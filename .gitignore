@@ -1,0 +1,11 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+.env
+# local runtime data
+*.db
+*.db-shm
+*.db-wal
+# sdd scratch
+.superpowers/

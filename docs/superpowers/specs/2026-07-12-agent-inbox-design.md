@@ -84,6 +84,14 @@ One item = one row in `items`:
 
 Indexes: `(status, project)`, `(created_at)`.
 
+### Status ownership — who clears the inbox
+
+Two lanes, no overlap of intent:
+- **Agents raise, and self-resolve when moot.** An agent `flag`s what happened, and may `resolve` its own item when it becomes obsolete (answered its own question, or the caveat no longer applies) — so stale items don't sit in my face.
+- **I triage.** In the viewer I `resolve` items I've acted on, `dismiss` items I don't care about, and annotate.
+
+The agent is the source of truth for *what happened*; the inbox is *my* surface for clearing it. Keeping `dismissed` distinct from `resolved` is deliberate: my **dismiss rate is the noise signal** — lots of dismissed notes means the reporting snippet (below) is over-flagging and needs tightening.
+
 ---
 
 ## MCP tool contracts
@@ -157,9 +165,9 @@ whoami() → { project: string, stream: string, agent: string }
 
 ---
 
-## Open decisions (for review)
+## Resolved decisions
 
-1. **Name** — `agent-inbox` is a placeholder.
-2. **Viewer port / launch** — fixed default port + a `npm run view` (later `agent-inbox` CLI that opens the browser)? 
-3. **`dismissed` vs `resolved`** — keep both statuses in v1, or collapse to just resolved and add dismiss later?
-4. **Reporting snippet wording** — the global-instruction text that tells agents *when* to flag is the lever that makes or breaks signal quality; worth iterating on separately.
+1. **Name** — `agent-inbox`. Kept.
+2. **Viewer launch** — plain localhost web app on a fixed default port, started via `npm run view`. Electron is a later wrap of the same bundle, not in v1.
+3. **Statuses** — keep both `resolved` and `dismissed` in v1 (see *Status ownership* above): agents raise + self-resolve when moot; I resolve/dismiss/annotate as triage; dismiss-rate is the noise signal.
+4. **Reporting snippet** — the global-instruction text telling agents *when* to `flag` is the lever for signal quality. It gets its **own plan task**, iterated separately from the code (ships as a documented snippet I paste into `~/.claude/CLAUDE.md` and Copilot's global instructions).

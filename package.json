@@ -5,7 +5,7 @@
   "engines": { "node": ">=24" },
   "bin": { "agent-inbox-mcp": "./dist/mcp-server.js" },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.build.json",
     "mcp": "tsx src/mcp-server.ts",
     "view": "tsx src/viewer-server.ts",
     "test": "vitest run",

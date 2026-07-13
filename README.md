@@ -9,7 +9,7 @@ CLI firehose. A local viewer shows the whole cross-project inbox grouped by
 
 Design: [`docs/superpowers/specs/2026-07-12-agent-inbox-design.md`](docs/superpowers/specs/2026-07-12-agent-inbox-design.md).
 
-Status: design approved, pre-implementation.
+Status: v1 shipped — local stdio MCP inbox (`flag`/`resolve`/`register`/`whoami`) + web viewer. See [Install & register](docs/INSTALL.md).
 
 ## Setup
 - [Install & register](docs/INSTALL.md)

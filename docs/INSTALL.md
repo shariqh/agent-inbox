@@ -1,0 +1,33 @@
+# Install
+
+## 1. Build
+```sh
+npm install && npm run build
+```
+
+## 2. Register the MCP server at user scope (once, applies to every repo)
+
+**Claude Code:**
+```sh
+claude mcp add --scope user agent-inbox -- node /ABSOLUTE/PATH/TO/agent-inbox/dist/mcp-server.js
+```
+
+**Copilot CLI:** add to its global MCP config (`~/.copilot/mcp-config.json`):
+```json
+{
+  "mcpServers": {
+    "agent-inbox": { "command": "node", "args": ["/ABSOLUTE/PATH/TO/agent-inbox/dist/mcp-server.js"] }
+  }
+}
+```
+
+Verify: in a repo, run the agent and call the `whoami` tool — it should report that repo's project and branch.
+
+## 3. Run the viewer
+```sh
+npm run view   # http://localhost:4319
+```
+Leave it running (or wrap as a login item / Electron app later).
+
+## 4. Add the reporting snippet
+Paste `docs/reporting-snippet.md` into your global agent instructions (`~/.claude/CLAUDE.md` and Copilot's global instructions) so agents know *when* to flag.

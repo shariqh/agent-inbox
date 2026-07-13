@@ -1,0 +1,19 @@
+:root { color-scheme: light dark; --gap: 12px; }
+* { box-sizing: border-box; }
+body { font: 15px/1.5 system-ui, sans-serif; margin: 0; padding: 0 16px 48px; max-width: 900px; margin-inline: auto; }
+header { display: flex; align-items: baseline; gap: 12px; padding: 16px 0; position: sticky; top: 0; background: Canvas; }
+h1 { font-size: 20px; margin: 0; }
+#status { color: crimson; font-size: 13px; }
+h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .05em; opacity: .6; margin: 24px 0 8px; }
+.project h3 { font-size: 13px; margin: 12px 0 6px; opacity: .8; }
+.item { border: 1px solid color-mix(in srgb, CanvasText 15%, transparent); border-left-width: 3px; border-radius: 8px; padding: 10px 12px; margin-bottom: var(--gap); }
+.item.question { border-left-color: crimson; }
+.item.note { border-left-color: goldenrod; }
+.meta { font-size: 12px; opacity: .55; }
+.title { font-weight: 600; margin: 2px 0; }
+.detail, .annotation { font-size: 13px; opacity: .8; white-space: pre-wrap; }
+.annotation { margin-top: 4px; opacity: .7; }
+.actions { display: flex; gap: 8px; margin-top: 8px; }
+.actions button { font-size: 12px; padding: 3px 10px; border-radius: 6px; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); background: transparent; cursor: pointer; }
+.empty { opacity: .4; font-size: 13px; }
+#done summary { cursor: pointer; margin-top: 24px; opacity: .6; }

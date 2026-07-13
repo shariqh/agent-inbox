@@ -10,3 +10,7 @@ CLI firehose. A local viewer shows the whole cross-project inbox grouped by
 Design: [`docs/superpowers/specs/2026-07-12-agent-inbox-design.md`](docs/superpowers/specs/2026-07-12-agent-inbox-design.md).
 
 Status: design approved, pre-implementation.
+
+## Setup
+- [Install & register](docs/INSTALL.md)
+- [Reporting snippet for agents](docs/reporting-snippet.md)

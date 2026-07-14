@@ -17,3 +17,19 @@ h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .05em; opacity:
 .actions button { font-size: 12px; padding: 3px 10px; border-radius: 6px; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); background: transparent; cursor: pointer; }
 .empty { opacity: .4; font-size: 13px; }
 #done summary { cursor: pointer; margin-top: 24px; opacity: .6; }
+.board { border: 1px solid color-mix(in srgb, CanvasText 15%, transparent); border-radius: 8px; padding: 12px; margin-bottom: var(--gap); }
+.board-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.board-title { font-weight: 600; }
+.board-meta { font-size: 12px; opacity: .55; }
+.bar { height: 6px; border-radius: 3px; background: color-mix(in srgb, CanvasText 12%, transparent); margin: 8px 0 4px; overflow: hidden; }
+.bar-fill { height: 100%; background: seagreen; }
+.bar-label { font-size: 12px; opacity: .6; margin-bottom: 6px; }
+.board-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.board-table td { padding: 4px 6px; border-top: 1px solid color-mix(in srgb, CanvasText 8%, transparent); vertical-align: top; }
+.board-table .pill { width: 1.5em; text-align: center; }
+.board-table .row-label { font-weight: 500; white-space: nowrap; }
+.board-table .row-note { opacity: .8; width: 100%; white-space: pre-wrap; }
+.board-table .row-action { text-align: right; }
+.board-table .row-action button { font-size: 12px; padding: 1px 6px; border-radius: 6px; border: 1px solid color-mix(in srgb, CanvasText 20%, transparent); background: transparent; cursor: pointer; }
+/* status accents on the label text so state reads at a glance even past the glyph */
+.board-table tr .missing ~ td, .board-table tr:has(.missing) .row-label { color: color-mix(in srgb, crimson 70%, CanvasText); }

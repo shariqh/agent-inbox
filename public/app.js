@@ -4,6 +4,8 @@ async function load() {
     renderGroups('needsYou', g.needsYou)
     renderGroups('notes', g.notes)
     renderDone(g.done)
+    const boards = await (await fetch('/api/boards')).json()
+    renderBoards(boards)
     document.getElementById('status').textContent = ''
   } catch {
     document.getElementById('status').textContent = 'disconnected'
@@ -26,6 +28,51 @@ function renderDone(items) {
   const host = document.querySelector('#done .items')
   host.innerHTML = items.length ? '' : '<p class="empty">Nothing yet.</p>'
   for (const it of items) host.appendChild(itemEl(it, true))
+}
+
+const GLYPH = { done: '✅', partial: '⚠️', missing: '❌', tracked: '🔜', na: '➖' }
+
+function renderBoards(boards) {
+  const host = document.querySelector('#boards .boards')
+  host.innerHTML = boards.length ? '' : '<p class="empty">No boards.</p>'
+  for (const b of boards) host.appendChild(boardEl(b))
+}
+
+function boardEl(b) {
+  const el = document.createElement('article')
+  el.className = 'board'
+  const pct = Math.round(b.progress.fraction * 100)
+  const stream = b.stream ? ` · ${esc(b.stream)}` : ''
+  el.innerHTML = `
+    <div class="board-head">
+      <div class="board-title">${esc(b.title)}</div>
+      <div class="board-meta">${esc(b.project)}${stream}</div>
+    </div>
+    <div class="bar"><div class="bar-fill" style="width:${pct}%"></div></div>
+    <div class="bar-label">${b.progress.done}/${b.progress.countable} done · ${pct}%</div>`
+  const table = document.createElement('table')
+  table.className = 'board-table'
+  for (const r of b.rows) {
+    const tr = document.createElement('tr')
+    tr.innerHTML = `
+      <td class="pill ${r.status}">${GLYPH[r.status] || ''}</td>
+      <td class="row-label">${esc(r.label)}</td>
+      <td class="row-note">${esc(r.note)}${r.annotation ? `<div class="annotation">📝 ${esc(r.annotation)}</div>` : ''}</td>`
+    const actionTd = document.createElement('td')
+    actionTd.className = 'row-action'
+    actionTd.appendChild(btn('📝', async () => {
+      const text = prompt('Your note on this row:', r.annotation || '')
+      if (text != null) { await fetch(`/api/boards/${b.id}/rows/${r.id}/annotate`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }) }); load() }
+    }))
+    tr.appendChild(actionTd)
+    table.appendChild(tr)
+  }
+  el.appendChild(table)
+  const actions = document.createElement('div')
+  actions.className = 'actions'
+  actions.appendChild(btn('Archive', async () => { await fetch(`/api/boards/${b.id}/archive`, { method: 'POST' }); load() }))
+  el.appendChild(actions)
+  return el
 }
 
 function itemEl(it, done = false) {

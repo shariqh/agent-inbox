@@ -49,7 +49,7 @@ boards
 
 board_rows
   id          TEXT PRIMARY KEY        -- uuid
-  board_id    TEXT NOT NULL           -- FK → boards.id (ON DELETE CASCADE)
+  board_id    TEXT NOT NULL           -- references boards.id (no FK enforcement; boards are archived, never deleted, so no cascade is exercised)
   label       TEXT NOT NULL           -- stable row key within a board
   status      TEXT NOT NULL           -- 'done'|'partial'|'missing'|'tracked'|'na'
   note        TEXT NOT NULL DEFAULT ''-- agent's note (cell content)

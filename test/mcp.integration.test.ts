@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
-import { openDb, listItems } from '../src/store.js'
+import { openDb, listItems, listBoards } from '../src/store.js'
 
 describe('mcp round-trip', () => {
   it('flag writes a row attributed to this session, and whoami reflects register', async () => {
@@ -33,4 +33,38 @@ describe('mcp round-trip', () => {
     expect(items[0]!.agent).toBe('claude-code')
     expect(items[0]!.kind).toBe('question')
   })
+
+  it('board tools upsert, update a row, and archive a board', async () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-board-')), 'inbox.db')
+    const transport = new StdioClientTransport({
+      command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath },
+    })
+    const client = new Client({ name: 'claude-code', version: '1.0.0' })
+    await client.connect(transport)
+
+    const up = await client.callTool({ name: 'board_upsert', arguments: {
+      title: 'coverage',
+      rows: [{ label: 'theme', status: 'done', note: 'both modes' }, { label: 'stems', status: 'partial' }],
+    } })
+    const upOut = JSON.parse((up.content as Array<{ text: string }>)[0]!.text)
+    expect(upOut.rowCount).toBe(2)
+
+    await client.callTool({ name: 'board_row', arguments: { title: 'coverage', label: 'stems', status: 'done' } })
+    await client.close()
+
+    const db = openDb(dbPath)
+    const board = listBoards(db)[0]!
+    expect(board.title).toBe('coverage')
+    expect(board.rows.find((r) => r.label === 'stems')!.status).toBe('done')
+
+    // archive via a second short-lived client (same db path)
+    const t2 = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
+    const c2 = new Client({ name: 'claude-code', version: '1.0.0' })
+    await c2.connect(t2)
+    const arch = await c2.callTool({ name: 'board_archive', arguments: { title: 'coverage' } })
+    expect(JSON.parse((arch.content as Array<{ text: string }>)[0]!.text).ok).toBe(true)
+    await c2.close()
+
+    expect(listBoards(openDb(dbPath))).toHaveLength(0) // archived → not in active list
+  }, 20000)
 })

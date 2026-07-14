@@ -60,6 +60,29 @@ function migrate(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_items_status_project ON items(status, project);
     CREATE INDEX IF NOT EXISTS idx_items_created ON items(created_at);
+    CREATE TABLE IF NOT EXISTS boards (
+      id TEXT PRIMARY KEY,
+      project TEXT NOT NULL,
+      stream TEXT NOT NULL DEFAULT '',
+      agent TEXT NOT NULL DEFAULT 'unknown',
+      title TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(project, title)
+    );
+    CREATE TABLE IF NOT EXISTS board_rows (
+      id TEXT PRIMARY KEY,
+      board_id TEXT NOT NULL,
+      label TEXT NOT NULL,
+      status TEXT NOT NULL,
+      note TEXT NOT NULL DEFAULT '',
+      annotation TEXT,
+      position INTEGER NOT NULL,
+      UNIQUE(board_id, label)
+    );
+    CREATE INDEX IF NOT EXISTS idx_boards_status_project ON boards(status, project);
+    CREATE INDEX IF NOT EXISTS idx_board_rows_board ON board_rows(board_id, position);
   `)
 }
 
@@ -98,4 +121,153 @@ export function listItems(db: Database.Database, opts: { status?: Status } = {})
     ? db.prepare(`SELECT * FROM items WHERE status = ? ORDER BY created_at DESC`).all(opts.status)
     : db.prepare(`SELECT * FROM items ORDER BY created_at DESC`).all()
   return rows as Item[]
+}
+
+export type RowStatus = 'done' | 'partial' | 'missing' | 'tracked' | 'na'
+
+export interface Board {
+  id: string
+  project: string
+  stream: string
+  agent: string
+  title: string
+  status: 'active' | 'archived'
+  created_at: string
+  updated_at: string
+}
+
+export interface BoardRow {
+  id: string
+  label: string
+  status: RowStatus
+  note: string
+  annotation: string | null
+  position: number
+}
+
+export interface Progress {
+  done: number
+  partial: number
+  missing: number
+  tracked: number
+  na: number
+  total: number
+  countable: number
+  fraction: number
+}
+
+export interface BoardWithRows extends Board {
+  rows: BoardRow[]
+  progress: Progress
+}
+
+export interface NewBoardRow {
+  label: string
+  status: RowStatus
+  note?: string
+}
+
+export function findBoard(db: Database.Database, project: string, title: string): Board | undefined {
+  return db.prepare(`SELECT * FROM boards WHERE project = ? AND title = ?`).get(project, title) as Board | undefined
+}
+
+interface UpsertBoardInput {
+  project: string
+  stream: string
+  agent: string
+  title: string
+  rows: NewBoardRow[]
+}
+
+export function upsertBoard(db: Database.Database, input: UpsertBoardInput): { boardId: string; rowCount: number } {
+  const run = db.transaction((inp: UpsertBoardInput): { boardId: string; rowCount: number } => {
+    const now = new Date().toISOString()
+    const boardId = ensureBoard(db, inp, now)
+    const existing = db.prepare(`SELECT id, label FROM board_rows WHERE board_id = ?`).all(boardId) as { id: string; label: string }[]
+    const idByLabel = new Map(existing.map((r) => [r.label, r.id]))
+    const incoming = new Set<string>()
+    inp.rows.forEach((r, i) => {
+      incoming.add(r.label)
+      const existingId = idByLabel.get(r.label)
+      if (existingId) {
+        // annotation column is deliberately NOT touched — human notes survive
+        db.prepare(`UPDATE board_rows SET status = ?, note = ?, position = ? WHERE id = ?`).run(r.status, r.note ?? '', i, existingId)
+      } else {
+        db.prepare(`INSERT INTO board_rows (id, board_id, label, status, note, position) VALUES (?, ?, ?, ?, ?, ?)`)
+          .run(randomUUID(), boardId, r.label, r.status, r.note ?? '', i)
+      }
+    })
+    for (const r of existing) if (!incoming.has(r.label)) db.prepare(`DELETE FROM board_rows WHERE id = ?`).run(r.id)
+    return { boardId, rowCount: inp.rows.length }
+  })
+  return run(input)
+}
+
+interface UpdateRowInput {
+  project: string
+  stream: string
+  agent: string
+  title: string
+  label: string
+  status?: RowStatus
+  note?: string
+}
+
+export function updateBoardRow(db: Database.Database, input: UpdateRowInput): { boardId: string; rowId: string } {
+  const run = db.transaction((inp: UpdateRowInput): { boardId: string; rowId: string } => {
+    const now = new Date().toISOString()
+    const boardId = ensureBoard(db, inp, now)
+    const existing = db.prepare(`SELECT id FROM board_rows WHERE board_id = ? AND label = ?`).get(boardId, inp.label) as { id: string } | undefined
+    if (existing) {
+      if (inp.status !== undefined) db.prepare(`UPDATE board_rows SET status = ? WHERE id = ?`).run(inp.status, existing.id)
+      if (inp.note !== undefined) db.prepare(`UPDATE board_rows SET note = ? WHERE id = ?`).run(inp.note, existing.id)
+      return { boardId, rowId: existing.id }
+    }
+    const rowId = randomUUID()
+    const pos = (db.prepare(`SELECT COALESCE(MAX(position), -1) + 1 AS p FROM board_rows WHERE board_id = ?`).get(boardId) as { p: number }).p
+    db.prepare(`INSERT INTO board_rows (id, board_id, label, status, note, position) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(rowId, boardId, inp.label, inp.status ?? 'tracked', inp.note ?? '', pos)
+    return { boardId, rowId }
+  })
+  return run(input)
+}
+
+// Find-or-create the board row and stamp the last writer. Shared by upsertBoard/updateBoardRow.
+function ensureBoard(db: Database.Database, inp: { project: string; stream: string; agent: string; title: string }, now: string): string {
+  const board = findBoard(db, inp.project, inp.title)
+  if (board) {
+    db.prepare(`UPDATE boards SET stream = ?, agent = ?, updated_at = ? WHERE id = ?`).run(inp.stream, inp.agent, now, board.id)
+    return board.id
+  }
+  const boardId = randomUUID()
+  db.prepare(`INSERT INTO boards (id, project, stream, agent, title, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'active', ?, ?)`)
+    .run(boardId, inp.project, inp.stream, inp.agent, inp.title, now, now)
+  return boardId
+}
+
+export function archiveBoard(db: Database.Database, boardId: string): void {
+  db.prepare(`UPDATE boards SET status = 'archived', updated_at = ? WHERE id = ?`).run(new Date().toISOString(), boardId)
+}
+
+export function annotateBoardRow(db: Database.Database, rowId: string, text: string): void {
+  db.prepare(`UPDATE board_rows SET annotation = ? WHERE id = ?`).run(text, rowId)
+}
+
+export function computeProgress(rows: BoardRow[]): Progress {
+  const counts = { done: 0, partial: 0, missing: 0, tracked: 0, na: 0 }
+  for (const r of rows) counts[r.status]++
+  const total = rows.length
+  const countable = total - counts.na
+  const fraction = countable > 0 ? (counts.done + 0.5 * counts.partial) / countable : 0
+  return { ...counts, total, countable, fraction }
+}
+
+export function listBoards(db: Database.Database, opts: { status?: 'active' | 'archived' } = {}): BoardWithRows[] {
+  const status = opts.status ?? 'active'
+  const boards = db.prepare(`SELECT * FROM boards WHERE status = ? ORDER BY updated_at DESC`).all(status) as Board[]
+  const rowStmt = db.prepare(`SELECT id, label, status, note, annotation, position FROM board_rows WHERE board_id = ? ORDER BY position ASC`)
+  return boards.map((b) => {
+    const rows = rowStmt.all(b.id) as BoardRow[]
+    return { ...b, rows, progress: computeProgress(rows) }
+  })
 }

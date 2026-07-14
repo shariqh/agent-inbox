@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
-import { openDb, listItems, listBoards } from '../src/store.js'
+import { openDb, listItems, listBoards, getBoard, annotateBoardRow } from '../src/store.js'
 
 describe('mcp round-trip', () => {
   it('flag writes a row attributed to this session, and whoami reflects register', async () => {
@@ -66,5 +66,27 @@ describe('mcp round-trip', () => {
     await c2.close()
 
     expect(listBoards(openDb(dbPath))).toHaveLength(0) // archived → not in active list
+  }, 20000)
+
+  it('board_get reads a board back including a human annotation', async () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-get-')), 'inbox.db')
+    const conn = async () => {
+      const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
+      const c = new Client({ name: 'claude-code', version: '1.0.0' }); await c.connect(t); return c
+    }
+    const c1 = await conn()
+    await c1.callTool({ name: 'board_upsert', arguments: { title: 'cov', rows: [{ label: 'x', status: 'missing' }] } })
+    await c1.close()
+
+    // Read the stored project (inference-derived), then annotate the row via the store (viewer path)
+    const project = listBoards(openDb(dbPath))[0]!.project
+    const rowId = getBoard(openDb(dbPath), project, 'cov')!.rows[0]!.id
+    annotateBoardRow(openDb(dbPath), rowId, 'human note')
+
+    const c2 = await conn()
+    const got = await c2.callTool({ name: 'board_get', arguments: { title: 'cov' } })
+    await c2.close()
+    const board = JSON.parse((got.content as Array<{ text: string }>)[0]!.text)
+    expect(board.rows[0].annotation).toBe('human note')
   }, 20000)
 })

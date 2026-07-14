@@ -271,3 +271,10 @@ export function listBoards(db: Database.Database, opts: { status?: 'active' | 'a
     return { ...b, rows, progress: computeProgress(rows) }
   })
 }
+
+export function getBoard(db: Database.Database, project: string, title: string): BoardWithRows | undefined {
+  const board = findBoard(db, project, title)
+  if (!board || board.status !== 'active') return undefined
+  const rows = db.prepare(`SELECT id, label, status, note, annotation, position FROM board_rows WHERE board_id = ? ORDER BY position ASC`).all(board.id) as BoardRow[]
+  return { ...board, rows, progress: computeProgress(rows) }
+}

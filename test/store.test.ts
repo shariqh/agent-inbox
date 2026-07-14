@@ -17,6 +17,7 @@ import {
   annotateBoardRow,
   listBoards,
   computeProgress,
+  getBoard,
 } from '../src/store.js'
 import type { BoardRow } from '../src/store.js'
 
@@ -163,5 +164,35 @@ describe('boards', () => {
 
   it('computeProgress of an empty board is fraction 0, not NaN', () => {
     expect(computeProgress([] as BoardRow[]).fraction).toBe(0)
+  })
+})
+
+describe('getBoard (agent read)', () => {
+  let db: Database.Database
+  beforeEach(() => { db = freshDb() })
+
+  it('returns one board with rows + progress, scoped by project+title', () => {
+    upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'cov', rows: [
+      { label: 'x', status: 'done' }, { label: 'y', status: 'partial' },
+    ] })
+    upsertBoard(db, { project: 'other', stream: '', agent: 'a', title: 'cov', rows: [{ label: 'z', status: 'missing' }] })
+    const b = getBoard(db, 'p', 'cov')!
+    expect(b.title).toBe('cov')
+    expect(b.rows.map((r) => r.label)).toEqual(['x', 'y'])   // project-scoped, not 'other's row
+    expect(b.progress.fraction).toBeCloseTo((1 + 0.5) / 2)
+  })
+
+  it('surfaces a human annotation to the reader', () => {
+    upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'cov', rows: [{ label: 'x', status: 'missing' }] })
+    const rowId = getBoard(db, 'p', 'cov')!.rows[0]!.id
+    annotateBoardRow(db, rowId, 'do this next')
+    expect(getBoard(db, 'p', 'cov')!.rows[0]!.annotation).toBe('do this next')
+  })
+
+  it('returns undefined for a missing or archived board', () => {
+    expect(getBoard(db, 'p', 'nope')).toBeUndefined()
+    const { boardId } = upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'cov', rows: [{ label: 'x', status: 'done' }] })
+    archiveBoard(db, boardId)
+    expect(getBoard(db, 'p', 'cov')).toBeUndefined()
   })
 })

@@ -3,7 +3,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
-import { openDb, insertItem, listItems } from '../src/store.js'
+import { openDb, insertItem, listItems, upsertBoard, listBoards } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
 
 function freshDb(): Database.Database {
@@ -37,5 +37,44 @@ describe('viewer api', () => {
     expect(rows.find((r) => r.id === a)!.status).toBe('resolved')
     expect(rows.find((r) => r.id === a)!.annotation).toBe('noted')
     expect(rows.find((r) => r.id === b)!.status).toBe('dismissed')
+  })
+})
+
+describe('boards api', () => {
+  let db: Database.Database
+  beforeEach(() => { db = freshDb() })
+
+  it('GET /api/boards returns active boards with rows + progress', async () => {
+    upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'coverage', rows: [
+      { label: 'theme', status: 'done' }, { label: 'stems', status: 'partial' }, { label: 'na-row', status: 'na' },
+    ] })
+    const res = await createViewer(db).request('/api/boards')
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body).toHaveLength(1)
+    expect(body[0].title).toBe('coverage')
+    expect(body[0].rows.map((r: { label: string }) => r.label)).toEqual(['theme', 'stems', 'na-row'])
+    expect(body[0].progress.countable).toBe(2)
+    expect(body[0].progress.fraction).toBeCloseTo(0.75) // (1 + 0.5)/2
+  })
+
+  it('POST archive removes the board from the active list', async () => {
+    const { boardId } = upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'c', rows: [{ label: 'x', status: 'done' }] })
+    const app = createViewer(db)
+    expect((await app.request(`/api/boards/${boardId}/archive`, { method: 'POST' })).status).toBe(200)
+    expect(listBoards(db)).toHaveLength(0)
+  })
+
+  it('POST row annotate sets the human note and survives a re-upsert', async () => {
+    upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'c', rows: [{ label: 'x', status: 'missing' }] })
+    const board = listBoards(db)[0]!
+    const rowId = board.rows[0]!.id
+    const app = createViewer(db)
+    const res = await app.request(`/api/boards/${board.id}/rows/${rowId}/annotate`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'do this next' }),
+    })
+    expect(res.status).toBe(200)
+    upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'c', rows: [{ label: 'x', status: 'done' }] })
+    expect(listBoards(db)[0]!.rows[0]!.annotation).toBe('do this next')
   })
 })

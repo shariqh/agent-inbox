@@ -6,11 +6,20 @@ h1 { font-size: 20px; margin: 0; }
 #status { color: crimson; font-size: 13px; }
 h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .05em; opacity: .6; margin: 0; display: inline-block; }
 .layout { display: flex; gap: 28px; align-items: flex-start; }
-#sidebar { position: sticky; top: 60px; display: flex; flex-direction: column; gap: 6px; min-width: 110px; padding-top: 24px; }
+#sidebar { position: sticky; top: 60px; display: flex; flex-direction: column; gap: 8px; width: 170px; flex-shrink: 0; padding-top: 24px; max-height: calc(100vh - 84px); overflow-y: auto; }
 #sidebar a { font-size: 13px; text-decoration: none; color: inherit; opacity: .6; }
 #sidebar a:hover { opacity: 1; }
+#sidebar .nav-group { display: flex; flex-direction: column; }
+#sidebar .sub { display: flex; flex-direction: column; gap: 2px; margin: 3px 0 2px 5px; padding-left: 8px; border-left: 1px solid color-mix(in srgb, CanvasText 15%, transparent); }
+#sidebar .sub a { font-size: 12px; opacity: .45; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#sidebar .sub:empty { display: none; }
 main { flex: 1; min-width: 0; }
-.section { scroll-margin-top: 60px; }
+.section, [data-card-id] { scroll-margin-top: 60px; }
+.card-summary { cursor: pointer; list-style: none; }
+.card-summary::-webkit-details-marker { display: none; }
+.caret { display: inline-block; width: 1em; opacity: .45; font-size: 11px; }
+.caret::before { content: '▸'; }
+details[open] > .card-summary .caret::before { content: '▾'; }
 .section > summary { cursor: pointer; margin: 24px 0 8px; list-style-position: outside; }
 .section > summary::marker { color: color-mix(in srgb, CanvasText 40%, transparent); font-size: 11px; }
 @media (max-width: 700px) { #sidebar { display: none; } }

@@ -10,10 +10,10 @@
   <header><h1>Agent Inbox</h1><span id="status"></span></header>
   <div class="layout">
     <nav id="sidebar" aria-label="Sections">
-      <a href="#needsYou" data-target="needsYou">Needs you</a>
-      <a href="#boards" data-target="boards">Tracking</a>
-      <a href="#notes" data-target="notes">Notes</a>
-      <a href="#done" data-target="done">Done</a>
+      <div class="nav-group"><a href="#needsYou" data-target="needsYou">Needs you</a><div class="sub" data-sub="needsYou"></div></div>
+      <div class="nav-group"><a href="#boards" data-target="boards">Tracking</a><div class="sub" data-sub="boards"></div></div>
+      <div class="nav-group"><a href="#notes" data-target="notes">Notes</a><div class="sub" data-sub="notes"></div></div>
+      <div class="nav-group"><a href="#done" data-target="done">Done</a><div class="sub" data-sub="done"></div></div>
     </nav>
     <main>
       <details class="section" id="needsYou" open><summary><h2>Needs you</h2></summary><div class="groups"></div></details>

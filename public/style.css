@@ -46,6 +46,7 @@ details[open] > .card-summary .caret::before { content: '▾'; }
 .board-table .pill { width: 1.5em; text-align: center; }
 .board-table .row-label { font-weight: 500; white-space: nowrap; }
 .board-table .row-note { opacity: .8; width: 100%; white-space: pre-wrap; }
+.unseen { color: LinkText; font-size: 9px; margin-left: 6px; vertical-align: middle; }
 .row-context { margin-top: 2px; font-size: 12.5px; }
 .row-context > summary { cursor: pointer; opacity: .55; user-select: none; }
 .row-context > div { white-space: pre-wrap; opacity: .75; margin: 2px 0 4px; padding-left: 10px; border-left: 2px solid color-mix(in srgb, CanvasText 15%, transparent); }

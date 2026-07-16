@@ -69,6 +69,7 @@ function migrate(db: Database.Database): void {
       status TEXT NOT NULL DEFAULT 'active',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
+      last_read_at TEXT,
       UNIQUE(project, title)
     );
     CREATE TABLE IF NOT EXISTS board_rows (
@@ -79,16 +80,22 @@ function migrate(db: Database.Database): void {
       note TEXT NOT NULL DEFAULT '',
       context TEXT NOT NULL DEFAULT '',
       annotation TEXT,
+      annotated_at TEXT,
       position INTEGER NOT NULL,
       UNIQUE(board_id, label)
     );
     CREATE INDEX IF NOT EXISTS idx_boards_status_project ON boards(status, project);
     CREATE INDEX IF NOT EXISTS idx_board_rows_board ON board_rows(board_id, position);
   `)
-  const rowCols = db.prepare(`SELECT name FROM pragma_table_info('board_rows')`).all() as { name: string }[]
-  if (!rowCols.some((c) => c.name === 'context')) {
-    db.exec(`ALTER TABLE board_rows ADD COLUMN context TEXT NOT NULL DEFAULT ''`)
-  }
+  ensureColumn(db, 'board_rows', 'context', `TEXT NOT NULL DEFAULT ''`)
+  ensureColumn(db, 'board_rows', 'annotated_at', 'TEXT')
+  ensureColumn(db, 'boards', 'last_read_at', 'TEXT')
+}
+
+// additive migration for DBs created before the column existed
+function ensureColumn(db: Database.Database, table: string, column: string, ddl: string): void {
+  const cols = db.prepare(`SELECT name FROM pragma_table_info(?)`).all(table) as { name: string }[]
+  if (!cols.some((c) => c.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`)
 }
 
 export function insertItem(db: Database.Database, item: NewItem): string {
@@ -139,6 +146,7 @@ export interface Board {
   status: 'active' | 'archived'
   created_at: string
   updated_at: string
+  last_read_at: string | null
 }
 
 export interface BoardRow {
@@ -148,7 +156,21 @@ export interface BoardRow {
   note: string
   context: string
   annotation: string | null
+  annotated_at: string | null
   position: number
+  annotation_unseen: boolean
+}
+
+type BoardRowRecord = Omit<BoardRow, 'annotation_unseen'>
+
+// an annotation is "unseen" until the agent reads the board after it was written
+function withUnseen(rows: BoardRowRecord[], lastReadAt: string | null): BoardRow[] {
+  return rows.map((r) => ({
+    ...r,
+    annotation_unseen:
+      r.annotation != null && r.annotation !== '' &&
+      (lastReadAt === null ? true : r.annotated_at !== null && r.annotated_at > lastReadAt),
+  }))
 }
 
 export interface Progress {
@@ -259,7 +281,11 @@ export function archiveBoard(db: Database.Database, boardId: string): void {
 }
 
 export function annotateBoardRow(db: Database.Database, rowId: string, text: string): void {
-  db.prepare(`UPDATE board_rows SET annotation = ? WHERE id = ?`).run(text, rowId)
+  db.prepare(`UPDATE board_rows SET annotation = ?, annotated_at = ? WHERE id = ?`).run(text, new Date().toISOString(), rowId)
+}
+
+export function markBoardRead(db: Database.Database, boardId: string): void {
+  db.prepare(`UPDATE boards SET last_read_at = ? WHERE id = ?`).run(new Date().toISOString(), boardId)
 }
 
 export function computeProgress(rows: BoardRow[]): Progress {
@@ -274,9 +300,9 @@ export function computeProgress(rows: BoardRow[]): Progress {
 export function listBoards(db: Database.Database, opts: { status?: 'active' | 'archived' } = {}): BoardWithRows[] {
   const status = opts.status ?? 'active'
   const boards = db.prepare(`SELECT * FROM boards WHERE status = ? ORDER BY updated_at DESC`).all(status) as Board[]
-  const rowStmt = db.prepare(`SELECT id, label, status, note, context, annotation, position FROM board_rows WHERE board_id = ? ORDER BY position ASC`)
+  const rowStmt = db.prepare(`SELECT id, label, status, note, context, annotation, annotated_at, position FROM board_rows WHERE board_id = ? ORDER BY position ASC`)
   return boards.map((b) => {
-    const rows = rowStmt.all(b.id) as BoardRow[]
+    const rows = withUnseen(rowStmt.all(b.id) as BoardRowRecord[], b.last_read_at)
     return { ...b, rows, progress: computeProgress(rows) }
   })
 }
@@ -284,6 +310,9 @@ export function listBoards(db: Database.Database, opts: { status?: 'active' | 'a
 export function getBoard(db: Database.Database, project: string, title: string): BoardWithRows | undefined {
   const board = findBoard(db, project, title)
   if (!board || board.status !== 'active') return undefined
-  const rows = db.prepare(`SELECT id, label, status, note, context, annotation, position FROM board_rows WHERE board_id = ? ORDER BY position ASC`).all(board.id) as BoardRow[]
+  const rows = withUnseen(
+    db.prepare(`SELECT id, label, status, note, context, annotation, annotated_at, position FROM board_rows WHERE board_id = ? ORDER BY position ASC`).all(board.id) as BoardRowRecord[],
+    board.last_read_at,
+  )
   return { ...board, rows, progress: computeProgress(rows) }
 }

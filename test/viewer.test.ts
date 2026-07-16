@@ -3,7 +3,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
-import { openDb, insertItem, listItems, upsertBoard, listBoards } from '../src/store.js'
+import { openDb, insertItem, listItems, upsertBoard, listBoards, annotateBoardRow } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
 
 function freshDb(): Database.Database {
@@ -77,5 +77,15 @@ describe('boards api', () => {
     expect(res.status).toBe(200)
     upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'c', rows: [{ label: 'x', status: 'done' }] })
     expect(listBoards(db)[0]!.rows[0]!.annotation).toBe('do this next')
+  })
+
+  it('GET /api/boards exposes annotation_unseen and does not mark the board read', async () => {
+    upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'c', rows: [{ label: 'x', status: 'missing' }] })
+    annotateBoardRow(db, listBoards(db)[0]!.rows[0]!.id, 'new note')
+    const app = createViewer(db)
+    const first = await (await app.request('/api/boards')).json()
+    expect(first[0].rows[0].annotation_unseen).toBe(true)
+    const second = await (await app.request('/api/boards')).json() // human watching ≠ agent reading
+    expect(second[0].rows[0].annotation_unseen).toBe(true)
   })
 })

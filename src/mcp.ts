@@ -1,7 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
 import type Database from 'better-sqlite3'
-import { insertItem, resolveItem, upsertBoard, updateBoardRow, findBoard, archiveBoard, getBoard, listBoards } from './store.js'
+import { insertItem, resolveItem, upsertBoard, updateBoardRow, findBoard, archiveBoard, getBoard, listBoards, markBoardRead } from './store.js'
 import { makeScope } from './scope.js'
 
 export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
@@ -116,16 +116,18 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     'board_get',
     {
       description:
-        'Read a tracking board back, INCLUDING the human’s per-row notes (annotations). Call this to see whether the human left you any notes, or to re-read a board’s state before updating it. With a title: that board. Without: all your active boards in this project. Returns {found:false} if the titled board does not exist.',
+        'Read a tracking board back, INCLUDING the human’s per-row notes (annotations). Call this to see whether the human left you any notes, or to re-read a board’s state before updating it. Rows carry annotation_unseen: true on annotations written since your last read — act on those. Reading marks the board read. With a title: that board. Without: all your active boards in this project. Returns {found:false} if the titled board does not exist.',
       inputSchema: { title: z.string().optional() },
     },
     async ({ title }) => {
       const s = scope.get(clientName())
       if (title === undefined) {
         const boards = listBoards(db).filter((b) => b.project === s.project)
+        for (const b of boards) markBoardRead(db, b.id)
         return { content: [{ type: 'text', text: JSON.stringify({ boards }) }] }
       }
       const board = getBoard(db, s.project, title)
+      if (board) markBoardRead(db, board.id)
       return { content: [{ type: 'text', text: JSON.stringify(board ?? { found: false }) }] }
     },
   )

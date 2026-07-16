@@ -18,6 +18,7 @@ import {
   listBoards,
   computeProgress,
   getBoard,
+  markBoardRead,
 } from '../src/store.js'
 import type { BoardRow } from '../src/store.js'
 
@@ -214,6 +215,71 @@ describe('boards', () => {
 
   it('computeProgress of an empty board is fraction 0, not NaN', () => {
     expect(computeProgress([] as BoardRow[]).fraction).toBe(0)
+  })
+})
+
+describe('unseen annotations', () => {
+  let db: Database.Database
+  beforeEach(() => { db = freshDb() })
+
+  function seed(): { boardId: string; rowId: string } {
+    const { boardId } = upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'c', rows: [{ label: 'x', status: 'missing' }] })
+    return { boardId, rowId: listBoards(db)[0]!.rows[0]!.id }
+  }
+
+  it('an annotation on a never-read board is unseen and stamped', () => {
+    const { rowId } = seed()
+    annotateBoardRow(db, rowId, 'look here')
+    const row = listBoards(db)[0]!.rows[0]!
+    expect(row.annotated_at).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+    expect(row.annotation_unseen).toBe(true)
+  })
+
+  it('rows without an annotation are never unseen', () => {
+    seed()
+    expect(listBoards(db)[0]!.rows[0]!.annotation_unseen).toBe(false)
+  })
+
+  it('markBoardRead clears unseen; a later annotation re-raises it', async () => {
+    const { boardId, rowId } = seed()
+    annotateBoardRow(db, rowId, 'first note')
+    markBoardRead(db, boardId)
+    const board = listBoards(db)[0]!
+    expect(board.last_read_at).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+    expect(board.rows[0]!.annotation_unseen).toBe(false)
+    await new Promise((r) => setTimeout(r, 5)) // let the clock tick past last_read_at
+    annotateBoardRow(db, rowId, 'second note')
+    expect(listBoards(db)[0]!.rows[0]!.annotation_unseen).toBe(true)
+  })
+
+  it('getBoard derives the same unseen flag', () => {
+    const { rowId } = seed()
+    annotateBoardRow(db, rowId, 'psst')
+    expect(getBoard(db, 'p', 'c')!.rows[0]!.annotation_unseen).toBe(true)
+  })
+
+  it('openDb migrates legacy tables missing last_read_at/annotated_at', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'inbox-legacy2-')), 'inbox.db')
+    const legacy = new Database(path)
+    legacy.exec(`
+      CREATE TABLE boards (
+        id TEXT PRIMARY KEY, project TEXT NOT NULL, stream TEXT NOT NULL DEFAULT '',
+        agent TEXT NOT NULL DEFAULT 'unknown', title TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        UNIQUE(project, title)
+      );
+      CREATE TABLE board_rows (
+        id TEXT PRIMARY KEY, board_id TEXT NOT NULL, label TEXT NOT NULL, status TEXT NOT NULL,
+        note TEXT NOT NULL DEFAULT '', context TEXT NOT NULL DEFAULT '', annotation TEXT,
+        position INTEGER NOT NULL, UNIQUE(board_id, label)
+      );
+    `)
+    legacy.close()
+    const db2 = openDb(path)
+    const { boardId } = upsertBoard(db2, { project: 'p', stream: '', agent: 'a', title: 'c', rows: [{ label: 'x', status: 'done' }] })
+    annotateBoardRow(db2, listBoards(db2)[0]!.rows[0]!.id, 'note')
+    markBoardRead(db2, boardId)
+    expect(listBoards(db2)[0]!.rows[0]!.annotation_unseen).toBe(false)
   })
 })
 

@@ -87,8 +87,14 @@ describe('mcp round-trip', () => {
 
     const c2 = await conn()
     const got = await c2.callTool({ name: 'board_get', arguments: { title: 'cov' } })
-    await c2.close()
     const board = JSON.parse((got.content as Array<{ text: string }>)[0]!.text)
     expect(board.rows[0].annotation).toBe('human note')
+    expect(board.rows[0].annotation_unseen).toBe(true) // first read since the annotation
+
+    // reading marks the board read, so a second read sees nothing new
+    const again = await c2.callTool({ name: 'board_get', arguments: { title: 'cov' } })
+    await c2.close()
+    const board2 = JSON.parse((again.content as Array<{ text: string }>)[0]!.text)
+    expect(board2.rows[0].annotation_unseen).toBe(false)
   }, 20000)
 })

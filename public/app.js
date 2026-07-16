@@ -125,7 +125,7 @@ function boardEl(b) {
     tr.innerHTML = `
       <td class="pill ${r.status}">${GLYPH[r.status] || ''}</td>
       <td class="row-label">${esc(r.label)}</td>
-      <td class="row-note">${esc(r.note)}${context}${r.annotation ? `<div class="annotation">📝 ${esc(r.annotation)}</div>` : ''}</td>`
+      <td class="row-note">${esc(r.note)}${context}${r.annotation ? `<div class="annotation">📝 ${esc(r.annotation)}${r.annotation_unseen ? '<span class="unseen" title="Not yet seen by the agent">●</span>' : ''}</div>` : ''}</td>`
     const ctxEl = tr.querySelector('.row-context')
     if (ctxEl) ctxEl.addEventListener('toggle', () => { ctxEl.open ? openContexts.add(r.id) : openContexts.delete(r.id) })
     const actionTd = document.createElement('td')

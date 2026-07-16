@@ -71,10 +71,10 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     'board_upsert',
     {
       description:
-        'Create or replace a tracking board (a titled table the human watches). Idempotent by title within this project — re-send the whole table to refresh it. Rows are matched by label; the human’s per-row notes survive. status: done|partial|missing|tracked|na.',
+        'Create or replace a tracking board (a titled table the human watches). Idempotent by title within this project — re-send the whole table to refresh it. Rows are matched by label; the human’s per-row notes survive. status: done|partial|missing|tracked|na. note is the one-line summary; context is optional long-form backstory (reasoning, history) shown collapsed.',
       inputSchema: {
         title: z.string().min(1),
-        rows: z.array(z.object({ label: z.string().min(1), status: rowStatus, note: z.string().optional() })),
+        rows: z.array(z.object({ label: z.string().min(1), status: rowStatus, note: z.string().optional(), context: z.string().optional() })),
       },
     },
     async ({ title, rows }) => {
@@ -88,12 +88,12 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     'board_row',
     {
       description:
-        'Update or add ONE row of a tracking board by label, without re-sending the whole table. Creates the board (and row) if missing; a new row defaults to status "tracked". Omitted status/note leave the existing value.',
-      inputSchema: { title: z.string().min(1), label: z.string().min(1), status: rowStatus.optional(), note: z.string().optional() },
+        'Update or add ONE row of a tracking board by label, without re-sending the whole table. Creates the board (and row) if missing; a new row defaults to status "tracked". Omitted status/note/context leave the existing value. context is optional long-form backstory shown collapsed.',
+      inputSchema: { title: z.string().min(1), label: z.string().min(1), status: rowStatus.optional(), note: z.string().optional(), context: z.string().optional() },
     },
-    async ({ title, label, status, note }) => {
+    async ({ title, label, status, note, context }) => {
       const s = scope.get(clientName())
-      const out = updateBoardRow(db, { project: s.project, stream: s.stream, agent: s.agent, title, label, status, note })
+      const out = updateBoardRow(db, { project: s.project, stream: s.stream, agent: s.agent, title, label, status, note, context })
       return { content: [{ type: 'text', text: JSON.stringify(out) }] }
     },
   )

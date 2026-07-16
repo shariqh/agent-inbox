@@ -1,10 +1,19 @@
 :root { color-scheme: light dark; --gap: 12px; }
 * { box-sizing: border-box; }
-body { font: 15px/1.5 system-ui, sans-serif; margin: 0; padding: 0 16px 48px; max-width: 900px; margin-inline: auto; }
-header { display: flex; align-items: baseline; gap: 12px; padding: 16px 0; position: sticky; top: 0; background: Canvas; }
+body { font: 15px/1.5 system-ui, sans-serif; margin: 0; padding: 0 16px 48px; max-width: 1040px; margin-inline: auto; }
+header { display: flex; align-items: baseline; gap: 12px; padding: 16px 0; position: sticky; top: 0; background: Canvas; z-index: 1; }
 h1 { font-size: 20px; margin: 0; }
 #status { color: crimson; font-size: 13px; }
-h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .05em; opacity: .6; margin: 24px 0 8px; }
+h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .05em; opacity: .6; margin: 0; display: inline-block; }
+.layout { display: flex; gap: 28px; align-items: flex-start; }
+#sidebar { position: sticky; top: 60px; display: flex; flex-direction: column; gap: 6px; min-width: 110px; padding-top: 24px; }
+#sidebar a { font-size: 13px; text-decoration: none; color: inherit; opacity: .6; }
+#sidebar a:hover { opacity: 1; }
+main { flex: 1; min-width: 0; }
+.section { scroll-margin-top: 60px; }
+.section > summary { cursor: pointer; margin: 24px 0 8px; list-style-position: outside; }
+.section > summary::marker { color: color-mix(in srgb, CanvasText 40%, transparent); font-size: 11px; }
+@media (max-width: 700px) { #sidebar { display: none; } }
 .project h3 { font-size: 13px; margin: 12px 0 6px; opacity: .8; }
 .item { border: 1px solid color-mix(in srgb, CanvasText 15%, transparent); border-left-width: 3px; border-radius: 8px; padding: 10px 12px; margin-bottom: var(--gap); }
 .item.question { border-left-color: crimson; }
@@ -16,7 +25,6 @@ h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .05em; opacity:
 .actions { display: flex; gap: 8px; margin-top: 8px; }
 .actions button { font-size: 12px; padding: 3px 10px; border-radius: 6px; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); background: transparent; cursor: pointer; }
 .empty { opacity: .4; font-size: 13px; }
-#done summary { cursor: pointer; margin-top: 24px; opacity: .6; }
 .board { border: 1px solid color-mix(in srgb, CanvasText 15%, transparent); border-radius: 8px; padding: 12px; margin-bottom: var(--gap); }
 .board-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .board-title { font-weight: 600; }
@@ -29,6 +37,9 @@ h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .05em; opacity:
 .board-table .pill { width: 1.5em; text-align: center; }
 .board-table .row-label { font-weight: 500; white-space: nowrap; }
 .board-table .row-note { opacity: .8; width: 100%; white-space: pre-wrap; }
+.row-context { margin-top: 2px; font-size: 12.5px; }
+.row-context > summary { cursor: pointer; opacity: .55; user-select: none; }
+.row-context > div { white-space: pre-wrap; opacity: .75; margin: 2px 0 4px; padding-left: 10px; border-left: 2px solid color-mix(in srgb, CanvasText 15%, transparent); }
 .board-table .row-action { text-align: right; }
 .board-table .row-action button { font-size: 12px; padding: 1px 6px; border-radius: 6px; border: 1px solid color-mix(in srgb, CanvasText 20%, transparent); background: transparent; cursor: pointer; }
 /* status accents on the label text so state reads at a glance even past the glyph */

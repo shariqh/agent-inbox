@@ -27,9 +27,12 @@ prose. Do this **proactively**, without being asked:
 
 - **`board_upsert({ title, rows })`** — create or refresh the WHOLE table (idempotent by
   title). Re-send the full table whenever status changes. Each row is
-  `{ label, status, note }`, `status ∈ done | partial | missing | tracked | na`. Keep
-  `label` stable — rows are matched by label, and the human's notes stick to the label.
-- **`board_row({ title, label, status?, note? })`** — flip a single row without resending all.
+  `{ label, status, note?, context? }`, `status ∈ done | partial | missing | tracked | na`.
+  Keep `label` stable — rows are matched by label, and the human's notes stick to the label.
+  `note` is the one-line summary; put long-form backstory (reasoning, history, links) in
+  `context` — the human sees it as a collapsed dropdown, so the row stays scannable.
+- **`board_row({ title, label, status?, note?, context? })`** — flip a single row without
+  resending all.
 - **`board_get({ title? })`** — read a board back, **including the human's per-row notes**.
   Call it when you (re)start work on a tracked effort, and before updating a board, to
   pick up anything the human left for you — then act on it. This is how you see their input.

@@ -8,12 +8,20 @@
 </head>
 <body>
   <header><h1>Agent Inbox</h1><span id="status"></span></header>
-  <main>
-    <section id="needsYou"><h2>Needs you</h2><div class="groups"></div></section>
-    <section id="boards"><h2>Tracking</h2><div class="boards"></div></section>
-    <section id="notes"><h2>Notes</h2><div class="groups"></div></section>
-    <details id="done"><summary>Done</summary><div class="items"></div></details>
-  </main>
+  <div class="layout">
+    <nav id="sidebar" aria-label="Sections">
+      <a href="#needsYou" data-target="needsYou">Needs you</a>
+      <a href="#boards" data-target="boards">Tracking</a>
+      <a href="#notes" data-target="notes">Notes</a>
+      <a href="#done" data-target="done">Done</a>
+    </nav>
+    <main>
+      <details class="section" id="needsYou" open><summary><h2>Needs you</h2></summary><div class="groups"></div></details>
+      <details class="section" id="boards" open><summary><h2>Tracking</h2></summary><div class="boards"></div></details>
+      <details class="section" id="notes" open><summary><h2>Notes</h2></summary><div class="groups"></div></details>
+      <details class="section" id="done"><summary><h2>Done</h2></summary><div class="items"></div></details>
+    </main>
+  </div>
   <script src="/app.js"></script>
 </body>
 </html>

@@ -44,18 +44,20 @@ describe('mcp round-trip', () => {
 
     const up = await client.callTool({ name: 'board_upsert', arguments: {
       title: 'coverage',
-      rows: [{ label: 'theme', status: 'done', note: 'both modes' }, { label: 'stems', status: 'partial' }],
+      rows: [{ label: 'theme', status: 'done', note: 'both modes', context: 'landed across three PRs' }, { label: 'stems', status: 'partial' }],
     } })
     const upOut = JSON.parse((up.content as Array<{ text: string }>)[0]!.text)
     expect(upOut.rowCount).toBe(2)
 
-    await client.callTool({ name: 'board_row', arguments: { title: 'coverage', label: 'stems', status: 'done' } })
+    await client.callTool({ name: 'board_row', arguments: { title: 'coverage', label: 'stems', status: 'done', context: 'the long story' } })
     await client.close()
 
     const db = openDb(dbPath)
     const board = listBoards(db)[0]!
     expect(board.title).toBe('coverage')
+    expect(board.rows.find((r) => r.label === 'theme')!.context).toBe('landed across three PRs')
     expect(board.rows.find((r) => r.label === 'stems')!.status).toBe('done')
+    expect(board.rows.find((r) => r.label === 'stems')!.context).toBe('the long story')
 
     // archive via a second short-lived client (same db path)
     const t2 = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })

@@ -77,6 +77,7 @@ function migrate(db: Database.Database): void {
       label TEXT NOT NULL,
       status TEXT NOT NULL,
       note TEXT NOT NULL DEFAULT '',
+      context TEXT NOT NULL DEFAULT '',
       annotation TEXT,
       position INTEGER NOT NULL,
       UNIQUE(board_id, label)
@@ -84,6 +85,10 @@ function migrate(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_boards_status_project ON boards(status, project);
     CREATE INDEX IF NOT EXISTS idx_board_rows_board ON board_rows(board_id, position);
   `)
+  const rowCols = db.prepare(`SELECT name FROM pragma_table_info('board_rows')`).all() as { name: string }[]
+  if (!rowCols.some((c) => c.name === 'context')) {
+    db.exec(`ALTER TABLE board_rows ADD COLUMN context TEXT NOT NULL DEFAULT ''`)
+  }
 }
 
 export function insertItem(db: Database.Database, item: NewItem): string {
@@ -141,6 +146,7 @@ export interface BoardRow {
   label: string
   status: RowStatus
   note: string
+  context: string
   annotation: string | null
   position: number
 }
@@ -165,6 +171,7 @@ export interface NewBoardRow {
   label: string
   status: RowStatus
   note?: string
+  context?: string
 }
 
 export function findBoard(db: Database.Database, project: string, title: string): Board | undefined {
@@ -191,10 +198,10 @@ export function upsertBoard(db: Database.Database, input: UpsertBoardInput): { b
       const existingId = idByLabel.get(r.label)
       if (existingId) {
         // annotation column is deliberately NOT touched — human notes survive
-        db.prepare(`UPDATE board_rows SET status = ?, note = ?, position = ? WHERE id = ?`).run(r.status, r.note ?? '', i, existingId)
+        db.prepare(`UPDATE board_rows SET status = ?, note = ?, context = ?, position = ? WHERE id = ?`).run(r.status, r.note ?? '', r.context ?? '', i, existingId)
       } else {
-        db.prepare(`INSERT INTO board_rows (id, board_id, label, status, note, position) VALUES (?, ?, ?, ?, ?, ?)`)
-          .run(randomUUID(), boardId, r.label, r.status, r.note ?? '', i)
+        db.prepare(`INSERT INTO board_rows (id, board_id, label, status, note, context, position) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+          .run(randomUUID(), boardId, r.label, r.status, r.note ?? '', r.context ?? '', i)
       }
     })
     for (const r of existing) if (!incoming.has(r.label)) db.prepare(`DELETE FROM board_rows WHERE id = ?`).run(r.id)
@@ -211,6 +218,7 @@ interface UpdateRowInput {
   label: string
   status?: RowStatus
   note?: string
+  context?: string
 }
 
 export function updateBoardRow(db: Database.Database, input: UpdateRowInput): { boardId: string; rowId: string } {
@@ -221,12 +229,13 @@ export function updateBoardRow(db: Database.Database, input: UpdateRowInput): { 
     if (existing) {
       if (inp.status !== undefined) db.prepare(`UPDATE board_rows SET status = ? WHERE id = ?`).run(inp.status, existing.id)
       if (inp.note !== undefined) db.prepare(`UPDATE board_rows SET note = ? WHERE id = ?`).run(inp.note, existing.id)
+      if (inp.context !== undefined) db.prepare(`UPDATE board_rows SET context = ? WHERE id = ?`).run(inp.context, existing.id)
       return { boardId, rowId: existing.id }
     }
     const rowId = randomUUID()
     const pos = (db.prepare(`SELECT COALESCE(MAX(position), -1) + 1 AS p FROM board_rows WHERE board_id = ?`).get(boardId) as { p: number }).p
-    db.prepare(`INSERT INTO board_rows (id, board_id, label, status, note, position) VALUES (?, ?, ?, ?, ?, ?)`)
-      .run(rowId, boardId, inp.label, inp.status ?? 'tracked', inp.note ?? '', pos)
+    db.prepare(`INSERT INTO board_rows (id, board_id, label, status, note, context, position) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run(rowId, boardId, inp.label, inp.status ?? 'tracked', inp.note ?? '', inp.context ?? '', pos)
     return { boardId, rowId }
   })
   return run(input)
@@ -265,7 +274,7 @@ export function computeProgress(rows: BoardRow[]): Progress {
 export function listBoards(db: Database.Database, opts: { status?: 'active' | 'archived' } = {}): BoardWithRows[] {
   const status = opts.status ?? 'active'
   const boards = db.prepare(`SELECT * FROM boards WHERE status = ? ORDER BY updated_at DESC`).all(status) as Board[]
-  const rowStmt = db.prepare(`SELECT id, label, status, note, annotation, position FROM board_rows WHERE board_id = ? ORDER BY position ASC`)
+  const rowStmt = db.prepare(`SELECT id, label, status, note, context, annotation, position FROM board_rows WHERE board_id = ? ORDER BY position ASC`)
   return boards.map((b) => {
     const rows = rowStmt.all(b.id) as BoardRow[]
     return { ...b, rows, progress: computeProgress(rows) }
@@ -275,6 +284,6 @@ export function listBoards(db: Database.Database, opts: { status?: 'active' | 'a
 export function getBoard(db: Database.Database, project: string, title: string): BoardWithRows | undefined {
   const board = findBoard(db, project, title)
   if (!board || board.status !== 'active') return undefined
-  const rows = db.prepare(`SELECT id, label, status, note, annotation, position FROM board_rows WHERE board_id = ? ORDER BY position ASC`).all(board.id) as BoardRow[]
+  const rows = db.prepare(`SELECT id, label, status, note, context, annotation, position FROM board_rows WHERE board_id = ? ORDER BY position ASC`).all(board.id) as BoardRow[]
   return { ...board, rows, progress: computeProgress(rows) }
 }

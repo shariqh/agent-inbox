@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type Database from 'better-sqlite3'
+import Database from 'better-sqlite3'
 import {
   openDb,
   insertItem,
@@ -145,6 +145,56 @@ describe('boards', () => {
     expect(after.note).toBe('pending') // note untouched when omitted
   })
 
+  it('rows carry an optional long-form context, defaulting to empty', () => {
+    upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'c', rows: [
+      { label: 'x', status: 'partial', context: 'tried A first; blocked on B — see PR #4' },
+      { label: 'y', status: 'done' },
+    ] })
+    const b = listBoards(db)[0]!
+    expect(b.rows[0]!.context).toBe('tried A first; blocked on B — see PR #4')
+    expect(b.rows[1]!.context).toBe('')
+  })
+
+  it('upsert updates context like note, still preserving the human annotation', () => {
+    upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'c', rows: [{ label: 'x', status: 'missing', context: 'v1' }] })
+    const rowId = listBoards(db)[0]!.rows[0]!.id
+    annotateBoardRow(db, rowId, 'human note')
+    upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'c', rows: [{ label: 'x', status: 'partial', context: 'v2' }] })
+    const row = listBoards(db)[0]!.rows[0]!
+    expect(row.context).toBe('v2')            // agent-owned, last write wins
+    expect(row.annotation).toBe('human note') // human-owned, preserved
+  })
+
+  it('updateBoardRow sets context, and leaves it when omitted', () => {
+    updateBoardRow(db, { project: 'p', stream: '', agent: 'a', title: 'c', label: 'x', status: 'partial', context: 'long story' })
+    expect(listBoards(db)[0]!.rows[0]!.context).toBe('long story')
+    updateBoardRow(db, { project: 'p', stream: '', agent: 'a', title: 'c', label: 'x', status: 'done' })
+    const row = listBoards(db)[0]!.rows[0]!
+    expect(row.status).toBe('done')
+    expect(row.context).toBe('long story') // untouched when omitted
+  })
+
+  it('openDb migrates a pre-context db by adding the column', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'inbox-legacy-')), 'inbox.db')
+    const legacy = new Database(path)
+    legacy.exec(`
+      CREATE TABLE board_rows (
+        id TEXT PRIMARY KEY,
+        board_id TEXT NOT NULL,
+        label TEXT NOT NULL,
+        status TEXT NOT NULL,
+        note TEXT NOT NULL DEFAULT '',
+        annotation TEXT,
+        position INTEGER NOT NULL,
+        UNIQUE(board_id, label)
+      );
+    `)
+    legacy.close()
+    const db2 = openDb(path)
+    upsertBoard(db2, { project: 'p', stream: '', agent: 'a', title: 'c', rows: [{ label: 'x', status: 'done', context: 'why' }] })
+    expect(listBoards(db2)[0]!.rows[0]!.context).toBe('why')
+  })
+
   it('archive hides a board from the default (active) list', () => {
     const { boardId } = upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'c', rows })
     archiveBoard(db, boardId)
@@ -182,11 +232,13 @@ describe('getBoard (agent read)', () => {
     expect(b.progress.fraction).toBeCloseTo((1 + 0.5) / 2)
   })
 
-  it('surfaces a human annotation to the reader', () => {
-    upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'cov', rows: [{ label: 'x', status: 'missing' }] })
+  it('surfaces a human annotation and the row context to the reader', () => {
+    upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'cov', rows: [{ label: 'x', status: 'missing', context: 'backstory' }] })
     const rowId = getBoard(db, 'p', 'cov')!.rows[0]!.id
     annotateBoardRow(db, rowId, 'do this next')
-    expect(getBoard(db, 'p', 'cov')!.rows[0]!.annotation).toBe('do this next')
+    const row = getBoard(db, 'p', 'cov')!.rows[0]!
+    expect(row.annotation).toBe('do this next')
+    expect(row.context).toBe('backstory')
   })
 
   it('returns undefined for a missing or archived board', () => {

@@ -46,7 +46,7 @@ describe('boards api', () => {
 
   it('GET /api/boards returns active boards with rows + progress', async () => {
     upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'coverage', rows: [
-      { label: 'theme', status: 'done' }, { label: 'stems', status: 'partial' }, { label: 'na-row', status: 'na' },
+      { label: 'theme', status: 'done', context: 'shipped in dark-mode PR' }, { label: 'stems', status: 'partial' }, { label: 'na-row', status: 'na' },
     ] })
     const res = await createViewer(db).request('/api/boards')
     expect(res.status).toBe(200)
@@ -54,6 +54,7 @@ describe('boards api', () => {
     expect(body).toHaveLength(1)
     expect(body[0].title).toBe('coverage')
     expect(body[0].rows.map((r: { label: string }) => r.label)).toEqual(['theme', 'stems', 'na-row'])
+    expect(body[0].rows[0].context).toBe('shipped in dark-mode PR')
     expect(body[0].progress.countable).toBe(2)
     expect(body[0].progress.fraction).toBeCloseTo(0.75) // (1 + 0.5)/2
   })

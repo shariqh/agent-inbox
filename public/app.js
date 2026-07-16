@@ -32,6 +32,10 @@ function renderDone(items) {
 
 const GLYPH = { done: '✅', partial: '⚠️', missing: '❌', tracked: '🔜', na: '➖' }
 
+// row-context <details> the user has expanded, by row id — the whole board DOM is
+// rebuilt on every poll, so open state must live outside it
+const openContexts = new Set()
+
 function renderBoards(boards) {
   const host = document.querySelector('#boards .boards')
   host.innerHTML = boards.length ? '' : '<p class="empty">No boards.</p>'
@@ -54,10 +58,15 @@ function boardEl(b) {
   table.className = 'board-table'
   for (const r of b.rows) {
     const tr = document.createElement('tr')
+    const context = r.context
+      ? `<details class="row-context"${openContexts.has(r.id) ? ' open' : ''}><summary>context</summary><div>${esc(r.context)}</div></details>`
+      : ''
     tr.innerHTML = `
       <td class="pill ${r.status}">${GLYPH[r.status] || ''}</td>
       <td class="row-label">${esc(r.label)}</td>
-      <td class="row-note">${esc(r.note)}${r.annotation ? `<div class="annotation">📝 ${esc(r.annotation)}</div>` : ''}</td>`
+      <td class="row-note">${esc(r.note)}${context}${r.annotation ? `<div class="annotation">📝 ${esc(r.annotation)}</div>` : ''}</td>`
+    const ctxEl = tr.querySelector('.row-context')
+    if (ctxEl) ctxEl.addEventListener('toggle', () => { ctxEl.open ? openContexts.add(r.id) : openContexts.delete(r.id) })
     const actionTd = document.createElement('td')
     actionTd.className = 'row-action'
     actionTd.appendChild(btn('📝', async () => {
@@ -114,5 +123,28 @@ function esc(s) {
   return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
 }
 
+const COLLAPSE_KEY = 'agent-inbox-collapsed'
+
+function initSections() {
+  let collapsed = {}
+  try { collapsed = JSON.parse(localStorage.getItem(COLLAPSE_KEY)) || {} } catch { /* fresh start */ }
+  for (const sec of document.querySelectorAll('main > details.section')) {
+    if (collapsed[sec.id] !== undefined) sec.open = !collapsed[sec.id]
+    sec.addEventListener('toggle', () => {
+      collapsed[sec.id] = !sec.open
+      localStorage.setItem(COLLAPSE_KEY, JSON.stringify(collapsed))
+    })
+  }
+  for (const link of document.querySelectorAll('#sidebar a')) {
+    link.addEventListener('click', (e) => {
+      e.preventDefault()
+      const sec = document.getElementById(link.dataset.target)
+      sec.open = true
+      sec.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    })
+  }
+}
+
+initSections()
 load()
 setInterval(load, 3000)

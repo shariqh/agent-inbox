@@ -5,12 +5,16 @@ Guidance for Claude Code (and any coding agent) working in this repo.
 ## What this is
 
 `agent-inbox` — a local, cross-project, cross-tool attention inbox for coding agents. A
-stdio **MCP server** lets agents `flag` open questions and non-blocking notes; everything
-lands in one SQLite hub (`~/.agent-inbox/inbox.db`); a local **Hono viewer** renders the
-cross-project inbox. No LLM/model calls anywhere — this is dumb infra (store + viewer +
-thin MCP server). See [`README.md`](README.md) for the full picture and
-[`docs/superpowers/specs/2026-07-12-agent-inbox-design.md`](docs/superpowers/specs/2026-07-12-agent-inbox-design.md)
-for the design.
+stdio **MCP server** lets agents `flag` open questions and non-blocking notes and maintain
+**tracking boards** (titled status tables); everything lands in one SQLite hub
+(`~/.agent-inbox/inbox.db`); a local **Hono viewer** renders the cross-project inbox and
+boards. No LLM/model calls anywhere — this is dumb infra (store + viewer + thin MCP
+server). See [`README.md`](README.md) for the full picture and
+[`docs/superpowers/specs/`](docs/superpowers/specs/) for the design docs (inbox v1 +
+tracking boards).
+
+MCP tools: `flag`, `resolve`, `register`, `whoami` (items/scope) and `board_upsert`,
+`board_row`, `board_get`, `board_archive` (boards) — all defined in `src/mcp.ts`.
 
 ## Commands
 
@@ -25,7 +29,8 @@ npx vitest run test/mcp.integration.test.ts   # single file
 ```
 
 **Node 24 only.** `better-sqlite3`'s native binding does not build/load under Node 26+. The
-repo pins `.node-version` to 24 — run `fnm use 24` before anything. This bites twice:
+repo pins `.node-version` to 24 — run `fnm use 24` before anything (or prefix one-off
+commands with `fnm exec --using=24 …`). This bites twice:
 (1) the integration test **spawns** `npx tsx src/mcp-server.ts` as a child, which inherits
 your shell's PATH, so Node 24 must be active when you run `npm test`; (2) when registering
 the server with a CLI, pin the **absolute Node 24 binary path**, never bare `node`.
@@ -33,9 +38,16 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
 ## Architecture & invariants
 
 - **`src/store.ts` is the only door to the database.** Every read/write goes through its
-  exported functions (`openDb`, `insertItem`, `resolveItem`, `dismissItem`, `annotateItem`,
-  `listItems`). No raw SQL anywhere else. To change storage, reimplement this module;
-  nothing else touches SQLite.
+  exported functions — items: `insertItem`/`resolveItem`/`dismissItem`/`annotateItem`/
+  `listItems`; boards: `upsertBoard`/`updateBoardRow`/`getBoard`/`listBoards`/
+  `archiveBoard`/`annotateBoardRow` — plus `openDb`. No raw SQL anywhere else. To change
+  storage, reimplement this module; nothing else touches SQLite.
+- **Boards: the human's annotations are sacred.** A board is idempotent by
+  `(project, title)` (UNIQUE); rows match by `label`, positions come from array order.
+  `upsertBoard` deliberately never touches `board_rows.annotation` — human per-row notes
+  must survive a full re-upsert. But rows *absent* from an upsert are deleted (annotations
+  with them), so agents must keep labels stable. There is no FK enforcement between
+  `boards` and `board_rows` — deletes are handled explicitly in `store.ts`.
 - **One process per agent session (stdio), one shared file.** The MCP server is spawned per
   session; all instances write to the same `~/.agent-inbox/inbox.db`. Concurrency is handled
   by **WAL + `busy_timeout=5000`** set in `openDb` — keep both. Writes are single tiny
@@ -51,11 +63,13 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
 - **Fail-open / never lose a flag.** If inference fails, attribute to `unknown` and still
   insert. If a write fails, surface an MCP error — don't crash.
 - **Viewer escapes all agent-authored text.** `public/app.js` runs every interpolated field
-  (title, detail, annotation, project, stream, agent) through `esc()` before `innerHTML`.
-  Keep it — flags are attacker-influenced text.
-- **`store.ts`/`mcp.ts`/`viewer.ts` inverse round-trip:** the store's `Item` shape is the
-  contract shared by MCP writes and viewer reads. Change it in `store.ts` and update both
-  consumers + `group.ts`.
+  (item title/detail/annotation/project/stream/agent, board title/meta, row label/note/
+  annotation) through `esc()` before `innerHTML`. Keep it — flags and boards are
+  attacker-influenced text.
+- **`store.ts`/`mcp.ts`/`viewer.ts` inverse round-trip:** the store's `Item` and
+  `BoardWithRows` shapes are the contract shared by MCP writes/reads and viewer reads.
+  Change them in `store.ts` and update both consumers (+ `group.ts` for items;
+  `public/app.js` renders both).
 
 ## Conventions
 
@@ -95,6 +109,10 @@ v1 is deliberately local + triage-only. The next work, with the hooks left for i
 
 Keep all of these additive and behind the existing seams — don't break v1's local,
 zero-config, no-auth path.
+
+Boards-specific follow-ups (unseen-by-agent markers, row context field, archive safety,
+row escalation) are tracked separately in [`docs/boards-backlog.md`](docs/boards-backlog.md)
+— note its P1 `board_get` item has since shipped.
 
 ## Gotchas recap
 

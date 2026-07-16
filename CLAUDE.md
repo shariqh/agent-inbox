@@ -88,31 +88,32 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
 
 ## v2 backlog — and the seams already in place
 
-v1 is deliberately local + triage-only. The next work, with the hooks left for it:
+v1 is deliberately local + triage-only. The next work, with the hooks left for it
+(tracked as GitHub issues #7–#11):
 
-1. **Answer-back** — reply to an agent from the viewer. Add a `pending({ stream }) → items`
+1. **Answer-back** *(#7)* — reply to an agent from the viewer. Add a `pending({ stream }) → items`
    MCP tool the agent polls for the human's reply, and a viewer reply box that writes the
    reply onto the item. `register`/session scope already identify which session to route to.
-2. **Remote / hosted mode** — run on a server (e.g. ubi-prod), tunnel-exposed for phone +
+2. **Remote / hosted mode** *(#8)* — run on a server (e.g. ubi-prod), tunnel-exposed for phone +
    cloud-agent reach. Swap stdio for **streamable-HTTP** transport and add **auth** (bearer
    token in MCP client headers + a gate on the viewer). `register` is the identity seam: a
    remote server can't see the client's `cwd`, so agents declare scope via `register` instead
    of auto-inference. `AGENT_INBOX_DB`/`AGENT_INBOX_PORT` env overrides are already in place.
-3. **`done`/milestone bucket** — an opt-in third kind (e.g. `flag({ kind:'done' })`) surfaced
+3. **`done`/milestone bucket** *(#9)* — an opt-in third kind (e.g. `flag({ kind:'done' })`) surfaced
    in the viewer's Done section. Kept out of v1 to preserve signal; `group.ts` already has a
    `done` bucket for closed items to slot into.
-4. **Status backstop via Claude Code hooks** — deterministic (no-AI) `agent_needs_input` /
+4. **Status backstop via Claude Code hooks** *(#10)* — deterministic (no-AI) `agent_needs_input` /
    `agent_completed` hooks → POST an event, so status shows even when an agent forgets to
    flag. Pure shell→HTTP; needs the remote HTTP endpoint from (2), or a local one.
-5. **Electron packaging** — wrap the existing `public/` viewer in an Electron window (it's
+5. **Electron packaging** *(#11)* — wrap the existing `public/` viewer in an Electron window (it's
    plain HTML/CSS/JS with no build step precisely so this is a lift-and-drop).
 
 Keep all of these additive and behind the existing seams — don't break v1's local,
 zero-config, no-auth path.
 
 Boards-specific follow-ups (unseen-by-agent markers, row context field, archive safety,
-row escalation) are tracked separately in [`docs/boards-backlog.md`](docs/boards-backlog.md)
-— note its P1 `board_get` item has since shipped.
+row escalation) are GitHub issues #1–#6; original review context in
+[`docs/boards-backlog.md`](docs/boards-backlog.md).
 
 ## Gotchas recap
 

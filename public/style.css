@@ -24,6 +24,11 @@ details[open] > .card-summary .caret::before { content: '▾'; }
 .section > summary::marker { color: color-mix(in srgb, CanvasText 40%, transparent); font-size: 11px; }
 @media (max-width: 700px) { #sidebar { display: none; } }
 .project h3 { font-size: 13px; margin: 12px 0 6px; opacity: .8; }
+.agent-head { font-size: 12px; font-weight: 600; margin: 10px 0 4px 2px; opacity: .55; }
+#agentTabs { display: flex; gap: 6px; margin-left: auto; flex-wrap: wrap; }
+#agentTabs button { font-size: 12px; padding: 2px 11px; border-radius: 999px; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); background: transparent; cursor: pointer; opacity: .6; }
+#agentTabs button:hover { opacity: 1; }
+#agentTabs button.active { opacity: 1; border-color: LinkText; color: LinkText; }
 .item { border: 1px solid color-mix(in srgb, CanvasText 15%, transparent); border-left-width: 3px; border-radius: 8px; padding: 10px 12px; margin-bottom: var(--gap); }
 .item.question { border-left-color: crimson; }
 .item.note { border-left-color: goldenrod; }

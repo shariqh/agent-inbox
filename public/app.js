@@ -1,16 +1,71 @@
+let lastData = null
+const FILTER_KEY = 'agent-inbox-agent-filter'
+let agentFilter = localStorage.getItem(FILTER_KEY) || null
+
 async function load() {
   try {
     const g = await (await fetch('/api/items')).json()
     const boards = await (await fetch('/api/boards')).json()
-    liveCardIds = new Set()
-    renderGroups('needsYou', g.needsYou)
-    renderGroups('notes', g.notes)
-    renderDone(g.done)
-    renderBoards(boards)
-    pruneCollapsedCards()
+    lastData = { g, boards }
+    render()
     document.getElementById('status').textContent = ''
   } catch {
     document.getElementById('status').textContent = 'disconnected'
+  }
+}
+
+function allItems(g) {
+  return [...g.needsYou.flatMap((x) => x.items), ...g.notes.flatMap((x) => x.items), ...g.done]
+}
+
+function collectAgents({ g, boards }) {
+  return [...new Set([...allItems(g).map((i) => i.agent), ...boards.map((b) => b.agent)])].sort()
+}
+
+function render() {
+  const agents = collectAgents(lastData)
+  if (agentFilter && !agents.includes(agentFilter)) agentFilter = null
+  renderAgentTabs(agents)
+  // prune collapse state against ALL cards, not the filtered view, so
+  // switching tabs never drops state for cards the filter is hiding
+  liveCardIds = new Set([...allItems(lastData.g).map((i) => i.id), ...lastData.boards.map((b) => b.id)])
+  const { g, boards } = filterData(lastData)
+  renderGroups('needsYou', g.needsYou)
+  renderGroups('notes', g.notes)
+  renderDone(g.done)
+  renderBoards(boards)
+  pruneCollapsedCards()
+}
+
+function filterData({ g, boards }) {
+  if (!agentFilter) return { g, boards }
+  const only = (groups) => groups
+    .map((gr) => ({ ...gr, items: gr.items.filter((i) => i.agent === agentFilter) }))
+    .filter((gr) => gr.items.length > 0)
+  return {
+    g: { needsYou: only(g.needsYou), notes: only(g.notes), done: g.done.filter((i) => i.agent === agentFilter) },
+    boards: boards.filter((b) => b.agent === agentFilter),
+  }
+}
+
+function renderAgentTabs(agents) {
+  const host = document.getElementById('agentTabs')
+  const sig = JSON.stringify([agents, agentFilter])
+  if (host.dataset.sig === sig) return
+  host.dataset.sig = sig
+  host.innerHTML = ''
+  if (agents.length < 2) return // tabs are noise with a single agent
+  for (const a of [null, ...agents]) {
+    const b = document.createElement('button')
+    b.textContent = a ?? 'All'
+    if (a === agentFilter) b.classList.add('active')
+    b.addEventListener('click', () => {
+      agentFilter = a
+      if (a) localStorage.setItem(FILTER_KEY, a)
+      else localStorage.removeItem(FILTER_KEY)
+      render()
+    })
+    host.appendChild(b)
   }
 }
 
@@ -21,7 +76,24 @@ function renderGroups(sectionId, groups) {
     const box = document.createElement('div')
     box.className = 'project'
     box.innerHTML = `<h3>${esc(grp.project)}</h3>`
-    for (const it of grp.items) box.appendChild(itemEl(it))
+    const byAgent = new Map()
+    for (const it of grp.items) {
+      const arr = byAgent.get(it.agent) ?? []
+      arr.push(it)
+      byAgent.set(it.agent, arr)
+    }
+    if (byAgent.size > 1) {
+      // multi-agent project: agent sub-headers carry the attribution
+      for (const [agent, items] of byAgent) {
+        const head = document.createElement('h4')
+        head.className = 'agent-head'
+        head.textContent = agent
+        box.appendChild(head)
+        for (const it of items) box.appendChild(itemEl(it, false, true))
+      }
+    } else {
+      for (const it of grp.items) box.appendChild(itemEl(it))
+    }
     host.appendChild(box)
   }
   renderSub(sectionId, groups.flatMap((g) => g.items.map((it) => ({ id: it.id, label: it.title }))))
@@ -109,7 +181,7 @@ function boardEl(b) {
     <summary class="card-summary">
       <div class="board-head">
         <div class="board-title"><span class="caret"></span>${esc(b.title)}</div>
-        <div class="board-meta">${esc(b.project)}${stream}</div>
+        <div class="board-meta">${esc(b.project)}${stream} · ${esc(b.agent)}</div>
       </div>
       <div class="bar"><div class="bar-fill" style="width:${pct}%"></div></div>
       <div class="bar-label">${b.progress.done}/${b.progress.countable} done · ${pct}%</div>
@@ -145,13 +217,15 @@ function boardEl(b) {
   return el
 }
 
-function itemEl(it, done = false) {
+function itemEl(it, done = false, underAgentHead = false) {
   const el = document.createElement('details')
   el.className = `item ${it.kind}`
   const stream = it.stream ? ` · ${esc(it.stream)}` : ''
+  // under an agent sub-header the agent name would be redundant on every card
+  const meta = underAgentHead ? (it.stream ? esc(it.stream) : '') : `${esc(it.agent)}${stream}`
   el.innerHTML = `
     <summary class="card-summary">
-      <div class="meta"><span class="caret"></span>${esc(it.agent)}${stream}</div>
+      <div class="meta"><span class="caret"></span>${meta}</div>
       <div class="title">${esc(it.title)}</div>
     </summary>
     ${it.detail ? `<div class="detail">${esc(it.detail)}</div>` : ''}

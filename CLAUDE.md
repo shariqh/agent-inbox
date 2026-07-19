@@ -28,9 +28,11 @@ npm run view        # run the viewer on localhost:4319 via tsx
 npx vitest run test/mcp.integration.test.ts   # single file
 ```
 
-**Node 24 only.** `better-sqlite3`'s native binding does not build/load under Node 26+. The
-repo pins `.node-version` to 24 — run `fnm use 24` before anything (or prefix one-off
-commands with `fnm exec --using=24 …`). This bites twice:
+**Node 24 only (for this checkout).** `better-sqlite3` compiles one native binding per
+install; this repo's is built for Node 24 and `.node-version` pins it — run `fnm use 24`
+before anything (or prefix one-off commands with `fnm exec --using=24 …`). (Since the v12
+upgrade the library itself supports newer Node — the packaged Electron app rebuilds it for
+Electron's ABI in `build/stage` — but the checkout standardizes on 24.) This bites twice:
 (1) the integration test **spawns** `npx tsx src/mcp-server.ts` as a child, which inherits
 your shell's PATH, so Node 24 must be active when you run `npm test`; (2) when registering
 the server with a CLI, pin the **absolute Node 24 binary path**, never bare `node`.

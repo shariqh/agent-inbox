@@ -1,12 +1,27 @@
 # Electron shell
 
-A minimal desktop window around the existing viewer (`public/` + `dist/viewer-server.js`).
-Dev-run only — no packaging, no installers.
+A desktop window around the existing viewer (`public/` + `dist/viewer-server.js`).
+Two modes: a dev run from the repo, and a packaged self-contained `Agent Inbox.app`.
 
-## Prerequisites
+## Packaged app (self-contained)
 
-- **Node 24** (better-sqlite3 does not load under Node 26+): `fnm use 24`, or prefix
-  commands with `fnm exec --using=24 `.
+```sh
+npm run package:app
+# → out/Agent Inbox-darwin-arm64/Agent Inbox.app  (drag to /Applications if you like)
+```
+
+The .app needs **no terminal and no system Node**: the viewer server runs inside
+Electron's bundled Node. `scripts/package-app.sh` stages `dist/ + public/ + electron/`
+into `build/stage`, installs production deps there, rebuilds better-sqlite3 against
+Electron's ABI (isolated — the repo's node_modules stays built for Node 24), and packages
+with @electron/packager (`--no-asar`: the server chdirs into the app dir and serves
+`./public` from the real filesystem). Same launch rules as dev: reuse a running 4319
+viewer, else serve in-process; quitting frees the port only if the app started the server.
+
+## Dev run — prerequisites
+
+- **Node 24** (the repo's better-sqlite3 binding is compiled for Node 24): `fnm use 24`,
+  or prefix commands with `fnm exec --using=24 `.
 - `npm install` (downloads the Electron binary as a devDependency).
 - `npm run build` — the shell spawns the **built** viewer, `dist/viewer-server.js`.
 
@@ -21,9 +36,11 @@ fnm exec --using=24 npm run electron
 - The shell probes `http://localhost:4319` (or `AGENT_INBOX_PORT` if set).
 - If a viewer is **already running** there (e.g. `npm run view`), it is reused and is
   **not** killed when the app quits.
-- Otherwise the shell spawns `node dist/viewer-server.js` itself and kills that child on
-  quit. It spawns with the Node binary that launched npm (`npm_node_execpath`), so run
-  via `fnm exec --using=24 npm run electron` — a bare PATH `node` may be Node 26+.
+- Otherwise it tries to run the server **in-process** (works in the packaged app, where
+  better-sqlite3 is built for Electron's ABI). In a dev run that import fails (repo
+  modules are Node-24 ABI) and it falls back to spawning `node dist/viewer-server.js`,
+  killing that child on quit. The spawn uses the Node that launched npm
+  (`npm_node_execpath`), so run via `fnm exec --using=24 npm run electron`.
 - If `dist/viewer-server.js` is missing you get a clear error telling you to
   `npm run build` first.
 

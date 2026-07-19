@@ -9,3 +9,6 @@ dist/
 *.db-wal
 # sdd scratch
 .superpowers/
+# packaged app artifacts
+build/
+out/

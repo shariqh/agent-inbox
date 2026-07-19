@@ -5,16 +5,21 @@
 //
 // Behavior:
 //   1. If a viewer is already listening on http://localhost:<AGENT_INBOX_PORT|4319>,
-//      reuse it (never spawn a second one, never kill it on quit).
-//   2. Otherwise spawn `node dist/viewer-server.js` (requires `npm run build`) and
-//      kill that child on quit — only because we own it.
-//   3. Open a BrowserWindow on the viewer URL once the server responds.
+//      reuse it (never start a second one, never kill it on quit).
+//   2. Otherwise run dist/viewer-server.js IN THIS PROCESS (Electron's bundled
+//      Node) — this is what makes the packaged .app self-contained. It requires
+//      better-sqlite3 built for Electron's ABI (the package script does this).
+//   3. Dev fallback: if the in-process import fails (repo node_modules are built
+//      for system Node 24, not Electron), spawn `node dist/viewer-server.js` as
+//      before and kill that child on quit — only because we own it.
+//   4. Open a BrowserWindow on the viewer URL once the server responds.
 
 const { app, BrowserWindow, shell } = require('electron')
 const { spawn } = require('node:child_process')
 const { existsSync } = require('node:fs')
 const http = require('node:http')
 const path = require('node:path')
+const { pathToFileURL } = require('node:url')
 
 const PORT = Number(process.env.AGENT_INBOX_PORT ?? 4319)
 const URL_BASE = `http://localhost:${PORT}/`
@@ -46,6 +51,24 @@ async function waitForServer(timeoutMs = 10_000, intervalMs = 250) {
     await new Promise((r) => setTimeout(r, intervalMs))
   }
   return false
+}
+
+/**
+ * Run the viewer server inside this process (Electron's Node). Returns true on
+ * success. Fails cleanly (returns false) when better-sqlite3 was compiled for a
+ * different ABI — the dev case — so the caller can fall back to spawning.
+ */
+async function startInProcess(entry) {
+  try {
+    // viewer-server serves static files from ./public relative to cwd
+    process.chdir(REPO_ROOT)
+    await import(pathToFileURL(entry).href)
+    console.log(`[agent-inbox] viewer running in-process on ${URL_BASE}`)
+    return true
+  } catch (err) {
+    console.error(`[agent-inbox] in-process viewer failed (${err.message}); falling back to spawning node`)
+    return false
+  }
 }
 
 /** Spawn the built viewer server; returns the child. Assumes dist/viewer-server.js exists. */
@@ -103,8 +126,10 @@ app.whenReady().then(async () => {
       app.exit(1)
       return
     }
-    console.log(`[agent-inbox] no viewer on port ${PORT}; spawning ${entry}`)
-    spawnedViewer = spawnViewer()
+    if (!(await startInProcess(entry))) {
+      console.log(`[agent-inbox] spawning ${entry} under system node instead`)
+      spawnedViewer = spawnViewer()
+    }
   }
 
   if (!(await waitForServer())) {

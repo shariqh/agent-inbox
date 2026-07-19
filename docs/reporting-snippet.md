@@ -13,6 +13,8 @@ Call `flag` when:
 - **`kind: "note"`** — you made a notable **assumption**, took a **workaround**, hit a
   **caveat**, or left **tech debt** the human should know about but that does NOT block
   you. Do not flag routine progress or things visible in the diff.
+- **`kind: "done"`** — a completed **milestone** worth announcing (shipped, merged,
+  deployed). Use sparingly — it is NOT for routine progress.
 
 Keep `title` to one line. Do not flag more than the human needs — a noisy inbox gets
 ignored. If a question you raised resolves itself before they answer, call `resolve`

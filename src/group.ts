@@ -25,6 +25,7 @@ export function groupItems(items: Item[]): Grouped {
   return {
     needsYou: byProject(open.filter((i) => i.kind === 'question')),
     notes: byProject(open.filter((i) => i.kind === 'note')),
-    done: items.filter((i) => i.status !== 'open'),
+    // closed items, plus open kind=done milestones — announcements, not actionable
+    done: items.filter((i) => i.status !== 'open' || i.kind === 'done'),
   }
 }

@@ -14,6 +14,15 @@ describe('viewer api', () => {
   let db: Database.Database
   beforeEach(() => { db = freshDb() })
 
+  it('stamps a stable boot id header so stale tabs can self-reload', async () => {
+    const app = createViewer(db)
+    const a = await app.request('/api/items')
+    const b = await app.request('/api/boards')
+    expect(a.headers.get('x-inbox-boot')).toBeTruthy()
+    expect(a.headers.get('x-inbox-boot')).toBe(b.headers.get('x-inbox-boot')) // stable within one server
+    expect(createViewer(db) === app).toBe(false)
+  })
+
   it('GET /api/items returns grouped items', async () => {
     insertItem(db, { project: 'p', stream: '', agent: 'claude-code', kind: 'question', title: 'q' })
     const app = createViewer(db)

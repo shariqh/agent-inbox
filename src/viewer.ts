@@ -6,6 +6,14 @@ import { groupItems } from './group.js'
 export function createViewer(db: Database.Database): Hono {
   const app = new Hono()
 
+  // boot id lets a long-lived tab detect a server restart (= likely deploy)
+  // and reload itself instead of polling forever with stale frontend code
+  const boot = new Date().toISOString()
+  app.use('*', async (c, next) => {
+    await next()
+    c.res.headers.set('x-inbox-boot', boot)
+  })
+
   app.get('/api/items', (c) => c.json(groupItems(listItems(db))))
 
   app.post('/api/items/:id/resolve', (c) => {

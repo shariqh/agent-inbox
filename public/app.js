@@ -6,9 +6,15 @@ let agentFilter = localStorage.getItem(FILTER_KEY) || null
 let projectFilter = localStorage.getItem(PROJECT_KEY) || null
 let hideCompleted = localStorage.getItem(HIDE_DONE_KEY) !== 'false' // default ON
 
+let bootId = null
+
 async function load() {
   try {
-    const g = await (await fetch('/api/items')).json()
+    const res = await fetch('/api/items')
+    const boot = res.headers.get('x-inbox-boot')
+    if (bootId && boot && bootId !== boot) { location.reload(); return } // server restarted → pick up fresh frontend
+    if (boot) bootId = boot
+    const g = await res.json()
     const boards = await (await fetch('/api/boards')).json()
     const archived = await (await fetch('/api/boards/archived')).json()
     lastData = { g, boards, archived }
@@ -113,15 +119,46 @@ function renderNow() {
   if (qs.length) {
     const oldest = qs.reduce((a, b) => (a.created_at < b.created_at ? a : b))
     host.className = 'attention'
-    host.innerHTML = `<strong>${qs.length} question${qs.length > 1 ? 's' : ''} need${qs.length > 1 ? '' : 's'} you</strong> — oldest waiting ${rel(oldest.created_at)}${tail}`
+    host.innerHTML = `<div><strong>${qs.length} question${qs.length > 1 ? 's' : ''} need${qs.length > 1 ? '' : 's'} you</strong> — oldest waiting ${rel(oldest.created_at)}${tail}</div>`
+    // each waiting item is a link straight to its card
+    const list = document.createElement('div')
+    list.className = 'now-items'
+    for (const q of qs) {
+      const a = document.createElement('a')
+      a.href = '#'
+      a.textContent = `${q.project} · ${q.title}`
+      a.title = q.title
+      a.addEventListener('click', (e) => {
+        e.preventDefault()
+        jumpToCard('needsYou', q.id)
+      })
+      list.appendChild(a)
+    }
+    host.appendChild(list)
   } else {
     host.className = 'calm'
     host.innerHTML = `Nothing needs you${tail}`
   }
-  host.onclick = () => {
-    const sec = document.getElementById('needsYou')
-    sec.open = true
-    sec.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
+function jumpToCard(sectionId, cardId) {
+  document.getElementById(sectionId).open = true
+  const card = document.querySelector(`[data-card-id="${CSS.escape(cardId)}"]`)
+  if (card) {
+    card.open = true
+    card.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  } else {
+    // the card may be hidden by an active filter — clear filters and retry
+    projectFilter = null
+    agentFilter = null
+    localStorage.removeItem(PROJECT_KEY)
+    localStorage.removeItem(FILTER_KEY)
+    render()
+    const retry = document.querySelector(`[data-card-id="${CSS.escape(cardId)}"]`)
+    if (retry) {
+      retry.open = true
+      retry.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
   }
 }
 

@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import type Database from 'better-sqlite3'
-import { listItems, resolveItem, dismissItem, annotateItem, listBoards, archiveBoard, annotateBoardRow } from './store.js'
+import { listItems, resolveItem, dismissItem, annotateItem, listBoards, archiveBoard, unarchiveBoard, annotateBoardRow } from './store.js'
 import { groupItems } from './group.js'
 
 export function createViewer(db: Database.Database): Hono {
@@ -26,8 +26,15 @@ export function createViewer(db: Database.Database): Hono {
 
   app.get('/api/boards', (c) => c.json(listBoards(db)))
 
+  app.get('/api/boards/archived', (c) => c.json(listBoards(db, { status: 'archived' })))
+
   app.post('/api/boards/:id/archive', (c) => {
     archiveBoard(db, c.req.param('id'))
+    return c.json({ ok: true })
+  })
+
+  app.post('/api/boards/:id/unarchive', (c) => {
+    unarchiveBoard(db, c.req.param('id'))
     return c.json({ ok: true })
   })
 

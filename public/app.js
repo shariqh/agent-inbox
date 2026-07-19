@@ -6,7 +6,8 @@ async function load() {
   try {
     const g = await (await fetch('/api/items')).json()
     const boards = await (await fetch('/api/boards')).json()
-    lastData = { g, boards }
+    const archived = await (await fetch('/api/boards/archived')).json()
+    lastData = { g, boards, archived }
     render()
     document.getElementById('status').textContent = ''
   } catch {
@@ -28,23 +29,25 @@ function render() {
   renderAgentTabs(agents)
   // prune collapse state against ALL cards, not the filtered view, so
   // switching tabs never drops state for cards the filter is hiding
-  liveCardIds = new Set([...allItems(lastData.g).map((i) => i.id), ...lastData.boards.map((b) => b.id)])
-  const { g, boards } = filterData(lastData)
+  liveCardIds = new Set([...allItems(lastData.g).map((i) => i.id), ...lastData.boards.map((b) => b.id), ...lastData.archived.map((b) => b.id)])
+  const { g, boards, archived } = filterData(lastData)
   renderGroups('needsYou', g.needsYou)
   renderGroups('notes', g.notes)
   renderDone(g.done)
   renderBoards(boards)
+  renderArchived(archived)
   pruneCollapsedCards()
 }
 
-function filterData({ g, boards }) {
-  if (!agentFilter) return { g, boards }
+function filterData({ g, boards, archived }) {
+  if (!agentFilter) return { g, boards, archived }
   const only = (groups) => groups
     .map((gr) => ({ ...gr, items: gr.items.filter((i) => i.agent === agentFilter) }))
     .filter((gr) => gr.items.length > 0)
   return {
     g: { needsYou: only(g.needsYou), notes: only(g.notes), done: g.done.filter((i) => i.agent === agentFilter) },
     boards: boards.filter((b) => b.agent === agentFilter),
+    archived: archived.filter((b) => b.agent === agentFilter),
   }
 }
 
@@ -174,48 +177,84 @@ function renderBoards(boards) {
   renderSub('boards', boards.map((b) => ({ id: b.id, label: b.title })))
 }
 
-function boardEl(b) {
+function renderArchived(boards) {
+  const host = document.querySelector('#archived .boards')
+  host.innerHTML = boards.length ? '' : '<p class="empty">Nothing archived.</p>'
+  for (const b of boards) host.appendChild(boardEl(b, true))
+  renderSub('archived', boards.map((b) => ({ id: b.id, label: b.title })))
+}
+
+function boardEl(b, archived = false) {
   const el = document.createElement('details')
-  el.className = 'board'
+  const complete = b.progress.fraction === 1 && b.progress.countable > 0
+  el.className = `board${complete ? ' complete' : ''}`
   const pct = Math.round(b.progress.fraction * 100)
   const stream = b.stream ? ` · ${esc(b.stream)}` : ''
   el.innerHTML = `
     <summary class="card-summary">
       <div class="board-head">
-        <div class="board-title"><span class="caret"></span>${esc(b.title)}</div>
+        <div class="board-title"><span class="caret"></span>${esc(b.title)}<span class="board-id" title="board id">#${esc(b.id.slice(0, 6))}</span></div>
         <div class="board-meta">${esc(b.project)}${stream} · ${esc(b.agent)}</div>
       </div>
       <div class="bar"><div class="bar-fill" style="width:${pct}%"></div></div>
-      <div class="bar-label">${b.progress.done}/${b.progress.countable} done · ${pct}%</div>
+      <div class="bar-label">${b.progress.done}/${b.progress.countable} done · ${pct}%${complete ? '<span class="complete-badge">✓ complete</span>' : ''}</div>
     </summary>`
   cardify(el, b.id)
   const table = document.createElement('table')
   table.className = 'board-table'
-  for (const r of b.rows) {
+  for (const [i, r] of b.rows.entries()) {
     const tr = document.createElement('tr')
     const context = r.context
       ? `<details class="row-context"${openContexts.has(r.id) ? ' open' : ''}><summary>context</summary><div>${esc(r.context)}</div></details>`
       : ''
     tr.innerHTML = `
+      <td class="row-num">${i + 1}</td>
       <td class="pill ${r.status}">${GLYPH[r.status] || ''}</td>
       <td class="row-label">${esc(r.label)}</td>
       <td class="row-note">${esc(r.note)}${context}${r.annotation ? `<div class="annotation">📝 ${esc(r.annotation)}${r.annotation_unseen ? '<span class="unseen" title="Not yet seen by the agent">●</span>' : ''}</div>` : ''}</td>`
     const ctxEl = tr.querySelector('.row-context')
     if (ctxEl) ctxEl.addEventListener('toggle', () => { ctxEl.open ? openContexts.add(r.id) : openContexts.delete(r.id) })
-    const actionTd = document.createElement('td')
-    actionTd.className = 'row-action'
-    actionTd.appendChild(btn('📝', async () => {
-      const text = prompt('Your note on this row:', r.annotation || '')
-      if (text != null) { await fetch(`/api/boards/${b.id}/rows/${r.id}/annotate`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }) }); load() }
-    }))
-    tr.appendChild(actionTd)
+    if (!archived) {
+      const actionTd = document.createElement('td')
+      actionTd.className = 'row-action'
+      actionTd.appendChild(btn('📝', async () => {
+        const text = prompt('Your note on this row:', r.annotation || '')
+        if (text != null) { await fetch(`/api/boards/${b.id}/rows/${r.id}/annotate`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }) }); load() }
+      }))
+      tr.appendChild(actionTd)
+    }
     table.appendChild(tr)
   }
   el.appendChild(table)
   const actions = document.createElement('div')
   actions.className = 'actions'
-  actions.appendChild(btn('Archive', async () => { await fetch(`/api/boards/${b.id}/archive`, { method: 'POST' }); load() }))
+  if (archived) {
+    actions.appendChild(btn('Un-archive', async () => { await fetch(`/api/boards/${b.id}/unarchive`, { method: 'POST' }); load() }))
+  } else {
+    actions.appendChild(archiveBtn(b.id))
+  }
   el.appendChild(actions)
+  return el
+}
+
+// two-step inline confirm: first click arms ("Really archive?"), second click within
+// 4s archives; it disarms after 4s (and implicitly on re-render — the DOM is rebuilt)
+function archiveBtn(boardId) {
+  let timer = null
+  const el = btn('Archive', async () => {
+    if (el.classList.contains('confirm')) {
+      clearTimeout(timer)
+      await fetch(`/api/boards/${boardId}/archive`, { method: 'POST' })
+      load()
+      return
+    }
+    el.classList.add('confirm')
+    el.textContent = 'Really archive?'
+    timer = setTimeout(() => {
+      el.classList.remove('confirm')
+      el.textContent = 'Archive'
+    }, 4000)
+  })
   return el
 }
 

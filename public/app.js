@@ -1,6 +1,8 @@
 let lastData = null
 const FILTER_KEY = 'agent-inbox-agent-filter'
+const PROJECT_KEY = 'agent-inbox-project-filter'
 let agentFilter = localStorage.getItem(FILTER_KEY) || null
+let projectFilter = localStorage.getItem(PROJECT_KEY) || null
 
 async function load() {
   try {
@@ -23,10 +25,43 @@ function collectAgents({ g, boards }) {
   return [...new Set([...allItems(g).map((i) => i.agent), ...boards.map((b) => b.agent)])].sort()
 }
 
+function collectProjects({ g, boards, archived }) {
+  return [...new Set([
+    ...allItems(g).map((i) => i.project),
+    ...boards.map((b) => b.project),
+    ...archived.map((b) => b.project),
+  ])].sort()
+}
+
+// the slice of the data matching only the project filter — agent tabs derive
+// from this, so switching project shows just that project's agents
+function projectScoped({ g, boards, archived }) {
+  if (!projectFilter) return { g, boards, archived }
+  const keep = (x) => x.project === projectFilter
+  return {
+    g: { needsYou: g.needsYou.filter(keep), notes: g.notes.filter(keep), done: g.done.filter(keep) },
+    boards: boards.filter(keep),
+    archived: archived.filter(keep),
+  }
+}
+
 function render() {
-  const agents = collectAgents(lastData)
+  const projects = collectProjects(lastData)
+  if (projectFilter && !projects.includes(projectFilter)) projectFilter = null
+  renderPills('projectTabs', projects, projectFilter, (v) => {
+    projectFilter = v
+    if (v) localStorage.setItem(PROJECT_KEY, v)
+    else localStorage.removeItem(PROJECT_KEY)
+    render()
+  })
+  const agents = collectAgents(projectScoped(lastData))
   if (agentFilter && !agents.includes(agentFilter)) agentFilter = null
-  renderAgentTabs(agents)
+  renderPills('agentTabs', agents, agentFilter, (v) => {
+    agentFilter = v
+    if (v) localStorage.setItem(FILTER_KEY, v)
+    else localStorage.removeItem(FILTER_KEY)
+    render()
+  })
   // prune collapse state against ALL cards, not the filtered view, so
   // switching tabs never drops state for cards the filter is hiding
   liveCardIds = new Set([...allItems(lastData.g).map((i) => i.id), ...lastData.boards.map((b) => b.id), ...lastData.archived.map((b) => b.id)])
@@ -40,34 +75,34 @@ function render() {
 }
 
 function filterData({ g, boards, archived }) {
-  if (!agentFilter) return { g, boards, archived }
+  const pf = projectFilter
+  const af = agentFilter
+  if (!pf && !af) return { g, boards, archived }
+  const keepItem = (i) => (!pf || i.project === pf) && (!af || i.agent === af)
+  const keepBoard = (b) => (!pf || b.project === pf) && (!af || b.agent === af)
   const only = (groups) => groups
-    .map((gr) => ({ ...gr, items: gr.items.filter((i) => i.agent === agentFilter) }))
+    .filter((gr) => !pf || gr.project === pf)
+    .map((gr) => ({ ...gr, items: gr.items.filter((i) => !af || i.agent === af) }))
     .filter((gr) => gr.items.length > 0)
   return {
-    g: { needsYou: only(g.needsYou), notes: only(g.notes), done: g.done.filter((i) => i.agent === agentFilter) },
-    boards: boards.filter((b) => b.agent === agentFilter),
-    archived: archived.filter((b) => b.agent === agentFilter),
+    g: { needsYou: only(g.needsYou), notes: only(g.notes), done: g.done.filter(keepItem) },
+    boards: boards.filter(keepBoard),
+    archived: archived.filter(keepBoard),
   }
 }
 
-function renderAgentTabs(agents) {
-  const host = document.getElementById('agentTabs')
-  const sig = JSON.stringify([agents, agentFilter])
+function renderPills(hostId, values, current, onPick) {
+  const host = document.getElementById(hostId)
+  const sig = JSON.stringify([values, current])
   if (host.dataset.sig === sig) return
   host.dataset.sig = sig
   host.innerHTML = ''
-  if (agents.length < 2) return // tabs are noise with a single agent
-  for (const a of [null, ...agents]) {
+  if (values.length < 2) return // a filter with one option is noise
+  for (const v of [null, ...values]) {
     const b = document.createElement('button')
-    b.textContent = a ?? 'All'
-    if (a === agentFilter) b.classList.add('active')
-    b.addEventListener('click', () => {
-      agentFilter = a
-      if (a) localStorage.setItem(FILTER_KEY, a)
-      else localStorage.removeItem(FILTER_KEY)
-      render()
-    })
+    b.textContent = v ?? 'All'
+    if (v === current) b.classList.add('active')
+    b.addEventListener('click', () => onPick(v))
     host.appendChild(b)
   }
 }

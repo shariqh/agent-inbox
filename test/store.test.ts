@@ -318,6 +318,18 @@ describe('boards', () => {
   it('computeProgress of an empty board is fraction 0, not NaN', () => {
     expect(computeProgress([] as BoardRow[]).fraction).toBe(0)
   })
+
+  it('blocked rows are countable, earn no credit, and are tallied for escalation', () => {
+    upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'c', rows: [
+      { label: 'shipped', status: 'done' },
+      { label: 'needs human call', status: 'blocked', note: 'pick a vendor' },
+    ] })
+    const p = listBoards(db)[0]!.progress
+    expect(p.blocked).toBe(1)
+    expect(p.countable).toBe(2)          // blocked is real work, not n/a
+    expect(p.fraction).toBeCloseTo(0.5)  // and it earns nothing until unblocked
+    expect(listBoards(db)[0]!.rows[1]!.status).toBe('blocked')
+  })
 })
 
 describe('unseen annotations', () => {

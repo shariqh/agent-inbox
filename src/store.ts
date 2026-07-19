@@ -183,7 +183,8 @@ export function listItems(db: Database.Database, opts: { status?: Status } = {})
   return (rows as Array<Omit<Item, 'options'> & { options: string | null }>).map(parseItem)
 }
 
-export type RowStatus = 'done' | 'partial' | 'missing' | 'tracked' | 'na'
+// 'blocked' = the row needs human input and escalates into the attention layer
+export type RowStatus = 'done' | 'partial' | 'missing' | 'tracked' | 'na' | 'blocked'
 
 export interface Board {
   id: string
@@ -227,6 +228,7 @@ export interface Progress {
   missing: number
   tracked: number
   na: number
+  blocked: number
   total: number
   countable: number
   fraction: number
@@ -341,7 +343,7 @@ export function markBoardRead(db: Database.Database, boardId: string): void {
 }
 
 export function computeProgress(rows: BoardRow[]): Progress {
-  const counts = { done: 0, partial: 0, missing: 0, tracked: 0, na: 0 }
+  const counts = { done: 0, partial: 0, missing: 0, tracked: 0, na: 0, blocked: 0 }
   for (const r of rows) counts[r.status]++
   const total = rows.length
   const countable = total - counts.na

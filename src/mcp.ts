@@ -85,7 +85,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     async () => ({ content: [{ type: 'text', text: JSON.stringify(scope.get(clientName())) }] }),
   )
 
-  const rowStatus = z.enum(['done', 'partial', 'missing', 'tracked', 'na'])
+  const rowStatus = z.enum(['done', 'partial', 'missing', 'tracked', 'na', 'blocked'])
 
   server.registerTool(
     'board_upsert',
@@ -108,7 +108,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     'board_row',
     {
       description:
-        'Update or add ONE row of a tracking board by label, without re-sending the whole table. Creates the board (and row) if missing; a new row defaults to status "tracked". Omitted status/note/context leave the existing value. context is optional long-form backstory shown collapsed.',
+        'Update or add ONE row of a tracking board by label, without re-sending the whole table. Creates the board (and row) if missing; a new row defaults to status "tracked". Omitted status/note/context leave the existing value. context is optional long-form backstory shown collapsed. status "blocked" means the row needs the HUMAN — it escalates into their attention banner; put what you need in note, then watch board_get for their annotation and set a new status once unblocked.',
       inputSchema: { title: z.string().min(1), label: z.string().min(1), status: rowStatus.optional(), note: z.string().optional(), context: z.string().optional() },
     },
     async ({ title, label, status, note, context }) => {

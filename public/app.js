@@ -107,6 +107,8 @@ function renderNow() {
   const allQs = lastData.g.needsYou.flatMap((gr) => gr.items)
   const qs = allQs.filter((i) => !i.reply) // answered questions are the agent's problem now
   const awaitingPickup = allQs.filter((i) => i.reply && !i.reply_seen_at).length
+  // blocked board rows escalate: a board can ask for the human too
+  const blockedRows = lastData.boards.flatMap((b) => b.rows.filter((r) => r.status === 'blocked').map((r) => ({ b, r })))
   const milestones = lastData.g.done.filter((i) => i.kind === 'done' && i.status === 'open').length
   const total = lastData.boards.length
   const complete = lastData.boards.filter((b) => b.progress.fraction === 1 && b.progress.countable > 0).length
@@ -116,26 +118,33 @@ function renderNow() {
   if (total) rest.push(`${total} board${total > 1 ? 's' : ''}${complete ? ` · ${complete} complete` : ''}`)
   const tail = rest.length ? ` &nbsp;·&nbsp; ${rest.join(' &nbsp;·&nbsp; ')}` : ''
   host.hidden = false
-  if (qs.length) {
+  if (qs.length || blockedRows.length) {
     // attention state carries ONLY what needs the human — ambient status
     // (boards, milestones) stays out of the red banner
-    const oldest = qs.reduce((a, b) => (a.created_at < b.created_at ? a : b))
+    const parts = []
+    if (qs.length) {
+      const oldest = qs.reduce((a, b) => (a.created_at < b.created_at ? a : b))
+      parts.push(`${qs.length} question${qs.length > 1 ? 's' : ''} — oldest waiting ${rel(oldest.created_at)}`)
+    }
+    if (blockedRows.length) parts.push(`${blockedRows.length} blocked board row${blockedRows.length > 1 ? 's' : ''}`)
     host.className = 'attention'
-    host.innerHTML = `<div><strong>${qs.length} question${qs.length > 1 ? 's' : ''} need${qs.length > 1 ? '' : 's'} you</strong> — oldest waiting ${rel(oldest.created_at)}</div>`
+    host.innerHTML = `<div><strong>Needs you:</strong> ${parts.join(' · ')}</div>`
     // each waiting item is a link straight to its card
     const list = document.createElement('div')
     list.className = 'now-items'
-    for (const q of qs) {
+    const link = (label, sectionId, cardId) => {
       const a = document.createElement('a')
       a.href = '#'
-      a.textContent = `${q.project} · ${q.title}`
-      a.title = q.title
+      a.textContent = label
+      a.title = label
       a.addEventListener('click', (e) => {
         e.preventDefault()
-        jumpToCard('needsYou', q.id)
+        jumpToCard(sectionId, cardId)
       })
       list.appendChild(a)
     }
+    for (const q of qs) link(`${q.project} · ${q.title}`, 'needsYou', q.id)
+    for (const { b, r } of blockedRows) link(`🚧 ${b.title} · ${r.label}`, 'boards', b.id)
     host.appendChild(list)
   } else {
     host.className = 'calm'
@@ -272,7 +281,7 @@ function renderDone(items) {
   renderSub('done', items.map((it) => ({ id: it.id, label: it.title })))
 }
 
-const GLYPH = { done: '✅', partial: '⚠️', missing: '❌', tracked: '🔜', na: '➖' }
+const GLYPH = { done: '✅', partial: '⚠️', missing: '❌', tracked: '🔜', na: '➖', blocked: '🚧' }
 
 // row-context <details> the user has expanded, by row id — the whole board DOM is
 // rebuilt on every poll, so open state must live outside it

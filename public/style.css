@@ -94,3 +94,5 @@ header { flex-wrap: wrap; }
 .board-table .row-action button { font-size: 12px; padding: 1px 6px; border-radius: 6px; border: 1px solid color-mix(in srgb, CanvasText 20%, transparent); background: transparent; cursor: pointer; }
 /* status accents on the label text so state reads at a glance even past the glyph */
 .board-table tr .missing ~ td, .board-table tr:has(.missing) .row-label { color: color-mix(in srgb, crimson 70%, CanvasText); }
+.board-table tr:has(.blocked) .row-label { color: color-mix(in srgb, crimson 70%, CanvasText); font-weight: 600; }
+.board-table tr:has(.blocked) td { background: color-mix(in srgb, crimson 6%, transparent); }

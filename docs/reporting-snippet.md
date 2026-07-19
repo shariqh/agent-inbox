@@ -37,7 +37,9 @@ prose. Do this **proactively**, without being asked:
 
 - **`board_upsert({ title, rows })`** — create or refresh the WHOLE table (idempotent by
   title). Re-send the full table whenever status changes. Each row is
-  `{ label, status, note?, context? }`, `status ∈ done | partial | missing | tracked | na`.
+  `{ label, status, note?, context? }`, `status ∈ done | partial | missing | tracked | na | blocked`.
+  `blocked` means the row needs the HUMAN — it escalates into their attention banner; put
+  what you need in `note`, watch `board_get` for their annotation, then set a new status.
   Keep `label` stable — rows are matched by label, and the human's notes stick to the label.
   `note` is the one-line summary; put long-form backstory (reasoning, history, links) in
   `context` — the human sees it as a collapsed dropdown, so the row stays scannable.

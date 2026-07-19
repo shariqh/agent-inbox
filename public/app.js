@@ -72,7 +72,7 @@ function render() {
   renderDone(g.done)
   renderBoards(boards)
   renderArchived(archived)
-  setCount('needsYou', g.needsYou.reduce((n, gr) => n + gr.items.length, 0))
+  setCount('needsYou', g.needsYou.reduce((n, gr) => n + gr.items.filter((i) => !i.reply).length, 0))
   setCount('notes', g.notes.reduce((n, gr) => n + gr.items.length, 0))
   setCount('done', g.done.length)
   setCount('boards', boards.length)
@@ -95,11 +95,14 @@ function rel(iso) {
 // unanswered question stays loud however old it is.
 function renderNow() {
   const host = document.getElementById('now')
-  const qs = lastData.g.needsYou.flatMap((gr) => gr.items)
+  const allQs = lastData.g.needsYou.flatMap((gr) => gr.items)
+  const qs = allQs.filter((i) => !i.reply) // answered questions are the agent's problem now
+  const awaitingPickup = allQs.filter((i) => i.reply && !i.reply_seen_at).length
   const milestones = lastData.g.done.filter((i) => i.kind === 'done' && i.status === 'open').length
   const total = lastData.boards.length
   const complete = lastData.boards.filter((b) => b.progress.fraction === 1 && b.progress.countable > 0).length
   const rest = []
+  if (awaitingPickup) rest.push(`${awaitingPickup} answered · awaiting agent`)
   if (milestones) rest.push(`${milestones} milestone${milestones > 1 ? 's' : ''}`)
   if (total) rest.push(`${total} board${total > 1 ? 's' : ''}${complete ? ` · ${complete} complete` : ''}`)
   const tail = rest.length ? ` &nbsp;·&nbsp; ${rest.join(' &nbsp;·&nbsp; ')}` : ''
@@ -353,26 +356,96 @@ function archiveBtn(boardId) {
   return el
 }
 
+// answer-back UI state that must survive the 3s poll rebuild
+const openCompares = new Set()   // item ids with the compare view expanded
+const draftReplies = {}          // item id → in-progress free-text answer
+let draftFocusId = null          // which draft input had focus, to restore it
+
+async function sendReply(id, text) {
+  if (!text.trim()) return
+  delete draftReplies[id]
+  if (draftFocusId === id) draftFocusId = null
+  await fetch(`/api/items/${id}/reply`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: text.trim() }) })
+  load()
+}
+
+// the answer surface on an unanswered question: option pills (recommended
+// first), a Compare toggle for the tradeoffs, and a free-text answer
+function answerEl(it) {
+  const wrap = document.createElement('div')
+  wrap.className = `options${openCompares.has(it.id) ? ' comparing' : ''}`
+  const opts = [...(it.options ?? [])].sort((a, b) => (b.recommended ? 1 : 0) - (a.recommended ? 1 : 0))
+  for (const o of opts) {
+    const box = document.createElement('div')
+    box.className = 'option'
+    const pill = document.createElement('button')
+    pill.className = `opt-pill${o.recommended ? ' rec' : ''}`
+    pill.innerHTML = `${esc(o.label)}${o.recommended ? '<span class="rec-tag">recommended</span>' : ''}`
+    pill.addEventListener('click', () => sendReply(it.id, o.label))
+    box.appendChild(pill)
+    if (o.detail) {
+      const d = document.createElement('div')
+      d.className = 'opt-detail'
+      d.textContent = o.detail
+      box.appendChild(d)
+    }
+    wrap.appendChild(box)
+  }
+  const row = document.createElement('div')
+  row.className = 'reply-row'
+  if (opts.some((o) => o.detail)) {
+    const cmp = btn(openCompares.has(it.id) ? 'Hide compare' : 'Compare', () => {
+      openCompares.has(it.id) ? openCompares.delete(it.id) : openCompares.add(it.id)
+      render()
+    })
+    cmp.className = 'compare-toggle'
+    row.appendChild(cmp)
+  }
+  const input = document.createElement('input')
+  input.className = 'reply-input'
+  input.placeholder = opts.length ? 'or answer in your own words…' : 'answer…'
+  input.value = draftReplies[it.id] ?? ''
+  input.addEventListener('input', () => { draftReplies[it.id] = input.value })
+  input.addEventListener('focus', () => { draftFocusId = it.id })
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendReply(it.id, input.value) })
+  row.appendChild(input)
+  row.appendChild(btn('Send', () => sendReply(it.id, input.value)))
+  wrap.appendChild(row)
+  if (draftFocusId === it.id) requestAnimationFrame(() => {
+    input.focus()
+    input.setSelectionRange(input.value.length, input.value.length)
+  })
+  return wrap
+}
+
 function itemEl(it, done = false, underAgentHead = false) {
   const el = document.createElement('details')
-  el.className = `item ${it.kind}`
+  const answered = it.kind === 'question' && it.status === 'open' && it.reply
+  el.className = `item ${it.kind}${answered ? ' answered' : ''}`
   const stream = it.stream ? ` · ${esc(it.stream)}` : ''
   // under an agent sub-header the agent name would be redundant on every card
   const meta = underAgentHead ? (it.stream ? esc(it.stream) : '') : `${esc(it.agent)}${stream}`
-  const waiting = it.kind === 'question' && it.status === 'open' ? `<span class="waiting">waiting ${rel(it.created_at)}</span>` : ''
+  const waiting = it.kind === 'question' && it.status === 'open' && !it.reply ? `<span class="waiting">waiting ${rel(it.created_at)}</span>` : ''
   el.innerHTML = `
     <summary class="card-summary">
       <div class="meta"><span class="caret"></span>${meta}${waiting}</div>
       <div class="title">${esc(it.title)}</div>
     </summary>
     ${it.detail ? `<div class="detail">${esc(it.detail)}</div>` : ''}
-    ${it.annotation ? `<div class="annotation">📝 ${esc(it.annotation)}</div>` : ''}`
+    ${it.annotation ? `<div class="annotation">📝 ${esc(it.annotation)}</div>` : ''}
+    ${answered ? `<div class="reply-block">↩ ${esc(it.reply)}<span class="pickup ${it.reply_seen_at ? 'picked' : 'awaiting'}">${it.reply_seen_at ? '✓ picked up' : '● waiting for agent pickup'}</span></div>` : ''}`
   cardify(el, it.id)
+  if (!done && it.kind === 'question' && it.status === 'open' && !it.reply) el.appendChild(answerEl(it))
   if (!done) {
     const actions = document.createElement('div')
     actions.className = 'actions'
     actions.appendChild(btn('Resolve', () => act(it.id, 'resolve')))
     actions.appendChild(btn('Dismiss', () => act(it.id, 'dismiss')))
+    if (answered) actions.appendChild(btn('Change answer', async () => {
+      draftReplies[it.id] = it.reply
+      await fetch(`/api/items/${it.id}/reply`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: '' }) })
+      load()
+    }))
     actions.appendChild(btn('Note', async () => {
       const text = prompt('Your note:')
       if (text != null) { await fetch(`/api/items/${it.id}/annotate`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }) }); load() }

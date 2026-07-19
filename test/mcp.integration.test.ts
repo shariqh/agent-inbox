@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
-import { openDb, listItems, listBoards, getBoard, annotateBoardRow } from '../src/store.js'
+import { openDb, listItems, listBoards, getBoard, annotateBoardRow, replyItem } from '../src/store.js'
 
 describe('mcp round-trip', () => {
   it('flag writes a row attributed to this session, and whoami reflects register', async () => {
@@ -40,6 +40,36 @@ describe('mcp round-trip', () => {
     expect(d.title).toBe('shipped v2')
     expect(d.status).toBe('open')
   })
+
+  it('flag accepts options; pending returns the human reply and stamps pickup', async () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-pending-')), 'inbox.db')
+    const conn = async () => {
+      const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
+      const c = new Client({ name: 'claude-code', version: '1.0.0' }); await c.connect(t); return c
+    }
+    const c1 = await conn()
+    const flagRes = await c1.callTool({ name: 'flag', arguments: {
+      kind: 'question', title: 'flags or branch?',
+      options: [{ label: 'flags', detail: 'safer rollback', recommended: true }, { label: 'branch' }],
+    } })
+    const { id } = JSON.parse((flagRes.content as Array<{ text: string }>)[0]!.text)
+
+    // no reply yet — pending shows the open question unanswered
+    const p1 = await c1.callTool({ name: 'pending', arguments: {} })
+    const items1 = JSON.parse((p1.content as Array<{ text: string }>)[0]!.text).items
+    expect(items1).toHaveLength(1)
+    expect(items1[0].reply).toBeNull()
+    expect(items1[0].options[0].label).toBe('flags')
+
+    // human answers (viewer path)
+    replyItem(openDb(dbPath), id, 'flags — but canary first')
+
+    const p2 = await c1.callTool({ name: 'pending', arguments: {} })
+    const items2 = JSON.parse((p2.content as Array<{ text: string }>)[0]!.text).items
+    expect(items2[0].reply).toBe('flags — but canary first')
+    await c1.close()
+    expect(listItems(openDb(dbPath))[0]!.reply_seen_at).toMatch(/^\d{4}-\d{2}-\d{2}T/) // pickup stamped
+  }, 20000)
 
   it('board tools upsert, update a row, and archive a board', async () => {
     const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-board-')), 'inbox.db')

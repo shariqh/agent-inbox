@@ -7,6 +7,14 @@ import { mkdirSync } from 'node:fs'
 export type Kind = 'question' | 'note' | 'done'
 export type Status = 'open' | 'resolved' | 'dismissed'
 
+// a proposed answer the agent attaches to a question; detail carries the
+// tradeoffs shown in the viewer's compare view
+export interface QuestionOption {
+  label: string
+  detail?: string
+  recommended?: boolean
+}
+
 export interface Item {
   id: string
   project: string
@@ -17,6 +25,10 @@ export interface Item {
   detail: string
   status: Status
   annotation: string | null
+  options: QuestionOption[] | null
+  reply: string | null
+  replied_at: string | null
+  reply_seen_at: string | null
   created_at: string
   resolved_at: string | null
 }
@@ -28,6 +40,7 @@ export interface NewItem {
   kind: Kind
   title: string
   detail?: string
+  options?: QuestionOption[]
 }
 
 export function defaultDbPath(): string {
@@ -90,6 +103,10 @@ function migrate(db: Database.Database): void {
   ensureColumn(db, 'board_rows', 'context', `TEXT NOT NULL DEFAULT ''`)
   ensureColumn(db, 'board_rows', 'annotated_at', 'TEXT')
   ensureColumn(db, 'boards', 'last_read_at', 'TEXT')
+  ensureColumn(db, 'items', 'options', 'TEXT')
+  ensureColumn(db, 'items', 'reply', 'TEXT')
+  ensureColumn(db, 'items', 'replied_at', 'TEXT')
+  ensureColumn(db, 'items', 'reply_seen_at', 'TEXT')
 }
 
 // additive migration for DBs created before the column existed
@@ -109,8 +126,8 @@ export function insertItem(db: Database.Database, item: NewItem): string {
   }
   const id = randomUUID()
   db.prepare(
-    `INSERT INTO items (id, project, stream, agent, kind, title, detail, status, created_at)
-     VALUES (@id, @project, @stream, @agent, @kind, @title, @detail, 'open', @created_at)`,
+    `INSERT INTO items (id, project, stream, agent, kind, title, detail, options, status, created_at)
+     VALUES (@id, @project, @stream, @agent, @kind, @title, @detail, @options, 'open', @created_at)`,
   ).run({
     id,
     project: item.project,
@@ -119,9 +136,32 @@ export function insertItem(db: Database.Database, item: NewItem): string {
     kind: item.kind,
     title: item.title,
     detail: item.detail ?? '',
+    options: item.options?.length ? JSON.stringify(item.options) : null,
     created_at: new Date().toISOString(),
   })
   return id
+}
+
+export function replyItem(db: Database.Database, id: string, text: string): void {
+  // a changed answer resets pickup — the agent must see the latest reply;
+  // an empty answer reverts the question to unanswered (null, never '')
+  db.prepare(`UPDATE items SET reply = ?, replied_at = ?, reply_seen_at = NULL WHERE id = ?`)
+    .run(text.trim() ? text : null, new Date().toISOString(), id)
+}
+
+export function markReplySeen(db: Database.Database, id: string): void {
+  db.prepare(`UPDATE items SET reply_seen_at = ? WHERE id = ?`).run(new Date().toISOString(), id)
+}
+
+export function listPending(db: Database.Database, project: string): Item[] {
+  const rows = db
+    .prepare(`SELECT * FROM items WHERE status = 'open' AND kind = 'question' AND project = ? ORDER BY created_at ASC`)
+    .all(project)
+  return (rows as Array<Omit<Item, 'options'> & { options: string | null }>).map(parseItem)
+}
+
+function parseItem(row: Omit<Item, 'options'> & { options: string | null }): Item {
+  return { ...row, options: row.options ? (JSON.parse(row.options) as QuestionOption[]) : null }
 }
 
 export function resolveItem(db: Database.Database, id: string): void {
@@ -140,7 +180,7 @@ export function listItems(db: Database.Database, opts: { status?: Status } = {})
   const rows = opts.status
     ? db.prepare(`SELECT * FROM items WHERE status = ? ORDER BY created_at DESC`).all(opts.status)
     : db.prepare(`SELECT * FROM items ORDER BY created_at DESC`).all()
-  return rows as Item[]
+  return (rows as Array<Omit<Item, 'options'> & { options: string | null }>).map(parseItem)
 }
 
 export type RowStatus = 'done' | 'partial' | 'missing' | 'tracked' | 'na'

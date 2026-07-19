@@ -30,6 +30,23 @@ header { flex-wrap: wrap; }
 #now.attention { background: color-mix(in srgb, crimson 12%, transparent); border: 1px solid color-mix(in srgb, crimson 35%, transparent); color: color-mix(in srgb, crimson 72%, CanvasText); }
 #now.calm { background: color-mix(in srgb, seagreen 8%, transparent); border: 1px solid color-mix(in srgb, seagreen 22%, transparent); opacity: .8; }
 .waiting { color: color-mix(in srgb, crimson 70%, CanvasText); margin-left: 8px; font-weight: 600; font-size: 11.5px; }
+.options { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; align-items: flex-start; }
+.options.comparing { flex-direction: column; }
+.options.comparing .option { border: 1px solid color-mix(in srgb, CanvasText 12%, transparent); border-radius: 8px; padding: 8px 10px; width: 100%; }
+.opt-pill { font-size: 12.5px; padding: 4px 12px; border-radius: 999px; border: 1px solid color-mix(in srgb, CanvasText 30%, transparent); background: transparent; cursor: pointer; }
+.opt-pill:hover { border-color: LinkText; color: LinkText; }
+.opt-pill.rec { border-color: color-mix(in srgb, LinkText 60%, transparent); color: LinkText; }
+.rec-tag { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; opacity: .65; margin-left: 6px; }
+.opt-detail { display: none; font-size: 12.5px; opacity: .75; margin-top: 6px; white-space: pre-wrap; }
+.options.comparing .opt-detail { display: block; }
+.reply-row { display: flex; gap: 6px; flex-basis: 100%; margin-top: 4px; align-items: center; }
+.reply-input { flex: 1; font: inherit; font-size: 13px; padding: 4px 10px; border-radius: 6px; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); background: transparent; color: inherit; }
+.reply-row button, .compare-toggle { font-size: 12px; padding: 3px 10px; border-radius: 6px; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); background: transparent; cursor: pointer; }
+.item.answered { border-left-color: seagreen; opacity: .85; }
+.reply-block { font-size: 13px; margin-top: 8px; padding: 6px 10px; border-radius: 6px; background: color-mix(in srgb, seagreen 8%, transparent); }
+.pickup { margin-left: 10px; font-size: 11.5px; }
+.pickup.awaiting { color: color-mix(in srgb, goldenrod 80%, CanvasText); }
+.pickup.picked { color: color-mix(in srgb, seagreen 80%, CanvasText); }
 #filters { display: flex; gap: 12px; margin-left: auto; align-items: center; flex-wrap: wrap; }
 #filters .tabs { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 .tab-label { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; opacity: .45; margin-right: 2px; }

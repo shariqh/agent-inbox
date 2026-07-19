@@ -10,6 +10,9 @@ import {
   dismissItem,
   annotateItem,
   listItems,
+  replyItem,
+  markReplySeen,
+  listPending,
   upsertBoard,
   updateBoardRow,
   findBoard,
@@ -94,6 +97,77 @@ describe('store', () => {
     const q1 = insertItem(db, { project: 'p', stream: '', agent: 'x', kind: 'question', title: 'same q' })
     const q2 = insertItem(db, { project: 'p', stream: '', agent: 'x', kind: 'question', title: 'same q' })
     expect(q2).not.toBe(q1)                 // questions never dedupe
+  })
+})
+
+describe('answer-back', () => {
+  let db: Database.Database
+  beforeEach(() => { db = freshDb() })
+
+  it('question options round-trip as structured data; absent options are null', () => {
+    const id = insertItem(db, {
+      project: 'p', stream: '', agent: 'a', kind: 'question', title: 'which db?',
+      options: [
+        { label: 'sqlite', detail: 'zero-config, single file; fine for local write rates', recommended: true },
+        { label: 'postgres', detail: 'needs a server; overkill until remote mode' },
+      ],
+    })
+    const item = listItems(db).find((i) => i.id === id)!
+    expect(item.options).toHaveLength(2)
+    expect(item.options![0]!.label).toBe('sqlite')
+    expect(item.options![0]!.recommended).toBe(true)
+    expect(item.options![1]!.detail).toMatch(/needs a server/)
+    const plain = insertItem(db, { project: 'p', stream: '', agent: 'a', kind: 'note', title: 'no opts' })
+    expect(listItems(db).find((i) => i.id === plain)!.options).toBeNull()
+  })
+
+  it('replyItem stores the answer, stamps replied_at, and resets pickup', () => {
+    const id = insertItem(db, { project: 'p', stream: '', agent: 'a', kind: 'question', title: 'q' })
+    replyItem(db, id, 'sqlite')
+    let item = listItems(db)[0]!
+    expect(item.reply).toBe('sqlite')
+    expect(item.replied_at).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+    expect(item.reply_seen_at).toBeNull()
+    markReplySeen(db, id)
+    expect(listItems(db)[0]!.reply_seen_at).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+    replyItem(db, id, 'actually postgres') // changing the answer resets pickup
+    item = listItems(db)[0]!
+    expect(item.reply).toBe('actually postgres')
+    expect(item.reply_seen_at).toBeNull()
+    replyItem(db, id, '') // clearing the answer reverts to unanswered (null, not '')
+    expect(listItems(db)[0]!.reply).toBeNull()
+  })
+
+  it('listPending returns open questions for a project, oldest first', () => {
+    const a = insertItem(db, { project: 'p', stream: '', agent: 'x', kind: 'question', title: 'first?' })
+    insertItem(db, { project: 'p', stream: '', agent: 'x', kind: 'note', title: 'a note' })
+    insertItem(db, { project: 'other', stream: '', agent: 'x', kind: 'question', title: 'elsewhere?' })
+    const b = insertItem(db, { project: 'p', stream: '', agent: 'x', kind: 'question', title: 'second?' })
+    resolveItem(db, b)
+    const answeredId = insertItem(db, { project: 'p', stream: '', agent: 'x', kind: 'question', title: 'third?' })
+    replyItem(db, answeredId, 'go left')
+    const pending = listPending(db, 'p')
+    expect(pending.map((i) => i.id)).toEqual([a, answeredId]) // open questions only, oldest first
+    expect(pending[1]!.reply).toBe('go left')
+  })
+
+  it('openDb migrates a legacy items table missing the reply columns', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'inbox-legacy3-')), 'inbox.db')
+    const legacy = new Database(path)
+    legacy.exec(`
+      CREATE TABLE items (
+        id TEXT PRIMARY KEY, project TEXT NOT NULL, stream TEXT NOT NULL DEFAULT '',
+        agent TEXT NOT NULL DEFAULT 'unknown', kind TEXT NOT NULL, title TEXT NOT NULL,
+        detail TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'open',
+        annotation TEXT, created_at TEXT NOT NULL, resolved_at TEXT
+      );
+    `)
+    legacy.close()
+    const db2 = openDb(path)
+    const id = insertItem(db2, { project: 'p', stream: '', agent: 'a', kind: 'question', title: 'q', options: [{ label: 'x' }] })
+    replyItem(db2, id, 'x')
+    expect(listItems(db2)[0]!.reply).toBe('x')
+    expect(listItems(db2)[0]!.options![0]!.label).toBe('x')
   })
 })
 

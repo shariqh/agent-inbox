@@ -3,7 +3,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
-import { openDb, insertItem, listItems, upsertBoard, listBoards, annotateBoardRow } from '../src/store.js'
+import { openDb, insertItem, listItems, markReplySeen, upsertBoard, listBoards, annotateBoardRow } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
 
 function freshDb(): Database.Database {
@@ -37,6 +37,25 @@ describe('viewer api', () => {
     expect(rows.find((r) => r.id === a)!.status).toBe('resolved')
     expect(rows.find((r) => r.id === a)!.annotation).toBe('noted')
     expect(rows.find((r) => r.id === b)!.status).toBe('dismissed')
+  })
+
+  it('POST reply writes the answer and resets pickup; options surface in GET', async () => {
+    const id = insertItem(db, {
+      project: 'p', stream: '', agent: 'claude-code', kind: 'question', title: 'which auth?',
+      options: [{ label: 'clerk', recommended: true }, { label: 'auth0', detail: 'more setup' }],
+    })
+    const app = createViewer(db)
+    const got = await (await app.request('/api/items')).json()
+    expect(got.needsYou[0].items[0].options).toHaveLength(2)
+    markReplySeen(db, id) // pretend a stale pickup exists; a new reply must reset it
+    const res = await app.request(`/api/items/${id}/reply`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'clerk' }),
+    })
+    expect(res.status).toBe(200)
+    const item = listItems(db)[0]!
+    expect(item.reply).toBe('clerk')
+    expect(item.reply_seen_at).toBeNull()
+    expect(item.status).toBe('open') // replying is not resolving — the agent still has to act
   })
 })
 

@@ -1,7 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
 import type Database from 'better-sqlite3'
-import { insertItem, resolveItem, upsertBoard, updateBoardRow, findBoard, archiveBoard, getBoard, listBoards, markBoardRead } from './store.js'
+import { insertItem, resolveItem, listPending, markReplySeen, upsertBoard, updateBoardRow, findBoard, archiveBoard, getBoard, listBoards, markBoardRead } from './store.js'
 import { makeScope } from './scope.js'
 
 export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
@@ -13,15 +13,19 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     'flag',
     {
       description:
-        'Raise an item for the human. kind="question" when you would otherwise pause to ask in the terminal; kind="note" for a non-blocking assumption, caveat, or workaround they should see; kind="done" for a completed milestone worth surfacing (shipped, merged, deployed) — used sparingly, NOT for routine progress. project/stream/agent are inferred automatically.',
+        'Raise an item for the human. kind="question" when you would otherwise pause to ask in the terminal; kind="note" for a non-blocking assumption, caveat, or workaround they should see; kind="done" for a completed milestone worth surfacing (shipped, merged, deployed) — used sparingly, NOT for routine progress. For questions, ALWAYS include 2-4 options when sensible answers exist: your recommendation first with recommended:true, each with a short label and a detail explaining the tradeoff — the human can pick one, compare them, or type their own answer. After flagging a question, poll the pending tool for the reply. project/stream/agent are inferred automatically.',
       inputSchema: {
         kind: z.enum(['question', 'note', 'done']),
         title: z.string().min(1),
         detail: z.string().optional(),
         stream: z.string().optional(),
+        options: z
+          .array(z.object({ label: z.string().min(1), detail: z.string().optional(), recommended: z.boolean().optional() }))
+          .max(5)
+          .optional(),
       },
     },
-    async ({ kind, title, detail, stream }) => {
+    async ({ kind, title, detail, stream, options }) => {
       const s = scope.get(clientName())
       const id = insertItem(db, {
         project: s.project,
@@ -30,6 +34,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
         kind,
         title,
         detail,
+        options,
       })
       return { content: [{ type: 'text', text: JSON.stringify({ id }) }] }
     },
@@ -44,6 +49,21 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     async ({ id }) => {
       resolveItem(db, id)
       return { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] }
+    },
+  )
+
+  server.registerTool(
+    'pending',
+    {
+      description:
+        'Poll for the human’s answers to your open questions in this project. Returns every open question with its reply (null until the human answers — reply may be one of your options or their own free-text direction; follow it either way). Fetching a replied question marks it picked-up, so the human sees you got it. When you have acted on a reply, call resolve on that item. Poll between work steps rather than blocking.',
+      inputSchema: {},
+    },
+    async () => {
+      const s = scope.get(clientName())
+      const items = listPending(db, s.project)
+      for (const it of items) if (it.reply && !it.reply_seen_at) markReplySeen(db, it.id)
+      return { content: [{ type: 'text', text: JSON.stringify({ items }) }] }
     },
   )
 

@@ -9,7 +9,13 @@ watch live. project/stream/agent are inferred automatically.
 Call `flag` when:
 - **`kind: "question"`** — you are about to pause and wait on the human: a decision,
   a missing credential, an ambiguity you cannot resolve yourself. One flag per real
-  blocker; put the actual question in `title`, options/context in `detail`.
+  blocker; put the actual question in `title`, context in `detail`. When sensible answers
+  exist, ALWAYS attach 2-4 `options` — your recommendation first with `recommended: true`,
+  each with a short `label` and a `detail` explaining the tradeoff. The human can pick
+  one, compare them, or answer in their own words. Then **poll `pending()`** between work
+  steps: it returns your open questions with `reply` once answered (an option label or
+  free text — follow it either way), and call `resolve` once you have acted on it. Do
+  not park forever waiting in the terminal.
 - **`kind: "note"`** — you made a notable **assumption**, took a **workaround**, hit a
   **caveat**, or left **tech debt** the human should know about but that does NOT block
   you. Do not flag routine progress or things visible in the diff.

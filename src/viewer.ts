@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import type Database from 'better-sqlite3'
-import { listItems, resolveItem, dismissItem, annotateItem, listBoards, archiveBoard, unarchiveBoard, annotateBoardRow } from './store.js'
+import { listItems, resolveItem, dismissItem, annotateItem, replyItem, listBoards, archiveBoard, unarchiveBoard, annotateBoardRow } from './store.js'
 import { groupItems } from './group.js'
 
 export function createViewer(db: Database.Database): Hono {
@@ -21,6 +21,12 @@ export function createViewer(db: Database.Database): Hono {
   app.post('/api/items/:id/annotate', async (c) => {
     const { text } = await c.req.json<{ text: string }>()
     annotateItem(db, c.req.param('id'), text)
+    return c.json({ ok: true })
+  })
+
+  app.post('/api/items/:id/reply', async (c) => {
+    const { text } = await c.req.json<{ text: string }>()
+    replyItem(db, c.req.param('id'), text)
     return c.json({ ok: true })
   })
 

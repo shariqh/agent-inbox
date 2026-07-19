@@ -38,6 +38,7 @@ details[open] > .card-summary .caret::before { content: '▾'; }
 .annotation { margin-top: 4px; opacity: .7; }
 .actions { display: flex; gap: 8px; margin-top: 8px; }
 .actions button { font-size: 12px; padding: 3px 10px; border-radius: 6px; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); background: transparent; cursor: pointer; }
+.actions button.confirm { border-color: crimson; color: crimson; }
 .empty { opacity: .4; font-size: 13px; }
 .board { border: 1px solid color-mix(in srgb, CanvasText 15%, transparent); border-radius: 8px; padding: 12px; margin-bottom: var(--gap); }
 .board-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }

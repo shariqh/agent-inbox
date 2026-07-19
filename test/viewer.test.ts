@@ -66,6 +66,34 @@ describe('boards api', () => {
     expect(listBoards(db)).toHaveLength(0)
   })
 
+  it('POST unarchive returns the board to the active list', async () => {
+    const { boardId } = upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'c', rows: [{ label: 'x', status: 'done' }] })
+    const app = createViewer(db)
+    expect((await app.request(`/api/boards/${boardId}/archive`, { method: 'POST' })).status).toBe(200)
+    expect((await app.request(`/api/boards/${boardId}/unarchive`, { method: 'POST' })).status).toBe(200)
+    expect(listBoards(db)).toHaveLength(1)
+    expect(listBoards(db, { status: 'archived' })).toHaveLength(0)
+  })
+
+  it('GET /api/boards/archived returns archived boards with rows + progress', async () => {
+    const { boardId } = upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'old effort', rows: [{ label: 'x', status: 'done' }] })
+    upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'still active', rows: [{ label: 'y', status: 'tracked' }] })
+    const app = createViewer(db)
+    await app.request(`/api/boards/${boardId}/archive`, { method: 'POST' })
+    const res = await app.request('/api/boards/archived')
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body).toHaveLength(1)
+    expect(body[0].title).toBe('old effort')
+    expect(body[0].status).toBe('archived')
+    expect(body[0].rows[0].label).toBe('x')
+    expect(body[0].progress.done).toBe(1)
+    // active list is untouched by the archived endpoint
+    const active = await (await app.request('/api/boards')).json()
+    expect(active).toHaveLength(1)
+    expect(active[0].title).toBe('still active')
+  })
+
   it('POST row annotate sets the human note and survives a re-upsert', async () => {
     upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'c', rows: [{ label: 'x', status: 'missing' }] })
     const board = listBoards(db)[0]!

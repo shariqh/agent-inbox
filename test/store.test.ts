@@ -14,6 +14,7 @@ import {
   updateBoardRow,
   findBoard,
   archiveBoard,
+  unarchiveBoard,
   annotateBoardRow,
   listBoards,
   computeProgress,
@@ -201,6 +202,18 @@ describe('boards', () => {
     archiveBoard(db, boardId)
     expect(listBoards(db)).toHaveLength(0)
     expect(listBoards(db, { status: 'archived' })).toHaveLength(1)
+  })
+
+  it('unarchive restores a board to the active list and bumps updated_at', () => {
+    const { boardId } = upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'c', rows })
+    archiveBoard(db, boardId)
+    const archived = listBoards(db, { status: 'archived' })[0]!
+    unarchiveBoard(db, boardId)
+    expect(listBoards(db, { status: 'archived' })).toHaveLength(0)
+    const active = listBoards(db)
+    expect(active).toHaveLength(1)
+    expect(active[0]!.status).toBe('active')
+    expect(active[0]!.updated_at >= archived.updated_at).toBe(true)
   })
 
   it('computeProgress weights done=1, partial=0.5, missing/tracked=0, excludes na', () => {

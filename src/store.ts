@@ -280,6 +280,10 @@ export function archiveBoard(db: Database.Database, boardId: string): void {
   db.prepare(`UPDATE boards SET status = 'archived', updated_at = ? WHERE id = ?`).run(new Date().toISOString(), boardId)
 }
 
+export function unarchiveBoard(db: Database.Database, boardId: string): void {
+  db.prepare(`UPDATE boards SET status = 'active', updated_at = ? WHERE id = ?`).run(new Date().toISOString(), boardId)
+}
+
 export function annotateBoardRow(db: Database.Database, rowId: string, text: string): void {
   db.prepare(`UPDATE board_rows SET annotation = ?, annotated_at = ? WHERE id = ?`).run(text, new Date().toISOString(), rowId)
 }

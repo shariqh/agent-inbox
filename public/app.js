@@ -184,7 +184,8 @@ function renderArchived(boards) {
 
 function boardEl(b, archived = false) {
   const el = document.createElement('details')
-  el.className = 'board'
+  const complete = b.progress.fraction === 1 && b.progress.countable > 0
+  el.className = `board${complete ? ' complete' : ''}`
   const pct = Math.round(b.progress.fraction * 100)
   const stream = b.stream ? ` · ${esc(b.stream)}` : ''
   el.innerHTML = `
@@ -194,7 +195,7 @@ function boardEl(b, archived = false) {
         <div class="board-meta">${esc(b.project)}${stream} · ${esc(b.agent)}</div>
       </div>
       <div class="bar"><div class="bar-fill" style="width:${pct}%"></div></div>
-      <div class="bar-label">${b.progress.done}/${b.progress.countable} done · ${pct}%</div>
+      <div class="bar-label">${b.progress.done}/${b.progress.countable} done · ${pct}%${complete ? '<span class="complete-badge">✓ complete</span>' : ''}</div>
     </summary>`
   cardify(el, b.id)
   const table = document.createElement('table')

@@ -47,6 +47,8 @@ details[open] > .card-summary .caret::before { content: '▾'; }
 .board-meta { font-size: 12px; opacity: .55; }
 .bar { height: 6px; border-radius: 3px; background: color-mix(in srgb, CanvasText 12%, transparent); margin: 8px 0 4px; overflow: hidden; }
 .bar-fill { height: 100%; background: seagreen; }
+.board.complete .bar-fill { background: limegreen; }
+.complete-badge { color: limegreen; font-size: 11px; font-weight: 600; margin-left: 8px; }
 .bar-label { font-size: 12px; opacity: .6; margin-bottom: 6px; }
 .board-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .board-table td { padding: 4px 6px; border-top: 1px solid color-mix(in srgb, CanvasText 8%, transparent); vertical-align: top; }

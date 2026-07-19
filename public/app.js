@@ -102,7 +102,9 @@ function renderGroups(sectionId, groups) {
 function renderDone(items) {
   const host = document.querySelector('#done .items')
   host.innerHTML = items.length ? '' : '<p class="empty">Nothing yet.</p>'
-  for (const it of items) host.appendChild(itemEl(it, true))
+  // closed items are action-less; OPEN milestones (kind=done) keep their
+  // actions so the human can clear them
+  for (const it of items) host.appendChild(itemEl(it, it.status !== 'open'))
   renderSub('done', items.map((it) => ({ id: it.id, label: it.title })))
 }
 

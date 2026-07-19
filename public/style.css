@@ -32,6 +32,7 @@ details[open] > .card-summary .caret::before { content: '▾'; }
 .item { border: 1px solid color-mix(in srgb, CanvasText 15%, transparent); border-left-width: 3px; border-radius: 8px; padding: 10px 12px; margin-bottom: var(--gap); }
 .item.question { border-left-color: crimson; }
 .item.note { border-left-color: goldenrod; }
+.item.done { border-left-color: seagreen; }
 .meta { font-size: 12px; opacity: .55; }
 .title { font-weight: 600; margin: 2px 0; }
 .detail, .annotation { font-size: 13px; opacity: .8; white-space: pre-wrap; }

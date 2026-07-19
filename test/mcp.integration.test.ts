@@ -21,6 +21,10 @@ describe('mcp round-trip', () => {
     const { id } = JSON.parse((flagRes.content as Array<{ text: string }>)[0]!.text)
     expect(id).toBeTruthy()
 
+    // kind=done milestone round-trips too
+    const doneRes = await client.callTool({ name: 'flag', arguments: { kind: 'done', title: 'shipped v2' } })
+    expect(JSON.parse((doneRes.content as Array<{ text: string }>)[0]!.text).id).toBeTruthy()
+
     const who = await client.callTool({ name: 'register', arguments: { project: 'overridden' } })
     expect(JSON.parse((who.content as Array<{ text: string }>)[0]!.text).project).toBe('overridden')
 
@@ -28,10 +32,13 @@ describe('mcp round-trip', () => {
 
     const db = openDb(dbPath)
     const items = listItems(db)
-    expect(items).toHaveLength(1)
-    expect(items[0]!.title).toBe('which storage?')
-    expect(items[0]!.agent).toBe('claude-code')
-    expect(items[0]!.kind).toBe('question')
+    expect(items).toHaveLength(2)
+    const q = items.find((i) => i.kind === 'question')!
+    expect(q.title).toBe('which storage?')
+    expect(q.agent).toBe('claude-code')
+    const d = items.find((i) => i.kind === 'done')!
+    expect(d.title).toBe('shipped v2')
+    expect(d.status).toBe('open')
   })
 
   it('board tools upsert, update a row, and archive a board', async () => {

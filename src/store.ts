@@ -4,7 +4,7 @@ import { homedir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { mkdirSync } from 'node:fs'
 
-export type Kind = 'question' | 'note'
+export type Kind = 'question' | 'note' | 'done'
 export type Status = 'open' | 'resolved' | 'dismissed'
 
 export interface Item {

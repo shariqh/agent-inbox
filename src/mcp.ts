@@ -13,9 +13,9 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     'flag',
     {
       description:
-        'Raise an item for the human. kind="question" when you would otherwise pause to ask in the terminal; kind="note" for a non-blocking assumption, caveat, or workaround they should see. project/stream/agent are inferred automatically.',
+        'Raise an item for the human. kind="question" when you would otherwise pause to ask in the terminal; kind="note" for a non-blocking assumption, caveat, or workaround they should see; kind="done" for a completed milestone worth surfacing (shipped, merged, deployed) — used sparingly, NOT for routine progress. project/stream/agent are inferred automatically.',
       inputSchema: {
-        kind: z.enum(['question', 'note']),
+        kind: z.enum(['question', 'note', 'done']),
         title: z.string().min(1),
         detail: z.string().optional(),
         stream: z.string().optional(),

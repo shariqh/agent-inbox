@@ -24,4 +24,17 @@ describe('groupItems', () => {
     expect(g.notes.map((pg) => pg.project)).toEqual(['social-agent'])
     expect(g.done.map((i) => i.id).sort()).toEqual(['4', '5'])
   })
+
+  it('buckets OPEN kind=done milestones into done, never needsYou/notes, preserving order', () => {
+    const g = groupItems([
+      item({ id: '1', project: 'oris', kind: 'done', status: 'open', title: 'shipped v2', created_at: '2026-07-14T00:00:00.000Z' }),
+      item({ id: '2', project: 'oris', kind: 'question', status: 'open', title: 'q1' }),
+      item({ id: '3', project: 'oris', kind: 'note', status: 'open', title: 'n1' }),
+      item({ id: '4', project: 'oris', kind: 'note', status: 'resolved', title: 'closed1', created_at: '2026-07-13T00:00:00.000Z' }),
+    ])
+    expect(g.needsYou.flatMap((pg) => pg.items.map((i) => i.id))).toEqual(['2'])
+    expect(g.notes.flatMap((pg) => pg.items.map((i) => i.id))).toEqual(['3'])
+    // input order (newest first) is preserved: open milestone before older closed item
+    expect(g.done.map((i) => i.id)).toEqual(['1', '4'])
+  })
 })

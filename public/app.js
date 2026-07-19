@@ -65,13 +65,67 @@ function render() {
   // prune collapse state against ALL cards, not the filtered view, so
   // switching tabs never drops state for cards the filter is hiding
   liveCardIds = new Set([...allItems(lastData.g).map((i) => i.id), ...lastData.boards.map((b) => b.id), ...lastData.archived.map((b) => b.id)])
+  renderNow()
   const { g, boards, archived } = filterData(lastData)
   renderGroups('needsYou', g.needsYou)
   renderGroups('notes', g.notes)
   renderDone(g.done)
   renderBoards(boards)
   renderArchived(archived)
+  setCount('needsYou', g.needsYou.reduce((n, gr) => n + gr.items.length, 0))
+  setCount('notes', g.notes.reduce((n, gr) => n + gr.items.length, 0))
+  setCount('done', g.done.length)
+  setCount('boards', boards.length)
+  setCount('archived', archived.length)
   pruneCollapsedCards()
+}
+
+// "waiting 2h" style relative age — the agent-blocked clock
+function rel(iso) {
+  const m = Math.floor((Date.now() - Date.parse(iso)) / 60000)
+  if (m < 1) return 'moments'
+  if (m < 60) return `${m}m`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h}h ${m % 60}m`
+  return `${Math.floor(h / 24)}d ${h % 24}h`
+}
+
+// the Now strip reflects GLOBAL state, ignoring filters: "do I need to do
+// anything?" must never be hidden by a filter. State-driven only — an
+// unanswered question stays loud however old it is.
+function renderNow() {
+  const host = document.getElementById('now')
+  const qs = lastData.g.needsYou.flatMap((gr) => gr.items)
+  const milestones = lastData.g.done.filter((i) => i.kind === 'done' && i.status === 'open').length
+  const total = lastData.boards.length
+  const complete = lastData.boards.filter((b) => b.progress.fraction === 1 && b.progress.countable > 0).length
+  const rest = []
+  if (milestones) rest.push(`${milestones} milestone${milestones > 1 ? 's' : ''}`)
+  if (total) rest.push(`${total} board${total > 1 ? 's' : ''}${complete ? ` · ${complete} complete` : ''}`)
+  const tail = rest.length ? ` &nbsp;·&nbsp; ${rest.join(' &nbsp;·&nbsp; ')}` : ''
+  host.hidden = false
+  if (qs.length) {
+    const oldest = qs.reduce((a, b) => (a.created_at < b.created_at ? a : b))
+    host.className = 'attention'
+    host.innerHTML = `<strong>${qs.length} question${qs.length > 1 ? 's' : ''} need${qs.length > 1 ? '' : 's'} you</strong> — oldest waiting ${rel(oldest.created_at)}${tail}`
+  } else {
+    host.className = 'calm'
+    host.innerHTML = `Nothing needs you${tail}`
+  }
+  host.onclick = () => {
+    const sec = document.getElementById('needsYou')
+    sec.open = true
+    sec.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+}
+
+function setCount(sectionId, n) {
+  const link = document.querySelector(`#sidebar a[data-target="${sectionId}"]`)
+  if (!link.dataset.base) link.dataset.base = link.textContent
+  link.textContent = n ? `${link.dataset.base} (${n})` : link.dataset.base
+  const h2 = document.querySelector(`#${sectionId} > summary h2`)
+  if (!h2.dataset.base) h2.dataset.base = h2.textContent
+  h2.textContent = n ? `${h2.dataset.base} (${n})` : h2.dataset.base
 }
 
 function filterData({ g, boards, archived }) {
@@ -305,9 +359,10 @@ function itemEl(it, done = false, underAgentHead = false) {
   const stream = it.stream ? ` · ${esc(it.stream)}` : ''
   // under an agent sub-header the agent name would be redundant on every card
   const meta = underAgentHead ? (it.stream ? esc(it.stream) : '') : `${esc(it.agent)}${stream}`
+  const waiting = it.kind === 'question' && it.status === 'open' ? `<span class="waiting">waiting ${rel(it.created_at)}</span>` : ''
   el.innerHTML = `
     <summary class="card-summary">
-      <div class="meta"><span class="caret"></span>${meta}</div>
+      <div class="meta"><span class="caret"></span>${meta}${waiting}</div>
       <div class="title">${esc(it.title)}</div>
     </summary>
     ${it.detail ? `<div class="detail">${esc(it.detail)}</div>` : ''}

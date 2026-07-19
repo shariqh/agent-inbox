@@ -80,6 +80,21 @@ describe('store', () => {
     resolveItem(db, 'nope') // must not throw
     expect(listItems(db)).toHaveLength(0)
   })
+
+  it('open done-kind milestones dedupe by (project, title); other kinds never do', () => {
+    const a = insertItem(db, { project: 'p', stream: '', agent: 'x', kind: 'done', title: 'shipped v2' })
+    const b = insertItem(db, { project: 'p', stream: '', agent: 'x', kind: 'done', title: 'shipped v2' })
+    expect(b).toBe(a)                       // same open milestone → same id
+    expect(listItems(db)).toHaveLength(1)
+    resolveItem(db, a)
+    const c = insertItem(db, { project: 'p', stream: '', agent: 'x', kind: 'done', title: 'shipped v2' })
+    expect(c).not.toBe(a)                   // resolved → a fresh announcement is fine
+    const d = insertItem(db, { project: 'other', stream: '', agent: 'x', kind: 'done', title: 'shipped v2' })
+    expect(d).not.toBe(c)                   // scoped by project
+    const q1 = insertItem(db, { project: 'p', stream: '', agent: 'x', kind: 'question', title: 'same q' })
+    const q2 = insertItem(db, { project: 'p', stream: '', agent: 'x', kind: 'question', title: 'same q' })
+    expect(q2).not.toBe(q1)                 // questions never dedupe
+  })
 })
 
 describe('boards', () => {

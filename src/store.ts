@@ -99,6 +99,14 @@ function ensureColumn(db: Database.Database, table: string, column: string, ddl:
 }
 
 export function insertItem(db: Database.Database, item: NewItem): string {
+  // milestones are announcements — re-announcing the same open milestone
+  // (agent retries, re-runs) must not stack duplicates
+  if (item.kind === 'done') {
+    const existing = db
+      .prepare(`SELECT id FROM items WHERE kind = 'done' AND status = 'open' AND project = ? AND title = ?`)
+      .get(item.project, item.title) as { id: string } | undefined
+    if (existing) return existing.id
+  }
   const id = randomUUID()
   db.prepare(
     `INSERT INTO items (id, project, stream, agent, kind, title, detail, status, created_at)

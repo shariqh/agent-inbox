@@ -26,6 +26,10 @@ details[open] > .card-summary .caret::before { content: '▾'; }
 .project h3 { font-size: 13px; margin: 12px 0 6px; opacity: .8; }
 .agent-head { font-size: 12px; font-weight: 600; margin: 10px 0 4px 2px; opacity: .55; }
 header { flex-wrap: wrap; }
+#now { font-size: 13.5px; padding: 8px 14px; border-radius: 8px; margin-bottom: 6px; cursor: pointer; }
+#now.attention { background: color-mix(in srgb, crimson 12%, transparent); border: 1px solid color-mix(in srgb, crimson 35%, transparent); color: color-mix(in srgb, crimson 72%, CanvasText); }
+#now.calm { background: color-mix(in srgb, seagreen 8%, transparent); border: 1px solid color-mix(in srgb, seagreen 22%, transparent); opacity: .8; }
+.waiting { color: color-mix(in srgb, crimson 70%, CanvasText); margin-left: 8px; font-weight: 600; font-size: 11.5px; }
 #filters { display: flex; gap: 12px; margin-left: auto; align-items: center; flex-wrap: wrap; }
 #filters .tabs { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 .tab-label { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; opacity: .45; margin-right: 2px; }

@@ -180,7 +180,7 @@ function boardEl(b) {
   el.innerHTML = `
     <summary class="card-summary">
       <div class="board-head">
-        <div class="board-title"><span class="caret"></span>${esc(b.title)}</div>
+        <div class="board-title"><span class="caret"></span>${esc(b.title)}<span class="board-id" title="board id">#${esc(b.id.slice(0, 6))}</span></div>
         <div class="board-meta">${esc(b.project)}${stream} · ${esc(b.agent)}</div>
       </div>
       <div class="bar"><div class="bar-fill" style="width:${pct}%"></div></div>
@@ -189,12 +189,13 @@ function boardEl(b) {
   cardify(el, b.id)
   const table = document.createElement('table')
   table.className = 'board-table'
-  for (const r of b.rows) {
+  for (const [i, r] of b.rows.entries()) {
     const tr = document.createElement('tr')
     const context = r.context
       ? `<details class="row-context"${openContexts.has(r.id) ? ' open' : ''}><summary>context</summary><div>${esc(r.context)}</div></details>`
       : ''
     tr.innerHTML = `
+      <td class="row-num">${i + 1}</td>
       <td class="pill ${r.status}">${GLYPH[r.status] || ''}</td>
       <td class="row-label">${esc(r.label)}</td>
       <td class="row-note">${esc(r.note)}${context}${r.annotation ? `<div class="annotation">📝 ${esc(r.annotation)}${r.annotation_unseen ? '<span class="unseen" title="Not yet seen by the agent">●</span>' : ''}</div>` : ''}</td>`

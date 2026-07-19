@@ -117,9 +117,11 @@ function renderNow() {
   const tail = rest.length ? ` &nbsp;·&nbsp; ${rest.join(' &nbsp;·&nbsp; ')}` : ''
   host.hidden = false
   if (qs.length) {
+    // attention state carries ONLY what needs the human — ambient status
+    // (boards, milestones) stays out of the red banner
     const oldest = qs.reduce((a, b) => (a.created_at < b.created_at ? a : b))
     host.className = 'attention'
-    host.innerHTML = `<div><strong>${qs.length} question${qs.length > 1 ? 's' : ''} need${qs.length > 1 ? '' : 's'} you</strong> — oldest waiting ${rel(oldest.created_at)}${tail}</div>`
+    host.innerHTML = `<div><strong>${qs.length} question${qs.length > 1 ? 's' : ''} need${qs.length > 1 ? '' : 's'} you</strong> — oldest waiting ${rel(oldest.created_at)}</div>`
     // each waiting item is a link straight to its card
     const list = document.createElement('div')
     list.className = 'now-items'

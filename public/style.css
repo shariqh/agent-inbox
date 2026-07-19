@@ -27,7 +27,8 @@ details[open] > .card-summary .caret::before { content: '▾'; }
 .agent-head { font-size: 12px; font-weight: 600; margin: 10px 0 4px 2px; opacity: .55; }
 header { flex-wrap: wrap; }
 #filters { display: flex; gap: 12px; margin-left: auto; align-items: center; flex-wrap: wrap; }
-#filters .tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+#filters .tabs { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.tab-label { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; opacity: .45; margin-right: 2px; }
 #agentTabs:not(:empty) { border-left: 1px solid color-mix(in srgb, CanvasText 20%, transparent); padding-left: 12px; }
 #filters button { font-size: 12px; padding: 2px 11px; border-radius: 999px; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); background: transparent; cursor: pointer; opacity: .6; }
 #filters button:hover { opacity: 1; }

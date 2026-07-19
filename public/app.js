@@ -48,7 +48,7 @@ function projectScoped({ g, boards, archived }) {
 function render() {
   const projects = collectProjects(lastData)
   if (projectFilter && !projects.includes(projectFilter)) projectFilter = null
-  renderPills('projectTabs', projects, projectFilter, (v) => {
+  renderPills('projectTabs', 'project', projects, projectFilter, (v) => {
     projectFilter = v
     if (v) localStorage.setItem(PROJECT_KEY, v)
     else localStorage.removeItem(PROJECT_KEY)
@@ -56,7 +56,7 @@ function render() {
   })
   const agents = collectAgents(projectScoped(lastData))
   if (agentFilter && !agents.includes(agentFilter)) agentFilter = null
-  renderPills('agentTabs', agents, agentFilter, (v) => {
+  renderPills('agentTabs', 'agent', agents, agentFilter, (v) => {
     agentFilter = v
     if (v) localStorage.setItem(FILTER_KEY, v)
     else localStorage.removeItem(FILTER_KEY)
@@ -91,13 +91,19 @@ function filterData({ g, boards, archived }) {
   }
 }
 
-function renderPills(hostId, values, current, onPick) {
+function renderPills(hostId, label, values, current, onPick) {
   const host = document.getElementById(hostId)
   const sig = JSON.stringify([values, current])
   if (host.dataset.sig === sig) return
   host.dataset.sig = sig
   host.innerHTML = ''
-  if (values.length < 2) return // a filter with one option is noise
+  if (values.length === 0) return
+  // always render when there is anything to show — even a single-option strip
+  // tells you what you're looking at (and that the filter exists)
+  const tag = document.createElement('span')
+  tag.className = 'tab-label'
+  tag.textContent = label
+  host.appendChild(tag)
   for (const v of [null, ...values]) {
     const b = document.createElement('button')
     b.textContent = v ?? 'All'

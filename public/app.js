@@ -1,8 +1,10 @@
 let lastData = null
 const FILTER_KEY = 'agent-inbox-agent-filter'
 const PROJECT_KEY = 'agent-inbox-project-filter'
+const HIDE_DONE_KEY = 'agent-inbox-hide-completed'
 let agentFilter = localStorage.getItem(FILTER_KEY) || null
 let projectFilter = localStorage.getItem(PROJECT_KEY) || null
+let hideCompleted = localStorage.getItem(HIDE_DONE_KEY) !== 'false' // default ON
 
 async function load() {
   try {
@@ -62,6 +64,7 @@ function render() {
     else localStorage.removeItem(FILTER_KEY)
     render()
   })
+  renderRowToggle()
   // prune collapse state against ALL cards, not the filtered view, so
   // switching tabs never drops state for cards the filter is hiding
   liveCardIds = new Set([...allItems(lastData.g).map((i) => i.id), ...lastData.boards.map((b) => b.id), ...lastData.archived.map((b) => b.id)])
@@ -146,6 +149,27 @@ function filterData({ g, boards, archived }) {
     boards: boards.filter(keepBoard),
     archived: archived.filter(keepBoard),
   }
+}
+
+function renderRowToggle() {
+  const host = document.getElementById('rowTabs')
+  const sig = String(hideCompleted)
+  if (host.dataset.sig === sig) return
+  host.dataset.sig = sig
+  host.innerHTML = ''
+  const tag = document.createElement('span')
+  tag.className = 'tab-label'
+  tag.textContent = 'rows'
+  host.appendChild(tag)
+  const b = document.createElement('button')
+  b.textContent = 'hide completed'
+  if (hideCompleted) b.classList.add('active')
+  b.addEventListener('click', () => {
+    hideCompleted = !hideCompleted
+    localStorage.setItem(HIDE_DONE_KEY, String(hideCompleted))
+    render()
+  })
+  host.appendChild(b)
 }
 
 function renderPills(hostId, label, values, current, onPick) {
@@ -295,12 +319,15 @@ function boardEl(b, archived = false) {
         <div class="board-meta">${esc(b.project)}${stream} · ${esc(b.agent)}</div>
       </div>
       <div class="bar"><div class="bar-fill" style="width:${pct}%"></div></div>
-      <div class="bar-label">${b.progress.done}/${b.progress.countable} done · ${pct}%${complete ? '<span class="complete-badge">✓ complete</span>' : ''}</div>
+      <div class="bar-label">${b.progress.done}/${b.progress.countable} done · ${pct}%${complete ? '<span class="complete-badge">✓ complete</span>' : ''}${hideCompleted && b.progress.done > 0 ? `<span class="hidden-hint">· ${b.progress.done} hidden</span>` : ''}</div>
     </summary>`
   cardify(el, b.id)
   const table = document.createElement('table')
   table.className = 'board-table'
   for (const [i, r] of b.rows.entries()) {
+    // hide-completed skips done rows; i stays the original index so the
+    // visible row numbers keep matching "row N" references
+    if (hideCompleted && r.status === 'done') continue
     const tr = document.createElement('tr')
     const context = r.context
       ? `<details class="row-context"${openContexts.has(r.id) ? ' open' : ''}><summary>context</summary><div>${esc(r.context)}</div></details>`

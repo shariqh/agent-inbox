@@ -31,6 +31,7 @@ header { flex-wrap: wrap; }
 .triage-btn { font-size: 12px; padding: 3px 14px; border-radius: 999px; border: 1px solid color-mix(in srgb, crimson 45%, transparent); background: transparent; color: inherit; cursor: pointer; font-weight: 600; white-space: nowrap; }
 .triage-btn:hover { border-color: crimson; }
 #lightbox { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; }
+#lightbox[hidden] { display: none; } /* our display:flex would otherwise beat the UA's [hidden] rule */
 .lb-backdrop { position: absolute; inset: 0; background: color-mix(in srgb, CanvasText 25%, transparent); backdrop-filter: blur(2px); }
 .lb-panel { position: relative; background: Canvas; border: 1px solid color-mix(in srgb, CanvasText 20%, transparent); border-radius: 14px; width: min(660px, 92vw); max-height: 84vh; display: flex; flex-direction: column; padding: 14px 18px 12px; box-shadow: 0 18px 50px color-mix(in srgb, CanvasText 25%, transparent); }
 .lb-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }

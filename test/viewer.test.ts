@@ -144,7 +144,7 @@ describe('boards api', () => {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'do this next' }),
     })
     expect(res.status).toBe(200)
-    upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'c', rows: [{ label: 'x', status: 'done' }] })
+    upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'c', rows: [{ label: 'x', status: 'partial' }] })
     expect(listBoards(db)[0]!.rows[0]!.annotation).toBe('do this next')
   })
 

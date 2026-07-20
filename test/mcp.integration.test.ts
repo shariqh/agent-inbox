@@ -88,14 +88,14 @@ describe('mcp round-trip', () => {
     const upOut = JSON.parse((up.content as Array<{ text: string }>)[0]!.text)
     expect(upOut.rowCount).toBe(2)
 
-    await client.callTool({ name: 'board_row', arguments: { title: 'coverage', label: 'stems', status: 'done', context: 'the long story' } })
+    await client.callTool({ name: 'board_row', arguments: { title: 'coverage', label: 'stems', status: 'partial', context: 'the long story' } })
     await client.close()
 
     const db = openDb(dbPath)
     const board = listBoards(db)[0]!
     expect(board.title).toBe('coverage')
     expect(board.rows.find((r) => r.label === 'theme')!.context).toBe('landed across three PRs')
-    expect(board.rows.find((r) => r.label === 'stems')!.status).toBe('done')
+    expect(board.rows.find((r) => r.label === 'stems')!.status).toBe('partial')
     expect(board.rows.find((r) => r.label === 'stems')!.context).toBe('the long story')
 
     // archive via a second short-lived client (same db path)

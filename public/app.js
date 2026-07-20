@@ -417,6 +417,10 @@ const GLYPH = { done: '✅', partial: '⚠️', missing: '❌', tracked: '🔜',
 // rebuilt on every poll, so open state must live outside it
 const openContexts = new Set()
 
+// boards where the human clicked "show" on hidden done rows, overriding the
+// global hide-completed pill for that board only
+const showDoneBoards = new Set()
+
 // collapsed cards (items + boards) by id — same rebuild problem, but also persisted
 const CARDS_KEY = 'agent-inbox-cards-collapsed'
 let collapsedCards = {}
@@ -497,15 +501,22 @@ function boardEl(b, archived = false) {
         <div class="board-meta">${esc(b.project)}${stream} · ${esc(b.agent)}</div>
       </div>
       <div class="bar"><div class="bar-fill" style="width:${pct}%"></div></div>
-      <div class="bar-label">${b.progress.done}/${b.progress.countable} done · ${pct}%${complete ? '<span class="complete-badge">✓ complete</span>' : ''}${hideCompleted && b.progress.done > 0 ? `<span class="hidden-hint">· ${b.progress.done} hidden</span>` : ''}</div>
+      <div class="bar-label">${b.progress.done}/${b.progress.countable} done · ${pct}%${complete ? '<span class="complete-badge">✓ complete</span>' : ''}${hideCompleted && b.progress.done > 0 ? `<span class="hidden-hint" title="show/hide this board's completed rows">· ${b.progress.done} ${showDoneBoards.has(b.id) ? 'done shown' : 'hidden — show'}</span>` : ''}</div>
     </summary>`
   cardify(el, b.id)
+  const hint = el.querySelector('.hidden-hint')
+  if (hint) hint.addEventListener('click', (e) => {
+    e.preventDefault()
+    e.stopPropagation() // don't toggle the surrounding <details>
+    showDoneBoards.has(b.id) ? showDoneBoards.delete(b.id) : showDoneBoards.add(b.id)
+    render()
+  })
   const table = document.createElement('table')
   table.className = 'board-table'
   for (const [i, r] of b.rows.entries()) {
     // hide-completed skips done rows; i stays the original index so the
     // visible row numbers keep matching "row N" references
-    if (hideCompleted && r.status === 'done') continue
+    if (hideCompleted && r.status === 'done' && !showDoneBoards.has(b.id)) continue
     const tr = document.createElement('tr')
     const context = r.context
       ? `<details class="row-context"${openContexts.has(r.id) ? ' open' : ''}><summary>context</summary><div>${esc(r.context)}</div></details>`

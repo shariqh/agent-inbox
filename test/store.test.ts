@@ -240,9 +240,9 @@ describe('boards', () => {
     expect(board.title).toBe('fresh')
     expect(board.rows[0]!.status).toBe('tracked') // default for a new row with no status
     expect(board.rows[0]!.note).toBe('pending')
-    updateBoardRow(db, { project: 'p', stream: '', agent: 'a', title: 'fresh', label: 'deploy', status: 'done' })
+    updateBoardRow(db, { project: 'p', stream: '', agent: 'a', title: 'fresh', label: 'deploy', status: 'partial' })
     const after = listBoards(db)[0]!.rows[0]!
-    expect(after.status).toBe('done')
+    expect(after.status).toBe('partial')
     expect(after.note).toBe('pending') // note untouched when omitted
   })
 
@@ -269,9 +269,9 @@ describe('boards', () => {
   it('updateBoardRow sets context, and leaves it when omitted', () => {
     updateBoardRow(db, { project: 'p', stream: '', agent: 'a', title: 'c', label: 'x', status: 'partial', context: 'long story' })
     expect(listBoards(db)[0]!.rows[0]!.context).toBe('long story')
-    updateBoardRow(db, { project: 'p', stream: '', agent: 'a', title: 'c', label: 'x', status: 'done' })
+    updateBoardRow(db, { project: 'p', stream: '', agent: 'a', title: 'c', label: 'x', status: 'missing' })
     const row = listBoards(db)[0]!.rows[0]!
-    expect(row.status).toBe('done')
+    expect(row.status).toBe('missing')
     expect(row.context).toBe('long story') // untouched when omitted
   })
 
@@ -292,8 +292,25 @@ describe('boards', () => {
     `)
     legacy.close()
     const db2 = openDb(path)
-    upsertBoard(db2, { project: 'p', stream: '', agent: 'a', title: 'c', rows: [{ label: 'x', status: 'done', context: 'why' }] })
+    upsertBoard(db2, { project: 'p', stream: '', agent: 'a', title: 'c', rows: [{ label: 'x', status: 'partial', context: 'why' }] })
     expect(listBoards(db2)[0]!.rows[0]!.context).toBe('why')
+  })
+
+  it('a board reaching 100% auto-archives; a later agent write reactivates it', () => {
+    upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'ship it', rows: [
+      { label: 'a', status: 'done' }, { label: 'b', status: 'done' },
+    ] })
+    expect(listBoards(db)).toHaveLength(0) // complete → straight to archived
+    expect(listBoards(db, { status: 'archived' })[0]!.title).toBe('ship it')
+    // the flicker case: the agent keeps working — board comes back
+    updateBoardRow(db, { project: 'p', stream: '', agent: 'a', title: 'ship it', label: 'c', status: 'tracked' })
+    expect(listBoards(db)[0]!.title).toBe('ship it')
+    expect(listBoards(db, { status: 'archived' })).toHaveLength(0)
+  })
+
+  it('all-na boards do not auto-archive (countable 0 is not complete)', () => {
+    upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'n/a only', rows: [{ label: 'x', status: 'na' }] })
+    expect(listBoards(db)).toHaveLength(1)
   })
 
   it('archive hides a board from the default (active) list', () => {
@@ -400,7 +417,7 @@ describe('unseen annotations', () => {
     `)
     legacy.close()
     const db2 = openDb(path)
-    const { boardId } = upsertBoard(db2, { project: 'p', stream: '', agent: 'a', title: 'c', rows: [{ label: 'x', status: 'done' }] })
+    const { boardId } = upsertBoard(db2, { project: 'p', stream: '', agent: 'a', title: 'c', rows: [{ label: 'x', status: 'partial' }] })
     annotateBoardRow(db2, listBoards(db2)[0]!.rows[0]!.id, 'note')
     markBoardRead(db2, boardId)
     expect(listBoards(db2)[0]!.rows[0]!.annotation_unseen).toBe(false)

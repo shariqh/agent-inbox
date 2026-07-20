@@ -281,6 +281,7 @@ export function upsertBoard(db: Database.Database, input: UpsertBoardInput): { b
       }
     })
     for (const r of existing) if (!incoming.has(r.label)) db.prepare(`DELETE FROM board_rows WHERE id = ?`).run(r.id)
+    syncBoardStatus(db, boardId)
     return { boardId, rowCount: inp.rows.length }
   })
   return run(input)
@@ -306,15 +307,29 @@ export function updateBoardRow(db: Database.Database, input: UpdateRowInput): { 
       if (inp.status !== undefined) db.prepare(`UPDATE board_rows SET status = ? WHERE id = ?`).run(inp.status, existing.id)
       if (inp.note !== undefined) db.prepare(`UPDATE board_rows SET note = ? WHERE id = ?`).run(inp.note, existing.id)
       if (inp.context !== undefined) db.prepare(`UPDATE board_rows SET context = ? WHERE id = ?`).run(inp.context, existing.id)
+      syncBoardStatus(db, boardId)
       return { boardId, rowId: existing.id }
     }
     const rowId = randomUUID()
     const pos = (db.prepare(`SELECT COALESCE(MAX(position), -1) + 1 AS p FROM board_rows WHERE board_id = ?`).get(boardId) as { p: number }).p
     db.prepare(`INSERT INTO board_rows (id, board_id, label, status, note, context, position) VALUES (?, ?, ?, ?, ?, ?, ?)`)
       .run(rowId, boardId, inp.label, inp.status ?? 'tracked', inp.note ?? '', inp.context ?? '', pos)
+    syncBoardStatus(db, boardId)
     return { boardId, rowId }
   })
   return run(input)
+}
+
+// After every agent write, a board's active/archived status follows its
+// completeness: 100% (with countable rows) → archived immediately (the human's
+// chosen lifecycle); anything less → active, which also resurrects an archived
+// board the agent is still writing to (the "flickered to 100% mid-update" case).
+function syncBoardStatus(db: Database.Database, boardId: string): void {
+  const rows = db.prepare(`SELECT status FROM board_rows WHERE board_id = ?`).all(boardId) as { status: RowStatus }[]
+  const p = computeProgress(rows as BoardRow[])
+  const complete = p.countable > 0 && p.fraction === 1
+  db.prepare(`UPDATE boards SET status = ?, updated_at = ? WHERE id = ?`)
+    .run(complete ? 'archived' : 'active', new Date().toISOString(), boardId)
 }
 
 // Find-or-create the board row and stamp the last writer. Shared by upsertBoard/updateBoardRow.

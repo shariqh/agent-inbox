@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- macOS-style dark squircle with standard ~10% margin -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#26262b"/>
+      <stop offset="1" stop-color="#161619"/>
+    </linearGradient>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="188" fill="url(#bg)"/>
+
+  <!-- incoming arrow dropping into the tray -->
+  <g stroke="#ecedf2" stroke-width="52" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <path d="M 512 268 L 512 452"/>
+    <path d="M 428 386 L 512 470 L 596 386"/>
+  </g>
+
+  <!-- inbox tray: open box with the classic angled lip -->
+  <path d="M 250 560
+           L 366 560
+           L 412 632
+           L 612 632
+           L 658 560
+           L 774 560
+           L 774 716
+           Q 774 760 730 760
+           L 294 760
+           Q 250 760 250 716
+           Z" fill="#ecedf2"/>
+
+  <!-- crimson attention dot, banner-red -->
+  <circle cx="748" cy="322" r="92" fill="#e5344e"/>
+</svg>

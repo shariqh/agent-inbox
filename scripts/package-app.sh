@@ -54,6 +54,7 @@ cd "$ROOT"
 # real filesystem — neither works from inside an asar archive.
 npx --yes @electron/packager "$STAGE" "Agent Inbox" \
   --platform=darwin --arch=arm64 --out="$OUT" --overwrite --no-asar \
+  --icon="$ROOT/electron/icon.icns" \
   --app-bundle-id=io.coreworx.agent-inbox
 
 # Ad-hoc codesign: macOS silently drops notifications from apps with no code

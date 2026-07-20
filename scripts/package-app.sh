@@ -18,8 +18,19 @@ cd "$ROOT"
 npm run build
 
 rm -rf "$STAGE"
-mkdir -p "$STAGE"
+mkdir -p "$STAGE/docs"
 cp -R "$ROOT/dist" "$ROOT/public" "$ROOT/electron" "$STAGE/"
+cp "$ROOT/docs/reporting-snippet.md" "$STAGE/docs/"
+
+# Bake agent-registration paths for the in-app Setup section: the packaged app
+# cannot host the MCP server (Electron-ABI native module), so agents run it
+# from this repo checkout under this Node binary.
+node -e "
+require('fs').writeFileSync('$STAGE/setup-info.json', JSON.stringify({
+  repoRoot: '$ROOT',
+  nodeBin: process.execPath,
+}, null, 2))
+"
 
 # Minimal staged package.json: runtime deps only, entry at electron/main.cjs.
 node -e "

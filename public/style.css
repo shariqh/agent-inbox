@@ -55,6 +55,11 @@ header { flex-wrap: wrap; }
 .tab-label { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; opacity: .45; margin-right: 2px; }
 #agentTabs:not(:empty), #rowTabs:not(:empty) { border-left: 1px solid color-mix(in srgb, CanvasText 20%, transparent); padding-left: 12px; }
 .hidden-hint { margin-left: 6px; opacity: .55; }
+.setup-block { margin-bottom: 18px; }
+.setup-block h3 { font-size: 13px; margin: 0 0 4px; opacity: .85; }
+.setup-hint { font-size: 12.5px; opacity: .6; margin: 2px 0 6px; }
+.setup-body pre { font-size: 12px; padding: 10px 12px; border-radius: 8px; background: color-mix(in srgb, CanvasText 6%, transparent); overflow-x: auto; white-space: pre-wrap; word-break: break-all; max-height: 300px; overflow-y: auto; }
+.copy-btn { font-size: 12px; padding: 3px 12px; border-radius: 6px; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); background: transparent; cursor: pointer; }
 #filters button { font-size: 12px; padding: 2px 11px; border-radius: 999px; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); background: transparent; cursor: pointer; opacity: .6; }
 #filters button:hover { opacity: 1; }
 #filters button.active { opacity: 1; border-color: LinkText; color: LinkText; }

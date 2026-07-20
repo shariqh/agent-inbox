@@ -23,6 +23,19 @@ describe('viewer api', () => {
     expect(createViewer(db) === app).toBe(false)
   })
 
+  it('GET /api/setup returns agent-registration commands and the reporting snippet', async () => {
+    const app = createViewer(db)
+    const res = await app.request('/api/setup')
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.claudeCommand).toContain('claude mcp add --scope user agent-inbox')
+    expect(body.claudeCommand).toContain('dist/mcp-server.js')
+    expect(body.copilotConfig).toContain('mcp-server.js')
+    expect(body.snippet).toContain('flag')          // the reporting snippet text
+    expect(body.snippet).toContain('board_upsert')
+    expect(body.dbPath).toContain('.agent-inbox')
+  })
+
   it('GET /api/items returns grouped items', async () => {
     insertItem(db, { project: 'p', stream: '', agent: 'claude-code', kind: 'question', title: 'q' })
     const app = createViewer(db)

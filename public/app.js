@@ -568,6 +568,47 @@ function initSections() {
   }
 }
 
+// Setup section: how to point new agents at this inbox. Static content —
+// fetched once, not on the poll.
+async function renderSetup() {
+  try {
+    const s = await (await fetch('/api/setup')).json()
+    const host = document.querySelector('#setup .setup-body')
+    const block = (title, text, hint) => {
+      const wrap = document.createElement('div')
+      wrap.className = 'setup-block'
+      wrap.innerHTML = `<h3>${esc(title)}</h3>${hint ? `<p class="setup-hint">${esc(hint)}</p>` : ''}`
+      const pre = document.createElement('pre')
+      pre.textContent = text
+      const copy = btn('Copy', async () => {
+        await navigator.clipboard.writeText(text)
+        copy.textContent = 'Copied ✓'
+        setTimeout(() => { copy.textContent = 'Copy' }, 1500)
+      })
+      copy.className = 'copy-btn'
+      wrap.appendChild(pre)
+      wrap.appendChild(copy)
+      host.appendChild(wrap)
+    }
+    if (s.note) {
+      const note = document.createElement('p')
+      note.className = 'setup-hint'
+      note.textContent = `⚠ ${s.note}`
+      host.appendChild(note)
+    }
+    block('1 · Register the MCP server — Claude Code', s.claudeCommand,
+      'Run once; applies to every repo (user scope). New registrations are picked up on a fresh agent session.')
+    block('1b · Copilot CLI — merge into ~/.copilot/mcp-config.json', s.copilotConfig)
+    block('2 · Teach agents when to flag — paste into your global instructions (e.g. ~/.claude/CLAUDE.md)', s.snippet,
+      'This snippet is the signal-quality lever: it tells agents when to raise questions/notes, attach options, poll for your replies, and keep boards.')
+    const db = document.createElement('p')
+    db.className = 'setup-hint'
+    db.textContent = `Everything lands in ${s.dbPath} — any viewer (browser tab, app) reads the same file.`
+    host.appendChild(db)
+  } catch { /* setup info unavailable — leave the section empty */ }
+}
+
 initSections()
+renderSetup()
 load()
 setInterval(load, 3000)

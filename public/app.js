@@ -426,7 +426,7 @@ function renderLive(entries) {
     fold.className = 'idle-fold'
     if (openLive.has('__idle__')) fold.open = true
     fold.addEventListener('toggle', () => { fold.open ? openLive.add('__idle__') : openLive.delete('__idle__') })
-    fold.innerHTML = `<summary>+ ${idle.length} open session${idle.length > 1 ? 's' : ''}</summary>`
+    fold.innerHTML = `<summary>${idle.length} open session${idle.length > 1 ? 's' : ''}</summary>`
     for (const a of idle) {
       const row = document.createElement('div')
       row.className = 'idle-row'

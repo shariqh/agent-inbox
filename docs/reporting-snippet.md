@@ -31,6 +31,11 @@ needs — a noisy inbox gets ignored. One `done` flag per shipped thing: re-flag
 identical open milestone title is deduped, not stacked. If a question you raised
 resolves itself before they answer, call `resolve` with its id.
 
+**The end-of-turn rule:** asking in chat is fine while the human is actively conversing —
+but if your turn would END on a question, flag it instead. A question in scrollback is
+invisible to their banner, badge, and triage; a flagged one pings them and wakes you when
+answered.
+
 ## Boards (standing status the human watches)
 
 For a **multi-item effort** where the human would otherwise have to ask "what's the

@@ -22,11 +22,14 @@ Call `flag` when:
 - **`kind: "done"`** — a completed **milestone** worth announcing (shipped, merged,
   deployed). Use sparingly — it is NOT for routine progress.
 
-Keep `title` to one short line (aim under ~80 chars) — everything longer belongs in
-`detail`. Do not flag more than the human needs — a noisy inbox gets ignored. One `done`
-flag per shipped thing: re-flagging an identical open milestone title is deduped, not
-stacked. If a question you raised resolves itself before they answer, call `resolve`
-with its id.
+Keep `title` to one short line (aim under ~80 chars); `detail` is the short visible
+elaboration. **Always provide `context`** — the background a human returning cold needs
+to act without asking you anything: what you were working on, why this came up, relevant
+files/PRs/links. They may read the item hours later with zero memory of the task; it
+renders as a collapsed dropdown, so length is fine. Do not flag more than the human
+needs — a noisy inbox gets ignored. One `done` flag per shipped thing: re-flagging an
+identical open milestone title is deduped, not stacked. If a question you raised
+resolves itself before they answer, call `resolve` with its id.
 
 ## Boards (standing status the human watches)
 

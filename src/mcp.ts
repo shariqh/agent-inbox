@@ -13,11 +13,12 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     'flag',
     {
       description:
-        'Raise an item for the human. kind="question" when you would otherwise pause to ask in the terminal; kind="note" for a non-blocking assumption, caveat, or workaround they should see; kind="done" for a completed milestone worth surfacing (shipped, merged, deployed) — used sparingly, NOT for routine progress. For questions, ALWAYS include 2-4 options when sensible answers exist: your recommendation first with recommended:true, each with a short label and a detail explaining the tradeoff — the human can pick one, compare them, or type their own answer. After flagging a question, poll the pending tool for the reply. project/stream/agent are inferred automatically.',
+        'Raise an item for the human. kind="question" when you would otherwise pause to ask in the terminal; kind="note" for a non-blocking assumption, caveat, or workaround they should see; kind="done" for a completed milestone worth surfacing (shipped, merged, deployed) — used sparingly, NOT for routine progress. ALWAYS provide context: the background a human returning cold needs to act without asking you anything — what you were working on, why this came up, relevant files/PRs/links. They may read your item hours later with no memory of the task; context is shown as a collapsed dropdown so length is fine. For questions, ALWAYS include 2-4 options when sensible answers exist: your recommendation first with recommended:true, each with a short label and a detail explaining the tradeoff — the human can pick one, compare them, or type their own answer. After flagging a question, poll the pending tool for the reply. project/stream/agent are inferred automatically.',
       inputSchema: {
         kind: z.enum(['question', 'note', 'done']),
         title: z.string().min(1),
         detail: z.string().optional(),
+        context: z.string().optional(),
         stream: z.string().optional(),
         options: z
           .array(z.object({ label: z.string().min(1), detail: z.string().optional(), recommended: z.boolean().optional() }))
@@ -25,7 +26,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
           .optional(),
       },
     },
-    async ({ kind, title, detail, stream, options }) => {
+    async ({ kind, title, detail, context, stream, options }) => {
       const s = scope.get(clientName())
       const id = insertItem(db, {
         project: s.project,
@@ -34,6 +35,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
         kind,
         title,
         detail,
+        context,
         options,
       })
       return { content: [{ type: 'text', text: JSON.stringify({ id }) }] }

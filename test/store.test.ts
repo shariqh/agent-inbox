@@ -104,6 +104,16 @@ describe('answer-back', () => {
   let db: Database.Database
   beforeEach(() => { db = freshDb() })
 
+  it('items carry long-form context, defaulting to empty', () => {
+    const id = insertItem(db, {
+      project: 'p', stream: '', agent: 'a', kind: 'question', title: 'which db?',
+      context: 'Migrating the auth service; hit this while wiring sessions. See PR #12. Current code assumes sqlite.',
+    })
+    expect(listItems(db).find((i) => i.id === id)!.context).toMatch(/auth service/)
+    const bare = insertItem(db, { project: 'p', stream: '', agent: 'a', kind: 'note', title: 'no ctx' })
+    expect(listItems(db).find((i) => i.id === bare)!.context).toBe('')
+  })
+
   it('question options round-trip as structured data; absent options are null', () => {
     const id = insertItem(db, {
       project: 'p', stream: '', agent: 'a', kind: 'question', title: 'which db?',

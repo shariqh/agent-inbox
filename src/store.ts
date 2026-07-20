@@ -23,6 +23,7 @@ export interface Item {
   kind: Kind
   title: string
   detail: string
+  context: string
   status: Status
   annotation: string | null
   options: QuestionOption[] | null
@@ -40,6 +41,7 @@ export interface NewItem {
   kind: Kind
   title: string
   detail?: string
+  context?: string
   options?: QuestionOption[]
 }
 
@@ -103,6 +105,7 @@ function migrate(db: Database.Database): void {
   ensureColumn(db, 'board_rows', 'context', `TEXT NOT NULL DEFAULT ''`)
   ensureColumn(db, 'board_rows', 'annotated_at', 'TEXT')
   ensureColumn(db, 'boards', 'last_read_at', 'TEXT')
+  ensureColumn(db, 'items', 'context', `TEXT NOT NULL DEFAULT ''`)
   ensureColumn(db, 'items', 'options', 'TEXT')
   ensureColumn(db, 'items', 'reply', 'TEXT')
   ensureColumn(db, 'items', 'replied_at', 'TEXT')
@@ -126,8 +129,8 @@ export function insertItem(db: Database.Database, item: NewItem): string {
   }
   const id = randomUUID()
   db.prepare(
-    `INSERT INTO items (id, project, stream, agent, kind, title, detail, options, status, created_at)
-     VALUES (@id, @project, @stream, @agent, @kind, @title, @detail, @options, 'open', @created_at)`,
+    `INSERT INTO items (id, project, stream, agent, kind, title, detail, context, options, status, created_at)
+     VALUES (@id, @project, @stream, @agent, @kind, @title, @detail, @context, @options, 'open', @created_at)`,
   ).run({
     id,
     project: item.project,
@@ -136,6 +139,7 @@ export function insertItem(db: Database.Database, item: NewItem): string {
     kind: item.kind,
     title: item.title,
     detail: item.detail ?? '',
+    context: item.context ?? '',
     options: item.options?.length ? JSON.stringify(item.options) : null,
     created_at: new Date().toISOString(),
   })

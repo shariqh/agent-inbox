@@ -87,6 +87,7 @@ function render() {
   setCount('boards', boards.length)
   setCount('archived', archived.length)
   pruneCollapsedCards()
+  renderTriage() // keep the open lightbox in sync with fresh data
 }
 
 // "waiting 2h" style relative age — the agent-blocked clock
@@ -128,7 +129,10 @@ function renderNow() {
     }
     if (blockedRows.length) parts.push(`${blockedRows.length} blocked board row${blockedRows.length > 1 ? 's' : ''}`)
     host.className = 'attention'
-    host.innerHTML = `<div><strong>Needs you:</strong> ${parts.join(' · ')}</div>`
+    host.innerHTML = `<div class="now-head"><span><strong>Needs you:</strong> ${parts.join(' · ')}</span></div>`
+    const tri = btn('Triage →', openTriage)
+    tri.className = 'triage-btn'
+    host.querySelector('.now-head').appendChild(tri)
     // each waiting item is a link straight to its card
     const list = document.createElement('div')
     list.className = 'now-items'
@@ -150,6 +154,132 @@ function renderNow() {
     host.className = 'calm'
     host.innerHTML = `Nothing needs you${tail}`
   }
+}
+
+// ── triage mode: step through the needs-input set one card at a time ──
+let triageDeck = null // { entries, index } while the lightbox is open
+const rowDrafts = {}  // in-progress row annotations, surviving the poll rebuild
+let rowFocusId = null
+
+function buildDeck() {
+  const qs = lastData.g.needsYou
+    .flatMap((gr) => gr.items)
+    .filter((i) => !i.reply)
+    .sort((a, b) => (a.created_at < b.created_at ? -1 : 1)) // longest-waiting first
+  const rows = lastData.boards.flatMap((b) => b.rows.filter((r) => r.status === 'blocked').map((r) => ({ b, r })))
+  return [
+    ...qs.map((q) => ({ type: 'q', id: q.id })),
+    ...rows.map(({ b, r }) => ({ type: 'row', boardId: b.id, rowId: r.id })),
+  ]
+}
+
+// resolve a deck entry against the LATEST data; null = no longer needs input
+function findEntryData(e) {
+  if (e.type === 'q') {
+    const it = lastData.g.needsYou.flatMap((gr) => gr.items).find((i) => i.id === e.id)
+    return it && !it.reply ? { it } : null
+  }
+  const b = lastData.boards.find((x) => x.id === e.boardId)
+  const r = b?.rows.find((x) => x.id === e.rowId && x.status === 'blocked')
+  return r ? { b, r } : null
+}
+
+function openTriage() {
+  triageDeck = { entries: buildDeck(), index: 0 }
+  renderTriage()
+}
+
+function closeTriage() {
+  triageDeck = null
+  document.getElementById('lightbox').hidden = true
+}
+
+function triageRemoveCurrent() {
+  triageDeck.entries.splice(triageDeck.index, 1)
+  renderTriage()
+}
+
+function rowCardEl(b, r) {
+  const wrap = document.createElement('div')
+  wrap.className = 'lb-row-card'
+  wrap.innerHTML = `
+    <div class="meta">🚧 blocked row · ${esc(b.title)} <span class="board-id">#${esc(b.id.slice(0, 6))}</span></div>
+    <div class="title">${esc(r.label)}</div>
+    ${r.note ? `<div class="detail">${esc(r.note)}</div>` : ''}
+    ${r.context ? `<div class="detail lb-context">${esc(r.context)}</div>` : ''}
+    ${r.annotation ? `<div class="annotation">📝 ${esc(r.annotation)}</div>` : ''}`
+  const row = document.createElement('div')
+  row.className = 'reply-row'
+  const input = document.createElement('input')
+  input.className = 'reply-input'
+  input.placeholder = 'tell the agent how to proceed…'
+  input.value = rowDrafts[r.id] ?? ''
+  input.addEventListener('input', () => { rowDrafts[r.id] = input.value })
+  input.addEventListener('focus', () => { rowFocusId = r.id })
+  const save = async () => {
+    if (!input.value.trim()) return
+    delete rowDrafts[r.id]
+    if (rowFocusId === r.id) rowFocusId = null
+    await fetch(`/api/boards/${b.id}/rows/${r.id}/annotate`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: input.value.trim() }),
+    })
+    // the row stays blocked until the agent picks the note up — the human's
+    // part is done, so drop it from the deck explicitly
+    triageRemoveCurrent()
+    load()
+  }
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') save() })
+  row.appendChild(input)
+  row.appendChild(btn('Send', save))
+  wrap.appendChild(row)
+  if (rowFocusId === r.id) requestAnimationFrame(() => {
+    input.focus()
+    input.setSelectionRange(input.value.length, input.value.length)
+  })
+  return wrap
+}
+
+function renderTriage() {
+  if (!triageDeck) return
+  const lb = document.getElementById('lightbox')
+  // drop entries resolved elsewhere (or answered in a previous card)
+  triageDeck.entries = triageDeck.entries.filter((e) => findEntryData(e))
+  const n = triageDeck.entries.length
+  triageDeck.index = Math.max(0, Math.min(triageDeck.index, n - 1))
+  const card = lb.querySelector('.lb-card')
+  card.innerHTML = ''
+  if (n === 0) {
+    lb.querySelector('.lb-count').textContent = 'all clear'
+    card.innerHTML = '<div class="lb-clear">✓ All clear — nothing needs you.</div>'
+  } else {
+    lb.querySelector('.lb-count').textContent = `${triageDeck.index + 1} of ${n}`
+    const data = findEntryData(triageDeck.entries[triageDeck.index])
+    if (data.it) {
+      const el = itemEl(data.it)
+      el.open = true
+      card.appendChild(el)
+    } else {
+      card.appendChild(rowCardEl(data.b, data.r))
+    }
+  }
+  lb.querySelector('.lb-prev').disabled = triageDeck.index <= 0
+  lb.querySelector('.lb-next').disabled = triageDeck.index >= n - 1
+  lb.hidden = false
+}
+
+function initTriage() {
+  const lb = document.getElementById('lightbox')
+  lb.querySelector('.lb-close').addEventListener('click', closeTriage)
+  lb.querySelector('.lb-backdrop').addEventListener('click', closeTriage)
+  lb.querySelector('.lb-prev').addEventListener('click', () => { triageDeck.index--; renderTriage() })
+  lb.querySelector('.lb-next').addEventListener('click', () => { triageDeck.index++; renderTriage() })
+  document.addEventListener('keydown', (e) => {
+    if (!triageDeck) return
+    const typing = e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA'
+    if (e.key === 'Escape') closeTriage()
+    else if (!typing && e.key === 'ArrowLeft' && triageDeck.index > 0) { triageDeck.index--; renderTriage() }
+    else if (!typing && e.key === 'ArrowRight' && triageDeck.index < triageDeck.entries.length - 1) { triageDeck.index++; renderTriage() }
+  })
 }
 
 function jumpToCard(sectionId, cardId) {
@@ -507,8 +637,11 @@ function itemEl(it, done = false, underAgentHead = false) {
       <div class="title">${esc(it.title)}</div>
     </summary>
     ${it.detail ? `<div class="detail">${esc(it.detail)}</div>` : ''}
+    ${it.context ? `<details class="row-context"${openContexts.has(it.id) ? ' open' : ''}><summary>context</summary><div>${esc(it.context)}</div></details>` : ''}
     ${it.annotation ? `<div class="annotation">📝 ${esc(it.annotation)}</div>` : ''}
     ${answered ? `<div class="reply-block">↩ ${esc(it.reply)}<span class="pickup ${it.reply_seen_at ? 'picked' : 'awaiting'}">${it.reply_seen_at ? '✓ picked up' : '● waiting for agent pickup'}</span></div>` : ''}`
+  const ctxEl = el.querySelector('.row-context')
+  if (ctxEl) ctxEl.addEventListener('toggle', () => { ctxEl.open ? openContexts.add(it.id) : openContexts.delete(it.id) })
   cardify(el, it.id)
   if (!done && it.kind === 'question' && it.status === 'open' && !it.reply) el.appendChild(answerEl(it))
   if (!done) {
@@ -609,6 +742,7 @@ async function renderSetup() {
 }
 
 initSections()
+initTriage()
 renderSetup()
 load()
 setInterval(load, 3000)

@@ -50,6 +50,7 @@ describe('mcp round-trip', () => {
     const c1 = await conn()
     const flagRes = await c1.callTool({ name: 'flag', arguments: {
       kind: 'question', title: 'flags or branch?',
+      context: 'Mid-rollout of the checkout revamp; hit this at the deploy step. See PR #42.',
       options: [{ label: 'flags', detail: 'safer rollback', recommended: true }, { label: 'branch' }],
     } })
     const { id } = JSON.parse((flagRes.content as Array<{ text: string }>)[0]!.text)
@@ -60,6 +61,7 @@ describe('mcp round-trip', () => {
     expect(items1).toHaveLength(1)
     expect(items1[0].reply).toBeNull()
     expect(items1[0].options[0].label).toBe('flags')
+    expect(items1[0].context).toMatch(/checkout revamp/)
 
     // human answers (viewer path)
     replyItem(openDb(dbPath), id, 'flags — but canary first')

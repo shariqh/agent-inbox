@@ -14,7 +14,7 @@
 //      before and kill that child on quit — only because we own it.
 //   4. Open a BrowserWindow on the viewer URL once the server responds.
 
-const { app, BrowserWindow, shell } = require('electron')
+const { app, BrowserWindow, Notification, shell } = require('electron')
 const { spawn } = require('node:child_process')
 const { existsSync } = require('node:fs')
 const http = require('node:http')
@@ -89,6 +89,46 @@ function spawnViewer() {
   return child
 }
 
+/**
+ * Attention watch (issue #19): poll the viewer API for the needs-input set —
+ * unanswered questions + blocked board rows, the human's chosen trigger set —
+ * badge the dock with the count, and fire ONE native notification per poll for
+ * newly arrived items only. Nothing notifies on launch: what already needs you
+ * is on screen. Runs in the main process so the shared frontend stays
+ * browser-neutral.
+ */
+function startAttentionWatch(win) {
+  let known = null // ids seen on the previous poll; null until the first one
+  setInterval(async () => {
+    try {
+      const g = await (await fetch(`${URL_BASE}api/items`)).json()
+      const boards = await (await fetch(`${URL_BASE}api/boards`)).json()
+      const entries = [
+        ...g.needsYou.flatMap((gr) => gr.items).filter((i) => !i.reply)
+          .map((q) => ({ id: `q:${q.id}`, text: q.title })),
+        ...boards.flatMap((b) => b.rows.filter((r) => r.status === 'blocked')
+          .map((r) => ({ id: `r:${r.id}`, text: `🚧 ${b.title} · ${r.label}` }))),
+      ]
+      if (process.platform === 'darwin') app.dock.setBadge(entries.length ? String(entries.length) : '')
+      const fresh = known === null ? [] : entries.filter((e) => !known.has(e.id))
+      known = new Set(entries.map((e) => e.id))
+      if (fresh.length && Notification.isSupported()) {
+        console.log(`[agent-inbox] notifying: ${fresh.length} new (${fresh[0].text})`)
+        const note = new Notification({
+          title: fresh.length === 1 ? 'Agent Inbox — needs you' : `Agent Inbox — ${fresh.length} new need you`,
+          body: fresh.slice(0, 3).map((f) => f.text).join('\n'),
+        })
+        note.on('click', () => {
+          if (win.isMinimized()) win.restore()
+          win.show()
+          win.focus()
+        })
+        note.show()
+      }
+    } catch { /* viewer briefly unreachable — retry next tick */ }
+  }, 3000)
+}
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1100,
@@ -112,6 +152,7 @@ function createWindow() {
   })
 
   win.loadURL(URL_BASE)
+  return win
 }
 
 app.whenReady().then(async () => {
@@ -141,7 +182,7 @@ app.whenReady().then(async () => {
     return
   }
 
-  createWindow()
+  startAttentionWatch(createWindow())
 })
 
 // This is a utility window, so quit when it closes — including on macOS,

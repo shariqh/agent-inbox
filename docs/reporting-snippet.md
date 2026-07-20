@@ -62,6 +62,19 @@ Prefer updating an existing board (same title) over spawning new ones. One board
 effort; let it track from start to done. A board is the durable, always-current answer —
 maintain it as the work moves, not just at the end.
 
+## Live status (ephemeral presence)
+
+For **long-running work** — especially multi-agent fan-outs the human loses the mental
+model of — call `status({ doing, detail?, children?, done? })` at meaningful **phase
+changes only** (never on a timer, never per step): starting a long effort, entering a new
+phase, spawning or finishing subagents, wrapping up. `children` is a **full-replace**
+list of your currently-running subagents (`{ name, doing, state? }`) — resend the current
+set when it changes; the human sees them nested under your entry. Only the top-level
+manager reports — subagents stay silent. Call `status({ done: true })` when the effort
+ends; entries also expire on their own if silent ~15 minutes, so a crash never leaves a
+ghost. This is ambient glass for the human, not tracking — boards remain the durable
+record.
+
 ## Subagents
 
 When you delegate work to subagents whose pauses/assumptions/tracked status the human

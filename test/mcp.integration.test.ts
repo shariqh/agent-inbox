@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
-import { openDb, listItems, listBoards, getBoard, annotateBoardRow, replyItem } from '../src/store.js'
+import { openDb, listItems, listBoards, getBoard, annotateBoardRow, replyItem, listActivity } from '../src/store.js'
 
 describe('mcp round-trip', () => {
   it('flag writes a row attributed to this session, and whoami reflects register', async () => {
@@ -71,6 +71,30 @@ describe('mcp round-trip', () => {
     expect(items2[0].reply).toBe('flags — but canary first')
     await c1.close()
     expect(listItems(openDb(dbPath))[0]!.reply_seen_at).toMatch(/^\d{4}-\d{2}-\d{2}T/) // pickup stamped
+  }, 20000)
+
+  it('status reports live activity per session and done removes it', async () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-status-')), 'inbox.db')
+    const transport = new StdioClientTransport({
+      command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath },
+    })
+    const client = new Client({ name: 'claude-code', version: '1.0.0' })
+    await client.connect(transport)
+
+    await client.callTool({ name: 'status', arguments: { doing: 'starting the migration' } })
+    await client.callTool({ name: 'status', arguments: {
+      doing: 'fan-out: migrating 3 modules',
+      children: [{ name: 'mig-a', doing: 'store.ts', state: 'running' }, { name: 'mig-b', doing: 'viewer.ts', state: 'running' }],
+    } })
+    let live = listActivity(openDb(dbPath))
+    expect(live).toHaveLength(1) // same session → one entry, updated in place
+    expect(live[0]!.doing).toBe('fan-out: migrating 3 modules')
+    expect(live[0]!.agent).toBe('claude-code')
+    expect(live[0]!.children.map((c) => c.name)).toEqual(['mig-a', 'mig-b'])
+
+    await client.callTool({ name: 'status', arguments: { done: true } })
+    await client.close()
+    expect(listActivity(openDb(dbPath))).toHaveLength(0)
   }, 20000)
 
   it('board tools upsert, update a row, and archive a board', async () => {

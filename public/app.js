@@ -17,7 +17,8 @@ async function load() {
     const g = await res.json()
     const boards = await (await fetch('/api/boards')).json()
     const archived = await (await fetch('/api/boards/archived')).json()
-    lastData = { g, boards, archived }
+    const activity = await (await fetch('/api/activity')).json()
+    lastData = { g, boards, archived, activity }
     render()
     document.getElementById('status').textContent = ''
   } catch {
@@ -76,6 +77,10 @@ function render() {
   liveCardIds = new Set([...allItems(lastData.g).map((i) => i.id), ...lastData.boards.map((b) => b.id), ...lastData.archived.map((b) => b.id)])
   renderNow()
   const { g, boards, archived } = filterData(lastData)
+  const live = (lastData.activity ?? []).filter((a) =>
+    (!projectFilter || a.project === projectFilter) && (!agentFilter || a.agent === agentFilter))
+  renderLive(live)
+  setCount('live', live.length)
   renderGroups('needsYou', g.needsYou)
   renderGroups('notes', g.notes)
   renderDone(g.done)
@@ -369,6 +374,47 @@ function renderPills(hostId, label, values, current, onPick) {
     if (v === current) b.classList.add('active')
     b.addEventListener('click', () => onPick(v))
     host.appendChild(b)
+  }
+}
+
+// live entries the user has expanded, by session id — survives the poll rebuild
+const openLive = new Set()
+
+function renderLive(entries) {
+  const host = document.querySelector('#live .live-list')
+  host.innerHTML = entries.length ? '' : '<p class="empty">Nothing running.</p>'
+  for (const a of entries) {
+    const el = document.createElement('details')
+    el.className = 'live-entry'
+    if (openLive.has(a.session)) el.open = true
+    el.addEventListener('toggle', () => { el.open ? openLive.add(a.session) : openLive.delete(a.session) })
+    const ageMs = Date.now() - Date.parse(a.updated_at)
+    const fresh = ageMs < 60000 ? 'fresh' : ageMs < 5 * 60000 ? 'aging' : 'quiet'
+    const stream = a.stream ? ` · ${esc(a.stream)}` : ''
+    const kids = a.children.length ? `<span class="live-kids">▸ ${a.children.length} agent${a.children.length > 1 ? 's' : ''}</span>` : ''
+    el.innerHTML = `
+      <summary class="card-summary live-summary">
+        <span class="live-dot ${fresh}" title="last update ${rel(a.updated_at)} ago"></span>
+        <span class="live-who">${esc(a.agent)} · ${esc(a.project)}${stream}</span>
+        <span class="live-doing">${esc(a.doing)}</span>
+        ${kids}
+        <span class="live-age" title="started ${rel(a.started_at)} ago">${rel(a.started_at)}</span>
+      </summary>
+      ${a.detail ? `<div class="detail live-detail">${esc(a.detail)}</div>` : ''}`
+    if (a.children.length) {
+      const table = document.createElement('table')
+      table.className = 'board-table live-children'
+      for (const c of a.children) {
+        const tr = document.createElement('tr')
+        tr.innerHTML = `
+          <td class="row-label">${esc(c.name)}</td>
+          <td class="row-note">${esc(c.doing)}</td>
+          <td class="live-state">${c.state ? esc(c.state) : ''}</td>`
+        table.appendChild(tr)
+      }
+      el.appendChild(table)
+    }
+    host.appendChild(el)
   }
 }
 

@@ -101,6 +101,19 @@ function migrate(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_boards_status_project ON boards(status, project);
     CREATE INDEX IF NOT EXISTS idx_board_rows_board ON board_rows(board_id, position);
+    CREATE TABLE IF NOT EXISTS activity (
+      session TEXT PRIMARY KEY,
+      project TEXT NOT NULL,
+      stream TEXT NOT NULL DEFAULT '',
+      agent TEXT NOT NULL DEFAULT 'unknown',
+      doing TEXT NOT NULL,
+      detail TEXT NOT NULL DEFAULT '',
+      children TEXT,
+      started_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      ended_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_activity_live ON activity(ended_at, updated_at);
   `)
   ensureColumn(db, 'board_rows', 'context', `TEXT NOT NULL DEFAULT ''`)
   ensureColumn(db, 'board_rows', 'annotated_at', 'TEXT')
@@ -378,6 +391,74 @@ export function listBoards(db: Database.Database, opts: { status?: 'active' | 'a
     const rows = withUnseen(rowStmt.all(b.id) as BoardRowRecord[], b.last_read_at)
     return { ...b, rows, progress: computeProgress(rows) }
   })
+}
+
+// ── live activity: ephemeral presence, one row per session ──────────────────
+
+export interface ActivityChild {
+  name: string
+  doing: string
+  state?: string
+}
+
+export interface Activity {
+  session: string
+  project: string
+  stream: string
+  agent: string
+  doing: string
+  detail: string
+  children: ActivityChild[]
+  started_at: string
+  updated_at: string
+}
+
+export interface ActivityUpdate {
+  session: string
+  project: string
+  stream: string
+  agent: string
+  doing: string
+  detail?: string
+  children?: ActivityChild[]
+}
+
+export function upsertActivity(db: Database.Database, a: ActivityUpdate): void {
+  const now = new Date().toISOString()
+  db.prepare(
+    `INSERT INTO activity (session, project, stream, agent, doing, detail, children, started_at, updated_at)
+     VALUES (@session, @project, @stream, @agent, @doing, @detail, @children, @now, @now)
+     ON CONFLICT(session) DO UPDATE SET
+       project = @project, stream = @stream, agent = @agent, doing = @doing,
+       detail = COALESCE(NULLIF(@detail, ''), detail),
+       children = COALESCE(@children, children),
+       updated_at = @now, ended_at = NULL`,
+  ).run({
+    session: a.session,
+    project: a.project,
+    stream: a.stream,
+    agent: a.agent,
+    doing: a.doing,
+    detail: a.detail ?? '',
+    children: a.children ? JSON.stringify(a.children) : null,
+    now,
+  })
+  // housekeeping: rows dead (ended or silent) for over a day serve no one
+  const dayAgo = new Date(Date.now() - 24 * 60 * 60000).toISOString()
+  db.prepare(`DELETE FROM activity WHERE (ended_at IS NOT NULL AND ended_at < ?) OR updated_at < ?`).run(dayAgo, dayAgo)
+}
+
+export function endActivity(db: Database.Database, session: string): void {
+  db.prepare(`UPDATE activity SET ended_at = ? WHERE session = ?`).run(new Date().toISOString(), session)
+}
+
+export function listActivity(db: Database.Database, opts: { staleMinutes?: number } = {}): Activity[] {
+  const cutoff = new Date(Date.now() - (opts.staleMinutes ?? 15) * 60000).toISOString()
+  const rows = db
+    .prepare(`SELECT session, project, stream, agent, doing, detail, children, started_at, updated_at
+              FROM activity WHERE ended_at IS NULL AND updated_at >= ? ORDER BY started_at ASC`)
+    .all(cutoff) as Array<Omit<Activity, 'children'> & { children: string | null }>
+  return rows.map((r) => ({ ...r, children: r.children ? (JSON.parse(r.children) as ActivityChild[]) : [] }))
 }
 
 export function getBoard(db: Database.Database, project: string, title: string): BoardWithRows | undefined {

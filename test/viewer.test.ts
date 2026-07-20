@@ -3,7 +3,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
-import { openDb, insertItem, listItems, markReplySeen, upsertBoard, listBoards, annotateBoardRow } from '../src/store.js'
+import { openDb, insertItem, listItems, markReplySeen, upsertBoard, listBoards, annotateBoardRow, upsertActivity } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
 
 function freshDb(): Database.Database {
@@ -34,6 +34,16 @@ describe('viewer api', () => {
     expect(body.snippet).toContain('flag')          // the reporting snippet text
     expect(body.snippet).toContain('board_upsert')
     expect(body.dbPath).toContain('.agent-inbox')
+  })
+
+  it('GET /api/activity returns live sessions with children', async () => {
+    upsertActivity(db, { session: 's1', project: 'p', stream: 'main', agent: 'claude-code', doing: 'reviewing', children: [{ name: 'kid', doing: 'grep' }] })
+    const res = await createViewer(db).request('/api/activity')
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body).toHaveLength(1)
+    expect(body[0].doing).toBe('reviewing')
+    expect(body[0].children[0].name).toBe('kid')
   })
 
   it('GET /api/items returns grouped items', async () => {

@@ -1,13 +1,17 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
 import type Database from 'better-sqlite3'
-import { insertItem, resolveItem, listPending, markReplySeen, upsertBoard, updateBoardRow, findBoard, archiveBoard, getBoard, listBoards, markBoardRead } from './store.js'
+import { randomUUID } from 'node:crypto'
+import { insertItem, resolveItem, listPending, markReplySeen, upsertBoard, updateBoardRow, findBoard, archiveBoard, getBoard, listBoards, markBoardRead, upsertActivity, endActivity } from './store.js'
 import { makeScope } from './scope.js'
 
 export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
   const server = new McpServer({ name: 'agent-inbox', version: '0.1.0' })
   const scope = makeScope(cwd)
   const clientName = (): string | undefined => server.server.getClientVersion()?.name
+  // this stdio server lives exactly as long as its agent session — its own id
+  // IS the session id for the live-activity view
+  const sessionId = randomUUID()
 
   server.registerTool(
     'flag',
@@ -66,6 +70,30 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
       const items = listPending(db, s.project)
       for (const it of items) if (it.reply && !it.reply_seen_at) markReplySeen(db, it.id)
       return { content: [{ type: 'text', text: JSON.stringify({ items }) }] }
+    },
+  )
+
+  server.registerTool(
+    'status',
+    {
+      description:
+        'Ephemeral "what am I doing right now" for the human\'s live view — NOT for tasks (use boards) or attention (use flag). Call at meaningful PHASE changes only, not every step: starting a long effort, entering a new phase, fanning out subagents, wrapping up. children is a full-replace list of the subagents you are running ({name, doing, state?}) — resend the current set whenever it changes; the human can expand them under your entry. Times are stamped server-side; never call this just because time passed. Call with done:true when the effort ends — your entry disappears. Entries silently expire if not updated for ~15 minutes.',
+      inputSchema: {
+        doing: z.string().min(1).optional(),
+        detail: z.string().optional(),
+        children: z.array(z.object({ name: z.string().min(1), doing: z.string(), state: z.string().optional() })).max(32).optional(),
+        done: z.boolean().optional(),
+      },
+    },
+    async ({ doing, detail, children, done }) => {
+      if (done) {
+        endActivity(db, sessionId)
+        return { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] }
+      }
+      if (!doing) throw new Error('doing is required unless done: true')
+      const s = scope.get(clientName())
+      upsertActivity(db, { session: sessionId, project: s.project, stream: s.stream, agent: s.agent, doing, detail, children })
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] }
     },
   )
 

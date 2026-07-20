@@ -27,6 +27,19 @@ details[open] > .card-summary .caret::before { content: '▾'; }
 .agent-head { font-size: 12px; font-weight: 600; margin: 10px 0 4px 2px; opacity: .55; }
 header { flex-wrap: wrap; }
 #now { font-size: 13.5px; padding: 8px 14px; border-radius: 8px; margin-bottom: 6px; }
+.live-entry { border: 1px solid color-mix(in srgb, CanvasText 12%, transparent); border-radius: 8px; padding: 8px 12px; margin-bottom: 8px; }
+.live-summary { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.live-dot { width: 8px; height: 8px; border-radius: 50%; align-self: center; flex-shrink: 0; }
+.live-dot.fresh { background: seagreen; box-shadow: 0 0 6px color-mix(in srgb, seagreen 60%, transparent); }
+.live-dot.aging { background: goldenrod; }
+.live-dot.quiet { background: color-mix(in srgb, CanvasText 30%, transparent); }
+.live-who { font-size: 12px; opacity: .55; }
+.live-doing { font-weight: 600; font-size: 13.5px; }
+.live-kids { font-size: 12px; opacity: .6; }
+.live-age { margin-left: auto; font-size: 12px; opacity: .5; font-variant-numeric: tabular-nums; }
+.live-detail { margin-top: 6px; }
+.live-children { margin-top: 8px; }
+.live-state { font-size: 12px; opacity: .6; white-space: nowrap; }
 .now-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 .triage-btn { font-size: 12px; padding: 3px 14px; border-radius: 999px; border: 1px solid color-mix(in srgb, crimson 45%, transparent); background: transparent; color: inherit; cursor: pointer; font-weight: 600; white-space: nowrap; }
 .triage-btn:hover { border-color: crimson; }

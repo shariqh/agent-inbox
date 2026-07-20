@@ -23,6 +23,9 @@ import {
   computeProgress,
   getBoard,
   markBoardRead,
+  upsertActivity,
+  endActivity,
+  listActivity,
 } from '../src/store.js'
 import type { BoardRow } from '../src/store.js'
 
@@ -178,6 +181,58 @@ describe('answer-back', () => {
     replyItem(db2, id, 'x')
     expect(listItems(db2)[0]!.reply).toBe('x')
     expect(listItems(db2)[0]!.options![0]!.label).toBe('x')
+  })
+})
+
+describe('live activity', () => {
+  let db: Database.Database
+  beforeEach(() => { db = freshDb() })
+
+  it('upsert creates then updates one entry per session, stamping times', () => {
+    upsertActivity(db, { session: 's1', project: 'p', stream: 'main', agent: 'claude-code', doing: 'migrating tests' })
+    let live = listActivity(db)
+    expect(live).toHaveLength(1)
+    expect(live[0]!.doing).toBe('migrating tests')
+    expect(live[0]!.started_at).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+    upsertActivity(db, { session: 's1', project: 'p', stream: 'main', agent: 'claude-code', doing: 'running suite', detail: 'vitest run' })
+    live = listActivity(db)
+    expect(live).toHaveLength(1) // same session → same entry
+    expect(live[0]!.doing).toBe('running suite')
+    expect(live[0]!.detail).toBe('vitest run')
+    expect(live[0]!.updated_at >= live[0]!.started_at).toBe(true)
+  })
+
+  it('children round-trip as a full-replace list', () => {
+    upsertActivity(db, {
+      session: 's1', project: 'p', stream: '', agent: 'claude-code', doing: 'fan-out review',
+      children: [
+        { name: 'reviewer-bugs', doing: 'scanning store.ts', state: 'running' },
+        { name: 'reviewer-perf', doing: 'profiling viewer', state: 'running' },
+      ],
+    })
+    expect(listActivity(db)[0]!.children).toHaveLength(2)
+    upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'claude-code', doing: 'fan-out review', children: [{ name: 'reviewer-perf', doing: 'writing findings', state: 'finishing' }] })
+    const kids = listActivity(db)[0]!.children
+    expect(kids).toHaveLength(1) // full replace — finished child gone
+    expect(kids[0]!.doing).toBe('writing findings')
+    upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'claude-code', doing: 'synthesizing' })
+    expect(listActivity(db)[0]!.children).toHaveLength(1) // omitted children = unchanged
+  })
+
+  it('endActivity removes the entry from the live list', () => {
+    upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'a', doing: 'work' })
+    endActivity(db, 's1')
+    expect(listActivity(db)).toHaveLength(0)
+    endActivity(db, 'never-existed') // no-op, no throw
+  })
+
+  it('stale entries drop out of the live list', () => {
+    upsertActivity(db, { session: 'old', project: 'p', stream: '', agent: 'a', doing: 'ancient work' })
+    // backdate the heartbeat well past the staleness window
+    db.prepare(`UPDATE activity SET updated_at = ? WHERE session = ?`)
+      .run(new Date(Date.now() - 60 * 60000).toISOString(), 'old')
+    expect(listActivity(db)).toHaveLength(0)
+    expect(listActivity(db, { staleMinutes: 90 })).toHaveLength(1) // window is configurable
   })
 })
 

@@ -18,6 +18,7 @@
   <div id="now" hidden></div>
   <div class="layout">
     <nav id="sidebar" aria-label="Sections">
+      <div class="nav-group"><a href="#live" data-target="live">Live</a></div>
       <div class="nav-group"><a href="#needsYou" data-target="needsYou">Needs you</a><div class="sub" data-sub="needsYou"></div></div>
       <div class="nav-group"><a href="#boards" data-target="boards">Tracking</a><div class="sub" data-sub="boards"></div></div>
       <div class="nav-group"><a href="#notes" data-target="notes">Notes</a><div class="sub" data-sub="notes"></div></div>
@@ -26,6 +27,7 @@
       <div class="nav-group"><a href="#setup" data-target="setup">Setup</a></div>
     </nav>
     <main>
+      <details class="section" id="live" open><summary><h2>Live</h2></summary><div class="live-list"></div></details>
       <details class="section" id="needsYou" open><summary><h2>Needs you</h2></summary><div class="groups"></div></details>
       <details class="section" id="boards" open><summary><h2>Tracking</h2></summary><div class="boards"></div></details>
       <details class="section" id="notes" open><summary><h2>Notes</h2></summary><div class="groups"></div></details>

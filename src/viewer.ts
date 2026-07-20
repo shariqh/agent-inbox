@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { readFileSync, existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import type Database from 'better-sqlite3'
-import { listItems, resolveItem, dismissItem, annotateItem, replyItem, listBoards, archiveBoard, unarchiveBoard, annotateBoardRow, defaultDbPath } from './store.js'
+import { listItems, resolveItem, dismissItem, annotateItem, replyItem, listBoards, archiveBoard, unarchiveBoard, annotateBoardRow, listActivity, defaultDbPath } from './store.js'
 import { groupItems } from './group.js'
 
 // Registration info for hooking new agents up to the MCP server. In a repo
@@ -49,6 +49,8 @@ export function createViewer(db: Database.Database): Hono {
   app.get('/api/items', (c) => c.json(groupItems(listItems(db))))
 
   app.get('/api/setup', (c) => c.json(setupInfo()))
+
+  app.get('/api/activity', (c) => c.json(listActivity(db)))
 
   app.post('/api/items/:id/resolve', (c) => {
     resolveItem(db, c.req.param('id'))

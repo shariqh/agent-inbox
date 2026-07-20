@@ -2,7 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
 import type Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
-import { insertItem, resolveItem, listPending, markReplySeen, upsertBoard, updateBoardRow, findBoard, archiveBoard, getBoard, listBoards, markBoardRead, upsertActivity, endActivity } from './store.js'
+import { insertItem, resolveItem, listPending, markReplySeen, upsertBoard, updateBoardRow, findBoard, archiveBoard, getBoard, listBoards, markBoardRead, upsertActivity, endActivity, touchActivity } from './store.js'
 import { makeScope } from './scope.js'
 
 export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
@@ -12,6 +12,26 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
   // this stdio server lives exactly as long as its agent session — its own id
   // IS the session id for the live-activity view
   const sessionId = randomUUID()
+
+  // ── session presence (issue #28): the session itself is a Live row ──
+  // Registered after the initialize handshake (clientInfo is only populated
+  // then), heartbeated by the server so an idle session never goes stale,
+  // upgraded/reverted by the status tool, ended when this process exits.
+  const registerPresence = (): void => {
+    try {
+      const s = scope.get(clientName())
+      upsertActivity(db, { session: sessionId, project: s.project, stream: s.stream, agent: s.agent, doing: 'idle', idle: true })
+    } catch { /* presence must never break the server */ }
+  }
+  server.server.oninitialized = registerPresence
+  setTimeout(registerPresence, 2000).unref() // fallback if no initialized notification arrives
+  setInterval(() => {
+    try { touchActivity(db, sessionId) } catch { /* ignore */ }
+  }, 5 * 60000).unref()
+  process.on('exit', () => {
+    try { endActivity(db, sessionId) } catch { /* ignore */ }
+  })
+  for (const sig of ['SIGINT', 'SIGTERM'] as const) process.on(sig, () => process.exit(0))
 
   server.registerTool(
     'flag',
@@ -86,12 +106,13 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
       },
     },
     async ({ doing, detail, children, done }) => {
+      const s = scope.get(clientName())
       if (done) {
-        endActivity(db, sessionId)
+        // the effort is over but the session lives on — revert to idle presence
+        upsertActivity(db, { session: sessionId, project: s.project, stream: s.stream, agent: s.agent, doing: 'idle', idle: true, children: [] })
         return { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] }
       }
       if (!doing) throw new Error('doing is required unless done: true')
-      const s = scope.get(clientName())
       upsertActivity(db, { session: sessionId, project: s.project, stream: s.stream, agent: s.agent, doing, detail, children })
       return { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] }
     },

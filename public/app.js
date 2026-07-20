@@ -80,7 +80,7 @@ function render() {
   const live = (lastData.activity ?? []).filter((a) =>
     (!projectFilter || a.project === projectFilter) && (!agentFilter || a.agent === agentFilter))
   renderLive(live)
-  setCount('live', live.length)
+  setCount('live', live.filter((a) => !a.idle).length)
   renderGroups('needsYou', g.needsYou)
   renderGroups('notes', g.notes)
   renderDone(g.done)
@@ -382,8 +382,10 @@ const openLive = new Set()
 
 function renderLive(entries) {
   const host = document.querySelector('#live .live-list')
-  host.innerHTML = entries.length ? '' : '<p class="empty">Nothing running.</p>'
-  for (const a of entries) {
+  const active = entries.filter((a) => !a.idle)
+  const idle = entries.filter((a) => a.idle)
+  host.innerHTML = entries.length ? '' : '<p class="empty">No sessions.</p>'
+  for (const a of active) {
     const el = document.createElement('details')
     el.className = 'live-entry'
     if (openLive.has(a.session)) el.open = true
@@ -415,6 +417,24 @@ function renderLive(entries) {
       el.appendChild(table)
     }
     host.appendChild(el)
+  }
+  if (idle.length) {
+    // idle sessions are the parents of everything — present but quiet,
+    // collapsed until you want them (they expand into full entries the
+    // moment they report real work)
+    const fold = document.createElement('details')
+    fold.className = 'idle-fold'
+    if (openLive.has('__idle__')) fold.open = true
+    fold.addEventListener('toggle', () => { fold.open ? openLive.add('__idle__') : openLive.delete('__idle__') })
+    fold.innerHTML = `<summary>+ ${idle.length} idle session${idle.length > 1 ? 's' : ''}</summary>`
+    for (const a of idle) {
+      const row = document.createElement('div')
+      row.className = 'idle-row'
+      const stream = a.stream ? ` · ${esc(a.stream)}` : ''
+      row.innerHTML = `<span class="live-dot quiet"></span><span class="live-who">${esc(a.agent)} · ${esc(a.project)}${stream}</span><span class="live-age" title="last heartbeat ${rel(a.updated_at)} ago">alive ${rel(a.started_at)}</span>`
+      fold.appendChild(row)
+    }
+    host.appendChild(fold)
   }
 }
 

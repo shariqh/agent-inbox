@@ -64,9 +64,10 @@ maintain it as the work moves, not just at the end.
 
 ## Live status (ephemeral presence)
 
-For **long-running work** — especially multi-agent fan-outs the human loses the mental
-model of — call `status({ doing, detail?, children?, done? })` at meaningful **phase
-changes only** (never on a timer, never per step): starting a long effort, entering a new
+Your session appears in the human's Live view automatically (an idle presence row —
+no action needed from you). For **long-running work** — especially multi-agent fan-outs
+the human loses the mental model of — call `status({ doing, detail?, children?, done? })`
+at meaningful **phase changes only** (never on a timer, never per step): starting a long effort, entering a new
 phase, spawning or finishing subagents, wrapping up. `children` is a **full-replace**
 list of your currently-running subagents (`{ name, doing, state? }`) — resend the current
 set when it changes; the human sees them nested under your entry. Only the top-level

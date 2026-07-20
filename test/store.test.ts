@@ -219,6 +219,22 @@ describe('live activity', () => {
     expect(listActivity(db)[0]!.children).toHaveLength(1) // omitted children = unchanged
   })
 
+  it('presence rows are idle until a real report upgrades them, and can revert', () => {
+    upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'claude-code', doing: 'session open', idle: true })
+    expect(listActivity(db)[0]!.idle).toBe(true)
+    upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'claude-code', doing: 'migrating the store' })
+    expect(listActivity(db)[0]!.idle).toBe(false)  // real report → active
+    expect(listActivity(db)[0]!.doing).toBe('migrating the store')
+    upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'claude-code', doing: 'session open', idle: true })
+    expect(listActivity(db)[0]!.idle).toBe(true)   // effort done → back to idle presence
+  })
+
+  it('active entries sort before idle ones', () => {
+    upsertActivity(db, { session: 'idle-1', project: 'p', stream: '', agent: 'a', doing: 'session open', idle: true })
+    upsertActivity(db, { session: 'busy-1', project: 'p', stream: '', agent: 'a', doing: 'working hard' })
+    expect(listActivity(db).map((x) => x.session)).toEqual(['busy-1', 'idle-1'])
+  })
+
   it('endActivity removes the entry from the live list', () => {
     upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'a', doing: 'work' })
     endActivity(db, 's1')

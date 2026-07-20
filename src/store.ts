@@ -118,6 +118,7 @@ function migrate(db: Database.Database): void {
   ensureColumn(db, 'board_rows', 'context', `TEXT NOT NULL DEFAULT ''`)
   ensureColumn(db, 'board_rows', 'annotated_at', 'TEXT')
   ensureColumn(db, 'boards', 'last_read_at', 'TEXT')
+  ensureColumn(db, 'activity', 'idle', 'INTEGER NOT NULL DEFAULT 0')
   ensureColumn(db, 'items', 'context', `TEXT NOT NULL DEFAULT ''`)
   ensureColumn(db, 'items', 'options', 'TEXT')
   ensureColumn(db, 'items', 'reply', 'TEXT')
@@ -409,6 +410,7 @@ export interface Activity {
   doing: string
   detail: string
   children: ActivityChild[]
+  idle: boolean
   started_at: string
   updated_at: string
 }
@@ -421,17 +423,19 @@ export interface ActivityUpdate {
   doing: string
   detail?: string
   children?: ActivityChild[]
+  idle?: boolean
 }
 
 export function upsertActivity(db: Database.Database, a: ActivityUpdate): void {
   const now = new Date().toISOString()
   db.prepare(
-    `INSERT INTO activity (session, project, stream, agent, doing, detail, children, started_at, updated_at)
-     VALUES (@session, @project, @stream, @agent, @doing, @detail, @children, @now, @now)
+    `INSERT INTO activity (session, project, stream, agent, doing, detail, children, idle, started_at, updated_at)
+     VALUES (@session, @project, @stream, @agent, @doing, @detail, @children, @idle, @now, @now)
      ON CONFLICT(session) DO UPDATE SET
        project = @project, stream = @stream, agent = @agent, doing = @doing,
        detail = COALESCE(NULLIF(@detail, ''), detail),
        children = COALESCE(@children, children),
+       idle = @idle,
        updated_at = @now, ended_at = NULL`,
   ).run({
     session: a.session,
@@ -441,6 +445,7 @@ export function upsertActivity(db: Database.Database, a: ActivityUpdate): void {
     doing: a.doing,
     detail: a.detail ?? '',
     children: a.children ? JSON.stringify(a.children) : null,
+    idle: a.idle ? 1 : 0,
     now,
   })
   // housekeeping: rows dead (ended or silent) for over a day serve no one
@@ -452,13 +457,18 @@ export function endActivity(db: Database.Database, session: string): void {
   db.prepare(`UPDATE activity SET ended_at = ? WHERE session = ?`).run(new Date().toISOString(), session)
 }
 
+// heartbeat: keep a live session's row from going stale without changing it
+export function touchActivity(db: Database.Database, session: string): void {
+  db.prepare(`UPDATE activity SET updated_at = ? WHERE session = ? AND ended_at IS NULL`).run(new Date().toISOString(), session)
+}
+
 export function listActivity(db: Database.Database, opts: { staleMinutes?: number } = {}): Activity[] {
   const cutoff = new Date(Date.now() - (opts.staleMinutes ?? 15) * 60000).toISOString()
   const rows = db
-    .prepare(`SELECT session, project, stream, agent, doing, detail, children, started_at, updated_at
-              FROM activity WHERE ended_at IS NULL AND updated_at >= ? ORDER BY started_at ASC`)
-    .all(cutoff) as Array<Omit<Activity, 'children'> & { children: string | null }>
-  return rows.map((r) => ({ ...r, children: r.children ? (JSON.parse(r.children) as ActivityChild[]) : [] }))
+    .prepare(`SELECT session, project, stream, agent, doing, detail, children, idle, started_at, updated_at
+              FROM activity WHERE ended_at IS NULL AND updated_at >= ? ORDER BY idle ASC, started_at ASC`)
+    .all(cutoff) as Array<Omit<Activity, 'children' | 'idle'> & { children: string | null; idle: number }>
+  return rows.map((r) => ({ ...r, idle: r.idle === 1, children: r.children ? (JSON.parse(r.children) as ActivityChild[]) : [] }))
 }
 
 export function getBoard(db: Database.Database, project: string, title: string): BoardWithRows | undefined {

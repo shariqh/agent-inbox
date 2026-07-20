@@ -73,28 +73,39 @@ describe('mcp round-trip', () => {
     expect(listItems(openDb(dbPath))[0]!.reply_seen_at).toMatch(/^\d{4}-\d{2}-\d{2}T/) // pickup stamped
   }, 20000)
 
-  it('status reports live activity per session and done removes it', async () => {
+  it('sessions auto-register presence; status upgrades it; done reverts; exit removes', async () => {
     const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-status-')), 'inbox.db')
     const transport = new StdioClientTransport({
       command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath },
     })
     const client = new Client({ name: 'claude-code', version: '1.0.0' })
     await client.connect(transport)
+    await new Promise((r) => setTimeout(r, 500))
 
-    await client.callTool({ name: 'status', arguments: { doing: 'starting the migration' } })
+    // presence appears with NO tool calls at all — the session itself is the row
+    let live = listActivity(openDb(dbPath))
+    expect(live).toHaveLength(1)
+    expect(live[0]!.idle).toBe(true)
+    expect(live[0]!.agent).toBe('claude-code')
+
     await client.callTool({ name: 'status', arguments: {
       doing: 'fan-out: migrating 3 modules',
       children: [{ name: 'mig-a', doing: 'store.ts', state: 'running' }, { name: 'mig-b', doing: 'viewer.ts', state: 'running' }],
     } })
-    let live = listActivity(openDb(dbPath))
-    expect(live).toHaveLength(1) // same session → one entry, updated in place
+    live = listActivity(openDb(dbPath))
+    expect(live).toHaveLength(1) // same row, upgraded
+    expect(live[0]!.idle).toBe(false)
     expect(live[0]!.doing).toBe('fan-out: migrating 3 modules')
-    expect(live[0]!.agent).toBe('claude-code')
     expect(live[0]!.children.map((c) => c.name)).toEqual(['mig-a', 'mig-b'])
 
     await client.callTool({ name: 'status', arguments: { done: true } })
+    live = listActivity(openDb(dbPath))
+    expect(live).toHaveLength(1) // effort over, session alive → back to idle presence
+    expect(live[0]!.idle).toBe(true)
+
     await client.close()
-    expect(listActivity(openDb(dbPath))).toHaveLength(0)
+    await new Promise((r) => setTimeout(r, 500))
+    expect(listActivity(openDb(dbPath))).toHaveLength(0) // process exit ends the row
   }, 20000)
 
   it('board tools upsert, update a row, and archive a board', async () => {

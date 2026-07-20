@@ -20,8 +20,14 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
   const registerPresence = (): void => {
     try {
       const s = scope.get(clientName())
-      upsertActivity(db, { session: sessionId, project: s.project, stream: s.stream, agent: s.agent, doing: 'idle', idle: true })
+      upsertActivity(db, { session: sessionId, project: s.project, stream: s.stream, agent: s.agent, doing: 'open', idle: true })
     } catch { /* presence must never break the server */ }
+  }
+
+  // every tool call is proof of life — the freshness dot in the viewer's
+  // open-sessions fold turns green for a session that's actively conversing
+  const heartbeat = (): void => {
+    try { touchActivity(db, sessionId) } catch { /* ignore */ }
   }
   server.server.oninitialized = registerPresence
   setTimeout(registerPresence, 2000).unref() // fallback if no initialized notification arrives
@@ -51,6 +57,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
       },
     },
     async ({ kind, title, detail, context, stream, options }) => {
+      heartbeat()
       const s = scope.get(clientName())
       const id = insertItem(db, {
         project: s.project,
@@ -73,6 +80,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
       inputSchema: { id: z.string() },
     },
     async ({ id }) => {
+      heartbeat()
       resolveItem(db, id)
       return { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] }
     },
@@ -86,6 +94,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
       inputSchema: {},
     },
     async () => {
+      heartbeat()
       const s = scope.get(clientName())
       const items = listPending(db, s.project)
       for (const it of items) if (it.reply && !it.reply_seen_at) markReplySeen(db, it.id)
@@ -106,10 +115,11 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
       },
     },
     async ({ doing, detail, children, done }) => {
+      heartbeat()
       const s = scope.get(clientName())
       if (done) {
-        // the effort is over but the session lives on — revert to idle presence
-        upsertActivity(db, { session: sessionId, project: s.project, stream: s.stream, agent: s.agent, doing: 'idle', idle: true, children: [] })
+        // the effort is over but the session lives on — revert to open presence
+        upsertActivity(db, { session: sessionId, project: s.project, stream: s.stream, agent: s.agent, doing: 'open', idle: true, children: [] })
         return { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] }
       }
       if (!doing) throw new Error('doing is required unless done: true')
@@ -125,6 +135,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
       inputSchema: { project: z.string().optional(), stream: z.string().optional() },
     },
     async ({ project, stream }) => {
+      heartbeat()
       scope.override({ project, stream })
       return { content: [{ type: 'text', text: JSON.stringify(scope.get(clientName())) }] }
     },
@@ -133,7 +144,10 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
   server.registerTool(
     'whoami',
     { description: 'Report this session’s current project/stream/agent scope.', inputSchema: {} },
-    async () => ({ content: [{ type: 'text', text: JSON.stringify(scope.get(clientName())) }] }),
+    async () => {
+      heartbeat()
+      return { content: [{ type: 'text', text: JSON.stringify(scope.get(clientName())) }] }
+    },
   )
 
   const rowStatus = z.enum(['done', 'partial', 'missing', 'tracked', 'na', 'blocked'])
@@ -149,6 +163,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
       },
     },
     async ({ title, rows }) => {
+      heartbeat()
       const s = scope.get(clientName())
       const out = upsertBoard(db, { project: s.project, stream: s.stream, agent: s.agent, title, rows })
       return { content: [{ type: 'text', text: JSON.stringify(out) }] }
@@ -163,6 +178,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
       inputSchema: { title: z.string().min(1), label: z.string().min(1), status: rowStatus.optional(), note: z.string().optional(), context: z.string().optional() },
     },
     async ({ title, label, status, note, context }) => {
+      heartbeat()
       const s = scope.get(clientName())
       const out = updateBoardRow(db, { project: s.project, stream: s.stream, agent: s.agent, title, label, status, note, context })
       return { content: [{ type: 'text', text: JSON.stringify(out) }] }
@@ -176,6 +192,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
       inputSchema: { title: z.string().min(1) },
     },
     async ({ title }) => {
+      heartbeat()
       const s = scope.get(clientName())
       const board = findBoard(db, s.project, title)
       if (board) archiveBoard(db, board.id)
@@ -191,6 +208,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
       inputSchema: { title: z.string().optional() },
     },
     async ({ title }) => {
+      heartbeat()
       const s = scope.get(clientName())
       if (title === undefined) {
         const boards = listBoards(db).filter((b) => b.project === s.project)

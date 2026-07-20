@@ -426,12 +426,16 @@ function renderLive(entries) {
     fold.className = 'idle-fold'
     if (openLive.has('__idle__')) fold.open = true
     fold.addEventListener('toggle', () => { fold.open ? openLive.add('__idle__') : openLive.delete('__idle__') })
-    fold.innerHTML = `<summary>+ ${idle.length} idle session${idle.length > 1 ? 's' : ''}</summary>`
+    fold.innerHTML = `<summary>+ ${idle.length} open session${idle.length > 1 ? 's' : ''}</summary>`
     for (const a of idle) {
       const row = document.createElement('div')
       row.className = 'idle-row'
       const stream = a.stream ? ` · ${esc(a.stream)}` : ''
-      row.innerHTML = `<span class="live-dot quiet"></span><span class="live-who">${esc(a.agent)} · ${esc(a.project)}${stream}</span><span class="live-age" title="last heartbeat ${rel(a.updated_at)} ago">alive ${rel(a.started_at)}</span>`
+      // a green dot means the session touched the inbox in the last minute —
+      // open-but-conversing, not asleep
+      const ageMs = Date.now() - Date.parse(a.updated_at)
+      const fresh = ageMs < 60000 ? 'fresh' : ageMs < 5 * 60000 ? 'aging' : 'quiet'
+      row.innerHTML = `<span class="live-dot ${fresh}" title="last activity ${rel(a.updated_at)} ago"></span><span class="live-who">${esc(a.agent)} · ${esc(a.project)}${stream}</span><span class="live-age" title="last activity ${rel(a.updated_at)} ago">alive ${rel(a.started_at)}</span>`
       fold.appendChild(row)
     }
     host.appendChild(fold)

@@ -9,6 +9,7 @@ export interface HaystackEntity {
   kind?: string
   annotation?: string
   reply?: string
+  reply_context?: string
   rows?: Array<{ label?: string; note?: string; context?: string; annotation?: string }>
 }
 

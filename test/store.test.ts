@@ -134,11 +134,12 @@ describe('answer-back', () => {
     expect(listItems(db).find((i) => i.id === plain)!.options).toBeNull()
   })
 
-  it('replyItem stores the answer, stamps replied_at, and resets pickup', () => {
+  it('replyItem stores the answer + optional context, stamps replied_at, and resets pickup', () => {
     const id = insertItem(db, { project: 'p', stream: '', agent: 'a', kind: 'question', title: 'q' })
-    replyItem(db, id, 'sqlite')
+    replyItem(db, id, 'sqlite', 'prefer low ops for now')
     let item = listItems(db)[0]!
     expect(item.reply).toBe('sqlite')
+    expect(item.reply_context).toBe('prefer low ops for now')
     expect(item.replied_at).toMatch(/^\d{4}-\d{2}-\d{2}T/)
     expect(item.reply_seen_at).toBeNull()
     markReplySeen(db, id)
@@ -146,9 +147,11 @@ describe('answer-back', () => {
     replyItem(db, id, 'actually postgres') // changing the answer resets pickup
     item = listItems(db)[0]!
     expect(item.reply).toBe('actually postgres')
+    expect(item.reply_context).toBeNull()
     expect(item.reply_seen_at).toBeNull()
     replyItem(db, id, '') // clearing the answer reverts to unanswered (null, not '')
     expect(listItems(db)[0]!.reply).toBeNull()
+    expect(listItems(db)[0]!.reply_context).toBeNull()
   })
 
   it('listPending returns open questions for a project, oldest first', () => {
@@ -162,9 +165,10 @@ describe('answer-back', () => {
     const pending = listPending(db, 'p')
     expect(pending.map((i) => i.id)).toEqual([a, answeredId]) // open questions only, oldest first
     expect(pending[1]!.reply).toBe('go left')
+    expect(pending[1]!.reply_context).toBeNull()
   })
 
-  it('openDb migrates a legacy items table missing the reply columns', () => {
+  it('openDb migrates a legacy items table missing the answer columns', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'inbox-legacy3-')), 'inbox.db')
     const legacy = new Database(path)
     legacy.exec(`
@@ -178,8 +182,9 @@ describe('answer-back', () => {
     legacy.close()
     const db2 = openDb(path)
     const id = insertItem(db2, { project: 'p', stream: '', agent: 'a', kind: 'question', title: 'q', options: [{ label: 'x' }] })
-    replyItem(db2, id, 'x')
+    replyItem(db2, id, 'x', 'ship this today')
     expect(listItems(db2)[0]!.reply).toBe('x')
+    expect(listItems(db2)[0]!.reply_context).toBe('ship this today')
     expect(listItems(db2)[0]!.options![0]!.label).toBe('x')
   })
 })

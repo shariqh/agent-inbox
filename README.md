@@ -33,9 +33,9 @@ which is used only to **auto-infer** attribution:
 - **stream** ← current git branch → `''`
 - **agent** ← MCP `clientInfo.name` (`claude-code` / `copilot` / …)
 
-So an agent's whole job is one call: `flag({ kind, title, detail? })`. Everything else is
-inferred. Every flag lands in one SQLite file; the viewer reads it and shows the
-cross-project inbox.
+So an agent's core loop is: `flag(...)` when it needs attention, then poll `pending()` for
+answers (including optional answer context). Attribution is inferred. Every flag lands in
+one SQLite file; the viewer reads it and shows the cross-project inbox.
 
 ## Status
 
@@ -64,7 +64,8 @@ dismiss rate.
 
 | tool | agent calls it to… |
 |---|---|
-| `flag({ kind, title, detail?, stream? })` → `{ id }` | raise a `question` (needs you) or `note` (non-blocking FYI). The workhorse. |
+| `flag({ kind, title, detail?, context?, options?, stream? })` → `{ id }` | raise a `question` (needs you) or `note` (non-blocking FYI). The workhorse. |
+| `pending()` | poll open questions; each answered item includes `reply` plus optional `reply_context` for extra direction. |
 | `resolve({ id })` | close its own item once it's moot (mostly you resolve from the viewer). |
 | `register({ project?, stream? })` | override auto-inferred scope; also the identity seam for future remote mode. |
 | `whoami()` | debug — report the session's current project/stream/agent. |

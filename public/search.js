@@ -10,7 +10,7 @@ export function haystackFor(entity) {
   if (Array.isArray(entity.rows)) {
     for (const r of entity.rows) parts.push(r.label, r.note, r.context, r.annotation)
   } else {
-    parts.push(entity.detail, entity.context, entity.kind, entity.annotation, entity.reply)
+    parts.push(entity.detail, entity.context, entity.kind, entity.annotation, entity.reply, entity.reply_context)
   }
   return parts.filter(Boolean).join(' ').toLowerCase()
 }

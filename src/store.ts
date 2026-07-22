@@ -28,6 +28,7 @@ export interface Item {
   annotation: string | null
   options: QuestionOption[] | null
   reply: string | null
+  reply_context: string | null
   replied_at: string | null
   reply_seen_at: string | null
   created_at: string
@@ -122,6 +123,7 @@ function migrate(db: Database.Database): void {
   ensureColumn(db, 'items', 'context', `TEXT NOT NULL DEFAULT ''`)
   ensureColumn(db, 'items', 'options', 'TEXT')
   ensureColumn(db, 'items', 'reply', 'TEXT')
+  ensureColumn(db, 'items', 'reply_context', 'TEXT')
   ensureColumn(db, 'items', 'replied_at', 'TEXT')
   ensureColumn(db, 'items', 'reply_seen_at', 'TEXT')
 }
@@ -160,11 +162,13 @@ export function insertItem(db: Database.Database, item: NewItem): string {
   return id
 }
 
-export function replyItem(db: Database.Database, id: string, text: string): void {
+export function replyItem(db: Database.Database, id: string, text: string, context?: string): void {
   // a changed answer resets pickup — the agent must see the latest reply;
   // an empty answer reverts the question to unanswered (null, never '')
-  db.prepare(`UPDATE items SET reply = ?, replied_at = ?, reply_seen_at = NULL WHERE id = ?`)
-    .run(text.trim() ? text : null, new Date().toISOString(), id)
+  const reply = text.trim()
+  const replyContext = context?.trim() ?? ''
+  db.prepare(`UPDATE items SET reply = ?, reply_context = ?, replied_at = ?, reply_seen_at = NULL WHERE id = ?`)
+    .run(reply ? reply : null, reply ? (replyContext || null) : null, new Date().toISOString(), id)
 }
 
 export function markReplySeen(db: Database.Database, id: string): void {

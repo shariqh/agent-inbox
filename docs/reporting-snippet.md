@@ -14,7 +14,8 @@ Call `flag` when:
   each with a short `label` and a `detail` explaining the tradeoff. The human can pick
   one, compare them, or answer in their own words. Then **poll `pending()`** between work
   steps: it returns your open questions with `reply` once answered (an option label or
-  free text — follow it either way), and call `resolve` once you have acted on it. Do
+  free text — follow it either way), plus optional `reply_context` when they attach extra
+  direction with their answer; act on both, then call `resolve`. Do
   not park forever waiting in the terminal.
 - **`kind: "note"`** — you made a notable **assumption**, took a **workaround**, hit a
   **caveat**, or left **tech debt** the human should know about but that does NOT block

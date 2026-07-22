@@ -4,8 +4,8 @@ import { haystackFor, searchMatches, paginate, paginateGroups } from '../public/
 
 describe('haystackFor', () => {
   it('includes item fields, lowercased', () => {
-    const h = haystackFor({ id: '1', title: 'Fix Auth', detail: 'JWT bug', project: 'API', agent: 'claude', reply: 'go ahead' })
-    expect(h).toBe('fix auth api claude jwt bug go ahead')
+    const h = haystackFor({ id: '1', title: 'Fix Auth', detail: 'JWT bug', project: 'API', agent: 'claude', reply: 'go ahead', reply_context: 'start with tmcc' })
+    expect(h).toBe('fix auth api claude jwt bug go ahead start with tmcc')
   })
   it('includes board row text and is lowercased', () => {
     const h = haystackFor({ id: 'b1', title: 'Rollout', project: 'Web', rows: [{ label: 'Deploy', note: 'Staging first' }] })

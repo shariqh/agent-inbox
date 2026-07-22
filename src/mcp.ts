@@ -90,7 +90,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     'pending',
     {
       description:
-        'Poll for the human’s answers to your open questions in this project. Returns every open question with its reply (null until the human answers — reply may be one of your options or their own free-text direction; follow it either way). Fetching a replied question marks it picked-up, so the human sees you got it. When you have acted on a reply, call resolve on that item. Poll between work steps rather than blocking.',
+        'Poll for the human’s answers to your open questions in this project. Returns every open question with its reply (null until the human answers — reply may be one of your options or their own free-text direction; follow it either way) and optional reply_context for extra instructions. Fetching a replied question marks it picked-up, so the human sees you got it. When you have acted on a reply, call resolve on that item. Poll between work steps rather than blocking.',
       inputSchema: {},
     },
     async () => {

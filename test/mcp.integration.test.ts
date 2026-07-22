@@ -64,11 +64,12 @@ describe('mcp round-trip', () => {
     expect(items1[0].context).toMatch(/checkout revamp/)
 
     // human answers (viewer path)
-    replyItem(openDb(dbPath), id, 'flags — but canary first')
+    replyItem(openDb(dbPath), id, 'flags — but canary first', 'roll this to 10% first and report back')
 
     const p2 = await c1.callTool({ name: 'pending', arguments: {} })
     const items2 = JSON.parse((p2.content as Array<{ text: string }>)[0]!.text).items
     expect(items2[0].reply).toBe('flags — but canary first')
+    expect(items2[0].reply_context).toBe('roll this to 10% first and report back')
     await c1.close()
     expect(listItems(openDb(dbPath))[0]!.reply_seen_at).toMatch(/^\d{4}-\d{2}-\d{2}T/) // pickup stamped
   }, 20000)

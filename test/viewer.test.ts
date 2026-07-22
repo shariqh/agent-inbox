@@ -71,7 +71,7 @@ describe('viewer api', () => {
     expect(rows.find((r) => r.id === b)!.status).toBe('dismissed')
   })
 
-  it('POST reply writes the answer and resets pickup; options surface in GET', async () => {
+  it('POST reply writes the answer + context and resets pickup; options surface in GET', async () => {
     const id = insertItem(db, {
       project: 'p', stream: '', agent: 'claude-code', kind: 'question', title: 'which auth?',
       options: [{ label: 'clerk', recommended: true }, { label: 'auth0', detail: 'more setup' }],
@@ -81,11 +81,12 @@ describe('viewer api', () => {
     expect(got.needsYou[0].items[0].options).toHaveLength(2)
     markReplySeen(db, id) // pretend a stale pickup exists; a new reply must reset it
     const res = await app.request(`/api/items/${id}/reply`, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'clerk' }),
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'clerk', context: 'start with the TMCC thread' }),
     })
     expect(res.status).toBe(200)
     const item = listItems(db)[0]!
     expect(item.reply).toBe('clerk')
+    expect(item.reply_context).toBe('start with the TMCC thread')
     expect(item.reply_seen_at).toBeNull()
     expect(item.status).toBe('open') // replying is not resolving — the agent still has to act
   })

@@ -69,8 +69,8 @@ export function createViewer(db: Database.Database): Hono {
   })
 
   app.post('/api/items/:id/reply', async (c) => {
-    const { text } = await c.req.json<{ text: string }>()
-    replyItem(db, c.req.param('id'), text)
+    const { text, context } = await c.req.json<{ text: string; context?: string }>()
+    replyItem(db, c.req.param('id'), text, context)
     return c.json({ ok: true })
   })
 

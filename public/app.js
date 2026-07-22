@@ -694,13 +694,20 @@ function archiveBtn(boardId) {
 // answer-back UI state that must survive the 3s poll rebuild
 const openCompares = new Set()   // item ids with the compare view expanded
 const draftReplies = {}          // item id → in-progress free-text answer
-let draftFocusId = null          // which draft input had focus, to restore it
+const draftReplyContexts = {}    // item id → optional context attached to the answer
+let draftFocusKey = null         // `${itemId}:answer` or `${itemId}:context`, to restore focus
 
-async function sendReply(id, text) {
-  if (!text.trim()) return
+async function sendReply(id, text, context = '') {
+  const reply = text.trim()
+  if (!reply) return
   delete draftReplies[id]
-  if (draftFocusId === id) draftFocusId = null
-  await fetch(`/api/items/${id}/reply`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: text.trim() }) })
+  delete draftReplyContexts[id]
+  if (draftFocusKey?.startsWith(`${id}:`)) draftFocusKey = null
+  await fetch(`/api/items/${id}/reply`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ text: reply, context: context.trim() || undefined }),
+  })
   load()
 }
 
@@ -716,7 +723,7 @@ function answerEl(it) {
     const pill = document.createElement('button')
     pill.className = `opt-pill${o.recommended ? ' rec' : ''}`
     pill.innerHTML = `${esc(o.label)}${o.recommended ? '<span class="rec-tag">recommended</span>' : ''}`
-    pill.addEventListener('click', () => sendReply(it.id, o.label))
+    pill.addEventListener('click', () => sendReply(it.id, o.label, draftReplyContexts[it.id] ?? ''))
     box.appendChild(pill)
     if (o.detail) {
       const d = document.createElement('div')
@@ -741,14 +748,28 @@ function answerEl(it) {
   input.placeholder = opts.length ? 'or answer in your own words…' : 'answer…'
   input.value = draftReplies[it.id] ?? ''
   input.addEventListener('input', () => { draftReplies[it.id] = input.value })
-  input.addEventListener('focus', () => { draftFocusId = it.id })
-  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendReply(it.id, input.value) })
+  input.addEventListener('focus', () => { draftFocusKey = `${it.id}:answer` })
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendReply(it.id, input.value, ctxInput.value) })
   row.appendChild(input)
-  row.appendChild(btn('Send', () => sendReply(it.id, input.value)))
+  row.appendChild(btn('Send', () => sendReply(it.id, input.value, ctxInput.value)))
   wrap.appendChild(row)
-  if (draftFocusId === it.id) requestAnimationFrame(() => {
+  const ctxRow = document.createElement('div')
+  ctxRow.className = 'reply-row reply-context-row'
+  const ctxInput = document.createElement('input')
+  ctxInput.className = 'reply-input reply-context-input'
+  ctxInput.placeholder = 'optional context for the agent (applies to Send or option picks)…'
+  ctxInput.value = draftReplyContexts[it.id] ?? ''
+  ctxInput.addEventListener('input', () => { draftReplyContexts[it.id] = ctxInput.value })
+  ctxInput.addEventListener('focus', () => { draftFocusKey = `${it.id}:context` })
+  ctxRow.appendChild(ctxInput)
+  wrap.appendChild(ctxRow)
+  if (draftFocusKey === `${it.id}:answer`) requestAnimationFrame(() => {
     input.focus()
     input.setSelectionRange(input.value.length, input.value.length)
+  })
+  if (draftFocusKey === `${it.id}:context`) requestAnimationFrame(() => {
+    ctxInput.focus()
+    ctxInput.setSelectionRange(ctxInput.value.length, ctxInput.value.length)
   })
   return wrap
 }
@@ -769,7 +790,7 @@ function itemEl(it, done = false, underAgentHead = false) {
     ${it.detail ? `<div class="detail">${esc(it.detail)}</div>` : ''}
     ${it.context ? `<details class="row-context"${openContexts.has(it.id) ? ' open' : ''}><summary>context</summary><div>${esc(it.context)}</div></details>` : ''}
     ${it.annotation ? `<div class="annotation">📝 ${esc(it.annotation)}</div>` : ''}
-    ${answered ? `<div class="reply-block">↩ ${esc(it.reply)}<span class="pickup ${it.reply_seen_at ? 'picked' : 'awaiting'}">${it.reply_seen_at ? '✓ picked up' : '● waiting for agent pickup'}</span></div>` : ''}`
+    ${answered ? `<div class="reply-block">↩ ${esc(it.reply)}${it.reply_context ? `<div class="reply-context">context: ${esc(it.reply_context)}</div>` : ''}<span class="pickup ${it.reply_seen_at ? 'picked' : 'awaiting'}">${it.reply_seen_at ? '✓ picked up' : '● waiting for agent pickup'}</span></div>` : ''}`
   const ctxEl = el.querySelector('.row-context')
   if (ctxEl) ctxEl.addEventListener('toggle', () => { ctxEl.open ? openContexts.add(it.id) : openContexts.delete(it.id) })
   cardify(el, it.id)
@@ -781,6 +802,7 @@ function itemEl(it, done = false, underAgentHead = false) {
     actions.appendChild(btn('Dismiss', () => act(it.id, 'dismiss')))
     if (answered) actions.appendChild(btn('Change answer', async () => {
       draftReplies[it.id] = it.reply
+      draftReplyContexts[it.id] = it.reply_context ?? ''
       await fetch(`/api/items/${it.id}/reply`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: '' }) })
       load()
     }))

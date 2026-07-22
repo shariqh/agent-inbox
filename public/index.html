@@ -13,6 +13,7 @@
       <div class="tabs" id="projectTabs" aria-label="Filter by project"></div>
       <div class="tabs" id="agentTabs" aria-label="Filter by agent"></div>
       <div class="tabs" id="rowTabs" aria-label="Board row visibility"></div>
+      <input id="search" class="search-box" type="search" placeholder="Search everything…" aria-label="Search items and boards" autocomplete="off" />
     </nav>
   </header>
   <div id="now" hidden></div>
@@ -44,6 +45,7 @@
       <div class="lb-nav"><button class="lb-prev">← prev</button><button class="lb-next">next →</button></div>
     </div>
   </div>
+  <script src="/ufuzzy.iife.min.js"></script>
   <script type="module" src="/app.js"></script>
 </body>
 </html>

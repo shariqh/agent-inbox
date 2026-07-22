@@ -153,3 +153,14 @@ header { flex-wrap: wrap; }
   font-size: 13px;
 }
 .show-more:hover { opacity: .9; border-color: color-mix(in srgb, CanvasText 45%, transparent); }
+.search-box {
+  min-width: 220px;
+  padding: 6px 10px;
+  background: Canvas;
+  border: 1px solid color-mix(in srgb, CanvasText 25%, transparent);
+  border-radius: 6px;
+  color: CanvasText;
+  font-size: 13px;
+}
+.search-box::placeholder { color: color-mix(in srgb, CanvasText 45%, transparent); }
+.search-box:focus { outline: none; border-color: LinkText; }

@@ -1,4 +1,9 @@
-import { paginate, paginateGroups } from '/search.js'
+import { paginate, paginateGroups, searchMatches } from '/search.js'
+
+// typo-tolerant fuzzy filtering; the engine is a vendored browser global
+const uf = new window.uFuzzy({ intraMode: 1 })
+const fuzzyFilter = (hay, needle) => uf.filter(hay, needle)
+let searchQuery = ''
 
 // per-section visible-card caps; `shown` grows as the user clicks "show more"
 const PAGE = { needsYou: 10, notes: 5, done: 5, boards: 5, archived: 5 }
@@ -85,7 +90,7 @@ function render() {
   // switching tabs never drops state for cards the filter is hiding
   liveCardIds = new Set([...allItems(lastData.g).map((i) => i.id), ...lastData.boards.map((b) => b.id), ...lastData.archived.map((b) => b.id)])
   renderNow()
-  const { g, boards, archived } = filterData(lastData)
+  const { g, boards, archived } = applySearch(filterData(lastData))
   const live = (lastData.activity ?? []).filter((a) =>
     (!projectFilter || a.project === projectFilter) && (!agentFilter || a.agent === agentFilter))
   renderLive(live)
@@ -343,6 +348,28 @@ function filterData({ g, boards, archived }) {
   }
 }
 
+// narrow the pill-filtered data to the fuzzy-search matches (composes AND with
+// the project/agent pills). No query → returned unchanged.
+function applySearch({ g, boards, archived }) {
+  const matches = searchMatches([...allItems(g), ...boards, ...archived], searchQuery, fuzzyFilter)
+  if (!matches) return { g, boards, archived }
+  const keep = (x) => matches.has(x.id)
+  const only = (groups) => groups
+    .map((gr) => ({ ...gr, items: gr.items.filter(keep) }))
+    .filter((gr) => gr.items.length > 0)
+  return {
+    g: { needsYou: only(g.needsYou), notes: only(g.notes), done: g.done.filter(keep) },
+    boards: boards.filter(keep),
+    archived: archived.filter(keep),
+  }
+}
+
+// section empty-state text: search-aware when a query is active
+function emptyMsg(base) {
+  const q = searchQuery.trim()
+  return q ? `No matches for &ldquo;${esc(q)}&rdquo;` : base
+}
+
 function renderRowToggle() {
   const host = document.getElementById('rowTabs')
   const sig = String(hideCompleted)
@@ -454,7 +481,7 @@ function renderLive(entries) {
 function renderGroups(sectionId, groups) {
   const host = document.querySelector(`#${sectionId} .groups`)
   const { groups: page, remaining } = paginateGroups(groups, shown[sectionId])
-  host.innerHTML = groups.length ? '' : '<p class="empty">Nothing here.</p>'
+  host.innerHTML = groups.length ? '' : `<p class="empty">${emptyMsg('Nothing here.')}</p>`
   for (const grp of page) {
     const box = document.createElement('div')
     box.className = 'project'
@@ -485,7 +512,7 @@ function renderGroups(sectionId, groups) {
 function renderDone(items) {
   const host = document.querySelector('#done .items')
   const { visible, remaining } = paginate(items, shown.done)
-  host.innerHTML = items.length ? '' : '<p class="empty">Nothing yet.</p>'
+  host.innerHTML = items.length ? '' : `<p class="empty">${emptyMsg('Nothing yet.')}</p>`
   for (const it of visible) host.appendChild(itemEl(it, it.status !== 'open'))
   if (remaining > 0) host.appendChild(moreButton('done', remaining))
   renderSub('done', visible.map((it) => ({ id: it.id, label: it.title })))
@@ -557,7 +584,7 @@ function renderSub(sectionId, entries) {
 function renderBoards(boards) {
   const host = document.querySelector('#boards .boards')
   const { visible, remaining } = paginate(boards, shown.boards)
-  host.innerHTML = boards.length ? '' : '<p class="empty">No boards.</p>'
+  host.innerHTML = boards.length ? '' : `<p class="empty">${emptyMsg('No boards.')}</p>`
   for (const b of visible) host.appendChild(boardEl(b))
   if (remaining > 0) host.appendChild(moreButton('boards', remaining))
   renderSub('boards', visible.map((b) => ({ id: b.id, label: b.title })))
@@ -566,7 +593,7 @@ function renderBoards(boards) {
 function renderArchived(boards) {
   const host = document.querySelector('#archived .boards')
   const { visible, remaining } = paginate(boards, shown.archived)
-  host.innerHTML = boards.length ? '' : '<p class="empty">Nothing archived.</p>'
+  host.innerHTML = boards.length ? '' : `<p class="empty">${emptyMsg('Nothing archived.')}</p>`
   for (const b of visible) host.appendChild(boardEl(b, true))
   if (remaining > 0) host.appendChild(moreButton('archived', remaining))
   renderSub('archived', visible.map((b) => ({ id: b.id, label: b.title })))
@@ -804,6 +831,15 @@ function initSections() {
   }
 }
 
+function initSearch() {
+  const input = document.getElementById('search')
+  let t = null
+  input.addEventListener('input', () => {
+    clearTimeout(t)
+    t = setTimeout(() => { searchQuery = input.value; resetPaging(); render() }, 120)
+  })
+}
+
 // Setup section: how to point new agents at this inbox. Static content —
 // fetched once, not on the poll.
 async function renderSetup() {
@@ -846,6 +882,7 @@ async function renderSetup() {
 
 initSections()
 initTriage()
+initSearch()
 renderSetup()
 load()
 setInterval(load, 3000)

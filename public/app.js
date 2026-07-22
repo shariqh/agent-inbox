@@ -91,8 +91,16 @@ function render() {
   liveCardIds = new Set([...allItems(lastData.g).map((i) => i.id), ...lastData.boards.map((b) => b.id), ...lastData.archived.map((b) => b.id)])
   renderNow()
   const { g, boards, archived } = applySearch(filterData(lastData))
-  const live = (lastData.activity ?? []).filter((a) =>
+  const pillLive = (lastData.activity ?? []).filter((a) =>
     (!projectFilter || a.project === projectFilter) && (!agentFilter || a.agent === agentFilter))
+  // search filters Live too: match a session on what it's doing (+ its children),
+  // reusing searchMatches by mapping each session onto a haystack-shaped entity
+  const liveMatched = searchMatches(
+    pillLive.map((a) => ({
+      id: a.session, title: a.doing, project: a.project, agent: a.agent, stream: a.stream,
+      detail: [a.detail, ...(a.children ?? []).flatMap((c) => [c.name, c.doing])].filter(Boolean).join(' '),
+    })), searchQuery, fuzzyFilter)
+  const live = liveMatched ? pillLive.filter((a) => liveMatched.has(a.session)) : pillLive
   renderLive(live)
   setCount('live', live.filter((a) => !a.idle).length)
   renderGroups('needsYou', g.needsYou)

@@ -29,6 +29,7 @@
   "devDependencies": {
     "@electron/packager": "^20.0.3",
     "@electron/rebuild": "^4.2.0",
+    "@leeoniya/ufuzzy": "^1.0.19",
     "@types/better-sqlite3": "^7.6.11",
     "@types/node": "^24.0.0",
     "electron": "^43.1.1",

@@ -1,0 +1,25 @@
+export interface HaystackEntity {
+  id: string
+  title?: string
+  project?: string
+  agent?: string
+  stream?: string
+  detail?: string
+  context?: string
+  kind?: string
+  annotation?: string
+  reply?: string
+  rows?: Array<{ label?: string; note?: string; context?: string; annotation?: string }>
+}
+
+export function haystackFor(entity: HaystackEntity): string
+export function searchMatches(
+  entities: HaystackEntity[],
+  query: string,
+  filterFn: (haystack: string[], needle: string) => number[] | null,
+): Set<string> | null
+export function paginate<T>(items: T[], limit: number): { visible: T[]; remaining: number }
+export function paginateGroups<G extends { items: unknown[] }>(
+  groups: G[],
+  limit: number,
+): { groups: G[]; remaining: number }

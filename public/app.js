@@ -1,3 +1,10 @@
+import { paginate, paginateGroups } from '/search.js'
+
+// per-section visible-card caps; `shown` grows as the user clicks "show more"
+const PAGE = { needsYou: 10, notes: 5, done: 5, boards: 5, archived: 5 }
+let shown = { ...PAGE }
+function resetPaging() { shown = { ...PAGE } }
+
 let lastData = null
 const FILTER_KEY = 'agent-inbox-agent-filter'
 const PROJECT_KEY = 'agent-inbox-project-filter'
@@ -61,6 +68,7 @@ function render() {
     projectFilter = v
     if (v) localStorage.setItem(PROJECT_KEY, v)
     else localStorage.removeItem(PROJECT_KEY)
+    resetPaging()
     render()
   })
   const agents = collectAgents(projectScoped(lastData))
@@ -69,6 +77,7 @@ function render() {
     agentFilter = v
     if (v) localStorage.setItem(FILTER_KEY, v)
     else localStorage.removeItem(FILTER_KEY)
+    resetPaging()
     render()
   })
   renderRowToggle()
@@ -444,8 +453,9 @@ function renderLive(entries) {
 
 function renderGroups(sectionId, groups) {
   const host = document.querySelector(`#${sectionId} .groups`)
+  const { groups: page, remaining } = paginateGroups(groups, shown[sectionId])
   host.innerHTML = groups.length ? '' : '<p class="empty">Nothing here.</p>'
-  for (const grp of groups) {
+  for (const grp of page) {
     const box = document.createElement('div')
     box.className = 'project'
     box.innerHTML = `<h3>${esc(grp.project)}</h3>`
@@ -456,7 +466,6 @@ function renderGroups(sectionId, groups) {
       byAgent.set(it.agent, arr)
     }
     if (byAgent.size > 1) {
-      // multi-agent project: agent sub-headers carry the attribution
       for (const [agent, items] of byAgent) {
         const head = document.createElement('h4')
         head.className = 'agent-head'
@@ -469,16 +478,17 @@ function renderGroups(sectionId, groups) {
     }
     host.appendChild(box)
   }
-  renderSub(sectionId, groups.flatMap((g) => g.items.map((it) => ({ id: it.id, label: it.title }))))
+  if (remaining > 0) host.appendChild(moreButton(sectionId, remaining))
+  renderSub(sectionId, page.flatMap((g) => g.items.map((it) => ({ id: it.id, label: it.title }))))
 }
 
 function renderDone(items) {
   const host = document.querySelector('#done .items')
+  const { visible, remaining } = paginate(items, shown.done)
   host.innerHTML = items.length ? '' : '<p class="empty">Nothing yet.</p>'
-  // closed items are action-less; OPEN milestones (kind=done) keep their
-  // actions so the human can clear them
-  for (const it of items) host.appendChild(itemEl(it, it.status !== 'open'))
-  renderSub('done', items.map((it) => ({ id: it.id, label: it.title })))
+  for (const it of visible) host.appendChild(itemEl(it, it.status !== 'open'))
+  if (remaining > 0) host.appendChild(moreButton('done', remaining))
+  renderSub('done', visible.map((it) => ({ id: it.id, label: it.title })))
 }
 
 const GLYPH = { done: '✅', partial: '⚠️', missing: '❌', tracked: '🔜', na: '➖', blocked: '🚧' }
@@ -546,16 +556,20 @@ function renderSub(sectionId, entries) {
 
 function renderBoards(boards) {
   const host = document.querySelector('#boards .boards')
+  const { visible, remaining } = paginate(boards, shown.boards)
   host.innerHTML = boards.length ? '' : '<p class="empty">No boards.</p>'
-  for (const b of boards) host.appendChild(boardEl(b))
-  renderSub('boards', boards.map((b) => ({ id: b.id, label: b.title })))
+  for (const b of visible) host.appendChild(boardEl(b))
+  if (remaining > 0) host.appendChild(moreButton('boards', remaining))
+  renderSub('boards', visible.map((b) => ({ id: b.id, label: b.title })))
 }
 
 function renderArchived(boards) {
   const host = document.querySelector('#archived .boards')
+  const { visible, remaining } = paginate(boards, shown.archived)
   host.innerHTML = boards.length ? '' : '<p class="empty">Nothing archived.</p>'
-  for (const b of boards) host.appendChild(boardEl(b, true))
-  renderSub('archived', boards.map((b) => ({ id: b.id, label: b.title })))
+  for (const b of visible) host.appendChild(boardEl(b, true))
+  if (remaining > 0) host.appendChild(moreButton('archived', remaining))
+  renderSub('archived', visible.map((b) => ({ id: b.id, label: b.title })))
 }
 
 function boardEl(b, archived = false) {
@@ -748,6 +762,14 @@ function btn(label, onClick) {
   const b = document.createElement('button')
   b.textContent = label
   b.addEventListener('click', onClick)
+  return b
+}
+
+// the pager at the foot of a capped section — reveals PAGE[section] more cards
+function moreButton(section, remaining) {
+  const n = Math.min(PAGE[section], remaining)
+  const b = btn(`Show ${n} more (${remaining} hidden)`, () => { shown[section] += PAGE[section]; render() })
+  b.className = 'show-more'
   return b
 }
 

@@ -12,3 +12,8 @@ dist/
 # packaged app artifacts
 build/
 out/
+# Claude Code local state
+.claude/
+# local scratch (not part of the project)
+checkprod.mts
+seed-demo.mjs

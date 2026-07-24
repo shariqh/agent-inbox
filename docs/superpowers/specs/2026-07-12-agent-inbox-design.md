@@ -29,7 +29,7 @@ Claude Code's native **Agent View** (`claude agents`) already solves cross-proje
 
 **Explicitly out of v1 (planned later, seams left in place):**
 - **Answer-back** (reply to an agent from the viewer) — v2. Adds a `pending` tool the agent polls.
-- **Remote mode** (run on ubi-prod, tunnel-exposed, phone access, cloud agents) — v2. Adds HTTP transport + auth; the `register` seam already covers identity when the server can't see the client's cwd.
+- **Remote mode** (run on a remote host, tunnel-exposed, phone access, cloud agents) — v2. Adds HTTP transport + auth; the `register` seam already covers identity when the server can't see the client's cwd.
 - **`done`/milestone bucket** — opt-in later; omitted now to keep the inbox high-signal.
 - **Notification hooks backstop** (Claude Code Stop/needs-input hooks → deterministic event) — later nicety for status even when an agent forgets to flag.
 - **Electron packaging** — the viewer is built as a plain local web app so it wraps into an Electron window unchanged.

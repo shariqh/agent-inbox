@@ -96,7 +96,7 @@ v1 is deliberately local + triage-only. The next work, with the hooks left for i
 1. **Answer-back** *(#7)* — reply to an agent from the viewer. Add a `pending({ stream }) → items`
    MCP tool the agent polls for the human's reply, and a viewer reply box that writes the
    reply onto the item. `register`/session scope already identify which session to route to.
-2. **Remote / hosted mode** *(#8)* — run on a server (e.g. ubi-prod), tunnel-exposed for phone +
+2. **Remote / hosted mode** *(#8)* — run on a server (e.g. a remote host), tunnel-exposed for phone +
    cloud-agent reach. Swap stdio for **streamable-HTTP** transport and add **auth** (bearer
    token in MCP client headers + a gate on the viewer). `register` is the identity seam: a
    remote server can't see the client's `cwd`, so agents declare scope via `register` instead

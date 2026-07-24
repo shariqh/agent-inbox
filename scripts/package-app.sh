@@ -55,7 +55,7 @@ cd "$ROOT"
 npx --yes @electron/packager "$STAGE" "Agent Inbox" \
   --platform=darwin --arch=arm64 --out="$OUT" --overwrite --no-asar \
   --icon="$ROOT/electron/icon.icns" \
-  --app-bundle-id=io.coreworx.agent-inbox
+  --app-bundle-id=io.github.shariqh.agent-inbox
 
 # Ad-hoc codesign: macOS silently drops notifications from apps with no code
 # identity at all. No certificate needed; "-" signs with an ad-hoc identity.

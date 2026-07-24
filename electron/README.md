@@ -35,7 +35,11 @@ fnm exec --using=24 npm run electron
 
 - The shell probes `http://localhost:4319` (or `AGENT_INBOX_PORT` if set).
 - If a viewer is **already running** there (e.g. `npm run view`), it is reused and is
-  **not** killed when the app quits.
+  **not** killed when the app quits. Reuse is confirmed with a **second probe** after a
+  short delay — a viewer caught mid-shutdown can answer once and then vanish (issue #23),
+  and a single probe would strand the app on a dead page. Once reusing, the shell keeps
+  watching the upstream and **starts its own in-process server** if it disappears,
+  reloading the window so it self-heals instead of sitting on the disconnected banner.
 - Otherwise it tries to run the server **in-process** (works in the packaged app, where
   better-sqlite3 is built for Electron's ABI). In a dev run that import fails (repo
   modules are Node-24 ABI) and it falls back to spawning `node dist/viewer-server.js`,

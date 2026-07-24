@@ -5,7 +5,9 @@
 //
 // Behavior:
 //   1. If a viewer is already listening on http://localhost:<AGENT_INBOX_PORT|4319>,
-//      reuse it (never start a second one, never kill it on quit).
+//      reuse it (never start a second one, never kill it on quit). We re-probe
+//      before committing (a dying viewer can answer one probe then vanish), and
+//      once reusing we watch it and start our own server if it disappears (#23).
 //   2. Otherwise run dist/viewer-server.js IN THIS PROCESS (Electron's bundled
 //      Node) — this is what makes the packaged .app self-contained. It requires
 //      better-sqlite3 built for Electron's ABI (the package script does this).
@@ -20,10 +22,16 @@ const { existsSync } = require('node:fs')
 const http = require('node:http')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
+const { confirmReuse, watchUpstream } = require('./reuse.cjs')
 
 const PORT = Number(process.env.AGENT_INBOX_PORT ?? 4319)
 const URL_BASE = `http://localhost:${PORT}/`
 const REPO_ROOT = path.resolve(__dirname, '..')
+
+/** Gap between the two reuse probes — long enough for a dying viewer to vanish. */
+const REUSE_CONFIRM_DELAY_MS = 500
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 /** The viewer child process, ONLY if this app spawned it. Never set for a pre-existing server. */
 let spawnedViewer = null
@@ -155,22 +163,35 @@ function createWindow() {
   return win
 }
 
+/**
+ * Start OUR OWN viewer server: in-process (packaged app, better-sqlite3 built
+ * for Electron's ABI) or, if that import fails, spawned under system Node (dev).
+ * Returns true if a server was started, false if dist/viewer-server.js is missing.
+ */
+async function startOwnServer() {
+  const entry = path.join(REPO_ROOT, 'dist', 'viewer-server.js')
+  if (!existsSync(entry)) {
+    console.error(
+      `[agent-inbox] ${entry} not found — run \`npm run build\` first (Node 24: fnm exec --using=24 npm run build).`
+    )
+    return false
+  }
+  if (!(await startInProcess(entry))) {
+    console.log(`[agent-inbox] spawning ${entry} under system node instead`)
+    spawnedViewer = spawnViewer()
+  }
+  return true
+}
+
 app.whenReady().then(async () => {
-  if (await probe()) {
+  // Re-probe before committing to reuse: a DYING standalone viewer can answer a
+  // single probe and then vanish, stranding the app on a dead page (issue #23).
+  const reusing = await confirmReuse(probe, sleep, REUSE_CONFIRM_DELAY_MS)
+  if (reusing) {
     console.log(`[agent-inbox] reusing existing viewer on ${URL_BASE}`)
-  } else {
-    const entry = path.join(REPO_ROOT, 'dist', 'viewer-server.js')
-    if (!existsSync(entry)) {
-      console.error(
-        `[agent-inbox] ${entry} not found — run \`npm run build\` first (Node 24: fnm exec --using=24 npm run build).`
-      )
-      app.exit(1)
-      return
-    }
-    if (!(await startInProcess(entry))) {
-      console.log(`[agent-inbox] spawning ${entry} under system node instead`)
-      spawnedViewer = spawnViewer()
-    }
+  } else if (!(await startOwnServer())) {
+    app.exit(1)
+    return
   }
 
   if (!(await waitForServer())) {
@@ -182,7 +203,19 @@ app.whenReady().then(async () => {
     return
   }
 
-  startAttentionWatch(createWindow())
+  const win = createWindow()
+  startAttentionWatch(win)
+
+  // Self-heal (issue #23): while reusing a viewer we don't own, watch it — if it
+  // disappears, start our own server on the same port and reload the dead page.
+  if (reusing) {
+    watchUpstream(probe, async () => {
+      console.log(`[agent-inbox] reused viewer vanished — starting our own server`)
+      if ((await startOwnServer()) && (await waitForServer())) {
+        if (!win.isDestroyed()) win.webContents.reload()
+      }
+    })
+  }
 })
 
 // This is a utility window, so quit when it closes — including on macOS,

@@ -48,7 +48,7 @@ Every later task inserts **exactly one line** ("insert `initKeys()` after `initS
 **Shared symbols — declared once by their owner; everyone else consumes:**
 | Symbol | Owner |
 |---|---|
-| `liveSessionIds()`, `themeName()`, `railProjects(...)`, `filterRailEntries(...)` | Task 7 |
+| `liveSessionIds()`, `themeName()`, `pcolor(name)`, `railProjects(...)`, `filterRailEntries(...)` | Task 7 |
 | `selectTab(id)`, `activeTab`, `tabCounts(...)` | Task 8 |
 | `openRowId`, `setOpenRow(id)`, `suspendState()`, `renderIfIdle()` | Task 9 |
 | `staleEntries(...)`, `attentionEntries(...)`, `attentionCount(...)`, `countsByProject(...)`, `sortNeedsYou(...)`, `classifyLiveness(...)` | Task 3 |
@@ -1499,7 +1499,7 @@ in JS by Task 13; the responsive `@media` layer is appended at EOF by Task 18.
 - Create: `test/shell.test.ts`
 - Modify: `public/index.html:10-39` (replace the header `10-18`, the `#now` strip `19`, the `.layout` wrapper `20`, the sidebar nav `21-29` and the `<details class="section">` stack `30-38` in one block)
 - Modify: `public/style.css` — delete lines `8-15` (`.layout` + `#sidebar`), `17` (`.section, [data-card-id]`), `23-25` (`.section > summary`, its `::marker`, the sidebar media query), `29` (`#now`), `47-49` (`.now-head`, `.triage-btn` ×2), `67-71` (`.now-items` ×3, `#now.attention`, `#now.calm`), `85` (`.item.answered`), `93-96` (`#filters`, `#filters .tabs`, `.tab-label`, `#agentTabs/#rowTabs`), `104-106` (`#filters button` ×3), `107-110` (`.item` + the three kind stripes); then append the shell block at EOF
-- Modify: `public/app.js` — render head `69-92` and render tail `105-118`; delete `renderNow` (`133-184`); delete `jumpToCard` (`312-331`, only caller was `renderNow`); guard `renderRowToggle` (`381-383`); delete `renderPills` (`402-422`); repoint `renderGroups` (`489-490`); delete `renderSub` (`566-590`) and its four call sites (`517`, `526`, `598`, `607`); delete `renderArchived` (`601-608`); replace `setCount` (`333-340`); add the triage keyboard opener in `initTriage` (`303-305`); delete `COLLAPSE_KEY` + `initSections` (`842-862`); replace the init block (`913-918`)
+- Modify: `public/app.js` — render head `69-92` and render tail `105-118`; delete `renderNow` (`133-184`); rewrite `jumpToCard` (`312-331`) in place — the filter-clearing fallback is dropped and the function now routes through `selectTab` (Task 8), which is `jumpToCard`'s only real caller (Task 10's board glyph); guard `renderRowToggle` (`381-383`); delete `renderPills` (`402-422`); repoint `renderGroups` (`489-490`); delete `renderSub` (`566-590`) and its four call sites (`517`, `526`, `598`, `607`); delete `renderArchived` (`601-608`); replace `setCount` (`333-340`); add the triage keyboard opener in `initTriage` (`303-305`); delete `COLLAPSE_KEY` + `initSections` (`842-862`); replace the init block (`913-918`)
 - Test: `test/shell.test.ts`
 
 Apply the `public/app.js` deletions **bottom-up** (init block first, then `initSections`,
@@ -1515,8 +1515,8 @@ then `renderArchived`, …) so earlier line numbers stay valid while you work.
   - `#boards > .boards`, `#live > .live-list`, `#notes > .groups`, `#done > .items`, `#setup > .setup-body`
   - `#status` and, beside it, `#pauseHint` — the poll-suspension hint Task 9 writes into
   - `#agentSelect`, `#search.search-box`, `#gear`
-  - JS: `renderAgentSelect(agents: string[]): void`, `initAgentSelect(): void`, `showPanel(id: string): void`, `initGear(): void`, `setCount(id: string, n: number): void`
-- Deletes for good: `#sidebar`, the `.section` stack, `#now`, `renderNow`, `jumpToCard`, `renderSub`, `renderPills`, `renderArchived`, `initSections`, `COLLAPSE_KEY`. `renderRowToggle` stays (guarded) until Task 13 replaces it with the boards header.
+  - JS: `renderAgentSelect(agents: string[]): void`, `initAgentSelect(): void`, `showPanel(id: string): void`, `initGear(): void`, `setCount(id: string, n: number): void`, `jumpToCard(tabId: string, cardId: string): void`
+- Deletes for good: `#sidebar`, the `.section` stack, `#now`, `renderNow`, `renderSub`, `renderPills`, `renderArchived`, `initSections`, `COLLAPSE_KEY`. `renderRowToggle` stays (guarded) until Task 13 replaces it with the boards header. `jumpToCard` also stays — rewritten, not deleted (see Step 3).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1604,7 +1604,7 @@ describe('shell css', () => {
 
 describe('shell script', () => {
   it('deletes every sidebar-era render path, so nothing calls a symbol that is gone', () => {
-    for (const dead of ['renderSub', 'renderPills', 'renderNow', 'initSections', 'COLLAPSE_KEY', 'jumpToCard', 'renderArchived']) {
+    for (const dead of ['renderSub', 'renderPills', 'renderNow', 'initSections', 'COLLAPSE_KEY', 'renderArchived']) {
       expect(js, `${dead} survives`).not.toContain(dead)
     }
   })
@@ -1619,6 +1619,7 @@ describe('shell script', () => {
     expect(js).toContain('function showPanel')
     expect(js).toContain('initAgentSelect()')
     expect(js).toContain('initGear()')
+    expect(js).toContain('function jumpToCard')
   })
 })
 ```
@@ -1764,7 +1765,7 @@ and the render tail (`app.js:105-118`) drops the archived render + count — Tas
 }
 ```
 
-Delete `renderNow` (`app.js:133-184`) and `jumpToCard` (`app.js:312-331`) outright — the `#now` strip they serve is gone, and `renderNow` was `jumpToCard`'s only caller.
+Delete `renderNow` (`app.js:133-184`) outright — the `#now` strip it served is gone. `jumpToCard` (`app.js:312-331`) survives: it is the only address a caller needs to land on a `[data-card-id]` element, and Task 10's board glyph calls it.
 
 `renderNow` also held the only "Triage →" button, so give the deck a keyboard door. Replace the `keydown` listener inside `initTriage` (`app.js:303-308`):
 
@@ -1778,6 +1779,22 @@ Delete `renderNow` (`app.js:133-184`) and `jumpToCard` (`app.js:312-331`) outrig
     else if (!typing && e.key === 'ArrowLeft' && triageDeck.index > 0) { triageDeck.index--; renderTriage() }
     else if (!typing && e.key === 'ArrowRight' && triageDeck.index < triageDeck.entries.length - 1) { triageDeck.index++; renderTriage() }
   })
+```
+
+Rewrite `jumpToCard` (`app.js:312-331`) in place — the filter-clearing fallback is
+dropped (with a rail, silently resetting the user's project filter is wrong) and it
+routes through `selectTab` instead. `selectTab` is Task 8's function; nothing calls
+`jumpToCard` until Task 10's board glyph, so the forward reference resolves by the
+time it is ever invoked at runtime:
+
+```js
+function jumpToCard(tabId, cardId) {
+  selectTab(tabId)
+  const card = document.querySelector(`[data-card-id="${CSS.escape(cardId)}"]`)
+  if (!card) return
+  if (card instanceof HTMLDetailsElement) card.open = true
+  card.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
 ```
 
 Replace `setCount` (`app.js:333-340`) — counts now live on the tab strip, and there is no `archived` branch because the fold is Task 13's, built in JS:
@@ -1884,7 +1901,8 @@ git commit -m "feat(viewer): replace the section stack and sidebar with a rail +
 index.html gets its final shape here — rail host, five panels, the
 Needs-you row host and the pause hint — so no later task reopens it.
 The Now strip, the sidebar outline and the pill strips are deleted along
-with renderNow/jumpToCard/renderSub/renderPills/initSections; the triage
+with renderNow/renderSub/renderPills/initSections; jumpToCard is rewritten
+to route through the tab system instead of clearing filters; the triage
 deck moves to a 't' shortcut."
 ```
 
@@ -1900,7 +1918,7 @@ deck moves to a 't' shortcut."
 **Interfaces:**
 - Consumes: `countsByProject(items, boards, nowMs, liveSessionIds) -> Map<string, {total:number, escalated:number}>` from `public/attention.js`; `projectColor(name, theme) -> { dot, wash }` from `public/colors.js`; the `<nav id="rail">` host and `PROJECT_KEY` / `resetPaging()` / `render()` from Task 6.
 - Produces (module `public/rail.js`): `railProjects({ items, boards, archived, activity }) -> string[]` (unique, sorted, `'unknown'` last); `railEntries(projects, counts) -> Array<{ key, label, total, escalated, unknown }>` (`key === '__all__'` first); `filterRailEntries(entries, query) -> entries` (`'__all__'` always retained); `shouldShowRailFilter(projects) -> boolean` (more than 12 projects).
-- Produces (app.js, declared **once here** and consumed by later tasks): `liveSessionIds(): Set<string>`, `themeName(): 'dark'|'light'`, `renderRail(): void`.
+- Produces (app.js, declared **once here** and consumed by later tasks): `liveSessionIds(): Set<string>`, `themeName(): 'dark'|'light'`, `pcolor(name: string) -> { dot, wash }` (the persisted-color call path — every renderer that paints a project dot/wash goes through this, never `projectColor()` directly, so a project's hue survives a reload; `overrideHue` is exported by `public/colors.js` and reachable for a future override UI — none is built here), `renderRail(): void`.
 - Produces (DOM contract — later tasks bind to exactly this, nothing else):
   - `#rail > button.rail-tab[data-project="<key>"][role="tab"][aria-selected]`, where `<key>` is the project name or `__all__`.
   - Each `button.rail-tab` contains, in order: `span.rail-dot`, `span.rail-name`, `span.rail-badge`, `span.rail-match`.
@@ -2088,6 +2106,12 @@ Add `renderRail` and the two shared session helpers next to `renderAgentSelect`.
 const liveSessionIds = () => new Set((lastData.activity ?? []).map((a) => a.session))
 const themeName = () => (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
 
+// spec §2: color persistence. Every caller that paints a project dot/wash goes
+// through THIS, never projectColor() directly — passing localStorage is what
+// lets assignedHue() persist a hue across reloads and nudge a collision once,
+// instead of re-hashing (and potentially re-colliding) on every render.
+const pcolor = (name) => projectColor(name, themeName(), localStorage)
+
 // typed rail filter; only rendered when the rail is long enough to need it
 let railQuery = ''
 
@@ -2140,7 +2164,7 @@ function renderRail() {
     const selected = e.key === '__all__' ? !projectFilter : projectFilter === e.key
     b.setAttribute('aria-selected', String(selected))
     if (!e.total) b.classList.add('quiet')
-    const color = e.key === '__all__' || e.unknown ? null : projectColor(e.key, th)
+    const color = e.key === '__all__' || e.unknown ? null : pcolor(e.key)
     if (e.unknown) {
       b.classList.add('unknown')
       b.title = 'Project inference failed for these agents — a register() call fixes their scope.'
@@ -2214,7 +2238,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 
 **Files:**
 - Create: `public/tabs.js`
-- Modify: `public/app.js:1` (imports — EDIT the existing `/attention.js` import line, add one `/tabs.js` line), `public/app.js:104-115` (count wiring in `render`), `public/app.js:312-331` (`jumpToCard`), `public/app.js:333-340` (`setCount` null guard), the app.js bottom init block (rewritten in full here — **this task owns it**)
+- Modify: `public/app.js:1` (imports — EDIT the existing `/attention.js` import line, add one `/tabs.js` line), `public/app.js:104-115` (count wiring in `render`), `public/app.js:333-340` (`setCount` null guard — `jumpToCard` is Task 6's function, not touched here), the app.js bottom init block (rewritten in full here — **this task owns it**)
 - Test: `test/tabs.test.ts`
 
 **Interfaces:**
@@ -2341,7 +2365,7 @@ import { attentionCount, countsByProject } from '/attention.js'
 import { DEFAULT_TAB, TAB_IDS, livePresence, tabCounts } from '/tabs.js'
 ```
 
-Replace the count wiring in `render()` (`app.js:104-115`, keeping `renderLive`/`renderGroups`/`renderDone`/`renderBoards`/`renderArchived` in place):
+Replace the count wiring in `render()` (`app.js:104-115`, keeping `renderLive`/`renderGroups`/`renderDone`/`renderBoards` in place — Task 6 already deleted `renderArchived`, and no task re-adds it until Task 13 folds archived boards into `renderBoards` itself):
 
 ```js
   renderLive(live)
@@ -2349,7 +2373,6 @@ Replace the count wiring in `render()` (`app.js:104-115`, keeping `renderLive`/`
   renderGroups('notes', g.notes)
   renderDone(g.done)
   renderBoards(boards)
-  renderArchived(archived)
   // Needs-you counts the GLOBAL attention set; every other tab counts the
   // filtered view the user is actually looking at (spec §7)
   const counts = tabCounts({
@@ -2358,18 +2381,21 @@ Replace the count wiring in `render()` (`app.js:104-115`, keeping `renderLive`/`
     scoped: { boards, done: g.done },
   })
   for (const id of TAB_IDS) setCount(id, counts[id])
-  setCount('archived', archived.length)
   setPresence(livePresence(live))
 ```
 
 The document/dock badge is deliberately NOT set here — Task 16 owns it via `titleWithBadge()`.
+There is no `setCount('archived', …)` call — the archived fold has no tab of its own; Task 13
+builds it inside the Boards panel.
 
-Add the null guard to `setCount` (first line of the function body, `app.js:334`):
+Add the null guard as the FIRST line of Task 6's `setCount` body, above the existing
+`const el = document.querySelector(...)` line (Task 6 already ships this function with no
+`archived` branch, so there is nothing to delete here):
 
 ```js
 function setCount(id, n) {
   if (n == null) return // Live carries a presence dot, not a number
-  if (id === 'archived') {
+  const el = document.querySelector(`.tab[data-tab="${id}"] .tab-count`)
 ```
 
 Add the presence + routing helpers beside it. `selectTab` is the ONLY way anything changes tabs — it owns `activeTab` and delegates the DOM swap to Task 6's private `showPanel`:
@@ -2402,17 +2428,7 @@ function initTabs() {
 }
 ```
 
-Replace `jumpToCard` (`app.js:312-331`) — the filter-clearing fallback is dropped, because with a rail it would silently reset the user's project:
-
-```js
-function jumpToCard(sectionId, cardId) {
-  if (TAB_IDS.includes(sectionId)) selectTab(sectionId)
-  const card = document.querySelector(`[data-card-id="${CSS.escape(cardId)}"]`)
-  if (!card) return
-  if (card instanceof HTMLDetailsElement) card.open = true
-  card.scrollIntoView({ behavior: 'smooth', block: 'start' })
-}
-```
+`jumpToCard` is not touched here — Task 6 owns it and already routes it through `selectTab`.
 
 - [ ] **Step 4: Write the canonical init block (this task owns it)**
 
@@ -2779,7 +2795,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 `<section class="panel" id="needsYou"><div id="needsYouList" class="rows"></div></section>`.
 
 **Interfaces:**
-- Consumes: `attentionEntries(items, boards, nowMs, liveSessionIds)`, `sortNeedsYou(entries, nowMs)`, `staleEntries(items, nowMs, liveSessionIds)`, `ESCALATE_MS` from `/attention.js`; `starOption(item)`, `createStagedSend({delayMs,setTimeoutFn,clearTimeoutFn,send})` from `/star.js`; `projectColor(name, theme)`, `projectMonogram(name)` from `/colors.js`; `paginate(items, limit)` from `/search.js`; `liveSessionIds()` and `themeName()` from Task 7 (this task declares neither); the existing `projectFilter`, `shown`, `emptyMsg`, `moreButton`, `esc`, `btn`, `act`, `jumpToCard` in app.js. Tab counts belong to Task 8's `tabCounts` loop — this task sets no counts.
+- Consumes: `attentionEntries(items, boards, nowMs, liveSessionIds)`, `sortNeedsYou(entries, nowMs)`, `staleEntries(items, nowMs, liveSessionIds)`, `ESCALATE_MS` from `/attention.js`; `starOption(item)`, `createStagedSend({delayMs,setTimeoutFn,clearTimeoutFn,send})` from `/star.js`; `projectMonogram(name)` from `/colors.js`; `paginate(items, limit)` from `/search.js`; `liveSessionIds()`, `themeName()` and `pcolor(name)` from Task 7 (this task declares none of them); `orderedIds(ids: string[]) -> string[]` from Task 9 — every render of the Needs-you list must run through it so sort order pins per session and membership stages under the pointer; the existing `projectFilter`, `shown`, `emptyMsg`, `moreButton`, `esc`, `btn`, `act`, `jumpToCard` in app.js. Tab counts belong to Task 8's `tabCounts` loop — this task sets no counts.
 - Produces (module `public/rowview.js`): `secondaryLine(item) -> string`, `streamCounts(entities) -> Map<string,number>`, `agentCounts(entities) -> Map<string,number>`, `rowModel(entry, { streams, agents, showProject }) -> RowModel`, `urgencyChip(model, nowMs) -> { text, tone }`, `relMs(ms) -> string`, `FRESH_MS`, `AGING_MS`, `freshnessTone(ageMs) -> 'fresh'|'aging'|'quiet'`, `ageChip(ageMs) -> { tone, text }`, `needsYouEntries(items, boards, nowMs, liveSessionIds, extra?) -> Entry[]`, `staleFoldLabel(n) -> string`
 - Produces (app.js): `renderNeedsYou(g, boardsInView, nowMs)`, `needsRowEl(model, entry, nowMs)`, `staleFoldEl(entries, opts, nowMs)`, `stageDismiss(id)` and `undoDismiss(id)` — **Task 17's keyboard `x` routes through `stageDismiss(id)`** so mouse and keyboard share the same 5s staged undo.
 
@@ -2788,6 +2804,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 ```ts
 // test/rowview.test.ts
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
 import {
   secondaryLine, streamCounts, agentCounts, rowModel, urgencyChip, relMs,
   FRESH_MS, AGING_MS, freshnessTone, ageChip, needsYouEntries, staleFoldLabel,
@@ -2964,6 +2981,26 @@ describe('staleFoldLabel', () => {
   it('names the collapsed decide-later fold', () => {
     expect(staleFoldLabel(3)).toBe('stale — decide later (3)')
     expect(staleFoldLabel(1)).toBe('stale — decide later (1)')
+  })
+})
+
+// spec §10: the row-staging pin (Task 9's orderedIds) only protects the list if
+// renderNeedsYou actually runs its entries through it BEFORE paginating. This is
+// wiring inside app.js, which — like the rest of the shell — has no DOM test
+// harness in this repo (see test/shell.test.ts), so the check is source-level:
+// the same pattern already used to pin renderNeedsYou/jumpToCard/openTriage wiring.
+describe('renderNeedsYou reorders through the poll-suspension pin before paginating (spec §10)', () => {
+  const js = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8')
+  const start = js.indexOf('function renderNeedsYou')
+  const fn = js.slice(start, js.indexOf('function staleFoldEl', start))
+
+  it('runs the entries through orderedIds', () => {
+    expect(start, 'renderNeedsYou is missing').toBeGreaterThan(-1)
+    expect(fn).toContain('orderedIds(')
+  })
+
+  it('reorders BEFORE paginating — reordering after slicing cannot stop a new row landing under the pointer', () => {
+    expect(fn.indexOf('orderedIds(')).toBeLessThan(fn.indexOf('paginate('))
   })
 })
 ```
@@ -3192,14 +3229,14 @@ void paginateGroups // kept exported+tested (spec §15); the viewer no longer ca
 
 `public/app.js:106-111` — in `render()`, swap the needs-you wiring. The filtered+searched
 `boards` go to the renderer; Task 8's `tabCounts` loop keeps counting `lastData` and stays
-untouched — do not add a `setCount('needsYou', …)` here:
+untouched — do not add a `setCount('needsYou', …)` here. There is no `renderArchived(archived)`
+call to keep: Task 6 deleted the function and Task 8's wiring never re-added it:
 
 ```js
   renderNeedsYou(g, boards, Date.now())
   renderGroups('notes', g.notes)
   renderDone(g.done)
   renderBoards(boards)
-  renderArchived(archived)
 ```
 
 `public/app.js:121-128` — `rel()` stops being a second age formatter:
@@ -3261,7 +3298,14 @@ function renderNeedsYou(g, boardsInView, nowMs) {
   const live = liveSessionIds()
   // §7: the LIST is scoped by the rail + search (boardsInView); the tab count is
   // computed from lastData by Task 8 and never sees this slice
-  const entries = needsYouEntries(items, boardsInView, nowMs, live)
+  const unordered = needsYouEntries(items, boardsInView, nowMs, live)
+  // §10: run every entry through Task 9's poll-suspension pin BEFORE paginating —
+  // this is what stops a freshly-arrived row from jumping into the visible slice
+  // while the pointer is over the list. orderedIds() only ever returns ids that
+  // were already pinned or that hovering:false let through, so entries that got
+  // staged simply do not appear in `ordered` until the pointer leaves.
+  const entryById = new Map(unordered.map((e) => [e.kind === 'row' ? e.row.id : e.item.id, e]))
+  const entries = orderedIds([...entryById.keys()]).map((id) => entryById.get(id)).filter(Boolean)
   const entities = [...items, ...boardsInView]
   const opts = {
     streams: streamCounts(entities),
@@ -3294,7 +3338,7 @@ function needsRowEl(m, entry, nowMs) {
   el.dataset.cardId = m.id
   el.tabIndex = 0
   const chip = urgencyChip(m, nowMs)
-  const color = projectColor(m.project, themeName())
+  const color = pcolor(m.project)
   const glyph = m.kind === 'row' ? `<button class="nrow-glyph" title="open board: ${esc(m.boardTitle ?? '')}">🚧</button>` : ''
   const projBit = m.projectLabel ? `<span class="nrow-proj" title="${esc(m.project)}">${esc(m.projectLabel)}</span>` : ''
   const agentBit = m.agent ? `<span class="nrow-agent">${esc(m.agent)}</span>` : ''
@@ -3413,7 +3457,7 @@ vocabulary with Live, and a collapsed stale fold at the foot."
 - Modify: `public/style.css` (append card styles at EOF)
 
 **Interfaces:**
-- Consumes: `rowModel`, `urgencyChip` from `/rowview.js`; `projectColor(name, theme)` from `/colors.js`; `classifyLiveness(item, nowMs, liveSessionIds)` from `/attention.js`; `openRowId`, `setOpenRow(id)`, `renderIfIdle()` from Task 9 (this task declares no expansion state of its own); `liveSessionIds()`, `themeName()` from Task 7; existing `answerEl(it)`, `rowCardEl(b, r)`, `esc()`, `btn()`, `act()` in app.js
+- Consumes: `rowModel`, `urgencyChip` from `/rowview.js`; `pcolor(name)` from Task 7 (the persisted-color wrapper — do not call `projectColor()` directly); `classifyLiveness(item, nowMs, liveSessionIds)` from `/attention.js`; `openRowId`, `setOpenRow(id)`, `renderIfIdle()` from Task 9 (this task declares no expansion state of its own); `liveSessionIds()`, `themeName()` from Task 7; existing `answerEl(it)`, `rowCardEl(b, r)`, `esc()`, `btn()`, `act()` in app.js
 - Produces: `optionOrder(options) -> Option[]`, `recommendedWarning(options) -> string | null`, `cardSections(it, { done }) -> { detail, context, annotation, reply, options, recWarning, showAnswer, showActions, answered }` (from `public/card.js`); `itemCardEl(it, { done, nowMs, liveness, header })`, `rowCardBodyEl(entry, m, nowMs)`, `toggleRow(el, m, entry, nowMs)`, `changeAnswer(it)` in app.js
 
 - [ ] **Step 1: Write the failing test**
@@ -3570,7 +3614,7 @@ function itemCardEl(it, { done = false, nowMs = Date.now(), liveness = 'parked',
   const el = document.createElement('div')
   el.className = `card card-${it.kind}`
   const s = cardSections(it, { done })
-  const color = projectColor(it.project, themeName())
+  const color = pcolor(it.project)
   const chip = urgencyChip(
     { kind: 'item', liveness, created_at: it.created_at, answered: s.answered }, nowMs)
   const head = header ? `
@@ -3991,7 +4035,7 @@ This task is the SOLE owner of the Boards tab chrome. Task 6 emits only
 toggle and the archived fold are built here, in JS.
 
 **Interfaces:**
-- Consumes: `isBlockedRowAttention(row) -> boolean` from `public/attention.js` (Task 3); `projectColor(name, theme) -> { dot, wash }` from `public/colors.js` (Task 4); `themeName() -> 'light' | 'dark'` (Task 7); existing `paginate(items, limit) -> { visible, remaining }` from `public/search.js`.
+- Consumes: `isBlockedRowAttention(row) -> boolean` from `public/attention.js` (Task 3); `pcolor(name) -> { dot, wash }` and `themeName() -> 'light' | 'dark'` from Task 7 (the persisted-color wrapper — do not call `projectColor()` directly); `triageDeck` and `triageRemoveCurrent()` from the existing triage lightbox (`app.js:187-227`); existing `paginate(items, limit) -> { visible, remaining }` from `public/search.js`.
 - Produces: `boardRowsView(board, opts) -> Array<{ row, num, needsAnswer }>`, `progressLabel(progress) -> { primary, secondary, complete }`, `hiddenDoneCount(board, opts) -> number`, `lingeringBoards(prevActiveIds, boards, archived) -> Board[]` (all in `public/boards.js`); in `app.js`: `rowAnswerEl(b, r, onSaved?) -> HTMLElement`, `rowPanelEl(b, r, readOnly) -> HTMLElement`, `boardsHeader() -> HTMLElement`, `renderBoards(boards, archived) -> void`.
 
 - [ ] **Step 1: Write the failing test**
@@ -4000,6 +4044,7 @@ Create `test/boards.test.ts`:
 
 ```ts
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
 import { boardRowsView, progressLabel, hiddenDoneCount, lingeringBoards } from '../public/boards.js'
 
 type Row = Parameters<typeof boardRowsView>[0]['rows'][number]
@@ -4097,6 +4142,26 @@ describe('lingeringBoards', () => {
     expect(lingeringBoards(['b1'], [], [bd('b1', 2, 2)]).map((b) => b.id)).toEqual(['b1'])
   })
 })
+
+// rowCardEl mounts both in the triage lightbox (triageDeck open) and, since
+// Task 11, inline in the Needs-you list (triageDeck null). Saving a blocked-row
+// answer from the list must not throw just because there is no deck entry to
+// remove — app.js has no DOM test harness in this repo (see test/shell.test.ts),
+// so this is a source-level pin on the guard.
+describe('rowCardEl never calls triageRemoveCurrent without a deck open', () => {
+  const js = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8')
+  const start = js.indexOf('function rowCardEl')
+  const fn = js.slice(start, start + 800) // rowCardEl's whole body fits comfortably in this window
+
+  it('rowCardEl exists and guards the onSaved callback on triageDeck', () => {
+    expect(start, 'rowCardEl is missing').toBeGreaterThan(-1)
+    expect(fn).toContain('if (triageDeck) triageRemoveCurrent()')
+  })
+
+  it('never passes the bare triageRemoveCurrent reference as onSaved — that throws when the deck is closed', () => {
+    expect(js).not.toContain('rowAnswerEl(b, r, triageRemoveCurrent)')
+  })
+})
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -4186,11 +4251,15 @@ In `public/app.js`, add ONE new import line at the top:
 import { boardRowsView, progressLabel, hiddenDoneCount, lingeringBoards } from '/boards.js'
 ```
 
-`projectColor` is already on the existing `import { … } from '/colors.js'` line and
-`themeName()` is already declared (Task 7) — consume both bindings, do not add a
-second import and do not re-declare a theme helper.
+`pcolor(name)` is already declared (Task 7, wrapping `projectColor` with
+`localStorage` persistence) — consume it directly. Do not call `projectColor()`
+here, do not add a second `/colors.js` import, and do not re-declare a theme
+or color helper.
 
-Replace `rowCardEl` with a card that delegates its input to a shared answer row:
+Replace `rowCardEl` with a card that delegates its input to a shared answer row. This
+MUST preserve Task 9's poll-suspension wiring — the original `rowCardEl` input listener
+called `resumeRender()` on every keystroke so a non-empty row draft holds the poll; losing
+that here would silently let the 3s rebuild eat an in-progress answer:
 
 ```js
 // rows the user expanded in the matrix (context + answer panel), by row id —
@@ -4206,7 +4275,7 @@ function rowAnswerEl(b, r, onSaved) {
   input.className = 'reply-input'
   input.placeholder = r.status === 'blocked' ? 'tell the agent how to proceed…' : 'your note on this row…'
   input.value = rowDrafts[r.id] ?? ''
-  input.addEventListener('input', () => { rowDrafts[r.id] = input.value })
+  input.addEventListener('input', () => { rowDrafts[r.id] = input.value; resumeRender() })
   input.addEventListener('focus', () => { rowFocusId = r.id })
   const save = async () => {
     if (!input.value.trim()) return
@@ -4241,6 +4310,11 @@ function rowPanelEl(b, r, readOnly = false) {
   return wrap
 }
 
+// `rowCardEl` mounts in TWO places: the triage lightbox (where `triageDeck` is
+// open) and, since Task 11, the inline Needs-you accordion (where it is `null`).
+// Guard the onSaved callback here, at the definition, so neither call site has
+// to know which context it is in — answering a blocked row from the list must
+// not throw just because there is no deck to remove it from.
 function rowCardEl(b, r) {
   const wrap = document.createElement('div')
   wrap.className = 'lb-row-card'
@@ -4250,7 +4324,7 @@ function rowCardEl(b, r) {
     ${r.note ? `<div class="detail">${esc(r.note)}</div>` : ''}
     ${r.context ? `<div class="detail lb-context">${esc(r.context)}</div>` : ''}
     ${r.annotation ? `<div class="annotation">📝 ${esc(r.annotation)}</div>` : ''}`
-  wrap.appendChild(rowAnswerEl(b, r, triageRemoveCurrent))
+  wrap.appendChild(rowAnswerEl(b, r, () => { if (triageDeck) triageRemoveCurrent() }))
   return wrap
 }
 ```
@@ -4317,7 +4391,7 @@ function boardEl(b, archived = false, lingering = false) {
   const p = progressLabel(b.progress)
   el.className = `board${p.complete ? ' complete' : ''}${archived ? ' archived' : ''}${lingering ? ' lingering' : ''}`
   const stream = b.stream ? ` · ${esc(b.stream)}` : ''
-  const c = projectColor(b.project, themeName())
+  const c = pcolor(b.project)
   const hidden = hiddenDoneCount(b, { hideCompleted, showDone: showDoneBoards.has(b.id) })
   el.innerHTML = `
     <summary class="card-summary">
@@ -4398,15 +4472,18 @@ one line immediately before the `await fetch(.../archive…)` call:
 
 Delete `renderRowToggle` entirely and its call in `render()` — the `#rowTabs` host
 it wrote into no longer exists, so leaving it would throw on the first render. In
-`render()`, replace the two board calls with one:
+`render()`, there is only the single-arg `renderBoards(boards)` call left by Task
+10 (Tasks 8 and 10 never wire a separate `renderArchived` call, so there is nothing
+to merge away) — give it the archived list too:
 
 ```js
   renderBoards(boards, archived)
 ```
 
-Delete the `setCount('archived', archived.length)` line from the count wiring:
-the archived fold lives inside the Boards panel and has no tab of its own. Keep
-`setCount('boards', …)` as the tab wiring leaves it.
+There is no `setCount('archived', …)` call anywhere in the count wiring to delete —
+the archived fold lives inside the Boards panel and has no tab of its own, and Task
+8's `tabCounts` loop only ever iterates `TAB_IDS`. Keep `setCount('boards', …)` as
+the tab wiring leaves it.
 
 Append the Boards chrome + matrix CSS to `public/style.css` (`.tab-header` /
 `.header-toggle` are declared here once and reused by the Needs-you header in
@@ -5199,7 +5276,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 - Create: `public/badge.js`
 - Create: `public/badge.d.ts`
 - Test: `test/badge.test.ts`
-- Modify: `public/app.js` — the `/attention.js` import line (add `attentionCount` to it; Task 3 created that line), a NEW `/badge.js` import line, `render()` (call `applyBadge()` first), `load()` (boot focus), and the bottom init block (Task 8 owns it — insert EXACTLY ONE line, `initFocusHash()` after `initSearch()`)
+- Modify: `public/app.js` — a NEW `/badge.js` import line (the `/attention.js` import line is NOT touched — `attentionCount` is already on it from Task 8, and this task needs no other name from that module), `render()` (call `applyBadge()` first), `load()` (boot focus), and the bottom init block (Task 8 owns it — insert EXACTLY ONE line, `initFocusHash()` after `initSearch()`)
 - Modify: `electron/main.cjs:19-32` (requires + module handles), `electron/main.cjs:108-138` (`startAttentionWatch`)
 - Verify only, no edit: `scripts/package-app.sh` (must keep staging `public/`)
 
@@ -5312,10 +5389,13 @@ Expected: PASS
 
 - [ ] **Step 5: Wire the browser badge + focusItem into app.js**
 
-Imports — `/attention.js` is already imported (Task 3), so **edit that existing line** rather than adding a second one, and add ONE new line for the new module:
+Imports — this task needs no new name from `/attention.js`: `attentionCount` is
+already on that import line (Task 8), so **do not touch it** — by this point in
+the plan it also carries `classifyLiveness` (Task 11) and `staleEntries` (Task
+10); re-quoting the line here without those names would delete them and break
+every render that uses them. Add only the one new line for the new module:
 
 ```js
-import { attentionCount, attentionEntries, classifyLiveness, countsByProject, sortNeedsYou } from '/attention.js'
 import { titleWithBadge, focusHashFor, parseFocusHash } from '/badge.js'
 ```
 
@@ -5536,12 +5616,13 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 - Create: `public/keys.js`
 - Create: `public/keys.d.ts`
 - Test: `test/keys.test.ts`
-- Modify: `public/app.js` — a NEW `/keys.js` import line and the existing `/card.js` import line (add `optionOrder` to it); `public/app.js:303-309` (retire the triage-only keydown); Task 7's `renderRail()` and Task 8's `initTabs()` (roving-tablist wiring); Task 10's `needsRowEl` (liveness glyph on the chip); Task 12's star slot (accessible name); the bottom init block (Task 8 owns it — insert EXACTLY ONE line, `initKeys()` after `initSearch()`)
+- Modify: `public/app.js` — a NEW `/keys.js` import line and the existing `/card.js` import line (add `optionOrder` to it); `public/app.js:303-309` (retire the triage-only keydown, including its `'t'` opener — `initKeys` owns `t` now); Task 7's `renderRail()` and Task 8's `initTabs()` (roving-tablist wiring); Task 10's `needsRowEl` (liveness glyph on the chip); Task 12's star slot (accessible name); the bottom init block (Task 8 owns it — insert EXACTLY ONE line, `initKeys()` after `initSearch()`)
 - Modify: `public/style.css` — append a small focus/selection block at EOF (no `@media` rules; those are Task 18's alone)
+- Modify: `test/shell.test.ts` — the triage-reachability assertion moves with `'t'`: it no longer checks for `e.key === 't'` in `app.js` (that literal is gone; Task 6's `initTriage` listener lost its `'t'` branch and its replacement lives in `public/keys.js`, which has its own test)
 
 **Interfaces:**
-- Consumes: `setOpenRow(id)` and `openRowId` from Task 9; `render()`; `optionOrder(options)` from `public/card.js` (Task 11) so keyboard numbers match the on-screen order; `rowStarOption(m, item)` from `public/rowview.js` and the `.nrow-star` slot from Task 12; `dismissStage` / `stagedDismiss` (the staged 5s-undo dismiss path) from Task 10; the liveness strings `'waiting'|'parked'|'stale'` produced by `classifyLiveness` in `public/attention.js` (Task 3); the shell's `#rail` / `#tabs` / `#needsYouList` hosts (Task 6) and the `.nrow[data-card-id]` / `.nrow-card` markup (Task 10); existing `sendReply(id, text, context)` (`app.js:700`), `act(id, action)` (`app.js:833`), `triageDeck` / `renderTriage()` / `closeTriage()` (`app.js:187-310`).
-- Produces: `keyAction(key: string, ctx?: KeyContext) -> KeyIntent | null`, `rovingIndex(current: number, key: string, count: number) -> number`, `ariaAnswerLabel(option) -> string | null`, `livenessGlyph(liveness) -> { glyph: string, text: string }`, `KEYS`; and in app.js `selectRow(id)`, `runIntent(intent)`, `dismissRowStaged(id)`, `initKeys()`, `wireTablist(host, orientation)`.
+- Consumes: `setOpenRow(id)` and `openRowId` from Task 9; `render()`; `optionOrder(options)` from `public/card.js` (Task 11) so keyboard numbers match the on-screen order; `rowStarOption(m, item)` from `public/rowview.js` and the `.nrow-star` slot from Task 12; `dismissStage` / `stagedDismiss` (the staged 5s-undo dismiss path) from Task 10; the liveness strings `'waiting'|'parked'|'stale'` produced by `classifyLiveness` in `public/attention.js` (Task 3); the shell's `#rail` / `#tabs` / `#needsYouList` hosts (Task 6) and the `.nrow[data-card-id]` / `.nrow-card` markup (Task 10); existing `sendReply(id, text, context)` (`app.js:700`), `act(id, action)` (`app.js:833`), `openTriage()`, `triageDeck` / `findEntryData(entry)` / `renderTriage()` / `closeTriage()` (`app.js:187-310`).
+- Produces: `keyAction(key: string, ctx?: KeyContext) -> KeyIntent | null`, `rovingIndex(current: number, key: string, count: number) -> number`, `ariaAnswerLabel(option) -> string | null`, `livenessGlyph(liveness) -> { glyph: string, text: string }`, `KEYS`; and in app.js `selectRow(id)`, `keyTargetItem()` (the reply target for the keyboard — the deck's on-screen entry while `triageDeck` is open, `selectedItem()` otherwise), `runIntent(intent)`, `dismissRowStaged(id)`, `initKeys()`, `wireTablist(host, orientation)`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -5581,6 +5662,20 @@ describe('keyAction — never steal a keystroke from an input', () => {
     expect(keyAction('x', { typing: true })).toBeNull()
     expect(keyAction('1', { typing: true, optionCount: 3 })).toBeNull()
     expect(keyAction('Escape', { typing: true })).toEqual({ type: 'blur' })
+  })
+})
+
+// The Now strip's "Triage →" button is gone (Task 6); 't' is the deck's only
+// remaining door, and it must not fight the deck's own keys once open.
+describe("keyAction — 't' opens the triage deck", () => {
+  it('opens the deck when it is closed', () => {
+    expect(keyAction('t', {})).toEqual({ type: 'openDeck' })
+  })
+  it('is inert once the deck is already open — deck keys own the keyboard there', () => {
+    expect(keyAction('t', { deckOpen: true })).toBeNull()
+  })
+  it('never steals a "t" typed into a field', () => {
+    expect(keyAction('t', { typing: true })).toBeNull()
   })
 })
 
@@ -5671,6 +5766,9 @@ export function keyAction(key, ctx = {}) {
     return { type: 'clearSelection' }
   }
   if (typing) return null // an input owns every other keystroke
+  // the Now strip's "Triage →" button is gone (Task 6) — 't' is the deck's only
+  // remaining door, and it only opens: an already-open deck owns its own keys
+  if (key === 't' && !deckOpen) return { type: 'openDeck' }
   if (deckOpen) {
     if (key === 'ArrowRight' || KEYS.next.includes(key)) return { type: 'deckNext' }
     if (key === 'ArrowLeft' || KEYS.prev.includes(key)) return { type: 'deckPrev' }
@@ -5750,6 +5848,7 @@ export type KeyIntent =
   | { type: 'deckPrev' }
   | { type: 'deckNext' }
   | { type: 'closeDeck' }
+  | { type: 'openDeck' }
 
 export const KEYS: { next: string[]; prev: string[] }
 export function keyAction(key: string, ctx?: KeyContext): KeyIntent | null
@@ -5801,6 +5900,16 @@ function selectedItem() {
   return allItems(lastData.g).find((i) => i.id === selectedId) ?? null
 }
 
+// The keyboard's reply target. `selectedId` is the LIST's selection — while the
+// triage deck is open that is a different row than whatever the lightbox is
+// showing, so a bare `selectedItem()` would let '1'-'4' answer the wrong item
+// (a wrong-item write). While the deck is open, the target is always the
+// entry currently on screen in it.
+function keyTargetItem() {
+  if (triageDeck) return findEntryData(triageDeck.entries[triageDeck.index])?.it ?? null
+  return selectedItem()
+}
+
 // Same staged 5s-undo path the ✕ button uses (Task 10) — a keyboard dismiss
 // must be exactly as reversible as a mouse dismiss.
 function dismissRowStaged(id) {
@@ -5812,7 +5921,7 @@ function dismissRowStaged(id) {
 
 function runIntent(intent) {
   const ids = rowEls().map((el) => el.dataset.cardId)
-  const it = selectedItem()
+  const it = keyTargetItem()
   switch (intent.type) {
     case 'move': {
       if (!ids.length) return
@@ -5870,6 +5979,9 @@ function runIntent(intent) {
     case 'closeDeck':
       closeTriage()
       return
+    case 'openDeck':
+      openTriage() // the Now strip's button is gone (Task 6) — 't' is the deck's door now
+      return
   }
 }
 
@@ -5881,11 +5993,14 @@ function initKeys() {
     if (e.defaultPrevented) return
     const t = e.target
     const typing = !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)
+    // optionCount must come from the SAME target runIntent will answer — the
+    // deck entry while it's open, the list selection otherwise — or a
+    // keyboard '1'-'4' can validate against one item and answer another.
     const intent = keyAction(e.key, {
       typing,
       deckOpen: !!triageDeck,
       expanded: openRowId != null,
-      optionCount: optionOrder(selectedItem()?.options).length,
+      optionCount: optionOrder(keyTargetItem()?.options).length,
     })
     if (!intent) return
     e.preventDefault()
@@ -5914,15 +6029,15 @@ function wireTablist(host, orientation) {
 }
 ```
 
-Delete the deck-only listener at `public/app.js:303-309` (the `document.addEventListener('keydown', …)` inside `initTriage`) — `initKeys` now owns every key, including `Escape`/`ArrowLeft`/`ArrowRight` in the deck.
+Delete the deck-only listener at `public/app.js:303-309` (the `document.addEventListener('keydown', …)` inside `initTriage`) — `initKeys` now owns every key, including `Escape`/`ArrowLeft`/`ArrowRight` in the deck and the `'t'` opener that listener also carried (Task 6's `if (!triageDeck && !typing && e.key === 't')` branch goes with it; `keyAction`'s `openDeck` intent replaces it).
 
-**Rail (Task 7's `renderRail`).** `renderPills` is gone; the roving wiring goes at the end of `renderRail`, right after the loop that appends the `button.rail-tab` elements. Each tab already carries `role="tab"` and `aria-selected`; add the roving tabIndex and register the host:
+**Rail (Task 7's `renderRail`).** `renderPills` is gone; the roving wiring goes at the end of `renderRail`, right after the loop that appends the `button.rail-tab` elements. Each tab already carries `role="tab"` and `aria-selected`; add the roving tabIndex and register the host. `renderRail` names its host `host` (`const host = document.getElementById('rail')`) — there is no local variable named `rail`, so use `host`, not `rail`:
 
 ```js
-  for (const b of rail.querySelectorAll('.rail-tab')) {
+  for (const b of host.querySelectorAll('.rail-tab')) {
     b.tabIndex = b.getAttribute('aria-selected') === 'true' ? 0 : -1
   }
-  wireTablist(rail, 'vertical')
+  wireTablist(host, 'vertical')
 ```
 
 **Top tabs (Task 8's `initTabs`).** Same treatment for the horizontal strip — add inside `initTabs`, after the click listeners are attached:
@@ -5958,6 +6073,59 @@ and, in `selectTab(id)` (Task 8), keep the roving index in sync with the selecti
 
 Init block (owned by Task 8) — insert **exactly one line**, `initKeys()`, after `initSearch()`.
 
+**Retarget the stale shell assertion.** Task 6's `test/shell.test.ts` pins
+`e.key === 't'` inside `app.js` — that literal is gone now that the triage-only
+keydown listener is deleted and `'t'` is handled by `keyAction`/`runIntent`
+instead. Edit that test so it checks what still has to be true (the deck stays
+reachable) instead of a string that no longer exists:
+
+```ts
+  it('keeps the triage deck reachable now that the Now strip is gone', () => {
+    expect(js).toContain('openTriage()')
+  })
+```
+
+**Pin the wrong-item fix with a wiring test.** Append this to `test/keys.test.ts`
+— it exercises the app.js wiring this step just added, so add the `readFileSync`
+import alongside the existing ones and this `describe` at the end of the file:
+
+```ts
+import { readFileSync } from 'node:fs'
+
+// spec §13 regression: keyboard '1'-'4' must answer whatever the triage deck is
+// SHOWING, not whatever the list still has selected underneath it. app.js has no
+// DOM test harness in this repo (see test/shell.test.ts), so this is source-level.
+describe('app.js wiring — deck-open keyboard options target the deck entry, not the list selection', () => {
+  const js = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8')
+
+  it('defines keyTargetItem, deriving from the deck entry while triageDeck is open', () => {
+    const start = js.indexOf('function keyTargetItem')
+    expect(start, 'keyTargetItem is missing').toBeGreaterThan(-1)
+    const fn = js.slice(start, start + 400)
+    expect(fn).toContain('triageDeck')
+    expect(fn).toContain('findEntryData(triageDeck.entries[triageDeck.index])')
+  })
+
+  it('runIntent resolves its target through keyTargetItem(), not a bare selectedItem()', () => {
+    const start = js.indexOf('function runIntent')
+    const body = js.slice(start, js.indexOf('function initKeys'))
+    expect(body).toContain('keyTargetItem()')
+    expect(body).not.toContain('const it = selectedItem()')
+  })
+
+  it("initKeys computes optionCount from the same target — 1-4 can't validate against one item and answer another", () => {
+    const start = js.indexOf('function initKeys')
+    const body = js.slice(start, js.indexOf('function wireTablist'))
+    expect(body).toContain('optionCount: optionOrder(keyTargetItem()?.options).length')
+  })
+})
+```
+
+Run: `fnm exec --using=24 -- npx vitest run test/keys.test.ts test/shell.test.ts`
+Expected: PASS — the pure `keyAction`/`rovingIndex`/etc. suite from Step 4 stays
+green, the new wiring describe passes now that Step 5 exists, and the retargeted
+shell assertion passes now that `'t'` has moved out of `app.js`.
+
 - [ ] **Step 6: Add the focus / selection styling**
 
 Append to the end of `public/style.css` (no `@media` rules here — Task 18 owns every responsive block, and it appends after this one):
@@ -5978,17 +6146,20 @@ Expected: PASS
 - [ ] **Step 8: Commit**
 
 ```bash
-git add public/keys.js public/keys.d.ts test/keys.test.ts public/app.js public/style.css
+git add public/keys.js public/keys.d.ts test/keys.test.ts test/shell.test.ts public/app.js public/style.css
 git commit -m "feat(viewer): keyboard map and accessibility pass
 
 Spec §13: j/k move, Enter expands, 1-4 pick option N (ordered by card.js's
-optionOrder so numbers match the screen), x dismiss, e resolve, / search, Esc
-collapses — as ONE pure mapping (public/keys.js) shared by the needs-you list
-and the triage deck, so the two can't drift. The keyboard dismiss goes through
-the same staged 5s-undo path as the ✕ button. #rail and #tabs become real
-tablists with roving focus, focus is taken on expand (.nrow-card) and returned
-to the .nrow on collapse, the star's accessible name reads 'Answer: <label>'
-from one helper, and the urgency chip carries a glyph beside its colour.
+optionOrder so numbers match the screen), x dismiss, e resolve, / search, t
+opens the triage deck (moved off the deleted Now strip), Esc collapses — as
+ONE pure mapping (public/keys.js) shared by the needs-you list and the triage
+deck, so the two can't drift. While the deck is open, keyboard option-numbers
+target the entry the deck is showing (keyTargetItem), not whatever the list
+still has selected underneath it. The keyboard dismiss goes through the same
+staged 5s-undo path as the ✕ button. #rail and #tabs become real tablists
+with roving focus, focus is taken on expand (.nrow-card) and returned to the
+.nrow on collapse, the star's accessible name reads 'Answer: <label>' from
+one helper, and the urgency chip carries a glyph beside its colour.
 
 Co-Authored-By: Claude <noreply@anthropic.com>"
 ```

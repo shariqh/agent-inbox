@@ -5,6 +5,7 @@ import type { Item } from '../src/store.js'
 function item(p: Partial<Item>): Item {
   return {
     id: p.id ?? 'x', project: p.project ?? 'p', stream: p.stream ?? '', agent: p.agent ?? 'claude-code',
+    session: p.session ?? null,
     kind: p.kind ?? 'note', title: p.title ?? 't', detail: p.detail ?? '', context: p.context ?? '', status: p.status ?? 'open',
     annotation: p.annotation ?? null, created_at: p.created_at ?? '2026-07-12T00:00:00.000Z', resolved_at: p.resolved_at ?? null,
     options: p.options ?? null, reply: p.reply ?? null, reply_context: p.reply_context ?? null, replied_at: p.replied_at ?? null, reply_seen_at: p.reply_seen_at ?? null,

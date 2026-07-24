@@ -20,6 +20,9 @@ export interface Item {
   project: string
   stream: string
   agent: string
+  // the MCP session that raised this item — lets the viewer tell whether the
+  // asking agent is still alive (null on legacy rows and non-agent inserts)
+  session: string | null
   kind: Kind
   title: string
   detail: string
@@ -39,6 +42,7 @@ export interface NewItem {
   project: string
   stream: string
   agent: string
+  session?: string
   kind: Kind
   title: string
   detail?: string
@@ -126,6 +130,7 @@ function migrate(db: Database.Database): void {
   ensureColumn(db, 'items', 'reply_context', 'TEXT')
   ensureColumn(db, 'items', 'replied_at', 'TEXT')
   ensureColumn(db, 'items', 'reply_seen_at', 'TEXT')
+  ensureColumn(db, 'items', 'session', 'TEXT')
 }
 
 // additive migration for DBs created before the column existed
@@ -145,13 +150,14 @@ export function insertItem(db: Database.Database, item: NewItem): string {
   }
   const id = randomUUID()
   db.prepare(
-    `INSERT INTO items (id, project, stream, agent, kind, title, detail, context, options, status, created_at)
-     VALUES (@id, @project, @stream, @agent, @kind, @title, @detail, @context, @options, 'open', @created_at)`,
+    `INSERT INTO items (id, project, stream, agent, session, kind, title, detail, context, options, status, created_at)
+     VALUES (@id, @project, @stream, @agent, @session, @kind, @title, @detail, @context, @options, 'open', @created_at)`,
   ).run({
     id,
     project: item.project,
     stream: item.stream,
     agent: item.agent,
+    session: item.session ?? null,
     kind: item.kind,
     title: item.title,
     detail: item.detail ?? '',

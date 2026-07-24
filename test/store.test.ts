@@ -531,3 +531,38 @@ describe('getBoard (agent read)', () => {
     expect(getBoard(db, 'p', 'cov')).toBeUndefined()
   })
 })
+
+describe('item session (liveness)', () => {
+  let db: Database.Database
+  beforeEach(() => { db = freshDb() })
+
+  it('items record the asking session; absent session is null', () => {
+    const asked = insertItem(db, { project: 'p', stream: '', agent: 'a', kind: 'question', title: 'which db?', session: 'sess-42' })
+    const anon = insertItem(db, { project: 'p', stream: '', agent: 'a', kind: 'note', title: 'no session' })
+    const items = listItems(db)
+    expect(items.find((i) => i.id === asked)!.session).toBe('sess-42')
+    expect(items.find((i) => i.id === anon)!.session).toBeNull()
+  })
+
+  it('listPending surfaces the session on open questions', () => {
+    insertItem(db, { project: 'p', stream: '', agent: 'a', kind: 'question', title: 'q', session: 'sess-7' })
+    expect(listPending(db, 'p')[0]!.session).toBe('sess-7')
+  })
+
+  it('openDb migrates a legacy items table missing the session column', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'inbox-legacy4-')), 'inbox.db')
+    const legacy = new Database(path)
+    legacy.exec(`
+      CREATE TABLE items (
+        id TEXT PRIMARY KEY, project TEXT NOT NULL, stream TEXT NOT NULL DEFAULT '',
+        agent TEXT NOT NULL DEFAULT 'unknown', kind TEXT NOT NULL, title TEXT NOT NULL,
+        detail TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'open',
+        annotation TEXT, created_at TEXT NOT NULL, resolved_at TEXT
+      );
+    `)
+    legacy.close()
+    const db2 = openDb(path)
+    insertItem(db2, { project: 'p', stream: '', agent: 'a', kind: 'question', title: 'q', session: 'sess-legacy' })
+    expect(listItems(db2)[0]!.session).toBe('sess-legacy')
+  })
+})

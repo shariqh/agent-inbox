@@ -63,6 +63,9 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
         project: s.project,
         stream: stream ?? s.stream,
         agent: s.agent,
+        // stamp the asking session so the viewer can tell "waiting" (this
+        // session is still in /api/activity) from "parked" (agent long gone)
+        session: sessionId,
         kind,
         title,
         detail,

@@ -90,6 +90,14 @@ describe('viewer api', () => {
     expect(item.reply_seen_at).toBeNull()
     expect(item.status).toBe('open') // replying is not resolving — the agent still has to act
   })
+
+  it('GET /api/items exposes the asking session so the viewer can judge liveness', async () => {
+    insertItem(db, { project: 'p', stream: '', agent: 'claude-code', kind: 'question', title: 'q', session: 'sess-1' })
+    insertItem(db, { project: 'p', stream: '', agent: 'claude-code', kind: 'note', title: 'n' })
+    const body = await (await createViewer(db).request('/api/items')).json()
+    expect(body.needsYou[0].items[0].session).toBe('sess-1')
+    expect(body.notes[0].items[0].session).toBeNull()
+  })
 })
 
 describe('boards api', () => {

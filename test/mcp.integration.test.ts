@@ -172,4 +172,26 @@ describe('mcp round-trip', () => {
     const board2 = JSON.parse((again.content as Array<{ text: string }>)[0]!.text)
     expect(board2.rows[0].annotation_unseen).toBe(false)
   }, 20000)
+
+  it('a flagged item records the asking session, matching its live activity row', async () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-session-')), 'inbox.db')
+    const transport = new StdioClientTransport({
+      command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath },
+    })
+    const client = new Client({ name: 'claude-code', version: '1.0.0' })
+    await client.connect(transport)
+    await new Promise((r) => setTimeout(r, 500)) // presence registers on the initialized notification
+
+    await client.callTool({ name: 'flag', arguments: { kind: 'question', title: 'which storage?' } })
+
+    // read BEFORE closing — process exit ends the activity row
+    const db = openDb(dbPath)
+    const live = listActivity(db)
+    expect(live).toHaveLength(1)
+    const item = listItems(db).find((i) => i.title === 'which storage?')!
+    expect(item.session).toBe(live[0]!.session)
+    expect(item.session).toMatch(/^[0-9a-f-]{36}$/)
+
+    await client.close()
+  }, 20000)
 })

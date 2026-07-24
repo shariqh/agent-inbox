@@ -69,27 +69,13 @@ function projectScoped({ g, boards, archived }) {
 function render() {
   const projects = collectProjects(lastData)
   if (projectFilter && !projects.includes(projectFilter)) projectFilter = null
-  renderPills('projectTabs', 'project', projects, projectFilter, (v) => {
-    projectFilter = v
-    if (v) localStorage.setItem(PROJECT_KEY, v)
-    else localStorage.removeItem(PROJECT_KEY)
-    resetPaging()
-    render()
-  })
   const agents = collectAgents(projectScoped(lastData))
   if (agentFilter && !agents.includes(agentFilter)) agentFilter = null
-  renderPills('agentTabs', 'agent', agents, agentFilter, (v) => {
-    agentFilter = v
-    if (v) localStorage.setItem(FILTER_KEY, v)
-    else localStorage.removeItem(FILTER_KEY)
-    resetPaging()
-    render()
-  })
+  renderAgentSelect(agents)
   renderRowToggle()
   // prune collapse state against ALL cards, not the filtered view, so
   // switching tabs never drops state for cards the filter is hiding
   liveCardIds = new Set([...allItems(lastData.g).map((i) => i.id), ...lastData.boards.map((b) => b.id), ...lastData.archived.map((b) => b.id)])
-  renderNow()
   const { g, boards, archived } = applySearch(filterData(lastData))
   const pillLive = (lastData.activity ?? []).filter((a) =>
     (!projectFilter || a.project === projectFilter) && (!agentFilter || a.agent === agentFilter))
@@ -107,12 +93,10 @@ function render() {
   renderGroups('notes', g.notes)
   renderDone(g.done)
   renderBoards(boards)
-  renderArchived(archived)
   setCount('needsYou', g.needsYou.reduce((n, gr) => n + gr.items.filter((i) => !i.reply).length, 0))
   setCount('notes', g.notes.reduce((n, gr) => n + gr.items.length, 0))
   setCount('done', g.done.length)
   setCount('boards', boards.length)
-  setCount('archived', archived.length)
   pruneCollapsedCards()
   renderTriage() // keep the open lightbox in sync with fresh data
 }
@@ -125,62 +109,6 @@ function rel(iso) {
   const h = Math.floor(m / 60)
   if (h < 24) return `${h}h ${m % 60}m`
   return `${Math.floor(h / 24)}d ${h % 24}h`
-}
-
-// the Now strip reflects GLOBAL state, ignoring filters: "do I need to do
-// anything?" must never be hidden by a filter. State-driven only — an
-// unanswered question stays loud however old it is.
-function renderNow() {
-  const host = document.getElementById('now')
-  const allQs = lastData.g.needsYou.flatMap((gr) => gr.items)
-  const qs = allQs.filter((i) => !i.reply) // answered questions are the agent's problem now
-  const awaitingPickup = allQs.filter((i) => i.reply && !i.reply_seen_at).length
-  // blocked board rows escalate: a board can ask for the human too
-  const blockedRows = lastData.boards.flatMap((b) => b.rows.filter((r) => r.status === 'blocked').map((r) => ({ b, r })))
-  const milestones = lastData.g.done.filter((i) => i.kind === 'done' && i.status === 'open').length
-  const total = lastData.boards.length
-  const complete = lastData.boards.filter((b) => b.progress.fraction === 1 && b.progress.countable > 0).length
-  const rest = []
-  if (awaitingPickup) rest.push(`${awaitingPickup} answered · awaiting agent`)
-  if (milestones) rest.push(`${milestones} milestone${milestones > 1 ? 's' : ''}`)
-  if (total) rest.push(`${total} board${total > 1 ? 's' : ''}${complete ? ` · ${complete} complete` : ''}`)
-  const tail = rest.length ? ` &nbsp;·&nbsp; ${rest.join(' &nbsp;·&nbsp; ')}` : ''
-  host.hidden = false
-  if (qs.length || blockedRows.length) {
-    // attention state carries ONLY what needs the human — ambient status
-    // (boards, milestones) stays out of the red banner
-    const parts = []
-    if (qs.length) {
-      const oldest = qs.reduce((a, b) => (a.created_at < b.created_at ? a : b))
-      parts.push(`${qs.length} question${qs.length > 1 ? 's' : ''} — oldest waiting ${rel(oldest.created_at)}`)
-    }
-    if (blockedRows.length) parts.push(`${blockedRows.length} blocked board row${blockedRows.length > 1 ? 's' : ''}`)
-    host.className = 'attention'
-    host.innerHTML = `<div class="now-head"><span><strong>Needs you:</strong> ${parts.join(' · ')}</span></div>`
-    const tri = btn('Triage →', openTriage)
-    tri.className = 'triage-btn'
-    host.querySelector('.now-head').appendChild(tri)
-    // each waiting item is a link straight to its card
-    const list = document.createElement('div')
-    list.className = 'now-items'
-    const link = (label, sectionId, cardId) => {
-      const a = document.createElement('a')
-      a.href = '#'
-      a.textContent = label
-      a.title = label
-      a.addEventListener('click', (e) => {
-        e.preventDefault()
-        jumpToCard(sectionId, cardId)
-      })
-      list.appendChild(a)
-    }
-    for (const q of qs) link(`${q.project} · ${q.title}`, 'needsYou', q.id)
-    for (const { b, r } of blockedRows) link(`🚧 ${b.title} · ${r.label}`, 'boards', b.id)
-    host.appendChild(list)
-  } else {
-    host.className = 'calm'
-    host.innerHTML = `Nothing needs you${tail}`
-  }
 }
 
 // ── triage mode: step through the needs-input set one card at a time ──
@@ -301,42 +229,29 @@ function initTriage() {
   lb.querySelector('.lb-prev').addEventListener('click', () => { triageDeck.index--; renderTriage() })
   lb.querySelector('.lb-next').addEventListener('click', () => { triageDeck.index++; renderTriage() })
   document.addEventListener('keydown', (e) => {
-    if (!triageDeck) return
     const typing = e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA'
+    // 't' opens the triage deck — the Now strip's button went with the strip
+    if (!triageDeck && !typing && e.key === 't') { openTriage(); return }
+    if (!triageDeck) return
     if (e.key === 'Escape') closeTriage()
     else if (!typing && e.key === 'ArrowLeft' && triageDeck.index > 0) { triageDeck.index--; renderTriage() }
     else if (!typing && e.key === 'ArrowRight' && triageDeck.index < triageDeck.entries.length - 1) { triageDeck.index++; renderTriage() }
   })
 }
 
-function jumpToCard(sectionId, cardId) {
-  document.getElementById(sectionId).open = true
+function jumpToCard(tabId, cardId) {
+  selectTab(tabId)
   const card = document.querySelector(`[data-card-id="${CSS.escape(cardId)}"]`)
-  if (card) {
-    card.open = true
-    card.scrollIntoView({ behavior: 'smooth', block: 'start' })
-  } else {
-    // the card may be hidden by an active filter — clear filters and retry
-    projectFilter = null
-    agentFilter = null
-    localStorage.removeItem(PROJECT_KEY)
-    localStorage.removeItem(FILTER_KEY)
-    render()
-    const retry = document.querySelector(`[data-card-id="${CSS.escape(cardId)}"]`)
-    if (retry) {
-      retry.open = true
-      retry.scrollIntoView({ behavior: 'smooth', block: 'start' })
-    }
-  }
+  if (!card) return
+  if (card instanceof HTMLDetailsElement) card.open = true
+  card.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
-function setCount(sectionId, n) {
-  const link = document.querySelector(`#sidebar a[data-target="${sectionId}"]`)
-  if (!link.dataset.base) link.dataset.base = link.textContent
-  link.textContent = n ? `${link.dataset.base} (${n})` : link.dataset.base
-  const h2 = document.querySelector(`#${sectionId} > summary h2`)
-  if (!h2.dataset.base) h2.dataset.base = h2.textContent
-  h2.textContent = n ? `${h2.dataset.base} (${n})` : h2.dataset.base
+function setCount(id, n) {
+  const el = document.querySelector(`.tab[data-tab="${id}"] .tab-count`)
+  if (!el) return // Live carries a presence dot, not a number
+  el.textContent = n ? String(n) : ''
+  el.hidden = !n
 }
 
 function filterData({ g, boards, archived }) {
@@ -380,6 +295,7 @@ function emptyMsg(base) {
 
 function renderRowToggle() {
   const host = document.getElementById('rowTabs')
+  if (!host) return // the boards header that hosts this arrives in Task 13
   const sig = String(hideCompleted)
   if (host.dataset.sig === sig) return
   host.dataset.sig = sig
@@ -399,26 +315,42 @@ function renderRowToggle() {
   host.appendChild(b)
 }
 
-function renderPills(hostId, label, values, current, onPick) {
-  const host = document.getElementById(hostId)
-  const sig = JSON.stringify([values, current])
-  if (host.dataset.sig === sig) return
-  host.dataset.sig = sig
-  host.innerHTML = ''
-  if (values.length === 0) return
-  // always render when there is anything to show — even a single-option strip
-  // tells you what you're looking at (and that the filter exists)
-  const tag = document.createElement('span')
-  tag.className = 'tab-label'
-  tag.textContent = label
-  host.appendChild(tag)
-  for (const v of [null, ...values]) {
-    const b = document.createElement('button')
-    b.textContent = v ?? 'All'
-    if (v === current) b.classList.add('active')
-    b.addEventListener('click', () => onPick(v))
-    host.appendChild(b)
+// the top bar's agent filter — a demoted dropdown scoped to the selected project.
+// option text goes through textContent, never innerHTML: agent names are agent-authored.
+function renderAgentSelect(agents) {
+  const sel = document.getElementById('agentSelect')
+  const sig = JSON.stringify([agents, agentFilter])
+  if (sel.dataset.sig === sig) return
+  sel.dataset.sig = sig
+  sel.innerHTML = ''
+  for (const v of [null, ...agents]) {
+    const o = document.createElement('option')
+    o.value = v ?? ''
+    o.textContent = v ?? 'all'
+    if (v === agentFilter) o.selected = true
+    sel.appendChild(o)
   }
+}
+
+function initAgentSelect() {
+  document.getElementById('agentSelect').addEventListener('change', (e) => {
+    agentFilter = e.target.value || null
+    if (agentFilter) localStorage.setItem(FILTER_KEY, agentFilter)
+    else localStorage.removeItem(FILTER_KEY)
+    resetPaging()
+    render()
+  })
+}
+
+// which content panel is visible; the tab strip drives this in Task 8
+function showPanel(id) {
+  for (const p of document.querySelectorAll('main > .panel')) p.hidden = p.id !== id
+  for (const t of document.querySelectorAll('#tabs .tab')) t.setAttribute('aria-selected', String(t.dataset.tab === id))
+  document.getElementById('gear').classList.toggle('active', id === 'setup')
+}
+
+function initGear() {
+  document.getElementById('gear').addEventListener('click', () => showPanel('setup'))
 }
 
 // live entries the user has expanded, by session id — survives the poll rebuild
@@ -487,7 +419,10 @@ function renderLive(entries) {
 }
 
 function renderGroups(sectionId, groups) {
-  const host = document.querySelector(`#${sectionId} .groups`)
+  // Needs-you owns a dedicated row host; Notes keeps the grouped layout
+  const host = sectionId === 'needsYou'
+    ? document.getElementById('needsYouList')
+    : document.querySelector(`#${sectionId} .groups`)
   const { groups: page, remaining } = paginateGroups(groups, shown[sectionId])
   host.innerHTML = groups.length ? '' : `<p class="empty">${emptyMsg('Nothing here.')}</p>`
   for (const grp of page) {
@@ -514,7 +449,6 @@ function renderGroups(sectionId, groups) {
     host.appendChild(box)
   }
   if (remaining > 0) host.appendChild(moreButton(sectionId, remaining))
-  renderSub(sectionId, page.flatMap((g) => g.items.map((it) => ({ id: it.id, label: it.title }))))
 }
 
 function renderDone(items) {
@@ -523,7 +457,6 @@ function renderDone(items) {
   host.innerHTML = items.length ? '' : `<p class="empty">${emptyMsg('Nothing yet.')}</p>`
   for (const it of visible) host.appendChild(itemEl(it, it.status !== 'open'))
   if (remaining > 0) host.appendChild(moreButton('done', remaining))
-  renderSub('done', visible.map((it) => ({ id: it.id, label: it.title })))
 }
 
 const GLYPH = { done: '✅', partial: '⚠️', missing: '❌', tracked: '🔜', na: '➖', blocked: '🚧' }
@@ -563,48 +496,12 @@ function cardify(el, id) {
   el.addEventListener('toggle', () => setCardCollapsed(id, !el.open))
 }
 
-function renderSub(sectionId, entries) {
-  const host = document.querySelector(`#sidebar .sub[data-sub="${sectionId}"]`)
-  // skip the rebuild when nothing changed, so poll cycles don't yank links out
-  // from under the cursor (or invalidate an in-flight click)
-  const sig = JSON.stringify(entries)
-  if (host.dataset.sig === sig) return
-  host.dataset.sig = sig
-  host.innerHTML = ''
-  for (const { id, label } of entries) {
-    const a = document.createElement('a')
-    a.href = '#'
-    a.textContent = label
-    a.title = label
-    a.addEventListener('click', (e) => {
-      e.preventDefault()
-      document.getElementById(sectionId).open = true
-      const card = document.querySelector(`[data-card-id="${CSS.escape(id)}"]`)
-      if (card) {
-        card.open = true
-        card.scrollIntoView({ behavior: 'smooth', block: 'start' })
-      }
-    })
-    host.appendChild(a)
-  }
-}
-
 function renderBoards(boards) {
   const host = document.querySelector('#boards .boards')
   const { visible, remaining } = paginate(boards, shown.boards)
   host.innerHTML = boards.length ? '' : `<p class="empty">${emptyMsg('No boards.')}</p>`
   for (const b of visible) host.appendChild(boardEl(b))
   if (remaining > 0) host.appendChild(moreButton('boards', remaining))
-  renderSub('boards', visible.map((b) => ({ id: b.id, label: b.title })))
-}
-
-function renderArchived(boards) {
-  const host = document.querySelector('#archived .boards')
-  const { visible, remaining } = paginate(boards, shown.archived)
-  host.innerHTML = boards.length ? '' : `<p class="empty">${emptyMsg('Nothing archived.')}</p>`
-  for (const b of visible) host.appendChild(boardEl(b, true))
-  if (remaining > 0) host.appendChild(moreButton('archived', remaining))
-  renderSub('archived', visible.map((b) => ({ id: b.id, label: b.title })))
 }
 
 function boardEl(b, archived = false) {
@@ -839,28 +736,6 @@ function esc(s) {
   return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
 }
 
-const COLLAPSE_KEY = 'agent-inbox-collapsed'
-
-function initSections() {
-  let collapsed = {}
-  try { collapsed = JSON.parse(localStorage.getItem(COLLAPSE_KEY)) || {} } catch { /* fresh start */ }
-  for (const sec of document.querySelectorAll('main > details.section')) {
-    if (collapsed[sec.id] !== undefined) sec.open = !collapsed[sec.id]
-    sec.addEventListener('toggle', () => {
-      collapsed[sec.id] = !sec.open
-      localStorage.setItem(COLLAPSE_KEY, JSON.stringify(collapsed))
-    })
-  }
-  for (const link of document.querySelectorAll('#sidebar a')) {
-    link.addEventListener('click', (e) => {
-      e.preventDefault()
-      const sec = document.getElementById(link.dataset.target)
-      sec.open = true
-      sec.scrollIntoView({ behavior: 'smooth', block: 'start' })
-    })
-  }
-}
-
 function initSearch() {
   const input = document.getElementById('search')
   let t = null
@@ -910,9 +785,10 @@ async function renderSetup() {
   } catch { /* setup info unavailable — leave the section empty */ }
 }
 
-initSections()
 initTriage()
 initSearch()
+initAgentSelect()
+initGear()
 renderSetup()
 load()
 setInterval(load, 3000)

@@ -7,35 +7,35 @@
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
-  <header>
-    <h1>Agent Inbox</h1><span id="status"></span>
-    <nav id="filters" aria-label="Filters">
-      <div class="tabs" id="projectTabs" aria-label="Filter by project"></div>
-      <div class="tabs" id="agentTabs" aria-label="Filter by agent"></div>
-      <div class="tabs" id="rowTabs" aria-label="Board row visibility"></div>
-      <input id="search" class="search-box" type="search" placeholder="Search everything…" aria-label="Search items and boards" autocomplete="off" />
-    </nav>
+  <header id="topbar">
+    <div class="brand">Agent Inbox</div>
+    <span id="status"></span>
+    <span id="pauseHint"></span>
+    <label class="agent-pick"><span class="tab-label">agent</span>
+      <select id="agentSelect" aria-label="Filter by agent"><option value="">all</option></select>
+    </label>
+    <input id="search" class="search-box" type="search" placeholder="Search everything…" aria-label="Search items and boards" autocomplete="off" />
+    <button id="gear" class="gear" type="button" title="Setup" aria-label="Setup">⚙</button>
   </header>
-  <div id="now" hidden></div>
   <div class="layout">
-    <nav id="sidebar" aria-label="Sections">
-      <div class="nav-group"><a href="#live" data-target="live">Live</a></div>
-      <div class="nav-group"><a href="#needsYou" data-target="needsYou">Needs you</a><div class="sub" data-sub="needsYou"></div></div>
-      <div class="nav-group"><a href="#boards" data-target="boards">Tracking</a><div class="sub" data-sub="boards"></div></div>
-      <div class="nav-group"><a href="#notes" data-target="notes">Notes</a><div class="sub" data-sub="notes"></div></div>
-      <div class="nav-group"><a href="#done" data-target="done">Done</a><div class="sub" data-sub="done"></div></div>
-      <div class="nav-group"><a href="#archived" data-target="archived">Archived</a><div class="sub" data-sub="archived"></div></div>
-      <div class="nav-group"><a href="#setup" data-target="setup">Setup</a></div>
-    </nav>
-    <main>
-      <details class="section" id="live" open><summary><h2>Live</h2></summary><div class="live-list"></div></details>
-      <details class="section" id="needsYou" open><summary><h2>Needs you</h2></summary><div class="groups"></div></details>
-      <details class="section" id="boards" open><summary><h2>Tracking</h2></summary><div class="boards"></div></details>
-      <details class="section" id="notes" open><summary><h2>Notes</h2></summary><div class="groups"></div></details>
-      <details class="section" id="done"><summary><h2>Done</h2></summary><div class="items"></div></details>
-      <details class="section" id="archived"><summary><h2>Archived</h2></summary><div class="boards"></div></details>
-      <details class="section" id="setup"><summary><h2>Setup</h2></summary><div class="setup-body"></div></details>
-    </main>
+    <nav id="rail" role="tablist" aria-orientation="vertical" aria-label="Projects"></nav>
+    <div class="content">
+      <div id="tabs" class="tabstrip" role="tablist" aria-label="Content">
+        <button class="tab" type="button" role="tab" data-tab="needsYou" aria-selected="true">Needs you<span class="tab-count" hidden></span></button>
+        <button class="tab" type="button" role="tab" data-tab="boards" aria-selected="false">Boards<span class="tab-count" hidden></span></button>
+        <button class="tab" type="button" role="tab" data-tab="live" aria-selected="false">Live<span class="tab-dot" hidden></span></button>
+        <button class="tab" type="button" role="tab" data-tab="notes" aria-selected="false">Notes<span class="tab-count" hidden></span></button>
+        <button class="tab" type="button" role="tab" data-tab="done" aria-selected="false">Done<span class="tab-count" hidden></span></button>
+      </div>
+      <main>
+        <section class="panel" id="needsYou" role="tabpanel"><div id="needsYouList" class="rows"></div></section>
+        <section class="panel" id="boards" role="tabpanel" hidden><div class="boards"></div></section>
+        <section class="panel" id="live" role="tabpanel" hidden><div class="live-list"></div></section>
+        <section class="panel" id="notes" role="tabpanel" hidden><div class="groups"></div></section>
+        <section class="panel" id="done" role="tabpanel" hidden><div class="items"></div></section>
+        <section class="panel" id="setup" role="tabpanel" hidden><div class="setup-body"></div></section>
+      </main>
+    </div>
   </div>
   <div id="lightbox" hidden>
     <div class="lb-backdrop"></div>

@@ -9,7 +9,8 @@ watch live. project/stream/agent are inferred automatically.
 Call `flag` when:
 - **`kind: "question"`** — you are about to pause and wait on the human: a decision,
   a missing credential, an ambiguity you cannot resolve yourself. One flag per real
-  blocker; put the actual question in `title`, context in `detail`. When sensible answers
+  blocker; put the actual question in `title`, a one-line why in `detail`, long background in
+`context`. When sensible answers
   exist, ALWAYS attach 2-4 `options` — your recommendation first with `recommended: true`,
   each with a short `label` and a `detail` explaining the tradeoff. The human can pick
   one, compare them, or answer in their own words. Then **poll `pending()`** between work
@@ -23,8 +24,11 @@ Call `flag` when:
 - **`kind: "done"`** — a completed **milestone** worth announcing (shipped, merged,
   deployed). Use sparingly — it is NOT for routine progress.
 
-Keep `title` to one short line (aim under ~80 chars); `detail` is the short visible
-elaboration. **Always provide `context`** — the background a human returning cold needs
+**Keep every item glanceable.** `title` is the ask or finding itself in one line (aim
+under ~80 chars) — not a preamble; `detail` is *one* line (the why, the impact, or what
+happens next). If you catch yourself writing a paragraph into `title` or `detail`, compress
+the headline and move the body into `context` — the viewer ranks `title` first, so prose in
+`detail` buries the signal. **Always provide `context`** — the background a human returning cold needs
 to act without asking you anything: what you were working on, why this came up, relevant
 files/PRs/links. They may read the item hours later with zero memory of the task; it
 renders as a collapsed dropdown, so length is fine. Do not flag more than the human
@@ -32,10 +36,18 @@ needs — a noisy inbox gets ignored. One `done` flag per shipped thing: re-flag
 identical open milestone title is deduped, not stacked. If a question you raised
 resolves itself before they answer, call `resolve` with its id.
 
-**The end-of-turn rule:** asking in chat is fine while the human is actively conversing —
-but if your turn would END on a question, flag it instead. A question in scrollback is
-invisible to their banner, badge, and triage; a flagged one pings them and wakes you when
-answered.
+**The end-of-turn rule — flag decisions, don't bury them.** The test is not "am I still
+chatting?" — it's **"am I about to stop and wait on the human?"** If your next move depends
+on their answer and you are ending your turn, that is a question — flag it, **even
+mid-conversation, even if you just answered something.** This catches the case agents miss
+most: you end on a **recommendation** to accept ("I'd do X"), a **next step awaiting
+go-ahead** ("want me to…?", "say the word", "should I…?"), or you hand back a **decision**.
+A recommendation in the last paragraph of a great analysis is invisible — no banner, no
+badge, no triage, and it will not wake you when they answer; flagging it (with `options`)
+does all three. Writing it in chat **and** flagging is right — the flag is what makes it
+survive, so don't choose between them. *Example: you conclude "I'd add the tour row and
+file the issue — go?" → `flag(kind:"question", title:"Add the feature-tour gate row + file
+the --handbook issue?", options:[Do both (rec), Just the row, Just the issue, Not now])`.*
 
 ## Boards (standing status the human watches)
 

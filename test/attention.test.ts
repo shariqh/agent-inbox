@@ -187,6 +187,11 @@ describe('countsByProject', () => {
     const parked = [item('p', { created_at: new Date(NOW - ESCALATE_MS * 10).toISOString() })]
     expect(countsByProject(parked, [], NOW, new Set())).toEqual(new Map([['api', { total: 1, escalated: 0 }]]))
   })
+  it('an exactly-1h-old waiting item is not yet escalated (strict >)', () => {
+    const items = [item('q', { created_at: new Date(NOW - ESCALATE_MS).toISOString(), session: 's1' })]
+    const counts = countsByProject(items, [], NOW, new Set(['s1']))
+    expect(counts.get('api')).toEqual({ total: 1, escalated: 0 })
+  })
 })
 
 describe('sortNeedsYou', () => {

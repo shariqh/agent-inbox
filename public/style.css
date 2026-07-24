@@ -158,3 +158,18 @@ header { flex-wrap: wrap; }
 .rows { display: flex; flex-direction: column; gap: 6px; }
 [data-card-id] { scroll-margin-top: 64px; }
 .item { border: 1px solid color-mix(in srgb, CanvasText 15%, transparent); border-radius: 8px; padding: 10px 12px; margin-bottom: var(--gap); }
+
+.rail-filter { width: 100%; margin-bottom: 6px; padding: 4px 8px; border: 1px solid color-mix(in srgb, CanvasText 14%, transparent); border-radius: 7px; background: transparent; color: inherit; font: inherit; font-size: 12px; }
+.rail-tab { display: flex; align-items: center; gap: 8px; width: 100%; padding: 5px 9px; border: none; border-radius: 7px; background: transparent; color: inherit; font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+.rail-tab:hover { background: color-mix(in srgb, CanvasText 6%, transparent); }
+.rail-tab.quiet { opacity: .5; }
+.rail-tab[aria-selected="true"] { opacity: 1; font-weight: 600; }
+.rail-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; background: color-mix(in srgb, CanvasText 35%, transparent); }
+.rail-dot.all { background: linear-gradient(135deg, color-mix(in srgb, CanvasText 55%, transparent), color-mix(in srgb, CanvasText 18%, transparent)); }
+.rail-tab.unknown .rail-dot { background: color-mix(in srgb, CanvasText 28%, transparent); }
+.rail-tab.unknown .rail-name { font-style: italic; opacity: .75; }
+.rail-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-badge { font-size: 11px; font-variant-numeric: tabular-nums; padding: 0 6px; border-radius: 999px; background: color-mix(in srgb, CanvasText 12%, transparent); }
+.rail-badge.escalated { background: color-mix(in srgb, crimson 18%, transparent); color: color-mix(in srgb, crimson 80%, CanvasText); font-weight: 600; }
+.rail-match { font-size: 11px; font-variant-numeric: tabular-nums; opacity: .6; }
+.rail-match:empty { display: none; }

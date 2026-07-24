@@ -1,4 +1,7 @@
 import { paginate, paginateGroups, searchMatches } from '/search.js'
+import { filterRailEntries, railEntries, railProjects, shouldShowRailFilter } from '/rail.js'
+import { countsByProject } from '/attention.js'
+import { projectColor } from '/colors.js'
 
 // typo-tolerant fuzzy filtering; the engine is a vendored browser global
 const uf = new window.uFuzzy({ intraMode: 1 })
@@ -46,14 +49,6 @@ function collectAgents({ g, boards }) {
   return [...new Set([...allItems(g).map((i) => i.agent), ...boards.map((b) => b.agent)])].sort()
 }
 
-function collectProjects({ g, boards, archived }) {
-  return [...new Set([
-    ...allItems(g).map((i) => i.project),
-    ...boards.map((b) => b.project),
-    ...archived.map((b) => b.project),
-  ])].sort()
-}
-
 // the slice of the data matching only the project filter — agent tabs derive
 // from this, so switching project shows just that project's agents
 function projectScoped({ g, boards, archived }) {
@@ -67,8 +62,7 @@ function projectScoped({ g, boards, archived }) {
 }
 
 function render() {
-  const projects = collectProjects(lastData)
-  if (projectFilter && !projects.includes(projectFilter)) projectFilter = null
+  renderRail()
   const agents = collectAgents(projectScoped(lastData))
   if (agentFilter && !agents.includes(agentFilter)) agentFilter = null
   renderAgentSelect(agents)
@@ -313,6 +307,101 @@ function renderRowToggle() {
     render()
   })
   host.appendChild(b)
+}
+
+const liveSessionIds = () => new Set((lastData.activity ?? []).map((a) => a.session))
+const themeName = () => (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+
+// spec §2: color persistence. Every caller that paints a project dot/wash goes
+// through THIS, never projectColor() directly — passing localStorage is what
+// lets assignedHue() persist a hue across reloads and nudge a collision once,
+// instead of re-hashing (and potentially re-colliding) on every render.
+const pcolor = (name) => projectColor(name, themeName(), localStorage)
+
+// typed rail filter; only rendered when the rail is long enough to need it
+let railQuery = ''
+
+// Projects as vertical tabs: color dot · name · per-project attention badge ·
+// an empty match slot the search fills in later. The badges are per-project by
+// design; the dock badge and the Needs-you tab count stay global (spec §7
+// filter-blindness).
+function renderRail() {
+  const host = document.getElementById('rail')
+  if (!host) return
+  const projects = railProjects({
+    items: allItems(lastData.g),
+    boards: lastData.boards,
+    archived: lastData.archived,
+    activity: lastData.activity ?? [],
+  })
+  if (projectFilter && !projects.includes(projectFilter)) {
+    projectFilter = null
+    localStorage.removeItem(PROJECT_KEY)
+  }
+  const counts = countsByProject(allItems(lastData.g), lastData.boards, Date.now(), liveSessionIds())
+  const withFilter = shouldShowRailFilter(projects)
+  if (!withFilter) railQuery = ''
+  const entries = filterRailEntries(railEntries(projects, counts), railQuery)
+  const th = themeName()
+  const sig = JSON.stringify([entries, projectFilter, th, withFilter, railQuery])
+  if (host.dataset.sig === sig) return
+  // rebuilding blows away focus; remember the caret so typing in the filter survives
+  const active = document.activeElement
+  const caret = active && active.classList.contains('rail-filter') ? active.selectionStart : null
+  host.dataset.sig = sig
+  host.innerHTML = ''
+  if (withFilter) {
+    const f = document.createElement('input')
+    f.type = 'search'
+    f.className = 'rail-filter'
+    f.placeholder = 'Filter projects'
+    f.setAttribute('aria-label', 'Filter projects')
+    f.value = railQuery
+    f.addEventListener('input', () => { railQuery = f.value; renderRail() })
+    host.appendChild(f)
+    if (caret !== null) { f.focus(); f.setSelectionRange(caret, caret) }
+  }
+  for (const e of entries) {
+    const b = document.createElement('button')
+    b.type = 'button'
+    b.className = 'rail-tab'
+    b.dataset.project = e.key // '__all__' for the unfiltered view
+    b.setAttribute('role', 'tab')
+    const selected = e.key === '__all__' ? !projectFilter : projectFilter === e.key
+    b.setAttribute('aria-selected', String(selected))
+    if (!e.total) b.classList.add('quiet')
+    const color = e.key === '__all__' || e.unknown ? null : pcolor(e.key)
+    if (e.unknown) {
+      b.classList.add('unknown')
+      b.title = 'Project inference failed for these agents — a register() call fixes their scope.'
+    }
+    // selection is a soft wash of the project's own color; no stripe anywhere
+    if (selected && color) b.style.background = color.wash
+    const dot = document.createElement('span')
+    dot.className = e.key === '__all__' ? 'rail-dot all' : 'rail-dot'
+    if (color) dot.style.background = color.dot
+    const name = document.createElement('span')
+    name.className = 'rail-name'
+    name.textContent = e.label // agent-authored: textContent, never innerHTML
+    name.title = e.label
+    const badge = document.createElement('span')
+    badge.className = e.escalated ? 'rail-badge escalated' : 'rail-badge'
+    badge.textContent = e.total ? String(e.total) : ''
+    badge.hidden = !e.total
+    badge.title = e.escalated ? `${e.escalated} escalated` : `${e.total} waiting on you`
+    // always present, always empty here — Task 15's search paints match counts in
+    const match = document.createElement('span')
+    match.className = 'rail-match'
+    b.append(dot, name, badge, match)
+    b.addEventListener('click', () => {
+      projectFilter = e.key === '__all__' ? null : e.key
+      if (projectFilter) localStorage.setItem(PROJECT_KEY, projectFilter)
+      else localStorage.removeItem(PROJECT_KEY)
+      resetPaging()
+      render()
+    })
+    host.appendChild(b)
+  }
 }
 
 // the top bar's agent filter — a demoted dropdown scoped to the selected project.

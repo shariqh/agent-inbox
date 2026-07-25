@@ -99,3 +99,24 @@ describe('shell script', () => {
     expect(js).toContain('function jumpToCard')
   })
 })
+
+// load()'s fetch + renderIfIdle() are wrapped in try/catch; a bare `catch {}`
+// swallows every exception — including one thrown inside render() itself — and
+// silently leaves the page blank with no console signal. That is exactly the
+// failure mode that made the "none of the buttons work" incident (0 needs-you
+// items, empty panel) hard to diagnose. This pins that the catch binds the
+// error and logs it, so nobody can silently reintroduce the bare catch. The
+// 'disconnected' status behaviour for a genuine fetch failure must survive.
+describe("load()'s catch logs instead of swallowing (incident: silent blank page)", () => {
+  it('binds the caught error and passes it to console.error', () => {
+    const m = js.match(/async function load\(\)[\s\S]*?\n\}/)
+    expect(m, 'load() not found').toBeTruthy()
+    const body = m![0]
+    expect(body).toMatch(/catch\s*\(\s*\w+\s*\)\s*\{/)
+    const caught = body.match(/catch\s*\(\s*(\w+)\s*\)\s*\{([\s\S]*?)\n\s*\}\s*$/)
+    expect(caught, 'no catch(err) { … } block found in load()').toBeTruthy()
+    const [, errName, catchBody] = caught!
+    expect(catchBody).toMatch(new RegExp(`console\\.error\\(\\s*${errName}\\s*\\)`))
+    expect(catchBody).toContain("'disconnected'")
+  })
+})

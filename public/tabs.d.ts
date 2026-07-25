@@ -6,6 +6,11 @@ export const DEFAULT_TAB: TabId
 export interface ScopedCounts {
   boards: readonly unknown[]
   done: readonly unknown[]
+  // tabCounts() never reads this — Notes now takes its number from the
+  // precomputed `unreadNotes` argument (spec §8) — but callers still pass the
+  // scoped note list through for shape symmetry with the rest of `g`, so the
+  // field is typed here (optional) to keep those call sites/tests honest.
+  notes?: readonly unknown[]
 }
 
 export interface TabCountsInput {

@@ -89,3 +89,22 @@ describe('filter-blindness is pinned at the render() call site (spec §7)', () =
     expect(line, line).toMatch(/lastData\.boards\b/)
   })
 })
+
+describe('Notes count is unread-only (spec §8)', () => {
+  it('reports the unread note count, not how many notes are on screen', () => {
+    const c = tabCounts({
+      globalAttention: 0,
+      unreadNotes: 1,
+      scoped: { boards: [], notes: [{ id: 'n1' }, { id: 'n2' }, { id: 'n3' }], done: [] },
+    })
+    expect(c.notes).toBe(1)
+  })
+  it('is 0 once every note has been seen, even with notes in the list', () => {
+    const c = tabCounts({
+      globalAttention: 0,
+      unreadNotes: 0,
+      scoped: { boards: [], notes: [{ id: 'n1' }, { id: 'n2' }], done: [] },
+    })
+    expect(c.notes).toBe(0)
+  })
+})

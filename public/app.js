@@ -10,6 +10,7 @@ import {
   stagedLabel, staleFoldLabel, streamCounts, undoRefusal, urgencyChip,
 } from '/rowview.js'
 import { cardSections, optionOrder } from '/card.js'
+import { partitionNotes, unreadNoteCount, ambientChips } from '/notes.js'
 
 void paginateGroups // kept exported+tested (spec §15); the viewer no longer calls it
 
@@ -30,6 +31,13 @@ const HIDE_DONE_KEY = 'agent-inbox-hide-completed'
 let agentFilter = localStorage.getItem(FILTER_KEY) || null
 let projectFilter = localStorage.getItem(PROJECT_KEY) || null
 let hideCompleted = localStorage.getItem(HIDE_DONE_KEY) !== 'false' // default ON
+
+const NOTES_SEEN_KEY = 'agent-inbox-notes-seen'
+let notesSeenAt = localStorage.getItem(NOTES_SEEN_KEY) || null
+function markNotesSeen() {
+  notesSeenAt = new Date().toISOString()
+  localStorage.setItem(NOTES_SEEN_KEY, notesSeenAt)
+}
 
 let bootId = null
 
@@ -119,16 +127,36 @@ async function load() {
     const boards = await (await fetch('/api/boards')).json()
     const archived = await (await fetch('/api/boards/archived')).json()
     const activity = await (await fetch('/api/activity')).json()
-    lastData = { g, boards, archived, activity }
+    lastData = { g: ageNotes(g, Date.now()), boards, archived, activity }
     renderIfIdle()
     document.getElementById('status').textContent = ''
-  } catch {
+  } catch (err) {
+    // an exception thrown inside render() used to be swallowed here with no
+    // console signal at all — a completely dead page with nothing to debug.
+    // That is exactly the failure mode behind the "none of the buttons work"
+    // incident (0 needs-you items → renderEmptyState threw → blank panel,
+    // silently). Log it; keep the 'disconnected' status for genuine fetch failures.
+    console.error(err)
     document.getElementById('status').textContent = 'disconnected'
   }
 }
 
 function allItems(g) {
   return [...g.needsYou.flatMap((x) => x.items), ...g.notes.flatMap((x) => x.items), ...g.done]
+}
+
+// notes age into Done after NOTE_AGE_MS (spec §8) — done at the door so the
+// Notes tab, the Done tab and search all agree
+function ageNotes(g, nowMs) {
+  const aged = []
+  const notes = g.notes
+    .map((gr) => {
+      const part = partitionNotes(gr.items, nowMs)
+      aged.push(...part.aged)
+      return { ...gr, items: part.fresh }
+    })
+    .filter((gr) => gr.items.length > 0)
+  return { ...g, notes, done: [...g.done, ...aged] }
 }
 
 // the CURRENT server state for an item, not a row's closed-over render-time snapshot.
@@ -187,7 +215,7 @@ function render() {
   // filtered view the user is actually looking at (spec §7)
   const counts = tabCounts({
     globalAttention: attentionCount(allItems(lastData.g), lastData.boards, Date.now(), liveSessionIds()),
-    unreadNotes: g.notes.reduce((n, gr) => n + gr.items.length, 0),
+    unreadNotes: unreadNoteCount(g.notes.flatMap((gr) => gr.items), notesSeenAt, Date.now()),
     scoped: { boards, done: g.done },
   })
   for (const id of TAB_IDS) setCount(id, counts[id])
@@ -673,6 +701,48 @@ function initStagedFlush() {
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushStaged() })
 }
 
+// The Needs-you header: opt-in triage only (tenet 1) — a button, never a flow
+// that opens itself. With the old #now strip gone this is the deck's only door.
+function needsYouHeader() {
+  const bar = document.createElement('div')
+  bar.className = 'tab-header'
+  const tri = btn('Triage →', openTriage)
+  tri.className = 'triage-btn'
+  bar.appendChild(tri)
+  return bar
+}
+
+// one quiet chip at the very foot of the Needs-you list — notes are seen in the
+// flow the user actually opens, without entering the attention set (spec §8)
+function renderNeedsYouExtras(host) {
+  const notes = lastData.g.notes.flatMap((gr) => gr.items)
+  const n = unreadNoteCount(notes, notesSeenAt, Date.now())
+  if (!n) return
+  const chip = btn(`${n} new note${n > 1 ? 's' : ''}`, () => selectTab('notes'))
+  chip.className = 'notes-chip'
+  host.appendChild(chip)
+}
+
+// the calm state: no red, no call to action, ambient counts as discrete chips
+function renderEmptyState(host) {
+  const panel = document.createElement('div')
+  panel.className = 'calm-panel'
+  panel.innerHTML = '<div class="calm-head">Nothing needs you</div>'
+  const chips = ambientChips(allItems(lastData.g), lastData.boards, Date.now(), notesSeenAt)
+  if (chips.length) {
+    const row = document.createElement('div')
+    row.className = 'calm-chips'
+    for (const c of chips) {
+      const s = document.createElement('span')
+      s.className = `calm-chip chip-${c.key}`
+      s.textContent = c.label // ambient labels are agent-derived counts — textContent, never innerHTML
+      row.appendChild(s)
+    }
+    panel.appendChild(row)
+  }
+  host.appendChild(panel)
+}
+
 // flat, ranked, two-line rows — no project/agent heading levels (§3, §15)
 function renderNeedsYou(g, boardsInView, nowMs) {
   const host = document.getElementById('needsYouList')
@@ -695,11 +765,18 @@ function renderNeedsYou(g, boardsInView, nowMs) {
     showProject: !projectFilter, // a single selected project needs no monogram (§2)
   }
   const { visible, remaining } = paginate(entries, shown.needsYou)
-  host.innerHTML = entries.length ? '' : `<p class="empty">${emptyMsg('Nothing needs you.')}</p>`
+  host.innerHTML = ''
+  host.appendChild(needsYouHeader())
+  if (!entries.length) {
+    // a search that matched nothing still says so; an empty INBOX gets the calm panel
+    if (searchQuery.trim()) host.insertAdjacentHTML('beforeend', `<p class="empty">${emptyMsg('Nothing needs you.')}</p>`)
+    else renderEmptyState(host)
+  }
   for (const e of visible) host.appendChild(needsRowEl(rowModel(e, opts), e, nowMs))
   if (remaining > 0) host.appendChild(moreButton('needsYou', remaining))
   const stale = staleEntries(items, nowMs, live)
   if (stale.length) host.appendChild(staleFoldEl(stale, opts, nowMs))
+  renderNeedsYouExtras(host)
 }
 
 // the stale fold's open/closed state, outside the DOM the 3s poll rebuilds —
@@ -841,6 +918,7 @@ function renderGroups(sectionId, groups) {
   host.innerHTML = items.length ? '' : `<p class="empty">${emptyMsg('Nothing here.')}</p>`
   for (const it of visible) host.appendChild(itemEl(it))
   if (remaining > 0) host.appendChild(moreButton(sectionId, remaining))
+  if (sectionId === 'notes' && activeTab === 'notes') markNotesSeen()
 }
 
 function renderDone(items) {

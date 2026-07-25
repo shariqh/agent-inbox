@@ -207,8 +207,8 @@ function render() {
       detail: [a.detail, ...(a.children ?? []).flatMap((c) => [c.name, c.doing])].filter(Boolean).join(' '),
     })), searchQuery, fuzzyFilter)
   const live = liveMatched ? pillLive.filter((a) => liveMatched.has(a.session)) : pillLive
-  renderLive(live)
-  renderLiveBar(live)
+  renderLive(live)                          // drawer's expanded list — stays FILTERED (rail-scoped, like every other tab)
+  renderLiveBar(lastData.activity ?? [])    // collapsed strip — GLOBAL, never scoped (§7 filter-blindness, generalized)
   renderNeedsYou(g, boards, Date.now())
   renderGroups('notes', g.notes)
   renderDone(g.done)

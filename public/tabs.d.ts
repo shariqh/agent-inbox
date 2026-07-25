@@ -1,4 +1,4 @@
-export type TabId = 'needsYou' | 'boards' | 'live' | 'notes' | 'done'
+export type TabId = 'needsYou' | 'boards' | 'notes' | 'done'
 
 export const TAB_IDS: TabId[]
 export const DEFAULT_TAB: TabId
@@ -22,7 +22,6 @@ export interface TabCountsInput {
 export interface TabCounts {
   needsYou: number
   boards: number
-  live: null
   notes: number
   done: number
 }

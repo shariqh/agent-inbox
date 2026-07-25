@@ -109,6 +109,32 @@ describe('shell script', () => {
   })
 })
 
+// The always-visible footer strip is a single-glance ambient summary — the
+// same kind of object as a dock badge — not a triage surface, so rail/agent
+// filtering and search must never scope it (§7's filter-blindness invariant,
+// generalized). renderLive(live) — the DRAWER's expanded list — stays
+// filtered on purpose: it's a list you deliberately open, so scoping it is
+// consistent with every other tab. Only the collapsed strip must read global
+// activity, or "no agents running" becomes a lie the moment the human filters
+// to a project nothing is currently running in. There is no jsdom configured
+// in vitest.config.ts, so a real render() invocation isn't exercisable here;
+// this pins the SOURCE TEXT instead, the same way the filter-blindness guard
+// in test/tabs.test.ts does.
+describe('Live footer strip is global, never rail-scoped (spec §16 / §7 generalized)', () => {
+  it('calls renderLiveBar with lastData.activity, not the filtered `live` local', () => {
+    const line = js.split('\n').find((l) => l.includes('renderLiveBar('))
+    expect(line, 'no renderLiveBar( call found in app.js').toBeTruthy()
+    expect(line, line).toMatch(/renderLiveBar\(\s*lastData\.activity\b/)
+    expect(line, line).not.toMatch(/renderLiveBar\(\s*live\s*\)/)
+  })
+
+  it('keeps renderLive on the filtered `live` local — the drawer stays rail-scoped', () => {
+    const line = js.split('\n').find((l) => l.includes('renderLive('))
+    expect(line, 'no renderLive( call found in app.js').toBeTruthy()
+    expect(line, line).toMatch(/renderLive\(\s*live\s*\)/)
+  })
+})
+
 // load()'s fetch + renderIfIdle() are wrapped in try/catch; a bare `catch {}`
 // swallows every exception — including one thrown inside render() itself — and
 // silently leaves the page blank with no console signal. That is exactly the

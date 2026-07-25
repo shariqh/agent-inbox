@@ -203,3 +203,15 @@ header { flex-wrap: wrap; }
 .stale-fold > summary { cursor: pointer; font-size: 12px; letter-spacing: .02em; padding: 4px 0; list-style: none; }
 .stale-fold > summary::before { content: "▸ "; font-size: 10px; }
 .stale-fold[open] > summary::before { content: "▾ "; }
+
+.card { display: block; }
+.card-meta { display: flex; align-items: center; gap: 6px; }
+.card-title { font-weight: 600; font-size: 16px; margin: 4px 0 2px; }
+.card-detail { margin-bottom: 8px; }
+.card-context { margin: 8px 0; padding: 8px 10px; border-radius: 8px; background: color-mix(in srgb, CanvasText 5%, transparent); }
+.card-context-label { font-size: 10px; letter-spacing: .09em; text-transform: uppercase; opacity: .5; margin-bottom: 3px; }
+.card-context-body { font-size: 13px; opacity: .85; white-space: pre-wrap; }
+.rec-warning { font-size: 12px; margin-top: 6px; color: color-mix(in srgb, goldenrod 80%, CanvasText); }
+.nrow-card { margin: 8px 0 2px; padding: 10px 12px 4px 18px; border-top: 1px solid color-mix(in srgb, CanvasText 10%, transparent); cursor: default; }
+.nrow[data-open="1"] { background: color-mix(in srgb, CanvasText 4%, transparent); }
+.nrow[data-open="1"] .nrow-l2 { white-space: normal; }

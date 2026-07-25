@@ -1,0 +1,137 @@
+// test/card.test.ts
+import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { optionOrder, recommendedWarning, cardSections } from '../public/card.js'
+import type { CardItem } from '../public/card.js'
+
+const base: CardItem = {
+  id: 'i1', kind: 'question', status: 'open', title: 'Drop the column?',
+  detail: 'one line', context: 'why this came up', annotation: null,
+  options: null, reply: null, reply_context: null, reply_seen_at: null,
+}
+const item = (over: Partial<CardItem> = {}): CardItem => ({ ...base, ...over })
+
+describe('optionOrder', () => {
+  it('puts the recommended option first and keeps the rest stable', () => {
+    const opts = [{ label: 'A' }, { label: 'B' }, { label: 'C', recommended: true }]
+    expect(optionOrder(opts).map((o) => o.label)).toEqual(['C', 'A', 'B'])
+  })
+  it('returns an empty array for null options', () => {
+    expect(optionOrder(null)).toEqual([])
+  })
+})
+
+describe('recommendedWarning', () => {
+  it('is null for zero or one recommendation', () => {
+    expect(recommendedWarning(null)).toBeNull()
+    expect(recommendedWarning([{ label: 'A', recommended: true }, { label: 'B' }])).toBeNull()
+  })
+  it('warns when the agent marked more than one', () => {
+    expect(recommendedWarning([{ label: 'A', recommended: true }, { label: 'B', recommended: true }]))
+      .toBe('2 options are marked recommended — one-tap accept is disabled')
+  })
+})
+
+describe('cardSections', () => {
+  it('surfaces context as its own labeled block', () => {
+    expect(cardSections(item()).context).toBe('why this came up')
+    expect(cardSections(item({ context: '' })).context).toBe('')
+  })
+  it('shows the answer surface only for an open unanswered question', () => {
+    expect(cardSections(item()).showAnswer).toBe(true)
+    expect(cardSections(item({ reply: 'go' })).showAnswer).toBe(false)
+    expect(cardSections(item({ kind: 'note' })).showAnswer).toBe(false)
+    expect(cardSections(item(), { done: true }).showAnswer).toBe(false)
+  })
+  it('exposes the reply and the answered flag once replied', () => {
+    const s = cardSections(item({ reply: 'go ahead' }))
+    expect(s.answered).toBe(true)
+    expect(s.reply).toBe('go ahead')
+  })
+  it('hides actions on a done card and carries the multi-recommendation warning', () => {
+    expect(cardSections(item(), { done: true }).showActions).toBe(false)
+    const s = cardSections(item({ options: [{ label: 'A', recommended: true }, { label: 'B', recommended: true }] }))
+    expect(s.recWarning).toContain('2 options are marked recommended')
+    expect(s.options.length).toBe(2)
+  })
+})
+
+// No jsdom in this repo (see test/shell.test.ts, test/rowview.test.ts): DOM
+// wiring that can't be reached through pure functions is pinned at the source
+// level instead of executed.
+describe('app.js wiring (source-level pins)', () => {
+  const js = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8')
+
+  it('imports the shared card builders instead of re-declaring them', () => {
+    expect(js).toMatch(/import\s*\{\s*cardSections,\s*optionOrder\s*\}\s*from\s*'\/card\.js'/)
+  })
+
+  it('has no separate expansion-state variable — only Task 9\'s openRowId/setOpenRow', () => {
+    expect(js).not.toMatch(/\bexpandedRowId\b/)
+    expect(js).toMatch(/let\s+openRowId\s*=\s*null/)
+    expect(js).toMatch(/function setOpenRow\(/)
+    // every write to openRowId other than its `let` declaration happens inside
+    // setOpenRow — no other function is allowed to assign it directly
+    const withoutDeclaration = js.replace(/let\s+openRowId\s*=\s*null/, '')
+    const assignments = withoutDeclaration.match(/openRowId\s*=(?!=)/g) ?? []
+    expect(assignments.length).toBe(1)
+    const setOpenRowStart = js.indexOf('function setOpenRow(')
+    const setOpenRowFn = js.slice(setOpenRowStart, js.indexOf('\nfunction ', setOpenRowStart))
+    expect(setOpenRowFn).toMatch(/openRowId\s*=(?!=)/)
+  })
+
+  it('toggleRow drives the accordion through renderIfIdle(), never a bare render()', () => {
+    const start = js.indexOf('function toggleRow(')
+    expect(start, 'toggleRow is missing').toBeGreaterThan(-1)
+    const fn = js.slice(start, js.indexOf('\nfunction ', start))
+    expect(fn).toContain('setOpenRow(')
+    expect(fn).toContain('renderIfIdle()')
+    expect(fn).not.toContain('render()')
+  })
+
+  it('the inline expanded body is rowCardBodyEl, tagged .nrow-card', () => {
+    const start = js.indexOf('function rowCardBodyEl(')
+    expect(start, 'rowCardBodyEl is missing').toBeGreaterThan(-1)
+    const fn = js.slice(start, js.indexOf('\nfunction ', start))
+    expect(fn).toMatch(/className\s*=\s*'nrow-card'/)
+  })
+
+  it('needsRowEl wires click/keydown to toggleRow and restores the open row on rebuild', () => {
+    const start = js.indexOf('function needsRowEl(')
+    const fn = js.slice(start, js.indexOf('\nfunction rowCardBodyEl('))
+    expect(fn).toContain('toggleRow(el, m, entry, nowMs)')
+    expect(fn).toMatch(/openRowId === m\.id/)
+  })
+
+  it('itemCardEl backs both the inline accordion body and the triage lightbox', () => {
+    const rowBodyStart = js.indexOf('function rowCardBodyEl(')
+    const rowBodyFn = js.slice(rowBodyStart, js.indexOf('\nfunction toggleRow('))
+    expect(rowBodyFn).toContain('itemCardEl(')
+
+    const triageStart = js.indexOf('function renderTriage(')
+    const triageFn = js.slice(triageStart, js.indexOf('\nfunction initTriage('))
+    expect(triageFn).toContain('itemCardEl(')
+  })
+
+  it('itemEl delegates its body to itemCardEl rather than duplicating the card markup', () => {
+    const start = js.indexOf('function itemEl(')
+    const fn = js.slice(start, js.indexOf('\nfunction btn('))
+    expect(fn).toContain('itemCardEl(it, { done, header: false })')
+  })
+
+  it('the CONTEXT block is labeled and renders through esc()', () => {
+    const start = js.indexOf('function itemCardEl(')
+    const fn = js.slice(start, js.indexOf('\nasync function changeAnswer('))
+    expect(fn).toContain('card-context-label">CONTEXT<')
+    expect(fn).toMatch(/card-context-body">\$\{esc\(s\.context\)\}/)
+  })
+
+  it('guards triageRemoveCurrent so saving a blocked row inline (deck closed) cannot throw', () => {
+    const start = js.indexOf('function rowCardEl(')
+    const fn = js.slice(start, js.indexOf('\nfunction renderTriage('))
+    expect(fn).toContain('if (triageDeck) triageRemoveCurrent()')
+    // guard against a regression that re-adds an unconditional call elsewhere in the function
+    const bareCalls = (fn.match(/(?<!if \(triageDeck\) )triageRemoveCurrent\(\)/g) ?? []).length
+    expect(bareCalls).toBe(0)
+  })
+})

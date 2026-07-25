@@ -1,11 +1,12 @@
 import { paginate, paginateGroups, searchMatches } from '/search.js'
 import { filterRailEntries, railEntries, railProjects, shouldShowRailFilter } from '/rail.js'
-import { attentionCount, countsByProject, staleEntries } from '/attention.js'
+import { attentionCount, classifyLiveness, countsByProject, staleEntries } from '/attention.js'
 import { DEFAULT_TAB, TAB_IDS, livePresence, tabCounts } from '/tabs.js'
 import { projectColor, projectMonogram } from '/colors.js'
 import { shouldSuspendRender, suspendHint, pinOrder, applyListUpdate } from '/poll.js'
 import { createStagedSend } from '/star.js'
 import { ageChip, agentCounts, needsYouEntries, relMs, rowModel, staleFoldLabel, streamCounts, urgencyChip } from '/rowview.js'
+import { cardSections, optionOrder } from '/card.js'
 
 void paginateGroups // kept exported+tested (spec §15); the viewer no longer calls it
 
@@ -255,8 +256,9 @@ function rowCardEl(b, r) {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: input.value.trim() }),
     })
     // the row stays blocked until the agent picks the note up — the human's
-    // part is done, so drop it from the deck explicitly
-    triageRemoveCurrent()
+    // part is done, so drop it from the deck explicitly. This card is also
+    // mounted inline (Needs-you accordion) where the deck is null — guard it.
+    if (triageDeck) triageRemoveCurrent()
     load()
   }
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') save() })
@@ -286,9 +288,10 @@ function renderTriage() {
     lb.querySelector('.lb-count').textContent = `${triageDeck.index + 1} of ${n}`
     const data = findEntryData(triageDeck.entries[triageDeck.index])
     if (data.it) {
-      const el = itemEl(data.it)
-      el.open = true
-      card.appendChild(el)
+      card.appendChild(itemCardEl(data.it, {
+        nowMs: Date.now(),
+        liveness: classifyLiveness(data.it, Date.now(), liveSessionIds()),
+      }))
     } else {
       card.appendChild(rowCardEl(data.b, data.r))
     }
@@ -722,7 +725,48 @@ function needsRowEl(m, entry, nowMs) {
     undo.className = 'undo-btn'
     el.querySelector('.nrow-l2').replaceChildren(document.createTextNode('Dismissed — '), undo)
   }
+  el.addEventListener('click', (ev) => {
+    if (ev.target.closest('button, input, a')) return
+    toggleRow(el, m, entry, nowMs)
+  })
+  el.addEventListener('keydown', (ev) => {
+    if (ev.target !== el) return
+    if (ev.key === 'Enter') { ev.preventDefault(); toggleRow(el, m, entry, nowMs) }
+    if (ev.key === 'Escape' && openRowId === m.id) { ev.preventDefault(); toggleRow(el, m, entry, nowMs) }
+  })
+  // a full render (poll or user action) rebuilds the open row from openRowId
+  if (openRowId === m.id) {
+    el.dataset.open = '1'
+    el.appendChild(rowCardBodyEl(entry, m, nowMs))
+  }
   return el
+}
+
+// the inline expanded body — one card component, mounted under the row (§4)
+function rowCardBodyEl(entry, m, nowMs) {
+  const body = document.createElement('div')
+  body.className = 'nrow-card'
+  body.addEventListener('click', (ev) => ev.stopPropagation()) // clicks in the card must not collapse it
+  body.appendChild(entry.kind === 'row'
+    ? rowCardEl(entry.board, entry.row)
+    : itemCardEl(entry.item, { nowMs, liveness: m.liveness }))
+  return body
+}
+
+// Single-open accordion. `setOpenRow` (Task 9) owns the flag and the poll gate;
+// the DOM is patched in place because a re-render is exactly what the gate is
+// there to suspend. Collapsing hands the poll its pending data back.
+function toggleRow(el, m, entry, nowMs) {
+  const wasOpen = openRowId === m.id
+  setOpenRow(wasOpen ? null : m.id)
+  for (const other of document.querySelectorAll('.nrow[data-open="1"]')) {
+    other.removeAttribute('data-open')
+    const card = other.querySelector('.nrow-card')
+    if (card) card.remove()
+  }
+  if (wasOpen) { renderIfIdle(); return }
+  el.dataset.open = '1'
+  el.appendChild(rowCardBodyEl(entry, m, nowMs))
 }
 
 // notes keep a card list, but flat: no project h3, no agent h4 (§15)
@@ -897,7 +941,7 @@ async function sendReply(id, text, context = '') {
 function answerEl(it) {
   const wrap = document.createElement('div')
   wrap.className = `options${openCompares.has(it.id) ? ' comparing' : ''}`
-  const opts = [...(it.options ?? [])].sort((a, b) => (b.recommended ? 1 : 0) - (a.recommended ? 1 : 0))
+  const opts = optionOrder(it.options)
   for (const o of opts) {
     const box = document.createElement('div')
     box.className = 'option'
@@ -955,43 +999,65 @@ function answerEl(it) {
   return wrap
 }
 
-function itemEl(it, done = false) {
-  const el = document.createElement('details')
-  const answered = it.kind === 'question' && it.status === 'open' && it.reply
-  el.className = `item ${it.kind}${answered ? ' answered' : ''}`
-  const stream = it.stream ? ` · ${esc(it.stream)}` : ''
-  const meta = `${esc(it.agent)}${stream}`
-  const waiting = it.kind === 'question' && it.status === 'open' && !it.reply ? `<span class="waiting">waiting ${rel(it.created_at)}</span>` : ''
+// THE card (§4): meta → title → detail → labeled CONTEXT → options → answer →
+// actions. Mounted inline by the Needs-you accordion and by the triage lightbox.
+function itemCardEl(it, { done = false, nowMs = Date.now(), liveness = 'parked', header = true } = {}) {
+  const el = document.createElement('div')
+  el.className = `card card-${it.kind}`
+  const s = cardSections(it, { done })
+  const color = pcolor(it.project)
+  const chip = urgencyChip(
+    { kind: 'item', liveness, created_at: it.created_at, answered: s.answered }, nowMs)
+  const head = header ? `
+    <div class="meta card-meta">
+      <span class="pdot" style="background:${color.dot}"></span>
+      <span>${esc(it.project)}</span> · <span>${esc(it.agent)}</span>${it.stream ? ` · <span>${esc(it.stream)}</span>` : ''}
+      <span class="chip chip-${chip.tone}">${esc(chip.text)}</span>
+    </div>
+    <div class="card-title">${esc(it.title)}</div>` : ''
   el.innerHTML = `
-    <summary class="card-summary">
-      <div class="meta"><span class="caret"></span>${meta}${waiting}</div>
-      <div class="title">${esc(it.title)}</div>
-    </summary>
-    ${it.detail ? `<div class="detail">${esc(it.detail)}</div>` : ''}
-    ${it.context ? `<details class="row-context"${openContexts.has(it.id) ? ' open' : ''}><summary>context</summary><div>${esc(it.context)}</div></details>` : ''}
-    ${it.annotation ? `<div class="annotation">📝 ${esc(it.annotation)}</div>` : ''}
-    ${answered ? `<div class="reply-block">↩ ${esc(it.reply)}${it.reply_context ? `<div class="reply-context">context: ${esc(it.reply_context)}</div>` : ''}<span class="pickup ${it.reply_seen_at ? 'picked' : 'awaiting'}">${it.reply_seen_at ? '✓ picked up' : '● waiting for agent pickup'}</span></div>` : ''}`
-  const ctxEl = el.querySelector('.row-context')
-  if (ctxEl) ctxEl.addEventListener('toggle', () => { ctxEl.open ? openContexts.add(it.id) : openContexts.delete(it.id) })
-  cardify(el, it.id)
-  if (!done && it.kind === 'question' && it.status === 'open' && !it.reply) el.appendChild(answerEl(it))
-  if (!done) {
+    ${head}
+    ${s.detail ? `<div class="detail card-detail">${esc(s.detail)}</div>` : ''}
+    ${s.context ? `<div class="card-context"><div class="card-context-label">CONTEXT</div><div class="card-context-body">${esc(s.context)}</div></div>` : ''}
+    ${s.annotation ? `<div class="annotation">📝 ${esc(s.annotation)}</div>` : ''}
+    ${s.recWarning ? `<div class="rec-warning">⚠ ${esc(s.recWarning)}</div>` : ''}
+    ${s.reply ? `<div class="reply-block">↩ ${esc(s.reply)}${it.reply_context ? `<div class="reply-context">context: ${esc(it.reply_context)}</div>` : ''}<span class="pickup ${it.reply_seen_at ? 'picked' : 'awaiting'}">${it.reply_seen_at ? '✓ picked up' : '● waiting for agent pickup'}</span></div>` : ''}`
+  if (s.showAnswer) el.appendChild(answerEl(it))
+  if (s.showActions) {
     const actions = document.createElement('div')
     actions.className = 'actions'
     actions.appendChild(btn('Resolve', () => act(it.id, 'resolve')))
     actions.appendChild(btn('Dismiss', () => act(it.id, 'dismiss')))
-    if (answered) actions.appendChild(btn('Change answer', async () => {
-      draftReplies[it.id] = it.reply
-      draftReplyContexts[it.id] = it.reply_context ?? ''
-      await fetch(`/api/items/${it.id}/reply`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: '' }) })
-      load()
-    }))
+    if (s.answered) actions.appendChild(btn('Change answer', () => changeAnswer(it)))
     actions.appendChild(btn('Note', async () => {
       const text = prompt('Your note:')
       if (text != null) { await fetch(`/api/items/${it.id}/annotate`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }) }); load() }
     }))
     el.appendChild(actions)
   }
+  return el
+}
+
+async function changeAnswer(it) {
+  draftReplies[it.id] = it.reply
+  draftReplyContexts[it.id] = it.reply_context ?? ''
+  await fetch(`/api/items/${it.id}/reply`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: '' }) })
+  load()
+}
+
+// notes / done keep a collapsible card; the body is the same component
+function itemEl(it, done = false) {
+  const el = document.createElement('details')
+  const answered = it.kind === 'question' && it.status === 'open' && it.reply
+  el.className = `item ${it.kind}${answered ? ' answered' : ''}`
+  const stream = it.stream ? ` · ${esc(it.stream)}` : ''
+  el.innerHTML = `
+    <summary class="card-summary">
+      <div class="meta"><span class="caret"></span>${esc(it.agent)}${stream}</div>
+      <div class="title">${esc(it.title)}</div>
+    </summary>`
+  cardify(el, it.id)
+  el.appendChild(itemCardEl(it, { done, header: false }))
   return el
 }
 

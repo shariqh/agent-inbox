@@ -27,6 +27,7 @@ describe('railLabel', () => {
   })
   it('keeps the All and unknown pseudo-projects labelled', () => {
     expect(railLabel('All', 'wide')).toBe('All')
+    expect(railLabel('All', 'narrow')).toBe(projectMonogram('All'))
     expect(railLabel('unknown', 'narrow')).toBe(projectMonogram('unknown'))
   })
 })

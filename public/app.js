@@ -2,9 +2,9 @@ import { paginate, paginateGroups, searchMatches } from '/search.js'
 import { filterRailEntries, railEntries, railProjects, shouldShowRailFilter } from '/rail.js'
 import { attentionCount, classifyLiveness, countsByProject, staleEntries } from '/attention.js'
 import { DEFAULT_TAB, TAB_IDS, tabCounts } from '/tabs.js'
-import { projectColor, projectMonogram } from '/colors.js'
+import { projectColor } from '/colors.js'
 import { shouldSuspendRender, suspendHint, pinOrder, applyListUpdate } from '/poll.js'
-import { canUndo, createStagedSend } from '/star.js'
+import { createStagedSend } from '/star.js'
 import {
   ageChip, agentCounts, awaitingPickupEntries, needsYouEntries, relMs, rowModel, rowStarOption,
   stagedLabel, staleFoldLabel, streamCounts, undoRefusal, urgencyChip,
@@ -500,7 +500,7 @@ function jumpToCard(tabId, cardId) {
 }
 
 function setCount(id, n) {
-  if (n == null) return // Live carries a presence dot, not a number
+  if (n == null) return
   const el = document.querySelector(`.tab[data-tab="${id}"] .tab-count`)
   if (!el) return
   el.textContent = n ? String(n) : ''
@@ -938,7 +938,11 @@ function renderEmptyState(host) {
   const panel = document.createElement('div')
   panel.className = 'calm-panel'
   panel.innerHTML = '<div class="calm-head">Nothing needs you</div>'
+  // the unread-note count already has its own actionable footer button
+  // (renderNeedsYouExtras' .notes-chip) — an inert duplicate here is one
+  // number shown twice for the same fact.
   const chips = ambientChips(allItems(lastData.g), lastData.boards, Date.now(), notesSeenAt)
+    .filter((c) => c.key !== 'notes')
   if (chips.length) {
     const row = document.createElement('div')
     row.className = 'calm-chips'
@@ -1031,6 +1035,12 @@ function needsRowEl(m, entry, nowMs) {
   const projBit = m.projectLabel ? `<span class="nrow-proj" title="${esc(m.project)}">${esc(m.projectLabel)}</span>` : ''
   const agentBit = m.agent ? `<span class="nrow-agent">${esc(m.agent)}</span>` : ''
   const streamBit = m.stream ? `<span class="nrow-stream">${esc(m.stream)}</span>` : ''
+  // omit line 2 entirely when it would be blank — no secondary text, no agent
+  // chip, no stream — otherwise it leaves a padded empty line under the row.
+  // Still built (with staged-dismiss's own content) when a dismiss is staged,
+  // since the ✕ handler below replaces this div's children in place.
+  const showL2 = m.secondary || agentBit || streamBit || stagedDismiss.has(m.id)
+  const l2 = showL2 ? `<div class="nrow-l2"><span class="nrow-sec">${esc(m.secondary)}</span>${agentBit}${streamBit}</div>` : ''
   el.innerHTML = `
     <div class="nrow-l1">
       <span class="pdot" style="background:${color.dot}" title="${esc(m.project)}"></span>
@@ -1042,7 +1052,7 @@ function needsRowEl(m, entry, nowMs) {
       <button class="nrow-dismiss" title="Dismiss (x)" aria-label="Dismiss">✕</button>
       <span class="nrow-caret">▸</span>
     </div>
-    <div class="nrow-l2"><span class="nrow-sec">${esc(m.secondary)}</span>${agentBit}${streamBit}</div>`
+    ${l2}`
   el.style.setProperty('--wash', color.wash)
   const boardBtn = el.querySelector('.nrow-glyph')
   if (boardBtn) boardBtn.addEventListener('click', (ev) => { ev.stopPropagation(); jumpToCard('boards', m.boardId) })
@@ -1077,11 +1087,6 @@ function needsRowEl(m, entry, nowMs) {
     star.title = ariaAnswerLabel(opt) ?? 'Answer'
     star.addEventListener('click', (ev) => ev.stopPropagation())
     slot.replaceChildren(star)
-  } else if (m.answered && !canUndo(entry.item)) {
-    const note = document.createElement('span')
-    note.className = 'pickup picked'
-    note.textContent = '✓ picked up'
-    slot.replaceChildren(note)
   }
   if (stagedDismiss.has(m.id)) {
     const undo = btn('Undo dismiss', () => undoDismiss(m.id))

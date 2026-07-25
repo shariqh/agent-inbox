@@ -18,8 +18,8 @@ export interface AttentionRow {
   id: string
   label?: string
   status: string
-  annotation?: string | null
-  annotation_unseen?: boolean
+  annotation: string | null
+  annotation_unseen: boolean
   note?: string
 }
 

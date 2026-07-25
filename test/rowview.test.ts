@@ -157,8 +157,8 @@ describe('freshnessTone / ageChip', () => {
 describe('needsYouEntries', () => {
   const items = [item({ id: 'q-api', project: 'api' })]
   const boards: AttentionBoard[] = [
-    { id: 'b-web', project: 'web', title: 'Rollout', rows: [{ id: 'r-web', label: 'Deploy', status: 'blocked' }] },
-    { id: 'b-api', project: 'api', title: 'Migration', rows: [{ id: 'r-api', label: 'Backfill', status: 'blocked' }] },
+    { id: 'b-web', project: 'web', title: 'Rollout', rows: [{ id: 'r-web', label: 'Deploy', status: 'blocked', annotation: null, annotation_unseen: false }] },
+    { id: 'b-api', project: 'api', title: 'Migration', rows: [{ id: 'r-api', label: 'Backfill', status: 'blocked', annotation: null, annotation_unseen: false }] },
   ]
   it('drops another project rows from the rendered list but not from the count', () => {
     const scoped = boards.filter((b) => b.project === 'api')

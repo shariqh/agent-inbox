@@ -85,8 +85,23 @@ describe('every write-path fetch has a catch with a visible signal (fix 3)', () 
       /async function act\([\s\S]*?postJSON\(/,
       /async function changeAnswer\([\s\S]*?postJSON\(/,
     ]) expect(js, marker.toString()).toMatch(marker)
-    // board row note (shared by the matrix and the triage card since Task 13 —
-    // was two separate call sites, now one), un-archive, archive-confirm
-    expect(js.match(/postJSON\(`\/api\/boards\//g)?.length ?? 0).toBeGreaterThanOrEqual(3)
+    // board row note (shared by the matrix and the triage card since Task 13),
+    // the archived-board Un-archive handler, and the Archive-confirm button —
+    // a per-function existence check rather than a whole-file occurrence count:
+    // a count needs editing on every legitimate refactor of these call sites,
+    // and each such edit is a chance to silently weaken the guard.
+    const boardsApiPattern = /postJSON\(`\/api\/boards\//
+
+    const rowAnswerEl = js.match(/function rowAnswerEl\([\s\S]*?\n\}/)
+    expect(rowAnswerEl, 'rowAnswerEl is missing').toBeTruthy()
+    expect(rowAnswerEl![0], 'rowAnswerEl does not call postJSON(').toMatch(boardsApiPattern)
+
+    const unarchiveHandler = js.match(/btn\('Un-archive',[\s\S]*?\}\)\)/)
+    expect(unarchiveHandler, 'the board Un-archive handler is missing').toBeTruthy()
+    expect(unarchiveHandler![0], 'the Un-archive handler does not call postJSON(').toMatch(boardsApiPattern)
+
+    const archiveBtnFn = js.match(/function archiveBtn\([\s\S]*?\n\}/)
+    expect(archiveBtnFn, 'archiveBtn is missing').toBeTruthy()
+    expect(archiveBtnFn![0], 'archiveBtn does not call postJSON(').toMatch(boardsApiPattern)
   })
 })

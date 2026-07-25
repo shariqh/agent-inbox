@@ -178,6 +178,19 @@ describe('app.js wiring — deck-open keyboard options target the deck entry, no
     // stageDismiss is defined exactly once — the ✕ button and the keyboard both call it
     expect(js.split('function stageDismiss').length - 1).toBe(1)
   })
+
+  // The Now strip's own "Triage →" button is gone (Task 6); 't' → keyAction's
+  // `openDeck` intent is the deck's only remaining door, so runIntent's
+  // 'openDeck' case is what must actually open it. shell.test.ts's surviving
+  // `expect(js).toContain('openTriage()')` is too loose to catch this wiring
+  // going missing on its own — it's already satisfied by `function openTriage()
+  // {`'s own definition line, without runIntent ever calling it.
+  it("runIntent's 'openDeck' case calls openTriage()", () => {
+    const start = js.indexOf('function runIntent')
+    const body = js.slice(start, js.indexOf('function initKeys'))
+    const openDeckCase = body.slice(body.indexOf("case 'openDeck'"))
+    expect(openDeckCase, "no case 'openDeck' found in runIntent").toContain('openTriage()')
+  })
 })
 
 // fix round 1 (Important #1): renderNeedsYou rebuilds every `.nrow` from

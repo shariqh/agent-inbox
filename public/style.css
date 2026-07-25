@@ -78,6 +78,9 @@ header { flex-wrap: wrap; }
 .actions button { font-size: 12px; padding: 3px 10px; border-radius: 6px; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); background: transparent; cursor: pointer; }
 .actions button.confirm { border-color: crimson; color: crimson; }
 .refusal-msg { font-size: 12px; opacity: .7; }
+/* a failed write's reason, parked beside its Send until the next attempt — the
+   #status line auto-clears on the next successful poll, this must not (C3) */
+.write-error { font-size: 12px; color: crimson; margin-left: 8px; }
 .empty { opacity: .4; font-size: 13px; }
 .board { border: 1px solid color-mix(in srgb, CanvasText 15%, transparent); border-radius: 8px; padding: 12px; margin-bottom: var(--gap); }
 .board-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }

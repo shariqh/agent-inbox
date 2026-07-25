@@ -7,6 +7,7 @@ import {
   pinOrder,
   pendingCount,
   applyListUpdate,
+  reconcileOpenRow,
 } from '../public/poll.js'
 
 describe('suspendReason', () => {
@@ -71,5 +72,29 @@ describe('applyListUpdate', () => {
     expect(r.ids).toEqual(['a', 'b'])
     expect(r.staged).toEqual(['b', 'c'])
     expect(r.pending).toBe(2)
+  })
+})
+
+// Fix round 2 (C1): `openRowId` is module state whose ONLY clearing path was
+// toggleRow — reachable exclusively from a `.nrow` element. A deep link that
+// wrote a BOARD id (electron/main.cjs notifies a blocked row with
+// focusHashFor(board.id)) or a notes/done item id into it therefore wedged
+// shouldSuspendRender() on forever: the poll kept fetching, render() never ran
+// again, and every tab count and the document title froze. The structural fix
+// is this render-time reconciliation — whatever the render actually produced is
+// the truth about what is still collapsible — so ANY future writer of openRowId
+// inherits a clearing path instead of a permanent freeze.
+describe('reconcileOpenRow', () => {
+  it('keeps an open id that the render actually produced a row for', () => {
+    expect(reconcileOpenRow('i1', ['i0', 'i1', 'i2'])).toBe('i1')
+    expect(reconcileOpenRow('i1', new Set(['i1']))).toBe('i1')
+  })
+  it('clears an open id no row was rendered for — the freeze case', () => {
+    expect(reconcileOpenRow('board-9', ['i0', 'i1'])).toBeNull()
+    expect(reconcileOpenRow('note-1', [])).toBeNull()
+  })
+  it('is a no-op when nothing is open', () => {
+    expect(reconcileOpenRow(null, ['i1'])).toBeNull()
+    expect(reconcileOpenRow(undefined, undefined)).toBeNull()
   })
 })

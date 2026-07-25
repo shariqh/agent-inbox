@@ -50,3 +50,17 @@ export function applyListUpdate({ current, incoming, hovering }) {
   if (hovering) return { ids: current, staged: incoming, pending: pendingCount(current, incoming) }
   return { ids: pinOrder(current, incoming), staged: null, pending: 0 }
 }
+
+// The other half of the suspension contract. `expanded` above is fed from
+// module state (app.js's openRowId) whose only clearing path is a DOM
+// affordance — `toggleRow`, reachable exclusively from a rendered `.nrow`.
+// Anything else written into it (a deep-linked BOARD id, a notes/done item id)
+// therefore suspended the poll FOREVER: no row, no toggle, no clear. This is
+// the render-time reconciliation — the render that just happened is the truth
+// about what is still collapsible — so a writer that aims at nothing costs one
+// wasted click instead of a frozen viewer.
+export function reconcileOpenRow(openId, renderedIds) {
+  if (openId == null) return null
+  const ids = renderedIds instanceof Set ? renderedIds : new Set(renderedIds ?? [])
+  return ids.has(openId) ? openId : null
+}

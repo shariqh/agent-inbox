@@ -3,7 +3,7 @@ import { filterRailEntries, railEntries, railProjects, shouldShowRailFilter } fr
 import { attentionCount, classifyLiveness, countsByProject, staleEntries } from '/attention.js'
 import { DEFAULT_TAB, TAB_IDS, tabCounts } from '/tabs.js'
 import { projectColor } from '/colors.js'
-import { shouldSuspendRender, suspendHint, pinOrder, applyListUpdate } from '/poll.js'
+import { shouldSuspendRender, suspendHint, pinOrder, applyListUpdate, reconcileOpenRow } from '/poll.js'
 import { createStagedSend } from '/star.js'
 import {
   ageChip, agentCounts, awaitingPickupEntries, needsYouEntries, relMs, rowModel, rowStarOption,
@@ -92,10 +92,14 @@ function resumeRender() {
   else showPauseHint()
 }
 
-// the single writer of openRowId — Tasks 11/16/17 call this, never assign
-function setOpenRow(id) {
+// the single writer of openRowId — Tasks 11/16/17 call this, never assign.
+// `resume: false` is for the ONE caller that is already inside render()
+// (render()'s own reconciliation, fix round 2 / C1): resuming from there would
+// re-enter render(); the next poll tick renders instead, now unsuspended.
+function setOpenRow(id, { resume = true } = {}) {
   openRowId = id
-  resumeRender()
+  if (resume) resumeRender()
+  else showPauseHint()
 }
 
 // render() runs its Needs-you entry ids through this: order pins for the
@@ -163,6 +167,18 @@ async function postJSON(url, body) {
       method: 'POST',
       ...(body !== undefined ? { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : {}),
     })
+    // fix round 2 (C4): nothing checked the STATUS. A 500 returns a text body,
+    // res.json() throws, the .catch below hands the caller `{}` — and every
+    // caller reads that as success and calls load(). A server-side throw on
+    // reply/resolve/dismiss/annotate/archive was completely silent. Note this
+    // keys on the Response, never on the parsed body: a 200 carrying
+    // `{ ok: false }` is the store's legitimate reply refusal (changeAnswer
+    // reads that itself) and must NOT be swallowed here.
+    if (!res.ok) {
+      console.error(`POST ${url} failed: HTTP ${res.status}`)
+      document.getElementById('status').textContent = `write failed (${res.status})`
+      return null
+    }
     return await res.json().catch(() => ({}))
   } catch (err) {
     console.error(`POST ${url} failed`, err)
@@ -170,6 +186,36 @@ async function postJSON(url, body) {
     return null
   }
 }
+
+// fix round 2 (C3): a failed write used to silently discard what the human
+// typed — the draft was deleted BEFORE the POST, and #status's "disconnected"
+// is wiped by the next successful poll ≤3s later, so the typed answer vanished
+// with no trace at all. The draft now outlives the failure and the REASON parks
+// here, beside Send, until the next attempt: a persistent inline slot, never
+// the auto-clearing status line.
+const writeErrors = {} // item/row id → last write failure, shown beside its Send
+
+function writeErrorEl(id) {
+  const el = document.createElement('span')
+  el.className = 'write-error'
+  el.dataset.errorFor = id
+  el.textContent = writeErrors[id] ?? '' // never innerHTML — this text is rendered beside agent-authored content
+  el.hidden = !writeErrors[id]
+  return el
+}
+
+// Also paints into the slot already on screen: a restored draft suspends the
+// poll (spec §10), so waiting for the next render would show the human nothing.
+function showWriteError(id, msg) {
+  if (msg) writeErrors[id] = msg
+  else delete writeErrors[id]
+  for (const el of document.querySelectorAll(`.write-error[data-error-for="${CSS.escape(id)}"]`)) {
+    el.textContent = msg
+    el.hidden = !msg
+  }
+}
+
+const WRITE_FAILED = 'Not sent — nothing was lost; press Send to retry.'
 
 function allItems(g) {
   return [...g.needsYou.flatMap((x) => x.items), ...g.notes.flatMap((x) => x.items), ...g.done]
@@ -184,6 +230,12 @@ function applyBadge() {
   const live = new Set((lastData.activity ?? []).map((a) => a.session))
   const n = attentionCount(allItems(lastData.g), lastData.boards, Date.now(), live)
   document.title = titleWithBadge(BASE_TITLE, n)
+}
+
+// The rendered Needs-you row for an id, or null. `openRowId` may only ever name
+// something this returns — see focusItem and render()'s reconciliation (C1).
+function needsYouRowEl(id) {
+  return document.querySelector(`#needsYouList .nrow[data-card-id="${CSS.escape(id)}"]`)
 }
 
 // Which tab holds an item — a deep link must land on the right one.
@@ -206,10 +258,20 @@ function focusItem(id) {
   agentFilter = null
   localStorage.removeItem(FILTER_KEY)
   selectTab(board ? 'boards' : tabForItem(item)) // Task 8: sets activeTab AND shows the panel
-  setOpenRow(id)                                  // Task 9: single-open accordion
   const hash = focusHashFor(id)
   if (location.hash !== hash) location.hash = hash // survives reload
   render()
+  // fix round 2 (C1): this used to call setOpenRow(id) for EVERY target. The
+  // accordion is a Needs-you affordance — `toggleRow` is the only thing that
+  // clears openRowId and it is reachable only from a rendered `.nrow`. A board
+  // id (electron/main.cjs deep-links a blocked row with focusHashFor(board.id),
+  // one notification click away) or a notes/done item id has none, so
+  // shouldSuspendRender() stayed true forever: load() kept updating lastData
+  // while the DOM, all four tab counts and document.title froze, and Escape's
+  // `collapse` intent no-op'd against a `.nrow` that never existed. Claim the
+  // accordion only once the target has actually landed in the list — render()
+  // above put it there — then render again so the card body mounts under it.
+  if (needsYouRowEl(id)) { setOpenRow(id); render() }
   requestAnimationFrame(() => {
     const el = document.querySelector(`[data-card-id="${CSS.escape(id)}"]`)
     if (!el) return
@@ -335,6 +397,16 @@ function render() {
   })
   for (const id of TAB_IDS) setCount(id, counts[id])
   pruneCollapsedCards()
+  // fix round 2 (C1, layer 2 — the one that closes the bug class). openRowId
+  // feeds shouldSuspendRender(), but its only clearing path is toggleRow, a DOM
+  // affordance that exists only for rows this render actually produced. Any
+  // writer that names something else (a deep-linked board id, a row the rail
+  // filter or the pager just removed) would otherwise suspend the poll
+  // permanently. The render that just happened is the authority on what is
+  // still collapsible; reconcileOpenRow (poll.js, unit-tested) is the rule.
+  const nextOpen = reconcileOpenRow(openRowId, rowEls().map((el) => el.dataset.cardId))
+  // still through setOpenRow — it stays the single writer of openRowId
+  if (nextOpen !== openRowId) setOpenRow(nextOpen, { resume: false })
   renderTriage() // keep the open lightbox in sync with fresh data
 }
 
@@ -403,11 +475,21 @@ function rowAnswerEl(b, r, onSaved) {
   input.addEventListener('input', () => { rowDrafts[r.id] = input.value; resumeRender() })
   input.addEventListener('focus', () => { rowFocusId = r.id })
   const save = async () => {
-    if (!input.value.trim()) return
+    const typed = input.value
+    if (!typed.trim()) return
+    // fix round 2 (C3): the draft used to be dropped BEFORE the POST, so a
+    // dropped request (viewer server restarted — routine for the Electron app)
+    // erased the human's note with no trace. Clear only once it landed.
+    const res = await postJSON(`/api/boards/${b.id}/rows/${r.id}/annotate`, { text: typed.trim() })
+    if (res === null) {
+      rowDrafts[r.id] = typed
+      showWriteError(r.id, WRITE_FAILED)
+      resumeRender()
+      return
+    }
     delete rowDrafts[r.id]
     if (rowFocusId === r.id) rowFocusId = null
-    const res = await postJSON(`/api/boards/${b.id}/rows/${r.id}/annotate`, { text: input.value.trim() })
-    if (res === null) return // network failure — postJSON already signaled it
+    showWriteError(r.id, '')
     // the row stays blocked until the agent picks the note up — the human's part
     // is done, so the caller decides what to drop
     onSaved?.()
@@ -416,6 +498,7 @@ function rowAnswerEl(b, r, onSaved) {
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') save() })
   row.appendChild(input)
   row.appendChild(btn('Send', save))
+  row.appendChild(writeErrorEl(r.id))
   if (rowFocusId === r.id) requestAnimationFrame(() => {
     input.focus()
     input.setSelectionRange(input.value.length, input.value.length)
@@ -1365,11 +1448,27 @@ let draftFocusKey = null         // `${itemId}:answer` or `${itemId}:context`, t
 async function sendReply(id, text, context = '') {
   const reply = text.trim()
   if (!reply) return
+  // fix round 2 (C3): both drafts used to be deleted BEFORE the POST. When the
+  // write failed (postJSON → null: server restarted, or now any non-2xx) the
+  // human's typed answer was gone — the next render rebuilt an empty input and
+  // #status's "disconnected" was wiped by the next successful poll ≤3s later.
+  // Nothing is cleared until the server has it.
+  const hadDraft = draftReplies[id] !== undefined || draftReplyContexts[id] !== undefined
+  const res = await postJSON(`/api/items/${id}/reply`, { text: reply, context: context.trim() || undefined })
+  if (res === null) {
+    // re-assert rather than merely leave in place, so a future edit that clears
+    // early still cannot lose it. Only when the human HAD a draft: inventing one
+    // for an option-pill/★ send would park text in an input nobody typed into
+    // (and suspend the poll on it — the C2 failure mode).
+    if (hadDraft) { draftReplies[id] = text; draftReplyContexts[id] = context }
+    showWriteError(id, WRITE_FAILED)
+    resumeRender()
+    return
+  }
   delete draftReplies[id]
   delete draftReplyContexts[id]
   if (draftFocusKey?.startsWith(`${id}:`)) draftFocusKey = null
-  const res = await postJSON(`/api/items/${id}/reply`, { text: reply, context: context.trim() || undefined })
-  if (res === null) return // network failure — postJSON already signaled it
+  showWriteError(id, '')
   load()
 }
 
@@ -1414,6 +1513,7 @@ function answerEl(it) {
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendReply(it.id, input.value, ctxInput.value) })
   row.appendChild(input)
   row.appendChild(btn('Send', () => sendReply(it.id, input.value, ctxInput.value)))
+  row.appendChild(writeErrorEl(it.id)) // persists a failed write's reason across the poll rebuild (C3)
   wrap.appendChild(row)
   const ctxRow = document.createElement('div')
   ctxRow.className = 'reply-row reply-context-row'
@@ -1495,8 +1595,6 @@ function itemCardEl(it, { done = false, nowMs = Date.now(), liveness = 'parked',
 // snapshot hasn't caught up yet (up to ~3s stale) — the server already told us
 // definitively that a pickup happened, we just don't know exactly when.
 async function changeAnswer(it, msgEl) {
-  draftReplies[it.id] = it.reply
-  draftReplyContexts[it.id] = it.reply_context ?? ''
   const res = await postJSON(`/api/items/${it.id}/reply`, { text: '' })
   if (res === null) return // network failure — postJSON already signaled it
   if (!res.ok) {
@@ -1506,6 +1604,14 @@ async function changeAnswer(it, msgEl) {
     if (msgEl) msgEl.textContent = `${refusal} `
     return
   }
+  // fix round 2 (C2): the prefill used to be written BEFORE the POST. On refusal
+  // the item is still answered, so cardSections.showAnswer stays false and
+  // answerEl is never built — the draft had no input to live in and NO ui could
+  // clear it, so suspendReason() read 'draft' forever and the viewer froze
+  // exactly like C1. It belongs on the accepted path only: the reply is blanked,
+  // the answer surface comes back, and this is what it comes back holding.
+  draftReplies[it.id] = it.reply
+  draftReplyContexts[it.id] = it.reply_context ?? ''
   load()
 }
 

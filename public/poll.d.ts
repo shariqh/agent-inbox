@@ -15,3 +15,7 @@ export function applyListUpdate(args: {
   incoming: string[]
   hovering: boolean
 }): { ids: string[]; staged: string[] | null; pending: number }
+export function reconcileOpenRow(
+  openId: string | null | undefined,
+  renderedIds: string[] | Set<string> | null | undefined,
+): string | null

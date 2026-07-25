@@ -88,27 +88,39 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   is flat. The base `tsconfig.json` (src + test) is for typecheck only. Don't point `build`
   at the base config — it re-nests output under `dist/src/`.
 
-## v2 backlog — and the seams already in place
+## Shipped since v1
 
-v1 is deliberately local + triage-only. The next work, with the hooks left for it
-(tracked as GitHub issues #7–#11):
+v1 was deliberately local + triage-only. These have since landed — don't re-plan them:
 
-1. **Answer-back** *(#7)* — reply to an agent from the viewer. Add a `pending({ stream }) → items`
-   MCP tool the agent polls for the human's reply, and a viewer reply box that writes the
-   reply onto the item. `register`/session scope already identify which session to route to.
-2. **Remote / hosted mode** *(#8)* — run on a server (e.g. a remote host), tunnel-exposed for phone +
-   cloud-agent reach. Swap stdio for **streamable-HTTP** transport and add **auth** (bearer
-   token in MCP client headers + a gate on the viewer). `register` is the identity seam: a
-   remote server can't see the client's `cwd`, so agents declare scope via `register` instead
-   of auto-inference. `AGENT_INBOX_DB`/`AGENT_INBOX_PORT` env overrides are already in place.
-3. **`done`/milestone bucket** *(#9)* — an opt-in third kind (e.g. `flag({ kind:'done' })`) surfaced
-   in the viewer's Done section. Kept out of v1 to preserve signal; `group.ts` already has a
-   `done` bucket for closed items to slot into.
-4. **Status backstop via Claude Code hooks** *(#10)* — deterministic (no-AI) `agent_needs_input` /
-   `agent_completed` hooks → POST an event, so status shows even when an agent forgets to
-   flag. Pure shell→HTTP; needs the remote HTTP endpoint from (2), or a local one.
-5. **Electron packaging** *(#11)* — wrap the existing `public/` viewer in an Electron window (it's
-   plain HTML/CSS/JS with no build step precisely so this is a lift-and-drop).
+- **Answer-back** *(#7)* — `pending` MCP tool + the viewer reply box. Answers carry an optional
+  `reply_context`, and `reply_seen_at` records agent pickup.
+- **`done`/milestone bucket** *(#9)* — `flag({ kind:'done' })`, surfaced in the viewer's Done section.
+- **Electron packaging** *(#11)* — `electron/` wraps the `public/` viewer; `scripts/package-app.sh`
+  stages `dist` + `public` + `electron` and rebuilds `better-sqlite3` for Electron's ABI.
+- **Session presence** *(#28)* — every MCP session is a Live row; `status()` upgrades it, process
+  exit ends it, and rows silently expire after ~15 min.
+- **The agent-emit contract** — `docs/reporting-snippet.md`'s end-of-turn rule now tests "am I about
+  to stop and wait on the human?", so recommendations and "say the word" moments get flagged
+  instead of buried. Mirrored in the `flag` tool description so agents get it at the call site.
+
+## Open backlog — and the seams already in place
+
+- **Remote / hosted mode** *(#8)* — run on a server, tunnel-exposed for phone + cloud-agent reach.
+  Swap stdio for **streamable-HTTP** and add **auth** (bearer token in MCP client headers + a gate
+  on the viewer). `register` is the identity seam: a remote server can't see the client's `cwd`, so
+  agents declare scope via `register` instead of auto-inference. `AGENT_INBOX_DB`/`AGENT_INBOX_PORT`
+  env overrides are already in place.
+- **Forgotten-flag backstop** *(#10)* — deterministic (no-AI) hooks that insert an item when a
+  session stalls or ends without flagging, so the human is pinged even when the agent forgets.
+  Pure shell→store (or shell→HTTP once (#8) lands). Must fail open.
+- **Idle-agent polling gap** *(#21)* — an agent idle at the prompt never calls `pending()`, so a
+  human's reply can sit at "waiting for pickup". Overlaps #10's hook territory.
+- **Dual-channel answer sync** *(#29)* — answering in chat and answering in the inbox should
+  converge on the same item state, last-write-wins.
+- **Source + PR links** *(#30)* — infer the issue/PR from git + `gh` (a PR belongs to a branch, and
+  `stream` already *is* the branch), refresh PR state from the local `gh` CLI **in the viewer
+  process**, and show it as a chip. No model calls — the TL;DR is the PR title or an agent-supplied
+  one-liner.
 
 Keep all of these additive and behind the existing seams — don't break v1's local,
 zero-config, no-auth path.

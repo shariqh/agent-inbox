@@ -16,15 +16,13 @@ const boards = [
 ]
 
 describe('tab model', () => {
-  it('boots to Needs you and lists the five content tabs in order', () => {
+  it('boots to Needs you and lists the four content tabs in order (Live is a footer strip, not a tab — spec §16)', () => {
     expect(DEFAULT_TAB).toBe('needsYou')
-    expect(TAB_IDS).toEqual(['needsYou', 'boards', 'live', 'notes', 'done'])
+    expect(TAB_IDS).toEqual(['needsYou', 'boards', 'notes', 'done'])
     expect(TAB_IDS[0]).toBe(DEFAULT_TAB)
   })
 
-  it('gives Live no number — presence is a dot', () => {
-    const c = tabCounts({ globalAttention: 0, unreadNotes: 0, scoped: { boards: [], done: [] } })
-    expect(c.live).toBeNull()
+  it('livePresence still works — the footer strip reuses it', () => {
     expect(livePresence([{ session: 's1', idle: true }])).toBe(false)
     expect(livePresence([{ session: 's1', idle: true }, { session: 's2', idle: false }])).toBe(true)
     expect(livePresence(undefined)).toBe(false)
@@ -36,7 +34,7 @@ describe('tab model', () => {
       unreadNotes: 2,
       scoped: { boards: [{ id: 'b1' }], done: [{ id: 'd1' }] },
     })
-    expect(c).toEqual({ needsYou: 7, boards: 1, live: null, notes: 2, done: 1 })
+    expect(c).toEqual({ needsYou: 7, boards: 1, notes: 2, done: 1 })
   })
 
   it('treats a missing notes number as zero rather than NaN', () => {

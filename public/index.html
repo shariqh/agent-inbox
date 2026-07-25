@@ -23,20 +23,27 @@
       <div id="tabs" class="tabstrip" role="tablist" aria-label="Content">
         <button class="tab" type="button" role="tab" data-tab="needsYou" aria-selected="true">Needs you<span class="tab-count" hidden></span></button>
         <button class="tab" type="button" role="tab" data-tab="boards" aria-selected="false">Boards<span class="tab-count" hidden></span></button>
-        <button class="tab" type="button" role="tab" data-tab="live" aria-selected="false">Live<span class="tab-dot" hidden></span></button>
         <button class="tab" type="button" role="tab" data-tab="notes" aria-selected="false">Notes<span class="tab-count" hidden></span></button>
         <button class="tab" type="button" role="tab" data-tab="done" aria-selected="false">Done<span class="tab-count" hidden></span></button>
       </div>
       <main>
         <section class="panel" id="needsYou" role="tabpanel"><div id="needsYouList" class="rows"></div></section>
         <section class="panel" id="boards" role="tabpanel" hidden><div class="boards"></div></section>
-        <section class="panel" id="live" role="tabpanel" hidden><div class="live-list"></div></section>
         <section class="panel" id="notes" role="tabpanel" hidden><div class="groups"></div></section>
         <section class="panel" id="done" role="tabpanel" hidden><div class="items"></div></section>
         <section class="panel" id="setup" role="tabpanel" hidden><div class="setup-body"></div></section>
       </main>
     </div>
   </div>
+  <footer id="liveBar">
+    <button id="liveStrip" type="button" aria-expanded="false" aria-controls="liveDrawer">
+      <span class="live-dot idle" id="liveStripDot"></span>
+      <span class="live-label" id="liveStripLabel">no agents running</span>
+      <span class="live-sessions" id="liveStripSessions"></span>
+      <span class="live-caret" aria-hidden="true">▴</span>
+    </button>
+    <div id="liveDrawer" class="live-drawer" hidden><div class="live-list"></div></div>
+  </footer>
   <div id="lightbox" hidden>
     <div class="lb-backdrop"></div>
     <div class="lb-panel">

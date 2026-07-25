@@ -23,14 +23,14 @@ describe('shell markup', () => {
     expect(html).toContain('id="gear"')
   })
 
-  it('has a project rail and the five content tabs in spec order', () => {
+  it('has a project rail and the four content tabs in spec order (Live is a footer strip, not a tab — spec §16)', () => {
     expect(html).toContain('id="rail"')
     const tabs = [...html.matchAll(/<button class="tab"[^>]*data-tab="(\w+)"/g)].map((m) => m[1])
-    expect(tabs).toEqual(['needsYou', 'boards', 'live', 'notes', 'done'])
+    expect(tabs).toEqual(['needsYou', 'boards', 'notes', 'done'])
+    expect(html).not.toContain('data-tab="live"')
   })
 
-  it('gives Live a presence dot and every other tab a count slot', () => {
-    expect(html).toMatch(/data-tab="live"[^>]*>[^<]*<span class="tab-dot"/)
+  it('gives every tab a count slot', () => {
     for (const t of ['needsYou', 'boards', 'notes', 'done']) {
       expect(html, t).toMatch(new RegExp(`data-tab="${t}"[^>]*>[^<]*<span class="tab-count"`))
     }
@@ -38,10 +38,19 @@ describe('shell markup', () => {
 
   it('keeps every render host the viewer writes into', () => {
     for (const host of [
-      'id="needsYou"', 'id="boards"', 'id="live"', 'id="notes"', 'id="done"', 'id="setup"',
-      'id="needsYouList"', 'class="rows"', 'class="live-list"', 'class="groups"',
+      'id="needsYou"', 'id="boards"', 'id="notes"', 'id="done"', 'id="setup"',
+      'id="needsYouList"', 'class="rows"', 'class="groups"',
       'class="boards"', 'class="items"', 'class="setup-body"',
     ]) expect(html, host).toContain(host)
+  })
+
+  it('has the always-visible Live footer strip and its collapsed drawer (spec §16)', () => {
+    expect(html).toContain('id="liveBar"')
+    expect(html).toMatch(/id="liveStrip"[^>]*aria-expanded="false"/)
+    expect(html).toMatch(/id="liveStrip"[^>]*aria-controls="liveDrawer"/)
+    expect(html).toMatch(/id="liveDrawer"[^>]*hidden/)
+    expect(html).toContain('class="live-list"')
+    expect(html).toContain('no agents running')
   })
 
   it('leaves the pieces later tasks build in JS out of the static markup', () => {

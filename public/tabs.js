@@ -2,7 +2,7 @@
 // attention count is INJECTED rather than imported, so the filter-blindness
 // rule is stated here instead of hiding inside a call site.
 
-export const TAB_IDS = ['needsYou', 'boards', 'live', 'notes', 'done']
+export const TAB_IDS = ['needsYou', 'boards', 'notes', 'done']
 
 // the active tab is never persisted — the app always opens where the action is
 export const DEFAULT_TAB = 'needsYou'
@@ -11,18 +11,18 @@ export const DEFAULT_TAB = 'needsYou'
 // project/agent/search-narrowed view; `unreadNotes` is an ALREADY-COMPUTED
 // number (the caller decides what "unread" means). Needs-you is filter-blind by
 // construction: selecting a project narrows the list, never the global signal.
-// `live` is null on purpose — Live gets a presence dot; numbers are reserved for
-// things that actually want you.
+// Live is no longer a tab (spec §16) — it's an always-visible footer strip, so
+// it carries no count here at all.
 export function tabCounts({ globalAttention, unreadNotes, scoped }) {
   return {
     needsYou: globalAttention,
     boards: scoped.boards.length,
-    live: null,
     notes: unreadNotes ?? 0,
     done: scoped.done.length,
   }
 }
 
+// still used by the footer strip's freshest-tone/idle read (spec §16)
 export function livePresence(activity) {
   return (activity ?? []).some((a) => !a.idle)
 }

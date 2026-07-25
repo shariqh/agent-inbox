@@ -1,7 +1,7 @@
 import { paginate, paginateGroups, searchMatches } from '/search.js'
 import { filterRailEntries, railEntries, railProjects, shouldShowRailFilter } from '/rail.js'
 import { attentionCount, classifyLiveness, countsByProject, staleEntries } from '/attention.js'
-import { DEFAULT_TAB, TAB_IDS, livePresence, tabCounts } from '/tabs.js'
+import { DEFAULT_TAB, TAB_IDS, tabCounts } from '/tabs.js'
 import { projectColor, projectMonogram } from '/colors.js'
 import { shouldSuspendRender, suspendHint, pinOrder, applyListUpdate } from '/poll.js'
 import { canUndo, createStagedSend } from '/star.js'
@@ -11,6 +11,7 @@ import {
 } from '/rowview.js'
 import { cardSections, optionOrder } from '/card.js'
 import { partitionNotes, unreadNoteCount, ambientChips } from '/notes.js'
+import { liveSummary } from '/livebar.js'
 
 void paginateGroups // kept exported+tested (spec §15); the viewer no longer calls it
 
@@ -207,6 +208,7 @@ function render() {
     })), searchQuery, fuzzyFilter)
   const live = liveMatched ? pillLive.filter((a) => liveMatched.has(a.session)) : pillLive
   renderLive(live)
+  renderLiveBar(live)
   renderNeedsYou(g, boards, Date.now())
   renderGroups('notes', g.notes)
   renderDone(g.done)
@@ -219,7 +221,6 @@ function render() {
     scoped: { boards, done: g.done },
   })
   for (const id of TAB_IDS) setCount(id, counts[id])
-  setPresence(livePresence(live))
   pruneCollapsedCards()
   renderTriage() // keep the open lightbox in sync with fresh data
 }
@@ -374,11 +375,6 @@ function setCount(id, n) {
   if (!el) return
   el.textContent = n ? String(n) : ''
   el.hidden = !n
-}
-
-function setPresence(present) {
-  const dot = document.querySelector('.tab[data-tab="live"] .tab-dot')
-  if (dot) dot.hidden = !present
 }
 
 // project selection persists (Task 7); the active tab deliberately does not
@@ -600,7 +596,7 @@ function initGear() {
 const openLive = new Set()
 
 function renderLive(entries) {
-  const host = document.querySelector('#live .live-list')
+  const host = document.querySelector('#liveDrawer .live-list')
   const active = entries.filter((a) => !a.idle)
   const idle = entries.filter((a) => a.idle)
   host.innerHTML = entries.length ? '' : '<p class="empty">No sessions.</p>'
@@ -657,6 +653,45 @@ function renderLive(entries) {
     }
     host.appendChild(fold)
   }
+}
+
+// The always-visible footer strip (spec §16). Ambient only: never steals focus,
+// never auto-expands, and its number never reads as a to-do.
+function renderLiveBar(entries) {
+  const s = liveSummary(entries, Date.now())
+  const dot = document.getElementById('liveStripDot')
+  const label = document.getElementById('liveStripLabel')
+  const list = document.getElementById('liveStripSessions')
+  if (!dot || !label || !list) return
+  dot.className = `live-dot ${s.tone}`
+  label.textContent = s.label
+  list.replaceChildren()
+  for (const x of s.sessions) {
+    const el = document.createElement('span')
+    el.className = `live-session ${x.tone}`
+    el.textContent = x.label // agent-authored: textContent, never innerHTML
+    list.appendChild(el)
+  }
+}
+
+function toggleLiveDrawer(open) {
+  const strip = document.getElementById('liveStrip')
+  const drawer = document.getElementById('liveDrawer')
+  if (!strip || !drawer) return
+  const next = open ?? drawer.hidden
+  drawer.hidden = !next
+  strip.setAttribute('aria-expanded', String(next))
+  if (!next) strip.focus() // return focus on collapse (spec §13)
+}
+
+function initLiveBar() {
+  const strip = document.getElementById('liveStrip')
+  if (!strip) return
+  strip.addEventListener('click', () => toggleLiveDrawer())
+  document.addEventListener('keydown', (e) => {
+    const drawer = document.getElementById('liveDrawer')
+    if (e.key === 'Escape' && drawer && !drawer.hidden) { toggleLiveDrawer(false) }
+  })
 }
 
 // dismissing noise must not cost an expansion: staged 5s, undoable, flushed on blur
@@ -1289,6 +1324,7 @@ initStagedFlush()
 initListStaging()
 initAgentSelect()
 initGear()
+initLiveBar()
 renderSetup()
 load()
 setInterval(load, 3000)

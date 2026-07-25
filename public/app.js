@@ -14,6 +14,7 @@ import { partitionNotes, unreadNoteCount, ambientChips } from '/notes.js'
 import { liveSummary } from '/livebar.js'
 import { esc } from '/esc.js'
 import { boardRowsView, progressLabel, hiddenDoneCount, lingeringBoards } from '/boards.js'
+import { liveEntity, tabMatchCounts, projectMatchCounts, otherTabMatches } from '/tabsearch.js'
 
 void paginateGroups // kept exported+tested (spec §15); the viewer no longer calls it
 
@@ -220,15 +221,20 @@ function render() {
   // switching tabs never drops state for cards the filter is hiding
   liveCardIds = new Set([...allItems(lastData.g).map((i) => i.id), ...lastData.boards.map((b) => b.id), ...lastData.archived.map((b) => b.id)])
   const { g, boards, archived } = applySearch(filterData(lastData))
+  // counts are computed against lastData, NOT the filtered slice: selecting a
+  // project or a tab narrows the list, never the search signal (spec §12)
+  matchCounts = tabMatchCounts(lastData, searchQuery, fuzzyFilter)
+  for (const [tab, n] of Object.entries(matchCounts)) setTabMatch(tab, n)
+  const projMatches = projectMatchCounts(lastData, searchQuery, fuzzyFilter)
+  const railProjectKeys = railProjects({
+    items: allItems(lastData.g), boards: lastData.boards, archived: lastData.archived, activity: lastData.activity,
+  })
+  for (const p of railProjectKeys) setRailMatch(p, projMatches.get(p) ?? 0)
   const pillLive = (lastData.activity ?? []).filter((a) =>
     (!projectFilter || a.project === projectFilter) && (!agentFilter || a.agent === agentFilter))
   // search filters Live too: match a session on what it's doing (+ its children),
   // reusing searchMatches by mapping each session onto a haystack-shaped entity
-  const liveMatched = searchMatches(
-    pillLive.map((a) => ({
-      id: a.session, title: a.doing, project: a.project, agent: a.agent, stream: a.stream,
-      detail: [a.detail, ...(a.children ?? []).flatMap((c) => [c.name, c.doing])].filter(Boolean).join(' '),
-    })), searchQuery, fuzzyFilter)
+  const liveMatched = searchMatches(pillLive.map(liveEntity), searchQuery, fuzzyFilter)
   const live = liveMatched ? pillLive.filter((a) => liveMatched.has(a.session)) : pillLive
   renderLive(live)                          // drawer's expanded list — stays FILTERED (rail-scoped, like every other tab)
   renderLiveBar(lastData.activity ?? [])    // collapsed strip — GLOBAL, never scoped (§7 filter-blindness, generalized)
@@ -424,6 +430,33 @@ function setCount(id, n) {
   el.hidden = !n
 }
 
+// the whole-dataset per-tab match tally (spec §12) — read by emptyMsg so a tab
+// can point at where a search's hits actually are
+let matchCounts = { needsYou: null, boards: null, live: null, notes: null, done: null }
+
+// a small "N" beside a tab label — how many matches hide behind THAT tab
+function setTabMatch(tab, n) {
+  const el = document.querySelector(`#tabs .tab[data-tab="${tab}"]`)
+  if (!el) return
+  let badge = el.querySelector('.match-count')
+  if (n === null || n === 0) { badge?.remove(); return }
+  if (!badge) {
+    badge = document.createElement('span')
+    badge.className = 'match-count'
+    el.appendChild(badge)
+  }
+  badge.textContent = String(n)
+}
+
+// the rail row already ships an empty <span class="rail-match"> (Task 7) — this
+// only fills it in, so the rail's own markup stays the single source of truth
+function setRailMatch(project, n) {
+  const el = document.querySelector(`#rail button.rail-tab[data-project="${CSS.escape(project)}"] .rail-match`)
+  if (!el) return
+  el.textContent = n ? String(n) : ''
+  el.hidden = !n
+}
+
 // project selection persists (Task 7); the active tab deliberately does not
 let activeTab = DEFAULT_TAB
 
@@ -478,10 +511,16 @@ function applySearch({ g, boards, archived }) {
   }
 }
 
-// section empty-state text: search-aware when a query is active
+const TAB_LABEL = { needsYou: 'Needs you', boards: 'Boards', live: 'Live', notes: 'Notes', done: 'Done' }
+
+// section empty-state text: search-aware, and never a BARE "no matches" — it
+// always points at the tabs that do have hits (spec §12)
 function emptyMsg(base) {
   const q = searchQuery.trim()
-  return q ? `No matches for &ldquo;${esc(q)}&rdquo;` : base
+  if (!q) return base
+  const elsewhere = otherTabMatches(matchCounts, activeTab)
+  const where = elsewhere.map(({ tab, n }) => `${n} in ${TAB_LABEL[tab]}`).join(' · ')
+  return `No matches for &ldquo;${esc(q)}&rdquo; here${where ? ` — <span class="match-elsewhere">${where}</span>` : ' or in any other tab'}`
 }
 
 const liveSessionIds = () => new Set((lastData.activity ?? []).map((a) => a.session))
@@ -1366,6 +1405,7 @@ async function act(id, action) {
 
 function initSearch() {
   const input = document.getElementById('search')
+  input.value = searchQuery // the query persists across tab and project changes
   let t = null
   input.addEventListener('input', () => {
     clearTimeout(t)

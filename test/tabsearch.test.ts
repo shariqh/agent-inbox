@@ -1,0 +1,80 @@
+import { describe, it, expect } from 'vitest'
+import uFuzzy from '@leeoniya/ufuzzy'
+import { liveEntity, searchIndex, tabMatchCounts, projectMatchCounts, otherTabMatches } from '../public/tabsearch.js'
+
+const uf = new uFuzzy({ intraMode: 1 })
+const fuzzy = (hay: string[], needle: string) => uf.filter(hay, needle)
+
+const data = {
+  g: {
+    needsYou: [{ project: 'api', items: [{ id: 'q1', title: 'rotate the auth token', project: 'api', agent: 'claude' }] }],
+    notes: [{ project: 'web', items: [{ id: 'n1', title: 'auth cookie workaround', project: 'web', agent: 'claude' }] }],
+    done: [{ id: 'd1', title: 'billing migration', project: 'web', agent: 'claude' }],
+  },
+  boards: [{ id: 'b1', title: 'Auth rollout', project: 'api', agent: 'claude', rows: [{ label: 'Deploy', note: '' }] }],
+  archived: [{ id: 'b2', title: 'Old auth spike', project: 'infra', agent: 'claude', rows: [] }],
+  activity: [
+    { session: 's1', project: 'infra', agent: 'claude', stream: '', doing: 'wiring auth headers', detail: '', children: [] },
+    { session: 's2', project: 'web', agent: 'codex', stream: '', doing: 'writing docs', detail: '', children: [{ name: 'sub', doing: 'lint' }] },
+  ],
+}
+
+describe('liveEntity', () => {
+  it('flattens a session (and its children) into a haystack-shaped entity', () => {
+    const e = liveEntity(data.activity[1]!)
+    expect(e.id).toBe('s2')
+    expect(e.title).toBe('writing docs')
+    expect(e.detail).toBe('sub lint')
+  })
+})
+
+describe('searchIndex', () => {
+  it('returns null per tab when there is no query (everything shows)', () => {
+    const idx = searchIndex(data, '  ', fuzzy)
+    expect(idx.needsYou).toBeNull()
+    expect(idx.boards).toBeNull()
+    expect(idx.live).toBeNull()
+  })
+  it('indexes each tab independently, across the whole dataset', () => {
+    const idx = searchIndex(data, 'auth', fuzzy)
+    expect([...idx.needsYou!]).toEqual(['q1'])
+    expect([...idx.notes!]).toEqual(['n1'])
+    expect([...idx.boards!].sort()).toEqual(['b1', 'b2'])
+    expect([...idx.live!]).toEqual(['s1'])
+    expect([...idx.done!]).toEqual([])
+  })
+})
+
+describe('tabMatchCounts', () => {
+  it('counts matches behind every tab, not just the active one', () => {
+    expect(tabMatchCounts(data, 'auth', fuzzy)).toEqual({ needsYou: 1, boards: 2, live: 1, notes: 1, done: 0 })
+  })
+  it('is all-null with no query', () => {
+    expect(tabMatchCounts(data, '', fuzzy)).toEqual({ needsYou: null, boards: null, live: null, notes: null, done: null })
+  })
+})
+
+describe('projectMatchCounts', () => {
+  it('counts matching entities per project across all tabs', () => {
+    const m = projectMatchCounts(data, 'auth', fuzzy)
+    expect(m.get('api')).toBe(2)   // q1 + b1
+    expect(m.get('web')).toBe(1)   // n1
+    expect(m.get('infra')).toBe(2) // b2 + s1
+  })
+  it('is empty with no query', () => {
+    expect(projectMatchCounts(data, '', fuzzy).size).toBe(0)
+  })
+})
+
+describe('otherTabMatches', () => {
+  it('lists the tabs holding matches you are not looking at', () => {
+    const counts = { needsYou: 0, boards: 2, live: 1, notes: 1, done: 0 }
+    expect(otherTabMatches(counts, 'needsYou')).toEqual([{ tab: 'boards', n: 2 }, { tab: 'live', n: 1 }, { tab: 'notes', n: 1 }])
+  })
+  it('is empty when nothing matches anywhere else', () => {
+    expect(otherTabMatches({ needsYou: 3, boards: 0, live: 0, notes: 0, done: 0 }, 'needsYou')).toEqual([])
+  })
+  it('is empty with no query (null counts)', () => {
+    expect(otherTabMatches({ needsYou: null, boards: null, live: null, notes: null, done: null }, 'needsYou')).toEqual([])
+  })
+})

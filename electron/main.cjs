@@ -28,6 +28,31 @@ const PORT = Number(process.env.AGENT_INBOX_PORT ?? 4319)
 const URL_BASE = `http://localhost:${PORT}/`
 const REPO_ROOT = path.resolve(__dirname, '..')
 
+// One attention predicate for the whole product (spec §7 / tenet 3): the dock
+// badge imports the very module the viewer renders from. ESM from CJS →
+// dynamic import, started once and awaited per poll.
+const ATTENTION_PATH = path.join(REPO_ROOT, 'public', 'attention.js')
+const BADGE_PATH = path.join(REPO_ROOT, 'public', 'badge.js')
+
+for (const p of [ATTENTION_PATH, BADGE_PATH]) {
+  if (!existsSync(p)) {
+    console.error(`[agent-inbox] FATAL: missing ${p}. The packaged app must stage public/ next to electron/ (scripts/package-app.sh) — dock badge will be disabled.`)
+  }
+}
+
+let attentionModsFailed = false
+const attentionMods = Promise.all([
+  import(pathToFileURL(ATTENTION_PATH).href),
+  import(pathToFileURL(BADGE_PATH).href),
+]).then(([attention, badge]) => ({ ...attention, ...badge }))
+
+attentionMods.catch((err) => {
+  attentionModsFailed = true
+  // LOUD, once: never let the badge stop updating in silence.
+  console.error('[agent-inbox] FATAL: could not load the attention/badge modules — dock badge disabled', err)
+  if (typeof app.setBadgeCount === 'function') app.setBadgeCount(0)
+})
+
 /** Gap between the two reuse probes — long enough for a dying viewer to vanish. */
 const REUSE_CONFIRM_DELAY_MS = 500
 
@@ -108,28 +133,52 @@ function spawnViewer() {
 function startAttentionWatch(win) {
   let known = null // ids seen on the previous poll; null until the first one
   setInterval(async () => {
+    if (attentionModsFailed) return // already logged once — don't spam every 3s
+    let mods
+    try {
+      mods = await attentionMods
+    } catch {
+      return // the .catch above owns the (loud) reporting
+    }
+    const { attentionEntries, focusHashFor } = mods
     try {
       const g = await (await fetch(`${URL_BASE}api/items`)).json()
       const boards = await (await fetch(`${URL_BASE}api/boards`)).json()
-      const entries = [
-        ...g.needsYou.flatMap((gr) => gr.items).filter((i) => !i.reply)
-          .map((q) => ({ id: `q:${q.id}`, text: q.title })),
-        ...boards.flatMap((b) => b.rows.filter((r) => r.status === 'blocked')
-          .map((r) => ({ id: `r:${r.id}`, text: `🚧 ${b.title} · ${r.label}` }))),
+      const activity = await (await fetch(`${URL_BASE}api/activity`)).json()
+      const items = [
+        ...g.needsYou.flatMap((gr) => gr.items),
+        ...g.notes.flatMap((gr) => gr.items),
+        ...g.done,
       ]
-      if (process.platform === 'darwin') app.dock.setBadge(entries.length ? String(entries.length) : '')
+      const liveSessions = new Set(activity.map((a) => a.session))
+      // THE §7 attention set — the exact same call the viewer's badge, rail,
+      // tab count and triage deck all read from (spec §7 / tenet 3). No inline
+      // re-derivation here: annotated-and-seen blocked rows and stale items are
+      // OUT, so the badge — unlike the old per-file predicate — can reach zero.
+      const attn = attentionEntries(items, boards, Date.now(), liveSessions)
+      if (typeof app.setBadgeCount === 'function') app.setBadgeCount(attn.length)
+      const entries = attn.map((e) => e.kind === 'item'
+        ? { id: `q:${e.item.id}`, itemId: e.item.id, text: e.item.title }
+        : { id: `r:${e.row.id}`, itemId: e.board.id, text: `🚧 ${e.board.title} · ${e.row.label}` })
       const fresh = known === null ? [] : entries.filter((e) => !known.has(e.id))
       known = new Set(entries.map((e) => e.id))
+      // Per-item notifications stay (owner's call) — informational only.
       if (fresh.length && Notification.isSupported()) {
         console.log(`[agent-inbox] notifying: ${fresh.length} new (${fresh[0].text})`)
+        // No action buttons: a notification never mutates state (spec §11 / tenet 1).
         const note = new Notification({
           title: fresh.length === 1 ? 'Agent Inbox — needs you' : `Agent Inbox — ${fresh.length} new need you`,
           body: fresh.slice(0, 3).map((f) => f.text).join('\n'),
         })
+        const hash = fresh.length === 1 ? focusHashFor(fresh[0].itemId) : null
         note.on('click', () => {
           if (win.isMinimized()) win.restore()
           win.show()
           win.focus()
+          // Clicking only opens the app — and, for a single item, lands on it.
+          if (hash) win.webContents.executeJavaScript(`location.hash = ${JSON.stringify(hash)}`).catch((err) => {
+            console.error('[agent-inbox] deep link failed', err)
+          })
         })
         note.show()
       }

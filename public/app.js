@@ -15,6 +15,7 @@ import { liveSummary } from '/livebar.js'
 import { esc } from '/esc.js'
 import { boardRowsView, progressLabel, hiddenDoneCount, lingeringBoards } from '/boards.js'
 import { liveEntity, tabMatchCounts, projectMatchCounts, otherTabMatches } from '/tabsearch.js'
+import { titleWithBadge, focusHashFor, parseFocusHash } from '/badge.js'
 
 void paginateGroups // kept exported+tested (spec §15); the viewer no longer calls it
 
@@ -133,6 +134,7 @@ async function load() {
     const activity = await (await fetch('/api/activity')).json()
     lastData = { g: ageNotes(g, Date.now()), boards, archived, activity }
     renderIfIdle()
+    if (!bootFocusDone) { bootFocusDone = true; applyFocusHash() }
     document.getElementById('status').textContent = ''
   } catch (err) {
     // an exception thrown inside render() used to be swallowed here with no
@@ -169,6 +171,61 @@ async function postJSON(url, body) {
 
 function allItems(g) {
   return [...g.needsYou.flatMap((x) => x.items), ...g.notes.flatMap((x) => x.items), ...g.done]
+}
+
+const BASE_TITLE = 'Agent Inbox'
+
+// The document-title badge is GLOBAL — filters narrow the list, never the
+// signal (spec §7). Zero attention ⇒ the bare title, so the badge can rest.
+// This is the ONLY writer of document.title in the product.
+function applyBadge() {
+  const live = new Set((lastData.activity ?? []).map((a) => a.session))
+  const n = attentionCount(allItems(lastData.g), lastData.boards, Date.now(), live)
+  document.title = titleWithBadge(BASE_TITLE, n)
+}
+
+// Which tab holds an item — a deep link must land on the right one.
+function tabForItem(it) {
+  if (lastData.g.notes.some((gr) => gr.items.some((x) => x.id === it.id))) return 'notes'
+  if (lastData.g.done.some((x) => x.id === it.id)) return 'done'
+  return 'needsYou'
+}
+
+// Notification click / URL hash entry point (spec §11): select the item's
+// project, switch to its tab, expand it, scroll to it.
+function focusItem(id) {
+  if (!lastData) return
+  const item = allItems(lastData.g).find((i) => i.id === id)
+  const board = [...lastData.boards, ...lastData.archived].find((b) => b.id === id)
+  const target = item ?? board
+  if (!target) return
+  projectFilter = target.project
+  localStorage.setItem(PROJECT_KEY, target.project)
+  agentFilter = null
+  localStorage.removeItem(FILTER_KEY)
+  selectTab(board ? 'boards' : tabForItem(item)) // Task 8: sets activeTab AND shows the panel
+  setOpenRow(id)                                  // Task 9: single-open accordion
+  const hash = focusHashFor(id)
+  if (location.hash !== hash) location.hash = hash // survives reload
+  render()
+  requestAnimationFrame(() => {
+    const el = document.querySelector(`[data-card-id="${CSS.escape(id)}"]`)
+    if (!el) return
+    if (el.tagName === 'DETAILS') el.open = true
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    if (typeof el.focus === 'function') el.focus({ preventScroll: true })
+  })
+}
+
+let bootFocusDone = false
+
+function applyFocusHash() {
+  const f = parseFocusHash(location.hash)
+  if (f) focusItem(f.id)
+}
+
+function initFocusHash() {
+  window.addEventListener('hashchange', applyFocusHash)
 }
 
 // notes age into Done after NOTE_AGE_MS (spec §8) — done at the door so the
@@ -213,6 +270,7 @@ function projectScoped({ g, boards, archived }) {
 }
 
 function render() {
+  applyBadge()
   renderRail()
   const agents = collectAgents(projectScoped(lastData))
   if (agentFilter && !agents.includes(agentFilter)) agentFilter = null
@@ -1479,6 +1537,7 @@ async function renderSetup() {
 initTabs()
 initTriage()
 initSearch()
+initFocusHash()
 initStagedFlush()
 initListStaging()
 initAgentSelect()

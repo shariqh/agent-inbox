@@ -174,3 +174,32 @@ header { flex-wrap: wrap; }
 .rail-match { font-size: 11px; font-variant-numeric: tabular-nums; opacity: .6; }
 .rail-match:empty { display: none; }
 #pauseHint { font-size: 12px; opacity: .5; font-style: italic; white-space: nowrap; }
+
+.nrow { display: flex; flex-direction: column; gap: 1px; padding: 7px 10px; border-radius: 8px; border: 1px solid color-mix(in srgb, CanvasText 10%, transparent); margin-bottom: 6px; background: var(--wash, transparent); cursor: pointer; }
+.nrow:focus-visible { outline: 2px solid LinkText; outline-offset: 1px; }
+.nrow.answered { opacity: .55; }
+.nrow.staged { opacity: .45; }
+.nrow-l1 { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.nrow-title { font-weight: 600; font-size: 14px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nrow-l2 { display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; opacity: .6; min-width: 0; padding-left: 18px; }
+.nrow-sec { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nrow-agent, .nrow-stream { flex-shrink: 0; opacity: .8; font-variant: all-small-caps; }
+.nrow-proj { font-size: 10px; letter-spacing: .06em; font-weight: 700; opacity: .55; flex-shrink: 0; }
+.pdot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+.nrow-glyph { border: none; background: transparent; cursor: pointer; font-size: 13px; padding: 0; }
+.nrow-caret { font-size: 10px; opacity: .4; }
+.nrow[data-open="1"] .nrow-caret { transform: rotate(90deg); }
+.nrow-dismiss { border: none; background: transparent; color: inherit; cursor: pointer; font-size: 12px; opacity: 0; }
+.nrow:hover .nrow-dismiss, .nrow:focus-within .nrow-dismiss { opacity: .5; }
+.nrow-dismiss:hover { opacity: 1; }
+.chip { font-size: 11px; padding: 1px 8px; border-radius: 999px; white-space: nowrap; border: 1px solid transparent; }
+.chip-hot { background: color-mix(in srgb, crimson 16%, transparent); color: color-mix(in srgb, crimson 75%, CanvasText); border-color: color-mix(in srgb, crimson 40%, transparent); }
+.chip-warm { background: color-mix(in srgb, goldenrod 16%, transparent); color: color-mix(in srgb, goldenrod 80%, CanvasText); }
+.chip-neutral { background: color-mix(in srgb, CanvasText 8%, transparent); opacity: .7; }
+.chip-muted { opacity: .45; }
+.chip-blocked { background: color-mix(in srgb, crimson 12%, transparent); color: color-mix(in srgb, crimson 70%, CanvasText); }
+.undo-btn { font-size: 11.5px; padding: 1px 8px; border-radius: 6px; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); background: transparent; color: inherit; cursor: pointer; }
+.stale-fold { margin-top: 10px; opacity: .6; }
+.stale-fold > summary { cursor: pointer; font-size: 12px; letter-spacing: .02em; padding: 4px 0; list-style: none; }
+.stale-fold > summary::before { content: "▸ "; font-size: 10px; }
+.stale-fold[open] > summary::before { content: "▾ "; }

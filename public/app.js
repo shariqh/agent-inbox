@@ -1,9 +1,13 @@
 import { paginate, paginateGroups, searchMatches } from '/search.js'
 import { filterRailEntries, railEntries, railProjects, shouldShowRailFilter } from '/rail.js'
-import { attentionCount, countsByProject } from '/attention.js'
+import { attentionCount, countsByProject, staleEntries } from '/attention.js'
 import { DEFAULT_TAB, TAB_IDS, livePresence, tabCounts } from '/tabs.js'
-import { projectColor } from '/colors.js'
+import { projectColor, projectMonogram } from '/colors.js'
 import { shouldSuspendRender, suspendHint, pinOrder, applyListUpdate } from '/poll.js'
+import { createStagedSend } from '/star.js'
+import { ageChip, agentCounts, needsYouEntries, relMs, rowModel, staleFoldLabel, streamCounts, urgencyChip } from '/rowview.js'
+
+void paginateGroups // kept exported+tested (spec §15); the viewer no longer calls it
 
 // typo-tolerant fuzzy filtering; the engine is a vendored browser global
 const uf = new window.uFuzzy({ intraMode: 1 })
@@ -160,7 +164,7 @@ function render() {
     })), searchQuery, fuzzyFilter)
   const live = liveMatched ? pillLive.filter((a) => liveMatched.has(a.session)) : pillLive
   renderLive(live)
-  renderGroups('needsYou', g.needsYou)
+  renderNeedsYou(g, boards, Date.now())
   renderGroups('notes', g.notes)
   renderDone(g.done)
   renderBoards(boards)
@@ -177,14 +181,10 @@ function render() {
   renderTriage() // keep the open lightbox in sync with fresh data
 }
 
-// "waiting 2h" style relative age — the agent-blocked clock
+// one age vocabulary for every surface (§6): rows, chips, Live and tooltips all
+// format through relMs()
 function rel(iso) {
-  const m = Math.floor((Date.now() - Date.parse(iso)) / 60000)
-  if (m < 1) return 'moments'
-  if (m < 60) return `${m}m`
-  const h = Math.floor(m / 60)
-  if (h < 24) return `${h}h ${m % 60}m`
-  return `${Math.floor(h / 24)}d ${h % 24}h`
+  return relMs(Date.now() - Date.parse(iso))
 }
 
 // ── triage mode: step through the needs-input set one card at a time ──
@@ -564,8 +564,7 @@ function renderLive(entries) {
     el.className = 'live-entry'
     if (openLive.has(a.session)) el.open = true
     el.addEventListener('toggle', () => { el.open ? openLive.add(a.session) : openLive.delete(a.session) })
-    const ageMs = Date.now() - Date.parse(a.updated_at)
-    const fresh = ageMs < 60000 ? 'fresh' : ageMs < 5 * 60000 ? 'aging' : 'quiet'
+    const { tone: fresh } = ageChip(Date.now() - Date.parse(a.updated_at))
     const stream = a.stream ? ` · ${esc(a.stream)}` : ''
     const kids = a.children.length ? `<span class="live-kids">▸ ${a.children.length} agent${a.children.length > 1 ? 's' : ''}</span>` : ''
     el.innerHTML = `
@@ -607,8 +606,7 @@ function renderLive(entries) {
       const stream = a.stream ? ` · ${esc(a.stream)}` : ''
       // a green dot means the session touched the inbox in the last minute —
       // open-but-conversing, not asleep
-      const ageMs = Date.now() - Date.parse(a.updated_at)
-      const fresh = ageMs < 60000 ? 'fresh' : ageMs < 5 * 60000 ? 'aging' : 'quiet'
+      const { tone: fresh } = ageChip(Date.now() - Date.parse(a.updated_at))
       row.innerHTML = `<span class="live-dot ${fresh}" title="last activity ${rel(a.updated_at)} ago"></span><span class="live-who">${esc(a.agent)} · ${esc(a.project)}${stream}</span><span class="live-age" title="last activity ${rel(a.updated_at)} ago">alive ${rel(a.started_at)}</span>`
       fold.appendChild(row)
     }
@@ -616,36 +614,117 @@ function renderLive(entries) {
   }
 }
 
-function renderGroups(sectionId, groups) {
-  // Needs-you owns a dedicated row host; Notes keeps the grouped layout
-  const host = sectionId === 'needsYou'
-    ? document.getElementById('needsYouList')
-    : document.querySelector(`#${sectionId} .groups`)
-  const { groups: page, remaining } = paginateGroups(groups, shown[sectionId])
-  host.innerHTML = groups.length ? '' : `<p class="empty">${emptyMsg('Nothing here.')}</p>`
-  for (const grp of page) {
-    const box = document.createElement('div')
-    box.className = 'project'
-    box.innerHTML = `<h3>${esc(grp.project)}</h3>`
-    const byAgent = new Map()
-    for (const it of grp.items) {
-      const arr = byAgent.get(it.agent) ?? []
-      arr.push(it)
-      byAgent.set(it.agent, arr)
-    }
-    if (byAgent.size > 1) {
-      for (const [agent, items] of byAgent) {
-        const head = document.createElement('h4')
-        head.className = 'agent-head'
-        head.textContent = agent
-        box.appendChild(head)
-        for (const it of items) box.appendChild(itemEl(it, false, true))
-      }
-    } else {
-      for (const it of grp.items) box.appendChild(itemEl(it))
-    }
-    host.appendChild(box)
+// dismissing noise must not cost an expansion: staged 5s, undoable, flushed on blur
+const stagedDismiss = new Set() // item ids inside their undo window — survives the poll rebuild
+const dismissStage = createStagedSend({
+  delayMs: 5000,
+  setTimeoutFn: (fn, ms) => window.setTimeout(fn, ms),
+  clearTimeoutFn: (h) => window.clearTimeout(h),
+  send: ({ id }) => { stagedDismiss.delete(id); act(id, 'dismiss') },
+})
+
+// the one staged-dismiss entry point: the row ✕ and Task 17's `x` key both call
+// this, so mouse and keyboard share one undo window
+function stageDismiss(id) {
+  if (stagedDismiss.has(id)) return
+  stagedDismiss.add(id)
+  dismissStage.stage(`dismiss:${id}`, { id })
+  render()
+}
+
+function undoDismiss(id) {
+  if (!dismissStage.undo(`dismiss:${id}`)) return false
+  stagedDismiss.delete(id)
+  render()
+  return true
+}
+
+// flat, ranked, two-line rows — no project/agent heading levels (§3, §15)
+function renderNeedsYou(g, boardsInView, nowMs) {
+  const host = document.getElementById('needsYouList')
+  const items = g.needsYou.flatMap((gr) => gr.items)
+  const live = liveSessionIds()
+  // §7: the LIST is scoped by the rail + search (boardsInView); the tab count is
+  // computed from lastData by Task 8 and never sees this slice
+  const unordered = needsYouEntries(items, boardsInView, nowMs, live)
+  // §10: run every entry through Task 9's poll-suspension pin BEFORE paginating —
+  // this is what stops a freshly-arrived row from jumping into the visible slice
+  // while the pointer is over the list. orderedIds() only ever returns ids that
+  // were already pinned or that hovering:false let through, so entries that got
+  // staged simply do not appear in `ordered` until the pointer leaves.
+  const entryById = new Map(unordered.map((e) => [e.kind === 'row' ? e.row.id : e.item.id, e]))
+  const entries = orderedIds([...entryById.keys()]).map((id) => entryById.get(id)).filter(Boolean)
+  const entities = [...items, ...boardsInView]
+  const opts = {
+    streams: streamCounts(entities),
+    agents: agentCounts(entities),
+    showProject: !projectFilter, // a single selected project needs no monogram (§2)
   }
+  const { visible, remaining } = paginate(entries, shown.needsYou)
+  host.innerHTML = entries.length ? '' : `<p class="empty">${emptyMsg('Nothing needs you.')}</p>`
+  for (const e of visible) host.appendChild(needsRowEl(rowModel(e, opts), e, nowMs))
+  if (remaining > 0) host.appendChild(moreButton('needsYou', remaining))
+  const stale = staleEntries(items, nowMs, live)
+  if (stale.length) host.appendChild(staleFoldEl(stale, opts, nowMs))
+}
+
+// nobody is listening and it is older than STALE_MS: out of the active list and
+// out of every count, but one click away — never deleted (§6)
+function staleFoldEl(entries, opts, nowMs) {
+  const fold = document.createElement('details')
+  fold.className = 'stale-fold'
+  const summary = document.createElement('summary')
+  summary.textContent = staleFoldLabel(entries.length)
+  fold.appendChild(summary)
+  for (const e of entries) fold.appendChild(needsRowEl(rowModel(e, opts), e, nowMs))
+  return fold
+}
+
+function needsRowEl(m, entry, nowMs) {
+  const el = document.createElement('div')
+  el.className = `nrow nrow-${m.kind}${m.answered ? ' answered' : ''}${stagedDismiss.has(m.id) ? ' staged' : ''}`
+  el.dataset.cardId = m.id
+  el.tabIndex = 0
+  const chip = urgencyChip(m, nowMs)
+  const color = pcolor(m.project)
+  const glyph = m.kind === 'row' ? `<button class="nrow-glyph" title="open board: ${esc(m.boardTitle ?? '')}">🚧</button>` : ''
+  const projBit = m.projectLabel ? `<span class="nrow-proj" title="${esc(m.project)}">${esc(m.projectLabel)}</span>` : ''
+  const agentBit = m.agent ? `<span class="nrow-agent">${esc(m.agent)}</span>` : ''
+  const streamBit = m.stream ? `<span class="nrow-stream">${esc(m.stream)}</span>` : ''
+  el.innerHTML = `
+    <div class="nrow-l1">
+      <span class="pdot" style="background:${color.dot}" title="${esc(m.project)}"></span>
+      ${projBit}
+      ${glyph}
+      <span class="nrow-title" title="${esc(m.title)}">${esc(m.title)}</span>
+      <span class="chip chip-${chip.tone}">${esc(chip.text)}</span>
+      <span class="nrow-star"></span>
+      <button class="nrow-dismiss" title="Dismiss (x)" aria-label="Dismiss">✕</button>
+      <span class="nrow-caret">▸</span>
+    </div>
+    <div class="nrow-l2"><span class="nrow-sec">${esc(m.secondary)}</span>${agentBit}${streamBit}</div>`
+  el.style.setProperty('--wash', color.wash)
+  const boardBtn = el.querySelector('.nrow-glyph')
+  if (boardBtn) boardBtn.addEventListener('click', (ev) => { ev.stopPropagation(); jumpToCard('boards', m.boardId) })
+  el.querySelector('.nrow-dismiss').addEventListener('click', (ev) => {
+    ev.stopPropagation()
+    if (m.kind === 'item') stageDismiss(m.id)
+  })
+  if (stagedDismiss.has(m.id)) {
+    const undo = btn('Undo dismiss', () => undoDismiss(m.id))
+    undo.className = 'undo-btn'
+    el.querySelector('.nrow-l2').replaceChildren(document.createTextNode('Dismissed — '), undo)
+  }
+  return el
+}
+
+// notes keep a card list, but flat: no project h3, no agent h4 (§15)
+function renderGroups(sectionId, groups) {
+  const host = document.querySelector(`#${sectionId} .groups`)
+  const items = groups.flatMap((gr) => gr.items)
+  const { visible, remaining } = paginate(items, shown[sectionId])
+  host.innerHTML = items.length ? '' : `<p class="empty">${emptyMsg('Nothing here.')}</p>`
+  for (const it of visible) host.appendChild(itemEl(it))
   if (remaining > 0) host.appendChild(moreButton(sectionId, remaining))
 }
 
@@ -869,13 +948,12 @@ function answerEl(it) {
   return wrap
 }
 
-function itemEl(it, done = false, underAgentHead = false) {
+function itemEl(it, done = false) {
   const el = document.createElement('details')
   const answered = it.kind === 'question' && it.status === 'open' && it.reply
   el.className = `item ${it.kind}${answered ? ' answered' : ''}`
   const stream = it.stream ? ` · ${esc(it.stream)}` : ''
-  // under an agent sub-header the agent name would be redundant on every card
-  const meta = underAgentHead ? (it.stream ? esc(it.stream) : '') : `${esc(it.agent)}${stream}`
+  const meta = `${esc(it.agent)}${stream}`
   const waiting = it.kind === 'question' && it.status === 'open' && !it.reply ? `<span class="waiting">waiting ${rel(it.created_at)}</span>` : ''
   el.innerHTML = `
     <summary class="card-summary">

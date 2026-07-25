@@ -12,6 +12,7 @@ import {
 import { cardSections, optionOrder } from '/card.js'
 import { partitionNotes, unreadNoteCount, ambientChips } from '/notes.js'
 import { liveSummary } from '/livebar.js'
+import { esc } from '/esc.js'
 
 void paginateGroups // kept exported+tested (spec §15); the viewer no longer calls it
 
@@ -1256,10 +1257,6 @@ function moreButton(section, remaining) {
 async function act(id, action) {
   await fetch(`/api/items/${id}/${action}`, { method: 'POST' })
   load()
-}
-
-function esc(s) {
-  return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
 }
 
 function initSearch() {

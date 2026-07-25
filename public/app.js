@@ -3,6 +3,7 @@ import { filterRailEntries, railEntries, railProjects, shouldShowRailFilter } fr
 import { attentionCount, countsByProject } from '/attention.js'
 import { DEFAULT_TAB, TAB_IDS, livePresence, tabCounts } from '/tabs.js'
 import { projectColor } from '/colors.js'
+import { shouldSuspendRender, suspendHint, pinOrder, applyListUpdate } from '/poll.js'
 
 // typo-tolerant fuzzy filtering; the engine is a vendored browser global
 const uf = new window.uFuzzy({ intraMode: 1 })
@@ -24,6 +25,82 @@ let hideCompleted = localStorage.getItem(HIDE_DONE_KEY) !== 'false' // default O
 
 let bootId = null
 
+// ── poll suspension (spec §10) ──────────────────────────────────────────────
+// The 3s rebuild is the enemy of every in-progress interaction. It holds while
+// a card is open or a draft has content, and lands the moment the user is done.
+let openRowId = null    // the single inline-expanded Needs-you row (§4)
+let renderDirty = false // fresh data arrived while suspended
+let listHover = false   // pointer is over the Needs-you list
+let pinnedIds = []      // sort order pinned for this render session
+let stagedIds = null    // list membership waiting for mouse-leave
+
+function suspendState() {
+  return {
+    expanded: openRowId ? [openRowId] : [],
+    drafts: { ...draftReplies, ...draftReplyContexts, ...rowDrafts },
+  }
+}
+
+// #pauseHint is emitted by the shell (Task 6); this is the only writer
+function showPauseHint() {
+  const el = document.getElementById('pauseHint')
+  if (!el) return
+  const hint = renderDirty ? suspendHint(suspendState()) : null
+  el.textContent = hint ?? ''
+  el.hidden = !hint
+}
+
+// the poll's ONLY entry into render()
+function renderIfIdle() {
+  if (shouldSuspendRender(suspendState())) {
+    renderDirty = true
+    showPauseHint()
+    return
+  }
+  renderDirty = false
+  showPauseHint()
+  render()
+}
+
+// called whenever a suspending condition may have cleared (collapse, draft
+// emptied, reply sent)
+function resumeRender() {
+  if (renderDirty) renderIfIdle()
+  else showPauseHint()
+}
+
+// the single writer of openRowId — Tasks 11/16/17 call this, never assign
+function setOpenRow(id) {
+  openRowId = id
+  resumeRender()
+}
+
+// render() runs its Needs-you entry ids through this: order pins for the
+// session, membership stages while the pointer is over the list
+function orderedIds(ids) {
+  const r = applyListUpdate({ current: pinnedIds, incoming: ids, hovering: listHover })
+  pinnedIds = r.ids
+  stagedIds = r.staged
+  return r.ids
+}
+
+function initListStaging() {
+  showPauseHint()
+  const list = document.getElementById('needsYouList')
+  if (!list) return
+  list.addEventListener('mouseenter', () => { listHover = true })
+  list.addEventListener('mouseleave', () => {
+    listHover = false
+    if (stagedIds) {
+      pinnedIds = pinOrder(pinnedIds, stagedIds)
+      stagedIds = null
+      render()
+    } else {
+      resumeRender()
+    }
+  })
+}
+
 async function load() {
   try {
     const res = await fetch('/api/items')
@@ -35,7 +112,7 @@ async function load() {
     const archived = await (await fetch('/api/boards/archived')).json()
     const activity = await (await fetch('/api/activity')).json()
     lastData = { g, boards, archived, activity }
-    render()
+    renderIfIdle()
     document.getElementById('status').textContent = ''
   } catch {
     document.getElementById('status').textContent = 'disconnected'
@@ -168,7 +245,7 @@ function rowCardEl(b, r) {
   input.className = 'reply-input'
   input.placeholder = 'tell the agent how to proceed…'
   input.value = rowDrafts[r.id] ?? ''
-  input.addEventListener('input', () => { rowDrafts[r.id] = input.value })
+  input.addEventListener('input', () => { rowDrafts[r.id] = input.value; resumeRender() })
   input.addEventListener('focus', () => { rowFocusId = r.id })
   const save = async () => {
     if (!input.value.trim()) return
@@ -765,7 +842,7 @@ function answerEl(it) {
   input.className = 'reply-input'
   input.placeholder = opts.length ? 'or answer in your own words…' : 'answer…'
   input.value = draftReplies[it.id] ?? ''
-  input.addEventListener('input', () => { draftReplies[it.id] = input.value })
+  input.addEventListener('input', () => { draftReplies[it.id] = input.value; resumeRender() })
   input.addEventListener('focus', () => { draftFocusKey = `${it.id}:answer` })
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendReply(it.id, input.value, ctxInput.value) })
   row.appendChild(input)
@@ -777,7 +854,7 @@ function answerEl(it) {
   ctxInput.className = 'reply-input reply-context-input'
   ctxInput.placeholder = 'optional context for the agent (applies to Send or option picks)…'
   ctxInput.value = draftReplyContexts[it.id] ?? ''
-  ctxInput.addEventListener('input', () => { draftReplyContexts[it.id] = ctxInput.value })
+  ctxInput.addEventListener('input', () => { draftReplyContexts[it.id] = ctxInput.value; resumeRender() })
   ctxInput.addEventListener('focus', () => { draftFocusKey = `${it.id}:context` })
   ctxRow.appendChild(ctxInput)
   wrap.appendChild(ctxRow)
@@ -915,6 +992,7 @@ async function renderSetup() {
 initTabs()
 initTriage()
 initSearch()
+initListStaging()
 initAgentSelect()
 initGear()
 renderSetup()

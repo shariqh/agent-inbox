@@ -173,3 +173,4 @@ header { flex-wrap: wrap; }
 .rail-badge.escalated { background: color-mix(in srgb, crimson 18%, transparent); color: color-mix(in srgb, crimson 80%, CanvasText); font-weight: 600; }
 .rail-match { font-size: 11px; font-variant-numeric: tabular-nums; opacity: .6; }
 .rail-match:empty { display: none; }
+#pauseHint { font-size: 12px; opacity: .5; font-style: italic; white-space: nowrap; }

@@ -1,5 +1,6 @@
 // test/tabs.test.ts
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
 import { TAB_IDS, DEFAULT_TAB, tabCounts, livePresence } from '../public/tabs.js'
 import { attentionCount } from '../public/attention.js'
 
@@ -62,5 +63,29 @@ describe('filter-blindness invariant (spec §7)', () => {
     expect(apiOnly.notes).toBe(1)
     expect(apiOnly.done).toBe(0)
     expect(apiOnly.needsYou).toBe(global) // the one count the filter may never touch
+  })
+})
+
+// tabCounts() above is pure — it just echoes whatever `globalAttention` number
+// it is handed, so those tests can't catch a regression where the REAL call
+// site in render() (public/app.js) accidentally wires the locally-shadowed,
+// filtered `g`/`boards` into that argument instead of the unfiltered
+// `lastData.g`/`lastData.boards`. The rail makes project filtering the
+// primary navigation (spec §7), so this one line is the only thing standing
+// between "Needs you" and silently hiding attention behind whatever project
+// is selected — exactly the failure this task exists to prevent. There is no
+// jsdom/happy-dom configured in vitest.config.ts, so a real render()
+// invocation isn't exercisable here; this pins the SOURCE TEXT instead, the
+// same way test/shell.test.ts already pins deleted symbols. Do not delete
+// this as "just a string match" — it is the only guard on the invariant.
+describe('filter-blindness is pinned at the render() call site (spec §7)', () => {
+  const js = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8')
+
+  it('computes globalAttention from the unfiltered lastData, not the filtered g/boards', () => {
+    const line = js.split('\n').find((l) => l.includes('globalAttention:'))
+    expect(line, 'no globalAttention: line found in app.js').toBeTruthy()
+    expect(line, line).toMatch(/globalAttention:\s*attentionCount\(/)
+    expect(line, line).toMatch(/lastData\.g\b/)
+    expect(line, line).toMatch(/lastData\.boards\b/)
   })
 })

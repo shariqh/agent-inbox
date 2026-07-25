@@ -696,9 +696,14 @@ function renderRail() {
     if (color) dot.style.background = color.dot
     const name = document.createElement('span')
     name.className = 'rail-name'
-    // narrow rail collapses to the monogram; textContent, never innerHTML —
-    // agent-authored project names.
-    name.textContent = railLabel(e.label, layout)
+    // narrow rail collapses to the monogram — UNLESS the type-to-narrow filter
+    // is showing (>12 projects, RAIL_FILTER_THRESHOLD in rail.js): the CSS
+    // widens #rail back out and restores row layout for exactly that case
+    // (see the #rail:has(.rail-filter) block in style.css), so keep full
+    // names here too — a column of monograms next to a search box you can't
+    // read the results of would defeat the point of un-hiding the filter.
+    // textContent, never innerHTML — agent-authored project names.
+    name.textContent = railLabel(e.label, withFilter ? 'wide' : layout)
     const badge = document.createElement('span')
     badge.className = e.escalated ? 'rail-badge escalated' : 'rail-badge'
     badge.textContent = e.total ? String(e.total) : ''

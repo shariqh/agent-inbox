@@ -86,6 +86,22 @@ describe('shell css', () => {
     expect(css).toContain('.tabstrip')
     expect(css).toContain('.panel[hidden]')
   })
+
+  // Task 18 owns every @media rule in this file, appended last so it wins the
+  // cascade over the shell (Task 6), boards chrome (Task 13) and focus rules
+  // (Task 17) above it. Nothing enforced that beyond a manual grep until fix
+  // round 1 — pin it so a future task can't slip a responsive rule in earlier
+  // (matching `@media (`, not just the string "@media", so this doesn't trip
+  // on the block's own explanatory comment mentioning "@media block").
+  it('has exactly one @media rule, appended at EOF', () => {
+    const mediaRules = css.match(/@media\s*\([^)]*\)\s*\{/g) ?? []
+    expect(mediaRules.length).toBe(1)
+    const idx = css.search(/@media\s*\(/)
+    expect(idx).toBeGreaterThan(-1)
+    const tail = css.slice(idx)
+    const lastClose = tail.lastIndexOf('}')
+    expect(tail.slice(lastClose + 1).trim(), "content found after the @media block's closing brace").toBe('')
+  })
 })
 
 describe('shell script', () => {

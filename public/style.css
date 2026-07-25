@@ -301,11 +301,14 @@ main { padding-bottom: 34px; } /* the fixed strip must never cover the last row 
    - .rail-badge and .rail-match both stay visible, repositioned onto opposite
      corners of the dot rather than hidden — a count that disappears on a
      narrow screen defeats the badge.
-   - .rail-filter is hidden below the breakpoint: a type-to-narrow text input
-     has no usable room in a 52px dot column, and it isn't part of the rail's
-     roving-tabindex tablist (only .rail-tab buttons are), so hiding it drops
-     a convenience, not a keyboard trap. The top bar's #search box remains the
-     narrow-width way to find a project. */
+   - .rail-filter is hidden below the breakpoint BY DEFAULT, but only while it
+     isn't needed: #rail:has(.rail-filter) below un-hides it and widens the
+     rail back to row layout with full names whenever >12 projects means the
+     filter is actually rendered (RAIL_FILTER_THRESHOLD, rail.js). #search in
+     the top bar annotates match COUNTS on existing rail tabs — it never
+     narrows which tabs are shown, so it is not a substitute for typing a
+     project name to jump to it; fix round 1 caught a report that had
+     incorrectly claimed it was. See task-18-report.md fix-round-1 for detail. */
 @media (max-width: 900px) {
   body { padding: 0 10px 48px; }
   .layout { gap: 10px; }
@@ -338,6 +341,37 @@ main { padding-bottom: 34px; } /* the fixed strip must never cover the last row 
      until a search is actually active */
   #rail .rail-match { position: absolute; bottom: 1px; right: 2px; left: auto; margin: 0; font-size: 8.5px; line-height: 1; }
   #rail .rail-filter { display: none; }
+
+  /* >12 projects (RAIL_FILTER_THRESHOLD) still need type-to-narrow even at
+     narrow width — a monogram dot column with no way to jump to a project by
+     name would strand exactly the population large enough to need the filter
+     in the first place. When app.js renders .rail-filter, widen the rail back
+     out and fall back to row layout (full name, inline badge/match) so the
+     filter results are legible; app.js also switches .rail-name back to the
+     full project name in this state (railLabel(e.label, withFilter ? 'wide' :
+     layout)), so this isn't just a wider box around unreadable monograms. */
+  #rail:has(.rail-filter) { width: 200px; }
+  #rail:has(.rail-filter) .rail-filter { display: block; }
+  #rail:has(.rail-filter) .rail-tab {
+    flex-direction: row;
+    justify-content: flex-start;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 9px;
+    text-align: left;
+  }
+  #rail:has(.rail-filter) .rail-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13px;
+    font-weight: 400;
+    letter-spacing: normal;
+  }
+  #rail:has(.rail-filter) .rail-badge { position: static; margin: 0; font-size: 11px; padding: 0 6px; line-height: normal; }
+  #rail:has(.rail-filter) .rail-match { position: static; margin-left: auto; right: auto; bottom: auto; font-size: 10.5px; }
 
   /* top tabs → scrollable segmented control (4 tabs; scrolls if a narrow
      device still can't fit them without truncation) */

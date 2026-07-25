@@ -180,13 +180,19 @@ export function replyItem(db: Database.Database, id: string, text: string, conte
   // is a TOCTOU window, not a fix (a stale client snapshot can still read
   // reply_seen_at as null right up until the request lands here).
   const reply = text.trim()
-  if (!reply) {
-    const row = db.prepare(`SELECT reply_seen_at FROM items WHERE id = ?`).get(id) as { reply_seen_at: string | null } | undefined
-    if (row?.reply_seen_at) return false
-  }
   const replyContext = context?.trim() ?? ''
+  if (!reply) {
+    // atomic: the guard condition (reply_seen_at IS NULL) is checked and acted on in the
+    // SAME statement as the write, so a concurrent markReplySeen from another connection
+    // (e.g. the MCP server's `pending` handler, its own OS process) can never land in a
+    // window between a read and a later, unconditional write — there is no such window.
+    const info = db
+      .prepare(`UPDATE items SET reply = NULL, reply_context = NULL, replied_at = ?, reply_seen_at = NULL WHERE id = ? AND reply_seen_at IS NULL`)
+      .run(new Date().toISOString(), id)
+    return info.changes > 0
+  }
   db.prepare(`UPDATE items SET reply = ?, reply_context = ?, replied_at = ?, reply_seen_at = NULL WHERE id = ?`)
-    .run(reply ? reply : null, reply ? (replyContext || null) : null, new Date().toISOString(), id)
+    .run(reply, replyContext || null, new Date().toISOString(), id)
   return true
 }
 

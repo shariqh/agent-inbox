@@ -181,6 +181,71 @@ describe('answer-back', () => {
     expect(changed.reply_seen_at).toBeNull()
   })
 
+  // fix round 1 (hardening): replyItem's blank-clear guard must be ONE atomic
+  // conditioned statement, not a SELECT followed by an unconditional UPDATE — the two
+  // statements run in the SAME OS process, but the MCP server's `pending` tool calls
+  // markReplySeen from a genuinely SEPARATE process on the same WAL-mode db file. This
+  // proves the guard is race-safe by literally exercising two connections and forcing
+  // the interleaving a plain sequential call cannot reproduce (a write committed fully
+  // before or after the call is already correctly handled either way — only a write
+  // landing INSIDE the guard's own statement sequence is the exploit window).
+  it('an atomic guard survives markReplySeen from a second connection racing the blank-clear', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'inbox-race-'))
+    const path = join(dir, 'inbox.db')
+    const db1 = openDb(path)
+    const db2 = new Database(path)
+    db2.pragma('journal_mode = WAL')
+    db2.pragma('busy_timeout = 5000')
+
+    const id = insertItem(db1, { project: 'p', stream: '', agent: 'a', kind: 'question', title: 'q' })
+    replyItem(db1, id, 'go left')
+
+    // Force the interleaving: intercept the first statement replyItem() prepares on db1
+    // that touches reply_seen_at, and land the agent's pickup (via db2, a separate
+    // connection) inside replyItem's own call — after its read completes (the old
+    // SELECT-then-unconditional-UPDATE shape) or before its write executes (the fixed
+    // single conditioned UPDATE) — whichever the implementation actually uses.
+    const realPrepare = db1.prepare.bind(db1)
+    let injected = false
+    db1.prepare = ((sql: string) => {
+      const stmt = realPrepare(sql)
+      if (!injected && /reply_seen_at/.test(sql)) {
+        injected = true
+        const realGet = stmt.get.bind(stmt)
+        const realRun = stmt.run.bind(stmt)
+        stmt.get = ((...args: unknown[]) => {
+          const result = realGet(...(args as []))
+          markReplySeen(db2, id) // race lands right after the (stale) read
+          return result
+        }) as typeof stmt.get
+        stmt.run = ((...args: unknown[]) => {
+          markReplySeen(db2, id) // race lands right before the conditioned write
+          return realRun(...(args as []))
+        }) as typeof stmt.run
+      }
+      return stmt
+    }) as typeof db1.prepare
+
+    const ok = replyItem(db1, id, '')
+    db1.prepare = realPrepare
+
+    expect(ok).toBe(false) // refused — the concurrent pickup must win
+    const item = listItems(db1).find((i) => i.id === id)!
+    expect(item.reply).toBe('go left') // the reply survives
+    expect(item.reply_seen_at).not.toBeNull() // pickup state survives too
+
+    db2.close()
+  })
+
+  // fix round 1: replyItem(id, '') on a nonexistent id now returns false (the old
+  // unguarded SELECT found nothing, skipped the check, and the unconditional UPDATE
+  // "succeeded" as a no-op returning true). The new atomic UPDATE's WHERE clause simply
+  // matches zero rows, so info.changes is 0 — harmless, since ids always come from real
+  // UI state, but noted so it doesn't read as a regression.
+  it('replyItem blank-clear on a nonexistent id returns false (no matching row to update)', () => {
+    expect(replyItem(db, 'does-not-exist', '')).toBe(false)
+  })
+
   it('listPending returns open questions for a project, oldest first', () => {
     const a = insertItem(db, { project: 'p', stream: '', agent: 'x', kind: 'question', title: 'first?' })
     insertItem(db, { project: 'p', stream: '', agent: 'x', kind: 'note', title: 'a note' })

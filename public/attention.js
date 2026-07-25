@@ -23,7 +23,10 @@ function createdMs(entity) {
 // closes an item without ever writing a reply, so keying on `reply` alone
 // counts a resolved question forever and the badge can never reach zero.
 // Absent status (hand-built fixtures, legacy rows) is treated as open.
-function isAskingQuestion(item) {
+// EXPORTED because the triage deck re-validates its entries against the live
+// data: it used to re-implement this as a bare `!i.reply`, which is the second
+// predicate spec §7 tenet 3 exists to forbid.
+export function isAskingQuestion(item) {
   if (!item || item.kind !== 'question' || item.reply) return false
   return item.status === undefined || item.status === null || item.status === 'open'
 }

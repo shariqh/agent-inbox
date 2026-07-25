@@ -39,3 +39,17 @@ export function ambientChips(items, boards, nowMs, lastSeenIso) {
   if (boards.length) chips.push({ key: 'boards', label: `${plural(boards.length, 'board')}${complete ? ` · ${complete} complete` : ''}` })
   return chips
 }
+
+// Read-marking is a single watermark (`notesSeenAt`), so it can only honestly
+// advance to a point below every note the human was NOT shown — the pager's
+// hidden tail, and anything the rail filter narrowed away. Stamping `now()` on
+// every render while the tab is open (the old rule) marked those read too.
+// Never moves backwards.
+export function seenWatermark(rendered, hidden, prevIso) {
+  const stamps = (list) => list.map((n) => n.created_at).filter(Boolean).sort()
+  const cutoff = stamps(hidden ?? [])[0] // the oldest note that stayed hidden
+  const safe = stamps(rendered ?? []).filter((s) => cutoff === undefined || s < cutoff)
+  const next = safe[safe.length - 1]
+  if (!next) return prevIso ?? null
+  return prevIso && prevIso >= next ? prevIso : next
+}

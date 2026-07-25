@@ -47,6 +47,7 @@ export const ESCALATE_MS: number
 export const NOTE_AGE_MS: number
 
 export function classifyLiveness(item: AttentionItem, nowMs: number, liveSessionIds: LiveSessionIds): Liveness
+export function isAskingQuestion(item: AttentionItem): boolean
 export function isBlockedRowAttention(row: AttentionRow): boolean
 export function attentionEntries(
   items: AttentionItem[],

@@ -142,9 +142,24 @@ export function undoRefusal(item, nowMs) {
 }
 
 // Replying does not resolve (§5): answered questions leave the active set and
-// sit dimmed at the foot until the agent picks the answer up.
-export function awaitingPickupEntries(items, nowMs, liveSessionIds) {
+// sit dimmed at the foot of the list until the agent closes them out.
+//
+// This deliberately keeps the ones the agent has ALREADY picked up. Between
+// `reply_seen_at` being stamped and the agent's `resolve` call — which it may
+// simply forget, permanently — such an item is dropped by attentionEntries,
+// staleEntries and group.ts's `done` alike, so it used to render in NO tab
+// while tabsearch's searchIndex still counted it under Needs-you: the tab badge
+// lit up and the tab then said "No matches here". The foot group is also the
+// only place the card's "✓ picked up" marker (§15) can ever be seen.
+export function repliedEntries(items, nowMs, liveSessionIds) {
   return items
-    .filter((i) => i.kind === 'question' && (i.status ?? 'open') === 'open' && i.reply && !i.reply_seen_at)
+    .filter((i) => i.kind === 'question' && (i.status ?? 'open') === 'open' && i.reply)
     .map((i) => ({ kind: 'item', item: i, liveness: classifyLiveness(i, nowMs, liveSessionIds) }))
+}
+
+// The strict subset still waiting on the agent — "answered · awaiting agent" as
+// an ambient reading. Its own predicate because "replied" and "awaiting pickup"
+// stopped being the same set (see repliedEntries).
+export function awaitingPickupEntries(items, nowMs, liveSessionIds) {
+  return repliedEntries(items, nowMs, liveSessionIds).filter((e) => !e.item.reply_seen_at)
 }

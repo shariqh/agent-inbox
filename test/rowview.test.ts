@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import {
   secondaryLine, streamCounts, agentCounts, rowModel, urgencyChip, relMs,
   FRESH_MS, AGING_MS, freshnessTone, ageChip, needsYouEntries, staleFoldLabel,
-  SECONDARY_BUDGET, rowStarOption, stagedLabel, undoRefusal, awaitingPickupEntries,
+  SECONDARY_BUDGET, rowStarOption, stagedLabel, undoRefusal, awaitingPickupEntries, repliedEntries,
 } from '../public/rowview.js'
 import type { RowItem, Entry } from '../public/rowview.js'
 import { attentionCount } from '../public/attention.js'
@@ -332,5 +332,30 @@ describe('the star Undo fallback in app.js is wired to fresh state, not the stal
     expect(fn).toMatch(/changeAnswer\(\s*fresh\s*,\s*label\s*\)/)
     expect(fn).not.toMatch(/undoRefusal\(\s*entry\.item\s*,/)
     expect(fn).not.toMatch(/changeAnswer\(\s*entry\.item\s*\)/)
+  })
+})
+
+// Fix round 2 (I4): once the agent set reply_seen_at and BEFORE it calls
+// resolve (which it may forget, permanently), an answered-but-open question was
+// dropped by attentionEntries, awaitingPickupEntries, staleEntries AND g.done —
+// it rendered in no tab at all, while tabsearch's searchIndex still counted it
+// under needsYou. The tab badge lit up and the tab then said "No matches here".
+// The dimmed foot group is where it belongs: it also makes the card's
+// "✓ picked up" marker (spec §15) reachable for the first time.
+describe('repliedEntries', () => {
+  const items = [
+    item({ id: 'a', reply: 'go' }),
+    item({ id: 'b', reply: 'go', reply_seen_at: new Date(T0).toISOString() }),
+    item({ id: 'c' }),
+    item({ id: 'd', kind: 'note', reply: 'go' }),
+    item({ id: 'e', reply: 'go', status: 'resolved' }),
+  ]
+  it('keeps every replied, still-open question — picked up or not', () => {
+    const entries = repliedEntries(items, T0, new Set<string>())
+    expect(entries.map((e) => (e.kind === 'item' ? e.item.id : ''))).toEqual(['a', 'b'])
+  })
+  it('is a superset of awaitingPickupEntries — the strict awaiting-agent subset', () => {
+    const awaiting = awaitingPickupEntries(items, T0, new Set<string>())
+    expect(awaiting.map((e) => (e.kind === 'item' ? e.item.id : ''))).toEqual(['a'])
   })
 })

@@ -17,3 +17,8 @@ export function ambientChips(
   nowMs: number,
   lastSeenIso: string | null,
 ): Array<{ key: string; label: string }>
+export function seenWatermark(
+  rendered: NoteLike[],
+  hidden: NoteLike[],
+  prevIso: string | null,
+): string | null

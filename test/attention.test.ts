@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   classifyLiveness,
   isBlockedRowAttention,
+  isAskingQuestion,
   attentionEntries,
   staleEntries,
   attentionCount,
@@ -223,5 +224,23 @@ describe('sortNeedsYou', () => {
     ]
     sortNeedsYou(entries, NOW)
     expect(entries[0]!.kind).toBe('item')
+  })
+})
+
+// Fix round 2 (I1): the triage deck used to run its own second attention
+// predicate. Re-validating a deck entry against the live data needs the SAME
+// "is this question still asking?" rule the attention set uses, so it has to be
+// exported rather than re-implemented (as `!i.reply` was) at the call site.
+describe('isAskingQuestion is exported so no second predicate has to be written', () => {
+  it('is true only for an open, unanswered question', () => {
+    expect(isAskingQuestion(item('a'))).toBe(true)
+    expect(isAskingQuestion(item('b', { reply: 'go' }))).toBe(false)
+    expect(isAskingQuestion(item('c', { status: 'resolved' }))).toBe(false)
+    expect(isAskingQuestion(item('d', { kind: 'note' }))).toBe(false)
+  })
+  it('treats an absent status as open (hand-built fixtures, legacy rows)', () => {
+    const legacy = { ...item('e') } as AttentionItem
+    delete (legacy as { status?: string }).status
+    expect(isAskingQuestion(legacy)).toBe(true)
   })
 })

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
-import { partitionNotes, unreadNotes, unreadNoteCount, ambientChips } from '../public/notes.js'
+import { partitionNotes, unreadNotes, unreadNoteCount, ambientChips, seenWatermark } from '../public/notes.js'
 
 const NOW = Date.parse('2026-07-24T12:00:00.000Z')
 const ago = (ms: number) => new Date(NOW - ms).toISOString()
@@ -85,5 +85,36 @@ describe('triage stays reachable from Needs-you', () => {
   })
   it('the auto-opening #now strip is not back', () => {
     expect(appJs).not.toContain('renderNow')
+  })
+})
+
+// Fix round 2 (I3): opening the Notes tab used to stamp ONE global
+// `notesSeenAt = now` on every render, marking notes read that were never on
+// screen — including everything behind the "Show N more" pager, and everything
+// the rail's project filter was hiding. A single watermark can only honestly
+// advance to a point below every note the user was NOT shown.
+describe('seenWatermark', () => {
+  const prev = null
+  it('advances to the newest note that was actually rendered', () => {
+    const rendered = [note('a', 3 * DAY), note('b', 1 * DAY)]
+    expect(seenWatermark(rendered, [], prev)).toBe(ago(1 * DAY))
+  })
+  it('never advances past a note the pager left hidden', () => {
+    const rendered = [note('a', 3 * DAY), note('b', 1 * DAY)]
+    const hidden = [note('c', 2 * DAY)] // older than `b`, so `b` cannot be the watermark
+    expect(seenWatermark(rendered, hidden, prev)).toBe(ago(3 * DAY))
+  })
+  it('does not move at all when every rendered note is newer than a hidden one', () => {
+    const rendered = [note('a', 1 * DAY)]
+    const hidden = [note('c', 5 * DAY)]
+    expect(seenWatermark(rendered, hidden, prev)).toBeNull()
+  })
+  it('never moves backwards', () => {
+    const rendered = [note('a', 5 * DAY)]
+    expect(seenWatermark(rendered, [], ago(1 * DAY))).toBe(ago(1 * DAY))
+  })
+  it('keeps the previous mark when nothing was rendered', () => {
+    expect(seenWatermark([], [], ago(2 * DAY))).toBe(ago(2 * DAY))
+    expect(seenWatermark([], [], null)).toBeNull()
   })
 })

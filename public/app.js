@@ -1,17 +1,20 @@
 import { paginate, paginateGroups, searchMatches } from '/search.js'
 import { filterRailEntries, railEntries, railProjects, shouldShowRailFilter } from '/rail.js'
-import { attentionCount, classifyLiveness, countsByProject, staleEntries } from '/attention.js'
+import {
+  attentionCount, attentionEntries, classifyLiveness, countsByProject, isAskingQuestion,
+  isBlockedRowAttention, staleEntries,
+} from '/attention.js'
 import { DEFAULT_TAB, TAB_IDS, tabCounts } from '/tabs.js'
 import { projectColor } from '/colors.js'
 import { shouldSuspendRender, suspendHint, pinOrder, applyListUpdate, reconcileOpenRow } from '/poll.js'
 import { createStagedSend } from '/star.js'
 import {
-  ageChip, agentCounts, awaitingPickupEntries, needsYouEntries, relMs, rowModel, rowStarOption,
+  ageChip, agentCounts, needsYouEntries, relMs, repliedEntries, rowModel, rowStarOption,
   stagedLabel, staleFoldLabel, streamCounts, undoRefusal, urgencyChip,
 } from '/rowview.js'
 import { cardSections, optionOrder } from '/card.js'
 import { keyAction, rovingIndex, ariaAnswerLabel, livenessGlyph, deckEntryAt } from '/keys.js'
-import { partitionNotes, unreadNoteCount, ambientChips } from '/notes.js'
+import { partitionNotes, unreadNoteCount, ambientChips, seenWatermark } from '/notes.js'
 import { liveSummary } from '/livebar.js'
 import { esc } from '/esc.js'
 import { boardRowsView, progressLabel, hiddenDoneCount, lingeringBoards } from '/boards.js'
@@ -41,8 +44,15 @@ let hideCompleted = localStorage.getItem(HIDE_DONE_KEY) !== 'false' // default O
 
 const NOTES_SEEN_KEY = 'agent-inbox-notes-seen'
 let notesSeenAt = localStorage.getItem(NOTES_SEEN_KEY) || null
-function markNotesSeen() {
-  notesSeenAt = new Date().toISOString()
+// Read-marking used to stamp `now()` unconditionally on every render while the
+// Notes tab was open — marking read every note behind the "Show N more" pager
+// and every note the rail filter was hiding, none of which the human ever saw.
+// notes.js's seenWatermark advances at most to a point below everything that
+// stayed hidden, and never backwards.
+function markNotesSeen(rendered, hidden) {
+  const next = seenWatermark(rendered, hidden, notesSeenAt)
+  if (!next || next === notesSeenAt) return
+  notesSeenAt = next
   localStorage.setItem(NOTES_SEEN_KEY, notesSeenAt)
 }
 
@@ -164,6 +174,12 @@ async function load() {
 async function postJSON(url, body) {
   try {
     const res = await fetch(url, {
+      // fix round 2 (I5): a staged ★ is flushed from `beforeunload`, where a
+      // plain fetch is routinely cancelled during teardown — the row said
+      // "Sent: <label>" and nothing was ever written, leaving the agent blocked.
+      // keepalive lets the request outlive the page (spec §5's "fires
+      // immediately on tab blur/close").
+      keepalive: true,
       method: 'POST',
       ...(body !== undefined ? { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : {}),
     })
@@ -421,26 +437,36 @@ let triageDeck = null // { entries, index } while the lightbox is open
 const rowDrafts = {}  // in-progress row annotations, surviving the poll rebuild
 let rowFocusId = null
 
+// fix round 2 (I1): the deck used to run a SECOND attention predicate of its own
+// (`!i.reply` for questions, `status === 'blocked'` for rows), so it included
+// stale items and blocked rows the human had already annotated and the agent had
+// already seen — badge 0, calm panel saying "Nothing needs you", then a deck
+// reading "1 of 5". Spec §7 tenet 3 names the deck explicitly: the dock badge,
+// the rail badges, the Needs-you tab count AND the deck all derive from ONE
+// predicate. This was the last place that was untrue. Ordering (longest-waiting
+// questions first, blocked rows after) is presentation, not a predicate.
 function buildDeck() {
-  const qs = lastData.g.needsYou
-    .flatMap((gr) => gr.items)
-    .filter((i) => !i.reply)
-    .sort((a, b) => (a.created_at < b.created_at ? -1 : 1)) // longest-waiting first
-  const rows = lastData.boards.flatMap((b) => b.rows.filter((r) => r.status === 'blocked').map((r) => ({ b, r })))
+  const entries = attentionEntries(allItems(lastData.g), lastData.boards, Date.now(), liveSessionIds())
+  const qs = entries.filter((e) => e.kind === 'item')
+    .sort((a, b) => (a.item.created_at < b.item.created_at ? -1 : 1))
+  const rows = entries.filter((e) => e.kind === 'row')
   return [
-    ...qs.map((q) => ({ type: 'q', id: q.id })),
-    ...rows.map(({ b, r }) => ({ type: 'row', boardId: b.id, rowId: r.id })),
+    ...qs.map((e) => ({ type: 'q', id: e.item.id })),
+    ...rows.map((e) => ({ type: 'row', boardId: e.board.id, rowId: e.row.id })),
   ]
 }
 
-// resolve a deck entry against the LATEST data; null = no longer needs input
+// resolve a deck entry against the LATEST data; null = no longer needs input.
+// Re-validated through the SAME shared predicates the deck was built from, so
+// an entry drops out exactly when it stops needing the human — answered,
+// resolved, dismissed, or (for a row) annotated and picked up.
 function findEntryData(e) {
   if (e.type === 'q') {
-    const it = lastData.g.needsYou.flatMap((gr) => gr.items).find((i) => i.id === e.id)
-    return it && !it.reply ? { it } : null
+    const it = allItems(lastData.g).find((i) => i.id === e.id)
+    return it && isAskingQuestion(it) ? { it } : null
   }
   const b = lastData.boards.find((x) => x.id === e.boardId)
-  const r = b?.rows.find((x) => x.id === e.rowId && x.status === 'blocked')
+  const r = b?.rows.find((x) => x.id === e.rowId && isBlockedRowAttention(x))
   return r ? { b, r } : null
 }
 
@@ -1007,8 +1033,7 @@ function needsYouHeader() {
 
 // one quiet chip at the very foot of the Needs-you list — notes are seen in the
 // flow the user actually opens, without entering the attention set (spec §8)
-function renderNeedsYouExtras(host) {
-  const notes = lastData.g.notes.flatMap((gr) => gr.items)
+function renderNeedsYouExtras(host, notes) {
   const n = unreadNoteCount(notes, notesSeenAt, Date.now())
   if (!n) return
   const chip = btn(`${n} new note${n > 1 ? 's' : ''}`, () => selectTab('notes'))
@@ -1051,7 +1076,10 @@ function renderNeedsYou(g, boardsInView, nowMs) {
   const live = liveSessionIds()
   // §7: the LIST is scoped by the rail + search (boardsInView); the tab count is
   // computed from lastData by Task 8 and never sees this slice
-  const unordered = needsYouEntries(items, boardsInView, nowMs, live, awaitingPickupEntries(items, nowMs, live))
+  // fix round 2 (I4): repliedEntries, not the strict awaiting-pickup subset —
+  // between reply_seen_at and the agent's (possibly never) resolve, an answered
+  // open question was rendered by NO tab while search still counted it here.
+  const unordered = needsYouEntries(items, boardsInView, nowMs, live, repliedEntries(items, nowMs, live))
   // §10: run every entry through Task 9's poll-suspension pin BEFORE paginating —
   // this is what stops a freshly-arrived row from jumping into the visible slice
   // while the pointer is over the list. orderedIds() only ever returns ids that
@@ -1066,18 +1094,31 @@ function renderNeedsYou(g, boardsInView, nowMs) {
     showProject: !projectFilter, // a single selected project needs no monogram (§2)
   }
   const { visible, remaining } = paginate(entries, shown.needsYou)
+  // fix round 2 (I2): the stale fold renders BELOW the empty state but its
+  // contents are part of this tab's answer. Computed first so a query matching
+  // only a stale item can't print "No matches … or in any other tab" directly
+  // above the fold holding that exact match (while its tab badge reads 1).
+  const stale = staleEntries(items, nowMs, live)
   host.innerHTML = ''
   host.appendChild(needsYouHeader())
   if (!entries.length) {
     // a search that matched nothing still says so; an empty INBOX gets the calm panel
-    if (searchQuery.trim()) host.insertAdjacentHTML('beforeend', `<p class="empty">${emptyMsg('Nothing needs you.')}</p>`)
-    else renderEmptyState(host)
+    if (searchQuery.trim()) {
+      // only claim "no matches" when the fold below holds none either
+      if (!stale.length) host.insertAdjacentHTML('beforeend', `<p class="empty">${emptyMsg('Nothing needs you.')}</p>`)
+    } else {
+      // an empty INBOX still gets the calm panel: a demoted stale item is, by
+      // definition, not something that needs you — the claim stays true.
+      renderEmptyState(host)
+    }
   }
   for (const e of visible) host.appendChild(needsRowEl(rowModel(e, opts), e, nowMs))
   if (remaining > 0) host.appendChild(moreButton('needsYou', remaining))
-  const stale = staleEntries(items, nowMs, live)
   if (stale.length) host.appendChild(staleFoldEl(stale, opts, nowMs))
-  renderNeedsYouExtras(host)
+  // fix round 2 (I3): the foot chip is fed the SAME scoped notes the Notes tab
+  // count is computed from (render()'s `g.notes`). It used to read the GLOBAL
+  // lastData.g.notes, so the chip and the badge disagreed under any rail filter.
+  renderNeedsYouExtras(host, g.notes.flatMap((gr) => gr.items))
   // §13: `selectedId` (Task 17) is module state, same pattern as openRowId/
   // staleFoldOpen — the DOM just rebuilt above has no idea a row was selected,
   // so reapply it. Deliberately NOT suspended by suspendState() (unlike an open
@@ -1243,7 +1284,15 @@ function renderGroups(sectionId, groups) {
   host.innerHTML = items.length ? '' : `<p class="empty">${emptyMsg('Nothing here.')}</p>`
   for (const it of visible) host.appendChild(itemEl(it))
   if (remaining > 0) host.appendChild(moreButton(sectionId, remaining))
-  if (sectionId === 'notes' && activeTab === 'notes') markNotesSeen()
+  // fix round 2 (I3): mark seen only what was actually on screen. The hidden set
+  // is the GLOBAL note list minus what rendered — a note behind the "Show N
+  // more" pager and a note behind the rail's project filter were equally unseen,
+  // and there is one watermark covering every scope.
+  if (sectionId === 'notes' && activeTab === 'notes') {
+    const shownIds = new Set(visible.map((it) => it.id))
+    const all = lastData.g.notes.flatMap((gr) => gr.items)
+    markNotesSeen(visible, all.filter((n) => !shownIds.has(n.id)))
+  }
 }
 
 function renderDone(items) {
@@ -1314,12 +1363,15 @@ function renderBoards(boards, archived) {
   // here as a "completed — archived" card so finished work never blinks out (§9)
   const lingering = lingeringBoards(sessionActiveBoards, boards, archived)
   const lingerIds = new Set(lingering.map((b) => b.id))
-  if (!boards.length && !lingering.length) host.insertAdjacentHTML('beforeend', `<p class="empty">${emptyMsg('No boards.')}</p>`)
+  // fix round 2 (I2): the archived fold renders below this line and its contents
+  // are part of the answer — `rest` is computed first so "No matches for X here
+  // or in any other tab" can't print directly above a fold holding the match.
+  const rest = archived.filter((b) => !lingerIds.has(b.id))
+  if (!boards.length && !lingering.length && !rest.length) host.insertAdjacentHTML('beforeend', `<p class="empty">${emptyMsg('No boards.')}</p>`)
   const { visible, remaining } = paginate(boards, shown.boards)
   for (const b of visible) host.appendChild(boardEl(b))
   if (remaining > 0) host.appendChild(moreButton('boards', remaining))
   for (const b of lingering) host.appendChild(boardEl(b, true, true))
-  const rest = archived.filter((b) => !lingerIds.has(b.id))
   if (rest.length) {
     // un-archive is the only undo for Archive, so archived boards fold in here —
     // they must never become unreachable (spec §9)

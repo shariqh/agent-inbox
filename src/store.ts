@@ -168,13 +168,26 @@ export function insertItem(db: Database.Database, item: NewItem): string {
   return id
 }
 
-export function replyItem(db: Database.Database, id: string, text: string, context?: string): void {
+// Returns false when the write was refused, true otherwise — so a caller
+// (the viewer's POST handler) can surface a refusal instead of a silent no-op.
+export function replyItem(db: Database.Database, id: string, text: string, context?: string): boolean {
   // a changed answer resets pickup — the agent must see the latest reply;
-  // an empty answer reverts the question to unanswered (null, never '')
+  // an empty answer reverts the question to unanswered (null, never '') — but
+  // ONLY when the agent has not already picked the current reply up. Once
+  // reply_seen_at is set, blanking the reply would silently erase an answer
+  // the agent may already have read and acted on; refuse instead of losing
+  // it. This is the authoritative guard — a client-side freshness check alone
+  // is a TOCTOU window, not a fix (a stale client snapshot can still read
+  // reply_seen_at as null right up until the request lands here).
   const reply = text.trim()
+  if (!reply) {
+    const row = db.prepare(`SELECT reply_seen_at FROM items WHERE id = ?`).get(id) as { reply_seen_at: string | null } | undefined
+    if (row?.reply_seen_at) return false
+  }
   const replyContext = context?.trim() ?? ''
   db.prepare(`UPDATE items SET reply = ?, reply_context = ?, replied_at = ?, reply_seen_at = NULL WHERE id = ?`)
     .run(reply ? reply : null, reply ? (replyContext || null) : null, new Date().toISOString(), id)
+  return true
 }
 
 export function markReplySeen(db: Database.Database, id: string): void {

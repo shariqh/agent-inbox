@@ -70,8 +70,9 @@ export function createViewer(db: Database.Database): Hono {
 
   app.post('/api/items/:id/reply', async (c) => {
     const { text, context } = await c.req.json<{ text: string; context?: string }>()
-    replyItem(db, c.req.param('id'), text, context)
-    return c.json({ ok: true })
+    // false = refused: an already-picked-up reply cannot be silently blanked out (src/store.ts)
+    const ok = replyItem(db, c.req.param('id'), text, context)
+    return c.json({ ok })
   })
 
   app.get('/api/boards', (c) => c.json(listBoards(db)))

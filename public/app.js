@@ -131,6 +131,17 @@ function allItems(g) {
   return [...g.needsYou.flatMap((x) => x.items), ...g.notes.flatMap((x) => x.items), ...g.done]
 }
 
+// the CURRENT server state for an item, not a row's closed-over render-time snapshot.
+// fix round 1: the star Undo fallback must decide canUndo/undoRefusal off fresh data —
+// a row that hasn't re-rendered since staging still reads reply_seen_at as null even
+// after the agent has picked the reply up, which would otherwise fall through to
+// changeAnswer() and silently revert an already-seen answer. (src/store.ts's replyItem
+// is the authoritative guard against that; this is what makes the refusal visible in
+// the common case instead of relying on the server round-trip alone.)
+function freshItem(id) {
+  return lastData ? allItems(lastData.g).find((i) => i.id === id) : undefined
+}
+
 function collectAgents({ g, boards }) {
   return [...new Set([...allItems(g).map((i) => i.agent), ...boards.map((b) => b.agent)])].sort()
 }
@@ -750,8 +761,9 @@ function needsRowEl(m, entry, nowMs) {
     label.textContent = `${stagedLabel(staged)} — `
     const undo = btn('Undo', () => {
       if (starStage.undo(`star:${m.id}`)) { stagedStars.delete(m.id); render(); return }
-      const refusal = undoRefusal(entry.item, Date.now())
-      if (refusal) { label.textContent = `${refusal} ` } else changeAnswer(entry.item)
+      const fresh = freshItem(m.id) ?? entry.item
+      const refusal = undoRefusal(fresh, Date.now())
+      if (refusal) { label.textContent = `${refusal} ` } else changeAnswer(fresh)
     })
     undo.className = 'undo-btn'
     slot.replaceChildren(label, undo)

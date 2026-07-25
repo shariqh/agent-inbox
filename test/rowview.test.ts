@@ -291,3 +291,43 @@ describe('awaitingPickupEntries', () => {
     expect(entries.map((e) => (e.kind === 'item' ? e.item.id : ''))).toEqual(['a'])
   })
 })
+
+// fix round 1: a stale row (no re-render between staging and the click, which is
+// routine — renderIfIdle suspends whenever a card is open or any draft has text) must
+// never let the star Undo fallback silently revert a reply the agent already picked
+// up. undoRefusal itself already tells the two snapshots apart correctly (below); this
+// pins that needsRowEl's Undo handler actually FEEDS it the fresh lookup, not the
+// row's closed-over `entry.item`. No jsdom — same readFileSync/source-pin style as the
+// other app.js wiring pins in this file.
+describe('undoRefusal distinguishes a stale snapshot from the fresh one (fix round 1)', () => {
+  it('a stale (pre-pickup) snapshot says undo is fine, even once the real item has been picked up', () => {
+    const stale = item({ reply: 'go' }) // as read before the agent's pickup landed
+    const fresh = item({ reply: 'go', reply_seen_at: new Date(T0).toISOString() }) // current truth
+    expect(undoRefusal(stale, T0)).toBeNull() // a stale check would wrongly allow it
+    expect(undoRefusal(fresh, T0)).not.toBeNull() // the fresh check correctly refuses
+  })
+})
+
+describe('the star Undo fallback in app.js is wired to fresh state, not the stale render-time snapshot (fix round 1)', () => {
+  const js = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8')
+  const start = js.indexOf('function needsRowEl')
+  const end = js.indexOf('function rowCardBodyEl', start)
+  const fn = js.slice(start, end)
+  const before = js.slice(0, start)
+
+  it('needsRowEl is where this is expected to live', () => {
+    expect(start, 'needsRowEl is missing').toBeGreaterThan(-1)
+  })
+
+  it('looks the item up fresh (freshItem) before deciding, rather than trusting the closure', () => {
+    expect(before, 'freshItem is missing').toMatch(/function\s+freshItem\s*\(/)
+    expect(fn).toMatch(/const\s+fresh\s*=\s*freshItem\(m\.id\)/)
+  })
+
+  it('feeds the fresh lookup — not entry.item — into undoRefusal and changeAnswer', () => {
+    expect(fn).toMatch(/undoRefusal\(\s*fresh\s*,/)
+    expect(fn).toMatch(/changeAnswer\(\s*fresh\s*\)/)
+    expect(fn).not.toMatch(/undoRefusal\(\s*entry\.item\s*,/)
+    expect(fn).not.toMatch(/changeAnswer\(\s*entry\.item\s*\)/)
+  })
+})

@@ -154,6 +154,33 @@ describe('answer-back', () => {
     expect(listItems(db)[0]!.reply_context).toBeNull()
   })
 
+  // fix round 1: a stale client (or an explicit "change answer") must never be able to
+  // silently revert a reply the agent has already picked up — replyItem refuses the
+  // blank-clear once reply_seen_at is set, and reports the refusal via its return value
+  // instead of quietly no-op-ing.
+  it('refuses to blank out an already-picked-up reply, but still allows clearing one that has not been seen', () => {
+    const id = insertItem(db, { project: 'p', stream: '', agent: 'a', kind: 'question', title: 'q' })
+    replyItem(db, id, 'go left')
+    markReplySeen(db, id)
+    expect(replyItem(db, id, '')).toBe(false) // refused — signaled via the return value
+    const item = listItems(db).find((i) => i.id === id)!
+    expect(item.reply).toBe('go left') // the reply survives
+    expect(item.reply_seen_at).not.toBeNull() // pickup state survives too
+
+    // control: clearing a reply the agent has NOT yet picked up still works as before
+    const id2 = insertItem(db, { project: 'p', stream: '', agent: 'a', kind: 'question', title: 'q2' })
+    replyItem(db, id2, 'go right')
+    expect(replyItem(db, id2, '')).toBe(true)
+    expect(listItems(db).find((i) => i.id === id2)!.reply).toBeNull()
+
+    // a genuine new answer (not a blank clear) still resets pickup even after it was seen —
+    // only the destructive blank-clear is refused, not legitimate re-answering
+    replyItem(db, id, 'go right instead')
+    const changed = listItems(db).find((i) => i.id === id)!
+    expect(changed.reply).toBe('go right instead')
+    expect(changed.reply_seen_at).toBeNull()
+  })
+
   it('listPending returns open questions for a project, oldest first', () => {
     const a = insertItem(db, { project: 'p', stream: '', agent: 'x', kind: 'question', title: 'first?' })
     insertItem(db, { project: 'p', stream: '', agent: 'x', kind: 'note', title: 'a note' })

@@ -198,3 +198,38 @@ describe('renderNeedsYou reorders through the poll-suspension pin before paginat
     expect(fn.indexOf('orderedIds(')).toBeLessThan(fn.indexOf('paginate('))
   })
 })
+
+// fix round 1: the stale fold's open/closed state must survive the 3s poll
+// rebuild, the same way openLive/openContexts already do — otherwise the
+// <details> silently snaps shut under the user mid-read. No jsdom in this
+// repo, so this is a source-level pin: it fails if the persisted flag is
+// declared inside staleFoldEl (re-initialized every render, so it can never
+// remember anything) instead of at module scope, or if the toggle listener
+// stops writing the state back.
+describe('staleFoldEl persists open state across re-renders (fix round 1)', () => {
+  const js = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8')
+  const start = js.indexOf('function staleFoldEl')
+  const end = js.indexOf('function needsRowEl', start)
+  const fn = js.slice(start, end)
+  const before = js.slice(0, start)
+
+  it('exists', () => {
+    expect(start, 'staleFoldEl is missing').toBeGreaterThan(-1)
+  })
+
+  it('declares the persisted flag at module scope, not inside the function', () => {
+    // must be readable/writable OUTSIDE staleFoldEl, or a re-render just
+    // resets it to closed every time — defeating the whole fix
+    expect(before).toMatch(/\bstaleFoldOpen\b/)
+    expect(fn).not.toMatch(/\b(let|const|var)\s+staleFoldOpen\b/)
+  })
+
+  it('opens the <details> from the persisted flag rather than always defaulting closed', () => {
+    expect(fn).toMatch(/fold\.open\s*=\s*true/)
+  })
+
+  it('writes the current open state back on toggle, so the next render remembers it', () => {
+    expect(fn).toMatch(/addEventListener\(\s*['"]toggle['"]/)
+    expect(fn).toMatch(/staleFoldOpen\s*=\s*fold\.open/)
+  })
+})

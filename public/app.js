@@ -668,11 +668,18 @@ function renderNeedsYou(g, boardsInView, nowMs) {
   if (stale.length) host.appendChild(staleFoldEl(stale, opts, nowMs))
 }
 
+// the stale fold's open/closed state, outside the DOM the 3s poll rebuilds —
+// same precedent as openLive/openContexts: without this the fold silently
+// re-collapses under the user mid-read
+let staleFoldOpen = false
+
 // nobody is listening and it is older than STALE_MS: out of the active list and
 // out of every count, but one click away — never deleted (§6)
 function staleFoldEl(entries, opts, nowMs) {
   const fold = document.createElement('details')
   fold.className = 'stale-fold'
+  if (staleFoldOpen) fold.open = true
+  fold.addEventListener('toggle', () => { staleFoldOpen = fold.open })
   const summary = document.createElement('summary')
   summary.textContent = staleFoldLabel(entries.length)
   fold.appendChild(summary)

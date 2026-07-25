@@ -287,3 +287,71 @@ main { padding-bottom: 34px; } /* the fixed strip must never cover the last row 
 #needsYouList .nrow.selected { background: color-mix(in srgb, LinkText 8%, transparent); }
 #needsYouList .nrow.selected:focus-visible { outline-offset: 0; }
 [role="tab"][aria-selected="true"] { font-weight: 600; }
+
+/* ── responsive (spec §14) ───────────────────────────────────────────────────
+   The ONLY @media block in the file — deliberately last so it wins over the
+   shell (Task 6), boards chrome (Task 13) and focus rules (Task 17) above it.
+   Under ~900px the rail collapses to a monogram dot column (app.js's
+   railLabel() supplies the short label; the full name stays on the button's
+   title/aria-label — see public/layout.js), the top tabs become a scrollable
+   segmented control, and the expanded .nrow-card goes full-width.
+
+   Two deliberate calls, both left as-is from the base rules elsewhere in this
+   file (i.e. NOT overridden here), worth documenting:
+   - .rail-badge and .rail-match both stay visible, repositioned onto opposite
+     corners of the dot rather than hidden — a count that disappears on a
+     narrow screen defeats the badge.
+   - .rail-filter is hidden below the breakpoint: a type-to-narrow text input
+     has no usable room in a 52px dot column, and it isn't part of the rail's
+     roving-tabindex tablist (only .rail-tab buttons are), so hiding it drops
+     a convenience, not a keyboard trap. The top bar's #search box remains the
+     narrow-width way to find a project. */
+@media (max-width: 900px) {
+  body { padding: 0 10px 48px; }
+  .layout { gap: 10px; }
+
+  /* rail → monogram dot column */
+  #rail { width: 52px; flex-shrink: 0; }
+  #rail .rail-tab {
+    position: relative;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    gap: 2px;
+    padding: 7px 2px;
+    text-align: center;
+  }
+  #rail .rail-name {
+    flex: none;
+    max-width: 100%;
+    overflow: visible;
+    text-overflow: clip;
+    white-space: nowrap;
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: .02em;
+  }
+  /* attention count: corner overlay, still perceivable, not just the wash colour */
+  #rail .rail-badge { position: absolute; top: 1px; right: 2px; margin: 0; font-size: 9px; padding: 0 4px; line-height: 1.4; }
+  /* search match count: opposite corner so it never collides with the badge —
+     .rail-match:empty stays display:none from the base rule, so this is inert
+     until a search is actually active */
+  #rail .rail-match { position: absolute; bottom: 1px; right: 2px; left: auto; margin: 0; font-size: 8.5px; line-height: 1; }
+  #rail .rail-filter { display: none; }
+
+  /* top tabs → scrollable segmented control (4 tabs; scrolls if a narrow
+     device still can't fit them without truncation) */
+  #tabs { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+  #tabs::-webkit-scrollbar { display: none; }
+  #tabs .tab { flex: 0 0 auto; white-space: nowrap; }
+
+  /* expanded needs-you card goes full width instead of tracking the wide-rail gutter */
+  #needsYouList .nrow-card { width: 100%; max-width: none; padding-inline: 10px; }
+
+  /* triage lightbox: use the narrow viewport instead of a fixed 660px panel */
+  .lb-panel { width: 96vw; max-height: 92vh; }
+
+  /* top bar: let search take the freed-up width, tighten spacing */
+  header { gap: 8px; padding: 10px 0; }
+  .search-box { flex: 1; min-width: 0; }
+}

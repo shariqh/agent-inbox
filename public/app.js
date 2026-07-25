@@ -17,6 +17,7 @@ import { esc } from '/esc.js'
 import { boardRowsView, progressLabel, hiddenDoneCount, lingeringBoards } from '/boards.js'
 import { liveEntity, tabMatchCounts, projectMatchCounts, otherTabMatches } from '/tabsearch.js'
 import { titleWithBadge, focusHashFor, parseFocusHash } from '/badge.js'
+import { layoutMode, railLabel, NARROW_MAX } from '/layout.js'
 
 void paginateGroups // kept exported+tested (spec §15); the viewer no longer calls it
 
@@ -613,6 +614,24 @@ const pcolor = (name) => projectColor(name, themeName(), localStorage)
 // typed rail filter; only rendered when the rail is long enough to need it
 let railQuery = ''
 
+// ── responsive (spec §14) ────────────────────────────────────────────────────
+// Pure breakpoint check lives in layout.js; this is just the mode + the media
+// query that keeps it live. renderRail reads `layout` to decide whether the
+// rail shows full project names or collapses to monogram dots.
+let layout = layoutMode(window.innerWidth)
+
+function initResponsive() {
+  const mq = window.matchMedia(`(max-width: ${NARROW_MAX}px)`)
+  const apply = () => {
+    const next = mq.matches ? 'narrow' : 'wide'
+    if (next === layout) return
+    layout = next
+    if (lastData) render() // the rail's labels change shape, so rebuild it
+  }
+  mq.addEventListener('change', apply)
+  apply()
+}
+
 // Projects as vertical tabs: color dot · name · per-project attention badge ·
 // an empty match slot the search fills in later. The badges are per-project by
 // design; the dock badge and the Needs-you tab count stay global (spec §7
@@ -635,7 +654,7 @@ function renderRail() {
   if (!withFilter) railQuery = ''
   const entries = filterRailEntries(railEntries(projects, counts), railQuery)
   const th = themeName()
-  const sig = JSON.stringify([entries, projectFilter, th, withFilter, railQuery])
+  const sig = JSON.stringify([entries, projectFilter, th, withFilter, railQuery, layout])
   if (host.dataset.sig === sig) return
   // rebuilding blows away focus; remember the caret so typing in the filter survives
   const active = document.activeElement
@@ -663,10 +682,13 @@ function renderRail() {
     b.setAttribute('aria-selected', String(selected))
     if (!e.total) b.classList.add('quiet')
     const color = e.key === '__all__' || e.unknown ? null : pcolor(e.key)
-    if (e.unknown) {
-      b.classList.add('unknown')
-      b.title = 'Project inference failed for these agents — a register() call fixes their scope.'
-    }
+    if (e.unknown) b.classList.add('unknown')
+    // the full name always stays reachable on title/aria-label — the unknown
+    // hint wins there, everyone else gets their project name — so the tab is
+    // still identifiable even once the narrow rail shrinks its visible text
+    // down to a monogram (§2: colour is never the only carrier).
+    b.title = e.unknown ? 'Project inference failed for these agents — a register() call fixes their scope.' : e.label
+    b.setAttribute('aria-label', e.label)
     // selection is a soft wash of the project's own color; no stripe anywhere
     if (selected && color) b.style.background = color.wash
     const dot = document.createElement('span')
@@ -674,8 +696,9 @@ function renderRail() {
     if (color) dot.style.background = color.dot
     const name = document.createElement('span')
     name.className = 'rail-name'
-    name.textContent = e.label // agent-authored: textContent, never innerHTML
-    name.title = e.label
+    // narrow rail collapses to the monogram; textContent, never innerHTML —
+    // agent-authored project names.
+    name.textContent = railLabel(e.label, layout)
     const badge = document.createElement('span')
     badge.className = e.escalated ? 'rail-badge escalated' : 'rail-badge'
     badge.textContent = e.total ? String(e.total) : ''
@@ -1756,12 +1779,14 @@ async function renderSetup() {
 // ── init ────────────────────────────────────────────────────────────────────
 // Canonical order for the finished app; later tasks add their one line at the
 // slot named here and never rewrite this block:
-//   initTabs → initTriage → initSearch → initAgentSelect → initGear →
-//   initListStaging (Task 9) → initKeys (Task 17) → initFocusHash (Task 17) →
-//   initResponsive (Task 18) → renderSetup → load → setInterval(load, 3000)
+//   initTabs → initTriage → initSearch → initResponsive (Task 18) →
+//   initKeys (Task 17) → initFocusHash (Task 17) → initStagedFlush →
+//   initListStaging (Task 9) → initAgentSelect → initGear → initLiveBar →
+//   renderSetup → load → setInterval(load, 3000)
 initTabs()
 initTriage()
 initSearch()
+initResponsive()
 initKeys()
 initFocusHash()
 initStagedFlush()

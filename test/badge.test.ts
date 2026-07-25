@@ -78,3 +78,31 @@ describe('the Electron dock badge shares the §7 attention predicate (no duplica
     expect(main).toMatch(/console\.error\([^)]*attention/i)
   })
 })
+
+// Fix round 1: focusItem() used to open only the target [data-card-id]
+// element, so a deep link into a collapsed stale-fold or archived-fold
+// switched tabs and updated the URL hash but left the target hidden inside a
+// closed <details> — scrollIntoView()/.focus() silently no-op on a
+// display:none element. Pinned as SOURCE TEXT (no jsdom in vitest.config.ts,
+// same precedent as the filter-blindness pin in test/tabs.test.ts) against
+// the isolated focusItem() function body, so a match elsewhere in the file
+// (e.g. a different `parentElement` walk) can't false-positive this.
+describe('focusItem opens ancestor <details> folds, not just the target (fix round 1)', () => {
+  const js = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8')
+  const start = js.indexOf('function focusItem(')
+  const end = js.indexOf('\nlet bootFocusDone', start)
+  if (start === -1 || end === -1) throw new Error('focusItem() not found at its expected shape in public/app.js')
+  const body = js.slice(start, end)
+
+  it('walks the ancestor chain rather than opening only the target element', () => {
+    expect(body).toMatch(/parentElement/)
+    // this is exactly the regression the fix replaced — pin it gone
+    expect(body).not.toMatch(/if \(el\.tagName === 'DETAILS'\) el\.open = true/)
+  })
+  it('flips staleFoldOpen so the next 3s poll does not re-collapse the stale fold', () => {
+    expect(body).toMatch(/staleFoldOpen\s*=\s*true/)
+  })
+  it('flips showArchived so the next 3s poll does not re-collapse the archived fold', () => {
+    expect(body).toMatch(/showArchived\s*=\s*true/)
+  })
+})

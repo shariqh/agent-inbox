@@ -211,7 +211,20 @@ function focusItem(id) {
   requestAnimationFrame(() => {
     const el = document.querySelector(`[data-card-id="${CSS.escape(id)}"]`)
     if (!el) return
-    if (el.tagName === 'DETAILS') el.open = true
+    // Open every ancestor <details> fold on the way up, not just the target —
+    // a deep link that lands on the right tab but leaves the target buried
+    // inside a collapsed stale-fold/archived-fold LOOKS like it worked while
+    // showing nothing, which is worse than doing nothing. Flip the matching
+    // module flag too: the next 3s poll rebuilds these folds from
+    // staleFoldOpen/showArchived, and a DOM-only open doesn't survive that
+    // rebuild (the same persistence trap already fixed once for the stale
+    // fold in isolation).
+    for (let node = el; node; node = node.parentElement) {
+      if (node.tagName !== 'DETAILS') continue
+      node.open = true
+      if (node.classList.contains('stale-fold')) staleFoldOpen = true
+      if (node.classList.contains('archived-fold')) showArchived = true
+    }
     el.scrollIntoView({ behavior: 'smooth', block: 'center' })
     if (typeof el.focus === 'function') el.focus({ preventScroll: true })
   })

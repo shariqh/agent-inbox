@@ -1,6 +1,7 @@
 import { paginate, paginateGroups, searchMatches } from '/search.js'
 import { filterRailEntries, railEntries, railProjects, shouldShowRailFilter } from '/rail.js'
-import { countsByProject } from '/attention.js'
+import { attentionCount, countsByProject } from '/attention.js'
+import { DEFAULT_TAB, TAB_IDS, livePresence, tabCounts } from '/tabs.js'
 import { projectColor } from '/colors.js'
 
 // typo-tolerant fuzzy filtering; the engine is a vendored browser global
@@ -82,15 +83,19 @@ function render() {
     })), searchQuery, fuzzyFilter)
   const live = liveMatched ? pillLive.filter((a) => liveMatched.has(a.session)) : pillLive
   renderLive(live)
-  setCount('live', live.filter((a) => !a.idle).length)
   renderGroups('needsYou', g.needsYou)
   renderGroups('notes', g.notes)
   renderDone(g.done)
   renderBoards(boards)
-  setCount('needsYou', g.needsYou.reduce((n, gr) => n + gr.items.filter((i) => !i.reply).length, 0))
-  setCount('notes', g.notes.reduce((n, gr) => n + gr.items.length, 0))
-  setCount('done', g.done.length)
-  setCount('boards', boards.length)
+  // Needs-you counts the GLOBAL attention set; every other tab counts the
+  // filtered view the user is actually looking at (spec §7)
+  const counts = tabCounts({
+    globalAttention: attentionCount(allItems(lastData.g), lastData.boards, Date.now(), liveSessionIds()),
+    unreadNotes: g.notes.reduce((n, gr) => n + gr.items.length, 0),
+    scoped: { boards, done: g.done },
+  })
+  for (const id of TAB_IDS) setCount(id, counts[id])
+  setPresence(livePresence(live))
   pruneCollapsedCards()
   renderTriage() // keep the open lightbox in sync with fresh data
 }
@@ -242,10 +247,37 @@ function jumpToCard(tabId, cardId) {
 }
 
 function setCount(id, n) {
+  if (n == null) return // Live carries a presence dot, not a number
   const el = document.querySelector(`.tab[data-tab="${id}"] .tab-count`)
-  if (!el) return // Live carries a presence dot, not a number
+  if (!el) return
   el.textContent = n ? String(n) : ''
   el.hidden = !n
+}
+
+function setPresence(present) {
+  const dot = document.querySelector('.tab[data-tab="live"] .tab-dot')
+  if (dot) dot.hidden = !present
+}
+
+// project selection persists (Task 7); the active tab deliberately does not
+let activeTab = DEFAULT_TAB
+
+// single routing entry point: state + DOM together, so no caller can set one
+// without the other
+function selectTab(id) {
+  if (!TAB_IDS.includes(id)) return
+  activeTab = id
+  for (const t of document.querySelectorAll('#tabs .tab')) {
+    t.setAttribute('aria-selected', String(t.dataset.tab === id))
+  }
+  showPanel(id)
+}
+
+function initTabs() {
+  for (const t of document.querySelectorAll('#tabs .tab')) {
+    t.addEventListener('click', () => selectTab(t.dataset.tab))
+  }
+  selectTab(activeTab)
 }
 
 function filterData({ g, boards, archived }) {
@@ -874,6 +906,13 @@ async function renderSetup() {
   } catch { /* setup info unavailable — leave the section empty */ }
 }
 
+// ── init ────────────────────────────────────────────────────────────────────
+// Canonical order for the finished app; later tasks add their one line at the
+// slot named here and never rewrite this block:
+//   initTabs → initTriage → initSearch → initAgentSelect → initGear →
+//   initListStaging (Task 9) → initKeys (Task 17) → initFocusHash (Task 17) →
+//   initResponsive (Task 18) → renderSetup → load → setInterval(load, 3000)
+initTabs()
 initTriage()
 initSearch()
 initAgentSelect()

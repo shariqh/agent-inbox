@@ -75,3 +75,12 @@ const LIVENESS = {
 export function livenessGlyph(liveness) {
   return LIVENESS[liveness] ?? { glyph: '·', text: String(liveness ?? '') }
 }
+
+// The triage deck's "current" entry. `index` is not always in range: the deck
+// can narrow to nothing ("all clear" — entries: []) while still open, or an
+// entry can age out from under a stale index. Centralizing the out-of-range
+// guard here (fix round 1) turns it into an executable, unit-tested
+// guarantee instead of a source-string pin on the app.js call site.
+export function deckEntryAt(entries, index) {
+  return (entries ?? [])[index] ?? null
+}

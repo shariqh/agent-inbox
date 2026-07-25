@@ -27,3 +27,4 @@ export function ariaAnswerLabel(
   option: { label?: string; detail?: string; recommended?: boolean } | null | undefined,
 ): string | null
 export function livenessGlyph(liveness: string): { glyph: string; text: string }
+export function deckEntryAt<T>(entries: readonly T[] | null | undefined, index: number): T | null

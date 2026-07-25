@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
-import { keyAction, rovingIndex, ariaAnswerLabel, livenessGlyph } from '../public/keys.js'
+import { keyAction, rovingIndex, ariaAnswerLabel, livenessGlyph, deckEntryAt } from '../public/keys.js'
 
 describe('keyAction — list keys', () => {
   it('j/ArrowDown move down, k/ArrowUp move up', () => {
@@ -109,29 +109,44 @@ describe('livenessGlyph — colour is never the only carrier', () => {
   })
 })
 
+// fix round 1: `keyTargetItem`'s deck-index lookup used to be a raw
+// `triageDeck.entries[triageDeck.index]`, pinned only by a source-string test
+// that also matched the brief's original UNSAFE reference (it never asserted
+// the out-of-range/empty-deck guard, so reintroducing the crash would have
+// passed it). Extracted into a pure, unit-tested helper instead — this is the
+// executable guarantee; the empty/out-of-range cases are real test cases
+// below, not just a source-string pin.
+describe('deckEntryAt — the triage deck index is not always in range', () => {
+  it('returns the entry at a valid index', () => {
+    expect(deckEntryAt(['a', 'b', 'c'], 1)).toBe('b')
+  })
+  it('returns null on an empty deck (the "all clear" state) — this used to throw downstream', () => {
+    expect(deckEntryAt([], 0)).toBeNull()
+  })
+  it('returns null for an out-of-range index', () => {
+    expect(deckEntryAt(['a'], 3)).toBeNull()
+    expect(deckEntryAt(['a'], -1)).toBeNull()
+  })
+  it('is safe with no entries array at all', () => {
+    expect(deckEntryAt(undefined, 0)).toBeNull()
+    expect(deckEntryAt(null, 0)).toBeNull()
+  })
+})
+
 // spec §13 regression: keyboard '1'-'4' must answer whatever the triage deck is
 // SHOWING, not whatever the list still has selected underneath it. app.js has no
 // DOM test harness in this repo (see test/shell.test.ts), so this is source-level.
-//
-// Deviation from the task brief's literal reference wiring: the brief's suggested
-// `keyTargetItem` body is `findEntryData(triageDeck.entries[triageDeck.index])?.it`,
-// called unconditionally. That throws when the deck is open but empty (the "all
-// clear" state — triageDeck is non-null, entries is []), because
-// `findEntryData(undefined)` dereferences `undefined.type`. initKeys computes
-// optionCount from keyTargetItem() on EVERY keydown while the deck is open, so
-// that state is reachable on a live keypress, not just a corner case. The
-// implementation below guards the empty-array case before calling findEntryData;
-// these assertions pin that shape instead of the brief's exact (unsafe) substring.
 describe('app.js wiring — deck-open keyboard options target the deck entry, not the list selection', () => {
   const js = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8')
 
-  it('defines keyTargetItem, deriving from the deck entry while triageDeck is open', () => {
+  it('defines keyTargetItem, deriving from the deck entry (via deckEntryAt) while triageDeck is open', () => {
     const start = js.indexOf('function keyTargetItem')
     expect(start, 'keyTargetItem is missing').toBeGreaterThan(-1)
     const fn = js.slice(start, start + 500)
     expect(fn).toContain('triageDeck')
-    expect(fn).toContain('triageDeck.entries[triageDeck.index]')
+    expect(fn).toContain('deckEntryAt(triageDeck.entries, triageDeck.index)')
     expect(fn).toContain('findEntryData(')
+    expect(fn).toMatch(/entry\s*\?/) // explicit null-guard around findEntryData — belt-and-suspenders with deckEntryAt itself
   })
 
   it('runIntent resolves its target through keyTargetItem(), not a bare selectedItem()', () => {
@@ -162,5 +177,60 @@ describe('app.js wiring — deck-open keyboard options target the deck entry, no
     expect(start, 'stageDismiss is missing').toBeGreaterThan(-1)
     // stageDismiss is defined exactly once — the ✕ button and the keyboard both call it
     expect(js.split('function stageDismiss').length - 1).toBe(1)
+  })
+})
+
+// fix round 1 (Important #1): renderNeedsYou rebuilds every `.nrow` from
+// scratch on EVERY render() — including the 3s poll — and, before this fix,
+// had no idea a row was keyboard-selected. `selectedId` kept working in the
+// closure (j/k never broke), but the VISIBLE `.selected` class and the row's
+// real DOM focus were destroyed every ~3s and only self-healed on the next
+// keypress: for a screen-reader user that reads as random flakiness, not a
+// clean failure. app.js has no DOM test harness in this repo (see
+// test/shell.test.ts), so this is source-level, mirroring the other wiring
+// pins in this file.
+describe('app.js wiring — keyboard row selection survives the poll rebuild (spec §13, fix round 1)', () => {
+  const js = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8')
+
+  it('captures whether focus was already in the list BEFORE clearing it, and restores selection after rebuilding', () => {
+    const start = js.indexOf('function renderNeedsYou')
+    expect(start, 'renderNeedsYou is missing').toBeGreaterThan(-1)
+    const body = js.slice(start, js.indexOf('function staleFoldEl'))
+    const captureAt = body.indexOf('hadListFocus =')
+    const clearAt = body.indexOf("host.innerHTML = ''")
+    const restoreAt = body.lastIndexOf('restoreRowSelection(hadListFocus)')
+    expect(captureAt, 'hadListFocus is not captured').toBeGreaterThan(-1)
+    expect(clearAt, "host.innerHTML = '' not found").toBeGreaterThan(-1)
+    expect(restoreAt, 'restoreRowSelection(hadListFocus) is not called').toBeGreaterThan(-1)
+    // captured BEFORE the list is cleared — clearing a focused element's
+    // subtree moves document.activeElement immediately, so capturing after
+    // would always read false
+    expect(captureAt).toBeLessThan(clearAt)
+    // restored AFTER the rebuild, not before it (the new rows don't exist yet)
+    expect(restoreAt).toBeGreaterThan(clearAt)
+  })
+
+  it('restoreRowSelection is NOT gated behind the poll-suspend check — selection must survive an ordinary, non-suspended poll too', () => {
+    const start = js.indexOf('function restoreRowSelection')
+    expect(start, 'restoreRowSelection is missing').toBeGreaterThan(-1)
+    const body = js.slice(start, start + 400)
+    expect(body).toContain('markSelectedRow(selectedId)')
+    expect(body).not.toContain('shouldSuspendRender')
+    expect(body).not.toContain('suspendState')
+  })
+
+  it('only steals DOM focus back when focus was already in the list — never the search box or a draft input', () => {
+    const start = js.indexOf('function restoreRowSelection')
+    const body = js.slice(start, start + 400)
+    expect(body).toContain('if (focusIt)')
+  })
+
+  it('selectRow and restoreRowSelection share one class/attr/tabIndex helper, so the two paths cannot drift', () => {
+    const selectStart = js.indexOf('function selectRow')
+    const selectBody = js.slice(selectStart, js.indexOf('function selectedItem'))
+    expect(selectBody).toContain('markSelectedRow(id)')
+    const restoreStart = js.indexOf('function restoreRowSelection')
+    const restoreBody = js.slice(restoreStart, restoreStart + 400)
+    expect(restoreBody).toContain('markSelectedRow(selectedId)')
   })
 })

@@ -10,7 +10,7 @@ import {
   stagedLabel, staleFoldLabel, streamCounts, undoRefusal, urgencyChip,
 } from '/rowview.js'
 import { cardSections, optionOrder } from '/card.js'
-import { keyAction, rovingIndex, ariaAnswerLabel, livenessGlyph } from '/keys.js'
+import { keyAction, rovingIndex, ariaAnswerLabel, livenessGlyph, deckEntryAt } from '/keys.js'
 import { partitionNotes, unreadNoteCount, ambientChips } from '/notes.js'
 import { liveSummary } from '/livebar.js'
 import { esc } from '/esc.js'
@@ -928,6 +928,10 @@ function renderEmptyState(host) {
 // flat, ranked, two-line rows — no project/agent heading levels (§3, §15)
 function renderNeedsYou(g, boardsInView, nowMs) {
   const host = document.getElementById('needsYouList')
+  // §13: this rebuilds every row from scratch (poll tick or user action) — capture
+  // this BEFORE the list gets cleared below, since clearing a focused element's
+  // subtree shifts document.activeElement immediately (to <body>, typically).
+  const hadListFocus = !!document.activeElement?.closest?.('#needsYouList .nrow[data-card-id]')
   const items = g.needsYou.flatMap((gr) => gr.items)
   const live = liveSessionIds()
   // §7: the LIST is scoped by the rail + search (boardsInView); the tab count is
@@ -959,6 +963,14 @@ function renderNeedsYou(g, boardsInView, nowMs) {
   const stale = staleEntries(items, nowMs, live)
   if (stale.length) host.appendChild(staleFoldEl(stale, opts, nowMs))
   renderNeedsYouExtras(host)
+  // §13: `selectedId` (Task 17) is module state, same pattern as openRowId/
+  // staleFoldOpen — the DOM just rebuilt above has no idea a row was selected,
+  // so reapply it. Deliberately NOT suspended by suspendState() (unlike an open
+  // card): freezing the poll on mere selection would stall ordinary keyboard
+  // navigation, the opposite of what §10 wants. Only steals DOM focus back if
+  // focus was already inside the list before the rebuild (hadListFocus) — a
+  // poll tick must never yank focus out of the search box or a draft input.
+  restoreRowSelection(hadListFocus)
 }
 
 // the stale fold's open/closed state, outside the DOM the 3s poll rebuilds —
@@ -1489,15 +1501,37 @@ function rowEls() {
   return [...document.querySelectorAll('#needsYouList .nrow[data-card-id]')]
 }
 
-function selectRow(id) {
-  selectedId = id
+// class/attr/tabIndex only — no focus side effect, so it's safe to call from a
+// passive rebuild (restoreRowSelection) as well as a deliberate user action
+// (selectRow)
+function markSelectedRow(id) {
   for (const el of rowEls()) {
     const on = el.dataset.cardId === id
     el.classList.toggle('selected', on)
     el.setAttribute('aria-selected', String(on))
     el.tabIndex = on ? 0 : -1
-    if (on) el.focus({ preventScroll: false })
   }
+}
+
+function selectRow(id) {
+  selectedId = id
+  markSelectedRow(id)
+  if (id) rowEls().find((el) => el.dataset.cardId === id)?.focus({ preventScroll: false })
+}
+
+// §13 fix round 1: `renderNeedsYou` rebuilds every `.nrow` from scratch on
+// every render() — poll tick or user action — and has no idea a row was
+// selected. Without this, `selectedId` (and j/k navigation) kept working in
+// the module's closure, but the VISIBLE `.selected` class and the row's real
+// DOM focus were destroyed every ~3s and only self-healed on the next
+// keypress — for a screen-reader user that reads as random flakiness, not a
+// clean failure. `focusIt` is true only when focus was already inside the
+// list before the rebuild (see `hadListFocus` in renderNeedsYou) — otherwise
+// this would steal focus from the search box or a draft input on every poll.
+function restoreRowSelection(focusIt) {
+  if (!selectedId) return
+  markSelectedRow(selectedId)
+  if (focusIt) rowEls().find((el) => el.dataset.cardId === selectedId)?.focus({ preventScroll: true })
 }
 
 function selectedItem() {
@@ -1509,12 +1543,14 @@ function selectedItem() {
 // triage deck is open that is a different row than whatever the lightbox is
 // showing, so a bare `selectedItem()` would let '1'-'4' (and dismiss/resolve)
 // answer the WRONG item. While the deck is open, the target is always the entry
-// currently on screen in it. Guarded against the deck's "all clear" state
-// (entries: [] while triageDeck is still non-null) — findEntryData(undefined)
-// would throw, and initKeys evaluates this on every keydown the deck is open.
+// currently on screen in it. `deckEntryAt` (public/keys.js) is the guarded,
+// unit-tested lookup — the deck's "all clear" state (entries: [] while
+// triageDeck is still non-null) would otherwise make `triageDeck.entries[i]`
+// undefined and findEntryData(undefined) throw, and initKeys evaluates this on
+// every keydown the deck is open.
 function keyTargetItem() {
   if (triageDeck) {
-    const entry = triageDeck.entries[triageDeck.index]
+    const entry = deckEntryAt(triageDeck.entries, triageDeck.index)
     return entry ? (findEntryData(entry)?.it ?? null) : null
   }
   return selectedItem()

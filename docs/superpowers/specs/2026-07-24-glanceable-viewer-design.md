@@ -53,10 +53,14 @@ Replaces the 7-section stack **and** the outline sidebar (both removed).
   with a tooltip explaining inference failed and `register()` fixes it. Projects with zero
   attention dim. The rail scrolls independently; above ~12 projects it gets its own filter box.
   Selected project = a **soft wash of that project's own color** — no left stripe anywhere.
-- **Top tabs — content type.** `Needs you` · `Boards` · `Live` · `Notes` · `Done`. Always
+- **Top tabs — content type.** `Needs you` · `Boards` · `Notes` · `Done`. Always
   boots to **Needs you** (tenet 1: the app opens where the action is, then lets you leave).
-  Counts per tab. **Live shows a presence dot, not a number** — numbers are reserved for
-  things that want you.
+  Counts per tab.
+- **Live is NOT a tab — it is an always-visible footer strip** (revised 2026-07-24, see §16).
+  Everything behind a tab is something you *act on*; Live is context you *glance at*. Behind a
+  tab you would never see it — you would have to go looking, which defeats presence entirely.
+  This finishes the thought the original design started when it gave Live a presence dot rather
+  than a count: numbers are reserved for things that want you.
 - **Top bar.** Brand · demoted `agent: all ▾` dropdown (replaces the agent pill strip,
   re-scoped to the selected project) · global search · **gear → Setup** (Setup is not a
   content type and does not deserve a peer tab, but it holds the reporting snippet that makes
@@ -280,7 +284,36 @@ multi-section dashboard · project and agent heading levels · the kind-based le
 **Note:** `paginateGroups` stays exported and tested even though the viewer stops calling it —
 `test/search.test.ts` imports it. Retiring it is a separate, deliberate decision.
 
-## 16. Non-goals
+## 16. The Live footer strip (revised 2026-07-24)
+
+Replaces the Live tab. Added after the redesign went live and the tab proved to be the wrong
+container: Live is ambient presence, and a tab is a place you must decide to visit.
+
+**Collapsed — always visible, ~28px, pinned to the footer:** a freshness dot, a count, and the
+running sessions as `project/agent`, e.g. `🟢 2 working · oris/claude-code · agent-inbox/claude-code`.
+Freshness dots keep the existing thresholds (fresh <60s, aging <5m, quiet beyond) — the same
+scale the rows use, per §6. One system, not two.
+
+**Idle:** the strip **stays**, dimmed, reading `no agents running`. It never disappears — an
+element that vanishes teaches you to wonder whether it broke, and a fixed location is what makes
+a glance cheap.
+
+**Expanded — click, or Enter/Space when focused:** a **drawer rises over** the bottom of the
+content, which stays put behind it. Nothing reflows, so the list never moves under the cursor
+(the §10 concern) and scroll position survives. Dismiss by clicking the strip again, or `Esc`.
+Contents are today's Live richness, unchanged: per-session `doing`, the detail line, the nested
+subagent `children` table, and the idle-sessions fold.
+
+**Expansion state persists across the 3s poll** — reuse the existing `openLive` state rather
+than inventing a second mechanism.
+
+**It must never demand attention.** No count that reads as a to-do, no colour that reads as an
+alarm, never steals focus, never auto-expands. It is glass, not a prompt (tenet 1).
+
+**Accessibility:** the strip is a real `button` with `aria-expanded`, keyboard reachable, and the
+drawer is focus-managed, returning focus to the strip on collapse (§13).
+
+## 17. Non-goals
 
 Menu-bar app · phone/remote (#8) · answer-in-place chat convergence (#29) · the forgotten-flag
 hook backstop (#10) · close/reopen projects (#4 / C1 — the rail is designed to receive it, but it

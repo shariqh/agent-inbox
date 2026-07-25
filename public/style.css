@@ -97,15 +97,10 @@ header { flex-wrap: wrap; }
 .board-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .board-table td { padding: 4px 6px; border-top: 1px solid color-mix(in srgb, CanvasText 8%, transparent); vertical-align: top; }
 .board-table .row-num { width: 1%; text-align: right; font-size: 11px; opacity: .35; font-variant-numeric: tabular-nums; }
-.board-table .pill { width: 1.5em; text-align: center; }
 .board-table .row-label { font-weight: 500; white-space: nowrap; }
 .board-table .row-note { opacity: .8; width: 100%; white-space: pre-wrap; }
 .unseen { color: LinkText; font-size: 9px; margin-left: 6px; vertical-align: middle; }
-.row-context { margin-top: 2px; font-size: 12.5px; }
-.row-context > summary { cursor: pointer; opacity: .55; user-select: none; }
-.row-context > div { white-space: pre-wrap; opacity: .75; margin: 2px 0 4px; padding-left: 10px; border-left: 2px solid color-mix(in srgb, CanvasText 15%, transparent); }
 .board-table .row-action { text-align: right; }
-.board-table .row-action button { font-size: 12px; padding: 1px 6px; border-radius: 6px; border: 1px solid color-mix(in srgb, CanvasText 20%, transparent); background: transparent; cursor: pointer; }
 /* status accents on the label text so state reads at a glance even past the glyph */
 .board-table tr .missing ~ td, .board-table tr:has(.missing) .row-label { color: color-mix(in srgb, crimson 70%, CanvasText); }
 .board-table tr:has(.blocked) .row-label { color: color-mix(in srgb, crimson 70%, CanvasText); font-weight: 600; }

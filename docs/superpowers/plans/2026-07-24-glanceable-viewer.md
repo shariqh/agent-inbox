@@ -6348,3 +6348,251 @@ the rail's narrow label are pure and tested.
 
 Co-Authored-By: Claude <noreply@anthropic.com>"
 ```
+
+---
+
+### Task 19: Live as an always-visible footer strip (spec §16)
+
+Replaces the Live **tab** with a footer strip. Live is ambient presence, not triage: behind a
+tab you never see it, because a tab is a place you must decide to visit.
+
+**Files:**
+- Create: `public/livebar.js`, `public/livebar.d.ts`, `test/livebar.test.ts`
+- Modify: `public/index.html` (drop the Live tab button + `#live` panel; add the footer)
+- Modify: `public/tabs.js` (TAB_IDS drops `'live'`; `tabCounts` drops the `live` key)
+- Modify: `public/app.js` (`renderLive` retargets; add `renderLiveBar`; drop `setPresence`)
+- Modify: `public/style.css` (append strip + drawer rules; NO `@media` — Task 18 owns those)
+- Modify: `test/tabs.test.ts`, `test/shell.test.ts` (TAB_IDS + markup assertions)
+
+**Interfaces:**
+- Consumes: `freshnessTone(ageMs)`, `relMs(ms)`, `ageChip(ageMs)` from `public/rowview.js`
+  (reuse them — spec §6 requires ONE freshness scale, not a second); `esc()`, `openLive`,
+  `renderLive`'s existing entry markup in `app.js`.
+- Produces: `liveSummary(activity, nowMs) -> { count:number, tone:string, label:string, sessions:Array<{session:string,label:string,tone:string}> }`
+  (`public/livebar.js`); in `app.js`: `renderLiveBar(entries)`, `toggleLiveDrawer(open?)`.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `test/livebar.test.ts`:
+
+```ts
+import { describe, it, expect } from 'vitest'
+import { liveSummary } from '../public/livebar.js'
+
+const NOW = Date.parse('2026-07-24T12:00:00.000Z')
+const at = (msAgo: number) => new Date(NOW - msAgo).toISOString()
+const sess = (o: Partial<Record<string, unknown>> = {}) => ({
+  session: 's1', project: 'oris', agent: 'claude-code', stream: '', doing: 'working',
+  detail: '', children: [], idle: false, updated_at: at(1000), started_at: at(60_000), ...o,
+})
+
+describe('liveSummary', () => {
+  it('counts only non-idle sessions and labels them project/agent', () => {
+    const s = liveSummary([sess(), sess({ session: 's2', project: 'api', idle: true })], NOW)
+    expect(s.count).toBe(1)
+    expect(s.label).toBe('1 working')
+    expect(s.sessions).toEqual([{ session: 's1', label: 'oris/claude-code', tone: 'fresh' }])
+  })
+
+  it('pluralises', () => {
+    const s = liveSummary([sess(), sess({ session: 's2', project: 'api' })], NOW)
+    expect(s.label).toBe('2 working')
+  })
+
+  it('reads idle when nothing is running — the strip still renders', () => {
+    const s = liveSummary([sess({ idle: true })], NOW)
+    expect(s.count).toBe(0)
+    expect(s.tone).toBe('idle')
+    expect(s.label).toBe('no agents running')
+    expect(s.sessions).toEqual([])
+  })
+
+  it('empty activity is idle, never a crash', () => {
+    expect(liveSummary([], NOW).label).toBe('no agents running')
+    expect(liveSummary(undefined as never, NOW).label).toBe('no agents running')
+  })
+
+  it('strip tone is the FRESHEST session — one live agent must not read as quiet', () => {
+    const s = liveSummary([sess({ updated_at: at(10 * 60_000) }), sess({ session: 's2', updated_at: at(500) })], NOW)
+    expect(s.tone).toBe('fresh')
+  })
+
+  it('per-session tones use the shared freshness scale', () => {
+    const s = liveSummary([
+      sess({ session: 'a', updated_at: at(500) }),
+      sess({ session: 'b', updated_at: at(2 * 60_000) }),
+      sess({ session: 'c', updated_at: at(30 * 60_000) }),
+    ], NOW)
+    expect(s.sessions.map((x) => x.tone)).toEqual(['fresh', 'aging', 'quiet'])
+  })
+})
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `fnm exec --using=24 -- npx vitest run test/livebar.test.ts`
+Expected: FAIL — `Cannot find module '../public/livebar.js'`
+
+- [ ] **Step 3: Write minimal implementation**
+
+Create `public/livebar.js`:
+
+```js
+// The Live footer strip's summary line (spec §16). Pure: no DOM, no clock —
+// the caller passes nowMs. Live is ambient presence, so this never produces a
+// number that reads as a to-do.
+import { freshnessTone } from '/rowview.js'
+
+/**
+ * @param {Array<any>} activity rows from /api/activity
+ * @param {number} nowMs
+ * @returns {{count:number,tone:string,label:string,sessions:Array<{session:string,label:string,tone:string}>}}
+ */
+export function liveSummary(activity, nowMs) {
+  const rows = Array.isArray(activity) ? activity : []
+  const active = rows.filter((a) => a && !a.idle)
+  const sessions = active.map((a) => ({
+    session: a.session,
+    label: `${a.project}/${a.agent}`,
+    tone: freshnessTone(nowMs - Date.parse(a.updated_at)),
+  }))
+  // the strip takes the FRESHEST tone: one actively-working agent must not be
+  // hidden behind a quieter one
+  const rank = { fresh: 0, aging: 1, quiet: 2 }
+  const tone = sessions.length
+    ? sessions.reduce((best, s) => (rank[s.tone] < rank[best] ? s.tone : best), 'quiet')
+    : 'idle'
+  return {
+    count: active.length,
+    tone,
+    label: active.length ? `${active.length} working` : 'no agents running',
+    sessions,
+  }
+}
+```
+
+Create `public/livebar.d.ts`:
+
+```ts
+export interface LiveSessionSummary { session: string; label: string; tone: string }
+export interface LiveSummary { count: number; tone: string; label: string; sessions: LiveSessionSummary[] }
+export function liveSummary(activity: unknown[], nowMs: number): LiveSummary
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `fnm exec --using=24 -- npx vitest run test/livebar.test.ts`
+Expected: PASS (6 tests)
+
+- [ ] **Step 5: Wire the strip, the drawer, and remove the tab**
+
+`public/index.html` — delete `<button class="tab" ... data-tab="live" ...>` from the tab strip
+and delete `<section class="panel" id="live" ...>`. Immediately after `</div>` closing
+`.layout`, add:
+
+```html
+  <footer id="liveBar">
+    <button id="liveStrip" type="button" aria-expanded="false" aria-controls="liveDrawer">
+      <span class="live-dot idle" id="liveStripDot"></span>
+      <span class="live-label" id="liveStripLabel">no agents running</span>
+      <span class="live-sessions" id="liveStripSessions"></span>
+      <span class="live-caret" aria-hidden="true">▴</span>
+    </button>
+    <div id="liveDrawer" class="live-drawer" hidden><div class="live-list"></div></div>
+  </footer>
+```
+
+`public/tabs.js` — `export const TAB_IDS = ['needsYou', 'boards', 'notes', 'done']` and delete
+the `live: null` entry from `tabCounts`'s return. Keep `livePresence` exported (still used).
+
+`public/app.js`:
+- `renderLive`'s host becomes `document.querySelector('#liveDrawer .live-list')`.
+- Delete `setPresence` and its call (the tab dot it wrote to no longer exists).
+- Add, next to `renderLive`:
+
+```js
+// The always-visible footer strip (spec §16). Ambient only: never steals focus,
+// never auto-expands, and its number never reads as a to-do.
+function renderLiveBar(entries) {
+  const s = liveSummary(entries, Date.now())
+  const dot = document.getElementById('liveStripDot')
+  const label = document.getElementById('liveStripLabel')
+  const list = document.getElementById('liveStripSessions')
+  if (!dot || !label || !list) return
+  dot.className = `live-dot ${s.tone}`
+  label.textContent = s.label
+  list.replaceChildren()
+  for (const x of s.sessions) {
+    const el = document.createElement('span')
+    el.className = `live-session ${x.tone}`
+    el.textContent = x.label // agent-authored: textContent, never innerHTML
+    list.appendChild(el)
+  }
+}
+
+function toggleLiveDrawer(open) {
+  const strip = document.getElementById('liveStrip')
+  const drawer = document.getElementById('liveDrawer')
+  if (!strip || !drawer) return
+  const next = open ?? drawer.hidden
+  drawer.hidden = !next
+  strip.setAttribute('aria-expanded', String(next))
+  if (!next) strip.focus() // return focus on collapse (spec §13)
+}
+
+function initLiveBar() {
+  const strip = document.getElementById('liveStrip')
+  if (!strip) return
+  strip.addEventListener('click', () => toggleLiveDrawer())
+  document.addEventListener('keydown', (e) => {
+    const drawer = document.getElementById('liveDrawer')
+    if (e.key === 'Escape' && drawer && !drawer.hidden) { toggleLiveDrawer(false) }
+  })
+}
+```
+
+- In `render()`, call `renderLiveBar(live)` alongside the existing `renderLive(live)`.
+- Add `import { liveSummary } from '/livebar.js'` by EDITING the existing import block (one
+  import statement per module — never add a second).
+- Insert exactly ONE line into the canonical init block: `initLiveBar()` after `initGear()`.
+
+`public/style.css` — append (no `@media`):
+
+```css
+/* Live footer strip (spec §16): ambient presence, always visible. */
+#liveBar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 50; }
+#liveStrip { display: flex; align-items: center; gap: 8px; width: 100%; height: 28px; padding: 0 12px;
+  border: none; border-top: 1px solid color-mix(in srgb, CanvasText 14%, transparent);
+  background: Canvas; color: inherit; font: inherit; font-size: 12px; cursor: pointer; text-align: left; }
+#liveStrip:hover { background: color-mix(in srgb, CanvasText 4%, Canvas); }
+#liveStrip .live-label { opacity: .75; }
+#liveStrip .live-sessions { display: flex; gap: 10px; overflow: hidden; opacity: .6; min-width: 0; }
+#liveStrip .live-session { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#liveStrip .live-caret { margin-left: auto; opacity: .5; }
+#liveStrip[aria-expanded="true"] .live-caret { transform: rotate(180deg); }
+.live-dot.idle { background: color-mix(in srgb, CanvasText 30%, transparent); }
+/* the drawer rises OVER the content: nothing reflows, scroll position survives */
+.live-drawer { position: fixed; left: 0; right: 0; bottom: 28px; max-height: 46vh; overflow: auto;
+  background: Canvas; border-top: 1px solid color-mix(in srgb, CanvasText 14%, transparent);
+  box-shadow: 0 -12px 32px color-mix(in srgb, CanvasText 18%, transparent); padding: 10px 12px; }
+main { padding-bottom: 34px; } /* the fixed strip must never cover the last row */
+```
+
+`test/tabs.test.ts` / `test/shell.test.ts` — update TAB_IDS expectations to the four tabs, drop
+the `live` count assertion, and assert the new markup: `#liveBar`, `#liveStrip[aria-expanded]`,
+`#liveDrawer[hidden]`, and that `data-tab="live"` is GONE.
+
+- [ ] **Step 6: Verify and commit**
+
+Run:
+```
+fnm exec --using=24 -- npx vitest run test/livebar.test.ts test/tabs.test.ts test/shell.test.ts
+fnm exec --using=24 -- npm run typecheck
+fnm exec --using=24 -- npm test
+```
+Expected: all green (281 passing before this task, plus the new livebar tests).
+
+```bash
+git add public/livebar.js public/livebar.d.ts public/index.html public/tabs.js public/app.js public/style.css test/livebar.test.ts test/tabs.test.ts test/shell.test.ts
+git commit -m "feat(viewer): Live becomes an always-visible footer strip"
+```

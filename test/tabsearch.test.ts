@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
 import uFuzzy from '@leeoniya/ufuzzy'
 import { liveEntity, searchIndex, tabMatchCounts, projectMatchCounts, otherTabMatches } from '../public/tabsearch.js'
 
@@ -76,5 +77,44 @@ describe('otherTabMatches', () => {
   })
   it('is empty with no query (null counts)', () => {
     expect(otherTabMatches({ needsYou: null, boards: null, live: null, notes: null, done: null }, 'needsYou')).toEqual([])
+  })
+})
+
+// fix round 1: matchCounts/otherTabMatches were originally fed RAW `lastData`
+// in app.js's render() — unscoped by the active project/agent rail filter.
+// Repro: rail filtered to project 'web'; the only match ('auth') lives on a
+// needsYou item under project 'api'. The rendered needsYou list is empty
+// (filterData() drops the 'api' item before applySearch even sees it), but
+// the raw-data matchCounts.needsYou would still read 1 — and since no OTHER
+// tab has an unfiltered match either, otherTabMatches() comes back empty and
+// emptyMsg() renders "No matches ... or in any other tab", which is FALSE:
+// the match exists, just behind the project pill, not behind another tab.
+// The fix scopes tabMatchCounts' INPUT by project/agent (matching what
+// render() actually shows), while projectMatchCounts stays fed the GLOBAL
+// `lastData` on purpose — the rail's per-project badge is how the user
+// discovers a match sitting behind a DIFFERENT project pill. There is no
+// jsdom configured in vitest.config.ts, so render() itself isn't
+// exercisable; this pins the SOURCE TEXT at the call site instead, the same
+// way test/tabs.test.ts's filter-blindness guard and test/shell.test.ts's
+// Live-strip-global guard do.
+describe('tabMatchCounts is scoped by the active rail filter, not fed raw lastData (fix round 1, spec §12 generalized)', () => {
+  const js = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8')
+  const m = js.match(/function render\(\)[\s\S]*?\n\}/)
+  const body = m ? m[0] : ''
+
+  it('render() exists and was matched', () => {
+    expect(body, 'render() not found in app.js').toBeTruthy()
+  })
+
+  it('feeds tabMatchCounts data derived from filterData(lastData) — a match hidden by the rail filter must not be counted as reachable', () => {
+    const line = body.split('\n').find((l) => l.includes('tabMatchCounts('))
+    expect(line, 'no tabMatchCounts( call found in render()').toBeTruthy()
+    expect(line, line).not.toMatch(/tabMatchCounts\(\s*lastData\s*,/)
+  })
+
+  it('keeps projectMatchCounts fed the GLOBAL lastData — the rail badge is how the user discovers a match under a different project pill', () => {
+    const line = body.split('\n').find((l) => l.includes('projectMatchCounts('))
+    expect(line, 'no projectMatchCounts( call found in render()').toBeTruthy()
+    expect(line, line).toMatch(/projectMatchCounts\(\s*lastData\s*,/)
   })
 })

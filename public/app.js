@@ -220,18 +220,29 @@ function render() {
   // prune collapse state against ALL cards, not the filtered view, so
   // switching tabs never drops state for cards the filter is hiding
   liveCardIds = new Set([...allItems(lastData.g).map((i) => i.id), ...lastData.boards.map((b) => b.id), ...lastData.archived.map((b) => b.id)])
-  const { g, boards, archived } = applySearch(filterData(lastData))
-  // counts are computed against lastData, NOT the filtered slice: selecting a
-  // project or a tab narrows the list, never the search signal (spec §12)
-  matchCounts = tabMatchCounts(lastData, searchQuery, fuzzyFilter)
+  const filtered = filterData(lastData)
+  const { g, boards, archived } = applySearch(filtered)
+  const pillLive = (lastData.activity ?? []).filter((a) =>
+    (!projectFilter || a.project === projectFilter) && (!agentFilter || a.agent === agentFilter))
+  // fix round 1: counts feed off the project/agent-SCOPED data (`filtered` +
+  // `pillLive`), matching what render() actually shows — NOT raw `lastData`.
+  // Feeding raw data let a match hidden behind the active rail filter still
+  // count as "reachable" (its tab badge lit up, and its absence elsewhere
+  // silenced the "elsewhere" pointer), which is the same confident-false-
+  // negative spec §12 exists to kill, just reached through the project axis
+  // instead of the tab axis. Still deliberately NOT search-scoped (a tab
+  // count can't depend on itself) and NOT tab-scoped (the whole point).
+  const scopedForCounts = { g: filtered.g, boards: filtered.boards, archived: filtered.archived, activity: pillLive }
+  matchCounts = tabMatchCounts(scopedForCounts, searchQuery, fuzzyFilter)
   for (const [tab, n] of Object.entries(matchCounts)) setTabMatch(tab, n)
+  // projectMatchCounts stays fed the GLOBAL lastData, unscoped by the rail
+  // filter, on purpose: it's how the user discovers a match sitting behind a
+  // DIFFERENT project pill than the one currently selected.
   const projMatches = projectMatchCounts(lastData, searchQuery, fuzzyFilter)
   const railProjectKeys = railProjects({
     items: allItems(lastData.g), boards: lastData.boards, archived: lastData.archived, activity: lastData.activity,
   })
   for (const p of railProjectKeys) setRailMatch(p, projMatches.get(p) ?? 0)
-  const pillLive = (lastData.activity ?? []).filter((a) =>
-    (!projectFilter || a.project === projectFilter) && (!agentFilter || a.agent === agentFilter))
   // search filters Live too: match a session on what it's doing (+ its children),
   // reusing searchMatches by mapping each session onto a haystack-shaped entity
   const liveMatched = searchMatches(pillLive.map(liveEntity), searchQuery, fuzzyFilter)
@@ -1403,9 +1414,15 @@ async function act(id, action) {
   load()
 }
 
+// fix round 1: the query persists across tab and project changes for free —
+// `searchQuery` is module state nothing else ever resets (selectTab and the
+// rail's project handler don't touch it), and `#search`'s DOM node is never
+// rebuilt after this one-time init, so its typed value survives on its own.
+// (A prior `input.value = searchQuery` line here was dead: initSearch() runs
+// once at boot, before searchQuery can be non-empty, and never runs again —
+// it asserted a protection this line wasn't actually providing.)
 function initSearch() {
   const input = document.getElementById('search')
-  input.value = searchQuery // the query persists across tab and project changes
   let t = null
   input.addEventListener('input', () => {
     clearTimeout(t)

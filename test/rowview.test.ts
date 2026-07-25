@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import {
   secondaryLine, streamCounts, agentCounts, rowModel, urgencyChip, relMs,
   FRESH_MS, AGING_MS, freshnessTone, ageChip, needsYouEntries, staleFoldLabel,
+  SECONDARY_BUDGET, rowStarOption, stagedLabel, undoRefusal, awaitingPickupEntries,
 } from '../public/rowview.js'
 import type { RowItem, Entry } from '../public/rowview.js'
 import { attentionCount } from '../public/attention.js'
@@ -231,5 +232,62 @@ describe('staleFoldEl persists open state across re-renders (fix round 1)', () =
   it('writes the current open state back on toggle, so the next render remembers it', () => {
     expect(fn).toMatch(/addEventListener\(\s*['"]toggle['"]/)
     expect(fn).toMatch(/staleFoldOpen\s*=\s*fold\.open/)
+  })
+})
+
+describe('rowStarOption', () => {
+  const withOpts = (opts: RowItem['options'], detail = 'short') => {
+    const it2 = item({ options: opts, detail })
+    return { it2, m: rowModel({ kind: 'item', item: it2, liveness: 'waiting' }) }
+  }
+  it('returns the single recommended option', () => {
+    const { it2, m } = withOpts([{ label: 'Roll forward', recommended: true }, { label: 'Revert' }])
+    expect(rowStarOption(m, it2)?.label).toBe('Roll forward')
+  })
+  it('is null when the agent marked two recommendations', () => {
+    const { it2, m } = withOpts([{ label: 'A', recommended: true }, { label: 'B', recommended: true }])
+    expect(rowStarOption(m, it2)).toBeNull()
+  })
+  it('is null when line 2 blows the one-line budget', () => {
+    const { it2, m } = withOpts([{ label: 'A', recommended: true }], 'x'.repeat(SECONDARY_BUDGET + 1))
+    expect(rowStarOption(m, it2)).toBeNull()
+  })
+  it('is null for a blocked board row and for an answered item', () => {
+    const rowM = rowModel({
+      kind: 'row', row: { id: 'r1', label: 'Deploy' }, board: { id: 'b1', project: 'web', title: 'Rollout' },
+    })
+    expect(rowStarOption(rowM, item())).toBeNull()
+    const answered = item({ reply: 'go', options: [{ label: 'A', recommended: true }] })
+    expect(rowStarOption(rowModel({ kind: 'item', item: answered, liveness: 'parked' }), answered)).toBeNull()
+  })
+})
+
+describe('stagedLabel', () => {
+  it('names what was accepted', () => {
+    expect(stagedLabel({ label: 'Roll forward' })).toBe('Sent: Roll forward')
+  })
+})
+
+describe('undoRefusal', () => {
+  it('is null while the reply is still un-picked-up', () => {
+    expect(undoRefusal(item({ reply: 'go' }), T0)).toBeNull()
+  })
+  it('explains the lost race once the agent picked it up', () => {
+    const picked = item({ reply: 'go', reply_seen_at: new Date(T0).toISOString() })
+    expect(undoRefusal(picked, T0 + 2 * 60_000))
+      .toBe('Picked up 2m ago — answering again will not un-do it')
+  })
+})
+
+describe('awaitingPickupEntries', () => {
+  it('keeps only replied questions the agent has not picked up', () => {
+    const items = [
+      item({ id: 'a', reply: 'go' }),
+      item({ id: 'b', reply: 'go', reply_seen_at: new Date(T0).toISOString() }),
+      item({ id: 'c' }),
+      item({ id: 'd', kind: 'note', reply: 'go' }),
+    ]
+    const entries = awaitingPickupEntries(items, T0, new Set<string>())
+    expect(entries.map((e) => (e.kind === 'item' ? e.item.id : ''))).toEqual(['a'])
   })
 })

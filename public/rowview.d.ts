@@ -66,3 +66,8 @@ export function needsYouEntries(
   extra?: AttentionEntry[],
 ): AttentionEntry[]
 export function staleFoldLabel(n: number): string
+export const SECONDARY_BUDGET: number
+export function rowStarOption(model: RowModel, item: RowItem): RowOption | null
+export function stagedLabel(staged: { label: string }): string
+export function undoRefusal(item: RowItem, nowMs: number): string | null
+export function awaitingPickupEntries(items: RowItem[], nowMs: number, liveSessionIds: Set<string>): Entry[]

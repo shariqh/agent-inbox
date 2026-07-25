@@ -4,8 +4,11 @@ import { attentionCount, classifyLiveness, countsByProject, staleEntries } from 
 import { DEFAULT_TAB, TAB_IDS, livePresence, tabCounts } from '/tabs.js'
 import { projectColor, projectMonogram } from '/colors.js'
 import { shouldSuspendRender, suspendHint, pinOrder, applyListUpdate } from '/poll.js'
-import { createStagedSend } from '/star.js'
-import { ageChip, agentCounts, needsYouEntries, relMs, rowModel, staleFoldLabel, streamCounts, urgencyChip } from '/rowview.js'
+import { canUndo, createStagedSend } from '/star.js'
+import {
+  ageChip, agentCounts, awaitingPickupEntries, needsYouEntries, relMs, rowModel, rowStarOption,
+  stagedLabel, staleFoldLabel, streamCounts, undoRefusal, urgencyChip,
+} from '/rowview.js'
 import { cardSections, optionOrder } from '/card.js'
 
 void paginateGroups // kept exported+tested (spec §15); the viewer no longer calls it
@@ -642,6 +645,23 @@ function undoDismiss(id) {
   return true
 }
 
+const REPLY_DELAY_MS = 5000
+const stagedStars = new Map() // item id → { label } inside its undo window
+const starStage = createStagedSend({
+  delayMs: REPLY_DELAY_MS,
+  setTimeoutFn: (fn, ms) => window.setTimeout(fn, ms),
+  clearTimeoutFn: (h) => window.clearTimeout(h),
+  // exactly the call the option pill makes today (app.js `answerEl`) — no new endpoint
+  send: ({ id, label, context }) => { stagedStars.delete(id); sendReply(id, label, context) },
+})
+
+// a staged send must never be lost to a closing tab
+function initStagedFlush() {
+  const flushStaged = () => { starStage.flush(); dismissStage.flush() }
+  window.addEventListener('beforeunload', flushStaged)
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushStaged() })
+}
+
 // flat, ranked, two-line rows — no project/agent heading levels (§3, §15)
 function renderNeedsYou(g, boardsInView, nowMs) {
   const host = document.getElementById('needsYouList')
@@ -649,7 +669,7 @@ function renderNeedsYou(g, boardsInView, nowMs) {
   const live = liveSessionIds()
   // §7: the LIST is scoped by the rail + search (boardsInView); the tab count is
   // computed from lastData by Task 8 and never sees this slice
-  const unordered = needsYouEntries(items, boardsInView, nowMs, live)
+  const unordered = needsYouEntries(items, boardsInView, nowMs, live, awaitingPickupEntries(items, nowMs, live))
   // §10: run every entry through Task 9's poll-suspension pin BEFORE paginating —
   // this is what stops a freshly-arrived row from jumping into the visible slice
   // while the pointer is over the list. orderedIds() only ever returns ids that
@@ -720,6 +740,38 @@ function needsRowEl(m, entry, nowMs) {
     ev.stopPropagation()
     if (m.kind === 'item') stageDismiss(m.id)
   })
+  const slot = el.querySelector('.nrow-star')
+  const staged = stagedStars.get(m.id)
+  const opt = m.kind === 'item' ? rowStarOption(m, entry.item) : null
+  if (staged) {
+    el.classList.add('staged')
+    const label = document.createElement('span')
+    label.className = 'sent-label'
+    label.textContent = `${stagedLabel(staged)} — `
+    const undo = btn('Undo', () => {
+      if (starStage.undo(`star:${m.id}`)) { stagedStars.delete(m.id); render(); return }
+      const refusal = undoRefusal(entry.item, Date.now())
+      if (refusal) { label.textContent = `${refusal} ` } else changeAnswer(entry.item)
+    })
+    undo.className = 'undo-btn'
+    slot.replaceChildren(label, undo)
+  } else if (opt) {
+    const star = btn('★', () => {
+      stagedStars.set(m.id, { label: opt.label })
+      starStage.stage(`star:${m.id}`, { id: m.id, label: opt.label, context: draftReplyContexts[m.id] ?? '' })
+      render()
+    })
+    star.className = 'star-btn'
+    star.setAttribute('aria-label', `Answer: ${opt.label}`)
+    star.title = `Answer: ${opt.label}`
+    star.addEventListener('click', (ev) => ev.stopPropagation())
+    slot.replaceChildren(star)
+  } else if (m.answered && !canUndo(entry.item)) {
+    const note = document.createElement('span')
+    note.className = 'pickup picked'
+    note.textContent = '✓ picked up'
+    slot.replaceChildren(note)
+  }
   if (stagedDismiss.has(m.id)) {
     const undo = btn('Undo dismiss', () => undoDismiss(m.id))
     undo.className = 'undo-btn'
@@ -1143,6 +1195,7 @@ async function renderSetup() {
 initTabs()
 initTriage()
 initSearch()
+initStagedFlush()
 initListStaging()
 initAgentSelect()
 initGear()

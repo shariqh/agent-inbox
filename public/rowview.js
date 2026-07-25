@@ -1,8 +1,8 @@
 // Pure view-model for the Needs-you compact rows (spec §3). No DOM: line-2
 // selection, stream/agent disambiguation, the urgency chip and the single age
 // vocabulary stay unit-testable; app.js only turns these models into elements.
-import { starOption } from './star.js'
-import { attentionEntries, sortNeedsYou, ESCALATE_MS } from './attention.js'
+import { canUndo, starOption } from './star.js'
+import { attentionEntries, classifyLiveness, sortNeedsYou, ESCALATE_MS } from './attention.js'
 import { projectMonogram } from './colors.js'
 
 // Line 2 is what makes one-tap defensible (§5): you accept what you just read.
@@ -119,4 +119,32 @@ export function needsYouEntries(items, boards, nowMs, liveSessionIds, extra = []
 // reachable (never deleted) but must not sit in the active list (§6).
 export function staleFoldLabel(n) {
   return `stale — decide later (${n})`
+}
+
+// Gate 2 of the safe star (§5): you may only one-tap what the row actually
+// showed you, so a line-2 that would ellipsize kills the star.
+export const SECONDARY_BUDGET = 140
+
+export function rowStarOption(model, item) {
+  if (model.kind !== 'item' || model.answered) return null
+  if (model.secondary.length === 0 || model.secondary.length > SECONDARY_BUDGET) return null
+  return starOption(item)
+}
+
+export function stagedLabel(staged) {
+  return `Sent: ${staged.label}`
+}
+
+// Undo cannot win the race against a picked-up reply — say so instead of lying.
+export function undoRefusal(item, nowMs) {
+  if (canUndo(item)) return null
+  return `Picked up ${relMs(nowMs - Date.parse(item.reply_seen_at))} ago — answering again will not un-do it`
+}
+
+// Replying does not resolve (§5): answered questions leave the active set and
+// sit dimmed at the foot until the agent picks the answer up.
+export function awaitingPickupEntries(items, nowMs, liveSessionIds) {
+  return items
+    .filter((i) => i.kind === 'question' && (i.status ?? 'open') === 'open' && i.reply && !i.reply_seen_at)
+    .map((i) => ({ kind: 'item', item: i, liveness: classifyLiveness(i, nowMs, liveSessionIds) }))
 }

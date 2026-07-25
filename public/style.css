@@ -215,3 +215,9 @@ header { flex-wrap: wrap; }
 .nrow-card { margin: 8px 0 2px; padding: 10px 12px 4px 18px; border-top: 1px solid color-mix(in srgb, CanvasText 10%, transparent); cursor: default; }
 .nrow[data-open="1"] { background: color-mix(in srgb, CanvasText 4%, transparent); }
 .nrow[data-open="1"] .nrow-l2 { white-space: normal; }
+
+.star-btn { border: none; background: transparent; color: color-mix(in srgb, goldenrod 85%, CanvasText); cursor: pointer; font-size: 14px; line-height: 1; padding: 0 2px; opacity: .75; }
+.star-btn:hover, .star-btn:focus-visible { opacity: 1; transform: scale(1.15); }
+.nrow-star { display: flex; align-items: center; gap: 4px; font-size: 11.5px; white-space: nowrap; }
+.sent-label { opacity: .7; }
+.nrow.staged .nrow-title { text-decoration: line-through; text-decoration-thickness: 1px; opacity: .7; }

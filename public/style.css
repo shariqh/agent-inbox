@@ -223,14 +223,6 @@ header { flex-wrap: wrap; }
 .sent-label { opacity: .7; }
 .nrow.staged .nrow-title { text-decoration: line-through; text-decoration-thickness: 1px; opacity: .7; }
 
-/* Task 14 adds .tab-header / .triage-btn ahead of Task 13 (boards matrix), which
-   was expected to define them first — this task jumped the queue to fix the
-   "none of the buttons work" incident. Keep these minimal; Task 13 owns the
-   fuller boards-header styling and should reconcile rather than redeclare. */
-.tab-header { display: flex; justify-content: flex-end; margin-bottom: 8px; }
-.triage-btn { font: inherit; font-size: 12.5px; padding: 4px 10px; border-radius: 6px; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); background: transparent; color: inherit; cursor: pointer; opacity: .75; }
-.triage-btn:hover { opacity: 1; }
-
 .calm-panel { border: 1px solid color-mix(in srgb, seagreen 22%, transparent); background: color-mix(in srgb, seagreen 6%, transparent); border-radius: 10px; padding: 22px 18px; text-align: center; }
 .calm-head { font-size: 15px; opacity: .75; }
 .calm-chips { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; margin-top: 12px; }
@@ -255,3 +247,37 @@ header { flex-wrap: wrap; }
   background: Canvas; border-top: 1px solid color-mix(in srgb, CanvasText 14%, transparent);
   box-shadow: 0 -12px 32px color-mix(in srgb, CanvasText 18%, transparent); padding: 10px 12px; }
 main { padding-bottom: 34px; } /* the fixed strip must never cover the last row */
+
+/* ── tab headers: shared by Needs-you's Triage button and the Boards hide-completed
+   toggle (Task 13 is the sole owner — reconciled here, not duplicated with Task 14's
+   incident-fix placeholder, which is deleted). ── */
+.tab-header { display: flex; justify-content: flex-end; gap: 8px; margin: 0 0 10px; }
+.header-toggle { font: inherit; font-size: 12px; padding: 2px 11px; border-radius: 999px; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); background: transparent; color: inherit; cursor: pointer; opacity: .6; }
+.header-toggle:hover { opacity: 1; }
+.header-toggle.active { opacity: 1; border-color: LinkText; color: LinkText; }
+.triage-btn { font: inherit; font-size: 12.5px; padding: 4px 10px; border-radius: 6px; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); background: transparent; color: inherit; cursor: pointer; opacity: .75; }
+.triage-btn:hover { opacity: 1; }
+
+/* ── Boards tab: the matrix (spec §9) ── */
+.proj-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 7px; vertical-align: baseline; }
+.prog-primary { font-variant-numeric: tabular-nums; opacity: .95; }
+.prog-secondary { opacity: .5; margin-left: 6px; font-size: 11.5px; }
+.board-table.matrix .row-glyph { width: 1%; text-align: center; font-size: 17px; line-height: 1.2; padding-right: 10px; }
+.board-table.matrix .row-label { font-weight: 600; white-space: nowrap; }
+.board-table.matrix .row-note { opacity: .75; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 0; }
+.board-table.matrix .board-row { cursor: pointer; }
+.board-table.matrix .board-row:hover td { background: color-mix(in srgb, CanvasText 4%, transparent); }
+.board-table.matrix tr.needs-answer td { background: color-mix(in srgb, crimson 8%, transparent); }
+.board-table.matrix tr.needs-answer .row-label { color: color-mix(in srgb, crimson 72%, CanvasText); }
+.more-dot { opacity: .45; margin-left: 6px; }
+.annotation-dot { margin-left: 8px; font-size: 11px; opacity: .7; }
+.answer-btn { font: inherit; font-size: 11.5px; padding: 1px 10px; border-radius: 999px; border: 1px solid color-mix(in srgb, crimson 45%, transparent); background: transparent; color: inherit; cursor: pointer; font-weight: 600; }
+.row-expand { font: inherit; font-size: 11px; padding: 1px 6px; border: none; background: transparent; color: inherit; opacity: .4; cursor: pointer; }
+.row-panel-row td { padding: 6px 10px 10px 34px !important; }
+.row-panel { font-size: 12.5px; }
+.row-context-body { white-space: pre-wrap; opacity: .75; padding-left: 10px; border-left: 2px solid color-mix(in srgb, CanvasText 15%, transparent); margin-bottom: 6px; }
+.archived-fold > summary { cursor: pointer; font-size: 12.5px; opacity: .5; margin: 14px 0 8px; }
+.archived-fold > summary:hover { opacity: .85; }
+.board.archived { opacity: .72; }
+.board.lingering { opacity: 1; }
+.linger-badge { margin-left: 8px; font-size: 11px; opacity: .6; border: 1px solid color-mix(in srgb, CanvasText 18%, transparent); border-radius: 999px; padding: 0 8px; }

@@ -13,6 +13,7 @@ import { cardSections, optionOrder } from '/card.js'
 import { partitionNotes, unreadNoteCount, ambientChips } from '/notes.js'
 import { liveSummary } from '/livebar.js'
 import { esc } from '/esc.js'
+import { boardRowsView, progressLabel, hiddenDoneCount, lingeringBoards } from '/boards.js'
 
 void paginateGroups // kept exported+tested (spec §15); the viewer no longer calls it
 
@@ -215,7 +216,6 @@ function render() {
   const agents = collectAgents(projectScoped(lastData))
   if (agentFilter && !agents.includes(agentFilter)) agentFilter = null
   renderAgentSelect(agents)
-  renderRowToggle()
   // prune collapse state against ALL cards, not the filtered view, so
   // switching tabs never drops state for cards the filter is hiding
   liveCardIds = new Set([...allItems(lastData.g).map((i) => i.id), ...lastData.boards.map((b) => b.id), ...lastData.archived.map((b) => b.id)])
@@ -235,7 +235,7 @@ function render() {
   renderNeedsYou(g, boards, Date.now())
   renderGroups('notes', g.notes)
   renderDone(g.done)
-  renderBoards(boards)
+  renderBoards(boards, archived)
   // Needs-you counts the GLOBAL attention set; every other tab counts the
   // filtered view the user is actually looking at (spec §7)
   const counts = tabCounts({
@@ -297,20 +297,18 @@ function triageRemoveCurrent() {
   renderTriage()
 }
 
-function rowCardEl(b, r) {
-  const wrap = document.createElement('div')
-  wrap.className = 'lb-row-card'
-  wrap.innerHTML = `
-    <div class="meta">🚧 blocked row · ${esc(b.title)} <span class="board-id">#${esc(b.id.slice(0, 6))}</span></div>
-    <div class="title">${esc(r.label)}</div>
-    ${r.note ? `<div class="detail">${esc(r.note)}</div>` : ''}
-    ${r.context ? `<div class="detail lb-context">${esc(r.context)}</div>` : ''}
-    ${r.annotation ? `<div class="annotation">📝 ${esc(r.annotation)}</div>` : ''}`
+// rows the user expanded in the matrix (context + answer panel), by row id —
+// the board DOM is rebuilt every poll, so open state lives out here
+const openRows = new Set()
+
+// The ONE write path for a row annotation — single-line input, no window.prompt.
+// Shared by the boards matrix and the triage card (spec §7).
+function rowAnswerEl(b, r, onSaved) {
   const row = document.createElement('div')
   row.className = 'reply-row'
   const input = document.createElement('input')
   input.className = 'reply-input'
-  input.placeholder = 'tell the agent how to proceed…'
+  input.placeholder = r.status === 'blocked' ? 'tell the agent how to proceed…' : 'your note on this row…'
   input.value = rowDrafts[r.id] ?? ''
   input.addEventListener('input', () => { rowDrafts[r.id] = input.value; resumeRender() })
   input.addEventListener('focus', () => { rowFocusId = r.id })
@@ -320,20 +318,47 @@ function rowCardEl(b, r) {
     if (rowFocusId === r.id) rowFocusId = null
     const res = await postJSON(`/api/boards/${b.id}/rows/${r.id}/annotate`, { text: input.value.trim() })
     if (res === null) return // network failure — postJSON already signaled it
-    // the row stays blocked until the agent picks the note up — the human's
-    // part is done, so drop it from the deck explicitly. This card is also
-    // mounted inline (Needs-you accordion) where the deck is null — guard it.
-    if (triageDeck) triageRemoveCurrent()
+    // the row stays blocked until the agent picks the note up — the human's part
+    // is done, so the caller decides what to drop
+    onSaved?.()
     load()
   }
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') save() })
   row.appendChild(input)
   row.appendChild(btn('Send', save))
-  wrap.appendChild(row)
   if (rowFocusId === r.id) requestAnimationFrame(() => {
     input.focus()
     input.setSelectionRange(input.value.length, input.value.length)
   })
+  return row
+}
+
+// the inline expansion under a matrix row: long context + existing annotation + answer
+function rowPanelEl(b, r, readOnly = false) {
+  const wrap = document.createElement('div')
+  wrap.className = 'row-panel'
+  wrap.innerHTML = `
+    ${r.context ? `<div class="row-context-body">${esc(r.context)}</div>` : ''}
+    ${r.annotation ? `<div class="annotation">📝 ${esc(r.annotation)}${r.annotation_unseen ? '<span class="unseen" title="Not yet seen by the agent">●</span>' : ''}</div>` : ''}`
+  if (!readOnly) wrap.appendChild(rowAnswerEl(b, r))
+  return wrap
+}
+
+// `rowCardEl` mounts in TWO places: the triage lightbox (where `triageDeck` is
+// open) and, since Task 11, the inline Needs-you accordion (where it is `null`).
+// Guard the onSaved callback here, at the definition, so neither call site has
+// to know which context it is in — answering a blocked row from the list must
+// not throw just because there is no deck to remove it from.
+function rowCardEl(b, r) {
+  const wrap = document.createElement('div')
+  wrap.className = 'lb-row-card'
+  wrap.innerHTML = `
+    <div class="meta">🚧 blocked row · ${esc(b.title)} <span class="board-id">#${esc(b.id.slice(0, 6))}</span></div>
+    <div class="title">${esc(r.label)}</div>
+    ${r.note ? `<div class="detail">${esc(r.note)}</div>` : ''}
+    ${r.context ? `<div class="detail lb-context">${esc(r.context)}</div>` : ''}
+    ${r.annotation ? `<div class="annotation">📝 ${esc(r.annotation)}</div>` : ''}`
+  wrap.appendChild(rowAnswerEl(b, r, () => { if (triageDeck) triageRemoveCurrent() }))
   return wrap
 }
 
@@ -457,28 +482,6 @@ function applySearch({ g, boards, archived }) {
 function emptyMsg(base) {
   const q = searchQuery.trim()
   return q ? `No matches for &ldquo;${esc(q)}&rdquo;` : base
-}
-
-function renderRowToggle() {
-  const host = document.getElementById('rowTabs')
-  if (!host) return // the boards header that hosts this arrives in Task 13
-  const sig = String(hideCompleted)
-  if (host.dataset.sig === sig) return
-  host.dataset.sig = sig
-  host.innerHTML = ''
-  const tag = document.createElement('span')
-  tag.className = 'tab-label'
-  tag.textContent = 'rows'
-  host.appendChild(tag)
-  const b = document.createElement('button')
-  b.textContent = 'hide completed'
-  if (hideCompleted) b.classList.add('active')
-  b.addEventListener('click', () => {
-    hideCompleted = !hideCompleted
-    localStorage.setItem(HIDE_DONE_KEY, String(hideCompleted))
-    render()
-  })
-  host.appendChild(b)
 }
 
 const liveSessionIds = () => new Set((lastData.activity ?? []).map((a) => a.session))
@@ -988,10 +991,6 @@ function renderDone(items) {
 
 const GLYPH = { done: '✅', partial: '⚠️', missing: '❌', tracked: '🔜', na: '➖', blocked: '🚧' }
 
-// row-context <details> the user has expanded, by row id — the whole board DOM is
-// rebuilt on every poll, so open state must live outside it
-const openContexts = new Set()
-
 // boards where the human clicked "show" on hidden done rows, overriding the
 // global hide-completed pill for that board only
 const showDoneBoards = new Set()
@@ -1023,28 +1022,69 @@ function cardify(el, id) {
   el.addEventListener('toggle', () => setCardCollapsed(id, !el.open))
 }
 
-function renderBoards(boards) {
-  const host = document.querySelector('#boards .boards')
-  const { visible, remaining } = paginate(boards, shown.boards)
-  host.innerHTML = boards.length ? '' : `<p class="empty">${emptyMsg('No boards.')}</p>`
-  for (const b of visible) host.appendChild(boardEl(b))
-  if (remaining > 0) host.appendChild(moreButton('boards', remaining))
+let showArchived = false            // session-only: the archived fold is not persisted
+const sessionActiveBoards = new Set() // board ids seen active at some point this session (§9)
+
+// the Boards tab header — this tab's only chrome, built here because the shell
+// ships an empty panel (no #rowTabs, no .panel-tools)
+function boardsHeader() {
+  const bar = document.createElement('div')
+  bar.className = 'tab-header'
+  const t = btn('hide completed rows', () => {
+    hideCompleted = !hideCompleted
+    localStorage.setItem(HIDE_DONE_KEY, String(hideCompleted))
+    render()
+  })
+  t.className = `header-toggle${hideCompleted ? ' active' : ''}`
+  bar.appendChild(t)
+  return bar
 }
 
-function boardEl(b, archived = false) {
+function renderBoards(boards, archived) {
+  const host = document.querySelector('#boards .boards')
+  host.innerHTML = ''
+  host.appendChild(boardsHeader())
+  for (const b of boards) sessionActiveBoards.add(b.id)
+  // a board that reaches 100% is archived by its agent seconds later; it lingers
+  // here as a "completed — archived" card so finished work never blinks out (§9)
+  const lingering = lingeringBoards(sessionActiveBoards, boards, archived)
+  const lingerIds = new Set(lingering.map((b) => b.id))
+  if (!boards.length && !lingering.length) host.insertAdjacentHTML('beforeend', `<p class="empty">${emptyMsg('No boards.')}</p>`)
+  const { visible, remaining } = paginate(boards, shown.boards)
+  for (const b of visible) host.appendChild(boardEl(b))
+  if (remaining > 0) host.appendChild(moreButton('boards', remaining))
+  for (const b of lingering) host.appendChild(boardEl(b, true, true))
+  const rest = archived.filter((b) => !lingerIds.has(b.id))
+  if (rest.length) {
+    // un-archive is the only undo for Archive, so archived boards fold in here —
+    // they must never become unreachable (spec §9)
+    const fold = document.createElement('details')
+    fold.className = 'archived-fold'
+    fold.open = showArchived
+    fold.addEventListener('toggle', () => { showArchived = fold.open })
+    fold.innerHTML = `<summary>show archived (${rest.length})</summary>`
+    const page = paginate(rest, shown.archived)
+    for (const b of page.visible) fold.appendChild(boardEl(b, true))
+    if (page.remaining > 0) fold.appendChild(moreButton('archived', page.remaining))
+    host.appendChild(fold)
+  }
+}
+
+function boardEl(b, archived = false, lingering = false) {
   const el = document.createElement('details')
-  const complete = b.progress.fraction === 1 && b.progress.countable > 0
-  el.className = `board${complete ? ' complete' : ''}`
-  const pct = Math.round(b.progress.fraction * 100)
+  const p = progressLabel(b.progress)
+  el.className = `board${p.complete ? ' complete' : ''}${archived ? ' archived' : ''}${lingering ? ' lingering' : ''}`
   const stream = b.stream ? ` · ${esc(b.stream)}` : ''
+  const c = pcolor(b.project)
+  const hidden = hiddenDoneCount(b, { hideCompleted, showDone: showDoneBoards.has(b.id) })
   el.innerHTML = `
     <summary class="card-summary">
       <div class="board-head">
-        <div class="board-title"><span class="caret"></span>${esc(b.title)}<span class="board-id" title="board id">#${esc(b.id.slice(0, 6))}</span></div>
+        <div class="board-title"><span class="caret"></span><span class="proj-dot" style="background:${c.dot}"></span>${esc(b.title)}<span class="board-id" title="board id">#${esc(b.id.slice(0, 6))}</span></div>
         <div class="board-meta">${esc(b.project)}${stream} · ${esc(b.agent)}</div>
       </div>
-      <div class="bar"><div class="bar-fill" style="width:${pct}%"></div></div>
-      <div class="bar-label">${b.progress.done}/${b.progress.countable} done · ${pct}%${complete ? '<span class="complete-badge">✓ complete</span>' : ''}${hideCompleted && b.progress.done > 0 ? `<span class="hidden-hint" title="show/hide this board's completed rows">· ${b.progress.done} ${showDoneBoards.has(b.id) ? 'done shown' : 'hidden — show'}</span>` : ''}</div>
+      <div class="bar"><div class="bar-fill" style="width:${p.secondary}"></div></div>
+      <div class="bar-label"><strong class="prog-primary">${p.primary}</strong> done <span class="prog-secondary">${p.secondary}</span>${p.complete ? '<span class="complete-badge">✓ complete</span>' : ''}${lingering ? '<span class="linger-badge">completed — archived</span>' : ''}${hidden ? `<span class="hidden-hint" title="show this board's completed rows">· ${hidden} done hidden — show</span>` : ''}</div>
     </summary>`
   cardify(el, b.id)
   const hint = el.querySelector('.hidden-hint')
@@ -1055,35 +1095,43 @@ function boardEl(b, archived = false) {
     render()
   })
   const table = document.createElement('table')
-  table.className = 'board-table'
-  for (const [i, r] of b.rows.entries()) {
-    // hide-completed skips done rows; i stays the original index so the
-    // visible row numbers keep matching "row N" references
-    if (hideCompleted && r.status === 'done' && !showDoneBoards.has(b.id)) continue
+  table.className = 'board-table matrix'
+  for (const { row: r, num, needsAnswer } of boardRowsView(b, { hideCompleted, showDone: showDoneBoards.has(b.id) })) {
     const tr = document.createElement('tr')
-    const context = r.context
-      ? `<details class="row-context"${openContexts.has(r.id) ? ' open' : ''}><summary>context</summary><div>${esc(r.context)}</div></details>`
-      : ''
+    tr.className = `board-row${needsAnswer ? ' needs-answer' : ''}${openRows.has(r.id) ? ' open' : ''}`
+    // one-line note only; the long context lives behind the row click
     tr.innerHTML = `
-      <td class="row-num">${i + 1}</td>
-      <td class="pill ${r.status}">${GLYPH[r.status] || ''}</td>
+      <td class="row-num">${num}</td>
+      <td class="row-glyph ${r.status}" title="${esc(r.status)}">${GLYPH[r.status] || ''}</td>
       <td class="row-label">${esc(r.label)}</td>
-      <td class="row-note">${esc(r.note)}${context}${r.annotation ? `<div class="annotation">📝 ${esc(r.annotation)}${r.annotation_unseen ? '<span class="unseen" title="Not yet seen by the agent">●</span>' : ''}</div>` : ''}</td>`
-    const ctxEl = tr.querySelector('.row-context')
-    if (ctxEl) ctxEl.addEventListener('toggle', () => { ctxEl.open ? openContexts.add(r.id) : openContexts.delete(r.id) })
-    if (!archived) {
-      const actionTd = document.createElement('td')
-      actionTd.className = 'row-action'
-      actionTd.appendChild(btn('📝', async () => {
-        const text = prompt('Your note on this row:', r.annotation || '')
-        if (text == null) return
-        const res = await postJSON(`/api/boards/${b.id}/rows/${r.id}/annotate`, { text })
-        if (res === null) return // network failure — postJSON already signaled it
-        load()
-      }))
-      tr.appendChild(actionTd)
+      <td class="row-note"><span class="note-line">${esc(r.note)}</span>${r.context ? '<span class="more-dot" title="has context — click the row">…</span>' : ''}${r.annotation ? `<span class="annotation-dot" title="${esc(r.annotation)}">📝${r.annotation_unseen ? '<span class="unseen">●</span>' : ''}</span>` : ''}</td>`
+    const actionTd = document.createElement('td')
+    actionTd.className = 'row-action'
+    const toggle = () => {
+      openRows.has(r.id) ? openRows.delete(r.id) : openRows.add(r.id)
+      render()
     }
+    if (needsAnswer && !archived) {
+      const a = btn('Answer', toggle)
+      a.className = 'answer-btn'
+      actionTd.appendChild(a)
+    } else if (r.context || !archived) {
+      const a = btn(openRows.has(r.id) ? '▾' : '▸', toggle)
+      a.className = 'row-expand'
+      actionTd.appendChild(a)
+    }
+    tr.appendChild(actionTd)
+    tr.addEventListener('click', (e) => { if (!e.target.closest('button, input')) toggle() })
     table.appendChild(tr)
+    if (openRows.has(r.id)) {
+      const ptr = document.createElement('tr')
+      ptr.className = 'row-panel-row'
+      const td = document.createElement('td')
+      td.colSpan = 5
+      td.appendChild(rowPanelEl(b, r, archived))
+      ptr.appendChild(td)
+      table.appendChild(ptr)
+    }
   }
   el.appendChild(table)
   const actions = document.createElement('div')
@@ -1108,6 +1156,9 @@ function archiveBtn(boardId) {
   const el = btn('Archive', async () => {
     if (el.classList.contains('confirm')) {
       clearTimeout(timer)
+      // a board the HUMAN archives by hand must not linger — lingering is only
+      // for the agent's own auto-archive at 100% (spec §9)
+      sessionActiveBoards.delete(boardId)
       const res = await postJSON(`/api/boards/${boardId}/archive`)
       if (res === null) return // network failure — postJSON already signaled it
       load()

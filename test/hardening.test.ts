@@ -85,7 +85,8 @@ describe('every write-path fetch has a catch with a visible signal (fix 3)', () 
       /async function act\([\s\S]*?postJSON\(/,
       /async function changeAnswer\([\s\S]*?postJSON\(/,
     ]) expect(js, marker.toString()).toMatch(marker)
-    // board row note, un-archive, archive-confirm
-    expect(js.match(/postJSON\(`\/api\/boards\//g)?.length ?? 0).toBeGreaterThanOrEqual(4)
+    // board row note (shared by the matrix and the triage card since Task 13 —
+    // was two separate call sites, now one), un-archive, archive-confirm
+    expect(js.match(/postJSON\(`\/api\/boards\//g)?.length ?? 0).toBeGreaterThanOrEqual(3)
   })
 })

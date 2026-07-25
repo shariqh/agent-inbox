@@ -10,6 +10,7 @@ import {
   stagedLabel, staleFoldLabel, streamCounts, undoRefusal, urgencyChip,
 } from '/rowview.js'
 import { cardSections, optionOrder } from '/card.js'
+import { keyAction, rovingIndex, ariaAnswerLabel, livenessGlyph } from '/keys.js'
 import { partitionNotes, unreadNoteCount, ambientChips } from '/notes.js'
 import { liveSummary } from '/livebar.js'
 import { esc } from '/esc.js'
@@ -485,15 +486,8 @@ function initTriage() {
   lb.querySelector('.lb-backdrop').addEventListener('click', closeTriage)
   lb.querySelector('.lb-prev').addEventListener('click', () => { triageDeck.index--; renderTriage() })
   lb.querySelector('.lb-next').addEventListener('click', () => { triageDeck.index++; renderTriage() })
-  document.addEventListener('keydown', (e) => {
-    const typing = e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA'
-    // 't' opens the triage deck — the Now strip's button went with the strip
-    if (!triageDeck && !typing && e.key === 't') { openTriage(); return }
-    if (!triageDeck) return
-    if (e.key === 'Escape') closeTriage()
-    else if (!typing && e.key === 'ArrowLeft' && triageDeck.index > 0) { triageDeck.index--; renderTriage() }
-    else if (!typing && e.key === 'ArrowRight' && triageDeck.index < triageDeck.entries.length - 1) { triageDeck.index++; renderTriage() }
-  })
+  // keyboard (Esc/ArrowLeft/ArrowRight/t) is owned by initKeys (Task 17) —
+  // one handler for the list AND the deck so the two can never drift apart
 }
 
 function jumpToCard(tabId, cardId) {
@@ -549,6 +543,7 @@ function selectTab(id) {
   activeTab = id
   for (const t of document.querySelectorAll('#tabs .tab')) {
     t.setAttribute('aria-selected', String(t.dataset.tab === id))
+    t.tabIndex = t.dataset.tab === id ? 0 : -1 // roving tabindex (spec §13)
   }
   showPanel(id)
 }
@@ -558,6 +553,7 @@ function initTabs() {
     t.addEventListener('click', () => selectTab(t.dataset.tab))
   }
   selectTab(activeTab)
+  wireTablist(document.getElementById('tabs'), 'horizontal')
 }
 
 function filterData({ g, boards, archived }) {
@@ -698,6 +694,11 @@ function renderRail() {
     })
     host.appendChild(b)
   }
+  // roving tablist (spec §13): exactly one project tab is tabbable
+  for (const b of host.querySelectorAll('.rail-tab')) {
+    b.tabIndex = b.getAttribute('aria-selected') === 'true' ? 0 : -1
+  }
+  wireTablist(host, 'vertical')
 }
 
 // the top bar's agent filter — a demoted dropdown scoped to the selected project.
@@ -996,7 +997,7 @@ function needsRowEl(m, entry, nowMs) {
       ${projBit}
       ${glyph}
       <span class="nrow-title" title="${esc(m.title)}">${esc(m.title)}</span>
-      <span class="chip chip-${chip.tone}">${esc(chip.text)}</span>
+      <span class="chip chip-${chip.tone}"><span aria-hidden="true">${livenessGlyph(m.liveness).glyph}</span> ${esc(chip.text)}</span>
       <span class="nrow-star"></span>
       <button class="nrow-dismiss" title="Dismiss (x)" aria-label="Dismiss">✕</button>
       <span class="nrow-caret">▸</span>
@@ -1032,8 +1033,8 @@ function needsRowEl(m, entry, nowMs) {
       render()
     })
     star.className = 'star-btn'
-    star.setAttribute('aria-label', `Answer: ${opt.label}`)
-    star.title = `Answer: ${opt.label}`
+    star.setAttribute('aria-label', ariaAnswerLabel(opt) ?? 'Answer')
+    star.title = ariaAnswerLabel(opt) ?? 'Answer'
     star.addEventListener('click', (ev) => ev.stopPropagation())
     slot.replaceChildren(star)
   } else if (m.answered && !canUndo(entry.item)) {
@@ -1078,6 +1079,13 @@ function rowCardBodyEl(entry, m, nowMs) {
 // Single-open accordion. `setOpenRow` (Task 9) owns the flag and the poll gate;
 // the DOM is patched in place because a re-render is exactly what the gate is
 // there to suspend. Collapsing hands the poll its pending data back.
+//
+// This is the ONE function that opens/closes a row — a mouse click, the row's
+// own Enter/Escape keydown handler below, and Task 17's keyboard 'expand'/
+// 'collapse' intents (dispatched as a synthetic click on the row) all end up
+// here — so focus management (spec §13: focus moves into the card on expand,
+// returns to the row on collapse) lives in exactly one place instead of being
+// duplicated per trigger.
 function toggleRow(el, m, entry, nowMs) {
   const wasOpen = openRowId === m.id
   setOpenRow(wasOpen ? null : m.id)
@@ -1086,9 +1094,17 @@ function toggleRow(el, m, entry, nowMs) {
     const card = other.querySelector('.nrow-card')
     if (card) card.remove()
   }
-  if (wasOpen) { renderIfIdle(); return }
+  if (wasOpen) {
+    renderIfIdle()
+    requestAnimationFrame(() => selectRow(m.id)) // focus returns to the row (spec §13)
+    return
+  }
   el.dataset.open = '1'
   el.appendChild(rowCardBodyEl(entry, m, nowMs))
+  requestAnimationFrame(() => {
+    const card = el.querySelector('.nrow-card')
+    if (card) { card.tabIndex = -1; card.focus({ preventScroll: true }) } // focus moves into the card (spec §13)
+  })
 }
 
 // notes keep a card list, but flat: no project h3, no agent h4 (§15)
@@ -1388,7 +1404,7 @@ function itemCardEl(it, { done = false, nowMs = Date.now(), liveness = 'parked',
     <div class="meta card-meta">
       <span class="pdot" style="background:${color.dot}"></span>
       <span>${esc(it.project)}</span> · <span>${esc(it.agent)}</span>${it.stream ? ` · <span>${esc(it.stream)}</span>` : ''}
-      <span class="chip chip-${chip.tone}">${esc(chip.text)}</span>
+      <span class="chip chip-${chip.tone}"><span aria-hidden="true">${livenessGlyph(liveness).glyph}</span> ${esc(chip.text)}</span>
     </div>
     <div class="card-title">${esc(it.title)}</div>` : ''
   el.innerHTML = `
@@ -1462,6 +1478,166 @@ function itemEl(it, done = false) {
   cardify(el, it.id)
   el.appendChild(itemCardEl(it, { done, header: false }))
   return el
+}
+
+// ── keyboard (spec §13) ─────────────────────────────────────────────────────
+// ONE handler for the list and the triage deck, so the deck's keys and the
+// list's keys can never drift apart.
+let selectedId = null // the row the keyboard is on
+
+function rowEls() {
+  return [...document.querySelectorAll('#needsYouList .nrow[data-card-id]')]
+}
+
+function selectRow(id) {
+  selectedId = id
+  for (const el of rowEls()) {
+    const on = el.dataset.cardId === id
+    el.classList.toggle('selected', on)
+    el.setAttribute('aria-selected', String(on))
+    el.tabIndex = on ? 0 : -1
+    if (on) el.focus({ preventScroll: false })
+  }
+}
+
+function selectedItem() {
+  if (!selectedId || !lastData) return null
+  return allItems(lastData.g).find((i) => i.id === selectedId) ?? null
+}
+
+// The keyboard's reply target. `selectedId` is the LIST's selection — while the
+// triage deck is open that is a different row than whatever the lightbox is
+// showing, so a bare `selectedItem()` would let '1'-'4' (and dismiss/resolve)
+// answer the WRONG item. While the deck is open, the target is always the entry
+// currently on screen in it. Guarded against the deck's "all clear" state
+// (entries: [] while triageDeck is still non-null) — findEntryData(undefined)
+// would throw, and initKeys evaluates this on every keydown the deck is open.
+function keyTargetItem() {
+  if (triageDeck) {
+    const entry = triageDeck.entries[triageDeck.index]
+    return entry ? (findEntryData(entry)?.it ?? null) : null
+  }
+  return selectedItem()
+}
+
+function runIntent(intent) {
+  const ids = rowEls().map((el) => el.dataset.cardId)
+  const it = keyTargetItem()
+  switch (intent.type) {
+    case 'move': {
+      if (!ids.length) return
+      const at = ids.indexOf(selectedId)
+      const from = at < 0 ? (intent.delta > 0 ? -1 : ids.length) : at
+      selectRow(ids[Math.max(0, Math.min(ids.length - 1, from + intent.delta))])
+      return
+    }
+    case 'expand': {
+      // dispatched as a real click on the row — toggleRow is the single
+      // open/close path and owns the focus-into-card behaviour (spec §13)
+      if (!selectedId) return
+      rowEls().find((el) => el.dataset.cardId === selectedId)?.click()
+      return
+    }
+    case 'collapse': {
+      // same trick in reverse: clicking the open row closes it and toggleRow
+      // returns focus to the row (spec §13)
+      if (!openRowId) return
+      document.querySelector(`.nrow[data-card-id="${CSS.escape(openRowId)}"]`)?.click()
+      return
+    }
+    case 'clearSelection':
+      selectRow(null)
+      return
+    case 'option': {
+      const o = optionOrder(it?.options)[intent.index]
+      if (o && it) sendReply(it.id, o.label, draftReplyContexts[it.id] ?? '')
+      return
+    }
+    case 'dismiss':
+      // items only; the SAME staged 5s-undo path the ✕ button uses (Task 10) —
+      // a keyboard dismiss must be exactly as reversible as a mouse dismiss.
+      if (it) stageDismiss(it.id)
+      return
+    case 'resolve':
+      if (it) act(it.id, 'resolve') // deck-aware target — never a bare selectedId
+      return
+    case 'search':
+      document.getElementById('search').focus()
+      return
+    case 'blur':
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur()
+      return
+    case 'deckPrev':
+      triageDeck.index = Math.max(0, triageDeck.index - 1)
+      renderTriage()
+      return
+    case 'deckNext':
+      triageDeck.index = Math.min(triageDeck.entries.length - 1, triageDeck.index + 1)
+      renderTriage()
+      return
+    case 'closeDeck':
+      closeTriage()
+      return
+    case 'openDeck':
+      openTriage() // the Now strip's button is gone (Task 6) — 't' is the deck's door now
+      return
+  }
+}
+
+function initKeys() {
+  document.addEventListener('keydown', (e) => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return
+    // The row's own keydown listener (needsRowEl) already handles Enter/Escape
+    // when the row itself has focus and calls preventDefault() — don't run the
+    // action twice.
+    if (e.defaultPrevented) return
+    // Esc precedence, explicit (topmost/innermost first): the triage deck (an
+    // actual lightbox) wins via keyAction's own ladder below (deckOpen is
+    // checked first, ahead of 'expanded'/clearSelection). The Live drawer is
+    // its OWN Esc consumer (initLiveBar, Task 16) that already closes it and
+    // returns focus to the strip — when the deck is closed but the drawer is
+    // open, step aside instead of ALSO clearing the list selection underneath
+    // it; the drawer's own listener (registered after this one) still runs.
+    const liveDrawer = document.getElementById('liveDrawer')
+    if (e.key === 'Escape' && !triageDeck && liveDrawer && !liveDrawer.hidden) return
+    const t = e.target
+    const typing = !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)
+    // optionCount must come from the SAME target runIntent will answer — the
+    // deck entry while it's open, the list selection otherwise — or a keyboard
+    // '1'-'4' can validate against one item and answer another (see
+    // keyTargetItem).
+    const intent = keyAction(e.key, {
+      typing,
+      deckOpen: !!triageDeck,
+      expanded: openRowId != null,
+      optionCount: optionOrder(keyTargetItem()?.options).length,
+    })
+    if (!intent) return
+    e.preventDefault()
+    runIntent(intent)
+  })
+}
+
+// Rail (#rail, vertical) and top tabs (#tabs, horizontal) are real tablists
+// with roving focus: exactly one [role="tab"] is tabbable, arrows move within
+// the group (spec §13).
+function wireTablist(host, orientation) {
+  if (!host) return
+  host.setAttribute('role', 'tablist')
+  host.setAttribute('aria-orientation', orientation)
+  if (host.dataset.tablist === '1') return // listener attaches once; rebuilds reuse it
+  host.dataset.tablist = '1'
+  host.addEventListener('keydown', (e) => {
+    const tabs = [...host.querySelectorAll('[role="tab"]')]
+    const i = tabs.indexOf(document.activeElement)
+    if (i < 0) return
+    const next = rovingIndex(i, e.key, tabs.length)
+    if (next === i) return
+    e.preventDefault()
+    tabs[i].tabIndex = -1
+    tabs[next].tabIndex = 0
+    tabs[next].focus()
+  })
 }
 
 function btn(label, onClick) {
@@ -1550,6 +1726,7 @@ async function renderSetup() {
 initTabs()
 initTriage()
 initSearch()
+initKeys()
 initFocusHash()
 initStagedFlush()
 initListStaging()

@@ -96,7 +96,6 @@ describe('shell script', () => {
   })
 
   it('keeps the triage deck reachable now that the Now strip is gone', () => {
-    expect(js).toContain("e.key === 't'")
     expect(js).toContain('openTriage()')
   })
 

@@ -143,6 +143,28 @@ async function load() {
   }
 }
 
+// fix round 1 (hardening): every write-path fetch used to be a bare `await fetch(...)`
+// with no try/catch — a dropped request (offline, server restart mid-click) became an
+// unhandled promise rejection: no console signal, no user feedback, and the optimistic
+// UI may already have updated as if it worked. That is worse than a visible failure for
+// an app whose whole job is not losing the human's action. Mirrors load()'s existing
+// catch → console.error + 'disconnected' status pattern; one helper instead of six
+// bespoke handlers. Returns the parsed JSON body on success, or null on network failure
+// (callers must treat null as "nothing happened, already signaled" and bail out).
+async function postJSON(url, body) {
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      ...(body !== undefined ? { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : {}),
+    })
+    return await res.json().catch(() => ({}))
+  } catch (err) {
+    console.error(`POST ${url} failed`, err)
+    document.getElementById('status').textContent = 'disconnected'
+    return null
+  }
+}
+
 function allItems(g) {
   return [...g.needsYou.flatMap((x) => x.items), ...g.notes.flatMap((x) => x.items), ...g.done]
 }
@@ -296,9 +318,8 @@ function rowCardEl(b, r) {
     if (!input.value.trim()) return
     delete rowDrafts[r.id]
     if (rowFocusId === r.id) rowFocusId = null
-    await fetch(`/api/boards/${b.id}/rows/${r.id}/annotate`, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: input.value.trim() }),
-    })
+    const res = await postJSON(`/api/boards/${b.id}/rows/${r.id}/annotate`, { text: input.value.trim() })
+    if (res === null) return // network failure — postJSON already signaled it
     // the row stays blocked until the agent picks the note up — the human's
     // part is done, so drop it from the deck explicitly. This card is also
     // mounted inline (Needs-you accordion) where the deck is null — guard it.
@@ -876,7 +897,7 @@ function needsRowEl(m, entry, nowMs) {
       if (starStage.undo(`star:${m.id}`)) { stagedStars.delete(m.id); render(); return }
       const fresh = freshItem(m.id) ?? entry.item
       const refusal = undoRefusal(fresh, Date.now())
-      if (refusal) { label.textContent = `${refusal} ` } else changeAnswer(fresh)
+      if (refusal) { label.textContent = `${refusal} ` } else changeAnswer(fresh, label)
     })
     undo.className = 'undo-btn'
     slot.replaceChildren(label, undo)
@@ -1055,7 +1076,10 @@ function boardEl(b, archived = false) {
       actionTd.className = 'row-action'
       actionTd.appendChild(btn('📝', async () => {
         const text = prompt('Your note on this row:', r.annotation || '')
-        if (text != null) { await fetch(`/api/boards/${b.id}/rows/${r.id}/annotate`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }) }); load() }
+        if (text == null) return
+        const res = await postJSON(`/api/boards/${b.id}/rows/${r.id}/annotate`, { text })
+        if (res === null) return // network failure — postJSON already signaled it
+        load()
       }))
       tr.appendChild(actionTd)
     }
@@ -1065,7 +1089,11 @@ function boardEl(b, archived = false) {
   const actions = document.createElement('div')
   actions.className = 'actions'
   if (archived) {
-    actions.appendChild(btn('Un-archive', async () => { await fetch(`/api/boards/${b.id}/unarchive`, { method: 'POST' }); load() }))
+    actions.appendChild(btn('Un-archive', async () => {
+      const res = await postJSON(`/api/boards/${b.id}/unarchive`)
+      if (res === null) return // network failure — postJSON already signaled it
+      load()
+    }))
   } else {
     actions.appendChild(archiveBtn(b.id))
   }
@@ -1080,7 +1108,8 @@ function archiveBtn(boardId) {
   const el = btn('Archive', async () => {
     if (el.classList.contains('confirm')) {
       clearTimeout(timer)
-      await fetch(`/api/boards/${boardId}/archive`, { method: 'POST' })
+      const res = await postJSON(`/api/boards/${boardId}/archive`)
+      if (res === null) return // network failure — postJSON already signaled it
       load()
       return
     }
@@ -1106,11 +1135,8 @@ async function sendReply(id, text, context = '') {
   delete draftReplies[id]
   delete draftReplyContexts[id]
   if (draftFocusKey?.startsWith(`${id}:`)) draftFocusKey = null
-  await fetch(`/api/items/${id}/reply`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ text: reply, context: context.trim() || undefined }),
-  })
+  const res = await postJSON(`/api/items/${id}/reply`, { text: reply, context: context.trim() || undefined })
+  if (res === null) return // network failure — postJSON already signaled it
   load()
 }
 
@@ -1206,20 +1232,47 @@ function itemCardEl(it, { done = false, nowMs = Date.now(), liveness = 'parked',
     actions.className = 'actions'
     actions.appendChild(btn('Resolve', () => act(it.id, 'resolve')))
     actions.appendChild(btn('Dismiss', () => act(it.id, 'dismiss')))
-    if (s.answered) actions.appendChild(btn('Change answer', () => changeAnswer(it)))
+    if (s.answered) {
+      // fix round 1 (hardening): a small inline slot beside the button for the
+      // refusal message changeAnswer() surfaces when the server refuses (spec req #2)
+      const msg = document.createElement('span')
+      msg.className = 'refusal-msg'
+      actions.appendChild(btn('Change answer', () => changeAnswer(it, msg)))
+      actions.appendChild(msg)
+    }
     actions.appendChild(btn('Note', async () => {
       const text = prompt('Your note:')
-      if (text != null) { await fetch(`/api/items/${it.id}/annotate`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }) }); load() }
+      if (text == null) return
+      const res = await postJSON(`/api/items/${it.id}/annotate`, { text })
+      if (res === null) return // network failure — postJSON already signaled it
+      load()
     }))
     el.appendChild(actions)
   }
   return el
 }
 
-async function changeAnswer(it) {
+// fix round 1 (hardening): the server can refuse this (src/store.ts's replyItem
+// guard — an already-picked-up reply cannot be silently blanked). It used to POST
+// and throw away the response entirely: the human clicked, nothing happened, no
+// explanation. Now it reads `{ ok }` and, on refusal, mirrors the SAME refusal copy
+// the row Undo flow already produces (rowview.js's undoRefusal) into msgEl — the
+// Undo call site passes its own `label`; the card's "Change answer" button passes
+// the small slot created above. Approximate "now" for reply_seen_at when our local
+// snapshot hasn't caught up yet (up to ~3s stale) — the server already told us
+// definitively that a pickup happened, we just don't know exactly when.
+async function changeAnswer(it, msgEl) {
   draftReplies[it.id] = it.reply
   draftReplyContexts[it.id] = it.reply_context ?? ''
-  await fetch(`/api/items/${it.id}/reply`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: '' }) })
+  const res = await postJSON(`/api/items/${it.id}/reply`, { text: '' })
+  if (res === null) return // network failure — postJSON already signaled it
+  if (!res.ok) {
+    const fresh = freshItem(it.id) ?? it
+    const seenAt = fresh.reply_seen_at ?? new Date().toISOString()
+    const refusal = undoRefusal({ ...fresh, reply_seen_at: seenAt }, Date.now())
+    if (msgEl) msgEl.textContent = `${refusal} `
+    return
+  }
   load()
 }
 
@@ -1255,7 +1308,8 @@ function moreButton(section, remaining) {
 }
 
 async function act(id, action) {
-  await fetch(`/api/items/${id}/${action}`, { method: 'POST' })
+  const res = await postJSON(`/api/items/${id}/${action}`)
+  if (res === null) return // network failure — postJSON already signaled it
   load()
 }
 

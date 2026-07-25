@@ -326,7 +326,10 @@ describe('the star Undo fallback in app.js is wired to fresh state, not the stal
 
   it('feeds the fresh lookup — not entry.item — into undoRefusal and changeAnswer', () => {
     expect(fn).toMatch(/undoRefusal\(\s*fresh\s*,/)
-    expect(fn).toMatch(/changeAnswer\(\s*fresh\s*\)/)
+    // fix round 1 (hardening): changeAnswer also takes the existing `label` element,
+    // so it can surface a server-side refusal it wouldn't otherwise catch — see
+    // test/hardening.test.ts for that behavior
+    expect(fn).toMatch(/changeAnswer\(\s*fresh\s*,\s*label\s*\)/)
     expect(fn).not.toMatch(/undoRefusal\(\s*entry\.item\s*,/)
     expect(fn).not.toMatch(/changeAnswer\(\s*entry\.item\s*\)/)
   })

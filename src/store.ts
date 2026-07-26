@@ -753,16 +753,37 @@ export function listSourceLinks(db: Database.Database): SourceLink[] {
 // Which (repo, branch) pairs are worth spending a `gh` call on: the branches
 // OPEN items and ACTIVE boards actually sit on. A resolved item's branch stops
 // being refreshed but keeps whatever it last cached.
+//
+// #32 × #30: a project the human CLOSED is retired from the poller too — it kept
+// spawning a `gh` subprocess every 60s and kept eating the shared per-tick budget,
+// diluting the refresh rate for projects still in use. Its cached chips survive
+// untouched, so a peek still shows what it last knew. The closed set is DERIVED,
+// so this asks closedProjects() rather than reading closed_at: a project that
+// un-closed itself when an agent flagged in it resumes polling with no other
+// change. A branch a closed project SHARES with a live one keeps being refreshed —
+// the live project is still rendering that chip.
 export function listLinkTargets(db: Database.Database): LinkTarget[] {
   const rows = db
     .prepare(
-      `SELECT repo, stream AS branch FROM items  WHERE status = 'open'   AND repo IS NOT NULL AND repo <> '' AND stream <> ''
+      `SELECT project, repo, stream AS branch FROM items  WHERE status = 'open'   AND repo IS NOT NULL AND repo <> '' AND stream <> ''
        UNION
-       SELECT repo, stream AS branch FROM boards WHERE status = 'active' AND repo IS NOT NULL AND repo <> '' AND stream <> ''
+       SELECT project, repo, stream AS branch FROM boards WHERE status = 'active' AND repo IS NOT NULL AND repo <> '' AND stream <> ''
        ORDER BY repo ASC, branch ASC`,
     )
-    .all() as LinkTarget[]
-  return rows.slice(0, MAX_LINK_TARGETS)
+    .all() as Array<LinkTarget & { project: string }>
+  const closed = new Set(closedProjects(db))
+  // the UNION dedupes on (project, repo, branch); (repo, branch) is the cache key,
+  // so the collapse to one target per pair happens here instead
+  const seen = new Set<string>()
+  const targets: LinkTarget[] = []
+  for (const row of rows) {
+    if (closed.has(row.project)) continue
+    const key = `${row.repo}\u0000${row.branch}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    targets.push({ repo: row.repo, branch: row.branch })
+  }
+  return targets.slice(0, MAX_LINK_TARGETS)
 }
 
 export function pruneSourceLinks(db: Database.Database, opts: { nowMs?: number } = {}): void {
@@ -802,7 +823,19 @@ export function listClosedProjects(db: Database.Database): ClosedProject[] {
 }
 
 // The EFFECTIVE closed set. Reopen is DERIVED, never written: a project stops
-// being closed the moment new CONTENT is created in it.
+// being closed as soon as new CONTENT is created in it STRICTLY AFTER the close.
+//
+// Strictly after, and the millisecond boundary is deliberate. Both stamps are
+// millisecond-resolution, so a close and a write can genuinely tie, and a tie
+// resolves in favour of the human's explicit act. `>=` is the worse trade in both
+// directions: closing a project in the same millisecond an item lands — the
+// ordinary flow, since you close a project *because* something just finished in
+// it — would leave it open, so the × click visibly does nothing and does nothing
+// again on every retry while an agent keeps writing. `>` costs one missed
+// un-close in a genuine tie, and the next write in any later millisecond undoes
+// it by itself. (Contrast sweepStale's deliberately INCLUSIVE `>=`, whose
+// inclusivity exists so MAX_AGE_MS=0 can mean "clear every backstop".)
+// test/store.test.ts pins the boundary in both directions on a frozen clock.
 //
 // WHY derived rather than deleting the row inside insertItem: insertItem is the
 // one path CLAUDE.md says must never lose a flag, and this way it gains no new

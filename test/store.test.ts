@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -856,6 +856,12 @@ describe('item session (liveness)', () => {
 // writes must sleep ≥2ms between the two, or both stamps can land in the same
 // millisecond and the write will not read as "after". Tests that write and THEN
 // close need no sleep — equal stamps correctly leave the project closed.
+//
+// Those sleeps AVOID the tie; the frozen-clock test below PINS it, in both
+// directions, so the choice of `>` over `>=` is a decision on the record rather
+// than an accident of wall-clock timing. (Executed: `>=` breaks the very first
+// test in this block — insert, then close in the same millisecond, and the
+// project never closes at all.)
 describe('project close / reopen (issue #32)', () => {
   let db: Database.Database
   beforeEach(() => { db = freshDb() })
@@ -922,6 +928,28 @@ describe('project close / reopen (issue #32)', () => {
     await tick()
     closeProject(db, 'dead')
     expect(closedProjects(db)).toEqual(['dead'])
+  })
+
+  // The 1ms boundary, pinned rather than left to the wall clock. Ties resolve in
+  // favour of the human's explicit act: `>=` would mean an agent writing in the
+  // very millisecond of the click makes the × visibly do nothing, and repeat on
+  // every retry while that agent keeps writing. `>` costs one missed un-close,
+  // which the next write (any later millisecond) undoes on its own.
+  it('an item created in the SAME millisecond as the close leaves it closed; one millisecond later reopens it', () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-07-26T12:00:00.000Z'))
+      closeProject(db, 'dead')
+      insertItem(db, { project: 'dead', stream: '', agent: 'a', kind: 'question', title: 'same tick' })
+      // the stamps really are byte-identical — otherwise this asserts nothing
+      expect(listItems(db)[0]!.created_at).toBe(listClosedProjects(db)[0]!.closed_at)
+      expect(closedProjects(db)).toEqual(['dead'])
+      vi.advanceTimersByTime(1)
+      insertItem(db, { project: 'dead', stream: '', agent: 'a', kind: 'question', title: 'one ms later' })
+      expect(closedProjects(db)).toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('closeProject is idempotent — one row per project, never a duplicate', () => {
@@ -1121,6 +1149,34 @@ describe('source links', () => {
     expect(targets.map((t) => t.branch)).not.toContain('')
     expect(targets.map((t) => t.branch)).not.toContain('b')
     expect(targets.map((t) => t.branch)).not.toContain('gone')
+  })
+
+  // #32 × #30: closing a project retires its branches from the poller. The closed
+  // set is DERIVED, so this must go through closedProjects() — reading closed_at
+  // directly would keep polling a project that has already un-closed itself.
+  it('drops a CLOSED project\'s branches, and picks them up again on either kind of reopen', async () => {
+    insertItem(db, { project: 'live', stream: 'a', agent: 'a', kind: 'question', title: 'q', repo: 'o/n' })
+    insertItem(db, { project: 'dead', stream: 'b', agent: 'a', kind: 'question', title: 'q', repo: 'o/n' })
+    expect(listLinkTargets(db).map((t) => t.branch)).toEqual(['a', 'b'])
+    closeProject(db, 'dead')
+    expect(listLinkTargets(db).map((t) => t.branch)).toEqual(['a'])
+    // the explicit reopen …
+    reopenProject(db, 'dead')
+    expect(listLinkTargets(db).map((t) => t.branch)).toEqual(['a', 'b'])
+    // … and the derived one: new content after closed_at
+    closeProject(db, 'dead')
+    expect(listLinkTargets(db).map((t) => t.branch)).toEqual(['a'])
+    await new Promise((r) => setTimeout(r, 5))
+    insertItem(db, { project: 'dead', stream: 'b', agent: 'a', kind: 'note', title: 'back', repo: 'o/n' })
+    expect(listLinkTargets(db).map((t) => t.branch)).toEqual(['a', 'b'])
+  })
+
+  it('keeps a branch a closed project shares with a live one, and drops an ACTIVE board\'s branch too', () => {
+    insertItem(db, { project: 'live', stream: 'shared', agent: 'a', kind: 'question', title: 'q', repo: 'o/n' })
+    insertItem(db, { project: 'dead', stream: 'shared', agent: 'a', kind: 'question', title: 'q', repo: 'o/n' })
+    upsertBoard(db, { project: 'dead', stream: 'board-br', agent: 'a', title: 'cov', rows: [{ label: 'a', status: 'tracked' }], repo: 'o/n' })
+    closeProject(db, 'dead')
+    expect(listLinkTargets(db)).toEqual([{ repo: 'o/n', branch: 'shared' }])
   })
 
   it('caps the target list so a huge inbox cannot turn into an unbounded gh fan-out', () => {

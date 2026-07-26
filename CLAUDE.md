@@ -114,8 +114,12 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   an un-exitable session), and `watch`'s **exit code 2** must reach the harness — it is the
   only thing that wakes the model, and its payload rides on **stderr**, so no wrapper may
   redirect either stream. Backstop items carry the *harness* session id, so they classify
-  `parked` and can never escalate a badge; `public/attention.js` is untouched. Full contract:
-  [`docs/hooks.md`](docs/hooks.md).
+  `parked` and can never escalate a badge; `public/attention.js` is untouched. **Test trap:**
+  `test/hook.test.ts`'s `freshEnv()` pins `AGENT_INBOX_HOOK_GRACE_MS=0` so the arm/commit pair can
+  be driven synchronously — which makes BOTH grace comparisons (the in-flight-committer guard and
+  the committer's own wait) unreachable, and each was invisible to the whole suite until a test
+  raised the window on purpose. Two do now; anything else about the window must too, or it asserts
+  nothing. Full contract: [`docs/hooks.md`](docs/hooks.md).
 
 ### DOM harness — what it can and cannot see
 
@@ -247,6 +251,13 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   rail's closed fold is where the number is RELOCATED, not destroyed. Live presence (footer strip and
   drawer) is untouched: presence is not attention. Clicking a closed project PEEKS (a banner above
   the panel says the badge excludes what you are looking at); only × / ↩ / a new flag mutate.
+  Closing also retires the project from #30's PR poller (`listLinkTargets` filters through
+  `closedProjects`, never the raw table, so a derived reopen resumes polling by itself) — a retired
+  project must not keep spawning `gh` every 60s nor keep eating the shared `MAX_PER_TICK` budget.
+  The reopen predicate is strict `>` **on purpose**: a close and a write can tie at the millisecond,
+  and the tie goes to the human's explicit act — `>=` would mean closing a project in the same
+  millisecond an item lands leaves it open, i.e. a × that visibly does nothing. Pinned on a frozen
+  clock in `test/store.test.ts`.
   **Honest limitation:** an agent already blocked on a question raised *before* the close creates
   nothing new while it polls `pending()`, so closing that project mutes a genuinely-live blocker
   until fresh content arrives. "Nothing can be permanently muted" is true of everything except that

@@ -12,6 +12,8 @@ import {
   recordLinkFailure,
   listSourceLinks,
   listLinkTargets,
+  closeProject,
+  reopenProject,
 } from '../src/store.js'
 import type { LinkTarget, SourceLink } from '../src/store.js'
 import {
@@ -57,6 +59,17 @@ describe('classifyChecks', () => {
     expect(classifyChecks(rollup)).toBe('failing')
   })
 
+  // Each conclusion pinned BY NAME. Narrowing FAILING_CONCLUSIONS to ['FAILURE']
+  // alone left all 43 tests in this file green, and under that mutation a rollup
+  // of [SUCCESS, TIMED_OUT] classified as `passing` — a green chip on a red PR.
+  it('every failing conclusion GitHub reports is red, not just FAILURE', () => {
+    for (const conclusion of ['FAILURE', 'TIMED_OUT', 'ACTION_REQUIRED', 'STARTUP_FAILURE', 'STALE']) {
+      expect(classifyChecks([run(conclusion)]), conclusion).toBe('failing')
+      // and worst-first still holds beside a green job
+      expect(classifyChecks([run('SUCCESS'), run(conclusion)]), `${conclusion} beside a SUCCESS`).toBe('failing')
+    }
+  })
+
   it('IN_PROGRESS with no failure is pending', () => {
     expect(classifyChecks([run('SUCCESS'), run('', 'IN_PROGRESS')])).toBe('pending')
     expect(classifyChecks([run('', 'QUEUED')])).toBe('pending')
@@ -75,9 +88,13 @@ describe('classifyChecks', () => {
     expect(classifyChecks('nonsense')).toBe('none')
   })
 
+  // the legacy commit-status side of the rollup, every branch of it named: ERROR
+  // and EXPECTED were as unpinned as the four conclusions above
   it('reads StatusContext state as well as CheckRun conclusion', () => {
     expect(classifyChecks([{ __typename: 'StatusContext', state: 'FAILURE' }])).toBe('failing')
+    expect(classifyChecks([{ __typename: 'StatusContext', state: 'ERROR' }])).toBe('failing')
     expect(classifyChecks([{ __typename: 'StatusContext', state: 'PENDING' }])).toBe('pending')
+    expect(classifyChecks([{ __typename: 'StatusContext', state: 'EXPECTED' }])).toBe('pending')
     expect(classifyChecks([{ __typename: 'StatusContext', state: 'SUCCESS' }])).toBe('passing')
   })
 
@@ -288,6 +305,45 @@ describe('refreshOnce', () => {
     await refreshOnce(db, { run: async () => { calls++; return '[]' }, nowMs: Date.now() + 86_400_000 })
     expect(calls).toBe(0)
     expect(listSourceLinks(db)[0]!.pr_number).toBe(41) // the cache row survives
+  })
+
+  // #32 × #30. Retiring a project has to stop the NETWORK work too: before this,
+  // a closed project kept spawning `gh pr list` every 60s and kept consuming the
+  // shared MAX_PER_TICK budget, diluting the refresh rate for projects still in
+  // use. Nobody owned the seam — #30 predates #32's table.
+  it('spends no gh call on a CLOSED project, and resumes the moment it reopens', async () => {
+    seedItem('30-x')
+    closeProject(db, 'p')
+    let calls = 0
+    const run = async (): Promise<string> => { calls++; return ghPayload() }
+    await refreshOnce(db, { run })
+    expect(calls).toBe(0)
+    expect(listSourceLinks(db)).toHaveLength(0)
+    reopenProject(db, 'p')
+    await refreshOnce(db, { run })
+    expect(calls).toBe(1)
+  })
+
+  // the reopen that matters most is the DERIVED one — the agent flags again and
+  // the project un-closes itself, with nobody writing a row
+  it('resumes polling a project a new flag implicitly reopened', async () => {
+    seedItem('30-x')
+    closeProject(db, 'p')
+    await new Promise((r) => setTimeout(r, 5)) // created_at must land AFTER closed_at
+    seedItem('30-y', 'raised after the close')
+    const calls: string[] = []
+    await refreshOnce(db, { run: async (_r, branch) => { calls.push(branch); return ghPayload() } })
+    expect(calls.sort()).toEqual(['30-x', '30-y'])
+  })
+
+  // a closed project must not drag a live one's branch down with it
+  it('keeps a branch a closed project SHARES with a live one', async () => {
+    seedItem('shared')
+    insertItem(db, { project: 'live', stream: 'shared', agent: 'a', kind: 'question', title: 'q', repo: 'o/n', issue_ref: 30 })
+    closeProject(db, 'p')
+    const calls: string[] = []
+    await refreshOnce(db, { run: async (_r, branch) => { calls.push(branch); return ghPayload() } })
+    expect(calls).toEqual(['shared'])
   })
 
   it('refreshes a branch an ACTIVE board sits on, not only items', async () => {

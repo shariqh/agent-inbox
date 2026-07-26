@@ -8,6 +8,7 @@ import {
   shouldBackstop, backoffMs, nudgeText, parseEvent, safeSegment, hookOpts,
   runHook, sweepStale, hooksSettingsBlock, SUBCOMMANDS,
 } from '../src/hook.js'
+import type { SessionMarker } from '../src/hook.js'
 import { openDb, insertItem, listItems, replyItem, markReplySeen, resolveItem } from '../src/store.js'
 import type { Item } from '../src/store.js'
 
@@ -95,6 +96,10 @@ describe('hook: options and parsing', () => {
     expect(d.cooldownMs).toBe(10 * 60_000)
     expect(d.maxPerSession).toBe(3)
     expect(d.maxAgeMs).toBe(24 * 60 * 60 * 1000)
+    // the grace window is the whole point of the two-phase backstop; a default of
+    // 0 would make every permission prompt an instant inbox row, and nothing else
+    // in this file would notice (freshEnv pins GRACE_MS=0 for the runtime tests)
+    expect(d.graceMs).toBe(90_000)
     expect(d.notifyTypes).toEqual(['permission_prompt']) // idle_prompt is deliberately OFF
     const o = hookOpts({
       AGENT_INBOX_HOOK_RECENT_MS: '1',
@@ -159,6 +164,12 @@ describe('hook: options and parsing', () => {
 
 // ── everything below drives the real runtime against a real temp SQLite db ──
 
+// GRACE_MS=0 collapses the two-phase backstop into one step so the arm/commit
+// pair can be driven synchronously. The cost is that BOTH of the runtime's grace
+// comparisons — the in-flight-committer guard and the committer's own wait — are
+// unreachable under this default, so anything that depends on the window must
+// override it. The two tests that do are marked as such below; do not add a third
+// grace assertion that quietly inherits the 0.
 function freshEnv(extra: Record<string, string> = {}): { env: Record<string, string>; dbPath: string } {
   const dbPath = join(mkdtempSync(join(tmpdir(), 'hook-')), 'inbox.db')
   openDb(dbPath).close() // the runtime deliberately no-ops until the db exists
@@ -282,6 +293,46 @@ describe('hook: notification backstop (#10)', () => {
     // the human answered: the session took its next step, which clears the arming
     await runHook(['prompt-submit'], ev(), env)
     await runHook(['notification-commit'], ev(), env)
+    expect(listItems(openDb(dbPath))).toHaveLength(0)
+  })
+
+  // ── the two assertions that need a REALISTIC grace window ─────────────────
+  // freshEnv pins GRACE_MS=0 file-wide (see the note there), which makes both of
+  // the runtime's grace comparisons unreachable: delete either one and all 79
+  // other tests here stay green. Both are load-bearing, so both are driven at a
+  // window a human could actually answer inside.
+
+  // Without the in-flight guard, every prompt re-arms — the committer's deadline
+  // (pendingPromptAt + graceMs) is pushed forward on each one, so a prompt stream
+  // more frequent than the 90s default means the backstop NEVER fires. That is
+  // precisely the failure #10 exists to prevent, and it is invisible in the db:
+  // nothing is written either way, so only the marker can witness it.
+  it('a second prompt inside the grace window does NOT push the committer deadline out', async () => {
+    const { env, dbPath } = freshEnv({ AGENT_INBOX_HOOK_GRACE_MS: '60000' })
+    const armedAt = (): number | null | undefined =>
+      (JSON.parse(readFileSync(join(dirname(dbPath), 'hook-state', 'S1.json'), 'utf8')) as SessionMarker).pendingPromptAt
+    await runHook(['notification'], ev(), env)
+    const first = armedAt()!
+    expect(first).toBeGreaterThan(0)
+    for (let i = 0; i < 3; i++) {
+      await new Promise((r) => setTimeout(r, 30)) // a real gap, so a re-arm would be visible
+      await runHook(['notification'], ev(), env)
+      expect(armedAt(), `prompt ${i + 2} moved the deadline`).toBe(first)
+    }
+    expect(listItems(openDb(dbPath))).toHaveLength(0) // still armed, still uncommitted
+  })
+
+  // The other half: the committer must SLEEP OUT the window rather than decide at
+  // the instant it starts. Deciding immediately would give an ordinary prompt the
+  // human answers in twenty seconds an inbox row — and, in the packaged app, a
+  // desktop notification that cannot be withdrawn.
+  it('the committer waits out the grace window instead of deciding the moment it starts', async () => {
+    const { env, dbPath } = freshEnv({ AGENT_INBOX_HOOK_GRACE_MS: '400' })
+    await runHook(['notification'], ev(), env)
+    const commit = runHook(['notification-commit'], ev(), env) // starts its wait now
+    // the human answers 100ms in: the session's next step disarms the marker
+    setTimeout(() => { void runHook(['prompt-submit'], ev(), env) }, 100)
+    expect(await commit).toEqual({ stdout: '' })
     expect(listItems(openDb(dbPath))).toHaveLength(0)
   })
 

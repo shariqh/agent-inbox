@@ -140,7 +140,7 @@ describe('safeHttpUrl', () => {
   })
 
   it('refuses a leading-whitespace or control-character smuggle', () => {
-    expect(safeHttpUrl('javascript:alert(1)')).toBe('')
+    expect(safeHttpUrl('\u0001javascript:alert(1)')).toBe('')
     expect(safeHttpUrl('  javascript:alert(1)')).toBe('')
     expect(safeHttpUrl('\n\tjavascript:alert(1)')).toBe('')
     expect(safeHttpUrl('java\nscript:alert(1)')).toBe('')

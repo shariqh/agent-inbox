@@ -321,8 +321,22 @@ describe('the gh subprocess contract', () => {
   it('never inherits a stdio stream — execFile pipes by construction, and nothing overrides it', () => {
     expect(src).not.toContain("'inherit'")
     expect(src).not.toContain('"inherit"')
-    // if this ever switches to spawn it MUST capture, like src/infer.ts's git()
-    if (src.includes('spawn(')) expect(src).toContain("stdio: ['ignore', 'pipe', 'ignore']")
+  })
+
+  // The other half of the same invariant, and previously the hole in it: this used
+  // to read `if (src.includes('spawn(')) expect(...)`. Because prstate.ts has never
+  // contained `spawn(`, that branch never executed — the file was pinned against
+  // 'inherit' only, while the contract it documents is "no subprocess may inherit
+  // stdout". spawn() is the construct that makes inheriting easy (stdio defaults
+  // are per-call and easy to widen by accident), so it is pinned OUT of the file
+  // outright rather than pinned conditionally.
+  //
+  // If prstate ever genuinely needs spawn, this assertion is the thing that forces
+  // the change to be deliberate: replace it with the capture form src/infer.ts's
+  // git() uses — stdio: ['ignore', 'pipe', 'ignore'] — and say so here.
+  it('shells out through execFile ONLY — no spawn( anywhere in the file', () => {
+    expect(src).not.toContain('spawn(')
+    expect(src).toContain('execFile')
   })
 
   it('passes -R and --head so the fetch never depends on the viewer\'s cwd', () => {

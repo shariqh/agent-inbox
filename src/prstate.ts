@@ -190,7 +190,7 @@ function ttlFor(link: SourceLink): number {
   return TTL.openPr
 }
 
-const keyOf = (repo: string, branch: string): string => `${repo} ${branch}`
+const keyOf = (repo: string, branch: string): string => `${repo}\u0000${branch}`
 
 // Pure: everything it needs already came out of store.ts. A branch with no cache
 // row is due immediately and sorts first, so a newly-flagged item lights up on

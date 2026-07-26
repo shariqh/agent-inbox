@@ -4,8 +4,26 @@
 // test can see: WHICH shared predicate each call site feeds, and that there is
 // exactly one of them (tenet 3).
 // The BEHAVIOURAL half now runs for real against jsdom in
-// test/dom/render-agreement.test.ts (I1–I4) and test/dom/toggle-row.test.ts (I5) —
-// all five verified to fail on 4f12144^. Keep both; they cover different things.
+// test/dom/render-agreement.test.ts (I1–I4) and test/dom/toggle-row.test.ts (I5).
+// That is five FINDINGS but SIX tests — I2 has two, one per empty state — so a
+// count of "five" over there is a count of tests that does not exist.
+//
+// DISCRIMINATION, re-verified by reverting each hunk on THIS tree one at a time
+// (the older "all five verified to fail on 4f12144^" was a claim about a tree six
+// commits behind, which is not the same statement):
+//   I1  buildDeck AND findEntryData put back on their own predicate → 1 red,
+//       "expected '1 of 1' to be 'all clear'". buildDeck ALONE → 0 red: the
+//       re-validation in findEntryData catches it, so both halves are load-bearing.
+//   I2  the `!rest.length` guard removed          → 1 red, "claimed 'no boards' above
+//                                                  the fold holding the match"
+//       the `!stale.length` guard removed        → 1 red, "denied a match the stale
+//                                                  fold is holding"
+//   I3  markNotesSeen back to an unconditional now() → 4 red across
+//       render-agreement + issue-31, incl. the watermark stamp itself
+//   I4  repliedEntries narrowed back to the strict awaiting-pickup subset → 1 red,
+//       "expected [] to deeply equal [ 'ship it?' ]"
+//   I5  `keepalive: true` removed                → 1 red, "expected undefined to be true"
+// Keep both files; they cover different things.
 // The parts that could be lifted into pure functions were: reconcileOpenRow
 // (test/poll.test.ts), seenWatermark (test/notes.test.ts), repliedEntries
 // (test/rowview.test.ts) and isAskingQuestion (test/attention.test.ts) carry real

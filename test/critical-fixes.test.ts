@@ -6,8 +6,30 @@
 // setOpenRow stays the single writer of openRowId. Those are the properties that
 // stop the bug class from coming back.
 // The BEHAVIOURAL half now runs for real against jsdom in
-// test/dom/focus-item.test.ts (C1) and test/dom/toggle-row.test.ts (C2/C3/C4) —
-// all four verified to fail on 21b16d0^. Keep both; they cover different things.
+// test/dom/focus-item.test.ts (C1) and test/dom/toggle-row.test.ts (C2/C3/C4).
+//
+// DISCRIMINATION, stated exactly. This comment used to read "all four verified to
+// fail on 21b16d0^", which was true as a FAILURE COUNT and false as a claim about
+// the tests: the C2 test as first written passed with the C2 hunk reverted on
+// HEAD, so its red on the old tree came from unrelated pre-fix code. Re-verified
+// here by reverting each hunk on THIS tree, one at a time, and reading the
+// failure message:
+//   C1  render()'s reconcileOpenRow removed        → 1 red, "expected [ 'beta question' ]
+//                                                    to deeply equal [ …, 'beta second' ]"
+//       + focusItem's needsYouRowEl guard removed  → 3 red, the deep-linked poll frozen
+//       focusItem's guard removed ALONE            → 0 red: layer 2 covers it at runtime,
+//                                                    and the C1-layer-1 pin below is the
+//                                                    only thing holding that guard in place
+//   C2  prefill moved back above the POST          → 1 red, #pauseHint reads "paused —
+//                                                    updating when you're done" after a
+//                                                    REFUSED change-answer (the orphan)
+//   C3  drafts deleted before the POST             → 1 red, the inline write-error slot
+//                                                    stays hidden
+//   C4  the `res.ok` check removed                 → 2 red, #status stays '' instead of
+//                                                    "write failed (500)" (C3's test rides
+//                                                    on postJSON returning null, so it goes
+//                                                    with it)
+// Keep both files; they cover different things — C1 layer 1 is the proof of that.
 // The parts that could be lifted into pure functions were: reconcileOpenRow
 // (test/poll.test.ts), seenWatermark (test/notes.test.ts), repliedEntries
 // (test/rowview.test.ts) and isAskingQuestion (test/attention.test.ts) carry real

@@ -129,11 +129,24 @@ describe('C3 · a failed write must not discard the typed answer', () => {
   })
 })
 
+// The reply CONTEXT in these fixtures is load-bearing, not decoration — without it
+// the refusal test below passes on the pre-fix tree too, which is exactly how the
+// first version of it shipped as a non-discriminating test.
+//
+// `suspendState()` merges draftReplies, draftReplyContexts and rowDrafts into ONE
+// object keyed by id. changeAnswer writes BOTH maps under the same item id, so with
+// an empty reply_context the later spread parks `''` over the reply draft and the
+// merged view reads blank: the orphan exists in module state but suspends nothing.
+// Give the answer a context and the pre-fix orphan is non-empty, which is the C2
+// freeze as the commit describes it.
+const ANSWER = 'yes'
+const ANSWER_CONTEXT = 'because CI is green on the release branch'
+
 describe('C2 · a REFUSED change-answer must not freeze the viewer', () => {
-  it('leaves no orphaned draft, so the poll keeps landing new work', async () => {
+  it('writes no draft at all, so nothing suspends a poll that no input could un-suspend', async () => {
     const d = open()
     const id = insertItem(d, { ...AGENT, kind: 'question', title: 'ship it?' })
-    replyItem(d, id, 'yes')
+    replyItem(d, id, ANSWER, ANSWER_CONTEXT)
     advanceClock()
     markReplySeen(d, id) // the store will now legitimately refuse a blank-out: 200 + {ok:false}
     await bootApp(d)
@@ -147,17 +160,51 @@ describe('C2 · a REFUSED change-answer must not freeze the viewer', () => {
     click(buttonLabelled('Change answer', row(id)!))
     await settle()
 
-    expect(document.querySelector('.refusal-msg')?.textContent?.trim()).not.toBe('')
-    expect(listItems(d)[0]?.reply, 'the picked-up answer must survive the refusal').toBe('yes')
+    // `?.textContent` on a missing node is undefined, and `expect(undefined).not.toBe('')`
+    // passes — so match the copy instead of asserting "not empty".
+    expect(document.querySelector('.refusal-msg')?.textContent ?? '').toMatch(/Picked up/)
+    expect(listItems(d)[0]?.reply, 'the picked-up answer must survive the refusal').toBe(ANSWER)
 
-    click(row(id)) // collapse
+    click(row(id)) // collapse: openRowId is null, so a draft is the ONLY suspend reason left
     await settle()
 
     advanceClock()
     insertItem(d, { ...AGENT, kind: 'question', title: 'SECOND question' })
     await pollTick()
 
+    // The orphan named directly, in the two halves that make it an orphan:
+    // the refusal built no answer surface, so there is no input anywhere that
+    // could hold or clear a draft…
+    expect(document.querySelectorAll('.reply-input').length,
+      'a refused change-answer leaves the item answered, so no answer surface is built').toBe(0)
+    // …and #pauseHint is the app's own report of suspendReason(). Pre-fix this reads
+    // "paused — updating when you're done" forever: a viewer paused on a draft with
+    // no home. THIS is the assertion that discriminates the C2 hunk.
+    expect(document.getElementById('pauseHint')?.textContent,
+      'the refusal must leave nothing behind that suspends the poll').toBe('')
+    // and the human-visible consequence of that freeze
     expect(rowTitles()).toContain('SECOND question')
     expect(rows().length).toBe(2)
+  })
+
+  // The other direction. This does NOT discriminate commit 21b16d0 — both trees
+  // write the prefill on the accepted path, only the ORDER differs — it is here so
+  // that "fixing" C2 by deleting the prefill outright cannot pass.
+  it('an ACCEPTED change-answer brings the answer surface back holding the old reply', async () => {
+    const d = open()
+    const id = insertItem(d, { ...AGENT, kind: 'question', title: 'ship it?' })
+    replyItem(d, id, ANSWER, ANSWER_CONTEXT) // never picked up → the blank-out is allowed
+    await bootApp(d)
+
+    click(row(id))
+    await settle()
+    click(buttonLabelled('Change answer', row(id)!))
+    await settle()
+
+    expect(listItems(d)[0]?.reply, 'the blank-out landed').toBeNull()
+    expect(document.querySelector('.refusal-msg')?.textContent ?? '').toBe('')
+    expect(answerInput(id)?.value, 'the answer comes back prefilled with what it was').toBe(ANSWER)
+    expect(document.querySelector<HTMLInputElement>(`.nrow[data-card-id="${id}"] .reply-context-input`)?.value)
+      .toBe(ANSWER_CONTEXT)
   })
 })

@@ -2,7 +2,12 @@
 // test/dom/issue-31.test.ts
 // The three USER-VISIBLE follow-ups from the final review of the glanceable-viewer
 // rebuild (GitHub issue #31), driven through the real viewer instead of pinned as
-// source text. All three were verified to fail on the pre-fix tree.
+// source text. Three FINDINGS, eight tests — the counts are not interchangeable.
+//
+// Discrimination re-verified by reverting each fix on this tree, one at a time:
+// 31.1 (setOpenRow + forceRender) → 3 red, "the answer surface never came back";
+// 31.2 (the per-id seen set) → 3 red, "expected '6' to be '1'"; 31.3 (the pointer
+// branch) → 1 red, "the tab went completely silent about where the match is".
 //
 //   31.1 — "Change answer" accepted by the server staged a prefill draft and then
 //          called load(), whose renderIfIdle() is GUARANTEED to skip: the draft it
@@ -162,14 +167,23 @@ describe('31.2 · the Notes count must come down once you have looked', () => {
     await bootApp(d)
     click(document.querySelector('.tab[data-tab="notes"]'))
     await pollTick()
-    expect(tabCount('notes')).toBe('1')
+    expect(tabCount('notes')).toBe('1') // note 0, the one the pager kept hidden
+
+    // Leave the tab BEFORE the new note lands. Read-marking is gated on
+    // `activeTab === 'notes'`, so with Notes still open the new note renders and
+    // the same tick marks it seen — the count would honestly stay at 1 and this
+    // test would prove nothing about a new note counting. (That is exactly what
+    // the first version asserted: `< 6`, which also passes at 0.)
+    click(document.querySelector('.tab[data-tab="needsYou"]'))
+    await settle()
 
     advanceClock()
     insertItem(d, { ...AGENT, kind: 'note', title: 'brand new' })
     await pollTick()
-    // the new note renders (it is newest), so the same tick marks it seen again —
-    // what matters is that the count moved, i.e. it is not monotonic any more.
-    expect(Number(tabCount('notes') || '0')).toBeLessThan(6)
+
+    // 2 = the pager-hidden note 0 + the brand new one. The per-id seen set must
+    // suppress the five already looked at and nothing more.
+    expect(tabCount('notes'), 'a note that arrived after you looked away is new').toBe('2')
   })
 })
 

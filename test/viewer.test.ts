@@ -40,6 +40,28 @@ describe('viewer api', () => {
     expect(body.dbPath).toContain('.agent-inbox')
   })
 
+  it('GET /api/setup carries a hand-mergeable backstop-hooks block (#10 / #21)', async () => {
+    const body = await (await createViewer(db).request('/api/setup')).json()
+    expect(typeof body.hooksSettings).toBe('string')
+    const parsed = JSON.parse(body.hooksSettings)
+    expect(Object.keys(parsed.hooks).sort()).toEqual(
+      ['Notification', 'SessionEnd', 'SessionStart', 'Stop', 'UserPromptSubmit'],
+    )
+    // exec form: no shell tokenisation, so a repo path with a quote or a $ is safe
+    expect(parsed.hooks.Notification[0].hooks[0].args[0]).toMatch(/dist\/hook-cli\.js$/)
+    expect(parsed.hooks.Notification[0].hooks[0].command.startsWith('/')).toBe(true)
+    // no matcher: the CLI's Notification matcher matches notification_type, and
+    // AGENT_INBOX_HOOK_NOTIFY_TYPES is the single gate (docs/hooks.md)
+    expect(parsed.hooks.Notification[0].matcher).toBeUndefined()
+    expect(parsed.hooks.SessionStart[0].matcher).toBe('startup|resume')
+    // Stop carries BOTH halves of #21: the synchronous bounce and the watcher
+    expect(parsed.hooks.Stop[0].hooks).toHaveLength(2)
+    expect(parsed.hooks.Stop[0].hooks.map((h: { args: string[] }) => h.args[1])).toEqual(['stop', 'watch'])
+    expect(parsed.hooks.Stop[0].hooks[1].asyncRewake).toBe(true)
+    // the panel cannot run selftest, so it must say so rather than imply safety
+    expect(body.hooksNote).toContain('install:hooks')
+  })
+
   it('GET /api/activity returns live sessions with children', async () => {
     upsertActivity(db, { session: 's1', project: 'p', stream: 'main', agent: 'claude-code', doing: 'reviewing', children: [{ name: 'kid', doing: 'grep' }] })
     const res = await createViewer(db).request('/api/activity')

@@ -17,7 +17,9 @@ Call `flag` when:
   steps: it returns your open questions with `reply` once answered (an option label or
   free text — follow it either way), plus optional `reply_context` when they attach extra
   direction with their answer; act on both, then call `resolve`. Do
-  not park forever waiting in the terminal.
+  not park forever waiting in the terminal. If you end a turn with a question still
+  open, say so in chat ("I'll pick your answer up next time you message me") and call
+  `pending()` first thing on your next turn, so they know the contract.
   **One question, two channels.** A flagged question IS the question you are asking in
   chat — never open a second, independent prompt for a decision you already flagged; point
   at the flag instead. If they answer you in chat, call `answer({ id, text, context? })` so

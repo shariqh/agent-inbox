@@ -71,6 +71,16 @@ describe('classifyLiveness', () => {
   it('accepts an array of session ids as well as a Set', () => {
     expect(classifyLiveness(item('a', { session: 's1' }), NOW, ['s1'])).toBe('waiting')
   })
+  // Documentation of intent for the #10 backstop, not a new mechanism: hook
+  // items carry a Claude Code HARNESS session id, and `activity.session` only
+  // ever holds a randomUUID minted by the MCP server. The join therefore always
+  // misses, which is exactly what keeps a backstop parked (and so unable to
+  // escalate a rail badge) however long the terminal stays blocked.
+  it('a hook backstop, whose session id is from the harness id space, is parked', () => {
+    const harness = item('h', { session: 'a1b2c3d4-claude-code-session', created_at: new Date(NOW - ESCALATE_MS * 6).toISOString() })
+    expect(classifyLiveness(harness, NOW, new Set(['mcp-uuid-1', 'mcp-uuid-2']))).toBe('parked')
+    expect(countsByProject([harness], [], NOW, new Set(['mcp-uuid-1']))).toEqual(new Map([['api', { total: 1, escalated: 0 }]]))
+  })
 })
 
 describe('isBlockedRowAttention', () => {

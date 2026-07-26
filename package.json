@@ -8,12 +8,15 @@
     "node": ">=24"
   },
   "bin": {
-    "agent-inbox-mcp": "./dist/mcp-server.js"
+    "agent-inbox-mcp": "./dist/mcp-server.js",
+    "agent-inbox-hook": "./dist/hook-cli.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "mcp": "tsx src/mcp-server.ts",
     "view": "tsx src/viewer-server.ts",
+    "hook": "tsx src/hook-cli.ts",
+    "install:hooks": "bash scripts/install-hooks.sh",
     "electron": "electron .",
     "test": "vitest run",
     "test:watch": "vitest",

@@ -55,6 +55,9 @@ claude mcp add --scope user agent-inbox -- /path/to/node24 /abs/path/to/agent-in
 npm run view                      # http://localhost:4319 — leave running
 ```
 
+Optionally add the backstop hooks — `npm run install:hooks` (a dry run; `-- --apply` writes),
+see [`docs/hooks.md`](docs/hooks.md).
+
 Then paste [`docs/reporting-snippet.md`](docs/reporting-snippet.md) into your global agent
 instructions (`~/.claude/CLAUDE.md` + Copilot's global instructions) so agents know *when*
 to flag. That snippet is the single lever for signal quality — tune it as you watch your
@@ -90,8 +93,11 @@ src/
   group.ts         pure grouping (Needs-you / Notes / Done)
   viewer.ts        Hono API (GET /api/items, POST resolve/dismiss/annotate)
   viewer-server.ts node entry — serves API + public/ on localhost
+  hook.ts          Claude Code hooks runtime (#10 backstop + #21 pickup nudges)
+  hook-cli.ts      hook entry — one subcommand per event; fail-open, exit-code owner
 public/            plain HTML/CSS/JS front-end (no bundler → wraps to Electron unchanged)
-docs/              INSTALL.md, reporting-snippet.md, superpowers/{specs,plans}/
+hooks/             portable shell wrapper for hand-edited hook registrations
+docs/              INSTALL.md, hooks.md, reporting-snippet.md, superpowers/{specs,plans}/
 ```
 
 ## Development

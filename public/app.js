@@ -2014,6 +2014,9 @@ async function renderSetup() {
     block('1b · Copilot CLI — merge into ~/.copilot/mcp-config.json', s.copilotConfig)
     block('2 · Teach agents when to flag — paste into your global instructions (e.g. ~/.claude/CLAUDE.md)', s.snippet,
       'This snippet is the signal-quality lever: it tells agents when to raise questions/notes, attach options, poll for your replies, and keep boards.')
+    if (s.hooksSettings) {
+      block('3 · Optional: backstop hooks — merge into ~/.claude/settings.json', s.hooksSettings, s.hooksNote)
+    }
     const db = document.createElement('p')
     db.className = 'setup-hint'
     db.textContent = `Everything lands in ${s.dbPath} — any viewer (browser tab, app) reads the same file.`

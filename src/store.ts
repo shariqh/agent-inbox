@@ -23,8 +23,19 @@ export interface Item {
   project: string
   stream: string
   agent: string
-  // the MCP session that raised this item — lets the viewer tell whether the
-  // asking agent is still alive (null on legacy rows and non-agent inserts)
+  // The agent session that raised this item — lets the viewer tell whether the
+  // asking agent is still alive (null on legacy rows and non-agent inserts).
+  //
+  // TWO ID SPACES LIVE IN THIS COLUMN. Normally it is an MCP session id (a
+  // randomUUID minted in src/mcp.ts), which is also what `activity.session`
+  // holds, so classifyLiveness can join them. A backstop item written by the
+  // hooks runtime (src/hook.ts, issue #10) instead carries the *harness*
+  // (Claude Code) session id, which is never in the activity table — so the
+  // join misses and the item classifies 'parked', never 'waiting'. That
+  // degradation is deliberate and load-bearing: a hook item can therefore never
+  // masquerade as a live blocked agent or escalate a rail badge to red. Any
+  // future code that joins this column against `activity` must know both
+  // spaces are here.
   session: string | null
   kind: Kind
   title: string

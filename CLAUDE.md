@@ -25,6 +25,8 @@ npm run typecheck   # tsc --noEmit (strict; noUncheckedIndexedAccess)
 npm run build       # tsc -p tsconfig.build.json → dist/ (entry: dist/mcp-server.js)
 npm run mcp         # run the MCP stdio server via tsx (local iteration)
 npm run view        # run the viewer on localhost:4319 via tsx
+npm run install:hooks           # DRY RUN of the opt-in backstop hooks installer (docs/hooks.md)
+npm run install:hooks -- --apply    # …and actually write ~/.claude/settings.json
 npx vitest run test/mcp.integration.test.ts   # single file
 npx vitest run test/dom/                      # the jsdom viewer tests only
 ```
@@ -84,6 +86,21 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   `BoardWithRows` shapes are the contract shared by MCP writes/reads and viewer reads.
   Change them in `store.ts` and update both consumers (+ `group.ts` for items;
   `public/app.js` renders both).
+
+- **The hooks runtime is a SECOND OS process on the same db — and it still goes through
+  `store.ts`.** `src/hook.ts` (+ the `src/hook-cli.ts` entry) is spawned by Claude Code, not
+  by an MCP session, and writes backstop items with `insertItem`/`resolveItem` like everything
+  else: **no CLI shell-out, no raw SQL** (the untracked shell hooks it replaces did exactly
+  that; `test/hook.test.ts` now pins the absence). Its stdout rule is the inverse of the MCP
+  server's: not "write nothing" but **"write EXACTLY the documented payload"** —
+  `notification`/`session-end`/`sweep`/`watch` emit zero bytes, `prompt-submit` and `stop`
+  exactly one JSON object, `session-start` one line of text. Two things are non-negotiable:
+  `stop` must never block when `stop_hook_active` is true (a double block traps the human in
+  an un-exitable session), and `watch`'s **exit code 2** must reach the harness — it is the
+  only thing that wakes the model, and its payload rides on **stderr**, so no wrapper may
+  redirect either stream. Backstop items carry the *harness* session id, so they classify
+  `parked` and can never escalate a badge; `public/attention.js` is untouched. Full contract:
+  [`docs/hooks.md`](docs/hooks.md).
 
 ### DOM harness — what it can and cannot see
 
@@ -187,6 +204,14 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   the issue's original "timestamp-based last write wins". Known limitation, worth a follow-up:
   once a chat answer lands, `reply_seen_at` is set, so the card's "Change answer" (a
   blank-clear) is refused and the human cannot re-answer that item from the viewer.
+- **Backstop hooks** *(#10 + #21)* — `src/hook.ts` + `src/hook-cli.ts`, installed opt-in by
+  `scripts/install-hooks.sh` (dry-run by default). #10: a `Notification` hook arms a
+  grace-windowed backstop item when a session is stuck at a permission prompt; it is
+  self-clearing, rate-limited and janitored, so the badge stays trustworthy. #21: `stop`,
+  `prompt-submit` and `session-start` nudge an idle agent to call `pending()`, and the
+  `watch` subcommand (asyncRewake, exit 2) wakes it the moment you answer. The two legacy
+  untracked `~/.claude/hooks/agent-inbox-*.sh` scripts are superseded — `--migrate` retires
+  their settings entries.
 - **The agent-emit contract** — `docs/reporting-snippet.md`'s end-of-turn rule now tests "am I about
   to stop and wait on the human?", so recommendations and "say the word" moments get flagged
   instead of buried. Mirrored in the `flag` tool description so agents get it at the call site.
@@ -198,11 +223,6 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   on the viewer). `register` is the identity seam: a remote server can't see the client's `cwd`, so
   agents declare scope via `register` instead of auto-inference. `AGENT_INBOX_DB`/`AGENT_INBOX_PORT`
   env overrides are already in place.
-- **Forgotten-flag backstop** *(#10)* — deterministic (no-AI) hooks that insert an item when a
-  session stalls or ends without flagging, so the human is pinged even when the agent forgets.
-  Pure shell→store (or shell→HTTP once (#8) lands). Must fail open.
-- **Idle-agent polling gap** *(#21)* — an agent idle at the prompt never calls `pending()`, so a
-  human's reply can sit at "waiting for pickup". Overlaps #10's hook territory.
 - **Source + PR links** *(#30)* — infer the issue/PR from git + `gh` (a PR belongs to a branch, and
   `stream` already *is* the branch), refresh PR state from the local `gh` CLI **in the viewer
   process**, and show it as a chip. No model calls — the TL;DR is the PR title or an agent-supplied

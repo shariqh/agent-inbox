@@ -39,11 +39,14 @@ ENTRY="${AGENT_INBOX_HOOK_ENTRY:-$ROOT/dist/hook-cli.js}"
 # into settings.json, so the hooks cannot be spawned under a Node whose ABI
 # better-sqlite3 was not built for.
 #
-# `fnm which` and a PATH lookup both hand back an EPHEMERAL
+# A PATH lookup inside an fnm shell hands back an EPHEMERAL
 # ~/.local/state/fnm_multishells/<pid>_<ts>/bin/node path that vanishes when
 # that shell exits. Baking one into settings.json breaks every hook the next
 # day, silently. `cd $(dirname) && pwd -P` resolves it to the stable
-# node-versions installation path.
+# node-versions installation path. (The wrapper, hooks/agent-inbox-hook.sh,
+# deliberately does NOT do this: it re-resolves and execs in one breath, so an
+# ephemeral path is valid for as long as it is used. Only a path we PERSIST
+# needs to be stable.)
 stable_path() {
   [ -n "${1:-}" ] || return 0
   echo "$(cd "$(dirname "$1")" 2>/dev/null && pwd -P)/$(basename "$1")"
@@ -52,7 +55,11 @@ stable_path() {
 resolve_node() {
   if [ -n "${AGENT_INBOX_NODE:-}" ] && [ -x "${AGENT_INBOX_NODE}" ]; then stable_path "$AGENT_INBOX_NODE"; return; fi
   if command -v fnm >/dev/null 2>&1 && [ -r "$ROOT/.node-version" ]; then
-    n="$(fnm which "$(cat "$ROOT/.node-version")" 2>/dev/null || true)"
+    # NOT `fnm which` — no such subcommand exists (fnm 1.39 answers
+    # "error: unrecognized subcommand 'which'"), so this branch used to yield
+    # empty on every box and fall through to the PATH lookup, quietly defeating
+    # the whole point of reading .node-version.
+    n="$(fnm exec --using="$(cat "$ROOT/.node-version")" -- sh -c 'command -v node' 2>/dev/null || true)"
     if [ -n "$n" ] && [ -x "$n" ]; then stable_path "$n"; return; fi
   fi
   for candidate in "$HOME"/.local/share/fnm/node-versions/v24.*/installation/bin/node; do

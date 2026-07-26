@@ -12,7 +12,7 @@ npm install && npm run build
 claude mcp add --scope user agent-inbox -- node /ABSOLUTE/PATH/TO/agent-inbox/dist/mcp-server.js
 ```
 
-> **Node 24 required.** `better-sqlite3`'s native binding does not build/load under Node 26+, so the server must be spawned with Node 24. If your default `node` is newer, register the **absolute path to your Node 24 binary** instead of bare `node`, e.g. `$(fnm which 24 2>/dev/null || echo ~/.local/share/fnm/node-versions/v24.*/installation/bin/node)`.
+> **Node 24 required.** `better-sqlite3`'s native binding does not build/load under Node 26+, so the server must be spawned with Node 24. If your default `node` is newer, register the **absolute path to your Node 24 binary** instead of bare `node`, e.g. `$(fnm exec --using=24 -- node -p process.execPath 2>/dev/null || echo ~/.local/share/fnm/node-versions/v24.*/installation/bin/node)`. (There is no `fnm which` — fnm answers `unrecognized subcommand 'which'`, so that form silently falls through to the glob.)
 
 **Copilot CLI:** add to its global MCP config (`~/.copilot/mcp-config.json`):
 ```json

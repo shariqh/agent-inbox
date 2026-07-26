@@ -31,11 +31,12 @@ export interface Item {
   // holds, so classifyLiveness can join them. A backstop item written by the
   // hooks runtime (src/hook.ts, issue #10) instead carries the *harness*
   // (Claude Code) session id, which is never in the activity table — so the
-  // join misses and the item classifies 'parked', never 'waiting'. That
-  // degradation is deliberate and load-bearing: a hook item can therefore never
-  // masquerade as a live blocked agent or escalate a rail badge to red. Any
-  // future code that joins this column against `activity` must know both
-  // spaces are here.
+  // join always misses and the item can never classify 'waiting'. It gets
+  // 'parked', and 'stale' once older than STALE_MS (72h); both are
+  // non-escalating, which is the point. That degradation is deliberate and
+  // load-bearing: a hook item can therefore never masquerade as a live blocked
+  // agent or escalate a rail badge to red. Any future code that joins this
+  // column against `activity` must know both spaces are here.
   session: string | null
   kind: Kind
   title: string

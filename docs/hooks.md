@@ -59,7 +59,7 @@ cannot exit.
 `watch` writes its payload to **stderr** and exits 2, which is what
 `asyncRewake` turns into a model wake-up. Any wrapper around the CLI must
 therefore leave *both* streams alone — `hooks/agent-inbox-hook.sh` redirects
-neither, and forwards the child's status with `exit $?`.
+neither. It does **not** forward the status blindly, though; see below.
 
 ## The stdin payloads
 
@@ -100,10 +100,13 @@ It is an ordinary `items` row — `kind: "question"`, `agent: "hook"`,
 set through the same predicate as everything else; `public/attention.js` is not
 modified and no second predicate exists anywhere in this runtime.
 
-It classifies as **parked**, never **waiting**: `activity.session` only ever
-holds a `randomUUID()` minted by the MCP server, so a harness id can never be
-in `liveSessionIds`. A backstop therefore **cannot escalate a rail badge to
-red**, however old it gets.
+It **never classifies as `waiting`**: `activity.session` only ever holds a
+`randomUUID()` minted by the MCP server, so a harness id can never be in
+`liveSessionIds` and the join always misses. `classifyLiveness` therefore
+returns `parked` for it, and `stale` once it is older than `STALE_MS` (72h) —
+never `parked` indefinitely. Both are non-escalating, so the conclusion is
+stronger than "parked forever", not weaker: a backstop **cannot escalate a rail
+badge to red**, however old it gets.
 
 **It is self-clearing, and that is the load-bearing part.** A backstop that
 cannot stop nagging is exactly what the viewer rebuild was designed against
@@ -134,14 +137,23 @@ cannot stop nagging is exactly what the viewer rebuild was designed against
    backstop first. Another session's backstop and any agent-authored question
    are never touched.
 7. **A 24h janitor.** `AGENT_INBOX_HOOK_MAX_AGE_MS` (24h) sweeps orphans left by
-   a session that died without another event. It runs on every invocation.
+   a session that died without another event. It runs from every subcommand that
+   opens the database for session work — `notification`, `notification-commit`,
+   `stop`, `session-start`, `session-end`, `prompt-submit` — plus the standalone
+   `sweep`. It does **not** run from `watch` or `selftest`, and neither needs it:
+   `selftest` is read-only, and `watch` is the second hook in the same `Stop`
+   group as `stop`, which has already swept by the time it starts. The cutoff is
+   inclusive (`age >= maxAge`), so
+   `AGENT_INBOX_HOOK_MAX_AGE_MS=0` deterministically means "clear every
+   backstop" instead of racing the millisecond the row was written.
 
 ## Non-goals, recorded on purpose
 
 - **No `activity` row is written by the hook.** The `activity` table is
   one-row-per-MCP-session; a hook row keyed by the harness session id would show
   **two** Live entries for one Claude Code session, and would let backstops
-  escalate to red after an hour. Blocked terminals stay parked.
+  escalate to red after an hour. Blocked terminals stay non-escalating
+  (`parked`, then `stale` past 72h).
 - **No SessionEnd "you ended with nothing flagged" note.** The two session-id
   spaces never join: an MCP-authored item carries a `randomUUID()`, so a hook
   can never tell whether *this* Claude Code session produced items. The
@@ -181,6 +193,21 @@ their prompt. So:
 - The runtime returns immediately, before any `git` call, if the hub database
   does not exist yet.
 - `hooks/agent-inbox-hook.sh` uses `set -u` only — never `set -e`.
+- **The wrapper forwards only deliberate exit statuses.** Per the hooks
+  reference's *Exit code 2 behavior per event* table, `2` is the one status with
+  session-affecting semantics: on `Stop` it "prevents Claude from stopping"
+  (exactly what `watch` wants), but on `UserPromptSubmit` it "blocks prompt
+  processing and **erases the prompt**". A blanket `exit $?` would hand the
+  harness a `126` from a non-executable Node, a `127` from a missing one, a
+  `137` from an OOM kill, or a future stray `process.exit(2)`. So the wrapper
+  passes `2` through **only for `watch`**, passes any status through for
+  `selftest` (not a hook event — it is the installer's proof), and exits `0` for
+  everything else. A broken install is invisible, never a per-prompt
+  `<hook name> hook error` notice and never a blocked session.
+- **The wrapper's Node guard tests `-x`, not just `-n`.** bash's `command -v`
+  reports the first PATH entry matching by *name* and does not require the
+  execute bit, so a mode-644 `node` on PATH comes back as a non-empty path;
+  executing it costs `Permission denied` and status 126 on every hook event.
 - The one door to the database is still `src/store.ts`. This runtime is a
   **second OS process** writing to the same file, and it goes through the same
   exported functions: no CLI shell-out, no raw SQL. `test/hook.test.ts` pins it.
@@ -191,10 +218,16 @@ their prompt. So:
 a Node 26 box dies on **every** invocation, silently, forever — and fail-open
 means you will not notice. So the installer:
 
-1. resolves Node (`$AGENT_INBOX_NODE` → `fnm which $(cat .node-version)` → the
-   `~/.local/share/fnm/node-versions/v24.*` glob → `command -v node`), then
-   resolves that through `pwd -P` — `fnm which` hands back an **ephemeral**
-   `fnm_multishells/<pid>_<ts>/bin/node` path that vanishes with the shell;
+1. resolves Node (`$AGENT_INBOX_NODE` → `fnm exec --using=$(cat .node-version)
+   -- sh -c 'command -v node'` → the `~/.local/share/fnm/node-versions/v24.*`
+   glob → `command -v node`), then resolves that through `pwd -P` — inside an
+   fnm shell a PATH lookup hands back an **ephemeral**
+   `fnm_multishells/<pid>_<ts>/bin/node` path that vanishes with the shell.
+   (There is no `fnm which`; fnm answers `unrecognized subcommand 'which'`, so
+   an earlier draft's version pin was a dead branch.) **`hooks/agent-inbox-hook.sh`
+   deliberately has no `pwd -P` step** — it re-resolves Node on every invocation
+   and execs it immediately, so it never persists a path that could rot. Only a
+   path written into `settings.json` needs to be stable;
 2. **proves it** by running `"$NODE" dist/hook-cli.js selftest` and aborts with
    a clear message if that fails. Nothing is written to `settings.json` first;
 3. bakes the absolute path into exec-form `args`, so no shell parser ever sees

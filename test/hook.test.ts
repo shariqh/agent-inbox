@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
 import { spawn, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
@@ -332,6 +332,28 @@ describe('hook: self-clearing (the trustworthy badge)', () => {
     expect(open.map((i) => i.session).sort()).toEqual(['S2', 'mcp-1'])
   })
 
+  // Pins the INCLUSIVE cutoff in sweepStale. The subcommand test below reaches
+  // the same line, but only ever with age > 0 by however many milliseconds the
+  // spawn happened to take — with `>` it passes roughly two runs in three. This
+  // one is arithmetic, so it cannot flap either way.
+  it('sweeps at EXACTLY the cutoff (>=), so MAX_AGE_MS=0 means "clear every backstop"', () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'hook-sweep-')), 'inbox.db')
+    const db = openDb(dbPath)
+    const mk = (): Item => {
+      insertItem(db, { project: 'agent-inbox', stream: 'main', agent: 'hook', session: 'S1', kind: 'question', title: 'blocked at a prompt' })
+      return listItems(db, { status: 'open' })[0]!
+    }
+    const DAY = 24 * 60 * 60 * 1000
+    const created = Date.parse(mk().created_at)
+    expect(sweepStale(db, created + DAY - 1, DAY)).toBe(0) // one tick early: it survives
+    expect(sweepStale(db, created + DAY, DAY)).toBe(1)     // exactly on it: `>` would leave it
+
+    const later = mk()
+    // the documented meaning of AGENT_INBOX_HOOK_MAX_AGE_MS=0 — "clear every
+    // backstop" — at the one instant that actually distinguishes `>=` from `>`
+    expect(sweepStale(db, Date.parse(later.created_at), 0)).toBe(1)
+  })
+
   it('the 24h janitor resolves orphaned backstops on any invocation', async () => {
     const { env, dbPath } = freshEnv()
     await backstop(env)
@@ -523,14 +545,13 @@ describe('hook: real spawn round-trip', () => {
     expect(bad.err).toMatch(/selftest FAILED/)
   })
 
-  it('the shell wrapper forwards the exit status and stays silent when dist/ is unbuilt', async () => {
+  it('the shell wrapper stays silent when dist/ is unbuilt', async () => {
     const wrapper = join(REPO, 'hooks', 'agent-inbox-hook.sh')
     const src = readFileSync(wrapper, 'utf8')
     // the redirect that would delete the exit-2 payload the model is woken with
     expect(src).not.toMatch(/2>>/)
-    // the hook is invoked with BOTH streams intact, and its status is forwarded
+    // the hook is invoked with BOTH streams intact
     expect(src).toMatch(/^"\$NODE" "\$ENTRY" "\$@"$/m)
-    expect(src).toContain('exit $?')
     const res = await new Promise<{ code: number | null; out: string }>((resolve) => {
       const child = spawn('bash', [wrapper, 'notification'], { env: { ...process.env, AGENT_INBOX_HOOKS: '0' } })
       let out = ''
@@ -543,13 +564,107 @@ describe('hook: real spawn round-trip', () => {
   })
 })
 
+describe('hook: the shell wrapper', () => {
+  // A throwaway checkout-shaped tree so the wrapper can be driven end to end:
+  // its own bytes at hooks/, a dist/hook-cli.js whose exit status we choose, and
+  // a HOME with no ~/.local/share/fnm so the v24 glob deterministically misses.
+  function tree(cli: string): { script: string; root: string; bin: string } {
+    const root = mkdtempSync(join(tmpdir(), 'hook-wrap-'))
+    for (const d of ['hooks', 'dist', 'bin']) mkdirSync(join(root, d))
+    const script = join(root, 'hooks', 'agent-inbox-hook.sh')
+    writeFileSync(script, readFileSync(join(REPO, 'hooks', 'agent-inbox-hook.sh'), 'utf8'))
+    writeFileSync(join(root, 'dist', 'hook-cli.js'), cli)
+    writeFileSync(join(root, '.node-version'), '24\n')
+    return { script, root, bin: join(root, 'bin') }
+  }
+
+  function sh(dir: string, name: string, body: string): string {
+    const p = join(dir, name)
+    writeFileSync(p, `#!/bin/sh\n${body}\n`)
+    chmodSync(p, 0o755)
+    return p
+  }
+
+  function run(script: string, args: string[], env: NodeJS.ProcessEnv): { code: number | null; out: string; err: string } {
+    const r = spawnSync('bash', [script, ...args], { encoding: 'utf8', input: '{}', env })
+    return { code: r.status, out: r.stdout, err: r.stderr }
+  }
+
+  it('refuses a `node` on PATH that has no execute bit, instead of running it', () => {
+    const { script, root, bin } = tree('process.exit(7)\n')
+    writeFileSync(join(bin, 'node'), '#!/bin/sh\nexit 7\n')
+    chmodSync(join(bin, 'node'), 0o644) // the exec bit is the only thing missing
+
+    // The hazard itself, pinned first: bash's `command -v` reports the first
+    // PATH entry matching BY NAME and does not check X_OK, so a `-n`-only guard
+    // waves this straight through to `"$NODE" "$ENTRY"` → Permission denied, 126.
+    const probe = spawnSync('/bin/bash', ['-c', 'command -v node'], { encoding: 'utf8', env: { PATH: bin } })
+    expect(probe.stdout.trim()).toBe(join(bin, 'node'))
+
+    const r = run(script, ['prompt-submit'], { HOME: root, PATH: `${bin}:/usr/bin:/bin` })
+    expect(r.code).toBe(0)
+    expect(r.err).toBe('') // no "Permission denied" in the human's transcript
+    expect(r.out).toBe('')
+  })
+
+  // Verified against the hooks reference's "Exit code 2 behavior per event"
+  // table: 2 is the only status with session-affecting semantics — Stop "blocks,
+  // prevents Claude from stopping" (what `watch` is for), UserPromptSubmit
+  // "blocks prompt processing and erases the prompt" (what must never happen).
+  // Every other non-zero status earns a "<hook name> hook error" transcript
+  // notice. So only deliberate statuses are forwarded.
+  const POLICY: Array<[string, number, number]> = [
+    ['watch', 2, 2],           // #21's async half: swallowing this is a silent no-op
+    ['watch', 1, 0],           // a crashed watcher is not a wake-up
+    ['watch', 126, 0],
+    ['prompt-submit', 2, 0],   // forwarding this would ERASE the human's prompt
+    ['stop', 2, 0],            // only watch may block a Stop
+    ['stop', 126, 0],          // a broken Node path is not a hook error notice
+    ['session-start', 137, 0], // nor is an OOM kill
+    ['session-end', 1, 0],
+    ['notification', 1, 0],
+    ['selftest', 1, 1],        // not a hook event: the installer checks this status
+    ['selftest', 0, 0],
+  ]
+  it.each(POLICY)('%s whose child exits %i makes the wrapper exit %i', (sub, child, want) => {
+    const { script, root } = tree(`process.exit(${child})\n`)
+    const r = run(script, [sub], { HOME: root, PATH: '/usr/bin:/bin', AGENT_INBOX_NODE: process.execPath })
+    expect(r.code).toBe(want)
+  })
+
+  it('resolves Node through the fnm invocation that exists — `fnm which` is a dead branch', () => {
+    const { script, root, bin } = tree('process.stdout.write("REAL-CLI\\n")\n')
+    const pinned = join(root, 'pinned')
+    mkdirSync(pinned)
+    sh(pinned, 'node', 'echo FNM-PINNED-NODE')
+    // stands in for the installed fnm (1.39): `which` is unrecognised, while
+    // `exec --using=<v> -- <cmd>` runs <cmd> with that version's bin on PATH
+    sh(bin, 'fnm', [
+      'if [ "$1" = exec ]; then',
+      '  shift',
+      '  case "$1" in --using=*) shift ;; esac',
+      '  case "$1" in --) shift ;; esac',
+      '  PATH="$FNM_PINNED_BIN:$PATH"; export PATH; exec "$@"',
+      'fi',
+      "echo \"error: unrecognized subcommand '$1'\" >&2",
+      'exit 2',
+    ].join('\n'))
+
+    const r = run(script, ['stop'], { HOME: root, PATH: `${bin}:/usr/bin:/bin`, FNM_PINNED_BIN: pinned })
+    expect(r.code).toBe(0)
+    // `fnm which` would have yielded nothing, fallen past the (empty) v24 glob
+    // to a `command -v node` that finds no node at all, and printed nothing
+    expect(r.out.trim()).toBe('FNM-PINNED-NODE')
+  })
+})
+
 describe('hook: installer', () => {
   const SCRIPT = join(REPO, 'scripts', 'install-hooks.sh')
 
-  function installer(args: string[], home: string, entry: string): { code: number | null; out: string; err: string } {
+  function installer(args: string[], home: string, entry: string, extra: NodeJS.ProcessEnv = {}): { code: number | null; out: string; err: string } {
     const r = spawnSync('bash', [SCRIPT, ...args], {
       encoding: 'utf8',
-      env: { ...process.env, HOME: home, AGENT_INBOX_HOOK_ENTRY: entry },
+      env: { ...process.env, HOME: home, AGENT_INBOX_HOOK_ENTRY: entry, ...extra },
     })
     return { code: r.status, out: r.stdout, err: r.stderr }
   }
@@ -597,7 +712,59 @@ describe('hook: installer', () => {
     installer(['--apply'], dir, entry)
     const cmd = JSON.parse(readFileSync(file, 'utf8')).hooks.Notification[0].hooks[0].command
     expect(cmd.startsWith('/')).toBe(true)
-    expect(cmd).not.toContain('fnm_multishells') // ephemeral: gone when that shell exits
+  })
+
+  // The `not.toContain('fnm_multishells')` assertion used to live in the test
+  // above, where it was a tautology: under `fnm exec` (how the suite runs) PATH
+  // already points at node-versions/, so it held with stable_path() replaced by
+  // `echo "$1"`. Here the ephemeral path is manufactured, so the assertion has
+  // something to catch.
+  it('normalises an EPHEMERAL fnm_multishells path to the stable installation path', () => {
+    const { dir, entry, file } = home({})
+    const stableBin = dirname(process.execPath)
+    // the real shape: <pid>_<ts>/bin is a symlink into node-versions/, and the
+    // whole tree is deleted the moment that shell exits
+    const eph = join(dir, '.local', 'state', 'fnm_multishells', '4242_1780000000000')
+    mkdirSync(eph, { recursive: true })
+    symlinkSync(stableBin, join(eph, 'bin'))
+    const ephemeralNode = join(eph, 'bin', 'node')
+    expect(existsSync(ephemeralNode)).toBe(true)
+
+    expect(installer(['--apply'], dir, entry, { AGENT_INBOX_NODE: ephemeralNode }).code).toBe(0)
+    const cmd = JSON.parse(readFileSync(file, 'utf8')).hooks.Notification[0].hooks[0].command
+    expect(cmd).not.toContain('fnm_multishells') // baking this breaks every hook tomorrow
+    expect(cmd).toBe(join(realpathSync(stableBin), 'node'))
+  })
+
+  it('pins .node-version through the fnm invocation that exists — `fnm which` was a dead branch', () => {
+    const { dir, entry, file } = home({})
+    const pinned = join(dir, 'pinned')
+    mkdirSync(pinned)
+    // a real Node under a path of our choosing, so we can tell WHICH branch won
+    writeFileSync(join(pinned, 'node'), `#!/bin/sh\nexec ${process.execPath} "$@"\n`)
+    chmodSync(join(pinned, 'node'), 0o755)
+    const fakebin = join(dir, 'fakebin')
+    mkdirSync(fakebin)
+    writeFileSync(join(fakebin, 'fnm'), ['#!/bin/sh',
+      'if [ "$1" = exec ]; then',
+      '  shift',
+      '  case "$1" in --using=*) shift ;; esac',
+      '  case "$1" in --) shift ;; esac',
+      '  PATH="$FNM_PINNED_BIN:$PATH"; export PATH; exec "$@"',
+      'fi',
+      "echo \"error: unrecognized subcommand '$1'\" >&2",
+      'exit 2',
+    ].join('\n') + '\n')
+    chmodSync(join(fakebin, 'fnm'), 0o755)
+
+    // fakebin first so `command -v fnm` finds the stand-in; the rest of PATH
+    // stays intact because the installer needs jq
+    const r = installer(['--apply'], dir, entry, { PATH: `${fakebin}:${process.env.PATH}`, FNM_PINNED_BIN: pinned })
+    expect(r.code).toBe(0)
+    const cmd = JSON.parse(readFileSync(file, 'utf8')).hooks.Notification[0].hooks[0].command
+    // with `fnm which` the stand-in errors, the branch yields empty and the
+    // PATH fallback bakes whatever node happens to be first — not this one
+    expect(cmd).toBe(join(realpathSync(pinned), 'node'))
   })
 
   it('refuses a second install without --force, and does not double up with it', () => {

@@ -145,6 +145,13 @@ function startAttentionWatch(win) {
       const g = await (await fetch(`${URL_BASE}api/items`)).json()
       const boards = await (await fetch(`${URL_BASE}api/boards`)).json()
       const activity = await (await fetch(`${URL_BASE}api/activity`)).json()
+      // Projects the human closed (issue #32). FAIL OPEN, deliberately: an older
+      // standalone viewer from a different checkout has no such route, and
+      // confirmReuse() will happily attach this app to it. An unknown closed set
+      // must mean "suppress nothing" (a truthful over-count) — never a dark badge.
+      const closed = await fetch(`${URL_BASE}api/projects/closed`)
+        .then((r) => (r.ok ? r.json() : []))
+        .catch(() => [])
       const items = [
         ...g.needsYou.flatMap((gr) => gr.items),
         ...g.notes.flatMap((gr) => gr.items),
@@ -155,13 +162,23 @@ function startAttentionWatch(win) {
       // tab count and triage deck all read from (spec §7 / tenet 3). No inline
       // re-derivation here: annotated-and-seen blocked rows and stale items are
       // OUT, so the badge — unlike the old per-file predicate — can reach zero.
-      const attn = attentionEntries(items, boards, Date.now(), liveSessions)
+      // `attn` is the VISIBLE set (closed projects suppressed): it sizes the dock
+      // badge and fills the notification body.
+      const attn = attentionEntries(items, boards, Date.now(), liveSessions, closed)
       if (typeof app.setBadgeCount === 'function') app.setBadgeCount(attn.length)
-      const entries = attn.map((e) => e.kind === 'item'
+      const idOf = (e) => e.kind === 'item'
         ? { id: `q:${e.item.id}`, itemId: e.item.id, text: e.item.title }
-        : { id: `r:${e.row.id}`, itemId: e.board.id, text: `🚧 ${e.board.title} · ${e.row.label}` })
+        : { id: `r:${e.row.id}`, itemId: e.board.id, text: `🚧 ${e.board.title} · ${e.row.label}` }
+      const entries = attn.map(idOf)
+      // …but `known` is maintained from the UNSUPPRESSED set. If it tracked only
+      // what is visible, closing a project would drop its items from `known` and
+      // reopening would re-announce every one of them as new — an OS notification
+      // for items the human closed days ago. Reopen is the advertised happy path,
+      // so that would fire routinely. `known` tracks what EXISTS; the badge and
+      // the notification body track what is VISIBLE.
+      const everything = attentionEntries(items, boards, Date.now(), liveSessions)
       const fresh = known === null ? [] : entries.filter((e) => !known.has(e.id))
-      known = new Set(entries.map((e) => e.id))
+      known = new Set(everything.map(idOf).map((e) => e.id))
       // Per-item notifications stay (owner's call) — informational only.
       if (fresh.length && Notification.isSupported()) {
         console.log(`[agent-inbox] notifying: ${fresh.length} new (${fresh[0].text})`)

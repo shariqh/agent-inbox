@@ -1,5 +1,8 @@
 import { paginate, paginateGroups, searchMatches } from '/search.js'
-import { filterRailEntries, railEntries, railProjects, shouldShowRailFilter } from '/rail.js'
+import {
+  closedFoldLabel, closedRailEntries, filterRailEntries, railEntries, railProjects,
+  shouldShowRailFilter, splitClosed, suppressedTotal,
+} from '/rail.js'
 import {
   attentionCount, attentionEntries, classifyLiveness, countsByProject, isAskingQuestion,
   isBlockedRowAttention, staleEntries,
@@ -187,7 +190,12 @@ async function load() {
     const boards = await (await fetch('/api/boards')).json()
     const archived = await (await fetch('/api/boards/archived')).json()
     const activity = await (await fetch('/api/activity')).json()
-    lastData = { g: ageNotes(g, Date.now()), boards, archived, activity }
+    // Projects the human closed (issue #32). Defensive on purpose: a viewer that
+    // predates this route answers 404 with HTML, a bare .json() would throw into
+    // the catch below, and the WHOLE page would read 'disconnected'. An unknown
+    // closed set must mean "suppress nothing", never a dead page.
+    const closed = await fetch('/api/projects/closed').then((r) => (r.ok ? r.json() : [])).catch(() => [])
+    lastData = { g: ageNotes(g, Date.now()), boards, archived, activity, closed }
     renderIfIdle()
     if (!bootFocusDone) { bootFocusDone = true; applyFocusHash() }
     document.getElementById('status').textContent = ''
@@ -281,9 +289,15 @@ const BASE_TITLE = 'Agent Inbox'
 // The document-title badge is GLOBAL — filters narrow the list, never the
 // signal (spec §7). Zero attention ⇒ the bare title, so the badge can rest.
 // This is the ONLY writer of document.title in the product.
+//
+// The closed set (issue #32) is NOT a filter and does not violate that: a filter
+// is a temporary lens the human is looking through, while a close is the human
+// retiring a project outright. It is passed to the ONE predicate rather than
+// subtracted here, so the dock badge, the rail's All row, the Needs-you count
+// and the triage deck cannot disagree about it (tenet 3).
 function applyBadge() {
   const live = new Set((lastData.activity ?? []).map((a) => a.session))
-  const n = attentionCount(allItems(lastData.g), lastData.boards, Date.now(), live)
+  const n = attentionCount(allItems(lastData.g), lastData.boards, Date.now(), live, lastData.closed ?? [])
   document.title = titleWithBadge(BASE_TITLE, n)
 }
 
@@ -389,6 +403,30 @@ function collectAgents({ g, boards }) {
   return [...new Set([...allItems(g).map((i) => i.agent), ...boards.map((b) => b.agent)])].sort()
 }
 
+// Closed projects drop out of the DEFAULT view — UNLESS the human has explicitly
+// selected one from the rail's closed fold. An explicit ask is not "the default
+// view", so peeking must never require reopening first (issue #32); the banner
+// renderClosedBanner() puts above the panel is what keeps that peek honest about
+// the badge deliberately not counting what is on screen.
+//
+// Mirrors filterData's shape: whole project GROUPS leave needsYou/notes, while
+// g.done/boards/archived are flat lists filtered by x.project.
+function withoutClosed({ g, boards, archived }) {
+  const closed = closedSet()
+  if (!closed.size) return { g, boards, archived }
+  const hide = (p) => closed.has(p) && p !== projectFilter
+  const keep = (x) => !hide(x.project)
+  return {
+    g: {
+      needsYou: g.needsYou.filter((gr) => !hide(gr.project)),
+      notes: g.notes.filter((gr) => !hide(gr.project)),
+      done: g.done.filter(keep),
+    },
+    boards: boards.filter(keep),
+    archived: archived.filter(keep),
+  }
+}
+
 // the slice of the data matching only the project filter — agent tabs derive
 // from this, so switching project shows just that project's agents
 function projectScoped({ g, boards, archived }) {
@@ -403,14 +441,30 @@ function projectScoped({ g, boards, archived }) {
 
 function render() {
   applyBadge()
+  // projectMatchCounts stays fed the GLOBAL lastData, unscoped by the rail
+  // filter, on purpose: it's how the user discovers a match sitting behind a
+  // DIFFERENT project pill than the one currently selected — including one
+  // behind a CLOSED project, which is what the fold's auto-open rule keys on.
+  //
+  // Hoisted out of render() to the module binding (issue #32) so renderRail can
+  // read it. It is an ASSIGNMENT, never a `const`: a function-scoped declaration
+  // here is legal JS that silently shadows the module binding, leaving renderRail
+  // reading an empty Map forever and §12's confident false negative sealed inside
+  // a collapsed fold. It must be computed BEFORE renderRail for the same reason.
+  projMatches = projectMatchCounts(lastData, searchQuery, fuzzyFilter)
   renderRail()
-  const agents = collectAgents(projectScoped(lastData))
+  // AFTER renderRail: renderRail is what reconciles a stale projectFilter, and
+  // withoutClosed reads projectFilter to decide whether this is a peek.
+  visibleData = withoutClosed(lastData)
+  renderClosedBanner()
+  const agents = collectAgents(projectScoped(visibleData))
   if (agentFilter && !agents.includes(agentFilter)) agentFilter = null
   renderAgentSelect(agents)
-  // prune collapse state against ALL cards, not the filtered view, so
-  // switching tabs never drops state for cards the filter is hiding
+  // prune collapse state against ALL cards, not the filtered view (nor the
+  // closure-narrowed one), so switching tabs never drops state for cards the
+  // filter is hiding
   liveCardIds = new Set([...allItems(lastData.g).map((i) => i.id), ...lastData.boards.map((b) => b.id), ...lastData.archived.map((b) => b.id)])
-  const filtered = filterData(lastData)
+  const filtered = filterData(visibleData)
   const { g, boards, archived } = applySearch(filtered)
   const pillLive = (lastData.activity ?? []).filter((a) =>
     (!projectFilter || a.project === projectFilter) && (!agentFilter || a.agent === agentFilter))
@@ -425,10 +479,8 @@ function render() {
   const scopedForCounts = { g: filtered.g, boards: filtered.boards, archived: filtered.archived, activity: pillLive }
   matchCounts = tabMatchCounts(scopedForCounts, searchQuery, fuzzyFilter)
   for (const [tab, n] of Object.entries(matchCounts)) setTabMatch(tab, n)
-  // projectMatchCounts stays fed the GLOBAL lastData, unscoped by the rail
-  // filter, on purpose: it's how the user discovers a match sitting behind a
-  // DIFFERENT project pill than the one currently selected.
-  const projMatches = projectMatchCounts(lastData, searchQuery, fuzzyFilter)
+  // setRailMatch must stay AFTER renderRail: renderRail does host.innerHTML = '',
+  // so painting match counts before it would wipe every one of them.
   const railProjectKeys = railProjects({
     items: allItems(lastData.g), boards: lastData.boards, archived: lastData.archived, activity: lastData.activity,
   })
@@ -446,7 +498,7 @@ function render() {
   // Needs-you counts the GLOBAL attention set; every other tab counts the
   // filtered view the user is actually looking at (spec §7)
   const counts = tabCounts({
-    globalAttention: attentionCount(allItems(lastData.g), lastData.boards, Date.now(), liveSessionIds()),
+    globalAttention: attentionCount(allItems(lastData.g), lastData.boards, Date.now(), liveSessionIds(), lastData.closed ?? []),
     unreadNotes: unreadNoteCount(g.notes.flatMap((gr) => gr.items), notesSeenAt, Date.now(), notesSeenIds),
     scoped: { boards, done: g.done },
   })
@@ -484,8 +536,10 @@ let rowFocusId = null
 // the rail badges, the Needs-you tab count AND the deck all derive from ONE
 // predicate. This was the last place that was untrue. Ordering (longest-waiting
 // questions first, blocked rows after) is presentation, not a predicate.
+// issue #32: the same suppressed set the badge reads. Tenet 3 names the deck
+// explicitly, so a closed project's items must not resurface here either.
 function buildDeck() {
-  const entries = attentionEntries(allItems(lastData.g), lastData.boards, Date.now(), liveSessionIds())
+  const entries = attentionEntries(allItems(lastData.g), lastData.boards, Date.now(), liveSessionIds(), lastData.closed ?? [])
   const qs = entries.filter((e) => e.kind === 'item')
     .sort((a, b) => (a.item.created_at < b.item.created_at ? -1 : 1))
   const rows = entries.filter((e) => e.kind === 'row')
@@ -759,6 +813,9 @@ function emptyMsg(base) {
 }
 
 const liveSessionIds = () => new Set((lastData.activity ?? []).map((a) => a.session))
+// projects the human retired (issue #32) — server state, not localStorage, so the
+// Electron dock badge (a different OS process) reads the very same set
+const closedSet = () => new Set(lastData.closed ?? [])
 const themeName = () => (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
 
 // spec §2: color persistence. Every caller that paints a project dot/wash goes
@@ -769,6 +826,19 @@ const pcolor = (name) => projectColor(name, themeName(), localStorage)
 
 // typed rail filter; only rendered when the rail is long enough to need it
 let railQuery = ''
+
+// ── closed projects (issue #32) ─────────────────────────────────────────────
+// The fold's open state lives out here for the same reason staleFoldOpen does:
+// the 3s poll rebuilds the rail, and a DOM-only <details open> would silently
+// re-collapse under the human mid-read.
+let closedFoldOpen = false
+// lastData minus the closed projects — what the DEFAULT view may show. Set once
+// per render(), read by every panel renderer that must agree with the badge.
+let visibleData = null
+// Hoisted out of render() so renderRail's fold-open rule can consult it. See the
+// long note at its assignment: making this a local `const` again is a silent
+// break, not a loud one.
+let projMatches = new Map()
 
 // ── responsive (spec §14) ────────────────────────────────────────────────────
 // Pure breakpoint check lives in layout.js; this is just the mode + the media
@@ -788,6 +858,157 @@ function initResponsive() {
   apply()
 }
 
+// The × / ↩ affordance on a rail row (issue #32).
+//
+// tabIndex = -1 is deliberate: §13 promises "exactly one project tab is
+// tabbable", and N focusable close buttons in a rail of N projects would bury
+// the tablist under tab stops. The keyboard path is Delete/Backspace on the
+// focused tab instead — the convention every browser tab strip uses — wired in
+// railRowEl below. Both buttons are hidden under 900px (see the @media block);
+// implicit reopen-on-new-activity works at every width, so nothing an agent
+// needs ever becomes unreachable.
+function railActionEl(e, closed) {
+  const a = document.createElement('button')
+  a.type = 'button'
+  a.tabIndex = -1
+  a.className = closed ? 'rail-reopen' : 'rail-close'
+  a.textContent = closed ? '↩' : '×'
+  // setAttribute escapes; a project name is agent-authored and must NEVER be
+  // interpolated into innerHTML
+  a.setAttribute('aria-label', `${closed ? 'Reopen' : 'Close'} project ${e.label}`)
+  a.title = closed
+    ? 'Reopen — bring this project back into the rail and the badge'
+    : 'Close — it comes back the moment an agent flags into it'
+  a.addEventListener('click', () => { closed ? reopenProjectAction(e.key) : closeProjectAction(e.key) })
+  return a
+}
+
+// ONE row builder for both the open rail and the closed fold, so the two can
+// never drift apart.
+//
+// The tab and its action button are SIBLINGS inside a wrapper div, never nested:
+// `.rail-tab` is itself a `<button role="tab">`, and a button may not contain
+// interactive content (invalid HTML, and the roving-tabindex loop at the foot of
+// renderRail only governs `.rail-tab`). The codebase's own precedent is
+// `.nrow-dismiss` inside `div.nrow`. setRailMatch's
+// `#rail button.rail-tab[data-project=…] .rail-match` selector is a descendant
+// selector, so it keeps working through the wrapper and into the fold for free.
+function railRowEl(e, { withFilter, closed = false }) {
+  const wrap = document.createElement('div')
+  wrap.className = 'rail-row'
+  const b = document.createElement('button')
+  b.type = 'button'
+  b.className = 'rail-tab'
+  b.dataset.project = e.key // '__all__' for the unfiltered view
+  b.setAttribute('role', 'tab')
+  const selected = e.key === '__all__' ? !projectFilter : projectFilter === e.key
+  b.setAttribute('aria-selected', String(selected))
+  if (!e.total) b.classList.add('quiet')
+  const color = e.key === '__all__' || e.unknown ? null : pcolor(e.key)
+  if (e.unknown) b.classList.add('unknown')
+  // the full name always stays reachable on title/aria-label — the unknown
+  // hint wins there, everyone else gets their project name — so the tab is
+  // still identifiable even once the narrow rail shrinks its visible text
+  // down to a monogram (§2: colour is never the only carrier).
+  b.title = e.unknown ? 'Project inference failed for these agents — a register() call fixes their scope.' : e.label
+  b.setAttribute('aria-label', e.label)
+  // selection is a soft wash of the project's own color; no stripe anywhere
+  if (selected && color) b.style.background = color.wash
+  const dot = document.createElement('span')
+  dot.className = e.key === '__all__' ? 'rail-dot all' : 'rail-dot'
+  if (color) dot.style.background = color.dot
+  const name = document.createElement('span')
+  name.className = 'rail-name'
+  // narrow rail collapses to the monogram — UNLESS the type-to-narrow filter
+  // is showing (>12 projects, RAIL_FILTER_THRESHOLD in rail.js): the CSS
+  // widens #rail back out and restores row layout for exactly that case
+  // (see the #rail:has(.rail-filter) block in style.css), so keep full
+  // names here too — a column of monograms next to a search box you can't
+  // read the results of would defeat the point of un-hiding the filter.
+  // textContent, never innerHTML — agent-authored project names.
+  name.textContent = railLabel(e.label, withFilter ? 'wide' : layout)
+  const badge = document.createElement('span')
+  // a closed row is never escalated (closedRailEntries pins escalated: 0) —
+  // red is an alarm, and a project the badge is ignoring must not alarm
+  badge.className = e.escalated ? 'rail-badge escalated' : 'rail-badge'
+  badge.textContent = e.total ? String(e.total) : ''
+  badge.hidden = !e.total
+  badge.title = e.escalated ? `${e.escalated} escalated` : `${e.total} waiting on you`
+  // always present, always empty here — Task 15's search paints match counts in
+  const match = document.createElement('span')
+  match.className = 'rail-match'
+  b.append(dot, name, badge, match)
+  b.addEventListener('click', () => {
+    projectFilter = e.key === '__all__' ? null : e.key
+    if (projectFilter) localStorage.setItem(PROJECT_KEY, projectFilter)
+    else localStorage.removeItem(PROJECT_KEY)
+    resetPaging()
+    render()
+  })
+  // the keyboard half of close/reopen, since the button itself is out of the tab
+  // order. `ev` is the keyboard event; `e` is the rail entry — do not merge them.
+  if (e.key !== '__all__') b.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'Delete' && ev.key !== 'Backspace') return
+    ev.preventDefault()
+    closed ? reopenProjectAction(e.key) : closeProjectAction(e.key)
+  })
+  wrap.appendChild(b)
+  // 'All' is not a project and cannot be retired
+  if (e.key !== '__all__') wrap.appendChild(railActionEl(e, closed))
+  return wrap
+}
+
+// The closed fold: retired projects, still one click from coming back.
+//
+// `count` and `suppressed` are BOTH computed from the unfiltered closed list —
+// feeding one a rail-query-narrowed list and the other not would print two
+// numbers drawn from different populations, and that muted number is the entire
+// honesty valve the badge-suppression decision rests on.
+function closedFoldEl(entries, count, suppressed, open, withFilter) {
+  const fold = document.createElement('details')
+  fold.className = 'closed-fold'
+  fold.setAttribute('role', 'group')
+  fold.setAttribute('aria-label', 'Closed projects')
+  fold.open = open
+  fold.addEventListener('toggle', () => { closedFoldOpen = fold.open })
+  const summary = document.createElement('summary')
+  const label = closedFoldLabel(count, suppressed, withFilter ? 'wide' : layout)
+  summary.textContent = label.text // textContent, never innerHTML
+  summary.title = label.hint
+  if (label.muted) {
+    const m = document.createElement('span')
+    m.className = 'closed-muted'
+    m.textContent = label.muted
+    summary.appendChild(m)
+  }
+  fold.appendChild(summary)
+  for (const e of entries) fold.appendChild(railRowEl(e, { withFilter, closed: true }))
+  return fold
+}
+
+// The peek banner (issue #32). While you are looking at a closed project the
+// list on screen deliberately holds rows no count includes — two numbers
+// disagreeing with no explanation is exactly what tenets 2/3 forbid. So say it
+// out loud, with the one-click reversal right there. Rendered from render()
+// above the panel host rather than inside renderNeedsYou, so Boards, Notes and
+// Done explain themselves too.
+function renderClosedBanner() {
+  const content = document.querySelector('.content')
+  if (!content) return
+  content.querySelector('.closed-banner')?.remove()
+  if (!projectFilter || !closedSet().has(projectFilter)) return
+  const name = projectFilter // captured: a later render may have moved it on
+  const bar = document.createElement('div')
+  bar.className = 'closed-banner'
+  const text = document.createElement('span')
+  // textContent — project names are agent-authored
+  text.textContent = `${name} is closed — these items are not counted in your badge or triage deck.`
+  const reopen = btn('Reopen', () => reopenProjectAction(name))
+  reopen.className = 'closed-reopen'
+  bar.append(text, reopen)
+  content.insertBefore(bar, content.querySelector('main'))
+}
+
 // Projects as vertical tabs: color dot · name · per-project attention badge ·
 // an empty match slot the search fills in later. The badges are per-project by
 // design; the dock badge and the Needs-you tab count stay global (spec §7
@@ -801,16 +1022,34 @@ function renderRail() {
     archived: lastData.archived,
     activity: lastData.activity ?? [],
   })
+  // Reconciled against the FULL list, open AND closed: selecting a closed
+  // project IS legal — that is the peek — so this must never read `open`, or the
+  // very first render after a peek click would evict it again.
   if (projectFilter && !projects.includes(projectFilter)) {
     projectFilter = null
     localStorage.removeItem(PROJECT_KEY)
   }
+  // unsuppressed on purpose (see countsByProject in attention.js): the fold
+  // relocates a closed project's number, it never destroys it
   const counts = countsByProject(allItems(lastData.g), lastData.boards, Date.now(), liveSessionIds())
-  const withFilter = shouldShowRailFilter(projects)
+  const { open, closed } = splitClosed(projects, closedSet())
+  // shouldShowRailFilter reads the OPEN list, so closing projects can drop the
+  // count back under RAIL_FILTER_THRESHOLD and remove the input from the DOM.
+  // Clearing railQuery with it is what stops the rail from permanently hiding
+  // every project that fails a query the human can no longer see or edit — a
+  // dead end otherwise reachable by this feature's own primary action.
+  const withFilter = shouldShowRailFilter(open)
   if (!withFilter) railQuery = ''
-  const entries = filterRailEntries(railEntries(projects, counts), railQuery)
+  const entries = filterRailEntries(railEntries(open, counts), railQuery)
+  const closedRows = closedRailEntries(closed, counts)
+  const closedEntries = filterRailEntries(closedRows, railQuery)
+  // The fold opens on demand, whenever a closed project is being peeked, and
+  // whenever a search's only hit is behind it — otherwise §12's confident false
+  // negative comes back through a sealed fold instead of through a missing tab.
+  const foldOpen = closedFoldOpen || closed.includes(projectFilter)
+    || (!!searchQuery.trim() && closedEntries.some((e) => (projMatches.get(e.key) ?? 0) > 0))
   const th = themeName()
-  const sig = JSON.stringify([entries, projectFilter, th, withFilter, railQuery, layout])
+  const sig = JSON.stringify([entries, closedEntries, foldOpen, projectFilter, th, withFilter, railQuery, layout])
   if (host.dataset.sig === sig) return
   // rebuilding blows away focus; remember the caret so typing in the filter survives
   const active = document.activeElement
@@ -828,56 +1067,8 @@ function renderRail() {
     host.appendChild(f)
     if (caret !== null) { f.focus(); f.setSelectionRange(caret, caret) }
   }
-  for (const e of entries) {
-    const b = document.createElement('button')
-    b.type = 'button'
-    b.className = 'rail-tab'
-    b.dataset.project = e.key // '__all__' for the unfiltered view
-    b.setAttribute('role', 'tab')
-    const selected = e.key === '__all__' ? !projectFilter : projectFilter === e.key
-    b.setAttribute('aria-selected', String(selected))
-    if (!e.total) b.classList.add('quiet')
-    const color = e.key === '__all__' || e.unknown ? null : pcolor(e.key)
-    if (e.unknown) b.classList.add('unknown')
-    // the full name always stays reachable on title/aria-label — the unknown
-    // hint wins there, everyone else gets their project name — so the tab is
-    // still identifiable even once the narrow rail shrinks its visible text
-    // down to a monogram (§2: colour is never the only carrier).
-    b.title = e.unknown ? 'Project inference failed for these agents — a register() call fixes their scope.' : e.label
-    b.setAttribute('aria-label', e.label)
-    // selection is a soft wash of the project's own color; no stripe anywhere
-    if (selected && color) b.style.background = color.wash
-    const dot = document.createElement('span')
-    dot.className = e.key === '__all__' ? 'rail-dot all' : 'rail-dot'
-    if (color) dot.style.background = color.dot
-    const name = document.createElement('span')
-    name.className = 'rail-name'
-    // narrow rail collapses to the monogram — UNLESS the type-to-narrow filter
-    // is showing (>12 projects, RAIL_FILTER_THRESHOLD in rail.js): the CSS
-    // widens #rail back out and restores row layout for exactly that case
-    // (see the #rail:has(.rail-filter) block in style.css), so keep full
-    // names here too — a column of monograms next to a search box you can't
-    // read the results of would defeat the point of un-hiding the filter.
-    // textContent, never innerHTML — agent-authored project names.
-    name.textContent = railLabel(e.label, withFilter ? 'wide' : layout)
-    const badge = document.createElement('span')
-    badge.className = e.escalated ? 'rail-badge escalated' : 'rail-badge'
-    badge.textContent = e.total ? String(e.total) : ''
-    badge.hidden = !e.total
-    badge.title = e.escalated ? `${e.escalated} escalated` : `${e.total} waiting on you`
-    // always present, always empty here — Task 15's search paints match counts in
-    const match = document.createElement('span')
-    match.className = 'rail-match'
-    b.append(dot, name, badge, match)
-    b.addEventListener('click', () => {
-      projectFilter = e.key === '__all__' ? null : e.key
-      if (projectFilter) localStorage.setItem(PROJECT_KEY, projectFilter)
-      else localStorage.removeItem(PROJECT_KEY)
-      resetPaging()
-      render()
-    })
-    host.appendChild(b)
-  }
+  for (const e of entries) host.appendChild(railRowEl(e, { withFilter }))
+  if (closed.length) host.appendChild(closedFoldEl(closedEntries, closed.length, suppressedTotal(closedRows), foldOpen, withFilter))
   // roving tablist (spec §13): exactly one project tab is tabbable
   for (const b of host.querySelectorAll('.rail-tab')) {
     b.tabIndex = b.getAttribute('aria-selected') === 'true' ? 0 : -1
@@ -1100,7 +1291,11 @@ function renderEmptyState(host) {
   // change, passing it here is inert TODAY. It is passed anyway so that dropping
   // the filter can never resurrect a chip that disagrees with the tab count —
   // the two note numbers disagreeing is precisely fix round 2's I3.
-  const chips = ambientChips(allItems(lastData.g), lastData.boards, Date.now(), notesSeenAt, notesSeenIds)
+  // issue #32: read visibleData, so the calm panel's chips agree with the
+  // suppressed badge. The existing justification above holds verbatim for a
+  // closed project too — a project the human retired is, by definition, not
+  // something that needs them, so the claim stays true.
+  const chips = ambientChips(allItems(visibleData.g), visibleData.boards, Date.now(), notesSeenAt, notesSeenIds)
     .filter((c) => c.key !== 'notes')
   if (chips.length) {
     const row = document.createElement('div')
@@ -1932,7 +2127,10 @@ function wireTablist(host, orientation) {
   if (host.dataset.tablist === '1') return // listener attaches once; rebuilds reuse it
   host.dataset.tablist = '1'
   host.addEventListener('keydown', (e) => {
-    const tabs = [...host.querySelectorAll('[role="tab"]')]
+    // issue #32: the rail's closed fold holds `[role="tab"]` rows that are
+    // display:none while the <details> is shut. Arrow-keying into one sends
+    // focus to an invisible element and it simply vanishes for the user.
+    const tabs = [...host.querySelectorAll('[role="tab"]')].filter((t) => !t.closest('details:not([open])'))
     const i = tabs.indexOf(document.activeElement)
     if (i < 0) return
     const next = rovingIndex(i, e.key, tabs.length)
@@ -1962,6 +2160,45 @@ function moreButton(section, remaining) {
 async function act(id, action) {
   const res = await postJSON(`/api/items/${id}/${action}`)
   if (res === null) return // network failure — postJSON already signaled it
+  load()
+}
+
+// ── close / reopen a project (issue #32) ────────────────────────────────────
+// The rail's only two mutations. Both are OPTIMISTIC: a poll suspended by an
+// open card (§10) would otherwise leave the rail visibly stale for as long as
+// the human keeps that card open, which reads as a broken button.
+//
+// Every revert works BY VALUE, never by index. load() replaces lastData wholesale
+// every 3s, so a `splice(lastData.closed.indexOf(name), 1)` that lands after a
+// poll would find -1 and delete the LAST element — silently un-closing an
+// unrelated project. There is no scenario in which the index form is safe here.
+//
+// No staged undo: closing is one click to reverse, in the same place the tab
+// just left.
+async function closeProjectAction(name) {
+  lastData.closed = [...(lastData.closed ?? []), name]
+  closedFoldOpen = true // show the human where the tab went
+  if (projectFilter === name) { projectFilter = null; localStorage.removeItem(PROJECT_KEY) }
+  resetPaging()
+  render()
+  const res = await postJSON('/api/projects/close', { project: name })
+  if (res === null) { // postJSON already surfaced the reason — just put the tab back
+    lastData.closed = (lastData.closed ?? []).filter((p) => p !== name)
+    render()
+    return
+  }
+  load()
+}
+
+async function reopenProjectAction(name) {
+  lastData.closed = (lastData.closed ?? []).filter((p) => p !== name)
+  render()
+  const res = await postJSON('/api/projects/reopen', { project: name })
+  if (res === null) {
+    if (!(lastData.closed ?? []).includes(name)) lastData.closed = [...(lastData.closed ?? []), name]
+    render()
+    return
+  }
   load()
 }
 

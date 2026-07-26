@@ -198,10 +198,69 @@ describe('countsByProject', () => {
     const parked = [item('p', { created_at: new Date(NOW - ESCALATE_MS * 10).toISOString() })]
     expect(countsByProject(parked, [], NOW, new Set())).toEqual(new Map([['api', { total: 1, escalated: 0 }]]))
   })
+  // The honesty valve for the badge decision above: the rail's closed fold is
+  // where a suppressed number is RELOCATED. If countsByProject suppressed too,
+  // the fold would read 0 and an honest mute would become a silent one.
+  it('still counts a closed project — the rail relocates the number, it never destroys it', () => {
+    const items = [item('q1', { project: 'dead' })]
+    expect(countsByProject(items, [], NOW, new Set()).get('dead')).toEqual({ total: 1, escalated: 0 })
+  })
+
   it('an exactly-1h-old waiting item is not yet escalated (strict >)', () => {
     const items = [item('q', { created_at: new Date(NOW - ESCALATE_MS).toISOString(), session: 's1' })]
     const counts = countsByProject(items, [], NOW, new Set(['s1']))
     expect(counts.get('api')).toEqual({ total: 1, escalated: 0 })
+  })
+})
+
+// ── issue #32: a closed project leaves the attention set entirely ────────────
+// THE BADGE DECISION, for the record. Tenet 2: "a count that counts things
+// nobody is waiting on is worse than no count at all. This tenet outranks
+// completeness: when in doubt, a thing does not enter the attention set." §6
+// already drops unanswered questions from the badge on a bare 72-hour
+// heuristic; an explicit human close is stronger evidence than that heuristic,
+// not weaker. So closure SUPPRESSES — and it does so HERE, in the one shared
+// predicate (tenet 3), never re-implemented at each call site.
+describe('closed projects are out of the attention set (issue #32)', () => {
+  const q = item('q1', { project: 'dead', session: 's1' })
+  const deadBoard: AttentionBoard = {
+    id: 'b9', project: 'dead', title: 'Rollout',
+    rows: [{ id: 'r9', label: 'deploy', status: 'blocked', annotation: null, annotation_unseen: false }],
+  }
+
+  it('attentionEntries drops an unanswered question in a closed project', () => {
+    expect(attentionEntries([q], [], NOW, new Set(['s1']))).toHaveLength(1)
+    expect(attentionEntries([q], [], NOW, new Set(['s1']), ['dead'])).toEqual([])
+  })
+
+  it('attentionEntries drops a blocked board row in a closed project', () => {
+    expect(attentionEntries([], [deadBoard], NOW, new Set())).toHaveLength(1)
+    expect(attentionEntries([], [deadBoard], NOW, new Set(), ['dead'])).toEqual([])
+  })
+
+  it('attentionCount lets the badge rest when the only attention is in a closed project', () => {
+    expect(attentionCount([q], [deadBoard], NOW, new Set(['s1']), ['dead'])).toBe(0)
+  })
+
+  it('suppresses only the named project — everything else still counts', () => {
+    const alive = item('q2', { project: 'live' })
+    expect(attentionCount([q, alive], [deadBoard], NOW, new Set(['s1']), ['dead'])).toBe(1)
+  })
+
+  it('accepts the closed set as a Set or as an array (the API hands over JSON)', () => {
+    expect(attentionCount([q], [], NOW, new Set(['s1']), new Set(['dead']))).toBe(0)
+    expect(attentionCount([q], [], NOW, new Set(['s1']), ['dead'])).toBe(0)
+  })
+
+  it('an omitted closed list changes nothing — every existing 4-arg call site is unaffected', () => {
+    expect(attentionCount([q], [deadBoard], NOW, new Set(['s1']))).toBe(2)
+    expect(attentionCount([q], [deadBoard], NOW, new Set(['s1']), [])).toBe(2)
+    expect(attentionCount([q], [deadBoard], NOW, new Set(['s1']), undefined)).toBe(2)
+  })
+
+  it('staleEntries is untouched by closure — the §6 fold is a different question', () => {
+    const ancient = item('old', { project: 'dead', created_at: new Date(NOW - STALE_MS - 60_000).toISOString() })
+    expect(staleEntries([ancient], NOW, new Set())).toHaveLength(1)
   })
 })
 

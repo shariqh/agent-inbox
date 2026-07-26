@@ -1,7 +1,13 @@
 // The attention set, liveness classification and Needs-you ordering — one
 // predicate, used by the dock badge, the rail badges, the tab count and the
 // triage deck (design §6, §7, §3). Pure: no DOM, no fetch, clock injected as
-// `nowMs` and live sessions injected as `liveSessionIds`.
+// `nowMs`, live sessions injected as `liveSessionIds` and closed projects
+// injected as `closedProjects`.
+//
+// TWO things sit outside the attention set on purpose: the §6 stale fold
+// (nobody is listening any more) and, since issue #32, a project the human has
+// explicitly CLOSED. Both are demotions, never deletions — the stale fold and
+// the rail's closed fold each still show what they hold.
 
 export const STALE_MS = 72 * 60 * 60 * 1000     // no live session + older than this → stale fold
 export const ESCALATE_MS = 60 * 60 * 1000       // a *waiting* item older than this turns the rail badge red
@@ -49,16 +55,28 @@ export function isBlockedRowAttention(row) {
 // attention = open unanswered questions (minus the stale fold) ∪ escalating
 // blocked rows. Nothing else: not notes, not milestones, not resolved, not
 // answered-awaiting-pickup.
-export function attentionEntries(items, boards, nowMs, liveSessionIds) {
+//
+// `closedProjects` (issue #32) is the SECOND thing outside the set, alongside
+// the §6 stale fold: a project the human explicitly retired. Tenet 2 —
+// "when in doubt, a thing does not enter the attention set" — and §6 already
+// drops questions on a mere 72h heuristic, so an explicit close is stronger
+// evidence, not weaker. The suppression lives HERE, in the one predicate, so
+// the dock badge, the title badge, the Needs-you count and the triage deck can
+// never disagree about it (tenet 3). Optional and defaulting to empty: every
+// existing 4-argument call site keeps its exact behaviour.
+export function attentionEntries(items, boards, nowMs, liveSessionIds, closedProjects = []) {
   const live = asSet(liveSessionIds)
+  const closed = asSet(closedProjects)
   const out = []
   for (const it of items ?? []) {
+    if (closed.has(it.project)) continue
     if (!isAskingQuestion(it)) continue
     const liveness = classifyLiveness(it, nowMs, live)
     if (liveness === 'stale') continue
     out.push({ kind: 'item', item: it, liveness })
   }
   for (const b of boards ?? []) {
+    if (closed.has(b.project)) continue
     for (const r of b.rows ?? []) if (isBlockedRowAttention(r)) out.push({ kind: 'row', row: r, board: b })
   }
   return out
@@ -77,13 +95,20 @@ export function staleEntries(items, nowMs, liveSessionIds) {
   return out
 }
 
-export function attentionCount(items, boards, nowMs, liveSessionIds) {
-  return attentionEntries(items, boards, nowMs, liveSessionIds).length
+export function attentionCount(items, boards, nowMs, liveSessionIds, closedProjects = []) {
+  return attentionEntries(items, boards, nowMs, liveSessionIds, closedProjects).length
 }
 
 // per-project totals for the rail. `escalated` is the red subset: blocked rows,
 // or waiting items (live agent blocked) older than an hour. A rail of all-red
 // badges is a rail of no information.
+//
+// It deliberately never takes the closed set (issue #32): the rail is where a
+// suppressed count is RELOCATED, not destroyed. Suppressing here would make the
+// closed fold read 0 and turn an honest mute into a silent one — the number the
+// fold shows is the whole reason suppression is acceptable at all. The 4-arg
+// call below therefore picks up attentionEntries' `closedProjects = []` default
+// on purpose; do not "fix" its arity.
 export function countsByProject(items, boards, nowMs, liveSessionIds) {
   const map = new Map()
   for (const e of attentionEntries(items, boards, nowMs, liveSessionIds)) {

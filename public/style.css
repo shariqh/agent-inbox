@@ -167,6 +167,32 @@ header { flex-wrap: wrap; }
 .rail-badge.escalated { background: color-mix(in srgb, crimson 18%, transparent); color: color-mix(in srgb, crimson 80%, CanvasText); font-weight: 600; }
 .rail-match { font-size: 11px; font-variant-numeric: tabular-nums; opacity: .6; }
 .rail-match:empty { display: none; }
+/* issue #32: the tab and its ×/↩ are SIBLINGS in this wrapper, never nested —
+   .rail-tab is a <button role="tab"> and a button may not contain interactive
+   content. Everything that selects `.rail-tab` as a descendant of #rail keeps
+   working through the wrapper. */
+.rail-row { display: flex; align-items: center; gap: 2px; }
+.rail-row > .rail-tab { flex: 1 1 auto; width: auto; min-width: 0; }
+.rail-close, .rail-reopen { flex: 0 0 auto; border: none; background: transparent; color: inherit; font: inherit; font-size: 12px; line-height: 1; padding: 0 3px; border-radius: 4px; cursor: pointer; opacity: 0; }
+/* always visible inside the fold — it IS the affordance there. Declared BEFORE
+   the :hover rules below: both are (0,2,0)/(0,1,1)-class selectors, so a later
+   dimming rule would silently beat the hover feedback (the .answer-btn species
+   of bug this repo already hit once). */
+.closed-fold .rail-reopen { opacity: .5; }
+.rail-row:hover .rail-close, .rail-row:focus-within .rail-close, .rail-close:focus-visible { opacity: .6; }
+.rail-close:hover, .rail-reopen:hover { opacity: 1; background: color-mix(in srgb, CanvasText 10%, transparent); }
+.closed-fold { margin-top: 6px; }
+.closed-fold > summary { cursor: pointer; font-size: 11.5px; opacity: .5; padding: 6px 9px; border-top: 1px solid color-mix(in srgb, CanvasText 10%, transparent); }
+.closed-fold > summary:hover { opacity: .85; }
+/* dims the TAB only, not its sibling ↩ — nested opacity multiplies */
+.closed-fold .rail-tab { opacity: .6; }
+/* #rail's own `gap` does not reach inside the <details> */
+.closed-fold .rail-row + .rail-row { margin-top: 2px; }
+/* never crimson: a project the badge is deliberately ignoring must not alarm */
+.closed-fold .rail-badge { background: color-mix(in srgb, CanvasText 10%, transparent); color: inherit; font-weight: 400; }
+.closed-muted { margin-left: 6px; font-size: 10.5px; opacity: .7; font-variant-numeric: tabular-nums; }
+.closed-banner { display: flex; align-items: center; gap: 8px; font-size: 12.5px; opacity: .75; padding: 6px 10px; margin-bottom: 8px; border-radius: 8px; background: color-mix(in srgb, CanvasText 6%, transparent); }
+.closed-reopen { font: inherit; font-size: 11.5px; padding: 1px 8px; border-radius: 6px; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); background: transparent; color: inherit; cursor: pointer; }
 #pauseHint { font-size: 12px; opacity: .5; font-style: italic; white-space: nowrap; }
 
 .nrow { display: flex; flex-direction: column; gap: 1px; padding: 7px 10px; border-radius: 8px; border: 1px solid color-mix(in srgb, CanvasText 10%, transparent); margin-bottom: 6px; background: var(--wash, transparent); cursor: pointer; }
@@ -370,6 +396,27 @@ main { padding-bottom: 34px; } /* the fixed strip must never cover the last row 
   }
   #rail:has(.rail-filter) .rail-badge { position: static; margin: 0; font-size: 11px; padding: 0 6px; line-height: normal; }
   #rail:has(.rail-filter) .rail-match { position: static; margin-left: auto; right: auto; bottom: auto; font-size: 10.5px; }
+
+  /* close/reopen (issue #32): curation, not triage. On a 52px monogram column
+     there is no third corner left — .rail-badge owns top-right and .rail-match
+     bottom-right — so ×/↩ are wide-layout affordances. Implicit
+     reopen-on-new-activity still works at every width, so nothing an agent
+     needs becomes unreachable; only the manual gesture waits for a wider
+     window. The :has(.rail-filter) state restores row layout and, with it, the
+     buttons — the same call §14 already makes for full names and inline badges.
+     `#rail:has(.rail-filter) .rail-close` is (1,2,0) against (1,1,0), so the
+     restore wins on specificity, not on source order. */
+  /* .rail-row itself needs NO narrow override: it stays a row-flex whose single
+     remaining child (the tab) grows to the full 52px column. Turning it into a
+     column-flex here would inherit align-items:center from the base rule and
+     shrink the tab to its monogram's width, taking the hover background and the
+     absolutely-positioned corner badge with it. */
+  #rail .rail-close, #rail .rail-reopen { display: none; }
+  #rail .closed-fold > summary { text-align: center; padding: 6px 2px; font-size: 10px; }
+  #rail .closed-muted { display: none; }
+  #rail:has(.rail-filter) .rail-close, #rail:has(.rail-filter) .rail-reopen { display: inline-block; }
+  #rail:has(.rail-filter) .closed-fold > summary { text-align: left; padding: 6px 9px; font-size: 11.5px; }
+  #rail:has(.rail-filter) .closed-muted { display: inline; }
 
   /* top tabs → scrollable segmented control (4 tabs; scrolls if a narrow
      device still can't fit them without truncation) */

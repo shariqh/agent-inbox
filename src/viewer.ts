@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { readFileSync, existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import type Database from 'better-sqlite3'
-import { listItems, resolveItem, dismissItem, annotateItem, replyItem, listBoards, archiveBoard, unarchiveBoard, annotateBoardRow, listActivity, defaultDbPath } from './store.js'
+import { listItems, resolveItem, dismissItem, annotateItem, replyItem, listBoards, archiveBoard, unarchiveBoard, annotateBoardRow, listActivity, defaultDbPath, closeProject, reopenProject, closedProjects } from './store.js'
 import { groupItems } from './group.js'
 import { hooksSettingsBlock } from './hook.js'
 
@@ -48,6 +48,14 @@ function setupInfo(): { claudeCommand: string; copilotConfig: string; snippet: s
         : '⚠ The Node path below was captured when this app was packaged and has NOT been verified against better-sqlite3. ') +
       'Prefer `npm run install:hooks` from the repo — it proves the Node binary with a selftest before writing anything, backs the file up, and is a dry run by default. See docs/hooks.md.',
   }
+}
+
+// A close/reopen body carries one agent-authored project name. An unparseable
+// body arrives here as null (the caller's .catch) and is refused like any other
+// missing name — a 400, never a 500.
+function validProject(body: unknown): string | null {
+  const project = (body as { project?: unknown } | null)?.project
+  return typeof project === 'string' && project.trim() ? project : null
 }
 
 export function createViewer(db: Database.Database): Hono {
@@ -107,6 +115,32 @@ export function createViewer(db: Database.Database): Hono {
   app.post('/api/boards/:id/rows/:rowId/annotate', async (c) => {
     const { text } = await c.req.json<{ text: string }>()
     annotateBoardRow(db, c.req.param('rowId'), text)
+    return c.json({ ok: true })
+  })
+
+  // ── project closure (issue #32) ───────────────────────────────────────────
+  // The EFFECTIVE closed set — closures the derived reopen rule has not already
+  // undone. Read by public/app.js (title badge, rail fold) AND by
+  // electron/main.cjs (dock badge): tenet 3 says one attention set, and the main
+  // process cannot see the renderer's localStorage, so this has to be server
+  // state rather than a client-side toggle.
+  app.get('/api/projects/closed', (c) => c.json(closedProjects(db)))
+
+  // Project names are agent-authored free text and routinely contain '/' and
+  // spaces, which Hono's :param will not match — hence a JSON body, never a path
+  // param. The 400 matters: app.js's postJSON() keys on res.ok, so a rejected
+  // close surfaces to the human instead of vanishing into an optimistic UI.
+  app.post('/api/projects/close', async (c) => {
+    const project = validProject(await c.req.json().catch(() => null))
+    if (project === null) return c.json({ ok: false, error: 'project required' }, 400)
+    closeProject(db, project)
+    return c.json({ ok: true })
+  })
+
+  app.post('/api/projects/reopen', async (c) => {
+    const project = validProject(await c.req.json().catch(() => null))
+    if (project === null) return c.json({ ok: false, error: 'project required' }, 400)
+    reopenProject(db, project)
     return c.json({ ok: true })
   })
 

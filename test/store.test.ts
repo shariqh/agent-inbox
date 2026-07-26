@@ -27,6 +27,10 @@ import {
   upsertActivity,
   endActivity,
   listActivity,
+  closeProject,
+  reopenProject,
+  listClosedProjects,
+  closedProjects,
 } from '../src/store.js'
 import type { BoardRow } from '../src/store.js'
 
@@ -831,5 +835,127 @@ describe('item session (liveness)', () => {
     const db2 = openDb(path)
     insertItem(db2, { project: 'p', stream: '', agent: 'a', kind: 'question', title: 'q', session: 'sess-legacy' })
     expect(listItems(db2)[0]!.session).toBe('sess-legacy')
+  })
+})
+
+// ── issue #32: close / reopen a project ──────────────────────────────────────
+// Closure is PRESENTATION state, stored sparsely (one row per project the human
+// actually closed). Reopen is DERIVED, never written: a project stops being
+// closed the moment new CONTENT is created in it. That keeps insertItem
+// byte-identical — the fail-open flag path gains no new write and no new failure
+// mode — and makes the reopen atomic with the very insert that raises the
+// question.
+//
+// Timestamp note: created_at/closed_at are ISO-8601 UTC strings with millisecond
+// resolution and the predicate is strict `>`. Any test that CLOSES and then
+// writes must sleep ≥2ms between the two, or both stamps can land in the same
+// millisecond and the write will not read as "after". Tests that write and THEN
+// close need no sleep — equal stamps correctly leave the project closed.
+describe('project close / reopen (issue #32)', () => {
+  let db: Database.Database
+  beforeEach(() => { db = freshDb() })
+
+  const tick = () => new Promise((r) => setTimeout(r, 5))
+
+  it('closeProject closes a project and closedProjects reports it', () => {
+    insertItem(db, { project: 'dead', stream: '', agent: 'a', kind: 'question', title: 'q' })
+    closeProject(db, 'dead')
+    expect(closedProjects(db)).toEqual(['dead'])
+  })
+
+  it('reopenProject clears the closure', () => {
+    closeProject(db, 'dead')
+    reopenProject(db, 'dead')
+    expect(closedProjects(db)).toEqual([])
+    expect(listClosedProjects(db)).toEqual([])
+  })
+
+  it('a new item created after closed_at implicitly reopens the project', async () => {
+    insertItem(db, { project: 'dead', stream: '', agent: 'a', kind: 'question', title: 'old' })
+    closeProject(db, 'dead')
+    expect(closedProjects(db)).toEqual(['dead'])
+    await tick()
+    insertItem(db, { project: 'dead', stream: '', agent: 'a', kind: 'question', title: 'new' })
+    expect(closedProjects(db)).toEqual([])
+  })
+
+  it('an item created BEFORE closed_at leaves the project closed', async () => {
+    insertItem(db, { project: 'dead', stream: '', agent: 'a', kind: 'question', title: 'old' })
+    await tick()
+    closeProject(db, 'dead')
+    expect(closedProjects(db)).toEqual(['dead'])
+  })
+
+  it('a NEW board created after closed_at implicitly reopens the project', async () => {
+    closeProject(db, 'dead')
+    await tick()
+    upsertBoard(db, { project: 'dead', stream: '', agent: 'a', title: 'rollout', rows: [{ label: 'x', status: 'tracked' }] })
+    expect(closedProjects(db)).toEqual([])
+  })
+
+  it('a board merely re-upserted after closed_at does NOT reopen it (updated_at moves, created_at does not)', async () => {
+    upsertBoard(db, { project: 'dead', stream: '', agent: 'a', title: 'rollout', rows: [{ label: 'x', status: 'tracked' }] })
+    await tick()
+    closeProject(db, 'dead')
+    await tick()
+    upsertBoard(db, { project: 'dead', stream: '', agent: 'a', title: 'rollout', rows: [{ label: 'x', status: 'done' }] })
+    expect(closedProjects(db)).toEqual(['dead'])
+  })
+
+  it('a live session in a closed project does NOT reopen it — presence is not attention', async () => {
+    closeProject(db, 'dead')
+    await tick()
+    upsertActivity(db, { session: 's1', project: 'dead', stream: '', agent: 'a', doing: 'poking around' })
+    expect(closedProjects(db)).toEqual(['dead'])
+  })
+
+  it('closing again after an implicit reopen re-closes it', async () => {
+    closeProject(db, 'dead')
+    await tick()
+    insertItem(db, { project: 'dead', stream: '', agent: 'a', kind: 'question', title: 'new' })
+    expect(closedProjects(db)).toEqual([])
+    await tick()
+    closeProject(db, 'dead')
+    expect(closedProjects(db)).toEqual(['dead'])
+  })
+
+  it('closeProject is idempotent — one row per project, never a duplicate', () => {
+    closeProject(db, 'dead')
+    closeProject(db, 'dead')
+    expect(listClosedProjects(db)).toHaveLength(1)
+    expect(closedProjects(db)).toEqual(['dead'])
+  })
+
+  it('closing deletes nothing — items and boards survive intact', () => {
+    insertItem(db, { project: 'dead', stream: '', agent: 'a', kind: 'question', title: 'still here' })
+    upsertBoard(db, { project: 'dead', stream: '', agent: 'a', title: 'board', rows: [{ label: 'x', status: 'tracked' }] })
+    const itemsBefore = listItems(db)
+    const boardsBefore = listBoards(db)
+    closeProject(db, 'dead')
+    expect(listItems(db)).toHaveLength(itemsBefore.length)
+    expect(listBoards(db)).toHaveLength(boardsBefore.length)
+    expect(listItems(db)[0]!.title).toBe('still here')
+    expect(listBoards(db)[0]!.rows[0]!.label).toBe('x')
+  })
+
+  it('closedProjects is sorted and scopes per project — closing one leaves the others open', () => {
+    closeProject(db, 'zed')
+    closeProject(db, 'alpha')
+    expect(closedProjects(db)).toEqual(['alpha', 'zed'])
+    insertItem(db, { project: 'live', stream: '', agent: 'a', kind: 'question', title: 'q' })
+    expect(closedProjects(db)).toEqual(['alpha', 'zed'])
+  })
+
+  it('listClosedProjects returns the raw rows, newest closure first, including implicitly-reopened ones', async () => {
+    closeProject(db, 'alpha')
+    await tick()
+    closeProject(db, 'zed')
+    await tick()
+    insertItem(db, { project: 'alpha', stream: '', agent: 'a', kind: 'question', title: 'back' })
+    expect(listClosedProjects(db).map((c) => c.project)).toEqual(['zed', 'alpha'])
+    // …which is exactly why a consumer that wants the EFFECTIVE set must use
+    // closedProjects(), not this raw list
+    expect(closedProjects(db)).toEqual(['zed'])
+    expect(listClosedProjects(db)[0]!.closed_at).toMatch(/^\d{4}-\d{2}-\d{2}T/)
   })
 })

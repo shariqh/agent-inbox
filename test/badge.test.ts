@@ -72,6 +72,38 @@ describe('the Electron dock badge shares the §7 attention predicate (no duplica
     expect(main).toMatch(/attentionEntries\(/)
     expect(main).toMatch(/setBadgeCount\(attn\.length\)/)
   })
+  // issue #32: the dock badge and the title badge must agree on the CLOSED set
+  // too, or tenet 3 breaks in the most visible place there is — the dock. The
+  // main process cannot read the renderer's localStorage, which is exactly why
+  // closure is server state; this pins that main.cjs actually reads it.
+  it('reads the same closed set the title badge reads, and passes it to the shared predicate', () => {
+    expect(main).toContain('api/projects/closed')
+    expect(main).toMatch(/attentionEntries\([^\n]*closed\s*\)/)
+  })
+
+  it('fails OPEN on the closed-set fetch — an unknown closed set suppresses nothing', () => {
+    // confirmReuse() can attach this app to an OLDER standalone viewer with no
+    // such route. Failing open over-counts (a truthful superset); failing closed
+    // would dark the badge entirely, which tenet 2 cannot survive.
+    const line = main.split('\n').find((l) => l.includes('api/projects/closed'))
+    expect(line, 'no api/projects/closed fetch found').toBeTruthy()
+    const block = main.slice(main.indexOf('api/projects/closed'))
+    expect(block.slice(0, 200)).toMatch(/\.catch\(/)
+    expect(block.slice(0, 200)).toMatch(/res\.ok|r\.ok/)
+  })
+
+  // Reopen is the feature's advertised happy path, so this fires routinely:
+  // if `known` were rebuilt from the SUPPRESSED set, closing a project would
+  // drop its items from `known`, and reopening would re-classify every one of
+  // them as "fresh" — a native OS notification for items the human closed days
+  // ago. `known` therefore tracks what EXISTS; the badge and the notification
+  // body read what is VISIBLE.
+  it('maintains its seen-set from the UNSUPPRESSED set, so reopening announces nothing old', () => {
+    const watch = main.slice(main.indexOf('function startAttentionWatch'))
+    expect(watch).toMatch(/known\s*=\s*new Set\(everything\.map/)
+    expect(watch).toMatch(/const everything = attentionEntries\(items, boards, Date\.now\(\), liveSessions\)/)
+  })
+
   it('never swallows a failed module import silently', () => {
     // a bare `.catch(() => {})` (or no .catch at all) would freeze the badge
     // forever with no signal — the import failure path must log loudly

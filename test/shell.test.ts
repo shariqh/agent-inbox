@@ -173,3 +173,185 @@ describe("load()'s catch logs instead of swallowing (incident: silent blank page
     expect(catchBody).toContain("'disconnected'")
   })
 })
+
+// ── issue #32: close / reopen a project ──────────────────────────────────────
+// SOURCE-TEXT pins for the properties no runtime assertion can see: WHICH data
+// each call site is handed. The behavioural half — clicking ×, peeking, the
+// banner, the implicit reopen — runs for real against jsdom in
+// test/dom/closed-projects.test.ts. Keep both; they cover different things.
+//
+// The body-slicing helper is the established idiom from
+// test/critical-fixes.test.ts. Do NOT write `attentionCount\([^)]*lastData\.closed`:
+// `[^)]*` cannot cross the `)` that closes `allItems(lastData.g)`, so it can
+// never match correct code.
+describe('closed projects (issue #32)', () => {
+  const fn = (name: string, endMarker: string) => {
+    const start = js.indexOf(name)
+    expect(start, `${name} not found in public/app.js`).toBeGreaterThan(-1)
+    const end = js.indexOf(endMarker, start)
+    expect(end, `end marker ${endMarker} not found after ${name}`).toBeGreaterThan(-1)
+    return js.slice(start, end)
+  }
+
+  it('applyBadge computes the title count with the closed set', () => {
+    expect(fn('function applyBadge()', '\n// The rendered Needs-you row'))
+      .toMatch(/attentionCount\([\s\S]*?lastData\.closed/)
+  })
+
+  it('the triage deck is built from the same suppressed set (tenet 3 names the deck)', () => {
+    expect(fn('function buildDeck()', '\n// resolve a deck entry'))
+      .toMatch(/attentionEntries\([\s\S]*?lastData\.closed/)
+  })
+
+  it("the Needs-you tab count reads it too, on one line so tabs.test.ts's line pin still holds", () => {
+    const line = js.split('\n').find((l) => l.includes('globalAttention:'))
+    expect(line, line).toMatch(/lastData\.closed/)
+  })
+
+  it('load() fetches the closed set defensively — a missing route must not blank the page', () => {
+    const body = fn('async function load()', '\n// fix round 1 (hardening)')
+    expect(body).toContain('/api/projects/closed')
+    // an older viewer answers 404 with HTML; a bare .json() would throw into
+    // load()'s catch and turn the whole page 'disconnected'
+    const fetchLine = body.split('\n').find((l) => l.includes('/api/projects/closed'))!
+    expect(fetchLine).toMatch(/\.catch\(/)
+    expect(fetchLine).toMatch(/r\.ok/)
+    expect(body).toMatch(/lastData = \{[^}]*closed/)
+  })
+
+  it('projMatches is assigned to the MODULE binding, never re-declared inside render()', () => {
+    // a function-scoped `const projMatches` is legal JS that silently shadows the
+    // module binding, leaving renderRail reading an empty Map forever — and the
+    // fold's auto-open-on-search-hit rule dead on arrival
+    expect(js).toMatch(/^let projMatches = new Map\(\)/m)
+    expect(js, 'render() re-declares projMatches and shadows the module binding')
+      .not.toMatch(/const projMatches\s*=/)
+  })
+
+  it('render() computes projMatches BEFORE renderRail, and withoutClosed AFTER it', () => {
+    const body = fn('function render()', '\n// one age vocabulary')
+    expect(body.indexOf('projMatches =')).toBeLessThan(body.indexOf('renderRail()'))
+    // renderRail is what reconciles a stale projectFilter, and withoutClosed
+    // reads projectFilter to decide whether this is a peek
+    expect(body.indexOf('renderRail()')).toBeLessThan(body.indexOf('withoutClosed(lastData)'))
+    // …but setRailMatch must stay AFTER renderRail: renderRail does
+    // host.innerHTML = '', so painting match counts first would wipe them
+    expect(body.indexOf('renderRail()')).toBeLessThan(body.indexOf('setRailMatch('))
+  })
+
+  it('projectMatchCounts still reads the global lastData, so a match behind a closed project stays discoverable', () => {
+    const body = fn('function render()', '\n// one age vocabulary')
+    expect(body).toMatch(/projMatches = projectMatchCounts\(lastData,/)
+  })
+
+  it('the Live footer strip and the drawer stay global — presence is not attention (§16)', () => {
+    const body = fn('function render()', '\n// one age vocabulary')
+    expect(body).toMatch(/renderLiveBar\(\s*lastData\.activity\b/)
+    // pillLive (the drawer's source) is filtered by project/agent only, never by closure
+    expect(body).toMatch(/const pillLive = \(lastData\.activity/)
+    expect(body, 'the Live drawer must not be closure-scoped').not.toMatch(/pillLive[\s\S]{0,120}closedSet\(/)
+  })
+
+  it('renderRail splits open from closed and builds the fold from the pure rail helpers', () => {
+    const body = fn('function renderRail()', '\n// the top bar')
+    for (const call of ['splitClosed(', 'closedRailEntries(', 'suppressedTotal(']) {
+      expect(body, call).toContain(call)
+    }
+    expect(js).toMatch(/import\s*\{[^}]*closedFoldLabel[^}]*\}\s*from\s*'\/rail\.js'/)
+    expect(js).toContain('closed-fold')
+    expect(js).toContain('rail-close')
+    expect(js).toContain('rail-reopen')
+  })
+
+  it('the rail signature includes the closed rows and the fold state, or the rail goes stale', () => {
+    const body = fn('function renderRail()', '\n// the top bar')
+    const sig = body.split('\n').find((l) => l.includes('const sig = JSON.stringify(['))!
+    expect(sig).toContain('closedEntries')
+    expect(sig).toContain('foldOpen')
+  })
+
+  it('keeps the type-to-narrow filter escapable — railQuery is cleared whenever the input is not rendered', () => {
+    // closing projects can drop the open count under RAIL_FILTER_THRESHOLD,
+    // removing the input while a non-empty query still hides most of the rail
+    const body = fn('function renderRail()', '\n// the top bar')
+    expect(body).toMatch(/const withFilter = shouldShowRailFilter\(open\)/)
+    expect(body).toMatch(/if \(!withFilter\) railQuery = ''/)
+  })
+
+  it('keeps the caret restore and the sig short-circuit the rewrite could have dropped', () => {
+    const body = fn('function renderRail()', '\n// the top bar')
+    expect(body).toMatch(/if \(host\.dataset\.sig === sig\) return/)
+    expect(body).toMatch(/host\.dataset\.sig = sig/)
+    expect(body).toMatch(/classList\.contains\('rail-filter'\)/)
+    expect(body).toMatch(/setSelectionRange\(caret, caret\)/)
+    expect(body).toMatch(/railQuery = f\.value; renderRail\(\)/)
+  })
+
+  it('reconciles projectFilter against the FULL project list so a closed project can still be peeked', () => {
+    const body = fn('function renderRail()', '\n// the top bar')
+    expect(body).toMatch(/if \(projectFilter && !projects\.includes\(projectFilter\)\)/)
+    expect(body, 'reconciling against the OPEN list would evict the peek on sight')
+      .not.toMatch(/!open\.includes\(projectFilter\)/)
+  })
+
+  it('close/reopen buttons are SIBLINGS of the tab, not nested inside it, and never steal a tab stop', () => {
+    // .rail-tab is itself a <button role="tab">; a button may not contain
+    // interactive content, and N extra tab stops break §13's roving tabindex
+    const body = fn('function railRowEl(', '\n// Projects as vertical tabs')
+    expect(body).toMatch(/wrap\.appendChild\(/)
+    const action = fn('function railActionEl(', '\nfunction closedFoldEl(')
+    expect(action).toMatch(/tabIndex = -1/)
+    expect(action).toMatch(/setAttribute\('aria-label'/)
+  })
+
+  it('wireTablist skips tabs inside a collapsed <details>, or arrow keys focus invisible rows', () => {
+    expect(fn('function wireTablist(', '\nfunction btn(')).toContain('details:not([open])')
+  })
+
+  it('the peek banner names the suppression instead of leaving two counts disagreeing', () => {
+    const body = fn('function renderClosedBanner(', '\n// Projects as vertical tabs')
+    expect(body).toContain('closed-banner')
+    expect(body).toMatch(/textContent/)
+    expect(body, 'a project name must never reach innerHTML').not.toMatch(/innerHTML/)
+    expect(body).toMatch(/triage deck/)
+    expect(body).toMatch(/reopenProjectAction\(/)
+    // rendered from render(), above the panel host, so EVERY tab explains itself
+    expect(fn('function render()', '\n// one age vocabulary')).toContain('renderClosedBanner()')
+  })
+
+  it('the optimistic close/reopen revert BY VALUE — a poll between click and response must not evict a bystander', () => {
+    const close = fn('async function closeProjectAction(', '\nasync function reopenProjectAction(')
+    const reopen = fn('async function reopenProjectAction(', '\n// fix round 1: the query persists')
+    for (const [name, body] of [['close', close], ['reopen', reopen]] as const) {
+      expect(body, `${name} must not splice by index`).not.toMatch(/\.splice\(/)
+      expect(body, `${name} must route through postJSON`).toMatch(/postJSON\('\/api\/projects\//)
+      expect(body, `${name} must bail out on a failed write`).toMatch(/=== null/)
+    }
+    expect(close).toMatch(/filter\(\(p\) => p !== name\)/)
+    expect(reopen).toMatch(/includes\(name\)/)
+  })
+})
+
+describe('closed-project css (issue #32)', () => {
+  it('ships the fold, the row actions and the peek banner', () => {
+    for (const rule of ['.closed-fold', '.rail-close', '.rail-reopen', '.closed-muted', '.closed-banner', '.rail-row']) {
+      expect(css, rule).toContain(rule)
+    }
+  })
+
+  it('closed rows never wear the escalated crimson badge', () => {
+    expect(css).toMatch(/\.closed-fold \.rail-badge \{/)
+  })
+
+  it('a Reopen button inside the fold still responds to hover (equal specificity, later rule wins)', () => {
+    // .closed-fold .rail-reopen and .rail-reopen:hover are both (0,2,0)/(0,1,1);
+    // the dimmed fold rule must not silently beat the hover feedback
+    expect(css.indexOf('.closed-fold .rail-reopen {')).toBeLessThan(css.indexOf('.rail-close:hover'))
+  })
+
+  it('the narrow-width closed rules live INSIDE the single @media block', () => {
+    const media = css.search(/@media\s*\(/)
+    expect(css.indexOf('#rail .closed-fold')).toBeGreaterThan(media)
+    expect(css.indexOf('#rail:has(.rail-filter) .rail-close')).toBeGreaterThan(media)
+  })
+})

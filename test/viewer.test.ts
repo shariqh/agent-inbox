@@ -3,7 +3,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
-import { openDb, insertItem, listItems, answerItem, markReplySeen, upsertBoard, listBoards, annotateBoardRow, upsertActivity } from '../src/store.js'
+import { openDb, insertItem, listItems, answerItem, markReplySeen, upsertBoard, listBoards, annotateBoardRow, upsertActivity, closeProject, closedProjects } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
 
 function freshDb(): Database.Database {
@@ -221,5 +221,80 @@ describe('boards api', () => {
     expect(first[0].rows[0].annotation_unseen).toBe(true)
     const second = await (await app.request('/api/boards')).json() // human watching ≠ agent reading
     expect(second[0].rows[0].annotation_unseen).toBe(true)
+  })
+})
+
+// ── issue #32: close / reopen a project ──────────────────────────────────────
+// The HTTP surface both consumers read: public/app.js (title badge, rail) and
+// electron/main.cjs (dock badge). Tenet 3 — one attention set — is why closure
+// has to be server state at all: the main process cannot read the renderer's
+// localStorage, so a client-side close would make the two badges disagree.
+describe('project close/reopen api (issue #32)', () => {
+  let db: Database.Database
+  beforeEach(() => { db = freshDb() })
+
+  const post = (app: ReturnType<typeof createViewer>, path: string, body: unknown) =>
+    app.request(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+
+  it('POST /api/projects/close closes it and GET /api/projects/closed lists it', async () => {
+    const app = createViewer(db)
+    insertItem(db, { project: 'dead', stream: '', agent: 'a', kind: 'question', title: 'q' })
+    const res = await post(app, '/api/projects/close', { project: 'dead' })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ ok: true })
+    expect(await (await app.request('/api/projects/closed')).json()).toEqual(['dead'])
+  })
+
+  it('POST /api/projects/reopen removes it from the closed list', async () => {
+    const app = createViewer(db)
+    closeProject(db, 'dead')
+    const res = await post(app, '/api/projects/reopen', { project: 'dead' })
+    expect(res.status).toBe(200)
+    expect(await (await app.request('/api/projects/closed')).json()).toEqual([])
+  })
+
+  it('GET /api/projects/closed omits a project an agent flagged into after it was closed', async () => {
+    const app = createViewer(db)
+    closeProject(db, 'dead')
+    await new Promise((r) => setTimeout(r, 5))
+    insertItem(db, { project: 'dead', stream: '', agent: 'a', kind: 'question', title: 'back from the dead' })
+    expect(await (await app.request('/api/projects/closed')).json()).toEqual([])
+  })
+
+  it('accepts a project name containing a slash — names are agent-authored, hence a body not a path param', async () => {
+    const app = createViewer(db)
+    const res = await post(app, '/api/projects/close', { project: 'org/repo name' })
+    expect(res.status).toBe(200)
+    expect(await (await app.request('/api/projects/closed')).json()).toEqual(['org/repo name'])
+  })
+
+  it('rejects a blank or missing project name with 400, so app.js surfaces it instead of swallowing it', async () => {
+    const app = createViewer(db)
+    for (const body of [{ project: '   ' }, { project: '' }, {}, { project: 42 }]) {
+      const res = await post(app, '/api/projects/close', body)
+      expect(res.status, JSON.stringify(body)).toBe(400)
+    }
+    expect(closedProjects(db)).toEqual([])
+    const reopen = await post(app, '/api/projects/reopen', {})
+    expect(reopen.status).toBe(400)
+  })
+
+  it('rejects an unparseable body with 400 rather than throwing a 500', async () => {
+    const app = createViewer(db)
+    const res = await app.request('/api/projects/close', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: 'not json',
+    })
+    expect(res.status).toBe(400)
+  })
+
+  it('closing is presentation only — the /api/items and /api/boards payloads are byte-identical', async () => {
+    const app = createViewer(db)
+    insertItem(db, { project: 'dead', stream: '', agent: 'a', kind: 'question', title: 'q' })
+    upsertBoard(db, { project: 'dead', stream: '', agent: 'a', title: 'b', rows: [{ label: 'x', status: 'blocked' }] })
+    const itemsBefore = await (await app.request('/api/items')).json()
+    const boardsBefore = await (await app.request('/api/boards')).json()
+    await post(app, '/api/projects/close', { project: 'dead' })
+    expect(await (await app.request('/api/items')).json()).toEqual(itemsBefore)
+    expect(await (await app.request('/api/boards')).json()).toEqual(boardsBefore)
   })
 })

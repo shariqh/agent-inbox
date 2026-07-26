@@ -49,11 +49,15 @@ export const NOTE_AGE_MS: number
 export function classifyLiveness(item: AttentionItem, nowMs: number, liveSessionIds: LiveSessionIds): Liveness
 export function isAskingQuestion(item: AttentionItem): boolean
 export function isBlockedRowAttention(row: AttentionRow): boolean
+/** A closed set: project names, as a Set (browser) or a plain array (JSON). */
+export type ClosedProjects = Set<string> | readonly string[]
+
 export function attentionEntries(
   items: AttentionItem[],
   boards: AttentionBoard[],
   nowMs: number,
   liveSessionIds: LiveSessionIds,
+  closedProjects?: ClosedProjects,
 ): AttentionEntry[]
 export function staleEntries(
   items: AttentionItem[],
@@ -65,6 +69,7 @@ export function attentionCount(
   boards: AttentionBoard[],
   nowMs: number,
   liveSessionIds: LiveSessionIds,
+  closedProjects?: ClosedProjects,
 ): number
 export function countsByProject(
   items: AttentionItem[],

@@ -45,7 +45,8 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
 - **`src/store.ts` is the only door to the database.** Every read/write goes through its
   exported functions — items: `insertItem`/`resolveItem`/`dismissItem`/`annotateItem`/
   `replyItem`/`answerItem`/`listItems`; boards: `upsertBoard`/`updateBoardRow`/`getBoard`/`listBoards`/
-  `archiveBoard`/`annotateBoardRow` — plus `openDb`. No raw SQL anywhere else. To change
+  `archiveBoard`/`annotateBoardRow`; projects: `closeProject`/`reopenProject`/`listClosedProjects`/
+  `closedProjects` — plus `openDb`. No raw SQL anywhere else. To change
   storage, reimplement this module; nothing else touches SQLite.
 - **Boards: the human's annotations are sacred.** A board is idempotent by
   `(project, title)` (UNIQUE); rows match by `label`, positions come from array order.
@@ -212,6 +213,19 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   `watch` subcommand (asyncRewake, exit 2) wakes it the moment you answer. The two legacy
   untracked `~/.claude/hooks/agent-inbox-*.sh` scripts are superseded — `--migrate` retires
   their settings entries.
+- **Close / reopen a project** *(#32)* — a sparse `projects(project, closed_at)` table; **reopen is
+  DERIVED, never written** (a project un-closes the moment an item or board is CREATED in it after
+  `closed_at`), so `insertItem` stays byte-identical and the un-close is atomic with the very insert
+  that raises the question. A closed project leaves the §7 attention set **entirely** — badge, title,
+  Needs-you count, triage deck — via a 5th `closedProjects` argument to `attentionEntries`, so there
+  is still exactly ONE predicate; `countsByProject` deliberately stays unsuppressed because the
+  rail's closed fold is where the number is RELOCATED, not destroyed. Live presence (footer strip and
+  drawer) is untouched: presence is not attention. Clicking a closed project PEEKS (a banner above
+  the panel says the badge excludes what you are looking at); only × / ↩ / a new flag mutate.
+  **Honest limitation:** an agent already blocked on a question raised *before* the close creates
+  nothing new while it polls `pending()`, so closing that project mutes a genuinely-live blocker
+  until fresh content arrives. "Nothing can be permanently muted" is true of everything except that
+  case — do not restate it unqualified.
 - **The agent-emit contract** — `docs/reporting-snippet.md`'s end-of-turn rule now tests "am I about
   to stop and wait on the human?", so recommendations and "say the word" moments get flagged
   instead of buried. Mirrored in the `flag` tool description so agents get it at the call site.

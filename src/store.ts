@@ -134,6 +134,11 @@ function migrate(db: Database.Database): void {
       ended_at TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_activity_live ON activity(ended_at, updated_at);
+    CREATE TABLE IF NOT EXISTS projects (
+      project TEXT PRIMARY KEY,
+      closed_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_items_project_created ON items(project, created_at);
   `)
   ensureColumn(db, 'board_rows', 'context', `TEXT NOT NULL DEFAULT ''`)
   ensureColumn(db, 'board_rows', 'annotated_at', 'TEXT')
@@ -579,4 +584,68 @@ export function getBoard(db: Database.Database, project: string, title: string):
     board.last_read_at,
   )
   return { ...board, rows, progress: computeProgress(rows) }
+}
+
+// ── project closure: retiring a dead project tab without losing it (issue #32) ──
+//
+// Sparse by design: a row exists ONLY for a project the human explicitly closed.
+// Closing is PRESENTATION ONLY — nothing is deleted, no item or board is touched,
+// and every one of them comes straight back the moment the project is reopened.
+
+export interface ClosedProject {
+  project: string
+  closed_at: string
+}
+
+// Idempotent: re-closing after an implicit reopen simply re-stamps closed_at.
+export function closeProject(db: Database.Database, project: string): void {
+  db.prepare(
+    `INSERT INTO projects (project, closed_at) VALUES (?, ?)
+     ON CONFLICT(project) DO UPDATE SET closed_at = excluded.closed_at`,
+  ).run(project, new Date().toISOString())
+}
+
+export function reopenProject(db: Database.Database, project: string): void {
+  db.prepare(`DELETE FROM projects WHERE project = ?`).run(project)
+}
+
+// The RAW rows, newest closure first — including projects the derived rule below
+// has already reopened (nothing deletes those; the table is bounded by how many
+// projects a human has ever closed, which is tiny). Anyone who wants the
+// EFFECTIVE closed set must call closedProjects(), never this.
+export function listClosedProjects(db: Database.Database): ClosedProject[] {
+  return db.prepare(`SELECT project, closed_at FROM projects ORDER BY closed_at DESC`).all() as ClosedProject[]
+}
+
+// The EFFECTIVE closed set. Reopen is DERIVED, never written: a project stops
+// being closed the moment new CONTENT is created in it.
+//
+// WHY derived rather than deleting the row inside insertItem: insertItem is the
+// one path CLAUDE.md says must never lose a flag, and this way it gains no new
+// write and no new failure mode; there is no window in which the item exists but
+// the un-close has not run yet; and one rule covers boards and every future
+// writer for free.
+//
+// created_at and closed_at are both ISO-8601 UTC strings from
+// `new Date().toISOString()` everywhere in this file, so lexicographic `>` is
+// chronologically correct — that is the load-bearing assumption here.
+//
+// Deliberately NOT reopening on: a board merely re-upserted (ensureBoard moves
+// updated_at, never created_at) or a live session appearing (presence is not
+// attention). KNOWN LIMITATION, accepted: an agent already blocked on a question
+// raised BEFORE the close creates nothing new while it polls pending(), so
+// closing that project mutes a genuinely-live blocking question until fresh
+// content arrives. Closing is the human's explicit act, and one new flag undoes
+// it — but "nothing can be permanently muted" is not true of that one case, and
+// saying otherwise would be an overclaim.
+export function closedProjects(db: Database.Database): string[] {
+  const rows = db
+    .prepare(
+      `SELECT p.project FROM projects p
+        WHERE NOT EXISTS (SELECT 1 FROM items  i WHERE i.project = p.project AND i.created_at > p.closed_at)
+          AND NOT EXISTS (SELECT 1 FROM boards b WHERE b.project = p.project AND b.created_at > p.closed_at)
+        ORDER BY p.project`,
+    )
+    .all() as { project: string }[]
+  return rows.map((r) => r.project)
 }

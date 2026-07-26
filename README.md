@@ -50,8 +50,10 @@ check never touches the badge — PR state is ambient information, not attention
 
 **v1 shipped and running locally.** Registered with Claude Code (user scope) and Copilot
 CLI (`~/.copilot/mcp-config.json`); viewer served on `http://localhost:4319`.
-Answer-back, remote/hosted mode, a `done` bucket, and Electron packaging are v2 — see
-[`CLAUDE.md`](CLAUDE.md) for the backlog and the seams already in place.
+Answer-back, the `done` bucket, tracking boards, session presence, Electron packaging, the
+backstop hooks, source/PR links and project close/reopen have all since landed.
+**Remote/hosted mode is the one big open item** — see [`CLAUDE.md`](CLAUDE.md) for the
+backlog and the seams already in place.
 
 ## Quickstart
 
@@ -94,13 +96,15 @@ noise signal — high dismiss = tighten the reporting snippet.
 
 ```
 src/
-  store.ts         SQLite: schema, WAL, insert/resolve/dismiss/annotate/list (only DB door)
-  infer.ts         project/stream/agent inference from cwd + clientInfo
+  store.ts         SQLite: schema, WAL, items + boards + activity + source links +
+                   project closure — the only DB door
+  infer.ts         project/stream/agent/repo/issue inference from cwd + clientInfo
   scope.ts         session-bound scope object (Solo-style: inferred, overridable)
-  mcp.ts           MCP tool definitions (flag/resolve/register/whoami)
+  mcp.ts           MCP tool definitions (flag/pending/answer/resolve/register/whoami,
+                   board_upsert/board_row/board_get/board_archive, status)
   mcp-server.ts    stdio entry — spawned per agent session
   group.ts         pure grouping (Needs-you / Notes / Done)
-  viewer.ts        Hono API (GET /api/items, POST resolve/dismiss/annotate)
+  viewer.ts        Hono API (items, boards, live activity, source links, close/reopen)
   prstate.ts       VIEWER-PROCESS-ONLY gh fetcher for live PR state (#30) — never imported by mcp.ts
   viewer-server.ts node entry — serves API + public/ on localhost
   hook.ts          Claude Code hooks runtime (#10 backstop + #21 pickup nudges)
@@ -113,20 +117,24 @@ docs/              INSTALL.md, hooks.md, reporting-snippet.md, superpowers/{spec
 ## Development
 
 ```sh
-npm test            # vitest run (21 tests: store, infer, scope, mcp round-trip, group, viewer)
+npm test            # vitest run — the whole suite, one shot (store, infer, scope, hooks,
+                    # mcp round-trip, viewer, every public/ module, jsdom DOM harness)
 npm run typecheck   # tsc --noEmit (strict, noUncheckedIndexedAccess)
 npm run build       # tsc -p tsconfig.build.json → dist/ (flat; entry at dist/mcp-server.js)
 npm run mcp         # run the MCP server via tsx (for local iteration)
 npm run view        # run the viewer via tsx
 ```
 
-> **Node 24 is required.** `better-sqlite3`'s native binding does not build/load under Node
-> 26+. The repo pins `.node-version` to 24 — run `fnm use 24` before any command. When
-> registering the MCP server, use the **absolute path to the Node 24 binary**, not bare
-> `node`, or agents will spawn it under your default (newer) Node and it will fail to load.
+> **Node 24 for this checkout.** `better-sqlite3` compiles one native binding per install,
+> and this repo's is built for Node 24's ABI — `.node-version` pins it, so run `fnm use 24`
+> before any command. (Since the v12 upgrade the library itself supports newer Node; the
+> packaged Electron app rebuilds the binding for Electron's own ABI.) When registering the
+> MCP server, use the **absolute path to the Node 24 binary**, not bare `node`, or agents
+> will spawn it under your default Node and the binding will fail to load.
 
 ## Design docs
 
 - Spec: [`docs/superpowers/specs/2026-07-12-agent-inbox-design.md`](docs/superpowers/specs/2026-07-12-agent-inbox-design.md)
+  — one per feature since; the whole set is in [`docs/superpowers/specs/`](docs/superpowers/specs/)
 - Plan: [`docs/superpowers/plans/2026-07-12-agent-inbox-v1.md`](docs/superpowers/plans/2026-07-12-agent-inbox-v1.md)
 - Agent handoff / conventions / v2 backlog: [`CLAUDE.md`](CLAUDE.md)

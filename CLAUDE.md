@@ -13,8 +13,9 @@ server). See [`README.md`](README.md) for the full picture and
 [`docs/superpowers/specs/`](docs/superpowers/specs/) for the design docs (inbox v1 +
 tracking boards).
 
-MCP tools: `flag`, `resolve`, `answer`, `register`, `whoami` (items/scope) and `board_upsert`,
-`board_row`, `board_get`, `board_archive` (boards) — all defined in `src/mcp.ts`.
+MCP tools: `flag`, `pending`, `answer`, `resolve`, `register`, `whoami` (items/scope),
+`board_upsert`, `board_row`, `board_get`, `board_archive` (boards) and `status` (live
+presence) — all defined in `src/mcp.ts`.
 
 ## Commands
 
@@ -82,7 +83,11 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
 - **Viewer escapes all agent-authored text.** `public/app.js` runs every interpolated field
   (item title/detail/annotation/project/stream/agent, board title/meta, row label/note/
   annotation) through `esc()` before `innerHTML`. Keep it — flags and boards are
-  attacker-influenced text.
+  attacker-influenced text. **`esc()` is not enough for a URL:** it does nothing about
+  `javascript:`, and issue #30 introduced the first anchors this product builds from supplied
+  text (PR titles are third-party network text). Every href is constructed in ONE place,
+  `chipHtml()` in `public/source.js`, through `esc(safeHttpUrl(...))` — a URL that does not
+  survive `safeHttpUrl` renders as a `<span>`. Do not build an anchor anywhere else.
 - **`src/prstate.ts` is VIEWER-PROCESS-ONLY (issue #30).** It is the one module that shells out to a
   network tool (`gh`), so `src/mcp.ts`/`src/mcp-server.ts` must never import it, directly or
   transitively — a subprocess that inherited a stream, or gh's update notifier, would corrupt the MCP
@@ -188,14 +193,25 @@ not evidence — delete it or move it to a source pin.
 - Build emits via **`tsconfig.build.json`** (rootDir `src`, src-only) so `dist/mcp-server.js`
   is flat. The base `tsconfig.json` (src + test) is for typecheck only. Don't point `build`
   at the base config — it re-nests output under `dist/src/`.
-- **Every export in `public/*.js` needs a non-test consumer** — another `public/*.js`
-  module, `src/*.ts`, or `electron/*.cjs`. A test is not a consumer: a helper only its own
-  unit test calls looks load-bearing (typed, covered, named after a real concept) while
-  shipping nothing, and four accumulated through the viewer rebuild before anyone noticed.
-  `test/dead-exports.test.ts` enforces it. The only deliberate exits are a
-  `void X // why` marker at the call site (as `app.js` does for `paginateGroups`) or an
-  entry in that file's `ALLOWED` map **with a written reason** — the map is the point: it
-  turns a silent trap into a list someone has to justify.
+- **Every value export in `public/*.js` AND `src/*.ts` must be reachable from code that
+  ships.** Two ways, and nothing else counts: another production module IMPORTS it by name
+  and uses that binding, or it is CALLED inside its own module and that module is itself
+  imported (or is an entry point). A test is not a consumer: a helper only its own unit test
+  calls looks load-bearing (typed, covered, named after a real concept) while shipping
+  nothing. `test/dead-exports.test.ts` enforces it. The only deliberate exits are a
+  `void X // why` marker at an importing call site (as `app.js` does for `paginateGroups`)
+  or an entry in that file's `ALLOWED` map **with a written reason** — the map is the point:
+  it turns a silent trap into a list someone has to justify.
+  Four such helpers accumulated through the viewer rebuild; `listClosedProjects` (#32) was
+  the fifth and got through because the guard's first draft asked only whether `\bNAME\b`
+  occurred more than once across a concatenation of the consumer files — so any unrelated
+  file containing the same word vouched for it, and `src/` was not scanned at all. **Keep
+  the liveness test import-or-call.** Its discrimination is pinned on synthetic module trees
+  in the same file (including the exact word-match hole), so a slide back into word-matching
+  fails there rather than shipping a sixth. It is a scanner, not a tokenizer: cross-file
+  liveness is import-only and airtight, but *within* the declaring file a bare occurrence
+  counts however it got there (a local binding, an object key, template-literal text). That
+  limit is written down at the `word()` helper — don't restate it more generously.
 
 ## Shipped since v1
 
@@ -260,7 +276,8 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   Swap stdio for **streamable-HTTP** and add **auth** (bearer token in MCP client headers + a gate
   on the viewer). `register` is the identity seam: a remote server can't see the client's `cwd`, so
   agents declare scope via `register` instead of auto-inference. `AGENT_INBOX_DB`/`AGENT_INBOX_PORT`
-  env overrides are already in place.
+  env overrides are already in place. Design (three blocking decisions, three verified wiring traps):
+  [`docs/superpowers/specs/2026-07-26-remote-hosted-mode-design.md`](docs/superpowers/specs/2026-07-26-remote-hosted-mode-design.md).
 
 Keep all of these additive and behind the existing seams — don't break v1's local,
 zero-config, no-auth path.
@@ -271,7 +288,8 @@ row escalation) are GitHub issues #1–#6; original review context in
 
 ## Gotchas recap
 
-- Node 26 default → `better-sqlite3` fails; use Node 24.
+- Node 26 default → this checkout's `better-sqlite3` binding was built for Node 24's ABI and
+  fails to load; use Node 24.
 - Register the MCP server with the absolute Node 24 path, not bare `node`.
 - New MCP-server registration is picked up only on a **fresh** CLI session.
 - The **reporting snippet** (`docs/reporting-snippet.md`) is what makes agents flag at all —

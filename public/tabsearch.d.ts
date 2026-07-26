@@ -29,3 +29,8 @@ export function searchIndex(data: SearchData, query: string, filterFn: FilterFn)
 export function tabMatchCounts(data: SearchData, query: string, filterFn: FilterFn): Record<TabName, number | null>
 export function projectMatchCounts(data: SearchData, query: string, filterFn: FilterFn): Map<string, number>
 export function otherTabMatches(counts: Record<TabName, number | null>, activeTab: TabName): Array<{ tab: TabName; n: number }>
+export function elsewhereLabel(
+  counts: Record<TabName, number | null>,
+  activeTab: TabName,
+  labels?: Partial<Record<TabName, string>>,
+): string

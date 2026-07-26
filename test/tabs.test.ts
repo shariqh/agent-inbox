@@ -1,7 +1,7 @@
 // test/tabs.test.ts
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
-import { TAB_IDS, DEFAULT_TAB, tabCounts, livePresence } from '../public/tabs.js'
+import { TAB_IDS, DEFAULT_TAB, tabCounts } from '../public/tabs.js'
 import { attentionCount } from '../public/attention.js'
 
 const NOW = Date.parse('2026-07-24T12:00:00.000Z')
@@ -22,11 +22,11 @@ describe('tab model', () => {
     expect(TAB_IDS[0]).toBe(DEFAULT_TAB)
   })
 
-  it('livePresence still works — the footer strip reuses it', () => {
-    expect(livePresence([{ session: 's1', idle: true }])).toBe(false)
-    expect(livePresence([{ session: 's1', idle: true }, { session: 's2', idle: false }])).toBe(true)
-    expect(livePresence(undefined)).toBe(false)
-  })
+  // (A `livePresence still works — the footer strip reuses it` case used to sit
+  // here. The claim was false — livebar.js's liveSummary derives `!a.idle`
+  // itself — and it was the only caller, which is exactly how a dead export
+  // keeps looking load-bearing. Both are gone; test/livebar.test.ts covers the
+  // real presence read. Issue #31.4.)
 
   it('counts the scoped view for boards and done, and takes notes as a precomputed number', () => {
     const c = tabCounts({

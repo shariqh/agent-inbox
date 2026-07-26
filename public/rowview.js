@@ -156,10 +156,9 @@ export function repliedEntries(items, nowMs, liveSessionIds) {
     .filter((i) => i.kind === 'question' && (i.status ?? 'open') === 'open' && i.reply)
     .map((i) => ({ kind: 'item', item: i, liveness: classifyLiveness(i, nowMs, liveSessionIds) }))
 }
-
-// The strict subset still waiting on the agent — "answered · awaiting agent" as
-// an ambient reading. Its own predicate because "replied" and "awaiting pickup"
-// stopped being the same set (see repliedEntries).
-export function awaitingPickupEntries(items, nowMs, liveSessionIds) {
-  return repliedEntries(items, nowMs, liveSessionIds).filter((e) => !e.item.reply_seen_at)
-}
+// (There used to be a strict "still awaiting pickup" subset of the above here.
+// Nothing called it once repliedEntries became what the list renders — issue
+// #31.4. The one ambient reading of "answered · awaiting agent" is notes.js's
+// inline count inside ambientChips, which needs a NUMBER, not entries with a
+// computed liveness, and has no liveSessionIds to pass. test/dead-exports.test.ts
+// is what now notices a helper like that going quiet.)

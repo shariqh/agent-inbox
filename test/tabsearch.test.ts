@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import uFuzzy from '@leeoniya/ufuzzy'
-import { liveEntity, searchIndex, tabMatchCounts, projectMatchCounts, otherTabMatches } from '../public/tabsearch.js'
+import { liveEntity, searchIndex, tabMatchCounts, projectMatchCounts, otherTabMatches, elsewhereLabel } from '../public/tabsearch.js'
 
 const uf = new uFuzzy({ intraMode: 1 })
 const fuzzy = (hay: string[], needle: string) => uf.filter(hay, needle)
@@ -77,6 +77,29 @@ describe('otherTabMatches', () => {
   })
   it('is empty with no query (null counts)', () => {
     expect(otherTabMatches({ needsYou: null, boards: null, live: null, notes: null, done: null }, 'needsYou')).toEqual([])
+  })
+})
+
+// Issue #31.3: the §12 pointer ("2 in Boards · 1 in Notes") used to exist only
+// as a fragment inside app.js's emptyMsg, so the ONE path that must not print
+// emptyMsg — a Needs-you search whose only hits are inside the collapsed stale
+// fold (fix round 2 / I2) — lost the pointer along with the false "no matches"
+// claim, and printed nothing at all. Lifting it here gives both surfaces one
+// builder. Label map injected so this module stays presentation-free.
+describe('elsewhereLabel', () => {
+  const LABELS = { needsYou: 'Needs you', boards: 'Boards', live: 'Live', notes: 'Notes', done: 'Done' } as const
+  it('names the tabs holding matches you are not looking at', () => {
+    const counts = { needsYou: 1, boards: 2, live: 0, notes: 1, done: 0 }
+    expect(elsewhereLabel(counts, 'needsYou', LABELS)).toBe('2 in Boards · 1 in Notes')
+  })
+  it('is empty when the only matches are in the active tab', () => {
+    expect(elsewhereLabel({ needsYou: 3, boards: 0, live: 0, notes: 0, done: 0 }, 'needsYou', LABELS)).toBe('')
+  })
+  it('is empty with no query (null counts)', () => {
+    expect(elsewhereLabel({ needsYou: null, boards: null, live: null, notes: null, done: null }, 'needsYou', LABELS)).toBe('')
+  })
+  it('falls back to the raw tab id when no label is supplied', () => {
+    expect(elsewhereLabel({ needsYou: 0, boards: 1, live: 0, notes: 0, done: 0 }, 'needsYou')).toBe('1 in boards')
   })
 })
 

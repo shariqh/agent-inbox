@@ -14,11 +14,11 @@ import {
 } from '/rowview.js'
 import { cardSections, optionOrder } from '/card.js'
 import { keyAction, rovingIndex, ariaAnswerLabel, livenessGlyph, deckEntryAt } from '/keys.js'
-import { partitionNotes, unreadNoteCount, ambientChips, seenWatermark } from '/notes.js'
+import { partitionNotes, unreadNoteCount, ambientChips, seenWatermark, markSeenIds } from '/notes.js'
 import { liveSummary } from '/livebar.js'
 import { esc } from '/esc.js'
 import { boardRowsView, progressLabel, hiddenDoneCount, lingeringBoards } from '/boards.js'
-import { liveEntity, tabMatchCounts, projectMatchCounts, otherTabMatches } from '/tabsearch.js'
+import { liveEntity, tabMatchCounts, projectMatchCounts, elsewhereLabel } from '/tabsearch.js'
 import { titleWithBadge, focusHashFor, parseFocusHash } from '/badge.js'
 import { layoutMode, railLabel, NARROW_MAX } from '/layout.js'
 
@@ -43,17 +43,36 @@ let projectFilter = localStorage.getItem(PROJECT_KEY) || null
 let hideCompleted = localStorage.getItem(HIDE_DONE_KEY) !== 'false' // default ON
 
 const NOTES_SEEN_KEY = 'agent-inbox-notes-seen'
+const NOTES_SEEN_IDS_KEY = 'agent-inbox-notes-seen-ids'
 let notesSeenAt = localStorage.getItem(NOTES_SEEN_KEY) || null
+let notesSeenIds = new Set()
+try { notesSeenIds = new Set(JSON.parse(localStorage.getItem(NOTES_SEEN_IDS_KEY)) || []) } catch { /* fresh start */ }
 // Read-marking used to stamp `now()` unconditionally on every render while the
 // Notes tab was open — marking read every note behind the "Show N more" pager
 // and every note the rail filter was hiding, none of which the human ever saw.
 // notes.js's seenWatermark advances at most to a point below everything that
 // stayed hidden, and never backwards.
-function markNotesSeen(rendered, hidden) {
+//
+// Issue #31.2 added the second half. The watermark is ONE stamp, so whenever the
+// pager hides the oldest note it cannot move at all — six fresh notes with
+// PAGE.notes = 5 pinned the tab count at six until they aged out seven days
+// later. §8 says the count means "new since you last looked" and tenet 2 forbids
+// a count that can only grow, so the per-id set records what was literally on
+// screen. The two marks are INDEPENDENT: the id write must NOT sit behind the
+// watermark's early return, because "the watermark could not advance" is exactly
+// the case the id set exists for. `live` is the GLOBAL note list — it is the
+// prune input that keeps the stored set bounded by the 7-day window.
+function markNotesSeen(rendered, hidden, live) {
   const next = seenWatermark(rendered, hidden, notesSeenAt)
-  if (!next || next === notesSeenAt) return
-  notesSeenAt = next
-  localStorage.setItem(NOTES_SEEN_KEY, notesSeenAt)
+  if (next && next !== notesSeenAt) {
+    notesSeenAt = next
+    localStorage.setItem(NOTES_SEEN_KEY, notesSeenAt)
+  }
+  const ids = markSeenIds(notesSeenIds, rendered, live)
+  if (ids.length !== notesSeenIds.size || ids.some((id) => !notesSeenIds.has(id))) {
+    notesSeenIds = new Set(ids)
+    localStorage.setItem(NOTES_SEEN_IDS_KEY, JSON.stringify(ids))
+  }
 }
 
 let bootId = null
@@ -100,6 +119,26 @@ function renderIfIdle() {
 function resumeRender() {
   if (renderDirty) renderIfIdle()
   else showPauseHint()
+}
+
+// USER-INITIATED repaints only, and deliberately OUTSIDE the §10 gate.
+//
+// The gate protects the human from the 3s POLL rebuilding the DOM under the
+// cursor. It must not also swallow the frame the human's own click just asked
+// for — and there is one action that can ONLY be served by bypassing it:
+// changeAnswer's accepted path stages a draft, and a draft is itself a suspend
+// reason, so load()'s renderIfIdle() is GUARANTEED to skip the render that would
+// have built the input that draft lives in (issue #31.1).
+//
+// renderIfIdle() stays the poll's only entry. If this is ever wired into load(),
+// the 3s interval or renderIfIdle itself, the gate is gone.
+// Naming note: the obvious "render immediately" name belongs to the deleted #now
+// strip's render function, and test/shell.test.ts + test/notes.test.ts both
+// forbid that identifier as a substring of this file. Hence `forceRender`.
+function forceRender() {
+  renderDirty = false
+  render()
+  showPauseHint()
 }
 
 // the single writer of openRowId — Tasks 11/16/17 call this, never assign.
@@ -408,7 +447,7 @@ function render() {
   // filtered view the user is actually looking at (spec §7)
   const counts = tabCounts({
     globalAttention: attentionCount(allItems(lastData.g), lastData.boards, Date.now(), liveSessionIds()),
-    unreadNotes: unreadNoteCount(g.notes.flatMap((gr) => gr.items), notesSeenAt, Date.now()),
+    unreadNotes: unreadNoteCount(g.notes.flatMap((gr) => gr.items), notesSeenAt, Date.now(), notesSeenIds),
     scoped: { boards, done: g.done },
   })
   for (const id of TAB_IDS) setCount(id, counts[id])
@@ -701,14 +740,22 @@ function applySearch({ g, boards, archived }) {
 
 const TAB_LABEL = { needsYou: 'Needs you', boards: 'Boards', live: 'Live', notes: 'Notes', done: 'Done' }
 
+// the §12 pointer on its own: "<span>2 in Boards · 1 in Notes</span>", or ''.
+// Interpolates ONLY the fixed TAB_LABEL strings and integers — never agent text
+// — which is what makes it safe to hand straight to innerHTML. tabsearch.js's
+// elsewhereLabel is the unit-tested builder both callers share.
+function elsewhereMsg() {
+  const where = elsewhereLabel(matchCounts, activeTab, TAB_LABEL)
+  return where ? `<span class="match-elsewhere">${where}</span>` : ''
+}
+
 // section empty-state text: search-aware, and never a BARE "no matches" — it
 // always points at the tabs that do have hits (spec §12)
 function emptyMsg(base) {
   const q = searchQuery.trim()
   if (!q) return base
-  const elsewhere = otherTabMatches(matchCounts, activeTab)
-  const where = elsewhere.map(({ tab, n }) => `${n} in ${TAB_LABEL[tab]}`).join(' · ')
-  return `No matches for &ldquo;${esc(q)}&rdquo; here${where ? ` — <span class="match-elsewhere">${where}</span>` : ' or in any other tab'}`
+  const where = elsewhereMsg()
+  return `No matches for &ldquo;${esc(q)}&rdquo; here${where ? ` — ${where}` : ' or in any other tab'}`
 }
 
 const liveSessionIds = () => new Set((lastData.activity ?? []).map((a) => a.session))
@@ -1034,7 +1081,7 @@ function needsYouHeader() {
 // one quiet chip at the very foot of the Needs-you list — notes are seen in the
 // flow the user actually opens, without entering the attention set (spec §8)
 function renderNeedsYouExtras(host, notes) {
-  const n = unreadNoteCount(notes, notesSeenAt, Date.now())
+  const n = unreadNoteCount(notes, notesSeenAt, Date.now(), notesSeenIds)
   if (!n) return
   const chip = btn(`${n} new note${n > 1 ? 's' : ''}`, () => selectTab('notes'))
   chip.className = 'notes-chip'
@@ -1049,7 +1096,11 @@ function renderEmptyState(host) {
   // the unread-note count already has its own actionable footer button
   // (renderNeedsYouExtras' .notes-chip) — an inert duplicate here is one
   // number shown twice for the same fact.
-  const chips = ambientChips(allItems(lastData.g), lastData.boards, Date.now(), notesSeenAt)
+  // Honest note: because that filter drops the ONLY chip `notesSeenIds` can
+  // change, passing it here is inert TODAY. It is passed anyway so that dropping
+  // the filter can never resurrect a chip that disagrees with the tab count —
+  // the two note numbers disagreeing is precisely fix round 2's I3.
+  const chips = ambientChips(allItems(lastData.g), lastData.boards, Date.now(), notesSeenAt, notesSeenIds)
     .filter((c) => c.key !== 'notes')
   if (chips.length) {
     const row = document.createElement('div')
@@ -1106,6 +1157,13 @@ function renderNeedsYou(g, boardsInView, nowMs) {
     if (searchQuery.trim()) {
       // only claim "no matches" when the fold below holds none either
       if (!stale.length) host.insertAdjacentHTML('beforeend', `<p class="empty">${emptyMsg('Nothing needs you.')}</p>`)
+      // issue #31.3: suppressing the FALSE "no matches" claim also swallowed the
+      // §12 pointer, leaving a search that hit only a collapsed stale item with a
+      // blank tab. The claim is what was wrong, not the pointer — print it alone.
+      else {
+        const where = elsewhereMsg()
+        if (where) host.insertAdjacentHTML('beforeend', `<p class="empty">Only stale matches here — ${where}</p>`)
+      }
     } else {
       // an empty INBOX still gets the calm panel: a demoted stale item is, by
       // definition, not something that needs you — the claim stays true.
@@ -1239,9 +1297,14 @@ function rowCardBodyEl(entry, m, nowMs) {
   const body = document.createElement('div')
   body.className = 'nrow-card'
   body.addEventListener('click', (ev) => ev.stopPropagation()) // clicks in the card must not collapse it
+  // `entry` is a render-time closure and the §10 gate can hold a render for
+  // minutes, so the snapshot inside it goes stale (issue #31.1, layer 2: a row
+  // reopened after a Change answer would otherwise re-mount the OLD reply and
+  // hide the answer surface again). Same freshItem() precedent as the star's
+  // Undo fallback. Resolved in place: `entry.item` is undefined for board rows.
   body.appendChild(entry.kind === 'row'
     ? rowCardEl(entry.board, entry.row)
-    : itemCardEl(entry.item, { nowMs, liveness: m.liveness }))
+    : itemCardEl(freshItem(entry.item.id) ?? entry.item, { nowMs, liveness: m.liveness }))
   return body
 }
 
@@ -1291,7 +1354,7 @@ function renderGroups(sectionId, groups) {
   if (sectionId === 'notes' && activeTab === 'notes') {
     const shownIds = new Set(visible.map((it) => it.id))
     const all = lastData.g.notes.flatMap((gr) => gr.items)
-    markNotesSeen(visible, all.filter((n) => !shownIds.has(n.id)))
+    markNotesSeen(visible, all.filter((n) => !shownIds.has(n.id)), all)
   }
 }
 
@@ -1664,7 +1727,21 @@ async function changeAnswer(it, msgEl) {
   // the answer surface comes back, and this is what it comes back holding.
   draftReplies[it.id] = it.reply
   draftReplyContexts[it.id] = it.reply_context ?? ''
-  load()
+  draftFocusKey = `${it.id}:answer`
+  // issue #31.1. Two things have to be true for the human to SEE that draft, and
+  // neither was:
+  //  1. the row has to be expanded. This is reachable from a collapsed row —
+  //     the star's Undo fallback lives on line 1 of `.nrow` — and a repaint of a
+  //     collapsed row builds no answer surface at all. setOpenRow stays the
+  //     single writer of openRowId (Task 9).
+  //  2. a render has to happen. `load()`'s renderIfIdle() cannot do it: the
+  //     draft written two lines up IS a suspend reason, so the gate is certain
+  //     to skip. The human's own click is what asks for this frame, so it goes
+  //     through forceRender(), outside the gate, and awaits load() first so the
+  //     frame paints the server's post-blank-out state rather than the old reply.
+  setOpenRow(it.id)
+  await load()
+  forceRender()
 }
 
 // notes / done keep a collapsible card; the body is the same component

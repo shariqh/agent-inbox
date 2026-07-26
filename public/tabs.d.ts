@@ -27,11 +27,3 @@ export interface TabCounts {
 }
 
 export function tabCounts(input: TabCountsInput): TabCounts
-
-export interface LiveActivity {
-  idle?: boolean
-  session?: string
-  [key: string]: unknown
-}
-
-export function livePresence(activity: readonly LiveActivity[] | undefined): boolean

@@ -1,0 +1,214 @@
+// @vitest-environment jsdom
+// test/dom/issue-31.test.ts
+// The three USER-VISIBLE follow-ups from the final review of the glanceable-viewer
+// rebuild (GitHub issue #31), driven through the real viewer instead of pinned as
+// source text. All three were verified to fail on the pre-fix tree.
+//
+//   31.1 — "Change answer" accepted by the server staged a prefill draft and then
+//          called load(), whose renderIfIdle() is GUARANTEED to skip: the draft it
+//          just wrote is itself a suspend reason. The answer surface the draft
+//          belongs in never appeared, and nothing could clear it. A frozen viewer
+//          with an invisible draft — the C2 failure mode, on the accepted path.
+//   31.2 — the notes read-mark is a single ISO watermark, so it cannot move at all
+//          whenever the pager hides the OLDEST note. Six fresh notes pinned the
+//          Notes tab count at six until they aged out seven days later.
+//   31.3 — a Needs-you search whose only hit is inside the collapsed stale fold
+//          correctly suppresses the false "No matches here" claim (fix round 2 /
+//          I2) — and used to swallow the §12 "matches elsewhere" pointer with it,
+//          leaving a blank tab and no way to find the hit.
+//
+// The structural half (which construct each fix uses) is pinned in
+// test/issue-31-followups.test.ts. Keep both — they cover different things.
+import { describe, it, expect, afterEach, vi } from 'vitest'
+import type Database from 'better-sqlite3'
+import { insertItem, replyItem } from '../../src/store.js'
+import {
+  advanceClock, answerInput, bootApp, buttonLabelled, click, freshDb, pollTick, row, rowTitles,
+  searchFor, settle, tabCount, type, useDomTest,
+} from './harness.js'
+
+useDomTest()
+
+let db: Database.Database | null = null
+afterEach(() => { db?.close(); db = null })
+
+function open(): Database.Database {
+  db = freshDb()
+  return db
+}
+
+const AGENT = { project: 'alpha', stream: 'main', agent: 'claude' } as const
+
+// ── 31.1 ────────────────────────────────────────────────────────────────────
+describe('31.1 · an accepted "Change answer" must show the surface it staged a draft into', () => {
+  it('reopens the answer input holding the previous reply', async () => {
+    const d = open()
+    const id = insertItem(d, { ...AGENT, kind: 'question', title: 'ship it?' })
+    replyItem(d, id, 'yes') // answered, NOT picked up — the store will accept the blank-out
+    await bootApp(d)
+
+    click(row(id))
+    await settle()
+    expect(answerInput(id), 'an answered question shows no answer surface yet').toBeNull()
+
+    click(buttonLabelled('Change answer', row(id)!))
+    await settle()
+
+    // the whole bug: before the fix load()'s renderIfIdle() was suspended by the very
+    // draft it had just written, so this input was never built and the text was parked
+    // where no UI could reach it.
+    expect(answerInput(id), 'the answer surface never came back — the draft is invisible').toBeTruthy()
+    expect(answerInput(id)?.value).toBe('yes')
+  })
+
+  it('leaves the parked draft clearable, so the viewer can un-freeze', async () => {
+    const d = open()
+    const id = insertItem(d, { ...AGENT, kind: 'question', title: 'ship it?' })
+    replyItem(d, id, 'yes')
+    await bootApp(d)
+
+    click(row(id))
+    await settle()
+    click(buttonLabelled('Change answer', row(id)!))
+    await settle()
+
+    type(answerInput(id), '')      // the human abandons the change
+    click(row(id))                 // collapse — nothing is suspending the poll now
+    await settle()
+
+    advanceClock()
+    insertItem(d, { ...AGENT, kind: 'question', title: 'SECOND question' })
+    await pollTick()
+
+    expect(rowTitles()).toContain('SECOND question')
+  })
+
+  it('opens the row on the star-Undo path too, where nothing was expanded to begin with', async () => {
+    // The other of changeAnswer's two call sites. The ★/Undo affordance sits on line 1
+    // of a COLLAPSED row, so a repaint alone builds no answer surface at all: the fix
+    // has to guarantee the surface, not merely repaint.
+    const d = open()
+    const starred = insertItem(d, {
+      ...AGENT, kind: 'question', title: 'deploy now?', detail: 'the canary is green',
+      options: [{ label: 'Deploy', recommended: true }, { label: 'Hold' }],
+    })
+    advanceClock()
+    const other = insertItem(d, { ...AGENT, kind: 'question', title: 'other question' })
+    await bootApp(d)
+
+    // Expanding a DIFFERENT row suspends the poll (spec §10), which is what keeps the
+    // stale "Sent: … — Undo" affordance on screen after the staged send has flushed —
+    // exactly the real-world sequence that makes this path reachable.
+    click(row(other))
+    await settle()
+
+    click(row(starred)!.querySelector('.star-btn'))
+    await settle()
+    expect(buttonLabelled('Undo', row(starred)!), 'the ★ should stage with an undo window').toBeTruthy()
+
+    await vi.advanceTimersByTimeAsync(5000) // REPLY_DELAY_MS — the staged reply actually sends
+    await settle()
+
+    click(buttonLabelled('Undo', row(starred)!)) // too late to cancel → falls through to changeAnswer
+    await settle()
+
+    expect(answerInput(starred), 'the un-done answer has nowhere to live').toBeTruthy()
+    expect(answerInput(starred)?.value).toBe('Deploy')
+  })
+})
+
+// ── 31.2 ────────────────────────────────────────────────────────────────────
+describe('31.2 · the Notes count must come down once you have looked', () => {
+  it('drops to the notes the pager actually hid, instead of staying pinned', async () => {
+    const d = open()
+    // six notes > PAGE.notes (5): the pager hides the OLDEST, which is precisely the
+    // shape a single watermark cannot express.
+    for (let i = 0; i < 6; i++) {
+      insertItem(d, { ...AGENT, kind: 'note', title: `note ${i}` })
+      advanceClock()
+    }
+    await bootApp(d)
+    expect(tabCount('notes')).toBe('6')
+
+    click(document.querySelector('.tab[data-tab="notes"]'))
+    await pollTick() // read-marking happens in render(), which the poll drives
+
+    expect(document.querySelectorAll('#notes .groups .item').length, 'the pager should hide one').toBe(5)
+    expect(tabCount('notes'), 'only the note that stayed behind the pager is still new').toBe('1')
+  })
+
+  it('stays down across a reload — the seen set is persisted, not per-session', async () => {
+    const d = open()
+    for (let i = 0; i < 6; i++) {
+      insertItem(d, { ...AGENT, kind: 'note', title: `note ${i}` })
+      advanceClock()
+    }
+    await bootApp(d)
+    click(document.querySelector('.tab[data-tab="notes"]'))
+    await pollTick()
+    expect(tabCount('notes')).toBe('1')
+
+    vi.resetModules() // a fresh page load against the same localStorage
+    await bootApp(d)
+    expect(tabCount('notes')).toBe('1')
+  })
+
+  it('a genuinely new note still counts', async () => {
+    const d = open()
+    for (let i = 0; i < 6; i++) {
+      insertItem(d, { ...AGENT, kind: 'note', title: `note ${i}` })
+      advanceClock()
+    }
+    await bootApp(d)
+    click(document.querySelector('.tab[data-tab="notes"]'))
+    await pollTick()
+    expect(tabCount('notes')).toBe('1')
+
+    advanceClock()
+    insertItem(d, { ...AGENT, kind: 'note', title: 'brand new' })
+    await pollTick()
+    // the new note renders (it is newest), so the same tick marks it seen again —
+    // what matters is that the count moved, i.e. it is not monotonic any more.
+    expect(Number(tabCount('notes') || '0')).toBeLessThan(6)
+  })
+})
+
+// ── 31.3 ────────────────────────────────────────────────────────────────────
+describe('31.3 · a search that only the stale fold answers still points somewhere', () => {
+  it('prints the §12 pointer instead of nothing at all', async () => {
+    const d = open()
+    const id = insertItem(d, { ...AGENT, kind: 'question', title: 'rotate the auth token' })
+    advanceClock()
+    insertItem(d, { ...AGENT, kind: 'note', title: 'auth cookie workaround' })
+    vi.setSystemTime(Date.now() + 73 * 3600e3) // past STALE_MS: the question demotes into the fold
+    await bootApp(d)
+
+    // the fold is appended INTO #needsYouList, so row() still finds it — what matters
+    // is that it sits inside the collapsed fold rather than the active list
+    expect(row(id)?.closest('.stale-fold'), 'the question should have demoted into the stale fold').toBeTruthy()
+
+    await searchFor('auth')
+
+    const empties = [...document.querySelectorAll('#needsYou .empty')].map((el) => el.textContent ?? '')
+    expect(empties.join(' '), 'the tab went completely silent about where the match is').not.toBe('')
+    expect(empties.join(' ')).toContain('1 in Notes')
+    // …and it must NOT be the false claim I2 removed
+    expect(empties.join(' ')).not.toContain('No matches')
+    // the fold below is still holding the other match
+    expect(document.querySelector('#needsYou .stale-fold')).toBeTruthy()
+  })
+
+  it('an ordinary no-match search still gets the full "No matches … — N in X" line', async () => {
+    const d = open()
+    insertItem(d, { ...AGENT, kind: 'question', title: 'unrelated question' })
+    advanceClock()
+    insertItem(d, { ...AGENT, kind: 'note', title: 'auth cookie workaround' })
+    await bootApp(d)
+
+    await searchFor('auth')
+
+    const empty = document.querySelector('#needsYou .empty')?.textContent ?? ''
+    expect(empty).toContain('No matches')
+    expect(empty).toContain('1 in Notes')
+  })
+})

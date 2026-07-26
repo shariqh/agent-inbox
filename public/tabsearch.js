@@ -60,3 +60,18 @@ export function otherTabMatches(counts, activeTab) {
     .filter((t) => t !== activeTab && (counts[t] ?? 0) > 0)
     .map((t) => ({ tab: t, n: counts[t] }))
 }
+
+// The rendered form of the above — "2 in Boards · 1 in Notes", '' when there is
+// nothing to point at. It lives HERE, not inside app.js's emptyMsg, because two
+// surfaces need it: the ordinary "No matches … — <here>" empty state, and the
+// one case that must NOT print a "no matches" claim at all (a Needs-you search
+// whose only hits are inside the collapsed stale fold — fix round 2 / I2), where
+// the pointer is the entire message. One builder, so they cannot drift.
+// `labels` is injected rather than imported: this module stays presentation-free
+// and Node-testable. Interpolates only caller-supplied fixed labels and integers
+// — never agent text — so the app can put the result straight into innerHTML.
+export function elsewhereLabel(counts, activeTab, labels = {}) {
+  return otherTabMatches(counts, activeTab)
+    .map(({ tab, n }) => `${n} in ${labels[tab] ?? tab}`)
+    .join(' · ')
+}

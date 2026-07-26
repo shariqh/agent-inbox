@@ -106,6 +106,9 @@ describe('I4 · the dimmed foot group keeps picked-up-but-open questions', () =>
   it('renderNeedsYou feeds the list repliedEntries, not the strict awaiting-pickup subset', () => {
     const body = fn('function renderNeedsYou(', '\n// the stale fold')
     expect(body).toMatch(/repliedEntries\(items,/)
+    // `awaitingPickupEntries` was the strict subset this call site used to use. It has
+    // since been deleted outright (issue #31.4 — nothing called it any more), so this
+    // is a never-come-back guard rather than a live either/or.
     expect(body).not.toMatch(/awaitingPickupEntries\(items,/)
   })
 })

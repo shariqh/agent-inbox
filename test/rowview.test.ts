@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import {
   secondaryLine, streamCounts, agentCounts, rowModel, urgencyChip, relMs,
   FRESH_MS, AGING_MS, freshnessTone, ageChip, needsYouEntries, staleFoldLabel,
-  SECONDARY_BUDGET, rowStarOption, stagedLabel, undoRefusal, awaitingPickupEntries, repliedEntries,
+  SECONDARY_BUDGET, rowStarOption, stagedLabel, undoRefusal, repliedEntries,
 } from '../public/rowview.js'
 import type { RowItem, Entry } from '../public/rowview.js'
 import { attentionCount } from '../public/attention.js'
@@ -280,19 +280,6 @@ describe('undoRefusal', () => {
   })
 })
 
-describe('awaitingPickupEntries', () => {
-  it('keeps only replied questions the agent has not picked up', () => {
-    const items = [
-      item({ id: 'a', reply: 'go' }),
-      item({ id: 'b', reply: 'go', reply_seen_at: new Date(T0).toISOString() }),
-      item({ id: 'c' }),
-      item({ id: 'd', kind: 'note', reply: 'go' }),
-    ]
-    const entries = awaitingPickupEntries(items, T0, new Set<string>())
-    expect(entries.map((e) => (e.kind === 'item' ? e.item.id : ''))).toEqual(['a'])
-  })
-})
-
 // fix round 1: a stale row (no re-render between staging and the click, which is
 // routine — renderIfIdle suspends whenever a card is open or any draft has text) must
 // never let the star Undo fallback silently revert a reply the agent already picked
@@ -339,7 +326,8 @@ describe('the star Undo fallback in app.js is wired to fresh state, not the stal
 
 // Fix round 2 (I4): once the agent set reply_seen_at and BEFORE it calls
 // resolve (which it may forget, permanently), an answered-but-open question was
-// dropped by attentionEntries, awaitingPickupEntries, staleEntries AND g.done —
+// dropped by attentionEntries, by the strict still-awaiting-pickup filter the
+// list used to run, by staleEntries AND by g.done —
 // it rendered in no tab at all, while tabsearch's searchIndex still counted it
 // under needsYou. The tab badge lit up and the tab then said "No matches here".
 // The dimmed foot group is where it belongs: it also makes the card's
@@ -356,8 +344,10 @@ describe('repliedEntries', () => {
     const entries = repliedEntries(items, T0, new Set<string>())
     expect(entries.map((e) => (e.kind === 'item' ? e.item.id : ''))).toEqual(['a', 'b'])
   })
-  it('is a superset of awaitingPickupEntries — the strict awaiting-agent subset', () => {
-    const awaiting = awaitingPickupEntries(items, T0, new Set<string>())
-    expect(awaiting.map((e) => (e.kind === 'item' ? e.item.id : ''))).toEqual(['a'])
+  it('keeps the picked-up reply a strict awaiting-agent filter would drop — that is the whole point of I4', () => {
+    const entries = repliedEntries(items, T0, new Set<string>())
+    const b = entries.find((e) => e.kind === 'item' && e.item.id === 'b')
+    expect(b, 'the picked-up-but-open question is missing from the foot group').toBeTruthy()
+    expect(b!.kind === 'item' && b!.item.reply_seen_at, 'b must be the PICKED-UP one, or this case proves nothing').toBeTruthy()
   })
 })

@@ -160,9 +160,9 @@ describe('I3 · the notes watermark never advances past a note that stayed hidde
     // hidden tail is always OLDER than everything on screen and `safe` comes out empty.
     const oldest = insertItem(d, { ...AGENT, kind: 'note', title: 'alpha old' })
     advanceClock()
-    insertItem(d, { project: 'beta', stream: 'main', agent: 'claude', kind: 'note', title: 'beta hidden' })
+    const hidden = insertItem(d, { project: 'beta', stream: 'main', agent: 'claude', kind: 'note', title: 'beta hidden' })
     advanceClock()
-    insertItem(d, { ...AGENT, kind: 'note', title: 'alpha newest' })
+    const newest = insertItem(d, { ...AGENT, kind: 'note', title: 'alpha newest' })
 
     await bootApp(d)
     click(document.querySelector('#rail button.rail-tab[data-project="alpha"]'))
@@ -176,7 +176,16 @@ describe('I3 · the notes watermark never advances past a note that stayed hidde
       localStorage.getItem('agent-inbox-notes-seen'),
       'the watermark must stop below the newer note the rail filter hid',
     ).toBe(createdAt(d, oldest))
-    // …so the count does NOT collapse to zero just because the tab was open
-    expect(tabCount('notes')).toBe('1')
+
+    // Issue #31.2 added the second read-mark, and it is what this case now turns on.
+    // The watermark alone had to leave `alpha newest` looking unread even though it
+    // was literally on screen — that under-marking is the bug §8 and tenet 2 forbid
+    // (a tab count that can only grow), so the count DOES come down here now.
+    // What I3 actually protects is the note the rail filter hid, and the per-id set
+    // states that directly instead of inferring it from an inflated count.
+    const seenIds = JSON.parse(localStorage.getItem('agent-inbox-notes-seen-ids') ?? '[]') as string[]
+    expect([...seenIds].sort(), 'only what was on screen may be marked read').toEqual([oldest, newest].sort())
+    expect(seenIds, 'the rail-hidden note must stay unread').not.toContain(hidden)
+    expect(tabCount('notes'), 'both alpha notes were read, and alpha is the scope in view').toBe('')
   })
 })

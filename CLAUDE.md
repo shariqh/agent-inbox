@@ -150,6 +150,14 @@ not evidence — delete it or move it to a source pin.
 - Build emits via **`tsconfig.build.json`** (rootDir `src`, src-only) so `dist/mcp-server.js`
   is flat. The base `tsconfig.json` (src + test) is for typecheck only. Don't point `build`
   at the base config — it re-nests output under `dist/src/`.
+- **Every export in `public/*.js` needs a non-test consumer** — another `public/*.js`
+  module, `src/*.ts`, or `electron/*.cjs`. A test is not a consumer: a helper only its own
+  unit test calls looks load-bearing (typed, covered, named after a real concept) while
+  shipping nothing, and four accumulated through the viewer rebuild before anyone noticed.
+  `test/dead-exports.test.ts` enforces it. The only deliberate exits are a
+  `void X // why` marker at the call site (as `app.js` does for `paginateGroups`) or an
+  entry in that file's `ALLOWED` map **with a written reason** — the map is the point: it
+  turns a silent trap into a list someone has to justify.
 
 ## Shipped since v1
 

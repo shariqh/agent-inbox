@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
-import { partitionNotes, unreadNotes, unreadNoteCount, ambientChips, seenWatermark } from '../public/notes.js'
+import { partitionNotes, unreadNotes, unreadNoteCount, ambientChips, seenWatermark, markSeenIds } from '../public/notes.js'
 
 const NOW = Date.parse('2026-07-24T12:00:00.000Z')
 const ago = (ms: number) => new Date(NOW - ms).toISOString()
@@ -38,6 +38,65 @@ describe('unreadNotes', () => {
     expect(unreadNoteCount(notes, ago(1.5 * DAY), NOW)).toBe(1)
     expect(unreadNoteCount([], null, NOW)).toBe(0)
   })
+
+  // Issue #31.2. The watermark is a single ISO stamp, so it can only advance to a
+  // point below EVERYTHING that stayed hidden (that is the I3 fix, and it is
+  // right). The consequence: with more notes than the pager shows, the pager hides
+  // the OLDEST — and there is then no stamp below it that is also at-or-above
+  // anything rendered, so the mark cannot move at all and the tab count is pinned
+  // until the notes age out seven days later. §8 says the count means "new since
+  // you last looked" and tenet 2 forbids a count that can only grow, so the seen
+  // set has to be able to name individual notes.
+  it('drops a note the human has seen by id even when the watermark could not advance', () => {
+    // six fresh notes, newest first — exactly what the viewer renders with PAGE.notes = 5
+    const six = [0, 1, 2, 3, 4, 5].map((i) => note(`n${i}`, (i + 1) * 3600e3))
+    const rendered = six.slice(0, 5)
+    const hidden = six.slice(5)
+    expect(seenWatermark(rendered, hidden, null), 'the watermark genuinely cannot move here').toBeNull()
+    expect(unreadNoteCount(six, null, NOW), 'without the id set the count is stuck at six').toBe(6)
+    const seen = new Set(rendered.map((n) => n.id))
+    expect(unreadNoteCount(six, null, NOW, seen)).toBe(1)
+    expect(unreadNotes(six, null, NOW, seen).map((n) => n.id)).toEqual(['n5'])
+  })
+
+  it('composes with the watermark rather than replacing it (AND-NOT on both)', () => {
+    const seen = new Set(['b'])
+    expect(unreadNotes(notes, null, NOW, seen).map((n) => n.id)).toEqual(['a'])
+    expect(unreadNotes(notes, ago(1.5 * DAY), NOW, seen).map((n) => n.id)).toEqual([])
+  })
+
+  it('accepts an array as well as a Set — localStorage round-trips JSON', () => {
+    expect(unreadNotes(notes, null, NOW, ['a']).map((n) => n.id)).toEqual(['b'])
+    expect(unreadNotes(notes, null, NOW, []).map((n) => n.id)).toEqual(['a', 'b'])
+  })
+})
+
+// The id set has to be pruned or it grows without bound in localStorage. The
+// prune input is the LIVE note list, which the viewer keeps trimmed to the 7-day
+// window — so an aged-out note drops out of the set on its own.
+describe('markSeenIds', () => {
+  const live = [note('a', DAY), note('b', 2 * DAY), note('c', 3 * DAY)]
+
+  it('remembers every note that was actually on screen', () => {
+    expect(markSeenIds([], [note('a', DAY)], live).sort()).toEqual(['a'])
+  })
+
+  it('unions across renders, so paging through "Show 5 more" accumulates', () => {
+    const first = markSeenIds([], [note('a', DAY)], live)
+    expect(markSeenIds(first, [note('b', 2 * DAY)], live).sort()).toEqual(['a', 'b'])
+  })
+
+  it('prunes ids that are no longer live notes, so the set stays bounded by the 7-day window', () => {
+    expect(markSeenIds(['gone', 'a'], [], live).sort()).toEqual(['a'])
+  })
+
+  it('accepts a Set or an array for the previous ids, and never returns duplicates', () => {
+    expect(markSeenIds(new Set(['a']), [note('a', DAY)], live)).toEqual(['a'])
+  })
+
+  it('is empty when nothing is live at all', () => {
+    expect(markSeenIds(['a', 'b'], [note('a', DAY)], [])).toEqual([])
+  })
 })
 
 describe('ambientChips', () => {
@@ -64,6 +123,10 @@ describe('ambientChips', () => {
   })
   it('drops the notes chip once they have been seen', () => {
     expect(ambientChips(items, boards, NOW, ago(0)).map((c) => c.key)).not.toContain('notes')
+  })
+  it('honours the per-id seen set for the new-notes chip', () => {
+    expect(ambientChips(items, boards, NOW, null).map((c) => c.key)).toContain('notes')
+    expect(ambientChips(items, boards, NOW, null, ['n1']).map((c) => c.key)).not.toContain('notes')
   })
   it('pluralises', () => {
     const two = [note('n1', DAY), note('n2', DAY)]

@@ -22,7 +22,7 @@ export function tabCounts({ globalAttention, unreadNotes, scoped }) {
   }
 }
 
-// still used by the footer strip's freshest-tone/idle read (spec §16)
-export function livePresence(activity) {
-  return (activity ?? []).some((a) => !a.idle)
-}
+// (A `livePresence(activity)` helper used to live here, commented "still used by
+// the footer strip". It was not: livebar.js's liveSummary re-derives `!a.idle`
+// itself, and nothing else ever imported this. Deleted with issue #31.4 —
+// test/dead-exports.test.ts now fails the moment an export goes quiet like that.)

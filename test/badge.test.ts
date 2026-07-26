@@ -83,10 +83,11 @@ describe('the Electron dock badge shares the §7 attention predicate (no duplica
 // element, so a deep link into a collapsed stale-fold or archived-fold
 // switched tabs and updated the URL hash but left the target hidden inside a
 // closed <details> — scrollIntoView()/.focus() silently no-op on a
-// display:none element. Pinned as SOURCE TEXT (no jsdom in vitest.config.ts,
-// same precedent as the filter-blindness pin in test/tabs.test.ts) against
-// the isolated focusItem() function body, so a match elsewhere in the file
-// (e.g. a different `parentElement` walk) can't false-positive this.
+// display:none element. Pinned as SOURCE TEXT against the isolated focusItem()
+// function body, so a match elsewhere in the file (e.g. a different
+// `parentElement` walk) can't false-positive this. The runtime half of
+// focusItem — that a deep link never freezes the poll — is exercised for real
+// in test/dom/focus-item.test.ts.
 describe('focusItem opens ancestor <details> folds, not just the target (fix round 1)', () => {
   const js = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8')
   const start = js.indexOf('function focusItem(')

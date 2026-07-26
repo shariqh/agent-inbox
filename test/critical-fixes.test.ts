@@ -1,8 +1,13 @@
 // test/critical-fixes.test.ts
 // Fix round 2 (final whole-branch review): the four CRITICAL findings in
-// public/app.js. There is still no jsdom in vitest.config.ts (see the note at the
-// top of test/shell.test.ts and test/hardening.test.ts), so the wiring that can
-// only be observed through a real render()/click is pinned as SOURCE TEXT here.
+// public/app.js, pinned as SOURCE TEXT — this file asserts STRUCTURE that no
+// runtime test can see: that the reconciliation is the pure, unit-tested one
+// imported from /poll.js rather than a local re-implementation, and that
+// setOpenRow stays the single writer of openRowId. Those are the properties that
+// stop the bug class from coming back.
+// The BEHAVIOURAL half now runs for real against jsdom in
+// test/dom/focus-item.test.ts (C1) and test/dom/toggle-row.test.ts (C2/C3/C4) —
+// all four verified to fail on 21b16d0^. Keep both; they cover different things.
 // The parts that could be lifted into pure functions were: reconcileOpenRow
 // (test/poll.test.ts), seenWatermark (test/notes.test.ts), repliedEntries
 // (test/rowview.test.ts) and isAskingQuestion (test/attention.test.ts) carry real

@@ -202,11 +202,12 @@ describe('renderNeedsYou reorders through the poll-suspension pin before paginat
 
 // fix round 1: the stale fold's open/closed state must survive the 3s poll
 // rebuild, the same way openLive/openContexts already do — otherwise the
-// <details> silently snaps shut under the user mid-read. No jsdom in this
-// repo, so this is a source-level pin: it fails if the persisted flag is
-// declared inside staleFoldEl (re-initialized every render, so it can never
-// remember anything) instead of at module scope, or if the toggle listener
-// stops writing the state back.
+// <details> silently snaps shut under the user mid-read. A source-level pin,
+// deliberately: it fails if the persisted flag is declared inside staleFoldEl
+// (re-initialized every render, so it can never remember anything) instead of
+// at module scope, or if the toggle listener stops writing the state back —
+// WHERE the flag lives is the invariant, and the jsdom harness in test/dom/
+// cannot see that.
 describe('staleFoldEl persists open state across re-renders (fix round 1)', () => {
   const js = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8')
   const start = js.indexOf('function staleFoldEl')
@@ -297,8 +298,9 @@ describe('awaitingPickupEntries', () => {
 // never let the star Undo fallback silently revert a reply the agent already picked
 // up. undoRefusal itself already tells the two snapshots apart correctly (below); this
 // pins that needsRowEl's Undo handler actually FEEDS it the fresh lookup, not the
-// row's closed-over `entry.item`. No jsdom — same readFileSync/source-pin style as the
-// other app.js wiring pins in this file.
+// row's closed-over `entry.item` — WHICH snapshot the handler reads, which is
+// structure, not behaviour. Same readFileSync/source-pin style as the other
+// app.js wiring pins in this file.
 describe('undoRefusal distinguishes a stale snapshot from the fresh one (fix round 1)', () => {
   it('a stale (pre-pickup) snapshot says undo is fine, even once the real item has been picked up', () => {
     const stale = item({ reply: 'go' }) // as read before the agent's pickup landed

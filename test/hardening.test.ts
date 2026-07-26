@@ -1,8 +1,9 @@
 // test/hardening.test.ts
 // Fix round 1 (security sweep + findings triage): two client-side hardening fixes to
-// public/app.js. There is no jsdom configured in vitest.config.ts (see test/shell.test.ts),
-// so these pin the SOURCE TEXT the same way test/shell.test.ts already does for load()'s
-// catch behavior — a real render()/click isn't exercisable here.
+// public/app.js, pinned as SOURCE TEXT the same way test/shell.test.ts does for
+// load()'s catch behaviour — these assert WHICH construct the code uses, which a
+// runtime assertion cannot distinguish. The jsdom harness added in test/dom/ covers
+// the observable half (test/dom/toggle-row.test.ts drives the write path end to end).
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 

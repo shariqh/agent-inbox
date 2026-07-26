@@ -92,11 +92,13 @@ describe('otherTabMatches', () => {
 // The fix scopes tabMatchCounts' INPUT by project/agent (matching what
 // render() actually shows), while projectMatchCounts stays fed the GLOBAL
 // `lastData` on purpose — the rail's per-project badge is how the user
-// discovers a match sitting behind a DIFFERENT project pill. There is no
-// jsdom configured in vitest.config.ts, so render() itself isn't
-// exercisable; this pins the SOURCE TEXT at the call site instead, the same
-// way test/tabs.test.ts's filter-blindness guard and test/shell.test.ts's
-// Live-strip-global guard do.
+// discovers a match sitting behind a DIFFERENT project pill. This pins the
+// SOURCE TEXT at the call site — WHICH of the two datasets each counter is
+// fed, which no rendered output can distinguish — the same way
+// test/tabs.test.ts's filter-blindness guard and test/shell.test.ts's
+// Live-strip-global guard do. The rendered consequence (an empty state that
+// never denies a match a fold is holding) is covered in
+// test/dom/render-agreement.test.ts.
 describe('tabMatchCounts is scoped by the active rail filter, not fed raw lastData (fix round 1, spec §12 generalized)', () => {
   const js = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8')
   const m = js.match(/function render\(\)[\s\S]*?\n\}/)

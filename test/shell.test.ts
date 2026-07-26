@@ -131,10 +131,13 @@ describe('shell script', () => {
 // filtered on purpose: it's a list you deliberately open, so scoping it is
 // consistent with every other tab. Only the collapsed strip must read global
 // activity, or "no agents running" becomes a lie the moment the human filters
-// to a project nothing is currently running in. There is no jsdom configured
-// in vitest.config.ts, so a real render() invocation isn't exercisable here;
-// this pins the SOURCE TEXT instead, the same way the filter-blindness guard
-// in test/tabs.test.ts does.
+// to a project nothing is currently running in. This pins the SOURCE TEXT —
+// which ARGUMENT the call site passes — because that is the actual invariant
+// and no runtime assertion can see it. The behavioural half now runs for real
+// in test/dom/boot.test.ts ("a rail filter narrows the LIST, never the GLOBAL
+// signal"); keep both. (There IS a jsdom harness since test/dom/harness.ts —
+// the older "no jsdom in this repo" note here was correct at the time and is
+// no longer true.)
 describe('Live footer strip is global, never rail-scoped (spec §16 / §7 generalized)', () => {
   it('calls renderLiveBar with lastData.activity, not the filtered `live` local', () => {
     const line = js.split('\n').find((l) => l.includes('renderLiveBar('))

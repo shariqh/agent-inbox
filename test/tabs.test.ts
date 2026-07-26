@@ -71,11 +71,11 @@ describe('filter-blindness invariant (spec §7)', () => {
 // `lastData.g`/`lastData.boards`. The rail makes project filtering the
 // primary navigation (spec §7), so this one line is the only thing standing
 // between "Needs you" and silently hiding attention behind whatever project
-// is selected — exactly the failure this task exists to prevent. There is no
-// jsdom/happy-dom configured in vitest.config.ts, so a real render()
-// invocation isn't exercisable here; this pins the SOURCE TEXT instead, the
-// same way test/shell.test.ts already pins deleted symbols. Do not delete
-// this as "just a string match" — it is the only guard on the invariant.
+// is selected — exactly the failure this task exists to prevent. This pins the
+// SOURCE TEXT: WHICH data the call site passes, which is the invariant itself
+// and is invisible to any runtime assertion (a render can agree with the badge
+// by coincidence on one fixture). Do not delete this as "just a string match".
+// test/dom/boot.test.ts drives the same rule through a real rail click.
 describe('filter-blindness is pinned at the render() call site (spec §7)', () => {
   const js = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8')
 

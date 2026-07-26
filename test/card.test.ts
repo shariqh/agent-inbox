@@ -56,9 +56,9 @@ describe('cardSections', () => {
   })
 })
 
-// No jsdom in this repo (see test/shell.test.ts, test/rowview.test.ts): DOM
-// wiring that can't be reached through pure functions is pinned at the source
-// level instead of executed.
+// Source-level pins: which shared builder app.js imports, rather than what it
+// renders. (The rendered result is covered against jsdom in test/dom/ — see
+// test/dom/toggle-row.test.ts for the card's answer surface.)
 describe('app.js wiring (source-level pins)', () => {
   const js = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8')
 

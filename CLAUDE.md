@@ -26,6 +26,7 @@ npm run build       # tsc -p tsconfig.build.json → dist/ (entry: dist/mcp-serv
 npm run mcp         # run the MCP stdio server via tsx (local iteration)
 npm run view        # run the viewer on localhost:4319 via tsx
 npx vitest run test/mcp.integration.test.ts   # single file
+npx vitest run test/dom/                      # the jsdom viewer tests only
 ```
 
 **Node 24 only (for this checkout).** `better-sqlite3` compiles one native binding per
@@ -73,6 +74,64 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   Change them in `store.ts` and update both consumers (+ `group.ts` for items;
   `public/app.js` renders both).
 
+### DOM harness — what it can and cannot see
+
+`test/dom/` boots the **real** viewer frontend in jsdom: `test/dom/harness.ts` bridges
+`globalThis.fetch` onto the real `createViewer(db)` Hono app over a real temp SQLite DB,
+then imports `public/app.js` **unmodified** — top-level side effects and all.
+`public/` and `src/` have a **zero-line diff** because of it; keep it that way.
+
+- **jsdom cannot execute `<script type="module">`.** That is why the harness imports the
+  module graph directly instead of mounting `public/index.html` and letting it run. Do not
+  re-litigate this — it has already cost time twice.
+- **`publicDir: false` in `vitest.config.ts` is mandatory.** Without it Vite claims
+  `<root>/public` as its static publicDir and hard-errors on any import from it
+  ("this file is in /public … can only be referenced via HTML tags"). The companion
+  `resolve.alias` (`/^\/([\w.-]+\.js)$/` → `<repo>/public/$1`) is what makes the browser's
+  absolute `/x.js` specifiers resolve. Neither touches a byte on disk: `public/` still has
+  no build step, and the browser and Electron keep resolving `/x.js` from their own root.
+- **Four globals must be stubbed or `render()` throws and `load()`'s catch swallows it** —
+  which presents as "nothing rendered", not as an error: `window.uFuzzy` (vendored IIFE,
+  constructed at app.js module top level, so it must exist BEFORE the import),
+  `window.matchMedia` (2 call sites: `themeName`, `initResponsive`), `CSS.escape`
+  (6 call sites, incl. `setRailMatch` on every render), `Element.prototype.scrollIntoView`.
+  The harness's **console.error guard is load-bearing**, not cosmetic — it is the only
+  thing that turns a swallowed render throw back into a visible failure.
+- **`new URL('…', import.meta.url)` does not work in a jsdom test file.** jsdom files run in
+  Vite's WEB transform mode, where the asset plugin rewrites that literal pattern into
+  `http://localhost:3000/@fs/…` and `readFileSync` dies with "The URL must be of scheme
+  file". The rest of `test/` uses that form happily because those files run in the NODE
+  environment. Resolve through `node:path` instead (`harness.ts` does).
+- **Fake timers freeze `Date`,** so every row seeded inside one test shares one
+  `created_at` unless you call the harness's `advanceClock()` between writes. That silently
+  breaks `listItems`' `ORDER BY created_at DESC`, `buildDeck`'s sort and — worst —
+  `seenWatermark`, whose whole job is comparing stamps. Item timestamps cannot be
+  backdated through `store.ts`, so a staleness fixture moves the CLOCK, never the row.
+- **Window/document listeners accumulate across boots within one file.**
+  `vi.resetModules()` gives a fresh module instance but jsdom's window/document live for
+  the whole file, so each boot adds another `hashchange`/`keydown`/`beforeunload` handler.
+  Harness rule: **assert rendered state only, never handler-invocation counts.**
+
+CSS: `getComputedStyle` over an attached `public/style.css` genuinely resolves specificity,
+source order, `!important`, `:has()` and `color-mix()` — that is what makes the
+`.answer-btn` geometry test in `test/dom/css-cascade.test.ts` catch the real 13819d2
+regression. **Four verified blind spots; only literal lengths and keywords are trustworthy:**
+
+1. **`@media` never matches.** jsdom's media-list evaluation only answers `all`/`screen`,
+   so style.css's single `@media (max-width: 900px)` block — the ENTIRE spec §14 responsive
+   layer — never applies. Do not assert anything about it; cover the JS half instead
+   (`setViewport('narrow')` + `railLabel` monograms, in `test/dom/boot.test.ts`).
+2. **`var()` is returned unresolved.**
+3. **An unparseable declaration is dropped SILENTLY — and therefore reads as "correct".**
+   `border: 1px solid color-mix(…)` comes back as `borderStyle: 'none'` /
+   `borderTopWidth: 'medium'`, so asserting the `.row-expand { border: none }` half of the
+   13819d2 bug would pass VACUOUSLY on the buggy sheet. This is the dangerous one.
+4. **The `font:` shorthand clobbers a later longhand.** `.answer-btn` declares
+   `font: inherit; … font-weight: 600` and jsdom computes `normal`.
+
+An overstated harness is worse than none. If an assertion falls in one of those four, it is
+not evidence — delete it or move it to a source pin.
+
 ## Conventions
 
 - Node 24, TS **ESM** (`"type":"module"`); **imports use `.js` specifiers** even for `.ts`
@@ -82,6 +141,10 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
 - **TDD.** Every change: failing test → red → implement → green. Tests use **real** temp
   SQLite DBs (`AGENT_INBOX_DB`/`mkdtempSync`), never mock the store. The MCP test is a real
   spawn-the-server round-trip.
+- **Test environments are per-file.** There is no global `test.environment`: the node suite
+  (store, mcp, infer) stays on node and a DOM file opts in with a
+  `// @vitest-environment jsdom` docblock. `test/dom/harness.ts` is deliberately NOT named
+  `*.test.ts` so the `test/**/*.test.ts` glob imports it without collecting it.
 - `zod` is a **direct** dependency (used by `mcp.ts` for tool schemas) — keep it in
   `package.json`, don't rely on it resolving transitively via the SDK.
 - Build emits via **`tsconfig.build.json`** (rootDir `src`, src-only) so `dist/mcp-server.js`

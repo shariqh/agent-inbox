@@ -1,8 +1,11 @@
 // test/important-fixes.test.ts
 // Fix round 2 (final whole-branch review): the five IMPORTANT findings in
-// public/app.js. There is still no jsdom in vitest.config.ts (see the note at the
-// top of test/shell.test.ts and test/hardening.test.ts), so the wiring that can
-// only be observed through a real render()/click is pinned as SOURCE TEXT here.
+// public/app.js, pinned as SOURCE TEXT — this file asserts STRUCTURE no runtime
+// test can see: WHICH shared predicate each call site feeds, and that there is
+// exactly one of them (tenet 3).
+// The BEHAVIOURAL half now runs for real against jsdom in
+// test/dom/render-agreement.test.ts (I1–I4) and test/dom/toggle-row.test.ts (I5) —
+// all five verified to fail on 4f12144^. Keep both; they cover different things.
 // The parts that could be lifted into pure functions were: reconcileOpenRow
 // (test/poll.test.ts), seenWatermark (test/notes.test.ts), repliedEntries
 // (test/rowview.test.ts) and isAskingQuestion (test/attention.test.ts) carry real

@@ -312,6 +312,30 @@ main { padding-bottom: 34px; } /* the fixed strip must never cover the last row 
 #needsYouList .nrow.selected:focus-visible { outline-offset: 0; }
 [role="tab"][aria-selected="true"] { font-weight: 600; }
 
+/* ── source links: issue + PR chips (issue #30) ───────────────────────────────
+   Ambient by design: these chips are information, never attention. Nothing here
+   borrows the crimson of an urgency chip for a red CI — a failing check is the
+   agent's problem, not a reason to pull the human's eye. */
+.src-chip { font-size: 11px; padding: 1px 7px; border-radius: 999px; white-space: nowrap; text-decoration: none; color: inherit; border: 1px solid color-mix(in srgb, CanvasText 16%, transparent); opacity: .75; }
+a.src-chip:hover { opacity: 1; text-decoration: underline; }
+.src-chip.tone-issue { color: LinkText; border-color: color-mix(in srgb, LinkText 32%, transparent); }
+.src-chip.tone-merged { color: color-mix(in srgb, rebeccapurple 70%, CanvasText); border-color: color-mix(in srgb, rebeccapurple 40%, transparent); }
+.src-chip.tone-good { color: color-mix(in srgb, seagreen 70%, CanvasText); border-color: color-mix(in srgb, seagreen 40%, transparent); }
+.src-chip.tone-bad { color: color-mix(in srgb, crimson 70%, CanvasText); border-color: color-mix(in srgb, crimson 38%, transparent); }
+.src-chip.tone-neutral { opacity: .7; }
+.src-chip.tone-muted { opacity: .5; }
+
+/* the row slot must not compress: every sibling that carries text in .nrow-l1
+   already sets flex-shrink: 0, and only .nrow-title/.nrow-sec have ellipsis rules */
+.nrow-src { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+
+.card-source { display: flex; flex-direction: column; gap: 4px; margin: 6px 0 2px; }
+.card-source-label { font-size: 10px; letter-spacing: .08em; opacity: .5; font-weight: 700; }
+.src-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.src-tldr { font-size: 12px; opacity: .8; }
+.src-checked { font-size: 11px; opacity: .5; }
+.board-source { display: flex; align-items: center; gap: 6px; padding: 2px 12px 6px; }
+
 /* ── responsive (spec §14) ───────────────────────────────────────────────────
    The ONLY @media block in the file — deliberately last so it wins over the
    shell (Task 6), boards chrome (Task 13) and focus rules (Task 17) above it.
@@ -433,4 +457,10 @@ main { padding-bottom: 34px; } /* the fixed strip must never cover the last row 
   /* top bar: let search take the freed-up width, tighten spacing */
   header { gap: 8px; padding: 10px 0; }
   .search-box { flex: 1; min-width: 0; }
+
+  /* source chips (issue #30): drop only the state WORD, keeping #30 / PR 41,
+     the glyph and the tone. The full sentence survives in the chip's title and
+     in the expanded card, so nothing becomes unreachable — (1,2,0) here beats
+     the base (0,2,0) rule on specificity, not on source order. */
+  #needsYouList .nrow-src .src-word { display: none; }
 }

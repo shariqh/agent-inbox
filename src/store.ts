@@ -49,6 +49,13 @@ export interface Item {
   replied_at: string | null
   reply_seen_at: string | null
   reply_source: ReplySource | null
+  // issue #30 — the source-link identity inferred locally at write time:
+  // `owner/name` for a github.com remote, and the issue number the BRANCH names.
+  // Both null whenever the answer was not unambiguous, and null on every row
+  // written before #30 (the additive migration backfills nothing — deliberately;
+  // there is no way to know what a historical item's remote was).
+  repo: string | null
+  issue_ref: number | null
   created_at: string
   resolved_at: string | null
 }
@@ -63,6 +70,9 @@ export interface NewItem {
   detail?: string
   context?: string
   options?: QuestionOption[]
+  // optional on the WRITE shape: every pre-#30 call site passes neither
+  repo?: string | null
+  issue_ref?: number | null
 }
 
 export function defaultDbPath(): string {
@@ -139,6 +149,26 @@ function migrate(db: Database.Database): void {
       closed_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_items_project_created ON items(project, created_at);
+    CREATE TABLE IF NOT EXISTS source_links (
+      repo TEXT NOT NULL,
+      branch TEXT NOT NULL,
+      provider TEXT NOT NULL DEFAULT 'github',
+      pr_number INTEGER,
+      pr_url TEXT,
+      pr_title TEXT,
+      pr_state TEXT,
+      pr_draft INTEGER,
+      review_decision TEXT,
+      checks TEXT,
+      issue_number INTEGER,
+      issue_url TEXT,
+      issue_title TEXT,
+      tldr TEXT,
+      fetched_at TEXT,
+      checked_at TEXT NOT NULL,
+      error TEXT,
+      PRIMARY KEY (repo, branch)
+    );
   `)
   ensureColumn(db, 'board_rows', 'context', `TEXT NOT NULL DEFAULT ''`)
   ensureColumn(db, 'board_rows', 'annotated_at', 'TEXT')
@@ -152,6 +182,10 @@ function migrate(db: Database.Database): void {
   ensureColumn(db, 'items', 'reply_seen_at', 'TEXT')
   ensureColumn(db, 'items', 'reply_source', 'TEXT')
   ensureColumn(db, 'items', 'session', 'TEXT')
+  ensureColumn(db, 'items', 'repo', 'TEXT')
+  ensureColumn(db, 'items', 'issue_ref', 'INTEGER')
+  ensureColumn(db, 'boards', 'repo', 'TEXT')
+  ensureColumn(db, 'boards', 'issue_ref', 'INTEGER')
 }
 
 // additive migration for DBs created before the column existed
@@ -171,8 +205,8 @@ export function insertItem(db: Database.Database, item: NewItem): string {
   }
   const id = randomUUID()
   db.prepare(
-    `INSERT INTO items (id, project, stream, agent, session, kind, title, detail, context, options, status, created_at)
-     VALUES (@id, @project, @stream, @agent, @session, @kind, @title, @detail, @context, @options, 'open', @created_at)`,
+    `INSERT INTO items (id, project, stream, agent, session, kind, title, detail, context, options, repo, issue_ref, status, created_at)
+     VALUES (@id, @project, @stream, @agent, @session, @kind, @title, @detail, @context, @options, @repo, @issue_ref, 'open', @created_at)`,
   ).run({
     id,
     project: item.project,
@@ -184,6 +218,8 @@ export function insertItem(db: Database.Database, item: NewItem): string {
     detail: item.detail ?? '',
     context: item.context ?? '',
     options: item.options?.length ? JSON.stringify(item.options) : null,
+    repo: item.repo ?? null,
+    issue_ref: item.issue_ref ?? null,
     created_at: new Date().toISOString(),
   })
   return id
@@ -316,6 +352,10 @@ export interface Board {
   agent: string
   title: string
   status: 'active' | 'archived'
+  // issue #30 — same locally-inferred link identity items carry; null on every
+  // board written before #30
+  repo: string | null
+  issue_ref: number | null
   created_at: string
   updated_at: string
   last_read_at: string | null
@@ -379,6 +419,9 @@ interface UpsertBoardInput {
   agent: string
   title: string
   rows: NewBoardRow[]
+  // optional on the WRITE shape: every pre-#30 call site passes neither
+  repo?: string | null
+  issueRef?: number | null
 }
 
 export function upsertBoard(db: Database.Database, input: UpsertBoardInput): { boardId: string; rowCount: number } {
@@ -415,6 +458,8 @@ interface UpdateRowInput {
   status?: RowStatus
   note?: string
   context?: string
+  repo?: string | null
+  issueRef?: number | null
 }
 
 export function updateBoardRow(db: Database.Database, input: UpdateRowInput): { boardId: string; rowId: string } {
@@ -452,15 +497,24 @@ function syncBoardStatus(db: Database.Database, boardId: string): void {
 }
 
 // Find-or-create the board row and stamp the last writer. Shared by upsertBoard/updateBoardRow.
-function ensureBoard(db: Database.Database, inp: { project: string; stream: string; agent: string; title: string }, now: string): string {
+function ensureBoard(
+  db: Database.Database,
+  inp: { project: string; stream: string; agent: string; title: string; repo?: string | null; issueRef?: number | null },
+  now: string,
+): string {
   const board = findBoard(db, inp.project, inp.title)
+  // #30's repo/issue_ref are restamped on every write, exactly like stream and
+  // agent — the board follows whoever is writing to it now. They belong on the
+  // `boards` row and nowhere near board_rows, whose annotation column is the
+  // human's and must survive every re-upsert untouched.
   if (board) {
-    db.prepare(`UPDATE boards SET stream = ?, agent = ?, updated_at = ? WHERE id = ?`).run(inp.stream, inp.agent, now, board.id)
+    db.prepare(`UPDATE boards SET stream = ?, agent = ?, repo = ?, issue_ref = ?, updated_at = ? WHERE id = ?`)
+      .run(inp.stream, inp.agent, inp.repo ?? null, inp.issueRef ?? null, now, board.id)
     return board.id
   }
   const boardId = randomUUID()
-  db.prepare(`INSERT INTO boards (id, project, stream, agent, title, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'active', ?, ?)`)
-    .run(boardId, inp.project, inp.stream, inp.agent, inp.title, now, now)
+  db.prepare(`INSERT INTO boards (id, project, stream, agent, title, repo, issue_ref, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`)
+    .run(boardId, inp.project, inp.stream, inp.agent, inp.title, inp.repo ?? null, inp.issueRef ?? null, now, now)
   return boardId
 }
 
@@ -584,6 +638,135 @@ export function getBoard(db: Database.Database, project: string, title: string):
     board.last_read_at,
   )
   return { ...board, rows, progress: computeProgress(rows) }
+}
+
+// ── source links: the cached live PR state, one row per (repo, branch) (#30) ──
+//
+// Written ONLY by the viewer process (src/prstate.ts, which shells out to `gh`);
+// read by the viewer's /api/links and joined in the frontend against each item's
+// own repo + stream. Keyed per BRANCH rather than per item so N items raised on
+// one branch cost one `gh` call, and a merge updates all of them at once.
+
+export interface SourceLink {
+  repo: string
+  branch: string
+  provider: string
+  pr_number: number | null
+  pr_url: string | null
+  pr_title: string | null
+  pr_state: string | null
+  pr_draft: boolean
+  review_decision: string | null
+  checks: string | null
+  issue_number: number | null
+  issue_url: string | null
+  issue_title: string | null
+  tldr: string | null
+  // when the last SUCCESSFUL fetch landed vs when we last tried at all — the
+  // gap between them is exactly how stale a still-rendered good row is
+  fetched_at: string | null
+  checked_at: string
+  error: string | null
+}
+
+export interface NewSourceLink {
+  repo: string
+  branch: string
+  provider?: string
+  pr_number?: number | null
+  pr_url?: string | null
+  pr_title?: string | null
+  pr_state?: string | null
+  pr_draft?: boolean
+  review_decision?: string | null
+  checks?: string | null
+  issue_number?: number | null
+  issue_url?: string | null
+  issue_title?: string | null
+  tldr?: string | null
+}
+
+export interface LinkTarget {
+  repo: string
+  branch: string
+}
+
+// a cache row unchecked for this long belongs to a branch nobody works on
+const LINK_TTL_DAYS = 30
+// hard ceiling on how many branches one refresh pass can ever consider
+const MAX_LINK_TARGETS = 50
+
+// A successful fetch: writes every field, stamps BOTH timestamps and clears the
+// error. Housekeeping rides along, mirroring upsertActivity's day-old sweep.
+export function upsertSourceLink(db: Database.Database, link: NewSourceLink): void {
+  const now = new Date().toISOString()
+  db.prepare(
+    `INSERT INTO source_links (repo, branch, provider, pr_number, pr_url, pr_title, pr_state, pr_draft,
+       review_decision, checks, issue_number, issue_url, issue_title, tldr, fetched_at, checked_at, error)
+     VALUES (@repo, @branch, @provider, @pr_number, @pr_url, @pr_title, @pr_state, @pr_draft,
+       @review_decision, @checks, @issue_number, @issue_url, @issue_title, @tldr, @now, @now, NULL)
+     ON CONFLICT(repo, branch) DO UPDATE SET
+       provider = @provider, pr_number = @pr_number, pr_url = @pr_url, pr_title = @pr_title,
+       pr_state = @pr_state, pr_draft = @pr_draft, review_decision = @review_decision, checks = @checks,
+       issue_number = @issue_number, issue_url = @issue_url, issue_title = @issue_title, tldr = @tldr,
+       fetched_at = @now, checked_at = @now, error = NULL`,
+  ).run({
+    repo: link.repo,
+    branch: link.branch,
+    provider: link.provider ?? 'github',
+    pr_number: link.pr_number ?? null,
+    pr_url: link.pr_url ?? null,
+    pr_title: link.pr_title ?? null,
+    pr_state: link.pr_state ?? null,
+    pr_draft: link.pr_draft ? 1 : 0,
+    review_decision: link.review_decision ?? null,
+    checks: link.checks ?? null,
+    issue_number: link.issue_number ?? null,
+    issue_url: link.issue_url ?? null,
+    issue_title: link.issue_title ?? null,
+    tldr: link.tldr ?? null,
+    now,
+  })
+  pruneSourceLinks(db)
+}
+
+// A FAILED fetch: touches checked_at and error and NOTHING else, so a laptop
+// going offline can never blank a good cached row — the human keeps seeing the
+// merged PR they saw a minute ago, with an honest "checked N ago" beside it.
+// Every column except repo/branch/checked_at is nullable precisely so this
+// INSERT half can succeed for a branch that has never been fetched.
+export function recordLinkFailure(db: Database.Database, f: { repo: string; branch: string; error: string }): void {
+  db.prepare(
+    `INSERT INTO source_links (repo, branch, checked_at, error) VALUES (@repo, @branch, @now, @error)
+     ON CONFLICT(repo, branch) DO UPDATE SET checked_at = @now, error = @error`,
+  ).run({ repo: f.repo, branch: f.branch, error: f.error, now: new Date().toISOString() })
+}
+
+export function listSourceLinks(db: Database.Database): SourceLink[] {
+  const rows = db.prepare(`SELECT * FROM source_links ORDER BY repo ASC, branch ASC`).all() as Array<
+    Omit<SourceLink, 'pr_draft'> & { pr_draft: number | null }
+  >
+  return rows.map((r) => ({ ...r, pr_draft: r.pr_draft === 1 }))
+}
+
+// Which (repo, branch) pairs are worth spending a `gh` call on: the branches
+// OPEN items and ACTIVE boards actually sit on. A resolved item's branch stops
+// being refreshed but keeps whatever it last cached.
+export function listLinkTargets(db: Database.Database): LinkTarget[] {
+  const rows = db
+    .prepare(
+      `SELECT repo, stream AS branch FROM items  WHERE status = 'open'   AND repo IS NOT NULL AND repo <> '' AND stream <> ''
+       UNION
+       SELECT repo, stream AS branch FROM boards WHERE status = 'active' AND repo IS NOT NULL AND repo <> '' AND stream <> ''
+       ORDER BY repo ASC, branch ASC`,
+    )
+    .all() as LinkTarget[]
+  return rows.slice(0, MAX_LINK_TARGETS)
+}
+
+export function pruneSourceLinks(db: Database.Database, opts: { nowMs?: number } = {}): void {
+  const cutoff = new Date((opts.nowMs ?? Date.now()) - LINK_TTL_DAYS * 24 * 60 * 60000).toISOString()
+  db.prepare(`DELETE FROM source_links WHERE checked_at < ?`).run(cutoff)
 }
 
 // ── project closure: retiring a dead project tab without losing it (issue #32) ──

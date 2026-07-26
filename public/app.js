@@ -24,6 +24,7 @@ import { boardRowsView, progressLabel, hiddenDoneCount, lingeringBoards } from '
 import { liveEntity, tabMatchCounts, projectMatchCounts, elsewhereLabel } from '/tabsearch.js'
 import { titleWithBadge, focusHashFor, parseFocusHash } from '/badge.js'
 import { layoutMode, railLabel, NARROW_MAX } from '/layout.js'
+import { indexLinks, sourceChipsHtml, sourceBlockHtml } from '/source.js'
 
 void paginateGroups // kept exported+tested (spec §15); the viewer no longer calls it
 
@@ -38,6 +39,11 @@ let shown = { ...PAGE }
 function resetPaging() { shown = { ...PAGE } }
 
 let lastData = null
+// issue #30 — the (repo, branch) → cached PR state index, rebuilt once per
+// render. A Map from the start, never null: the deep-link and setup paths can
+// reach a renderer before the first /api/links response lands, and linkFor(null)
+// would throw into load()'s catch and blank the whole page.
+let linkIndex = new Map()
 const FILTER_KEY = 'agent-inbox-agent-filter'
 const PROJECT_KEY = 'agent-inbox-project-filter'
 const HIDE_DONE_KEY = 'agent-inbox-hide-completed'
@@ -195,7 +201,11 @@ async function load() {
     // the catch below, and the WHOLE page would read 'disconnected'. An unknown
     // closed set must mean "suppress nothing", never a dead page.
     const closed = await fetch('/api/projects/closed').then((r) => (r.ok ? r.json() : [])).catch(() => [])
-    lastData = { g: ageNotes(g, Date.now()), boards, archived, activity, closed }
+    // Cached PR state (issue #30), same defensive shape and for the same reason:
+    // an empty links set must mean "render exactly as before this feature", never
+    // a dead page. A viewer that predates this route answers 404 with HTML.
+    const links = await fetch('/api/links').then((r) => (r.ok ? r.json() : [])).catch(() => [])
+    lastData = { g: ageNotes(g, Date.now()), boards, archived, activity, closed, links }
     renderIfIdle()
     if (!bootFocusDone) { bootFocusDone = true; applyFocusHash() }
     document.getElementById('status').textContent = ''
@@ -441,6 +451,11 @@ function projectScoped({ g, boards, archived }) {
 
 function render() {
   applyBadge()
+  // issue #30 — rebuilt ONCE here, before any renderer runs, so the row chips,
+  // the card blocks and the board chips all read the same snapshot. It feeds
+  // nothing in applyBadge / attentionCount on purpose: PR state is ambient, and
+  // a red CI must never move the badge (tenets 1 and 2).
+  linkIndex = indexLinks(lastData.links ?? [])
   // projectMatchCounts stays fed the GLOBAL lastData, unscoped by the rail
   // filter, on purpose: it's how the user discovers a match sitting behind a
   // DIFFERENT project pill than the one currently selected — including one
@@ -1425,6 +1440,7 @@ function needsRowEl(m, entry, nowMs) {
       ${glyph}
       <span class="nrow-title" title="${esc(m.title)}">${esc(m.title)}</span>
       <span class="chip chip-${chip.tone}"><span aria-hidden="true">${livenessGlyph(m.liveness).glyph}</span> ${esc(chip.text)}</span>
+      <span class="nrow-src">${sourceChipsHtml(linkIndex, entry.kind === 'row' ? entry.board : entry.item, nowMs)}</span>
       <span class="nrow-star"></span>
       <button class="nrow-dismiss" title="Dismiss (x)" aria-label="Dismiss">✕</button>
       <span class="nrow-caret">▸</span>
@@ -1669,6 +1685,18 @@ function boardEl(b, archived = false, lingering = false) {
     showDoneBoards.has(b.id) ? showDoneBoards.delete(b.id) : showDoneBoards.add(b.id)
     render()
   })
+  // issue #30 — deliberately OUTSIDE the <summary>: a summary's activation
+  // behaviour toggles its parent <details>, so a chip inside .board-meta would
+  // navigate AND collapse the card, writing a spurious collapsedCards entry that
+  // outlives the session. preventDefault (the .hidden-hint precedent above) is
+  // not reusable here — on an anchor it kills the navigation we want.
+  const srcHtml = sourceChipsHtml(linkIndex, b, Date.now(), { tabbable: true })
+  if (srcHtml) {
+    const src = document.createElement('div')
+    src.className = 'board-source'
+    src.innerHTML = srcHtml
+    el.appendChild(src)
+  }
   const table = document.createElement('table')
   table.className = 'board-table matrix'
   for (const { row: r, num, needsAnswer } of boardRowsView(b, { hideCompleted, showDone: showDoneBoards.has(b.id) })) {
@@ -1864,6 +1892,7 @@ function itemCardEl(it, { done = false, nowMs = Date.now(), liveness = 'parked',
     <div class="card-title">${esc(it.title)}</div>` : ''
   el.innerHTML = `
     ${head}
+    ${sourceBlockHtml(linkIndex, it, nowMs)}
     ${s.detail ? `<div class="detail card-detail">${esc(s.detail)}</div>` : ''}
     ${s.context ? `<div class="card-context"><div class="card-context-label">CONTEXT</div><div class="card-context-body">${esc(s.context)}</div></div>` : ''}
     ${s.annotation ? `<div class="annotation">📝 ${esc(s.annotation)}</div>` : ''}

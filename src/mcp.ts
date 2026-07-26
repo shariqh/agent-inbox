@@ -59,10 +59,16 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     async ({ kind, title, detail, context, stream, options }) => {
       heartbeat()
       const s = scope.get(clientName())
+      // issue #30 — a per-call `stream` override changes which BRANCH this item
+      // was raised on, so the issue has to follow it. scope.issueFor owns the
+      // override-then-infer precedence; branch-parsing policy never leaks in here.
+      const branch = stream ?? s.stream
       const id = insertItem(db, {
         project: s.project,
-        stream: stream ?? s.stream,
+        stream: branch,
         agent: s.agent,
+        repo: s.repo,
+        issue_ref: scope.issueFor(branch),
         // stamp the asking session so the viewer can tell "waiting" (this
         // session is still in /api/activity) from "parked" (agent long gone)
         session: sessionId,
@@ -155,12 +161,18 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
   server.registerTool(
     'register',
     {
-      description: 'Override the auto-inferred project/stream for this session when detection is wrong.',
-      inputSchema: { project: z.string().optional(), stream: z.string().optional() },
+      description:
+        'Override the auto-inferred project/stream for this session when detection is wrong. repo ("owner/name" on github.com) and issue (a number) override the source link the inbox shows beside your items — set issue when the branch name does not name it.',
+      inputSchema: {
+        project: z.string().optional(),
+        stream: z.string().optional(),
+        repo: z.string().optional(),
+        issue: z.number().int().positive().optional(),
+      },
     },
-    async ({ project, stream }) => {
+    async ({ project, stream, repo, issue }) => {
       heartbeat()
-      scope.override({ project, stream })
+      scope.override({ project, stream, repo, issue })
       return { content: [{ type: 'text', text: JSON.stringify(scope.get(clientName())) }] }
     },
   )
@@ -189,7 +201,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     async ({ title, rows }) => {
       heartbeat()
       const s = scope.get(clientName())
-      const out = upsertBoard(db, { project: s.project, stream: s.stream, agent: s.agent, title, rows })
+      const out = upsertBoard(db, { project: s.project, stream: s.stream, agent: s.agent, title, rows, repo: s.repo, issueRef: s.issue })
       return { content: [{ type: 'text', text: JSON.stringify(out) }] }
     },
   )
@@ -204,7 +216,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     async ({ title, label, status, note, context }) => {
       heartbeat()
       const s = scope.get(clientName())
-      const out = updateBoardRow(db, { project: s.project, stream: s.stream, agent: s.agent, title, label, status, note, context })
+      const out = updateBoardRow(db, { project: s.project, stream: s.stream, agent: s.agent, title, label, status, note, context, repo: s.repo, issueRef: s.issue })
       return { content: [{ type: 'text', text: JSON.stringify(out) }] }
     },
   )

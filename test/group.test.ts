@@ -10,6 +10,7 @@ function item(p: Partial<Item>): Item {
     annotation: p.annotation ?? null, created_at: p.created_at ?? '2026-07-12T00:00:00.000Z', resolved_at: p.resolved_at ?? null,
     options: p.options ?? null, reply: p.reply ?? null, reply_context: p.reply_context ?? null, replied_at: p.replied_at ?? null, reply_seen_at: p.reply_seen_at ?? null,
     reply_source: p.reply_source ?? null,
+    repo: p.repo ?? null, issue_ref: p.issue_ref ?? null,
   }
 }
 

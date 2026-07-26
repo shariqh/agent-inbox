@@ -31,6 +31,11 @@ import {
   reopenProject,
   listClosedProjects,
   closedProjects,
+  upsertSourceLink,
+  recordLinkFailure,
+  listSourceLinks,
+  listLinkTargets,
+  pruneSourceLinks,
 } from '../src/store.js'
 import type { BoardRow } from '../src/store.js'
 
@@ -959,3 +964,180 @@ describe('project close / reopen (issue #32)', () => {
     expect(listClosedProjects(db)[0]!.closed_at).toMatch(/^\d{4}-\d{2}-\d{2}T/)
   })
 })
+
+// ── issue #30: source links ──────────────────────────────────────────────────
+// items/boards carry the LOCALLY inferred link identity (repo + issue_ref);
+// source_links caches the live PR state the viewer process fetches with `gh`,
+// ONE row per (repo, branch) rather than one per item.
+
+describe('items and boards carry the link identity they were raised on', () => {
+  let db: Database.Database
+  beforeEach(() => { db = freshDb() })
+
+  it('an item records repo and issue_ref, and defaults both to null', () => {
+    insertItem(db, { project: 'agent-inbox', stream: '30-x', agent: 'a', kind: 'question', title: 'q', repo: 'shariqh/agent-inbox', issue_ref: 30 })
+    insertItem(db, { project: 'agent-inbox', stream: '', agent: 'a', kind: 'note', title: 'n' })
+    const withLink = listItems(db).find((i) => i.title === 'q')!
+    expect(withLink.repo).toBe('shariqh/agent-inbox')
+    expect(withLink.issue_ref).toBe(30)
+    const without = listItems(db).find((i) => i.title === 'n')!
+    expect(without.repo).toBeNull()
+    expect(without.issue_ref).toBeNull()
+  })
+
+  // ensureBoard hits UPDATE for every re-upsert, so a board test that only
+  // exercises the update path would pass while a FRESH board carries nulls
+  it('a board created fresh carries the repo/issue_ref, not only one that was re-upserted', () => {
+    upsertBoard(db, { project: 'agent-inbox', stream: '30-x', agent: 'a', title: 'cov', rows: [{ label: 'a', status: 'tracked' }], repo: 'shariqh/agent-inbox', issueRef: 30 })
+    const fresh = listBoards(db)[0]!
+    expect(fresh.repo).toBe('shariqh/agent-inbox')
+    expect(fresh.issue_ref).toBe(30)
+  })
+
+  it('a re-upsert restamps the link identity, like stream and agent', () => {
+    upsertBoard(db, { project: 'agent-inbox', stream: 'main', agent: 'a', title: 'cov', rows: [{ label: 'a', status: 'tracked' }] })
+    expect(listBoards(db)[0]!.repo).toBeNull()
+    upsertBoard(db, { project: 'agent-inbox', stream: '30-x', agent: 'a', title: 'cov', rows: [{ label: 'a', status: 'tracked' }], repo: 'shariqh/agent-inbox', issueRef: 30 })
+    expect(listBoards(db)[0]!.repo).toBe('shariqh/agent-inbox')
+    expect(listBoards(db)[0]!.issue_ref).toBe(30)
+  })
+
+  it('board_row\'s single-row path stamps it too, board_rows gains no columns', () => {
+    updateBoardRow(db, { project: 'agent-inbox', stream: '30-x', agent: 'a', title: 'cov', label: 'a', status: 'tracked', repo: 'shariqh/agent-inbox', issueRef: 30 })
+    const b = listBoards(db)[0]!
+    expect(b.repo).toBe('shariqh/agent-inbox')
+    expect(Object.keys(b.rows[0]!)).not.toContain('repo')
+  })
+
+  it('openDb migrates legacy items/boards tables missing repo/issue_ref', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'inbox-legacy30-')), 'inbox.db')
+    const legacy = new Database(path)
+    legacy.exec(`
+      CREATE TABLE items (
+        id TEXT PRIMARY KEY, project TEXT NOT NULL, stream TEXT NOT NULL DEFAULT '',
+        agent TEXT NOT NULL DEFAULT 'unknown', kind TEXT NOT NULL, title TEXT NOT NULL,
+        detail TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'open',
+        annotation TEXT, created_at TEXT NOT NULL, resolved_at TEXT
+      );
+      CREATE TABLE boards (
+        id TEXT PRIMARY KEY, project TEXT NOT NULL, stream TEXT NOT NULL DEFAULT '',
+        agent TEXT NOT NULL DEFAULT 'unknown', title TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        UNIQUE(project, title)
+      );
+      INSERT INTO items (id, project, kind, title, created_at) VALUES ('old', 'p', 'question', 'legacy?', '2026-01-01T00:00:00.000Z');
+    `)
+    legacy.close()
+    const migrated = openDb(path)
+    // every pre-#30 row reads back with null link identity — the honest answer,
+    // and the reason the feature renders nothing for the existing inbox
+    expect(listItems(migrated).find((i) => i.id === 'old')!.repo).toBeNull()
+    expect(listItems(migrated).find((i) => i.id === 'old')!.issue_ref).toBeNull()
+    insertItem(migrated, { project: 'p', stream: '30-x', agent: 'a', kind: 'question', title: 'new', repo: 'o/n', issue_ref: 30 })
+    expect(listItems(migrated).find((i) => i.title === 'new')!.repo).toBe('o/n')
+    upsertBoard(migrated, { project: 'p', stream: '30-x', agent: 'a', title: 't', rows: [], repo: 'o/n', issueRef: 30 })
+    expect(findBoard(migrated, 'p', 't')!.repo).toBe('o/n')
+  })
+})
+
+describe('source links', () => {
+  let db: Database.Database
+  beforeEach(() => { db = freshDb() })
+
+  const good = {
+    repo: 'shariqh/agent-inbox', branch: '30-x', provider: 'github',
+    pr_number: 41, pr_url: 'https://github.com/shariqh/agent-inbox/pull/41',
+    pr_title: 'source + PR links', pr_state: 'OPEN', pr_draft: false,
+    review_decision: 'APPROVED', checks: 'passing',
+    issue_number: 30, issue_url: 'https://github.com/shariqh/agent-inbox/issues/30',
+    issue_title: 'source + PR links', tldr: 'links the inbox to its PR',
+  }
+
+  it('upsertSourceLink is idempotent by (repo, branch) and stamps fetched_at', () => {
+    upsertSourceLink(db, good)
+    upsertSourceLink(db, { ...good, pr_state: 'MERGED', pr_title: 'source + PR links (merged)' })
+    const links = listSourceLinks(db)
+    expect(links).toHaveLength(1)
+    expect(links[0]!.pr_state).toBe('MERGED')
+    expect(links[0]!.pr_title).toBe('source + PR links (merged)')
+    expect(links[0]!.fetched_at).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+    expect(links[0]!.checked_at).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+    expect(links[0]!.error).toBeNull()
+  })
+
+  it('reads pr_draft back as a boolean, false when it was never written', () => {
+    upsertSourceLink(db, { ...good, pr_draft: true })
+    expect(listSourceLinks(db)[0]!.pr_draft).toBe(true)
+    upsertSourceLink(db, { ...good, pr_draft: false })
+    expect(listSourceLinks(db)[0]!.pr_draft).toBe(false)
+    recordLinkFailure(db, { repo: 'a/b', branch: 'x', error: 'no-gh' })
+    expect(listSourceLinks(db).find((l) => l.repo === 'a/b')!.pr_draft).toBe(false)
+  })
+
+  // the naive "upsert with nulls" implementation blanks a merged PR the moment
+  // the laptop goes offline — that is the bug this test exists to prevent
+  it('recordLinkFailure never blanks a previously good row — only checked_at and error move', () => {
+    upsertSourceLink(db, good)
+    const before = listSourceLinks(db)[0]!
+    recordLinkFailure(db, { repo: good.repo, branch: good.branch, error: 'offline' })
+    const after = listSourceLinks(db)[0]!
+    expect(after.pr_number).toBe(41)
+    expect(after.pr_title).toBe('source + PR links')
+    expect(after.pr_state).toBe('OPEN')
+    expect(after.tldr).toBe('links the inbox to its PR')
+    expect(after.fetched_at).toBe(before.fetched_at)
+    expect(after.error).toBe('offline')
+    expect(after.checked_at >= before.checked_at).toBe(true)
+    // and a later success clears the error again
+    upsertSourceLink(db, good)
+    expect(listSourceLinks(db)[0]!.error).toBeNull()
+  })
+
+  // recordLinkFailure runs inside the poller tick; a NOT NULL constraint on any
+  // omitted column would make the very first failure for a new branch throw
+  it('recordLinkFailure inserts a bare row for a branch it has never seen, without throwing', () => {
+    expect(() => recordLinkFailure(db, { repo: 'a/b', branch: 'never-seen', error: 'no-gh' })).not.toThrow()
+    const row = listSourceLinks(db)[0]!
+    expect(row.error).toBe('no-gh')
+    expect(row.pr_number).toBeNull()
+    expect(row.fetched_at).toBeNull()
+    expect(row.checked_at).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+  })
+
+  it('listLinkTargets returns distinct repo+branch pairs from OPEN items and ACTIVE boards, and skips rows with no repo', () => {
+    insertItem(db, { project: 'p', stream: '30-x', agent: 'a', kind: 'question', title: 'q1', repo: 'o/n', issue_ref: 30 })
+    insertItem(db, { project: 'p', stream: '30-x', agent: 'a', kind: 'note', title: 'q2', repo: 'o/n', issue_ref: 30 })
+    insertItem(db, { project: 'p', stream: '', agent: 'a', kind: 'note', title: 'no branch', repo: 'o/n' })
+    insertItem(db, { project: 'p', stream: 'b', agent: 'a', kind: 'note', title: 'no repo' })
+    const resolved = insertItem(db, { project: 'p', stream: 'gone', agent: 'a', kind: 'question', title: 'old', repo: 'o/n', issue_ref: 1 })
+    resolveItem(db, resolved)
+    upsertBoard(db, { project: 'p', stream: 'board-branch', agent: 'a', title: 'cov', rows: [{ label: 'a', status: 'tracked' }], repo: 'o/n', issueRef: 2 })
+    const targets = listLinkTargets(db)
+    expect(targets).toContainEqual({ repo: 'o/n', branch: '30-x' })
+    expect(targets).toContainEqual({ repo: 'o/n', branch: 'board-branch' })
+    // two items on ONE branch is ONE target — that is the whole point of caching
+    // per (repo, branch) instead of per item
+    expect(targets.filter((t) => t.branch === '30-x')).toHaveLength(1)
+    expect(targets.map((t) => t.branch)).not.toContain('')
+    expect(targets.map((t) => t.branch)).not.toContain('b')
+    expect(targets.map((t) => t.branch)).not.toContain('gone')
+  })
+
+  it('caps the target list so a huge inbox cannot turn into an unbounded gh fan-out', () => {
+    for (let i = 0; i < 60; i++) {
+      insertItem(db, { project: 'p', stream: `br-${i}`, agent: 'a', kind: 'question', title: `q${i}`, repo: 'o/n', issue_ref: 1 })
+    }
+    expect(listLinkTargets(db).length).toBe(50)
+  })
+
+  it('pruneSourceLinks keeps freshly-checked rows and drops ones unchecked for 30 days', () => {
+    upsertSourceLink(db, good)
+    recordLinkFailure(db, { repo: 'o/other', branch: 'x', error: 'no-gh' })
+    pruneSourceLinks(db)
+    expect(listSourceLinks(db)).toHaveLength(2) // nothing is a month old yet
+    // the clock moves, never the row: checked_at is stamped inside the store
+    pruneSourceLinks(db, { nowMs: Date.now() + 31 * 24 * 60 * 60000 })
+    expect(listSourceLinks(db)).toHaveLength(0)
+  })
+})
+

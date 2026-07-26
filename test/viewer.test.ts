@@ -3,7 +3,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
-import { openDb, insertItem, listItems, answerItem, markReplySeen, upsertBoard, listBoards, annotateBoardRow, upsertActivity, closeProject, closedProjects } from '../src/store.js'
+import { openDb, insertItem, listItems, answerItem, markReplySeen, upsertBoard, listBoards, annotateBoardRow, upsertActivity, closeProject, closedProjects, upsertSourceLink } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
 
 function freshDb(): Database.Database {
@@ -143,6 +143,39 @@ describe('viewer api', () => {
     const body = await (await createViewer(db).request('/api/items')).json()
     expect(body.needsYou[0].items[0].session).toBe('sess-1')
     expect(body.notes[0].items[0].session).toBeNull()
+  })
+})
+
+// issue #30 — read-only by design: the 3s frontend poll hits this freely and it
+// never triggers a gh fetch. Only the poller in src/viewer-server.ts writes here.
+describe('source links api (issue #30)', () => {
+  it('GET /api/links returns the cached PR state per (repo, branch)', async () => {
+    const db = freshDb()
+    upsertSourceLink(db, {
+      repo: 'shariqh/agent-inbox', branch: '30-x', pr_number: 41,
+      pr_url: 'https://github.com/shariqh/agent-inbox/pull/41', pr_title: 'source + PR links',
+      pr_state: 'OPEN', pr_draft: true, review_decision: 'APPROVED', checks: 'passing',
+      issue_number: 30, issue_url: 'https://github.com/shariqh/agent-inbox/issues/30',
+      tldr: 'links the inbox to its PR',
+    })
+    const res = await createViewer(db).request('/api/links')
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body).toHaveLength(1)
+    expect(body[0].repo).toBe('shariqh/agent-inbox')
+    expect(body[0].branch).toBe('30-x')
+    expect(body[0].pr_number).toBe(41)
+    expect(body[0].pr_state).toBe('OPEN')
+    expect(body[0].checks).toBe('passing')
+    expect(body[0].tldr).toBe('links the inbox to its PR')
+    // a boolean over the wire, never SQLite's 0/1 — the frontend branches on it
+    expect(body[0].pr_draft).toBe(true)
+  })
+
+  it('is empty and 200 on a fresh db, so the frontend renders exactly as it does today', async () => {
+    const res = await createViewer(freshDb()).request('/api/links')
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual([])
   })
 })
 

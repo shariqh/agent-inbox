@@ -83,6 +83,15 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   (item title/detail/annotation/project/stream/agent, board title/meta, row label/note/
   annotation) through `esc()` before `innerHTML`. Keep it — flags and boards are
   attacker-influenced text.
+- **`src/prstate.ts` is VIEWER-PROCESS-ONLY (issue #30).** It is the one module that shells out to a
+  network tool (`gh`), so `src/mcp.ts`/`src/mcp-server.ts` must never import it, directly or
+  transitively — a subprocess that inherited a stream, or gh's update notifier, would corrupt the MCP
+  wire. It writes only through `store.ts` (`upsertSourceLink`/`recordLinkFailure`; the TTL *policy*,
+  `dueTargets`, is a pure function over what the store returned) and it can never reject: an
+  unhandled rejection from a background PR fetcher would take down the human's entire UI. **A failing
+  CI check or a changes-requested review NEVER enters the attention set** — `public/attention.js` is
+  untouched, no badge moves, no notification fires. A red CI is the agent's problem, not the human
+  being blocked; this is the likeliest place for scope creep to damage tenet 2.
 - **`store.ts`/`mcp.ts`/`viewer.ts` inverse round-trip:** the store's `Item` and
   `BoardWithRows` shapes are the contract shared by MCP writes/reads and viewer reads.
   Change them in `store.ts` and update both consumers (+ `group.ts` for items;
@@ -226,6 +235,21 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   nothing new while it polls `pending()`, so closing that project mutes a genuinely-live blocker
   until fresh content arrives. "Nothing can be permanently muted" is true of everything except that
   case — do not restate it unqualified.
+- **Source + PR links** *(#30)* — split along the network boundary. Link IDENTITY is inferred
+  locally at write time by the stdio server (`inferRepo`/`inferIssueRef` in `src/infer.ts`, carried
+  on the scope, stamped as `items.repo`/`items.issue_ref` and the same two on `boards`); live PR
+  STATE is fetched only by the viewer process (`src/prstate.ts` → `gh pr list`), cached one row per
+  `(repo, branch)` in `source_links`, and served read-only at `GET /api/links`. `public/source.js`
+  joins the two and renders an issue chip plus a PR chip with a native `title=` TL;DR. The
+  branch→issue heuristic is deliberately CONSERVATIVE (`30-x`, `feat/30-x`, `issue-30`, `issues/30`,
+  `gh-30` — never a trailing year or `release/2.1`), because a link to the wrong issue is worse than
+  no link; `gh`'s `closingIssuesReferences` overrides it and `register({ issue })` is the manual
+  escape hatch. Non-github remotes render NOTHING (the `provider` column + `parseRepoSlug`'s host
+  check are the GitLab/GHE seam). **Two honest limitations:** every item and board written before
+  this shipped has `repo = NULL` and shows no chip at all — there is no backfill, and there cannot
+  be a correct one; and `gh pr list` does not return the linked issue's TITLE, so `issue_title` is
+  always null in v1 and the chip reads `#30`.
+
 - **The agent-emit contract** — `docs/reporting-snippet.md`'s end-of-turn rule now tests "am I about
   to stop and wait on the human?", so recommendations and "say the word" moments get flagged
   instead of buried. Mirrored in the `flag` tool description so agents get it at the call site.
@@ -237,10 +261,6 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   on the viewer). `register` is the identity seam: a remote server can't see the client's `cwd`, so
   agents declare scope via `register` instead of auto-inference. `AGENT_INBOX_DB`/`AGENT_INBOX_PORT`
   env overrides are already in place.
-- **Source + PR links** *(#30)* — infer the issue/PR from git + `gh` (a PR belongs to a branch, and
-  `stream` already *is* the branch), refresh PR state from the local `gh` CLI **in the viewer
-  process**, and show it as a chip. No model calls — the TL;DR is the PR title or an agent-supplied
-  one-liner.
 
 Keep all of these additive and behind the existing seams — don't break v1's local,
 zero-config, no-auth path.

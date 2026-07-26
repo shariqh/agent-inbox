@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { readFileSync, existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import type Database from 'better-sqlite3'
-import { listItems, resolveItem, dismissItem, annotateItem, replyItem, listBoards, archiveBoard, unarchiveBoard, annotateBoardRow, listActivity, defaultDbPath, closeProject, reopenProject, closedProjects } from './store.js'
+import { listItems, resolveItem, dismissItem, annotateItem, replyItem, listBoards, archiveBoard, unarchiveBoard, annotateBoardRow, listActivity, listSourceLinks, defaultDbPath, closeProject, reopenProject, closedProjects } from './store.js'
 import { groupItems } from './group.js'
 import { hooksSettingsBlock } from './hook.js'
 
@@ -74,6 +74,11 @@ export function createViewer(db: Database.Database): Hono {
   app.get('/api/setup', (c) => c.json(setupInfo()))
 
   app.get('/api/activity', (c) => c.json(listActivity(db)))
+
+  // issue #30 — the cached PR state, one row per (repo, branch). Deliberately
+  // PURE: it never triggers a gh fetch, so the frontend's 3s poll can hit it
+  // freely. The only writer is the poller src/viewer-server.ts starts.
+  app.get('/api/links', (c) => c.json(listSourceLinks(db)))
 
   app.post('/api/items/:id/resolve', (c) => {
     resolveItem(db, c.req.param('id'))

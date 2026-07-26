@@ -25,17 +25,27 @@ describe('mcp round-trip', () => {
     const doneRes = await client.callTool({ name: 'flag', arguments: { kind: 'done', title: 'shipped v2' } })
     expect(JSON.parse((doneRes.content as Array<{ text: string }>)[0]!.text).id).toBeTruthy()
 
-    const who = await client.callTool({ name: 'register', arguments: { project: 'overridden' } })
-    expect(JSON.parse((who.content as Array<{ text: string }>)[0]!.text).project).toBe('overridden')
+    const who = await client.callTool({ name: 'register', arguments: { project: 'overridden', issue: 30 } })
+    const whoBody = JSON.parse((who.content as Array<{ text: string }>)[0]!.text)
+    expect(whoBody.project).toBe('overridden')
+    expect(whoBody.issue).toBe(30)
+
+    // issue #30 — a registered issue is an OVERRIDE, so it rides the next flag
+    // even though this checkout's branch name carries no issue number
+    await client.callTool({ name: 'flag', arguments: { kind: 'note', title: 'after register' } })
 
     await client.close()
 
     const db = openDb(dbPath)
     const items = listItems(db)
-    expect(items).toHaveLength(2)
-    const q = items.find((i) => i.kind === 'question')!
-    expect(q.title).toBe('which storage?')
+    expect(items).toHaveLength(3)
+    const q = items.find((i) => i.title === 'which storage?')!
+    expect(q.kind).toBe('question')
     expect(q.agent).toBe('claude-code')
+    // the link identity is inferred locally from git, with no gh and no network:
+    // asserted as a shape so a fork (different owner) does not break the suite
+    expect(q.repo).toMatch(/^[\w.-]+\/agent-inbox$/)
+    expect(items.find((i) => i.title === 'after register')!.issue_ref).toBe(30)
     const d = items.find((i) => i.kind === 'done')!
     expect(d.title).toBe('shipped v2')
     expect(d.status).toBe('open')

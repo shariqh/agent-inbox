@@ -33,6 +33,8 @@ function q(over: Partial<Item> = {}): Item {
     replied_at: null,
     reply_seen_at: null,
     reply_source: null,
+    repo: null,
+    issue_ref: null,
     created_at: new Date(NOW - 60_000).toISOString(),
     resolved_at: null,
     ...over,

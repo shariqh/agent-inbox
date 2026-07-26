@@ -37,6 +37,15 @@ So an agent's core loop is: `flag(...)` when it needs attention, then poll `pend
 answers (including optional answer context). Attribution is inferred. Every flag lands in
 one SQLite file; the viewer reads it and shows the cross-project inbox.
 
+Since a **stream already *is* a branch**, the same inference also yields the **source link**:
+the github.com `owner/name` from `origin`, plus the issue number the branch names when it names
+one unambiguously (`30-x`, `feat/30-x`, `issue-30`, `gh-30` — never a trailing year). Those ride
+on the item, so an issue chip appears with no `gh`, no network and no PR. Separately, the
+**viewer process** (never the MCP server) polls the local `gh` CLI for the PR on that branch and
+caches one row per `(repo, branch)`, adding a `PR 41 ✓ merged` chip whose hover shows the PR
+title and the first line of its body. There is no model call anywhere in this. A failing CI
+check never touches the badge — PR state is ambient information, not attention.
+
 ## Status
 
 **v1 shipped and running locally.** Registered with Claude Code (user scope) and Copilot
@@ -71,7 +80,7 @@ dismiss rate.
 | `pending()` | poll open questions; each answered item includes `reply` plus optional `reply_context` for extra direction. |
 | `answer({ id, text, context? })` → `{ ok, reason? }` | record an answer the human gave in **chat** onto an open question, so both channels converge. Refused with `reason: "unread_inbox_answer"` while an inbox answer is waiting unread — the inbox wins. |
 | `resolve({ id })` | close its own item once it's moot (mostly you resolve from the viewer). |
-| `register({ project?, stream? })` | override auto-inferred scope; also the identity seam for future remote mode. |
+| `register({ project?, stream?, repo?, issue? })` | override auto-inferred scope, including the source link (`repo` = `owner/name`, `issue` = a number) when the branch does not name it; also the identity seam for future remote mode. |
 | `whoami()` | debug — report the session's current project/stream/agent. |
 
 ## Ownership
@@ -92,6 +101,7 @@ src/
   mcp-server.ts    stdio entry — spawned per agent session
   group.ts         pure grouping (Needs-you / Notes / Done)
   viewer.ts        Hono API (GET /api/items, POST resolve/dismiss/annotate)
+  prstate.ts       VIEWER-PROCESS-ONLY gh fetcher for live PR state (#30) — never imported by mcp.ts
   viewer-server.ts node entry — serves API + public/ on localhost
   hook.ts          Claude Code hooks runtime (#10 backstop + #21 pickup nudges)
   hook-cli.ts      hook entry — one subcommand per event; fail-open, exit-code owner

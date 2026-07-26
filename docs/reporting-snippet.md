@@ -18,6 +18,12 @@ Call `flag` when:
   free text — follow it either way), plus optional `reply_context` when they attach extra
   direction with their answer; act on both, then call `resolve`. Do
   not park forever waiting in the terminal.
+  **One question, two channels.** A flagged question IS the question you are asking in
+  chat — never open a second, independent prompt for a decision you already flagged; point
+  at the flag instead. If they answer you in chat, call `answer({ id, text, context? })` so
+  the inbox stops showing it open and unread. If that comes back
+  `{ ok:false, reason:"unread_inbox_answer" }` they also answered in the inbox and you have
+  not read it — poll `pending()` and follow that one; the inbox wins.
 - **`kind: "note"`** — you made a notable **assumption**, took a **workaround**, hit a
   **caveat**, or left **tech debt** the human should know about but that does NOT block
   you. Do not flag routine progress or things visible in the diff.

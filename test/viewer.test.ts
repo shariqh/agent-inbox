@@ -3,7 +3,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
-import { openDb, insertItem, listItems, markReplySeen, upsertBoard, listBoards, annotateBoardRow, upsertActivity } from '../src/store.js'
+import { openDb, insertItem, listItems, answerItem, markReplySeen, upsertBoard, listBoards, annotateBoardRow, upsertActivity } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
 
 function freshDb(): Database.Database {
@@ -33,6 +33,10 @@ describe('viewer api', () => {
     expect(body.copilotConfig).toContain('mcp-server.js')
     expect(body.snippet).toContain('flag')          // the reporting snippet text
     expect(body.snippet).toContain('board_upsert')
+    // the Setup pane serves docs/reporting-snippet.md verbatim, so the shipped
+    // emit contract and the pane cannot drift apart on the dual-channel rule (#29).
+    // Pin the tool token only, never the prose around it.
+    expect(body.snippet).toContain('answer(')
     expect(body.dbPath).toContain('.agent-inbox')
   })
 
@@ -89,6 +93,26 @@ describe('viewer api', () => {
     expect(item.reply_context).toBe('start with the TMCC thread')
     expect(item.reply_seen_at).toBeNull()
     expect(item.status).toBe('open') // replying is not resolving — the agent still has to act
+  })
+
+  // #29: the channel is stamped inside the store, so the viewer needs no code of its
+  // own — SELECT * already carries reply_source out through GET /api/items, which is
+  // where the card's "via chat" provenance chip reads it from.
+  it('the answer channel is stamped by the store and surfaces unchanged through GET /api/items', async () => {
+    const viaInbox = insertItem(db, { project: 'p', stream: '', agent: 'claude-code', kind: 'question', title: 'which auth?' })
+    const viaChat = insertItem(db, { project: 'p', stream: '', agent: 'claude-code', kind: 'question', title: 'which db?' })
+    const app = createViewer(db)
+    const res = await app.request(`/api/items/${viaInbox}/reply`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'clerk' }),
+    })
+    expect(res.status).toBe(200)
+    expect(answerItem(db, viaChat, 'sqlite').ok).toBe(true)
+
+    const body = await (await app.request('/api/items')).json()
+    const rendered: Record<string, string | null> = {}
+    for (const group of body.needsYou) for (const it of group.items) rendered[it.title] = it.reply_source
+    expect(rendered['which auth?']).toBe('inbox')
+    expect(rendered['which db?']).toBe('agent')
   })
 
   it('GET /api/items exposes the asking session so the viewer can judge liveness', async () => {

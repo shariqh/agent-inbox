@@ -2,7 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
 import type Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
-import { insertItem, resolveItem, listPending, markReplySeen, upsertBoard, updateBoardRow, findBoard, archiveBoard, getBoard, listBoards, markBoardRead, upsertActivity, endActivity, touchActivity } from './store.js'
+import { insertItem, resolveItem, listPending, markReplySeen, answerItem, upsertBoard, updateBoardRow, findBoard, archiveBoard, getBoard, listBoards, markBoardRead, upsertActivity, endActivity, touchActivity } from './store.js'
 import { makeScope } from './scope.js'
 
 export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
@@ -43,7 +43,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     'flag',
     {
       description:
-        'Raise an item for the human. Use kind="question" whenever you are about to STOP and WAIT on the human — a decision, a missing credential, an ambiguity you cannot resolve, or a recommendation / next step you are ending your turn on ("recommend X — go?", "want me to ...?", "say the word"). The test is not whether you are mid-conversation; it is whether your next move depends on their answer — such a moment left only in chat is invisible, so flag it (a recommendation in your last paragraph does NOT reach them). kind="note" = a non-blocking assumption, caveat, or workaround they should see; kind="done" = a finished milestone (shipped / merged / deployed), used sparingly, NOT routine progress. Keep it glanceable: title is the ask or finding itself in one line (aim under ~80 chars), detail is ONE line (the why or impact), and everything long — background, files/PRs/links, the context a cold reader needs — goes in context, which renders collapsed so length there is free. For a question, ALWAYS include 2-4 options when the answer has discernible choices: your recommendation first with recommended:true, each a short label plus a detail explaining the tradeoff; the human can pick one, compare them, or answer freely. After flagging a question, poll the pending tool for the reply. project/stream/agent are inferred automatically.',
+        'Raise an item for the human. Use kind="question" whenever you are about to STOP and WAIT on the human — a decision, a missing credential, an ambiguity you cannot resolve, or a recommendation / next step you are ending your turn on ("recommend X — go?", "want me to ...?", "say the word"). The test is not whether you are mid-conversation; it is whether your next move depends on their answer — such a moment left only in chat is invisible, so flag it (a recommendation in your last paragraph does NOT reach them). kind="note" = a non-blocking assumption, caveat, or workaround they should see; kind="done" = a finished milestone (shipped / merged / deployed), used sparingly, NOT routine progress. Keep it glanceable: title is the ask or finding itself in one line (aim under ~80 chars), detail is ONE line (the why or impact), and everything long — background, files/PRs/links, the context a cold reader needs — goes in context, which renders collapsed so length there is free. For a question, ALWAYS include 2-4 options when the answer has discernible choices: your recommendation first with recommended:true, each a short label plus a detail explaining the tradeoff; the human can pick one, compare them, or answer freely. After flagging a question, poll the pending tool for the reply. One question, two channels: never ask the same decision twice in two places — if the human answers you in chat rather than on the card, record it with the answer tool so the inbox converges. project/stream/agent are inferred automatically.',
       inputSchema: {
         kind: z.enum(['question', 'note', 'done']),
         title: z.string().min(1),
@@ -93,7 +93,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     'pending',
     {
       description:
-        'Poll for the human’s answers to your open questions in this project. Returns every open question with its reply (null until the human answers — reply may be one of your options or their own free-text direction; follow it either way) and optional reply_context for extra instructions. Fetching a replied question marks it picked-up, so the human sees you got it. When you have acted on a reply, call resolve on that item. Poll between work steps rather than blocking.',
+        'Poll for the human’s answers to your open questions in this project. Returns every open question with its reply (null until the human answers — reply may be one of your options or their own free-text direction; follow it either way) and optional reply_context for extra instructions. Fetching a replied question marks it picked-up, so the human sees you got it. When you have acted on a reply, call resolve on that item. Poll between work steps rather than blocking. If the human answered you in chat instead, record it with the answer tool — but an inbox reply you have not picked up here always wins over one given in chat.',
       inputSchema: {},
     },
     async () => {
@@ -102,6 +102,27 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
       const items = listPending(db, s.project)
       for (const it of items) if (it.reply && !it.reply_seen_at) markReplySeen(db, it.id)
       return { content: [{ type: 'text', text: JSON.stringify({ items }) }] }
+    },
+  )
+
+  // issue #29 — the second answer channel. A question flagged here is the SAME
+  // question you asked in chat, so an answer given out loud has to land on the
+  // item too, or the human keeps seeing an open question they already settled.
+  server.registerTool(
+    'answer',
+    {
+      description:
+        'Record an answer the HUMAN gave you in CHAT onto one of your open inbox questions, so the inbox stops showing it unanswered. This is NOT for answering your own question — if the question became moot, call resolve instead; writing an answer here removes the item from the human’s attention list, so inventing one hides a real question from them. id comes from flag’s return value or from pending. Returns {ok:true}, or {ok:false, reason} — reason "unread_inbox_answer" means they ALSO answered in the inbox and you have not read it: that answer is returned alongside the refusal and it wins, so follow it, and call pending() so the card stops telling them you are still waiting to read it. Other reasons: "empty" (no text), "not_found", "not_a_question", "not_open". Recording an answer is not resolving — once you have acted on it, call resolve.',
+      inputSchema: { id: z.string(), text: z.string(), context: z.string().optional() },
+    },
+    async ({ id, text, context }) => {
+      heartbeat()
+      // no project scope check on purpose: an answering session's inferred project
+      // can legitimately differ from the asking one (different cwd, subagent,
+      // worktree), and losing the human's answer is worse than a cross-project
+      // write only an id typo can cause. kind/status/precedence guard the rest.
+      const out = answerItem(db, id, text, context)
+      return { content: [{ type: 'text', text: JSON.stringify(out) }] }
     },
   )
 

@@ -74,6 +74,56 @@ describe('mcp round-trip', () => {
     expect(listItems(openDb(dbPath))[0]!.reply_seen_at).toMatch(/^\d{4}-\d{2}-\d{2}T/) // pickup stamped
   }, 20000)
 
+  // issue #29 — the human answered in chat, so the agent records it onto the item.
+  // Two real OS processes: the MCP server writes through `answer`, the viewer side
+  // writes through replyItem on its own connection to the same WAL file.
+  it('answer records a chat reply end-to-end, leaves pickup alone, and yields to a waiting inbox answer', async () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-answer-')), 'inbox.db')
+    const transport = new StdioClientTransport({
+      command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath },
+    })
+    const client = new Client({ name: 'claude-code', version: '1.0.0' })
+    await client.connect(transport)
+    const call = async (name: string, args: Record<string, unknown>) =>
+      JSON.parse(((await client.callTool({ name, arguments: args })).content as Array<{ text: string }>)[0]!.text)
+
+    const { id } = await call('flag', { kind: 'question', title: 'sqlite or postgres?' })
+
+    // a refusal is JSON the agent can branch on, never a thrown MCP error
+    expect(await call('answer', { id, text: '   ' })).toEqual({ ok: false, reason: 'empty' })
+
+    expect(await call('answer', { id, text: 'sqlite', context: 'stay local until remote mode' })).toEqual({ ok: true })
+    let item = listItems(openDb(dbPath))[0]!
+    expect(item.reply).toBe('sqlite')
+    expect(item.reply_context).toBe('stay local until remote mode')
+    expect(item.reply_source).toBe('agent')
+    expect(item.reply_seen_at).toBe(item.replied_at) // the agent authored it, so it is already read
+    expect(item.status).toBe('open') // recording is not resolving
+
+    // pending only stamps pickup when an answer is unread — it must not restamp this one
+    const seenBefore = item.reply_seen_at
+    const p = await call('pending', {})
+    expect(p.items[0].reply).toBe('sqlite')
+    expect(listItems(openDb(dbPath))[0]!.reply_seen_at).toBe(seenBefore)
+
+    // the human then answers in the inbox instead; that outranks the chat channel
+    replyItem(openDb(dbPath), id, 'no — postgres', 'we need concurrent writers')
+    const refused = await call('answer', { id, text: 'sticking with sqlite' })
+    expect(refused).toEqual({
+      ok: false, reason: 'unread_inbox_answer', reply: 'no — postgres', reply_context: 'we need concurrent writers',
+    })
+    item = listItems(openDb(dbPath))[0]!
+    expect(item.reply).toBe('no — postgres')
+    expect(item.reply_source).toBe('inbox')
+
+    // and either channel's answer survives the agent resolving afterwards
+    expect(await call('resolve', { id })).toEqual({ ok: true })
+    await client.close()
+    item = listItems(openDb(dbPath))[0]!
+    expect(item.status).toBe('resolved')
+    expect(item.reply).toBe('no — postgres')
+  }, 20000)
+
   it('sessions auto-register presence; status upgrades it; done reverts; exit removes', async () => {
     const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-status-')), 'inbox.db')
     const transport = new StdioClientTransport({

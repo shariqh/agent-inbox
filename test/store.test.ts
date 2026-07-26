@@ -11,6 +11,7 @@ import {
   annotateItem,
   listItems,
   replyItem,
+  answerItem,
   markReplySeen,
   listPending,
   upsertBoard,
@@ -278,6 +279,180 @@ describe('answer-back', () => {
     expect(listItems(db2)[0]!.reply).toBe('x')
     expect(listItems(db2)[0]!.reply_context).toBe('ship this today')
     expect(listItems(db2)[0]!.options![0]!.label).toBe('x')
+  })
+})
+
+// issue #29 — dual-channel answers. The human can answer in the inbox card OR say it
+// out loud in chat, in which case the agent that heard it records it with answerItem.
+// The conflict rule is NOT wall-clock last-write-wins (a skewed clock or a delayed
+// flush would let a stale chat answer clobber a fresh inbox one): the INBOX ALWAYS
+// WINS. An agent may only record while nothing unread is waiting for it, and the
+// human's own reply overwrites unconditionally. Both orderings therefore converge on
+// the inbox answer, with no clock comparison to get wrong.
+describe('dual-channel answers (#29)', () => {
+  let db: Database.Database
+  beforeEach(() => { db = freshDb() })
+
+  const ask = (title = 'q'): string => insertItem(db, { project: 'p', stream: '', agent: 'a', kind: 'question', title })
+  const row = (id: string) => listItems(db).find((i) => i.id === id)!
+
+  it('replyItem stamps the inbox channel, and a blank clear drops the source with the answer', () => {
+    const id = ask()
+    replyItem(db, id, 'sqlite')
+    expect(row(id).reply_source).toBe('inbox')
+    expect(replyItem(db, id, '')).toBe(true) // not picked up yet, so the clear is allowed
+    expect(row(id).reply).toBeNull()
+    expect(row(id).reply_source).toBeNull() // no answer means no channel
+  })
+
+  it('a legacy items table migrates to carry reply_source, defaulting to null', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'inbox-legacy-source-')), 'inbox.db')
+    const legacy = new Database(path)
+    legacy.exec(`
+      CREATE TABLE items (
+        id TEXT PRIMARY KEY, project TEXT NOT NULL, stream TEXT NOT NULL DEFAULT '',
+        agent TEXT NOT NULL DEFAULT 'unknown', kind TEXT NOT NULL, title TEXT NOT NULL,
+        detail TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'open',
+        annotation TEXT, created_at TEXT NOT NULL, resolved_at TEXT
+      );
+      INSERT INTO items (id, project, kind, title, created_at) VALUES ('old', 'p', 'question', 'legacy?', '2026-01-01T00:00:00.000Z');
+    `)
+    legacy.close()
+    const migrated = openDb(path)
+    expect(listItems(migrated).find((i) => i.id === 'old')!.reply_source).toBeNull()
+    const fresh = insertItem(migrated, { project: 'p', stream: '', agent: 'a', kind: 'question', title: 'q' })
+    expect(answerItem(migrated, fresh, 'from chat').ok).toBe(true)
+    expect(listItems(migrated).find((i) => i.id === fresh)!.reply_source).toBe('agent')
+  })
+
+  it('answerItem records a chat answer as already picked up, sourced to the agent, item still open', () => {
+    const id = ask()
+    expect(answerItem(db, id, 'use postgres', 'ship behind a flag')).toEqual({ ok: true })
+    const it = row(id)
+    expect(it.reply).toBe('use postgres')
+    expect(it.reply_context).toBe('ship behind a flag')
+    expect(it.replied_at).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+    // the agent IS the reader here — printing "waiting for agent pickup" for an
+    // answer it authored itself would be a lie the card tells the human
+    expect(it.reply_seen_at).toBe(it.replied_at)
+    expect(it.reply_source).toBe('agent')
+    expect(it.status).toBe('open') // recording an answer is not resolving; the agent still has to act
+  })
+
+  it('answerItem refuses an empty answer, an unknown id, a note and a resolved question, each with a reason', () => {
+    const id = ask()
+    expect(answerItem(db, id, '   ')).toEqual({ ok: false, reason: 'empty' })
+    expect(row(id).reply).toBeNull() // an agent may RECORD an answer, never erase one
+    expect(answerItem(db, 'does-not-exist', 'x')).toEqual({ ok: false, reason: 'not_found' })
+    const note = insertItem(db, { project: 'p', stream: '', agent: 'a', kind: 'note', title: 'fyi' })
+    expect(answerItem(db, note, 'x')).toEqual({ ok: false, reason: 'not_a_question' })
+    const closed = ask('closed?')
+    resolveItem(db, closed)
+    expect(answerItem(db, closed, 'x')).toEqual({ ok: false, reason: 'not_open' })
+  })
+
+  it('an unpicked-up inbox answer beats a chat answer — answerItem refuses and hands back what is waiting', () => {
+    const id = ask()
+    replyItem(db, id, 'from the inbox', 'and read the thread first')
+    const out = answerItem(db, id, 'from chat')
+    expect(out.ok).toBe(false)
+    expect(out.reason).toBe('unread_inbox_answer')
+    expect(out.reply).toBe('from the inbox')
+    expect(out.reply_context).toBe('and read the thread first')
+    const it = row(id)
+    expect(it.reply).toBe('from the inbox')
+    expect(it.reply_source).toBe('inbox')
+    expect(it.reply_seen_at).toBeNull() // still waiting to be picked up via pending()
+  })
+
+  it('a fresh inbox answer always supersedes a chat-recorded one, resetting pickup and source', () => {
+    const id = ask()
+    expect(answerItem(db, id, 'from chat').ok).toBe(true)
+    replyItem(db, id, 'no, the other way', 'I changed my mind')
+    const it = row(id)
+    expect(it.reply).toBe('no, the other way')
+    expect(it.reply_context).toBe('I changed my mind')
+    expect(it.reply_seen_at).toBeNull()
+    expect(it.reply_source).toBe('inbox')
+  })
+
+  it('once the agent has picked the inbox answer up, a newer chat answer overwrites it — reply AND context', () => {
+    const id = ask()
+    replyItem(db, id, 'inbox answer', 'inbox context')
+    markReplySeen(db, id)
+    expect(answerItem(db, id, 'chat overrides').ok).toBe(true)
+    const it = row(id)
+    expect(it.reply).toBe('chat overrides')
+    // deliberate, pinned: an agent may OVERWRITE a picked-up human answer (the human
+    // said something newer out loud) but may never BLANK one. The stale context goes
+    // with the stale answer rather than being left attached to a different reply.
+    expect(it.reply_context).toBeNull()
+    expect(it.reply_source).toBe('agent')
+  })
+
+  it('an answer from either channel survives resolve, and the final state converges on resolved', () => {
+    const chat = ask('chat?')
+    answerItem(db, chat, 'chat answer')
+    resolveItem(db, chat)
+    expect(row(chat).status).toBe('resolved')
+    expect(row(chat).reply).toBe('chat answer')
+
+    const inbox = ask('inbox?')
+    replyItem(db, inbox, 'inbox answer')
+    markReplySeen(db, inbox)
+    resolveItem(db, inbox)
+    expect(row(inbox).status).toBe('resolved')
+    expect(row(inbox).reply).toBe('inbox answer')
+  })
+
+  // The precedence guard has to be ONE conditioned UPDATE, not SELECT-then-UPDATE and
+  // not two UPDATEs: the viewer (its own OS process, its own connection to the same WAL
+  // file) can land a reply INSIDE a multi-statement answerItem. A two-statement version
+  // would leave the human's newest answer flagged "✓ picked up" — a lie — and
+  // un-clearable by their own "Change answer" (replyItem's blank-clear refuses once
+  // reply_seen_at is set). Same interception shape as the replyItem race pin above.
+  it('the precedence guard is one atomic statement: a viewer replyItem racing from a second connection still wins the whole record', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'inbox-answer-race-')), 'inbox.db')
+    const db1 = openDb(path) // the MCP server's connection
+    const db2 = new Database(path) // the viewer's
+    db2.pragma('journal_mode = WAL')
+    db2.pragma('busy_timeout = 5000')
+
+    const id = insertItem(db1, { project: 'p', stream: '', agent: 'a', kind: 'question', title: 'q' })
+
+    const realPrepare = db1.prepare.bind(db1)
+    let injected = false
+    db1.prepare = ((sql: string) => {
+      const stmt = realPrepare(sql)
+      if (!injected && /reply_seen_at/.test(sql)) {
+        injected = true
+        const realGet = stmt.get.bind(stmt)
+        const realRun = stmt.run.bind(stmt)
+        stmt.get = ((...args: unknown[]) => {
+          const result = realGet(...(args as []))
+          replyItem(db2, id, 'from the inbox') // race lands right after a (stale) read
+          return result
+        }) as typeof stmt.get
+        stmt.run = ((...args: unknown[]) => {
+          replyItem(db2, id, 'from the inbox') // race lands right before the conditioned write
+          return realRun(...(args as []))
+        }) as typeof stmt.run
+      }
+      return stmt
+    }) as typeof db1.prepare
+
+    const out = answerItem(db1, id, 'from chat')
+    db1.prepare = realPrepare
+
+    expect(out.ok).toBe(false)
+    expect(out.reason).toBe('unread_inbox_answer')
+    const it = listItems(db1).find((i) => i.id === id)!
+    expect(it.reply).toBe('from the inbox') // the whole record is the human's, not a blend
+    expect(it.reply_context).toBeNull()
+    expect(it.reply_seen_at).toBeNull()
+    expect(it.reply_source).toBe('inbox')
+
+    db2.close()
   })
 })
 

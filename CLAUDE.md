@@ -13,7 +13,7 @@ server). See [`README.md`](README.md) for the full picture and
 [`docs/superpowers/specs/`](docs/superpowers/specs/) for the design docs (inbox v1 +
 tracking boards).
 
-MCP tools: `flag`, `resolve`, `register`, `whoami` (items/scope) and `board_upsert`,
+MCP tools: `flag`, `resolve`, `answer`, `register`, `whoami` (items/scope) and `board_upsert`,
 `board_row`, `board_get`, `board_archive` (boards) — all defined in `src/mcp.ts`.
 
 ## Commands
@@ -42,7 +42,7 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
 
 - **`src/store.ts` is the only door to the database.** Every read/write goes through its
   exported functions — items: `insertItem`/`resolveItem`/`dismissItem`/`annotateItem`/
-  `listItems`; boards: `upsertBoard`/`updateBoardRow`/`getBoard`/`listBoards`/
+  `replyItem`/`answerItem`/`listItems`; boards: `upsertBoard`/`updateBoardRow`/`getBoard`/`listBoards`/
   `archiveBoard`/`annotateBoardRow` — plus `openDb`. No raw SQL anywhere else. To change
   storage, reimplement this module; nothing else touches SQLite.
 - **Boards: the human's annotations are sacred.** A board is idempotent by
@@ -51,6 +51,17 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   must survive a full re-upsert. But rows *absent* from an upsert are deleted (annotations
   with them), so agents must keep labels stable. There is no FK enforcement between
   `boards` and `board_rows` — deletes are handled explicitly in `store.ts`.
+- **Two answer channels, ONE precedence rule: the inbox always wins.** A question can be
+  answered on the card (`replyItem`, source `'inbox'`) or out loud in chat and recorded by
+  the agent (`answerItem`, source `'agent'`). It is deliberately NOT wall-clock
+  last-write-wins — a skewed clock or a delayed flush would let a stale chat answer clobber
+  a fresh inbox one. `answerItem` is ONE conditioned UPDATE that only writes while nothing
+  unread is waiting (`reply IS NULL OR reply = '' OR reply_seen_at IS NOT NULL`) and
+  otherwise returns `{ok:false, reason:'unread_inbox_answer'}` with the waiting answer;
+  `replyItem` overwrites unconditionally and resets pickup. Never SELECT-then-UPDATE and
+  never two UPDATEs here: the viewer writes from its own OS process and would land between
+  them, leaving the human's newest answer flagged "✓ picked up" and un-clearable. An agent
+  may overwrite an answer it has already picked up, but may never blank one.
 - **One process per agent session (stdio), one shared file.** The MCP server is spawned per
   session; all instances write to the same `~/.agent-inbox/inbox.db`. Concurrency is handled
   by **WAL + `busy_timeout=5000`** set in `openDb` — keep both. Writes are single tiny
@@ -170,6 +181,12 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   stages `dist` + `public` + `electron` and rebuilds `better-sqlite3` for Electron's ABI.
 - **Session presence** *(#28)* — every MCP session is a Live row; `status()` upgrades it, process
   exit ends it, and rows silently expire after ~15 min.
+- **Dual-channel answer sync** *(#29)* — the `answer` MCP tool plus `answerItem`/`reply_source`.
+  Agent-mediated by design: this repo has no hook into any chat client, so the AGENT is the
+  bridge. Convergence is order-independent (inbox precedence, no clock comparison) rather than
+  the issue's original "timestamp-based last write wins". Known limitation, worth a follow-up:
+  once a chat answer lands, `reply_seen_at` is set, so the card's "Change answer" (a
+  blank-clear) is refused and the human cannot re-answer that item from the viewer.
 - **The agent-emit contract** — `docs/reporting-snippet.md`'s end-of-turn rule now tests "am I about
   to stop and wait on the human?", so recommendations and "say the word" moments get flagged
   instead of buried. Mirrored in the `flag` tool description so agents get it at the call site.
@@ -186,8 +203,6 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   Pure shell→store (or shell→HTTP once (#8) lands). Must fail open.
 - **Idle-agent polling gap** *(#21)* — an agent idle at the prompt never calls `pending()`, so a
   human's reply can sit at "waiting for pickup". Overlaps #10's hook territory.
-- **Dual-channel answer sync** *(#29)* — answering in chat and answering in the inbox should
-  converge on the same item state, last-write-wins.
 - **Source + PR links** *(#30)* — infer the issue/PR from git + `gh` (a PR belongs to a branch, and
   `stream` already *is* the branch), refresh PR state from the local `gh` CLI **in the viewer
   process**, and show it as a chip. No model calls — the TL;DR is the PR title or an agent-supplied

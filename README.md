@@ -66,6 +66,7 @@ dismiss rate.
 |---|---|
 | `flag({ kind, title, detail?, context?, options?, stream? })` → `{ id }` | raise a `question` (needs you) or `note` (non-blocking FYI). The workhorse. |
 | `pending()` | poll open questions; each answered item includes `reply` plus optional `reply_context` for extra direction. |
+| `answer({ id, text, context? })` → `{ ok, reason? }` | record an answer the human gave in **chat** onto an open question, so both channels converge. Refused with `reason: "unread_inbox_answer"` while an inbox answer is waiting unread — the inbox wins. |
 | `resolve({ id })` | close its own item once it's moot (mostly you resolve from the viewer). |
 | `register({ project?, stream? })` | override auto-inferred scope; also the identity seam for future remote mode. |
 | `whoami()` | debug — report the session's current project/stream/agent. |

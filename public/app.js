@@ -1673,7 +1673,7 @@ function itemCardEl(it, { done = false, nowMs = Date.now(), liveness = 'parked',
     ${s.context ? `<div class="card-context"><div class="card-context-label">CONTEXT</div><div class="card-context-body">${esc(s.context)}</div></div>` : ''}
     ${s.annotation ? `<div class="annotation">📝 ${esc(s.annotation)}</div>` : ''}
     ${s.recWarning ? `<div class="rec-warning">⚠ ${esc(s.recWarning)}</div>` : ''}
-    ${s.reply ? `<div class="reply-block">↩ ${esc(s.reply)}${it.reply_context ? `<div class="reply-context">context: ${esc(it.reply_context)}</div>` : ''}<span class="pickup ${it.reply_seen_at ? 'picked' : 'awaiting'}">${it.reply_seen_at ? '✓ picked up' : '● waiting for agent pickup'}</span></div>` : ''}`
+    ${s.reply ? `<div class="reply-block">↩ ${esc(s.reply)}${it.reply_context ? `<div class="reply-context">context: ${esc(it.reply_context)}</div>` : ''}${it.reply_source === 'agent' ? '<span class="reply-source">via chat</span>' : ''}<span class="pickup ${it.reply_seen_at ? 'picked' : 'awaiting'}">${it.reply_seen_at ? '✓ picked up' : '● waiting for agent pickup'}</span></div>` : ''}`
   if (s.showAnswer) el.appendChild(answerEl(it))
   if (s.showActions) {
     const actions = document.createElement('div')

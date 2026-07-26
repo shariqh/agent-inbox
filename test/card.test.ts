@@ -48,6 +48,19 @@ describe('cardSections', () => {
     expect(s.answered).toBe(true)
     expect(s.reply).toBe('go ahead')
   })
+  // #29 criterion 3, pinned as ALREADY TRUE rather than fixed: `answered` requires
+  // status === 'open', and `reply` is blanked with it, so once a question is resolved
+  // no card can render its reply — and therefore none can render a stale
+  // "waiting for agent pickup" marker beside it. Both resolve paths (the MCP tool and
+  // POST /api/items/:id/resolve) go through the same resolveItem, so this holds
+  // whichever channel closed the item.
+  it('a resolved question exposes no reply, so no card can render a stale pickup marker', () => {
+    expect(cardSections(item({ reply: 'go ahead', status: 'resolved' }), { done: true }))
+      .toMatchObject({ reply: '', answered: false })
+    expect(cardSections(item({ reply: 'go ahead', status: 'resolved' })))
+      .toMatchObject({ reply: '', answered: false }) // and not only in the Done section
+  })
+
   it('hides actions on a done card and carries the multi-recommendation warning', () => {
     expect(cardSections(item(), { done: true }).showActions).toBe(false)
     const s = cardSections(item({ options: [{ label: 'A', recommended: true }, { label: 'B', recommended: true }] }))
@@ -124,6 +137,22 @@ describe('app.js wiring (source-level pins)', () => {
     const fn = js.slice(start, js.indexOf('\nasync function changeAnswer('))
     expect(fn).toContain('card-context-label">CONTEXT<')
     expect(fn).toMatch(/card-context-body">\$\{esc\(s\.context\)\}/)
+  })
+
+  // #29: an answer an agent recorded from chat must be visibly agent-written, and the
+  // pickup marker must live in exactly one place — inside the reply block — so it can
+  // never be printed for an item that has no reply to show.
+  it('itemCardEl renders via-chat provenance as a fixed literal, inside the s.reply branch', () => {
+    const start = js.indexOf('function itemCardEl(')
+    const fn = js.slice(start, js.indexOf('\nasync function changeAnswer('))
+    expect((js.match(/waiting for agent pickup/g) ?? []).length).toBe(1)
+    const replyBlock = fn.split('\n').find((l) => l.includes('waiting for agent pickup'))!
+    expect(replyBlock).toContain('${s.reply ?')
+    expect(replyBlock).toContain('reply-block')
+    // the chip is a FIXED string selected by an equality test — interpolating the
+    // stored value would regress the "everything through esc() before innerHTML" rule
+    expect(replyBlock).toContain("it.reply_source === 'agent'")
+    expect(fn).not.toMatch(/esc\(\s*it\.reply_source/)
   })
 
   it('guards triageRemoveCurrent so saving a blocked row inline (deck closed) cannot throw', () => {

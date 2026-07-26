@@ -6,6 +6,9 @@ import { mkdirSync } from 'node:fs'
 
 export type Kind = 'question' | 'note' | 'done'
 export type Status = 'open' | 'resolved' | 'dismissed'
+// which channel the current answer came through: the human typed it into the
+// inbox card, or an agent recorded what they said in chat (issue #29)
+export type ReplySource = 'inbox' | 'agent'
 
 // a proposed answer the agent attaches to a question; detail carries the
 // tradeoffs shown in the viewer's compare view
@@ -34,6 +37,7 @@ export interface Item {
   reply_context: string | null
   replied_at: string | null
   reply_seen_at: string | null
+  reply_source: ReplySource | null
   created_at: string
   resolved_at: string | null
 }
@@ -130,6 +134,7 @@ function migrate(db: Database.Database): void {
   ensureColumn(db, 'items', 'reply_context', 'TEXT')
   ensureColumn(db, 'items', 'replied_at', 'TEXT')
   ensureColumn(db, 'items', 'reply_seen_at', 'TEXT')
+  ensureColumn(db, 'items', 'reply_source', 'TEXT')
   ensureColumn(db, 'items', 'session', 'TEXT')
 }
 
@@ -187,17 +192,72 @@ export function replyItem(db: Database.Database, id: string, text: string, conte
     // (e.g. the MCP server's `pending` handler, its own OS process) can never land in a
     // window between a read and a later, unconditional write — there is no such window.
     const info = db
-      .prepare(`UPDATE items SET reply = NULL, reply_context = NULL, replied_at = ?, reply_seen_at = NULL WHERE id = ? AND reply_seen_at IS NULL`)
+      .prepare(`UPDATE items SET reply = NULL, reply_context = NULL, replied_at = ?, reply_seen_at = NULL, reply_source = NULL WHERE id = ? AND reply_seen_at IS NULL`)
       .run(new Date().toISOString(), id)
     return info.changes > 0
   }
-  db.prepare(`UPDATE items SET reply = ?, reply_context = ?, replied_at = ?, reply_seen_at = NULL WHERE id = ?`)
+  // unconditional by design: the inbox is the higher-precedence channel, so the
+  // human's own reply overwrites anything an agent recorded from chat (#29) and
+  // resets pickup so that agent has to read the new one.
+  db.prepare(`UPDATE items SET reply = ?, reply_context = ?, replied_at = ?, reply_seen_at = NULL, reply_source = 'inbox' WHERE id = ?`)
     .run(reply, replyContext || null, new Date().toISOString(), id)
   return true
 }
 
 export function markReplySeen(db: Database.Database, id: string): void {
   db.prepare(`UPDATE items SET reply_seen_at = ? WHERE id = ?`).run(new Date().toISOString(), id)
+}
+
+export type AnswerRefusal = 'empty' | 'not_found' | 'not_a_question' | 'not_open' | 'unread_inbox_answer'
+
+export interface AnswerResult {
+  ok: boolean
+  reason?: AnswerRefusal
+  // on 'unread_inbox_answer': the answer that is waiting, so the caller can act
+  // on it without a second round-trip
+  reply?: string | null
+  reply_context?: string | null
+}
+
+// The agent-side answer channel (#29): an agent records onto the item what the
+// human told it in chat. The precedence rule lives entirely in this statement's
+// WHERE clause — an inbox answer the agent has NOT picked up outranks a chat
+// answer, so this refuses rather than clobbering it; the human's own replyItem
+// stays unconditional and outranks everything. Both orderings converge on the
+// inbox answer without comparing clocks.
+//
+// An agent may RECORD an answer but never ERASE one: blank text is refused here,
+// and blanking stays the human's guarded prerogative in replyItem. It MAY
+// overwrite a human answer it has already picked up (they said something newer
+// out loud) — that case is pinned in test/store.test.ts.
+export function answerItem(db: Database.Database, id: string, text: string, context?: string): AnswerResult {
+  const reply = text.trim()
+  if (!reply) return { ok: false, reason: 'empty' }
+  const now = new Date().toISOString()
+  // ONE conditioned UPDATE, never SELECT-then-UPDATE and never two UPDATEs: the
+  // viewer writes to this same WAL file from its own OS process and can land a
+  // reply between two statements. reply_seen_at = replied_at because the agent IS
+  // the reader — rendering "waiting for agent pickup" for an answer it authored
+  // itself would be a lie. Status stays 'open': recording is not resolving.
+  const info = db
+    .prepare(
+      `UPDATE items SET reply = ?, reply_context = ?, replied_at = ?, reply_seen_at = ?, reply_source = 'agent'
+       WHERE id = ? AND kind = 'question' AND status = 'open'
+         AND (reply IS NULL OR reply = '' OR reply_seen_at IS NOT NULL)`,
+    )
+    .run(reply, context?.trim() || null, now, now, id)
+  if (info.changes > 0) return { ok: true }
+  // Diagnosis is advisory and deliberately runs AFTER the write. Reading first to
+  // decide would reopen exactly the TOCTOU window the conditioned UPDATE closes;
+  // since nothing was written, a concurrent change here can only make the
+  // explanation stale, never the stored state wrong.
+  const row = db.prepare(`SELECT kind, status, reply, reply_context FROM items WHERE id = ?`).get(id) as
+    | { kind: Kind; status: Status; reply: string | null; reply_context: string | null }
+    | undefined
+  if (!row) return { ok: false, reason: 'not_found' }
+  if (row.kind !== 'question') return { ok: false, reason: 'not_a_question' }
+  if (row.status !== 'open') return { ok: false, reason: 'not_open' }
+  return { ok: false, reason: 'unread_inbox_answer', reply: row.reply, reply_context: row.reply_context }
 }
 
 export function listPending(db: Database.Database, project: string): Item[] {

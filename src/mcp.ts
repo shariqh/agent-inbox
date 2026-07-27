@@ -100,7 +100,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     'pending',
     {
       description:
-        'Poll for everything the human has said to you in this project — the ONE polling call; you do not need board_get to hear from them. Returns {items, rows}. items = your open questions, each with its reply (null until the human answers — reply may be one of your options or their own free-text direction; follow it either way) plus optional reply_context, and `annotation` if they pinned a side-note to the card — read that too. rows = the human’s per-row notes on your tracking boards, each {board_title, label, note, annotation, …}: an annotation is the human answering that row, so act on it and then flip the row’s status with board_row — THAT STATUS CHANGE IS WHAT TELLS THEM YOU DID. Both are handed over once: fetching marks them delivered, so record anything you cannot act on yet. When you have acted on a question’s reply, call resolve on that item. Poll between work steps rather than blocking. If the human answered you in chat instead, record it with the answer tool — but an inbox reply you have not picked up here always wins over one given in chat.',
+        'Poll for everything the human has said to you in this project — the ONE polling call; you do not need board_get to hear from them. Returns {items, rows}. items = your open questions, each with its reply (null until the human answers — reply may be one of your options or their own free-text direction; follow it either way) plus optional reply_context, and `annotation` if they pinned a side-note to the card — read that too. rows = the human’s per-row notes on your tracking boards, each {board_title, label, note, annotation, …}: an annotation is the human answering that row, so act on it and then flip the row’s status with board_row — THAT STATUS CHANGE IS WHAT TELLS THEM YOU DID. NOTHING here is handed over only once, so nothing is lost if you are busy or if a sibling session polls first: a question keeps coming back until you `resolve` it, and a `blocked` row keeps coming back until you change its status. That means you WILL see the same answer again — `annotation_seen_at`/`annotation_seen_by` on a row (and `reply_seen_at` on an item) tell you it has already been handed to an agent, so treat it as a reminder that nobody has closed it out yet, not as fresh news to act on twice. Poll between work steps rather than blocking. If the human answered you in chat instead, record it with the answer tool — but an inbox reply you have not picked up here always wins over one given in chat.',
       inputSchema: {},
     },
     async () => {
@@ -110,9 +110,15 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
       for (const it of items) if (it.reply && !it.reply_seen_at) markReplySeen(db, it.id, it.replied_at)
       // issue #37 — the human's board-row notes had NO delivery path: pending()
       // was items-only, so an agent following the contract perfectly still never
-      // saw one. Only rows the CAS actually stamped are returned: a failed stamp
-      // means the human rewrote the note between the read and the write, and
-      // handing over text that no longer exists is exactly the harm.
+      // saw one. The store decides WHAT is still pending (gated on the row being
+      // unacknowledged, not on the delivery stamp — see listPendingAnnotations).
+      //
+      // This filter does exactly one thing, and it is not "deliver once": it
+      // DROPS text the human replaced between the read above and the write here.
+      // `markAnnotationDelivered` pins the version it was read at, so `false`
+      // means the note is no longer what the human wrote — handing that over is
+      // the harm, and the newer text stays queued for the next poll. A row that
+      // was already delivered returns `true` and is handed over again on purpose.
       const rows = listPendingAnnotations(db, s.project)
         .filter((r) => markAnnotationDelivered(db, r.row_id, r.annotated_at, s.agent))
       return { content: [{ type: 'text', text: JSON.stringify({ items, rows }) }] }

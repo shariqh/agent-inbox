@@ -72,7 +72,10 @@ prose. Do this **proactively**, without being asked:
   `blocked` means the row needs the HUMAN — it escalates into their attention banner; put
   what you need in `note`. `pending()` delivers their annotation; **flip the row's status
   once you have acted — that status change is what tells them you did.** Until you do, they
-  see the row sitting there marked "delivered to you", which is exactly what it is.
+  see the row sitting there marked "delivered to you", which is exactly what it is — and
+  `pending()` keeps handing you the same note on every poll, so nothing is lost when a
+  sibling session polls first. A note that comes back carrying `annotation_seen_at` is that
+  reminder, not fresh work: act once, then flip the status and it stops.
   Keep `label` stable — rows are matched by label, and the human's notes stick to the label.
   `note` is the one-line summary; put long-form backstory (reasoning, history, links) in
   `context` — the human sees it as a collapsed dropdown, so the row stays scannable.

@@ -56,12 +56,13 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   with them), so agents must keep labels stable. There is no FK enforcement between
   `boards` and `board_rows` — deletes are handled explicitly in `store.ts`. The same
   protection covers `annotated_at`/`annotation_seen_at`/`annotation_seen_by`: a re-upsert
-  that reset delivery would re-hand the same note to an agent on every poll, forever.
+  that reset delivery would re-attribute the note to whoever polls next and reset the
+  "delivered 3h ago" age the human reads as evidence.
 - **Delivery is not acknowledgement (issue #37).** `board_rows.annotation_seen_at` records
-  ONE fact — this text was handed to some agent — and it silences nothing the human sees:
-  the row stays `blocked` and on their screen until an agent flips its status, which IS the
-  acknowledgement. That split is what makes it safe for `pending()` to stamp on return.
-  Two consequences that must not be "simplified" away. (1) `annotation_unseen` derives from
+  ONE fact — this text was handed to some agent — and it silences nothing: not the human's
+  screen, and (since F1) not the agent's queue either. The row stays `blocked` and stays in
+  BOTH places until an agent flips its status, which IS the acknowledgement.
+  Three consequences that must not be "simplified" away. (1) `annotation_unseen` derives from
   the PER-ROW stamp only — `boards.last_read_at` still gets written by `markBoardRead` but
   is pure decoration (its only real use is the one-shot migration backfill); a second input
   would disagree invisibly, since nothing renders it. (2) The attention predicate
@@ -69,13 +70,28 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   `isBlockedRowAttention = status === 'blocked' && !annotation`, and the rows it drops are
   RELABELED into `awaitingAgentRows()` — same module, rendered in the Needs-you foot — not
   deleted. Removing the alarm without relabeling it is the worse bug, not the fix.
-- **Every mark-seen write is a compare-and-swap.** `markReplySeen(id, repliedAt)` and
+  (3) **`listPendingAnnotations` gates on the ACKNOWLEDGEMENT, not on the stamp:**
+  `annotation_seen_at IS NULL OR status = 'blocked'`. Gating on the stamp made rows
+  at-most-once while items are at-least-once (`listPending` is gated on `status='open'`), so
+  in a fan-out a sibling's routine poll ate the answer, the session that RAISED the row never
+  got it, and the human's card then claimed "delivered to claude-code". A blocked row is
+  therefore re-delivered on every poll until the status flips — the same window the human is
+  still staring at it — and the payload carries the stamp so a re-delivery is self-labelling.
+  A non-blocked row has nothing to acknowledge and stays at-most-once; without that half a
+  months-old aside would be a permanent firehose.
+- **Every mark-seen write pins the version it read.** `markReplySeen(id, repliedAt)` and
   `markAnnotationDelivered(rowId, annotatedAt, by)` bind the exact version stamp the read
   returned (`... AND replied_at IS ?` / `AND annotated_at IS ?`, `IS` because legacy rows
-  carry NULL) and return whether they changed a row. The viewer writes answers from its own
-  OS process, so an unconditional stamp marks text the human just replaced as picked up and
-  no later poll ever returns it. Never SELECT-then-UPDATE with a gap; `annotateBoardRow` and
-  `replyItem` reset the stamp in the SAME statement that writes the new text.
+  carry NULL). The viewer writes answers from its own OS process, so an unconditional stamp
+  marks text the human just replaced as picked up. Never SELECT-then-UPDATE with a gap;
+  `annotateBoardRow` and `replyItem` reset the stamp in the SAME statement that writes the
+  new text. `markAnnotationDelivered`'s boolean means ONLY "the text you read is still
+  there, safe to hand over" — never "you were first" (re-delivery is normal now), and its
+  `COALESCE` is what keeps the two apart: the stamp records the FIRST delivery and never
+  moves, because its AGE is the human's evidence that an agent has sat on the answer.
+  `pending()`'s `.filter()` consuming that boolean is what drops replaced text — pinned at
+  the MCP level in `test/mcp.integration.test.ts` with a SQLite trigger, the only way to
+  schedule the human's hand between the handler's SELECT and its stamp.
 - **Two answer channels, ONE precedence rule: the inbox always wins.** A question can be
   answered on the card (`replyItem`, source `'inbox'`) or out loud in chat and recorded by
   the agent (`answerItem`, source `'agent'`). It is deliberately NOT wall-clock
@@ -298,7 +314,8 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   be a correct one; and `gh pr list` does not return the linked issue's TITLE, so `issue_title` is
   always null in v1 and the chip reads `#30`.
 - **Board-annotation delivery** *(#37)* — `pending()` returns `{items, rows}`: the human's per-row
-  board notes ride the one poll every agent already makes, project-scoped like items. See the
+  board notes ride the one poll every agent already makes, project-scoped like items, and a
+  `blocked` row keeps arriving until an agent acknowledges it by flipping the status. See the
   delivery-is-not-acknowledgement invariant above; `docs/reporting-snippet.md` and the `pending`/
   `board_row` tool descriptions all say that the STATUS FLIP is the acknowledgement.
 - **The agent-emit contract** — `docs/reporting-snippet.md`'s end-of-turn rule now tests "am I about
@@ -317,7 +334,10 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   annotated case: writing a note now clears the row from the badge with no agent round-trip. A
   blocked row the human has NOT answered still has no lever they can pull (there is no route to
   change a row's status and no per-row dismiss). Needs `POST /api/boards/:id/rows/:rowId/status`
-  or a lighter "acknowledge"; the live DB has one such row today.
+  or a lighter "acknowledge"; the live DB has one such row today. Until then the Needs-you ✕
+  does not render on a board row at all (`needsRowEl`'s `dismissBit`, pinned in
+  `test/dom/row-dismiss.test.ts`) — it used to draw, advertise the `x` key and do nothing.
+  Draw it back in only together with the route behind it.
 - **Item-annotation delivery** *(not yet filed — #37 with a different noun)* — the viewer's Note
   button renders on EVERY open item (`card.js`'s `showActions: !done`, no kind check), but
   `listPending` filters `kind='question' AND status='open'`, so a human's note on a `note` item, a

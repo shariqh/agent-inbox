@@ -848,7 +848,88 @@ describe('per-row annotation delivery (#37)', () => {
     return { boardId, board: () => listBoards(db).find((b) => b.title === title && b.project === project)! }
   }
 
-  it('stamps delivery exactly once, recording WHO it went to', () => {
+  // ── F1: rows are AT-LEAST-ONCE, exactly like items ────────────────────────
+  // The queue used to be gated on the DELIVERY stamp, so the human's note went to
+  // exactly ONE poll from ONE session. This repo fans out subagents constantly:
+  // a sibling's incidental poll silently ate the answer, the manager that RAISED
+  // the row never got it, and the human's screen then read "delivered to
+  // claude-code" — the very signal that tells them to stop chasing it. Items
+  // never had that hole because listPending is gated on the ACKNOWLEDGEMENT
+  // (status='open'), not on reply_seen_at. Rows now match: the gate is the row
+  // still being `blocked`, which is precisely the state the human is still
+  // looking at, so the agent's queue and the human's screen go quiet on the SAME
+  // event — the agent flipping the status.
+  it('keeps handing a blocked row over until an agent ACKNOWLEDGES it (the fan-out hole)', () => {
+    const { board } = seed([{ label: 'Merge', status: 'blocked' }, { label: 'QA', status: 'partial' }])
+    const rowId = board().rows[0]!.id
+    annotateBoardRow(db, rowId, 'merge it')
+
+    // a SUBAGENT polls first and is stamped as the one it went to
+    const sub = listPendingAnnotations(db, 'p')
+    expect(sub.map((r) => r.annotation)).toEqual(['merge it'])
+    markAnnotationDelivered(db, rowId, sub[0]!.annotated_at, 'claude-code')
+
+    // …and the MANAGER — the session that actually raised the row — still gets it
+    const manager = listPendingAnnotations(db, 'p')
+    expect(manager.map((r) => r.annotation), 'a sibling poll must not eat the human’s note').toEqual(['merge it'])
+
+    // the ack — and only the ack — stops it. Not `done`: that would complete the
+    // board and archive it, which would end the delivery for a second reason.
+    updateBoardRow(db, { project: 'p', stream: 's', agent: 'a', title: 'c', label: 'Merge', status: 'partial' })
+    expect(listPendingAnnotations(db, 'p')).toEqual([])
+  })
+
+  // Re-delivery must be SELF-LABELLING or it is a firehose: an agent polling every
+  // few seconds has to be able to tell "new to me" from "I have already been handed
+  // this and have not acted yet". The delivery stamp is the discriminator, so it
+  // rides in the payload.
+  it('a re-delivered row carries the delivery stamp, so a reader can tell it is not fresh news', () => {
+    const { board } = seed([{ label: 'Merge', status: 'blocked' }])
+    const rowId = board().rows[0]!.id
+    annotateBoardRow(db, rowId, 'merge it')
+
+    const first = listPendingAnnotations(db, 'p')[0]!
+    expect(first.annotation_seen_at, 'nobody has been handed it yet').toBeNull()
+    expect(first.annotation_seen_by).toBeNull()
+    markAnnotationDelivered(db, rowId, first.annotated_at, 'claude-code')
+
+    const again = listPendingAnnotations(db, 'p')[0]!
+    expect(again.annotation_seen_at).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+    expect(again.annotation_seen_by).toBe('claude-code')
+  })
+
+  // The human's chip reads "delivered to X 3h ago". That AGE is the evidence that
+  // an agent has had the answer for three hours and done nothing — so a second
+  // delivery must not refresh it, or the chip would read "delivered moments ago"
+  // forever and hide exactly the failure it exists to show.
+  it('a second delivery never re-dates or re-attributes the first one', async () => {
+    const { board } = seed([{ label: 'Merge', status: 'blocked' }])
+    const rowId = board().rows[0]!.id
+    annotateBoardRow(db, rowId, 'merge it')
+    const stamped = board().rows[0]!.annotated_at
+    markAnnotationDelivered(db, rowId, stamped, 'claude-code')
+    const first = board().rows[0]!.annotation_seen_at
+
+    await new Promise((r) => setTimeout(r, 5))
+    markAnnotationDelivered(db, rowId, stamped, 'codex')
+    expect(board().rows[0]!.annotation_seen_at, 'the delivered chip must keep ageing').toBe(first)
+    expect(board().rows[0]!.annotation_seen_by).toBe('claude-code')
+  })
+
+  // The other half of the rule, and the reason it is not simply "always
+  // re-deliver": a row that is NOT blocked has nothing to acknowledge — the note
+  // is an aside, not an answer — so it is handed over once and then stays put.
+  it('a note on a row that is not blocked is handed over exactly once', () => {
+    const { board } = seed([{ label: 'x', status: 'tracked' }])
+    const rowId = board().rows[0]!.id
+    annotateBoardRow(db, rowId, 'fyi, this one moved')
+    const first = listPendingAnnotations(db, 'p')
+    expect(first.map((r) => r.annotation)).toEqual(['fyi, this one moved'])
+    markAnnotationDelivered(db, rowId, first[0]!.annotated_at, 'claude-code')
+    expect(listPendingAnnotations(db, 'p')).toEqual([])
+  })
+
+  it('stamps the FIRST delivery only, recording WHO it went to', () => {
     const { board } = seed()
     const rowId = board().rows[0]!.id
     annotateBoardRow(db, rowId, 'merge it')
@@ -861,8 +942,11 @@ describe('per-row annotation delivery (#37)', () => {
     expect(row.annotation_seen_at).toMatch(/^\d{4}-\d{2}-\d{2}T/)
     expect(row.annotation_seen_by).toBe('claude-code')
 
-    // a second reader does not "re-deliver" — and must not overwrite who got it
-    expect(markAnnotationDelivered(db, rowId, row.annotated_at, 'codex')).toBe(false)
+    // A second reader is NORMAL now that a blocked row is at-least-once, so the
+    // return value cannot mean "you were first" — it means only "the text you
+    // read is still the text that is there". It says true, and the attribution
+    // of the FIRST delivery is what survives.
+    expect(markAnnotationDelivered(db, rowId, row.annotated_at, 'codex')).toBe(true)
     expect(board().rows[0]!.annotation_seen_by).toBe('claude-code')
   })
 
@@ -888,7 +972,13 @@ describe('per-row annotation delivery (#37)', () => {
     markAnnotationDelivered(db, rx.id, board().rows[0]!.annotated_at, 'claude-code')
     expect(board().rows[0]!.annotation_unseen).toBe(false)
     expect(board().rows[1]!.annotation_unseen, 'reading one row must not consume the other').toBe(true)
-    expect(listPendingAnnotations(db, 'p').map((r) => r.label)).toEqual(['y'])
+    // Both are still queued — they are both still blocked, i.e. unacknowledged —
+    // but the per-row stamps stay independent, and the queue SHOWS that: the one
+    // that was delivered says so, the one that was not says nothing.
+    const queued = new Map(listPendingAnnotations(db, 'p').map((r) => [r.label, r.annotation_seen_by]))
+    expect([...queued.keys()]).toEqual(['x', 'y'])
+    expect(queued.get('x')).toBe('claude-code')
+    expect(queued.get('y'), 'a delivery must not attribute a row nobody read').toBeNull()
   })
 
   // ── the T1–T4 interleaving, FORCED with two real connections ──────────────
@@ -954,8 +1044,8 @@ describe('per-row annotation delivery (#37)', () => {
 
   // upsertBoard's contract (CLAUDE.md): the human's per-row notes are sacred and
   // survive a full re-upsert. #37 adds two more columns that must survive with them
-  // — a re-upsert that reset the stamp would re-deliver a note the agent already
-  // has, forever, on every poll.
+  // — a re-upsert that reset the stamp would re-attribute the note to whoever
+  // polled next and reset the "delivered 3h ago" age the human reads as evidence.
   it('upsertBoard clobbers neither the annotation nor its delivery state', () => {
     const { board } = seed([{ label: 'Merge', status: 'blocked' }])
     const rowId = board().rows[0]!.id
@@ -970,12 +1060,27 @@ describe('per-row annotation delivery (#37)', () => {
     expect(after.annotated_at).toBe(before.annotated_at)
     expect(after.annotation_seen_at).toBe(before.annotation_seen_at)
     expect(after.annotation_seen_by).toBe('claude-code')
-    expect(listPendingAnnotations(db, 'p'), 'a re-upsert must not re-deliver').toEqual([])
+    // It is still queued — an agent re-upserting the board while leaving the row
+    // blocked has not acknowledged anything — but it is queued as an ALREADY
+    // DELIVERED row, carrying the original stamp rather than reading as new.
+    expect(listPendingAnnotations(db, 'p').map((r) => r.annotation_seen_at)).toEqual([before.annotation_seen_at])
+
+    // …and that surviving stamp is load-bearing: the moment the same upsert
+    // acknowledges the row, the stamp is what keeps it from being re-delivered.
+    upsertBoard(db, { project: 'p', stream: 's', agent: 'a', title: 'c', rows: [{ label: 'Merge', status: 'partial', note: 'merging' }] })
+    expect(listPendingAnnotations(db, 'p'), 'an acknowledged row must not re-deliver').toEqual([])
   })
 
   // The backfill is the whole risk of this change. Without it every existing
-  // annotation reads as undelivered on first open and pending() hands week-old,
-  // already-superseded instructions to a live agent that will act on them.
+  // annotation reads as undelivered on first open — the human's whole board
+  // history lights up as "awaiting pickup" — and every already-read aside on a
+  // non-blocked row is handed to a live agent that will act on it.
+  //
+  // What it no longer buys, since rows became at-least-once: a backfilled-as-seen
+  // row that is STILL BLOCKED is delivered again, because a blocked row is by
+  // definition unacknowledged. That is right, not a leak — such a row is also
+  // still sitting in the human's Needs-you list right now. (There is exactly one
+  // in the live DB: an unmerged "merge it".)
   it('openDb backfills annotation_seen_at from the OLD board-level rule, all four cases', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'inbox-seenat-')), 'inbox.db')
     const legacy = new Database(path)
@@ -994,8 +1099,10 @@ describe('per-row annotation delivery (#37)', () => {
       -- board 'read' was read at T2; board 'never' was never read at all
       INSERT INTO boards VALUES ('b-read','p','','a','read','active','T0','T0','2026-07-02T00:00:00.000Z');
       INSERT INTO boards VALUES ('b-never','p','','a','never','active','T0','T0',NULL);
-      -- 1 · annotated BEFORE the read → was SEEN
-      INSERT INTO board_rows VALUES ('r-seen','b-read','seen','blocked','','','old note','2026-07-01T00:00:00.000Z',0);
+      -- 1 · annotated BEFORE the read → was SEEN. Deliberately NOT blocked: this
+      --     is the row that proves the backfill still keeps an old, already-read
+      --     aside away from a live agent.
+      INSERT INTO board_rows VALUES ('r-seen','b-read','seen','tracked','','','old note','2026-07-01T00:00:00.000Z',0);
       -- 2 · annotated AFTER the read → was UNSEEN
       INSERT INTO board_rows VALUES ('r-after','b-read','after','blocked','','','new note','2026-07-03T00:00:00.000Z',1);
       -- 3 · pre-annotated_at legacy row on a read board → was SEEN (the NULL branch of withUnseen)
@@ -1018,16 +1125,22 @@ describe('per-row annotation delivery (#37)', () => {
     expect(byId.get('r-none')!.annotation_seen_at).toBeNull()
     // and the derived flag lands exactly where the OLD rule put it
     expect([...byId.values()].filter((r) => r.annotation_unseen).map((r) => r.label).sort()).toEqual(['after', 'unread'])
-    // so only the genuinely-unread notes are handed to an agent on first poll
-    expect(listPendingAnnotations(db2, 'p').map((r) => r.annotation).sort()).toEqual(['new note', 'sure make the PR'])
+    // The first poll gets the two genuinely-unread notes PLUS the backfilled-seen
+    // row that is still blocked — and NOT 'old note', the already-read aside on a
+    // non-blocked row, which is what the backfill is still there to hold back.
+    expect(listPendingAnnotations(db2, 'p').map((r) => r.annotation).sort())
+      .toEqual(['do this next', 'new note', 'sure make the PR'])
 
-    // …and the legacy NULL annotated_at is still DELIVERABLE: the CAS compares
-    // with `IS`, not `=`, or that row would be re-delivered on every poll forever.
+    // …and the legacy NULL annotated_at is still STAMPABLE: the version pin
+    // compares with `IS`, not `=`, or that row could never earn a "delivered to"
+    // attribution and the human's chip would read "awaiting pickup" forever.
     annotateBoardRowLegacyNull(db2)
     const legacyRow = listPendingAnnotations(db2, 'p').find((r) => r.row_id === 'r-null')!
     expect(legacyRow.annotated_at).toBeNull()
     expect(markAnnotationDelivered(db2, 'r-null', null, 'claude-code')).toBe(true)
-    expect(listPendingAnnotations(db2, 'p').some((r) => r.row_id === 'r-null')).toBe(false)
+    const stamped = listBoards(db2).flatMap((b) => b.rows).find((r) => r.id === 'r-null')!
+    expect(stamped.annotation_seen_at).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+    expect(stamped.annotation_seen_by).toBe('claude-code')
     db2.close()
   })
 })

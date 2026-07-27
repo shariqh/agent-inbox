@@ -123,12 +123,17 @@ function spawnViewer() {
 }
 
 /**
- * Attention watch (issue #19): poll the viewer API for the needs-input set —
- * unanswered questions + blocked board rows, the human's chosen trigger set —
- * badge the dock with the count, and fire ONE native notification per poll for
- * newly arrived items only. Nothing notifies on launch: what already needs you
- * is on screen. Runs in the main process so the shared frontend stays
- * browser-neutral.
+ * Attention watch (issue #19): poll the viewer API, badge the dock with the size
+ * of the §7 attention set, and fire ONE native notification per poll for newly
+ * arrived entries only. Nothing notifies on launch: what already needs you is on
+ * screen. Runs in the main process so the shared frontend stays browser-neutral.
+ *
+ * WHAT counts as attention is not decided here and is not described here — that
+ * is public/attention.js's job, and this file must never restate its rule even
+ * in a comment. A restatement is a second predicate by another name: nothing
+ * executes it, so it rots in silence, and it did — the text here used to spell
+ * out a board-row rule that issue #37 had already replaced. Read the predicate.
+ * test/badge.test.ts enforces this against the whole file, prose included.
  */
 function startAttentionWatch(win) {
   let known = null // ids seen on the previous poll; null until the first one
@@ -160,8 +165,9 @@ function startAttentionWatch(win) {
       const liveSessions = new Set(activity.map((a) => a.session))
       // THE §7 attention set — the exact same call the viewer's badge, rail,
       // tab count and triage deck all read from (spec §7 / tenet 3). No inline
-      // re-derivation here: annotated-and-seen blocked rows and stale items are
-      // OUT, so the badge — unlike the old per-file predicate — can reach zero.
+      // re-derivation, and no local copy of the rule: whatever the shared module
+      // includes or drops, the dock follows for free, which is the only way the
+      // dock and the title badge can be guaranteed to agree.
       // `attn` is the VISIBLE set (closed projects suppressed): it sizes the dock
       // badge and fills the notification body.
       const attn = attentionEntries(items, boards, Date.now(), liveSessions, closed)

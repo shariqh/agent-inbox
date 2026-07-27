@@ -64,13 +64,23 @@ describe('the Electron dock badge shares the §7 attention predicate (no duplica
   it('does not re-implement the blocked-row filter inline', () => {
     expect(main).not.toContain("r.status === 'blocked'")
   })
-  // issue #37 changed what a blocked row MEANS (annotated → out of the badge,
-  // into the awaiting-pickup foot). The requirement on main.cjs is NEGATIVE: it
-  // must gain nothing, because its count is attentionEntries(...).length against
-  // the shared module and therefore follows for free. A local mention of the
-  // annotation columns here would be a second predicate by another name.
-  it('gains no annotation/pickup predicate of its own when the row rule changes', () => {
-    expect(main).not.toMatch(/annotation/)
+  // issue #37 changed what a blocked row MEANS — twice. The requirement on
+  // main.cjs is NEGATIVE: it must gain nothing, because its count is
+  // attentionEntries(...).length against the shared module and therefore follows
+  // for free. A local mention of the row vocabulary would be a second predicate
+  // by another name.
+  //
+  // The first draft of this guard asked only for the exact word "annotation" —
+  // and passed while the file's own comment claimed "annotated-and-seen blocked
+  // rows are OUT", which #37 had already made false. A comment cannot be
+  // executed, so a rule written in one goes stale in silence; that is the whole
+  // failure mode. So the guard covers the FAMILY, prose included: main.cjs may
+  // call the predicate, count it and render it, but may not say what it decides.
+  const ROW_RULE_VOCABULARY = [/annotat/i, /pickup/i, /picked[- ]up/i, /delivered/i, /\bblocked\b/i, /\bstale\b/i, /unanswered/i]
+  it('never restates the attention rule — not in code, not in a comment', () => {
+    for (const re of ROW_RULE_VOCABULARY) {
+      expect(main, `electron/main.cjs must not describe what counts as attention (${re}) — public/attention.js owns that, and a copy in a comment goes stale silently`).not.toMatch(re)
+    }
   })
   it('dynamically imports the shared attention module rather than re-deriving it', () => {
     expect(main).toContain("path.join(REPO_ROOT, 'public', 'attention.js')")

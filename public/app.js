@@ -1447,6 +1447,12 @@ function needsRowEl(m, entry, nowMs) {
   const chip = urgencyChip(m, nowMs)
   const color = pcolor(m.project)
   const glyph = m.kind === 'row' ? `<button class="nrow-glyph" title="open board: ${esc(m.boardTitle ?? '')}">🚧</button>` : ''
+  // Items only. A board row has NO dismiss path — the human's exit from an
+  // unannotated blocked row is issue #36's remaining half, and until it exists
+  // this button rendered on every row, advertised the 'x' key, and did nothing.
+  // An affordance that lies is worse than no affordance; do not draw it back in
+  // before there is a route behind it.
+  const dismissBit = m.kind === 'item' ? '<button class="nrow-dismiss" title="Dismiss (x)" aria-label="Dismiss">✕</button>' : ''
   const projBit = m.projectLabel ? `<span class="nrow-proj" title="${esc(m.project)}">${esc(m.projectLabel)}</span>` : ''
   const agentBit = m.agent ? `<span class="nrow-agent">${esc(m.agent)}</span>` : ''
   const streamBit = m.stream ? `<span class="nrow-stream">${esc(m.stream)}</span>` : ''
@@ -1465,16 +1471,17 @@ function needsRowEl(m, entry, nowMs) {
       <span class="chip chip-${chip.tone}"><span aria-hidden="true">${livenessGlyph(m.liveness).glyph}</span> ${esc(chip.text)}</span>
       <span class="nrow-src">${sourceChipsHtml(linkIndex, entry.kind === 'row' ? entry.board : entry.item, nowMs)}</span>
       <span class="nrow-star"></span>
-      <button class="nrow-dismiss" title="Dismiss (x)" aria-label="Dismiss">✕</button>
+      ${dismissBit}
       <span class="nrow-caret">▸</span>
     </div>
     ${l2}`
   el.style.setProperty('--wash', color.wash)
   const boardBtn = el.querySelector('.nrow-glyph')
   if (boardBtn) boardBtn.addEventListener('click', (ev) => { ev.stopPropagation(); jumpToCard('boards', m.boardId) })
-  el.querySelector('.nrow-dismiss').addEventListener('click', (ev) => {
+  const dismissBtn = el.querySelector('.nrow-dismiss')
+  if (dismissBtn) dismissBtn.addEventListener('click', (ev) => {
     ev.stopPropagation()
-    if (m.kind === 'item') stageDismiss(m.id)
+    stageDismiss(m.id)
   })
   const slot = el.querySelector('.nrow-star')
   const staged = stagedStars.get(m.id)

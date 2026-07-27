@@ -605,15 +605,33 @@ export function annotateBoardRow(db: Database.Database, rowId: string, text: str
     .run(text, new Date().toISOString(), rowId)
 }
 
-// The rows-shaped twin of markReplySeen, and the same compare-and-swap for the
-// same reason: the viewer writes annotations from its own OS process, so a
-// SELECT-then-UPDATE would stamp text that no longer exists and bury the human's
-// newest instruction forever. ONE statement; `false` means it moved under you.
+// The rows-shaped twin of markReplySeen, version-pinned for the same reason: the
+// viewer writes annotations from its own OS process, so a SELECT-then-UPDATE
+// would stamp text that no longer exists and bury the human's newest instruction
+// forever. ONE statement, pinning the exact version the caller read.
+//
+// It is NOT markReplySeen's exact shape, and the difference is deliberate. That
+// one also carries `AND reply_seen_at IS NULL`, so it stamps once and reports
+// whether it won. This one drops that clause (see COALESCE below) because for
+// rows a second delivery is the normal case, not a lost race.
+//
+// The return value means EXACTLY ONE THING: the text you read is still the text
+// that is there, so it is safe to hand over. `false` = the human replaced it
+// under you — drop it, and the newer text stays queued. It deliberately does NOT
+// mean "you were the first reader": since rows became at-least-once (F1 below),
+// a re-delivery is normal and must not be mistaken for a lost race.
+//
+// COALESCE, not a plain SET, is what keeps those two apart. The stamp records the
+// FIRST delivery and never moves, because its age is what the human's chip shows
+// ("delivered to claude-code 3h ago") — and that age is the evidence that an
+// agent has had the answer for three hours and done nothing. Re-stamping every
+// poll would make it read "delivered moments ago" forever and hide precisely the
+// failure it exists to show.
 //
 // `IS`, not `=`: annotated_at is NULL on rows written before that column existed
 // (real ones exist in the wild), and `annotated_at = NULL` is never true — a `=`
-// CAS would leave every legacy annotation unstampable and therefore re-delivered
-// on every single poll, forever.
+// pin would leave every legacy annotation unstampable, so it would never earn a
+// "delivered to" attribution at all.
 export function markAnnotationDelivered(
   db: Database.Database,
   rowId: string,
@@ -621,8 +639,9 @@ export function markAnnotationDelivered(
   by: string | null,
 ): boolean {
   const info = db
-    .prepare(`UPDATE board_rows SET annotation_seen_at = ?, annotation_seen_by = ?
-               WHERE id = ? AND annotation_seen_at IS NULL AND annotated_at IS ?`)
+    .prepare(`UPDATE board_rows SET annotation_seen_at = COALESCE(annotation_seen_at, ?),
+                                    annotation_seen_by = COALESCE(annotation_seen_by, ?)
+               WHERE id = ? AND annotated_at IS ?`)
     .run(new Date().toISOString(), by, rowId, annotatedAt)
   return info.changes > 0
 }
@@ -647,6 +666,33 @@ export function markBoardRead(db: Database.Database, boardId: string): void {
 // archived board). syncBoardStatus auto-archives a board the moment it hits 100%,
 // so an annotation on a completed board stays where the human left it rather than
 // being re-delivered out of context.
+//
+// GATED ON THE ACKNOWLEDGEMENT, NOT ON THE DELIVERY STAMP — this is F1, and it is
+// what makes rows AT-LEAST-ONCE like items instead of at-most-once. `listPending`
+// keeps returning an answered question until the agent `resolve`s it; gating rows
+// on `annotation_seen_at` instead meant the human's note went to exactly ONE poll
+// from ONE session. This repo fans out subagents constantly, so a sibling's
+// incidental poll silently ate the answer, the session that RAISED the row never
+// received it, and the human's screen then read "delivered to claude-code" — the
+// one signal that tells them to stop chasing it. The same window opened on a
+// crash or client timeout between the stamp and the response.
+//
+// So: a row is pending while it is UNACKNOWLEDGED — nobody has been handed it
+// yet, OR it is still `blocked`. `blocked` is exactly the state the human is
+// still looking at (public/attention.js keeps an annotated blocked row on screen
+// in the awaiting-pickup foot until an agent flips it), so the agent's queue and
+// the human's screen now go quiet on the SAME event. One rule, both surfaces.
+//
+// The two halves are deliberate, not a special case:
+//   · blocked   → the human is waiting on you. Re-delivered until you flip the
+//                 status with board_row, which IS the acknowledgement. An agent
+//                 that acted without flipping keeps being told — and so does the
+//                 human, who still sees the row. Neither is silently dropped.
+//   · anything  → nothing to acknowledge; the note is an aside, not an answer.
+//     else        Handed over once, then it stays put. Without this half a
+//                 months-old aside on a live board would be a permanent firehose.
+// The payload carries the delivery stamp so a re-delivery is self-labelling: an
+// agent polling every few seconds can tell "new to me" from "I already have this".
 export interface PendingAnnotation {
   board_id: string
   board_title: string
@@ -660,6 +706,8 @@ export interface PendingAnnotation {
   context: string
   annotation: string
   annotated_at: string | null
+  annotation_seen_at: string | null
+  annotation_seen_by: string | null
 }
 
 export function listPendingAnnotations(db: Database.Database, project: string): PendingAnnotation[] {
@@ -667,11 +715,12 @@ export function listPendingAnnotations(db: Database.Database, project: string): 
     .prepare(
       `SELECT b.id AS board_id, b.title AS board_title, b.project AS project, b.stream AS stream, b.agent AS agent,
               r.id AS row_id, r.label AS label, r.status AS status, r.note AS note, r.context AS context,
-              r.annotation AS annotation, r.annotated_at AS annotated_at
+              r.annotation AS annotation, r.annotated_at AS annotated_at,
+              r.annotation_seen_at AS annotation_seen_at, r.annotation_seen_by AS annotation_seen_by
          FROM board_rows r JOIN boards b ON b.id = r.board_id
         WHERE b.project = ? AND b.status = 'active'
           AND r.annotation IS NOT NULL AND r.annotation <> ''
-          AND r.annotation_seen_at IS NULL
+          AND (r.annotation_seen_at IS NULL OR r.status = 'blocked')
         ORDER BY b.updated_at DESC, r.position ASC`,
     )
     .all(project) as PendingAnnotation[]

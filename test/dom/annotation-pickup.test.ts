@@ -121,14 +121,19 @@ describe('#37 · annotated-and-unpicked renders differently from annotated-and-p
     click(row(rowId)) // collapse — §10 suspends re-renders while a card is open
     await settle()
 
-    // an agent finally polls pending() — modelled by the exact store call that tool makes
-    advanceClock(4 * 60_000)
+    // an agent finally polls pending() — modelled by the exact store call that
+    // tool makes. STAMP FIRST, then move the clock: markAnnotationDelivered
+    // writes `now`, so advancing before it made the delivered age zero and the
+    // chip really said "delivered moments" while the test claimed four minutes.
+    // The AGE is the whole point of this chip — it is what shows the human an
+    // agent has had their answer for a while and done nothing — so assert it.
     markAnnotationDelivered(d, rowId, listBoards(d)[0]!.rows[0]!.annotated_at, 'claude-code')
+    advanceClock(4 * 60_000)
     await pollTick()
 
     const delivered = chipText(rowId)
     expect(delivered).not.toBe(waiting)
-    expect(delivered).toMatch(/^delivered /)
+    expect(delivered).toBe('delivered 4m')
     click(row(rowId))
     await settle()
     expect(row(rowId)?.querySelector('.nrow-card')?.textContent).toContain('claude-code')

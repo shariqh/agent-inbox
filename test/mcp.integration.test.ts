@@ -233,14 +233,14 @@ describe('mcp round-trip', () => {
     expect(board2.rows[0].annotation_unseen).toBe(false)
   }, 20000)
 
-  // A TRADE TAKEN ON PURPOSE (#37). board_get with no title returns every active
-  // board in the project, so under per-row delivery one incidental call marks
-  // every annotation in the project delivered. That is TRUE — the payload
-  // genuinely contained them — and harmless only because delivery is not
-  // acknowledgement: each row stays blocked, on the human's screen, reading
-  // "delivered to <agent>" until an agent flips its status. Exempting the
-  // title-less form instead would be a third mark-seen rule nobody would
-  // remember. The tool description steers agents to the titled form.
+  // A TRADE TAKEN ON PURPOSE (#37), and one that F1 shrank to almost nothing.
+  // board_get with no title returns every active board in the project, so one
+  // incidental call ATTRIBUTES every annotation in the project to that reader.
+  // That is TRUE — the payload genuinely contained them — and for a BLOCKED row
+  // it now costs nothing at all: the queue is gated on the acknowledgement, so
+  // the note keeps being handed to every polling session regardless. All the
+  // incidental call can do is name the first reader. Exempting the title-less
+  // form would be a third mark-seen rule nobody would remember.
   it('board_get with no title delivers every annotation in the project, and says so honestly', async () => {
     const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-getall-')), 'inbox.db')
     const conn = async () => {
@@ -264,14 +264,18 @@ describe('mcp round-trip', () => {
     expect(boards.flatMap((b: { rows: { annotation_unseen: boolean }[] }) => b.rows).every((r: { annotation_unseen: boolean }) => r.annotation_unseen)).toBe(true)
     await c2.close()
 
-    // …and afterwards nothing is pending, because it genuinely read all of them
-    expect(listPendingAnnotations(openDb(dbPath), project)).toEqual([])
-    // delivery ≠ acknowledgement: every row is still blocked and still the
-    // human's evidence that nothing has happened yet
+    // …and afterwards every row is attributed to it, because it genuinely read them
     for (const b of listBoards(openDb(dbPath))) {
+      // delivery ≠ acknowledgement: every row is still blocked and still the
+      // human's evidence that nothing has happened yet
       expect(b.rows[0]!.status).toBe('blocked')
       expect(b.rows[0]!.annotation_seen_by).toBe('claude-code')
+      expect(b.rows[0]!.annotation_seen_at).toMatch(/^\d{4}-\d{2}-\d{2}T/)
     }
+    // …and it consumed NOTHING: an unrelated session's incidental board_get must
+    // not be able to take the human's note out of anyone else's pending() queue
+    expect(listPendingAnnotations(openDb(dbPath), project).map((r) => r.annotation).sort())
+      .toEqual(['note for one', 'note for two'])
   }, 20000)
 
   // ── issue #37: the delivery path for a board-row annotation ────────────────
@@ -309,16 +313,117 @@ describe('mcp round-trip', () => {
     expect(delivered[0].label).toBe('Merge')
     expect(delivered[0].note).toBe('ready when you are')
 
-    // delivery happens once — a second poll does not re-hand the same note over
-    expect((await call(c1, 'pending', {})).rows).toEqual([])
-    await c1.close()
-
+    // …and it is stamped, so the human's card can say who has it
     const row = getBoard(openDb(dbPath), project, 'rollout')!.rows[0]!
     expect(row.annotation_seen_at).toMatch(/^\d{4}-\d{2}-\d{2}T/)
     expect(row.annotation_seen_by).toBe('claude-code')
     // DELIVERY IS NOT ACKNOWLEDGEMENT: the row stays blocked until the agent
     // flips its status, so the human keeps seeing it until something happened.
     expect(row.status).toBe('blocked')
+
+    // …and so does the AGENT. A second poll re-hands it, labelled as already
+    // delivered rather than as fresh news, until the agent acknowledges it.
+    const again = (await call(c1, 'pending', {})).rows
+    expect(again).toHaveLength(1)
+    expect(again[0].annotation).toBe('merge it')
+    expect(again[0].annotation_seen_at).toBe(row.annotation_seen_at)
+    expect(again[0].annotation_seen_by).toBe('claude-code')
+
+    // the status flip IS the acknowledgement, and it is the only thing that stops it
+    await call(c1, 'board_row', { title: 'rollout', label: 'Merge', status: 'partial' })
+    expect((await call(c1, 'pending', {})).rows).toEqual([])
+    await c1.close()
+  }, 20000)
+
+  // F1 — THE FAN-OUT HOLE, the reason the above is at-least-once. The queue used
+  // to be gated on `annotation_seen_at`, so the note went to exactly ONE poll from
+  // ONE session. This repo fans out subagents constantly: the subagent's routine
+  // poll ate the answer, the MANAGER that raised the row never got it, and the
+  // human's screen then read "delivered to claude-code" — the exact signal that
+  // tells them to stop chasing it. Two real server processes, one project.
+  it('a sibling session’s poll cannot eat the answer the manager is waiting for (#37 F1)', async () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-fanout-')), 'inbox.db')
+    const conn = async () => {
+      const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
+      const c = new Client({ name: 'claude-code', version: '1.0.0' }); await c.connect(t); return c
+    }
+    const call = async (c: Client, name: string, args: Record<string, unknown>) =>
+      JSON.parse(((await c.callTool({ name, arguments: args })).content as Array<{ text: string }>)[0]!.text)
+
+    const manager = await conn()
+    await call(manager, 'board_upsert', { title: 'rollout', rows: [{ label: 'Merge', status: 'blocked' }, { label: 'QA', status: 'partial' }] })
+    const subagent = await conn()
+
+    // the human answers from the VIEWER — a third process
+    const project = listBoards(openDb(dbPath))[0]!.project
+    const rowId = getBoard(openDb(dbPath), project, 'rollout')!.rows.find((r) => r.label === 'Merge')!.id
+    annotateBoardRow(openDb(dbPath), rowId, 'merge it')
+
+    // the subagent happens to poll first
+    expect((await call(subagent, 'pending', {})).rows.map((r: { annotation: string }) => r.annotation)).toEqual(['merge it'])
+    // …and the manager — the session that RAISED the row — still gets it
+    const managerRows = (await call(manager, 'pending', {})).rows
+    expect(managerRows.map((r: { annotation: string }) => r.annotation)).toEqual(['merge it'])
+
+    // the human's screen is telling the truth the whole time: still blocked,
+    // attributed to the first reader, nobody has acknowledged it
+    const row = getBoard(openDb(dbPath), project, 'rollout')!.rows.find((r) => r.label === 'Merge')!
+    expect(row.status).toBe('blocked')
+    expect(row.annotation_seen_by).toBe('claude-code')
+
+    await manager.close()
+    await subagent.close()
+  }, 20000)
+
+  // F2 — pending()'s CAS filter, pinned at the MCP level. The store's version pin
+  // is covered; mcp.ts CONSUMING that boolean was not, so
+  // `.filter((r) => { markAnnotationDelivered(...); return true })` passed the whole
+  // suite — and that mutant hands the agent text the human has already replaced.
+  //
+  // The interleave is real (the viewer writes from its own OS process, between the
+  // handler's SELECT and its stamp) but unschedulable from outside. A TRIGGER on the
+  // shared db file is a deterministic stand-in for the human's hand: it fires inside
+  // the handler, on the first row's stamp, and rewrites the SECOND row exactly as a
+  // change of mind would. Raw SQL is allowed here for the same reason store.test.ts
+  // allows it — a test constructing a moment production cannot otherwise schedule.
+  it('pending never hands over an annotation the human replaced mid-poll (#37 F2)', async () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-midpoll-')), 'inbox.db')
+    const conn = async () => {
+      const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
+      const c = new Client({ name: 'claude-code', version: '1.0.0' }); await c.connect(t); return c
+    }
+    const call = async (c: Client, name: string, args: Record<string, unknown>) =>
+      JSON.parse(((await c.callTool({ name, arguments: args })).content as Array<{ text: string }>)[0]!.text)
+
+    const c1 = await conn()
+    await call(c1, 'board_upsert', { title: 'rollout', rows: [{ label: 'first', status: 'blocked' }, { label: 'second', status: 'blocked' }] })
+
+    const store = openDb(dbPath)
+    const project = listBoards(store)[0]!.project
+    const rows = getBoard(store, project, 'rollout')!.rows
+    annotateBoardRow(store, rows.find((r) => r.label === 'first')!.id, 'ship it')
+    annotateBoardRow(store, rows.find((r) => r.label === 'second')!.id, 'wait for CI')
+
+    // installed AFTER both annotations so it fires only from inside the handler
+    store.exec(`
+      CREATE TRIGGER human_changes_mind AFTER UPDATE OF annotation_seen_at ON board_rows
+      WHEN NEW.label = 'first'
+      BEGIN
+        UPDATE board_rows
+           SET annotation = 'actually — do NOT merge', annotated_at = '2099-01-01T00:00:00.000Z',
+               annotation_seen_at = NULL, annotation_seen_by = NULL
+         WHERE label = 'second';
+      END;`)
+
+    const delivered = (await call(c1, 'pending', {})).rows as Array<{ label: string; annotation: string }>
+    expect(delivered.map((r) => r.label), 'the row rewritten under the reader must be dropped').toEqual(['first'])
+    expect(JSON.stringify(delivered)).not.toContain('wait for CI')
+
+    // and it is NOT lost: the newest text is still queued, undelivered, for the next poll
+    store.exec(`DROP TRIGGER human_changes_mind`)
+    const next = (await call(c1, 'pending', {})).rows as Array<{ label: string; annotation: string }>
+    expect(next.find((r) => r.label === 'second')?.annotation).toBe('actually — do NOT merge')
+    await c1.close()
   }, 20000)
 
   it('a flagged item records the asking session, matching its live activity row', async () => {

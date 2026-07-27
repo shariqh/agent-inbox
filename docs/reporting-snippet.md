@@ -14,9 +14,11 @@ Call `flag` when:
   exist, ALWAYS attach 2-4 `options` — your recommendation first with `recommended: true`,
   each with a short `label` and a `detail` explaining the tradeoff. The human can pick
   one, compare them, or answer in their own words. Then **poll `pending()`** between work
-  steps: it returns your open questions with `reply` once answered (an option label or
-  free text — follow it either way), plus optional `reply_context` when they attach extra
-  direction with their answer; act on both, then call `resolve`. Do
+  steps: it returns `{ items, rows }` — your open questions with `reply` once answered (an
+  option label or free text — follow it either way), plus optional `reply_context` when they
+  attach extra direction with their answer, **and `rows`: the human's per-row notes on your
+  boards** (see Boards below). Act on both, then call `resolve`. `pending()` is the ONE poll —
+  everything they have said to you arrives through it. Do
   not park forever waiting in the terminal. If you end a turn with a question still
   open, say so in chat ("I'll pick your answer up next time you message me") and call
   `pending()` first thing on your next turn, so they know the contract.
@@ -68,15 +70,18 @@ prose. Do this **proactively**, without being asked:
   title). Re-send the full table whenever status changes. Each row is
   `{ label, status, note?, context? }`, `status ∈ done | partial | missing | tracked | na | blocked`.
   `blocked` means the row needs the HUMAN — it escalates into their attention banner; put
-  what you need in `note`, watch `board_get` for their annotation, then set a new status.
+  what you need in `note`. `pending()` delivers their annotation; **flip the row's status
+  once you have acted — that status change is what tells them you did.** Until you do, they
+  see the row sitting there marked "delivered to you", which is exactly what it is.
   Keep `label` stable — rows are matched by label, and the human's notes stick to the label.
   `note` is the one-line summary; put long-form backstory (reasoning, history, links) in
   `context` — the human sees it as a collapsed dropdown, so the row stays scannable.
 - **`board_row({ title, label, status?, note?, context? })`** — flip a single row without
   resending all.
 - **`board_get({ title? })`** — read a board back, **including the human's per-row notes**.
-  Call it when you (re)start work on a tracked effort, and before updating a board, to
-  pick up anything the human left for you — then act on it. This is how you see their input.
+  Call it when you (re)start work on a tracked effort, and before updating a board. You do
+  not need it to HEAR from them — `pending()` delivers their notes — so prefer the titled
+  form; the title-less one reads every board in the project at once.
 - **`board_archive({ title })`** — when the effort is finished.
 
 Prefer updating an existing board (same title) over spawning new ones. One board per

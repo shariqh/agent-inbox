@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   classifyLiveness,
   isBlockedRowAttention,
+  awaitingAgentRows,
   isAskingQuestion,
   attentionEntries,
   staleEntries,
@@ -34,8 +35,8 @@ const board: AttentionBoard = {
   title: 'Rollout',
   rows: [
     { id: 'r1', label: 'deploy', status: 'blocked', annotation: null, annotation_unseen: false },
-    { id: 'r2', label: 'dns', status: 'blocked', annotation: 'use cloudflare', annotation_unseen: false },
-    { id: 'r3', label: 'certs', status: 'blocked', annotation: 'wildcard please', annotation_unseen: true },
+    { id: 'r2', label: 'dns', status: 'blocked', annotation: 'use cloudflare', annotation_unseen: false, annotation_seen_at: '2026-07-24T11:50:00Z' },
+    { id: 'r3', label: 'certs', status: 'blocked', annotation: 'wildcard please', annotation_unseen: true, annotation_seen_at: null },
     { id: 'r4', label: 'smoke', status: 'done', annotation: null, annotation_unseen: false },
   ],
 }
@@ -84,23 +85,67 @@ describe('classifyLiveness', () => {
   })
 })
 
+// ── issues #36 + #37 ────────────────────────────────────────────────────────
+// The human's ANSWER leaves the badge immediately; whether an agent picked it up
+// is the agent's state, not the human's to-do. That is not a new rule — it is
+// exactly what items already do (isAskingQuestion goes false the moment `reply`
+// is non-empty; pickup is irrelevant to the count), and the un-picked-up state is
+// relabeled rather than deleted (repliedEntries' dimmed foot).
+//
+// The old rule also made `annotation_unseen` — board mark-seen state written by
+// a completely different process — an input to the badge, which is how a note
+// could silently stop escalating a day later because some agent called
+// board_get. Dropping that dependency removes the whole class of bug.
 describe('isBlockedRowAttention', () => {
-  it('counts a blocked row with no annotation', () => {
+  it('counts a blocked row with no annotation — nobody has answered it', () => {
     expect(isBlockedRowAttention(board.rows[0]!)).toBe(true)
   })
-  it('REGRESSION: does NOT count a blocked row the human already annotated and the agent has seen', () => {
-    // today's predicate (app.js:139) counts every blocked row, so the badge can
-    // never return to zero. An already-seen annotation clears the escalation.
+  it('does NOT count a blocked row the human annotated and an agent picked up', () => {
     expect(isBlockedRowAttention(board.rows[1]!)).toBe(false)
   })
-  it('still counts a blocked row whose annotation the agent has not seen yet', () => {
-    expect(isBlockedRowAttention(board.rows[2]!)).toBe(true)
+  it('does NOT count one whose annotation is still undelivered either — the human already acted', () => {
+    // the old rule kept this in the badge, so annotating (the only lever the
+    // viewer offers) never moved the number and the row was unclearable (#36)
+    expect(isBlockedRowAttention(board.rows[2]!)).toBe(false)
   })
   it('ignores non-blocked rows', () => {
     expect(isBlockedRowAttention(board.rows[3]!)).toBe(false)
   })
   it('treats an empty-string annotation as no annotation', () => {
     expect(isBlockedRowAttention({ id: 'x', label: 'x', status: 'blocked', annotation: '', annotation_unseen: false })).toBe(true)
+  })
+  it('no longer reads annotation_unseen at all — board mark-seen state cannot move the badge', () => {
+    const base = { id: 'x', label: 'x', status: 'blocked', annotation: 'answered' }
+    expect(isBlockedRowAttention({ ...base, annotation_unseen: true })).toBe(false)
+    expect(isBlockedRowAttention({ ...base, annotation_unseen: false })).toBe(false)
+  })
+})
+
+// The other half of "never remove the signal — relabel it truthfully": the rows
+// that LEFT the badge above are not gone, they are a separate rendered set, the
+// exact shape repliedEntries has for items. Same module, so there is still ONE
+// place that knows what a blocked row means (tenet 3).
+describe('awaitingAgentRows', () => {
+  it('holds exactly the annotated blocked rows the badge dropped', () => {
+    expect(awaitingAgentRows([board]).map((e) => e.row.id)).toEqual(['r2', 'r3'])
+  })
+  it('carries the owning board, like every other row entry', () => {
+    expect(awaitingAgentRows([board])[0]!.board.title).toBe('Rollout')
+  })
+  it('the two sets are disjoint and together cover every blocked row', () => {
+    const attn = attentionEntries([], [board], NOW, new Set()).map((e) => (e.kind === 'row' ? e.row.id : ''))
+    const foot = awaitingAgentRows([board]).map((e) => e.row.id)
+    expect(attn.filter((id) => foot.includes(id))).toEqual([])
+    expect([...attn, ...foot].sort()).toEqual(['r1', 'r2', 'r3'])
+  })
+  it('suppresses a closed project, exactly as the attention set does (issue #32)', () => {
+    expect(awaitingAgentRows([board], ['web'])).toEqual([])
+    expect(awaitingAgentRows([board], new Set(['web']))).toEqual([])
+    expect(awaitingAgentRows([board], []).length).toBe(2)
+  })
+  it('tolerates missing input the way attentionEntries does', () => {
+    expect(awaitingAgentRows(undefined)).toEqual([])
+    expect(awaitingAgentRows([{ id: 'b', project: 'p', rows: undefined } as unknown as AttentionBoard])).toEqual([])
   })
 })
 
@@ -114,9 +159,9 @@ describe('attentionEntries', () => {
   ]
   const live = new Set(['s1'])
 
-  it('includes unanswered non-stale questions with their liveness, plus blocked rows', () => {
+  it('includes unanswered non-stale questions with their liveness, plus UNANSWERED blocked rows', () => {
     const e = attentionEntries(items, [board], NOW, live)
-    expect(e.map((x) => (x.kind === 'row' ? `row:${x.row.id}` : x.item.id))).toEqual(['q1', 'q2', 'row:r1', 'row:r3'])
+    expect(e.map((x) => (x.kind === 'row' ? `row:${x.row.id}` : x.item.id))).toEqual(['q1', 'q2', 'row:r1'])
     const first = e[0]!
     expect(first.kind).toBe('item')
     if (first.kind === 'item') expect(first.liveness).toBe('waiting')
@@ -147,11 +192,13 @@ describe('attentionEntries', () => {
     if (rowEntry.kind === 'row') expect(rowEntry.board.title).toBe('Rollout')
   })
   it('attentionCount matches the entry count', () => {
-    expect(attentionCount(items, [board], NOW, live)).toBe(4)
+    expect(attentionCount(items, [board], NOW, live)).toBe(3)
   })
-  it('returns zero when the only blocked row is already annotated and seen', () => {
+  it('returns zero when the only blocked row has been annotated — picked up or not', () => {
     const settled: AttentionBoard = { id: 'b2', project: 'web', title: 'Done deal', rows: [board.rows[1]!] }
+    const waiting: AttentionBoard = { id: 'b3', project: 'web', title: 'Still waiting', rows: [board.rows[2]!] }
     expect(attentionCount([], [settled], NOW, live)).toBe(0)
+    expect(attentionCount([], [waiting], NOW, live)).toBe(0)
   })
 })
 
@@ -193,7 +240,8 @@ describe('countsByProject', () => {
     ]
     const m = countsByProject(items, [board], NOW, new Set(['s1']))
     expect(m.get('api')).toEqual({ total: 3, escalated: 1 })
-    expect(m.get('web')).toEqual({ total: 2, escalated: 2 })
+    // only r1 is left in `web`: r2/r3 carry the human's answer and are out (#36)
+    expect(m.get('web')).toEqual({ total: 1, escalated: 1 })
   })
   it('a parked item never escalates however old it is', () => {
     const parked = [item('p', { created_at: new Date(NOW - ESCALATE_MS * 10).toISOString() })]
@@ -277,7 +325,19 @@ describe('sortNeedsYou', () => {
       { kind: 'row', row: board.rows[2]!, board },
     ]
     const out = sortNeedsYou(entries, NOW).map((e) => (e.kind === 'row' ? `row:${e.row.id}` : e.item.id))
-    expect(out).toEqual(['row:r1', 'row:r3', 'waitOld', 'waitNew', 'parkedOld', 'parkedNew', 'answered'])
+    // r3 carries the human's annotation, so it joins `answered` in bucket 3 — the
+    // dimmed awaiting-pickup foot. ONE ordering rule covers both nouns (#37).
+    expect(out).toEqual(['row:r1', 'waitOld', 'waitNew', 'parkedOld', 'parkedNew', 'answered', 'row:r3'])
+  })
+
+  it('sinks an annotated row to the awaiting-pickup foot, below every parked question', () => {
+    const entries: AttentionEntry[] = [
+      { kind: 'row', row: board.rows[2]!, board },                                        // annotated → foot
+      { kind: 'item', item: item('parked', { created_at: '2026-07-24T11:30:00Z' }), liveness: 'parked' },
+      { kind: 'row', row: board.rows[0]!, board },                                        // unanswered → top
+    ]
+    const out = sortNeedsYou(entries, NOW).map((e) => (e.kind === 'row' ? `row:${e.row.id}` : e.item.id))
+    expect(out).toEqual(['row:r1', 'parked', 'row:r3'])
   })
   it('is stable for entries in the same bucket with equal timestamps', () => {
     const entries: AttentionEntry[] = [

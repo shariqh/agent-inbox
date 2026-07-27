@@ -105,7 +105,7 @@ describe('viewer api', () => {
     const app = createViewer(db)
     const got = await (await app.request('/api/items')).json()
     expect(got.needsYou[0].items[0].options).toHaveLength(2)
-    markReplySeen(db, id) // pretend a stale pickup exists; a new reply must reset it
+    markReplySeen(db, id, null) // pretend a stale pickup exists; a new reply must reset it
     const res = await app.request(`/api/items/${id}/reply`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'clerk', context: 'start with the TMCC thread' }),
     })

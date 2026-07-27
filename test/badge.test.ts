@@ -64,6 +64,14 @@ describe('the Electron dock badge shares the §7 attention predicate (no duplica
   it('does not re-implement the blocked-row filter inline', () => {
     expect(main).not.toContain("r.status === 'blocked'")
   })
+  // issue #37 changed what a blocked row MEANS (annotated → out of the badge,
+  // into the awaiting-pickup foot). The requirement on main.cjs is NEGATIVE: it
+  // must gain nothing, because its count is attentionEntries(...).length against
+  // the shared module and therefore follows for free. A local mention of the
+  // annotation columns here would be a second predicate by another name.
+  it('gains no annotation/pickup predicate of its own when the row rule changes', () => {
+    expect(main).not.toMatch(/annotation/)
+  })
   it('dynamically imports the shared attention module rather than re-deriving it', () => {
     expect(main).toContain("path.join(REPO_ROOT, 'public', 'attention.js')")
     expect(main).toMatch(/import\(pathToFileURL\(ATTENTION_PATH\)/)

@@ -90,7 +90,7 @@ describe('I4 · an answered question awaiting pickup is still rendered somewhere
     const id = insertItem(d, { ...AGENT, kind: 'question', title: 'ship it?' })
     replyItem(d, id, 'yes')
     advanceClock()
-    markReplySeen(d, id)
+    markReplySeen(d, id, listItems(d).find((i) => i.id === id)!.replied_at)
 
     await bootApp(d)
 

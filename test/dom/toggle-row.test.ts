@@ -148,7 +148,7 @@ describe('C2 · a REFUSED change-answer must not freeze the viewer', () => {
     const id = insertItem(d, { ...AGENT, kind: 'question', title: 'ship it?' })
     replyItem(d, id, ANSWER, ANSWER_CONTEXT)
     advanceClock()
-    markReplySeen(d, id) // the store will now legitimately refuse a blank-out: 200 + {ok:false}
+    markReplySeen(d, id, listItems(d).find((i) => i.id === id)!.replied_at) // the store will now legitimately refuse a blank-out: 200 + {ok:false}
     await bootApp(d)
 
     // the precondition is itself the I4 fix — an answered + picked-up open question

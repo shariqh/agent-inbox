@@ -20,6 +20,9 @@ export interface AttentionRow {
   status: string
   annotation: string | null
   annotation_unseen: boolean
+  /** issue #37 — when the annotation was handed to an agent, and to which one. */
+  annotation_seen_at?: string | null
+  annotation_seen_by?: string | null
   note?: string
 }
 
@@ -51,6 +54,12 @@ export function isAskingQuestion(item: AttentionItem): boolean
 export function isBlockedRowAttention(row: AttentionRow): boolean
 /** A closed set: project names, as a Set (browser) or a plain array (JSON). */
 export type ClosedProjects = Set<string> | readonly string[]
+
+/** Blocked rows carrying the human's answer — the relabeled half of #36/#37. */
+export function awaitingAgentRows(
+  boards: AttentionBoard[] | undefined,
+  closedProjects?: ClosedProjects,
+): Array<{ kind: 'row'; row: AttentionRow; board: AttentionBoard }>
 
 export function attentionEntries(
   items: AttentionItem[],

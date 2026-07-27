@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
-import { openDb, listItems, listBoards, getBoard, annotateBoardRow, replyItem, listActivity } from '../src/store.js'
+import { openDb, listItems, listBoards, getBoard, annotateBoardRow, listPendingAnnotations, replyItem, listActivity } from '../src/store.js'
 
 describe('mcp round-trip', () => {
   it('flag writes a row attributed to this session, and whoami reflects register', async () => {
@@ -226,11 +226,99 @@ describe('mcp round-trip', () => {
     expect(board.rows[0].annotation).toBe('human note')
     expect(board.rows[0].annotation_unseen).toBe(true) // first read since the annotation
 
-    // reading marks the board read, so a second read sees nothing new
+    // reading delivers the annotations in THAT payload, so a second read sees nothing new
     const again = await c2.callTool({ name: 'board_get', arguments: { title: 'cov' } })
     await c2.close()
     const board2 = JSON.parse((again.content as Array<{ text: string }>)[0]!.text)
     expect(board2.rows[0].annotation_unseen).toBe(false)
+  }, 20000)
+
+  // A TRADE TAKEN ON PURPOSE (#37). board_get with no title returns every active
+  // board in the project, so under per-row delivery one incidental call marks
+  // every annotation in the project delivered. That is TRUE — the payload
+  // genuinely contained them — and harmless only because delivery is not
+  // acknowledgement: each row stays blocked, on the human's screen, reading
+  // "delivered to <agent>" until an agent flips its status. Exempting the
+  // title-less form instead would be a third mark-seen rule nobody would
+  // remember. The tool description steers agents to the titled form.
+  it('board_get with no title delivers every annotation in the project, and says so honestly', async () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-getall-')), 'inbox.db')
+    const conn = async () => {
+      const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
+      const c = new Client({ name: 'claude-code', version: '1.0.0' }); await c.connect(t); return c
+    }
+    const c1 = await conn()
+    await c1.callTool({ name: 'board_upsert', arguments: { title: 'one', rows: [{ label: 'a', status: 'blocked' }] } })
+    await c1.callTool({ name: 'board_upsert', arguments: { title: 'two', rows: [{ label: 'b', status: 'blocked' }] } })
+    await c1.close()
+
+    const store = openDb(dbPath)
+    const project = listBoards(store)[0]!.project
+    for (const b of listBoards(store)) annotateBoardRow(store, b.rows[0]!.id, `note for ${b.title}`)
+    expect(listPendingAnnotations(store, project)).toHaveLength(2)
+
+    const c2 = await conn()
+    const got = await c2.callTool({ name: 'board_get', arguments: {} })
+    const { boards } = JSON.parse((got.content as Array<{ text: string }>)[0]!.text)
+    // the payload it hands over still reports them as new to this reader
+    expect(boards.flatMap((b: { rows: { annotation_unseen: boolean }[] }) => b.rows).every((r: { annotation_unseen: boolean }) => r.annotation_unseen)).toBe(true)
+    await c2.close()
+
+    // …and afterwards nothing is pending, because it genuinely read all of them
+    expect(listPendingAnnotations(openDb(dbPath), project)).toEqual([])
+    // delivery ≠ acknowledgement: every row is still blocked and still the
+    // human's evidence that nothing has happened yet
+    for (const b of listBoards(openDb(dbPath))) {
+      expect(b.rows[0]!.status).toBe('blocked')
+      expect(b.rows[0]!.annotation_seen_by).toBe('claude-code')
+    }
+  }, 20000)
+
+  // ── issue #37: the delivery path for a board-row annotation ────────────────
+  // THE HEADLINE. docs/reporting-snippet.md tells every agent that polling
+  // `pending()` is how the human's input reaches them. Before this, `pending`
+  // was `SELECT … FROM items` and nothing else, so an agent that followed the
+  // contract perfectly still never saw a board annotation — the only thing that
+  // surfaced one was independently choosing to call `board_get`. Observed in the
+  // wild: a "merge it" note sat unread for a day while the agent polled throughout.
+  it('pending delivers a board annotation to an agent that never calls board_get (#37)', async () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-pending-rows-')), 'inbox.db')
+    const conn = async () => {
+      const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
+      const c = new Client({ name: 'claude-code', version: '1.0.0' }); await c.connect(t); return c
+    }
+    const call = async (c: Client, name: string, args: Record<string, unknown>) =>
+      JSON.parse(((await c.callTool({ name, arguments: args })).content as Array<{ text: string }>)[0]!.text)
+
+    const c1 = await conn()
+    await call(c1, 'board_upsert', { title: 'rollout', rows: [{ label: 'Merge', status: 'blocked', note: 'ready when you are' }] })
+
+    // nothing from the human yet
+    expect((await call(c1, 'pending', {})).rows).toEqual([])
+
+    // the human annotates from the VIEWER — a different process, the store path
+    const project = listBoards(openDb(dbPath))[0]!.project
+    const rowId = getBoard(openDb(dbPath), project, 'rollout')!.rows[0]!.id
+    annotateBoardRow(openDb(dbPath), rowId, 'merge it')
+
+    // the same session polls pending() — and only pending() — and receives it
+    const delivered = (await call(c1, 'pending', {})).rows
+    expect(delivered).toHaveLength(1)
+    expect(delivered[0].annotation).toBe('merge it')
+    expect(delivered[0].board_title).toBe('rollout')
+    expect(delivered[0].label).toBe('Merge')
+    expect(delivered[0].note).toBe('ready when you are')
+
+    // delivery happens once — a second poll does not re-hand the same note over
+    expect((await call(c1, 'pending', {})).rows).toEqual([])
+    await c1.close()
+
+    const row = getBoard(openDb(dbPath), project, 'rollout')!.rows[0]!
+    expect(row.annotation_seen_at).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+    expect(row.annotation_seen_by).toBe('claude-code')
+    // DELIVERY IS NOT ACKNOWLEDGEMENT: the row stays blocked until the agent
+    // flips its status, so the human keeps seeing it until something happened.
+    expect(row.status).toBe('blocked')
   }, 20000)
 
   it('a flagged item records the asking session, matching its live activity row', async () => {

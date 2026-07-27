@@ -187,12 +187,60 @@ function migrate(db: Database.Database): void {
   ensureColumn(db, 'items', 'issue_ref', 'INTEGER')
   ensureColumn(db, 'boards', 'repo', 'TEXT')
   ensureColumn(db, 'boards', 'issue_ref', 'INTEGER')
+  migrateAnnotationDelivery(db)
 }
 
-// additive migration for DBs created before the column existed
+// Additive migration for DBs created before the column existed. Good enough for
+// a column whose absence means "no value" — but NOT for one that needs seeding:
+// a migration that must BACKFILL has to ask hasColumn() itself and put the ALTER
+// and the UPDATE in ONE transaction, or a crash between them leaves the column
+// present and permanently empty. migrateAnnotationDelivery is the worked example.
 function ensureColumn(db: Database.Database, table: string, column: string, ddl: string): void {
+  if (hasColumn(db, table, column)) return
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`)
+}
+
+function hasColumn(db: Database.Database, table: string, column: string): boolean {
   const cols = db.prepare(`SELECT name FROM pragma_table_info(?)`).all(table) as { name: string }[]
-  if (!cols.some((c) => c.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`)
+  return cols.some((c) => c.name === column)
+}
+
+// ── issue #37: board-level "read" → per-ROW "delivered" ──────────────────────
+//
+// `annotation_unseen` used to derive from BOARD-level `boards.last_read_at`, so
+// one board_get marked every row's annotation seen — including rows the agent
+// never looked at, and (title-less board_get) every board in the project at once.
+// The per-row stamp is the honest model items already had via reply_seen_at.
+//
+// THE BACKFILL IS THE WHOLE RISK. Introduce the column NULL-for-all and every
+// existing annotation reads as undelivered — so the first `pending()` poll hands
+// week-old, already-superseded instructions ("merge it", "spec approved") to a
+// live agent that will act on them. That is not a badge flood; it is an agent
+// merging something. So the column is seeded from the EXACT inverse of the old
+// withUnseen predicate, including its `annotated_at IS NULL` branch:
+//   previously SEEN   → annotation_seen_at = the board's last_read_at (a real stamp)
+//   previously UNSEEN → NULL, still deliverable
+//
+// ALTER + backfill are ONE transaction on purpose: a crash between them would
+// leave the column present and empty forever, i.e. the flood, permanently, with
+// no replay path. It runs inside migrate(), before any read path can touch it.
+function migrateAnnotationDelivery(db: Database.Database): void {
+  if (hasColumn(db, 'board_rows', 'annotation_seen_at')) {
+    ensureColumn(db, 'board_rows', 'annotation_seen_by', 'TEXT')
+    return
+  }
+  db.transaction(() => {
+    db.exec(`ALTER TABLE board_rows ADD COLUMN annotation_seen_at TEXT`)
+    if (!hasColumn(db, 'board_rows', 'annotation_seen_by')) db.exec(`ALTER TABLE board_rows ADD COLUMN annotation_seen_by TEXT`)
+    db.exec(`
+      UPDATE board_rows SET annotation_seen_at = (SELECT b.last_read_at FROM boards b WHERE b.id = board_rows.board_id)
+       WHERE annotation IS NOT NULL AND annotation <> ''
+         AND EXISTS (
+           SELECT 1 FROM boards b
+            WHERE b.id = board_rows.board_id
+              AND b.last_read_at IS NOT NULL
+              AND (board_rows.annotated_at IS NULL OR board_rows.annotated_at <= b.last_read_at))`)
+  })()
 }
 
 export function insertItem(db: Database.Database, item: NewItem): string {
@@ -257,8 +305,21 @@ export function replyItem(db: Database.Database, id: string, text: string, conte
   return true
 }
 
-export function markReplySeen(db: Database.Database, id: string): void {
-  db.prepare(`UPDATE items SET reply_seen_at = ? WHERE id = ?`).run(new Date().toISOString(), id)
+// Compare-and-swap on the answer's own version stamp, in ONE statement (issue
+// #37). This used to be an unconditional `WHERE id = ?`, while replyItem resets
+// reply_seen_at = NULL from the VIEWER's separate OS process: a reply the human
+// revised between the agent's read and its stamp got marked picked up by an agent
+// that never saw it, and no later pending() would ever return it. Bind the exact
+// replied_at the read returned and check the return value — false means the human
+// moved it under you, so leave it undelivered and let the next poll carry it.
+//
+// `IS`, not `=`: replied_at is NULL on an item that has never been answered
+// (test/viewer.test.ts stamps exactly that shape), and `= NULL` is never true.
+export function markReplySeen(db: Database.Database, id: string, repliedAt: string | null): boolean {
+  const info = db
+    .prepare(`UPDATE items SET reply_seen_at = ? WHERE id = ? AND reply_seen_at IS NULL AND replied_at IS ?`)
+    .run(new Date().toISOString(), id, repliedAt)
+  return info.changes > 0
 }
 
 export type AnswerRefusal = 'empty' | 'not_found' | 'not_a_question' | 'not_open' | 'unread_inbox_answer'
@@ -370,19 +431,28 @@ export interface BoardRow {
   context: string
   annotation: string | null
   annotated_at: string | null
+  // issue #37 — DELIVERY, not acknowledgement: "this text was handed to some
+  // agent", and who it went to. It silences nothing on the human's side; the row
+  // stays blocked until an agent flips its status, which is the acknowledgement.
+  annotation_seen_at: string | null
+  annotation_seen_by: string | null
   position: number
   annotation_unseen: boolean
 }
 
 type BoardRowRecord = Omit<BoardRow, 'annotation_unseen'>
 
-// an annotation is "unseen" until the agent reads the board after it was written
-function withUnseen(rows: BoardRowRecord[], lastReadAt: string | null): BoardRow[] {
+const ROW_COLUMNS = `id, label, status, note, context, annotation, annotated_at, annotation_seen_at, annotation_seen_by, position`
+
+// An annotation is "unseen" until it has been DELIVERED to an agent. Per-row and
+// nothing else: `boards.last_read_at` is deliberately not an input any more
+// (issue #37 / #36). Two inputs would disagree the first time a row is stamped
+// individually while a board is stamped wholesale, and the disagreement would be
+// invisible — nothing renders last_read_at.
+function withUnseen(rows: BoardRowRecord[]): BoardRow[] {
   return rows.map((r) => ({
     ...r,
-    annotation_unseen:
-      r.annotation != null && r.annotation !== '' &&
-      (lastReadAt === null ? true : r.annotated_at !== null && r.annotated_at > lastReadAt),
+    annotation_unseen: r.annotation != null && r.annotation !== '' && r.annotation_seen_at === null,
   }))
 }
 
@@ -527,12 +597,84 @@ export function unarchiveBoard(db: Database.Database, boardId: string): void {
   db.prepare(`UPDATE boards SET status = 'active', updated_at = ? WHERE id = ?`).run(new Date().toISOString(), boardId)
 }
 
+// New text resets delivery IN THE SAME STATEMENT that writes it (the replyItem
+// invariant, for rows). Split them and a re-annotation of an already-delivered
+// row inherits the old stamp and is never handed to anyone.
 export function annotateBoardRow(db: Database.Database, rowId: string, text: string): void {
-  db.prepare(`UPDATE board_rows SET annotation = ?, annotated_at = ? WHERE id = ?`).run(text, new Date().toISOString(), rowId)
+  db.prepare(`UPDATE board_rows SET annotation = ?, annotated_at = ?, annotation_seen_at = NULL, annotation_seen_by = NULL WHERE id = ?`)
+    .run(text, new Date().toISOString(), rowId)
 }
 
+// The rows-shaped twin of markReplySeen, and the same compare-and-swap for the
+// same reason: the viewer writes annotations from its own OS process, so a
+// SELECT-then-UPDATE would stamp text that no longer exists and bury the human's
+// newest instruction forever. ONE statement; `false` means it moved under you.
+//
+// `IS`, not `=`: annotated_at is NULL on rows written before that column existed
+// (real ones exist in the wild), and `annotated_at = NULL` is never true — a `=`
+// CAS would leave every legacy annotation unstampable and therefore re-delivered
+// on every single poll, forever.
+export function markAnnotationDelivered(
+  db: Database.Database,
+  rowId: string,
+  annotatedAt: string | null,
+  by: string | null,
+): boolean {
+  const info = db
+    .prepare(`UPDATE board_rows SET annotation_seen_at = ?, annotation_seen_by = ?
+               WHERE id = ? AND annotation_seen_at IS NULL AND annotated_at IS ?`)
+    .run(new Date().toISOString(), by, rowId, annotatedAt)
+  return info.changes > 0
+}
+
+// DECORATION since issue #37: "when did an agent last read this board" is a
+// legitimate fact and the annotation-delivery migration's only input (dropping
+// the column would make that backfill unreplayable), so it stays and keeps being
+// written — but it no longer marks anything seen. Nothing outside store.ts has
+// ever CONSUMED it; it is merely carried along in the board payload.
 export function markBoardRead(db: Database.Database, boardId: string): void {
   db.prepare(`UPDATE boards SET last_read_at = ? WHERE id = ?`).run(new Date().toISOString(), boardId)
+}
+
+// ── issue #37: the delivery queue for board annotations ─────────────────────
+//
+// The human's per-row note used to be reachable only by an agent independently
+// choosing to call board_get — guidance in a document, not a delivery mechanism.
+// This is what `pending()` adds to its payload, project-scoped exactly as items
+// are, so every agent already polling picks them up with no new discipline.
+//
+// ACTIVE boards only, matching board_get (getBoard returns undefined for an
+// archived board). syncBoardStatus auto-archives a board the moment it hits 100%,
+// so an annotation on a completed board stays where the human left it rather than
+// being re-delivered out of context.
+export interface PendingAnnotation {
+  board_id: string
+  board_title: string
+  project: string
+  stream: string
+  agent: string
+  row_id: string
+  label: string
+  status: RowStatus
+  note: string
+  context: string
+  annotation: string
+  annotated_at: string | null
+}
+
+export function listPendingAnnotations(db: Database.Database, project: string): PendingAnnotation[] {
+  return db
+    .prepare(
+      `SELECT b.id AS board_id, b.title AS board_title, b.project AS project, b.stream AS stream, b.agent AS agent,
+              r.id AS row_id, r.label AS label, r.status AS status, r.note AS note, r.context AS context,
+              r.annotation AS annotation, r.annotated_at AS annotated_at
+         FROM board_rows r JOIN boards b ON b.id = r.board_id
+        WHERE b.project = ? AND b.status = 'active'
+          AND r.annotation IS NOT NULL AND r.annotation <> ''
+          AND r.annotation_seen_at IS NULL
+        ORDER BY b.updated_at DESC, r.position ASC`,
+    )
+    .all(project) as PendingAnnotation[]
 }
 
 export function computeProgress(rows: BoardRow[]): Progress {
@@ -547,9 +689,9 @@ export function computeProgress(rows: BoardRow[]): Progress {
 export function listBoards(db: Database.Database, opts: { status?: 'active' | 'archived' } = {}): BoardWithRows[] {
   const status = opts.status ?? 'active'
   const boards = db.prepare(`SELECT * FROM boards WHERE status = ? ORDER BY updated_at DESC`).all(status) as Board[]
-  const rowStmt = db.prepare(`SELECT id, label, status, note, context, annotation, annotated_at, position FROM board_rows WHERE board_id = ? ORDER BY position ASC`)
+  const rowStmt = db.prepare(`SELECT ${ROW_COLUMNS} FROM board_rows WHERE board_id = ? ORDER BY position ASC`)
   return boards.map((b) => {
-    const rows = withUnseen(rowStmt.all(b.id) as BoardRowRecord[], b.last_read_at)
+    const rows = withUnseen(rowStmt.all(b.id) as BoardRowRecord[])
     return { ...b, rows, progress: computeProgress(rows) }
   })
 }
@@ -635,8 +777,7 @@ export function getBoard(db: Database.Database, project: string, title: string):
   const board = findBoard(db, project, title)
   if (!board || board.status !== 'active') return undefined
   const rows = withUnseen(
-    db.prepare(`SELECT id, label, status, note, context, annotation, annotated_at, position FROM board_rows WHERE board_id = ? ORDER BY position ASC`).all(board.id) as BoardRowRecord[],
-    board.last_read_at,
+    db.prepare(`SELECT ${ROW_COLUMNS} FROM board_rows WHERE board_id = ? ORDER BY position ASC`).all(board.id) as BoardRowRecord[],
   )
   return { ...board, rows, progress: computeProgress(rows) }
 }

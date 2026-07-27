@@ -4,8 +4,8 @@ import {
   shouldShowRailFilter, splitClosed, suppressedTotal,
 } from '/rail.js'
 import {
-  attentionCount, attentionEntries, classifyLiveness, countsByProject, isAskingQuestion,
-  isBlockedRowAttention, staleEntries,
+  attentionCount, attentionEntries, awaitingAgentRows, classifyLiveness, countsByProject,
+  isAskingQuestion, isBlockedRowAttention, staleEntries,
 } from '/attention.js'
 import { DEFAULT_TAB, TAB_IDS, tabCounts } from '/tabs.js'
 import { projectColor } from '/colors.js'
@@ -640,13 +640,30 @@ function rowAnswerEl(b, r, onSaved) {
   return row
 }
 
+// The human's answer on a row, plus whether anyone collected it (issue #37) —
+// the rows-shaped twin of the item reply block's pickup marker, and the same
+// vocabulary. It lives in ONE function so the marker can never be printed for a
+// row that has no annotation to show, and so the matrix, the accordion card and
+// the triage card cannot drift apart about what "delivered" means.
+//
+// "delivered", not "read": the stamp records only that the text was handed to an
+// agent. The acknowledgement is the agent flipping the row's status, which is
+// why an annotated row stays on screen until it does.
+function rowAnnotationHtml(r) {
+  if (!r.annotation) return ''
+  const mark = r.annotation_seen_at
+    ? `<span class="pickup picked">✓ delivered${r.annotation_seen_by ? ` to ${esc(r.annotation_seen_by)}` : ''} ${esc(rel(r.annotation_seen_at))} ago</span>`
+    : '<span class="pickup awaiting">● waiting for agent pickup</span>'
+  return `<div class="annotation">📝 ${esc(r.annotation)}${mark}</div>`
+}
+
 // the inline expansion under a matrix row: long context + existing annotation + answer
 function rowPanelEl(b, r, readOnly = false) {
   const wrap = document.createElement('div')
   wrap.className = 'row-panel'
   wrap.innerHTML = `
     ${r.context ? `<div class="row-context-body">${esc(r.context)}</div>` : ''}
-    ${r.annotation ? `<div class="annotation">📝 ${esc(r.annotation)}${r.annotation_unseen ? '<span class="unseen" title="Not yet seen by the agent">●</span>' : ''}</div>` : ''}`
+    ${rowAnnotationHtml(r)}`
   if (!readOnly) wrap.appendChild(rowAnswerEl(b, r))
   return wrap
 }
@@ -664,7 +681,7 @@ function rowCardEl(b, r) {
     <div class="title">${esc(r.label)}</div>
     ${r.note ? `<div class="detail">${esc(r.note)}</div>` : ''}
     ${r.context ? `<div class="detail lb-context">${esc(r.context)}</div>` : ''}
-    ${r.annotation ? `<div class="annotation">📝 ${esc(r.annotation)}</div>` : ''}`
+    ${rowAnnotationHtml(r)}`
   wrap.appendChild(rowAnswerEl(b, r, () => { if (triageDeck) triageRemoveCurrent() }))
   return wrap
 }
@@ -1340,7 +1357,13 @@ function renderNeedsYou(g, boardsInView, nowMs) {
   // fix round 2 (I4): repliedEntries, not the strict awaiting-pickup subset —
   // between reply_seen_at and the agent's (possibly never) resolve, an answered
   // open question was rendered by NO tab while search still counted it here.
-  const unordered = needsYouEntries(items, boardsInView, nowMs, live, repliedEntries(items, nowMs, live))
+  // issue #37 adds the rows-shaped twin: a blocked row the human has ANSWERED
+  // leaves the attention set (their part is done) but must not vanish, or an
+  // answer nobody ever collected rots with nothing anywhere saying so. Both
+  // land in sortNeedsYou's bucket 3 — the same dimmed foot, one ordering rule.
+  const replied = repliedEntries(items, nowMs, live)
+  const awaiting = awaitingAgentRows(boardsInView, closedSet())
+  const unordered = needsYouEntries(items, boardsInView, nowMs, live, [...replied, ...awaiting])
   // §10: run every entry through Task 9's poll-suspension pin BEFORE paginating —
   // this is what stops a freshly-arrived row from jumping into the visible slice
   // while the pointer is over the list. orderedIds() only ever returns ids that
@@ -1707,7 +1730,7 @@ function boardEl(b, archived = false, lingering = false) {
       <td class="row-num">${num}</td>
       <td class="row-glyph ${r.status}" title="${esc(r.status)}">${GLYPH[r.status] || ''}</td>
       <td class="row-label">${esc(r.label)}</td>
-      <td class="row-note"><span class="note-line">${esc(r.note)}</span>${r.context ? '<span class="more-dot" title="has context — click the row">…</span>' : ''}${r.annotation ? `<span class="annotation-dot" title="${esc(r.annotation)}">📝${r.annotation_unseen ? '<span class="unseen">●</span>' : ''}</span>` : ''}</td>`
+      <td class="row-note"><span class="note-line">${esc(r.note)}</span>${r.context ? '<span class="more-dot" title="has context — click the row">…</span>' : ''}${r.annotation ? `<span class="annotation-dot" title="${esc(r.annotation)}">📝${r.annotation_unseen ? '<span class="unseen" title="not yet delivered to an agent">●</span>' : ''}</span>` : ''}</td>`
     const actionTd = document.createElement('td')
     actionTd.className = 'row-action'
     const toggle = () => {

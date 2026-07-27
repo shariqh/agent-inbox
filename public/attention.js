@@ -44,12 +44,39 @@ export function classifyLiveness(item, nowMs, liveSessionIds) {
   return nowMs - createdMs(item) > STALE_MS ? 'stale' : 'parked'
 }
 
-// A blocked row stops asking once the human has annotated it AND the agent has
-// seen that annotation. Counting every blocked row (the old app.js:139 rule)
-// makes the badge unable to return to zero.
+// A blocked row stops asking the moment the HUMAN answers it — i.e. annotates.
+// Whether an agent has picked that answer up is the agent's state, not a reason
+// to keep nagging the human, and this is precisely what items already do:
+// isAskingQuestion goes false as soon as `reply` is non-empty, pickup irrelevant.
+//
+// Issues #36 + #37 removed the old `annotation_unseen` dependency deliberately.
+// Two things were wrong with it. (1) Annotating is the ONLY lever the viewer
+// offers on a blocked row, and it did not move the badge — if the agent's
+// session was over, nothing ever would, so the row was literally unclearable
+// (#36). (2) It made board-level mark-seen state, written by a different OS
+// process, an input to the badge: one `board_get` silently cleared rows nobody
+// had read, which is how a real "merge it" note stopped escalating a day later
+// with the merge still not done. Nothing here reads delivery state any more.
+//
+// The signal is NOT removed, it is relabeled: see awaitingAgentRows below.
 export function isBlockedRowAttention(row) {
-  if (row.status !== 'blocked') return false
-  return !(row.annotation && !row.annotation_unseen)
+  return row.status === 'blocked' && !row.annotation
+}
+
+// The rows isBlockedRowAttention just dropped: blocked, and carrying the human's
+// answer. They render in the Needs-you foot beside repliedEntries — "delivered
+// 3m ago" vs "waiting for agent pickup" — so an answer nobody collected stays
+// visible, as the AGENT's failure rather than the human's to-do. It lives in
+// THIS module, next to the predicate whose complement it is, so there is never a
+// second place that decides what a blocked row means (tenet 3).
+export function awaitingAgentRows(boards, closedProjects = []) {
+  const closed = asSet(closedProjects)
+  const out = []
+  for (const b of boards ?? []) {
+    if (closed.has(b.project)) continue
+    for (const r of b.rows ?? []) if (r.status === 'blocked' && r.annotation) out.push({ kind: 'row', row: r, board: b })
+  }
+  return out
 }
 
 // attention = open unanswered questions (minus the stale fold) ∪ escalating
@@ -123,8 +150,12 @@ export function countsByProject(items, boards, nowMs, liveSessionIds) {
 }
 
 // 0 blocked rows · 1 waiting · 2 parked · 3 answered-awaiting-pickup (dimmed foot)
+//
+// Bucket 3 covers BOTH nouns: an answered question and an annotated blocked row
+// are the same state — the human is done, the agent has not closed it out — so
+// they share one ordering rule rather than growing a second one for rows (#37).
 function bucket(e) {
-  if (e.kind === 'row') return 0
+  if (e.kind === 'row') return e.row.annotation ? 3 : 0
   if (e.item.reply) return 3
   return e.liveness === 'waiting' ? 1 : 2
 }

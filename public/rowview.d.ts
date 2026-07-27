@@ -19,7 +19,16 @@ export interface RowItem {
 }
 
 export interface RowBoard { id: string; project: string; stream?: string; agent?: string; title: string }
-export interface RowRow { id: string; label: string; note?: string; status?: string }
+export interface RowRow {
+  id: string
+  label: string
+  note?: string
+  status?: string
+  /** issue #37 — the human's answer on this row, and its delivery state. */
+  annotation?: string | null
+  annotation_seen_at?: string | null
+  annotation_seen_by?: string | null
+}
 
 export type Liveness = 'waiting' | 'parked' | 'stale'
 export type Entry =
@@ -40,6 +49,10 @@ export interface RowModel {
   boardTitle: string | null
   created_at: string | null
   answered: boolean
+  /** issue #37 — whether an agent has collected the answer, when, and which one. */
+  pickedUp: boolean
+  pickedUpAt: string | null
+  pickedUpBy: string
 }
 
 export interface RowModelOpts {

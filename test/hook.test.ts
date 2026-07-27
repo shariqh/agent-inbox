@@ -453,7 +453,8 @@ describe('hook: pickup nudge (#21)', () => {
 
   it('emits nothing once the agent has picked the reply up', async () => {
     const { env, dbPath, id } = answered()
-    markReplySeen(openDb(dbPath), id)
+    const answeredItem = listItems(openDb(dbPath)).find((i) => i.id === id)!
+    markReplySeen(openDb(dbPath), id, answeredItem.replied_at)
     expect(await runHook(['prompt-submit'], ev(), env)).toEqual({ stdout: '' })
     expect(await runHook(['stop'], ev(), env)).toEqual({ stdout: '' })
     expect(await runHook(['session-start'], ev(), env)).toEqual({ stdout: '' })

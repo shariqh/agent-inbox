@@ -37,11 +37,14 @@ describe('boardRowsView', () => {
     expect(v.needsAnswer).toBe(true)
   })
 
-  it('clears needsAnswer once the human annotation has been seen by the agent', () => {
+  // #36/#37: the human's annotation IS the answer, so the matrix stops flagging
+  // the row the moment they write one — delivery to an agent is a separate fact
+  // the row panel renders, never a reason to keep asking them again.
+  it('clears needsAnswer as soon as the human annotates, delivered or not', () => {
     const seen = board([row({ id: 'r2', status: 'blocked', annotation: 'use the staging key', annotation_unseen: false })])
     const unseen = board([row({ id: 'r2', status: 'blocked', annotation: 'use the staging key', annotation_unseen: true })])
     expect(boardRowsView(seen)[0]!.needsAnswer).toBe(false)
-    expect(boardRowsView(unseen)[0]!.needsAnswer).toBe(true)
+    expect(boardRowsView(unseen)[0]!.needsAnswer).toBe(false)
   })
 
   it('never flags a non-blocked row', () => {

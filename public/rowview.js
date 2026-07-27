@@ -51,7 +51,14 @@ export function rowModel(entry, { streams = new Map(), agents = new Map(), showP
       boardId: board.id,
       boardTitle: board.title,
       created_at: null,
-      answered: false,
+      // #37 — a row carries the same two facts an item does: the human answered
+      // (annotation), and an agent collected that answer (annotation_seen_at).
+      // `answered` is what dims it and sinks it to the awaiting-pickup foot, so
+      // it must key on the ANNOTATION, never on delivery.
+      answered: Boolean(row.annotation),
+      pickedUp: Boolean(row.annotation_seen_at),
+      pickedUpAt: row.annotation_seen_at ?? null,
+      pickedUpBy: row.annotation_seen_by ?? '',
     }
   }
   const it = entry.item
@@ -69,13 +76,25 @@ export function rowModel(entry, { streams = new Map(), agents = new Map(), showP
     boardTitle: null,
     created_at: it.created_at,
     answered: Boolean(it.reply),
+    pickedUp: Boolean(it.reply_seen_at),
+    pickedUpAt: it.reply_seen_at ?? null,
+    pickedUpBy: '',
   }
 }
 
 // One time vocabulary shared with the Live freshness dots (§6) — never a raw
 // age ramp: only a live asking session earns heat.
 export function urgencyChip(model, nowMs) {
-  if (model.kind === 'row') return { text: 'blocked', tone: 'blocked' }
+  if (model.kind === 'row') {
+    // #37: a blocked row that the human has ANSWERED must stop reading "you
+    // still need to act" and start reading "answered — has anyone collected it?"
+    // The alarm is relabeled, never removed, so a pickup that never happens
+    // stays on screen as the agent's failure rather than as your to-do.
+    if (!model.answered) return { text: 'blocked', tone: 'blocked' }
+    return model.pickedUp
+      ? { text: `delivered ${relMs(nowMs - Date.parse(model.pickedUpAt))}`, tone: 'muted' }
+      : { text: 'awaiting pickup', tone: 'muted' }
+  }
   if (model.answered) return { text: 'answered', tone: 'muted' }
   const age = nowMs - Date.parse(model.created_at)
   if (model.liveness === 'waiting') return { text: `waiting ${relMs(age)}`, tone: age >= ESCALATE_MS ? 'hot' : 'warm' }

@@ -46,15 +46,36 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
 - **`src/store.ts` is the only door to the database.** Every read/write goes through its
   exported functions — items: `insertItem`/`resolveItem`/`dismissItem`/`annotateItem`/
   `replyItem`/`answerItem`/`listItems`; boards: `upsertBoard`/`updateBoardRow`/`getBoard`/`listBoards`/
-  `archiveBoard`/`annotateBoardRow`; projects: `closeProject`/`reopenProject`/`listClosedProjects`/
-  `closedProjects` — plus `openDb`. No raw SQL anywhere else. To change
+  `archiveBoard`/`annotateBoardRow`/`markAnnotationDelivered`/`listPendingAnnotations`;
+  projects: `closeProject`/`reopenProject`/`listClosedProjects`/`closedProjects` — plus `openDb`. No raw SQL anywhere else. To change
   storage, reimplement this module; nothing else touches SQLite.
 - **Boards: the human's annotations are sacred.** A board is idempotent by
   `(project, title)` (UNIQUE); rows match by `label`, positions come from array order.
   `upsertBoard` deliberately never touches `board_rows.annotation` — human per-row notes
   must survive a full re-upsert. But rows *absent* from an upsert are deleted (annotations
   with them), so agents must keep labels stable. There is no FK enforcement between
-  `boards` and `board_rows` — deletes are handled explicitly in `store.ts`.
+  `boards` and `board_rows` — deletes are handled explicitly in `store.ts`. The same
+  protection covers `annotated_at`/`annotation_seen_at`/`annotation_seen_by`: a re-upsert
+  that reset delivery would re-hand the same note to an agent on every poll, forever.
+- **Delivery is not acknowledgement (issue #37).** `board_rows.annotation_seen_at` records
+  ONE fact — this text was handed to some agent — and it silences nothing the human sees:
+  the row stays `blocked` and on their screen until an agent flips its status, which IS the
+  acknowledgement. That split is what makes it safe for `pending()` to stamp on return.
+  Two consequences that must not be "simplified" away. (1) `annotation_unseen` derives from
+  the PER-ROW stamp only — `boards.last_read_at` still gets written by `markBoardRead` but
+  is pure decoration (its only real use is the one-shot migration backfill); a second input
+  would disagree invisibly, since nothing renders it. (2) The attention predicate
+  (`public/attention.js`) reads the ANNOTATION, never the delivery state:
+  `isBlockedRowAttention = status === 'blocked' && !annotation`, and the rows it drops are
+  RELABELED into `awaitingAgentRows()` — same module, rendered in the Needs-you foot — not
+  deleted. Removing the alarm without relabeling it is the worse bug, not the fix.
+- **Every mark-seen write is a compare-and-swap.** `markReplySeen(id, repliedAt)` and
+  `markAnnotationDelivered(rowId, annotatedAt, by)` bind the exact version stamp the read
+  returned (`... AND replied_at IS ?` / `AND annotated_at IS ?`, `IS` because legacy rows
+  carry NULL) and return whether they changed a row. The viewer writes answers from its own
+  OS process, so an unconditional stamp marks text the human just replaced as picked up and
+  no later poll ever returns it. Never SELECT-then-UPDATE with a gap; `annotateBoardRow` and
+  `replyItem` reset the stamp in the SAME statement that writes the new text.
 - **Two answer channels, ONE precedence rule: the inbox always wins.** A question can be
   answered on the card (`replyItem`, source `'inbox'`) or out loud in chat and recorded by
   the agent (`answerItem`, source `'agent'`). It is deliberately NOT wall-clock
@@ -276,7 +297,10 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   this shipped has `repo = NULL` and shows no chip at all — there is no backfill, and there cannot
   be a correct one; and `gh pr list` does not return the linked issue's TITLE, so `issue_title` is
   always null in v1 and the chip reads `#30`.
-
+- **Board-annotation delivery** *(#37)* — `pending()` returns `{items, rows}`: the human's per-row
+  board notes ride the one poll every agent already makes, project-scoped like items. See the
+  delivery-is-not-acknowledgement invariant above; `docs/reporting-snippet.md` and the `pending`/
+  `board_row` tool descriptions all say that the STATUS FLIP is the acknowledgement.
 - **The agent-emit contract** — `docs/reporting-snippet.md`'s end-of-turn rule now tests "am I about
   to stop and wait on the human?", so recommendations and "say the word" moments get flagged
   instead of buried. Mirrored in the `flag` tool description so agents get it at the call site.
@@ -289,6 +313,19 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   agents declare scope via `register` instead of auto-inference. `AGENT_INBOX_DB`/`AGENT_INBOX_PORT`
   env overrides are already in place. Design (three blocking decisions, three verified wiring traps):
   [`docs/superpowers/specs/2026-07-26-remote-hosted-mode-design.md`](docs/superpowers/specs/2026-07-26-remote-hosted-mode-design.md).
+- **The human's exit from an UNANNOTATED blocked row** *(#36, remaining half)* — #37 fixed the
+  annotated case: writing a note now clears the row from the badge with no agent round-trip. A
+  blocked row the human has NOT answered still has no lever they can pull (there is no route to
+  change a row's status and no per-row dismiss). Needs `POST /api/boards/:id/rows/:rowId/status`
+  or a lighter "acknowledge"; the live DB has one such row today.
+- **Item-annotation delivery** *(not yet filed — #37 with a different noun)* — the viewer's Note
+  button renders on EVERY open item (`card.js`'s `showActions: !done`, no kind check), but
+  `listPending` filters `kind='question' AND status='open'`, so a human's note on a `note` item, a
+  `done` milestone or a resolved question reaches no agent, ever — and items have no
+  `annotation_seen_at`, so the viewer cannot even show that it was not delivered. The fix mirrors
+  #37 exactly: `items.annotation_seen_at`/`annotation_seen_by`, the same CAS, and open items of any
+  kind carrying an annotation in `pending()`'s payload. Deliberately NOT bundled into #37 — it is a
+  different noun with its own viewer surface — but the column shape is decided, so it is additive.
 
 Keep all of these additive and behind the existing seams — don't break v1's local,
 zero-config, no-auth path.

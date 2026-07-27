@@ -145,7 +145,15 @@ describe('app.js wiring (source-level pins)', () => {
   it('itemCardEl renders via-chat provenance as a fixed literal, inside the s.reply branch', () => {
     const start = js.indexOf('function itemCardEl(')
     const fn = js.slice(start, js.indexOf('\nasync function changeAnswer('))
-    expect((js.match(/waiting for agent pickup/g) ?? []).length).toBe(1)
+    // The invariant is "one marker per noun, inside the branch that has something
+    // to show" — not "one in the file". Issue #37 gave board rows the same marker
+    // (rowAnnotationHtml, guarded by `if (!r.annotation) return ''`), so pin BOTH
+    // occurrences to their own function instead of loosening the count.
+    expect((fn.match(/waiting for agent pickup/g) ?? []).length).toBe(1)
+    const rowFn = js.slice(js.indexOf('function rowAnnotationHtml('), js.indexOf('\nfunction rowPanelEl('))
+    expect((rowFn.match(/waiting for agent pickup/g) ?? []).length).toBe(1)
+    expect(rowFn).toContain("if (!r.annotation) return ''")
+    expect((js.match(/waiting for agent pickup/g) ?? []).length, 'exactly one per noun, nowhere else').toBe(2)
     const replyBlock = fn.split('\n').find((l) => l.includes('waiting for agent pickup'))!
     expect(replyBlock).toContain('${s.reply ?')
     expect(replyBlock).toContain('reply-block')

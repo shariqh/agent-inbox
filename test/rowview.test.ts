@@ -106,6 +106,23 @@ describe('rowModel', () => {
   it('marks a replied item answered', () => {
     expect(rowModel({ kind: 'item', item: item({ reply: 'go' }), liveness: 'parked' }).answered).toBe(true)
   })
+
+  // #37 — a board row gets the SAME two facts an item has: the human answered
+  // (annotation), and an agent collected it (annotation_seen_at). `answered` is
+  // what dims the row and drops it to the foot; `pickedUp` is what makes the
+  // difference between "you're waiting on the agent" and "it has the answer".
+  it('marks an annotated row answered, and reports whether it was delivered', () => {
+    const rowEntry = (row: Record<string, unknown>) => ({
+      kind: 'row' as const,
+      row: { id: 'r1', label: 'Merge', note: 'ready', status: 'blocked', ...row },
+      board: { id: 'b1', project: 'web', stream: '', title: 'Rollout' },
+    })
+    expect(rowModel(rowEntry({})).answered).toBe(false)
+    const waiting = rowModel(rowEntry({ annotation: 'merge it' }))
+    expect(waiting).toMatchObject({ answered: true, pickedUp: false, pickedUpAt: null, pickedUpBy: '' })
+    const done = rowModel(rowEntry({ annotation: 'merge it', annotation_seen_at: '2026-07-24T12:00:00Z', annotation_seen_by: 'claude-code' }))
+    expect(done).toMatchObject({ answered: true, pickedUp: true, pickedUpAt: '2026-07-24T12:00:00Z', pickedUpBy: 'claude-code' })
+  })
 })
 
 describe('urgencyChip', () => {
@@ -123,6 +140,20 @@ describe('urgencyChip', () => {
   it('is blocked for a board row and muted once answered', () => {
     expect(urgencyChip(model({ kind: 'row' }), T0)).toEqual({ text: 'blocked', tone: 'blocked' })
     expect(urgencyChip(model({ answered: true }), T0).tone).toBe('muted')
+  })
+
+  // #37 — the whole point of keeping an annotated row on screen is that it reads
+  // differently depending on whether anyone actually collected the answer. One
+  // chip, three states, and the un-delivered one is never silent.
+  it('gives an annotated row the two-state pickup vocabulary', () => {
+    const row = (over: Record<string, unknown>) => model({ kind: 'row', answered: true, pickedUp: false, pickedUpAt: null, pickedUpBy: '', ...over })
+    expect(urgencyChip(row({}), T0)).toEqual({ text: 'awaiting pickup', tone: 'muted' })
+    expect(urgencyChip(row({ pickedUp: true, pickedUpAt: new Date(T0 - 3 * 60_000).toISOString() }), T0))
+      .toEqual({ text: 'delivered 3m', tone: 'muted' })
+  })
+  it('an un-picked-up row is never rendered as blocked — the human already answered', () => {
+    const m = model({ kind: 'row', answered: true, pickedUp: false, pickedUpAt: null, pickedUpBy: '' })
+    expect(urgencyChip(m, T0).tone).not.toBe('blocked')
   })
 })
 

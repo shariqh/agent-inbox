@@ -138,6 +138,27 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   `BoardWithRows` shapes are the contract shared by MCP writes/reads and viewer reads.
   Change them in `store.ts` and update both consumers (+ `group.ts` for items;
   `public/app.js` renders both).
+- **`load()` is the poll's; `reloadAndPaint()` is the human's (issue #38).** `load()` ends in
+  `renderIfIdle()` — the spec §10 gate — and **that gate is GLOBAL**: `suspendState()` reports
+  ANY expanded card plus EVERY draft anywhere in the app. So a handler that ends a successful
+  POST with a bare `load()` is asking the gate for permission to show the human the result of
+  their own click, and one unrelated card left open on another tab refuses it *indefinitely*.
+  Every human-initiated write therefore ends in `reloadAndPaint()` (`await load()` then
+  `forceRender()`); the ONLY un-painted callers are the boot call and `setInterval(load, 3000)`.
+  There are exactly **two entries into `render()`** — `renderIfIdle` (gated) and `forceRender`
+  (not) — because `forceRender` is also the only thing that clears `renderDirty` and refreshes
+  `#pauseHint`; a direct `render()` leaves that hint claiming "paused" over data already on
+  screen. Pinned in `test/shell.test.ts` + `test/issue-31-followups.test.ts`; the behavioural
+  half (including the anti-regression that the poll still suspends) is `test/dom/silent-send.test.ts`.
+- **A held pointer defers the rebuild, and it is NOT a suspension (#38 / D2).** The 3s render
+  detaches the node under the cursor, so `pointerdown`/`pointerup` share no ancestor and the
+  browser dispatches **no click at all** (measured in Chrome: ~1 in 24 at human hold times, on
+  every surface). `initPressGuard` records `pressedAt`; `shouldDeferRender` (in `public/poll.js`)
+  ORs it with the §10 suspension. Keep `pressedAt` **out of** `suspendState()`/`suspendReason()`
+  — a press loses nothing, so lighting `#pauseHint` for it would be a new lie — and keep it a
+  **timestamp**, never a flag: bounded by `PRESS_GRACE_MS`, it self-heals when a release event
+  is missed. Never gate the render on `openRows` instead: it is unbounded, never pruned, and
+  would resurrect the C1 freeze on the tab the badge counts.
 
 - **The hooks runtime is a SECOND OS process on the same db — and it still goes through
   `store.ts`.** `src/hook.ts` (+ the `src/hook-cli.ts` entry) is spawned by Claude Code, not

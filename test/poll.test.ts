@@ -8,6 +8,9 @@ import {
   pendingCount,
   applyListUpdate,
   reconcileOpenRow,
+  pressHeld,
+  shouldDeferRender,
+  PRESS_GRACE_MS,
 } from '../public/poll.js'
 
 describe('suspendReason', () => {
@@ -96,5 +99,83 @@ describe('reconcileOpenRow', () => {
   it('is a no-op when nothing is open', () => {
     expect(reconcileOpenRow(null, ['i1'])).toBeNull()
     expect(reconcileOpenRow(undefined, undefined)).toBeNull()
+  })
+})
+
+// ── issue #38 / D2: the press guard ──────────────────────────────────────────
+// The measured failure is NOT "the panel was open". It is that the 3s rebuild
+// landed BETWEEN pointerdown and pointerup, so the press target was detached and
+// Chrome had no common ancestor to fire `click` on — no click event at all, on
+// any surface (rail pills, tabs, Answer, Send, ★, the pager). Real-Chrome CDP
+// measured 1 lost click in 24 at human hold times (≈ hold / 3000ms).
+//
+// So the gate is on the PRESS, not on hover, focus, or expansion. Two properties
+// are load-bearing and both are pinned below:
+//
+//  1. It CANNOT STRAND. `pressHeld` is a timestamp comparison, not a flag — even
+//     if every release event is missed (button let go outside the window, no
+//     pointercancel) it self-heals within PRESS_GRACE_MS. That is the
+//     `reconcileOpenRow` lesson ("one wasted click instead of a frozen viewer")
+//     applied at the design level instead of patched afterwards. A press held
+//     longer than the grace degrades to today's behaviour; never worse.
+//  2. It is NOT A PAUSE, so it must never reach suspendReason()/suspendHint().
+//     A bare press loses nothing (values and focus survive the rebuild; clicks
+//     now do too), so printing "paused — updating when you're done" for it would
+//     be a NEW lie in the hint. Keeping `pressedAt` out of the suspend vocabulary
+//     is what makes the hint automatically truthful, and it is pinned here rather
+//     than left to discipline.
+describe('pressHeld (#38 · D2)', () => {
+  const t = 1_000_000
+
+  it('is false when no press is down', () => {
+    expect(pressHeld(null, t)).toBe(false)
+    expect(pressHeld(undefined, t)).toBe(false)
+  })
+
+  it('is true from the instant of the press', () => {
+    expect(pressHeld(t, t)).toBe(true)
+  })
+
+  it('holds for the whole grace window and not one ms longer — it cannot strand', () => {
+    expect(PRESS_GRACE_MS).toBe(1000)
+    expect(pressHeld(t - (PRESS_GRACE_MS - 1), t)).toBe(true)
+    expect(pressHeld(t - PRESS_GRACE_MS, t)).toBe(false)
+    expect(pressHeld(t - 60_000, t), 'a press whose release was never seen must expire on its own').toBe(false)
+  })
+})
+
+describe('shouldDeferRender (#38 · D2)', () => {
+  const t = 1_000_000
+  const idle = { expanded: [], drafts: {} }
+
+  it('defers for a held press even though nothing is suspended', () => {
+    expect(shouldDeferRender({ ...idle, pressedAt: t - 40 }, t)).toBe(true)
+  })
+
+  it('stops deferring once the grace has run out', () => {
+    expect(shouldDeferRender({ ...idle, pressedAt: t - PRESS_GRACE_MS }, t)).toBe(false)
+  })
+
+  it('still defers for every existing suspend reason, press or no press', () => {
+    expect(shouldDeferRender({ expanded: ['i1'], drafts: {}, pressedAt: null }, t)).toBe(true)
+    expect(shouldDeferRender({ expanded: [], drafts: { 'i1:answer': 'ship it' }, pressedAt: null }, t)).toBe(true)
+  })
+
+  it('is idle when nothing is expanded, nothing typed and no button is down', () => {
+    expect(shouldDeferRender({ ...idle, pressedAt: null }, t)).toBe(false)
+    expect(shouldDeferRender(idle, t), 'a state that never heard of presses still works').toBe(false)
+  })
+})
+
+describe('a press is not a pause — the hint vocabulary never learns about it', () => {
+  const t = 1_000_000
+
+  it('suspendReason ignores pressedAt entirely', () => {
+    expect(suspendReason({ expanded: [], drafts: {}, pressedAt: t })).toBeNull()
+    expect(shouldSuspendRender({ expanded: [], drafts: {}, pressedAt: t })).toBe(false)
+  })
+
+  it('suspendHint stays null for a bare press — nothing is being held back from the human', () => {
+    expect(suspendHint({ expanded: [], drafts: {}, pressedAt: t })).toBeNull()
   })
 })

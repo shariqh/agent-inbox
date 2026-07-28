@@ -53,7 +53,14 @@ describe('31.1 · changeAnswer paints the surface it just staged a draft into', 
   })
 
   it('renders directly after the accepted path, and only after awaiting the reload', () => {
-    expect(body).toMatch(/draftReplies\[it\.id\]\s*=[\s\S]*await load\(\)[\s\S]*forceRender\(\)/)
+    // `await load(); forceRender()` written out by hand here originally. Issue #38
+    // found the same two lines missing from EIGHT other write handlers and gave the
+    // pair a name — reloadAndPaint(), whose own shape (await load() then
+    // forceRender()) is pinned in test/shell.test.ts. Same construct, one caller
+    // instead of nine hand-copies.
+    expect(body).toMatch(/draftReplies\[it\.id\]\s*=[\s\S]*await reloadAndPaint\(\)/)
+    expect(body, 'the prefill must be written BEFORE the reload, or the frame paints the old reply')
+      .not.toMatch(/await reloadAndPaint\(\)[\s\S]*draftReplies\[it\.id\]\s*=/)
   })
 
   it('guarantees a surface exists before rendering — the star-Undo call site fires from a COLLAPSED row', () => {
@@ -62,20 +69,20 @@ describe('31.1 · changeAnswer paints the surface it just staged a draft into', 
     // open the row. setOpenRow stays the single writer of openRowId — that
     // invariant is pinned in test/card.test.ts.
     expect(body).toMatch(/setOpenRow\(it\.id\)/)
-    expect(body.indexOf('setOpenRow(it.id)')).toBeLessThan(body.indexOf('forceRender()'))
+    expect(body.indexOf('setOpenRow(it.id)')).toBeLessThan(body.indexOf('reloadAndPaint()'))
   })
 
   it('the refusal branch still returns before any render or draft write (C2 must not regress)', () => {
     const refusal = body.match(/if \(!res\.ok\) \{[\s\S]*?\n  \}/)
     expect(refusal, 'no refusal branch found').toBeTruthy()
     expect(refusal![0]).toMatch(/return/)
-    expect(refusal![0]).not.toMatch(/forceRender|setOpenRow|draftReplies\[it\.id\]\s*=/)
+    expect(refusal![0]).not.toMatch(/reloadAndPaint|forceRender|setOpenRow|draftReplies\[it\.id\]\s*=/)
   })
 
   it('the network-failure branch still returns before any render or draft write', () => {
     const netFail = body.slice(body.indexOf('res === null'), body.indexOf('if (!res.ok)'))
     expect(netFail).toMatch(/return/)
-    expect(netFail).not.toMatch(/forceRender|setOpenRow|draftReplies\[it\.id\]\s*=/)
+    expect(netFail).not.toMatch(/reloadAndPaint|forceRender|setOpenRow|draftReplies\[it\.id\]\s*=/)
   })
 
   it('forceRender clears renderDirty and repaints the pause hint, so a painted viewer stops claiming it is paused', () => {
@@ -92,9 +99,33 @@ describe('31.1 · changeAnswer paints the surface it just staged a draft into', 
     expect(topLevelFn('function renderIfIdle()')).not.toContain('forceRender')
     expect(topLevelFn('function resumeRender()')).not.toContain('forceRender')
     expect(js).not.toMatch(/setInterval\(\s*forceRender/)
-    // and the whole file has exactly one caller: changeAnswer's accepted path
-    const calls = code(js).match(/(?<!function )\bforceRender\(\)/g) ?? []
-    expect(calls.length, 'forceRender() gained a second call site — check it is user-initiated').toBe(1)
+  })
+
+  // This replaces the old "forceRender() has exactly ONE caller" count, which was
+  // standing in for an invariant it could only approximate. Issue #38 gave
+  // forceRender the callers it was always owed: every user-initiated repaint. The
+  // count is therefore meaningless now — but the property it was protecting is
+  // stronger than ever, and directly checkable.
+  //
+  // The comment above forceRender() has claimed this since the rebuild: there are
+  // exactly TWO ways into render(), the poll's (renderIfIdle, gated by §10) and the
+  // human's (forceRender, ungated, and the ONLY thing that clears renderDirty and
+  // refreshes #pauseHint). Before #38 that claim was false in both directions —
+  // seventeen handlers called render() directly, so the viewer would repaint and go
+  // on telling the human "paused — updating when you're done" over data that was
+  // already on screen.
+  it('render() has exactly two entries: the poll’s and the human’s (#38 / D3)', () => {
+    const src = code(js)
+    const enclosing = (i: number): string => {
+      const decls = [...src.slice(0, i).matchAll(/\n(?:async )?function (\w+)/g)]
+      return decls[decls.length - 1]?.[1] ?? '<module top level>'
+    }
+    // `(?<!function )` skips the declaration itself; the capital R in forceRender /
+    // resumeRender / renderIfIdle means none of those match `render()`.
+    const callers = [...src.matchAll(/(?<!function )(?<![\w.])render\(\)/g)]
+      .map((m) => enclosing(m.index!))
+    expect([...new Set(callers)].sort(),
+      'a direct render() outside these two leaves #pauseHint lying about paused data').toEqual(['forceRender', 'renderIfIdle'])
   })
 
   it('rowCardBodyEl resolves the item through freshItem() rather than the render-time closure', () => {

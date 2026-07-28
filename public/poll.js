@@ -24,6 +24,39 @@ export function suspendHint(state) {
   return shouldSuspendRender(state) ? "paused — updating when you're done" : null
 }
 
+// ── the press guard (issue #38 / D2) ─────────────────────────────────────────
+// Measured in real Chrome over CDP, not theorised: the 3s rebuild destroys and
+// recreates the node the human is pressing on, so `pointerdown` and `pointerup`
+// share no ancestor and the browser dispatches NO CLICK AT ALL — roughly
+// `hold / 3000` of every click, on every surface (rail pills, tabs, Answer, Send,
+// the ★, the pager), not merely the one that got instrumented.
+//
+// So the gate is on the PRESS, not on hover, focus or expansion: it is the press
+// interval that must not be interrupted, and it is the only interval that has to
+// be. Three properties earn it its place beside suspendReason:
+//
+//  · It is NOT a suspension, and must never be routed through suspendReason() /
+//    suspendHint(). A press is bounded by the human's own button-up — tens of ms
+//    — and loses nothing (input values are rebuilt from module state, focus is
+//    restored, and clicks now survive), so "paused — updating when you're done"
+//    would be a NEW lie rather than a repair of the old one.
+//  · It CANNOT STRAND. This is a timestamp comparison, not a flag: if the release
+//    is never seen (button let go outside the window, no pointercancel) it heals
+//    itself within PRESS_GRACE_MS. `reconcileOpenRow` below is the same lesson
+//    learned the expensive way — one wasted click, never a frozen viewer.
+//  · A press held longer than the grace degrades to today's behaviour exactly.
+//    It can never do worse than the code it replaces.
+export const PRESS_GRACE_MS = 1000
+
+export function pressHeld(pressedAt, nowMs) {
+  return pressedAt != null && nowMs - pressedAt < PRESS_GRACE_MS
+}
+
+// What the 3s poll may do RIGHT NOW: the §10 suspension, plus the press interval.
+export function shouldDeferRender(state, nowMs) {
+  return pressHeld(state?.pressedAt ?? null, nowMs) || shouldSuspendRender(state)
+}
+
 // Sort order pins per render session: ids already on screen keep their relative
 // order however the server re-sorts them; genuinely new ids append at the foot.
 export function pinOrder(current, incoming) {

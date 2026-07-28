@@ -9,7 +9,7 @@ import {
 } from '/attention.js'
 import { DEFAULT_TAB, TAB_IDS, tabCounts } from '/tabs.js'
 import { projectColor } from '/colors.js'
-import { shouldSuspendRender, suspendHint, pinOrder, applyListUpdate, reconcileOpenRow } from '/poll.js'
+import { shouldDeferRender, suspendHint, pinOrder, applyListUpdate, reconcileOpenRow } from '/poll.js'
 import { createStagedSend } from '/star.js'
 import {
   ageChip, agentCounts, needsYouEntries, relMs, repliedEntries, rowModel, rowStarOption,
@@ -94,12 +94,33 @@ let renderDirty = false // fresh data arrived while suspended
 let listHover = false   // pointer is over the Needs-you list
 let pinnedIds = []      // sort order pinned for this render session
 let stagedIds = null    // list membership waiting for mouse-leave
+let pressedAt = null    // pointerdown → pointerup, hard-bounded by PRESS_GRACE_MS (#38)
 
+// What SUSPENDS the poll — deliberately not the same set as what DEFERS it.
+// `pressedAt` is missing on purpose and must stay missing: showPauseHint() reads
+// this, and a held button is not a pause (see initPressGuard).
 function suspendState() {
   return {
     expanded: openRowId ? [openRowId] : [],
     drafts: { ...draftReplies, ...draftReplyContexts, ...rowDrafts },
   }
+}
+
+// issue #38 (D2). Measured in real Chrome: the 3s rebuild detaches the node the
+// human is pressing on, so pointerdown and pointerup share no ancestor and the
+// browser dispatches NO click at all — ~1 in 24 at human hold times, on every
+// surface. Defer the rebuild for the length of the press and the click lands.
+//
+// Capture phase, on window, so nothing can stop it before we see it. No resume()
+// on release, on purpose: Chrome dispatches pointerup → mouseup → click, so
+// rendering from the release handler would rebuild the DOM before `click` and eat
+// the very click this exists to protect. The deferred frame lands on the app's own
+// next tick (≤3s), which is the cadence the human already sees.
+function initPressGuard() {
+  window.addEventListener('pointerdown', () => { pressedAt = Date.now() }, true)
+  const release = () => { pressedAt = null }
+  window.addEventListener('pointerup', release, true)
+  window.addEventListener('pointercancel', release, true)
 }
 
 // #pauseHint is emitted by the shell (Task 6); this is the only writer
@@ -113,9 +134,9 @@ function showPauseHint() {
 
 // the poll's ONLY entry into render()
 function renderIfIdle() {
-  if (shouldSuspendRender(suspendState())) {
+  if (shouldDeferRender({ ...suspendState(), pressedAt }, Date.now())) {
     renderDirty = true
-    showPauseHint()
+    showPauseHint() // reads suspendState() only — a bare press prints nothing (#38)
     return
   }
   renderDirty = false
@@ -130,14 +151,24 @@ function resumeRender() {
   else showPauseHint()
 }
 
-// USER-INITIATED repaints only, and deliberately OUTSIDE the §10 gate.
+// USER-INITIATED repaints only, and deliberately OUTSIDE the §10 gate. Together
+// with renderIfIdle these are the ONLY two entries into render(): the poll's and
+// the human's.
 //
 // The gate protects the human from the 3s POLL rebuilding the DOM under the
 // cursor. It must not also swallow the frame the human's own click just asked
-// for — and there is one action that can ONLY be served by bypassing it:
-// changeAnswer's accepted path stages a draft, and a draft is itself a suspend
-// reason, so load()'s renderIfIdle() is GUARANTEED to skip the render that would
-// have built the input that draft lives in (issue #31.1).
+// for — and the gate is GLOBAL, so it will: suspendState() reports ANY expanded
+// card and EVERY draft anywhere in the app, so one unrelated question card left
+// open, or one half-typed note on another board, silenced the human's own Send /
+// Resolve / Archive indefinitely (issue #38). It also cannot serve
+// changeAnswer's accepted path at all: that stages a draft, and a draft is itself
+// a suspend reason, so renderIfIdle() is GUARANTEED to skip the render that would
+// build the input the draft lives in (issue #31.1).
+//
+// Clearing renderDirty here is not bookkeeping: load() updates `lastData` on every
+// tick whether or not it renders, so the frame we just painted IS the newest data
+// and #pauseHint must stop claiming otherwise. A direct render() that skips this
+// leaves the hint lying in the other direction (#38 / D3).
 //
 // renderIfIdle() stays the poll's only entry. If this is ever wired into load(),
 // the 3s interval or renderIfIdle itself, the gate is gone.
@@ -145,9 +176,31 @@ function resumeRender() {
 // strip's render function, and test/shell.test.ts + test/notes.test.ts both
 // forbid that identifier as a substring of this file. Hence `forceRender`.
 function forceRender() {
+  // nine-plus callers now, and a click can beat the first successful load(): a
+  // render with no data throws out of applyBadge, OUTSIDE load()'s catch, as an
+  // unhandled rejection with no status line.
+  if (!lastData) return
   renderDirty = false
   render()
   showPauseHint()
+}
+
+// The human's own write ends HERE. The POLL still ends in load()/renderIfIdle().
+//
+// That one distinction is the whole of issue #38: eight handlers ended a
+// successful POST with a bare `load()`, which asks the §10 gate for permission to
+// show the human the result of their own click — and the gate, being global,
+// refused whenever anything anywhere was expanded or half-typed. The write landed
+// (POST 200, row in the DB) and the viewer sat on the stale frame across every
+// subsequent poll tick. Awaits load() first so the frame paints the SERVER's
+// state, not the pre-write snapshot.
+//
+// The invariant, in one line: `load()` is the poll's, `reloadAndPaint()` is the
+// human's. Pinned as source text in test/shell.test.ts, because no runtime
+// assertion can see which of the two a handler picked.
+async function reloadAndPaint() {
+  await load()
+  forceRender()
 }
 
 // the single writer of openRowId — Tasks 11/16/17 call this, never assign.
@@ -179,7 +232,7 @@ function initListStaging() {
     if (stagedIds) {
       pinnedIds = pinOrder(pinnedIds, stagedIds)
       stagedIds = null
-      render()
+      forceRender()
     } else {
       resumeRender()
     }
@@ -339,7 +392,7 @@ function focusItem(id) {
   selectTab(board ? 'boards' : tabForItem(item)) // Task 8: sets activeTab AND shows the panel
   const hash = focusHashFor(id)
   if (location.hash !== hash) location.hash = hash // survives reload
-  render()
+  forceRender()
   // fix round 2 (C1): this used to call setOpenRow(id) for EVERY target. The
   // accordion is a Needs-you affordance — `toggleRow` is the only thing that
   // clears openRowId and it is reachable only from a rendered `.nrow`. A board
@@ -350,7 +403,7 @@ function focusItem(id) {
   // `collapse` intent no-op'd against a `.nrow` that never existed. Claim the
   // accordion only once the target has actually landed in the list — render()
   // above put it there — then render again so the card body mounts under it.
-  if (needsYouRowEl(id)) { setOpenRow(id); render() }
+  if (needsYouRowEl(id)) { setOpenRow(id); forceRender() }
   requestAnimationFrame(() => {
     const el = document.querySelector(`[data-card-id="${CSS.escape(id)}"]`)
     if (!el) return
@@ -594,7 +647,16 @@ function triageRemoveCurrent() {
 }
 
 // rows the user expanded in the matrix (context + answer panel), by row id —
-// the board DOM is rebuilt every poll, so open state lives out here
+// the board DOM is rebuilt every poll, so open state lives out here.
+//
+// It is NEVER pruned, and it must never be fed to the §10 gate (issue #38). A
+// stale id here renders nothing and costs nothing; a stale id in suspendState()
+// freezes the whole viewer forever, which is exactly the C1 bug reconcileOpenRow
+// exists to close. Unlike openRowId this is an unbounded, multi-open Set with no
+// single-open discipline and no reconciliation, strandable by board pagination,
+// the archived fold, the rail filter, hideCompleted and any agent board_upsert
+// that drops a row — so it is the LAST state in the app that should gate a
+// render. What the boards panel actually needed is the press guard (initPressGuard).
 const openRows = new Set()
 
 // The ONE write path for a row annotation — single-line input, no window.prompt.
@@ -608,6 +670,13 @@ function rowAnswerEl(b, r, onSaved) {
   input.value = rowDrafts[r.id] ?? ''
   input.addEventListener('input', () => { rowDrafts[r.id] = input.value; resumeRender() })
   input.addEventListener('focus', () => { rowFocusId = r.id })
+  // The focus token is STICKY — set on focus, cleared only by a successful send —
+  // and every rebuild re-focuses from it. That already stole the caret back on any
+  // unsuspended poll tick; issue #38's forced frames make it reachable while
+  // suspended too (Send on one card would yank the cursor into a board-row input
+  // the human touched minutes ago). Release it when the human leaves an EMPTY box:
+  // a real draft still gets its cursor back, which is what the token is for.
+  input.addEventListener('blur', () => { if (rowFocusId === r.id && !input.value) rowFocusId = null })
   const save = async () => {
     const typed = input.value
     if (!typed.trim()) return
@@ -627,7 +696,10 @@ function rowAnswerEl(b, r, onSaved) {
     // the row stays blocked until the agent picks the note up — the human's part
     // is done, so the caller decides what to drop
     onSaved?.()
-    load()
+    // issue #38, the reported surface: a bare load() here was gated, and the gate
+    // is global — one unrelated card expanded anywhere and this write showed the
+    // human nothing at all, box still full, ready to send the same string twice.
+    await reloadAndPaint()
   }
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') save() })
   row.appendChild(input)
@@ -884,7 +956,7 @@ function initResponsive() {
     const next = mq.matches ? 'narrow' : 'wide'
     if (next === layout) return
     layout = next
-    if (lastData) render() // the rail's labels change shape, so rebuild it
+    if (lastData) forceRender() // the rail's labels change shape, so rebuild it
   }
   mq.addEventListener('change', apply)
   apply()
@@ -975,7 +1047,7 @@ function railRowEl(e, { withFilter, closed = false }) {
     if (projectFilter) localStorage.setItem(PROJECT_KEY, projectFilter)
     else localStorage.removeItem(PROJECT_KEY)
     resetPaging()
-    render()
+    forceRender()
   })
   // the keyboard half of close/reopen, since the button itself is out of the tab
   // order. `ev` is the keyboard event; `e` is the rail entry — do not merge them.
@@ -1131,7 +1203,7 @@ function initAgentSelect() {
     if (agentFilter) localStorage.setItem(FILTER_KEY, agentFilter)
     else localStorage.removeItem(FILTER_KEY)
     resetPaging()
-    render()
+    forceRender()
   })
 }
 
@@ -1263,13 +1335,13 @@ function stageDismiss(id) {
   if (stagedDismiss.has(id)) return
   stagedDismiss.add(id)
   dismissStage.stage(`dismiss:${id}`, { id })
-  render()
+  forceRender()
 }
 
 function undoDismiss(id) {
   if (!dismissStage.undo(`dismiss:${id}`)) return false
   stagedDismiss.delete(id)
-  render()
+  forceRender()
   return true
 }
 
@@ -1492,7 +1564,7 @@ function needsRowEl(m, entry, nowMs) {
     label.className = 'sent-label'
     label.textContent = `${stagedLabel(staged)} — `
     const undo = btn('Undo', () => {
-      if (starStage.undo(`star:${m.id}`)) { stagedStars.delete(m.id); render(); return }
+      if (starStage.undo(`star:${m.id}`)) { stagedStars.delete(m.id); forceRender(); return }
       const fresh = freshItem(m.id) ?? entry.item
       const refusal = undoRefusal(fresh, Date.now())
       if (refusal) { label.textContent = `${refusal} ` } else changeAnswer(fresh, label)
@@ -1503,7 +1575,7 @@ function needsRowEl(m, entry, nowMs) {
     const star = btn('★', () => {
       stagedStars.set(m.id, { label: opt.label })
       starStage.stage(`star:${m.id}`, { id: m.id, label: opt.label, context: draftReplyContexts[m.id] ?? '' })
-      render()
+      forceRender()
     })
     star.className = 'star-btn'
     star.setAttribute('aria-label', ariaAnswerLabel(opt) ?? 'Answer')
@@ -1651,7 +1723,7 @@ function boardsHeader() {
   const t = btn('hide completed rows', () => {
     hideCompleted = !hideCompleted
     localStorage.setItem(HIDE_DONE_KEY, String(hideCompleted))
-    render()
+    forceRender()
   })
   t.className = `header-toggle${hideCompleted ? ' active' : ''}`
   bar.appendChild(t)
@@ -1713,7 +1785,7 @@ function boardEl(b, archived = false, lingering = false) {
     e.preventDefault()
     e.stopPropagation() // don't toggle the surrounding <details>
     showDoneBoards.has(b.id) ? showDoneBoards.delete(b.id) : showDoneBoards.add(b.id)
-    render()
+    forceRender()
   })
   // issue #30 — deliberately OUTSIDE the <summary>: a summary's activation
   // behaviour toggles its parent <details>, so a chip inside .board-meta would
@@ -1742,7 +1814,7 @@ function boardEl(b, archived = false, lingering = false) {
     actionTd.className = 'row-action'
     const toggle = () => {
       openRows.has(r.id) ? openRows.delete(r.id) : openRows.add(r.id)
-      render()
+      forceRender()
     }
     if (needsAnswer && !archived) {
       const a = btn('Answer', toggle)
@@ -1773,7 +1845,7 @@ function boardEl(b, archived = false, lingering = false) {
     actions.appendChild(btn('Un-archive', async () => {
       const res = await postJSON(`/api/boards/${b.id}/unarchive`)
       if (res === null) return // network failure — postJSON already signaled it
-      load()
+      await reloadAndPaint() // #38 — the human's own click gets its frame
     }))
   } else {
     actions.appendChild(archiveBtn(b.id))
@@ -1794,7 +1866,7 @@ function archiveBtn(boardId) {
       sessionActiveBoards.delete(boardId)
       const res = await postJSON(`/api/boards/${boardId}/archive`)
       if (res === null) return // network failure — postJSON already signaled it
-      load()
+      await reloadAndPaint() // #38 — the human's own click gets its frame
       return
     }
     el.classList.add('confirm')
@@ -1837,7 +1909,9 @@ async function sendReply(id, text, context = '') {
   delete draftReplyContexts[id]
   if (draftFocusKey?.startsWith(`${id}:`)) draftFocusKey = null
   showWriteError(id, '')
-  load()
+  // issue #38, the reported surface. Also the entry for the option pills, the ★'s
+  // staged send, Enter in the input and the triage card — all of them were silent.
+  await reloadAndPaint()
 }
 
 // the answer surface on an unanswered question: option pills (recommended
@@ -1867,7 +1941,7 @@ function answerEl(it) {
   if (opts.some((o) => o.detail)) {
     const cmp = btn(openCompares.has(it.id) ? 'Hide compare' : 'Compare', () => {
       openCompares.has(it.id) ? openCompares.delete(it.id) : openCompares.add(it.id)
-      render()
+      forceRender()
     })
     cmp.className = 'compare-toggle'
     row.appendChild(cmp)
@@ -1878,6 +1952,7 @@ function answerEl(it) {
   input.value = draftReplies[it.id] ?? ''
   input.addEventListener('input', () => { draftReplies[it.id] = input.value; resumeRender() })
   input.addEventListener('focus', () => { draftFocusKey = `${it.id}:answer` })
+  input.addEventListener('blur', () => { if (draftFocusKey === `${it.id}:answer` && !input.value) draftFocusKey = null })
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendReply(it.id, input.value, ctxInput.value) })
   row.appendChild(input)
   row.appendChild(btn('Send', () => sendReply(it.id, input.value, ctxInput.value)))
@@ -1891,6 +1966,7 @@ function answerEl(it) {
   ctxInput.value = draftReplyContexts[it.id] ?? ''
   ctxInput.addEventListener('input', () => { draftReplyContexts[it.id] = ctxInput.value; resumeRender() })
   ctxInput.addEventListener('focus', () => { draftFocusKey = `${it.id}:context` })
+  ctxInput.addEventListener('blur', () => { if (draftFocusKey === `${it.id}:context` && !ctxInput.value) draftFocusKey = null })
   ctxRow.appendChild(ctxInput)
   wrap.appendChild(ctxRow)
   if (draftFocusKey === `${it.id}:answer`) requestAnimationFrame(() => {
@@ -1947,7 +2023,10 @@ function itemCardEl(it, { done = false, nowMs = Date.now(), liveness = 'parked',
       if (text == null) return
       const res = await postJSON(`/api/items/${it.id}/annotate`, { text })
       if (res === null) return // network failure — postJSON already signaled it
-      load()
+      // #38: this button only exists INSIDE the expanded card, so openRowId is
+      // set by construction — a bare load() here could never paint. Guaranteed
+      // self-silencing, not merely unlucky.
+      await reloadAndPaint()
     }))
     el.appendChild(actions)
   }
@@ -1990,12 +2069,13 @@ async function changeAnswer(it, msgEl) {
   //     single writer of openRowId (Task 9).
   //  2. a render has to happen. `load()`'s renderIfIdle() cannot do it: the
   //     draft written two lines up IS a suspend reason, so the gate is certain
-  //     to skip. The human's own click is what asks for this frame, so it goes
-  //     through forceRender(), outside the gate, and awaits load() first so the
-  //     frame paints the server's post-blank-out state rather than the old reply.
+  //     to skip. The human's own click is what asks for this frame — which is
+  //     exactly what reloadAndPaint() is (#38 generalised this call site's fix to
+  //     every other human-initiated write): reload first so the frame paints the
+  //     server's post-blank-out state rather than the old reply, then paint
+  //     unconditionally, outside the gate.
   setOpenRow(it.id)
-  await load()
-  forceRender()
+  await reloadAndPaint()
 }
 
 // notes / done keep a collapsible card; the body is the same component
@@ -2211,15 +2291,22 @@ function btn(label, onClick) {
 // the pager at the foot of a capped section — reveals PAGE[section] more cards
 function moreButton(section, remaining) {
   const n = Math.min(PAGE[section], remaining)
-  const b = btn(`Show ${n} more (${remaining} hidden)`, () => { shown[section] += PAGE[section]; render() })
+  const b = btn(`Show ${n} more (${remaining} hidden)`, () => { shown[section] += PAGE[section]; forceRender() })
   b.className = 'show-more'
   return b
 }
 
+// Resolve / Dismiss. The HIGHEST-severity #38 site: both buttons live inside the
+// expanded card, so `openRowId` is set by construction and the bare load() here
+// could NEVER paint. Worse, it stranded openRowId on a row that no longer exists —
+// render() is what reconciles that (reconcileOpenRow), and the render never ran —
+// so the poll stayed suspended, the row stayed on screen and the badge kept
+// counting a resolved item. A badge that outlives its subject is a badge nobody
+// trusts (tenet 2). Also reached by the 5s staged dismiss.
 async function act(id, action) {
   const res = await postJSON(`/api/items/${id}/${action}`)
   if (res === null) return // network failure — postJSON already signaled it
-  load()
+  await reloadAndPaint()
 }
 
 // ── close / reopen a project (issue #32) ────────────────────────────────────
@@ -2239,26 +2326,28 @@ async function closeProjectAction(name) {
   closedFoldOpen = true // show the human where the tab went
   if (projectFilter === name) { projectFilter = null; localStorage.removeItem(PROJECT_KEY) }
   resetPaging()
-  render()
+  forceRender()
   const res = await postJSON('/api/projects/close', { project: name })
   if (res === null) { // postJSON already surfaced the reason — just put the tab back
     lastData.closed = (lastData.closed ?? []).filter((p) => p !== name)
-    render()
+    forceRender()
     return
   }
-  load()
+  // low stakes here — the optimistic frame above already showed the right thing —
+  // but there is ONE rule for a human-initiated write, not two (#38).
+  await reloadAndPaint()
 }
 
 async function reopenProjectAction(name) {
   lastData.closed = (lastData.closed ?? []).filter((p) => p !== name)
-  render()
+  forceRender()
   const res = await postJSON('/api/projects/reopen', { project: name })
   if (res === null) {
     if (!(lastData.closed ?? []).includes(name)) lastData.closed = [...(lastData.closed ?? []), name]
-    render()
+    forceRender()
     return
   }
-  load()
+  await reloadAndPaint()
 }
 
 // fix round 1: the query persists across tab and project changes for free —
@@ -2273,7 +2362,7 @@ function initSearch() {
   let t = null
   input.addEventListener('input', () => {
     clearTimeout(t)
-    t = setTimeout(() => { searchQuery = input.value; resetPaging(); render() }, 120)
+    t = setTimeout(() => { searchQuery = input.value; resetPaging(); forceRender() }, 120)
   })
 }
 
@@ -2325,8 +2414,8 @@ async function renderSetup() {
 // slot named here and never rewrite this block:
 //   initTabs → initTriage → initSearch → initResponsive (Task 18) →
 //   initKeys (Task 17) → initFocusHash (Task 17) → initStagedFlush →
-//   initListStaging (Task 9) → initAgentSelect → initGear → initLiveBar →
-//   renderSetup → load → setInterval(load, 3000)
+//   initListStaging (Task 9) → initPressGuard (#38) → initAgentSelect →
+//   initGear → initLiveBar → renderSetup → load → setInterval(load, 3000)
 initTabs()
 initTriage()
 initSearch()
@@ -2335,9 +2424,13 @@ initKeys()
 initFocusHash()
 initStagedFlush()
 initListStaging()
+initPressGuard()
 initAgentSelect()
 initGear()
 initLiveBar()
 renderSetup()
+// The LAST two lines that may ever call the gated load() directly: the boot paint
+// and the poll itself. Every other caller is a human action and goes through
+// reloadAndPaint() — see the block above forceRender(), and issue #38.
 load()
 setInterval(load, 3000)

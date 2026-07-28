@@ -355,3 +355,67 @@ describe('closed-project css (issue #32)', () => {
     expect(css.indexOf('#rail:has(.rail-filter) .rail-close')).toBeGreaterThan(media)
   })
 })
+
+// ── issue #38: `load()` is the poll's, `reloadAndPaint()` is the human's ──────
+// The whole of #38 is one confusion between those two. `load()` repaints through
+// `renderIfIdle()` — the §10 gate — and THE GATE IS GLOBAL: one unrelated card
+// left expanded anywhere, or one half-typed draft on another board, and the
+// human's own Send/Resolve/Archive gets NO FRAME. The write landed (POST 200, row
+// in the DB) and the viewer showed the old state indefinitely.
+//
+// So there are exactly two shapes, and no third:
+//   `load()`            — the poll's. Fetch, then ASK the gate. Two callers only:
+//                         the boot call and setInterval.
+//   `reloadAndPaint()`  — the human's. Fetch, then paint unconditionally.
+//
+// These are SOURCE pins because no runtime assertion can see them: a test can
+// prove a click repaints, but only the text can prove the 3s interval was not
+// "fixed" by wiring forceRender into load() — which would delete the gate and
+// pass every behavioural test in test/dom/silent-send.test.ts. The
+// anti-regression test at the foot of that file is the behavioural half; keep
+// both, they fail for different mistakes.
+describe('#38 · the poll keeps its gate, the human bypasses it', () => {
+  it('the 3s interval still calls the GATED load(), not a painting variant', () => {
+    const line = js.split('\n').map((l) => l.trim()).find((l) => l.startsWith('setInterval('))
+    expect(line, 'no setInterval( statement found in app.js').toBeTruthy()
+    expect(line).toBe('setInterval(load, 3000)')
+    expect(line, 'the poll must never force a frame — that IS the gate').not.toMatch(/reloadAndPaint|forceRender/)
+  })
+
+  it('load() ends in renderIfIdle() and never forces a frame of its own', () => {
+    const m = js.match(/async function load\(\)[\s\S]*?\n\}/)
+    expect(m, 'load() not found').toBeTruthy()
+    const body = m![0]
+    expect(body).toContain('renderIfIdle()')
+    expect(body, 'forcing a frame inside load() deletes the §10 gate for the poll too').not.toContain('forceRender')
+  })
+
+  it('reloadAndPaint() awaits load() first, so the frame paints the SERVER state', () => {
+    const m = js.match(/async function reloadAndPaint\(\)[\s\S]*?\n\}/)
+    expect(m, 'reloadAndPaint() not found').toBeTruthy()
+    expect(m![0]).toMatch(/await load\(\)[\s\S]*forceRender\(\)/)
+  })
+
+  it('every write a click initiates goes through it — one bare load() survives, the boot call', () => {
+    // A bare `load()` as the last statement of a successful POST handler is
+    // precisely the #38 defect, and it hid in EIGHT call sites (row annotate,
+    // reply, resolve/dismiss, item note, archive, un-archive, close/reopen
+    // project). setInterval passes `load` by reference, so it is not a call
+    // expression and never matches here.
+    const lines = js.split('\n').map((l) => l.trim())
+    const bare = lines
+      .map((line, i) => ({ line, n: i + 1 }))
+      .filter(({ line }) => /^load\(\);?$/.test(line))
+    expect(bare.length, `un-painted load() calls survive: ${JSON.stringify(bare)}`).toBe(1)
+    // …and it is the boot call: the very next statement is the poll itself.
+    expect(lines[bare[0]!.n]).toBe('setInterval(load, 3000)')
+
+    // The awaited form belongs to reloadAndPaint and nowhere else — an `await
+    // load()` anywhere else is the same defect wearing a keyword.
+    const awaited = lines
+      .map((line, i) => ({ line, n: i + 1 }))
+      .filter(({ line }) => /^await\s+load\(\);?$/.test(line))
+    expect(awaited.length, `stray await load(): ${JSON.stringify(awaited)}`).toBe(1)
+    expect(lines[awaited[0]!.n - 2]).toBe('async function reloadAndPaint() {')
+  })
+})

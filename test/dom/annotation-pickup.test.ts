@@ -68,10 +68,13 @@ describe('#36 · the human can clear a blocked row without any agent round-trip'
     type(answerInput(rowId), 'merge it')
     click(sendButton(rowId))
     await settle()
-    // …then collapse it. §10 freezes re-renders while a card is expanded, so the
-    // repaint lands when the human is done reading, not under their cursor.
-    click(row(rowId))
-    await settle()
+
+    // NO collapse. This test used to end with one, explained as "§10 freezes
+    // re-renders while a card is expanded, so the repaint lands when the human is
+    // done reading" — which documented issue #38 as intent. §10 governs the 3s
+    // POLL; it never governed the frame the human's own Send asked for, and while
+    // it did, this badge stayed stuck at 1 until something else happened to
+    // repaint. The badge must come down on the click.
 
     // NO agent has run. The badge must still come down.
     expect(badgeCount(), 'the only lever the viewer offers must move the badge').toBe(0)
@@ -118,7 +121,11 @@ describe('#37 · annotated-and-unpicked renders differently from annotated-and-p
     await settle()
     expect(row(rowId)?.querySelector('.nrow-card')?.textContent).toContain('waiting for agent pickup')
     expect(answerInput(rowId), 'the human can still revise an uncollected answer').not.toBeNull()
-    click(row(rowId)) // collapse — §10 suspends re-renders while a card is open
+    // The one collapse kept on purpose (#38): the human is done reading, so they
+    // shut the card — and THAT is what hands the suspended poll its pending data
+    // back. §10 still holds the 3s rebuild while a card is open; what it no longer
+    // does is hold the frame a human action asked for.
+    click(row(rowId))
     await settle()
 
     // an agent finally polls pending() — modelled by the exact store call that
@@ -161,9 +168,8 @@ describe('#37 · annotated-and-unpicked renders differently from annotated-and-p
     type(answerInput(rowId), 'actually, merge it')
     click(sendButton(rowId))
     await settle()
-    click(row(rowId)) // collapse — §10 suspends re-renders while a card is open
-    await settle()
-
+    // no collapse (#38): re-answering must relabel the row on the spot, or the
+    // human cannot tell their revision from the delivered answer it replaced
     expect(chipText(rowId)).toBe('awaiting pickup')
   })
 })

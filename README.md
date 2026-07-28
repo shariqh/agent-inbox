@@ -106,6 +106,8 @@ src/
   group.ts         pure grouping (Needs-you / Notes / Done)
   viewer.ts        Hono API (items, boards, live activity, source links, close/reopen)
   prstate.ts       VIEWER-PROCESS-ONLY gh fetcher for live PR state (#30) — never imported by mcp.ts
+  stamp.ts         VIEWER-PROCESS-ONLY build stamp (#40) — which build is running, and
+                   whether the checkout it was packaged from has moved on
   viewer-server.ts node entry — serves API + public/ on localhost
   hook.ts          Claude Code hooks runtime (#10 backstop + #21 pickup nudges)
   hook-cli.ts      hook entry — one subcommand per event; fail-open, exit-code owner

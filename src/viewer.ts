@@ -5,12 +5,22 @@ import type Database from 'better-sqlite3'
 import { listItems, resolveItem, dismissItem, annotateItem, replyItem, listBoards, archiveBoard, unarchiveBoard, annotateBoardRow, listActivity, listSourceLinks, defaultDbPath, closeProject, reopenProject, closedProjects } from './store.js'
 import { groupItems } from './group.js'
 import { hooksSettingsBlock } from './hook.js'
+import { buildStamp, readBakedInfo } from './stamp.js'
+import type { BakedInfo, BuildStamp } from './stamp.js'
+
+/** Seams, both test-only today — the production path passes neither. */
+export interface ViewerOpts {
+  /** where the packaged app's setup-info.json lives (a checkout has none) */
+  setupInfoPath?: string
+  /** the #40 build-stamp probe, injected so a test never shells out to git */
+  stamp?: (baked: BakedInfo | null, cwd: string) => Promise<BuildStamp>
+}
 
 // Registration info for hooking new agents up to the MCP server. In a repo
 // checkout the paths come from the running process; the packaged app instead
 // ships a setup-info.json captured at package time (its own bundle cannot host
 // the MCP server — the native module there is built for Electron, not Node).
-function setupInfo(): { claudeCommand: string; copilotConfig: string; snippet: string; dbPath: string; note: string; hooksSettings: string; hooksNote: string } {
+function setupInfo(baked: BakedInfo | null): { claudeCommand: string; copilotConfig: string; snippet: string; dbPath: string; note: string; hooksSettings: string; hooksNote: string } {
   let nodeBin = process.execPath
   let root = process.cwd()
   let note = ''
@@ -18,11 +28,11 @@ function setupInfo(): { claudeCommand: string; copilotConfig: string; snippet: s
   // better-sqlite3 (it is holding the db open); in the packaged app the baked
   // path is whatever ran the packaging script and is NOT proven.
   let nodeProven = true
-  const baked = resolve(process.cwd(), 'setup-info.json')
-  if (existsSync(baked)) {
-    const info = JSON.parse(readFileSync(baked, 'utf8')) as { repoRoot: string; nodeBin: string }
-    root = info.repoRoot
-    nodeBin = info.nodeBin
+  // Both fields or neither: a half-written file would otherwise put `undefined`
+  // into the very command the human is told to paste.
+  if (baked?.repoRoot && baked.nodeBin) {
+    root = baked.repoRoot
+    nodeBin = baked.nodeBin
     nodeProven = false
     note = `Paths were captured when this app was packaged and assume the agent-inbox repo still lives at ${root} (agents run the MCP server from the repo, not from this app).`
   }
@@ -58,8 +68,10 @@ function validProject(body: unknown): string | null {
   return typeof project === 'string' && project.trim() ? project : null
 }
 
-export function createViewer(db: Database.Database): Hono {
+export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono {
   const app = new Hono()
+  const bakedPath = opts.setupInfoPath ?? resolve(process.cwd(), 'setup-info.json')
+  const stamp = opts.stamp ?? buildStamp
 
   // boot id lets a long-lived tab detect a server restart (= likely deploy)
   // and reload itself instead of polling forever with stale frontend code
@@ -71,7 +83,24 @@ export function createViewer(db: Database.Database): Hono {
 
   app.get('/api/items', (c) => c.json(groupItems(listItems(db))))
 
-  app.get('/api/setup', (c) => c.json(setupInfo()))
+  // The build stamp (#40) rides along here rather than on its own route: the
+  // Setup panel is the one surface that asks "which build is this", and it is
+  // fetched ONCE per page load, never on the 3s poll. The git probe behind it is
+  // memoized for STAMP_TTL_MS, so a reload storm costs no extra processes.
+  app.get('/api/setup', async (c) => {
+    const baked = readBakedInfo(bakedPath)
+    // The stamp is a nicety; the registration commands are the reason this panel
+    // exists. A probe that throws must cost the human the ONE line, never the
+    // whole panel — which is what a 500 here would do (renderSetup's catch
+    // leaves the section empty).
+    let build: BuildStamp | null = null
+    try {
+      build = await stamp(baked, process.cwd())
+    } catch {
+      build = null
+    }
+    return c.json({ ...setupInfo(baked), build })
+  })
 
   app.get('/api/activity', (c) => c.json(listActivity(db)))
 

@@ -25,6 +25,7 @@ import { liveEntity, tabMatchCounts, projectMatchCounts, elsewhereLabel } from '
 import { titleWithBadge, focusHashFor, parseFocusHash } from '/badge.js'
 import { layoutMode, railLabel, NARROW_MAX } from '/layout.js'
 import { indexLinks, sourceChipsHtml, sourceBlockHtml } from '/source.js'
+import { buildSummary } from '/buildstamp.js'
 
 void paginateGroups // kept exported+tested (spec §15); the viewer no longer calls it
 
@@ -2387,6 +2388,23 @@ async function renderSetup() {
       wrap.appendChild(pre)
       wrap.appendChild(copy)
       host.appendChild(wrap)
+    }
+    // Which build is this (issue #40) — FIRST, because it is the question a
+    // human opening this panel most often has, and before #40 it had no answer
+    // anywhere in the product. `textContent` throughout: a commit and a path
+    // read off disk are still text reaching the DOM, and never being innerHTML
+    // is a stronger guarantee than remembering to esc() them.
+    const build = buildSummary(s.build)
+    if (build) {
+      const line = document.createElement('p')
+      line.className = 'setup-hint'
+      line.textContent = build.text
+      host.appendChild(line)
+      if (build.command) {
+        const cmd = document.createElement('pre')
+        cmd.textContent = build.command
+        host.appendChild(cmd)
+      }
     }
     if (s.note) {
       const note = document.createElement('p')

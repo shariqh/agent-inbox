@@ -346,6 +346,24 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
 - **The agent-emit contract** — `docs/reporting-snippet.md`'s end-of-turn rule now tests "am I about
   to stop and wait on the human?", so recommendations and "say the word" moments get flagged
   instead of buried. Mirrored in the `flag` tool description so agents get it at the call site.
+- **Build stamp + staleness signal** *(#40)* — `scripts/write-setup-info.mjs` (called by the
+  packager, and executable in a test the way `package-app.sh` never can be) bakes `commit` +
+  `builtAt` beside the paths setup-info.json already carried; `src/stamp.ts` reads the checkout's
+  live HEAD in the VIEWER process and `/api/setup` carries the verdict; `public/buildstamp.js` turns
+  it into one line in the Setup panel. Four things are deliberate. (1) **Direction, not difference:**
+  `merge-base --is-ancestor` splits a bare SHA mismatch into `stale` (the checkout moved on —
+  repackage), `behind` (the CHECKOUT was moved back; the app is NEWER, so repackaging would
+  downgrade it and no command is offered) and `diverged`. (2) **The dev path claims nothing** — no
+  baked commit means `drift:'dev'`, which reports the live HEAD and never warns. (3) **Fail-open at
+  every step**: `readBakedInfo` swallows a corrupt file (it used to throw straight out of the
+  handler and empty the whole panel), a non-sha commit is never handed to git as argv, a missing
+  repoRoot spawns nothing, `execGit` is timeout-bounded, and the `/api/setup` handler treats a
+  throwing probe as "no stamp". (4) **It is NOT attention** — nothing reaches `public/attention.js`,
+  `countsByProject` or the dock badge; pinned in `test/stamp.test.ts` (source) and
+  `test/dom/build-stamp.test.ts` (the same fixture's badge/tabs/rows under `current` vs `stale`).
+  Cadence: the git probe is **lazy and memoized for 60s** (`STAMP_TTL_MS`) — there is no poller, and
+  `/api/setup` is fetched once per page load, not on the 3s poll. The #23 reuse path is covered for
+  free: a fresh checkout that attaches to a stale packaged server renders that server's stamp.
 
 ## Open backlog — and the seams already in place
 

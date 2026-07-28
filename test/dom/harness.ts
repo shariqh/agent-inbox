@@ -28,6 +28,7 @@ import { fileURLToPath } from 'node:url'
 import type Database from 'better-sqlite3'
 import { openDb } from '../../src/store.js'
 import { createViewer } from '../../src/viewer.js'
+import type { ViewerOpts } from '../../src/viewer.js'
 
 // NOT `new URL('../../public/x', import.meta.url)`. The rest of test/ uses that form
 // happily, but those files run in the NODE environment (ssr transform mode). A jsdom
@@ -94,6 +95,14 @@ export interface BootOptions {
    * `advanceTimersByTime*` flushes microtasks first, so the load always wins the race.
    */
   holdFetch?: boolean
+  /**
+   * Options for the real `createViewer(db, …)` behind the bridge.
+   *
+   * Only `#40`'s build stamp uses it today, and it must: the default probe SPAWNS
+   * GIT, and a real child process does not resolve inside `advanceTimersByTimeAsync`.
+   * Inject a plain object and `/api/setup` is deterministic.
+   */
+  viewer?: ViewerOpts
 }
 
 /**
@@ -102,8 +111,8 @@ export interface BootOptions {
  * The bridge is `async` on purpose: Hono types `.request()` as
  * `Response | Promise<Response>`, which is not assignable to `fetch` directly.
  */
-export function mountViewer(db: Database.Database, { holdFetch = false }: BootOptions = {}): ViewerBridge {
-  const app = createViewer(db)
+export function mountViewer(db: Database.Database, { holdFetch = false, viewer }: BootOptions = {}): ViewerBridge {
+  const app = createViewer(db, viewer)
   const posts: PostRecord[] = []
   let failStatus: number | null = null
   let release: (() => void) | null = null

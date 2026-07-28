@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
@@ -143,6 +144,84 @@ describe('viewer api', () => {
     const body = await (await createViewer(db).request('/api/items')).json()
     expect(body.needsYou[0].items[0].session).toBe('sess-1')
     expect(body.notes[0].items[0].session).toBeNull()
+  })
+})
+
+// issue #40 — "which build is this" must be answerable in one glance, and a
+// packaged bundle must say when the checkout it was built from has moved on.
+// These run END TO END: a real setup-info.json over a real temp git repo, through
+// the real /api/setup handler, with the real git subprocess doing the comparing.
+describe('GET /api/setup carries the build stamp (issue #40)', () => {
+  function tmpRepo(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'setup-repo-'))
+    execFileSync('git', ['init', '-q'], { cwd: dir })
+    execFileSync('git', ['config', 'user.email', 't@t.dev'], { cwd: dir })
+    execFileSync('git', ['config', 'user.name', 't'], { cwd: dir })
+    return dir
+  }
+  function commitIn(dir: string): string {
+    execFileSync('git', ['commit', '--allow-empty', '-q', '-m', 'x'], { cwd: dir })
+    return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim()
+  }
+  function bakedFile(body: unknown): string {
+    const p = join(mkdtempSync(join(tmpdir(), 'setup-info-')), 'setup-info.json')
+    writeFileSync(p, typeof body === 'string' ? body : JSON.stringify(body))
+    return p
+  }
+  const setup = async (path?: string): Promise<Record<string, never> & { build: { drift: string; commit: string | null; head: string | null; builtAt: string | null; repoRoot: string | null }; note: string; claudeCommand: string }> => {
+    const res = await createViewer(freshDb(), path ? { setupInfoPath: path } : {}).request('/api/setup')
+    expect(res.status).toBe(200)
+    return await res.json()
+  }
+
+  it('a checkout reports its own live HEAD and never claims staleness against itself', async () => {
+    const body = await setup(join(tmpdir(), 'no-such-setup-info-40.json'))
+
+    expect(body.build.drift).toBe('dev')
+    expect(body.build.commit).toBeNull()
+    // this repo IS a checkout, so the viewer process can read its HEAD
+    expect(body.build.head).toBe(execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim())
+  })
+
+  it('a packaged bundle reports the commit and time it was built from', async () => {
+    const dir = tmpRepo()
+    const sha = commitIn(dir)
+    const path = bakedFile({ repoRoot: dir, nodeBin: '/opt/node', commit: sha, builtAt: '2026-07-25T12:00:00.000Z' })
+
+    const body = await setup(path)
+
+    expect(body.build).toMatchObject({ drift: 'current', commit: sha, head: sha, builtAt: '2026-07-25T12:00:00.000Z', repoRoot: dir })
+    // …and it still serves the registration paths it always did
+    expect(body.claudeCommand).toContain('/opt/node')
+    expect(body.note).toContain(dir)
+  })
+
+  it('says "stale" once the checkout has moved on past the baked commit', async () => {
+    const dir = tmpRepo()
+    const sha = commitIn(dir)
+    const moved = commitIn(dir)
+
+    const body = await setup(bakedFile({ repoRoot: dir, nodeBin: '/opt/node', commit: sha, builtAt: '2026-07-25T12:00:00.000Z' }))
+
+    expect(body.build.drift).toBe('stale')
+    expect(body.build.head).toBe(moved)
+  })
+
+  it('a corrupt setup-info.json fails open: 200, dev paths, exactly as before #40', async () => {
+    // BEFORE #40 this threw straight out of the handler (JSON.parse on an
+    // unguarded readFileSync) and took the whole Setup panel with it.
+    const body = await setup(bakedFile('{ this is not json'))
+
+    expect(body.note).toBe('')
+    expect(body.claudeCommand).toContain('dist/mcp-server.js')
+    expect(body.build.drift).toBe('dev')
+  })
+
+  it('a bundle packaged before #40 keeps working and simply has nothing to say', async () => {
+    const body = await setup(bakedFile({ repoRoot: '/gone/repo', nodeBin: '/opt/node' }))
+
+    expect(body.build).toMatchObject({ drift: 'unknown', commit: null, builtAt: null, head: null })
+    expect(body.claudeCommand).toContain('/opt/node')
   })
 })
 

@@ -22,15 +22,14 @@ mkdir -p "$STAGE/docs"
 cp -R "$ROOT/dist" "$ROOT/public" "$ROOT/electron" "$STAGE/"
 cp "$ROOT/docs/reporting-snippet.md" "$STAGE/docs/"
 
-# Bake agent-registration paths for the in-app Setup section: the packaged app
-# cannot host the MCP server (Electron-ABI native module), so agents run it
-# from this repo checkout under this Node binary.
-node -e "
-require('fs').writeFileSync('$STAGE/setup-info.json', JSON.stringify({
-  repoRoot: '$ROOT',
-  nodeBin: process.execPath,
-}, null, 2))
-"
+# Bake, for the in-app Setup section:
+#  · the agent-registration paths — the packaged app cannot host the MCP server
+#    (Electron-ABI native module), so agents run it from this repo checkout
+#    under this Node binary;
+#  · WHICH BUILD THIS IS (issue #40) — the commit and the build time. The viewer
+#    compares the commit against $ROOT's live HEAD and says so when the bundle
+#    has fallen behind. If git cannot answer, the commit is omitted, never guessed.
+node "$ROOT/scripts/write-setup-info.mjs" "$ROOT" "$STAGE/setup-info.json"
 
 # Minimal staged package.json: runtime deps only, entry at electron/main.cjs.
 node -e "

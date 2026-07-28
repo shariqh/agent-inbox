@@ -35,7 +35,7 @@ import type Database from 'better-sqlite3'
 import { insertItem, listBoards, upsertBoard } from '../../src/store.js'
 import {
   advanceClock, answerInput, badgeCount, bootApp, buttonLabelled, click, freshDb, pollTick,
-  row, rowTitles, sendButton, settle, type, useDomTest,
+  row, rowTitles, searchFor, sendButton, settle, type, useDomTest,
 } from './harness.js'
 
 useDomTest()
@@ -150,6 +150,38 @@ describe('#38 · a board-row answer shows itself, with no collapse and no poll t
     // and the row's own state moved: it is answered, so it leaves the attention set
     expect(badgeCount(), 'the badge must agree with what the human just did').toBe(1) // the question only
     expect(rowId).toBeTruthy()
+  })
+
+  // THE OTHER SURFACE THE ISSUE NAMES. `sendReply()` is a different function from
+  // the board row's `save()` above — different endpoint (/api/items/:id/reply),
+  // different state (draftReplies/draftReplyContexts, not rowDrafts) — and it is
+  // the one the human hits most, since it is also where the option pills, Enter,
+  // the ★'s staged send and the triage card all land. It ended in a bare `load()`
+  // too, and `openRowId` is set BY CONSTRUCTION here: the input only exists inside
+  // the expanded card, so the gate was guaranteed to refuse. Reverting this one
+  // call site alone left the rest of the suite green, which is why it gets its own
+  // test rather than riding on a board row's.
+  it('answering a QUESTION shows the answer, with no collapse and no poll tick', async () => {
+    const d = open()
+    const id = insertItem(d, { ...AGENT, kind: 'question', title: 'bump the timeout?' })
+    await bootApp(d)
+    expect(badgeCount()).toBe(1)
+
+    click(row(id))
+    await settle()
+    type(answerInput(id), 'yes — 30s')
+    click(sendButton(id))
+    await settle()
+
+    const card = row(id)?.querySelector('.nrow-card')
+    expect(card, 'the card must still be on screen, or this proves nothing').not.toBeNull()
+    expect(card!.querySelector('.reply-block')?.textContent ?? '(no reply block — the card still shows the question)',
+      "the human's own answer must be on screen before anything else happens").toContain('yes — 30s')
+    expect(card!.textContent, 'and it must say the agent has not collected it yet').toContain('waiting for agent pickup')
+    expect(answerInput(id), 'an answered question has no answer box left to re-send from').toBeNull()
+    expect(row(id)?.className, 'the row must wear its answered state').toContain('answered')
+    expect(badgeCount(), 'an answered question has stopped needing the human').toBe(0)
+    expect(row(id)?.dataset['open'], 'the card the human is reading must stay open').toBe('1')
   })
 
   it('a second Send cannot re-send the same string, because the box was cleared', async () => {
@@ -300,6 +332,50 @@ describe('#38 · archiving a board takes the board off the screen', () => {
   })
 })
 
+// ── the cost of nine new callers: a click can beat the first payload ─────────
+
+describe('#38 · forceRender() before there is anything to render', () => {
+  // `if (!lastData) return` is the guard #38 added to forceRender(), and it is not
+  // theoretical bookkeeping: app.js calls `load()` at module top level WITHOUT
+  // awaiting it, so every listener wired the line before — initSearch, initTabs,
+  // initKeys, the rail — is live while the first payload is still in the air. Nine
+  // human-write call sites now paint unconditionally, and the earliest of them can
+  // fire in that window.
+  //
+  // Removing the guard passed the entire suite. What it actually costs, measured in
+  // real Chrome:
+  //   TypeError: Cannot read properties of null (reading 'activity')
+  //     at applyBadge (app.js:361) → render (505) → forceRender (183) → Timeout
+  // and it lands inside a setTimeout, so it is OUTSIDE load()'s try/catch: no
+  // console.error, no 'disconnected' status line, nothing on screen. A blank page
+  // with no signal is the exact failure mode load()'s catch was hardened for.
+  it('typing in the search box before any data has arrived defers, and does not throw', async () => {
+    const d = open()
+    insertItem(d, { ...AGENT, kind: 'question', title: 'ship it?' })
+    const bridge = await bootApp(d, { holdFetch: true })
+
+    // (`document.title` is NOT a usable signal here: jsdom's document outlives the
+    // test and no beforeEach resets it, so it still carries the previous test's badge.
+    // The rendered list is rebuilt by mountShell on every boot, so it is.)
+    expect(rowTitles(), 'nothing can have rendered yet, or the payload is not actually held').toEqual([])
+
+    // initSearch's 120ms debounce fires forceRender() with lastData still null.
+    // THE DISCRIMINATOR IS THIS LINE, not the assertions after it: without the
+    // guard, the debounce callback throws and `advanceTimersByTimeAsync` rethrows
+    // it, so the test dies here with the stack quoted above. In the browser the
+    // same throw is silent, which is precisely why it needs a test.
+    await searchFor('ship')
+
+    // …and skipping a frame is not an error, so nothing may be painted about it.
+    expect(document.getElementById('status')?.textContent, 'a deferred frame is not a failed fetch').toBe('')
+
+    // …and the frame is DEFERRED, not lost: the payload lands and the query applies.
+    bridge.releaseFetch()
+    await settle()
+    expect(rowTitles(), 'the guard must skip the frame, not poison the app').toEqual(['ship it?'])
+  })
+})
+
 // ── the gate itself, unchanged ───────────────────────────────────────────────
 
 describe('#38 · §10 survives the fix — the POLL still holds while the human works', () => {
@@ -394,5 +470,76 @@ describe('#38 · a forced frame must not drag the caret back to an empty box', (
     expect(answerInput(rowId)?.value).toBe('half a thought')
     expect(document.activeElement, 'the caret must come back to the unfinished draft')
       .toBe(answerInput(rowId))
+  })
+
+  // THE OTHER TWO GUARDS. The release shipped on THREE inputs — a board row's
+  // (`rowFocusId`, covered by the pair above) and both of a question card's
+  // (`draftFocusKey`, one token with two values, `${id}:answer` and
+  // `${id}:context`). Only the first was tested: deleting either draftFocusKey
+  // blur listener left the whole suite green. These two are the item half, and
+  // each carries BOTH directions, so neither can be satisfied by simply deleting
+  // the focus restore it is asserting against.
+  it('a QUESTION card\'s answer box releases the caret when empty, and keeps it when not', async () => {
+    const d = open()
+    const id = insertItem(d, { ...AGENT, kind: 'question', title: 'ship it?' })
+    await bootApp(d)
+
+    click(row(id))
+    await settle()
+    answerInput(id)!.focus()
+    expect(document.activeElement).toBe(answerInput(id))
+
+    // typed nothing, gave up, went to the search field
+    document.getElementById('search')!.focus()
+    await settle()
+    click(document.querySelector('#rail .rail-tab')) // any human-forced frame (#38)
+    await settle()
+
+    expect(answerInput(id), 'the card must still be open, or this proves nothing').not.toBeNull()
+    expect(document.activeElement, 'the rebuild must not chase the caret into an abandoned answer box')
+      .toBe(document.getElementById('search'))
+
+    // …and the half the guard must NOT change: a real draft still owns the caret
+    const again = answerInput(id)!
+    again.focus()
+    type(again, 'yes, but after the freeze')
+    document.getElementById('search')!.focus()
+    await settle()
+    click(document.querySelector('#rail .rail-tab'))
+    await settle()
+
+    expect(answerInput(id)?.value).toBe('yes, but after the freeze')
+    expect(document.activeElement, 'an unfinished answer must get its cursor back')
+      .toBe(answerInput(id))
+  })
+
+  it('…and so does the optional CONTEXT box beside it', async () => {
+    const d = open()
+    const id = insertItem(d, { ...AGENT, kind: 'question', title: 'ship it?' })
+    await bootApp(d)
+
+    click(row(id))
+    await settle()
+    const ctx = () => row(id)?.querySelector<HTMLInputElement>('.reply-context-input') ?? null
+    expect(ctx(), 'no context input rendered — the rest of this test proves nothing').not.toBeNull()
+    ctx()!.focus()
+    document.getElementById('search')!.focus()
+    await settle()
+    click(document.querySelector('#rail .rail-tab'))
+    await settle()
+
+    expect(document.activeElement, 'the rebuild must not chase the caret into an abandoned context box')
+      .toBe(document.getElementById('search'))
+
+    const again = ctx()!
+    again.focus()
+    type(again, 'the freeze ends Thursday')
+    document.getElementById('search')!.focus()
+    await settle()
+    click(document.querySelector('#rail .rail-tab'))
+    await settle()
+
+    expect(ctx()?.value).toBe('the freeze ends Thursday')
+    expect(document.activeElement, 'an unfinished context note must get its cursor back').toBe(ctx())
   })
 })

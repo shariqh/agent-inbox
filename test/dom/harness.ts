@@ -73,6 +73,27 @@ export interface ViewerBridge {
   posts: PostRecord[]
   /** Make every subsequent POST return this HTTP status instead of hitting the app. */
   failPostsWith(status: number | null): void
+  /**
+   * Let a parked payload through. Only meaningful after `bootApp(db, { holdFetch: true })`;
+   * a no-op otherwise. Call it in the test, not in teardown — the point of holding is
+   * to prove the app RECOVERS when the data finally lands, not merely that it survives.
+   */
+  releaseFetch(): void
+}
+
+export interface BootOptions {
+  /**
+   * Boot with the first payload STILL IN FLIGHT — every fetch parks until
+   * `bridge.releaseFetch()`.
+   *
+   * This is the only way to reach the window between "the shell is interactive" and
+   * "`lastData` exists". app.js calls `load()` at module top level and does NOT await
+   * it, so every listener `initSearch`/`initTabs`/`initKeys` wired a moment earlier is
+   * already live while the payload is in the air — and a handler that renders in that
+   * window has no data to render. Fake timers cannot model it on their own:
+   * `advanceTimersByTime*` flushes microtasks first, so the load always wins the race.
+   */
+  holdFetch?: boolean
 }
 
 /**
@@ -81,21 +102,25 @@ export interface ViewerBridge {
  * The bridge is `async` on purpose: Hono types `.request()` as
  * `Response | Promise<Response>`, which is not assignable to `fetch` directly.
  */
-export function mountViewer(db: Database.Database): ViewerBridge {
+export function mountViewer(db: Database.Database, { holdFetch = false }: BootOptions = {}): ViewerBridge {
   const app = createViewer(db)
   const posts: PostRecord[] = []
   let failStatus: number | null = null
+  let release: (() => void) | null = null
+  let parked: Promise<void> | null = holdFetch ? new Promise<void>((r) => { release = r }) : null
   globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = String(input)
     if (init?.method === 'POST') {
       posts.push({ url, init })
       if (failStatus !== null) return new Response('boom', { status: failStatus })
     }
+    if (parked) await parked
     return await app.request(url, init)
   }
   return {
     posts,
     failPostsWith(status: number | null) { failStatus = status },
+    releaseFetch() { release?.(); release = null; parked = null },
   }
 }
 
@@ -227,8 +252,8 @@ const APP_MODULE = '/app.js'
  * That order is load-bearing (uFuzzy is constructed at module top level, and
  * every init function queries the shell), so it lives here rather than in tests.
  */
-export async function bootApp(db: Database.Database): Promise<ViewerBridge> {
-  const bridge = mountViewer(db)
+export async function bootApp(db: Database.Database, opts: BootOptions = {}): Promise<ViewerBridge> {
+  const bridge = mountViewer(db, opts)
   installStubs()
   mountShell()
   await import(/* @vite-ignore */ APP_MODULE)

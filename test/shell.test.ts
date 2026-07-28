@@ -390,6 +390,28 @@ describe('#38 · the poll keeps its gate, the human bypasses it', () => {
     expect(body, 'forcing a frame inside load() deletes the §10 gate for the poll too').not.toContain('forceRender')
   })
 
+  // The design's REJECTED option (a), pinned at the edit site. `openRows` is the
+  // boards matrix's multi-open Set: unbounded, NEVER pruned, no single-open
+  // discipline and no reconciliation — strandable by pagination, the archived
+  // fold, the rail filter, hideCompleted and any agent board_upsert that drops a
+  // row. Feeding it to the gate freezes the Needs-you list, the badge and
+  // #pauseHint for as long as any row is open, which is the C1 bug reconcileOpenRow
+  // exists to close. It reads like a consistency cleanup ("openRowId is in there,
+  // why isn't openRows?"), it is one line, and before this pin it passed the whole
+  // suite. The behavioural half — the freeze, measured — is
+  // test/dom/press-guard.test.ts's "the REJECTED fix" block; keep both. This one
+  // fails at the declaration with the reason attached, that one fails with the cost.
+  it('openRows is never fed to the §10 gate — the C1 freeze is one line away', () => {
+    const m = js.match(/function suspendState\(\)[\s\S]*?\n\}/)
+    expect(m, 'suspendState() not found').toBeTruthy()
+    expect(m![0], 'openRows in suspendState() freezes the whole viewer while any matrix row is expanded')
+      .not.toContain('openRows')
+    // …and not by the back door either: shouldDeferRender's argument is the same gate.
+    const gate = js.match(/function renderIfIdle\(\)[\s\S]*?\n\}/)
+    expect(gate, 'renderIfIdle() not found').toBeTruthy()
+    expect(gate![0], 'the press guard is the boards panel\'s protection — openRows is not').not.toContain('openRows')
+  })
+
   it('reloadAndPaint() awaits load() first, so the frame paints the SERVER state', () => {
     const m = js.match(/async function reloadAndPaint\(\)[\s\S]*?\n\}/)
     expect(m, 'reloadAndPaint() not found').toBeTruthy()

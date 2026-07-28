@@ -34,7 +34,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest'
 import type Database from 'better-sqlite3'
 import { insertItem, listBoards, upsertBoard } from '../../src/store.js'
 import {
-  advanceClock, bootApp, freshDb, pollTick, rowTitles, settle, useDomTest,
+  advanceClock, badgeCount, bootApp, freshDb, pollTick, rowTitles, settle, useDomTest,
 } from './harness.js'
 
 useDomTest()
@@ -130,7 +130,14 @@ describe('#38 · D2 — the 3s rebuild must not land inside a press', () => {
     expect(pauseHint()).toBe('')
   })
 
-  it('the deferred frame lands on the next tick, once the button is up', async () => {
+  // TITLE PRECISION, deliberate: this test does NOT observe the release, and an
+  // earlier title ("…once the button is up") promised that it did. `pollTick()`
+  // advances 3000ms, which expires PRESS_GRACE_MS whether or not the pointerup was
+  // ever seen — delete both release listeners and this still passes. What it does
+  // prove, and what it is for, is that a deferral is BOUNDED: the frame is not
+  // dropped, it lands on the app's own next tick. The release itself is pinned by
+  // the two tests below, which put the tick INSIDE the grace window.
+  it('a deferred frame is not a dropped one — it lands on the app\'s own next tick', async () => {
     const d = await boardWithAnswerButton()
     const pressed = answerBtn()!
 
@@ -156,6 +163,51 @@ describe('#38 · D2 — the 3s rebuild must not land inside a press', () => {
     expect(document.contains(pressed), 'and the rebuild does happen — this is a defer, not a freeze').toBe(false)
   })
 
+  it('a completed click does not defer the frames that come after it', async () => {
+    // THE RELEASE, isolated. `toJustBeforeTick(200)` parks the clock 200ms out;
+    // the press is taken and GIVEN BACK inside that window, so the tick lands
+    // 200ms after `pressedAt` — well inside PRESS_GRACE_MS. Whether it renders is
+    // therefore decided by one thing only: was the pointerup observed.
+    //
+    // Deleting the release listeners passes every other test in this file, because
+    // a press can only ever straddle ONE tick (3000ms poll, 1000ms grace) and the
+    // NEXT tick is 3000ms out — past the grace, so it renders either way. This is
+    // the arrangement where the two implementations disagree.
+    const d = await boardWithAnswerButton()
+    const pressed = answerBtn()!
+
+    await toJustBeforeTick(200)
+    pointer(pressed, 'pointerdown')
+    await vi.advanceTimersByTimeAsync(50)
+    pointer(pressed, 'pointerup') // …the human is done; the click has been dispatched
+    advanceClock(10)
+    insertItem(d, { ...AGENT, kind: 'question', title: 'arrived after the click' })
+    await crossTick(150)
+
+    expect(rowTitles(), 'the button is UP — a released press must not hold the poll for another second')
+      .toContain('arrived after the click')
+  })
+
+  it('a cancelled press releases too — pointercancel is the touch/drag-away path', async () => {
+    // The other half of the same listener pair. Chrome fires `pointercancel`
+    // instead of `pointerup` when the gesture is stolen (scroll takes over the
+    // touch, the pointer is captured elsewhere): no click will ever come, so the
+    // rebuild has nothing left to protect and must resume immediately.
+    const d = await boardWithAnswerButton()
+    const pressed = answerBtn()!
+
+    await toJustBeforeTick(200)
+    pointer(pressed, 'pointerdown')
+    await vi.advanceTimersByTimeAsync(50)
+    pointer(pressed, 'pointercancel')
+    advanceClock(10)
+    insertItem(d, { ...AGENT, kind: 'question', title: 'arrived after the cancel' })
+    await crossTick(150)
+
+    expect(rowTitles(), 'a cancelled gesture protects nothing and must not defer anything')
+      .toContain('arrived after the cancel')
+  })
+
   it('a press whose release is never seen still expires — it cannot strand the viewer', async () => {
     // The C1 lesson, applied at design time: any suspend key whose only clearing
     // path is an event that may never arrive (button released outside the window,
@@ -176,5 +228,49 @@ describe('#38 · D2 — the 3s rebuild must not land inside a press', () => {
 
     expect(rowTitles(), 'a press must never be able to freeze the poll').toContain('still alive')
     expect(listBoards(d).length).toBe(1)
+  })
+})
+
+// ── the rejected fix, made unshippable ───────────────────────────────────────
+// The header of this file argues why D2 is NOT fixed by adding `openRows` to
+// `suspendState()`. Nothing enforced that argument: the one-line mutation
+// `expanded: openRowId ? [openRowId, ...openRows] : [...openRows]` passed the
+// entire suite — every press-guard test above included, because it defers the
+// same ticks for a different (wrong) reason. So the loudest new invariant in the
+// change was the only one a future "consistency" cleanup could delete in green.
+//
+// This is the test it fails, and the cost is exactly what it prints: expand ONE
+// matrix row and the whole viewer stops — the Needs-you list, the document-title
+// badge and #pauseHint — for as long as that row is open, which is unbounded
+// because `openRows` is never pruned and has no reconciliation (the C1 lesson —
+// see the comment over `const openRows` in public/app.js, and poll.js's
+// reconcileOpenRow, which exists because that mistake already shipped once). A badge that
+// stops counting while the human works is the bug #38 exists to close, wearing a
+// different hat.
+//
+// Behavioural rather than a source pin, because the cost is observable and a
+// behavioural test catches shapes the source text cannot: `openRows` routed into
+// shouldDeferRender(), or into `drafts` instead of `expanded`, or pruned-then-fed
+// all fail right here. test/shell.test.ts carries a source pin as well — that one
+// fails AT the edit, naming the invariant, which is what the author of the
+// cleanup actually reads.
+describe('#38 · D2 — the REJECTED fix: an expanded matrix row must never suspend the poll', () => {
+  it('a row left open in the matrix freezes nothing — not the list, not the badge, not the hint', async () => {
+    const d = await boardWithAnswerButton()
+    answerBtn()!.click()
+    await settle()
+    expect(document.querySelector('#boards .row-panel'), 'the row must really be expanded').not.toBeNull()
+    expect(badgeCount(), 'one blocked row is waiting on the human').toBe(1)
+
+    advanceClock()
+    insertItem(d, { ...AGENT, kind: 'question', title: 'arrived while a row was open' })
+    await pollTick()
+    await pollTick()
+
+    expect(document.querySelector('#boards .row-panel'), '…and still expanded, or this proves nothing').not.toBeNull()
+    expect(rowTitles(), 'an expanded matrix row must not hold the 3s poll — openRows is not a suspend key')
+      .toContain('arrived while a row was open')
+    expect(badgeCount(), 'the badge stopped counting while a row was open — that is the C1 freeze again').toBe(2)
+    expect(pauseHint(), 'nothing is being held back, so the viewer must not claim to be paused').toBe('')
   })
 })

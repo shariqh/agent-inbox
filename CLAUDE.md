@@ -158,7 +158,11 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   — a press loses nothing, so lighting `#pauseHint` for it would be a new lie — and keep it a
   **timestamp**, never a flag: bounded by `PRESS_GRACE_MS`, it self-heals when a release event
   is missed. Never gate the render on `openRows` instead: it is unbounded, never pruned, and
-  would resurrect the C1 freeze on the tab the badge counts.
+  would resurrect the C1 freeze on the tab the badge counts. That last sentence is the design's
+  explicitly rejected option and the easiest thing in the file to "clean up", so it is pinned
+  twice: a source pin on `suspendState()` in `test/shell.test.ts`, and the freeze itself —
+  expand one matrix row, watch the list, badge and `#pauseHint` stop — in
+  `test/dom/press-guard.test.ts`.
 
 - **The hooks runtime is a SECOND OS process on the same db — and it still goes through
   `store.ts`.** `src/hook.ts` (+ the `src/hook-cli.ts` entry) is spawned by Claude Code, not

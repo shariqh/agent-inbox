@@ -106,9 +106,9 @@ phase, spawning or finishing subagents, wrapping up. `children` is a **full-repl
 list of your currently-running subagents (`{ name, doing, state? }`) — resend the current
 set when it changes; the human sees them nested under your entry. Only the top-level
 manager reports — subagents stay silent. Call `status({ done: true })` when the effort
-ends; entries also expire on their own if silent ~15 minutes, so a crash never leaves a
-ghost. This is ambient glass for the human, not tracking — boards remain the durable
-record.
+ends; if your process dies instead, its entry drops out on its own within ~15 minutes, so
+a crash never leaves a ghost. This is ambient glass for the human, not tracking — boards
+remain the durable record.
 
 ## Subagents
 

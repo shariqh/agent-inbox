@@ -103,9 +103,11 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   never two UPDATEs here: the viewer writes from its own OS process and would land between
   them, leaving the human's newest answer flagged "✓ picked up" and un-clearable. An agent
   may overwrite an answer it has already picked up, but may never blank one.
-- **One process per agent session (stdio), one shared file.** The MCP server is spawned per
-  session; all instances write to the same `~/.agent-inbox/inbox.db`. Concurrency is handled
-  by **WAL + `busy_timeout=5000`** set in `openDb` — keep both. Writes are single tiny
+- **One process per CLI (stdio), one shared file.** A server is spawned per *client process*, not
+  per agent session — a subagent's calls are served by its parent CLI's long-lived server
+  (measured: servers observed running 4+ days), so a fan-out shares one process, one `sessionId`
+  and one in-memory ledger. All instances write to the same `~/.agent-inbox/inbox.db`. Concurrency
+  is handled by **WAL + `busy_timeout=5000`** set in `openDb` — keep both. Writes are single tiny
   inserts; this is WAL's happy path.
 - **Session scope is Solo-style** (`src/scope.ts`): inferred lazily per call, overridable via
   `register`. The client name for `inferAgent` **must be read lazily** inside handlers

@@ -18,8 +18,10 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
   // decides whether the common case is cheap. See src/shape.ts.
   const ledger = makeContextLedger()
   const clientName = (): string | undefined => server.server.getClientVersion()?.name
-  // this stdio server lives exactly as long as its agent session — its own id
-  // IS the session id for the live-activity view
+  // one id per SERVER PROCESS, used as the session id for the live-activity view.
+  // NOT one per agent session: a subagent's calls are served by its parent CLI's
+  // long-lived process (measured — servers observed running 4+ days), so a
+  // fan-out shares this id. Presence therefore tracks the CLI, not the agent.
   const sessionId = randomUUID()
 
   // ── session presence (issue #28): the session itself is a Live row ──

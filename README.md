@@ -102,7 +102,7 @@ src/
   scope.ts         session-bound scope object (Solo-style: inferred, overridable)
   mcp.ts           MCP tool definitions (flag/pending/answer/resolve/register/whoami,
                    board_upsert/board_row/board_get/board_archive, status)
-  mcp-server.ts    stdio entry — spawned per agent session
+  mcp-server.ts    stdio entry — spawned per client process (a subagent shares its parent's)
   shape.ts         AGENT-SIDE-ONLY payload shaping for MCP reads (#42) — trims agent-authored
                    `context` to `context_chars`; never the human's annotation, never the viewer
   group.ts         pure grouping (Needs-you / Notes / Done)

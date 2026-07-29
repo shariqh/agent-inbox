@@ -112,6 +112,13 @@ every remote agent into **one Live row and one `register` scope**, silently regr
 and destroying the identity seam. Stateful multi-session hosting is mandatory here, not a
 preference.
 
+Worth knowing: this would make remote identity *stricter* than local, not equal to it. On the
+stdio path a "session" is really a **client process** — a subagent's calls are served by its
+parent CLI's long-lived server (measured during #42: servers running 4+ days), so a fan-out
+shares one `sessionId`, one Live row and one in-memory ledger. Streamable-HTTP's
+`sessionIdGenerator` is what finally makes one session mean one agent. Do not assume the local
+path already behaves that way when porting anything that keys on `sessionId`.
+
 ### The three wiring traps — all three produce a *working-looking* server if you get them wrong
 
 These were verified empirically against this repo's installed `hono` and SDK. Each one is

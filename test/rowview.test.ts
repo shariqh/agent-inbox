@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import {
   secondaryLine, streamCounts, agentCounts, rowModel, urgencyChip, relMs,
   FRESH_MS, AGING_MS, freshnessTone, ageChip, needsYouEntries, staleFoldLabel,
-  SECONDARY_BUDGET, rowStarOption, stagedLabel, undoRefusal, repliedEntries,
+  SECONDARY_BUDGET, rowStarOption, stagedLabel, undoRefusal, handledUndoRefusal, repliedEntries,
 } from '../public/rowview.js'
 import type { RowItem, Entry } from '../public/rowview.js'
 import { attentionCount } from '../public/attention.js'
@@ -123,6 +123,95 @@ describe('rowModel', () => {
     const done = rowModel(rowEntry({ annotation: 'merge it', annotation_seen_at: '2026-07-24T12:00:00Z', annotation_seen_by: 'claude-code' }))
     expect(done).toMatchObject({ answered: true, pickedUp: true, pickedUpAt: '2026-07-24T12:00:00Z', pickedUpBy: 'claude-code' })
   })
+
+  // #36 — the second shape of "the human is finished with this row". It must dim
+  // and sink the row exactly as an annotation does (so `answered`), while still
+  // being distinguishable for the card that has to describe it (so `handled`).
+  describe('the handled mark (#36)', () => {
+    const rowEntry = (row: Record<string, unknown>) => ({
+      kind: 'row' as const,
+      row: { id: 'r1', label: 'Paddle account', note: '~15 min KYC', status: 'blocked', annotation: null, ...row },
+      board: { id: 'b1', project: 'web', stream: '', title: 'Wave 0' },
+    })
+
+    it('marks a row with no words but a mark as answered, and says which shape it was', () => {
+      const m = rowModel(rowEntry({ handled_at: '2026-07-24T11:00:00Z' }))
+      expect(m).toMatchObject({ answered: true, handled: true, handledAt: '2026-07-24T11:00:00Z' })
+    })
+
+    it('an unmarked, unannotated row is neither answered nor handled', () => {
+      expect(rowModel(rowEntry({}))).toMatchObject({ answered: false, handled: false, handledAt: null })
+    })
+
+    it('an annotated row is answered but NOT handled — the two are not synonyms', () => {
+      expect(rowModel(rowEntry({ annotation: 'go ahead' }))).toMatchObject({ answered: true, handled: false })
+    })
+
+    it('an item is never handled — the mark is a row-only concept', () => {
+      expect(rowModel({ kind: 'item', item: item({ reply: 'go' }), liveness: 'parked' }))
+        .toMatchObject({ handled: false, handledAt: null, handledPickedUp: false })
+    })
+
+    it('a mark nobody has collected reports no pickup', () => {
+      expect(rowModel(rowEntry({ handled_at: '2026-07-24T11:00:00Z' })))
+        .toMatchObject({ pickedUp: false, pickedUpAt: null, pickedUpBy: '', handledPickedUp: false })
+    })
+
+    it('a collected mark reports the pickup, its time and the agent', () => {
+      expect(rowModel(rowEntry({ handled_at: '2026-07-24T11:00:00Z', handled_seen_at: '2026-07-24T11:30:00Z', handled_seen_by: 'claude-code' })))
+        .toMatchObject({ pickedUp: true, pickedUpAt: '2026-07-24T11:30:00Z', pickedUpBy: 'claude-code', handledPickedUp: true })
+    })
+
+    // The half-delivered case is the one that matters: reporting "delivered"
+    // while a whole half of what the human left is still queued is exactly the
+    // lie #37 exists to prevent.
+    it('a delivered annotation plus an uncollected mark still reports NO pickup', () => {
+      expect(rowModel(rowEntry({
+        annotation: 'and I emailed them',
+        annotation_seen_at: '2026-07-24T11:10:00Z',
+        annotation_seen_by: 'claude-code',
+        handled_at: '2026-07-24T11:20:00Z',
+      }))).toMatchObject({ pickedUp: false, pickedUpAt: null })
+    })
+
+    it('an uncollected annotation plus a delivered mark also reports NO pickup', () => {
+      expect(rowModel(rowEntry({
+        annotation: 'and I emailed them',
+        handled_at: '2026-07-24T11:20:00Z',
+        handled_seen_at: '2026-07-24T11:30:00Z',
+        handled_seen_by: 'claude-code',
+      }))).toMatchObject({ pickedUp: false, pickedUpAt: null })
+    })
+
+    it('with both halves delivered it reports the LATER stamp and that agent', () => {
+      expect(rowModel(rowEntry({
+        annotation: 'and I emailed them',
+        annotation_seen_at: '2026-07-24T11:10:00Z',
+        annotation_seen_by: 'codex',
+        handled_at: '2026-07-24T11:20:00Z',
+        handled_seen_at: '2026-07-24T11:30:00Z',
+        handled_seen_by: 'claude-code',
+      }))).toMatchObject({ pickedUp: true, pickedUpAt: '2026-07-24T11:30:00Z', pickedUpBy: 'claude-code' })
+    })
+
+    // ADDED alongside the test above, which its own fixture cannot bind: there the
+    // later stamp is ALSO the mark's, so "always report the mark's stamp" passes it
+    // (verified by mutation). This is the same claim with the ordering reversed, so
+    // only an implementation that really compares the two stamps satisfies both.
+    // It matters because the age shown is the human's evidence for how long an
+    // agent has been sitting on their answer — naming the EARLIER pickup would
+    // overstate the delay and point at the wrong agent.
+    it('…and the LATER stamp is whichever it is — the annotation’s, when the mark was collected first', () => {
+      expect(rowModel(rowEntry({
+        annotation: 'and I emailed them',
+        annotation_seen_at: '2026-07-24T11:30:00Z',
+        annotation_seen_by: 'codex',
+        handled_at: '2026-07-24T11:00:00Z',
+        handled_seen_at: '2026-07-24T11:10:00Z',
+        handled_seen_by: 'claude-code',
+      }))).toMatchObject({ pickedUp: true, pickedUpAt: '2026-07-24T11:30:00Z', pickedUpBy: 'codex' })
+    })
+  })
 })
 
 describe('urgencyChip', () => {
@@ -154,6 +243,29 @@ describe('urgencyChip', () => {
   it('an un-picked-up row is never rendered as blocked — the human already answered', () => {
     const m = model({ kind: 'row', answered: true, pickedUp: false, pickedUpAt: null, pickedUpBy: '' })
     expect(urgencyChip(m, T0).tone).not.toBe('blocked')
+  })
+
+  // #36 requirement 3: a marked row relabels into the awaiting-pickup foot
+  // "exactly like an annotated row" — so it gets the SAME two-state vocabulary,
+  // not a third one nobody has to learn.
+  it('gives a row marked handled the same two-state pickup vocabulary as an annotated one', () => {
+    const marked = model({ kind: 'row', answered: true, handled: true, pickedUp: false, pickedUpAt: null, pickedUpBy: '' })
+    expect(urgencyChip(marked, T0)).toEqual({ text: 'awaiting pickup', tone: 'muted' })
+    const collected = { ...marked, pickedUp: true, pickedUpAt: new Date(T0 - 3 * 60_000).toISOString() }
+    expect(urgencyChip(collected, T0)).toEqual({ text: 'delivered 3m', tone: 'muted' })
+  })
+})
+
+// The mark's own undo-refusal copy, the rows-shaped twin of undoRefusal above.
+describe('handledUndoRefusal (#36)', () => {
+  it('is silent while the mark is still undelivered — there is nothing to refuse', () => {
+    expect(handledUndoRefusal({ id: 'r1', label: 'x', handled_at: '2026-07-24T11:00:00Z' }, T0)).toBeNull()
+    expect(handledUndoRefusal({ id: 'r1', label: 'x' }, T0)).toBeNull()
+  })
+  it('names the delivery age once an agent has been handed the mark', () => {
+    const msg = handledUndoRefusal({ id: 'r1', label: 'x', handled_at: '2026-07-24T11:00:00Z', handled_seen_at: new Date(T0 - 4 * 60_000).toISOString() }, T0)
+    expect(msg).toContain('4m')
+    expect(msg).toMatch(/will not un-tell the agent/)
   })
 })
 

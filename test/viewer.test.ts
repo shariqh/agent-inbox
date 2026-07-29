@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
-import { openDb, insertItem, listItems, answerItem, markReplySeen, upsertBoard, listBoards, annotateBoardRow, upsertActivity, closeProject, closedProjects, upsertSourceLink } from '../src/store.js'
+import { openDb, insertItem, listItems, answerItem, markReplySeen, upsertBoard, listBoards, annotateBoardRow, markHandledDelivered, upsertActivity, closeProject, closedProjects, upsertSourceLink } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
 
 function freshDb(): Database.Database {
@@ -323,6 +323,77 @@ describe('boards api', () => {
     expect(res.status).toBe(200)
     upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'c', rows: [{ label: 'x', status: 'partial' }] })
     expect(listBoards(db)[0]!.rows[0]!.annotation).toBe('do this next')
+  })
+
+  // issue #36 — the human's other exit from a blocked row. Every assertion here
+  // is about the ROUTE: the store's own rules are pinned in test/store.test.ts.
+  describe('POST row handled (#36)', () => {
+    function seed(): { boardId: string; rowId: string } {
+      upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'c', rows: [{ label: 'Paddle', status: 'blocked' }] })
+      const board = listBoards(db)[0]!
+      return { boardId: board.id, rowId: board.rows[0]!.id }
+    }
+    const post = (boardId: string, rowId: string, body?: unknown) =>
+      createViewer(db).request(`/api/boards/${boardId}/rows/${rowId}/handled`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      })
+
+    it('marks the row and reports ok', async () => {
+      const { boardId, rowId } = seed()
+      const res = await post(boardId, rowId, { handled: true })
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ ok: true })
+      expect(listBoards(db)[0]!.rows[0]!.handled_at).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+    })
+
+    it('a body-less POST marks rather than un-marks — the affirmative action is the default', async () => {
+      const { boardId, rowId } = seed()
+      expect(await (await post(boardId, rowId)).json()).toEqual({ ok: true })
+      expect(listBoards(db)[0]!.rows[0]!.handled_at).not.toBeNull()
+    })
+
+    it('handled:false takes the mark back off', async () => {
+      const { boardId, rowId } = seed()
+      await post(boardId, rowId, { handled: true })
+      expect(await (await post(boardId, rowId, { handled: false })).json()).toEqual({ ok: true })
+      expect(listBoards(db)[0]!.rows[0]!.handled_at).toBeNull()
+    })
+
+    it('refuses to un-mark once an agent has been handed it — 200 with ok:false, mark intact', async () => {
+      const { boardId, rowId } = seed()
+      await post(boardId, rowId, { handled: true })
+      markHandledDelivered(db, rowId, listBoards(db)[0]!.rows[0]!.handled_at, 'claude-code')
+      const res = await post(boardId, rowId, { handled: false })
+      expect(res.status, 'a refusal is not an error — the caller has to read the body').toBe(200)
+      expect(await res.json()).toEqual({ ok: false })
+      expect(listBoards(db)[0]!.rows[0]!.handled_at).not.toBeNull()
+    })
+
+    it('reports ok:false for a row id that does not exist', async () => {
+      const { boardId } = seed()
+      expect(await (await post(boardId, 'no-such-row', { handled: true })).json()).toEqual({ ok: false })
+    })
+
+    it('the mark survives an agent re-upsert that leaves the row blocked', async () => {
+      const { boardId, rowId } = seed()
+      await post(boardId, rowId, { handled: true })
+      upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'c', rows: [{ label: 'Paddle', status: 'blocked', note: 'still waiting' }] })
+      expect(listBoards(db)[0]!.rows[0]!.handled_at).not.toBeNull()
+    })
+
+    it('GET /api/boards carries the mark and its delivery state to the viewer', async () => {
+      const { boardId, rowId } = seed()
+      await post(boardId, rowId, { handled: true })
+      const before = (await (await createViewer(db).request('/api/boards')).json())[0].rows[0]
+      expect(before.handled_at).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+      expect(before.handled_seen_at).toBeNull()
+      markHandledDelivered(db, rowId, listBoards(db)[0]!.rows[0]!.handled_at, 'claude-code')
+      const after = (await (await createViewer(db).request('/api/boards')).json())[0].rows[0]
+      expect(after.handled_seen_at).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+      expect(after.handled_seen_by).toBe('claude-code')
+    })
   })
 
   it('GET /api/boards exposes annotation_unseen and does not mark the board read', async () => {

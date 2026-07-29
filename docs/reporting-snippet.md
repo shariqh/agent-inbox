@@ -73,14 +73,17 @@ prose. Do this **proactively**, without being asked:
   banner; put what you need from them in `note`. **Being stuck is not being blocked:** a failing
   test, a build or release that does not exist yet, another PR — no person can unblock those, so
   they are `partial` (or `tracked`) with the reason in `note`.
-  `pending()` delivers their annotation; **flip the row's status
+  `pending()` delivers their answer, in either of the two shapes a blocked row can come back
+  in: an `annotation` (words), or `handled_at` — **the human telling you THEY have gone and
+  DONE the thing** you blocked on. Both mean their part is finished; **flip the row's status
   once you have acted — that status change is what tells them you did.** Until you do, they
   see the row sitting there marked "delivered to you", which is exactly what it is — and
   `pending()` keeps handing you the same note on every poll, so nothing is lost when a
   sibling session polls first. `annotation_seen_at`/`annotation_seen_by` mean the note reached
   **some** agent — often a sibling session sharing your name, not you — so a stamp is never a
   reason to skip it. **If the row is still `blocked`, it is not done.** Act on it, then flip the
-  status and it stops coming back.
+  status and it stops coming back. Moving a row out of `blocked` and later back into it is a
+  NEW request and discards their "I did my part" mark, so never do that just to re-ask.
   Keep `label` stable — rows are matched by label, and the human's notes stick to the label.
   `note` is the one-line summary; put long-form backstory (reasoning, history, links) in
   `context` — the human sees it as a collapsed dropdown, so the row stays scannable.

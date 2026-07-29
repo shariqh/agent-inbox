@@ -21,7 +21,10 @@ import {
   unarchiveBoard,
   annotateBoardRow,
   markAnnotationDelivered,
-  listPendingAnnotations,
+  markRowHandled,
+  clearRowHandled,
+  markHandledDelivered,
+  listPendingRows,
   listBoards,
   computeProgress,
   getBoard,
@@ -42,7 +45,7 @@ import {
   listLinkTargets,
   pruneSourceLinks,
 } from '../src/store.js'
-import type { BoardRow } from '../src/store.js'
+import type { BoardRow, RowStatus } from '../src/store.js'
 
 function freshDb(): Database.Database {
   const dir = mkdtempSync(join(tmpdir(), 'inbox-'))
@@ -1078,7 +1081,7 @@ describe('unseen annotations', () => {
     expect(board.last_read_at! > board.rows[0]!.annotated_at!, 'the old rule would have called this seen').toBe(true)
     expect(board.rows[0]!.annotation_unseen).toBe(true)
     // …and the consequence that actually matters: it is still queued for delivery
-    expect(listPendingAnnotations(db, 'p').map((r) => r.annotation)).toEqual(['first note'])
+    expect(listPendingRows(db, 'p').map((r) => r.annotation)).toEqual(['first note'])
 
     // the per-row stamp is the only thing that clears it
     markAnnotationDelivered(db, rowId, board.rows[0]!.annotated_at, 'claude-code')
@@ -1154,18 +1157,18 @@ describe('per-row annotation delivery (#37)', () => {
     annotateBoardRow(db, rowId, 'merge it')
 
     // a SUBAGENT polls first and is stamped as the one it went to
-    const sub = listPendingAnnotations(db, 'p')
+    const sub = listPendingRows(db, 'p')
     expect(sub.map((r) => r.annotation)).toEqual(['merge it'])
     markAnnotationDelivered(db, rowId, sub[0]!.annotated_at, 'claude-code')
 
     // …and the MANAGER — the session that actually raised the row — still gets it
-    const manager = listPendingAnnotations(db, 'p')
+    const manager = listPendingRows(db, 'p')
     expect(manager.map((r) => r.annotation), 'a sibling poll must not eat the human’s note').toEqual(['merge it'])
 
     // the ack — and only the ack — stops it. Not `done`: that would complete the
     // board and archive it, which would end the delivery for a second reason.
     updateBoardRow(db, { project: 'p', stream: 's', agent: 'a', title: 'c', label: 'Merge', status: 'partial' })
-    expect(listPendingAnnotations(db, 'p')).toEqual([])
+    expect(listPendingRows(db, 'p')).toEqual([])
   })
 
   // Re-delivery must be SELF-LABELLING or it is a firehose: an agent polling every
@@ -1177,12 +1180,12 @@ describe('per-row annotation delivery (#37)', () => {
     const rowId = board().rows[0]!.id
     annotateBoardRow(db, rowId, 'merge it')
 
-    const first = listPendingAnnotations(db, 'p')[0]!
+    const first = listPendingRows(db, 'p')[0]!
     expect(first.annotation_seen_at, 'nobody has been handed it yet').toBeNull()
     expect(first.annotation_seen_by).toBeNull()
     markAnnotationDelivered(db, rowId, first.annotated_at, 'claude-code')
 
-    const again = listPendingAnnotations(db, 'p')[0]!
+    const again = listPendingRows(db, 'p')[0]!
     expect(again.annotation_seen_at).toMatch(/^\d{4}-\d{2}-\d{2}T/)
     expect(again.annotation_seen_by).toBe('claude-code')
   })
@@ -1212,10 +1215,10 @@ describe('per-row annotation delivery (#37)', () => {
     const { board } = seed([{ label: 'x', status: 'tracked' }])
     const rowId = board().rows[0]!.id
     annotateBoardRow(db, rowId, 'fyi, this one moved')
-    const first = listPendingAnnotations(db, 'p')
+    const first = listPendingRows(db, 'p')
     expect(first.map((r) => r.annotation)).toEqual(['fyi, this one moved'])
     markAnnotationDelivered(db, rowId, first[0]!.annotated_at, 'claude-code')
-    expect(listPendingAnnotations(db, 'p')).toEqual([])
+    expect(listPendingRows(db, 'p')).toEqual([])
   })
 
   it('stamps the FIRST delivery only, recording WHO it went to', () => {
@@ -1250,7 +1253,7 @@ describe('per-row annotation delivery (#37)', () => {
     expect(row.annotation).toBe('merge it')
     expect(row.annotation_seen_at, 'a delivered stamp must never be inherited by newer text').toBeNull()
     expect(row.annotation_seen_by).toBeNull()
-    expect(listPendingAnnotations(db, 'p').map((r) => r.annotation)).toEqual(['merge it'])
+    expect(listPendingRows(db, 'p').map((r) => r.annotation)).toEqual(['merge it'])
   })
 
   it('delivering one row does not mark another row seen', () => {
@@ -1264,7 +1267,7 @@ describe('per-row annotation delivery (#37)', () => {
     // Both are still queued — they are both still blocked, i.e. unacknowledged —
     // but the per-row stamps stay independent, and the queue SHOWS that: the one
     // that was delivered says so, the one that was not says nothing.
-    const queued = new Map(listPendingAnnotations(db, 'p').map((r) => [r.label, r.annotation_seen_by]))
+    const queued = new Map(listPendingRows(db, 'p').map((r) => [r.label, r.annotation_seen_by]))
     expect([...queued.keys()]).toEqual(['x', 'y'])
     expect(queued.get('x')).toBe('claude-code')
     expect(queued.get('y'), 'a delivery must not attribute a row nobody read').toBeNull()
@@ -1285,7 +1288,7 @@ describe('per-row annotation delivery (#37)', () => {
     upsertBoard(mcp, { project: 'p', stream: 's', agent: 'a', title: 'c', rows: [{ label: 'Merge', status: 'blocked' }] })
     const rowId = listBoards(mcp)[0]!.rows[0]!.id
     annotateBoardRow(viewer, rowId, 'wait for CI')                 // T1
-    const read = listPendingAnnotations(mcp, 'p')[0]!              // T2
+    const read = listPendingRows(mcp, 'p')[0]!              // T2
     expect(read.annotation).toBe('wait for CI')
     await new Promise((r) => setTimeout(r, 5))
     annotateBoardRow(viewer, rowId, 'merge it')                    // T3
@@ -1294,12 +1297,12 @@ describe('per-row annotation delivery (#37)', () => {
     const row = listBoards(mcp)[0]!.rows[0]!
     expect(row.annotation).toBe('merge it')
     expect(row.annotation_seen_at, 'the newest instruction must stay undelivered').toBeNull()
-    expect(listPendingAnnotations(mcp, 'p').map((r) => r.annotation)).toEqual(['merge it'])
+    expect(listPendingRows(mcp, 'p').map((r) => r.annotation)).toEqual(['merge it'])
     viewer.close()
     mcp.close()
   })
 
-  it('listPendingAnnotations is scoped to the project and to ACTIVE boards only', () => {
+  it('listPendingRows is scoped to the project and to ACTIVE boards only', () => {
     const a = seed([{ label: 'x', status: 'blocked' }], 'mine', 'p')
     const other = seed([{ label: 'x', status: 'blocked' }], 'theirs', 'q')
     const gone = seed([{ label: 'x', status: 'blocked' }], 'archived', 'p')
@@ -1308,8 +1311,8 @@ describe('per-row annotation delivery (#37)', () => {
     annotateBoardRow(db, gone.board().rows[0]!.id, 'for nobody')
     archiveBoard(db, gone.boardId)
 
-    expect(listPendingAnnotations(db, 'p').map((r) => r.annotation)).toEqual(['for p'])
-    expect(listPendingAnnotations(db, 'q').map((r) => r.annotation)).toEqual(['for q'])
+    expect(listPendingRows(db, 'p').map((r) => r.annotation)).toEqual(['for p'])
+    expect(listPendingRows(db, 'q').map((r) => r.annotation)).toEqual(['for q'])
     // an archived board is out of board_get too — one rule, not two
     expect(getBoard(db, 'p', 'archived')).toBeUndefined()
   })
@@ -1317,7 +1320,7 @@ describe('per-row annotation delivery (#37)', () => {
   it('carries everything an agent needs to act without a second call', () => {
     const { boardId, board } = seed([{ label: 'Merge', status: 'blocked' }])
     annotateBoardRow(db, board().rows[0]!.id, 'merge it')
-    const [row] = listPendingAnnotations(db, 'p')
+    const [row] = listPendingRows(db, 'p')
     expect(row).toMatchObject({
       board_id: boardId, board_title: 'c', project: 'p', stream: 's', agent: 'a',
       row_id: board().rows[0]!.id, label: 'Merge', status: 'blocked', note: 'note Merge', annotation: 'merge it',
@@ -1327,7 +1330,7 @@ describe('per-row annotation delivery (#37)', () => {
   it('an empty annotation is not pending work', () => {
     const { board } = seed()
     annotateBoardRow(db, board().rows[0]!.id, '')
-    expect(listPendingAnnotations(db, 'p')).toEqual([])
+    expect(listPendingRows(db, 'p')).toEqual([])
     expect(board().rows[0]!.annotation_unseen).toBe(false)
   })
 
@@ -1352,12 +1355,12 @@ describe('per-row annotation delivery (#37)', () => {
     // It is still queued — an agent re-upserting the board while leaving the row
     // blocked has not acknowledged anything — but it is queued as an ALREADY
     // DELIVERED row, carrying the original stamp rather than reading as new.
-    expect(listPendingAnnotations(db, 'p').map((r) => r.annotation_seen_at)).toEqual([before.annotation_seen_at])
+    expect(listPendingRows(db, 'p').map((r) => r.annotation_seen_at)).toEqual([before.annotation_seen_at])
 
     // …and that surviving stamp is load-bearing: the moment the same upsert
     // acknowledges the row, the stamp is what keeps it from being re-delivered.
     upsertBoard(db, { project: 'p', stream: 's', agent: 'a', title: 'c', rows: [{ label: 'Merge', status: 'partial', note: 'merging' }] })
-    expect(listPendingAnnotations(db, 'p'), 'an acknowledged row must not re-deliver').toEqual([])
+    expect(listPendingRows(db, 'p'), 'an acknowledged row must not re-deliver').toEqual([])
   })
 
   // The backfill is the whole risk of this change. Without it every existing
@@ -1417,19 +1420,267 @@ describe('per-row annotation delivery (#37)', () => {
     // The first poll gets the two genuinely-unread notes PLUS the backfilled-seen
     // row that is still blocked — and NOT 'old note', the already-read aside on a
     // non-blocked row, which is what the backfill is still there to hold back.
-    expect(listPendingAnnotations(db2, 'p').map((r) => r.annotation).sort())
+    expect(listPendingRows(db2, 'p').map((r) => r.annotation).sort())
       .toEqual(['do this next', 'new note', 'sure make the PR'])
 
     // …and the legacy NULL annotated_at is still STAMPABLE: the version pin
     // compares with `IS`, not `=`, or that row could never earn a "delivered to"
     // attribution and the human's chip would read "awaiting pickup" forever.
     annotateBoardRowLegacyNull(db2)
-    const legacyRow = listPendingAnnotations(db2, 'p').find((r) => r.row_id === 'r-null')!
+    const legacyRow = listPendingRows(db2, 'p').find((r) => r.row_id === 'r-null')!
     expect(legacyRow.annotated_at).toBeNull()
     expect(markAnnotationDelivered(db2, 'r-null', null, 'claude-code')).toBe(true)
     const stamped = listBoards(db2).flatMap((b) => b.rows).find((r) => r.id === 'r-null')!
     expect(stamped.annotation_seen_at).toMatch(/^\d{4}-\d{2}-\d{2}T/)
     expect(stamped.annotation_seen_by).toBe('claude-code')
+    db2.close()
+  })
+})
+
+// ── issue #36: the human's "I did my part" mark ─────────────────────────────
+//
+// Every blocked row in the wild was a TASK, not a question, and the viewer only
+// offered a text box. `handled_at` is the missing lever. It mirrors `annotation`
+// deliberately: sacred against upsertBoard, delivered through the same queue,
+// reset by a NEW ask.
+describe('row handled mark (#36)', () => {
+  let db: Database.Database
+  beforeEach(() => { db = freshDb() })
+
+  function seed(rows: { label: string; status: RowStatus }[] = [{ label: 'Paddle', status: 'blocked' }]) {
+    upsertBoard(db, { project: 'p', stream: 's', agent: 'a', title: 'c', rows: rows.map((r) => ({ ...r, note: `note ${r.label}` })) })
+    return { board: () => listBoards(db).find((b) => b.title === 'c')!, rowId: (label = rows[0]!.label) => listBoards(db).find((b) => b.title === 'c')!.rows.find((r) => r.label === label)!.id }
+  }
+
+  it('marking stamps handled_at and leaves it undelivered', () => {
+    const { board, rowId } = seed()
+    expect(markRowHandled(db, rowId())).toBe(true)
+    const row = board().rows[0]!
+    expect(row.handled_at).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+    expect(row.handled_seen_at).toBeNull()
+    expect(row.handled_seen_by).toBeNull()
+  })
+
+  it('marking a row id that does not exist reports failure rather than silently succeeding', () => {
+    seed()
+    expect(markRowHandled(db, 'no-such-row')).toBe(false)
+  })
+
+  // THE invariant. The prescribed agent flow is board_get → board_upsert with the
+  // whole table, so a re-send that dropped the mark would erase the human's action
+  // on every routine refresh — #42's omitted-field-means-delete bug in a new hat.
+  it('a full re-upsert that leaves the row blocked keeps the mark and its delivery state', () => {
+    const { board, rowId } = seed()
+    const id = rowId()
+    markRowHandled(db, id)
+    markHandledDelivered(db, id, board().rows[0]!.handled_at, 'claude-code')
+    const before = board().rows[0]!
+
+    upsertBoard(db, { project: 'p', stream: 's', agent: 'a', title: 'c', rows: [{ label: 'Paddle', status: 'blocked', note: 'still waiting on you' }] })
+    const after = board().rows[0]!
+    expect(after.note, 'the agent-owned field it DID send still wins').toBe('still waiting on you')
+    expect(after.handled_at).toBe(before.handled_at)
+    expect(after.handled_seen_at).toBe(before.handled_seen_at)
+    expect(after.handled_seen_by).toBe('claude-code')
+  })
+
+  it('board_row leaving the row blocked keeps the mark too', () => {
+    const { board, rowId } = seed()
+    markRowHandled(db, rowId())
+    const before = board().rows[0]!.handled_at
+    updateBoardRow(db, { project: 'p', stream: 's', agent: 'a', title: 'c', label: 'Paddle', status: 'blocked', note: 'nudge' })
+    expect(board().rows[0]!.handled_at).toBe(before)
+  })
+
+  it('a write that touches only note/context keeps the mark', () => {
+    const { board, rowId } = seed()
+    markRowHandled(db, rowId())
+    const before = board().rows[0]!.handled_at
+    updateBoardRow(db, { project: 'p', stream: 's', agent: 'a', title: 'c', label: 'Paddle', note: 'ping', context: 'why' })
+    expect(board().rows[0]!.handled_at).toBe(before)
+  })
+
+  // The other half of the rule: acknowledging and then asking AGAIN is a new ask,
+  // so it starts from nothing — the mark must not vouch for the second request.
+  it('board_row acknowledging and then re-blocking clears the mark', () => {
+    const { board, rowId } = seed()
+    markRowHandled(db, rowId())
+    updateBoardRow(db, { project: 'p', stream: 's', agent: 'a', title: 'c', label: 'Paddle', status: 'partial' })
+    expect(board().rows[0]!.handled_at, 'the ack alone does not need to clear it').not.toBeNull()
+    updateBoardRow(db, { project: 'p', stream: 's', agent: 'a', title: 'c', label: 'Paddle', status: 'blocked', note: 'now the LIVE key please' })
+    const row = board().rows[0]!
+    expect(row.handled_at).toBeNull()
+    expect(row.handled_seen_at).toBeNull()
+    expect(row.handled_seen_by).toBeNull()
+  })
+
+  it('board_upsert acknowledging and then re-blocking clears the mark too', () => {
+    const { board, rowId } = seed()
+    markRowHandled(db, rowId())
+    markHandledDelivered(db, rowId(), board().rows[0]!.handled_at, 'claude-code')
+    upsertBoard(db, { project: 'p', stream: 's', agent: 'a', title: 'c', rows: [{ label: 'Paddle', status: 'partial' }] })
+    upsertBoard(db, { project: 'p', stream: 's', agent: 'a', title: 'c', rows: [{ label: 'Paddle', status: 'blocked', note: 'now the LIVE key please' }] })
+    const row = board().rows[0]!
+    expect(row.handled_at).toBeNull()
+    expect(row.handled_seen_by).toBeNull()
+  })
+
+  it('re-blocking one row leaves another row’s mark alone', () => {
+    const { board, rowId } = seed([{ label: 'Paddle', status: 'blocked' }, { label: 'Notion', status: 'blocked' }])
+    markRowHandled(db, rowId('Paddle'))
+    markRowHandled(db, rowId('Notion'))
+    upsertBoard(db, { project: 'p', stream: 's', agent: 'a', title: 'c', rows: [
+      { label: 'Paddle', status: 'partial' }, { label: 'Notion', status: 'blocked' },
+    ] })
+    upsertBoard(db, { project: 'p', stream: 's', agent: 'a', title: 'c', rows: [
+      { label: 'Paddle', status: 'blocked' }, { label: 'Notion', status: 'blocked' },
+    ] })
+    expect(board().rows.find((r) => r.label === 'Paddle')!.handled_at).toBeNull()
+    expect(board().rows.find((r) => r.label === 'Notion')!.handled_at).not.toBeNull()
+  })
+
+  it('the annotation and the mark are independent — neither write clears the other', () => {
+    const { board, rowId } = seed()
+    const id = rowId()
+    annotateBoardRow(db, id, 'account is live, id 4471')
+    markRowHandled(db, id)
+    expect(board().rows[0]!.annotation).toBe('account is live, id 4471')
+    annotateBoardRow(db, id, 'actually id 4472')
+    expect(board().rows[0]!.handled_at).not.toBeNull()
+  })
+
+  // The undo. It may only work while the mark is still the human's own business:
+  // once an agent has been handed it, un-marking cannot un-tell them.
+  it('clearing an undelivered mark succeeds and wipes all three columns', () => {
+    const { board, rowId } = seed()
+    markRowHandled(db, rowId())
+    expect(clearRowHandled(db, rowId())).toBe(true)
+    const row = board().rows[0]!
+    expect(row.handled_at).toBeNull()
+    expect(row.handled_seen_at).toBeNull()
+    expect(row.handled_seen_by).toBeNull()
+  })
+
+  it('clearing is refused once an agent has been handed the mark, and the mark survives the refusal', () => {
+    const { board, rowId } = seed()
+    markRowHandled(db, rowId())
+    markHandledDelivered(db, rowId(), board().rows[0]!.handled_at, 'claude-code')
+    expect(clearRowHandled(db, rowId())).toBe(false)
+    expect(board().rows[0]!.handled_at, 'a refused clear must not half-apply').not.toBeNull()
+    expect(board().rows[0]!.handled_seen_by).toBe('claude-code')
+  })
+
+  it('clearing an already-clear row reports success — a repeat must not read as a pickup', () => {
+    const { rowId } = seed()
+    expect(clearRowHandled(db, rowId())).toBe(true)
+    expect(clearRowHandled(db, rowId())).toBe(true)
+  })
+
+  // markAnnotationDelivered's contract, for the mark: COALESCE so the FIRST
+  // delivery's age is what the human reads, and a version pin so a re-mark made
+  // between an agent's read and its stamp is not marked delivered.
+  it('delivery stamps once and never moves, so the age stays evidence', async () => {
+    const { board, rowId } = seed()
+    markRowHandled(db, rowId())
+    expect(markHandledDelivered(db, rowId(), board().rows[0]!.handled_at, 'claude-code')).toBe(true)
+    const first = board().rows[0]!.handled_seen_at
+    await new Promise((r) => setTimeout(r, 5))
+    expect(markHandledDelivered(db, rowId(), board().rows[0]!.handled_at, 'codex')).toBe(true)
+    expect(board().rows[0]!.handled_seen_at).toBe(first)
+    expect(board().rows[0]!.handled_seen_by).toBe('claude-code')
+  })
+
+  it('marking again after a delivery puts the row back to undelivered', async () => {
+    const { board, rowId } = seed()
+    markRowHandled(db, rowId())
+    markHandledDelivered(db, rowId(), board().rows[0]!.handled_at, 'claude-code')
+    await new Promise((r) => setTimeout(r, 5))
+    markRowHandled(db, rowId())
+    expect(board().rows[0]!.handled_seen_at).toBeNull()
+    expect(board().rows[0]!.handled_seen_by).toBeNull()
+  })
+
+  it('a re-mark under a reader’s feet is refused and stays undelivered', async () => {
+    const { board, rowId } = seed()
+    markRowHandled(db, rowId())
+    const read = board().rows[0]!.handled_at            // what the agent read
+    await new Promise((r) => setTimeout(r, 5))
+    markRowHandled(db, rowId())                         // the human re-marks
+    expect(markHandledDelivered(db, rowId(), read, 'claude-code')).toBe(false)
+    expect(board().rows[0]!.handled_seen_at).toBeNull()
+  })
+
+  it('a row carrying no mark cannot be stamped delivered', () => {
+    const { board, rowId } = seed()
+    expect(markHandledDelivered(db, rowId(), null, 'claude-code')).toBe(false)
+    expect(board().rows[0]!.handled_seen_at).toBeNull()
+  })
+
+  // #36 requirement 4: a mark the agent cannot see is the same dead end the issue
+  // is about. It rides the SAME queue as annotations, under the same rules.
+  it('listPendingRows delivers a row whose only human input is the mark', () => {
+    const { board, rowId } = seed()
+    markRowHandled(db, rowId())
+    const [queued] = listPendingRows(db, 'p')
+    expect(queued).toMatchObject({ label: 'Paddle', status: 'blocked', annotation: null })
+    expect(queued!.handled_at).toBe(board().rows[0]!.handled_at)
+    expect(queued!.handled_seen_at).toBeNull()
+  })
+
+  it('a marked blocked row keeps being delivered until the agent flips the status', () => {
+    const { board, rowId } = seed([{ label: 'Paddle', status: 'blocked' }, { label: 'QA', status: 'partial' }])
+    markRowHandled(db, rowId('Paddle'))
+    markHandledDelivered(db, rowId('Paddle'), board().rows[0]!.handled_at, 'claude-code')
+    expect(listPendingRows(db, 'p').map((r) => r.label), 'delivery is not acknowledgement').toEqual(['Paddle'])
+    updateBoardRow(db, { project: 'p', stream: 's', agent: 'a', title: 'c', label: 'Paddle', status: 'partial' })
+    expect(listPendingRows(db, 'p')).toEqual([])
+  })
+
+  it('an undelivered mark on a NON-blocked row is delivered once, then stays put', () => {
+    const { board, rowId } = seed([{ label: 'Paddle', status: 'partial' }])
+    markRowHandled(db, rowId())
+    expect(listPendingRows(db, 'p').map((r) => r.label)).toEqual(['Paddle'])
+    markHandledDelivered(db, rowId(), board().rows[0]!.handled_at, 'claude-code')
+    expect(listPendingRows(db, 'p')).toEqual([])
+  })
+
+  it('a row whose annotation is delivered but whose mark is not is still queued', () => {
+    const { board, rowId } = seed([{ label: 'Paddle', status: 'partial' }])
+    annotateBoardRow(db, rowId(), 'see the note')
+    markAnnotationDelivered(db, rowId(), board().rows[0]!.annotated_at, 'claude-code')
+    expect(listPendingRows(db, 'p'), 'the annotation alone would have gone quiet here').toEqual([])
+    markRowHandled(db, rowId())
+    expect(listPendingRows(db, 'p').map((r) => r.label)).toEqual(['Paddle'])
+  })
+
+  it('a row with neither an annotation nor a mark is not queued', () => {
+    seed()
+    expect(listPendingRows(db, 'p')).toEqual([])
+  })
+
+  it('openDb adds the three columns to a board_rows table that predates them', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'inbox-handled-')), 'inbox.db')
+    const legacy = new Database(path)
+    legacy.exec(`
+      CREATE TABLE boards (
+        id TEXT PRIMARY KEY, project TEXT NOT NULL, stream TEXT NOT NULL DEFAULT '',
+        agent TEXT NOT NULL DEFAULT 'unknown', title TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        UNIQUE(project, title)
+      );
+      CREATE TABLE board_rows (
+        id TEXT PRIMARY KEY, board_id TEXT NOT NULL, label TEXT NOT NULL, status TEXT NOT NULL,
+        note TEXT NOT NULL DEFAULT '', context TEXT NOT NULL DEFAULT '', annotation TEXT,
+        position INTEGER NOT NULL, UNIQUE(board_id, label)
+      );
+    `)
+    legacy.close()
+    const db2 = openDb(path)
+    upsertBoard(db2, { project: 'p', stream: '', agent: 'a', title: 'c', rows: [{ label: 'x', status: 'blocked' }] })
+    const id = listBoards(db2)[0]!.rows[0]!.id
+    expect(listBoards(db2)[0]!.rows[0]!.handled_at, 'a legacy row starts unmarked, not undefined').toBeNull()
+    expect(markRowHandled(db2, id)).toBe(true)
+    expect(listBoards(db2)[0]!.rows[0]!.handled_at).toMatch(/^\d{4}-\d{2}-\d{2}T/)
     db2.close()
   })
 })

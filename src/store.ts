@@ -193,6 +193,13 @@ function migrate(db: Database.Database): void {
   ensureColumn(db, 'items', 'issue_ref', 'INTEGER')
   ensureColumn(db, 'boards', 'repo', 'TEXT')
   ensureColumn(db, 'boards', 'issue_ref', 'INTEGER')
+  // issue #36 — the human's "I did my part" mark and its delivery mirror. Plain
+  // additive columns: absence genuinely means "no value" (nobody has marked
+  // anything), so unlike migrateAnnotationDelivery below there is nothing to
+  // backfill and no flood to avoid.
+  ensureColumn(db, 'board_rows', 'handled_at', 'TEXT')
+  ensureColumn(db, 'board_rows', 'handled_seen_at', 'TEXT')
+  ensureColumn(db, 'board_rows', 'handled_seen_by', 'TEXT')
   migrateAnnotationDelivery(db)
 }
 
@@ -442,19 +449,35 @@ export interface BoardRow {
   // stays blocked until an agent flips its status, which is the acknowledgement.
   annotation_seen_at: string | null
   annotation_seen_by: string | null
+  // issue #36 — the human's OTHER answer on a blocked row: not words, but "I went
+  // and did my part". Deliberately NOT called done: `status: 'done'` is the
+  // AGENT's assertion that the row's work is finished, and only an agent may set
+  // it. This says the human's half is finished and the row is now waiting on an
+  // agent to acknowledge by flipping that status. Same delivery mirror as the
+  // annotation, and for the same reason (#37): the age of `handled_seen_at` is
+  // the evidence that an agent has known for three hours and done nothing.
+  handled_at: string | null
+  handled_seen_at: string | null
+  handled_seen_by: string | null
   position: number
   annotation_unseen: boolean
 }
 
 type BoardRowRecord = Omit<BoardRow, 'annotation_unseen'>
 
-const ROW_COLUMNS = `id, label, status, note, context, annotation, annotated_at, annotation_seen_at, annotation_seen_by, position`
+const ROW_COLUMNS = `id, label, status, note, context, annotation, annotated_at, annotation_seen_at, annotation_seen_by, handled_at, handled_seen_at, handled_seen_by, position`
 
 // An annotation is "unseen" until it has been DELIVERED to an agent. Per-row and
 // nothing else: `boards.last_read_at` is deliberately not an input any more
 // (issue #37 / #36). Two inputs would disagree the first time a row is stamped
 // individually while a board is stamped wholesale, and the disagreement would be
 // invisible — nothing renders last_read_at.
+//
+// #36's `handled_at` gets NO derived twin here on purpose. `annotation_unseen`
+// exists because "is there text an agent has not been handed" cannot be read off
+// `annotation` alone — it needs the emptiness rule above. The mark has no such
+// rule: `handled_at != null && handled_seen_at == null` says it exactly, and one
+// less derived field is one less thing that can disagree with its own inputs.
 function withUnseen(rows: BoardRowRecord[]): BoardRow[] {
   return rows.map((r) => ({
     ...r,
@@ -505,15 +528,17 @@ export function upsertBoard(db: Database.Database, input: UpsertBoardInput): { b
   const run = db.transaction((inp: UpsertBoardInput): { boardId: string; rowCount: number } => {
     const now = new Date().toISOString()
     const boardId = ensureBoard(db, inp, now)
-    const existing = db.prepare(`SELECT id, label FROM board_rows WHERE board_id = ?`).all(boardId) as { id: string; label: string }[]
-    const idByLabel = new Map(existing.map((r) => [r.label, r.id]))
+    const existing = db.prepare(`SELECT id, label, status FROM board_rows WHERE board_id = ?`).all(boardId) as { id: string; label: string; status: RowStatus }[]
+    const idByLabel = new Map(existing.map((r) => [r.label, r]))
     const incoming = new Set<string>()
     inp.rows.forEach((r, i) => {
       incoming.add(r.label)
-      const existingId = idByLabel.get(r.label)
-      if (existingId) {
+      const prev = idByLabel.get(r.label)
+      if (prev) {
+        const existingId = prev.id
         // annotation column is deliberately NOT touched — human notes survive
         db.prepare(`UPDATE board_rows SET status = ?, note = ?, position = ? WHERE id = ?`).run(r.status, r.note ?? '', i, existingId)
+        resetHandledOnReblock(db, existingId, prev.status, r.status)
         // OMITTING `context` KEEPS WHAT IS STORED; only an explicit '' clears it
         // (issue #42). The rule that a row ABSENT from an upsert is deleted is
         // about ROWS and is untouched — this is about a FIELD, and omission is
@@ -554,9 +579,12 @@ export function updateBoardRow(db: Database.Database, input: UpdateRowInput): { 
   const run = db.transaction((inp: UpdateRowInput): { boardId: string; rowId: string } => {
     const now = new Date().toISOString()
     const boardId = ensureBoard(db, inp, now)
-    const existing = db.prepare(`SELECT id FROM board_rows WHERE board_id = ? AND label = ?`).get(boardId, inp.label) as { id: string } | undefined
+    const existing = db.prepare(`SELECT id, status FROM board_rows WHERE board_id = ? AND label = ?`).get(boardId, inp.label) as { id: string; status: RowStatus } | undefined
     if (existing) {
-      if (inp.status !== undefined) db.prepare(`UPDATE board_rows SET status = ? WHERE id = ?`).run(inp.status, existing.id)
+      if (inp.status !== undefined) {
+        db.prepare(`UPDATE board_rows SET status = ? WHERE id = ?`).run(inp.status, existing.id)
+        resetHandledOnReblock(db, existing.id, existing.status, inp.status)
+      }
       if (inp.note !== undefined) db.prepare(`UPDATE board_rows SET note = ? WHERE id = ?`).run(inp.note, existing.id)
       if (inp.context !== undefined) db.prepare(`UPDATE board_rows SET context = ? WHERE id = ?`).run(inp.context, existing.id)
       syncBoardStatus(db, boardId)
@@ -622,6 +650,83 @@ export function annotateBoardRow(db: Database.Database, rowId: string, text: str
     .run(text, new Date().toISOString(), rowId)
 }
 
+// ── issue #36: the human's "I did my part" mark ─────────────────────────────
+//
+// WHY IT IS NOT A STATUS. Every `blocked` row in the wild turned out to be a
+// TASK — "create the Paddle account", "register the Notion integration",
+// "record the hero demo" — not a question. Agents use `blocked` exactly as the
+// rule says (it needs the human), but the only lever the viewer offered was a
+// free-text box: a task does not want words, it wants DONE. `status: 'done'` is
+// the agent's assertion about the ROW's work and only agents may write it, so
+// the human's half needed its own field. This is that field.
+//
+// THE INVARIANT: `upsertBoard` can never clear it, exactly like `annotation`.
+// The prescribed agent flow is a full-table re-send, so "any write mentioning
+// this row drops the mark" would erase the human's action on every routine
+// refresh — the omitted-field-means-delete failure #42 had to fix at the root,
+// wearing a different hat.
+export function markRowHandled(db: Database.Database, rowId: string): boolean {
+  // New mark, new delivery — the same statement, for annotateBoardRow's reason:
+  // split them and a re-mark on an already-delivered row inherits the old stamp
+  // and reads "delivered" to the human before anyone has been told.
+  const info = db
+    .prepare(`UPDATE board_rows SET handled_at = ?, handled_seen_at = NULL, handled_seen_by = NULL WHERE id = ?`)
+    .run(new Date().toISOString(), rowId)
+  return info.changes > 0
+}
+
+// The undo, and the ONLY thing that can take the mark back. Guarded in the SAME
+// statement it writes (replyItem's blank-guard precedent, not a read-then-write):
+// the MCP server stamps delivery from its own OS process, so a check up here
+// would be a TOCTOU window rather than a guard. `false` = an agent has already
+// been handed the mark — un-marking cannot un-tell them, so refuse and let the
+// caller say so out loud instead of pretending it worked.
+//
+// It does NOT require the mark to still be there: clearing an already-clear row
+// reports success, so two tabs (or a double click) can never turn a harmless
+// repeat into a "somebody picked this up" lie.
+export function clearRowHandled(db: Database.Database, rowId: string): boolean {
+  const info = db
+    .prepare(`UPDATE board_rows SET handled_at = NULL, handled_seen_at = NULL, handled_seen_by = NULL
+               WHERE id = ? AND handled_seen_at IS NULL`)
+    .run(rowId)
+  return info.changes > 0
+}
+
+// markAnnotationDelivered's twin, same COALESCE (the stamp records the FIRST
+// delivery and never moves, because its AGE is the evidence the human's card
+// shows) and same version pin (the viewer can re-mark from another process
+// between an agent's read and its stamp).
+//
+// Stricter in one place: `handled_at IS NOT NULL`. markAnnotationDelivered
+// deliberately tolerates a NULL pin because real pre-`annotated_at` rows exist in
+// the wild; this column has no legacy, so a NULL pin can only mean "you are
+// stamping a row that carries no mark" and is refused.
+export function markHandledDelivered(
+  db: Database.Database,
+  rowId: string,
+  handledAt: string | null,
+  by: string | null,
+): boolean {
+  const info = db
+    .prepare(`UPDATE board_rows SET handled_seen_at = COALESCE(handled_seen_at, ?),
+                                    handled_seen_by = COALESCE(handled_seen_by, ?)
+               WHERE id = ? AND handled_at IS NOT NULL AND handled_at IS ?`)
+    .run(new Date().toISOString(), by, rowId, handledAt)
+  return info.changes > 0
+}
+
+// The ONE rule that decides when the human's mark dies: a NEW ask, and nothing
+// else — a row that was NOT blocked and now is. Re-sending a row that is already
+// blocked is not an acknowledgement (both board tool descriptions say so) and
+// must therefore not reset anything, or every routine full-table refresh would
+// quietly undo the human's action. Flipping the status is the acknowledgement;
+// blocking it again afterwards is a fresh request, so it starts from nothing.
+function resetHandledOnReblock(db: Database.Database, rowId: string, prev: RowStatus, next: RowStatus): void {
+  if (next !== 'blocked' || prev === 'blocked') return
+  db.prepare(`UPDATE board_rows SET handled_at = NULL, handled_seen_at = NULL, handled_seen_by = NULL WHERE id = ?`).run(rowId)
+}
+
 // The rows-shaped twin of markReplySeen, version-pinned for the same reason: the
 // viewer writes annotations from its own OS process, so a SELECT-then-UPDATE
 // would stamp text that no longer exists and bury the human's newest instruction
@@ -672,12 +777,17 @@ export function markBoardRead(db: Database.Database, boardId: string): void {
   db.prepare(`UPDATE boards SET last_read_at = ? WHERE id = ?`).run(new Date().toISOString(), boardId)
 }
 
-// ── issue #37: the delivery queue for board annotations ─────────────────────
+// ── issue #37: the delivery queue for what the human said on a board row ────
 //
 // The human's per-row note used to be reachable only by an agent independently
 // choosing to call board_get — guidance in a document, not a delivery mechanism.
 // This is what `pending()` adds to its payload, project-scoped exactly as items
 // are, so every agent already polling picks them up with no new discipline.
+//
+// It carries BOTH shapes the human can answer a row in (issue #36): the
+// `annotation` (words) and the `handled_at` mark (they went and DID it). A mark
+// the agent cannot see is the same dead end as an undeliverable note, so the two
+// ride the same queue and the same at-least-once rule below.
 //
 // ACTIVE boards only, matching board_get (getBoard returns undefined for an
 // archived board). syncBoardStatus auto-archives a board the moment it hits 100%,
@@ -694,8 +804,8 @@ export function markBoardRead(db: Database.Database, boardId: string): void {
 // one signal that tells them to stop chasing it. The same window opened on a
 // crash or client timeout between the stamp and the response.
 //
-// So: a row is pending while it is UNACKNOWLEDGED — nobody has been handed it
-// yet, OR it is still `blocked`. `blocked` is exactly the state the human is
+// So: a row is pending while it is UNACKNOWLEDGED — some part of what the human
+// left has not been handed over, OR it is still `blocked`. `blocked` is exactly the state the human is
 // still looking at (public/attention.js keeps an annotated blocked row on screen
 // in the awaiting-pickup foot until an agent flips it), so the agent's queue and
 // the human's screen now go quiet on the SAME event. One rule, both surfaces.
@@ -710,7 +820,7 @@ export function markBoardRead(db: Database.Database, boardId: string): void {
 //                 months-old aside on a live board would be a permanent firehose.
 // The payload carries the delivery stamp so a re-delivery is self-labelling: an
 // agent polling every few seconds can tell "new to me" from "I already have this".
-export interface PendingAnnotation {
+export interface PendingRow {
   board_id: string
   board_title: string
   project: string
@@ -721,26 +831,35 @@ export interface PendingAnnotation {
   status: RowStatus
   note: string
   context: string
-  annotation: string
+  // NULLABLE since #36: a row can reach this queue carrying only the human's
+  // `handled_at` mark and no words at all. An agent that keys on `annotation`
+  // being a string would then silently skip the very thing it is being told.
+  annotation: string | null
   annotated_at: string | null
   annotation_seen_at: string | null
   annotation_seen_by: string | null
+  handled_at: string | null
+  handled_seen_at: string | null
+  handled_seen_by: string | null
 }
 
-export function listPendingAnnotations(db: Database.Database, project: string): PendingAnnotation[] {
+export function listPendingRows(db: Database.Database, project: string): PendingRow[] {
   return db
     .prepare(
       `SELECT b.id AS board_id, b.title AS board_title, b.project AS project, b.stream AS stream, b.agent AS agent,
               r.id AS row_id, r.label AS label, r.status AS status, r.note AS note, r.context AS context,
               r.annotation AS annotation, r.annotated_at AS annotated_at,
-              r.annotation_seen_at AS annotation_seen_at, r.annotation_seen_by AS annotation_seen_by
+              r.annotation_seen_at AS annotation_seen_at, r.annotation_seen_by AS annotation_seen_by,
+              r.handled_at AS handled_at, r.handled_seen_at AS handled_seen_at, r.handled_seen_by AS handled_seen_by
          FROM board_rows r JOIN boards b ON b.id = r.board_id
         WHERE b.project = ? AND b.status = 'active'
-          AND r.annotation IS NOT NULL AND r.annotation <> ''
-          AND (r.annotation_seen_at IS NULL OR r.status = 'blocked')
+          AND ((r.annotation IS NOT NULL AND r.annotation <> '') OR r.handled_at IS NOT NULL)
+          AND (r.status = 'blocked'
+               OR (r.annotation IS NOT NULL AND r.annotation <> '' AND r.annotation_seen_at IS NULL)
+               OR (r.handled_at IS NOT NULL AND r.handled_seen_at IS NULL))
         ORDER BY b.updated_at DESC, r.position ASC`,
     )
-    .all(project) as PendingAnnotation[]
+    .all(project) as PendingRow[]
 }
 
 export function computeProgress(rows: BoardRow[]): Progress {

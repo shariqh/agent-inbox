@@ -44,14 +44,29 @@ export function classifyLiveness(item, nowMs, liveSessionIds) {
   return nowMs - createdMs(item) > STALE_MS ? 'stale' : 'parked'
 }
 
-// A blocked row stops asking the moment the HUMAN answers it — i.e. annotates.
-// Whether an agent has picked that answer up is the agent's state, not a reason
-// to keep nagging the human, and this is precisely what items already do:
-// isAskingQuestion goes false as soon as `reply` is non-empty, pickup irrelevant.
+// THE ONE PLACE that knows a blocked row can be answered in TWO shapes (#36).
+// Every `blocked` row in the wild turned out to be a TASK — "create the Paddle
+// account", "record the hero demo" — not a question, so the human's answer is
+// often not words at all but "I went and did it": `handled_at`. Either shape
+// ends the human's part, and nothing downstream should have to know which one
+// arrived, so the disjunction lives here rather than in each caller.
+//
+// Empty string is no answer, for both halves: `''` is what a blanked annotation
+// leaves behind, and a caller that tested `!== null` would keep a row in the
+// badge forever with nothing to show for it.
+export function humanActedOnRow(row) {
+  return Boolean(row.annotation) || Boolean(row.handled_at)
+}
+
+// A blocked row stops asking the moment the HUMAN answers it — in words, or by
+// doing it. Whether an agent has picked that answer up is the agent's state, not
+// a reason to keep nagging the human, and this is precisely what items already
+// do: isAskingQuestion goes false as soon as `reply` is non-empty, pickup
+// irrelevant.
 //
 // Issues #36 + #37 removed the old `annotation_unseen` dependency deliberately.
-// Two things were wrong with it. (1) Annotating is the ONLY lever the viewer
-// offers on a blocked row, and it did not move the badge — if the agent's
+// Two things were wrong with it. (1) Annotating was the ONLY lever the viewer
+// offered on a blocked row, and it did not move the badge — if the agent's
 // session was over, nothing ever would, so the row was literally unclearable
 // (#36). (2) It made board-level mark-seen state, written by a different OS
 // process, an input to the badge: one `board_get` silently cleared rows nobody
@@ -60,21 +75,23 @@ export function classifyLiveness(item, nowMs, liveSessionIds) {
 //
 // The signal is NOT removed, it is relabeled: see awaitingAgentRows below.
 export function isBlockedRowAttention(row) {
-  return row.status === 'blocked' && !row.annotation
+  return row.status === 'blocked' && !humanActedOnRow(row)
 }
 
-// The rows isBlockedRowAttention just dropped: blocked, and carrying the human's
-// answer. They render in the Needs-you foot beside repliedEntries — "delivered
-// 3m ago" vs "waiting for agent pickup" — so an answer nobody collected stays
-// visible, as the AGENT's failure rather than the human's to-do. It lives in
-// THIS module, next to the predicate whose complement it is, so there is never a
-// second place that decides what a blocked row means (tenet 3).
+// The rows isBlockedRowAttention just dropped: blocked, and carrying whatever the
+// human left — words (#37) or their "I did my part" mark (#36). They render in the
+// Needs-you foot beside repliedEntries — "delivered 3m ago" vs "waiting for agent
+// pickup" — so an answer nobody collected stays visible, as the AGENT's failure
+// rather than the human's to-do. It lives in THIS module, next to the predicate
+// whose complement it is, and reuses humanActedOnRow so the two can never
+// disagree about what "answered" means and let a row fall through BOTH sets
+// (tenet 3). Complement, exactly: attention ∪ foot = every blocked row.
 export function awaitingAgentRows(boards, closedProjects = []) {
   const closed = asSet(closedProjects)
   const out = []
   for (const b of boards ?? []) {
     if (closed.has(b.project)) continue
-    for (const r of b.rows ?? []) if (r.status === 'blocked' && r.annotation) out.push({ kind: 'row', row: r, board: b })
+    for (const r of b.rows ?? []) if (r.status === 'blocked' && humanActedOnRow(r)) out.push({ kind: 'row', row: r, board: b })
   }
   return out
 }
@@ -151,11 +168,13 @@ export function countsByProject(items, boards, nowMs, liveSessionIds) {
 
 // 0 blocked rows · 1 waiting · 2 parked · 3 answered-awaiting-pickup (dimmed foot)
 //
-// Bucket 3 covers BOTH nouns: an answered question and an annotated blocked row
+// Bucket 3 covers BOTH nouns: an answered question and an answered blocked row
 // are the same state — the human is done, the agent has not closed it out — so
 // they share one ordering rule rather than growing a second one for rows (#37).
+// Through humanActedOnRow (#36) a row the human MARKED sinks into that same foot
+// beside an annotated one, instead of staying at the top reading like a to-do.
 function bucket(e) {
-  if (e.kind === 'row') return e.row.annotation ? 3 : 0
+  if (e.kind === 'row') return humanActedOnRow(e.row) ? 3 : 0
   if (e.item.reply) return 3
   return e.liveness === 'waiting' ? 1 : 2
 }

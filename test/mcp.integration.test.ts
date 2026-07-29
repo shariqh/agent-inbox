@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
-import { openDb, listItems, listBoards, getBoard, annotateBoardRow, listPendingAnnotations, replyItem, listActivity } from '../src/store.js'
+import { openDb, listItems, listBoards, getBoard, annotateBoardRow, markRowHandled, listPendingRows, replyItem, listActivity } from '../src/store.js'
 
 describe('mcp round-trip', () => {
   it('flag writes a row attributed to this session, and whoami reflects register', async () => {
@@ -301,7 +301,7 @@ describe('mcp round-trip', () => {
     const store = openDb(dbPath)
     const project = listBoards(store)[0]!.project
     for (const b of listBoards(store)) annotateBoardRow(store, b.rows[0]!.id, `note for ${b.title}`)
-    expect(listPendingAnnotations(store, project)).toHaveLength(2)
+    expect(listPendingRows(store, project)).toHaveLength(2)
 
     const c2 = await conn()
     const got = await c2.callTool({ name: 'board_get', arguments: {} })
@@ -320,7 +320,7 @@ describe('mcp round-trip', () => {
     }
     // …and it consumed NOTHING: an unrelated session's incidental board_get must
     // not be able to take the human's note out of anyone else's pending() queue
-    expect(listPendingAnnotations(openDb(dbPath), project).map((r) => r.annotation).sort())
+    expect(listPendingRows(openDb(dbPath), project).map((r) => r.annotation).sort())
       .toEqual(['note for one', 'note for two'])
   }, 20000)
 
@@ -730,6 +730,94 @@ describe('mcp round-trip', () => {
   // is what the agent receives, and it is the only proof that the zod
   // .describe() survives into the JSON Schema — including through .optional()
   // on board_row and through the array-items wrapper on board_upsert.
+  // #36 requirement 4 — the mark has to REACH the agent, through the one poll
+  // they are told to make. A mark the agent cannot see is the same dead end the
+  // issue is about, so this drives the real stdio server end to end.
+  it('pending delivers a handled mark to an agent that never calls board_get (#36)', async () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-handled-')), 'inbox.db')
+    const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
+    const c1 = new Client({ name: 'claude-code', version: '1.0.0' }); await c1.connect(t)
+    const call = async (name: string, args: Record<string, unknown>) =>
+      JSON.parse(((await c1.callTool({ name, arguments: args })).content as Array<{ text: string }>)[0]!.text)
+
+    await call('board_upsert', { title: 'wave 0', rows: [{ label: 'Paddle account', status: 'blocked', note: '~15 min KYC' }] })
+    expect((await call('pending', {})).rows).toEqual([])
+
+    // the human clicks "I've done my part" in the VIEWER — a different process
+    const project = listBoards(openDb(dbPath))[0]!.project
+    const rowId = getBoard(openDb(dbPath), project, 'wave 0')!.rows[0]!.id
+    markRowHandled(openDb(dbPath), rowId)
+
+    const delivered = (await call('pending', {})).rows
+    expect(delivered).toHaveLength(1)
+    expect(delivered[0].label).toBe('Paddle account')
+    expect(delivered[0].handled_at).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+    expect(delivered[0].annotation, 'the human wrote no words — only the mark').toBeNull()
+
+    // …and it is stamped, so the human's card can stop saying "waiting for pickup"
+    const row = getBoard(openDb(dbPath), project, 'wave 0')!.rows[0]!
+    expect(row.handled_seen_at).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+    expect(row.handled_seen_by).toBe('claude-code')
+    expect(row.status, 'delivery is not acknowledgement').toBe('blocked')
+
+    // at-least-once, exactly like an annotation: a second poll re-hands it,
+    // labelled as already delivered, until the status flip acknowledges it
+    const again = (await call('pending', {})).rows
+    expect(again).toHaveLength(1)
+    expect(again[0].handled_seen_at).toBe(row.handled_seen_at)
+
+    await call('board_row', { title: 'wave 0', label: 'Paddle account', status: 'done' })
+    expect((await call('pending', {})).rows).toEqual([])
+    await c1.close()
+  }, 20000)
+
+  it('board_get delivers the handled mark too, and re-blocking clears it (#36)', async () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-handled2-')), 'inbox.db')
+    const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
+    const c1 = new Client({ name: 'claude-code', version: '1.0.0' }); await c1.connect(t)
+    const call = async (name: string, args: Record<string, unknown>) =>
+      JSON.parse(((await c1.callTool({ name, arguments: args })).content as Array<{ text: string }>)[0]!.text)
+
+    await call('board_upsert', { title: 'wave 0', rows: [{ label: 'Notion integration', status: 'blocked' }] })
+    const project = listBoards(openDb(dbPath))[0]!.project
+    markRowHandled(openDb(dbPath), getBoard(openDb(dbPath), project, 'wave 0')!.rows[0]!.id)
+
+    const read = await call('board_get', { title: 'wave 0' })
+    expect(read.rows[0].handled_at).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+    expect(getBoard(openDb(dbPath), project, 'wave 0')!.rows[0]!.handled_seen_by).toBe('claude-code')
+
+    // a full-table re-send that leaves the row blocked must NOT wipe the mark
+    await call('board_upsert', { title: 'wave 0', rows: [{ label: 'Notion integration', status: 'blocked', note: 'still waiting' }] })
+    expect(getBoard(openDb(dbPath), project, 'wave 0')!.rows[0]!.handled_at).not.toBeNull()
+
+    // acknowledging and then asking again IS a new request, and starts clean
+    await call('board_row', { title: 'wave 0', label: 'Notion integration', status: 'partial' })
+    await call('board_row', { title: 'wave 0', label: 'Notion integration', status: 'blocked', note: 'now the OAuth secret please' })
+    expect(getBoard(openDb(dbPath), project, 'wave 0')!.rows[0]!.handled_at).toBeNull()
+    await c1.close()
+  }, 20000)
+
+  it('the tool descriptions tell agents the mark can arrive and how to acknowledge it (#36)', async () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-handleddesc-')), 'inbox.db')
+    const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
+    const c1 = new Client({ name: 'claude-code', version: '1.0.0' }); await c1.connect(t)
+    const tools = new Map((await c1.listTools()).tools.map((x) => [x.name, x]))
+
+    // the poll is where the mark arrives, so that is where it must be described
+    const pending = tools.get('pending')!.description ?? ''
+    expect(pending).toMatch(/handled_at/)
+    expect(pending, 'the acknowledgement is the status flip, not merely reading it').toMatch(/status/)
+
+    // and the two write tools are where the acknowledgement is made
+    for (const name of ['board_upsert', 'board_row']) {
+      expect(tools.get(name)!.description ?? '', name).toMatch(/handled_at|did my part|I did my part/)
+    }
+    const rowStatusDesc = ((tools.get('board_row')!.inputSchema as unknown as { properties: Record<string, { description?: string }> })
+      .properties['status']!).description ?? ''
+    expect(rowStatusDesc, 'the reset rule rides on the FIELD an agent is filling in').toMatch(/NEW request|new request/)
+    await c1.close()
+  }, 20000)
+
   it('the board tools say who `blocked` waits on, and carry the negative example (#44)', async () => {
     const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-blocked-')), 'inbox.db')
     const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })

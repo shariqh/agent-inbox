@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   classifyLiveness,
   isBlockedRowAttention,
+  humanActedOnRow,
   awaitingAgentRows,
   isAskingQuestion,
   attentionEntries,
@@ -40,6 +41,88 @@ const board: AttentionBoard = {
     { id: 'r4', label: 'smoke', status: 'done', annotation: null, annotation_unseen: false },
   ],
 }
+
+// Issue #36's shape, kept apart from `board` above so the #37 assertions keep
+// asserting exactly what they always did. Every row here is a TASK the human was
+// asked to go and do — which is what `blocked` turned out to mean in the wild —
+// so the answer is a `handled_at` mark, not words.
+const taskBoard: AttentionBoard = {
+  id: 'b2',
+  project: 'ops',
+  title: 'Wave 0',
+  rows: [
+    { id: 't1', label: 'Paddle account', status: 'blocked', annotation: null, annotation_unseen: false },
+    { id: 't2', label: 'Notion integration', status: 'blocked', annotation: null, annotation_unseen: false, handled_at: '2026-07-24T11:40:00Z' },
+    { id: 't3', label: 'hero demo', status: 'blocked', annotation: null, annotation_unseen: false, handled_at: '2026-07-24T11:45:00Z', handled_seen_at: '2026-07-24T11:50:00Z' },
+    { id: 't4', label: 'both', status: 'blocked', annotation: 'and I emailed them', annotation_unseen: true, handled_at: '2026-07-24T11:55:00Z' },
+    { id: 't5', label: 'shipped', status: 'done', annotation: null, annotation_unseen: false, handled_at: '2026-07-24T11:30:00Z' },
+  ],
+}
+
+describe('humanActedOnRow', () => {
+  it('is true for an annotation, true for a mark, true for both, false for neither', () => {
+    expect(humanActedOnRow(taskBoard.rows[0]!)).toBe(false)
+    expect(humanActedOnRow(taskBoard.rows[1]!)).toBe(true)
+    expect(humanActedOnRow(taskBoard.rows[3]!)).toBe(true)
+    expect(humanActedOnRow(board.rows[1]!)).toBe(true)
+  })
+
+  it('an empty-string mark is no mark, exactly like an empty annotation', () => {
+    expect(humanActedOnRow({ id: 'x', label: 'x', status: 'blocked', annotation: '', annotation_unseen: false, handled_at: '' })).toBe(false)
+  })
+
+  it('says nothing about status — that is the caller’s half of the rule', () => {
+    expect(humanActedOnRow(taskBoard.rows[4]!)).toBe(true)
+  })
+})
+
+// #36 requirement 2. Before this, the human's ONLY lever on a blocked row was a
+// text box, and none of the four live blocked rows was a question — so a task
+// they had actually gone and done stayed in the badge until an agent flipped the
+// status, and if that session was over, forever.
+describe('isBlockedRowAttention with the handled mark (#36)', () => {
+  it('still counts a blocked row nobody has answered or done', () => {
+    expect(isBlockedRowAttention(taskBoard.rows[0]!)).toBe(true)
+  })
+  it('drops a blocked row the human marked handled, with no agent round-trip', () => {
+    expect(isBlockedRowAttention(taskBoard.rows[1]!)).toBe(false)
+  })
+  it('drops it whether or not an agent has collected the mark', () => {
+    expect(isBlockedRowAttention(taskBoard.rows[2]!)).toBe(false)
+  })
+  it('an empty-string mark leaves the row in the badge', () => {
+    expect(isBlockedRowAttention({ id: 'x', label: 'x', status: 'blocked', annotation: null, annotation_unseen: false, handled_at: '' })).toBe(true)
+  })
+})
+
+// Requirement 3, the rule the whole surface turns on: NEVER remove the signal —
+// relabel it. A marked row leaves the badge and lands in the awaiting-pickup
+// foot, and only an agent flipping the status takes it off screen.
+describe('awaitingAgentRows with the handled mark (#36)', () => {
+  it('holds the marked blocked rows the badge just dropped', () => {
+    expect(awaitingAgentRows([taskBoard]).map((e) => e.row.id)).toEqual(['t2', 't3', 't4'])
+  })
+  it('does not hold a marked row that is no longer blocked — the agent acknowledged it', () => {
+    expect(awaitingAgentRows([taskBoard]).map((e) => e.row.id)).not.toContain('t5')
+  })
+  it('the two sets stay disjoint and together still cover every blocked row', () => {
+    const attn = attentionEntries([], [taskBoard], NOW, new Set()).map((e) => (e.kind === 'row' ? e.row.id : ''))
+    const foot = awaitingAgentRows([taskBoard]).map((e) => e.row.id)
+    expect(attn.filter((id) => foot.includes(id))).toEqual([])
+    expect([...attn, ...foot].sort()).toEqual(['t1', 't2', 't3', 't4'])
+  })
+})
+
+describe('sortNeedsYou with the handled mark (#36)', () => {
+  it('sinks a marked row below an unanswered one, into the same foot as an annotated row', () => {
+    const entries: AttentionEntry[] = [
+      { kind: 'row', row: taskBoard.rows[1]!, board: taskBoard },   // marked
+      { kind: 'row', row: taskBoard.rows[0]!, board: taskBoard },   // still asking
+      { kind: 'row', row: board.rows[2]!, board },                  // annotated
+    ]
+    expect(sortNeedsYou(entries, NOW).map((e) => (e.kind === 'row' ? e.row.id : ''))).toEqual(['t1', 't2', 'r3'])
+  })
+})
 
 describe('constants', () => {
   it('are the spec durations', () => {

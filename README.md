@@ -104,7 +104,8 @@ src/
                    board_upsert/board_row/board_get/board_archive, status)
   mcp-server.ts    stdio entry — spawned per client process (a subagent shares its parent's)
   shape.ts         AGENT-SIDE-ONLY payload shaping for MCP reads (#42) — trims agent-authored
-                   `context` to `context_chars`; never the human's annotation, never the viewer
+                   `context` to `context_chars`; never the human's annotation or handled mark,
+                   never the viewer
   group.ts         pure grouping (Needs-you / Notes / Done)
   viewer.ts        Hono API (items, boards, live activity, source links, close/reopen)
   prstate.ts       VIEWER-PROCESS-ONLY gh fetcher for live PR state (#30) — never imported by mcp.ts

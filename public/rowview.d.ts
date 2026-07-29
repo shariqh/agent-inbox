@@ -28,6 +28,10 @@ export interface RowRow {
   annotation?: string | null
   annotation_seen_at?: string | null
   annotation_seen_by?: string | null
+  /** issue #36 — the human's "I did my part" mark, and its own delivery state. */
+  handled_at?: string | null
+  handled_seen_at?: string | null
+  handled_seen_by?: string | null
 }
 
 export type Liveness = 'waiting' | 'parked' | 'stale'
@@ -49,7 +53,11 @@ export interface RowModel {
   boardTitle: string | null
   created_at: string | null
   answered: boolean
-  /** issue #37 — whether an agent has collected the answer, when, and which one. */
+  /** issue #36 — the human answered by DOING it rather than by writing. */
+  handled: boolean
+  handledAt: string | null
+  handledPickedUp: boolean
+  /** issue #37 — whether an agent has collected everything the human left, when, and which one. */
   pickedUp: boolean
   pickedUpAt: string | null
   pickedUpBy: string
@@ -83,4 +91,5 @@ export const SECONDARY_BUDGET: number
 export function rowStarOption(model: RowModel, item: RowItem): RowOption | null
 export function stagedLabel(staged: { label: string }): string
 export function undoRefusal(item: RowItem, nowMs: number): string | null
+export function handledUndoRefusal(row: RowRow, nowMs: number): string | null
 export function repliedEntries(items: RowItem[], nowMs: number, liveSessionIds: Set<string>): Entry[]

@@ -58,6 +58,17 @@ header { flex-wrap: wrap; }
 .reply-row { display: flex; gap: 6px; flex-basis: 100%; margin-top: 4px; align-items: center; }
 .reply-input { flex: 1; font: inherit; font-size: 13px; padding: 4px 10px; border-radius: 6px; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); background: transparent; color: inherit; }
 .reply-row button, .compare-toggle { font-size: 12px; padding: 3px 10px; border-radius: 6px; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); background: transparent; cursor: pointer; }
+/* issue #36 — the human's "I've done my part" lever. Weighted, because on a
+   blocked TASK row (which is most of them) it is the primary action, not the
+   text box beside it. */
+.handled-btn { font-weight: 600; white-space: nowrap; }
+/* …and what stands in its place once an agent has been handed the mark, because
+   un-marking cannot un-tell them. Not crimson: nothing failed and nothing was
+   lost — this is an explanation, not the .write-error slot beside it. */
+.handled-refusal { font-size: 12px; opacity: .7; white-space: nowrap; }
+/* the mark's own block in the card, beside the annotation's. Green, because it is
+   the human reporting a thing DONE, where 📝 is them reporting words said. */
+.handled-mark { color: color-mix(in srgb, seagreen 55%, CanvasText); opacity: .85; }
 .reply-block { font-size: 13px; margin-top: 8px; padding: 6px 10px; border-radius: 6px; background: color-mix(in srgb, seagreen 8%, transparent); }
 .reply-context { margin-top: 4px; font-size: 12.5px; opacity: .8; white-space: pre-wrap; }
 .pickup { margin-left: 10px; font-size: 11.5px; }
@@ -292,6 +303,9 @@ main { padding-bottom: 34px; } /* the fixed strip must never cover the last row 
 .board-table.matrix tr.needs-answer .row-label { color: color-mix(in srgb, crimson 72%, CanvasText); }
 .more-dot { opacity: .45; margin-left: 6px; }
 .annotation-dot { margin-left: 8px; font-size: 11px; opacity: .7; }
+/* the matrix's at-a-glance "you already did this one" (#36) — the row keeps its
+   🚧 status glyph, because only an agent may change that */
+.handled-dot { margin-left: 8px; font-size: 11px; color: color-mix(in srgb, seagreen 70%, CanvasText); }
 .answer-btn { font: inherit; font-size: 11.5px; padding: 1px 10px; border-radius: 999px; border: 1px solid color-mix(in srgb, crimson 45%, transparent); background: transparent; color: inherit; cursor: pointer; font-weight: 600; }
 .row-expand { font: inherit; font-size: 11px; padding: 1px 6px; border: none; background: transparent; color: inherit; opacity: .4; cursor: pointer; }
 .row-panel-row td { padding: 6px 10px 10px 34px !important; }

@@ -23,6 +23,10 @@ export interface AttentionRow {
   /** issue #37 — when the annotation was handed to an agent, and to which one. */
   annotation_seen_at?: string | null
   annotation_seen_by?: string | null
+  /** issue #36 — the human's "I did my part" mark, and its own delivery stamps. */
+  handled_at?: string | null
+  handled_seen_at?: string | null
+  handled_seen_by?: string | null
   note?: string
 }
 
@@ -52,6 +56,8 @@ export const NOTE_AGE_MS: number
 export function classifyLiveness(item: AttentionItem, nowMs: number, liveSessionIds: LiveSessionIds): Liveness
 export function isAskingQuestion(item: AttentionItem): boolean
 export function isBlockedRowAttention(row: AttentionRow): boolean
+/** issue #36 — the human answered it in words, or went and did it. Either ends their part. */
+export function humanActedOnRow(row: AttentionRow): boolean
 /** A closed set: project names, as a Set (browser) or a plain array (JSON). */
 export type ClosedProjects = Set<string> | readonly string[]
 

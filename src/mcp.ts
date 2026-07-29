@@ -2,7 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
 import type Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
-import { insertItem, resolveItem, listPending, markReplySeen, answerItem, upsertBoard, updateBoardRow, findBoard, archiveBoard, getBoard, listBoards, markBoardRead, markAnnotationDelivered, listPendingAnnotations, upsertActivity, endActivity, touchActivity, recordActivityCall } from './store.js'
+import { insertItem, resolveItem, listPending, markReplySeen, answerItem, upsertBoard, updateBoardRow, findBoard, archiveBoard, getBoard, listBoards, markBoardRead, markAnnotationDelivered, markHandledDelivered, listPendingRows, upsertActivity, endActivity, touchActivity, recordActivityCall } from './store.js'
 import type { BoardWithRows } from './store.js'
 import { makeContextLedger, deliverContext, shapeBoard, summariseBoard, rowKey, itemKey } from './shape.js'
 import { makeScope } from './scope.js'
@@ -134,7 +134,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     'pending',
     {
       description:
-        'Poll for everything the human has said to you in this project — the ONE polling call; you do not need board_get to hear from them. Returns {items, rows}. items = your open questions, each with its reply (null until the human answers — reply may be one of your options or their own free-text direction; follow it either way) plus optional reply_context, and `annotation` if they pinned a side-note to the card — read that too. rows = the human’s per-row notes on your tracking boards, each {board_title, label, note, annotation, …}: an annotation is the human answering that row, so act on it and then flip the row’s status with board_row — THAT STATUS CHANGE IS WHAT TELLS THEM YOU DID. NOTHING here is handed over only once, so nothing is lost if you are busy or if a sibling session polls first: a question keeps coming back until you `resolve` it, and a `blocked` row keeps coming back until you change its status. That means you WILL see the same answer again — `annotation_seen_at`/`annotation_seen_by` on a row (and `reply_seen_at` on an item) mean it reached SOME agent, very often a sibling session sharing your agent name rather than you, so a stamp is NEVER a reason to skip it: if the row is still `blocked`, or the question still open, it is not done and it may well be yours to do. The stamp only tells you someone else may be working it too; the status change (or `resolve`) is the real signal. Poll between work steps rather than blocking. If the human answered you in chat instead, record it with the answer tool — but an inbox reply you have not picked up here always wins over one given in chat. Polling is cheap on purpose: everything the HUMAN wrote (reply, reply_context, annotation) comes back in full every time, but agent-authored `context` is handed over only ONCE — after that a row or item carries `context_chars` instead, its size as JS counts it (UTF-16 code units, so an emoji counts 2). That "once" is per SERVER PROCESS, and a fan-out of subagents shares one: a sibling’s poll can consume a delivery you never received, so `context_chars` is NOT proof you have the text. Whenever you are missing context you actually need, ask for it — `pending({full:true})` returns every context in this payload in full, and `board_get({title, full:true})` returns one board’s rows in full. Nothing is ever unreachable, so never guess at backstory you were not given.',
+        'Poll for everything the human has said to you in this project — the ONE polling call; you do not need board_get to hear from them. Returns {items, rows}. items = your open questions, each with its reply (null until the human answers — reply may be one of your options or their own free-text direction; follow it either way) plus optional reply_context, and `annotation` if they pinned a side-note to the card — read that too. rows = what the human has said or DONE on your tracking boards, each {board_title, label, note, annotation, handled_at, …}. Two shapes arrive here and you must act on both: `annotation` is the human answering that row in words, and `handled_at` is the human telling you THEY HAVE DONE THE THING you blocked on — the account is created, the video is recorded, the key exists now. A row can carry either or both. Either way, go and check/continue the work and then flip the row’s status with board_row — THAT STATUS CHANGE IS WHAT TELLS THEM YOU DID, and it is the only thing that takes the row off their screen. Never answer a `handled_at` row by re-sending it as `blocked` with the same ask. NOTHING here is handed over only once, so nothing is lost if you are busy or if a sibling session polls first: a question keeps coming back until you `resolve` it, and a `blocked` row keeps coming back until you change its status. That means you WILL see the same answer again — `annotation_seen_at`/`annotation_seen_by`/`handled_seen_at` on a row (and `reply_seen_at` on an item) mean it reached SOME agent, very often a sibling session sharing your agent name rather than you, so a stamp is NEVER a reason to skip it: if the row is still `blocked`, or the question still open, it is not done and it may well be yours to do. The stamp only tells you someone else may be working it too; the status change (or `resolve`) is the real signal. Poll between work steps rather than blocking. If the human answered you in chat instead, record it with the answer tool — but an inbox reply you have not picked up here always wins over one given in chat. Polling is cheap on purpose: everything the HUMAN wrote or marked (reply, reply_context, annotation, handled_at) comes back in full every time, but agent-authored `context` is handed over only ONCE — after that a row or item carries `context_chars` instead, its size as JS counts it (UTF-16 code units, so an emoji counts 2). That "once" is per SERVER PROCESS, and a fan-out of subagents shares one: a sibling’s poll can consume a delivery you never received, so `context_chars` is NOT proof you have the text. Whenever you are missing context you actually need, ask for it — `pending({full:true})` returns every context in this payload in full, and `board_get({title, full:true})` returns one board’s rows in full. Nothing is ever unreachable, so never guess at backstory you were not given.',
       inputSchema: { full: z.boolean().optional() },
     },
     async ({ full }) => {
@@ -145,7 +145,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
       // issue #37 — the human's board-row notes had NO delivery path: pending()
       // was items-only, so an agent following the contract perfectly still never
       // saw one. The store decides WHAT is still pending (gated on the row being
-      // unacknowledged, not on the delivery stamp — see listPendingAnnotations).
+      // unacknowledged, not on the delivery stamp — see listPendingRows).
       //
       // This filter does exactly one thing, and it is not "deliver once": it
       // DROPS text the human replaced between the read above and the write here.
@@ -153,8 +153,18 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
       // means the note is no longer what the human wrote — handing that over is
       // the harm, and the newer text stays queued for the next poll. A row that
       // was already delivered returns `true` and is handed over again on purpose.
-      const rows = listPendingAnnotations(db, s.project)
-        .filter((r) => markAnnotationDelivered(db, r.row_id, r.annotated_at, s.agent))
+      //
+      // Two halves since #36 — the words and the "I did my part" mark — each
+      // pinned to the version the read returned, and SHORT-CIRCUITED in that
+      // order. If the annotation moved, the mark is left unstamped too, so a
+      // dropped row is never half-recorded as delivered. (The reverse race
+      // stamps the annotation on a row it then drops; the row is still blocked,
+      // so the next poll carries both — at-least-once is what absorbs it.)
+      const rows = listPendingRows(db, s.project).filter((r) => {
+        if (r.annotation && !markAnnotationDelivered(db, r.row_id, r.annotated_at, s.agent)) return false
+        if (r.handled_at && !markHandledDelivered(db, r.row_id, r.handled_at, s.agent)) return false
+        return true
+      })
       // issue #42 — at-least-once is about the HUMAN's words, not the agent's own
       // backstory. The annotation/reply comes back on every poll for as long as
       // #37 says it should; `context` is handed over on its first delivery out of
@@ -261,14 +271,14 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
   const rowStatus = z
     .enum(['done', 'partial', 'missing', 'tracked', 'na', 'blocked'])
     .describe(
-      'Row status. done|partial|missing|tracked|na are purely descriptive. blocked is the ONE that escalates: it means this row is waiting on the HUMAN and nobody else, and it sits in their attention banner until they answer it. Work stuck on something a person cannot unblock — a failing test, a build or release that does not exist yet, another PR, a long job — is `partial` (or `tracked`) with the reason in note, NEVER blocked.',
+      'Row status. done|partial|missing|tracked|na are purely descriptive. blocked is the ONE that escalates: it means this row is waiting on the HUMAN and nobody else, and it sits in their attention banner until they answer it or mark that they have DONE it (pending() delivers both). Work stuck on something a person cannot unblock — a failing test, a build or release that does not exist yet, another PR, a long job — is `partial` (or `tracked`) with the reason in note, NEVER blocked. Moving a row OUT of blocked and later back INTO blocked is a NEW request and discards the human’s "I did my part" mark, so do it only when you really are asking for something else.',
     )
 
   server.registerTool(
     'board_upsert',
     {
       description:
-        'Create or replace a tracking board (a titled table the human watches). Idempotent by title within this project — re-send the whole table to refresh it. Rows are matched by label; the human’s per-row notes survive, and a row you leave OUT is deleted (so keep labels stable). status: done|partial|missing|tracked|na|blocked — five of those merely describe the row; "blocked" is an ESCALATION meaning this row is waiting on the HUMAN and nobody else, and it sits in their attention banner until they answer. Being stuck is not being blocked: a failing test, a build or release that does not exist yet, another PR, a long job — none of those are things a person can unblock, so they are `partial` (or `tracked`) with the reason in note. note is the one-line summary; context is optional long-form backstory (reasoning, history) shown collapsed. Leaving `context` off a row KEEPS whatever is stored there — reads hand you `context_chars`, not the text, so omission can never mean delete; pass context:"" to clear it deliberately. Re-sending a row as "blocked" is NOT an acknowledgement of the human’s answer on it — you are still asserting you are blocked; act on their note (pending() delivers it) and send a different status.',
+        'Create or replace a tracking board (a titled table the human watches). Idempotent by title within this project — re-send the whole table to refresh it. Rows are matched by label; the human’s per-row notes survive, and a row you leave OUT is deleted (so keep labels stable). status: done|partial|missing|tracked|na|blocked — five of those merely describe the row; "blocked" is an ESCALATION meaning this row is waiting on the HUMAN and nobody else, and it sits in their attention banner until they answer. Being stuck is not being blocked: a failing test, a build or release that does not exist yet, another PR, a long job — none of those are things a person can unblock, so they are `partial` (or `tracked`) with the reason in note. note is the one-line summary; context is optional long-form backstory (reasoning, history) shown collapsed. Leaving `context` off a row KEEPS whatever is stored there — reads hand you `context_chars`, not the text, so omission can never mean delete; pass context:"" to clear it deliberately. Re-sending a row as "blocked" is NOT an acknowledgement of the human’s answer on it — you are still asserting you are blocked; act on what they left (pending() delivers it: an annotation, and/or `handled_at` meaning they went and DID the thing) and send a different status. Their annotation and their `handled_at` mark both survive every re-send of the whole table, so you can never wipe them by omission.',
       inputSchema: {
         title: z.string().min(1),
         rows: z.array(z.object({ label: z.string().min(1), status: rowStatus, note: z.string().optional(), context: z.string().optional() })),
@@ -286,7 +296,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     'board_row',
     {
       description:
-        'Update or add ONE row of a tracking board by label, without re-sending the whole table. Creates the board (and row) if missing; a new row defaults to status "tracked". Omitted status/note/context leave the existing value. context is optional long-form backstory shown collapsed. status "blocked" means the row needs the HUMAN and nobody else — it escalates into their attention banner, so put what you need from them in note. Use it for nothing else: work stuck on a failing test, on a build or release that does not exist yet, or on another PR is `partial` (or `tracked`) with the reason in note, because there is nothing there for a person to do. pending() delivers their answer; FLIP THE ROW’S STATUS ONCE YOU HAVE ACTED — that status change is what tells them you did, and until it happens they keep seeing the row marked "delivered to you".',
+        'Update or add ONE row of a tracking board by label, without re-sending the whole table. Creates the board (and row) if missing; a new row defaults to status "tracked". Omitted status/note/context leave the existing value. context is optional long-form backstory shown collapsed. status "blocked" means the row needs the HUMAN and nobody else — it escalates into their attention banner, so put what you need from them in note. Use it for nothing else: work stuck on a failing test, on a build or release that does not exist yet, or on another PR is `partial` (or `tracked`) with the reason in note, because there is nothing there for a person to do. pending() delivers their answer — words (`annotation`), or `handled_at` meaning they have gone and DONE what you asked. FLIP THE ROW’S STATUS ONCE YOU HAVE ACTED — that status change is what tells them you did, and until it happens they keep seeing the row marked "delivered to you". Changing this row from a non-blocked status back to "blocked" counts as a fresh ask and clears their "I did my part" mark, so never do it as a way of nagging about the same thing.',
       inputSchema: { title: z.string().min(1), label: z.string().min(1), status: rowStatus.optional(), note: z.string().optional(), context: z.string().optional() },
     },
     async ({ title, label, status, note, context }) => {
@@ -316,7 +326,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     'board_get',
     {
       description:
-        'Re-read a tracking board’s state before updating it. You do NOT need this to hear from the human — pending() delivers their per-row notes. Rows carry annotation_unseen: true on notes not yet delivered to any agent; reading marks the rows in the payload delivered. With a title: that board, rows and all. Without: a SUMMARY of your active boards in this project — titles, row labels, statuses, notes and the human’s annotations, no row context (and it delivers every annotation in the project at once, so prefer the titled form). Returns {found:false} if the titled board does not exist. The human’s annotation is ALWAYS returned in full. Agent-authored row `context` is not: a row shows `context_chars` instead — its size as JS counts it (UTF-16 code units, so an emoji counts 2) — and `full: true` WITH a title returns the real text for that board. Ask for it whenever you actually need the backstory (most updates do not) — it is also how you recover context a sibling subagent’s poll consumed before you saw it. Re-sending a row through board_upsert WITHOUT its context keeps the stored text; it is not deleted by omission.',
+        'Re-read a tracking board’s state before updating it. You do NOT need this to hear from the human — pending() delivers their per-row notes AND their `handled_at` marks ("I have done my part on this row"). Rows carry annotation_unseen: true on notes not yet delivered to any agent; reading marks the rows in the payload delivered, marks included. With a title: that board, rows and all. Without: a SUMMARY of your active boards in this project — titles, row labels, statuses, notes and the human’s annotations, no row context (and it delivers every annotation in the project at once, so prefer the titled form). Returns {found:false} if the titled board does not exist. The human’s annotation and `handled_at` mark are ALWAYS returned in full. Agent-authored row `context` is not: a row shows `context_chars` instead — its size as JS counts it (UTF-16 code units, so an emoji counts 2) — and `full: true` WITH a title returns the real text for that board. Ask for it whenever you actually need the backstory (most updates do not) — it is also how you recover context a sibling subagent’s poll consumed before you saw it. Re-sending a row through board_upsert WITHOUT its context keeps the stored text; it is not deleted by omission.',
       inputSchema: { title: z.string().optional(), full: z.boolean().optional() },
     },
     async ({ title, full }) => {
@@ -328,7 +338,13 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
       // looked at. The payload is built BEFORE stamping on purpose, so this read
       // still reports annotation_unseen: true for what it is handing over.
       const deliver = (b: BoardWithRows): void => {
-        for (const r of b.rows) if (r.annotation && !r.annotation_seen_at) markAnnotationDelivered(db, r.id, r.annotated_at, s.agent)
+        for (const r of b.rows) {
+          if (r.annotation && !r.annotation_seen_at) markAnnotationDelivered(db, r.id, r.annotated_at, s.agent)
+          // #36 — the mark is delivered by this read too, or the human's card
+          // would say "waiting for agent pickup" about something an agent is
+          // holding in its hands right now.
+          if (r.handled_at && !r.handled_seen_at) markHandledDelivered(db, r.id, r.handled_at, s.agent)
+        }
         markBoardRead(db, b.id)
       }
       // issue #42 — the shape is decided AFTER delivery, never instead of it:

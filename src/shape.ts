@@ -155,6 +155,12 @@ export interface RowSummary {
   annotation_seen_at?: string | null
   annotation_seen_by?: string | null
   annotation_unseen?: boolean
+  // issue #36 — the human's OTHER answer on a blocked row. Same rule as the
+  // annotation: it is theirs, so it is never trimmed and never omitted when it
+  // exists; an unmarked row spends nothing on it.
+  handled_at?: string | null
+  handled_seen_at?: string | null
+  handled_seen_by?: string | null
 }
 
 export interface BoardSummary {
@@ -200,6 +206,16 @@ function summariseRow(r: BoardRow): RowSummary {
     out.annotation_seen_at = r.annotation_seen_at
     out.annotation_seen_by = r.annotation_seen_by
     out.annotation_unseen = r.annotation_unseen
+  }
+  // #36 — the mark is the human's word too, and it is the one fact that decides
+  // what the agent does next ("the account exists now, go on"). A summary that
+  // dropped it would send every agent back to board_get for it, which is the
+  // round-trip this shape exists to avoid. No `annotation_unseen`-style derived
+  // twin: `handled_at && !handled_seen_at` says undelivered on its own.
+  if (r.handled_at) {
+    out.handled_at = r.handled_at
+    out.handled_seen_at = r.handled_seen_at
+    out.handled_seen_by = r.handled_seen_by
   }
   return out
 }

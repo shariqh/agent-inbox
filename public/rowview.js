@@ -2,7 +2,7 @@
 // selection, stream/agent disambiguation, the urgency chip and the single age
 // vocabulary stay unit-testable; app.js only turns these models into elements.
 import { canUndo, starOption } from './star.js'
-import { attentionEntries, classifyLiveness, sortNeedsYou, ESCALATE_MS } from './attention.js'
+import { attentionEntries, classifyLiveness, humanActedOnRow, sortNeedsYou, ESCALATE_MS } from './attention.js'
 import { projectMonogram } from './colors.js'
 
 // Line 2 is what makes one-tap defensible (§5): you accept what you just read.
@@ -35,6 +35,27 @@ export function agentCounts(entities) {
   return countDistinct(entities, 'agent')
 }
 
+// Everything the human left on a row, as {at, by} delivery pairs — one per shape
+// they actually used. #36 made "has an agent collected this?" a question about
+// TWO independent halves (the annotation's stamp, and the mark's), and reporting
+// "delivered" while one of them is still queued is exactly the lie #37 exists to
+// prevent. So: delivered only when EVERY half is, and then the age shown is the
+// LATEST of them — the one that decides how long the row has really been sitting
+// with an agent.
+function humanHalves(row) {
+  const halves = []
+  if (row.annotation) halves.push({ at: row.annotation_seen_at ?? null, by: row.annotation_seen_by ?? '' })
+  if (row.handled_at) halves.push({ at: row.handled_seen_at ?? null, by: row.handled_seen_by ?? '' })
+  return halves
+}
+
+function rowPickup(row) {
+  const halves = humanHalves(row)
+  if (!halves.length || halves.some((h) => !h.at)) return { pickedUp: false, pickedUpAt: null, pickedUpBy: '' }
+  const latest = halves.reduce((a, b) => (Date.parse(b.at) > Date.parse(a.at) ? b : a))
+  return { pickedUp: true, pickedUpAt: latest.at, pickedUpBy: latest.by }
+}
+
 export function rowModel(entry, { streams = new Map(), agents = new Map(), showProject = true } = {}) {
   if (entry.kind === 'row') {
     const { row, board } = entry
@@ -51,14 +72,19 @@ export function rowModel(entry, { streams = new Map(), agents = new Map(), showP
       boardId: board.id,
       boardTitle: board.title,
       created_at: null,
-      // #37 — a row carries the same two facts an item does: the human answered
-      // (annotation), and an agent collected that answer (annotation_seen_at).
-      // `answered` is what dims it and sinks it to the awaiting-pickup foot, so
-      // it must key on the ANNOTATION, never on delivery.
-      answered: Boolean(row.annotation),
-      pickedUp: Boolean(row.annotation_seen_at),
-      pickedUpAt: row.annotation_seen_at ?? null,
-      pickedUpBy: row.annotation_seen_by ?? '',
+      // #37 — a row carries the same two facts an item does: the human answered,
+      // and an agent collected that answer. `answered` is what dims it and sinks
+      // it to the awaiting-pickup foot, so it must key on what the HUMAN did,
+      // never on delivery — and #36 gave them a second way to do it, so this is
+      // the same predicate the badge uses rather than a second reading of it.
+      answered: humanActedOnRow(row),
+      // #36 — WHICH shape it was. `answered` decides how the row looks; this
+      // decides what the card can SAY about it, and it is the only field that
+      // tells "I wrote you a note" apart from "I went and did it".
+      handled: Boolean(row.handled_at),
+      handledAt: row.handled_at ?? null,
+      handledPickedUp: Boolean(row.handled_seen_at),
+      ...rowPickup(row),
     }
   }
   const it = entry.item
@@ -76,6 +102,12 @@ export function rowModel(entry, { streams = new Map(), agents = new Map(), showP
     boardTitle: null,
     created_at: it.created_at,
     answered: Boolean(it.reply),
+    // an ITEM is never "handled": the mark is a board-row concept, and a model
+    // that left these undefined would make every card's `m.handled` check read
+    // as a typo rather than as a stated false.
+    handled: false,
+    handledAt: null,
+    handledPickedUp: false,
     pickedUp: Boolean(it.reply_seen_at),
     pickedUpAt: it.reply_seen_at ?? null,
     pickedUpBy: '',
@@ -158,6 +190,18 @@ export function stagedLabel(staged) {
 export function undoRefusal(item, nowMs) {
   if (canUndo(item)) return null
   return `Picked up ${relMs(nowMs - Date.parse(item.reply_seen_at))} ago — answering again will not un-do it`
+}
+
+// The mark's own twin of the above (#36). store.ts's clearRowHandled refuses once
+// `handled_seen_at` is set, because un-marking cannot un-tell an agent that has
+// already been handed the mark — so the viewer must not DRAW an undo it knows
+// will be refused (#38: never ship a control that lies), and must be able to say
+// why when it loses the race anyway. Null = still the human's own business, undo
+// freely. The delivery AGE is named for the same reason the row chip names it:
+// it is the evidence about how long an agent has been sitting on this.
+export function handledUndoRefusal(row, nowMs) {
+  if (!row.handled_seen_at) return null
+  return `Delivered ${relMs(nowMs - Date.parse(row.handled_seen_at))} ago — un-marking will not un-tell the agent`
 }
 
 // Replying does not resolve (§5): answered questions leave the active set and

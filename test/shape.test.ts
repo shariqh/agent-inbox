@@ -16,7 +16,7 @@ import { describe, it, expect } from 'vitest'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { openDb, upsertBoard, listBoards, annotateBoardRow, listPendingAnnotations, markAnnotationDelivered } from '../src/store.js'
+import { openDb, upsertBoard, listBoards, annotateBoardRow, listPendingRows, markAnnotationDelivered, markRowHandled, markHandledDelivered } from '../src/store.js'
 import type { BoardWithRows } from '../src/store.js'
 import { trimContext, makeContextLedger, deliverContext, shapeBoard, summariseBoard, rowKey, itemKey } from '../src/shape.js'
 
@@ -259,12 +259,29 @@ describe('summariseBoard — board_get() with no title', () => {
     expect(out.rows[0]).toEqual({ label: 'QA', status: 'tracked' })
   })
 
+  // #36 — the mark is the human's word too. A summary that dropped it would send
+  // an agent back to board_get for the one fact that decides what it does next.
+  it('carries the handled mark and its delivery stamps when the row has one', () => {
+    const { db, board } = boardWith([{ label: 'Paddle', status: 'blocked', note: '~15 min KYC' }])
+    markRowHandled(db, board.rows[0]!.id)
+    markHandledDelivered(db, board.rows[0]!.id, listBoards(db)[0]!.rows[0]!.handled_at, 'claude-code')
+    const out = summariseBoard(listBoards(db)[0]!)
+    expect(out.rows[0]!.handled_at).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+    expect(out.rows[0]!.handled_seen_by).toBe('claude-code')
+  })
+
+  it('an unmarked row spends nothing on the mark either — no three null fields', () => {
+    const { db, board } = boardWith([{ label: 'QA', status: 'tracked' }])
+    void board
+    expect(summariseBoard(listBoards(db)[0]!).rows[0]).toEqual({ label: 'QA', status: 'tracked' })
+  })
+
   it('delivers no context, so it claims nothing from the ledger (it cannot starve a later poll)', () => {
     const { db, board } = boardWith([{ label: 'Merge', status: 'blocked', context: LONG }])
     annotateBoardRow(db, board.rows[0]!.id, 'merge it')
     const ledger = makeContextLedger()
     summariseBoard(listBoards(db)[0]!)
-    const pending = listPendingAnnotations(db, 'p')[0]!
+    const pending = listPendingRows(db, 'p')[0]!
     expect(deliverContext(pending, rowKey(pending.row_id), ledger)).toHaveProperty('context', LONG)
   })
 })
@@ -277,7 +294,7 @@ describe('constraint A — no shaping path may drop the human’s annotation', (
     const { db, board } = boardWith([{ label: 'Merge', status: 'blocked', note: 'ready', context: LONG }])
     annotateBoardRow(db, board.rows[0]!.id, 'merge it — but rebase first')
     const fresh = listBoards(db)[0]!
-    const pending = listPendingAnnotations(db, 'p')[0]!
+    const pending = listPendingRows(db, 'p')[0]!
     const ledger = makeContextLedger()
 
     const payloads: unknown[] = [
@@ -290,5 +307,28 @@ describe('constraint A — no shaping path may drop the human’s annotation', (
       trimContext(pending),
     ]
     for (const p of payloads) expect(JSON.stringify(p)).toContain('merge it — but rebase first')
+  })
+
+  // #36's half of the same constraint: the mark is a human-authored fact with no
+  // text to search for, so a shaping path could drop it without tripping the
+  // sweep above. Pin it by name.
+  it('every MCP-read shape carries the handled mark', () => {
+    const { db, board } = boardWith([{ label: 'Paddle', status: 'blocked', note: 'KYC', context: LONG }])
+    markRowHandled(db, board.rows[0]!.id)
+    const fresh = listBoards(db)[0]!
+    const stamp = fresh.rows[0]!.handled_at!
+    const pending = listPendingRows(db, 'p')[0]!
+    const ledger = makeContextLedger()
+
+    const payloads: unknown[] = [
+      shapeBoard(fresh, { ledger: makeContextLedger() }),
+      shapeBoard(fresh, { full: true, ledger: makeContextLedger() }),
+      summariseBoard(fresh),
+      deliverContext(pending, rowKey(pending.row_id), ledger),
+      deliverContext(pending, rowKey(pending.row_id), ledger),
+      deliverContext(pending, rowKey(pending.row_id), ledger, { full: true }),
+      trimContext(pending),
+    ]
+    for (const p of payloads) expect(JSON.stringify(p)).toContain(stamp)
   })
 })

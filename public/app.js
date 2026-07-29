@@ -12,8 +12,8 @@ import { projectColor } from '/colors.js'
 import { shouldDeferRender, suspendHint, pinOrder, applyListUpdate, reconcileOpenRow } from '/poll.js'
 import { createStagedSend } from '/star.js'
 import {
-  ageChip, agentCounts, needsYouEntries, relMs, repliedEntries, rowModel, rowStarOption,
-  stagedLabel, staleFoldLabel, streamCounts, undoRefusal, urgencyChip,
+  ageChip, agentCounts, handledUndoRefusal, needsYouEntries, relMs, repliedEntries, rowModel,
+  rowStarOption, stagedLabel, staleFoldLabel, streamCounts, undoRefusal, urgencyChip,
 } from '/rowview.js'
 import { cardSections, optionOrder } from '/card.js'
 import { keyAction, rovingIndex, ariaAnswerLabel, livenessGlyph, deckEntryAt } from '/keys.js'
@@ -660,8 +660,82 @@ function triageRemoveCurrent() {
 // render. What the boards panel actually needed is the press guard (initPressGuard).
 const openRows = new Set()
 
+// #36's labels, and the words are load-bearing. This is NOT the row's `done`
+// STATUS — that is the AGENT's assertion about the row's work, and only agents
+// write it. This is the human saying THEIR half is finished and the row is now
+// waiting on somebody else. "I've done my part" / "Not done after all" says
+// exactly that and nothing more; "Done" would say the other thing.
+const HANDLED_LABEL = 'I’ve done my part'
+const UNHANDLED_LABEL = 'Not done after all'
+
+// The human's own exit from a blocked row (#36) — the deed, beside the words.
+//
+// WHY IT EXISTS. Every `blocked` row in the wild is a TASK ("create the Paddle
+// account", "record the hero demo"), not a question, and the only lever the
+// viewer offered was a free-text box. A task does not want words, it wants DONE
+// — and with the asking session long over, nobody was ever going to flip the
+// status, so the row was literally unclearable.
+//
+// `null` on any row where the control would be a lie: nothing is being asked of
+// the human on a row that is not `blocked`, so there is nothing for them to
+// finish. Three states beyond that, and the third one is the whole point of #38
+// — never draw a control that cannot work:
+//   · unmarked            → the lever
+//   · marked, undelivered → the undo, which the store will honour
+//   · marked, delivered   → NO undo, and the reason standing in its place
+function rowHandledEl(b, r) {
+  if (r.status !== 'blocked') return null
+  const set = async (handled) => {
+    const res = await postJSON(`/api/boards/${b.id}/rows/${r.id}/handled`, { handled })
+    if (res === null) return // network failure — postJSON already signaled it
+    if (!res.ok) {
+      // REFUSED: an agent was handed the mark between the frame that drew this
+      // button and the click. Our snapshot is by definition the stale one that
+      // drew it, so approximate the stamp with now — the server has told us
+      // definitively THAT a pickup happened, just not exactly when (≤3s stale).
+      // Same shape, and the same reason, as changeAnswer's refusal path.
+      showWriteError(r.id, handledUndoRefusal({ ...r, handled_seen_at: r.handled_seen_at ?? new Date().toISOString() }, Date.now()))
+    } else {
+      showWriteError(r.id, '')
+    }
+    // #38 — the human's own click gets its frame whatever the answer was. A bare
+    // load() asks the global §10 gate for permission, and this control only ever
+    // exists inside an expanded card or an open matrix row, so the gate is
+    // CERTAIN to refuse: the mark would land in the DB and the screen would keep
+    // showing the pre-click state until something unrelated collapsed.
+    await reloadAndPaint()
+  }
+  if (!r.handled_at) {
+    const mark = btn(HANDLED_LABEL, () => set(true))
+    mark.className = 'handled-btn'
+    mark.title = 'takes this row out of your attention — the agent still has to acknowledge it'
+    return mark
+  }
+  // Undoable only while it is still the human's own business: store.ts's
+  // clearRowHandled refuses once handled_seen_at is set, because un-marking
+  // cannot un-tell an agent that already has it.
+  const refusal = handledUndoRefusal(r, Date.now())
+  if (!refusal) {
+    const undo = btn(UNHANDLED_LABEL, () => set(false))
+    undo.className = 'handled-btn undo-btn'
+    return undo
+  }
+  const why = document.createElement('span')
+  why.className = 'handled-refusal'
+  why.textContent = refusal // never innerHTML; it is rendered beside agent-authored text
+  return why
+}
+
 // The ONE write path for a row annotation — single-line input, no window.prompt.
 // Shared by the boards matrix and the triage card (spec §7).
+//
+// It also carries #36's lever, so all THREE surfaces that let a human act on a
+// blocked row — the Needs-you accordion card, the triage deck (both via
+// rowCardEl) and the boards matrix panel (rowPanelEl) — get it from one call
+// site and cannot drift apart. They belong in one control row because they are
+// the two answers to one question ("what do you want to tell the agent?"), and
+// because the single `.write-error` slot below is then where a refusal on EITHER
+// of them appears.
 function rowAnswerEl(b, r, onSaved) {
   const row = document.createElement('div')
   row.className = 'reply-row'
@@ -705,6 +779,8 @@ function rowAnswerEl(b, r, onSaved) {
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') save() })
   row.appendChild(input)
   row.appendChild(btn('Send', save))
+  const handled = rowHandledEl(b, r)
+  if (handled) row.appendChild(handled)
   row.appendChild(writeErrorEl(r.id))
   if (rowFocusId === r.id) requestAnimationFrame(() => {
     input.focus()
@@ -713,21 +789,35 @@ function rowAnswerEl(b, r, onSaved) {
   return row
 }
 
-// The human's answer on a row, plus whether anyone collected it (issue #37) —
-// the rows-shaped twin of the item reply block's pickup marker, and the same
-// vocabulary. It lives in ONE function so the marker can never be printed for a
-// row that has no annotation to show, and so the matrix, the accordion card and
-// the triage card cannot drift apart about what "delivered" means.
+// The delivery marker for ONE thing the human left on a row (issue #37) — the
+// rows-shaped twin of the item reply block's marker, and the same vocabulary.
 //
-// "delivered", not "read": the stamp records only that the text was handed to an
-// agent. The acknowledgement is the agent flipping the row's status, which is
-// why an annotated row stays on screen until it does.
-function rowAnnotationHtml(r) {
-  if (!r.annotation) return ''
-  const mark = r.annotation_seen_at
-    ? `<span class="pickup picked">✓ delivered${r.annotation_seen_by ? ` to ${esc(r.annotation_seen_by)}` : ''} ${esc(rel(r.annotation_seen_at))} ago</span>`
+// "delivered", not "read": the stamp records only that this was handed to an
+// agent. The acknowledgement is the agent flipping the row's status, which is why
+// an answered row stays on screen until it does.
+//
+// Parameterised over the pair of stamps rather than reading the row, because #36
+// gave a row two INDEPENDENTLY delivered halves and the marker has to be able to
+// disagree between them.
+function pickupMarkHtml(seenAt, seenBy) {
+  return seenAt
+    ? `<span class="pickup picked">✓ delivered${seenBy ? ` to ${esc(seenBy)}` : ''} ${esc(rel(seenAt))} ago</span>`
     : '<span class="pickup awaiting">● waiting for agent pickup</span>'
-  return `<div class="annotation">📝 ${esc(r.annotation)}${mark}</div>`
+}
+
+// Everything the human has left on a row: their words (#37), their "I did my
+// part" mark (#36), or both — each carrying its OWN delivery state, because a
+// collected annotation sitting beside an uncollected mark must never read as
+// "delivered". That half-delivered case is exactly the lie #37 exists to prevent.
+//
+// One function, so the matrix, the accordion card and the triage card cannot
+// drift apart about what any of this means; and every branch is gated on the
+// field it describes, so no marker can be printed for a fact that is not there.
+function rowHumanStateHtml(r) {
+  const parts = []
+  if (r.annotation) parts.push(`<div class="annotation">📝 ${esc(r.annotation)}${pickupMarkHtml(r.annotation_seen_at, r.annotation_seen_by)}</div>`)
+  if (r.handled_at) parts.push(`<div class="annotation handled-mark">✓ You marked your part done ${esc(rel(r.handled_at))} ago${pickupMarkHtml(r.handled_seen_at, r.handled_seen_by)}</div>`)
+  return parts.join('')
 }
 
 // the inline expansion under a matrix row: long context + existing annotation + answer
@@ -736,7 +826,7 @@ function rowPanelEl(b, r, readOnly = false) {
   wrap.className = 'row-panel'
   wrap.innerHTML = `
     ${r.context ? `<div class="row-context-body">${esc(r.context)}</div>` : ''}
-    ${rowAnnotationHtml(r)}`
+    ${rowHumanStateHtml(r)}`
   if (!readOnly) wrap.appendChild(rowAnswerEl(b, r))
   return wrap
 }
@@ -754,7 +844,7 @@ function rowCardEl(b, r) {
     <div class="title">${esc(r.label)}</div>
     ${r.note ? `<div class="detail">${esc(r.note)}</div>` : ''}
     ${r.context ? `<div class="detail lb-context">${esc(r.context)}</div>` : ''}
-    ${rowAnnotationHtml(r)}`
+    ${rowHumanStateHtml(r)}`
   wrap.appendChild(rowAnswerEl(b, r, () => { if (triageDeck) triageRemoveCurrent() }))
   return wrap
 }
@@ -1821,7 +1911,7 @@ function boardEl(b, archived = false, lingering = false) {
       <td class="row-num">${num}</td>
       <td class="row-glyph ${r.status}" title="${esc(r.status)}">${GLYPH[r.status] || ''}</td>
       <td class="row-label">${esc(r.label)}</td>
-      <td class="row-note"><span class="note-line">${esc(r.note)}</span>${r.context ? '<span class="more-dot" title="has context — click the row">…</span>' : ''}${r.annotation ? `<span class="annotation-dot" title="${esc(r.annotation)}">📝${r.annotation_unseen ? '<span class="unseen" title="not yet delivered to an agent">●</span>' : ''}</span>` : ''}</td>`
+      <td class="row-note"><span class="note-line">${esc(r.note)}</span>${r.context ? '<span class="more-dot" title="has context — click the row">…</span>' : ''}${r.annotation ? `<span class="annotation-dot" title="${esc(r.annotation)}">📝${r.annotation_unseen ? '<span class="unseen" title="not yet delivered to an agent">●</span>' : ''}</span>` : ''}${r.handled_at ? `<span class="handled-dot" title="you marked your part done">✓${r.handled_seen_at ? '' : '<span class="unseen" title="not yet delivered to an agent">●</span>'}</span>` : ''}</td>`
     const actionTd = document.createElement('td')
     actionTd.className = 'row-action'
     const toggle = () => {

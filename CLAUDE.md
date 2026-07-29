@@ -46,7 +46,8 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
 - **`src/store.ts` is the only door to the database.** Every read/write goes through its
   exported functions — items: `insertItem`/`resolveItem`/`dismissItem`/`annotateItem`/
   `replyItem`/`answerItem`/`listItems`; boards: `upsertBoard`/`updateBoardRow`/`getBoard`/`listBoards`/
-  `archiveBoard`/`annotateBoardRow`/`markAnnotationDelivered`/`listPendingAnnotations`;
+  `archiveBoard`/`annotateBoardRow`/`markAnnotationDelivered`/`markRowHandled`/
+  `clearRowHandled`/`markHandledDelivered`/`listPendingRows`;
   projects: `closeProject`/`reopenProject`/`listClosedProjects`/`closedProjects` — plus `openDb`. No raw SQL anywhere else. To change
   storage, reimplement this module; nothing else touches SQLite.
 - **Boards: the human's annotations are sacred.** A board is idempotent by
@@ -57,7 +58,13 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   `boards` and `board_rows` — deletes are handled explicitly in `store.ts`. The same
   protection covers `annotated_at`/`annotation_seen_at`/`annotation_seen_by`: a re-upsert
   that reset delivery would re-attribute the note to whoever polls next and reset the
-  "delivered 3h ago" age the human reads as evidence.
+  "delivered 3h ago" age the human reads as evidence. **Issue #36's `handled_at` (plus its
+  `handled_seen_at`/`handled_seen_by`) is sacred on the same terms** — it is the human's
+  "I did my part" on a blocked TASK row, and the prescribed agent flow is a full-table
+  re-send, so an upsert that dropped it would wipe their action on every routine refresh.
+  Exactly ONE thing clears it, in `resetHandledOnReblock`: a status transition INTO
+  `blocked` from something else, i.e. a genuinely new ask. Re-sending a row that is already
+  blocked is not an acknowledgement and must never reset it.
 - **Delivery is not acknowledgement (issue #37).** `board_rows.annotation_seen_at` records
   ONE fact — this text was handed to some agent — and it silences nothing: not the human's
   screen, and (since F1) not the agent's queue either. The row stays `blocked` and stays in
@@ -66,12 +73,15 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   the PER-ROW stamp only — `boards.last_read_at` still gets written by `markBoardRead` but
   is pure decoration (its only real use is the one-shot migration backfill); a second input
   would disagree invisibly, since nothing renders it. (2) The attention predicate
-  (`public/attention.js`) reads the ANNOTATION, never the delivery state:
-  `isBlockedRowAttention = status === 'blocked' && !annotation`, and the rows it drops are
+  (`public/attention.js`) reads what the HUMAN did, never the delivery state:
+  `isBlockedRowAttention = status === 'blocked' && !humanActedOnRow(row)`, where
+  `humanActedOnRow` is the one place that knows a row can be answered in words
+  (`annotation`) OR by going and doing it (`handled_at`, #36). The rows it drops are
   RELABELED into `awaitingAgentRows()` — same module, rendered in the Needs-you foot — not
   deleted. Removing the alarm without relabeling it is the worse bug, not the fix.
-  (3) **`listPendingAnnotations` gates on the ACKNOWLEDGEMENT, not on the stamp:**
-  `annotation_seen_at IS NULL OR status = 'blocked'`. Gating on the stamp made rows
+  (3) **`listPendingRows` gates on the ACKNOWLEDGEMENT, not on the stamp:** still pending
+  while `status = 'blocked'`, or while either half (annotation, `handled_at`) is
+  undelivered. Gating on the stamp made rows
   at-most-once while items are at-least-once (`listPending` is gated on `status='open'`), so
   in a fan-out a sibling's routine poll ate the answer, the session that RAISED the row never
   got it, and the human's card then claimed "delivered to claude-code". A blocked row is
@@ -79,13 +89,14 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   still staring at it — and the payload carries the stamp so a re-delivery is self-labelling.
   A non-blocked row has nothing to acknowledge and stays at-most-once; without that half a
   months-old aside would be a permanent firehose.
-- **Every mark-seen write pins the version it read.** `markReplySeen(id, repliedAt)` and
-  `markAnnotationDelivered(rowId, annotatedAt, by)` bind the exact version stamp the read
-  returned (`... AND replied_at IS ?` / `AND annotated_at IS ?`, `IS` because legacy rows
+- **Every mark-seen write pins the version it read.** `markReplySeen(id, repliedAt)`,
+  `markAnnotationDelivered(rowId, annotatedAt, by)` and `markHandledDelivered(rowId,
+  handledAt, by)` bind the exact version stamp the read returned (`... AND replied_at IS ?` /
+  `AND annotated_at IS ?` / `AND handled_at IS ?`, `IS` because legacy rows
   carry NULL). The viewer writes answers from its own OS process, so an unconditional stamp
   marks text the human just replaced as picked up. Never SELECT-then-UPDATE with a gap;
-  `annotateBoardRow` and `replyItem` reset the stamp in the SAME statement that writes the
-  new text. `markAnnotationDelivered`'s boolean means ONLY "the text you read is still
+  `annotateBoardRow`, `replyItem` and `markRowHandled` reset the stamp in the SAME statement
+  that writes the new value. `markAnnotationDelivered`'s boolean means ONLY "the text you read is still
   there, safe to hand over" — never "you were first" (re-delivery is normal now), and its
   `COALESCE` is what keeps the two apart: the stamp records the FIRST delivery and never
   moves, because its AGE is the human's evidence that an agent has sat on the answer.
@@ -393,6 +404,21 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   `blocked` row keeps arriving until an agent acknowledges it by flipping the status. See the
   delivery-is-not-acknowledgement invariant above; `docs/reporting-snippet.md` and the `pending`/
   `board_row` tool descriptions all say that the STATUS FLIP is the acknowledgement.
+- **The human's "I did my part" mark on a blocked row** *(#36)* — `board_rows.handled_at` plus
+  `handled_seen_at`/`handled_seen_by`. It exists because every `blocked` row in the wild is a
+  TASK ("create the Paddle account", "record the hero demo"), not a question, and the viewer
+  only offered a free-text box: a task wants DONE, and with the asking session over nobody was
+  ever going to flip the status. Four things are load-bearing. (1) **It is not the `done`
+  STATUS** — that is the agent's assertion about the row's work and only agents write it; the
+  labels say so (`I've done my part` / `Not done after all`, and "You marked your part done" on
+  the card). (2) **`upsertBoard` can never clear it**, and exactly one thing can: a status
+  transition INTO `blocked` from something else (`resetHandledOnReblock`) — see the sacred-fields
+  invariant above. (3) **The row does not vanish**: `isBlockedRowAttention` drops it via
+  `humanActedOnRow`, and `awaitingAgentRows` picks it straight back up into the same
+  awaiting-pickup foot an annotated row lands in. (4) **The undo is real or absent** — the store
+  refuses a clear once `handled_seen_at` is set (one guarded statement, no TOCTOU), and the
+  viewer does not draw the button when its own snapshot already shows a delivery. That is the
+  rule the row ✕ removed in #38 broke: never draw a control that lies.
 - **`blocked` now says WHO it waits on** *(#44)* — the six stored values are unchanged: no
   `needs-you` alias, no rename. The ambiguity was purely agent-facing (the viewer's 🚧 + Needs-you
   reads unambiguously), and the mistake is *choosing* `blocked` for work no person can unblock — a

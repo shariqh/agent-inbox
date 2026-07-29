@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { readFileSync, existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import type Database from 'better-sqlite3'
-import { listItems, resolveItem, dismissItem, annotateItem, replyItem, listBoards, archiveBoard, unarchiveBoard, annotateBoardRow, listActivity, listSourceLinks, defaultDbPath, closeProject, reopenProject, closedProjects } from './store.js'
+import { listItems, resolveItem, dismissItem, annotateItem, replyItem, listBoards, archiveBoard, unarchiveBoard, annotateBoardRow, markRowHandled, clearRowHandled, listActivity, listSourceLinks, defaultDbPath, closeProject, reopenProject, closedProjects } from './store.js'
 import { groupItems } from './group.js'
 import { hooksSettingsBlock } from './hook.js'
 import { buildStamp, readBakedInfo } from './stamp.js'
@@ -150,6 +150,31 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
     const { text } = await c.req.json<{ text: string }>()
     annotateBoardRow(db, c.req.param('rowId'), text)
     return c.json({ ok: true })
+  })
+
+  // issue #36 — the human's OTHER answer on a blocked row: "I have done my part".
+  // The annotate route above is the words; this is the deed, and it is what makes
+  // a blocked TASK row clearable at all without the asking agent still being alive.
+  //
+  // `{ handled: false }` is the undo, and it is the ONE thing here that can be
+  // REFUSED: clearRowHandled will not blank a mark an agent has already been
+  // handed (un-marking cannot un-tell them). That refusal is a 200 with
+  // `{ ok: false }`, never a 4xx — postJSON() in public/app.js keys on the HTTP
+  // status to decide "the write never happened", so a refusal dressed as an error
+  // would show the human WRITE_FAILED and invite a retry that can never succeed.
+  // Exactly the /api/items/:id/reply precedent.
+  //
+  // Missing/unparseable body ⇒ MARK. The affirmative action is the default because
+  // it is the one the human reaches for, and because a body-less POST that quietly
+  // UN-marked would be the most destructive possible reading of a dropped payload.
+  // `ok:false` also covers an unknown row id: both store writes report whether they
+  // matched a row, so a stale click on a row an agent has since deleted says so
+  // instead of reporting a success that never touched the database.
+  app.post('/api/boards/:id/rows/:rowId/handled', async (c) => {
+    const body = await c.req.json<{ handled?: boolean }>().catch(() => null)
+    const rowId = c.req.param('rowId')
+    const ok = body?.handled === false ? clearRowHandled(db, rowId) : markRowHandled(db, rowId)
+    return c.json({ ok })
   })
 
   // ── project closure (issue #32) ───────────────────────────────────────────

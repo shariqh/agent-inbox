@@ -4,11 +4,19 @@ import type Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
 import { insertItem, resolveItem, listPending, markReplySeen, answerItem, upsertBoard, updateBoardRow, findBoard, archiveBoard, getBoard, listBoards, markBoardRead, markAnnotationDelivered, listPendingAnnotations, upsertActivity, endActivity, touchActivity } from './store.js'
 import type { BoardWithRows } from './store.js'
+import { makeContextLedger, deliverContext, shapeBoard, summariseBoard, rowKey, itemKey } from './shape.js'
 import { makeScope } from './scope.js'
 
 export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
   const server = new McpServer({ name: 'agent-inbox', version: '0.1.0' })
   const scope = makeScope(cwd)
+  // issue #42 — what THIS SERVER PROCESS has already handed over. Per-process,
+  // NOT per session or per agent: this server is long-lived and a subagent's
+  // calls are served by its parent CLI's process, so a fan-out shares one
+  // ledger. That is why every trimmed context stays recoverable on demand
+  // (`pending({full:true})`, `board_get({title, full:true})`) — the ledger only
+  // decides whether the common case is cheap. See src/shape.ts.
+  const ledger = makeContextLedger()
   const clientName = (): string | undefined => server.server.getClientVersion()?.name
   // this stdio server lives exactly as long as its agent session — its own id
   // IS the session id for the live-activity view
@@ -100,10 +108,10 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     'pending',
     {
       description:
-        'Poll for everything the human has said to you in this project — the ONE polling call; you do not need board_get to hear from them. Returns {items, rows}. items = your open questions, each with its reply (null until the human answers — reply may be one of your options or their own free-text direction; follow it either way) plus optional reply_context, and `annotation` if they pinned a side-note to the card — read that too. rows = the human’s per-row notes on your tracking boards, each {board_title, label, note, annotation, …}: an annotation is the human answering that row, so act on it and then flip the row’s status with board_row — THAT STATUS CHANGE IS WHAT TELLS THEM YOU DID. NOTHING here is handed over only once, so nothing is lost if you are busy or if a sibling session polls first: a question keeps coming back until you `resolve` it, and a `blocked` row keeps coming back until you change its status. That means you WILL see the same answer again — `annotation_seen_at`/`annotation_seen_by` on a row (and `reply_seen_at` on an item) mean it reached SOME agent, very often a sibling session sharing your agent name rather than you, so a stamp is NEVER a reason to skip it: if the row is still `blocked`, or the question still open, it is not done and it may well be yours to do. The stamp only tells you someone else may be working it too; the status change (or `resolve`) is the real signal. Poll between work steps rather than blocking. If the human answered you in chat instead, record it with the answer tool — but an inbox reply you have not picked up here always wins over one given in chat.',
-      inputSchema: {},
+        'Poll for everything the human has said to you in this project — the ONE polling call; you do not need board_get to hear from them. Returns {items, rows}. items = your open questions, each with its reply (null until the human answers — reply may be one of your options or their own free-text direction; follow it either way) plus optional reply_context, and `annotation` if they pinned a side-note to the card — read that too. rows = the human’s per-row notes on your tracking boards, each {board_title, label, note, annotation, …}: an annotation is the human answering that row, so act on it and then flip the row’s status with board_row — THAT STATUS CHANGE IS WHAT TELLS THEM YOU DID. NOTHING here is handed over only once, so nothing is lost if you are busy or if a sibling session polls first: a question keeps coming back until you `resolve` it, and a `blocked` row keeps coming back until you change its status. That means you WILL see the same answer again — `annotation_seen_at`/`annotation_seen_by` on a row (and `reply_seen_at` on an item) mean it reached SOME agent, very often a sibling session sharing your agent name rather than you, so a stamp is NEVER a reason to skip it: if the row is still `blocked`, or the question still open, it is not done and it may well be yours to do. The stamp only tells you someone else may be working it too; the status change (or `resolve`) is the real signal. Poll between work steps rather than blocking. If the human answered you in chat instead, record it with the answer tool — but an inbox reply you have not picked up here always wins over one given in chat. Polling is cheap on purpose: everything the HUMAN wrote (reply, reply_context, annotation) comes back in full every time, but agent-authored `context` is handed over only ONCE — after that a row or item carries `context_chars` instead, its size as JS counts it (UTF-16 code units, so an emoji counts 2). That "once" is per SERVER PROCESS, and a fan-out of subagents shares one: a sibling’s poll can consume a delivery you never received, so `context_chars` is NOT proof you have the text. Whenever you are missing context you actually need, ask for it — `pending({full:true})` returns every context in this payload in full, and `board_get({title, full:true})` returns one board’s rows in full. Nothing is ever unreachable, so never guess at backstory you were not given.',
+      inputSchema: { full: z.boolean().optional() },
     },
-    async () => {
+    async ({ full }) => {
       heartbeat()
       const s = scope.get(clientName())
       const items = listPending(db, s.project)
@@ -121,7 +129,24 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
       // was already delivered returns `true` and is handed over again on purpose.
       const rows = listPendingAnnotations(db, s.project)
         .filter((r) => markAnnotationDelivered(db, r.row_id, r.annotated_at, s.agent))
-      return { content: [{ type: 'text', text: JSON.stringify({ items, rows }) }] }
+      // issue #42 — at-least-once is about the HUMAN's words, not the agent's own
+      // backstory. The annotation/reply comes back on every poll for as long as
+      // #37 says it should; `context` is handed over on its first delivery out of
+      // this PROCESS and reduced to `context_chars` after that. Shaped AFTER the
+      // CAS filter above, so a row dropped for being stale is never recorded as
+      // delivered.
+      //
+      // `full: true` is the recovery path for BOTH shapes, items included: the
+      // ledger is per-process and a fan-out shares it, so an agent can hold a
+      // `context_chars` for text a sibling consumed. Asking is always allowed and
+      // always answered — that is what keeps the ledger an optimisation rather
+      // than a delivery guarantee it cannot make.
+      return {
+        content: [{ type: 'text', text: JSON.stringify({
+          items: items.map((it) => deliverContext(it, itemKey(it.id), ledger, { full })),
+          rows: rows.map((r) => deliverContext(r, rowKey(r.row_id), ledger, { full })),
+        }) }],
+      }
     },
   )
 
@@ -206,7 +231,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     'board_upsert',
     {
       description:
-        'Create or replace a tracking board (a titled table the human watches). Idempotent by title within this project — re-send the whole table to refresh it. Rows are matched by label; the human’s per-row notes survive. status: done|partial|missing|tracked|na|blocked. note is the one-line summary; context is optional long-form backstory (reasoning, history) shown collapsed. Re-sending a row as "blocked" is NOT an acknowledgement of the human’s answer on it — you are still asserting you are blocked; act on their note (pending() delivers it) and send a different status.',
+        'Create or replace a tracking board (a titled table the human watches). Idempotent by title within this project — re-send the whole table to refresh it. Rows are matched by label; the human’s per-row notes survive, and a row you leave OUT is deleted (so keep labels stable). status: done|partial|missing|tracked|na|blocked. note is the one-line summary; context is optional long-form backstory (reasoning, history) shown collapsed. Leaving `context` off a row KEEPS whatever is stored there — reads hand you `context_chars`, not the text, so omission can never mean delete; pass context:"" to clear it deliberately. Re-sending a row as "blocked" is NOT an acknowledgement of the human’s answer on it — you are still asserting you are blocked; act on their note (pending() delivers it) and send a different status.',
       inputSchema: {
         title: z.string().min(1),
         rows: z.array(z.object({ label: z.string().min(1), status: rowStatus, note: z.string().optional(), context: z.string().optional() })),
@@ -254,10 +279,10 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     'board_get',
     {
       description:
-        'Re-read a tracking board’s state before updating it. You do NOT need this to hear from the human — pending() delivers their per-row notes. Rows carry annotation_unseen: true on notes not yet delivered to any agent; reading marks the rows in the payload delivered. With a title: that board. Without: ALL your active boards in this project (which delivers every annotation in the project at once — prefer the titled form). Returns {found:false} if the titled board does not exist.',
-      inputSchema: { title: z.string().optional() },
+        'Re-read a tracking board’s state before updating it. You do NOT need this to hear from the human — pending() delivers their per-row notes. Rows carry annotation_unseen: true on notes not yet delivered to any agent; reading marks the rows in the payload delivered. With a title: that board, rows and all. Without: a SUMMARY of your active boards in this project — titles, row labels, statuses, notes and the human’s annotations, no row context (and it delivers every annotation in the project at once, so prefer the titled form). Returns {found:false} if the titled board does not exist. The human’s annotation is ALWAYS returned in full. Agent-authored row `context` is not: a row shows `context_chars` instead — its size as JS counts it (UTF-16 code units, so an emoji counts 2) — and `full: true` WITH a title returns the real text for that board. Ask for it whenever you actually need the backstory (most updates do not) — it is also how you recover context a sibling subagent’s poll consumed before you saw it. Re-sending a row through board_upsert WITHOUT its context keeps the stored text; it is not deleted by omission.',
+      inputSchema: { title: z.string().optional(), full: z.boolean().optional() },
     },
-    async ({ title }) => {
+    async ({ title, full }) => {
       heartbeat()
       const s = scope.get(clientName())
       // issue #37 — per-ROW delivery, exactly like pending(). markBoardRead still
@@ -269,14 +294,24 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
         for (const r of b.rows) if (r.annotation && !r.annotation_seen_at) markAnnotationDelivered(db, r.id, r.annotated_at, s.agent)
         markBoardRead(db, b.id)
       }
+      // issue #42 — the shape is decided AFTER delivery, never instead of it:
+      // every annotation in the payload is stamped exactly as before, whichever
+      // form was asked for. Only agent-authored `context` changes hands here.
       if (title === undefined) {
         const boards = listBoards(db).filter((b) => b.project === s.project)
         for (const b of boards) deliver(b)
-        return { content: [{ type: 'text', text: JSON.stringify({ boards }) }] }
+        // "what are my boards" is a summary — naming a board is what buys rows
+        // with their context, so `full` here is refused out loud rather than
+        // silently ignored.
+        const summary = boards.map(summariseBoard)
+        const payload = full === true ? { boards: summary, full_requires_title: true } : { boards: summary }
+        return { content: [{ type: 'text', text: JSON.stringify(payload) }] }
       }
       const board = getBoard(db, s.project, title)
       if (board) deliver(board)
-      return { content: [{ type: 'text', text: JSON.stringify(board ?? { found: false }) }] }
+      return {
+        content: [{ type: 'text', text: JSON.stringify(board ? shapeBoard(board, { full, ledger }) : { found: false }) }],
+      }
     },
   )
 

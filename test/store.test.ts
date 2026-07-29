@@ -657,6 +657,44 @@ describe('boards', () => {
     expect(row.annotation).toBe('human note') // human-owned, preserved
   })
 
+  // Issue #42, the read-modify-write hole. Every document prescribes
+  // board_get → board_upsert ("re-read the board before updating it",
+  // "re-send the whole table"), and MCP reads no longer carry `context` at all —
+  // they carry `context_chars`. So the table an agent faithfully re-sends has no
+  // `context` field on any row. If an absent field meant DELETE, following the
+  // documented flow would wipe every row's backstory. It means KEEP.
+  it('a re-upsert that omits context keeps the stored text — omission is not deletion (#42)', () => {
+    const backstory = 'tried A first; blocked on B — see PR #4'
+    upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'c', rows: [{ label: 'x', status: 'missing', note: 'n1', context: backstory }] })
+    annotateBoardRow(db, listBoards(db)[0]!.rows[0]!.id, 'human note')
+    // exactly what an agent can rebuild from a shaped read: label, status, note — no context
+    upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'c', rows: [{ label: 'x', status: 'partial', note: 'n2' }] })
+    const row = listBoards(db)[0]!.rows[0]!
+    expect(row.context).toBe(backstory) // survived the round-trip
+    expect(row.status).toBe('partial')  // the fields it DID send still won
+    expect(row.note).toBe('n2')
+    expect(row.annotation).toBe('human note')
+  })
+
+  it('an explicit empty context clears it — deliberate erasure is still possible (#42)', () => {
+    upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'c', rows: [{ label: 'x', status: 'missing', context: 'stale backstory' }] })
+    upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'c', rows: [{ label: 'x', status: 'missing', context: '' }] })
+    expect(listBoards(db)[0]!.rows[0]!.context).toBe('')
+  })
+
+  // The row rule is NOT softened by the field rule: a label left out of the
+  // table is still gone, annotation and all. That is what makes labels the
+  // stable identity agents are told to keep.
+  it('a ROW absent from an upsert is still deleted — only the FIELD rule changed (#42)', () => {
+    upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'c', rows: [
+      { label: 'x', status: 'missing', context: 'keep me' }, { label: 'y', status: 'missing', context: 'drop me' },
+    ] })
+    upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'c', rows: [{ label: 'x', status: 'missing' }] })
+    const rows = listBoards(db)[0]!.rows
+    expect(rows.map((r) => r.label)).toEqual(['x'])
+    expect(rows[0]!.context).toBe('keep me')
+  })
+
   it('updateBoardRow sets context, and leaves it when omitted', () => {
     updateBoardRow(db, { project: 'p', stream: '', agent: 'a', title: 'c', label: 'x', status: 'partial', context: 'long story' })
     expect(listBoards(db)[0]!.rows[0]!.context).toBe('long story')

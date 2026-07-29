@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -408,5 +408,42 @@ describe('project close/reopen api (issue #32)', () => {
     await post(app, '/api/projects/close', { project: 'dead' })
     expect(await (await app.request('/api/items')).json()).toEqual(itemsBefore)
     expect(await (await app.request('/api/boards')).json()).toEqual(boardsBefore)
+  })
+})
+
+// ── issue #42, constraint B: the viewer is untouched ─────────────────────────
+// #42 trims agent-authored `context` out of the MCP READ payloads, because it is
+// written for the human and the agent that wrote it pays to read it back. The
+// human's surface is the one place that text is FOR: /api/boards and /api/items
+// must keep carrying it verbatim, and the viewer must not route through
+// src/shape.ts at all. Two pins — the payload, and the wiring that produces it.
+describe('the human’s payloads never route through the agent-side shaping (#42)', () => {
+  let db: Database.Database
+  beforeEach(() => { db = freshDb() })
+
+  it('GET /api/boards still carries full row context — and no context_chars', async () => {
+    const long = 'the backstory the human reads in the collapsed dropdown. '.repeat(10)
+    upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'c', rows: [{ label: 'x', status: 'blocked', note: 'n', context: long }] })
+    annotateBoardRow(db, listBoards(db)[0]!.rows[0]!.id, 'human note')
+    const body = await (await createViewer(db).request('/api/boards')).json()
+    expect(body[0].rows[0].context).toBe(long)
+    expect(body[0].rows[0]).not.toHaveProperty('context_chars')
+    expect(body[0].rows[0].annotation).toBe('human note')
+    // byte-identical to what the store returns: the route is a passthrough
+    expect(body).toEqual(JSON.parse(JSON.stringify(listBoards(db))))
+  })
+
+  it('GET /api/items still carries the item’s full context', async () => {
+    const long = 'background a human returning cold needs. '.repeat(10)
+    insertItem(db, { project: 'p', stream: '', agent: 'a', kind: 'question', title: 'q', context: long })
+    const body = await (await createViewer(db).request('/api/items')).json()
+    expect(JSON.stringify(body)).toContain(long)
+    expect(JSON.stringify(body)).not.toContain('context_chars')
+  })
+
+  it('src/viewer.ts does not import the shaping module', () => {
+    const src = readFileSync(new URL('../src/viewer.ts', import.meta.url), 'utf8')
+    expect(src).not.toMatch(/from '\.\/shape\.js'/)
+    expect(src).not.toContain('context_chars')
   })
 })

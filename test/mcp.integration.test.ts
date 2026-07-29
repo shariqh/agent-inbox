@@ -426,6 +426,292 @@ describe('mcp round-trip', () => {
     await c1.close()
   }, 20000)
 
+  // ── issue #42: the payload the AGENT pays for ──────────────────────────────
+  // `context` is written for the HUMAN (collapsed dropdown, "length is fine"),
+  // and every agent read used to carry all of it: ~11,500 tokens for one
+  // project's `board_get()`, ~7,050 of it context. These pin the shape at the
+  // MCP boundary — the store still returns whole rows, and the viewer still
+  // gets them (test/viewer.test.ts).
+  it('board_get omits row context by default, returns it with full: true, and summarises with no title (#42)', async () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-shape-')), 'inbox.db')
+    const conn = async () => {
+      const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
+      const c = new Client({ name: 'claude-code', version: '1.0.0' }); await c.connect(t); return c
+    }
+    const call = async (c: Client, name: string, args: Record<string, unknown>) =>
+      JSON.parse(((await c.callTool({ name, arguments: args })).content as Array<{ text: string }>)[0]!.text)
+    const LONG = 'the backstory the human reads in the collapsed dropdown. '.repeat(10)
+
+    const c1 = await conn()
+    await call(c1, 'board_upsert', { title: 'rollout', rows: [
+      { label: 'Merge', status: 'blocked', note: 'ready when you are', context: LONG },
+      { label: 'QA', status: 'tracked' },
+    ] })
+    const project = listBoards(openDb(dbPath))[0]!.project
+    annotateBoardRow(openDb(dbPath), getBoard(openDb(dbPath), project, 'rollout')!.rows[0]!.id, 'merge it')
+
+    // default: the size, not the text — and the human's note in full
+    const trimmed = await call(c1, 'board_get', { title: 'rollout' })
+    expect(trimmed.rows[0].context).toBeUndefined()
+    expect(trimmed.rows[0].context_chars).toBe(LONG.length)
+    expect(trimmed.rows[0].note).toBe('ready when you are')
+    expect(trimmed.rows[0].annotation).toBe('merge it')
+    expect(trimmed.rows[1].context_chars).toBeUndefined() // no context → no field at all
+
+    // the escape hatch
+    const full = await call(c1, 'board_get', { title: 'rollout', full: true })
+    expect(full.rows[0].context).toBe(LONG)
+    expect(full.rows[0].annotation).toBe('merge it')
+
+    // no title = a summary: titles, labels, statuses, notes, annotations. No context.
+    const all = await call(c1, 'board_get', {})
+    expect(all.boards[0].title).toBe('rollout')
+    expect(all.boards[0].rows.map((r: { label: string }) => r.label)).toEqual(['Merge', 'QA'])
+    expect(all.boards[0].rows[0].note).toBe('ready when you are')
+    expect(all.boards[0].rows[0].annotation).toBe('merge it')
+    expect(all.boards[0].rows[0].context_chars).toBe(LONG.length)
+    expect(JSON.stringify(all)).not.toContain('collapsed dropdown')
+
+    // full without a title is refused rather than silently ignored — naming a board buys the rows
+    const refused = await call(c1, 'board_get', { full: true })
+    expect(refused.full_requires_title).toBe(true)
+    expect(JSON.stringify(refused)).not.toContain('collapsed dropdown')
+    await c1.close()
+  }, 20000)
+
+  // #37 made a blocked annotated row re-ship on EVERY poll — with its whole
+  // context each time. The human's words must keep coming back; the agent's own
+  // backstory must not.
+  it('pending hands each context over once per process, then only its size (#42)', async () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-once-')), 'inbox.db')
+    const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
+    const c1 = new Client({ name: 'claude-code', version: '1.0.0' }); await c1.connect(t)
+    const call = async (name: string, args: Record<string, unknown>) =>
+      JSON.parse(((await c1.callTool({ name, arguments: args })).content as Array<{ text: string }>)[0]!.text)
+    const ROW_CTX = 'why this row is blocked, at the length agents are told to write. '.repeat(8)
+    const ITEM_CTX = 'the background a human returning cold would need. '.repeat(8)
+
+    await call('board_upsert', { title: 'rollout', rows: [{ label: 'Merge', status: 'blocked', context: ROW_CTX }] })
+    await call('flag', { kind: 'question', title: 'flags or branch?', context: ITEM_CTX })
+    const project = listBoards(openDb(dbPath))[0]!.project
+    annotateBoardRow(openDb(dbPath), getBoard(openDb(dbPath), project, 'rollout')!.rows[0]!.id, 'merge it')
+
+    const first = await call('pending', {})
+    expect(first.rows[0].context).toBe(ROW_CTX)
+    expect(first.items[0].context).toBe(ITEM_CTX)
+
+    // …and every poll after it: the human's annotation still, the backstory never
+    for (const _ of [1, 2, 3]) {
+      const again = await call('pending', {})
+      expect(again.rows[0].annotation).toBe('merge it')     // #37 at-least-once, untouched
+      expect(again.rows[0].note).toBeDefined()
+      expect(again.rows[0].context).toBeUndefined()
+      expect(again.rows[0].context_chars).toBe(ROW_CTX.length)
+      expect(again.items[0].context).toBeUndefined()
+      expect(again.items[0].context_chars).toBe(ITEM_CTX.length)
+    }
+
+    // delivery semantics are untouched: still blocked, still stamped once
+    const row = getBoard(openDb(dbPath), project, 'rollout')!.rows[0]!
+    expect(row.status).toBe('blocked')
+    expect(row.annotation_seen_by).toBe('claude-code')
+    await c1.close()
+  }, 20000)
+
+  // THE STARVATION GUARD, for the case a ledger CAN cover: two CLIs, two server
+  // processes. The delivery stamp is per-ROW and `annotation_seen_by` is a CLIENT
+  // NAME, not a session id — so "already delivered" says nothing about whether
+  // THIS agent has ever seen the text. Deciding first-delivery from the stamp
+  // would hand a context-less payload to the agent that raised the row because
+  // someone else polled first: #37's fan-out hole, one level down.
+  //
+  // The case it CANNOT cover is a subagent, whose calls are served by its
+  // parent's process and therefore its parent's ledger — see the recovery test
+  // below, which is why that case is survivable rather than solved.
+  it('an agent in a separate process gets the context on ITS first poll, however often others polled (#42)', async () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-sibling-')), 'inbox.db')
+    const conn = async () => {
+      const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
+      const c = new Client({ name: 'claude-code', version: '1.0.0' }); await c.connect(t); return c
+    }
+    const call = async (c: Client, name: string, args: Record<string, unknown>) =>
+      JSON.parse(((await c.callTool({ name, arguments: args })).content as Array<{ text: string }>)[0]!.text)
+    const ROW_CTX = 'the backstory the manager needs to act on this row. '.repeat(8)
+
+    const manager = await conn()
+    await call(manager, 'board_upsert', { title: 'rollout', rows: [{ label: 'Merge', status: 'blocked', context: ROW_CTX }] })
+    const project = listBoards(openDb(dbPath))[0]!.project
+    annotateBoardRow(openDb(dbPath), getBoard(openDb(dbPath), project, 'rollout')!.rows[0]!.id, 'merge it')
+
+    // a subagent — same client NAME, different process — polls twice and drains its own first delivery
+    const subagent = await conn()
+    expect((await call(subagent, 'pending', {})).rows[0].context).toBe(ROW_CTX)
+    expect((await call(subagent, 'pending', {})).rows[0].context).toBeUndefined()
+
+    // the manager has still never seen it, and the row is stamped delivered — it gets it anyway
+    expect(getBoard(openDb(dbPath), project, 'rollout')!.rows[0]!.annotation_seen_at).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+    const managerRows = (await call(manager, 'pending', {})).rows
+    expect(managerRows[0].annotation).toBe('merge it')
+    expect(managerRows[0].context).toBe(ROW_CTX)
+
+    await manager.close()
+    await subagent.close()
+  }, 25000)
+
+  // #42 meets #37 F2. pending() DROPS a row the human rewrote between the read
+  // and the stamp — the newer text stays queued for the next poll. Shaping runs
+  // AFTER that filter for a reason: record a dropped row as "context delivered"
+  // and the agent gets the human's new note next poll with the backstory it was
+  // never actually handed. Same trigger technique as F2 — a deterministic stand-in
+  // for the human's hand, firing from inside the handler.
+  it('a row dropped mid-poll is not recorded as delivered — its context still ships next time (#42)', async () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-cas-')), 'inbox.db')
+    const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
+    const c1 = new Client({ name: 'claude-code', version: '1.0.0' }); await c1.connect(t)
+    const call = async (name: string, args: Record<string, unknown>) =>
+      JSON.parse(((await c1.callTool({ name, arguments: args })).content as Array<{ text: string }>)[0]!.text)
+    const CTX = 'the backstory for the row the human changed their mind about. '.repeat(8)
+
+    await call('board_upsert', { title: 'rollout', rows: [
+      { label: 'first', status: 'blocked' }, { label: 'second', status: 'blocked', context: CTX },
+    ] })
+    const store = openDb(dbPath)
+    const project = listBoards(store)[0]!.project
+    const rows = getBoard(store, project, 'rollout')!.rows
+    annotateBoardRow(store, rows.find((r) => r.label === 'first')!.id, 'ship it')
+    annotateBoardRow(store, rows.find((r) => r.label === 'second')!.id, 'wait for CI')
+    store.exec(`
+      CREATE TRIGGER human_changes_mind AFTER UPDATE OF annotation_seen_at ON board_rows
+      WHEN NEW.label = 'first'
+      BEGIN
+        UPDATE board_rows
+           SET annotation = 'actually — do NOT merge', annotated_at = '2099-01-01T00:00:00.000Z',
+               annotation_seen_at = NULL, annotation_seen_by = NULL
+         WHERE label = 'second';
+      END;`)
+
+    const dropped = (await call('pending', {})).rows as Array<{ label: string }>
+    expect(dropped.map((r) => r.label)).toEqual(['first'])
+
+    store.exec(`DROP TRIGGER human_changes_mind`)
+    const next = (await call('pending', {})).rows as Array<{ label: string; annotation: string; context?: string }>
+    const second = next.find((r) => r.label === 'second')!
+    expect(second.annotation).toBe('actually — do NOT merge')
+    expect(second.context, 'never delivered, so the context must still come with it').toBe(CTX)
+    await c1.close()
+  }, 20000)
+
+  // THE CASE NO LEDGER CAN GET RIGHT, and the reason it does not have to.
+  // A Claude Code subagent does NOT get its own MCP server: its calls are served
+  // by the parent CLI's long-lived process, so a manager and its subagents share
+  // ONE ledger and the first of them to poll consumes the delivery — everyone
+  // else is handed `context_chars` for text they have never seen. MCP exposes no
+  // subagent identity to key on, so the loss is made RECOVERABLE instead of
+  // prevented: asking is always allowed and always answered, for rows AND for
+  // items, which is the only read path an item has. One process = one client
+  // here, exactly the fan-out's sharing.
+  it('pending({full:true}) recovers context another caller in the same process already drained (#42)', async () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-recover-')), 'inbox.db')
+    const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
+    const c1 = new Client({ name: 'claude-code', version: '1.0.0' }); await c1.connect(t)
+    const call = async (name: string, args: Record<string, unknown>) =>
+      JSON.parse(((await c1.callTool({ name, arguments: args })).content as Array<{ text: string }>)[0]!.text)
+    const ROW_CTX = 'why this row is blocked, at the length agents are told to write. '.repeat(8)
+    const ITEM_CTX = 'the background a human returning cold would need. '.repeat(8)
+
+    await call('board_upsert', { title: 'rollout', rows: [{ label: 'Merge', status: 'blocked', context: ROW_CTX }] })
+    await call('flag', { kind: 'question', title: 'flags or branch?', context: ITEM_CTX })
+    const project = listBoards(openDb(dbPath))[0]!.project
+    annotateBoardRow(openDb(dbPath), getBoard(openDb(dbPath), project, 'rollout')!.rows[0]!.id, 'merge it')
+
+    // whoever polled first drained both deliveries; the next caller sees only sizes
+    await call('pending', {})
+    const drained = await call('pending', {})
+    expect(drained.rows[0].context).toBeUndefined()
+    expect(drained.items[0].context).toBeUndefined()
+
+    // …and can always get them back, as often as it needs to
+    for (const _ of [1, 2]) {
+      const recovered = await call('pending', { full: true })
+      expect(recovered.rows[0].context).toBe(ROW_CTX)
+      expect(recovered.items[0].context).toBe(ITEM_CTX)
+      expect(recovered.rows[0].annotation).toBe('merge it') // the human's words, as always
+    }
+
+    // a full delivery is still a delivery — the ordinary poll stays cheap
+    const after = await call('pending', {})
+    expect(after.rows[0].context).toBeUndefined()
+    expect(after.rows[0].context_chars).toBe(ROW_CTX.length)
+    expect(after.items[0].context_chars).toBe(ITEM_CTX.length)
+    await c1.close()
+  }, 20000)
+
+  // An escape hatch an agent cannot find is not an escape hatch. These are the
+  // words the model actually reads before it calls anything, so they are pinned:
+  // the hatch, on both tools, and how to CLEAR a context now that omitting it
+  // keeps the stored text.
+  it('the payload contract is discoverable at the call site — the tool definitions say it (#42)', async () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-desc-')), 'inbox.db')
+    const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
+    const c1 = new Client({ name: 'claude-code', version: '1.0.0' }); await c1.connect(t)
+    const tools = new Map((await c1.listTools()).tools.map((x) => [x.name, x]))
+
+    const pending = tools.get('pending')!
+    expect(pending.description).toContain('pending({full:true})')
+    expect(pending.description).toContain('board_get({title, full:true})')
+    expect(pending.inputSchema.properties).toHaveProperty('full') // and the hatch is actually callable
+    // it must not promise a per-session guarantee it cannot keep
+    expect(pending.description).toContain('per SERVER PROCESS')
+    expect(pending.description).toMatch(/UTF-16 code units/)
+
+    expect(tools.get('board_get')!.description).toContain('full: true')
+    expect(tools.get('board_get')!.description).toMatch(/UTF-16 code units/)
+    // the write side: omission keeps, '' clears
+    expect(tools.get('board_upsert')!.description).toMatch(/context:""/)
+    await c1.close()
+  }, 20000)
+
+  // THE DOCUMENTED FLOW, end to end. board_get says "re-read a board before
+  // updating it", board_upsert says "re-send the whole table", and the reporting
+  // snippet tells agents to call board_get before updating a board. Since #42 the
+  // payload an agent re-sends carries `context_chars`, not `context` — so this
+  // exact loop is where a wiped board would come from.
+  it('board_get → board_upsert keeps every row’s context (#42)', async () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-rmw-')), 'inbox.db')
+    const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
+    const c1 = new Client({ name: 'claude-code', version: '1.0.0' }); await c1.connect(t)
+    const call = async (name: string, args: Record<string, unknown>) =>
+      JSON.parse(((await c1.callTool({ name, arguments: args })).content as Array<{ text: string }>)[0]!.text)
+    const CTX = 'the backstory the human reads in the collapsed dropdown. '.repeat(10)
+
+    await call('board_upsert', { title: 'rollout', rows: [
+      { label: 'Merge', status: 'blocked', note: 'ready when you are', context: CTX },
+      { label: 'QA', status: 'tracked' },
+    ] })
+    const project = listBoards(openDb(dbPath))[0]!.project
+    annotateBoardRow(openDb(dbPath), getBoard(openDb(dbPath), project, 'rollout')!.rows[0]!.id, 'merge it')
+
+    // re-read, flip a status, re-send EXACTLY what the read handed back
+    const read = await call('board_get', { title: 'rollout' })
+    expect(read.rows[0].context).toBeUndefined() // the read genuinely cannot give it back
+    const rows = (read.rows as Array<{ label: string; status: string; note: string; context?: string }>).map((r) => ({
+      label: r.label, status: r.label === 'QA' ? 'done' : r.status, note: r.note, context: r.context,
+    }))
+    await call('board_upsert', { title: 'rollout', rows })
+
+    const stored = getBoard(openDb(dbPath), project, 'rollout')!
+    expect(stored.rows[0]!.context, 'the round-trip must not wipe the human-facing backstory').toBe(CTX)
+    expect(stored.rows[0]!.annotation).toBe('merge it')
+    expect(stored.rows.find((r) => r.label === 'QA')!.status).toBe('done') // the update still applied
+
+    // and a deliberate erasure still works
+    await call('board_upsert', { title: 'rollout', rows: [
+      { label: 'Merge', status: 'blocked', note: 'ready when you are', context: '' }, { label: 'QA', status: 'done' },
+    ] })
+    expect(getBoard(openDb(dbPath), project, 'rollout')!.rows[0]!.context).toBe('')
+    await c1.close()
+  }, 20000)
+
   it('a flagged item records the asking session, matching its live activity row', async () => {
     const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-session-')), 'inbox.db')
     const transport = new StdioClientTransport({

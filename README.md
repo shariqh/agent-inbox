@@ -103,6 +103,8 @@ src/
   mcp.ts           MCP tool definitions (flag/pending/answer/resolve/register/whoami,
                    board_upsert/board_row/board_get/board_archive, status)
   mcp-server.ts    stdio entry — spawned per agent session
+  shape.ts         AGENT-SIDE-ONLY payload shaping for MCP reads (#42) — trims agent-authored
+                   `context` to `context_chars`; never the human's annotation, never the viewer
   group.ts         pure grouping (Needs-you / Notes / Done)
   viewer.ts        Hono API (items, boards, live activity, source links, close/reopen)
   prstate.ts       VIEWER-PROCESS-ONLY gh fetcher for live PR state (#30) — never imported by mcp.ts

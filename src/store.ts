@@ -507,7 +507,18 @@ export function upsertBoard(db: Database.Database, input: UpsertBoardInput): { b
       const existingId = idByLabel.get(r.label)
       if (existingId) {
         // annotation column is deliberately NOT touched — human notes survive
-        db.prepare(`UPDATE board_rows SET status = ?, note = ?, context = ?, position = ? WHERE id = ?`).run(r.status, r.note ?? '', r.context ?? '', i, existingId)
+        db.prepare(`UPDATE board_rows SET status = ?, note = ?, position = ? WHERE id = ?`).run(r.status, r.note ?? '', i, existingId)
+        // OMITTING `context` KEEPS WHAT IS STORED; only an explicit '' clears it
+        // (issue #42). The rule that a row ABSENT from an upsert is deleted is
+        // about ROWS and is untouched — this is about a FIELD, and omission is
+        // not deletion. It matters because the prescribed flow is read-then-
+        // re-upsert (`board_get` → `board_upsert`) and MCP reads no longer carry
+        // `context` at all: an agent re-sending exactly what it was handed would
+        // wipe every row's backstory. `note` still clears on omission, and that
+        // asymmetry is deliberate — a read hands `note` back, so leaving it out
+        // is a choice the agent can actually make; it cannot make that choice
+        // about text it was never given.
+        if (r.context !== undefined) db.prepare(`UPDATE board_rows SET context = ? WHERE id = ?`).run(r.context, existingId)
       } else {
         db.prepare(`INSERT INTO board_rows (id, board_id, label, status, note, context, position) VALUES (?, ?, ?, ?, ?, ?, ?)`)
           .run(randomUUID(), boardId, r.label, r.status, r.note ?? '', r.context ?? '', i)

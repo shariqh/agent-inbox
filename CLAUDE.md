@@ -134,6 +134,29 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   CI check or a changes-requested review NEVER enters the attention set** — `public/attention.js` is
   untouched, no badge moves, no notification fires. A red CI is the agent's problem, not the human
   being blocked; this is the likeliest place for scope creep to damage tenet 2.
+- **`src/shape.ts` is AGENT-SIDE ONLY (issue #42).** `context` is written for the human
+  and rendered collapsed, so agents write it generously — and every agent read used to pay
+  for all of it. `shape.ts` is where the MCP read payloads are trimmed (`context` →
+  `context_chars`, `full: true` to fetch); `store.ts` still returns whole rows and
+  `src/viewer.ts` must never import it, so `/api/boards` and `/api/items` stay
+  byte-identical for the human. **Only agent-authored `context` is ever trimmed** — the
+  human's `annotation`/`reply`/`reply_context` is never omitted on any path, under any
+  option. **The "handed over once" ledger is per-PROCESS, and that is all it can be.** Not
+  per session and not per agent: the stdio server is long-lived, and a Claude Code
+  subagent's MCP calls are served by the PARENT CLI's process — so a fan-out SHARES one
+  ledger and the first sibling to poll consumes the delivery. (The persisted stamp is no
+  better: `annotation_seen_by` is a CLIENT NAME every sibling shares.) MCP exposes no
+  subagent identity to key on, so the ledger is **an optimisation, never a guarantee** —
+  what makes that safe is that a trimmed context is ALWAYS recoverable on demand:
+  `pending({full:true})` for items and rows, `board_get({title, full:true})` for a board.
+  Keep both hatches, and keep them named in the tool descriptions. Do not re-assert
+  "one process = one session"; it was measured and it is false.
+- **Omission is not deletion — for FIELDS (issue #42).** `board_upsert` leaves a row's
+  `context` alone when the field is absent and clears it only on an explicit `''`, because
+  the prescribed flow is `board_get` → `board_upsert` and MCP reads no longer carry the
+  text: omitting what you were never handed would wipe it. This does NOT weaken the rule
+  that a ROW absent from an upsert is deleted — that one stands. `note` still clears on
+  omission, deliberately: reads do hand `note` back, so leaving it out is a real choice.
 - **`store.ts`/`mcp.ts`/`viewer.ts` inverse round-trip:** the store's `Item` and
   `BoardWithRows` shapes are the contract shared by MCP writes/reads and viewer reads.
   Change them in `store.ts` and update both consumers (+ `group.ts` for items;
@@ -343,6 +366,17 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   `blocked` row keeps arriving until an agent acknowledges it by flipping the status. See the
   delivery-is-not-acknowledgement invariant above; `docs/reporting-snippet.md` and the `pending`/
   `board_row` tool descriptions all say that the STATUS FLIP is the acknowledgement.
+- **Agent-read payload diet** *(#42)* — `src/shape.ts`. MCP reads omit agent-authored `context` and
+  report `context_chars` instead; `board_get()` with no title is a summary; and a given context is
+  handed over ONCE per server process (the human's words still come back on every poll — #37 is
+  untouched). Two escape hatches, both named in the tool descriptions: `pending({full:true})` for
+  items and rows, `board_get({title, full:true})` for a board. Measured against a copy of the live
+  db (`JSON length / 3.6`, the issue's method): `board_get()` 11,493 → 2,604 tok (agent-inbox),
+  14,818 → 3,955 (oris); the biggest single board 4,361 → 1,551, unchanged under `full:true`; and,
+  with the project's 14 heavy rows synthetically blocked, 20 polls 136,791 → 52,568. It costs +477
+  tok of tool definitions once per session. `docs/reporting-snippet.md` is deliberately unchanged —
+  agents should keep writing generous `context` for the human; the tool descriptions carry the
+  payload contract.
 - **The agent-emit contract** — `docs/reporting-snippet.md`'s end-of-turn rule now tests "am I about
   to stop and wait on the human?", so recommendations and "say the word" moments get flagged
   instead of buried. Mirrored in the `flag` tool description so agents get it at the call site.

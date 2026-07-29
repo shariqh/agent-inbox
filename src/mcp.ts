@@ -7,6 +7,18 @@ import type { BoardWithRows } from './store.js'
 import { makeContextLedger, deliverContext, shapeBoard, summariseBoard, rowKey, itemKey } from './shape.js'
 import { makeScope } from './scope.js'
 
+// The 5-minute liveness tick, hoisted OUT of its setInterval callback on purpose
+// (#45). This is the line the two-stamp distinction rests on — it moves
+// `updated_at` and must NEVER move `last_call_at` — and inline in an anonymous
+// callback it was unreachable from any test: a `recordActivityCall` added beside
+// it there restored the original "claim never decays" bug with the whole suite
+// still green. Named, it can be fired directly; test/live-tick.test.ts asserts
+// what it does over 12 modelled hours of silence AND that the timer's body is
+// nothing but this call.
+export function livenessTick(db: Database.Database, session: string): void {
+  try { touchActivity(db, session) } catch { /* presence must never break the server */ }
+}
+
 export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
   const server = new McpServer({ name: 'agent-inbox', version: '0.1.0' })
   const scope = makeScope(cwd)
@@ -46,10 +58,9 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
   server.server.oninitialized = registerPresence
   setTimeout(registerPresence, 2000).unref() // fallback if no initialized notification arrives
   // liveness only: keeps the session listed (a crashed process still falls out
-  // of listActivity's 15-minute window) while letting its `doing` claim go cold
-  setInterval(() => {
-    try { touchActivity(db, sessionId) } catch { /* ignore */ }
-  }, 5 * 60000).unref()
+  // of listActivity's 15-minute window) while letting its `doing` claim go cold.
+  // One call, and it must stay one call — see livenessTick above.
+  setInterval(() => livenessTick(db, sessionId), 5 * 60000).unref()
   process.on('exit', () => {
     try { endActivity(db, sessionId) } catch { /* ignore */ }
   })

@@ -67,5 +67,11 @@ describe('the Live drawer after a claim goes cold (#45)', () => {
     // "alive 9h" reads as a plus; what the human needs is how long it has been quiet
     expect(seen[1]!.querySelector('.live-age')?.textContent).toMatch(/^quiet 9h/)
     expect(seen[0]!.querySelector('.live-age')?.textContent).toMatch(/^alive /)
+    // …and the hover text must say the same thing as the dot beside it. Keyed on
+    // `updated_at` — what it used to read — this row would claim "last update 2m
+    // ago", because the server heartbeated it two minutes ago and will go on
+    // doing so forever. The dot's TONE was already pinned; the words were not.
+    expect(seen[1]!.querySelector('.live-age')?.getAttribute('title')).toBe('last call 9h ago')
+    expect(seen[1]!.querySelector('.live-dot')?.getAttribute('title')).toBe('last call 9h ago')
   })
 })

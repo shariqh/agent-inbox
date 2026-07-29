@@ -115,7 +115,11 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   not evidence of activity — that is why a row was observed advertising a 2-day-old effort.
   `activity.last_call_at` is written by `recordActivityCall` ONLY, called from `heartbeat()` in
   `src/mcp.ts`, i.e. by real MCP calls; **the timer must never call it**, and that one line is the
-  whole distinction. A `doing` claim is live while that stamp is within `CLAIM_COLD_MS` (30 min)
+  whole distinction — which is why the timer's body is the named export `livenessTick` rather than
+  an anonymous callback: inline it was unreachable, and a `recordActivityCall` added beside it
+  reinstated the whole bug with the suite green. `test/live-tick.test.ts` pins both halves (what
+  the tick does over 12 modelled hours of silence, and that the interval calls nothing else).
+  A `doing` claim is live while that stamp is within `CLAIM_COLD_MS` (30 min)
   and otherwise decays to `doing:'open', idle:true, children:[]`. **The decay is in two places on
   purpose.** It is derived on every read in `listActivity` (a session that goes quiet forever needs
   no further write to stop lying) *and* cleared by `recordActivityCall` when the call it is

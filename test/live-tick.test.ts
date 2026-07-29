@@ -24,26 +24,107 @@
 //      assert it moves liveness and NOTHING else. Kills any mutation of the
 //      tick's own body (stamping `last_call_at` in addition to, or instead of,
 //      `touchActivity`), and also a tick that does nothing at all.
-//   2. SOURCE — the `setInterval` callback is exactly that one call. Extraction
-//      MOVES the mutable line rather than removing it: a stamp added in the
-//      callback would be invisible to (1). A source pin is this repo's idiom for
-//      what runtime cannot see (test/hardening.test.ts, test/shell.test.ts).
+//   2. SOURCE — nothing else stamps a real call. Extraction MOVES the mutable
+//      line rather than removing it: a stamp added in the callback would be
+//      invisible to (1). A source pin is this repo's idiom for what runtime
+//      cannot see (test/hardening.test.ts, test/shell.test.ts).
+//
+// THE SOURCE PIN WAS ITSELF WRONG UNTIL NOW, and it is worth saying how, because
+// the shape of the mistake is the general one. It read
+// `/setInterval\(([\s\S]*?)\)\.unref\(\)/g`, expected exactly one match, and
+// required that match's body to be the `livenessTick` call verbatim. Its NAME
+// said "nothing else runs on that schedule". Its ASSERTION saw only `.unref()`'d
+// `setInterval`s written in one exact spelling. Measured, both of these restore
+// #45's bug in full and passed all 1014 tests:
+//   (a) `setInterval(() => recordActivityCall(db, sessionId), 5*60000)` — no
+//       `.unref()`, so the regex never matched it at all;
+//   (b) a recursive `setTimeout` re-arm calling `recordActivityCall` — not a
+//       `setInterval`, so likewise invisible.
+// And it failed on a behaviour-identical reformat to a braced arrow body, which
+// is the other half of a bad pin: hostile to refactors it should not care about.
+//
+// Replaced by two AST pins over src/mcp.ts (comments and imports are not call
+// expressions, so neither prose nor the import line can satisfy them, and neither
+// can see whitespace):
+//   · `recordActivityCall` is called EXACTLY ONCE, from inside `heartbeat()`.
+//     This is the invariant that actually matters, and it catches every
+//     scheduling shape — interval, timeout, recursive, anything — because an
+//     evasion has to call it from somewhere. It kills (a) and (b) outright.
+//   · no timer callback reaches `heartbeat` or `recordActivityCall` through this
+//     file's own named functions. That is what the old regex was reaching for,
+//     minus the spelling, and it additionally kills the indirection the old pin
+//     only caught by luck: `setInterval(alsoTick, …)` where `alsoTick` calls
+//     `heartbeat()` — one `recordActivityCall`, still in `heartbeat`, bug back.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
+import ts from 'typescript'
 import { livenessTick } from '../src/mcp.js'
 import { openDb, upsertActivity, recordActivityCall, listActivity } from '../src/store.js'
 
 const START = Date.parse('2026-07-25T09:00:00.000Z')
 const CLAIM = 'Executing Track B — 18-task viewer redesign'
 
-// comment lines stripped so prose about setInterval can never satisfy the pin
-const code = readFileSync(new URL('../src/mcp.ts', import.meta.url), 'utf8')
-  .split('\n')
-  .filter((l) => !l.trim().startsWith('//'))
-  .join('\n')
+const SRC = new URL('../src/mcp.ts', import.meta.url)
+const ast = ts.createSourceFile('mcp.ts', readFileSync(SRC, 'utf8'), ts.ScriptTarget.ESNext, true)
+
+const walk = (node: ts.Node, visit: (n: ts.Node) => void): void => {
+  visit(node)
+  ts.forEachChild(node, (c) => walk(c, visit))
+}
+
+/** every `name(...)` in `node`. A comment mentioning it is not a call; nor is the import. */
+const callsTo = (node: ts.Node, name: string): ts.CallExpression[] => {
+  const out: ts.CallExpression[] = []
+  walk(node, (n) => {
+    if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === name) out.push(n)
+  })
+  return out
+}
+
+/** the name of the nearest enclosing function, or undefined if it is anonymous. */
+const enclosingFunction = (node: ts.Node): string | undefined => {
+  for (let n: ts.Node | undefined = node.parent; n; n = n.parent) {
+    if (ts.isFunctionDeclaration(n)) return n.name?.text
+    if (ts.isArrowFunction(n) || ts.isFunctionExpression(n)) {
+      const p = n.parent
+      return ts.isVariableDeclaration(p) && ts.isIdentifier(p.name) ? p.name.text : undefined
+    }
+  }
+  return undefined
+}
+
+/** every identifier mentioned anywhere under `node` — deliberately over-broad. */
+const identifiersIn = (node: ts.Node): string[] => {
+  const out: string[] = []
+  walk(node, (n) => { if (ts.isIdentifier(n)) out.push(n.text) })
+  return out
+}
+
+/** name → identifiers it mentions, for every named function-like binding in the file. */
+const bodyOf = new Map<string, string[]>()
+walk(ast, (n) => {
+  if (ts.isFunctionDeclaration(n) && n.name && n.body) bodyOf.set(n.name.text, identifiersIn(n.body))
+  if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.initializer &&
+      (ts.isArrowFunction(n.initializer) || ts.isFunctionExpression(n.initializer))) {
+    bodyOf.set(n.name.text, identifiersIn(n.initializer))
+  }
+})
+
+/** closure of `seed` over bodyOf — what a call site can reach without leaving this file. */
+const reachableFrom = (seed: string[]): Set<string> => {
+  const seen = new Set<string>()
+  const queue = [...seed]
+  while (queue.length > 0) {
+    const name = queue.shift()!
+    if (seen.has(name)) continue
+    seen.add(name)
+    for (const next of bodyOf.get(name) ?? []) queue.push(next)
+  }
+  return seen
+}
 
 describe('the liveness tick moves liveness and nothing else (#45)', () => {
   let db: Database.Database
@@ -79,11 +160,21 @@ describe('the liveness tick moves liveness and nothing else (#45)', () => {
     expect(live[0]!.detail).toBe('')
   })
 
-  it('is the ENTIRE body of the 5-minute timer — nothing else runs on that schedule', () => {
-    const timers = [...code.matchAll(/setInterval\(([\s\S]*?)\)\.unref\(\)/g)]
-    expect(timers, 'src/mcp.ts should arm exactly one interval').toHaveLength(1)
-    // one call, one argument list, no second statement, no `&&` smuggle
-    expect(timers[0]![1]!.trim()).toMatch(/^\(\)\s*=>\s*livenessTick\(db,\s*\w+\),\s*5\s*\*\s*60000$/)
+  it('recordActivityCall has exactly one call expression in src/mcp.ts, and it is inside heartbeat()', () => {
+    const found = callsTo(ast, 'recordActivityCall')
+    expect(found.map((c) => ast.getLineAndCharacterOfPosition(c.getStart(ast)).line + 1)).toHaveLength(1)
+    expect(enclosingFunction(found[0]!)).toBe('heartbeat')
+  })
+
+  it('no timer callback in src/mcp.ts reaches heartbeat or recordActivityCall through this file’s own named functions', () => {
+    const timers = [...callsTo(ast, 'setInterval'), ...callsTo(ast, 'setTimeout')]
+    expect(timers.length, 'src/mcp.ts should still be arming timers').toBeGreaterThan(0)
+    for (const timer of timers) {
+      const line = ast.getLineAndCharacterOfPosition(timer.getStart(ast)).line + 1
+      const reached = reachableFrom(identifiersIn(timer.arguments[0]!))
+      expect([...reached].filter((n) => n === 'heartbeat' || n === 'recordActivityCall'),
+        `the timer at src/mcp.ts:${line} must move liveness only`).toEqual([])
+    }
   })
 
   it('never throws, whatever the db does — presence must not take the server down', () => {

@@ -40,10 +40,18 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
   // Registered after the initialize handshake (clientInfo is only populated
   // then), heartbeated by the server so an idle session never goes stale,
   // upgraded/reverted by the status tool, ended when this process exits.
+  //
+  // `claim: false` is load-bearing, not decoration. This runs TWICE — on the
+  // initialize notification and again on an unconditional 2-second fallback — and
+  // an agent that reports its first phase inside that window had the claim wiped
+  // two seconds later, which is precisely what the `status` description's "it
+  // re-asserts instantly" promises cannot happen. Registration says only "this
+  // session is here": scope, liveness, not-ended. `doing`/`idle`/`detail`/
+  // `children` belong to the agent, and only `status` writes them.
   const registerPresence = (): void => {
     try {
       const s = scope.get(clientName())
-      upsertActivity(db, { session: sessionId, project: s.project, stream: s.stream, agent: s.agent, doing: 'open', idle: true })
+      upsertActivity(db, { session: sessionId, project: s.project, stream: s.stream, agent: s.agent, doing: 'open', idle: true, claim: false })
     } catch { /* presence must never break the server */ }
   }
 

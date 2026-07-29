@@ -794,18 +794,37 @@ export interface ActivityUpdate {
   detail?: string
   children?: ActivityChild[]
   idle?: boolean
+  /**
+   * Is this write SPEAKING FOR THE AGENT, or merely saying the session is here?
+   *
+   * Default `true` — CLAIMING — and that half is unchanged: `status({doing})`
+   * asserts a claim and `status({done:true})` legitimately revokes one back to
+   * `doing: 'open'`, so both must overwrite whatever was there.
+   *
+   * `false` — REGISTERING — is the presence path in src/mcp.ts, which runs on the
+   * initialize handshake AND on an unconditional 2-second fallback. It refreshes
+   * scope, `updated_at` and `ended_at` only; `doing`, `detail`, `children` and
+   * `idle` are left exactly as the agent last set them. Without this, a
+   * `status({doing})` made in a session's first two seconds was wiped by the
+   * fallback two seconds later.
+   */
+  claim?: boolean
 }
 
 export function upsertActivity(db: Database.Database, a: ActivityUpdate): void {
   const now = new Date().toISOString()
+  // One statement, two modes: on a fresh row the INSERT is identical either way
+  // (there is no claim to protect yet); the CASEs only bite on conflict, which
+  // is the whole point — registration must never speak over a live claim.
   db.prepare(
     `INSERT INTO activity (session, project, stream, agent, doing, detail, children, idle, started_at, updated_at)
      VALUES (@session, @project, @stream, @agent, @doing, @detail, @children, @idle, @now, @now)
      ON CONFLICT(session) DO UPDATE SET
-       project = @project, stream = @stream, agent = @agent, doing = @doing,
-       detail = COALESCE(NULLIF(@detail, ''), detail),
-       children = COALESCE(@children, children),
-       idle = @idle,
+       project = @project, stream = @stream, agent = @agent,
+       doing    = CASE WHEN @claim = 1 THEN @doing ELSE doing END,
+       detail   = CASE WHEN @claim = 1 THEN COALESCE(NULLIF(@detail, ''), detail) ELSE detail END,
+       children = CASE WHEN @claim = 1 THEN COALESCE(@children, children) ELSE children END,
+       idle     = CASE WHEN @claim = 1 THEN @idle ELSE idle END,
        updated_at = @now, ended_at = NULL`,
   ).run({
     session: a.session,
@@ -816,6 +835,7 @@ export function upsertActivity(db: Database.Database, a: ActivityUpdate): void {
     detail: a.detail ?? '',
     children: a.children ? JSON.stringify(a.children) : null,
     idle: a.idle ? 1 : 0,
+    claim: a.claim === false ? 0 : 1,
     now,
   })
   // housekeeping: rows dead (ended or silent) for over a day serve no one

@@ -174,6 +174,47 @@ describe('mcp round-trip', () => {
     expect(listActivity(openDb(dbPath))).toHaveLength(0) // process exit ends the row
   }, 20000)
 
+  // src/mcp.ts registers presence twice — on the initialize notification, and
+  // again on an unconditional `setTimeout(registerPresence, 2000)` fallback. The
+  // second one used to CLOBBER: a status({doing}) made in a session's first two
+  // seconds was silently reverted to `open` two seconds later. Measured on this
+  // machine the claim lands at ~0.6s, so a fast agent reporting its first phase
+  // hit it every time — while the `status` tool description promises the opposite
+  // ("just say what you are doing at your next real phase change, and it
+  // re-asserts instantly").
+  //
+  // Nothing here is timing-tolerant by accident. `t0` is taken BEFORE the child
+  // process exists, so it over-estimates the child's own clock and the <2s guard
+  // can only be conservative. And the fallback is not assumed to have run: after
+  // the claim, registerPresence is the ONLY writer left in this process (no more
+  // tool calls, and the liveness interval is five minutes out), so an `updated_at`
+  // that moved is proof it fired. Without that assertion a claim that landed
+  // AFTER the window would sail through.
+  it('a status claim made inside the 2s handshake-fallback window survives the fallback', async () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-register-')), 'inbox.db')
+    const t0 = Date.now()
+    const transport = new StdioClientTransport({
+      command: 'npx', args: ['tsx', 'src/mcp-server.ts'],
+      env: { ...process.env, AGENT_INBOX_DB: dbPath },
+    })
+    const client = new Client({ name: 'claude-code', version: '1.0.0' })
+    await client.connect(transport)
+    await client.callTool({ name: 'status', arguments: { doing: 'planning the migration', detail: 'reading store.ts' } })
+    const elapsed = Date.now() - t0
+    expect(elapsed, 'the claim must land inside the 2s window or this test proves nothing').toBeLessThan(2000)
+
+    const claimed = listActivity(openDb(dbPath))[0]!
+    expect(claimed.doing).toBe('planning the migration')
+
+    await new Promise((r) => setTimeout(r, 3500 - elapsed))
+    const after = listActivity(openDb(dbPath))[0]!
+    expect(after.updated_at > claimed.updated_at, 'the fallback registration must have run for this to mean anything').toBe(true)
+    expect(after.doing).toBe('planning the migration')
+    expect(after.detail).toBe('reading store.ts')
+    expect(after.idle).toBe(false)
+    await client.close()
+  }, 20000)
+
   it('board tools upsert, update a row, and archive a board', async () => {
     const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-board-')), 'inbox.db')
     const transport = new StdioClientTransport({

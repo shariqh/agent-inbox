@@ -623,6 +623,23 @@ describe('live activity — the doing claim decays, the presence row does not (#
     expect(live[0]!.children).toHaveLength(1)
   })
 
+  it('a claim 25 minutes old is still live — the threshold is a real duration, not just CLAIM_COLD_MS', () => {
+    // Every other assertion in this file writes CLAIM_COLD_MS ± 60s, so all of
+    // them MOVE with the constant: 30 min → 5 min ships green through the lot.
+    // Below is the dangerous direction — a 5-minute threshold would erase a true
+    // claim during any ordinary six-minute silence, which is exactly what the
+    // THRESHOLD paragraph argues 30 minutes buys protection against. 25 real
+    // minutes is the floor, written as a number so it cannot follow the constant.
+    // (The ceiling is already absolute: 'the FIRST call after a silence' below
+    // waits 3 real hours, so 30 min → 300 min dies there.)
+    claim()
+    vi.setSystemTime(START + 25 * 60_000)
+    touchActivity(db, 's1')
+    const live = listActivity(db)[0]!
+    expect(live.doing).toBe('Executing Track B — 18-task viewer redesign')
+    expect(live.idle).toBe(false)
+  })
+
   it('the FIRST call after a silence clears the stale claim instead of resurrecting it', () => {
     // Read-side decay alone is not enough: the observed rows belonged to CLIs
     // that were still polling. Any later tool call would have re-listed a
@@ -698,6 +715,111 @@ describe('live activity — the doing claim decays, the presence row does not (#
     vi.setSystemTime(Date.now() + 2 * 24 * 60 * 60_000)
     touchActivity(db, 's1')
     expect(listActivity(db).map((x) => x.session)).toEqual(['s1'])
+  })
+})
+
+// ── registering presence is not claiming work ────────────────────────────────
+//
+// src/mcp.ts arms `setTimeout(registerPresence, 2000)` in case the initialize
+// notification never arrives, and it fires UNCONDITIONALLY. Through a conflict
+// clause that always wrote `doing`/`idle`, that silently wiped any claim made in
+// a session's first two seconds — isolated with two real spawned servers
+// differing only in when status() was called, and reproduced three times out of
+// three (claim at ~0.6s, gone at ~2.4s). It also quietly contradicted the
+// `status` description's "it re-asserts instantly": it does, unless you are a
+// fast agent reporting your first phase immediately.
+//
+// So the write has two modes and the caller picks. CLAIMING is the default and is
+// unchanged — `status({done:true})` legitimately reverts `doing` to 'open', so
+// that path must keep clobbering. REGISTERING (`claim: false`) asserts only "this
+// session is here": scope, liveness, not-ended. It never speaks for the agent.
+describe('live activity — registering presence never overwrites a claim', () => {
+  let db: Database.Database
+  const START = Date.parse('2026-07-25T09:00:00.000Z')
+
+  beforeEach(() => {
+    db = freshDb()
+    vi.useFakeTimers()
+    vi.setSystemTime(START)
+  })
+  afterEach(() => { vi.useRealTimers() })
+
+  // byte-for-byte what registerPresence sends
+  const register = (session = 's1'): void => {
+    upsertActivity(db, { session, project: 'agent-inbox', stream: 'main', agent: 'claude-code', doing: 'open', idle: true, claim: false })
+  }
+  const workingOn = (doing: string): void => {
+    upsertActivity(db, { session: 's1', project: 'agent-inbox', stream: 'main', agent: 'claude-code', doing, detail: 'reading store.ts', children: [{ name: 'kid', doing: 'grep' }] })
+  }
+
+  it('the registration write src/mcp.ts actually sends leaves doing, detail, children and idle untouched', () => {
+    workingOn('planning the migration')
+    vi.setSystemTime(START + 2000) // the handshake fallback, two seconds in
+    register()
+    const live = listActivity(db)[0]!
+    expect(live.doing).toBe('planning the migration')
+    expect(live.detail).toBe('reading store.ts')
+    expect(live.children).toHaveLength(1)
+    expect(live.idle).toBe(false)
+  })
+
+  it('claim: false ignores doing, detail, children and idle even when all four are supplied', () => {
+    // The test above cannot see two of the four guards. registerPresence sends no
+    // detail and no children, and `COALESCE(NULLIF(@detail,''), detail)` already
+    // no-ops on an empty string — so dropping those guards passes it. The store's
+    // contract is the stronger thing and this is what pins it: `claim: false`
+    // means "I am not speaking for the agent", whatever the caller happens to
+    // pass. A future registration path that starts sending a detail must not
+    // become able to wipe one.
+    workingOn('planning the migration')
+    vi.setSystemTime(START + 2000)
+    upsertActivity(db, {
+      session: 's1', project: 'agent-inbox', stream: 'main', agent: 'claude-code',
+      doing: 'open', detail: 'registered', children: [], idle: true, claim: false,
+    })
+    const live = listActivity(db)[0]!
+    expect(live.doing).toBe('planning the migration')
+    expect(live.detail).toBe('reading store.ts')
+    expect(live.children).toHaveLength(1)
+    expect(live.idle).toBe(false)
+  })
+
+  it('claim: false still refreshes scope and liveness, and un-ends the row', () => {
+    // registration is not a no-op: it is how a session says where it is and that
+    // it is still here. Only the CLAIM is off limits.
+    upsertActivity(db, { session: 's1', project: 'stale-guess', stream: 'stale-branch', agent: 'stale-agent', doing: 'planning the migration' })
+    const before = listActivity(db)[0]!
+    endActivity(db, 's1')
+    expect(listActivity(db)).toHaveLength(0)
+
+    vi.setSystemTime(START + 2000)
+    register()
+    const after = listActivity(db)[0]!
+    expect(after.project).toBe('agent-inbox')
+    expect(after.stream).toBe('main')
+    expect(after.agent).toBe('claude-code')
+    expect(after.updated_at > before.updated_at).toBe(true)
+    expect(after.doing).toBe('planning the migration')
+  })
+
+  it('claim: false on a session with no row yet writes the idle presence row', () => {
+    register('fresh')
+    const live = listActivity(db)
+    expect(live).toHaveLength(1)
+    expect(live[0]!.doing).toBe('open')
+    expect(live[0]!.idle).toBe(true)
+    expect(live[0]!.last_call_at).toBeNull() // registration is not a tool call
+  })
+
+  it('the default is still claiming — status({done:true}) reverts doing to open', () => {
+    workingOn('planning the migration')
+    vi.setSystemTime(START + 60_000)
+    // the done:true branch of the status handler, verbatim
+    upsertActivity(db, { session: 's1', project: 'agent-inbox', stream: 'main', agent: 'claude-code', doing: 'open', idle: true, children: [] })
+    const live = listActivity(db)[0]!
+    expect(live.doing).toBe('open')
+    expect(live.idle).toBe(true)
+    expect(live.children).toEqual([])
   })
 })
 

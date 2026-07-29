@@ -111,6 +111,12 @@ walk(ast, (n) => {
       (ts.isArrowFunction(n.initializer) || ts.isFunctionExpression(n.initializer))) {
     bodyOf.set(n.name.text, identifiersIn(n.initializer))
   }
+  // A PLAIN ALIAS (`const tick = heartbeat`) is a function-like binding too, and
+  // leaving it out was a real hole: `setInterval(tick, …)` restored #45's bug and
+  // shipped green past the arrow/expression cases above.
+  if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.initializer && ts.isIdentifier(n.initializer)) {
+    bodyOf.set(n.name.text, [n.initializer.text])
+  }
 })
 
 /** closure of `seed` over bodyOf — what a call site can reach without leaving this file. */
@@ -166,7 +172,12 @@ describe('the liveness tick moves liveness and nothing else (#45)', () => {
     expect(enclosingFunction(found[0]!)).toBe('heartbeat')
   })
 
-  it('no timer callback in src/mcp.ts reaches heartbeat or recordActivityCall through this file’s own named functions', () => {
+  // NAME SCOPED ON PURPOSE. This resolves callbacks passed to a LITERAL `setInterval`/
+  // `setTimeout` identifier, through this file's own named functions and plain aliases.
+  // It does NOT follow imports, and it does not see a scheduler reached through its own
+  // alias (`const every = setInterval`). Say what it checks, not what it wishes it
+  // checked — an over-promising name is what let three earlier pins ship green.
+  it('a callback passed to a literal setInterval/setTimeout in src/mcp.ts cannot reach heartbeat or recordActivityCall', () => {
     const timers = [...callsTo(ast, 'setInterval'), ...callsTo(ast, 'setTimeout')]
     expect(timers.length, 'src/mcp.ts should still be arming timers').toBeGreaterThan(0)
     for (const timer of timers) {

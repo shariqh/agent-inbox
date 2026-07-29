@@ -168,8 +168,17 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
   // it is the one the human reaches for, and because a body-less POST that quietly
   // UN-marked would be the most destructive possible reading of a dropped payload.
   // `ok:false` also covers an unknown row id: both store writes report whether they
-  // matched a row, so a stale click on a row an agent has since deleted says so
-  // instead of reporting a success that never touched the database.
+  // matched a row, so the route never claims a success that never touched the
+  // database.
+  //
+  // What the HUMAN sees in that case is NOT a message, despite an earlier version of
+  // this comment saying so. A stale click on a row an agent has since deleted is
+  // refused here, and then `reloadAndPaint()` destroys the row — and the error slot
+  // with it — so the row simply disappears. That is defensible (the row is genuinely
+  // gone, and disappearing is the truth) but it is silent, and the client's refusal
+  // branch renders the UN-MARK wording for it, which is the wrong sentence. Both are
+  // cosmetic only because the frame is unreachable; fix them together if this route
+  // ever gains a failure mode that leaves the row on screen.
   app.post('/api/boards/:id/rows/:rowId/handled', async (c) => {
     const body = await c.req.json<{ handled?: boolean }>().catch(() => null)
     const rowId = c.req.param('rowId')

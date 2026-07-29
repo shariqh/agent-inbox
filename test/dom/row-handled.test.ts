@@ -266,3 +266,34 @@ describe('#36 · the mark survives the agent, and only a status change retires t
     expect(badgeCount()).toBe(0)
   })
 })
+
+// The delivery attribution is the ONE place a row prints a value the human never
+// typed and no agent chose deliberately: `handled_seen_by` / `annotation_seen_by`
+// come from inferAgent(clientName), which returns an unrecognised MCP client name
+// VERBATIM (src/infer.ts) — so it is whatever string a client declared itself as.
+// CLAUDE.md designates that class attacker-influenced, and removing the esc() on
+// it killed ZERO of 1092 tests. Pinning the escape, not the wording.
+describe('#36 · the delivery attribution escapes the client-declared agent name', () => {
+  it('renders a hostile agent name as text, injecting no element and running no handler', async () => {
+    const d = open()
+    const rowId = blockedRow(d)
+    markRowHandled(d, rowId)
+    advanceClock()
+    markHandledDelivered(
+      d,
+      rowId,
+      listBoards(d)[0]!.rows[0]!.handled_at,
+      '<img src=x onerror="globalThis.__pwned = true">',
+    )
+    advanceClock(4 * 60_000)
+
+    await bootApp(d)
+    const card = await openCard(rowId)
+
+    // the DOM is the assertion — not the markup string, which is what esc() shapes
+    expect(card.querySelector('img'), 'an injected element means the attribution reached innerHTML raw').toBeNull()
+    expect((globalThis as Record<string, unknown>).__pwned, 'no handler may run').toBeUndefined()
+    // and it is still SHOWN, escaped — suppressing it would pass this test for the wrong reason
+    expect(card.textContent).toContain('onerror')
+  })
+})

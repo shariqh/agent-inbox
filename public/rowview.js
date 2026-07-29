@@ -102,9 +102,17 @@ export function rowModel(entry, { streams = new Map(), agents = new Map(), showP
     boardTitle: null,
     created_at: it.created_at,
     answered: Boolean(it.reply),
-    // an ITEM is never "handled": the mark is a board-row concept, and a model
-    // that left these undefined would make every card's `m.handled` check read
-    // as a typo rather than as a stated false.
+    // an ITEM is never "handled": the mark is a board-row concept. These three
+    // are a stated false rather than an absence, so a consumer reading them off
+    // an item model gets an answer instead of `undefined`.
+    //
+    // NOTE, so nobody mistakes these for load-bearing: no shipping code reads
+    // them today. public/app.js works off the raw row (`r.handled_at`,
+    // `r.handled_seen_at`), and `rowHumanStateHtml` — not this model — is what
+    // tells "I wrote you a note" apart from "I went and did it". They exist
+    // because public/rowview.d.ts declares them, and they are covered by
+    // rowview.test.ts only. Wire them or drop them deliberately; do not assume
+    // a card depends on them.
     handled: false,
     handledAt: null,
     handledPickedUp: false,

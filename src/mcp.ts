@@ -227,13 +227,24 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     },
   )
 
-  const rowStatus = z.enum(['done', 'partial', 'missing', 'tracked', 'na', 'blocked'])
+  // Issue #44 — the six values are unchanged (they are in every existing DB, in
+  // public/attention.js and in the CSS), but ONE of them is an escalation and
+  // its name does not say so: "blocked" ordinarily means "blocked BY
+  // something". The description rides on the FIELD, not just the tool, because
+  // that is the text a model reads while filling in an enum — and the negative
+  // example is the load-bearing half: the observed mistake was a row blocked on
+  // a release candidate that did not exist yet, which no human could act on.
+  const rowStatus = z
+    .enum(['done', 'partial', 'missing', 'tracked', 'na', 'blocked'])
+    .describe(
+      'Row status. done|partial|missing|tracked|na are purely descriptive. blocked is the ONE that escalates: it means this row is waiting on the HUMAN and nobody else, and it sits in their attention banner until they answer it. Work stuck on something a person cannot unblock — a failing test, a build or release that does not exist yet, another PR, a long job — is `partial` (or `tracked`) with the reason in note, NEVER blocked.',
+    )
 
   server.registerTool(
     'board_upsert',
     {
       description:
-        'Create or replace a tracking board (a titled table the human watches). Idempotent by title within this project — re-send the whole table to refresh it. Rows are matched by label; the human’s per-row notes survive, and a row you leave OUT is deleted (so keep labels stable). status: done|partial|missing|tracked|na|blocked. note is the one-line summary; context is optional long-form backstory (reasoning, history) shown collapsed. Leaving `context` off a row KEEPS whatever is stored there — reads hand you `context_chars`, not the text, so omission can never mean delete; pass context:"" to clear it deliberately. Re-sending a row as "blocked" is NOT an acknowledgement of the human’s answer on it — you are still asserting you are blocked; act on their note (pending() delivers it) and send a different status.',
+        'Create or replace a tracking board (a titled table the human watches). Idempotent by title within this project — re-send the whole table to refresh it. Rows are matched by label; the human’s per-row notes survive, and a row you leave OUT is deleted (so keep labels stable). status: done|partial|missing|tracked|na|blocked — five of those merely describe the row; "blocked" is an ESCALATION meaning this row is waiting on the HUMAN and nobody else, and it sits in their attention banner until they answer. Being stuck is not being blocked: a failing test, a build or release that does not exist yet, another PR, a long job — none of those are things a person can unblock, so they are `partial` (or `tracked`) with the reason in note. note is the one-line summary; context is optional long-form backstory (reasoning, history) shown collapsed. Leaving `context` off a row KEEPS whatever is stored there — reads hand you `context_chars`, not the text, so omission can never mean delete; pass context:"" to clear it deliberately. Re-sending a row as "blocked" is NOT an acknowledgement of the human’s answer on it — you are still asserting you are blocked; act on their note (pending() delivers it) and send a different status.',
       inputSchema: {
         title: z.string().min(1),
         rows: z.array(z.object({ label: z.string().min(1), status: rowStatus, note: z.string().optional(), context: z.string().optional() })),
@@ -251,7 +262,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     'board_row',
     {
       description:
-        'Update or add ONE row of a tracking board by label, without re-sending the whole table. Creates the board (and row) if missing; a new row defaults to status "tracked". Omitted status/note/context leave the existing value. context is optional long-form backstory shown collapsed. status "blocked" means the row needs the HUMAN — it escalates into their attention banner; put what you need in note. pending() delivers their answer; FLIP THE ROW’S STATUS ONCE YOU HAVE ACTED — that status change is what tells them you did, and until it happens they keep seeing the row marked "delivered to you".',
+        'Update or add ONE row of a tracking board by label, without re-sending the whole table. Creates the board (and row) if missing; a new row defaults to status "tracked". Omitted status/note/context leave the existing value. context is optional long-form backstory shown collapsed. status "blocked" means the row needs the HUMAN and nobody else — it escalates into their attention banner, so put what you need from them in note. Use it for nothing else: work stuck on a failing test, on a build or release that does not exist yet, or on another PR is `partial` (or `tracked`) with the reason in note, because there is nothing there for a person to do. pending() delivers their answer; FLIP THE ROW’S STATUS ONCE YOU HAVE ACTED — that status change is what tells them you did, and until it happens they keep seeing the row marked "delivered to you".',
       inputSchema: { title: z.string().min(1), label: z.string().min(1), status: rowStatus.optional(), note: z.string().optional(), context: z.string().optional() },
     },
     async ({ title, label, status, note, context }) => {

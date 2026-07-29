@@ -671,6 +671,50 @@ describe('mcp round-trip', () => {
     await c1.close()
   }, 20000)
 
+  // Issue #44 — `blocked` is the ONE row status that escalates to the human,
+  // but in ordinary usage the word means "blocked BY something", so an agent
+  // reaching for the obvious meaning escalates what no person can act on: a
+  // real board row sat in the attention banner because a release candidate did
+  // not exist yet. Nothing about the mechanism is wrong, so the fix is at the
+  // call site — and in BOTH places an agent reads before writing a status: the
+  // tool description, and the description on the `status` FIELD itself, which
+  // is the text a model filling in an enum actually looks at.
+  //
+  // Asserted over a REAL tools/list rather than the source string, because that
+  // is what the agent receives, and it is the only proof that the zod
+  // .describe() survives into the JSON Schema — including through .optional()
+  // on board_row and through the array-items wrapper on board_upsert.
+  it('the board tools say who `blocked` waits on, and carry the negative example (#44)', async () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-blocked-')), 'inbox.db')
+    const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
+    const c1 = new Client({ name: 'claude-code', version: '1.0.0' }); await c1.connect(t)
+    const tools = new Map((await c1.listTools()).tools.map((x) => [x.name, x]))
+
+    for (const name of ['board_upsert', 'board_row']) {
+      const d = tools.get(name)!.description ?? ''
+      expect(d, name).toMatch(/waiting on the HUMAN|needs the HUMAN/)
+      // the half that was missing: "stuck" is not "blocked"
+      expect(d, name).toMatch(/failing test/)
+      expect(d, name).toMatch(/\bpartial\b/)
+    }
+
+    interface JsonNode { enum?: string[]; description?: string; properties?: Record<string, JsonNode>; items?: JsonNode }
+    const schemaOf = (name: string): JsonNode => tools.get(name)!.inputSchema as unknown as JsonNode
+    const fields = [
+      schemaOf('board_upsert').properties!['rows']!.items!.properties!['status']!,
+      schemaOf('board_row').properties!['status']!,
+    ]
+    for (const f of fields) {
+      // decision, pinned: option 1 only. No `needs-you` alias and no rename —
+      // one stored value, the same six an existing DB already holds.
+      expect(f.enum).toEqual(['done', 'partial', 'missing', 'tracked', 'na', 'blocked'])
+      expect(f.description).toMatch(/HUMAN/)
+      expect(f.description).toMatch(/failing test/)
+      expect(f.description).toMatch(/\bpartial\b/)
+    }
+    await c1.close()
+  }, 20000)
+
   // THE DOCUMENTED FLOW, end to end. board_get says "re-read a board before
   // updating it", board_upsert says "re-send the whole table", and the reporting
   // snippet tells agents to call board_get before updating a board. Since #42 the

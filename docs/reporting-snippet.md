@@ -69,8 +69,11 @@ prose. Do this **proactively**, without being asked:
 - **`board_upsert({ title, rows })`** — create or refresh the WHOLE table (idempotent by
   title). Re-send the full table whenever status changes. Each row is
   `{ label, status, note?, context? }`, `status ∈ done | partial | missing | tracked | na | blocked`.
-  `blocked` means the row needs the HUMAN — it escalates into their attention banner; put
-  what you need in `note`. `pending()` delivers their annotation; **flip the row's status
+  `blocked` means the row needs the HUMAN and nobody else — it escalates into their attention
+  banner; put what you need from them in `note`. **Being stuck is not being blocked:** a failing
+  test, a build or release that does not exist yet, another PR — no person can unblock those, so
+  they are `partial` (or `tracked`) with the reason in `note`.
+  `pending()` delivers their annotation; **flip the row's status
   once you have acted — that status change is what tells them you did.** Until you do, they
   see the row sitting there marked "delivered to you", which is exactly what it is — and
   `pending()` keeps handing you the same note on every poll, so nothing is lost when a

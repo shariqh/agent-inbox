@@ -368,6 +368,17 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   `blocked` row keeps arriving until an agent acknowledges it by flipping the status. See the
   delivery-is-not-acknowledgement invariant above; `docs/reporting-snippet.md` and the `pending`/
   `board_row` tool descriptions all say that the STATUS FLIP is the acknowledgement.
+- **`blocked` now says WHO it waits on** *(#44)* — the six stored values are unchanged: no
+  `needs-you` alias, no rename. The ambiguity was purely agent-facing (the viewer's 🚧 + Needs-you
+  reads unambiguously), and the mistake is *choosing* `blocked` for work no person can unblock — a
+  row went into the human's banner because a release candidate did not exist yet — so an alias
+  would have added a seventh-looking status without removing the trap, and a rename would migrate
+  every DB, the CSS and `attention.js` to fix a sentence. The fix is the text agents read: both
+  board tool descriptions AND a zod `.describe()` on the `status` FIELD (the text a model reads
+  while filling in an enum), each carrying the NEGATIVE example — stuck on a failing test, a
+  missing build or another PR is `partial`, never `blocked`. `docs/reporting-snippet.md` gained
+  one sentence of the same. Pinned over a real `tools/list` in `test/mcp.integration.test.ts`,
+  which is also the only proof the field description survives `.optional()` and array-items.
 - **Agent-read payload diet** *(#42)* — `src/shape.ts`. MCP reads omit agent-authored `context` and
   report `context_chars` instead; `board_get()` with no title is a summary; and a given context is
   handed over ONCE per server process (the human's words still come back on every poll — #37 is

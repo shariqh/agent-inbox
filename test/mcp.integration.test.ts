@@ -148,6 +148,10 @@ describe('mcp round-trip', () => {
     expect(live).toHaveLength(1)
     expect(live[0]!.idle).toBe(true)
     expect(live[0]!.agent).toBe('claude-code')
+    // issue #45 — the row exists with no tool call behind it, so there is
+    // nothing to claim yet. `last_call_at` IS the alive-vs-working distinction:
+    // only heartbeat() writes it, and heartbeat() runs on real calls only.
+    expect(live[0]!.last_call_at).toBeNull()
 
     await client.callTool({ name: 'status', arguments: {
       doing: 'fan-out: migrating 3 modules',
@@ -158,6 +162,7 @@ describe('mcp round-trip', () => {
     expect(live[0]!.idle).toBe(false)
     expect(live[0]!.doing).toBe('fan-out: migrating 3 modules')
     expect(live[0]!.children.map((c) => c.name)).toEqual(['mig-a', 'mig-b'])
+    expect(live[0]!.last_call_at).not.toBeNull() // a real call — the claim is now backed by one
 
     await client.callTool({ name: 'status', arguments: { done: true } })
     live = listActivity(openDb(dbPath))

@@ -175,6 +175,12 @@ function migrate(db: Database.Database): void {
   ensureColumn(db, 'board_rows', 'annotated_at', 'TEXT')
   ensureColumn(db, 'boards', 'last_read_at', 'TEXT')
   ensureColumn(db, 'activity', 'idle', 'INTEGER NOT NULL DEFAULT 0')
+  // issue #45 — the second activity stamp. NULL means "this session has not made
+  // a tool call since the column existed": a brand-new presence row (registered
+  // before the first call) and every row written by a server process still
+  // running the old code. Both fall back to `started_at`, so a fresh connection
+  // is never born cold and a days-old legacy claim is.
+  ensureColumn(db, 'activity', 'last_call_at', 'TEXT')
   ensureColumn(db, 'items', 'context', `TEXT NOT NULL DEFAULT ''`)
   ensureColumn(db, 'items', 'options', 'TEXT')
   ensureColumn(db, 'items', 'reply', 'TEXT')
@@ -775,6 +781,8 @@ export interface Activity {
   idle: boolean
   started_at: string
   updated_at: string
+  /** last REAL MCP call (issue #45). NULL until this session makes one. */
+  last_call_at: string | null
 }
 
 export interface ActivityUpdate {
@@ -819,18 +827,83 @@ export function endActivity(db: Database.Database, session: string): void {
   db.prepare(`UPDATE activity SET ended_at = ? WHERE session = ?`).run(new Date().toISOString(), session)
 }
 
-// heartbeat: keep a live session's row from going stale without changing it
+// heartbeat: keep a live session's row from going stale without changing it.
+// LIVENESS ONLY (issue #45) — this is what the 5-minute timer in src/mcp.ts
+// calls, and it must never touch `last_call_at`, or the two stamps collapse back
+// into one and a `doing` claim becomes immortal again.
 export function touchActivity(db: Database.Database, session: string): void {
   db.prepare(`UPDATE activity SET updated_at = ? WHERE session = ? AND ended_at IS NULL`).run(new Date().toISOString(), session)
 }
 
+// ── issue #45: how long a `doing` claim outlives its last real MCP call ──────
+//
+// 30 minutes, and the number is a floor on "silent but genuinely working", not a
+// guess at "idle". An agent can work for a long stretch without touching this
+// server at all — a 10-minute test run, a build, a heads-down edit loop — and a
+// claim killed under a session that is still working is a new lie, so the
+// threshold is deliberately generous: 6x the heartbeat interval, comfortably past
+// the longest single Bash timeout, and past any fan-out gap (a subagent's calls
+// are served by the parent CLI's process, so siblings bump this same row). What
+// it buys is a bound: the claim can be wrong for half an hour instead of days,
+// and any `status({doing})` re-asserts it instantly.
+export const CLAIM_COLD_MS = 30 * 60000
+
+const claimCutoff = (nowMs: number): string => new Date(nowMs - CLAIM_COLD_MS).toISOString()
+
+// A REAL tool call: proof the agent is doing something, not just running.
+//
+// It writes both stamps, and it is also where a claim that already went cold is
+// CLEARED rather than renewed. That half is not optional: decaying only on read
+// would let any later poll re-list a two-day-old `doing` as live work, which is
+// exactly the observed failure — the stale rows belonged to CLIs that were still
+// calling. Expressed as one conditional UPDATE (never SELECT-then-UPDATE) so the
+// clear and the stamp cannot be split.
+export function recordActivityCall(db: Database.Database, session: string): void {
+  const now = new Date().toISOString()
+  const cold = claimCutoff(Date.now())
+  db.prepare(
+    `UPDATE activity SET
+       doing    = CASE WHEN COALESCE(last_call_at, started_at) < @cold THEN 'open' ELSE doing END,
+       detail   = CASE WHEN COALESCE(last_call_at, started_at) < @cold THEN ''     ELSE detail END,
+       children = CASE WHEN COALESCE(last_call_at, started_at) < @cold THEN NULL   ELSE children END,
+       idle     = CASE WHEN COALESCE(last_call_at, started_at) < @cold THEN 1      ELSE idle END,
+       last_call_at = @now,
+       updated_at = @now
+     WHERE session = @session AND ended_at IS NULL`,
+  ).run({ session, now, cold })
+}
+
 export function listActivity(db: Database.Database, opts: { staleMinutes?: number } = {}): Activity[] {
-  const cutoff = new Date(Date.now() - (opts.staleMinutes ?? 15) * 60000).toISOString()
+  const now = Date.now()
+  const cutoff = new Date(now - (opts.staleMinutes ?? 15) * 60000).toISOString()
+  const cold = claimCutoff(now)
   const rows = db
-    .prepare(`SELECT session, project, stream, agent, doing, detail, children, idle, started_at, updated_at
-              FROM activity WHERE ended_at IS NULL AND updated_at >= ? ORDER BY idle ASC, started_at ASC`)
+    .prepare(`SELECT session, project, stream, agent, doing, detail, children, idle, started_at, updated_at, last_call_at
+              FROM activity WHERE ended_at IS NULL AND updated_at >= ?`)
     .all(cutoff) as Array<Omit<Activity, 'children' | 'idle'> & { children: string | null; idle: number }>
-  return rows.map((r) => ({ ...r, idle: r.idle === 1, children: r.children ? (JSON.parse(r.children) as ActivityChild[]) : [] }))
+  // The row is kept whatever happens here — the session really is present, and
+  // public/attention.js classifies an item as "waiting" iff its session id is in
+  // this list, so dropping the row would silently downgrade a live blocker. Only
+  // the CLAIM decays.
+  const out = rows.map((r): Activity => {
+    const live = (r.last_call_at ?? r.started_at) >= cold
+    return {
+      ...r,
+      idle: live ? r.idle === 1 : true,
+      doing: live ? r.doing : 'open',
+      detail: live ? r.detail : '',
+      children: live && r.children ? (JSON.parse(r.children) as ActivityChild[]) : [],
+    }
+  })
+  // Working sessions first (longest-running first, as before). Everything else
+  // sorts by how recently it actually did something, so the terminal somebody
+  // left open on Tuesday sits at the bottom of the fold instead of the top.
+  const lastActive = (a: Activity): string => a.last_call_at ?? a.started_at
+  return out.sort((a, b) => {
+    if (a.idle !== b.idle) return a.idle ? 1 : -1
+    if (a.idle) return lastActive(a) < lastActive(b) ? 1 : lastActive(a) > lastActive(b) ? -1 : 0
+    return a.started_at < b.started_at ? -1 : a.started_at > b.started_at ? 1 : 0
+  })
 }
 
 export function getBoard(db: Database.Database, project: string, title: string): BoardWithRows | undefined {

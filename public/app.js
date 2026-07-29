@@ -18,7 +18,7 @@ import {
 import { cardSections, optionOrder } from '/card.js'
 import { keyAction, rovingIndex, ariaAnswerLabel, livenessGlyph, deckEntryAt } from '/keys.js'
 import { partitionNotes, unreadNoteCount, ambientChips, seenWatermark, markSeenIds } from '/notes.js'
-import { liveSummary } from '/livebar.js'
+import { liveSummary, lastActivityAt, isDormant } from '/livebar.js'
 import { esc } from '/esc.js'
 import { boardRowsView, progressLabel, hiddenDoneCount, lingeringBoards } from '/boards.js'
 import { liveEntity, tabMatchCounts, projectMatchCounts, elsewhereLabel } from '/tabsearch.js'
@@ -1232,12 +1232,13 @@ function renderLive(entries) {
     el.className = 'live-entry'
     if (openLive.has(a.session)) el.open = true
     el.addEventListener('toggle', () => { el.open ? openLive.add(a.session) : openLive.delete(a.session) })
-    const { tone: fresh } = ageChip(Date.now() - Date.parse(a.updated_at))
+    // #45: the real-call stamp, never the 5-minute liveness heartbeat
+    const { tone: fresh } = ageChip(Date.now() - Date.parse(lastActivityAt(a)))
     const stream = a.stream ? ` · ${esc(a.stream)}` : ''
     const kids = a.children.length ? `<span class="live-kids">▸ ${a.children.length} agent${a.children.length > 1 ? 's' : ''}</span>` : ''
     el.innerHTML = `
       <summary class="card-summary live-summary">
-        <span class="live-dot ${fresh}" title="last update ${rel(a.updated_at)} ago"></span>
+        <span class="live-dot ${fresh}" title="last call ${rel(lastActivityAt(a))} ago"></span>
         <span class="live-who">${esc(a.agent)} · ${esc(a.project)}${stream}</span>
         <span class="live-doing">${esc(a.doing)}</span>
         ${kids}
@@ -1270,12 +1271,22 @@ function renderLive(entries) {
     fold.innerHTML = `<summary>${idle.length} open session${idle.length > 1 ? 's' : ''}</summary>`
     for (const a of idle) {
       const row = document.createElement('div')
-      row.className = 'idle-row'
+      // #45: hours-quiet sessions keep their row (they ARE present, and their
+      // questions still count as waiting) but read as background. listActivity
+      // has already sorted them to the bottom of this fold.
+      const dormant = isDormant(a, Date.now())
+      row.className = dormant ? 'idle-row dormant' : 'idle-row'
       const stream = a.stream ? ` · ${esc(a.stream)}` : ''
       // a green dot means the session touched the inbox in the last minute —
-      // open-but-conversing, not asleep
-      const { tone: fresh } = ageChip(Date.now() - Date.parse(a.updated_at))
-      row.innerHTML = `<span class="live-dot ${fresh}" title="last activity ${rel(a.updated_at)} ago"></span><span class="live-who">${esc(a.agent)} · ${esc(a.project)}${stream}</span><span class="live-age" title="last activity ${rel(a.updated_at)} ago">alive ${rel(a.started_at)}</span>`
+      // open-but-conversing, not asleep. Keyed on real calls: the server's own
+      // 5-minute heartbeat would otherwise re-green a terminal left open on
+      // Tuesday, forever.
+      const seen = lastActivityAt(a)
+      const { tone: fresh } = ageChip(Date.now() - Date.parse(seen))
+      // "alive 3d" reads as a plus on a session that has done nothing for 3
+      // days; what identifies a forgotten terminal is the silence, not the age.
+      const age = dormant ? `quiet ${rel(seen)}` : `alive ${rel(a.started_at)}`
+      row.innerHTML = `<span class="live-dot ${fresh}" title="last call ${rel(seen)} ago"></span><span class="live-who">${esc(a.agent)} · ${esc(a.project)}${stream}</span><span class="live-age" title="last call ${rel(seen)} ago">${age}</span>`
       fold.appendChild(row)
     }
     host.appendChild(fold)

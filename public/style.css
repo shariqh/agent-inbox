@@ -25,6 +25,8 @@ header { flex-wrap: wrap; }
 .idle-fold > summary:hover { opacity: .8; }
 .idle-row { display: flex; align-items: center; gap: 10px; padding: 4px 2px 4px 14px; opacity: .55; font-size: 12.5px; }
 .idle-row .live-age { margin-left: auto; }
+/* #45: present but hours-quiet — a forgotten terminal, kept but pushed to the background */
+.idle-row.dormant { opacity: .32; }
 .live-children { margin-top: 8px; }
 .live-state { font-size: 12px; opacity: .6; white-space: nowrap; }
 #lightbox { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; }

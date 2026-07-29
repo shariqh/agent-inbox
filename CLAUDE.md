@@ -109,6 +109,24 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   and one in-memory ledger. All instances write to the same `~/.agent-inbox/inbox.db`. Concurrency
   is handled by **WAL + `busy_timeout=5000`** set in `openDb` — keep both. Writes are single tiny
   inserts; this is WAL's happy path.
+- **Two activity stamps, and only one of them means work** *(issue #45)*. `activity.updated_at` is
+  LIVENESS: the 5-minute `touchActivity` timer bumps it whether or not the agent has done
+  anything, so `listActivity`'s 15-minute cutoff can only ever catch a **crashed** process and is
+  not evidence of activity — that is why a row was observed advertising a 2-day-old effort.
+  `activity.last_call_at` is written by `recordActivityCall` ONLY, called from `heartbeat()` in
+  `src/mcp.ts`, i.e. by real MCP calls; **the timer must never call it**, and that one line is the
+  whole distinction. A `doing` claim is live while that stamp is within `CLAIM_COLD_MS` (30 min)
+  and otherwise decays to `doing:'open', idle:true, children:[]`. **The decay is in two places on
+  purpose.** It is derived on every read in `listActivity` (a session that goes quiet forever needs
+  no further write to stop lying) *and* cleared by `recordActivityCall` when the call it is
+  stamping lands after a cold gap — read-side alone would let a routine `pending()` poll resurrect
+  a two-day-old claim, which is exactly what the observed rows were doing. Both comparisons share
+  `CLAIM_COLD_MS`/`claimCutoff` and both fall back to `started_at` when `last_call_at` is NULL, so
+  a just-registered session is never born cold and a legacy row always is. **The row itself is
+  never dropped for being idle:** `public/attention.js` calls an item `waiting` iff its session id
+  is in `/api/activity`, so expiring a quiet-but-live session would silently demote a genuine
+  blocker to `parked` (and the same list sizes Electron's dock badge). Long-idle sessions sink to
+  the bottom of the fold and render `dormant` instead — sorted, dimmed, never removed.
 - **Session scope is Solo-style** (`src/scope.ts`): inferred lazily per call, overridable via
   `register`. The client name for `inferAgent` **must be read lazily** inside handlers
   (`server.server.getClientVersion()?.name`) — it's only populated after the initialize
@@ -313,8 +331,11 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
 - **`done`/milestone bucket** *(#9)* — `flag({ kind:'done' })`, surfaced in the viewer's Done section.
 - **Electron packaging** *(#11)* — `electron/` wraps the `public/` viewer; `scripts/package-app.sh`
   stages `dist` + `public` + `electron` and rebuilds `better-sqlite3` for Electron's ABI.
-- **Session presence** *(#28)* — every MCP session is a Live row; `status()` upgrades it, process
-  exit ends it, and rows silently expire after ~15 min.
+- **Session presence** *(#28, corrected by #45)* — every MCP session is a Live row; `status()`
+  upgrades it, process exit ends it, and a row that stops being heartbeated expires after ~15 min.
+  That expiry only ever fires for a **crashed** process: a live one heartbeats itself, so what
+  decays for an idle-but-running session is its `doing` CLAIM, not its row (see the two-stamps
+  invariant above). `status({doing})` re-asserts instantly; agents never need to keep one alive.
 - **Dual-channel answer sync** *(#29)* — the `answer` MCP tool plus `answerItem`/`reply_source`.
   Agent-mediated by design: this repo has no hook into any chat client, so the AGENT is the
   bridge. Convergence is order-independent (inbox precedence, no clock comparison) rather than

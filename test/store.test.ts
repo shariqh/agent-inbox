@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -29,6 +29,9 @@ import {
   upsertActivity,
   endActivity,
   listActivity,
+  touchActivity,
+  recordActivityCall,
+  CLAIM_COLD_MS,
   closeProject,
   reopenProject,
   listClosedProjects,
@@ -569,6 +572,132 @@ describe('live activity', () => {
       .run(new Date(Date.now() - 60 * 60000).toISOString(), 'old')
     expect(listActivity(db)).toHaveLength(0)
     expect(listActivity(db, { staleMinutes: 90 })).toHaveLength(1) // window is configurable
+  })
+})
+
+// ── issue #45: the claim decays, the session does not ────────────────────────
+//
+// The 5-minute heartbeat bumps the SAME `updated_at` the 15-minute cutoff reads,
+// so while a process lives the cutoff is unreachable and a `doing` claim outlives
+// the work it describes — rows were observed advertising a 2-day-old effort.
+// The ROW is honest (that CLI really is running); the CLAIM is not. So there are
+// now two stamps: `updated_at` = liveness (heartbeat OR real call), `last_call_at`
+// = real MCP calls only. Expiring the row was the wrong fix — it would hide a
+// live agent, and `classifyLiveness` would demote that agent's open question from
+// "waiting" to "parked", so the badge would lose a genuinely blocked session.
+describe('live activity — the doing claim decays, the presence row does not (#45)', () => {
+  let db: Database.Database
+  const START = Date.parse('2026-07-25T09:00:00.000Z')
+
+  beforeEach(() => {
+    db = freshDb()
+    vi.useFakeTimers()
+    vi.setSystemTime(START)
+  })
+  afterEach(() => { vi.useRealTimers() })
+
+  const claim = (session = 's1', doing = 'Executing Track B — 18-task viewer redesign'): void => {
+    upsertActivity(db, { session, project: 'agent-inbox', stream: 'main', agent: 'claude-code', doing, detail: 'task 7 of 18', children: [{ name: 'kid', doing: 'grep' }] })
+    recordActivityCall(db, session) // status() heartbeats like every other tool call
+  }
+
+  it('a heartbeat keeps the session listed but never renews the claim', () => {
+    claim()
+    vi.setSystemTime(Date.now() + CLAIM_COLD_MS + 60_000)
+    touchActivity(db, 's1') // the 5-minute timer in src/mcp.ts, exactly as it fires
+    const live = listActivity(db)
+    expect(live).toHaveLength(1)          // NOT expired — the CLI really is running
+    expect(live[0]!.doing).toBe('open')
+    expect(live[0]!.idle).toBe(true)
+    expect(live[0]!.detail).toBe('')      // detail and children belong to the claim
+    expect(live[0]!.children).toEqual([])
+  })
+
+  it('a long silent stretch BELOW the threshold keeps the claim — a big test run is still working', () => {
+    claim()
+    vi.setSystemTime(Date.now() + CLAIM_COLD_MS - 60_000)
+    touchActivity(db, 's1')
+    const live = listActivity(db)
+    expect(live[0]!.doing).toBe('Executing Track B — 18-task viewer redesign')
+    expect(live[0]!.idle).toBe(false)
+    expect(live[0]!.children).toHaveLength(1)
+  })
+
+  it('the FIRST call after a silence clears the stale claim instead of resurrecting it', () => {
+    // Read-side decay alone is not enough: the observed rows belonged to CLIs
+    // that were still polling. Any later tool call would have re-listed a
+    // days-old claim as live work.
+    claim()
+    vi.setSystemTime(Date.now() + 3 * 60 * 60_000)
+    recordActivityCall(db, 's1') // a routine pending() poll, nothing else
+    const live = listActivity(db)
+    expect(live[0]!.doing).toBe('open')
+    expect(live[0]!.idle).toBe(true)
+    expect(live[0]!.children).toEqual([])
+  })
+
+  it('status({doing}) re-asserts immediately, however long the silence was', () => {
+    claim()
+    vi.setSystemTime(Date.now() + 8 * 60 * 60_000)
+    recordActivityCall(db, 's1') // heartbeat() runs FIRST in the status handler
+    upsertActivity(db, { session: 's1', project: 'agent-inbox', stream: 'main', agent: 'claude-code', doing: 'reviewing #45' })
+    const live = listActivity(db)
+    expect(live[0]!.doing).toBe('reviewing #45')
+    expect(live[0]!.idle).toBe(false)
+    expect(live[0]!.detail).toBe('') // the decayed claim's detail did not survive into the new one
+  })
+
+  it('only a real call writes last_call_at; the timer moves liveness alone', () => {
+    claim()
+    const called = listActivity(db)[0]!.last_call_at
+    expect(called).toBe(new Date(START).toISOString())
+    vi.setSystemTime(Date.now() + 10 * 60_000)
+    touchActivity(db, 's1')
+    const live = listActivity(db)[0]!
+    expect(live.last_call_at).toBe(called)          // untouched — this is the whole distinction
+    expect(live.updated_at > called!).toBe(true)    // liveness DID move
+  })
+
+  it('a session that has never called anything is not born cold', () => {
+    // registerPresence writes the row before any tool call, so last_call_at is
+    // NULL and started_at stands in for it
+    upsertActivity(db, { session: 'fresh', project: 'p', stream: '', agent: 'a', doing: 'open', idle: true })
+    const live = listActivity(db)
+    expect(live).toHaveLength(1)
+    expect(live[0]!.last_call_at).toBeNull()
+    expect(live[0]!.doing).toBe('open')
+  })
+
+  it('long-idle sessions sink below recently active ones — the strip stays glanceable', () => {
+    // DECIDED: a session idle for days keeps its row (removing it would hide a
+    // live agent and demote its questions out of "waiting"), but it sorts last.
+    //
+    // The fixture is shaped so that EVERY order the query could hand back lists
+    // `forgotten` FIRST — it is inserted first (rowid order) and its heartbeat
+    // is the oldest of the three (the idx_activity_live index order). Only
+    // sorting on the real-call stamp moves it to the bottom, so a comparator
+    // that does nothing cannot pass by luck.
+    upsertActivity(db, { session: 'forgotten', project: 'p', stream: '', agent: 'a', doing: 'open', idle: true })
+    recordActivityCall(db, 'forgotten')
+    vi.setSystemTime(Date.now() + 9 * 60 * 60_000)
+    touchActivity(db, 'forgotten') // its CLI is alive, so the heartbeat keeps it listed
+    vi.setSystemTime(Date.now() + 2 * 60_000)
+    upsertActivity(db, { session: 'quiet', project: 'p', stream: '', agent: 'a', doing: 'open', idle: true })
+    recordActivityCall(db, 'quiet')
+    vi.setSystemTime(Date.now() + 2 * 60_000)
+    upsertActivity(db, { session: 'busy', project: 'p', stream: '', agent: 'a', doing: 'shipping' })
+    recordActivityCall(db, 'busy')
+    expect(listActivity(db).map((x) => x.session)).toEqual(['busy', 'quiet', 'forgotten'])
+  })
+
+  it('a decayed session is still a LIVE session — the row, and its id, survive', () => {
+    // public/attention.js classifies an item as "waiting" iff its session id is
+    // in /api/activity. Expiring the row would silently downgrade a real
+    // blocker; decaying the claim must not.
+    claim()
+    vi.setSystemTime(Date.now() + 2 * 24 * 60 * 60_000)
+    touchActivity(db, 's1')
+    expect(listActivity(db).map((x) => x.session)).toEqual(['s1'])
   })
 })
 

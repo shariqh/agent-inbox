@@ -14,7 +14,7 @@ export function liveSummary(activity, nowMs) {
   const sessions = active.map((a) => ({
     session: a.session,
     label: `${a.project}/${a.agent}`,
-    tone: freshnessTone(nowMs - Date.parse(a.updated_at)),
+    tone: freshnessTone(nowMs - Date.parse(lastActivityAt(a))),
   }))
   // the strip takes the FRESHEST tone: one actively-working agent must not be
   // hidden behind a quieter one
@@ -28,4 +28,27 @@ export function liveSummary(activity, nowMs) {
     label: active.length ? `${active.length} working` : 'no agents running',
     sessions,
   }
+}
+
+// ── issue #45: when a session last actually DID something ───────────────────
+//
+// `updated_at` is liveness, not activity: the MCP server bumps it every five
+// minutes whether or not the agent has made a single call, so a dot keyed on it
+// re-greens forever and "last activity 30s ago" only ever meant "this process
+// has not crashed". `last_call_at` is written by real MCP calls alone. It is
+// NULL until a session makes its first one (a just-registered presence row, or
+// a row written by a server still running the old code), and `started_at`
+// stands in — the same fallback src/store.ts uses to decide a claim is cold, so
+// the dot and the decay can never disagree.
+export function lastActivityAt(a) {
+  return a?.last_call_at ?? a?.started_at ?? a?.updated_at
+}
+
+// Long-idle: not an error and not attention — just a terminal somebody left
+// open. The Live surface keeps it (the session IS present, and its questions
+// still classify as "waiting"), but it sorts last and reads as background.
+export const DORMANT_MS = 8 * 60 * 60 * 1000
+
+export function isDormant(a, nowMs) {
+  return nowMs - Date.parse(lastActivityAt(a)) >= DORMANT_MS
 }

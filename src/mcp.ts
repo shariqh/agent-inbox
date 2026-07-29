@@ -2,7 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
 import type Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
-import { insertItem, resolveItem, listPending, markReplySeen, answerItem, upsertBoard, updateBoardRow, findBoard, archiveBoard, getBoard, listBoards, markBoardRead, markAnnotationDelivered, listPendingAnnotations, upsertActivity, endActivity, touchActivity } from './store.js'
+import { insertItem, resolveItem, listPending, markReplySeen, answerItem, upsertBoard, updateBoardRow, findBoard, archiveBoard, getBoard, listBoards, markBoardRead, markAnnotationDelivered, listPendingAnnotations, upsertActivity, endActivity, touchActivity, recordActivityCall } from './store.js'
 import type { BoardWithRows } from './store.js'
 import { makeContextLedger, deliverContext, shapeBoard, summariseBoard, rowKey, itemKey } from './shape.js'
 import { makeScope } from './scope.js'
@@ -35,13 +35,18 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     } catch { /* presence must never break the server */ }
   }
 
-  // every tool call is proof of life — the freshness dot in the viewer's
-  // open-sessions fold turns green for a session that's actively conversing
+  // Every tool call is proof of WORK, not merely of life — the freshness dot in
+  // the viewer's open-sessions fold turns green for a session that's actively
+  // conversing. Issue #45: this is the ONLY thing that writes `last_call_at`,
+  // and that is the entire distinction between "this process is alive" and
+  // "this agent is doing something". The timer below must never call it.
   const heartbeat = (): void => {
-    try { touchActivity(db, sessionId) } catch { /* ignore */ }
+    try { recordActivityCall(db, sessionId) } catch { /* ignore */ }
   }
   server.server.oninitialized = registerPresence
   setTimeout(registerPresence, 2000).unref() // fallback if no initialized notification arrives
+  // liveness only: keeps the session listed (a crashed process still falls out
+  // of listActivity's 15-minute window) while letting its `doing` claim go cold
   setInterval(() => {
     try { touchActivity(db, sessionId) } catch { /* ignore */ }
   }, 5 * 60000).unref()
@@ -177,7 +182,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     'status',
     {
       description:
-        'Ephemeral "what am I doing right now" for the human\'s live view — NOT for tasks (use boards) or attention (use flag). Call at meaningful PHASE changes only, not every step: starting a long effort, entering a new phase, fanning out subagents, wrapping up. children is a full-replace list of the subagents you are running ({name, doing, state?}) — resend the current set whenever it changes; the human can expand them under your entry. Times are stamped server-side; never call this just because time passed. Call with done:true when the effort ends — your entry disappears. Entries silently expire if not updated for ~15 minutes.',
+        'Ephemeral "what am I doing right now" for the human\'s live view — NOT for tasks (use boards) or attention (use flag). Call at meaningful PHASE changes only, not every step: starting a long effort, entering a new phase, fanning out subagents, wrapping up. children is a full-replace list of the subagents you are running ({name, doing, state?}) — resend the current set whenever it changes; the human can expand them under your entry. Times are stamped server-side; never call this just because time passed. Call with done:true when the effort ends — your entry reverts to an idle presence row. Your session stays listed for as long as it is running, but the CLAIM decays: after ~30 minutes with no MCP calls from you at all, "doing" reverts to open on its own, so a claim can never outlive the work. You do not need to keep it alive — just say what you are doing at your next real phase change, and it re-asserts instantly.',
       inputSchema: {
         doing: z.string().min(1).optional(),
         detail: z.string().optional(),

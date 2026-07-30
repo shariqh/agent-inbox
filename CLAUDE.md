@@ -357,6 +357,17 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   the issue's original "timestamp-based last write wins". Known limitation, worth a follow-up:
   once a chat answer lands, `reply_seen_at` is set, so the card's "Change answer" (a
   blank-clear) is refused and the human cannot re-answer that item from the viewer.
+- **Electron response watch + host adapter seam** — `electron/reply-watch.cjs` derives the
+  work still waiting on an agent without changing `public/attention.js`: a question leaves
+  the set when `pending()` stamps `reply_seen_at`, while a human-acted board row stays until
+  its agent-owned status changes. New responses invoke an optional
+  `AGENT_INBOX_WAKE_COMMAND` immediately; native reminders start after one minute and repeat
+  every 15 minutes. The command is an absolute path, is spawned with `shell:false`, and
+  receives one JSON event on stdin. This is an Electron-process integration seam, not an MCP
+  capability: Claude's hook remains the supported automatic wake path, and Copilot has no
+  built-in adapter until its host exposes a supported per-session resume API. Never fold
+  these reminders into the attention predicate or badge — they represent work awaiting the
+  agent, not work awaiting the human.
 - **Backstop hooks** *(#10 + #21)* — `src/hook.ts` + `src/hook-cli.ts`, installed opt-in by
   `scripts/install-hooks.sh` (dry-run by default). #10: a `Notification` hook arms a
   grace-windowed backstop item when a session is stuck at a permission prompt; it is

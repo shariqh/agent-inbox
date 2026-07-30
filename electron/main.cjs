@@ -23,10 +23,19 @@ const http = require('node:http')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 const { confirmReuse, watchUpstream } = require('./reuse.cjs')
+const {
+  createResponseWatch,
+  formatResponseReminder,
+  runWakeAdapter,
+  wakeAdapterFromEnv,
+  wakeAdapterPayload,
+} = require('./reply-watch.cjs')
 
 const PORT = Number(process.env.AGENT_INBOX_PORT ?? 4319)
 const URL_BASE = `http://localhost:${PORT}/`
 const REPO_ROOT = path.resolve(__dirname, '..')
+const responseWatch = createResponseWatch()
+const wakeAdapter = wakeAdapterFromEnv(process.env)
 
 // One attention predicate for the whole product (spec §7 / tenet 3): the dock
 // badge imports the very module the viewer renders from. ESM from CJS →
@@ -162,6 +171,27 @@ function startAttentionWatch(win) {
         ...g.notes.flatMap((gr) => gr.items),
         ...g.done,
       ]
+      const { newTargets, reminders } = responseWatch.scan(g, boards, Date.now())
+      const dueByKey = new Map([...newTargets, ...reminders].map((target) => [target.key, target]))
+      const due = [...dueByKey.values()]
+      if (wakeAdapter && due.length) {
+        await runWakeAdapter(wakeAdapter, wakeAdapterPayload(due)).catch((err) => {
+          console.error(`[agent-inbox] wake adapter failed: ${err.message}`)
+        })
+      }
+      if (reminders.length && Notification.isSupported()) {
+        const note = new Notification(formatResponseReminder(reminders))
+        const hash = reminders.length === 1 ? focusHashFor(reminders[0].focusId) : null
+        note.on('click', () => {
+          if (win.isMinimized()) win.restore()
+          win.show()
+          win.focus()
+          if (hash) win.webContents.executeJavaScript(`location.hash = ${JSON.stringify(hash)}`).catch((err) => {
+            console.error('[agent-inbox] deep link failed', err)
+          })
+        })
+        note.show()
+      }
       const liveSessions = new Set(activity.map((a) => a.session))
       // THE §7 attention set — the exact same call the viewer's badge, rail,
       // tab count and triage deck all read from (spec §7 / tenet 3). No inline

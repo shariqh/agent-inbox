@@ -2,7 +2,8 @@
 
 You have an `agent-inbox` MCP server. Use it to surface things the human would
 otherwise miss in the terminal firehose, and to keep standing status they can
-watch live. project/stream/agent are inferred automatically.
+watch live. For customer-facing drafts, also use it as the review-before-send
+source of truth. project/stream/agent are inferred automatically.
 
 ## Flags (one-shot attention)
 
@@ -98,6 +99,25 @@ prose. Do this **proactively**, without being asked:
 Prefer updating an existing board (same title) over spawning new ones. One board per
 effort; let it track from start to done. A board is the durable, always-current answer —
 maintain it as the work moves, not just at the end.
+
+## Draft review / approval loop
+
+For customer-facing emails and other sendable copy, treat the board as the single
+source of truth before anything is sent.
+
+- Keep one stable board title for the active review queue, such as `Email draft review`.
+- Use one row per draft/thread. Keep the row label stable, and put the draft's
+  subject/customer/thread key in the label.
+- Put the draft body, relevant context, and any open questions in the row `context`;
+  use `note` for a one-line status summary.
+- Set `status: tracked` while drafting, `blocked` when you need the human to decide
+  something, and `done` once the final draft has been approved and sent.
+- If a draft has a concrete blocker, also raise a `flag({ kind: "question" })` with
+  2-4 options when possible, and reference the same draft row in the `context`.
+- Treat that flag as the ONE question across both channels. Poll `pending()` for an
+  inbox answer; if the human answers in chat, record it with `answer({ id, text })`.
+- Before sending, call `pending()` and re-read the titled board for full draft context.
+  Do not rely on a separate chat thread or scattered notes as the approval record.
 
 ## Live status (ephemeral presence)
 

@@ -119,6 +119,31 @@ hooks/             portable shell wrapper for hand-edited hook registrations
 docs/              INSTALL.md, hooks.md, reporting-snippet.md, superpowers/{specs,plans}/
 ```
 
+## Answer pickup and host wake adapters
+
+The Electron app watches for human responses that still need agent action. A newly
+answered question produces an immediate local wake event; if it is still waiting after
+one minute, Electron shows a native reminder and repeats it every 15 minutes. Board rows
+remain eligible until the agent moves the row out of `blocked`. These reminders are
+informational only and never change the human attention badge or mutate inbox state.
+
+Claude Code uses the built-in hook flow in [`docs/hooks.md`](docs/hooks.md). Other hosts
+can opt into the Electron wake event by launching the app with:
+
+```sh
+AGENT_INBOX_WAKE_COMMAND=/absolute/path/to/adapter \
+AGENT_INBOX_WAKE_ARGS='["--host","copilot"]' \
+npm run electron
+```
+
+The command must be an absolute executable path. Electron invokes it directly (never
+through a shell), passes the optional JSON string-array arguments, and writes one JSON
+event to stdin. The payload includes the project, agent, response, and originating
+session ID when the data model has one. Adapter failures are logged and never affect the
+viewer. There is no built-in Copilot adapter yet because Copilot does not expose a
+supported API for resuming a specific idle conversation; the adapter seam is ready for
+one without coupling that host behavior to the inbox.
+
 ## Development
 
 ```sh

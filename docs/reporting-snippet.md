@@ -17,7 +17,11 @@ Call `flag` when:
 `context`. When sensible answers
   exist, ALWAYS attach 2-4 `options` — your recommendation first with `recommended: true`,
   each with a short `label` and a `detail` explaining the tradeoff. The human can pick
-  one, compare them, or answer in their own words. If a Copilot question flag returns a
+  one, compare them, or answer in their own words. **Options now buy more than clarity:**
+  they become one-click buttons on the desktop notification itself, so the human can answer
+  without opening the app at all. A question with no options can only be answered by someone
+  who stops what they are doing and goes to the inbox — so write `label`s that stand alone
+  out of context, because that button may be the entire question they ever see. If a Copilot question flag returns a
   `watch` object, **immediately launch `watch.shell_command` as a detached async background
   command** using the returned `mode`, `detach`, `shell_id`, and `timeout_seconds`; do not
   wait for it synchronously. The background completion notification wakes your session when
@@ -103,7 +107,12 @@ prose. Do this **proactively**, without being asked:
 - **`board_get({ title? })`** — read a board back, **including the human's per-row notes**.
   Call it when you (re)start work on a tracked effort, and before updating a board. You do
   not need it to HEAR from them — `pending()` delivers their notes — so prefer the titled
-  form; the title-less one reads every board in the project at once.
+  form; the title-less one summarises every board in the project at once.
+  **Reads do not return `context`.** The human's `annotation` always comes back in full, but
+  the `context` YOU wrote comes back as `context_chars` (its size) — you wrote it, so you are
+  not charged to read it again. `board_get({ title, full: true })` returns the real text if you
+  genuinely need it; `pending({ full: true })` does the same for items. `context_chars` is not
+  proof you have the text, only that text exists.
 - **`board_archive({ title })`** — when the effort is finished.
 
 Prefer updating an existing board (same title) over spawning new ones. One board per
@@ -142,6 +151,14 @@ manager reports — subagents stay silent. Call `status({ done: true })` when th
 ends; if your process dies instead, its entry drops out on its own within ~15 minutes, so
 a crash never leaves a ghost. This is ambient glass for the human, not tracking — boards
 remain the durable record.
+
+**A claim goes quiet after ~30 minutes with no MCP call of any kind**, and your row reverts
+to idle — otherwise a session that finished hours ago sits there advertising work it is no
+longer doing. Your row does NOT disappear; only the claim does. This is still not a reason
+to call `status` on a timer: any tool call keeps it fresh, so ordinary work holds it
+automatically. It only bites on a genuinely silent stretch — a long build, a deep fan-out
+where the children do the work — and the fix is a phase-change `status({ doing })` when you
+come back up for air, which you should be sending anyway. Re-asserting is instant.
 
 ## Subagents
 

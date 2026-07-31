@@ -114,6 +114,8 @@ src/
   viewer-server.ts node entry — serves API + public/ on localhost
   hook.ts          Claude Code hooks runtime (#10 backstop + #21 pickup nudges)
   hook-cli.ts      hook entry — one subcommand per event; fail-open, exit-code owner
+  watch.ts         exact-question Copilot wake watcher + host launch contract
+  watch-cli.ts     short-lived watcher entry launched by the Copilot host
 public/            plain HTML/CSS/JS front-end (no bundler → wraps to Electron unchanged)
 hooks/             portable shell wrapper for hand-edited hook registrations
 docs/              INSTALL.md, hooks.md, reporting-snippet.md, superpowers/{specs,plans}/
@@ -140,9 +142,11 @@ The command must be an absolute executable path. Electron invokes it directly (n
 through a shell), passes the optional JSON string-array arguments, and writes one JSON
 event to stdin. The payload includes the project, agent, response, and originating
 session ID when the data model has one. Adapter failures are logged and never affect the
-viewer. There is no built-in Copilot adapter yet because Copilot does not expose a
-supported API for resuming a specific idle conversation; the adapter seam is ready for
-one without coupling that host behavior to the inbox.
+viewer. Copilot still exposes no direct session-resume API, so question flags use a
+host-launched workaround instead: a Copilot `flag(kind:"question")` response includes a
+detached `agent-inbox-watch` command for that exact item. Its background-command completion
+notification wakes the owning session, which then calls `pending()`. The MCP server never
+spawns that process itself because only a host-owned completion can wake the conversation.
 
 ## Development
 

@@ -14,15 +14,20 @@ Call `flag` when:
 `context`. When sensible answers
   exist, ALWAYS attach 2-4 `options` — your recommendation first with `recommended: true`,
   each with a short `label` and a `detail` explaining the tradeoff. The human can pick
-  one, compare them, or answer in their own words. Then **poll `pending()`** between work
-  steps: it returns `{ items, rows }` — your open questions with `reply` once answered (an
+  one, compare them, or answer in their own words. If a Copilot question flag returns a
+  `watch` object, **immediately launch `watch.shell_command` as a detached async background
+  command** using the returned `mode`, `detach`, `shell_id`, and `timeout_seconds`; do not
+  wait for it synchronously. The background completion notification wakes your session when
+  the answer lands. On that notification, call `pending()` immediately, act on the answer,
+  and resolve the question. Clients without a returned watcher keep using their native wake
+  path. Also **poll `pending()`** between work steps: it returns `{ items, rows }` — your open questions with `reply` once answered (an
   option label or free text — follow it either way), plus optional `reply_context` when they
   attach extra direction with their answer, **and `rows`: the human's per-row notes on your
   boards** (see Boards below). Act on both, then call `resolve`. `pending()` is the ONE poll —
   everything they have said to you arrives through it. Do
-  not park forever waiting in the terminal. If you end a turn with a question still
-  open, say so in chat ("I'll pick your answer up next time you message me") and call
-  `pending()` first thing on your next turn, so they know the contract.
+  not park forever waiting in the terminal. If you end a turn with a Copilot question still
+  open, the returned watcher must already be running; do not tell the human they need to
+  message you again.
   **One question, two channels.** A flagged question IS the question you are asking in
   chat — never open a second, independent prompt for a decision you already flagged; point
   at the flag instead. If they answer you in chat, call `answer({ id, text, context? })` so

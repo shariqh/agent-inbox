@@ -18,8 +18,9 @@ describe('mcp round-trip', () => {
     await client.connect(transport)
 
     const flagRes = await client.callTool({ name: 'flag', arguments: { kind: 'question', title: 'which storage?' } })
-    const { id } = JSON.parse((flagRes.content as Array<{ text: string }>)[0]!.text)
+    const { id, watch } = JSON.parse((flagRes.content as Array<{ text: string }>)[0]!.text)
     expect(id).toBeTruthy()
+    expect(watch).toBeUndefined()
 
     // kind=done milestone round-trips too
     const doneRes = await client.callTool({ name: 'flag', arguments: { kind: 'done', title: 'shipped v2' } })
@@ -49,6 +50,34 @@ describe('mcp round-trip', () => {
     const d = items.find((i) => i.kind === 'done')!
     expect(d.title).toBe('shipped v2')
     expect(d.status).toBe('open')
+  })
+
+  it('returns a host-launched answer watcher only for Copilot questions', async () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-copilot-watch-')), 'inbox.db')
+    const transport = new StdioClientTransport({
+      command: 'npx',
+      args: ['tsx', 'src/mcp-server.ts'],
+      env: { ...process.env, AGENT_INBOX_DB: dbPath },
+    })
+    const client = new Client({ name: 'copilot', version: '1.0.0' })
+    await client.connect(transport)
+
+    const question = await client.callTool({ name: 'flag', arguments: { kind: 'question', title: 'which storage?' } })
+    const body = JSON.parse((question.content as Array<{ text: string }>)[0]!.text)
+    expect(body.id).toBeTruthy()
+    expect(body.watch).toMatchObject({
+      mode: 'async',
+      detach: true,
+      shell_id: `agent-inbox-${body.id}`,
+      timeout_seconds: 1800,
+    })
+    expect(body.watch.shell_command).toMatch(/watch-cli\.(?:js|ts)/)
+    expect(body.watch.shell_command).toContain(body.id)
+    expect(body.watch.on_completion).toMatch(/pending/)
+
+    const note = await client.callTool({ name: 'flag', arguments: { kind: 'note', title: 'heads up' } })
+    expect(JSON.parse((note.content as Array<{ text: string }>)[0]!.text).watch).toBeUndefined()
+    await client.close()
   })
 
   it('flag accepts options; pending returns the human reply and stamps pickup', async () => {
@@ -709,6 +738,11 @@ describe('mcp round-trip', () => {
     // it must not promise a per-session guarantee it cannot keep
     expect(pending.description).toContain('per SERVER PROCESS')
     expect(pending.description).toMatch(/UTF-16 code units/)
+
+    const flag = tools.get('flag')!
+    expect(flag.description).toContain('watch')
+    expect(flag.description).toMatch(/detached.*background/i)
+    expect(flag.description).toMatch(/completion.*pending/i)
 
     expect(tools.get('board_get')!.description).toContain('full: true')
     expect(tools.get('board_get')!.description).toMatch(/UTF-16 code units/)

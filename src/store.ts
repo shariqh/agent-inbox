@@ -398,6 +398,13 @@ function parseItem(row: Omit<Item, 'options'> & { options: string | null }): Ite
   return { ...row, options: row.options ? (JSON.parse(row.options) as QuestionOption[]) : null }
 }
 
+export function getItem(db: Database.Database, id: string): Item | null {
+  const row = db.prepare(`SELECT * FROM items WHERE id = ?`).get(id) as
+    | (Omit<Item, 'options'> & { options: string | null })
+    | undefined
+  return row ? parseItem(row) : null
+}
+
 export function resolveItem(db: Database.Database, id: string): void {
   db.prepare(`UPDATE items SET status = 'resolved', resolved_at = ? WHERE id = ?`).run(new Date().toISOString(), id)
 }

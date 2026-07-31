@@ -5,8 +5,6 @@ import {
   shouldSuspendRender,
   suspendHint,
   pinOrder,
-  pendingCount,
-  applyListUpdate,
   reconcileOpenRow,
   pressHeld,
   shouldDeferRender,
@@ -15,19 +13,19 @@ import {
 
 describe('suspendReason', () => {
   it('is null when nothing is open and no draft has content', () => {
-    expect(suspendReason({ expanded: [], drafts: { a: '', b: '   ' } })).toBeNull()
-    expect(shouldSuspendRender({ expanded: [], drafts: {} })).toBe(false)
+    expect(suspendReason({ drafts: { a: '', b: '   ' } })).toBeNull()
+    expect(shouldSuspendRender({ drafts: {} })).toBe(false)
   })
-  it('reports an expanded card', () => {
-    expect(suspendReason({ expanded: ['i1'], drafts: {} })).toBe('expanded')
-    expect(shouldSuspendRender({ expanded: new Set(['i1']), drafts: {} })).toBe(true)
+  it('does not suspend for a merely expanded card', () => {
+    expect(suspendReason({ drafts: {} })).toBeNull()
+    expect(shouldSuspendRender({ drafts: {} })).toBe(false)
   })
   it('reports a non-empty draft even with nothing expanded', () => {
-    expect(suspendReason({ expanded: [], drafts: { 'i1:answer': 'ship it' } })).toBe('draft')
-    expect(shouldSuspendRender({ expanded: [], drafts: { 'i1:answer': 'ship it' } })).toBe(true)
+    expect(suspendReason({ drafts: { 'i1:answer': 'ship it' } })).toBe('draft')
+    expect(shouldSuspendRender({ drafts: { 'i1:answer': 'ship it' } })).toBe(true)
   })
-  it('an expanded card outranks a draft — both suspend', () => {
-    expect(suspendReason({ expanded: ['i1'], drafts: { x: 'hi' } })).toBe('expanded')
+  it('still reports a draft when its card is expanded', () => {
+    expect(suspendReason({ drafts: { x: 'hi' } })).toBe('draft')
   })
   it('tolerates a state with no fields at all', () => {
     expect(shouldSuspendRender({})).toBe(false)
@@ -37,8 +35,8 @@ describe('suspendReason', () => {
 
 describe('suspendHint', () => {
   it('is the quiet paused copy while suspended, null otherwise', () => {
-    expect(suspendHint({ expanded: ['i1'], drafts: {} })).toBe("paused — updating when you're done")
-    expect(suspendHint({ expanded: [], drafts: {} })).toBeNull()
+    expect(suspendHint({ drafts: { answer: 'half a thought' } })).toBe("paused — updating when you're done")
+    expect(suspendHint({ drafts: {} })).toBeNull()
   })
 })
 
@@ -54,27 +52,6 @@ describe('pinOrder', () => {
   })
   it('starts from empty', () => {
     expect(pinOrder([], ['a', 'b'])).toEqual(['a', 'b'])
-  })
-})
-
-describe('pendingCount', () => {
-  it('counts additions and removals', () => {
-    expect(pendingCount(['a', 'b'], ['b', 'c'])).toBe(2)
-    expect(pendingCount(['a'], ['a'])).toBe(0)
-    expect(pendingCount([], ['a', 'b'])).toBe(2)
-  })
-})
-
-describe('applyListUpdate', () => {
-  it('applies, pinned, when the pointer is away from the list', () => {
-    expect(applyListUpdate({ current: ['a', 'b'], incoming: ['b', 'a', 'c'], hovering: false }))
-      .toEqual({ ids: ['a', 'b', 'c'], staged: null, pending: 0 })
-  })
-  it('stages while the pointer is over the list — rows never move under a click', () => {
-    const r = applyListUpdate({ current: ['a', 'b'], incoming: ['b', 'c'], hovering: true })
-    expect(r.ids).toEqual(['a', 'b'])
-    expect(r.staged).toEqual(['b', 'c'])
-    expect(r.pending).toBe(2)
   })
 })
 
@@ -146,7 +123,7 @@ describe('pressHeld (#38 · D2)', () => {
 
 describe('shouldDeferRender (#38 · D2)', () => {
   const t = 1_000_000
-  const idle = { expanded: [], drafts: {} }
+  const idle = { drafts: {} }
 
   it('defers for a held press even though nothing is suspended', () => {
     expect(shouldDeferRender({ ...idle, pressedAt: t - 40 }, t)).toBe(true)
@@ -156,9 +133,9 @@ describe('shouldDeferRender (#38 · D2)', () => {
     expect(shouldDeferRender({ ...idle, pressedAt: t - PRESS_GRACE_MS }, t)).toBe(false)
   })
 
-  it('still defers for every existing suspend reason, press or no press', () => {
-    expect(shouldDeferRender({ expanded: ['i1'], drafts: {}, pressedAt: null }, t)).toBe(true)
-    expect(shouldDeferRender({ expanded: [], drafts: { 'i1:answer': 'ship it' }, pressedAt: null }, t)).toBe(true)
+  it('still defers for drafts, press or no press', () => {
+    expect(shouldDeferRender({ drafts: {}, pressedAt: null }, t)).toBe(false)
+    expect(shouldDeferRender({ drafts: { 'i1:answer': 'ship it' }, pressedAt: null }, t)).toBe(true)
   })
 
   it('is idle when nothing is expanded, nothing typed and no button is down', () => {
@@ -171,11 +148,11 @@ describe('a press is not a pause — the hint vocabulary never learns about it',
   const t = 1_000_000
 
   it('suspendReason ignores pressedAt entirely', () => {
-    expect(suspendReason({ expanded: [], drafts: {}, pressedAt: t })).toBeNull()
-    expect(shouldSuspendRender({ expanded: [], drafts: {}, pressedAt: t })).toBe(false)
+    expect(suspendReason({ drafts: {}, pressedAt: t })).toBeNull()
+    expect(shouldSuspendRender({ drafts: {}, pressedAt: t })).toBe(false)
   })
 
   it('suspendHint stays null for a bare press — nothing is being held back from the human', () => {
-    expect(suspendHint({ expanded: [], drafts: {}, pressedAt: t })).toBeNull()
+    expect(suspendHint({ drafts: {}, pressedAt: t })).toBeNull()
   })
 })

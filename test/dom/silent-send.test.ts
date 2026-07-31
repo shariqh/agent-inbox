@@ -8,12 +8,11 @@
 // never happened was the frame that says so.
 //
 // The cause is one confusion. `load()` repaints through `renderIfIdle()` — the §10
-// poll gate — and THE GATE IS GLOBAL: `suspendState()` reports `openRowId` (ANY
-// expanded Needs-you card) plus EVERY entry in draftReplies/draftReplyContexts/
-// rowDrafts anywhere in the app. So a handler that ends in a bare `load()` after a
-// successful POST is asking the gate for permission to show the human the result of
-// their own click — and one unrelated card left expanded, or one half-typed draft
-// on a different board, is enough to refuse it. Indefinitely: the observed viewer
+// poll gate — and THE GATE IS GLOBAL: `suspendState()` reports EVERY entry in
+// draftReplies/draftReplyContexts/rowDrafts anywhere in the app. So a handler that
+// ends in a bare `load()` after a successful POST is asking the gate for permission
+// to show the human the result of their own click — and one half-typed draft on a
+// different board is enough to refuse it. Indefinitely: the observed viewer
 // sat on the old state across repeated poll ticks until a collapse (which calls
 // `render()` directly, outside the gate) revealed the truth. The input still held
 // the text, so a second Send re-sent the same string.
@@ -94,8 +93,8 @@ async function answerInMatrix(text: string): Promise<void> {
   await settle()
 }
 
-/** An open question, expanded in the Needs-you accordion — the global suspender. */
-async function expandAnUnrelatedQuestion(d: Database.Database): Promise<string> {
+/** An open question used to park a draft before testing a write on another tab. */
+async function unrelatedQuestion(d: Database.Database): Promise<string> {
   const id = insertItem(d, { ...AGENT, kind: 'question', title: 'bump the timeout?' })
   advanceClock()
   return id
@@ -126,14 +125,16 @@ describe('#38 · a board-row answer shows itself, with no collapse and no poll t
   })
 
   // THE OWNER'S BUG, stated as an assertion. Two completely unrelated surfaces:
-  // a question card left expanded in Needs-you silences a Send in the Boards matrix.
-  it('…even while an unrelated question card is expanded on the other tab', async () => {
+  // a draft in Needs-you silences a Send in the Boards matrix.
+  it('…even while an unrelated draft is open on the other tab', async () => {
     const d = open()
     const rowId = blockedRow(d)
-    const questionId = await expandAnUnrelatedQuestion(d)
+    const questionId = await unrelatedQuestion(d)
     await bootApp(d)
 
-    click(row(questionId))                 // the innocent bystander that freezes the gate
+    click(row(questionId))
+    await settle()
+    type(answerInput(questionId), 'unfinished elsewhere')
     await settle()
     expect(row(questionId)?.dataset['open']).toBe('1')
 
@@ -320,7 +321,9 @@ describe('#38 · archiving a board takes the board off the screen', () => {
     fold!.dispatchEvent(new window.Event('toggle'))
     await settle()
 
-    click(row(rowId)) // an expanded Needs-you card — the global suspender
+    click(row(rowId))
+    await settle()
+    type(answerInput(rowId), 'unfinished elsewhere')
     await settle()
 
     click(buttonLabelled('Un-archive', document.querySelector('#boards .archived-fold')!))
@@ -376,32 +379,47 @@ describe('#38 · forceRender() before there is anything to render', () => {
   })
 })
 
-// ── the gate itself, unchanged ───────────────────────────────────────────────
+// ── the gate: protect work, never hide arrivals ──────────────────────────────
 
-describe('#38 · §10 survives the fix — the POLL still holds while the human works', () => {
-  // GREEN TODAY, and the point is that it stays green. Every test above would
-  // also pass if the fix were "wire forceRender() into load()" — which deletes
-  // the gate, rebuilds the DOM under the cursor every 3s, and reintroduces the
-  // exact class of bug §10 exists to prevent. This is the only test that fails
-  // for that mistake.
-  it('a card left expanded still freezes the 3s rebuild, and says so', async () => {
+describe('#38 · §10 protects typed work without hiding new inbox items', () => {
+  it('a merely expanded card stays open while a new inbox item appears', async () => {
     const d = open()
     const id = insertItem(d, { ...AGENT, kind: 'question', title: 'ship it?' })
     await bootApp(d)
 
     click(row(id))
     await settle()
+    document.getElementById('needsYouList')!.dispatchEvent(new window.MouseEvent('mouseenter'))
 
     advanceClock()
     insertItem(d, { ...AGENT, kind: 'question', title: 'brand new' })
     await pollTick()
     await pollTick()
 
-    expect(rowTitles(), 'the poll must not move rows under an open card').not.toContain('brand new')
-    expect(pauseHint(), 'and it must SAY it is holding data back').toBe("paused — updating when you're done")
+    expect(rowTitles(), 'an open card must not hide newly arrived work').toEqual(['ship it?', 'brand new'])
+    expect(row(id)?.dataset['open'], 'the existing card must survive the live refresh').toBe('1')
+    expect(pauseHint(), 'nothing is being held back when the human is only reading').toBe('')
+  })
 
-    // …and it lands the moment the human is done, exactly as §10 promises
+  it('a non-empty draft still suspends rebuilding until the draft is cleared', async () => {
+    const d = open()
+    const id = insertItem(d, { ...AGENT, kind: 'question', title: 'ship it?' })
+    await bootApp(d)
+
     click(row(id))
+    await settle()
+    type(answerInput(id), 'half a thought')
+    await settle()
+
+    advanceClock()
+    insertItem(d, { ...AGENT, kind: 'question', title: 'brand new' })
+    await pollTick()
+
+    expect(rowTitles(), 'the poll must not rebuild over a typed draft').not.toContain('brand new')
+    expect(answerInput(id)?.value).toBe('half a thought')
+    expect(pauseHint()).toBe("paused — updating when you're done")
+
+    type(answerInput(id), '')
     await settle()
     expect(rowTitles()).toContain('brand new')
     expect(pauseHint()).toBe('')

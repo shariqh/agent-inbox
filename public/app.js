@@ -9,7 +9,7 @@ import {
 } from '/attention.js'
 import { DEFAULT_TAB, TAB_IDS, tabCounts } from '/tabs.js'
 import { projectColor } from '/colors.js'
-import { shouldDeferRender, suspendHint, pinOrder, applyListUpdate, reconcileOpenRow } from '/poll.js'
+import { shouldDeferRender, suspendHint, pinOrder, reconcileOpenRow } from '/poll.js'
 import { createStagedSend } from '/star.js'
 import {
   ageChip, agentCounts, handledUndoRefusal, needsYouEntries, relMs, repliedEntries, rowModel,
@@ -88,13 +88,12 @@ function markNotesSeen(rendered, hidden, live) {
 let bootId = null
 
 // ── poll suspension (spec §10) ──────────────────────────────────────────────
-// The 3s rebuild is the enemy of every in-progress interaction. It holds while
-// a card is open or a draft has content, and lands the moment the user is done.
+// The 3s rebuild holds only for typed drafts. A merely expanded card keeps
+// polling: open state survives rebuilds, order pinning appends new arrivals at
+// the foot, and the bounded press guard protects clicks.
 let openRowId = null    // the single inline-expanded Needs-you row (§4)
 let renderDirty = false // fresh data arrived while suspended
-let listHover = false   // pointer is over the Needs-you list
 let pinnedIds = []      // sort order pinned for this render session
-let stagedIds = null    // list membership waiting for mouse-leave
 let pressedAt = null    // pointerdown → pointerup, hard-bounded by PRESS_GRACE_MS (#38)
 
 // What SUSPENDS the poll — deliberately not the same set as what DEFERS it.
@@ -102,7 +101,6 @@ let pressedAt = null    // pointerdown → pointerup, hard-bounded by PRESS_GRAC
 // this, and a held button is not a pause (see initPressGuard).
 function suspendState() {
   return {
-    expanded: openRowId ? [openRowId] : [],
     drafts: { ...draftReplies, ...draftReplyContexts, ...rowDrafts },
   }
 }
@@ -145,8 +143,7 @@ function renderIfIdle() {
   render()
 }
 
-// called whenever a suspending condition may have cleared (collapse, draft
-// emptied, reply sent)
+// called whenever a draft may have cleared (input emptied, reply sent)
 function resumeRender() {
   if (renderDirty) renderIfIdle()
   else showPauseHint()
@@ -158,10 +155,9 @@ function resumeRender() {
 //
 // The gate protects the human from the 3s POLL rebuilding the DOM under the
 // cursor. It must not also swallow the frame the human's own click just asked
-// for — and the gate is GLOBAL, so it will: suspendState() reports ANY expanded
-// card and EVERY draft anywhere in the app, so one unrelated question card left
-// open, or one half-typed note on another board, silenced the human's own Send /
-// Resolve / Archive indefinitely (issue #38). It also cannot serve
+// for — and the gate is GLOBAL, so it will: suspendState() reports EVERY draft
+// anywhere in the app, so one half-typed note on another board silenced the
+// human's own Send / Resolve / Archive indefinitely (issue #38). It also cannot serve
 // changeAnswer's accepted path at all: that stages a draft, and a draft is itself
 // a suspend reason, so renderIfIdle() is GUARANTEED to skip the render that would
 // build the input the draft lives in (issue #31.1).
@@ -191,7 +187,7 @@ function forceRender() {
 // That one distinction is the whole of issue #38: eight handlers ended a
 // successful POST with a bare `load()`, which asks the §10 gate for permission to
 // show the human the result of their own click — and the gate, being global,
-// refused whenever anything anywhere was expanded or half-typed. The write landed
+// refused whenever anything anywhere was half-typed. The write landed
 // (POST 200, row in the DB) and the viewer sat on the stale frame across every
 // subsequent poll tick. Awaits load() first so the frame paints the SERVER's
 // state, not the pre-write snapshot.
@@ -214,30 +210,11 @@ function setOpenRow(id, { resume = true } = {}) {
   else showPauseHint()
 }
 
-// render() runs its Needs-you entry ids through this: order pins for the
-// session, membership stages while the pointer is over the list
+// Existing rows keep their relative order for the session; genuinely new work
+// appends at the foot. The press guard, not hover state, protects active clicks.
 function orderedIds(ids) {
-  const r = applyListUpdate({ current: pinnedIds, incoming: ids, hovering: listHover })
-  pinnedIds = r.ids
-  stagedIds = r.staged
-  return r.ids
-}
-
-function initListStaging() {
-  showPauseHint()
-  const list = document.getElementById('needsYouList')
-  if (!list) return
-  list.addEventListener('mouseenter', () => { listHover = true })
-  list.addEventListener('mouseleave', () => {
-    listHover = false
-    if (stagedIds) {
-      pinnedIds = pinOrder(pinnedIds, stagedIds)
-      stagedIds = null
-      forceRender()
-    } else {
-      resumeRender()
-    }
-  })
+  pinnedIds = pinOrder(pinnedIds, ids)
+  return pinnedIds
 }
 
 async function load() {
@@ -772,8 +749,8 @@ function rowAnswerEl(b, r, onSaved) {
     // is done, so the caller decides what to drop
     onSaved?.()
     // issue #38, the reported surface: a bare load() here was gated, and the gate
-    // is global — one unrelated card expanded anywhere and this write showed the
-    // human nothing at all, box still full, ready to send the same string twice.
+    // is global — one unrelated draft anywhere and this write showed the human
+    // nothing at all, box still full, ready to send the same string twice.
     await reloadAndPaint()
   }
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') save() })
@@ -1538,11 +1515,8 @@ function renderNeedsYou(g, boardsInView, nowMs) {
   const replied = repliedEntries(items, nowMs, live)
   const awaiting = awaitingAgentRows(boardsInView, closedSet())
   const unordered = needsYouEntries(items, boardsInView, nowMs, live, [...replied, ...awaiting])
-  // §10: run every entry through Task 9's poll-suspension pin BEFORE paginating —
-  // this is what stops a freshly-arrived row from jumping into the visible slice
-  // while the pointer is over the list. orderedIds() only ever returns ids that
-  // were already pinned or that hovering:false let through, so entries that got
-  // staged simply do not appear in `ordered` until the pointer leaves.
+  // §10: pin existing order BEFORE paginating. New arrivals append at the foot,
+  // so they appear live without moving the row the human is reading.
   const entryById = new Map(unordered.map((e) => [e.kind === 'row' ? e.row.id : e.item.id, e]))
   const entries = orderedIds([...entryById.keys()]).map((id) => entryById.get(id)).filter(Boolean)
   const entities = [...items, ...boardsInView]
@@ -2533,7 +2507,7 @@ async function renderSetup() {
 // slot named here and never rewrite this block:
 //   initTabs → initTriage → initSearch → initResponsive (Task 18) →
 //   initKeys (Task 17) → initFocusHash (Task 17) → initStagedFlush →
-//   initListStaging (Task 9) → initPressGuard (#38) → initAgentSelect →
+//   initPressGuard (#38) → initAgentSelect →
 //   initGear → initLiveBar → renderSetup → load → setInterval(load, 3000)
 initTabs()
 initTriage()
@@ -2542,7 +2516,6 @@ initResponsive()
 initKeys()
 initFocusHash()
 initStagedFlush()
-initListStaging()
 initPressGuard()
 initAgentSelect()
 initGear()

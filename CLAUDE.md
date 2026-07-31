@@ -198,9 +198,13 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   `public/app.js` renders both).
 - **`load()` is the poll's; `reloadAndPaint()` is the human's (issue #38).** `load()` ends in
   `renderIfIdle()` — the spec §10 gate — and **that gate is GLOBAL**: `suspendState()` reports
-  ANY expanded card plus EVERY draft anywhere in the app. So a handler that ends a successful
-  POST with a bare `load()` is asking the gate for permission to show the human the result of
-  their own click, and one unrelated card left open on another tab refuses it *indefinitely*.
+  every typed draft anywhere in the app, but NOT a merely expanded card. Expanded cards survive
+  rebuilds; order pinning appends new work at the foot; the press guard protects clicks. This
+  distinction is what lets new inbox items appear without eating in-progress input. A handler
+  that ends a successful POST with a bare `load()` still asks the gate for permission to show
+  the human the result of their own click, and one unrelated draft can refuse it indefinitely.
+  Hover is never a gate either: existing order is pinned and new work appends at the foot, so
+  leaving the pointer over Needs-you cannot hide an arrival.
   Every human-initiated write therefore ends in `reloadAndPaint()` (`await load()` then
   `forceRender()`); the ONLY un-painted callers are the boot call and `setInterval(load, 3000)`.
   There are exactly **two entries into `render()`** — `renderIfIdle` (gated) and `forceRender`

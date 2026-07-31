@@ -858,12 +858,18 @@ describe('mcp round-trip', () => {
     const c1 = new Client({ name: 'claude-code', version: '1.0.0' }); await c1.connect(t)
     const tools = new Map((await c1.listTools()).tools.map((x) => [x.name, x]))
 
+    const flagDescription = tools.get('flag')!.description ?? ''
+    expect(flagDescription).toMatch(/one ask, one surface/i)
+    expect(flagDescription).toMatch(/existing board row/i)
+
     for (const name of ['board_upsert', 'board_row']) {
       const d = tools.get(name)!.description ?? ''
       expect(d, name).toMatch(/waiting on the HUMAN|needs the HUMAN/)
       // the half that was missing: "stuck" is not "blocked"
       expect(d, name).toMatch(/failing test/)
       expect(d, name).toMatch(/\bpartial\b/)
+      expect(d, name).toMatch(/one ask, one surface/i)
+      expect(d, name).toMatch(/question item/i)
     }
 
     interface JsonNode { enum?: string[]; description?: string; properties?: Record<string, JsonNode>; items?: JsonNode }
@@ -879,6 +885,7 @@ describe('mcp round-trip', () => {
       expect(f.description).toMatch(/HUMAN/)
       expect(f.description).toMatch(/failing test/)
       expect(f.description).toMatch(/\bpartial\b/)
+      expect(f.description).toMatch(/question item/i)
     }
     await c1.close()
   }, 20000)

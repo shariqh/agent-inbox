@@ -8,6 +8,9 @@ source of truth. project/stream/agent are inferred automatically.
 ## Flags (one-shot attention)
 
 Call `flag` when:
+- **One ask, one surface.** If an existing tracking-board row already represents the
+  dependency, set that row to `blocked` and do **not** create a question item for the same
+  ask. Use a question item only when no board row already owns it.
 - **`kind: "question"`** — you are about to pause and wait on the human: a decision,
   a missing credential, an ambiguity you cannot resolve yourself. One flag per real
   blocker; put the actual question in `title`, a one-line why in `detail`, long background in
@@ -76,7 +79,9 @@ prose. Do this **proactively**, without being asked:
   title). Re-send the full table whenever status changes. Each row is
   `{ label, status, note?, context? }`, `status ∈ done | partial | missing | tracked | na | blocked`.
   `blocked` means the row needs the HUMAN and nobody else — it escalates into their attention
-  banner; put what you need from them in `note`. **Being stuck is not being blocked:** a failing
+  banner; put what you need from them in `note`. The blocked row is itself the ask:
+  **one ask, one surface** — never also create a question item for that dependency.
+  **Being stuck is not being blocked:** a failing
   test, a build or release that does not exist yet, another PR — no person can unblock those, so
   they are `partial` (or `tracked`) with the reason in `note`.
   `pending()` delivers their answer, in either of the two shapes a blocked row can come back

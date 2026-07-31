@@ -462,7 +462,10 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   board tool descriptions AND a zod `.describe()` on the `status` FIELD (the text a model reads
   while filling in an enum), each carrying the NEGATIVE example — stuck on a failing test, a
   missing build or another PR is `partial`, never `blocked`. `docs/reporting-snippet.md` gained
-  one sentence of the same. Pinned over a real `tools/list` in `test/mcp.integration.test.ts`,
+  one sentence of the same. A blocked row is also the ask itself: **one ask, one surface**.
+  When a board row already owns the dependency, agents must set that row to `blocked` and must
+  not create a separate question item for it; question flags are only for asks with no owning
+  board row. Pinned over a real `tools/list` in `test/mcp.integration.test.ts`,
   which is also the only proof the field description survives `.optional()` and array-items.
 - **Agent-read payload diet** *(#42)* — `src/shape.ts`. MCP reads omit agent-authored `context` and
   report `context_chars` instead; `board_get()` with no title is a summary; and a given context is

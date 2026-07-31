@@ -6,6 +6,7 @@ import { insertItem, resolveItem, listPending, markReplySeen, answerItem, upsert
 import type { BoardWithRows } from './store.js'
 import { makeContextLedger, deliverContext, shapeBoard, summariseBoard, rowKey, itemKey } from './shape.js'
 import { makeScope } from './scope.js'
+import { copilotWatchLaunch } from './watch.js'
 
 // The 5-minute liveness tick, hoisted OUT of its setInterval callback on purpose
 // (#45). This is the line the two-stamp distinction rests on — it moves
@@ -78,7 +79,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     'flag',
     {
       description:
-        'Raise an item for the human. Use kind="question" whenever you are about to STOP and WAIT on the human — a decision, a missing credential, an ambiguity you cannot resolve, or a recommendation / next step you are ending your turn on ("recommend X — go?", "want me to ...?", "say the word"). The test is not whether you are mid-conversation; it is whether your next move depends on their answer — such a moment left only in chat is invisible, so flag it (a recommendation in your last paragraph does NOT reach them). kind="note" = a non-blocking assumption, caveat, or workaround they should see; kind="done" = a finished milestone (shipped / merged / deployed), used sparingly, NOT routine progress. Keep it glanceable: title is the ask or finding itself in one line (aim under ~80 chars), detail is ONE line (the why or impact), and everything long — background, files/PRs/links, the context a cold reader needs — goes in context, which renders collapsed so length there is free. For a question, ALWAYS include 2-4 options when the answer has discernible choices: your recommendation first with recommended:true, each a short label plus a detail explaining the tradeoff; the human can pick one, compare them, or answer freely. After flagging a question, poll the pending tool for the reply. One question, two channels: never ask the same decision twice in two places — if the human answers you in chat rather than on the card, record it with the answer tool so the inbox converges. project/stream/agent are inferred automatically.',
+        'Raise an item for the human. Use kind="question" whenever you are about to STOP and WAIT on the human — a decision, a missing credential, an ambiguity you cannot resolve, or a recommendation / next step you are ending your turn on ("recommend X — go?", "want me to ...?", "say the word"). The test is not whether you are mid-conversation; it is whether your next move depends on their answer — such a moment left only in chat is invisible, so flag it (a recommendation in your last paragraph does NOT reach them). kind="note" = a non-blocking assumption, caveat, or workaround they should see; kind="done" = a finished milestone (shipped / merged / deployed), used sparingly, NOT routine progress. Keep it glanceable: title is the ask or finding itself in one line (aim under ~80 chars), detail is ONE line (the why or impact), and everything long — background, files/PRs/links, the context a cold reader needs — goes in context, which renders collapsed so length there is free. For a question, ALWAYS include 2-4 options when the answer has discernible choices: your recommendation first with recommended:true, each a short label plus a detail explaining the tradeoff; the human can pick one, compare them, or answer freely. Copilot question responses include a `watch` launch contract: immediately run its `shell_command` as a detached async background task using the returned mode, detach, shell_id, and timeout_seconds values. Do not wait synchronously. Its completion notification wakes the session; then call pending() immediately, act on the reply, and resolve the question. Other clients continue using their native wake path. One question, two channels: never ask the same decision twice in two places — if the human answers you in chat rather than on the card, record it with the answer tool so the inbox converges. project/stream/agent are inferred automatically.',
       inputSchema: {
         kind: z.enum(['question', 'note', 'done']),
         title: z.string().min(1),
@@ -113,7 +114,10 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
         context,
         options,
       })
-      return { content: [{ type: 'text', text: JSON.stringify({ id }) }] }
+      const result = kind === 'question' && s.agent === 'copilot'
+        ? { id, watch: copilotWatchLaunch(id) }
+        : { id }
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] }
     },
   )
 

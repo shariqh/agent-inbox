@@ -9,13 +9,15 @@
   },
   "bin": {
     "agent-inbox-mcp": "./dist/mcp-server.js",
-    "agent-inbox-hook": "./dist/hook-cli.js"
+    "agent-inbox-hook": "./dist/hook-cli.js",
+    "agent-inbox-watch": "./dist/watch-cli.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "mcp": "tsx src/mcp-server.ts",
     "view": "tsx src/viewer-server.ts",
     "hook": "tsx src/hook-cli.ts",
+    "watch": "tsx src/watch-cli.ts",
     "install:hooks": "bash scripts/install-hooks.sh",
     "electron": "electron .",
     "test": "vitest run",

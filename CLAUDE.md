@@ -245,6 +245,20 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   raised the window on purpose. Two do now; anything else about the window must too, or it asserts
   nothing. Full contract: [`docs/hooks.md`](docs/hooks.md).
 
+- **The Copilot answer watcher is host-owned, exact-item, and read-only.** Copilot has no
+  supported session-resume API, but a detached background command's completion notification
+  does wake the owning session. `flag(kind:'question')` therefore returns `watch` metadata
+  only when `inferAgent` identifies Copilot; the agent launches `src/watch-cli.ts` (source)
+  or `dist/watch-cli.js` (built) itself and calls `pending()` when it completes. The MCP
+  server must never spawn this watcher: a child completion inside the stdio server cannot
+  wake the host. `src/watch.ts` reads only through `getItem` in `store.ts`, watches the exact
+  generated item id, emits no answer content, and exits on response, close, or a bounded
+  timeout. A persisted `reply_seen_at` is NOT a reason to keep sleeping — a sibling process
+  may have stamped pickup first while the asking session still needs its own wake. Preserve
+  `process.execArgv` in the returned command so the same contract works under source `tsx`
+  and built Node execution. The command also carries the resolved database path explicitly;
+  the host shell does not inherit MCP-only `AGENT_INBOX_DB` configuration.
+
 ### DOM harness — what it can and cannot see
 
 `test/dom/` boots the **real** viewer frontend in jsdom: `test/dom/harness.ts` bridges
@@ -372,6 +386,11 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   built-in adapter until its host exposes a supported per-session resume API. Never fold
   these reminders into the attention predicate or badge — they represent work awaiting the
   agent, not work awaiting the human.
+- **Copilot exact-question wake** — `src/watch.ts` + `src/watch-cli.ts` bridge the remaining
+  host gap without pretending Copilot has a direct resume API. For Copilot questions only,
+  `flag` returns a shell-safe detached-background launch contract. The host owns that process
+  and therefore receives the completion notification; the resumed agent calls `pending()`.
+  Claude gets no duplicate watcher because its hook already owns wakeup.
 - **Backstop hooks** *(#10 + #21)* — `src/hook.ts` + `src/hook-cli.ts`, installed opt-in by
   `scripts/install-hooks.sh` (dry-run by default). #10: a `Notification` hook arms a
   grace-windowed backstop item when a session is stuck at a permission prompt; it is

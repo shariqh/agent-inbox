@@ -63,6 +63,7 @@ const ENTRY_POINTS = new Map<string, string>([
   ['src/mcp-server.ts', 'the stdio MCP entry — `npm run mcp`, dist/mcp-server.js in the packaged app'],
   ['src/viewer-server.ts', 'the viewer entry — `npm run view`'],
   ['src/hook-cli.ts', 'the hooks entry the Claude Code settings block invokes'],
+  ['src/watch-cli.ts', 'the exact-question watcher entry launched by Copilot from flag metadata'],
   ['electron/main.cjs', "Electron's main-process entry"],
 ])
 

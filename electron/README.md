@@ -53,4 +53,8 @@ fnm exec --using=24 npm run electron
 - `electron/main.cjs` is CommonJS on purpose: the repo is TS ESM (`"type":"module"`),
   and a `.cjs` main process sidesteps Electron/ESM loader friction.
 - External links (target=_blank or navigation off localhost) open in the system browser.
+- A notification for one new question exposes its canned responses as native macOS
+  actions, with the recommended response first. Selecting one writes the reply without
+  opening the window; the existing response watcher then wakes the agent. Batched
+  notifications remain open-only because one action list cannot identify multiple questions.
 - The app quits when the window closes, including on macOS (utility-window behavior).

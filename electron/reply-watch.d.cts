@@ -27,6 +27,55 @@ export interface ResponseScan {
   reminders: ResponseTarget[]
 }
 
+export interface CannedResponseActions {
+  actions: Array<{ type: 'button'; text: string }>
+  responses: string[]
+}
+
+export interface RetainableNotification {
+  once(event: string, listener: (...args: unknown[]) => void): this
+  show(): void
+}
+
+export function createNotificationRetainer(options?: {
+  held?: Set<unknown>
+  retentionMs?: number
+  setTimeoutImpl?: (callback: () => void, delay: number) => {
+    unref?(): void
+  }
+  clearTimeoutImpl?: (timer: unknown) => void
+}): {
+  show(notification: RetainableNotification): void
+}
+
+export function cannedResponseActions(
+  options: Array<{
+    label?: string
+    detail?: string
+    recommended?: boolean
+  } | null> | null | undefined,
+): CannedResponseActions
+
+export function responseForNotificationAction(
+  responses: string[],
+  details: { actionIndex?: number } | null | undefined,
+  legacyActionIndex?: number,
+): string | null
+
+export function submitCannedResponse(
+  urlBase: string,
+  itemId: string,
+  text: string,
+  fetchImpl?: (
+    url: string,
+    init: RequestInit,
+  ) => Promise<{
+    ok: boolean
+    status: number
+    json(): Promise<{ ok?: boolean }>
+  }>,
+): Promise<void>
+
 export function responseTargets(grouped: unknown, boards: unknown[]): ResponseTarget[]
 
 export function createResponseWatch(options?: {

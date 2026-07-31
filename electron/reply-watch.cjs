@@ -4,6 +4,7 @@ const path = require('node:path')
 const DEFAULT_INITIAL_DELAY_MS = 60_000
 const DEFAULT_REPEAT_MS = 15 * 60_000
 const DEFAULT_ADAPTER_TIMEOUT_MS = 10_000
+const DEFAULT_NOTIFICATION_RETENTION_MS = 24 * 60 * 60_000
 
 function nonEmpty(value) {
   return typeof value === 'string' && value.trim() !== ''
@@ -16,6 +17,66 @@ function latestTimestamp(...values) {
     .filter(({ time }) => Number.isFinite(time))
     .sort((a, b) => b.time - a.time)
   return valid[0] ?? { value: new Date(0).toISOString(), time: 0 }
+}
+
+function createNotificationRetainer(options = {}) {
+  const held = options.held ?? new Set()
+  const retentionMs = options.retentionMs ?? DEFAULT_NOTIFICATION_RETENTION_MS
+  const setTimeoutImpl = options.setTimeoutImpl ?? setTimeout
+  const clearTimeoutImpl = options.clearTimeoutImpl ?? clearTimeout
+
+  return {
+    show(notification) {
+      held.add(notification)
+      let timer
+      const release = () => {
+        held.delete(notification)
+        if (timer) clearTimeoutImpl(timer)
+        timer = null
+      }
+      for (const event of ['action', 'click', 'close', 'reply']) {
+        notification.once(event, release)
+      }
+      timer = setTimeoutImpl(release, retentionMs)
+      timer.unref?.()
+      notification.show()
+    },
+  }
+}
+
+function cannedResponseActions(options) {
+  const responses = (options ?? [])
+    .map((option) => option?.label)
+    .filter(nonEmpty)
+  return {
+    actions: responses.map((text) => ({ type: 'button', text })),
+    responses,
+  }
+}
+
+function responseForNotificationAction(responses, details, legacyActionIndex) {
+  const actionIndex = Number.isInteger(details?.actionIndex)
+    ? details.actionIndex
+    : legacyActionIndex
+  return Number.isInteger(actionIndex) ? responses[actionIndex] ?? null : null
+}
+
+async function submitCannedResponse(urlBase, itemId, text, fetchImpl = fetch) {
+  const response = await fetchImpl(
+    `${urlBase}api/items/${encodeURIComponent(itemId)}/reply`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text }),
+    },
+  )
+  if (!response.ok) {
+    throw new Error(`notification reply failed with HTTP ${response.status}`)
+  }
+  const result = await response.json()
+  if (!result?.ok) {
+    throw new Error('notification reply was refused')
+  }
 }
 
 function responseTargets(grouped, boards) {
@@ -193,10 +254,14 @@ function wakeAdapterPayload(targets) {
 }
 
 module.exports = {
+  cannedResponseActions,
+  createNotificationRetainer,
   createResponseWatch,
   formatResponseReminder,
   responseTargets,
+  responseForNotificationAction,
   runWakeAdapter,
+  submitCannedResponse,
   wakeAdapterPayload,
   wakeAdapterFromEnv,
 }

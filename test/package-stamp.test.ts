@@ -80,6 +80,13 @@ describe('the packager delegates to it', () => {
     expect(sh).not.toContain("writeFileSync('$STAGE/setup-info.json'")
   })
 
+  it('enables macOS alert-style notification actions before signing the app', () => {
+    const alertStyle = sh.indexOf('NSUserNotificationAlertStyle')
+    const signing = sh.indexOf('codesign --force --deep --sign -')
+    expect(alertStyle).toBeGreaterThan(-1)
+    expect(signing).toBeGreaterThan(alertStyle)
+  })
+
   it('stamps the STAGED copy, from the repo root it also bakes as repoRoot', () => {
     expect(sh).toMatch(/write-setup-info\.mjs" "\$ROOT" "\$STAGE\/setup-info\.json"/)
   })

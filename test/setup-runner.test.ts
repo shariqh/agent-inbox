@@ -136,6 +136,8 @@ while :; do sleep 1; done
     expect(main).toContain("preload: path.join(__dirname, 'setup-preload.cjs')")
     expect(main).toContain("accelerator: 'CommandOrControl+,'")
     expect(main).toContain("win.webContents.send('agent-inbox:toggle-settings')")
+    expect(main).toContain('const setupWindowWebContentsId = win.webContents.id')
+    expect(main).toContain('setupInstallWebContentsId === setupWindowWebContentsId')
     expect(preload).toContain("contextBridge.exposeInMainWorld('agentInboxSetup'")
     expect(preload).toContain('onToggleSettings')
     expect(preload).not.toContain('child_process')

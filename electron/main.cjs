@@ -430,8 +430,9 @@ app.whenReady().then(async () => {
 
   const win = createWindow()
   installApplicationMenu(win)
+  const setupWindowWebContentsId = win.webContents.id
   const revokeSetup = () => {
-    if (setupInstallWebContentsId === win.webContents.id) setupInstallWebContentsId = null
+    if (setupInstallWebContentsId === setupWindowWebContentsId) setupInstallWebContentsId = null
   }
   let firstMainNavigation = true
   win.webContents.on('did-start-navigation', (_event, url, isInPlace, isMainFrame) => {
@@ -439,7 +440,7 @@ app.whenReady().then(async () => {
     if (firstMainNavigation) {
       firstMainNavigation = false
       if (setupInstallEnabled && new URL(url).origin === new URL(URL_BASE).origin) {
-        setupInstallWebContentsId = win.webContents.id
+        setupInstallWebContentsId = setupWindowWebContentsId
       }
       return
     }

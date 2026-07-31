@@ -5,7 +5,7 @@ import { createViewer } from './viewer.js'
 import { startPrPoller } from './prstate.js'
 
 const db = openDb()
-const app = createViewer(db)
+const app = createViewer(db, { ownerToken: process.env.AGENT_INBOX_OWNER_TOKEN })
 // issue #30 — this is the ONE process allowed to run `gh` (the stdio MCP server
 // never may). Started here rather than inside createViewer because every viewer
 // test constructs the app with app.request(...) and a timer there would leak

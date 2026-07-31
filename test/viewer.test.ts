@@ -44,6 +44,13 @@ describe('viewer api', () => {
     expect(body.dbPath).toContain('.agent-inbox')
   })
 
+  it('exposes an Electron ownership capability only when explicitly configured', async () => {
+    expect((await createViewer(db).request('/api/owner')).status).toBe(404)
+    const res = await createViewer(db, { ownerToken: 'private-ready-token' }).request('/api/owner')
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ token: 'private-ready-token' })
+  })
+
   it('GET /api/setup carries a hand-mergeable backstop-hooks block (#10 / #21)', async () => {
     const body = await (await createViewer(db).request('/api/setup')).json()
     expect(typeof body.hooksSettings).toBe('string')

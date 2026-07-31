@@ -14,6 +14,8 @@ export interface ViewerOpts {
   setupInfoPath?: string
   /** the #40 build-stamp probe, injected so a test never shells out to git */
   stamp?: (baked: BakedInfo | null, cwd: string) => Promise<BuildStamp>
+  /** Electron-only readiness capability; absent for browser/dev viewers. */
+  ownerToken?: string
 }
 
 // Registration info for hooking new agents up to the MCP server. In a repo
@@ -120,6 +122,10 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
     }
     return c.json({ ...setupInfo(baked), build })
   })
+
+  if (opts.ownerToken) {
+    app.get('/api/owner', (c) => c.json({ token: opts.ownerToken }))
+  }
 
   app.get('/api/activity', (c) => c.json(listActivity(db)))
 

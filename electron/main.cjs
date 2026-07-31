@@ -16,13 +16,15 @@
 //      before and kill that child on quit — only because we own it.
 //   4. Open a BrowserWindow on the viewer URL once the server responds.
 
-const { app, BrowserWindow, Notification, shell } = require('electron')
+const { app, BrowserWindow, ipcMain, Notification, shell } = require('electron')
 const { spawn } = require('node:child_process')
+const { randomBytes } = require('node:crypto')
 const { existsSync } = require('node:fs')
 const http = require('node:http')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 const { confirmReuse, watchUpstream } = require('./reuse.cjs')
+const { canRunSetup, installerRepoRoot, runAgentInstall } = require('./setup-runner.cjs')
 const {
   cannedResponseActions,
   createNotificationRetainer,
@@ -37,10 +39,50 @@ const {
 
 const PORT = Number(process.env.AGENT_INBOX_PORT ?? 4319)
 const URL_BASE = `http://localhost:${PORT}/`
+const OWNER_TOKEN = randomBytes(32).toString('hex')
 const REPO_ROOT = path.resolve(__dirname, '..')
 const responseWatch = createResponseWatch()
 const notificationRetainer = createNotificationRetainer()
 const wakeAdapter = wakeAdapterFromEnv(process.env)
+let setupInstallRunning = false
+let setupInstallEnabled = false
+let setupInstallWebContentsId = null
+let setupInstallPromise = null
+let cancelSetupInstall = null
+let quitAfterSetup = false
+
+ipcMain.handle('agent-inbox:install-available', (event) =>
+  setupInstallEnabled &&
+  canRunSetup(event.senderFrame?.url ?? '', URL_BASE, event.sender.id, setupInstallWebContentsId))
+
+ipcMain.handle('agent-inbox:install', async (event, target) => {
+  const senderUrl = event.senderFrame?.url ?? ''
+  if (!setupInstallEnabled ||
+      !canRunSetup(senderUrl, URL_BASE, event.sender.id, setupInstallWebContentsId)) {
+    return { ok: false, exitCode: null, output: 'One-click setup is unavailable for this viewer.', target, timedOut: false }
+  }
+  if (setupInstallRunning) {
+    return { ok: false, exitCode: null, output: 'Agent setup is already running.', target, timedOut: false }
+  }
+  const repoRoot = installerRepoRoot(REPO_ROOT)
+  if (!repoRoot) {
+    return { ok: false, exitCode: null, output: 'The agent-inbox checkout or installer could not be found.', target, timedOut: false }
+  }
+  setupInstallRunning = true
+  const install = runAgentInstall({
+    repoRoot,
+    target,
+    onCancel(cancel) { cancelSetupInstall = cancel },
+  })
+  setupInstallPromise = install
+  try {
+    return await install
+  } finally {
+    setupInstallRunning = false
+    if (setupInstallPromise === install) setupInstallPromise = null
+    cancelSetupInstall = null
+  }
+})
 
 // One attention predicate for the whole product (spec §7 / tenet 3): the dock
 // badge imports the very module the viewer renders from. ESM from CJS →
@@ -102,21 +144,46 @@ async function waitForServer(timeoutMs = 10_000, intervalMs = 250) {
   return false
 }
 
+async function probeOwnership() {
+  try {
+    const response = await fetch(`${URL_BASE}api/owner`, { signal: AbortSignal.timeout(1000) })
+    if (!response.ok) return false
+    const body = await response.json()
+    return body?.token === OWNER_TOKEN
+  } catch {
+    return false
+  }
+}
+
+async function waitForOwnership(timeoutMs = 10_000, intervalMs = 250) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (await probeOwnership()) return true
+    await sleep(intervalMs)
+  }
+  return false
+}
+
 /**
  * Run the viewer server inside this process (Electron's Node). Returns true on
  * success. Fails cleanly (returns false) when better-sqlite3 was compiled for a
  * different ABI — the dev case — so the caller can fall back to spawning.
  */
 async function startInProcess(entry) {
+  const previousOwnerToken = process.env.AGENT_INBOX_OWNER_TOKEN
   try {
     // viewer-server serves static files from ./public relative to cwd
     process.chdir(REPO_ROOT)
+    process.env.AGENT_INBOX_OWNER_TOKEN = OWNER_TOKEN
     await import(pathToFileURL(entry).href)
     console.log(`[agent-inbox] viewer running in-process on ${URL_BASE}`)
     return true
   } catch (err) {
     console.error(`[agent-inbox] in-process viewer failed (${err.message}); falling back to spawning node`)
     return false
+  } finally {
+    if (previousOwnerToken === undefined) delete process.env.AGENT_INBOX_OWNER_TOKEN
+    else process.env.AGENT_INBOX_OWNER_TOKEN = previousOwnerToken
   }
 }
 
@@ -130,7 +197,7 @@ function spawnViewer() {
   const child = spawn(nodeBin, [entry], {
     cwd: REPO_ROOT,
     stdio: ['ignore', 'inherit', 'inherit'],
-    env: process.env,
+    env: { ...process.env, AGENT_INBOX_OWNER_TOKEN: OWNER_TOKEN },
   })
   child.on('error', (err) => {
     console.error(`[agent-inbox] failed to spawn viewer (${nodeBin}): ${err.message}`)
@@ -260,6 +327,11 @@ function createWindow() {
     width: 1100,
     height: 850,
     title: 'Agent Inbox',
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      preload: path.join(__dirname, 'setup-preload.cjs'),
+    },
   })
   // Keep our title; the page's <title> would otherwise overwrite it.
   win.on('page-title-updated', (e) => e.preventDefault())
@@ -277,7 +349,6 @@ function createWindow() {
     }
   })
 
-  win.loadURL(URL_BASE)
   return win
 }
 
@@ -310,6 +381,12 @@ app.whenReady().then(async () => {
   } else if (!(await startOwnServer())) {
     app.exit(1)
     return
+  } else if (await waitForOwnership()) {
+    setupInstallEnabled = true
+  } else {
+    console.error('[agent-inbox] started viewer did not prove ownership; refusing to load it')
+    app.exit(1)
+    return
   }
 
   if (!(await waitForServer())) {
@@ -322,6 +399,24 @@ app.whenReady().then(async () => {
   }
 
   const win = createWindow()
+  const revokeSetup = () => {
+    if (setupInstallWebContentsId === win.webContents.id) setupInstallWebContentsId = null
+  }
+  let firstMainNavigation = true
+  win.webContents.on('did-start-navigation', (_event, url, isInPlace, isMainFrame) => {
+    if (!isMainFrame || isInPlace) return
+    if (firstMainNavigation) {
+      firstMainNavigation = false
+      if (setupInstallEnabled && new URL(url).origin === new URL(URL_BASE).origin) {
+        setupInstallWebContentsId = win.webContents.id
+      }
+      return
+    }
+    revokeSetup()
+  })
+  win.webContents.on('render-process-gone', revokeSetup)
+  win.on('closed', revokeSetup)
+  win.loadURL(URL_BASE)
   startAttentionWatch(win)
 
   // Self-heal (issue #23): while reusing a viewer we don't own, watch it — if it
@@ -329,7 +424,7 @@ app.whenReady().then(async () => {
   if (reusing) {
     watchUpstream(probe, async () => {
       console.log(`[agent-inbox] reused viewer vanished — starting our own server`)
-      if ((await startOwnServer()) && (await waitForServer())) {
+      if ((await startOwnServer()) && (await waitForOwnership())) {
         if (!win.isDestroyed()) win.webContents.reload()
       }
     })
@@ -340,6 +435,16 @@ app.whenReady().then(async () => {
 // deliberately deviating from the mac convention of staying alive with no windows.
 app.on('window-all-closed', () => {
   app.quit()
+})
+
+app.on('before-quit', (event) => {
+  if (!setupInstallPromise || quitAfterSetup) return
+  event.preventDefault()
+  cancelSetupInstall?.()
+  setupInstallPromise.finally(() => {
+    quitAfterSetup = true
+    app.quit()
+  })
 })
 
 // Kill the viewer only if we spawned it; a pre-existing server is left untouched.

@@ -43,6 +43,36 @@ case "$TARGET" in
   *) echo "install-agents: --target must be all, claude, or copilot" >&2; exit 2 ;;
 esac
 
+LOCK_FILE="${AGENT_INBOX_INSTALL_LOCK_DIR:-$HOME/.agent-inbox/install-agents.lock}"
+LOCK_ACQUIRED=0
+acquire_install_lock() {
+  mkdir -p "$(dirname "$LOCK_FILE")" || return 1
+  if [ -d "$LOCK_FILE" ] || [ -L "$LOCK_FILE" ]; then
+    echo "install-agents: install lock path must be a regular file: $LOCK_FILE" >&2
+    return 1
+  fi
+  exec 9>> "$LOCK_FILE" || return 1
+  if command -v lockf >/dev/null 2>&1; then
+    lockf -s -t 0 9 || {
+      echo "install-agents: another setup is already running" >&2
+      return 1
+    }
+  elif command -v flock >/dev/null 2>&1; then
+    flock -n 9 || {
+      echo "install-agents: another setup is already running" >&2
+      return 1
+    }
+  else
+    echo "install-agents: setup requires lockf or flock for safe concurrent installation" >&2
+    return 1
+  fi
+  LOCK_ACQUIRED=1
+}
+
+if [ "$APPLY" -eq 1 ]; then
+  acquire_install_lock || exit 1
+fi
+
 stable_path() {
   [ -n "${1:-}" ] || return 0
   echo "$(cd "$(dirname "$1")" 2>/dev/null && pwd -P)/$(basename "$1")"
@@ -189,8 +219,6 @@ has_user_registration() {
   esac
 }
 
-NEWLY_ADDED=""
-NEEDS_RESTORE=""
 registration_config_file() {
   case "$1" in
     claude) echo "$HOME/.claude.json" ;;
@@ -198,6 +226,33 @@ registration_config_file() {
   esac
 }
 
+user_registration_state() {
+  local target="$1" config code
+  if has_user_registration "$target"; then
+    echo present
+    return 0
+  fi
+  config="$(registration_config_file "$target")"
+  if [ ! -e "$config" ] && [ ! -L "$config" ]; then
+    echo absent
+    return 0
+  fi
+  [ -n "$JSON_NODE" ] || return 1
+  "$JSON_NODE" -e '
+    const fs = require("node:fs")
+    const parsed = JSON.parse(fs.readFileSync(process.argv[1], "utf8"))
+    process.exit(parsed.mcpServers && parsed.mcpServers["agent-inbox"] ? 10 : 0)
+  ' "$config" >/dev/null 2>&1
+  code=$?
+  case "$code" in
+    0) echo absent ;;
+    10) echo present ;;
+    *) return 1 ;;
+  esac
+}
+
+NEWLY_ADDED=""
+NEEDS_RESTORE=""
 capture_registration_config() {
   local target="$1" config
   config="$(registration_config_file "$target")"
@@ -297,7 +352,41 @@ cleanup() {
   done
   rmdir "$WORK" 2>/dev/null || true
 }
+
+rollback_files() {
+  local target file rollback
+  for target in "${TARGETS[@]}"; do
+    [ -f "$WORK/$target.applied" ] || continue
+    file="$(instruction_write_file "$target")" || continue
+    if [ -f "$WORK/$target.existed" ]; then
+      rollback="$file.rollback.$$"
+      if cp -p "$WORK/$target.original" "$rollback" && mv "$rollback" "$file"; then
+        echo "$target: restored instructions after failed install" >&2
+      else
+        rm -f "$rollback"
+        echo "install-agents: warning: could not restore $file" >&2
+      fi
+    elif rm -f "$file"; then
+      echo "$target: removed partial instruction file after failed install" >&2
+    else
+      echo "install-agents: warning: could not remove partial $file" >&2
+    fi
+  done
+}
+
+TRANSACTION_ACTIVE=0
+interrupt_install() {
+  trap - INT TERM
+  if [ "$TRANSACTION_ACTIVE" -eq 1 ]; then
+    TRANSACTION_ACTIVE=0
+    echo "install-agents: interrupted — restoring prior configuration" >&2
+    rollback_files
+    rollback_mcp_changes
+  fi
+  exit 130
+}
 trap cleanup EXIT
+trap interrupt_install INT TERM
 
 if [ "$APPLY" -eq 0 ]; then
   echo "── dry run: nothing was written or registered. Re-run with --apply. ──" >&2
@@ -374,14 +463,20 @@ for target in "${TARGETS[@]}"; do
   fi
 done
 
+TRANSACTION_ACTIVE=1
 for target in "${TARGETS[@]}"; do
   if ! command -v "$target" >/dev/null 2>&1; then
     echo "$target: CLI is unavailable; removing the managed instruction block only" >&2
     continue
   fi
 
+  registration_state="$(user_registration_state "$target")" || {
+    rollback_mcp_changes
+    echo "install-agents: could not determine whether $target has a user-scoped agent-inbox registration; refusing to change it" >&2
+    exit 1
+  }
   had_user=0
-  if has_user_registration "$target"; then
+  if [ "$registration_state" = present ]; then
     had_user=1
     if [ "$UNINSTALL" -eq 1 ] || [ "$FORCE" -eq 1 ]; then
       if ! capture_registration_config "$target"; then
@@ -407,38 +502,17 @@ for target in "${TARGETS[@]}"; do
     continue
   fi
 
+  if [ "$had_user" -eq 0 ]; then
+    NEWLY_ADDED="$NEWLY_ADDED $target"
+  fi
   mcp_commands "$target" add
   if ! "${MCP_CMD[@]}" >/dev/null; then
     rollback_mcp_changes
     echo "install-agents: could not register the $target user-scoped MCP; instructions were not changed" >&2
     exit 1
   fi
-  if [ "$had_user" -eq 0 ]; then
-    NEWLY_ADDED="$NEWLY_ADDED $target"
-  fi
   echo "$target: registered agent-inbox MCP with $NODE" >&2
 done
-
-rollback_files() {
-  local target file rollback
-  for target in "${TARGETS[@]}"; do
-    [ -f "$WORK/$target.applied" ] || continue
-    file="$(instruction_write_file "$target")" || continue
-    if [ -f "$WORK/$target.existed" ]; then
-      rollback="$file.rollback.$$"
-      if cp -p "$WORK/$target.original" "$rollback" && mv "$rollback" "$file"; then
-        echo "$target: restored instructions after failed install" >&2
-      else
-        rm -f "$rollback"
-        echo "install-agents: warning: could not restore $file" >&2
-      fi
-    elif rm -f "$file"; then
-      echo "$target: removed partial instruction file after failed install" >&2
-    else
-      echo "install-agents: warning: could not remove partial $file" >&2
-    fi
-  done
-}
 
 for target in "${TARGETS[@]}"; do
   [ -f "$WORK/$target.skip" ] && continue
@@ -464,13 +538,14 @@ for target in "${TARGETS[@]}"; do
   fi
 
   temp="$(< "$WORK/$target.temp-path")"
+  : > "$WORK/$target.applied"
   if ! mv "$temp" "$file"; then
     rollback_files
     rollback_mcp_changes
     echo "install-agents: could not replace $file" >&2
     exit 1
   fi
-  : > "$WORK/$target.applied"
 done
 
+TRANSACTION_ACTIVE=0
 echo "Start a fresh agent session to load MCP and instruction changes." >&2

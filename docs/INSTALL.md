@@ -26,6 +26,13 @@ transport command and arguments, while global prompts belong to each host. The i
 is the explicit, auditable one-command equivalent—it performs both operations without
 changing anything during package install, build, or Electron launch.
 
+The Electron app exposes the same choices in **Setup**. Select both hosts,
+Claude only, or Copilot only, then choose **Install now**, **Copy prompt for
+agent**, or **Copy terminal command**. The direct button calls the same audited
+installer and is available only in an Electron window backed by the viewer
+process that app started; browser tabs and reused third-party localhost pages
+never receive command-execution access.
+
 ### Host-specific behavior
 
 <details>

@@ -66,6 +66,11 @@ npm run install:agents -- --apply       # apply with backups; user scope, every 
 npm run view                      # http://localhost:4319 — leave running
 ```
 
+Or open the Electron app's **Setup** panel: choose both hosts, Claude only, or
+Copilot only, then install directly or copy an exact prompt/command for an agent
+or terminal. Direct execution is available only when the Electron app owns the
+local viewer; a browser tab never receives command-execution access.
+
 Optionally add the backstop hooks — `npm run install:hooks` (a dry run; `-- --apply` writes),
 see [`docs/hooks.md`](docs/hooks.md).
 
@@ -120,7 +125,8 @@ are installed for Copilot.
 Both installers are dry-run by default, use the repo's pinned Node 24 binary, verify the
 runtime before writing, and require a fresh agent session afterward. Use `--force` to
 replace an existing Agent Inbox MCP registration or `--uninstall` to remove only the
-managed MCP entry and instruction block.
+managed MCP entry and instruction block. The Electron Setup action invokes the same
+installer with a fixed target—there is no general-purpose shell or HTTP execution route.
 
 ## MCP tools
 

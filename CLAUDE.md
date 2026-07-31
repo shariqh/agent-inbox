@@ -275,6 +275,18 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   `docs/instructions/copilot-cli.md`; both receive `docs/reporting-snippet.md`. `--force`
   replaces only the named MCP registration, and `--uninstall` removes only the managed
   registration/block. Nothing runs from install, build, package, or Electron startup.
+  The Setup panel's direct action is deliberately Electron-only:
+  `electron/setup-preload.cjs` exposes only `available()`/`install(target)`, with
+  `contextIsolation:true` and `nodeIntegration:false`; `main.cjs` accepts only the
+  three fixed targets and only while the app owns the exact local-viewer origin. A
+  reused viewer never gets execution access, and there is no HTTP setup-write route.
+  `electron/setup-runner.cjs` invokes `/bin/bash` directly (no command shell), bounds
+  output/time, and resolves the packaged checkout through baked `setup-info.json`.
+  Every applied install also holds a kernel-backed user-scoped lock on
+  `~/.agent-inbox/install-agents.lock` across preflight, mutation, and rollback,
+  using `lockf` on macOS or `flock` on Linux. The descriptor stays open for the
+  whole script, so contention fails closed and the kernel releases ownership
+  after normal exit, signals, or crashes; file existence never implies ownership.
 
 ### DOM harness — what it can and cannot see
 

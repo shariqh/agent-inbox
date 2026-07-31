@@ -2442,8 +2442,122 @@ function initSearch() {
   })
 }
 
-// Setup section: how to point new agents at this inbox. Static content —
-// fetched once, not on the poll.
+function setupTargetLabel(target) {
+  return {
+    all: 'Claude Code + Copilot CLI',
+    claude: 'Claude Code',
+    copilot: 'Copilot CLI',
+  }[target]
+}
+
+function setupMenu(s, host, canInstall) {
+  const wrap = document.createElement('div')
+  wrap.className = 'setup-menu'
+  const title = document.createElement('h3')
+  title.textContent = 'Set up MCP + agent instructions'
+  const hint = document.createElement('p')
+  hint.className = 'setup-hint'
+  hint.textContent = 'Choose the hosts once, then install here or hand the exact command to an agent or terminal. Optional Claude wake hooks stay under Advanced setup.'
+
+  const select = document.createElement('select')
+  select.className = 'setup-target'
+  select.setAttribute('aria-label', 'Agents to configure')
+  for (const [value, label] of [
+    ['all', 'Claude Code + Copilot CLI (recommended)'],
+    ['claude', 'Claude Code only'],
+    ['copilot', 'Copilot CLI only'],
+  ]) {
+    const option = document.createElement('option')
+    option.value = value
+    option.textContent = label
+    select.appendChild(option)
+  }
+
+  const commands = {
+    all: s.agentInstallCommand,
+    claude: s.claudeInstallCommand,
+    copilot: s.copilotInstallCommand,
+  }
+  const actions = document.createElement('div')
+  actions.className = 'setup-menu-actions'
+  const commandPreview = document.createElement('pre')
+  commandPreview.className = 'setup-command-preview'
+  const result = document.createElement('pre')
+  result.className = 'setup-result'
+  result.hidden = true
+
+  const showResult = (text, success = false) => {
+    result.textContent = text
+    result.hidden = false
+    result.classList.toggle('success', success)
+    result.classList.toggle('failure', !success)
+  }
+  const copy = async (button, text) => {
+    try {
+      await navigator.clipboard.writeText(text)
+      button.textContent = 'Copied ✓'
+      setTimeout(() => updateLabels(), 1500)
+    } catch {
+      showResult('Clipboard access failed. Copy the command from Advanced setup below.')
+    }
+  }
+
+  let run = null
+  if (canInstall && window.agentInboxSetup?.install) {
+    run = btn('', async () => {
+      const target = select.value
+      run.disabled = true
+      select.disabled = true
+      showResult(`Installing ${setupTargetLabel(target)}…`)
+      try {
+        const outcome = await window.agentInboxSetup.install(target)
+        showResult(
+          outcome.output || (outcome.ok ? 'Setup complete. Start fresh agent sessions to load it.' : 'Setup failed without output.'),
+          outcome.ok,
+        )
+      } catch (err) {
+        showResult(`Setup failed: ${err instanceof Error ? err.message : String(err)}`)
+      } finally {
+        run.disabled = false
+        select.disabled = false
+        updateLabels()
+      }
+    })
+    run.className = 'setup-run-btn'
+    actions.appendChild(run)
+  } else {
+    const note = document.createElement('p')
+    note.className = 'setup-hint setup-app-note'
+    note.textContent = 'Open this panel in the Electron app for one-click installation.'
+    wrap.appendChild(note)
+  }
+
+  const agent = btn('Copy prompt for agent', () => {
+    const command = commands[select.value]
+    const prompt = `Run this setup command for me, verify it succeeds, and report any action I need to take:\n\n${command}`
+    copy(agent, prompt)
+  })
+  agent.className = 'setup-agent-btn'
+  actions.appendChild(agent)
+  const terminal = btn('Copy terminal command', () => copy(terminal, commands[select.value]))
+  terminal.className = 'setup-command-btn'
+  actions.appendChild(terminal)
+
+  const updateLabels = () => {
+    if (run) run.textContent = `Install ${setupTargetLabel(select.value)} now`
+    commandPreview.textContent = commands[select.value]
+    if (agent.textContent.startsWith('Copied')) agent.textContent = 'Copy prompt for agent'
+    if (terminal.textContent.startsWith('Copied')) terminal.textContent = 'Copy terminal command'
+  }
+  select.addEventListener('change', updateLabels)
+  updateLabels()
+  wrap.prepend(title, hint, select)
+  wrap.append(commandPreview, actions, result)
+  host.appendChild(wrap)
+}
+
+// Setup section: configure new agents or copy the exact setup command. Fetched
+// once, not on the poll.
 async function renderSetup() {
   try {
     const s = await (await fetch('/api/setup')).json()
@@ -2487,12 +2601,8 @@ async function renderSetup() {
       note.textContent = `⚠ ${s.note}`
       host.appendChild(note)
     }
-    block('1 · Install MCP + instructions — Claude Code and Copilot CLI', s.agentInstallCommand,
-      'Safe, idempotent installer: registers both user-scoped MCPs and writes marked instruction blocks with backups. Remove --apply for a dry run.')
-    block('1a · Claude Code only', s.claudeInstallCommand,
-      'Adds the shared reporting contract plus Claude-specific hook/wake guidance.')
-    block('1b · Copilot CLI only', s.copilotInstallCommand,
-      'Adds the shared reporting contract plus Copilot’s detached answer-watcher guidance.')
+    const canInstall = await window.agentInboxSetup?.available?.().catch(() => false) ?? false
+    setupMenu(s, host, canInstall)
     block('Advanced · Manual MCP registration — Claude Code', s.claudeCommand,
       'Use the installer above unless you intentionally manage configuration by hand.')
     block('Advanced · Manual Copilot MCP config', s.copilotConfig)

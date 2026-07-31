@@ -61,24 +61,72 @@ Requires **Node 24** (see the gotcha below). Full steps in [`docs/INSTALL.md`](d
 
 ```sh
 npm install && npm run build
-# register once (applies to every repo); pin Node 24 in the command:
-claude mcp add --scope user agent-inbox -- /path/to/node24 /abs/path/to/agent-inbox/dist/mcp-server.js
+npm run install:agents                  # dry run: MCP + instructions for both hosts
+npm run install:agents -- --apply       # apply with backups; user scope, every repo
 npm run view                      # http://localhost:4319 — leave running
 ```
 
 Optionally add the backstop hooks — `npm run install:hooks` (a dry run; `-- --apply` writes),
 see [`docs/hooks.md`](docs/hooks.md).
 
-Then paste [`docs/reporting-snippet.md`](docs/reporting-snippet.md) into your global agent
-instructions (`~/.claude/CLAUDE.md` + Copilot's global instructions) so agents know *when*
-to flag. That snippet is the single lever for signal quality — tune it as you watch your
-dismiss rate.
+The installer is the safe equivalent of binding instructions into `mcp add`: MCP
+registration itself can only store a server command, not edit a host's global prompt. The
+script performs both explicit operations, manages a marked block in each instruction file,
+and preserves unrelated content. Full options and manual setup:
+[`docs/INSTALL.md`](docs/INSTALL.md).
+
+## Agent setup by host
+
+<details>
+<summary><strong>Claude Code</strong></summary>
+
+```sh
+npm run install:agents -- --apply --target claude
+```
+
+This registers the MCP server at Claude's user scope and installs the shared reporting
+contract plus [`docs/instructions/claude-code.md`](docs/instructions/claude-code.md) in
+`~/.claude/CLAUDE.md`. Claude does **not** launch the Copilot watcher. Its optional native
+wake path is the backstop-hook installer:
+
+```sh
+npm run install:hooks                  # dry run
+npm run install:hooks -- --apply       # install with a timestamped backup
+```
+
+With hooks, `asyncRewake` resumes an idle Claude session when an Inbox answer arrives.
+Without hooks, all MCP tools still work; Claude picks answers up through `pending()` on an
+active or subsequent turn.
+
+</details>
+
+<details>
+<summary><strong>GitHub Copilot CLI</strong></summary>
+
+```sh
+npm run install:agents -- --apply --target copilot
+```
+
+This registers the MCP server in `~/.copilot/mcp-config.json` and installs the shared
+reporting contract plus
+[`docs/instructions/copilot-cli.md`](docs/instructions/copilot-cli.md) in
+`~/.copilot/copilot-instructions.md`. Copilot question flags return an exact-item `watch`
+contract; the instructions make Copilot launch it as a detached background command. Its
+completion notification wakes the session, which then calls `pending()`. No Claude hooks
+are installed for Copilot.
+
+</details>
+
+Both installers are dry-run by default, use the repo's pinned Node 24 binary, verify the
+runtime before writing, and require a fresh agent session afterward. Use `--force` to
+replace an existing Agent Inbox MCP registration or `--uninstall` to remove only the
+managed MCP entry and instruction block.
 
 ## MCP tools
 
 | tool | agent calls it to… |
 |---|---|
-| `flag({ kind, title, detail?, context?, options?, stream? })` → `{ id }` | raise a `question` (needs you) or `note` (non-blocking FYI). The workhorse. |
+| `flag({ kind, title, detail?, context?, options?, stream? })` → `{ id, watch? }` | raise a `question` (needs you) or `note` (non-blocking FYI). Copilot questions also return the detached watcher launch contract. |
 | `pending()` | poll open questions; each answered item includes `reply` plus optional `reply_context` for extra direction. |
 | `answer({ id, text, context? })` → `{ ok, reason? }` | record an answer the human gave in **chat** onto an open question, so both channels converge. Refused with `reason: "unread_inbox_answer"` while an inbox answer is waiting unread — the inbox wins. |
 | `resolve({ id })` | close its own item once it's moot (mostly you resolve from the viewer). |
@@ -118,6 +166,8 @@ src/
   watch-cli.ts     short-lived watcher entry launched by the Copilot host
 public/            plain HTML/CSS/JS front-end (no bundler → wraps to Electron unchanged)
 hooks/             portable shell wrapper for hand-edited hook registrations
+scripts/install-agents.sh
+                   dry-run-first MCP + managed-instructions installer for both hosts
 docs/              INSTALL.md, hooks.md, reporting-snippet.md, superpowers/{specs,plans}/
 ```
 

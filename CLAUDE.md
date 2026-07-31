@@ -259,6 +259,23 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   and built Node execution. The command also carries the resolved database path explicitly;
   the host shell does not inherit MCP-only `AGENT_INBOX_DB` configuration.
 
+- **Agent setup is explicit, dry-run-first, and owns only marked text.**
+  `scripts/install-agents.sh` is the supported bridge between two configuration systems:
+  MCP registration can store a server command but cannot inject a global prompt, so the
+  installer performs both operations visibly. It defaults to a side-effect-free dry run;
+  `--apply` verifies the pinned Node runtime through `hook-cli selftest` before mutation.
+  Instruction content is fully rendered and staged before MCP changes, and it writes only between
+  `<!-- agent-inbox:begin -->` / `<!-- agent-inbox:end -->` in
+  `~/.claude/CLAUDE.md` or `~/.copilot/copilot-instructions.md`, with a timestamped backup
+  before every change. Symlinked instruction files stay symlinks: the resolved target is
+  updated atomically. Unmatched or duplicate markers are a hard refusal. Destructive MCP
+  changes retain an exact snapshot of the host's user config until instruction writes commit,
+  so a later failure restores the prior registration rather than reconstructing it. Claude receives
+  `docs/instructions/claude-code.md`; Copilot receives
+  `docs/instructions/copilot-cli.md`; both receive `docs/reporting-snippet.md`. `--force`
+  replaces only the named MCP registration, and `--uninstall` removes only the managed
+  registration/block. Nothing runs from install, build, package, or Electron startup.
+
 ### DOM harness — what it can and cannot see
 
 `test/dom/` boots the **real** viewer frontend in jsdom: `test/dom/harness.ts` bridges

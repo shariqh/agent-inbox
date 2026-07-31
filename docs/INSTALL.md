@@ -5,7 +5,50 @@
 npm install && npm run build
 ```
 
-## 2. Register the MCP server at user scope (once, applies to every repo)
+## 2. Install the MCP server and agent instructions
+
+The recommended installer handles both pieces. It is a dry run unless `--apply` is
+present, verifies Node 24 against the built runtime, backs up every instruction file it
+changes, and owns only content between `<!-- agent-inbox:begin -->` /
+`<!-- agent-inbox:end -->`.
+
+```sh
+npm run install:agents                              # dry run for both hosts
+npm run install:agents -- --apply                   # Claude + Copilot
+npm run install:agents -- --apply --target claude   # Claude only
+npm run install:agents -- --apply --target copilot  # Copilot only
+npm run install:agents -- --apply --force           # replace existing MCP entries
+npm run install:agents -- --apply --uninstall       # remove managed entries/blocks
+```
+
+MCP registration cannot itself inject instructions into a host: `mcp add` stores a
+transport command and arguments, while global prompts belong to each host. The installer
+is the explicit, auditable one-command equivalent—it performs both operations without
+changing anything during package install, build, or Electron launch.
+
+### Host-specific behavior
+
+<details>
+<summary><strong>Claude Code</strong></summary>
+
+The installer writes the shared [`reporting-snippet.md`](reporting-snippet.md) plus
+[`instructions/claude-code.md`](instructions/claude-code.md) to
+`~/.claude/CLAUDE.md`. Claude questions do not return the Copilot `watch` contract.
+Automatic idle-session pickup comes from the optional hooks in step 5.
+
+</details>
+
+<details>
+<summary><strong>GitHub Copilot CLI</strong></summary>
+
+The installer writes the shared [`reporting-snippet.md`](reporting-snippet.md) plus
+[`instructions/copilot-cli.md`](instructions/copilot-cli.md) to
+`~/.copilot/copilot-instructions.md`. Copilot questions return an exact-item detached
+watcher command; its background completion wakes the owning session.
+
+</details>
+
+### Manual MCP registration
 
 **Claude Code:**
 ```sh
@@ -14,13 +57,9 @@ claude mcp add --scope user agent-inbox -- node /ABSOLUTE/PATH/TO/agent-inbox/di
 
 > **Node 24 required.** `better-sqlite3`'s native binding does not build/load under Node 26+, so the server must be spawned with Node 24. If your default `node` is newer, register the **absolute path to your Node 24 binary** instead of bare `node`, e.g. `$(fnm exec --using=24 -- node -p process.execPath 2>/dev/null || echo ~/.local/share/fnm/node-versions/v24.*/installation/bin/node)`. (There is no `fnm which` — fnm answers `unrecognized subcommand 'which'`, so that form silently falls through to the glob.)
 
-**Copilot CLI:** add to its global MCP config (`~/.copilot/mcp-config.json`):
-```json
-{
-  "mcpServers": {
-    "agent-inbox": { "command": "node", "args": ["/ABSOLUTE/PATH/TO/agent-inbox/dist/mcp-server.js"] }
-  }
-}
+**Copilot CLI:**
+```sh
+copilot mcp add agent-inbox -- /ABSOLUTE/PATH/TO/NODE24 /ABSOLUTE/PATH/TO/agent-inbox/dist/mcp-server.js
 ```
 
 Verify: in a repo, run the agent and call the `whoami` tool — it should report that repo's project and branch.
@@ -31,8 +70,11 @@ npm run view   # http://localhost:4319
 ```
 Leave it running (or wrap as a login item / Electron app later).
 
-## 4. Add the reporting snippet
-Paste `docs/reporting-snippet.md` into your global agent instructions (`~/.claude/CLAUDE.md` and Copilot's global instructions) so agents know *when* to flag.
+## 4. Add instructions manually (only if you skipped the installer)
+
+Paste `docs/reporting-snippet.md` plus the matching file under `docs/instructions/` into
+the host's global instructions. The installer is preferred because it can update its
+marked block idempotently without duplicating or overwriting personal instructions.
 
 ## 5. Optional: the backstop hooks (issues #10 / #21)
 

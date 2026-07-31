@@ -2487,13 +2487,19 @@ async function renderSetup() {
       note.textContent = `⚠ ${s.note}`
       host.appendChild(note)
     }
-    block('1 · Register the MCP server — Claude Code', s.claudeCommand,
-      'Run once; applies to every repo (user scope). New registrations are picked up on a fresh agent session.')
-    block('1b · Copilot CLI — merge into ~/.copilot/mcp-config.json', s.copilotConfig)
-    block('2 · Teach agents when to flag — paste into your global instructions (e.g. ~/.claude/CLAUDE.md)', s.snippet,
+    block('1 · Install MCP + instructions — Claude Code and Copilot CLI', s.agentInstallCommand,
+      'Safe, idempotent installer: registers both user-scoped MCPs and writes marked instruction blocks with backups. Remove --apply for a dry run.')
+    block('1a · Claude Code only', s.claudeInstallCommand,
+      'Adds the shared reporting contract plus Claude-specific hook/wake guidance.')
+    block('1b · Copilot CLI only', s.copilotInstallCommand,
+      'Adds the shared reporting contract plus Copilot’s detached answer-watcher guidance.')
+    block('Advanced · Manual MCP registration — Claude Code', s.claudeCommand,
+      'Use the installer above unless you intentionally manage configuration by hand.')
+    block('Advanced · Manual Copilot MCP config', s.copilotConfig)
+    block('Advanced · Manual shared instructions', s.snippet,
       'This snippet is the signal-quality lever: it tells agents when to raise questions/notes, attach options, poll for your replies, and keep boards.')
     if (s.hooksSettings) {
-      block('3 · Optional: backstop hooks — merge into ~/.claude/settings.json', s.hooksSettings, s.hooksNote)
+      block('Advanced · Optional Claude backstop hooks', s.hooksSettings, s.hooksNote)
     }
     const db = document.createElement('p')
     db.className = 'setup-hint'

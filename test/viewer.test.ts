@@ -32,6 +32,9 @@ describe('viewer api', () => {
     expect(body.claudeCommand).toContain('claude mcp add --scope user agent-inbox')
     expect(body.claudeCommand).toContain('dist/mcp-server.js')
     expect(body.copilotConfig).toContain('mcp-server.js')
+    expect(body.agentInstallCommand).toContain('npm run install:agents -- --apply')
+    expect(body.claudeInstallCommand).toContain('--target claude')
+    expect(body.copilotInstallCommand).toContain('--target copilot')
     expect(body.snippet).toContain('flag')          // the reporting snippet text
     expect(body.snippet).toContain('board_upsert')
     // the Setup pane serves docs/reporting-snippet.md verbatim, so the shipped

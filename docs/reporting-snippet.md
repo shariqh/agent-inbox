@@ -30,7 +30,8 @@ Call `flag` when:
   path. Also **poll `pending()`** between work steps: it returns `{ items, rows }` — your open questions with `reply` once answered (an
   option label or free text — follow it either way), plus optional `reply_context` when they
   attach extra direction with their answer, **and `rows`: the human's per-row notes on your
-  boards** (see Boards below). Act on both, then call `resolve`. `pending()` is the ONE poll —
+  boards** (see Boards below). Act on both: call `resolve` after handling a question item,
+  and move a board row out of `blocked` after handling its response. `pending()` is the ONE poll —
   everything they have said to you arrives through it. Do
   not park forever waiting in the terminal. If you end a turn with a Copilot question still
   open, the returned watcher must already be running; do not tell the human they need to
@@ -131,8 +132,10 @@ source of truth before anything is sent.
   use `note` for a one-line status summary.
 - Set `status: tracked` while drafting, `blocked` when you need the human to decide
   something, and `done` once the final draft has been approved and sent.
-- If a draft has a concrete blocker, also raise a `flag({ kind: "question" })` with
-  2-4 options when possible, and reference the same draft row in the `context`.
+- If a draft row already represents a concrete blocker, set that row to `blocked` and
+  ask through the row only. If no board row owns the ask, raise a
+  `flag({ kind: "question" })` with 2-4 options when possible. Never create both for the
+  same dependency.
 - Treat that flag as the ONE question across both channels. Poll `pending()` for an
   inbox answer; if the human answers in chat, record it with `answer({ id, text })`.
 - Before sending, call `pending()` and re-read the titled board for full draft context.

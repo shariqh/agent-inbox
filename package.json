@@ -18,6 +18,7 @@
     "view": "tsx src/viewer-server.ts",
     "hook": "tsx src/hook-cli.ts",
     "watch": "tsx src/watch-cli.ts",
+    "install:agents": "bash scripts/install-agents.sh",
     "install:hooks": "bash scripts/install-hooks.sh",
     "electron": "electron .",
     "test": "vitest run",

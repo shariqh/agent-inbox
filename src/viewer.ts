@@ -20,7 +20,22 @@ export interface ViewerOpts {
 // checkout the paths come from the running process; the packaged app instead
 // ships a setup-info.json captured at package time (its own bundle cannot host
 // the MCP server — the native module there is built for Electron, not Node).
-function setupInfo(baked: BakedInfo | null): { claudeCommand: string; copilotConfig: string; snippet: string; dbPath: string; note: string; hooksSettings: string; hooksNote: string } {
+function shellQuote(value: string): string {
+  return `'${value.replaceAll(`'`, `'\\''`)}'`
+}
+
+function setupInfo(baked: BakedInfo | null): {
+  agentInstallCommand: string
+  claudeInstallCommand: string
+  copilotInstallCommand: string
+  claudeCommand: string
+  copilotConfig: string
+  snippet: string
+  dbPath: string
+  note: string
+  hooksSettings: string
+  hooksNote: string
+} {
   let nodeBin = process.execPath
   let root = process.cwd()
   let note = ''
@@ -38,7 +53,11 @@ function setupInfo(baked: BakedInfo | null): { claudeCommand: string; copilotCon
   }
   const entry = resolve(root, 'dist', 'mcp-server.js')
   const snippetPath = resolve(process.cwd(), 'docs', 'reporting-snippet.md')
+  const install = `cd ${shellQuote(root)} && npm run install:agents -- --apply`
   return {
+    agentInstallCommand: install,
+    claudeInstallCommand: `${install} --target claude`,
+    copilotInstallCommand: `${install} --target copilot`,
     claudeCommand: `claude mcp add --scope user agent-inbox -- ${nodeBin} ${entry}`,
     copilotConfig: JSON.stringify(
       { mcpServers: { 'agent-inbox': { command: nodeBin, args: [entry] } } },

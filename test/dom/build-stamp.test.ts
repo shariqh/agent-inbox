@@ -89,6 +89,7 @@ describe('the Setup panel answers "which build is this"', () => {
     await settle()
 
     expect(setupBlocks(), 'the registration blocks must still be there').toBeGreaterThanOrEqual(3)
+    expect(setupText()).toContain('install:agents')
     expect(setupText()).not.toContain('package:app')
     expect(setupText()).not.toContain('⚠ This app')
   })

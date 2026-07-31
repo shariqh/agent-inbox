@@ -16,7 +16,7 @@
 //      before and kill that child on quit — only because we own it.
 //   4. Open a BrowserWindow on the viewer URL once the server responds.
 
-const { app, BrowserWindow, ipcMain, Notification, shell } = require('electron')
+const { app, BrowserWindow, ipcMain, Menu, Notification, shell } = require('electron')
 const { spawn } = require('node:child_process')
 const { randomBytes } = require('node:crypto')
 const { existsSync } = require('node:fs')
@@ -352,6 +352,36 @@ function createWindow() {
   return win
 }
 
+function installApplicationMenu(win) {
+  const settings = {
+    label: 'Settings…',
+    accelerator: 'CommandOrControl+,',
+    click() {
+      if (!win.isDestroyed()) win.webContents.send('agent-inbox:toggle-settings')
+    },
+  }
+  const standardMenus = [{ role: 'editMenu' }, { role: 'viewMenu' }, { role: 'windowMenu' }]
+  const template = process.platform === 'darwin'
+    ? [{
+        label: app.name,
+        submenu: [
+          { role: 'about' },
+          { type: 'separator' },
+          settings,
+          { type: 'separator' },
+          { role: 'services' },
+          { type: 'separator' },
+          { role: 'hide' },
+          { role: 'hideOthers' },
+          { role: 'unhide' },
+          { type: 'separator' },
+          { role: 'quit' },
+        ],
+      }, ...standardMenus]
+    : [{ label: 'File', submenu: [settings, { type: 'separator' }, { role: 'quit' }] }, ...standardMenus]
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+}
+
 /**
  * Start OUR OWN viewer server: in-process (packaged app, better-sqlite3 built
  * for Electron's ABI) or, if that import fails, spawned under system Node (dev).
@@ -399,6 +429,7 @@ app.whenReady().then(async () => {
   }
 
   const win = createWindow()
+  installApplicationMenu(win)
   const revokeSetup = () => {
     if (setupInstallWebContentsId === win.webContents.id) setupInstallWebContentsId = null
   }

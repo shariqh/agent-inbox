@@ -1111,6 +1111,7 @@ function railRowEl(e, { withFilter, closed = false }) {
   match.className = 'rail-match'
   b.append(dot, name, badge, match)
   b.addEventListener('click', () => {
+    closeSettings()
     projectFilter = e.key === '__all__' ? null : e.key
     if (projectFilter) localStorage.setItem(PROJECT_KEY, projectFilter)
     else localStorage.removeItem(PROJECT_KEY)
@@ -1279,11 +1280,29 @@ function initAgentSelect() {
 function showPanel(id) {
   for (const p of document.querySelectorAll('main > .panel')) p.hidden = p.id !== id
   for (const t of document.querySelectorAll('#tabs .tab')) t.setAttribute('aria-selected', String(t.dataset.tab === id))
-  document.getElementById('gear').classList.toggle('active', id === 'setup')
+  const gear = document.getElementById('gear')
+  gear.classList.toggle('active', id === 'setup')
+  gear.setAttribute('aria-pressed', String(id === 'setup'))
+}
+
+function settingsOpen() {
+  return !document.getElementById('setup').hidden
+}
+
+function closeSettings({ restoreFocus = false } = {}) {
+  if (!settingsOpen()) return false
+  selectTab(activeTab)
+  if (restoreFocus) document.getElementById('gear').focus()
+  return true
+}
+
+function toggleSettings() {
+  if (!closeSettings()) showPanel('setup')
 }
 
 function initGear() {
-  document.getElementById('gear').addEventListener('click', () => showPanel('setup'))
+  document.getElementById('gear').addEventListener('click', toggleSettings)
+  window.agentInboxSetup?.onToggleSettings?.(toggleSettings)
 }
 
 // live entries the user has expanded, by session id — survives the poll rebuild
@@ -2300,6 +2319,11 @@ function runIntent(intent) {
 
 function initKeys() {
   document.addEventListener('keydown', (e) => {
+    if (e.key === ',' && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
+      e.preventDefault()
+      toggleSettings()
+      return
+    }
     if (e.metaKey || e.ctrlKey || e.altKey) return
     // The row's own keydown listener (needsRowEl) already handles Enter/Escape
     // when the row itself has focus and calls preventDefault() — don't run the
@@ -2314,6 +2338,10 @@ function initKeys() {
     // it; the drawer's own listener (registered after this one) still runs.
     const liveDrawer = document.getElementById('liveDrawer')
     if (e.key === 'Escape' && !triageDeck && liveDrawer && !liveDrawer.hidden) return
+    if (e.key === 'Escape' && !triageDeck && closeSettings({ restoreFocus: true })) {
+      e.preventDefault()
+      return
+    }
     const t = e.target
     const typing = !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)
     // optionCount must come from the SAME target runIntent will answer — the

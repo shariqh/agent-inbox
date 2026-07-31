@@ -94,6 +94,11 @@ header { flex-wrap: wrap; }
 .setup-result { margin: 10px 0 0; }
 .setup-result.success { border-left: 3px solid seagreen; }
 .setup-result.failure { border-left: 3px solid crimson; }
+#setup { padding: 16px; border: 1px solid color-mix(in srgb, CanvasText 14%, transparent); border-radius: 12px; background: Canvas; box-shadow: 0 18px 48px color-mix(in srgb, CanvasText 14%, transparent); }
+body.settings-open #rail,
+body.settings-open #tabs,
+body.settings-open #liveBar { opacity: .32; }
+body.settings-open #topbar > :not(#gear) { opacity: .32; }
 .meta { font-size: 12px; opacity: .55; }
 .title { font-weight: 600; margin: 2px 0; }
 .detail, .annotation { font-size: 13px; opacity: .8; white-space: pre-wrap; }

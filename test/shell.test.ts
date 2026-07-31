@@ -23,6 +23,12 @@ describe('shell markup', () => {
     expect(html).toContain('id="gear"')
   })
 
+  it('dims the app chrome behind Settings without motion', () => {
+    expect(js).toContain("document.body.classList.toggle('settings-open', id === 'setup')")
+    expect(css).toContain('body.settings-open #rail')
+    expect(css).not.toMatch(/settings-open[^}]*transition/)
+  })
+
   it('has a project rail and the four content tabs in spec order (Live is a footer strip, not a tab — spec §16)', () => {
     expect(html).toContain('id="rail"')
     const tabs = [...html.matchAll(/<button class="tab"[^>]*data-tab="(\w+)"/g)].map((m) => m[1])

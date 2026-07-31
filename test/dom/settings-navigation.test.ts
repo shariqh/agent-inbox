@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import type Database from 'better-sqlite3'
 import { upsertBoard } from '../../src/store.js'
-import { bootApp, click, freshDb, settle, useDomTest } from './harness.js'
+import { attachStylesheet, bootApp, click, freshDb, settle, useDomTest } from './harness.js'
 
 useDomTest()
 
@@ -35,6 +35,7 @@ describe('native settings navigation', () => {
         onToggleSettings(toggle: () => void) { toggleFromAppMenu = toggle },
       },
     })
+    attachStylesheet()
     await bootApp(db, {
       viewer: {
         setupInfoPath: '/nonexistent/setup-info.json',
@@ -56,9 +57,12 @@ describe('native settings navigation', () => {
 
     expect(shortcut().defaultPrevented).toBe(true)
     expect(panelIsOpen('setup')).toBe(true)
+    expect(document.body.classList.contains('settings-open')).toBe(true)
+    expect(getComputedStyle(document.getElementById('rail')!).opacity).toBe('0.32')
     expect(document.getElementById('gear')?.getAttribute('aria-pressed')).toBe('true')
     shortcut()
     expect(panelIsOpen('needsYou')).toBe(true)
+    expect(document.body.classList.contains('settings-open')).toBe(false)
 
     toggleFromAppMenu()
     expect(panelIsOpen('setup')).toBe(true)

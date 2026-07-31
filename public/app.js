@@ -1280,6 +1280,7 @@ function initAgentSelect() {
 function showPanel(id) {
   for (const p of document.querySelectorAll('main > .panel')) p.hidden = p.id !== id
   for (const t of document.querySelectorAll('#tabs .tab')) t.setAttribute('aria-selected', String(t.dataset.tab === id))
+  document.body.classList.toggle('settings-open', id === 'setup')
   const gear = document.getElementById('gear')
   gear.classList.toggle('active', id === 'setup')
   gear.setAttribute('aria-pressed', String(id === 'setup'))

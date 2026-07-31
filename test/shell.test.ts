@@ -358,10 +358,10 @@ describe('closed-project css (issue #32)', () => {
 
 // ── issue #38: `load()` is the poll's, `reloadAndPaint()` is the human's ──────
 // The whole of #38 is one confusion between those two. `load()` repaints through
-// `renderIfIdle()` — the §10 gate — and THE GATE IS GLOBAL: one unrelated card
-// left expanded anywhere, or one half-typed draft on another board, and the
-// human's own Send/Resolve/Archive gets NO FRAME. The write landed (POST 200, row
-// in the DB) and the viewer showed the old state indefinitely.
+// `renderIfIdle()` — the §10 gate — and THE GATE IS GLOBAL: one half-typed draft
+// on another board and the human's own Send/Resolve/Archive gets NO FRAME. The
+// write landed (POST 200, row in the DB) and the viewer showed the old state
+// indefinitely.
 //
 // So there are exactly two shapes, and no third:
 //   `load()`            — the poll's. Fetch, then ASK the gate. Two callers only:

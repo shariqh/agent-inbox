@@ -219,10 +219,11 @@ poisoning the number vocabulary (tenet 2).
 surviving the 3-second full-DOM rebuild. Inline expansion, staged sends, and per-tab paging on
 top of that will eat someone's half-typed answer.
 
-**Rule:** the re-render is **suspended** whenever a card is expanded or any draft input is
-non-empty, resuming on collapse — with a quiet "paused — updating when you're done" hint. List
-additions/removals stage while the pointer is over the list and apply on mouse-leave. Sort order
-pins per render session.
+**Rule:** the re-render is **suspended** only while a draft input is non-empty, resuming when
+the draft is cleared — with a quiet "paused — updating when you're done" hint. A merely expanded
+card remains open across live refreshes, so it cannot hide newly arrived work. Sort order pins per
+render session, genuinely new work appends at the foot, and the bounded pointer press guard
+prevents a rebuild from eating a click. Hover alone never delays an arrival.
 
 The existing techniques that must carry over: the `dataset.sig` no-op-rebuild trick, draft/focus
 preservation, `x-inbox-boot` reload, and pruning open-state against **all** cards rather than the

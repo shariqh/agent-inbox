@@ -2,12 +2,11 @@
 // the caller hands in the current UI state and gets back what the 3s poll is
 // allowed to do. Unit-tested from test/poll.test.ts.
 
-// Any expanded card or any non-empty draft freezes the re-render — the poll
-// must never eat a half-typed answer or collapse a card under the cursor.
+// Only a non-empty draft freezes the re-render. Expanded cards keep their state
+// across rebuilds, existing row order is pinned, and the bounded press guard
+// below protects clicks. Treating "open for reading" as a pause hid new work
+// indefinitely whenever the human left a card expanded.
 export function suspendReason(state) {
-  const expanded = (state && state.expanded) || []
-  const size = expanded instanceof Set ? expanded.size : expanded.length
-  if (size > 0) return 'expanded'
   const drafts = (state && state.drafts) || {}
   for (const v of Object.values(drafts)) {
     if (String(v ?? '').trim() !== '') return 'draft'
@@ -66,32 +65,9 @@ export function pinOrder(current, incoming) {
   return [...kept, ...incoming.filter((id) => !seen.has(id))]
 }
 
-// How many rows would appear/disappear if a staged update were applied.
-export function pendingCount(current, incoming) {
-  const now = new Set(current)
-  const next = new Set(incoming)
-  let n = 0
-  for (const id of next) if (!now.has(id)) n++
-  for (const id of now) if (!next.has(id)) n++
-  return n
-}
-
-// While the pointer is over the list, membership changes STAGE instead of
-// applying — rows must not move out from under a click. `staged` is replayed on
-// mouse-leave.
-export function applyListUpdate({ current, incoming, hovering }) {
-  if (hovering) return { ids: current, staged: incoming, pending: pendingCount(current, incoming) }
-  return { ids: pinOrder(current, incoming), staged: null, pending: 0 }
-}
-
-// The other half of the suspension contract. `expanded` above is fed from
-// module state (app.js's openRowId) whose only clearing path is a DOM
-// affordance — `toggleRow`, reachable exclusively from a rendered `.nrow`.
-// Anything else written into it (a deep-linked BOARD id, a notes/done item id)
-// therefore suspended the poll FOREVER: no row, no toggle, no clear. This is
-// the render-time reconciliation — the render that just happened is the truth
-// about what is still collapsible — so a writer that aims at nothing costs one
-// wasted click instead of a frozen viewer.
+// `openRowId` still needs render-time reconciliation even though expansion no
+// longer pauses polling: a deep link can target a board or a filtered-out item,
+// and stale open state must not leak into later renders.
 export function reconcileOpenRow(openId, renderedIds) {
   if (openId == null) return null
   const ids = renderedIds instanceof Set ? renderedIds : new Set(renderedIds ?? [])

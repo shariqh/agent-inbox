@@ -1,7 +1,6 @@
-export type SuspendReason = 'expanded' | 'draft'
+export type SuspendReason = 'draft'
 
 export interface SuspendState {
-  expanded?: string[] | Set<string>
   drafts?: Record<string, string | undefined>
   /**
    * When the pointer went down (issue #38 / D2). Deliberately NOT part of the
@@ -19,12 +18,6 @@ export const PRESS_GRACE_MS: number
 export function pressHeld(pressedAt: number | null | undefined, nowMs: number): boolean
 export function shouldDeferRender(state: SuspendState, nowMs: number): boolean
 export function pinOrder(current: string[], incoming: string[]): string[]
-export function pendingCount(current: string[], incoming: string[]): number
-export function applyListUpdate(args: {
-  current: string[]
-  incoming: string[]
-  hovering: boolean
-}): { ids: string[]; staged: string[] | null; pending: number }
 export function reconcileOpenRow(
   openId: string | null | undefined,
   renderedIds: string[] | Set<string> | null | undefined,

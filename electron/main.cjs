@@ -24,9 +24,13 @@ const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 const { confirmReuse, watchUpstream } = require('./reuse.cjs')
 const {
+  cannedResponseActions,
+  createNotificationRetainer,
   createResponseWatch,
   formatResponseReminder,
+  responseForNotificationAction,
   runWakeAdapter,
+  submitCannedResponse,
   wakeAdapterFromEnv,
   wakeAdapterPayload,
 } = require('./reply-watch.cjs')
@@ -35,6 +39,7 @@ const PORT = Number(process.env.AGENT_INBOX_PORT ?? 4319)
 const URL_BASE = `http://localhost:${PORT}/`
 const REPO_ROOT = path.resolve(__dirname, '..')
 const responseWatch = createResponseWatch()
+const notificationRetainer = createNotificationRetainer()
 const wakeAdapter = wakeAdapterFromEnv(process.env)
 
 // One attention predicate for the whole product (spec §7 / tenet 3): the dock
@@ -42,8 +47,9 @@ const wakeAdapter = wakeAdapterFromEnv(process.env)
 // dynamic import, started once and awaited per poll.
 const ATTENTION_PATH = path.join(REPO_ROOT, 'public', 'attention.js')
 const BADGE_PATH = path.join(REPO_ROOT, 'public', 'badge.js')
+const CARD_PATH = path.join(REPO_ROOT, 'public', 'card.js')
 
-for (const p of [ATTENTION_PATH, BADGE_PATH]) {
+for (const p of [ATTENTION_PATH, BADGE_PATH, CARD_PATH]) {
   if (!existsSync(p)) {
     console.error(`[agent-inbox] FATAL: missing ${p}. The packaged app must stage public/ next to electron/ (scripts/package-app.sh) — dock badge will be disabled.`)
   }
@@ -53,12 +59,13 @@ let attentionModsFailed = false
 const attentionMods = Promise.all([
   import(pathToFileURL(ATTENTION_PATH).href),
   import(pathToFileURL(BADGE_PATH).href),
-]).then(([attention, badge]) => ({ ...attention, ...badge }))
+  import(pathToFileURL(CARD_PATH).href),
+]).then(([attention, badge, card]) => ({ ...attention, ...badge, ...card }))
 
 attentionMods.catch((err) => {
   attentionModsFailed = true
   // LOUD, once: never let the badge stop updating in silence.
-  console.error('[agent-inbox] FATAL: could not load the attention/badge modules — dock badge disabled', err)
+  console.error('[agent-inbox] FATAL: could not load attention UI modules — dock badge disabled', err)
   if (typeof app.setBadgeCount === 'function') app.setBadgeCount(0)
 })
 
@@ -154,7 +161,7 @@ function startAttentionWatch(win) {
     } catch {
       return // the .catch above owns the (loud) reporting
     }
-    const { attentionEntries, focusHashFor } = mods
+    const { attentionEntries, focusHashFor, optionOrder } = mods
     try {
       const g = await (await fetch(`${URL_BASE}api/items`)).json()
       const boards = await (await fetch(`${URL_BASE}api/boards`)).json()
@@ -190,7 +197,7 @@ function startAttentionWatch(win) {
             console.error('[agent-inbox] deep link failed', err)
           })
         })
-        note.show()
+        notificationRetainer.show(note)
       }
       const liveSessions = new Set(activity.map((a) => a.session))
       // THE §7 attention set — the exact same call the viewer's badge, rail,
@@ -203,8 +210,8 @@ function startAttentionWatch(win) {
       const attn = attentionEntries(items, boards, Date.now(), liveSessions, closed)
       if (typeof app.setBadgeCount === 'function') app.setBadgeCount(attn.length)
       const idOf = (e) => e.kind === 'item'
-        ? { id: `q:${e.item.id}`, itemId: e.item.id, text: e.item.title }
-        : { id: `r:${e.row.id}`, itemId: e.board.id, text: `🚧 ${e.board.title} · ${e.row.label}` }
+        ? { id: `q:${e.item.id}`, itemId: e.item.id, text: e.item.title, item: e.item }
+        : { id: `r:${e.row.id}`, itemId: e.board.id, text: `🚧 ${e.board.title} · ${e.row.label}`, item: null }
       const entries = attn.map(idOf)
       // …but `known` is maintained from the UNSUPPRESSED set. If it tracked only
       // what is visible, closing a project would drop its items from `known` and
@@ -218,12 +225,21 @@ function startAttentionWatch(win) {
       // Per-item notifications stay (owner's call) — informational only.
       if (fresh.length && Notification.isSupported()) {
         console.log(`[agent-inbox] notifying: ${fresh.length} new (${fresh[0].text})`)
-        // No action buttons: a notification never mutates state (spec §11 / tenet 1).
+        const question = fresh.length === 1 ? fresh[0].item : null
+        const canned = cannedResponseActions(question ? optionOrder(question.options) : [])
         const note = new Notification({
           title: fresh.length === 1 ? 'Agent Inbox — needs you' : `Agent Inbox — ${fresh.length} new need you`,
           body: fresh.slice(0, 3).map((f) => f.text).join('\n'),
+          ...(canned.actions.length ? { actions: canned.actions } : {}),
         })
         const hash = fresh.length === 1 ? focusHashFor(fresh[0].itemId) : null
+        note.on('action', (details, legacyActionIndex) => {
+          const answer = responseForNotificationAction(canned.responses, details, legacyActionIndex)
+          if (!answer || !question) return
+          submitCannedResponse(URL_BASE, question.id, answer).catch((err) => {
+            console.error(`[agent-inbox] could not save notification response: ${err.message}`)
+          })
+        })
         note.on('click', () => {
           if (win.isMinimized()) win.restore()
           win.show()
@@ -233,7 +249,7 @@ function startAttentionWatch(win) {
             console.error('[agent-inbox] deep link failed', err)
           })
         })
-        note.show()
+        notificationRetainer.show(note)
       }
     } catch { /* viewer briefly unreachable — retry next tick */ }
   }, 3000)

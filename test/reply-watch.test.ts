@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events'
+import { readFileSync } from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
 import replyWatch from '../electron/reply-watch.cjs'
 
@@ -14,6 +15,10 @@ function item(overrides: Record<string, unknown> = {}) {
     session: 'session-1',
     kind: 'question',
     title: 'Use the gated diagram?',
+    options: [
+      { label: 'Send me the link first' },
+      { label: 'Use the Trust Center diagram', recommended: true },
+    ],
     status: 'open',
     reply: 'Send me the link first',
     reply_context: 'I want to verify the source.',
@@ -55,6 +60,93 @@ function board(rows = [boardRow()]) {
     rows,
   }
 }
+
+describe('canned notification responses', () => {
+  it('retains a shown notification until the user acts on or closes it', () => {
+    const held = new Set()
+    const timer = { unref: vi.fn() }
+    const setTimeoutImpl = vi.fn(() => timer)
+    const retainer = replyWatch.createNotificationRetainer({ held, setTimeoutImpl, retentionMs: 10_000 })
+    const notification = Object.assign(new EventEmitter(), { show: vi.fn() })
+
+    retainer.show(notification)
+    expect(held.has(notification)).toBe(true)
+    expect(notification.show).toHaveBeenCalledOnce()
+    expect(setTimeoutImpl).toHaveBeenCalledWith(expect.any(Function), 10_000)
+    expect(timer.unref).toHaveBeenCalledOnce()
+
+    notification.emit('action', { actionIndex: 0 })
+    expect(held.has(notification)).toBe(false)
+  })
+
+  it('turns ordered question options into native buttons and stable response labels', () => {
+    expect(replyWatch.cannedResponseActions([
+      { label: 'Use the Trust Center diagram', recommended: true },
+      { label: 'Send me the link first' },
+    ])).toEqual({
+      actions: [
+        { type: 'button', text: 'Use the Trust Center diagram' },
+        { type: 'button', text: 'Send me the link first' },
+      ],
+      responses: ['Use the Trust Center diagram', 'Send me the link first'],
+    })
+  })
+
+  it('maps both current and legacy Electron action events without guessing invalid indexes', () => {
+    const responses = ['Recommended', 'Alternative']
+    expect(replyWatch.responseForNotificationAction(responses, { actionIndex: 1 })).toBe('Alternative')
+    expect(replyWatch.responseForNotificationAction(responses, {}, 0)).toBe('Recommended')
+    expect(replyWatch.responseForNotificationAction(responses, { actionIndex: 9 })).toBeNull()
+  })
+
+  it('posts the selected label through the existing inbox reply route', async () => {
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true }),
+    }))
+
+    await expect(replyWatch.submitCannedResponse(
+      'http://localhost:4319/',
+      'question/1',
+      'Use the Trust Center diagram',
+      fetchImpl,
+    )).resolves.toBeUndefined()
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'http://localhost:4319/api/items/question%2F1/reply',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{"text":"Use the Trust Center diagram"}',
+      },
+    )
+  })
+
+  it('surfaces HTTP and store refusals instead of reporting a successful response', async () => {
+    await expect(replyWatch.submitCannedResponse(
+      'http://localhost:4319/',
+      'question-1',
+      'Recommended',
+      async () => ({ ok: false, status: 503, json: async () => ({ ok: false }) }),
+    )).rejects.toThrow('HTTP 503')
+
+    await expect(replyWatch.submitCannedResponse(
+      'http://localhost:4319/',
+      'question-1',
+      'Recommended',
+      async () => ({ ok: true, status: 200, json: async () => ({ ok: false }) }),
+    )).rejects.toThrow('reply was refused')
+  })
+
+  it('is wired into the Electron notification action event', () => {
+    const main = readFileSync(new URL('../electron/main.cjs', import.meta.url), 'utf8')
+    expect(main).toContain('cannedResponseActions(question ? optionOrder(question.options) : [])')
+    expect(main).toContain("note.on('action'")
+    expect(main).toContain('submitCannedResponse(URL_BASE, question.id, answer)')
+    expect(main).toContain('notificationRetainer.show(note)')
+  })
+})
 
 describe('responseTargets', () => {
   it('returns answered questions that no agent has read, with routing metadata', () => {

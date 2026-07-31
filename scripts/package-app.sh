@@ -56,9 +56,16 @@ npx --yes @electron/packager "$STAGE" "Agent Inbox" \
   --icon="$ROOT/electron/icon.icns" \
   --app-bundle-id=io.github.shariqh.agent-inbox
 
+# Electron requires alert-style notifications for native action buttons on
+# macOS. Write the key before signing so the signature covers the final plist.
+APP="$OUT/Agent Inbox-darwin-arm64/Agent Inbox.app"
+PLIST="$APP/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :NSUserNotificationAlertStyle alert" "$PLIST" 2>/dev/null \
+  || /usr/libexec/PlistBuddy -c "Add :NSUserNotificationAlertStyle string alert" "$PLIST"
+
 # Ad-hoc codesign: macOS silently drops notifications from apps with no code
 # identity at all. No certificate needed; "-" signs with an ad-hoc identity.
-codesign --force --deep --sign - "$OUT/Agent Inbox-darwin-arm64/Agent Inbox.app"
+codesign --force --deep --sign - "$APP"
 
 echo
-echo "Packaged (ad-hoc signed): $OUT/Agent Inbox-darwin-arm64/Agent Inbox.app"
+echo "Packaged (ad-hoc signed): $APP"

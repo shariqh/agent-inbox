@@ -18,6 +18,14 @@ import { describe, expect, it } from 'vitest'
 const REPO = resolve(import.meta.dirname, '..')
 const SCRIPT = join(REPO, 'scripts', 'install-agents.sh')
 const BEGIN = '<!-- agent-inbox:begin -->'
+const END = '<!-- agent-inbox:end -->'
+const SNIPPET_PATH = join(REPO, 'docs', 'reporting-snippet.md')
+// The live import the owner keeps in ~/.claude/CLAUDE.md, verbatim in shape.
+const IMPORT_LINE = `@${SNIPPET_PATH}`
+// Two strings that exist ONLY in the shared snippet — neither host appendix
+// contains them — so their presence/absence is exactly "was the snippet inlined".
+const SNIPPET_LINE = 'One ask, one surface'
+const SNIPPET_HEADING = '## Flags (one-shot attention)'
 
 interface Fixture {
   home: string
@@ -133,6 +141,11 @@ function run(f: Fixture, args: string[] = []) {
 
 function count(text: string, needle: string): number {
   return text.split(needle).length - 1
+}
+
+function backups(file: string): string[] {
+  const base = file.slice(file.lastIndexOf('/') + 1)
+  return readdirSync(dirname(file)).filter((name) => name.startsWith(`${base}.bak.`))
 }
 
 async function waitFor(path: string): Promise<void> {
@@ -633,6 +646,190 @@ exec "${process.execPath}" "$@"
     expect(readFileSync(target, 'utf8')).toContain('Copilot CLI wake behavior')
     expect(readdirSync(dirname(target)).some((name) =>
       name.startsWith('copilot-instructions.md.bak.'))).toBe(true)
+  })
+
+  it('omits the inlined snippet from the claude block when that file imports the snippet itself', () => {
+    const f = fixture()
+    const personal = `# Claude personal rules\n\nImported here so they can never drift:\n\n${IMPORT_LINE}\n`
+    writeFileSync(f.claudeFile, personal)
+
+    const result = run(f, ['--apply', '--target', 'claude'])
+
+    expect(result.code, result.err).toBe(0)
+    const claude = readFileSync(f.claudeFile, 'utf8')
+    expect(claude).toContain(personal)
+    expect(claude).toContain(BEGIN)
+    expect(claude).toContain('Not inlined here')
+    expect(claude).not.toContain(SNIPPET_LINE)
+    expect(claude).not.toContain(SNIPPET_HEADING)
+  })
+
+  it('still writes the claude appendix into an import-mode block', () => {
+    const f = fixture()
+    writeFileSync(f.claudeFile, `# Claude personal rules\n\n${IMPORT_LINE}\n`)
+
+    expect(run(f, ['--apply', '--target', 'claude']).code).toBe(0)
+
+    const claude = readFileSync(f.claudeFile, 'utf8')
+    const appendix = readFileSync(join(REPO, 'docs', 'instructions', 'claude-code.md'), 'utf8')
+    expect(claude).toContain(appendix)
+    expect(claude).toContain('Claude Code wake behavior')
+    expect(claude).not.toContain('Copilot CLI wake behavior')
+  })
+
+  it('inlines the snippet anyway when the file only names it in prose or a code span', () => {
+    const f = fixture()
+    writeFileSync(
+      f.claudeFile,
+      '# Claude personal rules\n\nI pasted docs/reporting-snippet.md by hand once.\n' +
+        '`@docs/reporting-snippet.md` is the import form I keep forgetting.\n' +
+        `Someday: ${IMPORT_LINE}, maybe.\n`,
+    )
+
+    const result = run(f, ['--apply', '--target', 'claude'])
+
+    expect(result.code, result.err).toBe(0)
+    const claude = readFileSync(f.claudeFile, 'utf8')
+    expect(claude).toContain(SNIPPET_LINE)
+    expect(claude).toContain(SNIPPET_HEADING)
+    expect(claude).not.toContain('Not inlined here')
+    expect(result.err).not.toMatch(/already imports/)
+  })
+
+  it('accepts an import directive written as an absolute, ~ or relative path', () => {
+    for (const path of [
+      SNIPPET_PATH,
+      '~/Development/agent-inbox/docs/reporting-snippet.md',
+      './docs/reporting-snippet.md',
+    ]) {
+      const f = fixture()
+      writeFileSync(f.claudeFile, `# Claude personal rules\n\n@${path}\n`)
+
+      expect(run(f, ['--apply', '--target', 'claude']).code, path).toBe(0)
+
+      const claude = readFileSync(f.claudeFile, 'utf8')
+      expect(claude, path).not.toContain(SNIPPET_LINE)
+      expect(claude, path).toContain('Claude Code wake behavior')
+    }
+  })
+
+  it('does not let an import inside the managed block suppress the inlined snippet', () => {
+    const f = fixture()
+    writeFileSync(
+      f.claudeFile,
+      `# Claude personal rules\n\n${BEGIN}\n${IMPORT_LINE}\nstale managed content\n${END}\n`,
+    )
+
+    const result = run(f, ['--apply', '--target', 'claude'])
+
+    expect(result.code, result.err).toBe(0)
+    const claude = readFileSync(f.claudeFile, 'utf8')
+    expect(claude).toContain(SNIPPET_LINE)
+    expect(claude).not.toContain('stale managed content')
+    expect(claude).not.toContain(IMPORT_LINE)
+    expect(count(claude, BEGIN)).toBe(1)
+  })
+
+  it('leaves an import-mode file byte-identical on a second apply, writing no second backup', () => {
+    const f = fixture()
+    writeFileSync(f.claudeFile, `# Claude personal rules\n\n${IMPORT_LINE}\n`)
+    expect(run(f, ['--apply', '--target', 'claude']).code).toBe(0)
+    const first = readFileSync(f.claudeFile, 'utf8')
+    const backupsAfterFirst = backups(f.claudeFile).length
+
+    const result = run(f, ['--apply', '--target', 'claude'])
+
+    expect(result.code, result.err).toBe(0)
+    expect(readFileSync(f.claudeFile, 'utf8')).toBe(first)
+    expect(count(first, BEGIN)).toBe(1)
+    expect(backups(f.claudeFile).length).toBe(backupsAfterFirst)
+  })
+
+  it('sheds an already-inlined snippet on the next run once the human adds the import', () => {
+    const f = fixture()
+    expect(run(f, ['--apply', '--target', 'claude']).code).toBe(0)
+    const inlined = readFileSync(f.claudeFile, 'utf8')
+    expect(inlined).toContain(SNIPPET_LINE)
+    writeFileSync(f.claudeFile, `${IMPORT_LINE}\n${inlined}`)
+
+    const result = run(f, ['--apply', '--target', 'claude'])
+
+    expect(result.code, result.err).toBe(0)
+    const claude = readFileSync(f.claudeFile, 'utf8')
+    expect(claude).toContain(IMPORT_LINE)
+    expect(claude).not.toContain(SNIPPET_LINE)
+    expect(claude).toContain('Claude Code wake behavior')
+    expect(count(claude, BEGIN)).toBe(1)
+  })
+
+  it('inlines the snippet again on the next run once the human deletes the import', () => {
+    const f = fixture()
+    writeFileSync(f.claudeFile, `# Claude personal rules\n\n${IMPORT_LINE}\n`)
+    expect(run(f, ['--apply', '--target', 'claude']).code).toBe(0)
+    const thin = readFileSync(f.claudeFile, 'utf8')
+    expect(thin).not.toContain(SNIPPET_LINE)
+    writeFileSync(f.claudeFile, thin.replace(`${IMPORT_LINE}\n`, ''))
+
+    const result = run(f, ['--apply', '--target', 'claude'])
+
+    expect(result.code, result.err).toBe(0)
+    const claude = readFileSync(f.claudeFile, 'utf8')
+    expect(claude).toContain(SNIPPET_LINE)
+    expect(claude).not.toContain('Not inlined here')
+    expect(count(claude, BEGIN)).toBe(1)
+  })
+
+  it('--uninstall removes an import-mode block and leaves the human import line', () => {
+    const f = fixture()
+    const personal = `# Claude personal rules\n\n${IMPORT_LINE}\n`
+    writeFileSync(f.claudeFile, personal)
+    expect(run(f, ['--apply', '--target', 'claude']).code).toBe(0)
+    expect(readFileSync(f.claudeFile, 'utf8')).toContain(BEGIN)
+
+    const result = run(f, ['--apply', '--uninstall', '--target', 'claude'])
+
+    expect(result.code, result.err).toBe(0)
+    expect(readFileSync(f.claudeFile, 'utf8')).toBe(personal)
+  })
+
+  it('dry run reports the detected import and previews a block with no inlined snippet', () => {
+    const f = fixture()
+    const personal = `# Claude personal rules\n\n${IMPORT_LINE}\n`
+    writeFileSync(f.claudeFile, personal)
+
+    const result = run(f, ['--target', 'claude'])
+
+    expect(result.code, result.err).toBe(0)
+    expect(result.err).toMatch(/already imports docs\/reporting-snippet\.md/)
+    expect(result.err).toMatch(/skipping the inlined snippet/)
+    expect(result.out).toContain('Claude Code wake behavior')
+    expect(result.out).not.toContain(SNIPPET_LINE)
+    expect(readFileSync(f.claudeFile, 'utf8')).toBe(personal)
+  })
+
+  it('writes copilot begin + whole snippet + copilot appendix + end when nothing imports the snippet', () => {
+    const f = fixture()
+    const before = readFileSync(f.copilotFile, 'utf8')
+
+    expect(run(f, ['--apply', '--target', 'copilot']).code).toBe(0)
+
+    const snippet = readFileSync(SNIPPET_PATH, 'utf8').replace(/^# /, '## ')
+    const appendix = readFileSync(join(REPO, 'docs', 'instructions', 'copilot-cli.md'), 'utf8')
+    expect(readFileSync(f.copilotFile, 'utf8')).toBe(`${before}${BEGIN}\n${snippet}\n${appendix}${END}\n`)
+  })
+
+  it('keeps inlining the snippet for copilot even when its file carries an import directive', () => {
+    const f = fixture()
+    writeFileSync(f.copilotFile, `# Copilot personal rules\n\n${IMPORT_LINE}\n`)
+
+    const result = run(f, ['--apply', '--target', 'copilot'])
+
+    expect(result.code, result.err).toBe(0)
+    const copilot = readFileSync(f.copilotFile, 'utf8')
+    expect(copilot).toContain(SNIPPET_LINE)
+    expect(copilot).toContain(SNIPPET_HEADING)
+    expect(copilot).not.toContain('Not inlined here')
+    expect(result.err).not.toMatch(/already imports/)
   })
 
   it('atomically restores a symlinked host config target after force failure', () => {

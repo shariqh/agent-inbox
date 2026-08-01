@@ -43,6 +43,22 @@ The installer writes the shared [`reporting-snippet.md`](reporting-snippet.md) p
 `~/.claude/CLAUDE.md`. Claude questions do not return the Copilot `watch` contract.
 Automatic idle-session pickup comes from the optional hooks in step 5.
 
+**If you already import the snippet, the installer will not inline it again.** Claude Code
+resolves `@path` imports, so a line like
+
+```
+@/ABSOLUTE/PATH/TO/agent-inbox/docs/reporting-snippet.md
+```
+
+anywhere in `~/.claude/CLAUDE.md` (outside the managed block) already keeps you on the live
+file. When the installer sees one, its block carries only the Claude appendix plus a line
+saying where the snippet came from — a second, inlined copy would both double the tokens and
+freeze a snapshot that goes stale the next time the snippet changes. The dry run says so
+explicitly before you apply. Delete the import and the next run puts the snippet back;
+`--uninstall` removes the block either way and never touches your import line. Only a real
+directive counts (leading `@`, absolute, `~` or relative path); merely mentioning the
+filename in prose does not.
+
 </details>
 
 <details>
@@ -52,6 +68,10 @@ The installer writes the shared [`reporting-snippet.md`](reporting-snippet.md) p
 [`instructions/copilot-cli.md`](instructions/copilot-cli.md) to
 `~/.copilot/copilot-instructions.md`. Copilot questions return an exact-item detached
 watcher command; its background completion wakes the owning session.
+
+Copilot CLI has no import mechanism, so the snippet is **always** inlined here — an `@path`
+line in `copilot-instructions.md` is inert text, not a live reference. Re-run the installer
+after the snippet changes to pick the new text up.
 
 </details>
 

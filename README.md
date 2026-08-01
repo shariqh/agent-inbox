@@ -91,8 +91,12 @@ npm run install:agents -- --apply --target claude
 
 This registers the MCP server at Claude's user scope and installs the shared reporting
 contract plus [`docs/instructions/claude-code.md`](docs/instructions/claude-code.md) in
-`~/.claude/CLAUDE.md`. Claude does **not** launch the Copilot watcher. Its optional native
-wake path is the backstop-hook installer:
+`~/.claude/CLAUDE.md`. If that file already **imports** the snippet
+(`@/abs/path/to/agent-inbox/docs/reporting-snippet.md`, which Claude Code resolves at load
+time), the managed block skips the inlined copy and installs only the Claude appendix —
+inlining beside a live import would double the tokens and freeze a snapshot that goes stale
+on the next snippet edit. The dry run says when it detects one. Claude does **not** launch
+the Copilot watcher. Its optional native wake path is the backstop-hook installer:
 
 ```sh
 npm run install:hooks                  # dry run
@@ -118,7 +122,8 @@ reporting contract plus
 `~/.copilot/copilot-instructions.md`. Copilot question flags return an exact-item `watch`
 contract; the instructions make Copilot launch it as a detached background command. Its
 completion notification wakes the session, which then calls `pending()`. No Claude hooks
-are installed for Copilot.
+are installed for Copilot. Copilot has no import mechanism, so the snippet is always
+inlined here — re-run the installer to pick up snippet changes.
 
 </details>
 

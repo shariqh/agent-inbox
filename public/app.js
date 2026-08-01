@@ -2636,7 +2636,8 @@ async function renderSetup() {
       'Use the installer above unless you intentionally manage configuration by hand.')
     block('Advanced · Manual Copilot MCP config', s.copilotConfig)
     block('Advanced · Manual shared instructions', s.snippet,
-      'This snippet is the signal-quality lever: it tells agents when to raise questions/notes, attach options, poll for your replies, and keep boards.')
+      'This snippet is the signal-quality lever: it tells agents when to raise questions/notes, attach options, poll for your replies, and keep boards. '
+      + 'Claude Code can instead import docs/reporting-snippet.md with an @path line, which stays current by itself — the installer detects that and skips its inlined copy. Copilot CLI cannot import, so it always gets the text.')
     if (s.hooksSettings) {
       block('Advanced · Optional Claude backstop hooks', s.hooksSettings, s.hooksNote)
     }

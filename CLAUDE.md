@@ -272,7 +272,24 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   changes retain an exact snapshot of the host's user config until instruction writes commit,
   so a later failure restores the prior registration rather than reconstructing it. Claude receives
   `docs/instructions/claude-code.md`; Copilot receives
-  `docs/instructions/copilot-cli.md`; both receive `docs/reporting-snippet.md`. `--force`
+  `docs/instructions/copilot-cli.md`; both normally receive `docs/reporting-snippet.md` inlined.
+  **The one exception is an import the human wrote themselves.** If the target file already
+  carries a live `@…/docs/reporting-snippet.md` directive, the block cites that import instead
+  of inlining a second copy: the inline would be ~2,300 duplicated tokens in every session AND a
+  snapshot that goes stale on the next snippet edit — exactly the drift the import exists to
+  prevent. The target appendix is still written, because the import does not carry it, and the
+  dry run says on stderr that it detected the import and is skipping the inline. Three things are
+  load-bearing. (1) **Detection is a directive, not a mention**: first non-blank character `@`,
+  path token ending in the snippet filename (absolute, `~` or relative). Prose that names the
+  file, and a `@…` inside a code span, are not imports — Claude Code does not resolve those
+  either. (2) **Only the region OUTSIDE BEGIN/END is consulted**, so the installer can never be
+  fooled into thinning a block by its own output. (3) **It is gated on the HOST, not the file**
+  (`host_resolves_imports`): Copilot CLI has no import mechanism, so an `@path` line in its
+  instructions is inert text and skipping the inline there would silently delete the reporting
+  contract instead of de-duplicating it. Copilot always inlines; that is why its instructions
+  used to sit frozen while Claude's tracked every edit. Both transitions are covered — a file
+  that gains an import sheds the inlined snippet on the next run, one that loses it gets the
+  snippet back — and both modes are idempotent and `--uninstall`-reversible. `--force`
   replaces only the named MCP registration, and `--uninstall` removes only the managed
   registration/block. Nothing runs from install, build, package, or Electron startup.
   The Setup panel's direct action is deliberately Electron-only:

@@ -3,6 +3,8 @@
 #
 # DRY RUN IS THE DEFAULT. --apply registers the MCP server and writes one
 # managed instruction block while preserving every unrelated line.
+# If the target file already imports docs/reporting-snippet.md itself (Claude Code
+# only), the managed block cites that import instead of inlining a second copy.
 #
 # Usage:
 #   npm run install:agents
@@ -32,7 +34,7 @@ while [ "$#" -gt 0 ]; do
       TARGET="$2"
       shift 2
       ;;
-    -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
     *) echo "install-agents: unknown flag: $1 (try --help)" >&2; exit 2 ;;
   esac
 done
@@ -146,11 +148,52 @@ preflight_markers() {
   fi
 }
 
+# Only a real import directive counts: a line whose first non-blank character is
+# `@` and whose path token ends in the snippet's filename — absolute, `~`, or
+# relative. Prose that merely names the file, and a `@…` inside a code span, are
+# not imports and must not suppress the inline. Anything between BEGIN/END is
+# this script's own output, so only what the human wrote outside the managed
+# block is consulted.
+imports_snippet() {
+  local file="$1"
+  [ -f "$file" ] || return 1
+  awk -v begin="$BEGIN" -v end="$END" '
+    $0 == begin { skip = 1; next }
+    $0 == end { skip = 0; next }
+    !skip { print }
+  ' "$file" | grep -Eq '^[[:space:]]*@[^[:space:]]*reporting-snippet\.md([[:space:]]|$)'
+}
+
+# Import awareness is a property of the HOST, not of the file. Claude Code
+# resolves `@path` imports at load time, so an inlined copy beside one is both a
+# duplicate (~2,300 tokens every session) and a snapshot that goes stale on the
+# next snippet edit — the exact drift the human's import exists to prevent.
+# Copilot CLI has no import mechanism, so an `@path` line in its instructions is
+# inert text: skipping the inline there would silently delete the reporting
+# contract instead of de-duplicating it. Inlining is correct for Copilot, always.
+host_resolves_imports() {
+  [ "$1" = claude ]
+}
+
+snippet_import_note() {
+  cat <<'NOTE'
+## Agent Inbox — reporting instructions
+
+Not inlined here: this file already imports `docs/reporting-snippet.md` itself, so the
+shared reporting contract stays live from that file. A copy in this block would be a
+snapshot that goes stale the next time the snippet changes.
+NOTE
+}
+
 build_block() {
-  local target="$1" output="$2"
+  local target="$1" output="$2" omit_snippet="$3"
   {
     echo "$BEGIN" || return 1
-    sed '1s/^# /## /' "$ROOT/docs/reporting-snippet.md" || return 1
+    if [ "$omit_snippet" -eq 1 ]; then
+      snippet_import_note || return 1
+    else
+      sed '1s/^# /## /' "$ROOT/docs/reporting-snippet.md" || return 1
+    fi
     echo || return 1
     cat "$(instruction_appendix "$target")" || return 1
     echo "$END" || return 1
@@ -397,7 +440,12 @@ for target in "${TARGETS[@]}"; do
   file="$(instruction_write_file "$target")" || exit 1
   block="$WORK/$target.block"
   rendered="$WORK/$target.rendered"
-  if ! build_block "$target" "$block"; then
+  omit_snippet=0
+  if [ "$UNINSTALL" -eq 0 ] && host_resolves_imports "$target" && imports_snippet "$file"; then
+    omit_snippet=1
+    echo "$target: $display_file already imports docs/reporting-snippet.md — skipping the inlined snippet; the managed block carries the $target appendix only" >&2
+  fi
+  if ! build_block "$target" "$block" "$omit_snippet"; then
     echo "install-agents: could not build the $target instruction block" >&2
     exit 1
   fi

@@ -55,9 +55,17 @@ file. When the installer sees one, its block carries only the Claude appendix pl
 saying where the snippet came from — a second, inlined copy would both double the tokens and
 freeze a snapshot that goes stale the next time the snippet changes. The dry run says so
 explicitly before you apply. Delete the import and the next run puts the snippet back;
-`--uninstall` removes the block either way and never touches your import line. Only a real
-directive counts (leading `@`, absolute, `~` or relative path); merely mentioning the
-filename in prose does not.
+`--uninstall` removes the block either way and never touches your import line.
+
+Only a directive Claude Code would really follow, to really this file, counts. It has to be
+a line whose first non-blank character is `@` (up to three spaces of indent), outside any
+code fence or indented code block — so documenting the import inside your own instructions
+does not count as having it. And the path has to resolve to this checkout's snippet:
+absolute, `~/…` or relative (relative to the directory of the file holding the line, as
+Claude Code resolves it), through symlinks and `..` if you like. A stale path left behind
+when the checkout moved, a URL, a different file that merely ends in the same name, or
+anything else that fails to resolve all inline instead — a duplicate is only wasteful,
+whereas trusting a broken import would leave you with no reporting instructions at all.
 
 </details>
 

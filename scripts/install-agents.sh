@@ -22,6 +22,7 @@ UNINSTALL=0
 TARGET="all"
 BEGIN='<!-- agent-inbox:begin -->'
 END='<!-- agent-inbox:end -->'
+SNIPPET_SOURCE="$ROOT/docs/reporting-snippet.md"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -148,20 +149,78 @@ preflight_markers() {
   fi
 }
 
-# Only a real import directive counts: a line whose first non-blank character is
-# `@` and whose path token ends in the snippet's filename — absolute, `~`, or
-# relative. Prose that merely names the file, and a `@…` inside a code span, are
-# not imports and must not suppress the inline. Anything between BEGIN/END is
-# this script's own output, so only what the human wrote outside the managed
-# block is consulted.
-imports_snippet() {
-  local file="$1"
-  [ -f "$file" ] || return 1
+# Suppressing the inline asserts, in the managed block itself, that this file
+# already imports docs/reporting-snippet.md. If that is false the reporting
+# contract then exists NOWHERE, so the bar is high: a directive line Claude Code
+# would actually resolve, reaching THIS repo's snippet. Anything short of that
+# inlines — a duplicated snippet is wasteful, a missing contract is silent
+# breakage.
+#
+# SHAPE (snippet_directives). First non-blank character `@`, with at most three
+# leading spaces. Four or more spaces, or a leading tab, is a markdown indented
+# code block; anything between ``` / ~~~ fences is a fenced one. Claude Code
+# renders both as text and resolves nothing there — and someone documenting the
+# import inside their own instructions is exactly this file's audience. Prose
+# that merely names the file, and a `@…` inside a code span, start with some
+# other character and never reach the token. Only the region OUTSIDE BEGIN/END
+# is read, so the installer can never be fooled by its own output.
+#
+# TARGET (resolves_to_snippet). `~/` expands to $HOME; a relative path resolves
+# against the directory of the file being scanned, which is where Claude Code
+# resolves a relative import from; identity is the same-file test, so symlinks,
+# `..` segments, hard links and alternate spellings all agree. A dangling path
+# left behind when the checkout moved, a URL, and a different file that merely
+# ends in the same name are none of them imports.
+snippet_directives() {
   awk -v begin="$BEGIN" -v end="$END" '
     $0 == begin { skip = 1; next }
     $0 == end { skip = 0; next }
-    !skip { print }
-  ' "$file" | grep -Eq '^[[:space:]]*@[^[:space:]]*reporting-snippet\.md([[:space:]]|$)'
+    skip { next }
+    {
+      indent = 0
+      tabbed = 0
+      while (indent < length($0)) {
+        c = substr($0, indent + 1, 1)
+        if (c == " ") { indent++; continue }
+        if (c == "\t") { tabbed = 1 }
+        break
+      }
+      if (tabbed || indent >= 4) next
+      body = substr($0, indent + 1)
+      head = substr(body, 1, 3)
+      if (head == "```" || head == "~~~") { fenced = !fenced; next }
+      if (fenced) next
+      if (substr(body, 1, 1) != "@") next
+      token = substr(body, 2)
+      cut = index(token, " ")
+      tab = index(token, "\t")
+      if (tab > 0 && (cut == 0 || tab < cut)) cut = tab
+      if (cut > 0) token = substr(token, 1, cut - 1)
+      if (token != "") print token
+    }
+  ' "$1"
+}
+
+resolves_to_snippet() {
+  local token="$1" base="$2" candidate
+  case "$token" in
+    '~/'*) candidate="$HOME/${token#\~/}" ;;
+    /*) candidate="$token" ;;
+    *) candidate="$base/$token" ;;
+  esac
+  [ -f "$candidate" ] || return 1
+  [ "$candidate" -ef "$SNIPPET_SOURCE" ]
+}
+
+imports_snippet() {
+  local file="$1" base token
+  [ -f "$file" ] || return 1
+  base="$(dirname "$file")"
+  while IFS= read -r token; do
+    [ -n "$token" ] || continue
+    resolves_to_snippet "$token" "$base" && return 0
+  done <<< "$(snippet_directives "$file")"
+  return 1
 }
 
 # Import awareness is a property of the HOST, not of the file. Claude Code
@@ -192,7 +251,7 @@ build_block() {
     if [ "$omit_snippet" -eq 1 ]; then
       snippet_import_note || return 1
     else
-      sed '1s/^# /## /' "$ROOT/docs/reporting-snippet.md" || return 1
+      sed '1s/^# /## /' "$SNIPPET_SOURCE" || return 1
     fi
     echo || return 1
     cat "$(instruction_appendix "$target")" || return 1

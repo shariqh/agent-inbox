@@ -143,6 +143,23 @@ function count(text: string, needle: string): number {
   return text.split(needle).length - 1
 }
 
+// The managed region only, so "the installer wrote X" cannot be satisfied by an
+// X the human already had somewhere else in the file.
+function managedBlock(text: string): string {
+  const start = text.indexOf(BEGIN)
+  const stop = text.indexOf(END)
+  expect(start, 'managed begin marker').toBeGreaterThanOrEqual(0)
+  expect(stop, 'managed end marker').toBeGreaterThan(start)
+  return text.slice(start, stop + END.length)
+}
+
+// A directive only counts if it reaches THIS repo's snippet, so a fixture that
+// spells the path differently has to genuinely land on the same file.
+function linkSnippet(at: string): void {
+  mkdirSync(dirname(at), { recursive: true })
+  symlinkSync(SNIPPET_PATH, at)
+}
+
 function backups(file: string): string[] {
   const base = file.slice(file.lastIndexOf('/') + 1)
   return readdirSync(dirname(file)).filter((name) => name.startsWith(`${base}.bak.`))
@@ -664,17 +681,17 @@ exec "${process.execPath}" "$@"
     expect(claude).not.toContain(SNIPPET_HEADING)
   })
 
-  it('still writes the claude appendix into an import-mode block', () => {
+  it('still writes the claude appendix inside an import-mode block', () => {
     const f = fixture()
     writeFileSync(f.claudeFile, `# Claude personal rules\n\n${IMPORT_LINE}\n`)
 
     expect(run(f, ['--apply', '--target', 'claude']).code).toBe(0)
 
-    const claude = readFileSync(f.claudeFile, 'utf8')
+    const block = managedBlock(readFileSync(f.claudeFile, 'utf8'))
     const appendix = readFileSync(join(REPO, 'docs', 'instructions', 'claude-code.md'), 'utf8')
-    expect(claude).toContain(appendix)
-    expect(claude).toContain('Claude Code wake behavior')
-    expect(claude).not.toContain('Copilot CLI wake behavior')
+    expect(block).toContain(appendix)
+    expect(block).toContain('Claude Code wake behavior')
+    expect(block).not.toContain('Copilot CLI wake behavior')
   })
 
   it('inlines the snippet anyway when the file only names it in prose or a code span', () => {
@@ -696,21 +713,189 @@ exec "${process.execPath}" "$@"
     expect(result.err).not.toMatch(/already imports/)
   })
 
-  it('accepts an import directive written as an absolute, ~ or relative path', () => {
-    for (const path of [
-      SNIPPET_PATH,
-      '~/Development/agent-inbox/docs/reporting-snippet.md',
-      './docs/reporting-snippet.md',
-    ]) {
+  it('accepts an absolute, ~ or relative directive that resolves to this snippet', () => {
+    // Every spelling has to land on the REAL file, so each fixture puts one
+    // there: `~` under the temp HOME, relative from the instruction file's own
+    // directory (which is where Claude Code resolves a relative import from).
+    const cases: { path: string; prepare: (f: Fixture) => void }[] = [
+      { path: SNIPPET_PATH, prepare: () => {} },
+      {
+        path: '~/Development/agent-inbox/docs/reporting-snippet.md',
+        prepare: (f) =>
+          linkSnippet(join(f.home, 'Development', 'agent-inbox', 'docs', 'reporting-snippet.md')),
+      },
+      {
+        // Deliberately a name the repo root does NOT have, so this can only
+        // resolve from the instruction file's directory.
+        path: './agent-inbox/reporting-snippet.md',
+        prepare: (f) =>
+          linkSnippet(join(dirname(f.claudeFile), 'agent-inbox', 'reporting-snippet.md')),
+      },
+    ]
+
+    for (const { path, prepare } of cases) {
       const f = fixture()
+      prepare(f)
       writeFileSync(f.claudeFile, `# Claude personal rules\n\n@${path}\n`)
 
-      expect(run(f, ['--apply', '--target', 'claude']).code, path).toBe(0)
+      const result = run(f, ['--apply', '--target', 'claude'])
 
+      expect(result.code, path).toBe(0)
+      expect(result.err, path).toMatch(/already imports/)
       const claude = readFileSync(f.claudeFile, 'utf8')
       expect(claude, path).not.toContain(SNIPPET_LINE)
       expect(claude, path).toContain('Claude Code wake behavior')
     }
+  })
+
+  it('ignores a relative directive that only resolves from the process working directory', () => {
+    const f = fixture()
+    // The premise: this path DOES resolve from where the installer runs. It is
+    // a non-import only because a relative import resolves from the directory
+    // of the file that carries it — and that HOME has no docs/ at all.
+    expect(process.cwd()).toBe(REPO)
+    expect(existsSync(join(process.cwd(), 'docs', 'reporting-snippet.md'))).toBe(true)
+    writeFileSync(f.claudeFile, '# Claude personal rules\n\n@./docs/reporting-snippet.md\n')
+
+    const result = run(f, ['--apply', '--target', 'claude'])
+
+    expect(result.code, result.err).toBe(0)
+    expect(result.err).not.toMatch(/already imports/)
+    expect(readFileSync(f.claudeFile, 'utf8')).toContain(SNIPPET_LINE)
+  })
+
+  it('inlines the snippet when the only directive sits inside a fenced code block', () => {
+    const f = fixture()
+    writeFileSync(
+      f.claudeFile,
+      '# Claude personal rules\n\nThe import my team should add:\n\n' +
+        `\`\`\`\n${IMPORT_LINE}\n\`\`\`\n`,
+    )
+
+    const result = run(f, ['--apply', '--target', 'claude'])
+
+    expect(result.code, result.err).toBe(0)
+    const claude = readFileSync(f.claudeFile, 'utf8')
+    expect(claude).toContain(SNIPPET_LINE)
+    expect(claude).toContain(SNIPPET_HEADING)
+    expect(claude).not.toContain('Not inlined here')
+    expect(result.err).not.toMatch(/already imports/)
+  })
+
+  it('inlines the snippet when the only directive is indented into a code block', () => {
+    for (const indent of ['    ', '\t']) {
+      const f = fixture()
+      const label = JSON.stringify(indent)
+      writeFileSync(f.claudeFile, `# Claude personal rules\n\nLike this:\n\n${indent}${IMPORT_LINE}\n`)
+
+      const result = run(f, ['--apply', '--target', 'claude'])
+
+      expect(result.code, label).toBe(0)
+      const claude = readFileSync(f.claudeFile, 'utf8')
+      expect(claude, label).toContain(SNIPPET_LINE)
+      expect(claude, label).toContain(SNIPPET_HEADING)
+      expect(claude, label).not.toContain('Not inlined here')
+      expect(result.err, label).not.toMatch(/already imports/)
+    }
+  })
+
+  it('still detects a directive indented up to three spaces', () => {
+    const f = fixture()
+    writeFileSync(f.claudeFile, `# Claude personal rules\n\n   ${IMPORT_LINE}\n`)
+
+    const result = run(f, ['--apply', '--target', 'claude'])
+
+    expect(result.code, result.err).toBe(0)
+    expect(result.err).toMatch(/already imports/)
+    expect(readFileSync(f.claudeFile, 'utf8')).not.toContain(SNIPPET_LINE)
+  })
+
+  it('still detects a directive written after a closed code fence', () => {
+    const f = fixture()
+    writeFileSync(
+      f.claudeFile,
+      '# Claude personal rules\n\n```sh\nnpm run install:agents -- --apply\n```\n\n' + `${IMPORT_LINE}\n`,
+    )
+
+    const result = run(f, ['--apply', '--target', 'claude'])
+
+    expect(result.code, result.err).toBe(0)
+    expect(result.err).toMatch(/already imports/)
+    expect(readFileSync(f.claudeFile, 'utf8')).not.toContain(SNIPPET_LINE)
+  })
+
+  it('inlines the snippet when the directive path does not resolve', () => {
+    const f = fixture()
+    writeFileSync(
+      f.claudeFile,
+      '# Claude personal rules\n\n@/nowhere/at/all/docs/reporting-snippet.md\n',
+    )
+
+    const result = run(f, ['--apply', '--target', 'claude'])
+
+    expect(result.code, result.err).toBe(0)
+    const claude = readFileSync(f.claudeFile, 'utf8')
+    expect(claude).toContain(SNIPPET_LINE)
+    expect(claude).toContain(SNIPPET_HEADING)
+    expect(claude).not.toContain('Not inlined here')
+    expect(result.err).not.toMatch(/already imports/)
+  })
+
+  it('inlines the snippet when the directive resolves to a different file', () => {
+    // Left: a path that merely ENDS in the snippet filename. Right: the exact
+    // basename in someone else's checkout. Neither is this repo's snippet.
+    for (const suffix of ['team-reporting-snippet.md', 'team/docs/reporting-snippet.md']) {
+      const f = fixture()
+      const other = join(f.home, suffix)
+      mkdirSync(dirname(other), { recursive: true })
+      writeFileSync(other, '# Somebody else’s reporting contract\n')
+      writeFileSync(f.claudeFile, `# Claude personal rules\n\n@${other}\n`)
+
+      const result = run(f, ['--apply', '--target', 'claude'])
+
+      expect(result.code, suffix).toBe(0)
+      const claude = readFileSync(f.claudeFile, 'utf8')
+      expect(claude, suffix).toContain(SNIPPET_LINE)
+      expect(claude, suffix).toContain(SNIPPET_HEADING)
+      expect(claude, suffix).not.toContain('Not inlined here')
+      expect(result.err, suffix).not.toMatch(/already imports/)
+    }
+  })
+
+  it('inlines the snippet when the directive is a URL rather than a path', () => {
+    const f = fixture()
+    writeFileSync(
+      f.claudeFile,
+      '# Claude personal rules\n\n@https://example.com/docs/reporting-snippet.md\n',
+    )
+
+    const result = run(f, ['--apply', '--target', 'claude'])
+
+    expect(result.code, result.err).toBe(0)
+    const claude = readFileSync(f.claudeFile, 'utf8')
+    expect(claude).toContain(SNIPPET_LINE)
+    expect(claude).toContain(SNIPPET_HEADING)
+    expect(claude).not.toContain('Not inlined here')
+    expect(result.err).not.toMatch(/already imports/)
+  })
+
+  it('detects a directive that reaches this snippet by a different spelling', () => {
+    const f = fixture()
+    const viaLink = join(f.home, 'dotfiles', 'checkout')
+    mkdirSync(dirname(viaLink), { recursive: true })
+    symlinkSync(REPO, viaLink)
+    writeFileSync(
+      f.claudeFile,
+      `# Claude personal rules\n\n@${viaLink}/docs/../docs/reporting-snippet.md\n`,
+    )
+
+    const result = run(f, ['--apply', '--target', 'claude'])
+
+    expect(result.code, result.err).toBe(0)
+    expect(result.err).toMatch(/already imports/)
+    const claude = readFileSync(f.claudeFile, 'utf8')
+    expect(claude).not.toContain(SNIPPET_LINE)
+    expect(claude).toContain('Not inlined here')
   })
 
   it('does not let an import inside the managed block suppress the inlined snippet', () => {

@@ -95,7 +95,9 @@ contract plus [`docs/instructions/claude-code.md`](docs/instructions/claude-code
 (`@/abs/path/to/agent-inbox/docs/reporting-snippet.md`, which Claude Code resolves at load
 time), the managed block skips the inlined copy and installs only the Claude appendix —
 inlining beside a live import would double the tokens and freeze a snapshot that goes stale
-on the next snippet edit. The dry run says when it detects one. Claude does **not** launch
+on the next snippet edit. The dry run says when it detects one — and a line it cannot resolve
+to *this* checkout's snippet (a stale path, one inside a code fence, someone else's file)
+inlines instead of being trusted. Claude does **not** launch
 the Copilot watcher. Its optional native wake path is the backstop-hook installer:
 
 ```sh

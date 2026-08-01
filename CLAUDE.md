@@ -278,12 +278,21 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   of inlining a second copy: the inline would be ~2,300 duplicated tokens in every session AND a
   snapshot that goes stale on the next snippet edit — exactly the drift the import exists to
   prevent. The target appendix is still written, because the import does not carry it, and the
-  dry run says on stderr that it detected the import and is skipping the inline. Three things are
-  load-bearing. (1) **Detection is a directive, not a mention**: first non-blank character `@`,
-  path token ending in the snippet filename (absolute, `~` or relative). Prose that names the
-  file, and a `@…` inside a code span, are not imports — Claude Code does not resolve those
-  either. (2) **Only the region OUTSIDE BEGIN/END is consulted**, so the installer can never be
-  fooled into thinning a block by its own output. (3) **It is gated on the HOST, not the file**
+  dry run says on stderr that it detected the import and is skipping the inline. Four things are
+  load-bearing. (1) **Detection is a directive, not a mention** — and the bar is what CLAUDE CODE
+  WOULD RESOLVE, not what looks like a path. Shape: first non-blank character `@`, at most three
+  leading spaces; four or more spaces (or a tab) is an indented code block and ``` / `~~~` open a
+  fenced one, and an `@…` in either is inert text. Prose that names the file and a `@…` inside a
+  code span start with some other character. (2) **The path must resolve to THIS repo's
+  `docs/reporting-snippet.md`** — `~/` expands to `$HOME`, a relative path resolves against the
+  directory of the file carrying the line (where Claude Code resolves it from), and identity is
+  the same-FILE test (`-ef`), so symlinks, `..` and alternate spellings agree while a different
+  file that merely ends in the same name does not. Anything unresolvable — a dangling path left
+  by a moved checkout, a URL — fails toward INLINING. That direction is the whole point: the
+  managed block's note asserts "this file already imports the snippet", so a false positive makes
+  the block state something untrue *and* deletes the reporting contract, while a false negative
+  only duplicates it. (3) **Only the region OUTSIDE BEGIN/END is consulted**, so the installer can
+  never be fooled into thinning a block by its own output. (4) **It is gated on the HOST, not the file**
   (`host_resolves_imports`): Copilot CLI has no import mechanism, so an `@path` line in its
   instructions is inert text and skipping the inline there would silently delete the reporting
   contract instead of de-duplicating it. Copilot always inlines; that is why its instructions

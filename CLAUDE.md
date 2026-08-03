@@ -196,22 +196,26 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   `BoardWithRows` shapes are the contract shared by MCP writes/reads and viewer reads.
   Change them in `store.ts` and update both consumers (+ `group.ts` for items;
   `public/app.js` renders both).
-- **`load()` is the poll's; `reloadAndPaint()` is the human's (issue #38).** `load()` ends in
-  `renderIfIdle()` — the spec §10 gate — and **that gate is GLOBAL**: `suspendState()` reports
-  every typed draft anywhere in the app, but NOT a merely expanded card. Expanded cards survive
-  rebuilds; order pinning appends new work at the foot; the press guard protects clicks. This
-  distinction is what lets new inbox items appear without eating in-progress input. A handler
-  that ends a successful POST with a bare `load()` still asks the gate for permission to show
-  the human the result of their own click, and one unrelated draft can refuse it indefinitely.
+- **`load()` is the poll's; `reloadAndPaint()` is the human's (issues #38/#39).** `load()` ends in
+  `renderIfIdle()` — the spec §10 gate. `suspendState()` reports every typed draft anywhere in the
+  app, but NOT a merely expanded card. Expanded cards survive rebuilds; order pinning appends new
+  work at the foot; the press guard protects clicks. A draft gates only the editable surfaces:
+  `paintAmbient()` still refreshes the document-title badge, project rail, tab counts and global
+  Live strip before `shouldDeferRender()` returns. A held press is different: `pressHeld()` runs
+  before `paintAmbient()` because the rail itself can rebuild, so the press guard still defers
+  every surface. A handler that ends a successful POST with a bare `load()` still asks the gate
+  for permission to show the human the editable result of their own click, and one unrelated
+  draft can refuse it indefinitely.
   Hover is never a gate either: existing order is pinned and new work appends at the foot, so
   leaving the pointer over Needs-you cannot hide an arrival.
   Every human-initiated write therefore ends in `reloadAndPaint()` (`await load()` then
   `forceRender()`); the ONLY un-painted callers are the boot call and `setInterval(load, 3000)`.
-  There are exactly **two entries into `render()`** — `renderIfIdle` (gated) and `forceRender`
-  (not) — because `forceRender` is also the only thing that clears `renderDirty` and refreshes
-  `#pauseHint`; a direct `render()` leaves that hint claiming "paused" over data already on
-  screen. Pinned in `test/shell.test.ts` + `test/issue-31-followups.test.ts`; the behavioural
-  half (including the anti-regression that the poll still suspends) is `test/dom/silent-send.test.ts`.
+  There are exactly **two entries into `render()`** — `renderIfIdle` (with the ambient frame it
+  already prepared) and `forceRender` (a full fresh frame) — because `forceRender` is also the
+  only thing that clears `renderDirty` and refreshes `#pauseHint`; a direct `render()` leaves that
+  hint claiming "paused" over data already on screen. Pinned in `test/shell.test.ts` +
+  `test/issue-31-followups.test.ts`; the behavioural half (including both the protected draft and
+  live ambient signals) is `test/dom/silent-send.test.ts`.
 - **A held pointer defers the rebuild, and it is NOT a suspension (#38 / D2).** The 3s render
   detaches the node under the cursor, so `pointerdown`/`pointerup` share no ancestor and the
   browser dispatches **no click at all** (measured in Chrome: ~1 in 24 at human hold times, on

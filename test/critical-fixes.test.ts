@@ -69,10 +69,10 @@ describe('C1 · focusItem only claims the accordion for a row that exists (layer
   })
 })
 
-describe('C1 · render() reconciles openRowId against what it actually rendered (layer 2)', () => {
-  const body = fn('function render()', '\n// one age vocabulary')
+describe('C1 · the editable frame reconciles openRowId against what it actually rendered (layer 2)', () => {
+  const body = fn('function paintEditableSurfaces(', '\nfunction render()')
 
-  it('render() runs the reconciliation', () => {
+  it('the editable frame runs the reconciliation', () => {
     expect(body).toMatch(/reconcileOpenRow\(/)
   })
 
@@ -184,4 +184,3 @@ describe('C4 · postJSON fails loudly on a non-2xx response', () => {
     expect(fn('async function changeAnswer(', '\n// notes / done keep')).toMatch(/undoRefusal\(/)
   })
 })
-

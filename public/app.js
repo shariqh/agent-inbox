@@ -9,7 +9,7 @@ import {
 } from '/attention.js'
 import { DEFAULT_TAB, TAB_IDS, tabCounts } from '/tabs.js'
 import { projectColor } from '/colors.js'
-import { shouldDeferRender, suspendHint, pinOrder, reconcileOpenRow } from '/poll.js'
+import { pressHeld, shouldDeferRender, suspendHint, pinOrder, reconcileOpenRow } from '/poll.js'
 import { createStagedSend } from '/star.js'
 import {
   ageChip, agentCounts, handledUndoRefusal, needsYouEntries, relMs, repliedEntries, rowModel,
@@ -40,6 +40,7 @@ let shown = { ...PAGE }
 function resetPaging() { shown = { ...PAGE } }
 
 let lastData = null
+let preparedFrame = null
 // issue #30 — the (repo, branch) → cached PR state index, rebuilt once per
 // render. A Map from the start, never null: the deep-link and setup paths can
 // reach a renderer before the first /api/links response lands, and linkFor(null)
@@ -100,8 +101,12 @@ let pressedAt = null    // pointerdown → pointerup, hard-bounded by PRESS_GRAC
 // `pressedAt` is missing on purpose and must stay missing: showPauseHint() reads
 // this, and a held button is not a pause (see initPressGuard).
 function suspendState() {
+  const drafts = {}
+  for (const [id, value] of Object.entries(draftReplies)) drafts[`reply:${id}`] = value
+  for (const [id, value] of Object.entries(draftReplyContexts)) drafts[`context:${id}`] = value
+  for (const [id, value] of Object.entries(rowDrafts)) drafts[`row:${id}`] = value
   return {
-    drafts: { ...draftReplies, ...draftReplyContexts, ...rowDrafts },
+    drafts,
   }
 }
 
@@ -133,13 +138,25 @@ function showPauseHint() {
 
 // the poll's ONLY entry into render()
 function renderIfIdle() {
-  if (shouldDeferRender({ ...suspendState(), pressedAt }, Date.now())) {
+  const now = Date.now()
+  // A held press still protects EVERY surface. paintAmbient() may rebuild the rail,
+  // so running it between pointerdown and click would reintroduce issue #38.
+  if (pressHeld(pressedAt, now)) {
     renderDirty = true
     showPauseHint() // reads suspendState() only — a bare press prints nothing (#38)
     return
   }
+  const frame = paintAmbient()
+  // Drafts protect only editable lists. Counts, the badge, rail and Live strip
+  // above have no in-progress text to lose and must keep reporting fresh data.
+  if (shouldDeferRender({ ...suspendState(), pressedAt }, now)) {
+    renderDirty = true
+    showPauseHint()
+    return
+  }
   renderDirty = false
   showPauseHint()
+  preparedFrame = frame
   render()
 }
 
@@ -480,7 +497,7 @@ function projectScoped({ g, boards, archived }) {
   }
 }
 
-function render() {
+function paintAmbient() {
   applyBadge()
   // issue #30 — rebuilt ONCE here, before any renderer runs, so the row chips,
   // the card blocks and the board chips all read the same snapshot. It feeds
@@ -492,7 +509,7 @@ function render() {
   // DIFFERENT project pill than the one currently selected — including one
   // behind a CLOSED project, which is what the fold's auto-open rule keys on.
   //
-  // Hoisted out of render() to the module binding (issue #32) so renderRail can
+  // Hoisted to the module binding (issue #32) so renderRail can
   // read it. It is an ASSIGNMENT, never a `const`: a function-scoped declaration
   // here is legal JS that silently shadows the module binding, leaving renderRail
   // reading an empty Map forever and §12's confident false negative sealed inside
@@ -502,10 +519,8 @@ function render() {
   // AFTER renderRail: renderRail is what reconciles a stale projectFilter, and
   // withoutClosed reads projectFilter to decide whether this is a peek.
   visibleData = withoutClosed(lastData)
-  renderClosedBanner()
   const agents = collectAgents(projectScoped(visibleData))
   if (agentFilter && !agents.includes(agentFilter)) agentFilter = null
-  renderAgentSelect(agents)
   // prune collapse state against ALL cards, not the filtered view (nor the
   // closure-narrowed one), so switching tabs never drops state for cards the
   // filter is hiding
@@ -535,20 +550,33 @@ function render() {
   // reusing searchMatches by mapping each session onto a haystack-shaped entity
   const liveMatched = searchMatches(pillLive.map(liveEntity), searchQuery, fuzzyFilter)
   const live = liveMatched ? pillLive.filter((a) => liveMatched.has(a.session)) : pillLive
-  renderLive(live)                          // drawer's expanded list — stays FILTERED (rail-scoped, like every other tab)
   renderLiveBar(lastData.activity ?? [])    // collapsed strip — GLOBAL, never scoped (§7 filter-blindness, generalized)
-  renderNeedsYou(g, boards, Date.now())
-  renderGroups('notes', g.notes)
-  renderDone(g.done)
-  renderBoards(boards, archived)
+  paintTabCounts(g, boards)
+  return { agents, g, boards, archived, live }
+}
+
+function paintTabCounts(g, boards) {
   // Needs-you counts the GLOBAL attention set; every other tab counts the
-  // filtered view the user is actually looking at (spec §7)
+  // filtered view the user is actually looking at (spec §7).
   const counts = tabCounts({
     globalAttention: attentionCount(allItems(lastData.g), lastData.boards, Date.now(), liveSessionIds(), lastData.closed ?? []),
     unreadNotes: unreadNoteCount(g.notes.flatMap((gr) => gr.items), notesSeenAt, Date.now(), notesSeenIds),
     scoped: { boards, done: g.done },
   })
   for (const id of TAB_IDS) setCount(id, counts[id])
+}
+
+function paintEditableSurfaces({ agents, g, boards, archived, live }) {
+  renderClosedBanner()
+  renderAgentSelect(agents)
+  renderLive(live) // drawer's expanded list — stays FILTERED (rail-scoped, like every other tab)
+  renderNeedsYou(g, boards, Date.now())
+  renderGroups('notes', g.notes)
+  renderDone(g.done)
+  renderBoards(boards, archived)
+  // renderGroups may have marked visible notes read. Recount only on a full
+  // editable frame; a draft-gated ambient frame must never mark unseen notes.
+  paintTabCounts(g, boards)
   pruneCollapsedCards()
   // fix round 2 (C1, layer 2 — the one that closes the bug class). openRowId
   // feeds shouldSuspendRender(), but its only clearing path is toggleRow, a DOM
@@ -561,6 +589,12 @@ function render() {
   // still through setOpenRow — it stays the single writer of openRowId
   if (nextOpen !== openRowId) setOpenRow(nextOpen, { resume: false })
   renderTriage() // keep the open lightbox in sync with fresh data
+}
+
+function render() {
+  const frame = preparedFrame ?? paintAmbient()
+  preparedFrame = null
+  paintEditableSurfaces(frame)
 }
 
 // one age vocabulary for every surface (§6): rows, chips, Live and tooltips all
@@ -1162,7 +1196,7 @@ function closedFoldEl(entries, count, suppressed, open, withFilter) {
 // The peek banner (issue #32). While you are looking at a closed project the
 // list on screen deliberately holds rows no count includes — two numbers
 // disagreeing with no explanation is exactly what tenets 2/3 forbid. So say it
-// out loud, with the one-click reversal right there. Rendered from render()
+// out loud, with the one-click reversal right there. Rendered in the editable frame
 // above the panel host rather than inside renderNeedsYou, so Boards, Notes and
 // Done explain themselves too.
 function renderClosedBanner() {

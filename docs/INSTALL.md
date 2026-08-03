@@ -1,8 +1,25 @@
 # Install
 
-## 1. Build
+## Supported hosts
+
+| Surface | Support |
+|---|---|
+| MCP server and browser viewer | macOS and Linux with Node 24 |
+| Agent setup installer | Claude Code and GitHub Copilot CLI on macOS/Linux |
+| Electron app packaging | Apple Silicon macOS, built from source |
+| Windows | Not currently supported by the shell installers or Electron packager |
+
+The source repository is the v0.1 distribution; the package is not published to npm.
+GitHub CLI (`gh`) is optional and adds live PR state. The optional Claude hooks also
+require `jq`.
+
+## 1. Clone and build
+
 ```sh
-npm install && npm run build
+git clone https://github.com/shariqh/agent-inbox.git
+cd agent-inbox
+npm ci
+npm run build
 ```
 
 ## 2. Install the MCP server and agent instructions

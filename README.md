@@ -48,28 +48,35 @@ check never touches the badge — PR state is ambient information, not attention
 
 ## Status
 
-**v1 shipped and running locally.** Registered with Claude Code (user scope) and Copilot
-CLI (`~/.copilot/mcp-config.json`); viewer served on `http://localhost:4319`.
-Answer-back, the `done` bucket, tracking boards, session presence, Electron packaging, the
-backstop hooks, source/PR links and project close/reopen have all since landed.
-**Remote/hosted mode is the one big open item** — see [`CLAUDE.md`](CLAUDE.md) for the
-backlog and the seams already in place.
+**v0.1 is local-first.** The MCP server, SQLite hub, browser viewer, agent setup,
+answer-back, tracking boards, session presence, Electron shell, wake hooks and source/PR
+links all run on your machine. Remote/hosted mode is planned for v2; it is not required
+for the local workflow.
 
 ## Quickstart
 
-Requires **Node 24** (see the gotcha below). Full steps in [`docs/INSTALL.md`](docs/INSTALL.md).
+Requires **Git**, **Node 24** and npm. The MCP server and browser viewer support macOS
+and Linux; the Electron packaging script currently targets Apple Silicon macOS. Full
+steps and the host support matrix are in [`docs/INSTALL.md`](docs/INSTALL.md).
 
 ```sh
-npm install && npm run build
+git clone https://github.com/shariqh/agent-inbox.git
+cd agent-inbox
+npm ci
+npm run build
 npm run install:agents                  # dry run: MCP + instructions for both hosts
 npm run install:agents -- --apply       # apply with backups; user scope, every repo
-npm run view                      # http://localhost:4319 — leave running
+npm run view                            # http://localhost:4319 — leave running
 ```
 
 Or open the Electron app's **Setup** panel: choose both hosts, Claude only, or
 Copilot only, then install directly or copy an exact prompt/command for an agent
 or terminal. Direct execution is available only when the Electron app owns the
 local viewer; a browser tab never receives command-execution access.
+
+This repository is the v0.1 distribution: it is intentionally not published to npm.
+The macOS app can be built from the checkout with `npm run package:app`; signed and
+notarized downloads are a separate release track.
 
 Optionally add the backstop hooks — `npm run install:hooks` (a dry run; `-- --apply` writes),
 see [`docs/hooks.md`](docs/hooks.md).

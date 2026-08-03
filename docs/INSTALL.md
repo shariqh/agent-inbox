@@ -13,6 +13,14 @@ The source repository is the v0.1 distribution; the package is not published to 
 GitHub CLI (`gh`) is optional and adds live PR state. The optional Claude hooks also
 require `jq`.
 
+The transactional agent installer requires a kernel-backed `lockf` or `flock`
+command. Linux normally includes `flock`, and newer macOS versions include `lockf`.
+If neither is available on macOS, install `flock` first:
+
+```sh
+brew install flock
+```
+
 ## 1. Clone and build
 
 ```sh

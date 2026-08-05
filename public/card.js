@@ -16,16 +16,24 @@ export function recommendedWarning(options) {
 
 export function cardSections(it, { done = false } = {}) {
   const open = it.status === 'open'
-  const answered = it.kind === 'question' && open && Boolean(it.reply)
+  const responded = it.kind === 'question' && Boolean(it.reply || it.reply_kind)
+  const answered = open && responded
   return {
     detail: it.detail ?? '',
+    nextStep: it.next_step ?? '',
+    actionOwner: it.action_owner ?? null,
+    impact: it.impact ?? '',
+    nextAfter: it.next_after ?? '',
+    outcome: it.outcome ?? '',
+    outcomeAt: it.outcome_at ?? null,
     context: it.context ?? '',
     annotation: it.annotation ?? '',
-    reply: answered ? it.reply : '',
+    reply: responded ? (it.reply ?? '') : '',
     options: optionOrder(it.options),
     recWarning: it.kind === 'question' && !answered ? recommendedWarning(it.options) : null,
     showAnswer: !done && it.kind === 'question' && open && !it.reply,
     showActions: !done,
+    showPickup: answered,
     answered,
   }
 }

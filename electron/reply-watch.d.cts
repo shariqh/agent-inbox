@@ -11,6 +11,7 @@ export interface ResponseTarget {
   title: string
   label: string | null
   response: string | null
+  responseKind: 'answer' | 'clarify' | 'decline' | null
   responseContext: string | null
   humanMarkedDone: boolean
   actedAt: string
@@ -31,6 +32,10 @@ export interface CannedResponseActions {
   actions: Array<{ type: 'button'; text: string }>
   responses: string[]
 }
+
+export type NotificationResponseTarget =
+  | { source: 'item'; id: string }
+  | { source: 'row'; boardId: string; rowId: string; revision: number; boardRevision: number }
 
 export interface RetainableNotification {
   once(event: string, listener: (...args: unknown[]) => void): this
@@ -75,6 +80,25 @@ export function submitCannedResponse(
     json(): Promise<{ ok?: boolean }>
   }>,
 ): Promise<void>
+
+export function submitNotificationResponse(
+  urlBase: string,
+  target: NotificationResponseTarget,
+  text: string,
+  fetchImpl?: (
+    url: string,
+    init: RequestInit,
+  ) => Promise<{
+    ok: boolean
+    status: number
+    json(): Promise<{ ok?: boolean }>
+  }>,
+): Promise<void>
+
+export function refreshNotificationTarget(
+  boards: unknown[],
+  target: NotificationResponseTarget,
+): NotificationResponseTarget | null
 
 export function responseTargets(grouped: unknown, boards: unknown[]): ResponseTarget[]
 

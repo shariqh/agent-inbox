@@ -18,6 +18,10 @@ const base: RowItem = {
 const item = (over: Partial<RowItem> = {}): RowItem => ({ ...base, ...over })
 
 describe('secondaryLine', () => {
+  it('leads with the concrete next step when one is present', () => {
+    expect(secondaryLine(item({ detail: 'reviews are green', next_step: 'Merge PR #42.' })))
+      .toBe('Next: Merge PR #42.')
+  })
   it('prefers the item detail', () => {
     expect(secondaryLine(item({ detail: 'one glanceable line' }))).toBe('one glanceable line')
   })
@@ -95,12 +99,16 @@ describe('rowModel', () => {
   it('maps a blocked board row to a row model carrying the board link', () => {
     const m = rowModel({
       kind: 'row',
-      row: { id: 'r1', label: 'Deploy staging', note: 'needs a prod token', status: 'blocked' },
+      row: {
+        id: 'r1', label: 'Deploy staging', note: 'needs a prod token',
+        next_step: 'Create the production token.', status: 'blocked',
+      },
       board: { id: 'b1', project: 'web', stream: '', title: 'Rollout' },
     })
     expect(m).toMatchObject({
       kind: 'row', id: 'r1', project: 'web', title: 'Deploy staging',
-      secondary: 'needs a prod token', boardId: 'b1', boardTitle: 'Rollout', liveness: 'blocked',
+      secondary: 'Next: Create the production token.',
+      boardId: 'b1', boardTitle: 'Rollout', liveness: 'blocked',
     })
   })
   it('marks a replied item answered', () => {
@@ -238,7 +246,7 @@ describe('urgencyChip', () => {
     const row = (over: Record<string, unknown>) => model({ kind: 'row', answered: true, pickedUp: false, pickedUpAt: null, pickedUpBy: '', ...over })
     expect(urgencyChip(row({}), T0)).toEqual({ text: 'awaiting pickup', tone: 'muted' })
     expect(urgencyChip(row({ pickedUp: true, pickedUpAt: new Date(T0 - 3 * 60_000).toISOString() }), T0))
-      .toEqual({ text: 'delivered 3m', tone: 'muted' })
+      .toEqual({ text: 'picked up 3m', tone: 'muted' })
   })
   it('an un-picked-up row is never rendered as blocked — the human already answered', () => {
     const m = model({ kind: 'row', answered: true, pickedUp: false, pickedUpAt: null, pickedUpBy: '' })
@@ -252,7 +260,7 @@ describe('urgencyChip', () => {
     const marked = model({ kind: 'row', answered: true, handled: true, pickedUp: false, pickedUpAt: null, pickedUpBy: '' })
     expect(urgencyChip(marked, T0)).toEqual({ text: 'awaiting pickup', tone: 'muted' })
     const collected = { ...marked, pickedUp: true, pickedUpAt: new Date(T0 - 3 * 60_000).toISOString() }
-    expect(urgencyChip(collected, T0)).toEqual({ text: 'delivered 3m', tone: 'muted' })
+    expect(urgencyChip(collected, T0)).toEqual({ text: 'picked up 3m', tone: 'muted' })
   })
 })
 

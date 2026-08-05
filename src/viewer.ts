@@ -2,7 +2,13 @@ import { Hono } from 'hono'
 import { readFileSync, existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import type Database from 'better-sqlite3'
-import { listItems, resolveItem, dismissItem, annotateItem, replyItem, listBoards, archiveBoard, unarchiveBoard, annotateBoardRow, markRowHandled, clearRowHandled, listActivity, listSourceLinks, defaultDbPath, closeProject, reopenProject, closedProjects } from './store.js'
+import {
+  listItems, resolveItem, dismissItem, annotateItem, replyItem, snoozeItem,
+  listBoards, archiveBoard, unarchiveBoard, annotateBoardRow, snoozeBoardRow,
+  markRowHandled, clearRowHandled, listActivity, listSourceLinks, defaultDbPath,
+  closeProject, reopenProject, closedProjects,
+} from './store.js'
+import type { ResponseKind } from './store.js'
 import { groupItems } from './group.js'
 import { hooksSettingsBlock } from './hook.js'
 import { buildStamp, readBakedInfo } from './stamp.js'
@@ -89,6 +95,10 @@ function validProject(body: unknown): string | null {
   return typeof project === 'string' && project.trim() ? project : null
 }
 
+function responseKind(value: unknown): ResponseKind | null {
+  return value === 'answer' || value === 'clarify' || value === 'decline' ? value : null
+}
+
 export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono {
   const app = new Hono()
   const bakedPath = opts.setupInfoPath ?? resolve(process.cwd(), 'setup-info.json')
@@ -151,9 +161,18 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
   })
 
   app.post('/api/items/:id/reply', async (c) => {
-    const { text, context } = await c.req.json<{ text: string; context?: string }>()
+    const { text, context, kind } = await c.req.json<{ text: string; context?: string; kind?: string }>()
+    const parsedKind = kind === undefined ? 'answer' : responseKind(kind)
+    if (parsedKind === null) return c.json({ ok: false, error: 'invalid response kind' }, 400)
     // false = refused: an already-picked-up reply cannot be silently blanked out (src/store.ts)
-    const ok = replyItem(db, c.req.param('id'), text, context)
+    const ok = replyItem(db, c.req.param('id'), text, context, parsedKind)
+    return c.json({ ok })
+  })
+
+  app.post('/api/items/:id/snooze', async (c) => {
+    const body = await c.req.json<{ until?: string | null }>().catch(() => null)
+    const until = body?.until === null || typeof body?.until === 'string' ? body.until : null
+    const ok = snoozeItem(db, c.req.param('id'), until)
     return c.json({ ok })
   })
 
@@ -161,20 +180,61 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
 
   app.get('/api/boards/archived', (c) => c.json(listBoards(db, { status: 'archived' })))
 
-  app.post('/api/boards/:id/archive', (c) => {
-    archiveBoard(db, c.req.param('id'))
-    return c.json({ ok: true })
+  app.post('/api/boards/:id/archive', async (c) => {
+    const body = await c.req.json<{ expected_version?: number }>().catch(() => null)
+    if (!Number.isInteger(body?.expected_version)) return c.json({ ok: false, error: 'expected_version required' }, 400)
+    const ok = archiveBoard(db, c.req.param('id'), body!.expected_version!)
+    return c.json(ok ? { ok: true } : { ok: false, reason: 'version_mismatch' })
   })
 
-  app.post('/api/boards/:id/unarchive', (c) => {
-    unarchiveBoard(db, c.req.param('id'))
-    return c.json({ ok: true })
+  app.post('/api/boards/:id/unarchive', async (c) => {
+    const body = await c.req.json<{ expected_version?: number }>().catch(() => null)
+    if (!Number.isInteger(body?.expected_version)) return c.json({ ok: false, error: 'expected_version required' }, 400)
+    const ok = unarchiveBoard(db, c.req.param('id'), body!.expected_version!)
+    return c.json(ok ? { ok: true } : { ok: false, reason: 'version_mismatch' })
   })
 
   app.post('/api/boards/:id/rows/:rowId/annotate', async (c) => {
-    const { text } = await c.req.json<{ text: string }>()
-    annotateBoardRow(db, c.req.param('rowId'), text)
-    return c.json({ ok: true })
+    const { text, kind, expected_revision, expected_board_version } = await c.req.json<{
+      text: string
+      kind?: string
+      expected_revision?: number
+      expected_board_version?: number
+    }>()
+    const parsedKind = kind === undefined ? 'answer' : responseKind(kind)
+    if (parsedKind === null) return c.json({ ok: false, error: 'invalid response kind' }, 400)
+    if (!Number.isInteger(expected_revision) || !Number.isInteger(expected_board_version)) {
+      return c.json({ ok: false, error: 'expected_revision and expected_board_version required' }, 400)
+    }
+    const ok = annotateBoardRow(
+      db,
+      c.req.param('rowId'),
+      text,
+      parsedKind,
+      expected_revision,
+      expected_board_version,
+    )
+    return c.json(ok ? { ok: true } : { ok: false, reason: 'version_mismatch' })
+  })
+
+  app.post('/api/boards/:id/rows/:rowId/snooze', async (c) => {
+    const body = await c.req.json<{
+      until?: string | null
+      expected_revision?: number
+      expected_board_version?: number
+    }>().catch(() => null)
+    if (!Number.isInteger(body?.expected_revision) || !Number.isInteger(body?.expected_board_version)) {
+      return c.json({ ok: false, error: 'expected_revision and expected_board_version required' }, 400)
+    }
+    const until = body?.until === null || typeof body?.until === 'string' ? body.until : null
+    const ok = snoozeBoardRow(
+      db,
+      c.req.param('rowId'),
+      until,
+      body?.expected_revision,
+      body?.expected_board_version,
+    )
+    return c.json(ok ? { ok: true } : { ok: false, reason: 'version_mismatch' })
   })
 
   // issue #36 — the human's OTHER answer on a blocked row: "I have done my part".
@@ -205,10 +265,32 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
   // cosmetic only because the frame is unreachable; fix them together if this route
   // ever gains a failure mode that leaves the row on screen.
   app.post('/api/boards/:id/rows/:rowId/handled', async (c) => {
-    const body = await c.req.json<{ handled?: boolean }>().catch(() => null)
+    const body = await c.req.json<{
+      handled?: boolean
+      expected_revision?: number
+      expected_board_version?: number
+    }>().catch(() => null)
+    if (!Number.isInteger(body?.expected_revision) || !Number.isInteger(body?.expected_board_version)) {
+      return c.json({ ok: false, error: 'expected_revision and expected_board_version required' }, 400)
+    }
     const rowId = c.req.param('rowId')
-    const ok = body?.handled === false ? clearRowHandled(db, rowId) : markRowHandled(db, rowId)
-    return c.json({ ok })
+    const ok = body?.handled === false
+      ? clearRowHandled(db, rowId, body?.expected_revision, body?.expected_board_version)
+      : markRowHandled(db, rowId, body?.expected_revision, body?.expected_board_version)
+    if (ok) return c.json({ ok: true })
+    const currentBoard = [
+      ...listBoards(db),
+      ...listBoards(db, { status: 'archived' }),
+    ].find((board) => board.rows.some((row) => row.id === rowId))
+    const current = currentBoard?.rows.find((row) => row.id === rowId)
+    return c.json(
+      current && (
+        current.revision !== body?.expected_revision
+        || currentBoard?.revision !== body?.expected_board_version
+      )
+        ? { ok: false, reason: 'version_mismatch' }
+        : { ok: false },
+    )
   })
 
   // ── project closure (issue #32) ───────────────────────────────────────────

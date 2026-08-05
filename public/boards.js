@@ -11,6 +11,10 @@ export function boardRowsView(board, { hideCompleted = false, showDone = false }
     .filter(({ row }) => !(hideCompleted && !showDone && row.status === 'done'))
 }
 
+export function boardRowLine(row) {
+  return row.status === 'blocked' && row.next_step ? `Next: ${row.next_step}` : (row.note ?? '')
+}
+
 // done/countable is the primary reading; the percentage is secondary (spec §9).
 export function progressLabel(progress) {
   return {

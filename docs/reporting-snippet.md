@@ -13,8 +13,12 @@ Call `flag` when:
   ask. Use a question item only when no board row already owns it.
 - **`kind: "question"`** — you are about to pause and wait on the human: a decision,
   a missing credential, an ambiguity you cannot resolve yourself. One flag per real
-  blocker; put the actual question in `title`, a one-line why in `detail`, long background in
-`context`. When sensible answers
+  blocker; put the actual question in `title`, a one-sentence TL;DR in `detail`, the ONE
+  concrete action the human should take in `next_step`, why it matters in `impact`,
+  what happens after in `next_after`, and long background in `context`. Set
+  `action_owner` to `decision` (they choose), `task` (they do it), or `approval`
+  (they approve and you act). Start `next_step` with a verb and do not bundle multiple asks.
+  `decision`/`approval` requires 2-4 answers; `task` has no options. When sensible answers
   exist, ALWAYS attach 2-4 `options` — your recommendation first with `recommended: true`,
   each with a short `label` and a `detail` explaining the tradeoff. The human can pick
   one, compare them, or answer in their own words. **Options now buy more than clarity:**
@@ -42,17 +46,22 @@ Call `flag` when:
   the inbox stops showing it open and unread. If that comes back
   `{ ok:false, reason:"unread_inbox_answer" }` they also answered in the inbox and you have
   not read it — poll `pending()` and follow that one; the inbox wins.
+  Read `reply_kind`: `clarify` means resolve this wording and raise a corrected replacement
+  question; `decline` means stop/cancel the proposed path and resolve with an `outcome`.
+  `snoozed_until` means the human deferred the ask; do not nag or treat it as an answer.
 - **`kind: "note"`** — you made a notable **assumption**, took a **workaround**, hit a
   **caveat**, or left **tech debt** the human should know about but that does NOT block
   you. Do not flag routine progress or things visible in the diff.
 - **`kind: "done"`** — a completed **milestone** worth announcing (shipped, merged,
   deployed). Use sparingly — it is NOT for routine progress.
 
-**Keep every item glanceable.** `title` is the ask or finding itself in one line (aim
-under ~80 chars) — not a preamble; `detail` is *one* line (the why, the impact, or what
-happens next). If you catch yourself writing a paragraph into `title` or `detail`, compress
-the headline and move the body into `context` — the viewer ranks `title` first, so prose in
-`detail` buries the signal. **Always provide `context`** — the background a human returning cold needs
+**Keep every item glanceable.** Every flag has distinct fields: `title` is the ask or finding
+itself in one line (aim under ~80 chars), `detail` is a one-sentence TL;DR of the current
+state, `next_step` is the ONE concrete action the human should take now, `impact` says why
+it matters, and `next_after` says what follows. Use
+`next_step: "No action"` for a pure FYI or milestone. If you catch yourself writing a
+paragraph into any of those fields, compress it and move the body into `context`.
+**Always provide `context`** — the background a human returning cold needs
 to act without asking you anything: what you were working on, why this came up, relevant
 files/PRs/links. They may read the item hours later with zero memory of the task; it
 renders as a collapsed dropdown, so length is fine. Do not flag more than the human
@@ -81,30 +90,51 @@ review's findings — keep a **board** (a titled table of rows) instead of buryi
 prose. Do this **proactively**, without being asked:
 
 - **`board_upsert({ title, rows })`** — create or refresh the WHOLE table (idempotent by
-  title). Re-send the full table whenever status changes. Each row is
-  `{ label, status, note?, context? }`, `status ∈ done | partial | missing | tracked | na | blocked`.
+  title). Existing boards require `board_version`; re-send the full table whenever status
+  changes. Each row is
+  `{ label, status, revision?, note?, next_step?, action_owner?, impact?, next_after?, options?, outcome?, context? }`,
+  `status ∈ done | partial | missing | tracked | na | blocked`.
   `blocked` means the row needs the HUMAN and nobody else — it escalates into their attention
-  banner; put what you need from them in `note`. The blocked row is itself the ask:
+  banner. Every blocked row MUST have `note` as a one-sentence TL;DR and `next_step` as
+  the ONE concrete action the human can take now, plus `action_owner` and `impact`.
+  Start it with a verb; split multiple asks into separate rows. If the blocker is a
+  **decision/approval**, attach 2-4 `options` (recommendation first); if it is a **task**
+  the human must perform, omit options so
+  the viewer offers “I’ve done my part.” The blocked row is itself the ask:
   **one ask, one surface** — never also create a question item for that dependency.
   **Being stuck is not being blocked:** a failing
   test, a build or release that does not exist yet, another PR — no person can unblock those, so
   they are `partial` (or `tracked`) with the reason in `note`.
-  `pending()` delivers their answer, in either of the two shapes a blocked row can come back
-  in: an `annotation` (words), or `handled_at` — **the human telling you THEY have gone and
+  `pending()` delivers their response kind too: `answer`, `clarify`, or `decline`.
+  A row comes back as an `annotation` (words/choice), or `handled_at` — **the human telling you THEY have gone and
   DONE the thing** you blocked on. Both mean their part is finished; **flip the row's status
-  once you have acted — that status change is what tells them you did.** Until you do, they
+  once you have acted and include `outcome` — that status change/result tells them you did.**
+  A clarification request is NOT a final answer: rewrite the same stable row with
+  `board_advance({ board_version, expected_revision, ...fresh action fields })`. If their answer creates
+  another human step, use `board_advance` again rather than stacking a second row. A decline
+  normally becomes `na` with an outcome saying what was cancelled. Until you acknowledge, they
   see the row sitting there marked "delivered to you", which is exactly what it is — and
   `pending()` keeps handing you the same note on every poll, so nothing is lost when a
   sibling session polls first. `annotation_seen_at`/`annotation_seen_by` mean the note reached
   **some** agent — often a sibling session sharing your name, not you — so a stamp is never a
   reason to skip it. **If the row is still `blocked`, it is not done.** Act on it, then flip the
   status and it stops coming back. Moving a row out of `blocked` and later back into it is a
-  NEW request and discards their "I did my part" mark, so never do that just to re-ask.
+  NEW request and archives the previous step, so never do that just to nag about the same ask.
   Keep `label` stable — rows are matched by label, and the human's notes stick to the label.
-  `note` is the one-line summary; put long-form backstory (reasoning, history, links) in
+  Every EXISTING row update must carry the current row `revision` from `board_get`/`pending`;
+  a mismatch is a stale sibling and the write is refused.
+  `note` is the TL;DR, `next_step` is the action, `impact` is why now, and `next_after`
+  is the immediate follow-up; put long-form backstory (reasoning, history, links) in
   `context` — the human sees it as a collapsed dropdown, so the row stays scannable.
-- **`board_row({ title, label, status?, note?, context? })`** — flip a single row without
-  resending all.
+  Example decision row: `label: "#334 PR-X0 spec (#582)"`,
+  `note: "The spec is settled and every review gate is green."`,
+  `next_step: "Choose whether to merge PR #582."`,
+  `action_owner: "approval"`, `impact: "Unblocks PR-X"`,
+  `options: [Merge PR #582 (recommended), Hold]`; the six review rounds belong in `context`.
+- **`board_row({ title, label, expected_revision, status?, ..., outcome? })`** — update one
+  existing row; when acknowledging the human, move it out of `blocked` and record the result.
+- **`board_advance({ title, label, board_version, expected_revision, ...fresh action })`** — atomically archive
+  the prior step and reuse the same row for the next human action.
 - **`board_get({ title? })`** — read a board back, **including the human's per-row notes**.
   Call it when you (re)start work on a tracked effort, and before updating a board. You do
   not need it to HEAR from them — `pending()` delivers their notes — so prefer the titled
@@ -113,8 +143,10 @@ prose. Do this **proactively**, without being asked:
   the `context` YOU wrote comes back as `context_chars` (its size) — you wrote it, so you are
   not charged to read it again. `board_get({ title, full: true })` returns the real text if you
   genuinely need it; `pending({ full: true })` does the same for items. `context_chars` is not
-  proof you have the text, only that text exists.
+  proof you have the text, only that text exists. Row `revision` is the CAS token for writes;
+  `action_version` numbers chained steps; `history_count` says prior steps exist without shipping them.
 - **`board_archive({ title })`** — when the effort is finished.
+  Existing boards require the current `board_version`.
 
 Prefer updating an existing board (same title) over spawning new ones. One board per
 effort; let it track from start to done. A board is the durable, always-current answer —
@@ -129,7 +161,7 @@ source of truth before anything is sent.
 - Use one row per draft/thread. Keep the row label stable, and put the draft's
   subject/customer/thread key in the label.
 - Put the draft body, relevant context, and any open questions in the row `context`;
-  use `note` for a one-line status summary.
+  use `note` for a one-sentence TL;DR and `next_step` for the exact approval/action needed.
 - Set `status: tracked` while drafting, `blocked` when you need the human to decide
   something, and `done` once the final draft has been approved and sent.
 - If a draft row already represents a concrete blocker, set that row to `blocked` and

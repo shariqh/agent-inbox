@@ -139,10 +139,11 @@ installer with a fixed target—there is no general-purpose shell or HTTP execut
 
 | tool | agent calls it to… |
 |---|---|
-| `flag({ kind, title, detail?, context?, options?, stream? })` → `{ id, watch? }` | raise a `question` (needs you) or `note` (non-blocking FYI). Copilot questions also return the detached watcher launch contract. |
-| `pending()` | poll open questions; each answered item includes `reply` plus optional `reply_context` for extra direction. |
+| `flag({ kind, title, detail, next_step, action_owner?, impact?, next_after?, context?, options?, stream? })` → `{ id, watch? }` | raise a `question` (needs you) or `note` (non-blocking FYI). Questions identify who acts, why now, and what follows. Copilot questions also return the detached watcher launch contract. |
+| `pending()` | poll human responses, including `answer` / `clarify` / `decline`, snooze state, and board-row task completion. |
 | `answer({ id, text, context? })` → `{ ok, reason? }` | record an answer the human gave in **chat** onto an open question, so both channels converge. Refused with `reason: "unread_inbox_answer"` while an inbox answer is waiting unread — the inbox wins. |
-| `resolve({ id })` | close its own item once it's moot (mostly you resolve from the viewer). |
+| `resolve({ id, outcome? })` | close an item and record the result the human’s answer produced. |
+| `board_advance({ title, label, board_version, expected_revision, ... })` | archive the current step and reuse the same stable row for the next human action. |
 | `register({ project?, stream?, repo?, issue? })` | override auto-inferred scope, including the source link (`repo` = `owner/name`, `issue` = a number) when the branch does not name it; also the identity seam for future remote mode. |
 | `whoami()` | debug — report the session's current project/stream/agent. |
 

@@ -10,19 +10,29 @@ export interface RowItem {
   kind?: string
   title: string
   detail?: string
+  next_step?: string
   status?: string
   session?: string | null
   options?: RowOption[] | null
   reply?: string | null
   reply_seen_at?: string | null
+  reply_kind?: 'answer' | 'clarify' | 'decline' | null
+  snoozed_until?: string | null
+  action_owner?: 'decision' | 'task' | 'approval' | null
+  impact?: string
+  next_after?: string
+  updated_at?: string
+  revision?: number
   created_at: string
 }
 
-export interface RowBoard { id: string; project: string; stream?: string; agent?: string; title: string }
+export interface RowBoard { id: string; project: string; stream?: string; agent?: string; title: string; revision?: number }
 export interface RowRow {
   id: string
   label: string
   note?: string
+  next_step?: string
+  options?: RowOption[] | null
   status?: string
   /** issue #37 — the human's answer on this row, and its delivery state. */
   annotation?: string | null
@@ -32,12 +42,19 @@ export interface RowRow {
   handled_at?: string | null
   handled_seen_at?: string | null
   handled_seen_by?: string | null
+  snoozed_until?: string | null
+  action_owner?: 'decision' | 'task' | 'approval' | null
+  impact?: string
+  next_after?: string
+  created_at?: string
+  updated_at?: string
+  revision?: number
 }
 
-export type Liveness = 'waiting' | 'parked' | 'stale'
+export type Liveness = 'waiting' | 'parked' | 'stale' | 'snoozed'
 export type Entry =
   | { kind: 'item'; item: RowItem; liveness: Liveness }
-  | { kind: 'row'; row: RowRow; board: RowBoard }
+  | { kind: 'row'; row: RowRow; board: RowBoard; liveness?: Liveness }
 
 export interface RowModel {
   kind: 'item' | 'row'
@@ -52,6 +69,10 @@ export interface RowModel {
   boardId: string | null
   boardTitle: string | null
   created_at: string | null
+  snoozedUntil: string | null
+  ownerLabel: string
+  actionCategory: 'decision' | 'task'
+  changeKind: 'new' | 'changed' | null
   answered: boolean
   /** issue #36 — the human answered by DOING it rather than by writing. */
   handled: boolean
@@ -67,6 +88,7 @@ export interface RowModelOpts {
   streams?: Map<string, number>
   agents?: Map<string, number>
   showProject?: boolean
+  lastVisitAt?: string | null
 }
 
 export function secondaryLine(item: RowItem): string

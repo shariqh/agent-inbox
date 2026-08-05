@@ -4,10 +4,12 @@
 import { canUndo, starOption } from './star.js'
 import { attentionEntries, classifyLiveness, humanActedOnRow, sortNeedsYou, ESCALATE_MS } from './attention.js'
 import { projectMonogram } from './colors.js'
+import { actionCategory, actionOwnerLabel, agentFollowupChip, changeKind } from './action.js'
 
 // Line 2 is what makes one-tap defensible (§5): you accept what you just read.
 // The item's own detail wins; otherwise the recommended option's detail.
 export function secondaryLine(item) {
+  if (item.next_step) return `Next: ${item.next_step}`
   if (item.detail) return item.detail
   const rec = starOption(item)
   return rec && rec.detail ? rec.detail : ''
@@ -56,7 +58,12 @@ function rowPickup(row) {
   return { pickedUp: true, pickedUpAt: latest.at, pickedUpBy: latest.by }
 }
 
-export function rowModel(entry, { streams = new Map(), agents = new Map(), showProject = true } = {}) {
+export function rowModel(entry, {
+  streams = new Map(),
+  agents = new Map(),
+  showProject = true,
+  lastVisitAt = null,
+} = {}) {
   if (entry.kind === 'row') {
     const { row, board } = entry
     return {
@@ -67,11 +74,15 @@ export function rowModel(entry, { streams = new Map(), agents = new Map(), showP
       stream: (streams.get(board.project) ?? 0) > 1 ? (board.stream ?? '') : '',
       agent: (agents.get(board.project) ?? 0) > 1 ? (board.agent ?? '') : '',
       title: row.label,
-      secondary: row.note ?? '',
-      liveness: 'blocked',
+      secondary: row.next_step ? `Next: ${row.next_step}` : (row.note ?? ''),
+      liveness: entry.liveness ?? 'blocked',
       boardId: board.id,
       boardTitle: board.title,
       created_at: null,
+      snoozedUntil: row.snoozed_until ?? null,
+      ownerLabel: actionOwnerLabel(row),
+      actionCategory: actionCategory(row),
+      changeKind: changeKind(row, lastVisitAt),
       // #37 — a row carries the same two facts an item does: the human answered,
       // and an agent collected that answer. `answered` is what dims it and sinks
       // it to the awaiting-pickup foot, so it must key on what the HUMAN did,
@@ -101,7 +112,11 @@ export function rowModel(entry, { streams = new Map(), agents = new Map(), showP
     boardId: null,
     boardTitle: null,
     created_at: it.created_at,
-    answered: Boolean(it.reply),
+    snoozedUntil: it.snoozed_until ?? null,
+    ownerLabel: actionOwnerLabel(it),
+    actionCategory: actionCategory(it),
+    changeKind: changeKind(it, lastVisitAt),
+    answered: Boolean(it.reply || it.reply_kind),
     // an ITEM is never "handled": the mark is a board-row concept. These three
     // are a stated false rather than an absence, so a consumer reading them off
     // an item model gets an answer instead of `undefined`.
@@ -125,17 +140,18 @@ export function rowModel(entry, { streams = new Map(), agents = new Map(), showP
 // One time vocabulary shared with the Live freshness dots (§6) — never a raw
 // age ramp: only a live asking session earns heat.
 export function urgencyChip(model, nowMs) {
+  if (model.liveness === 'snoozed' && model.snoozedUntil) {
+    return { text: `snoozed ${relMs(Date.parse(model.snoozedUntil) - nowMs)}`, tone: 'muted' }
+  }
   if (model.kind === 'row') {
     // #37: a blocked row that the human has ANSWERED must stop reading "you
     // still need to act" and start reading "answered — has anyone collected it?"
     // The alarm is relabeled, never removed, so a pickup that never happens
     // stays on screen as the agent's failure rather than as your to-do.
     if (!model.answered) return { text: 'blocked', tone: 'blocked' }
-    return model.pickedUp
-      ? { text: `delivered ${relMs(nowMs - Date.parse(model.pickedUpAt))}`, tone: 'muted' }
-      : { text: 'awaiting pickup', tone: 'muted' }
+    return agentFollowupChip(model, nowMs) ?? { text: 'awaiting pickup', tone: 'muted' }
   }
-  if (model.answered) return { text: 'answered', tone: 'muted' }
+  if (model.answered) return agentFollowupChip(model, nowMs) ?? { text: 'answered', tone: 'muted' }
   const age = nowMs - Date.parse(model.created_at)
   if (model.liveness === 'waiting') return { text: `waiting ${relMs(age)}`, tone: age >= ESCALATE_MS ? 'hot' : 'warm' }
   if (model.liveness === 'stale') return { text: `stale ${relMs(age)}`, tone: 'muted' }
@@ -224,7 +240,7 @@ export function handledUndoRefusal(row, nowMs) {
 // only place the card's "✓ picked up" marker (§15) can ever be seen.
 export function repliedEntries(items, nowMs, liveSessionIds) {
   return items
-    .filter((i) => i.kind === 'question' && (i.status ?? 'open') === 'open' && i.reply)
+    .filter((i) => i.kind === 'question' && (i.status ?? 'open') === 'open' && (i.reply || i.reply_kind))
     .map((i) => ({ kind: 'item', item: i, liveness: classifyLiveness(i, nowMs, liveSessionIds) }))
 }
 // (There used to be a strict "still awaiting pickup" subset of the above here.

@@ -62,12 +62,26 @@ function responseForNotificationAction(responses, details, legacyActionIndex) {
 }
 
 async function submitCannedResponse(urlBase, itemId, text, fetchImpl = fetch) {
+  return submitNotificationResponse(urlBase, { source: 'item', id: itemId }, text, fetchImpl)
+}
+
+async function submitNotificationResponse(urlBase, target, text, fetchImpl = fetch) {
+  const path = target?.source === 'row'
+    ? `api/boards/${encodeURIComponent(target.boardId)}/rows/${encodeURIComponent(target.rowId)}/annotate`
+    : `api/items/${encodeURIComponent(target.id)}/reply`
   const response = await fetchImpl(
-    `${urlBase}api/items/${encodeURIComponent(itemId)}/reply`,
+    `${urlBase}${path}`,
     {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify(target?.source === 'row'
+        ? {
+            text,
+            kind: 'answer',
+            expected_revision: target.revision,
+            expected_board_version: target.boardRevision,
+          }
+        : { text }),
     },
   )
   if (!response.ok) {
@@ -79,6 +93,14 @@ async function submitCannedResponse(urlBase, itemId, text, fetchImpl = fetch) {
   }
 }
 
+function refreshNotificationTarget(boards, target) {
+  if (target?.source !== 'row') return target ?? null
+  const board = (boards ?? []).find((candidate) => candidate.id === target.boardId)
+  const row = board?.rows?.find((candidate) => candidate.id === target.rowId)
+  if (!board || !row || row.revision !== target.revision) return null
+  return { ...target, boardRevision: board.revision }
+}
+
 function responseTargets(grouped, boards) {
   const targets = []
   for (const group of grouped?.needsYou ?? []) {
@@ -87,7 +109,7 @@ function responseTargets(grouped, boards) {
       const acted = latestTimestamp(item.replied_at)
       targets.push({
         key: `item:${item.id}`,
-        version: `${item.replied_at ?? ''}\0${item.reply}\0${item.reply_context ?? ''}`,
+        version: `${item.replied_at ?? ''}\0${item.reply_kind ?? ''}\0${item.reply}\0${item.reply_context ?? ''}`,
         source: 'item',
         id: item.id,
         focusId: item.id,
@@ -98,6 +120,7 @@ function responseTargets(grouped, boards) {
         title: item.title,
         label: null,
         response: item.reply,
+        responseKind: item.reply_kind ?? 'answer',
         responseContext: item.reply_context ?? null,
         humanMarkedDone: false,
         actedAt: acted.value,
@@ -114,7 +137,7 @@ function responseTargets(grouped, boards) {
       const acted = latestTimestamp(row.annotated_at, row.handled_at)
       targets.push({
         key: `row:${row.id}`,
-        version: `${row.annotated_at ?? ''}\0${row.annotation ?? ''}\0${row.handled_at ?? ''}`,
+        version: `${row.annotated_at ?? ''}\0${row.annotation_kind ?? ''}\0${row.annotation ?? ''}\0${row.handled_at ?? ''}`,
         source: 'row',
         id: row.id,
         focusId: board.id,
@@ -125,6 +148,7 @@ function responseTargets(grouped, boards) {
         title: board.title,
         label: row.label,
         response: hasWords ? row.annotation : null,
+        responseKind: row.annotation_kind ?? (hasWords || humanMarkedDone ? 'answer' : null),
         responseContext: null,
         humanMarkedDone,
         actedAt: acted.value,
@@ -260,8 +284,10 @@ module.exports = {
   formatResponseReminder,
   responseTargets,
   responseForNotificationAction,
+  refreshNotificationTarget,
   runWakeAdapter,
   submitCannedResponse,
+  submitNotificationResponse,
   wakeAdapterPayload,
   wakeAdapterFromEnv,
 }

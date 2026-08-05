@@ -112,7 +112,8 @@ describe('I2 · an empty state must never deny a match the fold below is holding
       ...AGENT, title: 'migration matrix',
       rows: [{ label: 'step one', status: 'tracked' }],
     })
-    archiveBoard(d, listBoards(d, { status: 'active' })[0]!.id)
+    const active = listBoards(d, { status: 'active' })[0]!
+    archiveBoard(d, active.id, active.revision)
     advanceClock()
     insertItem(d, { ...AGENT, kind: 'question', title: 'unrelated question' })
 

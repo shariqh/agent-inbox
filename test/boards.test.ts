@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
-import { boardRowsView, progressLabel, hiddenDoneCount, lingeringBoards } from '../public/boards.js'
+import { boardRowsView, boardRowLine, progressLabel, hiddenDoneCount, lingeringBoards } from '../public/boards.js'
 
 type Row = Parameters<typeof boardRowsView>[0]['rows'][number]
 
 const row = (over: Partial<Row> & { id: string; status: Row['status'] }): Row => ({
-  label: 'Row', note: '', context: '', annotation: null, annotation_unseen: false, ...over,
+  label: 'Row', note: '', next_step: '', context: '', annotation: null, annotation_unseen: false, ...over,
 })
 
 const board = (rows: Row[]) => ({
@@ -25,6 +25,25 @@ describe('boardRowsView', () => {
     const view = boardRowsView(b, { hideCompleted: true })
     expect(view.map((v) => v.row.id)).toEqual(['r2', 'r3'])
     expect(view.map((v) => v.num)).toEqual([2, 3])
+  })
+
+  describe('boardRowLine', () => {
+    it('shows the next step instead of status prose when one is available', () => {
+      expect(boardRowLine(row({
+        id: 'r1', status: 'blocked', note: 'Reviews are complete.', next_step: 'Merge PR #42.',
+      }))).toBe('Next: Merge PR #42.')
+    })
+
+    it('falls back to the legacy note', () => {
+      expect(boardRowLine(row({ id: 'r1', status: 'blocked', note: 'ready when you are' })))
+        .toBe('ready when you are')
+    })
+
+    it('does not show a stale human next step after the row leaves blocked', () => {
+      expect(boardRowLine(row({
+        id: 'r1', status: 'partial', note: 'Implementation started.', next_step: 'Merge PR #42.',
+      }))).toBe('Implementation started.')
+    })
   })
 
   it('keeps done rows when hideCompleted is off, or when this board opted back in', () => {

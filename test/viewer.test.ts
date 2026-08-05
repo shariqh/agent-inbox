@@ -4,11 +4,26 @@ import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
-import { openDb, insertItem, listItems, answerItem, markReplySeen, upsertBoard, listBoards, annotateBoardRow, markHandledDelivered, upsertActivity, closeProject, closedProjects, upsertSourceLink } from '../src/store.js'
+import { openDb, insertItem, listItems, answerItem, markReplySeen, upsertBoard as writeBoard, listBoards, annotateBoardRow, markHandledDelivered, upsertActivity, closeProject, closedProjects, upsertSourceLink } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
 
 function freshDb(): Database.Database {
   return openDb(join(mkdtempSync(join(tmpdir(), 'view-')), 'inbox.db'))
+}
+
+function upsertBoard(db: Database.Database, input: Parameters<typeof writeBoard>[1]) {
+  const existing = [...listBoards(db), ...listBoards(db, { status: 'archived' })]
+    .find((board) => board.project === input.project && board.title === input.title)
+  return writeBoard(db, {
+    ...input,
+    expectedVersion: input.expectedVersion ?? existing?.revision,
+    rows: input.rows.map((row) => {
+      const current = existing?.rows.find((candidate) => candidate.label === row.label)
+      return current && row.revision === undefined
+        ? { ...row, revision: current.revision }
+        : row
+    }),
+  })
 }
 
 describe('viewer api', () => {
@@ -290,15 +305,28 @@ describe('boards api', () => {
   it('POST archive removes the board from the active list', async () => {
     const { boardId } = upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'c', rows: [{ label: 'x', status: 'done' }] })
     const app = createViewer(db)
-    expect((await app.request(`/api/boards/${boardId}/archive`, { method: 'POST' })).status).toBe(200)
+    const board = listBoards(db, { status: 'archived' })[0]!
+    expect((await app.request(`/api/boards/${boardId}/archive`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ expected_version: board.revision }),
+    })).status).toBe(200)
     expect(listBoards(db)).toHaveLength(0)
   })
 
   it('POST unarchive returns the board to the active list', async () => {
     const { boardId } = upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'c', rows: [{ label: 'x', status: 'done' }] })
     const app = createViewer(db)
-    expect((await app.request(`/api/boards/${boardId}/archive`, { method: 'POST' })).status).toBe(200)
-    expect((await app.request(`/api/boards/${boardId}/unarchive`, { method: 'POST' })).status).toBe(200)
+    let board = listBoards(db, { status: 'archived' })[0]!
+    expect((await app.request(`/api/boards/${boardId}/archive`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ expected_version: board.revision }),
+    })).status).toBe(200)
+    board = listBoards(db, { status: 'archived' })[0]!
+    expect((await app.request(`/api/boards/${boardId}/unarchive`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ expected_version: board.revision }),
+    })).status).toBe(200)
     expect(listBoards(db)).toHaveLength(1)
     expect(listBoards(db, { status: 'archived' })).toHaveLength(0)
   })
@@ -307,7 +335,11 @@ describe('boards api', () => {
     const { boardId } = upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'old effort', rows: [{ label: 'x', status: 'done' }] })
     upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'still active', rows: [{ label: 'y', status: 'tracked' }] })
     const app = createViewer(db)
-    await app.request(`/api/boards/${boardId}/archive`, { method: 'POST' })
+    const board = listBoards(db, { status: 'archived' }).find((candidate) => candidate.id === boardId)!
+    await app.request(`/api/boards/${boardId}/archive`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ expected_version: board.revision }),
+    })
     const res = await app.request('/api/boards/archived')
     expect(res.status).toBe(200)
     const body = await res.json()
@@ -328,7 +360,13 @@ describe('boards api', () => {
     const rowId = board.rows[0]!.id
     const app = createViewer(db)
     const res = await app.request(`/api/boards/${board.id}/rows/${rowId}/annotate`, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'do this next' }),
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text: 'do this next',
+        expected_revision: board.rows[0]!.revision,
+        expected_board_version: board.revision,
+      }),
     })
     expect(res.status).toBe(200)
     upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'c', rows: [{ label: 'x', status: 'partial' }] })
@@ -343,12 +381,20 @@ describe('boards api', () => {
       const board = listBoards(db)[0]!
       return { boardId: board.id, rowId: board.rows[0]!.id }
     }
-    const post = (boardId: string, rowId: string, body?: unknown) =>
-      createViewer(db).request(`/api/boards/${boardId}/rows/${rowId}/handled`, {
+    const post = (boardId: string, rowId: string, body: Record<string, unknown> = {}) => {
+      const board = [...listBoards(db), ...listBoards(db, { status: 'archived' })]
+        .find((candidate) => candidate.id === boardId)
+      const current = board?.rows.find((row) => row.id === rowId)
+      return createViewer(db).request(`/api/boards/${boardId}/rows/${rowId}/handled`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        body: JSON.stringify({
+          ...body,
+          expected_revision: current?.revision ?? 1,
+          expected_board_version: board?.revision ?? 1,
+        }),
       })
+    }
 
     it('marks the row and reports ok', async () => {
       const { boardId, rowId } = seed()
@@ -358,7 +404,7 @@ describe('boards api', () => {
       expect(listBoards(db)[0]!.rows[0]!.handled_at).toMatch(/^\d{4}-\d{2}-\d{2}T/)
     })
 
-    it('a body-less POST marks rather than un-marks — the affirmative action is the default', async () => {
+    it('omitting handled marks rather than un-marks — the affirmative action is the default', async () => {
       const { boardId, rowId } = seed()
       expect(await (await post(boardId, rowId)).json()).toEqual({ ok: true })
       expect(listBoards(db)[0]!.rows[0]!.handled_at).not.toBeNull()

@@ -167,7 +167,7 @@ describe('#36 · the mark is undoable only while it is still the human’s own b
     expect(buttonLabelled(UNMARK, card), 'a control that cannot work must not be drawn (#38)').toBeNull()
     expect(card.textContent).toContain('will not un-tell the agent')
     // the chip flips to the delivered vocabulary, and the row is still on screen
-    expect(chipText(rowId)).toBe('delivered 4m')
+    expect(chipText(rowId)).toBe('picked up 4m')
     expect(rowTitles()).toContain('Paddle account')
     expect(badgeCount()).toBe(0)
   })
@@ -240,7 +240,18 @@ describe('#36 · the mark survives the agent, and only a status change retires t
     // the agent refreshes the whole board, still asserting it is blocked
     await collapseCard(rowId)
     advanceClock()
-    upsertBoard(d, { ...AGENT, title: 'Wave 0', rows: [{ label: 'Paddle account', status: 'blocked', note: 'still waiting on you' }] })
+    const current = listBoards(d)[0]!
+    upsertBoard(d, {
+      ...AGENT,
+      title: 'Wave 0',
+      expectedVersion: current.revision,
+      rows: [{
+        label: 'Paddle account',
+        revision: current.rows[0]!.revision,
+        status: 'blocked',
+        note: 'still waiting on you',
+      }],
+    })
     await pollTick()
 
     expect(badgeCount(), 'a routine re-send must not wipe the human’s action').toBe(0)
@@ -259,7 +270,18 @@ describe('#36 · the mark survives the agent, and only a status change retires t
 
     await collapseCard(rowId)
     advanceClock()
-    upsertBoard(d, { ...AGENT, title: 'Wave 0', rows: [{ label: 'Paddle account', status: 'done', note: 'account live' }] })
+    const current = listBoards(d)[0]!
+    upsertBoard(d, {
+      ...AGENT,
+      title: 'Wave 0',
+      expectedVersion: current.revision,
+      rows: [{
+        label: 'Paddle account',
+        revision: current.rows[0]!.revision,
+        status: 'done',
+        note: 'account live',
+      }],
+    })
     await pollTick()
 
     expect(rowTitles()).not.toContain('Paddle account')

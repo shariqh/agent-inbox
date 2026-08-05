@@ -516,6 +516,9 @@ async function cmdNotificationCommit(ctx: Ctx): Promise<HookResult> {
       kind: 'question',
       title: `Waiting on a permission prompt in ${project}`,
       detail: 'Claude Code is blocked at the terminal — the agent did not flag this itself.',
+      next_step: 'Return to the terminal and answer the permission prompt.',
+      action_owner: 'task',
+      impact: 'The current agent session cannot continue until the prompt is answered.',
       context: [
         ctx.ev.message ?? '(no message)',
         `cwd: ${cwd}`,

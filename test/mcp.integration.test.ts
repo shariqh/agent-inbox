@@ -6,6 +6,32 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { openDb, listItems, listBoards, getBoard, annotateBoardRow, markRowHandled, listPendingRows, replyItem, listActivity } from '../src/store.js'
 
+const QUESTION_SHAPE = {
+  detail: 'A concise summary of the current state.',
+  next_step: 'Choose how the agent should proceed.',
+  action_owner: 'task',
+  impact: 'Requires a concrete human action.',
+}
+const APPROVAL_SHAPE = {
+  detail: 'A concise summary of the current state.',
+  next_step: 'Choose how the agent should proceed.',
+  action_owner: 'approval',
+  impact: 'Unblocks the agent’s next step.',
+}
+const INFO_SHAPE = {
+  detail: 'A concise summary of the current state.',
+  next_step: 'No action.',
+}
+const blockedRow = (label: string, over: Record<string, unknown> = {}) => ({
+  label,
+  status: 'blocked',
+  note: 'Human input is required.',
+  next_step: 'Tell the agent how to proceed.',
+  action_owner: 'task',
+  impact: 'Required before the work can continue.',
+  ...over,
+})
+
 describe('mcp round-trip', () => {
   it('flag writes a row attributed to this session, and whoami reflects register', async () => {
     const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-')), 'inbox.db')
@@ -17,13 +43,13 @@ describe('mcp round-trip', () => {
     const client = new Client({ name: 'claude-code', version: '1.0.0' })
     await client.connect(transport)
 
-    const flagRes = await client.callTool({ name: 'flag', arguments: { kind: 'question', title: 'which storage?' } })
+    const flagRes = await client.callTool({ name: 'flag', arguments: { kind: 'question', title: 'which storage?', ...QUESTION_SHAPE } })
     const { id, watch } = JSON.parse((flagRes.content as Array<{ text: string }>)[0]!.text)
     expect(id).toBeTruthy()
     expect(watch).toBeUndefined()
 
     // kind=done milestone round-trips too
-    const doneRes = await client.callTool({ name: 'flag', arguments: { kind: 'done', title: 'shipped v2' } })
+    const doneRes = await client.callTool({ name: 'flag', arguments: { kind: 'done', title: 'shipped v2', ...INFO_SHAPE } })
     expect(JSON.parse((doneRes.content as Array<{ text: string }>)[0]!.text).id).toBeTruthy()
 
     const who = await client.callTool({ name: 'register', arguments: { project: 'overridden', issue: 30 } })
@@ -33,7 +59,7 @@ describe('mcp round-trip', () => {
 
     // issue #30 — a registered issue is an OVERRIDE, so it rides the next flag
     // even though this checkout's branch name carries no issue number
-    await client.callTool({ name: 'flag', arguments: { kind: 'note', title: 'after register' } })
+    await client.callTool({ name: 'flag', arguments: { kind: 'note', title: 'after register', ...INFO_SHAPE } })
 
     await client.close()
 
@@ -62,7 +88,7 @@ describe('mcp round-trip', () => {
     const client = new Client({ name: 'copilot', version: '1.0.0' })
     await client.connect(transport)
 
-    const question = await client.callTool({ name: 'flag', arguments: { kind: 'question', title: 'which storage?' } })
+    const question = await client.callTool({ name: 'flag', arguments: { kind: 'question', title: 'which storage?', ...QUESTION_SHAPE } })
     const body = JSON.parse((question.content as Array<{ text: string }>)[0]!.text)
     expect(body.id).toBeTruthy()
     expect(body.watch).toMatchObject({
@@ -75,7 +101,7 @@ describe('mcp round-trip', () => {
     expect(body.watch.shell_command).toContain(body.id)
     expect(body.watch.on_completion).toMatch(/pending/)
 
-    const note = await client.callTool({ name: 'flag', arguments: { kind: 'note', title: 'heads up' } })
+    const note = await client.callTool({ name: 'flag', arguments: { kind: 'note', title: 'heads up', ...INFO_SHAPE } })
     expect(JSON.parse((note.content as Array<{ text: string }>)[0]!.text).watch).toBeUndefined()
     await client.close()
   })
@@ -89,6 +115,7 @@ describe('mcp round-trip', () => {
     const c1 = await conn()
     const flagRes = await c1.callTool({ name: 'flag', arguments: {
       kind: 'question', title: 'flags or branch?',
+      ...APPROVAL_SHAPE,
       context: 'Mid-rollout of the checkout revamp; hit this at the deploy step. See PR #42.',
       options: [{ label: 'flags', detail: 'safer rollback', recommended: true }, { label: 'branch' }],
     } })
@@ -126,7 +153,7 @@ describe('mcp round-trip', () => {
     const call = async (name: string, args: Record<string, unknown>) =>
       JSON.parse(((await client.callTool({ name, arguments: args })).content as Array<{ text: string }>)[0]!.text)
 
-    const { id } = await call('flag', { kind: 'question', title: 'sqlite or postgres?' })
+    const { id } = await call('flag', { kind: 'question', title: 'sqlite or postgres?', ...QUESTION_SHAPE })
 
     // a refusal is JSON the agent can branch on, never a thrown MCP error
     expect(await call('answer', { id, text: '   ' })).toEqual({ ok: false, reason: 'empty' })
@@ -146,10 +173,14 @@ describe('mcp round-trip', () => {
     expect(listItems(openDb(dbPath))[0]!.reply_seen_at).toBe(seenBefore)
 
     // the human then answers in the inbox instead; that outranks the chat channel
-    replyItem(openDb(dbPath), id, 'no — postgres', 'we need concurrent writers')
+    replyItem(openDb(dbPath), id, 'no — postgres', 'we need concurrent writers', 'decline')
     const refused = await call('answer', { id, text: 'sticking with sqlite' })
     expect(refused).toEqual({
-      ok: false, reason: 'unread_inbox_answer', reply: 'no — postgres', reply_context: 'we need concurrent writers',
+      ok: false,
+      reason: 'unread_inbox_answer',
+      reply: 'no — postgres',
+      reply_context: 'we need concurrent writers',
+      reply_kind: 'decline',
     })
     item = listItems(openDb(dbPath))[0]!
     expect(item.reply).toBe('no — postgres')
@@ -235,7 +266,7 @@ describe('mcp round-trip', () => {
     const claimed = listActivity(openDb(dbPath))[0]!
     expect(claimed.doing).toBe('planning the migration')
 
-    await new Promise((r) => setTimeout(r, 3500 - elapsed))
+    await new Promise((r) => setTimeout(r, 5000 - elapsed))
     const after = listActivity(openDb(dbPath))[0]!
     expect(after.updated_at > claimed.updated_at, 'the fallback registration must have run for this to mean anything').toBe(true)
     expect(after.doing).toBe('planning the migration')
@@ -259,7 +290,16 @@ describe('mcp round-trip', () => {
     const upOut = JSON.parse((up.content as Array<{ text: string }>)[0]!.text)
     expect(upOut.rowCount).toBe(2)
 
-    await client.callTool({ name: 'board_row', arguments: { title: 'coverage', label: 'stems', status: 'partial', context: 'the long story' } })
+    const coverage = await client.callTool({ name: 'board_get', arguments: { title: 'coverage' } })
+    const coverageBoard = JSON.parse((coverage.content as Array<{ text: string }>)[0]!.text)
+    await client.callTool({ name: 'board_row', arguments: {
+      title: 'coverage',
+      board_version: coverageBoard.revision,
+      label: 'stems',
+      expected_revision: coverageBoard.rows.find((row: { label: string }) => row.label === 'stems').revision,
+      status: 'partial',
+      context: 'the long story',
+    } })
     await client.close()
 
     const db = openDb(dbPath)
@@ -273,7 +313,10 @@ describe('mcp round-trip', () => {
     const t2 = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
     const c2 = new Client({ name: 'claude-code', version: '1.0.0' })
     await c2.connect(t2)
-    const arch = await c2.callTool({ name: 'board_archive', arguments: { title: 'coverage' } })
+    const arch = await c2.callTool({
+      name: 'board_archive',
+      arguments: { title: 'coverage', board_version: board.revision },
+    })
     expect(JSON.parse((arch.content as Array<{ text: string }>)[0]!.text).ok).toBe(true)
     await c2.close()
 
@@ -323,8 +366,8 @@ describe('mcp round-trip', () => {
       const c = new Client({ name: 'claude-code', version: '1.0.0' }); await c.connect(t); return c
     }
     const c1 = await conn()
-    await c1.callTool({ name: 'board_upsert', arguments: { title: 'one', rows: [{ label: 'a', status: 'blocked' }] } })
-    await c1.callTool({ name: 'board_upsert', arguments: { title: 'two', rows: [{ label: 'b', status: 'blocked' }] } })
+    await c1.callTool({ name: 'board_upsert', arguments: { title: 'one', rows: [blockedRow('a')] } })
+    await c1.callTool({ name: 'board_upsert', arguments: { title: 'two', rows: [blockedRow('b')] } })
     await c1.close()
 
     const store = openDb(dbPath)
@@ -370,7 +413,10 @@ describe('mcp round-trip', () => {
       JSON.parse(((await c.callTool({ name, arguments: args })).content as Array<{ text: string }>)[0]!.text)
 
     const c1 = await conn()
-    await call(c1, 'board_upsert', { title: 'rollout', rows: [{ label: 'Merge', status: 'blocked', note: 'ready when you are' }] })
+    await call(c1, 'board_upsert', {
+      title: 'rollout',
+      rows: [blockedRow('Merge', { note: 'ready when you are', next_step: 'Approve the merge.' })],
+    })
 
     // nothing from the human yet
     expect((await call(c1, 'pending', {})).rows).toEqual([])
@@ -405,7 +451,14 @@ describe('mcp round-trip', () => {
     expect(again[0].annotation_seen_by).toBe('claude-code')
 
     // the status flip IS the acknowledgement, and it is the only thing that stops it
-    await call(c1, 'board_row', { title: 'rollout', label: 'Merge', status: 'partial' })
+    const activeBoard = getBoard(openDb(dbPath), project, 'rollout')!
+    await call(c1, 'board_row', {
+      title: 'rollout',
+      board_version: activeBoard.revision,
+      label: 'Merge',
+      expected_revision: row.revision,
+      status: 'partial',
+    })
     expect((await call(c1, 'pending', {})).rows).toEqual([])
     await c1.close()
   }, 20000)
@@ -426,7 +479,7 @@ describe('mcp round-trip', () => {
       JSON.parse(((await c.callTool({ name, arguments: args })).content as Array<{ text: string }>)[0]!.text)
 
     const manager = await conn()
-    await call(manager, 'board_upsert', { title: 'rollout', rows: [{ label: 'Merge', status: 'blocked' }, { label: 'QA', status: 'partial' }] })
+    await call(manager, 'board_upsert', { title: 'rollout', rows: [blockedRow('Merge'), { label: 'QA', status: 'partial' }] })
     const subagent = await conn()
 
     // the human answers from the VIEWER — a third process
@@ -471,7 +524,7 @@ describe('mcp round-trip', () => {
       JSON.parse(((await c.callTool({ name, arguments: args })).content as Array<{ text: string }>)[0]!.text)
 
     const c1 = await conn()
-    await call(c1, 'board_upsert', { title: 'rollout', rows: [{ label: 'first', status: 'blocked' }, { label: 'second', status: 'blocked' }] })
+    await call(c1, 'board_upsert', { title: 'rollout', rows: [blockedRow('first'), blockedRow('second')] })
 
     const store = openDb(dbPath)
     const project = listBoards(store)[0]!.project
@@ -519,7 +572,7 @@ describe('mcp round-trip', () => {
 
     const c1 = await conn()
     await call(c1, 'board_upsert', { title: 'rollout', rows: [
-      { label: 'Merge', status: 'blocked', note: 'ready when you are', context: LONG },
+      blockedRow('Merge', { note: 'ready when you are', next_step: 'Approve the merge.', context: LONG }),
       { label: 'QA', status: 'tracked' },
     ] })
     const project = listBoards(openDb(dbPath))[0]!.project
@@ -566,8 +619,8 @@ describe('mcp round-trip', () => {
     const ROW_CTX = 'why this row is blocked, at the length agents are told to write. '.repeat(8)
     const ITEM_CTX = 'the background a human returning cold would need. '.repeat(8)
 
-    await call('board_upsert', { title: 'rollout', rows: [{ label: 'Merge', status: 'blocked', context: ROW_CTX }] })
-    await call('flag', { kind: 'question', title: 'flags or branch?', context: ITEM_CTX })
+    await call('board_upsert', { title: 'rollout', rows: [blockedRow('Merge', { context: ROW_CTX })] })
+    await call('flag', { kind: 'question', title: 'flags or branch?', ...QUESTION_SHAPE, context: ITEM_CTX })
     const project = listBoards(openDb(dbPath))[0]!.project
     annotateBoardRow(openDb(dbPath), getBoard(openDb(dbPath), project, 'rollout')!.rows[0]!.id, 'merge it')
 
@@ -614,7 +667,7 @@ describe('mcp round-trip', () => {
     const ROW_CTX = 'the backstory the manager needs to act on this row. '.repeat(8)
 
     const manager = await conn()
-    await call(manager, 'board_upsert', { title: 'rollout', rows: [{ label: 'Merge', status: 'blocked', context: ROW_CTX }] })
+    await call(manager, 'board_upsert', { title: 'rollout', rows: [blockedRow('Merge', { context: ROW_CTX })] })
     const project = listBoards(openDb(dbPath))[0]!.project
     annotateBoardRow(openDb(dbPath), getBoard(openDb(dbPath), project, 'rollout')!.rows[0]!.id, 'merge it')
 
@@ -648,7 +701,7 @@ describe('mcp round-trip', () => {
     const CTX = 'the backstory for the row the human changed their mind about. '.repeat(8)
 
     await call('board_upsert', { title: 'rollout', rows: [
-      { label: 'first', status: 'blocked' }, { label: 'second', status: 'blocked', context: CTX },
+      blockedRow('first'), blockedRow('second', { context: CTX }),
     ] })
     const store = openDb(dbPath)
     const project = listBoards(store)[0]!.project
@@ -694,8 +747,8 @@ describe('mcp round-trip', () => {
     const ROW_CTX = 'why this row is blocked, at the length agents are told to write. '.repeat(8)
     const ITEM_CTX = 'the background a human returning cold would need. '.repeat(8)
 
-    await call('board_upsert', { title: 'rollout', rows: [{ label: 'Merge', status: 'blocked', context: ROW_CTX }] })
-    await call('flag', { kind: 'question', title: 'flags or branch?', context: ITEM_CTX })
+    await call('board_upsert', { title: 'rollout', rows: [blockedRow('Merge', { context: ROW_CTX })] })
+    await call('flag', { kind: 'question', title: 'flags or branch?', ...QUESTION_SHAPE, context: ITEM_CTX })
     const project = listBoards(openDb(dbPath))[0]!.project
     annotateBoardRow(openDb(dbPath), getBoard(openDb(dbPath), project, 'rollout')!.rows[0]!.id, 'merge it')
 
@@ -743,6 +796,15 @@ describe('mcp round-trip', () => {
     expect(flag.description).toContain('watch')
     expect(flag.description).toMatch(/detached.*background/i)
     expect(flag.description).toMatch(/completion.*pending/i)
+    expect(flag.description).toMatch(/TL;DR/)
+    expect(flag.description).toMatch(/next_step/)
+    const flagSchema = flag.inputSchema as unknown as {
+      required?: string[]
+      properties: Record<string, { description?: string }>
+    }
+    expect(flagSchema.required).toEqual(expect.arrayContaining(['detail', 'next_step']))
+    expect(flagSchema.properties['detail']?.description).toMatch(/TL;DR/)
+    expect(flagSchema.properties['next_step']?.description).toMatch(/ONE concrete action/)
 
     expect(tools.get('board_get')!.description).toContain('full: true')
     expect(tools.get('board_get')!.description).toMatch(/UTF-16 code units/)
@@ -774,7 +836,10 @@ describe('mcp round-trip', () => {
     const call = async (name: string, args: Record<string, unknown>) =>
       JSON.parse(((await c1.callTool({ name, arguments: args })).content as Array<{ text: string }>)[0]!.text)
 
-    await call('board_upsert', { title: 'wave 0', rows: [{ label: 'Paddle account', status: 'blocked', note: '~15 min KYC' }] })
+    await call('board_upsert', {
+      title: 'wave 0',
+      rows: [blockedRow('Paddle account', { note: '~15 min KYC', next_step: 'Complete the Paddle KYC flow.' })],
+    })
     expect((await call('pending', {})).rows).toEqual([])
 
     // the human clicks "I've done my part" in the VIEWER — a different process
@@ -800,7 +865,14 @@ describe('mcp round-trip', () => {
     expect(again).toHaveLength(1)
     expect(again[0].handled_seen_at).toBe(row.handled_seen_at)
 
-    await call('board_row', { title: 'wave 0', label: 'Paddle account', status: 'done' })
+    const activeBoard = getBoard(openDb(dbPath), project, 'wave 0')!
+    await call('board_row', {
+      title: 'wave 0',
+      board_version: activeBoard.revision,
+      label: 'Paddle account',
+      expected_revision: row.revision,
+      status: 'done',
+    })
     expect((await call('pending', {})).rows).toEqual([])
     await c1.close()
   }, 20000)
@@ -812,7 +884,7 @@ describe('mcp round-trip', () => {
     const call = async (name: string, args: Record<string, unknown>) =>
       JSON.parse(((await c1.callTool({ name, arguments: args })).content as Array<{ text: string }>)[0]!.text)
 
-    await call('board_upsert', { title: 'wave 0', rows: [{ label: 'Notion integration', status: 'blocked' }] })
+    await call('board_upsert', { title: 'wave 0', rows: [blockedRow('Notion integration')] })
     const project = listBoards(openDb(dbPath))[0]!.project
     markRowHandled(openDb(dbPath), getBoard(openDb(dbPath), project, 'wave 0')!.rows[0]!.id)
 
@@ -821,12 +893,39 @@ describe('mcp round-trip', () => {
     expect(getBoard(openDb(dbPath), project, 'wave 0')!.rows[0]!.handled_seen_by).toBe('claude-code')
 
     // a full-table re-send that leaves the row blocked must NOT wipe the mark
-    await call('board_upsert', { title: 'wave 0', rows: [{ label: 'Notion integration', status: 'blocked', note: 'still waiting' }] })
+    await call('board_upsert', {
+      title: 'wave 0',
+      board_version: read.revision,
+      rows: [{
+        label: 'Notion integration',
+        revision: read.rows[0].revision,
+        status: 'blocked',
+        note: 'still waiting',
+      }],
+    })
     expect(getBoard(openDb(dbPath), project, 'wave 0')!.rows[0]!.handled_at).not.toBeNull()
 
     // acknowledging and then asking again IS a new request, and starts clean
-    await call('board_row', { title: 'wave 0', label: 'Notion integration', status: 'partial' })
-    await call('board_row', { title: 'wave 0', label: 'Notion integration', status: 'blocked', note: 'now the OAuth secret please' })
+    const refreshed = await call('board_get', { title: 'wave 0' })
+    await call('board_row', {
+      title: 'wave 0',
+      board_version: refreshed.revision,
+      label: 'Notion integration',
+      expected_revision: refreshed.rows[0].revision,
+      status: 'partial',
+    })
+    const acknowledged = await call('board_get', { title: 'wave 0' })
+    await call('board_row', {
+      title: 'wave 0',
+      board_version: acknowledged.revision,
+      label: 'Notion integration',
+      expected_revision: acknowledged.rows[0].revision,
+      status: 'blocked',
+      note: 'The integration is ready for the live credential.',
+      next_step: 'Provide the OAuth client secret.',
+      action_owner: 'task',
+      impact: 'Required to complete the live integration.',
+    })
     expect(getBoard(openDb(dbPath), project, 'wave 0')!.rows[0]!.handled_at).toBeNull()
     await c1.close()
   }, 20000)
@@ -887,6 +986,51 @@ describe('mcp round-trip', () => {
       expect(f.description).toMatch(/\bpartial\b/)
       expect(f.description).toMatch(/question item/i)
     }
+    const rowSchemas = [
+      schemaOf('board_upsert').properties!['rows']!.items!,
+      schemaOf('board_row'),
+    ]
+    for (const schema of rowSchemas) {
+      expect(schema.properties!['note']!.description).toMatch(/TL;DR/)
+      expect(schema.properties!['next_step']!.description).toMatch(/ONE concrete action/)
+      expect(schema.properties!['options']!.description).toMatch(/decision/i)
+    }
+    await c1.close()
+  }, 20000)
+
+  it('rejects a new blocked row that has no TL;DR or concrete next step', async () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-action-shape-')), 'inbox.db')
+    const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
+    const c1 = new Client({ name: 'claude-code', version: '1.0.0' }); await c1.connect(t)
+
+    const missing = await c1.callTool({
+      name: 'board_upsert',
+      arguments: { title: 'launch', rows: [{ label: 'Recruit partners', status: 'blocked' }] },
+    })
+    expect(missing.isError).toBe(true)
+    expect((missing.content as Array<{ text: string }>)[0]!.text).toMatch(/TL;DR.*next_step/)
+    expect(listBoards(openDb(dbPath))).toEqual([])
+
+    const valid = await c1.callTool({
+      name: 'board_upsert',
+      arguments: {
+        title: 'launch',
+        rows: [blockedRow('Recruit partners', {
+          note: 'The outreach kit is ready; nothing has been sent.',
+          next_step: 'Send the first three personalized messages.',
+          action_owner: 'decision',
+          impact: 'Starts the design-partner evidence loop.',
+          options: [
+            { label: 'Start today', recommended: true },
+            { label: 'Hold' },
+          ],
+        })],
+      },
+    })
+    expect(valid.isError).not.toBe(true)
+    const project = listBoards(openDb(dbPath))[0]!.project
+    expect(getBoard(openDb(dbPath), project, 'launch')!.rows[0]!.options?.map((option) => option.label))
+      .toEqual(['Start today', 'Hold'])
     await c1.close()
   }, 20000)
 
@@ -904,7 +1048,7 @@ describe('mcp round-trip', () => {
     const CTX = 'the backstory the human reads in the collapsed dropdown. '.repeat(10)
 
     await call('board_upsert', { title: 'rollout', rows: [
-      { label: 'Merge', status: 'blocked', note: 'ready when you are', context: CTX },
+      blockedRow('Merge', { note: 'ready when you are', next_step: 'Approve the merge.', context: CTX }),
       { label: 'QA', status: 'tracked' },
     ] })
     const project = listBoards(openDb(dbPath))[0]!.project
@@ -913,10 +1057,14 @@ describe('mcp round-trip', () => {
     // re-read, flip a status, re-send EXACTLY what the read handed back
     const read = await call('board_get', { title: 'rollout' })
     expect(read.rows[0].context).toBeUndefined() // the read genuinely cannot give it back
-    const rows = (read.rows as Array<{ label: string; status: string; note: string; context?: string }>).map((r) => ({
-      label: r.label, status: r.label === 'QA' ? 'done' : r.status, note: r.note, context: r.context,
+    const rows = (read.rows as Array<{ label: string; status: string; note: string; revision: number; context?: string }>).map((r) => ({
+      label: r.label,
+      revision: r.revision,
+      status: r.label === 'QA' ? 'done' : r.status,
+      note: r.note,
+      context: r.context,
     }))
-    await call('board_upsert', { title: 'rollout', rows })
+    await call('board_upsert', { title: 'rollout', board_version: read.revision, rows })
 
     const stored = getBoard(openDb(dbPath), project, 'rollout')!
     expect(stored.rows[0]!.context, 'the round-trip must not wipe the human-facing backstory').toBe(CTX)
@@ -924,8 +1072,19 @@ describe('mcp round-trip', () => {
     expect(stored.rows.find((r) => r.label === 'QA')!.status).toBe('done') // the update still applied
 
     // and a deliberate erasure still works
-    await call('board_upsert', { title: 'rollout', rows: [
-      { label: 'Merge', status: 'blocked', note: 'ready when you are', context: '' }, { label: 'QA', status: 'done' },
+    await call('board_upsert', { title: 'rollout', board_version: stored.revision, rows: [
+      {
+        label: 'Merge',
+        revision: stored.rows[0]!.revision,
+        status: 'blocked',
+        note: 'ready when you are',
+        context: '',
+      },
+      {
+        label: 'QA',
+        revision: stored.rows.find((r) => r.label === 'QA')!.revision,
+        status: 'done',
+      },
     ] })
     expect(getBoard(openDb(dbPath), project, 'rollout')!.rows[0]!.context).toBe('')
     await c1.close()
@@ -940,7 +1099,7 @@ describe('mcp round-trip', () => {
     await client.connect(transport)
     await new Promise((r) => setTimeout(r, 500)) // presence registers on the initialized notification
 
-    await client.callTool({ name: 'flag', arguments: { kind: 'question', title: 'which storage?' } })
+    await client.callTool({ name: 'flag', arguments: { kind: 'question', title: 'which storage?', ...QUESTION_SHAPE } })
 
     // read BEFORE closing — process exit ends the activity row
     const db = openDb(dbPath)

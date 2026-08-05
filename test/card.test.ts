@@ -6,7 +6,7 @@ import type { CardItem } from '../public/card.js'
 
 const base: CardItem = {
   id: 'i1', kind: 'question', status: 'open', title: 'Drop the column?',
-  detail: 'one line', context: 'why this came up', annotation: null,
+  detail: 'one line', next_step: 'Choose whether to drop it.', context: 'why this came up', annotation: null,
   options: null, reply: null, reply_context: null, reply_seen_at: null,
 }
 const item = (over: Partial<CardItem> = {}): CardItem => ({ ...base, ...over })
@@ -37,6 +37,12 @@ describe('cardSections', () => {
     expect(cardSections(item()).context).toBe('why this came up')
     expect(cardSections(item({ context: '' })).context).toBe('')
   })
+  it('surfaces the concrete next step separately from the TL;DR', () => {
+    expect(cardSections(item())).toMatchObject({
+      detail: 'one line',
+      nextStep: 'Choose whether to drop it.',
+    })
+  })
   it('shows the answer surface only for an open unanswered question', () => {
     expect(cardSections(item()).showAnswer).toBe(true)
     expect(cardSections(item({ reply: 'go' })).showAnswer).toBe(false)
@@ -48,17 +54,11 @@ describe('cardSections', () => {
     expect(s.answered).toBe(true)
     expect(s.reply).toBe('go ahead')
   })
-  // #29 criterion 3, pinned as ALREADY TRUE rather than fixed: `answered` requires
-  // status === 'open', and `reply` is blanked with it, so once a question is resolved
-  // no card can render its reply — and therefore none can render a stale
-  // "waiting for agent pickup" marker beside it. Both resolve paths (the MCP tool and
-  // POST /api/items/:id/resolve) go through the same resolveItem, so this holds
-  // whichever channel closed the item.
-  it('a resolved question exposes no reply, so no card can render a stale pickup marker', () => {
+  it('a resolved question keeps the decision text but is no longer actively answered', () => {
     expect(cardSections(item({ reply: 'go ahead', status: 'resolved' }), { done: true }))
-      .toMatchObject({ reply: '', answered: false })
+      .toMatchObject({ reply: 'go ahead', answered: false })
     expect(cardSections(item({ reply: 'go ahead', status: 'resolved' })))
-      .toMatchObject({ reply: '', answered: false }) // and not only in the Done section
+      .toMatchObject({ reply: 'go ahead', answered: false })
   })
 
   it('hides actions on a done card and carries the multi-recommendation warning', () => {
@@ -132,11 +132,15 @@ describe('app.js wiring (source-level pins)', () => {
     expect(fn).toContain('itemCardEl(it, { done, header: false })')
   })
 
-  it('the CONTEXT block is labeled and renders through esc()', () => {
+  it('the background block is identity-keyed, escaped, and rebound after rendering', () => {
     const start = js.indexOf('function itemCardEl(')
     const fn = js.slice(start, js.indexOf('\nasync function changeAnswer('))
-    expect(fn).toContain('card-context-label">CONTEXT<')
-    expect(fn).toMatch(/card-context-body">\$\{esc\(s\.context\)\}/)
+    expect(fn).toContain('actionBlocksHtml(s.detail, s.nextStep, s.actionOwner, s.impact, s.nextAfter, s.context, `item:${it.id}`)')
+    expect(fn).toContain('bindContextDisclosures(el)')
+    const blocks = js.slice(js.indexOf('function contextHtml('), js.indexOf('\n// the inline expansion'))
+    expect(blocks).toContain('data-context-key="${esc(key)}"')
+    expect(blocks).toContain("openContexts.has(key) ? ' open' : ''")
+    expect(blocks).toMatch(/card-context-body">\$\{esc\(context\)\}/)
   })
 
   // #29: an answer an agent recorded from chat must be visibly agent-written, and the
@@ -157,11 +161,11 @@ describe('app.js wiring (source-level pins)', () => {
     expect((markFn.match(/waiting for agent pickup/g) ?? []).length).toBe(1)
     const rowFn = js.slice(js.indexOf('function rowHumanStateHtml('), js.indexOf('\nfunction rowPanelEl('))
     expect(rowFn, 'the row marker is never printed outside a guarded branch').not.toMatch(/waiting for agent pickup/)
-    expect(rowFn).toContain('if (r.annotation) parts.push(')
+    expect(rowFn).toContain('if (r.annotation || r.annotation_kind)')
     expect(rowFn).toContain('if (r.handled_at) parts.push(')
     expect((js.match(/waiting for agent pickup/g) ?? []).length, 'exactly one per noun, nowhere else').toBe(2)
     const replyBlock = fn.split('\n').find((l) => l.includes('waiting for agent pickup'))!
-    expect(replyBlock).toContain('${s.reply ?')
+    expect(replyBlock).toContain('${s.reply || it.reply_kind ?')
     expect(replyBlock).toContain('reply-block')
     // the chip is a FIXED string selected by an equality test — interpolating the
     // stored value would regress the "everything through esc() before innerHTML" rule

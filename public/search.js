@@ -8,9 +8,12 @@
 export function haystackFor(entity) {
   const parts = [entity.title, entity.project, entity.agent, entity.stream]
   if (Array.isArray(entity.rows)) {
-    for (const r of entity.rows) parts.push(r.label, r.note, r.context, r.annotation)
+    for (const r of entity.rows) {
+      parts.push(r.label, r.note, r.next_step, r.action_owner, r.impact, r.next_after, r.context, r.annotation, r.outcome)
+      for (const option of r.options ?? []) parts.push(option.label, option.detail)
+    }
   } else {
-    parts.push(entity.detail, entity.context, entity.kind, entity.annotation, entity.reply, entity.reply_context)
+    parts.push(entity.detail, entity.next_step, entity.action_owner, entity.impact, entity.next_after, entity.context, entity.kind, entity.annotation, entity.reply, entity.reply_context, entity.outcome)
   }
   return parts.filter(Boolean).join(' ').toLowerCase()
 }

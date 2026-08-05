@@ -30,9 +30,10 @@ const {
   createNotificationRetainer,
   createResponseWatch,
   formatResponseReminder,
+  refreshNotificationTarget,
   responseForNotificationAction,
   runWakeAdapter,
-  submitCannedResponse,
+  submitNotificationResponse,
   wakeAdapterFromEnv,
   wakeAdapterPayload,
 } = require('./reply-watch.cjs')
@@ -220,7 +221,8 @@ function spawnViewer() {
  */
 function startAttentionWatch(win) {
   let known = null // ids seen on the previous poll; null until the first one
-  setInterval(async () => {
+  let polling = false
+  const poll = async () => {
     if (attentionModsFailed) return // already logged once — don't spam every 3s
     let mods
     try {
@@ -277,8 +279,26 @@ function startAttentionWatch(win) {
       const attn = attentionEntries(items, boards, Date.now(), liveSessions, closed)
       if (typeof app.setBadgeCount === 'function') app.setBadgeCount(attn.length)
       const idOf = (e) => e.kind === 'item'
-        ? { id: `q:${e.item.id}`, itemId: e.item.id, text: e.item.title, item: e.item }
-        : { id: `r:${e.row.id}`, itemId: e.board.id, text: `🚧 ${e.board.title} · ${e.row.label}`, item: null }
+        ? {
+            id: `q:${e.item.id}`,
+            itemId: e.item.id,
+            text: e.item.title,
+            item: e.item,
+            target: { source: 'item', id: e.item.id },
+          }
+        : {
+            id: `r:${e.row.id}:v${e.row.revision}`,
+            itemId: e.board.id,
+            text: `🚧 ${e.board.title} · ${e.row.label}`,
+            item: e.row,
+            target: {
+              source: 'row',
+              boardId: e.board.id,
+              rowId: e.row.id,
+              revision: e.row.revision,
+              boardRevision: e.board.revision,
+            },
+          }
       const entries = attn.map(idOf)
       // …but `known` is maintained from the UNSUPPRESSED set. If it tracked only
       // what is visible, closing a project would drop its items from `known` and
@@ -292,20 +312,49 @@ function startAttentionWatch(win) {
       // Per-item notifications stay (owner's call) — informational only.
       if (fresh.length && Notification.isSupported()) {
         console.log(`[agent-inbox] notifying: ${fresh.length} new (${fresh[0].text})`)
-        const question = fresh.length === 1 ? fresh[0].item : null
-        const canned = cannedResponseActions(question ? optionOrder(question.options) : [])
+        const actionable = fresh.length === 1 ? fresh[0] : null
+        const canned = cannedResponseActions(actionable ? optionOrder(actionable.item.options) : [])
         const note = new Notification({
           title: fresh.length === 1 ? 'Agent Inbox — needs you' : `Agent Inbox — ${fresh.length} new need you`,
           body: fresh.slice(0, 3).map((f) => f.text).join('\n'),
           ...(canned.actions.length ? { actions: canned.actions } : {}),
         })
         const hash = fresh.length === 1 ? focusHashFor(fresh[0].itemId) : null
-        note.on('action', (details, legacyActionIndex) => {
+        note.on('action', async (details, legacyActionIndex) => {
           const answer = responseForNotificationAction(canned.responses, details, legacyActionIndex)
-          if (!answer || !question) return
-          submitCannedResponse(URL_BASE, question.id, answer).catch((err) => {
-            console.error(`[agent-inbox] could not save notification response: ${err.message}`)
-          })
+          if (!answer || !actionable) return
+          try {
+            await submitNotificationResponse(URL_BASE, actionable.target, answer)
+          } catch (firstError) {
+            let saved = false
+            if (actionable.target.source === 'row') {
+              try {
+                const latestBoards = await (await fetch(`${URL_BASE}api/boards`)).json()
+                const refreshed = refreshNotificationTarget(latestBoards, actionable.target)
+                if (refreshed) {
+                  await submitNotificationResponse(URL_BASE, refreshed, answer)
+                  saved = true
+                }
+              } catch { /* surface the original choice below */ }
+            }
+            if (saved) return
+            console.error(`[agent-inbox] could not save notification response: ${firstError.message}`)
+            if (Notification.isSupported()) {
+              const failed = new Notification({
+                title: 'Agent Inbox — Response not applied',
+                body: `“${answer}” was preserved here because the action changed. Open Agent Inbox to review it.`,
+              })
+              failed.on('click', () => {
+                if (win.isMinimized()) win.restore()
+                win.show()
+                win.focus()
+                if (hash) win.webContents.executeJavaScript(`location.hash = ${JSON.stringify(hash)}`).catch((err) => {
+                  console.error('[agent-inbox] deep link failed', err)
+                })
+              })
+              notificationRetainer.show(failed)
+            }
+          }
         })
         note.on('click', () => {
           if (win.isMinimized()) win.restore()
@@ -319,6 +368,11 @@ function startAttentionWatch(win) {
         notificationRetainer.show(note)
       }
     } catch { /* viewer briefly unreachable — retry next tick */ }
+  }
+  setInterval(() => {
+    if (polling) return
+    polling = true
+    poll().finally(() => { polling = false })
   }, 3000)
 }
 

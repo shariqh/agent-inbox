@@ -16,13 +16,20 @@ import { describe, it, expect } from 'vitest'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { openDb, upsertBoard, listBoards, annotateBoardRow, listPendingRows, markAnnotationDelivered, markRowHandled, markHandledDelivered } from '../src/store.js'
+import { advanceBoardRow, openDb, upsertBoard, listBoards, annotateBoardRow, listPendingRows, markAnnotationDelivered, markRowHandled, markHandledDelivered } from '../src/store.js'
 import type { BoardWithRows } from '../src/store.js'
 import { trimContext, makeContextLedger, deliverContext, shapeBoard, summariseBoard, rowKey, itemKey } from '../src/shape.js'
 
 const LONG = 'why this row exists, at the length agents are told to write. '.repeat(12)
 
-function boardWith(rows: Array<{ label: string; status: 'blocked' | 'tracked' | 'done' | 'partial' | 'na'; note?: string; context?: string }>): {
+function boardWith(rows: Array<{
+  label: string
+  status: 'blocked' | 'tracked' | 'done' | 'partial' | 'na'
+  note?: string
+  next_step?: string
+  options?: Array<{ label: string; detail?: string; recommended?: boolean }>
+  context?: string
+}>): {
   db: ReturnType<typeof openDb>
   board: BoardWithRows
 } {
@@ -173,11 +180,15 @@ describe('deliverContext — first delivery carries it, re-delivery does not', (
 
 describe('shapeBoard — board_get({title})', () => {
   it('omits row context by default and reports its size instead', () => {
-    const { board } = boardWith([{ label: 'Merge', status: 'blocked', note: 'ready', context: LONG }])
+    const { board } = boardWith([{
+      label: 'Merge', status: 'blocked', note: 'ready',
+      next_step: 'Approve the merge.', context: LONG,
+    }])
     const out = shapeBoard(board, { ledger: makeContextLedger() })
     expect(out.rows[0]).not.toHaveProperty('context')
     expect((out.rows[0] as { context_chars: number }).context_chars).toBe(LONG.length)
     expect(out.rows[0]!.note).toBe('ready') // the one-line summary always rides along
+    expect(out.rows[0]!.next_step).toBe('Approve the merge.')
     expect(out.title).toBe('rollout')
     expect(out.progress.total).toBe(1)
   })
@@ -186,6 +197,36 @@ describe('shapeBoard — board_get({title})', () => {
     const { board } = boardWith([{ label: 'Merge', status: 'blocked', context: LONG }])
     const out = shapeBoard(board, { full: true, ledger: makeContextLedger() })
     expect((out.rows[0] as { context: string }).context).toBe(LONG)
+  })
+
+  it('never sends action history to agents, only its count', () => {
+    const { db, board } = boardWith([{
+      label: 'Merge',
+      status: 'blocked',
+      note: 'ready',
+      next_step: 'Choose.',
+      context: LONG,
+    }])
+    annotateBoardRow(db, board.rows[0]!.id, 'yes')
+    const answered = listBoards(db)[0]!.rows[0]!
+    const answeredBoard = listBoards(db)[0]!
+    advanceBoardRow(db, {
+      project: 'p',
+      title: 'rollout',
+      label: 'Merge',
+      expectedBoardVersion: answeredBoard.revision,
+      expectedRevision: answered.revision,
+      note: 'approved',
+      next_step: 'Do the next task.',
+      action_owner: 'task',
+      impact: 'Moves the rollout forward.',
+    })
+    const fresh = listBoards(db)[0]!
+    for (const opts of [{ ledger: makeContextLedger() }, { full: true, ledger: makeContextLedger() }]) {
+      const out = shapeBoard(fresh, opts)
+      expect(out.rows[0]).not.toHaveProperty('history')
+      expect(out.rows[0]).toHaveProperty('history_count', 1)
+    }
   })
 
   it('full: true records the delivery, so pending() does not re-ship what this session just read', () => {
@@ -219,7 +260,12 @@ describe('shapeBoard — board_get({title})', () => {
 describe('summariseBoard — board_get() with no title', () => {
   it('keeps title, label, status, note and the human’s annotation; drops row context', () => {
     const { db, board } = boardWith([
-      { label: 'Merge', status: 'blocked', note: 'ready when you are', context: LONG },
+      {
+        label: 'Merge', status: 'blocked', note: 'ready when you are',
+        next_step: 'Approve the merge.',
+        options: [{ label: 'Merge', recommended: true }, { label: 'Hold' }],
+        context: LONG,
+      },
       { label: 'QA', status: 'tracked', context: LONG },
     ])
     annotateBoardRow(db, board.rows[0]!.id, 'merge it')
@@ -230,6 +276,8 @@ describe('summariseBoard — board_get() with no title', () => {
     expect(out.rows.map((r) => r.label)).toEqual(['Merge', 'QA'])
     expect(out.rows[0]!.status).toBe('blocked')
     expect(out.rows[0]!.note).toBe('ready when you are')
+    expect(out.rows[0]!.next_step).toBe('Approve the merge.')
+    expect(out.rows[0]!.options?.map((option) => option.label)).toEqual(['Merge', 'Hold'])
     expect(out.rows[0]!.annotation).toBe('merge it')
     expect(out.rows[0]!.annotation_seen_by).toBe('claude-code')
     expect(out.rows[0]!.annotation_unseen).toBe(false)
@@ -256,7 +304,9 @@ describe('summariseBoard — board_get() with no title', () => {
   it('spends nothing on absent fields — no empty note, no null annotation block', () => {
     const { board } = boardWith([{ label: 'QA', status: 'tracked' }])
     const out = summariseBoard(board)
-    expect(out.rows[0]).toEqual({ label: 'QA', status: 'tracked' })
+    expect(out.rows[0]).toMatchObject({ label: 'QA', status: 'tracked', action_version: 1 })
+    expect(out.rows[0]!.updated_at).toMatch(/^\d{4}-/)
+    expect(out.rows[0]!.action_started_at).toMatch(/^\d{4}-/)
   })
 
   // #36 — the mark is the human's word too. A summary that dropped it would send
@@ -273,7 +323,9 @@ describe('summariseBoard — board_get() with no title', () => {
   it('an unmarked row spends nothing on the mark either — no three null fields', () => {
     const { db, board } = boardWith([{ label: 'QA', status: 'tracked' }])
     void board
-    expect(summariseBoard(listBoards(db)[0]!).rows[0]).toEqual({ label: 'QA', status: 'tracked' })
+    expect(summariseBoard(listBoards(db)[0]!).rows[0]).toMatchObject({
+      label: 'QA', status: 'tracked', action_version: 1,
+    })
   })
 
   it('delivers no context, so it claims nothing from the ledger (it cannot starve a later poll)', () => {

@@ -140,7 +140,7 @@ describe('#37 · annotated-and-unpicked renders differently from annotated-and-p
 
     const delivered = chipText(rowId)
     expect(delivered).not.toBe(waiting)
-    expect(delivered).toBe('delivered 4m')
+    expect(delivered).toBe('picked up 4m')
     click(row(rowId))
     await settle()
     expect(row(rowId)?.querySelector('.nrow-card')?.textContent).toContain('claude-code')
@@ -159,7 +159,7 @@ describe('#37 · annotated-and-unpicked renders differently from annotated-and-p
     markAnnotationDelivered(d, rowId, listBoards(d)[0]!.rows[0]!.annotated_at, 'claude-code')
 
     await bootApp(d)
-    expect(chipText(rowId)).toMatch(/^delivered /)
+    expect(chipText(rowId)).toMatch(/^picked up /)
 
     // the human changes their mind — the agent has NOT seen this one
     advanceClock()

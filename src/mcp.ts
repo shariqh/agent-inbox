@@ -2,8 +2,8 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
 import type Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
-import { insertItem, resolveItem, listPending, markReplySeen, answerItem, upsertBoard, updateBoardRow, findBoard, archiveBoard, getBoard, listBoards, markBoardRead, markAnnotationDelivered, markHandledDelivered, listPendingRows, upsertActivity, endActivity, touchActivity, recordActivityCall } from './store.js'
-import type { BoardWithRows } from './store.js'
+import { insertItem, resolveItem, listPending, markReplySeen, answerItem, upsertBoard, updateBoardRow, advanceBoardRow, findBoard, archiveBoard, getBoard, listBoards, markBoardRead, markAnnotationDelivered, markHandledDelivered, listPendingRows, upsertActivity, endActivity, touchActivity, recordActivityCall } from './store.js'
+import type { ActionOwner, BoardWithRows, QuestionOption } from './store.js'
 import { makeContextLedger, deliverContext, shapeBoard, summariseBoard, rowKey, itemKey } from './shape.js'
 import { makeScope } from './scope.js'
 import { copilotWatchLaunch } from './watch.js'
@@ -75,25 +75,59 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
   })
   for (const sig of ['SIGINT', 'SIGTERM'] as const) process.on(sig, () => process.exit(0))
 
+  const responseOption = z.object({
+    label: z.string().min(1),
+    detail: z.string().optional(),
+    recommended: z.boolean().optional(),
+  })
+  const actionOwner = z.enum(['decision', 'task', 'approval']).describe(
+    'Who owns the human-facing action: decision = the human chooses; task = the human performs it; approval = the human approves and the agent acts.',
+  )
+  const impactField = z.string().max(180).describe('Why this matters now: the one downstream result or dependency this action unblocks.')
+  const nextAfterField = z.string().max(180).describe('What happens immediately after the human responds or completes the task.')
+
+  const requireActionShape = (
+    label: string,
+    owner: ActionOwner | null | undefined,
+    impact: string,
+    options: QuestionOption[] | null | undefined,
+  ): void => {
+    if (!owner || !impact.trim()) {
+      throw new Error(`"${label}" requires action_owner and a one-line impact`)
+    }
+    const count = options?.length ?? 0
+    if (owner === 'task' && count > 0) {
+      throw new Error(`task "${label}" must omit options`)
+    }
+    if (owner !== 'task' && (count < 2 || count > 4)) {
+      throw new Error(`${owner} "${label}" requires 2-4 options`)
+    }
+  }
+
   server.registerTool(
     'flag',
     {
       description:
-        'Raise an item for the human. Use kind="question" whenever you are about to STOP and WAIT on the human — a decision, a missing credential, an ambiguity you cannot resolve, or a recommendation / next step you are ending your turn on ("recommend X — go?", "want me to ...?", "say the word"). ONE ASK, ONE SURFACE: if an existing board row already represents this same dependency, set that row to blocked instead and DO NOT create a question item; use a question item only when no existing board row owns the ask. The test is not whether you are mid-conversation; it is whether your next move depends on their answer — such a moment left only in chat is invisible, so flag it (a recommendation in your last paragraph does NOT reach them). kind="note" = a non-blocking assumption, caveat, or workaround they should see; kind="done" = a finished milestone (shipped / merged / deployed), used sparingly, NOT routine progress. Keep it glanceable: title is the ask or finding itself in one line (aim under ~80 chars), detail is ONE line (the why or impact), and everything long — background, files/PRs/links, the context a cold reader needs — goes in context, which renders collapsed so length there is free. For a question, ALWAYS include 2-4 options when the answer has discernible choices: your recommendation first with recommended:true, each a short label plus a detail explaining the tradeoff; the human can pick one, compare them, or answer freely. Copilot question responses include a `watch` launch contract: immediately run its `shell_command` as a detached async background task using the returned mode, detach, shell_id, and timeout_seconds values. Do not wait synchronously. Its completion notification wakes the session; then call pending() immediately, act on the reply, and resolve the question. Other clients continue using their native wake path. One question, two channels: never ask the same decision twice in two places — if the human answers you in chat rather than on the card, record it with the answer tool so the inbox converges. project/stream/agent are inferred automatically.',
+        'Raise an item for the human. Use kind="question" whenever you are about to STOP and WAIT on the human — a decision, a missing credential, an ambiguity you cannot resolve, or a recommendation / next step you are ending your turn on ("recommend X — go?", "want me to ...?", "say the word"). ONE ASK, ONE SURFACE: if an existing board row already represents this same dependency, set that row to blocked instead and DO NOT create a question item; use a question item only when no existing board row owns the ask. The test is not whether you are mid-conversation; it is whether your next move depends on their answer — such a moment left only in chat is invisible, so flag it. kind="note" = a non-blocking assumption/caveat/workaround; kind="done" = a finished milestone, used sparingly. A question must carry: title = the ask, detail = one-sentence TL;DR, next_step = ONE concrete human action, action_owner = decision (they choose) | task (they do it) | approval (they approve and the agent acts), impact = why it matters now, and optional next_after = what immediately follows. decision/approval requires 2-4 options (recommendation first); task must omit options. Put all history, reasoning, files, PRs and links in collapsed context. Copilot question responses include a `watch` launch contract: immediately run its `shell_command` as a detached background task using the returned values; on completion call pending(). One question, two channels: if the human answers in chat, record it with answer. project/stream/agent are inferred automatically.',
       inputSchema: {
         kind: z.enum(['question', 'note', 'done']),
-        title: z.string().min(1),
-        detail: z.string().optional(),
+        title: z.string().min(1).max(120),
+        detail: z.string().min(1).max(240).describe('TL;DR: one plain-language sentence summarizing the current state. No history or transcript.'),
+        next_step: z.string().min(1).max(180).describe('The ONE concrete action the human should take now. Start with a verb; use "No action" for informational items.'),
+        action_owner: actionOwner.optional(),
+        impact: impactField.optional(),
+        next_after: nextAfterField.optional(),
         context: z.string().optional(),
         stream: z.string().optional(),
         options: z
-          .array(z.object({ label: z.string().min(1), detail: z.string().optional(), recommended: z.boolean().optional() }))
-          .max(5)
+          .array(responseOption)
+          .max(4)
           .optional(),
       },
     },
-    async ({ kind, title, detail, context, stream, options }) => {
+    async ({ kind, title, detail, next_step, action_owner, impact, next_after, context, stream, options }) => {
       heartbeat()
+      if (kind === 'question') requireActionShape(title, action_owner, impact ?? '', options)
       const s = scope.get(clientName())
       // issue #30 — a per-call `stream` override changes which BRANCH this item
       // was raised on, so the issue has to follow it. scope.issueFor owns the
@@ -111,6 +145,10 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
         kind,
         title,
         detail,
+        next_step,
+        action_owner,
+        impact,
+        next_after,
         context,
         options,
       })
@@ -124,12 +162,12 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
   server.registerTool(
     'resolve',
     {
-      description: 'Mark one of your own inbox items resolved once it is moot (you answered it yourself, or the caveat no longer applies).',
-      inputSchema: { id: z.string() },
+      description: 'Mark one of your own inbox items resolved once you acted on the human response or it became moot. Include outcome as the one-line result so the human can see what happened after their answer.',
+      inputSchema: { id: z.string(), outcome: z.string().max(240).optional() },
     },
-    async ({ id }) => {
+    async ({ id, outcome }) => {
       heartbeat()
-      resolveItem(db, id)
+      resolveItem(db, id, outcome)
       return { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] }
     },
   )
@@ -138,7 +176,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     'pending',
     {
       description:
-        'Poll for everything the human has said to you in this project — the ONE polling call; you do not need board_get to hear from them. Returns {items, rows}. items = your open questions, each with its reply (null until the human answers — reply may be one of your options or their own free-text direction; follow it either way) plus optional reply_context, and `annotation` if they pinned a side-note to the card — read that too. rows = what the human has said or DONE on your tracking boards, each {board_title, label, note, annotation, handled_at, …}. Two shapes arrive here and you must act on both: `annotation` is the human answering that row in words, and `handled_at` is the human telling you THEY HAVE DONE THE THING you blocked on — the account is created, the video is recorded, the key exists now. A row can carry either or both. Either way, go and check/continue the work and then flip the row’s status with board_row — THAT STATUS CHANGE IS WHAT TELLS THEM YOU DID, and it is the only thing that takes the row off their screen. Never answer a `handled_at` row by re-sending it as `blocked` with the same ask. NOTHING here is handed over only once, so nothing is lost if you are busy or if a sibling session polls first: a question keeps coming back until you `resolve` it, and a `blocked` row keeps coming back until you change its status. That means you WILL see the same answer again — `annotation_seen_at`/`annotation_seen_by`/`handled_seen_at` on a row (and `reply_seen_at` on an item) mean it reached SOME agent, very often a sibling session sharing your agent name rather than you, so a stamp is NEVER a reason to skip it: if the row is still `blocked`, or the question still open, it is not done and it may well be yours to do. The stamp only tells you someone else may be working it too; the status change (or `resolve`) is the real signal. Poll between work steps rather than blocking. If the human answered you in chat instead, record it with the answer tool — but an inbox reply you have not picked up here always wins over one given in chat. Polling is cheap on purpose: everything the HUMAN wrote or marked (reply, reply_context, annotation, handled_at) comes back in full every time, but agent-authored `context` is handed over only ONCE — after that a row or item carries `context_chars` instead, its size as JS counts it (UTF-16 code units, so an emoji counts 2). That "once" is per SERVER PROCESS, and a fan-out of subagents shares one: a sibling’s poll can consume a delivery you never received, so `context_chars` is NOT proof you have the text. Whenever you are missing context you actually need, ask for it — `pending({full:true})` returns every context in this payload in full, and `board_get({title, full:true})` returns one board’s rows in full. Nothing is ever unreachable, so never guess at backstory you were not given.',
+        'Poll for everything the human has said to you in this project — the ONE polling call. Returns {items, rows}. Read reply_kind/annotation_kind: answer = act normally; clarify = rewrite the ask (for a board use board_advance on the same label/version; for an item resolve and raise a corrected replacement); decline = stop/cancel the proposed path and acknowledge it with an outcome. handled_at means the human completed their task. snoozed_until means they deferred an unanswered ask; do not nag or treat it as an answer. After acting, resolve an item with outcome or move a row out of blocked with outcome. If another human step remains, use board_advance rather than stacking another row. Questions reappear until resolve; blocked rows reappear until status changes, so delivery stamps are never acknowledgements. Human words are always returned; agent context is handed over once per SERVER PROCESS and recoverable with pending({full:true}) or board_get({title, full:true}); context_chars uses UTF-16 code units.',
       inputSchema: { full: z.boolean().optional() },
     },
     async ({ full }) => {
@@ -198,15 +236,20 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     {
       description:
         'Record an answer the HUMAN gave you in CHAT onto one of your open inbox questions, so the inbox stops showing it unanswered. This is NOT for answering your own question — if the question became moot, call resolve instead; writing an answer here removes the item from the human’s attention list, so inventing one hides a real question from them. id comes from flag’s return value or from pending. Returns {ok:true}, or {ok:false, reason} — reason "unread_inbox_answer" means they ALSO answered in the inbox and you have not read it: that answer is returned alongside the refusal and it wins, so follow it, and call pending() so the card stops telling them you are still waiting to read it. Other reasons: "empty" (no text), "not_found", "not_a_question", "not_open". Recording an answer is not resolving — once you have acted on it, call resolve.',
-      inputSchema: { id: z.string(), text: z.string(), context: z.string().optional() },
+      inputSchema: {
+        id: z.string(),
+        text: z.string(),
+        context: z.string().optional(),
+        kind: z.enum(['answer', 'clarify', 'decline']).optional(),
+      },
     },
-    async ({ id, text, context }) => {
+    async ({ id, text, context, kind }) => {
       heartbeat()
       // no project scope check on purpose: an answering session's inferred project
       // can legitimately differ from the asking one (different cwd, subagent,
       // worktree), and losing the human's answer is worse than a cross-project
       // write only an id typo can cause. kind/status/precedence guard the rest.
-      const out = answerItem(db, id, text, context)
+      const out = answerItem(db, id, text, context, kind)
       return { content: [{ type: 'text', text: JSON.stringify(out) }] }
     },
   )
@@ -275,23 +318,90 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
   const rowStatus = z
     .enum(['done', 'partial', 'missing', 'tracked', 'na', 'blocked'])
     .describe(
-      'Row status. done|partial|missing|tracked|na are purely descriptive. blocked is the ONE that escalates: it means this row is waiting on the HUMAN and nobody else, and it sits in their attention banner until they answer it or mark that they have DONE it (pending() delivers both). A blocked row is itself the ask: ONE ASK, ONE SURFACE — never also create a question item for the same dependency. Work stuck on something a person cannot unblock — a failing test, a build or release that does not exist yet, another PR, a long job — is `partial` (or `tracked`) with the reason in note, NEVER blocked. Moving a row OUT of blocked and later back INTO blocked is a NEW request and discards the human’s "I did my part" mark, so do it only when you really are asking for something else.',
+      'Row status. done|partial|missing|tracked|na are descriptive. blocked is the ONE escalation: waiting on the HUMAN and nobody else. A blocked row requires note, next_step, action_owner and impact; decision/approval requires 2-4 options, task omits options. The row is the ask — ONE ASK, ONE SURFACE, never a duplicate question item. Work stuck on a failing test, missing build, another PR or long job is partial/tracked, NEVER blocked. Moving into blocked is a NEW request and archives the prior action; use board_advance when deliberately chaining the same stable row.',
     )
+  const rowNote = z.string().max(240).describe('TL;DR: one plain-language sentence summarizing this row’s current state.')
+  const rowNextStep = z.string().max(180).describe('The ONE concrete action the human should take now. Required and non-empty when status is blocked.')
+  const rowOptions = z.array(responseOption).max(4)
+    .refine((options) => options.length === 0 || options.length >= 2, 'options must be empty or contain 2-4 choices')
+    .describe('For a decision-shaped blocked row, 2-4 direct choices; put the recommended choice first with recommended:true. Omit for a task the human must perform.')
+
+  const requireBlockedShape = (
+    label: string,
+    status: string,
+    note: string,
+    nextStep: string,
+    owner: ActionOwner | null | undefined,
+    impact: string,
+    options: QuestionOption[] | null | undefined,
+  ): void => {
+    if (status !== 'blocked') return
+    if (!note.trim() || !nextStep.trim()) {
+      throw new Error(`blocked row "${label}" requires a one-sentence note (TL;DR) and one concrete next_step`)
+    }
+    requireActionShape(label, owner, impact, options)
+  }
 
   server.registerTool(
     'board_upsert',
     {
       description:
-        'Create or replace a tracking board (a titled table the human watches). Idempotent by title within this project — re-send the whole table to refresh it. Rows are matched by label; the human’s per-row notes survive, and a row you leave OUT is deleted (so keep labels stable). status: done|partial|missing|tracked|na|blocked — five of those merely describe the row; "blocked" is an ESCALATION meaning this row is waiting on the HUMAN and nobody else, and it sits in their attention banner until they answer. A blocked row is itself the ask: ONE ASK, ONE SURFACE — never also create a question item for the same dependency. Being stuck is not being blocked: a failing test, a build or release that does not exist yet, another PR, a long job — none of those are things a person can unblock, so they are `partial` (or `tracked`) with the reason in note. note is the one-line summary; context is optional long-form backstory (reasoning, history) shown collapsed. Leaving `context` off a row KEEPS whatever is stored there — reads hand you `context_chars`, not the text, so omission can never mean delete; pass context:"" to clear it deliberately. Re-sending a row as "blocked" is NOT an acknowledgement of the human’s answer on it — you are still asserting you are blocked; act on what they left (pending() delivers it: an annotation, and/or `handled_at` meaning they went and DID the thing) and send a different status. Their annotation and their `handled_at` mark both survive every re-send of the whole table, so you can never wipe them by omission.',
+        'Create or refresh a tracking board. Idempotent by title; rows match stable labels and omitted ROWS are deleted. Every existing board MUST carry board_version and every existing row MUST carry its current revision from board_get/pending; stale snapshots abort the whole write. blocked means waiting on the HUMAN and is itself the ask — ONE ASK, ONE SURFACE, never a duplicate question item. Every blocked row requires note (TL;DR), next_step, action_owner and impact; decision/approval requires 2-4 options, task omits options. A failing test, missing build, another PR or long job is partial/tracked, never blocked. context is collapsed background. Omitted agent fields preserve stored values; context:"", next_step:"" and options:[] clear deliberately. Routine re-sends never erase the human annotation or handled_at ("I did my part"). When acknowledging a response, move the row out of blocked and include outcome; when another human step follows, use board_advance.',
       inputSchema: {
         title: z.string().min(1),
-        rows: z.array(z.object({ label: z.string().min(1), status: rowStatus, note: z.string().optional(), context: z.string().optional() })),
+        board_version: z.number().int().positive().optional().describe('Required for an existing board; use revision from board_get.'),
+        rows: z.array(z.object({
+          label: z.string().min(1),
+          status: rowStatus,
+          revision: z.number().int().positive().optional().describe('Required for every existing row; use the row revision from board_get/pending.'),
+          note: rowNote.optional(),
+          next_step: rowNextStep.optional(),
+          action_owner: actionOwner.optional(),
+          impact: impactField.optional(),
+          next_after: nextAfterField.optional(),
+          options: rowOptions.optional(),
+          outcome: z.string().max(240).optional(),
+          context: z.string().optional(),
+        })).refine(
+          (rows) => new Set(rows.map((row) => row.label)).size === rows.length,
+          'row labels must be unique',
+        ),
       },
     },
-    async ({ title, rows }) => {
+    async ({ title, board_version, rows }) => {
       heartbeat()
       const s = scope.get(clientName())
-      const out = upsertBoard(db, { project: s.project, stream: s.stream, agent: s.agent, title, rows, repo: s.repo, issueRef: s.issue })
+      const existing = getBoard(db, s.project, title)
+        ?? listBoards(db, { status: 'archived' }).find((board) => board.project === s.project && board.title === title)
+      if (existing && board_version === undefined) {
+        throw new Error(`existing board "${title}" requires board_version ${existing.revision}`)
+      }
+      for (const row of rows) {
+        const previous = existing?.rows.find((candidate) => candidate.label === row.label)
+        if (previous && row.revision === undefined) {
+          throw new Error(`existing row "${row.label}" requires revision ${previous.revision}`)
+        }
+        const newAsk = row.status === 'blocked' && previous?.status !== 'blocked'
+        requireBlockedShape(
+          row.label,
+          row.status,
+          row.note ?? (newAsk ? '' : previous?.note ?? ''),
+          row.next_step ?? (newAsk ? '' : previous?.next_step ?? ''),
+          row.action_owner ?? (newAsk ? null : previous?.action_owner),
+          row.impact ?? (newAsk ? '' : previous?.impact ?? ''),
+          row.options ?? (newAsk ? null : previous?.options),
+        )
+      }
+      const out = upsertBoard(db, {
+        project: s.project,
+        stream: s.stream,
+        agent: s.agent,
+        title,
+        rows,
+        expectedVersion: board_version,
+        repo: s.repo,
+        issueRef: s.issue,
+      })
       return { content: [{ type: 'text', text: JSON.stringify(out) }] }
     },
   )
@@ -300,13 +410,107 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     'board_row',
     {
       description:
-        'Update or add ONE row of a tracking board by label, without re-sending the whole table. Creates the board (and row) if missing; a new row defaults to status "tracked". Omitted status/note/context leave the existing value. context is optional long-form backstory shown collapsed. status "blocked" means the row needs the HUMAN and nobody else — it escalates into their attention banner, so put what you need from them in note. A blocked row is itself the ask: ONE ASK, ONE SURFACE — never also create a question item for the same dependency. Use it for nothing else: work stuck on a failing test, on a build or release that does not exist yet, or on another PR is `partial` (or `tracked`) with the reason in note, because there is nothing there for a person to do. pending() delivers their answer — words (`annotation`), or `handled_at` meaning they have gone and DONE what you asked. FLIP THE ROW’S STATUS ONCE YOU HAVE ACTED — that status change is what tells them you did, and until it happens they keep seeing the row marked "delivered to you". Changing this row from a non-blocked status back to "blocked" counts as a fresh ask and clears their "I did my part" mark, so never do it as a way of nagging about the same thing.',
-      inputSchema: { title: z.string().min(1), label: z.string().min(1), status: rowStatus.optional(), note: z.string().optional(), context: z.string().optional() },
+        'Update or add ONE board row by stable label. Existing rows require expected_revision from board_get/pending; a stale revision is refused. Omitted fields preserve the current value. blocked means the row needs the HUMAN and nobody else; it requires note, next_step, action_owner and impact. decision/approval requires 2-4 options; task omits options. The row is the ask — ONE ASK, ONE SURFACE, never a duplicate question item. A failing test, missing build or another PR is partial/tracked, not blocked. After pending delivers answer/clarify/decline/handled_at, either move the row out of blocked with outcome or use board_advance for the next human step. A nonblocked→blocked transition is a NEW request and archives the prior action.',
+      inputSchema: {
+        title: z.string().min(1),
+        board_version: z.number().int().positive().optional().describe('Required when the board already exists; use revision from board_get.'),
+        label: z.string().min(1),
+        expected_revision: z.number().int().positive().optional().describe('Required when the row already exists; use revision from board_get/pending.'),
+        status: rowStatus.optional(),
+        note: rowNote.optional(),
+        next_step: rowNextStep.optional(),
+        action_owner: actionOwner.optional(),
+        impact: impactField.optional(),
+        next_after: nextAfterField.optional(),
+        options: rowOptions.optional(),
+        outcome: z.string().max(240).optional(),
+        context: z.string().optional(),
+      },
     },
-    async ({ title, label, status, note, context }) => {
+    async ({ title, board_version, label, expected_revision, status, note, next_step, action_owner, impact, next_after, options, outcome, context }) => {
       heartbeat()
       const s = scope.get(clientName())
-      const out = updateBoardRow(db, { project: s.project, stream: s.stream, agent: s.agent, title, label, status, note, context, repo: s.repo, issueRef: s.issue })
+      const existingBoard = getBoard(db, s.project, title)
+        ?? listBoards(db, { status: 'archived' }).find((board) => board.project === s.project && board.title === title)
+      const existing = existingBoard?.rows.find((row) => row.label === label)
+      if (existingBoard && board_version === undefined) {
+        throw new Error(`existing board "${title}" requires board_version ${existingBoard.revision}`)
+      }
+      const nextStatus = status ?? existing?.status ?? 'tracked'
+      if (existing && expected_revision === undefined) {
+        throw new Error(`existing row "${label}" requires expected_revision ${existing.revision}`)
+      }
+      const newAsk = nextStatus === 'blocked' && existing?.status !== 'blocked'
+      requireBlockedShape(
+        label,
+        nextStatus,
+        note ?? (newAsk ? '' : existing?.note ?? ''),
+        next_step ?? (newAsk ? '' : existing?.next_step ?? ''),
+        action_owner ?? (newAsk ? null : existing?.action_owner),
+        impact ?? (newAsk ? '' : existing?.impact ?? ''),
+        options ?? (newAsk ? null : existing?.options),
+      )
+      const out = updateBoardRow(db, {
+        project: s.project,
+        stream: s.stream,
+        agent: s.agent,
+        title,
+        label,
+        expectedBoardVersion: board_version,
+        expectedRevision: expected_revision,
+        status,
+        note,
+        next_step,
+        action_owner,
+        impact,
+        next_after,
+        options,
+        outcome,
+        context,
+        repo: s.repo,
+        issueRef: s.issue,
+      })
+      return { content: [{ type: 'text', text: JSON.stringify(out) }] }
+    },
+  )
+
+  server.registerTool(
+    'board_advance',
+    {
+      description:
+        'Advance an existing board row into its NEXT human action without changing its stable label. Use this after the human answered/declined/requested clarification and more human work remains. It atomically archives the prior step (including their response and pickup state), clears the old response/snooze/outcome, increments action_version, and installs a fresh blocked action. board_version and expected_revision are required so a sibling agent cannot overwrite newer board, human or agent state. action_owner=task must omit options; decision/approval requires 2-4 options.',
+      inputSchema: {
+        title: z.string().min(1),
+        label: z.string().min(1),
+        board_version: z.number().int().positive(),
+        expected_revision: z.number().int().positive(),
+        note: rowNote,
+        next_step: rowNextStep,
+        action_owner: actionOwner,
+        impact: impactField,
+        next_after: nextAfterField.optional(),
+        options: rowOptions.optional(),
+        context: z.string().optional(),
+      },
+    },
+    async ({ title, label, board_version, expected_revision, note, next_step, action_owner, impact, next_after, options, context }) => {
+      heartbeat()
+      requireBlockedShape(label, 'blocked', note, next_step, action_owner, impact, options)
+      const s = scope.get(clientName())
+      const out = advanceBoardRow(db, {
+        project: s.project,
+        title,
+        label,
+        expectedBoardVersion: board_version,
+        expectedRevision: expected_revision,
+        note,
+        next_step,
+        action_owner,
+        impact,
+        next_after,
+        options,
+        context,
+      })
       return { content: [{ type: 'text', text: JSON.stringify(out) }] }
     },
   )
@@ -315,14 +519,14 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     'board_archive',
     {
       description: 'Archive a finished tracking board so it drops off the human’s active view. Resolved by title within this project.',
-      inputSchema: { title: z.string().min(1) },
+      inputSchema: { title: z.string().min(1), board_version: z.number().int().positive() },
     },
-    async ({ title }) => {
+    async ({ title, board_version }) => {
       heartbeat()
       const s = scope.get(clientName())
       const board = findBoard(db, s.project, title)
-      if (board) archiveBoard(db, board.id)
-      return { content: [{ type: 'text', text: JSON.stringify({ ok: board !== undefined }) }] }
+      const ok = board ? archiveBoard(db, board.id, board_version) : false
+      return { content: [{ type: 'text', text: JSON.stringify({ ok }) }] }
     },
   )
 
@@ -330,7 +534,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     'board_get',
     {
       description:
-        'Re-read a tracking board’s state before updating it. You do NOT need this to hear from the human — pending() delivers their per-row notes AND their `handled_at` marks ("I have done my part on this row"). Rows carry annotation_unseen: true on notes not yet delivered to any agent; reading marks the rows in the payload delivered, marks included. With a title: that board, rows and all. Without: a SUMMARY of your active boards in this project — titles, row labels, statuses, notes and the human’s annotations, no row context (and it delivers every annotation in the project at once, so prefer the titled form). Returns {found:false} if the titled board does not exist. The human’s annotation and `handled_at` mark are ALWAYS returned in full. Agent-authored row `context` is not: a row shows `context_chars` instead — its size as JS counts it (UTF-16 code units, so an emoji counts 2) — and `full: true` WITH a title returns the real text for that board. Ask for it whenever you actually need the backstory (most updates do not) — it is also how you recover context a sibling subagent’s poll consumed before you saw it. Re-sending a row through board_upsert WITHOUT its context keeps the stored text; it is not deleted by omission.',
+        'Re-read a tracking board before updating it. pending() already delivers human responses/handled_at. With a title: full row state; without: a summary of active boards. Board revision protects full snapshots/archive state; row revision is the CAS token for board_row/board_advance; action_version numbers chained steps. history_count says prior steps exist but history text is viewer-only and never sent to agents. Human response fields are always returned. Agent context is replaced by context_chars unless a titled read uses full: true (its size is UTF-16 code units, so an emoji counts 2).',
       inputSchema: { title: z.string().optional(), full: z.boolean().optional() },
     },
     async ({ title, full }) => {
@@ -365,6 +569,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
         return { content: [{ type: 'text', text: JSON.stringify(payload) }] }
       }
       const board = getBoard(db, s.project, title)
+        ?? listBoards(db, { status: 'archived' }).find((candidate) => candidate.project === s.project && candidate.title === title)
       if (board) deliver(board)
       return {
         content: [{ type: 'text', text: JSON.stringify(board ? shapeBoard(board, { full, ledger }) : { found: false }) }],

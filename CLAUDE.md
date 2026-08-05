@@ -65,6 +65,33 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   Exactly ONE thing clears it, in `resetHandledOnReblock`: a status transition INTO
   `blocked` from something else, i.e. a genuinely new ask. Re-sending a row that is already
   blocked is not an acknowledgement and must never reset it.
+- **Actionability is stored, never inferred from prose.** Item `detail` and board-row `note`
+  are one-sentence TL;DRs; `next_step` is the ONE concrete human action; `action_owner`
+  (`decision|task|approval`) says who acts; `impact` says why now; `next_after` says what
+  follows. MCP requires the action fields on every question/blocked row. decision/approval
+  carries 2-4 `options`; task omits options and gets "I've done my part." Long history belongs
+  in collapsed `context`. These are additive agent-owned fields: full-board upserts preserve
+  omitted values, explicit empty values clear them, and legacy rows use note/detail fallbacks.
+- **Snooze is a demotion, never disappearance.** `snoozed_until` excludes an unanswered item
+  or row from `attentionEntries`/badge counts until due, but `snoozedEntries` renders it in a
+  visible fold with Wake now. The three-way complement for blocked rows is attention ∪
+  awaiting-agent ∪ snoozed. Clarify/decline are response kinds and therefore human action;
+  they move to awaiting-agent and never pretend to be an outcome.
+- **Row chaining is versioned and atomic.** `board_advance` uses row `revision` as its CAS
+  token; `action_version` is only the human-step number. `advanceBoardRow(...).immediate`
+  archives the current action/response/outcome into JSON `history`, clears every
+  human/delivery/snooze/outcome field, increments both counters,
+  and installs the next blocked action in one write transaction. Ordinary nonblocked→blocked
+  transitions use the same archive/reset path. Agent reads get only `history_count`; the
+  viewer alone receives full history.
+- **Every row action is version-pinned.** MCP `board_upsert` existing rows carry row
+  `revision`; `board_row` carries `expected_revision`; browser/native annotate, snooze and
+  handled writes carry row revision plus board revision. A stale notification or sibling
+  therefore cannot answer or complete the newer action that reused the stable row id.
+- **`updated_at` means content changed.** Item/row human or agent content writes bump it;
+  delivery stamps (`markReplySeen`, `markAnnotationDelivered`, `markHandledDelivered`) never
+  do. The viewer's New/changed filter depends on this distinction just as Live depends on
+  `last_call_at` rather than liveness heartbeats.
 - **Delivery is not acknowledgement (issue #37).** `board_rows.annotation_seen_at` records
   ONE fact — this text was handed to some agent — and it silences nothing: not the human's
   screen, and (since F1) not the agent's queue either. The row stays `blocked` and stays in
@@ -212,6 +239,8 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   `#pauseHint`; a direct `render()` leaves that hint claiming "paused" over data already on
   screen. Pinned in `test/shell.test.ts` + `test/issue-31-followups.test.ts`; the behavioural
   half (including the anti-regression that the poll still suspends) is `test/dom/silent-send.test.ts`.
+  Nested Background disclosures are keyed by item/row id in `openContexts`; a poll or forced
+  rebuild must restore their `open` state instead of collapsing text under the reader.
 - **A held pointer defers the rebuild, and it is NOT a suspension (#38 / D2).** The 3s render
   detaches the node under the cursor, so `pointerdown`/`pointerup` share no ancestor and the
   browser dispatches **no click at all** (measured in Chrome: ~1 in 24 at human hold times, on
@@ -494,10 +523,11 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   delivery-is-not-acknowledgement invariant above; `docs/reporting-snippet.md` and the `pending`/
   `board_row` tool descriptions all say that the STATUS FLIP is the acknowledgement.
 - **The human's "I did my part" mark on a blocked row** *(#36)* — `board_rows.handled_at` plus
-  `handled_seen_at`/`handled_seen_by`. It exists because every `blocked` row in the wild is a
-  TASK ("create the Paddle account", "record the hero demo"), not a question, and the viewer
-  only offered a free-text box: a task wants DONE, and with the asking session over nobody was
-  ever going to flip the status. Four things are load-bearing. (1) **It is not the `done`
+  `handled_seen_at`/`handled_seen_by`. It exists for task-shaped blockers ("create the Paddle
+  account", "record the hero demo"): a task wants DONE, and with the asking session over nobody
+  was ever going to flip the status. Decision-shaped blockers now carry direct response options,
+  store the choice as an annotation, and do not render this task control. Four things are
+  load-bearing. (1) **It is not the `done`
   STATUS** — that is the agent's assertion about the row's work and only agents write it; the
   labels say so (`I've done my part` / `Not done after all`, and "You marked your part done" on
   the card). (2) **`upsertBoard` can never clear it**, and exactly one thing can: a status
@@ -530,12 +560,18 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   db (`JSON length / 3.6`, the issue's method): `board_get()` 11,493 → 2,604 tok (agent-inbox),
   14,818 → 3,955 (oris); the biggest single board 4,361 → 1,551, unchanged under `full:true`; and,
   with the project's 14 heavy rows synthetically blocked, 20 polls 136,791 → 52,568. It costs +477
-  tok of tool definitions once per session. `docs/reporting-snippet.md` is deliberately unchanged —
-  agents should keep writing generous `context` for the human; the tool descriptions carry the
-  payload contract.
+  tok of tool definitions once per session. Agents still write generous `context` for the
+  human; action-first TL;DR/next-step fields do not turn context into a terse status slot.
 - **The agent-emit contract** — `docs/reporting-snippet.md`'s end-of-turn rule now tests "am I about
   to stop and wait on the human?", so recommendations and "say the word" moments get flagged
-  instead of buried. Mirrored in the `flag` tool description so agents get it at the call site.
+  instead of buried. It now also defines ownership/impact/next-after, snooze semantics,
+  answer|clarify|decline handling, required outcomes, and `board_advance` for chained work.
+  Mirrored in MCP schemas/descriptions so malformed blockers are rejected at the call site.
+- **Human action lifecycle** — blockers carry ownership, impact and next-after; the viewer
+  offers snooze/wake, clarification and decline without changing agent-owned row status;
+  answered work shows pickup/outcome/history and ages into an agent-overdue chip outside badge
+  attention; board decisions and question items both expose native Electron response actions.
+  Needs-you can filter Decisions, Tasks and New/changed since the previous visit.
 - **Build stamp + staleness signal** *(#40)* — `scripts/write-setup-info.mjs` (called by the
   packager, and executable in a test the way `package-app.sh` never can be) bakes `commit` +
   `builtAt` beside the paths setup-info.json already carried; `src/stamp.ts` reads the checkout's
@@ -563,14 +599,6 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   agents declare scope via `register` instead of auto-inference. `AGENT_INBOX_DB`/`AGENT_INBOX_PORT`
   env overrides are already in place. Design (three blocking decisions, three verified wiring traps):
   [`docs/superpowers/specs/2026-07-26-remote-hosted-mode-design.md`](docs/superpowers/specs/2026-07-26-remote-hosted-mode-design.md).
-- **The human's exit from an UNANNOTATED blocked row** *(#36, remaining half)* — #37 fixed the
-  annotated case: writing a note now clears the row from the badge with no agent round-trip. A
-  blocked row the human has NOT answered still has no lever they can pull (there is no route to
-  change a row's status and no per-row dismiss). Needs `POST /api/boards/:id/rows/:rowId/status`
-  or a lighter "acknowledge"; the live DB has one such row today. Until then the Needs-you ✕
-  does not render on a board row at all (`needsRowEl`'s `dismissBit`, pinned in
-  `test/dom/row-dismiss.test.ts`) — it used to draw, advertise the `x` key and do nothing.
-  Draw it back in only together with the route behind it.
 - **Item-annotation delivery** *(not yet filed — #37 with a different noun)* — the viewer's Note
   button renders on EVERY open item (`card.js`'s `showActions: !done`, no kind check), but
   `listPending` filters `kind='question' AND status='open'`, so a human's note on a `note` item, a

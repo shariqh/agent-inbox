@@ -29,6 +29,8 @@ npm run view                          # viewer at http://localhost:4319
 npm run electron                      # Electron wrapper in development
 npm run package:app                   # build the self-contained macOS app
 
+npm run install:agents                # dry-run MCP + host-instructions setup
+npm run install:agents -- --apply     # install for Claude Code and Copilot CLI
 npm run install:hooks                 # dry-run the Claude hook installer
 npm run install:hooks -- --apply      # write the hook configuration
 ```
@@ -36,6 +38,8 @@ npm run install:hooks -- --apply      # write the hook configuration
 `npm run build` must continue to use `tsconfig.build.json`: its `rootDir: "src"`
 keeps entries such as `dist/mcp-server.js` flat. The base `tsconfig.json` includes
 tests for typechecking and would emit an unwanted `dist/src/` tree.
+Run the build before `npm run electron`; the development shell starts the built
+`dist/viewer-server.js`.
 
 ## Architecture
 
@@ -56,6 +60,11 @@ tests for typechecking and would emit an unwanted `dist/src/` tree.
   `src/shape.ts` trims agent-facing MCP read payloads and must not affect viewer
   API payloads. `src/hook.ts`/`hook-cli.ts` and `src/watch.ts`/`watch-cli.ts` are
   separate host adapters that still access data through `store.ts`.
+- **Setup path:** `scripts/install-agents.sh` is the canonical dry-run-first
+  installer for MCP registration and managed host instructions. Electron exposes
+  only fixed setup targets through `electron/setup-preload.cjs` and invokes that
+  same script through `electron/setup-runner.cjs`; there is no HTTP setup-write
+  route or general-purpose shell bridge.
 - **Shared presentation rules:** `public/attention.js` is the single attention
   predicate used by the viewer and Electron dock badge. Pure modules under
   `public/` hold grouping, ordering, search, badge, polling, and rendering rules;
@@ -79,13 +88,29 @@ tests for typechecking and would emit an unwanted `dist/src/` tree.
   timestamp-based last-write-wins.
 - Boards are idempotent by `(project, title)` and rows by stable `label`.
   A full `board_upsert` deletes rows omitted from the payload, but omitting a
-  row's `context` preserves the stored context; `context: ""` clears it.
+  row's `context`, `next_step`, or `options` preserves the stored value; explicit
+  empty values clear them.
   Never overwrite or reset human-owned annotation, handled, or delivery fields
   during routine upserts.
 - `blocked` is the only row status that means the human must act. A failing
   test, missing build, another PR, or other non-human dependency is `partial` or
   `tracked`. A blocked row remains pending until an agent changes its status;
   delivery stamps are not acknowledgements.
+- Human blockers are action-first data, not prose conventions. Item `detail` and
+  row `note` are one-sentence TL;DRs; `next_step` is one concrete human action.
+  `action_owner` identifies decision/task/approval, `impact` says why now, and
+  `next_after` says what follows. decision/approval carries 2-4 `options`; task
+  omits them so the viewer offers "I've done my part." Long history belongs in
+  collapsed `context`.
+- Snoozed work leaves badge attention but remains in the explicit snoozed fold.
+  Clarify/decline are response kinds, not outcomes. `board_advance` is the only
+  same-row chain operation: it CAS-pins row `revision`, archives the prior step,
+  and clears human/delivery state atomically. Agent reads get `history_count`, not
+  full history.
+- Every existing-row agent mutation and every human/browser/native row action is
+  pinned to row `revision`; never weaken those writes back to row-id-only updates.
+- Item/row `updated_at` is for content changes only. Delivery stamp writes must
+  never bump it or the New/changed filter becomes a polling firehose.
 - Activity has two meanings: `updated_at` is process liveness and
   `last_call_at` is real MCP work. The periodic liveness tick must call only
   `touchActivity`; tool calls record work with `recordActivityCall`.
@@ -93,10 +118,18 @@ tests for typechecking and would emit an unwanted `dist/src/` tree.
   path or let subprocess stdout inherit it. Capture subprocess output. Viewer
   logging is allowed. Hook CLI stdout/stderr and exit codes are also protocol
   contracts; preserve the exact behavior documented in `docs/hooks.md`.
+- The Copilot answer watcher is host-owned, exact-item, and read-only. The MCP
+  server returns its launch contract but must never spawn it; only a host-owned
+  detached command can wake the originating session. Preserve `process.execArgv`
+  and the explicit database path so source and built execution behave alike.
 - Keep network access out of the MCP process. Repository/branch identity is
   inferred locally; live PR state is fetched only by the viewer's `gh` poller.
   PR/check state is ambient information and must not enter the human-attention
   predicate.
+- Treat `scripts/install-agents.sh` as transactional infrastructure. It owns only
+  the named MCP registration and marker-delimited instruction block, preserves
+  unrelated content and symlink targets, uses timestamped backups, and holds a
+  user-scoped `lockf`/`flock` lock while applying or rolling back changes.
 - All agent-authored text interpolated into HTML must pass through `esc()`.
   Supplied URLs additionally pass through `safeHttpUrl()` in
   `public/source.js`; build anchors through the existing `chipHtml()` path.

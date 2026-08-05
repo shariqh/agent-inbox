@@ -25,6 +25,12 @@ function createdMs(entity) {
   return Number.isFinite(t) ? t : 0
 }
 
+function isSnoozed(entity, nowMs) {
+  if (!entity?.snoozed_until) return false
+  const until = Date.parse(entity.snoozed_until)
+  return Number.isFinite(until) && until > nowMs
+}
+
 // A question is still asking only while it is OPEN and unanswered. `resolve`
 // closes an item without ever writing a reply, so keying on `reply` alone
 // counts a resolved question forever and the badge can never reach zero.
@@ -32,8 +38,9 @@ function createdMs(entity) {
 // EXPORTED because the triage deck re-validates its entries against the live
 // data: it used to re-implement this as a bare `!i.reply`, which is the second
 // predicate spec §7 tenet 3 exists to forbid.
-export function isAskingQuestion(item) {
-  if (!item || item.kind !== 'question' || item.reply) return false
+export function isAskingQuestion(item, nowMs = Date.now()) {
+  if (!item || item.kind !== 'question' || item.reply || item.reply_kind) return false
+  if (isSnoozed(item, nowMs)) return false
   return item.status === undefined || item.status === null || item.status === 'open'
 }
 
@@ -45,17 +52,16 @@ export function classifyLiveness(item, nowMs, liveSessionIds) {
 }
 
 // THE ONE PLACE that knows a blocked row can be answered in TWO shapes (#36).
-// Every `blocked` row in the wild turned out to be a TASK — "create the Paddle
-// account", "record the hero demo" — not a question, so the human's answer is
-// often not words at all but "I went and did it": `handled_at`. Either shape
-// ends the human's part, and nothing downstream should have to know which one
-// arrived, so the disjunction lives here rather than in each caller.
+// Decision choices and free-text direction land in `annotation`; task-shaped
+// blockers can instead be answered by "I went and did it": `handled_at`.
+// Either shape ends the human's part, and nothing downstream should have to
+// know which one arrived, so the disjunction lives here rather than each caller.
 //
 // Empty string is no answer, for both halves: `''` is what a blanked annotation
 // leaves behind, and a caller that tested `!== null` would keep a row in the
 // badge forever with nothing to show for it.
 export function humanActedOnRow(row) {
-  return Boolean(row.annotation) || Boolean(row.handled_at)
+  return Boolean(row.annotation_kind) || Boolean(row.annotation) || Boolean(row.handled_at)
 }
 
 // A blocked row stops asking the moment the HUMAN answers it — in words, or by
@@ -74,8 +80,8 @@ export function humanActedOnRow(row) {
 // with the merge still not done. Nothing here reads delivery state any more.
 //
 // The signal is NOT removed, it is relabeled: see awaitingAgentRows below.
-export function isBlockedRowAttention(row) {
-  return row.status === 'blocked' && !humanActedOnRow(row)
+export function isBlockedRowAttention(row, nowMs = Date.now()) {
+  return row.status === 'blocked' && !humanActedOnRow(row) && !isSnoozed(row, nowMs)
 }
 
 // The rows isBlockedRowAttention just dropped: blocked, and carrying whatever the
@@ -114,14 +120,14 @@ export function attentionEntries(items, boards, nowMs, liveSessionIds, closedPro
   const out = []
   for (const it of items ?? []) {
     if (closed.has(it.project)) continue
-    if (!isAskingQuestion(it)) continue
+    if (!isAskingQuestion(it, nowMs)) continue
     const liveness = classifyLiveness(it, nowMs, live)
     if (liveness === 'stale') continue
     out.push({ kind: 'item', item: it, liveness })
   }
   for (const b of boards ?? []) {
     if (closed.has(b.project)) continue
-    for (const r of b.rows ?? []) if (isBlockedRowAttention(r)) out.push({ kind: 'row', row: r, board: b })
+    for (const r of b.rows ?? []) if (isBlockedRowAttention(r, nowMs)) out.push({ kind: 'row', row: r, board: b })
   }
   return out
 }
@@ -133,8 +139,27 @@ export function staleEntries(items, nowMs, liveSessionIds) {
   const live = asSet(liveSessionIds)
   const out = []
   for (const it of items ?? []) {
-    if (!isAskingQuestion(it)) continue
+    if (!isAskingQuestion(it, nowMs)) continue
     if (classifyLiveness(it, nowMs, live) === 'stale') out.push({ kind: 'item', item: it, liveness: 'stale' })
+  }
+  return out
+}
+
+export function snoozedEntries(items, boards, nowMs, closedProjects = []) {
+  const closed = asSet(closedProjects)
+  const out = []
+  for (const item of items ?? []) {
+    if (closed.has(item.project)) continue
+    if (item.kind !== 'question' || (item.status ?? 'open') !== 'open') continue
+    if (item.reply || item.reply_kind || !isSnoozed(item, nowMs)) continue
+    out.push({ kind: 'item', item, liveness: 'snoozed' })
+  }
+  for (const board of boards ?? []) {
+    if (closed.has(board.project)) continue
+    for (const row of board.rows ?? []) {
+      if (row.status !== 'blocked' || humanActedOnRow(row) || !isSnoozed(row, nowMs)) continue
+      out.push({ kind: 'row', row, board, liveness: 'snoozed' })
+    }
   }
   return out
 }
@@ -175,7 +200,7 @@ export function countsByProject(items, boards, nowMs, liveSessionIds) {
 // beside an annotated one, instead of staying at the top reading like a to-do.
 function bucket(e) {
   if (e.kind === 'row') return humanActedOnRow(e.row) ? 3 : 0
-  if (e.item.reply) return 3
+  if (e.item.reply || e.item.reply_kind) return 3
   return e.liveness === 'waiting' ? 1 : 2
 }
 

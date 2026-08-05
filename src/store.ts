@@ -9,9 +9,11 @@ export type Status = 'open' | 'resolved' | 'dismissed'
 // which channel the current answer came through: the human typed it into the
 // inbox card, or an agent recorded what they said in chat (issue #29)
 export type ReplySource = 'inbox' | 'agent'
+export type ResponseKind = 'answer' | 'clarify' | 'decline'
+export type ActionOwner = 'decision' | 'task' | 'approval'
 
-// a proposed answer the agent attaches to a question; detail carries the
-// tradeoffs shown in the viewer's compare view
+// A proposed human response attached to a question item or decision-shaped
+// blocked row; detail carries the tradeoff shown beside the choice.
 export interface QuestionOption {
   label: string
   detail?: string
@@ -41,6 +43,10 @@ export interface Item {
   kind: Kind
   title: string
   detail: string
+  next_step: string
+  action_owner: ActionOwner | null
+  impact: string
+  next_after: string
   context: string
   status: Status
   annotation: string | null
@@ -50,6 +56,10 @@ export interface Item {
   replied_at: string | null
   reply_seen_at: string | null
   reply_source: ReplySource | null
+  reply_kind: ResponseKind | null
+  snoozed_until: string | null
+  outcome: string
+  outcome_at: string | null
   // issue #30 — the source-link identity inferred locally at write time:
   // `owner/name` for a github.com remote, and the issue number the BRANCH names.
   // Both null whenever the answer was not unambiguous, and null on every row
@@ -58,6 +68,7 @@ export interface Item {
   repo: string | null
   issue_ref: number | null
   created_at: string
+  updated_at: string
   resolved_at: string | null
 }
 
@@ -69,6 +80,10 @@ export interface NewItem {
   kind: Kind
   title: string
   detail?: string
+  next_step?: string
+  action_owner?: ActionOwner | null
+  impact?: string
+  next_after?: string
   context?: string
   options?: QuestionOption[]
   // optional on the WRITE shape: every pre-#30 call site passes neither
@@ -99,9 +114,18 @@ function migrate(db: Database.Database): void {
       kind TEXT NOT NULL,
       title TEXT NOT NULL,
       detail TEXT NOT NULL DEFAULT '',
+      next_step TEXT NOT NULL DEFAULT '',
+      action_owner TEXT,
+      impact TEXT NOT NULL DEFAULT '',
+      next_after TEXT NOT NULL DEFAULT '',
       status TEXT NOT NULL DEFAULT 'open',
       annotation TEXT,
       created_at TEXT NOT NULL,
+      updated_at TEXT,
+      reply_kind TEXT,
+      snoozed_until TEXT,
+      outcome TEXT NOT NULL DEFAULT '',
+      outcome_at TEXT,
       resolved_at TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_items_status_project ON items(status, project);
@@ -113,6 +137,7 @@ function migrate(db: Database.Database): void {
       agent TEXT NOT NULL DEFAULT 'unknown',
       title TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'active',
+      revision INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       last_read_at TEXT,
@@ -124,9 +149,24 @@ function migrate(db: Database.Database): void {
       label TEXT NOT NULL,
       status TEXT NOT NULL,
       note TEXT NOT NULL DEFAULT '',
+      next_step TEXT NOT NULL DEFAULT '',
+      action_owner TEXT,
+      impact TEXT NOT NULL DEFAULT '',
+      next_after TEXT NOT NULL DEFAULT '',
+      options TEXT,
       context TEXT NOT NULL DEFAULT '',
       annotation TEXT,
+      annotation_kind TEXT,
       annotated_at TEXT,
+      snoozed_until TEXT,
+      outcome TEXT NOT NULL DEFAULT '',
+      outcome_at TEXT,
+      created_at TEXT,
+      updated_at TEXT,
+      action_started_at TEXT,
+      action_version INTEGER NOT NULL DEFAULT 1,
+      revision INTEGER NOT NULL DEFAULT 1,
+      history TEXT,
       position INTEGER NOT NULL,
       UNIQUE(board_id, label)
     );
@@ -182,6 +222,7 @@ function migrate(db: Database.Database): void {
   // is never born cold and a days-old legacy claim is.
   ensureColumn(db, 'activity', 'last_call_at', 'TEXT')
   ensureColumn(db, 'items', 'context', `TEXT NOT NULL DEFAULT ''`)
+  ensureColumn(db, 'items', 'next_step', `TEXT NOT NULL DEFAULT ''`)
   ensureColumn(db, 'items', 'options', 'TEXT')
   ensureColumn(db, 'items', 'reply', 'TEXT')
   ensureColumn(db, 'items', 'reply_context', 'TEXT')
@@ -193,6 +234,9 @@ function migrate(db: Database.Database): void {
   ensureColumn(db, 'items', 'issue_ref', 'INTEGER')
   ensureColumn(db, 'boards', 'repo', 'TEXT')
   ensureColumn(db, 'boards', 'issue_ref', 'INTEGER')
+  ensureColumn(db, 'boards', 'revision', 'INTEGER NOT NULL DEFAULT 1')
+  ensureColumn(db, 'board_rows', 'next_step', `TEXT NOT NULL DEFAULT ''`)
+  ensureColumn(db, 'board_rows', 'options', 'TEXT')
   // issue #36 — the human's "I did my part" mark and its delivery mirror. Plain
   // additive columns: absence genuinely means "no value" (nobody has marked
   // anything), so unlike migrateAnnotationDelivery below there is nothing to
@@ -200,6 +244,7 @@ function migrate(db: Database.Database): void {
   ensureColumn(db, 'board_rows', 'handled_at', 'TEXT')
   ensureColumn(db, 'board_rows', 'handled_seen_at', 'TEXT')
   ensureColumn(db, 'board_rows', 'handled_seen_by', 'TEXT')
+  migrateActionLifecycle(db)
   migrateAnnotationDelivery(db)
 }
 
@@ -216,6 +261,64 @@ function ensureColumn(db: Database.Database, table: string, column: string, ddl:
 function hasColumn(db: Database.Database, table: string, column: string): boolean {
   const cols = db.prepare(`SELECT name FROM pragma_table_info(?)`).all(table) as { name: string }[]
   return cols.some((c) => c.name === column)
+}
+
+function migrateActionLifecycle(db: Database.Database): void {
+  db.transaction(() => {
+    const add = (table: string, column: string, ddl: string): void => {
+      if (!hasColumn(db, table, column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`)
+    }
+    add('items', 'action_owner', 'TEXT')
+    add('items', 'impact', `TEXT NOT NULL DEFAULT ''`)
+    add('items', 'next_after', `TEXT NOT NULL DEFAULT ''`)
+    add('items', 'reply_kind', 'TEXT')
+    add('items', 'snoozed_until', 'TEXT')
+    add('items', 'outcome', `TEXT NOT NULL DEFAULT ''`)
+    add('items', 'outcome_at', 'TEXT')
+    add('items', 'updated_at', 'TEXT')
+
+    add('board_rows', 'action_owner', 'TEXT')
+    add('board_rows', 'impact', `TEXT NOT NULL DEFAULT ''`)
+    add('board_rows', 'next_after', `TEXT NOT NULL DEFAULT ''`)
+    add('board_rows', 'annotation_kind', 'TEXT')
+    add('board_rows', 'snoozed_until', 'TEXT')
+    add('board_rows', 'outcome', `TEXT NOT NULL DEFAULT ''`)
+    add('board_rows', 'outcome_at', 'TEXT')
+    add('board_rows', 'created_at', 'TEXT')
+    add('board_rows', 'updated_at', 'TEXT')
+    add('board_rows', 'action_started_at', 'TEXT')
+    add('board_rows', 'action_version', 'INTEGER NOT NULL DEFAULT 1')
+    add('board_rows', 'revision', 'INTEGER NOT NULL DEFAULT 1')
+    add('board_rows', 'history', 'TEXT')
+
+    db.exec(`
+      UPDATE items
+         SET updated_at = COALESCE(NULLIF(updated_at, ''), resolved_at, replied_at, created_at)
+       WHERE updated_at IS NULL OR updated_at = '';
+
+      UPDATE board_rows
+         SET created_at = COALESCE(
+               NULLIF(created_at, ''),
+               (SELECT b.created_at FROM boards b WHERE b.id = board_rows.board_id)),
+             updated_at = COALESCE(
+               NULLIF(updated_at, ''),
+               annotated_at,
+               handled_at,
+               (SELECT b.updated_at FROM boards b WHERE b.id = board_rows.board_id),
+               (SELECT b.created_at FROM boards b WHERE b.id = board_rows.board_id)),
+             action_started_at = COALESCE(
+               NULLIF(action_started_at, ''),
+               NULLIF(created_at, ''),
+               (SELECT b.created_at FROM boards b WHERE b.id = board_rows.board_id)),
+             action_version = COALESCE(action_version, 1),
+             revision = COALESCE(revision, 1),
+             history = COALESCE(history, '[]')
+       WHERE created_at IS NULL OR created_at = ''
+          OR updated_at IS NULL OR updated_at = ''
+          OR action_started_at IS NULL OR action_started_at = ''
+          OR history IS NULL;
+    `)
+  })()
 }
 
 // ── issue #37: board-level "read" → per-ROW "delivered" ──────────────────────
@@ -266,9 +369,16 @@ export function insertItem(db: Database.Database, item: NewItem): string {
     if (existing) return existing.id
   }
   const id = randomUUID()
+  const now = new Date().toISOString()
   db.prepare(
-    `INSERT INTO items (id, project, stream, agent, session, kind, title, detail, context, options, repo, issue_ref, status, created_at)
-     VALUES (@id, @project, @stream, @agent, @session, @kind, @title, @detail, @context, @options, @repo, @issue_ref, 'open', @created_at)`,
+    `INSERT INTO items (
+       id, project, stream, agent, session, kind, title, detail, next_step,
+       action_owner, impact, next_after, context, options, repo, issue_ref,
+       status, created_at, updated_at)
+     VALUES (
+       @id, @project, @stream, @agent, @session, @kind, @title, @detail, @next_step,
+       @action_owner, @impact, @next_after, @context, @options, @repo, @issue_ref,
+       'open', @created_at, @updated_at)`,
   ).run({
     id,
     project: item.project,
@@ -278,18 +388,29 @@ export function insertItem(db: Database.Database, item: NewItem): string {
     kind: item.kind,
     title: item.title,
     detail: item.detail ?? '',
+    next_step: item.next_step ?? '',
+    action_owner: item.action_owner ?? null,
+    impact: item.impact ?? '',
+    next_after: item.next_after ?? '',
     context: item.context ?? '',
     options: item.options?.length ? JSON.stringify(item.options) : null,
     repo: item.repo ?? null,
     issue_ref: item.issue_ref ?? null,
-    created_at: new Date().toISOString(),
+    created_at: now,
+    updated_at: now,
   })
   return id
 }
 
 // Returns false when the write was refused, true otherwise — so a caller
 // (the viewer's POST handler) can surface a refusal instead of a silent no-op.
-export function replyItem(db: Database.Database, id: string, text: string, context?: string): boolean {
+export function replyItem(
+  db: Database.Database,
+  id: string,
+  text: string,
+  context?: string,
+  kind: ResponseKind = 'answer',
+): boolean {
   // a changed answer resets pickup — the agent must see the latest reply;
   // an empty answer reverts the question to unanswered (null, never '') — but
   // ONLY when the agent has not already picked the current reply up. Once
@@ -300,21 +421,28 @@ export function replyItem(db: Database.Database, id: string, text: string, conte
   // reply_seen_at as null right up until the request lands here).
   const reply = text.trim()
   const replyContext = context?.trim() ?? ''
+  const now = new Date().toISOString()
   if (!reply) {
     // atomic: the guard condition (reply_seen_at IS NULL) is checked and acted on in the
     // SAME statement as the write, so a concurrent markReplySeen from another connection
     // (e.g. the MCP server's `pending` handler, its own OS process) can never land in a
     // window between a read and a later, unconditional write — there is no such window.
     const info = db
-      .prepare(`UPDATE items SET reply = NULL, reply_context = NULL, replied_at = ?, reply_seen_at = NULL, reply_source = NULL WHERE id = ? AND reply_seen_at IS NULL`)
-      .run(new Date().toISOString(), id)
+      .prepare(`UPDATE items
+                   SET reply = NULL, reply_context = NULL, replied_at = ?, reply_seen_at = NULL,
+                       reply_source = NULL, reply_kind = NULL, updated_at = ?
+                 WHERE id = ? AND reply_seen_at IS NULL`)
+      .run(now, now, id)
     return info.changes > 0
   }
   // unconditional by design: the inbox is the higher-precedence channel, so the
   // human's own reply overwrites anything an agent recorded from chat (#29) and
   // resets pickup so that agent has to read the new one.
-  db.prepare(`UPDATE items SET reply = ?, reply_context = ?, replied_at = ?, reply_seen_at = NULL, reply_source = 'inbox' WHERE id = ?`)
-    .run(reply, replyContext || null, new Date().toISOString(), id)
+  db.prepare(`UPDATE items
+                 SET reply = ?, reply_context = ?, replied_at = ?, reply_seen_at = NULL,
+                     reply_source = 'inbox', reply_kind = ?, snoozed_until = NULL, updated_at = ?
+               WHERE id = ?`)
+    .run(reply, replyContext || null, now, kind, now, id)
   return true
 }
 
@@ -344,6 +472,7 @@ export interface AnswerResult {
   // on it without a second round-trip
   reply?: string | null
   reply_context?: string | null
+  reply_kind?: ResponseKind | null
 }
 
 // The agent-side answer channel (#29): an agent records onto the item what the
@@ -357,7 +486,13 @@ export interface AnswerResult {
 // and blanking stays the human's guarded prerogative in replyItem. It MAY
 // overwrite a human answer it has already picked up (they said something newer
 // out loud) — that case is pinned in test/store.test.ts.
-export function answerItem(db: Database.Database, id: string, text: string, context?: string): AnswerResult {
+export function answerItem(
+  db: Database.Database,
+  id: string,
+  text: string,
+  context?: string,
+  kind: ResponseKind = 'answer',
+): AnswerResult {
   const reply = text.trim()
   if (!reply) return { ok: false, reason: 'empty' }
   const now = new Date().toISOString()
@@ -368,23 +503,31 @@ export function answerItem(db: Database.Database, id: string, text: string, cont
   // itself would be a lie. Status stays 'open': recording is not resolving.
   const info = db
     .prepare(
-      `UPDATE items SET reply = ?, reply_context = ?, replied_at = ?, reply_seen_at = ?, reply_source = 'agent'
+      `UPDATE items
+          SET reply = ?, reply_context = ?, replied_at = ?, reply_seen_at = ?,
+              reply_source = 'agent', reply_kind = ?, snoozed_until = NULL, updated_at = ?
        WHERE id = ? AND kind = 'question' AND status = 'open'
          AND (reply IS NULL OR reply = '' OR reply_seen_at IS NOT NULL)`,
     )
-    .run(reply, context?.trim() || null, now, now, id)
+    .run(reply, context?.trim() || null, now, now, kind, now, id)
   if (info.changes > 0) return { ok: true }
   // Diagnosis is advisory and deliberately runs AFTER the write. Reading first to
   // decide would reopen exactly the TOCTOU window the conditioned UPDATE closes;
   // since nothing was written, a concurrent change here can only make the
   // explanation stale, never the stored state wrong.
-  const row = db.prepare(`SELECT kind, status, reply, reply_context FROM items WHERE id = ?`).get(id) as
-    | { kind: Kind; status: Status; reply: string | null; reply_context: string | null }
+  const row = db.prepare(`SELECT kind, status, reply, reply_context, reply_kind FROM items WHERE id = ?`).get(id) as
+    | { kind: Kind; status: Status; reply: string | null; reply_context: string | null; reply_kind: ResponseKind | null }
     | undefined
   if (!row) return { ok: false, reason: 'not_found' }
   if (row.kind !== 'question') return { ok: false, reason: 'not_a_question' }
   if (row.status !== 'open') return { ok: false, reason: 'not_open' }
-  return { ok: false, reason: 'unread_inbox_answer', reply: row.reply, reply_context: row.reply_context }
+  return {
+    ok: false,
+    reason: 'unread_inbox_answer',
+    reply: row.reply,
+    reply_context: row.reply_context,
+    reply_kind: row.reply_kind,
+  }
 }
 
 export function listPending(db: Database.Database, project: string): Item[] {
@@ -395,7 +538,11 @@ export function listPending(db: Database.Database, project: string): Item[] {
 }
 
 function parseItem(row: Omit<Item, 'options'> & { options: string | null }): Item {
-  return { ...row, options: row.options ? (JSON.parse(row.options) as QuestionOption[]) : null }
+  return { ...row, options: parseOptions(row.options) }
+}
+
+function parseOptions(raw: string | null): QuestionOption[] | null {
+  return raw ? (JSON.parse(raw) as QuestionOption[]) : null
 }
 
 export function getItem(db: Database.Database, id: string): Item | null {
@@ -405,16 +552,38 @@ export function getItem(db: Database.Database, id: string): Item | null {
   return row ? parseItem(row) : null
 }
 
-export function resolveItem(db: Database.Database, id: string): void {
-  db.prepare(`UPDATE items SET status = 'resolved', resolved_at = ? WHERE id = ?`).run(new Date().toISOString(), id)
+export function resolveItem(db: Database.Database, id: string, outcome?: string): void {
+  const now = new Date().toISOString()
+  const text = outcome?.trim() ?? ''
+  db.prepare(`UPDATE items
+                 SET status = 'resolved',
+                     resolved_at = COALESCE(resolved_at, @now),
+                     updated_at = CASE
+                       WHEN status IS NOT 'resolved'
+                         OR (@text <> '' AND outcome IS NOT @text)
+                       THEN @now ELSE updated_at END,
+                     outcome = CASE WHEN @text <> '' THEN @text ELSE outcome END,
+                     outcome_at = CASE
+                       WHEN @text = '' OR outcome IS @text THEN outcome_at
+                       ELSE @now END
+               WHERE id = @id`)
+    .run({ now, text, id })
 }
 
 export function dismissItem(db: Database.Database, id: string): void {
-  db.prepare(`UPDATE items SET status = 'dismissed' WHERE id = ?`).run(id)
+  db.prepare(`UPDATE items SET status = 'dismissed', updated_at = ? WHERE id = ?`)
+    .run(new Date().toISOString(), id)
 }
 
 export function annotateItem(db: Database.Database, id: string, text: string): void {
-  db.prepare(`UPDATE items SET annotation = ? WHERE id = ?`).run(text, id)
+  db.prepare(`UPDATE items SET annotation = ?, updated_at = ? WHERE id = ?`)
+    .run(text, new Date().toISOString(), id)
+}
+
+export function snoozeItem(db: Database.Database, id: string, until: string | null): boolean {
+  const info = db.prepare(`UPDATE items SET snoozed_until = ?, updated_at = ? WHERE id = ? AND status = 'open'`)
+    .run(until, new Date().toISOString(), id)
+  return info.changes > 0
 }
 
 export function listItems(db: Database.Database, opts: { status?: Status } = {}): Item[] {
@@ -427,6 +596,26 @@ export function listItems(db: Database.Database, opts: { status?: Status } = {})
 // 'blocked' = the row needs human input and escalates into the attention layer
 export type RowStatus = 'done' | 'partial' | 'missing' | 'tracked' | 'na' | 'blocked'
 
+export interface RowActionHistory {
+  version: number
+  status: RowStatus
+  note: string
+  next_step: string
+  action_owner: ActionOwner | null
+  impact: string
+  next_after: string
+  options: QuestionOption[] | null
+  response_kind: ResponseKind | null
+  response: string | null
+  response_at: string | null
+  picked_up_at: string | null
+  handled: boolean
+  outcome: string
+  outcome_at: string | null
+  started_at: string
+  ended_at: string
+}
+
 export interface Board {
   id: string
   project: string
@@ -434,6 +623,7 @@ export interface Board {
   agent: string
   title: string
   status: 'active' | 'archived'
+  revision: number
   // issue #30 — same locally-inferred link identity items carry; null on every
   // board written before #30
   repo: string | null
@@ -448,8 +638,14 @@ export interface BoardRow {
   label: string
   status: RowStatus
   note: string
+  next_step: string
+  action_owner: ActionOwner | null
+  impact: string
+  next_after: string
+  options: QuestionOption[] | null
   context: string
   annotation: string | null
+  annotation_kind: ResponseKind | null
   annotated_at: string | null
   // issue #37 — DELIVERY, not acknowledgement: "this text was handed to some
   // agent", and who it went to. It silences nothing on the human's side; the row
@@ -466,13 +662,30 @@ export interface BoardRow {
   handled_at: string | null
   handled_seen_at: string | null
   handled_seen_by: string | null
+  snoozed_until: string | null
+  outcome: string
+  outcome_at: string | null
+  created_at: string
+  updated_at: string
+  action_started_at: string
+  action_version: number
+  revision: number
+  history: RowActionHistory[]
   position: number
   annotation_unseen: boolean
 }
 
-type BoardRowRecord = Omit<BoardRow, 'annotation_unseen'>
+type BoardRowRecord = Omit<BoardRow, 'annotation_unseen' | 'options' | 'history'> & {
+  options: string | null
+  history: string | null
+}
 
-const ROW_COLUMNS = `id, label, status, note, context, annotation, annotated_at, annotation_seen_at, annotation_seen_by, handled_at, handled_seen_at, handled_seen_by, position`
+const ROW_COLUMNS = `
+  id, label, status, note, next_step, action_owner, impact, next_after, options,
+  context, annotation, annotation_kind, annotated_at, annotation_seen_at,
+  annotation_seen_by, handled_at, handled_seen_at, handled_seen_by, snoozed_until,
+  outcome, outcome_at, created_at, updated_at, action_started_at, action_version,
+  revision, history, position`
 
 // An annotation is "unseen" until it has been DELIVERED to an agent. Per-row and
 // nothing else: `boards.last_read_at` is deliberately not an input any more
@@ -488,8 +701,14 @@ const ROW_COLUMNS = `id, label, status, note, context, annotation, annotated_at,
 function withUnseen(rows: BoardRowRecord[]): BoardRow[] {
   return rows.map((r) => ({
     ...r,
+    options: parseOptions(r.options),
+    history: parseHistory(r.history),
     annotation_unseen: r.annotation != null && r.annotation !== '' && r.annotation_seen_at === null,
   }))
+}
+
+function parseHistory(raw: string | null): RowActionHistory[] {
+  return raw ? (JSON.parse(raw) as RowActionHistory[]) : []
 }
 
 export interface Progress {
@@ -512,7 +731,14 @@ export interface BoardWithRows extends Board {
 export interface NewBoardRow {
   label: string
   status: RowStatus
+  revision?: number
   note?: string
+  next_step?: string
+  action_owner?: ActionOwner | null
+  impact?: string
+  next_after?: string
+  options?: QuestionOption[]
+  outcome?: string
   context?: string
 }
 
@@ -526,6 +752,7 @@ interface UpsertBoardInput {
   agent: string
   title: string
   rows: NewBoardRow[]
+  expectedVersion?: number
   // optional on the WRITE shape: every pre-#30 call site passes neither
   repo?: string | null
   issueRef?: number | null
@@ -533,9 +760,28 @@ interface UpsertBoardInput {
 
 export function upsertBoard(db: Database.Database, input: UpsertBoardInput): { boardId: string; rowCount: number } {
   const run = db.transaction((inp: UpsertBoardInput): { boardId: string; rowCount: number } => {
+    const labels = new Set(inp.rows.map((row) => row.label))
+    if (labels.size !== inp.rows.length) throw new Error(`duplicate board row label in "${inp.title}"`)
     const now = new Date().toISOString()
+    const before = findBoard(db, inp.project, inp.title)
+    if (before && inp.expectedVersion !== before.revision) {
+      throw new Error(`board version mismatch for "${inp.title}": expected ${String(inp.expectedVersion)}, found ${before.revision}`)
+    }
+    let boardChanged = !before
+      || before.stream !== inp.stream
+      || before.agent !== inp.agent
+      || before.repo !== (inp.repo ?? null)
+      || before.issue_ref !== (inp.issueRef ?? null)
     const boardId = ensureBoard(db, inp, now)
-    const existing = db.prepare(`SELECT id, label, status FROM board_rows WHERE board_id = ?`).all(boardId) as { id: string; label: string; status: RowStatus }[]
+    const existing = db.prepare(`SELECT id, label, status, note, position, action_version, revision FROM board_rows WHERE board_id = ?`).all(boardId) as Array<{
+      id: string
+      label: string
+      status: RowStatus
+      note: string
+      position: number
+      action_version: number
+      revision: number
+    }>
     const idByLabel = new Map(existing.map((r) => [r.label, r]))
     const incoming = new Set<string>()
     inp.rows.forEach((r, i) => {
@@ -543,27 +789,96 @@ export function upsertBoard(db: Database.Database, input: UpsertBoardInput): { b
       const prev = idByLabel.get(r.label)
       if (prev) {
         const existingId = prev.id
+        if (r.revision !== prev.revision) {
+          throw new Error(`board row revision mismatch for "${r.label}": expected ${r.revision}, found ${prev.revision}`)
+        }
+        const newAction = r.status === 'blocked' && prev.status !== 'blocked'
+        if (newAction) beginNewRowAction(db, existingId, now)
+        let rowChanged = newAction
+          || prev.status !== r.status
+          || prev.note !== (r.note ?? prev.note)
+          || prev.position !== i
         // annotation column is deliberately NOT touched — human notes survive
-        db.prepare(`UPDATE board_rows SET status = ?, note = ?, position = ? WHERE id = ?`).run(r.status, r.note ?? '', i, existingId)
-        resetHandledOnReblock(db, existingId, prev.status, r.status)
+        db.prepare(`
+          UPDATE board_rows
+             SET status = @status,
+                 note = @note,
+                 position = @position,
+                 updated_at = CASE
+                   WHEN status IS NOT @status OR note IS NOT @note OR position IS NOT @position
+                   THEN @now ELSE updated_at END
+           WHERE id = @id`).run({
+          status: r.status,
+          note: r.note ?? prev.note,
+          position: i,
+          now,
+          id: existingId,
+        })
+        // `next_step` is new and older agents do not know to echo it during a
+        // full-table refresh. Omission therefore preserves it; an explicit ''
+        // clears it, matching the context field's compatibility rule.
+        rowChanged = updateRowTextField(db, existingId, 'next_step', r.next_step, now) || rowChanged
+        rowChanged = updateRowTextField(db, existingId, 'impact', r.impact, now) || rowChanged
+        rowChanged = updateRowTextField(db, existingId, 'next_after', r.next_after, now) || rowChanged
+        if (r.action_owner !== undefined) {
+          const info = db.prepare(`UPDATE board_rows SET action_owner = ?, updated_at = ? WHERE id = ? AND action_owner IS NOT ?`)
+            .run(r.action_owner, now, existingId, r.action_owner)
+          rowChanged = info.changes > 0 || rowChanged
+        }
+        if (r.options !== undefined) {
+          const encoded = r.options.length ? JSON.stringify(r.options) : null
+          const info = db.prepare(`UPDATE board_rows SET options = ?, updated_at = ? WHERE id = ? AND options IS NOT ?`)
+            .run(encoded, now, existingId, encoded)
+          rowChanged = info.changes > 0 || rowChanged
+        }
         // OMITTING `context` KEEPS WHAT IS STORED; only an explicit '' clears it
         // (issue #42). The rule that a row ABSENT from an upsert is deleted is
         // about ROWS and is untouched — this is about a FIELD, and omission is
         // not deletion. It matters because the prescribed flow is read-then-
         // re-upsert (`board_get` → `board_upsert`) and MCP reads no longer carry
         // `context` at all: an agent re-sending exactly what it was handed would
-        // wipe every row's backstory. `note` still clears on omission, and that
-        // asymmetry is deliberate — a read hands `note` back, so leaving it out
-        // is a choice the agent can actually make; it cannot make that choice
-        // about text it was never given.
-        if (r.context !== undefined) db.prepare(`UPDATE board_rows SET context = ? WHERE id = ?`).run(r.context, existingId)
+        // wipe every row's backstory. Action fields, including note, preserve on
+        // omission; explicit empty values are the only erasure.
+        rowChanged = updateRowTextField(db, existingId, 'context', r.context, now) || rowChanged
+        if (r.outcome !== undefined) rowChanged = setRowOutcome(db, existingId, r.outcome, now) || rowChanged
+        if (!newAction && rowChanged) incrementRowRevision(db, existingId)
+        boardChanged = boardChanged || rowChanged
       } else {
-        db.prepare(`INSERT INTO board_rows (id, board_id, label, status, note, context, position) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-          .run(randomUUID(), boardId, r.label, r.status, r.note ?? '', r.context ?? '', i)
+        boardChanged = true
+        db.prepare(`
+          INSERT INTO board_rows (
+            id, board_id, label, status, note, next_step, action_owner, impact,
+            next_after, options, context, outcome, outcome_at, created_at,
+            updated_at, action_started_at, action_version, revision, history, position)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, '[]', ?)`)
+          .run(
+            randomUUID(),
+            boardId,
+            r.label,
+            r.status,
+            r.note ?? '',
+            r.next_step ?? '',
+            r.action_owner ?? null,
+            r.impact ?? '',
+            r.next_after ?? '',
+            r.options?.length ? JSON.stringify(r.options) : null,
+            r.context ?? '',
+            r.outcome?.trim() ?? '',
+            r.outcome?.trim() ? now : null,
+            now,
+            now,
+            now,
+            i,
+          )
       }
     })
-    for (const r of existing) if (!incoming.has(r.label)) db.prepare(`DELETE FROM board_rows WHERE id = ?`).run(r.id)
-    syncBoardStatus(db, boardId)
+    for (const r of existing) {
+      if (incoming.has(r.label)) continue
+      db.prepare(`DELETE FROM board_rows WHERE id = ?`).run(r.id)
+      boardChanged = true
+    }
+    boardChanged = syncBoardStatus(db, boardId) || boardChanged
+    if (before && boardChanged) bumpBoardRevision(db, boardId, now)
     return { boardId, rowCount: inp.rows.length }
   })
   return run(input)
@@ -575,33 +890,288 @@ interface UpdateRowInput {
   agent: string
   title: string
   label: string
+  expectedBoardVersion?: number
   status?: RowStatus
+  expectedRevision?: number
   note?: string
+  next_step?: string
+  action_owner?: ActionOwner | null
+  impact?: string
+  next_after?: string
+  options?: QuestionOption[]
+  outcome?: string
   context?: string
   repo?: string | null
   issueRef?: number | null
 }
 
+type RowTextColumn = 'note' | 'next_step' | 'impact' | 'next_after' | 'context'
+
+function updateRowTextField(
+  db: Database.Database,
+  rowId: string,
+  column: RowTextColumn,
+  value: string | undefined,
+  now: string,
+): boolean {
+  if (value === undefined) return false
+  const info = db.prepare(`UPDATE board_rows SET ${column} = ?, updated_at = ? WHERE id = ? AND ${column} IS NOT ?`)
+    .run(value, now, rowId, value)
+  return info.changes > 0
+}
+
+function setRowOutcome(db: Database.Database, rowId: string, outcome: string, now: string): boolean {
+  const text = outcome.trim()
+  const info = db.prepare(`UPDATE board_rows
+                 SET outcome_at = CASE
+                       WHEN @text = '' THEN NULL
+                       ELSE @now END,
+                     updated_at = @now,
+                     outcome = @text
+               WHERE id = @id AND outcome IS NOT @text`)
+    .run({ text, now, id: rowId })
+  return info.changes > 0
+}
+
+function incrementRowRevision(db: Database.Database, rowId: string): number {
+  const row = db.prepare(`UPDATE board_rows SET revision = revision + 1 WHERE id = ? RETURNING revision`)
+    .get(rowId) as { revision: number } | undefined
+  if (!row) throw new Error(`board row not found: ${rowId}`)
+  return row.revision
+}
+
+function bumpBoardRevision(db: Database.Database, boardId: string, now: string): number {
+  const board = db.prepare(`UPDATE boards SET revision = revision + 1, updated_at = ? WHERE id = ? RETURNING revision`)
+    .get(now, boardId) as { revision: number } | undefined
+  if (!board) throw new Error(`board not found: ${boardId}`)
+  return board.revision
+}
+
+function latestIso(...values: Array<string | null>): string | null {
+  let latest: { value: string; at: number } | null = null
+  for (const value of values) {
+    if (!value) continue
+    const at = Date.parse(value)
+    if (!Number.isFinite(at)) continue
+    if (!latest || at > latest.at) latest = { value, at }
+  }
+  return latest?.value ?? null
+}
+
+function beginNewRowAction(db: Database.Database, rowId: string, now: string): number {
+  const raw = db.prepare(`SELECT ${ROW_COLUMNS} FROM board_rows WHERE id = ?`).get(rowId) as BoardRowRecord | undefined
+  if (!raw) throw new Error(`board row not found: ${rowId}`)
+  const row = withUnseen([raw])[0]!
+  const responseKind = row.annotation_kind ?? (row.annotation || row.handled_at ? 'answer' : null)
+  const snapshot: RowActionHistory = {
+    version: row.action_version,
+    status: row.status,
+    note: row.note,
+    next_step: row.next_step,
+    action_owner: row.action_owner,
+    impact: row.impact,
+    next_after: row.next_after,
+    options: row.options,
+    response_kind: responseKind,
+    response: row.annotation,
+    response_at: latestIso(row.annotated_at, row.handled_at),
+    picked_up_at: latestIso(row.annotation_seen_at, row.handled_seen_at),
+    handled: Boolean(row.handled_at),
+    outcome: row.outcome,
+    outcome_at: row.outcome_at,
+    started_at: row.action_started_at,
+    ended_at: now,
+  }
+  const history = [...row.history, snapshot]
+  const nextVersion = row.action_version + 1
+  db.prepare(`
+    UPDATE board_rows
+       SET note = '',
+           next_step = '',
+           action_owner = NULL,
+           impact = '',
+           next_after = '',
+           options = NULL,
+           annotation = NULL,
+           annotation_kind = NULL,
+           annotated_at = NULL,
+           annotation_seen_at = NULL,
+           annotation_seen_by = NULL,
+           handled_at = NULL,
+           handled_seen_at = NULL,
+           handled_seen_by = NULL,
+           snoozed_until = NULL,
+           outcome = '',
+           outcome_at = NULL,
+           action_started_at = ?,
+           action_version = ?,
+           revision = revision + 1,
+           history = ?,
+           updated_at = ?
+     WHERE id = ?`)
+    .run(now, nextVersion, JSON.stringify(history), now, rowId)
+  return nextVersion
+}
+
+export interface AdvanceBoardRowInput {
+  project: string
+  title: string
+  label: string
+  expectedBoardVersion: number
+  expectedRevision: number
+  note: string
+  next_step: string
+  action_owner: ActionOwner
+  impact: string
+  next_after?: string
+  options?: QuestionOption[]
+  context?: string
+}
+
+export type AdvanceBoardRowResult =
+  | { ok: true; action_version: number; revision: number }
+  | {
+      ok: false
+      reason: 'not_found' | 'version_mismatch' | 'board_version_mismatch'
+      revision?: number
+      board_revision?: number
+    }
+
+export function advanceBoardRow(
+  db: Database.Database,
+  input: AdvanceBoardRowInput,
+): AdvanceBoardRowResult {
+  const run = db.transaction((inp: AdvanceBoardRowInput): AdvanceBoardRowResult => {
+    const board = findBoard(db, inp.project, inp.title)
+    if (!board || board.status !== 'active') return { ok: false, reason: 'not_found' }
+    if (board.revision !== inp.expectedBoardVersion) {
+      return { ok: false, reason: 'board_version_mismatch', board_revision: board.revision }
+    }
+    const raw = db.prepare(`SELECT ${ROW_COLUMNS} FROM board_rows WHERE board_id = ? AND label = ?`)
+      .get(board.id, inp.label) as BoardRowRecord | undefined
+    if (!raw) return { ok: false, reason: 'not_found' }
+    const row = withUnseen([raw])[0]!
+    if (row.revision !== inp.expectedRevision) {
+      return { ok: false, reason: 'version_mismatch', revision: row.revision }
+    }
+    const now = new Date().toISOString()
+    const version = beginNewRowAction(db, row.id, now)
+    db.prepare(`
+      UPDATE board_rows
+         SET status = 'blocked',
+             note = ?,
+             next_step = ?,
+             action_owner = ?,
+             impact = ?,
+             next_after = ?,
+             options = ?,
+             context = CASE WHEN ? IS NULL THEN context ELSE ? END,
+             updated_at = ?
+       WHERE id = ?`)
+      .run(
+        inp.note,
+        inp.next_step,
+        inp.action_owner,
+        inp.impact,
+        inp.next_after ?? '',
+        inp.options?.length ? JSON.stringify(inp.options) : null,
+        inp.context ?? null,
+        inp.context ?? null,
+        now,
+        row.id,
+      )
+    syncBoardStatus(db, board.id)
+    bumpBoardRevision(db, board.id, now)
+    const revision = (db.prepare(`SELECT revision FROM board_rows WHERE id = ?`).get(row.id) as { revision: number }).revision
+    return { ok: true, action_version: version, revision }
+  })
+  return run.immediate(input)
+}
+
 export function updateBoardRow(db: Database.Database, input: UpdateRowInput): { boardId: string; rowId: string } {
   const run = db.transaction((inp: UpdateRowInput): { boardId: string; rowId: string } => {
     const now = new Date().toISOString()
+    const before = findBoard(db, inp.project, inp.title)
+    if (before && inp.expectedBoardVersion !== before.revision) {
+      throw new Error(`board version mismatch for "${inp.title}": expected ${String(inp.expectedBoardVersion)}, found ${before.revision}`)
+    }
+    const metadataChanged = Boolean(before) && (
+      before!.stream !== inp.stream
+      || before!.agent !== inp.agent
+      || before!.repo !== (inp.repo ?? null)
+      || before!.issue_ref !== (inp.issueRef ?? null)
+    )
     const boardId = ensureBoard(db, inp, now)
-    const existing = db.prepare(`SELECT id, status FROM board_rows WHERE board_id = ? AND label = ?`).get(boardId, inp.label) as { id: string; status: RowStatus } | undefined
+    const existing = db.prepare(`SELECT id, status, action_version, revision FROM board_rows WHERE board_id = ? AND label = ?`).get(boardId, inp.label) as {
+      id: string
+      status: RowStatus
+      action_version: number
+      revision: number
+    } | undefined
     if (existing) {
-      if (inp.status !== undefined) {
-        db.prepare(`UPDATE board_rows SET status = ? WHERE id = ?`).run(inp.status, existing.id)
-        resetHandledOnReblock(db, existing.id, existing.status, inp.status)
+      if (inp.expectedRevision !== existing.revision) {
+        throw new Error(`board row revision mismatch for "${inp.label}": expected ${inp.expectedRevision}, found ${existing.revision}`)
       }
-      if (inp.note !== undefined) db.prepare(`UPDATE board_rows SET note = ? WHERE id = ?`).run(inp.note, existing.id)
-      if (inp.context !== undefined) db.prepare(`UPDATE board_rows SET context = ? WHERE id = ?`).run(inp.context, existing.id)
-      syncBoardStatus(db, boardId)
+      let newAction = false
+      let rowChanged = false
+      if (inp.status !== undefined) {
+        newAction = inp.status === 'blocked' && existing.status !== 'blocked'
+        if (newAction) beginNewRowAction(db, existing.id, now)
+        const info = db.prepare(`UPDATE board_rows SET status = ?, updated_at = ? WHERE id = ? AND status IS NOT ?`)
+          .run(inp.status, now, existing.id, inp.status)
+        rowChanged = newAction || info.changes > 0
+      }
+      rowChanged = updateRowTextField(db, existing.id, 'note', inp.note, now) || rowChanged
+      rowChanged = updateRowTextField(db, existing.id, 'next_step', inp.next_step, now) || rowChanged
+      rowChanged = updateRowTextField(db, existing.id, 'impact', inp.impact, now) || rowChanged
+      rowChanged = updateRowTextField(db, existing.id, 'next_after', inp.next_after, now) || rowChanged
+      if (inp.action_owner !== undefined) {
+        const info = db.prepare(`UPDATE board_rows SET action_owner = ?, updated_at = ? WHERE id = ? AND action_owner IS NOT ?`)
+          .run(inp.action_owner, now, existing.id, inp.action_owner)
+        rowChanged = info.changes > 0 || rowChanged
+      }
+      if (inp.options !== undefined) {
+        const encoded = inp.options.length ? JSON.stringify(inp.options) : null
+        const info = db.prepare(`UPDATE board_rows SET options = ?, updated_at = ? WHERE id = ? AND options IS NOT ?`)
+          .run(encoded, now, existing.id, encoded)
+        rowChanged = info.changes > 0 || rowChanged
+      }
+      rowChanged = updateRowTextField(db, existing.id, 'context', inp.context, now) || rowChanged
+      if (inp.outcome !== undefined) rowChanged = setRowOutcome(db, existing.id, inp.outcome, now) || rowChanged
+      if (!newAction && rowChanged) incrementRowRevision(db, existing.id)
+      const boardChanged = syncBoardStatus(db, boardId) || rowChanged || metadataChanged
+      if (boardChanged) bumpBoardRevision(db, boardId, now)
       return { boardId, rowId: existing.id }
     }
     const rowId = randomUUID()
     const pos = (db.prepare(`SELECT COALESCE(MAX(position), -1) + 1 AS p FROM board_rows WHERE board_id = ?`).get(boardId) as { p: number }).p
-    db.prepare(`INSERT INTO board_rows (id, board_id, label, status, note, context, position) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-      .run(rowId, boardId, inp.label, inp.status ?? 'tracked', inp.note ?? '', inp.context ?? '', pos)
+    db.prepare(`
+      INSERT INTO board_rows (
+        id, board_id, label, status, note, next_step, action_owner, impact,
+        next_after, options, context, outcome, outcome_at, created_at, updated_at,
+        action_started_at, action_version, revision, history, position)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, '[]', ?)`)
+      .run(
+        rowId,
+        boardId,
+        inp.label,
+        inp.status ?? 'tracked',
+        inp.note ?? '',
+        inp.next_step ?? '',
+        inp.action_owner ?? null,
+        inp.impact ?? '',
+        inp.next_after ?? '',
+        inp.options?.length ? JSON.stringify(inp.options) : null,
+        inp.context ?? '',
+        inp.outcome?.trim() ?? '',
+        inp.outcome?.trim() ? now : null,
+        now,
+        now,
+        now,
+        pos,
+      )
     syncBoardStatus(db, boardId)
+    if (before) bumpBoardRevision(db, boardId, now)
     return { boardId, rowId }
   })
   return run(input)
@@ -611,12 +1181,16 @@ export function updateBoardRow(db: Database.Database, input: UpdateRowInput): { 
 // completeness: 100% (with countable rows) → archived immediately (the human's
 // chosen lifecycle); anything less → active, which also resurrects an archived
 // board the agent is still writing to (the "flickered to 100% mid-update" case).
-function syncBoardStatus(db: Database.Database, boardId: string): void {
+function syncBoardStatus(db: Database.Database, boardId: string): boolean {
   const rows = db.prepare(`SELECT status FROM board_rows WHERE board_id = ?`).all(boardId) as { status: RowStatus }[]
   const p = computeProgress(rows as BoardRow[])
   const complete = p.countable > 0 && p.fraction === 1
+  const next = complete ? 'archived' : 'active'
+  const current = db.prepare(`SELECT status FROM boards WHERE id = ?`).get(boardId) as { status: 'active' | 'archived' } | undefined
+  if (!current || current.status === next) return false
   db.prepare(`UPDATE boards SET status = ?, updated_at = ? WHERE id = ?`)
-    .run(complete ? 'archived' : 'active', new Date().toISOString(), boardId)
+    .run(next, new Date().toISOString(), boardId)
+  return true
 }
 
 // Find-or-create the board row and stamp the last writer. Shared by upsertBoard/updateBoardRow.
@@ -631,8 +1205,24 @@ function ensureBoard(
   // `boards` row and nowhere near board_rows, whose annotation column is the
   // human's and must survive every re-upsert untouched.
   if (board) {
-    db.prepare(`UPDATE boards SET stream = ?, agent = ?, repo = ?, issue_ref = ?, updated_at = ? WHERE id = ?`)
-      .run(inp.stream, inp.agent, inp.repo ?? null, inp.issueRef ?? null, now, board.id)
+    db.prepare(`UPDATE boards
+                   SET stream = ?, agent = ?, repo = ?, issue_ref = ?,
+                       updated_at = CASE
+                         WHEN stream IS NOT ? OR agent IS NOT ? OR repo IS NOT ? OR issue_ref IS NOT ?
+                         THEN ? ELSE updated_at END
+                 WHERE id = ?`)
+      .run(
+        inp.stream,
+        inp.agent,
+        inp.repo ?? null,
+        inp.issueRef ?? null,
+        inp.stream,
+        inp.agent,
+        inp.repo ?? null,
+        inp.issueRef ?? null,
+        now,
+        board.id,
+      )
     return board.id
   }
   const boardId = randomUUID()
@@ -641,45 +1231,152 @@ function ensureBoard(
   return boardId
 }
 
-export function archiveBoard(db: Database.Database, boardId: string): void {
-  db.prepare(`UPDATE boards SET status = 'archived', updated_at = ? WHERE id = ?`).run(new Date().toISOString(), boardId)
+export function archiveBoard(db: Database.Database, boardId: string, expectedRevision: number): boolean {
+  const info = db.prepare(`UPDATE boards
+                              SET status = 'archived', revision = revision + 1, updated_at = ?
+                            WHERE id = ? AND revision = ?`)
+    .run(new Date().toISOString(), boardId, expectedRevision)
+  return info.changes > 0
 }
 
-export function unarchiveBoard(db: Database.Database, boardId: string): void {
-  db.prepare(`UPDATE boards SET status = 'active', updated_at = ? WHERE id = ?`).run(new Date().toISOString(), boardId)
+export function unarchiveBoard(db: Database.Database, boardId: string, expectedRevision: number): boolean {
+  const info = db.prepare(`UPDATE boards
+                              SET status = 'active', revision = revision + 1, updated_at = ?
+                            WHERE id = ? AND revision = ?`)
+    .run(new Date().toISOString(), boardId, expectedRevision)
+  return info.changes > 0
 }
 
 // New text resets delivery IN THE SAME STATEMENT that writes it (the replyItem
 // invariant, for rows). Split them and a re-annotation of an already-delivered
 // row inherits the old stamp and is never handed to anyone.
-export function annotateBoardRow(db: Database.Database, rowId: string, text: string): void {
-  db.prepare(`UPDATE board_rows SET annotation = ?, annotated_at = ?, annotation_seen_at = NULL, annotation_seen_by = NULL WHERE id = ?`)
-    .run(text, new Date().toISOString(), rowId)
+export function annotateBoardRow(
+  db: Database.Database,
+  rowId: string,
+  text: string,
+  kind: ResponseKind = 'answer',
+  expectedRevision?: number,
+  expectedBoardRevision?: number,
+): boolean {
+  const now = new Date().toISOString()
+  const annotation = text.trim()
+  const run = db.transaction((): boolean => {
+    const row = db.prepare(`UPDATE board_rows
+                               SET annotation = ?, annotation_kind = ?, annotated_at = ?,
+                                   annotation_seen_at = NULL, annotation_seen_by = NULL,
+                                   snoozed_until = NULL, updated_at = ?, revision = revision + 1
+                             WHERE id = ? AND (? IS NULL OR revision = ?)
+                               AND EXISTS (
+                                 SELECT 1 FROM boards b
+                                  WHERE b.id = board_rows.board_id
+                                    AND b.status = 'active'
+                                    AND (? IS NULL OR b.revision = ?))
+                             RETURNING board_id`)
+      .get(
+        annotation,
+        annotation ? kind : null,
+        now,
+        now,
+        rowId,
+        expectedRevision ?? null,
+        expectedRevision ?? null,
+        expectedBoardRevision ?? null,
+        expectedBoardRevision ?? null,
+      ) as { board_id: string } | undefined
+    if (!row) return false
+    bumpBoardRevision(db, row.board_id, now)
+    return true
+  })
+  return run.immediate()
+}
+
+export function snoozeBoardRow(
+  db: Database.Database,
+  rowId: string,
+  until: string | null,
+  expectedRevision?: number,
+  expectedBoardRevision?: number,
+): boolean {
+  const now = new Date().toISOString()
+  const run = db.transaction((): boolean => {
+    const row = db.prepare(`UPDATE board_rows
+                               SET snoozed_until = ?, updated_at = ?, revision = revision + 1
+                             WHERE id = ? AND status = 'blocked'
+                               AND (? IS NULL OR revision = ?)
+                               AND annotation IS NULL AND annotation_kind IS NULL
+                               AND handled_at IS NULL
+                               AND EXISTS (
+                                 SELECT 1 FROM boards b
+                                  WHERE b.id = board_rows.board_id
+                                    AND b.status = 'active'
+                                    AND (? IS NULL OR b.revision = ?))
+                             RETURNING board_id`)
+      .get(
+        until,
+        now,
+        rowId,
+        expectedRevision ?? null,
+        expectedRevision ?? null,
+        expectedBoardRevision ?? null,
+        expectedBoardRevision ?? null,
+      ) as { board_id: string } | undefined
+    if (!row) return false
+    bumpBoardRevision(db, row.board_id, now)
+    return true
+  })
+  return run.immediate()
 }
 
 // ── issue #36: the human's "I did my part" mark ─────────────────────────────
 //
-// WHY IT IS NOT A STATUS. Every `blocked` row in the wild turned out to be a
-// TASK — "create the Paddle account", "register the Notion integration",
-// "record the hero demo" — not a question. Agents use `blocked` exactly as the
-// rule says (it needs the human), but the only lever the viewer offered was a
-// free-text box: a task does not want words, it wants DONE. `status: 'done'` is
-// the agent's assertion about the ROW's work and only agents may write it, so
-// the human's half needed its own field. This is that field.
+// WHY IT IS NOT A STATUS. The task-shaped blockers that motivated #36 — "create
+// the Paddle account", "register the Notion integration", "record the hero
+// demo" — do not want words, they want DONE. Decision-shaped blockers now carry
+// direct options and land as an annotation instead; this field remains the
+// human's completion signal for TASKS. `status: 'done'` is the agent's assertion
+// about the ROW and only agents may write it, so the human's half needs its own
+// field. This is that field.
 //
 // THE INVARIANT: `upsertBoard` can never clear it, exactly like `annotation`.
 // The prescribed agent flow is a full-table re-send, so "any write mentioning
 // this row drops the mark" would erase the human's action on every routine
 // refresh — the omitted-field-means-delete failure #42 had to fix at the root,
 // wearing a different hat.
-export function markRowHandled(db: Database.Database, rowId: string): boolean {
+export function markRowHandled(
+  db: Database.Database,
+  rowId: string,
+  expectedRevision?: number,
+  expectedBoardRevision?: number,
+): boolean {
   // New mark, new delivery — the same statement, for annotateBoardRow's reason:
   // split them and a re-mark on an already-delivered row inherits the old stamp
   // and reads "delivered" to the human before anyone has been told.
-  const info = db
-    .prepare(`UPDATE board_rows SET handled_at = ?, handled_seen_at = NULL, handled_seen_by = NULL WHERE id = ?`)
-    .run(new Date().toISOString(), rowId)
-  return info.changes > 0
+  const now = new Date().toISOString()
+  const run = db.transaction((): boolean => {
+    const row = db.prepare(`UPDATE board_rows
+                 SET handled_at = ?, handled_seen_at = NULL, handled_seen_by = NULL,
+                     snoozed_until = NULL, updated_at = ?, revision = revision + 1
+               WHERE id = ? AND (? IS NULL OR revision = ?)
+                 AND EXISTS (
+                   SELECT 1 FROM boards b
+                    WHERE b.id = board_rows.board_id
+                      AND b.status = 'active'
+                      AND (? IS NULL OR b.revision = ?))
+               RETURNING board_id`)
+      .get(
+        now,
+        now,
+        rowId,
+        expectedRevision ?? null,
+        expectedRevision ?? null,
+        expectedBoardRevision ?? null,
+        expectedBoardRevision ?? null,
+      ) as { board_id: string } | undefined
+    if (!row) return false
+    bumpBoardRevision(db, row.board_id, now)
+    return true
+  })
+  return run.immediate()
 }
 
 // The undo, and the ONLY thing that can take the mark back. Guarded in the SAME
@@ -692,12 +1389,38 @@ export function markRowHandled(db: Database.Database, rowId: string): boolean {
 // It does NOT require the mark to still be there: clearing an already-clear row
 // reports success, so two tabs (or a double click) can never turn a harmless
 // repeat into a "somebody picked this up" lie.
-export function clearRowHandled(db: Database.Database, rowId: string): boolean {
-  const info = db
-    .prepare(`UPDATE board_rows SET handled_at = NULL, handled_seen_at = NULL, handled_seen_by = NULL
-               WHERE id = ? AND handled_seen_at IS NULL`)
-    .run(rowId)
-  return info.changes > 0
+export function clearRowHandled(
+  db: Database.Database,
+  rowId: string,
+  expectedRevision?: number,
+  expectedBoardRevision?: number,
+): boolean {
+  const now = new Date().toISOString()
+  const run = db.transaction((): boolean => {
+    const row = db.prepare(`UPDATE board_rows
+                 SET handled_at = NULL, handled_seen_at = NULL, handled_seen_by = NULL,
+                     updated_at = ?, revision = revision + 1
+               WHERE id = ? AND handled_seen_at IS NULL
+                 AND (? IS NULL OR revision = ?)
+                 AND EXISTS (
+                   SELECT 1 FROM boards b
+                    WHERE b.id = board_rows.board_id
+                      AND b.status = 'active'
+                      AND (? IS NULL OR b.revision = ?))
+               RETURNING board_id`)
+      .get(
+        now,
+        rowId,
+        expectedRevision ?? null,
+        expectedRevision ?? null,
+        expectedBoardRevision ?? null,
+        expectedBoardRevision ?? null,
+      ) as { board_id: string } | undefined
+    if (!row) return false
+    bumpBoardRevision(db, row.board_id, now)
+    return true
+  })
+  return run.immediate()
 }
 
 // markAnnotationDelivered's twin, same COALESCE (the stamp records the FIRST
@@ -729,11 +1452,6 @@ export function markHandledDelivered(
 // must therefore not reset anything, or every routine full-table refresh would
 // quietly undo the human's action. Flipping the status is the acknowledgement;
 // blocking it again afterwards is a fresh request, so it starts from nothing.
-function resetHandledOnReblock(db: Database.Database, rowId: string, prev: RowStatus, next: RowStatus): void {
-  if (next !== 'blocked' || prev === 'blocked') return
-  db.prepare(`UPDATE board_rows SET handled_at = NULL, handled_seen_at = NULL, handled_seen_by = NULL WHERE id = ?`).run(rowId)
-}
-
 // The rows-shaped twin of markReplySeen, version-pinned for the same reason: the
 // viewer writes annotations from its own OS process, so a SELECT-then-UPDATE
 // would stamp text that no longer exists and bury the human's newest instruction
@@ -830,6 +1548,7 @@ export function markBoardRead(db: Database.Database, boardId: string): void {
 export interface PendingRow {
   board_id: string
   board_title: string
+  board_revision: number
   project: string
   stream: string
   agent: string
@@ -837,36 +1556,65 @@ export interface PendingRow {
   label: string
   status: RowStatus
   note: string
+  next_step: string
+  action_owner: ActionOwner | null
+  impact: string
+  next_after: string
+  options: QuestionOption[] | null
   context: string
   // NULLABLE since #36: a row can reach this queue carrying only the human's
   // `handled_at` mark and no words at all. An agent that keys on `annotation`
   // being a string would then silently skip the very thing it is being told.
   annotation: string | null
+  annotation_kind: ResponseKind | null
   annotated_at: string | null
   annotation_seen_at: string | null
   annotation_seen_by: string | null
   handled_at: string | null
   handled_seen_at: string | null
   handled_seen_by: string | null
+  snoozed_until: string | null
+  outcome: string
+  outcome_at: string | null
+  action_started_at: string
+  action_version: number
+  revision: number
+  updated_at: string
 }
 
 export function listPendingRows(db: Database.Database, project: string): PendingRow[] {
-  return db
+  const now = new Date().toISOString()
+  const rows = db
     .prepare(
-      `SELECT b.id AS board_id, b.title AS board_title, b.project AS project, b.stream AS stream, b.agent AS agent,
-              r.id AS row_id, r.label AS label, r.status AS status, r.note AS note, r.context AS context,
-              r.annotation AS annotation, r.annotated_at AS annotated_at,
+      `SELECT b.id AS board_id, b.title AS board_title, b.revision AS board_revision,
+              b.project AS project, b.stream AS stream, b.agent AS agent,
+              r.id AS row_id, r.label AS label, r.status AS status, r.note AS note,
+              r.next_step AS next_step, r.action_owner AS action_owner, r.impact AS impact,
+              r.next_after AS next_after, r.options AS options, r.context AS context,
+              r.annotation AS annotation, r.annotation_kind AS annotation_kind,
+              r.annotated_at AS annotated_at,
               r.annotation_seen_at AS annotation_seen_at, r.annotation_seen_by AS annotation_seen_by,
-              r.handled_at AS handled_at, r.handled_seen_at AS handled_seen_at, r.handled_seen_by AS handled_seen_by
+              r.handled_at AS handled_at, r.handled_seen_at AS handled_seen_at,
+              r.handled_seen_by AS handled_seen_by, r.snoozed_until AS snoozed_until,
+              r.outcome AS outcome, r.outcome_at AS outcome_at,
+              r.action_started_at AS action_started_at, r.action_version AS action_version,
+              r.revision AS revision,
+              r.updated_at AS updated_at
          FROM board_rows r JOIN boards b ON b.id = r.board_id
         WHERE b.project = ? AND b.status = 'active'
-          AND ((r.annotation IS NOT NULL AND r.annotation <> '') OR r.handled_at IS NOT NULL)
-          AND (r.status = 'blocked'
-               OR (r.annotation IS NOT NULL AND r.annotation <> '' AND r.annotation_seen_at IS NULL)
+          AND (r.snoozed_until > ?
+               OR r.annotation_kind IS NOT NULL
+               OR (r.annotation IS NOT NULL AND r.annotation <> '')
+               OR r.handled_at IS NOT NULL)
+          AND (r.snoozed_until > ?
+               OR r.status = 'blocked'
+               OR ((r.annotation_kind IS NOT NULL OR (r.annotation IS NOT NULL AND r.annotation <> ''))
+                   AND r.annotation_seen_at IS NULL)
                OR (r.handled_at IS NOT NULL AND r.handled_seen_at IS NULL))
         ORDER BY b.updated_at DESC, r.position ASC`,
     )
-    .all(project) as PendingRow[]
+    .all(project, now, now) as Array<Omit<PendingRow, 'options'> & { options: string | null }>
+  return rows.map((row) => ({ ...row, options: parseOptions(row.options) }))
 }
 
 export function computeProgress(rows: BoardRow[]): Progress {

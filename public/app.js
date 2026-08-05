@@ -5,7 +5,7 @@ import {
 } from '/rail.js'
 import {
   attentionCount, attentionEntries, awaitingAgentRows, classifyLiveness, countsByProject,
-  isAskingQuestion, isBlockedRowAttention, staleEntries,
+  isAskingQuestion, isBlockedRowAttention, snoozedEntries, staleEntries,
 } from '/attention.js'
 import { DEFAULT_TAB, TAB_IDS, tabCounts } from '/tabs.js'
 import { projectColor } from '/colors.js'
@@ -20,12 +20,13 @@ import { keyAction, rovingIndex, ariaAnswerLabel, livenessGlyph, deckEntryAt } f
 import { partitionNotes, unreadNoteCount, ambientChips, seenWatermark, markSeenIds } from '/notes.js'
 import { liveSummary, lastActivityAt, isDormant } from '/livebar.js'
 import { esc } from '/esc.js'
-import { boardRowsView, progressLabel, hiddenDoneCount, lingeringBoards } from '/boards.js'
+import { boardRowsView, boardRowLine, progressLabel, hiddenDoneCount, lingeringBoards } from '/boards.js'
 import { liveEntity, tabMatchCounts, projectMatchCounts, elsewhereLabel } from '/tabsearch.js'
 import { titleWithBadge, focusHashFor, parseFocusHash } from '/badge.js'
 import { layoutMode, railLabel, NARROW_MAX } from '/layout.js'
 import { indexLinks, sourceChipsHtml, sourceBlockHtml } from '/source.js'
 import { buildSummary } from '/buildstamp.js'
+import { actionCategory, actionOwnerLabel, changeKind, lifecycleReceipt, responseLabel } from '/action.js'
 
 void paginateGroups // kept exported+tested (spec §15); the viewer no longer calls it
 
@@ -54,6 +55,9 @@ let hideCompleted = localStorage.getItem(HIDE_DONE_KEY) !== 'false' // default O
 
 const NOTES_SEEN_KEY = 'agent-inbox-notes-seen'
 const NOTES_SEEN_IDS_KEY = 'agent-inbox-notes-seen-ids'
+const LAST_VISIT_KEY = 'agent-inbox-last-visit'
+const lastVisitAt = localStorage.getItem(LAST_VISIT_KEY)
+localStorage.setItem(LAST_VISIT_KEY, new Date().toISOString())
 let notesSeenAt = localStorage.getItem(NOTES_SEEN_KEY) || null
 let notesSeenIds = new Set()
 try { notesSeenIds = new Set(JSON.parse(localStorage.getItem(NOTES_SEEN_IDS_KEY)) || []) } catch { /* fresh start */ }
@@ -572,6 +576,8 @@ function rel(iso) {
 // ── triage mode: step through the needs-input set one card at a time ──
 let triageDeck = null // { entries, index } while the lightbox is open
 const rowDrafts = {}  // in-progress row annotations, surviving the poll rebuild
+const rowDraftKinds = {} // row id → answer|clarify|decline, surviving accordion remounts
+const staleRowDrafts = {} // row id → { revision, text } refused by row/board CAS
 let rowFocusId = null
 
 // fix round 2 (I1): the deck used to run a SECOND attention predicate of its own
@@ -636,6 +642,7 @@ function triageRemoveCurrent() {
 // that drops a row — so it is the LAST state in the app that should gate a
 // render. What the boards panel actually needed is the press guard (initPressGuard).
 const openRows = new Set()
+const openContexts = new Set()
 
 // #36's labels, and the words are load-bearing. This is NOT the row's `done`
 // STATUS — that is the AGENT's assertion about the row's work, and only agents
@@ -645,13 +652,35 @@ const openRows = new Set()
 const HANDLED_LABEL = 'I’ve done my part'
 const UNHANDLED_LABEL = 'Not done after all'
 
+function dispositionEl(onResponse, onSnooze) {
+  const wrap = document.createElement('div')
+  wrap.className = 'disposition-actions'
+  const snooze = (label, ms) => {
+    const button = btn(label, () => onSnooze(new Date(Date.now() + ms).toISOString()))
+    button.className = 'disposition-btn'
+    wrap.appendChild(button)
+  }
+  snooze('Not now · 4h', 4 * 60 * 60_000)
+  snooze('Tomorrow', 24 * 60 * 60_000)
+  snooze('Next week', 7 * 24 * 60 * 60_000)
+  const clarify = btn('Needs clarification', () => {
+    onResponse('clarify', 'Please clarify the exact decision or task you need from me.')
+  })
+  clarify.className = 'disposition-btn'
+  wrap.appendChild(clarify)
+  const decline = btn('Decline', () => onResponse('decline', 'Declined'))
+  decline.className = 'disposition-btn decline'
+  wrap.appendChild(decline)
+  return wrap
+}
+
 // The human's own exit from a blocked row (#36) — the deed, beside the words.
 //
-// WHY IT EXISTS. Every `blocked` row in the wild is a TASK ("create the Paddle
-// account", "record the hero demo"), not a question, and the only lever the
-// viewer offered was a free-text box. A task does not want words, it wants DONE
-// — and with the asking session long over, nobody was ever going to flip the
-// status, so the row was literally unclearable.
+// WHY IT EXISTS. The task-shaped blockers that motivated #36 ("create the
+// Paddle account", "record the hero demo") do not want words, they want DONE.
+// Decision-shaped blockers now carry direct options and do not render this
+// control. Without a task completion lever, a row whose asking session ended
+// was literally unclearable.
 //
 // `null` on any row where the control would be a lie: nothing is being asked of
 // the human on a row that is not `blocked`, so there is nothing for them to
@@ -662,8 +691,15 @@ const UNHANDLED_LABEL = 'Not done after all'
 //   · marked, delivered   → NO undo, and the reason standing in its place
 function rowHandledEl(b, r) {
   if (r.status !== 'blocked') return null
+  // Decision-shaped blockers are answered by choosing an option. "I've done my
+  // part" is the task-shaped control and would be ambiguous beside Merge/Hold.
+  if (r.options?.length) return null
   const set = async (handled) => {
-    const res = await postJSON(`/api/boards/${b.id}/rows/${r.id}/handled`, { handled })
+    const res = await postJSON(`/api/boards/${b.id}/rows/${r.id}/handled`, {
+      handled,
+      expected_revision: r.revision,
+      expected_board_version: b.revision,
+    })
     if (res === null) return // network failure — postJSON already signaled it
     if (!res.ok) {
       // REFUSED: an agent was handed the mark between the frame that drew this
@@ -671,7 +707,12 @@ function rowHandledEl(b, r) {
       // drew it, so approximate the stamp with now — the server has told us
       // definitively THAT a pickup happened, just not exactly when (≤3s stale).
       // Same shape, and the same reason, as changeAnswer's refusal path.
-      showWriteError(r.id, handledUndoRefusal({ ...r, handled_seen_at: r.handled_seen_at ?? new Date().toISOString() }, Date.now()))
+      showWriteError(
+        r.id,
+        res.reason === 'version_mismatch'
+          ? 'This action changed before your click; refreshed without applying it.'
+          : handledUndoRefusal({ ...r, handled_seen_at: r.handled_seen_at ?? new Date().toISOString() }, Date.now()),
+      )
     } else {
       showWriteError(r.id, '')
     }
@@ -714,13 +755,26 @@ function rowHandledEl(b, r) {
 // because the single `.write-error` slot below is then where a refusal on EITHER
 // of them appears.
 function rowAnswerEl(b, r, onSaved) {
+  const wrap = document.createElement('div')
+  wrap.className = 'row-answer'
   const row = document.createElement('div')
   row.className = 'reply-row'
   const input = document.createElement('input')
   input.className = 'reply-input'
-  input.placeholder = r.status === 'blocked' ? 'tell the agent how to proceed…' : 'your note on this row…'
-  input.value = rowDrafts[r.id] ?? ''
-  input.addEventListener('input', () => { rowDrafts[r.id] = input.value; resumeRender() })
+  input.placeholder = r.options?.length
+    ? 'or answer in your own words…'
+    : r.status === 'blocked' ? 'tell the agent how to proceed…' : 'your note on this row…'
+  const staleDraft = staleRowDrafts[r.id]
+  input.value = rowDrafts[r.id] ?? (staleDraft?.revision === r.revision ? staleDraft.text : '')
+  if (input.value && rowDrafts[r.id] === undefined) rowDrafts[r.id] = input.value
+  if (staleDraft?.revision === r.revision) rowDraftKinds[r.id] = staleDraft.kind
+  input.dataset.responseKind = rowDraftKinds[r.id] ?? 'answer'
+  input.addEventListener('input', () => {
+    rowDrafts[r.id] = input.value
+    rowDraftKinds[r.id] = input.dataset.responseKind ?? rowDraftKinds[r.id] ?? 'answer'
+    delete staleRowDrafts[r.id]
+    resumeRender()
+  })
   input.addEventListener('focus', () => { rowFocusId = r.id })
   // The focus token is STICKY — set on focus, cleared only by a successful send —
   // and every rebuild re-focuses from it. That already stole the caret back on any
@@ -732,17 +786,42 @@ function rowAnswerEl(b, r, onSaved) {
   const save = async () => {
     const typed = input.value
     if (!typed.trim()) return
+    const kind = input.dataset.responseKind ?? 'answer'
     // fix round 2 (C3): the draft used to be dropped BEFORE the POST, so a
     // dropped request (viewer server restarted — routine for the Electron app)
     // erased the human's note with no trace. Clear only once it landed.
-    const res = await postJSON(`/api/boards/${b.id}/rows/${r.id}/annotate`, { text: typed.trim() })
+    const res = await postJSON(`/api/boards/${b.id}/rows/${r.id}/annotate`, {
+      text: typed.trim(),
+      kind,
+      expected_revision: r.revision,
+      expected_board_version: b.revision,
+    })
     if (res === null) {
       rowDrafts[r.id] = typed
+      input.value = typed
       showWriteError(r.id, WRITE_FAILED)
       resumeRender()
       return
     }
+    if (!res.ok) {
+      staleRowDrafts[r.id] = {
+        revision: r.revision,
+        text: typed,
+        kind,
+        boardTitle: b.title,
+        label: r.label,
+      }
+      delete rowDrafts[r.id]
+      delete rowDraftKinds[r.id]
+      if (rowFocusId === r.id) rowFocusId = null
+      showWriteError(r.id, 'This action changed before your response arrived; refreshed without applying it.')
+      await reloadAndPaint()
+      return
+    }
     delete rowDrafts[r.id]
+    delete rowDraftKinds[r.id]
+    delete staleRowDrafts[r.id]
+    delete input.dataset.responseKind
     if (rowFocusId === r.id) rowFocusId = null
     showWriteError(r.id, '')
     // the row stays blocked until the agent picks the note up — the human's part
@@ -753,17 +832,74 @@ function rowAnswerEl(b, r, onSaved) {
     // nothing at all, box still full, ready to send the same string twice.
     await reloadAndPaint()
   }
+  const options = r.status === 'blocked' ? optionOrder(r.options) : []
+  if (options.length) {
+    const choices = document.createElement('div')
+    choices.className = 'options row-options comparing'
+    for (const option of options) {
+      const box = document.createElement('div')
+      box.className = 'option'
+      const pill = document.createElement('button')
+      pill.className = `opt-pill${option.recommended ? ' rec' : ''}`
+      pill.innerHTML = `${esc(option.label)}${option.recommended ? '<span class="rec-tag">recommended</span>' : ''}`
+      pill.addEventListener('click', () => {
+        input.value = option.label
+        input.dataset.responseKind = 'answer'
+        rowDraftKinds[r.id] = 'answer'
+        save()
+      })
+      box.appendChild(pill)
+      if (option.detail) {
+        const detail = document.createElement('div')
+        detail.className = 'opt-detail'
+        detail.textContent = option.detail
+        box.appendChild(detail)
+      }
+      choices.appendChild(box)
+    }
+    wrap.appendChild(choices)
+  }
+  if (r.status === 'blocked' && !r.annotation && !r.annotation_kind && !r.handled_at) {
+    wrap.appendChild(dispositionEl(
+      (kind, text) => {
+        input.value = text
+        input.dataset.responseKind = kind
+        rowDraftKinds[r.id] = kind
+        save()
+      },
+      async (until) => {
+        const res = await postJSON(`/api/boards/${b.id}/rows/${r.id}/snooze`, {
+          until,
+          expected_revision: r.revision,
+          expected_board_version: b.revision,
+        })
+        if (res === null) return
+        if (!res.ok) { await reloadAndPaint(); return }
+        onSaved?.()
+        await reloadAndPaint()
+      },
+    ))
+  }
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') save() })
   row.appendChild(input)
   row.appendChild(btn('Send', save))
   const handled = rowHandledEl(b, r)
   if (handled) row.appendChild(handled)
   row.appendChild(writeErrorEl(r.id))
+  wrap.appendChild(row)
+  if (staleDraft) {
+    const warning = document.createElement('div')
+    warning.className = 'write-error stale-draft'
+    warning.textContent = staleDraft.revision === r.revision
+      ? 'Not sent because the board changed. Review the preserved draft and send again.'
+      : `Not sent because this action changed. Preserved ${staleDraft.kind}: ${staleDraft.text}`
+    wrap.appendChild(warning)
+  }
   if (rowFocusId === r.id) requestAnimationFrame(() => {
     input.focus()
     input.setSelectionRange(input.value.length, input.value.length)
   })
-  return row
+  return wrap
 }
 
 // The delivery marker for ONE thing the human left on a row (issue #37) — the
@@ -792,9 +928,62 @@ function pickupMarkHtml(seenAt, seenBy) {
 // field it describes, so no marker can be printed for a fact that is not there.
 function rowHumanStateHtml(r) {
   const parts = []
-  if (r.annotation) parts.push(`<div class="annotation">📝 ${esc(r.annotation)}${pickupMarkHtml(r.annotation_seen_at, r.annotation_seen_by)}</div>`)
+  if (r.annotation || r.annotation_kind) {
+    const label = responseLabel(r) || 'You answered'
+    parts.push(`<div class="annotation"><strong>${esc(label)}:</strong> ${esc(r.annotation ?? '')}${pickupMarkHtml(r.annotation_seen_at, r.annotation_seen_by)}</div>`)
+  }
   if (r.handled_at) parts.push(`<div class="annotation handled-mark">✓ You marked your part done ${esc(rel(r.handled_at))} ago${pickupMarkHtml(r.handled_seen_at, r.handled_seen_by)}</div>`)
   return parts.join('')
+}
+
+function contextHtml(context, key) {
+  if (!context) return ''
+  return `<details class="card-context" data-context-key="${esc(key)}"${openContexts.has(key) ? ' open' : ''}><summary class="card-context-label">Background</summary><div class="card-context-body">${esc(context)}</div></details>`
+}
+
+function bindContextDisclosures(root) {
+  for (const details of root.querySelectorAll('.card-context[data-context-key]')) {
+    details.addEventListener('toggle', () => {
+      const key = details.dataset.contextKey
+      if (!key) return
+      details.open ? openContexts.add(key) : openContexts.delete(key)
+    })
+  }
+}
+
+function actionBlocksHtml(tldr, nextStep, actionOwner, impact, nextAfter, context, contextKey) {
+  return `
+    ${actionOwner ? `<div class="action-owner">${esc(actionOwnerLabel({ action_owner: actionOwner }))}</div>` : ''}
+    ${nextStep ? `<div class="card-next"><div class="card-section-label">NEXT STEP</div><div class="card-next-body">${esc(nextStep)}</div></div>` : ''}
+    ${impact ? `<div class="card-impact"><div class="card-section-label">WHY NOW</div><div>${esc(impact)}</div></div>` : ''}
+    ${nextAfter ? `<div class="card-after"><div class="card-section-label">AFTER THIS</div><div>${esc(nextAfter)}</div></div>` : ''}
+    ${tldr ? `<div class="card-tldr"><div class="card-section-label">TL;DR</div><div class="card-tldr-body">${esc(tldr)}</div></div>` : ''}
+    ${contextHtml(context, contextKey)}`
+}
+
+function lifecycleHtml(entity) {
+  const steps = lifecycleReceipt(entity)
+  if (!steps.length) return ''
+  return `<div class="lifecycle-receipt">${steps.map((step) => (
+    `<span class="lifecycle-step">${esc(step.label)}${step.at ? ` · ${esc(rel(step.at))}` : ''}</span>`
+  )).join('<span class="lifecycle-arrow">→</span>')}</div>`
+}
+
+function historyHtml(r) {
+  if (!r.history?.length) return ''
+  const entries = [...r.history].reverse().map((entry) => {
+    const response = responseLabel({
+      annotation_kind: entry.response_kind,
+      annotation: entry.response,
+      handled_at: entry.handled ? entry.response_at : null,
+    })
+    return `<div class="history-entry">
+      <div class="history-title">Step ${esc(String(entry.version))} · ${esc(entry.note || entry.next_step || entry.status)}</div>
+      ${response ? `<div>${esc(response)}${entry.response ? `: ${esc(entry.response)}` : ''}</div>` : ''}
+      ${entry.outcome ? `<div>Outcome: ${esc(entry.outcome)}</div>` : ''}
+    </div>`
+  }).join('')
+  return `<details class="action-history"><summary>Prior steps (${r.history.length})</summary>${entries}</details>`
 }
 
 // the inline expansion under a matrix row: long context + existing annotation + answer
@@ -802,8 +991,12 @@ function rowPanelEl(b, r, readOnly = false) {
   const wrap = document.createElement('div')
   wrap.className = 'row-panel'
   wrap.innerHTML = `
-    ${r.context ? `<div class="row-context-body">${esc(r.context)}</div>` : ''}
-    ${rowHumanStateHtml(r)}`
+    ${actionBlocksHtml(r.note, r.status === 'blocked' ? r.next_step : '', r.action_owner, r.impact, r.next_after, r.context, `row:${r.id}`)}
+    ${rowHumanStateHtml(r)}
+    ${r.outcome ? `<div class="outcome-block">Outcome: ${esc(r.outcome)}</div>` : ''}
+    ${lifecycleHtml(r)}
+    ${historyHtml(r)}`
+  bindContextDisclosures(wrap)
   if (!readOnly) wrap.appendChild(rowAnswerEl(b, r))
   return wrap
 }
@@ -819,9 +1012,12 @@ function rowCardEl(b, r) {
   wrap.innerHTML = `
     <div class="meta">🚧 blocked row · ${esc(b.title)} <span class="board-id">#${esc(b.id.slice(0, 6))}</span></div>
     <div class="title">${esc(r.label)}</div>
-    ${r.note ? `<div class="detail">${esc(r.note)}</div>` : ''}
-    ${r.context ? `<div class="detail lb-context">${esc(r.context)}</div>` : ''}
-    ${rowHumanStateHtml(r)}`
+    ${actionBlocksHtml(r.note, r.next_step, r.action_owner, r.impact, r.next_after, r.context, `row:${r.id}`)}
+    ${rowHumanStateHtml(r)}
+    ${r.outcome ? `<div class="outcome-block">Outcome: ${esc(r.outcome)}</div>` : ''}
+    ${lifecycleHtml(r)}
+    ${historyHtml(r)}`
+  bindContextDisclosures(wrap)
   wrap.appendChild(rowAnswerEl(b, r, () => { if (triageDeck) triageRemoveCurrent() }))
   return wrap
 }
@@ -1463,9 +1659,40 @@ function initStagedFlush() {
 
 // The Needs-you header: opt-in triage only (tenet 1) — a button, never a flow
 // that opens itself. With the old #now strip gone this is the deck's only door.
+let actionFilter = 'all'
+let changedOnly = false
+
+function entryEntity(entry) {
+  return entry.kind === 'row' ? entry.row : entry.item
+}
+
+function filterActionEntries(entries) {
+  return entries.filter((entry) => {
+    const entity = entryEntity(entry)
+    if (actionFilter !== 'all' && actionCategory(entity) !== actionFilter) return false
+    if (changedOnly && !changeKind(entity, lastVisitAt)) return false
+    return true
+  })
+}
+
 function needsYouHeader() {
   const bar = document.createElement('div')
   bar.className = 'tab-header'
+  for (const [value, label] of [['all', 'All'], ['decision', 'Decisions'], ['task', 'Tasks']]) {
+    const filter = btn(label, () => {
+      actionFilter = value
+      forceRender()
+    })
+    filter.className = `header-toggle${actionFilter === value ? ' active' : ''}`
+    bar.appendChild(filter)
+  }
+  const changed = btn('New / changed', () => {
+    changedOnly = !changedOnly
+    forceRender()
+  })
+  changed.className = `header-toggle${changedOnly ? ' active' : ''}`
+  changed.disabled = !lastVisitAt
+  bar.appendChild(changed)
   const tri = btn('Triage →', openTriage)
   tri.className = 'triage-btn'
   bar.appendChild(tri)
@@ -1534,7 +1761,8 @@ function renderNeedsYou(g, boardsInView, nowMs) {
   // land in sortNeedsYou's bucket 3 — the same dimmed foot, one ordering rule.
   const replied = repliedEntries(items, nowMs, live)
   const awaiting = awaitingAgentRows(boardsInView, closedSet())
-  const unordered = needsYouEntries(items, boardsInView, nowMs, live, [...replied, ...awaiting])
+  const snoozed = filterActionEntries(snoozedEntries(items, boardsInView, nowMs, closedSet()))
+  const unordered = filterActionEntries(needsYouEntries(items, boardsInView, nowMs, live, [...replied, ...awaiting]))
   // §10: pin existing order BEFORE paginating. New arrivals append at the foot,
   // so they appear live without moving the row the human is reading.
   const entryById = new Map(unordered.map((e) => [e.kind === 'row' ? e.row.id : e.item.id, e]))
@@ -1544,26 +1772,27 @@ function renderNeedsYou(g, boardsInView, nowMs) {
     streams: streamCounts(entities),
     agents: agentCounts(entities),
     showProject: !projectFilter, // a single selected project needs no monogram (§2)
+    lastVisitAt,
   }
   const { visible, remaining } = paginate(entries, shown.needsYou)
   // fix round 2 (I2): the stale fold renders BELOW the empty state but its
   // contents are part of this tab's answer. Computed first so a query matching
   // only a stale item can't print "No matches … or in any other tab" directly
   // above the fold holding that exact match (while its tab badge reads 1).
-  const stale = staleEntries(items, nowMs, live)
+  const stale = filterActionEntries(staleEntries(items, nowMs, live))
   host.innerHTML = ''
   host.appendChild(needsYouHeader())
   if (!entries.length) {
     // a search that matched nothing still says so; an empty INBOX gets the calm panel
     if (searchQuery.trim()) {
       // only claim "no matches" when the fold below holds none either
-      if (!stale.length) host.insertAdjacentHTML('beforeend', `<p class="empty">${emptyMsg('Nothing needs you.')}</p>`)
+      if (!stale.length && !snoozed.length) host.insertAdjacentHTML('beforeend', `<p class="empty">${emptyMsg('Nothing needs you.')}</p>`)
       // issue #31.3: suppressing the FALSE "no matches" claim also swallowed the
       // §12 pointer, leaving a search that hit only a collapsed stale item with a
       // blank tab. The claim is what was wrong, not the pointer — print it alone.
       else {
         const where = elsewhereMsg()
-        if (where) host.insertAdjacentHTML('beforeend', `<p class="empty">Only stale matches here — ${where}</p>`)
+        if (where) host.insertAdjacentHTML('beforeend', `<p class="empty">Only deferred matches here — ${where}</p>`)
       }
     } else {
       // an empty INBOX still gets the calm panel: a demoted stale item is, by
@@ -1573,7 +1802,9 @@ function renderNeedsYou(g, boardsInView, nowMs) {
   }
   for (const e of visible) host.appendChild(needsRowEl(rowModel(e, opts), e, nowMs))
   if (remaining > 0) host.appendChild(moreButton('needsYou', remaining))
+  if (snoozed.length) host.appendChild(snoozedFoldEl(snoozed, opts, nowMs))
   if (stale.length) host.appendChild(staleFoldEl(stale, opts, nowMs))
+  renderOrphanedDrafts(host)
   // fix round 2 (I3): the foot chip is fed the SAME scoped notes the Notes tab
   // count is computed from (render()'s `g.notes`). It used to read the GLOBAL
   // lastData.g.notes, so the chip and the badge disagreed under any rail filter.
@@ -1588,10 +1819,47 @@ function renderNeedsYou(g, boardsInView, nowMs) {
   restoreRowSelection(hadListFocus)
 }
 
+function renderOrphanedDrafts(host) {
+  const activeRows = new Set((lastData?.boards ?? []).flatMap((board) => board.rows.map((row) => row.id)))
+  const entries = Object.entries(staleRowDrafts).filter(([id]) => !activeRows.has(id))
+  if (!entries.length) return
+  const fold = document.createElement('details')
+  fold.className = 'stale-fold stale-drafts-fold'
+  const summary = document.createElement('summary')
+  summary.textContent = `unsent responses (${entries.length})`
+  fold.appendChild(summary)
+  for (const [id, draft] of entries) {
+    const line = document.createElement('div')
+    line.className = 'stale-draft-line'
+    line.textContent = `${draft.boardTitle} · ${draft.label} · ${draft.kind}: ${draft.text}`
+    const clear = btn('Clear', () => {
+      delete staleRowDrafts[id]
+      forceRender()
+    })
+    clear.className = 'undo-btn'
+    line.appendChild(clear)
+    fold.appendChild(line)
+  }
+  host.appendChild(fold)
+}
+
 // the stale fold's open/closed state, outside the DOM the 3s poll rebuilds —
 // same precedent as openLive/openContexts: without this the fold silently
 // re-collapses under the user mid-read
 let staleFoldOpen = false
+let snoozedFoldOpen = false
+
+function snoozedFoldEl(entries, opts, nowMs) {
+  const fold = document.createElement('details')
+  fold.className = 'stale-fold snoozed-fold'
+  if (snoozedFoldOpen) fold.open = true
+  fold.addEventListener('toggle', () => { snoozedFoldOpen = fold.open })
+  const summary = document.createElement('summary')
+  summary.textContent = `snoozed (${entries.length})`
+  fold.appendChild(summary)
+  for (const entry of entries) fold.appendChild(needsRowEl(rowModel(entry, opts), entry, nowMs))
+  return fold
+}
 
 // nobody is listening and it is older than STALE_MS: out of the active list and
 // out of every count, but one click away — never deleted (§6)
@@ -1615,15 +1883,16 @@ function needsRowEl(m, entry, nowMs) {
   const chip = urgencyChip(m, nowMs)
   const color = pcolor(m.project)
   const glyph = m.kind === 'row' ? `<button class="nrow-glyph" title="open board: ${esc(m.boardTitle ?? '')}">🚧</button>` : ''
-  // Items only. A board row has NO dismiss path — the human's exit from an
-  // unannotated blocked row is issue #36's remaining half, and until it exists
-  // this button rendered on every row, advertised the 'x' key, and did nothing.
-  // An affordance that lies is worse than no affordance; do not draw it back in
-  // before there is a route behind it.
+  // Items only. Board rows deliberately have no line-level ✕: their expanded
+  // card owns the truthful dispositions (snooze, clarify, decline, or do/answer).
+  // The old ✕ advertised the x key and did nothing.
   const dismissBit = m.kind === 'item' ? '<button class="nrow-dismiss" title="Dismiss (x)" aria-label="Dismiss">✕</button>' : ''
+  const wakeBit = m.snoozedUntil ? '<button class="nrow-wake" title="Return to Needs you now">Wake now</button>' : ''
   const projBit = m.projectLabel ? `<span class="nrow-proj" title="${esc(m.project)}">${esc(m.projectLabel)}</span>` : ''
   const agentBit = m.agent ? `<span class="nrow-agent">${esc(m.agent)}</span>` : ''
   const streamBit = m.stream ? `<span class="nrow-stream">${esc(m.stream)}</span>` : ''
+  const ownerBit = `<span class="nrow-owner owner-${esc(m.actionCategory)}">${esc(m.ownerLabel)}</span>`
+  const changeBit = m.changeKind ? `<span class="nrow-change">${esc(m.changeKind)}</span>` : ''
   // omit line 2 entirely when it would be blank — no secondary text, no agent
   // chip, no stream — otherwise it leaves a padded empty line under the row.
   // Still built (with staged-dismiss's own content) when a dismiss is staged,
@@ -1636,9 +1905,12 @@ function needsRowEl(m, entry, nowMs) {
       ${projBit}
       ${glyph}
       <span class="nrow-title" title="${esc(m.title)}">${esc(m.title)}</span>
+      ${ownerBit}
+      ${changeBit}
       <span class="chip chip-${chip.tone}"><span aria-hidden="true">${livenessGlyph(m.liveness).glyph}</span> ${esc(chip.text)}</span>
       <span class="nrow-src">${sourceChipsHtml(linkIndex, entry.kind === 'row' ? entry.board : entry.item, nowMs)}</span>
       <span class="nrow-star"></span>
+      ${wakeBit}
       ${dismissBit}
       <span class="nrow-caret">▸</span>
     </div>
@@ -1650,6 +1922,23 @@ function needsRowEl(m, entry, nowMs) {
   if (dismissBtn) dismissBtn.addEventListener('click', (ev) => {
     ev.stopPropagation()
     stageDismiss(m.id)
+  })
+  const wakeBtn = el.querySelector('.nrow-wake')
+  if (wakeBtn) wakeBtn.addEventListener('click', async (ev) => {
+    ev.stopPropagation()
+    const url = entry.kind === 'row'
+      ? `/api/boards/${entry.board.id}/rows/${entry.row.id}/snooze`
+      : `/api/items/${entry.item.id}/snooze`
+    const res = await postJSON(url, entry.kind === 'row'
+      ? {
+          until: null,
+          expected_revision: entry.row.revision,
+          expected_board_version: entry.board.revision,
+        }
+      : { until: null })
+    if (res === null) return
+    if (!res.ok) { await reloadAndPaint(); return }
+    await reloadAndPaint()
   })
   const slot = el.querySelector('.nrow-star')
   const staged = stagedStars.get(m.id)
@@ -1905,7 +2194,7 @@ function boardEl(b, archived = false, lingering = false) {
       <td class="row-num">${num}</td>
       <td class="row-glyph ${r.status}" title="${esc(r.status)}">${GLYPH[r.status] || ''}</td>
       <td class="row-label">${esc(r.label)}</td>
-      <td class="row-note"><span class="note-line">${esc(r.note)}</span>${r.context ? '<span class="more-dot" title="has context — click the row">…</span>' : ''}${r.annotation ? `<span class="annotation-dot" title="${esc(r.annotation)}">📝${r.annotation_unseen ? '<span class="unseen" title="not yet delivered to an agent">●</span>' : ''}</span>` : ''}${r.handled_at ? `<span class="handled-dot" title="you marked your part done">✓${r.handled_seen_at ? '' : '<span class="unseen" title="not yet delivered to an agent">●</span>'}</span>` : ''}</td>`
+      <td class="row-note"><span class="note-line">${esc(boardRowLine(r))}</span>${r.context ? '<span class="more-dot" title="has background — click the row">…</span>' : ''}${r.annotation ? `<span class="annotation-dot" title="${esc(r.annotation)}">📝${r.annotation_unseen ? '<span class="unseen" title="not yet delivered to an agent">●</span>' : ''}</span>` : ''}${r.handled_at ? `<span class="handled-dot" title="you marked your part done">✓${r.handled_seen_at ? '' : '<span class="unseen" title="not yet delivered to an agent">●</span>'}</span>` : ''}</td>`
     const actionTd = document.createElement('td')
     actionTd.className = 'row-action'
     const toggle = () => {
@@ -1939,12 +2228,12 @@ function boardEl(b, archived = false, lingering = false) {
   actions.className = 'actions'
   if (archived) {
     actions.appendChild(btn('Un-archive', async () => {
-      const res = await postJSON(`/api/boards/${b.id}/unarchive`)
+      const res = await postJSON(`/api/boards/${b.id}/unarchive`, { expected_version: b.revision })
       if (res === null) return // network failure — postJSON already signaled it
       await reloadAndPaint() // #38 — the human's own click gets its frame
     }))
   } else {
-    actions.appendChild(archiveBtn(b.id))
+    actions.appendChild(archiveBtn(b))
   }
   el.appendChild(actions)
   return el
@@ -1952,15 +2241,15 @@ function boardEl(b, archived = false, lingering = false) {
 
 // two-step inline confirm: first click arms ("Really archive?"), second click within
 // 4s archives; it disarms after 4s (and implicitly on re-render — the DOM is rebuilt)
-function archiveBtn(boardId) {
+function archiveBtn(board) {
   let timer = null
   const el = btn('Archive', async () => {
     if (el.classList.contains('confirm')) {
       clearTimeout(timer)
       // a board the HUMAN archives by hand must not linger — lingering is only
       // for the agent's own auto-archive at 100% (spec §9)
-      sessionActiveBoards.delete(boardId)
-      const res = await postJSON(`/api/boards/${boardId}/archive`)
+      sessionActiveBoards.delete(board.id)
+      const res = await postJSON(`/api/boards/${board.id}/archive`, { expected_version: board.revision })
       if (res === null) return // network failure — postJSON already signaled it
       await reloadAndPaint() // #38 — the human's own click gets its frame
       return
@@ -1981,7 +2270,7 @@ const draftReplies = {}          // item id → in-progress free-text answer
 const draftReplyContexts = {}    // item id → optional context attached to the answer
 let draftFocusKey = null         // `${itemId}:answer` or `${itemId}:context`, to restore focus
 
-async function sendReply(id, text, context = '') {
+async function sendReply(id, text, context = '', kind = 'answer') {
   const reply = text.trim()
   if (!reply) return
   // fix round 2 (C3): both drafts used to be deleted BEFORE the POST. When the
@@ -1990,7 +2279,7 @@ async function sendReply(id, text, context = '') {
   // #status's "disconnected" was wiped by the next successful poll ≤3s later.
   // Nothing is cleared until the server has it.
   const hadDraft = draftReplies[id] !== undefined || draftReplyContexts[id] !== undefined
-  const res = await postJSON(`/api/items/${id}/reply`, { text: reply, context: context.trim() || undefined })
+  const res = await postJSON(`/api/items/${id}/reply`, { text: reply, context: context.trim() || undefined, kind })
   if (res === null) {
     // re-assert rather than merely leave in place, so a future edit that clears
     // early still cannot lose it. Only when the human HAD a draft: inventing one
@@ -2065,6 +2354,14 @@ function answerEl(it) {
   ctxInput.addEventListener('blur', () => { if (draftFocusKey === `${it.id}:context` && !ctxInput.value) draftFocusKey = null })
   ctxRow.appendChild(ctxInput)
   wrap.appendChild(ctxRow)
+  wrap.appendChild(dispositionEl(
+    (kind, text) => sendReply(it.id, text, draftReplyContexts[it.id] ?? '', kind),
+    async (until) => {
+      const res = await postJSON(`/api/items/${it.id}/snooze`, { until })
+      if (res === null) return
+      await reloadAndPaint()
+    },
+  ))
   if (draftFocusKey === `${it.id}:answer`) requestAnimationFrame(() => {
     input.focus()
     input.setSelectionRange(input.value.length, input.value.length)
@@ -2095,11 +2392,13 @@ function itemCardEl(it, { done = false, nowMs = Date.now(), liveness = 'parked',
   el.innerHTML = `
     ${head}
     ${sourceBlockHtml(linkIndex, it, nowMs)}
-    ${s.detail ? `<div class="detail card-detail">${esc(s.detail)}</div>` : ''}
-    ${s.context ? `<div class="card-context"><div class="card-context-label">CONTEXT</div><div class="card-context-body">${esc(s.context)}</div></div>` : ''}
+    ${actionBlocksHtml(s.detail, s.nextStep, s.actionOwner, s.impact, s.nextAfter, s.context, `item:${it.id}`)}
     ${s.annotation ? `<div class="annotation">📝 ${esc(s.annotation)}</div>` : ''}
     ${s.recWarning ? `<div class="rec-warning">⚠ ${esc(s.recWarning)}</div>` : ''}
-    ${s.reply ? `<div class="reply-block">↩ ${esc(s.reply)}${it.reply_context ? `<div class="reply-context">context: ${esc(it.reply_context)}</div>` : ''}${it.reply_source === 'agent' ? '<span class="reply-source">via chat</span>' : ''}<span class="pickup ${it.reply_seen_at ? 'picked' : 'awaiting'}">${it.reply_seen_at ? '✓ picked up' : '● waiting for agent pickup'}</span></div>` : ''}`
+    ${s.reply || it.reply_kind ? `<div class="reply-block"><strong>${esc(responseLabel(it) || 'You answered')}:</strong> ${esc(s.reply ?? '')}${it.reply_context ? `<div class="reply-context">context: ${esc(it.reply_context)}</div>` : ''}${it.reply_source === 'agent' ? '<span class="reply-source">via chat</span>' : ''}${s.showPickup ? `<span class="pickup ${it.reply_seen_at ? 'picked' : 'awaiting'}">${it.reply_seen_at ? '✓ picked up' : '● waiting for agent pickup'}</span>` : ''}</div>` : ''}
+    ${s.outcome ? `<div class="outcome-block">Outcome: ${esc(s.outcome)}</div>` : ''}
+    ${lifecycleHtml(it)}`
+  bindContextDisclosures(el)
   if (s.showAnswer) el.appendChild(answerEl(it))
   if (s.showActions) {
     const actions = document.createElement('div')

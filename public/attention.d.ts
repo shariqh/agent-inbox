@@ -1,4 +1,4 @@
-export type Liveness = 'waiting' | 'parked' | 'stale'
+export type Liveness = 'waiting' | 'parked' | 'stale' | 'snoozed'
 
 export interface AttentionItem {
   id: string
@@ -7,11 +7,18 @@ export interface AttentionItem {
   /** 'open' | 'resolved' | 'dismissed'; absent is treated as open */
   status?: string
   reply?: string | null
+  reply_kind?: 'answer' | 'clarify' | 'decline' | null
   session?: string | null
+  snoozed_until?: string | null
   created_at: string
   title?: string
   detail?: string
+  next_step?: string
+  action_owner?: 'decision' | 'task' | 'approval' | null
+  impact?: string
+  next_after?: string
   reply_seen_at?: string | null
+  updated_at?: string
 }
 
 export interface AttentionRow {
@@ -19,6 +26,7 @@ export interface AttentionRow {
   label?: string
   status: string
   annotation: string | null
+  annotation_kind?: 'answer' | 'clarify' | 'decline' | null
   annotation_unseen: boolean
   /** issue #37 — when the annotation was handed to an agent, and to which one. */
   annotation_seen_at?: string | null
@@ -27,13 +35,23 @@ export interface AttentionRow {
   handled_at?: string | null
   handled_seen_at?: string | null
   handled_seen_by?: string | null
+  snoozed_until?: string | null
   note?: string
+  next_step?: string
+  action_owner?: 'decision' | 'task' | 'approval' | null
+  impact?: string
+  next_after?: string
+  options?: Array<{ label: string; detail?: string; recommended?: boolean }> | null
+  created_at?: string
+  updated_at?: string
+  revision?: number
 }
 
 export interface AttentionBoard {
   id: string
   project: string
   title?: string
+  revision?: number
   rows: AttentionRow[]
 }
 
@@ -54,8 +72,8 @@ export const ESCALATE_MS: number
 export const NOTE_AGE_MS: number
 
 export function classifyLiveness(item: AttentionItem, nowMs: number, liveSessionIds: LiveSessionIds): Liveness
-export function isAskingQuestion(item: AttentionItem): boolean
-export function isBlockedRowAttention(row: AttentionRow): boolean
+export function isAskingQuestion(item: AttentionItem, nowMs?: number): boolean
+export function isBlockedRowAttention(row: AttentionRow, nowMs?: number): boolean
 /** issue #36 — the human answered it in words, or went and did it. Either ends their part. */
 export function humanActedOnRow(row: AttentionRow): boolean
 /** A closed set: project names, as a Set (browser) or a plain array (JSON). */
@@ -79,6 +97,12 @@ export function staleEntries(
   nowMs: number,
   liveSessionIds: LiveSessionIds,
 ): StaleEntry[]
+export function snoozedEntries(
+  items: AttentionItem[],
+  boards: AttentionBoard[],
+  nowMs: number,
+  closedProjects?: ClosedProjects,
+): AttentionEntry[]
 export function attentionCount(
   items: AttentionItem[],
   boards: AttentionBoard[],

@@ -123,6 +123,43 @@ describe('canned notification responses', () => {
     )
   })
 
+  it('posts a blocked-row choice through the row annotation route', async () => {
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true }),
+    }))
+    await expect(replyWatch.submitNotificationResponse(
+      'http://localhost:4319/',
+      { source: 'row', boardId: 'board/1', rowId: 'row/1', revision: 3, boardRevision: 7 },
+      'Merge PR #42',
+      fetchImpl,
+    )).resolves.toBeUndefined()
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'http://localhost:4319/api/boards/board%2F1/rows/row%2F1/annotate',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{"text":"Merge PR #42","kind":"answer","expected_revision":3,"expected_board_version":7}',
+      },
+    )
+  })
+
+  it('refreshes only the board revision when the row action itself is unchanged', () => {
+    const target = { source: 'row' as const, boardId: 'board-1', rowId: 'row-1', revision: 3, boardRevision: 7 }
+    expect(replyWatch.refreshNotificationTarget([{
+      id: 'board-1',
+      revision: 8,
+      rows: [{ id: 'row-1', revision: 3 }],
+    }], target)).toEqual({ ...target, boardRevision: 8 })
+    expect(replyWatch.refreshNotificationTarget([{
+      id: 'board-1',
+      revision: 8,
+      rows: [{ id: 'row-1', revision: 4 }],
+    }], target)).toBeNull()
+  })
+
   it('surfaces HTTP and store refusals instead of reporting a successful response', async () => {
     await expect(replyWatch.submitCannedResponse(
       'http://localhost:4319/',
@@ -141,9 +178,14 @@ describe('canned notification responses', () => {
 
   it('is wired into the Electron notification action event', () => {
     const main = readFileSync(new URL('../electron/main.cjs', import.meta.url), 'utf8')
-    expect(main).toContain('cannedResponseActions(question ? optionOrder(question.options) : [])')
+    expect(main).toContain('cannedResponseActions(actionable ? optionOrder(actionable.item.options) : [])')
+    expect(main).toContain('id: `r:${e.row.id}:v${e.row.revision}`')
     expect(main).toContain("note.on('action'")
-    expect(main).toContain('submitCannedResponse(URL_BASE, question.id, answer)')
+    expect(main).toContain('submitNotificationResponse(URL_BASE, actionable.target, answer)')
+    expect(main).toContain('refreshNotificationTarget')
+    expect(main).toContain('Response not applied')
+    expect(main).toContain('if (polling) return')
+    expect(main).toContain("poll().finally(() => { polling = false })")
     expect(main).toContain('notificationRetainer.show(note)')
   })
 })

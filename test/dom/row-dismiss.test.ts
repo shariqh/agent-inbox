@@ -5,10 +5,10 @@
 // complaint about the Needs-you list. Every row rendered a ✕ titled
 // "Dismiss (x)", but its handler was `if (m.kind === 'item') stageDismiss(m.id)`:
 // on a blocked board row the button was there, hoverable, focusable, keyboard-
-// advertised, and did NOTHING. Board rows have no dismiss path at all — the
-// human's exit from an UNANNOTATED blocked row is issue #36's remaining half and
-// is deliberately not in scope here — so the honest minimal thing is to stop
-// drawing a control that cannot work, on BOTH input paths.
+// advertised, and did NOTHING. Board rows deliberately have no line-level
+// dismiss path: their expanded card owns snooze, clarification, decline, answer
+// and task-done controls. The honest thing is still to omit the ambiguous ✕ on
+// BOTH input paths.
 //
 // ONE boot on purpose: jsdom's document outlives the module registry, so every
 // extra bootApp() in a file leaves another keydown listener attached and a key

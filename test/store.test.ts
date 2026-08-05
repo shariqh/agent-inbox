@@ -14,11 +14,11 @@ import {
   answerItem,
   markReplySeen,
   listPending,
-  upsertBoard,
-  updateBoardRow,
+  upsertBoard as writeBoard,
+  updateBoardRow as writeBoardRow,
   findBoard,
-  archiveBoard,
-  unarchiveBoard,
+  archiveBoard as writeArchiveBoard,
+  unarchiveBoard as writeUnarchiveBoard,
   annotateBoardRow,
   markAnnotationDelivered,
   markRowHandled,
@@ -52,6 +52,54 @@ function freshDb(): Database.Database {
   return openDb(join(dir, 'inbox.db'))
 }
 
+function boardState(db: Database.Database, project: string, title: string) {
+  return [...listBoards(db), ...listBoards(db, { status: 'archived' })]
+    .find((board) => board.project === project && board.title === title)
+}
+
+function upsertBoard(
+  db: Database.Database,
+  input: Parameters<typeof writeBoard>[1],
+): ReturnType<typeof writeBoard> {
+  const existing = boardState(db, input.project, input.title)
+  const rows = input.rows.map((row) => {
+    const current = existing?.rows.find((candidate) => candidate.label === row.label)
+    return current && row.revision === undefined
+      ? { ...row, revision: current.revision }
+      : row
+  })
+  return writeBoard(db, {
+    ...input,
+    expectedVersion: input.expectedVersion ?? existing?.revision,
+    rows,
+  })
+}
+
+function updateBoardRow(
+  db: Database.Database,
+  input: Parameters<typeof writeBoardRow>[1],
+): ReturnType<typeof writeBoardRow> {
+  const existing = boardState(db, input.project, input.title)
+  const row = existing?.rows.find((candidate) => candidate.label === input.label)
+  return writeBoardRow(db, {
+    ...input,
+    expectedBoardVersion: input.expectedBoardVersion ?? existing?.revision,
+    expectedRevision: input.expectedRevision ?? row?.revision,
+  })
+}
+
+function archiveBoard(db: Database.Database, boardId: string): boolean {
+  const board = [...listBoards(db), ...listBoards(db, { status: 'archived' })]
+    .find((candidate) => candidate.id === boardId)
+  return writeArchiveBoard(db, boardId, board?.revision ?? 1)
+}
+
+function unarchiveBoard(db: Database.Database, boardId: string): boolean {
+  const board = [...listBoards(db), ...listBoards(db, { status: 'archived' })]
+    .find((candidate) => candidate.id === boardId)
+  return writeUnarchiveBoard(db, boardId, board?.revision ?? 1)
+}
+
 // What an agent's `pending()` does: read the item, then stamp pickup against the
 // exact `replied_at` it just read (issue #37's compare-and-swap). Fixtures that
 // only mean "the agent has picked this up" go through here so none of them has to
@@ -73,6 +121,7 @@ describe('store', () => {
     expect(it0.status).toBe('open')
     expect(it0.kind).toBe('question')
     expect(it0.detail).toBe('')
+    expect(it0.next_step).toBe('')
     expect(it0.annotation).toBeNull()
     expect(it0.created_at).toMatch(/^\d{4}-\d{2}-\d{2}T/)
     expect(it0.resolved_at).toBeNull()
@@ -136,11 +185,14 @@ describe('answer-back', () => {
   it('items carry long-form context, defaulting to empty', () => {
     const id = insertItem(db, {
       project: 'p', stream: '', agent: 'a', kind: 'question', title: 'which db?',
+      next_step: 'Choose sqlite or postgres.',
       context: 'Migrating the auth service; hit this while wiring sessions. See PR #12. Current code assumes sqlite.',
     })
     expect(listItems(db).find((i) => i.id === id)!.context).toMatch(/auth service/)
+    expect(listItems(db).find((i) => i.id === id)!.next_step).toBe('Choose sqlite or postgres.')
     const bare = insertItem(db, { project: 'p', stream: '', agent: 'a', kind: 'note', title: 'no ctx' })
     expect(listItems(db).find((i) => i.id === bare)!.context).toBe('')
+    expect(listItems(db).find((i) => i.id === bare)!.next_step).toBe('')
   })
 
   it('question options round-trip as structured data; absent options are null', () => {
@@ -847,6 +899,7 @@ describe('boards', () => {
     expect(board.status).toBe('active')
     expect(board.rows.map((r) => r.label)).toEqual(['theme', 'stems', 'mobile', 'multi', 'legacy'])
     expect(board.rows[1]!.note).toBe('') // partial had no note
+    expect(board.rows[1]!.next_step).toBe('')
     expect(board.rows[0]!.annotation).toBeNull()
   })
 
@@ -880,15 +933,20 @@ describe('boards', () => {
   })
 
   it('updateBoardRow updates one row, and creates board+row when absent (default status tracked)', () => {
-    updateBoardRow(db, { project: 'p', stream: '', agent: 'a', title: 'fresh', label: 'deploy', note: 'pending' })
+    updateBoardRow(db, {
+      project: 'p', stream: '', agent: 'a', title: 'fresh', label: 'deploy',
+      note: 'pending', next_step: 'Approve the deploy window.',
+    })
     const board = listBoards(db)[0]!
     expect(board.title).toBe('fresh')
     expect(board.rows[0]!.status).toBe('tracked') // default for a new row with no status
     expect(board.rows[0]!.note).toBe('pending')
+    expect(board.rows[0]!.next_step).toBe('Approve the deploy window.')
     updateBoardRow(db, { project: 'p', stream: '', agent: 'a', title: 'fresh', label: 'deploy', status: 'partial' })
     const after = listBoards(db)[0]!.rows[0]!
     expect(after.status).toBe('partial')
     expect(after.note).toBe('pending') // note untouched when omitted
+    expect(after.next_step).toBe('Approve the deploy window.') // next step untouched when omitted
   })
 
   it('rows carry an optional long-form context, defaulting to empty', () => {
@@ -934,6 +992,78 @@ describe('boards', () => {
     upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'c', rows: [{ label: 'x', status: 'missing', context: 'stale backstory' }] })
     upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'c', rows: [{ label: 'x', status: 'missing', context: '' }] })
     expect(listBoards(db)[0]!.rows[0]!.context).toBe('')
+  })
+
+  it('a re-upsert preserves an omitted next step, while an explicit empty string clears it', () => {
+    upsertBoard(db, {
+      project: 'p', stream: '', agent: 'a', title: 'c',
+      rows: [{ label: 'Merge', status: 'blocked', note: 'Reviews complete.', next_step: 'Merge PR #42.' }],
+    })
+    upsertBoard(db, {
+      project: 'p', stream: '', agent: 'a', title: 'c',
+      rows: [{ label: 'Merge', status: 'blocked', note: 'Still ready.' }],
+    })
+    expect(listBoards(db)[0]!.rows[0]!.next_step).toBe('Merge PR #42.')
+
+    upsertBoard(db, {
+      project: 'p', stream: '', agent: 'a', title: 'c',
+      rows: [{ label: 'Merge', status: 'partial', note: 'No longer waiting.', next_step: '' }],
+    })
+    expect(listBoards(db)[0]!.rows[0]!.next_step).toBe('')
+  })
+
+  it('blocked-row response options round-trip, survive omission, and clear explicitly', () => {
+    upsertBoard(db, {
+      project: 'p', stream: '', agent: 'a', title: 'c',
+      rows: [{
+        label: 'Merge',
+        status: 'blocked',
+        note: 'Reviews are complete.',
+        next_step: 'Choose whether to merge PR #42.',
+        options: [
+          { label: 'Merge', detail: 'Start implementation now.', recommended: true },
+          { label: 'Hold', detail: 'Keep the branch open.' },
+        ],
+      }],
+    })
+    expect(listBoards(db)[0]!.rows[0]!.options).toEqual([
+      { label: 'Merge', detail: 'Start implementation now.', recommended: true },
+      { label: 'Hold', detail: 'Keep the branch open.' },
+    ])
+
+    upsertBoard(db, {
+      project: 'p', stream: '', agent: 'a', title: 'c',
+      rows: [{ label: 'Merge', status: 'blocked', note: 'Still ready.' }],
+    })
+    expect(listBoards(db)[0]!.rows[0]!.options?.map((option) => option.label)).toEqual(['Merge', 'Hold'])
+
+    updateBoardRow(db, {
+      project: 'p', stream: '', agent: 'a', title: 'c', label: 'Merge', options: [],
+    })
+    expect(listBoards(db)[0]!.rows[0]!.options).toBeNull()
+  })
+
+  it('re-blocking starts a fresh action contract instead of reusing stale decision options', () => {
+    upsertBoard(db, {
+      project: 'p', stream: '', agent: 'a', title: 'c',
+      rows: [{
+        label: 'Merge',
+        status: 'blocked',
+        note: 'Reviews are complete.',
+        next_step: 'Choose whether to merge PR #42.',
+        options: [{ label: 'Merge', recommended: true }, { label: 'Hold' }],
+      }],
+    })
+    updateBoardRow(db, {
+      project: 'p', stream: '', agent: 'a', title: 'c', label: 'Merge', status: 'partial',
+    })
+    updateBoardRow(db, {
+      project: 'p', stream: '', agent: 'a', title: 'c', label: 'Merge',
+      status: 'blocked', note: 'A new credential is required.', next_step: 'Provide the live API key.',
+    })
+    const row = listBoards(db)[0]!.rows[0]!
+    expect(row.next_step).toBe('Provide the live API key.')
+    expect(row.options).toBeNull()
   })
 
   // The row rule is NOT softened by the field rule: a label left out of the
@@ -2113,4 +2243,3 @@ describe('source links', () => {
     expect(listSourceLinks(db)).toHaveLength(0)
   })
 })
-

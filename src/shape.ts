@@ -20,7 +20,7 @@
 // human's `annotation` (and `reply`/`reply_context`) is never omitted, on any
 // path, under any option — that is the whole point of #37 and #42 must not undo
 // it while saving tokens.
-import type { BoardWithRows, BoardRow, Progress, RowStatus } from './store.js'
+import type { ActionOwner, BoardWithRows, BoardRow, Progress, QuestionOption, ResponseKind, RowStatus } from './store.js'
 
 interface HasContext {
   context: string
@@ -130,7 +130,15 @@ export function deliverContext<T extends HasContext>(
 
 // ── board_get ───────────────────────────────────────────────────────────────
 
-export type ShapedBoard = BoardWithRows | (Omit<BoardWithRows, 'rows'> & { rows: Trimmed<BoardRow>[] })
+type RowWithoutHistory = Omit<BoardRow, 'history'> & { history_count?: number }
+export type ShapedRow = RowWithoutHistory | Trimmed<RowWithoutHistory>
+export type ShapedBoard = Omit<BoardWithRows, 'rows'> & { rows: ShapedRow[] }
+
+function shapeRow(row: BoardRow, full: boolean): ShapedRow {
+  const { history, ...rest } = row
+  const base: RowWithoutHistory = history.length ? { ...rest, history_count: history.length } : rest
+  return full ? base : trimContext(base)
+}
 
 /**
  * board_get({ title }) — the whole board, with row context swapped for its size.
@@ -140,15 +148,29 @@ export type ShapedBoard = BoardWithRows | (Omit<BoardWithRows, 'rows'> & { rows:
  * `context_chars` for a row it has never seen asks for the board in full.
  */
 export function shapeBoard(board: BoardWithRows, opts: { full?: boolean; ledger: ContextLedger }): ShapedBoard {
-  if (opts.full !== true) return { ...board, rows: board.rows.map(trimContext) }
-  for (const r of board.rows) opts.ledger.claim(rowKey(r.id), r.context)
-  return board
+  const full = opts.full === true
+  if (full) for (const r of board.rows) opts.ledger.claim(rowKey(r.id), r.context)
+  return { ...board, rows: board.rows.map((row) => shapeRow(row, full)) }
 }
 
 export interface RowSummary {
   label: string
   status: RowStatus
   note?: string
+  next_step?: string
+  action_owner?: ActionOwner
+  impact?: string
+  next_after?: string
+  options?: QuestionOption[]
+  annotation_kind?: ResponseKind
+  snoozed_until?: string
+  outcome?: string
+  outcome_at?: string
+  action_started_at?: string
+  action_version: number
+  revision: number
+  updated_at: string
+  history_count?: number
   context_chars?: number
   annotation?: string
   annotated_at?: string | null
@@ -168,6 +190,7 @@ export interface BoardSummary {
   stream: string
   agent: string
   status: 'active' | 'archived'
+  revision: number
   updated_at: string
   progress: Progress
   rows: RowSummary[]
@@ -189,6 +212,7 @@ export function summariseBoard(b: BoardWithRows): BoardSummary {
     stream: b.stream,
     agent: b.agent,
     status: b.status,
+    revision: b.revision,
     updated_at: b.updated_at,
     progress: b.progress,
     rows: b.rows.map(summariseRow),
@@ -196,12 +220,29 @@ export function summariseBoard(b: BoardWithRows): BoardSummary {
 }
 
 function summariseRow(r: BoardRow): RowSummary {
-  const out: RowSummary = { label: r.label, status: r.status }
+  const out: RowSummary = {
+    label: r.label,
+    status: r.status,
+    action_version: r.action_version,
+    revision: r.revision,
+    updated_at: r.updated_at,
+  }
   if (r.note) out.note = r.note
+  if (r.next_step) out.next_step = r.next_step
+  if (r.action_owner) out.action_owner = r.action_owner
+  if (r.impact) out.impact = r.impact
+  if (r.next_after) out.next_after = r.next_after
+  if (r.options?.length) out.options = r.options
+  if (r.snoozed_until) out.snoozed_until = r.snoozed_until
+  if (r.outcome) out.outcome = r.outcome
+  if (r.outcome_at) out.outcome_at = r.outcome_at
+  if (r.action_started_at) out.action_started_at = r.action_started_at
+  if (r.history.length) out.history_count = r.history.length
   if (r.context) out.context_chars = r.context.length
   // the same predicate store.ts's withUnseen() uses for "this row has a note"
   if (r.annotation != null && r.annotation !== '') {
     out.annotation = r.annotation
+    if (r.annotation_kind) out.annotation_kind = r.annotation_kind
     out.annotated_at = r.annotated_at
     out.annotation_seen_at = r.annotation_seen_at
     out.annotation_seen_by = r.annotation_seen_by

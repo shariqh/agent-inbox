@@ -314,11 +314,14 @@ describe('app.js wires the source chips without re-implementing the escaping', (
     expect(fn).toContain('.catch(() => [])')
   })
 
-  it('rebuilds linkIndex once per render, before the renderers run', () => {
-    const start = js.indexOf('function render()')
-    const fn = js.slice(start, js.indexOf('\nfunction ', start))
-    expect(fn).toMatch(/linkIndex\s*=\s*indexLinks\(/)
-    expect(fn.indexOf('linkIndex')).toBeLessThan(fn.indexOf('renderNeedsYou('))
+  it('rebuilds linkIndex in the ambient frame before editable renderers run', () => {
+    const ambientStart = js.indexOf('function paintAmbient()')
+    const ambient = js.slice(ambientStart, js.indexOf('\nfunction paintTabCounts(', ambientStart))
+    expect(ambient).toMatch(/linkIndex\s*=\s*indexLinks\(/)
+
+    const renderStart = js.indexOf('function render()')
+    const render = js.slice(renderStart, js.indexOf('\nfunction ', renderStart + 1))
+    expect(render).toMatch(/preparedFrame \?\? paintAmbient\(\)[\s\S]*paintEditableSurfaces\(frame\)/)
   })
 
   // the escaping happens inside source.js; interpolating its result through

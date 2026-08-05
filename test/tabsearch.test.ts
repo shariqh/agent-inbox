@@ -104,7 +104,7 @@ describe('elsewhereLabel', () => {
 })
 
 // fix round 1: matchCounts/otherTabMatches were originally fed RAW `lastData`
-// in app.js's render() — unscoped by the active project/agent rail filter.
+// in app.js's ambient frame — unscoped by the active project/agent rail filter.
 // Repro: rail filtered to project 'web'; the only match ('auth') lives on a
 // needsYou item under project 'api'. The rendered needsYou list is empty
 // (filterData() drops the 'api' item before applySearch even sees it), but
@@ -113,7 +113,7 @@ describe('elsewhereLabel', () => {
 // emptyMsg() renders "No matches ... or in any other tab", which is FALSE:
 // the match exists, just behind the project pill, not behind another tab.
 // The fix scopes tabMatchCounts' INPUT by project/agent (matching what
-// render() actually shows), while projectMatchCounts stays fed the GLOBAL
+// the viewer actually shows), while projectMatchCounts stays fed the GLOBAL
 // `lastData` on purpose — the rail's per-project badge is how the user
 // discovers a match sitting behind a DIFFERENT project pill. This pins the
 // SOURCE TEXT at the call site — WHICH of the two datasets each counter is
@@ -124,22 +124,22 @@ describe('elsewhereLabel', () => {
 // test/dom/render-agreement.test.ts.
 describe('tabMatchCounts is scoped by the active rail filter, not fed raw lastData (fix round 1, spec §12 generalized)', () => {
   const js = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8')
-  const m = js.match(/function render\(\)[\s\S]*?\n\}/)
+  const m = js.match(/function paintAmbient\(\)[\s\S]*?\n\}/)
   const body = m ? m[0] : ''
 
-  it('render() exists and was matched', () => {
-    expect(body, 'render() not found in app.js').toBeTruthy()
+  it('paintAmbient() exists and was matched', () => {
+    expect(body, 'paintAmbient() not found in app.js').toBeTruthy()
   })
 
   it('feeds tabMatchCounts data derived from filterData(lastData) — a match hidden by the rail filter must not be counted as reachable', () => {
     const line = body.split('\n').find((l) => l.includes('tabMatchCounts('))
-    expect(line, 'no tabMatchCounts( call found in render()').toBeTruthy()
+    expect(line, 'no tabMatchCounts( call found in paintAmbient()').toBeTruthy()
     expect(line, line).not.toMatch(/tabMatchCounts\(\s*lastData\s*,/)
   })
 
   it('keeps projectMatchCounts fed the GLOBAL lastData — the rail badge is how the user discovers a match under a different project pill', () => {
     const line = body.split('\n').find((l) => l.includes('projectMatchCounts('))
-    expect(line, 'no projectMatchCounts( call found in render()').toBeTruthy()
+    expect(line, 'no projectMatchCounts( call found in paintAmbient()').toBeTruthy()
     expect(line, line).toMatch(/projectMatchCounts\(\s*lastData\s*,/)
   })
 })

@@ -590,7 +590,7 @@ describe('sortNeedsYou', () => {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `fnm exec --using=24 -- npx vitest run test/attention.test.ts`
-Expected: FAIL — `Error: Failed to load url ../public/attention.js (resolved id: /Users/shariqhirani/Development/agent-inbox/public/attention.js). Does the file exist?`
+Expected: FAIL — `Error: Failed to load url ../public/attention.js (resolved id: /path/to/agent-inbox/public/attention.js). Does the file exist?`
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -1067,7 +1067,7 @@ describe('projectMonogram', () => {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `fnm exec --using=24 -- npx vitest run test/colors.test.ts`
-Expected: FAIL — `Error: Failed to load url ../public/colors.js (resolved id: /Users/shariqhirani/Development/agent-inbox/public/colors.js). Does the file exist?`
+Expected: FAIL — `Error: Failed to load url ../public/colors.js (resolved id: /path/to/agent-inbox/public/colors.js). Does the file exist?`
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -1370,7 +1370,7 @@ describe('canUndo', () => {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `fnm exec --using=24 -- npx vitest run test/star.test.ts`
-Expected: FAIL — `Error: Failed to load url ../public/star.js (resolved id: /Users/shariqhirani/Development/agent-inbox/public/star.js). Does the file exist?`
+Expected: FAIL — `Error: Failed to load url ../public/star.js (resolved id: /path/to/agent-inbox/public/star.js). Does the file exist?`
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -2568,7 +2568,7 @@ describe('applyListUpdate', () => {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `fnm exec --using=24 -- npx vitest run test/poll.test.ts`
-Expected: FAIL with `Error: Failed to load url ../public/poll.js (resolved id: /Users/shariqhirani/Development/agent-inbox/public/poll.js)`
+Expected: FAIL with `Error: Failed to load url ../public/poll.js (resolved id: /path/to/agent-inbox/public/poll.js)`
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -3859,7 +3859,7 @@ describe('awaitingPickupEntries', () => {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `fnm exec --using=24 -- npx vitest run test/rowview.test.ts -t 'is null when the agent marked two recommendations'`
-Expected: FAIL with `SyntaxError: The requested module '/Users/shariqhirani/Development/agent-inbox/public/rowview.js' does not provide an export named 'SECONDARY_BUDGET'`
+Expected: FAIL with `SyntaxError: The requested module '/path/to/agent-inbox/public/rowview.js' does not provide an export named 'SECONDARY_BUDGET'`
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -5343,7 +5343,7 @@ describe('packaged app can resolve public/ from REPO_ROOT', () => {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `fnm exec --using=24 -- npx vitest run test/badge.test.ts`
-Expected: FAIL with `Error: Failed to load url ../public/badge.js (resolved id: /Users/shariqhirani/Development/agent-inbox/public/badge.js)`
+Expected: FAIL with `Error: Failed to load url ../public/badge.js (resolved id: /path/to/agent-inbox/public/badge.js)`
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -5742,7 +5742,7 @@ describe('livenessGlyph — colour is never the only carrier', () => {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `fnm exec --using=24 -- npx vitest run test/keys.test.ts`
-Expected: FAIL with `Error: Failed to load url ../public/keys.js (resolved id: /Users/shariqhirani/Development/agent-inbox/public/keys.js)`
+Expected: FAIL with `Error: Failed to load url ../public/keys.js (resolved id: /path/to/agent-inbox/public/keys.js)`
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -6219,7 +6219,7 @@ describe('railLabel', () => {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `fnm exec --using=24 -- npx vitest run test/layout.test.ts`
-Expected: FAIL with `Error: Failed to load url ../public/layout.js (resolved id: /Users/shariqhirani/Development/agent-inbox/public/layout.js)`
+Expected: FAIL with `Error: Failed to load url ../public/layout.js (resolved id: /path/to/agent-inbox/public/layout.js)`
 
 - [ ] **Step 3: Write minimal implementation**
 

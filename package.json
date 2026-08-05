@@ -1,7 +1,18 @@
 {
   "name": "agent-inbox",
   "version": "0.1.0",
+  "description": "Local, cross-project attention inbox for coding agents",
+  "private": true,
   "license": "MIT",
+  "author": "Shariq Hirani",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/shariqh/agent-inbox.git"
+  },
+  "bugs": {
+    "url": "https://github.com/shariqh/agent-inbox/issues"
+  },
+  "homepage": "https://github.com/shariqh/agent-inbox#readme",
   "type": "module",
   "main": "electron/main.cjs",
   "engines": {
@@ -27,8 +38,8 @@
     "package:app": "bash scripts/package-app.sh"
   },
   "dependencies": {
-    "@hono/node-server": "^1.13.0",
-    "@modelcontextprotocol/sdk": "^1.12.0",
+    "@hono/node-server": "2.0.12",
+    "@modelcontextprotocol/sdk": "1.30.0",
     "better-sqlite3": "^12.11.1",
     "hono": "^4.6.0",
     "zod": "^4.4.3"

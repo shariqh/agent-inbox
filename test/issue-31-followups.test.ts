@@ -122,7 +122,7 @@ describe('31.1 · changeAnswer paints the surface it just staged a draft into', 
     }
     // `(?<!function )` skips the declaration itself; the capital R in forceRender /
     // resumeRender / renderIfIdle means none of those match `render()`.
-    const callers = [...src.matchAll(/(?<!function )(?<![\w.])render\(\)/g)]
+    const callers = [...src.matchAll(/(?<!function )(?<![\w.])render\([^)]*\)/g)]
       .map((m) => enclosing(m.index!))
     expect([...new Set(callers)].sort(),
       'a direct render() outside these two leaves #pauseHint lying about paused data').toEqual(['forceRender', 'renderIfIdle'])
@@ -171,7 +171,7 @@ describe('31.2 · read-marking records ids as well as a watermark', () => {
   })
 
   it('every reader of the unread count is fed the id set, so no two note numbers can disagree', () => {
-    for (const reader of ['function render()', 'function renderNeedsYouExtras(', 'function renderEmptyState(']) {
+    for (const reader of ['function paintTabCounts(', 'function renderNeedsYouExtras(', 'function renderEmptyState(']) {
       expect(topLevelFn(reader), `${reader} still reads the watermark alone`).toMatch(/notesSeenIds/)
     }
   })

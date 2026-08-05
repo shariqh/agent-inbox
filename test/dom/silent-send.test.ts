@@ -8,33 +8,31 @@
 // never happened was the frame that says so.
 //
 // The cause is one confusion. `load()` repaints through `renderIfIdle()` — the §10
-// poll gate — and THE GATE IS GLOBAL: `suspendState()` reports EVERY entry in
-// draftReplies/draftReplyContexts/rowDrafts anywhere in the app. So a handler that
-// ends in a bare `load()` after a successful POST is asking the gate for permission
-// to show the human the result of their own click — and one half-typed draft on a
-// different board is enough to refuse it. Indefinitely: the observed viewer
-// sat on the old state across repeated poll ticks until a collapse (which calls
-// `render()` directly, outside the gate) revealed the truth. The input still held
-// the text, so a second Send re-sent the same string.
+// poll gate — and that editable-surface gate is global: `suspendState()` reports
+// every draft anywhere in the app. So a handler that ends in a bare `load()` after
+// a successful POST is asking the gate for permission to show the human the result
+// of their own click — and one half-typed draft on a different board is enough to
+// refuse it. Ambient signals now repaint ahead of that gate (#39), but the observed
+// list still sat on the old state across repeated poll ticks until a collapse
+// revealed the truth. The input held the text, so a second Send re-sent it.
 //
 // §10 is right and stays: the 3s rebuild must never land under the cursor. What it
 // must never do is swallow the confirmation a click asked for. `load()` is the
 // poll's; `reloadAndPaint()` is the human's.
 //
-// The owner reported two surfaces. There are at least SEVEN, all the same defect,
-// and one of them (Resolve) freezes the badge — it lives inside the card that is by
-// construction `openRowId`, so it is a GUARANTEED self-silencing write. Every one
-// is covered below, because fixing only what was reported leaves the bug shipped.
+// The owner reported two surfaces. There are at least SEVEN, all the same defect.
+// Every one is covered below, because fixing only what was reported leaves the bug
+// shipped.
 //
 // The last test in this file is the anti-regression: it is GREEN today and must
 // stay green. Without it, "fixing" #38 by wiring forceRender() into load() — i.e.
 // deleting the gate — passes everything above it.
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import type Database from 'better-sqlite3'
-import { insertItem, listBoards, upsertBoard } from '../../src/store.js'
+import { insertItem, listBoards, upsertActivity, upsertBoard } from '../../src/store.js'
 import {
   advanceClock, answerInput, badgeCount, bootApp, buttonLabelled, click, freshDb, pollTick,
-  row, rowTitles, searchFor, sendButton, settle, type, useDomTest,
+  row, rowTitles, searchFor, sendButton, settle, tabCount, type, useDomTest,
 } from './harness.js'
 
 useDomTest()
@@ -280,7 +278,7 @@ describe('#38 · archiving a board takes the board off the screen', () => {
     await showBoards()
     expect(boardTitles('active').join(' ')).toContain('BOARD A')
 
-    // park a draft on B — a draft ANYWHERE suspends the whole viewer's poll
+    // park a draft on B — a draft anywhere suspends every editable surface
     click(boardCard('BOARD B')!.querySelector('.answer-btn'))
     await settle()
     type(document.querySelector<HTMLInputElement>('#boards .row-panel .reply-input'), 'half a thought')
@@ -413,10 +411,44 @@ describe('#38 · §10 protects typed work without hiding new inbox items', () =>
 
     advanceClock()
     insertItem(d, { ...AGENT, kind: 'question', title: 'brand new' })
+    upsertActivity(d, { ...AGENT, session: 'release-audit', doing: 'clearing launch blockers' })
     await pollTick()
 
     expect(rowTitles(), 'the poll must not rebuild over a typed draft').not.toContain('brand new')
     expect(answerInput(id)?.value).toBe('half a thought')
+    expect(pauseHint()).toBe("paused — updating when you're done")
+    expect(badgeCount(), 'the global attention badge must stay live while the list is paused').toBe(2)
+    expect(tabCount('needsYou'), 'the Needs-you count must stay live while the list is paused').toBe('2')
+    expect(document.querySelector('.rail-tab[data-project="alpha"] .rail-badge')?.textContent,
+      'the project rail count must stay live while the list is paused').toBe('2')
+    expect(document.getElementById('liveStripLabel')?.textContent,
+      'the global Live strip must stay live while the list is paused').toBe('1 working')
+
+    type(answerInput(id), '')
+    await settle()
+    expect(rowTitles()).toContain('brand new')
+    expect(pauseHint()).toBe('')
+  })
+
+  it('a cleared optional context cannot shadow a non-empty answer draft (#33)', async () => {
+    const d = open()
+    const id = insertItem(d, { ...AGENT, kind: 'question', title: 'ship it?' })
+    await bootApp(d)
+
+    click(row(id))
+    await settle()
+    type(answerInput(id), 'yes, after the audit')
+    const contextInput = () => row(id)?.querySelector<HTMLInputElement>('.reply-context-input') ?? null
+    type(contextInput(), 'temporary context')
+    type(contextInput(), '')
+    await settle()
+
+    advanceClock()
+    insertItem(d, { ...AGENT, kind: 'question', title: 'brand new' })
+    await pollTick()
+
+    expect(rowTitles(), 'the empty context must not mask the answer draft').not.toContain('brand new')
+    expect(answerInput(id)?.value).toBe('yes, after the audit')
     expect(pauseHint()).toBe("paused — updating when you're done")
 
     type(answerInput(id), '')

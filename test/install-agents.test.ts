@@ -93,6 +93,13 @@ esac
     writeFileSync(path, cli)
     chmodSync(path, 0o755)
   }
+  const lockCommand = spawnSync(
+    '/bin/sh',
+    ['-c', 'command -v lockf || command -v flock'],
+    { encoding: 'utf8' },
+  ).stdout.trim()
+  if (!lockCommand) throw new Error('install-agents tests require lockf or flock')
+  symlinkSync(lockCommand, join(fakebin, lockCommand.slice(lockCommand.lastIndexOf('/') + 1)))
 
   const selftest = join(home, 'selftest.js')
   const selftestMarker = join(state, 'selftest-ran')

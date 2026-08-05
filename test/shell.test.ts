@@ -5,6 +5,13 @@ import { readFileSync } from 'node:fs'
 const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8')
 const css = readFileSync(new URL('../public/style.css', import.meta.url), 'utf8')
 const js = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8')
+const sourceFn = (name: string, endMarker: string): string => {
+  const start = js.indexOf(name)
+  expect(start, `${name} not found in public/app.js`).toBeGreaterThan(-1)
+  const end = js.indexOf(endMarker, start)
+  expect(end, `end marker ${endMarker} not found after ${name}`).toBeGreaterThan(-1)
+  return js.slice(start, end)
+}
 
 describe('shell markup', () => {
   it('drops the section stack and the outline sidebar', () => {
@@ -234,8 +241,8 @@ describe('closed projects (issue #32)', () => {
       .not.toMatch(/const projMatches\s*=/)
   })
 
-  it('render() computes projMatches BEFORE renderRail, and withoutClosed AFTER it', () => {
-    const body = fn('function render()', '\n// one age vocabulary')
+  it('the ambient frame computes projMatches BEFORE renderRail, and withoutClosed AFTER it', () => {
+    const body = fn('function paintAmbient()', '\nfunction paintEditableSurfaces(')
     expect(body.indexOf('projMatches =')).toBeLessThan(body.indexOf('renderRail()'))
     // renderRail is what reconciles a stale projectFilter, and withoutClosed
     // reads projectFilter to decide whether this is a peek
@@ -246,12 +253,12 @@ describe('closed projects (issue #32)', () => {
   })
 
   it('projectMatchCounts still reads the global lastData, so a match behind a closed project stays discoverable', () => {
-    const body = fn('function render()', '\n// one age vocabulary')
+    const body = fn('function paintAmbient()', '\nfunction paintEditableSurfaces(')
     expect(body).toMatch(/projMatches = projectMatchCounts\(lastData,/)
   })
 
   it('the Live footer strip and the drawer stay global — presence is not attention (§16)', () => {
-    const body = fn('function render()', '\n// one age vocabulary')
+    const body = fn('function paintAmbient()', '\nfunction paintEditableSurfaces(')
     expect(body).toMatch(/renderLiveBar\(\s*lastData\.activity\b/)
     // pillLive (the drawer's source) is filtered by project/agent only, never by closure
     expect(body).toMatch(/const pillLive = \(lastData\.activity/)
@@ -321,8 +328,8 @@ describe('closed projects (issue #32)', () => {
     expect(body, 'a project name must never reach innerHTML').not.toMatch(/innerHTML/)
     expect(body).toMatch(/triage deck/)
     expect(body).toMatch(/reopenProjectAction\(/)
-    // rendered from render(), above the panel host, so EVERY tab explains itself
-    expect(fn('function render()', '\n// one age vocabulary')).toContain('renderClosedBanner()')
+    // rendered in the editable frame above the panel host, so EVERY tab explains itself
+    expect(fn('function paintEditableSurfaces(', '\nfunction render(')).toContain('renderClosedBanner()')
   })
 
   it('the optimistic close/reopen revert BY VALUE — a poll between click and response must not evict a bystander', () => {
@@ -364,10 +371,10 @@ describe('closed-project css (issue #32)', () => {
 
 // ── issue #38: `load()` is the poll's, `reloadAndPaint()` is the human's ──────
 // The whole of #38 is one confusion between those two. `load()` repaints through
-// `renderIfIdle()` — the §10 gate — and THE GATE IS GLOBAL: one half-typed draft
-// on another board and the human's own Send/Resolve/Archive gets NO FRAME. The
-// write landed (POST 200, row in the DB) and the viewer showed the old state
-// indefinitely.
+// `renderIfIdle()` — the §10 editable-surface gate — and one half-typed draft on
+// another board means the human's own Send/Resolve/Archive gets NO LIST FRAME.
+// The write landed (POST 200, row in the DB) and the viewer showed the old list
+// indefinitely. Issue #39 later kept ambient signals live ahead of this gate.
 //
 // So there are exactly two shapes, and no third:
 //   `load()`            — the poll's. Fetch, then ASK the gate. Two callers only:
@@ -396,11 +403,26 @@ describe('#38 · the poll keeps its gate, the human bypasses it', () => {
     expect(body, 'forcing a frame inside load() deletes the §10 gate for the poll too').not.toContain('forceRender')
   })
 
+  it('refreshes ambient signals before the draft gate, but defers everything during a held press (#39)', () => {
+    const body = sourceFn('function renderIfIdle()', '\n// called whenever a draft may have cleared')
+    expect(body).toMatch(/if \(pressHeld\([^)]*\)\)[\s\S]*const frame = paintAmbient\(\)[\s\S]*if \(shouldDeferRender\(/)
+
+    const ambient = sourceFn('function paintAmbient()', '\nfunction paintEditableSurfaces(')
+    for (const call of ['applyBadge()', 'renderRail()', 'renderLiveBar(', 'setCount(']) {
+      expect(ambient, `${call} must stay outside the draft gate`).toContain(call)
+    }
+
+    const editable = sourceFn('function paintEditableSurfaces(', '\nfunction render(')
+    for (const call of ['renderLive(', 'renderNeedsYou(', 'renderGroups(', 'renderDone(', 'renderBoards(']) {
+      expect(editable, `${call} must stay protected by the draft gate`).toContain(call)
+    }
+  })
+
   // The design's REJECTED option (a), pinned at the edit site. `openRows` is the
   // boards matrix's multi-open Set: unbounded, NEVER pruned, no single-open
   // discipline and no reconciliation — strandable by pagination, the archived
   // fold, the rail filter, hideCompleted and any agent board_upsert that drops a
-  // row. Feeding it to the gate freezes the Needs-you list, the badge and
+  // row. Feeding it to the gate freezes every editable list and lights
   // #pauseHint for as long as any row is open, which is the C1 bug reconcileOpenRow
   // exists to close. It reads like a consistency cleanup ("openRowId is in there,
   // why isn't openRows?"), it is one line, and before this pin it passed the whole
@@ -410,7 +432,7 @@ describe('#38 · the poll keeps its gate, the human bypasses it', () => {
   it('openRows is never fed to the §10 gate — the C1 freeze is one line away', () => {
     const m = js.match(/function suspendState\(\)[\s\S]*?\n\}/)
     expect(m, 'suspendState() not found').toBeTruthy()
-    expect(m![0], 'openRows in suspendState() freezes the whole viewer while any matrix row is expanded')
+    expect(m![0], 'openRows in suspendState() freezes every editable surface while any matrix row is expanded')
       .not.toContain('openRows')
     // …and not by the back door either: shouldDeferRender's argument is the same gate.
     const gate = js.match(/function renderIfIdle\(\)[\s\S]*?\n\}/)

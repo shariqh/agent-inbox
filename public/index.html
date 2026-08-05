@@ -46,10 +46,72 @@
   </footer>
   <div id="lightbox" hidden>
     <div class="lb-backdrop"></div>
-    <div class="lb-panel">
-      <div class="lb-head"><span class="lb-count"></span><button class="lb-close" title="Close (Esc)">✕</button></div>
+    <div class="lb-panel" role="dialog" aria-modal="true" aria-label="Triage Quest">
+      <div class="lb-head">
+        <div class="lb-run">
+          <span class="lb-kicker">Focus run</span>
+          <span class="lb-count"></span>
+        </div>
+        <span class="lb-owner"></span>
+        <button class="lb-close" title="Close (Esc)">✕</button>
+      </div>
+      <div class="lb-progress" aria-hidden="true"><span class="lb-progress-fill"></span></div>
+      <div class="lb-mix"></div>
       <div class="lb-card"></div>
-      <div class="lb-nav"><button class="lb-prev">← prev</button><button class="lb-next">next →</button></div>
+      <div class="lb-shortcuts"><kbd>1-4</kbd> choose · <kbd>J/K</kbd> or <kbd>←/→</kbd> move · <kbd>Esc</kbd> close</div>
+      <div class="lb-nav"><button class="lb-prev">← back</button><button class="lb-next">skip →</button></div>
+    </div>
+  </div>
+  <div id="relaybox" hidden>
+    <div class="relay-backdrop"></div>
+    <div class="relay-panel" role="dialog" aria-modal="true" aria-label="Relay Board">
+      <div class="relay-head">
+        <div>
+          <span class="relay-kicker">Workflow relay</span>
+          <h2>Human → Agent → Outcome</h2>
+        </div>
+        <span class="relay-summary"></span>
+        <button class="relay-close" title="Close (Esc)">✕</button>
+      </div>
+      <div class="relay-lanes">
+        <section class="relay-lane" data-relay-lane="human">
+          <header><span class="relay-dot human"></span><strong>Needs you</strong><b class="relay-count"></b></header>
+          <div class="relay-body"></div>
+        </section>
+        <section class="relay-lane" data-relay-lane="agent">
+          <header><span class="relay-dot agent"></span><strong>Agent has baton</strong><b class="relay-count"></b></header>
+          <div class="relay-body"></div>
+        </section>
+        <section class="relay-lane" data-relay-lane="outcome">
+          <header><span class="relay-dot outcome"></span><strong>Outcome</strong><b class="relay-count"></b></header>
+          <div class="relay-body"></div>
+        </section>
+      </div>
+      <div class="relay-foot">Click a card to open its existing action, receipt, or board. Relay never owns separate workflow state.</div>
+    </div>
+  </div>
+  <div id="missionbox" hidden>
+    <div class="mission-backdrop"></div>
+    <div class="mission-panel" role="dialog" aria-modal="true" aria-label="Mission Map">
+      <div class="mission-head">
+        <div>
+          <span class="mission-kicker">Plan view</span>
+          <h2>Mission Map</h2>
+          <p class="mission-subtitle"></p>
+        </div>
+        <button class="mission-close" title="Close (Esc)">✕</button>
+      </div>
+      <div class="mission-graph">
+        <div class="mission-root-column">
+          <div class="mission-root-card">
+            <span class="mission-root-project"></span>
+            <strong class="mission-root-title"></strong>
+            <span class="mission-root-progress"></span>
+          </div>
+        </div>
+        <div class="mission-paths"></div>
+      </div>
+      <div class="mission-foot">Edges are explicit only: board → row → recorded next step or outcome. Impact prose never creates a dependency.</div>
     </div>
   </div>
   <script src="/ufuzzy.iife.min.js"></script>

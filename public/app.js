@@ -26,7 +26,9 @@ import { titleWithBadge, focusHashFor, parseFocusHash } from '/badge.js'
 import { layoutMode, railLabel, NARROW_MAX } from '/layout.js'
 import { indexLinks, sourceChipsHtml, sourceBlockHtml } from '/source.js'
 import { buildSummary } from '/buildstamp.js'
-import { actionCategory, actionOwnerLabel, changeKind, lifecycleReceipt, responseLabel } from '/action.js'
+import { actionCategory, actionOwnerLabel, agentFollowupChip, changeKind, lifecycleReceipt, responseLabel } from '/action.js'
+import { buildRelay } from '/relay.js'
+import { buildMission } from '/mission.js'
 
 void paginateGroups // kept exported+tested (spec §15); the viewer no longer calls it
 
@@ -593,6 +595,8 @@ function paintEditableSurfaces({ agents, g, boards, archived, live }) {
   // still through setOpenRow — it stays the single writer of openRowId
   if (nextOpen !== openRowId) setOpenRow(nextOpen, { resume: false })
   renderTriage() // keep the open lightbox in sync with fresh data
+  renderRelay() // same entities, projected into human → agent → outcome lanes
+  renderMission() // selected board, projected through explicit row next/outcome edges
 }
 
 function render() {
@@ -650,6 +654,8 @@ function findEntryData(e) {
 }
 
 function openTriage() {
+  if (relayOpen) closeRelay()
+  if (missionBoardId) closeMission()
   triageDeck = { entries: buildDeck(), index: 0 }
   renderTriage()
 }
@@ -662,6 +668,20 @@ function closeTriage() {
 function triageRemoveCurrent() {
   triageDeck.entries.splice(triageDeck.index, 1)
   renderTriage()
+}
+
+function triageActionMix(entries) {
+  let decisions = 0
+  let tasks = 0
+  for (const entry of entries) {
+    const data = findEntryData(entry)
+    if (!data) continue
+    const entity = data.it ?? data.r
+    if (actionCategory(entity) === 'task') tasks++
+    else decisions++
+  }
+  const plural = (n, one) => `${n} ${one}${n === 1 ? '' : 's'}`
+  return `${plural(decisions, 'decision')} · ${plural(tasks, 'task')} remaining`
 }
 
 // rows the user expanded in the matrix (context + answer panel), by row id —
@@ -1064,13 +1084,21 @@ function renderTriage() {
   const n = triageDeck.entries.length
   triageDeck.index = Math.max(0, Math.min(triageDeck.index, n - 1))
   const card = lb.querySelector('.lb-card')
+  const owner = lb.querySelector('.lb-owner')
+  const progress = lb.querySelector('.lb-progress-fill')
   card.innerHTML = ''
   if (n === 0) {
     lb.querySelector('.lb-count').textContent = 'all clear'
+    lb.querySelector('.lb-mix').textContent = 'Run complete'
+    owner.textContent = ''
+    progress.style.width = '100%'
     card.innerHTML = '<div class="lb-clear">✓ All clear — nothing needs you.</div>'
   } else {
     lb.querySelector('.lb-count').textContent = `${triageDeck.index + 1} of ${n}`
+    lb.querySelector('.lb-mix').textContent = triageActionMix(triageDeck.entries)
+    progress.style.width = `${((triageDeck.index + 1) / n) * 100}%`
     const data = findEntryData(triageDeck.entries[triageDeck.index])
+    owner.textContent = actionOwnerLabel(data.it ?? data.r)
     if (data.it) {
       card.appendChild(itemCardEl(data.it, {
         nowMs: Date.now(),
@@ -1093,6 +1121,218 @@ function initTriage() {
   lb.querySelector('.lb-next').addEventListener('click', () => { triageDeck.index++; renderTriage() })
   // keyboard (Esc/ArrowLeft/ArrowRight/t) is owned by initKeys (Task 17) —
   // one handler for the list AND the deck so the two can never drift apart
+}
+
+let relayOpen = false
+
+function openRelay() {
+  if (triageDeck) closeTriage()
+  if (missionBoardId) closeMission()
+  relayOpen = true
+  renderRelay()
+}
+
+function closeRelay() {
+  relayOpen = false
+  document.getElementById('relaybox').hidden = true
+}
+
+function relayEntity(entry) {
+  return entry.kind === 'row' ? entry.row : entry.item
+}
+
+function relayTitle(entry) {
+  return entry.kind === 'row' ? entry.row.label : entry.item.title
+}
+
+function relayProject(entry) {
+  return entry.kind === 'row' ? entry.board.project : entry.item.project
+}
+
+function relaySummaryText(entry) {
+  const entity = relayEntity(entry)
+  return entry.kind === 'row'
+    ? (entity.note || entity.next_step || '')
+    : (entity.detail || entity.next_step || '')
+}
+
+function relayPickupChip(entity) {
+  const pickup = lifecycleReceipt(entity).find((step) => step.label === 'Agent picked up')
+  if (!pickup?.at) return { text: 'awaiting pickup', tone: 'awaiting' }
+  return agentFollowupChip({
+    answered: true,
+    pickedUp: true,
+    pickedUpAt: pickup.at,
+  }, Date.now()) ?? { text: 'picked up', tone: 'muted' }
+}
+
+function focusRelayEntry(entry, lane) {
+  closeRelay()
+  if (entry.kind === 'item') {
+    focusItem(entry.item.id)
+    return
+  }
+  if (lane === 'outcome') {
+    focusItem(entry.board.id)
+    return
+  }
+  jumpToCard('needsYou', entry.row.id)
+}
+
+function relayCardEl(entry, lane) {
+  const entity = relayEntity(entry)
+  const card = document.createElement('article')
+  card.className = `relay-card relay-${lane}`
+  let status
+  if (lane === 'human') {
+    status = { text: actionOwnerLabel(entity), tone: 'human' }
+  } else if (lane === 'agent') {
+    status = relayPickupChip(entity)
+    if (status.tone === 'warm' || status.tone === 'hot') card.classList.add('overdue')
+  } else {
+    status = { text: 'closed loop', tone: 'outcome' }
+  }
+  const summary = relaySummaryText(entry)
+  const outcome = entity.outcome ?? ''
+  card.innerHTML = `
+    <div class="relay-meta"><span>${esc(relayProject(entry))}</span><span class="relay-owner">${esc(actionOwnerLabel(entity))}</span></div>
+    <h3>${esc(relayTitle(entry))}</h3>
+    ${summary ? `<p>${esc(summary)}</p>` : ''}
+    ${outcome ? `<div class="relay-result">${esc(outcome)}</div>` : ''}
+    <div class="relay-state"><span class="relay-baton"></span><span class="relay-chip ${esc(status.tone)}">${esc(status.text)}</span></div>`
+  const open = btn(lane === 'human' ? 'Open action' : lane === 'agent' ? 'Open receipt' : 'View outcome', () => {
+    focusRelayEntry(entry, lane)
+  })
+  open.className = 'relay-open'
+  card.appendChild(open)
+  return card
+}
+
+function renderRelayLane(box, lane, entries) {
+  const host = box.querySelector(`[data-relay-lane="${lane}"]`)
+  host.querySelector('.relay-count').textContent = String(entries.length)
+  const body = host.querySelector('.relay-body')
+  body.replaceChildren()
+  if (!entries.length) {
+    const empty = document.createElement('div')
+    empty.className = 'relay-empty'
+    empty.textContent = lane === 'human'
+      ? 'Nothing needs you'
+      : lane === 'agent' ? 'No handoffs waiting' : 'No recorded outcomes'
+    body.appendChild(empty)
+    return
+  }
+  for (const entry of entries) body.appendChild(relayCardEl(entry, lane))
+}
+
+function renderRelay() {
+  if (!relayOpen || !lastData || !visibleData) return
+  const box = document.getElementById('relaybox')
+  const scoped = filterData(visibleData)
+  const relay = buildRelay(
+    allItems(scoped.g),
+    scoped.boards,
+    scoped.archived,
+    Date.now(),
+    liveSessionIds(),
+  )
+  renderRelayLane(box, 'human', relay.human)
+  renderRelayLane(box, 'agent', relay.agent)
+  renderRelayLane(box, 'outcome', relay.outcomes)
+  box.querySelector('.relay-summary').textContent =
+    `${relay.human.length} human · ${relay.agent.length} agent · ${relay.outcomes.length} outcomes`
+  box.hidden = false
+}
+
+function initRelay() {
+  const box = document.getElementById('relaybox')
+  box.querySelector('.relay-close').addEventListener('click', closeRelay)
+  box.querySelector('.relay-backdrop').addEventListener('click', closeRelay)
+}
+
+let missionBoardId = null
+
+function openMission(board) {
+  if (triageDeck) closeTriage()
+  if (relayOpen) closeRelay()
+  missionBoardId = board.id
+  renderMission()
+}
+
+function closeMission() {
+  missionBoardId = null
+  document.getElementById('missionbox').hidden = true
+}
+
+function focusMissionRow(board, row) {
+  closeMission()
+  focusItem(board.id)
+  openRows.add(row.id)
+  forceRender()
+  requestAnimationFrame(() => {
+    const target = document.querySelector(`[data-row-id="${CSS.escape(row.id)}"]`)
+    target?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  })
+}
+
+function missionPathEl(path, board) {
+  const row = path.row
+  const line = document.createElement('div')
+  line.className = 'mission-path'
+  const action = document.createElement('button')
+  action.className = `mission-node mission-${row.status}`
+  const owner = row.action_owner ? actionOwnerLabel(row) : row.status
+  action.innerHTML = `
+    <span class="mission-node-meta">${esc(owner)}</span>
+    <strong>${esc(row.label)}</strong>
+    ${row.note ? `<span>${esc(row.note)}</span>` : ''}
+    ${row.impact ? `<small>Why now: ${esc(row.impact)}</small>` : ''}`
+  action.addEventListener('click', () => focusMissionRow(board, row))
+  const arrow = document.createElement('span')
+  arrow.className = 'mission-arrow'
+  arrow.textContent = '→'
+  const result = document.createElement('div')
+  result.className = `mission-result${path.result ? ` ${path.result.kind}` : ' empty'}`
+  if (path.result) {
+    result.innerHTML = `<span>${path.result.kind === 'outcome' ? 'Outcome' : 'After this'}</span><strong>${esc(path.result.text)}</strong>`
+  } else {
+    result.textContent = 'No explicit next outcome'
+  }
+  line.append(action, arrow, result)
+  return line
+}
+
+function renderMission() {
+  if (!missionBoardId || !lastData) return
+  const board = [...lastData.boards, ...lastData.archived].find((candidate) => candidate.id === missionBoardId)
+  if (!board) { closeMission(); return }
+  const box = document.getElementById('missionbox')
+  const mission = buildMission(board)
+  box.querySelector('.mission-subtitle').textContent = `${mission.root.project} · ${mission.paths.length} mapped rows`
+  box.querySelector('.mission-root-project').textContent = mission.root.project
+  box.querySelector('.mission-root-title').textContent = mission.root.title
+  box.querySelector('.mission-root-progress').textContent = `${mission.root.progress} done`
+  const paths = box.querySelector('.mission-paths')
+  paths.replaceChildren()
+  if (!mission.paths.length) {
+    const empty = document.createElement('div')
+    empty.className = 'mission-empty'
+    empty.textContent = 'No countable rows to map.'
+    paths.appendChild(empty)
+  } else {
+    for (const path of mission.paths) paths.appendChild(missionPathEl(path, board))
+  }
+  box.querySelector('.mission-root-card').onclick = () => {
+    closeMission()
+    focusItem(board.id)
+  }
+  box.hidden = false
+}
+
+function initMission() {
+  const box = document.getElementById('missionbox')
+  box.querySelector('.mission-close').addEventListener('click', closeMission)
+  box.querySelector('.mission-backdrop').addEventListener('click', closeMission)
 }
 
 function jumpToCard(tabId, cardId) {
@@ -1727,6 +1967,9 @@ function needsYouHeader() {
   changed.className = `header-toggle${changedOnly ? ' active' : ''}`
   changed.disabled = !lastVisitAt
   bar.appendChild(changed)
+  const relay = btn('Relay', openRelay)
+  relay.className = 'relay-btn'
+  bar.appendChild(relay)
   const tri = btn('Triage →', openTriage)
   tri.className = 'triage-btn'
   bar.appendChild(tri)
@@ -2223,6 +2466,7 @@ function boardEl(b, archived = false, lingering = false) {
   for (const { row: r, num, needsAnswer } of boardRowsView(b, { hideCompleted, showDone: showDoneBoards.has(b.id) })) {
     const tr = document.createElement('tr')
     tr.className = `board-row${needsAnswer ? ' needs-answer' : ''}${openRows.has(r.id) ? ' open' : ''}`
+    tr.dataset.rowId = r.id
     // one-line note only; the long context lives behind the row click
     tr.innerHTML = `
       <td class="row-num">${num}</td>
@@ -2260,6 +2504,7 @@ function boardEl(b, archived = false, lingering = false) {
   el.appendChild(table)
   const actions = document.createElement('div')
   actions.className = 'actions'
+  actions.appendChild(btn('Map', () => openMission(b)))
   if (archived) {
     actions.appendChild(btn('Un-archive', async () => {
       const res = await postJSON(`/api/boards/${b.id}/unarchive`, { expected_version: b.revision })
@@ -2659,6 +2904,16 @@ function initKeys() {
       return
     }
     if (e.metaKey || e.ctrlKey || e.altKey) return
+    if (e.key === 'Escape' && missionBoardId) {
+      e.preventDefault()
+      closeMission()
+      return
+    }
+    if (e.key === 'Escape' && relayOpen) {
+      e.preventDefault()
+      closeRelay()
+      return
+    }
     // The row's own keydown listener (needsRowEl) already handles Enter/Escape
     // when the row itself has focus and calls preventDefault() — don't run the
     // action twice.
@@ -2990,6 +3245,8 @@ async function renderSetup() {
 //   initGear → initLiveBar → renderSetup → load → setInterval(load, 3000)
 initTabs()
 initTriage()
+initRelay()
+initMission()
 initSearch()
 initResponsive()
 initKeys()

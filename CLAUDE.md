@@ -575,7 +575,13 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   offers snooze/wake, clarification and decline without changing agent-owned row status;
   answered work shows pickup/outcome/history and ages into an agent-overdue chip outside badge
   attention; board decisions and question items both expose native Electron response actions.
-  Needs-you can filter Decisions, Tasks and New/changed since the previous visit.
+  Needs-you can filter Decisions, Tasks and New/changed since the previous visit. Triage Quest
+  is the existing shared-attention deck presented as a focused run: progress, action mix,
+  ownership, always-visible option tradeoffs, and the same underlying card/write paths. Relay
+  Board is a read-only projection of those same entities into Needs you → Agent has baton →
+  Outcome; clicking a card routes back to its existing action/receipt/board. Mission Map is
+  board-scoped and draws only board → row → explicit `next_after`/`outcome` paths; `impact`
+  prose never creates a dependency edge.
 - **Build stamp + staleness signal** *(#40)* — `scripts/write-setup-info.mjs` (called by the
   packager, and executable in a test the way `package-app.sh` never can be) bakes `commit` +
   `builtAt` beside the paths setup-info.json already carried; `src/stamp.ts` reads the checkout's

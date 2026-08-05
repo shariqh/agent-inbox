@@ -132,6 +132,20 @@ header { flex-wrap: wrap; }
 .mission-result.empty { color: color-mix(in srgb, CanvasText 35%, transparent); font-size: 10.5px; }
 .mission-empty { display: grid; place-items: center; min-height: 140px; color: color-mix(in srgb, CanvasText 40%, transparent); }
 .mission-foot { padding-top: 10px; color: color-mix(in srgb, CanvasText 45%, transparent); font-size: 10.5px; text-align: center; }
+.mission-detail { position: absolute; inset: 0; z-index: 3; display: flex; align-items: center; justify-content: center; }
+.mission-detail[hidden] { display: none; }
+.mission-detail-backdrop { position: absolute; inset: 0; background: color-mix(in srgb, CanvasText 28%, transparent); backdrop-filter: blur(2px); }
+.mission-detail-panel { position: relative; width: min(680px, 90vw); max-height: 82vh; display: flex; flex-direction: column; padding: 16px 18px 13px; border: 1px solid color-mix(in srgb, LinkText 30%, CanvasText 15%); border-radius: 14px; background: Canvas; box-shadow: 0 24px 65px color-mix(in srgb, CanvasText 32%, transparent); }
+.mission-detail-head { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 9px; }
+.mission-detail-meta { color: LinkText; font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; }
+.mission-detail-title { margin: 3px 0 0; font-size: 17px; }
+.mission-detail-close { margin-left: auto; border: none; background: transparent; color: inherit; cursor: pointer; font-size: 15px; opacity: .55; }
+.mission-detail-close:hover { opacity: 1; }
+.mission-detail-body { overflow-y: auto; padding: 1px; }
+.mission-detail-body .row-panel { font-size: 13px; }
+.mission-detail-actions { display: flex; justify-content: flex-end; padding-top: 10px; border-top: 1px solid color-mix(in srgb, CanvasText 9%, transparent); }
+.mission-detail-board { padding: 5px 11px; border: 1px solid color-mix(in srgb, CanvasText 20%, transparent); border-radius: 7px; color: inherit; background: transparent; cursor: pointer; font-size: 11.5px; }
+.mission-detail-board:hover { border-color: LinkText; color: LinkText; }
 .options { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; align-items: flex-start; }
 .options.comparing { flex-direction: column; }
 .options.comparing .option { border: 1px solid color-mix(in srgb, CanvasText 12%, transparent); border-radius: 8px; padding: 8px 10px; width: 100%; }

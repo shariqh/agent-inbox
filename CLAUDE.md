@@ -581,7 +581,8 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   Board is a read-only projection of those same entities into Needs you → Agent has baton →
   Outcome; clicking a card routes back to its existing action/receipt/board. Mission Map is
   board-scoped and draws only board → row → explicit `next_after`/`outcome` paths; `impact`
-  prose never creates a dependency edge.
+  prose never creates a dependency edge. Clicking a map row opens a nested detail/action
+  lightbox and keeps the graph mounted; leaving for Boards requires the explicit button.
 - **Build stamp + staleness signal** *(#40)* — `scripts/write-setup-info.mjs` (called by the
   packager, and executable in a test the way `package-app.sh` never can be) bakes `commit` +
   `builtAt` beside the paths setup-info.json already carried; `src/stamp.ts` reads the checkout's

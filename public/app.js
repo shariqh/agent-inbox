@@ -1251,6 +1251,7 @@ function initRelay() {
 }
 
 let missionBoardId = null
+let missionDetailRowId = null
 
 function openMission(board) {
   if (triageDeck) closeTriage()
@@ -1261,6 +1262,7 @@ function openMission(board) {
 
 function closeMission() {
   missionBoardId = null
+  missionDetailRowId = null
   document.getElementById('missionbox').hidden = true
 }
 
@@ -1275,6 +1277,16 @@ function focusMissionRow(board, row) {
   })
 }
 
+function openMissionDetail(row) {
+  missionDetailRowId = row.id
+  renderMission()
+}
+
+function closeMissionDetail() {
+  missionDetailRowId = null
+  document.querySelector('#missionbox .mission-detail').hidden = true
+}
+
 function missionPathEl(path, board) {
   const row = path.row
   const line = document.createElement('div')
@@ -1287,7 +1299,7 @@ function missionPathEl(path, board) {
     <strong>${esc(row.label)}</strong>
     ${row.note ? `<span>${esc(row.note)}</span>` : ''}
     ${row.impact ? `<small>Why now: ${esc(row.impact)}</small>` : ''}`
-  action.addEventListener('click', () => focusMissionRow(board, row))
+  action.addEventListener('click', () => openMissionDetail(row))
   const arrow = document.createElement('span')
   arrow.className = 'mission-arrow'
   arrow.textContent = '→'
@@ -1326,6 +1338,22 @@ function renderMission() {
     closeMission()
     focusItem(board.id)
   }
+  const detail = box.querySelector('.mission-detail')
+  if (missionDetailRowId) {
+    const row = board.rows.find((candidate) => candidate.id === missionDetailRowId)
+    if (row) {
+      detail.querySelector('.mission-detail-meta').textContent = `${row.status} · ${actionOwnerLabel(row)}`
+      detail.querySelector('.mission-detail-title').textContent = row.label
+      const body = detail.querySelector('.mission-detail-body')
+      body.replaceChildren(rowPanelEl(board, row, board.status === 'archived'))
+      detail.querySelector('.mission-detail-board').onclick = () => focusMissionRow(board, row)
+      detail.hidden = false
+    } else {
+      closeMissionDetail()
+    }
+  } else {
+    detail.hidden = true
+  }
   box.hidden = false
 }
 
@@ -1333,6 +1361,8 @@ function initMission() {
   const box = document.getElementById('missionbox')
   box.querySelector('.mission-close').addEventListener('click', closeMission)
   box.querySelector('.mission-backdrop').addEventListener('click', closeMission)
+  box.querySelector('.mission-detail-close').addEventListener('click', closeMissionDetail)
+  box.querySelector('.mission-detail-backdrop').addEventListener('click', closeMissionDetail)
 }
 
 function jumpToCard(tabId, cardId) {
@@ -2904,6 +2934,11 @@ function initKeys() {
       return
     }
     if (e.metaKey || e.ctrlKey || e.altKey) return
+    if (e.key === 'Escape' && missionDetailRowId) {
+      e.preventDefault()
+      closeMissionDetail()
+      return
+    }
     if (e.key === 'Escape' && missionBoardId) {
       e.preventDefault()
       closeMission()

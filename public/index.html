@@ -113,6 +113,22 @@
       </div>
       <div class="mission-foot">Edges are explicit only: board → row → recorded next step or outcome. Impact prose never creates a dependency.</div>
     </div>
+    <div class="mission-detail" hidden>
+      <div class="mission-detail-backdrop"></div>
+      <section class="mission-detail-panel" role="dialog" aria-modal="true" aria-label="Mission row detail">
+        <div class="mission-detail-head">
+          <div>
+            <span class="mission-detail-meta"></span>
+            <h3 class="mission-detail-title"></h3>
+          </div>
+          <button class="mission-detail-close" title="Close detail (Esc)">✕</button>
+        </div>
+        <div class="mission-detail-body"></div>
+        <div class="mission-detail-actions">
+          <button class="mission-detail-board">Open in Boards</button>
+        </div>
+      </section>
+    </div>
   </div>
   <script src="/ufuzzy.iife.min.js"></script>
   <script type="module" src="/app.js"></script>

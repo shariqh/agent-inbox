@@ -58,7 +58,7 @@ describe('Mission Map milestone', () => {
     expect(mission.querySelector('.mission-result.outcome')?.textContent).toContain('Outcome')
   })
 
-  it('routes an action node back to the existing board row panel', async () => {
+  it('opens row detail over the map and only leaves through the explicit Boards action', async () => {
     const d = open()
     upsertBoard(d, {
       ...AGENT,
@@ -82,7 +82,21 @@ describe('Mission Map milestone', () => {
     click(document.querySelector('.mission-node'))
     await settle()
 
-    expect(document.getElementById('missionbox')?.hidden).toBe(true)
+    const mission = document.getElementById('missionbox')!
+    expect(mission.hidden).toBe(false)
+    expect(mission.querySelector<HTMLElement>('.mission-detail')?.hidden).toBe(false)
+    expect(mission.querySelector('.mission-detail-body')?.textContent).toContain('The outreach kit is ready.')
+
+    click(mission.querySelector('.mission-detail-close'))
+    await settle()
+    expect(mission.hidden).toBe(false)
+    expect(mission.querySelector<HTMLElement>('.mission-detail')?.hidden).toBe(true)
+
+    click(document.querySelector('.mission-node'))
+    await settle()
+    click(mission.querySelector('.mission-detail-board'))
+    await settle()
+    expect(mission.hidden).toBe(true)
     expect(document.querySelector('#boards .row-panel')?.textContent).toContain('The outreach kit is ready.')
   })
 })

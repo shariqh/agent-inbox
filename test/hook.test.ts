@@ -589,8 +589,14 @@ describe('hook: real spawn round-trip', () => {
     const db = openDb(dbPath)
     const id = insertItem(db, { project: 'agent-inbox', stream: '', agent: 'claude-code', kind: 'question', title: 'which?' })
     const running = run(['watch'], ev(), env)
-    setTimeout(() => replyItem(openDb(dbPath), id, 'the second one'), 800)
+    const lock = join(dirname(dbPath), 'hook-state', 'watch-agent-inbox.lock')
+    const deadline = Date.now() + 9000
+    while (!existsSync(lock) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50))
+    const armed = existsSync(lock)
+    replyItem(db, id, 'the second one')
     const res = await running
+    db.close()
+    expect(armed).toBe(true)
     expect(res.code).toBe(2)
     expect(res.err).toMatch(/pending/)
     expect(res.out).toBe('')

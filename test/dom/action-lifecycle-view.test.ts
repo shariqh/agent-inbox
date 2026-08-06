@@ -37,7 +37,7 @@ function chipText(id: string): string {
 }
 
 describe('action lifecycle presentation', () => {
-  it('shows ownership and filters the queue by Decisions, Tasks, and New/changed', async () => {
+  it('shows ownership and filters the queue by Decisions, To do, and Updates', async () => {
     const d = open()
     upsertBoard(d, {
       ...AGENT,
@@ -78,21 +78,21 @@ describe('action lifecycle presentation', () => {
     })
 
     await bootApp(d)
-    expect(row(taskId)?.textContent).toContain('You do')
+    expect(row(taskId)?.textContent).toContain('To do')
     expect(row(taskId)?.textContent).toContain('changed')
-    expect(row(decisionId)?.textContent).toContain('Agent acts after approval')
+    expect(row(decisionId)?.textContent).toContain('Ready after approval')
     expect(row(decisionId)?.textContent).toContain('new')
 
     click(buttonLabelled('Decisions'))
     await settle()
     expect(rowTitles()).toEqual(['Publish?'])
 
-    click(buttonLabelled('Tasks'))
+    click(buttonLabelled('To do'))
     await settle()
     expect(rowTitles()).toEqual(['Upload notarized build'])
 
     click(buttonLabelled('All'))
-    click(buttonLabelled('New / changed'))
+    click(buttonLabelled('Updates'))
     await settle()
     expect(new Set(rowTitles())).toEqual(new Set(['Publish?', 'Upload notarized build']))
   })
@@ -136,7 +136,7 @@ describe('action lifecycle presentation', () => {
     click(row(current.id))
     await settle()
     const card = row(current.id)?.querySelector('.nrow-card')
-    expect(card?.textContent).toContain('You do')
+    expect(card?.textContent).toContain('To do')
     expect(card?.textContent).toContain('Starts the design-partner evidence loop.')
     expect(card?.textContent).toContain('Review replies and schedule interviews.')
     expect(card?.querySelector('.action-history')?.textContent).toContain('People Pipeline')
@@ -165,9 +165,9 @@ describe('action lifecycle presentation', () => {
     advanceClock(2 * 60 * 60_000)
 
     await bootApp(d)
-    expect(chipText(rowId)).toBe('agent overdue 2h')
+    expect(chipText(rowId)).toBe('follow-up due 2h')
     click(row(rowId))
     await settle()
-    expect(row(rowId)?.textContent).toContain('Agent picked up')
+    expect(row(rowId)?.textContent).toContain('With the agent')
   })
 })

@@ -326,7 +326,7 @@ describe('closed projects (issue #32)', () => {
     expect(body).toContain('closed-banner')
     expect(body).toMatch(/textContent/)
     expect(body, 'a project name must never reach innerHTML').not.toMatch(/innerHTML/)
-    expect(body).toMatch(/triage deck/)
+    expect(body).toMatch(/Inbox count or Review queue/)
     expect(body).toMatch(/reopenProjectAction\(/)
     // rendered in the editable frame above the panel host, so EVERY tab explains itself
     expect(fn('function paintEditableSurfaces(', '\nfunction render(')).toContain('renderClosedBanner()')

@@ -199,9 +199,8 @@ describe('app.js wiring — deck-open keyboard options target the deck entry, no
 // closure (j/k never broke), but the VISIBLE `.selected` class and the row's
 // real DOM focus were destroyed every ~3s and only self-healed on the next
 // keypress: for a screen-reader user that reads as random flakiness, not a
-// clean failure. app.js has no DOM test harness in this repo (see
-// test/shell.test.ts), so this is source-level, mirroring the other wiring
-// pins in this file.
+// clean failure. This source pin complements the behavioral DOM coverage by
+// failing at the ordering mistake itself.
 describe('app.js wiring — keyboard row selection survives the poll rebuild (spec §13, fix round 1)', () => {
   const js = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8')
 
@@ -211,10 +210,10 @@ describe('app.js wiring — keyboard row selection survives the poll rebuild (sp
     const body = js.slice(start, js.indexOf('function staleFoldEl'))
     const captureAt = body.indexOf('hadListFocus =')
     const clearAt = body.indexOf("host.innerHTML = ''")
-    const restoreAt = body.lastIndexOf('restoreRowSelection(hadListFocus)')
+    const restoreAt = body.lastIndexOf('restoreRowSelection(hadListFocus && !restoredCardFocus)')
     expect(captureAt, 'hadListFocus is not captured').toBeGreaterThan(-1)
     expect(clearAt, "host.innerHTML = '' not found").toBeGreaterThan(-1)
-    expect(restoreAt, 'restoreRowSelection(hadListFocus) is not called').toBeGreaterThan(-1)
+    expect(restoreAt, 'row focus is not restored after giving the open card first refusal').toBeGreaterThan(-1)
     // captured BEFORE the list is cleared — clearing a focused element's
     // subtree moves document.activeElement immediately, so capturing after
     // would always read false

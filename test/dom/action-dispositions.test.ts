@@ -87,7 +87,7 @@ describe('human disposition controls', () => {
     expect(stored.annotation_kind).toBe('clarify')
     expect(stored.status).toBe('blocked')
     expect(rowTitles()).toContain('Recruit partners')
-    expect(row(rowId)?.textContent).toContain('waiting for agent pickup')
+    expect(row(rowId)?.textContent).toContain('Waiting for the agent')
   })
 
   it('records decline as a distinct response kind', async () => {

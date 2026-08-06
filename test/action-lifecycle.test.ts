@@ -208,7 +208,7 @@ describe('action lifecycle storage', () => {
     const itemId = insertItem(db, {
       project: 'p', stream: '', agent: 'a', kind: 'question', title: 'Choose',
     })
-    const until = '2026-08-06T12:00:00.000Z'
+    const until = new Date(Date.now() + 60 * 60_000).toISOString()
     expect(snoozeItem(db, itemId, until)).toBe(true)
     expect(listItems(db)[0]!.snoozed_until).toBe(until)
     expect(snoozeItem(db, itemId, null)).toBe(true)

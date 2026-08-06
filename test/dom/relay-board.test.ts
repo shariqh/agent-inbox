@@ -19,8 +19,8 @@ function open(): Database.Database {
   return db
 }
 
-describe('Relay Board milestone', () => {
-  it('projects the live workflow into Needs you, Agent has baton, and Outcome lanes', async () => {
+describe('Handoffs milestone', () => {
+  it('projects the live workflow into Waiting on you, With the agent, and Outcome lanes', async () => {
     const d = open()
     insertItem(d, {
       ...AGENT,
@@ -69,7 +69,7 @@ describe('Relay Board milestone', () => {
 
     const relay = document.getElementById('relaybox')!
     expect(relay.hidden).toBe(false)
-    expect(relay.querySelector('.relay-summary')?.textContent).toBe('1 human · 2 agent · 1 outcomes')
+    expect(relay.querySelector('.relay-summary')?.textContent).toBe('1 waiting on you · 2 with agent · 1 outcomes')
     expect(relay.querySelectorAll('[data-relay-lane="human"] .relay-card')).toHaveLength(1)
     expect(relay.querySelectorAll('[data-relay-lane="agent"] .relay-card')).toHaveLength(2)
     expect(relay.querySelectorAll('[data-relay-lane="outcome"] .relay-card')).toHaveLength(1)
@@ -78,7 +78,7 @@ describe('Relay Board milestone', () => {
     expect(relay.querySelector('[data-relay-lane="outcome"]')?.textContent).toContain('Release shipped successfully.')
   })
 
-  it('routes Relay cards back to their existing card rather than owning duplicate actions', async () => {
+  it('routes handoff cards back to their existing card rather than owning duplicate actions', async () => {
     const d = open()
     const agentItem = insertItem(d, {
       ...AGENT,

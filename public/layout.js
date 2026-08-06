@@ -2,7 +2,7 @@
 // resolves in the browser (both files are served from /) and in vitest.
 import { projectMonogram } from './colors.js'
 
-export const NARROW_MAX = 900
+export const NARROW_MAX = 1279
 
 export function layoutMode(width) {
   return Number(width) <= NARROW_MAX ? 'narrow' : 'wide'

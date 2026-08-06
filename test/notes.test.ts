@@ -140,8 +140,8 @@ describe('ambientChips', () => {
 describe('triage stays reachable from Needs-you', () => {
   const appJs = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8')
 
-  it('the Needs-you header carries the opt-in Triage button', () => {
-    expect(appJs).toMatch(/function needsYouHeader\(\)[\s\S]*?btn\('Triage →', openTriage\)/)
+  it('the Inbox header carries the opt-in Review queue button', () => {
+    expect(appJs).toMatch(/function needsYouHeader\(\)[\s\S]*?btn\('Review queue', openTriage\)/)
   })
   it('renderNeedsYou renders that header', () => {
     expect(appJs).toMatch(/function renderNeedsYou\([^)]*\)\s*\{[\s\S]*?needsYouHeader\(\)/)

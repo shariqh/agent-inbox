@@ -3,12 +3,12 @@
 // C1 (commit 21b16d0) — the deep-link freeze, asserted through the real
 // hashchange → applyFocusHash → focusItem path instead of through source text.
 //
-// The bug: focusItem() called setOpenRow(id) for EVERY target. openRowId feeds
-// shouldSuspendRender(), and its only clearing path is toggleRow — an affordance that
-// exists only on a rendered `.nrow`. A board id (which electron/main.cjs deep-links for
-// a blocked row, one notification click away) or a notes/done item id has none, so the
-// poll suspended FOREVER: load() kept updating lastData while the DOM, all four tab
-// counts and document.title froze.
+// The original bug: focusItem() called setOpenRow(id) for EVERY target while
+// openRowId still participated in poll suspension. A board id (which
+// electron/main.cjs deep-links for a blocked row, one notification click away)
+// or a notes/done item id had no toggleRow clearing path, so the poll suspended
+// forever. Expansion no longer suspends polling, but reconciliation still keeps
+// stale deep-link state from leaking into a later render.
 //
 // The companion source pins (which reconciliation function app.js calls, and that
 // setOpenRow stays the single writer of openRowId) live in test/critical-fixes.test.ts.

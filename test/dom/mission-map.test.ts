@@ -16,7 +16,7 @@ function open(): Database.Database {
   return db
 }
 
-describe('Mission Map milestone', () => {
+describe('Plan flow milestone', () => {
   it('maps a selected board through explicit row next/outcome edges only', async () => {
     const d = open()
     upsertBoard(d, {
@@ -45,7 +45,7 @@ describe('Mission Map milestone', () => {
     click(document.querySelector('.tab[data-tab="boards"]'))
     await settle()
     const board = document.querySelector('#boards .board')!
-    click(buttonLabelled('Map', board))
+    click(buttonLabelled('Plan flow', board))
     await settle()
 
     const mission = document.getElementById('missionbox')!
@@ -58,7 +58,7 @@ describe('Mission Map milestone', () => {
     expect(mission.querySelector('.mission-result.outcome')?.textContent).toContain('Outcome')
   })
 
-  it('opens row detail over the map and only leaves through the explicit Boards action', async () => {
+  it('opens row detail over the flow and only leaves through the explicit Plans action', async () => {
     const d = open()
     upsertBoard(d, {
       ...AGENT,
@@ -77,7 +77,7 @@ describe('Mission Map milestone', () => {
     await bootApp(d)
     click(document.querySelector('.tab[data-tab="boards"]'))
     await settle()
-    click(buttonLabelled('Map', document.querySelector('#boards .board')!))
+    click(buttonLabelled('Plan flow', document.querySelector('#boards .board')!))
     await settle()
     click(document.querySelector('.mission-node'))
     await settle()

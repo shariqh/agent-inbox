@@ -60,7 +60,7 @@ describe('#36 · the human can clear a blocked row without any agent round-trip'
     await bootApp(d)
     expect(badgeCount(), 'a blocked row starts in the attention set').toBe(1)
     expect(tabCount('needsYou')).toBe('1')
-    expect(chipText(rowId)).toBe('blocked')
+    expect(chipText(rowId)).toBe('Needs input')
 
     // the human answers it, through the real UI: expand the row, type, Send
     click(row(rowId))
@@ -82,7 +82,7 @@ describe('#36 · the human can clear a blocked row without any agent round-trip'
     // …and the row must NOT vanish: an answer nobody collected is still a fact
     // the human needs to see, just no longer as their own to-do.
     expect(rowTitles()).toContain('Merge')
-    expect(chipText(rowId)).toBe('awaiting pickup')
+    expect(chipText(rowId)).toBe('Waiting for agent')
     expect(row(rowId)?.className, 'it renders dimmed, like an answered question').toContain('answered')
   })
 
@@ -112,14 +112,14 @@ describe('#37 · annotated-and-unpicked renders differently from annotated-and-p
 
     await bootApp(d)
     const waiting = chipText(rowId)
-    expect(waiting).toBe('awaiting pickup')
+    expect(waiting).toBe('Waiting for agent')
     expect(badgeCount(), 'answered is answered — pickup is not the human’s problem').toBe(0)
 
     // the row's own card says the same thing in words, and offers the human a
     // way to change their mind while it is still undelivered
     click(row(rowId))
     await settle()
-    expect(row(rowId)?.querySelector('.nrow-card')?.textContent).toContain('waiting for agent pickup')
+    expect(row(rowId)?.querySelector('.nrow-card')?.textContent).toContain('Waiting for the agent')
     expect(answerInput(rowId), 'the human can still revise an uncollected answer').not.toBeNull()
     // The one collapse kept on purpose (#38): the human is done reading, so they
     // shut the card — and THAT is what hands the suspended poll its pending data
@@ -140,7 +140,7 @@ describe('#37 · annotated-and-unpicked renders differently from annotated-and-p
 
     const delivered = chipText(rowId)
     expect(delivered).not.toBe(waiting)
-    expect(delivered).toBe('picked up 4m')
+    expect(delivered).toBe('with agent 4m')
     click(row(rowId))
     await settle()
     expect(row(rowId)?.querySelector('.nrow-card')?.textContent).toContain('claude-code')
@@ -159,7 +159,7 @@ describe('#37 · annotated-and-unpicked renders differently from annotated-and-p
     markAnnotationDelivered(d, rowId, listBoards(d)[0]!.rows[0]!.annotated_at, 'claude-code')
 
     await bootApp(d)
-    expect(chipText(rowId)).toMatch(/^picked up /)
+    expect(chipText(rowId)).toMatch(/^with agent /)
 
     // the human changes their mind — the agent has NOT seen this one
     advanceClock()
@@ -170,6 +170,6 @@ describe('#37 · annotated-and-unpicked renders differently from annotated-and-p
     await settle()
     // no collapse (#38): re-answering must relabel the row on the spot, or the
     // human cannot tell their revision from the delivered answer it replaced
-    expect(chipText(rowId)).toBe('awaiting pickup')
+    expect(chipText(rowId)).toBe('Waiting for agent')
   })
 })

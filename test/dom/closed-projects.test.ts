@@ -125,7 +125,7 @@ describe('closing a project from the rail (issue #32)', () => {
 
     click(rowAction('beta', 'rail-close'))
     await settle()
-    click(buttonLabelled('Triage →'))
+    click(buttonLabelled('Review queue'))
     await settle()
 
     expect(document.querySelector('.lb-clear')?.textContent).toContain('All clear')
@@ -178,7 +178,7 @@ describe('peeking into a closed project (issue #32)', () => {
 
     const text = banner()?.textContent ?? ''
     expect(text).toContain('beta is closed')
-    expect(text).toContain('badge or triage deck')
+    expect(text).toContain('Inbox count or Review queue')
     // agent-authored project name never becomes live markup
     expect(banner()?.querySelectorAll('img, script')).toHaveLength(0)
   })

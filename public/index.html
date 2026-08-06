@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -7,27 +7,55 @@
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
-  <header id="topbar">
-    <div class="brand">Agent Inbox</div>
-    <span id="status"></span>
-    <span id="pauseHint"></span>
-    <label class="agent-pick"><span class="tab-label">agent</span>
-      <select id="agentSelect" aria-label="Filter by agent"><option value="">all</option></select>
-    </label>
-    <input id="search" class="search-box" type="search" placeholder="Search everything…" aria-label="Search items and boards" autocomplete="off" />
-    <button id="gear" class="gear" type="button" title="Settings" aria-label="Settings" aria-pressed="false">⚙</button>
-  </header>
-  <div class="layout">
-    <nav id="rail" role="tablist" aria-orientation="vertical" aria-label="Projects"></nav>
-    <div class="content">
-      <div id="tabs" class="tabstrip" role="tablist" aria-label="Content">
-        <button class="tab" type="button" role="tab" data-tab="needsYou" aria-selected="true">Needs you<span class="tab-count" hidden></span></button>
-        <button class="tab" type="button" role="tab" data-tab="boards" aria-selected="false">Boards<span class="tab-count" hidden></span></button>
-        <button class="tab" type="button" role="tab" data-tab="notes" aria-selected="false">Notes<span class="tab-count" hidden></span></button>
-        <button class="tab" type="button" role="tab" data-tab="done" aria-selected="false">Done<span class="tab-count" hidden></span></button>
+  <div class="app-shell">
+    <aside class="sidebar-shell">
+      <div class="brand">
+        <span class="brand-dot" aria-hidden="true"></span>
+        <span class="brand-copy"><strong>Agent Inbox</strong><small>Local workspace</small></span>
       </div>
+      <div id="tabs" class="tabstrip" role="tablist" aria-label="Library">
+        <button class="tab" type="button" role="tab" data-tab="needsYou" aria-selected="true">Inbox<span class="tab-count" hidden></span></button>
+        <button class="tab" type="button" role="tab" data-tab="boards" aria-selected="false">Plans<span class="tab-count" hidden></span></button>
+        <button class="tab" type="button" role="tab" data-tab="notes" aria-selected="false">Notes<span class="tab-count" hidden></span></button>
+        <button class="tab" type="button" role="tab" data-tab="done" aria-selected="false">History<span class="tab-count" hidden></span></button>
+      </div>
+      <div class="sidebar-section-label">Projects</div>
+      <nav id="rail" role="tablist" aria-orientation="vertical" aria-label="Projects"></nav>
+      <button id="gear" class="gear" type="button" title="Settings" aria-label="Settings" aria-pressed="false">
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M2 4.25h6.5M11.5 4.25H14M2 11.75h2.5M7.5 11.75H14"></path>
+          <circle cx="10" cy="4.25" r="1.5"></circle>
+          <circle cx="6" cy="11.75" r="1.5"></circle>
+        </svg>
+        <span>Settings</span>
+      </button>
+      <div id="sidebarResize" class="pane-resizer sidebar-resizer" role="separator"
+        aria-label="Resize project pane" aria-orientation="vertical" tabindex="0"></div>
+    </aside>
+    <div class="workspace-shell content">
+      <header id="topbar">
+        <div class="page-heading">
+          <span class="page-kicker" id="pageKicker">Inbox</span>
+          <h1 id="pageTitle">Your queue</h1>
+        </div>
+        <div class="topbar-tools">
+          <label class="agent-pick"><span class="tab-label">Agent</span>
+            <select id="agentSelect" aria-label="Filter by agent"><option value="">All agents</option></select>
+          </label>
+          <input id="search" class="search-box" type="search" placeholder="Search this workspace" aria-label="Search items and plans" autocomplete="off" />
+        </div>
+        <div class="topbar-notices"><span id="status"></span><span id="pauseHint"></span></div>
+      </header>
       <main>
-        <section class="panel" id="needsYou" role="tabpanel"><div id="needsYouList" class="rows"></div></section>
+        <section class="panel" id="needsYou" role="tabpanel">
+          <div id="needsYouList" class="rows"></div>
+          <aside class="inspector-empty" aria-hidden="true">
+            <span>Select an item</span>
+            <p>Choose something from the queue to review the context and respond.</p>
+          </aside>
+          <div id="inspectorResize" class="pane-resizer inspector-resizer" role="separator"
+            aria-label="Resize item pane" aria-orientation="vertical" tabindex="0"></div>
+        </section>
         <section class="panel" id="boards" role="tabpanel" hidden><div class="boards"></div></section>
         <section class="panel" id="notes" role="tabpanel" hidden><div class="groups"></div></section>
         <section class="panel" id="done" role="tabpanel" hidden><div class="items"></div></section>
@@ -46,10 +74,10 @@
   </footer>
   <div id="lightbox" hidden>
     <div class="lb-backdrop"></div>
-    <div class="lb-panel" role="dialog" aria-modal="true" aria-label="Triage Quest">
+    <div class="lb-panel" role="dialog" aria-modal="true" aria-label="Review queue">
       <div class="lb-head">
         <div class="lb-run">
-          <span class="lb-kicker">Focus run</span>
+          <span class="lb-kicker">Review queue</span>
           <span class="lb-count"></span>
         </div>
         <span class="lb-owner"></span>
@@ -59,27 +87,27 @@
       <div class="lb-mix"></div>
       <div class="lb-card"></div>
       <div class="lb-shortcuts"><kbd>1-4</kbd> choose · <kbd>J/K</kbd> or <kbd>←/→</kbd> move · <kbd>Esc</kbd> close</div>
-      <div class="lb-nav"><button class="lb-prev">← back</button><button class="lb-next">skip →</button></div>
+      <div class="lb-nav"><button class="lb-prev">← Back</button><button class="lb-next">Next →</button></div>
     </div>
   </div>
   <div id="relaybox" hidden>
     <div class="relay-backdrop"></div>
-    <div class="relay-panel" role="dialog" aria-modal="true" aria-label="Relay Board">
+    <div class="relay-panel" role="dialog" aria-modal="true" aria-label="Handoffs">
       <div class="relay-head">
         <div>
-          <span class="relay-kicker">Workflow relay</span>
-          <h2>Human → Agent → Outcome</h2>
+          <span class="relay-kicker">Handoffs</span>
+          <h2>From your response to the result</h2>
         </div>
         <span class="relay-summary"></span>
         <button class="relay-close" title="Close (Esc)">✕</button>
       </div>
       <div class="relay-lanes">
         <section class="relay-lane" data-relay-lane="human">
-          <header><span class="relay-dot human"></span><strong>Needs you</strong><b class="relay-count"></b></header>
+          <header><span class="relay-dot human"></span><strong>Waiting on you</strong><b class="relay-count"></b></header>
           <div class="relay-body"></div>
         </section>
         <section class="relay-lane" data-relay-lane="agent">
-          <header><span class="relay-dot agent"></span><strong>Agent has baton</strong><b class="relay-count"></b></header>
+          <header><span class="relay-dot agent"></span><strong>With the agent</strong><b class="relay-count"></b></header>
           <div class="relay-body"></div>
         </section>
         <section class="relay-lane" data-relay-lane="outcome">
@@ -87,16 +115,16 @@
           <div class="relay-body"></div>
         </section>
       </div>
-      <div class="relay-foot">Click a card to open its existing action, receipt, or board. Relay never owns separate workflow state.</div>
+      <div class="relay-foot">Open any card to see its action, handoff, or recorded outcome.</div>
     </div>
   </div>
   <div id="missionbox" hidden>
     <div class="mission-backdrop"></div>
-    <div class="mission-panel" role="dialog" aria-modal="true" aria-label="Mission Map">
+    <div class="mission-panel" role="dialog" aria-modal="true" aria-label="Plan flow">
       <div class="mission-head">
         <div>
-          <span class="mission-kicker">Plan view</span>
-          <h2>Mission Map</h2>
+          <span class="mission-kicker">Plan flow</span>
+          <h2>Steps and outcomes</h2>
           <p class="mission-subtitle"></p>
         </div>
         <button class="mission-close" title="Close (Esc)">✕</button>
@@ -111,11 +139,11 @@
         </div>
         <div class="mission-paths"></div>
       </div>
-      <div class="mission-foot">Edges are explicit only: board → row → recorded next step or outcome. Impact prose never creates a dependency.</div>
+      <div class="mission-foot">Connections follow recorded next steps and outcomes.</div>
     </div>
     <div class="mission-detail" hidden>
       <div class="mission-detail-backdrop"></div>
-      <section class="mission-detail-panel" role="dialog" aria-modal="true" aria-label="Mission row detail">
+      <section class="mission-detail-panel" role="dialog" aria-modal="true" aria-label="Plan step detail">
         <div class="mission-detail-head">
           <div>
             <span class="mission-detail-meta"></span>
@@ -125,7 +153,7 @@
         </div>
         <div class="mission-detail-body"></div>
         <div class="mission-detail-actions">
-          <button class="mission-detail-board">Open in Boards</button>
+          <button class="mission-detail-board">Open in Plans</button>
         </div>
       </section>
     </div>

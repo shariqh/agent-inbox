@@ -12,16 +12,16 @@ const T0 = Date.parse('2026-08-05T12:00:00.000Z')
 
 describe('action presentation helpers', () => {
   it('labels ownership and groups approval with decisions', () => {
-    expect(actionOwnerLabel({ action_owner: 'decision' })).toBe('You decide')
-    expect(actionOwnerLabel({ action_owner: 'task' })).toBe('You do')
-    expect(actionOwnerLabel({ action_owner: 'approval' })).toBe('Agent acts after approval')
+    expect(actionOwnerLabel({ action_owner: 'decision' })).toBe('Decision')
+    expect(actionOwnerLabel({ action_owner: 'task' })).toBe('To do')
+    expect(actionOwnerLabel({ action_owner: 'approval' })).toBe('Ready after approval')
     expect(actionCategory({ action_owner: 'approval' })).toBe('decision')
     expect(actionCategory({ action_owner: 'task' })).toBe('task')
   })
 
   it('derives a sensible legacy owner from options', () => {
-    expect(actionOwnerLabel({ options: [{ label: 'A' }, { label: 'B' }] })).toBe('You decide')
-    expect(actionOwnerLabel({ options: null })).toBe('You do')
+    expect(actionOwnerLabel({ options: [{ label: 'A' }, { label: 'B' }] })).toBe('Decision')
+    expect(actionOwnerLabel({ options: null })).toBe('To do')
   })
 
   it('distinguishes new from changed since the prior visit', () => {
@@ -52,12 +52,12 @@ describe('action presentation helpers', () => {
       answered: true,
       pickedUp: true,
       pickedUpAt: new Date(T0 - 30 * 60_000).toISOString(),
-    }, T0)).toEqual({ text: 'picked up 30m', tone: 'muted' })
+    }, T0)).toEqual({ text: 'with agent 30m', tone: 'muted' })
     expect(agentFollowupChip({
       answered: true,
       pickedUp: true,
       pickedUpAt: new Date(T0 - 2 * 60 * 60_000).toISOString(),
-    }, T0)).toEqual({ text: 'agent overdue 2h', tone: 'warm' })
+    }, T0)).toEqual({ text: 'follow-up due 2h', tone: 'warm' })
   })
 
   it('builds a concise asked → response → pickup → outcome receipt', () => {
@@ -73,7 +73,7 @@ describe('action presentation helpers', () => {
     expect(receipt.map((step) => step.label)).toEqual([
       'Asked',
       'You answered',
-      'Agent picked up',
+      'With the agent',
       'Merged PR #42.',
     ])
   })

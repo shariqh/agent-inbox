@@ -227,15 +227,15 @@ describe('urgencyChip', () => {
     ({ ...rowModel({ kind: 'item', item: item(), liveness: 'waiting' }), ...over })
 
   it('is warm for a young waiting item and hot past the escalation age', () => {
-    expect(urgencyChip(model(), T0 + 10 * 60_000)).toEqual({ text: 'waiting 10m', tone: 'warm' })
-    expect(urgencyChip(model(), T0 + 90 * 60_000)).toEqual({ text: 'waiting 1h', tone: 'hot' })
+    expect(urgencyChip(model(), T0 + 10 * 60_000)).toEqual({ text: 'Waiting 10m', tone: 'warm' })
+    expect(urgencyChip(model(), T0 + 90 * 60_000)).toEqual({ text: 'Waiting 1h', tone: 'hot' })
   })
   it('is neutral for parked and muted for stale', () => {
     expect(urgencyChip(model({ liveness: 'parked' }), T0 + 3 * 3600_000).tone).toBe('neutral')
     expect(urgencyChip(model({ liveness: 'stale' }), T0 + 100 * 3600_000).tone).toBe('muted')
   })
   it('is blocked for a board row and muted once answered', () => {
-    expect(urgencyChip(model({ kind: 'row' }), T0)).toEqual({ text: 'blocked', tone: 'blocked' })
+    expect(urgencyChip(model({ kind: 'row' }), T0)).toEqual({ text: 'Needs input', tone: 'blocked' })
     expect(urgencyChip(model({ answered: true }), T0).tone).toBe('muted')
   })
 
@@ -244,9 +244,9 @@ describe('urgencyChip', () => {
   // chip, three states, and the un-delivered one is never silent.
   it('gives an annotated row the two-state pickup vocabulary', () => {
     const row = (over: Record<string, unknown>) => model({ kind: 'row', answered: true, pickedUp: false, pickedUpAt: null, pickedUpBy: '', ...over })
-    expect(urgencyChip(row({}), T0)).toEqual({ text: 'awaiting pickup', tone: 'muted' })
+    expect(urgencyChip(row({}), T0)).toEqual({ text: 'Waiting for agent', tone: 'muted' })
     expect(urgencyChip(row({ pickedUp: true, pickedUpAt: new Date(T0 - 3 * 60_000).toISOString() }), T0))
-      .toEqual({ text: 'picked up 3m', tone: 'muted' })
+      .toEqual({ text: 'with agent 3m', tone: 'muted' })
   })
   it('an un-picked-up row is never rendered as blocked — the human already answered', () => {
     const m = model({ kind: 'row', answered: true, pickedUp: false, pickedUpAt: null, pickedUpBy: '' })
@@ -258,9 +258,9 @@ describe('urgencyChip', () => {
   // not a third one nobody has to learn.
   it('gives a row marked handled the same two-state pickup vocabulary as an annotated one', () => {
     const marked = model({ kind: 'row', answered: true, handled: true, pickedUp: false, pickedUpAt: null, pickedUpBy: '' })
-    expect(urgencyChip(marked, T0)).toEqual({ text: 'awaiting pickup', tone: 'muted' })
+    expect(urgencyChip(marked, T0)).toEqual({ text: 'Waiting for agent', tone: 'muted' })
     const collected = { ...marked, pickedUp: true, pickedUpAt: new Date(T0 - 3 * 60_000).toISOString() }
-    expect(urgencyChip(collected, T0)).toEqual({ text: 'picked up 3m', tone: 'muted' })
+    expect(urgencyChip(collected, T0)).toEqual({ text: 'with agent 3m', tone: 'muted' })
   })
 })
 
@@ -300,7 +300,7 @@ describe('freshnessTone / ageChip', () => {
     const live = ageChip(ageMs)
     expect(live).toEqual({ tone: 'quiet', text: relMs(ageMs) })
     const row = urgencyChip(rowModel({ kind: 'item', item: item(), liveness: 'waiting' }), T0 + ageMs)
-    expect(row.text).toBe(`waiting ${live.text}`)
+    expect(row.text).toBe(`Waiting ${live.text}`)
   })
 })
 

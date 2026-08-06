@@ -16,7 +16,7 @@ function open(): Database.Database {
   return db
 }
 
-describe('Triage Quest milestone', () => {
+describe('Review queue milestone', () => {
   it('frames the existing deck as a focused run with progress and action mix', async () => {
     const d = open()
     insertItem(d, {
@@ -49,11 +49,11 @@ describe('Triage Quest milestone', () => {
     await settle()
 
     const lightbox = document.getElementById('lightbox')!
-    expect(lightbox.querySelector('.lb-kicker')?.textContent).toBe('Focus run')
+    expect(lightbox.querySelector('.lb-kicker')?.textContent).toBe('Review queue')
     expect(lightbox.querySelector('.lb-count')?.textContent).toBe('1 of 2')
     expect(lightbox.querySelector('.lb-mix')?.textContent).toContain('1 decision')
     expect(lightbox.querySelector('.lb-mix')?.textContent).toContain('1 task')
-    expect(lightbox.querySelector('.lb-owner')?.textContent).toBe('Agent acts after approval')
+    expect(lightbox.querySelector('.lb-owner')?.textContent).toBe('Ready after approval')
     expect(lightbox.querySelector<HTMLElement>('.lb-progress-fill')?.style.width).toBe('50%')
     expect(lightbox.querySelector('.lb-shortcuts')?.textContent).toContain('1-4 choose')
     expect(lightbox.querySelector('.lb-card')?.textContent).toContain('Unblocks implementation.')
@@ -92,13 +92,13 @@ describe('Triage Quest milestone', () => {
     click(lightbox.querySelector('.lb-next'))
     await settle()
     expect(lightbox.querySelector('.lb-count')?.textContent).toBe('2 of 2')
-    expect(lightbox.querySelector('.lb-owner')?.textContent).toBe('You do')
+    expect(lightbox.querySelector('.lb-owner')?.textContent).toBe('To do')
     expect(lightbox.querySelector('.lb-card')?.textContent).toContain('Send outreach')
 
     click(lightbox.querySelector('.lb-prev'))
     await settle()
     expect(lightbox.querySelector('.lb-count')?.textContent).toBe('1 of 2')
-    expect(lightbox.querySelector('.lb-owner')?.textContent).toBe('Agent acts after approval')
+    expect(lightbox.querySelector('.lb-owner')?.textContent).toBe('Ready after approval')
     expect(lightbox.querySelector('.lb-card')?.textContent).toContain('Publish?')
   })
 })

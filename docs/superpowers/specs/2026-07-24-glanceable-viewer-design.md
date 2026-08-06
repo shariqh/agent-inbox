@@ -1,7 +1,7 @@
 # Design: the glanceable viewer (Track B)
 
 **Date:** 2026-07-24
-**Status:** approved, ready for implementation planning
+**Status:** implemented; Direction A editorial refresh and adjustable panes implemented
 **Predecessor:** [Track A — the agent-emit contract](2026-07-24-agent-emit-contract-design.md)
 **Mockups:** `.superpowers/brainstorm/8044-1784928261/content/` (card, layout, shell, detail-card, final-beats)
 
@@ -43,29 +43,47 @@ star's reply call, and the boards matrix are all computable client-side.
 **No new endpoints.** The only backend change is the additive `items.session` column required
 by §6 (liveness).
 
+## Editorial refresh
+
+The post-implementation visual review selected **Direction A: Editorial desk**. It changes
+presentation and vocabulary only; attention, storage, routes, statuses, polling, and write
+semantics remain unchanged.
+
+- Light-first warm canvas (`#f7f4ef`), white surfaces, deep rose accent, Segoe UI/Aptos-style
+  typography, subtle borders, and minimal shadows. No gradients, glow, or AI-blue/purple visual
+  language.
+- Human navigation reads **Inbox · Plans · Notes · History**. Supporting workflows read
+  **Review queue · Handoffs · Plan flow**. Stored/API terms remain `needsYou`, `boards`, `done`,
+  `blocked`, triage, relay, and mission where those names are implementation contracts.
+- Ownership reads **Decision · To do · Ready after approval**. A `blocked` row reads **Needs
+  input** in the human UI; the stored status and agent-facing vocabulary do not change.
+- The content tabs and project rail share one fixed library sidebar. The work area gets a quiet
+  editorial heading and utility bar instead of a dashboard header.
+- At 1280px and wider an expanded queue card is visually positioned as a 520px right-side
+  inspector, but remains nested inside its `.nrow`. The 220px project library and item inspector
+  are independently resizable; their widths persist per browser profile. Below 1280px the card
+  returns inline and the splitters disappear. This preserves single-open state, deep links, focus
+  movement, drafts, and the 3-second poll gate without a second renderer or DOM portal.
+
 ## 1. Shell
 
-Replaces the 7-section stack **and** the outline sidebar (both removed).
+Replaces the 7-section stack and legacy outline sidebar.
 
-- **Left rail — projects as vertical tabs.** Replaces the horizontal project pill strip *and*
-  the section-outline sidebar. Each tab: project color dot · name · attention count badge.
+- **Library sidebar.** Content navigation (`Inbox` · `Plans` · `Notes` · `History`) sits above
+  projects in one fixed left library. Project tabs retain color dot · name · attention count.
   An **All** pseudo-project pins to the top; **`unknown`** pins to the bottom in neutral grey
   with a tooltip explaining inference failed and `register()` fixes it. Projects with zero
   attention dim. The rail scrolls independently; above ~12 projects it gets its own filter box.
-  Selected project = a **soft wash of that project's own color** — no left stripe anywhere.
-- **Top tabs — content type.** `Needs you` · `Boards` · `Notes` · `Done`. Always
-  boots to **Needs you** (tenet 1: the app opens where the action is, then lets you leave).
-  Counts per tab.
+  Selected project uses a restrained surface treatment; project color remains a small identity
+  dot, never a page wash.
 - **Live is NOT a tab — it is an always-visible footer strip** (revised 2026-07-24, see §16).
   Everything behind a tab is something you *act on*; Live is context you *glance at*. Behind a
   tab you would never see it — you would have to go looking, which defeats presence entirely.
   This finishes the thought the original design started when it gave Live a presence dot rather
   than a count: numbers are reserved for things that want you.
-- **Top bar.** Brand · demoted `agent: all ▾` dropdown (replaces the agent pill strip,
-  re-scoped to the selected project) · global search · **gear → Setup** (Setup is not a
-  content type and does not deserve a peer tab, but it holds the reporting snippet that makes
-  the whole system work, so it stays one click away).
-- **Cold-launch state.** Always land on **Needs you · All projects · all agents · All
+- **Work header.** Editorial page kicker/title · demoted `agent: all ▾` dropdown · global search.
+  **Settings** lives at the foot of the library sidebar.
+- **Cold-launch state.** Always land on **Inbox · All projects · all agents · All
   actions**, with no card expanded. Project and agent filters last only for the current
   window; persisting them across launches can make a global badge of five reopen onto a list
   of one, which contradicts the product's cross-project attention promise. An explicit
@@ -105,10 +123,11 @@ because it is the precondition that makes one-tap defensible (§5) — you accep
 the star, plus keyboard `x` — dismissing noise must not cost an expansion. **Resolve stays
 inside the card**: it implies you did something.
 
-## 4. Click a row → inline expansion into the card
+## 4. Click a row → the shared card
 
-Single-open accordion, inline (not an overlay), dismissible, ephemeral (not persisted across
-reload, but **must survive the 3s poll rebuild** — see §10).
+Single-open, dismissible, ephemeral (not persisted across reload, but **must survive the 3s poll
+rebuild** — see §10). The card stays nested inside the row in the DOM. CSS presents it as the
+right-side inspector on wide screens and inline beneath its row on narrow screens.
 
 The expanded card is **the same component the triage lightbox renders** — one component, two
 entry points. (This is already nearly true: the lightbox mounts `itemEl` today.) It contains:
@@ -261,15 +280,27 @@ across tab and project changes.
   `Esc` collapse. **Accepting a recommendation by keyboard costs the same as reading it.**
 - Rail and tabs are proper `tablist`/`tab` roles with roving focus; focus is managed on inline
   expand and returned on collapse.
+- The two desktop pane handles are focusable vertical separators. Arrow keys resize in the
+  visual direction, Shift increases the step, Home/End choose the minimum/maximum, and a
+  double-click restores the default. ARIA min/max/current values track the effective width.
 - The star's accessible name reads **"Answer: `<option label>`"**.
 - Every color-coded state also carries a glyph or text. Contrast verified in both themes.
 
 ## 14. Responsive
 
-Specified now because it is cheap now and expensive after the CSS exists: under ~900px the rail
-collapses to a dot column (or project dropdown), tabs become a scrollable segmented control, and
-the expanded card goes full-width. Today's only responsive escape hatch (`@media` hiding the
-sidebar) disappears with the sidebar.
+At **1280px and wider**, the library, queue, and inspector form the desktop split view. Defaults
+are 220px for the library and 520px for the inspector. `public/panes.js` clamps the library to
+180–320px and the inspector to 360–720px while preserving at least 400px for the queue, including
+after a window resize. Effective widths are exposed through CSS variables and separator ARIA;
+preferences persist as `agent-inbox-sidebar-width` and `agent-inbox-inspector-width`.
+
+Below 1280px the fixed library becomes a compact sticky header: content tabs remain readable,
+projects become a horizontally scrollable monogram rail, search takes the available width, and
+the expanded inspector returns to a full-width inline card. Plan rows use fixed columns and
+ellipsized labels so their action affordance cannot leave the viewport; the full note remains in
+the row panel. Lane- and graph-shaped overlays retain horizontal touch scrolling rather than
+collapsing their meaning into a different mobile component. The stylesheet keeps exactly one
+`@media` block at EOF so the responsive layer wins the cascade predictably.
 
 ## 15. Preserved / dropped
 
@@ -281,7 +312,7 @@ unseen marker · per-section counts · the triage deck and its keyboard nav · L
 (idle fold, subagent children, freshness dots) · connection status + boot-id auto-reload ·
 pagination caps · multi-agent attribution (now a row-level chip, not an `h4` level).
 
-**Dropped** (consciously): sidebar sub-links · section collapse persistence / user-composed
+**Dropped** (consciously): legacy outline-sidebar sub-links · section collapse persistence / user-composed
 multi-section dashboard · project and agent heading levels · the kind-based left stripe ·
 `jumpToCard`'s filter-clearing fallback (with a rail it would silently reset the user's project).
 

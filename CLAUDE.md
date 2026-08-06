@@ -225,8 +225,9 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   `public/app.js` renders both).
 - **`load()` is the poll's; `reloadAndPaint()` is the human's (issues #38/#39).** `load()` ends in
   `renderIfIdle()` — the spec §10 gate. `suspendState()` reports every typed draft anywhere in the
-  app, but NOT a merely expanded card. Expanded cards survive rebuilds; order pinning appends new
-  work at the foot; the press guard protects clicks. A draft gates only the editable surfaces:
+  app, but NOT a merely expanded card. Expanded cards, the open inspector's scroll offset, and
+  its focused control survive rebuilds; order pinning appends new work at the foot; the press
+  guard protects clicks. A draft gates only the editable surfaces:
   `paintAmbient()` still refreshes the document-title badge, project rail, tab counts and global
   Live strip before `shouldDeferRender()` returns. A held press is different: `pressHeld()` runs
   before `paintAmbient()` because the rail itself can rebuild, so the press guard still defers
@@ -391,7 +392,7 @@ source order, `!important`, `:has()` and `color-mix()` — that is what makes th
 regression. **Four verified blind spots; only literal lengths and keywords are trustworthy:**
 
 1. **`@media` never matches.** jsdom's media-list evaluation only answers `all`/`screen`,
-   so style.css's single `@media (max-width: 900px)` block — the ENTIRE spec §14 responsive
+   so style.css's single `@media (max-width: 1279px)` block — the ENTIRE spec §14 responsive
    layer — never applies. Do not assert anything about it; cover the JS half instead
    (`setViewport('narrow')` + `railLabel` monograms, in `test/dom/boot.test.ts`).
 2. **`var()` is returned unresolved.**
@@ -573,16 +574,30 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   Mirrored in MCP schemas/descriptions so malformed blockers are rejected at the call site.
 - **Human action lifecycle** — blockers carry ownership, impact and next-after; the viewer
   offers snooze/wake, clarification and decline without changing agent-owned row status;
-  answered work shows pickup/outcome/history and ages into an agent-overdue chip outside badge
+  answered work shows pickup/outcome/history and ages into a follow-up-due chip outside badge
   attention; board decisions and question items both expose native Electron response actions.
-  Needs-you can filter Decisions, Tasks and New/changed since the previous visit. Triage Quest
-  is the existing shared-attention deck presented as a focused run: progress, action mix,
-  ownership, always-visible option tradeoffs, and the same underlying card/write paths. Relay
-  Board is a read-only projection of those same entities into Needs you → Agent has baton →
-  Outcome; clicking a card routes back to its existing action/receipt/board. Mission Map is
-  board-scoped and draws only board → row → explicit `next_after`/`outcome` paths; `impact`
-  prose never creates a dependency edge. Clicking a map row opens a nested detail/action
-  lightbox and keeps the graph mounted; leaving for Boards requires the explicit button.
+  Inbox can filter Decisions, To do and Updates since the previous visit. Review queue is the
+  existing shared-attention deck: progress, action mix, ownership, always-visible option
+  tradeoffs, and the same underlying card/write paths. Handoffs is a read-only projection of
+  those same entities into Waiting on you → With the agent → Outcome; clicking a card routes
+  back to its existing action/receipt/plan. Plan flow is plan-scoped and draws only
+  plan → row → explicit `next_after`/`outcome` paths; `impact` prose never creates a dependency
+  edge. Clicking a flow row opens a nested detail/action lightbox and keeps the graph mounted;
+  leaving for Plans requires the explicit button.
+- **Editorial desk shell** — user-facing navigation is Inbox / Plans / Notes / History, while
+  stored ids and API vocabulary remain `needsYou` / `boards` / `done` / `blocked`. The app is
+  light-first with a warm canvas, white surfaces, deep rose accent, Segoe UI/Aptos typography,
+  restrained borders and no gradients or glow. At 1280px+ `.nrow-card` is CSS-positioned as a
+  fixed inspector but MUST remain a descendant of its `.nrow`; moving it into a portal breaks
+  row-scoped writes, draft persistence, focus, deep links and the poll gate. `public/panes.js` is
+  the pure source of truth for adjustable widths: library 220px default / 180–320px, inspector
+  520px default / 360–720px, with at least 400px left for the queue. Preferences persist under
+  `agent-inbox-sidebar-width` and `agent-inbox-inspector-width`; mouse drag, separator keyboard
+  controls, viewport reclamping and double-click reset must update CSS and ARIA together. Inside
+  the single EOF `@media (max-width: 1279px)` block the splitters hide and the item card returns
+  to static inline layout. `test/editorial-shell.test.ts`, `test/panes.test.ts`,
+  `test/layout.test.ts`, and `test/dom/boot.test.ts` pin the contract; jsdom still cannot validate
+  the responsive media layer or CSS vars.
 - **Attention-first cold launch** — every fresh viewer starts at Needs you with All projects,
   all agents and All action types, and no expanded card. Project/agent filters are
   window-local; the boot path removes the two legacy localStorage keys so an older build

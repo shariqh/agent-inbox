@@ -144,7 +144,7 @@ describe('#38 · a board-row answer shows itself, with no collapse and no poll t
     const panel = document.querySelector('#boards .row-panel')
     expect(panel?.querySelector('.annotation')?.textContent,
       'an expanded card on ANOTHER tab must not silence this write').toContain('go ahead and merge')
-    expect(panel?.textContent).toContain('waiting for agent pickup')
+    expect(panel?.textContent).toContain('Waiting for the agent')
     expect(panelInput()?.value).toBe('')
     // and the row's own state moved: it is answered, so it leaves the attention set
     expect(badgeCount(), 'the badge must agree with what the human just did').toBe(1) // the question only
@@ -156,10 +156,10 @@ describe('#38 · a board-row answer shows itself, with no collapse and no poll t
   // different state (draftReplies/draftReplyContexts, not rowDrafts) — and it is
   // the one the human hits most, since it is also where the option pills, Enter,
   // the ★'s staged send and the triage card all land. It ended in a bare `load()`
-  // too, and `openRowId` is set BY CONSTRUCTION here: the input only exists inside
-  // the expanded card, so the gate was guaranteed to refuse. Reverting this one
-  // call site alone left the rest of the suite green, which is why it gets its own
-  // test rather than riding on a board row's.
+  // too. At the time, the input's expanded card also participated in suspension,
+  // so the gate was guaranteed to refuse. Reverting this one call site alone left
+  // the rest of the suite green, which is why it gets its own test rather than
+  // riding on a board row's.
   it('answering a QUESTION shows the answer, with no collapse and no poll tick', async () => {
     const d = open()
     const id = insertItem(d, { ...AGENT, kind: 'question', title: 'bump the timeout?' })
@@ -176,7 +176,7 @@ describe('#38 · a board-row answer shows itself, with no collapse and no poll t
     expect(card, 'the card must still be on screen, or this proves nothing').not.toBeNull()
     expect(card!.querySelector('.reply-block')?.textContent ?? '(no reply block — the card still shows the question)',
       "the human's own answer must be on screen before anything else happens").toContain('yes — 30s')
-    expect(card!.textContent, 'and it must say the agent has not collected it yet').toContain('waiting for agent pickup')
+    expect(card!.textContent, 'and it must say the agent has not collected it yet').toContain('Waiting for the agent')
     expect(answerInput(id), 'an answered question has no answer box left to re-send from').toBeNull()
     expect(row(id)?.className, 'the row must wear its answered state').toContain('answered')
     expect(badgeCount(), 'an answered question has stopped needing the human').toBe(0)
@@ -203,11 +203,11 @@ describe('#38 · a board-row answer shows itself, with no collapse and no poll t
 })
 
 // ── the surfaces nobody reported ─────────────────────────────────────────────
-// Resolve/Dismiss/Note live INSIDE the expanded card. `openRowId` is set by
-// construction for every one of them: they are guaranteed self-silencing writes,
-// and Resolve strands `openRowId` on a row `render()` would have reconciled away —
-// so the badge freezes and the viewer stops updating for good. That is a live
-// tenet-2 violation (the badge must stay TRUSTWORTHY), not a cosmetic one.
+// Resolve/Dismiss/Note live INSIDE the expanded card. Before expansion stopped
+// suspending polls, every one was a self-silencing write, and Resolve could strand
+// `openRowId` on a row `render()` would have reconciled away. These tests preserve
+// the stronger rule that human writes repaint immediately even when a draft gates
+// ordinary polling.
 
 describe('#38 · the card actions repaint the card they live in', () => {
   it('Resolve removes the row, drops the badge, and leaves the viewer LIVE', async () => {
@@ -312,7 +312,7 @@ describe('#38 · archiving a board takes the board off the screen', () => {
     click(buttonLabelled('Really archive?', boardCard('BOARD A')!))
     await settle()
 
-    // open the archived fold, then suspend the viewer with an expanded card
+    // open the archived fold, then keep a non-empty draft while un-archiving
     const fold = document.querySelector<HTMLDetailsElement>('#boards .archived-fold')
     expect(fold, 'no archived fold rendered').not.toBeNull()
     fold!.open = true

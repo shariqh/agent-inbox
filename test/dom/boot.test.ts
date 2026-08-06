@@ -67,6 +67,75 @@ describe('viewer boots against a real DB', () => {
     expect(localStorage.getItem('agent-inbox-agent-filter')).toBeNull()
   })
 
+  it('uses the editorial navigation and plain-language queue vocabulary', async () => {
+    const d = open()
+    insertItem(d, {
+      project: 'alpha',
+      stream: 'main',
+      agent: 'copilot',
+      kind: 'question',
+      title: 'Choose the launch window',
+    })
+    advanceClock()
+    upsertBoard(d, {
+      project: 'beta',
+      stream: 'main',
+      agent: 'copilot',
+      title: 'Release plan',
+      rows: [{
+        label: 'Approve the rollout',
+        status: 'blocked',
+        action_owner: 'approval',
+        note: 'The release is ready.',
+        next_step: 'Approve the rollout.',
+        impact: 'Unblocks publishing.',
+      }],
+    })
+
+    await bootApp(d)
+
+    expect(document.querySelector('.brand')?.textContent).toContain('Agent Inbox')
+    expect(document.getElementById('pageTitle')?.textContent).toBe('Your queue')
+    expect([...document.querySelectorAll('#tabs .tab')].map((tab) => tab.childNodes[0]?.textContent))
+      .toEqual(['Inbox', 'Plans', 'Notes', 'History'])
+    expect(document.querySelector('#needsYouList .tab-header')?.textContent)
+      .toContain('AllDecisionsTo doUpdatesHandoffsReview queue')
+    expect(document.querySelector('#needsYouList')?.textContent).not.toContain('blocked')
+    expect(document.querySelector('#needsYouList')?.textContent).not.toContain('Agent acts after approval')
+    expect(document.querySelector('#needsYouList')?.textContent).not.toContain('🚧')
+    expect(document.querySelector('#needsYouList')?.textContent).toContain('Ready after approval')
+  })
+
+  it('restores pane widths and lets the keyboard resize or reset both splits', async () => {
+    const d = open()
+    setViewport('wide')
+    localStorage.setItem('agent-inbox-sidebar-width', '260')
+    localStorage.setItem('agent-inbox-inspector-width', '540')
+
+    await bootApp(d)
+
+    const root = document.documentElement.style
+    const sidebar = document.getElementById('sidebarResize')!
+    const inspector = document.getElementById('inspectorResize')!
+    expect(root.getPropertyValue('--sidebar-width')).toBe('260px')
+    expect(root.getPropertyValue('--inspector-width')).toBe('540px')
+    expect(sidebar.getAttribute('aria-valuenow')).toBe('260')
+    expect(inspector.getAttribute('aria-valuenow')).toBe('540')
+
+    inspector.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }))
+    expect(root.getPropertyValue('--inspector-width')).toBe('556px')
+    expect(localStorage.getItem('agent-inbox-inspector-width')).toBe('556')
+
+    sidebar.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+    expect(root.getPropertyValue('--sidebar-width')).toBe('276px')
+    expect(localStorage.getItem('agent-inbox-sidebar-width')).toBe('276')
+
+    inspector.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
+    sidebar.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
+    expect(root.getPropertyValue('--inspector-width')).toBe('520px')
+    expect(root.getPropertyValue('--sidebar-width')).toBe('220px')
+  })
+
   it('logs nothing to console.error on a clean boot, and #status stays empty', async () => {
     const d = open()
     insertItem(d, { project: 'alpha', stream: 'main', agent: 'claude', kind: 'question', title: 'hello' })

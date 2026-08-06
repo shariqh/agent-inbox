@@ -148,14 +148,14 @@ export function urgencyChip(model, nowMs) {
     // still need to act" and start reading "answered — has anyone collected it?"
     // The alarm is relabeled, never removed, so a pickup that never happens
     // stays on screen as the agent's failure rather than as your to-do.
-    if (!model.answered) return { text: 'blocked', tone: 'blocked' }
-    return agentFollowupChip(model, nowMs) ?? { text: 'awaiting pickup', tone: 'muted' }
+    if (!model.answered) return { text: 'Needs input', tone: 'blocked' }
+    return agentFollowupChip(model, nowMs) ?? { text: 'Waiting for agent', tone: 'muted' }
   }
-  if (model.answered) return agentFollowupChip(model, nowMs) ?? { text: 'answered', tone: 'muted' }
+  if (model.answered) return agentFollowupChip(model, nowMs) ?? { text: 'Answered', tone: 'muted' }
   const age = nowMs - Date.parse(model.created_at)
-  if (model.liveness === 'waiting') return { text: `waiting ${relMs(age)}`, tone: age >= ESCALATE_MS ? 'hot' : 'warm' }
-  if (model.liveness === 'stale') return { text: `stale ${relMs(age)}`, tone: 'muted' }
-  return { text: `parked ${relMs(age)}`, tone: 'neutral' }
+  if (model.liveness === 'waiting') return { text: `Waiting ${relMs(age)}`, tone: age >= ESCALATE_MS ? 'hot' : 'warm' }
+  if (model.liveness === 'stale') return { text: `Later ${relMs(age)}`, tone: 'muted' }
+  return { text: `Queued ${relMs(age)}`, tone: 'neutral' }
 }
 
 export function relMs(ms) {

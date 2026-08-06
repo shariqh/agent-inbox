@@ -29,6 +29,7 @@ import { buildSummary } from '/buildstamp.js'
 import { actionCategory, actionOwnerLabel, agentFollowupChip, changeKind, lifecycleReceipt, responseLabel } from '/action.js'
 import { buildRelay } from '/relay.js'
 import { buildMission } from '/mission.js'
+import { PANE_DEFAULTS, paneKeyValue, paneValueFromPointer, resolvePaneLayout } from '/panes.js'
 
 void paginateGroups // kept exported+tested (spec §15); the viewer no longer calls it
 
@@ -103,6 +104,7 @@ let bootId = null
 // polling: open state survives rebuilds, order pinning appends new arrivals at
 // the foot, and the bounded press guard protects clicks.
 let openRowId = null    // the single inline-expanded Needs-you row (§4)
+let openRowScrollTop = 0 // the inspector's viewport survives the 3s DOM rebuild
 let renderDirty = false // fresh data arrived while suspended
 let pinnedIds = []      // sort order pinned for this render session
 let pressedAt = null    // pointerdown → pointerup, hard-bounded by PRESS_GRACE_MS (#38)
@@ -232,6 +234,7 @@ async function reloadAndPaint() {
 // (render()'s own reconciliation, fix round 2 / C1): resuming from there would
 // re-enter render(); the next poll tick renders instead, now unsuspended.
 function setOpenRow(id, { resume = true } = {}) {
+  if (openRowId !== id) openRowScrollTop = 0
   openRowId = id
   if (resume) resumeRender()
   else showPauseHint()
@@ -373,6 +376,52 @@ function applyBadge() {
 // something this returns — see focusItem and render()'s reconciliation (C1).
 function needsYouRowEl(id) {
   return document.querySelector(`#needsYouList .nrow[data-card-id="${CSS.escape(id)}"]`)
+}
+
+const CARD_FOCUS_SELECTOR = 'button, input, textarea, select, a[href], summary, [tabindex]'
+
+function cardFocusTargets(card) {
+  return [...card.querySelectorAll(CARD_FOCUS_SELECTOR)]
+}
+
+function cardFocusKey(el) {
+  const text = ['BUTTON', 'SUMMARY'].includes(el.tagName) ? el.textContent?.trim() ?? '' : ''
+  return JSON.stringify([
+    el.tagName,
+    el.getAttribute('type') ?? '',
+    el.getAttribute('name') ?? '',
+    el.getAttribute('aria-label') ?? '',
+    el.getAttribute('href') ?? '',
+    typeof el.className === 'string' ? el.className : '',
+    text,
+  ])
+}
+
+function captureCardFocus(card, id) {
+  const active = document.activeElement
+  if (!active || (active !== card && !card.contains(active))) return null
+  const targets = cardFocusTargets(card)
+  if (active === card || !targets.includes(active)) return { id, key: null, ordinal: 0 }
+  const key = cardFocusKey(active)
+  return {
+    id,
+    key,
+    ordinal: targets.filter((target) => cardFocusKey(target) === key).indexOf(active),
+  }
+}
+
+function restoreCardFocus(bookmark) {
+  if (!bookmark || bookmark.id !== openRowId) return false
+  const card = needsYouRowEl(bookmark.id)?.querySelector('.nrow-card')
+  if (!card) return false
+  card.tabIndex = -1
+  const matches = bookmark.key
+    ? cardFocusTargets(card).filter((target) => cardFocusKey(target) === bookmark.key)
+    : []
+  const target = matches[bookmark.ordinal] ?? card
+  target.focus({ preventScroll: true })
+  if (document.activeElement !== target && target !== card) card.focus({ preventScroll: true })
+  return document.activeElement === card || card.contains(document.activeElement)
 }
 
 // Which tab holds an item — a deep link must land on the right one.
@@ -586,13 +635,9 @@ function paintEditableSurfaces({ agents, g, boards, archived, live }) {
   // editable frame; a draft-gated ambient frame must never mark unseen notes.
   paintTabCounts(g, boards)
   pruneCollapsedCards()
-  // fix round 2 (C1, layer 2 — the one that closes the bug class). openRowId
-  // feeds shouldSuspendRender(), but its only clearing path is toggleRow, a DOM
-  // affordance that exists only for rows this render actually produced. Any
-  // writer that names something else (a deep-linked board id, a row the rail
-  // filter or the pager just removed) would otherwise suspend the poll
-  // permanently. The render that just happened is the authority on what is
-  // still collapsible; reconcileOpenRow (poll.js, unit-tested) is the rule.
+  // The render that just happened is the authority on what remains collapsible.
+  // A deep link or filter can name a board, a hidden item, or a paged-away row;
+  // reconcile stale open state now so it cannot leak into a later render.
   const nextOpen = reconcileOpenRow(openRowId, rowEls().map((el) => el.dataset.cardId))
   // still through setOpenRow — it stays the single writer of openRowId
   if (nextOpen !== openRowId) setOpenRow(nextOpen, { resume: false })
@@ -970,8 +1015,8 @@ function rowAnswerEl(b, r, onSaved) {
 // disagree between them.
 function pickupMarkHtml(seenAt, seenBy) {
   return seenAt
-    ? `<span class="pickup picked">✓ delivered${seenBy ? ` to ${esc(seenBy)}` : ''} ${esc(rel(seenAt))} ago</span>`
-    : '<span class="pickup awaiting">● waiting for agent pickup</span>'
+    ? `<span class="pickup picked">With ${seenBy ? esc(seenBy) : 'the agent'} · ${esc(rel(seenAt))} ago</span>`
+    : '<span class="pickup awaiting">Waiting for the agent</span>'
 }
 
 // Everything the human has left on a row: their words (#37), their "I did my
@@ -1066,7 +1111,7 @@ function rowCardEl(b, r) {
   const wrap = document.createElement('div')
   wrap.className = 'lb-row-card'
   wrap.innerHTML = `
-    <div class="meta">🚧 blocked row · ${esc(b.title)} <span class="board-id">#${esc(b.id.slice(0, 6))}</span></div>
+    <div class="meta">Plan · ${esc(b.title)} <span class="board-id">#${esc(b.id.slice(0, 6))}</span></div>
     <div class="title">${esc(r.label)}</div>
     ${actionBlocksHtml(r.note, r.next_step, r.action_owner, r.impact, r.next_after, r.context, `row:${r.id}`)}
     ${rowHumanStateHtml(r)}
@@ -1091,10 +1136,10 @@ function renderTriage() {
   card.innerHTML = ''
   if (n === 0) {
     lb.querySelector('.lb-count').textContent = 'all clear'
-    lb.querySelector('.lb-mix').textContent = 'Run complete'
+    lb.querySelector('.lb-mix').textContent = 'Review complete'
     owner.textContent = ''
     progress.style.width = '100%'
-    card.innerHTML = '<div class="lb-clear">✓ All clear — nothing needs you.</div>'
+    card.innerHTML = '<div class="lb-clear">All clear. There is nothing left to review.</div>'
   } else {
     lb.querySelector('.lb-count').textContent = `${triageDeck.index + 1} of ${n}`
     lb.querySelector('.lb-mix').textContent = triageActionMix(triageDeck.entries)
@@ -1159,13 +1204,13 @@ function relaySummaryText(entry) {
 }
 
 function relayPickupChip(entity) {
-  const pickup = lifecycleReceipt(entity).find((step) => step.label === 'Agent picked up')
-  if (!pickup?.at) return { text: 'awaiting pickup', tone: 'awaiting' }
+  const pickup = lifecycleReceipt(entity).find((step) => step.label === 'With the agent')
+  if (!pickup?.at) return { text: 'Waiting for agent', tone: 'awaiting' }
   return agentFollowupChip({
     answered: true,
     pickedUp: true,
     pickedUpAt: pickup.at,
-  }, Date.now()) ?? { text: 'picked up', tone: 'muted' }
+  }, Date.now()) ?? { text: 'With agent', tone: 'muted' }
 }
 
 function focusRelayEntry(entry, lane) {
@@ -1192,7 +1237,7 @@ function relayCardEl(entry, lane) {
     status = relayPickupChip(entity)
     if (status.tone === 'warm' || status.tone === 'hot') card.classList.add('overdue')
   } else {
-    status = { text: 'closed loop', tone: 'outcome' }
+    status = { text: 'Completed', tone: 'outcome' }
   }
   const summary = relaySummaryText(entry)
   const outcome = entity.outcome ?? ''
@@ -1219,8 +1264,8 @@ function renderRelayLane(box, lane, entries) {
     const empty = document.createElement('div')
     empty.className = 'relay-empty'
     empty.textContent = lane === 'human'
-      ? 'Nothing needs you'
-      : lane === 'agent' ? 'No handoffs waiting' : 'No recorded outcomes'
+      ? 'Nothing is waiting on you'
+      : lane === 'agent' ? 'No handoffs are waiting' : 'No outcomes recorded yet'
     body.appendChild(empty)
     return
   }
@@ -1242,7 +1287,7 @@ function renderRelay() {
   renderRelayLane(box, 'agent', relay.agent)
   renderRelayLane(box, 'outcome', relay.outcomes)
   box.querySelector('.relay-summary').textContent =
-    `${relay.human.length} human · ${relay.agent.length} agent · ${relay.outcomes.length} outcomes`
+    `${relay.human.length} waiting on you · ${relay.agent.length} with agent · ${relay.outcomes.length} outcomes`
   box.hidden = false
 }
 
@@ -1295,7 +1340,7 @@ function missionPathEl(path, board) {
   line.className = 'mission-path'
   const action = document.createElement('button')
   action.className = `mission-node mission-${row.status}`
-  const owner = row.action_owner ? actionOwnerLabel(row) : row.status
+  const owner = row.action_owner ? actionOwnerLabel(row) : (STATUS_LABEL[row.status] ?? row.status)
   action.innerHTML = `
     <span class="mission-node-meta">${esc(owner)}</span>
     <strong>${esc(row.label)}</strong>
@@ -1310,7 +1355,7 @@ function missionPathEl(path, board) {
   if (path.result) {
     result.innerHTML = `<span>${path.result.kind === 'outcome' ? 'Outcome' : 'After this'}</span><strong>${esc(path.result.text)}</strong>`
   } else {
-    result.textContent = 'No explicit next outcome'
+    result.textContent = 'No next step recorded'
   }
   line.append(action, arrow, result)
   return line
@@ -1322,7 +1367,7 @@ function renderMission() {
   if (!board) { closeMission(); return }
   const box = document.getElementById('missionbox')
   const mission = buildMission(board)
-  box.querySelector('.mission-subtitle').textContent = `${mission.root.project} · ${mission.paths.length} mapped rows`
+  box.querySelector('.mission-subtitle').textContent = `${mission.root.project} · ${mission.paths.length} steps`
   box.querySelector('.mission-root-project').textContent = mission.root.project
   box.querySelector('.mission-root-title').textContent = mission.root.title
   box.querySelector('.mission-root-progress').textContent = `${mission.root.progress} done`
@@ -1331,7 +1376,7 @@ function renderMission() {
   if (!mission.paths.length) {
     const empty = document.createElement('div')
     empty.className = 'mission-empty'
-    empty.textContent = 'No countable rows to map.'
+    empty.textContent = 'No active steps in this plan.'
     paths.appendChild(empty)
   } else {
     for (const path of mission.paths) paths.appendChild(missionPathEl(path, board))
@@ -1344,7 +1389,7 @@ function renderMission() {
   if (missionDetailRowId) {
     const row = board.rows.find((candidate) => candidate.id === missionDetailRowId)
     if (row) {
-      detail.querySelector('.mission-detail-meta').textContent = `${row.status} · ${actionOwnerLabel(row)}`
+      detail.querySelector('.mission-detail-meta').textContent = `${STATUS_LABEL[row.status] ?? row.status} · ${actionOwnerLabel(row)}`
       detail.querySelector('.mission-detail-title').textContent = row.label
       const body = detail.querySelector('.mission-detail-body')
       body.replaceChildren(rowPanelEl(board, row, board.status === 'archived'))
@@ -1431,7 +1476,7 @@ function initTabs() {
     t.addEventListener('click', () => selectTab(t.dataset.tab))
   }
   selectTab(activeTab)
-  wireTablist(document.getElementById('tabs'), 'horizontal')
+  wireTablist(document.getElementById('tabs'), 'vertical')
 }
 
 function filterData({ g, boards, archived }) {
@@ -1467,7 +1512,14 @@ function applySearch({ g, boards, archived }) {
   }
 }
 
-const TAB_LABEL = { needsYou: 'Needs you', boards: 'Boards', live: 'Live', notes: 'Notes', done: 'Done' }
+const TAB_LABEL = { needsYou: 'Inbox', boards: 'Plans', live: 'Activity', notes: 'Notes', done: 'History' }
+const PAGE_META = {
+  needsYou: { kicker: 'Inbox', title: 'Your queue' },
+  boards: { kicker: 'Workspace', title: 'Plans' },
+  notes: { kicker: 'Workspace', title: 'Notes' },
+  done: { kicker: 'Workspace', title: 'History' },
+  setup: { kicker: 'Agent Inbox', title: 'Settings' },
+}
 
 // the §12 pointer on its own: "<span>2 in Boards · 1 in Notes</span>", or ''.
 // Interpolates ONLY the fixed TAB_LABEL strings and integers — never agent text
@@ -1491,7 +1543,7 @@ const liveSessionIds = () => new Set((lastData.activity ?? []).map((a) => a.sess
 // projects the human retired (issue #32) — server state, not localStorage, so the
 // Electron dock badge (a different OS process) reads the very same set
 const closedSet = () => new Set(lastData.closed ?? [])
-const themeName = () => (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+const themeName = () => document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light'
 
 // spec §2: color persistence. Every caller that paints a project dot/wash goes
 // through THIS, never projectColor() directly — passing localStorage is what
@@ -1521,6 +1573,93 @@ let projMatches = new Map()
 // rail shows full project names or collapses to monogram dots.
 let layout = layoutMode(window.innerWidth)
 
+const PANE_KEYS = {
+  sidebar: 'agent-inbox-sidebar-width',
+  inspector: 'agent-inbox-inspector-width',
+}
+const panePreferences = {
+  sidebar: savedPaneWidth('sidebar'),
+  inspector: savedPaneWidth('inspector'),
+}
+
+function savedPaneWidth(kind) {
+  const stored = Number(localStorage.getItem(PANE_KEYS[kind]))
+  return Number.isFinite(stored) && stored > 0 ? stored : PANE_DEFAULTS[kind]
+}
+
+function updatePaneHandle(kind, pane) {
+  const handle = document.getElementById(`${kind}Resize`)
+  if (!handle) return
+  handle.setAttribute('aria-valuemin', String(pane.min))
+  handle.setAttribute('aria-valuemax', String(pane.max))
+  handle.setAttribute('aria-valuenow', String(pane.value))
+  handle.title = `Drag to resize; arrow keys adjust; double-click resets to ${PANE_DEFAULTS[kind]}px`
+}
+
+function applyPaneLayout() {
+  const panes = resolvePaneLayout(window.innerWidth, panePreferences)
+  const root = document.documentElement.style
+  root.setProperty('--sidebar-width', `${panes.sidebar.value}px`)
+  root.setProperty('--inspector-width', `${panes.inspector.value}px`)
+  updatePaneHandle('sidebar', panes.sidebar)
+  updatePaneHandle('inspector', panes.inspector)
+  return panes
+}
+
+function setPanePreference(kind, value) {
+  panePreferences[kind] = Number(value)
+  const panes = applyPaneLayout()
+  const actual = panes[kind].value
+  panePreferences[kind] = actual
+  localStorage.setItem(PANE_KEYS[kind], String(actual))
+}
+
+function resetPanePreference(kind) {
+  panePreferences[kind] = PANE_DEFAULTS[kind]
+  localStorage.removeItem(PANE_KEYS[kind])
+  applyPaneLayout()
+}
+
+function initPaneResizers() {
+  let active = null
+
+  const finish = (event) => {
+    if (!active || (event.pointerId != null && event.pointerId !== active.pointerId)) return
+    active = null
+    document.body.classList.remove('resizing-pane')
+  }
+  window.addEventListener('pointermove', (event) => {
+    if (!active || event.pointerId !== active.pointerId) return
+    setPanePreference(active.kind, paneValueFromPointer(active.kind, event.clientX, window.innerWidth))
+  })
+  window.addEventListener('pointerup', finish)
+  window.addEventListener('pointercancel', finish)
+  window.addEventListener('resize', applyPaneLayout)
+
+  for (const kind of ['sidebar', 'inspector']) {
+    const handle = document.getElementById(`${kind}Resize`)
+    if (!handle) continue
+    handle.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0) return
+      active = { kind, pointerId: event.pointerId }
+      document.body.classList.add('resizing-pane')
+      handle.setPointerCapture?.(event.pointerId)
+      event.preventDefault()
+    })
+    handle.addEventListener('keydown', (event) => {
+      const pane = applyPaneLayout()[kind]
+      const next = paneKeyValue(kind, event.key, pane.value, pane.min, pane.max, event.shiftKey)
+      if (next == null) return
+      event.preventDefault()
+      event.stopPropagation()
+      setPanePreference(kind, next)
+    })
+    handle.addEventListener('dblclick', () => resetPanePreference(kind))
+  }
+
+  applyPaneLayout()
+}
+
 function initResponsive() {
   const mq = window.matchMedia(`(max-width: ${NARROW_MAX}px)`)
   const apply = () => {
@@ -1539,7 +1678,7 @@ function initResponsive() {
 // tabbable", and N focusable close buttons in a rail of N projects would bury
 // the tablist under tab stops. The keyboard path is Delete/Backspace on the
 // focused tab instead — the convention every browser tab strip uses — wired in
-// railRowEl below. Both buttons are hidden under 900px (see the @media block);
+// railRowEl below. Both buttons are hidden under 1280px (see the @media block);
 // implicit reopen-on-new-activity works at every width, so nothing an agent
 // needs ever becomes unreachable.
 function railActionEl(e, closed) {
@@ -1676,7 +1815,7 @@ function renderClosedBanner() {
   bar.className = 'closed-banner'
   const text = document.createElement('span')
   // textContent — project names are agent-authored
-  text.textContent = `${name} is closed — these items are not counted in your badge or triage deck.`
+  text.textContent = `${name} is closed — these items are not included in your Inbox count or Review queue.`
   const reopen = btn('Reopen', () => reopenProjectAction(name))
   reopen.className = 'closed-reopen'
   bar.append(text, reopen)
@@ -1760,7 +1899,7 @@ function renderAgentSelect(agents) {
   for (const v of [null, ...agents]) {
     const o = document.createElement('option')
     o.value = v ?? ''
-    o.textContent = v ?? 'all'
+    o.textContent = v ?? 'All agents'
     if (v === agentFilter) o.selected = true
     sel.appendChild(o)
   }
@@ -1779,6 +1918,9 @@ function showPanel(id) {
   for (const p of document.querySelectorAll('main > .panel')) p.hidden = p.id !== id
   for (const t of document.querySelectorAll('#tabs .tab')) t.setAttribute('aria-selected', String(t.dataset.tab === id))
   document.body.classList.toggle('settings-open', id === 'setup')
+  const page = PAGE_META[id] ?? PAGE_META.needsYou
+  document.getElementById('pageKicker').textContent = page.kicker
+  document.getElementById('pageTitle').textContent = page.title
   const gear = document.getElementById('gear')
   gear.classList.toggle('active', id === 'setup')
   gear.setAttribute('aria-pressed', String(id === 'setup'))
@@ -1980,7 +2122,7 @@ function filterActionEntries(entries) {
 function needsYouHeader() {
   const bar = document.createElement('div')
   bar.className = 'tab-header'
-  for (const [value, label] of [['all', 'All'], ['decision', 'Decisions'], ['task', 'Tasks']]) {
+  for (const [value, label] of [['all', 'All'], ['decision', 'Decisions'], ['task', 'To do']]) {
     const filter = btn(label, () => {
       actionFilter = value
       forceRender()
@@ -1988,17 +2130,17 @@ function needsYouHeader() {
     filter.className = `header-toggle${actionFilter === value ? ' active' : ''}`
     bar.appendChild(filter)
   }
-  const changed = btn('New / changed', () => {
+  const changed = btn('Updates', () => {
     changedOnly = !changedOnly
     forceRender()
   })
   changed.className = `header-toggle${changedOnly ? ' active' : ''}`
   changed.disabled = !lastVisitAt
   bar.appendChild(changed)
-  const relay = btn('Relay', openRelay)
+  const relay = btn('Handoffs', openRelay)
   relay.className = 'relay-btn'
   bar.appendChild(relay)
-  const tri = btn('Triage →', openTriage)
+  const tri = btn('Review queue', openTriage)
   tri.className = 'triage-btn'
   bar.appendChild(tri)
   return bar
@@ -2018,7 +2160,7 @@ function renderNeedsYouExtras(host, notes) {
 function renderEmptyState(host) {
   const panel = document.createElement('div')
   panel.className = 'calm-panel'
-  panel.innerHTML = '<div class="calm-head">Nothing needs you</div>'
+  panel.innerHTML = '<div class="calm-head">Your queue is clear</div>'
   // the unread-note count already has its own actionable footer button
   // (renderNeedsYouExtras' .notes-chip) — an inert duplicate here is one
   // number shown twice for the same fact.
@@ -2049,6 +2191,9 @@ function renderEmptyState(host) {
 // flat, ranked, two-line rows — no project/agent heading levels (§3, §15)
 function renderNeedsYou(g, boardsInView, nowMs) {
   const host = document.getElementById('needsYouList')
+  const openCard = openRowId ? needsYouRowEl(openRowId)?.querySelector('.nrow-card') : null
+  const cardFocus = openCard ? captureCardFocus(openCard, openRowId) : null
+  if (openCard) openRowScrollTop = openCard.scrollTop
   // §13: this rebuilds every row from scratch (poll tick or user action) — capture
   // this BEFORE the list gets cleared below, since clearing a focused element's
   // subtree shifts document.activeElement immediately (to <body>, typically).
@@ -2114,14 +2259,15 @@ function renderNeedsYou(g, boardsInView, nowMs) {
   // count is computed from (render()'s `g.notes`). It used to read the GLOBAL
   // lastData.g.notes, so the chip and the badge disagreed under any rail filter.
   renderNeedsYouExtras(host, g.notes.flatMap((gr) => gr.items))
+  const restoredCard = openRowId ? needsYouRowEl(openRowId)?.querySelector('.nrow-card') : null
+  if (restoredCard && openRowScrollTop > 0) restoredCard.scrollTop = openRowScrollTop
+  const restoredCardFocus = restoreCardFocus(cardFocus)
   // §13: `selectedId` (Task 17) is module state, same pattern as openRowId/
   // staleFoldOpen — the DOM just rebuilt above has no idea a row was selected,
-  // so reapply it. Deliberately NOT suspended by suspendState() (unlike an open
-  // card): freezing the poll on mere selection would stall ordinary keyboard
-  // navigation, the opposite of what §10 wants. Only steals DOM focus back if
-  // focus was already inside the list before the rebuild (hadListFocus) — a
-  // poll tick must never yank focus out of the search box or a draft input.
-  restoreRowSelection(hadListFocus)
+  // so reapply it. Neither selection nor an open card suspends polling. Restore
+  // row focus only when focus was already inside the list and the open card did
+  // not restore its own control; a poll must never yank focus from elsewhere.
+  restoreRowSelection(hadListFocus && !restoredCardFocus)
 }
 
 function renderOrphanedDrafts(host) {
@@ -2187,7 +2333,7 @@ function needsRowEl(m, entry, nowMs) {
   el.tabIndex = 0
   const chip = urgencyChip(m, nowMs)
   const color = pcolor(m.project)
-  const glyph = m.kind === 'row' ? `<button class="nrow-glyph" title="open board: ${esc(m.boardTitle ?? '')}">🚧</button>` : ''
+  const glyph = m.kind === 'row' ? `<button class="nrow-glyph" title="Open plan: ${esc(m.boardTitle ?? '')}">Plan</button>` : ''
   // Items only. Board rows deliberately have no line-level ✕: their expanded
   // card owns the truthful dispositions (snooze, clarify, decline, or do/answer).
   // The old ✕ advertised the x key and did nothing.
@@ -2299,6 +2445,7 @@ function needsRowEl(m, entry, nowMs) {
 function rowCardBodyEl(entry, m, nowMs) {
   const body = document.createElement('div')
   body.className = 'nrow-card'
+  body.tabIndex = -1
   body.addEventListener('click', (ev) => ev.stopPropagation()) // clicks in the card must not collapse it
   // `entry` is a render-time closure and the §10 gate can hold a render for
   // minutes, so the snapshot inside it goes stale (issue #31.1, layer 2: a row
@@ -2311,9 +2458,8 @@ function rowCardBodyEl(entry, m, nowMs) {
   return body
 }
 
-// Single-open accordion. `setOpenRow` (Task 9) owns the flag and the poll gate;
-// the DOM is patched in place because a re-render is exactly what the gate is
-// there to suspend. Collapsing hands the poll its pending data back.
+// Single-open accordion. `setOpenRow` owns the logical state; the DOM is patched
+// in place for immediate interaction, then polling rebuilds it from that state.
 //
 // This is the ONE function that opens/closes a row — a mouse click, the row's
 // own Enter/Escape keydown handler below, and Task 17's keyboard 'expand'/
@@ -2369,7 +2515,15 @@ function renderDone(items) {
   if (remaining > 0) host.appendChild(moreButton('done', remaining))
 }
 
-const GLYPH = { done: '✅', partial: '⚠️', missing: '❌', tracked: '🔜', na: '➖', blocked: '🚧' }
+const GLYPH = { done: '✓', partial: '◐', missing: '×', tracked: '→', na: '—', blocked: '!' }
+const STATUS_LABEL = {
+  done: 'Done',
+  partial: 'In progress',
+  missing: 'Missing',
+  tracked: 'Tracked',
+  na: 'Not applicable',
+  blocked: 'Needs input',
+}
 
 // boards where the human clicked "show" on hidden done rows, overriding the
 // global hide-completed pill for that board only
@@ -2433,7 +2587,7 @@ function renderBoards(boards, archived) {
   // are part of the answer — `rest` is computed first so "No matches for X here
   // or in any other tab" can't print directly above a fold holding the match.
   const rest = archived.filter((b) => !lingerIds.has(b.id))
-  if (!boards.length && !lingering.length && !rest.length) host.insertAdjacentHTML('beforeend', `<p class="empty">${emptyMsg('No boards.')}</p>`)
+  if (!boards.length && !lingering.length && !rest.length) host.insertAdjacentHTML('beforeend', `<p class="empty">${emptyMsg('No plans yet.')}</p>`)
   const { visible, remaining } = paginate(boards, shown.boards)
   for (const b of visible) host.appendChild(boardEl(b))
   if (remaining > 0) host.appendChild(moreButton('boards', remaining))
@@ -2445,7 +2599,7 @@ function renderBoards(boards, archived) {
     fold.className = 'archived-fold'
     fold.open = showArchived
     fold.addEventListener('toggle', () => { showArchived = fold.open })
-    fold.innerHTML = `<summary>show archived (${rest.length})</summary>`
+    fold.innerHTML = `<summary>Archived plans (${rest.length})</summary>`
     const page = paginate(rest, shown.archived)
     for (const b of page.visible) fold.appendChild(boardEl(b, true))
     if (page.remaining > 0) fold.appendChild(moreButton('archived', page.remaining))
@@ -2498,9 +2652,9 @@ function boardEl(b, archived = false, lingering = false) {
     // one-line note only; the long context lives behind the row click
     tr.innerHTML = `
       <td class="row-num">${num}</td>
-      <td class="row-glyph ${r.status}" title="${esc(r.status)}">${GLYPH[r.status] || ''}</td>
+      <td class="row-glyph ${r.status}" title="${esc(STATUS_LABEL[r.status] ?? r.status)}">${GLYPH[r.status] || ''}</td>
       <td class="row-label">${esc(r.label)}</td>
-      <td class="row-note"><span class="note-line">${esc(boardRowLine(r))}</span>${r.context ? '<span class="more-dot" title="has background — click the row">…</span>' : ''}${r.annotation ? `<span class="annotation-dot" title="${esc(r.annotation)}">📝${r.annotation_unseen ? '<span class="unseen" title="not yet delivered to an agent">●</span>' : ''}</span>` : ''}${r.handled_at ? `<span class="handled-dot" title="you marked your part done">✓${r.handled_seen_at ? '' : '<span class="unseen" title="not yet delivered to an agent">●</span>'}</span>` : ''}</td>`
+      <td class="row-note"><span class="note-line">${esc(boardRowLine(r))}</span>${r.context ? '<span class="more-dot" title="has background — click the row">…</span>' : ''}${r.annotation ? `<span class="annotation-dot" title="${esc(r.annotation)}">Note${r.annotation_unseen ? '<span class="unseen" title="not yet delivered to an agent">●</span>' : ''}</span>` : ''}${r.handled_at ? `<span class="handled-dot" title="you marked your part done">✓${r.handled_seen_at ? '' : '<span class="unseen" title="not yet delivered to an agent">●</span>'}</span>` : ''}</td>`
     const actionTd = document.createElement('td')
     actionTd.className = 'row-action'
     const toggle = () => {
@@ -2532,7 +2686,7 @@ function boardEl(b, archived = false, lingering = false) {
   el.appendChild(table)
   const actions = document.createElement('div')
   actions.className = 'actions'
-  actions.appendChild(btn('Map', () => openMission(b)))
+  actions.appendChild(btn('Plan flow', () => openMission(b)))
   if (archived) {
     actions.appendChild(btn('Un-archive', async () => {
       const res = await postJSON(`/api/boards/${b.id}/unarchive`, { expected_version: b.revision })
@@ -2700,9 +2854,9 @@ function itemCardEl(it, { done = false, nowMs = Date.now(), liveness = 'parked',
     ${head}
     ${sourceBlockHtml(linkIndex, it, nowMs)}
     ${actionBlocksHtml(s.detail, s.nextStep, s.actionOwner, s.impact, s.nextAfter, s.context, `item:${it.id}`)}
-    ${s.annotation ? `<div class="annotation">📝 ${esc(s.annotation)}</div>` : ''}
-    ${s.recWarning ? `<div class="rec-warning">⚠ ${esc(s.recWarning)}</div>` : ''}
-    ${s.reply || it.reply_kind ? `<div class="reply-block"><strong>${esc(responseLabel(it) || 'You answered')}:</strong> ${esc(s.reply ?? '')}${it.reply_context ? `<div class="reply-context">context: ${esc(it.reply_context)}</div>` : ''}${it.reply_source === 'agent' ? '<span class="reply-source">via chat</span>' : ''}${s.showPickup ? `<span class="pickup ${it.reply_seen_at ? 'picked' : 'awaiting'}">${it.reply_seen_at ? '✓ picked up' : '● waiting for agent pickup'}</span>` : ''}</div>` : ''}
+    ${s.annotation ? `<div class="annotation"><strong>Note:</strong> ${esc(s.annotation)}</div>` : ''}
+    ${s.recWarning ? `<div class="rec-warning">Review: ${esc(s.recWarning)}</div>` : ''}
+    ${s.reply || it.reply_kind ? `<div class="reply-block"><strong>${esc(responseLabel(it) || 'You answered')}:</strong> ${esc(s.reply ?? '')}${it.reply_context ? `<div class="reply-context">Context: ${esc(it.reply_context)}</div>` : ''}${it.reply_source === 'agent' ? '<span class="reply-source">via chat</span>' : ''}${s.showPickup ? `<span class="pickup ${it.reply_seen_at ? 'picked' : 'awaiting'}">${it.reply_seen_at ? 'With the agent' : 'Waiting for the agent'}</span>` : ''}</div>` : ''}
     ${s.outcome ? `<div class="outcome-block">Outcome: ${esc(s.outcome)}</div>` : ''}
     ${lifecycleHtml(it)}`
   bindContextDisclosures(el)
@@ -3272,7 +3426,7 @@ async function renderSetup() {
 // ── init ────────────────────────────────────────────────────────────────────
 // Canonical order for the finished app; later tasks add their one line at the
 // slot named here and never rewrite this block:
-//   initTabs → initTriage → initSearch → initResponsive (Task 18) →
+//   initTabs → initTriage → initSearch → initResponsive → initPaneResizers →
 //   initKeys (Task 17) → initFocusHash (Task 17) → initStagedFlush →
 //   initPressGuard (#38) → initAgentSelect →
 //   initGear → initLiveBar → renderSetup → load → setInterval(load, 3000)
@@ -3282,6 +3436,7 @@ initRelay()
 initMission()
 initSearch()
 initResponsive()
+initPaneResizers()
 initKeys()
 initFocusHash()
 initStagedFlush()

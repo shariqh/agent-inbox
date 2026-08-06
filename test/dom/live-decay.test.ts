@@ -42,7 +42,7 @@ describe('the Live drawer after a claim goes cold (#45)', () => {
 
     // the row did NOT expire, so the item is still an agent blocked on you
     const nrow = rows().find((r) => r.dataset['cardId'] === id)!
-    expect(nrow.textContent).toContain('waiting')
+    expect(nrow.textContent).toContain('Waiting')
   })
 
   it('sinks and dims a terminal nobody has touched in hours, and dates it by silence', async () => {

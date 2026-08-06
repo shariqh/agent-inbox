@@ -165,7 +165,7 @@ describe('C2 · a REFUSED change-answer must not freeze the viewer', () => {
     expect(document.querySelector('.refusal-msg')?.textContent ?? '').toMatch(/Picked up/)
     expect(listItems(d)[0]?.reply, 'the picked-up answer must survive the refusal').toBe(ANSWER)
 
-    click(row(id)) // collapse: openRowId is null, so a draft is the ONLY suspend reason left
+    click(row(id)) // collapse; the rejected reply draft remains the only suspend reason
     await settle()
 
     advanceClock()

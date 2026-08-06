@@ -1,6 +1,7 @@
 // Pure responsive decisions (spec §14).
 
 export const NARROW_MAX = 1279
+export const PROJECT_DISCLOSURE_MAX = 620
 
 export function layoutMode(width) {
   return Number(width) <= NARROW_MAX ? 'narrow' : 'wide'

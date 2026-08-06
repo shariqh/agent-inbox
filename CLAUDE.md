@@ -383,7 +383,7 @@ then imports `public/app.js` **unmodified** — top-level side effects and all.
 - **Four globals must be stubbed or `render()` throws and `load()`'s catch swallows it** —
   which presents as "nothing rendered", not as an error: `window.uFuzzy` (vendored IIFE,
   constructed at app.js module top level, so it must exist BEFORE the import),
-  `window.matchMedia` (2 call sites: `themeName`, `initResponsive`), `CSS.escape`
+  `window.matchMedia` (3 call sites: `themeName`, `initResponsive`, `initProjectDisclosure`), `CSS.escape`
   (6 call sites, incl. `setRailMatch` on every render), `Element.prototype.scrollIntoView`.
   The harness's **console.error guard is load-bearing**, not cosmetic — it is the only
   thing that turns a swallowed render throw back into a visible failure.
@@ -615,10 +615,13 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   to static inline layout, and the library becomes a two-tier masthead: brand/library/Settings
   share its first row, while a labelled, horizontally scrollable strip keeps readable project
   names and inline counts on the second. The page heading and agent/search tools share a fluid
-  row before wrapping; below 620px a named container hides only library counts so all four
-  destinations remain visible. `test/editorial-shell.test.ts`, `test/panes.test.ts`,
-  `test/layout.test.ts`, and `test/dom/boot.test.ts` pin the contract; jsdom still cannot validate
-  the responsive media layer or CSS vars.
+  row before wrapping. At 620px the named masthead container hides library counts and replaces
+  the project strip with one full-width disclosure summarizing the current project and attention
+  count; its vertical menu closes on project selection, outside pointer/focus, Escape (with focus
+  restoration), or a breakpoint transition. Disclosure state is window-local and non-persistent.
+  `test/editorial-shell.test.ts`, `test/panes.test.ts`, `test/layout.test.ts`,
+  `test/dom/boot.test.ts`, and `test/dom/project-disclosure.test.ts` pin the contract; jsdom still
+  cannot validate the responsive media layer or CSS vars.
 - **Attention-first cold launch** — every fresh viewer starts at Needs you with All projects,
   all agents and All action types, and no expanded card. Project/agent filters are
   window-local; the boot path removes the two legacy localStorage keys so an older build

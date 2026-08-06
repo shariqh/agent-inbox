@@ -47,12 +47,14 @@ describe('the editorial desk shell', () => {
 
   it('composes compact navigation as one masthead with a readable project strip', () => {
     const compact = css.slice(css.indexOf('@media (max-width: 1279px)'))
+    expect(html).toContain('id="projectDisclosureToggle"')
     expect(compact).toMatch(/\.sidebar-shell\s*\{[^}]*grid-template-columns:\s*auto minmax\(0,\s*1fr\) auto/s)
     expect(compact).toMatch(/#tabs\s*\{[^}]*grid-column:\s*2[^}]*width:\s*max-content/s)
     expect(compact).toMatch(/\.sidebar-section-label\s*\{[^}]*display:\s*block/s)
     expect(compact).toMatch(/#rail\s*\{[^}]*grid-column:\s*2\s*\/\s*-1/s)
     expect(compact).toMatch(/#rail \.rail-name\s*\{[^}]*text-overflow:\s*ellipsis/s)
-    expect(css).toMatch(/@container compact-masthead \(max-width:\s*620px\)[\s\S]*#tabs \.tab-count\s*\{[^}]*display:\s*none/s)
+    expect(compact).toMatch(/@container compact-masthead \(max-width:\s*620px\)[\s\S]*#tabs \.tab-count\s*\{[^}]*display:\s*none/s)
+    expect(compact).toMatch(/#projectDisclosure\[data-open="true"\] #rail\s*\{[^}]*display:\s*flex/s)
   })
 
   it('lets the compact page heading and tools share a row before wrapping', () => {

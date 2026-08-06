@@ -20,7 +20,19 @@
         <button class="tab" type="button" role="tab" data-tab="done" aria-selected="false">History<span class="tab-count" hidden></span></button>
       </div>
       <div class="sidebar-section-label">Projects</div>
-      <nav id="rail" role="tablist" aria-orientation="vertical" aria-label="Projects"></nav>
+      <div id="projectDisclosure" class="project-disclosure" data-open="false">
+        <button id="projectDisclosureToggle" class="project-disclosure-toggle" type="button"
+          aria-expanded="false" aria-controls="rail" aria-label="Choose project">
+          <span class="project-disclosure-kicker">Project</span>
+          <span id="projectDisclosureDot" class="rail-dot all" aria-hidden="true"></span>
+          <span id="projectDisclosureName" class="project-disclosure-name">All projects</span>
+          <span id="projectDisclosureCount" class="project-disclosure-count" hidden></span>
+          <svg class="project-disclosure-caret" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="m4 6 4 4 4-4"></path>
+          </svg>
+        </button>
+        <nav id="rail" role="tablist" aria-orientation="vertical" aria-label="Projects"></nav>
+      </div>
       <button id="gear" class="gear" type="button" title="Settings" aria-label="Settings" aria-pressed="false">
         <svg viewBox="0 0 16 16" aria-hidden="true">
           <path d="M2 4.25h6.5M11.5 4.25H14M2 11.75h2.5M7.5 11.75H14"></path>

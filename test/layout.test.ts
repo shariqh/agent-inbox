@@ -1,10 +1,11 @@
 // test/layout.test.ts
 import { describe, it, expect } from 'vitest'
-import { layoutMode, railLabel, NARROW_MAX } from '../public/layout.js'
+import { layoutMode, railLabel, NARROW_MAX, PROJECT_DISCLOSURE_MAX } from '../public/layout.js'
 
 describe('layoutMode', () => {
   it('switches before three panes can crush the queue', () => {
     expect(NARROW_MAX).toBe(1279)
+    expect(PROJECT_DISCLOSURE_MAX).toBe(620)
   })
   it('is wide above the breakpoint', () => {
     expect(layoutMode(1400)).toBe('wide')

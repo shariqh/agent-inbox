@@ -296,9 +296,13 @@ preferences persist as `agent-inbox-sidebar-width` and `agent-inbox-inspector-wi
 
 Below 1280px the fixed library becomes a compact two-tier sticky masthead. Brand, library
 navigation, and Settings share its first row; a labelled, horizontally scrollable project strip
-uses readable slug labels, project colors, and inline counts on the second. Below 620px only the
-library counts hide so all four destinations remain visible. The page heading and agent/search
-tools share a fluid row until their preferred widths require a wrap. The expanded inspector
+uses readable slug labels, project colors, and inline counts on the second. At 620px the library
+counts hide so all four destinations remain visible, and the project strip becomes a single
+full-width disclosure showing the current project, its project-colored dot, and its attention
+count. Opening it reveals the same project choices in a bounded vertical menu; selecting a
+project, interacting outside it, pressing Escape, or crossing the breakpoint closes it. The
+disclosure is window-local and does not persist. The page heading and agent/search tools share a
+fluid row until their preferred widths require a wrap. The expanded inspector
 returns to a full-width inline card. Plan rows use fixed columns and ellipsized labels so their
 action affordance cannot leave the viewport; the full note remains in the row panel. Lane- and
 graph-shaped overlays retain horizontal touch scrolling rather than collapsing their meaning

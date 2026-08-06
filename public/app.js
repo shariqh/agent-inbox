@@ -26,7 +26,7 @@ import { esc } from '/esc.js'
 import { boardRowsView, boardRowLine, progressLabel, hiddenDoneCount, lingeringBoards } from '/boards.js'
 import { liveEntity, tabMatchCounts, projectMatchCounts, elsewhereLabel } from '/tabsearch.js'
 import { titleWithBadge, focusHashFor, parseFocusHash } from '/badge.js'
-import { layoutMode, railLabel, NARROW_MAX } from '/layout.js'
+import { layoutMode, railLabel, NARROW_MAX, PROJECT_DISCLOSURE_MAX } from '/layout.js'
 import { indexLinks, sourceChipsHtml, sourceBlockHtml } from '/source.js'
 import { buildSummary } from '/buildstamp.js'
 import { actionCategory, actionOwnerLabel, agentFollowupChip, changeKind, lifecycleReceipt, responseLabel } from '/action.js'
@@ -1705,6 +1705,56 @@ function initResponsive() {
   apply()
 }
 
+function setProjectDisclosure(open, { restoreFocus = false } = {}) {
+  const disclosure = document.getElementById('projectDisclosure')
+  const toggle = document.getElementById('projectDisclosureToggle')
+  if (!disclosure || !toggle) return
+  disclosure.dataset.open = String(!!open)
+  toggle.setAttribute('aria-expanded', String(!!open))
+  if (!open && restoreFocus) toggle.focus()
+}
+
+function updateProjectDisclosure(entry) {
+  const toggle = document.getElementById('projectDisclosureToggle')
+  const dot = document.getElementById('projectDisclosureDot')
+  const name = document.getElementById('projectDisclosureName')
+  const count = document.getElementById('projectDisclosureCount')
+  if (!toggle || !dot || !name || !count || !entry) return
+
+  const label = entry.key === '__all__' ? 'All projects' : railLabel(entry.label, 'narrow')
+  name.textContent = label
+  count.textContent = entry.total ? String(entry.total) : ''
+  count.hidden = !entry.total
+  dot.className = entry.key === '__all__' ? 'rail-dot all' : 'rail-dot'
+  dot.style.background = ''
+  if (entry.key !== '__all__' && !entry.unknown) dot.style.background = pcolor(entry.key).dot
+  toggle.setAttribute('aria-label', `Choose project, current ${label}`)
+}
+
+function initProjectDisclosure() {
+  const disclosure = document.getElementById('projectDisclosure')
+  const toggle = document.getElementById('projectDisclosureToggle')
+  if (!disclosure || !toggle) return
+
+  toggle.addEventListener('click', () => {
+    setProjectDisclosure(disclosure.dataset.open !== 'true')
+  })
+  for (const type of ['pointerdown', 'focusin']) document.addEventListener(type, (event) => {
+    if (disclosure.dataset.open !== 'true' || disclosure.contains(event.target)) return
+    setProjectDisclosure(false)
+  })
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape' || disclosure.dataset.open !== 'true') return
+    event.preventDefault()
+    event.stopImmediatePropagation()
+    setProjectDisclosure(false, { restoreFocus: true })
+  })
+  window.matchMedia(`(max-width: ${PROJECT_DISCLOSURE_MAX}px)`).addEventListener('change', () => {
+    setProjectDisclosure(false)
+  })
+  setProjectDisclosure(false)
+}
+
 // The × / ↩ affordance on a rail row (issue #32).
 //
 // tabIndex = -1 is deliberate: §13 promises "exactly one project tab is
@@ -1782,6 +1832,7 @@ function railRowEl(e, { withFilter, closed = false }) {
   b.addEventListener('click', () => {
     closeSettings()
     projectFilter = e.key === '__all__' ? null : e.key
+    setProjectDisclosure(false)
     resetPaging()
     forceRender()
   })
@@ -1879,9 +1930,14 @@ function renderRail() {
   // dead end otherwise reachable by this feature's own primary action.
   const withFilter = shouldShowRailFilter(open)
   if (!withFilter) railQuery = ''
-  const entries = filterRailEntries(railEntries(open, counts), railQuery)
+  const openEntries = railEntries(open, counts)
+  const entries = filterRailEntries(openEntries, railQuery)
   const closedRows = closedRailEntries(closed, counts)
   const closedEntries = filterRailEntries(closedRows, railQuery)
+  const selectedEntry = projectFilter
+    ? [...openEntries, ...closedRows].find((entry) => entry.key === projectFilter)
+    : openEntries[0]
+  updateProjectDisclosure(selectedEntry)
   // The fold opens on demand, whenever a closed project is being peeked, and
   // whenever a search's only hit is behind it — otherwise §12's confident false
   // negative comes back through a sealed fold instead of through a missing tab.
@@ -3525,6 +3581,7 @@ async function renderSetup() {
 // Canonical order for the finished app; later tasks add their one line at the
 // slot named here and never rewrite this block:
 //   initTabs → initTriage → initSearch → initResponsive → initPaneResizers →
+//   initProjectDisclosure →
 //   initKeys (Task 17) → initFocusHash (Task 17) → initStagedFlush →
 //   initPressGuard (#38) → initAgentSelect →
 //   initGear → initLiveBar → renderSetup → load → setInterval(load, 3000)
@@ -3535,6 +3592,7 @@ initMission()
 initSearch()
 initResponsive()
 initPaneResizers()
+initProjectDisclosure()
 initKeys()
 initFocusHash()
 initStagedFlush()

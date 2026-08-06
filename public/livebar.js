@@ -6,13 +6,15 @@ import { freshnessTone } from './rowview.js'
 /**
  * @param {Array<any>} activity rows from /api/activity
  * @param {number} nowMs
- * @returns {{count:number,tone:string,label:string,sessions:Array<{session:string,label:string,tone:string}>}}
+ * @returns {{count:number,idleCount:number,tone:string,label:string,sessions:Array<{session:string,project:string,agent:string,label:string,tone:string}>}}
  */
 export function liveSummary(activity, nowMs) {
-  const rows = Array.isArray(activity) ? activity : []
+  const rows = Array.isArray(activity) ? activity.filter(Boolean) : []
   const active = rows.filter((a) => a && !a.idle)
   const sessions = active.map((a) => ({
     session: a.session,
+    project: a.project,
+    agent: a.agent,
     label: `${a.project}/${a.agent}`,
     tone: freshnessTone(nowMs - Date.parse(lastActivityAt(a))),
   }))
@@ -24,6 +26,7 @@ export function liveSummary(activity, nowMs) {
     : 'idle'
   return {
     count: active.length,
+    idleCount: rows.length - active.length,
     tone,
     label: active.length ? `${active.length} working` : 'no agents running',
     sessions,
@@ -51,4 +54,16 @@ export const DORMANT_MS = 8 * 60 * 60 * 1000
 
 export function isDormant(a, nowMs) {
   return nowMs - Date.parse(lastActivityAt(a)) >= DORMANT_MS
+}
+
+// A stale claim must not stay "working", but throwing its words away leaves an
+// idle session with no useful identity beyond project/agent. `last_doing` is a
+// historical caption only: it never participates in state, freshness, or
+// attention.
+export function activitySynopsis(a) {
+  const current = typeof a?.doing === 'string' ? a.doing.trim() : ''
+  if (!a?.idle && current && current !== 'open') return { text: current, historical: false }
+  const last = typeof a?.last_doing === 'string' ? a.last_doing.trim() : ''
+  if (last && last !== 'open') return { text: last, historical: true }
+  return { text: 'No activity summary yet', historical: false }
 }

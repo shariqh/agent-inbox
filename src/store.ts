@@ -178,6 +178,7 @@ function migrate(db: Database.Database): void {
       stream TEXT NOT NULL DEFAULT '',
       agent TEXT NOT NULL DEFAULT 'unknown',
       doing TEXT NOT NULL,
+      last_doing TEXT NOT NULL DEFAULT '',
       detail TEXT NOT NULL DEFAULT '',
       children TEXT,
       started_at TEXT NOT NULL,
@@ -221,6 +222,7 @@ function migrate(db: Database.Database): void {
   // running the old code. Both fall back to `started_at`, so a fresh connection
   // is never born cold and a days-old legacy claim is.
   ensureColumn(db, 'activity', 'last_call_at', 'TEXT')
+  migrateActivitySynopsis(db)
   ensureColumn(db, 'items', 'context', `TEXT NOT NULL DEFAULT ''`)
   ensureColumn(db, 'items', 'next_step', `TEXT NOT NULL DEFAULT ''`)
   ensureColumn(db, 'items', 'options', 'TEXT')
@@ -261,6 +263,30 @@ function ensureColumn(db: Database.Database, table: string, column: string, ddl:
 function hasColumn(db: Database.Database, table: string, column: string): boolean {
   const cols = db.prepare(`SELECT name FROM pragma_table_info(?)`).all(table) as { name: string }[]
   return cols.some((c) => c.name === column)
+}
+
+// `doing` is the current claim and must decay; `last_doing` is display-only
+// history for the idle row. Seed legacy claims (and preserved idle details) so
+// upgrading does not erase the only synopsis they ever reported. ALTER +
+// backfill stay atomic: a crash between them would leave every existing session
+// with an empty history and no migration replay path.
+function migrateActivitySynopsis(db: Database.Database): void {
+  db.transaction(() => {
+    if (!hasColumn(db, 'activity', 'last_doing')) {
+      db.exec(`ALTER TABLE activity ADD COLUMN last_doing TEXT NOT NULL DEFAULT ''`)
+    }
+    db.exec(`
+      UPDATE activity
+         SET last_doing = CASE
+               WHEN idle = 0 AND doing <> '' AND doing <> 'open' THEN doing
+               ELSE detail
+             END
+       WHERE last_doing = ''
+         AND (
+           (idle = 0 AND doing <> '' AND doing <> 'open')
+           OR (idle = 1 AND detail <> '')
+         )`)
+  })()
 }
 
 function migrateActionLifecycle(db: Database.Database): void {
@@ -1650,6 +1676,8 @@ export interface Activity {
   stream: string
   agent: string
   doing: string
+  /** Most recent explicit non-idle claim (or legacy idle detail); display only. */
+  last_doing: string
   detail: string
   children: ActivityChild[]
   idle: boolean
@@ -1677,8 +1705,9 @@ export interface ActivityUpdate {
    *
    * `false` — REGISTERING — is the presence path in src/mcp.ts, which runs on the
    * initialize handshake AND on an unconditional 2-second fallback. It refreshes
-   * scope, `updated_at` and `ended_at` only; `doing`, `detail`, `children` and
-   * `idle` are left exactly as the agent last set them. Without this, a
+   * scope, `updated_at` and `ended_at` only; `doing`, `last_doing`, `detail`,
+   * `children` and `idle` are left exactly as the agent last set them. Without
+   * this, a
    * `status({doing})` made in a session's first two seconds was wiped by the
    * fallback two seconds later.
    */
@@ -1687,15 +1716,22 @@ export interface ActivityUpdate {
 
 export function upsertActivity(db: Database.Database, a: ActivityUpdate): void {
   const now = new Date().toISOString()
-  // One statement, two modes: on a fresh row the INSERT is identical either way
-  // (there is no claim to protect yet); the CASEs only bite on conflict, which
-  // is the whole point — registration must never speak over a live claim.
+  // One statement, two modes. Registration can create idle presence but can
+  // neither replace a live claim nor write its historical caption.
   db.prepare(
-    `INSERT INTO activity (session, project, stream, agent, doing, detail, children, idle, started_at, updated_at)
-     VALUES (@session, @project, @stream, @agent, @doing, @detail, @children, @idle, @now, @now)
+    `INSERT INTO activity (session, project, stream, agent, doing, last_doing, detail, children, idle, started_at, updated_at)
+     VALUES (
+       @session, @project, @stream, @agent, @doing,
+       CASE WHEN @claim = 1 AND @idle = 0 AND @doing <> '' AND @doing <> 'open' THEN @doing ELSE '' END,
+       @detail, @children, @idle, @now, @now
+     )
      ON CONFLICT(session) DO UPDATE SET
        project = @project, stream = @stream, agent = @agent,
        doing    = CASE WHEN @claim = 1 THEN @doing ELSE doing END,
+       last_doing = CASE
+         WHEN @claim = 1 AND @idle = 0 AND @doing <> '' AND @doing <> 'open' THEN @doing
+         ELSE last_doing
+       END,
        detail   = CASE WHEN @claim = 1 THEN COALESCE(NULLIF(@detail, ''), detail) ELSE detail END,
        children = CASE WHEN @claim = 1 THEN COALESCE(@children, children) ELSE children END,
        idle     = CASE WHEN @claim = 1 THEN @idle ELSE idle END,
@@ -1751,7 +1787,8 @@ const claimCutoff = (nowMs: number): string => new Date(nowMs - CLAIM_COLD_MS).t
 // would let any later poll re-list a two-day-old `doing` as live work, which is
 // exactly the observed failure — the stale rows belonged to CLIs that were still
 // calling. Expressed as one conditional UPDATE (never SELECT-then-UPDATE) so the
-// clear and the stamp cannot be split.
+// clear and the stamp cannot be split. `last_doing` deliberately stays out of
+// this UPDATE: it is a historical caption, never a current claim.
 export function recordActivityCall(db: Database.Database, session: string): void {
   const now = new Date().toISOString()
   const cold = claimCutoff(Date.now())
@@ -1772,7 +1809,7 @@ export function listActivity(db: Database.Database, opts: { staleMinutes?: numbe
   const cutoff = new Date(now - (opts.staleMinutes ?? 15) * 60000).toISOString()
   const cold = claimCutoff(now)
   const rows = db
-    .prepare(`SELECT session, project, stream, agent, doing, detail, children, idle, started_at, updated_at, last_call_at
+    .prepare(`SELECT session, project, stream, agent, doing, last_doing, detail, children, idle, started_at, updated_at, last_call_at
               FROM activity WHERE ended_at IS NULL AND updated_at >= ?`)
     .all(cutoff) as Array<Omit<Activity, 'children' | 'idle'> & { children: string | null; idle: number }>
   // The row is kept whatever happens here — the session really is present, and

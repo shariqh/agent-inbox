@@ -21,7 +21,7 @@ import {
 import { cardSections, optionOrder } from '/card.js'
 import { keyAction, rovingIndex, ariaAnswerLabel, livenessGlyph, deckEntryAt } from '/keys.js'
 import { partitionNotes, unreadNoteCount, ambientChips, seenWatermark, markSeenIds } from '/notes.js'
-import { liveSummary, lastActivityAt, isDormant } from '/livebar.js'
+import { liveSummary, lastActivityAt, isDormant, activitySynopsis } from '/livebar.js'
 import { esc } from '/esc.js'
 import { boardRowsView, boardRowLine, progressLabel, hiddenDoneCount, lingeringBoards } from '/boards.js'
 import { liveEntity, tabMatchCounts, projectMatchCounts, elsewhereLabel } from '/tabsearch.js'
@@ -1982,6 +1982,13 @@ function initGear() {
 // live entries the user has expanded, by session id — survives the poll rebuild
 const openLive = new Set()
 
+function paintLiveProjectDot(dot, project, state) {
+  const color = pcolor(project)
+  dot.className = `live-dot project ${state}`
+  dot.style.setProperty('--project-dot', color.dot)
+  dot.style.setProperty('--project-wash', color.wash)
+}
+
 function renderLive(entries) {
   const host = document.querySelector('#liveDrawer .live-list')
   const active = entries.filter((a) => !a.idle)
@@ -1992,19 +1999,27 @@ function renderLive(entries) {
     el.className = 'live-entry'
     if (openLive.has(a.session)) el.open = true
     el.addEventListener('toggle', () => { el.open ? openLive.add(a.session) : openLive.delete(a.session) })
-    // #45: the real-call stamp, never the 5-minute liveness heartbeat
-    const { tone: fresh } = ageChip(Date.now() - Date.parse(lastActivityAt(a)))
+    const seen = lastActivityAt(a)
+    const { tone: fresh } = ageChip(Date.now() - Date.parse(seen))
     const stream = a.stream ? ` · ${esc(a.stream)}` : ''
     const kids = a.children.length ? `<span class="live-kids">▸ ${a.children.length} agent${a.children.length > 1 ? 's' : ''}</span>` : ''
     el.innerHTML = `
       <summary class="card-summary live-summary">
-        <span class="live-dot ${fresh}" title="last call ${rel(lastActivityAt(a))} ago"></span>
-        <span class="live-who">${esc(a.agent)} · ${esc(a.project)}${stream}</span>
-        <span class="live-doing">${esc(a.doing)}</span>
+        <span class="live-dot"></span>
+        <span class="live-session-copy">
+          <span class="live-session-heading">
+            <span class="live-state-label working">Working</span>
+            <span class="live-who">${esc(a.agent)} · ${esc(a.project)}${stream}</span>
+          </span>
+          <span class="live-doing">${esc(a.doing)}</span>
+        </span>
         ${kids}
-        <span class="live-age" title="started ${rel(a.started_at)} ago">${rel(a.started_at)}</span>
+        <span class="live-age ${fresh}" title="started ${rel(a.started_at)} ago">last call ${rel(seen)}</span>
       </summary>
       ${a.detail ? `<div class="detail live-detail">${esc(a.detail)}</div>` : ''}`
+    const dot = el.querySelector('.live-dot')
+    paintLiveProjectDot(dot, a.project, 'working')
+    dot.title = `${a.project} · working · last call ${rel(seen)} ago`
     if (a.children.length) {
       const table = document.createElement('table')
       table.className = 'board-table live-children'
@@ -2028,7 +2043,7 @@ function renderLive(entries) {
     fold.className = 'idle-fold'
     if (openLive.has('__idle__')) fold.open = true
     fold.addEventListener('toggle', () => { fold.open ? openLive.add('__idle__') : openLive.delete('__idle__') })
-    fold.innerHTML = `<summary>${idle.length} open session${idle.length > 1 ? 's' : ''}</summary>`
+    fold.innerHTML = `<summary>${idle.length} idle session${idle.length > 1 ? 's' : ''}</summary>`
     for (const a of idle) {
       const row = document.createElement('div')
       // #45: hours-quiet sessions keep their row (they ARE present, and their
@@ -2037,16 +2052,23 @@ function renderLive(entries) {
       const dormant = isDormant(a, Date.now())
       row.className = dormant ? 'idle-row dormant' : 'idle-row'
       const stream = a.stream ? ` · ${esc(a.stream)}` : ''
-      // a green dot means the session touched the inbox in the last minute —
-      // open-but-conversing, not asleep. Keyed on real calls: the server's own
-      // 5-minute heartbeat would otherwise re-green a terminal left open on
-      // Tuesday, forever.
       const seen = lastActivityAt(a)
       const { tone: fresh } = ageChip(Date.now() - Date.parse(seen))
-      // "alive 3d" reads as a plus on a session that has done nothing for 3
-      // days; what identifies a forgotten terminal is the silence, not the age.
-      const age = dormant ? `quiet ${rel(seen)}` : `alive ${rel(a.started_at)}`
-      row.innerHTML = `<span class="live-dot ${fresh}" title="last call ${rel(seen)} ago"></span><span class="live-who">${esc(a.agent)} · ${esc(a.project)}${stream}</span><span class="live-age" title="last call ${rel(seen)} ago">${age}</span>`
+      const synopsis = activitySynopsis(a)
+      const age = dormant ? `quiet ${rel(seen)}` : `last call ${rel(seen)}`
+      row.innerHTML = `
+        <span class="live-dot"></span>
+        <span class="live-session-copy">
+          <span class="live-session-heading">
+            <span class="live-state-label idle">Idle</span>
+            <span class="live-who">${esc(a.agent)} · ${esc(a.project)}${stream}</span>
+          </span>
+          <span class="live-doing ${synopsis.historical ? 'historical' : 'empty-summary'}">${synopsis.historical ? 'Last activity: ' : ''}${esc(synopsis.text)}</span>
+        </span>
+        <span class="live-age ${fresh}" title="last call ${rel(seen)} ago">${age}</span>`
+      const dot = row.querySelector('.live-dot')
+      paintLiveProjectDot(dot, a.project, 'idle-session')
+      dot.title = `${a.project} · idle · last call ${rel(seen)} ago`
       fold.appendChild(row)
     }
     host.appendChild(fold)
@@ -2061,34 +2083,80 @@ function renderLiveBar(entries) {
   const label = document.getElementById('liveStripLabel')
   const list = document.getElementById('liveStripSessions')
   if (!dot || !label || !list) return
-  dot.className = `live-dot ${s.tone}`
+  const projects = [...new Set(s.sessions.map((x) => x.project))]
+  if (projects.length === 1) {
+    paintLiveProjectDot(dot, projects[0], 'working')
+  } else {
+    dot.className = s.count ? 'live-dot aggregate-working' : 'live-dot idle'
+    dot.style.removeProperty('--project-dot')
+    dot.style.removeProperty('--project-wash')
+  }
+  dot.title = s.count
+    ? `${s.count} working across ${projects.length} project${projects.length === 1 ? '' : 's'}`
+    : `${s.idleCount} idle session${s.idleCount === 1 ? '' : 's'}`
   label.textContent = s.label
   list.replaceChildren()
   for (const x of s.sessions) {
     const el = document.createElement('span')
     el.className = `live-session ${x.tone}`
-    el.textContent = x.label // agent-authored: textContent, never innerHTML
+    const projectDot = document.createElement('span')
+    paintLiveProjectDot(projectDot, x.project, 'working')
+    projectDot.setAttribute('aria-hidden', 'true')
+    const text = document.createElement('span')
+    text.textContent = x.label
+    el.append(projectDot, text)
     list.appendChild(el)
   }
 }
 
-function toggleLiveDrawer(open) {
+let livePinned = false
+
+function setLivePinned(pinned) {
+  livePinned = pinned
+  const drawer = document.getElementById('liveDrawer')
+  const pin = document.getElementById('livePin')
+  if (!drawer || !pin) return
+  drawer.classList.toggle('pinned', pinned)
+  pin.setAttribute('aria-pressed', String(pinned))
+  const label = pinned ? 'Unpin Live sessions' : 'Pin Live sessions open'
+  pin.setAttribute('aria-label', label)
+  pin.title = label
+}
+
+function toggleLiveDrawer(open, { restoreFocus = false } = {}) {
   const strip = document.getElementById('liveStrip')
   const drawer = document.getElementById('liveDrawer')
   if (!strip || !drawer) return
   const next = open ?? drawer.hidden
   drawer.hidden = !next
   strip.setAttribute('aria-expanded', String(next))
-  if (!next) strip.focus() // return focus on collapse (spec §13)
+  if (!next) {
+    setLivePinned(false)
+    if (restoreFocus) strip.focus()
+  }
 }
 
 function initLiveBar() {
   const strip = document.getElementById('liveStrip')
-  if (!strip) return
+  const drawer = document.getElementById('liveDrawer')
+  const pin = document.getElementById('livePin')
+  if (!strip || !drawer || !pin) return
   strip.addEventListener('click', () => toggleLiveDrawer())
+  pin.addEventListener('click', () => setLivePinned(!livePinned))
+  const outsideDrawer = (target) => target instanceof Node
+    && !drawer.contains(target)
+    && !strip.contains(target)
+  document.addEventListener('pointerdown', (e) => {
+    if (!drawer.hidden && !livePinned && outsideDrawer(e.target)) toggleLiveDrawer(false)
+  }, true)
+  document.addEventListener('focusin', (e) => {
+    if (!drawer.hidden && !livePinned && outsideDrawer(e.target)) toggleLiveDrawer(false)
+  })
   document.addEventListener('keydown', (e) => {
-    const drawer = document.getElementById('liveDrawer')
-    if (e.key === 'Escape' && drawer && !drawer.hidden) { toggleLiveDrawer(false) }
+    if (e.key === 'Escape' && !drawer.hidden) {
+      e.preventDefault()
+      toggleLiveDrawer(false, { restoreFocus: true })
+    }
   })
 }
 

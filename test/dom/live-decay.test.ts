@@ -35,9 +35,10 @@ describe('the Live drawer after a claim goes cold (#45)', () => {
 
     await bootApp(d)
 
-    expect(drawer().textContent).not.toContain('Executing Track B')
     expect(drawer().querySelectorAll('.live-entry')).toHaveLength(0)
-    expect(drawer().querySelector('.idle-fold > summary')?.textContent).toBe('1 open session')
+    expect(drawer().querySelector('.idle-fold > summary')?.textContent).toBe('1 idle session')
+    expect(drawer().querySelector('.idle-row .live-state-label')?.textContent).toBe('Idle')
+    expect(drawer().querySelector('.idle-row .live-doing')?.textContent).toBe('Last activity: Executing Track B — 18-task viewer redesign')
     expect(document.getElementById('liveStripLabel')?.textContent).toBe('no agents running')
 
     // the row did NOT expire, so the item is still an agent blocked on you
@@ -64,14 +65,15 @@ describe('the Live drawer after a claim goes cold (#45)', () => {
     expect(seen.map((r) => r.querySelector('.live-who')?.textContent)).toEqual(['claude · alpha', 'claude · beta'])
     expect(seen[0]!.classList.contains('dormant')).toBe(false)
     expect(seen[1]!.classList.contains('dormant')).toBe(true)
-    // "alive 9h" reads as a plus; what the human needs is how long it has been quiet
+    // The recent row reports its real last call; the forgotten one foregrounds silence.
     expect(seen[1]!.querySelector('.live-age')?.textContent).toMatch(/^quiet 9h/)
-    expect(seen[0]!.querySelector('.live-age')?.textContent).toMatch(/^alive /)
-    // …and the hover text must say the same thing as the dot beside it. Keyed on
+    expect(seen[0]!.querySelector('.live-age')?.textContent).toMatch(/^last call /)
+    // …and both hover surfaces must use the same real-call stamp. Keyed on
     // `updated_at` — what it used to read — this row would claim "last update 2m
     // ago", because the server heartbeated it two minutes ago and will go on
-    // doing so forever. The dot's TONE was already pinned; the words were not.
+    // doing so forever. Color now identifies the project; the title carries state.
     expect(seen[1]!.querySelector('.live-age')?.getAttribute('title')).toBe('last call 9h ago')
-    expect(seen[1]!.querySelector('.live-dot')?.getAttribute('title')).toBe('last call 9h ago')
+    expect(seen[1]!.querySelector('.live-dot')?.getAttribute('title')).toBe('beta · idle · last call 9h ago')
+    expect(seen.every((r) => r.querySelector('.live-doing')?.textContent === 'No activity summary yet')).toBe(true)
   })
 })

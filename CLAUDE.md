@@ -169,6 +169,11 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   is in `/api/activity`, so expiring a quiet-but-live session would silently demote a genuine
   blocker to `parked` (and the same list sizes Electron's dock badge). Long-idle sessions sink to
   the bottom of the fold and render `dormant` instead — sorted, dimmed, never removed.
+  `activity.last_doing` is a separate, historical caption for that idle UI. Only an explicit
+  non-idle claim updates it; registration and both claim-decay paths preserve it; and it never
+  participates in working/idle state, freshness, attention, or sorting. Its additive migration
+  backfills atomically from a legacy non-`open` claim (or a preserved idle detail) so upgrading
+  cannot erase the only synopsis a session reported.
 - **Session scope is Solo-style** (`src/scope.ts`): inferred lazily per call, overridable via
   `register`. The client name for `inferAgent` **must be read lazily** inside handlers
   (`server.server.getClientVersion()?.name`) — it's only populated after the initialize

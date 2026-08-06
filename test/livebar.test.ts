@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest'
-import { liveSummary, lastActivityAt, isDormant } from '../public/livebar.js'
+import { liveSummary, lastActivityAt, isDormant, activitySynopsis } from '../public/livebar.js'
 
 const NOW = Date.parse('2026-07-24T12:00:00.000Z')
 const at = (msAgo: number) => new Date(NOW - msAgo).toISOString()
 const sess = (o: Partial<Record<string, unknown>> = {}) => ({
   session: 's1', project: 'oris', agent: 'claude-code', stream: '', doing: 'working',
-  detail: '', children: [], idle: false, updated_at: at(1000), started_at: at(60_000),
+  last_doing: 'working', detail: '', children: [], idle: false, updated_at: at(1000), started_at: at(60_000),
   last_call_at: at(1000), ...o,
 })
 
@@ -13,8 +13,12 @@ describe('liveSummary', () => {
   it('counts only non-idle sessions and labels them project/agent', () => {
     const s = liveSummary([sess(), sess({ session: 's2', project: 'api', idle: true })], NOW)
     expect(s.count).toBe(1)
+    expect(s.idleCount).toBe(1)
     expect(s.label).toBe('1 working')
-    expect(s.sessions).toEqual([{ session: 's1', label: 'oris/claude-code', tone: 'fresh' }])
+    expect(s.sessions).toEqual([{
+      session: 's1', project: 'oris', agent: 'claude-code',
+      label: 'oris/claude-code', tone: 'fresh',
+    }])
   })
 
   it('pluralises', () => {
@@ -25,6 +29,7 @@ describe('liveSummary', () => {
   it('reads idle when nothing is running — the strip still renders', () => {
     const s = liveSummary([sess({ idle: true })], NOW)
     expect(s.count).toBe(0)
+    expect(s.idleCount).toBe(1)
     expect(s.tone).toBe('idle')
     expect(s.label).toBe('no agents running')
     expect(s.sessions).toEqual([])
@@ -70,5 +75,21 @@ describe('lastActivityAt / isDormant (#45)', () => {
     expect(isDormant(sess({ last_call_at: at(9 * 3600_000), updated_at: at(0) }), NOW)).toBe(true)
     expect(isDormant(sess({ last_call_at: at(60 * 60_000) }), NOW)).toBe(false)
     expect(isDormant(sess({ last_call_at: at(1000) }), NOW)).toBe(false)
+  })
+})
+
+describe('activitySynopsis', () => {
+  it('uses the last meaningful claim without reviving it as current work', () => {
+    expect(activitySynopsis(sess({ doing: 'open', idle: true, last_doing: 'Preparing the release' }))).toEqual({
+      text: 'Preparing the release',
+      historical: true,
+    })
+  })
+
+  it('is explicit when a session has never reported an activity summary', () => {
+    expect(activitySynopsis(sess({ doing: 'open', idle: true, last_doing: '' }))).toEqual({
+      text: 'No activity summary yet',
+      historical: false,
+    })
   })
 })

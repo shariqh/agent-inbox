@@ -53,22 +53,35 @@ main { flex: 1; min-width: 0; }
 details[open] > .card-summary .caret::before { content: '▾'; }
 header { flex-wrap: wrap; }
 .live-entry { border: 1px solid color-mix(in srgb, CanvasText 12%, transparent); border-radius: 8px; padding: 8px 12px; margin-bottom: 8px; }
-.live-summary { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.live-summary { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 10px; }
 .live-dot { width: 8px; height: 8px; border-radius: 50%; align-self: center; flex-shrink: 0; }
 .live-dot.fresh { background: seagreen; box-shadow: 0 0 6px color-mix(in srgb, seagreen 60%, transparent); }
 .live-dot.aging { background: goldenrod; }
 .live-dot.quiet { background: color-mix(in srgb, CanvasText 30%, transparent); }
+.live-dot.project { background: var(--project-dot); }
+.live-dot.project.working { box-shadow: 0 0 0 3px var(--project-wash); }
+.live-dot.project.idle-session { background: transparent; border: 2px solid var(--project-dot); opacity: .6; }
+.live-session-copy { display: flex; min-width: 0; flex-direction: column; gap: 1px; }
+.live-session-heading { display: flex; min-width: 0; align-items: center; gap: 7px; }
+.live-state-label { flex: none; border: 1px solid color-mix(in srgb, CanvasText 16%, transparent); border-radius: 999px; padding: 0 6px; font-size: 10px; font-weight: 650; }
+.live-state-label.working { border-color: color-mix(in srgb, seagreen 32%, transparent); color: color-mix(in srgb, seagreen 82%, CanvasText); }
+.live-state-label.idle { opacity: .62; }
 .live-who { font-size: 12px; opacity: .55; }
 .live-doing { font-weight: 600; font-size: 13.5px; }
+.live-doing.historical { font-weight: 500; }
+.live-doing.empty-summary { font-weight: 400; font-style: italic; opacity: .55; }
 .live-kids { font-size: 12px; opacity: .6; }
-.live-age { margin-left: auto; font-size: 12px; opacity: .5; font-variant-numeric: tabular-nums; }
+.live-age { margin-left: auto; white-space: nowrap; font-size: 12px; opacity: .5; font-variant-numeric: tabular-nums; }
+.live-age.fresh { opacity: .72; }
+.live-age.aging { opacity: .58; }
+.live-age.quiet { opacity: .44; }
 .live-detail { margin-top: 6px; }
 .idle-fold > summary { cursor: pointer; font-size: 12.5px; opacity: .5; margin: 2px 0 4px; }
 .idle-fold > summary:hover { opacity: .8; }
-.idle-row { display: flex; align-items: center; gap: 10px; padding: 4px 2px 4px 14px; opacity: .55; font-size: 12.5px; }
+.idle-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 7px 2px 7px 14px; font-size: 12.5px; }
 .idle-row .live-age { margin-left: auto; }
 /* #45: present but hours-quiet — a forgotten terminal, kept but pushed to the background */
-.idle-row.dormant { opacity: .32; }
+.idle-row.dormant { opacity: .58; }
 .live-children { margin-top: 8px; }
 .live-state { font-size: 12px; opacity: .6; white-space: nowrap; }
 #lightbox { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; }
@@ -458,14 +471,21 @@ body.settings-open #topbar > :not(#gear) { opacity: .32; }
 #liveStrip:hover { background: color-mix(in srgb, CanvasText 4%, Canvas); }
 #liveStrip .live-label { opacity: .75; }
 #liveStrip .live-sessions { display: flex; gap: 10px; overflow: hidden; opacity: .6; min-width: 0; }
-#liveStrip .live-session { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#liveStrip .live-session { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#liveStrip .live-session .live-dot { width: 6px; height: 6px; box-shadow: none; }
 #liveStrip .live-caret { margin-left: auto; opacity: .5; }
 #liveStrip[aria-expanded="true"] .live-caret { transform: rotate(180deg); }
 .live-dot.idle { background: color-mix(in srgb, CanvasText 30%, transparent); }
 /* the drawer rises OVER the content: nothing reflows, scroll position survives */
 .live-drawer { position: fixed; left: 0; right: 0; bottom: 28px; max-height: 46vh; overflow: auto;
   background: Canvas; border-top: 1px solid color-mix(in srgb, CanvasText 14%, transparent);
-  box-shadow: 0 -12px 32px color-mix(in srgb, CanvasText 18%, transparent); padding: 10px 12px; }
+  box-shadow: 0 -12px 32px color-mix(in srgb, CanvasText 18%, transparent); padding: 0 12px 10px; }
+.live-drawer-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; padding: 9px 0 8px; background: inherit; }
+.live-drawer-title { font-size: 11px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; opacity: .55; }
+.live-pin { display: grid; width: 28px; height: 28px; place-items: center; border: 1px solid transparent; border-radius: 7px; background: transparent; color: inherit; cursor: pointer; opacity: .5; }
+.live-pin:hover, .live-pin:focus-visible { border-color: color-mix(in srgb, CanvasText 18%, transparent); opacity: 1; }
+.live-pin[aria-pressed="true"] { border-color: LinkText; background: color-mix(in srgb, LinkText 8%, transparent); color: LinkText; opacity: 1; }
+.live-pin svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linejoin: round; }
 main { padding-bottom: 34px; } /* the fixed strip must never cover the last row */
 
 /* ── tab headers: shared by Needs-you's Triage button and the Boards hide-completed
@@ -883,6 +903,15 @@ body:has(.nrow[data-open="1"]) .inspector-empty { display: none; }
 .mission-root-column::after, .mission-path::before { background: color-mix(in srgb, var(--app-accent) 24%, transparent); }
 .mission-arrow { color: var(--app-accent); }
 .live-dot.fresh { background: var(--app-success); box-shadow: none; }
+.live-dot.project { background: var(--project-dot); }
+.live-dot.project.working { box-shadow: 0 0 0 3px var(--project-wash); }
+.live-dot.project.idle-session { background: transparent; border-color: var(--project-dot); }
+.live-dot.aggregate-working { background: var(--app-success); box-shadow: 0 0 0 3px color-mix(in srgb, var(--app-success) 12%, transparent); }
+.live-state-label.working { border-color: color-mix(in srgb, var(--app-success) 34%, var(--app-border)); background: color-mix(in srgb, var(--app-success) 6%, transparent); color: var(--app-success); }
+.live-state-label.idle { border-color: var(--app-border); color: var(--app-muted); opacity: 1; }
+.live-drawer-head { border-bottom: 1px solid var(--app-border); }
+.live-pin:hover, .live-pin:focus-visible { border-color: var(--app-border-strong); }
+.live-pin[aria-pressed="true"] { border-color: var(--app-accent); background: var(--app-accent-soft); color: var(--app-accent); }
 #liveBar { left: var(--sidebar-width); }
 #liveStrip, .live-drawer { border-color: var(--app-border); background: var(--app-elevated); color: var(--app-text); }
 #liveStrip:hover { background: var(--app-soft); }

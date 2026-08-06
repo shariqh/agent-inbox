@@ -228,6 +228,7 @@ describe('mcp round-trip', () => {
     live = listActivity(openDb(dbPath))
     expect(live).toHaveLength(1) // effort over, session alive → back to idle presence
     expect(live[0]!.idle).toBe(true)
+    expect(live[0]!.last_doing).toBe('fan-out: migrating 3 modules')
 
     await client.close()
     await new Promise((r) => setTimeout(r, 500))

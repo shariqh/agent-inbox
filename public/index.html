@@ -70,7 +70,18 @@
       <span class="live-sessions" id="liveStripSessions"></span>
       <span class="live-caret" aria-hidden="true">▴</span>
     </button>
-    <div id="liveDrawer" class="live-drawer" hidden><div class="live-list"></div></div>
+    <div id="liveDrawer" class="live-drawer" role="region" aria-label="Live sessions" hidden>
+      <div class="live-drawer-head">
+        <span class="live-drawer-title">Live sessions</span>
+        <button id="livePin" class="live-pin" type="button" aria-pressed="false"
+          aria-label="Pin Live sessions open" title="Pin Live sessions open">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M8 3h8l-1 5 3 3v2h-5v7l-1 1-1-1v-7H6v-2l3-3-1-5Z"></path>
+          </svg>
+        </button>
+      </div>
+      <div class="live-list"></div>
+    </div>
   </footer>
   <div id="lightbox" hidden>
     <div class="lb-backdrop"></div>

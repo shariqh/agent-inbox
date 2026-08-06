@@ -62,6 +62,8 @@ describe('shell markup', () => {
     expect(html).toMatch(/id="liveStrip"[^>]*aria-expanded="false"/)
     expect(html).toMatch(/id="liveStrip"[^>]*aria-controls="liveDrawer"/)
     expect(html).toMatch(/id="liveDrawer"[^>]*hidden/)
+    expect(html).toMatch(/id="livePin"[^>]*aria-pressed="false"/)
+    expect(html).toContain('Pin Live sessions open')
     expect(html).toContain('class="live-list"')
     expect(html).toContain('no agents running')
   })

@@ -571,11 +571,13 @@ describe('live activity', () => {
     let live = listActivity(db)
     expect(live).toHaveLength(1)
     expect(live[0]!.doing).toBe('migrating tests')
+    expect(live[0]!.last_doing).toBe('migrating tests')
     expect(live[0]!.started_at).toMatch(/^\d{4}-\d{2}-\d{2}T/)
     upsertActivity(db, { session: 's1', project: 'p', stream: 'main', agent: 'claude-code', doing: 'running suite', detail: 'vitest run' })
     live = listActivity(db)
     expect(live).toHaveLength(1) // same session → same entry
     expect(live[0]!.doing).toBe('running suite')
+    expect(live[0]!.last_doing).toBe('running suite')
     expect(live[0]!.detail).toBe('vitest run')
     expect(live[0]!.updated_at >= live[0]!.started_at).toBe(true)
   })
@@ -605,6 +607,46 @@ describe('live activity', () => {
     expect(listActivity(db)[0]!.doing).toBe('migrating the store')
     upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'claude-code', doing: 'session open', idle: true })
     expect(listActivity(db)[0]!.idle).toBe(true)   // effort done → back to idle presence
+    expect(listActivity(db)[0]!.last_doing).toBe('migrating the store')
+  })
+
+  it('migrates a legacy claim or preserved idle detail into the historical synopsis atomically', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'inbox-legacy-activity-')), 'inbox.db')
+    const legacy = new Database(path)
+    const now = new Date().toISOString()
+    legacy.exec(`
+      CREATE TABLE activity (
+        session TEXT PRIMARY KEY,
+        project TEXT NOT NULL,
+        stream TEXT NOT NULL DEFAULT '',
+        agent TEXT NOT NULL DEFAULT 'unknown',
+        doing TEXT NOT NULL,
+        detail TEXT NOT NULL DEFAULT '',
+        children TEXT,
+        idle INTEGER NOT NULL DEFAULT 0,
+        started_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        last_call_at TEXT,
+        ended_at TEXT
+      );
+    `)
+    legacy.prepare(
+      `INSERT INTO activity
+         (session, project, agent, doing, detail, idle, started_at, updated_at, last_call_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run('legacy', 'p', 'claude-code', 'Preparing the release', '', 0, now, now, now)
+    legacy.prepare(
+      `INSERT INTO activity
+         (session, project, agent, doing, detail, idle, started_at, updated_at, last_call_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run('legacy-idle', 'p', 'copilot', 'open', 'Waiting for GitHub Actions recovery', 1, now, now, now)
+    legacy.close()
+
+    const migrated = openDb(path)
+    const live = listActivity(migrated)
+    expect(live.find((a) => a.session === 'legacy')!.last_doing).toBe('Preparing the release')
+    expect(live.find((a) => a.session === 'legacy-idle')!.last_doing).toBe('Waiting for GitHub Actions recovery')
+    migrated.close()
   })
 
   it('active entries sort before idle ones', () => {
@@ -664,6 +706,7 @@ describe('live activity — the doing claim decays, the presence row does not (#
     expect(live).toHaveLength(1)          // NOT expired — the CLI really is running
     expect(live[0]!.doing).toBe('open')
     expect(live[0]!.idle).toBe(true)
+    expect(live[0]!.last_doing).toBe('Executing Track B — 18-task viewer redesign')
     expect(live[0]!.detail).toBe('')      // detail and children belong to the claim
     expect(live[0]!.children).toEqual([])
   })
@@ -705,6 +748,7 @@ describe('live activity — the doing claim decays, the presence row does not (#
     const live = listActivity(db)
     expect(live[0]!.doing).toBe('open')
     expect(live[0]!.idle).toBe(true)
+    expect(live[0]!.last_doing).toBe('Executing Track B — 18-task viewer redesign')
     expect(live[0]!.children).toEqual([])
   })
 
@@ -738,6 +782,7 @@ describe('live activity — the doing claim decays, the presence row does not (#
     expect(live).toHaveLength(1)
     expect(live[0]!.last_call_at).toBeNull()
     expect(live[0]!.doing).toBe('open')
+    expect(live[0]!.last_doing).toBe('')
   })
 
   it('long-idle sessions sink below recently active ones — the strip stays glanceable', () => {
@@ -816,6 +861,7 @@ describe('live activity — registering presence never overwrites a claim', () =
     expect(live.detail).toBe('reading store.ts')
     expect(live.children).toHaveLength(1)
     expect(live.idle).toBe(false)
+    expect(live.last_doing).toBe('planning the migration')
   })
 
   it('claim: false ignores doing, detail, children and idle even when all four are supplied', () => {
@@ -837,6 +883,7 @@ describe('live activity — registering presence never overwrites a claim', () =
     expect(live.detail).toBe('reading store.ts')
     expect(live.children).toHaveLength(1)
     expect(live.idle).toBe(false)
+    expect(live.last_doing).toBe('planning the migration')
   })
 
   it('claim: false still refreshes scope and liveness, and un-ends the row', () => {
@@ -864,6 +911,7 @@ describe('live activity — registering presence never overwrites a claim', () =
     expect(live[0]!.doing).toBe('open')
     expect(live[0]!.idle).toBe(true)
     expect(live[0]!.last_call_at).toBeNull() // registration is not a tool call
+    expect(live[0]!.last_doing).toBe('')
   })
 
   it('the default is still claiming — status({done:true}) reverts doing to open', () => {
@@ -875,6 +923,7 @@ describe('live activity — registering presence never overwrites a claim', () =
     expect(live.doing).toBe('open')
     expect(live.idle).toBe(true)
     expect(live.children).toEqual([])
+    expect(live.last_doing).toBe('planning the migration')
   })
 })
 

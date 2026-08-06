@@ -44,4 +44,21 @@ describe('the editorial desk shell', () => {
     expect(compact).toMatch(/\.board-table\.matrix \.row-note\s*\{[^}]*display:\s*none/s)
     expect(compact).toMatch(/\.board-table\.matrix \.row-label\s*\{[^}]*text-overflow:\s*ellipsis/s)
   })
+
+  it('composes compact navigation as one masthead with a readable project strip', () => {
+    const compact = css.slice(css.indexOf('@media (max-width: 1279px)'))
+    expect(compact).toMatch(/\.sidebar-shell\s*\{[^}]*grid-template-columns:\s*auto minmax\(0,\s*1fr\) auto/s)
+    expect(compact).toMatch(/#tabs\s*\{[^}]*grid-column:\s*2[^}]*width:\s*max-content/s)
+    expect(compact).toMatch(/\.sidebar-section-label\s*\{[^}]*display:\s*block/s)
+    expect(compact).toMatch(/#rail\s*\{[^}]*grid-column:\s*2\s*\/\s*-1/s)
+    expect(compact).toMatch(/#rail \.rail-name\s*\{[^}]*text-overflow:\s*ellipsis/s)
+    expect(css).toMatch(/@container compact-masthead \(max-width:\s*620px\)[\s\S]*#tabs \.tab-count\s*\{[^}]*display:\s*none/s)
+  })
+
+  it('lets the compact page heading and tools share a row before wrapping', () => {
+    const compact = css.slice(css.indexOf('@media (max-width: 1279px)'))
+    expect(compact).toMatch(/#topbar\s*\{[^}]*display:\s*flex[^}]*flex-wrap:\s*wrap/s)
+    expect(compact).toMatch(/\.page-heading\s*\{[^}]*flex:\s*0 1 auto/s)
+    expect(compact).toMatch(/\.topbar-tools\s*\{[^}]*flex:\s*1 1 440px/s)
+  })
 })

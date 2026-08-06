@@ -410,7 +410,8 @@ regression. **Four verified blind spots; only literal lengths and keywords are t
 1. **`@media` never matches.** jsdom's media-list evaluation only answers `all`/`screen`,
    so style.css's single `@media (max-width: 1279px)` block — the ENTIRE spec §14 responsive
    layer — never applies. Do not assert anything about it; cover the JS half instead
-   (`setViewport('narrow')` + `railLabel` monograms, in `test/dom/boot.test.ts`).
+   (`setViewport('narrow')` + readable `railLabel` output, in `test/dom/boot.test.ts`) and
+   source-pin compact geometry/container-query rules in `test/editorial-shell.test.ts`.
 2. **`var()` is returned unresolved.**
 3. **An unparseable declaration is dropped SILENTLY — and therefore reads as "correct".**
    `border: 1px solid color-mix(…)` comes back as `borderStyle: 'none'` /
@@ -610,8 +611,12 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   520px default / 360–720px, with at least 400px left for the queue. Preferences persist under
   `agent-inbox-sidebar-width` and `agent-inbox-inspector-width`; mouse drag, separator keyboard
   controls, viewport reclamping and double-click reset must update CSS and ARIA together. Inside
-  the single EOF `@media (max-width: 1279px)` block the splitters hide and the item card returns
-  to static inline layout. `test/editorial-shell.test.ts`, `test/panes.test.ts`,
+  the single EOF `@media (max-width: 1279px)` block the splitters hide, the item card returns
+  to static inline layout, and the library becomes a two-tier masthead: brand/library/Settings
+  share its first row, while a labelled, horizontally scrollable strip keeps readable project
+  names and inline counts on the second. The page heading and agent/search tools share a fluid
+  row before wrapping; below 620px a named container hides only library counts so all four
+  destinations remain visible. `test/editorial-shell.test.ts`, `test/panes.test.ts`,
   `test/layout.test.ts`, and `test/dom/boot.test.ts` pin the contract; jsdom still cannot validate
   the responsive media layer or CSS vars.
 - **Attention-first cold launch** — every fresh viewer starts at Needs you with All projects,

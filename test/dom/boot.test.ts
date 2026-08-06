@@ -218,18 +218,18 @@ describe('spec §7 · a rail filter narrows the LIST, never the GLOBAL signal', 
 })
 
 describe('spec §14 · the JS half of the responsive rail', () => {
-  it('collapses rail labels to monograms at a narrow viewport', async () => {
+  it('keeps compact project labels readable at a narrow viewport', async () => {
     const d = open()
-    insertItem(d, { project: 'alpha', stream: 'main', agent: 'claude', kind: 'question', title: 'q' })
+    insertItem(d, { project: 'alpha-project', stream: 'main', agent: 'claude', kind: 'question', title: 'q' })
 
     // BEFORE boot: `layout` is read at app.js module top level.
     setViewport('narrow')
     await bootApp(d)
 
-    const label = document.querySelector('#rail button.rail-tab[data-project="alpha"] .rail-name')
-    expect(label?.textContent).toBe('AL')
+    const label = document.querySelector('#rail button.rail-tab[data-project="alpha-project"] .rail-name')
+    expect(label?.textContent).toBe('alpha project')
     // the full name stays reachable — colour/shape is never the only carrier (§2)
-    expect(document.querySelector('#rail button.rail-tab[data-project="alpha"]')?.getAttribute('aria-label')).toBe('alpha')
+    expect(document.querySelector('#rail button.rail-tab[data-project="alpha-project"]')?.getAttribute('aria-label')).toBe('alpha-project')
   })
 
   it('keeps full project names at a wide viewport', async () => {

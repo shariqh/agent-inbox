@@ -1602,8 +1602,8 @@ let projMatches = new Map()
 
 // ── responsive (spec §14) ────────────────────────────────────────────────────
 // Pure breakpoint check lives in layout.js; this is just the mode + the media
-// query that keeps it live. renderRail reads `layout` to decide whether the
-// rail shows full project names or collapses to monogram dots.
+// query that keeps it live. renderRail reads `layout` to turn project slugs into
+// readable compact-strip labels without changing their accessible names.
 let layout = layoutMode(window.innerWidth)
 
 const PANE_KEYS = {
@@ -1699,7 +1699,7 @@ function initResponsive() {
     const next = mq.matches ? 'narrow' : 'wide'
     if (next === layout) return
     layout = next
-    if (lastData) forceRender() // the rail's labels change shape, so rebuild it
+    if (lastData) forceRender() // the rail's visible labels change, so rebuild it
   }
   mq.addEventListener('change', apply)
   apply()
@@ -1753,10 +1753,8 @@ function railRowEl(e, { withFilter, closed = false }) {
   if (!e.total) b.classList.add('quiet')
   const color = e.key === '__all__' || e.unknown ? null : pcolor(e.key)
   if (e.unknown) b.classList.add('unknown')
-  // the full name always stays reachable on title/aria-label — the unknown
-  // hint wins there, everyone else gets their project name — so the tab is
-  // still identifiable even once the narrow rail shrinks its visible text
-  // down to a monogram (§2: colour is never the only carrier).
+  // The untouched name always stays reachable on title/aria-label. Compact mode
+  // only turns slug separators into spaces, while the unknown hint wins here.
   b.title = e.unknown ? 'Project inference failed for these agents — a register() call fixes their scope.' : e.label
   b.setAttribute('aria-label', e.label)
   // selection is a soft wash of the project's own color; no stripe anywhere
@@ -1766,12 +1764,8 @@ function railRowEl(e, { withFilter, closed = false }) {
   if (color) dot.style.background = color.dot
   const name = document.createElement('span')
   name.className = 'rail-name'
-  // narrow rail collapses to the monogram — UNLESS the type-to-narrow filter
-  // is showing (>12 projects, RAIL_FILTER_THRESHOLD in rail.js): the CSS
-  // widens #rail back out and restores row layout for exactly that case
-  // (see the #rail:has(.rail-filter) block in style.css), so keep full
-  // names here too — a column of monograms next to a search box you can't
-  // read the results of would defeat the point of un-hiding the filter.
+  // The long-rail filter keeps canonical names so search results stay exact;
+  // the ordinary compact strip uses the readable label from layout.js.
   // textContent, never innerHTML — agent-authored project names.
   name.textContent = railLabel(e.label, withFilter ? 'wide' : layout)
   const badge = document.createElement('span')

@@ -919,114 +919,42 @@ body:has(.nrow[data-open="1"]) .inspector-empty { display: none; }
 body.settings-open .sidebar-shell > :not(#gear),
 body.settings-open #liveBar { opacity: .32; }
 
+@container compact-masthead (max-width: 620px) {
+  #tabs .tab-count { display: none; }
+}
+
 /* ── responsive (spec §14) ───────────────────────────────────────────────────
    The ONLY @media block in the file — deliberately last so it wins over the
    shell (Task 6), boards chrome (Task 13) and focus rules (Task 17) above it.
-   Under 1280px the rail collapses to a monogram dot column (app.js's
-   railLabel() supplies the short label; the full name stays on the button's
-   title/aria-label — see public/layout.js), the top tabs become a scrollable
-   segmented control, and the expanded .nrow-card goes full-width.
+   Under 1280px the fixed sidebar becomes a two-tier masthead: library navigation
+   shares the first row with the brand and Settings, while readable project chips
+   scroll on the second row. The page heading and tools share a fluid row before
+   wrapping, and the expanded .nrow-card goes full-width.
 
    Two deliberate calls, both left as-is from the base rules elsewhere in this
    file (i.e. NOT overridden here), worth documenting:
-   - .rail-badge and .rail-match both stay visible, repositioned onto opposite
-     corners of the dot rather than hidden — a count that disappears on a
-     narrow screen defeats the badge.
+   - .rail-badge and .rail-match both stay visible inline; a count that
+     disappears on a narrow screen defeats the badge.
    - .rail-filter is hidden below the breakpoint BY DEFAULT, but only while it
-     isn't needed: #rail:has(.rail-filter) below un-hides it and widens the
-     rail back to row layout with full names whenever >12 projects means the
-     filter is actually rendered (RAIL_FILTER_THRESHOLD, rail.js). #search in
-     the top bar annotates match COUNTS on existing rail tabs — it never
-     narrows which tabs are shown, so it is not a substitute for typing a
-     project name to jump to it; fix round 1 caught a report that had
-     incorrectly claimed it was. See task-18-report.md fix-round-1 for detail. */
+     isn't needed: #rail:has(.rail-filter) below gives it a full row whenever
+     >12 projects means the filter is actually rendered (RAIL_FILTER_THRESHOLD,
+     rail.js). #search in the top bar annotates match COUNTS on existing rail
+     tabs — it never narrows which tabs are shown, so it is not a substitute for
+     typing a project name to jump to it. */
 @media (max-width: 1279px) {
   body { padding: 0 10px 48px; }
   .layout { gap: 10px; }
 
-  /* rail → monogram dot column */
-  #rail { width: 52px; flex-shrink: 0; }
-  #rail .rail-tab {
-    position: relative;
-    flex-direction: column;
-    justify-content: center;
-    align-items: center;
-    gap: 2px;
-    padding: 7px 2px;
-    text-align: center;
-  }
-  #rail .rail-name {
-    flex: none;
-    max-width: 100%;
-    overflow: visible;
-    text-overflow: clip;
-    white-space: nowrap;
-    font-size: 10.5px;
-    font-weight: 700;
-    letter-spacing: .02em;
-  }
-  /* attention count: corner overlay, still perceivable, not just the wash colour */
-  #rail .rail-badge { position: absolute; top: 1px; right: 2px; margin: 0; font-size: 9px; padding: 0 4px; line-height: 1.4; }
-  /* search match count: opposite corner so it never collides with the badge —
-     .rail-match:empty stays display:none from the base rule, so this is inert
-     until a search is actually active */
-  #rail .rail-match { position: absolute; bottom: 1px; right: 2px; left: auto; margin: 0; font-size: 8.5px; line-height: 1; }
-  #rail .rail-filter { display: none; }
-
-  /* >12 projects (RAIL_FILTER_THRESHOLD) still need type-to-narrow even at
-     narrow width — a monogram dot column with no way to jump to a project by
-     name would strand exactly the population large enough to need the filter
-     in the first place. When app.js renders .rail-filter, widen the rail back
-     out and fall back to row layout (full name, inline badge/match) so the
-     filter results are legible; app.js also switches .rail-name back to the
-     full project name in this state (railLabel(e.label, withFilter ? 'wide' :
-     layout)), so this isn't just a wider box around unreadable monograms. */
-  #rail:has(.rail-filter) { width: 200px; }
-  #rail:has(.rail-filter) .rail-filter { display: block; }
-  #rail:has(.rail-filter) .rail-tab {
-    flex-direction: row;
-    justify-content: flex-start;
-    align-items: center;
-    gap: 8px;
-    padding: 5px 9px;
-    text-align: left;
-  }
-  #rail:has(.rail-filter) .rail-name {
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-size: 13px;
-    font-weight: 400;
-    letter-spacing: normal;
-  }
-  #rail:has(.rail-filter) .rail-badge { position: static; margin: 0; font-size: 11px; padding: 0 6px; line-height: normal; }
-  #rail:has(.rail-filter) .rail-match { position: static; margin-left: auto; right: auto; bottom: auto; font-size: 10.5px; }
-
-  /* close/reopen (issue #32): curation, not triage. On a 52px monogram column
-     there is no third corner left — .rail-badge owns top-right and .rail-match
-     bottom-right — so ×/↩ are wide-layout affordances. Implicit
-     reopen-on-new-activity still works at every width, so nothing an agent
-     needs becomes unreachable; only the manual gesture waits for a wider
-     window. The :has(.rail-filter) state restores row layout and, with it, the
-     buttons — the same call §14 already makes for full names and inline badges.
-     `#rail:has(.rail-filter) .rail-close` is (1,2,0) against (1,1,0), so the
-     restore wins on specificity, not on source order. */
-  /* .rail-row itself needs NO narrow override: it stays a row-flex whose single
-     remaining child (the tab) grows to the full 52px column. Turning it into a
-     column-flex here would inherit align-items:center from the base rule and
-     shrink the tab to its monogram's width, taking the hover background and the
-     absolutely-positioned corner badge with it. */
+  /* Project curation stays out of the compact strip unless the long-rail
+     filter expands it to multiple rows. Delete/Backspace on a focused project
+     tab and implicit reopen-on-new-activity work in either state. */
   #rail .rail-close, #rail .rail-reopen { display: none; }
-  #rail .closed-fold > summary { text-align: center; padding: 6px 2px; font-size: 10px; }
+  #rail .closed-fold > summary { padding: 6px 8px; border: 0; white-space: nowrap; font-size: 10.5px; }
   #rail .closed-muted { display: none; }
   #rail:has(.rail-filter) .rail-close, #rail:has(.rail-filter) .rail-reopen { display: inline-block; }
-  #rail:has(.rail-filter) .closed-fold > summary { text-align: left; padding: 6px 9px; font-size: 11.5px; }
   #rail:has(.rail-filter) .closed-muted { display: inline; }
 
-  /* top tabs → scrollable segmented control (4 tabs; scrolls if a narrow
-     device still can't fit them without truncation) */
+  /* The library control scrolls rather than wrapping or truncating labels. */
   #tabs { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
   #tabs::-webkit-scrollbar { display: none; }
   #tabs .tab { flex: 0 0 auto; white-space: nowrap; }
@@ -1050,17 +978,13 @@ body.settings-open #liveBar { opacity: .32; }
   .mission-panel { width: 96vw; height: 92vh; }
   .mission-graph { grid-template-columns: 180px minmax(620px, 1fr); overflow-x: auto; }
 
-  /* top bar: let search take the freed-up width, tighten spacing */
-  header { gap: 8px; padding: 10px 0; }
-  .search-box { flex: 1; min-width: 0; }
-
   /* source chips (issue #30): drop only the state WORD, keeping #30 / PR 41,
      the glyph and the tone. The full sentence survives in the chip's title and
      in the expanded card, so nothing becomes unreachable — (1,2,0) here beats
      the base (0,2,0) rule on specificity, not on source order. */
   #needsYouList .nrow-src .src-word { display: none; }
 
-  /* Editorial shell: the fixed library becomes a compact, scrollable header.
+  /* Editorial shell: the fixed library becomes a compact, scrollable masthead.
      The detail card returns to its original inline position, preserving the
      one-card DOM and all draft/poll semantics at narrow widths. */
   body { padding: 0 0 48px; }
@@ -1070,53 +994,131 @@ body.settings-open #liveBar { opacity: .32; }
     inset: 0 auto auto 0;
     display: grid;
     width: 100%;
-    grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-rows: auto auto auto;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-rows: auto auto;
+    align-items: center;
     gap: 8px 12px;
-    padding: 10px 12px;
+    padding: 10px 16px 8px;
     border-right: 0;
     border-bottom: 1px solid var(--app-border);
+    box-shadow: 0 1px 0 color-mix(in srgb, var(--app-text) 2%, transparent);
+    container: compact-masthead / inline-size;
   }
-  .brand { grid-column: 1; grid-row: 1; margin: 0; }
+  .brand {
+    grid-column: 1;
+    grid-row: 1;
+    margin: 0;
+    padding-right: 12px;
+    border-right: 1px solid var(--app-border);
+    white-space: nowrap;
+  }
   .brand-copy small { display: none; }
-  .sidebar-section-label { display: none; }
-  .gear { grid-column: 2; grid-row: 1; width: auto; margin: 0; padding: 7px 9px; }
-  .gear > span { display: none; }
-  #tabs {
-    grid-column: 1 / -1;
+  .sidebar-section-label {
+    display: block;
+    grid-column: 1;
     grid-row: 2;
-    flex-direction: row;
-    gap: 4px;
+    margin: 0;
+    padding-left: 2px;
   }
-  #tabs .tab { flex: 0 0 auto; width: auto; padding: 6px 9px; }
+  .gear {
+    grid-column: 3;
+    grid-row: 1;
+    width: 34px;
+    height: 34px;
+    justify-content: center;
+    margin: 0;
+    padding: 0;
+    border: 1px solid var(--app-border);
+    background: var(--app-surface);
+  }
+  .gear > span { display: none; }
+  .gear svg { width: 15px; height: 15px; }
+  #tabs {
+    grid-column: 2;
+    grid-row: 1;
+    width: max-content;
+    max-width: 100%;
+    min-width: 0;
+    justify-self: start;
+    flex-direction: row;
+    gap: 2px;
+    margin: 0;
+    padding: 3px;
+    border: 1px solid var(--app-border);
+    border-radius: 10px;
+    background: var(--app-soft);
+  }
+  #tabs .tab { flex: 0 0 auto; width: auto; padding: 5px 9px; border-radius: 7px; }
+  #tabs .tab[aria-selected="true"] { background: var(--app-surface); box-shadow: var(--app-shadow); }
+  #tabs .tab-count { line-height: 17px; }
   #rail {
-    grid-column: 1 / -1;
-    grid-row: 3;
+    grid-column: 2 / -1;
+    grid-row: 2;
     display: flex;
     width: 100%;
+    min-width: 0;
     max-height: none;
     flex-direction: row;
+    align-items: center;
     gap: 4px;
     overflow-x: auto;
     overflow-y: hidden;
-    padding: 0;
+    padding: 0 2px 2px 0;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
   }
-  #rail .rail-row { flex: 0 0 auto; }
-  #rail .rail-tab { width: auto; min-width: 48px; }
-  #rail:has(.rail-filter) { width: 100%; flex-wrap: wrap; }
-  #rail:has(.rail-filter) .rail-filter { flex: 1 0 100%; }
+  #rail::-webkit-scrollbar { display: none; }
+  #rail .rail-row { min-width: 0; flex: 0 0 auto; }
+  #rail .rail-tab {
+    width: auto;
+    min-width: 0;
+    max-width: 220px;
+    flex-direction: row;
+    justify-content: flex-start;
+    gap: 6px;
+    padding: 5px 8px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+  }
+  #rail .rail-tab[aria-selected="true"] { border-color: var(--app-border); box-shadow: var(--app-shadow); }
+  #rail .rail-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 11.5px;
+    font-weight: 550;
+    letter-spacing: 0;
+  }
+  #rail .rail-badge { position: static; flex: 0 0 auto; margin-left: 2px; padding: 0 5px; font-size: 9.5px; line-height: 17px; }
+  #rail .rail-match { position: static; flex: 0 0 auto; margin-left: 2px; font-size: 9.5px; }
+  #rail .rail-filter { display: none; }
+  #rail:has(.rail-filter) { flex-wrap: wrap; }
+  #rail:has(.rail-filter) .rail-filter { display: block; flex: 1 0 100%; margin: 0 0 4px; }
   #rail:has(.rail-filter) .rail-row { flex: 0 1 auto; }
+  #rail .closed-fold { flex: 0 0 auto; margin: 0; }
   .workspace-shell { margin-left: 0; }
   #topbar {
     position: static;
-    grid-template-columns: minmax(0, 1fr);
-    padding: 18px 16px 12px;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px 24px;
+    padding: 16px 16px 12px;
     background: var(--app-bg);
     backdrop-filter: none;
   }
-  .topbar-tools { justify-content: flex-start; flex-wrap: wrap; }
-  .search-box { width: auto; min-width: 180px; flex: 1 1 220px; }
-  .topbar-notices { grid-column: 1; }
+  .page-heading { min-width: 150px; flex: 0 1 auto; }
+  .page-heading h1 { font-size: clamp(21px, 3vw, 26px); }
+  .topbar-tools {
+    display: grid;
+    min-width: 0;
+    flex: 1 1 440px;
+    grid-template-columns: auto minmax(0, 1fr);
+    justify-content: stretch;
+  }
+  .search-box { width: 100%; min-width: 0; }
+  .topbar-notices { min-height: 0; flex: 1 0 100%; margin-top: -4px; }
   main { padding: 0 16px 72px; }
   #needsYou { min-height: 0; }
   #needsYouList { min-height: 0; padding-right: 0; }

@@ -1,6 +1,4 @@
-// Pure responsive decisions (spec §14). Relative specifier so the same module
-// resolves in the browser (both files are served from /) and in vitest.
-import { projectMonogram } from './colors.js'
+// Pure responsive decisions (spec §14).
 
 export const NARROW_MAX = 1279
 
@@ -8,9 +6,11 @@ export function layoutMode(width) {
   return Number(width) <= NARROW_MAX ? 'narrow' : 'wide'
 }
 
-// The narrow rail is a dot column: monogram only. The full name stays on
-// title/aria-label so the label never disappears entirely (§2: colour is never
-// the only carrier).
+// The compact rail is horizontally scrollable, so it can keep readable names
+// instead of forcing people to decode monograms. Slug separators become spaces;
+// the untouched project name remains on title/aria-label.
 export function railLabel(name, mode) {
-  return mode === 'narrow' ? projectMonogram(name) : String(name)
+  const label = String(name)
+  if (mode !== 'narrow') return label
+  return label.replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim() || '?'
 }

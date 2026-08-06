@@ -294,13 +294,16 @@ are 220px for the library and 520px for the inspector. `public/panes.js` clamps 
 after a window resize. Effective widths are exposed through CSS variables and separator ARIA;
 preferences persist as `agent-inbox-sidebar-width` and `agent-inbox-inspector-width`.
 
-Below 1280px the fixed library becomes a compact sticky header: content tabs remain readable,
-projects become a horizontally scrollable monogram rail, search takes the available width, and
-the expanded inspector returns to a full-width inline card. Plan rows use fixed columns and
-ellipsized labels so their action affordance cannot leave the viewport; the full note remains in
-the row panel. Lane- and graph-shaped overlays retain horizontal touch scrolling rather than
-collapsing their meaning into a different mobile component. The stylesheet keeps exactly one
-`@media` block at EOF so the responsive layer wins the cascade predictably.
+Below 1280px the fixed library becomes a compact two-tier sticky masthead. Brand, library
+navigation, and Settings share its first row; a labelled, horizontally scrollable project strip
+uses readable slug labels, project colors, and inline counts on the second. Below 620px only the
+library counts hide so all four destinations remain visible. The page heading and agent/search
+tools share a fluid row until their preferred widths require a wrap. The expanded inspector
+returns to a full-width inline card. Plan rows use fixed columns and ellipsized labels so their
+action affordance cannot leave the viewport; the full note remains in the row panel. Lane- and
+graph-shaped overlays retain horizontal touch scrolling rather than collapsing their meaning
+into a different mobile component. The stylesheet keeps exactly one `@media` block at EOF so the
+responsive layer wins the cascade predictably.
 
 ## 15. Preserved / dropped
 

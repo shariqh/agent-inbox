@@ -65,8 +65,11 @@ Replaces the 7-section stack **and** the outline sidebar (both removed).
   re-scoped to the selected project) · global search · **gear → Setup** (Setup is not a
   content type and does not deserve a peer tab, but it holds the reporting snippet that makes
   the whole system work, so it stays one click away).
-- **Persistence.** Project selection and agent filter persist (as today). The **active tab
-  does not** — always land on Needs you.
+- **Cold-launch state.** Always land on **Needs you · All projects · all agents · All
+  actions**, with no card expanded. Project and agent filters last only for the current
+  window; persisting them across launches can make a global badge of five reopen onto a list
+  of one, which contradicts the product's cross-project attention promise. An explicit
+  notification/URL deep link still scopes to and opens its target.
 
 ## 2. Project colors
 

@@ -45,6 +45,29 @@ function seedQuestionAndBlockedBoard(d: Database.Database): { boardId: string } 
 }
 
 describe('C1 · a deep link must never freeze the poll', () => {
+  it('a cold-launch deep link overrides stale filters and focuses its target', async () => {
+    const d = open()
+    insertItem(d, { ...AGENT, kind: 'question', title: 'alpha question' })
+    advanceClock()
+    const betaId = insertItem(d, {
+      project: 'beta',
+      stream: 'main',
+      agent: 'copilot',
+      kind: 'question',
+      title: 'beta question',
+    })
+    localStorage.setItem('agent-inbox-project-filter', 'alpha')
+    localStorage.setItem('agent-inbox-agent-filter', 'claude')
+    location.hash = `#item/${betaId}`
+
+    await bootApp(d)
+
+    expect(rowTitles()).toEqual(['beta question'])
+    expect(document.querySelector('#rail [data-project="beta"]')?.getAttribute('aria-selected')).toBe('true')
+    expect((document.getElementById('agentSelect') as HTMLSelectElement).value).toBe('')
+    expect(row(betaId)?.dataset['open']).toBe('1')
+  })
+
   it('a deep link to a BOARD leaves the poll running', async () => {
     const d = open()
     const { boardId } = seedQuestionAndBlockedBoard(d)

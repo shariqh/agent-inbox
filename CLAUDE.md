@@ -583,6 +583,12 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   board-scoped and draws only board → row → explicit `next_after`/`outcome` paths; `impact`
   prose never creates a dependency edge. Clicking a map row opens a nested detail/action
   lightbox and keeps the graph mounted; leaving for Boards requires the explicit button.
+- **Attention-first cold launch** — every fresh viewer starts at Needs you with All projects,
+  all agents and All action types, and no expanded card. Project/agent filters are
+  window-local; the boot path removes the two legacy localStorage keys so an older build
+  cannot strand a new build behind a stale lens. Explicit notification/hash deep links are
+  the exception: they scope to and open their target. This keeps the global badge and the
+  first visible list honest about the same cross-project workload.
 - **Build stamp + staleness signal** *(#40)* — `scripts/write-setup-info.mjs` (called by the
   packager, and executable in a test the way `package-app.sh` never can be) bakes `commit` +
   `builtAt` beside the paths setup-info.json already carried; `src/stamp.ts` reads the checkout's

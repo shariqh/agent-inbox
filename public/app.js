@@ -49,11 +49,15 @@ let preparedFrame = null
 // reach a renderer before the first /api/links response lands, and linkFor(null)
 // would throw into load()'s catch and blank the whole page.
 let linkIndex = new Map()
-const FILTER_KEY = 'agent-inbox-agent-filter'
-const PROJECT_KEY = 'agent-inbox-project-filter'
 const HIDE_DONE_KEY = 'agent-inbox-hide-completed'
-let agentFilter = localStorage.getItem(FILTER_KEY) || null
-let projectFilter = localStorage.getItem(PROJECT_KEY) || null
+// The product is a cross-project attention inbox, so a cold launch must never
+// reopen behind yesterday's project/agent lens while the global badge counts
+// work the list is hiding. Retire the old persisted keys; filters remain useful
+// for this window and explicit deep links still scope themselves below.
+localStorage.removeItem('agent-inbox-agent-filter')
+localStorage.removeItem('agent-inbox-project-filter')
+let agentFilter = null
+let projectFilter = null
 let hideCompleted = localStorage.getItem(HIDE_DONE_KEY) !== 'false' // default ON
 
 const NOTES_SEEN_KEY = 'agent-inbox-notes-seen'
@@ -387,9 +391,7 @@ function focusItem(id) {
   const target = item ?? board
   if (!target) return
   projectFilter = target.project
-  localStorage.setItem(PROJECT_KEY, target.project)
   agentFilter = null
-  localStorage.removeItem(FILTER_KEY)
   selectTab(board ? 'boards' : tabForItem(item)) // Task 8: sets activeTab AND shows the panel
   const hash = focusHashFor(id)
   if (location.hash !== hash) location.hash = hash // survives reload
@@ -1408,7 +1410,8 @@ function setRailMatch(project, n) {
   el.hidden = !n
 }
 
-// project selection persists (Task 7); the active tab deliberately does not
+// Project and agent filters are window-local; every cold launch starts from the
+// cross-project/cross-tool view. The active tab likewise always starts here.
 let activeTab = DEFAULT_TAB
 
 // single routing entry point: state + DOM together, so no caller can set one
@@ -1613,8 +1616,6 @@ function railRowEl(e, { withFilter, closed = false }) {
   b.addEventListener('click', () => {
     closeSettings()
     projectFilter = e.key === '__all__' ? null : e.key
-    if (projectFilter) localStorage.setItem(PROJECT_KEY, projectFilter)
-    else localStorage.removeItem(PROJECT_KEY)
     resetPaging()
     forceRender()
   })
@@ -1700,7 +1701,6 @@ function renderRail() {
   // very first render after a peek click would evict it again.
   if (projectFilter && !projects.includes(projectFilter)) {
     projectFilter = null
-    localStorage.removeItem(PROJECT_KEY)
   }
   // unsuppressed on purpose (see countsByProject in attention.js): the fold
   // relocates a closed project's number, it never destroys it
@@ -1769,8 +1769,6 @@ function renderAgentSelect(agents) {
 function initAgentSelect() {
   document.getElementById('agentSelect').addEventListener('change', (e) => {
     agentFilter = e.target.value || null
-    if (agentFilter) localStorage.setItem(FILTER_KEY, agentFilter)
-    else localStorage.removeItem(FILTER_KEY)
     resetPaging()
     forceRender()
   })
@@ -3052,7 +3050,7 @@ async function act(id, action) {
 async function closeProjectAction(name) {
   lastData.closed = [...(lastData.closed ?? []), name]
   closedFoldOpen = true // show the human where the tab went
-  if (projectFilter === name) { projectFilter = null; localStorage.removeItem(PROJECT_KEY) }
+  if (projectFilter === name) projectFilter = null
   resetPaging()
   forceRender()
   const res = await postJSON('/api/projects/close', { project: name })

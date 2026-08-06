@@ -34,6 +34,39 @@ describe('viewer boots against a real DB', () => {
     expect(tabCount('needsYou')).toBe('1')
   })
 
+  it('cold-opens Needs you across all projects, agents, and action types', async () => {
+    const d = open()
+    insertItem(d, { project: 'alpha', stream: 'main', agent: 'claude', kind: 'question', title: 'alpha decision' })
+    advanceClock()
+    upsertBoard(d, {
+      project: 'beta',
+      stream: 'main',
+      agent: 'copilot',
+      title: 'Beta launch',
+      rows: [{
+        label: 'beta task',
+        status: 'blocked',
+        action_owner: 'task',
+        note: 'The handoff is ready.',
+        next_step: 'Complete the handoff.',
+        impact: 'Unblocks launch.',
+      }],
+    })
+    localStorage.setItem('agent-inbox-project-filter', 'alpha')
+    localStorage.setItem('agent-inbox-agent-filter', 'claude')
+
+    await bootApp(d)
+
+    expect(document.querySelector('.tab[data-tab="needsYou"]')?.getAttribute('aria-selected')).toBe('true')
+    expect(document.querySelector('#rail [data-project="__all__"]')?.getAttribute('aria-selected')).toBe('true')
+    expect((document.getElementById('agentSelect') as HTMLSelectElement).value).toBe('')
+    expect(rowTitles().sort()).toEqual(['alpha decision', 'beta task'])
+    expect(document.querySelector('.header-toggle.active')?.textContent).toBe('All')
+    expect(document.querySelector('.nrow[data-open="1"]')).toBeNull()
+    expect(localStorage.getItem('agent-inbox-project-filter')).toBeNull()
+    expect(localStorage.getItem('agent-inbox-agent-filter')).toBeNull()
+  })
+
   it('logs nothing to console.error on a clean boot, and #status stays empty', async () => {
     const d = open()
     insertItem(d, { project: 'alpha', stream: 'main', agent: 'claude', kind: 'question', title: 'hello' })

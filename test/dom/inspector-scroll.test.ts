@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
 import { insertItem } from '../../src/store.js'
 import { bootApp, buttonLabelled, click, freshDb, pollTick, row, settle, useDomTest } from './harness.js'
@@ -39,6 +39,52 @@ describe('item inspector scroll', () => {
     expect(after, 'the open item should survive the poll rebuild').not.toBeNull()
     expect(after).not.toBe(before)
     expect(after?.scrollTop).toBe(240)
+  })
+
+  it('does not replace the inspector while trackpad momentum is still scrolling it', async () => {
+    const d = freshDb()
+    db = d
+    const id = insertItem(d, {
+      project: 'alpha',
+      stream: 'viewer',
+      agent: 'copilot',
+      session: 'session-scroll',
+      kind: 'question',
+      title: 'Review the long proposal',
+      context: 'Long background '.repeat(100),
+    })
+
+    await bootApp(d)
+    click(row(id))
+    await settle()
+
+    const before = row(id)?.querySelector<HTMLElement>('.nrow-card')
+    before!.scrollTop = 240
+
+    // Land a scroll event immediately before the 3-second poll. Replacing this
+    // node would stop Chromium's in-flight wheel/trackpad momentum even if the
+    // replacement receives the same scrollTop.
+    await vi.advanceTimersByTimeAsync(2950)
+    before!.dispatchEvent(new Event('scroll'))
+    await vi.advanceTimersByTimeAsync(50)
+    await settle()
+
+    expect(row(id)?.querySelector('.nrow-card')).toBe(before)
+
+    // Continued momentum moves the quiet deadline instead of letting the first
+    // event's timer replace the card underneath a still-moving gesture.
+    await vi.advanceTimersByTimeAsync(100)
+    before!.scrollTop = 320
+    before!.dispatchEvent(new Event('scroll'))
+    await vi.advanceTimersByTimeAsync(150)
+    expect(row(id)?.querySelector('.nrow-card')).toBe(before)
+
+    // Once scrolling has settled, the held fresh frame should paint normally.
+    await vi.advanceTimersByTimeAsync(50)
+    await settle()
+    const after = row(id)?.querySelector<HTMLElement>('.nrow-card')
+    expect(after).not.toBe(before)
+    expect(after?.scrollTop).toBe(320)
   })
 
   it('starts at the top after the human changes or reopens the item', async () => {

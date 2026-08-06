@@ -7,8 +7,10 @@ import {
   pinOrder,
   reconcileOpenRow,
   pressHeld,
+  scrollActive,
   shouldDeferRender,
   PRESS_GRACE_MS,
+  SCROLL_IDLE_MS,
 } from '../public/poll.js'
 
 describe('suspendReason', () => {
@@ -141,6 +143,24 @@ describe('shouldDeferRender (#38 · D2)', () => {
   it('is idle when nothing is expanded, nothing typed and no button is down', () => {
     expect(shouldDeferRender({ ...idle, pressedAt: null }, t)).toBe(false)
     expect(shouldDeferRender(idle, t), 'a state that never heard of presses still works').toBe(false)
+  })
+})
+
+describe('active inspector scroll', () => {
+  const t = 1_000_000
+
+  it('defers inside the short idle window and self-heals at its boundary', () => {
+    expect(SCROLL_IDLE_MS).toBe(200)
+    expect(scrollActive(t - (SCROLL_IDLE_MS - 1), t)).toBe(true)
+    expect(scrollActive(t - SCROLL_IDLE_MS, t)).toBe(false)
+    expect(scrollActive(null, t)).toBe(false)
+  })
+
+  it('defers the editable rebuild without becoming a suspension', () => {
+    const scrolling = { drafts: {}, scrolledAt: t - 40 }
+    expect(shouldDeferRender(scrolling, t)).toBe(true)
+    expect(suspendReason(scrolling)).toBeNull()
+    expect(suspendHint(scrolling)).toBeNull()
   })
 })
 

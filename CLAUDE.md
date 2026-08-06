@@ -259,6 +259,17 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   twice: a source pin on `suspendState()` in `test/shell.test.ts`, and the freeze itself —
   expand one matrix row, watch the list, badge and `#pauseHint` stop — in
   `test/dom/press-guard.test.ts`.
+- **Active inspector scrolling defers only the editable rebuild.** Restoring `scrollTop` after
+  replacing `.nrow-card` preserves coordinates but still cancels Chromium's in-flight
+  wheel/trackpad momentum, which presents as an intermittent freeze at the 3-second poll boundary.
+  The card's `wheel` and `scroll` listeners update `lastInspectorScrollAt` and
+  `openRowScrollTop`; `shouldDeferRender()` holds the editable frame for the bounded
+  `SCROLL_IDLE_MS` window, while `paintAmbient()` still refreshes badges, counts, the rail, and
+  Live. A resettable timer calls `resumeRender()` as soon as movement settles, so a deferred frame
+  does not wait for another poll. Keep scroll activity out of `suspendState()`/`suspendHint()`:
+  it is a brief interaction guard, not a user-visible pause, and it must reset when the open item
+  changes. `test/dom/inspector-scroll.test.ts` pins both halves: the same DOM node survives a poll
+  during active movement, then a settled rebuild preserves its position and focused controls.
 
 - **The hooks runtime is a SECOND OS process on the same db — and it still goes through
   `store.ts`.** `src/hook.ts` (+ the `src/hook-cli.ts` entry) is spawned by Claude Code, not

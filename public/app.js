@@ -9,7 +9,10 @@ import {
 } from '/attention.js'
 import { DEFAULT_TAB, TAB_IDS, tabCounts } from '/tabs.js'
 import { projectColor } from '/colors.js'
-import { pressHeld, shouldDeferRender, suspendHint, pinOrder, reconcileOpenRow } from '/poll.js'
+import {
+  SCROLL_IDLE_MS, pressHeld, scrollActive, shouldDeferRender,
+  suspendHint, pinOrder, reconcileOpenRow,
+} from '/poll.js'
 import { createStagedSend } from '/star.js'
 import {
   ageChip, agentCounts, handledUndoRefusal, needsYouEntries, relMs, repliedEntries, rowModel,
@@ -100,12 +103,15 @@ function markNotesSeen(rendered, hidden, live) {
 let bootId = null
 
 // ── poll suspension (spec §10) ──────────────────────────────────────────────
-// The 3s rebuild holds only for typed drafts. A merely expanded card keeps
-// polling: open state survives rebuilds, order pinning appends new arrivals at
-// the foot, and the bounded press guard protects clicks.
+// The 3s rebuild holds for typed drafts and bounded active interactions. A
+// merely expanded card keeps polling: open state survives settled rebuilds,
+// order pinning appends new arrivals at the foot, and the press/scroll guards
+// protect clicks and trackpad momentum.
 let openRowId = null    // the single inline-expanded Needs-you row (§4)
 let openRowScrollTop = 0 // the inspector's viewport survives the 3s DOM rebuild
-let renderDirty = false // fresh data arrived while suspended
+let lastInspectorScrollAt = null // bounded wheel/scroll activity; never a suspension
+let inspectorScrollTimer = null
+let renderDirty = false // fresh data arrived while an editable rebuild was deferred
 let pinnedIds = []      // sort order pinned for this render session
 let pressedAt = null    // pointerdown → pointerup, hard-bounded by PRESS_GRACE_MS (#38)
 
@@ -139,6 +145,29 @@ function initPressGuard() {
   window.addEventListener('pointercancel', release, true)
 }
 
+function clearInspectorScrollActivity() {
+  lastInspectorScrollAt = null
+  if (inspectorScrollTimer !== null) {
+    clearTimeout(inspectorScrollTimer)
+    inspectorScrollTimer = null
+  }
+}
+
+// A poll that replaces `.nrow-card` mid-scroll preserves scrollTop but kills
+// Chromium's current wheel/trackpad momentum. Capture the position continuously,
+// defer only while events are arriving, then paint a held frame after 200ms of
+// quiet instead of waiting for another 3-second tick.
+function noteInspectorScroll(id, card) {
+  if (openRowId !== id) return
+  openRowScrollTop = card.scrollTop
+  lastInspectorScrollAt = Date.now()
+  if (inspectorScrollTimer !== null) clearTimeout(inspectorScrollTimer)
+  inspectorScrollTimer = setTimeout(() => {
+    inspectorScrollTimer = null
+    if (openRowId === id && !scrollActive(lastInspectorScrollAt, Date.now())) resumeRender()
+  }, SCROLL_IDLE_MS)
+}
+
 // #pauseHint is emitted by the shell (Task 6); this is the only writer
 function showPauseHint() {
   const el = document.getElementById('pauseHint')
@@ -159,9 +188,9 @@ function renderIfIdle() {
     return
   }
   const frame = paintAmbient()
-  // Drafts protect only editable lists. Counts, the badge, rail and Live strip
-  // above have no in-progress text to lose and must keep reporting fresh data.
-  if (shouldDeferRender({ ...suspendState(), pressedAt }, now)) {
+  // Drafts and active inspector scrolling protect only editable lists. Counts,
+  // the badge, rail and Live strip above keep reporting fresh data.
+  if (shouldDeferRender({ ...suspendState(), pressedAt, scrolledAt: lastInspectorScrollAt }, now)) {
     renderDirty = true
     showPauseHint()
     return
@@ -172,7 +201,8 @@ function renderIfIdle() {
   render()
 }
 
-// called whenever a draft may have cleared (input emptied, reply sent)
+// called whenever a draft may have cleared (input emptied, reply sent), or
+// bounded scroll activity has settled
 function resumeRender() {
   if (renderDirty) renderIfIdle()
   else showPauseHint()
@@ -234,7 +264,10 @@ async function reloadAndPaint() {
 // (render()'s own reconciliation, fix round 2 / C1): resuming from there would
 // re-enter render(); the next poll tick renders instead, now unsuspended.
 function setOpenRow(id, { resume = true } = {}) {
-  if (openRowId !== id) openRowScrollTop = 0
+  if (openRowId !== id) {
+    openRowScrollTop = 0
+    clearInspectorScrollActivity()
+  }
   openRowId = id
   if (resume) resumeRender()
   else showPauseHint()
@@ -2447,6 +2480,9 @@ function rowCardBodyEl(entry, m, nowMs) {
   body.className = 'nrow-card'
   body.tabIndex = -1
   body.addEventListener('click', (ev) => ev.stopPropagation()) // clicks in the card must not collapse it
+  const trackScroll = () => noteInspectorScroll(m.id, body)
+  body.addEventListener('wheel', trackScroll, { passive: true })
+  body.addEventListener('scroll', trackScroll, { passive: true })
   // `entry` is a render-time closure and the §10 gate can hold a render for
   // minutes, so the snapshot inside it goes stale (issue #31.1, layer 2: a row
   // reopened after a Change answer would otherwise re-mount the OLD reply and

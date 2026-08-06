@@ -9,6 +9,12 @@ export interface SuspendState {
    * `shouldDeferRender` reads it.
    */
   pressedAt?: number | null
+   /**
+    * The open inspector's most recent wheel or scroll event. Like a press, active
+    * scrolling defers only the editable rebuild and never enters the pause-hint
+    * vocabulary.
+    */
+   scrolledAt?: number | null
 }
 
 export function suspendReason(state: SuspendState): SuspendReason | null
@@ -16,6 +22,8 @@ export function shouldSuspendRender(state: SuspendState): boolean
 export function suspendHint(state: SuspendState): string | null
 export const PRESS_GRACE_MS: number
 export function pressHeld(pressedAt: number | null | undefined, nowMs: number): boolean
+export const SCROLL_IDLE_MS: number
+export function scrollActive(scrolledAt: number | null | undefined, nowMs: number): boolean
 export function shouldDeferRender(state: SuspendState, nowMs: number): boolean
 export function pinOrder(current: string[], incoming: string[]): string[]
 export function reconcileOpenRow(

@@ -2,10 +2,10 @@
 // the caller hands in the current UI state and gets back what the 3s poll is
 // allowed to do. Unit-tested from test/poll.test.ts.
 
-// Only a non-empty draft freezes the re-render. Expanded cards keep their state
-// across rebuilds, existing row order is pinned, and the bounded press guard
-// below protects clicks. Treating "open for reading" as a pause hid new work
-// indefinitely whenever the human left a card expanded.
+// Only a non-empty draft suspends the re-render. Expanded cards keep their state
+// across settled rebuilds, existing row order is pinned, and bounded press/scroll
+// guards protect active interactions. Treating "open for reading" as a pause hid
+// new work indefinitely whenever the human left a card expanded.
 export function suspendReason(state) {
   const drafts = (state && state.drafts) || {}
   for (const v of Object.values(drafts)) {
@@ -51,9 +51,22 @@ export function pressHeld(pressedAt, nowMs) {
   return pressedAt != null && nowMs - pressedAt < PRESS_GRACE_MS
 }
 
-// What the 3s poll may do RIGHT NOW: the §10 suspension, plus the press interval.
+// Replacing a scrolling element preserves its coordinates but cancels Chromium's
+// in-flight wheel/trackpad momentum. Treat scroll activity as another bounded
+// interaction interval: each event moves the deadline, so it cannot strand the
+// viewer and the held frame can paint as soon as movement settles.
+export const SCROLL_IDLE_MS = 200
+
+export function scrollActive(scrolledAt, nowMs) {
+  return scrolledAt != null && nowMs - scrolledAt < SCROLL_IDLE_MS
+}
+
+// What the 3s poll may do RIGHT NOW: the §10 suspension, plus bounded press and
+// inspector-scroll interaction intervals.
 export function shouldDeferRender(state, nowMs) {
-  return pressHeld(state?.pressedAt ?? null, nowMs) || shouldSuspendRender(state)
+  return pressHeld(state?.pressedAt ?? null, nowMs)
+    || scrollActive(state?.scrolledAt ?? null, nowMs)
+    || shouldSuspendRender(state)
 }
 
 // Sort order pins per render session: ids already on screen keep their relative

@@ -130,9 +130,10 @@ npm run view   # http://127.0.0.1:4319
 ```
 Leave it running (or wrap as a login item / Electron app later).
 
-The viewer listens only on IPv4 loopback; `http://localhost:4319` remains an accepted
-browser alias. It is intentionally unauthenticated inside the local machine, so use it on
-a single-user workstation rather than a shared host. If an older viewer is already
+The viewer listens only on IPv4 loopback; `http://localhost:4319` remains an exact browser
+Host/Origin alias without widening the socket, and every mutation requires one of those
+trusted Origins. It is intentionally unauthenticated inside the local machine, so use it
+on a single-user workstation rather than a shared host. If an older viewer is already
 running on port 4319 after an upgrade, stop and restart it before opening the Electron app.
 
 ## 4. Add instructions manually (only if you skipped the installer)

@@ -15,8 +15,9 @@ their behaviour; `src/store.ts` is not modified at all.
 
 **Resolved 2026-08-07.** The local entry now composes a viewer-process-only guard,
 binds a single listener to `127.0.0.1`, validates exact loopback Host/Origin values,
-denies framing, and gives Electron a boundary marker for fail-closed reuse. The finding
-below is the historical baseline that motivated that release-blocking fix.
+requires a trusted Origin for every mutation, denies framing, and gives Electron a
+boundary marker for fail-closed reuse. The finding below is the historical baseline that
+motivated that release-blocking fix.
 
 **This was a fact about the code when this design was written, not a remote-mode design
 note.** It is recorded first because it changes how the rest of this document should be read.

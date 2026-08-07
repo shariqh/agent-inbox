@@ -70,11 +70,12 @@ npm run view                            # http://127.0.0.1:4319 — leave runnin
 ```
 
 The viewer binds only to IPv4 loopback, rejects unrecognized Host and browser Origin
-headers, and cannot be embedded by another page. `http://localhost:4319` remains a browser
-alias, but the service is not reachable from ordinary LAN or bridged-container peers. v0.1
-assumes a single-user workstation: do not run the unauthenticated local viewer on a shared
-host. After upgrading from a pre-hardening build, stop and restart any viewer process
-already using port 4319.
+headers, requires an exact trusted Origin for every mutation, and cannot be embedded by
+another page. `http://localhost:4319` remains a browser alias without widening the socket:
+LAN peers still cannot connect, and DNS rebinding preserves the attacker's rejected
+Host/Origin. v0.1 assumes a single-user workstation; do not run the unauthenticated local
+viewer on a shared host. After upgrading from a pre-hardening build, stop and restart any
+viewer process already using port 4319.
 
 Or open the Electron app's **Setup** panel: choose both hosts, Claude only, or
 Copilot only, then install directly or copy an exact prompt/command for an agent

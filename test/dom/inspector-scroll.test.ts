@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
 import { insertItem } from '../../src/store.js'
-import { bootApp, buttonLabelled, click, freshDb, pollTick, row, settle, useDomTest } from './harness.js'
+import { bootApp, buttonLabelled, click, freshDb, pollTick, row, settle, T0, useDomTest } from './harness.js'
 
 useDomTest()
 
@@ -64,7 +64,8 @@ describe('item inspector scroll', () => {
     // Land a scroll event immediately before the 3-second poll. Replacing this
     // node would stop Chromium's in-flight wheel/trackpad momentum even if the
     // replacement receives the same scrollTop.
-    await vi.advanceTimersByTimeAsync(2950)
+    const untilNextPoll = 3000 - ((Date.now() - T0) % 3000)
+    await vi.advanceTimersByTimeAsync(untilNextPoll - 50)
     before!.dispatchEvent(new Event('scroll'))
     await vi.advanceTimersByTimeAsync(50)
     await settle()

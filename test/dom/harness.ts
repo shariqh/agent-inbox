@@ -309,7 +309,19 @@ export function useDomTest(): void {
     vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
       consoleErrors.push(args.map((a) => (a instanceof Error ? `${a.message}\n${a.stack ?? ''}` : String(a))).join(' '))
     })
-    vi.useFakeTimers()
+    vi.useFakeTimers({
+      toFake: [
+        'setTimeout',
+        'clearTimeout',
+        'setInterval',
+        'clearInterval',
+        'setImmediate',
+        'clearImmediate',
+        'Date',
+        'requestAnimationFrame',
+        'cancelAnimationFrame',
+      ],
+    })
     vi.setSystemTime(T0)
   })
 
@@ -327,9 +339,12 @@ export function useDomTest(): void {
   })
 }
 
-/** Flush microtasks, timers due within 20ms, and one jsdom rAF frame (16ms). */
+/** Flush microtasks first, then timers and one jsdom rAF frame within 20ms. */
 export async function settle(): Promise<void> {
-  await vi.advanceTimersByTimeAsync(20)
+  await vi.advanceTimersByTimeAsync(0)
+  const startedAt = Date.now()
+  vi.advanceTimersToNextFrame()
+  await vi.advanceTimersByTimeAsync(Math.max(0, 20 - (Date.now() - startedAt)))
 }
 
 /**

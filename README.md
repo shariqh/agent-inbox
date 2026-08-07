@@ -1,254 +1,211 @@
-# agent-inbox
+# Agent Inbox
 
-A durable, cross-project, cross-tool **"what needs my attention"** inbox for coding agents.
+[![CI](https://github.com/shariqh/agent-inbox/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/shariqh/agent-inbox/actions/workflows/ci.yml)
+[![Node 24](https://img.shields.io/badge/Node.js-24-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-Your agents (Claude Code, Copilot CLI, any MCP client) write to it themselves over MCP —
-one `flag` tool, called mid-work — so open questions and easily-missed notes stop
-scrolling past in the CLI firehose. A local web viewer shows the whole cross-project inbox
-grouped by *Needs you* / *Notes*. **No second AI**: the tool is a store + a viewer + a thin
-MCP server. The only intelligence is the agent already running, which files a note as a
-normal tool call.
+**A local command center for questions, plans, and live status from coding agents.**
 
-## Why
+Agent Inbox gives GitHub Copilot CLI and Claude Code one shared place to surface
+decisions, handoffs, notes, milestones, and multi-step plans. You respond in the
+Electron app; agents pick the response up through MCP and continue working.
 
-Claude Code's native `claude agents` (Agent View) already does cross-project *status*
-monitoring — but only for Claude Code, and only for what an agent is *blocked on*. This
-tool covers the two gaps: it's **cross-tool** (Copilot CLI too), and it captures the
-**non-blocking notes** — assumptions, caveats, workarounds, tech-debt flags — that Agent
-View can't surface and that you can't extract from raw logs without a second AI.
+![Agent Inbox showing a synthetic decision queue, plan row, response options, and live agents](docs/assets/agent-inbox-overview.png)
 
-## How it works — hub and spoke
+The app is local-first infrastructure, not another agent: its core data path has no
+model calls, hosted service, or telemetry. A stdio MCP server and the desktop viewer
+share one SQLite database on your machine.
 
-```
-  claude in ~/dev/project-a  ─┐
-  copilot in ~/dev/project-b ─┼─►  ~/.agent-inbox/inbox.db  ──►  viewer (127.0.0.1:4319)
-  claude in ~/dev/anything   ─┘        (the single hub)          all projects, one screen
-```
+## What it does
 
-The MCP server is registered **once, at user scope** and auto-attaches to every agent
-session in every repo. Each session spawns the stdio server inheriting that repo's `cwd`,
-which is used only to **auto-infer** attribution:
+| Capability | What you get |
+|---|---|
+| **Cross-project inbox** | Questions and handoffs from every active coding session in one prioritized queue |
+| **Action-aware responses** | Recommended options, free-text answers, snooze, clarify, and decline controls |
+| **Durable plans** | Tracking boards with stable rows, progress, next steps, outcomes, and human-owned actions |
+| **Live sessions** | Ambient status for active agents and their current work without turning activity into alerts |
+| **Dual-host setup** | Audited installers and instructions for GitHub Copilot CLI and Claude Code |
+| **Local security boundary** | A loopback-only viewer with strict Host, Origin, Fetch Metadata, and anti-framing checks |
 
-- **project** ← git remote basename → cwd basename → `unknown`
-- **stream** ← current git branch → `''`
-- **agent** ← MCP `clientInfo.name` (`claude-code` / `copilot` / …)
+## Quick start
 
-So an agent's core loop is: `flag(...)` when it needs attention, then poll `pending()` for
-answers (including optional answer context). Attribution is inferred. Every flag lands in
-one SQLite file; the viewer reads it and shows the cross-project inbox.
+### Requirements
 
-Since a **stream already *is* a branch**, the same inference also yields the **source link**:
-the github.com `owner/name` from `origin`, plus the issue number the branch names when it names
-one unambiguously (`30-x`, `feat/30-x`, `issue-30`, `gh-30` — never a trailing year). Those ride
-on the item, so an issue chip appears with no `gh`, no network and no PR. Separately, the
-**viewer process** (never the MCP server) polls the local `gh` CLI for the PR on that branch and
-caches one row per `(repo, branch)`, adding a `PR 41 ✓ merged` chip whose hover shows the PR
-title and the first line of its body. There is no model call anywhere in this. A failing CI
-check never touches the badge — PR state is ambient information, not attention.
+- **Node.js 24**
+- macOS or Linux for the MCP server and browser viewer
+- Apple Silicon macOS for the source-built Electron package
+- GitHub Copilot CLI and/or Claude Code
 
-## Status
+The v0.1 distribution is source-first and is not published to npm.
 
-**v0.1 is local-first.** The MCP server, SQLite hub, browser viewer, agent setup,
-answer-back, tracking boards, session presence, Electron shell, wake hooks and source/PR
-links all run on your machine. Remote/hosted mode is planned for v2; it is not required
-for the local workflow.
-
-## Quickstart
-
-Requires **Git**, **Node 24** and npm. The MCP server and browser viewer support macOS
-and Linux; the Electron packaging script currently targets Apple Silicon macOS. Full
-steps and the host support matrix are in [`docs/INSTALL.md`](docs/INSTALL.md).
+### 1. Clone and build
 
 ```sh
 git clone https://github.com/shariqh/agent-inbox.git
 cd agent-inbox
 npm ci
 npm run build
-npm run install:agents                  # dry run: MCP + instructions for both hosts
-npm run install:agents -- --apply       # apply with backups; user scope, every repo
-npm run view                            # http://127.0.0.1:4319 — leave running
 ```
 
-The viewer binds only to IPv4 loopback, rejects unrecognized Host and browser Origin
-headers, requires an exact trusted Origin for every mutation, and cannot be embedded by
-another page. `http://localhost:4319` remains a browser alias without widening the socket:
-LAN peers still cannot connect, and DNS rebinding preserves the attacker's rejected
-Host/Origin. v0.1 assumes a single-user workstation; do not run the unauthenticated local
-viewer on a shared host. After upgrading from a pre-hardening build, stop and restart any
-viewer process already using port 4319.
+### 2. Connect your coding agents
 
-Or open the Electron app's **Setup** panel: choose both hosts, Claude only, or
-Copilot only, then install directly or copy an exact prompt/command for an agent
-or terminal. Direct execution is available only when the Electron app owns the
-local viewer; a browser tab never receives command-execution access.
-
-This repository is the v0.1 distribution: it is intentionally not published to npm.
-The macOS app can be built from the checkout with `npm run package:app`; signed and
-notarized downloads are a separate release track.
-
-Optionally add the backstop hooks — `npm run install:hooks` (a dry run; `-- --apply` writes),
-see [`docs/hooks.md`](docs/hooks.md).
-
-The installer is the safe equivalent of binding instructions into `mcp add`: MCP
-registration itself can only store a server command, not edit a host's global prompt. The
-script performs both explicit operations, manages a marked block in each instruction file,
-and preserves unrelated content. Full options and manual setup:
-[`docs/INSTALL.md`](docs/INSTALL.md).
-
-## Agent setup by host
-
-<details>
-<summary><strong>Claude Code</strong></summary>
+Preview the changes first, then install the MCP registration and global reporting
+instructions:
 
 ```sh
-npm run install:agents -- --apply --target claude
+npm run install:agents
+npm run install:agents -- --apply
 ```
 
-This registers the MCP server at Claude's user scope and installs the shared reporting
-contract plus [`docs/instructions/claude-code.md`](docs/instructions/claude-code.md) in
-`~/.claude/CLAUDE.md`. If that file already **imports** the snippet
-(`@/abs/path/to/agent-inbox/docs/reporting-snippet.md`, which Claude Code resolves at load
-time), the managed block skips the inlined copy and installs only the Claude appendix —
-inlining beside a live import would double the tokens and freeze a snapshot that goes stale
-on the next snippet edit. The dry run says when it detects one — and a line it cannot resolve
-to *this* checkout's snippet (a stale path, one inside a code fence, someone else's file)
-inlines instead of being trusted. Claude does **not** launch
-the Copilot watcher. Its optional native wake path is the backstop-hook installer:
+The installer supports both hosts by default. Use `--target claude` or
+`--target copilot` to install only one. It verifies the Node 24 runtime, backs up
+instruction files before changing them, and owns only its marked block.
+
+Start a fresh agent session after installation.
+
+### 3. Launch the Electron app
 
 ```sh
-npm run install:hooks                  # dry run
-npm run install:hooks -- --apply       # install with a timestamped backup
-```
-
-With hooks, `asyncRewake` resumes an idle Claude session when an Inbox answer arrives.
-Without hooks, all MCP tools still work; Claude picks answers up through `pending()` on an
-active or subsequent turn.
-
-</details>
-
-<details>
-<summary><strong>GitHub Copilot CLI</strong></summary>
-
-```sh
-npm run install:agents -- --apply --target copilot
-```
-
-This registers the MCP server in `~/.copilot/mcp-config.json` and installs the shared
-reporting contract plus
-[`docs/instructions/copilot-cli.md`](docs/instructions/copilot-cli.md) in
-`~/.copilot/copilot-instructions.md`. Copilot question flags return an exact-item `watch`
-contract; the instructions make Copilot launch it as a detached background command. Its
-completion notification wakes the session, which then calls `pending()`. No Claude hooks
-are installed for Copilot. Copilot has no import mechanism, so the snippet is always
-inlined here — re-run the installer to pick up snippet changes.
-
-</details>
-
-Both installers are dry-run by default, use the repo's pinned Node 24 binary, verify the
-runtime before writing, and require a fresh agent session afterward. Use `--force` to
-replace an existing Agent Inbox MCP registration or `--uninstall` to remove only the
-managed MCP entry and instruction block. The Electron Setup action invokes the same
-installer with a fixed target—there is no general-purpose shell or HTTP execution route.
-
-## MCP tools
-
-| tool | agent calls it to… |
-|---|---|
-| `flag({ kind, title, detail, next_step, action_owner?, impact?, next_after?, context?, options?, stream? })` → `{ id, watch? }` | raise a `question` (needs you) or `note` (non-blocking FYI). Questions identify who acts, why now, and what follows. Copilot questions also return the detached watcher launch contract. |
-| `pending()` | poll human responses, including `answer` / `clarify` / `decline`, snooze state, and board-row task completion. |
-| `answer({ id, text, context? })` → `{ ok, reason? }` | record an answer the human gave in **chat** onto an open question, so both channels converge. Refused with `reason: "unread_inbox_answer"` while an inbox answer is waiting unread — the inbox wins. |
-| `resolve({ id, outcome? })` | close an item and record the result the human’s answer produced. |
-| `board_advance({ title, label, board_version, expected_revision, ... })` | archive the current step and reuse the same stable row for the next human action. |
-| `register({ project?, stream?, repo?, issue? })` | override auto-inferred scope, including the source link (`repo` = `owner/name`, `issue` = a number) when the branch does not name it; also the identity seam for future remote mode. |
-| `whoami()` | debug — report the session's current project/stream/agent. |
-
-## Ownership
-
-Agents **raise** and **self-resolve when moot**; you **triage** in the viewer
-(`resolve` handled, `dismiss` don't-care, `annotate`). The agent is the source of truth for
-*what happened*; the inbox is your surface for *clearing* it. Your **dismiss rate** is the
-noise signal — high dismiss = tighten the reporting snippet.
-
-## Project layout
-
-```
-src/
-  store.ts         SQLite: schema, WAL, items + boards + activity + source links +
-                   project closure — the only DB door
-  infer.ts         project/stream/agent/repo/issue inference from cwd + clientInfo
-  scope.ts         session-bound scope object (Solo-style: inferred, overridable)
-  mcp.ts           MCP tool definitions (flag/pending/answer/resolve/register/whoami,
-                   board_upsert/board_row/board_get/board_archive, status)
-  mcp-server.ts    stdio entry — spawned per client process (a subagent shares its parent's)
-  shape.ts         AGENT-SIDE-ONLY payload shaping for MCP reads (#42) — trims agent-authored
-                   `context` to `context_chars`; never the human's annotation or handled mark,
-                   never the viewer
-  group.ts         pure grouping (Needs-you / Notes / Done)
-  viewer.ts        Hono API (items, boards, live activity, source links, close/reopen)
-  viewer-network.ts viewer-only loopback bind + Host/Origin boundary for the local entry
-  prstate.ts       VIEWER-PROCESS-ONLY gh fetcher for live PR state (#30) — never imported by mcp.ts
-  stamp.ts         VIEWER-PROCESS-ONLY build stamp (#40) — which build is running, and
-                   whether the checkout it was packaged from has moved on
-  viewer-server.ts node entry — serves API + public/ on 127.0.0.1
-  hook.ts          Claude Code hooks runtime (#10 backstop + #21 pickup nudges)
-  hook-cli.ts      hook entry — one subcommand per event; fail-open, exit-code owner
-  watch.ts         exact-question Copilot wake watcher + host launch contract
-  watch-cli.ts     short-lived watcher entry launched by the Copilot host
-public/            plain HTML/CSS/JS front-end (no bundler → wraps to Electron unchanged)
-hooks/             portable shell wrapper for hand-edited hook registrations
-scripts/install-agents.sh
-                   dry-run-first MCP + managed-instructions installer for both hosts
-docs/              INSTALL.md, hooks.md, reporting-snippet.md, superpowers/{specs,plans}/
-```
-
-## Answer pickup and host wake adapters
-
-The Electron app watches for human responses that still need agent action. A newly
-answered question produces an immediate local wake event; if it is still waiting after
-one minute, Electron shows a native reminder and repeats it every 15 minutes. Board rows
-remain eligible until the agent moves the row out of `blocked`. These reminders are
-informational only and never change the human attention badge or mutate inbox state.
-
-Claude Code uses the built-in hook flow in [`docs/hooks.md`](docs/hooks.md). Other hosts
-can opt into the Electron wake event by launching the app with:
-
-```sh
-AGENT_INBOX_WAKE_COMMAND=/absolute/path/to/adapter \
-AGENT_INBOX_WAKE_ARGS='["--host","copilot"]' \
 npm run electron
 ```
 
-The command must be an absolute executable path. Electron invokes it directly (never
-through a shell), passes the optional JSON string-array arguments, and writes one JSON
-event to stdin. The payload includes the project, agent, response, and originating
-session ID when the data model has one. Adapter failures are logged and never affect the
-viewer. Copilot still exposes no direct session-resume API, so question flags use a
-host-launched workaround instead: a Copilot `flag(kind:"question")` response includes a
-detached `agent-inbox-watch` command for that exact item. Its background-command completion
-notification wakes the owning session, which then calls `pending()`. The MCP server never
-spawns that process itself because only a host-owned completion can wake the conversation.
+The Electron app starts or safely reuses the local viewer and opens the desktop
+workspace. Its **Setup** panel can also run the same audited host installer.
+
+To build a standalone local macOS app:
+
+```sh
+npm run package:app
+open "out/Agent Inbox-darwin-arm64/Agent Inbox.app"
+```
+
+There are no downloadable Electron binaries yet; the package is built from your
+checkout and ad-hoc signed locally.
+
+### Browser viewer on macOS or Linux
+
+Use the browser surface when Electron packaging is unavailable or when developing
+the frontend:
+
+```sh
+npm run view
+```
+
+Open <http://127.0.0.1:4319>. `http://localhost:4319` is retained as an exact browser
+alias.
+
+See [the full installation guide](docs/INSTALL.md) for host-specific setup, manual
+MCP registration, uninstall behavior, optional dependencies, and platform support.
+
+## Where to start agent conversations
+
+Clone Agent Inbox once to host the app and MCP runtime. Start Copilot CLI or Claude
+Code **inside the repository you actually want the agent to work on**, not inside the
+Agent Inbox checkout.
+
+The global MCP registration points every agent session at this installation. Agent
+Inbox infers project and branch identity from each session's working directory, then
+reconciles all of those sessions through the shared local database.
+
+## How the loop works
+
+```mermaid
+flowchart LR
+    A[Copilot CLI or Claude Code<br/>in any project] -->|stdio MCP| B[Agent Inbox MCP server]
+    B --> C[(~/.agent-inbox/inbox.db)]
+    C --> D[Electron app]
+    C --> E[Browser viewer]
+    D -->|answer or complete action| C
+    C -->|pending response| B
+```
+
+1. An agent calls `flag`, `status`, or a board tool.
+2. The shared SQLite hub updates immediately.
+3. You answer or complete the requested action in the Electron app.
+4. The agent calls `pending`, receives the response, acknowledges it, and continues.
+
+Claude Code can use the optional deterministic hooks in
+[`docs/hooks.md`](docs/hooks.md) for automatic idle-session pickup. Copilot questions
+return an exact-item watcher command so the owning CLI session wakes when the answer
+arrives.
+
+## MCP tools
+
+| Tool | Purpose |
+|---|---|
+| `flag` | Raise a question, non-blocking note, or completed milestone |
+| `pending` | Read open questions and human responses on blocked board rows |
+| `answer` | Record an answer the human gave in chat while preserving inbox precedence |
+| `resolve` | Close an item after the agent acts on it |
+| `status` | Publish ephemeral live work and child-agent presence |
+| `board_upsert` | Create or refresh an entire tracking board |
+| `board_row` | Update one stable board row |
+| `board_advance` | Advance a row to its next human action without changing its label |
+| `board_get` | Read board state and human annotations |
+| `board_archive` | Archive a finished board |
+| `register` | Override automatically inferred project, stream, repository, or issue scope |
+| `whoami` | Report the current inferred scope |
+
+The recommended agent behavior is defined in
+[`docs/reporting-snippet.md`](docs/reporting-snippet.md). The installer adds that
+contract plus the host-specific appendix under [`docs/instructions/`](docs/instructions/).
+
+## Architecture
+
+- **`src/store.ts`** owns schema, migrations, WAL configuration, and every database
+  read/write.
+- **`src/mcp-server.ts`** serves MCP over stdio. Its stdout is protocol-only and the
+  process makes no network calls.
+- **`src/viewer-server.ts`** serves the Hono API and static frontend through the
+  loopback network boundary.
+- **`public/`** is a plain JavaScript frontend with no bundler.
+- **`electron/`** wraps the viewer, manages safe local-server reuse, notifications,
+  setup, and packaging.
+
+The default database is `~/.agent-inbox/inbox.db`. Set `AGENT_INBOX_DB` to use a
+different file and `AGENT_INBOX_PORT` to change the viewer port.
+
+## Local security model
+
+The viewer binds one IPv4 listener to `127.0.0.1`, accepts only exact loopback
+authorities, requires a trusted Origin for mutations, rejects cross-site Fetch
+Metadata, and denies framing. Electron reuses only viewers carrying the expected
+local-boundary marker.
+
+This is an intentionally unauthenticated **single-user workstation** boundary.
+Programs running as the same OS user can read the SQLite file directly. Do not expose
+the viewer through a tunnel or run it on a shared host; authenticated hosted mode is
+tracked in [issue #8](https://github.com/shariqh/agent-inbox/issues/8).
+
+Live pull-request state is optional and viewer-owned through the local `gh` CLI. It
+never enters the MCP server process or changes what counts as human attention.
 
 ## Development
 
 ```sh
-npm test            # vitest run — the whole suite, one shot (store, infer, scope, hooks,
-                    # mcp round-trip, viewer, every public/ module, jsdom DOM harness)
-npm run typecheck   # tsc --noEmit (strict, noUncheckedIndexedAccess)
-npm run build       # tsc -p tsconfig.build.json → dist/ (flat; entry at dist/mcp-server.js)
-npm run mcp         # run the MCP server via tsx (for local iteration)
-npm run view        # run the viewer via tsx
+npm test
+npm run typecheck
+npm run build
 ```
 
-> **Node 24 for this checkout.** `better-sqlite3` compiles one native binding per install,
-> and this repo's is built for Node 24's ABI — `.node-version` pins it, so run `fnm use 24`
-> before any command. (Since the v12 upgrade the library itself supports newer Node; the
-> packaged Electron app rebuilds the binding for Electron's own ABI.) When registering the
-> MCP server, use the **absolute path to the Node 24 binary**, not bare `node`, or agents
-> will spawn it under your default Node and the binding will fail to load.
+The test suite uses real temporary SQLite databases and real stdio MCP integration
+round trips. Node 24 is required because this checkout's `better-sqlite3` binding is
+compiled for that ABI.
 
-## Design docs
+Before contributing, read [CONTRIBUTING.md](CONTRIBUTING.md) and the architectural
+invariants in [CLAUDE.md](CLAUDE.md).
 
-- Spec: [`docs/superpowers/specs/2026-07-12-agent-inbox-design.md`](docs/superpowers/specs/2026-07-12-agent-inbox-design.md)
-  — one per feature since; the whole set is in [`docs/superpowers/specs/`](docs/superpowers/specs/)
-- Plan: [`docs/superpowers/plans/2026-07-12-agent-inbox-v1.md`](docs/superpowers/plans/2026-07-12-agent-inbox-v1.md)
-- Agent handoff / conventions / v2 backlog: [`CLAUDE.md`](CLAUDE.md)
+## Roadmap
+
+- [Hosted mode with streamable HTTP and authentication](https://github.com/shariqh/agent-inbox/issues/8)
+- [Remote answer to exact local-session wake and continuation](https://github.com/shariqh/agent-inbox/issues/51)
+- Downloadable, signed Electron release artifacts
+
+## Project links
+
+- [Installation](docs/INSTALL.md)
+- [Claude hook integration](docs/hooks.md)
+- [Contributing](CONTRIBUTING.md)
+- [Security policy](SECURITY.md)
+- [Issue tracker](https://github.com/shariqh/agent-inbox/issues)
+- [MIT license](LICENSE)

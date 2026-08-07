@@ -53,6 +53,10 @@ function q(over: Partial<Item> = {}): Item {
 
 const OPTS = hookOpts({})
 
+it('points the legacy viewer fallback at the canonical IPv4 loopback URL', () => {
+  expect(nudgeText(1, 'agent-inbox')).toContain('127.0.0.1:4319/api/items')
+})
+
 describe('hook: suppression rules', () => {
   it('is true for a session with nothing open and no marker', () => {
     expect(shouldBackstop({ pending: [], sessionId: 'S1', nowMs: NOW, marker: null, opts: OPTS })).toBe(true)

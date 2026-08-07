@@ -21,7 +21,7 @@ View can't surface and that you can't extract from raw logs without a second AI.
 
 ```
   claude in ~/dev/project-a  ─┐
-  copilot in ~/dev/project-b ─┼─►  ~/.agent-inbox/inbox.db  ──►  viewer (localhost:4319)
+  copilot in ~/dev/project-b ─┼─►  ~/.agent-inbox/inbox.db  ──►  viewer (127.0.0.1:4319)
   claude in ~/dev/anything   ─┘        (the single hub)          all projects, one screen
 ```
 
@@ -66,8 +66,15 @@ npm ci
 npm run build
 npm run install:agents                  # dry run: MCP + instructions for both hosts
 npm run install:agents -- --apply       # apply with backups; user scope, every repo
-npm run view                            # http://localhost:4319 — leave running
+npm run view                            # http://127.0.0.1:4319 — leave running
 ```
+
+The viewer binds only to IPv4 loopback, rejects unrecognized Host and browser Origin
+headers, and cannot be embedded by another page. `http://localhost:4319` remains a browser
+alias, but the service is not reachable from ordinary LAN or bridged-container peers. v0.1
+assumes a single-user workstation: do not run the unauthenticated local viewer on a shared
+host. After upgrading from a pre-hardening build, stop and restart any viewer process
+already using port 4319.
 
 Or open the Electron app's **Setup** panel: choose both hosts, Claude only, or
 Copilot only, then install directly or copy an exact prompt/command for an agent
@@ -177,10 +184,11 @@ src/
                    never the viewer
   group.ts         pure grouping (Needs-you / Notes / Done)
   viewer.ts        Hono API (items, boards, live activity, source links, close/reopen)
+  viewer-network.ts viewer-only loopback bind + Host/Origin boundary for the local entry
   prstate.ts       VIEWER-PROCESS-ONLY gh fetcher for live PR state (#30) — never imported by mcp.ts
   stamp.ts         VIEWER-PROCESS-ONLY build stamp (#40) — which build is running, and
                    whether the checkout it was packaged from has moved on
-  viewer-server.ts node entry — serves API + public/ on localhost
+  viewer-server.ts node entry — serves API + public/ on 127.0.0.1
   hook.ts          Claude Code hooks runtime (#10 backstop + #21 pickup nudges)
   hook-cli.ts      hook entry — one subcommand per event; fail-open, exit-code owner
   watch.ts         exact-question Copilot wake watcher + host launch contract

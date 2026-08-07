@@ -1,9 +1,10 @@
-import { serve } from '@hono/node-server'
 import { serveStatic } from '@hono/node-server/serve-static'
 import { openDb } from './store.js'
 import { createViewer } from './viewer.js'
 import { startPrPoller } from './prstate.js'
+import { startLocalViewer } from './viewer-network.js'
 
+const port = Number(process.env.AGENT_INBOX_PORT ?? 4319)
 const db = openDb()
 const app = createViewer(db, { ownerToken: process.env.AGENT_INBOX_OWNER_TOKEN })
 // issue #30 — this is the ONE process allowed to run `gh` (the stdio MCP server
@@ -14,6 +15,5 @@ const app = createViewer(db, { ownerToken: process.env.AGENT_INBOX_OWNER_TOKEN }
 startPrPoller(db)
 app.get('/*', serveStatic({ root: './public' }))
 
-const port = Number(process.env.AGENT_INBOX_PORT ?? 4319)
-serve({ fetch: app.fetch, port })
-console.log(`agent-inbox viewer on http://localhost:${port}`)
+startLocalViewer(app, port)
+console.log(`agent-inbox viewer on http://127.0.0.1:${port}`)

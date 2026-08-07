@@ -9,6 +9,13 @@ export function confirmReuse(
   delayMs: number,
 ): Promise<boolean>
 
+export function classifyReuse(
+  probeAny: () => Promise<boolean>,
+  probeCompatible: () => Promise<boolean>,
+  sleep: (ms: number) => Promise<void>,
+  delayMs: number,
+): Promise<'none' | 'reuse' | 'incompatible'>
+
 export interface WatchUpstreamOpts {
   intervalMs?: number
   failuresToHeal?: number

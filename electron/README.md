@@ -33,13 +33,16 @@ fnm exec --using=24 npm run electron
 
 ## Port / server reuse
 
-- The shell probes `http://localhost:4319` (or `AGENT_INBOX_PORT` if set).
+- The shell probes `http://127.0.0.1:4319` (or `AGENT_INBOX_PORT` if set). The
+  viewer binds only to IPv4 loopback; `localhost` remains a browser alias.
 - If a viewer is **already running** there (e.g. `npm run view`), it is reused and is
-  **not** killed when the app quits. Reuse is confirmed with a **second probe** after a
-  short delay — a viewer caught mid-shutdown can answer once and then vanish (issue #23),
-  and a single probe would strand the app on a dead page. Once reusing, the shell keeps
-  watching the upstream and **starts its own in-process server** if it disappears,
-  reloading the window so it self-heals instead of sitting on the disconnected banner.
+  **not** killed when the app quits, but only if it attests the hardened local boundary.
+  A persistent pre-hardening viewer is refused with restart guidance rather than silently
+  preserving LAN exposure. Reuse is confirmed with a **second probe** after a short delay
+  — a viewer caught mid-shutdown can answer once and then vanish (issue #23), and a single
+  probe would strand the app on a dead page. Once reusing, the shell keeps watching the
+  upstream and **starts its own in-process server** if it disappears, reloading the window
+  so it self-heals instead of sitting on the disconnected banner.
 - Otherwise it tries to run the server **in-process** (works in the packaged app, where
   better-sqlite3 is built for Electron's ABI). In a dev run that import fails (repo
   modules are Node-24 ABI) and it falls back to spawning `node dist/viewer-server.js`,
@@ -52,7 +55,7 @@ fnm exec --using=24 npm run electron
 
 - `electron/main.cjs` is CommonJS on purpose: the repo is TS ESM (`"type":"module"`),
   and a `.cjs` main process sidesteps Electron/ESM loader friction.
-- External links (target=_blank or navigation off localhost) open in the system browser.
+- External links (target=_blank or navigation away from the local viewer) open in the system browser.
 - A notification for one new question exposes its canned responses as native macOS
   actions, with the recommended response first. Selecting one writes the reply without
   opening the window; the existing response watcher then wakes the agent. Batched

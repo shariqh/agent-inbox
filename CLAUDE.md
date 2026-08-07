@@ -25,7 +25,7 @@ npm run test:watch  # vitest watch
 npm run typecheck   # tsc --noEmit (strict; noUncheckedIndexedAccess)
 npm run build       # tsc -p tsconfig.build.json → dist/ (entry: dist/mcp-server.js)
 npm run mcp         # run the MCP stdio server via tsx (local iteration)
-npm run view        # run the viewer on localhost:4319 via tsx
+npm run view        # run the viewer on http://127.0.0.1:4319 via tsx
 npm run install:hooks           # DRY RUN of the opt-in backstop hooks installer (docs/hooks.md)
 npm run install:hooks -- --apply    # …and actually write ~/.claude/settings.json
 npx vitest run test/mcp.integration.test.ts   # single file
@@ -43,6 +43,15 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
 
 ## Architecture & invariants
 
+- **The local viewer boundary lives in `src/viewer-network.ts`, never in
+  `createViewer()`.** It composes an outer Hono app before the viewer/static routes,
+  binds one listener to `127.0.0.1`, validates exact loopback Host/Origin values and
+  emits the marker Electron requires before reuse. Every accepted response also carries
+  CSP `frame-ancestors 'none'` plus `X-Frame-Options: DENY`; otherwise a hostile page can
+  frame the viewer and turn a click into a trusted same-origin mutation. `localhost` is
+  an allowed browser authority but there is no `::1` listener and no host-widening
+  environment variable. Keep this module viewer-process-only: hosted auth is a separate
+  entry, and no network code may enter the stdio MCP import graph.
 - **`src/store.ts` is the only door to the database.** Every read/write goes through its
   exported functions — items: `insertItem`/`resolveItem`/`dismissItem`/`annotateItem`/
   `replyItem`/`answerItem`/`listItems`; boards: `upsertBoard`/`updateBoardRow`/`getBoard`/`listBoards`/

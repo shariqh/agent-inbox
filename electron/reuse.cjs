@@ -24,6 +24,23 @@ async function confirmReuse(probe, sleep, delayMs) {
 }
 
 /**
+ * Distinguish a free port from a hardened viewer and a persistent unmarked
+ * listener. The last case must fail closed: starting another server would race
+ * an occupied port, while reusing it would retain the pre-hardening exposure.
+ *
+ * @param {() => Promise<boolean>} probeAny
+ * @param {() => Promise<boolean>} probeCompatible
+ * @param {(ms: number) => Promise<void>} sleep
+ * @param {number} delayMs
+ * @returns {Promise<'none'|'reuse'|'incompatible'>}
+ */
+async function classifyReuse(probeAny, probeCompatible, sleep, delayMs) {
+  if (!(await probeAny())) return 'none'
+  if (await confirmReuse(probeCompatible, sleep, delayMs)) return 'reuse'
+  return (await probeAny()) ? 'incompatible' : 'none'
+}
+
+/**
  * Watch a reused upstream viewer and self-heal if it disappears (issue #23).
  * On `failuresToHeal` CONSECUTIVE failed probes it invokes `onDrop` once (which
  * starts our in-process/spawned server) and stops watching. A single failed
@@ -63,4 +80,4 @@ function watchUpstream(probe, onDrop, opts) {
   return () => clearIntervalFn(timer)
 }
 
-module.exports = { confirmReuse, watchUpstream }
+module.exports = { classifyReuse, confirmReuse, watchUpstream }

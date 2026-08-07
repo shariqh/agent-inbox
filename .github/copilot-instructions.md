@@ -25,7 +25,7 @@ npm run typecheck                     # strict tsc over src/ and test/
 npm run build                         # src-only build via tsconfig.build.json
 
 npm run mcp                           # stdio MCP server from source
-npm run view                          # viewer at http://localhost:4319
+npm run view                          # viewer at http://127.0.0.1:4319
 npm run electron                      # Electron wrapper in development
 npm run package:app                   # build the self-contained macOS app
 
@@ -55,6 +55,11 @@ Run the build before `npm run electron`; the development shell starts the built
   starts the viewer-only PR poller, and serves `public/`. The frontend is native
   browser ESM with no bundler. Electron stages `dist/`, `public/`, and `electron/`
   and rebuilds `better-sqlite3` for Electron's ABI.
+- **Local network boundary:** `src/viewer-network.ts` wraps the viewer/static app
+  before routing, binds only `127.0.0.1`, validates exact loopback Host/Origin
+  values, denies framing, and emits the hardening marker Electron requires before
+  reuse. Keep it out of the MCP graph and do not add a host-widening environment
+  variable.
 - **Strict process boundaries:** `src/prstate.ts` and `src/stamp.ts` are
   viewer-process concerns; they must not enter the MCP import graph.
   `src/shape.ts` trims agent-facing MCP read payloads and must not affect viewer

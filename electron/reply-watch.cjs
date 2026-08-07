@@ -73,7 +73,10 @@ async function submitNotificationResponse(urlBase, target, text, fetchImpl = fet
     `${urlBase}${path}`,
     {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+        origin: new URL(urlBase).origin,
+      },
       body: JSON.stringify(target?.source === 'row'
         ? {
             text,

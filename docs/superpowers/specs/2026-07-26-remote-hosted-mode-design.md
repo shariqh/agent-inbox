@@ -11,10 +11,15 @@ their behaviour; `src/store.ts` is not modified at all.
 
 ---
 
-## §0 — Present-tense finding: the "local" v1 viewer is already LAN-reachable
+## §0 — Historical finding: the "local" v1 viewer was LAN-reachable
 
-**This is a fact about shipped code today, not a remote-mode design note.** It is recorded
-first because it changes how the rest of this document should be read.
+**Resolved 2026-08-07.** The local entry now composes a viewer-process-only guard,
+binds a single listener to `127.0.0.1`, validates exact loopback Host/Origin values,
+denies framing, and gives Electron a boundary marker for fail-closed reuse. The finding
+below is the historical baseline that motivated that release-blocking fix.
+
+**This was a fact about the code when this design was written, not a remote-mode design
+note.** It is recorded first because it changes how the rest of this document should be read.
 
 `src/viewer-server.ts` calls:
 
@@ -32,16 +37,17 @@ read the entire inbox — every flag title, every `context` blob, every board �
 credential. That is a hand-rolled, unauthenticated version of the very feature #8 exists to
 provide.
 
-**This is not fixed here.** It is being handled separately. It is documented because (a) the
+**This was not fixed in this design wave.** It was handled separately. It is documented because (a) the
 hosted design's "the tunnel connects to us over loopback" story is only correct once the bind
 is explicit, and (b) shipping remote mode while the local server quietly answers the LAN is
 incoherent. See §11.6 for the decision and §11.6's Electron blast radius, which is larger
 than "LAN reachability" and is the reason this is not a one-line change.
 
-Corroborating fact, and the reason nobody caught it: **no test file in the repo references
-`src/viewer-server.ts` at all.** `test/viewer.test.ts` exercises `createViewer(db)` directly.
-The entry point that adds `serveStatic`, `serve()` and the startup `console.log` has zero
-coverage. See §7 for what that costs the "v1 is provably untouched" claim.
+At the time, the corroborating fact — and the reason nobody caught it — was that **no test
+file in the repo referenced `src/viewer-server.ts` at all.** `test/viewer.test.ts` exercised
+`createViewer(db)` directly. The entry point that added `serveStatic`, `serve()` and the
+startup `console.log` had zero coverage. See §7 for what that cost the "v1 is provably
+untouched" claim.
 
 ---
 
@@ -497,10 +503,11 @@ Enumerated as checkable facts, not a promise.
 
 It is tempting to claim "`test/viewer.test.ts` green with zero edits" as **the** proof that
 v1's no-auth local path is intact. **It proves strictly less than that.** Every case in that
-file calls `createViewer(db).request(...)` directly. The actual local entry point is
-`src/viewer-server.ts`, which adds `serveStatic`, `serve()` and a `console.log` — and which
-**has zero test coverage** (verified: no test file references it). The static-file surface
-that §9.2 calls the dangerous one is exactly what `viewer.test.ts` structurally cannot see.
+file calls `createViewer(db).request(...)` directly. At design time the actual local entry
+point was `src/viewer-server.ts`, which added `serveStatic`, `serve()` and a `console.log` —
+and **had zero test coverage** (verified then: no test file referenced it). The static-file
+surface that §9.2 calls the dangerous one is exactly what `viewer.test.ts` structurally
+cannot see.
 
 Correct claim: *`test/viewer.test.ts` unmodified proves `createViewer`'s **routes** gained no
 gate.* It is necessary, not sufficient. The weight is carried instead by a **gate-ordering
@@ -725,15 +732,20 @@ so the local zero-config surface gains no unauthenticated write endpoint and
 
 ### §11.6 — Non-blocking, but bigger than it looks: should `viewer-server.ts` bind `127.0.0.1`?
 
+**Resolved 2026-08-07:** yes. Electron now uses `127.0.0.1` consistently, a real-listener
+test asserts the bound address, and reuse requires the hardened viewer marker. This made a
+single IPv4 listener sufficient; no `::1` listener or `AGENT_INBOX_HOST` escape hatch was
+added. `localhost` remains an exact browser Host/Origin alias for compatibility.
+
 Given §0, the answer looks obviously yes. **The blast radius is Electron, not just the LAN.**
 `electron/main.cjs` hardcodes ``URL_BASE = `http://localhost:${PORT}/` `` and uses it for the
 reuse `http.get` probe, `win.loadURL`, and the three attention fetches. On macOS `localhost`
 resolves `::1` first. Node's `autoSelectFamily` and Chromium's happy-eyeballs *should* fall
-back to `127.0.0.1` — but **nothing in this repo verifies it, and no test file references
-`src/viewer-server.ts` at all**, so the change would ship with zero coverage on the one path
-the desktop app depends on.
+back to `127.0.0.1` — but **nothing in the repo verified it then, and no test file referenced
+`src/viewer-server.ts` at all**, so the change would have shipped with zero coverage on the
+one path the desktop app depends on.
 
-**Recommendation: bind explicitly, but bind both** — listen on `127.0.0.1` **and** `::1` (two
+The original recommendation was to **bind explicitly, but bind both** — listen on `127.0.0.1` **and** `::1` (two
 listeners), or gate the change on a recorded manual `npm run electron` smoke check, with
 `AGENT_INBOX_HOST` to widen it. Called out loudly in the changelog: it is the only local-path
 behaviour change in this design, so it should be deliberate and signed off.
@@ -871,8 +883,8 @@ inferred:
   `use('*')`-then-route → 401; `new Hono()` + `use('*')` + `route('/', sub)` → 401.
   `await c.req.json()` then `c.req.raw.json()` → `TypeError: Body is unusable: Body has already
   been read`. `c.req.json()` on a bodyless GET → `SyntaxError: Unexpected end of JSON input`.
-- `@hono/node-server` does `server.listen(options?.port ?? 3e3, options.hostname, …)` and
-  `src/viewer-server.ts` passes no hostname. **§0 is real.**
+- `@hono/node-server` does `server.listen(options?.port ?? 3e3, options.hostname, …)` and,
+  at verification time, `src/viewer-server.ts` passed no hostname. **§0 was real.**
 - `grep -n href public/app.js` → **zero hits**; no `<a >` built anywhere; no inline `on*=`
   handlers in any `public/*.js`. Four inline `style=` attributes exist, in `needsRowEl`,
   `boardEl` (×2) and `itemCardEl`.

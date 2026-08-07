@@ -28,6 +28,58 @@ describe('confirmReuse — re-probe before committing to reuse', () => {
     expect(calls).toBe(2)
   })
 
+  describe('classifyReuse — fail closed on an unmarked listener', () => {
+    const noSleep = async () => {}
+
+    it('reports none when the port is free', async () => {
+      expect(await reuse.classifyReuse(
+        async () => false,
+        async () => false,
+        noSleep,
+        10,
+      )).toBe('none')
+    })
+
+    it('reuses only a compatible viewer that survives both probes', async () => {
+      expect(await reuse.classifyReuse(
+        async () => true,
+        async () => true,
+        noSleep,
+        10,
+      )).toBe('reuse')
+    })
+
+    it('starts its own viewer when a compatible upstream dies during confirmation', async () => {
+      const compatible = [true, false]
+      const present = [true, false]
+      expect(await reuse.classifyReuse(
+        async () => present.shift() ?? false,
+        async () => compatible.shift() ?? false,
+        noSleep,
+        10,
+      )).toBe('none')
+    })
+
+    it('refuses a persistent listener that does not attest the hardened boundary', async () => {
+      expect(await reuse.classifyReuse(
+        async () => true,
+        async () => false,
+        noSleep,
+        10,
+      )).toBe('incompatible')
+    })
+
+    it('starts its own viewer if an incompatible listener disappears during classification', async () => {
+      const present = [true, false]
+      expect(await reuse.classifyReuse(
+        async () => present.shift() ?? false,
+        async () => false,
+        noSleep,
+        10,
+      )).toBe('none')
+    })
+  })
+
   it('does NOT reuse a DYING viewer that answers once then vanishes (the #23 race)', async () => {
     const results = [true, false] // alive for probe 1, gone by probe 2
     let i = 0

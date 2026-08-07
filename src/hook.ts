@@ -198,7 +198,7 @@ export function nudgeText(count: number, project: string): string {
     `agent-inbox: the human answered ${count} of your open question(s) in project ${project} — ` +
     `call the agent-inbox \`pending\` tool now, act on the reply (and reply_context), then \`resolve\` the item. ` +
     `If this session has no pending tool, read the reply from the viewer API ` +
-    `(curl -s localhost:4319/api/items) and tell the human this session predates it and needs a restart.`
+    `(curl -s 127.0.0.1:4319/api/items) and tell the human this session predates it and needs a restart.`
   )
 }
 

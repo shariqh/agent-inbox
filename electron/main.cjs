@@ -4,10 +4,11 @@
 // and keeping the Electron main process in CJS avoids ESM/Electron loader friction.
 //
 // Behavior:
-//   1. If a viewer is already listening on http://localhost:<AGENT_INBOX_PORT|4319>,
-//      reuse it (never start a second one, never kill it on quit). We re-probe
-//      before committing (a dying viewer can answer one probe then vanish), and
-//      once reusing we watch it and start our own server if it disappears (#23).
+//   1. If a hardened viewer is already listening on
+//      http://127.0.0.1:<AGENT_INBOX_PORT|4319>, reuse it (never start a second
+//      one, never kill it on quit). We re-probe before committing (a dying viewer
+//      can answer one probe then vanish), and once reusing we watch it and start
+//      our own server if it disappears (#23).
 //   2. Otherwise run dist/viewer-server.js IN THIS PROCESS (Electron's bundled
 //      Node) — this is what makes the packaged .app self-contained. It requires
 //      better-sqlite3 built for Electron's ABI (the package script does this).
@@ -23,7 +24,7 @@ const { existsSync } = require('node:fs')
 const http = require('node:http')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
-const { confirmReuse, watchUpstream } = require('./reuse.cjs')
+const { classifyReuse, watchUpstream } = require('./reuse.cjs')
 const { canRunSetup, installerRepoRoot, runAgentInstall } = require('./setup-runner.cjs')
 const {
   cannedResponseActions,
@@ -39,7 +40,10 @@ const {
 } = require('./reply-watch.cjs')
 
 const PORT = Number(process.env.AGENT_INBOX_PORT ?? 4319)
-const URL_BASE = `http://localhost:${PORT}/`
+const VIEWER_HOST = '127.0.0.1'
+const URL_BASE = `http://${VIEWER_HOST}:${PORT}/`
+const BOUNDARY_HEADER = 'x-agent-inbox-local-boundary'
+const BOUNDARY_VERSION = 'loopback-v1'
 const OWNER_TOKEN = randomBytes(32).toString('hex')
 const REPO_ROOT = path.resolve(__dirname, '..')
 const responseWatch = createResponseWatch()
@@ -120,12 +124,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 /** The viewer child process, ONLY if this app spawned it. Never set for a pre-existing server. */
 let spawnedViewer = null
 
-/** One HTTP probe: resolves true if anything answers on the viewer port. */
-function probe() {
+function probeResponse(accept) {
   return new Promise((resolve) => {
     const req = http.get(URL_BASE, { timeout: 1000 }, (res) => {
       res.resume()
-      resolve(true)
+      resolve(accept(res))
     })
     req.on('error', () => resolve(false))
     req.on('timeout', () => {
@@ -133,6 +136,16 @@ function probe() {
       resolve(false)
     })
   })
+}
+
+/** Resolves true when anything occupies the canonical viewer port. */
+function probeAny() {
+  return probeResponse(() => true)
+}
+
+/** Resolves true only for a viewer that attests the hardened local boundary. */
+function probe() {
+  return probeResponse((res) => res.headers[BOUNDARY_HEADER] === BOUNDARY_VERSION)
 }
 
 /** Poll the viewer URL until it responds, or fail after ~timeoutMs. */
@@ -149,6 +162,7 @@ async function probeOwnership() {
   try {
     const response = await fetch(`${URL_BASE}api/owner`, { signal: AbortSignal.timeout(1000) })
     if (!response.ok) return false
+    if (response.headers.get(BOUNDARY_HEADER) !== BOUNDARY_VERSION) return false
     const body = await response.json()
     return body?.token === OWNER_TOKEN
   } catch {
@@ -457,11 +471,19 @@ async function startOwnServer() {
 }
 
 app.whenReady().then(async () => {
-  // Re-probe before committing to reuse: a DYING standalone viewer can answer a
-  // single probe and then vanish, stranding the app on a dead page (issue #23).
-  const reusing = await confirmReuse(probe, sleep, REUSE_CONFIRM_DELAY_MS)
+  // Re-probe before committing to reuse, while distinguishing a dying viewer
+  // from a persistent pre-hardening listener that must not be trusted.
+  const reuseState = await classifyReuse(probeAny, probe, sleep, REUSE_CONFIRM_DELAY_MS)
+  const reusing = reuseState === 'reuse'
   if (reusing) {
     console.log(`[agent-inbox] reusing existing viewer on ${URL_BASE}`)
+  } else if (reuseState === 'incompatible') {
+    console.error(
+      `[agent-inbox] port ${PORT} is occupied by an incompatible or pre-hardening viewer. ` +
+      'Stop that viewer and restart Agent Inbox.'
+    )
+    app.exit(1)
+    return
   } else if (!(await startOwnServer())) {
     app.exit(1)
     return

@@ -444,7 +444,16 @@ describe('the poller runs in the viewer process only', () => {
 
   it('src/viewer-server.ts starts it, and createViewer does NOT (a timer there would leak into every viewer test)', () => {
     expect(read('src/viewer-server.ts')).toContain('startPrPoller(db)')
+    expect(read('src/viewer-server.ts')).toContain('startLocalViewer(app, port)')
+    expect(read('src/viewer-server.ts')).not.toContain('AGENT_INBOX_HOST')
     expect(read('src/viewer.ts')).not.toContain('startPrPoller')
+  })
+
+  it('the local HTTP boundary never enters the stdio MCP import graph', () => {
+    const importsViewerNetwork = /from\s+'\.\/viewer-network\.js'/
+    for (const file of ['src/mcp.ts', 'src/mcp-server.ts', 'src/store.ts', 'src/scope.ts', 'src/infer.ts', 'src/group.ts', 'src/hook.ts', 'src/hook-cli.ts']) {
+      expect(read(file), `${file} pulls the local HTTP boundary into MCP`).not.toMatch(importsViewerNetwork)
+    }
   })
 })
 

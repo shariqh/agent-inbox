@@ -36,13 +36,14 @@ function fixture(script: string): string {
 
 describe('Electron one-click setup runner', () => {
   it('accepts only the exact local viewer origin', () => {
-    expect(isTrustedSetupSender('http://localhost:4319/', 'http://localhost:4319/')).toBe(true)
-    expect(isTrustedSetupSender('http://localhost:4319/setup', 'http://localhost:4319/')).toBe(true)
-    expect(isTrustedSetupSender('http://localhost:4319.evil.example/', 'http://localhost:4319/')).toBe(false)
-    expect(isTrustedSetupSender('https://localhost:4319/', 'http://localhost:4319/')).toBe(false)
-    expect(isTrustedSetupSender('not a url', 'http://localhost:4319/')).toBe(false)
-    expect(canRunSetup('http://localhost:4319/', 'http://localhost:4319/', 7, 7)).toBe(true)
-    expect(canRunSetup('http://localhost:4319/', 'http://localhost:4319/', 7, 8)).toBe(false)
+    expect(isTrustedSetupSender('http://127.0.0.1:4319/', 'http://127.0.0.1:4319/')).toBe(true)
+    expect(isTrustedSetupSender('http://127.0.0.1:4319/setup', 'http://127.0.0.1:4319/')).toBe(true)
+    expect(isTrustedSetupSender('http://127.0.0.1:4319.evil.example/', 'http://127.0.0.1:4319/')).toBe(false)
+    expect(isTrustedSetupSender('https://127.0.0.1:4319/', 'http://127.0.0.1:4319/')).toBe(false)
+    expect(isTrustedSetupSender('http://localhost:4319/', 'http://127.0.0.1:4319/')).toBe(false)
+    expect(isTrustedSetupSender('not a url', 'http://127.0.0.1:4319/')).toBe(false)
+    expect(canRunSetup('http://127.0.0.1:4319/', 'http://127.0.0.1:4319/', 7, 7)).toBe(true)
+    expect(canRunSetup('http://127.0.0.1:4319/', 'http://127.0.0.1:4319/', 7, 8)).toBe(false)
   })
 
   it('resolves the packaged checkout from setup-info and refuses a missing installer', () => {
@@ -129,6 +130,11 @@ while :; do sleep 1; done
     expect(main).toContain("ipcMain.handle('agent-inbox:install'")
     expect(main).toContain('canRunSetup(senderUrl, URL_BASE, event.sender.id, setupInstallWebContentsId)')
     expect(main).toContain('await waitForOwnership()')
+    expect(main).toContain("const VIEWER_HOST = '127.0.0.1'")
+    expect(main).toContain('const URL_BASE = `http://${VIEWER_HOST}:${PORT}/`')
+    expect(main).toContain("const BOUNDARY_HEADER = 'x-agent-inbox-local-boundary'")
+    expect(main).toContain('classifyReuse(probeAny, probe, sleep, REUSE_CONFIRM_DELAY_MS)')
+    expect(main).toContain("reuseState === 'incompatible'")
     expect(main).not.toContain('setupInstallEnabled = true\n        if (!win.isDestroyed())')
     expect(main).toContain("app.on('before-quit'")
     expect(main).toContain('contextIsolation: true')

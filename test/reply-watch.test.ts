@@ -107,17 +107,20 @@ describe('canned notification responses', () => {
     }))
 
     await expect(replyWatch.submitCannedResponse(
-      'http://localhost:4319/',
+      'http://127.0.0.1:4319/',
       'question/1',
       'Use the Trust Center diagram',
       fetchImpl,
     )).resolves.toBeUndefined()
 
     expect(fetchImpl).toHaveBeenCalledWith(
-      'http://localhost:4319/api/items/question%2F1/reply',
+      'http://127.0.0.1:4319/api/items/question%2F1/reply',
       {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: {
+          'content-type': 'application/json',
+          origin: 'http://127.0.0.1:4319',
+        },
         body: '{"text":"Use the Trust Center diagram"}',
       },
     )
@@ -130,17 +133,20 @@ describe('canned notification responses', () => {
       json: async () => ({ ok: true }),
     }))
     await expect(replyWatch.submitNotificationResponse(
-      'http://localhost:4319/',
+      'http://127.0.0.1:4319/',
       { source: 'row', boardId: 'board/1', rowId: 'row/1', revision: 3, boardRevision: 7 },
       'Merge PR #42',
       fetchImpl,
     )).resolves.toBeUndefined()
 
     expect(fetchImpl).toHaveBeenCalledWith(
-      'http://localhost:4319/api/boards/board%2F1/rows/row%2F1/annotate',
+      'http://127.0.0.1:4319/api/boards/board%2F1/rows/row%2F1/annotate',
       {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: {
+          'content-type': 'application/json',
+          origin: 'http://127.0.0.1:4319',
+        },
         body: '{"text":"Merge PR #42","kind":"answer","expected_revision":3,"expected_board_version":7}',
       },
     )
@@ -162,14 +168,14 @@ describe('canned notification responses', () => {
 
   it('surfaces HTTP and store refusals instead of reporting a successful response', async () => {
     await expect(replyWatch.submitCannedResponse(
-      'http://localhost:4319/',
+      'http://127.0.0.1:4319/',
       'question-1',
       'Recommended',
       async () => ({ ok: false, status: 503, json: async () => ({ ok: false }) }),
     )).rejects.toThrow('HTTP 503')
 
     await expect(replyWatch.submitCannedResponse(
-      'http://localhost:4319/',
+      'http://127.0.0.1:4319/',
       'question-1',
       'Recommended',
       async () => ({ ok: true, status: 200, json: async () => ({ ok: false }) }),

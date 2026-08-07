@@ -98,13 +98,19 @@ export function defaultDbPath(): string {
 export function openDb(path: string = defaultDbPath()): Database.Database {
   mkdirSync(dirname(path), { recursive: true })
   const db = new Database(path)
-  db.pragma('journal_mode = WAL')
   db.pragma('busy_timeout = 5000')
+  db.pragma('journal_mode = WAL')
   migrate(db)
   return db
 }
 
 function migrate(db: Database.Database): void {
+  // Reserve the WAL writer before any migration reads. A deferred transaction
+  // cannot wait when a stale read snapshot is promoted to a writer.
+  db.transaction(() => runMigrations(db)).immediate()
+}
+
+function runMigrations(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS items (
       id TEXT PRIMARY KEY,

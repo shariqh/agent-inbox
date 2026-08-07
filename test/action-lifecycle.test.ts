@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
+import { spawn } from 'node:child_process'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -56,9 +57,60 @@ function updateBoardRow(db: Database.Database, input: Parameters<typeof writeBoa
   })
 }
 
+const HOLD_WRITE_LOCK = `
+  import Database from 'better-sqlite3'
+  const db = new Database(process.argv[1])
+  db.pragma('journal_mode = WAL')
+  db.pragma('busy_timeout = 5000')
+  db.exec('BEGIN IMMEDIATE')
+  db.prepare(\`
+    INSERT INTO items (
+      id, project, stream, agent, kind, title, detail, next_step, impact,
+      next_after, status, created_at, updated_at
+    ) VALUES (
+      'during-migration', 'p', '', 'holder', 'note', 'concurrent write',
+      '', '', '', '', 'open', '2026-08-07T00:00:00.000Z',
+      '2026-08-07T00:00:00.000Z'
+    )
+  \`).run()
+  process.stdout.write('locked\\n')
+  setTimeout(() => {
+    db.exec('COMMIT')
+    db.close()
+  }, 350)
+`
+
 describe('action lifecycle storage', () => {
   let db: Database.Database
   beforeEach(() => { db = freshDb() })
+
+  it('waits for a concurrent writer before migration reads and preserves its commit', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'migration-lock-')), 'inbox.db')
+    openDb(path).close()
+
+    const holder = spawn(process.execPath, ['--input-type=module', '-e', HOLD_WRITE_LOCK, path], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let stderr = ''
+    holder.stderr.on('data', (chunk) => { stderr += String(chunk) })
+    const exit = new Promise<number | null>((resolve) => holder.once('close', resolve))
+    await new Promise<void>((resolve, reject) => {
+      holder.stdout.once('data', (chunk) => {
+        if (String(chunk) === 'locked\n') resolve()
+        else reject(new Error(`unexpected lock-holder output: ${String(chunk)}`))
+      })
+      holder.once('error', reject)
+      holder.once('close', (code) => reject(new Error(`lock holder exited before acquiring the lock (${code}): ${stderr}`)))
+    })
+
+    const started = Date.now()
+    const migrated = openDb(path)
+    const waitedMs = Date.now() - started
+    expect(waitedMs).toBeGreaterThanOrEqual(150)
+    expect(listItems(migrated).map((item) => item.id)).toContain('during-migration')
+    migrated.close()
+    expect(await exit, stderr).toBe(0)
+  }, 10000)
 
   it('backfills legacy item/row timestamps from their existing creation records', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'lifecycle-migration-')), 'inbox.db')

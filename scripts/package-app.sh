@@ -45,7 +45,7 @@ require('fs').writeFileSync('$STAGE/package.json', JSON.stringify(staged, null, 
 "
 
 cd "$STAGE"
-npm install --omit=dev --no-audit --no-fund --min-release-age=0
+npm install --omit=dev --no-audit --no-fund
 npx --yes @electron/rebuild -f -w better-sqlite3 -v "$ELECTRON_VERSION" -m "$STAGE"
 
 cd "$ROOT"

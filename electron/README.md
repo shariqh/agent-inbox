@@ -58,6 +58,8 @@ fnm exec --using=24 npm run electron
 - External links (target=_blank or navigation away from the local viewer) open in the system browser.
 - A notification for one new question exposes its canned responses as native macOS
   actions, with the recommended response first. Selecting one writes the reply without
-  opening the window; the existing response watcher then wakes the agent. Batched
-  notifications remain open-only because one action list cannot identify multiple questions.
+  opening the window; the main-process request carries the canonical `127.0.0.1` Origin
+  required by the viewer boundary, then the existing response watcher wakes the agent.
+  Batched notifications remain open-only because one action list cannot identify multiple
+  questions.
 - The app quits when the window closes, including on macOS (utility-window behavior).

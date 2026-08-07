@@ -25,6 +25,8 @@ function trustedAuthorities(port: number): Set<string> {
 }
 
 function trustedOrigins(port: number): Set<string> {
+  // `localhost` is only an HTTP authority alias: the socket still binds 127.0.0.1.
+  // A rebinding origin keeps its attacker-controlled Host/Origin and matches neither.
   const origins = new Set([
     `http://${LOOPBACK_HOST}:${port}`,
     `http://localhost:${port}`,
@@ -57,11 +59,15 @@ export function startLocalViewer(app: Hono, port: number): Server {
     const fetchSite = c.req.header('sec-fetch-site')?.toLowerCase()
     if (
       !SAFE_METHODS.has(c.req.method)
-      && origin === undefined
-      && fetchSite !== undefined
-      && fetchSite !== 'same-origin'
-      && fetchSite !== 'same-site'
-      && fetchSite !== 'none'
+      && (
+        origin === undefined
+        || (
+          fetchSite !== undefined
+          && fetchSite !== 'same-origin'
+          && fetchSite !== 'same-site'
+          && fetchSite !== 'none'
+        )
+      )
     ) {
       return c.text('Forbidden', 403)
     }

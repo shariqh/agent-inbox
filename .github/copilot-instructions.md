@@ -57,9 +57,10 @@ Run the build before `npm run electron`; the development shell starts the built
   and rebuilds `better-sqlite3` for Electron's ABI.
 - **Local network boundary:** `src/viewer-network.ts` wraps the viewer/static app
   before routing, binds only `127.0.0.1`, validates exact loopback Host/Origin
-  values, denies framing, and emits the hardening marker Electron requires before
-  reuse. Keep it out of the MCP graph and do not add a host-widening environment
-  variable.
+  values, requires a trusted Origin for every mutation, denies framing, and emits
+  the hardening marker Electron requires before reuse. `localhost` is an exact
+  browser alias, not a wider bind. Keep it out of the MCP graph and do not add a
+  host-widening environment variable.
 - **Strict process boundaries:** `src/prstate.ts` and `src/stamp.ts` are
   viewer-process concerns; they must not enter the MCP import graph.
   `src/shape.ts` trims agent-facing MCP read payloads and must not affect viewer

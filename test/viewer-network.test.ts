@@ -116,20 +116,25 @@ describe('local viewer network boundary', () => {
     })).status).toBe(403)
   })
 
-  it('rejects an unsafe cross-site browser request even without Origin', async () => {
+  it('rejects cross-site Fetch Metadata even when Origin is forged as trusted', async () => {
     const response = await send('/api/mutate', {
       method: 'POST',
+      origin: `http://127.0.0.1:${port}`,
       fetchSite: 'cross-site',
     })
     expect(response.status).toBe(403)
   })
 
-  it('accepts trusted browser and origin-less native loopback mutations', async () => {
+  it('requires a trusted Origin for every browser or native loopback mutation', async () => {
     expect((await send('/api/mutate', {
       method: 'POST',
       origin: `http://127.0.0.1:${port}`,
       fetchSite: 'same-origin',
     })).status).toBe(200)
-    expect((await send('/api/mutate', { method: 'POST' })).status).toBe(200)
+    expect((await send('/api/mutate', {
+      method: 'POST',
+      origin: `http://127.0.0.1:${port}`,
+    })).status).toBe(200)
+    expect((await send('/api/mutate', { method: 'POST' })).status).toBe(403)
   })
 })

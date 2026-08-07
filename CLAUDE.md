@@ -48,10 +48,13 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   binds one listener to `127.0.0.1`, validates exact loopback Host/Origin values and
   emits the marker Electron requires before reuse. Every accepted response also carries
   CSP `frame-ancestors 'none'` plus `X-Frame-Options: DENY`; otherwise a hostile page can
-  frame the viewer and turn a click into a trusted same-origin mutation. `localhost` is
-  an allowed browser authority but there is no `::1` listener and no host-widening
-  environment variable. Keep this module viewer-process-only: hosted auth is a separate
-  entry, and no network code may enter the stdio MCP import graph.
+  frame the viewer and turn a click into a trusted same-origin mutation. Every unsafe
+  request requires an exact trusted Origin; Fetch Metadata is an independent rejection
+  signal. `localhost` is an allowed browser authority but does not widen the
+  `127.0.0.1` socket, and a rebinding hostname retains its rejected Host/Origin. There is
+  no `::1` listener or host-widening environment variable. Keep this module
+  viewer-process-only: hosted auth is a separate entry, and no network code may enter the
+  stdio MCP import graph.
 - **`src/store.ts` is the only door to the database.** Every read/write goes through its
   exported functions — items: `insertItem`/`resolveItem`/`dismissItem`/`annotateItem`/
   `replyItem`/`answerItem`/`listItems`; boards: `upsertBoard`/`updateBoardRow`/`getBoard`/`listBoards`/

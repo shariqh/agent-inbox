@@ -351,6 +351,23 @@ describe('tablet archived-project popover behavior', () => {
       .filter((tab) => tab.tabIndex === 0)).toEqual([beta])
   })
 
+  it('promotes a poll-reopened project tab when focus was on its Peek action', async () => {
+    const d = open()
+    question(d, 'alpha')
+    advanceClock()
+    question(d, 'beta')
+    closeProject(d, 'beta')
+    setViewport(900)
+    await bootApp(d)
+    click(archivedTrigger())
+    archivedPopover()?.querySelector<HTMLButtonElement>('[aria-label="View archived project beta"]')?.focus()
+    reopenProject(d, 'beta')
+    await pollTick()
+    const beta = projectTab('beta')!
+    expect(document.activeElement).toBe(beta)
+    expect(beta.tabIndex).toBe(0)
+  })
+
   it('makes a restored project tab the sole roving tab stop after a poll rebuild', async () => {
     const d = open()
     question(d, 'alpha')
@@ -517,6 +534,23 @@ describe.each([560, 900, 1400])('roving project fallback at %ipx', (width) => {
 })
 
 describe('async project mutation focus', () => {
+  it('promotes the restored project tab when Archive fails', async () => {
+    expectConsoleError(/HTTP 500/)
+    const d = open()
+    question(d, 'alpha')
+    advanceClock()
+    question(d, 'beta')
+    setViewport(900)
+    const bridge = await bootApp(d)
+    bridge.failPostsWith(500)
+    archiveAction('beta')?.focus()
+    click(archiveAction('beta'))
+    await settle()
+    const beta = projectTab('beta')!
+    expect(document.activeElement).toBe(beta)
+    expect(beta.tabIndex).toBe(0)
+  })
+
   it('does not let an older failed Archive steal focus from a newer Archive', async () => {
     expectConsoleError(/HTTP 500/)
     const d = open()
@@ -636,6 +670,21 @@ describe('async project mutation focus', () => {
     expect(document.activeElement).toBe(search)
     expect(closedProjects(d)).toEqual(['beta'])
   })
+})
+
+it('does not persist an open phone disclosure through a desktop round-trip', async () => {
+  const d = open()
+  question(d, 'alpha')
+  setViewport(560)
+  await bootApp(d)
+  click(document.getElementById('projectDisclosureToggle'))
+  expect(document.getElementById('projectDisclosure')?.dataset.open).toBe('true')
+  setViewport(1400)
+  await settle()
+  expect(document.getElementById('projectDisclosure')?.dataset.open).toBe('false')
+  setViewport(560)
+  await settle()
+  expect(document.getElementById('projectDisclosure')?.dataset.open).toBe('false')
 })
 
 describe.each([

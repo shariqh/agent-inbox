@@ -298,6 +298,16 @@ describe('closed projects (issue #32)', () => {
     expect(js).toMatch(/paddingRight/)
   })
 
+  it('tracks phone, tablet, and desktop project navigation as distinct modes', () => {
+    const mode = fn('function projectNavigationMode()', '\nfunction higherPriorityEscapeSurfaceOpen')
+    expect(mode).toContain("return 'desktop'")
+    expect(mode).toContain("? 'tablet' : 'phone'")
+    const disclosure = fn('function initProjectDisclosure()', '\nfunction railActionEl(')
+    expect(disclosure).toContain('projectMode = projectNavigationMode()')
+    expect(disclosure).toContain('projectMode = next')
+    expect(disclosure).toMatch(/matchMedia\(`\(max-width: \$\{NARROW_MAX\}px\)`\)/)
+  })
+
   it('keeps the type-to-narrow filter escapable — railQuery is cleared whenever the input is not rendered', () => {
     // closing projects can drop the open count under RAIL_FILTER_THRESHOLD,
     // removing the input while a non-empty query still hides most of the rail
@@ -319,6 +329,18 @@ describe('closed projects (issue #32)', () => {
     const body = fn('function renderRail()', '\n// the top bar')
     expect(body).toMatch(/if \(!tabs\.some\(\(tab\) => tab\.tabIndex === 0\) && tabs\[0\]\)/)
     expect(body).not.toMatch(/if \(tablet && !tabs\.some/)
+  })
+
+  it('promotes every programmatically focused project tab to the sole roving tab stop', () => {
+    const promote = fn('function promoteProjectTab(', '\nfunction focusProjectTab(')
+    expect(promote).toMatch(/querySelectorAll\('#rail \.rail-tab'\).*tabIndex = -1/)
+    expect(promote).toMatch(/target\.tabIndex = 0/)
+    expect(promote).toMatch(/target\.focus\(\)/)
+    const restore = fn('function restoreProjectFocus(', '\nfunction setClosedProjectsOpen(')
+    expect(restore).toMatch(/state\.kind === 'peek'/)
+    expect(restore).toMatch(/promoteProjectTab\(/)
+    const close = fn('async function closeProjectAction(', '\nasync function reopenProjectAction(')
+    expect(close).toMatch(/focusProjectTab\([^,]+,\s*generation\)/)
   })
 
   it('reconciles projectFilter against the FULL project list so a closed project can still be peeked', () => {

@@ -1731,6 +1731,11 @@ function tabletProjectsMode() {
   return layout === 'narrow' && compactMastheadWidth() > PROJECT_DISCLOSURE_MAX
 }
 
+function projectNavigationMode() {
+  if (layout !== 'narrow') return 'desktop'
+  return tabletProjectsMode() ? 'tablet' : 'phone'
+}
+
 function higherPriorityEscapeSurfaceOpen() {
   const liveDrawer = document.getElementById('liveDrawer')
   return !!(
@@ -1806,11 +1811,11 @@ function initProjectDisclosure() {
     event.stopImmediatePropagation()
     setProjectDisclosure(false, { restoreFocus: true })
   })
-  let tablet = tabletProjectsMode()
+  let projectMode = projectNavigationMode()
   const syncMode = () => {
-    const next = tabletProjectsMode()
-    if (next === tablet) return
-    tablet = next
+    const next = projectNavigationMode()
+    if (next === projectMode) return
+    projectMode = next
     setProjectDisclosure(false)
     closedFoldOpen = false
     tabletForcedOpenKey = ''
@@ -1823,6 +1828,7 @@ function initProjectDisclosure() {
   } else {
     window.addEventListener('resize', syncMode)
   }
+  window.matchMedia(`(max-width: ${NARROW_MAX}px)`).addEventListener('change', syncMode)
   setProjectDisclosure(false)
 }
 
@@ -1972,6 +1978,22 @@ function focusProjectControl(id, generation = null) {
   })
 }
 
+function promoteProjectTab(selector) {
+  const target = document.querySelector(selector)
+  if (!target) return false
+  for (const tab of document.querySelectorAll('#rail .rail-tab')) tab.tabIndex = -1
+  target.tabIndex = 0
+  target.focus()
+  return true
+}
+
+function focusProjectTab(selector, generation = null) {
+  requestAnimationFrame(() => {
+    if (generation !== null && generation !== projectMutationGeneration) return
+    promoteProjectTab(selector)
+  })
+}
+
 function projectMutationOwnsFocus(selector, generation) {
   if (generation !== projectMutationGeneration) return false
   const active = document.activeElement
@@ -2009,9 +2031,13 @@ function restoreProjectFocus(state) {
   if (state.kind === 'reopen' && !target) {
     target = document.querySelector(`#rail .rail-tab[data-project="${project}"]`)
   }
-  if ((state.kind === 'tab' || state.kind === 'reopen') && target?.classList.contains('rail-tab')) {
-    for (const tab of document.querySelectorAll('#rail .rail-tab')) tab.tabIndex = -1
-    target.tabIndex = 0
+  if (state.kind === 'peek' && !target) {
+    target = document.querySelector(`#rail .rail-tab[data-project="${project}"]`)
+  }
+  if ((state.kind === 'tab' || state.kind === 'reopen' || state.kind === 'peek')
+    && target?.classList.contains('rail-tab')) {
+    promoteProjectTab(`#rail .rail-tab[data-project="${project}"]`)
+    return
   }
   target?.focus()
 }
@@ -3671,10 +3697,7 @@ async function closeProjectAction(name, { focusArchived = false } = {}) {
     lastData.closed = (lastData.closed ?? []).filter((p) => p !== name)
     forceRender()
     if (restoreFocus) {
-      requestAnimationFrame(() => {
-        if (generation !== projectMutationGeneration) return
-        document.querySelector(`#rail .rail-tab[data-project="${CSS.escape(name)}"]`)?.focus()
-      })
+      focusProjectTab(`#rail .rail-tab[data-project="${CSS.escape(name)}"]`, generation)
     }
     return
   }
@@ -3694,14 +3717,7 @@ async function reopenProjectAction(name, { focusProject = false } = {}) {
   if (focusProject) closedFoldOpen = false
   forceRender()
   if (focusProject) {
-    requestAnimationFrame(() => {
-      if (generation !== projectMutationGeneration) return
-      const target = document.querySelector(projectSelector)
-      if (!target) return
-      for (const tab of document.querySelectorAll('#rail .rail-tab')) tab.tabIndex = -1
-      target.tabIndex = 0
-      target.focus()
-    })
+    focusProjectTab(projectSelector, generation)
   }
   const res = await postJSON('/api/projects/reopen', { project: name })
   if (res === null) {
@@ -3714,14 +3730,7 @@ async function reopenProjectAction(name, { focusProject = false } = {}) {
   const restoreFocus = focusProject && projectMutationOwnsFocus(projectSelector, generation)
   await reloadAndPaint()
   if (restoreFocus && projectMutationOwnsFocus(projectSelector, generation)) {
-    requestAnimationFrame(() => {
-      if (generation !== projectMutationGeneration) return
-      const target = document.querySelector(projectSelector)
-      if (!target) return
-      for (const tab of document.querySelectorAll('#rail .rail-tab')) tab.tabIndex = -1
-      target.tabIndex = 0
-      target.focus()
-    })
+    focusProjectTab(projectSelector, generation)
   }
 }
 

@@ -42,6 +42,10 @@ const uf = new window.uFuzzy({ intraMode: 1 })
 const fuzzyFilter = (hay, needle) => uf.filter(hay, needle)
 let searchQuery = ''
 
+function nativeKeyOwner(event) {
+  return event.target instanceof Element && !!event.target.closest('select')
+}
+
 // per-section visible-card caps; `shown` grows as the user clicks "show more"
 const PAGE = { needsYou: 10, notes: 5, done: 5, boards: 5, archived: 5 }
 let shown = { ...PAGE }
@@ -1766,6 +1770,7 @@ function initProjectDisclosure() {
     setProjectDisclosure(false)
   })
   document.addEventListener('keydown', (event) => {
+    if (nativeKeyOwner(event)) return
     if (event.key !== 'Escape' || disclosure.dataset.open !== 'true') return
     event.preventDefault()
     event.stopImmediatePropagation()
@@ -2225,6 +2230,7 @@ function initLiveBar() {
     if (!drawer.hidden && !livePinned && outsideDrawer(e.target)) toggleLiveDrawer(false)
   })
   document.addEventListener('keydown', (e) => {
+    if (nativeKeyOwner(e)) return
     if (e.key === 'Escape' && !drawer.hidden) {
       e.preventDefault()
       toggleLiveDrawer(false, { restoreFocus: true })
@@ -2366,6 +2372,7 @@ function needsEntryId(entry) {
 function protectedNeedsYouIds() {
   const ids = new Set()
   if (openRowId) ids.add(openRowId)
+  if (selectedId) ids.add(selectedId)
   const focusedId = document.activeElement?.closest?.('#needsYouList .nrow[data-card-id]')?.dataset.cardId
   if (focusedId) ids.add(focusedId)
   for (const [id, draft] of Object.entries(rowDrafts)) if (draft) ids.add(id)
@@ -3245,6 +3252,11 @@ function selectRow(id) {
 // this would steal focus from the search box or a draft input on every poll.
 function restoreRowSelection(focusIt) {
   if (!selectedId) return
+  const rows = rowEls()
+  if (!rows.some((el) => el.dataset.cardId === selectedId)) {
+    selectedId = rows[0]?.dataset.cardId ?? null
+  }
+  if (!selectedId) return
   markSelectedRow(selectedId)
   if (focusIt) rowEls().find((el) => el.dataset.cardId === selectedId)?.focus({ preventScroll: true })
 }
@@ -3337,13 +3349,13 @@ function runIntent(intent) {
 
 function initKeys() {
   document.addEventListener('keydown', (e) => {
+    if (nativeKeyOwner(e)) return
     if (e.key === ',' && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
       e.preventDefault()
       toggleSettings()
       return
     }
     if (e.metaKey || e.ctrlKey || e.altKey) return
-    if (e.target?.tagName === 'SELECT') return
     if (e.key === 'Escape' && missionDetailRowId) {
       e.preventDefault()
       closeMissionDetail()

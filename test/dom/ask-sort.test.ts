@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
-import { advanceBoardRow, getBoard, insertItem, upsertBoard } from '../../src/store.js'
+import {
+  advanceBoardRow, getBoard, insertItem, recordActivityCall, resolveItem, upsertActivity, upsertBoard,
+} from '../../src/store.js'
 import {
   advanceClock, answerInput, bootApp, click, freshDb, pollTick, row, rowTitles, settle, setViewport, useDomTest,
 } from './harness.js'
@@ -308,5 +310,84 @@ describe('current ask time and queue sorting (#64)', () => {
 
     expect(document.activeElement).toBe(select)
     expect(answerInput(id)?.value).toBe('Unfinished')
+  })
+
+  it('keeps a selected last-page row rendered after a newest arrival and reseeds a removed selection', async () => {
+    const d = open()
+    const ids: string[] = []
+    for (let index = 0; index < 10; index += 1) {
+      ids.push(insertItem(d, {
+        ...AGENT,
+        kind: 'question',
+        title: `Selection ${String(index + 1).padStart(2, '0')}`,
+      }))
+      advanceClock(60_000)
+    }
+    await bootApp(d)
+    await chooseSort('newest')
+
+    click(row(ids[0]!))
+    await settle()
+    click(row(ids[0]!))
+    await settle()
+    const selected = document.querySelector<HTMLElement>('#needsYouList .nrow.selected')!
+    const selectedId = selected.dataset.cardId!
+    expect(selectedId).toBe(ids[0])
+    document.getElementById('search')!.focus()
+
+    insertItem(d, { ...AGENT, kind: 'question', title: 'Newest selection arrival' })
+    await pollTick()
+
+    expect(rowTitles()).toContain('Selection 01')
+    expect(row(selectedId)).toBeTruthy()
+    expect(document.querySelectorAll('#needsYouList .nrow')).toHaveLength(11)
+    expect(row(selectedId)?.tabIndex).toBe(0)
+
+    resolveItem(d, selectedId)
+    await pollTick()
+
+    expect(row(selectedId)).toBeNull()
+    const tabbable = [...document.querySelectorAll<HTMLElement>('#needsYouList .nrow')]
+      .filter((entry) => entry.tabIndex === 0)
+    expect(tabbable).toHaveLength(1)
+    expect(tabbable[0]?.classList.contains('selected')).toBe(true)
+  })
+
+  it('gives a focused sort select ownership of settings and pinned Live Escape shortcuts', async () => {
+    const d = open()
+    seedMixedQueue(d)
+    upsertActivity(d, {
+      session: 'active',
+      project: 'alpha',
+      stream: 'main',
+      agent: 'copilot',
+      doing: 'Reviewing queue',
+    })
+    recordActivityCall(d, 'active')
+    await bootApp(d)
+
+    const strip = document.getElementById('liveStrip') as HTMLButtonElement
+    click(strip)
+    click(document.getElementById('livePin'))
+    const drawer = document.getElementById('liveDrawer') as HTMLElement
+    expect(drawer.hidden).toBe(false)
+
+    const select = sortSelect()
+    select.focus()
+    const settings = new KeyboardEvent('keydown', {
+      key: ',',
+      metaKey: true,
+      bubbles: true,
+      cancelable: true,
+    })
+    select.dispatchEvent(settings)
+    expect(settings.defaultPrevented).toBe(false)
+    expect(document.getElementById('setup')?.hidden).toBe(true)
+
+    const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    select.dispatchEvent(escape)
+    expect(escape.defaultPrevented).toBe(false)
+    expect(drawer.hidden).toBe(false)
+    expect(document.activeElement).toBe(select)
   })
 })

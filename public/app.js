@@ -458,6 +458,20 @@ function restoreCardFocus(bookmark) {
   return document.activeElement === card || card.contains(document.activeElement)
 }
 
+function focusedAskedTimeId() {
+  const active = document.activeElement
+  if (!active?.matches?.('.nrow-asked')) return null
+  return active.closest('.nrow[data-card-id]')?.dataset.cardId ?? null
+}
+
+function restoreAskedTimeFocus(id) {
+  if (!id) return false
+  const target = needsYouRowEl(id)?.querySelector('.nrow-asked')
+  if (!target) return false
+  target.focus({ preventScroll: true })
+  return document.activeElement === target
+}
+
 // Which tab holds an item — a deep link must land on the right one.
 function tabForItem(it) {
   if (lastData.g.notes.some((gr) => gr.items.some((x) => x.id === it.id))) return 'notes'
@@ -2304,10 +2318,12 @@ function needsYouHeader() {
   }
   sort.value = askSort
   sort.addEventListener('change', () => {
+    const restoreFocus = document.activeElement === sort
     askSort = sort.value
     pinnedIds = []
     resetPaging()
     forceRender()
+    if (restoreFocus) document.querySelector('.queue-sort select')?.focus({ preventScroll: true })
   })
   sortLabel.append(sortText, sort)
   bar.appendChild(sortLabel)
@@ -2367,6 +2383,7 @@ function renderNeedsYou(g, boardsInView, nowMs) {
   const host = document.getElementById('needsYouList')
   const openCard = openRowId ? needsYouRowEl(openRowId)?.querySelector('.nrow-card') : null
   const cardFocus = openCard ? captureCardFocus(openCard, openRowId) : null
+  const askedTimeFocusId = focusedAskedTimeId()
   if (openCard) openRowScrollTop = openCard.scrollTop
   // §13: this rebuilds every row from scratch (poll tick or user action) — capture
   // this BEFORE the list gets cleared below, since clearing a focused element's
@@ -2440,12 +2457,13 @@ function renderNeedsYou(g, boardsInView, nowMs) {
   const restoredCard = openRowId ? needsYouRowEl(openRowId)?.querySelector('.nrow-card') : null
   if (restoredCard && openRowScrollTop > 0) restoredCard.scrollTop = openRowScrollTop
   const restoredCardFocus = restoreCardFocus(cardFocus)
+  const restoredAskedTimeFocus = restoreAskedTimeFocus(askedTimeFocusId)
   // §13: `selectedId` (Task 17) is module state, same pattern as openRowId/
   // staleFoldOpen — the DOM just rebuilt above has no idea a row was selected,
   // so reapply it. Neither selection nor an open card suspends polling. Restore
   // row focus only when focus was already inside the list and the open card did
   // not restore its own control; a poll must never yank focus from elsewhere.
-  restoreRowSelection(hadListFocus && !restoredCardFocus)
+  restoreRowSelection(hadListFocus && !restoredCardFocus && !restoredAskedTimeFocus)
 }
 
 function renderOrphanedDrafts(host) {
@@ -3315,7 +3333,7 @@ function initKeys() {
       return
     }
     const t = e.target
-    const typing = !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)
+    const typing = !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)
     // optionCount must come from the SAME target runIntent will answer — the
     // deck entry while it's open, the list selection otherwise — or a keyboard
     // '1'-'4' can validate against one item and answer another (see

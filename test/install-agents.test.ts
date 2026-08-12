@@ -699,6 +699,8 @@ exec "${process.execPath}" "$@"
     expect(block).toContain(appendix)
     expect(block).toContain('Claude Code wake behavior')
     expect(block).not.toContain('Copilot CLI wake behavior')
+    expect(block).toContain('In Claude Code sessions only:')
+    expect(block).toMatch(/Copilot CLI must follow its returned\s+`watch` launch contract\./)
   })
 
   it('inlines the snippet anyway when the file only names it in prose or a code span', () => {

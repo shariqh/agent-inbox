@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
-import { insertItem, snoozeItem } from '../../src/store.js'
+import {
+  getBoard, insertItem, snoozeBoardRow, snoozeItem, upsertBoard,
+} from '../../src/store.js'
 import { bootApp, freshDb, row, settle, useDomTest } from './harness.js'
 
 useDomTest()
@@ -79,5 +81,46 @@ describe('Needs-you roving tab stop', () => {
     expect(row(id)).toBeTruthy()
     expect(tabbableQueueRows()).toEqual([row(id)])
     expect(row(id)?.classList.contains('selected')).toBe(true)
+  })
+
+  it('applies newest and oldest ask-time sorting inside snoozed and stale folds', async () => {
+    const d = open()
+    const staleOld = insertItem(d, { ...AGENT, kind: 'question', title: 'Stale old' })
+    vi.setSystemTime(Date.now() + HOUR)
+    const staleNew = insertItem(d, { ...AGENT, kind: 'question', title: 'Stale new' })
+    vi.setSystemTime(Date.now() + HOUR)
+    const snoozedItem = insertItem(d, { ...AGENT, kind: 'question', title: 'Snoozed item old' })
+    vi.setSystemTime(Date.now() + HOUR)
+    upsertBoard(d, {
+      ...AGENT,
+      title: 'Deferred plan',
+      rows: [{ label: 'Snoozed row new', status: 'blocked' }],
+    })
+    const board = getBoard(d, 'alpha', 'Deferred plan')!
+    const snoozedRow = board.rows[0]!
+    const until = new Date(Date.now() + 100 * HOUR).toISOString()
+    snoozeItem(d, snoozedItem, until)
+    snoozeBoardRow(d, snoozedRow.id, until, snoozedRow.revision, board.revision)
+    vi.setSystemTime(Date.now() + 73 * HOUR)
+    await bootApp(d)
+
+    const titles = (selector: string) => [...document.querySelectorAll(`${selector} .nrow-title`)]
+      .map((title) => title.textContent)
+    const select = document.querySelector<HTMLSelectElement>('#needsYouList .queue-sort select')!
+
+    select.value = 'newest'
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+    await settle()
+    expect(titles('.snoozed-fold')).toEqual(['Snoozed row new', 'Snoozed item old'])
+    expect(titles('.stale-fold:not(.snoozed-fold)')).toEqual(['Stale new', 'Stale old'])
+
+    select.value = 'oldest'
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+    await settle()
+    expect(titles('.snoozed-fold')).toEqual(['Snoozed item old', 'Snoozed row new'])
+    expect(titles('.stale-fold:not(.snoozed-fold)')).toEqual(['Stale old', 'Stale new'])
+
+    expect(row(staleOld)).toBeTruthy()
+    expect(row(staleNew)).toBeTruthy()
   })
 })

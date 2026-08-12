@@ -43,7 +43,8 @@ const fuzzyFilter = (hay, needle) => uf.filter(hay, needle)
 let searchQuery = ''
 
 function nativeKeyOwner(event) {
-  return event.target instanceof Element && !!event.target.closest('select')
+  return event.target instanceof Element
+    && !!event.target.closest('select, button, a[href], summary, [role="button"]')
 }
 
 // per-section visible-card caps; `shown` grows as the user clicks "show more"
@@ -103,6 +104,10 @@ function markNotesSeen(rendered, hidden, live) {
     notesSeenIds = new Set(ids)
     localStorage.setItem(NOTES_SEEN_IDS_KEY, JSON.stringify(ids))
   }
+}
+
+function sortDeferredEntries(entries) {
+  return askSort === 'priority' ? entries : sortNeedsYouByAsk(entries, askSort)
 }
 
 let bootId = null
@@ -522,7 +527,8 @@ function focusItem(id) {
     for (let node = el; node; node = node.parentElement) {
       if (node.tagName !== 'DETAILS') continue
       node.open = true
-      if (node.classList.contains('stale-fold')) staleFoldOpen = true
+      if (node.classList.contains('snoozed-fold')) snoozedFoldOpen = true
+      else if (node.classList.contains('stale-fold')) staleFoldOpen = true
       if (node.classList.contains('archived-fold')) showArchived = true
     }
     el.scrollIntoView({ behavior: 'smooth', block: 'center' })
@@ -690,7 +696,7 @@ function paintEditableSurfaces({ agents, g, boards, archived, live }) {
   // The render that just happened is the authority on what remains collapsible.
   // A deep link or filter can name a board, a hidden item, or a paged-away row;
   // reconcile stale open state now so it cannot leak into a later render.
-  const nextOpen = reconcileOpenRow(openRowId, rowEls().map((el) => el.dataset.cardId))
+  const nextOpen = reconcileOpenRow(openRowId, allRowEls().map((el) => el.dataset.cardId))
   // still through setOpenRow — it stays the single writer of openRowId
   if (nextOpen !== openRowId) setOpenRow(nextOpen, { resume: false })
   renderTriage() // keep the open lightbox in sync with fresh data
@@ -2464,7 +2470,9 @@ function renderNeedsYou(g, boardsInView, nowMs) {
   // land in sortNeedsYou's bucket 3 — the same dimmed foot, one ordering rule.
   const replied = repliedEntries(items, nowMs, live)
   const awaiting = awaitingAgentRows(boardsInView, closedSet())
-  const snoozed = filterActionEntries(snoozedEntries(items, boardsInView, nowMs, closedSet()))
+  const snoozed = sortDeferredEntries(
+    filterActionEntries(snoozedEntries(items, boardsInView, nowMs, closedSet())),
+  )
   const unordered = filterActionEntries(needsYouEntries(items, boardsInView, nowMs, live, [...replied, ...awaiting]))
   // §10: pin existing order BEFORE paginating. New arrivals append at the foot,
   // so they appear live without moving the row the human is reading.
@@ -2486,7 +2494,7 @@ function renderNeedsYou(g, boardsInView, nowMs) {
   // contents are part of this tab's answer. Computed first so a query matching
   // only a stale item can't print "No matches … or in any other tab" directly
   // above the fold holding that exact match (while its tab badge reads 1).
-  const stale = filterActionEntries(staleEntries(items, nowMs, live))
+  const stale = sortDeferredEntries(filterActionEntries(staleEntries(items, nowMs, live)))
   const header = needsYouHeader()
   replaceNeedsYouBody(host, header)
   if (!entries.length) {
@@ -2751,6 +2759,8 @@ function rowCardBodyEl(entry, m, nowMs) {
 // duplicated per trigger.
 function toggleRow(el, m, entry, nowMs) {
   const wasOpen = openRowId === m.id
+  selectedId = m.id
+  markSelectedRow(m.id)
   setOpenRow(wasOpen ? null : m.id)
   for (const other of document.querySelectorAll('.nrow[data-open="1"]')) {
     other.removeAttribute('data-open')
@@ -3290,6 +3300,10 @@ function keyTargetItem() {
   if (triageDeck) {
     const entry = deckEntryAt(triageDeck.entries, triageDeck.index)
     return entry ? (findEntryData(entry)?.it ?? null) : null
+  }
+  if (openRowId && lastData) {
+    const open = allItems(lastData.g).find((item) => item.id === openRowId)
+    if (open) return open
   }
   return selectedItem()
 }

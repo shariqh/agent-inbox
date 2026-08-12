@@ -121,6 +121,7 @@ let bootId = null
 // protect clicks and trackpad momentum.
 let openRowId = null    // the single inline-expanded Needs-you row (§4)
 let openRowScrollTop = 0 // the inspector's viewport survives the 3s DOM rebuild
+let pendingFocusId = null // explicit deep link protected through filter + pagination reconciliation
 let lastInspectorScrollAt = null // bounded wheel/scroll activity; never a suspension
 let inspectorScrollTimer = null
 let renderDirty = false // fresh data arrived while an editable rebuild was deferred
@@ -498,8 +499,14 @@ function focusItem(id) {
   const board = [...lastData.boards, ...lastData.archived].find((b) => b.id === id)
   const target = item ?? board
   if (!target) return
+  pendingFocusId = item && tabForItem(item) === 'needsYou' ? id : null
   projectFilter = target.project
   agentFilter = null
+  actionFilter = 'all'
+  changedOnly = false
+  searchQuery = ''
+  const search = document.getElementById('search')
+  if (search) search.value = ''
   selectTab(board ? 'boards' : tabForItem(item)) // Task 8: sets activeTab AND shows the panel
   const hash = focusHashFor(id)
   if (location.hash !== hash) location.hash = hash // survives reload
@@ -524,6 +531,7 @@ function focusItem(id) {
     }
     selectRow(id)
   }
+  if (queueTarget || !item || tabForItem(item) !== 'needsYou') pendingFocusId = null
   if (queueTarget) setOpenRow(id)
   if (queueTarget) forceRender()
   requestAnimationFrame(() => {
@@ -720,11 +728,12 @@ function paintEditableSurfaces({ agents, g, boards, archived, live }) {
 function render() {
   const frame = preparedFrame ?? paintAmbient()
   preparedFrame = null
-  reconcileDraftOwners()
   const draftFocus = activeDraftFocusBookmark() ?? requestedDraftFocusBookmark
+  if (document.activeElement?.closest?.('.stale-drafts-fold')) draftRecoveryFocusPending = true
+  reconcileDraftOwners()
   requestedDraftFocusBookmark = null
   paintEditableSurfaces(frame)
-  restoreDraftFocus(draftFocus)
+  if (!restoreDraftRecoveryFocus()) restoreDraftFocus(draftFocus)
 }
 
 // one age vocabulary for every surface (§6): rows, chips, Live and tooltips all
@@ -741,6 +750,7 @@ const rowDraftKinds = {} // row id → answer|clarify|decline, surviving accordi
 const rowDraftMeta = {} // row id → recovery labels/revision if its owner disappears
 const staleRowDrafts = {} // row id → { revision, text } refused by row/board CAS
 let requestedDraftFocusBookmark = null
+let draftRecoveryFocusPending = false
 
 function activeDraftFocusBookmark() {
   const active = document.activeElement
@@ -794,8 +804,47 @@ function findEntryData(e) {
   return r ? { b, r } : null
 }
 
+function captureTriageReturnFocus() {
+  const active = document.activeElement
+  if (!(active instanceof HTMLElement)) return { kind: 'triageButton' }
+  const queueRow = active.closest('#needsYouList .nrow[data-card-id]')
+  if (queueRow) {
+    return {
+      kind: 'queue',
+      id: queueRow.dataset.cardId,
+      control: active.matches('.nrow-asked') ? 'asked' : 'row',
+    }
+  }
+  if (active.id) return { kind: 'id', id: active.id }
+  const tab = active.closest('.tab[data-tab]')
+  if (tab) return { kind: 'tab', id: tab.dataset.tab }
+  if (active.closest('.triage-btn')) return { kind: 'triageButton' }
+  return { kind: 'triageButton' }
+}
+
+function restoreTriageReturnFocus(bookmark) {
+  let target = null
+  if (bookmark?.kind === 'queue') {
+    const queueRow = needsYouRowEl(bookmark.id)
+    target = bookmark.control === 'asked' ? queueRow?.querySelector('.nrow-asked') : queueRow
+  } else if (bookmark?.kind === 'id') {
+    target = document.getElementById(bookmark.id)
+  } else if (bookmark?.kind === 'tab') {
+    target = document.querySelector(`.tab[data-tab="${CSS.escape(bookmark.id)}"]`)
+  } else if (bookmark?.kind === 'triageButton') {
+    target = document.querySelector('.triage-btn')
+  }
+  target ??= needsYouRowEl(selectedId) ?? document.querySelector('.triage-btn')
+  target?.focus({ preventScroll: true })
+}
+
 function openTriage() {
-  triageReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
+  if (hasDraftRecovery()) {
+    requestDraftRecovery()
+    restoreDraftRecoveryFocus()
+    return
+  }
+  triageReturnFocus = captureTriageReturnFocus()
   if (relayOpen) closeRelay()
   if (missionBoardId) closeMission()
   triageDeck = { entries: buildDeck(), index: 0 }
@@ -803,12 +852,12 @@ function openTriage() {
   document.querySelector('#lightbox .lb-panel')?.focus({ preventScroll: true })
 }
 
-function closeTriage() {
+function closeTriage({ restoreFocus = true } = {}) {
   const returnFocus = triageReturnFocus
   triageDeck = null
   triageReturnFocus = null
   document.getElementById('lightbox').hidden = true
-  if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true })
+  if (restoreFocus) restoreTriageReturnFocus(returnFocus)
 }
 
 function triageRemoveCurrent() {
@@ -1029,6 +1078,7 @@ function rowAnswerEl(b, r, onSaved) {
         label: r.label,
         context: r.context ?? '',
       }
+      requestDraftRecovery()
       delete rowDrafts[r.id]
       delete rowDraftKinds[r.id]
       delete rowDraftMeta[r.id]
@@ -1275,8 +1325,8 @@ function renderTriage() {
 
 function initTriage() {
   const lb = document.getElementById('lightbox')
-  lb.querySelector('.lb-close').addEventListener('click', closeTriage)
-  lb.querySelector('.lb-backdrop').addEventListener('click', closeTriage)
+  lb.querySelector('.lb-close').addEventListener('click', () => closeTriage())
+  lb.querySelector('.lb-backdrop').addEventListener('click', () => closeTriage())
   lb.querySelector('.lb-prev').addEventListener('click', () => { triageDeck.index--; renderTriage() })
   lb.querySelector('.lb-next').addEventListener('click', () => { triageDeck.index++; renderTriage() })
   // keyboard (Esc/ArrowLeft/ArrowRight/t) is owned by initKeys (Task 17) —
@@ -2426,6 +2476,7 @@ function needsEntryId(entry) {
 
 function protectedNeedsYouIds() {
   const ids = new Set()
+  if (pendingFocusId) ids.add(pendingFocusId)
   if (openRowId) ids.add(openRowId)
   if (selectedId) ids.add(selectedId)
   const focusedId = document.activeElement?.closest?.('#needsYouList .nrow[data-card-id]')?.dataset.cardId
@@ -2600,7 +2651,9 @@ function renderOrphanedDrafts(host) {
       ].filter(Boolean).join(' · '),
     })),
     ...Object.entries(staleRowDrafts)
-      .filter(([id, draft]) => activeRows.get(id) !== draft.revision)
+      .filter(([id, draft]) =>
+        activeRows.get(id) !== draft.revision
+        || !needsYouRowEl(id)?.querySelector('.reply-input'))
       .map(([id, draft]) => ({
         id,
         draft,
@@ -2618,6 +2671,7 @@ function renderOrphanedDrafts(host) {
   fold.className = 'stale-fold stale-drafts-fold'
   fold.open = true
   const summary = document.createElement('summary')
+  summary.tabIndex = 0
   summary.textContent = `unsent responses (${entries.length})`
   fold.appendChild(summary)
   for (const entry of entries) {
@@ -3112,6 +3166,25 @@ const draftReplyContexts = {}    // item id → optional context attached to the
 const itemDraftMeta = {}         // item id → recovery labels if its answer surface disappears
 const staleItemDrafts = {}       // item id → refused answer preserved outside the poll gate
 
+function hasDraftRecovery() {
+  return Object.keys(staleItemDrafts).length > 0 || Object.keys(staleRowDrafts).length > 0
+}
+
+function requestDraftRecovery() {
+  draftRecoveryFocusPending = true
+  if (triageDeck) closeTriage({ restoreFocus: false })
+  selectTab('needsYou')
+}
+
+function restoreDraftRecoveryFocus() {
+  if (!draftRecoveryFocusPending) return false
+  const target = document.querySelector('.stale-drafts-fold summary')
+  if (!target) return false
+  draftRecoveryFocusPending = false
+  target.focus({ preventScroll: true })
+  return document.activeElement === target
+}
+
 function currentRow(id) {
   for (const board of lastData?.boards ?? []) {
     const row = board.rows.find((candidate) => candidate.id === id)
@@ -3121,6 +3194,7 @@ function currentRow(id) {
 }
 
 function reconcileDraftOwners() {
+  let recovered = false
   const itemIds = new Set([...Object.keys(draftReplies), ...Object.keys(draftReplyContexts)])
   for (const id of itemIds) {
     const text = draftReplies[id] ?? ''
@@ -3137,6 +3211,7 @@ function reconcileDraftOwners() {
     delete draftReplies[id]
     delete draftReplyContexts[id]
     delete itemDraftMeta[id]
+    recovered = true
   }
 
   for (const [id, text] of Object.entries(rowDrafts)) {
@@ -3155,7 +3230,9 @@ function reconcileDraftOwners() {
     delete rowDrafts[id]
     delete rowDraftKinds[id]
     delete rowDraftMeta[id]
+    recovered = true
   }
+  if (recovered) requestDraftRecovery()
 }
 
 async function sendReply(id, text, context = '', kind = 'answer') {
@@ -3186,6 +3263,7 @@ async function sendReply(id, text, context = '', kind = 'answer') {
       context,
       kind,
     }
+    requestDraftRecovery()
     delete draftReplies[id]
     delete draftReplyContexts[id]
     delete itemDraftMeta[id]
@@ -3466,7 +3544,10 @@ function restoreRowSelection(focusIt) {
 function keyTargetItem() {
   if (triageDeck) {
     const entry = deckEntryAt(triageDeck.entries, triageDeck.index)
-    return entry ? (findEntryData(entry)?.it ?? null) : null
+    const data = entry ? findEntryData(entry) : null
+    if (data?.it) return { kind: 'item', item: data.it, options: data.it.options }
+    if (data?.r) return { kind: 'row', board: data.b, row: data.r, options: data.r.options }
+    return null
   }
   const operable = rowEls()
   const focused = document.activeElement?.closest?.('#needsYouList .nrow[data-card-id]')
@@ -3477,12 +3558,14 @@ function keyTargetItem() {
     ?? (selectedIsOperable ? selectedId : null)
     ?? (openIsOperable ? openRowId : null)
   if (!id || !lastData) return null
-  return allItems(lastData.g).find((item) => item.id === id) ?? null
+  const item = allItems(lastData.g).find((candidate) => candidate.id === id)
+  return item ? { kind: 'item', item, options: item.options } : null
 }
 
 function runIntent(intent) {
   const ids = rowEls().map((el) => el.dataset.cardId)
-  const it = keyTargetItem()
+  const target = keyTargetItem()
+  const it = target?.kind === 'item' ? target.item : null
   switch (intent.type) {
     case 'move': {
       if (!ids.length) return
@@ -3509,8 +3592,13 @@ function runIntent(intent) {
       selectRow(null)
       return
     case 'option': {
-      const o = optionOrder(it?.options)[intent.index]
-      if (o && it) sendReply(it.id, o.label, draftReplyContexts[it.id] ?? '')
+      const entity = target?.kind === 'row' ? target.row : it
+      const o = optionOrder(entity?.options)[intent.index]
+      if (o && target?.kind === 'row') {
+        document.querySelectorAll('#lightbox .lb-card .row-options .opt-pill')[intent.index]?.click()
+      } else if (o && it) {
+        sendReply(it.id, o.label, draftReplyContexts[it.id] ?? '')
+      }
       return
     }
     case 'dismiss':

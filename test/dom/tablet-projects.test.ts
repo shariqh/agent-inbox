@@ -3,7 +3,8 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type Database from 'better-sqlite3'
 import { closeProject, closedProjects, insertItem } from '../../src/store.js'
 import {
-  advanceClock, bootApp, click, freshDb, pollTick, rowTitles, searchFor, setViewport, settle, useDomTest,
+  advanceClock, bootApp, click, expectConsoleError, freshDb, pollTick, rowTitles, searchFor, setViewport,
+  settle, useDomTest,
 } from './harness.js'
 
 useDomTest()
@@ -41,6 +42,48 @@ const archivedPopover = (): HTMLElement | null =>
 function pointer(el: Element, type: 'pointerdown' | 'pointerup'): void {
   el.dispatchEvent(new window.PointerEvent(type, { bubbles: true }))
 }
+
+function holdNextRequest(method: 'GET' | 'POST'): () => void {
+  const fetchNow = globalThis.fetch
+  let release!: () => void
+  const gate = new Promise<void>((resolve) => { release = resolve })
+  globalThis.fetch = async (input, init) => {
+    if ((init?.method ?? 'GET') === method) {
+      await gate
+      globalThis.fetch = fetchNow
+    }
+    return await fetchNow(input, init)
+  }
+  return release
+}
+
+it('auto-opens a new same-count archived query after the previous query was dismissed', async () => {
+  const d = open()
+  question(d, 'alpha')
+  advanceClock()
+  insertItem(d, {
+    project: 'beta',
+    stream: 'main',
+    agent: 'copilot',
+    kind: 'question',
+    title: 'first second archived match',
+  })
+  closeProject(d, 'beta')
+  setViewport(900)
+  await bootApp(d)
+
+  await searchFor('first')
+  expect(archivedPopover()).toBeTruthy()
+  document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  expect(archivedPopover()).toBeNull()
+
+  await searchFor('second')
+  expect(archivedTrigger()?.getAttribute('aria-expanded')).toBe('true')
+  expect(archivedPopover()).toBeTruthy()
+  expect(archivedPopover()?.querySelector('[data-project="beta"] .rail-match')?.textContent).toBe('1')
+  document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  expect(archivedPopover()).toBeNull()
+})
 
 it('keeps an explicit Escape dismissal coherent through polling after a forced-open peek', async () => {
   const d = open()
@@ -314,6 +357,100 @@ describe('tablet archived-project popover behavior', () => {
 
     expect(document.querySelector('#rail .closed-fold')).toBeTruthy()
     expect(archivedTrigger()).toBeNull()
+  })
+})
+
+describe('async project mutation focus', () => {
+  it('does not steal deliberate Search focus when Archive finishes', async () => {
+    const d = open()
+    question(d, 'alpha')
+    advanceClock()
+    question(d, 'beta')
+    setViewport(900)
+    await bootApp(d)
+
+    const release = holdNextRequest('GET')
+    click(archiveAction('beta'))
+    await settle()
+    const search = document.getElementById('search') as HTMLInputElement
+    search.focus()
+
+    release()
+    await settle()
+
+    expect(document.activeElement).toBe(search)
+    expect(closedProjects(d)).toEqual(['beta'])
+  })
+
+  it('does not steal deliberate Search focus when Reopen finishes', async () => {
+    const d = open()
+    question(d, 'alpha')
+    advanceClock()
+    question(d, 'beta')
+    closeProject(d, 'beta')
+    setViewport(900)
+    await bootApp(d)
+
+    click(archivedTrigger())
+    const release = holdNextRequest('GET')
+    click(archivedPopover()?.querySelector('[aria-label="Reopen project beta"]'))
+    await settle()
+    const search = document.getElementById('search') as HTMLInputElement
+    search.focus()
+
+    release()
+    await settle()
+
+    expect(document.activeElement).toBe(search)
+    expect(closedProjects(d)).toEqual([])
+  })
+
+  it('does not steal deliberate Search focus when Archive fails', async () => {
+    expectConsoleError(/HTTP 500/)
+    const d = open()
+    question(d, 'alpha')
+    advanceClock()
+    question(d, 'beta')
+    setViewport(900)
+    const bridge = await bootApp(d)
+    bridge.failPostsWith(500)
+
+    const release = holdNextRequest('POST')
+    click(archiveAction('beta'))
+    await settle()
+    const search = document.getElementById('search') as HTMLInputElement
+    search.focus()
+
+    release()
+    await settle()
+
+    expect(document.activeElement).toBe(search)
+    expect(closedProjects(d)).toEqual([])
+  })
+
+  it('does not steal deliberate Search focus when Reopen fails', async () => {
+    expectConsoleError(/HTTP 500/)
+    const d = open()
+    question(d, 'alpha')
+    advanceClock()
+    question(d, 'beta')
+    closeProject(d, 'beta')
+    setViewport(900)
+    const bridge = await bootApp(d)
+    bridge.failPostsWith(500)
+
+    click(archivedTrigger())
+    const release = holdNextRequest('POST')
+    click(archivedPopover()?.querySelector('[aria-label="Reopen project beta"]'))
+    await settle()
+    const search = document.getElementById('search') as HTMLInputElement
+    search.focus()
+
+    release()
+    await settle()
+
+    expect(document.activeElement).toBe(search)
+    expect(closedProjects(d)).toEqual(['beta'])
   })
 })
 

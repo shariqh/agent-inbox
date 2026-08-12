@@ -43,8 +43,10 @@ const fuzzyFilter = (hay, needle) => uf.filter(hay, needle)
 let searchQuery = ''
 
 function nativeKeyOwner(event) {
-  return event.target instanceof Element
-    && !!event.target.closest('select, button, a[href], summary, [role="button"]')
+  if (!(event.target instanceof Element)) return false
+  const owner = event.target.closest('select, button, a[href], summary, [role="button"]')
+  if (!owner) return false
+  return owner.matches('select') || event.key !== 'Escape'
 }
 
 // per-section visible-card caps; `shown` grows as the user clicks "show more"
@@ -1534,6 +1536,7 @@ function selectTab(id) {
     t.tabIndex = t.dataset.tab === id ? 0 : -1 // roving tabindex (spec §13)
   }
   showPanel(id)
+  if (id === 'needsYou') restoreRowSelection(false)
 }
 
 function initTabs() {
@@ -2648,7 +2651,15 @@ function needsRowEl(m, entry, nowMs) {
   if (boardBtn) boardBtn.addEventListener('click', (ev) => { ev.stopPropagation(); jumpToCard('boards', m.boardId) })
   const askedEl = el.querySelector('.nrow-asked')
   if (askedEl) {
-    askedEl.addEventListener('click', (ev) => ev.stopPropagation())
+    const selectAskedRow = () => {
+      selectedId = m.id
+      markSelectedRow(m.id)
+    }
+    askedEl.addEventListener('focus', selectAskedRow)
+    askedEl.addEventListener('click', (ev) => {
+      selectAskedRow()
+      ev.stopPropagation()
+    })
     askedEl.addEventListener('keydown', (ev) => {
       if (ev.key === 'Enter' || ev.key === ' ') {
         ev.preventDefault()
@@ -3273,6 +3284,10 @@ function selectRow(id) {
 // this would steal focus from the search box or a draft input on every poll.
 function restoreRowSelection(focusIt) {
   const rows = rowEls()
+  if (!rows.length && document.getElementById('needsYou')?.hidden) {
+    markSelectedRow(null)
+    return
+  }
   if (!selectedId || !rows.some((el) => el.dataset.cardId === selectedId)) {
     selectedId = rows[0]?.dataset.cardId ?? null
   }

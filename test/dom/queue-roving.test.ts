@@ -4,7 +4,7 @@ import type Database from 'better-sqlite3'
 import {
   getBoard, insertItem, snoozeBoardRow, snoozeItem, upsertBoard,
 } from '../../src/store.js'
-import { bootApp, freshDb, row, settle, useDomTest } from './harness.js'
+import { bootApp, click, freshDb, pollTick, row, settle, useDomTest } from './harness.js'
 
 useDomTest()
 
@@ -81,6 +81,31 @@ describe('Needs-you roving tab stop', () => {
     expect(row(id)).toBeTruthy()
     expect(tabbableQueueRows()).toEqual([row(id)])
     expect(row(id)?.classList.contains('selected')).toBe(true)
+  })
+
+  it('restores one tab stop immediately when returning from a poll on Plans', async () => {
+    const d = open()
+    insertItem(d, { ...AGENT, kind: 'question', title: 'First visible row' })
+    insertItem(d, { ...AGENT, kind: 'question', title: 'Second visible row' })
+    await bootApp(d)
+    const selectedBefore = tabbableQueueRows()[0]?.dataset.cardId
+    expect(selectedBefore).toBeTruthy()
+
+    const plans = document.querySelector<HTMLElement>('#tabs [data-tab="boards"]')!
+    plans.focus()
+    click(plans)
+    await pollTick()
+    expect(document.getElementById('needsYou')?.hidden).toBe(true)
+    expect(tabbableQueueRows()).toHaveLength(0)
+
+    const inbox = document.querySelector<HTMLElement>('#tabs [data-tab="needsYou"]')!
+    inbox.focus()
+    click(inbox)
+
+    expect(document.getElementById('needsYou')?.hidden).toBe(false)
+    expect(tabbableQueueRows()).toHaveLength(1)
+    expect(tabbableQueueRows()[0]?.dataset.cardId).toBe(selectedBefore)
+    expect(document.activeElement).toBe(inbox)
   })
 
   it('applies newest and oldest ask-time sorting inside snoozed and stale folds', async () => {

@@ -49,7 +49,8 @@ describe('phone project disclosure', () => {
     expect(toggle().getAttribute('aria-expanded')).toBe('false')
 
     click(toggle())
-    document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    toggle().focus()
+    toggle().dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     expect(toggle().getAttribute('aria-expanded')).toBe('false')
     expect(document.activeElement).toBe(toggle())
   })

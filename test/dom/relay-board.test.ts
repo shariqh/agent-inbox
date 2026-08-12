@@ -76,6 +76,11 @@ describe('Handoffs milestone', () => {
     expect(relay.querySelector('[data-relay-lane="agent"]')?.textContent).toContain('Publish?')
     expect(relay.querySelector('[data-relay-lane="agent"]')?.textContent).toContain('Upload build')
     expect(relay.querySelector('[data-relay-lane="outcome"]')?.textContent).toContain('Release shipped successfully.')
+
+    const openButton = relay.querySelector<HTMLButtonElement>('.relay-open')!
+    openButton.focus()
+    openButton.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    expect(relay.hidden).toBe(true)
   })
 
   it('routes handoff cards back to their existing card rather than owning duplicate actions', async () => {

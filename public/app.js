@@ -2562,7 +2562,10 @@ function snoozedFoldEl(entries, opts, nowMs) {
   const fold = document.createElement('details')
   fold.className = 'stale-fold snoozed-fold'
   if (snoozedFoldOpen) fold.open = true
-  fold.addEventListener('toggle', () => { snoozedFoldOpen = fold.open })
+  fold.addEventListener('toggle', () => {
+    snoozedFoldOpen = fold.open
+    restoreRowSelection(false)
+  })
   const summary = document.createElement('summary')
   summary.textContent = `snoozed (${entries.length})`
   fold.appendChild(summary)
@@ -2576,7 +2579,10 @@ function staleFoldEl(entries, opts, nowMs) {
   const fold = document.createElement('details')
   fold.className = 'stale-fold'
   if (staleFoldOpen) fold.open = true
-  fold.addEventListener('toggle', () => { staleFoldOpen = fold.open })
+  fold.addEventListener('toggle', () => {
+    staleFoldOpen = fold.open
+    restoreRowSelection(false)
+  })
   const summary = document.createElement('summary')
   summary.textContent = staleFoldLabel(entries.length)
   fold.appendChild(summary)
@@ -2588,7 +2594,7 @@ function needsRowEl(m, entry, nowMs) {
   const el = document.createElement('div')
   el.className = `nrow nrow-${m.kind}${m.answered ? ' answered' : ''}${stagedDismiss.has(m.id) ? ' staged' : ''}`
   el.dataset.cardId = m.id
-  el.tabIndex = 0
+  el.tabIndex = -1
   const chip = urgencyChip(m, nowMs)
   const color = pcolor(m.project)
   const glyph = m.kind === 'row' ? `<button class="nrow-glyph" title="Open plan: ${esc(m.boardTitle ?? '')}">Plan</button>` : ''
@@ -3219,16 +3225,21 @@ function itemEl(it, done = false) {
 // list's keys can never drift apart.
 let selectedId = null // the row the keyboard is on
 
-function rowEls() {
+function allRowEls() {
   return [...document.querySelectorAll('#needsYouList .nrow[data-card-id]')]
+}
+
+function rowEls() {
+  return allRowEls().filter((el) => !el.closest('[hidden], details:not([open])'))
 }
 
 // class/attr/tabIndex only — no focus side effect, so it's safe to call from a
 // passive rebuild (restoreRowSelection) as well as a deliberate user action
 // (selectRow)
 function markSelectedRow(id) {
-  for (const el of rowEls()) {
-    const on = el.dataset.cardId === id
+  const operable = new Set(rowEls())
+  for (const el of allRowEls()) {
+    const on = operable.has(el) && el.dataset.cardId === id
     el.classList.toggle('selected', on)
     el.setAttribute('aria-selected', String(on))
     el.tabIndex = on ? 0 : -1
@@ -3251,14 +3262,14 @@ function selectRow(id) {
 // list before the rebuild (see `hadListFocus` in renderNeedsYou) — otherwise
 // this would steal focus from the search box or a draft input on every poll.
 function restoreRowSelection(focusIt) {
-  if (!selectedId) return
   const rows = rowEls()
-  if (!rows.some((el) => el.dataset.cardId === selectedId)) {
+  if (!selectedId || !rows.some((el) => el.dataset.cardId === selectedId)) {
     selectedId = rows[0]?.dataset.cardId ?? null
   }
-  if (!selectedId) return
   markSelectedRow(selectedId)
-  if (focusIt) rowEls().find((el) => el.dataset.cardId === selectedId)?.focus({ preventScroll: true })
+  if (focusIt) {
+    if (selectedId) rows.find((el) => el.dataset.cardId === selectedId)?.focus({ preventScroll: true })
+  }
 }
 
 function selectedItem() {

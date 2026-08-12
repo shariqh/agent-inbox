@@ -127,10 +127,18 @@ describe('renderStructuredText escaping', () => {
     'x<y and z',
     'is x <y ',
     'is x <a',
+    'if x<y = z',
+    'if x<y and z = t',
     'if (x <threshold )',
     'x <max-size ',
   ])('does not treat a compact comparison as a tag: %s', (comparison) => {
     const html = renderStructuredText(`${comparison}\nSee https://example.com/path\n- item`)
+    expect(html).toContain('href="https://example.com/path"')
+    expect(html).toContain('<ul><li>item</li></ul>')
+  })
+
+  it('does not use a quoted greater-than to validate a compact comparison', () => {
+    const html = renderStructuredText('if x<y, print(">")\nSee https://example.com/path\n- item')
     expect(html).toContain('href="https://example.com/path"')
     expect(html).toContain('<ul><li>item</li></ul>')
   })
@@ -223,6 +231,12 @@ describe('renderStructuredText safe autolinks', () => {
     expect(html.match(/<a /g)).toHaveLength(3)
   })
 
+  it('maintains prose wrapper state across an inert entity fragment', () => {
+    const html = renderStructuredText('(see &amp; https://example.com/?q=)')
+    expect(html).toContain('href="https://example.com/?q="')
+    expect(html).toContain('q=</a>)</p>')
+  })
+
   it.each([
     ['…', 'ellipsis'],
     ['。', 'ideographic full stop'],
@@ -305,5 +319,11 @@ describe('structured text presentation contract', () => {
     const loop = fn.slice(fn.indexOf('while ('), fn.indexOf('\n  return '))
     expect(loop).not.toContain('.slice(')
     expect(fn).toContain('new Uint8Array(candidate.length)')
+  })
+
+  it('assesses tag credibility without rescanning line prefixes or suffixes', () => {
+    const source = readFileSync(join(REPO, 'public/structured-text.js'), 'utf8')
+    expect(source).not.toContain("remainder.includes('>')")
+    expect(source).not.toContain('value.slice(0, match.index).trim()')
   })
 })

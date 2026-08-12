@@ -50,24 +50,63 @@ function splitTrailingPunctuation(candidate, externalClosers = []) {
   return { url: candidate.slice(0, end), trailing: candidate.slice(end) }
 }
 
-function consumeTag(value, start, state) {
-  state.mode = 'tag'
+function scanTag(value, start, initialQuote = '', stopAtTagStart = false) {
+  let quote = initialQuote
+  let hasAssignment = false
+  let firstAttributeAssignment = false
+  let attributeCount = 0
+  let attributeState = 'before'
   for (let index = start; index < value.length; index++) {
     const char = value[index]
-    if (state.quote) {
-      if (char === state.quote) state.quote = ''
+    if (quote) {
+      if (char === quote) quote = ''
       continue
     }
     if (char === '"' || char === "'") {
-      state.quote = char
+      quote = char
+      attributeState = 'value'
       continue
     }
-    if (char !== '>') continue
-    state.mode = ''
-    state.quote = ''
-    return index + 1
+    if (char === '>') {
+      return {
+        end: index + 1,
+        quote: '',
+        closed: true,
+        hasAssignment,
+        firstAttributeAssignment,
+      }
+    }
+    if (stopAtTagStart && char === '<') {
+      return { end: index, quote, closed: false, hasAssignment, firstAttributeAssignment }
+    }
+    if (char === '=') {
+      if (attributeState === 'name' || attributeState === 'afterName') {
+        hasAssignment = true
+        if (attributeCount === 1) firstAttributeAssignment = true
+      }
+      attributeState = 'value'
+      continue
+    }
+    if (/\s/.test(char)) {
+      if (attributeState === 'name') attributeState = 'afterName'
+      else if (attributeState !== 'afterName') attributeState = 'before'
+      continue
+    }
+    const attributeStart = /[a-z_:]/i.test(char)
+    if (attributeState === 'before' || attributeState === 'afterName') {
+      attributeState = attributeStart ? 'name' : 'other'
+      if (attributeStart) attributeCount++
+    } else if (attributeState === 'name' && !/[a-z0-9_.:-]/i.test(char)) {
+      attributeState = 'other'
+    }
   }
-  return value.length
+  return { end: value.length, quote, closed: false, hasAssignment, firstAttributeAssignment }
+}
+
+function consumeTag(scan, state) {
+  state.mode = scan.closed ? '' : 'tag'
+  state.quote = scan.closed ? '' : scan.quote
+  return scan.end
 }
 
 function consumeComment(value, start, state) {
@@ -79,14 +118,27 @@ function consumeComment(value, start, state) {
   return close + 3
 }
 
-function credibleTagStart(value, match) {
+function assessTagStart(value, match, lineLeading) {
   const token = match[0]
-  if (token === '<!--' || token.startsWith('<!')) return true
+  if (token === '<!--') return { credible: true, comment: true }
+  if (token.startsWith('<!')) {
+    return { credible: true, comment: false, scan: scanTag(value, match.index + token.length) }
+  }
   const name = token.replace(/^<\/?/, '').toLowerCase()
-  const remainder = value.slice(match.index + token.length)
-  if (remainder.includes('>') || /^\s+[a-z_:][a-z0-9_.:-]*\s*=/i.test(remainder)) return true
-  const lineLeading = !value.slice(0, match.index).trim()
-  return lineLeading && (HTML_TAG_NAMES.has(name) || name.includes('-'))
+  const recognized = HTML_TAG_NAMES.has(name) || name.includes('-')
+  const tokenEnd = match.index + token.length
+  if (lineLeading && recognized) {
+    return { credible: true, comment: false, scan: scanTag(value, tokenEnd) }
+  }
+  const next = value[tokenEnd] ?? ''
+  if (!next || !/[\s/>]/.test(next)) return { credible: false }
+  const shape = scanTag(value, tokenEnd, '', true)
+  if (!shape.closed && !shape.firstAttributeAssignment) return { credible: false }
+  return {
+    credible: true,
+    comment: false,
+    scan: shape.closed ? shape : scanTag(value, tokenEnd),
+  }
 }
 
 function startsHttpScheme(value, index) {
@@ -123,11 +175,11 @@ function updateDelimiterStack(value, start, end, expectedClosers) {
   }
 }
 
-function renderLinkedSegment(value) {
+function renderLinkedSegment(value, linkState) {
   let html = ''
   let cursor = 0
   let boundaryCursor = 0
-  const expectedProseClosers = []
+  const expectedProseClosers = linkState.expectedProseClosers
   URL_RE.lastIndex = 0
   for (let match = URL_RE.exec(value); match; match = URL_RE.exec(value)) {
     const start = match.index
@@ -137,6 +189,7 @@ function renderLinkedSegment(value) {
     const previous = start > 0 ? value[start - 1] : ''
     if (previous && !SAFE_BOUNDARY_RE.test(previous)) {
       html += esc(candidate)
+      updateDelimiterStack(candidate, 0, candidate.length, expectedProseClosers)
     } else {
       const segments = splitAdjacentUrls(candidate)
       for (let index = 0; index < segments.length; index++) {
@@ -151,37 +204,43 @@ function renderLinkedSegment(value) {
     cursor = start + candidate.length
     boundaryCursor = cursor
   }
+  updateDelimiterStack(value, boundaryCursor, value.length, expectedProseClosers)
   return html + esc(value.slice(cursor))
 }
 
 function renderInline(value, state) {
   let html = ''
   let cursor = 0
+  const firstContentIndex = value.search(/\S/)
+  const linkState = { expectedProseClosers: [] }
   if (state.mode) {
-    cursor = state.mode === 'comment'
-      ? consumeComment(value, 0, state)
-      : consumeTag(value, 0, state)
+    if (state.mode === 'comment') {
+      cursor = consumeComment(value, 0, state)
+    } else {
+      cursor = consumeTag(scanTag(value, 0, state.quote), state)
+    }
     html += esc(value.slice(0, cursor))
     if (state.mode) return html
   }
   PROTECTED_START_RE.lastIndex = cursor
   for (let match = PROTECTED_START_RE.exec(value); match; match = PROTECTED_START_RE.exec(value)) {
     if (match[0].startsWith('&')) {
-      html += renderLinkedSegment(value.slice(cursor, match.index))
+      html += renderLinkedSegment(value.slice(cursor, match.index), linkState)
       html += esc(match[0])
       cursor = match.index + match[0].length
       continue
     }
-    if (!credibleTagStart(value, match)) continue
-    html += renderLinkedSegment(value.slice(cursor, match.index))
-    cursor = match[0] === '<!--'
+    const assessment = assessTagStart(value, match, match.index === firstContentIndex)
+    if (!assessment.credible) continue
+    html += renderLinkedSegment(value.slice(cursor, match.index), linkState)
+    cursor = assessment.comment
       ? consumeComment(value, match.index, state)
-      : consumeTag(value, match.index, state)
+      : consumeTag(assessment.scan, state)
     html += esc(value.slice(match.index, cursor))
     if (state.mode) break
     PROTECTED_START_RE.lastIndex = cursor
   }
-  return html + (state.mode ? '' : renderLinkedSegment(value.slice(cursor)))
+  return html + (state.mode ? '' : renderLinkedSegment(value.slice(cursor), linkState))
 }
 
 function paragraphHtml(lines) {

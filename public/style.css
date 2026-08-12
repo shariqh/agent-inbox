@@ -138,7 +138,7 @@ header { flex-wrap: wrap; }
 .relay-meta { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; color: color-mix(in srgb, CanvasText 50%, transparent); font-size: 10px; }
 .relay-owner { padding: 1px 6px; border-radius: 999px; color: LinkText; background: color-mix(in srgb, LinkText 9%, transparent); }
 .relay-card h3 { margin: 0 0 4px; font-size: 13.5px; }
-.relay-card p { margin: 0; color: color-mix(in srgb, CanvasText 65%, transparent); font-size: 11.5px; }
+.relay-summary-text { color: color-mix(in srgb, CanvasText 65%, transparent); font-size: 11.5px; }
 .relay-result { margin-top: 7px; padding: 6px 8px; border-radius: 7px; color: color-mix(in srgb, seagreen 75%, CanvasText); background: color-mix(in srgb, seagreen 8%, transparent); font-size: 11.5px; }
 .relay-state { display: flex; align-items: center; gap: 6px; margin-top: 9px; }
 .relay-baton { width: 17px; height: 5px; border-radius: 999px; background: LinkText; box-shadow: 0 0 7px color-mix(in srgb, LinkText 45%, transparent); }
@@ -176,12 +176,15 @@ header { flex-wrap: wrap; }
 .mission-node.mission-done { border-color: color-mix(in srgb, seagreen 28%, transparent); }
 .mission-node-meta { display: block; margin-bottom: 4px; color: LinkText; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; }
 .mission-node strong { display: block; font-size: 12.5px; }
-.mission-node > span:not(.mission-node-meta) { display: block; margin-top: 3px; color: color-mix(in srgb, CanvasText 60%, transparent); font-size: 10.5px; }
-.mission-node small { display: block; margin-top: 6px; color: color-mix(in srgb, CanvasText 48%, transparent); font-size: 9.5px; }
+.mission-node-summary { margin-top: 3px; color: color-mix(in srgb, CanvasText 60%, transparent); font-size: 10.5px; }
+.mission-node-impact { margin-top: 6px; color: color-mix(in srgb, CanvasText 48%, transparent); font-size: 9.5px; }
+.mission-node-impact > span { display: block; font-size: 9px; text-transform: uppercase; letter-spacing: .07em; }
+.mission-node-open { margin-top: 7px; padding: 2px 7px; border: 1px solid color-mix(in srgb, CanvasText 18%, transparent); border-radius: 6px; color: inherit; background: transparent; cursor: pointer; font: inherit; font-size: 9.5px; }
+.mission-node-open:hover { border-color: LinkText; color: LinkText; }
 .mission-arrow { color: color-mix(in srgb, LinkText 55%, transparent); text-align: center; font-size: 17px; }
 .mission-result { min-height: 62px; display: flex; flex-direction: column; justify-content: center; padding: 9px 10px; border: 1px dashed color-mix(in srgb, CanvasText 17%, transparent); border-radius: 9px; background: color-mix(in srgb, CanvasText 2%, transparent); }
 .mission-result span { color: color-mix(in srgb, CanvasText 45%, transparent); font-size: 9px; text-transform: uppercase; letter-spacing: .07em; }
-.mission-result strong { margin-top: 3px; font-size: 11.5px; }
+.mission-result .structured-text { margin-top: 3px; font-size: 11.5px; }
 .mission-result.outcome { border-style: solid; border-color: color-mix(in srgb, seagreen 28%, transparent); background: color-mix(in srgb, seagreen 6%, transparent); }
 .mission-result.next { border-color: color-mix(in srgb, LinkText 24%, transparent); }
 .mission-result.empty { color: color-mix(in srgb, CanvasText 35%, transparent); font-size: 10.5px; }
@@ -232,8 +235,10 @@ header { flex-wrap: wrap; }
 .handled-mark { color: color-mix(in srgb, seagreen 55%, CanvasText); opacity: .85; }
 .reply-block { font-size: 13px; margin-top: 8px; padding: 6px 10px; border-radius: 6px; background: color-mix(in srgb, seagreen 8%, transparent); }
 .outcome-block { font-size: 13px; margin-top: 8px; padding: 7px 10px; border-radius: 7px; background: color-mix(in srgb, seagreen 10%, transparent); color: color-mix(in srgb, seagreen 70%, CanvasText); }
+.outcome-label { margin-bottom: 3px; font-size: 10px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; }
 .lifecycle-receipt { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; margin-top: 8px; font-size: 11px; opacity: .65; }
 .lifecycle-step { padding: 1px 6px; border-radius: 999px; background: color-mix(in srgb, CanvasText 6%, transparent); }
+.lifecycle-age { margin-left: 3px; }
 .lifecycle-arrow { opacity: .45; }
 .action-history { margin-top: 8px; font-size: 12px; opacity: .75; }
 .action-history > summary { cursor: pointer; }
@@ -431,6 +436,13 @@ body.settings-open #topbar > :not(#gear) { opacity: .32; }
 .snoozed-fold { opacity: .78; }
 
 .card { display: block; }
+.structured-text { min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.structured-text > :first-child { margin-top: 0; }
+.structured-text > :last-child { margin-bottom: 0; }
+.structured-text p { margin: 0 0 .65em; }
+.structured-text ul, .structured-text ol { margin: .35em 0 .65em; padding-left: 1.4em; }
+.structured-text li + li { margin-top: .2em; }
+.structured-link { overflow-wrap: anywhere; word-break: break-word; }
 .card-meta { display: flex; align-items: center; gap: 6px; }
 .card-title { font-weight: 600; font-size: 16px; margin: 4px 0 2px; }
 .card-next, .card-tldr { margin: 8px 0; padding: 8px 10px; border-radius: 8px; }

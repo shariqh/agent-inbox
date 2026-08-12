@@ -2318,12 +2318,10 @@ function needsYouHeader() {
   }
   sort.value = askSort
   sort.addEventListener('change', () => {
-    const restoreFocus = document.activeElement === sort
     askSort = sort.value
     pinnedIds = []
     resetPaging()
     forceRender()
-    if (restoreFocus) document.querySelector('.queue-sort select')?.focus({ preventScroll: true })
   })
   sortLabel.append(sortText, sort)
   bar.appendChild(sortLabel)
@@ -2381,6 +2379,7 @@ function renderEmptyState(host) {
 // flat, ranked, two-line rows — no project/agent heading levels (§3, §15)
 function renderNeedsYou(g, boardsInView, nowMs) {
   const host = document.getElementById('needsYouList')
+  const hadSortFocus = document.activeElement?.matches?.('#needsYouList .queue-sort select') ?? false
   const openCard = openRowId ? needsYouRowEl(openRowId)?.querySelector('.nrow-card') : null
   const cardFocus = openCard ? captureCardFocus(openCard, openRowId) : null
   const askedTimeFocusId = focusedAskedTimeId()
@@ -2427,6 +2426,7 @@ function renderNeedsYou(g, boardsInView, nowMs) {
   const stale = filterActionEntries(staleEntries(items, nowMs, live))
   host.innerHTML = ''
   host.appendChild(needsYouHeader())
+  if (hadSortFocus) host.querySelector('.queue-sort select')?.focus({ preventScroll: true })
   if (!entries.length) {
     // a search that matched nothing still says so; an empty INBOX gets the calm panel
     if (searchQuery.trim()) {

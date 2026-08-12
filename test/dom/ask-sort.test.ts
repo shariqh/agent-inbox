@@ -137,6 +137,23 @@ describe('current ask time and queue sorting (#64)', () => {
     expect(document.activeElement).toBe(sortSelect())
   })
 
+  it('restores the focused sort control after a safe polling render', async () => {
+    const d = open()
+    seedMixedQueue(d)
+    await bootApp(d)
+    const before = sortSelect()
+    before.focus()
+    expect(document.activeElement).toBe(before)
+
+    await pollTick()
+
+    const after = sortSelect()
+    expect(after).not.toBe(before)
+    expect(document.contains(before)).toBe(false)
+    expect(document.activeElement).toBe(after)
+    expect(after.value).toBe('priority')
+  })
+
   it('restores focused exact-time detail after a safe polling render', async () => {
     const d = open()
     const { oldId } = seedMixedQueue(d)

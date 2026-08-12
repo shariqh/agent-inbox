@@ -1705,6 +1705,22 @@ function initResponsive() {
   apply()
 }
 
+function tabletProjectsMode() {
+  return layout === 'narrow' && window.innerWidth > PROJECT_DISCLOSURE_MAX
+}
+
+function higherPriorityEscapeSurfaceOpen() {
+  const liveDrawer = document.getElementById('liveDrawer')
+  return !!(
+    triageDeck
+    || missionDetailRowId
+    || missionBoardId
+    || relayOpen
+    || document.body.classList.contains('settings-open')
+    || (liveDrawer && !liveDrawer.hidden)
+  )
+}
+
 function setProjectDisclosure(open, { restoreFocus = false } = {}) {
   const disclosure = document.getElementById('projectDisclosure')
   const toggle = document.getElementById('projectDisclosureToggle')
@@ -1740,10 +1756,29 @@ function initProjectDisclosure() {
     setProjectDisclosure(disclosure.dataset.open !== 'true')
   })
   for (const type of ['pointerdown', 'focusin']) document.addEventListener(type, (event) => {
+    const target = event.target
+    const trigger = document.getElementById('closedProjectsTrigger')
+    const popover = document.getElementById('closedProjectsPopover')
+    const insideArchived = target instanceof Node
+      && (trigger?.contains(target) || popover?.contains(target))
+    if (tabletProjectsMode() && closedFoldOpen && !insideArchived) {
+      setClosedProjectsOpen(false)
+    }
     if (disclosure.dataset.open !== 'true' || disclosure.contains(event.target)) return
     setProjectDisclosure(false)
   })
   document.addEventListener('keydown', (event) => {
+    if (
+      event.key === 'Escape'
+      && tabletProjectsMode()
+      && closedFoldOpen
+      && !higherPriorityEscapeSurfaceOpen()
+    ) {
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      setClosedProjectsOpen(false, { restoreFocus: true })
+      return
+    }
     if (event.key !== 'Escape' || disclosure.dataset.open !== 'true') return
     event.preventDefault()
     event.stopImmediatePropagation()
@@ -1751,6 +1786,8 @@ function initProjectDisclosure() {
   })
   window.matchMedia(`(max-width: ${PROJECT_DISCLOSURE_MAX}px)`).addEventListener('change', () => {
     setProjectDisclosure(false)
+    closedFoldOpen = false
+    if (lastData) forceRender()
   })
   setProjectDisclosure(false)
 }
@@ -1761,22 +1798,37 @@ function initProjectDisclosure() {
 // tabbable", and N focusable close buttons in a rail of N projects would bury
 // the tablist under tab stops. The keyboard path is Delete/Backspace on the
 // focused tab instead — the convention every browser tab strip uses — wired in
-// railRowEl below. Both buttons are hidden under 1280px (see the @media block);
-// implicit reopen-on-new-activity works at every width, so nothing an agent
-// needs ever becomes unreachable.
+// railRowEl below. Tablet mode promotes Archive to a labelled tab stop because
+// touch has no hover and the horizontal strip otherwise loses project curation.
 function railActionEl(e, closed) {
+  const tablet = tabletProjectsMode()
   const a = document.createElement('button')
   a.type = 'button'
-  a.tabIndex = -1
+  a.tabIndex = tablet && !closed ? 0 : -1
   a.className = closed ? 'rail-reopen' : 'rail-close'
-  a.textContent = closed ? '↩' : '×'
+  if (tablet && !closed) {
+    a.textContent = 'Archive'
+  } else {
+    const glyph = document.createElement('span')
+    glyph.className = 'rail-action-glyph'
+    glyph.setAttribute('aria-hidden', 'true')
+    glyph.textContent = closed ? '↩' : '×'
+    const label = document.createElement('span')
+    label.className = 'rail-action-label'
+    label.textContent = closed ? 'Reopen' : 'Archive'
+    a.append(glyph, label)
+  }
   // setAttribute escapes; a project name is agent-authored and must NEVER be
   // interpolated into innerHTML
-  a.setAttribute('aria-label', `${closed ? 'Reopen' : 'Close'} project ${e.label}`)
+  a.setAttribute('aria-label', `${closed ? 'Reopen' : tablet ? 'Archive' : 'Close'} project ${e.label}`)
   a.title = closed
     ? 'Reopen — bring this project back into the rail and the badge'
-    : 'Close — it comes back the moment an agent flags into it'
-  a.addEventListener('click', () => { closed ? reopenProjectAction(e.key) : closeProjectAction(e.key) })
+    : `${tablet ? 'Archive' : 'Close'} — it comes back the moment an agent flags into it`
+  a.addEventListener('click', () => {
+    closed
+      ? reopenProjectAction(e.key)
+      : closeProjectAction(e.key, { focusArchived: tablet })
+  })
   return a
 }
 
@@ -1841,7 +1893,9 @@ function railRowEl(e, { withFilter, closed = false }) {
   if (e.key !== '__all__') b.addEventListener('keydown', (ev) => {
     if (ev.key !== 'Delete' && ev.key !== 'Backspace') return
     ev.preventDefault()
-    closed ? reopenProjectAction(e.key) : closeProjectAction(e.key)
+    closed
+      ? reopenProjectAction(e.key)
+      : closeProjectAction(e.key, { focusArchived: tabletProjectsMode() })
   })
   wrap.appendChild(b)
   // 'All' is not a project and cannot be retired
@@ -1877,6 +1931,77 @@ function closedFoldEl(entries, count, suppressed, open, withFilter) {
   return fold
 }
 
+function focusProjectControl(id) {
+  requestAnimationFrame(() => document.getElementById(id)?.focus())
+}
+
+function setClosedProjectsOpen(open, { restoreFocus = false } = {}) {
+  closedFoldOpen = !!open
+  renderRail()
+  if (restoreFocus) document.getElementById('closedProjectsTrigger')?.focus()
+}
+
+function closedProjectEntryEl(entry) {
+  const row = document.createElement('div')
+  row.className = 'closed-project-entry'
+  row.dataset.project = entry.key
+
+  const summary = document.createElement('div')
+  summary.className = 'closed-project-summary'
+
+  const dot = document.createElement('span')
+  dot.className = 'rail-dot'
+  if (!entry.unknown) dot.style.background = pcolor(entry.key).dot
+  const name = document.createElement('span')
+  name.className = 'closed-project-name'
+  name.textContent = railLabel(entry.label, 'narrow')
+  name.title = entry.label
+  const badge = document.createElement('span')
+  badge.className = 'rail-badge'
+  badge.textContent = entry.total ? String(entry.total) : ''
+  badge.hidden = !entry.total
+  badge.title = `${entry.total} waiting on you`
+  summary.append(dot, name, badge)
+
+  const reopen = document.createElement('button')
+  reopen.type = 'button'
+  reopen.className = 'closed-project-reopen'
+  reopen.textContent = 'Reopen'
+  reopen.setAttribute('aria-label', `Reopen project ${entry.label}`)
+  reopen.addEventListener('click', () => reopenProjectAction(entry.key, { focusProject: true }))
+  row.append(summary, reopen)
+  return row
+}
+
+function closedProjectsControl(entries, count, suppressed, open) {
+  const trigger = document.createElement('button')
+  trigger.id = 'closedProjectsTrigger'
+  trigger.type = 'button'
+  trigger.className = 'closed-projects-trigger'
+  trigger.setAttribute('aria-expanded', String(open))
+  trigger.setAttribute('aria-controls', 'closedProjectsPopover')
+  trigger.textContent = `Archived (${count})`
+  trigger.title = suppressed
+    ? `${count} archived project${count === 1 ? '' : 's'} · ${suppressed} item${suppressed === 1 ? '' : 's'} muted`
+    : `${count} archived project${count === 1 ? '' : 's'}`
+  trigger.addEventListener('click', () => setClosedProjectsOpen(!closedFoldOpen))
+
+  let popover = null
+  if (open) {
+    popover = document.createElement('div')
+    popover.id = 'closedProjectsPopover'
+    popover.className = 'closed-projects-popover'
+    popover.setAttribute('role', 'region')
+    popover.setAttribute('aria-label', 'Archived projects')
+    const heading = document.createElement('div')
+    heading.className = 'closed-projects-heading'
+    heading.textContent = `Archived projects · ${count}`
+    popover.appendChild(heading)
+    for (const entry of entries) popover.appendChild(closedProjectEntryEl(entry))
+  }
+  return { trigger, popover }
+}
+
 // The peek banner (issue #32). While you are looking at a closed project the
 // list on screen deliberately holds rows no count includes — two numbers
 // disagreeing with no explanation is exactly what tenets 2/3 forbid. So say it
@@ -1907,6 +2032,9 @@ function renderClosedBanner() {
 function renderRail() {
   const host = document.getElementById('rail')
   if (!host) return
+  const disclosure = document.getElementById('projectDisclosure')
+  const tablet = tabletProjectsMode()
+  disclosure?.classList.toggle('tablet-projects', tablet)
   const projects = railProjects({
     items: allItems(lastData.g),
     boards: lastData.boards,
@@ -1941,15 +2069,18 @@ function renderRail() {
   // The fold opens on demand, whenever a closed project is being peeked, and
   // whenever a search's only hit is behind it — otherwise §12's confident false
   // negative comes back through a sealed fold instead of through a missing tab.
-  const foldOpen = closedFoldOpen || closed.includes(projectFilter)
-    || (!!searchQuery.trim() && closedEntries.some((e) => (projMatches.get(e.key) ?? 0) > 0))
+  const foldOpen = tablet
+    ? closedFoldOpen
+    : closedFoldOpen || closed.includes(projectFilter)
+      || (!!searchQuery.trim() && closedEntries.some((e) => (projMatches.get(e.key) ?? 0) > 0))
   const th = themeName()
-  const sig = JSON.stringify([entries, closedEntries, foldOpen, projectFilter, th, withFilter, railQuery, layout])
+  const sig = JSON.stringify([entries, closedEntries, foldOpen, projectFilter, th, withFilter, railQuery, layout, tablet])
   if (host.dataset.sig === sig) return
   // rebuilding blows away focus; remember the caret so typing in the filter survives
   const active = document.activeElement
   const caret = active && active.classList.contains('rail-filter') ? active.selectionStart : null
   host.dataset.sig = sig
+  document.getElementById('closedProjectsPopover')?.remove()
   host.innerHTML = ''
   if (withFilter) {
     const f = document.createElement('input')
@@ -1963,12 +2094,35 @@ function renderRail() {
     if (caret !== null) { f.focus(); f.setSelectionRange(caret, caret) }
   }
   for (const e of entries) host.appendChild(railRowEl(e, { withFilter }))
-  if (closed.length) host.appendChild(closedFoldEl(closedEntries, closed.length, suppressedTotal(closedRows), foldOpen, withFilter))
+  if (closed.length) {
+    if (tablet) {
+      const control = closedProjectsControl(
+        closedEntries,
+        closed.length,
+        suppressedTotal(closedRows),
+        foldOpen,
+      )
+      host.appendChild(control.trigger)
+      if (control.popover) disclosure?.appendChild(control.popover)
+    } else {
+      host.appendChild(closedFoldEl(
+        closedEntries,
+        closed.length,
+        suppressedTotal(closedRows),
+        foldOpen,
+        withFilter,
+      ))
+    }
+  }
   // roving tablist (spec §13): exactly one project tab is tabbable
-  for (const b of host.querySelectorAll('.rail-tab')) {
+  const tabs = [...host.querySelectorAll('.rail-tab')]
+  for (const b of tabs) {
     b.tabIndex = b.getAttribute('aria-selected') === 'true' ? 0 : -1
   }
-  wireTablist(host, 'vertical')
+  if (tablet && !tabs.some((tab) => tab.tabIndex === 0) && tabs[0]) {
+    tabs[0].tabIndex = 0
+  }
+  wireTablist(host, tablet ? 'horizontal' : 'vertical')
 }
 
 // the top bar's agent filter — a demoted dropdown scoped to the selected project.
@@ -3355,33 +3509,52 @@ async function act(id, action) {
 //
 // No staged undo: closing is one click to reverse, in the same place the tab
 // just left.
-async function closeProjectAction(name) {
+async function closeProjectAction(name, { focusArchived = false } = {}) {
   lastData.closed = [...(lastData.closed ?? []), name]
   closedFoldOpen = true // show the human where the tab went
   if (projectFilter === name) projectFilter = null
   resetPaging()
   forceRender()
+  if (focusArchived) focusProjectControl('closedProjectsTrigger')
   const res = await postJSON('/api/projects/close', { project: name })
   if (res === null) { // postJSON already surfaced the reason — just put the tab back
     lastData.closed = (lastData.closed ?? []).filter((p) => p !== name)
     forceRender()
+    if (focusArchived) {
+      requestAnimationFrame(() => {
+        document.querySelector(`#rail .rail-tab[data-project="${CSS.escape(name)}"]`)?.focus()
+      })
+    }
     return
   }
   // low stakes here — the optimistic frame above already showed the right thing —
   // but there is ONE rule for a human-initiated write, not two (#38).
   await reloadAndPaint()
+  if (focusArchived) focusProjectControl('closedProjectsTrigger')
 }
 
-async function reopenProjectAction(name) {
+async function reopenProjectAction(name, { focusProject = false } = {}) {
   lastData.closed = (lastData.closed ?? []).filter((p) => p !== name)
+  if (focusProject) closedFoldOpen = false
   forceRender()
+  if (focusProject) {
+    requestAnimationFrame(() => {
+      document.querySelector(`#rail .rail-tab[data-project="${CSS.escape(name)}"]`)?.focus()
+    })
+  }
   const res = await postJSON('/api/projects/reopen', { project: name })
   if (res === null) {
     if (!(lastData.closed ?? []).includes(name)) lastData.closed = [...(lastData.closed ?? []), name]
     forceRender()
+    if (focusProject) focusProjectControl('closedProjectsTrigger')
     return
   }
   await reloadAndPaint()
+  if (focusProject) {
+    requestAnimationFrame(() => {
+      document.querySelector(`#rail .rail-tab[data-project="${CSS.escape(name)}"]`)?.focus()
+    })
+  }
 }
 
 // fix round 1: the query persists across tab and project changes for free —

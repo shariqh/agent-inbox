@@ -230,8 +230,8 @@ function installStubs(): void {
  * same stub and fires that listener, but the top-level `layoutMode(window.innerWidth)`
  * read has already happened — so pre-boot is the only ordering that tests what you think.
  */
-export function setViewport(mode: 'narrow' | 'wide'): void {
-  const width = mode === 'narrow' ? 720 : 1400
+export function setViewport(mode: 'narrow' | 'wide' | number): void {
+  const width = typeof mode === 'number' ? mode : mode === 'narrow' ? 720 : 1400
   Object.defineProperty(window, 'innerWidth', { value: width, configurable: true, writable: true })
   for (const stub of mediaStubs.values()) {
     const next = mediaMatches(stub.media)

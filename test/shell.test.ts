@@ -309,13 +309,14 @@ describe('closed projects (issue #32)', () => {
       .not.toMatch(/!open\.includes\(projectFilter\)/)
   })
 
-  it('close/reopen buttons are SIBLINGS of the tab, not nested inside it, and never steal a tab stop', () => {
+  it('row actions stay beside the tab while only the explicit tablet Archive action joins the tab order', () => {
     // .rail-tab is itself a <button role="tab">; a button may not contain
-    // interactive content, and N extra tab stops break §13's roving tabindex
+    // interactive content. Desktop keeps §13's compact roving order; tablet
+    // deliberately exposes Archive to keyboard and touch users.
     const body = fn('function railRowEl(', '\n// Projects as vertical tabs')
     expect(body).toMatch(/wrap\.appendChild\(/)
     const action = fn('function railActionEl(', '\nfunction closedFoldEl(')
-    expect(action).toMatch(/tabIndex = -1/)
+    expect(action).toMatch(/tabIndex = tablet && !closed \? 0 : -1/)
     expect(action).toMatch(/setAttribute\('aria-label'/)
   })
 
@@ -364,10 +365,10 @@ describe('closed-project css (issue #32)', () => {
     expect(css.indexOf('.closed-fold .rail-reopen {')).toBeLessThan(css.indexOf('.rail-close:hover'))
   })
 
-  it('the narrow-width closed rules live INSIDE the single @media block', () => {
+  it('the tablet project-management rules live INSIDE the single @media block', () => {
     const media = css.search(/@media\s*\(/)
-    expect(css.indexOf('#rail .closed-fold')).toBeGreaterThan(media)
-    expect(css.indexOf('#rail:has(.rail-filter) .rail-close')).toBeGreaterThan(media)
+    expect(css.indexOf('.project-disclosure.tablet-projects')).toBeGreaterThan(media)
+    expect(css.indexOf('.closed-projects-popover')).toBeGreaterThan(media)
   })
 })
 

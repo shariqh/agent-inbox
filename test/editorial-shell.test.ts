@@ -57,6 +57,16 @@ describe('the editorial desk shell', () => {
     expect(compact).toMatch(/#projectDisclosure\[data-open="true"\] #rail\s*\{[^}]*display:\s*flex/s)
   })
 
+  it('contains the tablet archived-project popover without changing the desktop rail', () => {
+    const compact = css.slice(css.indexOf('@media (max-width: 1279px)'))
+    expect(compact).toMatch(/\.project-disclosure\.tablet-projects\s*\{[^}]*position:\s*relative/s)
+    expect(compact).toMatch(/\.project-disclosure\.tablet-projects #rail \.rail-close\s*\{[^}]*display:\s*inline-flex[^}]*min-height:\s*30px/s)
+    expect(compact).toMatch(/\.closed-projects-popover\s*\{[^}]*position:\s*absolute[^}]*right:\s*0[^}]*width:\s*min\(360px,\s*calc\(100vw - 24px\)\)[^}]*max-height:\s*min\(420px,\s*calc\(100vh - 180px\)\)[^}]*overflow-y:\s*auto/s)
+    expect(compact).toMatch(/#rail \.rail-close,\s*#rail \.rail-reopen\s*\{[^}]*display:\s*none/s)
+    expect(compact).toMatch(/@container compact-masthead \(max-width:\s*620px\)[\s\S]*\.closed-projects-trigger\s*\{[^}]*display:\s*none/s)
+    expect(css.slice(0, css.indexOf('@media (max-width: 1279px)'))).not.toContain('.tablet-projects')
+  })
+
   it('lets the compact page heading and tools share a row before wrapping', () => {
     const compact = css.slice(css.indexOf('@media (max-width: 1279px)'))
     expect(compact).toMatch(/#topbar\s*\{[^}]*display:\s*flex[^}]*flex-wrap:\s*wrap/s)

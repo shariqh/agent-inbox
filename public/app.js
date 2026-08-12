@@ -2172,6 +2172,7 @@ function renderRail() {
   const entries = filterRailEntries(openEntries, railQuery)
   const closedRows = closedRailEntries(closed, counts)
   const closedEntries = filterRailEntries(closedRows, railQuery)
+  const closedSuppressed = suppressedTotal(closedRows)
   const selectedEntry = projectFilter
     ? [...openEntries, ...closedRows].find((entry) => entry.key === projectFilter)
     : openEntries[0]
@@ -2198,6 +2199,8 @@ function renderRail() {
     tablet,
     archivedMatches,
     tablet ? forcedOpenKey : null,
+    closed.length,
+    closedSuppressed,
   ])
   if (host.dataset.sig === sig) return
   if (tablet) closedFoldOpen = foldOpen
@@ -2226,7 +2229,7 @@ function renderRail() {
       tabletClosedSnapshot = { entries: closedEntries, count: closed.length }
       host.appendChild(closedProjectsControl(
         closed.length,
-        suppressedTotal(closedRows),
+        closedSuppressed,
         foldOpen,
         archivedMatches,
       ))
@@ -2236,7 +2239,7 @@ function renderRail() {
       host.appendChild(closedFoldEl(
         closedEntries,
         closed.length,
-        suppressedTotal(closedRows),
+        closedSuppressed,
         foldOpen,
         withFilter,
       ))
@@ -2249,7 +2252,7 @@ function renderRail() {
   for (const b of tabs) {
     b.tabIndex = b.getAttribute('aria-selected') === 'true' ? 0 : -1
   }
-  if (tablet && !tabs.some((tab) => tab.tabIndex === 0) && tabs[0]) {
+  if (!tabs.some((tab) => tab.tabIndex === 0) && tabs[0]) {
     tabs[0].tabIndex = 0
   }
   wireTablist(host, tablet ? 'horizontal' : 'vertical')

@@ -315,6 +315,12 @@ describe('closed projects (issue #32)', () => {
     expect(body).toMatch(/railQuery = f\.value; renderRail\(\)/)
   })
 
+  it('applies the visible-tab roving fallback in every responsive layout', () => {
+    const body = fn('function renderRail()', '\n// the top bar')
+    expect(body).toMatch(/if \(!tabs\.some\(\(tab\) => tab\.tabIndex === 0\) && tabs\[0\]\)/)
+    expect(body).not.toMatch(/if \(tablet && !tabs\.some/)
+  })
+
   it('reconciles projectFilter against the FULL project list so a closed project can still be peeked', () => {
     const body = fn('function renderRail()', '\n// the top bar')
     expect(body).toMatch(/if \(projectFilter && !projects\.includes\(projectFilter\)\)/)

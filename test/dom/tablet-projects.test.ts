@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from 'vitest'
 import type Database from 'better-sqlite3'
-import { closeProject, closedProjects, insertItem } from '../../src/store.js'
+import { closeProject, closedProjects, insertItem, reopenProject } from '../../src/store.js'
 import {
   advanceClock, bootApp, click, expectConsoleError, freshDb, pollTick, rowTitles, searchFor, setViewport,
   settle, useDomTest,
@@ -177,6 +177,36 @@ describe.each([768, 1024])('tablet project management at %ipx', (width) => {
 })
 
 describe('tablet archived-project popover behavior', () => {
+  it('updates the archived control when a rail-filter-excluded project closes and reopens', async () => {
+    const d = open()
+    for (let i = 0; i < 13; i += 1) {
+      question(d, `open-${i}`)
+      advanceClock()
+    }
+    insertItem(d, {
+      project: 'zero-attention',
+      stream: 'main',
+      agent: 'copilot',
+      kind: 'done',
+      title: 'already done',
+    })
+    setViewport(900)
+    await bootApp(d)
+
+    const filter = document.querySelector<HTMLInputElement>('#rail .rail-filter')!
+    filter.value = 'open'
+    filter.dispatchEvent(new window.Event('input', { bubbles: true }))
+    expect(archivedTrigger()).toBeNull()
+
+    closeProject(d, 'zero-attention')
+    await pollTick()
+    expect(archivedTrigger()?.textContent).toContain('Archived (1)')
+
+    reopenProject(d, 'zero-attention')
+    await pollTick()
+    expect(archivedTrigger()).toBeNull()
+  })
+
   it('keeps forced archived disclosure coherent while restoring rail-filter focus', async () => {
     const d = open()
     for (let i = 0; i < 13; i += 1) {
@@ -438,6 +468,29 @@ describe('tablet archived-project popover behavior', () => {
 
     expect(document.querySelector('#rail .closed-fold')).toBeTruthy()
     expect(archivedTrigger()).toBeNull()
+  })
+})
+
+describe.each([560, 900, 1400])('roving project fallback at %ipx', (width) => {
+  it('keeps exactly one visible project tab tabbable when filtering removes the selection', async () => {
+    const d = open()
+    for (let i = 0; i < 13; i += 1) {
+      question(d, `project-${i}`)
+      advanceClock()
+    }
+    setViewport(width)
+    await bootApp(d)
+
+    click(projectTab('project-1'))
+    await settle()
+    const filter = document.querySelector<HTMLInputElement>('#rail .rail-filter')!
+    filter.value = 'project-2'
+    filter.dispatchEvent(new window.Event('input', { bubbles: true }))
+
+    const tabbable = [...document.querySelectorAll<HTMLButtonElement>('#rail .rail-tab')]
+      .filter((tab) => tab.tabIndex === 0)
+    expect(tabbable).toHaveLength(1)
+    expect(tabbable[0]?.dataset.project).toBe('__all__')
   })
 })
 

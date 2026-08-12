@@ -42,6 +42,37 @@ function pointer(el: Element, type: 'pointerdown' | 'pointerup'): void {
   el.dispatchEvent(new window.PointerEvent(type, { bubbles: true }))
 }
 
+it('keeps an explicit Escape dismissal coherent through polling after a forced-open peek', async () => {
+  const d = open()
+  question(d, 'alpha')
+  advanceClock()
+  question(d, 'beta')
+  closeProject(d, 'beta')
+  setViewport(900)
+  await bootApp(d)
+
+  click(archivedTrigger())
+  click(archivedPopover()?.querySelector('[aria-label="View archived project beta"]'))
+  await settle()
+  expect(archivedPopover()).toBeTruthy()
+
+  document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  expect(archivedTrigger()?.getAttribute('aria-expanded')).toBe('false')
+  expect(archivedPopover()).toBeNull()
+
+  await pollTick()
+  expect(archivedTrigger()?.getAttribute('aria-expanded')).toBe('false')
+  expect(archivedPopover()).toBeNull()
+
+  click(archivedTrigger())
+  expect(archivedTrigger()?.getAttribute('aria-expanded')).toBe('true')
+  expect(archivedPopover()).toBeTruthy()
+
+  document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  expect(archivedTrigger()?.getAttribute('aria-expanded')).toBe('false')
+  expect(archivedPopover()).toBeNull()
+})
+
 describe.each([768, 1024])('tablet project management at %ipx', (width) => {
   it('archives through an explicit focusable action and reopens from the anchored popover', async () => {
     const d = open()
@@ -283,5 +314,27 @@ describe('tablet archived-project popover behavior', () => {
 
     expect(document.querySelector('#rail .closed-fold')).toBeTruthy()
     expect(archivedTrigger()).toBeNull()
+  })
+})
+
+describe.each([
+  [621, false],
+  [640, false],
+  [652, false],
+  [653, true],
+] as const)('project disclosure boundary at %ipx', (width, tablet) => {
+  it(`uses ${tablet ? 'tablet' : 'phone'} project controls`, async () => {
+    const d = open()
+    question(d, 'alpha')
+    advanceClock()
+    question(d, 'beta')
+    closeProject(d, 'beta')
+    setViewport(width)
+    await bootApp(d)
+
+    expect(document.getElementById('projectDisclosure')?.classList.contains('tablet-projects')).toBe(tablet)
+    expect(archiveAction('alpha')?.tabIndex).toBe(tablet ? 0 : -1)
+    expect(archivedTrigger() !== null).toBe(tablet)
+    expect(document.querySelector('.closed-fold') !== null).toBe(!tablet)
   })
 })

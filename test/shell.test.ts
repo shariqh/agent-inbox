@@ -285,6 +285,19 @@ describe('closed projects (issue #32)', () => {
     expect(sig).toContain('foldOpen')
   })
 
+  it('does not synchronize derived tablet fold state before the rail decides to rebuild', () => {
+    const body = fn('function renderRail()', '\n// the top bar')
+    expect(body.indexOf('if (host.dataset.sig === sig) return'))
+      .toBeLessThan(body.indexOf('if (tablet) closedFoldOpen = foldOpen'))
+  })
+
+  it('derives the phone/tablet boundary from the compact masthead content box', () => {
+    expect(js).toContain("document.querySelector('.sidebar-shell')")
+    expect(js).toMatch(/clientWidth\s*\|\|\s*window\.innerWidth/)
+    expect(js).toMatch(/paddingLeft/)
+    expect(js).toMatch(/paddingRight/)
+  })
+
   it('keeps the type-to-narrow filter escapable — railQuery is cleared whenever the input is not rendered', () => {
     // closing projects can drop the open count under RAIL_FILTER_THRESHOLD,
     // removing the input while a non-empty query still hides most of the rail

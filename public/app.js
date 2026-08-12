@@ -1599,6 +1599,8 @@ let railQuery = ''
 // re-collapse under the human mid-read.
 let closedFoldOpen = false
 let tabletClosedSnapshot = null
+let tabletForcedOpenKey = ''
+let tabletDismissedOpenKey = null
 // lastData minus the closed projects — what the DEFAULT view may show. Set once
 // per render(), read by every panel renderer that must agree with the badge.
 let visibleData = null
@@ -1712,8 +1714,19 @@ function initResponsive() {
   apply()
 }
 
+function compactMastheadWidth() {
+  const shell = document.querySelector('.sidebar-shell')
+  if (!(shell instanceof HTMLElement)) return window.innerWidth
+  const style = getComputedStyle(shell)
+  const padding = Number.parseFloat(style.paddingLeft) + Number.parseFloat(style.paddingRight)
+  const inlineSize = shell.clientWidth || window.innerWidth
+  // jsdom has no layout box; the real narrow masthead has 16px inline padding.
+  const inlinePadding = padding || (shell.clientWidth ? 0 : 32)
+  return inlineSize - inlinePadding
+}
+
 function tabletProjectsMode() {
-  return layout === 'narrow' && window.innerWidth > PROJECT_DISCLOSURE_MAX
+  return layout === 'narrow' && compactMastheadWidth() > PROJECT_DISCLOSURE_MAX
 }
 
 function higherPriorityEscapeSurfaceOpen() {
@@ -1791,11 +1804,23 @@ function initProjectDisclosure() {
     event.stopImmediatePropagation()
     setProjectDisclosure(false, { restoreFocus: true })
   })
-  window.matchMedia(`(max-width: ${PROJECT_DISCLOSURE_MAX}px)`).addEventListener('change', () => {
+  let tablet = tabletProjectsMode()
+  const syncMode = () => {
+    const next = tabletProjectsMode()
+    if (next === tablet) return
+    tablet = next
     setProjectDisclosure(false)
     closedFoldOpen = false
+    tabletForcedOpenKey = ''
+    tabletDismissedOpenKey = null
     if (lastData) forceRender()
-  })
+  }
+  const shell = disclosure.closest('.sidebar-shell')
+  if ('ResizeObserver' in window && shell) {
+    new ResizeObserver(syncMode).observe(shell)
+  } else {
+    window.addEventListener('resize', syncMode)
+  }
   setProjectDisclosure(false)
 }
 
@@ -1974,6 +1999,7 @@ function restoreProjectFocus(state) {
 
 function setClosedProjectsOpen(open, { restoreFocus = false } = {}) {
   closedFoldOpen = !!open
+  tabletDismissedOpenKey = open ? null : (tabletForcedOpenKey || null)
   const trigger = document.getElementById('closedProjectsTrigger')
   trigger?.setAttribute('aria-expanded', String(closedFoldOpen))
   document.getElementById('closedProjectsPopover')?.remove()
@@ -2018,6 +2044,7 @@ function closedProjectEntryEl(entry) {
     closeSettings()
     projectFilter = entry.key
     closedFoldOpen = true
+    tabletDismissedOpenKey = null
     resetPaging()
     forceRender()
   })
@@ -2137,9 +2164,13 @@ function renderRail() {
   // whenever a search's only hit is behind it — otherwise §12's confident false
   // negative comes back through a sealed fold instead of through a missing tab.
   const archivedMatches = closedEntries.reduce((total, entry) => total + (projMatches.get(entry.key) ?? 0), 0)
-  const foldOpen = closedFoldOpen || closed.includes(projectFilter)
-    || (!!searchQuery.trim() && archivedMatches > 0)
-  if (tablet) closedFoldOpen = foldOpen
+  const forcedOpenParts = []
+  if (closed.includes(projectFilter)) forcedOpenParts.push(`project:${projectFilter}`)
+  if (searchQuery.trim() && archivedMatches > 0) forcedOpenParts.push(`search:${searchQuery.trim()}`)
+  const forcedOpenKey = forcedOpenParts.join('\n')
+  if (tablet) tabletForcedOpenKey = forcedOpenKey
+  const foldOpen = closedFoldOpen
+    || (!!forcedOpenKey && (!tablet || tabletDismissedOpenKey !== forcedOpenKey))
   const th = themeName()
   const sig = JSON.stringify([closedEntries, tablet ? null : foldOpen,
     entries,
@@ -2152,6 +2183,7 @@ function renderRail() {
     archivedMatches,
   ])
   if (host.dataset.sig === sig) return
+  if (tablet) closedFoldOpen = foldOpen
   // rebuilding blows away focus; remember the caret so typing in the filter survives
   const active = document.activeElement
   const focusState = projectFocusState(active)
@@ -3593,6 +3625,7 @@ async function act(id, action) {
 async function closeProjectAction(name, { focusArchived = false } = {}) {
   lastData.closed = [...(lastData.closed ?? []), name]
   closedFoldOpen = true // show the human where the tab went
+  tabletDismissedOpenKey = null
   if (projectFilter === name) projectFilter = null
   resetPaging()
   forceRender()

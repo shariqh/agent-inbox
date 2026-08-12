@@ -425,7 +425,7 @@ describe('renderNeedsYou reorders through the poll-suspension pin before paginat
   })
 
   it('reorders BEFORE paginating — reordering after slicing cannot stop a new row landing under the pointer', () => {
-    expect(fn.indexOf('orderedIds(')).toBeLessThan(fn.indexOf('paginate('))
+    expect(fn.indexOf('orderedIds(')).toBeLessThan(fn.indexOf('paginateNeedsYou('))
   })
 })
 

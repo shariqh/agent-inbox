@@ -697,7 +697,10 @@ function paintEditableSurfaces({ agents, g, boards, archived, live }) {
 function render() {
   const frame = preparedFrame ?? paintAmbient()
   preparedFrame = null
+  const draftFocus = activeDraftFocusBookmark() ?? requestedDraftFocusBookmark
+  requestedDraftFocusBookmark = null
   paintEditableSurfaces(frame)
+  restoreDraftFocus(draftFocus)
 }
 
 // one age vocabulary for every surface (§6): rows, chips, Live and tooltips all
@@ -711,7 +714,24 @@ let triageDeck = null // { entries, index } while the lightbox is open
 const rowDrafts = {}  // in-progress row annotations, surviving the poll rebuild
 const rowDraftKinds = {} // row id → answer|clarify|decline, surviving accordion remounts
 const staleRowDrafts = {} // row id → { revision, text } refused by row/board CAS
-let rowFocusId = null
+let requestedDraftFocusBookmark = null
+
+function activeDraftFocusBookmark() {
+  const active = document.activeElement
+  const key = active?.dataset?.draftFocusKey
+  if (!key) return null
+  return { key, scopeId: active.closest('[id]')?.id ?? null }
+}
+
+function restoreDraftFocus(bookmark) {
+  if (!bookmark) return false
+  const scope = bookmark.scopeId ? document.getElementById(bookmark.scopeId) : document
+  const input = scope?.querySelector(`[data-draft-focus-key="${CSS.escape(bookmark.key)}"]`)
+  if (!input) return false
+  input.focus({ preventScroll: true })
+  input.setSelectionRange(input.value.length, input.value.length)
+  return true
+}
 
 // fix round 2 (I1): the deck used to run a SECOND attention predicate of its own
 // (`!i.reply` for questions, `status === 'blocked'` for rows), so it included
@@ -910,6 +930,7 @@ function rowAnswerEl(b, r, onSaved) {
   row.className = 'reply-row'
   const input = document.createElement('input')
   input.className = 'reply-input'
+  input.dataset.draftFocusKey = `row:${r.id}`
   input.placeholder = r.options?.length
     ? 'or answer in your own words…'
     : r.status === 'blocked' ? 'tell the agent how to proceed…' : 'your note on this row…'
@@ -924,14 +945,6 @@ function rowAnswerEl(b, r, onSaved) {
     delete staleRowDrafts[r.id]
     resumeRender()
   })
-  input.addEventListener('focus', () => { rowFocusId = r.id })
-  // The focus token is STICKY — set on focus, cleared only by a successful send —
-  // and every rebuild re-focuses from it. That already stole the caret back on any
-  // unsuspended poll tick; issue #38's forced frames make it reachable while
-  // suspended too (Send on one card would yank the cursor into a board-row input
-  // the human touched minutes ago). Release it when the human leaves an EMPTY box:
-  // a real draft still gets its cursor back, which is what the token is for.
-  input.addEventListener('blur', () => { if (rowFocusId === r.id && !input.value) rowFocusId = null })
   const save = async () => {
     const typed = input.value
     if (!typed.trim()) return
@@ -962,7 +975,6 @@ function rowAnswerEl(b, r, onSaved) {
       }
       delete rowDrafts[r.id]
       delete rowDraftKinds[r.id]
-      if (rowFocusId === r.id) rowFocusId = null
       showWriteError(r.id, 'This action changed before your response arrived; refreshed without applying it.')
       await reloadAndPaint()
       return
@@ -971,7 +983,6 @@ function rowAnswerEl(b, r, onSaved) {
     delete rowDraftKinds[r.id]
     delete staleRowDrafts[r.id]
     delete input.dataset.responseKind
-    if (rowFocusId === r.id) rowFocusId = null
     showWriteError(r.id, '')
     // the row stays blocked until the agent picks the note up — the human's part
     // is done, so the caller decides what to drop
@@ -1044,10 +1055,6 @@ function rowAnswerEl(b, r, onSaved) {
       : `Not sent because this action changed. Preserved ${staleDraft.kind}: ${staleDraft.text}`
     wrap.appendChild(warning)
   }
-  if (rowFocusId === r.id) requestAnimationFrame(() => {
-    input.focus()
-    input.setSelectionRange(input.value.length, input.value.length)
-  })
   return wrap
 }
 
@@ -2272,6 +2279,7 @@ function initStagedFlush() {
 let actionFilter = 'all'
 let changedOnly = false
 let askSort = 'priority'
+let needsYouHeaderNode = null
 
 function entryEntity(entry) {
   return entry.kind === 'row' ? entry.row : entry.item
@@ -2286,7 +2294,22 @@ function filterActionEntries(entries) {
   })
 }
 
+function syncNeedsYouHeader(bar) {
+  for (const filter of bar.querySelectorAll('[data-action-filter]')) {
+    filter.classList.toggle('active', filter.dataset.actionFilter === actionFilter)
+  }
+  const changed = bar.querySelector('[data-changed-filter]')
+  changed.classList.toggle('active', changedOnly)
+  changed.disabled = !lastVisitAt
+  const sort = bar.querySelector('.queue-sort select')
+  if (sort.value !== askSort) sort.value = askSort
+}
+
 function needsYouHeader() {
+  if (needsYouHeaderNode) {
+    syncNeedsYouHeader(needsYouHeaderNode)
+    return needsYouHeaderNode
+  }
   const bar = document.createElement('div')
   bar.className = 'tab-header'
   for (const [value, label] of [['all', 'All'], ['decision', 'Decisions'], ['task', 'To do']]) {
@@ -2294,15 +2317,16 @@ function needsYouHeader() {
       actionFilter = value
       forceRender()
     })
-    filter.className = `header-toggle${actionFilter === value ? ' active' : ''}`
+    filter.className = 'header-toggle'
+    filter.dataset.actionFilter = value
     bar.appendChild(filter)
   }
   const changed = btn('Updates', () => {
     changedOnly = !changedOnly
     forceRender()
   })
-  changed.className = `header-toggle${changedOnly ? ' active' : ''}`
-  changed.disabled = !lastVisitAt
+  changed.className = 'header-toggle'
+  changed.dataset.changedFilter = '1'
   bar.appendChild(changed)
   const sortLabel = document.createElement('label')
   sortLabel.className = 'queue-sort'
@@ -2320,7 +2344,6 @@ function needsYouHeader() {
   sort.addEventListener('change', () => {
     askSort = sort.value
     pinnedIds = []
-    resetPaging()
     forceRender()
   })
   sortLabel.append(sortText, sort)
@@ -2331,7 +2354,40 @@ function needsYouHeader() {
   const tri = btn('Review queue', openTriage)
   tri.className = 'triage-btn'
   bar.appendChild(tri)
+  needsYouHeaderNode = bar
+  syncNeedsYouHeader(bar)
   return bar
+}
+
+function needsEntryId(entry) {
+  return entry.kind === 'row' ? entry.row.id : entry.item.id
+}
+
+function protectedNeedsYouIds() {
+  const ids = new Set()
+  if (openRowId) ids.add(openRowId)
+  const focusedId = document.activeElement?.closest?.('#needsYouList .nrow[data-card-id]')?.dataset.cardId
+  if (focusedId) ids.add(focusedId)
+  for (const [id, draft] of Object.entries(rowDrafts)) if (draft) ids.add(id)
+  for (const [id, draft] of Object.entries(draftReplies)) if (draft) ids.add(id)
+  for (const [id, draft] of Object.entries(draftReplyContexts)) if (draft) ids.add(id)
+  return ids
+}
+
+function paginateNeedsYou(entries, protectedIds) {
+  let limit = shown.needsYou
+  entries.forEach((entry, index) => {
+    if (protectedIds.has(needsEntryId(entry))) limit = Math.max(limit, index + 1)
+  })
+  shown.needsYou = limit
+  return paginate(entries, limit)
+}
+
+function replaceNeedsYouBody(host, header) {
+  for (const child of [...host.children]) {
+    if (child !== header) child.remove()
+  }
+  if (header.parentElement !== host) host.appendChild(header)
 }
 
 // one quiet chip at the very foot of the Needs-you list — notes are seen in the
@@ -2379,7 +2435,7 @@ function renderEmptyState(host) {
 // flat, ranked, two-line rows — no project/agent heading levels (§3, §15)
 function renderNeedsYou(g, boardsInView, nowMs) {
   const host = document.getElementById('needsYouList')
-  const hadSortFocus = document.activeElement?.matches?.('#needsYouList .queue-sort select') ?? false
+  const protectedIds = protectedNeedsYouIds()
   const openCard = openRowId ? needsYouRowEl(openRowId)?.querySelector('.nrow-card') : null
   const cardFocus = openCard ? captureCardFocus(openCard, openRowId) : null
   const askedTimeFocusId = focusedAskedTimeId()
@@ -2418,15 +2474,14 @@ function renderNeedsYou(g, boardsInView, nowMs) {
     showProject: !projectFilter, // a single selected project needs no monogram (§2)
     lastVisitAt,
   }
-  const { visible, remaining } = paginate(entries, shown.needsYou)
+  const { visible, remaining } = paginateNeedsYou(entries, protectedIds)
   // fix round 2 (I2): the stale fold renders BELOW the empty state but its
   // contents are part of this tab's answer. Computed first so a query matching
   // only a stale item can't print "No matches … or in any other tab" directly
   // above the fold holding that exact match (while its tab badge reads 1).
   const stale = filterActionEntries(staleEntries(items, nowMs, live))
-  host.innerHTML = ''
-  host.appendChild(needsYouHeader())
-  if (hadSortFocus) host.querySelector('.queue-sort select')?.focus({ preventScroll: true })
+  const header = needsYouHeader()
+  replaceNeedsYouBody(host, header)
   if (!entries.length) {
     // a search that matched nothing still says so; an empty INBOX gets the calm panel
     if (searchQuery.trim()) {
@@ -2943,7 +2998,6 @@ function archiveBtn(board) {
 const openCompares = new Set()   // item ids with the compare view expanded
 const draftReplies = {}          // item id → in-progress free-text answer
 const draftReplyContexts = {}    // item id → optional context attached to the answer
-let draftFocusKey = null         // `${itemId}:answer` or `${itemId}:context`, to restore focus
 
 async function sendReply(id, text, context = '', kind = 'answer') {
   const reply = text.trim()
@@ -2967,7 +3021,6 @@ async function sendReply(id, text, context = '', kind = 'answer') {
   }
   delete draftReplies[id]
   delete draftReplyContexts[id]
-  if (draftFocusKey?.startsWith(`${id}:`)) draftFocusKey = null
   showWriteError(id, '')
   // issue #38, the reported surface. Also the entry for the option pills, the ★'s
   // staged send, Enter in the input and the triage card — all of them were silent.
@@ -3008,11 +3061,10 @@ function answerEl(it) {
   }
   const input = document.createElement('input')
   input.className = 'reply-input'
+  input.dataset.draftFocusKey = `${it.id}:answer`
   input.placeholder = opts.length ? 'or answer in your own words…' : 'answer…'
   input.value = draftReplies[it.id] ?? ''
   input.addEventListener('input', () => { draftReplies[it.id] = input.value; resumeRender() })
-  input.addEventListener('focus', () => { draftFocusKey = `${it.id}:answer` })
-  input.addEventListener('blur', () => { if (draftFocusKey === `${it.id}:answer` && !input.value) draftFocusKey = null })
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendReply(it.id, input.value, ctxInput.value) })
   row.appendChild(input)
   row.appendChild(btn('Send', () => sendReply(it.id, input.value, ctxInput.value)))
@@ -3022,11 +3074,10 @@ function answerEl(it) {
   ctxRow.className = 'reply-row reply-context-row'
   const ctxInput = document.createElement('input')
   ctxInput.className = 'reply-input reply-context-input'
+  ctxInput.dataset.draftFocusKey = `${it.id}:context`
   ctxInput.placeholder = 'optional context for the agent (applies to Send or option picks)…'
   ctxInput.value = draftReplyContexts[it.id] ?? ''
   ctxInput.addEventListener('input', () => { draftReplyContexts[it.id] = ctxInput.value; resumeRender() })
-  ctxInput.addEventListener('focus', () => { draftFocusKey = `${it.id}:context` })
-  ctxInput.addEventListener('blur', () => { if (draftFocusKey === `${it.id}:context` && !ctxInput.value) draftFocusKey = null })
   ctxRow.appendChild(ctxInput)
   wrap.appendChild(ctxRow)
   wrap.appendChild(dispositionEl(
@@ -3037,14 +3088,6 @@ function answerEl(it) {
       await reloadAndPaint()
     },
   ))
-  if (draftFocusKey === `${it.id}:answer`) requestAnimationFrame(() => {
-    input.focus()
-    input.setSelectionRange(input.value.length, input.value.length)
-  })
-  if (draftFocusKey === `${it.id}:context`) requestAnimationFrame(() => {
-    ctxInput.focus()
-    ctxInput.setSelectionRange(ctxInput.value.length, ctxInput.value.length)
-  })
   return wrap
 }
 
@@ -3130,7 +3173,7 @@ async function changeAnswer(it, msgEl) {
   // the answer surface comes back, and this is what it comes back holding.
   draftReplies[it.id] = it.reply
   draftReplyContexts[it.id] = it.reply_context ?? ''
-  draftFocusKey = `${it.id}:answer`
+  requestedDraftFocusBookmark = { key: `${it.id}:answer`, scopeId: 'needsYouList' }
   // issue #31.1. Two things have to be true for the human to SEE that draft, and
   // neither was:
   //  1. the row has to be expanded. This is reachable from a collapsed row —
@@ -3300,6 +3343,7 @@ function initKeys() {
       return
     }
     if (e.metaKey || e.ctrlKey || e.altKey) return
+    if (e.target?.tagName === 'SELECT') return
     if (e.key === 'Escape' && missionDetailRowId) {
       e.preventDefault()
       closeMissionDetail()

@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
 import { advanceBoardRow, getBoard, insertItem, upsertBoard } from '../../src/store.js'
 import {
-  advanceClock, answerInput, bootApp, click, freshDb, pollTick, row, rowTitles, settle, useDomTest,
+  advanceClock, answerInput, bootApp, click, freshDb, pollTick, row, rowTitles, settle, setViewport, useDomTest,
 } from './harness.js'
 
 useDomTest()
@@ -126,10 +126,11 @@ describe('current ask time and queue sorting (#64)', () => {
     const select = sortSelect()
     select.focus()
 
-    for (const key of ['ArrowDown', 'ArrowUp', 'Enter', ' ']) {
+    for (const key of ['ArrowDown', 'ArrowUp', 'Enter', ' ', 'Escape']) {
       const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true })
       select.dispatchEvent(event)
       expect(event.defaultPrevented, `${key} was intercepted by a queue shortcut`).toBe(false)
+      expect(document.activeElement, `${key} moved focus away from the native select`).toBe(select)
     }
 
     select.value = 'newest'
@@ -137,21 +138,25 @@ describe('current ask time and queue sorting (#64)', () => {
     expect(document.activeElement).toBe(sortSelect())
   })
 
-  it('restores the focused sort control after a safe polling render', async () => {
+  it('preserves the active sort control and compact header scroll after a safe polling render', async () => {
     const d = open()
     seedMixedQueue(d)
+    setViewport('narrow')
     await bootApp(d)
     const before = sortSelect()
+    const header = before.closest('.tab-header') as HTMLElement
+    header.scrollLeft = 73
     before.focus()
     expect(document.activeElement).toBe(before)
 
     await pollTick()
 
     const after = sortSelect()
-    expect(after).not.toBe(before)
-    expect(document.contains(before)).toBe(false)
+    expect(after).toBe(before)
+    expect(document.contains(before)).toBe(true)
     expect(document.activeElement).toBe(after)
     expect(after.value).toBe('priority')
+    expect(header.scrollLeft).toBe(73)
   })
 
   it('restores focused exact-time detail after a safe polling render', async () => {
@@ -221,5 +226,87 @@ describe('current ask time and queue sorting (#64)', () => {
     input.dispatchEvent(new Event('input', { bubbles: true }))
     await vi.advanceTimersByTimeAsync(0)
     expect(rowTitles()[0]).toBe('draft-gated arrival')
+  })
+
+  it('retains a shown drafted row when sorting and arrivals move it beyond the first page', async () => {
+    const d = open()
+    const ids: string[] = []
+    for (let index = 0; index < 12; index += 1) {
+      ids.push(insertItem(d, {
+        ...AGENT,
+        kind: 'question',
+        title: `Question ${String(index + 1).padStart(2, '0')}`,
+        detail: `Question ${index + 1}.`,
+      }))
+      advanceClock(60_000)
+    }
+
+    await bootApp(d)
+
+    const showMore = Array.from(document.querySelectorAll<HTMLButtonElement>('#needsYouList .show-more'))
+      .find((button) => button.textContent?.startsWith('Show 2 more'))
+    expect(showMore).toBeTruthy()
+    click(showMore!)
+    await settle()
+
+    click(row(ids[0]!))
+    await settle()
+    const input = answerInput(ids[0]!)!
+    input.value = 'Keep this draft visible'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+
+    const select = sortSelect()
+    select.value = 'newest'
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+    await settle()
+
+    expect(row(ids[0]!)).toBeTruthy()
+    expect(row(ids[0]!)!.dataset.open).toBe('1')
+    expect(answerInput(ids[0]!)?.value).toBe('Keep this draft visible')
+    expect(document.querySelectorAll('#needsYouList .nrow')).toHaveLength(12)
+
+    insertItem(d, {
+      ...AGENT,
+      kind: 'question',
+      title: 'Newest arrival',
+      detail: 'Arrived after sorting.',
+    })
+    await pollTick()
+    expect(rowTitles()).not.toContain('Newest arrival')
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+    await settle()
+
+    expect(rowTitles()).toContain('Newest arrival')
+    expect(row(ids[0]!)).toBeTruthy()
+    expect(row(ids[0]!)!.dataset.open).toBe('1')
+    expect(answerInput(ids[0]!)?.value).toBe('Keep this draft visible')
+    expect(document.querySelectorAll('#needsYouList .nrow')).toHaveLength(13)
+  })
+
+  it('does not let stale draft autofocus override sort focus during a rebuild', async () => {
+    const d = open()
+    const id = insertItem(d, {
+      ...AGENT,
+      kind: 'question',
+      title: 'Draft focus owner',
+      detail: 'Only the pre-render focus owner may reclaim focus.',
+    })
+
+    await bootApp(d)
+    click(row(id))
+    await settle()
+    const input = answerInput(id)!
+    input.focus()
+    input.value = 'Unfinished'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+
+    const select = sortSelect()
+    select.focus()
+    select.value = 'newest'
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+    await settle()
+
+    expect(document.activeElement).toBe(select)
+    expect(answerInput(id)?.value).toBe('Unfinished')
   })
 })

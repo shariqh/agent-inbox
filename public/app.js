@@ -1482,10 +1482,16 @@ function setTabMatch(tab, n) {
 // the rail row already ships an empty <span class="rail-match"> (Task 7) — this
 // only fills it in, so the rail's own markup stays the single source of truth
 function setRailMatch(project, n) {
-  const el = document.querySelector(`#rail button.rail-tab[data-project="${CSS.escape(project)}"] .rail-match`)
-  if (!el) return
-  el.textContent = n ? String(n) : ''
-  el.hidden = !n
+  const key = CSS.escape(project)
+  const targets = document.querySelectorAll(
+    `#rail button.rail-tab[data-project="${key}"] .rail-match, `
+    + `#closedProjectsPopover [data-project="${key}"] .rail-match`,
+  )
+  for (const el of targets) {
+    el.textContent = n ? String(n) : ''
+    el.hidden = !n
+    el.closest('.closed-project-entry')?.classList.toggle('search-match', !!n)
+  }
 }
 
 // Project and agent filters are window-local; every cold launch starts from the
@@ -1592,6 +1598,7 @@ let railQuery = ''
 // the 3s poll rebuilds the rail, and a DOM-only <details open> would silently
 // re-collapse under the human mid-read.
 let closedFoldOpen = false
+let tabletClosedSnapshot = null
 // lastData minus the closed projects — what the DEFAULT view may show. Set once
 // per render(), read by every panel renderer that must agree with the badge.
 let visibleData = null
@@ -1935,10 +1942,46 @@ function focusProjectControl(id) {
   requestAnimationFrame(() => document.getElementById(id)?.focus())
 }
 
+function projectFocusState(active) {
+  if (!(active instanceof HTMLElement)) return null
+  if (active.id === 'closedProjectsTrigger') return { kind: 'trigger' }
+  const projectControl = active.closest('[data-project]')
+    ?? active.closest('.rail-row')?.querySelector('[data-project]')
+  const project = projectControl?.dataset.project
+  if (!project) return null
+  if (active.classList.contains('closed-project-reopen')) return { kind: 'reopen', project }
+  if (active.classList.contains('closed-project-peek')) return { kind: 'peek', project }
+  if (active.classList.contains('rail-close')) return { kind: 'archive', project }
+  if (active.classList.contains('rail-tab')) return { kind: 'tab', project }
+  return null
+}
+
+function restoreProjectFocus(state) {
+  if (!state) return
+  if (state.kind === 'trigger') {
+    document.getElementById('closedProjectsTrigger')?.focus()
+    return
+  }
+  const project = CSS.escape(state.project)
+  const selector = {
+    reopen: `#closedProjectsPopover [data-project="${project}"] .closed-project-reopen`,
+    peek: `#closedProjectsPopover [data-project="${project}"] .closed-project-peek`,
+    archive: `#rail [data-project="${project}"] + .rail-close`,
+    tab: `#rail .rail-tab[data-project="${project}"]`,
+  }[state.kind]
+  document.querySelector(selector)?.focus()
+}
+
 function setClosedProjectsOpen(open, { restoreFocus = false } = {}) {
   closedFoldOpen = !!open
-  renderRail()
-  if (restoreFocus) document.getElementById('closedProjectsTrigger')?.focus()
+  const trigger = document.getElementById('closedProjectsTrigger')
+  trigger?.setAttribute('aria-expanded', String(closedFoldOpen))
+  document.getElementById('closedProjectsPopover')?.remove()
+  if (closedFoldOpen && tabletClosedSnapshot) {
+    document.getElementById('projectDisclosure')
+      ?.appendChild(closedProjectsPopoverEl(tabletClosedSnapshot.entries, tabletClosedSnapshot.count))
+  }
+  if (restoreFocus) trigger?.focus()
 }
 
 function closedProjectEntryEl(entry) {
@@ -1946,8 +1989,11 @@ function closedProjectEntryEl(entry) {
   row.className = 'closed-project-entry'
   row.dataset.project = entry.key
 
-  const summary = document.createElement('div')
-  summary.className = 'closed-project-summary'
+  const peek = document.createElement('button')
+  peek.type = 'button'
+  peek.className = 'closed-project-peek'
+  peek.setAttribute('aria-label', `View archived project ${entry.label}`)
+  peek.setAttribute('aria-pressed', String(projectFilter === entry.key))
 
   const dot = document.createElement('span')
   dot.className = 'rail-dot'
@@ -1961,7 +2007,20 @@ function closedProjectEntryEl(entry) {
   badge.textContent = entry.total ? String(entry.total) : ''
   badge.hidden = !entry.total
   badge.title = `${entry.total} waiting on you`
-  summary.append(dot, name, badge)
+  const match = document.createElement('span')
+  match.className = 'rail-match'
+  const matches = projMatches.get(entry.key) ?? 0
+  match.textContent = matches ? String(matches) : ''
+  match.hidden = !matches
+  row.classList.toggle('search-match', !!matches)
+  peek.append(dot, name, badge, match)
+  peek.addEventListener('click', () => {
+    closeSettings()
+    projectFilter = entry.key
+    closedFoldOpen = true
+    resetPaging()
+    forceRender()
+  })
 
   const reopen = document.createElement('button')
   reopen.type = 'button'
@@ -1969,37 +2028,45 @@ function closedProjectEntryEl(entry) {
   reopen.textContent = 'Reopen'
   reopen.setAttribute('aria-label', `Reopen project ${entry.label}`)
   reopen.addEventListener('click', () => reopenProjectAction(entry.key, { focusProject: true }))
-  row.append(summary, reopen)
+  row.append(peek, reopen)
   return row
 }
 
-function closedProjectsControl(entries, count, suppressed, open) {
+function closedProjectsPopoverEl(entries, count) {
+  const popover = document.createElement('div')
+  popover.id = 'closedProjectsPopover'
+  popover.className = 'closed-projects-popover'
+  popover.setAttribute('role', 'region')
+  popover.setAttribute('aria-label', 'Archived projects')
+  const heading = document.createElement('div')
+  heading.className = 'closed-projects-heading'
+  heading.textContent = `Archived projects · ${count}`
+  popover.appendChild(heading)
+  for (const entry of entries) popover.appendChild(closedProjectEntryEl(entry))
+  return popover
+}
+
+function closedProjectsControl(count, suppressed, open, matches) {
   const trigger = document.createElement('button')
   trigger.id = 'closedProjectsTrigger'
   trigger.type = 'button'
   trigger.className = 'closed-projects-trigger'
   trigger.setAttribute('aria-expanded', String(open))
   trigger.setAttribute('aria-controls', 'closedProjectsPopover')
-  trigger.textContent = `Archived (${count})`
+  const label = document.createElement('span')
+  label.textContent = `Archived (${count})`
+  trigger.appendChild(label)
+  if (matches) {
+    const match = document.createElement('span')
+    match.className = 'closed-projects-match'
+    match.textContent = `${matches} match${matches === 1 ? '' : 'es'}`
+    trigger.appendChild(match)
+  }
   trigger.title = suppressed
     ? `${count} archived project${count === 1 ? '' : 's'} · ${suppressed} item${suppressed === 1 ? '' : 's'} muted`
     : `${count} archived project${count === 1 ? '' : 's'}`
   trigger.addEventListener('click', () => setClosedProjectsOpen(!closedFoldOpen))
-
-  let popover = null
-  if (open) {
-    popover = document.createElement('div')
-    popover.id = 'closedProjectsPopover'
-    popover.className = 'closed-projects-popover'
-    popover.setAttribute('role', 'region')
-    popover.setAttribute('aria-label', 'Archived projects')
-    const heading = document.createElement('div')
-    heading.className = 'closed-projects-heading'
-    heading.textContent = `Archived projects · ${count}`
-    popover.appendChild(heading)
-    for (const entry of entries) popover.appendChild(closedProjectEntryEl(entry))
-  }
-  return { trigger, popover }
+  return trigger
 }
 
 // The peek banner (issue #32). While you are looking at a closed project the
@@ -2069,15 +2136,25 @@ function renderRail() {
   // The fold opens on demand, whenever a closed project is being peeked, and
   // whenever a search's only hit is behind it — otherwise §12's confident false
   // negative comes back through a sealed fold instead of through a missing tab.
-  const foldOpen = tablet
-    ? closedFoldOpen
-    : closedFoldOpen || closed.includes(projectFilter)
-      || (!!searchQuery.trim() && closedEntries.some((e) => (projMatches.get(e.key) ?? 0) > 0))
+  const archivedMatches = closedEntries.reduce((total, entry) => total + (projMatches.get(entry.key) ?? 0), 0)
+  const foldOpen = closedFoldOpen || closed.includes(projectFilter)
+    || (!!searchQuery.trim() && archivedMatches > 0)
+  if (tablet) closedFoldOpen = foldOpen
   const th = themeName()
-  const sig = JSON.stringify([entries, closedEntries, foldOpen, projectFilter, th, withFilter, railQuery, layout, tablet])
+  const sig = JSON.stringify([closedEntries, tablet ? null : foldOpen,
+    entries,
+    projectFilter,
+    th,
+    withFilter,
+    railQuery,
+    layout,
+    tablet,
+    archivedMatches,
+  ])
   if (host.dataset.sig === sig) return
   // rebuilding blows away focus; remember the caret so typing in the filter survives
   const active = document.activeElement
+  const focusState = projectFocusState(active)
   const caret = active && active.classList.contains('rail-filter') ? active.selectionStart : null
   host.dataset.sig = sig
   document.getElementById('closedProjectsPopover')?.remove()
@@ -2096,15 +2173,16 @@ function renderRail() {
   for (const e of entries) host.appendChild(railRowEl(e, { withFilter }))
   if (closed.length) {
     if (tablet) {
-      const control = closedProjectsControl(
-        closedEntries,
+      tabletClosedSnapshot = { entries: closedEntries, count: closed.length }
+      host.appendChild(closedProjectsControl(
         closed.length,
         suppressedTotal(closedRows),
         foldOpen,
-      )
-      host.appendChild(control.trigger)
-      if (control.popover) disclosure?.appendChild(control.popover)
+        archivedMatches,
+      ))
+      if (foldOpen) disclosure?.appendChild(closedProjectsPopoverEl(closedEntries, closed.length))
     } else {
+      tabletClosedSnapshot = null
       host.appendChild(closedFoldEl(
         closedEntries,
         closed.length,
@@ -2113,6 +2191,8 @@ function renderRail() {
         withFilter,
       ))
     }
+  } else {
+    tabletClosedSnapshot = null
   }
   // roving tablist (spec §13): exactly one project tab is tabbable
   const tabs = [...host.querySelectorAll('.rail-tab')]
@@ -2123,6 +2203,7 @@ function renderRail() {
     tabs[0].tabIndex = 0
   }
   wireTablist(host, tablet ? 'horizontal' : 'vertical')
+  if (caret === null) restoreProjectFocus(focusState)
 }
 
 // the top bar's agent filter — a demoted dropdown scoped to the selected project.

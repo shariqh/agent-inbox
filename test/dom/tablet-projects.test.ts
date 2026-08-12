@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type Database from 'better-sqlite3'
 import { closeProject, closedProjects, insertItem } from '../../src/store.js'
 import {
-  advanceClock, bootApp, click, freshDb, setViewport, settle, useDomTest,
+  advanceClock, bootApp, click, freshDb, pollTick, rowTitles, searchFor, setViewport, settle, useDomTest,
 } from './harness.js'
 
 useDomTest()
@@ -37,6 +37,10 @@ const archivedTrigger = (): HTMLButtonElement | null =>
 
 const archivedPopover = (): HTMLElement | null =>
   document.getElementById('closedProjectsPopover')
+
+function pointer(el: Element, type: 'pointerdown' | 'pointerup'): void {
+  el.dispatchEvent(new window.PointerEvent(type, { bubbles: true }))
+}
 
 describe.each([768, 1024])('tablet project management at %ipx', (width) => {
   it('archives through an explicit focusable action and reopens from the anchored popover', async () => {
@@ -97,9 +101,118 @@ describe('tablet archived-project popover behavior', () => {
     expect(document.activeElement).toBe(archivedTrigger())
 
     click(archivedTrigger())
-    document.getElementById('search')?.dispatchEvent(new window.Event('pointerdown', { bubbles: true }))
+    const search = document.getElementById('search')!
+    pointer(search, 'pointerdown')
     expect(archivedTrigger()?.getAttribute('aria-expanded')).toBe('false')
     expect(archivedPopover()).toBeNull()
+  })
+
+  it('closes on outside pointerdown without detaching the pending project action', async () => {
+    const d = open()
+    question(d, 'alpha')
+    advanceClock()
+    question(d, 'beta')
+    closeProject(d, 'beta')
+    setViewport(900)
+    await bootApp(d)
+
+    click(archivedTrigger())
+    const alphaArchive = archiveAction('alpha')!
+    pointer(alphaArchive, 'pointerdown')
+
+    expect(archivedPopover()).toBeNull()
+    expect(document.contains(alphaArchive)).toBe(true)
+    expect(archiveAction('alpha')).toBe(alphaArchive)
+
+    pointer(alphaArchive, 'pointerup')
+    click(alphaArchive)
+    await settle()
+    expect(closedProjects(d).sort()).toEqual(['alpha', 'beta'])
+  })
+
+  it('keeps logical focus when opening and when fresh data rebuilds focused project actions', async () => {
+    const d = open()
+    question(d, 'alpha')
+    advanceClock()
+    question(d, 'beta')
+    closeProject(d, 'beta')
+    setViewport(1024)
+    await bootApp(d)
+
+    const trigger = archivedTrigger()!
+    trigger.focus()
+    click(trigger)
+    expect(archivedTrigger()).toBe(trigger)
+    expect(document.activeElement).toBe(trigger)
+
+    const reopen = archivedPopover()!.querySelector<HTMLButtonElement>('[aria-label="Reopen project beta"]')!
+    reopen.focus()
+    advanceClock()
+    question(d, 'gamma')
+    await pollTick()
+
+    const current = archivedPopover()!.querySelector<HTMLButtonElement>('[aria-label="Reopen project beta"]')!
+    expect(current).not.toBe(reopen)
+    expect(document.activeElement).toBe(current)
+
+    const archive = archiveAction('alpha')!
+    archive.focus()
+    advanceClock()
+    question(d, 'delta')
+    await pollTick()
+
+    const currentArchive = archiveAction('alpha')!
+    expect(currentArchive).not.toBe(archive)
+    expect(document.activeElement).toBe(currentArchive)
+  })
+
+  it('keeps archived project selection as a separate non-mutating peek beside Reopen', async () => {
+    const d = open()
+    question(d, 'alpha')
+    advanceClock()
+    question(d, 'beta')
+    closeProject(d, 'beta')
+    setViewport(900)
+    await bootApp(d)
+
+    click(archivedTrigger())
+    const peek = archivedPopover()!.querySelector<HTMLButtonElement>('[aria-label="View archived project beta"]')!
+    const reopen = archivedPopover()!.querySelector<HTMLButtonElement>('[aria-label="Reopen project beta"]')!
+    expect(peek).toBeTruthy()
+    expect(reopen).toBeTruthy()
+
+    peek.focus()
+    click(peek)
+    await settle()
+
+    expect(closedProjects(d)).toEqual(['beta'])
+    expect(rowTitles()).toEqual(['beta question'])
+    expect(archivedPopover()?.querySelector('[aria-label="View archived project beta"]')?.getAttribute('aria-pressed')).toBe('true')
+    expect(document.activeElement).toBe(archivedPopover()?.querySelector('[aria-label="View archived project beta"]'))
+  })
+
+  it('auto-opens and marks archived-only search matches', async () => {
+    const d = open()
+    question(d, 'alpha')
+    advanceClock()
+    insertItem(d, {
+      project: 'beta',
+      stream: 'main',
+      agent: 'copilot',
+      kind: 'question',
+      title: 'unique archived needle',
+    })
+    closeProject(d, 'beta')
+    setViewport(900)
+    await bootApp(d)
+
+    await searchFor('needle')
+
+    expect(archivedTrigger()?.getAttribute('aria-expanded')).toBe('true')
+    expect(archivedTrigger()?.textContent).toContain('1 match')
+    const beta = archivedPopover()?.querySelector('[data-project="beta"]')
+    expect(beta?.classList.contains('search-match')).toBe(true)
+    expect(beta?.querySelector('.rail-match')?.textContent).toBe('1')
   })
 
   it('keeps a large archived set in one labelled region with explicit reopen actions', async () => {
@@ -121,7 +234,7 @@ describe('tablet archived-project popover behavior', () => {
     expect(popover.getAttribute('aria-label')).toBe('Archived projects')
     expect(popover.querySelectorAll('.closed-project-entry')).toHaveLength(16)
     expect(popover.querySelectorAll('.closed-project-reopen')).toHaveLength(16)
-    expect(popover.querySelectorAll('button')).toHaveLength(16)
+    expect(popover.querySelectorAll('button')).toHaveLength(32)
   })
 
   it('keeps one project tab keyboard-reachable when a closed project is selected before tablet mode', async () => {

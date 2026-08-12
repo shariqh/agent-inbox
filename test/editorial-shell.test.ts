@@ -63,6 +63,8 @@ describe('the editorial desk shell', () => {
     expect(compact).toMatch(/\.project-disclosure\.tablet-projects #rail \.rail-close\s*\{[^}]*display:\s*inline-flex[^}]*min-height:\s*30px/s)
     expect(compact).toMatch(/\.closed-projects-popover\s*\{[^}]*position:\s*absolute[^}]*right:\s*0[^}]*width:\s*min\(360px,\s*calc\(100vw - 24px\)\)[^}]*max-height:\s*min\(420px,\s*calc\(100vh - 180px\)\)[^}]*overflow-y:\s*auto/s)
     expect(compact).toMatch(/#rail \.rail-close,\s*#rail \.rail-reopen\s*\{[^}]*display:\s*none/s)
+    expect(compact).toMatch(/#rail:has\(\.rail-filter\) \.rail-close,\s*#rail:has\(\.rail-filter\) \.rail-reopen\s*\{[^}]*display:\s*inline-flex/s)
+    expect(compact).toMatch(/#rail:has\(\.rail-filter\) \.closed-muted\s*\{[^}]*display:\s*inline/s)
     expect(compact).toMatch(/@container compact-masthead \(max-width:\s*620px\)[\s\S]*\.closed-projects-trigger\s*\{[^}]*display:\s*none/s)
     expect(css.slice(0, css.indexOf('@media (max-width: 1279px)'))).not.toContain('.tablet-projects')
   })

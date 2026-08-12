@@ -1817,7 +1817,7 @@ function initProjectDisclosure() {
     if (next === projectMode) return
     projectMode = next
     setProjectDisclosure(false)
-    closedFoldOpen = false
+    setClosedProjectsOpen(false)
     tabletForcedOpenKey = ''
     tabletDismissedOpenKey = null
     if (lastData) forceRender()
@@ -1955,7 +1955,10 @@ function closedFoldEl(entries, count, suppressed, open, withFilter) {
   fold.setAttribute('role', 'group')
   fold.setAttribute('aria-label', 'Closed projects')
   fold.open = open
-  fold.addEventListener('toggle', () => { closedFoldOpen = fold.open })
+  fold.addEventListener('toggle', () => {
+    if (!fold.isConnected || tabletProjectsMode()) return
+    closedFoldOpen = fold.open
+  })
   const summary = document.createElement('summary')
   const label = closedFoldLabel(count, suppressed, withFilter ? 'wide' : layout)
   summary.textContent = label.text // textContent, never innerHTML
@@ -2002,7 +2005,9 @@ function projectMutationOwnsFocus(selector, generation) {
 
 function projectFocusState(active) {
   if (!(active instanceof HTMLElement)) return null
-  if (active.id === 'closedProjectsTrigger') return { kind: 'trigger' }
+  if (active.id === 'closedProjectsTrigger') {
+    return { kind: 'trigger', project: active.dataset.project ?? null }
+  }
   const projectControl = active.closest('[data-project]')
     ?? active.closest('.rail-row')?.querySelector('[data-project]')
   const project = projectControl?.dataset.project
@@ -2017,7 +2022,14 @@ function projectFocusState(active) {
 function restoreProjectFocus(state) {
   if (!state) return
   if (state.kind === 'trigger') {
-    document.getElementById('closedProjectsTrigger')?.focus()
+    const trigger = document.getElementById('closedProjectsTrigger')
+    if (trigger) {
+      trigger.focus()
+      return
+    }
+    if (state.project) {
+      promoteProjectTab(`#rail .rail-tab[data-project="${CSS.escape(state.project)}"]`)
+    }
     return
   }
   const project = CSS.escape(state.project)
@@ -2118,13 +2130,14 @@ function closedProjectsPopoverEl(entries, count) {
   return popover
 }
 
-function closedProjectsControl(count, suppressed, open, matches) {
+function closedProjectsControl(count, suppressed, open, matches, soleProject = null) {
   const trigger = document.createElement('button')
   trigger.id = 'closedProjectsTrigger'
   trigger.type = 'button'
   trigger.className = 'closed-projects-trigger'
   trigger.setAttribute('aria-expanded', String(open))
   trigger.setAttribute('aria-controls', 'closedProjectsPopover')
+  if (soleProject) trigger.dataset.project = soleProject
   const label = document.createElement('span')
   label.textContent = `Archived (${count})`
   trigger.appendChild(label)
@@ -2261,6 +2274,7 @@ function renderRail() {
         closedSuppressed,
         foldOpen,
         archivedMatches,
+        closed.length === 1 ? closed[0] : null,
       ))
       if (foldOpen) disclosure?.appendChild(closedProjectsPopoverEl(closedEntries, closed.length))
     } else {

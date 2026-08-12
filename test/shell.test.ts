@@ -305,7 +305,10 @@ describe('closed projects (issue #32)', () => {
     const disclosure = fn('function initProjectDisclosure()', '\nfunction railActionEl(')
     expect(disclosure).toContain('projectMode = projectNavigationMode()')
     expect(disclosure).toContain('projectMode = next')
+    expect(disclosure).toContain('setClosedProjectsOpen(false)')
     expect(disclosure).toMatch(/matchMedia\(`\(max-width: \$\{NARROW_MAX\}px\)`\)/)
+    const fold = fn('function closedFoldEl(', '\nfunction focusProjectControl(')
+    expect(fold).toMatch(/if \(!fold\.isConnected \|\| tabletProjectsMode\(\)\) return/)
   })
 
   it('keeps the type-to-narrow filter escapable — railQuery is cleared whenever the input is not rendered', () => {
@@ -338,6 +341,7 @@ describe('closed projects (issue #32)', () => {
     expect(promote).toMatch(/target\.focus\(\)/)
     const restore = fn('function restoreProjectFocus(', '\nfunction setClosedProjectsOpen(')
     expect(restore).toMatch(/state\.kind === 'peek'/)
+    expect(restore).toMatch(/state\.kind === 'trigger'.*promoteProjectTab/s)
     expect(restore).toMatch(/promoteProjectTab\(/)
     const close = fn('async function closeProjectAction(', '\nasync function reopenProjectAction(')
     expect(close).toMatch(/focusProjectTab\([^,]+,\s*generation\)/)

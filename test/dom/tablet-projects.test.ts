@@ -368,6 +368,27 @@ describe('tablet archived-project popover behavior', () => {
     expect(beta.tabIndex).toBe(0)
   })
 
+  it('promotes the sole poll-reopened project tab when focus was on the archived trigger', async () => {
+    const d = open()
+    question(d, 'alpha')
+    advanceClock()
+    question(d, 'beta')
+    closeProject(d, 'beta')
+    setViewport(900)
+    await bootApp(d)
+
+    archivedTrigger()?.focus()
+    reopenProject(d, 'beta')
+    await pollTick()
+
+    const beta = projectTab('beta')!
+    expect(archivedTrigger()).toBeNull()
+    expect(document.activeElement).toBe(beta)
+    expect(beta.tabIndex).toBe(0)
+    expect([...document.querySelectorAll<HTMLButtonElement>('#rail .rail-tab')]
+      .filter((tab) => tab.tabIndex === 0)).toEqual([beta])
+  })
+
   it('makes a restored project tab the sole roving tab stop after a poll rebuild', async () => {
     const d = open()
     question(d, 'alpha')
@@ -685,6 +706,33 @@ it('does not persist an open phone disclosure through a desktop round-trip', asy
   setViewport(560)
   await settle()
   expect(document.getElementById('projectDisclosure')?.dataset.open).toBe('false')
+})
+
+it('closes archived project UI coherently across desktop and tablet transitions', async () => {
+  const d = open()
+  question(d, 'alpha')
+  advanceClock()
+  question(d, 'beta')
+  closeProject(d, 'beta')
+  setViewport(1400)
+  await bootApp(d)
+
+  click(document.querySelector('.closed-fold summary'))
+  expect(document.querySelector<HTMLDetailsElement>('.closed-fold')?.open).toBe(true)
+
+  setViewport(900)
+  await settle()
+  expect(archivedTrigger()?.getAttribute('aria-expanded')).toBe('false')
+  expect(archivedPopover()).toBeNull()
+
+  click(archivedTrigger())
+  expect(archivedTrigger()?.getAttribute('aria-expanded')).toBe('true')
+  expect(archivedPopover()).toBeTruthy()
+
+  setViewport(1400)
+  await settle()
+  expect(archivedPopover()).toBeNull()
+  expect(document.querySelector<HTMLDetailsElement>('.closed-fold')?.open).toBe(false)
 })
 
 describe.each([

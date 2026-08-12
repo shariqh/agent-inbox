@@ -94,10 +94,45 @@ describe('renderStructuredText escaping', () => {
     expect(html).toContain('href="https://prose.example/x"')
   })
 
+  it('keeps comment content inert until an exact comment close', () => {
+    const html = renderStructuredText(
+      '<!-- > https://comment.example/x --> then https://prose.example/x',
+    )
+    expect(html).not.toContain('href="https://comment.example/x"')
+    expect(html).toContain('href="https://prose.example/x"')
+  })
+
+  it('ignores quotes inside comments and tracks the comment across lines', () => {
+    const html = renderStructuredText(
+      '<!-- "quoted >\nhttps://comment.example/x\n--> See https://prose.example/x',
+    )
+    expect(html).not.toContain('href="https://comment.example/x"')
+    expect(html).toContain('href="https://prose.example/x"')
+  })
+
   it('does not mistake a plain less-than comparison for a cross-line HTML tag', () => {
     const html = renderStructuredText('threshold < 5\nsee https://example.com/path')
     expect(html).toContain('threshold &lt; 5')
     expect(html).toContain('href="https://example.com/path"')
+  })
+
+  it('does not let a compact comparison suppress following links or lists', () => {
+    const html = renderStructuredText('x<y\nSee https://example.com/path\n- item')
+    expect(html).toContain('x&lt;y')
+    expect(html).toContain('href="https://example.com/path"')
+    expect(html).toContain('<ul><li>item</li></ul>')
+  })
+
+  it.each([
+    'x<y and z',
+    'is x <y ',
+    'is x <a',
+    'if (x <threshold )',
+    'x <max-size ',
+  ])('does not treat a compact comparison as a tag: %s', (comparison) => {
+    const html = renderStructuredText(`${comparison}\nSee https://example.com/path\n- item`)
+    expect(html).toContain('href="https://example.com/path"')
+    expect(html).toContain('<ul><li>item</li></ul>')
   })
 })
 
@@ -138,6 +173,13 @@ describe('renderStructuredText safe autolinks', () => {
     expect(html).toContain('Foo_(bar)</a>.</p>')
   })
 
+  it('uses delimiter order rather than aggregate counts', () => {
+    const url = 'https://example.com/)(foo)'
+    const html = renderStructuredText(url)
+    expect(html).toContain(`href="${url}"`)
+    expect(html).toContain(`${url}</a>`)
+  })
+
   it('keeps a sentence-ending question mark outside a URL that has a query', () => {
     const html = renderStructuredText('Open https://example.com/search?q=renderer?')
     expect(html).toContain('href="https://example.com/search?q=renderer"')
@@ -153,16 +195,63 @@ describe('renderStructuredText safe autolinks', () => {
     expect(html).toContain(`${url}</a>`)
   })
 
+  it('keeps a prose wrapper outside a URL with a query', () => {
+    const html = renderStructuredText('(see https://example.com/?q=1)')
+    expect(html).toContain('href="https://example.com/?q=1"')
+    expect(html).toContain('q=1</a>)</p>')
+  })
+
+  it('tracks nested prose wrappers in their actual closing order', () => {
+    const html = renderStructuredText('([see https://example.com/?q=])')
+    expect(html).toContain('href="https://example.com/?q="')
+    expect(html).toContain('q=</a>])</p>')
+  })
+
+  it('trims one external wrapper while preserving same-character query data', () => {
+    const html = renderStructuredText('(see https://example.com/?q=))')
+    expect(html).toContain('href="https://example.com/?q=)"')
+    expect(html).toContain('q=)</a>)</p>')
+  })
+
+  it('applies an external wrapper to the final adjacent URL without leaking state', () => {
+    const html = renderStructuredText(
+      '(https://a.example/x,https://b.example/y) x https://c.example/z?q=)',
+    )
+    expect(html).toContain('href="https://a.example/x"')
+    expect(html).toContain('href="https://b.example/y"')
+    expect(html).toContain('href="https://c.example/z?q=)"')
+    expect(html.match(/<a /g)).toHaveLength(3)
+  })
+
   it.each([
     ['…', 'ellipsis'],
     ['。', 'ideographic full stop'],
     ['！', 'full-width exclamation'],
     ['”', 'closing double quote'],
     ['）', 'full-width closing parenthesis'],
+    ['؟', 'Arabic question mark'],
+    ['،', 'Arabic comma'],
+    ['»', 'closing guillemet'],
   ])('keeps Unicode %s outside the URL', (punctuation) => {
     const html = renderStructuredText(`Open https://example.com/path${punctuation}`)
     expect(html).toContain('href="https://example.com/path"')
     expect(html).toContain(`path</a>${punctuation}</p>`)
+  })
+
+  it('recognizes an opening guillemet as a safe prose boundary', () => {
+    const html = renderStructuredText('«https://example.com/path»')
+    expect(html).toContain('href="https://example.com/path"')
+    expect(html).toContain('«<a ')
+  })
+
+  it.each([
+    'https://example.com/search?q=مرحبا،العالم',
+    'https://example.com/مرحبا،العالم?q=1',
+    'https://example.com/path/%D8%9F?q=%C2%ABvalue%C2%BB',
+  ])('retains Unicode or encoded punctuation inside URL data: %s', (url) => {
+    const html = renderStructuredText(url)
+    expect(html).toContain(`>${url}</a>`)
+    expect(html.match(/<a /g)).toHaveLength(1)
   })
 
   it.each([',', ';', '，', '；'])('splits adjacent HTTP(S) URLs after %s', (separator) => {
@@ -215,5 +304,6 @@ describe('structured text presentation contract', () => {
     expect(fn).not.toContain('countChar(')
     const loop = fn.slice(fn.indexOf('while ('), fn.indexOf('\n  return '))
     expect(loop).not.toContain('.slice(')
+    expect(fn).toContain('new Uint8Array(candidate.length)')
   })
 })

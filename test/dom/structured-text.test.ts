@@ -80,6 +80,32 @@ describe('structured agent text on cards and plans', () => {
     expect(detail?.textContent).toContain('https://one.example/x…')
   })
 
+  it('recovers from comments and compact comparisons on a real card', async () => {
+    const d = open()
+    const id = insertItem(d, {
+      ...AGENT,
+      kind: 'question',
+      title: 'Inspect parser recovery',
+      detail: [
+        '<!-- > https://comment.example/x -->',
+        'x<y',
+        'See «https://prose.example/x»',
+        '- recovered item',
+      ].join('\n'),
+    })
+
+    await bootApp(d)
+    click(row(id))
+    await settle()
+
+    const detail = row(id)?.querySelector('.card-tldr')
+    const links = [...(detail?.querySelectorAll<HTMLAnchorElement>('a') ?? [])]
+    expect(links.map((link) => link.href)).toEqual(['https://prose.example/x'])
+    expect(detail?.textContent).toContain('https://comment.example/x')
+    expect(detail?.textContent).toContain('x<y')
+    expect(detail?.querySelector('li')?.textContent).toBe('recovered item')
+  })
+
   it('leaves human-authored replies and reply context on their existing plain-text path', async () => {
     const d = open()
     const id = insertItem(d, {

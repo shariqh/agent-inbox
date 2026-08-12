@@ -173,6 +173,7 @@ describe.each([768, 1024])('tablet project management at %ipx', (width) => {
     expect(projectTab('beta-project')).toBeTruthy()
     expect(archivedTrigger()).toBeNull()
     expect(document.activeElement).toBe(projectTab('beta-project'))
+    expect(projectTab('beta-project')?.tabIndex).toBe(0)
   })
 })
 
@@ -327,6 +328,27 @@ describe('tablet archived-project popover behavior', () => {
     const currentArchive = archiveAction('alpha')!
     expect(currentArchive).not.toBe(archive)
     expect(document.activeElement).toBe(currentArchive)
+  })
+
+  it('promotes a poll-reopened project tab when focus was on its Reopen action', async () => {
+    const d = open()
+    question(d, 'alpha')
+    advanceClock()
+    question(d, 'beta')
+    closeProject(d, 'beta')
+    setViewport(900)
+    await bootApp(d)
+
+    click(archivedTrigger())
+    archivedPopover()?.querySelector<HTMLButtonElement>('[aria-label="Reopen project beta"]')?.focus()
+    reopenProject(d, 'beta')
+    await pollTick()
+
+    const beta = projectTab('beta')!
+    expect(document.activeElement).toBe(beta)
+    expect(beta.tabIndex).toBe(0)
+    expect([...document.querySelectorAll<HTMLButtonElement>('#rail .rail-tab')]
+      .filter((tab) => tab.tabIndex === 0)).toEqual([beta])
   })
 
   it('makes a restored project tab the sole roving tab stop after a poll rebuild', async () => {

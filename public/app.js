@@ -2005,8 +2005,11 @@ function restoreProjectFocus(state) {
     archive: `#rail [data-project="${project}"] + .rail-close`,
     tab: `#rail .rail-tab[data-project="${project}"]`,
   }[state.kind]
-  const target = document.querySelector(selector)
-  if (state.kind === 'tab' && target) {
+  let target = document.querySelector(selector)
+  if (state.kind === 'reopen' && !target) {
+    target = document.querySelector(`#rail .rail-tab[data-project="${project}"]`)
+  }
+  if ((state.kind === 'tab' || state.kind === 'reopen') && target?.classList.contains('rail-tab')) {
     for (const tab of document.querySelectorAll('#rail .rail-tab')) tab.tabIndex = -1
     target.tabIndex = 0
   }
@@ -3693,7 +3696,11 @@ async function reopenProjectAction(name, { focusProject = false } = {}) {
   if (focusProject) {
     requestAnimationFrame(() => {
       if (generation !== projectMutationGeneration) return
-      document.querySelector(projectSelector)?.focus()
+      const target = document.querySelector(projectSelector)
+      if (!target) return
+      for (const tab of document.querySelectorAll('#rail .rail-tab')) tab.tabIndex = -1
+      target.tabIndex = 0
+      target.focus()
     })
   }
   const res = await postJSON('/api/projects/reopen', { project: name })
@@ -3709,7 +3716,11 @@ async function reopenProjectAction(name, { focusProject = false } = {}) {
   if (restoreFocus && projectMutationOwnsFocus(projectSelector, generation)) {
     requestAnimationFrame(() => {
       if (generation !== projectMutationGeneration) return
-      document.querySelector(projectSelector)?.focus()
+      const target = document.querySelector(projectSelector)
+      if (!target) return
+      for (const tab of document.querySelectorAll('#rail .rail-tab')) tab.tabIndex = -1
+      target.tabIndex = 0
+      target.focus()
     })
   }
 }

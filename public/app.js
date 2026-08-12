@@ -2885,6 +2885,14 @@ const draftReplies = {}          // item id → in-progress free-text answer
 const draftReplyContexts = {}    // item id → optional context attached to the answer
 let draftFocusKey = null         // `${itemId}:answer` or `${itemId}:context`, to restore focus
 
+function effectiveReply(it) {
+  return draftReplies[it.id] ?? (it.reply_source === 'agent' ? (it.reply ?? '') : '')
+}
+
+function effectiveReplyContext(it) {
+  return draftReplyContexts[it.id] ?? (it.reply_source === 'agent' ? (it.reply_context ?? '') : '')
+}
+
 async function sendReply(id, text, context = '', kind = 'answer') {
   const reply = text.trim()
   if (!reply) return
@@ -2926,7 +2934,11 @@ function answerEl(it) {
     const pill = document.createElement('button')
     pill.className = `opt-pill${o.recommended ? ' rec' : ''}`
     pill.innerHTML = `${esc(o.label)}${o.recommended ? '<span class="rec-tag">recommended</span>' : ''}`
-    pill.addEventListener('click', () => sendReply(it.id, o.label, draftReplyContexts[it.id] ?? ''))
+    pill.addEventListener('click', () => sendReply(
+      it.id,
+      o.label,
+      effectiveReplyContext(it),
+    ))
     box.appendChild(pill)
     if (o.detail) {
       const d = document.createElement('div')
@@ -2949,10 +2961,12 @@ function answerEl(it) {
   const input = document.createElement('input')
   input.className = 'reply-input'
   input.placeholder = opts.length ? 'or answer in your own words…' : 'answer…'
-  input.value = draftReplies[it.id] ?? ''
+  input.value = effectiveReply(it)
   input.addEventListener('input', () => { draftReplies[it.id] = input.value; resumeRender() })
   input.addEventListener('focus', () => { draftFocusKey = `${it.id}:answer` })
-  input.addEventListener('blur', () => { if (draftFocusKey === `${it.id}:answer` && !input.value) draftFocusKey = null })
+  input.addEventListener('blur', () => {
+    if (draftFocusKey === `${it.id}:answer` && !String(draftReplies[it.id] ?? '').trim()) draftFocusKey = null
+  })
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendReply(it.id, input.value, ctxInput.value) })
   row.appendChild(input)
   row.appendChild(btn('Send', () => sendReply(it.id, input.value, ctxInput.value)))
@@ -2963,14 +2977,16 @@ function answerEl(it) {
   const ctxInput = document.createElement('input')
   ctxInput.className = 'reply-input reply-context-input'
   ctxInput.placeholder = 'optional context for the agent (applies to Send or option picks)…'
-  ctxInput.value = draftReplyContexts[it.id] ?? ''
+  ctxInput.value = effectiveReplyContext(it)
   ctxInput.addEventListener('input', () => { draftReplyContexts[it.id] = ctxInput.value; resumeRender() })
   ctxInput.addEventListener('focus', () => { draftFocusKey = `${it.id}:context` })
-  ctxInput.addEventListener('blur', () => { if (draftFocusKey === `${it.id}:context` && !ctxInput.value) draftFocusKey = null })
+  ctxInput.addEventListener('blur', () => {
+    if (draftFocusKey === `${it.id}:context` && !String(draftReplyContexts[it.id] ?? '').trim()) draftFocusKey = null
+  })
   ctxRow.appendChild(ctxInput)
   wrap.appendChild(ctxRow)
   wrap.appendChild(dispositionEl(
-    (kind, text) => sendReply(it.id, text, draftReplyContexts[it.id] ?? '', kind),
+    (kind, text) => sendReply(it.id, text, effectiveReplyContext(it), kind),
     async (until) => {
       const res = await postJSON(`/api/items/${it.id}/snooze`, { until })
       if (res === null) return
@@ -3020,7 +3036,7 @@ function itemCardEl(it, { done = false, nowMs = Date.now(), liveness = 'parked',
     actions.className = 'actions'
     actions.appendChild(btn('Resolve', () => act(it.id, 'resolve')))
     actions.appendChild(btn('Dismiss', () => act(it.id, 'dismiss')))
-    if (s.answered) {
+    if (s.answered && !s.showAnswer) {
       // fix round 1 (hardening): a small inline slot beside the button for the
       // refusal message changeAnswer() surfaces when the server refuses (spec req #2)
       const msg = document.createElement('span')
@@ -3198,7 +3214,7 @@ function runIntent(intent) {
       return
     case 'option': {
       const o = optionOrder(it?.options)[intent.index]
-      if (o && it) sendReply(it.id, o.label, draftReplyContexts[it.id] ?? '')
+      if (o && it) sendReply(it.id, o.label, effectiveReplyContext(it))
       return
     }
     case 'dismiss':

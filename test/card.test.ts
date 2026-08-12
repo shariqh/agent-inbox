@@ -7,7 +7,7 @@ import type { CardItem } from '../public/card.js'
 const base: CardItem = {
   id: 'i1', kind: 'question', status: 'open', title: 'Drop the column?',
   detail: 'one line', next_step: 'Choose whether to drop it.', context: 'why this came up', annotation: null,
-  options: null, reply: null, reply_context: null, reply_seen_at: null,
+  options: null, reply: null, reply_context: null, reply_seen_at: null, reply_source: null,
 }
 const item = (over: Partial<CardItem> = {}): CardItem => ({ ...base, ...over })
 
@@ -48,6 +48,13 @@ describe('cardSections', () => {
     expect(cardSections(item({ reply: 'go' })).showAnswer).toBe(false)
     expect(cardSections(item({ kind: 'note' })).showAnswer).toBe(false)
     expect(cardSections(item(), { done: true }).showAnswer).toBe(false)
+  })
+  it('reopens the answer surface for an open answer recorded by the agent', () => {
+    expect(cardSections(item({
+      reply: 'go',
+      reply_source: 'agent',
+      reply_seen_at: '2026-08-12T17:00:00.000Z',
+    })).showAnswer).toBe(true)
   })
   it('exposes the reply and the answered flag once replied', () => {
     const s = cardSections(item({ reply: 'go ahead' }))

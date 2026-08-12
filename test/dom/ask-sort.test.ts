@@ -5,7 +5,7 @@ import {
   advanceBoardRow, getBoard, insertItem, recordActivityCall, resolveItem, upsertActivity, upsertBoard,
 } from '../../src/store.js'
 import {
-  advanceClock, answerInput, bootApp, click, freshDb, pollTick, row, rowTitles, settle, setViewport, useDomTest,
+  advanceClock, answerInput, bootApp, click, freshDb, pollTick, row, rowTitles, settle, setViewport, type, useDomTest,
 } from './harness.js'
 
 useDomTest()
@@ -230,7 +230,7 @@ describe('current ask time and queue sorting (#64)', () => {
     expect(rowTitles()[0]).toBe('draft-gated arrival')
   })
 
-  it('retains a shown drafted row when sorting and arrivals move it beyond the first page', async () => {
+  it('keeps a shown draft mounted until sorting and arrivals can safely resume', async () => {
     const d = open()
     const ids: string[] = []
     for (let index = 0; index < 12; index += 1) {
@@ -275,13 +275,13 @@ describe('current ask time and queue sorting (#64)', () => {
     })
     await pollTick()
     expect(rowTitles()).not.toContain('Newest arrival')
-    select.dispatchEvent(new Event('change', { bubbles: true }))
+    type(answerInput(ids[0]!), '')
     await settle()
 
     expect(rowTitles()).toContain('Newest arrival')
     expect(row(ids[0]!)).toBeTruthy()
     expect(row(ids[0]!)!.dataset.open).toBe('1')
-    expect(answerInput(ids[0]!)?.value).toBe('Keep this draft visible')
+    expect(answerInput(ids[0]!)?.value).toBe('')
     expect(document.querySelectorAll('#needsYouList .nrow')).toHaveLength(13)
   })
 

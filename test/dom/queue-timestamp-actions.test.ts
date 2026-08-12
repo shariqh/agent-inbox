@@ -20,7 +20,12 @@ function press(key: string, target: EventTarget): KeyboardEvent {
 describe('Needs-you timestamp keyboard ownership', () => {
   it('selects its row on focus and click before destructive or option shortcuts run', async () => {
     db = freshDb()
-    const first = insertItem(db, { ...AGENT, kind: 'question', title: 'Previously selected' })
+    const first = insertItem(db, {
+      ...AGENT,
+      kind: 'question',
+      title: 'Open inspector',
+      options: [{ label: 'Proceed', recommended: true }, { label: 'Wait' }],
+    })
     const second = insertItem(db, {
       ...AGENT,
       kind: 'question',
@@ -28,11 +33,10 @@ describe('Needs-you timestamp keyboard ownership', () => {
       options: [{ label: 'Approve', recommended: true }, { label: 'Hold' }],
     })
     await bootApp(db)
-
     click(row(first))
     await settle()
-    click(row(first))
     await settle()
+    expect(row(first)?.dataset.open).toBe('1')
     expect(row(first)?.classList.contains('selected')).toBe(true)
 
     const asked = () => row(second)!.querySelector<HTMLElement>('.nrow-asked')!
@@ -50,6 +54,12 @@ describe('Needs-you timestamp keyboard ownership', () => {
     await settle()
     expect(listItems(db).find((item) => item.id === second)?.reply).toBe('Approve')
     expect(listItems(db).find((item) => item.id === first)?.reply).toBeNull()
+
+    const openInspector = row(first)!.querySelector<HTMLElement>('.nrow-card')!
+    openInspector.focus()
+    press('1', openInspector)
+    await settle()
+    expect(listItems(db).find((item) => item.id === first)?.reply).toBe('Proceed')
 
     click(asked())
     press('x', asked())

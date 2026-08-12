@@ -709,6 +709,7 @@ function paintEditableSurfaces({ agents, g, boards, archived, live }) {
 function render() {
   const frame = preparedFrame ?? paintAmbient()
   preparedFrame = null
+  reconcileDraftOwners()
   const draftFocus = activeDraftFocusBookmark() ?? requestedDraftFocusBookmark
   requestedDraftFocusBookmark = null
   paintEditableSurfaces(frame)
@@ -725,6 +726,7 @@ function rel(iso) {
 let triageDeck = null // { entries, index } while the lightbox is open
 const rowDrafts = {}  // in-progress row annotations, surviving the poll rebuild
 const rowDraftKinds = {} // row id → answer|clarify|decline, surviving accordion remounts
+const rowDraftMeta = {} // row id → recovery labels/revision if its owner disappears
 const staleRowDrafts = {} // row id → { revision, text } refused by row/board CAS
 let requestedDraftFocusBookmark = null
 
@@ -948,12 +950,28 @@ function rowAnswerEl(b, r, onSaved) {
     : r.status === 'blocked' ? 'tell the agent how to proceed…' : 'your note on this row…'
   const staleDraft = staleRowDrafts[r.id]
   input.value = rowDrafts[r.id] ?? (staleDraft?.revision === r.revision ? staleDraft.text : '')
-  if (input.value && rowDrafts[r.id] === undefined) rowDrafts[r.id] = input.value
+  if (input.value && rowDrafts[r.id] === undefined) {
+    rowDrafts[r.id] = input.value
+    rowDraftMeta[r.id] = {
+      revision: r.revision,
+      boardTitle: b.title,
+      label: r.label,
+    }
+  }
   if (staleDraft?.revision === r.revision) rowDraftKinds[r.id] = staleDraft.kind
   input.dataset.responseKind = rowDraftKinds[r.id] ?? 'answer'
   input.addEventListener('input', () => {
     rowDrafts[r.id] = input.value
     rowDraftKinds[r.id] = input.dataset.responseKind ?? rowDraftKinds[r.id] ?? 'answer'
+    if (input.value.trim()) {
+      rowDraftMeta[r.id] = {
+        revision: r.revision,
+        boardTitle: b.title,
+        label: r.label,
+      }
+    } else {
+      delete rowDraftMeta[r.id]
+    }
     delete staleRowDrafts[r.id]
     resumeRender()
   })
@@ -972,6 +990,11 @@ function rowAnswerEl(b, r, onSaved) {
     })
     if (res === null) {
       rowDrafts[r.id] = typed
+      rowDraftMeta[r.id] = {
+        revision: r.revision,
+        boardTitle: b.title,
+        label: r.label,
+      }
       input.value = typed
       showWriteError(r.id, WRITE_FAILED)
       resumeRender()
@@ -987,12 +1010,14 @@ function rowAnswerEl(b, r, onSaved) {
       }
       delete rowDrafts[r.id]
       delete rowDraftKinds[r.id]
+      delete rowDraftMeta[r.id]
       showWriteError(r.id, 'This action changed before your response arrived; refreshed without applying it.')
       await reloadAndPaint()
       return
     }
     delete rowDrafts[r.id]
     delete rowDraftKinds[r.id]
+    delete rowDraftMeta[r.id]
     delete staleRowDrafts[r.id]
     delete input.dataset.responseKind
     showWriteError(r.id, '')
@@ -2330,7 +2355,7 @@ function needsYouHeader() {
   for (const [value, label] of [['all', 'All'], ['decision', 'Decisions'], ['task', 'To do']]) {
     const filter = btn(label, () => {
       actionFilter = value
-      forceRender()
+      renderIfIdle()
     })
     filter.className = 'header-toggle'
     filter.dataset.actionFilter = value
@@ -2338,7 +2363,7 @@ function needsYouHeader() {
   }
   const changed = btn('Updates', () => {
     changedOnly = !changedOnly
-    forceRender()
+    renderIfIdle()
   })
   changed.className = 'header-toggle'
   changed.dataset.changedFilter = '1'
@@ -2359,7 +2384,7 @@ function needsYouHeader() {
   sort.addEventListener('change', () => {
     askSort = sort.value
     pinnedIds = []
-    forceRender()
+    renderIfIdle()
   })
   sortLabel.append(sortText, sort)
   bar.appendChild(sortLabel)
@@ -2540,21 +2565,46 @@ function renderNeedsYou(g, boardsInView, nowMs) {
 }
 
 function renderOrphanedDrafts(host) {
-  const activeRows = new Set((lastData?.boards ?? []).flatMap((board) => board.rows.map((row) => row.id)))
-  const entries = Object.entries(staleRowDrafts).filter(([id]) => !activeRows.has(id))
+  const activeRows = new Map((lastData?.boards ?? [])
+    .flatMap((board) => board.rows.map((row) => [row.id, row.revision])))
+  const entries = [
+    ...Object.entries(staleItemDrafts).map(([id, draft]) => ({
+      id,
+      draft,
+      clear: () => { delete staleItemDrafts[id] },
+      text: [
+        draft.title,
+        `${draft.kind}: ${draft.text}`,
+        draft.context ? `context: ${draft.context}` : '',
+      ].filter(Boolean).join(' · '),
+    })),
+    ...Object.entries(staleRowDrafts)
+      .filter(([id, draft]) => activeRows.get(id) !== draft.revision)
+      .map(([id, draft]) => ({
+        id,
+        draft,
+        clear: () => { delete staleRowDrafts[id] },
+        text: `${draft.boardTitle} · ${draft.label} · ${draft.kind}: ${draft.text}`,
+      })),
+  ]
   if (!entries.length) return
   const fold = document.createElement('details')
   fold.className = 'stale-fold stale-drafts-fold'
+  fold.open = true
   const summary = document.createElement('summary')
   summary.textContent = `unsent responses (${entries.length})`
   fold.appendChild(summary)
-  for (const [id, draft] of entries) {
+  for (const entry of entries) {
     const line = document.createElement('div')
     line.className = 'stale-draft-line'
-    line.textContent = `${draft.boardTitle} · ${draft.label} · ${draft.kind}: ${draft.text}`
+    line.textContent = entry.text
     const clear = btn('Clear', () => {
-      delete staleRowDrafts[id]
-      forceRender()
+      entry.clear()
+      line.remove()
+      const remaining = fold.querySelectorAll('.stale-draft-line').length
+      if (remaining) summary.textContent = `unsent responses (${remaining})`
+      else fold.remove()
+      resumeRender()
     })
     clear.className = 'undo-btn'
     line.appendChild(clear)
@@ -2658,6 +2708,7 @@ function needsRowEl(m, entry, nowMs) {
     askedEl.addEventListener('focus', selectAskedRow)
     askedEl.addEventListener('click', (ev) => {
       selectAskedRow()
+      askedEl.focus({ preventScroll: true })
       ev.stopPropagation()
     })
     askedEl.addEventListener('keydown', (ev) => {
@@ -3032,6 +3083,51 @@ function archiveBtn(board) {
 const openCompares = new Set()   // item ids with the compare view expanded
 const draftReplies = {}          // item id → in-progress free-text answer
 const draftReplyContexts = {}    // item id → optional context attached to the answer
+const itemDraftMeta = {}         // item id → recovery labels if its answer surface disappears
+const staleItemDrafts = {}       // item id → refused answer preserved outside the poll gate
+
+function currentRow(id) {
+  for (const board of lastData?.boards ?? []) {
+    const row = board.rows.find((candidate) => candidate.id === id)
+    if (row) return { board, row }
+  }
+  return null
+}
+
+function reconcileDraftOwners() {
+  const itemIds = new Set([...Object.keys(draftReplies), ...Object.keys(draftReplyContexts)])
+  for (const id of itemIds) {
+    const text = draftReplies[id] ?? ''
+    const context = draftReplyContexts[id] ?? ''
+    if (!text.trim() && !context.trim()) continue
+    const item = freshItem(id)
+    if (item && cardSections(item).showAnswer) continue
+    staleItemDrafts[id] = {
+      title: itemDraftMeta[id]?.title ?? item?.title ?? 'Question',
+      text,
+      context,
+      kind: 'answer',
+    }
+    delete draftReplies[id]
+    delete draftReplyContexts[id]
+    delete itemDraftMeta[id]
+  }
+
+  for (const [id, text] of Object.entries(rowDrafts)) {
+    if (!String(text).trim() || currentRow(id)) continue
+    const meta = rowDraftMeta[id]
+    staleRowDrafts[id] = {
+      revision: meta?.revision ?? -1,
+      text,
+      kind: rowDraftKinds[id] ?? 'answer',
+      boardTitle: meta?.boardTitle ?? 'Plan',
+      label: meta?.label ?? 'Removed row',
+    }
+    delete rowDrafts[id]
+    delete rowDraftKinds[id]
+    delete rowDraftMeta[id]
+  }
+}
 
 async function sendReply(id, text, context = '', kind = 'answer') {
   const reply = text.trim()
@@ -3053,8 +3149,25 @@ async function sendReply(id, text, context = '', kind = 'answer') {
     resumeRender()
     return
   }
+  if (!res.ok) {
+    const item = freshItem(id)
+    staleItemDrafts[id] = {
+      title: itemDraftMeta[id]?.title ?? item?.title ?? 'Question',
+      text,
+      context,
+      kind,
+    }
+    delete draftReplies[id]
+    delete draftReplyContexts[id]
+    delete itemDraftMeta[id]
+    showWriteError(id, '')
+    await reloadAndPaint()
+    return
+  }
   delete draftReplies[id]
   delete draftReplyContexts[id]
+  delete itemDraftMeta[id]
+  delete staleItemDrafts[id]
   showWriteError(id, '')
   // issue #38, the reported surface. Also the entry for the option pills, the ★'s
   // staged send, Enter in the input and the triage card — all of them were silent.
@@ -3098,7 +3211,15 @@ function answerEl(it) {
   input.dataset.draftFocusKey = `${it.id}:answer`
   input.placeholder = opts.length ? 'or answer in your own words…' : 'answer…'
   input.value = draftReplies[it.id] ?? ''
-  input.addEventListener('input', () => { draftReplies[it.id] = input.value; resumeRender() })
+  const rememberDraftOwner = () => {
+    if (input.value.trim() || ctxInput.value.trim()) itemDraftMeta[it.id] = { title: it.title }
+    else delete itemDraftMeta[it.id]
+  }
+  input.addEventListener('input', () => {
+    draftReplies[it.id] = input.value
+    rememberDraftOwner()
+    resumeRender()
+  })
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendReply(it.id, input.value, ctxInput.value) })
   row.appendChild(input)
   row.appendChild(btn('Send', () => sendReply(it.id, input.value, ctxInput.value)))
@@ -3111,7 +3232,11 @@ function answerEl(it) {
   ctxInput.dataset.draftFocusKey = `${it.id}:context`
   ctxInput.placeholder = 'optional context for the agent (applies to Send or option picks)…'
   ctxInput.value = draftReplyContexts[it.id] ?? ''
-  ctxInput.addEventListener('input', () => { draftReplyContexts[it.id] = ctxInput.value; resumeRender() })
+  ctxInput.addEventListener('input', () => {
+    draftReplyContexts[it.id] = ctxInput.value
+    rememberDraftOwner()
+    resumeRender()
+  })
   ctxRow.appendChild(ctxInput)
   wrap.appendChild(ctxRow)
   wrap.appendChild(dispositionEl(
@@ -3297,30 +3422,33 @@ function restoreRowSelection(focusIt) {
   }
 }
 
-function selectedItem() {
-  if (!selectedId || !lastData) return null
-  return allItems(lastData.g).find((i) => i.id === selectedId) ?? null
-}
-
 // The keyboard's reply target. `selectedId` is the LIST's selection — while the
 // triage deck is open that is a different row than whatever the lightbox is
-// showing, so a bare `selectedItem()` would let '1'-'4' (and dismiss/resolve)
+// showing, so a bare selected-id lookup would let '1'-'4' (and dismiss/resolve)
 // answer the WRONG item. While the deck is open, the target is always the entry
 // currently on screen in it. `deckEntryAt` (public/keys.js) is the guarded,
 // unit-tested lookup — the deck's "all clear" state (entries: [] while
 // triageDeck is still non-null) would otherwise make `triageDeck.entries[i]`
 // undefined and findEntryData(undefined) throw, and initKeys evaluates this on
-// every keydown the deck is open.
+// every keydown the deck is open. Outside the deck, target only an operable
+// queue row: actual focus first, then the roving selection, then a visible open
+// inspector as a fallback. Hidden tabs and closed folds therefore cannot retain
+// destructive shortcut ownership.
 function keyTargetItem() {
   if (triageDeck) {
     const entry = deckEntryAt(triageDeck.entries, triageDeck.index)
     return entry ? (findEntryData(entry)?.it ?? null) : null
   }
-  if (openRowId && lastData) {
-    const open = allItems(lastData.g).find((item) => item.id === openRowId)
-    if (open) return open
-  }
-  return selectedItem()
+  const operable = rowEls()
+  const focused = document.activeElement?.closest?.('#needsYouList .nrow[data-card-id]')
+  const focusedId = focused && operable.includes(focused) ? focused.dataset.cardId : null
+  const selectedIsOperable = operable.some((row) => row.dataset.cardId === selectedId)
+  const openIsOperable = operable.some((row) => row.dataset.cardId === openRowId)
+  const id = focusedId
+    ?? (selectedIsOperable ? selectedId : null)
+    ?? (openIsOperable ? openRowId : null)
+  if (!id || !lastData) return null
+  return allItems(lastData.g).find((item) => item.id === id) ?? null
 }
 
 function runIntent(intent) {

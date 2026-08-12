@@ -53,6 +53,33 @@ describe('structured agent text on cards and plans', () => {
     )
   })
 
+  it('keeps quoted tag URLs inert and separates Unicode/adjacent prose links on cards', async () => {
+    const d = open()
+    const id = insertItem(d, {
+      ...AGENT,
+      kind: 'question',
+      title: 'Inspect boundaries',
+      detail: [
+        '<a title=">" href="https://attribute.example/x">raw</a>',
+        'See https://one.example/x… and https://two.example/x,https://three.example/x',
+      ].join('\n'),
+    })
+
+    await bootApp(d)
+    click(row(id))
+    await settle()
+
+    const detail = row(id)?.querySelector('.card-tldr')
+    const hrefs = [...(detail?.querySelectorAll<HTMLAnchorElement>('a') ?? [])].map((link) => link.href)
+    expect(hrefs).toEqual([
+      'https://one.example/x',
+      'https://two.example/x',
+      'https://three.example/x',
+    ])
+    expect(detail?.textContent).toContain('https://attribute.example/x')
+    expect(detail?.textContent).toContain('https://one.example/x…')
+  })
+
   it('leaves human-authored replies and reply context on their existing plain-text path', async () => {
     const d = open()
     const id = insertItem(d, {

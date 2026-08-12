@@ -1,40 +1,90 @@
 import { esc } from './esc.js'
 import { textLinkHtml } from './source.js'
 
-const URL_RE = /https?:\/\/[^\s<>"']+/gi
-const PROTECTED_RE = /<[a-z!/][^>\n]*(?:>|$)|&(?:#[0-9]+|#x[0-9a-f]+|[a-z][a-z0-9]+);/gi
-const SAFE_BOUNDARY_RE = /[\s([{'"]/
+const URL_RE = /https?:\/\/[^\s<>"'…⋯。！？：、“”‘’（）【】《》「」『』［］｛｝—–]+/gi
+const PROTECTED_START_RE = /<[a-z!/]|&(?:#[0-9]+|#x[0-9a-f]+|[a-z][a-z0-9]+);/gi
+const SAFE_BOUNDARY_RE = /[\s([{'",;…⋯。！？；：，、“”‘’（）【】《》「」『』［］｛｝—–]/
 const BULLET_RE = /^ {0,3}[-*]\s+(.+)$/
 const NUMBERED_RE = /^ {0,3}([0-9]+)\.\s+(.+)$/
 
-function countChar(value, char) {
-  let count = 0
-  for (const current of value) if (current === char) count++
-  return count
-}
+const TRAILING_PUNCTUATION = new Set('.,!?;:…⋯。！？；：，、“”‘’—–')
+const DELIMITER_PAIRS = new Map([
+  [')', '('], [']', '['], ['}', '{'],
+])
+const OPEN_TO_CLOSE = new Map([...DELIMITER_PAIRS].map(([close, open]) => [open, close]))
+const URL_SEPARATORS = new Set([',', ';', '，', '；'])
 
 function splitTrailingPunctuation(candidate) {
-  let url = candidate
-  let trailing = ''
-  let changed = true
-  while (url && changed) {
-    changed = false
-    if (/[.,!?;:]$/.test(url)) {
-      trailing = url.at(-1) + trailing
-      url = url.slice(0, -1)
-      changed = true
+  const balances = new Map([...DELIMITER_PAIRS.keys()].map((close) => [close, { open: 0, close: 0 }]))
+  const queryOrFragmentStart = candidate.search(/[?#]/)
+  for (const char of candidate) {
+    const closeForOpen = OPEN_TO_CLOSE.get(char)
+    if (closeForOpen) balances.get(closeForOpen).open++
+    if (DELIMITER_PAIRS.has(char)) balances.get(char).close++
+  }
+
+  let end = candidate.length
+  while (end > 0) {
+    const char = candidate[end - 1]
+    if (TRAILING_PUNCTUATION.has(char)) {
+      end--
       continue
     }
-    for (const [open, close] of [['(', ')'], ['[', ']'], ['{', '}']]) {
-      if (url.endsWith(close) && countChar(url, close) > countChar(url, open)) {
-        trailing = close + trailing
-        url = url.slice(0, -1)
-        changed = true
-        break
-      }
-    }
+    const balance = balances.get(char)
+    if (
+      !balance ||
+      balance.close <= balance.open ||
+      (queryOrFragmentStart >= 0 && end - 1 > queryOrFragmentStart)
+    ) break
+    balance.close--
+    end--
   }
-  return { url, trailing }
+  return { url: candidate.slice(0, end), trailing: candidate.slice(end) }
+}
+
+function consumeTag(value, start, state) {
+  state.inTag = true
+  for (let index = start; index < value.length; index++) {
+    const char = value[index]
+    if (state.quote) {
+      if (char === state.quote) state.quote = ''
+      continue
+    }
+    if (char === '"' || char === "'") {
+      state.quote = char
+      continue
+    }
+    if (char !== '>') continue
+    state.inTag = false
+    state.quote = ''
+    return index + 1
+  }
+  return value.length
+}
+
+function startsHttpScheme(value, index) {
+  const prefix = value.slice(index, index + 8).toLowerCase()
+  return prefix.startsWith('http://') || prefix.startsWith('https://')
+}
+
+function splitAdjacentUrls(candidate) {
+  const segments = []
+  let start = 0
+  let hasQueryOrFragment = false
+  for (let index = 0; index < candidate.length; index++) {
+    const char = candidate[index]
+    if (char === '?' || char === '#') hasQueryOrFragment = true
+    if (
+      hasQueryOrFragment ||
+      !URL_SEPARATORS.has(char) ||
+      !startsHttpScheme(candidate, index + 1)
+    ) continue
+    segments.push({ url: candidate.slice(start, index), separator: char })
+    start = index + 1
+    hasQueryOrFragment = false
+  }
+  segments.push({ url: candidate.slice(start), separator: '' })
+  return segments
 }
 
 function renderLinkedSegment(value) {
@@ -49,8 +99,10 @@ function renderLinkedSegment(value) {
     if (previous && !SAFE_BOUNDARY_RE.test(previous)) {
       html += esc(candidate)
     } else {
-      const { url, trailing } = splitTrailingPunctuation(candidate)
-      html += textLinkHtml(url, url) + esc(trailing)
+      for (const segment of splitAdjacentUrls(candidate)) {
+        const { url, trailing } = splitTrailingPunctuation(segment.url)
+        html += textLinkHtml(url, url) + esc(trailing + segment.separator)
+      }
     }
     cursor = start + candidate.length
   }
@@ -61,22 +113,22 @@ function renderInline(value, state) {
   let html = ''
   let cursor = 0
   if (state.inTag) {
-    const end = value.indexOf('>')
-    if (end < 0) return esc(value)
-    html += esc(value.slice(0, end + 1))
-    cursor = end + 1
-    state.inTag = false
+    cursor = consumeTag(value, 0, state)
+    html += esc(value.slice(0, cursor))
+    if (state.inTag) return html
   }
-  PROTECTED_RE.lastIndex = 0
-  PROTECTED_RE.lastIndex = cursor
-  for (let match = PROTECTED_RE.exec(value); match; match = PROTECTED_RE.exec(value)) {
+  PROTECTED_START_RE.lastIndex = cursor
+  for (let match = PROTECTED_START_RE.exec(value); match; match = PROTECTED_START_RE.exec(value)) {
     html += renderLinkedSegment(value.slice(cursor, match.index))
-    html += esc(match[0])
-    cursor = match.index + match[0].length
-    if (match[0].startsWith('<') && !match[0].endsWith('>')) {
-      state.inTag = true
-      break
+    if (match[0].startsWith('&')) {
+      html += esc(match[0])
+      cursor = match.index + match[0].length
+      continue
     }
+    cursor = consumeTag(value, match.index, state)
+    html += esc(value.slice(match.index, cursor))
+    if (state.inTag) break
+    PROTECTED_START_RE.lastIndex = cursor
   }
   return html + (state.inTag ? '' : renderLinkedSegment(value.slice(cursor)))
 }
@@ -100,7 +152,7 @@ export function renderStructuredText(value) {
   const blocks = []
   let paragraph = []
   let list = null
-  const inlineState = { inTag: false }
+  const inlineState = { inTag: false, quote: '' }
 
   const flushParagraph = () => {
     if (!paragraph.length) return

@@ -69,6 +69,31 @@ describe('renderStructuredText escaping', () => {
     expect(html).not.toContain('<a ')
   })
 
+  it('ignores greater-than characters inside quoted tag attributes', () => {
+    const html = renderStructuredText(
+      '<a title=">" href="https://attribute.example/x">label</a> then https://prose.example/x',
+    )
+    expect(html).toContain('&lt;a title=&quot;&gt;&quot; href=&quot;https://attribute.example/x&quot;&gt;')
+    expect(html).not.toContain('href="https://attribute.example/x"')
+    expect(html).toContain('href="https://prose.example/x"')
+  })
+
+  it('also ignores greater-than characters inside single-quoted tag attributes', () => {
+    const html = renderStructuredText(
+      "<a title='>' href='https://attribute.example/x'>label</a> then https://prose.example/x",
+    )
+    expect(html).not.toContain('href="https://attribute.example/x"')
+    expect(html).toContain('href="https://prose.example/x"')
+  })
+
+  it('tracks quoted tag attributes across line breaks until an unquoted close', () => {
+    const html = renderStructuredText(
+      '<a title="\n> still quoted" href="https://attribute.example/x">label</a>\nhttps://prose.example/x',
+    )
+    expect(html).not.toContain('href="https://attribute.example/x"')
+    expect(html).toContain('href="https://prose.example/x"')
+  })
+
   it('does not mistake a plain less-than comparison for a cross-line HTML tag', () => {
     const html = renderStructuredText('threshold < 5\nsee https://example.com/path')
     expect(html).toContain('threshold &lt; 5')
@@ -120,6 +145,43 @@ describe('renderStructuredText safe autolinks', () => {
   })
 
   it.each([
+    'https://example.com/search?q=)',
+    'https://example.com/path#fragment]',
+  ])('preserves unmatched delimiters that are data in a query or fragment: %s', (url) => {
+    const html = renderStructuredText(url)
+    expect(html).toContain(`href="${url}"`)
+    expect(html).toContain(`${url}</a>`)
+  })
+
+  it.each([
+    ['…', 'ellipsis'],
+    ['。', 'ideographic full stop'],
+    ['！', 'full-width exclamation'],
+    ['”', 'closing double quote'],
+    ['）', 'full-width closing parenthesis'],
+  ])('keeps Unicode %s outside the URL', (punctuation) => {
+    const html = renderStructuredText(`Open https://example.com/path${punctuation}`)
+    expect(html).toContain('href="https://example.com/path"')
+    expect(html).toContain(`path</a>${punctuation}</p>`)
+  })
+
+  it.each([',', ';', '，', '；'])('splits adjacent HTTP(S) URLs after %s', (separator) => {
+    const html = renderStructuredText(`https://a.example/x${separator}https://b.example/y`)
+    expect(html).toContain('href="https://a.example/x"')
+    expect(html).toContain('href="https://b.example/y"')
+    expect(html.match(/<a /g)).toHaveLength(2)
+  })
+
+  it.each([
+    'https://example.com/path?next=a,https://nested.example/x',
+    'https://example.com/path#next=a;https://nested.example/x',
+  ])('preserves embedded URLs inside a query or fragment: %s', (url) => {
+    const html = renderStructuredText(url)
+    expect(html).toContain(`href="${url}"`)
+    expect(html.match(/<a /g)).toHaveLength(1)
+  })
+
+  it.each([
     'javascript:alert(1)',
     'data:text/html,<script>alert(1)</script>',
     'file:///etc/passwd',
@@ -144,5 +206,14 @@ describe('structured text presentation contract', () => {
     const css = readFileSync(join(REPO, 'public/style.css'), 'utf8')
     expect(css).toMatch(/\.structured-text\s*\{[^}]*overflow-wrap:\s*anywhere;/)
     expect(css).toMatch(/\.structured-link\s*\{[^}]*overflow-wrap:\s*anywhere;/)
+  })
+
+  it('uses one backward offset pass instead of rescanning and slicing trailing delimiters', () => {
+    const source = readFileSync(join(REPO, 'public/structured-text.js'), 'utf8')
+    const start = source.indexOf('function splitTrailingPunctuation(')
+    const fn = source.slice(start, source.indexOf('\nfunction renderLinkedSegment(', start))
+    expect(fn).not.toContain('countChar(')
+    const loop = fn.slice(fn.indexOf('while ('), fn.indexOf('\n  return '))
+    expect(loop).not.toContain('.slice(')
   })
 })

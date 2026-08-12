@@ -106,6 +106,33 @@ describe('structured agent text on cards and plans', () => {
     expect(detail?.querySelector('li')?.textContent).toBe('recovered item')
   })
 
+  it('protects JSX component attributes and carries paragraph wrappers on a real card', async () => {
+    const d = open()
+    const id = insertItem(d, {
+      ...AGENT,
+      kind: 'question',
+      title: 'Inspect framework boundaries',
+      detail: [
+        '<Component disabled',
+        'onClick={() => open("https://attribute.example/x")}',
+        'href="https://attribute.example/y">label</Component>',
+        '(see',
+        'https://prose.example/x?q=)',
+      ].join('\n'),
+    })
+
+    await bootApp(d)
+    click(row(id))
+    await settle()
+
+    const detail = row(id)?.querySelector('.card-tldr')
+    const links = [...(detail?.querySelectorAll<HTMLAnchorElement>('a') ?? [])]
+    expect(links.map((link) => link.href)).toEqual(['https://prose.example/x?q='])
+    expect(detail?.textContent).toContain('https://attribute.example/x')
+    expect(detail?.textContent).toContain('https://attribute.example/y')
+    expect(detail?.textContent).toContain('https://prose.example/x?q=)')
+  })
+
   it('leaves human-authored replies and reply context on their existing plain-text path', async () => {
     const d = open()
     const id = insertItem(d, {

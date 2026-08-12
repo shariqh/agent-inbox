@@ -50,17 +50,113 @@ function splitTrailingPunctuation(candidate, externalClosers = []) {
   return { url: candidate.slice(0, end), trailing: candidate.slice(end) }
 }
 
-function scanTag(value, start, initialQuote = '', stopAtTagStart = false, rejectGreaterEqual = true) {
-  let quote = initialQuote
+function scanTag(value, start, initial = {}) {
+  let quote = initial.quote ?? ''
+  let quoteEscaped = initial.quoteEscaped ?? false
+  const expressionClosers = [...(initial.expressionClosers ?? [])]
+  let expressionMode = initial.expressionMode ?? ''
+  let regexCharClass = initial.regexCharClass ?? false
+  let canStartRegex = initial.canStartRegex ?? true
+  let genericDepth = initial.genericDepth ?? 0
+  const allowGenerics = initial.allowGenerics ?? false
+  const stopAtTagStart = initial.stopAtTagStart ?? false
+  const rejectGreaterEqual = initial.rejectGreaterEqual ?? true
   let hasAssignment = false
   let firstAttributeAssignment = false
   let attributeShapeValid = true
   let attributeCount = 0
   let attributeState = 'before'
+  const result = (end, closed) => ({
+    end,
+    quote: closed ? '' : quote,
+    closed,
+    hasAssignment,
+    firstAttributeAssignment,
+    attributeCount,
+    attributeShapeValid,
+    expressionClosers: closed ? [] : expressionClosers,
+    expressionMode: closed ? '' : expressionMode,
+    regexCharClass: closed ? false : regexCharClass,
+    quoteEscaped: closed ? false : quoteEscaped,
+    canStartRegex,
+    genericDepth: closed ? 0 : genericDepth,
+    allowGenerics,
+  })
   for (let index = start; index < value.length; index++) {
     const char = value[index]
     if (quote) {
-      if (char === quote) quote = ''
+      if (expressionClosers.length && char === '\\' && !quoteEscaped) {
+        quoteEscaped = true
+        continue
+      }
+      if (char === quote && !quoteEscaped) {
+        quote = ''
+        canStartRegex = false
+      }
+      quoteEscaped = false
+      continue
+    }
+    if (expressionMode === 'blockComment') {
+      if (char === '*' && value[index + 1] === '/') {
+        expressionMode = ''
+        index++
+      }
+      continue
+    }
+    if (expressionMode === 'regex') {
+      if (char === '\\' && !quoteEscaped) {
+        quoteEscaped = true
+        continue
+      }
+      if (quoteEscaped) {
+        quoteEscaped = false
+        continue
+      }
+      if (char === '[') regexCharClass = true
+      else if (char === ']') regexCharClass = false
+      else if (char === '/' && !regexCharClass) {
+        expressionMode = ''
+        canStartRegex = false
+      }
+      continue
+    }
+    if (expressionClosers.length) {
+      if (char === '/' && value[index + 1] === '/') {
+        expressionMode = ''
+        return result(value.length, false)
+      }
+      if (char === '/' && value[index + 1] === '*') {
+        expressionMode = 'blockComment'
+        index++
+        continue
+      }
+      if (char === '/' && canStartRegex) {
+        expressionMode = 'regex'
+        regexCharClass = false
+        quoteEscaped = false
+        continue
+      }
+      if (char === '"' || char === "'" || char === '`') {
+        quote = char
+        continue
+      }
+      const expressionClose = OPEN_TO_CLOSE.get(char)
+      if (expressionClose) {
+        expressionClosers.push(expressionClose)
+        canStartRegex = true
+      } else if (expressionClosers.at(-1) === char) {
+        expressionClosers.pop()
+        canStartRegex = false
+      } else if (/[a-z0-9_$]/i.test(char)) {
+        canStartRegex = false
+      } else if ('=!:,?&|+-*%<>/'.includes(char)) {
+        canStartRegex = true
+      }
+      continue
+    }
+    if (genericDepth) {
+      if (char === '<') genericDepth++
+      else if (char === '>') genericDepth--
       continue
     }
     if (char === '"' || char === "'") {
@@ -68,16 +164,23 @@ function scanTag(value, start, initialQuote = '', stopAtTagStart = false, reject
       attributeState = 'value'
       continue
     }
-    if (char === '/' && value[index + 1] === '>') {
-      return {
-        end: index + 2,
-        quote: '',
-        closed: true,
-        hasAssignment,
-        firstAttributeAssignment,
-        attributeCount,
-        attributeShapeValid,
+    if (char === '{') {
+      expressionClosers.push('}')
+      canStartRegex = true
+      regexCharClass = false
+      quoteEscaped = false
+      if (attributeState === 'before' || attributeState === 'afterName') {
+        attributeCount++
       }
+      attributeState = 'value'
+      continue
+    }
+    if (allowGenerics && char === '<' && index === start) {
+      genericDepth = 1
+      continue
+    }
+    if (char === '/' && value[index + 1] === '>') {
+      return result(index + 2, true)
     }
     if (char === '>' && value[index + 1] === '=' && !hasAssignment && rejectGreaterEqual) {
       attributeShapeValid = false
@@ -85,26 +188,10 @@ function scanTag(value, start, initialQuote = '', stopAtTagStart = false, reject
       continue
     }
     if (char === '>') {
-      return {
-        end: index + 1,
-        quote: '',
-        closed: true,
-        hasAssignment,
-        firstAttributeAssignment,
-        attributeCount,
-        attributeShapeValid,
-      }
+      return result(index + 1, true)
     }
     if (stopAtTagStart && char === '<') {
-      return {
-        end: index,
-        quote,
-        closed: false,
-        hasAssignment,
-        firstAttributeAssignment,
-        attributeCount,
-        attributeShapeValid,
-      }
+      return result(index, false)
     }
     if (char === '=') {
       if (attributeState === 'name' || attributeState === 'afterName') {
@@ -134,20 +221,19 @@ function scanTag(value, start, initialQuote = '', stopAtTagStart = false, reject
       if (!hasAssignment) attributeShapeValid = false
     }
   }
-  return {
-    end: value.length,
-    quote,
-    closed: false,
-    hasAssignment,
-    firstAttributeAssignment,
-    attributeCount,
-    attributeShapeValid,
-  }
+  return result(value.length, false)
 }
 
 function consumeTag(scan, state) {
   state.mode = scan.closed ? '' : 'tag'
-  state.quote = scan.closed ? '' : scan.quote
+  state.quote = scan.quote
+  state.expressionClosers = scan.expressionClosers
+  state.expressionMode = scan.expressionMode
+  state.regexCharClass = scan.regexCharClass
+  state.quoteEscaped = scan.quoteEscaped
+  state.canStartRegex = scan.canStartRegex
+  state.genericDepth = scan.genericDepth
+  state.allowGenerics = scan.allowGenerics
   return scan.end
 }
 
@@ -167,29 +253,50 @@ function assessTagStart(value, match, lineLeading) {
     return {
       credible: true,
       comment: false,
-      scan: scanTag(value, match.index + token.length, '', false, false),
+      scan: scanTag(value, match.index + token.length, { rejectGreaterEqual: false }),
     }
   }
-  const name = token.replace(/^<\/?/, '').toLowerCase()
-  const recognized = HTML_TAG_NAMES.has(name) || name.includes('-')
+  const rawName = token.replace(/^<\/?/, '')
+  const name = rawName.toLowerCase()
+  const frameworkComponent = /^[A-Z]/.test(rawName)
+  const recognized = HTML_TAG_NAMES.has(name) || name.includes('-') || frameworkComponent
   const tokenEnd = match.index + token.length
   if (lineLeading && recognized) {
-    return { credible: true, comment: false, scan: scanTag(value, tokenEnd, '', false, false) }
+    return {
+      credible: true,
+      comment: false,
+      scan: scanTag(value, tokenEnd, {
+        rejectGreaterEqual: false,
+        allowGenerics: frameworkComponent,
+      }),
+    }
   }
   const next = value[tokenEnd] ?? ''
-  if (!next || !/[\s/>]/.test(next)) return { credible: false }
-  const shape = scanTag(value, tokenEnd, '', true, !recognized)
+  if (!next || (!/[\s/>]/.test(next) && !(frameworkComponent && next === '<'))) {
+    return { credible: false }
+  }
+  const shape = scanTag(value, tokenEnd, {
+    stopAtTagStart: true,
+    rejectGreaterEqual: !recognized,
+    allowGenerics: frameworkComponent,
+  })
   if (!shape.attributeShapeValid) return { credible: false }
   if (
     !shape.closed &&
-    !(recognized ? shape.attributeCount > 0 : shape.firstAttributeAssignment)
+    !(frameworkComponent
+      ? shape.firstAttributeAssignment
+      : recognized
+        ? shape.attributeCount > 0
+        : shape.firstAttributeAssignment)
   ) {
     return { credible: false }
   }
   return {
     credible: true,
     comment: false,
-    scan: shape.closed ? shape : scanTag(value, tokenEnd),
+    scan: shape.closed
+      ? shape
+      : scanTag(value, tokenEnd, { allowGenerics: frameworkComponent }),
   }
 }
 
@@ -260,16 +367,28 @@ function renderLinkedSegment(value, linkState) {
   return html + esc(value.slice(cursor))
 }
 
-function renderInline(value, state) {
+function renderInline(value, state, linkState) {
   let html = ''
   let cursor = 0
   const firstContentIndex = value.search(/\S/)
-  const linkState = { expectedProseClosers: [] }
   if (state.mode) {
     if (state.mode === 'comment') {
       cursor = consumeComment(value, 0, state)
     } else {
-      cursor = consumeTag(scanTag(value, 0, state.quote, false, false), state)
+      cursor = consumeTag(
+        scanTag(value, 0, {
+          quote: state.quote,
+          quoteEscaped: state.quoteEscaped,
+          expressionClosers: state.expressionClosers,
+          expressionMode: state.expressionMode,
+          regexCharClass: state.regexCharClass,
+          canStartRegex: state.canStartRegex,
+          genericDepth: state.genericDepth,
+          allowGenerics: state.allowGenerics,
+          rejectGreaterEqual: false,
+        }),
+        state,
+      )
     }
     html += esc(value.slice(0, cursor))
     if (state.mode) return html
@@ -314,12 +433,24 @@ export function renderStructuredText(value) {
   const blocks = []
   let paragraph = []
   let list = null
-  const inlineState = { mode: '', quote: '' }
+  const inlineState = {
+    mode: '',
+    quote: '',
+    expressionClosers: [],
+    expressionMode: '',
+    regexCharClass: false,
+    quoteEscaped: false,
+    canStartRegex: true,
+    genericDepth: 0,
+    allowGenerics: false,
+  }
+  let paragraphLinkState = { expectedProseClosers: [] }
 
   const flushParagraph = () => {
     if (!paragraph.length) return
     blocks.push(paragraphHtml(paragraph))
     paragraph = []
+    paragraphLinkState = { expectedProseClosers: [] }
   }
   const flushList = () => {
     if (!list) return
@@ -342,7 +473,7 @@ export function renderStructuredText(value) {
         flushList()
         list = { kind: 'ul', items: [], start: 1 }
       }
-      list.items.push(renderInline(bullet[1], inlineState))
+      list.items.push(renderInline(bullet[1], inlineState, { expectedProseClosers: [] }))
       continue
     }
     if (numbered?.[1] !== undefined && numbered[2] !== undefined) {
@@ -351,11 +482,11 @@ export function renderStructuredText(value) {
         flushList()
         list = { kind: 'ol', items: [], start: Number(numbered[1]) }
       }
-      list.items.push(renderInline(numbered[2], inlineState))
+      list.items.push(renderInline(numbered[2], inlineState, { expectedProseClosers: [] }))
       continue
     }
     flushList()
-    paragraph.push(renderInline(line, inlineState))
+    paragraph.push(renderInline(line, inlineState, paragraphLinkState))
   }
   flushParagraph()
   flushList()

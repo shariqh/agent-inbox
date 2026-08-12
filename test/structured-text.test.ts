@@ -123,6 +123,49 @@ describe('renderStructuredText escaping', () => {
     expect(html).toContain('href="https://prose.example/x"')
   })
 
+  it.each([
+    '<Component onClick={() => open("https://attribute.example/x")} href="https://attribute.example/y">',
+    '<Component when={value >= limit ? "https://attribute.example/x" : fallback}>',
+    '<Component bits={value >> 2} href="https://attribute.example/x">',
+    '<Component render={({items: [first]}) => first > 0 ? "https://attribute.example/x" : null}>',
+    '<Component render={() => factory<Map<string, Array<number>>>("https://attribute.example/x")}>',
+    '<Component render={({items:\n[first]}) => first > 0 ? "https://attribute.example/x" : null}>',
+    '<Component message={"say \\" > https://attribute.example/x"} href="https://attribute.example/y">',
+    '<Component when={/* } */ value > 0 ? "https://attribute.example/x" : fallback}>',
+    '<Component when={/}/.test(value) && value > 0 ? "https://attribute.example/x" : fallback}>',
+    '<Component a={1} when={/}/.test(value) && value > 0 ? "https://attribute.example/x" : fallback}>',
+    '<Component when={value // }\n> 0 ? "https://attribute.example/x" : fallback}>',
+  ])('keeps greater-than operators inside JSX expressions inert: %s', (fragment) => {
+    const html = renderStructuredText(`before ${fragment}label</Component>\nafter https://prose.example/x`)
+    expect(html).not.toContain('href="https://attribute.example/x"')
+    expect(html).not.toContain('href="https://attribute.example/y"')
+    expect(html).toContain('href="https://prose.example/x"')
+  })
+
+  it('keeps line-leading PascalCase components inert across boolean-first attributes', () => {
+    const html = renderStructuredText(
+      '<Component disabled\nhref="https://attribute.example/x">label</Component>\nhttps://prose.example/x',
+    )
+    expect(html).not.toContain('href="https://attribute.example/x"')
+    expect(html).toContain('href="https://prose.example/x"')
+  })
+
+  it('keeps quoted component attributes inert across blank lines', () => {
+    const html = renderStructuredText(
+      '<Component href="\n\nhttps://attribute.example/x">label</Component>\nhttps://prose.example/x',
+    )
+    expect(html).not.toContain('href="https://attribute.example/x"')
+    expect(html).toContain('href="https://prose.example/x"')
+  })
+
+  it('keeps top-level TSX component generics inert', () => {
+    const html = renderStructuredText(
+      '<Component<Array<Map<string, number>>> href="https://attribute.example/x">label</Component>\nhttps://prose.example/x',
+    )
+    expect(html).not.toContain('href="https://attribute.example/x"')
+    expect(html).toContain('href="https://prose.example/x"')
+  })
+
   it('keeps comment content inert until an exact comment close', () => {
     const html = renderStructuredText(
       '<!-- > https://comment.example/x --> then https://prose.example/x',
@@ -162,6 +205,7 @@ describe('renderStructuredText escaping', () => {
     'if (x<y || a !== z)',
     'if (x<y <= a)',
     'if (x<y >= a)',
+    'x<Y and z',
     'if (x <threshold )',
     'x <max-size ',
   ])('does not treat a compact comparison as a tag: %s', (comparison) => {
@@ -270,6 +314,30 @@ describe('renderStructuredText safe autolinks', () => {
     expect(html).toContain('q=</a>)</p>')
   })
 
+  it('maintains prose wrapper state across explicit paragraph line breaks', () => {
+    const html = renderStructuredText('(see\nhttps://example.com/?q=)')
+    expect(html).toContain('href="https://example.com/?q="')
+    expect(html).toContain('<br><a ')
+    expect(html).toContain('q=</a>)</p>')
+  })
+
+  it('tracks nested wrappers across lines and multiple URLs', () => {
+    const html = renderStructuredText(
+      '([see\nhttps://one.example/x and https://two.example/x?q=])',
+    )
+    expect(html).toContain('href="https://one.example/x"')
+    expect(html).toContain('href="https://two.example/x?q="')
+    expect(html).toContain('q=</a>])</p>')
+  })
+
+  it.each([
+    '(see\n\nhttps://example.com/?q=)',
+    '(see\n- https://example.com/?q=)',
+  ])('resets prose wrapper state at paragraph and list boundaries: %s', (value) => {
+    const html = renderStructuredText(value)
+    expect(html).toContain('href="https://example.com/?q=)"')
+  })
+
   it.each([
     ['…', 'ellipsis'],
     ['。', 'ideographic full stop'],
@@ -358,5 +426,6 @@ describe('structured text presentation contract', () => {
     const source = readFileSync(join(REPO, 'public/structured-text.js'), 'utf8')
     expect(source).not.toContain("remainder.includes('>')")
     expect(source).not.toContain('value.slice(0, match.index).trim()')
+    expect(source).toContain("allowGenerics && char === '<' && index === start")
   })
 })

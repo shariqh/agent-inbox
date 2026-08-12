@@ -88,7 +88,7 @@ describe('structured agent text on cards and plans', () => {
       title: 'Inspect parser recovery',
       detail: [
         '<!-- > https://comment.example/x -->',
-        'x<y',
+        'if (x<y && a === z)',
         'See «https://prose.example/x»',
         '- recovered item',
       ].join('\n'),
@@ -102,7 +102,7 @@ describe('structured agent text on cards and plans', () => {
     const links = [...(detail?.querySelectorAll<HTMLAnchorElement>('a') ?? [])]
     expect(links.map((link) => link.href)).toEqual(['https://prose.example/x'])
     expect(detail?.textContent).toContain('https://comment.example/x')
-    expect(detail?.textContent).toContain('x<y')
+    expect(detail?.textContent).toContain('if (x<y && a === z)')
     expect(detail?.querySelector('li')?.textContent).toBe('recovered item')
   })
 

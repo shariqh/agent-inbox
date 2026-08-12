@@ -94,6 +94,35 @@ describe('renderStructuredText escaping', () => {
     expect(html).toContain('href="https://prose.example/x"')
   })
 
+  it('keeps line-leading custom tags and real attributes inert', () => {
+    const html = renderStructuredText(
+      '<custom-widget\nhref="https://attribute.example/x">label</custom-widget>\nhttps://prose.example/x',
+    )
+    expect(html).not.toContain('href="https://attribute.example/x"')
+    expect(html).toContain('href="https://prose.example/x"')
+  })
+
+  it('keeps boolean-first and framework-style attributes inert', () => {
+    for (const fragment of [
+      '<iframe allowfullscreen src="https://attribute.example/x" />',
+      '<a @click="https://attribute.example/x">label</a>',
+      '<a on:click|once="https://attribute.example/x">label</a>',
+      '<custom-widget ...props data-url="https://attribute.example/x" />',
+    ]) {
+      const html = renderStructuredText(`before ${fragment} after https://prose.example/x`)
+      expect(html).not.toContain('href="https://attribute.example/x"')
+      expect(html).toContain('href="https://prose.example/x"')
+    }
+  })
+
+  it('keeps recognized multiline tags inert after a boolean attribute', () => {
+    const html = renderStructuredText(
+      'before <iframe allowfullscreen\nsrc="https://attribute.example/x">label</iframe>\nafter https://prose.example/x',
+    )
+    expect(html).not.toContain('href="https://attribute.example/x"')
+    expect(html).toContain('href="https://prose.example/x"')
+  })
+
   it('keeps comment content inert until an exact comment close', () => {
     const html = renderStructuredText(
       '<!-- > https://comment.example/x --> then https://prose.example/x',
@@ -129,6 +158,10 @@ describe('renderStructuredText escaping', () => {
     'is x <a',
     'if x<y = z',
     'if x<y and z = t',
+    'if (x<y && a === z)',
+    'if (x<y || a !== z)',
+    'if (x<y <= a)',
+    'if (x<y >= a)',
     'if (x <threshold )',
     'x <max-size ',
   ])('does not treat a compact comparison as a tag: %s', (comparison) => {

@@ -50,10 +50,11 @@ function splitTrailingPunctuation(candidate, externalClosers = []) {
   return { url: candidate.slice(0, end), trailing: candidate.slice(end) }
 }
 
-function scanTag(value, start, initialQuote = '', stopAtTagStart = false) {
+function scanTag(value, start, initialQuote = '', stopAtTagStart = false, rejectGreaterEqual = true) {
   let quote = initialQuote
   let hasAssignment = false
   let firstAttributeAssignment = false
+  let attributeShapeValid = true
   let attributeCount = 0
   let attributeState = 'before'
   for (let index = start; index < value.length; index++) {
@@ -67,6 +68,22 @@ function scanTag(value, start, initialQuote = '', stopAtTagStart = false) {
       attributeState = 'value'
       continue
     }
+    if (char === '/' && value[index + 1] === '>') {
+      return {
+        end: index + 2,
+        quote: '',
+        closed: true,
+        hasAssignment,
+        firstAttributeAssignment,
+        attributeCount,
+        attributeShapeValid,
+      }
+    }
+    if (char === '>' && value[index + 1] === '=' && !hasAssignment && rejectGreaterEqual) {
+      attributeShapeValid = false
+      attributeState = 'other'
+      continue
+    }
     if (char === '>') {
       return {
         end: index + 1,
@@ -74,15 +91,27 @@ function scanTag(value, start, initialQuote = '', stopAtTagStart = false) {
         closed: true,
         hasAssignment,
         firstAttributeAssignment,
+        attributeCount,
+        attributeShapeValid,
       }
     }
     if (stopAtTagStart && char === '<') {
-      return { end: index, quote, closed: false, hasAssignment, firstAttributeAssignment }
+      return {
+        end: index,
+        quote,
+        closed: false,
+        hasAssignment,
+        firstAttributeAssignment,
+        attributeCount,
+        attributeShapeValid,
+      }
     }
     if (char === '=') {
       if (attributeState === 'name' || attributeState === 'afterName') {
         hasAssignment = true
         if (attributeCount === 1) firstAttributeAssignment = true
+      } else if (!hasAssignment) {
+        attributeShapeValid = false
       }
       attributeState = 'value'
       continue
@@ -92,15 +121,28 @@ function scanTag(value, start, initialQuote = '', stopAtTagStart = false) {
       else if (attributeState !== 'afterName') attributeState = 'before'
       continue
     }
-    const attributeStart = /[a-z_:]/i.test(char)
+    const attributeStart =
+      /[a-z_]/i.test(char) || ':@*.([{#$'.includes(char)
+    const attributeNameChar =
+      /[a-z0-9_.:-]/i.test(char) || '@*[](){}#$|'.includes(char)
     if (attributeState === 'before' || attributeState === 'afterName') {
       attributeState = attributeStart ? 'name' : 'other'
       if (attributeStart) attributeCount++
-    } else if (attributeState === 'name' && !/[a-z0-9_.:-]/i.test(char)) {
+      if (!attributeStart && !hasAssignment) attributeShapeValid = false
+    } else if (attributeState === 'name' && !attributeNameChar) {
       attributeState = 'other'
+      if (!hasAssignment) attributeShapeValid = false
     }
   }
-  return { end: value.length, quote, closed: false, hasAssignment, firstAttributeAssignment }
+  return {
+    end: value.length,
+    quote,
+    closed: false,
+    hasAssignment,
+    firstAttributeAssignment,
+    attributeCount,
+    attributeShapeValid,
+  }
 }
 
 function consumeTag(scan, state) {
@@ -122,18 +164,28 @@ function assessTagStart(value, match, lineLeading) {
   const token = match[0]
   if (token === '<!--') return { credible: true, comment: true }
   if (token.startsWith('<!')) {
-    return { credible: true, comment: false, scan: scanTag(value, match.index + token.length) }
+    return {
+      credible: true,
+      comment: false,
+      scan: scanTag(value, match.index + token.length, '', false, false),
+    }
   }
   const name = token.replace(/^<\/?/, '').toLowerCase()
   const recognized = HTML_TAG_NAMES.has(name) || name.includes('-')
   const tokenEnd = match.index + token.length
   if (lineLeading && recognized) {
-    return { credible: true, comment: false, scan: scanTag(value, tokenEnd) }
+    return { credible: true, comment: false, scan: scanTag(value, tokenEnd, '', false, false) }
   }
   const next = value[tokenEnd] ?? ''
   if (!next || !/[\s/>]/.test(next)) return { credible: false }
-  const shape = scanTag(value, tokenEnd, '', true)
-  if (!shape.closed && !shape.firstAttributeAssignment) return { credible: false }
+  const shape = scanTag(value, tokenEnd, '', true, !recognized)
+  if (!shape.attributeShapeValid) return { credible: false }
+  if (
+    !shape.closed &&
+    !(recognized ? shape.attributeCount > 0 : shape.firstAttributeAssignment)
+  ) {
+    return { credible: false }
+  }
   return {
     credible: true,
     comment: false,
@@ -217,7 +269,7 @@ function renderInline(value, state) {
     if (state.mode === 'comment') {
       cursor = consumeComment(value, 0, state)
     } else {
-      cursor = consumeTag(scanTag(value, 0, state.quote), state)
+      cursor = consumeTag(scanTag(value, 0, state.quote, false, false), state)
     }
     html += esc(value.slice(0, cursor))
     if (state.mode) return html

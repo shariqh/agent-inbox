@@ -43,6 +43,7 @@ export interface AttentionRow {
   next_after?: string
   options?: Array<{ label: string; detail?: string; recommended?: boolean }> | null
   created_at?: string
+  action_started_at?: string
   updated_at?: string
   revision?: number
 }

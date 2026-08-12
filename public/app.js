@@ -17,6 +17,7 @@ import { createStagedSend } from '/star.js'
 import {
   ageChip, agentCounts, handledUndoRefusal, needsYouEntries, relMs, repliedEntries, rowModel,
   rowStarOption, stagedLabel, staleFoldLabel, streamCounts, undoRefusal, urgencyChip,
+  ASK_SORT_OPTIONS, askTimeModel, sortNeedsYouByAsk,
 } from '/rowview.js'
 import { cardSections, optionOrder } from '/card.js'
 import { keyAction, rovingIndex, ariaAnswerLabel, livenessGlyph, deckEntryAt } from '/keys.js'
@@ -2256,6 +2257,7 @@ function initStagedFlush() {
 // that opens itself. With the old #now strip gone this is the deck's only door.
 let actionFilter = 'all'
 let changedOnly = false
+let askSort = 'priority'
 
 function entryEntity(entry) {
   return entry.kind === 'row' ? entry.row : entry.item
@@ -2288,6 +2290,27 @@ function needsYouHeader() {
   changed.className = `header-toggle${changedOnly ? ' active' : ''}`
   changed.disabled = !lastVisitAt
   bar.appendChild(changed)
+  const sortLabel = document.createElement('label')
+  sortLabel.className = 'queue-sort'
+  const sortText = document.createElement('span')
+  sortText.textContent = 'Sort'
+  const sort = document.createElement('select')
+  sort.setAttribute('aria-label', 'Sort queue')
+  for (const option of ASK_SORT_OPTIONS) {
+    const el = document.createElement('option')
+    el.value = option.value
+    el.textContent = option.label
+    sort.appendChild(el)
+  }
+  sort.value = askSort
+  sort.addEventListener('change', () => {
+    askSort = sort.value
+    pinnedIds = []
+    resetPaging()
+    forceRender()
+  })
+  sortLabel.append(sortText, sort)
+  bar.appendChild(sortLabel)
   const relay = btn('Handoffs', openRelay)
   relay.className = 'relay-btn'
   bar.appendChild(relay)
@@ -2366,8 +2389,12 @@ function renderNeedsYou(g, boardsInView, nowMs) {
   const unordered = filterActionEntries(needsYouEntries(items, boardsInView, nowMs, live, [...replied, ...awaiting]))
   // §10: pin existing order BEFORE paginating. New arrivals append at the foot,
   // so they appear live without moving the row the human is reading.
-  const entryById = new Map(unordered.map((e) => [e.kind === 'row' ? e.row.id : e.item.id, e]))
-  const entries = orderedIds([...entryById.keys()]).map((id) => entryById.get(id)).filter(Boolean)
+  const entries = askSort === 'priority'
+    ? (() => {
+        const entryById = new Map(unordered.map((e) => [e.kind === 'row' ? e.row.id : e.item.id, e]))
+        return orderedIds([...entryById.keys()]).map((id) => entryById.get(id)).filter(Boolean)
+      })()
+    : sortNeedsYouByAsk(unordered, askSort)
   const entities = [...items, ...boardsInView]
   const opts = {
     streams: streamCounts(entities),
@@ -2495,6 +2522,10 @@ function needsRowEl(m, entry, nowMs) {
   const streamBit = m.stream ? `<span class="nrow-stream">${esc(m.stream)}</span>` : ''
   const ownerBit = `<span class="nrow-owner owner-${esc(m.actionCategory)}">${esc(m.ownerLabel)}</span>`
   const changeBit = m.changeKind ? `<span class="nrow-change">${esc(m.changeKind)}</span>` : ''
+  const asked = askTimeModel(m.askedAt, nowMs)
+  const askedBit = asked
+    ? `<time class="nrow-asked" datetime="${esc(asked.datetime)}" data-exact="${esc(asked.exact)}" aria-label="${esc(asked.accessibleLabel)}" tabindex="0">${esc(asked.text)}</time>`
+    : ''
   // omit line 2 entirely when it would be blank — no secondary text, no agent
   // chip, no stream — otherwise it leaves a padded empty line under the row.
   // Still built (with staged-dismiss's own content) when a dismiss is staged,
@@ -2509,6 +2540,7 @@ function needsRowEl(m, entry, nowMs) {
       <span class="nrow-title" title="${esc(m.title)}">${esc(m.title)}</span>
       ${ownerBit}
       ${changeBit}
+      ${askedBit}
       <span class="chip chip-${chip.tone}"><span aria-hidden="true">${livenessGlyph(m.liveness).glyph}</span> ${esc(chip.text)}</span>
       <span class="nrow-src">${sourceChipsHtml(linkIndex, entry.kind === 'row' ? entry.board : entry.item, nowMs)}</span>
       <span class="nrow-star"></span>
@@ -2520,6 +2552,16 @@ function needsRowEl(m, entry, nowMs) {
   el.style.setProperty('--wash', color.wash)
   const boardBtn = el.querySelector('.nrow-glyph')
   if (boardBtn) boardBtn.addEventListener('click', (ev) => { ev.stopPropagation(); jumpToCard('boards', m.boardId) })
+  const askedEl = el.querySelector('.nrow-asked')
+  if (askedEl) {
+    askedEl.addEventListener('click', (ev) => ev.stopPropagation())
+    askedEl.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' || ev.key === ' ') {
+        ev.preventDefault()
+        ev.stopPropagation()
+      }
+    })
+  }
   const dismissBtn = el.querySelector('.nrow-dismiss')
   if (dismissBtn) dismissBtn.addEventListener('click', (ev) => {
     ev.stopPropagation()

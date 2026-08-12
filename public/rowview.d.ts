@@ -22,6 +22,7 @@ export interface RowItem {
   impact?: string
   next_after?: string
   updated_at?: string
+  action_started_at?: string
   revision?: number
   created_at: string
 }
@@ -48,6 +49,7 @@ export interface RowRow {
   next_after?: string
   created_at?: string
   updated_at?: string
+  action_started_at?: string
   revision?: number
 }
 
@@ -69,6 +71,7 @@ export interface RowModel {
   boardId: string | null
   boardTitle: string | null
   created_at: string | null
+  askedAt: string | null
   snoozedUntil: string | null
   ownerLabel: string
   actionCategory: 'decision' | 'task'
@@ -95,6 +98,33 @@ export function secondaryLine(item: RowItem): string
 export function streamCounts(entities: Array<{ project: string; stream?: string }>): Map<string, number>
 export function agentCounts(entities: Array<{ project: string; agent?: string }>): Map<string, number>
 export function rowModel(entry: Entry, opts?: RowModelOpts): RowModel
+export const ASK_SORT_OPTIONS: ReadonlyArray<{
+  value: 'priority' | 'newest' | 'oldest'
+  label: string
+}>
+export type AskSortableEntry =
+  | {
+      kind: 'item'
+      item: { id: string; created_at?: string; action_started_at?: string }
+      liveness?: unknown
+    }
+  | {
+      kind: 'row'
+      row: { id: string; created_at?: string; action_started_at?: string }
+      board?: unknown
+      liveness?: unknown
+    }
+export function currentAskAt(entry: AskSortableEntry): string | null
+export function sortNeedsYouByAsk<T extends AskSortableEntry>(
+  entries: T[],
+  mode: 'priority' | 'newest' | 'oldest',
+): T[]
+export function askTimeModel(askedAt: string | null, nowMs: number): {
+  datetime: string
+  exact: string
+  text: string
+  accessibleLabel: string
+} | null
 export function urgencyChip(model: RowModel, nowMs: number): { text: string; tone: string }
 export function relMs(ms: number): string
 export const FRESH_MS: number

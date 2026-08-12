@@ -64,6 +64,7 @@ function holdArchivePosts(): { release(index: number): void } {
     if (init?.method !== 'POST' || String(input) !== '/api/projects/close') {
       return await fetchNow(input, init)
     }
+
     const index = releases.length
     await new Promise<void>((resolve) => { releases.push(resolve) })
     if (index === 0) return new Response('boom', { status: 500 })
@@ -74,6 +75,32 @@ function holdArchivePosts(): { release(index: number): void } {
       const release = releases[index]
       if (!release) throw new Error(`archive POST ${index} is not pending`)
       release()
+    },
+  }
+}
+
+function holdProjectPosts(): { count(): number; release(index: number, status?: number): void } {
+  const fetchNow = globalThis.fetch
+  const pending: Array<{ release(): void; status: number }> = []
+  globalThis.fetch = async (input, init) => {
+    if (init?.method !== 'POST' || !String(input).startsWith('/api/projects/')) {
+      return await fetchNow(input, init)
+    }
+    const request = { release() {}, status: 200 }
+    await new Promise<void>((resolve) => {
+      request.release = resolve
+      pending.push(request)
+    })
+    if (request.status !== 200) return new Response('boom', { status: request.status })
+    return await fetchNow(input, init)
+  }
+  return {
+    count: () => pending.length,
+    release(index, status = 200) {
+      const request = pending[index]
+      if (!request) throw new Error(`project POST ${index} is not pending`)
+      request.status = status
+      request.release()
     },
   }
 }
@@ -389,6 +416,63 @@ describe('tablet archived-project popover behavior', () => {
       .filter((tab) => tab.tabIndex === 0)).toEqual([beta])
   })
 
+  it.each([
+    [1400, '.closed-fold summary'],
+    [560, '#projectDisclosureToggle'],
+  ])('falls back to an operable control when tablet archived focus becomes hidden at %ipx', async (width, selector) => {
+    const d = open()
+    question(d, 'alpha')
+    advanceClock()
+    question(d, 'beta')
+    advanceClock()
+    question(d, 'gamma')
+    closeProject(d, 'beta')
+    closeProject(d, 'gamma')
+    setViewport(900)
+    await bootApp(d)
+
+    click(archivedTrigger())
+    archivedPopover()?.querySelector<HTMLButtonElement>('[aria-label="View archived project beta"]')?.focus()
+    setViewport(width)
+    window.dispatchEvent(new window.Event('resize'))
+    await settle()
+
+    const fallback = document.querySelector<HTMLElement>(selector)!
+    expect(document.activeElement).toBe(fallback)
+    expect(document.querySelector<HTMLDetailsElement>('.closed-fold')?.open).toBe(false)
+    if (width === 1400) {
+      const visibleTabs = [...document.querySelectorAll<HTMLButtonElement>('#rail .rail-tab')]
+        .filter((tab) => !tab.closest('details:not([open])'))
+      expect(visibleTabs.filter((tab) => tab.tabIndex === 0)).toHaveLength(1)
+    }
+  })
+
+  it('falls back to a visible project tab when the reopened project is rail-filtered away', async () => {
+    const d = open()
+    for (let i = 0; i < 13; i += 1) {
+      question(d, `project-${i}`)
+      advanceClock()
+    }
+    question(d, 'hidden-archived')
+    closeProject(d, 'hidden-archived')
+    setViewport(900)
+    await bootApp(d)
+
+    const filter = document.querySelector<HTMLInputElement>('#rail .rail-filter')!
+    filter.value = 'project-2'
+    filter.dispatchEvent(new window.Event('input', { bubbles: true }))
+    archivedTrigger()?.focus()
+    reopenProject(d, 'hidden-archived')
+    await pollTick()
+
+    const visibleTabs = [...document.querySelectorAll<HTMLButtonElement>('#rail .rail-tab')]
+      .filter((tab) => !tab.closest('details:not([open])'))
+    const tabbable = visibleTabs.filter((tab) => tab.tabIndex === 0)
+    expect(projectTab('hidden-archived')).toBeNull()
+    expect(tabbable).toHaveLength(1)
+    expect(document.activeElement).toBe(tabbable[0])
+  })
+
   it('makes a restored project tab the sole roving tab stop after a poll rebuild', async () => {
     const d = open()
     question(d, 'alpha')
@@ -600,6 +684,94 @@ describe('async project mutation focus', () => {
     expect(closedProjects(d)).toEqual(['beta'])
   })
 
+  it('keeps a newer Archive intent painted while an older Reopen completes', async () => {
+    const d = open()
+    question(d, 'alpha')
+    advanceClock()
+    question(d, 'beta')
+    closeProject(d, 'beta')
+    setViewport(900)
+    await bootApp(d)
+
+    const posts = holdProjectPosts()
+    click(archivedTrigger())
+    click(archivedPopover()?.querySelector('[aria-label="Reopen project beta"]'))
+    await settle()
+    click(archiveAction('beta'))
+    await settle()
+    expect(posts.count()).toBe(1)
+
+    posts.release(0)
+    await settle()
+    expect(posts.count()).toBe(2)
+    expect(projectTab('beta')).toBeNull()
+
+    posts.release(1)
+    await settle()
+    expect(closedProjects(d)).toEqual(['beta'])
+    expect(projectTab('beta')).toBeNull()
+  })
+
+  it('rolls back only the latest failed Reopen after an older Archive succeeds', async () => {
+    expectConsoleError(/HTTP 500/)
+    const d = open()
+    question(d, 'alpha')
+    advanceClock()
+    question(d, 'beta')
+    setViewport(900)
+    await bootApp(d)
+
+    const posts = holdProjectPosts()
+    click(archiveAction('beta'))
+    await settle()
+    click(archivedPopover()?.querySelector('[aria-label="Reopen project beta"]'))
+    await settle()
+    expect(posts.count()).toBe(1)
+
+    posts.release(0)
+    await settle()
+    expect(posts.count()).toBe(2)
+    expect(projectTab('beta')).toBeTruthy()
+
+    posts.release(1, 500)
+    await settle()
+    expect(closedProjects(d)).toEqual(['beta'])
+    expect(projectTab('beta')).toBeNull()
+  })
+
+  it('keeps another pending Reopen painted through out-of-order success and failure', async () => {
+    expectConsoleError(/HTTP 500/)
+    const d = open()
+    question(d, 'alpha')
+    advanceClock()
+    question(d, 'beta')
+    advanceClock()
+    question(d, 'gamma')
+    closeProject(d, 'beta')
+    closeProject(d, 'gamma')
+    setViewport(900)
+    await bootApp(d)
+
+    const posts = holdProjectPosts()
+    click(archivedTrigger())
+    click(archivedPopover()?.querySelector('[aria-label="Reopen project beta"]'))
+    await settle()
+    click(archivedTrigger())
+    click(archivedPopover()?.querySelector('[aria-label="Reopen project gamma"]'))
+    await settle()
+
+    posts.release(1)
+    await settle()
+    expect(projectTab('beta')).toBeTruthy()
+    expect(projectTab('gamma')).toBeTruthy()
+
+    posts.release(0, 500)
+    await settle()
+    expect(closedProjects(d)).toEqual(['beta'])
+    expect(projectTab('beta')).toBeNull()
+    expect(projectTab('gamma')).toBeTruthy()
+  })
+
   it('does not steal deliberate Search focus when Archive finishes', async () => {
     const d = open()
     question(d, 'alpha')
@@ -733,6 +905,29 @@ it('closes archived project UI coherently across desktop and tablet transitions'
   await settle()
   expect(archivedPopover()).toBeNull()
   expect(document.querySelector<HTMLDetailsElement>('.closed-fold')?.open).toBe(false)
+})
+
+it('keeps a forced archived project dismissed after desktop-to-tablet transition polling', async () => {
+  const d = open()
+  question(d, 'alpha')
+  advanceClock()
+  question(d, 'beta')
+  closeProject(d, 'beta')
+  setViewport(1400)
+  await bootApp(d)
+
+  click(document.querySelector('.closed-fold .rail-tab[data-project="beta"]'))
+  await settle()
+  setViewport(900)
+  await settle()
+  expect(archivedTrigger()?.getAttribute('aria-expanded')).toBe('false')
+  expect(archivedPopover()).toBeNull()
+
+  advanceClock()
+  question(d, 'gamma')
+  await pollTick()
+  expect(archivedTrigger()?.getAttribute('aria-expanded')).toBe('false')
+  expect(archivedPopover()).toBeNull()
 })
 
 describe.each([

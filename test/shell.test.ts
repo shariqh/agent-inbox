@@ -305,7 +305,9 @@ describe('closed projects (issue #32)', () => {
     const disclosure = fn('function initProjectDisclosure()', '\nfunction railActionEl(')
     expect(disclosure).toContain('projectMode = projectNavigationMode()')
     expect(disclosure).toContain('projectMode = next')
+    expect(disclosure).toContain('const focusState = projectFocusState(document.activeElement)')
     expect(disclosure).toContain('setClosedProjectsOpen(false)')
+    expect(disclosure).toContain('restoreProjectFocus(focusState)')
     expect(disclosure).toMatch(/matchMedia\(`\(max-width: \$\{NARROW_MAX\}px\)`\)/)
     const fold = fn('function closedFoldEl(', '\nfunction focusProjectControl(')
     expect(fold).toMatch(/if \(!fold\.isConnected \|\| tabletProjectsMode\(\)\) return/)
@@ -336,6 +338,7 @@ describe('closed projects (issue #32)', () => {
 
   it('promotes every programmatically focused project tab to the sole roving tab stop', () => {
     const promote = fn('function promoteProjectTab(', '\nfunction focusProjectTab(')
+    expect(promote).toMatch(/if \(!projectTabIsOperable\(target\)\) return false/)
     expect(promote).toMatch(/querySelectorAll\('#rail \.rail-tab'\).*tabIndex = -1/)
     expect(promote).toMatch(/target\.tabIndex = 0/)
     expect(promote).toMatch(/target\.focus\(\)/)
@@ -345,6 +348,23 @@ describe('closed projects (issue #32)', () => {
     expect(restore).toMatch(/promoteProjectTab\(/)
     const close = fn('async function closeProjectAction(', '\nasync function reopenProjectAction(')
     expect(close).toMatch(/focusProjectTab\([^,]+,\s*generation\)/)
+    const operable = fn('function projectTabIsOperable(', '\nfunction visibleProjectTabs(')
+    expect(operable).toMatch(/projectNavigationMode\(\) === 'phone'/)
+    expect(operable).toMatch(/dataset\.open !== 'true'/)
+  })
+
+  it('serializes project writes and reapplies every current optimistic intent after loading', () => {
+    expect(js).toContain('const projectMutationIntents = new Map()')
+    expect(js).toContain('const projectMutationQueues = new Map()')
+    const loadBody = fn('async function load()', '\n// fix round 1 (hardening)')
+    expect(loadBody).toContain('applyProjectMutationIntents()')
+    const close = fn('async function closeProjectAction(', '\nasync function reopenProjectAction(')
+    const reopen = fn('async function reopenProjectAction(', '\n// fix round 1: the query persists')
+    for (const body of [close, reopen]) {
+      expect(body).toMatch(/beginProjectMutation\(/)
+      expect(body).toMatch(/await queueProjectMutation\(/)
+      expect(body).toMatch(/if \(!ownsProjectMutation\(/)
+    }
   })
 
   it('reconciles projectFilter against the FULL project list so a closed project can still be peeked', () => {

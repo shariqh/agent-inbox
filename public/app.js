@@ -514,7 +514,18 @@ function focusItem(id) {
   // `collapse` intent no-op'd against a `.nrow` that never existed. Claim the
   // accordion only once the target has actually landed in the list — render()
   // above put it there — then render again so the card body mounts under it.
-  if (needsYouRowEl(id)) { setOpenRow(id); forceRender() }
+  const queueTarget = needsYouRowEl(id)
+  if (queueTarget) {
+    for (let node = queueTarget; node; node = node.parentElement) {
+      if (node.tagName !== 'DETAILS') continue
+      node.open = true
+      if (node.classList.contains('snoozed-fold')) snoozedFoldOpen = true
+      else if (node.classList.contains('stale-fold')) staleFoldOpen = true
+    }
+    selectRow(id)
+  }
+  if (queueTarget) setOpenRow(id)
+  if (queueTarget) forceRender()
   requestAnimationFrame(() => {
     const el = document.querySelector(`[data-card-id="${CSS.escape(id)}"]`)
     if (!el) return
@@ -724,6 +735,7 @@ function rel(iso) {
 
 // ── triage mode: step through the needs-input set one card at a time ──
 let triageDeck = null // { entries, index } while the lightbox is open
+let triageReturnFocus = null
 const rowDrafts = {}  // in-progress row annotations, surviving the poll rebuild
 const rowDraftKinds = {} // row id → answer|clarify|decline, surviving accordion remounts
 const rowDraftMeta = {} // row id → recovery labels/revision if its owner disappears
@@ -783,15 +795,20 @@ function findEntryData(e) {
 }
 
 function openTriage() {
+  triageReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
   if (relayOpen) closeRelay()
   if (missionBoardId) closeMission()
   triageDeck = { entries: buildDeck(), index: 0 }
   renderTriage()
+  document.querySelector('#lightbox .lb-panel')?.focus({ preventScroll: true })
 }
 
 function closeTriage() {
+  const returnFocus = triageReturnFocus
   triageDeck = null
+  triageReturnFocus = null
   document.getElementById('lightbox').hidden = true
+  if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true })
 }
 
 function triageRemoveCurrent() {
@@ -956,6 +973,7 @@ function rowAnswerEl(b, r, onSaved) {
       revision: r.revision,
       boardTitle: b.title,
       label: r.label,
+      context: staleDraft?.context ?? r.context ?? '',
     }
   }
   if (staleDraft?.revision === r.revision) rowDraftKinds[r.id] = staleDraft.kind
@@ -968,6 +986,7 @@ function rowAnswerEl(b, r, onSaved) {
         revision: r.revision,
         boardTitle: b.title,
         label: r.label,
+        context: r.context ?? '',
       }
     } else {
       delete rowDraftMeta[r.id]
@@ -994,6 +1013,7 @@ function rowAnswerEl(b, r, onSaved) {
         revision: r.revision,
         boardTitle: b.title,
         label: r.label,
+        context: r.context ?? '',
       }
       input.value = typed
       showWriteError(r.id, WRITE_FAILED)
@@ -1007,6 +1027,7 @@ function rowAnswerEl(b, r, onSaved) {
         kind,
         boardTitle: b.title,
         label: r.label,
+        context: r.context ?? '',
       }
       delete rowDrafts[r.id]
       delete rowDraftKinds[r.id]
@@ -2584,7 +2605,12 @@ function renderOrphanedDrafts(host) {
         id,
         draft,
         clear: () => { delete staleRowDrafts[id] },
-        text: `${draft.boardTitle} · ${draft.label} · ${draft.kind}: ${draft.text}`,
+        text: [
+          draft.boardTitle,
+          draft.label,
+          `${draft.kind}: ${draft.text}`,
+          draft.context ? `context: ${draft.context}` : '',
+        ].filter(Boolean).join(' · '),
       })),
   ]
   if (!entries.length) return
@@ -2604,7 +2630,7 @@ function renderOrphanedDrafts(host) {
       const remaining = fold.querySelectorAll('.stale-draft-line').length
       if (remaining) summary.textContent = `unsent responses (${remaining})`
       else fold.remove()
-      resumeRender()
+      renderIfIdle()
     })
     clear.className = 'undo-btn'
     line.appendChild(clear)
@@ -3114,14 +3140,17 @@ function reconcileDraftOwners() {
   }
 
   for (const [id, text] of Object.entries(rowDrafts)) {
-    if (!String(text).trim() || currentRow(id)) continue
     const meta = rowDraftMeta[id]
+    if (!String(text).trim()) continue
+    const owner = currentRow(id)
+    if (owner && meta?.revision === owner.row.revision) continue
     staleRowDrafts[id] = {
       revision: meta?.revision ?? -1,
       text,
       kind: rowDraftKinds[id] ?? 'answer',
       boardTitle: meta?.boardTitle ?? 'Plan',
       label: meta?.label ?? 'Removed row',
+      context: meta?.context ?? '',
     }
     delete rowDrafts[id]
     delete rowDraftKinds[id]
@@ -3517,7 +3546,14 @@ function runIntent(intent) {
 
 function initKeys() {
   document.addEventListener('keydown', (e) => {
-    if (nativeKeyOwner(e)) return
+    const t = e.target
+    const typing = !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)
+    const triageOwnsKey = !!triageDeck
+      && !typing
+      && (e.key === 'Escape'
+        || /^[1-4]$/.test(e.key)
+        || ['j', 'k', 'ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight'].includes(e.key))
+    if (!triageOwnsKey && nativeKeyOwner(e)) return
     if (e.key === ',' && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
       e.preventDefault()
       toggleSettings()
@@ -3556,8 +3592,6 @@ function initKeys() {
       e.preventDefault()
       return
     }
-    const t = e.target
-    const typing = !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)
     // optionCount must come from the SAME target runIntent will answer — the
     // deck entry while it's open, the list selection otherwise — or a keyboard
     // '1'-'4' can validate against one item and answer another (see

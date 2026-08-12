@@ -57,6 +57,27 @@ function holdNextRequest(method: 'GET' | 'POST'): () => void {
   return release
 }
 
+function holdArchivePosts(): { release(index: number): void } {
+  const fetchNow = globalThis.fetch
+  const releases: Array<() => void> = []
+  globalThis.fetch = async (input, init) => {
+    if (init?.method !== 'POST' || String(input) !== '/api/projects/close') {
+      return await fetchNow(input, init)
+    }
+    const index = releases.length
+    await new Promise<void>((resolve) => { releases.push(resolve) })
+    if (index === 0) return new Response('boom', { status: 500 })
+    return await fetchNow(input, init)
+  }
+  return {
+    release(index) {
+      const release = releases[index]
+      if (!release) throw new Error(`archive POST ${index} is not pending`)
+      release()
+    },
+  }
+}
+
 it('auto-opens a new same-count archived query after the previous query was dismissed', async () => {
   const d = open()
   question(d, 'alpha')
@@ -156,6 +177,44 @@ describe.each([768, 1024])('tablet project management at %ipx', (width) => {
 })
 
 describe('tablet archived-project popover behavior', () => {
+  it('keeps forced archived disclosure coherent while restoring rail-filter focus', async () => {
+    const d = open()
+    for (let i = 0; i < 13; i += 1) {
+      question(d, `open-${i}`)
+      advanceClock()
+    }
+    insertItem(d, {
+      project: 'beta',
+      stream: 'main',
+      agent: 'copilot',
+      kind: 'question',
+      title: 'global archived needle',
+    })
+    closeProject(d, 'beta')
+    setViewport(900)
+    await bootApp(d)
+
+    let filter = document.querySelector<HTMLInputElement>('#rail .rail-filter')!
+    filter.value = 'open'
+    filter.dispatchEvent(new window.Event('input', { bubbles: true }))
+    await searchFor('needle')
+    expect(archivedPopover()).toBeNull()
+
+    filter = document.querySelector<HTMLInputElement>('#rail .rail-filter')!
+    filter.focus()
+    filter.value = 'beta'
+    filter.setSelectionRange(4, 4)
+    filter.dispatchEvent(new window.Event('input', { bubbles: true }))
+
+    expect(document.activeElement).toBe(document.querySelector('#rail .rail-filter'))
+    expect(archivedTrigger()?.getAttribute('aria-expanded')).toBe('true')
+    expect(archivedPopover()).toBeTruthy()
+    document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    expect(archivedPopover()).toBeNull()
+    click(archivedTrigger())
+    expect(archivedPopover()).toBeTruthy()
+  })
+
   it('restores trigger focus on Escape and closes on outside pointer interaction', async () => {
     const d = open()
     question(d, 'alpha')
@@ -238,6 +297,28 @@ describe('tablet archived-project popover behavior', () => {
     const currentArchive = archiveAction('alpha')!
     expect(currentArchive).not.toBe(archive)
     expect(document.activeElement).toBe(currentArchive)
+  })
+
+  it('makes a restored project tab the sole roving tab stop after a poll rebuild', async () => {
+    const d = open()
+    question(d, 'alpha')
+    advanceClock()
+    question(d, 'beta')
+    setViewport(900)
+    await bootApp(d)
+
+    const beta = projectTab('beta')!
+    beta.focus()
+    advanceClock()
+    question(d, 'gamma')
+    await pollTick()
+
+    const restored = projectTab('beta')!
+    const tabbable = [...document.querySelectorAll<HTMLButtonElement>('#rail .rail-tab')]
+      .filter((tab) => tab.tabIndex === 0)
+    expect(document.activeElement).toBe(restored)
+    expect(restored.tabIndex).toBe(0)
+    expect(tabbable).toEqual([restored])
   })
 
   it('keeps archived project selection as a separate non-mutating peek beside Reopen', async () => {
@@ -361,6 +442,34 @@ describe('tablet archived-project popover behavior', () => {
 })
 
 describe('async project mutation focus', () => {
+  it('does not let an older failed Archive steal focus from a newer Archive', async () => {
+    expectConsoleError(/HTTP 500/)
+    const d = open()
+    question(d, 'alpha')
+    advanceClock()
+    question(d, 'beta')
+    advanceClock()
+    question(d, 'gamma')
+    setViewport(900)
+    await bootApp(d)
+
+    const posts = holdArchivePosts()
+    click(archiveAction('alpha'))
+    await settle()
+    click(archiveAction('beta'))
+    await settle()
+
+    posts.release(1)
+    await settle()
+    expect(document.activeElement).toBe(archivedTrigger())
+
+    posts.release(0)
+    await settle()
+
+    expect(document.activeElement).toBe(archivedTrigger())
+    expect(closedProjects(d)).toEqual(['beta'])
+  })
+
   it('does not steal deliberate Search focus when Archive finishes', async () => {
     const d = open()
     question(d, 'alpha')

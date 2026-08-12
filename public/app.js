@@ -1601,6 +1601,8 @@ let closedFoldOpen = false
 let tabletClosedSnapshot = null
 let tabletForcedOpenKey = ''
 let tabletDismissedOpenKey = null
+let restoringRailFocus = false
+let projectMutationGeneration = 0
 // lastData minus the closed projects — what the DEFAULT view may show. Set once
 // per render(), read by every panel renderer that must agree with the badge.
 let visibleData = null
@@ -1781,7 +1783,7 @@ function initProjectDisclosure() {
     const popover = document.getElementById('closedProjectsPopover')
     const insideArchived = target instanceof Node
       && (trigger?.contains(target) || popover?.contains(target))
-    if (tabletProjectsMode() && closedFoldOpen && !insideArchived) {
+    if (!restoringRailFocus && tabletProjectsMode() && closedFoldOpen && !insideArchived) {
       setClosedProjectsOpen(false)
     }
     if (disclosure.dataset.open !== 'true' || disclosure.contains(event.target)) return
@@ -1963,11 +1965,15 @@ function closedFoldEl(entries, count, suppressed, open, withFilter) {
   return fold
 }
 
-function focusProjectControl(id) {
-  requestAnimationFrame(() => document.getElementById(id)?.focus())
+function focusProjectControl(id, generation = null) {
+  requestAnimationFrame(() => {
+    if (generation !== null && generation !== projectMutationGeneration) return
+    document.getElementById(id)?.focus()
+  })
 }
 
-function projectMutationOwnsFocus(selector) {
+function projectMutationOwnsFocus(selector, generation) {
+  if (generation !== projectMutationGeneration) return false
   const active = document.activeElement
   return !active || active === document.body || active.matches(selector)
 }
@@ -1999,7 +2005,12 @@ function restoreProjectFocus(state) {
     archive: `#rail [data-project="${project}"] + .rail-close`,
     tab: `#rail .rail-tab[data-project="${project}"]`,
   }[state.kind]
-  document.querySelector(selector)?.focus()
+  const target = document.querySelector(selector)
+  if (state.kind === 'tab' && target) {
+    for (const tab of document.querySelectorAll('#rail .rail-tab')) tab.tabIndex = -1
+    target.tabIndex = 0
+  }
+  target?.focus()
 }
 
 function setClosedProjectsOpen(open, { restoreFocus = false } = {}) {
@@ -2197,6 +2208,7 @@ function renderRail() {
   host.dataset.sig = sig
   document.getElementById('closedProjectsPopover')?.remove()
   host.innerHTML = ''
+  let railFilter = null
   if (withFilter) {
     const f = document.createElement('input')
     f.type = 'search'
@@ -2206,7 +2218,7 @@ function renderRail() {
     f.value = railQuery
     f.addEventListener('input', () => { railQuery = f.value; renderRail() })
     host.appendChild(f)
-    if (caret !== null) { f.focus(); f.setSelectionRange(caret, caret) }
+    railFilter = f
   }
   for (const e of entries) host.appendChild(railRowEl(e, { withFilter }))
   if (closed.length) {
@@ -2241,7 +2253,17 @@ function renderRail() {
     tabs[0].tabIndex = 0
   }
   wireTablist(host, tablet ? 'horizontal' : 'vertical')
-  if (caret === null) restoreProjectFocus(focusState)
+  if (caret !== null && railFilter) {
+    restoringRailFocus = true
+    try {
+      railFilter.focus()
+      railFilter.setSelectionRange(caret, caret)
+    } finally {
+      restoringRailFocus = false
+    }
+  } else {
+    restoreProjectFocus(focusState)
+  }
 }
 
 // the top bar's agent filter — a demoted dropdown scoped to the selected project.
@@ -3629,20 +3651,22 @@ async function act(id, action) {
 // No staged undo: closing is one click to reverse, in the same place the tab
 // just left.
 async function closeProjectAction(name, { focusArchived = false } = {}) {
+  const generation = ++projectMutationGeneration
   lastData.closed = [...(lastData.closed ?? []), name]
   closedFoldOpen = true // show the human where the tab went
   tabletDismissedOpenKey = null
   if (projectFilter === name) projectFilter = null
   resetPaging()
   forceRender()
-  if (focusArchived) focusProjectControl('closedProjectsTrigger')
+  if (focusArchived) focusProjectControl('closedProjectsTrigger', generation)
   const res = await postJSON('/api/projects/close', { project: name })
   if (res === null) { // postJSON already surfaced the reason — just put the tab back
-    const restoreFocus = focusArchived && projectMutationOwnsFocus('#closedProjectsTrigger')
+    const restoreFocus = focusArchived && projectMutationOwnsFocus('#closedProjectsTrigger', generation)
     lastData.closed = (lastData.closed ?? []).filter((p) => p !== name)
     forceRender()
     if (restoreFocus) {
       requestAnimationFrame(() => {
+        if (generation !== projectMutationGeneration) return
         document.querySelector(`#rail .rail-tab[data-project="${CSS.escape(name)}"]`)?.focus()
       })
     }
@@ -3650,35 +3674,38 @@ async function closeProjectAction(name, { focusArchived = false } = {}) {
   }
   // low stakes here — the optimistic frame above already showed the right thing —
   // but there is ONE rule for a human-initiated write, not two (#38).
-  const restoreFocus = focusArchived && projectMutationOwnsFocus('#closedProjectsTrigger')
+  const restoreFocus = focusArchived && projectMutationOwnsFocus('#closedProjectsTrigger', generation)
   await reloadAndPaint()
-  if (restoreFocus && projectMutationOwnsFocus('#closedProjectsTrigger')) {
-    focusProjectControl('closedProjectsTrigger')
+  if (restoreFocus && projectMutationOwnsFocus('#closedProjectsTrigger', generation)) {
+    focusProjectControl('closedProjectsTrigger', generation)
   }
 }
 
 async function reopenProjectAction(name, { focusProject = false } = {}) {
+  const generation = ++projectMutationGeneration
   const projectSelector = `#rail .rail-tab[data-project="${CSS.escape(name)}"]`
   lastData.closed = (lastData.closed ?? []).filter((p) => p !== name)
   if (focusProject) closedFoldOpen = false
   forceRender()
   if (focusProject) {
     requestAnimationFrame(() => {
+      if (generation !== projectMutationGeneration) return
       document.querySelector(projectSelector)?.focus()
     })
   }
   const res = await postJSON('/api/projects/reopen', { project: name })
   if (res === null) {
-    const restoreFocus = focusProject && projectMutationOwnsFocus(projectSelector)
+    const restoreFocus = focusProject && projectMutationOwnsFocus(projectSelector, generation)
     if (!(lastData.closed ?? []).includes(name)) lastData.closed = [...(lastData.closed ?? []), name]
     forceRender()
-    if (restoreFocus) focusProjectControl('closedProjectsTrigger')
+    if (restoreFocus) focusProjectControl('closedProjectsTrigger', generation)
     return
   }
-  const restoreFocus = focusProject && projectMutationOwnsFocus(projectSelector)
+  const restoreFocus = focusProject && projectMutationOwnsFocus(projectSelector, generation)
   await reloadAndPaint()
-  if (restoreFocus && projectMutationOwnsFocus(projectSelector)) {
+  if (restoreFocus && projectMutationOwnsFocus(projectSelector, generation)) {
     requestAnimationFrame(() => {
+      if (generation !== projectMutationGeneration) return
       document.querySelector(projectSelector)?.focus()
     })
   }

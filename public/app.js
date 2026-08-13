@@ -2579,9 +2579,10 @@ const starStage = createStagedSend({
   setTimeoutFn: (fn, ms) => window.setTimeout(fn, ms),
   clearTimeoutFn: (h) => window.clearTimeout(h),
   // exactly the call the option pill makes today (app.js `answerEl`) — no new endpoint
-  send: ({ id, label, context, generation, intentSequence }) => {
+  send: ({ id, label, context, generation, intent }) => {
     stagedStars.delete(id)
-    sendReply(id, label, context, 'answer', generation, intentSequence, false)
+    itemLatestIntents[id] = intent
+    sendReply(id, label, context, 'answer', generation, intent, false)
   },
 })
 
@@ -2862,10 +2863,11 @@ function renderOrphanedDrafts(host) {
   const activeRows = new Map((lastData?.boards ?? [])
     .flatMap((board) => board.rows.map((row) => [row.id, row.revision])))
   const entries = [
-    ...Object.entries(staleItemDrafts).map(([id, draft]) => ({
-      id,
+    ...Object.entries(staleItemDrafts).map(([key, draft]) => ({
+      id: key,
       draft,
-      clear: () => { delete staleItemDrafts[id] },
+      retry: () => retryItemDraft(key, draft),
+      clear: () => { delete staleItemDrafts[key] },
       text: [
         draft.title,
         `${draft.kind}: ${draft.text}`,
@@ -2904,6 +2906,11 @@ function renderOrphanedDrafts(host) {
     const line = document.createElement('div')
     line.className = 'stale-draft-line'
     line.textContent = entry.text
+    if (entry.retry) {
+      const retry = btn('Retry', entry.retry)
+      retry.className = 'undo-btn'
+      line.appendChild(retry)
+    }
     const clear = btn('Clear', () => {
       entry.clear()
       line.remove()
@@ -3066,7 +3073,12 @@ function needsRowEl(m, entry, nowMs) {
     label.className = 'sent-label'
     label.textContent = `${stagedLabel(staged)} — `
     const undo = btn('Undo', () => {
-      if (starStage.undo(`star:${m.id}`)) { stagedStars.delete(m.id); forceRender(); return }
+      if (starStage.undo(`star:${m.id}`)) {
+        cancelItemIntent(m.id, staged.intent, staged.previousIntent)
+        stagedStars.delete(m.id)
+        forceRender()
+        return
+      }
       const fresh = freshItem(m.id) ?? entry.item
       const refusal = undoRefusal(fresh, Date.now())
       if (refusal) { label.textContent = `${refusal} ` } else changeAnswer(fresh, label)
@@ -3075,14 +3087,15 @@ function needsRowEl(m, entry, nowMs) {
     slot.replaceChildren(label, undo)
   } else if (opt) {
     const star = btn('★', () => {
-      const intentSequence = claimItemIntent(m.id, { staged: true })
-      stagedStars.set(m.id, { label: opt.label })
+      const previousIntent = itemLatestIntents[m.id] ?? null
+      const intent = claimItemIntent(m.id, { staged: true })
+      stagedStars.set(m.id, { label: opt.label, intent, previousIntent })
       starStage.stage(`star:${m.id}`, {
         id: m.id,
         label: opt.label,
         context: draftReplyContexts[m.id] ?? '',
         generation: itemDraftGenerations[m.id] ?? 0,
-        intentSequence,
+        intent,
       })
       forceRender()
     })
@@ -3411,8 +3424,8 @@ const draftReplyContexts = {}    // item id → optional context attached to the
 const itemDraftMeta = {}         // item id → recovery labels if its answer surface disappears
 const itemDraftGenerations = {}  // item id → monotonic edit token across duplicate editors
 const itemSubmissionTokens = {}  // item id → latest async submission allowed to retire its draft
-const itemIntentSequences = {}   // item id → latest human intent, assigned before transport
-const staleItemDrafts = {}       // item id → refused answer preserved outside the poll gate
+const itemLatestIntents = {}     // item id → latest non-cancelled human intent
+const staleItemDrafts = {}       // recovery key → refused/orphaned answer preserved outside the poll gate
 const ITEM_REPLY_INTENT_SESSION_KEY = 'agent-inbox-reply-intent'
 const storedReplyIntent = (() => {
   try {
@@ -3434,22 +3447,79 @@ const storedReplyIntent = (() => {
 function claimItemIntent(id, { staged = false } = {}) {
   const sequence = ++storedReplyIntent.sequence
   sessionStorage.setItem(ITEM_REPLY_INTENT_SESSION_KEY, JSON.stringify(storedReplyIntent))
-  itemIntentSequences[id] = sequence
+  const intent = { sequence, actionId: globalThis.crypto.randomUUID() }
+  if (!staged) itemLatestIntents[id] = intent
   if (!staged && starStage.undo(`star:${id}`)) {
+    const stagedIntent = stagedStars.get(id)
+    if (stagedIntent) cancelItemIntent(id, stagedIntent.intent, stagedIntent.previousIntent)
     stagedStars.delete(id)
     const row = needsYouRowEl(id)
     row?.classList.remove('staged')
     row?.querySelector('.nrow-star')?.replaceChildren()
   }
-  return sequence
+  return intent
 }
 
-function postItemReply(id, body, intentSequence) {
+function sameItemIntent(left, right) {
+  return Boolean(left && right
+    && left.sequence === right.sequence
+    && left.actionId === right.actionId)
+}
+
+function cancelItemIntent(id, cancelled, previous) {
+  if (!sameItemIntent(itemLatestIntents[id], cancelled)) return
+  if (previous) itemLatestIntents[id] = previous
+  else delete itemLatestIntents[id]
+}
+
+function postItemReply(id, body, intent) {
   return postJSON(`/api/items/${id}/reply`, {
     ...body,
     intent_client_id: storedReplyIntent.clientId,
-    intent_sequence: intentSequence,
+    intent_sequence: intent.sequence,
+    intent_action_id: intent.actionId,
   })
+}
+
+function itemDraftRecoveryKey(id, { intent, generation, kind }) {
+  return intent
+    ? `item:${id}:intent:${intent.actionId}`
+    : `item:${id}:draft:${generation}:${kind}`
+}
+
+function preserveItemDraftRecovery(id, {
+  key = null,
+  title,
+  text,
+  context,
+  kind,
+  intent = null,
+  generation = itemDraftGenerations[id] ?? 0,
+}) {
+  const recoveryKey = key ?? itemDraftRecoveryKey(id, { intent, generation, kind })
+  staleItemDrafts[recoveryKey] = {
+    itemId: id,
+    title,
+    text,
+    context,
+    kind,
+    intent: intent ? { ...intent } : null,
+  }
+  return recoveryKey
+}
+
+function retryItemDraft(key, draft) {
+  return sendReply(
+    draft.itemId,
+    draft.text,
+    draft.context,
+    draft.kind,
+    itemDraftGenerations[draft.itemId] ?? 0,
+    draft.intent ?? null,
+    true,
+    false,
+    key,
+  )
 }
 
 function hasDraftRecovery() {
@@ -3508,12 +3578,13 @@ function reconcileDraftOwners() {
     if (!text.trim() && !context.trim()) continue
     const item = freshItem(id)
     if (item && cardSections(item).showAnswer) continue
-    staleItemDrafts[id] = {
+    preserveItemDraftRecovery(id, {
       title: itemDraftMeta[id]?.title ?? item?.title ?? 'Question',
       text,
       context,
       kind: 'answer',
-    }
+      generation: itemDraftGenerations[id] ?? 0,
+    })
     bumpDraftGeneration(itemDraftGenerations, id)
     delete draftReplies[id]
     delete draftReplyContexts[id]
@@ -3553,14 +3624,16 @@ async function sendReply(
   context = '',
   kind = 'answer',
   submittedGeneration = itemDraftGenerations[id] ?? 0,
-  intentSequence = null,
+  intent = null,
   recoverUndraftedFailure = true,
   submissionUsesDraft = false,
+  recoveryKey = null,
 ) {
   const reply = text.trim()
   if (!reply) return
-  intentSequence ??= claimItemIntent(id)
-  if (intentSequence < (itemIntentSequences[id] ?? 0)) return
+  const replayingRecordedIntent = Boolean(recoveryKey && intent)
+  intent ??= claimItemIntent(id)
+  if (!sameItemIntent(itemLatestIntents[id], intent) && !replayingRecordedIntent) return
   const submissionToken = bumpDraftGeneration(itemSubmissionTokens, id)
   // fix round 2 (C3): both drafts used to be deleted BEFORE the POST. When the
   // write failed (postJSON → null: server restarted, or now any non-2xx) the
@@ -3573,8 +3646,8 @@ async function sendReply(
     text: reply,
     context: context.trim() || undefined,
     kind,
-  }, intentSequence)
-  const latestIntent = itemIntentSequences[id] === intentSequence
+  }, intent)
+  const latestIntent = sameItemIntent(itemLatestIntents[id], intent)
   const ownsSubmission = latestIntent
     && (itemDraftGenerations[id] ?? 0) === submittedGeneration
     && itemSubmissionTokens[id] === submissionToken
@@ -3582,7 +3655,15 @@ async function sendReply(
     if (!latestIntent) return
     if (!submissionUsesDraft) {
       if (recoverUndraftedFailure) {
-        staleItemDrafts[id] = { title: recoveryTitle, text, context, kind }
+        preserveItemDraftRecovery(id, {
+          key: recoveryKey,
+          title: recoveryTitle,
+          text,
+          context,
+          kind,
+          intent,
+          generation: submittedGeneration,
+        })
         requestDraftRecovery()
         showWriteError(id, '')
         await reloadAndPaint()
@@ -3600,7 +3681,15 @@ async function sendReply(
       draftReplies[id] = text
       draftReplyContexts[id] = context
     } else if (ownsSubmission && recoverUndraftedFailure) {
-      staleItemDrafts[id] = { title: recoveryTitle, text, context, kind }
+      preserveItemDraftRecovery(id, {
+        key: recoveryKey,
+        title: recoveryTitle,
+        text,
+        context,
+        kind,
+        intent,
+        generation: submittedGeneration,
+      })
       requestDraftRecovery()
       showWriteError(id, WRITE_FAILED)
       await reloadAndPaint()
@@ -3615,12 +3704,15 @@ async function sendReply(
     if (!submissionUsesDraft) {
       if (recoverUndraftedFailure) {
         const item = freshItem(id)
-        staleItemDrafts[id] = {
+        preserveItemDraftRecovery(id, {
+          key: recoveryKey,
           title: itemDraftMeta[id]?.title ?? item?.title ?? recoveryTitle,
           text,
           context,
           kind,
-        }
+          intent,
+          generation: submittedGeneration,
+        })
         requestDraftRecovery()
         showWriteError(id, '')
         await reloadAndPaint()
@@ -3636,12 +3728,15 @@ async function sendReply(
       return
     }
     const item = freshItem(id)
-    staleItemDrafts[id] = {
+    preserveItemDraftRecovery(id, {
+      key: recoveryKey,
       title: itemDraftMeta[id]?.title ?? item?.title ?? recoveryTitle,
       text,
       context,
       kind,
-    }
+      intent,
+      generation: submittedGeneration,
+    })
     requestDraftRecovery()
     bumpDraftGeneration(itemDraftGenerations, id)
     delete draftReplies[id]
@@ -3651,13 +3746,13 @@ async function sendReply(
     await reloadAndPaint()
     return
   }
+  if (recoveryKey) delete staleItemDrafts[recoveryKey]
   if (!latestIntent) return
-  if (ownsSubmission) {
+  if (ownsSubmission && !recoveryKey) {
     bumpDraftGeneration(itemDraftGenerations, id)
     delete draftReplies[id]
     delete draftReplyContexts[id]
     delete itemDraftMeta[id]
-    delete staleItemDrafts[id]
   }
   showWriteError(id, '')
   // issue #38, the reported surface. Also the entry for the option pills, the ★'s
@@ -3819,10 +3914,10 @@ function itemCardEl(it, { done = false, nowMs = Date.now(), liveness = 'parked',
 // snapshot hasn't caught up yet (up to ~3s stale) — the server already told us
 // definitively that a pickup happened, we just don't know exactly when.
 async function changeAnswer(it, msgEl) {
-  const intentSequence = claimItemIntent(it.id)
-  const res = await postItemReply(it.id, { text: '' }, intentSequence)
+  const intent = claimItemIntent(it.id)
+  const res = await postItemReply(it.id, { text: '' }, intent)
   if (res === null) return // network failure — postJSON already signaled it
-  if (itemIntentSequences[it.id] !== intentSequence) return
+  if (!sameItemIntent(itemLatestIntents[it.id], intent)) return
   if (!res.ok) {
     const fresh = freshItem(it.id) ?? it
     const seenAt = fresh.reply_seen_at ?? new Date().toISOString()

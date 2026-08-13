@@ -167,24 +167,30 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
       kind,
       intent_client_id: intentClientId,
       intent_sequence: intentSequence,
+      intent_action_id: intentActionId,
     } = await c.req.json<{
       text: string
       context?: string
       kind?: string
       intent_client_id?: unknown
       intent_sequence?: unknown
+      intent_action_id?: unknown
     }>()
     const parsedKind = kind === undefined ? 'answer' : responseKind(kind)
     if (parsedKind === null) return c.json({ ok: false, error: 'invalid response kind' }, 400)
     const hasIntentClient = intentClientId !== undefined
     const hasIntentSequence = intentSequence !== undefined
-    if (hasIntentClient !== hasIntentSequence) {
+    const hasIntentAction = intentActionId !== undefined
+    if (new Set([hasIntentClient, hasIntentSequence, hasIntentAction]).size !== 1) {
       return c.json({ ok: false, error: 'reply intent metadata must be complete' }, 400)
     }
     const clientId = typeof intentClientId === 'string' ? intentClientId.trim() : ''
+    const actionId = typeof intentActionId === 'string' ? intentActionId.trim() : ''
     if (hasIntentClient && (
       !clientId
       || clientId.length > 128
+      || !actionId
+      || actionId.length > 128
       || typeof intentSequence !== 'number'
       || !Number.isSafeInteger(intentSequence)
       || intentSequence < 1
@@ -198,7 +204,9 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
       text,
       context,
       parsedKind,
-      clientId && typeof intentSequence === 'number' ? { clientId, sequence: intentSequence } : undefined,
+      clientId && actionId && typeof intentSequence === 'number'
+        ? { clientId, sequence: intentSequence, actionId }
+        : undefined,
     )
     return c.json({ ok })
   })

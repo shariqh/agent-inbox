@@ -148,33 +148,61 @@ describe('viewer api', () => {
       project: 'p', stream: '', agent: 'claude-code', kind: 'question', title: 'ordered reply',
     })
     const app = createViewer(db)
-    const post = (text: string, sequence: number) => app.request(`/api/items/${id}/reply`, {
+    const post = (text: string, sequence: number, actionId: string) => app.request(`/api/items/${id}/reply`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         text,
         intent_client_id: 'viewer-window-a',
         intent_sequence: sequence,
+        intent_action_id: actionId,
       }),
     })
 
-    expect(await (await post('intent B', 2)).json()).toEqual({ ok: true })
-    expect(await (await post('late intent A', 1)).json()).toEqual({ ok: false })
+    expect(await (await post('intent B', 2, 'action-b')).json()).toEqual({ ok: true })
+    expect(await (await post('late intent A', 1, 'action-a')).json()).toEqual({ ok: false })
     expect(listItems(db).find((item) => item.id === id)?.reply).toBe('intent B')
 
     const incomplete = await app.request(`/api/items/${id}/reply`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ text: 'invalid', intent_client_id: 'viewer-window-a' }),
+      body: JSON.stringify({
+        text: 'invalid',
+        intent_client_id: 'viewer-window-a',
+        intent_sequence: 3,
+      }),
     })
     expect(incomplete.status).toBe(400)
 
     const malformed = await app.request(`/api/items/${id}/reply`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ text: 'invalid', intent_client_id: 42, intent_sequence: 3 }),
+      body: JSON.stringify({
+        text: 'invalid',
+        intent_client_id: 42,
+        intent_sequence: 3,
+        intent_action_id: 'action-invalid',
+      }),
     })
     expect(malformed.status).toBe(400)
+
+    const clonedId = insertItem(db, {
+      project: 'p', stream: '', agent: 'claude-code', kind: 'question', title: 'cloned tabs',
+    })
+    const clonedPost = (text: string, actionId: string) => app.request(`/api/items/${clonedId}/reply`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text,
+        intent_client_id: 'cloned-session-storage',
+        intent_sequence: 1,
+        intent_action_id: actionId,
+      }),
+    })
+    expect(await (await clonedPost('first tab', 'action-tab-a')).json()).toEqual({ ok: true })
+    expect(await (await clonedPost('second tab', 'action-tab-b')).json()).toEqual({ ok: true })
+    expect(await (await clonedPost('replayed first tab', 'action-tab-a')).json()).toEqual({ ok: true })
+    expect(listItems(db).find((item) => item.id === clonedId)?.reply).toBe('second tab')
   })
 
   // #29: the channel is stamped inside the store, so the viewer needs no code of its

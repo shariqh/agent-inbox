@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
-import { getBoard, getItem, insertItem, upsertBoard } from '../../src/store.js'
+import {
+  getBoard, getItem, insertItem, markReplySeen, resolveItem, upsertBoard,
+} from '../../src/store.js'
 import {
   answerInput, bootApp, buttonLabelled, click, expectConsoleError, freshDb, pollTick, row,
   settle, type, useDomTest,
@@ -265,6 +267,7 @@ describe('async draft ownership', () => {
     expect(body.intent_client_id.trim()).not.toBe('')
     expect(body.intent_client_id.length).toBeLessThanOrEqual(128)
     expect(body.intent_sequence).toBe(1)
+    expect(body.intent_action_id).toMatch(/^[0-9a-f-]{36}$/)
     expect(getItem(db, id)?.reply).toBe('Safe reply')
   })
 
@@ -337,7 +340,15 @@ describe('async draft ownership', () => {
     bridge.failPostsWith(null)
 
     expect(answerInput(id)?.value).toBe('Draft X, revised while Y sends')
-    expect(document.querySelector('.stale-drafts-fold')?.textContent).toContain('Option Y')
+    const recovery = document.querySelector<HTMLElement>('.stale-drafts-fold')!
+    expect(recovery.textContent).toContain('Option Y')
+    click(buttonLabelled('Retry', recovery))
+    await settle()
+
+    expect(getItem(db, id)?.reply).toBe('Option Y')
+    const remaining = document.querySelector('.stale-drafts-fold')?.textContent ?? ''
+    expect(remaining).toContain('Draft X, revised while Y sends')
+    expect(remaining).not.toContain('Option Y')
   })
 
   it('lets a newer Undo reach transport immediately and defeat a delayed staged reply', async () => {
@@ -363,6 +374,115 @@ describe('async draft ownership', () => {
 
     expect(startedBeforeRelease).toBe(2)
     expect(getItem(db, id)?.reply).toBeNull()
+  })
+
+  it('restores prior reply ownership when a staged star is cancelled before send', async () => {
+    db = freshDb()
+    const id = insertItem(db, {
+      ...AGENT,
+      kind: 'question',
+      title: 'Cancel staged ownership',
+      detail: 'Choose one.',
+      options: [{ label: 'Staged choice', recommended: true }],
+    })
+    await bootApp(db)
+    click(row(id))
+    await settle()
+    type(answerInput(id), 'Earlier text reply')
+
+    const held = holdFirstPost(`/items/${id}/reply`)
+    click(buttonLabelled('Send', row(id)!))
+    await vi.advanceTimersByTimeAsync(0)
+    click(row(id))
+    await settle()
+    click(row(id)?.querySelector('.star-btn'))
+    held.release()
+    await settle()
+    click(buttonLabelled('Undo', row(id)!))
+    await settle()
+    await pollTick()
+
+    expect(getItem(db, id)?.reply).toBe('Earlier text reply')
+    expect(answerInput(id)).toBeNull()
+    expect(document.querySelector('.stale-drafts-fold')?.textContent ?? '')
+      .not.toContain('Earlier text reply')
+    expect(document.getElementById('pauseHint')?.textContent).toBe('')
+  })
+
+  it('keeps failed option and orphaned text recoveries distinct and clears only the chosen entry', async () => {
+    db = freshDb()
+    const id = insertItem(db, {
+      ...AGENT,
+      kind: 'question',
+      title: 'Distinct item recoveries',
+      options: [{ label: 'Option Y' }],
+    })
+    const bridge = await bootApp(db)
+    click(row(id))
+    await settle()
+    type(answerInput(id), 'Text X')
+
+    const release = deferPost(`/items/${id}/reply`)
+    click(buttonLabelled('Option Y', row(id)!))
+    resolveItem(db, id)
+    expectConsoleError(new RegExp(`/items/${id}/reply failed: HTTP 503`))
+    bridge.failPostsWith(503)
+    release()
+    await settle()
+    bridge.failPostsWith(null)
+
+    const lines = [...document.querySelectorAll<HTMLElement>('.stale-drafts-fold .stale-draft-line')]
+    expect(lines).toHaveLength(2)
+    expect(lines.some((line) => line.textContent?.includes('Option Y'))).toBe(true)
+    expect(lines.some((line) => line.textContent?.includes('Text X'))).toBe(true)
+    const optionLine = lines.find((line) => line.textContent?.includes('Option Y'))!
+    expect(buttonLabelled('Retry', optionLine)).not.toBeNull()
+    click(buttonLabelled('Clear', optionLine))
+
+    const remaining = document.querySelector('.stale-drafts-fold')?.textContent ?? ''
+    expect(remaining).toContain('Text X')
+    expect(remaining).not.toContain('Option Y')
+  })
+
+  it('retries an uncertain option with the exact action identity without resetting pickup', async () => {
+    db = freshDb()
+    const id = insertItem(db, {
+      ...AGENT,
+      kind: 'question',
+      title: 'Exact recovery replay',
+      options: [{ label: 'Option Y' }],
+    })
+    await bootApp(db)
+    const fetchNow = globalThis.fetch
+    let loseFirstResponse = true
+    globalThis.fetch = async (input, init) => {
+      if (
+        loseFirstResponse
+        && init?.method === 'POST'
+        && String(input).includes(`/items/${id}/reply`)
+      ) {
+        loseFirstResponse = false
+        await fetchNow(input, init)
+        throw new Error('lost response')
+      }
+      return fetchNow(input, init)
+    }
+    expectConsoleError(/lost response/)
+
+    click(row(id))
+    await settle()
+    click(buttonLabelled('Option Y', row(id)!))
+    await settle()
+    const applied = getItem(db, id)!
+    expect(applied.reply).toBe('Option Y')
+    expect(markReplySeen(db, id, applied.replied_at)).toBe(true)
+
+    const recovery = document.querySelector<HTMLElement>('.stale-drafts-fold')!
+    click(buttonLabelled('Retry', recovery))
+    await settle()
+
+    expect(getItem(db, id)?.reply_seen_at).not.toBeNull()
+    expect(document.querySelector('.stale-drafts-fold')).toBeNull()
   })
 })
 

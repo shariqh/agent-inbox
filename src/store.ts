@@ -136,6 +136,22 @@ function runMigrations(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_items_status_project ON items(status, project);
     CREATE INDEX IF NOT EXISTS idx_items_created ON items(created_at);
+    CREATE TABLE IF NOT EXISTS item_reply_intents (
+      item_id TEXT NOT NULL,
+      client_id TEXT NOT NULL,
+      action_id TEXT NOT NULL,
+      sequence INTEGER NOT NULL,
+      applied INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (item_id, client_id, action_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_item_reply_intents_high_water
+      ON item_reply_intents(item_id, client_id, sequence);
+    CREATE TRIGGER IF NOT EXISTS delete_item_reply_intents
+      AFTER DELETE ON items
+      BEGIN
+        DELETE FROM item_reply_intents WHERE item_id = OLD.id;
+      END;
     CREATE TABLE IF NOT EXISTS boards (
       id TEXT PRIMARY KEY,
       project TEXT NOT NULL,
@@ -237,11 +253,10 @@ function runMigrations(db: Database.Database): void {
   ensureColumn(db, 'items', 'replied_at', 'TEXT')
   ensureColumn(db, 'items', 'reply_seen_at', 'TEXT')
   ensureColumn(db, 'items', 'reply_source', 'TEXT')
-  ensureColumn(db, 'items', 'reply_intent_client', 'TEXT')
-  ensureColumn(db, 'items', 'reply_intent_sequence', 'INTEGER')
   ensureColumn(db, 'items', 'session', 'TEXT')
   ensureColumn(db, 'items', 'repo', 'TEXT')
   ensureColumn(db, 'items', 'issue_ref', 'INTEGER')
+  migrateReplyIntentLedger(db)
   ensureColumn(db, 'boards', 'repo', 'TEXT')
   ensureColumn(db, 'boards', 'issue_ref', 'INTEGER')
   ensureColumn(db, 'boards', 'revision', 'INTEGER NOT NULL DEFAULT 1')
@@ -271,6 +286,30 @@ function ensureColumn(db: Database.Database, table: string, column: string, ddl:
 function hasColumn(db: Database.Database, table: string, column: string): boolean {
   const cols = db.prepare(`SELECT name FROM pragma_table_info(?)`).all(table) as { name: string }[]
   return cols.some((c) => c.name === column)
+}
+
+function migrateReplyIntentLedger(db: Database.Database): void {
+  if (
+    !hasColumn(db, 'items', 'reply_intent_client')
+    || !hasColumn(db, 'items', 'reply_intent_sequence')
+  ) return
+  db.exec(`
+    INSERT INTO item_reply_intents
+      (item_id, client_id, action_id, sequence, applied, created_at)
+    SELECT id,
+           reply_intent_client,
+           '__legacy_watermark__',
+           reply_intent_sequence,
+           1,
+           created_at
+      FROM items
+     WHERE reply_intent_client IS NOT NULL
+       AND reply_intent_client <> ''
+       AND reply_intent_sequence IS NOT NULL
+       AND reply_intent_sequence >= 1
+    ON CONFLICT(item_id, client_id, action_id) DO UPDATE
+      SET sequence = MAX(sequence, excluded.sequence)
+  `)
 }
 
 // `doing` is the current claim and must decay; `last_doing` is display-only
@@ -444,7 +483,7 @@ export function replyItem(
   text: string,
   context?: string,
   kind: ResponseKind = 'answer',
-  intent?: { clientId: string; sequence: number },
+  intent?: { clientId: string; sequence: number; actionId: string },
 ): boolean {
   // a changed answer resets pickup — the agent must see the latest reply;
   // an empty answer reverts the question to unanswered (null, never '') — but
@@ -463,48 +502,63 @@ export function replyItem(
     replyContext: replyContext || null,
     kind,
     now,
-    intentClient: intent?.clientId ?? null,
-    intentSequence: intent?.sequence ?? null,
   }
-  const intentGuard = `
-         AND (
-           @intentClient IS NULL
-           OR @intentSequence IS NULL
-           OR reply_intent_client IS NULL
-           OR reply_intent_sequence IS NULL
-           OR reply_intent_client <> @intentClient
-           OR reply_intent_sequence <= @intentSequence
-         )`
-  if (!reply) {
+  const applyReply = (): boolean => {
+    if (!reply) {
     // atomic: the guard condition (reply_seen_at IS NULL) is checked and acted on in the
     // SAME statement as the write, so a concurrent markReplySeen from another connection
     // (e.g. the MCP server's `pending` handler, its own OS process) can never land in a
     // window between a read and a later, unconditional write — there is no such window.
-    const info = db
-      .prepare(`UPDATE items
-                   SET reply = NULL, reply_context = NULL, replied_at = @now, reply_seen_at = NULL,
-                       reply_source = NULL, reply_kind = NULL,
-                       reply_intent_client = @intentClient,
-                       reply_intent_sequence = @intentSequence,
-                       updated_at = @now
-                 WHERE id = @id AND reply_seen_at IS NULL
-                 ${intentGuard}`)
+      const info = db
+        .prepare(`UPDATE items
+                     SET reply = NULL, reply_context = NULL, replied_at = @now, reply_seen_at = NULL,
+                         reply_source = NULL, reply_kind = NULL, updated_at = @now
+                   WHERE id = @id AND reply_seen_at IS NULL`)
+        .run(params)
+      return info.changes > 0
+    }
+    // Inbox replies remain higher precedence than agent-recorded chat answers.
+    const info = db.prepare(`UPDATE items
+                   SET reply = @reply, reply_context = @replyContext, replied_at = @now, reply_seen_at = NULL,
+                       reply_source = 'inbox', reply_kind = @kind,
+                       snoozed_until = NULL, updated_at = @now
+                 WHERE id = @id`)
       .run(params)
     return info.changes > 0
   }
-  // Inbox replies remain higher precedence than agent-recorded chat answers.
-  // Only a lower sequence from the same viewer window is refused; missing
-  // metadata and a different window retain the historical arrival-order rule.
-  const info = db.prepare(`UPDATE items
-                 SET reply = @reply, reply_context = @replyContext, replied_at = @now, reply_seen_at = NULL,
-                     reply_source = 'inbox', reply_kind = @kind,
-                     reply_intent_client = @intentClient,
-                     reply_intent_sequence = @intentSequence,
-                     snoozed_until = NULL, updated_at = @now
-               WHERE id = @id
-               ${intentGuard}`)
-    .run(params)
-  return info.changes > 0
+
+  if (!intent) return applyReply()
+  return db.transaction(() => {
+    const recorded = db.prepare(`
+      SELECT applied
+        FROM item_reply_intents
+       WHERE item_id = ? AND client_id = ? AND action_id = ?`)
+      .get(id, intent.clientId, intent.actionId) as { applied: number } | undefined
+    if (recorded) return recorded.applied === 1
+
+    const waterMark = db.prepare(`
+      SELECT MAX(sequence) AS sequence
+        FROM item_reply_intents
+       WHERE item_id = ? AND client_id = ?`)
+      .get(id, intent.clientId) as { sequence: number | null }
+    const applied = waterMark.sequence !== null && intent.sequence < waterMark.sequence
+      ? false
+      : applyReply()
+    db.prepare(`
+      INSERT INTO item_reply_intents
+        (item_id, client_id, action_id, sequence, applied, created_at)
+      SELECT @id, @clientId, @actionId, @sequence, @applied, @now
+       WHERE EXISTS (SELECT 1 FROM items WHERE id = @id)`)
+      .run({
+        id,
+        clientId: intent.clientId,
+        actionId: intent.actionId,
+        sequence: intent.sequence,
+        applied: applied ? 1 : 0,
+        now,
+      })
+    return applied
+  }).immediate()
 }
 
 // Compare-and-swap on the answer's own version stamp, in ONE statement (issue

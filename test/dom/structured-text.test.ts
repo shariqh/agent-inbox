@@ -133,6 +133,43 @@ describe('structured agent text on cards and plans', () => {
     expect(detail?.textContent).toContain('https://prose.example/x?q=)')
   })
 
+  it('keeps spread-regex attributes inert without poisoning assignment-like comparisons', async () => {
+    const d = open()
+    const id = insertItem(d, {
+      ...AGENT,
+      kind: 'question',
+      title: 'Inspect cohesive scanner state',
+      detail: [
+        'Markup: (<a ',
+        'href="https://attribute.example/x"',
+        '>label</a>)',
+        'Markup: (<a ',
+        'href="https://attribute.example/z" <foo>>)',
+        'Markup: (<a ',
+        'href="https://attribute.example/w"',
+        '= = =>label</a>)',
+        '<Component value={[.../}>/.exec(value)]} href="https://attribute.example/y">',
+        'if x <a',
+        'next = 1',
+        'See https://prose.example/x',
+        '- recovered item',
+      ].join('\n'),
+    })
+
+    await bootApp(d)
+    click(row(id))
+    await settle()
+
+    const detail = row(id)?.querySelector('.card-tldr')
+    const links = [...(detail?.querySelectorAll<HTMLAnchorElement>('a') ?? [])]
+    expect(links.map((link) => link.href)).toEqual(['https://prose.example/x'])
+    expect(detail?.textContent).toContain('https://attribute.example/x')
+    expect(detail?.textContent).toContain('https://attribute.example/y')
+    expect(detail?.textContent).toContain('https://attribute.example/z')
+    expect(detail?.textContent).toContain('https://attribute.example/w')
+    expect(detail?.querySelector('li')?.textContent).toBe('recovered item')
+  })
+
   it('protects member components and keeps entity-like query text in one card link', async () => {
     const d = open()
     const id = insertItem(d, {
@@ -203,6 +240,10 @@ describe('structured agent text on cards and plans', () => {
         'before <Component 组件="https://attribute.example/y">label</Component>',
         '<组件 disabled',
         'href="https://attribute.example/z">label</组件>',
+        'Markup: (<a',
+        'href="https://attribute.example/multiline">label</a>)',
+        '<Component value={mask ^ /}>/.test(value)} href="https://attribute.example/xor">label</Component>',
+        'if x <𐊧 and',
         'text <div attr https://attribute.example/malformed <foo>>',
         'See https://prose.example/x',
         '- recovered item',

@@ -206,6 +206,13 @@ describe('renderStructuredText escaping', () => {
     '<Component value={of / 2 > 0 ? "https://attribute.example/x" : null} href="https://attribute.example/y">',
     '<Component value={typeof𐊧 / 2 > 0 ? "https://attribute.example/x" : null} href="https://attribute.example/y">',
     '<Component render={() => { foo(); /}}/.test(value) > 0; return "https://attribute.example/x" }} href="https://attribute.example/y">',
+    '<Component value={mask ^ /}>/.test(value)} href="https://attribute.example/y">',
+    '<Component value={mask & /}>/.test(value)} href="https://attribute.example/y">',
+    '<Component value={mask | /}>/.test(value)} href="https://attribute.example/y">',
+    '<Component value={~ /}>/.test(value)} href="https://attribute.example/y">',
+    '<Component value={[.../}>/.exec(value)]} href="https://attribute.example/y">',
+    '<Component value={default /}>/.exec(value)} href="https://attribute.example/y">',
+    '<Component value={class A extends /}>/.exec(value) {}} href="https://attribute.example/y">',
   ])('classifies regex and division from expression token context: %s', (fragment) => {
     const html = renderStructuredText(`${fragment}label</Component>\nhttps://prose.example/x\n- item`)
     expect(html).not.toContain('href="https://attribute.example/x"')
@@ -237,6 +244,44 @@ describe('renderStructuredText escaping', () => {
     expect(html).not.toContain('href="https://attribute.example/x"')
     expect(html).not.toContain('href="https://attribute.example/y"')
     expect(html).toContain('href="https://prose.example/x"')
+  })
+
+  it('carries a recognized inline tag across a line only with credible continuation syntax', () => {
+    const tag = renderStructuredText(
+      'Markup: (<a  \nhref="https://attribute.example/x"\n>label</a>)\n' +
+      'See https://prose.example/x\n- item',
+    )
+    expect(tag).not.toContain('href="https://attribute.example/x"')
+    expect(tag).toContain('href="https://prose.example/x"')
+    expect(tag).toContain('<ul><li>item</li></ul>')
+
+    const malformed = renderStructuredText(
+      'Markup: (<a \nhref="https://attribute.example/x" <foo>>)\n' +
+      'See https://prose.example/x\n- item',
+    )
+    expect(malformed).not.toContain('href="https://attribute.example/x"')
+    expect(malformed).toContain('href="https://prose.example/x"')
+    expect(malformed).toContain('<ul><li>item</li></ul>')
+
+    const malformedLater = renderStructuredText(
+      'Markup: (<a \nhref="https://attribute.example/x"\n= = =>label</a>)\n' +
+      'See https://prose.example/x\n- item',
+    )
+    expect(malformedLater).not.toContain('href="https://attribute.example/x"')
+    expect(malformedLater).toContain('href="https://prose.example/x"')
+    expect(malformedLater).toContain('<ul><li>item</li></ul>')
+
+    const comparison = renderStructuredText(
+      'if x <a\nSee https://prose.example/x\n- item',
+    )
+    expect(comparison).toContain('href="https://prose.example/x"')
+    expect(comparison).toContain('<ul><li>item</li></ul>')
+
+    const assignment = renderStructuredText(
+      'if x <a\nnext = 1\nSee https://prose.example/x\n- item',
+    )
+    expect(assignment).toContain('href="https://prose.example/x"')
+    expect(assignment).toContain('<ul><li>item</li></ul>')
   })
 
   it('clears a template escape at the logical-line boundary', () => {
@@ -368,6 +413,7 @@ describe('renderStructuredText escaping', () => {
     'if x<a and',
     'if (x <threshold )',
     'x <max-size ',
+    'if x <𐊧 and',
   ])('does not treat a compact comparison as a tag: %s', (comparison) => {
     const html = renderStructuredText(`${comparison}\nSee https://example.com/path\n- item`)
     expect(html).toContain('href="https://example.com/path"')
@@ -598,4 +644,44 @@ describe('structured text presentation contract', () => {
     expect(source).toContain('assessment.inertEnd')
     expect(source).toContain('shape.closed || hasUnclosedLexicalState')
   })
+
+  it('reuses growing continuation stacks linearly and isolates render calls', () => {
+    for (const value of [
+      '<Component value={\n' + '{\n'.repeat(48_000),
+      '<Component<\n' + '(\n'.repeat(48_000),
+    ]) {
+      const started = performance.now()
+      const html = renderStructuredText(value)
+      expect(performance.now() - started).toBeLessThan(1_000)
+      expect(html).not.toContain('<a ')
+    }
+    expect(renderStructuredText('See https://prose.example/x'))
+      .toContain('href="https://prose.example/x"')
+  }, 10_000)
+
+  it('does not clone continuation stacks at each logical line', () => {
+    const source = readFileSync(join(REPO, 'public/structured-text.js'), 'utf8')
+    expect(source).not.toContain('[...(initial.expressionClosers')
+    expect(source).not.toContain('[...(initial.genericClosers')
+  })
+
+  it('scans multiline tag continuations once while long comparisons recover linearly', () => {
+    const value = (
+      'if x <a\n' +
+      'next = 1\n'.repeat(50_000) +
+      'See https://prose.example/x\n- item'
+    )
+    const started = performance.now()
+    const html = renderStructuredText(value)
+    expect(performance.now() - started).toBeLessThan(1_500)
+    expect(html).toContain('href="https://prose.example/x"')
+    expect(html).toContain('<ul><li>item</li></ul>')
+  }, 10_000)
+
+  it('shares one linear scan budget across unterminated expression candidates', () => {
+    const value = 'x <div\na={\n'.repeat(6_000)
+    const started = performance.now()
+    expect(renderStructuredText(value)).not.toContain('<a ')
+    expect(performance.now() - started).toBeLessThan(1_500)
+  }, 10_000)
 })

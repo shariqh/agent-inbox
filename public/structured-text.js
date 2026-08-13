@@ -95,6 +95,8 @@ function scanTag(value, start, initial = {}) {
   })
   for (let index = start; index < value.length; index++) {
     const char = value[index]
+    const codePoint = value.codePointAt(index)
+    const tokenChar = codePoint === undefined ? char : String.fromCodePoint(codePoint)
     if (quote) {
       if ((expressionClosers.length || genericDepth) && char === '\\' && !quoteEscaped) {
         quoteEscaped = true
@@ -148,8 +150,6 @@ function scanTag(value, start, initial = {}) {
       continue
     }
     if (expressionClosers.length) {
-      const codePoint = value.codePointAt(index)
-      const tokenChar = codePoint === undefined ? char : String.fromCodePoint(codePoint)
       if (char === '/' && value[index + 1] === '/') {
         expressionMode = ''
         return result(value.length, false)
@@ -213,7 +213,7 @@ function scanTag(value, start, initial = {}) {
       } else if (char === '.') {
         canStartRegex = false
         afterMemberAccess = true
-      } else if ('=!:,?&|+-*%<>/'.includes(char)) {
+      } else if ('=!:,;?&|+-*%<>/'.includes(char)) {
         canStartRegex = true
         afterMemberAccess = false
       }
@@ -300,9 +300,9 @@ function scanTag(value, start, initial = {}) {
       continue
     }
     const attributeStart =
-      /[a-z_]/i.test(char) || ':@*.([{#$'.includes(char)
+      IDENTIFIER_START_RE.test(tokenChar) || ':@*.([{#'.includes(char)
     const attributeNameChar =
-      /[a-z0-9_.:-]/i.test(char) || '@*[](){}#$|'.includes(char)
+      IDENTIFIER_CONTINUE_RE.test(tokenChar) || '.:-@*[](){}#|'.includes(char)
     if (attributeState === 'before' || attributeState === 'afterName') {
       attributeState = attributeStart ? 'name' : 'other'
       if (attributeStart) attributeCount++
@@ -311,6 +311,7 @@ function scanTag(value, start, initial = {}) {
       attributeState = 'other'
       if (!hasAssignment) attributeShapeValid = false
     }
+    if (tokenChar.length > 1) index += tokenChar.length - 1
   }
   return result(value.length, false)
 }
@@ -354,7 +355,7 @@ function assessTagStart(value, match, lineLeading) {
   const nameParts = rawName.split('.')
   const frameworkComponent =
     (nameParts.length > 1 && nameParts.every((part) => JSX_IDENTIFIER_RE.test(part))) ||
-    (JSX_IDENTIFIER_RE.test(rawName) && (/^\p{Lu}/u.test(rawName) || /^[_$]/.test(rawName)))
+    (JSX_IDENTIFIER_RE.test(rawName) && !/^[a-z]/.test(rawName))
   const recognized = HTML_TAG_NAMES.has(name) || name.includes('-') || frameworkComponent
   const tokenEnd = match.index + token.length
   if (lineLeading && recognized) {
@@ -385,13 +386,15 @@ function assessTagStart(value, match, lineLeading) {
   const previous = match.index > 0 ? value[match.index - 1] : ''
   const hasSafeLeftBoundary =
     !previous || previous === '>' || SAFE_BOUNDARY_RE.test(previous)
+  const shouldConsumeRejected = shape.closed || hasUnclosedLexicalState ||
+    (hasSafeLeftBoundary && !shape.attributeShapeValid && shape.end > tokenEnd)
   if (!hasSafeLeftBoundary && !shape.closed) {
     return hasUnclosedLexicalState
       ? { credible: false, inertEnd: shape.end }
       : { credible: false }
   }
   if (!shape.attributeShapeValid) {
-    return hasUnclosedLexicalState
+    return shouldConsumeRejected
       ? { credible: false, inertEnd: shape.end }
       : { credible: false }
   }
@@ -508,7 +511,7 @@ function renderInline(value, state, linkState) {
       cursor = consumeTag(
         scanTag(value, 0, {
           quote: state.quote,
-          quoteEscaped: state.quoteEscaped,
+          quoteEscaped: false,
           expressionClosers: state.expressionClosers,
           expressionMode: state.expressionMode,
           regexCharClass: state.regexCharClass,

@@ -205,6 +205,7 @@ describe('renderStructuredText escaping', () => {
     '<Component value={value! / 2 > 0 ? "https://attribute.example/x" : null} href="https://attribute.example/y">',
     '<Component value={of / 2 > 0 ? "https://attribute.example/x" : null} href="https://attribute.example/y">',
     '<Component value={typeof𐊧 / 2 > 0 ? "https://attribute.example/x" : null} href="https://attribute.example/y">',
+    '<Component render={() => { foo(); /}}/.test(value) > 0; return "https://attribute.example/x" }} href="https://attribute.example/y">',
   ])('classifies regex and division from expression token context: %s', (fragment) => {
     const html = renderStructuredText(`${fragment}label</Component>\nhttps://prose.example/x\n- item`)
     expect(html).not.toContain('href="https://attribute.example/x"')
@@ -220,10 +221,34 @@ describe('renderStructuredText escaping', () => {
     'before <$ui.Component disabled\nhref="https://attribute.example/x">label</$ui.Component>',
     'before <组件.面板 disabled\nhref="https://attribute.example/x">label</组件.面板>',
     'before <𐊧ui.Component disabled\nhref="https://attribute.example/x">label</𐊧ui.Component>',
+    'before <组件 disabled\nhref="https://attribute.example/x">label</组件>',
   ])('keeps valid JSX identifier and member components inert: %s', (fragment) => {
     const html = renderStructuredText(`${fragment}\nhttps://prose.example/x`)
     expect(html).not.toContain('href="https://attribute.example/x"')
     expect(html).toContain('href="https://prose.example/x"')
+  })
+
+  it('keeps Unicode JSX attributes inert on inline components', () => {
+    const html = renderStructuredText(
+      'before <Component 组件="https://attribute.example/x" ' +
+      '𐊧attr="https://attribute.example/y">label</Component>\n' +
+      'See https://prose.example/x',
+    )
+    expect(html).not.toContain('href="https://attribute.example/x"')
+    expect(html).not.toContain('href="https://attribute.example/y"')
+    expect(html).toContain('href="https://prose.example/x"')
+  })
+
+  it('clears a template escape at the logical-line boundary', () => {
+    const html = renderStructuredText([
+      'before <Component text={`line\\',
+      '`} href="https://attribute.example/x">label</Component>',
+      'See https://prose.example/x',
+      '- item',
+    ].join('\n'))
+    expect(html).not.toContain('href="https://attribute.example/x"')
+    expect(html).toContain('href="https://prose.example/x"')
+    expect(html).toContain('<ul><li>item</li></ul>')
   })
 
   it('protects adjacent and text-adjacent closed tags without poisoning comparisons', () => {
@@ -241,6 +266,15 @@ describe('renderStructuredText escaping', () => {
     expect(html).toContain('<ul><li>item</li></ul>')
   })
 
+  it('keeps malformed safe-boundary attribute URLs inert up to a nested tag', () => {
+    const html = renderStructuredText(
+      'text <div attr https://attribute.example/x <foo>> ' +
+      'then https://prose.example/x',
+    )
+    expect(html).not.toContain('href="https://attribute.example/x"')
+    expect(html).toContain('href="https://prose.example/x"')
+  })
+
   it('keeps adversarial generic, member, and expression scans linear', () => {
     const cases = [
       {
@@ -254,6 +288,13 @@ describe('renderStructuredText escaping', () => {
           `x ${'<custom {'.repeat(10_000)} https://attribute.example/x\n` +
           'See https://prose.example/x',
         protectedUrl: true,
+      },
+      {
+        value:
+          `${'x<a = {'.repeat(4_000)}0${'}'.repeat(4_000)}>\n` +
+          'See https://prose.example/x',
+        protectedUrl: false,
+        maxMs: 750,
       },
       {
         value:
@@ -274,7 +315,7 @@ describe('renderStructuredText escaping', () => {
       const started = performance.now()
       const html = renderStructuredText(testCase.value)
       const elapsed = performance.now() - started
-      expect(elapsed).toBeLessThan(2_500)
+      expect(elapsed).toBeLessThan(testCase.maxMs ?? 2_500)
       if (testCase.protectedUrl) {
         expect(html).not.toContain('href="https://attribute.example/x"')
       }
@@ -555,5 +596,6 @@ describe('structured text presentation contract', () => {
     expect(source).not.toContain('value.slice(0, match.index).trim()')
     expect(source).toContain("allowGenerics && char === '<' && index === start")
     expect(source).toContain('assessment.inertEnd')
+    expect(source).toContain('shape.closed || hasUnclosedLexicalState')
   })
 })

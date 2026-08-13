@@ -190,6 +190,37 @@ describe('structured agent text on cards and plans', () => {
     expect(detail?.querySelector('li')?.textContent).toBe('recovered item')
   })
 
+  it('protects statement regexes, template continuations, and Unicode JSX names', async () => {
+    const d = open()
+    const id = insertItem(d, {
+      ...AGENT,
+      kind: 'question',
+      title: 'Inspect direct parser boundaries',
+      detail: [
+        '<Component render={() => { foo(); /}}/.test(value) > 0 }}',
+        'text={`line\\',
+        '`} href="https://attribute.example/x">label</Component>',
+        'before <Component 组件="https://attribute.example/y">label</Component>',
+        '<组件 disabled',
+        'href="https://attribute.example/z">label</组件>',
+        'text <div attr https://attribute.example/malformed <foo>>',
+        'See https://prose.example/x',
+        '- recovered item',
+      ].join('\n'),
+    })
+
+    await bootApp(d)
+    click(row(id))
+    await settle()
+
+    const detail = row(id)?.querySelector('.card-tldr')
+    const links = [...(detail?.querySelectorAll<HTMLAnchorElement>('a') ?? [])]
+    expect(links.map((link) => link.href)).toEqual(['https://prose.example/x'])
+    expect(detail?.textContent).toContain('https://attribute.example/x')
+    expect(detail?.textContent).toContain('https://attribute.example/z')
+    expect(detail?.querySelector('li')?.textContent).toBe('recovered item')
+  })
+
   it('leaves human-authored replies and reply context on their existing plain-text path', async () => {
     const d = open()
     const id = insertItem(d, {

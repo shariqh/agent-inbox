@@ -3425,26 +3425,39 @@ const itemDraftMeta = {}         // item id → recovery labels if its answer su
 const itemDraftGenerations = {}  // item id → monotonic edit token across duplicate editors
 const itemSubmissionTokens = {}  // item id → latest async submission allowed to retire its draft
 const itemLatestIntents = {}     // item id → latest non-cancelled human intent
+const itemDraftRetryIntents = {} // item id → exact ambiguous intent while its draft generation is unchanged
 const staleItemDrafts = {}       // recovery key → refused/orphaned answer preserved outside the poll gate
 const ITEM_REPLY_INTENT_SESSION_KEY = 'agent-inbox-reply-intent'
+
+function isVerifiedReload() {
+  const navigation = globalThis.performance?.getEntriesByType?.('navigation')?.[0]
+  if (navigation?.type) return navigation.type === 'reload'
+  return globalThis.performance?.navigation?.type === 1
+}
+
 const storedReplyIntent = (() => {
-  try {
-    const parsed = JSON.parse(sessionStorage.getItem(ITEM_REPLY_INTENT_SESSION_KEY) ?? 'null')
-    const clientId = typeof parsed?.clientId === 'string' ? parsed.clientId.trim() : ''
-    if (
-      clientId
-      && clientId.length <= 128
-      && Number.isSafeInteger(parsed.sequence)
-      && parsed.sequence >= 0
-      && parsed.sequence < Number.MAX_SAFE_INTEGER
-    ) return { clientId, sequence: parsed.sequence }
-  } catch {
-    // Corrupt window-local state gets a new identity rather than blocking replies.
+  if (isVerifiedReload()) {
+    try {
+      const parsed = JSON.parse(sessionStorage.getItem(ITEM_REPLY_INTENT_SESSION_KEY) ?? 'null')
+      const clientId = typeof parsed?.clientId === 'string' ? parsed.clientId.trim() : ''
+      if (
+        clientId
+        && clientId.length <= 128
+        && Number.isSafeInteger(parsed.sequence)
+        && parsed.sequence >= 0
+        && parsed.sequence < Number.MAX_SAFE_INTEGER
+      ) return { clientId, sequence: parsed.sequence }
+    } catch {
+      // Corrupt window-local state gets a new identity rather than blocking replies.
+    }
   }
-  return { clientId: globalThis.crypto.randomUUID(), sequence: 0 }
+  const fresh = { clientId: globalThis.crypto.randomUUID(), sequence: 0 }
+  sessionStorage.setItem(ITEM_REPLY_INTENT_SESSION_KEY, JSON.stringify(fresh))
+  return fresh
 })()
 
 function claimItemIntent(id, { staged = false } = {}) {
+  delete itemDraftRetryIntents[id]
   const sequence = ++storedReplyIntent.sequence
   sessionStorage.setItem(ITEM_REPLY_INTENT_SESSION_KEY, JSON.stringify(storedReplyIntent))
   const intent = { sequence, actionId: globalThis.crypto.randomUUID() }
@@ -3522,6 +3535,12 @@ function retryItemDraft(key, draft) {
   )
 }
 
+function reusableDraftIntent(id, generation) {
+  const retry = itemDraftRetryIntents[id]
+  if (!retry || retry.generation !== generation) return null
+  return retry.intent
+}
+
 function hasDraftRecovery() {
   return Object.keys(staleItemDrafts).length > 0 || Object.keys(staleRowDrafts).length > 0
 }
@@ -3584,11 +3603,13 @@ function reconcileDraftOwners() {
       context,
       kind: 'answer',
       generation: itemDraftGenerations[id] ?? 0,
+      intent: reusableDraftIntent(id, itemDraftGenerations[id] ?? 0),
     })
     bumpDraftGeneration(itemDraftGenerations, id)
     delete draftReplies[id]
     delete draftReplyContexts[id]
     delete itemDraftMeta[id]
+    delete itemDraftRetryIntents[id]
     recovered = true
   }
 
@@ -3631,7 +3652,9 @@ async function sendReply(
 ) {
   const reply = text.trim()
   if (!reply) return
+  if (recoveryKey) delete itemDraftRetryIntents[id]
   const replayingRecordedIntent = Boolean(recoveryKey && intent)
+  intent ??= submissionUsesDraft ? reusableDraftIntent(id, submittedGeneration) : null
   intent ??= claimItemIntent(id)
   if (!sameItemIntent(itemLatestIntents[id], intent) && !replayingRecordedIntent) return
   const submissionToken = bumpDraftGeneration(itemSubmissionTokens, id)
@@ -3680,6 +3703,10 @@ async function sendReply(
     if (hadDraft && ownsSubmission && submissionUsesDraft) {
       draftReplies[id] = text
       draftReplyContexts[id] = context
+      itemDraftRetryIntents[id] = {
+        generation: submittedGeneration,
+        intent: { ...intent },
+      }
     } else if (ownsSubmission && recoverUndraftedFailure) {
       preserveItemDraftRecovery(id, {
         key: recoveryKey,
@@ -3698,6 +3725,9 @@ async function sendReply(
     showWriteError(id, WRITE_FAILED)
     resumeRender()
     return
+  }
+  if (sameItemIntent(itemDraftRetryIntents[id]?.intent, intent)) {
+    delete itemDraftRetryIntents[id]
   }
   if (!res.ok) {
     if (!latestIntent) return
@@ -3753,6 +3783,7 @@ async function sendReply(
     delete draftReplies[id]
     delete draftReplyContexts[id]
     delete itemDraftMeta[id]
+    delete itemDraftRetryIntents[id]
   }
   showWriteError(id, '')
   // issue #38, the reported surface. Also the entry for the option pills, the ★'s
@@ -3805,6 +3836,7 @@ function answerEl(it) {
     else delete itemDraftMeta[it.id]
   }
   input.addEventListener('input', () => {
+    delete itemDraftRetryIntents[it.id]
     editorGeneration = bumpDraftGeneration(itemDraftGenerations, it.id)
     draftReplies[it.id] = input.value
     rememberDraftOwner()
@@ -3829,6 +3861,7 @@ function answerEl(it) {
   ctxInput.placeholder = 'optional context for the agent (applies to Send or option picks)…'
   ctxInput.value = draftReplyContexts[it.id] ?? ''
   ctxInput.addEventListener('input', () => {
+    delete itemDraftRetryIntents[it.id]
     editorGeneration = bumpDraftGeneration(itemDraftGenerations, it.id)
     draftReplyContexts[it.id] = ctxInput.value
     rememberDraftOwner()

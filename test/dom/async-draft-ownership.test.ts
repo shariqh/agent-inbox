@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
 import {
-  getBoard, getItem, insertItem, markReplySeen, resolveItem, upsertBoard,
+  getBoard, getItem, insertItem, markReplySeen, replyItem, resolveItem, upsertBoard,
 } from '../../src/store.js'
 import {
   answerInput, bootApp, buttonLabelled, click, expectConsoleError, freshDb, pollTick, row,
@@ -42,9 +42,22 @@ function holdFirstPost(match: string): {
     if (init?.method === 'POST' && String(input).includes(match) && ++count === 1) {
       await gate
     }
+
     return fetchNow(input, init)
   }
   return { release, started: () => count }
+}
+
+function stubNavigationType(type: 'navigate' | 'reload'): () => void {
+  const descriptor = Object.getOwnPropertyDescriptor(window.performance, 'getEntriesByType')
+  Object.defineProperty(window.performance, 'getEntriesByType', {
+    configurable: true,
+    value: () => [{ type }],
+  })
+  return () => {
+    if (descriptor) Object.defineProperty(window.performance, 'getEntriesByType', descriptor)
+    else Reflect.deleteProperty(window.performance, 'getEntriesByType')
+  }
 }
 
 function failSecondPost(match: string, status: number): void {
@@ -483,6 +496,160 @@ describe('async draft ownership', () => {
 
     expect(getItem(db, id)?.reply_seen_at).not.toBeNull()
     expect(document.querySelector('.stale-drafts-fold')).toBeNull()
+  })
+
+  it('reuses an unchanged free-text action after an ambiguous failure without overwriting a later reply', async () => {
+    db = freshDb()
+    const id = insertItem(db, {
+      ...AGENT,
+      kind: 'question',
+      title: 'Ambiguous free text',
+    })
+    const bridge = await bootApp(db)
+    const fetchNow = globalThis.fetch
+    let loseFirstResponse = true
+    globalThis.fetch = async (input, init) => {
+      if (
+        loseFirstResponse
+        && init?.method === 'POST'
+        && String(input).includes(`/items/${id}/reply`)
+      ) {
+        loseFirstResponse = false
+        await fetchNow(input, init)
+        throw new Error('lost text response')
+      }
+      return fetchNow(input, init)
+    }
+    expectConsoleError(/lost text response/)
+
+    click(row(id))
+    await settle()
+    type(answerInput(id), 'Original X')
+    click(buttonLabelled('Send', row(id)!))
+    await settle()
+    expect(getItem(db, id)?.reply).toBe('Original X')
+
+    expect(replyItem(db, id, 'Later Y', undefined, 'answer', {
+      clientId: 'other-window',
+      sequence: 1,
+      actionId: 'later-y',
+    })).toBe(true)
+    const later = getItem(db, id)!
+    expect(markReplySeen(db, id, later.replied_at)).toBe(true)
+
+    click(buttonLabelled('Send', row(id)!))
+    await settle()
+
+    const replyPosts = bridge.posts.filter((post) => post.url.includes(`/items/${id}/reply`))
+    const first = JSON.parse(String(replyPosts[0]?.init?.body))
+    const retry = JSON.parse(String(replyPosts[1]?.init?.body))
+    expect(retry.intent_action_id).toBe(first.intent_action_id)
+    expect(retry.intent_sequence).toBe(first.intent_sequence)
+    expect(getItem(db, id)?.reply).toBe('Later Y')
+    expect(getItem(db, id)?.reply_seen_at).not.toBeNull()
+  })
+
+  it('invalidates an ambiguous free-text action as soon as the draft is edited', async () => {
+    db = freshDb()
+    const id = insertItem(db, {
+      ...AGENT,
+      kind: 'question',
+      title: 'Edited ambiguous text',
+    })
+    const bridge = await bootApp(db)
+    const fetchNow = globalThis.fetch
+    let loseFirstResponse = true
+    globalThis.fetch = async (input, init) => {
+      if (
+        loseFirstResponse
+        && init?.method === 'POST'
+        && String(input).includes(`/items/${id}/reply`)
+      ) {
+        loseFirstResponse = false
+        await fetchNow(input, init)
+        throw new Error('lost edited response')
+      }
+      return fetchNow(input, init)
+    }
+    expectConsoleError(/lost edited response/)
+
+    click(row(id))
+    await settle()
+    const input = answerInput(id)
+    type(input, 'Draft A')
+    click(buttonLabelled('Send', row(id)!))
+    await settle()
+    type(input, 'Draft B')
+    click(buttonLabelled('Send', row(id)!))
+    await settle()
+
+    const replyPosts = bridge.posts.filter((post) => post.url.includes(`/items/${id}/reply`))
+    const first = JSON.parse(String(replyPosts[0]?.init?.body))
+    const edited = JSON.parse(String(replyPosts[1]?.init?.body))
+    expect(edited.intent_action_id).not.toBe(first.intent_action_id)
+    expect(edited.intent_sequence).toBeGreaterThan(first.intent_sequence)
+    expect(getItem(db, id)?.reply).toBe('Draft B')
+  })
+
+  it('rekeys an inherited client on ordinary navigation so a dormant cloned tab can submit', async () => {
+    db = freshDb()
+    const id = insertItem(db, {
+      ...AGENT,
+      kind: 'question',
+      title: 'Cloned navigation',
+      options: [{ label: 'Clone answer' }],
+    })
+    expect(replyItem(db, id, 'Other clone sequence 2', undefined, 'answer', {
+      clientId: 'inherited-client',
+      sequence: 2,
+      actionId: 'other-clone-action',
+    })).toBe(true)
+    expect(replyItem(db, id, '')).toBe(true)
+    sessionStorage.setItem('agent-inbox-reply-intent', JSON.stringify({
+      clientId: 'inherited-client',
+      sequence: 0,
+    }))
+    const restoreNavigation = stubNavigationType('navigate')
+    const bridge = await bootApp(db)
+    restoreNavigation()
+
+    click(row(id))
+    await settle()
+    click(buttonLabelled('Clone answer', row(id)!))
+    await settle()
+
+    const request = bridge.posts.find((post) => post.url.includes(`/items/${id}/reply`))
+    const body = JSON.parse(String(request?.init?.body))
+    expect(body.intent_client_id).not.toBe('inherited-client')
+    expect(body.intent_sequence).toBe(1)
+    expect(getItem(db, id)?.reply).toBe('Clone answer')
+  })
+
+  it('reuses the persisted client and counter only for a verified same-tab reload', async () => {
+    db = freshDb()
+    const id = insertItem(db, {
+      ...AGENT,
+      kind: 'question',
+      title: 'Reload navigation',
+      options: [{ label: 'Reload answer' }],
+    })
+    sessionStorage.setItem('agent-inbox-reply-intent', JSON.stringify({
+      clientId: 'same-tab-client',
+      sequence: 4,
+    }))
+    const restoreNavigation = stubNavigationType('reload')
+    const bridge = await bootApp(db)
+    restoreNavigation()
+
+    click(row(id))
+    await settle()
+    click(buttonLabelled('Reload answer', row(id)!))
+    await settle()
+
+    const request = bridge.posts.find((post) => post.url.includes(`/items/${id}/reply`))
+    const body = JSON.parse(String(request?.init?.body))
+    expect(body.intent_client_id).toBe('same-tab-client')
+    expect(body.intent_sequence).toBe(5)
   })
 })
 

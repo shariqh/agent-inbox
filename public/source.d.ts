@@ -58,6 +58,7 @@ export function linkKey(repo: string, branch: string): string
 export function indexLinks(links: CachedLink[] | null | undefined): Map<string, CachedLink>
 export function linkFor(index: Map<string, CachedLink> | null, entity: LinkedEntity | null): CachedLink | null
 export function safeHttpUrl(url: unknown): string
+export function textLinkHtml(url: unknown, label: unknown): string
 export function issueRef(entity: LinkedEntity | null, link: CachedLink | null): IssueRef | null
 export function prChip(link: CachedLink | null): PrChip | null
 export function prDetail(link: CachedLink | null, nowMs: number): PrDetail | null

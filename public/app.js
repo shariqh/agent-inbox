@@ -23,6 +23,7 @@ import { keyAction, rovingIndex, ariaAnswerLabel, livenessGlyph, deckEntryAt } f
 import { partitionNotes, unreadNoteCount, ambientChips, seenWatermark, markSeenIds } from '/notes.js'
 import { liveSummary, lastActivityAt, isDormant, activitySynopsis } from '/livebar.js'
 import { esc } from '/esc.js'
+import { renderStructuredText } from '/structured-text.js'
 import { boardRowsView, boardRowLine, progressLabel, hiddenDoneCount, lingeringBoards } from '/boards.js'
 import { liveEntity, tabMatchCounts, projectMatchCounts, elsewhereLabel } from '/tabsearch.js'
 import { titleWithBadge, focusHashFor, parseFocusHash } from '/badge.js'
@@ -986,7 +987,7 @@ function rowAnswerEl(b, r, onSaved) {
       if (option.detail) {
         const detail = document.createElement('div')
         detail.className = 'opt-detail'
-        detail.textContent = option.detail
+        detail.innerHTML = renderStructuredText(option.detail)
         box.appendChild(detail)
       }
       choices.appendChild(box)
@@ -1072,7 +1073,7 @@ function rowHumanStateHtml(r) {
 
 function contextHtml(context, key) {
   if (!context) return ''
-  return `<details class="card-context" data-context-key="${esc(key)}"${openContexts.has(key) ? ' open' : ''}><summary class="card-context-label">Background</summary><div class="card-context-body">${esc(context)}</div></details>`
+  return `<details class="card-context" data-context-key="${esc(key)}"${openContexts.has(key) ? ' open' : ''}><summary class="card-context-label">Background</summary><div class="card-context-body">${renderStructuredText(context)}</div></details>`
 }
 
 function bindContextDisclosures(root) {
@@ -1088,10 +1089,10 @@ function bindContextDisclosures(root) {
 function actionBlocksHtml(tldr, nextStep, actionOwner, impact, nextAfter, context, contextKey) {
   return `
     ${actionOwner ? `<div class="action-owner">${esc(actionOwnerLabel({ action_owner: actionOwner }))}</div>` : ''}
-    ${nextStep ? `<div class="card-next"><div class="card-section-label">NEXT STEP</div><div class="card-next-body">${esc(nextStep)}</div></div>` : ''}
-    ${impact ? `<div class="card-impact"><div class="card-section-label">WHY NOW</div><div>${esc(impact)}</div></div>` : ''}
-    ${nextAfter ? `<div class="card-after"><div class="card-section-label">AFTER THIS</div><div>${esc(nextAfter)}</div></div>` : ''}
-    ${tldr ? `<div class="card-tldr"><div class="card-section-label">TL;DR</div><div class="card-tldr-body">${esc(tldr)}</div></div>` : ''}
+    ${nextStep ? `<div class="card-next"><div class="card-section-label">NEXT STEP</div><div class="card-next-body">${renderStructuredText(nextStep)}</div></div>` : ''}
+    ${impact ? `<div class="card-impact"><div class="card-section-label">WHY NOW</div>${renderStructuredText(impact)}</div>` : ''}
+    ${nextAfter ? `<div class="card-after"><div class="card-section-label">AFTER THIS</div>${renderStructuredText(nextAfter)}</div>` : ''}
+    ${tldr ? `<div class="card-tldr"><div class="card-section-label">TL;DR</div><div class="card-tldr-body">${renderStructuredText(tldr)}</div></div>` : ''}
     ${contextHtml(context, contextKey)}`
 }
 
@@ -1099,8 +1100,14 @@ function lifecycleHtml(entity) {
   const steps = lifecycleReceipt(entity)
   if (!steps.length) return ''
   return `<div class="lifecycle-receipt">${steps.map((step) => (
-    `<span class="lifecycle-step">${esc(step.label)}${step.at ? ` · ${esc(rel(step.at))}` : ''}</span>`
+    `<div class="lifecycle-step">${renderStructuredText(step.label)}${step.at ? `<span class="lifecycle-age">· ${esc(rel(step.at))}</span>` : ''}</div>`
   )).join('<span class="lifecycle-arrow">→</span>')}</div>`
+}
+
+function outcomeHtml(outcome) {
+  return outcome
+    ? `<div class="outcome-block"><div class="outcome-label">Outcome</div>${renderStructuredText(outcome)}</div>`
+    : ''
 }
 
 function historyHtml(r) {
@@ -1114,7 +1121,7 @@ function historyHtml(r) {
     return `<div class="history-entry">
       <div class="history-title">Step ${esc(String(entry.version))} · ${esc(entry.note || entry.next_step || entry.status)}</div>
       ${response ? `<div>${esc(response)}${entry.response ? `: ${esc(entry.response)}` : ''}</div>` : ''}
-      ${entry.outcome ? `<div>Outcome: ${esc(entry.outcome)}</div>` : ''}
+      ${outcomeHtml(entry.outcome)}
     </div>`
   }).join('')
   return `<details class="action-history"><summary>Prior steps (${r.history.length})</summary>${entries}</details>`
@@ -1127,7 +1134,7 @@ function rowPanelEl(b, r, readOnly = false) {
   wrap.innerHTML = `
     ${actionBlocksHtml(r.note, r.status === 'blocked' ? r.next_step : '', r.action_owner, r.impact, r.next_after, r.context, `row:${r.id}`)}
     ${rowHumanStateHtml(r)}
-    ${r.outcome ? `<div class="outcome-block">Outcome: ${esc(r.outcome)}</div>` : ''}
+    ${outcomeHtml(r.outcome)}
     ${lifecycleHtml(r)}
     ${historyHtml(r)}`
   bindContextDisclosures(wrap)
@@ -1148,7 +1155,7 @@ function rowCardEl(b, r) {
     <div class="title">${esc(r.label)}</div>
     ${actionBlocksHtml(r.note, r.next_step, r.action_owner, r.impact, r.next_after, r.context, `row:${r.id}`)}
     ${rowHumanStateHtml(r)}
-    ${r.outcome ? `<div class="outcome-block">Outcome: ${esc(r.outcome)}</div>` : ''}
+    ${outcomeHtml(r.outcome)}
     ${lifecycleHtml(r)}
     ${historyHtml(r)}`
   bindContextDisclosures(wrap)
@@ -1277,8 +1284,8 @@ function relayCardEl(entry, lane) {
   card.innerHTML = `
     <div class="relay-meta"><span>${esc(relayProject(entry))}</span><span class="relay-owner">${esc(actionOwnerLabel(entity))}</span></div>
     <h3>${esc(relayTitle(entry))}</h3>
-    ${summary ? `<p>${esc(summary)}</p>` : ''}
-    ${outcome ? `<div class="relay-result">${esc(outcome)}</div>` : ''}
+    ${summary ? `<div class="relay-summary-text">${renderStructuredText(summary)}</div>` : ''}
+    ${outcome ? `<div class="relay-result">${renderStructuredText(outcome)}</div>` : ''}
     <div class="relay-state"><span class="relay-baton"></span><span class="relay-chip ${esc(status.tone)}">${esc(status.text)}</span></div>`
   const open = btn(lane === 'human' ? 'Open action' : lane === 'agent' ? 'Open receipt' : 'View outcome', () => {
     focusRelayEntry(entry, lane)
@@ -1371,22 +1378,28 @@ function missionPathEl(path, board) {
   const row = path.row
   const line = document.createElement('div')
   line.className = 'mission-path'
-  const action = document.createElement('button')
+  const action = document.createElement('article')
   action.className = `mission-node mission-${row.status}`
   const owner = row.action_owner ? actionOwnerLabel(row) : (STATUS_LABEL[row.status] ?? row.status)
   action.innerHTML = `
     <span class="mission-node-meta">${esc(owner)}</span>
     <strong>${esc(row.label)}</strong>
-    ${row.note ? `<span>${esc(row.note)}</span>` : ''}
-    ${row.impact ? `<small>Why now: ${esc(row.impact)}</small>` : ''}`
-  action.addEventListener('click', () => openMissionDetail(row))
+    ${row.note ? `<div class="mission-node-summary">${renderStructuredText(row.note)}</div>` : ''}
+    ${row.impact ? `<div class="mission-node-impact"><span>Why now</span>${renderStructuredText(row.impact)}</div>` : ''}`
+  action.addEventListener('click', (event) => {
+    if (event.target instanceof Element && event.target.closest('a, button')) return
+    openMissionDetail(row)
+  })
+  const open = btn('Open details', () => openMissionDetail(row))
+  open.className = 'mission-node-open'
+  action.appendChild(open)
   const arrow = document.createElement('span')
   arrow.className = 'mission-arrow'
   arrow.textContent = '→'
   const result = document.createElement('div')
   result.className = `mission-result${path.result ? ` ${path.result.kind}` : ' empty'}`
   if (path.result) {
-    result.innerHTML = `<span>${path.result.kind === 'outcome' ? 'Outcome' : 'After this'}</span><strong>${esc(path.result.text)}</strong>`
+    result.innerHTML = `<span>${path.result.kind === 'outcome' ? 'Outcome' : 'After this'}</span>${renderStructuredText(path.result.text)}`
   } else {
     result.textContent = 'No next step recorded'
   }
@@ -2066,7 +2079,7 @@ function renderLive(entries) {
         ${kids}
         <span class="live-age ${fresh}" title="started ${rel(a.started_at)} ago">last call ${rel(seen)}</span>
       </summary>
-      ${a.detail ? `<div class="detail live-detail">${esc(a.detail)}</div>` : ''}`
+      ${a.detail ? `<div class="detail live-detail">${renderStructuredText(a.detail)}</div>` : ''}`
     const dot = el.querySelector('.live-dot')
     paintLiveProjectDot(dot, a.project, 'working')
     dot.title = `${a.project} · working · last call ${rel(seen)} ago`
@@ -2943,7 +2956,7 @@ function answerEl(it) {
     if (o.detail) {
       const d = document.createElement('div')
       d.className = 'opt-detail'
-      d.textContent = o.detail
+      d.innerHTML = renderStructuredText(o.detail)
       box.appendChild(d)
     }
     wrap.appendChild(box)
@@ -3027,7 +3040,7 @@ function itemCardEl(it, { done = false, nowMs = Date.now(), liveness = 'parked',
     ${s.annotation ? `<div class="annotation"><strong>Note:</strong> ${esc(s.annotation)}</div>` : ''}
     ${s.recWarning ? `<div class="rec-warning">Review: ${esc(s.recWarning)}</div>` : ''}
     ${s.reply || it.reply_kind ? `<div class="reply-block"><strong>${esc(responseLabel(it) || 'You answered')}:</strong> ${esc(s.reply ?? '')}${it.reply_context ? `<div class="reply-context">Context: ${esc(it.reply_context)}</div>` : ''}${it.reply_source === 'agent' ? '<span class="reply-source">via chat</span>' : ''}${s.showPickup ? `<span class="pickup ${it.reply_seen_at ? 'picked' : 'awaiting'}">${it.reply_seen_at ? 'With the agent' : 'Waiting for the agent'}</span>` : ''}</div>` : ''}
-    ${s.outcome ? `<div class="outcome-block">Outcome: ${esc(s.outcome)}</div>` : ''}
+    ${outcomeHtml(s.outcome)}
     ${lifecycleHtml(it)}`
   bindContextDisclosures(el)
   if (s.showAnswer) el.appendChild(answerEl(it))

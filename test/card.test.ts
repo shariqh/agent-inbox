@@ -139,7 +139,7 @@ describe('app.js wiring (source-level pins)', () => {
     expect(fn).toContain('itemCardEl(it, { done, header: false })')
   })
 
-  it('the background block is identity-keyed, escaped, and rebound after rendering', () => {
+  it('the background block is identity-keyed, safely rendered, and rebound after rendering', () => {
     const start = js.indexOf('function itemCardEl(')
     const fn = js.slice(start, js.indexOf('\nasync function changeAnswer('))
     expect(fn).toContain('actionBlocksHtml(s.detail, s.nextStep, s.actionOwner, s.impact, s.nextAfter, s.context, `item:${it.id}`)')
@@ -147,7 +147,7 @@ describe('app.js wiring (source-level pins)', () => {
     const blocks = js.slice(js.indexOf('function contextHtml('), js.indexOf('\n// the inline expansion'))
     expect(blocks).toContain('data-context-key="${esc(key)}"')
     expect(blocks).toContain("openContexts.has(key) ? ' open' : ''")
-    expect(blocks).toMatch(/card-context-body">\$\{esc\(context\)\}/)
+    expect(blocks).toMatch(/card-context-body">\$\{renderStructuredText\(context\)\}/)
   })
 
   // #29: an answer an agent recorded from chat must be visibly agent-written, and the

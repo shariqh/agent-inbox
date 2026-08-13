@@ -141,13 +141,26 @@ export function sourceTooltip(entity, link, nowMs) {
   return lines.join('\n')
 }
 
-// THE one and only href construction in the product. A url that does not survive
-// safeHttpUrl renders as a plain <span>: the chip still says what it knows, and
-// no dead-or-hostile link is ever emitted.
+// THE one and only href construction in the product. Both source chips and
+// structured agent text enter here, so scheme validation and opener isolation
+// cannot drift between surfaces.
+function anchorHtml(url, innerHtml, attrs) {
+  if (!safeHttpUrl(url)) return ''
+  return `<a href="${esc(safeHttpUrl(url))}" target="_blank" rel="noopener noreferrer"${attrs ? ` ${attrs}` : ''}>${innerHtml}</a>`
+}
+
+// Structured text supplies raw source text as its label. Escaping stays here
+// beside href construction so callers cannot accidentally make a safe URL with
+// an unsafe label (or vice versa).
+export function textLinkHtml(url, label) {
+  return anchorHtml(url, esc(label), 'class="structured-link"') || esc(label)
+}
+
+// A source-chip URL that does not survive safeHttpUrl renders as a plain span:
+// the chip still says what it knows, and no dead-or-hostile link is emitted.
 function chipHtml(url, tone, innerHtml, title, tabbable) {
   const attrs = `class="src-chip tone-${esc(tone)}"${title ? ` title="${esc(title)}"` : ''}${tabbable ? '' : ' tabindex="-1"'}`
-  if (!safeHttpUrl(url)) return `<span ${attrs}>${innerHtml}</span>`
-  return `<a href="${esc(safeHttpUrl(url))}" target="_blank" rel="noopener noreferrer" ${attrs}>${innerHtml}</a>`
+  return anchorHtml(url, innerHtml, attrs) || `<span ${attrs}>${innerHtml}</span>`
 }
 
 function prChipInner(chip) {

@@ -650,6 +650,60 @@ describe('async draft ownership', () => {
     expect(document.querySelector('.stale-drafts-fold')?.textContent ?? '').not.toContain('Submission A')
   })
 
+  it('removes an exact recovery when a newer reply makes its held request definitively stale', async () => {
+    db = freshDb()
+    const id = insertItem(db, {
+      ...AGENT,
+      kind: 'question',
+      title: 'Definitively stale recovery',
+      options: [{ label: 'Newer B' }],
+    })
+    insertItem(db, { ...AGENT, kind: 'question', title: 'Review target' })
+    await bootApp(db)
+    const fetchNow = globalThis.fetch
+    let releaseA!: () => void
+    let releaseB!: () => void
+    const gateA = new Promise<void>((resolve) => { releaseA = resolve })
+    const gateB = new Promise<void>((resolve) => { releaseB = resolve })
+    let count = 0
+    globalThis.fetch = async (input, init) => {
+      if (init?.method === 'POST' && String(input).includes(`/items/${id}/reply`)) {
+        count += 1
+        if (count === 1) await gateA
+        if (count === 2) await gateB
+      }
+      return fetchNow(input, init)
+    }
+
+    click(row(id))
+    await settle()
+    type(answerInput(id), 'Submission A')
+    click(buttonLabelled('Send', row(id)!))
+    await vi.advanceTimersByTimeAsync(0)
+    click(buttonLabelled('Newer B', row(id)!))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(count).toBe(2)
+
+    resolveItem(db, id)
+    await pollTick()
+    click(buttonLabelled('Review queue'))
+    await settle()
+    expect(document.querySelector('.stale-drafts-fold')?.textContent).toContain('Submission A')
+
+    releaseB()
+    await settle()
+    const newer = getItem(db, id)!
+    expect(newer.reply).toBe('Newer B')
+    expect(markReplySeen(db, id, newer.replied_at)).toBe(true)
+
+    releaseA()
+    await settle()
+
+    expect(getItem(db, id)?.reply).toBe('Newer B')
+    expect(getItem(db, id)?.reply_seen_at).not.toBeNull()
+    expect(document.querySelector('.stale-drafts-fold')?.textContent ?? '').not.toContain('Submission A')
+  })
+
   it('reuses an unchanged free-text action after an ambiguous failure without overwriting a later reply', async () => {
     db = freshDb()
     const id = insertItem(db, {

@@ -3794,7 +3794,16 @@ async function sendReply(
   }
   if (!res.ok) {
     if (!latestIntent) {
+      const rejectedRecoveryKeys = [
+        recoveryKey,
+        trackedSubmission?.recoveryKey,
+      ].filter(Boolean)
+      for (const key of rejectedRecoveryKeys) delete staleItemDrafts[key]
       retireItemDraftSubmission(id, submittedGeneration, intent)
+      if (rejectedRecoveryKeys.length) {
+        showWriteError(id, '')
+        await reloadAndPaint()
+      }
       return
     }
     if (!submissionUsesDraft) {

@@ -122,6 +122,7 @@ let bootId = null
 let openRowId = null    // the single inline-expanded Needs-you row (§4)
 let openRowScrollTop = 0 // the inspector's viewport survives the 3s DOM rebuild
 let pendingFocusId = null // explicit deep link protected through filter + pagination reconciliation
+let pagedFocusId = null // non-Inbox focused card protected only for the current rebuild
 let lastInspectorScrollAt = null // bounded wheel/scroll activity; never a suspension
 let inspectorScrollTimer = null
 let renderDirty = false // fresh data arrived while an editable rebuild was deferred
@@ -484,6 +485,29 @@ function restoreAskedTimeFocus(id) {
   return document.activeElement === target
 }
 
+function pagedCardFocusBookmark() {
+  const active = document.activeElement
+  const card = active?.closest?.('#notes [data-card-id], #done [data-card-id], #boards [data-card-id]')
+  if (!card) return null
+  const summary = card.querySelector(':scope > summary')
+  if (active !== card && active !== summary) return null
+  return {
+    id: card.dataset.cardId,
+    control: active === summary ? 'summary' : 'card',
+  }
+}
+
+function restorePagedCardFocus(bookmark) {
+  if (!bookmark) return false
+  const card = document.querySelector(`[data-card-id="${CSS.escape(bookmark.id)}"]`)
+  if (!card) return false
+  const target = bookmark.control === 'summary' ? card.querySelector(':scope > summary') : card
+  if (!target) return false
+  target.tabIndex = 0
+  target.focus({ preventScroll: true })
+  return document.activeElement === target
+}
+
 // Which tab holds an item — a deep link must land on the right one.
 function tabForItem(it) {
   if (lastData.g.notes.some((gr) => gr.items.some((x) => x.id === it.id))) return 'notes'
@@ -733,11 +757,16 @@ function render() {
   const frame = preparedFrame ?? paintAmbient()
   preparedFrame = null
   const draftFocus = activeDraftFocusBookmark() ?? requestedDraftFocusBookmark
+  const pagedFocus = pagedCardFocusBookmark()
+  pagedFocusId = pagedFocus?.id ?? null
   if (document.activeElement?.closest?.('.stale-drafts-fold')) draftRecoveryFocusPending = true
   reconcileDraftOwners()
   requestedDraftFocusBookmark = null
   paintEditableSurfaces(frame)
-  if (!restoreDraftRecoveryFocus()) restoreDraftFocus(draftFocus)
+  pagedFocusId = null
+  if (!restoreDraftRecoveryFocus() && !restoreDraftFocus(draftFocus)) {
+    restorePagedCardFocus(pagedFocus)
+  }
 }
 
 // one age vocabulary for every surface (§6): rows, chips, Live and tooltips all
@@ -1026,6 +1055,7 @@ function rowAnswerEl(b, r, onSaved) {
   const staleDraft = staleRowDrafts[recoveryKey]
   const rowRecoveries = Object.values(staleRowDrafts)
     .filter((draft) => draft.rowId === r.id)
+  if (staleDraft) input.dataset.recoveredDraft = '1'
   input.value = rowDrafts[r.id] ?? (staleDraft?.text ?? '')
   if (input.value && rowDrafts[r.id] === undefined) {
     rowDrafts[r.id] = input.value
@@ -2513,13 +2543,18 @@ function paginateNeedsYou(entries, protectedIds) {
 }
 
 function paginateWithPending(entries, section) {
-  let limit = shown[section]
-  const targetIndex = pendingFocusId
-    ? entries.findIndex((entry) => entry.id === pendingFocusId)
+  const baseLimit = shown[section]
+  let limit = baseLimit
+  const protectedId = pendingFocusId ?? pagedFocusId
+  const targetIndex = protectedId
+    ? entries.findIndex((entry) => entry.id === protectedId)
     : -1
   if (targetIndex >= 0) limit = Math.max(limit, targetIndex + 1)
-  shown[section] = limit
-  return paginate(entries, limit)
+  const page = paginate(entries, limit)
+  const viewed = targetIndex >= baseLimit
+    ? [...page.visible.slice(0, baseLimit), entries[targetIndex]]
+    : page.visible
+  return { ...page, viewed: viewed.filter(Boolean) }
 }
 
 function replaceNeedsYouBody(host, header) {
@@ -2953,7 +2988,7 @@ function toggleRow(el, m, entry, nowMs) {
 function renderGroups(sectionId, groups) {
   const host = document.querySelector(`#${sectionId} .groups`)
   const items = groups.flatMap((gr) => gr.items)
-  const { visible, remaining } = paginateWithPending(items, sectionId)
+  const { visible, remaining, viewed } = paginateWithPending(items, sectionId)
   host.innerHTML = items.length ? '' : `<p class="empty">${emptyMsg('Nothing here.')}</p>`
   for (const it of visible) host.appendChild(itemEl(it))
   if (remaining > 0) host.appendChild(moreButton(sectionId, remaining))
@@ -2962,9 +2997,9 @@ function renderGroups(sectionId, groups) {
   // more" pager and a note behind the rail's project filter were equally unseen,
   // and there is one watermark covering every scope.
   if (sectionId === 'notes' && activeTab === 'notes') {
-    const shownIds = new Set(visible.map((it) => it.id))
+    const shownIds = new Set(viewed.map((it) => it.id))
     const all = lastData.g.notes.flatMap((gr) => gr.items)
-    markNotesSeen(visible, all.filter((n) => !shownIds.has(n.id)), all)
+    markNotesSeen(viewed, all.filter((n) => !shownIds.has(n.id)), all)
   }
 }
 
@@ -3208,6 +3243,7 @@ function requestDraftRecovery() {
 function restoreDraftRecoveryFocus() {
   if (!draftRecoveryFocusPending) return false
   const target = document.querySelector('.stale-drafts-fold summary')
+    ?? document.querySelector('#needsYouList .reply-input[data-recovered-draft="1"]')
   if (!target) return false
   draftRecoveryFocusPending = false
   target.focus({ preventScroll: true })

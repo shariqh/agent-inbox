@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type Database from 'better-sqlite3'
 import { archiveBoard, getBoard, insertItem, upsertBoard } from '../../src/store.js'
 import {
-  advanceClock, bootApp, click, freshDb, navigateToHash, searchFor, settle, useDomTest,
+  advanceClock, bootApp, click, freshDb, navigateToHash, pollTick, searchFor, settle, useDomTest,
 } from './harness.js'
 
 useDomTest()
@@ -38,6 +38,26 @@ function expectFocusedSummary(id: string): void {
 }
 
 describe('deep links across paginated tabs', () => {
+  it('marks the deep-linked note and normal page read without marking the skipped prefix', async () => {
+    db = freshDb()
+    const targetId = insertItem(db, { ...ALPHA, kind: 'note', title: 'Deep note target' })
+    advanceClock()
+    const skippedId = insertItem(db, { ...ALPHA, kind: 'note', title: 'Skipped newer note' })
+    const normalPageIds: string[] = []
+    for (let i = 0; i < 5; i++) {
+      advanceClock()
+      normalPageIds.push(insertItem(db, { ...ALPHA, kind: 'note', title: `Normal page ${i}` }))
+    }
+    await bootApp(db)
+
+    navigateToHash(`#item/${targetId}`)
+    await settle()
+
+    const seenIds = JSON.parse(localStorage.getItem('agent-inbox-notes-seen-ids') ?? '[]') as string[]
+    expect(seenIds).toEqual(expect.arrayContaining([...normalPageIds, targetId]))
+    expect(seenIds).not.toContain(skippedId)
+  })
+
   it('includes and focuses Notes, History, active Plans, and archived Plans beyond their caps', async () => {
     db = freshDb()
     const noteId = insertItem(db, { ...ALPHA, kind: 'note', title: 'Old note target' })
@@ -97,5 +117,34 @@ describe('deep links across paginated tabs', () => {
     expect(document.getElementById('boards')?.hidden).toBe(false)
     expect(card(archivedBoardId)?.closest<HTMLDetailsElement>('.archived-fold')?.open).toBe(true)
     expectFocusedSummary(archivedBoardId)
+  })
+
+  it('restores focused non-Inbox targets across polls without stealing focus after the user moves', async () => {
+    db = freshDb()
+    const noteId = insertItem(db, { ...ALPHA, kind: 'note', title: 'Note focus target' })
+    advanceClock()
+    const doneId = insertItem(db, { ...ALPHA, kind: 'done', title: 'History focus target' })
+    advanceClock()
+    const activeBoardId = addBoard('Active focus target')
+    advanceClock()
+    const archivedBoardId = addBoard('Archived focus target', true)
+    await bootApp(db)
+
+    for (const id of [noteId, doneId, activeBoardId, archivedBoardId]) {
+      navigateToHash(`#item/${id}`)
+      await settle()
+      const before = document.activeElement
+      expectFocusedSummary(id)
+
+      await pollTick()
+
+      expect(before?.isConnected).toBe(false)
+      expectFocusedSummary(id)
+    }
+
+    const search = document.getElementById('search')!
+    search.focus()
+    await pollTick()
+    expect(document.activeElement).toBe(search)
   })
 })

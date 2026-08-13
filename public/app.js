@@ -499,7 +499,7 @@ function focusItem(id) {
   const board = [...lastData.boards, ...lastData.archived].find((b) => b.id === id)
   const target = item ?? board
   if (!target) return
-  pendingFocusId = item && tabForItem(item) === 'needsYou' ? id : null
+  pendingFocusId = id
   projectFilter = target.project
   agentFilter = null
   actionFilter = 'all'
@@ -531,12 +531,12 @@ function focusItem(id) {
     }
     selectRow(id)
   }
-  if (queueTarget || !item || tabForItem(item) !== 'needsYou') pendingFocusId = null
   if (queueTarget) setOpenRow(id)
   if (queueTarget) forceRender()
   requestAnimationFrame(() => {
     const el = document.querySelector(`[data-card-id="${CSS.escape(id)}"]`)
     if (!el) return
+    pendingFocusId = null
     // Open every ancestor <details> fold on the way up, not just the target —
     // a deep link that lands on the right tab but leaves the target buried
     // inside a collapsed stale-fold/archived-fold LOOKS like it worked while
@@ -553,7 +553,11 @@ function focusItem(id) {
       if (node.classList.contains('archived-fold')) showArchived = true
     }
     el.scrollIntoView({ behavior: 'smooth', block: 'center' })
-    if (typeof el.focus === 'function') el.focus({ preventScroll: true })
+    const focusTarget = el.matches('details') ? el.querySelector(':scope > summary') : el
+    if (focusTarget) {
+      focusTarget.tabIndex = 0
+      focusTarget.focus({ preventScroll: true })
+    }
   })
 }
 
@@ -748,9 +752,13 @@ let triageReturnFocus = null
 const rowDrafts = {}  // in-progress row annotations, surviving the poll rebuild
 const rowDraftKinds = {} // row id → answer|clarify|decline, surviving accordion remounts
 const rowDraftMeta = {} // row id → recovery labels/revision if its owner disappears
-const staleRowDrafts = {} // row id → { revision, text } refused by row/board CAS
+const staleRowDrafts = {} // row-id + revision key → one refused action response
 let requestedDraftFocusBookmark = null
 let draftRecoveryFocusPending = false
+
+function rowDraftRecoveryKey(rowId, revision) {
+  return JSON.stringify([rowId, revision])
+}
 
 function activeDraftFocusBookmark() {
   const active = document.activeElement
@@ -1014,12 +1022,16 @@ function rowAnswerEl(b, r, onSaved) {
   input.placeholder = r.options?.length
     ? 'or answer in your own words…'
     : r.status === 'blocked' ? 'tell the agent how to proceed…' : 'your note on this row…'
-  const staleDraft = staleRowDrafts[r.id]
-  input.value = rowDrafts[r.id] ?? (staleDraft?.revision === r.revision ? staleDraft.text : '')
+  const recoveryKey = rowDraftRecoveryKey(r.id, r.revision)
+  const staleDraft = staleRowDrafts[recoveryKey]
+  const rowRecoveries = Object.values(staleRowDrafts)
+    .filter((draft) => draft.rowId === r.id)
+  input.value = rowDrafts[r.id] ?? (staleDraft?.text ?? '')
   if (input.value && rowDrafts[r.id] === undefined) {
     rowDrafts[r.id] = input.value
     rowDraftMeta[r.id] = {
       revision: r.revision,
+      actionVersion: staleDraft?.actionVersion ?? r.action_version,
       boardTitle: b.title,
       label: r.label,
       context: staleDraft?.context ?? r.context ?? '',
@@ -1033,6 +1045,7 @@ function rowAnswerEl(b, r, onSaved) {
     if (input.value.trim()) {
       rowDraftMeta[r.id] = {
         revision: r.revision,
+        actionVersion: r.action_version,
         boardTitle: b.title,
         label: r.label,
         context: r.context ?? '',
@@ -1040,7 +1053,7 @@ function rowAnswerEl(b, r, onSaved) {
     } else {
       delete rowDraftMeta[r.id]
     }
-    delete staleRowDrafts[r.id]
+    delete staleRowDrafts[recoveryKey]
     resumeRender()
   })
   const save = async () => {
@@ -1060,6 +1073,7 @@ function rowAnswerEl(b, r, onSaved) {
       rowDrafts[r.id] = typed
       rowDraftMeta[r.id] = {
         revision: r.revision,
+        actionVersion: r.action_version,
         boardTitle: b.title,
         label: r.label,
         context: r.context ?? '',
@@ -1070,8 +1084,10 @@ function rowAnswerEl(b, r, onSaved) {
       return
     }
     if (!res.ok) {
-      staleRowDrafts[r.id] = {
+      staleRowDrafts[recoveryKey] = {
+        rowId: r.id,
         revision: r.revision,
+        actionVersion: r.action_version,
         text: typed,
         kind,
         boardTitle: b.title,
@@ -1089,7 +1105,7 @@ function rowAnswerEl(b, r, onSaved) {
     delete rowDrafts[r.id]
     delete rowDraftKinds[r.id]
     delete rowDraftMeta[r.id]
-    delete staleRowDrafts[r.id]
+    delete staleRowDrafts[recoveryKey]
     delete input.dataset.responseKind
     showWriteError(r.id, '')
     // the row stays blocked until the agent picks the note up — the human's part
@@ -1155,12 +1171,12 @@ function rowAnswerEl(b, r, onSaved) {
   if (handled) row.appendChild(handled)
   row.appendChild(writeErrorEl(r.id))
   wrap.appendChild(row)
-  if (staleDraft) {
+  for (const recovery of rowRecoveries) {
     const warning = document.createElement('div')
     warning.className = 'write-error stale-draft'
-    warning.textContent = staleDraft.revision === r.revision
+    warning.textContent = recovery.revision === r.revision
       ? 'Not sent because the board changed. Review the preserved draft and send again.'
-      : `Not sent because this action changed. Preserved ${staleDraft.kind}: ${staleDraft.text}`
+      : `Not sent because this action changed. Preserved ${recovery.kind}: ${recovery.text}`
     wrap.appendChild(warning)
   }
   return wrap
@@ -2496,6 +2512,16 @@ function paginateNeedsYou(entries, protectedIds) {
   return paginate(entries, limit)
 }
 
+function paginateWithPending(entries, section) {
+  let limit = shown[section]
+  const targetIndex = pendingFocusId
+    ? entries.findIndex((entry) => entry.id === pendingFocusId)
+    : -1
+  if (targetIndex >= 0) limit = Math.max(limit, targetIndex + 1)
+  shown[section] = limit
+  return paginate(entries, limit)
+}
+
 function replaceNeedsYouBody(host, header) {
   for (const child of [...host.children]) {
     if (child !== header) child.remove()
@@ -2651,16 +2677,17 @@ function renderOrphanedDrafts(host) {
       ].filter(Boolean).join(' · '),
     })),
     ...Object.entries(staleRowDrafts)
-      .filter(([id, draft]) =>
-        activeRows.get(id) !== draft.revision
-        || !needsYouRowEl(id)?.querySelector('.reply-input'))
-      .map(([id, draft]) => ({
-        id,
+      .filter(([, draft]) =>
+        activeRows.get(draft.rowId) !== draft.revision
+        || !needsYouRowEl(draft.rowId)?.querySelector('.reply-input'))
+      .map(([key, draft]) => ({
+        id: key,
         draft,
-        clear: () => { delete staleRowDrafts[id] },
+        clear: () => { delete staleRowDrafts[key] },
         text: [
           draft.boardTitle,
           draft.label,
+          `action ${draft.actionVersion ?? draft.revision}`,
           `${draft.kind}: ${draft.text}`,
           draft.context ? `context: ${draft.context}` : '',
         ].filter(Boolean).join(' · '),
@@ -2926,7 +2953,7 @@ function toggleRow(el, m, entry, nowMs) {
 function renderGroups(sectionId, groups) {
   const host = document.querySelector(`#${sectionId} .groups`)
   const items = groups.flatMap((gr) => gr.items)
-  const { visible, remaining } = paginate(items, shown[sectionId])
+  const { visible, remaining } = paginateWithPending(items, sectionId)
   host.innerHTML = items.length ? '' : `<p class="empty">${emptyMsg('Nothing here.')}</p>`
   for (const it of visible) host.appendChild(itemEl(it))
   if (remaining > 0) host.appendChild(moreButton(sectionId, remaining))
@@ -2943,7 +2970,7 @@ function renderGroups(sectionId, groups) {
 
 function renderDone(items) {
   const host = document.querySelector('#done .items')
-  const { visible, remaining } = paginate(items, shown.done)
+  const { visible, remaining } = paginateWithPending(items, 'done')
   host.innerHTML = items.length ? '' : `<p class="empty">${emptyMsg('Nothing yet.')}</p>`
   for (const it of visible) host.appendChild(itemEl(it, it.status !== 'open'))
   if (remaining > 0) host.appendChild(moreButton('done', remaining))
@@ -3022,7 +3049,7 @@ function renderBoards(boards, archived) {
   // or in any other tab" can't print directly above a fold holding the match.
   const rest = archived.filter((b) => !lingerIds.has(b.id))
   if (!boards.length && !lingering.length && !rest.length) host.insertAdjacentHTML('beforeend', `<p class="empty">${emptyMsg('No plans yet.')}</p>`)
-  const { visible, remaining } = paginate(boards, shown.boards)
+  const { visible, remaining } = paginateWithPending(boards, 'boards')
   for (const b of visible) host.appendChild(boardEl(b))
   if (remaining > 0) host.appendChild(moreButton('boards', remaining))
   for (const b of lingering) host.appendChild(boardEl(b, true, true))
@@ -3034,7 +3061,7 @@ function renderBoards(boards, archived) {
     fold.open = showArchived
     fold.addEventListener('toggle', () => { showArchived = fold.open })
     fold.innerHTML = `<summary>Archived plans (${rest.length})</summary>`
-    const page = paginate(rest, shown.archived)
+    const page = paginateWithPending(rest, 'archived')
     for (const b of page.visible) fold.appendChild(boardEl(b, true))
     if (page.remaining > 0) fold.appendChild(moreButton('archived', page.remaining))
     host.appendChild(fold)
@@ -3173,6 +3200,8 @@ function hasDraftRecovery() {
 function requestDraftRecovery() {
   draftRecoveryFocusPending = true
   if (triageDeck) closeTriage({ restoreFocus: false })
+  if (missionBoardId) closeMission()
+  if (relayOpen) closeRelay()
   selectTab('needsYou')
 }
 
@@ -3219,8 +3248,11 @@ function reconcileDraftOwners() {
     if (!String(text).trim()) continue
     const owner = currentRow(id)
     if (owner && meta?.revision === owner.row.revision) continue
-    staleRowDrafts[id] = {
-      revision: meta?.revision ?? -1,
+    const revision = meta?.revision ?? -1
+    staleRowDrafts[rowDraftRecoveryKey(id, revision)] = {
+      rowId: id,
+      revision,
+      actionVersion: meta?.actionVersion,
       text,
       kind: rowDraftKinds[id] ?? 'answer',
       boardTitle: meta?.boardTitle ?? 'Plan',

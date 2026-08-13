@@ -133,6 +133,31 @@ describe('structured agent text on cards and plans', () => {
     expect(detail?.textContent).toContain('https://prose.example/x?q=)')
   })
 
+  it('protects member components and keeps entity-like query text in one card link', async () => {
+    const d = open()
+    const id = insertItem(d, {
+      ...AGENT,
+      kind: 'question',
+      title: 'Inspect final boundaries',
+      detail: [
+        'before <UI.Component disabled',
+        'render={() => `nested ${value > 0 ? "https://attribute.example/x" : ""}`}',
+        'href="https://attribute.example/y">label</UI.Component>',
+        'See https://prose.example/x?a=1&amp;b=2',
+      ].join('\n'),
+    })
+
+    await bootApp(d)
+    click(row(id))
+    await settle()
+
+    const detail = row(id)?.querySelector('.card-tldr')
+    const links = [...(detail?.querySelectorAll<HTMLAnchorElement>('a') ?? [])]
+    expect(links.map((link) => link.href)).toEqual(['https://prose.example/x?a=1&amp;b=2'])
+    expect(detail?.textContent).toContain('https://attribute.example/x')
+    expect(detail?.textContent).toContain('https://attribute.example/y')
+  })
+
   it('leaves human-authored replies and reply context on their existing plain-text path', async () => {
     const d = open()
     const id = insertItem(d, {

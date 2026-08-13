@@ -2,7 +2,7 @@ import { esc } from './esc.js'
 import { textLinkHtml } from './source.js'
 
 const URL_RE = /https?:\/\/[^\s<>"']+/gi
-const PROTECTED_START_RE = /<!--|<![a-z][a-z0-9:-]*|<\/?[a-z][a-z0-9:-]*|&(?:#[0-9]+|#x[0-9a-f]+|[a-z][a-z0-9]+);/gi
+const PROTECTED_START_RE = /<!--|<![a-z][a-z0-9:-]*|<\/?[a-z][a-z0-9:-]*(?:\.[a-z_$][a-z0-9_$-]*)*|&(?:#[0-9]+|#x[0-9a-f]+|[a-z][a-z0-9]+);/gi
 const SAFE_BOUNDARY_RE = /[\s([{'",;…⋯。！？؛؟،۔；：，、“”‘’（）【】《》「」『』［］｛｝—–«»]/
 const BULLET_RE = /^ {0,3}[-*]\s+(.+)$/
 const NUMBERED_RE = /^ {0,3}([0-9]+)\.\s+(.+)$/
@@ -58,6 +58,7 @@ function scanTag(value, start, initial = {}) {
   let regexCharClass = initial.regexCharClass ?? false
   let canStartRegex = initial.canStartRegex ?? true
   let genericDepth = initial.genericDepth ?? 0
+  const genericClosers = [...(initial.genericClosers ?? [])]
   const allowGenerics = initial.allowGenerics ?? false
   const stopAtTagStart = initial.stopAtTagStart ?? false
   const rejectGreaterEqual = initial.rejectGreaterEqual ?? true
@@ -80,13 +81,27 @@ function scanTag(value, start, initial = {}) {
     quoteEscaped: closed ? false : quoteEscaped,
     canStartRegex,
     genericDepth: closed ? 0 : genericDepth,
+    genericClosers: closed ? [] : genericClosers,
     allowGenerics,
   })
   for (let index = start; index < value.length; index++) {
     const char = value[index]
     if (quote) {
-      if (expressionClosers.length && char === '\\' && !quoteEscaped) {
+      if ((expressionClosers.length || genericDepth) && char === '\\' && !quoteEscaped) {
         quoteEscaped = true
+        continue
+      }
+      if (
+        quote === '`' &&
+        expressionClosers.length &&
+        char === '$' &&
+        value[index + 1] === '{' &&
+        !quoteEscaped
+      ) {
+        quote = ''
+        expressionClosers.push('template}')
+        canStartRegex = true
+        index++
         continue
       }
       if (char === quote && !quoteEscaped) {
@@ -144,8 +159,12 @@ function scanTag(value, start, initial = {}) {
       if (expressionClose) {
         expressionClosers.push(expressionClose)
         canStartRegex = true
-      } else if (expressionClosers.at(-1) === char) {
-        expressionClosers.pop()
+      } else if (
+        expressionClosers.at(-1) === char ||
+        (expressionClosers.at(-1) === 'template}' && char === '}')
+      ) {
+        const closedTemplateExpression = expressionClosers.pop() === 'template}'
+        if (closedTemplateExpression) quote = '`'
         canStartRegex = false
       } else if (/[a-z0-9_$]/i.test(char)) {
         canStartRegex = false
@@ -155,8 +174,34 @@ function scanTag(value, start, initial = {}) {
       continue
     }
     if (genericDepth) {
-      if (char === '<') genericDepth++
-      else if (char === '>') genericDepth--
+      if (char === '"' || char === "'" || char === '`') {
+        quote = char
+      } else if (char === '/' && value[index + 1] === '*') {
+        expressionMode = 'blockComment'
+        index++
+      } else if (char === '/' && value[index + 1] === '/') {
+        return result(value.length, false)
+      } else {
+        const genericClose = OPEN_TO_CLOSE.get(char)
+        if (genericClose) {
+          genericClosers.push(genericClose)
+          continue
+        }
+        if (genericClosers.at(-1) === char) {
+          genericClosers.pop()
+          continue
+        }
+        if (genericClosers.length) continue
+        if (char === '<') {
+          genericDepth++
+        } else if (
+          char === '>' &&
+          value[index - 1] !== '=' &&
+          value[index + 1] !== '='
+        ) {
+          genericDepth--
+        }
+      }
       continue
     }
     if (char === '"' || char === "'") {
@@ -233,6 +278,7 @@ function consumeTag(scan, state) {
   state.quoteEscaped = scan.quoteEscaped
   state.canStartRegex = scan.canStartRegex
   state.genericDepth = scan.genericDepth
+  state.genericClosers = scan.genericClosers
   state.allowGenerics = scan.allowGenerics
   return scan.end
 }
@@ -258,7 +304,9 @@ function assessTagStart(value, match, lineLeading) {
   }
   const rawName = token.replace(/^<\/?/, '')
   const name = rawName.toLowerCase()
-  const frameworkComponent = /^[A-Z]/.test(rawName)
+  const frameworkComponent =
+    /^[A-Z][a-z0-9_$]*(?:\.[a-z_$][a-z0-9_$]*)*$/i.test(rawName) &&
+    /^[A-Z]/.test(rawName)
   const recognized = HTML_TAG_NAMES.has(name) || name.includes('-') || frameworkComponent
   const tokenEnd = match.index + token.length
   if (lineLeading && recognized) {
@@ -284,7 +332,8 @@ function assessTagStart(value, match, lineLeading) {
   if (
     !shape.closed &&
     !(frameworkComponent
-      ? shape.firstAttributeAssignment
+      ? rawName.length > 1 &&
+        (shape.firstAttributeAssignment || shape.attributeCount === 1)
       : recognized
         ? shape.attributeCount > 0
         : shape.firstAttributeAssignment)
@@ -334,6 +383,18 @@ function updateDelimiterStack(value, start, end, expectedClosers) {
   }
 }
 
+function linkedUrlRanges(value) {
+  const ranges = []
+  URL_RE.lastIndex = 0
+  for (let match = URL_RE.exec(value); match; match = URL_RE.exec(value)) {
+    const previous = match.index > 0 ? value[match.index - 1] : ''
+    if (!previous || SAFE_BOUNDARY_RE.test(previous)) {
+      ranges.push({ start: match.index, end: match.index + match[0].length })
+    }
+  }
+  return ranges
+}
+
 function renderLinkedSegment(value, linkState) {
   let html = ''
   let cursor = 0
@@ -371,6 +432,8 @@ function renderInline(value, state, linkState) {
   let html = ''
   let cursor = 0
   const firstContentIndex = value.search(/\S/)
+  const urlRanges = linkedUrlRanges(value)
+  let urlRangeIndex = 0
   if (state.mode) {
     if (state.mode === 'comment') {
       cursor = consumeComment(value, 0, state)
@@ -384,6 +447,7 @@ function renderInline(value, state, linkState) {
           regexCharClass: state.regexCharClass,
           canStartRegex: state.canStartRegex,
           genericDepth: state.genericDepth,
+          genericClosers: state.genericClosers,
           allowGenerics: state.allowGenerics,
           rejectGreaterEqual: false,
         }),
@@ -396,6 +460,15 @@ function renderInline(value, state, linkState) {
   PROTECTED_START_RE.lastIndex = cursor
   for (let match = PROTECTED_START_RE.exec(value); match; match = PROTECTED_START_RE.exec(value)) {
     if (match[0].startsWith('&')) {
+      while (urlRanges[urlRangeIndex]?.end <= match.index) urlRangeIndex++
+      const activeUrl = urlRanges[urlRangeIndex]
+      if (
+        activeUrl &&
+        activeUrl.start <= match.index &&
+        activeUrl.end >= match.index + match[0].length
+      ) {
+        continue
+      }
       html += renderLinkedSegment(value.slice(cursor, match.index), linkState)
       html += esc(match[0])
       cursor = match.index + match[0].length
@@ -442,6 +515,7 @@ export function renderStructuredText(value) {
     quoteEscaped: false,
     canStartRegex: true,
     genericDepth: 0,
+    genericClosers: [],
     allowGenerics: false,
   }
   let paragraphLinkState = { expectedProseClosers: [] }

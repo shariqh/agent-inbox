@@ -135,6 +135,8 @@ describe('renderStructuredText escaping', () => {
     '<Component when={/}/.test(value) && value > 0 ? "https://attribute.example/x" : fallback}>',
     '<Component a={1} when={/}/.test(value) && value > 0 ? "https://attribute.example/x" : fallback}>',
     '<Component when={value // }\n> 0 ? "https://attribute.example/x" : fallback}>',
+    '<Component when={/}}/.test(value) && value / 2 > 0 ? "https://attribute.example/x" : fallback}>',
+    '<Component text={`outer ${value > 0 ? `inner ${"https://attribute.example/x"}` : ""}`} href="https://attribute.example/y">',
   ])('keeps greater-than operators inside JSX expressions inert: %s', (fragment) => {
     const html = renderStructuredText(`before ${fragment}label</Component>\nafter https://prose.example/x`)
     expect(html).not.toContain('href="https://attribute.example/x"')
@@ -162,6 +164,35 @@ describe('renderStructuredText escaping', () => {
     const html = renderStructuredText(
       '<Component<Array<Map<string, number>>> href="https://attribute.example/x">label</Component>\nhttps://prose.example/x',
     )
+    expect(html).not.toContain('href="https://attribute.example/x"')
+    expect(html).toContain('href="https://prose.example/x"')
+  })
+
+  it('does not close TSX generics on function arrows', () => {
+    const html = renderStructuredText(
+      '<Component<() => Promise<Map<string, number>>> href="https://attribute.example/x">label</Component>\nhttps://prose.example/x',
+    )
+    expect(html).not.toContain('href="https://attribute.example/x"')
+    expect(html).toContain('href="https://prose.example/x"')
+  })
+
+  it.each([
+    '<Component<typeof (a > b)> href="https://attribute.example/x">',
+    '<Component<() => { value: a > b }> href="https://attribute.example/x">',
+    '<Component<a >= b> href="https://attribute.example/x">',
+    '<Component<"\\\\\\">"> href="https://attribute.example/x">',
+  ])('keeps structured and quoted generic content inert: %s', (fragment) => {
+    const html = renderStructuredText(`${fragment}label</Component>\nhttps://prose.example/x`)
+    expect(html).not.toContain('href="https://attribute.example/x"')
+    expect(html).toContain('href="https://prose.example/x"')
+  })
+
+  it.each([
+    'before <Component disabled\nhref="https://attribute.example/x">label</Component>',
+    '<UI.Component disabled\nhref="https://attribute.example/x">label</UI.Component>',
+    'before <UI.Component disabled\nhref="https://attribute.example/x">label</UI.Component>',
+  ])('keeps inline and member framework components inert: %s', (fragment) => {
+    const html = renderStructuredText(`${fragment}\nhttps://prose.example/x`)
     expect(html).not.toContain('href="https://attribute.example/x"')
     expect(html).toContain('href="https://prose.example/x"')
   })
@@ -206,6 +237,7 @@ describe('renderStructuredText escaping', () => {
     'if (x<y <= a)',
     'if (x<y >= a)',
     'x<Y and z',
+    'if x<UI.Component and z',
     'if (x <threshold )',
     'x <max-size ',
   ])('does not treat a compact comparison as a tag: %s', (comparison) => {
@@ -402,6 +434,14 @@ describe('renderStructuredText safe autolinks', () => {
     const html = renderStructuredText('HTTP://EXAMPLE.COM/a')
     expect(html).toContain('href="http://example.com/a"')
     expect(html).toContain('>HTTP://EXAMPLE.COM/a</a>')
+  })
+
+  it('keeps entity-like query substrings inside one URL candidate', () => {
+    const html = renderStructuredText('See https://example.com/path?a=1&amp;b=2 and &amp; alone')
+    expect(html).toContain('href="https://example.com/path?a=1&amp;amp;b=2"')
+    expect(html).toContain('>https://example.com/path?a=1&amp;amp;b=2</a>')
+    expect(html.match(/<a /g)).toHaveLength(1)
+    expect(html).toContain('and &amp;amp; alone')
   })
 })
 

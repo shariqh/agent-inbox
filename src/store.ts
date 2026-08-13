@@ -237,6 +237,8 @@ function runMigrations(db: Database.Database): void {
   ensureColumn(db, 'items', 'replied_at', 'TEXT')
   ensureColumn(db, 'items', 'reply_seen_at', 'TEXT')
   ensureColumn(db, 'items', 'reply_source', 'TEXT')
+  ensureColumn(db, 'items', 'reply_intent_client', 'TEXT')
+  ensureColumn(db, 'items', 'reply_intent_sequence', 'INTEGER')
   ensureColumn(db, 'items', 'session', 'TEXT')
   ensureColumn(db, 'items', 'repo', 'TEXT')
   ensureColumn(db, 'items', 'issue_ref', 'INTEGER')
@@ -442,6 +444,7 @@ export function replyItem(
   text: string,
   context?: string,
   kind: ResponseKind = 'answer',
+  intent?: { clientId: string; sequence: number },
 ): boolean {
   // a changed answer resets pickup — the agent must see the latest reply;
   // an empty answer reverts the question to unanswered (null, never '') — but
@@ -454,6 +457,24 @@ export function replyItem(
   const reply = text.trim()
   const replyContext = context?.trim() ?? ''
   const now = new Date().toISOString()
+  const params = {
+    id,
+    reply,
+    replyContext: replyContext || null,
+    kind,
+    now,
+    intentClient: intent?.clientId ?? null,
+    intentSequence: intent?.sequence ?? null,
+  }
+  const intentGuard = `
+         AND (
+           @intentClient IS NULL
+           OR @intentSequence IS NULL
+           OR reply_intent_client IS NULL
+           OR reply_intent_sequence IS NULL
+           OR reply_intent_client <> @intentClient
+           OR reply_intent_sequence <= @intentSequence
+         )`
   if (!reply) {
     // atomic: the guard condition (reply_seen_at IS NULL) is checked and acted on in the
     // SAME statement as the write, so a concurrent markReplySeen from another connection
@@ -461,21 +482,29 @@ export function replyItem(
     // window between a read and a later, unconditional write — there is no such window.
     const info = db
       .prepare(`UPDATE items
-                   SET reply = NULL, reply_context = NULL, replied_at = ?, reply_seen_at = NULL,
-                       reply_source = NULL, reply_kind = NULL, updated_at = ?
-                 WHERE id = ? AND reply_seen_at IS NULL`)
-      .run(now, now, id)
+                   SET reply = NULL, reply_context = NULL, replied_at = @now, reply_seen_at = NULL,
+                       reply_source = NULL, reply_kind = NULL,
+                       reply_intent_client = @intentClient,
+                       reply_intent_sequence = @intentSequence,
+                       updated_at = @now
+                 WHERE id = @id AND reply_seen_at IS NULL
+                 ${intentGuard}`)
+      .run(params)
     return info.changes > 0
   }
-  // unconditional by design: the inbox is the higher-precedence channel, so the
-  // human's own reply overwrites anything an agent recorded from chat (#29) and
-  // resets pickup so that agent has to read the new one.
-  db.prepare(`UPDATE items
-                 SET reply = ?, reply_context = ?, replied_at = ?, reply_seen_at = NULL,
-                     reply_source = 'inbox', reply_kind = ?, snoozed_until = NULL, updated_at = ?
-               WHERE id = ?`)
-    .run(reply, replyContext || null, now, kind, now, id)
-  return true
+  // Inbox replies remain higher precedence than agent-recorded chat answers.
+  // Only a lower sequence from the same viewer window is refused; missing
+  // metadata and a different window retain the historical arrival-order rule.
+  const info = db.prepare(`UPDATE items
+                 SET reply = @reply, reply_context = @replyContext, replied_at = @now, reply_seen_at = NULL,
+                     reply_source = 'inbox', reply_kind = @kind,
+                     reply_intent_client = @intentClient,
+                     reply_intent_sequence = @intentSequence,
+                     snoozed_until = NULL, updated_at = @now
+               WHERE id = @id
+               ${intentGuard}`)
+    .run(params)
+  return info.changes > 0
 }
 
 // Compare-and-swap on the answer's own version stamp, in ONE statement (issue
@@ -569,8 +598,17 @@ export function listPending(db: Database.Database, project: string): Item[] {
   return (rows as Array<Omit<Item, 'options'> & { options: string | null }>).map(parseItem)
 }
 
-function parseItem(row: Omit<Item, 'options'> & { options: string | null }): Item {
-  return { ...row, options: parseOptions(row.options) }
+type StoredItem = Omit<Item, 'options'> & {
+  options: string | null
+  reply_intent_client?: string | null
+  reply_intent_sequence?: number | null
+}
+
+function parseItem(row: StoredItem): Item {
+  const visible = { ...row }
+  delete visible.reply_intent_client
+  delete visible.reply_intent_sequence
+  return { ...visible, options: parseOptions(row.options) }
 }
 
 function parseOptions(raw: string | null): QuestionOption[] | null {

@@ -143,6 +143,40 @@ describe('viewer api', () => {
     expect(item.status).toBe('open') // replying is not resolving — the agent still has to act
   })
 
+  it('rejects a late lower reply intent from the same viewer window', async () => {
+    const id = insertItem(db, {
+      project: 'p', stream: '', agent: 'claude-code', kind: 'question', title: 'ordered reply',
+    })
+    const app = createViewer(db)
+    const post = (text: string, sequence: number) => app.request(`/api/items/${id}/reply`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text,
+        intent_client_id: 'viewer-window-a',
+        intent_sequence: sequence,
+      }),
+    })
+
+    expect(await (await post('intent B', 2)).json()).toEqual({ ok: true })
+    expect(await (await post('late intent A', 1)).json()).toEqual({ ok: false })
+    expect(listItems(db).find((item) => item.id === id)?.reply).toBe('intent B')
+
+    const incomplete = await app.request(`/api/items/${id}/reply`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'invalid', intent_client_id: 'viewer-window-a' }),
+    })
+    expect(incomplete.status).toBe(400)
+
+    const malformed = await app.request(`/api/items/${id}/reply`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'invalid', intent_client_id: 42, intent_sequence: 3 }),
+    })
+    expect(malformed.status).toBe(400)
+  })
+
   // #29: the channel is stamped inside the store, so the viewer needs no code of its
   // own — SELECT * already carries reply_source out through GET /api/items, which is
   // where the card's "via chat" provenance chip reads it from.

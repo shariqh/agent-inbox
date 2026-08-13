@@ -161,11 +161,45 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
   })
 
   app.post('/api/items/:id/reply', async (c) => {
-    const { text, context, kind } = await c.req.json<{ text: string; context?: string; kind?: string }>()
+    const {
+      text,
+      context,
+      kind,
+      intent_client_id: intentClientId,
+      intent_sequence: intentSequence,
+    } = await c.req.json<{
+      text: string
+      context?: string
+      kind?: string
+      intent_client_id?: unknown
+      intent_sequence?: unknown
+    }>()
     const parsedKind = kind === undefined ? 'answer' : responseKind(kind)
     if (parsedKind === null) return c.json({ ok: false, error: 'invalid response kind' }, 400)
+    const hasIntentClient = intentClientId !== undefined
+    const hasIntentSequence = intentSequence !== undefined
+    if (hasIntentClient !== hasIntentSequence) {
+      return c.json({ ok: false, error: 'reply intent metadata must be complete' }, 400)
+    }
+    const clientId = typeof intentClientId === 'string' ? intentClientId.trim() : ''
+    if (hasIntentClient && (
+      !clientId
+      || clientId.length > 128
+      || typeof intentSequence !== 'number'
+      || !Number.isSafeInteger(intentSequence)
+      || intentSequence < 1
+    )) {
+      return c.json({ ok: false, error: 'invalid reply intent metadata' }, 400)
+    }
     // false = refused: an already-picked-up reply cannot be silently blanked out (src/store.ts)
-    const ok = replyItem(db, c.req.param('id'), text, context, parsedKind)
+    const ok = replyItem(
+      db,
+      c.req.param('id'),
+      text,
+      context,
+      parsedKind,
+      clientId && typeof intentSequence === 'number' ? { clientId, sequence: intentSequence } : undefined,
+    )
     return c.json({ ok })
   })
 

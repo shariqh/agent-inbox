@@ -28,15 +28,21 @@ function deferPost(match: string, response?: Response): () => void {
   return release
 }
 
-function delayFirstPost(match: string, delayMs: number): void {
+function holdFirstPost(match: string): {
+  release: () => void
+  started: () => number
+} {
   const fetchNow = globalThis.fetch
   let count = 0
+  let release!: () => void
+  const gate = new Promise<void>((resolve) => { release = resolve })
   globalThis.fetch = async (input, init) => {
     if (init?.method === 'POST' && String(input).includes(match) && ++count === 1) {
-      await new Promise<void>((resolve) => setTimeout(resolve, delayMs))
+      await gate
     }
     return fetchNow(input, init)
   }
+  return { release, started: () => count }
 }
 
 function failSecondPost(match: string, status: number): void {
@@ -208,7 +214,7 @@ describe('async draft ownership', () => {
     expect(document.querySelector('.stale-drafts-fold')?.textContent).toContain('newer draft B')
   })
 
-  it('serializes same-item reply transport so the latest submitted intent reaches the store last', async () => {
+  it('starts same-item replies immediately and lets the store reject a late older intent', async () => {
     db = freshDb()
     const id = insertItem(db, {
       ...AGENT,
@@ -220,14 +226,46 @@ describe('async draft ownership', () => {
     click(row(id))
     await settle()
 
-    delayFirstPost(`/items/${id}/reply`, 20)
+    const held = holdFirstPost(`/items/${id}/reply`)
     click(buttonLabelled('Intent A', row(id)!))
     click(buttonLabelled('Intent B', row(id)!))
-    await vi.advanceTimersByTimeAsync(20)
+    await vi.advanceTimersByTimeAsync(0)
+    const startedBeforeRelease = held.started()
+    const storedBeforeRelease = getItem(db, id)?.reply
+    held.release()
     await settle()
 
+    expect(startedBeforeRelease).toBe(2)
+    expect(storedBeforeRelease).toBe('Intent B')
     expect(getItem(db, id)?.reply).toBe('Intent B')
     expect(row(id)?.textContent).toContain('Intent B')
+  })
+
+  it('regenerates corrupt window reply intent state before sending', async () => {
+    db = freshDb()
+    const id = insertItem(db, {
+      ...AGENT,
+      kind: 'question',
+      title: 'Corrupt intent state',
+      options: [{ label: 'Safe reply' }],
+    })
+    sessionStorage.setItem('agent-inbox-reply-intent', JSON.stringify({
+      clientId: '   ',
+      sequence: Number.MAX_SAFE_INTEGER,
+    }))
+    const bridge = await bootApp(db)
+
+    click(row(id))
+    await settle()
+    click(buttonLabelled('Safe reply', row(id)!))
+    await settle()
+
+    const request = bridge.posts.find((post) => post.url.includes(`/items/${id}/reply`))
+    const body = JSON.parse(String(request?.init?.body))
+    expect(body.intent_client_id.trim()).not.toBe('')
+    expect(body.intent_client_id.length).toBeLessThanOrEqual(128)
+    expect(body.intent_sequence).toBe(1)
+    expect(getItem(db, id)?.reply).toBe('Safe reply')
   })
 
   it('cancels an older staged-star intent when a newer direct answer is submitted', async () => {
@@ -273,6 +311,58 @@ describe('async draft ownership', () => {
     expect(getItem(db, id)?.reply).toBe('Intent A')
     expect(document.querySelector('.stale-drafts-fold')?.textContent).toContain('Intent B')
     expect(document.getElementById('pauseHint')?.textContent).toBe('')
+  })
+
+  it('keeps a failed option intent separate from an existing text draft', async () => {
+    db = freshDb()
+    const id = insertItem(db, {
+      ...AGENT,
+      kind: 'question',
+      title: 'Draft plus option',
+      options: [{ label: 'Option Y' }],
+    })
+    const bridge = await bootApp(db)
+    click(row(id))
+    await settle()
+    const input = answerInput(id)
+    type(input, 'Draft X')
+
+    const release = deferPost(`/items/${id}/reply`)
+    click(buttonLabelled('Option Y', row(id)!))
+    type(input, 'Draft X, revised while Y sends')
+    expectConsoleError(new RegExp(`/items/${id}/reply failed: HTTP 503`))
+    bridge.failPostsWith(503)
+    release()
+    await settle()
+    bridge.failPostsWith(null)
+
+    expect(answerInput(id)?.value).toBe('Draft X, revised while Y sends')
+    expect(document.querySelector('.stale-drafts-fold')?.textContent).toContain('Option Y')
+  })
+
+  it('lets a newer Undo reach transport immediately and defeat a delayed staged reply', async () => {
+    db = freshDb()
+    const id = insertItem(db, {
+      ...AGENT,
+      kind: 'question',
+      title: 'Undo transport',
+      detail: 'Choose one.',
+      options: [{ label: 'Staged A', recommended: true }],
+    })
+    await bootApp(db)
+    const held = holdFirstPost(`/items/${id}/reply`)
+
+    click(row(id)?.querySelector('.star-btn'))
+    await vi.advanceTimersByTimeAsync(5000)
+    await settle()
+    click(buttonLabelled('Undo', row(id)!))
+    await vi.advanceTimersByTimeAsync(0)
+    const startedBeforeRelease = held.started()
+    held.release()
+    await settle()
+
+    expect(startedBeforeRelease).toBe(2)
+    expect(getItem(db, id)?.reply).toBeNull()
   })
 })
 
@@ -427,5 +517,33 @@ describe('direct overlay draft reconciliation', () => {
 
     expect(document.activeElement).toBe(lightbox.querySelector('.lb-panel'))
     expect(buttonLabelled('Hide compare', lightbox)).not.toBeNull()
+  })
+
+  it('does not transfer focus from a removed Review queue entry to the next row', async () => {
+    db = freshDb()
+    upsertBoard(db, {
+      ...AGENT,
+      title: 'Focus completion',
+      rows: [
+        { label: 'Focused row A', status: 'blocked', note: 'Choose A.' },
+        { label: 'Next row B', status: 'blocked', note: 'Choose B.' },
+      ],
+    })
+    const first = getBoard(db, 'alpha', 'Focus completion')!.rows[0]!
+    await bootApp(db)
+    click(buttonLabelled('Review queue'))
+    await settle()
+
+    const lightbox = document.getElementById('lightbox')!
+    type(lightbox.querySelector<HTMLInputElement>('.reply-input'), 'Answer A')
+    const send = buttonLabelled('Send', lightbox)!
+    send.focus()
+    const release = deferPost(`/rows/${first.id}/annotate`)
+    click(send)
+    release()
+    await settle()
+
+    expect(lightbox.querySelector('.title')?.textContent).toContain('Next row B')
+    expect(document.activeElement).toBe(lightbox.querySelector('.lb-panel'))
   })
 })

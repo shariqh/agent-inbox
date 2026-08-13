@@ -969,11 +969,15 @@ function closeTriage({ restoreFocus = true } = {}) {
 
 function triageRemoveEntry(deck, entryKey) {
   if (triageDeck !== deck) return
+  const focusBookmark = captureTriageFocus()
+  const removedDisplayedEntry = triageEntryKey(
+    deckEntryAt(triageDeck.entries, triageDeck.index),
+  ) === entryKey
   const index = triageDeck.entries.findIndex((entry) => triageEntryKey(entry) === entryKey)
   if (index < 0) return
   triageDeck.entries.splice(index, 1)
   if (index < triageDeck.index) triageDeck.index--
-  renderTriage()
+  renderTriage({ focusBookmark, forcePanelFocus: removedDisplayedEntry })
 }
 
 function triageEntryKey(entry) {
@@ -1467,13 +1471,15 @@ function rowCardEl(b, r, onSaved) {
   return wrap
 }
 
-function renderTriage() {
+function renderTriage({
+  focusBookmark = captureTriageFocus(),
+  forcePanelFocus = false,
+} = {}) {
   if (!triageDeck) return
   if (reconcileDraftOwners()) {
     forceRender()
     return
   }
-  const focusBookmark = captureTriageFocus()
   const lb = document.getElementById('lightbox')
   // drop entries resolved elsewhere (or answered in a previous card)
   triageDeck.entries = triageDeck.entries.filter((e) => findEntryData(e))
@@ -1513,7 +1519,8 @@ function renderTriage() {
   lb.querySelector('.lb-prev').disabled = triageDeck.index <= 0
   lb.querySelector('.lb-next').disabled = triageDeck.index >= n - 1
   lb.hidden = false
-  restoreTriageFocus(focusBookmark)
+  if (forcePanelFocus) lb.querySelector('.lb-panel')?.focus({ preventScroll: true })
+  else restoreTriageFocus(focusBookmark)
 }
 
 function initTriage() {
@@ -3405,11 +3412,28 @@ const itemDraftMeta = {}         // item id → recovery labels if its answer su
 const itemDraftGenerations = {}  // item id → monotonic edit token across duplicate editors
 const itemSubmissionTokens = {}  // item id → latest async submission allowed to retire its draft
 const itemIntentSequences = {}   // item id → latest human intent, assigned before transport
-const itemReplyTransports = {}   // item id → serialized transport tail
 const staleItemDrafts = {}       // item id → refused answer preserved outside the poll gate
+const ITEM_REPLY_INTENT_SESSION_KEY = 'agent-inbox-reply-intent'
+const storedReplyIntent = (() => {
+  try {
+    const parsed = JSON.parse(sessionStorage.getItem(ITEM_REPLY_INTENT_SESSION_KEY) ?? 'null')
+    const clientId = typeof parsed?.clientId === 'string' ? parsed.clientId.trim() : ''
+    if (
+      clientId
+      && clientId.length <= 128
+      && Number.isSafeInteger(parsed.sequence)
+      && parsed.sequence >= 0
+      && parsed.sequence < Number.MAX_SAFE_INTEGER
+    ) return { clientId, sequence: parsed.sequence }
+  } catch {
+    // Corrupt window-local state gets a new identity rather than blocking replies.
+  }
+  return { clientId: globalThis.crypto.randomUUID(), sequence: 0 }
+})()
 
 function claimItemIntent(id, { staged = false } = {}) {
-  const sequence = (itemIntentSequences[id] ?? 0) + 1
+  const sequence = ++storedReplyIntent.sequence
+  sessionStorage.setItem(ITEM_REPLY_INTENT_SESSION_KEY, JSON.stringify(storedReplyIntent))
   itemIntentSequences[id] = sequence
   if (!staged && starStage.undo(`star:${id}`)) {
     stagedStars.delete(id)
@@ -3420,18 +3444,12 @@ function claimItemIntent(id, { staged = false } = {}) {
   return sequence
 }
 
-async function postItemReplyInOrder(id, body) {
-  const previous = itemReplyTransports[id] ?? Promise.resolve()
-  const current = previous.then(
-    () => postJSON(`/api/items/${id}/reply`, body),
-    () => postJSON(`/api/items/${id}/reply`, body),
-  )
-  itemReplyTransports[id] = current
-  try {
-    return await current
-  } finally {
-    if (itemReplyTransports[id] === current) delete itemReplyTransports[id]
-  }
+function postItemReply(id, body, intentSequence) {
+  return postJSON(`/api/items/${id}/reply`, {
+    ...body,
+    intent_client_id: storedReplyIntent.clientId,
+    intent_sequence: intentSequence,
+  })
 }
 
 function hasDraftRecovery() {
@@ -3537,6 +3555,7 @@ async function sendReply(
   submittedGeneration = itemDraftGenerations[id] ?? 0,
   intentSequence = null,
   recoverUndraftedFailure = true,
+  submissionUsesDraft = false,
 ) {
   const reply = text.trim()
   if (!reply) return
@@ -3550,22 +3569,34 @@ async function sendReply(
   // Nothing is cleared until the server has it.
   const hadDraft = draftReplies[id] !== undefined || draftReplyContexts[id] !== undefined
   const recoveryTitle = itemDraftMeta[id]?.title ?? freshItem(id)?.title ?? 'Question'
-  const res = await postItemReplyInOrder(id, {
+  const res = await postItemReply(id, {
     text: reply,
     context: context.trim() || undefined,
     kind,
-  })
+  }, intentSequence)
   const latestIntent = itemIntentSequences[id] === intentSequence
   const ownsSubmission = latestIntent
     && (itemDraftGenerations[id] ?? 0) === submittedGeneration
     && itemSubmissionTokens[id] === submissionToken
   if (res === null) {
     if (!latestIntent) return
+    if (!submissionUsesDraft) {
+      if (recoverUndraftedFailure) {
+        staleItemDrafts[id] = { title: recoveryTitle, text, context, kind }
+        requestDraftRecovery()
+        showWriteError(id, '')
+        await reloadAndPaint()
+      } else {
+        showWriteError(id, WRITE_FAILED)
+        resumeRender()
+      }
+      return
+    }
     // re-assert rather than merely leave in place, so a future edit that clears
     // early still cannot lose it. Only when the human HAD a draft: inventing one
     // for an option-pill/★ send would park text in an input nobody typed into
     // (and suspend the poll on it — the C2 failure mode).
-    if (hadDraft && ownsSubmission) {
+    if (hadDraft && ownsSubmission && submissionUsesDraft) {
       draftReplies[id] = text
       draftReplyContexts[id] = context
     } else if (ownsSubmission && recoverUndraftedFailure) {
@@ -3581,6 +3612,24 @@ async function sendReply(
   }
   if (!res.ok) {
     if (!latestIntent) return
+    if (!submissionUsesDraft) {
+      if (recoverUndraftedFailure) {
+        const item = freshItem(id)
+        staleItemDrafts[id] = {
+          title: itemDraftMeta[id]?.title ?? item?.title ?? recoveryTitle,
+          text,
+          context,
+          kind,
+        }
+        requestDraftRecovery()
+        showWriteError(id, '')
+        await reloadAndPaint()
+      } else {
+        showWriteError(id, WRITE_FAILED)
+        resumeRender()
+      }
+      return
+    }
     if (!ownsSubmission) {
       showWriteError(id, 'An earlier response was not applied; your newer draft is preserved.')
       resumeRender()
@@ -3667,11 +3716,13 @@ function answerEl(it) {
     resumeRender()
   })
   input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') sendReply(it.id, input.value, ctxInput.value, 'answer', editorGeneration)
+    if (e.key === 'Enter') {
+      sendReply(it.id, input.value, ctxInput.value, 'answer', editorGeneration, null, true, true)
+    }
   })
   row.appendChild(input)
   row.appendChild(btn('Send', () => sendReply(
-    it.id, input.value, ctxInput.value, 'answer', editorGeneration,
+    it.id, input.value, ctxInput.value, 'answer', editorGeneration, null, true, true,
   )))
   row.appendChild(writeErrorEl(it.id)) // persists a failed write's reason across the poll rebuild (C3)
   wrap.appendChild(row)
@@ -3768,8 +3819,10 @@ function itemCardEl(it, { done = false, nowMs = Date.now(), liveness = 'parked',
 // snapshot hasn't caught up yet (up to ~3s stale) — the server already told us
 // definitively that a pickup happened, we just don't know exactly when.
 async function changeAnswer(it, msgEl) {
-  const res = await postJSON(`/api/items/${it.id}/reply`, { text: '' })
+  const intentSequence = claimItemIntent(it.id)
+  const res = await postItemReply(it.id, { text: '' }, intentSequence)
   if (res === null) return // network failure — postJSON already signaled it
+  if (itemIntentSequences[it.id] !== intentSequence) return
   if (!res.ok) {
     const fresh = freshItem(it.id) ?? it
     const seenAt = fresh.reply_seen_at ?? new Date().toISOString()

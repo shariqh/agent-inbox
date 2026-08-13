@@ -99,7 +99,7 @@ describe('viewer boots against a real DB', () => {
     expect([...document.querySelectorAll('#tabs .tab')].map((tab) => tab.childNodes[0]?.textContent))
       .toEqual(['Inbox', 'Plans', 'Notes', 'History'])
     expect(document.querySelector('#needsYouList .tab-header')?.textContent)
-      .toContain('AllDecisionsTo doUpdatesHandoffsReview queue')
+      .toContain('AllDecisionsTo doUpdatesSortCurrent priorityAsked newestAsked oldestHandoffsReview queue')
     expect(document.querySelector('#needsYouList')?.textContent).not.toContain('blocked')
     expect(document.querySelector('#needsYouList')?.textContent).not.toContain('Agent acts after approval')
     expect(document.querySelector('#needsYouList')?.textContent).not.toContain('🚧')

@@ -291,7 +291,7 @@ export function expectConsoleError(pattern: RegExp): void {
  *
  * beforeEach: reset the hash, reset the module registry (MANDATORY — without it the
  * second test in a file re-uses the first test's already-evaluated app.js and finds
- * zero rows), clear localStorage, spy on console.error, freeze the clock at T0.
+ * zero rows), clear browser storage, spy on console.error, freeze the clock at T0.
  * afterEach: drain in-flight work, restore real timers (which is what kills app.js's
  * module-level `setInterval(load, 3000)`), then assert the console.error contract.
  */
@@ -304,6 +304,7 @@ export function useDomTest(): void {
     Object.defineProperty(window, 'innerWidth', { value: 1400, configurable: true, writable: true })
     vi.resetModules()
     localStorage.clear()
+    sessionStorage.clear()
     consoleErrors.length = 0
     allowedErrors.length = 0
     vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {

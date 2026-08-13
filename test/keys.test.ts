@@ -209,11 +209,11 @@ describe('app.js wiring — keyboard row selection survives the poll rebuild (sp
     expect(start, 'renderNeedsYou is missing').toBeGreaterThan(-1)
     const body = js.slice(start, js.indexOf('function staleFoldEl'))
     const captureAt = body.indexOf('hadListFocus =')
-    const clearAt = body.indexOf("host.innerHTML = ''")
-    const restoreAt = body.lastIndexOf('restoreRowSelection(hadListFocus && !restoredCardFocus)')
+    const clearAt = body.indexOf('replaceNeedsYouBody(host, header)')
+    const restoreAt = body.lastIndexOf('restoreRowSelection(hadListFocus && !restoredCardFocus && !restoredAskedTimeFocus)')
     expect(captureAt, 'hadListFocus is not captured').toBeGreaterThan(-1)
-    expect(clearAt, "host.innerHTML = '' not found").toBeGreaterThan(-1)
-    expect(restoreAt, 'row focus is not restored after giving the open card first refusal').toBeGreaterThan(-1)
+    expect(clearAt, 'replaceNeedsYouBody(host, header) not found').toBeGreaterThan(-1)
+    expect(restoreAt, 'row focus is not restored after giving card and timestamp controls first refusal').toBeGreaterThan(-1)
     // captured BEFORE the list is cleared — clearing a focused element's
     // subtree moves document.activeElement immediately, so capturing after
     // would always read false

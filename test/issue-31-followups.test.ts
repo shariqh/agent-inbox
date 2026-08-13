@@ -167,7 +167,7 @@ describe('31.2 · read-marking records ids as well as a watermark', () => {
     // resurrected as unread on the next render.
     const body = topLevelFn('function renderGroups(')
     expect(body).toMatch(/const all = lastData\.g\.notes\.flatMap/)
-    expect(body).toMatch(/markNotesSeen\(visible,[\s\S]*?,\s*all\)/)
+    expect(body).toMatch(/markNotesSeen\(viewed,[\s\S]*?,\s*all\)/)
   })
 
   it('every reader of the unread count is fed the id set, so no two note numbers can disagree', () => {

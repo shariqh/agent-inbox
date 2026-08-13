@@ -46,8 +46,7 @@ describe('the ✕ on a Needs-you row (issue #36, the half that is in scope)', ()
     expect(row(itemId)?.querySelector('.nrow-dismiss'), 'an item genuinely has a dismiss path').not.toBeNull()
     expect(row(rowId)?.querySelector('.nrow-dismiss'), 'a board row has none — drawing ✕ was the lie').toBeNull()
 
-    // the keyboard affordance has to agree: 'x' on the row does nothing…
-    press('j')
+    // Roving focus seeds the first operable row; 'x' on that row does nothing…
     expect(row(rowId)?.classList.contains('selected')).toBe(true)
     press('x')
     await settle()

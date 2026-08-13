@@ -2581,6 +2581,7 @@ const starStage = createStagedSend({
   // exactly the call the option pill makes today (app.js `answerEl`) — no new endpoint
   send: ({ id, label, context, generation, intent }) => {
     stagedStars.delete(id)
+    invalidateItemDraftIntents(id)
     itemLatestIntents[id] = intent
     sendReply(id, label, context, 'answer', generation, intent, false)
   },
@@ -3462,19 +3463,12 @@ const storedReplyIntent = (() => {
 })()
 
 function claimItemIntent(id, { staged = false } = {}) {
-  invalidateItemDraftIntents(id)
+  if (!staged) invalidateItemDraftIntents(id)
   const sequence = ++storedReplyIntent.sequence
   sessionStorage.setItem(ITEM_REPLY_INTENT_SESSION_KEY, JSON.stringify(storedReplyIntent))
   const intent = { sequence, actionId: globalThis.crypto.randomUUID() }
   if (!staged) itemLatestIntents[id] = intent
-  if (!staged && starStage.undo(`star:${id}`)) {
-    const stagedIntent = stagedStars.get(id)
-    if (stagedIntent) cancelItemIntent(id, stagedIntent.intent, stagedIntent.previousIntent)
-    stagedStars.delete(id)
-    const row = needsYouRowEl(id)
-    row?.classList.remove('staged')
-    row?.querySelector('.nrow-star')?.replaceChildren()
-  }
+  if (!staged) cancelStagedItemIntent(id)
   return intent
 }
 
@@ -3531,6 +3525,17 @@ function cancelItemIntent(id, cancelled, previous) {
   if (!sameItemIntent(itemLatestIntents[id], cancelled)) return
   if (previous) itemLatestIntents[id] = previous
   else delete itemLatestIntents[id]
+}
+
+function cancelStagedItemIntent(id) {
+  if (!starStage.undo(`star:${id}`)) return false
+  const stagedIntent = stagedStars.get(id)
+  if (stagedIntent) cancelItemIntent(id, stagedIntent.intent, stagedIntent.previousIntent)
+  stagedStars.delete(id)
+  const row = needsYouRowEl(id)
+  row?.classList.remove('staged')
+  row?.querySelector('.nrow-star')?.replaceChildren()
+  return true
 }
 
 function postItemReply(id, body, intent) {
@@ -3779,6 +3784,7 @@ async function sendReply(
   if (recoveryKey) delete itemDraftRetryIntents[id]
   const replayingRecordedIntent = Boolean(recoveryKey && intent)
   intent ??= submissionUsesDraft ? reusableDraftIntent(id, submittedGeneration) : null
+  if (intent) cancelStagedItemIntent(id)
   intent ??= claimItemIntent(id)
   if (!sameItemIntent(itemLatestIntents[id], intent) && !replayingRecordedIntent) return
   const submittedRecoveryOwner = recoveryKey

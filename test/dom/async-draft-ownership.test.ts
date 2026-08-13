@@ -422,6 +422,160 @@ describe('async draft ownership', () => {
     expect(document.getElementById('pauseHint')?.textContent).toBe('')
   })
 
+  it('keeps an ambiguous draft retry exact when a staged star is undone before transport', async () => {
+    db = freshDb()
+    const id = insertItem(db, {
+      ...AGENT,
+      kind: 'question',
+      title: 'Undo preserves retry identity',
+      detail: 'Choose one.',
+      options: [{ label: 'Staged B', recommended: true }],
+    })
+    const bridge = await bootApp(db)
+    const fetchNow = globalThis.fetch
+    let loseFirstResponse = true
+    globalThis.fetch = async (input, init) => {
+      if (
+        loseFirstResponse
+        && init?.method === 'POST'
+        && String(input).includes(`/items/${id}/reply`)
+      ) {
+        loseFirstResponse = false
+        await fetchNow(input, init)
+        throw new Error('lost original response')
+      }
+      return fetchNow(input, init)
+    }
+    expectConsoleError(/lost original response/)
+
+    click(row(id))
+    await settle()
+    type(answerInput(id), 'Original A')
+    click(buttonLabelled('Send', row(id)!))
+    await settle()
+
+    click(row(id)?.querySelector('.star-btn'))
+    click(buttonLabelled('Undo', row(id)!))
+    await settle()
+
+    expect(replyItem(db, id, 'Later Y', undefined, 'answer', {
+      clientId: 'other-window',
+      sequence: 1,
+      actionId: 'later-after-staged-undo',
+    })).toBe(true)
+    const later = getItem(db, id)!
+    expect(markReplySeen(db, id, later.replied_at)).toBe(true)
+
+    click(buttonLabelled('Send', row(id)!))
+    await settle()
+
+    const replyPosts = bridge.posts.filter((post) => post.url.includes(`/items/${id}/reply`))
+    const first = JSON.parse(String(replyPosts[0]?.init?.body))
+    const retry = JSON.parse(String(replyPosts[1]?.init?.body))
+    expect(retry.intent_action_id).toBe(first.intent_action_id)
+    expect(retry.intent_sequence).toBe(first.intent_sequence)
+    expect(getItem(db, id)?.reply).toBe('Later Y')
+    expect(getItem(db, id)?.reply_seen_at).not.toBeNull()
+  })
+
+  it('cancels a staged star when the preserved draft is retried before transport', async () => {
+    db = freshDb()
+    const id = insertItem(db, {
+      ...AGENT,
+      kind: 'question',
+      title: 'Retry cancels staged answer',
+      detail: 'Choose one.',
+      options: [{ label: 'Staged B', recommended: true }],
+    })
+    const bridge = await bootApp(db)
+    const fetchNow = globalThis.fetch
+    let loseFirstResponse = true
+    globalThis.fetch = async (input, init) => {
+      if (
+        loseFirstResponse
+        && init?.method === 'POST'
+        && String(input).includes(`/items/${id}/reply`)
+      ) {
+        loseFirstResponse = false
+        await fetchNow(input, init)
+        throw new Error('lost original response')
+      }
+      return fetchNow(input, init)
+    }
+    expectConsoleError(/lost original response/)
+
+    click(row(id))
+    await settle()
+    type(answerInput(id), 'Original A')
+    click(buttonLabelled('Send', row(id)!))
+    await settle()
+
+    click(row(id)?.querySelector('.star-btn'))
+    click(buttonLabelled('Send', row(id)!))
+    await settle()
+    await vi.advanceTimersByTimeAsync(5000)
+    await settle()
+
+    const replyPosts = bridge.posts.filter((post) => post.url.includes(`/items/${id}/reply`))
+    expect(replyPosts).toHaveLength(2)
+    const first = JSON.parse(String(replyPosts[0]?.init?.body))
+    const retry = JSON.parse(String(replyPosts[1]?.init?.body))
+    expect(retry.text).toBe('Original A')
+    expect(retry.intent_action_id).toBe(first.intent_action_id)
+    expect(retry.intent_sequence).toBe(first.intent_sequence)
+  })
+
+  it('invalidates an ambiguous draft retry only when a staged star enters transport', async () => {
+    db = freshDb()
+    const id = insertItem(db, {
+      ...AGENT,
+      kind: 'question',
+      title: 'Fire invalidates retry identity',
+      detail: 'Choose one.',
+      options: [{ label: 'Staged B', recommended: true }],
+    })
+    const bridge = await bootApp(db)
+    const fetchNow = globalThis.fetch
+    let loseFirstResponse = true
+    globalThis.fetch = async (input, init) => {
+      if (
+        loseFirstResponse
+        && init?.method === 'POST'
+        && String(input).includes(`/items/${id}/reply`)
+      ) {
+        loseFirstResponse = false
+        await fetchNow(input, init)
+        throw new Error('lost pre-stage response')
+      }
+      return fetchNow(input, init)
+    }
+    expectConsoleError(/lost pre-stage response/)
+
+    click(row(id))
+    await settle()
+    type(answerInput(id), 'Original A')
+    click(buttonLabelled('Send', row(id)!))
+    await settle()
+
+    click(row(id)?.querySelector('.star-btn'))
+    const held = holdFirstPost(`/items/${id}/reply`)
+    await vi.advanceTimersByTimeAsync(5000)
+    await vi.advanceTimersByTimeAsync(0)
+    click(buttonLabelled('Send', row(id)!))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(held.started()).toBe(2)
+    held.release()
+    await settle()
+
+    const originalPosts = bridge.posts
+      .filter((post) => post.url.includes(`/items/${id}/reply`))
+      .map((post) => JSON.parse(String(post.init?.body)))
+      .filter((body) => body.text === 'Original A')
+    expect(originalPosts).toHaveLength(2)
+    expect(originalPosts[1].intent_action_id).not.toBe(originalPosts[0].intent_action_id)
+    expect(originalPosts[1].intent_sequence).toBeGreaterThan(originalPosts[0].intent_sequence)
+  })
+
   it('keeps failed option and orphaned text recoveries distinct and clears only the chosen entry', async () => {
     db = freshDb()
     const id = insertItem(db, {

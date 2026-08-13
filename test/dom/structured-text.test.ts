@@ -152,6 +152,8 @@ describe('structured agent text on cards and plans', () => {
         '<Component render={() => { if (value) /}>/.test(value) }} href="https://attribute.example/control">',
         '<Component render={() => { run()',
         'if (value) /}>/.test(value) }} href="https://attribute.example/asi">',
+        '<Component render={() => { switch (value) { case 1: if (value) /}}}>/.test(value) } }} href="https://attribute.example/case">',
+        '<Component render={() => { class Runner extends mixin(Base) {} /}}}>/.test(value) }} href="https://attribute.example/class">',
         'if x <a',
         'next = 1',
         'See https://prose.example/x',
@@ -172,7 +174,32 @@ describe('structured agent text on cards and plans', () => {
     expect(detail?.textContent).toContain('https://attribute.example/w')
     expect(detail?.textContent).toContain('https://attribute.example/control')
     expect(detail?.textContent).toContain('https://attribute.example/asi')
+    expect(detail?.textContent).toContain('https://attribute.example/case')
+    expect(detail?.textContent).toContain('https://attribute.example/class')
     expect(detail?.querySelector('li')?.textContent).toBe('recovered item')
+  })
+
+  it('fails closed on a missing division operand inside switch clauses', async () => {
+    const d = open()
+    const id = insertItem(d, {
+      ...AGENT,
+      kind: 'question',
+      title: 'Inspect malformed switch clause',
+      detail:
+        '<Component render={() => { switch (value) { ' +
+        'case one: run() /}}}>/.test(value) } }} ' +
+        'href="https://attribute.example/malformed-switch">label</Component>\n' +
+        'https://prose.example/x',
+    })
+
+    await bootApp(d)
+    click(row(id))
+    await settle()
+
+    const detail = row(id)?.querySelector('.card-tldr')
+    expect(detail?.querySelectorAll('a')).toHaveLength(0)
+    expect(detail?.textContent).toContain('https://attribute.example/malformed-switch')
+    expect(detail?.textContent).toContain('https://prose.example/x')
   })
 
   it('protects member components and keeps entity-like query text in one card link', async () => {

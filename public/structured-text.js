@@ -19,14 +19,14 @@ const REGEX_PREFIX_KEYWORDS = new Set([
   'return', 'throw', 'typeof', 'void', 'yield',
 ])
 const CONTROL_STATEMENT_HEADERS = new Set(['if', 'while', 'for', 'with'])
-const CONTROL_BLOCK_HEADERS = new Set(['catch', 'switch'])
+const CONTROL_BLOCK_HEADERS = new Set(['catch'])
 const STATEMENT_BLOCK_PREFIXES = new Set(['else', 'do', 'try', 'finally'])
 const NON_TERMINATING_KEYWORDS = new Set([
   ...REGEX_PREFIX_KEYWORDS,
   ...CONTROL_STATEMENT_HEADERS,
   ...CONTROL_BLOCK_HEADERS,
   ...STATEMENT_BLOCK_PREFIXES,
-  'async', 'class', 'const', 'export', 'function', 'import', 'let', 'var',
+  'async', 'class', 'const', 'export', 'function', 'import', 'let', 'switch', 'var',
 ])
 const HTML_TAG_NAMES = new Set(
   'a abbr address area article aside audio b base bdi bdo blockquote body br button canvas caption cite code col colgroup data datalist dd del details dfn dialog div dl dt em embed fieldset figcaption figure footer form h1 h2 h3 h4 h5 h6 head header hgroup hr html i iframe img input ins kbd label legend li link main map mark menu meta meter nav noscript object ol optgroup option output p picture pre progress q rp rt ruby s samp script search section select slot small source span strong style sub summary sup table tbody td template textarea tfoot th thead time title tr track u ul var video wbr'.split(' '),
@@ -82,11 +82,16 @@ function scanTag(value, start, initial = {}) {
   let pendingLabel = initial.pendingLabel ?? false
   let pendingFunctionKind = initial.pendingFunctionKind ?? ''
   let pendingClassKind = initial.pendingClassKind ?? ''
+  let classHeritageDepth = initial.classHeritageDepth ?? -1
+  let switchClauseDepth = initial.switchClauseDepth ?? -1
+  let switchClauseTernaries = initial.switchClauseTernaries ?? 0
+  let pendingDivisionDepth = initial.pendingDivisionDepth ?? -1
   let canEndStatement = initial.canEndStatement ?? false
   if (
     initial.lineStart &&
     canEndStatement &&
     (expressionContexts.at(-1) === 'statementBlock' ||
+      expressionContexts.at(-1) === 'switchBlock' ||
       expressionContexts.at(-1) === 'valueBlock')
   ) {
     atStatementStart = true
@@ -122,6 +127,10 @@ function scanTag(value, start, initial = {}) {
     pendingLabel: closed ? false : pendingLabel,
     pendingFunctionKind: closed ? '' : pendingFunctionKind,
     pendingClassKind: closed ? '' : pendingClassKind,
+    classHeritageDepth: closed ? -1 : classHeritageDepth,
+    switchClauseDepth: closed ? -1 : switchClauseDepth,
+    switchClauseTernaries: closed ? 0 : switchClauseTernaries,
+    pendingDivisionDepth: closed ? -1 : pendingDivisionDepth,
     canEndStatement: closed ? false : canEndStatement,
     genericDepth: closed ? 0 : genericDepth,
     genericClosers: closed ? [] : genericClosers,
@@ -153,7 +162,6 @@ function scanTag(value, start, initial = {}) {
         atStatementStart = false
         pendingLabel = false
         pendingFunctionKind = ''
-        pendingClassKind = ''
         canEndStatement = false
         index++
         continue
@@ -204,6 +212,7 @@ function scanTag(value, start, initial = {}) {
         continue
       }
       if (char === '/' && canStartRegex) {
+        pendingDivisionDepth = -1
         expressionMode = 'regex'
         regexCharClass = false
         quoteEscaped = false
@@ -212,23 +221,27 @@ function scanTag(value, start, initial = {}) {
         atStatementStart = false
         pendingLabel = false
         pendingFunctionKind = ''
-        pendingClassKind = ''
         canEndStatement = false
         continue
       }
       if (char === '"' || char === "'" || char === '`') {
+        pendingDivisionDepth = -1
         quote = char
         pendingControlHeader = ''
         pendingBlockKind = ''
         atStatementStart = false
         pendingLabel = false
         pendingFunctionKind = ''
-        pendingClassKind = ''
         canEndStatement = false
         continue
       }
       const expressionClose = OPEN_TO_CLOSE.get(char)
       if (expressionClose) {
+        const depthBeforeOpen = expressionClosers.length
+        const opensClassBody =
+          char === '{' &&
+          Boolean(pendingClassKind) &&
+          depthBeforeOpen === classHeritageDepth
         expressionClosers.push(expressionClose)
         let context = 'value'
         if (char === '(' && pendingFunctionKind) {
@@ -240,7 +253,7 @@ function scanTag(value, start, initial = {}) {
         else if (char === '{' && pendingBlockKind) context = pendingBlockKind
         else if (char === '{' && pendingControlHeader === 'controlBlock') {
           context = 'statementBlock'
-        } else if (char === '{' && pendingClassKind) context = pendingClassKind
+        } else if (opensClassBody) context = pendingClassKind
         else if (char === '{' && atStatementStart) context = 'statementBlock'
         expressionContexts.push(context)
         canStartRegex = true
@@ -249,30 +262,42 @@ function scanTag(value, start, initial = {}) {
         pendingBlockKind = ''
         atStatementStart =
           char === '{' &&
-          (context === 'statementBlock' || context === 'valueBlock')
+          (context === 'statementBlock' ||
+            context === 'switchBlock' ||
+            context === 'valueBlock')
         pendingLabel = false
         pendingFunctionKind = ''
-        pendingClassKind = ''
+        if (opensClassBody) {
+          pendingClassKind = ''
+          classHeritageDepth = -1
+        }
         canEndStatement = false
       } else if (
         expressionClosers.at(-1) === char ||
         (expressionClosers.at(-1) === 'template}' && char === '}')
       ) {
+        if (pendingDivisionDepth === expressionClosers.length) {
+          return result(value.length, false)
+        }
         const closedTemplateExpression = expressionClosers.pop() === 'template}'
         const closedContext = expressionContexts.pop() ?? 'value'
         if (closedTemplateExpression) quote = '`'
         canStartRegex =
           closedContext === 'controlStatement' ||
           closedContext === 'statementBlock' ||
+          closedContext === 'switchBlock' ||
           closedContext === 'classDeclarationBlock'
         afterMemberAccess = false
         pendingControlHeader = ''
         if (
           closedContext === 'controlStatement' ||
-          closedContext === 'controlBlock' ||
           closedContext === 'functionDeclarationParams'
         ) {
           pendingBlockKind = 'statementBlock'
+        } else if (closedContext === 'controlBlock') {
+          pendingBlockKind = 'statementBlock'
+        } else if (closedContext === 'switchHeader') {
+          pendingBlockKind = 'switchBlock'
         } else if (closedContext === 'functionExpressionParams') {
           pendingBlockKind = 'valueBlock'
         } else {
@@ -281,17 +306,29 @@ function scanTag(value, start, initial = {}) {
         atStatementStart =
           closedContext === 'controlStatement' ||
           closedContext === 'statementBlock' ||
+          closedContext === 'switchBlock' ||
           closedContext === 'classDeclarationBlock'
         pendingLabel = false
         pendingFunctionKind = ''
-        pendingClassKind = ''
+        if (closedContext === 'switchBlock') {
+          switchClauseDepth = -1
+          switchClauseTernaries = 0
+        }
+        if (
+          pendingDivisionDepth >= 0 &&
+          (char === ']' || (char === '}' && closedContext === 'value'))
+        ) {
+          pendingDivisionDepth = -1
+        }
         canEndStatement =
           closedContext !== 'template' &&
           closedContext !== 'controlStatement' &&
           closedContext !== 'controlBlock' &&
+          closedContext !== 'switchHeader' &&
           closedContext !== 'functionDeclarationParams' &&
           closedContext !== 'functionExpressionParams'
       } else if (IDENTIFIER_START_RE.test(tokenChar)) {
+        pendingDivisionDepth = -1
         let end = index + tokenChar.length
         while (end < value.length) {
           const nextCodePoint = value.codePointAt(end)
@@ -305,7 +342,9 @@ function scanTag(value, start, initial = {}) {
         const wasStatementStart = atStatementStart
         const previousFunctionKind = pendingFunctionKind
         const previousClassKind = pendingClassKind
-        if (!memberAccess && wasStatementStart && CONTROL_STATEMENT_HEADERS.has(word)) {
+        if (!memberAccess && wasStatementStart && word === 'switch') {
+          pendingControlHeader = 'switchHeader'
+        } else if (!memberAccess && wasStatementStart && CONTROL_STATEMENT_HEADERS.has(word)) {
           pendingControlHeader = 'controlStatement'
         } else if (!memberAccess && wasStatementStart && CONTROL_BLOCK_HEADERS.has(word)) {
           pendingControlHeader = 'controlBlock'
@@ -339,16 +378,28 @@ function scanTag(value, start, initial = {}) {
             wasStatementStart
               ? 'classDeclarationBlock'
               : 'classExpressionBlock'
+          classHeritageDepth = expressionClosers.length
         } else {
           pendingClassKind = previousClassKind
+        }
+        const startsSwitchClause =
+          !memberAccess &&
+          wasStatementStart &&
+          expressionContexts.at(-1) === 'switchBlock' &&
+          (word === 'case' || word === 'default')
+        if (startsSwitchClause) {
+          switchClauseDepth = expressionClosers.length
+          switchClauseTernaries = 0
         }
         const structuralWord =
           CONTROL_STATEMENT_HEADERS.has(word) ||
           CONTROL_BLOCK_HEADERS.has(word) ||
           STATEMENT_BLOCK_PREFIXES.has(word) ||
+          word === 'switch' ||
           word === 'async' ||
           word === 'function' ||
-          word === 'class'
+          word === 'class' ||
+          startsSwitchClause
         pendingLabel = !memberAccess && wasStatementStart && !structuralWord
         atStatementStart =
           !memberAccess &&
@@ -362,6 +413,7 @@ function scanTag(value, start, initial = {}) {
         afterMemberAccess = false
         index = end - 1
       } else if (/[0-9]/.test(char)) {
+        pendingDivisionDepth = -1
         let end = index + 1
         while (end < value.length && /[0-9a-f._]/i.test(value[end])) end++
         canStartRegex = false
@@ -371,7 +423,6 @@ function scanTag(value, start, initial = {}) {
         atStatementStart = false
         pendingLabel = false
         pendingFunctionKind = ''
-        pendingClassKind = ''
         canEndStatement = true
         index = end - 1
       } else if ((char === '+' || char === '-') && value[index + 1] === char) {
@@ -382,7 +433,6 @@ function scanTag(value, start, initial = {}) {
         pendingBlockKind = ''
         atStatementStart = false
         pendingLabel = false
-        if (!pendingFunctionKind) pendingClassKind = ''
         canEndStatement = !prefixOperator
         index++
       } else if (char === '!' && value[index + 1] !== '=') {
@@ -394,7 +444,6 @@ function scanTag(value, start, initial = {}) {
         atStatementStart = false
         pendingLabel = false
         pendingFunctionKind = ''
-        pendingClassKind = ''
         canEndStatement = false
       } else if (char === '.') {
         if (value[index + 1] === '.' && value[index + 2] === '.') {
@@ -405,7 +454,6 @@ function scanTag(value, start, initial = {}) {
           atStatementStart = false
           pendingLabel = false
           pendingFunctionKind = ''
-          pendingClassKind = ''
           canEndStatement = false
           index += 2
         } else {
@@ -426,10 +474,43 @@ function scanTag(value, start, initial = {}) {
         atStatementStart = false
         pendingLabel = false
         pendingFunctionKind = ''
-        pendingClassKind = ''
         canEndStatement = false
         index++
+      } else if (
+        char === '?' &&
+        switchClauseDepth === expressionClosers.length
+      ) {
+        switchClauseTernaries++
+        canStartRegex = true
+        afterMemberAccess = false
+        atStatementStart = false
+        pendingLabel = false
+        canEndStatement = false
+      } else if (
+        char === ':' &&
+        switchClauseDepth === expressionClosers.length
+      ) {
+        if (pendingDivisionDepth === expressionClosers.length) {
+          return result(value.length, false)
+        }
+        canStartRegex = true
+        afterMemberAccess = false
+        pendingControlHeader = ''
+        pendingBlockKind = ''
+        pendingLabel = false
+        pendingFunctionKind = ''
+        canEndStatement = false
+        if (switchClauseTernaries > 0) {
+          switchClauseTernaries--
+          atStatementStart = false
+        } else {
+          switchClauseDepth = -1
+          atStatementStart = true
+        }
       } else if (char === ':' && pendingLabel) {
+        if (pendingDivisionDepth === expressionClosers.length) {
+          return result(value.length, false)
+        }
         canStartRegex = true
         afterMemberAccess = false
         pendingControlHeader = ''
@@ -437,9 +518,11 @@ function scanTag(value, start, initial = {}) {
         atStatementStart = true
         pendingLabel = false
         pendingFunctionKind = ''
-        pendingClassKind = ''
         canEndStatement = false
       } else if (char === ';') {
+        if (pendingDivisionDepth === expressionClosers.length) {
+          return result(value.length, false)
+        }
         canStartRegex = true
         afterMemberAccess = false
         pendingControlHeader = ''
@@ -449,7 +532,6 @@ function scanTag(value, start, initial = {}) {
           expressionContexts.at(-1) !== 'controlBlock'
         pendingLabel = false
         pendingFunctionKind = ''
-        pendingClassKind = ''
         canEndStatement = false
       } else if (char === '*' && pendingFunctionKind) {
         canStartRegex = true
@@ -458,6 +540,15 @@ function scanTag(value, start, initial = {}) {
         pendingLabel = false
         canEndStatement = false
       } else if ('=!:,;?&|^~+-*%<>/'.includes(char)) {
+        if (
+          pendingDivisionDepth === expressionClosers.length &&
+          ',:?'.includes(char)
+        ) {
+          return result(value.length, false)
+        }
+        if (char === '/' && !canStartRegex) {
+          pendingDivisionDepth = expressionClosers.length
+        }
         canStartRegex = true
         afterMemberAccess = false
         pendingControlHeader = ''
@@ -465,7 +556,6 @@ function scanTag(value, start, initial = {}) {
         atStatementStart = false
         pendingLabel = false
         pendingFunctionKind = ''
-        pendingClassKind = ''
         canEndStatement = false
       }
       continue
@@ -513,7 +603,6 @@ function scanTag(value, start, initial = {}) {
       atStatementStart = false
       pendingLabel = false
       pendingFunctionKind = ''
-      pendingClassKind = ''
       canEndStatement = false
       regexCharClass = false
       quoteEscaped = false
@@ -589,6 +678,10 @@ function consumeTag(scan, state) {
   state.pendingLabel = scan.pendingLabel
   state.pendingFunctionKind = scan.pendingFunctionKind
   state.pendingClassKind = scan.pendingClassKind
+  state.classHeritageDepth = scan.classHeritageDepth
+  state.switchClauseDepth = scan.switchClauseDepth
+  state.switchClauseTernaries = scan.switchClauseTernaries
+  state.pendingDivisionDepth = scan.pendingDivisionDepth
   state.canEndStatement = scan.canEndStatement
   state.genericDepth = scan.genericDepth
   state.genericClosers = scan.genericClosers
@@ -621,6 +714,10 @@ function credibleTagContinuation(lines, lineIndex, frameworkComponent, scanBudge
     pendingLabel: false,
     pendingFunctionKind: '',
     pendingClassKind: '',
+    classHeritageDepth: -1,
+    switchClauseDepth: -1,
+    switchClauseTernaries: 0,
+    pendingDivisionDepth: -1,
     canEndStatement: false,
     genericDepth: 0,
     genericClosers: [],
@@ -869,6 +966,10 @@ function renderInline(
           pendingLabel: state.pendingLabel,
           pendingFunctionKind: state.pendingFunctionKind,
           pendingClassKind: state.pendingClassKind,
+          classHeritageDepth: state.classHeritageDepth,
+          switchClauseDepth: state.switchClauseDepth,
+          switchClauseTernaries: state.switchClauseTernaries,
+          pendingDivisionDepth: state.pendingDivisionDepth,
           canEndStatement: state.canEndStatement,
           lineStart: true,
           genericDepth: state.genericDepth,
@@ -962,6 +1063,10 @@ export function renderStructuredText(value) {
     pendingLabel: false,
     pendingFunctionKind: '',
     pendingClassKind: '',
+    classHeritageDepth: -1,
+    switchClauseDepth: -1,
+    switchClauseTernaries: 0,
+    pendingDivisionDepth: -1,
     canEndStatement: false,
     genericDepth: 0,
     genericClosers: [],

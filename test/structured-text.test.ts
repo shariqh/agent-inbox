@@ -227,6 +227,12 @@ describe('renderStructuredText escaping', () => {
     '<Component render={() => { class Runner {} /}>/.test(value) }} href="https://attribute.example/y">',
     '<Component render={() => { if\n((value && ready()))\n/}>/.test(value) }} href="https://attribute.example/y">',
     '<Component render={() => { run()\nif (value) /}>/.test(value) }} href="https://attribute.example/y">',
+    '<Component render={() => { switch (value) { case 1: if (value) /}}}>/.test(value); break; default: if (other) /}}}>/.test(other) } }} href="https://attribute.example/y">',
+    '<Component render={() => { switch (value) { case value ? one : two: if (value) /}}}>/.test(value) } }} href="https://attribute.example/y">',
+    '<Component render={() => { class Runner extends mixin(Base) {} /}}}>/.test(value) }} href="https://attribute.example/y">',
+    '<Component render={() => { class Runner extends Namespace.Base {} /}}}>/.test(value) }} href="https://attribute.example/y">',
+    '<Component render={() => { class Runner extends mixin<Base>() {} /}}}>/.test(value) }} href="https://attribute.example/y">',
+    '<Component render={() => { class Runner extends registry[key] {} /}}}>/.test(value) }} href="https://attribute.example/y">',
     '<Component value={call(value) / 2 > 0 ? "https://attribute.example/x" : null} href="https://attribute.example/y">',
     '<Component value={(value) / 2 > 0 ? "https://attribute.example/x" : null} href="https://attribute.example/y">',
     '<Component value={({ n: 1 }) / 2 > 0 ? "https://attribute.example/x" : null} href="https://attribute.example/y">',
@@ -235,12 +241,31 @@ describe('renderStructuredText escaping', () => {
     '<Component render={() => { if (value) call(value) / 2 }} href="https://attribute.example/y">',
     '<Component render={() => { const run = function () {} / 2 }} href="https://attribute.example/y">',
     '<Component render={() => { const Runner = class {} / 2 }} href="https://attribute.example/y">',
+    '<Component render={() => { const value = ready ? call() : fallback() / 2 }} href="https://attribute.example/y">',
+    '<Component render={() => { const value = { key: call() / 2 } }} href="https://attribute.example/y">',
+    '<Component render={() => { const value: number = call() / 2 }} href="https://attribute.example/y">',
+    '<Component render={() => { const Runner = class extends mixin(Base) {} / 2 }} href="https://attribute.example/y">',
+    '<Component render={() => { const Runner = class extends Namespace.Base {} / 2 }} href="https://attribute.example/y">',
+    '<Component render={() => { const Runner = class extends mixin<Base>() {} / 2 }} href="https://attribute.example/y">',
+    '<Component render={() => { const Runner = class extends registry[key] {} / 2 }} href="https://attribute.example/y">',
   ])('classifies regex and division from expression token context: %s', (fragment) => {
     const html = renderStructuredText(`${fragment}label</Component>\nhttps://prose.example/x\n- item`)
     expect(html).not.toContain('href="https://attribute.example/x"')
     expect(html).not.toContain('href="https://attribute.example/y"')
     expect(html).toContain('href="https://prose.example/x"')
     expect(html).toContain('<ul><li>item</li></ul>')
+  })
+
+  it('fails closed when a binary division has no right-hand operand', () => {
+    const html = renderStructuredText(
+      '<Component render={() => { switch (value) { ' +
+        'case one: run() /}}}>/.test(value); break; ' +
+        'default: run() /}}}>/.test(value) } }} ' +
+        'href="https://attribute.example/malformed-switch">label</Component>\n' +
+        'https://prose.example/x',
+    )
+    expect(html).not.toContain('href="https://attribute.example/malformed-switch"')
+    expect(html).not.toContain('href="https://prose.example/x"')
   })
 
   it.each([
@@ -711,6 +736,21 @@ describe('structured text presentation contract', () => {
     const controls = 'if ((value && ready())) /}>/.test(value); '.repeat(20_000)
     const value =
       `<Component render={() => { ${controls}}} ` +
+      'href="https://attribute.example/x">label</Component>\n' +
+      'See https://prose.example/x'
+    const started = performance.now()
+    const html = renderStructuredText(value)
+    expect(performance.now() - started).toBeLessThan(1_500)
+    expect(html).not.toContain('href="https://attribute.example/x"')
+    expect(html).toContain('href="https://prose.example/x"')
+  }, 10_000)
+
+  it('tracks switch clauses and nested class heritage linearly', () => {
+    const clauses = 'case 1: if (value) /}}}>/.test(value); break; '.repeat(10_000)
+    const classes =
+      'class Runner extends mixin<Base>(registry[key]) {} /}}}>/.test(value); '.repeat(10_000)
+    const value =
+      `<Component render={() => { switch (value) { ${clauses} } ${classes} }} ` +
       'href="https://attribute.example/x">label</Component>\n' +
       'See https://prose.example/x'
     const started = performance.now()

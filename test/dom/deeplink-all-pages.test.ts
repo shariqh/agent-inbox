@@ -121,7 +121,16 @@ describe('deep links across paginated tabs', () => {
 
   it('restores focused non-Inbox targets across polls without stealing focus after the user moves', async () => {
     db = freshDb()
-    const noteId = insertItem(db, { ...ALPHA, kind: 'note', title: 'Note focus target' })
+    const noteId = insertItem(db, {
+      ...ALPHA,
+      kind: 'note',
+      title: 'Note focus target',
+      context: 'Nested background',
+    })
+    for (let i = 0; i < 6; i++) {
+      advanceClock()
+      insertItem(db, { ...ALPHA, kind: 'note', title: `Newer focus note ${i}` })
+    }
     advanceClock()
     const doneId = insertItem(db, { ...ALPHA, kind: 'done', title: 'History focus target' })
     advanceClock()
@@ -141,6 +150,22 @@ describe('deep links across paginated tabs', () => {
       expect(before?.isConnected).toBe(false)
       expectFocusedSummary(id)
     }
+
+    navigateToHash(`#item/${noteId}`)
+    await settle()
+    const background = card(noteId)?.querySelector<HTMLElement>('.card-context > summary')!
+    background.focus()
+    await pollTick()
+    expect(document.activeElement).toBe(card(noteId)?.querySelector('.card-context > summary'))
+
+    const resolve = [...card(noteId)!.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent === 'Resolve')!
+    resolve.focus()
+    await pollTick()
+    expect(document.activeElement).toBe(
+      [...card(noteId)!.querySelectorAll<HTMLButtonElement>('button')]
+        .find((button) => button.textContent === 'Resolve'),
+    )
 
     const search = document.getElementById('search')!
     search.focus()

@@ -489,19 +489,20 @@ function pagedCardFocusBookmark() {
   const active = document.activeElement
   const card = active?.closest?.('#notes [data-card-id], #done [data-card-id], #boards [data-card-id]')
   if (!card) return null
-  const summary = card.querySelector(':scope > summary')
-  if (active !== card && active !== summary) return null
-  return {
-    id: card.dataset.cardId,
-    control: active === summary ? 'summary' : 'card',
-  }
+  const bookmark = captureCardFocus(card, card.dataset.cardId)
+  if (!bookmark) return null
+  return { ...bookmark, section: card.closest('section')?.id ?? '' }
 }
 
 function restorePagedCardFocus(bookmark) {
   if (!bookmark) return false
-  const card = document.querySelector(`[data-card-id="${CSS.escape(bookmark.id)}"]`)
+  const scope = bookmark.section ? document.getElementById(bookmark.section) : document
+  const card = scope?.querySelector(`[data-card-id="${CSS.escape(bookmark.id)}"]`)
   if (!card) return false
-  const target = bookmark.control === 'summary' ? card.querySelector(':scope > summary') : card
+  const matches = bookmark.key
+    ? cardFocusTargets(card).filter((target) => cardFocusKey(target) === bookmark.key)
+    : []
+  const target = matches[bookmark.ordinal] ?? card.querySelector(':scope > summary') ?? card
   if (!target) return false
   target.tabIndex = 0
   target.focus({ preventScroll: true })
@@ -784,9 +785,16 @@ const rowDraftMeta = {} // row id → recovery labels/revision if its owner disa
 const staleRowDrafts = {} // row-id + revision key → one refused action response
 let requestedDraftFocusBookmark = null
 let draftRecoveryFocusPending = false
+let draftRecoveryTarget = null
 
 function rowDraftRecoveryKey(rowId, revision) {
   return JSON.stringify([rowId, revision])
+}
+
+function clearRowRecoveryTarget(rowId, revision) {
+  if (draftRecoveryTarget?.rowId === rowId && draftRecoveryTarget.revision === revision) {
+    draftRecoveryTarget = null
+  }
 }
 
 function activeDraftFocusBookmark() {
@@ -1084,6 +1092,7 @@ function rowAnswerEl(b, r, onSaved) {
       delete rowDraftMeta[r.id]
     }
     delete staleRowDrafts[recoveryKey]
+    clearRowRecoveryTarget(r.id, r.revision)
     resumeRender()
   })
   const save = async () => {
@@ -1124,7 +1133,7 @@ function rowAnswerEl(b, r, onSaved) {
         label: r.label,
         context: r.context ?? '',
       }
-      requestDraftRecovery()
+      requestDraftRecovery({ rowId: r.id, revision: r.revision, project: b.project })
       delete rowDrafts[r.id]
       delete rowDraftKinds[r.id]
       delete rowDraftMeta[r.id]
@@ -1136,6 +1145,7 @@ function rowAnswerEl(b, r, onSaved) {
     delete rowDraftKinds[r.id]
     delete rowDraftMeta[r.id]
     delete staleRowDrafts[recoveryKey]
+    clearRowRecoveryTarget(r.id, r.revision)
     delete input.dataset.responseKind
     showWriteError(r.id, '')
     // the row stays blocked until the agent picks the note up — the human's part
@@ -2718,7 +2728,10 @@ function renderOrphanedDrafts(host) {
       .map(([key, draft]) => ({
         id: key,
         draft,
-        clear: () => { delete staleRowDrafts[key] },
+        clear: () => {
+          delete staleRowDrafts[key]
+          clearRowRecoveryTarget(draft.rowId, draft.revision)
+        },
         text: [
           draft.boardTitle,
           draft.label,
@@ -3232,8 +3245,20 @@ function hasDraftRecovery() {
   return Object.keys(staleItemDrafts).length > 0 || Object.keys(staleRowDrafts).length > 0
 }
 
-function requestDraftRecovery() {
+function requestDraftRecovery(target = draftRecoveryTarget) {
   draftRecoveryFocusPending = true
+  if (target) {
+    draftRecoveryTarget = target
+    projectFilter = target.project
+    agentFilter = null
+    actionFilter = 'all'
+    changedOnly = false
+    searchQuery = ''
+    const search = document.getElementById('search')
+    if (search) search.value = ''
+    setOpenRow(target.rowId)
+    selectRow(target.rowId)
+  }
   if (triageDeck) closeTriage({ restoreFocus: false })
   if (missionBoardId) closeMission()
   if (relayOpen) closeRelay()
@@ -3242,8 +3267,10 @@ function requestDraftRecovery() {
 
 function restoreDraftRecoveryFocus() {
   if (!draftRecoveryFocusPending) return false
-  const target = document.querySelector('.stale-drafts-fold summary')
-    ?? document.querySelector('#needsYouList .reply-input[data-recovered-draft="1"]')
+  const inline = draftRecoveryTarget
+    ? needsYouRowEl(draftRecoveryTarget.rowId)?.querySelector('.reply-input[data-recovered-draft="1"]')
+    : null
+  const target = inline ?? document.querySelector('.stale-drafts-fold summary')
   if (!target) return false
   draftRecoveryFocusPending = false
   target.focus({ preventScroll: true })

@@ -228,9 +228,7 @@ describe('closed projects (issue #32)', () => {
     expect(body).toContain('/api/projects/closed')
     // an older viewer answers 404 with HTML; a bare .json() would throw into
     // load()'s catch and turn the whole page 'disconnected'
-    const fetchLine = body.split('\n').find((l) => l.includes('/api/projects/closed'))!
-    expect(fetchLine).toMatch(/\.catch\(/)
-    expect(fetchLine).toMatch(/r\.ok/)
+    expect(body).toMatch(/fetch\('\/api\/projects\/closed'\)[\s\S]*?r\.ok[\s\S]*?\.catch\(/)
     expect(body).toMatch(/lastData = \{[^}]*closed/)
   })
 
@@ -305,9 +303,10 @@ describe('closed projects (issue #32)', () => {
     const disclosure = fn('function initProjectDisclosure()', '\nfunction railActionEl(')
     expect(disclosure).toContain('projectMode = projectNavigationMode()')
     expect(disclosure).toContain('projectMode = next')
-    expect(disclosure).toContain('const focusState = projectFocusState(document.activeElement)')
+    expect(disclosure).toContain('const activeFocusState = projectFocusState(document.activeElement)')
     expect(disclosure).toContain('setClosedProjectsOpen(false)')
     expect(disclosure).toContain('restoreProjectFocus(focusState)')
+    expect(disclosure).toContain('projectFocusBookmark')
     expect(disclosure).toMatch(/matchMedia\(`\(max-width: \$\{NARROW_MAX\}px\)`\)/)
     const fold = fn('function closedFoldEl(', '\nfunction focusProjectControl(')
     expect(fold).toMatch(/if \(!fold\.isConnected \|\| tabletProjectsMode\(\)\) return/)
@@ -358,6 +357,7 @@ describe('closed projects (issue #32)', () => {
     expect(js).toContain('let authoritativeClosed = []')
     expect(js).toContain('let loadGeneration = 0')
     expect(js).toContain('let appliedLoadGeneration = 0')
+    expect(js).toContain('let appliedClosedGeneration = 0')
     expect(js).toContain('const projectMutationIntents = new Map()')
     expect(js).toContain('const projectMutationQueues = new Map()')
     const loadBody = fn('async function load()', '\n// fix round 1 (hardening)')
@@ -375,7 +375,9 @@ describe('closed projects (issue #32)', () => {
     const retire = fn('function retireConfirmedProjectMutationIntents(', '\nfunction applyProjectMutationIntents(')
     expect(retire).toMatch(/completedLoadGeneration > intent\.confirmedAfterLoad/)
     const wait = fn('function waitForAuthoritativeRefresh(', '\nasync function refreshAuthoritativeProjectState(')
-    expect(wait).toMatch(/appliedLoadGeneration > afterGeneration/)
+    expect(wait).toMatch(/appliedClosedGeneration > afterGeneration/)
+    expect(loadBody).toMatch(/if \(closedSnapshot !== null\)/)
+    expect(loadBody).toMatch(/if \(generation < appliedLoadGeneration\) return false/)
   })
 
   it('reconciles projectFilter against the FULL project list so a closed project can still be peeked', () => {

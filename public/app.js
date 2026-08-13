@@ -50,6 +50,7 @@ let lastData = null
 let authoritativeClosed = []
 let loadGeneration = 0
 let appliedLoadGeneration = 0
+let appliedClosedGeneration = 0
 let preparedFrame = null
 // issue #30 — the (repo, branch) → cached PR state index, rebuilt once per
 // render. A Map from the start, never null: the deep-link and setup paths can
@@ -299,28 +300,41 @@ async function load() {
     // predates this route answers 404 with HTML, a bare .json() would throw into
     // the catch below, and the WHOLE page would read 'disconnected'. An unknown
     // closed set must mean "suppress nothing", never a dead page.
-    const closed = await fetch('/api/projects/closed').then((r) => (r.ok ? r.json() : [])).catch(() => [])
+    const closedSnapshot = await fetch('/api/projects/closed')
+      .then((r) => (r.ok ? r.json() : null))
+      .catch(() => null)
     // Cached PR state (issue #30), same defensive shape and for the same reason:
     // an empty links set must mean "render exactly as before this feature", never
     // a dead page. A viewer that predates this route answers 404 with HTML.
     const links = await fetch('/api/links').then((r) => (r.ok ? r.json() : [])).catch(() => [])
-    if (generation < appliedLoadGeneration) return true
+    if (generation < appliedLoadGeneration) return false
     appliedLoadGeneration = generation
-    authoritativeClosed = [...closed]
-    lastData = { g: ageNotes(g, Date.now()), boards, archived, activity, closed, links }
-    retireConfirmedProjectMutationIntents(generation)
+    if (closedSnapshot !== null) {
+      appliedClosedGeneration = generation
+      authoritativeClosed = [...closedSnapshot]
+      retireConfirmedProjectMutationIntents(generation)
+    }
+    lastData = {
+      g: ageNotes(g, Date.now()),
+      boards,
+      archived,
+      activity,
+      closed: [...authoritativeClosed],
+      links,
+    }
     applyProjectMutationIntents()
     renderIfIdle()
     if (!bootFocusDone) { bootFocusDone = true; applyFocusHash() }
     document.getElementById('status').textContent = ''
-    resolveAuthoritativeRefreshWaiters(generation)
-    return true
+    if (closedSnapshot !== null) resolveAuthoritativeRefreshWaiters(generation)
+    return closedSnapshot !== null
   } catch (err) {
     // an exception thrown inside render() used to be swallowed here with no
     // console signal at all — a completely dead page with nothing to debug.
     // That is exactly the failure mode behind the "none of the buttons work"
     // incident (0 needs-you items → renderEmptyState threw → blank panel,
     // silently). Log it; keep the 'disconnected' status for genuine fetch failures.
+    if (generation < appliedLoadGeneration) return false
     console.error(err)
     document.getElementById('status').textContent = 'disconnected'
     return false
@@ -1615,6 +1629,7 @@ let tabletClosedSnapshot = null
 let tabletForcedOpenKey = ''
 let tabletDismissedOpenKey = null
 let restoringRailFocus = false
+let projectFocusBookmark = null
 let projectMutationGeneration = 0
 const projectMutationIntents = new Map()
 const projectMutationQueues = new Map()
@@ -1789,6 +1804,7 @@ function updateProjectDisclosure(entry) {
   dot.style.background = ''
   if (entry.key !== '__all__' && !entry.unknown) dot.style.background = pcolor(entry.key).dot
   toggle.setAttribute('aria-label', `Choose project, current ${label}`)
+  toggle.dataset.project = entry.key
 }
 
 function initProjectDisclosure() {
@@ -1801,6 +1817,8 @@ function initProjectDisclosure() {
   })
   for (const type of ['pointerdown', 'focusin']) document.addEventListener(type, (event) => {
     const target = event.target
+    const focusState = projectFocusState(target)
+    projectFocusBookmark = focusState
     const trigger = document.getElementById('closedProjectsTrigger')
     const popover = document.getElementById('closedProjectsPopover')
     const insideArchived = target instanceof Node
@@ -1832,7 +1850,9 @@ function initProjectDisclosure() {
   const syncMode = () => {
     const next = projectNavigationMode()
     if (next === projectMode) return
-    const focusState = projectFocusState(document.activeElement)
+    const activeFocusState = projectFocusState(document.activeElement)
+    const focusState = activeFocusState
+      ?? (document.activeElement === document.body ? projectFocusBookmark : null)
     projectMode = next
     setProjectDisclosure(false)
     setClosedProjectsOpen(false)
@@ -2017,6 +2037,15 @@ function visibleProjectTabs() {
   return [...document.querySelectorAll('#rail .rail-tab')].filter(projectTabIsOperable)
 }
 
+function projectControlIsOperable(target) {
+  if (!(target instanceof HTMLElement) || !target.isConnected) return false
+  if (target.classList.contains('rail-tab')) return projectTabIsOperable(target)
+  if (target.classList.contains('rail-close') || target.classList.contains('rail-reopen')) {
+    return projectTabIsOperable(target.closest('.rail-row')?.querySelector('.rail-tab'))
+  }
+  return true
+}
+
 function promoteProjectTab(selector) {
   const target = document.querySelector(selector)
   if (!projectTabIsOperable(target)) return false
@@ -2085,6 +2114,9 @@ function projectMutationOwnsFocus(selector, generation) {
 
 function projectFocusState(active) {
   if (!(active instanceof HTMLElement)) return null
+  if (active.id === 'projectDisclosureToggle') {
+    return { kind: 'disclosure', project: active.dataset.project ?? null }
+  }
   if (active.id === 'closedProjectsTrigger') {
     return { kind: 'trigger', project: active.dataset.project ?? null }
   }
@@ -2101,6 +2133,15 @@ function projectFocusState(active) {
 
 function restoreProjectFocus(state) {
   if (!state) return
+  if (state.kind === 'disclosure') {
+    const disclosure = document.getElementById('projectDisclosure')
+    if (projectNavigationMode() === 'phone' && disclosure?.dataset.open !== 'true') {
+      document.getElementById('projectDisclosureToggle')?.focus()
+      return
+    }
+    focusProjectFallback(state.project === '__all__' ? null : state.project)
+    return
+  }
   if (state.kind === 'trigger') {
     const trigger = document.getElementById('closedProjectsTrigger')
     if (trigger) {
@@ -2120,6 +2161,7 @@ function restoreProjectFocus(state) {
     tab: `#rail .rail-tab[data-project="${project}"]`,
   }[state.kind]
   let target = document.querySelector(selector)
+  if (target && !projectControlIsOperable(target)) target = null
   if (state.kind === 'reopen' && !target) {
     target = document.querySelector(`#rail .rail-tab[data-project="${project}"]`)
   }
@@ -2127,11 +2169,18 @@ function restoreProjectFocus(state) {
     target = document.querySelector(`#rail .rail-tab[data-project="${project}"]`)
   }
   if (
-    (state.kind === 'tab' || state.kind === 'reopen' || state.kind === 'peek')
+    (state.kind === 'tab' || state.kind === 'archive' || state.kind === 'reopen' || state.kind === 'peek')
     && !target
     && tabletProjectsMode()
     && closedSet().has(state.project)
   ) {
+    if (state.kind === 'archive') {
+      const trigger = document.getElementById('closedProjectsTrigger')
+      if (trigger) {
+        trigger.focus()
+        return
+      }
+    }
     if (!focusArchivedProjectControl(state.project)) focusProjectFallback(state.project)
     return
   }
@@ -2143,6 +2192,10 @@ function restoreProjectFocus(state) {
     return
   }
   if ((state.kind === 'reopen' || state.kind === 'peek') && !target) {
+    focusProjectFallback(state.project, { preferFold: closedSet().has(state.project) })
+    return
+  }
+  if ((state.kind === 'tab' || state.kind === 'archive') && !target) {
     focusProjectFallback(state.project, { preferFold: closedSet().has(state.project) })
     return
   }
@@ -3858,7 +3911,7 @@ function resolveAuthoritativeRefreshWaiters(completedLoadGeneration) {
 }
 
 function waitForAuthoritativeRefresh(afterGeneration) {
-  if (appliedLoadGeneration > afterGeneration) return Promise.resolve()
+  if (appliedClosedGeneration > afterGeneration) return Promise.resolve()
   return new Promise((resolve) => {
     authoritativeRefreshWaiters.add({ afterGeneration, resolve })
   })

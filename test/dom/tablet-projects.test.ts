@@ -68,6 +68,33 @@ function failNextRequest(method: 'GET' | 'POST'): void {
   }
 }
 
+function failNextUrl(url: string): void {
+  const fetchNow = globalThis.fetch
+  globalThis.fetch = async (input, init) => {
+    if (String(input) === url) {
+      globalThis.fetch = fetchNow
+      return new Response('boom', { status: 500 })
+    }
+    return await fetchNow(input, init)
+  }
+}
+
+function holdUrlFailure(url: string): { started: Promise<void>; release(): void } {
+  const fetchNow = globalThis.fetch
+  let release!: () => void
+  let started!: () => void
+  const gate = new Promise<void>((resolve) => { release = resolve })
+  const startedPromise = new Promise<void>((resolve) => { started = resolve })
+  globalThis.fetch = async (input, init) => {
+    if (String(input) !== url) return await fetchNow(input, init)
+    globalThis.fetch = fetchNow
+    started()
+    await gate
+    throw new Error('stale load failure')
+  }
+  return { started: startedPromise, release }
+}
+
 function holdClosedProjectsSnapshot(): { started: Promise<void>; release(): void } {
   const fetchNow = globalThis.fetch
   let release!: () => void
@@ -475,6 +502,48 @@ describe('tablet archived-project popover behavior', () => {
         .filter((tab) => !tab.closest('details:not([open])'))
       expect(visibleTabs.filter((tab) => tab.tabIndex === 0)).toHaveLength(1)
     }
+  })
+
+  it('restores bookmarked tablet focus after phone CSS hides the archived control', async () => {
+    const d = open()
+    question(d, 'alpha')
+    advanceClock()
+    question(d, 'beta')
+    closeProject(d, 'beta')
+    setViewport(900)
+    await bootApp(d)
+
+    click(archivedTrigger())
+    const peek = archivedPopover()
+      ?.querySelector<HTMLButtonElement>('[aria-label="View archived project beta"]')!
+    peek.focus()
+    setViewport(560)
+    peek.blur()
+    expect(document.activeElement).toBe(document.body)
+    window.dispatchEvent(new window.Event('resize'))
+    await settle()
+
+    expect(document.activeElement).toBe(document.getElementById('projectDisclosureToggle'))
+  })
+
+  it('does not use a stale project bookmark after focus moves elsewhere', async () => {
+    const d = open()
+    question(d, 'alpha')
+    advanceClock()
+    question(d, 'beta')
+    closeProject(d, 'beta')
+    setViewport(900)
+    await bootApp(d)
+
+    click(archivedTrigger())
+    archivedPopover()?.querySelector<HTMLButtonElement>('[aria-label="View archived project beta"]')?.focus()
+    const search = document.getElementById('search') as HTMLInputElement
+    search.focus()
+    setViewport(560)
+    window.dispatchEvent(new window.Event('resize'))
+    await settle()
+
+    expect(document.activeElement).toBe(search)
   })
 
   it('falls back to a visible project tab when the reopened project is rail-filtered away', async () => {
@@ -898,6 +967,42 @@ describe('async project mutation focus', () => {
     await pollTick()
     expect(closedProjects(d)).toEqual(['beta'])
     expect(projectTab('beta')).toBeNull()
+  })
+
+  it('does not install a failed closed-project response as authoritative', async () => {
+    const d = open()
+    question(d, 'alpha')
+    advanceClock()
+    question(d, 'beta')
+    setViewport(900)
+    await bootApp(d)
+
+    failNextUrl('/api/projects/closed')
+    click(archiveAction('beta'))
+    await settle()
+
+    expect(closedProjects(d)).toEqual(['beta'])
+    expect(projectTab('beta')).toBeNull()
+
+    await pollTick()
+    expect(projectTab('beta')).toBeNull()
+  })
+
+  it('ignores an older poll failure after a newer load succeeds', async () => {
+    const d = open()
+    question(d, 'alpha')
+    setViewport(900)
+    await bootApp(d)
+
+    const stale = holdUrlFailure('/api/items')
+    const oldPoll = pollTick()
+    await stale.started
+    await pollTick()
+    expect(document.getElementById('status')?.textContent).toBe('')
+
+    stale.release()
+    await oldPoll
+    expect(document.getElementById('status')?.textContent).toBe('')
   })
 
   it('restores confirmed open state when queued Archive and Reopen both fail', async () => {

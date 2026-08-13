@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
-import { getBoard, insertItem, upsertBoard } from '../../src/store.js'
+import { getBoard, getItem, insertItem, upsertBoard } from '../../src/store.js'
 import {
   answerInput, bootApp, buttonLabelled, click, expectConsoleError, freshDb, pollTick, row,
   settle, type, useDomTest,
@@ -26,6 +26,28 @@ function deferPost(match: string, response?: Response): () => void {
     return fetchNow(input, init)
   }
   return release
+}
+
+function delayFirstPost(match: string, delayMs: number): void {
+  const fetchNow = globalThis.fetch
+  let count = 0
+  globalThis.fetch = async (input, init) => {
+    if (init?.method === 'POST' && String(input).includes(match) && ++count === 1) {
+      await new Promise<void>((resolve) => setTimeout(resolve, delayMs))
+    }
+    return fetchNow(input, init)
+  }
+}
+
+function failSecondPost(match: string, status: number): void {
+  const fetchNow = globalThis.fetch
+  let count = 0
+  globalThis.fetch = async (input, init) => {
+    if (init?.method === 'POST' && String(input).includes(match) && ++count === 2) {
+      return new Response('failed', { status })
+    }
+    return fetchNow(input, init)
+  }
 }
 
 function boardPanelInput(rowId: string): HTMLInputElement {
@@ -185,6 +207,73 @@ describe('async draft ownership', () => {
     expect(row(id)?.textContent).toContain('Ship now')
     expect(document.querySelector('.stale-drafts-fold')?.textContent).toContain('newer draft B')
   })
+
+  it('serializes same-item reply transport so the latest submitted intent reaches the store last', async () => {
+    db = freshDb()
+    const id = insertItem(db, {
+      ...AGENT,
+      kind: 'question',
+      title: 'Transport order',
+      options: [{ label: 'Intent A' }, { label: 'Intent B' }],
+    })
+    await bootApp(db)
+    click(row(id))
+    await settle()
+
+    delayFirstPost(`/items/${id}/reply`, 20)
+    click(buttonLabelled('Intent A', row(id)!))
+    click(buttonLabelled('Intent B', row(id)!))
+    await vi.advanceTimersByTimeAsync(20)
+    await settle()
+
+    expect(getItem(db, id)?.reply).toBe('Intent B')
+    expect(row(id)?.textContent).toContain('Intent B')
+  })
+
+  it('cancels an older staged-star intent when a newer direct answer is submitted', async () => {
+    db = freshDb()
+    const id = insertItem(db, {
+      ...AGENT,
+      kind: 'question',
+      title: 'Cancel staged intent',
+      detail: 'Choose one.',
+      options: [{ label: 'Staged A', recommended: true }, { label: 'Direct B' }],
+    })
+    const bridge = await bootApp(db)
+
+    click(row(id)?.querySelector('.star-btn'))
+    click(row(id))
+    await settle()
+    click(buttonLabelled('Direct B', row(id)!))
+    await vi.advanceTimersByTimeAsync(5000)
+    await settle()
+
+    expect(getItem(db, id)?.reply).toBe('Direct B')
+    expect(bridge.posts.filter((post) => post.url.includes(`/items/${id}/reply`))).toHaveLength(1)
+  })
+
+  it('surfaces the latest option intent when it fails after an older reply succeeds', async () => {
+    db = freshDb()
+    const id = insertItem(db, {
+      ...AGENT,
+      kind: 'question',
+      title: 'Latest failure',
+      options: [{ label: 'Intent A' }, { label: 'Intent B' }],
+    })
+    await bootApp(db)
+    click(row(id))
+    await settle()
+
+    expectConsoleError(new RegExp(`/items/${id}/reply failed: HTTP 503`))
+    failSecondPost(`/items/${id}/reply`, 503)
+    click(buttonLabelled('Intent A', row(id)!))
+    click(buttonLabelled('Intent B', row(id)!))
+    await settle()
+
+    expect(getItem(db, id)?.reply).toBe('Intent A')
+    expect(document.querySelector('.stale-drafts-fold')?.textContent).toContain('Intent B')
+    expect(document.getElementById('pauseHint')?.textContent).toBe('')
+  })
 })
 
 describe('direct overlay draft reconciliation', () => {
@@ -283,5 +372,60 @@ describe('direct overlay draft reconciliation', () => {
     const after = buttonLabelled('Hold', lightbox)!
     expect(before.isConnected).toBe(false)
     expect(document.activeElement).toBe(after)
+  })
+
+  it('removes only the submitted Review queue row when its delayed save completes', async () => {
+    db = freshDb()
+    upsertBoard(db, {
+      ...AGENT,
+      title: 'Delayed triage',
+      rows: [
+        { label: 'Submitted row A', status: 'blocked', note: 'Choose A.' },
+        { label: 'Current row B', status: 'blocked', note: 'Choose B.' },
+      ],
+    })
+    const board = getBoard(db, 'alpha', 'Delayed triage')!
+    const first = board.rows[0]!
+    await bootApp(db)
+    click(buttonLabelled('Review queue'))
+    await settle()
+
+    const lightbox = document.getElementById('lightbox')!
+    type(lightbox.querySelector<HTMLInputElement>('.reply-input'), 'Answer A')
+    const release = deferPost(`/rows/${first.id}/annotate`)
+    click(buttonLabelled('Send', lightbox))
+    click(lightbox.querySelector('.lb-next'))
+    expect(lightbox.querySelector('.title')?.textContent).toContain('Current row B')
+    release()
+    await settle()
+
+    expect(lightbox.hidden).toBe(false)
+    expect(lightbox.querySelector('.title')?.textContent).toContain('Current row B')
+    expect(lightbox.querySelector('.lb-count')?.textContent).toBe('1 of 1')
+  })
+
+  it('falls back to the Review queue dialog when a focused control changes identity', async () => {
+    db = freshDb()
+    insertItem(db, {
+      ...AGENT,
+      kind: 'question',
+      title: 'Compare focus',
+      options: [
+        { label: 'Ship', detail: 'Ship today.' },
+        { label: 'Hold', detail: 'Wait a day.' },
+      ],
+    })
+    await bootApp(db)
+    click(buttonLabelled('Review queue'))
+    await settle()
+
+    const lightbox = document.getElementById('lightbox')!
+    const compare = buttonLabelled('Compare', lightbox)!
+    compare.focus()
+    click(compare)
+    await settle()
+
+    expect(document.activeElement).toBe(lightbox.querySelector('.lb-panel'))
+    expect(buttonLabelled('Hide compare', lightbox)).not.toBeNull()
   })
 })

@@ -173,12 +173,11 @@ describe('app.js wiring (source-level pins)', () => {
     expect(fn).not.toMatch(/esc\(\s*it\.reply_source/)
   })
 
-  it('guards triageRemoveCurrent so saving a blocked row inline (deck closed) cannot throw', () => {
+  it('keeps inline row saves independent from triage completion ownership', () => {
     const start = js.indexOf('function rowCardEl(')
     const fn = js.slice(start, js.indexOf('\nfunction renderTriage('))
-    expect(fn).toContain('if (triageDeck) triageRemoveCurrent()')
-    // guard against a regression that re-adds an unconditional call elsewhere in the function
-    const bareCalls = (fn.match(/(?<!if \(triageDeck\) )triageRemoveCurrent\(\)/g) ?? []).length
-    expect(bareCalls).toBe(0)
+    expect(fn).toContain('rowAnswerEl(b, r, onSaved)')
+    expect(fn).not.toContain('triageDeck')
+    expect(js).toContain('() => triageRemoveEntry(renderedDeck, renderedEntryKey)')
   })
 })

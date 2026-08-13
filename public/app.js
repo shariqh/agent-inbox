@@ -2867,7 +2867,7 @@ function renderOrphanedDrafts(host) {
       id: key,
       draft,
       retry: () => retryItemDraft(key, draft),
-      clear: () => { delete staleItemDrafts[key] },
+      clear: () => deleteItemDraftRecovery(key, draft.owner),
       text: [
         draft.title,
         `${draft.kind}: ${draft.text}`,
@@ -2884,6 +2884,7 @@ function renderOrphanedDrafts(host) {
         clear: () => {
           delete staleRowDrafts[key]
           clearRowRecoveryTarget(draft.rowId, draft.revision)
+          return true
         },
         text: [
           draft.boardTitle,
@@ -2912,7 +2913,10 @@ function renderOrphanedDrafts(host) {
       line.appendChild(retry)
     }
     const clear = btn('Clear', () => {
-      entry.clear()
+      if (!entry.clear()) {
+        forceRender()
+        return
+      }
       line.remove()
       const remaining = fold.querySelectorAll('.stale-draft-line').length
       if (remaining) summary.textContent = `unsent responses (${remaining})`
@@ -3482,7 +3486,12 @@ function sameItemIntent(left, right) {
 
 function rememberItemDraftSubmission(id, generation, intent) {
   const submissions = itemDraftSubmissions[id] ?? new Map()
-  const submission = { intent: { ...intent }, recoveryKey: null, retryable: true }
+  const submission = {
+    intent: { ...intent },
+    recoveryKey: null,
+    recoveryOwner: null,
+    retryable: true,
+  }
   submissions.set(generation, submission)
   itemDraftSubmissions[id] = submissions
   return submission
@@ -3539,6 +3548,56 @@ function itemDraftRecoveryKey(id, { intent, generation, kind }) {
     : `item:${id}:draft:${generation}:${kind}`
 }
 
+function itemDraftRecoveryOwner(intent, generation) {
+  return {
+    token: globalThis.crypto.randomUUID(),
+    generation,
+    sequence: intent?.sequence ?? null,
+    actionId: intent?.actionId ?? null,
+  }
+}
+
+function sameItemDraftRecoveryOwner(left, right) {
+  return Boolean(left && right
+    && left.token === right.token
+    && left.generation === right.generation
+    && left.sequence === right.sequence
+    && left.actionId === right.actionId)
+}
+
+function deleteItemDraftRecovery(key, expectedOwner) {
+  const current = staleItemDrafts[key]
+  if (!current || !sameItemDraftRecoveryOwner(current.owner, expectedOwner)) return false
+  delete staleItemDrafts[key]
+  return true
+}
+
+function deleteMatchingItemDraftRecoveries(id, { text, context, kind }) {
+  let removed = false
+  for (const [key, draft] of Object.entries(staleItemDrafts)) {
+    if (
+      draft.itemId !== id
+      || draft.kind !== kind
+      || draft.text.trim() !== text.trim()
+      || draft.context.trim() !== context.trim()
+    ) continue
+    removed = deleteItemDraftRecovery(key, draft.owner) || removed
+  }
+  return removed
+}
+
+function transferItemDraftRecovery(key, expectedOwner, intent, generation) {
+  const current = staleItemDrafts[key]
+  if (!current || !sameItemDraftRecoveryOwner(current.owner, expectedOwner)) return null
+  const owner = itemDraftRecoveryOwner(intent, generation)
+  staleItemDrafts[key] = {
+    ...current,
+    intent: { ...intent },
+    owner,
+  }
+  return owner
+}
+
 function preserveItemDraftRecovery(id, {
   key = null,
   title,
@@ -3546,9 +3605,17 @@ function preserveItemDraftRecovery(id, {
   context,
   kind,
   intent = null,
+  ownerIntent = intent,
+  owner = null,
+  expectedOwner = null,
   generation = itemDraftGenerations[id] ?? 0,
 }) {
   const recoveryKey = key ?? itemDraftRecoveryKey(id, { intent, generation, kind })
+  if (
+    key
+    && expectedOwner
+    && !sameItemDraftRecoveryOwner(staleItemDrafts[key]?.owner, expectedOwner)
+  ) return null
   staleItemDrafts[recoveryKey] = {
     itemId: id,
     title,
@@ -3556,6 +3623,7 @@ function preserveItemDraftRecovery(id, {
     context,
     kind,
     intent: intent ? { ...intent } : null,
+    owner: owner ?? itemDraftRecoveryOwner(ownerIntent, generation),
   }
   return recoveryKey
 }
@@ -3571,6 +3639,7 @@ function retryItemDraft(key, draft) {
     true,
     false,
     key,
+    draft.owner,
   )
 }
 
@@ -3640,6 +3709,10 @@ function reconcileDraftOwners() {
     const activeSubmission = itemDraftSubmission(id, generation)
     const intent = reusableDraftIntent(id, generation)
       ?? (activeSubmission?.retryable ? activeSubmission.intent : null)
+    const recoveryOwner = itemDraftRecoveryOwner(
+      activeSubmission?.intent ?? intent,
+      generation,
+    )
     const recoveryKey = preserveItemDraftRecovery(id, {
       title: itemDraftMeta[id]?.title ?? item?.title ?? 'Question',
       text,
@@ -3647,8 +3720,13 @@ function reconcileDraftOwners() {
       kind: 'answer',
       generation,
       intent,
+      ownerIntent: activeSubmission?.intent ?? intent,
+      owner: recoveryOwner,
     })
-    if (activeSubmission) activeSubmission.recoveryKey = recoveryKey
+    if (activeSubmission && recoveryKey) {
+      activeSubmission.recoveryKey = recoveryKey
+      activeSubmission.recoveryOwner = recoveryOwner
+    }
     bumpDraftGeneration(itemDraftGenerations, id)
     delete draftReplies[id]
     delete draftReplyContexts[id]
@@ -3693,6 +3771,7 @@ async function sendReply(
   recoverUndraftedFailure = true,
   submissionUsesDraft = false,
   recoveryKey = null,
+  recoveryOwner = null,
 ) {
   const reply = text.trim()
   if (!reply) return
@@ -3702,6 +3781,18 @@ async function sendReply(
   intent ??= submissionUsesDraft ? reusableDraftIntent(id, submittedGeneration) : null
   intent ??= claimItemIntent(id)
   if (!sameItemIntent(itemLatestIntents[id], intent) && !replayingRecordedIntent) return
+  const submittedRecoveryOwner = recoveryKey
+    ? transferItemDraftRecovery(
+        recoveryKey,
+        recoveryOwner,
+        intent,
+        submittedGeneration,
+      )
+    : null
+  if (recoveryKey && !submittedRecoveryOwner) {
+    forceRender()
+    return
+  }
   const submissionToken = bumpDraftGeneration(itemSubmissionTokens, id)
   if (submissionUsesDraft && hadDraft) {
     rememberItemDraftSubmission(id, submittedGeneration, intent)
@@ -3736,6 +3827,7 @@ async function sendReply(
           context,
           kind,
           intent,
+          expectedOwner: submittedRecoveryOwner,
           generation: submittedGeneration,
         })
         requestDraftRecovery()
@@ -3778,6 +3870,7 @@ async function sendReply(
         context,
         kind,
         intent,
+        expectedOwner: submittedRecoveryOwner,
         generation: submittedGeneration,
       })
       requestDraftRecovery()
@@ -3795,12 +3888,15 @@ async function sendReply(
   if (!res.ok) {
     if (!latestIntent) {
       const rejectedRecoveryKeys = [
-        recoveryKey,
-        trackedSubmission?.recoveryKey,
-      ].filter(Boolean)
-      for (const key of rejectedRecoveryKeys) delete staleItemDrafts[key]
+        [recoveryKey, submittedRecoveryOwner],
+        [trackedSubmission?.recoveryKey, trackedSubmission?.recoveryOwner],
+      ].filter(([key]) => Boolean(key))
+      let removedRecovery = false
+      for (const [key, owner] of rejectedRecoveryKeys) {
+        removedRecovery = deleteItemDraftRecovery(key, owner) || removedRecovery
+      }
       retireItemDraftSubmission(id, submittedGeneration, intent)
-      if (rejectedRecoveryKeys.length) {
+      if (removedRecovery) {
         showWriteError(id, '')
         await reloadAndPaint()
       }
@@ -3816,6 +3912,7 @@ async function sendReply(
           context,
           kind,
           intent,
+          expectedOwner: submittedRecoveryOwner,
           generation: submittedGeneration,
         })
         requestDraftRecovery()
@@ -3851,6 +3948,7 @@ async function sendReply(
       context,
       kind,
       intent,
+      expectedOwner: submittedRecoveryOwner,
       generation: submittedGeneration,
     })
     retireItemDraftSubmission(id, submittedGeneration, intent)
@@ -3863,8 +3961,16 @@ async function sendReply(
     await reloadAndPaint()
     return
   }
-  if (recoveryKey) delete staleItemDrafts[recoveryKey]
-  if (trackedSubmission?.recoveryKey) delete staleItemDrafts[trackedSubmission.recoveryKey]
+  if (recoveryKey) deleteItemDraftRecovery(recoveryKey, submittedRecoveryOwner)
+  if (trackedSubmission?.recoveryKey) {
+    deleteItemDraftRecovery(
+      trackedSubmission.recoveryKey,
+      trackedSubmission.recoveryOwner,
+    )
+  }
+  if (latestIntent) {
+    deleteMatchingItemDraftRecoveries(id, { text, context, kind })
+  }
   retireItemDraftSubmission(id, submittedGeneration, intent)
   if (recoveryKey) retireItemDraftSubmissionIntent(id, intent)
   if (!latestIntent) return

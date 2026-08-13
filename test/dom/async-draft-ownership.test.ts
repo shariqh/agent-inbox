@@ -704,6 +704,147 @@ describe('async draft ownership', () => {
     expect(document.querySelector('.stale-drafts-fold')?.textContent ?? '').not.toContain('Submission A')
   })
 
+  it('does not let rejected A delete an ambiguous exact recovery now owned by retry C', async () => {
+    db = freshDb()
+    const id = insertItem(db, {
+      ...AGENT,
+      kind: 'question',
+      title: 'Immutable recovery owner',
+      options: [{ label: 'Newer B' }],
+    })
+    insertItem(db, { ...AGENT, kind: 'question', title: 'Review target' })
+    await bootApp(db)
+    const fetchNow = globalThis.fetch
+    let releaseA!: () => void
+    let releaseB!: () => void
+    const gateA = new Promise<void>((resolve) => { releaseA = resolve })
+    const gateB = new Promise<void>((resolve) => { releaseB = resolve })
+    const bodies: Array<Record<string, unknown>> = []
+    let count = 0
+    globalThis.fetch = async (input, init) => {
+      if (init?.method === 'POST' && String(input).includes(`/items/${id}/reply`)) {
+        const requestNumber = ++count
+        bodies.push(JSON.parse(String(init.body)))
+        if (requestNumber === 1) await gateA
+        if (requestNumber === 2) await gateB
+        if (requestNumber >= 3) throw new Error(`ambiguous retry ${requestNumber}`)
+      }
+      return fetchNow(input, init)
+    }
+
+    click(row(id))
+    await settle()
+    type(answerInput(id), 'Submission A')
+    click(buttonLabelled('Send', row(id)!))
+    await vi.advanceTimersByTimeAsync(0)
+    click(buttonLabelled('Newer B', row(id)!))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(count).toBe(2)
+
+    resolveItem(db, id)
+    await pollTick()
+    click(buttonLabelled('Review queue'))
+    await settle()
+    const recovery = document.querySelector<HTMLElement>('.stale-drafts-fold')!
+    expect(recovery.textContent).toContain('Submission A')
+
+    expectConsoleError(/ambiguous retry 3/)
+    click(buttonLabelled('Retry', recovery))
+    await settle()
+    const retryC = bodies[2]!
+
+    releaseB()
+    await settle()
+    const newer = getItem(db, id)!
+    expect(newer.reply).toBe('Newer B')
+    expect(markReplySeen(db, id, newer.replied_at)).toBe(true)
+
+    releaseA()
+    await settle()
+    expect(getItem(db, id)?.reply).toBe('Newer B')
+    expect(getItem(db, id)?.reply_seen_at).not.toBeNull()
+    const retained = document.querySelector<HTMLElement>('.stale-drafts-fold')!
+    expect(retained.textContent).toContain('Submission A')
+
+    expectConsoleError(/ambiguous retry 4/)
+    click(buttonLabelled('Retry', retained))
+    await settle()
+    const exactRetry = bodies[3]!
+    expect(exactRetry.intent_action_id).toBe(retryC.intent_action_id)
+    expect(exactRetry.intent_sequence).toBe(retryC.intent_sequence)
+    expect(getItem(db, id)?.reply).toBe('Newer B')
+    expect(getItem(db, id)?.reply_seen_at).not.toBeNull()
+  })
+
+  it('allows only one in-flight exact retry from the same recovery control', async () => {
+    db = freshDb()
+    const id = insertItem(db, {
+      ...AGENT,
+      kind: 'question',
+      title: 'Single retry lease',
+      options: [{ label: 'Option Y' }],
+    })
+    await bootApp(db)
+    const fetchNow = globalThis.fetch
+    let loseFirstResponse = true
+    globalThis.fetch = async (input, init) => {
+      if (
+        loseFirstResponse
+        && init?.method === 'POST'
+        && String(input).includes(`/items/${id}/reply`)
+      ) {
+        loseFirstResponse = false
+        await fetchNow(input, init)
+        throw new Error('lost initial response')
+      }
+      return fetchNow(input, init)
+    }
+    expectConsoleError(/lost initial response/)
+
+    click(row(id))
+    await settle()
+    click(buttonLabelled('Option Y', row(id)!))
+    await settle()
+
+    const held = holdFirstPost(`/items/${id}/reply`)
+    const recovery = document.querySelector<HTMLElement>('.stale-drafts-fold')!
+    const retry = buttonLabelled('Retry', recovery)
+    click(retry)
+    click(retry)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(held.started()).toBe(1)
+
+    held.release()
+    await settle()
+    expect(document.querySelector('.stale-drafts-fold')).toBeNull()
+  })
+
+  it('retires an older identical option recovery after a newer direct action succeeds', async () => {
+    db = freshDb()
+    const id = insertItem(db, {
+      ...AGENT,
+      kind: 'question',
+      title: 'Direct option retry',
+      options: [{ label: 'Option Y' }],
+    })
+    const bridge = await bootApp(db)
+    click(row(id))
+    await settle()
+
+    expectConsoleError(new RegExp(`/items/${id}/reply failed: HTTP 503`))
+    bridge.failPostsWith(503)
+    click(buttonLabelled('Option Y', row(id)!))
+    await settle()
+    expect(document.querySelector('.stale-drafts-fold')?.textContent).toContain('Option Y')
+
+    bridge.failPostsWith(null)
+    click(buttonLabelled('Option Y', row(id)!))
+    await settle()
+
+    expect(getItem(db, id)?.reply).toBe('Option Y')
+    expect(document.querySelector('.stale-drafts-fold')).toBeNull()
+  })
+
   it('reuses an unchanged free-text action after an ambiguous failure without overwriting a later reply', async () => {
     db = freshDb()
     const id = insertItem(db, {

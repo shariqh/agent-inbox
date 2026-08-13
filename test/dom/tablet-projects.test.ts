@@ -526,6 +526,27 @@ describe('tablet archived-project popover behavior', () => {
     expect(document.activeElement).toBe(document.getElementById('projectDisclosureToggle'))
   })
 
+  it('keeps the project focus bookmark when pointerdown lands on a control child', async () => {
+    const d = open()
+    question(d, 'alpha')
+    advanceClock()
+    question(d, 'beta')
+    closeProject(d, 'beta')
+    setViewport(900)
+    await bootApp(d)
+
+    const trigger = archivedTrigger()!
+    trigger.focus()
+    pointer(trigger.querySelector('span')!, 'pointerdown')
+    setViewport(560)
+    trigger.blur()
+    expect(document.activeElement).toBe(document.body)
+    window.dispatchEvent(new window.Event('resize'))
+    await settle()
+
+    expect(document.activeElement).toBe(document.getElementById('projectDisclosureToggle'))
+  })
+
   it('does not use a stale project bookmark after focus moves elsewhere', async () => {
     const d = open()
     question(d, 'alpha')
@@ -988,6 +1009,36 @@ describe('async project mutation focus', () => {
     expect(projectTab('beta')).toBeNull()
   })
 
+  it('does not block a later Reopen POST while Archive reconciliation waits', async () => {
+    expectConsoleError(/HTTP 500/)
+    const d = open()
+    question(d, 'alpha')
+    advanceClock()
+    question(d, 'beta')
+    setViewport(900)
+    await bootApp(d)
+
+    const posts = holdProjectPosts()
+    failNextUrl('/api/projects/closed')
+    click(archiveAction('beta'))
+    await settle()
+    posts.release(0)
+    await settle()
+
+    click(archivedPopover()?.querySelector('[aria-label="Reopen project beta"]'))
+    await settle()
+    expect(posts.count()).toBe(2)
+
+    posts.release(1, 500)
+    await settle()
+    expect(projectTab('beta')).toBeNull()
+
+    await pollTick()
+    await settle()
+    expect(closedProjects(d)).toEqual(['beta'])
+    expect(projectTab('beta')).toBeNull()
+  })
+
   it('ignores an older poll failure after a newer load succeeds', async () => {
     const d = open()
     question(d, 'alpha')
@@ -1146,6 +1197,42 @@ describe('async project mutation focus', () => {
     expect(document.activeElement).toBe(search)
     expect(closedProjects(d)).toEqual(['beta'])
   })
+})
+
+it('clears stale tablet archived state when the last archived project disappears', async () => {
+  const d = open()
+  question(d, 'alpha')
+  advanceClock()
+  question(d, 'beta')
+  advanceClock()
+  question(d, 'gamma')
+  closeProject(d, 'beta')
+  setViewport(900)
+  await bootApp(d)
+
+  await searchFor('beta')
+  expect(archivedPopover()).toBeTruthy()
+
+  reopenProject(d, 'beta')
+  await pollTick()
+  expect(archivedTrigger()).toBeNull()
+  expect(archivedPopover()).toBeNull()
+  await searchFor('')
+
+  const escape = new window.KeyboardEvent('keydown', {
+    key: 'Escape',
+    bubbles: true,
+    cancelable: true,
+  })
+  let propagated = false
+  document.addEventListener('keydown', () => { propagated = true }, { once: true })
+  document.dispatchEvent(escape)
+  expect(propagated).toBe(true)
+
+  closeProject(d, 'gamma')
+  await pollTick()
+  expect(archivedTrigger()?.getAttribute('aria-expanded')).toBe('false')
+  expect(archivedPopover()).toBeNull()
 })
 
 it('does not persist an open phone disclosure through a desktop round-trip', async () => {

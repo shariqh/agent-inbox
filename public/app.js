@@ -1632,6 +1632,7 @@ let restoringRailFocus = false
 let projectFocusBookmark = null
 let projectMutationGeneration = 0
 const projectMutationIntents = new Map()
+const confirmedProjectMutationIntents = new Map()
 const projectMutationQueues = new Map()
 const projectMutationVersions = new Map()
 const authoritativeRefreshWaiters = new Set()
@@ -1834,6 +1835,8 @@ function initProjectDisclosure() {
       event.key === 'Escape'
       && tabletProjectsMode()
       && closedFoldOpen
+      && document.getElementById('closedProjectsTrigger')?.getAttribute('aria-expanded') === 'true'
+      && document.getElementById('closedProjectsPopover')
       && !higherPriorityEscapeSurfaceOpen()
     ) {
       event.preventDefault()
@@ -2112,22 +2115,31 @@ function projectMutationOwnsFocus(selector, generation) {
   return !active || active === document.body || active.matches(selector)
 }
 
-function projectFocusState(active) {
-  if (!(active instanceof HTMLElement)) return null
-  if (active.id === 'projectDisclosureToggle') {
-    return { kind: 'disclosure', project: active.dataset.project ?? null }
+function projectFocusControl(target) {
+  if (!(target instanceof Element)) return null
+  return target.closest(
+    '#projectDisclosureToggle, #closedProjectsTrigger, '
+    + '.closed-project-reopen, .closed-project-peek, .rail-close, .rail-tab',
+  )
+}
+
+function projectFocusState(target) {
+  const control = projectFocusControl(target)
+  if (!(control instanceof HTMLElement)) return null
+  if (control.id === 'projectDisclosureToggle') {
+    return { kind: 'disclosure', project: control.dataset.project ?? null }
   }
-  if (active.id === 'closedProjectsTrigger') {
-    return { kind: 'trigger', project: active.dataset.project ?? null }
+  if (control.id === 'closedProjectsTrigger') {
+    return { kind: 'trigger', project: control.dataset.project ?? null }
   }
-  const projectControl = active.closest('[data-project]')
-    ?? active.closest('.rail-row')?.querySelector('[data-project]')
+  const projectControl = control.closest('[data-project]')
+    ?? control.closest('.rail-row')?.querySelector('[data-project]')
   const project = projectControl?.dataset.project
   if (!project) return null
-  if (active.classList.contains('closed-project-reopen')) return { kind: 'reopen', project }
-  if (active.classList.contains('closed-project-peek')) return { kind: 'peek', project }
-  if (active.classList.contains('rail-close')) return { kind: 'archive', project }
-  if (active.classList.contains('rail-tab')) return { kind: 'tab', project }
+  if (control.classList.contains('closed-project-reopen')) return { kind: 'reopen', project }
+  if (control.classList.contains('closed-project-peek')) return { kind: 'peek', project }
+  if (control.classList.contains('rail-close')) return { kind: 'archive', project }
+  if (control.classList.contains('rail-tab')) return { kind: 'tab', project }
   return null
 }
 
@@ -2376,8 +2388,14 @@ function renderRail() {
   if (searchQuery.trim() && archivedMatches > 0) forcedOpenParts.push(`search:${searchQuery.trim()}`)
   const forcedOpenKey = forcedOpenParts.join('\n')
   if (tablet) tabletForcedOpenKey = forcedOpenKey
-  const foldOpen = closedFoldOpen
+  if (!closed.length) {
+    closedFoldOpen = false
+    tabletDismissedOpenKey = null
+  }
+  const foldOpen = !!closed.length && (
+    closedFoldOpen
     || (!!forcedOpenKey && (!tablet || tabletDismissedOpenKey !== forcedOpenKey))
+  )
   const th = themeName()
   const sig = JSON.stringify([closedEntries, tablet ? null : foldOpen,
     entries,
@@ -3865,25 +3883,35 @@ function finishProjectMutation(name, generation) {
   if (latestProjectMutation(name, generation)) projectMutationVersions.delete(name)
 }
 
-function confirmProjectMutation(name, generation, confirmedAfterLoad) {
+function confirmProjectMutation(name, generation, closed, confirmedAfterLoad) {
+  const confirmed = confirmedProjectMutationIntents.get(name)
+  if (!confirmed || generation > confirmed.generation) {
+    confirmedProjectMutationIntents.set(name, {
+      generation,
+      closed,
+      confirmedAfterLoad,
+    })
+  }
   const intent = projectMutationIntents.get(name)
   if (intent?.generation === generation) intent.confirmedAfterLoad = confirmedAfterLoad
 }
 
 function retireConfirmedProjectMutationIntents(completedLoadGeneration) {
-  for (const [name, intent] of projectMutationIntents) {
-    if (
-      intent.confirmedAfterLoad !== null
-      && completedLoadGeneration > intent.confirmedAfterLoad
-    ) {
-      projectMutationIntents.delete(name)
-    }
+  for (const [name, confirmed] of confirmedProjectMutationIntents) {
+    if (completedLoadGeneration <= confirmed.confirmedAfterLoad) continue
+    confirmedProjectMutationIntents.delete(name)
+    const intent = projectMutationIntents.get(name)
+    if (intent?.generation === confirmed.generation) projectMutationIntents.delete(name)
   }
 }
 
 function applyProjectMutationIntents() {
   if (!lastData) return
   const closed = new Set(authoritativeClosed)
+  for (const [name, intent] of confirmedProjectMutationIntents) {
+    if (intent.closed) closed.add(name)
+    else closed.delete(name)
+  }
   for (const [name, intent] of projectMutationIntents) {
     if (intent.closed) closed.add(name)
     else closed.delete(name)
@@ -3931,20 +3959,20 @@ async function closeProjectAction(name, { focusArchived = false } = {}) {
   forceRender()
   if (focusArchived) focusProjectControl('closedProjectsTrigger', generation)
   let restoreFocus = false
-  const res = await queueProjectMutation(name, async () => {
-    const result = await postJSON('/api/projects/close', { project: name })
-    if (result !== null) {
-      const confirmedAfterLoad = loadGeneration
-      const current = ownsProjectMutation(name, generation)
-        && latestProjectMutation(name, generation)
-      restoreFocus = current
-        && focusArchived
-        && projectMutationOwnsFocus('#closedProjectsTrigger', generation)
-      if (current) confirmProjectMutation(name, generation, confirmedAfterLoad)
-      await refreshAuthoritativeProjectState(confirmedAfterLoad)
-    }
-    return result
-  })
+  const res = await queueProjectMutation(
+    name,
+    () => postJSON('/api/projects/close', { project: name }),
+  )
+  if (res !== null) {
+    const confirmedAfterLoad = loadGeneration
+    const current = ownsProjectMutation(name, generation)
+      && latestProjectMutation(name, generation)
+    restoreFocus = current
+      && focusArchived
+      && projectMutationOwnsFocus('#closedProjectsTrigger', generation)
+    confirmProjectMutation(name, generation, true, confirmedAfterLoad)
+    await refreshAuthoritativeProjectState(confirmedAfterLoad)
+  }
   if (!latestProjectMutation(name, generation)) return
   if (res === null) {
     if (!ownsProjectMutation(name, generation)) return
@@ -3972,20 +4000,20 @@ async function reopenProjectAction(name, { focusProject = false } = {}) {
     focusProjectTab(projectSelector, generation)
   }
   let restoreFocus = false
-  const res = await queueProjectMutation(name, async () => {
-    const result = await postJSON('/api/projects/reopen', { project: name })
-    if (result !== null) {
-      const confirmedAfterLoad = loadGeneration
-      const current = ownsProjectMutation(name, generation)
-        && latestProjectMutation(name, generation)
-      restoreFocus = current
-        && focusProject
-        && projectMutationOwnsFocus(projectSelector, generation)
-      if (current) confirmProjectMutation(name, generation, confirmedAfterLoad)
-      await refreshAuthoritativeProjectState(confirmedAfterLoad)
-    }
-    return result
-  })
+  const res = await queueProjectMutation(
+    name,
+    () => postJSON('/api/projects/reopen', { project: name }),
+  )
+  if (res !== null) {
+    const confirmedAfterLoad = loadGeneration
+    const current = ownsProjectMutation(name, generation)
+      && latestProjectMutation(name, generation)
+    restoreFocus = current
+      && focusProject
+      && projectMutationOwnsFocus(projectSelector, generation)
+    confirmProjectMutation(name, generation, false, confirmedAfterLoad)
+    await refreshAuthoritativeProjectState(confirmedAfterLoad)
+  }
   if (!latestProjectMutation(name, generation)) return
   if (res === null) {
     if (!ownsProjectMutation(name, generation)) return

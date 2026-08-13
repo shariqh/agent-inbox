@@ -353,12 +353,13 @@ describe('closed projects (issue #32)', () => {
     expect(operable).toMatch(/dataset\.open !== 'true'/)
   })
 
-  it('serializes project writes and reapplies every current optimistic intent after loading', () => {
+  it('serializes project POSTs while reconciling confirmed and optimistic intents independently', () => {
     expect(js).toContain('let authoritativeClosed = []')
     expect(js).toContain('let loadGeneration = 0')
     expect(js).toContain('let appliedLoadGeneration = 0')
     expect(js).toContain('let appliedClosedGeneration = 0')
     expect(js).toContain('const projectMutationIntents = new Map()')
+    expect(js).toContain('const confirmedProjectMutationIntents = new Map()')
     expect(js).toContain('const projectMutationQueues = new Map()')
     const loadBody = fn('async function load()', '\n// fix round 1 (hardening)')
     expect(loadBody).toContain('applyProjectMutationIntents()')
@@ -367,13 +368,15 @@ describe('closed projects (issue #32)', () => {
     for (const body of [close, reopen]) {
       expect(body).toMatch(/beginProjectMutation\(/)
       expect(body).toMatch(/await queueProjectMutation\(/)
+      expect(body).toMatch(/await queueProjectMutation\([\s\S]*postJSON\([\s\S]*\)[\s\S]*if \(res !== null\)[\s\S]*refreshAuthoritativeProjectState/)
       expect(body).toMatch(/if \(!ownsProjectMutation\(/)
       expect(body).toMatch(/finishProjectMutation\([^)]*\)[\s\S]*applyProjectMutationIntents\(\)[\s\S]*forceRender\(\)/)
     }
     const apply = fn('function applyProjectMutationIntents()', '\nasync function queueProjectMutation(')
     expect(apply).toMatch(/new Set\(authoritativeClosed\)/)
+    expect(apply).toMatch(/for \(const \[name, intent\] of confirmedProjectMutationIntents\)/)
     const retire = fn('function retireConfirmedProjectMutationIntents(', '\nfunction applyProjectMutationIntents(')
-    expect(retire).toMatch(/completedLoadGeneration > intent\.confirmedAfterLoad/)
+    expect(retire).toMatch(/completedLoadGeneration <= confirmed\.confirmedAfterLoad/)
     const wait = fn('function waitForAuthoritativeRefresh(', '\nasync function refreshAuthoritativeProjectState(')
     expect(wait).toMatch(/appliedClosedGeneration > afterGeneration/)
     expect(loadBody).toMatch(/if \(closedSnapshot !== null\)/)

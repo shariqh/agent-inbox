@@ -219,4 +219,41 @@ describe('deep links across paginated tabs', () => {
     secondRow = document.querySelector(`.board-row[data-row-id="${second.id}"]`)!
     expect(document.activeElement).toBe(buttonLabelled('Send', secondRow.nextElementSibling!))
   })
+
+  it('reveals and persists a newly archived paged Plan before restoring its focused control', async () => {
+    db = freshDb()
+    const targetId = addBoard('Old active focus target')
+    for (let i = 0; i < 6; i++) {
+      advanceClock()
+      addBoard(`Newer active ${i}`)
+    }
+    for (let i = 0; i < 6; i++) {
+      advanceClock()
+      addBoard(`Newer archived ${i}`, true)
+    }
+    await bootApp(db)
+    click(document.querySelector('.tab[data-tab="boards"]'))
+    await settle()
+    click(document.querySelector('#boards .show-more'))
+    await settle()
+
+    const target = card(targetId)!
+    const planFlow = buttonLabelled('Plan flow', target)!
+    planFlow.focus()
+    const current = getBoard(db, 'alpha', 'Old active focus target')!
+    expect(archiveBoard(db, current.id, current.revision)).toBe(true)
+    await pollTick()
+
+    let archivedTarget = card(targetId)!
+    let fold = archivedTarget.closest<HTMLDetailsElement>('.archived-fold')!
+    expect(fold.open).toBe(true)
+    expect(document.activeElement).toBe(buttonLabelled('Plan flow', archivedTarget))
+
+    await pollTick()
+
+    archivedTarget = card(targetId)!
+    fold = archivedTarget.closest<HTMLDetailsElement>('.archived-fold')!
+    expect(fold.open).toBe(true)
+    expect(document.activeElement).toBe(buttonLabelled('Plan flow', archivedTarget))
+  })
 })

@@ -530,14 +530,17 @@ function restorePagedCardFocus(bookmark) {
   const matches = bookmark.key
     ? targets.filter((target) => cardFocusKey(target) === bookmark.key)
     : []
-  const target = matches[bookmark.ordinal]
-    ?? (bookmark.rowId ? targets[0] : null)
-    ?? card.querySelector(':scope > summary')
-    ?? card
-  if (!target) return false
-  target.tabIndex = 0
-  target.focus({ preventScroll: true })
-  return document.activeElement === target
+  const exact = matches[bookmark.ordinal] ?? (bookmark.rowId ? targets[0] : null)
+  const fallback = card.querySelector(':scope > summary') ?? card
+  for (const target of [exact, fallback]) {
+    if (!target) continue
+    revealDetailsAncestors(target)
+    if (target.closest('[hidden], details:not([open])')) continue
+    target.tabIndex = 0
+    target.focus({ preventScroll: true })
+    if (document.activeElement === target) return true
+  }
+  return false
 }
 
 // Which tab holds an item — a deep link must land on the right one.
@@ -807,6 +810,8 @@ let triageReturnFocus = null
 const rowDrafts = {}  // in-progress row annotations, surviving the poll rebuild
 const rowDraftKinds = {} // row id → answer|clarify|decline, surviving accordion remounts
 const rowDraftMeta = {} // row id → recovery labels/revision if its owner disappears
+const rowDraftGenerations = {} // row id → monotonic edit token across duplicate editors
+const rowSubmissionTokens = {} // row id → latest async submission allowed to retire its draft
 const staleRowDrafts = {} // row-id + revision key → one refused action response
 let requestedDraftFocusBookmark = null
 let draftRecoveryFocusPending = false
@@ -814,6 +819,12 @@ let draftRecoveryTarget = null
 
 function rowDraftRecoveryKey(rowId, revision) {
   return JSON.stringify([rowId, revision])
+}
+
+function bumpDraftGeneration(generations, id) {
+  const next = (generations[id] ?? 0) + 1
+  generations[id] = next
+  return next
 }
 
 function clearRowRecoveryTarget(rowId, revision) {
@@ -837,6 +848,7 @@ function recoverMismatchedRenderedRowDraft(b, r) {
     label: meta.label ?? r.label,
     context: meta.context ?? '',
   }
+  bumpDraftGeneration(rowDraftGenerations, r.id)
   delete rowDrafts[r.id]
   delete rowDraftKinds[r.id]
   delete rowDraftMeta[r.id]
@@ -958,6 +970,41 @@ function closeTriage({ restoreFocus = true } = {}) {
 function triageRemoveCurrent() {
   triageDeck.entries.splice(triageDeck.index, 1)
   renderTriage()
+}
+
+function triageEntryKey(entry) {
+  if (!entry) return ''
+  return entry.type === 'q'
+    ? `q:${entry.id}`
+    : `row:${entry.boardId}:${entry.rowId}`
+}
+
+function captureTriageFocus() {
+  if (!triageDeck) return null
+  const card = document.querySelector('#lightbox .lb-card')
+  const active = document.activeElement
+  if (!card || !active || !card.contains(active)) return null
+  const targets = cardFocusTargets(card)
+  if (!targets.includes(active)) return null
+  const key = cardFocusKey(active)
+  return {
+    entry: triageEntryKey(deckEntryAt(triageDeck.entries, triageDeck.index)),
+    key,
+    ordinal: targets.filter((target) => cardFocusKey(target) === key).indexOf(active),
+  }
+}
+
+function restoreTriageFocus(bookmark) {
+  if (!bookmark || !triageDeck) return false
+  if (bookmark.entry !== triageEntryKey(deckEntryAt(triageDeck.entries, triageDeck.index))) return false
+  const card = document.querySelector('#lightbox .lb-card')
+  if (!card) return false
+  const targets = cardFocusTargets(card)
+  const matches = targets.filter((target) => cardFocusKey(target) === bookmark.key)
+  const target = matches[bookmark.ordinal]
+  if (!target || target.closest('[hidden], details:not([open])')) return false
+  target.focus({ preventScroll: true })
+  return document.activeElement === target
 }
 
 function triageActionMix(entries) {
@@ -1117,6 +1164,7 @@ function rowAnswerEl(b, r, onSaved) {
   if (staleDraft) input.dataset.recoveredDraft = '1'
   input.value = rowDrafts[r.id] ?? (staleDraft?.text ?? '')
   if (input.value && rowDrafts[r.id] === undefined) {
+    bumpDraftGeneration(rowDraftGenerations, r.id)
     rowDrafts[r.id] = input.value
     rowDraftMeta[r.id] = {
       revision: r.revision,
@@ -1127,8 +1175,10 @@ function rowAnswerEl(b, r, onSaved) {
     }
   }
   if (staleDraft?.revision === r.revision) rowDraftKinds[r.id] = staleDraft.kind
+  let editorGeneration = rowDraftGenerations[r.id] ?? 0
   input.dataset.responseKind = rowDraftKinds[r.id] ?? 'answer'
   input.addEventListener('input', () => {
+    editorGeneration = bumpDraftGeneration(rowDraftGenerations, r.id)
     rowDrafts[r.id] = input.value
     rowDraftKinds[r.id] = input.dataset.responseKind ?? rowDraftKinds[r.id] ?? 'answer'
     if (input.value.trim()) {
@@ -1150,6 +1200,8 @@ function rowAnswerEl(b, r, onSaved) {
     const typed = input.value
     if (!typed.trim()) return
     const kind = input.dataset.responseKind ?? 'answer'
+    const submittedGeneration = editorGeneration
+    const submissionToken = bumpDraftGeneration(rowSubmissionTokens, r.id)
     // fix round 2 (C3): the draft used to be dropped BEFORE the POST, so a
     // dropped request (viewer server restarted — routine for the Electron app)
     // erased the human's note with no trace. Clear only once it landed.
@@ -1159,21 +1211,30 @@ function rowAnswerEl(b, r, onSaved) {
       expected_revision: r.revision,
       expected_board_version: b.revision,
     })
+    const ownsSubmission = (rowDraftGenerations[r.id] ?? 0) === submittedGeneration
+      && rowSubmissionTokens[r.id] === submissionToken
     if (res === null) {
-      rowDrafts[r.id] = typed
-      rowDraftMeta[r.id] = {
-        revision: r.revision,
-        actionVersion: r.action_version,
-        boardTitle: b.title,
-        label: r.label,
-        context: r.context ?? '',
+      if (ownsSubmission) {
+        rowDrafts[r.id] = typed
+        rowDraftMeta[r.id] = {
+          revision: r.revision,
+          actionVersion: r.action_version,
+          boardTitle: b.title,
+          label: r.label,
+          context: r.context ?? '',
+        }
+        input.value = typed
       }
-      input.value = typed
       showWriteError(r.id, WRITE_FAILED)
       resumeRender()
       return
     }
     if (!res.ok) {
+      if (!ownsSubmission) {
+        showWriteError(r.id, 'An earlier response was not applied; your newer draft is preserved.')
+        resumeRender()
+        return
+      }
       staleRowDrafts[recoveryKey] = {
         rowId: r.id,
         revision: r.revision,
@@ -1185,6 +1246,7 @@ function rowAnswerEl(b, r, onSaved) {
         context: r.context ?? '',
       }
       requestDraftRecovery({ rowId: r.id, revision: r.revision, project: b.project })
+      bumpDraftGeneration(rowDraftGenerations, r.id)
       delete rowDrafts[r.id]
       delete rowDraftKinds[r.id]
       delete rowDraftMeta[r.id]
@@ -1192,12 +1254,15 @@ function rowAnswerEl(b, r, onSaved) {
       await reloadAndPaint()
       return
     }
-    delete rowDrafts[r.id]
-    delete rowDraftKinds[r.id]
-    delete rowDraftMeta[r.id]
-    delete staleRowDrafts[recoveryKey]
-    clearRowRecoveryTarget(r.id, r.revision)
-    delete input.dataset.responseKind
+    if (ownsSubmission) {
+      bumpDraftGeneration(rowDraftGenerations, r.id)
+      delete rowDrafts[r.id]
+      delete rowDraftKinds[r.id]
+      delete rowDraftMeta[r.id]
+      delete staleRowDrafts[recoveryKey]
+      clearRowRecoveryTarget(r.id, r.revision)
+      delete input.dataset.responseKind
+    }
     showWriteError(r.id, '')
     // the row stays blocked until the agent picks the note up — the human's part
     // is done, so the caller decides what to drop
@@ -1395,6 +1460,11 @@ function rowCardEl(b, r) {
 
 function renderTriage() {
   if (!triageDeck) return
+  if (reconcileDraftOwners()) {
+    forceRender()
+    return
+  }
+  const focusBookmark = captureTriageFocus()
   const lb = document.getElementById('lightbox')
   // drop entries resolved elsewhere (or answered in a previous card)
   triageDeck.entries = triageDeck.entries.filter((e) => findEntryData(e))
@@ -1428,6 +1498,7 @@ function renderTriage() {
   lb.querySelector('.lb-prev').disabled = triageDeck.index <= 0
   lb.querySelector('.lb-next').disabled = triageDeck.index >= n - 1
   lb.hidden = false
+  restoreTriageFocus(focusBookmark)
 }
 
 function initTriage() {
@@ -1633,6 +1704,10 @@ function missionPathEl(path, board) {
 
 function renderMission() {
   if (!missionBoardId || !lastData) return
+  if (reconcileDraftOwners()) {
+    forceRender()
+    return
+  }
   const board = [...lastData.boards, ...lastData.archived].find((candidate) => candidate.id === missionBoardId)
   if (!board) { closeMission(); return }
   const box = document.getElementById('missionbox')
@@ -2482,7 +2557,10 @@ const starStage = createStagedSend({
   setTimeoutFn: (fn, ms) => window.setTimeout(fn, ms),
   clearTimeoutFn: (h) => window.clearTimeout(h),
   // exactly the call the option pill makes today (app.js `answerEl`) — no new endpoint
-  send: ({ id, label, context }) => { stagedStars.delete(id); sendReply(id, label, context) },
+  send: ({ id, label, context, generation }) => {
+    stagedStars.delete(id)
+    sendReply(id, label, context, 'answer', generation)
+  },
 })
 
 // a staged send must never be lost to a closing tab
@@ -2829,6 +2907,7 @@ function revealDetailsAncestors(target) {
   for (let node = target; node; node = node.parentElement) {
     if (node.tagName !== 'DETAILS') continue
     node.open = true
+    if (node.dataset.cardId) setCardCollapsed(node.dataset.cardId, false)
     if (node.classList.contains('snoozed-fold')) snoozedFoldOpen = true
     else if (node.classList.contains('stale-fold')) staleFoldOpen = true
     if (node.classList.contains('archived-fold')) showArchived = true
@@ -2975,7 +3054,12 @@ function needsRowEl(m, entry, nowMs) {
   } else if (opt) {
     const star = btn('★', () => {
       stagedStars.set(m.id, { label: opt.label })
-      starStage.stage(`star:${m.id}`, { id: m.id, label: opt.label, context: draftReplyContexts[m.id] ?? '' })
+      starStage.stage(`star:${m.id}`, {
+        id: m.id,
+        label: opt.label,
+        context: draftReplyContexts[m.id] ?? '',
+        generation: itemDraftGenerations[m.id] ?? 0,
+      })
       forceRender()
     })
     star.className = 'star-btn'
@@ -3301,6 +3385,8 @@ const openCompares = new Set()   // item ids with the compare view expanded
 const draftReplies = {}          // item id → in-progress free-text answer
 const draftReplyContexts = {}    // item id → optional context attached to the answer
 const itemDraftMeta = {}         // item id → recovery labels if its answer surface disappears
+const itemDraftGenerations = {}  // item id → monotonic edit token across duplicate editors
+const itemSubmissionTokens = {}  // item id → latest async submission allowed to retire its draft
 const staleItemDrafts = {}       // item id → refused answer preserved outside the poll gate
 
 function hasDraftRecovery() {
@@ -3365,6 +3451,7 @@ function reconcileDraftOwners() {
       context,
       kind: 'answer',
     }
+    bumpDraftGeneration(itemDraftGenerations, id)
     delete draftReplies[id]
     delete draftReplyContexts[id]
     delete itemDraftMeta[id]
@@ -3387,17 +3474,20 @@ function reconcileDraftOwners() {
       label: meta?.label ?? 'Removed row',
       context: meta?.context ?? '',
     }
+    bumpDraftGeneration(rowDraftGenerations, id)
     delete rowDrafts[id]
     delete rowDraftKinds[id]
     delete rowDraftMeta[id]
     recovered = true
   }
   if (recovered) requestDraftRecovery()
+  return recovered
 }
 
-async function sendReply(id, text, context = '', kind = 'answer') {
+async function sendReply(id, text, context = '', kind = 'answer', submittedGeneration = itemDraftGenerations[id] ?? 0) {
   const reply = text.trim()
   if (!reply) return
+  const submissionToken = bumpDraftGeneration(itemSubmissionTokens, id)
   // fix round 2 (C3): both drafts used to be deleted BEFORE the POST. When the
   // write failed (postJSON → null: server restarted, or now any non-2xx) the
   // human's typed answer was gone — the next render rebuilt an empty input and
@@ -3405,17 +3495,24 @@ async function sendReply(id, text, context = '', kind = 'answer') {
   // Nothing is cleared until the server has it.
   const hadDraft = draftReplies[id] !== undefined || draftReplyContexts[id] !== undefined
   const res = await postJSON(`/api/items/${id}/reply`, { text: reply, context: context.trim() || undefined, kind })
+  const ownsSubmission = (itemDraftGenerations[id] ?? 0) === submittedGeneration
+    && itemSubmissionTokens[id] === submissionToken
   if (res === null) {
     // re-assert rather than merely leave in place, so a future edit that clears
     // early still cannot lose it. Only when the human HAD a draft: inventing one
     // for an option-pill/★ send would park text in an input nobody typed into
     // (and suspend the poll on it — the C2 failure mode).
-    if (hadDraft) { draftReplies[id] = text; draftReplyContexts[id] = context }
+    if (hadDraft && ownsSubmission) { draftReplies[id] = text; draftReplyContexts[id] = context }
     showWriteError(id, WRITE_FAILED)
     resumeRender()
     return
   }
   if (!res.ok) {
+    if (!ownsSubmission) {
+      showWriteError(id, 'An earlier response was not applied; your newer draft is preserved.')
+      resumeRender()
+      return
+    }
     const item = freshItem(id)
     staleItemDrafts[id] = {
       title: itemDraftMeta[id]?.title ?? item?.title ?? 'Question',
@@ -3424,6 +3521,7 @@ async function sendReply(id, text, context = '', kind = 'answer') {
       kind,
     }
     requestDraftRecovery()
+    bumpDraftGeneration(itemDraftGenerations, id)
     delete draftReplies[id]
     delete draftReplyContexts[id]
     delete itemDraftMeta[id]
@@ -3431,10 +3529,13 @@ async function sendReply(id, text, context = '', kind = 'answer') {
     await reloadAndPaint()
     return
   }
-  delete draftReplies[id]
-  delete draftReplyContexts[id]
-  delete itemDraftMeta[id]
-  delete staleItemDrafts[id]
+  if (ownsSubmission) {
+    bumpDraftGeneration(itemDraftGenerations, id)
+    delete draftReplies[id]
+    delete draftReplyContexts[id]
+    delete itemDraftMeta[id]
+    delete staleItemDrafts[id]
+  }
   showWriteError(id, '')
   // issue #38, the reported surface. Also the entry for the option pills, the ★'s
   // staged send, Enter in the input and the triage card — all of them were silent.
@@ -3446,6 +3547,7 @@ async function sendReply(id, text, context = '', kind = 'answer') {
 function answerEl(it) {
   const wrap = document.createElement('div')
   wrap.className = `options${openCompares.has(it.id) ? ' comparing' : ''}`
+  let editorGeneration = itemDraftGenerations[it.id] ?? 0
   const opts = optionOrder(it.options)
   for (const o of opts) {
     const box = document.createElement('div')
@@ -3453,7 +3555,9 @@ function answerEl(it) {
     const pill = document.createElement('button')
     pill.className = `opt-pill${o.recommended ? ' rec' : ''}`
     pill.innerHTML = `${esc(o.label)}${o.recommended ? '<span class="rec-tag">recommended</span>' : ''}`
-    pill.addEventListener('click', () => sendReply(it.id, o.label, draftReplyContexts[it.id] ?? ''))
+    pill.addEventListener('click', () => sendReply(
+      it.id, o.label, draftReplyContexts[it.id] ?? '', 'answer', editorGeneration,
+    ))
     box.appendChild(pill)
     if (o.detail) {
       const d = document.createElement('div')
@@ -3483,13 +3587,18 @@ function answerEl(it) {
     else delete itemDraftMeta[it.id]
   }
   input.addEventListener('input', () => {
+    editorGeneration = bumpDraftGeneration(itemDraftGenerations, it.id)
     draftReplies[it.id] = input.value
     rememberDraftOwner()
     resumeRender()
   })
-  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendReply(it.id, input.value, ctxInput.value) })
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') sendReply(it.id, input.value, ctxInput.value, 'answer', editorGeneration)
+  })
   row.appendChild(input)
-  row.appendChild(btn('Send', () => sendReply(it.id, input.value, ctxInput.value)))
+  row.appendChild(btn('Send', () => sendReply(
+    it.id, input.value, ctxInput.value, 'answer', editorGeneration,
+  )))
   row.appendChild(writeErrorEl(it.id)) // persists a failed write's reason across the poll rebuild (C3)
   wrap.appendChild(row)
   const ctxRow = document.createElement('div')
@@ -3500,6 +3609,7 @@ function answerEl(it) {
   ctxInput.placeholder = 'optional context for the agent (applies to Send or option picks)…'
   ctxInput.value = draftReplyContexts[it.id] ?? ''
   ctxInput.addEventListener('input', () => {
+    editorGeneration = bumpDraftGeneration(itemDraftGenerations, it.id)
     draftReplyContexts[it.id] = ctxInput.value
     rememberDraftOwner()
     resumeRender()
@@ -3507,7 +3617,9 @@ function answerEl(it) {
   ctxRow.appendChild(ctxInput)
   wrap.appendChild(ctxRow)
   wrap.appendChild(dispositionEl(
-    (kind, text) => sendReply(it.id, text, draftReplyContexts[it.id] ?? '', kind),
+    (kind, text) => sendReply(
+      it.id, text, draftReplyContexts[it.id] ?? '', kind, editorGeneration,
+    ),
     async (until) => {
       const res = await postJSON(`/api/items/${it.id}/snooze`, { until })
       if (res === null) return
@@ -3599,6 +3711,7 @@ async function changeAnswer(it, msgEl) {
   // the answer surface comes back, and this is what it comes back holding.
   draftReplies[it.id] = it.reply
   draftReplyContexts[it.id] = it.reply_context ?? ''
+  bumpDraftGeneration(itemDraftGenerations, it.id)
   requestedDraftFocusBookmark = { key: `${it.id}:answer`, scopeId: 'needsYouList' }
   // issue #31.1. Two things have to be true for the human to SEE that draft, and
   // neither was:

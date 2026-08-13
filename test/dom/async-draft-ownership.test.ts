@@ -498,6 +498,158 @@ describe('async draft ownership', () => {
     expect(document.querySelector('.stale-drafts-fold')).toBeNull()
   })
 
+  it('retires an exact recovery when its in-flight free-text reply succeeds after owner removal', async () => {
+    db = freshDb()
+    const id = insertItem(db, {
+      ...AGENT,
+      kind: 'question',
+      title: 'Removed while sending',
+    })
+    insertItem(db, { ...AGENT, kind: 'question', title: 'Review target' })
+    await bootApp(db)
+
+    click(row(id))
+    await settle()
+    type(answerInput(id), 'Submission A')
+    const release = deferPost(`/items/${id}/reply`)
+    click(buttonLabelled('Send', row(id)!))
+    resolveItem(db, id)
+    await pollTick()
+    click(buttonLabelled('Review queue'))
+    await settle()
+
+    expect(document.querySelector('.stale-drafts-fold')?.textContent).toContain('Submission A')
+    release()
+    await settle()
+
+    expect(getItem(db, id)?.reply).toBe('Submission A')
+    expect(document.querySelector('.stale-drafts-fold')?.textContent ?? '').not.toContain('Submission A')
+  })
+
+  it('retries an owner-removed ambiguous free-text reply with its exact action identity', async () => {
+    db = freshDb()
+    const id = insertItem(db, {
+      ...AGENT,
+      kind: 'question',
+      title: 'Removed ambiguous reply',
+    })
+    insertItem(db, { ...AGENT, kind: 'question', title: 'Review target' })
+    const bridge = await bootApp(db)
+    const fetchNow = globalThis.fetch
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    let loseFirstResponse = true
+    globalThis.fetch = async (input, init) => {
+      if (
+        loseFirstResponse
+        && init?.method === 'POST'
+        && String(input).includes(`/items/${id}/reply`)
+      ) {
+        loseFirstResponse = false
+        await gate
+        await fetchNow(input, init)
+        throw new Error('lost in-flight response')
+      }
+      return fetchNow(input, init)
+    }
+    expectConsoleError(/lost in-flight response/)
+
+    click(row(id))
+    await settle()
+    type(answerInput(id), 'Original X')
+    click(buttonLabelled('Send', row(id)!))
+    resolveItem(db, id)
+    await pollTick()
+    click(buttonLabelled('Review queue'))
+    await settle()
+    release()
+    await settle()
+
+    expect(replyItem(db, id, 'Later Y', undefined, 'answer', {
+      clientId: 'other-window',
+      sequence: 1,
+      actionId: 'later-owner-removal',
+    })).toBe(true)
+    const later = getItem(db, id)!
+    expect(markReplySeen(db, id, later.replied_at)).toBe(true)
+
+    click(buttonLabelled('Retry', document.querySelector('.stale-drafts-fold')!))
+    await settle()
+
+    const replyPosts = bridge.posts.filter((post) => post.url.includes(`/items/${id}/reply`))
+    const first = JSON.parse(String(replyPosts[0]?.init?.body))
+    const retry = JSON.parse(String(replyPosts[1]?.init?.body))
+    expect(retry.intent_action_id).toBe(first.intent_action_id)
+    expect(retry.intent_sequence).toBe(first.intent_sequence)
+    expect(getItem(db, id)?.reply).toBe('Later Y')
+    expect(getItem(db, id)?.reply_seen_at).not.toBeNull()
+    expect(document.querySelector('.stale-drafts-fold')).toBeNull()
+  })
+
+  it('keeps a newer owner-removed draft recovery independent from an older in-flight success', async () => {
+    db = freshDb()
+    const id = insertItem(db, {
+      ...AGENT,
+      kind: 'question',
+      title: 'Independent removed draft',
+    })
+    insertItem(db, { ...AGENT, kind: 'question', title: 'Review target' })
+    await bootApp(db)
+
+    click(row(id))
+    await settle()
+    const input = answerInput(id)
+    type(input, 'Submission A')
+    const release = deferPost(`/items/${id}/reply`)
+    click(buttonLabelled('Send', row(id)!))
+    type(input, 'Newer draft B')
+    resolveItem(db, id)
+    await pollTick()
+    click(buttonLabelled('Review queue'))
+    await settle()
+    release()
+    await settle()
+
+    const recovery = document.querySelector('.stale-drafts-fold')?.textContent ?? ''
+    expect(recovery).toContain('Newer draft B')
+    expect(recovery).not.toContain('Submission A')
+    expect(getItem(db, id)?.reply).toBe('Submission A')
+  })
+
+  it('retires a staged-action-superseded recovery without restoring its invalidated retry identity', async () => {
+    db = freshDb()
+    const id = insertItem(db, {
+      ...AGENT,
+      kind: 'question',
+      title: 'Superseded in-flight draft',
+      detail: 'Choose the response.',
+      options: [{ label: 'Option Y', recommended: true }],
+    })
+    insertItem(db, { ...AGENT, kind: 'question', title: 'Review target' })
+    await bootApp(db)
+
+    click(row(id))
+    await settle()
+    type(answerInput(id), 'Submission A')
+    const release = deferPost(`/items/${id}/reply`)
+    click(buttonLabelled('Send', row(id)!))
+    await vi.advanceTimersByTimeAsync(0)
+    click(row(id))
+    await settle()
+    click(row(id)?.querySelector('.star-btn'))
+    resolveItem(db, id)
+    await pollTick()
+    click(buttonLabelled('Review queue'))
+    await settle()
+    expect(document.querySelector('.stale-drafts-fold')?.textContent).toContain('Submission A')
+
+    release()
+    await settle()
+
+    expect(getItem(db, id)?.reply).toBe('Submission A')
+    expect(document.querySelector('.stale-drafts-fold')?.textContent ?? '').not.toContain('Submission A')
+  })
+
   it('reuses an unchanged free-text action after an ambiguous failure without overwriting a later reply', async () => {
     db = freshDb()
     const id = insertItem(db, {

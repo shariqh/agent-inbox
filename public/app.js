@@ -3426,6 +3426,7 @@ const itemDraftGenerations = {}  // item id → monotonic edit token across dupl
 const itemSubmissionTokens = {}  // item id → latest async submission allowed to retire its draft
 const itemLatestIntents = {}     // item id → latest non-cancelled human intent
 const itemDraftRetryIntents = {} // item id → exact ambiguous intent while its draft generation is unchanged
+const itemDraftSubmissions = {}  // item id → in-flight free-text intents keyed by draft generation
 const staleItemDrafts = {}       // recovery key → refused/orphaned answer preserved outside the poll gate
 const ITEM_REPLY_INTENT_SESSION_KEY = 'agent-inbox-reply-intent'
 
@@ -3457,7 +3458,7 @@ const storedReplyIntent = (() => {
 })()
 
 function claimItemIntent(id, { staged = false } = {}) {
-  delete itemDraftRetryIntents[id]
+  invalidateItemDraftIntents(id)
   const sequence = ++storedReplyIntent.sequence
   sessionStorage.setItem(ITEM_REPLY_INTENT_SESSION_KEY, JSON.stringify(storedReplyIntent))
   const intent = { sequence, actionId: globalThis.crypto.randomUUID() }
@@ -3477,6 +3478,44 @@ function sameItemIntent(left, right) {
   return Boolean(left && right
     && left.sequence === right.sequence
     && left.actionId === right.actionId)
+}
+
+function rememberItemDraftSubmission(id, generation, intent) {
+  const submissions = itemDraftSubmissions[id] ?? new Map()
+  const submission = { intent: { ...intent }, recoveryKey: null, retryable: true }
+  submissions.set(generation, submission)
+  itemDraftSubmissions[id] = submissions
+  return submission
+}
+
+function itemDraftSubmission(id, generation, intent = null) {
+  const submission = itemDraftSubmissions[id]?.get(generation) ?? null
+  if (intent && !sameItemIntent(submission?.intent, intent)) return null
+  return submission
+}
+
+function retireItemDraftSubmission(id, generation, intent) {
+  const submissions = itemDraftSubmissions[id]
+  const submission = submissions?.get(generation)
+  if (!submissions || !sameItemIntent(submission?.intent, intent)) return
+  submissions.delete(generation)
+  if (!submissions.size) delete itemDraftSubmissions[id]
+}
+
+function retireItemDraftSubmissionIntent(id, intent) {
+  const submissions = itemDraftSubmissions[id]
+  if (!submissions) return
+  for (const [generation, submission] of submissions) {
+    if (sameItemIntent(submission.intent, intent)) submissions.delete(generation)
+  }
+  if (!submissions.size) delete itemDraftSubmissions[id]
+}
+
+function invalidateItemDraftIntents(id) {
+  delete itemDraftRetryIntents[id]
+  for (const submission of itemDraftSubmissions[id]?.values() ?? []) {
+    submission.retryable = false
+  }
 }
 
 function cancelItemIntent(id, cancelled, previous) {
@@ -3597,14 +3636,19 @@ function reconcileDraftOwners() {
     if (!text.trim() && !context.trim()) continue
     const item = freshItem(id)
     if (item && cardSections(item).showAnswer) continue
-    preserveItemDraftRecovery(id, {
+    const generation = itemDraftGenerations[id] ?? 0
+    const activeSubmission = itemDraftSubmission(id, generation)
+    const intent = reusableDraftIntent(id, generation)
+      ?? (activeSubmission?.retryable ? activeSubmission.intent : null)
+    const recoveryKey = preserveItemDraftRecovery(id, {
       title: itemDraftMeta[id]?.title ?? item?.title ?? 'Question',
       text,
       context,
       kind: 'answer',
-      generation: itemDraftGenerations[id] ?? 0,
-      intent: reusableDraftIntent(id, itemDraftGenerations[id] ?? 0),
+      generation,
+      intent,
     })
+    if (activeSubmission) activeSubmission.recoveryKey = recoveryKey
     bumpDraftGeneration(itemDraftGenerations, id)
     delete draftReplies[id]
     delete draftReplyContexts[id]
@@ -3652,18 +3696,21 @@ async function sendReply(
 ) {
   const reply = text.trim()
   if (!reply) return
+  const hadDraft = draftReplies[id] !== undefined || draftReplyContexts[id] !== undefined
   if (recoveryKey) delete itemDraftRetryIntents[id]
   const replayingRecordedIntent = Boolean(recoveryKey && intent)
   intent ??= submissionUsesDraft ? reusableDraftIntent(id, submittedGeneration) : null
   intent ??= claimItemIntent(id)
   if (!sameItemIntent(itemLatestIntents[id], intent) && !replayingRecordedIntent) return
   const submissionToken = bumpDraftGeneration(itemSubmissionTokens, id)
+  if (submissionUsesDraft && hadDraft) {
+    rememberItemDraftSubmission(id, submittedGeneration, intent)
+  }
   // fix round 2 (C3): both drafts used to be deleted BEFORE the POST. When the
   // write failed (postJSON → null: server restarted, or now any non-2xx) the
   // human's typed answer was gone — the next render rebuilt an empty input and
   // #status's "disconnected" was wiped by the next successful poll ≤3s later.
   // Nothing is cleared until the server has it.
-  const hadDraft = draftReplies[id] !== undefined || draftReplyContexts[id] !== undefined
   const recoveryTitle = itemDraftMeta[id]?.title ?? freshItem(id)?.title ?? 'Question'
   const res = await postItemReply(id, {
     text: reply,
@@ -3674,8 +3721,12 @@ async function sendReply(
   const ownsSubmission = latestIntent
     && (itemDraftGenerations[id] ?? 0) === submittedGeneration
     && itemSubmissionTokens[id] === submissionToken
+  const trackedSubmission = itemDraftSubmission(id, submittedGeneration, intent)
   if (res === null) {
-    if (!latestIntent) return
+    if (!latestIntent) {
+      retireItemDraftSubmission(id, submittedGeneration, intent)
+      return
+    }
     if (!submissionUsesDraft) {
       if (recoverUndraftedFailure) {
         preserveItemDraftRecovery(id, {
@@ -3696,18 +3747,30 @@ async function sendReply(
       }
       return
     }
+    if (trackedSubmission?.recoveryKey) {
+      retireItemDraftSubmission(id, submittedGeneration, intent)
+      showWriteError(id, WRITE_FAILED)
+      resumeRender()
+      return
+    }
     // re-assert rather than merely leave in place, so a future edit that clears
     // early still cannot lose it. Only when the human HAD a draft: inventing one
     // for an option-pill/★ send would park text in an input nobody typed into
     // (and suspend the poll on it — the C2 failure mode).
-    if (hadDraft && ownsSubmission && submissionUsesDraft) {
+    if (
+      hadDraft
+      && ownsSubmission
+      && submissionUsesDraft
+      && trackedSubmission?.retryable
+    ) {
       draftReplies[id] = text
       draftReplyContexts[id] = context
       itemDraftRetryIntents[id] = {
         generation: submittedGeneration,
         intent: { ...intent },
       }
-    } else if (ownsSubmission && recoverUndraftedFailure) {
+      retireItemDraftSubmission(id, submittedGeneration, intent)
+    } else if (!hadDraft && ownsSubmission && recoverUndraftedFailure) {
       preserveItemDraftRecovery(id, {
         key: recoveryKey,
         title: recoveryTitle,
@@ -3730,7 +3793,10 @@ async function sendReply(
     delete itemDraftRetryIntents[id]
   }
   if (!res.ok) {
-    if (!latestIntent) return
+    if (!latestIntent) {
+      retireItemDraftSubmission(id, submittedGeneration, intent)
+      return
+    }
     if (!submissionUsesDraft) {
       if (recoverUndraftedFailure) {
         const item = freshItem(id)
@@ -3752,7 +3818,18 @@ async function sendReply(
       }
       return
     }
+    if (trackedSubmission?.recoveryKey) {
+      retireItemDraftSubmission(id, submittedGeneration, intent)
+      showWriteError(id, WRITE_FAILED)
+      resumeRender()
+      return
+    }
     if (!ownsSubmission) {
+      showWriteError(id, 'An earlier response was not applied; your newer draft is preserved.')
+      resumeRender()
+      return
+    }
+    if (hadDraft && !trackedSubmission?.retryable) {
       showWriteError(id, 'An earlier response was not applied; your newer draft is preserved.')
       resumeRender()
       return
@@ -3767,6 +3844,7 @@ async function sendReply(
       intent,
       generation: submittedGeneration,
     })
+    retireItemDraftSubmission(id, submittedGeneration, intent)
     requestDraftRecovery()
     bumpDraftGeneration(itemDraftGenerations, id)
     delete draftReplies[id]
@@ -3777,6 +3855,9 @@ async function sendReply(
     return
   }
   if (recoveryKey) delete staleItemDrafts[recoveryKey]
+  if (trackedSubmission?.recoveryKey) delete staleItemDrafts[trackedSubmission.recoveryKey]
+  retireItemDraftSubmission(id, submittedGeneration, intent)
+  if (recoveryKey) retireItemDraftSubmissionIntent(id, intent)
   if (!latestIntent) return
   if (ownsSubmission && !recoveryKey) {
     bumpDraftGeneration(itemDraftGenerations, id)
@@ -3836,7 +3917,7 @@ function answerEl(it) {
     else delete itemDraftMeta[it.id]
   }
   input.addEventListener('input', () => {
-    delete itemDraftRetryIntents[it.id]
+    invalidateItemDraftIntents(it.id)
     editorGeneration = bumpDraftGeneration(itemDraftGenerations, it.id)
     draftReplies[it.id] = input.value
     rememberDraftOwner()
@@ -3861,7 +3942,7 @@ function answerEl(it) {
   ctxInput.placeholder = 'optional context for the agent (applies to Send or option picks)…'
   ctxInput.value = draftReplyContexts[it.id] ?? ''
   ctxInput.addEventListener('input', () => {
-    delete itemDraftRetryIntents[it.id]
+    invalidateItemDraftIntents(it.id)
     editorGeneration = bumpDraftGeneration(itemDraftGenerations, it.id)
     draftReplyContexts[it.id] = ctxInput.value
     rememberDraftOwner()

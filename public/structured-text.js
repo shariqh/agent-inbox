@@ -2,15 +2,22 @@ import { esc } from './esc.js'
 import { textLinkHtml } from './source.js'
 
 const URL_RE = /https?:\/\/[^\s<>"']+/gi
-const PROTECTED_START_RE = /<!--|<![a-z][a-z0-9:-]*|<\/?[a-z][a-z0-9:-]*(?:\.[a-z_$][a-z0-9_$-]*)*|&(?:#[0-9]+|#x[0-9a-f]+|[a-z][a-z0-9]+);/gi
+const PROTECTED_START_RE = /<!--|<![\p{ID_Start}][\p{ID_Continue}\u200c\u200d:-]*|<\/?[\p{ID_Start}_$][\p{ID_Continue}\u200c\u200d_$:-]*(?:\.[\p{ID_Start}_$][\p{ID_Continue}\u200c\u200d_$-]*)*|&(?:#[0-9]+|#x[0-9a-f]+|[a-z][a-z0-9]+);/giu
 const SAFE_BOUNDARY_RE = /[\s([{'",;…⋯。！？؛؟،۔；：，、“”‘’（）【】《》「」『』［］｛｝—–«»]/
 const BULLET_RE = /^ {0,3}[-*]\s+(.+)$/
 const NUMBERED_RE = /^ {0,3}([0-9]+)\.\s+(.+)$/
+const IDENTIFIER_START_RE = /[\p{ID_Start}_$]/u
+const IDENTIFIER_CONTINUE_RE = /[\p{ID_Continue}\u200c\u200d_$]/u
+const JSX_IDENTIFIER_RE = /^[\p{ID_Start}_$][\p{ID_Continue}\u200c\u200d_$]*$/u
 
 const TRAILING_PUNCTUATION = new Set('.,!?;:…⋯。！？؛؟،۔；：，、“”‘’—–«»）】》」』］｝')
 const OPEN_TO_CLOSE = new Map([['(', ')'], ['[', ']'], ['{', '}']])
 const CLOSERS = new Set(OPEN_TO_CLOSE.values())
 const URL_SEPARATORS = new Set([',', ';', '؛', '،', '；', '，'])
+const REGEX_PREFIX_KEYWORDS = new Set([
+  'await', 'case', 'delete', 'do', 'else', 'in', 'instanceof', 'new',
+  'return', 'throw', 'typeof', 'void', 'yield',
+])
 const HTML_TAG_NAMES = new Set(
   'a abbr address area article aside audio b base bdi bdo blockquote body br button canvas caption cite code col colgroup data datalist dd del details dfn dialog div dl dt em embed fieldset figcaption figure footer form h1 h2 h3 h4 h5 h6 head header hgroup hr html i iframe img input ins kbd label legend li link main map mark menu meta meter nav noscript object ol optgroup option output p picture pre progress q rp rt ruby s samp script search section select slot small source span strong style sub summary sup table tbody td template textarea tfoot th thead time title tr track u ul var video wbr'.split(' '),
 )
@@ -57,6 +64,7 @@ function scanTag(value, start, initial = {}) {
   let expressionMode = initial.expressionMode ?? ''
   let regexCharClass = initial.regexCharClass ?? false
   let canStartRegex = initial.canStartRegex ?? true
+  let afterMemberAccess = initial.afterMemberAccess ?? false
   let genericDepth = initial.genericDepth ?? 0
   const genericClosers = [...(initial.genericClosers ?? [])]
   const allowGenerics = initial.allowGenerics ?? false
@@ -80,6 +88,7 @@ function scanTag(value, start, initial = {}) {
     regexCharClass: closed ? false : regexCharClass,
     quoteEscaped: closed ? false : quoteEscaped,
     canStartRegex,
+    afterMemberAccess,
     genericDepth: closed ? 0 : genericDepth,
     genericClosers: closed ? [] : genericClosers,
     allowGenerics,
@@ -101,12 +110,14 @@ function scanTag(value, start, initial = {}) {
         quote = ''
         expressionClosers.push('template}')
         canStartRegex = true
+        afterMemberAccess = false
         index++
         continue
       }
       if (char === quote && !quoteEscaped) {
         quote = ''
         canStartRegex = false
+        afterMemberAccess = false
       }
       quoteEscaped = false
       continue
@@ -132,10 +143,13 @@ function scanTag(value, start, initial = {}) {
       else if (char === '/' && !regexCharClass) {
         expressionMode = ''
         canStartRegex = false
+        afterMemberAccess = false
       }
       continue
     }
     if (expressionClosers.length) {
+      const codePoint = value.codePointAt(index)
+      const tokenChar = codePoint === undefined ? char : String.fromCodePoint(codePoint)
       if (char === '/' && value[index + 1] === '/') {
         expressionMode = ''
         return result(value.length, false)
@@ -159,6 +173,7 @@ function scanTag(value, start, initial = {}) {
       if (expressionClose) {
         expressionClosers.push(expressionClose)
         canStartRegex = true
+        afterMemberAccess = false
       } else if (
         expressionClosers.at(-1) === char ||
         (expressionClosers.at(-1) === 'template}' && char === '}')
@@ -166,10 +181,41 @@ function scanTag(value, start, initial = {}) {
         const closedTemplateExpression = expressionClosers.pop() === 'template}'
         if (closedTemplateExpression) quote = '`'
         canStartRegex = false
-      } else if (/[a-z0-9_$]/i.test(char)) {
+        afterMemberAccess = false
+      } else if (IDENTIFIER_START_RE.test(tokenChar)) {
+        let end = index + tokenChar.length
+        while (end < value.length) {
+          const nextCodePoint = value.codePointAt(end)
+          if (nextCodePoint === undefined) break
+          const nextChar = String.fromCodePoint(nextCodePoint)
+          if (!IDENTIFIER_CONTINUE_RE.test(nextChar)) break
+          end += nextChar.length
+        }
+        const word = value.slice(index, end)
+        canStartRegex = !afterMemberAccess && REGEX_PREFIX_KEYWORDS.has(word)
+        afterMemberAccess = false
+        index = end - 1
+      } else if (/[0-9]/.test(char)) {
+        let end = index + 1
+        while (end < value.length && /[0-9a-f._]/i.test(value[end])) end++
         canStartRegex = false
+        afterMemberAccess = false
+        index = end - 1
+      } else if ((char === '+' || char === '-') && value[index + 1] === char) {
+        const prefixOperator = canStartRegex
+        canStartRegex = prefixOperator
+        afterMemberAccess = false
+        index++
+      } else if (char === '!' && value[index + 1] !== '=') {
+        const prefixOperator = canStartRegex
+        canStartRegex = prefixOperator
+        afterMemberAccess = false
+      } else if (char === '.') {
+        canStartRegex = false
+        afterMemberAccess = true
       } else if ('=!:,?&|+-*%<>/'.includes(char)) {
         canStartRegex = true
+        afterMemberAccess = false
       }
       continue
     }
@@ -277,6 +323,7 @@ function consumeTag(scan, state) {
   state.regexCharClass = scan.regexCharClass
   state.quoteEscaped = scan.quoteEscaped
   state.canStartRegex = scan.canStartRegex
+  state.afterMemberAccess = scan.afterMemberAccess
   state.genericDepth = scan.genericDepth
   state.genericClosers = scan.genericClosers
   state.allowGenerics = scan.allowGenerics
@@ -304,9 +351,10 @@ function assessTagStart(value, match, lineLeading) {
   }
   const rawName = token.replace(/^<\/?/, '')
   const name = rawName.toLowerCase()
+  const nameParts = rawName.split('.')
   const frameworkComponent =
-    /^[A-Z][a-z0-9_$]*(?:\.[a-z_$][a-z0-9_$]*)*$/i.test(rawName) &&
-    /^[A-Z]/.test(rawName)
+    (nameParts.length > 1 && nameParts.every((part) => JSX_IDENTIFIER_RE.test(part))) ||
+    (JSX_IDENTIFIER_RE.test(rawName) && (/^\p{Lu}/u.test(rawName) || /^[_$]/.test(rawName)))
   const recognized = HTML_TAG_NAMES.has(name) || name.includes('-') || frameworkComponent
   const tokenEnd = match.index + token.length
   if (lineLeading && recognized) {
@@ -328,17 +376,36 @@ function assessTagStart(value, match, lineLeading) {
     rejectGreaterEqual: !recognized,
     allowGenerics: frameworkComponent,
   })
-  if (!shape.attributeShapeValid) return { credible: false }
-  if (
+  const hasUnclosedLexicalState =
     !shape.closed &&
-    !(frameworkComponent
+    (shape.genericDepth > 0 ||
+      shape.expressionClosers.length > 0 ||
+      Boolean(shape.expressionMode) ||
+      Boolean(shape.quote))
+  const previous = match.index > 0 ? value[match.index - 1] : ''
+  const hasSafeLeftBoundary =
+    !previous || previous === '>' || SAFE_BOUNDARY_RE.test(previous)
+  if (!hasSafeLeftBoundary && !shape.closed) {
+    return hasUnclosedLexicalState
+      ? { credible: false, inertEnd: shape.end }
+      : { credible: false }
+  }
+  if (!shape.attributeShapeValid) {
+    return hasUnclosedLexicalState
+      ? { credible: false, inertEnd: shape.end }
+      : { credible: false }
+  }
+  const credibleOpenTag =
+    frameworkComponent
       ? rawName.length > 1 &&
         (shape.firstAttributeAssignment || shape.attributeCount === 1)
       : recognized
         ? shape.attributeCount > 0
-        : shape.firstAttributeAssignment)
-  ) {
-    return { credible: false }
+        : shape.firstAttributeAssignment
+  if (!shape.closed && !credibleOpenTag) {
+    return hasUnclosedLexicalState
+      ? { credible: false, inertEnd: shape.end }
+      : { credible: false }
   }
   return {
     credible: true,
@@ -446,6 +513,7 @@ function renderInline(value, state, linkState) {
           expressionMode: state.expressionMode,
           regexCharClass: state.regexCharClass,
           canStartRegex: state.canStartRegex,
+          afterMemberAccess: state.afterMemberAccess,
           genericDepth: state.genericDepth,
           genericClosers: state.genericClosers,
           allowGenerics: state.allowGenerics,
@@ -475,7 +543,15 @@ function renderInline(value, state, linkState) {
       continue
     }
     const assessment = assessTagStart(value, match, match.index === firstContentIndex)
-    if (!assessment.credible) continue
+    if (!assessment.credible) {
+      if (assessment.inertEnd > match.index) {
+        html += renderLinkedSegment(value.slice(cursor, match.index), linkState)
+        cursor = assessment.inertEnd
+        html += esc(value.slice(match.index, cursor))
+        PROTECTED_START_RE.lastIndex = cursor
+      }
+      continue
+    }
     html += renderLinkedSegment(value.slice(cursor, match.index), linkState)
     cursor = assessment.comment
       ? consumeComment(value, match.index, state)
@@ -514,6 +590,7 @@ export function renderStructuredText(value) {
     regexCharClass: false,
     quoteEscaped: false,
     canStartRegex: true,
+    afterMemberAccess: false,
     genericDepth: 0,
     genericClosers: [],
     allowGenerics: false,

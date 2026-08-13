@@ -158,6 +158,38 @@ describe('structured agent text on cards and plans', () => {
     expect(detail?.textContent).toContain('https://attribute.example/y')
   })
 
+  it('protects token-sensitive expressions and broad JSX member names on a real card', async () => {
+    const d = open()
+    const id = insertItem(d, {
+      ...AGENT,
+      kind: 'question',
+      title: 'Inspect token boundaries',
+      detail: [
+        'before <motion.div disabled',
+        'render={() => { return /}}/.test(value) ? "https://attribute.example/x" : null }}',
+        'href="https://attribute.example/y">label</motion.div>',
+        'before <ui.Component<Props> value={count++ / 2}',
+        'href="https://attribute.example/z">label</ui.Component>',
+        '<Component href="https://attribute.example/a">x</Component><motion.div href="https://attribute.example/b">y</motion.div>',
+        'if x<a and',
+        'if x<motion.div and',
+        'See https://prose.example/x',
+        '- recovered item',
+      ].join('\n'),
+    })
+
+    await bootApp(d)
+    click(row(id))
+    await settle()
+
+    const detail = row(id)?.querySelector('.card-tldr')
+    const links = [...(detail?.querySelectorAll<HTMLAnchorElement>('a') ?? [])]
+    expect(links.map((link) => link.href)).toEqual(['https://prose.example/x'])
+    expect(detail?.textContent).toContain('https://attribute.example/x')
+    expect(detail?.textContent).toContain('https://attribute.example/z')
+    expect(detail?.querySelector('li')?.textContent).toBe('recovered item')
+  })
+
   it('leaves human-authored replies and reply context on their existing plain-text path', async () => {
     const d = open()
     const id = insertItem(d, {

@@ -197,6 +197,91 @@ describe('renderStructuredText escaping', () => {
     expect(html).toContain('href="https://prose.example/x"')
   })
 
+  it.each([
+    '<Component render={() => { return /}}/.test(value) ? "https://attribute.example/x" : null }} href="https://attribute.example/y">',
+    '<Component value={count++ / 2 > 0 ? "https://attribute.example/x" : null} href="https://attribute.example/y">',
+    '<Component value={++count / 2 > 0 ? "https://attribute.example/x" : null} href="https://attribute.example/y">',
+    '<Component value={count-- / 2 > 0 ? "https://attribute.example/x" : null} href="https://attribute.example/y">',
+    '<Component value={value! / 2 > 0 ? "https://attribute.example/x" : null} href="https://attribute.example/y">',
+    '<Component value={of / 2 > 0 ? "https://attribute.example/x" : null} href="https://attribute.example/y">',
+    '<Component value={typeof𐊧 / 2 > 0 ? "https://attribute.example/x" : null} href="https://attribute.example/y">',
+  ])('classifies regex and division from expression token context: %s', (fragment) => {
+    const html = renderStructuredText(`${fragment}label</Component>\nhttps://prose.example/x\n- item`)
+    expect(html).not.toContain('href="https://attribute.example/x"')
+    expect(html).not.toContain('href="https://attribute.example/y"')
+    expect(html).toContain('href="https://prose.example/x"')
+    expect(html).toContain('<ul><li>item</li></ul>')
+  })
+
+  it.each([
+    'before <motion.div disabled\nhref="https://attribute.example/x">label</motion.div>',
+    'before <ui.Component<Props> disabled\nhref="https://attribute.example/x">label</ui.Component>',
+    'before <_ui.Component disabled\nhref="https://attribute.example/x">label</_ui.Component>',
+    'before <$ui.Component disabled\nhref="https://attribute.example/x">label</$ui.Component>',
+    'before <组件.面板 disabled\nhref="https://attribute.example/x">label</组件.面板>',
+    'before <𐊧ui.Component disabled\nhref="https://attribute.example/x">label</𐊧ui.Component>',
+  ])('keeps valid JSX identifier and member components inert: %s', (fragment) => {
+    const html = renderStructuredText(`${fragment}\nhttps://prose.example/x`)
+    expect(html).not.toContain('href="https://attribute.example/x"')
+    expect(html).toContain('href="https://prose.example/x"')
+  })
+
+  it('protects adjacent and text-adjacent closed tags without poisoning comparisons', () => {
+    const html = renderStructuredText(
+      'text<Component href="https://attribute.example/x">x</Component>' +
+      '<motion.div href="https://attribute.example/y">y</motion.div>\n' +
+      'if x<a and\n' +
+      'if x<foo attr=" https://attribute.example/z\n' +
+      'See https://prose.example/x\n- item',
+    )
+    expect(html).not.toContain('href="https://attribute.example/x"')
+    expect(html).not.toContain('href="https://attribute.example/y"')
+    expect(html).not.toContain('href="https://attribute.example/z"')
+    expect(html).toContain('href="https://prose.example/x"')
+    expect(html).toContain('<ul><li>item</li></ul>')
+  })
+
+  it('keeps adversarial generic, member, and expression scans linear', () => {
+    const cases = [
+      {
+        value:
+          `x ${'<Component<'.repeat(10_000)} https://attribute.example/x\n` +
+          'See https://prose.example/x',
+        protectedUrl: true,
+      },
+      {
+        value:
+          `x ${'<custom {'.repeat(10_000)} https://attribute.example/x\n` +
+          'See https://prose.example/x',
+        protectedUrl: true,
+      },
+      {
+        value:
+          `${'x<motion.div and z '.repeat(50_000)}\n` +
+          'See https://prose.example/x',
+        protectedUrl: false,
+      },
+      {
+        value:
+          `<Component value={${'count++ / 2 + '.repeat(20_000)} 1} ` +
+          'href="https://attribute.example/x">label</Component>\n' +
+          'See https://prose.example/x',
+        protectedUrl: true,
+      },
+    ]
+
+    for (const testCase of cases) {
+      const started = performance.now()
+      const html = renderStructuredText(testCase.value)
+      const elapsed = performance.now() - started
+      expect(elapsed).toBeLessThan(2_500)
+      if (testCase.protectedUrl) {
+        expect(html).not.toContain('href="https://attribute.example/x"')
+      }
+      expect(html).toContain('href="https://prose.example/x"')
+    }
+  })
+
   it('keeps comment content inert until an exact comment close', () => {
     const html = renderStructuredText(
       '<!-- > https://comment.example/x --> then https://prose.example/x',
@@ -238,6 +323,8 @@ describe('renderStructuredText escaping', () => {
     'if (x<y >= a)',
     'x<Y and z',
     'if x<UI.Component and z',
+    'if x<motion.div and',
+    'if x<a and',
     'if (x <threshold )',
     'x <max-size ',
   ])('does not treat a compact comparison as a tag: %s', (comparison) => {
@@ -467,5 +554,6 @@ describe('structured text presentation contract', () => {
     expect(source).not.toContain("remainder.includes('>')")
     expect(source).not.toContain('value.slice(0, match.index).trim()')
     expect(source).toContain("allowGenerics && char === '<' && index === start")
+    expect(source).toContain('assessment.inertEnd')
   })
 })

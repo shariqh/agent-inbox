@@ -65,8 +65,10 @@ Agent-authored long-form text supports paragraphs, explicit line breaks, simple 
 bullets, `1.` numbered lists, and safe `http://`/`https://` autolinks. It does not render
 general Markdown or raw HTML. Keep titles, TL;DRs, notes, and action fields short and
 action-first; use that small structure for the reasoning and history in collapsed
-`context`. Fenced command/code presentation remains a separate follow-up and must not be
-assumed until that renderer ships.
+`context`. Code- or markup-like fragments quarantine the remainder of their paragraph or
+list item from autolinking; put prose URLs that should be clickable in a separate
+paragraph or list item. Fenced command/code presentation remains a separate follow-up and
+must not be assumed until that renderer ships.
 **Always provide `context`** — the background a human returning cold needs
 to act without asking you anything: what you were working on, why this came up, relevant
 files/PRs/links. They may read the item hours later with zero memory of the task; it

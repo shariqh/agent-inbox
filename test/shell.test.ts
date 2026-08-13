@@ -345,6 +345,7 @@ describe('closed projects (issue #32)', () => {
     const restore = fn('function restoreProjectFocus(', '\nfunction setClosedProjectsOpen(')
     expect(restore).toMatch(/state\.kind === 'peek'/)
     expect(restore).toMatch(/state\.kind === 'trigger'.*promoteProjectTab/s)
+    expect(restore).toMatch(/state\.kind === 'tab'.*focusArchivedProjectControl/s)
     expect(restore).toMatch(/promoteProjectTab\(/)
     const close = fn('async function closeProjectAction(', '\nasync function reopenProjectAction(')
     expect(close).toMatch(/focusProjectTab\([^,]+,\s*generation\)/)
@@ -354,6 +355,9 @@ describe('closed projects (issue #32)', () => {
   })
 
   it('serializes project writes and reapplies every current optimistic intent after loading', () => {
+    expect(js).toContain('let authoritativeClosed = []')
+    expect(js).toContain('let loadGeneration = 0')
+    expect(js).toContain('let appliedLoadGeneration = 0')
     expect(js).toContain('const projectMutationIntents = new Map()')
     expect(js).toContain('const projectMutationQueues = new Map()')
     const loadBody = fn('async function load()', '\n// fix round 1 (hardening)')
@@ -364,7 +368,14 @@ describe('closed projects (issue #32)', () => {
       expect(body).toMatch(/beginProjectMutation\(/)
       expect(body).toMatch(/await queueProjectMutation\(/)
       expect(body).toMatch(/if \(!ownsProjectMutation\(/)
+      expect(body).toMatch(/finishProjectMutation\([^)]*\)[\s\S]*applyProjectMutationIntents\(\)[\s\S]*forceRender\(\)/)
     }
+    const apply = fn('function applyProjectMutationIntents()', '\nasync function queueProjectMutation(')
+    expect(apply).toMatch(/new Set\(authoritativeClosed\)/)
+    const retire = fn('function retireConfirmedProjectMutationIntents(', '\nfunction applyProjectMutationIntents(')
+    expect(retire).toMatch(/completedLoadGeneration > intent\.confirmedAfterLoad/)
+    const wait = fn('function waitForAuthoritativeRefresh(', '\nasync function refreshAuthoritativeProjectState(')
+    expect(wait).toMatch(/appliedLoadGeneration > afterGeneration/)
   })
 
   it('reconciles projectFilter against the FULL project list so a closed project can still be peeked', () => {
@@ -400,7 +411,7 @@ describe('closed projects (issue #32)', () => {
     expect(fn('function paintEditableSurfaces(', '\nfunction render(')).toContain('renderClosedBanner()')
   })
 
-  it('the optimistic close/reopen revert BY VALUE — a poll between click and response must not evict a bystander', () => {
+  it('the optimistic close/reopen revert comes from the authoritative snapshot', () => {
     const close = fn('async function closeProjectAction(', '\nasync function reopenProjectAction(')
     const reopen = fn('async function reopenProjectAction(', '\n// fix round 1: the query persists')
     for (const [name, body] of [['close', close], ['reopen', reopen]] as const) {
@@ -408,8 +419,12 @@ describe('closed projects (issue #32)', () => {
       expect(body, `${name} must route through postJSON`).toMatch(/postJSON\('\/api\/projects\//)
       expect(body, `${name} must bail out on a failed write`).toMatch(/=== null/)
     }
-    expect(close).toMatch(/filter\(\(p\) => p !== name\)/)
-    expect(reopen).toMatch(/includes\(name\)/)
+    expect(close).not.toMatch(/lastData\.closed\s*=.*filter/)
+    expect(reopen).not.toMatch(/lastData\.closed\s*=.*includes/)
+    for (const body of [close, reopen]) {
+      expect(body).toMatch(/finishProjectMutation\(/)
+      expect(body).toMatch(/applyProjectMutationIntents\(\)/)
+    }
   })
 })
 
@@ -532,7 +547,7 @@ describe('#38 · the poll keeps its gate, the human bypasses it', () => {
     // load()` anywhere else is the same defect wearing a keyword.
     const awaited = lines
       .map((line, i) => ({ line, n: i + 1 }))
-      .filter(({ line }) => /^await\s+load\(\);?$/.test(line))
+      .filter(({ line }) => /^(?:const loaded = )?await\s+load\(\);?$/.test(line))
     expect(awaited.length, `stray await load(): ${JSON.stringify(awaited)}`).toBe(1)
     expect(lines[awaited[0]!.n - 2]).toBe('async function reloadAndPaint() {')
   })

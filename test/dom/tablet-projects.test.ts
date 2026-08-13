@@ -57,6 +57,36 @@ function holdNextRequest(method: 'GET' | 'POST'): () => void {
   return release
 }
 
+function failNextRequest(method: 'GET' | 'POST'): void {
+  const fetchNow = globalThis.fetch
+  globalThis.fetch = async (input, init) => {
+    if ((init?.method ?? 'GET') === method) {
+      globalThis.fetch = fetchNow
+      return new Response('not json', { status: 500 })
+    }
+    return await fetchNow(input, init)
+  }
+}
+
+function holdClosedProjectsSnapshot(): { started: Promise<void>; release(): void } {
+  const fetchNow = globalThis.fetch
+  let release!: () => void
+  let started!: () => void
+  const gate = new Promise<void>((resolve) => { release = resolve })
+  const startedPromise = new Promise<void>((resolve) => { started = resolve })
+  globalThis.fetch = async (input, init) => {
+    if ((init?.method ?? 'GET') !== 'GET' || String(input) !== '/api/projects/closed') {
+      return await fetchNow(input, init)
+    }
+    globalThis.fetch = fetchNow
+    const snapshot = await fetchNow(input, init)
+    started()
+    await gate
+    return snapshot
+  }
+  return { started: startedPromise, release }
+}
+
 function holdArchivePosts(): { release(index: number): void } {
   const fetchNow = globalThis.fetch
   const releases: Array<() => void> = []
@@ -473,6 +503,36 @@ describe('tablet archived-project popover behavior', () => {
     expect(document.activeElement).toBe(tabbable[0])
   })
 
+  it('maps a filtered desktop archived tab to the tablet archived trigger', async () => {
+    const d = open()
+    for (let i = 0; i < 13; i += 1) {
+      question(d, `project-${i}`)
+      advanceClock()
+    }
+    question(d, 'beta-archived')
+    advanceClock()
+    question(d, 'gamma-archived')
+    closeProject(d, 'beta-archived')
+    closeProject(d, 'gamma-archived')
+    setViewport(1400)
+    await bootApp(d)
+
+    const filter = document.querySelector<HTMLInputElement>('#rail .rail-filter')!
+    filter.value = 'beta'
+    filter.dispatchEvent(new window.Event('input', { bubbles: true }))
+    const fold = document.querySelector<HTMLDetailsElement>('.closed-fold')!
+    fold.open = true
+    fold.dispatchEvent(new window.Event('toggle'))
+    fold.querySelector<HTMLButtonElement>('.rail-tab[data-project="beta-archived"]')?.focus()
+
+    setViewport(900)
+    await settle()
+
+    expect(document.activeElement).toBe(archivedTrigger())
+    expect(archivedTrigger()?.getAttribute('aria-expanded')).toBe('false')
+    expect(document.querySelector('.rail-tab[data-project="beta-archived"]')).toBeNull()
+  })
+
   it('makes a restored project tab the sole roving tab stop after a poll rebuild', async () => {
     const d = open()
     question(d, 'alpha')
@@ -770,6 +830,124 @@ describe('async project mutation focus', () => {
     expect(closedProjects(d)).toEqual(['beta'])
     expect(projectTab('beta')).toBeNull()
     expect(projectTab('gamma')).toBeTruthy()
+  })
+
+  it('recomputes from a derived authoritative reopen after successful Archive', async () => {
+    const d = open()
+    question(d, 'alpha')
+    advanceClock()
+    question(d, 'beta')
+    setViewport(900)
+    await bootApp(d)
+
+    const release = holdNextRequest('GET')
+    click(archiveAction('beta'))
+    await settle()
+    advanceClock()
+    question(d, 'beta')
+    release()
+    await settle()
+
+    expect(closedProjects(d)).toEqual([])
+    expect(projectTab('beta')).toBeTruthy()
+  })
+
+  it('keeps a confirmed Archive intent until a failed authoritative refresh recovers', async () => {
+    expectConsoleError(/JSON|Unexpected token/)
+    const d = open()
+    question(d, 'alpha')
+    advanceClock()
+    question(d, 'beta')
+    setViewport(900)
+    await bootApp(d)
+
+    failNextRequest('GET')
+    click(archiveAction('beta'))
+    await settle()
+    expect(projectTab('beta')).toBeNull()
+
+    advanceClock()
+    question(d, 'beta')
+    await pollTick()
+
+    expect(closedProjects(d)).toEqual([])
+    expect(projectTab('beta')).toBeTruthy()
+  })
+
+  it('does not retire a confirmed Archive from an older poll snapshot', async () => {
+    expectConsoleError(/JSON|Unexpected token/)
+    const d = open()
+    question(d, 'alpha')
+    advanceClock()
+    question(d, 'beta')
+    setViewport(900)
+    await bootApp(d)
+
+    const stale = holdClosedProjectsSnapshot()
+    const oldPoll = pollTick()
+    await stale.started
+    failNextRequest('GET')
+    click(archiveAction('beta'))
+    await settle()
+    expect(projectTab('beta')).toBeNull()
+
+    stale.release()
+    await oldPoll
+    expect(projectTab('beta')).toBeNull()
+
+    await pollTick()
+    expect(closedProjects(d)).toEqual(['beta'])
+    expect(projectTab('beta')).toBeNull()
+  })
+
+  it('restores confirmed open state when queued Archive and Reopen both fail', async () => {
+    expectConsoleError(/HTTP 500/)
+    const d = open()
+    question(d, 'alpha')
+    advanceClock()
+    question(d, 'beta')
+    setViewport(900)
+    await bootApp(d)
+
+    const posts = holdProjectPosts()
+    click(archiveAction('beta'))
+    await settle()
+    click(archivedPopover()?.querySelector('[aria-label="Reopen project beta"]'))
+    await settle()
+
+    posts.release(0, 500)
+    await settle()
+    posts.release(1, 500)
+    await settle()
+
+    expect(closedProjects(d)).toEqual([])
+    expect(projectTab('beta')).toBeTruthy()
+  })
+
+  it('restores confirmed closed state when queued Reopen and Archive both fail', async () => {
+    expectConsoleError(/HTTP 500/)
+    const d = open()
+    question(d, 'alpha')
+    advanceClock()
+    question(d, 'beta')
+    closeProject(d, 'beta')
+    setViewport(900)
+    await bootApp(d)
+
+    const posts = holdProjectPosts()
+    click(archivedTrigger())
+    click(archivedPopover()?.querySelector('[aria-label="Reopen project beta"]'))
+    await settle()
+    click(archiveAction('beta'))
+    await settle()
+
+    posts.release(0, 500)
+    await settle()
+    posts.release(1, 500)
+    await settle()
+
+    expect(closedProjects(d)).toEqual(['beta'])
+    expect(projectTab('beta')).toBeNull()
   })
 
   it('does not steal deliberate Search focus when Archive finishes', async () => {

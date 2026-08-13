@@ -47,6 +47,9 @@ let shown = { ...PAGE }
 function resetPaging() { shown = { ...PAGE } }
 
 let lastData = null
+let authoritativeClosed = []
+let loadGeneration = 0
+let appliedLoadGeneration = 0
 let preparedFrame = null
 // issue #30 — the (repo, branch) → cached PR state index, rebuilt once per
 // render. A Map from the start, never null: the deep-link and setup paths can
@@ -255,8 +258,9 @@ function forceRender() {
 // human's. Pinned as source text in test/shell.test.ts, because no runtime
 // assertion can see which of the two a handler picked.
 async function reloadAndPaint() {
-  await load()
+  const loaded = await load()
   forceRender()
+  return loaded
 }
 
 // the single writer of openRowId — Tasks 11/16/17 call this, never assign.
@@ -281,10 +285,11 @@ function orderedIds(ids) {
 }
 
 async function load() {
+  const generation = ++loadGeneration
   try {
     const res = await fetch('/api/items')
     const boot = res.headers.get('x-inbox-boot')
-    if (bootId && boot && bootId !== boot) { location.reload(); return } // server restarted → pick up fresh frontend
+    if (bootId && boot && bootId !== boot) { location.reload(); return false } // server restarted → pick up fresh frontend
     if (boot) bootId = boot
     const g = await res.json()
     const boards = await (await fetch('/api/boards')).json()
@@ -299,11 +304,17 @@ async function load() {
     // an empty links set must mean "render exactly as before this feature", never
     // a dead page. A viewer that predates this route answers 404 with HTML.
     const links = await fetch('/api/links').then((r) => (r.ok ? r.json() : [])).catch(() => [])
+    if (generation < appliedLoadGeneration) return true
+    appliedLoadGeneration = generation
+    authoritativeClosed = [...closed]
     lastData = { g: ageNotes(g, Date.now()), boards, archived, activity, closed, links }
+    retireConfirmedProjectMutationIntents(generation)
     applyProjectMutationIntents()
     renderIfIdle()
     if (!bootFocusDone) { bootFocusDone = true; applyFocusHash() }
     document.getElementById('status').textContent = ''
+    resolveAuthoritativeRefreshWaiters(generation)
+    return true
   } catch (err) {
     // an exception thrown inside render() used to be swallowed here with no
     // console signal at all — a completely dead page with nothing to debug.
@@ -312,10 +323,11 @@ async function load() {
     // silently). Log it; keep the 'disconnected' status for genuine fetch failures.
     console.error(err)
     document.getElementById('status').textContent = 'disconnected'
+    return false
   }
 }
 
-// fix round 1 (hardening): every write-path fetch used to be a bare `await fetch(...)`
+// fix round 1 (hardening): every write-path fetch used to await an unguarded request
 // with no try/catch — a dropped request (offline, server restart mid-click) became an
 // unhandled promise rejection: no console signal, no user feedback, and the optimistic
 // UI may already have updated as if it worked. That is worse than a visible failure for
@@ -1606,6 +1618,8 @@ let restoringRailFocus = false
 let projectMutationGeneration = 0
 const projectMutationIntents = new Map()
 const projectMutationQueues = new Map()
+const projectMutationVersions = new Map()
+const authoritativeRefreshWaiters = new Set()
 // lastData minus the closed projects — what the DEFAULT view may show. Set once
 // per render(), read by every panel renderer that must agree with the badge.
 let visibleData = null
@@ -2046,6 +2060,23 @@ function focusProjectFallback(project, { preferFold = false } = {}) {
   return !!fallbackTab
 }
 
+function focusArchivedProjectControl(project) {
+  const escaped = CSS.escape(project)
+  const peek = document.querySelector(
+    `#closedProjectsPopover [data-project="${escaped}"] .closed-project-peek`,
+  )
+  if (peek instanceof HTMLElement) {
+    peek.focus()
+    return true
+  }
+  const trigger = document.getElementById('closedProjectsTrigger')
+  if (trigger) {
+    trigger.focus()
+    return true
+  }
+  return false
+}
+
 function projectMutationOwnsFocus(selector, generation) {
   if (generation !== projectMutationGeneration) return false
   const active = document.activeElement
@@ -2094,6 +2125,15 @@ function restoreProjectFocus(state) {
   }
   if (state.kind === 'peek' && !target) {
     target = document.querySelector(`#rail .rail-tab[data-project="${project}"]`)
+  }
+  if (
+    (state.kind === 'tab' || state.kind === 'reopen' || state.kind === 'peek')
+    && !target
+    && tabletProjectsMode()
+    && closedSet().has(state.project)
+  ) {
+    if (!focusArchivedProjectControl(state.project)) focusProjectFallback(state.project)
+    return
   }
   if ((state.kind === 'tab' || state.kind === 'reopen' || state.kind === 'peek')
     && target?.classList.contains('rail-tab')) {
@@ -3753,9 +3793,14 @@ async function act(id, action) {
 // just left.
 function beginProjectMutation(name, closed) {
   const generation = ++projectMutationGeneration
-  projectMutationIntents.set(name, { generation, closed })
+  projectMutationVersions.set(name, generation)
+  projectMutationIntents.set(name, { generation, closed, confirmedAfterLoad: null })
   applyProjectMutationIntents()
   return generation
+}
+
+function latestProjectMutation(name, generation) {
+  return projectMutationVersions.get(name) === generation
 }
 
 function ownsProjectMutation(name, generation) {
@@ -3764,11 +3809,28 @@ function ownsProjectMutation(name, generation) {
 
 function finishProjectMutation(name, generation) {
   if (ownsProjectMutation(name, generation)) projectMutationIntents.delete(name)
+  if (latestProjectMutation(name, generation)) projectMutationVersions.delete(name)
+}
+
+function confirmProjectMutation(name, generation, confirmedAfterLoad) {
+  const intent = projectMutationIntents.get(name)
+  if (intent?.generation === generation) intent.confirmedAfterLoad = confirmedAfterLoad
+}
+
+function retireConfirmedProjectMutationIntents(completedLoadGeneration) {
+  for (const [name, intent] of projectMutationIntents) {
+    if (
+      intent.confirmedAfterLoad !== null
+      && completedLoadGeneration > intent.confirmedAfterLoad
+    ) {
+      projectMutationIntents.delete(name)
+    }
+  }
 }
 
 function applyProjectMutationIntents() {
   if (!lastData) return
-  const closed = new Set(lastData.closed ?? [])
+  const closed = new Set(authoritativeClosed)
   for (const [name, intent] of projectMutationIntents) {
     if (intent.closed) closed.add(name)
     else closed.delete(name)
@@ -3787,6 +3849,26 @@ async function queueProjectMutation(name, write) {
   }
 }
 
+function resolveAuthoritativeRefreshWaiters(completedLoadGeneration) {
+  for (const waiter of authoritativeRefreshWaiters) {
+    if (completedLoadGeneration <= waiter.afterGeneration) continue
+    authoritativeRefreshWaiters.delete(waiter)
+    waiter.resolve()
+  }
+}
+
+function waitForAuthoritativeRefresh(afterGeneration) {
+  if (appliedLoadGeneration > afterGeneration) return Promise.resolve()
+  return new Promise((resolve) => {
+    authoritativeRefreshWaiters.add({ afterGeneration, resolve })
+  })
+}
+
+async function refreshAuthoritativeProjectState(afterGeneration) {
+  if (await reloadAndPaint()) return
+  await waitForAuthoritativeRefresh(afterGeneration)
+}
+
 async function closeProjectAction(name, { focusArchived = false } = {}) {
   const generation = beginProjectMutation(name, true)
   closedFoldOpen = true // show the human where the tab went
@@ -3795,14 +3877,25 @@ async function closeProjectAction(name, { focusArchived = false } = {}) {
   resetPaging()
   forceRender()
   if (focusArchived) focusProjectControl('closedProjectsTrigger', generation)
-  const res = await queueProjectMutation(
-    name,
-    () => postJSON('/api/projects/close', { project: name }),
-  )
-  if (!ownsProjectMutation(name, generation)) return
-  if (res === null) { // postJSON already surfaced the reason — just put the tab back
-    const restoreFocus = focusArchived && projectMutationOwnsFocus('#closedProjectsTrigger', generation)
-    lastData.closed = (lastData.closed ?? []).filter((p) => p !== name)
+  let restoreFocus = false
+  const res = await queueProjectMutation(name, async () => {
+    const result = await postJSON('/api/projects/close', { project: name })
+    if (result !== null) {
+      const confirmedAfterLoad = loadGeneration
+      const current = ownsProjectMutation(name, generation)
+        && latestProjectMutation(name, generation)
+      restoreFocus = current
+        && focusArchived
+        && projectMutationOwnsFocus('#closedProjectsTrigger', generation)
+      if (current) confirmProjectMutation(name, generation, confirmedAfterLoad)
+      await refreshAuthoritativeProjectState(confirmedAfterLoad)
+    }
+    return result
+  })
+  if (!latestProjectMutation(name, generation)) return
+  if (res === null) {
+    if (!ownsProjectMutation(name, generation)) return
+    restoreFocus = focusArchived && projectMutationOwnsFocus('#closedProjectsTrigger', generation)
     finishProjectMutation(name, generation)
     applyProjectMutationIntents()
     forceRender()
@@ -3811,11 +3904,6 @@ async function closeProjectAction(name, { focusArchived = false } = {}) {
     }
     return
   }
-  // low stakes here — the optimistic frame above already showed the right thing —
-  // but there is ONE rule for a human-initiated write, not two (#38).
-  const restoreFocus = focusArchived && projectMutationOwnsFocus('#closedProjectsTrigger', generation)
-  await reloadAndPaint()
-  if (!ownsProjectMutation(name, generation)) return
   finishProjectMutation(name, generation)
   if (restoreFocus && projectMutationOwnsFocus('#closedProjectsTrigger', generation)) {
     focusProjectControl('closedProjectsTrigger', generation)
@@ -3830,23 +3918,31 @@ async function reopenProjectAction(name, { focusProject = false } = {}) {
   if (focusProject) {
     focusProjectTab(projectSelector, generation)
   }
-  const res = await queueProjectMutation(
-    name,
-    () => postJSON('/api/projects/reopen', { project: name }),
-  )
-  if (!ownsProjectMutation(name, generation)) return
+  let restoreFocus = false
+  const res = await queueProjectMutation(name, async () => {
+    const result = await postJSON('/api/projects/reopen', { project: name })
+    if (result !== null) {
+      const confirmedAfterLoad = loadGeneration
+      const current = ownsProjectMutation(name, generation)
+        && latestProjectMutation(name, generation)
+      restoreFocus = current
+        && focusProject
+        && projectMutationOwnsFocus(projectSelector, generation)
+      if (current) confirmProjectMutation(name, generation, confirmedAfterLoad)
+      await refreshAuthoritativeProjectState(confirmedAfterLoad)
+    }
+    return result
+  })
+  if (!latestProjectMutation(name, generation)) return
   if (res === null) {
-    const restoreFocus = focusProject && projectMutationOwnsFocus(projectSelector, generation)
-    if (!(lastData.closed ?? []).includes(name)) lastData.closed = [...(lastData.closed ?? []), name]
+    if (!ownsProjectMutation(name, generation)) return
+    restoreFocus = focusProject && projectMutationOwnsFocus(projectSelector, generation)
     finishProjectMutation(name, generation)
     applyProjectMutationIntents()
     forceRender()
     if (restoreFocus) focusProjectControl('closedProjectsTrigger', generation)
     return
   }
-  const restoreFocus = focusProject && projectMutationOwnsFocus(projectSelector, generation)
-  await reloadAndPaint()
-  if (!ownsProjectMutation(name, generation)) return
   finishProjectMutation(name, generation)
   if (restoreFocus && projectMutationOwnsFocus(projectSelector, generation)) {
     focusProjectTab(projectSelector, generation)

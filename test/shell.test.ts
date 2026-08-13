@@ -228,9 +228,7 @@ describe('closed projects (issue #32)', () => {
     expect(body).toContain('/api/projects/closed')
     // an older viewer answers 404 with HTML; a bare .json() would throw into
     // load()'s catch and turn the whole page 'disconnected'
-    const fetchLine = body.split('\n').find((l) => l.includes('/api/projects/closed'))!
-    expect(fetchLine).toMatch(/\.catch\(/)
-    expect(fetchLine).toMatch(/r\.ok/)
+    expect(body).toMatch(/fetch\('\/api\/projects\/closed'\)[\s\S]*?r\.ok[\s\S]*?\.catch\(/)
     expect(body).toMatch(/lastData = \{[^}]*closed/)
   })
 
@@ -285,6 +283,35 @@ describe('closed projects (issue #32)', () => {
     expect(sig).toContain('foldOpen')
   })
 
+  it('does not synchronize derived tablet fold state before the rail decides to rebuild', () => {
+    const body = fn('function renderRail()', '\n// the top bar')
+    expect(body.indexOf('if (host.dataset.sig === sig) return'))
+      .toBeLessThan(body.indexOf('if (tablet) closedFoldOpen = foldOpen'))
+  })
+
+  it('derives the phone/tablet boundary from the compact masthead content box', () => {
+    expect(js).toContain("document.querySelector('.sidebar-shell')")
+    expect(js).toMatch(/clientWidth\s*\|\|\s*window\.innerWidth/)
+    expect(js).toMatch(/paddingLeft/)
+    expect(js).toMatch(/paddingRight/)
+  })
+
+  it('tracks phone, tablet, and desktop project navigation as distinct modes', () => {
+    const mode = fn('function projectNavigationMode()', '\nfunction higherPriorityEscapeSurfaceOpen')
+    expect(mode).toContain("return 'desktop'")
+    expect(mode).toContain("? 'tablet' : 'phone'")
+    const disclosure = fn('function initProjectDisclosure()', '\nfunction railActionEl(')
+    expect(disclosure).toContain('projectMode = projectNavigationMode()')
+    expect(disclosure).toContain('projectMode = next')
+    expect(disclosure).toContain('const activeFocusState = projectFocusState(document.activeElement)')
+    expect(disclosure).toContain('setClosedProjectsOpen(false)')
+    expect(disclosure).toContain('restoreProjectFocus(focusState)')
+    expect(disclosure).toContain('projectFocusBookmark')
+    expect(disclosure).toMatch(/matchMedia\(`\(max-width: \$\{NARROW_MAX\}px\)`\)/)
+    const fold = fn('function closedFoldEl(', '\nfunction focusProjectControl(')
+    expect(fold).toMatch(/if \(!fold\.isConnected \|\| tabletProjectsMode\(\)\) return/)
+  })
+
   it('keeps the type-to-narrow filter escapable — railQuery is cleared whenever the input is not rendered', () => {
     // closing projects can drop the open count under RAIL_FILTER_THRESHOLD,
     // removing the input while a non-empty query still hides most of the rail
@@ -302,6 +329,60 @@ describe('closed projects (issue #32)', () => {
     expect(body).toMatch(/railQuery = f\.value; renderRail\(\)/)
   })
 
+  it('applies the visible-tab roving fallback in every responsive layout', () => {
+    const body = fn('function renderRail()', '\n// the top bar')
+    expect(body).toMatch(/if \(!tabs\.some\(\(tab\) => tab\.tabIndex === 0\) && tabs\[0\]\)/)
+    expect(body).not.toMatch(/if \(tablet && !tabs\.some/)
+  })
+
+  it('promotes every programmatically focused project tab to the sole roving tab stop', () => {
+    const promote = fn('function promoteProjectTab(', '\nfunction focusProjectTab(')
+    expect(promote).toMatch(/if \(!projectTabIsOperable\(target\)\) return false/)
+    expect(promote).toMatch(/querySelectorAll\('#rail \.rail-tab'\).*tabIndex = -1/)
+    expect(promote).toMatch(/target\.tabIndex = 0/)
+    expect(promote).toMatch(/target\.focus\(\)/)
+    const restore = fn('function restoreProjectFocus(', '\nfunction setClosedProjectsOpen(')
+    expect(restore).toMatch(/state\.kind === 'peek'/)
+    expect(restore).toMatch(/state\.kind === 'trigger'.*promoteProjectTab/s)
+    expect(restore).toMatch(/state\.kind === 'tab'.*focusArchivedProjectControl/s)
+    expect(restore).toMatch(/promoteProjectTab\(/)
+    const close = fn('async function closeProjectAction(', '\nasync function reopenProjectAction(')
+    expect(close).toMatch(/focusProjectTab\([^,]+,\s*generation\)/)
+    const operable = fn('function projectTabIsOperable(', '\nfunction visibleProjectTabs(')
+    expect(operable).toMatch(/projectNavigationMode\(\) === 'phone'/)
+    expect(operable).toMatch(/dataset\.open !== 'true'/)
+  })
+
+  it('serializes project POSTs while reconciling confirmed and optimistic intents independently', () => {
+    expect(js).toContain('let authoritativeClosed = []')
+    expect(js).toContain('let loadGeneration = 0')
+    expect(js).toContain('let appliedLoadGeneration = 0')
+    expect(js).toContain('let appliedClosedGeneration = 0')
+    expect(js).toContain('const projectMutationIntents = new Map()')
+    expect(js).toContain('const confirmedProjectMutationIntents = new Map()')
+    expect(js).toContain('const projectMutationQueues = new Map()')
+    const loadBody = fn('async function load()', '\n// fix round 1 (hardening)')
+    expect(loadBody).toContain('applyProjectMutationIntents()')
+    const close = fn('async function closeProjectAction(', '\nasync function reopenProjectAction(')
+    const reopen = fn('async function reopenProjectAction(', '\n// fix round 1: the query persists')
+    for (const body of [close, reopen]) {
+      expect(body).toMatch(/beginProjectMutation\(/)
+      expect(body).toMatch(/await queueProjectMutation\(/)
+      expect(body).toMatch(/await queueProjectMutation\([\s\S]*postJSON\([\s\S]*\)[\s\S]*if \(res !== null\)[\s\S]*refreshAuthoritativeProjectState/)
+      expect(body).toMatch(/if \(!ownsProjectMutation\(/)
+      expect(body).toMatch(/finishProjectMutation\([^)]*\)[\s\S]*applyProjectMutationIntents\(\)[\s\S]*forceRender\(\)/)
+    }
+    const apply = fn('function applyProjectMutationIntents()', '\nasync function queueProjectMutation(')
+    expect(apply).toMatch(/new Set\(authoritativeClosed\)/)
+    expect(apply).toMatch(/for \(const \[name, intent\] of confirmedProjectMutationIntents\)/)
+    const retire = fn('function retireConfirmedProjectMutationIntents(', '\nfunction applyProjectMutationIntents(')
+    expect(retire).toMatch(/completedLoadGeneration <= confirmed\.confirmedAfterLoad/)
+    const wait = fn('function waitForAuthoritativeRefresh(', '\nasync function refreshAuthoritativeProjectState(')
+    expect(wait).toMatch(/appliedClosedGeneration > afterGeneration/)
+    expect(loadBody).toMatch(/if \(closedSnapshot !== null\)/)
+    expect(loadBody).toMatch(/if \(generation < appliedLoadGeneration\) return false/)
+  })
+
   it('reconciles projectFilter against the FULL project list so a closed project can still be peeked', () => {
     const body = fn('function renderRail()', '\n// the top bar')
     expect(body).toMatch(/if \(projectFilter && !projects\.includes\(projectFilter\)\)/)
@@ -309,13 +390,14 @@ describe('closed projects (issue #32)', () => {
       .not.toMatch(/!open\.includes\(projectFilter\)/)
   })
 
-  it('close/reopen buttons are SIBLINGS of the tab, not nested inside it, and never steal a tab stop', () => {
+  it('row actions stay beside the tab while only the explicit tablet Archive action joins the tab order', () => {
     // .rail-tab is itself a <button role="tab">; a button may not contain
-    // interactive content, and N extra tab stops break §13's roving tabindex
+    // interactive content. Desktop keeps §13's compact roving order; tablet
+    // deliberately exposes Archive to keyboard and touch users.
     const body = fn('function railRowEl(', '\n// Projects as vertical tabs')
     expect(body).toMatch(/wrap\.appendChild\(/)
     const action = fn('function railActionEl(', '\nfunction closedFoldEl(')
-    expect(action).toMatch(/tabIndex = -1/)
+    expect(action).toMatch(/tabIndex = tablet && !closed \? 0 : -1/)
     expect(action).toMatch(/setAttribute\('aria-label'/)
   })
 
@@ -334,7 +416,7 @@ describe('closed projects (issue #32)', () => {
     expect(fn('function paintEditableSurfaces(', '\nfunction render(')).toContain('renderClosedBanner()')
   })
 
-  it('the optimistic close/reopen revert BY VALUE — a poll between click and response must not evict a bystander', () => {
+  it('the optimistic close/reopen revert comes from the authoritative snapshot', () => {
     const close = fn('async function closeProjectAction(', '\nasync function reopenProjectAction(')
     const reopen = fn('async function reopenProjectAction(', '\n// fix round 1: the query persists')
     for (const [name, body] of [['close', close], ['reopen', reopen]] as const) {
@@ -342,8 +424,12 @@ describe('closed projects (issue #32)', () => {
       expect(body, `${name} must route through postJSON`).toMatch(/postJSON\('\/api\/projects\//)
       expect(body, `${name} must bail out on a failed write`).toMatch(/=== null/)
     }
-    expect(close).toMatch(/filter\(\(p\) => p !== name\)/)
-    expect(reopen).toMatch(/includes\(name\)/)
+    expect(close).not.toMatch(/lastData\.closed\s*=.*filter/)
+    expect(reopen).not.toMatch(/lastData\.closed\s*=.*includes/)
+    for (const body of [close, reopen]) {
+      expect(body).toMatch(/finishProjectMutation\(/)
+      expect(body).toMatch(/applyProjectMutationIntents\(\)/)
+    }
   })
 })
 
@@ -364,10 +450,10 @@ describe('closed-project css (issue #32)', () => {
     expect(css.indexOf('.closed-fold .rail-reopen {')).toBeLessThan(css.indexOf('.rail-close:hover'))
   })
 
-  it('the narrow-width closed rules live INSIDE the single @media block', () => {
+  it('the tablet project-management rules live INSIDE the single @media block', () => {
     const media = css.search(/@media\s*\(/)
-    expect(css.indexOf('#rail .closed-fold')).toBeGreaterThan(media)
-    expect(css.indexOf('#rail:has(.rail-filter) .rail-close')).toBeGreaterThan(media)
+    expect(css.indexOf('.project-disclosure.tablet-projects')).toBeGreaterThan(media)
+    expect(css.indexOf('.closed-projects-popover')).toBeGreaterThan(media)
   })
 })
 
@@ -466,7 +552,7 @@ describe('#38 · the poll keeps its gate, the human bypasses it', () => {
     // load()` anywhere else is the same defect wearing a keyword.
     const awaited = lines
       .map((line, i) => ({ line, n: i + 1 }))
-      .filter(({ line }) => /^await\s+load\(\);?$/.test(line))
+      .filter(({ line }) => /^(?:const loaded = )?await\s+load\(\);?$/.test(line))
     expect(awaited.length, `stray await load(): ${JSON.stringify(awaited)}`).toBe(1)
     expect(lines[awaited[0]!.n - 2]).toBe('async function reloadAndPaint() {')
   })

@@ -386,6 +386,7 @@ body.settings-open #topbar > :not(#gear) { opacity: .32; }
 .closed-fold .rail-reopen { opacity: .5; }
 .rail-row:hover .rail-close, .rail-row:focus-within .rail-close, .rail-close:focus-visible { opacity: .6; }
 .rail-close:hover, .rail-reopen:hover { opacity: 1; background: color-mix(in srgb, CanvasText 10%, transparent); }
+.rail-action-label { display: none; }
 .closed-fold { margin-top: 6px; }
 .closed-fold > summary { cursor: pointer; font-size: 11.5px; opacity: .5; padding: 6px 9px; border-top: 1px solid color-mix(in srgb, CanvasText 10%, transparent); }
 .closed-fold > summary:hover { opacity: .85; }
@@ -1017,14 +1018,138 @@ body.settings-open #liveBar { opacity: .32; }
   body { padding: 0 10px 48px; }
   .layout { gap: 10px; }
 
-  /* Project curation stays out of the compact strip unless the long-rail
-     filter expands it to multiple rows. Delete/Backspace on a focused project
-     tab and implicit reopen-on-new-activity work in either state. */
+  /* Tablet curation stays explicit: touch has no hover and the project tab
+     remains separate from the archive action to avoid nested controls. */
   #rail .rail-close, #rail .rail-reopen { display: none; }
-  #rail .closed-fold > summary { padding: 6px 8px; border: 0; white-space: nowrap; font-size: 10.5px; }
-  #rail .closed-muted { display: none; }
-  #rail:has(.rail-filter) .rail-close, #rail:has(.rail-filter) .rail-reopen { display: inline-block; }
+  #rail:has(.rail-filter) .rail-close, #rail:has(.rail-filter) .rail-reopen { display: inline-flex; }
   #rail:has(.rail-filter) .closed-muted { display: inline; }
+  .project-disclosure.tablet-projects {
+    position: relative;
+    display: block;
+    min-width: 0;
+    grid-column: 2 / -1;
+    grid-row: 2;
+  }
+  .project-disclosure.tablet-projects #rail .rail-close {
+    display: inline-flex;
+    min-height: 30px;
+    align-items: center;
+    padding: 5px 7px;
+    border: 1px solid transparent;
+    opacity: 1;
+    font-size: 10.5px;
+  }
+  .project-disclosure.tablet-projects #rail .rail-close:hover,
+  .project-disclosure.tablet-projects #rail .rail-close:focus-visible {
+    border-color: var(--app-border);
+    background: var(--app-soft);
+  }
+  .project-disclosure.tablet-projects #rail .rail-close .rail-action-glyph { display: none; }
+  .project-disclosure.tablet-projects #rail .rail-close .rail-action-label { display: inline; }
+  .closed-projects-trigger {
+    position: sticky;
+    right: 0;
+    z-index: 2;
+    display: inline-flex;
+    min-height: 30px;
+    flex: 0 0 auto;
+    align-items: center;
+    padding: 5px 9px;
+    border: 1px solid var(--app-border);
+    border-radius: 8px;
+    background: var(--app-surface);
+    color: var(--app-text);
+    font: inherit;
+    font-size: 10.5px;
+    font-weight: 650;
+    box-shadow: -8px 0 12px var(--app-bg);
+    cursor: pointer;
+  }
+  .closed-projects-trigger:hover, .closed-projects-trigger:focus-visible {
+    border-color: var(--app-border-strong);
+    background: var(--app-soft);
+  }
+  .closed-projects-match {
+    padding: 0 5px;
+    border-radius: 999px;
+    background: var(--app-accent-soft);
+    color: var(--app-accent);
+    font-size: 9.5px;
+    font-weight: 700;
+  }
+  .closed-projects-popover {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    z-index: 40;
+    width: min(360px, calc(100vw - 24px));
+    max-height: min(420px, calc(100vh - 180px));
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 7px;
+    border: 1px solid var(--app-border);
+    border-radius: 10px;
+    background: var(--app-elevated);
+    box-shadow: 0 12px 30px color-mix(in srgb, var(--app-text) 14%, transparent);
+  }
+  .closed-projects-heading {
+    padding: 5px 7px 7px;
+    color: var(--app-muted);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .05em;
+    text-transform: uppercase;
+  }
+  .closed-project-entry { display: flex; align-items: center; gap: 6px; }
+  .closed-project-entry + .closed-project-entry { margin-top: 3px; }
+  .closed-project-peek {
+    display: flex;
+    min-width: 0;
+    min-height: 36px;
+    flex: 1 1 auto;
+    align-items: center;
+    gap: 7px;
+    padding: 6px 7px;
+    border: 1px solid transparent;
+    border-radius: 7px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .closed-project-peek:hover, .closed-project-peek:focus-visible {
+    border-color: var(--app-border);
+    background: var(--app-soft);
+  }
+  .closed-project-entry.search-match .closed-project-peek {
+    border-color: color-mix(in srgb, var(--app-accent) 32%, var(--app-border));
+    background: var(--app-accent-soft);
+  }
+  .closed-project-name {
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+  }
+  .closed-project-reopen {
+    min-height: 32px;
+    flex: 0 0 auto;
+    padding: 5px 8px;
+    border: 1px solid var(--app-border);
+    border-radius: 7px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-size: 10.5px;
+    cursor: pointer;
+  }
+  .closed-project-reopen:hover, .closed-project-reopen:focus-visible {
+    border-color: var(--app-border-strong);
+    background: var(--app-soft);
+  }
 
   /* The library control scrolls rather than wrapping or truncating labels. */
   #tabs { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
@@ -1253,6 +1378,8 @@ body.settings-open #liveBar { opacity: .32; }
     }
     #projectDisclosure #rail .rail-name { flex: 1; font-size: 12px; }
     #projectDisclosure #rail .closed-fold { width: 100%; }
+    .closed-projects-trigger { display: none; }
+    .closed-projects-popover { display: none; }
   }
 
   #liveBar, .live-drawer { left: 0; }

@@ -19,6 +19,7 @@ export interface CardItem {
   reply_kind?: 'answer' | 'clarify' | 'decline' | null
   reply_context?: string | null
   reply_seen_at?: string | null
+  reply_source?: 'inbox' | 'agent' | null
 }
 
 export interface CardSections {

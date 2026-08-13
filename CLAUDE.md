@@ -490,9 +490,10 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
 - **Dual-channel answer sync** *(#29)* — the `answer` MCP tool plus `answerItem`/`reply_source`.
   Agent-mediated by design: this repo has no hook into any chat client, so the AGENT is the
   bridge. Convergence is order-independent (inbox precedence, no clock comparison) rather than
-  the issue's original "timestamp-based last write wins". Known limitation, worth a follow-up:
-  once a chat answer lands, `reply_seen_at` is set, so the card's "Change answer" (a
-  blank-clear) is refused and the human cannot re-answer that item from the viewer.
+  the issue's original "timestamp-based last write wins". Chat-recorded answers remain visible
+  with their provenance and pickup receipt; while the question is open, the answer surface is
+  prefilled for a non-destructive correction. Sending that correction through `replyItem` makes
+  it the authoritative inbox answer and resets pickup without first blanking stored state.
 - **Electron response watch + host adapter seam** — `electron/reply-watch.cjs` derives the
   work still waiting on an agent without changing `public/attention.js`: a question leaves
   the set when `pending()` stamps `reply_seen_at`, while a human-acted board row stays until

@@ -431,6 +431,20 @@ function cardFocusTargets(card) {
   return [...card.querySelectorAll(CARD_FOCUS_SELECTOR)]
 }
 
+function rowFocusTargets(card, rowId) {
+  const selector = `[data-row-id="${CSS.escape(rowId)}"]`
+  const seen = new Set()
+  const targets = []
+  for (const owner of card.querySelectorAll(selector)) {
+    for (const target of cardFocusTargets(owner)) {
+      if (seen.has(target)) continue
+      seen.add(target)
+      targets.push(target)
+    }
+  }
+  return targets
+}
+
 function cardFocusKey(el) {
   const text = ['BUTTON', 'SUMMARY'].includes(el.tagName) ? el.textContent?.trim() ?? '' : ''
   return JSON.stringify([
@@ -489,9 +503,22 @@ function pagedCardFocusBookmark() {
   const active = document.activeElement
   const card = active?.closest?.('#notes [data-card-id], #done [data-card-id], #boards [data-card-id]')
   if (!card) return null
+  const rowId = active.closest('[data-row-id]')?.dataset.rowId ?? null
+  if (rowId) {
+    const targets = rowFocusTargets(card, rowId)
+    if (!targets.includes(active)) return null
+    const key = cardFocusKey(active)
+    return {
+      id: card.dataset.cardId,
+      section: card.closest('section')?.id ?? '',
+      rowId,
+      key,
+      ordinal: targets.filter((target) => cardFocusKey(target) === key).indexOf(active),
+    }
+  }
   const bookmark = captureCardFocus(card, card.dataset.cardId)
   if (!bookmark) return null
-  return { ...bookmark, section: card.closest('section')?.id ?? '' }
+  return { ...bookmark, section: card.closest('section')?.id ?? '', rowId: null }
 }
 
 function restorePagedCardFocus(bookmark) {
@@ -499,10 +526,14 @@ function restorePagedCardFocus(bookmark) {
   const scope = bookmark.section ? document.getElementById(bookmark.section) : document
   const card = scope?.querySelector(`[data-card-id="${CSS.escape(bookmark.id)}"]`)
   if (!card) return false
+  const targets = bookmark.rowId ? rowFocusTargets(card, bookmark.rowId) : cardFocusTargets(card)
   const matches = bookmark.key
-    ? cardFocusTargets(card).filter((target) => cardFocusKey(target) === bookmark.key)
+    ? targets.filter((target) => cardFocusKey(target) === bookmark.key)
     : []
-  const target = matches[bookmark.ordinal] ?? card.querySelector(':scope > summary') ?? card
+  const target = matches[bookmark.ordinal]
+    ?? (bookmark.rowId ? targets[0] : null)
+    ?? card.querySelector(':scope > summary')
+    ?? card
   if (!target) return false
   target.tabIndex = 0
   target.focus({ preventScroll: true })
@@ -570,13 +601,7 @@ function focusItem(id) {
     // staleFoldOpen/showArchived, and a DOM-only open doesn't survive that
     // rebuild (the same persistence trap already fixed once for the stale
     // fold in isolation).
-    for (let node = el; node; node = node.parentElement) {
-      if (node.tagName !== 'DETAILS') continue
-      node.open = true
-      if (node.classList.contains('snoozed-fold')) snoozedFoldOpen = true
-      else if (node.classList.contains('stale-fold')) staleFoldOpen = true
-      if (node.classList.contains('archived-fold')) showArchived = true
-    }
+    revealDetailsAncestors(el)
     el.scrollIntoView({ behavior: 'smooth', block: 'center' })
     const focusTarget = el.matches('details') ? el.querySelector(':scope > summary') : el
     if (focusTarget) {
@@ -795,6 +820,31 @@ function clearRowRecoveryTarget(rowId, revision) {
   if (draftRecoveryTarget?.rowId === rowId && draftRecoveryTarget.revision === revision) {
     draftRecoveryTarget = null
   }
+}
+
+function recoverMismatchedRenderedRowDraft(b, r) {
+  const text = rowDrafts[r.id]
+  const meta = rowDraftMeta[r.id]
+  if (!String(text ?? '').trim() || !meta || meta.revision === r.revision) return false
+  const revision = meta.revision ?? -1
+  staleRowDrafts[rowDraftRecoveryKey(r.id, revision)] = {
+    rowId: r.id,
+    revision,
+    actionVersion: meta.actionVersion,
+    text,
+    kind: rowDraftKinds[r.id] ?? 'answer',
+    boardTitle: meta.boardTitle ?? b.title,
+    label: meta.label ?? r.label,
+    context: meta.context ?? '',
+  }
+  delete rowDrafts[r.id]
+  delete rowDraftKinds[r.id]
+  delete rowDraftMeta[r.id]
+  requestAnimationFrame(() => {
+    requestDraftRecovery(null)
+    forceRender()
+  })
+  return true
 }
 
 function activeDraftFocusBookmark() {
@@ -1049,6 +1099,7 @@ function rowHandledEl(b, r) {
 // because the single `.write-error` slot below is then where a refusal on EITHER
 // of them appears.
 function rowAnswerEl(b, r, onSaved) {
+  recoverMismatchedRenderedRowDraft(b, r)
   const wrap = document.createElement('div')
   wrap.className = 'row-answer'
   const row = document.createElement('div')
@@ -2774,6 +2825,16 @@ function renderOrphanedDrafts(host) {
 let staleFoldOpen = false
 let snoozedFoldOpen = false
 
+function revealDetailsAncestors(target) {
+  for (let node = target; node; node = node.parentElement) {
+    if (node.tagName !== 'DETAILS') continue
+    node.open = true
+    if (node.classList.contains('snoozed-fold')) snoozedFoldOpen = true
+    else if (node.classList.contains('stale-fold')) staleFoldOpen = true
+    if (node.classList.contains('archived-fold')) showArchived = true
+  }
+}
+
 function snoozedFoldEl(entries, opts, nowMs) {
   const fold = document.createElement('details')
   fold.className = 'stale-fold snoozed-fold'
@@ -3185,6 +3246,7 @@ function boardEl(b, archived = false, lingering = false) {
     if (openRows.has(r.id)) {
       const ptr = document.createElement('tr')
       ptr.className = 'row-panel-row'
+      ptr.dataset.rowId = r.id
       const td = document.createElement('td')
       td.colSpan = 5
       td.appendChild(rowPanelEl(b, r, archived))
@@ -3270,11 +3332,14 @@ function restoreDraftRecoveryFocus() {
   const inline = draftRecoveryTarget
     ? needsYouRowEl(draftRecoveryTarget.rowId)?.querySelector('.reply-input[data-recovered-draft="1"]')
     : null
-  const target = inline ?? document.querySelector('.stale-drafts-fold summary')
+  if (inline) revealDetailsAncestors(inline)
+  const visibleInline = inline && !inline.closest('[hidden], details:not([open])') ? inline : null
+  const target = visibleInline ?? document.querySelector('.stale-drafts-fold summary')
   if (!target) return false
-  draftRecoveryFocusPending = false
   target.focus({ preventScroll: true })
-  return document.activeElement === target
+  const restored = document.activeElement === target
+  if (restored) draftRecoveryFocusPending = false
+  return restored
 }
 
 function currentRow(id) {

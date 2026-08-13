@@ -27,6 +27,51 @@ function recoveryFold(): HTMLDetailsElement {
 }
 
 describe('versioned board-row draft ownership', () => {
+  it('never binds a deferred old-action draft to a newer action opened in Review queue', async () => {
+    db = freshDb()
+    upsertBoard(db, {
+      ...AGENT,
+      title: 'Review race',
+      rows: [{
+        label: 'Approve release',
+        status: 'blocked',
+        note: 'Old action',
+        context: 'Old action context',
+      }],
+    })
+    const original = getBoard(db, 'alpha', 'Review race')!
+    const rowId = original.rows[0]!.id
+    const bridge = await bootApp(db)
+
+    click(row(rowId))
+    await settle()
+    type(answerInput(rowId), 'Draft that belongs only to v1')
+    expect(advanceBoardRow(db, {
+      project: 'alpha',
+      title: 'Review race',
+      label: 'Approve release',
+      expectedBoardVersion: original.revision,
+      expectedRevision: original.rows[0]!.revision,
+      note: 'New action',
+      next_step: 'Choose for v2.',
+      action_owner: 'approval',
+      impact: 'Unblocks v2.',
+      context: 'New action context',
+    }).ok).toBe(true)
+
+    await pollTick()
+    expect(answerInput(rowId)?.value).toBe('Draft that belongs only to v1')
+    click(buttonLabelled('Review queue'))
+    await settle()
+
+    const lightbox = document.getElementById('lightbox')!
+    expect(lightbox.hidden).toBe(true)
+    expect(lightbox.querySelector<HTMLInputElement>('.reply-input')?.value).not.toBe('Draft that belongs only to v1')
+    expect(recoveryFold().textContent).toContain('Draft that belongs only to v1')
+    expect(recoveryFold().textContent).toContain('Old action context')
+    expect(bridge.posts.filter((post) => post.url.includes('/annotate'))).toHaveLength(0)
+  })
+
   it('never carries a draft across board_advance or a later status/content revision', async () => {
     db = freshDb()
     upsertBoard(db, {

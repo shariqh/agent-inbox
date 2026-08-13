@@ -3,7 +3,8 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type Database from 'better-sqlite3'
 import { archiveBoard, getBoard, insertItem, upsertBoard } from '../../src/store.js'
 import {
-  advanceClock, bootApp, click, freshDb, navigateToHash, pollTick, searchFor, settle, useDomTest,
+  advanceClock, bootApp, buttonLabelled, click, freshDb, navigateToHash, pollTick, searchFor,
+  settle, useDomTest,
 } from './harness.js'
 
 useDomTest()
@@ -171,5 +172,51 @@ describe('deep links across paginated tabs', () => {
     search.focus()
     await pollTick()
     expect(document.activeElement).toBe(search)
+  })
+
+  it('keeps identical Plan controls bound to their stable row when rows reorder', async () => {
+    db = freshDb()
+    upsertBoard(db, {
+      ...ALPHA,
+      title: 'Reordered controls',
+      rows: [
+        { label: 'First approval', status: 'blocked', note: 'Choose.' },
+        { label: 'Second approval', status: 'blocked', note: 'Choose.' },
+      ],
+    })
+    const original = getBoard(db, 'alpha', 'Reordered controls')!
+    const first = original.rows[0]!
+    const second = original.rows[1]!
+    await bootApp(db)
+    click(document.querySelector('.tab[data-tab="boards"]'))
+    await settle()
+
+    const openRowPanel = async (id: string): Promise<void> => {
+      const rowEl = document.querySelector(`.board-row[data-row-id="${id}"]`)!
+      click(buttonLabelled('Answer', rowEl))
+      await settle()
+    }
+    await openRowPanel(first.id)
+    await openRowPanel(second.id)
+
+    let secondRow = document.querySelector(`.board-row[data-row-id="${second.id}"]`)!
+    const secondPanel = secondRow.nextElementSibling!
+    const secondSend = buttonLabelled('Send', secondPanel)!
+    secondSend.focus()
+    expect(document.activeElement).toBe(secondSend)
+
+    upsertBoard(db, {
+      ...ALPHA,
+      title: 'Reordered controls',
+      expectedVersion: original.revision,
+      rows: [
+        { label: second.label, revision: second.revision, status: second.status, note: second.note },
+        { label: first.label, revision: first.revision, status: first.status, note: first.note },
+      ],
+    })
+    await pollTick()
+
+    secondRow = document.querySelector(`.board-row[data-row-id="${second.id}"]`)!
+    expect(document.activeElement).toBe(buttonLabelled('Send', secondRow.nextElementSibling!))
   })
 })

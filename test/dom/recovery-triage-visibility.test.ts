@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from 'vitest'
 import type Database from 'better-sqlite3'
-import { getBoard, insertItem, updateBoardRow, upsertBoard } from '../../src/store.js'
+import { getBoard, insertItem, snoozeBoardRow, updateBoardRow, upsertBoard } from '../../src/store.js'
 import {
   advanceClock, answerInput, bootApp, buttonLabelled, click, freshDb, row, searchFor,
   sendButton, settle, type, useDomTest,
@@ -159,5 +159,57 @@ describe('draft recovery visibility from Review queue', () => {
     await settle()
     click(buttonLabelled('Review queue'))
     expect(lightbox.hidden).toBe(false)
+  })
+
+  it('opens a closed deferred fold before focusing its same-revision recovery', async () => {
+    db = freshDb()
+    upsertBoard(db, {
+      ...AGENT,
+      title: 'Deferred launch',
+      rows: [
+        { label: 'Approve later', status: 'blocked', note: 'Choose after the pause.' },
+        { label: 'Agent progress', status: 'tracked', note: 'Original progress.' },
+      ],
+    })
+    const initial = getBoard(db, 'alpha', 'Deferred launch')!
+    const until = new Date(Date.now() + 86_400_000).toISOString()
+    expect(snoozeBoardRow(
+      db,
+      initial.rows[0]!.id,
+      until,
+      initial.rows[0]!.revision,
+      initial.revision,
+    )).toBe(true)
+    const snoozed = getBoard(db, 'alpha', 'Deferred launch')!
+    const target = snoozed.rows[0]!
+    const unrelated = snoozed.rows[1]!
+    await bootApp(db)
+
+    let fold = document.querySelector<HTMLDetailsElement>('.snoozed-fold')!
+    fold.open = true
+    fold.dispatchEvent(new Event('toggle'))
+    click(row(target.id))
+    await settle()
+    type(answerInput(target.id), 'Retry from the deferred row')
+    const staleSend = sendButton(target.id)!
+    updateBoardRow(db, {
+      ...AGENT,
+      title: 'Deferred launch',
+      label: unrelated.label,
+      expectedBoardVersion: snoozed.revision,
+      expectedRevision: unrelated.revision,
+      note: 'New progress only.',
+    })
+    fold = document.querySelector<HTMLDetailsElement>('.snoozed-fold')!
+    fold.open = false
+    fold.dispatchEvent(new Event('toggle'))
+    staleSend.click()
+    await settle()
+
+    fold = document.querySelector<HTMLDetailsElement>('.snoozed-fold')!
+    const recovered = answerInput(target.id)
+    expect(fold.open).toBe(true)
+    expect(recovered?.value).toBe('Retry from the deferred row')
+    expect(document.activeElement).toBe(recovered)
   })
 })

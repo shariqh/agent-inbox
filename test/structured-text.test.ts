@@ -213,6 +213,28 @@ describe('renderStructuredText escaping', () => {
     '<Component value={[.../}>/.exec(value)]} href="https://attribute.example/y">',
     '<Component value={default /}>/.exec(value)} href="https://attribute.example/y">',
     '<Component value={class A extends /}>/.exec(value) {}} href="https://attribute.example/y">',
+    '<Component render={() => { if (value) /}>/.test(value) }} href="https://attribute.example/y">',
+    '<Component render={() => { if ((value && ready())) /}>/.test(value) }} href="https://attribute.example/y">',
+    '<Component render={() => { if (value) { run() } /}>/.test(value) }} href="https://attribute.example/y">',
+    '<Component render={() => { while (value) /}>/.test(value) }} href="https://attribute.example/y">',
+    '<Component render={() => { for (; value;) /}>/.test(value) }} href="https://attribute.example/y">',
+    '<Component render={() => { try { run() } catch { recover() } /}>/.test(value) }} href="https://attribute.example/y">',
+    '<Component render={() => { { run() } /}>/.test(value) }} href="https://attribute.example/y">',
+    '<Component render={() => { label: { run() } /}>/.test(value) }} href="https://attribute.example/y">',
+    '<Component render={() => { function run() {} /}>/.test(value) }} href="https://attribute.example/y">',
+    '<Component render={() => { function* run() {} /}>/.test(value) }} href="https://attribute.example/y">',
+    '<Component render={() => { async function run() {} /}>/.test(value) }} href="https://attribute.example/y">',
+    '<Component render={() => { class Runner {} /}>/.test(value) }} href="https://attribute.example/y">',
+    '<Component render={() => { if\n((value && ready()))\n/}>/.test(value) }} href="https://attribute.example/y">',
+    '<Component render={() => { run()\nif (value) /}>/.test(value) }} href="https://attribute.example/y">',
+    '<Component value={call(value) / 2 > 0 ? "https://attribute.example/x" : null} href="https://attribute.example/y">',
+    '<Component value={(value) / 2 > 0 ? "https://attribute.example/x" : null} href="https://attribute.example/y">',
+    '<Component value={({ n: 1 }) / 2 > 0 ? "https://attribute.example/x" : null} href="https://attribute.example/y">',
+    '<Component value={(() => {}) / 2 > 0 ? "https://attribute.example/x" : null} href="https://attribute.example/y">',
+    '<Component value={call(value)\n/ 2 > 0 ? "https://attribute.example/x" : null} href="https://attribute.example/y">',
+    '<Component render={() => { if (value) call(value) / 2 }} href="https://attribute.example/y">',
+    '<Component render={() => { const run = function () {} / 2 }} href="https://attribute.example/y">',
+    '<Component render={() => { const Runner = class {} / 2 }} href="https://attribute.example/y">',
   ])('classifies regex and division from expression token context: %s', (fragment) => {
     const html = renderStructuredText(`${fragment}label</Component>\nhttps://prose.example/x\n- item`)
     expect(html).not.toContain('href="https://attribute.example/x"')
@@ -683,5 +705,18 @@ describe('structured text presentation contract', () => {
     const started = performance.now()
     expect(renderStructuredText(value)).not.toContain('<a ')
     expect(performance.now() - started).toBeLessThan(1_500)
+  }, 10_000)
+
+  it('tracks nested control-header regex context in one forward pass', () => {
+    const controls = 'if ((value && ready())) /}>/.test(value); '.repeat(20_000)
+    const value =
+      `<Component render={() => { ${controls}}} ` +
+      'href="https://attribute.example/x">label</Component>\n' +
+      'See https://prose.example/x'
+    const started = performance.now()
+    const html = renderStructuredText(value)
+    expect(performance.now() - started).toBeLessThan(1_500)
+    expect(html).not.toContain('href="https://attribute.example/x"')
+    expect(html).toContain('href="https://prose.example/x"')
   }, 10_000)
 })

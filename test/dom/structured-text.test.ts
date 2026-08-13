@@ -149,6 +149,9 @@ describe('structured agent text on cards and plans', () => {
         'href="https://attribute.example/w"',
         '= = =>label</a>)',
         '<Component value={[.../}>/.exec(value)]} href="https://attribute.example/y">',
+        '<Component render={() => { if (value) /}>/.test(value) }} href="https://attribute.example/control">',
+        '<Component render={() => { run()',
+        'if (value) /}>/.test(value) }} href="https://attribute.example/asi">',
         'if x <a',
         'next = 1',
         'See https://prose.example/x',
@@ -167,6 +170,8 @@ describe('structured agent text on cards and plans', () => {
     expect(detail?.textContent).toContain('https://attribute.example/y')
     expect(detail?.textContent).toContain('https://attribute.example/z')
     expect(detail?.textContent).toContain('https://attribute.example/w')
+    expect(detail?.textContent).toContain('https://attribute.example/control')
+    expect(detail?.textContent).toContain('https://attribute.example/asi')
     expect(detail?.querySelector('li')?.textContent).toBe('recovered item')
   })
 

@@ -18,6 +18,16 @@ const REGEX_PREFIX_KEYWORDS = new Set([
   'await', 'case', 'default', 'delete', 'do', 'else', 'extends', 'in', 'instanceof', 'new',
   'return', 'throw', 'typeof', 'void', 'yield',
 ])
+const CONTROL_STATEMENT_HEADERS = new Set(['if', 'while', 'for', 'with'])
+const CONTROL_BLOCK_HEADERS = new Set(['catch', 'switch'])
+const STATEMENT_BLOCK_PREFIXES = new Set(['else', 'do', 'try', 'finally'])
+const NON_TERMINATING_KEYWORDS = new Set([
+  ...REGEX_PREFIX_KEYWORDS,
+  ...CONTROL_STATEMENT_HEADERS,
+  ...CONTROL_BLOCK_HEADERS,
+  ...STATEMENT_BLOCK_PREFIXES,
+  'async', 'class', 'const', 'export', 'function', 'import', 'let', 'var',
+])
 const HTML_TAG_NAMES = new Set(
   'a abbr address area article aside audio b base bdi bdo blockquote body br button canvas caption cite code col colgroup data datalist dd del details dfn dialog div dl dt em embed fieldset figcaption figure footer form h1 h2 h3 h4 h5 h6 head header hgroup hr html i iframe img input ins kbd label legend li link main map mark menu meta meter nav noscript object ol optgroup option output p picture pre progress q rp rt ruby s samp script search section select slot small source span strong style sub summary sup table tbody td template textarea tfoot th thead time title tr track u ul var video wbr'.split(' '),
 )
@@ -61,10 +71,26 @@ function scanTag(value, start, initial = {}) {
   let quote = initial.quote ?? ''
   let quoteEscaped = initial.quoteEscaped ?? false
   const expressionClosers = initial.expressionClosers ?? []
+  const expressionContexts = initial.expressionContexts ?? []
   let expressionMode = initial.expressionMode ?? ''
   let regexCharClass = initial.regexCharClass ?? false
   let canStartRegex = initial.canStartRegex ?? true
   let afterMemberAccess = initial.afterMemberAccess ?? false
+  let pendingControlHeader = initial.pendingControlHeader ?? ''
+  let pendingBlockKind = initial.pendingBlockKind ?? ''
+  let atStatementStart = initial.atStatementStart ?? false
+  let pendingLabel = initial.pendingLabel ?? false
+  let pendingFunctionKind = initial.pendingFunctionKind ?? ''
+  let pendingClassKind = initial.pendingClassKind ?? ''
+  let canEndStatement = initial.canEndStatement ?? false
+  if (
+    initial.lineStart &&
+    canEndStatement &&
+    (expressionContexts.at(-1) === 'statementBlock' ||
+      expressionContexts.at(-1) === 'valueBlock')
+  ) {
+    atStatementStart = true
+  }
   let genericDepth = initial.genericDepth ?? 0
   const genericClosers = initial.genericClosers ?? []
   const allowGenerics = initial.allowGenerics ?? false
@@ -84,11 +110,19 @@ function scanTag(value, start, initial = {}) {
     attributeCount,
     attributeShapeValid,
     expressionClosers: closed ? [] : expressionClosers,
+    expressionContexts: closed ? [] : expressionContexts,
     expressionMode: closed ? '' : expressionMode,
     regexCharClass: closed ? false : regexCharClass,
     quoteEscaped: closed ? false : quoteEscaped,
     canStartRegex,
     afterMemberAccess,
+    pendingControlHeader: closed ? '' : pendingControlHeader,
+    pendingBlockKind: closed ? '' : pendingBlockKind,
+    atStatementStart: closed ? false : atStatementStart,
+    pendingLabel: closed ? false : pendingLabel,
+    pendingFunctionKind: closed ? '' : pendingFunctionKind,
+    pendingClassKind: closed ? '' : pendingClassKind,
+    canEndStatement: closed ? false : canEndStatement,
     genericDepth: closed ? 0 : genericDepth,
     genericClosers: closed ? [] : genericClosers,
     allowGenerics,
@@ -111,8 +145,16 @@ function scanTag(value, start, initial = {}) {
       ) {
         quote = ''
         expressionClosers.push('template}')
+        expressionContexts.push('template')
         canStartRegex = true
         afterMemberAccess = false
+        pendingControlHeader = ''
+        pendingBlockKind = ''
+        atStatementStart = false
+        pendingLabel = false
+        pendingFunctionKind = ''
+        pendingClassKind = ''
+        canEndStatement = false
         index++
         continue
       }
@@ -120,6 +162,7 @@ function scanTag(value, start, initial = {}) {
         quote = ''
         canStartRegex = false
         afterMemberAccess = false
+        canEndStatement = true
       }
       quoteEscaped = false
       continue
@@ -146,6 +189,7 @@ function scanTag(value, start, initial = {}) {
         expressionMode = ''
         canStartRegex = false
         afterMemberAccess = false
+        canEndStatement = true
       }
       continue
     }
@@ -163,25 +207,90 @@ function scanTag(value, start, initial = {}) {
         expressionMode = 'regex'
         regexCharClass = false
         quoteEscaped = false
+        pendingControlHeader = ''
+        pendingBlockKind = ''
+        atStatementStart = false
+        pendingLabel = false
+        pendingFunctionKind = ''
+        pendingClassKind = ''
+        canEndStatement = false
         continue
       }
       if (char === '"' || char === "'" || char === '`') {
         quote = char
+        pendingControlHeader = ''
+        pendingBlockKind = ''
+        atStatementStart = false
+        pendingLabel = false
+        pendingFunctionKind = ''
+        pendingClassKind = ''
+        canEndStatement = false
         continue
       }
       const expressionClose = OPEN_TO_CLOSE.get(char)
       if (expressionClose) {
         expressionClosers.push(expressionClose)
+        let context = 'value'
+        if (char === '(' && pendingFunctionKind) {
+          context =
+            pendingFunctionKind === 'statementBlock'
+              ? 'functionDeclarationParams'
+              : 'functionExpressionParams'
+        } else if (char === '(' && pendingControlHeader) context = pendingControlHeader
+        else if (char === '{' && pendingBlockKind) context = pendingBlockKind
+        else if (char === '{' && pendingControlHeader === 'controlBlock') {
+          context = 'statementBlock'
+        } else if (char === '{' && pendingClassKind) context = pendingClassKind
+        else if (char === '{' && atStatementStart) context = 'statementBlock'
+        expressionContexts.push(context)
         canStartRegex = true
         afterMemberAccess = false
+        pendingControlHeader = ''
+        pendingBlockKind = ''
+        atStatementStart =
+          char === '{' &&
+          (context === 'statementBlock' || context === 'valueBlock')
+        pendingLabel = false
+        pendingFunctionKind = ''
+        pendingClassKind = ''
+        canEndStatement = false
       } else if (
         expressionClosers.at(-1) === char ||
         (expressionClosers.at(-1) === 'template}' && char === '}')
       ) {
         const closedTemplateExpression = expressionClosers.pop() === 'template}'
+        const closedContext = expressionContexts.pop() ?? 'value'
         if (closedTemplateExpression) quote = '`'
-        canStartRegex = false
+        canStartRegex =
+          closedContext === 'controlStatement' ||
+          closedContext === 'statementBlock' ||
+          closedContext === 'classDeclarationBlock'
         afterMemberAccess = false
+        pendingControlHeader = ''
+        if (
+          closedContext === 'controlStatement' ||
+          closedContext === 'controlBlock' ||
+          closedContext === 'functionDeclarationParams'
+        ) {
+          pendingBlockKind = 'statementBlock'
+        } else if (closedContext === 'functionExpressionParams') {
+          pendingBlockKind = 'valueBlock'
+        } else {
+          pendingBlockKind = ''
+        }
+        atStatementStart =
+          closedContext === 'controlStatement' ||
+          closedContext === 'statementBlock' ||
+          closedContext === 'classDeclarationBlock'
+        pendingLabel = false
+        pendingFunctionKind = ''
+        pendingClassKind = ''
+        canEndStatement =
+          closedContext !== 'template' &&
+          closedContext !== 'controlStatement' &&
+          closedContext !== 'controlBlock' &&
+          closedContext !== 'functionDeclarationParams' &&
+          closedContext !== 'functionExpressionParams'
       } else if (IDENTIFIER_START_RE.test(tokenChar)) {
         let end = index + tokenChar.length
         while (end < value.length) {
@@ -192,7 +301,64 @@ function scanTag(value, start, initial = {}) {
           end += nextChar.length
         }
         const word = value.slice(index, end)
-        canStartRegex = !afterMemberAccess && REGEX_PREFIX_KEYWORDS.has(word)
+        const memberAccess = afterMemberAccess
+        const wasStatementStart = atStatementStart
+        const previousFunctionKind = pendingFunctionKind
+        const previousClassKind = pendingClassKind
+        if (!memberAccess && wasStatementStart && CONTROL_STATEMENT_HEADERS.has(word)) {
+          pendingControlHeader = 'controlStatement'
+        } else if (!memberAccess && wasStatementStart && CONTROL_BLOCK_HEADERS.has(word)) {
+          pendingControlHeader = 'controlBlock'
+        } else if (!(pendingControlHeader && word === 'await')) {
+          pendingControlHeader = ''
+        }
+        pendingBlockKind =
+          !memberAccess && wasStatementStart && STATEMENT_BLOCK_PREFIXES.has(word)
+            ? 'statementBlock'
+            : ''
+        if (!memberAccess && word === 'async' && wasStatementStart) {
+          pendingFunctionKind = 'asyncDeclaration'
+        } else if (
+          !memberAccess &&
+          word === 'function' &&
+          (wasStatementStart || previousFunctionKind === 'asyncDeclaration')
+        ) {
+          pendingFunctionKind = 'statementBlock'
+        } else if (!memberAccess && word === 'function') {
+          pendingFunctionKind = 'valueBlock'
+        } else if (
+          previousFunctionKind &&
+          previousFunctionKind !== 'asyncDeclaration'
+        ) {
+          pendingFunctionKind = previousFunctionKind
+        } else {
+          pendingFunctionKind = ''
+        }
+        if (!memberAccess && word === 'class') {
+          pendingClassKind =
+            wasStatementStart
+              ? 'classDeclarationBlock'
+              : 'classExpressionBlock'
+        } else {
+          pendingClassKind = previousClassKind
+        }
+        const structuralWord =
+          CONTROL_STATEMENT_HEADERS.has(word) ||
+          CONTROL_BLOCK_HEADERS.has(word) ||
+          STATEMENT_BLOCK_PREFIXES.has(word) ||
+          word === 'async' ||
+          word === 'function' ||
+          word === 'class'
+        pendingLabel = !memberAccess && wasStatementStart && !structuralWord
+        atStatementStart =
+          !memberAccess &&
+          wasStatementStart &&
+          (word === 'else' || word === 'do' || word === 'async')
+        canStartRegex = !memberAccess && REGEX_PREFIX_KEYWORDS.has(word)
+        canEndStatement =
+          !NON_TERMINATING_KEYWORDS.has(word) &&
+          !pendingFunctionKind &&
+          !pendingClassKind
         afterMemberAccess = false
         index = end - 1
       } else if (/[0-9]/.test(char)) {
@@ -200,28 +366,107 @@ function scanTag(value, start, initial = {}) {
         while (end < value.length && /[0-9a-f._]/i.test(value[end])) end++
         canStartRegex = false
         afterMemberAccess = false
+        pendingControlHeader = ''
+        pendingBlockKind = ''
+        atStatementStart = false
+        pendingLabel = false
+        pendingFunctionKind = ''
+        pendingClassKind = ''
+        canEndStatement = true
         index = end - 1
       } else if ((char === '+' || char === '-') && value[index + 1] === char) {
         const prefixOperator = canStartRegex
         canStartRegex = prefixOperator
         afterMemberAccess = false
+        pendingControlHeader = ''
+        pendingBlockKind = ''
+        atStatementStart = false
+        pendingLabel = false
+        if (!pendingFunctionKind) pendingClassKind = ''
+        canEndStatement = !prefixOperator
         index++
       } else if (char === '!' && value[index + 1] !== '=') {
         const prefixOperator = canStartRegex
         canStartRegex = prefixOperator
         afterMemberAccess = false
+        pendingControlHeader = ''
+        pendingBlockKind = ''
+        atStatementStart = false
+        pendingLabel = false
+        pendingFunctionKind = ''
+        pendingClassKind = ''
+        canEndStatement = false
       } else if (char === '.') {
         if (value[index + 1] === '.' && value[index + 2] === '.') {
           canStartRegex = true
           afterMemberAccess = false
+          pendingControlHeader = ''
+          pendingBlockKind = ''
+          atStatementStart = false
+          pendingLabel = false
+          pendingFunctionKind = ''
+          pendingClassKind = ''
+          canEndStatement = false
           index += 2
         } else {
           canStartRegex = false
           afterMemberAccess = true
+          pendingControlHeader = ''
+          pendingBlockKind = ''
+          atStatementStart = false
+          pendingLabel = false
+          pendingFunctionKind = ''
+          canEndStatement = false
         }
+      } else if (char === '=' && value[index + 1] === '>') {
+        canStartRegex = true
+        afterMemberAccess = false
+        pendingControlHeader = ''
+        pendingBlockKind = 'valueBlock'
+        atStatementStart = false
+        pendingLabel = false
+        pendingFunctionKind = ''
+        pendingClassKind = ''
+        canEndStatement = false
+        index++
+      } else if (char === ':' && pendingLabel) {
+        canStartRegex = true
+        afterMemberAccess = false
+        pendingControlHeader = ''
+        pendingBlockKind = ''
+        atStatementStart = true
+        pendingLabel = false
+        pendingFunctionKind = ''
+        pendingClassKind = ''
+        canEndStatement = false
+      } else if (char === ';') {
+        canStartRegex = true
+        afterMemberAccess = false
+        pendingControlHeader = ''
+        pendingBlockKind = ''
+        atStatementStart =
+          expressionContexts.at(-1) !== 'controlStatement' &&
+          expressionContexts.at(-1) !== 'controlBlock'
+        pendingLabel = false
+        pendingFunctionKind = ''
+        pendingClassKind = ''
+        canEndStatement = false
+      } else if (char === '*' && pendingFunctionKind) {
+        canStartRegex = true
+        afterMemberAccess = false
+        atStatementStart = false
+        pendingLabel = false
+        canEndStatement = false
       } else if ('=!:,;?&|^~+-*%<>/'.includes(char)) {
         canStartRegex = true
         afterMemberAccess = false
+        pendingControlHeader = ''
+        pendingBlockKind = ''
+        atStatementStart = false
+        pendingLabel = false
+        pendingFunctionKind = ''
+        pendingClassKind = ''
+        canEndStatement = false
       }
       continue
     }
@@ -263,7 +508,13 @@ function scanTag(value, start, initial = {}) {
     }
     if (char === '{') {
       expressionClosers.push('}')
+      expressionContexts.push('attribute')
       canStartRegex = true
+      atStatementStart = false
+      pendingLabel = false
+      pendingFunctionKind = ''
+      pendingClassKind = ''
+      canEndStatement = false
       regexCharClass = false
       quoteEscaped = false
       if (attributeState === 'before' || attributeState === 'afterName') {
@@ -326,11 +577,19 @@ function consumeTag(scan, state) {
   state.mode = scan.closed ? '' : 'tag'
   state.quote = scan.quote
   state.expressionClosers = scan.expressionClosers
+  state.expressionContexts = scan.expressionContexts
   state.expressionMode = scan.expressionMode
   state.regexCharClass = scan.regexCharClass
   state.quoteEscaped = scan.quoteEscaped
   state.canStartRegex = scan.canStartRegex
   state.afterMemberAccess = scan.afterMemberAccess
+  state.pendingControlHeader = scan.pendingControlHeader
+  state.pendingBlockKind = scan.pendingBlockKind
+  state.atStatementStart = scan.atStatementStart
+  state.pendingLabel = scan.pendingLabel
+  state.pendingFunctionKind = scan.pendingFunctionKind
+  state.pendingClassKind = scan.pendingClassKind
+  state.canEndStatement = scan.canEndStatement
   state.genericDepth = scan.genericDepth
   state.genericClosers = scan.genericClosers
   state.allowGenerics = scan.allowGenerics
@@ -350,11 +609,19 @@ function credibleTagContinuation(lines, lineIndex, frameworkComponent, scanBudge
   const state = {
     quote: '',
     expressionClosers: [],
+    expressionContexts: [],
     expressionMode: '',
     regexCharClass: false,
     quoteEscaped: false,
     canStartRegex: true,
     afterMemberAccess: false,
+    pendingControlHeader: '',
+    pendingBlockKind: '',
+    atStatementStart: false,
+    pendingLabel: false,
+    pendingFunctionKind: '',
+    pendingClassKind: '',
+    canEndStatement: false,
     genericDepth: 0,
     genericClosers: [],
     allowGenerics: frameworkComponent,
@@ -368,6 +635,7 @@ function credibleTagContinuation(lines, lineIndex, frameworkComponent, scanBudge
     scanBudget.remaining -= scanCost
     const shape = scanTag(line, 0, {
       ...state,
+      lineStart: true,
       stopAtTagStart: true,
       rejectGreaterEqual: false,
     })
@@ -590,10 +858,19 @@ function renderInline(
           quote: state.quote,
           quoteEscaped: false,
           expressionClosers: state.expressionClosers,
+          expressionContexts: state.expressionContexts,
           expressionMode: state.expressionMode,
           regexCharClass: state.regexCharClass,
           canStartRegex: state.canStartRegex,
           afterMemberAccess: state.afterMemberAccess,
+          pendingControlHeader: state.pendingControlHeader,
+          pendingBlockKind: state.pendingBlockKind,
+          atStatementStart: state.atStatementStart,
+          pendingLabel: state.pendingLabel,
+          pendingFunctionKind: state.pendingFunctionKind,
+          pendingClassKind: state.pendingClassKind,
+          canEndStatement: state.canEndStatement,
+          lineStart: true,
           genericDepth: state.genericDepth,
           genericClosers: state.genericClosers,
           allowGenerics: state.allowGenerics,
@@ -673,11 +950,19 @@ export function renderStructuredText(value) {
     mode: '',
     quote: '',
     expressionClosers: [],
+    expressionContexts: [],
     expressionMode: '',
     regexCharClass: false,
     quoteEscaped: false,
     canStartRegex: true,
     afterMemberAccess: false,
+    pendingControlHeader: '',
+    pendingBlockKind: '',
+    atStatementStart: false,
+    pendingLabel: false,
+    pendingFunctionKind: '',
+    pendingClassKind: '',
+    canEndStatement: false,
     genericDepth: 0,
     genericClosers: [],
     allowGenerics: false,

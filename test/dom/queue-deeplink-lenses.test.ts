@@ -4,7 +4,7 @@ import type Database from 'better-sqlite3'
 import { insertItem } from '../../src/store.js'
 import {
   advanceClock, bootApp, buttonLabelled, click, freshDb, navigateToHash, row, rowTitles,
-  searchFor, settle, useDomTest,
+  settle, useDomTest,
 } from './harness.js'
 
 useDomTest()
@@ -65,7 +65,6 @@ describe('Needs-you deep-link lens reconciliation', () => {
     agent.dispatchEvent(new Event('change', { bubbles: true }))
     click(buttonLabelled('To do'))
     click(buttonLabelled('Updates'))
-    await searchFor('Beta')
     expect(row(target)).toBeNull()
 
     navigateToHash(`#item/${target}`)

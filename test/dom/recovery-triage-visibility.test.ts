@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type Database from 'better-sqlite3'
 import { getBoard, insertItem, snoozeBoardRow, updateBoardRow, upsertBoard } from '../../src/store.js'
 import {
-  advanceClock, answerInput, bootApp, buttonLabelled, click, freshDb, row, searchFor,
+  advanceClock, answerInput, bootApp, buttonLabelled, click, freshDb, repaint, row,
   sendButton, settle, type, useDomTest,
 } from './harness.js'
 
@@ -135,7 +135,7 @@ describe('draft recovery visibility from Review queue', () => {
     expect(getBoard(db, 'alpha', 'Shared launch')!.revision).toBe(original.revision + 1)
     const staleSend = sendButton(target.id)!
     click(row(target.id))
-    await searchFor('Beta lens')
+    await repaint()
     staleSend.click()
     await settle()
 

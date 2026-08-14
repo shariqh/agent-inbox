@@ -20,7 +20,7 @@ describe('shell markup', () => {
     expect(html).not.toContain('data-sub=')
   })
 
-  it('has the top bar: brand, status + pause hint, agent select, search, gear', () => {
+  it('keeps the heading in the top bar and assigns filters to their responsive shell surfaces', () => {
     expect(html).toContain('id="topbar"')
     expect(html).toContain('class="brand"')
     expect(html).toContain('id="status"')
@@ -28,11 +28,18 @@ describe('shell markup', () => {
     expect(html).toContain('id="agentSelect"')
     expect(html).toContain('id="search"')
     expect(html).toContain('id="gear"')
+    const sidebar = html.slice(html.indexOf('<aside class="sidebar-shell">'), html.indexOf('</aside>'))
+    const topbar = html.slice(html.indexOf('<header id="topbar">'), html.indexOf('</header>'))
+    expect(sidebar).toContain('id="agentSelect"')
+    expect(topbar).not.toContain('id="agentSelect"')
+    expect(topbar).not.toContain('id="search"')
+    expect(html).toMatch(/class="floating-search"[^>]*role="search"/)
   })
 
   it('dims the app chrome behind Settings without motion', () => {
     expect(js).toContain("document.body.classList.toggle('settings-open', id === 'setup')")
     expect(css).toContain('body.settings-open #rail')
+    expect(css).toContain('body.settings-open .floating-search')
     expect(css).not.toMatch(/settings-open[^}]*transition/)
   })
 
@@ -232,29 +239,11 @@ describe('closed projects (issue #32)', () => {
     expect(body).toMatch(/lastData = \{[^}]*closed/)
   })
 
-  it('projMatches is assigned to the MODULE binding, never re-declared inside render()', () => {
-    // a function-scoped `const projMatches` is legal JS that silently shadows the
-    // module binding, leaving renderRail reading an empty Map forever — and the
-    // fold's auto-open-on-search-hit rule dead on arrival
-    expect(js).toMatch(/^let projMatches = new Map\(\)/m)
-    expect(js, 'render() re-declares projMatches and shadows the module binding')
-      .not.toMatch(/const projMatches\s*=/)
-  })
-
-  it('the ambient frame computes projMatches BEFORE renderRail, and withoutClosed AFTER it', () => {
+  it('the ambient frame reconciles the rail before applying the closed-project lens', () => {
     const body = fn('function paintAmbient()', '\nfunction paintEditableSurfaces(')
-    expect(body.indexOf('projMatches =')).toBeLessThan(body.indexOf('renderRail()'))
     // renderRail is what reconciles a stale projectFilter, and withoutClosed
     // reads projectFilter to decide whether this is a peek
     expect(body.indexOf('renderRail()')).toBeLessThan(body.indexOf('withoutClosed(lastData)'))
-    // …but setRailMatch must stay AFTER renderRail: renderRail does
-    // host.innerHTML = '', so painting match counts first would wipe them
-    expect(body.indexOf('renderRail()')).toBeLessThan(body.indexOf('setRailMatch('))
-  })
-
-  it('projectMatchCounts still reads the global lastData, so a match behind a closed project stays discoverable', () => {
-    const body = fn('function paintAmbient()', '\nfunction paintEditableSurfaces(')
-    expect(body).toMatch(/projMatches = projectMatchCounts\(lastData,/)
   })
 
   it('the Live footer strip and the drawer stay global — presence is not attention (§16)', () => {
@@ -349,7 +338,7 @@ describe('closed projects (issue #32)', () => {
     const close = fn('async function closeProjectAction(', '\nasync function reopenProjectAction(')
     expect(close).toMatch(/focusProjectTab\([^,]+,\s*generation\)/)
     const operable = fn('function projectTabIsOperable(', '\nfunction visibleProjectTabs(')
-    expect(operable).toMatch(/projectNavigationMode\(\) === 'phone'/)
+    expect(operable).toMatch(/layout === 'narrow'/)
     expect(operable).toMatch(/dataset\.open !== 'true'/)
   })
 
@@ -364,7 +353,7 @@ describe('closed projects (issue #32)', () => {
     const loadBody = fn('async function load()', '\n// fix round 1 (hardening)')
     expect(loadBody).toContain('applyProjectMutationIntents()')
     const close = fn('async function closeProjectAction(', '\nasync function reopenProjectAction(')
-    const reopen = fn('async function reopenProjectAction(', '\n// fix round 1: the query persists')
+    const reopen = fn('async function reopenProjectAction(', '\n// Search is a combobox')
     for (const body of [close, reopen]) {
       expect(body).toMatch(/beginProjectMutation\(/)
       expect(body).toMatch(/await queueProjectMutation\(/)
@@ -390,14 +379,14 @@ describe('closed projects (issue #32)', () => {
       .not.toMatch(/!open\.includes\(projectFilter\)/)
   })
 
-  it('row actions stay beside the tab while only the explicit tablet Archive action joins the tab order', () => {
+  it('row actions stay beside the tab and use the project tab as their keyboard path', () => {
     // .rail-tab is itself a <button role="tab">; a button may not contain
-    // interactive content. Desktop keeps §13's compact roving order; tablet
-    // deliberately exposes Archive to keyboard and touch users.
+    // interactive content. The sibling action stays out of the roving order;
+    // Delete/Backspace on the project tab is the keyboard path in every layout.
     const body = fn('function railRowEl(', '\n// Projects as vertical tabs')
     expect(body).toMatch(/wrap\.appendChild\(/)
     const action = fn('function railActionEl(', '\nfunction closedFoldEl(')
-    expect(action).toMatch(/tabIndex = tablet && !closed \? 0 : -1/)
+    expect(action).toContain('a.tabIndex = -1')
     expect(action).toMatch(/setAttribute\('aria-label'/)
   })
 
@@ -418,7 +407,7 @@ describe('closed projects (issue #32)', () => {
 
   it('the optimistic close/reopen revert comes from the authoritative snapshot', () => {
     const close = fn('async function closeProjectAction(', '\nasync function reopenProjectAction(')
-    const reopen = fn('async function reopenProjectAction(', '\n// fix round 1: the query persists')
+    const reopen = fn('async function reopenProjectAction(', '\n// Search is a combobox')
     for (const [name, body] of [['close', close], ['reopen', reopen]] as const) {
       expect(body, `${name} must not splice by index`).not.toMatch(/\.splice\(/)
       expect(body, `${name} must route through postJSON`).toMatch(/postJSON\('\/api\/projects\//)
@@ -450,10 +439,10 @@ describe('closed-project css (issue #32)', () => {
     expect(css.indexOf('.closed-fold .rail-reopen {')).toBeLessThan(css.indexOf('.rail-close:hover'))
   })
 
-  it('the tablet project-management rules live INSIDE the single @media block', () => {
+  it('the compact project-menu rules live INSIDE the single @media block', () => {
     const media = css.search(/@media\s*\(/)
-    expect(css.indexOf('.project-disclosure.tablet-projects')).toBeGreaterThan(media)
-    expect(css.indexOf('.closed-projects-popover')).toBeGreaterThan(media)
+    expect(css.indexOf('.sidebar-shell .project-disclosure', media)).toBeGreaterThan(media)
+    expect(css.indexOf('.closed-projects-popover', media)).toBeGreaterThan(media)
   })
 })
 

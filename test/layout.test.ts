@@ -21,7 +21,7 @@ describe('railLabel', () => {
   it('is the full project name when wide', () => {
     expect(railLabel('agent-inbox', 'wide')).toBe('agent-inbox')
   })
-  it('turns project slugs into readable labels in the compact project strip', () => {
+  it('turns project slugs into readable labels in the compact project menu', () => {
     expect(railLabel('agent-inbox', 'narrow')).toBe('agent inbox')
     expect(railLabel('github_enterprise-settings', 'narrow')).toBe('github enterprise settings')
   })

@@ -88,6 +88,46 @@ describe('item inspector scroll', () => {
     expect(after?.scrollTop).toBe(320)
   })
 
+  it('keeps the expanded queue row at the same viewport position across a poll rebuild', async () => {
+    const d = freshDb()
+    db = d
+    const id = insertItem(d, {
+      project: 'alpha',
+      stream: 'viewer',
+      agent: 'copilot',
+      session: 'session-page-scroll',
+      kind: 'question',
+      title: 'Keep this card visually anchored',
+      context: 'Long background '.repeat(100),
+    })
+
+    await bootApp(d)
+    click(row(id))
+    await settle()
+
+    const before = row(id)
+    const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockImplementation(function (this: HTMLElement) {
+        const top = this === before
+          ? 420
+          : this.classList.contains('nrow')
+            ? 300
+            : this.classList.contains('nrow-card')
+              ? 116
+              : 0
+        return DOMRect.fromRect({ y: top, width: 400, height: 600 })
+      })
+    const scrollBy = vi.spyOn(window, 'scrollBy').mockImplementation(() => {})
+
+    await pollTick()
+    await settle()
+
+    expect(row(id)).not.toBe(before)
+    expect(scrollBy).toHaveBeenCalledWith(0, -120)
+    rect.mockRestore()
+    scrollBy.mockRestore()
+  })
+
   it('starts at the top after the human changes or reopens the item', async () => {
     const d = freshDb()
     db = d

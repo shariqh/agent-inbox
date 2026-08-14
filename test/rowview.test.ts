@@ -557,7 +557,7 @@ describe('the star Undo fallback in app.js is wired to fresh state, not the stal
 // resolve (which it may forget, permanently), an answered-but-open question was
 // dropped by attentionEntries, by the strict still-awaiting-pickup filter the
 // list used to run, by staleEntries AND by g.done —
-// it rendered in no tab at all, while tabsearch's searchIndex still counted it
+// it rendered in no tab at all, while the old global search index still counted it
 // under needsYou. The tab badge lit up and the tab then said "No matches here".
 // The dimmed foot group is where it belongs: it also makes the card's
 // "✓ picked up" marker (spec §15) reachable for the first time.

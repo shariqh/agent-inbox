@@ -157,8 +157,8 @@ function mediaMatches(query: string): boolean {
 }
 
 // The CSSOM `CSS.escape` algorithm. jsdom exposes no `CSS` namespace at all, and
-// app.js calls CSS.escape in six places (incl. setRailMatch, which runs on every
-// render) — a missing one presents as a completely blank page.
+// app.js calls CSS.escape throughout navigation and rendering, so a missing one
+// presents as a completely blank page.
 function cssEscape(value: unknown): string {
   const str = String(value)
   let out = ''
@@ -425,6 +425,14 @@ export async function searchFor(query: string): Promise<void> {
   const input = document.getElementById('search') as HTMLInputElement | null
   type(input, query)
   await vi.advanceTimersByTimeAsync(200)
+}
+
+/** Force the editable frame to reconcile without coupling a test to search behavior. */
+export async function repaint(): Promise<void> {
+  const width = window.innerWidth
+  setViewport(width <= 1279 ? 1400 : 720)
+  setViewport(width)
+  await settle()
 }
 
 /** Drive the real hashchange → applyFocusHash → focusItem path. */

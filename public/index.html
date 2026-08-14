@@ -33,6 +33,9 @@
         </button>
         <nav id="rail" role="tablist" aria-orientation="vertical" aria-label="Projects"></nav>
       </div>
+      <label class="agent-pick"><span class="tab-label">Agent</span>
+        <select id="agentSelect" aria-label="Filter by agent"><option value="">All agents</option></select>
+      </label>
       <button id="gear" class="gear" type="button" title="Settings" aria-label="Settings" aria-pressed="false">
         <svg viewBox="0 0 16 16" aria-hidden="true">
           <path d="M2 4.25h6.5M11.5 4.25H14M2 11.75h2.5M7.5 11.75H14"></path>
@@ -49,12 +52,6 @@
         <div class="page-heading">
           <span class="page-kicker" id="pageKicker">Inbox</span>
           <h1 id="pageTitle">Your queue</h1>
-        </div>
-        <div class="topbar-tools">
-          <label class="agent-pick"><span class="tab-label">Agent</span>
-            <select id="agentSelect" aria-label="Filter by agent"><option value="">All agents</option></select>
-          </label>
-          <input id="search" class="search-box" type="search" placeholder="Search this workspace" aria-label="Search items and plans" autocomplete="off" />
         </div>
         <div class="topbar-notices"><span id="status"></span><span id="pauseHint"></span></div>
       </header>
@@ -74,6 +71,20 @@
         <section class="panel" id="setup" role="tabpanel" hidden><div class="setup-body"></div></section>
       </main>
     </div>
+  </div>
+  <div class="floating-search" role="search" aria-label="Workspace search">
+    <svg class="floating-search-icon" viewBox="0 0 16 16" aria-hidden="true">
+      <circle cx="7" cy="7" r="4.5"></circle>
+      <path d="m10.5 10.5 3 3"></path>
+    </svg>
+    <input id="search" class="search-box" type="search" placeholder="Search this workspace"
+      role="combobox" aria-label="Search items and plans" aria-autocomplete="list"
+      aria-controls="searchResults" aria-expanded="false"
+      aria-keyshortcuts="Meta+K Control+K" autocomplete="off" />
+    <kbd class="floating-search-key" aria-hidden="true">⌘K</kbd>
+    <div id="searchResults" class="search-results" role="listbox"
+      aria-label="Workspace search results" hidden></div>
+    <span id="searchStatus" class="visually-hidden" role="status" aria-live="polite"></span>
   </div>
   <footer id="liveBar">
     <button id="liveStrip" type="button" aria-expanded="false" aria-controls="liveDrawer">

@@ -72,6 +72,20 @@ describe('current ask time and queue sorting (#64)', () => {
     }
   })
 
+  it('does not repeat the compact Asked timestamp inside expanded item or row cards', async () => {
+    const d = open()
+    const { oldId, rowId } = seedMixedQueue(d)
+    await bootApp(d)
+
+    for (const id of [oldId, rowId]) {
+      click(row(id))
+      await settle()
+
+      expect(askedTime(id)).toBeTruthy()
+      expect(row(id)?.querySelector('.nrow-card .lifecycle-receipt')).toBeNull()
+    }
+  })
+
   it('uses a newly advanced action timestamp immediately instead of the row creation time', async () => {
     const d = open()
     upsertBoard(d, {
@@ -112,7 +126,7 @@ describe('current ask time and queue sorting (#64)', () => {
     expect(select.value).toBe('priority')
     expect(select.getAttribute('aria-label')).toBe('Sort queue')
     expect([...select.options].map((option) => option.textContent))
-      .toEqual(['Current priority', 'Asked newest', 'Asked oldest'])
+      .toEqual(['Priority', 'Newest', 'Oldest'])
     expect(rowTitles()).toEqual(['middle approval', 'old question', 'new question'])
 
     await chooseSort('newest')
@@ -140,14 +154,12 @@ describe('current ask time and queue sorting (#64)', () => {
     expect(document.activeElement).toBe(sortSelect())
   })
 
-  it('preserves the active sort control and compact header scroll after a safe polling render', async () => {
+  it('preserves the active sort control after a safe compact polling render', async () => {
     const d = open()
     seedMixedQueue(d)
     setViewport('narrow')
     await bootApp(d)
     const before = sortSelect()
-    const header = before.closest('.tab-header') as HTMLElement
-    header.scrollLeft = 73
     before.focus()
     expect(document.activeElement).toBe(before)
 
@@ -158,7 +170,6 @@ describe('current ask time and queue sorting (#64)', () => {
     expect(document.contains(before)).toBe(true)
     expect(document.activeElement).toBe(after)
     expect(after.value).toBe('priority')
-    expect(header.scrollLeft).toBe(73)
   })
 
   it('restores focused exact-time detail after a safe polling render', async () => {

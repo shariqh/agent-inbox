@@ -1,4 +1,5 @@
-import { paginate, paginateGroups, searchMatches } from '/search.js'
+import { paginate, paginateGroups } from '/search.js'
+import { buildSearchResults } from '/search-index.js'
 import {
   closedFoldLabel, closedRailEntries, filterRailEntries, railEntries, railProjects,
   shouldShowRailFilter, splitClosed, suppressedTotal,
@@ -26,7 +27,6 @@ import { liveSummary, lastActivityAt, isDormant, activitySynopsis } from '/liveb
 import { esc } from '/esc.js'
 import { renderStructuredText } from '/structured-text.js'
 import { boardRowsView, boardRowLine, progressLabel, hiddenDoneCount, lingeringBoards } from '/boards.js'
-import { liveEntity, tabMatchCounts, projectMatchCounts, elsewhereLabel } from '/tabsearch.js'
 import { titleWithBadge, focusHashFor, parseFocusHash } from '/badge.js'
 import { layoutMode, railLabel, NARROW_MAX, PROJECT_DISCLOSURE_MAX } from '/layout.js'
 import { indexLinks, sourceChipsHtml, sourceBlockHtml } from '/source.js'
@@ -40,8 +40,23 @@ void paginateGroups // kept exported+tested (spec §15); the viewer no longer ca
 
 // typo-tolerant fuzzy filtering; the engine is a vendored browser global
 const uf = new window.uFuzzy({ intraMode: 1 })
-const fuzzyFilter = (hay, needle) => uf.filter(hay, needle)
+const fuzzySearch = (hay, needle) => {
+  const [matches, info, order] = uf.search(hay, needle, 0, Number.POSITIVE_INFINITY)
+  return info && order
+    ? order.flatMap((infoIndex) => {
+        const index = info.idx[infoIndex]
+        return index === undefined ? [] : [{ index, ranges: info.ranges[infoIndex] ?? [] }]
+      })
+    : matches?.map((index) => ({ index, ranges: [] })) ?? null
+}
 let searchQuery = ''
+let searchTimer = null
+let searchIndexOpen = false
+let searchActiveIndex = -1
+let searchResultCache = []
+let searchResultSignature = ''
+let searchUpdating = false
+let searchJumpSource = null
 
 function nativeKeyOwner(event) {
   if (!(event.target instanceof Element)) return false
@@ -128,8 +143,8 @@ let openRowId = null    // the single inline-expanded Needs-you row (§4)
 let openRowScrollTop = 0 // the inspector's viewport survives the 3s DOM rebuild
 let pendingFocusId = null // explicit deep link protected through filter + pagination reconciliation
 let pagedFocusId = null // non-Inbox focused card protected only for the current rebuild
-let lastInspectorScrollAt = null // bounded wheel/scroll activity; never a suspension
-let inspectorScrollTimer = null
+let lastInteractionScrollAt = null // bounded inspector/page scroll activity; never a suspension
+let interactionScrollTimer = null
 let renderDirty = false // fresh data arrived while an editable rebuild was deferred
 let pinnedIds = []      // sort order pinned for this render session
 let pressedAt = null    // pointerdown → pointerup, hard-bounded by PRESS_GRACE_MS (#38)
@@ -164,27 +179,41 @@ function initPressGuard() {
   window.addEventListener('pointercancel', release, true)
 }
 
-function clearInspectorScrollActivity() {
-  lastInspectorScrollAt = null
-  if (inspectorScrollTimer !== null) {
-    clearTimeout(inspectorScrollTimer)
-    inspectorScrollTimer = null
+function clearScrollActivity() {
+  lastInteractionScrollAt = null
+  if (interactionScrollTimer !== null) {
+    clearTimeout(interactionScrollTimer)
+    interactionScrollTimer = null
   }
 }
 
-// A poll that replaces `.nrow-card` mid-scroll preserves scrollTop but kills
-// Chromium's current wheel/trackpad momentum. Capture the position continuously,
-// defer only while events are arriving, then paint a held frame after 200ms of
-// quiet instead of waiting for another 3-second tick.
+// Rebuilding during wheel/trackpad movement kills inspector momentum and can
+// fight the viewport's own scrolling. Defer only while events are arriving,
+// then paint a held frame after 200ms of quiet instead of waiting for another
+// 3-second tick.
+function noteScrollActivity() {
+  lastInteractionScrollAt = Date.now()
+  if (interactionScrollTimer !== null) clearTimeout(interactionScrollTimer)
+  interactionScrollTimer = setTimeout(() => {
+    interactionScrollTimer = null
+    if (!scrollActive(lastInteractionScrollAt, Date.now())) resumeRender()
+  }, SCROLL_IDLE_MS)
+}
+
 function noteInspectorScroll(id, card) {
   if (openRowId !== id) return
   openRowScrollTop = card.scrollTop
-  lastInspectorScrollAt = Date.now()
-  if (inspectorScrollTimer !== null) clearTimeout(inspectorScrollTimer)
-  inspectorScrollTimer = setTimeout(() => {
-    inspectorScrollTimer = null
-    if (openRowId === id && !scrollActive(lastInspectorScrollAt, Date.now())) resumeRender()
-  }, SCROLL_IDLE_MS)
+  noteScrollActivity()
+}
+
+function notePageScroll() {
+  if (openRowId == null) return
+  noteScrollActivity()
+}
+
+function initScrollGuard() {
+  window.addEventListener('wheel', notePageScroll, { passive: true })
+  window.addEventListener('scroll', notePageScroll, { passive: true })
 }
 
 // #pauseHint is emitted by the shell (Task 6); this is the only writer
@@ -207,9 +236,9 @@ function renderIfIdle() {
     return
   }
   const frame = paintAmbient()
-  // Drafts and active inspector scrolling protect only editable lists. Counts,
+  // Drafts and active inspector/page scrolling protect only editable lists. Counts,
   // the badge, rail and Live strip above keep reporting fresh data.
-  if (shouldDeferRender({ ...suspendState(), pressedAt, scrolledAt: lastInspectorScrollAt }, now)) {
+  if (shouldDeferRender({ ...suspendState(), pressedAt, scrolledAt: lastInteractionScrollAt }, now)) {
     renderDirty = true
     showPauseHint()
     return
@@ -286,7 +315,7 @@ async function reloadAndPaint() {
 function setOpenRow(id, { resume = true } = {}) {
   if (openRowId !== id) {
     openRowScrollTop = 0
-    clearInspectorScrollActivity()
+    clearScrollActivity()
   }
   openRowId = id
   if (resume) resumeRender()
@@ -580,20 +609,27 @@ function tabForItem(it) {
 
 // Notification click / URL hash entry point (spec §11): select the item's
 // project, switch to its tab, expand it, scroll to it.
-function focusItem(id) {
+function focusItem(id, source = null) {
   if (!lastData) return
   const item = allItems(lastData.g).find((i) => i.id === id)
   const board = [...lastData.boards, ...lastData.archived].find((b) => b.id === id)
   const target = item ?? board
   if (!target) return
+  if (source) searchJumpSource = { targetId: id, ...source }
+  else if (searchJumpSource?.targetId !== id) searchJumpSource = null
   pendingFocusId = id
+  if (source?.rowId) {
+    openRows.add(source.rowId)
+    if (board) showDoneBoards.add(board.id)
+  }
+  if (source?.field === 'context') {
+    openContexts.add(source.rowId ? `row:${source.rowId}` : `item:${id}`)
+  }
   projectFilter = target.project
   agentFilter = null
   actionFilter = 'all'
   changedOnly = false
-  searchQuery = ''
-  const search = document.getElementById('search')
-  if (search) search.value = ''
+  resetSearch()
   selectTab(board ? 'boards' : tabForItem(item)) // Task 8: sets activeTab AND shows the panel
   const hash = focusHashFor(id)
   if (location.hash !== hash) location.hash = hash // survives reload
@@ -632,14 +668,372 @@ function focusItem(id) {
     // staleFoldOpen/showArchived, and a DOM-only open doesn't survive that
     // rebuild (the same persistence trap already fixed once for the stale
     // fold in isolation).
-    revealDetailsAncestors(el)
-    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
-    const focusTarget = el.matches('details') ? el.querySelector(':scope > summary') : el
+    const sourceEl = applySearchJumpHighlight()
+    const scrollTarget = sourceEl ?? el
+    revealDetailsAncestors(scrollTarget)
+    scrollTarget.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    const contextSummary = sourceEl?.closest('.card-context')?.querySelector(':scope > summary')
+    const focusTarget = contextSummary
+      ?? (el.matches('details') ? el.querySelector(':scope > summary') : el)
     if (focusTarget) {
       focusTarget.tabIndex = 0
       focusTarget.focus({ preventScroll: true })
     }
   })
+}
+
+function searchElements() {
+  return {
+    dock: document.querySelector('.floating-search'),
+    input: document.getElementById('search'),
+    results: document.getElementById('searchResults'),
+    status: document.getElementById('searchStatus'),
+  }
+}
+
+function setSearchActive(index) {
+  const { input, results } = searchElements()
+  const options = [...(results?.querySelectorAll('[role="option"]') ?? [])]
+  searchActiveIndex = options.length ? Math.max(0, Math.min(index, options.length - 1)) : -1
+  for (const [optionIndex, option] of options.entries()) {
+    const active = optionIndex === searchActiveIndex
+    option.setAttribute('aria-selected', String(active))
+    if (active) option.scrollIntoView({ block: 'nearest' })
+  }
+  const active = options[searchActiveIndex]
+  if (input) {
+    if (active) input.setAttribute('aria-activedescendant', active.id)
+    else input.removeAttribute('aria-activedescendant')
+  }
+}
+
+function clearSearchResultView() {
+  const { input, results, status } = searchElements()
+  searchIndexOpen = false
+  searchUpdating = false
+  searchActiveIndex = -1
+  searchResultCache = []
+  searchResultSignature = ''
+  if (results) {
+    results.hidden = true
+    results.innerHTML = ''
+    results.removeAttribute('aria-busy')
+    delete results.dataset.updating
+  }
+  if (status) status.textContent = ''
+  input?.setAttribute('aria-expanded', 'false')
+  input?.removeAttribute('aria-activedescendant')
+}
+
+function beginSearchUpdate() {
+  const { input, results } = searchElements()
+  searchUpdating = true
+  if (!results || results.hidden) return
+  results.dataset.updating = 'true'
+  results.setAttribute('aria-busy', 'true')
+  for (const option of results.querySelectorAll('[role="option"]')) {
+    option.setAttribute('aria-disabled', 'true')
+  }
+  input?.removeAttribute('aria-activedescendant')
+}
+
+function finishSearchUpdate() {
+  const { results } = searchElements()
+  searchUpdating = false
+  if (!results) return
+  results.removeAttribute('aria-busy')
+  delete results.dataset.updating
+  for (const option of results.querySelectorAll('[role="option"]')) {
+    option.removeAttribute('aria-disabled')
+  }
+}
+
+function closeSearchResults() {
+  if (searchTimer) {
+    clearTimeout(searchTimer)
+    searchTimer = null
+  }
+  clearSearchResultView()
+}
+
+function resetSearch({ blur = false } = {}) {
+  if (searchTimer) {
+    clearTimeout(searchTimer)
+    searchTimer = null
+  }
+  searchQuery = ''
+  const { input } = searchElements()
+  if (input) input.value = ''
+  closeSearchResults()
+  if (blur && input === document.activeElement) input.blur()
+}
+
+function activateSearchResult(index = searchActiveIndex) {
+  if (searchUpdating || searchTimer) return
+  const result = searchResultCache[index]
+  if (!result) return
+  const available = lastData && (
+    allItems(lastData.g).some((item) => item.id === result.targetId)
+    || [...lastData.boards, ...lastData.archived].some((board) => board.id === result.targetId)
+  )
+  if (!available) {
+    renderSearchResults()
+    return
+  }
+  focusItem(result.targetId, result.source)
+}
+
+function appendHighlightedText(element, text, ranges) {
+  let cursor = 0
+  for (let index = 0; index < ranges.length; index += 2) {
+    const start = Math.max(cursor, Math.min(text.length, ranges[index] ?? 0))
+    const end = Math.max(start, Math.min(text.length, ranges[index + 1] ?? start))
+    if (start > cursor) element.append(document.createTextNode(text.slice(cursor, start)))
+    if (end > start) {
+      const mark = document.createElement('mark')
+      mark.textContent = text.slice(start, end)
+      element.append(mark)
+    }
+    cursor = end
+  }
+  if (cursor < text.length) element.append(document.createTextNode(text.slice(cursor)))
+}
+
+function searchResultContent(option, result) {
+  option.replaceChildren()
+  const title = document.createElement('span')
+  title.className = 'search-result-main'
+  appendHighlightedText(title, result.title, result.titleRanges)
+  const kind = document.createElement('span')
+  kind.className = 'search-result-kind'
+  kind.textContent = result.kind
+  const context = document.createElement('span')
+  context.className = 'search-result-context'
+  context.textContent = result.context
+  option.append(title, kind)
+  if (result.match) {
+    const match = document.createElement('span')
+    match.className = 'search-result-match'
+    const source = document.createElement('span')
+    source.className = 'search-result-match-source'
+    source.textContent = result.match.label
+    const value = document.createElement('span')
+    value.className = 'search-result-match-value'
+    appendHighlightedText(value, result.match.text, result.match.ranges)
+    match.append(source, document.createTextNode(' · '), value)
+    option.appendChild(match)
+  }
+  option.appendChild(context)
+}
+
+function sameSearchResultOrder(previous, next) {
+  return previous.length === next.length && previous.every((result, index) => (
+    result.key === next[index]?.key && result.section === next[index]?.section
+  ))
+}
+
+function searchJumpRoot(source) {
+  const card = document.querySelector(`[data-card-id="${CSS.escape(source.targetId)}"]`)
+  if (!card) return null
+  if (source.rowId) {
+    if (source.field === 'label') {
+      return card.querySelector(`.board-row[data-row-id="${CSS.escape(source.rowId)}"]`)
+    }
+    return card.querySelector(
+      `.row-panel-row[data-row-id="${CSS.escape(source.rowId)}"] .row-panel`,
+    ) ?? card.querySelector(`.board-row[data-row-id="${CSS.escape(source.rowId)}"]`)
+  }
+  if (source.field !== 'title' && card.classList.contains('nrow')) {
+    return card.querySelector('.nrow-card') ?? card
+  }
+  return card
+}
+
+const SEARCH_SOURCE_SELECTORS = {
+  title: '.nrow-title, .card-title, .board-title',
+  label: '.row-label',
+  detail: '.card-tldr-body',
+  note: '.card-tldr-body, .note-line',
+  'next-step': '.card-next-body',
+  owner: '.action-owner',
+  impact: '.card-impact',
+  next: '.card-after',
+  context: '.card-context-body',
+  annotation: '.annotation',
+  reply: '.reply-block',
+  'reply-context': '.reply-context',
+  outcome: '.outcome-block',
+  option: '.option, .opt-pill',
+  'option-detail': '.option',
+  project: '.card-meta, .board-meta, .meta',
+  stream: '.card-meta, .board-meta, .meta',
+  agent: '.card-meta, .board-meta, .meta',
+}
+
+function normalizedSearchText(value) {
+  return String(value ?? '').replace(/\s+/g, ' ').trim().toLocaleLowerCase()
+}
+
+function findSearchJumpSource(source) {
+  const root = searchJumpRoot(source)
+  if (!root) return null
+  let candidates
+  if (source.field === 'context') {
+    const key = source.rowId ? `row:${source.rowId}` : `item:${source.targetId}`
+    const details = root.querySelector(`.card-context[data-context-key="${CSS.escape(key)}"]`)
+    candidates = details ? [...details.querySelectorAll('.card-context-body')] : []
+  } else {
+    const selector = SEARCH_SOURCE_SELECTORS[source.field]
+    candidates = selector ? [...root.querySelectorAll(selector)] : []
+  }
+  const fullText = normalizedSearchText(source.text)
+  const fragments = source.fragments.map(normalizedSearchText).filter(Boolean)
+  return candidates
+    .map((element) => {
+      const text = normalizedSearchText(element.textContent)
+      const exact = fullText && text === fullText
+      const contains = fullText && text.includes(fullText)
+      const matchedFragments = fragments.filter((fragment) => text.includes(fragment)).length
+      return {
+        element,
+        score: exact ? 0 : contains ? 1 : matchedFragments === fragments.length && fragments.length ? 2 : matchedFragments ? 3 : 4,
+        length: text.length,
+      }
+    })
+    .filter((candidate) => candidate.score < 4)
+    .sort((left, right) => left.score - right.score || left.length - right.length)[0]?.element ?? null
+}
+
+function escapeSearchRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function highlightSearchJumpSource(element, fragments) {
+  const terms = [...new Set(fragments.map((fragment) => fragment.trim()).filter(Boolean))]
+    .sort((left, right) => right.length - left.length)
+  if (!terms.length) return
+  const matcher = new RegExp(terms.map(escapeSearchRegExp).join('|'), 'giu')
+  const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT)
+  const nodes = []
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (!node.parentElement?.closest('.search-jump-highlight')) nodes.push(node)
+  }
+  for (const node of nodes) {
+    const text = node.nodeValue ?? ''
+    matcher.lastIndex = 0
+    const matches = [...text.matchAll(matcher)]
+    if (!matches.length) continue
+    const replacement = document.createDocumentFragment()
+    let cursor = 0
+    for (const match of matches) {
+      const start = match.index ?? 0
+      if (start > cursor) replacement.append(document.createTextNode(text.slice(cursor, start)))
+      const mark = document.createElement('mark')
+      mark.className = 'search-jump-highlight'
+      mark.textContent = match[0]
+      replacement.appendChild(mark)
+      cursor = start + match[0].length
+    }
+    if (cursor < text.length) replacement.append(document.createTextNode(text.slice(cursor)))
+    node.replaceWith(replacement)
+  }
+}
+
+function applySearchJumpHighlight() {
+  if (!searchJumpSource) return null
+  const source = findSearchJumpSource(searchJumpSource)
+  if (!source) return null
+  highlightSearchJumpSource(source, searchJumpSource.fragments)
+  return source
+}
+
+function renderSearchResults() {
+  const { input, results, status } = searchElements()
+  if (!input || !results) return
+  const query = searchQuery.trim()
+  if (searchTimer) return
+  if (!searchIndexOpen || !query) {
+    closeSearchResults()
+    return
+  }
+  if (!lastData) return
+  const previousActiveKey = searchResultCache[searchActiveIndex]?.key
+  const previousResults = searchResultCache
+  const nextResults = buildSearchResults(lastData, query, fuzzySearch)
+  const nextSignature = JSON.stringify([query, nextResults])
+  if (!results.hidden && searchResultSignature === nextSignature) {
+    searchResultCache = nextResults
+    finishSearchUpdate()
+    input.setAttribute('aria-expanded', 'true')
+    return
+  }
+  const existingOptions = [...results.querySelectorAll('[role="option"]')]
+  const reconcile = !results.hidden
+    && nextResults.length > 0
+    && sameSearchResultOrder(previousResults, nextResults)
+    && existingOptions.length === nextResults.length
+  searchResultCache = nextResults
+  searchResultSignature = nextSignature
+  results.hidden = false
+  input.setAttribute('aria-expanded', 'true')
+
+  if (!searchResultCache.length) {
+    results.innerHTML = ''
+    const empty = document.createElement('p')
+    empty.className = 'search-results-empty'
+    empty.textContent = `No results for “${query}”`
+    results.appendChild(empty)
+    if (status) status.textContent = `No results for ${query}`
+    finishSearchUpdate()
+    setSearchActive(-1)
+    return
+  }
+
+  if (reconcile) {
+    for (const [index, result] of searchResultCache.entries()) {
+      searchResultContent(existingOptions[index], result)
+    }
+  } else {
+    results.innerHTML = ''
+    let group = null
+    let currentSection = null
+    for (const [index, result] of searchResultCache.entries()) {
+      if (result.section !== currentSection) {
+        currentSection = result.section
+        const labelId = `search-result-group-${result.section}`
+        group = document.createElement('div')
+        group.className = 'search-result-group'
+        group.setAttribute('role', 'group')
+        group.setAttribute('aria-labelledby', labelId)
+        const groupLabel = document.createElement('span')
+        groupLabel.id = labelId
+        groupLabel.className = 'search-result-group-label'
+        groupLabel.textContent = result.sectionLabel
+        group.appendChild(groupLabel)
+        results.appendChild(group)
+      }
+      const option = document.createElement('div')
+      option.id = `search-result-${index}`
+      option.className = 'search-result'
+      option.setAttribute('role', 'option')
+      option.setAttribute('aria-selected', 'false')
+      option.tabIndex = -1
+      option.dataset.searchTarget = result.targetId
+      searchResultContent(option, result)
+      option.addEventListener('pointerdown', (event) => event.preventDefault())
+      option.addEventListener('pointermove', () => setSearchActive(index))
+      option.addEventListener('click', () => activateSearchResult(index))
+      group?.appendChild(option)
+    }
+  }
+  finishSearchUpdate()
+  if (status) {
+    status.textContent = `${searchResultCache.length} search result${searchResultCache.length === 1 ? '' : 's'}`
+  }
+  const preservedIndex = previousActiveKey
+    ? searchResultCache.findIndex((result) => result.key === previousActiveKey)
+    : -1
+  setSearchActive(preservedIndex >= 0 ? preservedIndex : 0)
 }
 
 let bootFocusDone = false
@@ -654,7 +1048,7 @@ function initFocusHash() {
 }
 
 // notes age into Done after NOTE_AGE_MS (spec §8) — done at the door so the
-// Notes tab, the Done tab and search all agree
+// Notes tab and the Done tab agree
 function ageNotes(g, nowMs) {
   const aged = []
   const notes = g.notes
@@ -725,17 +1119,6 @@ function paintAmbient() {
   // nothing in applyBadge / attentionCount on purpose: PR state is ambient, and
   // a red CI must never move the badge (tenets 1 and 2).
   linkIndex = indexLinks(lastData.links ?? [])
-  // projectMatchCounts stays fed the GLOBAL lastData, unscoped by the rail
-  // filter, on purpose: it's how the user discovers a match sitting behind a
-  // DIFFERENT project pill than the one currently selected — including one
-  // behind a CLOSED project, which is what the fold's auto-open rule keys on.
-  //
-  // Hoisted to the module binding (issue #32) so renderRail can
-  // read it. It is an ASSIGNMENT, never a `const`: a function-scoped declaration
-  // here is legal JS that silently shadows the module binding, leaving renderRail
-  // reading an empty Map forever and §12's confident false negative sealed inside
-  // a collapsed fold. It must be computed BEFORE renderRail for the same reason.
-  projMatches = projectMatchCounts(lastData, searchQuery, fuzzyFilter)
   renderRail()
   // AFTER renderRail: renderRail is what reconciles a stale projectFilter, and
   // withoutClosed reads projectFilter to decide whether this is a peek.
@@ -747,30 +1130,10 @@ function paintAmbient() {
   // filter is hiding
   liveCardIds = new Set([...allItems(lastData.g).map((i) => i.id), ...lastData.boards.map((b) => b.id), ...lastData.archived.map((b) => b.id)])
   const filtered = filterData(visibleData)
-  const { g, boards, archived } = applySearch(filtered)
+  const { g, boards, archived } = filtered
   const pillLive = (lastData.activity ?? []).filter((a) =>
     (!projectFilter || a.project === projectFilter) && (!agentFilter || a.agent === agentFilter))
-  // fix round 1: counts feed off the project/agent-SCOPED data (`filtered` +
-  // `pillLive`), matching what render() actually shows — NOT raw `lastData`.
-  // Feeding raw data let a match hidden behind the active rail filter still
-  // count as "reachable" (its tab badge lit up, and its absence elsewhere
-  // silenced the "elsewhere" pointer), which is the same confident-false-
-  // negative spec §12 exists to kill, just reached through the project axis
-  // instead of the tab axis. Still deliberately NOT search-scoped (a tab
-  // count can't depend on itself) and NOT tab-scoped (the whole point).
-  const scopedForCounts = { g: filtered.g, boards: filtered.boards, archived: filtered.archived, activity: pillLive }
-  matchCounts = tabMatchCounts(scopedForCounts, searchQuery, fuzzyFilter)
-  for (const [tab, n] of Object.entries(matchCounts)) setTabMatch(tab, n)
-  // setRailMatch must stay AFTER renderRail: renderRail does host.innerHTML = '',
-  // so painting match counts before it would wipe every one of them.
-  const railProjectKeys = railProjects({
-    items: allItems(lastData.g), boards: lastData.boards, archived: lastData.archived, activity: lastData.activity,
-  })
-  for (const p of railProjectKeys) setRailMatch(p, projMatches.get(p) ?? 0)
-  // search filters Live too: match a session on what it's doing (+ its children),
-  // reusing searchMatches by mapping each session onto a haystack-shaped entity
-  const liveMatched = searchMatches(pillLive.map(liveEntity), searchQuery, fuzzyFilter)
-  const live = liveMatched ? pillLive.filter((a) => liveMatched.has(a.session)) : pillLive
+  const live = pillLive
   renderLiveBar(lastData.activity ?? [])    // collapsed strip — GLOBAL, never scoped (§7 filter-blindness, generalized)
   paintTabCounts(g, boards)
   return { agents, g, boards, archived, live }
@@ -788,6 +1151,7 @@ function paintTabCounts(g, boards) {
 }
 
 function paintEditableSurfaces({ agents, g, boards, archived, live }) {
+  renderSearchResults()
   renderClosedBanner()
   renderAgentSelect(agents)
   renderLive(live) // drawer's expanded list — stays FILTERED (rail-scoped, like every other tab)
@@ -824,6 +1188,7 @@ function render() {
   if (!restoreDraftRecoveryFocus() && !restoreDraftFocus(draftFocus)) {
     restorePagedCardFocus(pagedFocus)
   }
+  applySearchJumpHighlight()
 }
 
 // one age vocabulary for every surface (§6): rows, chips, Live and tooltips all
@@ -1438,8 +1803,9 @@ function actionBlocksHtml(tldr, nextStep, actionOwner, impact, nextAfter, contex
     ${contextHtml(context, contextKey)}`
 }
 
-function lifecycleHtml(entity) {
+function lifecycleHtml(entity, { includeAsked = true } = {}) {
   const steps = lifecycleReceipt(entity)
+    .filter((step) => includeAsked || step.label !== 'Asked')
   if (!steps.length) return ''
   return `<div class="lifecycle-receipt">${steps.map((step) => (
     `<div class="lifecycle-step">${renderStructuredText(step.label)}${step.at ? `<span class="lifecycle-age">· ${esc(rel(step.at))}</span>` : ''}</div>`
@@ -1489,7 +1855,7 @@ function rowPanelEl(b, r, readOnly = false) {
 // Guard the onSaved callback here, at the definition, so neither call site has
 // to know which context it is in — answering a blocked row from the list must
 // not throw just because there is no deck to remove it from.
-function rowCardEl(b, r, onSaved) {
+function rowCardEl(b, r, onSaved, { includeAsked = true } = {}) {
   const wrap = document.createElement('div')
   wrap.className = 'lb-row-card'
   wrap.innerHTML = `
@@ -1498,7 +1864,7 @@ function rowCardEl(b, r, onSaved) {
     ${actionBlocksHtml(r.note, r.next_step, r.action_owner, r.impact, r.next_after, r.context, `row:${r.id}`)}
     ${rowHumanStateHtml(r)}
     ${outcomeHtml(r.outcome)}
-    ${lifecycleHtml(r)}
+    ${lifecycleHtml(r, { includeAsked })}
     ${historyHtml(r)}`
   bindContextDisclosures(wrap)
   wrap.appendChild(rowAnswerEl(b, r, onSaved))
@@ -1835,39 +2201,6 @@ function setCount(id, n) {
   el.hidden = !n
 }
 
-// the whole-dataset per-tab match tally (spec §12) — read by emptyMsg so a tab
-// can point at where a search's hits actually are
-let matchCounts = { needsYou: null, boards: null, live: null, notes: null, done: null }
-
-// a small "N" beside a tab label — how many matches hide behind THAT tab
-function setTabMatch(tab, n) {
-  const el = document.querySelector(`#tabs .tab[data-tab="${tab}"]`)
-  if (!el) return
-  let badge = el.querySelector('.match-count')
-  if (n === null || n === 0) { badge?.remove(); return }
-  if (!badge) {
-    badge = document.createElement('span')
-    badge.className = 'match-count'
-    el.appendChild(badge)
-  }
-  badge.textContent = String(n)
-}
-
-// the rail row already ships an empty <span class="rail-match"> (Task 7) — this
-// only fills it in, so the rail's own markup stays the single source of truth
-function setRailMatch(project, n) {
-  const key = CSS.escape(project)
-  const targets = document.querySelectorAll(
-    `#rail button.rail-tab[data-project="${key}"] .rail-match, `
-    + `#closedProjectsPopover [data-project="${key}"] .rail-match`,
-  )
-  for (const el of targets) {
-    el.textContent = n ? String(n) : ''
-    el.hidden = !n
-    el.closest('.closed-project-entry')?.classList.toggle('search-match', !!n)
-  }
-}
-
 // Project and agent filters are window-local; every cold launch starts from the
 // cross-project/cross-tool view. The active tab likewise always starts here.
 let activeTab = DEFAULT_TAB
@@ -1910,47 +2243,12 @@ function filterData({ g, boards, archived }) {
   }
 }
 
-// narrow the pill-filtered data to the fuzzy-search matches (composes AND with
-// the project/agent pills). No query → returned unchanged.
-function applySearch({ g, boards, archived }) {
-  const matches = searchMatches([...allItems(g), ...boards, ...archived], searchQuery, fuzzyFilter)
-  if (!matches) return { g, boards, archived }
-  const keep = (x) => matches.has(x.id)
-  const only = (groups) => groups
-    .map((gr) => ({ ...gr, items: gr.items.filter(keep) }))
-    .filter((gr) => gr.items.length > 0)
-  return {
-    g: { needsYou: only(g.needsYou), notes: only(g.notes), done: g.done.filter(keep) },
-    boards: boards.filter(keep),
-    archived: archived.filter(keep),
-  }
-}
-
-const TAB_LABEL = { needsYou: 'Inbox', boards: 'Plans', live: 'Activity', notes: 'Notes', done: 'History' }
 const PAGE_META = {
   needsYou: { kicker: 'Inbox', title: 'Your queue' },
   boards: { kicker: 'Workspace', title: 'Plans' },
   notes: { kicker: 'Workspace', title: 'Notes' },
   done: { kicker: 'Workspace', title: 'History' },
   setup: { kicker: 'Agent Inbox', title: 'Settings' },
-}
-
-// the §12 pointer on its own: "<span>2 in Boards · 1 in Notes</span>", or ''.
-// Interpolates ONLY the fixed TAB_LABEL strings and integers — never agent text
-// — which is what makes it safe to hand straight to innerHTML. tabsearch.js's
-// elsewhereLabel is the unit-tested builder both callers share.
-function elsewhereMsg() {
-  const where = elsewhereLabel(matchCounts, activeTab, TAB_LABEL)
-  return where ? `<span class="match-elsewhere">${where}</span>` : ''
-}
-
-// section empty-state text: search-aware, and never a BARE "no matches" — it
-// always points at the tabs that do have hits (spec §12)
-function emptyMsg(base) {
-  const q = searchQuery.trim()
-  if (!q) return base
-  const where = elsewhereMsg()
-  return `No matches for &ldquo;${esc(q)}&rdquo; here${where ? ` — ${where}` : ' or in any other tab'}`
 }
 
 const liveSessionIds = () => new Set((lastData.activity ?? []).map((a) => a.session))
@@ -1987,15 +2285,10 @@ const authoritativeRefreshWaiters = new Set()
 // lastData minus the closed projects — what the DEFAULT view may show. Set once
 // per render(), read by every panel renderer that must agree with the badge.
 let visibleData = null
-// Hoisted out of render() so renderRail's fold-open rule can consult it. See the
-// long note at its assignment: making this a local `const` again is a silent
-// break, not a loud one.
-let projMatches = new Map()
-
 // ── responsive (spec §14) ────────────────────────────────────────────────────
 // Pure breakpoint check lives in layout.js; this is just the mode + the media
 // query that keeps it live. renderRail reads `layout` to turn project slugs into
-// readable compact-strip labels without changing their accessible names.
+// readable compact-menu labels without changing their accessible names.
 let layout = layoutMode(window.innerWidth)
 
 const PANE_KEYS = {
@@ -2119,6 +2412,8 @@ function projectNavigationMode() {
 
 function higherPriorityEscapeSurfaceOpen() {
   const liveDrawer = document.getElementById('liveDrawer')
+  const visibleModal = [...document.querySelectorAll('[aria-modal="true"]')]
+    .some((dialog) => !dialog.closest('[hidden]'))
   return !!(
     triageDeck
     || missionDetailRowId
@@ -2126,6 +2421,7 @@ function higherPriorityEscapeSurfaceOpen() {
     || relayOpen
     || document.body.classList.contains('settings-open')
     || (liveDrawer && !liveDrawer.hidden)
+    || visibleModal
   )
 }
 
@@ -2165,6 +2461,7 @@ function initProjectDisclosure() {
     setProjectDisclosure(disclosure.dataset.open !== 'true')
   })
   for (const type of ['pointerdown', 'focusin']) document.addEventListener(type, (event) => {
+    if (!disclosure.isConnected || document.getElementById('projectDisclosure') !== disclosure) return
     const target = event.target
     const focusState = projectFocusState(target)
     projectFocusBookmark = focusState
@@ -2179,7 +2476,8 @@ function initProjectDisclosure() {
     setProjectDisclosure(false)
   })
   document.addEventListener('keydown', (event) => {
-    if (nativeKeyOwner(event)) return
+    if (!disclosure.isConnected || document.getElementById('projectDisclosure') !== disclosure) return
+    if (event.defaultPrevented || nativeKeyOwner(event)) return
     if (
       event.key === 'Escape'
       && tabletProjectsMode()
@@ -2200,6 +2498,7 @@ function initProjectDisclosure() {
   })
   let projectMode = projectNavigationMode()
   const syncMode = () => {
+    if (!disclosure.isConnected || document.getElementById('projectDisclosure') !== disclosure) return
     const next = projectNavigationMode()
     if (next === projectMode) return
     const activeFocusState = projectFocusState(document.activeElement)
@@ -2232,36 +2531,31 @@ function initProjectDisclosure() {
 // tabbable", and N focusable close buttons in a rail of N projects would bury
 // the tablist under tab stops. The keyboard path is Delete/Backspace on the
 // focused tab instead — the convention every browser tab strip uses — wired in
-// railRowEl below. Tablet mode promotes Archive to a labelled tab stop because
-// touch has no hover and the horizontal strip otherwise loses project curation.
+// railRowEl below. Pointer and focus-within styling reveals the same × beside the
+// owning project in every layout without adding a second tab stop per project.
 function railActionEl(e, closed) {
-  const tablet = tabletProjectsMode()
   const a = document.createElement('button')
   a.type = 'button'
-  a.tabIndex = tablet && !closed ? 0 : -1
+  a.tabIndex = -1
   a.className = closed ? 'rail-reopen' : 'rail-close'
-  if (tablet && !closed) {
-    a.textContent = 'Archive'
-  } else {
-    const glyph = document.createElement('span')
-    glyph.className = 'rail-action-glyph'
-    glyph.setAttribute('aria-hidden', 'true')
-    glyph.textContent = closed ? '↩' : '×'
-    const label = document.createElement('span')
-    label.className = 'rail-action-label'
-    label.textContent = closed ? 'Reopen' : 'Archive'
-    a.append(glyph, label)
-  }
+  const glyph = document.createElement('span')
+  glyph.className = 'rail-action-glyph'
+  glyph.setAttribute('aria-hidden', 'true')
+  glyph.textContent = closed ? '↩' : '×'
+  const label = document.createElement('span')
+  label.className = 'rail-action-label'
+  label.textContent = closed ? 'Reopen' : 'Archive'
+  a.append(glyph, label)
   // setAttribute escapes; a project name is agent-authored and must NEVER be
   // interpolated into innerHTML
-  a.setAttribute('aria-label', `${closed ? 'Reopen' : tablet ? 'Archive' : 'Close'} project ${e.label}`)
+  a.setAttribute('aria-label', `${closed ? 'Reopen' : 'Archive'} project ${e.label}`)
   a.title = closed
     ? 'Reopen — bring this project back into the rail and the badge'
-    : `${tablet ? 'Archive' : 'Close'} — it comes back the moment an agent flags into it`
+    : `Archive ${e.label} — it comes back the moment an agent flags into it`
   a.addEventListener('click', () => {
     closed
       ? reopenProjectAction(e.key)
-      : closeProjectAction(e.key, { focusArchived: tablet })
+      : closeProjectAction(e.key, { focusArchived: tabletProjectsMode() })
   })
   return a
 }
@@ -2273,9 +2567,7 @@ function railActionEl(e, closed) {
 // `.rail-tab` is itself a `<button role="tab">`, and a button may not contain
 // interactive content (invalid HTML, and the roving-tabindex loop at the foot of
 // renderRail only governs `.rail-tab`). The codebase's own precedent is
-// `.nrow-dismiss` inside `div.nrow`. setRailMatch's
-// `#rail button.rail-tab[data-project=…] .rail-match` selector is a descendant
-// selector, so it keeps working through the wrapper and into the fold for free.
+// `.nrow-dismiss` inside `div.nrow`.
 function railRowEl(e, { withFilter, closed = false }) {
   const wrap = document.createElement('div')
   wrap.className = 'rail-row'
@@ -2301,7 +2593,7 @@ function railRowEl(e, { withFilter, closed = false }) {
   const name = document.createElement('span')
   name.className = 'rail-name'
   // The long-rail filter keeps canonical names so search results stay exact;
-  // the ordinary compact strip uses the readable label from layout.js.
+  // the compact project menu uses the readable label from layout.js.
   // textContent, never innerHTML — agent-authored project names.
   name.textContent = railLabel(e.label, withFilter ? 'wide' : layout)
   const badge = document.createElement('span')
@@ -2311,14 +2603,11 @@ function railRowEl(e, { withFilter, closed = false }) {
   badge.textContent = e.total ? String(e.total) : ''
   badge.hidden = !e.total
   badge.title = e.escalated ? `${e.escalated} escalated` : `${e.total} waiting on you`
-  // always present, always empty here — Task 15's search paints match counts in
-  const match = document.createElement('span')
-  match.className = 'rail-match'
-  b.append(dot, name, badge, match)
+  b.append(dot, name, badge)
   b.addEventListener('click', () => {
     closeSettings()
     projectFilter = e.key === '__all__' ? null : e.key
-    setProjectDisclosure(false)
+    setProjectDisclosure(false, { restoreFocus: layout === 'narrow' })
     resetPaging()
     forceRender()
   })
@@ -2380,7 +2669,7 @@ function projectTabIsOperable(target) {
   const disclosure = target.closest('#projectDisclosure')
   return !(
     disclosure instanceof HTMLElement
-    && projectNavigationMode() === 'phone'
+    && layout === 'narrow'
     && disclosure.dataset.open !== 'true'
   )
 }
@@ -2420,7 +2709,7 @@ function focusProjectFallback(project, { preferFold = false } = {}) {
     return true
   }
   const disclosure = document.getElementById('projectDisclosure')
-  if (projectNavigationMode() === 'phone' && disclosure?.dataset.open !== 'true') {
+  if (layout === 'narrow' && disclosure?.dataset.open !== 'true') {
     document.getElementById('projectDisclosureToggle')?.focus()
     return true
   }
@@ -2496,7 +2785,7 @@ function restoreProjectFocus(state) {
   if (!state) return
   if (state.kind === 'disclosure') {
     const disclosure = document.getElementById('projectDisclosure')
-    if (projectNavigationMode() === 'phone' && disclosure?.dataset.open !== 'true') {
+    if (layout === 'narrow' && disclosure?.dataset.open !== 'true') {
       document.getElementById('projectDisclosureToggle')?.focus()
       return
     }
@@ -2599,13 +2888,7 @@ function closedProjectEntryEl(entry) {
   badge.textContent = entry.total ? String(entry.total) : ''
   badge.hidden = !entry.total
   badge.title = `${entry.total} waiting on you`
-  const match = document.createElement('span')
-  match.className = 'rail-match'
-  const matches = projMatches.get(entry.key) ?? 0
-  match.textContent = matches ? String(matches) : ''
-  match.hidden = !matches
-  row.classList.toggle('search-match', !!matches)
-  peek.append(dot, name, badge, match)
+  peek.append(dot, name, badge)
   peek.addEventListener('click', () => {
     closeSettings()
     projectFilter = entry.key
@@ -2639,7 +2922,7 @@ function closedProjectsPopoverEl(entries, count) {
   return popover
 }
 
-function closedProjectsControl(count, suppressed, open, matches, soleProject = null) {
+function closedProjectsControl(count, suppressed, open, soleProject = null) {
   const trigger = document.createElement('button')
   trigger.id = 'closedProjectsTrigger'
   trigger.type = 'button'
@@ -2650,12 +2933,6 @@ function closedProjectsControl(count, suppressed, open, matches, soleProject = n
   const label = document.createElement('span')
   label.textContent = `Archived (${count})`
   trigger.appendChild(label)
-  if (matches) {
-    const match = document.createElement('span')
-    match.className = 'closed-projects-match'
-    match.textContent = `${matches} match${matches === 1 ? '' : 'es'}`
-    trigger.appendChild(match)
-  }
   trigger.title = suppressed
     ? `${count} archived project${count === 1 ? '' : 's'} · ${suppressed} item${suppressed === 1 ? '' : 's'} muted`
     : `${count} archived project${count === 1 ? '' : 's'}`
@@ -2686,8 +2963,8 @@ function renderClosedBanner() {
   content.insertBefore(bar, content.querySelector('main'))
 }
 
-// Projects as vertical tabs: color dot · name · per-project attention badge ·
-// an empty match slot the search fills in later. The badges are per-project by
+// Projects as vertical tabs: color dot · name · per-project attention badge.
+// The badges are per-project by
 // design; the dock badge and the Needs-you tab count stay global (spec §7
 // filter-blindness).
 function renderRail() {
@@ -2728,13 +3005,9 @@ function renderRail() {
     ? [...openEntries, ...closedRows].find((entry) => entry.key === projectFilter)
     : openEntries[0]
   updateProjectDisclosure(selectedEntry)
-  // The fold opens on demand, whenever a closed project is being peeked, and
-  // whenever a search's only hit is behind it — otherwise §12's confident false
-  // negative comes back through a sealed fold instead of through a missing tab.
-  const archivedMatches = closedEntries.reduce((total, entry) => total + (projMatches.get(entry.key) ?? 0), 0)
+  // The fold opens on demand or while a closed project is being peeked.
   const forcedOpenParts = []
   if (closed.includes(projectFilter)) forcedOpenParts.push(`project:${projectFilter}`)
-  if (searchQuery.trim() && archivedMatches > 0) forcedOpenParts.push(`search:${searchQuery.trim()}`)
   const forcedOpenKey = forcedOpenParts.join('\n')
   if (tablet) tabletForcedOpenKey = forcedOpenKey
   if (!closed.length) {
@@ -2754,7 +3027,6 @@ function renderRail() {
     railQuery,
     layout,
     tablet,
-    archivedMatches,
     tablet ? forcedOpenKey : null,
     closed.length,
     closedSuppressed,
@@ -2784,11 +3056,10 @@ function renderRail() {
   if (closed.length) {
     if (tablet) {
       tabletClosedSnapshot = { entries: closedEntries, count: closed.length }
-      host.appendChild(closedProjectsControl(
+      host.appendChild(      closedProjectsControl(
         closed.length,
         closedSuppressed,
         foldOpen,
-        archivedMatches,
         closed.length === 1 ? closed[0] : null,
       ))
       if (foldOpen) disclosure?.appendChild(closedProjectsPopoverEl(closedEntries, closed.length))
@@ -2813,7 +3084,7 @@ function renderRail() {
   if (!tabs.some((tab) => tab.tabIndex === 0) && tabs[0]) {
     tabs[0].tabIndex = 0
   }
-  wireTablist(host, tablet ? 'horizontal' : 'vertical')
+  wireTablist(host, 'vertical')
   if (caret !== null && railFilter) {
     restoringRailFocus = true
     try {
@@ -3152,6 +3423,8 @@ function needsYouHeader() {
   }
   const bar = document.createElement('div')
   bar.className = 'tab-header'
+  const filters = document.createElement('div')
+  filters.className = 'queue-filter-group'
   for (const [value, label] of [['all', 'All'], ['decision', 'Decisions'], ['task', 'To do']]) {
     const filter = btn(label, () => {
       actionFilter = value
@@ -3159,7 +3432,7 @@ function needsYouHeader() {
     })
     filter.className = 'header-toggle'
     filter.dataset.actionFilter = value
-    bar.appendChild(filter)
+    filters.appendChild(filter)
   }
   const changed = btn('Updates', () => {
     changedOnly = !changedOnly
@@ -3167,7 +3440,9 @@ function needsYouHeader() {
   })
   changed.className = 'header-toggle'
   changed.dataset.changedFilter = '1'
-  bar.appendChild(changed)
+  filters.appendChild(changed)
+  const tools = document.createElement('div')
+  tools.className = 'queue-tool-group'
   const sortLabel = document.createElement('label')
   sortLabel.className = 'queue-sort'
   const sortText = document.createElement('span')
@@ -3187,13 +3462,14 @@ function needsYouHeader() {
     renderIfIdle()
   })
   sortLabel.append(sortText, sort)
-  bar.appendChild(sortLabel)
+  tools.appendChild(sortLabel)
   const relay = btn('Handoffs', openRelay)
   relay.className = 'relay-btn'
-  bar.appendChild(relay)
+  tools.appendChild(relay)
   const tri = btn('Review queue', openTriage)
   tri.className = 'triage-btn'
-  bar.appendChild(tri)
+  tools.appendChild(tri)
+  bar.append(filters, tools)
   needsYouHeaderNode = bar
   syncNeedsYouHeader(bar)
   return bar
@@ -3293,7 +3569,9 @@ function renderEmptyState(host) {
 function renderNeedsYou(g, boardsInView, nowMs) {
   const host = document.getElementById('needsYouList')
   const protectedIds = protectedNeedsYouIds()
-  const openCard = openRowId ? needsYouRowEl(openRowId)?.querySelector('.nrow-card') : null
+  const openQueueRow = openRowId ? needsYouRowEl(openRowId) : null
+  const openCard = openQueueRow?.querySelector('.nrow-card') ?? null
+  const openRowViewportTop = openQueueRow?.getBoundingClientRect().top ?? null
   const cardFocus = openCard ? captureCardFocus(openCard, openRowId) : null
   const askedTimeFocusId = focusedAskedTimeId()
   if (openCard) openRowScrollTop = openCard.scrollTop
@@ -3334,30 +3612,12 @@ function renderNeedsYou(g, boardsInView, nowMs) {
     lastVisitAt,
   }
   const { visible, remaining } = paginateNeedsYou(entries, protectedIds)
-  // fix round 2 (I2): the stale fold renders BELOW the empty state but its
-  // contents are part of this tab's answer. Computed first so a query matching
-  // only a stale item can't print "No matches … or in any other tab" directly
-  // above the fold holding that exact match (while its tab badge reads 1).
   const stale = sortDeferredEntries(filterActionEntries(staleEntries(items, nowMs, live)))
   const header = needsYouHeader()
   replaceNeedsYouBody(host, header)
   if (!entries.length) {
-    // a search that matched nothing still says so; an empty INBOX gets the calm panel
-    if (searchQuery.trim()) {
-      // only claim "no matches" when the fold below holds none either
-      if (!stale.length && !snoozed.length) host.insertAdjacentHTML('beforeend', `<p class="empty">${emptyMsg('Nothing needs you.')}</p>`)
-      // issue #31.3: suppressing the FALSE "no matches" claim also swallowed the
-      // §12 pointer, leaving a search that hit only a collapsed stale item with a
-      // blank tab. The claim is what was wrong, not the pointer — print it alone.
-      else {
-        const where = elsewhereMsg()
-        if (where) host.insertAdjacentHTML('beforeend', `<p class="empty">Only deferred matches here — ${where}</p>`)
-      }
-    } else {
-      // an empty INBOX still gets the calm panel: a demoted stale item is, by
-      // definition, not something that needs you — the claim stays true.
-      renderEmptyState(host)
-    }
+    // A demoted stale item is, by definition, not something that needs you.
+    renderEmptyState(host)
   }
   for (const e of visible) host.appendChild(needsRowEl(rowModel(e, opts), e, nowMs))
   if (remaining > 0) host.appendChild(moreButton('needsYou', remaining))
@@ -3368,8 +3628,15 @@ function renderNeedsYou(g, boardsInView, nowMs) {
   // count is computed from (render()'s `g.notes`). It used to read the GLOBAL
   // lastData.g.notes, so the chip and the badge disagreed under any rail filter.
   renderNeedsYouExtras(host, g.notes.flatMap((gr) => gr.items))
-  const restoredCard = openRowId ? needsYouRowEl(openRowId)?.querySelector('.nrow-card') : null
+  const restoredRow = openRowId ? needsYouRowEl(openRowId) : null
+  const restoredCard = restoredRow?.querySelector('.nrow-card') ?? null
   if (restoredCard && openRowScrollTop > 0) restoredCard.scrollTop = openRowScrollTop
+  if (restoredRow && openRowViewportTop !== null) {
+    const viewportDelta = restoredRow.getBoundingClientRect().top - openRowViewportTop
+    if (Number.isFinite(viewportDelta) && Math.abs(viewportDelta) > 0.5) {
+      window.scrollBy(0, viewportDelta)
+    }
+  }
   const restoredCardFocus = restoreCardFocus(cardFocus)
   const restoredAskedTimeFocus = restoreAskedTimeFocus(askedTimeFocusId)
   // §13: `selectedId` (Task 17) is module state, same pattern as openRowId/
@@ -3530,19 +3797,23 @@ function needsRowEl(m, entry, nowMs) {
   const l2 = showL2 ? `<div class="nrow-l2"><span class="nrow-sec">${esc(m.secondary)}</span>${agentBit}${streamBit}</div>` : ''
   el.innerHTML = `
     <div class="nrow-l1">
-      <span class="pdot" style="background:${color.dot}" title="${esc(m.project)}"></span>
-      ${projBit}
-      ${glyph}
-      <span class="nrow-title" title="${esc(m.title)}">${esc(m.title)}</span>
-      ${ownerBit}
-      ${changeBit}
-      ${askedBit}
-      <span class="chip chip-${chip.tone}"><span aria-hidden="true">${livenessGlyph(m.liveness).glyph}</span> ${esc(chip.text)}</span>
-      <span class="nrow-src">${sourceChipsHtml(linkIndex, entry.kind === 'row' ? entry.board : entry.item, nowMs)}</span>
-      <span class="nrow-star"></span>
-      ${wakeBit}
-      ${dismissBit}
-      <span class="nrow-caret">▸</span>
+      <div class="nrow-primary">
+        <span class="pdot" style="background:${color.dot}" title="${esc(m.project)}"></span>
+        ${projBit}
+        ${glyph}
+        <span class="nrow-title" title="${esc(m.title)}">${esc(m.title)}</span>
+      </div>
+      <div class="nrow-meta">
+        ${ownerBit}
+        ${changeBit}
+        ${askedBit}
+        <span class="chip chip-${chip.tone}"><span aria-hidden="true">${livenessGlyph(m.liveness).glyph}</span> ${esc(chip.text)}</span>
+        <span class="nrow-src">${sourceChipsHtml(linkIndex, entry.kind === 'row' ? entry.board : entry.item, nowMs)}</span>
+        <span class="nrow-star"></span>
+        ${wakeBit}
+        ${dismissBit}
+        <span class="nrow-caret">▸</span>
+      </div>
     </div>
     ${l2}`
   el.style.setProperty('--wash', color.wash)
@@ -3667,8 +3938,12 @@ function rowCardBodyEl(entry, m, nowMs) {
   // hide the answer surface again). Same freshItem() precedent as the star's
   // Undo fallback. Resolved in place: `entry.item` is undefined for board rows.
   body.appendChild(entry.kind === 'row'
-    ? rowCardEl(entry.board, entry.row)
-    : itemCardEl(freshItem(entry.item.id) ?? entry.item, { nowMs, liveness: m.liveness }))
+    ? rowCardEl(entry.board, entry.row, undefined, { includeAsked: false })
+    : itemCardEl(freshItem(entry.item.id) ?? entry.item, {
+        nowMs,
+        liveness: m.liveness,
+        includeAsked: false,
+      }))
   return body
 }
 
@@ -3709,7 +3984,7 @@ function renderGroups(sectionId, groups) {
   const host = document.querySelector(`#${sectionId} .groups`)
   const items = groups.flatMap((gr) => gr.items)
   const { visible, remaining, viewed } = paginateWithPending(items, sectionId)
-  host.innerHTML = items.length ? '' : `<p class="empty">${emptyMsg('Nothing here.')}</p>`
+  host.innerHTML = items.length ? '' : '<p class="empty">Nothing here.</p>'
   for (const it of visible) host.appendChild(itemEl(it))
   if (remaining > 0) host.appendChild(moreButton(sectionId, remaining))
   // fix round 2 (I3): mark seen only what was actually on screen. The hidden set
@@ -3726,7 +4001,7 @@ function renderGroups(sectionId, groups) {
 function renderDone(items) {
   const host = document.querySelector('#done .items')
   const { visible, remaining } = paginateWithPending(items, 'done')
-  host.innerHTML = items.length ? '' : `<p class="empty">${emptyMsg('Nothing yet.')}</p>`
+  host.innerHTML = items.length ? '' : '<p class="empty">Nothing yet.</p>'
   for (const it of visible) host.appendChild(itemEl(it, it.status !== 'open'))
   if (remaining > 0) host.appendChild(moreButton('done', remaining))
 }
@@ -3799,11 +4074,8 @@ function renderBoards(boards, archived) {
   // here as a "completed — archived" card so finished work never blinks out (§9)
   const lingering = lingeringBoards(sessionActiveBoards, boards, archived)
   const lingerIds = new Set(lingering.map((b) => b.id))
-  // fix round 2 (I2): the archived fold renders below this line and its contents
-  // are part of the answer — `rest` is computed first so "No matches for X here
-  // or in any other tab" can't print directly above a fold holding the match.
   const rest = archived.filter((b) => !lingerIds.has(b.id))
-  if (!boards.length && !lingering.length && !rest.length) host.insertAdjacentHTML('beforeend', `<p class="empty">${emptyMsg('No plans yet.')}</p>`)
+  if (!boards.length && !lingering.length && !rest.length) host.insertAdjacentHTML('beforeend', '<p class="empty">No plans yet.</p>')
   const { visible, remaining } = paginateWithPending(boards, 'boards')
   for (const b of visible) host.appendChild(boardEl(b))
   if (remaining > 0) host.appendChild(moreButton('boards', remaining))
@@ -4194,9 +4466,7 @@ function requestDraftRecovery(target = draftRecoveryTarget) {
     agentFilter = null
     actionFilter = 'all'
     changedOnly = false
-    searchQuery = ''
-    const search = document.getElementById('search')
-    if (search) search.value = ''
+    resetSearch()
     setOpenRow(target.rowId)
     selectRow(target.rowId)
   }
@@ -4614,7 +4884,13 @@ function answerEl(it) {
 
 // THE card (§4): meta → title → detail → labeled CONTEXT → options → answer →
 // actions. Mounted inline by the Needs-you accordion and by the triage lightbox.
-function itemCardEl(it, { done = false, nowMs = Date.now(), liveness = 'parked', header = true } = {}) {
+function itemCardEl(it, {
+  done = false,
+  nowMs = Date.now(),
+  liveness = 'parked',
+  header = true,
+  includeAsked = true,
+} = {}) {
   const el = document.createElement('div')
   el.className = `card card-${it.kind}`
   const s = cardSections(it, { done })
@@ -4636,7 +4912,7 @@ function itemCardEl(it, { done = false, nowMs = Date.now(), liveness = 'parked',
     ${s.recWarning ? `<div class="rec-warning">Review: ${esc(s.recWarning)}</div>` : ''}
     ${s.reply || it.reply_kind ? `<div class="reply-block"><strong>${esc(responseLabel(it) || 'You answered')}:</strong> ${esc(s.reply ?? '')}${it.reply_context ? `<div class="reply-context">Context: ${esc(it.reply_context)}</div>` : ''}${it.reply_source === 'agent' ? '<span class="reply-source">via chat</span>' : ''}${s.showPickup ? `<span class="pickup ${it.reply_seen_at ? 'picked' : 'awaiting'}">${it.reply_seen_at ? 'With the agent' : 'Waiting for the agent'}</span>` : ''}</div>` : ''}
     ${outcomeHtml(s.outcome)}
-    ${lifecycleHtml(it)}`
+    ${lifecycleHtml(it, { includeAsked })}`
   bindContextDisclosures(el)
   if (s.showAnswer) el.appendChild(answerEl(it))
   if (s.showActions) {
@@ -4846,6 +5122,17 @@ function runIntent(intent) {
       document.querySelector(`.nrow[data-card-id="${CSS.escape(openRowId)}"]`)?.click()
       return
     }
+    case 'exitPeek': {
+      if (!projectFilter || !closedSet().has(projectFilter)) return
+      projectFilter = null
+      selectedId = null
+      resetPaging()
+      forceRender()
+      const trigger = document.getElementById('closedProjectsTrigger')
+      if (trigger) trigger.focus()
+      else focusProjectFallback(null, { preferFold: true })
+      return
+    }
     case 'clearSelection':
       selectRow(null)
       return
@@ -4868,7 +5155,7 @@ function runIntent(intent) {
       if (it) act(it.id, 'resolve') // deck-aware target — never a bare selectedId
       return
     case 'search':
-      document.getElementById('search').focus()
+      focusSearch()
       return
     case 'blur':
       if (document.activeElement && document.activeElement.blur) document.activeElement.blur()
@@ -4890,6 +5177,12 @@ function runIntent(intent) {
   }
 }
 
+function focusSearch(selectText = false) {
+  const search = document.getElementById('search')
+  search.focus()
+  if (selectText) search.select()
+}
+
 function initKeys() {
   document.addEventListener('keydown', (e) => {
     const t = e.target
@@ -4899,6 +5192,12 @@ function initKeys() {
       && (e.key === 'Escape'
         || /^[1-4]$/.test(e.key)
         || ['j', 'k', 'ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight'].includes(e.key))
+    if (e.key.toLowerCase() === 'k' && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
+      e.preventDefault()
+      if (higherPriorityEscapeSurfaceOpen()) return
+      focusSearch(true)
+      return
+    }
     if (!triageOwnsKey && nativeKeyOwner(e)) return
     if (e.key === ',' && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
       e.preventDefault()
@@ -4936,6 +5235,7 @@ function initKeys() {
     if (e.key === 'Escape' && !triageDeck && liveDrawer && !liveDrawer.hidden) return
     if (e.key === 'Escape' && !triageDeck && closeSettings({ restoreFocus: true })) {
       e.preventDefault()
+      e.stopImmediatePropagation()
       return
     }
     // optionCount must come from the SAME target runIntent will answer — the
@@ -4946,6 +5246,7 @@ function initKeys() {
       typing,
       deckOpen: !!triageDeck,
       expanded: openRowId != null,
+      peeking: !!projectFilter && closedSet().has(projectFilter),
       optionCount: optionOrder(keyTargetItem()?.options).length,
     })
     if (!intent) return
@@ -5187,20 +5488,79 @@ async function reopenProjectAction(name, { focusProject = false } = {}) {
   }
 }
 
-// fix round 1: the query persists across tab and project changes for free —
-// `searchQuery` is module state nothing else ever resets (selectTab and the
-// rail's project handler don't touch it), and `#search`'s DOM node is never
-// rebuilt after this one-time init, so its typed value survives on its own.
-// (A prior `input.value = searchQuery` line here was dead: initSearch() runs
-// once at boot, before searchQuery can be non-empty, and never runs again —
-// it asserted a protection this line wasn't actually providing.)
+// Search is a combobox over the loaded workspace index. It never mutates the
+// queue or its badges; selection reuses the same deep-link path as notifications.
 function initSearch() {
   const input = document.getElementById('search')
-  let t = null
+  const dock = input.closest('.floating-search')
   input.addEventListener('input', () => {
-    clearTimeout(t)
-    t = setTimeout(() => { searchQuery = input.value; resetPaging(); forceRender() }, 120)
+    if (searchTimer) {
+      clearTimeout(searchTimer)
+      searchTimer = null
+    }
+    const value = input.value
+    if (!value.trim()) {
+      resetSearch()
+      return
+    }
+    const queryChanged = searchQuery.trim() !== value.trim()
+    if (!queryChanged) {
+      finishSearchUpdate()
+      setSearchActive(searchActiveIndex)
+      return
+    }
+    beginSearchUpdate()
+    searchTimer = setTimeout(() => {
+      searchTimer = null
+      searchQuery = value
+      searchIndexOpen = true
+      searchActiveIndex = -1
+      renderSearchResults()
+    }, 120)
   })
+  input.addEventListener('focus', () => {
+    const value = input.value.trim()
+    if (!value || searchIndexOpen) return
+    searchQuery = input.value
+    searchIndexOpen = true
+    renderSearchResults()
+  })
+  input.addEventListener('keydown', (event) => {
+    if (event.isComposing) {
+      event.stopPropagation()
+      return
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      event.stopPropagation()
+      resetSearch({ blur: true })
+      return
+    }
+    if (!searchIndexOpen || searchUpdating || !searchResultCache.length) return
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault()
+      event.stopPropagation()
+      const delta = event.key === 'ArrowDown' ? 1 : -1
+      const start = searchActiveIndex < 0 ? (delta > 0 ? -1 : 0) : searchActiveIndex
+      setSearchActive((start + delta + searchResultCache.length) % searchResultCache.length)
+      return
+    }
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      event.stopPropagation()
+      activateSearchResult(searchActiveIndex < 0 ? 0 : searchActiveIndex)
+    }
+  })
+  dock?.addEventListener('focusout', (event) => {
+    if (event.relatedTarget instanceof Node && dock.contains(event.relatedTarget)) return
+    closeSearchResults()
+  })
+  document.addEventListener('pointerdown', (event) => {
+    if (!searchIndexOpen && !searchTimer) return
+    if (event.target instanceof Node && dock?.contains(event.target)) return
+    closeSearchResults()
+    if (document.activeElement === input) input.blur()
+  }, true)
 }
 
 function setupTargetLabel(target) {
@@ -5386,7 +5746,7 @@ async function renderSetup() {
 //   initTabs → initTriage → initSearch → initResponsive → initPaneResizers →
 //   initProjectDisclosure →
 //   initKeys (Task 17) → initFocusHash (Task 17) → initStagedFlush →
-//   initPressGuard (#38) → initAgentSelect →
+//   initPressGuard (#38) → initScrollGuard → initAgentSelect →
 //   initGear → initLiveBar → renderSetup → load → setInterval(load, 3000)
 initTabs()
 initTriage()
@@ -5400,6 +5760,7 @@ initKeys()
 initFocusHash()
 initStagedFlush()
 initPressGuard()
+initScrollGuard()
 initAgentSelect()
 initGear()
 initLiveBar()

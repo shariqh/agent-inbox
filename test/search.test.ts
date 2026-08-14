@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import uFuzzy from '@leeoniya/ufuzzy'
-import { haystackFor, searchMatches, paginate, paginateGroups } from '../public/search.js'
+import { haystackFor, paginate, paginateGroups } from '../public/search.js'
 
 describe('haystackFor', () => {
   it('includes item fields, lowercased', () => {
@@ -27,31 +26,6 @@ describe('haystackFor', () => {
     expect(h).toContain('canary is green')
     expect(h).toContain('rollout')
     expect(h).toBe(h.toLowerCase())
-  })
-})
-
-describe('searchMatches', () => {
-  const ents = [{ id: 'a', title: 'alpha' }, { id: 'b', title: 'beta' }, { id: 'c', title: 'gamma' }]
-  it('returns null for empty/whitespace query', () => {
-    expect(searchMatches(ents, '', () => [])).toBeNull()
-    expect(searchMatches(ents, '   ', () => [])).toBeNull()
-  })
-  it('maps filter indices back to ids', () => {
-    expect(searchMatches(ents, 'x', () => [0, 2])).toEqual(new Set(['a', 'c']))
-  })
-  it('returns an empty Set (not null) when the filter finds nothing', () => {
-    expect(searchMatches(ents, 'x', () => null)).toEqual(new Set())
-    expect(searchMatches(ents, 'x', () => [])).toEqual(new Set())
-  })
-  it('works end-to-end with the real uFuzzy engine', () => {
-    const uf = new uFuzzy({ intraMode: 1 })
-    const rows = [
-      { id: 'x', title: 'Auth board', project: 'api' },
-      { id: 'y', title: 'Billing rollout', project: 'web' },
-    ]
-    const set = searchMatches(rows, 'auth', (hay, needle) => uf.filter(hay, needle))!
-    expect(set.has('x')).toBe(true)
-    expect(set.has('y')).toBe(false)
   })
 })
 

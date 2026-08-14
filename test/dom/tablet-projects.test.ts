@@ -39,6 +39,11 @@ const archivedTrigger = (): HTMLButtonElement | null =>
 const archivedPopover = (): HTMLElement | null =>
   document.getElementById('closedProjectsPopover')
 
+function openProjectMenu(): void {
+  const toggle = document.getElementById('projectDisclosureToggle') as HTMLButtonElement
+  if (toggle.getAttribute('aria-expanded') !== 'true') click(toggle)
+}
+
 function pointer(el: Element, type: 'pointerdown' | 'pointerup'): void {
   el.dispatchEvent(new window.PointerEvent(type, { bubbles: true }))
 }
@@ -162,7 +167,7 @@ function holdProjectPosts(): { count(): number; release(index: number, status?: 
   }
 }
 
-it('auto-opens a new same-count archived query after the previous query was dismissed', async () => {
+it('keeps archived projects closed while the workspace search index changes', async () => {
   const d = open()
   question(d, 'alpha')
   advanceClock()
@@ -178,15 +183,15 @@ it('auto-opens a new same-count archived query after the previous query was dism
   await bootApp(d)
 
   await searchFor('first')
-  expect(archivedPopover()).toBeTruthy()
-  document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  expect(document.getElementById('projectDisclosure')?.dataset.open).toBe('false')
+  expect(archivedTrigger()?.getAttribute('aria-expanded')).toBe('false')
+  expect(document.querySelector('#searchResults [data-search-target]')?.textContent).toContain('first second archived match')
   expect(archivedPopover()).toBeNull()
 
-  await searchFor('second')
-  expect(archivedTrigger()?.getAttribute('aria-expanded')).toBe('true')
-  expect(archivedPopover()).toBeTruthy()
-  expect(archivedPopover()?.querySelector('[data-project="beta"] .rail-match')?.textContent).toBe('1')
-  document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  await searchFor('absent')
+  expect(document.getElementById('projectDisclosure')?.dataset.open).toBe('false')
+  expect(archivedTrigger()?.getAttribute('aria-expanded')).toBe('false')
+  expect(document.querySelector('#searchResults .search-results-empty')?.textContent).toContain('No results')
   expect(archivedPopover()).toBeNull()
 })
 
@@ -222,17 +227,19 @@ it('keeps an explicit Escape dismissal coherent through polling after a forced-o
 })
 
 describe.each([768, 1024])('tablet project management at %ipx', (width) => {
-  it('archives through an explicit focusable action and reopens from the anchored popover', async () => {
+  it('archives through an x-only project action and reopens from the anchored popover', async () => {
     const d = open()
     question(d, 'alpha-project')
     advanceClock()
     question(d, 'beta-project')
     setViewport(width)
     await bootApp(d)
+    openProjectMenu()
 
     const archive = archiveAction('beta-project')!
-    expect(archive.textContent).toBe('Archive')
-    expect(archive.tabIndex).toBe(0)
+    expect(archive.querySelector('.rail-action-glyph')?.textContent).toBe('×')
+    expect(archive.querySelector('.rail-action-label')?.textContent).toBe('Archive')
+    expect(archive.tabIndex).toBe(-1)
     expect(archive.getAttribute('aria-label')).toBe('Archive project beta-project')
 
     click(archive)
@@ -292,7 +299,7 @@ describe('tablet archived-project popover behavior', () => {
     expect(archivedTrigger()).toBeNull()
   })
 
-  it('keeps forced archived disclosure coherent while restoring rail-filter focus', async () => {
+  it('keeps archived disclosure explicit while restoring rail-filter focus', async () => {
     const d = open()
     for (let i = 0; i < 13; i += 1) {
       question(d, `open-${i}`)
@@ -322,9 +329,7 @@ describe('tablet archived-project popover behavior', () => {
     filter.dispatchEvent(new window.Event('input', { bubbles: true }))
 
     expect(document.activeElement).toBe(document.querySelector('#rail .rail-filter'))
-    expect(archivedTrigger()?.getAttribute('aria-expanded')).toBe('true')
-    expect(archivedPopover()).toBeTruthy()
-    document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    expect(archivedTrigger()?.getAttribute('aria-expanded')).toBe('false')
     expect(archivedPopover()).toBeNull()
     click(archivedTrigger())
     expect(archivedPopover()).toBeTruthy()
@@ -386,6 +391,7 @@ describe('tablet archived-project popover behavior', () => {
     closeProject(d, 'beta')
     setViewport(1024)
     await bootApp(d)
+    openProjectMenu()
 
     const trigger = archivedTrigger()!
     trigger.focus()
@@ -422,6 +428,7 @@ describe('tablet archived-project popover behavior', () => {
     closeProject(d, 'beta')
     setViewport(900)
     await bootApp(d)
+    openProjectMenu()
 
     click(archivedTrigger())
     archivedPopover()?.querySelector<HTMLButtonElement>('[aria-label="Reopen project beta"]')?.focus()
@@ -443,6 +450,7 @@ describe('tablet archived-project popover behavior', () => {
     closeProject(d, 'beta')
     setViewport(900)
     await bootApp(d)
+    openProjectMenu()
     click(archivedTrigger())
     archivedPopover()?.querySelector<HTMLButtonElement>('[aria-label="View archived project beta"]')?.focus()
     reopenProject(d, 'beta')
@@ -460,6 +468,7 @@ describe('tablet archived-project popover behavior', () => {
     closeProject(d, 'beta')
     setViewport(900)
     await bootApp(d)
+    openProjectMenu()
 
     archivedTrigger()?.focus()
     reopenProject(d, 'beta')
@@ -577,6 +586,7 @@ describe('tablet archived-project popover behavior', () => {
     closeProject(d, 'hidden-archived')
     setViewport(900)
     await bootApp(d)
+    openProjectMenu()
 
     const filter = document.querySelector<HTMLInputElement>('#rail .rail-filter')!
     filter.value = 'project-2'
@@ -630,6 +640,7 @@ describe('tablet archived-project popover behavior', () => {
     question(d, 'beta')
     setViewport(900)
     await bootApp(d)
+    openProjectMenu()
 
     const beta = projectTab('beta')!
     beta.focus()
@@ -670,7 +681,7 @@ describe('tablet archived-project popover behavior', () => {
     expect(document.activeElement).toBe(archivedPopover()?.querySelector('[aria-label="View archived project beta"]'))
   })
 
-  it('auto-opens and marks archived-only search matches', async () => {
+  it('indexes archived-only search matches without opening either project menu', async () => {
     const d = open()
     question(d, 'alpha')
     advanceClock()
@@ -687,11 +698,16 @@ describe('tablet archived-project popover behavior', () => {
 
     await searchFor('needle')
 
-    expect(archivedTrigger()?.getAttribute('aria-expanded')).toBe('true')
-    expect(archivedTrigger()?.textContent).toContain('1 match')
+    expect(document.getElementById('projectDisclosure')?.dataset.open).toBe('false')
+    expect(archivedTrigger()?.getAttribute('aria-expanded')).toBe('false')
+    expect(document.querySelector('#searchResults [data-search-target]')?.textContent).toContain('unique archived needle')
+    expect(archivedPopover()).toBeNull()
+
+    openProjectMenu()
+    click(archivedTrigger())
     const beta = archivedPopover()?.querySelector('[data-project="beta"]')
-    expect(beta?.classList.contains('search-match')).toBe(true)
-    expect(beta?.querySelector('.rail-match')?.textContent).toBe('1')
+    expect(beta).toBeTruthy()
+    expect(beta?.querySelector('.rail-match')).toBeNull()
   })
 
   it('keeps a large archived set in one labelled region with explicit reopen actions', async () => {
@@ -797,6 +813,7 @@ describe('async project mutation focus', () => {
     question(d, 'beta')
     setViewport(900)
     const bridge = await bootApp(d)
+    openProjectMenu()
     bridge.failPostsWith(500)
     archiveAction('beta')?.focus()
     click(archiveAction('beta'))
@@ -1210,15 +1227,15 @@ it('clears stale tablet archived state when the last archived project disappears
   setViewport(900)
   await bootApp(d)
 
-  await searchFor('beta')
+  expect(archivedPopover()).toBeNull()
+  openProjectMenu()
+  click(archivedTrigger())
   expect(archivedPopover()).toBeTruthy()
 
   reopenProject(d, 'beta')
   await pollTick()
   expect(archivedTrigger()).toBeNull()
   expect(archivedPopover()).toBeNull()
-  await searchFor('')
-
   const escape = new window.KeyboardEvent('keydown', {
     key: 'Escape',
     bubbles: true,
@@ -1235,7 +1252,7 @@ it('clears stale tablet archived state when the last archived project disappears
   expect(archivedPopover()).toBeNull()
 })
 
-it('does not persist an open phone disclosure through a desktop round-trip', async () => {
+it('does not persist an open compact project menu through a desktop round-trip', async () => {
   const d = open()
   question(d, 'alpha')
   setViewport(560)
@@ -1316,7 +1333,7 @@ describe.each([
     await bootApp(d)
 
     expect(document.getElementById('projectDisclosure')?.classList.contains('tablet-projects')).toBe(tablet)
-    expect(archiveAction('alpha')?.tabIndex).toBe(tablet ? 0 : -1)
+    expect(archiveAction('alpha')?.tabIndex).toBe(-1)
     expect(archivedTrigger() !== null).toBe(tablet)
     expect(document.querySelector('.closed-fold') !== null).toBe(!tablet)
   })

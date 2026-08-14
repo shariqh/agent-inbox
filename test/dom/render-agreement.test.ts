@@ -102,8 +102,8 @@ describe('I4 · an answered question awaiting pickup is still rendered somewhere
   })
 })
 
-describe('I2 · an empty state must never deny a match the fold below is holding', () => {
-  it('Boards prints no "No boards." when the only match is archived', async () => {
+describe('I2 · indexed search leaves the underlying folds unchanged', () => {
+  it('keeps the archived plan fold while indexing its contents', async () => {
     const d = open()
     // FIXTURE WARNING: store.ts's syncBoardStatus auto-archives any board whose rows are
     // all `done`, so give it a non-done row and archive it explicitly — otherwise
@@ -122,13 +122,13 @@ describe('I2 · an empty state must never deny a match the fold below is holding
     await settle()
     await searchFor('migration')
 
-    expect(document.querySelector('#boards .boards p.empty'), 'claimed "no boards" above the fold holding the match').toBeNull()
+    expect(document.querySelector('#searchResults [role="option"]')?.textContent).toContain('migration matrix')
     const fold = document.querySelector('#boards .archived-fold')
     expect(fold).not.toBeNull()
     expect(fold?.textContent).toContain('migration matrix')
   })
 
-  it('Needs-you prints no "no matches" when the only match is in the stale fold', async () => {
+  it('keeps the stale fold while indexing its contents', async () => {
     const d = open()
     const id = insertItem(d, { ...AGENT, kind: 'question', title: 'ancient question' })
     advanceClock()
@@ -144,7 +144,7 @@ describe('I2 · an empty state must never deny a match the fold below is holding
 
     await searchFor('ancient')
 
-    expect(document.querySelector('#needsYouList > p.empty'), 'denied a match the stale fold is holding').toBeNull()
+    expect(document.querySelector('#searchResults [role="option"]')?.textContent).toContain('ancient question')
     expect(document.querySelector('#needsYouList .stale-fold')?.textContent).toContain('ancient question')
   })
 })

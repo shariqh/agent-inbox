@@ -4,7 +4,7 @@ import type Database from 'better-sqlite3'
 import { getBoard, insertItem, resolveItem, upsertBoard } from '../../src/store.js'
 import {
   advanceClock, answerInput, bootApp, buttonLabelled, click, expectConsoleError, freshDb,
-  pollTick, row, rowTitles, searchFor, sendButton, settle, type, useDomTest,
+  pollTick, repaint, row, rowTitles, sendButton, settle, type, useDomTest,
 } from './harness.js'
 
 useDomTest()
@@ -79,7 +79,7 @@ describe('draft owner removal recovery', () => {
     type(answerInput(recoveredItem), 'Recover item from forced render')
     resolveItem(db, recoveredItem)
     await pollTick()
-    await searchFor('Forced removed question')
+    await repaint()
 
     expect(recoveryFold().open).toBe(true)
     expect(recoveryFold().textContent).toContain('Forced removed question')
@@ -87,7 +87,7 @@ describe('draft owner removal recovery', () => {
     expect(document.getElementById('pauseHint')?.textContent).toBe('')
     click(buttonLabelled('Clear', recoveryFold()))
     await settle()
-    await searchFor('')
+    await repaint()
 
     click(row(rowId))
     await settle()

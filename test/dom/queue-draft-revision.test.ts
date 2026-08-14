@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type Database from 'better-sqlite3'
 import { advanceBoardRow, getBoard, upsertBoard } from '../../src/store.js'
 import {
-  answerInput, bootApp, buttonLabelled, click, freshDb, pollTick, row, searchFor,
+  answerInput, bootApp, buttonLabelled, click, freshDb, pollTick, repaint, row,
   sendButton, settle, type, useDomTest,
 } from './harness.js'
 
@@ -108,7 +108,7 @@ describe('versioned board-row draft ownership', () => {
     sortBy('newest')
     await settle()
     expect(answerInput(rowId)?.value).toBe('Draft for old action')
-    await searchFor('Approve release')
+    await repaint()
 
     expect(answerInput(rowId)?.value).toBe('')
     expect(recoveryFold().textContent).toContain('Draft for old action')
@@ -140,7 +140,7 @@ describe('versioned board-row draft ownership', () => {
     sortBy('oldest')
     await settle()
     expect(answerInput(rowId)?.value).toBe('Draft for advanced action')
-    await searchFor('Approve release')
+    await repaint()
 
     expect(row(rowId)).toBeNull()
     expect(recoveryFold().textContent).toContain('Draft for advanced action')

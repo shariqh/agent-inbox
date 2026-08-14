@@ -236,8 +236,8 @@ describe('31.2 · the Notes count must come down once you have looked', () => {
 })
 
 // ── 31.3 ────────────────────────────────────────────────────────────────────
-describe('31.3 · a search that only the stale fold answers still points somewhere', () => {
-  it('prints the §12 pointer instead of nothing at all', async () => {
+describe('31.3 · search indexes destinations without rewriting the active tab', () => {
+  it('lists matches from the stale fold and Notes without changing the queue', async () => {
     const d = open()
     const id = insertItem(d, { ...AGENT, kind: 'question', title: 'rotate the auth token' })
     advanceClock()
@@ -251,16 +251,14 @@ describe('31.3 · a search that only the stale fold answers still points somewhe
 
     await searchFor('auth')
 
-    const empties = [...document.querySelectorAll('#needsYou .empty')].map((el) => el.textContent ?? '')
-    expect(empties.join(' '), 'the tab went completely silent about where the match is').not.toBe('')
-    expect(empties.join(' ')).toContain('1 in Notes')
-    // …and it must NOT be the false claim I2 removed
-    expect(empties.join(' ')).not.toContain('No matches')
-    // the fold below is still holding the other match
+    const options = [...document.querySelectorAll('#searchResults [role="option"]')]
+      .map((el) => el.textContent ?? '')
+    expect(options.some((text) => text.includes('rotate the auth token'))).toBe(true)
+    expect(options.some((text) => text.includes('auth cookie workaround'))).toBe(true)
     expect(document.querySelector('#needsYou .stale-fold')).toBeTruthy()
   })
 
-  it('an ordinary no-match search still gets the full "No matches … — N in X" line', async () => {
+  it('shows cross-tab matches in the index instead of a queue empty state', async () => {
     const d = open()
     insertItem(d, { ...AGENT, kind: 'question', title: 'unrelated question' })
     advanceClock()
@@ -269,8 +267,8 @@ describe('31.3 · a search that only the stale fold answers still points somewhe
 
     await searchFor('auth')
 
-    const empty = document.querySelector('#needsYou .empty')?.textContent ?? ''
-    expect(empty).toContain('No matches')
-    expect(empty).toContain('1 in Notes')
+    expect(document.querySelector('#searchResults [role="option"]')?.textContent)
+      .toContain('auth cookie workaround')
+    expect(document.querySelector('#needsYou .empty')).toBeNull()
   })
 })

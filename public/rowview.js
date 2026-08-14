@@ -7,9 +7,9 @@ import { projectMonogram } from './colors.js'
 import { actionCategory, actionOwnerLabel, agentFollowupChip, changeKind } from './action.js'
 
 export const ASK_SORT_OPTIONS = [
-  { value: 'priority', label: 'Current priority' },
-  { value: 'newest', label: 'Asked newest' },
-  { value: 'oldest', label: 'Asked oldest' },
+  { value: 'priority', label: 'Priority' },
+  { value: 'newest', label: 'Newest' },
+  { value: 'oldest', label: 'Oldest' },
 ]
 
 export function currentAskAt(entry) {
@@ -292,8 +292,8 @@ export function handledUndoRefusal(row, nowMs) {
 // `reply_seen_at` being stamped and the agent's `resolve` call — which it may
 // simply forget, permanently — such an item is dropped by attentionEntries,
 // staleEntries and group.ts's `done` alike, so it used to render in NO tab
-// while tabsearch's searchIndex still counted it under Needs-you: the tab badge
-// lit up and the tab then said "No matches here". The foot group is also the
+// while the old global search index still counted it under Needs-you: the tab
+// badge lit up and the tab then said "No matches here". The foot group is also the
 // only place the card's "✓ picked up" marker (§15) can ever be seen.
 export function repliedEntries(items, nowMs, liveSessionIds) {
   return items

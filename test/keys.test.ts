@@ -51,9 +51,10 @@ describe("keyAction — 't' opens the triage deck", () => {
 })
 
 describe('keyAction — the Escape ladder', () => {
-  it('closes the deck first, then collapses, then clears the selection', () => {
-    expect(keyAction('Escape', { deckOpen: true, expanded: true })).toEqual({ type: 'closeDeck' })
-    expect(keyAction('Escape', { expanded: true })).toEqual({ type: 'collapse' })
+  it('closes the deck first, then collapses, exits an archived peek, then clears the selection', () => {
+    expect(keyAction('Escape', { deckOpen: true, expanded: true, peeking: true })).toEqual({ type: 'closeDeck' })
+    expect(keyAction('Escape', { expanded: true, peeking: true })).toEqual({ type: 'collapse' })
+    expect(keyAction('Escape', { peeking: true })).toEqual({ type: 'exitPeek' })
     expect(keyAction('Escape', {})).toEqual({ type: 'clearSelection' })
   })
 })

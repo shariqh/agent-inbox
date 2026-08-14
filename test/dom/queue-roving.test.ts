@@ -59,7 +59,7 @@ describe('Needs-you roving tab stop', () => {
     expect(tabbableQueueRows()).toEqual([row(snoozedId)])
   })
 
-  it('rebuilds one roving tab stop when an empty search is cleared', async () => {
+  it('keeps one roving tab stop while indexed search opens and clears', async () => {
     const d = open()
     const id = insertItem(d, { ...AGENT, kind: 'question', title: 'Visible after clearing search' })
     await bootApp(d)
@@ -70,8 +70,9 @@ describe('Needs-you roving tab stop', () => {
     search.dispatchEvent(new Event('input', { bubbles: true }))
     await vi.advanceTimersByTimeAsync(150)
     await settle()
-    expect(document.querySelectorAll('#needsYouList .nrow')).toHaveLength(0)
-    expect(tabbableQueueRows()).toHaveLength(0)
+    expect(document.querySelectorAll('#needsYouList .nrow')).toHaveLength(1)
+    expect(tabbableQueueRows()).toEqual([row(id)])
+    expect(document.querySelector('#searchResults .search-results-empty')).toBeTruthy()
 
     search.value = ''
     search.dispatchEvent(new Event('input', { bubbles: true }))

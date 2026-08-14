@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type Database from 'better-sqlite3'
 import { advanceBoardRow, getBoard, upsertBoard } from '../../src/store.js'
 import {
-  answerInput, bootApp, buttonLabelled, click, freshDb, pollTick, searchFor, sendButton,
+  answerInput, bootApp, buttonLabelled, click, freshDb, pollTick, repaint, sendButton,
   settle, type, useDomTest,
 } from './harness.js'
 
@@ -57,7 +57,7 @@ describe('version-keyed row draft recovery', () => {
       context: 'Second action context',
     }).ok).toBe(true)
     await pollTick()
-    await searchFor('Approve release')
+    await repaint()
 
     expect(recoveryLines()).toHaveLength(1)
     expect(recoveryLines()[0]?.textContent).toContain('Revision one recovery')

@@ -150,7 +150,7 @@ describe('focusItem opens ancestor <details> folds, not just the target (fix rou
   const helper = js.slice(helperStart, helperEnd)
 
   it('walks the ancestor chain rather than opening only the target element', () => {
-    expect(body).toMatch(/revealDetailsAncestors\(el\)/)
+    expect(body).toMatch(/revealDetailsAncestors\(scrollTarget\)/)
     expect(helper).toMatch(/parentElement/)
     // this is exactly the regression the fix replaced — pin it gone
     expect(body).not.toMatch(/if \(el\.tagName === 'DETAILS'\) el\.open = true/)

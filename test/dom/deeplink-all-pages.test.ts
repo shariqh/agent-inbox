@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type Database from 'better-sqlite3'
 import { archiveBoard, getBoard, insertItem, upsertBoard } from '../../src/store.js'
 import {
-  advanceClock, bootApp, buttonLabelled, click, freshDb, navigateToHash, pollTick, searchFor,
+  advanceClock, bootApp, buttonLabelled, click, freshDb, navigateToHash, pollTick,
   settle, useDomTest,
 } from './harness.js'
 
@@ -24,7 +24,6 @@ function addBoard(title: string, archived = false): string {
 async function excludeAlpha(): Promise<void> {
   click(document.querySelector('#rail button[data-project="beta"]'))
   await settle()
-  await searchFor('Beta lens')
 }
 
 function card(id: string): HTMLDetailsElement | null {

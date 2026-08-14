@@ -177,38 +177,6 @@ describe('31.2 · read-marking records ids as well as a watermark', () => {
   })
 })
 
-// ── 31.3: suppressing a false claim also swallowed the pointer ───────────────
-describe('31.3 · a stale-only search still prints the §12 pointer', () => {
-  const body = topLevelFn('function renderNeedsYou(')
-
-  it('keeps I2 (no "no matches" claim above a fold holding one) and adds the pointer beside it', () => {
-    expect(body).toMatch(/!stale\.length/)
-    const branch = body.slice(body.indexOf("if (searchQuery.trim())"), body.indexOf('} else {'))
-    expect(branch).toContain('elsewhereMsg()')
-    // the else is the STALE-matches path — it must not print the false claim
-    const elseBranch = branch.slice(branch.indexOf('else {'))
-    expect(elseBranch).not.toContain('emptyMsg(')
-  })
-
-  it('both surfaces share ONE builder, so the pointer cannot drift between them', () => {
-    expect(js).toMatch(/import \{[^}]*elsewhereLabel[^}]*\} from '\/tabsearch\.js'/)
-    expect(topLevelFn('function elsewhereMsg()')).toMatch(/elsewhereLabel\(matchCounts, activeTab, TAB_LABEL\)/)
-    expect(topLevelFn('function emptyMsg(')).toMatch(/elsewhereMsg\(\)/)
-  })
-
-  it('emptyMsg still escapes the search query — the refactor must not drop esc(q)', () => {
-    expect(topLevelFn('function emptyMsg(')).toMatch(/esc\(q\)/)
-  })
-
-  it('the new sentence interpolates only the shared builder — never agent text', () => {
-    // The result goes straight into innerHTML, which is only safe because the ONLY
-    // interpolation is `where`: elsewhereLabel over the fixed TAB_LABEL map and
-    // integer counts. Anything agent-authored appearing here needs esc().
-    const fn = topLevelFn('function elsewhereMsg()')
-    expect(fn.match(/\$\{[^}]*\}/g)).toEqual(['${where}'])
-  })
-})
-
 // ── 31.4: exported, typed, tested — and called by nothing ────────────────────
 describe('31.4 · the dead helpers are gone, not merely untested', () => {
   const files = ['app.js', 'rowview.js', 'rowview.d.ts', 'tabs.js', 'tabs.d.ts']

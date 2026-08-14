@@ -59,6 +59,7 @@ describe('native settings navigation', () => {
     expect(panelIsOpen('setup')).toBe(true)
     expect(document.body.classList.contains('settings-open')).toBe(true)
     expect(getComputedStyle(document.getElementById('rail')!).opacity).toBe('0.32')
+    expect(getComputedStyle(document.querySelector('.floating-search')!).opacity).toBe('0.32')
     expect(document.getElementById('gear')?.getAttribute('aria-pressed')).toBe('true')
     shortcut()
     expect(panelIsOpen('needsYou')).toBe(true)

@@ -14,20 +14,9 @@ export function haystackFor(entity) {
     }
   } else {
     parts.push(entity.detail, entity.next_step, entity.action_owner, entity.impact, entity.next_after, entity.context, entity.kind, entity.annotation, entity.reply, entity.reply_context, entity.outcome)
+    for (const option of entity.options ?? []) parts.push(option.label, option.detail)
   }
   return parts.filter(Boolean).join(' ').toLowerCase()
-}
-
-// Map a fuzzy filter over entities. null = no query (show everything); a Set of
-// matching ids otherwise (empty Set = query present but nothing matched).
-export function searchMatches(entities, query, filterFn) {
-  const needle = (query ?? '').trim()
-  if (!needle) return null
-  const haystack = entities.map(haystackFor)
-  const idxs = filterFn(haystack, needle)
-  const ids = new Set()
-  if (idxs) for (const i of idxs) { const e = entities[i]; if (e) ids.add(e.id) }
-  return ids
 }
 
 // Flat list → first `limit` items plus how many remain hidden.

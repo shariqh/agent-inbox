@@ -283,7 +283,9 @@ describe('the closed fold and keyboard reachability (issue #32)', () => {
     expect(close.parentElement!.classList.contains('rail-row')).toBe(true)
     expect(railTab('beta')!.contains(close), 'a <button> may not contain interactive content').toBe(false)
     expect(close.tabIndex).toBe(-1)
-    expect(close.getAttribute('aria-label')).toBe('Close project beta')
+    expect(close.querySelector('.rail-action-glyph')?.textContent).toBe('×')
+    expect(close.getAttribute('aria-label')).toBe('Archive project beta')
+    expect(close.title).toContain('Archive beta')
   })
 
   it('Delete on a focused rail tab is the keyboard path to closing it', async () => {

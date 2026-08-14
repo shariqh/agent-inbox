@@ -31,7 +31,10 @@ export function cardSections(it, { done = false } = {}) {
     reply: responded ? (it.reply ?? '') : '',
     options: optionOrder(it.options),
     recWarning: it.kind === 'question' && !answered ? recommendedWarning(it.options) : null,
-    showAnswer: !done && it.kind === 'question' && open && !it.reply,
+    // A chat-recorded answer is already picked up by definition, so clearing it
+    // first would be refused. Reuse the answer surface as a non-destructive
+    // correction form; its next non-empty send becomes the authoritative inbox reply.
+    showAnswer: !done && it.kind === 'question' && open && (!it.reply || it.reply_source === 'agent'),
     showActions: !done,
     showPickup: answered,
     answered,

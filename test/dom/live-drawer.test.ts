@@ -72,7 +72,8 @@ describe('Live drawer dismissal and pinning', () => {
     pointerDown(document.getElementById('search')!)
     expect(drawer().hidden).toBe(false)
 
-    document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    pin().focus()
+    pin().dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     expect(drawer().hidden).toBe(true)
     expect(pin().getAttribute('aria-pressed')).toBe('false')
     expect(document.activeElement).toBe(strip())

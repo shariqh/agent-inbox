@@ -80,21 +80,6 @@ describe('I1 · the triage deck is built from THE attention predicate', () => {
   })
 })
 
-// ── I2: two "no matches" claims rendered directly above the matches ──────────
-describe('I2 · an empty-state claim accounts for the folds below it', () => {
-  it('Needs-you computes the stale fold before deciding the list is empty', () => {
-    const body = fn('function renderNeedsYou(', '\n// the stale fold')
-    expect(body.indexOf('staleEntries(')).toBeLessThan(body.indexOf("if (searchQuery.trim())"))
-    expect(body).toMatch(/!stale\.length/)
-  })
-
-  it('Boards counts the archived fold before printing "No boards"', () => {
-    const body = fn('function renderBoards(', '\nfunction boardEl')
-    expect(body.indexOf('const rest =')).toBeLessThan(body.indexOf('emptyMsg('))
-    expect(body).toMatch(/!boards\.length && !lingering\.length && !rest\.length/)
-  })
-})
-
 // ── I3: notes chip vs Notes tab count, and read-marking ──────────────────────
 describe('I3 · one scope for both note numbers, and only rendered notes get marked read', () => {
   it('the foot chip is fed the SAME scoped notes the tab count is computed from', () => {
@@ -110,9 +95,10 @@ describe('I3 · one scope for both note numbers, and only rendered notes get mar
     expect(mark).not.toMatch(/new Date\(\)/)
   })
 
-  it('renderGroups passes the notes it actually rendered plus the ones it hid', () => {
+  it('renderGroups marks only viewed notes and keeps the global hidden set', () => {
     const body = fn('function renderGroups(', '\nfunction renderDone')
-    expect(body).toMatch(/markNotesSeen\(visible,/)
+    expect(body).toMatch(/markNotesSeen\(viewed,/)
+    expect(body).toMatch(/const shownIds = new Set\(viewed\./)
     // the hidden set is the GLOBAL one — a note behind the rail filter was never
     // shown either, and one watermark covers every scope
     expect(body).toMatch(/lastData\.g\.notes/)

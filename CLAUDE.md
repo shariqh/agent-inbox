@@ -276,17 +276,23 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   twice: a source pin on `suspendState()` in `test/shell.test.ts`, and the freeze itself —
   expand one matrix row, watch the list, badge and `#pauseHint` stop — in
   `test/dom/press-guard.test.ts`.
-- **Active inspector scrolling defers only the editable rebuild.** Restoring `scrollTop` after
+- **Active inspector or page scrolling defers only the editable rebuild.** Restoring `scrollTop` after
   replacing `.nrow-card` preserves coordinates but still cancels Chromium's in-flight
   wheel/trackpad momentum, which presents as an intermittent freeze at the 3-second poll boundary.
-  The card's `wheel` and `scroll` listeners update `lastInspectorScrollAt` and
+  The card and window scroll guards update `lastInteractionScrollAt`, while the card also updates
   `openRowScrollTop`; `shouldDeferRender()` holds the editable frame for the bounded
   `SCROLL_IDLE_MS` window, while `paintAmbient()` still refreshes badges, counts, the rail, and
   Live. A resettable timer calls `resumeRender()` as soon as movement settles, so a deferred frame
   does not wait for another poll. Keep scroll activity out of `suspendState()`/`suspendHint()`:
   it is a brief interaction guard, not a user-visible pause, and it must reset when the open item
-  changes. `test/dom/inspector-scroll.test.ts` pins both halves: the same DOM node survives a poll
-  during active movement, then a settled rebuild preserves its position and focused controls.
+  changes. A settled rebuild anchors the open row's in-flow `.nrow` viewport position before and
+  after replacement, then corrects only the measured delta; anchoring `.nrow-card` would be inert
+  in the desktop fixed-inspector layout. `test/dom/inspector-scroll.test.ts` and
+  `test/dom/page-scroll.test.ts` pin the momentum, viewport, position, and focus contracts.
+  Independently scrolling inspectors, disclosures, drawers, and overlay bodies use
+  `overscroll-behavior: contain` so exhausted wheel/trackpad input cannot chain to the page beneath.
+  The compact project menu is a vertically contained popover at every narrow width, so its
+  exhausted scroll cannot move the workspace behind it.
 
 - **The hooks runtime is a SECOND OS process on the same db — and it still goes through
   `store.ts`.** `src/hook.ts` (+ the `src/hook-cli.ts` entry) is spawned by Claude Code, not
@@ -395,8 +401,8 @@ then imports `public/app.js` **unmodified** — top-level side effects and all.
 - **Four globals must be stubbed or `render()` throws and `load()`'s catch swallows it** —
   which presents as "nothing rendered", not as an error: `window.uFuzzy` (vendored IIFE,
   constructed at app.js module top level, so it must exist BEFORE the import),
-  `window.matchMedia` (3 call sites: `themeName`, `initResponsive`, `initProjectDisclosure`), `CSS.escape`
-  (6 call sites, incl. `setRailMatch` on every render), `Element.prototype.scrollIntoView`.
+  `window.matchMedia` (3 call sites: `themeName`, `initResponsive`, `initProjectDisclosure`),
+  `CSS.escape` (used throughout navigation and rendering), `Element.prototype.scrollIntoView`.
   The harness's **console.error guard is load-bearing**, not cosmetic — it is the only
   thing that turns a swallowed render throw back into a visible failure.
 - **`new URL('…', import.meta.url)` does not work in a jsdom test file.** jsdom files run in
@@ -490,9 +496,10 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
 - **Dual-channel answer sync** *(#29)* — the `answer` MCP tool plus `answerItem`/`reply_source`.
   Agent-mediated by design: this repo has no hook into any chat client, so the AGENT is the
   bridge. Convergence is order-independent (inbox precedence, no clock comparison) rather than
-  the issue's original "timestamp-based last write wins". Known limitation, worth a follow-up:
-  once a chat answer lands, `reply_seen_at` is set, so the card's "Change answer" (a
-  blank-clear) is refused and the human cannot re-answer that item from the viewer.
+  the issue's original "timestamp-based last write wins". Chat-recorded answers remain visible
+  with their provenance and pickup receipt; while the question is open, the answer surface is
+  prefilled for a non-destructive correction. Sending that correction through `replyItem` makes
+  it the authoritative inbox answer and resets pickup without first blanking stored state.
 - **Electron response watch + host adapter seam** — `electron/reply-watch.cjs` derives the
   work still waiting on an agent without changing `public/attention.js`: a question leaves
   the set when `pending()` stamps `reply_seen_at`, while a human-acted board row stays until
@@ -624,15 +631,39 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   `agent-inbox-sidebar-width` and `agent-inbox-inspector-width`; mouse drag, separator keyboard
   controls, viewport reclamping and double-click reset must update CSS and ARIA together. Inside
   the single EOF `@media (max-width: 1279px)` block the splitters hide, the item card returns
-  to static inline layout, and the library becomes a two-tier masthead: brand/library/Settings
-  share its first row, while a labelled, horizontally scrollable strip keeps readable project
-  names and inline counts on the second. The page heading and agent/search tools share a fluid
-  row before wrapping. At 620px the named masthead container hides library counts and replaces
-  the project strip with one full-width disclosure summarizing the current project and attention
-  count; its vertical menu closes on project selection, outside pointer/focus, Escape (with focus
-  restoration), or a breakpoint transition. Disclosure state is window-local and non-persistent.
+  to static inline layout, and the library becomes a compact masthead. At desktop width the
+  agent picker belongs at the bottom of the library sidebar above Settings. In the broad masthead
+  it sits immediately right of the project selector; at 900px those controls share a second row,
+  at 620px the complete four-tab library gets its own row above them, and at 440px the two
+  selectors stack. The project selector opens the existing rail as a vertically scrollable,
+  contained menu with inline counts and project-owned archive/reopen actions. The menu closes on
+  project selection, outside pointer/focus, Escape (with focus restoration), or a breakpoint
+  transition. Disclosure state is window-local and non-persistent. Workspace search is a fixed,
+  centered bottom dock outside the app shell: it clears the fixed inspector and sits above the
+  28px Live strip but below Live/modal layers. It is a combobox index over Inbox, Notes, History,
+  and active/archived Plans; it never filters the queue, project rail, tab badges, or Live
+  sessions. Results use one visible lifecycle hierarchy — Open items, Active plans, Notes,
+  History, Archived plans — with uFuzzy relevance inside each section, so past work never
+  outranks current action. Every result explains its match: visible title characters are rendered
+  through safe `<mark>` nodes, while hidden-field matches get a bounded, source-labelled snippet
+  with ranges adjusted into snippet coordinates. Agent text still enters the DOM only through
+  `textContent`/text nodes; never turn match highlighting into authored `innerHTML`. The initially
+  highlighted first option is the strongest Open-item match when one exists. Results navigate
+  through the existing deep-link path, carrying the exact matched field and plan-row identity:
+  hidden Background sources open on arrival and the matched text is safely highlighted in the
+  destination through poll rebuilds. Arrow keys/Enter operate the listbox without moving focus,
+  Escape cancels the debounce, clears, closes, and blurs, and leaving the dock closes the list
+  without discarding the query. While a changed query debounces, the prior list remains mounted
+  but `aria-busy` and non-activatable; once ready, unchanged result identities update their
+  highlights in place. Poll refreshes preserve the active result by identity and do not rebuild
+  an unchanged list under the pointer.
+  Command/Ctrl+K focuses and selects its query even from the agent select; `/` remains the
+  unmodified keyboard shortcut. The queue itself is an
+  inline-size container: filter/tool groups reflow rather than scroll beneath the inspector, and
+  below 620px each row gives its title a full primary line before wrapping status metadata.
   `test/editorial-shell.test.ts`, `test/panes.test.ts`, `test/layout.test.ts`,
-  `test/dom/boot.test.ts`, and `test/dom/project-disclosure.test.ts` pin the contract; jsdom still
+  `test/dom/search-index.test.ts`, `test/dom/boot.test.ts`, and
+  `test/dom/project-disclosure.test.ts` pin the contract; jsdom still
   cannot validate the responsive media layer or CSS vars.
 - **Attention-first cold launch** — every fresh viewer starts at Needs you with All projects,
   all agents and All action types, and no expanded card. Project/agent filters are

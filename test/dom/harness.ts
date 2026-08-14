@@ -157,8 +157,8 @@ function mediaMatches(query: string): boolean {
 }
 
 // The CSSOM `CSS.escape` algorithm. jsdom exposes no `CSS` namespace at all, and
-// app.js calls CSS.escape in six places (incl. setRailMatch, which runs on every
-// render) — a missing one presents as a completely blank page.
+// app.js calls CSS.escape throughout navigation and rendering, so a missing one
+// presents as a completely blank page.
 function cssEscape(value: unknown): string {
   const str = String(value)
   let out = ''
@@ -230,8 +230,8 @@ function installStubs(): void {
  * same stub and fires that listener, but the top-level `layoutMode(window.innerWidth)`
  * read has already happened — so pre-boot is the only ordering that tests what you think.
  */
-export function setViewport(mode: 'narrow' | 'wide'): void {
-  const width = mode === 'narrow' ? 720 : 1400
+export function setViewport(mode: 'narrow' | 'wide' | number): void {
+  const width = typeof mode === 'number' ? mode : mode === 'narrow' ? 720 : 1400
   Object.defineProperty(window, 'innerWidth', { value: width, configurable: true, writable: true })
   for (const stub of mediaStubs.values()) {
     const next = mediaMatches(stub.media)
@@ -291,7 +291,7 @@ export function expectConsoleError(pattern: RegExp): void {
  *
  * beforeEach: reset the hash, reset the module registry (MANDATORY — without it the
  * second test in a file re-uses the first test's already-evaluated app.js and finds
- * zero rows), clear localStorage, spy on console.error, freeze the clock at T0.
+ * zero rows), clear browser storage, spy on console.error, freeze the clock at T0.
  * afterEach: drain in-flight work, restore real timers (which is what kills app.js's
  * module-level `setInterval(load, 3000)`), then assert the console.error contract.
  */
@@ -304,6 +304,7 @@ export function useDomTest(): void {
     Object.defineProperty(window, 'innerWidth', { value: 1400, configurable: true, writable: true })
     vi.resetModules()
     localStorage.clear()
+    sessionStorage.clear()
     consoleErrors.length = 0
     allowedErrors.length = 0
     vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
@@ -424,6 +425,14 @@ export async function searchFor(query: string): Promise<void> {
   const input = document.getElementById('search') as HTMLInputElement | null
   type(input, query)
   await vi.advanceTimersByTimeAsync(200)
+}
+
+/** Force the editable frame to reconcile without coupling a test to search behavior. */
+export async function repaint(): Promise<void> {
+  const width = window.innerWidth
+  setViewport(width <= 1279 ? 1400 : 720)
+  setViewport(width)
+  await settle()
 }
 
 /** Drive the real hashchange → applyFocusHash → focusItem path. */

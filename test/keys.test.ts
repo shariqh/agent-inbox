@@ -51,9 +51,10 @@ describe("keyAction — 't' opens the triage deck", () => {
 })
 
 describe('keyAction — the Escape ladder', () => {
-  it('closes the deck first, then collapses, then clears the selection', () => {
-    expect(keyAction('Escape', { deckOpen: true, expanded: true })).toEqual({ type: 'closeDeck' })
-    expect(keyAction('Escape', { expanded: true })).toEqual({ type: 'collapse' })
+  it('closes the deck first, then collapses, exits an archived peek, then clears the selection', () => {
+    expect(keyAction('Escape', { deckOpen: true, expanded: true, peeking: true })).toEqual({ type: 'closeDeck' })
+    expect(keyAction('Escape', { expanded: true, peeking: true })).toEqual({ type: 'collapse' })
+    expect(keyAction('Escape', { peeking: true })).toEqual({ type: 'exitPeek' })
     expect(keyAction('Escape', {})).toEqual({ type: 'clearSelection' })
   })
 })
@@ -209,11 +210,11 @@ describe('app.js wiring — keyboard row selection survives the poll rebuild (sp
     expect(start, 'renderNeedsYou is missing').toBeGreaterThan(-1)
     const body = js.slice(start, js.indexOf('function staleFoldEl'))
     const captureAt = body.indexOf('hadListFocus =')
-    const clearAt = body.indexOf("host.innerHTML = ''")
-    const restoreAt = body.lastIndexOf('restoreRowSelection(hadListFocus && !restoredCardFocus)')
+    const clearAt = body.indexOf('replaceNeedsYouBody(host, header)')
+    const restoreAt = body.lastIndexOf('restoreRowSelection(hadListFocus && !restoredCardFocus && !restoredAskedTimeFocus)')
     expect(captureAt, 'hadListFocus is not captured').toBeGreaterThan(-1)
-    expect(clearAt, "host.innerHTML = '' not found").toBeGreaterThan(-1)
-    expect(restoreAt, 'row focus is not restored after giving the open card first refusal').toBeGreaterThan(-1)
+    expect(clearAt, 'replaceNeedsYouBody(host, header) not found').toBeGreaterThan(-1)
+    expect(restoreAt, 'row focus is not restored after giving card and timestamp controls first refusal').toBeGreaterThan(-1)
     // captured BEFORE the list is cleared — clearing a focused element's
     // subtree moves document.activeElement immediately, so capturing after
     // would always read false

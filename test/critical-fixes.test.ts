@@ -96,7 +96,7 @@ describe('C2 · changeAnswer only stages the draft once the server accepted', ()
   const body = fn('async function changeAnswer(', '\n// notes / done keep')
 
   it('does not write the draft before the POST', () => {
-    const post = body.indexOf('postJSON(')
+    const post = body.indexOf('postItemReply(')
     const draft = body.indexOf('draftReplies[it.id]')
     expect(post, 'the POST is missing').toBeGreaterThan(-1)
     expect(draft, 'the draft prefill is missing').toBeGreaterThan(-1)

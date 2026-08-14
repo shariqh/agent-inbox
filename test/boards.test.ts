@@ -120,22 +120,22 @@ describe('lingeringBoards', () => {
   })
 })
 
-// rowCardEl mounts both in the triage lightbox (triageDeck open) and, since
-// Task 11, inline in the Needs-you list (triageDeck null). Saving a blocked-row
-// answer from the list must not throw just because there is no deck entry to
-// remove — app.js has no DOM test harness in this repo (see test/shell.test.ts),
-// so this is a source-level pin on the guard.
-describe('rowCardEl never calls triageRemoveCurrent without a deck open', () => {
+// rowCardEl mounts both in the triage lightbox and inline in Needs-you. Only the
+// triage caller supplies a completion callback, already bound to the exact deck
+// instance and entry rendered for that submission.
+describe('rowCardEl leaves triage completion ownership with its caller', () => {
   const js = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8')
   const start = js.indexOf('function rowCardEl')
-  const fn = js.slice(start, start + 800) // rowCardEl's whole body fits comfortably in this window
+  const fn = js.slice(start, js.indexOf('\nfunction renderTriage(', start))
 
-  it('rowCardEl exists and guards the onSaved callback on triageDeck', () => {
+  it('passes through only the callback supplied by its mounting surface', () => {
     expect(start, 'rowCardEl is missing').toBeGreaterThan(-1)
-    expect(fn).toContain('if (triageDeck) triageRemoveCurrent()')
+    expect(fn).toContain('rowAnswerEl(b, r, onSaved)')
+    expect(fn).not.toContain('triageDeck')
   })
 
-  it('never passes the bare triageRemoveCurrent reference as onSaved — that throws when the deck is closed', () => {
-    expect(js).not.toContain('rowAnswerEl(b, r, triageRemoveCurrent)')
+  it('binds triage completion to the rendered deck and entry identities', () => {
+    expect(js).toContain('() => triageRemoveEntry(renderedDeck, renderedEntryKey)')
+    expect(js).not.toContain('triageRemoveCurrent')
   })
 })

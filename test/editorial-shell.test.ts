@@ -24,6 +24,31 @@ describe('the editorial desk shell', () => {
     expect(html).toContain('>History<span class="tab-count"')
   })
 
+  it('floats workspace search above Live and gives the sidebar ownership of the agent picker', () => {
+    const sidebar = html.slice(html.indexOf('<aside class="sidebar-shell">'), html.indexOf('</aside>'))
+    const topbar = html.slice(html.indexOf('<header id="topbar">'), html.indexOf('</header>'))
+    expect(sidebar).toContain('class="agent-pick"')
+    expect(sidebar.indexOf('class="agent-pick"')).toBeGreaterThan(sidebar.indexOf('id="projectDisclosure"'))
+    expect(sidebar.indexOf('class="agent-pick"')).toBeLessThan(sidebar.indexOf('id="gear"'))
+    expect(topbar).not.toContain('class="agent-pick"')
+    expect(topbar).not.toContain('id="search"')
+    expect(html).toMatch(/class="floating-search"[^>]*role="search"[\s\S]*id="search"[^>]*aria-keyshortcuts="Meta\+K Control\+K"/)
+    expect(css).toMatch(/\.floating-search\s*\{[^}]*position:\s*fixed[^}]*bottom:\s*42px[^}]*z-index:\s*45/s)
+    expect(css).toMatch(/\.floating-search\s*\{[^}]*left:\s*calc\(var\(--sidebar-width\)\s*\+\s*\(100vw - var\(--sidebar-width\)\)\s*\/\s*2\)/s)
+    expect(css).toMatch(/\.agent-pick\s*\{[^}]*display:\s*grid[^}]*grid-template-columns:\s*auto minmax\(0,\s*1fr\)[^}]*border-top:\s*1px solid var\(--app-border\)/s)
+    expect(css).toMatch(/\.nrow-card\s*\{[^}]*bottom:\s*104px/s)
+  })
+
+  it('keeps the archive × inside its project row and reveals it only on direct hover or keyboard focus', () => {
+    const desktop = css.slice(0, css.indexOf('@media (max-width: 1279px)'))
+    expect(desktop).toMatch(/\.rail-row\s*\{[^}]*position:\s*relative/s)
+    expect(desktop).toMatch(/\.rail-row > \.rail-close\s*\{[^}]*position:\s*absolute[^}]*right:\s*4px[^}]*top:\s*50%/s)
+    expect(desktop).toMatch(/\.rail-close,\s*\.rail-reopen\s*\{[^}]*opacity:\s*0[^}]*pointer-events:\s*none/s)
+    expect(desktop).toMatch(/\.rail-row:hover \.rail-close,\s*\.rail-row:focus-within \.rail-close,\s*\.rail-close:focus-visible\s*\{[^}]*opacity:\s*\.65[^}]*pointer-events:\s*auto/s)
+    expect(css).not.toMatch(/\.rail-close \.rail-action-glyph\s*\{[^}]*display:\s*none/s)
+    expect(css).not.toMatch(/\.rail-close \.rail-action-label\s*\{[^}]*display:\s*inline/s)
+  })
+
   it('presents an expanded queue card as the desktop inspector without moving its DOM', () => {
     expect(css).toMatch(/\.nrow-card\s*\{[^}]*position:\s*fixed\s*;/s)
     expect(css).toContain('--inspector-width: 520px')
@@ -45,22 +70,68 @@ describe('the editorial desk shell', () => {
     expect(compact).toMatch(/\.board-table\.matrix \.row-label\s*\{[^}]*text-overflow:\s*ellipsis/s)
   })
 
-  it('composes compact navigation as one masthead with a readable project strip', () => {
+  it('composes compact navigation as one masthead with a single project menu', () => {
     const compact = css.slice(css.indexOf('@media (max-width: 1279px)'))
+    const masthead = compact.slice(0, compact.indexOf('@container compact-masthead'))
     expect(html).toContain('id="projectDisclosureToggle"')
-    expect(compact).toMatch(/\.sidebar-shell\s*\{[^}]*grid-template-columns:\s*auto minmax\(0,\s*1fr\) auto/s)
+    expect(masthead).toMatch(/\.app-shell\s*\{[^}]*container:\s*compact-masthead\s*\/\s*inline-size/s)
+    expect(masthead).not.toMatch(/\.sidebar-shell\s*\{[^}]*container:\s*compact-masthead/s)
+    expect(compact).toMatch(/\.sidebar-shell\s*\{[^}]*grid-template-columns:\s*auto minmax\(0,\s*1fr\) minmax\(180px,\s*240px\) minmax\(130px,\s*180px\) auto[^}]*grid-template-rows:\s*auto/s)
     expect(compact).toMatch(/#tabs\s*\{[^}]*grid-column:\s*2[^}]*width:\s*max-content/s)
-    expect(compact).toMatch(/\.sidebar-section-label\s*\{[^}]*display:\s*block/s)
-    expect(compact).toMatch(/#rail\s*\{[^}]*grid-column:\s*2\s*\/\s*-1/s)
-    expect(compact).toMatch(/#rail \.rail-name\s*\{[^}]*text-overflow:\s*ellipsis/s)
+    expect(masthead).toMatch(/\.sidebar-section-label\s*\{[^}]*display:\s*none/s)
+    expect(masthead).toMatch(/\.sidebar-shell \.project-disclosure\s*\{[^}]*position:\s*relative[^}]*display:\s*block[^}]*grid-column:\s*3[^}]*grid-row:\s*1/s)
+    expect(masthead).toMatch(/\.sidebar-shell \.agent-pick\s*\{[^}]*grid-column:\s*4[^}]*grid-row:\s*1/s)
+    expect(masthead).toMatch(/\.sidebar-shell \.project-disclosure-toggle\s*\{[^}]*display:\s*flex/s)
+    expect(masthead).toMatch(/#projectDisclosure #rail\s*\{[^}]*position:\s*absolute[^}]*display:\s*none[^}]*flex-direction:\s*column[^}]*overflow-y:\s*auto[^}]*overscroll-behavior-y:\s*contain/s)
+    expect(masthead).toMatch(/#projectDisclosure\[data-open="true"\] #rail\s*\{[^}]*display:\s*flex/s)
+    expect(masthead).not.toMatch(/#rail\s*\{[^}]*overflow-x:\s*auto/s)
+    expect(compact).toMatch(/#projectDisclosure #rail \.rail-name\s*\{[^}]*text-overflow:\s*ellipsis/s)
+    expect(compact).toMatch(/@container compact-masthead \(max-width:\s*900px\)[\s\S]*\.sidebar-shell \.project-disclosure\s*\{[^}]*grid-column:\s*1\s*\/\s*3[^}]*grid-row:\s*2[\s\S]*\.sidebar-shell \.agent-pick\s*\{[^}]*grid-column:\s*3\s*\/\s*5[^}]*grid-row:\s*2/s)
+    expect(compact).toMatch(/@container compact-masthead \(max-width:\s*620px\)[\s\S]*#tabs\s*\{[^}]*grid-column:\s*1\s*\/\s*-1[^}]*grid-row:\s*2[^}]*grid-template-columns:\s*repeat\(4,\s*minmax\(0,\s*1fr\)\)/s)
     expect(compact).toMatch(/@container compact-masthead \(max-width:\s*620px\)[\s\S]*#tabs \.tab-count\s*\{[^}]*display:\s*none/s)
-    expect(compact).toMatch(/#projectDisclosure\[data-open="true"\] #rail\s*\{[^}]*display:\s*flex/s)
+    expect(compact).toMatch(/@container compact-masthead \(max-width:\s*620px\)[\s\S]*\.sidebar-shell \.project-disclosure\s*\{[^}]*grid-column:\s*1[^}]*grid-row:\s*3[\s\S]*\.sidebar-shell \.agent-pick\s*\{[^}]*grid-column:\s*2[^}]*grid-row:\s*3/s)
+    expect(compact).toMatch(/@container compact-masthead \(max-width:\s*440px\)[\s\S]*\.sidebar-shell \.project-disclosure\s*\{[^}]*grid-column:\s*1\s*\/\s*-1[^}]*grid-row:\s*3[\s\S]*\.sidebar-shell \.agent-pick\s*\{[^}]*grid-column:\s*1\s*\/\s*-1[^}]*grid-row:\s*4/s)
   })
 
-  it('lets the compact page heading and tools share a row before wrapping', () => {
+  it('reflows queue controls by queue width instead of scrolling them under adjacent panes', () => {
+    expect(css).toMatch(/#needsYouList\s*\{[^}]*container:\s*needs-queue\s*\/\s*inline-size/s)
+    expect(css).toMatch(/\.tab-header\s*\{[^}]*display:\s*grid[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto/s)
+    expect(css).toMatch(/\.queue-filter-group,\s*\.queue-tool-group\s*\{[^}]*display:\s*flex/s)
+    expect(css).toMatch(/\.header-toggle,\s*\.triage-btn,\s*\.relay-btn\s*\{[^}]*white-space:\s*nowrap/s)
+    expect(css).toMatch(/@container needs-queue \(max-width:\s*760px\)[\s\S]*\.tab-header\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)[^}]*\}[\s\S]*\.queue-tool-group\s*\{[^}]*grid-template-columns:\s*minmax\(140px,\s*1fr\)\s+auto\s+auto/s)
+    expect(css).toMatch(/@container needs-queue \(max-width:\s*440px\)[\s\S]*\.queue-filter-group\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/s)
+    const compact = css.slice(css.indexOf('@media (max-width: 1279px)'))
+    expect(compact).not.toMatch(/\.tab-header\s*\{[^}]*overflow-x:\s*auto/s)
+  })
+
+  it('gives compact queue titles their own row before wrapping metadata', () => {
+    expect(css).toMatch(/\.nrow-primary,\s*\.nrow-meta\s*\{[^}]*display:\s*flex/s)
+    expect(css).toMatch(/@container needs-queue \(max-width:\s*620px\)[\s\S]*\.nrow-l1\s*\{[^}]*display:\s*grid[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)[^}]*\}[\s\S]*\.nrow-meta\s*\{[^}]*flex-wrap:\s*wrap/s)
+  })
+
+  it('keeps archive and reopen actions inside the compact project menu', () => {
+    const compact = css.slice(css.indexOf('@media (max-width: 1279px)'))
+    expect(compact).toMatch(/#projectDisclosure #rail \.rail-close,\s*#projectDisclosure #rail \.rail-reopen\s*\{[^}]*display:\s*inline-grid[^}]*width:\s*24px[^}]*height:\s*24px/s)
+    expect(compact).toMatch(/@media \(hover:\s*none\),\s*\(pointer:\s*coarse\),\s*\(any-pointer:\s*coarse\)\s*\{[\s\S]*?#projectDisclosure #rail \.rail-close,\s*#projectDisclosure #rail \.rail-reopen\s*\{[^}]*opacity:\s*\.65[^}]*pointer-events:\s*auto/s)
+    expect(compact).not.toMatch(/#rail \.rail-close,\s*#rail \.rail-reopen\s*\{[^}]*display:\s*none/s)
+    expect(compact).toMatch(/\.closed-projects-popover\s*\{[^}]*position:\s*absolute[^}]*right:\s*0[^}]*width:\s*min\(360px,\s*calc\(100vw - 24px\)\)[^}]*max-height:\s*min\(420px,\s*calc\(100vh - 180px\)\)[^}]*overflow-y:\s*auto/s)
+    expect(compact).toMatch(/\.closed-projects-trigger\s*\{[^}]*width:\s*100%[^}]*position:\s*static/s)
+    expect(compact).not.toMatch(/\.rail-close \.rail-action-label\s*\{[^}]*display:\s*inline/s)
+  })
+
+  it('contains nested scroll surfaces including the compact project menu', () => {
+    expect(css).toMatch(/\.nrow-card,\s*\.closed-projects-popover,\s*\.lb-card,\s*\.live-drawer,\s*\.relay-body,\s*\.mission-paths,\s*\.mission-detail-body,\s*\.setup-body pre\s*\{[^}]*overscroll-behavior:\s*contain/s)
+    const desktop = css.slice(0, css.indexOf('@media (max-width: 1279px)'))
+    expect(desktop).toMatch(/#rail\s*\{[^}]*overscroll-behavior-y:\s*contain/s)
+    const compact = css.slice(css.indexOf('@media (max-width: 1279px)'))
+    expect(compact).toMatch(/#projectDisclosure #rail\s*\{[^}]*overflow-y:\s*auto[^}]*overscroll-behavior-y:\s*contain/s)
+  })
+
+  it('keeps the compact page heading clear of filter controls', () => {
     const compact = css.slice(css.indexOf('@media (max-width: 1279px)'))
     expect(compact).toMatch(/#topbar\s*\{[^}]*display:\s*flex[^}]*flex-wrap:\s*wrap/s)
     expect(compact).toMatch(/\.page-heading\s*\{[^}]*flex:\s*0 1 auto/s)
-    expect(compact).toMatch(/\.topbar-tools\s*\{[^}]*flex:\s*1 1 440px/s)
+    expect(compact).toMatch(/\.floating-search\s*\{[^}]*left:\s*50%[^}]*width:\s*min\(520px,\s*calc\(100vw - 24px\)\)/s)
+    expect(compact).not.toMatch(/\.topbar-tools\s*\{/)
   })
 })

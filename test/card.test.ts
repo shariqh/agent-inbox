@@ -7,7 +7,7 @@ import type { CardItem } from '../public/card.js'
 const base: CardItem = {
   id: 'i1', kind: 'question', status: 'open', title: 'Drop the column?',
   detail: 'one line', next_step: 'Choose whether to drop it.', context: 'why this came up', annotation: null,
-  options: null, reply: null, reply_context: null, reply_seen_at: null,
+  options: null, reply: null, reply_context: null, reply_seen_at: null, reply_source: null,
 }
 const item = (over: Partial<CardItem> = {}): CardItem => ({ ...base, ...over })
 
@@ -48,6 +48,13 @@ describe('cardSections', () => {
     expect(cardSections(item({ reply: 'go' })).showAnswer).toBe(false)
     expect(cardSections(item({ kind: 'note' })).showAnswer).toBe(false)
     expect(cardSections(item(), { done: true }).showAnswer).toBe(false)
+  })
+  it('reopens the answer surface for an open answer recorded by the agent', () => {
+    expect(cardSections(item({
+      reply: 'go',
+      reply_source: 'agent',
+      reply_seen_at: '2026-08-12T17:00:00.000Z',
+    })).showAnswer).toBe(true)
   })
   it('exposes the reply and the answered flag once replied', () => {
     const s = cardSections(item({ reply: 'go ahead' }))
@@ -132,7 +139,7 @@ describe('app.js wiring (source-level pins)', () => {
     expect(fn).toContain('itemCardEl(it, { done, header: false })')
   })
 
-  it('the background block is identity-keyed, escaped, and rebound after rendering', () => {
+  it('the background block is identity-keyed, safely rendered, and rebound after rendering', () => {
     const start = js.indexOf('function itemCardEl(')
     const fn = js.slice(start, js.indexOf('\nasync function changeAnswer('))
     expect(fn).toContain('actionBlocksHtml(s.detail, s.nextStep, s.actionOwner, s.impact, s.nextAfter, s.context, `item:${it.id}`)')
@@ -140,7 +147,7 @@ describe('app.js wiring (source-level pins)', () => {
     const blocks = js.slice(js.indexOf('function contextHtml('), js.indexOf('\n// the inline expansion'))
     expect(blocks).toContain('data-context-key="${esc(key)}"')
     expect(blocks).toContain("openContexts.has(key) ? ' open' : ''")
-    expect(blocks).toMatch(/card-context-body">\$\{esc\(context\)\}/)
+    expect(blocks).toMatch(/card-context-body">\$\{renderStructuredText\(context\)\}/)
   })
 
   // #29: an answer an agent recorded from chat must be visibly agent-written, and the
@@ -173,12 +180,11 @@ describe('app.js wiring (source-level pins)', () => {
     expect(fn).not.toMatch(/esc\(\s*it\.reply_source/)
   })
 
-  it('guards triageRemoveCurrent so saving a blocked row inline (deck closed) cannot throw', () => {
+  it('keeps inline row saves independent from triage completion ownership', () => {
     const start = js.indexOf('function rowCardEl(')
     const fn = js.slice(start, js.indexOf('\nfunction renderTriage('))
-    expect(fn).toContain('if (triageDeck) triageRemoveCurrent()')
-    // guard against a regression that re-adds an unconditional call elsewhere in the function
-    const bareCalls = (fn.match(/(?<!if \(triageDeck\) )triageRemoveCurrent\(\)/g) ?? []).length
-    expect(bareCalls).toBe(0)
+    expect(fn).toContain('rowAnswerEl(b, r, onSaved)')
+    expect(fn).not.toContain('triageDeck')
+    expect(js).toContain('() => triageRemoveEntry(renderedDeck, renderedEntryKey)')
   })
 })

@@ -62,7 +62,7 @@ export function scrollActive(scrolledAt, nowMs) {
 }
 
 // What the 3s poll may do RIGHT NOW: the §10 suspension, plus bounded press and
-// inspector-scroll interaction intervals.
+// scroll-interaction intervals.
 export function shouldDeferRender(state, nowMs) {
   return pressHeld(state?.pressedAt ?? null, nowMs)
     || scrollActive(state?.scrolledAt ?? null, nowMs)

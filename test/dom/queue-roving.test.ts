@@ -1,0 +1,152 @@
+// @vitest-environment jsdom
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import type Database from 'better-sqlite3'
+import {
+  getBoard, insertItem, snoozeBoardRow, snoozeItem, upsertBoard,
+} from '../../src/store.js'
+import { bootApp, click, freshDb, pollTick, row, settle, useDomTest } from './harness.js'
+
+useDomTest()
+
+let db: Database.Database | null = null
+afterEach(() => { db?.close(); db = null })
+
+const AGENT = { project: 'alpha', stream: 'main', agent: 'copilot' } as const
+const HOUR = 60 * 60_000
+
+function open(): Database.Database {
+  db = freshDb()
+  return db
+}
+
+function tabbableQueueRows(): HTMLElement[] {
+  return [...document.querySelectorAll<HTMLElement>('#needsYouList .nrow')]
+    .filter((entry) => entry.tabIndex === 0)
+}
+
+describe('Needs-you roving tab stop', () => {
+  it('keeps closed-fold rows untabbable and reconciles j/k focus as folds open', async () => {
+    const d = open()
+    const staleId = insertItem(d, { ...AGENT, kind: 'question', title: 'Stale folded row' })
+    vi.setSystemTime(Date.now() + 73 * HOUR)
+    const snoozedId = insertItem(d, { ...AGENT, kind: 'question', title: 'Snoozed folded row' })
+    snoozeItem(d, snoozedId, new Date(Date.now() + 4 * HOUR).toISOString())
+    await bootApp(d)
+
+    const snoozed = document.querySelector<HTMLDetailsElement>('.snoozed-fold')!
+    const stale = [...document.querySelectorAll<HTMLDetailsElement>('.stale-fold')]
+      .find((fold) => !fold.classList.contains('snoozed-fold'))!
+    expect(snoozed.open).toBe(false)
+    expect(stale.open).toBe(false)
+    expect(row(snoozedId)?.tabIndex).toBe(-1)
+    expect(row(staleId)?.tabIndex).toBe(-1)
+    expect(tabbableQueueRows()).toHaveLength(0)
+
+    snoozed.open = true
+    snoozed.dispatchEvent(new Event('toggle'))
+    expect(tabbableQueueRows()).toEqual([row(snoozedId)])
+
+    stale.open = true
+    stale.dispatchEvent(new Event('toggle'))
+    expect(tabbableQueueRows()).toEqual([row(snoozedId)])
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'j', bubbles: true, cancelable: true }))
+    expect(document.activeElement).toBe(row(staleId))
+    expect(tabbableQueueRows()).toEqual([row(staleId)])
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', bubbles: true, cancelable: true }))
+    expect(document.activeElement).toBe(row(snoozedId))
+    expect(tabbableQueueRows()).toEqual([row(snoozedId)])
+  })
+
+  it('keeps one roving tab stop while indexed search opens and clears', async () => {
+    const d = open()
+    const id = insertItem(d, { ...AGENT, kind: 'question', title: 'Visible after clearing search' })
+    await bootApp(d)
+    expect(tabbableQueueRows()).toEqual([row(id)])
+
+    const search = document.getElementById('search') as HTMLInputElement
+    search.value = 'no matching queue row'
+    search.dispatchEvent(new Event('input', { bubbles: true }))
+    await vi.advanceTimersByTimeAsync(150)
+    await settle()
+    expect(document.querySelectorAll('#needsYouList .nrow')).toHaveLength(1)
+    expect(tabbableQueueRows()).toEqual([row(id)])
+    expect(document.querySelector('#searchResults .search-results-empty')).toBeTruthy()
+
+    search.value = ''
+    search.dispatchEvent(new Event('input', { bubbles: true }))
+    await vi.advanceTimersByTimeAsync(150)
+    await settle()
+
+    expect(row(id)).toBeTruthy()
+    expect(tabbableQueueRows()).toEqual([row(id)])
+    expect(row(id)?.classList.contains('selected')).toBe(true)
+  })
+
+  it('restores one tab stop immediately when returning from a poll on Plans', async () => {
+    const d = open()
+    insertItem(d, { ...AGENT, kind: 'question', title: 'First visible row' })
+    insertItem(d, { ...AGENT, kind: 'question', title: 'Second visible row' })
+    await bootApp(d)
+    const selectedBefore = tabbableQueueRows()[0]?.dataset.cardId
+    expect(selectedBefore).toBeTruthy()
+
+    const plans = document.querySelector<HTMLElement>('#tabs [data-tab="boards"]')!
+    plans.focus()
+    click(plans)
+    await pollTick()
+    expect(document.getElementById('needsYou')?.hidden).toBe(true)
+    expect(tabbableQueueRows()).toHaveLength(0)
+
+    const inbox = document.querySelector<HTMLElement>('#tabs [data-tab="needsYou"]')!
+    inbox.focus()
+    click(inbox)
+
+    expect(document.getElementById('needsYou')?.hidden).toBe(false)
+    expect(tabbableQueueRows()).toHaveLength(1)
+    expect(tabbableQueueRows()[0]?.dataset.cardId).toBe(selectedBefore)
+    expect(document.activeElement).toBe(inbox)
+  })
+
+  it('applies newest and oldest ask-time sorting inside snoozed and stale folds', async () => {
+    const d = open()
+    const staleOld = insertItem(d, { ...AGENT, kind: 'question', title: 'Stale old' })
+    vi.setSystemTime(Date.now() + HOUR)
+    const staleNew = insertItem(d, { ...AGENT, kind: 'question', title: 'Stale new' })
+    vi.setSystemTime(Date.now() + HOUR)
+    const snoozedItem = insertItem(d, { ...AGENT, kind: 'question', title: 'Snoozed item old' })
+    vi.setSystemTime(Date.now() + HOUR)
+    upsertBoard(d, {
+      ...AGENT,
+      title: 'Deferred plan',
+      rows: [{ label: 'Snoozed row new', status: 'blocked' }],
+    })
+    const board = getBoard(d, 'alpha', 'Deferred plan')!
+    const snoozedRow = board.rows[0]!
+    const until = new Date(Date.now() + 100 * HOUR).toISOString()
+    snoozeItem(d, snoozedItem, until)
+    snoozeBoardRow(d, snoozedRow.id, until, snoozedRow.revision, board.revision)
+    vi.setSystemTime(Date.now() + 73 * HOUR)
+    await bootApp(d)
+
+    const titles = (selector: string) => [...document.querySelectorAll(`${selector} .nrow-title`)]
+      .map((title) => title.textContent)
+    const select = document.querySelector<HTMLSelectElement>('#needsYouList .queue-sort select')!
+
+    select.value = 'newest'
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+    await settle()
+    expect(titles('.snoozed-fold')).toEqual(['Snoozed row new', 'Snoozed item old'])
+    expect(titles('.stale-fold:not(.snoozed-fold)')).toEqual(['Stale new', 'Stale old'])
+
+    select.value = 'oldest'
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+    await settle()
+    expect(titles('.snoozed-fold')).toEqual(['Snoozed item old', 'Snoozed row new'])
+    expect(titles('.stale-fold:not(.snoozed-fold)')).toEqual(['Stale old', 'Stale new'])
+
+    expect(row(staleOld)).toBeTruthy()
+    expect(row(staleNew)).toBeTruthy()
+  })
+})

@@ -144,16 +144,21 @@ describe('focusItem opens ancestor <details> folds, not just the target (fix rou
   const end = js.indexOf('\nlet bootFocusDone', start)
   if (start === -1 || end === -1) throw new Error('focusItem() not found at its expected shape in public/app.js')
   const body = js.slice(start, end)
+  const helperStart = js.indexOf('function revealDetailsAncestors(')
+  const helperEnd = js.indexOf('\n}', helperStart)
+  if (helperStart === -1 || helperEnd === -1) throw new Error('revealDetailsAncestors() not found in public/app.js')
+  const helper = js.slice(helperStart, helperEnd)
 
   it('walks the ancestor chain rather than opening only the target element', () => {
-    expect(body).toMatch(/parentElement/)
+    expect(body).toMatch(/revealDetailsAncestors\(scrollTarget\)/)
+    expect(helper).toMatch(/parentElement/)
     // this is exactly the regression the fix replaced — pin it gone
     expect(body).not.toMatch(/if \(el\.tagName === 'DETAILS'\) el\.open = true/)
   })
   it('flips staleFoldOpen so the next 3s poll does not re-collapse the stale fold', () => {
-    expect(body).toMatch(/staleFoldOpen\s*=\s*true/)
+    expect(helper).toMatch(/staleFoldOpen\s*=\s*true/)
   })
   it('flips showArchived so the next 3s poll does not re-collapse the archived fold', () => {
-    expect(body).toMatch(/showArchived\s*=\s*true/)
+    expect(helper).toMatch(/showArchived\s*=\s*true/)
   })
 })

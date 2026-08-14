@@ -7,13 +7,20 @@ export const KEYS = {
   prev: ['k', 'ArrowUp'],
 }
 
-// ctx: { typing, deckOpen, expanded, optionCount }
+// ctx: { typing, deckOpen, expanded, peeking, optionCount }
 export function keyAction(key, ctx = {}) {
-  const { typing = false, deckOpen = false, expanded = false, optionCount = 0 } = ctx
+  const {
+    typing = false,
+    deckOpen = false,
+    expanded = false,
+    peeking = false,
+    optionCount = 0,
+  } = ctx
   if (key === 'Escape') {
     if (typing) return { type: 'blur' }
     if (deckOpen) return { type: 'closeDeck' }
     if (expanded) return { type: 'collapse' }
+    if (peeking) return { type: 'exitPeek' }
     return { type: 'clearSelection' }
   }
   if (typing) return null // an input owns every other keystroke

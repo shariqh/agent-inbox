@@ -4,10 +4,11 @@ import {
   secondaryLine, streamCounts, agentCounts, rowModel, urgencyChip, relMs,
   FRESH_MS, AGING_MS, freshnessTone, ageChip, needsYouEntries, staleFoldLabel,
   SECONDARY_BUDGET, rowStarOption, stagedLabel, undoRefusal, handledUndoRefusal, repliedEntries,
+  ASK_SORT_OPTIONS, currentAskAt, askTimeModel, sortNeedsYouByAsk,
 } from '../public/rowview.js'
 import type { RowItem, Entry } from '../public/rowview.js'
 import { attentionCount } from '../public/attention.js'
-import type { AttentionBoard } from '../public/attention.js'
+import type { AttentionBoard, AttentionEntry } from '../public/attention.js'
 
 const T0 = Date.parse('2026-07-24T12:00:00.000Z')
 const base: RowItem = {
@@ -286,6 +287,83 @@ describe('relMs', () => {
   })
 })
 
+describe('current ask timestamps and list-only sorting (#64)', () => {
+    const board = { id: 'b1', project: 'web', stream: '', agent: 'copilot', title: 'Launch' }
+    const rowEntry = (over: Record<string, unknown> = {}): Entry => ({
+      kind: 'row',
+      row: {
+        id: 'r1',
+        label: 'Approve launch',
+        status: 'blocked',
+        created_at: '2026-07-24T08:00:00.000Z',
+        ...over,
+      },
+      board,
+    })
+    const rowData = (over: Record<string, unknown> = {}) => {
+      const entry = rowEntry(over)
+      if (entry.kind !== 'row') throw new Error('row fixture produced an item')
+      return entry.row
+    }
+
+    it('uses item creation, current row action, and the legacy row creation fallback', () => {
+      expect(currentAskAt({ kind: 'item', item: item({ created_at: '2026-07-24T09:00:00.000Z' }), liveness: 'parked' }))
+        .toBe('2026-07-24T09:00:00.000Z')
+      expect(currentAskAt({
+        kind: 'item',
+        item: { ...item({ created_at: '2026-07-24T09:00:00.000Z' }), action_started_at: '2026-07-24T11:00:00.000Z' },
+        liveness: 'parked',
+      })).toBe('2026-07-24T09:00:00.000Z')
+      expect(currentAskAt(rowEntry({ action_started_at: '2026-07-24T11:00:00.000Z' })))
+        .toBe('2026-07-24T11:00:00.000Z')
+      expect(currentAskAt(rowEntry())).toBe('2026-07-24T08:00:00.000Z')
+    })
+
+    it('builds compact age copy and an exact local timestamp from the same instant', () => {
+      const time = askTimeModel('2026-07-24T09:00:00.000Z', T0)
+      expect(time).toMatchObject({
+        datetime: '2026-07-24T09:00:00.000Z',
+        text: 'Asked 3h ago',
+      })
+      expect(time?.exact).toContain('2026')
+      expect(time?.accessibleLabel).toContain(time!.exact)
+      expect(askTimeModel('not-a-date', T0)).toBeNull()
+    })
+
+    it('keeps current priority byte-for-byte and sorts newest/oldest with deterministic ties', () => {
+      const entries: Entry[] = [
+        rowEntry({ id: 'row-b', action_started_at: '2026-07-24T10:00:00.000Z' }),
+        { kind: 'item', item: item({ id: 'item-z', created_at: '2026-07-24T11:00:00.000Z' }), liveness: 'parked' },
+        { kind: 'item', item: item({ id: 'item-a', created_at: '2026-07-24T10:00:00.000Z' }), liveness: 'parked' },
+        rowEntry({ id: 'row-a', action_started_at: '2026-07-24T10:00:00.000Z' }),
+      ]
+      expect(ASK_SORT_OPTIONS.map(({ value }) => value)).toEqual(['priority', 'newest', 'oldest'])
+      expect(sortNeedsYouByAsk(entries, 'priority')).toBe(entries)
+      expect(sortNeedsYouByAsk(entries, 'newest').map((entry) => entry.kind === 'row' ? entry.row.id : entry.item.id))
+        .toEqual(['item-z', 'item-a', 'row-a', 'row-b'])
+      expect(sortNeedsYouByAsk(entries, 'oldest').map((entry) => entry.kind === 'row' ? entry.row.id : entry.item.id))
+        .toEqual(['item-a', 'row-a', 'row-b', 'item-z'])
+      expect(entries[0]!.kind).toBe('row')
+    })
+
+    it('sorting never changes attention membership or counts', () => {
+      const entries = needsYouEntries(
+        [item({ id: 'q1', created_at: '2026-07-24T09:00:00.000Z' }), item({ id: 'q2', created_at: '2026-07-24T10:00:00.000Z' })],
+        [{ ...board, rows: [{ ...rowData({ id: 'r1' }), status: 'blocked', annotation: null, annotation_unseen: false }] }],
+        T0,
+        new Set<string>(),
+      )
+      const ids = (list: AttentionEntry[]) => new Set(list.map((entry) => entry.kind === 'row' ? entry.row.id : entry.item.id))
+      for (const { value } of ASK_SORT_OPTIONS) expect(ids(sortNeedsYouByAsk(entries, value))).toEqual(ids(entries))
+      expect(attentionCount(
+        [item({ id: 'q1', created_at: '2026-07-24T09:00:00.000Z' }), item({ id: 'q2', created_at: '2026-07-24T10:00:00.000Z' })],
+        [{ ...board, rows: [{ ...rowData({ id: 'r1' }), status: 'blocked', annotation: null, annotation_unseen: false }] }],
+        T0,
+        new Set<string>(),
+      )).toBe(3)
+  })
+})
+
 // §6: ONE freshness/age system — the row chip and the Live dot must never
 // disagree about what "3h" or "aging" means.
 describe('freshnessTone / ageChip', () => {
@@ -347,7 +425,7 @@ describe('renderNeedsYou reorders through the poll-suspension pin before paginat
   })
 
   it('reorders BEFORE paginating — reordering after slicing cannot stop a new row landing under the pointer', () => {
-    expect(fn.indexOf('orderedIds(')).toBeLessThan(fn.indexOf('paginate('))
+    expect(fn.indexOf('orderedIds(')).toBeLessThan(fn.indexOf('paginateNeedsYou('))
   })
 })
 
@@ -479,7 +557,7 @@ describe('the star Undo fallback in app.js is wired to fresh state, not the stal
 // resolve (which it may forget, permanently), an answered-but-open question was
 // dropped by attentionEntries, by the strict still-awaiting-pickup filter the
 // list used to run, by staleEntries AND by g.done —
-// it rendered in no tab at all, while tabsearch's searchIndex still counted it
+// it rendered in no tab at all, while the old global search index still counted it
 // under needsYou. The tab badge lit up and the tab then said "No matches here".
 // The dimmed foot group is where it belongs: it also makes the card's
 // "✓ picked up" marker (spec §15) reachable for the first time.

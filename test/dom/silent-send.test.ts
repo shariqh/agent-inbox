@@ -494,12 +494,7 @@ describe('#38 · a forced frame must not drag the caret back to an empty box', (
       .toBe(document.getElementById('search'))
   })
 
-  it('…but a box holding a real draft keeps its draft AND its claim on the caret', async () => {
-    // The guard is `!input.value`, and this is the half it deliberately does NOT
-    // change: an unfinished draft keeps its focus token, so the rebuild puts the
-    // caret back in it. That is the pre-existing spec §13 behaviour — narrowing the
-    // guard to empty boxes is the whole point, and an unconditional clear on blur
-    // fails right here.
+  it('keeps a real draft without overriding the control that owned focus at render time', async () => {
     const d = open()
     const rowId = blockedRow(d)
     await bootApp(d)
@@ -518,18 +513,21 @@ describe('#38 · a forced frame must not drag the caret back to an empty box', (
 
     expect(answerInput(rowId), 'the card must survive the rebuild').not.toBeNull()
     expect(answerInput(rowId)?.value).toBe('half a thought')
-    expect(document.activeElement, 'the caret must come back to the unfinished draft')
+    expect(document.activeElement, 'the draft must not steal focus back from search')
+      .toBe(document.getElementById('search'))
+
+    answerInput(rowId)!.focus()
+    click(document.querySelector('#rail .rail-tab'))
+    await settle()
+    expect(document.activeElement, 'an actively focused draft must survive the rebuild')
       .toBe(answerInput(rowId))
   })
 
-  // THE OTHER TWO GUARDS. The release shipped on THREE inputs — a board row's
-  // (`rowFocusId`, covered by the pair above) and both of a question card's
-  // (`draftFocusKey`, one token with two values, `${id}:answer` and
-  // `${id}:context`). Only the first was tested: deleting either draftFocusKey
-  // blur listener left the whole suite green. These two are the item half, and
-  // each carries BOTH directions, so neither can be satisfied by simply deleting
-  // the focus restore it is asserting against.
-  it('a QUESTION card\'s answer box releases the caret when empty, and keeps it when not', async () => {
+  // The focus bookmark spans all three draft inputs: a board-row response and a
+  // question's answer/context pair. These two are the item half, and each carries
+  // BOTH directions: focus elsewhere must remain elsewhere, while an input that
+  // owns focus at the render boundary must reclaim its replacement.
+  it('a QUESTION card\'s answer box follows the pre-render focus owner', async () => {
     const d = open()
     const id = insertItem(d, { ...AGENT, kind: 'question', title: 'ship it?' })
     await bootApp(d)
@@ -549,12 +547,10 @@ describe('#38 · a forced frame must not drag the caret back to an empty box', (
     expect(document.activeElement, 'the rebuild must not chase the caret into an abandoned answer box')
       .toBe(document.getElementById('search'))
 
-    // …and the half the guard must NOT change: a real draft still owns the caret
+    // A real draft owns the caret only while it is the pre-render focus owner.
     const again = answerInput(id)!
     again.focus()
     type(again, 'yes, but after the freeze')
-    document.getElementById('search')!.focus()
-    await settle()
     click(document.querySelector('#rail .rail-tab'))
     await settle()
 
@@ -563,7 +559,7 @@ describe('#38 · a forced frame must not drag the caret back to an empty box', (
       .toBe(answerInput(id))
   })
 
-  it('…and so does the optional CONTEXT box beside it', async () => {
+  it('applies the same pre-render focus ownership to the optional CONTEXT box', async () => {
     const d = open()
     const id = insertItem(d, { ...AGENT, kind: 'question', title: 'ship it?' })
     await bootApp(d)
@@ -584,8 +580,6 @@ describe('#38 · a forced frame must not drag the caret back to an empty box', (
     const again = ctx()!
     again.focus()
     type(again, 'the freeze ends Thursday')
-    document.getElementById('search')!.focus()
-    await settle()
     click(document.querySelector('#rail .rail-tab'))
     await settle()
 

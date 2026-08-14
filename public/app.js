@@ -1,4 +1,5 @@
-import { paginate, paginateGroups, searchMatches } from '/search.js'
+import { paginate, paginateGroups } from '/search.js'
+import { buildSearchResults } from '/search-index.js'
 import {
   closedFoldLabel, closedRailEntries, filterRailEntries, railEntries, railProjects,
   shouldShowRailFilter, splitClosed, suppressedTotal,
@@ -17,14 +18,15 @@ import { createStagedSend } from '/star.js'
 import {
   ageChip, agentCounts, handledUndoRefusal, needsYouEntries, relMs, repliedEntries, rowModel,
   rowStarOption, stagedLabel, staleFoldLabel, streamCounts, undoRefusal, urgencyChip,
+  ASK_SORT_OPTIONS, askTimeModel, sortNeedsYouByAsk,
 } from '/rowview.js'
 import { cardSections, optionOrder } from '/card.js'
 import { keyAction, rovingIndex, ariaAnswerLabel, livenessGlyph, deckEntryAt } from '/keys.js'
 import { partitionNotes, unreadNoteCount, ambientChips, seenWatermark, markSeenIds } from '/notes.js'
 import { liveSummary, lastActivityAt, isDormant, activitySynopsis } from '/livebar.js'
 import { esc } from '/esc.js'
+import { renderStructuredText } from '/structured-text.js'
 import { boardRowsView, boardRowLine, progressLabel, hiddenDoneCount, lingeringBoards } from '/boards.js'
-import { liveEntity, tabMatchCounts, projectMatchCounts, elsewhereLabel } from '/tabsearch.js'
 import { titleWithBadge, focusHashFor, parseFocusHash } from '/badge.js'
 import { layoutMode, railLabel, NARROW_MAX, PROJECT_DISCLOSURE_MAX } from '/layout.js'
 import { indexLinks, sourceChipsHtml, sourceBlockHtml } from '/source.js'
@@ -38,8 +40,30 @@ void paginateGroups // kept exported+tested (spec §15); the viewer no longer ca
 
 // typo-tolerant fuzzy filtering; the engine is a vendored browser global
 const uf = new window.uFuzzy({ intraMode: 1 })
-const fuzzyFilter = (hay, needle) => uf.filter(hay, needle)
+const fuzzySearch = (hay, needle) => {
+  const [matches, info, order] = uf.search(hay, needle, 0, Number.POSITIVE_INFINITY)
+  return info && order
+    ? order.flatMap((infoIndex) => {
+        const index = info.idx[infoIndex]
+        return index === undefined ? [] : [{ index, ranges: info.ranges[infoIndex] ?? [] }]
+      })
+    : matches?.map((index) => ({ index, ranges: [] })) ?? null
+}
 let searchQuery = ''
+let searchTimer = null
+let searchIndexOpen = false
+let searchActiveIndex = -1
+let searchResultCache = []
+let searchResultSignature = ''
+let searchUpdating = false
+let searchJumpSource = null
+
+function nativeKeyOwner(event) {
+  if (!(event.target instanceof Element)) return false
+  const owner = event.target.closest('select, button, a[href], summary, [role="button"]')
+  if (!owner) return false
+  return owner.matches('select') || event.key !== 'Escape'
+}
 
 // per-section visible-card caps; `shown` grows as the user clicks "show more"
 const PAGE = { needsYou: 10, notes: 5, done: 5, boards: 5, archived: 5 }
@@ -47,6 +71,10 @@ let shown = { ...PAGE }
 function resetPaging() { shown = { ...PAGE } }
 
 let lastData = null
+let authoritativeClosed = []
+let loadGeneration = 0
+let appliedLoadGeneration = 0
+let appliedClosedGeneration = 0
 let preparedFrame = null
 // issue #30 — the (repo, branch) → cached PR state index, rebuilt once per
 // render. A Map from the start, never null: the deep-link and setup paths can
@@ -100,6 +128,10 @@ function markNotesSeen(rendered, hidden, live) {
   }
 }
 
+function sortDeferredEntries(entries) {
+  return askSort === 'priority' ? entries : sortNeedsYouByAsk(entries, askSort)
+}
+
 let bootId = null
 
 // ── poll suspension (spec §10) ──────────────────────────────────────────────
@@ -109,8 +141,10 @@ let bootId = null
 // protect clicks and trackpad momentum.
 let openRowId = null    // the single inline-expanded Needs-you row (§4)
 let openRowScrollTop = 0 // the inspector's viewport survives the 3s DOM rebuild
-let lastInspectorScrollAt = null // bounded wheel/scroll activity; never a suspension
-let inspectorScrollTimer = null
+let pendingFocusId = null // explicit deep link protected through filter + pagination reconciliation
+let pagedFocusId = null // non-Inbox focused card protected only for the current rebuild
+let lastInteractionScrollAt = null // bounded inspector/page scroll activity; never a suspension
+let interactionScrollTimer = null
 let renderDirty = false // fresh data arrived while an editable rebuild was deferred
 let pinnedIds = []      // sort order pinned for this render session
 let pressedAt = null    // pointerdown → pointerup, hard-bounded by PRESS_GRACE_MS (#38)
@@ -145,27 +179,41 @@ function initPressGuard() {
   window.addEventListener('pointercancel', release, true)
 }
 
-function clearInspectorScrollActivity() {
-  lastInspectorScrollAt = null
-  if (inspectorScrollTimer !== null) {
-    clearTimeout(inspectorScrollTimer)
-    inspectorScrollTimer = null
+function clearScrollActivity() {
+  lastInteractionScrollAt = null
+  if (interactionScrollTimer !== null) {
+    clearTimeout(interactionScrollTimer)
+    interactionScrollTimer = null
   }
 }
 
-// A poll that replaces `.nrow-card` mid-scroll preserves scrollTop but kills
-// Chromium's current wheel/trackpad momentum. Capture the position continuously,
-// defer only while events are arriving, then paint a held frame after 200ms of
-// quiet instead of waiting for another 3-second tick.
+// Rebuilding during wheel/trackpad movement kills inspector momentum and can
+// fight the viewport's own scrolling. Defer only while events are arriving,
+// then paint a held frame after 200ms of quiet instead of waiting for another
+// 3-second tick.
+function noteScrollActivity() {
+  lastInteractionScrollAt = Date.now()
+  if (interactionScrollTimer !== null) clearTimeout(interactionScrollTimer)
+  interactionScrollTimer = setTimeout(() => {
+    interactionScrollTimer = null
+    if (!scrollActive(lastInteractionScrollAt, Date.now())) resumeRender()
+  }, SCROLL_IDLE_MS)
+}
+
 function noteInspectorScroll(id, card) {
   if (openRowId !== id) return
   openRowScrollTop = card.scrollTop
-  lastInspectorScrollAt = Date.now()
-  if (inspectorScrollTimer !== null) clearTimeout(inspectorScrollTimer)
-  inspectorScrollTimer = setTimeout(() => {
-    inspectorScrollTimer = null
-    if (openRowId === id && !scrollActive(lastInspectorScrollAt, Date.now())) resumeRender()
-  }, SCROLL_IDLE_MS)
+  noteScrollActivity()
+}
+
+function notePageScroll() {
+  if (openRowId == null) return
+  noteScrollActivity()
+}
+
+function initScrollGuard() {
+  window.addEventListener('wheel', notePageScroll, { passive: true })
+  window.addEventListener('scroll', notePageScroll, { passive: true })
 }
 
 // #pauseHint is emitted by the shell (Task 6); this is the only writer
@@ -188,9 +236,9 @@ function renderIfIdle() {
     return
   }
   const frame = paintAmbient()
-  // Drafts and active inspector scrolling protect only editable lists. Counts,
+  // Drafts and active inspector/page scrolling protect only editable lists. Counts,
   // the badge, rail and Live strip above keep reporting fresh data.
-  if (shouldDeferRender({ ...suspendState(), pressedAt, scrolledAt: lastInspectorScrollAt }, now)) {
+  if (shouldDeferRender({ ...suspendState(), pressedAt, scrolledAt: lastInteractionScrollAt }, now)) {
     renderDirty = true
     showPauseHint()
     return
@@ -255,8 +303,9 @@ function forceRender() {
 // human's. Pinned as source text in test/shell.test.ts, because no runtime
 // assertion can see which of the two a handler picked.
 async function reloadAndPaint() {
-  await load()
+  const loaded = await load()
   forceRender()
+  return loaded
 }
 
 // the single writer of openRowId — Tasks 11/16/17 call this, never assign.
@@ -266,7 +315,7 @@ async function reloadAndPaint() {
 function setOpenRow(id, { resume = true } = {}) {
   if (openRowId !== id) {
     openRowScrollTop = 0
-    clearInspectorScrollActivity()
+    clearScrollActivity()
   }
   openRowId = id
   if (resume) resumeRender()
@@ -281,10 +330,11 @@ function orderedIds(ids) {
 }
 
 async function load() {
+  const generation = ++loadGeneration
   try {
     const res = await fetch('/api/items')
     const boot = res.headers.get('x-inbox-boot')
-    if (bootId && boot && bootId !== boot) { location.reload(); return } // server restarted → pick up fresh frontend
+    if (bootId && boot && bootId !== boot) { location.reload(); return false } // server restarted → pick up fresh frontend
     if (boot) bootId = boot
     const g = await res.json()
     const boards = await (await fetch('/api/boards')).json()
@@ -294,27 +344,48 @@ async function load() {
     // predates this route answers 404 with HTML, a bare .json() would throw into
     // the catch below, and the WHOLE page would read 'disconnected'. An unknown
     // closed set must mean "suppress nothing", never a dead page.
-    const closed = await fetch('/api/projects/closed').then((r) => (r.ok ? r.json() : [])).catch(() => [])
+    const closedSnapshot = await fetch('/api/projects/closed')
+      .then((r) => (r.ok ? r.json() : null))
+      .catch(() => null)
     // Cached PR state (issue #30), same defensive shape and for the same reason:
     // an empty links set must mean "render exactly as before this feature", never
     // a dead page. A viewer that predates this route answers 404 with HTML.
     const links = await fetch('/api/links').then((r) => (r.ok ? r.json() : [])).catch(() => [])
-    lastData = { g: ageNotes(g, Date.now()), boards, archived, activity, closed, links }
+    if (generation < appliedLoadGeneration) return false
+    appliedLoadGeneration = generation
+    if (closedSnapshot !== null) {
+      appliedClosedGeneration = generation
+      authoritativeClosed = [...closedSnapshot]
+      retireConfirmedProjectMutationIntents(generation)
+    }
+    lastData = {
+      g: ageNotes(g, Date.now()),
+      boards,
+      archived,
+      activity,
+      closed: [...authoritativeClosed],
+      links,
+    }
+    applyProjectMutationIntents()
     renderIfIdle()
     if (!bootFocusDone) { bootFocusDone = true; applyFocusHash() }
     document.getElementById('status').textContent = ''
+    if (closedSnapshot !== null) resolveAuthoritativeRefreshWaiters(generation)
+    return closedSnapshot !== null
   } catch (err) {
     // an exception thrown inside render() used to be swallowed here with no
     // console signal at all — a completely dead page with nothing to debug.
     // That is exactly the failure mode behind the "none of the buttons work"
     // incident (0 needs-you items → renderEmptyState threw → blank panel,
     // silently). Log it; keep the 'disconnected' status for genuine fetch failures.
+    if (generation < appliedLoadGeneration) return false
     console.error(err)
     document.getElementById('status').textContent = 'disconnected'
+    return false
   }
 }
 
-// fix round 1 (hardening): every write-path fetch used to be a bare `await fetch(...)`
+// fix round 1 (hardening): every write-path fetch used to await an unguarded request
 // with no try/catch — a dropped request (offline, server restart mid-click) became an
 // unhandled promise rejection: no console signal, no user feedback, and the optimistic
 // UI may already have updated as if it worked. That is worse than a visible failure for
@@ -417,6 +488,20 @@ function cardFocusTargets(card) {
   return [...card.querySelectorAll(CARD_FOCUS_SELECTOR)]
 }
 
+function rowFocusTargets(card, rowId) {
+  const selector = `[data-row-id="${CSS.escape(rowId)}"]`
+  const seen = new Set()
+  const targets = []
+  for (const owner of card.querySelectorAll(selector)) {
+    for (const target of cardFocusTargets(owner)) {
+      if (seen.has(target)) continue
+      seen.add(target)
+      targets.push(target)
+    }
+  }
+  return targets
+}
+
 function cardFocusKey(el) {
   const text = ['BUTTON', 'SUMMARY'].includes(el.tagName) ? el.textContent?.trim() ?? '' : ''
   return JSON.stringify([
@@ -457,6 +542,64 @@ function restoreCardFocus(bookmark) {
   return document.activeElement === card || card.contains(document.activeElement)
 }
 
+function focusedAskedTimeId() {
+  const active = document.activeElement
+  if (!active?.matches?.('.nrow-asked')) return null
+  return active.closest('.nrow[data-card-id]')?.dataset.cardId ?? null
+}
+
+function restoreAskedTimeFocus(id) {
+  if (!id) return false
+  const target = needsYouRowEl(id)?.querySelector('.nrow-asked')
+  if (!target) return false
+  target.focus({ preventScroll: true })
+  return document.activeElement === target
+}
+
+function pagedCardFocusBookmark() {
+  const active = document.activeElement
+  const card = active?.closest?.('#notes [data-card-id], #done [data-card-id], #boards [data-card-id]')
+  if (!card) return null
+  const rowId = active.closest('[data-row-id]')?.dataset.rowId ?? null
+  if (rowId) {
+    const targets = rowFocusTargets(card, rowId)
+    if (!targets.includes(active)) return null
+    const key = cardFocusKey(active)
+    return {
+      id: card.dataset.cardId,
+      section: card.closest('section')?.id ?? '',
+      rowId,
+      key,
+      ordinal: targets.filter((target) => cardFocusKey(target) === key).indexOf(active),
+    }
+  }
+  const bookmark = captureCardFocus(card, card.dataset.cardId)
+  if (!bookmark) return null
+  return { ...bookmark, section: card.closest('section')?.id ?? '', rowId: null }
+}
+
+function restorePagedCardFocus(bookmark) {
+  if (!bookmark) return false
+  const scope = bookmark.section ? document.getElementById(bookmark.section) : document
+  const card = scope?.querySelector(`[data-card-id="${CSS.escape(bookmark.id)}"]`)
+  if (!card) return false
+  const targets = bookmark.rowId ? rowFocusTargets(card, bookmark.rowId) : cardFocusTargets(card)
+  const matches = bookmark.key
+    ? targets.filter((target) => cardFocusKey(target) === bookmark.key)
+    : []
+  const exact = matches[bookmark.ordinal] ?? (bookmark.rowId ? targets[0] : null)
+  const fallback = card.querySelector(':scope > summary') ?? card
+  for (const target of [exact, fallback]) {
+    if (!target) continue
+    revealDetailsAncestors(target)
+    if (target.closest('[hidden], details:not([open])')) continue
+    target.tabIndex = 0
+    target.focus({ preventScroll: true })
+    if (document.activeElement === target) return true
+  }
+  return false
+}
+
 // Which tab holds an item — a deep link must land on the right one.
 function tabForItem(it) {
   if (lastData.g.notes.some((gr) => gr.items.some((x) => x.id === it.id))) return 'notes'
@@ -466,14 +609,27 @@ function tabForItem(it) {
 
 // Notification click / URL hash entry point (spec §11): select the item's
 // project, switch to its tab, expand it, scroll to it.
-function focusItem(id) {
+function focusItem(id, source = null) {
   if (!lastData) return
   const item = allItems(lastData.g).find((i) => i.id === id)
   const board = [...lastData.boards, ...lastData.archived].find((b) => b.id === id)
   const target = item ?? board
   if (!target) return
+  if (source) searchJumpSource = { targetId: id, ...source }
+  else if (searchJumpSource?.targetId !== id) searchJumpSource = null
+  pendingFocusId = id
+  if (source?.rowId) {
+    openRows.add(source.rowId)
+    if (board) showDoneBoards.add(board.id)
+  }
+  if (source?.field === 'context') {
+    openContexts.add(source.rowId ? `row:${source.rowId}` : `item:${id}`)
+  }
   projectFilter = target.project
   agentFilter = null
+  actionFilter = 'all'
+  changedOnly = false
+  resetSearch()
   selectTab(board ? 'boards' : tabForItem(item)) // Task 8: sets activeTab AND shows the panel
   const hash = focusHashFor(id)
   if (location.hash !== hash) location.hash = hash // survives reload
@@ -488,10 +644,22 @@ function focusItem(id) {
   // `collapse` intent no-op'd against a `.nrow` that never existed. Claim the
   // accordion only once the target has actually landed in the list — render()
   // above put it there — then render again so the card body mounts under it.
-  if (needsYouRowEl(id)) { setOpenRow(id); forceRender() }
+  const queueTarget = needsYouRowEl(id)
+  if (queueTarget) {
+    for (let node = queueTarget; node; node = node.parentElement) {
+      if (node.tagName !== 'DETAILS') continue
+      node.open = true
+      if (node.classList.contains('snoozed-fold')) snoozedFoldOpen = true
+      else if (node.classList.contains('stale-fold')) staleFoldOpen = true
+    }
+    selectRow(id)
+  }
+  if (queueTarget) setOpenRow(id)
+  if (queueTarget) forceRender()
   requestAnimationFrame(() => {
     const el = document.querySelector(`[data-card-id="${CSS.escape(id)}"]`)
     if (!el) return
+    pendingFocusId = null
     // Open every ancestor <details> fold on the way up, not just the target —
     // a deep link that lands on the right tab but leaves the target buried
     // inside a collapsed stale-fold/archived-fold LOOKS like it worked while
@@ -500,15 +668,372 @@ function focusItem(id) {
     // staleFoldOpen/showArchived, and a DOM-only open doesn't survive that
     // rebuild (the same persistence trap already fixed once for the stale
     // fold in isolation).
-    for (let node = el; node; node = node.parentElement) {
-      if (node.tagName !== 'DETAILS') continue
-      node.open = true
-      if (node.classList.contains('stale-fold')) staleFoldOpen = true
-      if (node.classList.contains('archived-fold')) showArchived = true
+    const sourceEl = applySearchJumpHighlight()
+    const scrollTarget = sourceEl ?? el
+    revealDetailsAncestors(scrollTarget)
+    scrollTarget.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    const contextSummary = sourceEl?.closest('.card-context')?.querySelector(':scope > summary')
+    const focusTarget = contextSummary
+      ?? (el.matches('details') ? el.querySelector(':scope > summary') : el)
+    if (focusTarget) {
+      focusTarget.tabIndex = 0
+      focusTarget.focus({ preventScroll: true })
     }
-    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
-    if (typeof el.focus === 'function') el.focus({ preventScroll: true })
   })
+}
+
+function searchElements() {
+  return {
+    dock: document.querySelector('.floating-search'),
+    input: document.getElementById('search'),
+    results: document.getElementById('searchResults'),
+    status: document.getElementById('searchStatus'),
+  }
+}
+
+function setSearchActive(index) {
+  const { input, results } = searchElements()
+  const options = [...(results?.querySelectorAll('[role="option"]') ?? [])]
+  searchActiveIndex = options.length ? Math.max(0, Math.min(index, options.length - 1)) : -1
+  for (const [optionIndex, option] of options.entries()) {
+    const active = optionIndex === searchActiveIndex
+    option.setAttribute('aria-selected', String(active))
+    if (active) option.scrollIntoView({ block: 'nearest' })
+  }
+  const active = options[searchActiveIndex]
+  if (input) {
+    if (active) input.setAttribute('aria-activedescendant', active.id)
+    else input.removeAttribute('aria-activedescendant')
+  }
+}
+
+function clearSearchResultView() {
+  const { input, results, status } = searchElements()
+  searchIndexOpen = false
+  searchUpdating = false
+  searchActiveIndex = -1
+  searchResultCache = []
+  searchResultSignature = ''
+  if (results) {
+    results.hidden = true
+    results.innerHTML = ''
+    results.removeAttribute('aria-busy')
+    delete results.dataset.updating
+  }
+  if (status) status.textContent = ''
+  input?.setAttribute('aria-expanded', 'false')
+  input?.removeAttribute('aria-activedescendant')
+}
+
+function beginSearchUpdate() {
+  const { input, results } = searchElements()
+  searchUpdating = true
+  if (!results || results.hidden) return
+  results.dataset.updating = 'true'
+  results.setAttribute('aria-busy', 'true')
+  for (const option of results.querySelectorAll('[role="option"]')) {
+    option.setAttribute('aria-disabled', 'true')
+  }
+  input?.removeAttribute('aria-activedescendant')
+}
+
+function finishSearchUpdate() {
+  const { results } = searchElements()
+  searchUpdating = false
+  if (!results) return
+  results.removeAttribute('aria-busy')
+  delete results.dataset.updating
+  for (const option of results.querySelectorAll('[role="option"]')) {
+    option.removeAttribute('aria-disabled')
+  }
+}
+
+function closeSearchResults() {
+  if (searchTimer) {
+    clearTimeout(searchTimer)
+    searchTimer = null
+  }
+  clearSearchResultView()
+}
+
+function resetSearch({ blur = false } = {}) {
+  if (searchTimer) {
+    clearTimeout(searchTimer)
+    searchTimer = null
+  }
+  searchQuery = ''
+  const { input } = searchElements()
+  if (input) input.value = ''
+  closeSearchResults()
+  if (blur && input === document.activeElement) input.blur()
+}
+
+function activateSearchResult(index = searchActiveIndex) {
+  if (searchUpdating || searchTimer) return
+  const result = searchResultCache[index]
+  if (!result) return
+  const available = lastData && (
+    allItems(lastData.g).some((item) => item.id === result.targetId)
+    || [...lastData.boards, ...lastData.archived].some((board) => board.id === result.targetId)
+  )
+  if (!available) {
+    renderSearchResults()
+    return
+  }
+  focusItem(result.targetId, result.source)
+}
+
+function appendHighlightedText(element, text, ranges) {
+  let cursor = 0
+  for (let index = 0; index < ranges.length; index += 2) {
+    const start = Math.max(cursor, Math.min(text.length, ranges[index] ?? 0))
+    const end = Math.max(start, Math.min(text.length, ranges[index + 1] ?? start))
+    if (start > cursor) element.append(document.createTextNode(text.slice(cursor, start)))
+    if (end > start) {
+      const mark = document.createElement('mark')
+      mark.textContent = text.slice(start, end)
+      element.append(mark)
+    }
+    cursor = end
+  }
+  if (cursor < text.length) element.append(document.createTextNode(text.slice(cursor)))
+}
+
+function searchResultContent(option, result) {
+  option.replaceChildren()
+  const title = document.createElement('span')
+  title.className = 'search-result-main'
+  appendHighlightedText(title, result.title, result.titleRanges)
+  const kind = document.createElement('span')
+  kind.className = 'search-result-kind'
+  kind.textContent = result.kind
+  const context = document.createElement('span')
+  context.className = 'search-result-context'
+  context.textContent = result.context
+  option.append(title, kind)
+  if (result.match) {
+    const match = document.createElement('span')
+    match.className = 'search-result-match'
+    const source = document.createElement('span')
+    source.className = 'search-result-match-source'
+    source.textContent = result.match.label
+    const value = document.createElement('span')
+    value.className = 'search-result-match-value'
+    appendHighlightedText(value, result.match.text, result.match.ranges)
+    match.append(source, document.createTextNode(' · '), value)
+    option.appendChild(match)
+  }
+  option.appendChild(context)
+}
+
+function sameSearchResultOrder(previous, next) {
+  return previous.length === next.length && previous.every((result, index) => (
+    result.key === next[index]?.key && result.section === next[index]?.section
+  ))
+}
+
+function searchJumpRoot(source) {
+  const card = document.querySelector(`[data-card-id="${CSS.escape(source.targetId)}"]`)
+  if (!card) return null
+  if (source.rowId) {
+    if (source.field === 'label') {
+      return card.querySelector(`.board-row[data-row-id="${CSS.escape(source.rowId)}"]`)
+    }
+    return card.querySelector(
+      `.row-panel-row[data-row-id="${CSS.escape(source.rowId)}"] .row-panel`,
+    ) ?? card.querySelector(`.board-row[data-row-id="${CSS.escape(source.rowId)}"]`)
+  }
+  if (source.field !== 'title' && card.classList.contains('nrow')) {
+    return card.querySelector('.nrow-card') ?? card
+  }
+  return card
+}
+
+const SEARCH_SOURCE_SELECTORS = {
+  title: '.nrow-title, .card-title, .board-title',
+  label: '.row-label',
+  detail: '.card-tldr-body',
+  note: '.card-tldr-body, .note-line',
+  'next-step': '.card-next-body',
+  owner: '.action-owner',
+  impact: '.card-impact',
+  next: '.card-after',
+  context: '.card-context-body',
+  annotation: '.annotation',
+  reply: '.reply-block',
+  'reply-context': '.reply-context',
+  outcome: '.outcome-block',
+  option: '.option, .opt-pill',
+  'option-detail': '.option',
+  project: '.card-meta, .board-meta, .meta',
+  stream: '.card-meta, .board-meta, .meta',
+  agent: '.card-meta, .board-meta, .meta',
+}
+
+function normalizedSearchText(value) {
+  return String(value ?? '').replace(/\s+/g, ' ').trim().toLocaleLowerCase()
+}
+
+function findSearchJumpSource(source) {
+  const root = searchJumpRoot(source)
+  if (!root) return null
+  let candidates
+  if (source.field === 'context') {
+    const key = source.rowId ? `row:${source.rowId}` : `item:${source.targetId}`
+    const details = root.querySelector(`.card-context[data-context-key="${CSS.escape(key)}"]`)
+    candidates = details ? [...details.querySelectorAll('.card-context-body')] : []
+  } else {
+    const selector = SEARCH_SOURCE_SELECTORS[source.field]
+    candidates = selector ? [...root.querySelectorAll(selector)] : []
+  }
+  const fullText = normalizedSearchText(source.text)
+  const fragments = source.fragments.map(normalizedSearchText).filter(Boolean)
+  return candidates
+    .map((element) => {
+      const text = normalizedSearchText(element.textContent)
+      const exact = fullText && text === fullText
+      const contains = fullText && text.includes(fullText)
+      const matchedFragments = fragments.filter((fragment) => text.includes(fragment)).length
+      return {
+        element,
+        score: exact ? 0 : contains ? 1 : matchedFragments === fragments.length && fragments.length ? 2 : matchedFragments ? 3 : 4,
+        length: text.length,
+      }
+    })
+    .filter((candidate) => candidate.score < 4)
+    .sort((left, right) => left.score - right.score || left.length - right.length)[0]?.element ?? null
+}
+
+function escapeSearchRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function highlightSearchJumpSource(element, fragments) {
+  const terms = [...new Set(fragments.map((fragment) => fragment.trim()).filter(Boolean))]
+    .sort((left, right) => right.length - left.length)
+  if (!terms.length) return
+  const matcher = new RegExp(terms.map(escapeSearchRegExp).join('|'), 'giu')
+  const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT)
+  const nodes = []
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (!node.parentElement?.closest('.search-jump-highlight')) nodes.push(node)
+  }
+  for (const node of nodes) {
+    const text = node.nodeValue ?? ''
+    matcher.lastIndex = 0
+    const matches = [...text.matchAll(matcher)]
+    if (!matches.length) continue
+    const replacement = document.createDocumentFragment()
+    let cursor = 0
+    for (const match of matches) {
+      const start = match.index ?? 0
+      if (start > cursor) replacement.append(document.createTextNode(text.slice(cursor, start)))
+      const mark = document.createElement('mark')
+      mark.className = 'search-jump-highlight'
+      mark.textContent = match[0]
+      replacement.appendChild(mark)
+      cursor = start + match[0].length
+    }
+    if (cursor < text.length) replacement.append(document.createTextNode(text.slice(cursor)))
+    node.replaceWith(replacement)
+  }
+}
+
+function applySearchJumpHighlight() {
+  if (!searchJumpSource) return null
+  const source = findSearchJumpSource(searchJumpSource)
+  if (!source) return null
+  highlightSearchJumpSource(source, searchJumpSource.fragments)
+  return source
+}
+
+function renderSearchResults() {
+  const { input, results, status } = searchElements()
+  if (!input || !results) return
+  const query = searchQuery.trim()
+  if (searchTimer) return
+  if (!searchIndexOpen || !query) {
+    closeSearchResults()
+    return
+  }
+  if (!lastData) return
+  const previousActiveKey = searchResultCache[searchActiveIndex]?.key
+  const previousResults = searchResultCache
+  const nextResults = buildSearchResults(lastData, query, fuzzySearch)
+  const nextSignature = JSON.stringify([query, nextResults])
+  if (!results.hidden && searchResultSignature === nextSignature) {
+    searchResultCache = nextResults
+    finishSearchUpdate()
+    input.setAttribute('aria-expanded', 'true')
+    return
+  }
+  const existingOptions = [...results.querySelectorAll('[role="option"]')]
+  const reconcile = !results.hidden
+    && nextResults.length > 0
+    && sameSearchResultOrder(previousResults, nextResults)
+    && existingOptions.length === nextResults.length
+  searchResultCache = nextResults
+  searchResultSignature = nextSignature
+  results.hidden = false
+  input.setAttribute('aria-expanded', 'true')
+
+  if (!searchResultCache.length) {
+    results.innerHTML = ''
+    const empty = document.createElement('p')
+    empty.className = 'search-results-empty'
+    empty.textContent = `No results for “${query}”`
+    results.appendChild(empty)
+    if (status) status.textContent = `No results for ${query}`
+    finishSearchUpdate()
+    setSearchActive(-1)
+    return
+  }
+
+  if (reconcile) {
+    for (const [index, result] of searchResultCache.entries()) {
+      searchResultContent(existingOptions[index], result)
+    }
+  } else {
+    results.innerHTML = ''
+    let group = null
+    let currentSection = null
+    for (const [index, result] of searchResultCache.entries()) {
+      if (result.section !== currentSection) {
+        currentSection = result.section
+        const labelId = `search-result-group-${result.section}`
+        group = document.createElement('div')
+        group.className = 'search-result-group'
+        group.setAttribute('role', 'group')
+        group.setAttribute('aria-labelledby', labelId)
+        const groupLabel = document.createElement('span')
+        groupLabel.id = labelId
+        groupLabel.className = 'search-result-group-label'
+        groupLabel.textContent = result.sectionLabel
+        group.appendChild(groupLabel)
+        results.appendChild(group)
+      }
+      const option = document.createElement('div')
+      option.id = `search-result-${index}`
+      option.className = 'search-result'
+      option.setAttribute('role', 'option')
+      option.setAttribute('aria-selected', 'false')
+      option.tabIndex = -1
+      option.dataset.searchTarget = result.targetId
+      searchResultContent(option, result)
+      option.addEventListener('pointerdown', (event) => event.preventDefault())
+      option.addEventListener('pointermove', () => setSearchActive(index))
+      option.addEventListener('click', () => activateSearchResult(index))
+      group?.appendChild(option)
+    }
+  }
+  finishSearchUpdate()
+  if (status) {
+    status.textContent = `${searchResultCache.length} search result${searchResultCache.length === 1 ? '' : 's'}`
+  }
+  const preservedIndex = previousActiveKey
+    ? searchResultCache.findIndex((result) => result.key === previousActiveKey)
+    : -1
+  setSearchActive(preservedIndex >= 0 ? preservedIndex : 0)
 }
 
 let bootFocusDone = false
@@ -523,7 +1048,7 @@ function initFocusHash() {
 }
 
 // notes age into Done after NOTE_AGE_MS (spec §8) — done at the door so the
-// Notes tab, the Done tab and search all agree
+// Notes tab and the Done tab agree
 function ageNotes(g, nowMs) {
   const aged = []
   const notes = g.notes
@@ -594,17 +1119,6 @@ function paintAmbient() {
   // nothing in applyBadge / attentionCount on purpose: PR state is ambient, and
   // a red CI must never move the badge (tenets 1 and 2).
   linkIndex = indexLinks(lastData.links ?? [])
-  // projectMatchCounts stays fed the GLOBAL lastData, unscoped by the rail
-  // filter, on purpose: it's how the user discovers a match sitting behind a
-  // DIFFERENT project pill than the one currently selected — including one
-  // behind a CLOSED project, which is what the fold's auto-open rule keys on.
-  //
-  // Hoisted to the module binding (issue #32) so renderRail can
-  // read it. It is an ASSIGNMENT, never a `const`: a function-scoped declaration
-  // here is legal JS that silently shadows the module binding, leaving renderRail
-  // reading an empty Map forever and §12's confident false negative sealed inside
-  // a collapsed fold. It must be computed BEFORE renderRail for the same reason.
-  projMatches = projectMatchCounts(lastData, searchQuery, fuzzyFilter)
   renderRail()
   // AFTER renderRail: renderRail is what reconciles a stale projectFilter, and
   // withoutClosed reads projectFilter to decide whether this is a peek.
@@ -616,30 +1130,10 @@ function paintAmbient() {
   // filter is hiding
   liveCardIds = new Set([...allItems(lastData.g).map((i) => i.id), ...lastData.boards.map((b) => b.id), ...lastData.archived.map((b) => b.id)])
   const filtered = filterData(visibleData)
-  const { g, boards, archived } = applySearch(filtered)
+  const { g, boards, archived } = filtered
   const pillLive = (lastData.activity ?? []).filter((a) =>
     (!projectFilter || a.project === projectFilter) && (!agentFilter || a.agent === agentFilter))
-  // fix round 1: counts feed off the project/agent-SCOPED data (`filtered` +
-  // `pillLive`), matching what render() actually shows — NOT raw `lastData`.
-  // Feeding raw data let a match hidden behind the active rail filter still
-  // count as "reachable" (its tab badge lit up, and its absence elsewhere
-  // silenced the "elsewhere" pointer), which is the same confident-false-
-  // negative spec §12 exists to kill, just reached through the project axis
-  // instead of the tab axis. Still deliberately NOT search-scoped (a tab
-  // count can't depend on itself) and NOT tab-scoped (the whole point).
-  const scopedForCounts = { g: filtered.g, boards: filtered.boards, archived: filtered.archived, activity: pillLive }
-  matchCounts = tabMatchCounts(scopedForCounts, searchQuery, fuzzyFilter)
-  for (const [tab, n] of Object.entries(matchCounts)) setTabMatch(tab, n)
-  // setRailMatch must stay AFTER renderRail: renderRail does host.innerHTML = '',
-  // so painting match counts before it would wipe every one of them.
-  const railProjectKeys = railProjects({
-    items: allItems(lastData.g), boards: lastData.boards, archived: lastData.archived, activity: lastData.activity,
-  })
-  for (const p of railProjectKeys) setRailMatch(p, projMatches.get(p) ?? 0)
-  // search filters Live too: match a session on what it's doing (+ its children),
-  // reusing searchMatches by mapping each session onto a haystack-shaped entity
-  const liveMatched = searchMatches(pillLive.map(liveEntity), searchQuery, fuzzyFilter)
-  const live = liveMatched ? pillLive.filter((a) => liveMatched.has(a.session)) : pillLive
+  const live = pillLive
   renderLiveBar(lastData.activity ?? [])    // collapsed strip — GLOBAL, never scoped (§7 filter-blindness, generalized)
   paintTabCounts(g, boards)
   return { agents, g, boards, archived, live }
@@ -657,6 +1151,7 @@ function paintTabCounts(g, boards) {
 }
 
 function paintEditableSurfaces({ agents, g, boards, archived, live }) {
+  renderSearchResults()
   renderClosedBanner()
   renderAgentSelect(agents)
   renderLive(live) // drawer's expanded list — stays FILTERED (rail-scoped, like every other tab)
@@ -671,7 +1166,7 @@ function paintEditableSurfaces({ agents, g, boards, archived, live }) {
   // The render that just happened is the authority on what remains collapsible.
   // A deep link or filter can name a board, a hidden item, or a paged-away row;
   // reconcile stale open state now so it cannot leak into a later render.
-  const nextOpen = reconcileOpenRow(openRowId, rowEls().map((el) => el.dataset.cardId))
+  const nextOpen = reconcileOpenRow(openRowId, allRowEls().map((el) => el.dataset.cardId))
   // still through setOpenRow — it stays the single writer of openRowId
   if (nextOpen !== openRowId) setOpenRow(nextOpen, { resume: false })
   renderTriage() // keep the open lightbox in sync with fresh data
@@ -682,7 +1177,18 @@ function paintEditableSurfaces({ agents, g, boards, archived, live }) {
 function render() {
   const frame = preparedFrame ?? paintAmbient()
   preparedFrame = null
+  const draftFocus = activeDraftFocusBookmark() ?? requestedDraftFocusBookmark
+  const pagedFocus = pagedCardFocusBookmark()
+  pagedFocusId = pagedFocus?.id ?? null
+  if (document.activeElement?.closest?.('.stale-drafts-fold')) draftRecoveryFocusPending = true
+  reconcileDraftOwners()
+  requestedDraftFocusBookmark = null
   paintEditableSurfaces(frame)
+  pagedFocusId = null
+  if (!restoreDraftRecoveryFocus() && !restoreDraftFocus(draftFocus)) {
+    restorePagedCardFocus(pagedFocus)
+  }
+  applySearchJumpHighlight()
 }
 
 // one age vocabulary for every surface (§6): rows, chips, Live and tooltips all
@@ -693,10 +1199,75 @@ function rel(iso) {
 
 // ── triage mode: step through the needs-input set one card at a time ──
 let triageDeck = null // { entries, index } while the lightbox is open
+let triageReturnFocus = null
 const rowDrafts = {}  // in-progress row annotations, surviving the poll rebuild
 const rowDraftKinds = {} // row id → answer|clarify|decline, surviving accordion remounts
-const staleRowDrafts = {} // row id → { revision, text } refused by row/board CAS
-let rowFocusId = null
+const rowDraftMeta = {} // row id → recovery labels/revision if its owner disappears
+const rowDraftGenerations = {} // row id → monotonic edit token across duplicate editors
+const rowSubmissionTokens = {} // row id → latest async submission allowed to retire its draft
+const staleRowDrafts = {} // row-id + revision key → one refused action response
+let requestedDraftFocusBookmark = null
+let draftRecoveryFocusPending = false
+let draftRecoveryTarget = null
+
+function rowDraftRecoveryKey(rowId, revision) {
+  return JSON.stringify([rowId, revision])
+}
+
+function bumpDraftGeneration(generations, id) {
+  const next = (generations[id] ?? 0) + 1
+  generations[id] = next
+  return next
+}
+
+function clearRowRecoveryTarget(rowId, revision) {
+  if (draftRecoveryTarget?.rowId === rowId && draftRecoveryTarget.revision === revision) {
+    draftRecoveryTarget = null
+  }
+}
+
+function recoverMismatchedRenderedRowDraft(b, r) {
+  const text = rowDrafts[r.id]
+  const meta = rowDraftMeta[r.id]
+  if (!String(text ?? '').trim() || !meta || meta.revision === r.revision) return false
+  const revision = meta.revision ?? -1
+  staleRowDrafts[rowDraftRecoveryKey(r.id, revision)] = {
+    rowId: r.id,
+    revision,
+    actionVersion: meta.actionVersion,
+    text,
+    kind: rowDraftKinds[r.id] ?? 'answer',
+    boardTitle: meta.boardTitle ?? b.title,
+    label: meta.label ?? r.label,
+    context: meta.context ?? '',
+  }
+  bumpDraftGeneration(rowDraftGenerations, r.id)
+  delete rowDrafts[r.id]
+  delete rowDraftKinds[r.id]
+  delete rowDraftMeta[r.id]
+  requestAnimationFrame(() => {
+    requestDraftRecovery(null)
+    forceRender()
+  })
+  return true
+}
+
+function activeDraftFocusBookmark() {
+  const active = document.activeElement
+  const key = active?.dataset?.draftFocusKey
+  if (!key) return null
+  return { key, scopeId: active.closest('[id]')?.id ?? null }
+}
+
+function restoreDraftFocus(bookmark) {
+  if (!bookmark) return false
+  const scope = bookmark.scopeId ? document.getElementById(bookmark.scopeId) : document
+  const input = scope?.querySelector(`[data-draft-focus-key="${CSS.escape(bookmark.key)}"]`)
+  if (!input) return false
+  input.focus({ preventScroll: true })
+  input.setSelectionRange(input.value.length, input.value.length)
+  return true
+}
 
 // fix round 2 (I1): the deck used to run a SECOND attention predicate of its own
 // (`!i.reply` for questions, `status === 'blocked'` for rows), so it included
@@ -733,21 +1304,113 @@ function findEntryData(e) {
   return r ? { b, r } : null
 }
 
+function captureTriageReturnFocus() {
+  const active = document.activeElement
+  if (!(active instanceof HTMLElement)) return { kind: 'triageButton' }
+  const queueRow = active.closest('#needsYouList .nrow[data-card-id]')
+  if (queueRow) {
+    return {
+      kind: 'queue',
+      id: queueRow.dataset.cardId,
+      control: active.matches('.nrow-asked') ? 'asked' : 'row',
+    }
+  }
+  if (active.id) return { kind: 'id', id: active.id }
+  const tab = active.closest('.tab[data-tab]')
+  if (tab) return { kind: 'tab', id: tab.dataset.tab }
+  if (active.closest('.triage-btn')) return { kind: 'triageButton' }
+  return { kind: 'triageButton' }
+}
+
+function restoreTriageReturnFocus(bookmark) {
+  let target = null
+  if (bookmark?.kind === 'queue') {
+    const queueRow = needsYouRowEl(bookmark.id)
+    target = bookmark.control === 'asked' ? queueRow?.querySelector('.nrow-asked') : queueRow
+  } else if (bookmark?.kind === 'id') {
+    target = document.getElementById(bookmark.id)
+  } else if (bookmark?.kind === 'tab') {
+    target = document.querySelector(`.tab[data-tab="${CSS.escape(bookmark.id)}"]`)
+  } else if (bookmark?.kind === 'triageButton') {
+    target = document.querySelector('.triage-btn')
+  }
+  target ??= needsYouRowEl(selectedId) ?? document.querySelector('.triage-btn')
+  target?.focus({ preventScroll: true })
+}
+
 function openTriage() {
+  if (hasDraftRecovery()) {
+    requestDraftRecovery()
+    restoreDraftRecoveryFocus()
+    return
+  }
+  triageReturnFocus = captureTriageReturnFocus()
   if (relayOpen) closeRelay()
   if (missionBoardId) closeMission()
   triageDeck = { entries: buildDeck(), index: 0 }
   renderTriage()
+  document.querySelector('#lightbox .lb-panel')?.focus({ preventScroll: true })
 }
 
-function closeTriage() {
+function closeTriage({ restoreFocus = true } = {}) {
+  const returnFocus = triageReturnFocus
   triageDeck = null
+  triageReturnFocus = null
   document.getElementById('lightbox').hidden = true
+  if (restoreFocus) restoreTriageReturnFocus(returnFocus)
 }
 
-function triageRemoveCurrent() {
-  triageDeck.entries.splice(triageDeck.index, 1)
-  renderTriage()
+function triageRemoveEntry(deck, entryKey) {
+  if (triageDeck !== deck) return
+  const focusBookmark = captureTriageFocus()
+  const removedDisplayedEntry = triageEntryKey(
+    deckEntryAt(triageDeck.entries, triageDeck.index),
+  ) === entryKey
+  const index = triageDeck.entries.findIndex((entry) => triageEntryKey(entry) === entryKey)
+  if (index < 0) return
+  triageDeck.entries.splice(index, 1)
+  if (index < triageDeck.index) triageDeck.index--
+  renderTriage({ focusBookmark, forcePanelFocus: removedDisplayedEntry })
+}
+
+function triageEntryKey(entry) {
+  if (!entry) return ''
+  return entry.type === 'q'
+    ? `q:${entry.id}`
+    : `row:${entry.boardId}:${entry.rowId}`
+}
+
+function captureTriageFocus() {
+  if (!triageDeck) return null
+  const card = document.querySelector('#lightbox .lb-card')
+  const active = document.activeElement
+  if (!card || !active || !card.contains(active)) return null
+  const targets = cardFocusTargets(card)
+  if (!targets.includes(active)) return null
+  const key = cardFocusKey(active)
+  return {
+    entry: triageEntryKey(deckEntryAt(triageDeck.entries, triageDeck.index)),
+    key,
+    ordinal: targets.filter((target) => cardFocusKey(target) === key).indexOf(active),
+  }
+}
+
+function restoreTriageFocus(bookmark) {
+  if (!bookmark || !triageDeck) return false
+  const card = document.querySelector('#lightbox .lb-card')
+  const sameEntry = bookmark.entry === triageEntryKey(deckEntryAt(triageDeck.entries, triageDeck.index))
+  if (card && sameEntry) {
+    const targets = cardFocusTargets(card)
+    const matches = targets.filter((target) => cardFocusKey(target) === bookmark.key)
+    const target = matches[bookmark.ordinal]
+    if (target && !target.closest('[hidden], details:not([open])')) {
+      target.focus({ preventScroll: true })
+      if (document.activeElement === target) return true
+    }
+  }
+  const panel = document.querySelector('#lightbox .lb-panel')
+  panel?.focus({ preventScroll: true })
+  return document.activeElement === panel
 }
 
 function triageActionMix(entries) {
@@ -889,38 +1552,62 @@ function rowHandledEl(b, r) {
 // because the single `.write-error` slot below is then where a refusal on EITHER
 // of them appears.
 function rowAnswerEl(b, r, onSaved) {
+  recoverMismatchedRenderedRowDraft(b, r)
   const wrap = document.createElement('div')
   wrap.className = 'row-answer'
   const row = document.createElement('div')
   row.className = 'reply-row'
   const input = document.createElement('input')
   input.className = 'reply-input'
+  input.dataset.draftFocusKey = `row:${r.id}`
   input.placeholder = r.options?.length
     ? 'or answer in your own words…'
     : r.status === 'blocked' ? 'tell the agent how to proceed…' : 'your note on this row…'
-  const staleDraft = staleRowDrafts[r.id]
-  input.value = rowDrafts[r.id] ?? (staleDraft?.revision === r.revision ? staleDraft.text : '')
-  if (input.value && rowDrafts[r.id] === undefined) rowDrafts[r.id] = input.value
+  const recoveryKey = rowDraftRecoveryKey(r.id, r.revision)
+  const staleDraft = staleRowDrafts[recoveryKey]
+  const rowRecoveries = Object.values(staleRowDrafts)
+    .filter((draft) => draft.rowId === r.id)
+  if (staleDraft) input.dataset.recoveredDraft = '1'
+  input.value = rowDrafts[r.id] ?? (staleDraft?.text ?? '')
+  if (input.value && rowDrafts[r.id] === undefined) {
+    bumpDraftGeneration(rowDraftGenerations, r.id)
+    rowDrafts[r.id] = input.value
+    rowDraftMeta[r.id] = {
+      revision: r.revision,
+      actionVersion: staleDraft?.actionVersion ?? r.action_version,
+      boardTitle: b.title,
+      label: r.label,
+      context: staleDraft?.context ?? r.context ?? '',
+    }
+  }
   if (staleDraft?.revision === r.revision) rowDraftKinds[r.id] = staleDraft.kind
+  let editorGeneration = rowDraftGenerations[r.id] ?? 0
   input.dataset.responseKind = rowDraftKinds[r.id] ?? 'answer'
   input.addEventListener('input', () => {
+    editorGeneration = bumpDraftGeneration(rowDraftGenerations, r.id)
     rowDrafts[r.id] = input.value
     rowDraftKinds[r.id] = input.dataset.responseKind ?? rowDraftKinds[r.id] ?? 'answer'
-    delete staleRowDrafts[r.id]
+    if (input.value.trim()) {
+      rowDraftMeta[r.id] = {
+        revision: r.revision,
+        actionVersion: r.action_version,
+        boardTitle: b.title,
+        label: r.label,
+        context: r.context ?? '',
+      }
+    } else {
+      delete rowDraftMeta[r.id]
+    }
+    delete staleRowDrafts[recoveryKey]
+    clearRowRecoveryTarget(r.id, r.revision)
     resumeRender()
   })
-  input.addEventListener('focus', () => { rowFocusId = r.id })
-  // The focus token is STICKY — set on focus, cleared only by a successful send —
-  // and every rebuild re-focuses from it. That already stole the caret back on any
-  // unsuspended poll tick; issue #38's forced frames make it reachable while
-  // suspended too (Send on one card would yank the cursor into a board-row input
-  // the human touched minutes ago). Release it when the human leaves an EMPTY box:
-  // a real draft still gets its cursor back, which is what the token is for.
-  input.addEventListener('blur', () => { if (rowFocusId === r.id && !input.value) rowFocusId = null })
   const save = async () => {
     const typed = input.value
     if (!typed.trim()) return
     const kind = input.dataset.responseKind ?? 'answer'
+    const submittedGeneration = editorGeneration
+    const submissionToken = bumpDraftGeneration(rowSubmissionTokens, r.id)
     // fix round 2 (C3): the draft used to be dropped BEFORE the POST, so a
     // dropped request (viewer server restarted — routine for the Electron app)
     // erased the human's note with no trace. Clear only once it landed.
@@ -930,33 +1617,58 @@ function rowAnswerEl(b, r, onSaved) {
       expected_revision: r.revision,
       expected_board_version: b.revision,
     })
+    const ownsSubmission = (rowDraftGenerations[r.id] ?? 0) === submittedGeneration
+      && rowSubmissionTokens[r.id] === submissionToken
     if (res === null) {
-      rowDrafts[r.id] = typed
-      input.value = typed
+      if (ownsSubmission) {
+        rowDrafts[r.id] = typed
+        rowDraftMeta[r.id] = {
+          revision: r.revision,
+          actionVersion: r.action_version,
+          boardTitle: b.title,
+          label: r.label,
+          context: r.context ?? '',
+        }
+        input.value = typed
+      }
       showWriteError(r.id, WRITE_FAILED)
       resumeRender()
       return
     }
     if (!res.ok) {
-      staleRowDrafts[r.id] = {
+      if (!ownsSubmission) {
+        showWriteError(r.id, 'An earlier response was not applied; your newer draft is preserved.')
+        resumeRender()
+        return
+      }
+      staleRowDrafts[recoveryKey] = {
+        rowId: r.id,
         revision: r.revision,
+        actionVersion: r.action_version,
         text: typed,
         kind,
         boardTitle: b.title,
         label: r.label,
+        context: r.context ?? '',
       }
+      requestDraftRecovery({ rowId: r.id, revision: r.revision, project: b.project })
+      bumpDraftGeneration(rowDraftGenerations, r.id)
       delete rowDrafts[r.id]
       delete rowDraftKinds[r.id]
-      if (rowFocusId === r.id) rowFocusId = null
+      delete rowDraftMeta[r.id]
       showWriteError(r.id, 'This action changed before your response arrived; refreshed without applying it.')
       await reloadAndPaint()
       return
     }
-    delete rowDrafts[r.id]
-    delete rowDraftKinds[r.id]
-    delete staleRowDrafts[r.id]
-    delete input.dataset.responseKind
-    if (rowFocusId === r.id) rowFocusId = null
+    if (ownsSubmission) {
+      bumpDraftGeneration(rowDraftGenerations, r.id)
+      delete rowDrafts[r.id]
+      delete rowDraftKinds[r.id]
+      delete rowDraftMeta[r.id]
+      delete staleRowDrafts[recoveryKey]
+      clearRowRecoveryTarget(r.id, r.revision)
+      delete input.dataset.responseKind
+    }
     showWriteError(r.id, '')
     // the row stays blocked until the agent picks the note up — the human's part
     // is done, so the caller decides what to drop
@@ -986,7 +1698,7 @@ function rowAnswerEl(b, r, onSaved) {
       if (option.detail) {
         const detail = document.createElement('div')
         detail.className = 'opt-detail'
-        detail.textContent = option.detail
+        detail.innerHTML = renderStructuredText(option.detail)
         box.appendChild(detail)
       }
       choices.appendChild(box)
@@ -1021,18 +1733,14 @@ function rowAnswerEl(b, r, onSaved) {
   if (handled) row.appendChild(handled)
   row.appendChild(writeErrorEl(r.id))
   wrap.appendChild(row)
-  if (staleDraft) {
+  for (const recovery of rowRecoveries) {
     const warning = document.createElement('div')
     warning.className = 'write-error stale-draft'
-    warning.textContent = staleDraft.revision === r.revision
+    warning.textContent = recovery.revision === r.revision
       ? 'Not sent because the board changed. Review the preserved draft and send again.'
-      : `Not sent because this action changed. Preserved ${staleDraft.kind}: ${staleDraft.text}`
+      : `Not sent because this action changed. Preserved ${recovery.kind}: ${recovery.text}`
     wrap.appendChild(warning)
   }
-  if (rowFocusId === r.id) requestAnimationFrame(() => {
-    input.focus()
-    input.setSelectionRange(input.value.length, input.value.length)
-  })
   return wrap
 }
 
@@ -1072,7 +1780,7 @@ function rowHumanStateHtml(r) {
 
 function contextHtml(context, key) {
   if (!context) return ''
-  return `<details class="card-context" data-context-key="${esc(key)}"${openContexts.has(key) ? ' open' : ''}><summary class="card-context-label">Background</summary><div class="card-context-body">${esc(context)}</div></details>`
+  return `<details class="card-context" data-context-key="${esc(key)}"${openContexts.has(key) ? ' open' : ''}><summary class="card-context-label">Background</summary><div class="card-context-body">${renderStructuredText(context)}</div></details>`
 }
 
 function bindContextDisclosures(root) {
@@ -1088,19 +1796,26 @@ function bindContextDisclosures(root) {
 function actionBlocksHtml(tldr, nextStep, actionOwner, impact, nextAfter, context, contextKey) {
   return `
     ${actionOwner ? `<div class="action-owner">${esc(actionOwnerLabel({ action_owner: actionOwner }))}</div>` : ''}
-    ${nextStep ? `<div class="card-next"><div class="card-section-label">NEXT STEP</div><div class="card-next-body">${esc(nextStep)}</div></div>` : ''}
-    ${impact ? `<div class="card-impact"><div class="card-section-label">WHY NOW</div><div>${esc(impact)}</div></div>` : ''}
-    ${nextAfter ? `<div class="card-after"><div class="card-section-label">AFTER THIS</div><div>${esc(nextAfter)}</div></div>` : ''}
-    ${tldr ? `<div class="card-tldr"><div class="card-section-label">TL;DR</div><div class="card-tldr-body">${esc(tldr)}</div></div>` : ''}
+    ${nextStep ? `<div class="card-next"><div class="card-section-label">NEXT STEP</div><div class="card-next-body">${renderStructuredText(nextStep)}</div></div>` : ''}
+    ${impact ? `<div class="card-impact"><div class="card-section-label">WHY NOW</div>${renderStructuredText(impact)}</div>` : ''}
+    ${nextAfter ? `<div class="card-after"><div class="card-section-label">AFTER THIS</div>${renderStructuredText(nextAfter)}</div>` : ''}
+    ${tldr ? `<div class="card-tldr"><div class="card-section-label">TL;DR</div><div class="card-tldr-body">${renderStructuredText(tldr)}</div></div>` : ''}
     ${contextHtml(context, contextKey)}`
 }
 
-function lifecycleHtml(entity) {
+function lifecycleHtml(entity, { includeAsked = true } = {}) {
   const steps = lifecycleReceipt(entity)
+    .filter((step) => includeAsked || step.label !== 'Asked')
   if (!steps.length) return ''
   return `<div class="lifecycle-receipt">${steps.map((step) => (
-    `<span class="lifecycle-step">${esc(step.label)}${step.at ? ` · ${esc(rel(step.at))}` : ''}</span>`
+    `<div class="lifecycle-step">${renderStructuredText(step.label)}${step.at ? `<span class="lifecycle-age">· ${esc(rel(step.at))}</span>` : ''}</div>`
   )).join('<span class="lifecycle-arrow">→</span>')}</div>`
+}
+
+function outcomeHtml(outcome) {
+  return outcome
+    ? `<div class="outcome-block"><div class="outcome-label">Outcome</div>${renderStructuredText(outcome)}</div>`
+    : ''
 }
 
 function historyHtml(r) {
@@ -1114,7 +1829,7 @@ function historyHtml(r) {
     return `<div class="history-entry">
       <div class="history-title">Step ${esc(String(entry.version))} · ${esc(entry.note || entry.next_step || entry.status)}</div>
       ${response ? `<div>${esc(response)}${entry.response ? `: ${esc(entry.response)}` : ''}</div>` : ''}
-      ${entry.outcome ? `<div>Outcome: ${esc(entry.outcome)}</div>` : ''}
+      ${outcomeHtml(entry.outcome)}
     </div>`
   }).join('')
   return `<details class="action-history"><summary>Prior steps (${r.history.length})</summary>${entries}</details>`
@@ -1127,7 +1842,7 @@ function rowPanelEl(b, r, readOnly = false) {
   wrap.innerHTML = `
     ${actionBlocksHtml(r.note, r.status === 'blocked' ? r.next_step : '', r.action_owner, r.impact, r.next_after, r.context, `row:${r.id}`)}
     ${rowHumanStateHtml(r)}
-    ${r.outcome ? `<div class="outcome-block">Outcome: ${esc(r.outcome)}</div>` : ''}
+    ${outcomeHtml(r.outcome)}
     ${lifecycleHtml(r)}
     ${historyHtml(r)}`
   bindContextDisclosures(wrap)
@@ -1140,7 +1855,7 @@ function rowPanelEl(b, r, readOnly = false) {
 // Guard the onSaved callback here, at the definition, so neither call site has
 // to know which context it is in — answering a blocked row from the list must
 // not throw just because there is no deck to remove it from.
-function rowCardEl(b, r) {
+function rowCardEl(b, r, onSaved, { includeAsked = true } = {}) {
   const wrap = document.createElement('div')
   wrap.className = 'lb-row-card'
   wrap.innerHTML = `
@@ -1148,16 +1863,23 @@ function rowCardEl(b, r) {
     <div class="title">${esc(r.label)}</div>
     ${actionBlocksHtml(r.note, r.next_step, r.action_owner, r.impact, r.next_after, r.context, `row:${r.id}`)}
     ${rowHumanStateHtml(r)}
-    ${r.outcome ? `<div class="outcome-block">Outcome: ${esc(r.outcome)}</div>` : ''}
-    ${lifecycleHtml(r)}
+    ${outcomeHtml(r.outcome)}
+    ${lifecycleHtml(r, { includeAsked })}
     ${historyHtml(r)}`
   bindContextDisclosures(wrap)
-  wrap.appendChild(rowAnswerEl(b, r, () => { if (triageDeck) triageRemoveCurrent() }))
+  wrap.appendChild(rowAnswerEl(b, r, onSaved))
   return wrap
 }
 
-function renderTriage() {
+function renderTriage({
+  focusBookmark = captureTriageFocus(),
+  forcePanelFocus = false,
+} = {}) {
   if (!triageDeck) return
+  if (reconcileDraftOwners()) {
+    forceRender()
+    return
+  }
   const lb = document.getElementById('lightbox')
   // drop entries resolved elsewhere (or answered in a previous card)
   triageDeck.entries = triageDeck.entries.filter((e) => findEntryData(e))
@@ -1178,6 +1900,8 @@ function renderTriage() {
     lb.querySelector('.lb-mix').textContent = triageActionMix(triageDeck.entries)
     progress.style.width = `${((triageDeck.index + 1) / n) * 100}%`
     const data = findEntryData(triageDeck.entries[triageDeck.index])
+    const renderedDeck = triageDeck
+    const renderedEntryKey = triageEntryKey(triageDeck.entries[triageDeck.index])
     owner.textContent = actionOwnerLabel(data.it ?? data.r)
     if (data.it) {
       card.appendChild(itemCardEl(data.it, {
@@ -1185,18 +1909,24 @@ function renderTriage() {
         liveness: classifyLiveness(data.it, Date.now(), liveSessionIds()),
       }))
     } else {
-      card.appendChild(rowCardEl(data.b, data.r))
+      card.appendChild(rowCardEl(
+        data.b,
+        data.r,
+        () => triageRemoveEntry(renderedDeck, renderedEntryKey),
+      ))
     }
   }
   lb.querySelector('.lb-prev').disabled = triageDeck.index <= 0
   lb.querySelector('.lb-next').disabled = triageDeck.index >= n - 1
   lb.hidden = false
+  if (forcePanelFocus) lb.querySelector('.lb-panel')?.focus({ preventScroll: true })
+  else restoreTriageFocus(focusBookmark)
 }
 
 function initTriage() {
   const lb = document.getElementById('lightbox')
-  lb.querySelector('.lb-close').addEventListener('click', closeTriage)
-  lb.querySelector('.lb-backdrop').addEventListener('click', closeTriage)
+  lb.querySelector('.lb-close').addEventListener('click', () => closeTriage())
+  lb.querySelector('.lb-backdrop').addEventListener('click', () => closeTriage())
   lb.querySelector('.lb-prev').addEventListener('click', () => { triageDeck.index--; renderTriage() })
   lb.querySelector('.lb-next').addEventListener('click', () => { triageDeck.index++; renderTriage() })
   // keyboard (Esc/ArrowLeft/ArrowRight/t) is owned by initKeys (Task 17) —
@@ -1277,8 +2007,8 @@ function relayCardEl(entry, lane) {
   card.innerHTML = `
     <div class="relay-meta"><span>${esc(relayProject(entry))}</span><span class="relay-owner">${esc(actionOwnerLabel(entity))}</span></div>
     <h3>${esc(relayTitle(entry))}</h3>
-    ${summary ? `<p>${esc(summary)}</p>` : ''}
-    ${outcome ? `<div class="relay-result">${esc(outcome)}</div>` : ''}
+    ${summary ? `<div class="relay-summary-text">${renderStructuredText(summary)}</div>` : ''}
+    ${outcome ? `<div class="relay-result">${renderStructuredText(outcome)}</div>` : ''}
     <div class="relay-state"><span class="relay-baton"></span><span class="relay-chip ${esc(status.tone)}">${esc(status.text)}</span></div>`
   const open = btn(lane === 'human' ? 'Open action' : lane === 'agent' ? 'Open receipt' : 'View outcome', () => {
     focusRelayEntry(entry, lane)
@@ -1371,22 +2101,28 @@ function missionPathEl(path, board) {
   const row = path.row
   const line = document.createElement('div')
   line.className = 'mission-path'
-  const action = document.createElement('button')
+  const action = document.createElement('article')
   action.className = `mission-node mission-${row.status}`
   const owner = row.action_owner ? actionOwnerLabel(row) : (STATUS_LABEL[row.status] ?? row.status)
   action.innerHTML = `
     <span class="mission-node-meta">${esc(owner)}</span>
     <strong>${esc(row.label)}</strong>
-    ${row.note ? `<span>${esc(row.note)}</span>` : ''}
-    ${row.impact ? `<small>Why now: ${esc(row.impact)}</small>` : ''}`
-  action.addEventListener('click', () => openMissionDetail(row))
+    ${row.note ? `<div class="mission-node-summary">${renderStructuredText(row.note)}</div>` : ''}
+    ${row.impact ? `<div class="mission-node-impact"><span>Why now</span>${renderStructuredText(row.impact)}</div>` : ''}`
+  action.addEventListener('click', (event) => {
+    if (event.target instanceof Element && event.target.closest('a, button')) return
+    openMissionDetail(row)
+  })
+  const open = btn('Open details', () => openMissionDetail(row))
+  open.className = 'mission-node-open'
+  action.appendChild(open)
   const arrow = document.createElement('span')
   arrow.className = 'mission-arrow'
   arrow.textContent = '→'
   const result = document.createElement('div')
   result.className = `mission-result${path.result ? ` ${path.result.kind}` : ' empty'}`
   if (path.result) {
-    result.innerHTML = `<span>${path.result.kind === 'outcome' ? 'Outcome' : 'After this'}</span><strong>${esc(path.result.text)}</strong>`
+    result.innerHTML = `<span>${path.result.kind === 'outcome' ? 'Outcome' : 'After this'}</span>${renderStructuredText(path.result.text)}`
   } else {
     result.textContent = 'No next step recorded'
   }
@@ -1396,6 +2132,10 @@ function missionPathEl(path, board) {
 
 function renderMission() {
   if (!missionBoardId || !lastData) return
+  if (reconcileDraftOwners()) {
+    forceRender()
+    return
+  }
   const board = [...lastData.boards, ...lastData.archived].find((candidate) => candidate.id === missionBoardId)
   if (!board) { closeMission(); return }
   const box = document.getElementById('missionbox')
@@ -1461,33 +2201,6 @@ function setCount(id, n) {
   el.hidden = !n
 }
 
-// the whole-dataset per-tab match tally (spec §12) — read by emptyMsg so a tab
-// can point at where a search's hits actually are
-let matchCounts = { needsYou: null, boards: null, live: null, notes: null, done: null }
-
-// a small "N" beside a tab label — how many matches hide behind THAT tab
-function setTabMatch(tab, n) {
-  const el = document.querySelector(`#tabs .tab[data-tab="${tab}"]`)
-  if (!el) return
-  let badge = el.querySelector('.match-count')
-  if (n === null || n === 0) { badge?.remove(); return }
-  if (!badge) {
-    badge = document.createElement('span')
-    badge.className = 'match-count'
-    el.appendChild(badge)
-  }
-  badge.textContent = String(n)
-}
-
-// the rail row already ships an empty <span class="rail-match"> (Task 7) — this
-// only fills it in, so the rail's own markup stays the single source of truth
-function setRailMatch(project, n) {
-  const el = document.querySelector(`#rail button.rail-tab[data-project="${CSS.escape(project)}"] .rail-match`)
-  if (!el) return
-  el.textContent = n ? String(n) : ''
-  el.hidden = !n
-}
-
 // Project and agent filters are window-local; every cold launch starts from the
 // cross-project/cross-tool view. The active tab likewise always starts here.
 let activeTab = DEFAULT_TAB
@@ -1502,6 +2215,7 @@ function selectTab(id) {
     t.tabIndex = t.dataset.tab === id ? 0 : -1 // roving tabindex (spec §13)
   }
   showPanel(id)
+  if (id === 'needsYou') restoreRowSelection(false)
 }
 
 function initTabs() {
@@ -1529,47 +2243,12 @@ function filterData({ g, boards, archived }) {
   }
 }
 
-// narrow the pill-filtered data to the fuzzy-search matches (composes AND with
-// the project/agent pills). No query → returned unchanged.
-function applySearch({ g, boards, archived }) {
-  const matches = searchMatches([...allItems(g), ...boards, ...archived], searchQuery, fuzzyFilter)
-  if (!matches) return { g, boards, archived }
-  const keep = (x) => matches.has(x.id)
-  const only = (groups) => groups
-    .map((gr) => ({ ...gr, items: gr.items.filter(keep) }))
-    .filter((gr) => gr.items.length > 0)
-  return {
-    g: { needsYou: only(g.needsYou), notes: only(g.notes), done: g.done.filter(keep) },
-    boards: boards.filter(keep),
-    archived: archived.filter(keep),
-  }
-}
-
-const TAB_LABEL = { needsYou: 'Inbox', boards: 'Plans', live: 'Activity', notes: 'Notes', done: 'History' }
 const PAGE_META = {
   needsYou: { kicker: 'Inbox', title: 'Your queue' },
   boards: { kicker: 'Workspace', title: 'Plans' },
   notes: { kicker: 'Workspace', title: 'Notes' },
   done: { kicker: 'Workspace', title: 'History' },
   setup: { kicker: 'Agent Inbox', title: 'Settings' },
-}
-
-// the §12 pointer on its own: "<span>2 in Boards · 1 in Notes</span>", or ''.
-// Interpolates ONLY the fixed TAB_LABEL strings and integers — never agent text
-// — which is what makes it safe to hand straight to innerHTML. tabsearch.js's
-// elsewhereLabel is the unit-tested builder both callers share.
-function elsewhereMsg() {
-  const where = elsewhereLabel(matchCounts, activeTab, TAB_LABEL)
-  return where ? `<span class="match-elsewhere">${where}</span>` : ''
-}
-
-// section empty-state text: search-aware, and never a BARE "no matches" — it
-// always points at the tabs that do have hits (spec §12)
-function emptyMsg(base) {
-  const q = searchQuery.trim()
-  if (!q) return base
-  const where = elsewhereMsg()
-  return `No matches for &ldquo;${esc(q)}&rdquo; here${where ? ` — ${where}` : ' or in any other tab'}`
 }
 
 const liveSessionIds = () => new Set((lastData.activity ?? []).map((a) => a.session))
@@ -1592,18 +2271,24 @@ let railQuery = ''
 // the 3s poll rebuilds the rail, and a DOM-only <details open> would silently
 // re-collapse under the human mid-read.
 let closedFoldOpen = false
+let tabletClosedSnapshot = null
+let tabletForcedOpenKey = ''
+let tabletDismissedOpenKey = null
+let restoringRailFocus = false
+let projectFocusBookmark = null
+let projectMutationGeneration = 0
+const projectMutationIntents = new Map()
+const confirmedProjectMutationIntents = new Map()
+const projectMutationQueues = new Map()
+const projectMutationVersions = new Map()
+const authoritativeRefreshWaiters = new Set()
 // lastData minus the closed projects — what the DEFAULT view may show. Set once
 // per render(), read by every panel renderer that must agree with the badge.
 let visibleData = null
-// Hoisted out of render() so renderRail's fold-open rule can consult it. See the
-// long note at its assignment: making this a local `const` again is a silent
-// break, not a loud one.
-let projMatches = new Map()
-
 // ── responsive (spec §14) ────────────────────────────────────────────────────
 // Pure breakpoint check lives in layout.js; this is just the mode + the media
 // query that keeps it live. renderRail reads `layout` to turn project slugs into
-// readable compact-strip labels without changing their accessible names.
+// readable compact-menu labels without changing their accessible names.
 let layout = layoutMode(window.innerWidth)
 
 const PANE_KEYS = {
@@ -1705,6 +2390,41 @@ function initResponsive() {
   apply()
 }
 
+function compactMastheadWidth() {
+  const shell = document.querySelector('.sidebar-shell')
+  if (!(shell instanceof HTMLElement)) return window.innerWidth
+  const style = getComputedStyle(shell)
+  const padding = Number.parseFloat(style.paddingLeft) + Number.parseFloat(style.paddingRight)
+  const inlineSize = shell.clientWidth || window.innerWidth
+  // jsdom has no layout box; the real narrow masthead has 16px inline padding.
+  const inlinePadding = padding || (shell.clientWidth ? 0 : 32)
+  return inlineSize - inlinePadding
+}
+
+function tabletProjectsMode() {
+  return layout === 'narrow' && compactMastheadWidth() > PROJECT_DISCLOSURE_MAX
+}
+
+function projectNavigationMode() {
+  if (layout !== 'narrow') return 'desktop'
+  return tabletProjectsMode() ? 'tablet' : 'phone'
+}
+
+function higherPriorityEscapeSurfaceOpen() {
+  const liveDrawer = document.getElementById('liveDrawer')
+  const visibleModal = [...document.querySelectorAll('[aria-modal="true"]')]
+    .some((dialog) => !dialog.closest('[hidden]'))
+  return !!(
+    triageDeck
+    || missionDetailRowId
+    || missionBoardId
+    || relayOpen
+    || document.body.classList.contains('settings-open')
+    || (liveDrawer && !liveDrawer.hidden)
+    || visibleModal
+  )
+}
+
 function setProjectDisclosure(open, { restoreFocus = false } = {}) {
   const disclosure = document.getElementById('projectDisclosure')
   const toggle = document.getElementById('projectDisclosureToggle')
@@ -1729,6 +2449,7 @@ function updateProjectDisclosure(entry) {
   dot.style.background = ''
   if (entry.key !== '__all__' && !entry.unknown) dot.style.background = pcolor(entry.key).dot
   toggle.setAttribute('aria-label', `Choose project, current ${label}`)
+  toggle.dataset.project = entry.key
 }
 
 function initProjectDisclosure() {
@@ -1740,18 +2461,67 @@ function initProjectDisclosure() {
     setProjectDisclosure(disclosure.dataset.open !== 'true')
   })
   for (const type of ['pointerdown', 'focusin']) document.addEventListener(type, (event) => {
+    if (!disclosure.isConnected || document.getElementById('projectDisclosure') !== disclosure) return
+    const target = event.target
+    const focusState = projectFocusState(target)
+    projectFocusBookmark = focusState
+    const trigger = document.getElementById('closedProjectsTrigger')
+    const popover = document.getElementById('closedProjectsPopover')
+    const insideArchived = target instanceof Node
+      && (trigger?.contains(target) || popover?.contains(target))
+    if (!restoringRailFocus && tabletProjectsMode() && closedFoldOpen && !insideArchived) {
+      setClosedProjectsOpen(false)
+    }
     if (disclosure.dataset.open !== 'true' || disclosure.contains(event.target)) return
     setProjectDisclosure(false)
   })
   document.addEventListener('keydown', (event) => {
+    if (!disclosure.isConnected || document.getElementById('projectDisclosure') !== disclosure) return
+    if (event.defaultPrevented || nativeKeyOwner(event)) return
+    if (
+      event.key === 'Escape'
+      && tabletProjectsMode()
+      && closedFoldOpen
+      && document.getElementById('closedProjectsTrigger')?.getAttribute('aria-expanded') === 'true'
+      && document.getElementById('closedProjectsPopover')
+      && !higherPriorityEscapeSurfaceOpen()
+    ) {
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      setClosedProjectsOpen(false, { restoreFocus: true })
+      return
+    }
     if (event.key !== 'Escape' || disclosure.dataset.open !== 'true') return
     event.preventDefault()
     event.stopImmediatePropagation()
     setProjectDisclosure(false, { restoreFocus: true })
   })
-  window.matchMedia(`(max-width: ${PROJECT_DISCLOSURE_MAX}px)`).addEventListener('change', () => {
+  let projectMode = projectNavigationMode()
+  const syncMode = () => {
+    if (!disclosure.isConnected || document.getElementById('projectDisclosure') !== disclosure) return
+    const next = projectNavigationMode()
+    if (next === projectMode) return
+    const activeFocusState = projectFocusState(document.activeElement)
+    const focusState = activeFocusState
+      ?? (document.activeElement === document.body ? projectFocusBookmark : null)
+    projectMode = next
     setProjectDisclosure(false)
-  })
+    setClosedProjectsOpen(false)
+    const dismissedOpenKey = next === 'tablet' ? tabletDismissedOpenKey : null
+    tabletForcedOpenKey = ''
+    tabletDismissedOpenKey = dismissedOpenKey
+    if (lastData) {
+      forceRender()
+      restoreProjectFocus(focusState)
+    }
+  }
+  const shell = disclosure.closest('.sidebar-shell')
+  if ('ResizeObserver' in window && shell) {
+    new ResizeObserver(syncMode).observe(shell)
+  } else {
+    window.addEventListener('resize', syncMode)
+  }
+  window.matchMedia(`(max-width: ${NARROW_MAX}px)`).addEventListener('change', syncMode)
   setProjectDisclosure(false)
 }
 
@@ -1761,22 +2531,32 @@ function initProjectDisclosure() {
 // tabbable", and N focusable close buttons in a rail of N projects would bury
 // the tablist under tab stops. The keyboard path is Delete/Backspace on the
 // focused tab instead — the convention every browser tab strip uses — wired in
-// railRowEl below. Both buttons are hidden under 1280px (see the @media block);
-// implicit reopen-on-new-activity works at every width, so nothing an agent
-// needs ever becomes unreachable.
+// railRowEl below. Pointer and focus-within styling reveals the same × beside the
+// owning project in every layout without adding a second tab stop per project.
 function railActionEl(e, closed) {
   const a = document.createElement('button')
   a.type = 'button'
   a.tabIndex = -1
   a.className = closed ? 'rail-reopen' : 'rail-close'
-  a.textContent = closed ? '↩' : '×'
+  const glyph = document.createElement('span')
+  glyph.className = 'rail-action-glyph'
+  glyph.setAttribute('aria-hidden', 'true')
+  glyph.textContent = closed ? '↩' : '×'
+  const label = document.createElement('span')
+  label.className = 'rail-action-label'
+  label.textContent = closed ? 'Reopen' : 'Archive'
+  a.append(glyph, label)
   // setAttribute escapes; a project name is agent-authored and must NEVER be
   // interpolated into innerHTML
-  a.setAttribute('aria-label', `${closed ? 'Reopen' : 'Close'} project ${e.label}`)
+  a.setAttribute('aria-label', `${closed ? 'Reopen' : 'Archive'} project ${e.label}`)
   a.title = closed
     ? 'Reopen — bring this project back into the rail and the badge'
-    : 'Close — it comes back the moment an agent flags into it'
-  a.addEventListener('click', () => { closed ? reopenProjectAction(e.key) : closeProjectAction(e.key) })
+    : `Archive ${e.label} — it comes back the moment an agent flags into it`
+  a.addEventListener('click', () => {
+    closed
+      ? reopenProjectAction(e.key)
+      : closeProjectAction(e.key, { focusArchived: tabletProjectsMode() })
+  })
   return a
 }
 
@@ -1787,9 +2567,7 @@ function railActionEl(e, closed) {
 // `.rail-tab` is itself a `<button role="tab">`, and a button may not contain
 // interactive content (invalid HTML, and the roving-tabindex loop at the foot of
 // renderRail only governs `.rail-tab`). The codebase's own precedent is
-// `.nrow-dismiss` inside `div.nrow`. setRailMatch's
-// `#rail button.rail-tab[data-project=…] .rail-match` selector is a descendant
-// selector, so it keeps working through the wrapper and into the fold for free.
+// `.nrow-dismiss` inside `div.nrow`.
 function railRowEl(e, { withFilter, closed = false }) {
   const wrap = document.createElement('div')
   wrap.className = 'rail-row'
@@ -1815,7 +2593,7 @@ function railRowEl(e, { withFilter, closed = false }) {
   const name = document.createElement('span')
   name.className = 'rail-name'
   // The long-rail filter keeps canonical names so search results stay exact;
-  // the ordinary compact strip uses the readable label from layout.js.
+  // the compact project menu uses the readable label from layout.js.
   // textContent, never innerHTML — agent-authored project names.
   name.textContent = railLabel(e.label, withFilter ? 'wide' : layout)
   const badge = document.createElement('span')
@@ -1825,14 +2603,11 @@ function railRowEl(e, { withFilter, closed = false }) {
   badge.textContent = e.total ? String(e.total) : ''
   badge.hidden = !e.total
   badge.title = e.escalated ? `${e.escalated} escalated` : `${e.total} waiting on you`
-  // always present, always empty here — Task 15's search paints match counts in
-  const match = document.createElement('span')
-  match.className = 'rail-match'
-  b.append(dot, name, badge, match)
+  b.append(dot, name, badge)
   b.addEventListener('click', () => {
     closeSettings()
     projectFilter = e.key === '__all__' ? null : e.key
-    setProjectDisclosure(false)
+    setProjectDisclosure(false, { restoreFocus: layout === 'narrow' })
     resetPaging()
     forceRender()
   })
@@ -1841,7 +2616,9 @@ function railRowEl(e, { withFilter, closed = false }) {
   if (e.key !== '__all__') b.addEventListener('keydown', (ev) => {
     if (ev.key !== 'Delete' && ev.key !== 'Backspace') return
     ev.preventDefault()
-    closed ? reopenProjectAction(e.key) : closeProjectAction(e.key)
+    closed
+      ? reopenProjectAction(e.key)
+      : closeProjectAction(e.key, { focusArchived: tabletProjectsMode() })
   })
   wrap.appendChild(b)
   // 'All' is not a project and cannot be retired
@@ -1861,7 +2638,10 @@ function closedFoldEl(entries, count, suppressed, open, withFilter) {
   fold.setAttribute('role', 'group')
   fold.setAttribute('aria-label', 'Closed projects')
   fold.open = open
-  fold.addEventListener('toggle', () => { closedFoldOpen = fold.open })
+  fold.addEventListener('toggle', () => {
+    if (!fold.isConnected || tabletProjectsMode()) return
+    closedFoldOpen = fold.open
+  })
   const summary = document.createElement('summary')
   const label = closedFoldLabel(count, suppressed, withFilter ? 'wide' : layout)
   summary.textContent = label.text // textContent, never innerHTML
@@ -1875,6 +2655,289 @@ function closedFoldEl(entries, count, suppressed, open, withFilter) {
   fold.appendChild(summary)
   for (const e of entries) fold.appendChild(railRowEl(e, { withFilter, closed: true }))
   return fold
+}
+
+function focusProjectControl(id, generation = null) {
+  requestAnimationFrame(() => {
+    if (generation !== null && generation !== projectMutationGeneration) return
+    document.getElementById(id)?.focus()
+  })
+}
+
+function projectTabIsOperable(target) {
+  if (!(target instanceof HTMLElement) || target.closest('details:not([open])')) return false
+  const disclosure = target.closest('#projectDisclosure')
+  return !(
+    disclosure instanceof HTMLElement
+    && layout === 'narrow'
+    && disclosure.dataset.open !== 'true'
+  )
+}
+
+function visibleProjectTabs() {
+  return [...document.querySelectorAll('#rail .rail-tab')].filter(projectTabIsOperable)
+}
+
+function projectControlIsOperable(target) {
+  if (!(target instanceof HTMLElement) || !target.isConnected) return false
+  if (target.classList.contains('rail-tab')) return projectTabIsOperable(target)
+  if (target.classList.contains('rail-close') || target.classList.contains('rail-reopen')) {
+    return projectTabIsOperable(target.closest('.rail-row')?.querySelector('.rail-tab'))
+  }
+  return true
+}
+
+function promoteProjectTab(selector) {
+  const target = document.querySelector(selector)
+  if (!projectTabIsOperable(target)) return false
+  if (!target) return false
+  for (const tab of document.querySelectorAll('#rail .rail-tab')) tab.tabIndex = -1
+  target.tabIndex = 0
+  target.focus()
+  return true
+}
+
+function focusProjectTab(selector, generation = null) {
+  requestAnimationFrame(() => {
+    if (generation !== null && generation !== projectMutationGeneration) return
+    promoteProjectTab(selector)
+  })
+}
+
+function focusProjectFallback(project, { preferFold = false } = {}) {
+  if (project && promoteProjectTab(`#rail .rail-tab[data-project="${CSS.escape(project)}"]`)) {
+    return true
+  }
+  const disclosure = document.getElementById('projectDisclosure')
+  if (layout === 'narrow' && disclosure?.dataset.open !== 'true') {
+    document.getElementById('projectDisclosureToggle')?.focus()
+    return true
+  }
+  const visibleTabs = visibleProjectTabs()
+  const fallbackTab = visibleTabs.find((tab) => tab.tabIndex === 0) ?? visibleTabs[0]
+  if (fallbackTab) {
+    for (const tab of document.querySelectorAll('#rail .rail-tab')) tab.tabIndex = -1
+    fallbackTab.tabIndex = 0
+  }
+  const summary = preferFold
+    ? document.querySelector('#rail .closed-fold > summary')
+    : null
+  if (summary instanceof HTMLElement) {
+    summary.focus()
+    return true
+  }
+  fallbackTab?.focus()
+  return !!fallbackTab
+}
+
+function focusArchivedProjectControl(project) {
+  const escaped = CSS.escape(project)
+  const peek = document.querySelector(
+    `#closedProjectsPopover [data-project="${escaped}"] .closed-project-peek`,
+  )
+  if (peek instanceof HTMLElement) {
+    peek.focus()
+    return true
+  }
+  const trigger = document.getElementById('closedProjectsTrigger')
+  if (trigger) {
+    trigger.focus()
+    return true
+  }
+  return false
+}
+
+function projectMutationOwnsFocus(selector, generation) {
+  if (generation !== projectMutationGeneration) return false
+  const active = document.activeElement
+  return !active || active === document.body || active.matches(selector)
+}
+
+function projectFocusControl(target) {
+  if (!(target instanceof Element)) return null
+  return target.closest(
+    '#projectDisclosureToggle, #closedProjectsTrigger, '
+    + '.closed-project-reopen, .closed-project-peek, .rail-close, .rail-tab',
+  )
+}
+
+function projectFocusState(target) {
+  const control = projectFocusControl(target)
+  if (!(control instanceof HTMLElement)) return null
+  if (control.id === 'projectDisclosureToggle') {
+    return { kind: 'disclosure', project: control.dataset.project ?? null }
+  }
+  if (control.id === 'closedProjectsTrigger') {
+    return { kind: 'trigger', project: control.dataset.project ?? null }
+  }
+  const projectControl = control.closest('[data-project]')
+    ?? control.closest('.rail-row')?.querySelector('[data-project]')
+  const project = projectControl?.dataset.project
+  if (!project) return null
+  if (control.classList.contains('closed-project-reopen')) return { kind: 'reopen', project }
+  if (control.classList.contains('closed-project-peek')) return { kind: 'peek', project }
+  if (control.classList.contains('rail-close')) return { kind: 'archive', project }
+  if (control.classList.contains('rail-tab')) return { kind: 'tab', project }
+  return null
+}
+
+function restoreProjectFocus(state) {
+  if (!state) return
+  if (state.kind === 'disclosure') {
+    const disclosure = document.getElementById('projectDisclosure')
+    if (layout === 'narrow' && disclosure?.dataset.open !== 'true') {
+      document.getElementById('projectDisclosureToggle')?.focus()
+      return
+    }
+    focusProjectFallback(state.project === '__all__' ? null : state.project)
+    return
+  }
+  if (state.kind === 'trigger') {
+    const trigger = document.getElementById('closedProjectsTrigger')
+    if (trigger) {
+      trigger.focus()
+      return
+    }
+    focusProjectFallback(state.project, {
+      preferFold: !!state.project && closedSet().has(state.project),
+    })
+    return
+  }
+  const project = CSS.escape(state.project)
+  const selector = {
+    reopen: `#closedProjectsPopover [data-project="${project}"] .closed-project-reopen`,
+    peek: `#closedProjectsPopover [data-project="${project}"] .closed-project-peek`,
+    archive: `#rail [data-project="${project}"] + .rail-close`,
+    tab: `#rail .rail-tab[data-project="${project}"]`,
+  }[state.kind]
+  let target = document.querySelector(selector)
+  if (target && !projectControlIsOperable(target)) target = null
+  if (state.kind === 'reopen' && !target) {
+    target = document.querySelector(`#rail .rail-tab[data-project="${project}"]`)
+  }
+  if (state.kind === 'peek' && !target) {
+    target = document.querySelector(`#rail .rail-tab[data-project="${project}"]`)
+  }
+  if (
+    (state.kind === 'tab' || state.kind === 'archive' || state.kind === 'reopen' || state.kind === 'peek')
+    && !target
+    && tabletProjectsMode()
+    && closedSet().has(state.project)
+  ) {
+    if (state.kind === 'archive') {
+      const trigger = document.getElementById('closedProjectsTrigger')
+      if (trigger) {
+        trigger.focus()
+        return
+      }
+    }
+    if (!focusArchivedProjectControl(state.project)) focusProjectFallback(state.project)
+    return
+  }
+  if ((state.kind === 'tab' || state.kind === 'reopen' || state.kind === 'peek')
+    && target?.classList.contains('rail-tab')) {
+    if (!promoteProjectTab(`#rail .rail-tab[data-project="${project}"]`)) {
+      focusProjectFallback(state.project, { preferFold: closedSet().has(state.project) })
+    }
+    return
+  }
+  if ((state.kind === 'reopen' || state.kind === 'peek') && !target) {
+    focusProjectFallback(state.project, { preferFold: closedSet().has(state.project) })
+    return
+  }
+  if ((state.kind === 'tab' || state.kind === 'archive') && !target) {
+    focusProjectFallback(state.project, { preferFold: closedSet().has(state.project) })
+    return
+  }
+  target?.focus()
+}
+
+function setClosedProjectsOpen(open, { restoreFocus = false } = {}) {
+  closedFoldOpen = !!open
+  tabletDismissedOpenKey = open ? null : (tabletForcedOpenKey || null)
+  const trigger = document.getElementById('closedProjectsTrigger')
+  trigger?.setAttribute('aria-expanded', String(closedFoldOpen))
+  document.getElementById('closedProjectsPopover')?.remove()
+  if (closedFoldOpen && tabletClosedSnapshot) {
+    document.getElementById('projectDisclosure')
+      ?.appendChild(closedProjectsPopoverEl(tabletClosedSnapshot.entries, tabletClosedSnapshot.count))
+  }
+  if (restoreFocus) trigger?.focus()
+}
+
+function closedProjectEntryEl(entry) {
+  const row = document.createElement('div')
+  row.className = 'closed-project-entry'
+  row.dataset.project = entry.key
+
+  const peek = document.createElement('button')
+  peek.type = 'button'
+  peek.className = 'closed-project-peek'
+  peek.setAttribute('aria-label', `View archived project ${entry.label}`)
+  peek.setAttribute('aria-pressed', String(projectFilter === entry.key))
+
+  const dot = document.createElement('span')
+  dot.className = 'rail-dot'
+  if (!entry.unknown) dot.style.background = pcolor(entry.key).dot
+  const name = document.createElement('span')
+  name.className = 'closed-project-name'
+  name.textContent = railLabel(entry.label, 'narrow')
+  name.title = entry.label
+  const badge = document.createElement('span')
+  badge.className = 'rail-badge'
+  badge.textContent = entry.total ? String(entry.total) : ''
+  badge.hidden = !entry.total
+  badge.title = `${entry.total} waiting on you`
+  peek.append(dot, name, badge)
+  peek.addEventListener('click', () => {
+    closeSettings()
+    projectFilter = entry.key
+    closedFoldOpen = true
+    tabletDismissedOpenKey = null
+    resetPaging()
+    forceRender()
+  })
+
+  const reopen = document.createElement('button')
+  reopen.type = 'button'
+  reopen.className = 'closed-project-reopen'
+  reopen.textContent = 'Reopen'
+  reopen.setAttribute('aria-label', `Reopen project ${entry.label}`)
+  reopen.addEventListener('click', () => reopenProjectAction(entry.key, { focusProject: true }))
+  row.append(peek, reopen)
+  return row
+}
+
+function closedProjectsPopoverEl(entries, count) {
+  const popover = document.createElement('div')
+  popover.id = 'closedProjectsPopover'
+  popover.className = 'closed-projects-popover'
+  popover.setAttribute('role', 'region')
+  popover.setAttribute('aria-label', 'Archived projects')
+  const heading = document.createElement('div')
+  heading.className = 'closed-projects-heading'
+  heading.textContent = `Archived projects · ${count}`
+  popover.appendChild(heading)
+  for (const entry of entries) popover.appendChild(closedProjectEntryEl(entry))
+  return popover
+}
+
+function closedProjectsControl(count, suppressed, open, soleProject = null) {
+  const trigger = document.createElement('button')
+  trigger.id = 'closedProjectsTrigger'
+  trigger.type = 'button'
+  trigger.className = 'closed-projects-trigger'
+  trigger.setAttribute('aria-expanded', String(open))
+  trigger.setAttribute('aria-controls', 'closedProjectsPopover')
+  if (soleProject) trigger.dataset.project = soleProject
+  const label = document.createElement('span')
+  label.textContent = `Archived (${count})`
+  trigger.appendChild(label)
+  trigger.title = suppressed
+    ? `${count} archived project${count === 1 ? '' : 's'} · ${suppressed} item${suppressed === 1 ? '' : 's'} muted`
+    : `${count} archived project${count === 1 ? '' : 's'}`
+  trigger.addEventListener('click', () => setClosedProjectsOpen(!closedFoldOpen))
+  return trigger
 }
 
 // The peek banner (issue #32). While you are looking at a closed project the
@@ -1900,13 +2963,16 @@ function renderClosedBanner() {
   content.insertBefore(bar, content.querySelector('main'))
 }
 
-// Projects as vertical tabs: color dot · name · per-project attention badge ·
-// an empty match slot the search fills in later. The badges are per-project by
+// Projects as vertical tabs: color dot · name · per-project attention badge.
+// The badges are per-project by
 // design; the dock badge and the Needs-you tab count stay global (spec §7
 // filter-blindness).
 function renderRail() {
   const host = document.getElementById('rail')
   if (!host) return
+  const disclosure = document.getElementById('projectDisclosure')
+  const tablet = tabletProjectsMode()
+  disclosure?.classList.toggle('tablet-projects', tablet)
   const projects = railProjects({
     items: allItems(lastData.g),
     boards: lastData.boards,
@@ -1934,23 +3000,47 @@ function renderRail() {
   const entries = filterRailEntries(openEntries, railQuery)
   const closedRows = closedRailEntries(closed, counts)
   const closedEntries = filterRailEntries(closedRows, railQuery)
+  const closedSuppressed = suppressedTotal(closedRows)
   const selectedEntry = projectFilter
     ? [...openEntries, ...closedRows].find((entry) => entry.key === projectFilter)
     : openEntries[0]
   updateProjectDisclosure(selectedEntry)
-  // The fold opens on demand, whenever a closed project is being peeked, and
-  // whenever a search's only hit is behind it — otherwise §12's confident false
-  // negative comes back through a sealed fold instead of through a missing tab.
-  const foldOpen = closedFoldOpen || closed.includes(projectFilter)
-    || (!!searchQuery.trim() && closedEntries.some((e) => (projMatches.get(e.key) ?? 0) > 0))
+  // The fold opens on demand or while a closed project is being peeked.
+  const forcedOpenParts = []
+  if (closed.includes(projectFilter)) forcedOpenParts.push(`project:${projectFilter}`)
+  const forcedOpenKey = forcedOpenParts.join('\n')
+  if (tablet) tabletForcedOpenKey = forcedOpenKey
+  if (!closed.length) {
+    closedFoldOpen = false
+    tabletDismissedOpenKey = null
+  }
+  const foldOpen = !!closed.length && (
+    closedFoldOpen
+    || (!!forcedOpenKey && (!tablet || tabletDismissedOpenKey !== forcedOpenKey))
+  )
   const th = themeName()
-  const sig = JSON.stringify([entries, closedEntries, foldOpen, projectFilter, th, withFilter, railQuery, layout])
+  const sig = JSON.stringify([closedEntries, tablet ? null : foldOpen,
+    entries,
+    projectFilter,
+    th,
+    withFilter,
+    railQuery,
+    layout,
+    tablet,
+    tablet ? forcedOpenKey : null,
+    closed.length,
+    closedSuppressed,
+  ])
   if (host.dataset.sig === sig) return
+  if (tablet) closedFoldOpen = foldOpen
   // rebuilding blows away focus; remember the caret so typing in the filter survives
   const active = document.activeElement
+  const focusState = projectFocusState(active)
   const caret = active && active.classList.contains('rail-filter') ? active.selectionStart : null
   host.dataset.sig = sig
+  document.getElementById('closedProjectsPopover')?.remove()
   host.innerHTML = ''
+  let railFilter = null
   if (withFilter) {
     const f = document.createElement('input')
     f.type = 'search'
@@ -1960,15 +3050,52 @@ function renderRail() {
     f.value = railQuery
     f.addEventListener('input', () => { railQuery = f.value; renderRail() })
     host.appendChild(f)
-    if (caret !== null) { f.focus(); f.setSelectionRange(caret, caret) }
+    railFilter = f
   }
   for (const e of entries) host.appendChild(railRowEl(e, { withFilter }))
-  if (closed.length) host.appendChild(closedFoldEl(closedEntries, closed.length, suppressedTotal(closedRows), foldOpen, withFilter))
+  if (closed.length) {
+    if (tablet) {
+      tabletClosedSnapshot = { entries: closedEntries, count: closed.length }
+      host.appendChild(      closedProjectsControl(
+        closed.length,
+        closedSuppressed,
+        foldOpen,
+        closed.length === 1 ? closed[0] : null,
+      ))
+      if (foldOpen) disclosure?.appendChild(closedProjectsPopoverEl(closedEntries, closed.length))
+    } else {
+      tabletClosedSnapshot = null
+      host.appendChild(closedFoldEl(
+        closedEntries,
+        closed.length,
+        closedSuppressed,
+        foldOpen,
+        withFilter,
+      ))
+    }
+  } else {
+    tabletClosedSnapshot = null
+  }
   // roving tablist (spec §13): exactly one project tab is tabbable
-  for (const b of host.querySelectorAll('.rail-tab')) {
+  const tabs = [...host.querySelectorAll('.rail-tab')]
+  for (const b of tabs) {
     b.tabIndex = b.getAttribute('aria-selected') === 'true' ? 0 : -1
   }
+  if (!tabs.some((tab) => tab.tabIndex === 0) && tabs[0]) {
+    tabs[0].tabIndex = 0
+  }
   wireTablist(host, 'vertical')
+  if (caret !== null && railFilter) {
+    restoringRailFocus = true
+    try {
+      railFilter.focus()
+      railFilter.setSelectionRange(caret, caret)
+    } finally {
+      restoringRailFocus = false
+    }
+  } else {
+    restoreProjectFocus(focusState)
+  }
 }
 
 // the top bar's agent filter — a demoted dropdown scoped to the selected project.
@@ -2066,7 +3193,7 @@ function renderLive(entries) {
         ${kids}
         <span class="live-age ${fresh}" title="started ${rel(a.started_at)} ago">last call ${rel(seen)}</span>
       </summary>
-      ${a.detail ? `<div class="detail live-detail">${esc(a.detail)}</div>` : ''}`
+      ${a.detail ? `<div class="detail live-detail">${renderStructuredText(a.detail)}</div>` : ''}`
     const dot = el.querySelector('.live-dot')
     paintLiveProjectDot(dot, a.project, 'working')
     dot.title = `${a.project} · working · last call ${rel(seen)} ago`
@@ -2203,6 +3330,7 @@ function initLiveBar() {
     if (!drawer.hidden && !livePinned && outsideDrawer(e.target)) toggleLiveDrawer(false)
   })
   document.addEventListener('keydown', (e) => {
+    if (nativeKeyOwner(e)) return
     if (e.key === 'Escape' && !drawer.hidden) {
       e.preventDefault()
       toggleLiveDrawer(false, { restoreFocus: true })
@@ -2242,7 +3370,12 @@ const starStage = createStagedSend({
   setTimeoutFn: (fn, ms) => window.setTimeout(fn, ms),
   clearTimeoutFn: (h) => window.clearTimeout(h),
   // exactly the call the option pill makes today (app.js `answerEl`) — no new endpoint
-  send: ({ id, label, context }) => { stagedStars.delete(id); sendReply(id, label, context) },
+  send: ({ id, label, context, generation, intent }) => {
+    stagedStars.delete(id)
+    invalidateItemDraftIntents(id)
+    itemLatestIntents[id] = intent
+    sendReply(id, label, context, 'answer', generation, intent, false)
+  },
 })
 
 // a staged send must never be lost to a closing tab
@@ -2256,6 +3389,8 @@ function initStagedFlush() {
 // that opens itself. With the old #now strip gone this is the deck's only door.
 let actionFilter = 'all'
 let changedOnly = false
+let askSort = 'priority'
+let needsYouHeaderNode = null
 
 function entryEntity(entry) {
   return entry.kind === 'row' ? entry.row : entry.item
@@ -2270,31 +3405,122 @@ function filterActionEntries(entries) {
   })
 }
 
+function syncNeedsYouHeader(bar) {
+  for (const filter of bar.querySelectorAll('[data-action-filter]')) {
+    filter.classList.toggle('active', filter.dataset.actionFilter === actionFilter)
+  }
+  const changed = bar.querySelector('[data-changed-filter]')
+  changed.classList.toggle('active', changedOnly)
+  changed.disabled = !lastVisitAt
+  const sort = bar.querySelector('.queue-sort select')
+  if (sort.value !== askSort) sort.value = askSort
+}
+
 function needsYouHeader() {
+  if (needsYouHeaderNode) {
+    syncNeedsYouHeader(needsYouHeaderNode)
+    return needsYouHeaderNode
+  }
   const bar = document.createElement('div')
   bar.className = 'tab-header'
+  const filters = document.createElement('div')
+  filters.className = 'queue-filter-group'
   for (const [value, label] of [['all', 'All'], ['decision', 'Decisions'], ['task', 'To do']]) {
     const filter = btn(label, () => {
       actionFilter = value
-      forceRender()
+      renderIfIdle()
     })
-    filter.className = `header-toggle${actionFilter === value ? ' active' : ''}`
-    bar.appendChild(filter)
+    filter.className = 'header-toggle'
+    filter.dataset.actionFilter = value
+    filters.appendChild(filter)
   }
   const changed = btn('Updates', () => {
     changedOnly = !changedOnly
-    forceRender()
+    renderIfIdle()
   })
-  changed.className = `header-toggle${changedOnly ? ' active' : ''}`
-  changed.disabled = !lastVisitAt
-  bar.appendChild(changed)
+  changed.className = 'header-toggle'
+  changed.dataset.changedFilter = '1'
+  filters.appendChild(changed)
+  const tools = document.createElement('div')
+  tools.className = 'queue-tool-group'
+  const sortLabel = document.createElement('label')
+  sortLabel.className = 'queue-sort'
+  const sortText = document.createElement('span')
+  sortText.textContent = 'Sort'
+  const sort = document.createElement('select')
+  sort.setAttribute('aria-label', 'Sort queue')
+  for (const option of ASK_SORT_OPTIONS) {
+    const el = document.createElement('option')
+    el.value = option.value
+    el.textContent = option.label
+    sort.appendChild(el)
+  }
+  sort.value = askSort
+  sort.addEventListener('change', () => {
+    askSort = sort.value
+    pinnedIds = []
+    renderIfIdle()
+  })
+  sortLabel.append(sortText, sort)
+  tools.appendChild(sortLabel)
   const relay = btn('Handoffs', openRelay)
   relay.className = 'relay-btn'
-  bar.appendChild(relay)
+  tools.appendChild(relay)
   const tri = btn('Review queue', openTriage)
   tri.className = 'triage-btn'
-  bar.appendChild(tri)
+  tools.appendChild(tri)
+  bar.append(filters, tools)
+  needsYouHeaderNode = bar
+  syncNeedsYouHeader(bar)
   return bar
+}
+
+function needsEntryId(entry) {
+  return entry.kind === 'row' ? entry.row.id : entry.item.id
+}
+
+function protectedNeedsYouIds() {
+  const ids = new Set()
+  if (pendingFocusId) ids.add(pendingFocusId)
+  if (openRowId) ids.add(openRowId)
+  if (selectedId) ids.add(selectedId)
+  const focusedId = document.activeElement?.closest?.('#needsYouList .nrow[data-card-id]')?.dataset.cardId
+  if (focusedId) ids.add(focusedId)
+  for (const [id, draft] of Object.entries(rowDrafts)) if (draft) ids.add(id)
+  for (const [id, draft] of Object.entries(draftReplies)) if (draft) ids.add(id)
+  for (const [id, draft] of Object.entries(draftReplyContexts)) if (draft) ids.add(id)
+  return ids
+}
+
+function paginateNeedsYou(entries, protectedIds) {
+  let limit = shown.needsYou
+  entries.forEach((entry, index) => {
+    if (protectedIds.has(needsEntryId(entry))) limit = Math.max(limit, index + 1)
+  })
+  shown.needsYou = limit
+  return paginate(entries, limit)
+}
+
+function paginateWithPending(entries, section) {
+  const baseLimit = shown[section]
+  let limit = baseLimit
+  const protectedId = pendingFocusId ?? pagedFocusId
+  const targetIndex = protectedId
+    ? entries.findIndex((entry) => entry.id === protectedId)
+    : -1
+  if (targetIndex >= 0) limit = Math.max(limit, targetIndex + 1)
+  const page = paginate(entries, limit)
+  const viewed = targetIndex >= baseLimit
+    ? [...page.visible.slice(0, baseLimit), entries[targetIndex]]
+    : page.visible
+  return { ...page, viewed: viewed.filter(Boolean) }
+}
+
+function replaceNeedsYouBody(host, header) {
+  for (const child of [...host.children]) {
+    if (child !== header) child.remove()
+  }
+  if (header.parentElement !== host) host.appendChild(header)
 }
 
 // one quiet chip at the very foot of the Needs-you list — notes are seen in the
@@ -2342,8 +3568,12 @@ function renderEmptyState(host) {
 // flat, ranked, two-line rows — no project/agent heading levels (§3, §15)
 function renderNeedsYou(g, boardsInView, nowMs) {
   const host = document.getElementById('needsYouList')
-  const openCard = openRowId ? needsYouRowEl(openRowId)?.querySelector('.nrow-card') : null
+  const protectedIds = protectedNeedsYouIds()
+  const openQueueRow = openRowId ? needsYouRowEl(openRowId) : null
+  const openCard = openQueueRow?.querySelector('.nrow-card') ?? null
+  const openRowViewportTop = openQueueRow?.getBoundingClientRect().top ?? null
   const cardFocus = openCard ? captureCardFocus(openCard, openRowId) : null
+  const askedTimeFocusId = focusedAskedTimeId()
   if (openCard) openRowScrollTop = openCard.scrollTop
   // §13: this rebuilds every row from scratch (poll tick or user action) — capture
   // this BEFORE the list gets cleared below, since clearing a focused element's
@@ -2362,12 +3592,18 @@ function renderNeedsYou(g, boardsInView, nowMs) {
   // land in sortNeedsYou's bucket 3 — the same dimmed foot, one ordering rule.
   const replied = repliedEntries(items, nowMs, live)
   const awaiting = awaitingAgentRows(boardsInView, closedSet())
-  const snoozed = filterActionEntries(snoozedEntries(items, boardsInView, nowMs, closedSet()))
+  const snoozed = sortDeferredEntries(
+    filterActionEntries(snoozedEntries(items, boardsInView, nowMs, closedSet())),
+  )
   const unordered = filterActionEntries(needsYouEntries(items, boardsInView, nowMs, live, [...replied, ...awaiting]))
   // §10: pin existing order BEFORE paginating. New arrivals append at the foot,
   // so they appear live without moving the row the human is reading.
-  const entryById = new Map(unordered.map((e) => [e.kind === 'row' ? e.row.id : e.item.id, e]))
-  const entries = orderedIds([...entryById.keys()]).map((id) => entryById.get(id)).filter(Boolean)
+  const entries = askSort === 'priority'
+    ? (() => {
+        const entryById = new Map(unordered.map((e) => [e.kind === 'row' ? e.row.id : e.item.id, e]))
+        return orderedIds([...entryById.keys()]).map((id) => entryById.get(id)).filter(Boolean)
+      })()
+    : sortNeedsYouByAsk(unordered, askSort)
   const entities = [...items, ...boardsInView]
   const opts = {
     streams: streamCounts(entities),
@@ -2375,31 +3611,13 @@ function renderNeedsYou(g, boardsInView, nowMs) {
     showProject: !projectFilter, // a single selected project needs no monogram (§2)
     lastVisitAt,
   }
-  const { visible, remaining } = paginate(entries, shown.needsYou)
-  // fix round 2 (I2): the stale fold renders BELOW the empty state but its
-  // contents are part of this tab's answer. Computed first so a query matching
-  // only a stale item can't print "No matches … or in any other tab" directly
-  // above the fold holding that exact match (while its tab badge reads 1).
-  const stale = filterActionEntries(staleEntries(items, nowMs, live))
-  host.innerHTML = ''
-  host.appendChild(needsYouHeader())
+  const { visible, remaining } = paginateNeedsYou(entries, protectedIds)
+  const stale = sortDeferredEntries(filterActionEntries(staleEntries(items, nowMs, live)))
+  const header = needsYouHeader()
+  replaceNeedsYouBody(host, header)
   if (!entries.length) {
-    // a search that matched nothing still says so; an empty INBOX gets the calm panel
-    if (searchQuery.trim()) {
-      // only claim "no matches" when the fold below holds none either
-      if (!stale.length && !snoozed.length) host.insertAdjacentHTML('beforeend', `<p class="empty">${emptyMsg('Nothing needs you.')}</p>`)
-      // issue #31.3: suppressing the FALSE "no matches" claim also swallowed the
-      // §12 pointer, leaving a search that hit only a collapsed stale item with a
-      // blank tab. The claim is what was wrong, not the pointer — print it alone.
-      else {
-        const where = elsewhereMsg()
-        if (where) host.insertAdjacentHTML('beforeend', `<p class="empty">Only deferred matches here — ${where}</p>`)
-      }
-    } else {
-      // an empty INBOX still gets the calm panel: a demoted stale item is, by
-      // definition, not something that needs you — the claim stays true.
-      renderEmptyState(host)
-    }
+    // A demoted stale item is, by definition, not something that needs you.
+    renderEmptyState(host)
   }
   for (const e of visible) host.appendChild(needsRowEl(rowModel(e, opts), e, nowMs))
   if (remaining > 0) host.appendChild(moreButton('needsYou', remaining))
@@ -2410,33 +3628,88 @@ function renderNeedsYou(g, boardsInView, nowMs) {
   // count is computed from (render()'s `g.notes`). It used to read the GLOBAL
   // lastData.g.notes, so the chip and the badge disagreed under any rail filter.
   renderNeedsYouExtras(host, g.notes.flatMap((gr) => gr.items))
-  const restoredCard = openRowId ? needsYouRowEl(openRowId)?.querySelector('.nrow-card') : null
+  const restoredRow = openRowId ? needsYouRowEl(openRowId) : null
+  const restoredCard = restoredRow?.querySelector('.nrow-card') ?? null
   if (restoredCard && openRowScrollTop > 0) restoredCard.scrollTop = openRowScrollTop
+  if (restoredRow && openRowViewportTop !== null) {
+    const viewportDelta = restoredRow.getBoundingClientRect().top - openRowViewportTop
+    if (Number.isFinite(viewportDelta) && Math.abs(viewportDelta) > 0.5) {
+      window.scrollBy(0, viewportDelta)
+    }
+  }
   const restoredCardFocus = restoreCardFocus(cardFocus)
+  const restoredAskedTimeFocus = restoreAskedTimeFocus(askedTimeFocusId)
   // §13: `selectedId` (Task 17) is module state, same pattern as openRowId/
   // staleFoldOpen — the DOM just rebuilt above has no idea a row was selected,
   // so reapply it. Neither selection nor an open card suspends polling. Restore
   // row focus only when focus was already inside the list and the open card did
   // not restore its own control; a poll must never yank focus from elsewhere.
-  restoreRowSelection(hadListFocus && !restoredCardFocus)
+  restoreRowSelection(hadListFocus && !restoredCardFocus && !restoredAskedTimeFocus)
 }
 
 function renderOrphanedDrafts(host) {
-  const activeRows = new Set((lastData?.boards ?? []).flatMap((board) => board.rows.map((row) => row.id)))
-  const entries = Object.entries(staleRowDrafts).filter(([id]) => !activeRows.has(id))
+  const activeRows = new Map((lastData?.boards ?? [])
+    .flatMap((board) => board.rows.map((row) => [row.id, row.revision])))
+  const entries = [
+    ...Object.entries(staleItemDrafts).map(([key, draft]) => ({
+      id: key,
+      draft,
+      retry: () => retryItemDraft(key, draft),
+      clear: () => deleteItemDraftRecovery(key, draft.owner),
+      text: [
+        draft.title,
+        `${draft.kind}: ${draft.text}`,
+        draft.context ? `context: ${draft.context}` : '',
+      ].filter(Boolean).join(' · '),
+    })),
+    ...Object.entries(staleRowDrafts)
+      .filter(([, draft]) =>
+        activeRows.get(draft.rowId) !== draft.revision
+        || !needsYouRowEl(draft.rowId)?.querySelector('.reply-input'))
+      .map(([key, draft]) => ({
+        id: key,
+        draft,
+        clear: () => {
+          delete staleRowDrafts[key]
+          clearRowRecoveryTarget(draft.rowId, draft.revision)
+          return true
+        },
+        text: [
+          draft.boardTitle,
+          draft.label,
+          `action ${draft.actionVersion ?? draft.revision}`,
+          `${draft.kind}: ${draft.text}`,
+          draft.context ? `context: ${draft.context}` : '',
+        ].filter(Boolean).join(' · '),
+      })),
+  ]
   if (!entries.length) return
   const fold = document.createElement('details')
   fold.className = 'stale-fold stale-drafts-fold'
+  fold.open = true
   const summary = document.createElement('summary')
+  summary.tabIndex = 0
   summary.textContent = `unsent responses (${entries.length})`
   fold.appendChild(summary)
-  for (const [id, draft] of entries) {
+  for (const entry of entries) {
     const line = document.createElement('div')
     line.className = 'stale-draft-line'
-    line.textContent = `${draft.boardTitle} · ${draft.label} · ${draft.kind}: ${draft.text}`
+    line.textContent = entry.text
+    if (entry.retry) {
+      const retry = btn('Retry', entry.retry)
+      retry.className = 'undo-btn'
+      line.appendChild(retry)
+    }
     const clear = btn('Clear', () => {
-      delete staleRowDrafts[id]
-      forceRender()
+      if (!entry.clear()) {
+        forceRender()
+        return
+      }
+      line.remove()
+      const remaining = fold.querySelectorAll('.stale-draft-line').length
+      if (remaining) summary.textContent = `unsent responses (${remaining})`
+      else fold.remove()
+      renderIfIdle()
     })
     clear.className = 'undo-btn'
     line.appendChild(clear)
@@ -2451,11 +3724,25 @@ function renderOrphanedDrafts(host) {
 let staleFoldOpen = false
 let snoozedFoldOpen = false
 
+function revealDetailsAncestors(target) {
+  for (let node = target; node; node = node.parentElement) {
+    if (node.tagName !== 'DETAILS') continue
+    node.open = true
+    if (node.dataset.cardId) setCardCollapsed(node.dataset.cardId, false)
+    if (node.classList.contains('snoozed-fold')) snoozedFoldOpen = true
+    else if (node.classList.contains('stale-fold')) staleFoldOpen = true
+    if (node.classList.contains('archived-fold')) showArchived = true
+  }
+}
+
 function snoozedFoldEl(entries, opts, nowMs) {
   const fold = document.createElement('details')
   fold.className = 'stale-fold snoozed-fold'
   if (snoozedFoldOpen) fold.open = true
-  fold.addEventListener('toggle', () => { snoozedFoldOpen = fold.open })
+  fold.addEventListener('toggle', () => {
+    snoozedFoldOpen = fold.open
+    restoreRowSelection(false)
+  })
   const summary = document.createElement('summary')
   summary.textContent = `snoozed (${entries.length})`
   fold.appendChild(summary)
@@ -2469,7 +3756,10 @@ function staleFoldEl(entries, opts, nowMs) {
   const fold = document.createElement('details')
   fold.className = 'stale-fold'
   if (staleFoldOpen) fold.open = true
-  fold.addEventListener('toggle', () => { staleFoldOpen = fold.open })
+  fold.addEventListener('toggle', () => {
+    staleFoldOpen = fold.open
+    restoreRowSelection(false)
+  })
   const summary = document.createElement('summary')
   summary.textContent = staleFoldLabel(entries.length)
   fold.appendChild(summary)
@@ -2481,7 +3771,7 @@ function needsRowEl(m, entry, nowMs) {
   const el = document.createElement('div')
   el.className = `nrow nrow-${m.kind}${m.answered ? ' answered' : ''}${stagedDismiss.has(m.id) ? ' staged' : ''}`
   el.dataset.cardId = m.id
-  el.tabIndex = 0
+  el.tabIndex = -1
   const chip = urgencyChip(m, nowMs)
   const color = pcolor(m.project)
   const glyph = m.kind === 'row' ? `<button class="nrow-glyph" title="Open plan: ${esc(m.boardTitle ?? '')}">Plan</button>` : ''
@@ -2495,6 +3785,10 @@ function needsRowEl(m, entry, nowMs) {
   const streamBit = m.stream ? `<span class="nrow-stream">${esc(m.stream)}</span>` : ''
   const ownerBit = `<span class="nrow-owner owner-${esc(m.actionCategory)}">${esc(m.ownerLabel)}</span>`
   const changeBit = m.changeKind ? `<span class="nrow-change">${esc(m.changeKind)}</span>` : ''
+  const asked = askTimeModel(m.askedAt, nowMs)
+  const askedBit = asked
+    ? `<time class="nrow-asked" datetime="${esc(asked.datetime)}" data-exact="${esc(asked.exact)}" aria-label="${esc(asked.accessibleLabel)}" tabindex="0">${esc(asked.text)}</time>`
+    : ''
   // omit line 2 entirely when it would be blank — no secondary text, no agent
   // chip, no stream — otherwise it leaves a padded empty line under the row.
   // Still built (with staged-dismiss's own content) when a dismiss is staged,
@@ -2503,23 +3797,47 @@ function needsRowEl(m, entry, nowMs) {
   const l2 = showL2 ? `<div class="nrow-l2"><span class="nrow-sec">${esc(m.secondary)}</span>${agentBit}${streamBit}</div>` : ''
   el.innerHTML = `
     <div class="nrow-l1">
-      <span class="pdot" style="background:${color.dot}" title="${esc(m.project)}"></span>
-      ${projBit}
-      ${glyph}
-      <span class="nrow-title" title="${esc(m.title)}">${esc(m.title)}</span>
-      ${ownerBit}
-      ${changeBit}
-      <span class="chip chip-${chip.tone}"><span aria-hidden="true">${livenessGlyph(m.liveness).glyph}</span> ${esc(chip.text)}</span>
-      <span class="nrow-src">${sourceChipsHtml(linkIndex, entry.kind === 'row' ? entry.board : entry.item, nowMs)}</span>
-      <span class="nrow-star"></span>
-      ${wakeBit}
-      ${dismissBit}
-      <span class="nrow-caret">▸</span>
+      <div class="nrow-primary">
+        <span class="pdot" style="background:${color.dot}" title="${esc(m.project)}"></span>
+        ${projBit}
+        ${glyph}
+        <span class="nrow-title" title="${esc(m.title)}">${esc(m.title)}</span>
+      </div>
+      <div class="nrow-meta">
+        ${ownerBit}
+        ${changeBit}
+        ${askedBit}
+        <span class="chip chip-${chip.tone}"><span aria-hidden="true">${livenessGlyph(m.liveness).glyph}</span> ${esc(chip.text)}</span>
+        <span class="nrow-src">${sourceChipsHtml(linkIndex, entry.kind === 'row' ? entry.board : entry.item, nowMs)}</span>
+        <span class="nrow-star"></span>
+        ${wakeBit}
+        ${dismissBit}
+        <span class="nrow-caret">▸</span>
+      </div>
     </div>
     ${l2}`
   el.style.setProperty('--wash', color.wash)
   const boardBtn = el.querySelector('.nrow-glyph')
   if (boardBtn) boardBtn.addEventListener('click', (ev) => { ev.stopPropagation(); jumpToCard('boards', m.boardId) })
+  const askedEl = el.querySelector('.nrow-asked')
+  if (askedEl) {
+    const selectAskedRow = () => {
+      selectedId = m.id
+      markSelectedRow(m.id)
+    }
+    askedEl.addEventListener('focus', selectAskedRow)
+    askedEl.addEventListener('click', (ev) => {
+      selectAskedRow()
+      askedEl.focus({ preventScroll: true })
+      ev.stopPropagation()
+    })
+    askedEl.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' || ev.key === ' ') {
+        ev.preventDefault()
+        ev.stopPropagation()
+      }
+    })
+  }
   const dismissBtn = el.querySelector('.nrow-dismiss')
   if (dismissBtn) dismissBtn.addEventListener('click', (ev) => {
     ev.stopPropagation()
@@ -2551,7 +3869,12 @@ function needsRowEl(m, entry, nowMs) {
     label.className = 'sent-label'
     label.textContent = `${stagedLabel(staged)} — `
     const undo = btn('Undo', () => {
-      if (starStage.undo(`star:${m.id}`)) { stagedStars.delete(m.id); forceRender(); return }
+      if (starStage.undo(`star:${m.id}`)) {
+        cancelItemIntent(m.id, staged.intent, staged.previousIntent)
+        stagedStars.delete(m.id)
+        forceRender()
+        return
+      }
       const fresh = freshItem(m.id) ?? entry.item
       const refusal = undoRefusal(fresh, Date.now())
       if (refusal) { label.textContent = `${refusal} ` } else changeAnswer(fresh, label)
@@ -2560,8 +3883,16 @@ function needsRowEl(m, entry, nowMs) {
     slot.replaceChildren(label, undo)
   } else if (opt) {
     const star = btn('★', () => {
-      stagedStars.set(m.id, { label: opt.label })
-      starStage.stage(`star:${m.id}`, { id: m.id, label: opt.label, context: draftReplyContexts[m.id] ?? '' })
+      const previousIntent = itemLatestIntents[m.id] ?? null
+      const intent = claimItemIntent(m.id, { staged: true })
+      stagedStars.set(m.id, { label: opt.label, intent, previousIntent })
+      starStage.stage(`star:${m.id}`, {
+        id: m.id,
+        label: opt.label,
+        context: draftReplyContexts[m.id] ?? '',
+        generation: itemDraftGenerations[m.id] ?? 0,
+        intent,
+      })
       forceRender()
     })
     star.className = 'star-btn'
@@ -2607,8 +3938,12 @@ function rowCardBodyEl(entry, m, nowMs) {
   // hide the answer surface again). Same freshItem() precedent as the star's
   // Undo fallback. Resolved in place: `entry.item` is undefined for board rows.
   body.appendChild(entry.kind === 'row'
-    ? rowCardEl(entry.board, entry.row)
-    : itemCardEl(freshItem(entry.item.id) ?? entry.item, { nowMs, liveness: m.liveness }))
+    ? rowCardEl(entry.board, entry.row, undefined, { includeAsked: false })
+    : itemCardEl(freshItem(entry.item.id) ?? entry.item, {
+        nowMs,
+        liveness: m.liveness,
+        includeAsked: false,
+      }))
   return body
 }
 
@@ -2623,6 +3958,8 @@ function rowCardBodyEl(entry, m, nowMs) {
 // duplicated per trigger.
 function toggleRow(el, m, entry, nowMs) {
   const wasOpen = openRowId === m.id
+  selectedId = m.id
+  markSelectedRow(m.id)
   setOpenRow(wasOpen ? null : m.id)
   for (const other of document.querySelectorAll('.nrow[data-open="1"]')) {
     other.removeAttribute('data-open')
@@ -2646,8 +3983,8 @@ function toggleRow(el, m, entry, nowMs) {
 function renderGroups(sectionId, groups) {
   const host = document.querySelector(`#${sectionId} .groups`)
   const items = groups.flatMap((gr) => gr.items)
-  const { visible, remaining } = paginate(items, shown[sectionId])
-  host.innerHTML = items.length ? '' : `<p class="empty">${emptyMsg('Nothing here.')}</p>`
+  const { visible, remaining, viewed } = paginateWithPending(items, sectionId)
+  host.innerHTML = items.length ? '' : '<p class="empty">Nothing here.</p>'
   for (const it of visible) host.appendChild(itemEl(it))
   if (remaining > 0) host.appendChild(moreButton(sectionId, remaining))
   // fix round 2 (I3): mark seen only what was actually on screen. The hidden set
@@ -2655,16 +3992,16 @@ function renderGroups(sectionId, groups) {
   // more" pager and a note behind the rail's project filter were equally unseen,
   // and there is one watermark covering every scope.
   if (sectionId === 'notes' && activeTab === 'notes') {
-    const shownIds = new Set(visible.map((it) => it.id))
+    const shownIds = new Set(viewed.map((it) => it.id))
     const all = lastData.g.notes.flatMap((gr) => gr.items)
-    markNotesSeen(visible, all.filter((n) => !shownIds.has(n.id)), all)
+    markNotesSeen(viewed, all.filter((n) => !shownIds.has(n.id)), all)
   }
 }
 
 function renderDone(items) {
   const host = document.querySelector('#done .items')
-  const { visible, remaining } = paginate(items, shown.done)
-  host.innerHTML = items.length ? '' : `<p class="empty">${emptyMsg('Nothing yet.')}</p>`
+  const { visible, remaining } = paginateWithPending(items, 'done')
+  host.innerHTML = items.length ? '' : '<p class="empty">Nothing yet.</p>'
   for (const it of visible) host.appendChild(itemEl(it, it.status !== 'open'))
   if (remaining > 0) host.appendChild(moreButton('done', remaining))
 }
@@ -2737,12 +4074,9 @@ function renderBoards(boards, archived) {
   // here as a "completed — archived" card so finished work never blinks out (§9)
   const lingering = lingeringBoards(sessionActiveBoards, boards, archived)
   const lingerIds = new Set(lingering.map((b) => b.id))
-  // fix round 2 (I2): the archived fold renders below this line and its contents
-  // are part of the answer — `rest` is computed first so "No matches for X here
-  // or in any other tab" can't print directly above a fold holding the match.
   const rest = archived.filter((b) => !lingerIds.has(b.id))
-  if (!boards.length && !lingering.length && !rest.length) host.insertAdjacentHTML('beforeend', `<p class="empty">${emptyMsg('No plans yet.')}</p>`)
-  const { visible, remaining } = paginate(boards, shown.boards)
+  if (!boards.length && !lingering.length && !rest.length) host.insertAdjacentHTML('beforeend', '<p class="empty">No plans yet.</p>')
+  const { visible, remaining } = paginateWithPending(boards, 'boards')
   for (const b of visible) host.appendChild(boardEl(b))
   if (remaining > 0) host.appendChild(moreButton('boards', remaining))
   for (const b of lingering) host.appendChild(boardEl(b, true, true))
@@ -2754,7 +4088,7 @@ function renderBoards(boards, archived) {
     fold.open = showArchived
     fold.addEventListener('toggle', () => { showArchived = fold.open })
     fold.innerHTML = `<summary>Archived plans (${rest.length})</summary>`
-    const page = paginate(rest, shown.archived)
+    const page = paginateWithPending(rest, 'archived')
     for (const b of page.visible) fold.appendChild(boardEl(b, true))
     if (page.remaining > 0) fold.appendChild(moreButton('archived', page.remaining))
     host.appendChild(fold)
@@ -2830,6 +4164,7 @@ function boardEl(b, archived = false, lingering = false) {
     if (openRows.has(r.id)) {
       const ptr = document.createElement('tr')
       ptr.className = 'row-panel-row'
+      ptr.dataset.rowId = r.id
       const td = document.createElement('td')
       td.colSpan = 5
       td.appendChild(rowPanelEl(b, r, archived))
@@ -2883,31 +4218,573 @@ function archiveBtn(board) {
 const openCompares = new Set()   // item ids with the compare view expanded
 const draftReplies = {}          // item id → in-progress free-text answer
 const draftReplyContexts = {}    // item id → optional context attached to the answer
-let draftFocusKey = null         // `${itemId}:answer` or `${itemId}:context`, to restore focus
+const itemDraftMeta = {}         // item id → recovery labels if its answer surface disappears
+const itemDraftGenerations = {}  // item id → monotonic edit token across duplicate editors
+const itemSubmissionTokens = {}  // item id → latest async submission allowed to retire its draft
+const itemLatestIntents = {}     // item id → latest non-cancelled human intent
+const itemDraftRetryIntents = {} // item id → exact ambiguous intent while its draft generation is unchanged
+const itemDraftSubmissions = {}  // item id → in-flight free-text intents keyed by draft generation
+const staleItemDrafts = {}       // recovery key → refused/orphaned answer preserved outside the poll gate
+const ITEM_REPLY_INTENT_SESSION_KEY = 'agent-inbox-reply-intent'
 
-async function sendReply(id, text, context = '', kind = 'answer') {
+function effectiveReply(it) {
+  return draftReplies[it.id] ?? (it.reply_source === 'agent' ? (it.reply ?? '') : '')
+}
+
+function effectiveReplyContext(it) {
+  return draftReplyContexts[it.id] ?? (it.reply_source === 'agent' ? (it.reply_context ?? '') : '')
+}
+
+function isVerifiedReload() {
+  const navigation = globalThis.performance?.getEntriesByType?.('navigation')?.[0]
+  if (navigation?.type) return navigation.type === 'reload'
+  return globalThis.performance?.navigation?.type === 1
+}
+
+const storedReplyIntent = (() => {
+  if (isVerifiedReload()) {
+    try {
+      const parsed = JSON.parse(sessionStorage.getItem(ITEM_REPLY_INTENT_SESSION_KEY) ?? 'null')
+      const clientId = typeof parsed?.clientId === 'string' ? parsed.clientId.trim() : ''
+      if (
+        clientId
+        && clientId.length <= 128
+        && Number.isSafeInteger(parsed.sequence)
+        && parsed.sequence >= 0
+        && parsed.sequence < Number.MAX_SAFE_INTEGER
+      ) return { clientId, sequence: parsed.sequence }
+    } catch {
+      // Corrupt window-local state gets a new identity rather than blocking replies.
+    }
+  }
+  const fresh = { clientId: globalThis.crypto.randomUUID(), sequence: 0 }
+  sessionStorage.setItem(ITEM_REPLY_INTENT_SESSION_KEY, JSON.stringify(fresh))
+  return fresh
+})()
+
+function claimItemIntent(id, { staged = false } = {}) {
+  if (!staged) invalidateItemDraftIntents(id)
+  const sequence = ++storedReplyIntent.sequence
+  sessionStorage.setItem(ITEM_REPLY_INTENT_SESSION_KEY, JSON.stringify(storedReplyIntent))
+  const intent = { sequence, actionId: globalThis.crypto.randomUUID() }
+  if (!staged) itemLatestIntents[id] = intent
+  if (!staged) cancelStagedItemIntent(id)
+  return intent
+}
+
+function sameItemIntent(left, right) {
+  return Boolean(left && right
+    && left.sequence === right.sequence
+    && left.actionId === right.actionId)
+}
+
+function rememberItemDraftSubmission(id, generation, intent) {
+  const submissions = itemDraftSubmissions[id] ?? new Map()
+  const submission = {
+    intent: { ...intent },
+    recoveryKey: null,
+    recoveryOwner: null,
+    retryable: true,
+  }
+  submissions.set(generation, submission)
+  itemDraftSubmissions[id] = submissions
+  return submission
+}
+
+function itemDraftSubmission(id, generation, intent = null) {
+  const submission = itemDraftSubmissions[id]?.get(generation) ?? null
+  if (intent && !sameItemIntent(submission?.intent, intent)) return null
+  return submission
+}
+
+function retireItemDraftSubmission(id, generation, intent) {
+  const submissions = itemDraftSubmissions[id]
+  const submission = submissions?.get(generation)
+  if (!submissions || !sameItemIntent(submission?.intent, intent)) return
+  submissions.delete(generation)
+  if (!submissions.size) delete itemDraftSubmissions[id]
+}
+
+function retireItemDraftSubmissionIntent(id, intent) {
+  const submissions = itemDraftSubmissions[id]
+  if (!submissions) return
+  for (const [generation, submission] of submissions) {
+    if (sameItemIntent(submission.intent, intent)) submissions.delete(generation)
+  }
+  if (!submissions.size) delete itemDraftSubmissions[id]
+}
+
+function invalidateItemDraftIntents(id) {
+  delete itemDraftRetryIntents[id]
+  for (const submission of itemDraftSubmissions[id]?.values() ?? []) {
+    submission.retryable = false
+  }
+}
+
+function cancelItemIntent(id, cancelled, previous) {
+  if (!sameItemIntent(itemLatestIntents[id], cancelled)) return
+  if (previous) itemLatestIntents[id] = previous
+  else delete itemLatestIntents[id]
+}
+
+function cancelStagedItemIntent(id) {
+  if (!starStage.undo(`star:${id}`)) return false
+  const stagedIntent = stagedStars.get(id)
+  if (stagedIntent) cancelItemIntent(id, stagedIntent.intent, stagedIntent.previousIntent)
+  stagedStars.delete(id)
+  const row = needsYouRowEl(id)
+  row?.classList.remove('staged')
+  row?.querySelector('.nrow-star')?.replaceChildren()
+  return true
+}
+
+function postItemReply(id, body, intent) {
+  return postJSON(`/api/items/${id}/reply`, {
+    ...body,
+    intent_client_id: storedReplyIntent.clientId,
+    intent_sequence: intent.sequence,
+    intent_action_id: intent.actionId,
+  })
+}
+
+function itemDraftRecoveryKey(id, { intent, generation, kind }) {
+  return intent
+    ? `item:${id}:intent:${intent.actionId}`
+    : `item:${id}:draft:${generation}:${kind}`
+}
+
+function itemDraftRecoveryOwner(intent, generation) {
+  return {
+    token: globalThis.crypto.randomUUID(),
+    generation,
+    sequence: intent?.sequence ?? null,
+    actionId: intent?.actionId ?? null,
+  }
+}
+
+function sameItemDraftRecoveryOwner(left, right) {
+  return Boolean(left && right
+    && left.token === right.token
+    && left.generation === right.generation
+    && left.sequence === right.sequence
+    && left.actionId === right.actionId)
+}
+
+function deleteItemDraftRecovery(key, expectedOwner) {
+  const current = staleItemDrafts[key]
+  if (!current || !sameItemDraftRecoveryOwner(current.owner, expectedOwner)) return false
+  delete staleItemDrafts[key]
+  return true
+}
+
+function deleteMatchingItemDraftRecoveries(id, { text, context, kind }) {
+  let removed = false
+  for (const [key, draft] of Object.entries(staleItemDrafts)) {
+    if (
+      draft.itemId !== id
+      || draft.kind !== kind
+      || draft.text.trim() !== text.trim()
+      || draft.context.trim() !== context.trim()
+    ) continue
+    removed = deleteItemDraftRecovery(key, draft.owner) || removed
+  }
+  return removed
+}
+
+function transferItemDraftRecovery(key, expectedOwner, intent, generation) {
+  const current = staleItemDrafts[key]
+  if (!current || !sameItemDraftRecoveryOwner(current.owner, expectedOwner)) return null
+  const owner = itemDraftRecoveryOwner(intent, generation)
+  staleItemDrafts[key] = {
+    ...current,
+    intent: { ...intent },
+    owner,
+  }
+  return owner
+}
+
+function preserveItemDraftRecovery(id, {
+  key = null,
+  title,
+  text,
+  context,
+  kind,
+  intent = null,
+  ownerIntent = intent,
+  owner = null,
+  expectedOwner = null,
+  generation = itemDraftGenerations[id] ?? 0,
+}) {
+  const recoveryKey = key ?? itemDraftRecoveryKey(id, { intent, generation, kind })
+  if (
+    key
+    && expectedOwner
+    && !sameItemDraftRecoveryOwner(staleItemDrafts[key]?.owner, expectedOwner)
+  ) return null
+  staleItemDrafts[recoveryKey] = {
+    itemId: id,
+    title,
+    text,
+    context,
+    kind,
+    intent: intent ? { ...intent } : null,
+    owner: owner ?? itemDraftRecoveryOwner(ownerIntent, generation),
+  }
+  return recoveryKey
+}
+
+function retryItemDraft(key, draft) {
+  return sendReply(
+    draft.itemId,
+    draft.text,
+    draft.context,
+    draft.kind,
+    itemDraftGenerations[draft.itemId] ?? 0,
+    draft.intent ?? null,
+    true,
+    false,
+    key,
+    draft.owner,
+  )
+}
+
+function reusableDraftIntent(id, generation) {
+  const retry = itemDraftRetryIntents[id]
+  if (!retry || retry.generation !== generation) return null
+  return retry.intent
+}
+
+function hasDraftRecovery() {
+  return Object.keys(staleItemDrafts).length > 0 || Object.keys(staleRowDrafts).length > 0
+}
+
+function requestDraftRecovery(target = draftRecoveryTarget) {
+  draftRecoveryFocusPending = true
+  if (target) {
+    draftRecoveryTarget = target
+    projectFilter = target.project
+    agentFilter = null
+    actionFilter = 'all'
+    changedOnly = false
+    resetSearch()
+    setOpenRow(target.rowId)
+    selectRow(target.rowId)
+  }
+  if (triageDeck) closeTriage({ restoreFocus: false })
+  if (missionBoardId) closeMission()
+  if (relayOpen) closeRelay()
+  selectTab('needsYou')
+}
+
+function restoreDraftRecoveryFocus() {
+  if (!draftRecoveryFocusPending) return false
+  const inline = draftRecoveryTarget
+    ? needsYouRowEl(draftRecoveryTarget.rowId)?.querySelector('.reply-input[data-recovered-draft="1"]')
+    : null
+  if (inline) revealDetailsAncestors(inline)
+  const visibleInline = inline && !inline.closest('[hidden], details:not([open])') ? inline : null
+  const target = visibleInline ?? document.querySelector('.stale-drafts-fold summary')
+  if (!target) return false
+  target.focus({ preventScroll: true })
+  const restored = document.activeElement === target
+  if (restored) draftRecoveryFocusPending = false
+  return restored
+}
+
+function currentRow(id) {
+  for (const board of lastData?.boards ?? []) {
+    const row = board.rows.find((candidate) => candidate.id === id)
+    if (row) return { board, row }
+  }
+  return null
+}
+
+function reconcileDraftOwners() {
+  let recovered = false
+  const itemIds = new Set([...Object.keys(draftReplies), ...Object.keys(draftReplyContexts)])
+  for (const id of itemIds) {
+    const text = draftReplies[id] ?? ''
+    const context = draftReplyContexts[id] ?? ''
+    if (!text.trim() && !context.trim()) continue
+    const item = freshItem(id)
+    if (item && cardSections(item).showAnswer) continue
+    const generation = itemDraftGenerations[id] ?? 0
+    const activeSubmission = itemDraftSubmission(id, generation)
+    const intent = reusableDraftIntent(id, generation)
+      ?? (activeSubmission?.retryable ? activeSubmission.intent : null)
+    const recoveryOwner = itemDraftRecoveryOwner(
+      activeSubmission?.intent ?? intent,
+      generation,
+    )
+    const recoveryKey = preserveItemDraftRecovery(id, {
+      title: itemDraftMeta[id]?.title ?? item?.title ?? 'Question',
+      text,
+      context,
+      kind: 'answer',
+      generation,
+      intent,
+      ownerIntent: activeSubmission?.intent ?? intent,
+      owner: recoveryOwner,
+    })
+    if (activeSubmission && recoveryKey) {
+      activeSubmission.recoveryKey = recoveryKey
+      activeSubmission.recoveryOwner = recoveryOwner
+    }
+    bumpDraftGeneration(itemDraftGenerations, id)
+    delete draftReplies[id]
+    delete draftReplyContexts[id]
+    delete itemDraftMeta[id]
+    delete itemDraftRetryIntents[id]
+    recovered = true
+  }
+
+  for (const [id, text] of Object.entries(rowDrafts)) {
+    const meta = rowDraftMeta[id]
+    if (!String(text).trim()) continue
+    const owner = currentRow(id)
+    if (owner && meta?.revision === owner.row.revision) continue
+    const revision = meta?.revision ?? -1
+    staleRowDrafts[rowDraftRecoveryKey(id, revision)] = {
+      rowId: id,
+      revision,
+      actionVersion: meta?.actionVersion,
+      text,
+      kind: rowDraftKinds[id] ?? 'answer',
+      boardTitle: meta?.boardTitle ?? 'Plan',
+      label: meta?.label ?? 'Removed row',
+      context: meta?.context ?? '',
+    }
+    bumpDraftGeneration(rowDraftGenerations, id)
+    delete rowDrafts[id]
+    delete rowDraftKinds[id]
+    delete rowDraftMeta[id]
+    recovered = true
+  }
+  if (recovered) requestDraftRecovery()
+  return recovered
+}
+
+async function sendReply(
+  id,
+  text,
+  context = '',
+  kind = 'answer',
+  submittedGeneration = itemDraftGenerations[id] ?? 0,
+  intent = null,
+  recoverUndraftedFailure = true,
+  submissionUsesDraft = false,
+  recoveryKey = null,
+  recoveryOwner = null,
+) {
   const reply = text.trim()
   if (!reply) return
+  const hadDraft = draftReplies[id] !== undefined || draftReplyContexts[id] !== undefined
+  if (recoveryKey) delete itemDraftRetryIntents[id]
+  const replayingRecordedIntent = Boolean(recoveryKey && intent)
+  intent ??= submissionUsesDraft ? reusableDraftIntent(id, submittedGeneration) : null
+  if (intent) cancelStagedItemIntent(id)
+  intent ??= claimItemIntent(id)
+  if (!sameItemIntent(itemLatestIntents[id], intent) && !replayingRecordedIntent) return
+  const submittedRecoveryOwner = recoveryKey
+    ? transferItemDraftRecovery(
+        recoveryKey,
+        recoveryOwner,
+        intent,
+        submittedGeneration,
+      )
+    : null
+  if (recoveryKey && !submittedRecoveryOwner) {
+    forceRender()
+    return
+  }
+  const submissionToken = bumpDraftGeneration(itemSubmissionTokens, id)
+  if (submissionUsesDraft && hadDraft) {
+    rememberItemDraftSubmission(id, submittedGeneration, intent)
+  }
   // fix round 2 (C3): both drafts used to be deleted BEFORE the POST. When the
   // write failed (postJSON → null: server restarted, or now any non-2xx) the
   // human's typed answer was gone — the next render rebuilt an empty input and
   // #status's "disconnected" was wiped by the next successful poll ≤3s later.
   // Nothing is cleared until the server has it.
-  const hadDraft = draftReplies[id] !== undefined || draftReplyContexts[id] !== undefined
-  const res = await postJSON(`/api/items/${id}/reply`, { text: reply, context: context.trim() || undefined, kind })
+  const recoveryTitle = itemDraftMeta[id]?.title ?? freshItem(id)?.title ?? 'Question'
+  const res = await postItemReply(id, {
+    text: reply,
+    context: context.trim() || undefined,
+    kind,
+  }, intent)
+  const latestIntent = sameItemIntent(itemLatestIntents[id], intent)
+  const ownsSubmission = latestIntent
+    && (itemDraftGenerations[id] ?? 0) === submittedGeneration
+    && itemSubmissionTokens[id] === submissionToken
+  const trackedSubmission = itemDraftSubmission(id, submittedGeneration, intent)
   if (res === null) {
+    if (!latestIntent) {
+      retireItemDraftSubmission(id, submittedGeneration, intent)
+      return
+    }
+    if (!submissionUsesDraft) {
+      if (recoverUndraftedFailure) {
+        preserveItemDraftRecovery(id, {
+          key: recoveryKey,
+          title: recoveryTitle,
+          text,
+          context,
+          kind,
+          intent,
+          expectedOwner: submittedRecoveryOwner,
+          generation: submittedGeneration,
+        })
+        requestDraftRecovery()
+        showWriteError(id, '')
+        await reloadAndPaint()
+      } else {
+        showWriteError(id, WRITE_FAILED)
+        resumeRender()
+      }
+      return
+    }
+    if (trackedSubmission?.recoveryKey) {
+      retireItemDraftSubmission(id, submittedGeneration, intent)
+      showWriteError(id, WRITE_FAILED)
+      resumeRender()
+      return
+    }
     // re-assert rather than merely leave in place, so a future edit that clears
     // early still cannot lose it. Only when the human HAD a draft: inventing one
     // for an option-pill/★ send would park text in an input nobody typed into
     // (and suspend the poll on it — the C2 failure mode).
-    if (hadDraft) { draftReplies[id] = text; draftReplyContexts[id] = context }
+    if (
+      hadDraft
+      && ownsSubmission
+      && submissionUsesDraft
+      && trackedSubmission?.retryable
+    ) {
+      draftReplies[id] = text
+      draftReplyContexts[id] = context
+      itemDraftRetryIntents[id] = {
+        generation: submittedGeneration,
+        intent: { ...intent },
+      }
+      retireItemDraftSubmission(id, submittedGeneration, intent)
+    } else if (!hadDraft && ownsSubmission && recoverUndraftedFailure) {
+      preserveItemDraftRecovery(id, {
+        key: recoveryKey,
+        title: recoveryTitle,
+        text,
+        context,
+        kind,
+        intent,
+        expectedOwner: submittedRecoveryOwner,
+        generation: submittedGeneration,
+      })
+      requestDraftRecovery()
+      showWriteError(id, WRITE_FAILED)
+      await reloadAndPaint()
+      return
+    }
     showWriteError(id, WRITE_FAILED)
     resumeRender()
     return
   }
-  delete draftReplies[id]
-  delete draftReplyContexts[id]
-  if (draftFocusKey?.startsWith(`${id}:`)) draftFocusKey = null
+  if (sameItemIntent(itemDraftRetryIntents[id]?.intent, intent)) {
+    delete itemDraftRetryIntents[id]
+  }
+  if (!res.ok) {
+    if (!latestIntent) {
+      const rejectedRecoveryKeys = [
+        [recoveryKey, submittedRecoveryOwner],
+        [trackedSubmission?.recoveryKey, trackedSubmission?.recoveryOwner],
+      ].filter(([key]) => Boolean(key))
+      let removedRecovery = false
+      for (const [key, owner] of rejectedRecoveryKeys) {
+        removedRecovery = deleteItemDraftRecovery(key, owner) || removedRecovery
+      }
+      retireItemDraftSubmission(id, submittedGeneration, intent)
+      if (removedRecovery) {
+        showWriteError(id, '')
+        await reloadAndPaint()
+      }
+      return
+    }
+    if (!submissionUsesDraft) {
+      if (recoverUndraftedFailure) {
+        const item = freshItem(id)
+        preserveItemDraftRecovery(id, {
+          key: recoveryKey,
+          title: itemDraftMeta[id]?.title ?? item?.title ?? recoveryTitle,
+          text,
+          context,
+          kind,
+          intent,
+          expectedOwner: submittedRecoveryOwner,
+          generation: submittedGeneration,
+        })
+        requestDraftRecovery()
+        showWriteError(id, '')
+        await reloadAndPaint()
+      } else {
+        showWriteError(id, WRITE_FAILED)
+        resumeRender()
+      }
+      return
+    }
+    if (trackedSubmission?.recoveryKey) {
+      retireItemDraftSubmission(id, submittedGeneration, intent)
+      showWriteError(id, WRITE_FAILED)
+      resumeRender()
+      return
+    }
+    if (!ownsSubmission) {
+      showWriteError(id, 'An earlier response was not applied; your newer draft is preserved.')
+      resumeRender()
+      return
+    }
+    if (hadDraft && !trackedSubmission?.retryable) {
+      showWriteError(id, 'An earlier response was not applied; your newer draft is preserved.')
+      resumeRender()
+      return
+    }
+    const item = freshItem(id)
+    preserveItemDraftRecovery(id, {
+      key: recoveryKey,
+      title: itemDraftMeta[id]?.title ?? item?.title ?? recoveryTitle,
+      text,
+      context,
+      kind,
+      intent,
+      expectedOwner: submittedRecoveryOwner,
+      generation: submittedGeneration,
+    })
+    retireItemDraftSubmission(id, submittedGeneration, intent)
+    requestDraftRecovery()
+    bumpDraftGeneration(itemDraftGenerations, id)
+    delete draftReplies[id]
+    delete draftReplyContexts[id]
+    delete itemDraftMeta[id]
+    showWriteError(id, '')
+    await reloadAndPaint()
+    return
+  }
+  if (recoveryKey) deleteItemDraftRecovery(recoveryKey, submittedRecoveryOwner)
+  if (trackedSubmission?.recoveryKey) {
+    deleteItemDraftRecovery(
+      trackedSubmission.recoveryKey,
+      trackedSubmission.recoveryOwner,
+    )
+  }
+  if (latestIntent) {
+    deleteMatchingItemDraftRecoveries(id, { text, context, kind })
+  }
+  retireItemDraftSubmission(id, submittedGeneration, intent)
+  if (recoveryKey) retireItemDraftSubmissionIntent(id, intent)
+  if (!latestIntent) return
+  if (ownsSubmission && !recoveryKey) {
+    bumpDraftGeneration(itemDraftGenerations, id)
+    delete draftReplies[id]
+    delete draftReplyContexts[id]
+    delete itemDraftMeta[id]
+    delete itemDraftRetryIntents[id]
+  }
   showWriteError(id, '')
   // issue #38, the reported surface. Also the entry for the option pills, the ★'s
   // staged send, Enter in the input and the triage card — all of them were silent.
@@ -2919,6 +4796,7 @@ async function sendReply(id, text, context = '', kind = 'answer') {
 function answerEl(it) {
   const wrap = document.createElement('div')
   wrap.className = `options${openCompares.has(it.id) ? ' comparing' : ''}`
+  let editorGeneration = itemDraftGenerations[it.id] ?? 0
   const opts = optionOrder(it.options)
   for (const o of opts) {
     const box = document.createElement('div')
@@ -2926,12 +4804,14 @@ function answerEl(it) {
     const pill = document.createElement('button')
     pill.className = `opt-pill${o.recommended ? ' rec' : ''}`
     pill.innerHTML = `${esc(o.label)}${o.recommended ? '<span class="rec-tag">recommended</span>' : ''}`
-    pill.addEventListener('click', () => sendReply(it.id, o.label, draftReplyContexts[it.id] ?? ''))
+    pill.addEventListener('click', () => sendReply(
+      it.id, o.label, effectiveReplyContext(it), 'answer', editorGeneration,
+    ))
     box.appendChild(pill)
     if (o.detail) {
       const d = document.createElement('div')
       d.className = 'opt-detail'
-      d.textContent = o.detail
+      d.innerHTML = renderStructuredText(o.detail)
       box.appendChild(d)
     }
     wrap.appendChild(box)
@@ -2948,49 +4828,69 @@ function answerEl(it) {
   }
   const input = document.createElement('input')
   input.className = 'reply-input'
+  input.dataset.draftFocusKey = `${it.id}:answer`
   input.placeholder = opts.length ? 'or answer in your own words…' : 'answer…'
-  input.value = draftReplies[it.id] ?? ''
-  input.addEventListener('input', () => { draftReplies[it.id] = input.value; resumeRender() })
-  input.addEventListener('focus', () => { draftFocusKey = `${it.id}:answer` })
-  input.addEventListener('blur', () => { if (draftFocusKey === `${it.id}:answer` && !input.value) draftFocusKey = null })
-  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendReply(it.id, input.value, ctxInput.value) })
+  input.value = effectiveReply(it)
+  const rememberDraftOwner = () => {
+    if (input.value.trim() || ctxInput.value.trim()) itemDraftMeta[it.id] = { title: it.title }
+    else delete itemDraftMeta[it.id]
+  }
+  input.addEventListener('input', () => {
+    invalidateItemDraftIntents(it.id)
+    editorGeneration = bumpDraftGeneration(itemDraftGenerations, it.id)
+    draftReplies[it.id] = input.value
+    rememberDraftOwner()
+    resumeRender()
+  })
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      sendReply(it.id, input.value, ctxInput.value, 'answer', editorGeneration, null, true, true)
+    }
+  })
   row.appendChild(input)
-  row.appendChild(btn('Send', () => sendReply(it.id, input.value, ctxInput.value)))
+  row.appendChild(btn('Send', () => sendReply(
+    it.id, input.value, ctxInput.value, 'answer', editorGeneration, null, true, true,
+  )))
   row.appendChild(writeErrorEl(it.id)) // persists a failed write's reason across the poll rebuild (C3)
   wrap.appendChild(row)
   const ctxRow = document.createElement('div')
   ctxRow.className = 'reply-row reply-context-row'
   const ctxInput = document.createElement('input')
   ctxInput.className = 'reply-input reply-context-input'
+  ctxInput.dataset.draftFocusKey = `${it.id}:context`
   ctxInput.placeholder = 'optional context for the agent (applies to Send or option picks)…'
-  ctxInput.value = draftReplyContexts[it.id] ?? ''
-  ctxInput.addEventListener('input', () => { draftReplyContexts[it.id] = ctxInput.value; resumeRender() })
-  ctxInput.addEventListener('focus', () => { draftFocusKey = `${it.id}:context` })
-  ctxInput.addEventListener('blur', () => { if (draftFocusKey === `${it.id}:context` && !ctxInput.value) draftFocusKey = null })
+  ctxInput.value = effectiveReplyContext(it)
+  ctxInput.addEventListener('input', () => {
+    invalidateItemDraftIntents(it.id)
+    editorGeneration = bumpDraftGeneration(itemDraftGenerations, it.id)
+    draftReplyContexts[it.id] = ctxInput.value
+    rememberDraftOwner()
+    resumeRender()
+  })
   ctxRow.appendChild(ctxInput)
   wrap.appendChild(ctxRow)
   wrap.appendChild(dispositionEl(
-    (kind, text) => sendReply(it.id, text, draftReplyContexts[it.id] ?? '', kind),
+    (kind, text) => sendReply(
+      it.id, text, effectiveReplyContext(it), kind, editorGeneration,
+    ),
     async (until) => {
       const res = await postJSON(`/api/items/${it.id}/snooze`, { until })
       if (res === null) return
       await reloadAndPaint()
     },
   ))
-  if (draftFocusKey === `${it.id}:answer`) requestAnimationFrame(() => {
-    input.focus()
-    input.setSelectionRange(input.value.length, input.value.length)
-  })
-  if (draftFocusKey === `${it.id}:context`) requestAnimationFrame(() => {
-    ctxInput.focus()
-    ctxInput.setSelectionRange(ctxInput.value.length, ctxInput.value.length)
-  })
   return wrap
 }
 
 // THE card (§4): meta → title → detail → labeled CONTEXT → options → answer →
 // actions. Mounted inline by the Needs-you accordion and by the triage lightbox.
-function itemCardEl(it, { done = false, nowMs = Date.now(), liveness = 'parked', header = true } = {}) {
+function itemCardEl(it, {
+  done = false,
+  nowMs = Date.now(),
+  liveness = 'parked',
+  header = true,
+  includeAsked = true,
+} = {}) {
   const el = document.createElement('div')
   el.className = `card card-${it.kind}`
   const s = cardSections(it, { done })
@@ -3011,8 +4911,8 @@ function itemCardEl(it, { done = false, nowMs = Date.now(), liveness = 'parked',
     ${s.annotation ? `<div class="annotation"><strong>Note:</strong> ${esc(s.annotation)}</div>` : ''}
     ${s.recWarning ? `<div class="rec-warning">Review: ${esc(s.recWarning)}</div>` : ''}
     ${s.reply || it.reply_kind ? `<div class="reply-block"><strong>${esc(responseLabel(it) || 'You answered')}:</strong> ${esc(s.reply ?? '')}${it.reply_context ? `<div class="reply-context">Context: ${esc(it.reply_context)}</div>` : ''}${it.reply_source === 'agent' ? '<span class="reply-source">via chat</span>' : ''}${s.showPickup ? `<span class="pickup ${it.reply_seen_at ? 'picked' : 'awaiting'}">${it.reply_seen_at ? 'With the agent' : 'Waiting for the agent'}</span>` : ''}</div>` : ''}
-    ${s.outcome ? `<div class="outcome-block">Outcome: ${esc(s.outcome)}</div>` : ''}
-    ${lifecycleHtml(it)}`
+    ${outcomeHtml(s.outcome)}
+    ${lifecycleHtml(it, { includeAsked })}`
   bindContextDisclosures(el)
   if (s.showAnswer) el.appendChild(answerEl(it))
   if (s.showActions) {
@@ -3020,7 +4920,7 @@ function itemCardEl(it, { done = false, nowMs = Date.now(), liveness = 'parked',
     actions.className = 'actions'
     actions.appendChild(btn('Resolve', () => act(it.id, 'resolve')))
     actions.appendChild(btn('Dismiss', () => act(it.id, 'dismiss')))
-    if (s.answered) {
+    if (s.answered && !s.showAnswer) {
       // fix round 1 (hardening): a small inline slot beside the button for the
       // refusal message changeAnswer() surfaces when the server refuses (spec req #2)
       const msg = document.createElement('span')
@@ -3053,8 +4953,10 @@ function itemCardEl(it, { done = false, nowMs = Date.now(), liveness = 'parked',
 // snapshot hasn't caught up yet (up to ~3s stale) — the server already told us
 // definitively that a pickup happened, we just don't know exactly when.
 async function changeAnswer(it, msgEl) {
-  const res = await postJSON(`/api/items/${it.id}/reply`, { text: '' })
+  const intent = claimItemIntent(it.id)
+  const res = await postItemReply(it.id, { text: '' }, intent)
   if (res === null) return // network failure — postJSON already signaled it
+  if (!sameItemIntent(itemLatestIntents[it.id], intent)) return
   if (!res.ok) {
     const fresh = freshItem(it.id) ?? it
     const seenAt = fresh.reply_seen_at ?? new Date().toISOString()
@@ -3070,7 +4972,8 @@ async function changeAnswer(it, msgEl) {
   // the answer surface comes back, and this is what it comes back holding.
   draftReplies[it.id] = it.reply
   draftReplyContexts[it.id] = it.reply_context ?? ''
-  draftFocusKey = `${it.id}:answer`
+  bumpDraftGeneration(itemDraftGenerations, it.id)
+  requestedDraftFocusBookmark = { key: `${it.id}:answer`, scopeId: 'needsYouList' }
   // issue #31.1. Two things have to be true for the human to SEE that draft, and
   // neither was:
   //  1. the row has to be expanded. This is reachable from a collapsed row —
@@ -3109,16 +5012,21 @@ function itemEl(it, done = false) {
 // list's keys can never drift apart.
 let selectedId = null // the row the keyboard is on
 
-function rowEls() {
+function allRowEls() {
   return [...document.querySelectorAll('#needsYouList .nrow[data-card-id]')]
+}
+
+function rowEls() {
+  return allRowEls().filter((el) => !el.closest('[hidden], details:not([open])'))
 }
 
 // class/attr/tabIndex only — no focus side effect, so it's safe to call from a
 // passive rebuild (restoreRowSelection) as well as a deliberate user action
 // (selectRow)
 function markSelectedRow(id) {
-  for (const el of rowEls()) {
-    const on = el.dataset.cardId === id
+  const operable = new Set(rowEls())
+  for (const el of allRowEls()) {
+    const on = operable.has(el) && el.dataset.cardId === id
     el.classList.toggle('selected', on)
     el.setAttribute('aria-selected', String(on))
     el.tabIndex = on ? 0 : -1
@@ -3141,36 +5049,57 @@ function selectRow(id) {
 // list before the rebuild (see `hadListFocus` in renderNeedsYou) — otherwise
 // this would steal focus from the search box or a draft input on every poll.
 function restoreRowSelection(focusIt) {
-  if (!selectedId) return
+  const rows = rowEls()
+  if (!rows.length && document.getElementById('needsYou')?.hidden) {
+    markSelectedRow(null)
+    return
+  }
+  if (!selectedId || !rows.some((el) => el.dataset.cardId === selectedId)) {
+    selectedId = rows[0]?.dataset.cardId ?? null
+  }
   markSelectedRow(selectedId)
-  if (focusIt) rowEls().find((el) => el.dataset.cardId === selectedId)?.focus({ preventScroll: true })
-}
-
-function selectedItem() {
-  if (!selectedId || !lastData) return null
-  return allItems(lastData.g).find((i) => i.id === selectedId) ?? null
+  if (focusIt) {
+    if (selectedId) rows.find((el) => el.dataset.cardId === selectedId)?.focus({ preventScroll: true })
+  }
 }
 
 // The keyboard's reply target. `selectedId` is the LIST's selection — while the
 // triage deck is open that is a different row than whatever the lightbox is
-// showing, so a bare `selectedItem()` would let '1'-'4' (and dismiss/resolve)
+// showing, so a bare selected-id lookup would let '1'-'4' (and dismiss/resolve)
 // answer the WRONG item. While the deck is open, the target is always the entry
 // currently on screen in it. `deckEntryAt` (public/keys.js) is the guarded,
 // unit-tested lookup — the deck's "all clear" state (entries: [] while
 // triageDeck is still non-null) would otherwise make `triageDeck.entries[i]`
 // undefined and findEntryData(undefined) throw, and initKeys evaluates this on
-// every keydown the deck is open.
+// every keydown the deck is open. Outside the deck, target only an operable
+// queue row: actual focus first, then the roving selection, then a visible open
+// inspector as a fallback. Hidden tabs and closed folds therefore cannot retain
+// destructive shortcut ownership.
 function keyTargetItem() {
   if (triageDeck) {
     const entry = deckEntryAt(triageDeck.entries, triageDeck.index)
-    return entry ? (findEntryData(entry)?.it ?? null) : null
+    const data = entry ? findEntryData(entry) : null
+    if (data?.it) return { kind: 'item', item: data.it, options: data.it.options }
+    if (data?.r) return { kind: 'row', board: data.b, row: data.r, options: data.r.options }
+    return null
   }
-  return selectedItem()
+  const operable = rowEls()
+  const focused = document.activeElement?.closest?.('#needsYouList .nrow[data-card-id]')
+  const focusedId = focused && operable.includes(focused) ? focused.dataset.cardId : null
+  const selectedIsOperable = operable.some((row) => row.dataset.cardId === selectedId)
+  const openIsOperable = operable.some((row) => row.dataset.cardId === openRowId)
+  const id = focusedId
+    ?? (selectedIsOperable ? selectedId : null)
+    ?? (openIsOperable ? openRowId : null)
+  if (!id || !lastData) return null
+  const item = allItems(lastData.g).find((candidate) => candidate.id === id)
+  return item ? { kind: 'item', item, options: item.options } : null
 }
 
 function runIntent(intent) {
   const ids = rowEls().map((el) => el.dataset.cardId)
-  const it = keyTargetItem()
+  const target = keyTargetItem()
+  const it = target?.kind === 'item' ? target.item : null
   switch (intent.type) {
     case 'move': {
       if (!ids.length) return
@@ -3193,12 +5122,28 @@ function runIntent(intent) {
       document.querySelector(`.nrow[data-card-id="${CSS.escape(openRowId)}"]`)?.click()
       return
     }
+    case 'exitPeek': {
+      if (!projectFilter || !closedSet().has(projectFilter)) return
+      projectFilter = null
+      selectedId = null
+      resetPaging()
+      forceRender()
+      const trigger = document.getElementById('closedProjectsTrigger')
+      if (trigger) trigger.focus()
+      else focusProjectFallback(null, { preferFold: true })
+      return
+    }
     case 'clearSelection':
       selectRow(null)
       return
     case 'option': {
-      const o = optionOrder(it?.options)[intent.index]
-      if (o && it) sendReply(it.id, o.label, draftReplyContexts[it.id] ?? '')
+      const entity = target?.kind === 'row' ? target.row : it
+      const o = optionOrder(entity?.options)[intent.index]
+      if (o && target?.kind === 'row') {
+        document.querySelectorAll('#lightbox .lb-card .row-options .opt-pill')[intent.index]?.click()
+      } else if (o && it) {
+        sendReply(it.id, o.label, effectiveReplyContext(it))
+      }
       return
     }
     case 'dismiss':
@@ -3210,7 +5155,7 @@ function runIntent(intent) {
       if (it) act(it.id, 'resolve') // deck-aware target — never a bare selectedId
       return
     case 'search':
-      document.getElementById('search').focus()
+      focusSearch()
       return
     case 'blur':
       if (document.activeElement && document.activeElement.blur) document.activeElement.blur()
@@ -3232,8 +5177,28 @@ function runIntent(intent) {
   }
 }
 
+function focusSearch(selectText = false) {
+  const search = document.getElementById('search')
+  search.focus()
+  if (selectText) search.select()
+}
+
 function initKeys() {
   document.addEventListener('keydown', (e) => {
+    const t = e.target
+    const typing = !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)
+    const triageOwnsKey = !!triageDeck
+      && !typing
+      && (e.key === 'Escape'
+        || /^[1-4]$/.test(e.key)
+        || ['j', 'k', 'ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight'].includes(e.key))
+    if (e.key.toLowerCase() === 'k' && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
+      e.preventDefault()
+      if (higherPriorityEscapeSurfaceOpen()) return
+      focusSearch(true)
+      return
+    }
+    if (!triageOwnsKey && nativeKeyOwner(e)) return
     if (e.key === ',' && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
       e.preventDefault()
       toggleSettings()
@@ -3270,10 +5235,9 @@ function initKeys() {
     if (e.key === 'Escape' && !triageDeck && liveDrawer && !liveDrawer.hidden) return
     if (e.key === 'Escape' && !triageDeck && closeSettings({ restoreFocus: true })) {
       e.preventDefault()
+      e.stopImmediatePropagation()
       return
     }
-    const t = e.target
-    const typing = !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)
     // optionCount must come from the SAME target runIntent will answer — the
     // deck entry while it's open, the list selection otherwise — or a keyboard
     // '1'-'4' can validate against one item and answer another (see
@@ -3282,6 +5246,7 @@ function initKeys() {
       typing,
       deckOpen: !!triageDeck,
       expanded: openRowId != null,
+      peeking: !!projectFilter && closedSet().has(projectFilter),
       optionCount: optionOrder(keyTargetItem()?.options).length,
     })
     if (!intent) return
@@ -3355,49 +5320,247 @@ async function act(id, action) {
 //
 // No staged undo: closing is one click to reverse, in the same place the tab
 // just left.
-async function closeProjectAction(name) {
-  lastData.closed = [...(lastData.closed ?? []), name]
+function beginProjectMutation(name, closed) {
+  const generation = ++projectMutationGeneration
+  projectMutationVersions.set(name, generation)
+  projectMutationIntents.set(name, { generation, closed, confirmedAfterLoad: null })
+  applyProjectMutationIntents()
+  return generation
+}
+
+function latestProjectMutation(name, generation) {
+  return projectMutationVersions.get(name) === generation
+}
+
+function ownsProjectMutation(name, generation) {
+  return projectMutationIntents.get(name)?.generation === generation
+}
+
+function finishProjectMutation(name, generation) {
+  if (ownsProjectMutation(name, generation)) projectMutationIntents.delete(name)
+  if (latestProjectMutation(name, generation)) projectMutationVersions.delete(name)
+}
+
+function confirmProjectMutation(name, generation, closed, confirmedAfterLoad) {
+  const confirmed = confirmedProjectMutationIntents.get(name)
+  if (!confirmed || generation > confirmed.generation) {
+    confirmedProjectMutationIntents.set(name, {
+      generation,
+      closed,
+      confirmedAfterLoad,
+    })
+  }
+  const intent = projectMutationIntents.get(name)
+  if (intent?.generation === generation) intent.confirmedAfterLoad = confirmedAfterLoad
+}
+
+function retireConfirmedProjectMutationIntents(completedLoadGeneration) {
+  for (const [name, confirmed] of confirmedProjectMutationIntents) {
+    if (completedLoadGeneration <= confirmed.confirmedAfterLoad) continue
+    confirmedProjectMutationIntents.delete(name)
+    const intent = projectMutationIntents.get(name)
+    if (intent?.generation === confirmed.generation) projectMutationIntents.delete(name)
+  }
+}
+
+function applyProjectMutationIntents() {
+  if (!lastData) return
+  const closed = new Set(authoritativeClosed)
+  for (const [name, intent] of confirmedProjectMutationIntents) {
+    if (intent.closed) closed.add(name)
+    else closed.delete(name)
+  }
+  for (const [name, intent] of projectMutationIntents) {
+    if (intent.closed) closed.add(name)
+    else closed.delete(name)
+  }
+  lastData.closed = [...closed]
+}
+
+async function queueProjectMutation(name, write) {
+  const previous = projectMutationQueues.get(name) ?? Promise.resolve()
+  const current = previous.then(write, write)
+  projectMutationQueues.set(name, current)
+  try {
+    return await current
+  } finally {
+    if (projectMutationQueues.get(name) === current) projectMutationQueues.delete(name)
+  }
+}
+
+function resolveAuthoritativeRefreshWaiters(completedLoadGeneration) {
+  for (const waiter of authoritativeRefreshWaiters) {
+    if (completedLoadGeneration <= waiter.afterGeneration) continue
+    authoritativeRefreshWaiters.delete(waiter)
+    waiter.resolve()
+  }
+}
+
+function waitForAuthoritativeRefresh(afterGeneration) {
+  if (appliedClosedGeneration > afterGeneration) return Promise.resolve()
+  return new Promise((resolve) => {
+    authoritativeRefreshWaiters.add({ afterGeneration, resolve })
+  })
+}
+
+async function refreshAuthoritativeProjectState(afterGeneration) {
+  if (await reloadAndPaint()) return
+  await waitForAuthoritativeRefresh(afterGeneration)
+}
+
+async function closeProjectAction(name, { focusArchived = false } = {}) {
+  const generation = beginProjectMutation(name, true)
   closedFoldOpen = true // show the human where the tab went
+  tabletDismissedOpenKey = null
   if (projectFilter === name) projectFilter = null
   resetPaging()
   forceRender()
-  const res = await postJSON('/api/projects/close', { project: name })
-  if (res === null) { // postJSON already surfaced the reason — just put the tab back
-    lastData.closed = (lastData.closed ?? []).filter((p) => p !== name)
-    forceRender()
-    return
+  if (focusArchived) focusProjectControl('closedProjectsTrigger', generation)
+  let restoreFocus = false
+  const res = await queueProjectMutation(
+    name,
+    () => postJSON('/api/projects/close', { project: name }),
+  )
+  if (res !== null) {
+    const confirmedAfterLoad = loadGeneration
+    const current = ownsProjectMutation(name, generation)
+      && latestProjectMutation(name, generation)
+    restoreFocus = current
+      && focusArchived
+      && projectMutationOwnsFocus('#closedProjectsTrigger', generation)
+    confirmProjectMutation(name, generation, true, confirmedAfterLoad)
+    await refreshAuthoritativeProjectState(confirmedAfterLoad)
   }
-  // low stakes here — the optimistic frame above already showed the right thing —
-  // but there is ONE rule for a human-initiated write, not two (#38).
-  await reloadAndPaint()
-}
-
-async function reopenProjectAction(name) {
-  lastData.closed = (lastData.closed ?? []).filter((p) => p !== name)
-  forceRender()
-  const res = await postJSON('/api/projects/reopen', { project: name })
+  if (!latestProjectMutation(name, generation)) return
   if (res === null) {
-    if (!(lastData.closed ?? []).includes(name)) lastData.closed = [...(lastData.closed ?? []), name]
+    if (!ownsProjectMutation(name, generation)) return
+    restoreFocus = focusArchived && projectMutationOwnsFocus('#closedProjectsTrigger', generation)
+    finishProjectMutation(name, generation)
+    applyProjectMutationIntents()
     forceRender()
+    if (restoreFocus) {
+      focusProjectTab(`#rail .rail-tab[data-project="${CSS.escape(name)}"]`, generation)
+    }
     return
   }
-  await reloadAndPaint()
+  finishProjectMutation(name, generation)
+  if (restoreFocus && projectMutationOwnsFocus('#closedProjectsTrigger', generation)) {
+    focusProjectControl('closedProjectsTrigger', generation)
+  }
 }
 
-// fix round 1: the query persists across tab and project changes for free —
-// `searchQuery` is module state nothing else ever resets (selectTab and the
-// rail's project handler don't touch it), and `#search`'s DOM node is never
-// rebuilt after this one-time init, so its typed value survives on its own.
-// (A prior `input.value = searchQuery` line here was dead: initSearch() runs
-// once at boot, before searchQuery can be non-empty, and never runs again —
-// it asserted a protection this line wasn't actually providing.)
+async function reopenProjectAction(name, { focusProject = false } = {}) {
+  const generation = beginProjectMutation(name, false)
+  const projectSelector = `#rail .rail-tab[data-project="${CSS.escape(name)}"]`
+  if (focusProject) closedFoldOpen = false
+  forceRender()
+  if (focusProject) {
+    focusProjectTab(projectSelector, generation)
+  }
+  let restoreFocus = false
+  const res = await queueProjectMutation(
+    name,
+    () => postJSON('/api/projects/reopen', { project: name }),
+  )
+  if (res !== null) {
+    const confirmedAfterLoad = loadGeneration
+    const current = ownsProjectMutation(name, generation)
+      && latestProjectMutation(name, generation)
+    restoreFocus = current
+      && focusProject
+      && projectMutationOwnsFocus(projectSelector, generation)
+    confirmProjectMutation(name, generation, false, confirmedAfterLoad)
+    await refreshAuthoritativeProjectState(confirmedAfterLoad)
+  }
+  if (!latestProjectMutation(name, generation)) return
+  if (res === null) {
+    if (!ownsProjectMutation(name, generation)) return
+    restoreFocus = focusProject && projectMutationOwnsFocus(projectSelector, generation)
+    finishProjectMutation(name, generation)
+    applyProjectMutationIntents()
+    forceRender()
+    if (restoreFocus) focusProjectControl('closedProjectsTrigger', generation)
+    return
+  }
+  finishProjectMutation(name, generation)
+  if (restoreFocus && projectMutationOwnsFocus(projectSelector, generation)) {
+    focusProjectTab(projectSelector, generation)
+  }
+}
+
+// Search is a combobox over the loaded workspace index. It never mutates the
+// queue or its badges; selection reuses the same deep-link path as notifications.
 function initSearch() {
   const input = document.getElementById('search')
-  let t = null
+  const dock = input.closest('.floating-search')
   input.addEventListener('input', () => {
-    clearTimeout(t)
-    t = setTimeout(() => { searchQuery = input.value; resetPaging(); forceRender() }, 120)
+    if (searchTimer) {
+      clearTimeout(searchTimer)
+      searchTimer = null
+    }
+    const value = input.value
+    if (!value.trim()) {
+      resetSearch()
+      return
+    }
+    const queryChanged = searchQuery.trim() !== value.trim()
+    if (!queryChanged) {
+      finishSearchUpdate()
+      setSearchActive(searchActiveIndex)
+      return
+    }
+    beginSearchUpdate()
+    searchTimer = setTimeout(() => {
+      searchTimer = null
+      searchQuery = value
+      searchIndexOpen = true
+      searchActiveIndex = -1
+      renderSearchResults()
+    }, 120)
   })
+  input.addEventListener('focus', () => {
+    const value = input.value.trim()
+    if (!value || searchIndexOpen) return
+    searchQuery = input.value
+    searchIndexOpen = true
+    renderSearchResults()
+  })
+  input.addEventListener('keydown', (event) => {
+    if (event.isComposing) {
+      event.stopPropagation()
+      return
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      event.stopPropagation()
+      resetSearch({ blur: true })
+      return
+    }
+    if (!searchIndexOpen || searchUpdating || !searchResultCache.length) return
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault()
+      event.stopPropagation()
+      const delta = event.key === 'ArrowDown' ? 1 : -1
+      const start = searchActiveIndex < 0 ? (delta > 0 ? -1 : 0) : searchActiveIndex
+      setSearchActive((start + delta + searchResultCache.length) % searchResultCache.length)
+      return
+    }
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      event.stopPropagation()
+      activateSearchResult(searchActiveIndex < 0 ? 0 : searchActiveIndex)
+    }
+  })
+  dock?.addEventListener('focusout', (event) => {
+    if (event.relatedTarget instanceof Node && dock.contains(event.relatedTarget)) return
+    closeSearchResults()
+  })
+  document.addEventListener('pointerdown', (event) => {
+    if (!searchIndexOpen && !searchTimer) return
+    if (event.target instanceof Node && dock?.contains(event.target)) return
+    closeSearchResults()
+    if (document.activeElement === input) input.blur()
+  }, true)
 }
 
 function setupTargetLabel(target) {
@@ -3583,7 +5746,7 @@ async function renderSetup() {
 //   initTabs → initTriage → initSearch → initResponsive → initPaneResizers →
 //   initProjectDisclosure →
 //   initKeys (Task 17) → initFocusHash (Task 17) → initStagedFlush →
-//   initPressGuard (#38) → initAgentSelect →
+//   initPressGuard (#38) → initScrollGuard → initAgentSelect →
 //   initGear → initLiveBar → renderSetup → load → setInterval(load, 3000)
 initTabs()
 initTriage()
@@ -3597,6 +5760,7 @@ initKeys()
 initFocusHash()
 initStagedFlush()
 initPressGuard()
+initScrollGuard()
 initAgentSelect()
 initGear()
 initLiveBar()

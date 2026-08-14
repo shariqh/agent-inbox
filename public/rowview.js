@@ -6,6 +6,61 @@ import { attentionEntries, classifyLiveness, humanActedOnRow, sortNeedsYou, ESCA
 import { projectMonogram } from './colors.js'
 import { actionCategory, actionOwnerLabel, agentFollowupChip, changeKind } from './action.js'
 
+export const ASK_SORT_OPTIONS = [
+  { value: 'priority', label: 'Priority' },
+  { value: 'newest', label: 'Newest' },
+  { value: 'oldest', label: 'Oldest' },
+]
+
+export function currentAskAt(entry) {
+  if (entry?.kind === 'row') return entry.row?.action_started_at ?? entry.row?.created_at ?? null
+  return entry?.item?.created_at ?? null
+}
+
+function askSortKey(entry) {
+  const entity = entry.kind === 'row' ? entry.row : entry.item
+  return `${entry.kind}:${entity.id}`
+}
+
+function askMs(entry) {
+  const parsed = Date.parse(currentAskAt(entry) ?? '')
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+export function sortNeedsYouByAsk(entries, mode) {
+  if (mode === 'priority') return entries
+  const direction = mode === 'oldest' ? 1 : -1
+  return entries
+    .map((entry, index) => ({ entry, index, at: askMs(entry), key: askSortKey(entry) }))
+    .sort((a, b) => {
+      if (a.at !== b.at) return direction * (a.at - b.at)
+      if (a.key !== b.key) return a.key < b.key ? -1 : 1
+      return a.index - b.index
+    })
+    .map(({ entry }) => entry)
+}
+
+export function askTimeModel(askedAt, nowMs) {
+  const at = Date.parse(askedAt ?? '')
+  if (!Number.isFinite(at)) return null
+  const exact = new Intl.DateTimeFormat(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    second: '2-digit',
+    timeZoneName: 'short',
+  }).format(new Date(at))
+  const text = `Asked ${relMs(Math.max(0, nowMs - at))} ago`
+  return {
+    datetime: new Date(at).toISOString(),
+    exact,
+    text,
+    accessibleLabel: `${text}, ${exact}`,
+  }
+}
+
 // Line 2 is what makes one-tap defensible (§5): you accept what you just read.
 // The item's own detail wins; otherwise the recommended option's detail.
 export function secondaryLine(item) {
@@ -79,6 +134,7 @@ export function rowModel(entry, {
       boardId: board.id,
       boardTitle: board.title,
       created_at: null,
+      askedAt: currentAskAt(entry),
       snoozedUntil: row.snoozed_until ?? null,
       ownerLabel: actionOwnerLabel(row),
       actionCategory: actionCategory(row),
@@ -112,6 +168,7 @@ export function rowModel(entry, {
     boardId: null,
     boardTitle: null,
     created_at: it.created_at,
+    askedAt: currentAskAt(entry),
     snoozedUntil: it.snoozed_until ?? null,
     ownerLabel: actionOwnerLabel(it),
     actionCategory: actionCategory(it),
@@ -235,8 +292,8 @@ export function handledUndoRefusal(row, nowMs) {
 // `reply_seen_at` being stamped and the agent's `resolve` call — which it may
 // simply forget, permanently — such an item is dropped by attentionEntries,
 // staleEntries and group.ts's `done` alike, so it used to render in NO tab
-// while tabsearch's searchIndex still counted it under Needs-you: the tab badge
-// lit up and the tab then said "No matches here". The foot group is also the
+// while the old global search index still counted it under Needs-you: the tab
+// badge lit up and the tab then said "No matches here". The foot group is also the
 // only place the card's "✓ picked up" marker (§15) can ever be seen.
 export function repliedEntries(items, nowMs, liveSessionIds) {
   return items

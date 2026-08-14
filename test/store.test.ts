@@ -232,6 +232,94 @@ describe('answer-back', () => {
     expect(listItems(db)[0]!.reply_context).toBeNull()
   })
 
+  it('keeps a per-client high-water across intervening clients and preserves legacy arrival order', () => {
+    const id = insertItem(db, { project: 'p', stream: '', agent: 'a', kind: 'question', title: 'q' })
+    expect(replyItem(db, id, 'client A sequence 2', undefined, 'answer', {
+      clientId: 'viewer-window-a',
+      sequence: 2,
+      actionId: 'action-a2',
+    })).toBe(true)
+    expect(replyItem(db, id, 'other window', undefined, 'answer', {
+      clientId: 'viewer-window-b',
+      sequence: 1,
+      actionId: 'action-b1',
+    })).toBe(true)
+    expect(listItems(db).find((item) => item.id === id)?.reply).toBe('other window')
+    expect(replyItem(db, id, 'late client A sequence 1', undefined, 'answer', {
+      clientId: 'viewer-window-a',
+      sequence: 1,
+      actionId: 'action-a1',
+    })).toBe(false)
+    expect(listItems(db).find((item) => item.id === id)?.reply).toBe('other window')
+
+    expect(replyItem(db, id, 'legacy caller')).toBe(true)
+    const visible = listItems(db).find((item) => item.id === id)
+    expect(visible?.reply).toBe('legacy caller')
+    expect(visible).not.toHaveProperty('reply_intent_client')
+    expect(visible).not.toHaveProperty('reply_intent_sequence')
+  })
+
+  it('treats an exact action replay as success without rewriting reply delivery state', () => {
+    const id = insertItem(db, { project: 'p', stream: '', agent: 'a', kind: 'question', title: 'q' })
+    const intent = { clientId: 'cloned-window', sequence: 1, actionId: 'action-original' }
+    expect(replyItem(db, id, 'original', undefined, 'answer', intent)).toBe(true)
+    pickUp(db, id)
+    const pickedUp = listItems(db).find((item) => item.id === id)!
+
+    expect(replyItem(db, id, 'must not rewrite', undefined, 'answer', intent)).toBe(true)
+    const replayed = listItems(db).find((item) => item.id === id)!
+    expect(replayed.reply).toBe('original')
+    expect(replayed.reply_seen_at).toBe(pickedUp.reply_seen_at)
+    expect(replayed.updated_at).toBe(pickedUp.updated_at)
+
+    expect(replyItem(db, id, 'distinct cloned-tab action', undefined, 'answer', {
+      clientId: 'cloned-window',
+      sequence: 1,
+      actionId: 'action-from-clone',
+    })).toBe(true)
+    expect(listItems(db).find((item) => item.id === id)?.reply).toBe('distinct cloned-tab action')
+
+    expect(replyItem(db, id, 'late replay still must not rewrite', undefined, 'answer', intent)).toBe(true)
+    expect(listItems(db).find((item) => item.id === id)?.reply).toBe('distinct cloned-tab action')
+  })
+
+  it('removes reply intent records when their retained item is deleted', () => {
+    const id = insertItem(db, { project: 'p', stream: '', agent: 'a', kind: 'question', title: 'q' })
+    expect(replyItem(db, id, 'answer', undefined, 'answer', {
+      clientId: 'viewer-window-a',
+      sequence: 1,
+      actionId: 'action-a1',
+    })).toBe(true)
+    expect(db.prepare(`SELECT COUNT(*) AS count FROM item_reply_intents WHERE item_id = ?`).get(id))
+      .toEqual({ count: 1 })
+
+    db.prepare(`DELETE FROM items WHERE id = ?`).run(id)
+    expect(db.prepare(`SELECT COUNT(*) AS count FROM item_reply_intents WHERE item_id = ?`).get(id))
+      .toEqual({ count: 0 })
+  })
+
+  it('backfills the normalized high-water ledger from legacy item intent columns', () => {
+    const path = db.name
+    db.exec(`ALTER TABLE items ADD COLUMN reply_intent_client TEXT`)
+    db.exec(`ALTER TABLE items ADD COLUMN reply_intent_sequence INTEGER`)
+    const id = insertItem(db, { project: 'p', stream: '', agent: 'a', kind: 'question', title: 'legacy' })
+    replyItem(db, id, 'newest legacy answer')
+    db.prepare(`
+      UPDATE items
+         SET reply_intent_client = 'viewer-window-a',
+             reply_intent_sequence = 5
+       WHERE id = ?`).run(id)
+    db.close()
+    db = openDb(path)
+
+    expect(replyItem(db, id, 'stale after upgrade', undefined, 'answer', {
+      clientId: 'viewer-window-a',
+      sequence: 1,
+      actionId: 'action-after-upgrade',
+    })).toBe(false)
+    expect(listItems(db).find((item) => item.id === id)?.reply).toBe('newest legacy answer')
+  })
+
   // fix round 1: a stale client (or an explicit "change answer") must never be able to
   // silently revert a reply the agent has already picked up — replyItem refuses the
   // blank-clear once reply_seen_at is set, and reports the refusal via its return value

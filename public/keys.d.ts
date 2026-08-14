@@ -2,6 +2,7 @@ export interface KeyContext {
   typing?: boolean
   deckOpen?: boolean
   expanded?: boolean
+  peeking?: boolean
   optionCount?: number
 }
 
@@ -9,6 +10,7 @@ export type KeyIntent =
   | { type: 'move'; delta: number }
   | { type: 'expand' }
   | { type: 'collapse' }
+  | { type: 'exitPeek' }
   | { type: 'clearSelection' }
   | { type: 'blur' }
   | { type: 'option'; index: number }

@@ -387,10 +387,10 @@ export function badgeCount(): number {
   return m?.[1] ? Number(m[1]) : 0
 }
 
-/** The open Needs-you inspector's free-text answer input (NOT its context input). */
-export function answerInput(id?: string): HTMLInputElement | null {
+/** The open Needs-you inspector's free-text answer editor (NOT its context editor). */
+export function answerInput(id?: string): HTMLTextAreaElement | null {
   const scope = id ? `.nrow[data-card-id="${cssEscape(id)}"] ` : ''
-  return document.querySelector<HTMLInputElement>(`${scope}.nrow-card .reply-input:not(.reply-context-input)`)
+  return document.querySelector<HTMLTextAreaElement>(`${scope}.nrow-card .reply-input:not(.reply-context-input)`)
 }
 
 /** The open Needs-you inspector's Send button — `btn('Send', …)` has no class of its own. */
@@ -424,8 +424,8 @@ export async function collapseRow(id: string): Promise<void> {
   await settle()
 }
 
-/** Set an input's value and fire the bubbling `input` event app.js listens for. */
-export function type(el: HTMLInputElement | null | undefined, value: string): void {
+/** Set an editor's value and fire the bubbling `input` event app.js listens for. */
+export function type(el: HTMLInputElement | HTMLTextAreaElement | null | undefined, value: string): void {
   if (!el) throw new Error('type(): nothing to type into — the selector matched nothing')
   if (!document.contains(el)) throw new Error('type(): stale node — re-query after every render/await')
   el.value = value

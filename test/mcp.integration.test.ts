@@ -130,12 +130,14 @@ describe('mcp round-trip', () => {
     expect(items1[0].context).toMatch(/checkout revamp/)
 
     // human answers (viewer path)
-    replyItem(openDb(dbPath), id, 'flags — but canary first', 'roll this to 10% first and report back')
+    const reply = 'Use flags:\n\n1. Canary at 10%\n2. Watch errors\n3. Continue'
+    const replyContext = 'Report:\n- latency\n- error rate'
+    replyItem(openDb(dbPath), id, reply, replyContext)
 
     const p2 = await c1.callTool({ name: 'pending', arguments: {} })
     const items2 = JSON.parse((p2.content as Array<{ text: string }>)[0]!.text).items
-    expect(items2[0].reply).toBe('flags — but canary first')
-    expect(items2[0].reply_context).toBe('roll this to 10% first and report back')
+    expect(items2[0].reply).toBe(reply)
+    expect(items2[0].reply_context).toBe(replyContext)
     await c1.close()
     expect(listItems(openDb(dbPath))[0]!.reply_seen_at).toMatch(/^\d{4}-\d{2}-\d{2}T/) // pickup stamped
   }, 20000)
@@ -430,12 +432,13 @@ describe('mcp round-trip', () => {
     // the human annotates from the VIEWER — a different process, the store path
     const project = listBoards(openDb(dbPath))[0]!.project
     const rowId = getBoard(openDb(dbPath), project, 'rollout')!.rows[0]!.id
-    annotateBoardRow(openDb(dbPath), rowId, 'merge it')
+    const annotation = 'Merge with safeguards:\n\n- keep rollback ready\n- pause on errors'
+    annotateBoardRow(openDb(dbPath), rowId, annotation)
 
     // the same session polls pending() — and only pending() — and receives it
     const delivered = (await call(c1, 'pending', {})).rows
     expect(delivered).toHaveLength(1)
-    expect(delivered[0].annotation).toBe('merge it')
+    expect(delivered[0].annotation).toBe(annotation)
     expect(delivered[0].board_title).toBe('rollout')
     expect(delivered[0].label).toBe('Merge')
     expect(delivered[0].note).toBe('ready when you are')
@@ -452,7 +455,7 @@ describe('mcp round-trip', () => {
     // delivered rather than as fresh news, until the agent acknowledges it.
     const again = (await call(c1, 'pending', {})).rows
     expect(again).toHaveLength(1)
-    expect(again[0].annotation).toBe('merge it')
+    expect(again[0].annotation).toBe(annotation)
     expect(again[0].annotation_seen_at).toBe(row.annotation_seen_at)
     expect(again[0].annotation_seen_by).toBe('claude-code')
 

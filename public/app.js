@@ -1545,7 +1545,27 @@ function rowHandledEl(b, r) {
   return why
 }
 
-// The ONE write path for a row annotation — single-line input, no window.prompt.
+const REPLY_EDITOR_MAX_HEIGHT = 160
+
+function resizeReplyEditor(editor) {
+  editor.style.height = 'auto'
+  const naturalHeight = editor.scrollHeight
+  if (naturalHeight > 0) editor.style.height = `${Math.min(naturalHeight, REPLY_EDITOR_MAX_HEIGHT)}px`
+  editor.style.overflowY = naturalHeight > REPLY_EDITOR_MAX_HEIGHT ? 'auto' : 'hidden'
+}
+
+function bindReplyEditor(editor, submit) {
+  editor.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' || (!event.ctrlKey && !event.metaKey)) return
+    event.preventDefault()
+    submit()
+  })
+  requestAnimationFrame(() => {
+    if (editor.isConnected) resizeReplyEditor(editor)
+  })
+}
+
+// The ONE write path for a row annotation — multiline editor, no window.prompt.
 // Shared by the boards matrix and the triage card (spec §7).
 //
 // It also carries #36's lever, so all THREE surfaces that let a human act on a
@@ -1561,8 +1581,10 @@ function rowAnswerEl(b, r, onSaved) {
   wrap.className = 'row-answer'
   const row = document.createElement('div')
   row.className = 'reply-row'
-  const input = document.createElement('input')
+  const input = document.createElement('textarea')
   input.className = 'reply-input'
+  input.rows = 1
+  input.setAttribute('aria-keyshortcuts', 'Control+Enter Meta+Enter')
   input.dataset.draftFocusKey = `row:${r.id}`
   input.placeholder = r.options?.length
     ? 'or answer in your own words…'
@@ -1591,6 +1613,7 @@ function rowAnswerEl(b, r, onSaved) {
     editorGeneration = bumpDraftGeneration(rowDraftGenerations, r.id)
     rowDrafts[r.id] = input.value
     rowDraftKinds[r.id] = input.dataset.responseKind ?? rowDraftKinds[r.id] ?? 'answer'
+    resizeReplyEditor(input)
     if (input.value.trim()) {
       rowDraftMeta[r.id] = {
         revision: r.revision,
@@ -1730,7 +1753,7 @@ function rowAnswerEl(b, r, onSaved) {
       },
     ))
   }
-  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') save() })
+  bindReplyEditor(input, save)
   row.appendChild(input)
   row.appendChild(btn('Send', save))
   const handled = rowHandledEl(b, r)
@@ -4916,7 +4939,7 @@ async function sendReply(
   }
   showWriteError(id, '')
   // issue #38, the reported surface. Also the entry for the option pills, the ★'s
-  // staged send, Enter in the input and the triage card — all of them were silent.
+  // staged send, the editor shortcut and the triage card — all of them were silent.
   await reloadAndPaint()
 }
 
@@ -4955,8 +4978,10 @@ function answerEl(it) {
     cmp.className = 'compare-toggle'
     row.appendChild(cmp)
   }
-  const input = document.createElement('input')
+  const input = document.createElement('textarea')
   input.className = 'reply-input'
+  input.rows = 1
+  input.setAttribute('aria-keyshortcuts', 'Control+Enter Meta+Enter')
   input.dataset.draftFocusKey = `${it.id}:answer`
   input.placeholder = opts.length ? 'or answer in your own words…' : 'answer…'
   input.value = effectiveReply(it)
@@ -4968,24 +4993,24 @@ function answerEl(it) {
     invalidateItemDraftIntents(it.id)
     editorGeneration = bumpDraftGeneration(itemDraftGenerations, it.id)
     draftReplies[it.id] = input.value
+    resizeReplyEditor(input)
     rememberDraftOwner()
     resumeRender()
   })
-  input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-      sendReply(it.id, input.value, ctxInput.value, 'answer', editorGeneration, null, true, true)
-    }
-  })
-  row.appendChild(input)
-  row.appendChild(btn('Send', () => sendReply(
+  const submit = () => sendReply(
     it.id, input.value, ctxInput.value, 'answer', editorGeneration, null, true, true,
-  )))
+  )
+  bindReplyEditor(input, submit)
+  row.appendChild(input)
+  row.appendChild(btn('Send', submit))
   row.appendChild(writeErrorEl(it.id)) // persists a failed write's reason across the poll rebuild (C3)
   wrap.appendChild(row)
   const ctxRow = document.createElement('div')
   ctxRow.className = 'reply-row reply-context-row'
-  const ctxInput = document.createElement('input')
+  const ctxInput = document.createElement('textarea')
   ctxInput.className = 'reply-input reply-context-input'
+  ctxInput.rows = 1
+  ctxInput.setAttribute('aria-keyshortcuts', 'Control+Enter Meta+Enter')
   ctxInput.dataset.draftFocusKey = `${it.id}:context`
   ctxInput.placeholder = 'optional context for the agent (applies to Send or option picks)…'
   ctxInput.value = effectiveReplyContext(it)
@@ -4993,9 +5018,11 @@ function answerEl(it) {
     invalidateItemDraftIntents(it.id)
     editorGeneration = bumpDraftGeneration(itemDraftGenerations, it.id)
     draftReplyContexts[it.id] = ctxInput.value
+    resizeReplyEditor(ctxInput)
     rememberDraftOwner()
     resumeRender()
   })
+  bindReplyEditor(ctxInput, submit)
   ctxRow.appendChild(ctxInput)
   wrap.appendChild(ctxRow)
   wrap.appendChild(dispositionEl(

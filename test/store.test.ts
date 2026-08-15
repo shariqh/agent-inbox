@@ -232,6 +232,19 @@ describe('answer-back', () => {
     expect(listItems(db)[0]!.reply_context).toBeNull()
   })
 
+  it('preserves multiline structure in item replies and context', () => {
+    const id = insertItem(db, { project: 'p', stream: '', agent: 'a', kind: 'question', title: 'q' })
+    const reply = 'Use a canary:\n\n1. Deploy to 10%\n2. Watch errors'
+    const context = 'Checks:\n- latency\n- error rate'
+
+    replyItem(db, id, reply, context)
+
+    const stored = listItems(db)[0]!
+    expect(stored.reply).toBe(reply)
+    expect(stored.reply_context).toBe(context)
+    expect(listPending(db, 'p')[0]!.reply).toBe(reply)
+  })
+
   it('keeps a per-client high-water across intervening clients and preserves legacy arrival order', () => {
     const id = insertItem(db, { project: 'p', stream: '', agent: 'a', kind: 'question', title: 'q' })
     expect(replyItem(db, id, 'client A sequence 2', undefined, 'answer', {
@@ -1592,6 +1605,15 @@ describe('per-row annotation delivery (#37)', () => {
       board_id: boardId, board_title: 'c', project: 'p', stream: 's', agent: 'a',
       row_id: board().rows[0]!.id, label: 'Merge', status: 'blocked', note: 'note Merge', annotation: 'merge it',
     })
+  })
+
+  it('preserves multiline structure in pending board annotations', () => {
+    const { board } = seed([{ label: 'Merge', status: 'blocked' }])
+    const annotation = 'Proceed with safeguards:\n\n- keep rollback ready\n- pause on errors'
+    annotateBoardRow(db, board().rows[0]!.id, annotation)
+
+    expect(board().rows[0]!.annotation).toBe(annotation)
+    expect(listPendingRows(db, 'p')[0]!.annotation).toBe(annotation)
   })
 
   it('an empty annotation is not pending work', () => {

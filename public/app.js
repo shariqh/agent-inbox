@@ -1177,6 +1177,7 @@ function paintEditableSurfaces({ agents, g, boards, archived, live }) {
 function render() {
   const frame = preparedFrame ?? paintAmbient()
   preparedFrame = null
+  const missionFocus = captureMissionFocus()
   const draftFocus = activeDraftFocusBookmark() ?? requestedDraftFocusBookmark
   const pagedFocus = pagedCardFocusBookmark()
   pagedFocusId = pagedFocus?.id ?? null
@@ -1185,7 +1186,9 @@ function render() {
   requestedDraftFocusBookmark = null
   paintEditableSurfaces(frame)
   pagedFocusId = null
-  if (!restoreDraftRecoveryFocus() && !restoreDraftFocus(draftFocus)) {
+  if (missionFocus && missionBoardId) {
+    restoreMissionFocus(missionFocus)
+  } else if (!restoreDraftRecoveryFocus() && !restoreDraftFocus(draftFocus)) {
     restorePagedCardFocus(pagedFocus)
   }
   applySearchJumpHighlight()
@@ -1346,7 +1349,7 @@ function openTriage() {
   }
   triageReturnFocus = captureTriageReturnFocus()
   if (relayOpen) closeRelay()
-  if (missionBoardId) closeMission()
+  if (missionBoardId) closeMission({ restoreFocus: false })
   triageDeck = { entries: buildDeck(), index: 0 }
   renderTriage()
   document.querySelector('#lightbox .lb-panel')?.focus({ preventScroll: true })
@@ -1937,7 +1940,7 @@ let relayOpen = false
 
 function openRelay() {
   if (triageDeck) closeTriage()
-  if (missionBoardId) closeMission()
+  if (missionBoardId) closeMission({ restoreFocus: false })
   relayOpen = true
   renderRelay()
 }
@@ -2062,22 +2065,109 @@ function initRelay() {
 
 let missionBoardId = null
 let missionDetailRowId = null
+let missionReturnFocus = null
+let missionDetailReturnFocus = null
+
+function missionPanel() {
+  return document.querySelector('#missionbox .mission-panel')
+}
+
+function missionDetailPanel() {
+  return document.querySelector('#missionbox .mission-detail-panel')
+}
+
+function captureMissionFocus() {
+  const active = document.activeElement
+  if (!missionBoardId || !active?.closest?.('#missionbox')) return null
+  const detail = active.closest('.mission-detail-panel')
+  const surface = detail ? 'detail' : 'flow'
+  const rowId = surface === 'detail'
+    ? missionDetailRowId
+    : active.closest('.mission-path[data-row-id]')?.dataset.rowId ?? null
+  const scope = surface === 'detail'
+    ? detail
+    : (rowId ? active.closest('.mission-path[data-row-id]') : missionPanel())
+  if (!scope) return null
+  const targets = cardFocusTargets(scope)
+  if (active === scope || !targets.includes(active)) {
+    return { boardId: missionBoardId, surface, rowId, key: null, ordinal: 0 }
+  }
+  const key = cardFocusKey(active)
+  return {
+    boardId: missionBoardId,
+    surface,
+    rowId,
+    key,
+    ordinal: targets.filter((target) => cardFocusKey(target) === key).indexOf(active),
+  }
+}
+
+function focusMissionPanel() {
+  const panel = missionPanel()
+  panel?.focus({ preventScroll: true })
+  return document.activeElement === panel
+}
+
+function restoreMissionFocus(bookmark) {
+  if (!bookmark || bookmark.boardId !== missionBoardId) return false
+  if (bookmark.surface === 'detail' && bookmark.rowId !== missionDetailRowId) {
+    return focusMissionPanel()
+  }
+  const scope = bookmark.surface === 'detail'
+    ? missionDetailPanel()
+    : (bookmark.rowId
+        ? document.querySelector(`#missionbox .mission-path[data-row-id="${CSS.escape(bookmark.rowId)}"]`)
+        : missionPanel())
+  if (!scope || scope.closest('[hidden]')) return focusMissionPanel()
+  const matches = bookmark.key
+    ? cardFocusTargets(scope).filter((target) => cardFocusKey(target) === bookmark.key)
+    : []
+  const target = matches[bookmark.ordinal] ?? (bookmark.key ? null : scope)
+  if (!target) return focusMissionPanel()
+  target.focus({ preventScroll: true })
+  return document.activeElement === target || focusMissionPanel()
+}
+
+function restoreMissionDetailReturnFocus(bookmark) {
+  if (!bookmark || bookmark.boardId !== missionBoardId || !bookmark.rowId) {
+    return focusMissionPanel()
+  }
+  const scope = document.querySelector(
+    `#missionbox .mission-path[data-row-id="${CSS.escape(bookmark.rowId)}"]`,
+  )
+  if (!scope) return focusMissionPanel()
+  const matches = bookmark.key
+    ? cardFocusTargets(scope).filter((target) => cardFocusKey(target) === bookmark.key)
+    : []
+  const target = matches[bookmark.ordinal] ?? cardFocusTargets(scope)[0]
+  if (!target) return focusMissionPanel()
+  target.focus({ preventScroll: true })
+  return document.activeElement === target || focusMissionPanel()
+}
 
 function openMission(board) {
   if (triageDeck) closeTriage()
   if (relayOpen) closeRelay()
+  missionReturnFocus = pagedCardFocusBookmark()
   missionBoardId = board.id
-  renderMission()
+  renderMission({ restoreFocus: false })
+  focusMissionPanel()
 }
 
-function closeMission() {
+function closeMission({ restoreFocus = true } = {}) {
+  const returnFocus = missionReturnFocus
   missionBoardId = null
   missionDetailRowId = null
+  missionReturnFocus = null
+  missionDetailReturnFocus = null
   document.getElementById('missionbox').hidden = true
+  if (restoreFocus && !restorePagedCardFocus(returnFocus)) {
+    document.querySelector('.tab[data-tab="boards"]')?.focus({ preventScroll: true })
+  }
 }
 
 function focusMissionRow(board, row) {
-  closeMission()
+  closeMission({ restoreFocus: false })
   focusItem(board.id)
   openRows.add(row.id)
   forceRender()
@@ -2088,19 +2178,28 @@ function focusMissionRow(board, row) {
 }
 
 function openMissionDetail(row) {
+  const current = captureMissionFocus()
+  missionDetailReturnFocus = current?.surface === 'flow' && current.rowId === row.id
+    ? current
+    : { boardId: missionBoardId, surface: 'flow', rowId: row.id, key: null, ordinal: 0 }
   missionDetailRowId = row.id
-  renderMission()
+  renderMission({ restoreFocus: false })
+  missionDetailPanel()?.focus({ preventScroll: true })
 }
 
-function closeMissionDetail() {
+function closeMissionDetail({ restoreFocus = true } = {}) {
+  const returnFocus = missionDetailReturnFocus
   missionDetailRowId = null
+  missionDetailReturnFocus = null
   document.querySelector('#missionbox .mission-detail').hidden = true
+  if (restoreFocus) restoreMissionDetailReturnFocus(returnFocus)
 }
 
 function missionPathEl(path, board) {
   const row = path.row
   const line = document.createElement('div')
   line.className = 'mission-path'
+  line.dataset.rowId = row.id
   const action = document.createElement('article')
   action.className = `mission-node mission-${row.status}`
   const owner = row.action_owner ? actionOwnerLabel(row) : (STATUS_LABEL[row.status] ?? row.status)
@@ -2130,8 +2229,9 @@ function missionPathEl(path, board) {
   return line
 }
 
-function renderMission() {
+function renderMission({ restoreFocus = true } = {}) {
   if (!missionBoardId || !lastData) return
+  const focusBookmark = restoreFocus ? captureMissionFocus() : null
   if (reconcileDraftOwners()) {
     forceRender()
     return
@@ -2155,7 +2255,7 @@ function renderMission() {
     for (const path of mission.paths) paths.appendChild(missionPathEl(path, board))
   }
   box.querySelector('.mission-root-card').onclick = () => {
-    closeMission()
+    closeMission({ restoreFocus: false })
     focusItem(board.id)
   }
   const detail = box.querySelector('.mission-detail')
@@ -2169,12 +2269,13 @@ function renderMission() {
       detail.querySelector('.mission-detail-board').onclick = () => focusMissionRow(board, row)
       detail.hidden = false
     } else {
-      closeMissionDetail()
+      closeMissionDetail({ restoreFocus: false })
     }
   } else {
     detail.hidden = true
   }
   box.hidden = false
+  if (restoreFocus) restoreMissionFocus(focusBookmark)
 }
 
 function initMission() {
@@ -4498,7 +4599,7 @@ function requestDraftRecovery(target = draftRecoveryTarget) {
     selectRow(target.rowId)
   }
   if (triageDeck) closeTriage({ restoreFocus: false })
-  if (missionBoardId) closeMission()
+  if (missionBoardId) closeMission({ restoreFocus: false })
   if (relayOpen) closeRelay()
   selectTab('needsYou')
 }

@@ -21,7 +21,7 @@ import { describe, it, expect, afterEach } from 'vitest'
 import type Database from 'better-sqlite3'
 import { listBoards, markHandledDelivered, markRowHandled, upsertBoard } from '../../src/store.js'
 import {
-  advanceClock, badgeCount, bootApp, buttonLabelled, click, freshDb, pollTick,
+  advanceClock, badgeCount, bootApp, buttonLabelled, click, collapseRow, freshDb, pollTick,
   row, rowTitles, settle, tabCount, useDomTest,
 } from './harness.js'
 
@@ -68,10 +68,7 @@ async function openCard(id: string): Promise<Element> {
  * passes for the wrong reason.
  */
 async function collapseCard(id: string): Promise<void> {
-  if (row(id)?.querySelector('.nrow-card')) {
-    click(row(id))
-    await settle()
-  }
+  await collapseRow(id)
 }
 
 describe('#36 · marking a blocked row done clears the badge with no agent round-trip', () => {

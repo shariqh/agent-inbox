@@ -6,7 +6,7 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import type Database from 'better-sqlite3'
 import { insertItem } from '../../src/store.js'
-import { bootApp, click, freshDb, row, rowTitles, settle, type, useDomTest } from './harness.js'
+import { bootApp, click, collapseRow, freshDb, row, rowTitles, settle, type, useDomTest } from './harness.js'
 
 useDomTest()
 
@@ -55,8 +55,7 @@ describe('the harness refuses stale nodes', () => {
 
     click(row(id)) // open
     await settle()
-    click(row(id)) // …and close, through a freshly-queried node
-    await settle()
+    await collapseRow(id) // …and close through the explicit action
 
     expect(document.querySelectorAll('.nrow-card').length).toBe(0)
   })

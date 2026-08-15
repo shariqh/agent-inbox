@@ -100,13 +100,23 @@ describe('app.js wiring (source-level pins)', () => {
     expect(setOpenRowFn).toMatch(/openRowId\s*=(?!=)/)
   })
 
-  it('toggleRow drives the accordion through renderIfIdle(), never a bare render()', () => {
-    const start = js.indexOf('function toggleRow(')
-    expect(start, 'toggleRow is missing').toBeGreaterThan(-1)
-    const fn = js.slice(start, js.indexOf('\nfunction ', start))
-    expect(fn).toContain('setOpenRow(')
-    expect(fn).toContain('renderIfIdle()')
-    expect(fn).not.toContain('render()')
+  it('separates idempotent activation from explicit collapse', () => {
+    const activateStart = js.indexOf('function activateRow(')
+    expect(activateStart, 'activateRow is missing').toBeGreaterThan(-1)
+    const activate = js.slice(activateStart, js.indexOf('\nfunction ', activateStart))
+    expect(activate).toContain('if (openRowId === m.id)')
+    expect(activate).toContain('if (selectedId !== m.id)')
+    expect(activate).toContain('setOpenRow(m.id, { resume: false })')
+    expect(activate).toContain('resumeRender()')
+    expect(activate).not.toContain('renderIfIdle()')
+    expect(activate).not.toContain('render()')
+
+    const collapseStart = js.indexOf('function collapseRow(')
+    expect(collapseStart, 'collapseRow is missing').toBeGreaterThan(-1)
+    const collapse = js.slice(collapseStart, js.indexOf('\nfunction ', collapseStart))
+    expect(collapse).toContain('setOpenRow(null)')
+    expect(collapse).toContain('renderIfIdle()')
+    expect(collapse).not.toContain('render()')
   })
 
   it('the inline expanded body is rowCardBodyEl, tagged .nrow-card', () => {
@@ -116,16 +126,17 @@ describe('app.js wiring (source-level pins)', () => {
     expect(fn).toMatch(/className\s*=\s*'nrow-card'/)
   })
 
-  it('needsRowEl wires click/keydown to toggleRow and restores the open row on rebuild', () => {
+  it('needsRowEl wires activation and explicit collapse, then restores the open row on rebuild', () => {
     const start = js.indexOf('function needsRowEl(')
     const fn = js.slice(start, js.indexOf('\nfunction rowCardBodyEl('))
-    expect(fn).toContain('toggleRow(el, m, entry, nowMs)')
+    expect(fn).toContain('activateRow(el, m, entry, nowMs)')
+    expect(fn).toContain('collapseRow(m.id)')
     expect(fn).toMatch(/openRowId === m\.id/)
   })
 
   it('itemCardEl backs both the inline accordion body and the triage lightbox', () => {
     const rowBodyStart = js.indexOf('function rowCardBodyEl(')
-    const rowBodyFn = js.slice(rowBodyStart, js.indexOf('\nfunction toggleRow('))
+    const rowBodyFn = js.slice(rowBodyStart, js.indexOf('\nfunction activateRow('))
     expect(rowBodyFn).toContain('itemCardEl(')
 
     const triageStart = js.indexOf('function renderTriage(')

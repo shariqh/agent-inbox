@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // test/dom/toggle-row.test.ts
-// The Needs-you accordion and the write path behind it: C2, C3, C4 (commit 21b16d0)
+// Needs-you inspector selection and the write path behind it: C2, C3, C4 (commit 21b16d0)
 // and I5 (commit 4f12144), asserted through real clicks instead of source text.
 //
 //   C2 — a REFUSED "Change answer" wrote the prefill draft before the POST, so the
@@ -15,7 +15,7 @@ import { describe, it, expect, afterEach } from 'vitest'
 import type Database from 'better-sqlite3'
 import { insertItem, listItems, markReplySeen, replyItem } from '../../src/store.js'
 import {
-  advanceClock, answerInput, bootApp, buttonLabelled, click, expectConsoleError, freshDb,
+  advanceClock, answerInput, bootApp, buttonLabelled, click, collapseRow, expectConsoleError, freshDb,
   pollTick, row, rowTitles, rows, sendButton, settle, type, useDomTest,
 } from './harness.js'
 
@@ -31,7 +31,7 @@ function open(): Database.Database {
 
 const AGENT = { project: 'alpha', stream: 'main', agent: 'claude' } as const
 
-describe('the Needs-you accordion is single-open', () => {
+describe('Needs-you row selection is idempotent and single-open', () => {
   it('opens the clicked row and closes whatever was open', async () => {
     const d = open()
     const a = insertItem(d, { ...AGENT, kind: 'question', title: 'first' })
@@ -49,10 +49,144 @@ describe('the Needs-you accordion is single-open', () => {
     expect(row(a)?.hasAttribute('data-open')).toBe(false)
     expect(row(b)?.dataset['open']).toBe('1')
     expect(document.querySelectorAll('.nrow-card').length).toBe(1)
+  })
 
-    click(row(b))
+  it('keeps the exact card, draft, scroll, and focus on repeated pointer activation', async () => {
+    const d = open()
+    const id = insertItem(d, { ...AGENT, kind: 'question', title: 'stable selection' })
+    await bootApp(d)
+
+    click(row(id))
     await settle()
-    expect(document.querySelectorAll('.nrow-card').length).toBe(0)
+    const card = row(id)!.querySelector<HTMLElement>('.nrow-card')!
+    const input = answerInput(id)!
+    type(input, 'unfinished answer')
+    card.scrollTop = 180
+    input.focus()
+
+    const down = new window.MouseEvent('mousedown', {
+      button: 0,
+      bubbles: true,
+      cancelable: true,
+    })
+    row(id)!.dispatchEvent(down)
+    expect(down.defaultPrevented).toBe(true)
+    click(row(id))
+    await settle()
+
+    expect(row(id)?.dataset['open']).toBe('1')
+    expect(row(id)?.querySelector('.nrow-card')).toBe(card)
+    expect(answerInput(id)).toBe(input)
+    expect(answerInput(id)?.value).toBe('unfinished answer')
+    expect(card.scrollTop).toBe(180)
+    expect(document.activeElement).toBe(input)
+  })
+
+  it('reselects an already-open row without remounting it after roving selection moved away', async () => {
+    const d = open()
+    const first = insertItem(d, { ...AGENT, kind: 'question', title: 'first' })
+    advanceClock()
+    const second = insertItem(d, { ...AGENT, kind: 'question', title: 'second' })
+    await bootApp(d)
+
+    click(row(first))
+    await settle()
+    const card = row(first)!.querySelector('.nrow-card')
+    document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'j', bubbles: true }))
+    await settle()
+    expect(row(first)?.classList.contains('selected')).toBe(false)
+    expect(document.activeElement).not.toBe(row(first))
+
+    const down = new window.MouseEvent('mousedown', {
+      button: 0,
+      bubbles: true,
+      cancelable: true,
+    })
+    row(first)!.dispatchEvent(down)
+    expect(down.defaultPrevented).toBe(false)
+    click(row(first))
+    await settle()
+
+    expect(row(first)?.classList.contains('selected')).toBe(true)
+    expect(row(first)?.querySelector('.nrow-card')).toBe(card)
+    expect(document.activeElement).toBe(row(first))
+
+    document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'e', bubbles: true }))
+    await settle()
+    expect(listItems(d).find((item) => item.id === first)?.status).toBe('resolved')
+    expect(listItems(d).find((item) => item.id === second)?.status).toBe('open')
+  })
+
+  it('leaves a textarea editor in control after roving selection moves away', async () => {
+    const d = open()
+    const first = insertItem(d, { ...AGENT, kind: 'question', title: 'first' })
+    advanceClock()
+    insertItem(d, { ...AGENT, kind: 'question', title: 'second' })
+    await bootApp(d)
+
+    click(row(first))
+    await settle()
+    const card = row(first)!.querySelector('.nrow-card')
+    document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'j', bubbles: true }))
+    await settle()
+    expect(row(first)?.classList.contains('selected')).toBe(false)
+
+    const editor = document.createElement('textarea')
+    editor.className = 'reply-input'
+    row(first)!.appendChild(editor)
+    editor.focus()
+    editor.click()
+    editor.value = 'line one\nline two'
+    editor.dispatchEvent(new window.Event('input', { bubbles: true }))
+
+    expect(document.activeElement).toBe(editor)
+    expect(editor.value).toBe('line one\nline two')
+    expect(row(first)?.classList.contains('selected')).toBe(false)
+    expect(row(first)?.querySelector('.nrow-card')).toBe(card)
+  })
+
+  it('keeps the exact card mounted when Enter reactivates the selected row', async () => {
+    const d = open()
+    const id = insertItem(d, { ...AGENT, kind: 'question', title: 'keyboard selection' })
+    await bootApp(d)
+
+    const firstRow = row(id)!
+    firstRow.focus()
+    firstRow.dispatchEvent(new window.KeyboardEvent('keydown', {
+      key: 'Enter',
+      bubbles: true,
+      cancelable: true,
+    }))
+    await settle()
+    const card = row(id)!.querySelector('.nrow-card')
+    row(id)!.focus()
+
+    row(id)!.dispatchEvent(new window.KeyboardEvent('keydown', {
+      key: 'Enter',
+      bubbles: true,
+      cancelable: true,
+    }))
+    await settle()
+
+    expect(row(id)?.dataset['open']).toBe('1')
+    expect(row(id)?.querySelector('.nrow-card')).toBe(card)
+    expect(document.activeElement).toBe(row(id))
+  })
+
+  it('explicitly collapses with Escape and restores row focus', async () => {
+    const d = open()
+    const id = insertItem(d, { ...AGENT, kind: 'question', title: 'collapse me' })
+    await bootApp(d)
+
+    click(row(id))
+    await settle()
+    expect(document.activeElement).toBe(row(id)?.querySelector('.nrow-card'))
+
+    await collapseRow(id)
+
+    expect(row(id)?.hasAttribute('data-open')).toBe(false)
+    expect(row(id)?.querySelector('.nrow-card')).toBeNull()
+    expect(document.activeElement).toBe(row(id))
   })
 })
 
@@ -118,8 +252,7 @@ describe('C3 · a failed write must not discard the typed answer', () => {
     // Collapse and RE-EXPAND before asserting. With the row open the poll is suspended
     // and the input node keeps its value either way, so a naive assertion passes on the
     // buggy code too; only a rebuild-from-module-state proves the draft was kept.
-    click(row(id))
-    await settle()
+    await collapseRow(id)
     expect(document.querySelectorAll('.nrow-card').length).toBe(0)
     click(row(id))
     await settle()
@@ -165,8 +298,7 @@ describe('C2 · a REFUSED change-answer must not freeze the viewer', () => {
     expect(document.querySelector('.refusal-msg')?.textContent ?? '').toMatch(/Picked up/)
     expect(listItems(d)[0]?.reply, 'the picked-up answer must survive the refusal').toBe(ANSWER)
 
-    click(row(id)) // collapse; the rejected reply draft remains the only suspend reason
-    await settle()
+    await collapseRow(id) // the rejected reply draft remains the only suspend reason
 
     advanceClock()
     insertItem(d, { ...AGENT, kind: 'question', title: 'SECOND question' })

@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
 import { insertItem, listItems, snoozeItem } from '../../src/store.js'
 import {
-  advanceClock, bootApp, click, freshDb, navigateToHash, pollTick, row, settle, useDomTest,
+  advanceClock, bootApp, click, collapseRow, freshDb, navigateToHash, pollTick, row, settle, useDomTest,
 } from './harness.js'
 
 useDomTest()
@@ -33,8 +33,7 @@ describe('Needs-you deep-link selection ownership', () => {
 
     click(row(first))
     await settle()
-    click(row(first))
-    await settle()
+    await collapseRow(first)
     expect(row(first)?.classList.contains('selected')).toBe(true)
 
     navigateToHash(`#item/${linked}`)

@@ -34,7 +34,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest'
 import type Database from 'better-sqlite3'
 import { insertItem, listBoards, upsertBoard } from '../../src/store.js'
 import {
-  advanceClock, badgeCount, bootApp, freshDb, pollTick, rowTitles, settle, useDomTest,
+  advanceClock, badgeCount, bootApp, click, freshDb, pollTick, row, rowTitles, settle, useDomTest,
 } from './harness.js'
 
 useDomTest()
@@ -110,6 +110,34 @@ describe('#38 · D2 — the 3s rebuild must not land inside a press', () => {
 
     expect(document.contains(pressed), 'the press target was destroyed mid-press — Chrome fires no click').toBe(true)
     expect(answerBtn(), 'and it is still THE node, not a fresh one in its place').toBe(pressed)
+  })
+
+  it('switches inspectors after a press-deferred poll without patching a detached row', async () => {
+    const d = freshDb()
+    db = d
+    const first = insertItem(d, { ...AGENT, kind: 'question', title: 'First question' })
+    advanceClock()
+    const second = insertItem(d, { ...AGENT, kind: 'question', title: 'Second question' })
+    await bootApp(d)
+    click(row(first))
+    await settle()
+    insertItem(d, { ...AGENT, kind: 'question', title: 'Arrived during press' })
+
+    await vi.advanceTimersByTimeAsync(POLL_MS - (2 * BOOT_SETTLE_MS) - 100)
+    const target = row(second)!
+    pointer(target, 'pointerdown')
+    await vi.advanceTimersByTimeAsync(150)
+    expect(row(second)).toBe(target)
+    expect(rowTitles()).not.toContain('Arrived during press')
+
+    pointer(target, 'pointerup')
+    click(target)
+    await settle()
+
+    expect(row(first)?.hasAttribute('data-open')).toBe(false)
+    expect(row(second)?.dataset['open']).toBe('1')
+    expect(row(second)?.querySelector('.nrow-card')).not.toBeNull()
+    expect(rowTitles()).toContain('Arrived during press')
   })
 
   it('a bare press is not a pause, and #pauseHint must not claim otherwise', async () => {

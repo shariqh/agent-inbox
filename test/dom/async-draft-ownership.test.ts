@@ -5,7 +5,7 @@ import {
   getBoard, getItem, insertItem, markReplySeen, replyItem, resolveItem, upsertBoard,
 } from '../../src/store.js'
 import {
-  answerInput, bootApp, buttonLabelled, click, expectConsoleError, freshDb, pollTick, row,
+  answerInput, bootApp, buttonLabelled, click, collapseRow, expectConsoleError, freshDb, pollTick, row,
   settle, type, useDomTest,
 } from './harness.js'
 
@@ -406,8 +406,7 @@ describe('async draft ownership', () => {
     const held = holdFirstPost(`/items/${id}/reply`)
     click(buttonLabelled('Send', row(id)!))
     await vi.advanceTimersByTimeAsync(0)
-    click(row(id))
-    await settle()
+    await collapseRow(id)
     click(row(id)?.querySelector('.star-btn'))
     held.release()
     await settle()
@@ -788,8 +787,7 @@ describe('async draft ownership', () => {
     const release = deferPost(`/items/${id}/reply`)
     click(buttonLabelled('Send', row(id)!))
     await vi.advanceTimersByTimeAsync(0)
-    click(row(id))
-    await settle()
+    await collapseRow(id)
     click(row(id)?.querySelector('.star-btn'))
     resolveItem(db, id)
     await pollTick()

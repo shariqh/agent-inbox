@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type Database from 'better-sqlite3'
 import { getBoard, insertItem, listItems, openDb, updateBoardRow, upsertBoard } from '../../src/store.js'
 import {
-  answerInput, badgeCount, bootApp, buttonLabelled, click, freshDb, row, rowTitles,
+  answerInput, badgeCount, bootApp, buttonLabelled, click, collapseRow, freshDb, row, rowTitles,
   pollTick, sendButton, settle, type, useDomTest,
 } from './harness.js'
 
@@ -179,8 +179,7 @@ describe('human disposition controls', () => {
     await settle()
 
     expect(answerInput(rowId)?.value).toContain('Please clarify')
-    click(row(rowId))
-    await settle()
+    await collapseRow(rowId)
     click(row(rowId))
     await settle()
     click(sendButton(rowId))

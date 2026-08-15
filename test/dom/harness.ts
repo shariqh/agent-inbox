@@ -387,13 +387,13 @@ export function badgeCount(): number {
   return m?.[1] ? Number(m[1]) : 0
 }
 
-/** The open accordion card's free-text answer input (NOT the context input beside it). */
+/** The open Needs-you inspector's free-text answer input (NOT its context input). */
 export function answerInput(id?: string): HTMLInputElement | null {
   const scope = id ? `.nrow[data-card-id="${cssEscape(id)}"] ` : ''
   return document.querySelector<HTMLInputElement>(`${scope}.nrow-card .reply-input:not(.reply-context-input)`)
 }
 
-/** The open accordion card's Send button — `btn('Send', …)` carries no class of its own. */
+/** The open Needs-you inspector's Send button — `btn('Send', …)` has no class of its own. */
 export function sendButton(id?: string): HTMLButtonElement | null {
   const scope = id ? `.nrow[data-card-id="${cssEscape(id)}"] ` : ''
   return [...document.querySelectorAll<HTMLButtonElement>(`${scope}.nrow-card .reply-row button`)]
@@ -410,6 +410,18 @@ export function click(el: Element | null | undefined): void {
   if (!el) throw new Error('click(): nothing to click — the selector matched nothing')
   if (!document.contains(el)) throw new Error('click(): stale node — re-query after every render/await')
   ;(el as HTMLElement).click()
+}
+
+/** Close an open Needs-you inspector through its explicit Escape action. */
+export async function collapseRow(id: string): Promise<void> {
+  const el = row(id)
+  if (!el?.querySelector('.nrow-card')) return
+  el.dispatchEvent(new window.KeyboardEvent('keydown', {
+    key: 'Escape',
+    bubbles: true,
+    cancelable: true,
+  }))
+  await settle()
 }
 
 /** Set an input's value and fire the bubbling `input` event app.js listens for. */

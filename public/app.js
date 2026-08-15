@@ -635,14 +635,14 @@ function focusItem(id, source = null) {
   if (location.hash !== hash) location.hash = hash // survives reload
   forceRender()
   // fix round 2 (C1): this used to call setOpenRow(id) for EVERY target. The
-  // accordion is a Needs-you affordance — `toggleRow` is the only thing that
-  // clears openRowId and it is reachable only from a rendered `.nrow`. A board
+  // inspector is a Needs-you affordance — explicit collapse is reachable only
+  // from a rendered `.nrow`. A board
   // id (electron/main.cjs deep-links a blocked row with focusHashFor(board.id),
   // one notification click away) or a notes/done item id has none, so
   // shouldSuspendRender() stayed true forever: load() kept updating lastData
   // while the DOM, all four tab counts and document.title froze, and Escape's
   // `collapse` intent no-op'd against a `.nrow` that never existed. Claim the
-  // accordion only once the target has actually landed in the list — render()
+  // inspector only once the target has actually landed in the list — render()
   // above put it there — then render again so the card body mounts under it.
   const queueTarget = needsYouRowEl(id)
   if (queueTarget) {
@@ -3906,14 +3906,21 @@ function needsRowEl(m, entry, nowMs) {
     undo.className = 'undo-btn'
     el.querySelector('.nrow-l2').replaceChildren(document.createTextNode('Dismissed — '), undo)
   }
+  el.addEventListener('mousedown', (ev) => {
+    if (openRowId !== m.id || ev.button !== 0) return
+    if (rowInteractiveDescendant(ev.target, el)) return
+    const card = el.querySelector('.nrow-card')
+    if (!card?.contains(document.activeElement)) return
+    ev.preventDefault()
+  })
   el.addEventListener('click', (ev) => {
-    if (ev.target.closest('button, input, a')) return
-    toggleRow(el, m, entry, nowMs)
+    if (rowInteractiveDescendant(ev.target, el)) return
+    activateRow(el, m, entry, nowMs)
   })
   el.addEventListener('keydown', (ev) => {
     if (ev.target !== el) return
-    if (ev.key === 'Enter') { ev.preventDefault(); toggleRow(el, m, entry, nowMs) }
-    if (ev.key === 'Escape' && openRowId === m.id) { ev.preventDefault(); toggleRow(el, m, entry, nowMs) }
+    if (ev.key === 'Enter') { ev.preventDefault(); activateRow(el, m, entry, nowMs) }
+    if (ev.key === 'Escape' && openRowId === m.id) { ev.preventDefault(); collapseRow(m.id) }
   })
   // a full render (poll or user action) rebuilds the open row from openRowId
   if (openRowId === m.id) {
@@ -3947,36 +3954,56 @@ function rowCardBodyEl(entry, m, nowMs) {
   return body
 }
 
-// Single-open accordion. `setOpenRow` owns the logical state; the DOM is patched
-// in place for immediate interaction, then polling rebuilds it from that state.
-//
-// This is the ONE function that opens/closes a row — a mouse click, the row's
-// own Enter/Escape keydown handler below, and Task 17's keyboard 'expand'/
-// 'collapse' intents (dispatched as a synthetic click on the row) all end up
-// here — so focus management (spec §13: focus moves into the card on expand,
-// returns to the row on collapse) lives in exactly one place instead of being
-// duplicated per trigger.
-function toggleRow(el, m, entry, nowMs) {
-  const wasOpen = openRowId === m.id
+const ROW_INTERACTIVE_SELECTOR = `${CARD_FOCUS_SELECTOR}, label, [role="button"], [contenteditable]:not([contenteditable="false"])`
+
+function rowInteractiveDescendant(target, row) {
+  if (!(target instanceof Element)) return false
+  const owner = target.closest(ROW_INTERACTIVE_SELECTOR)
+  return owner !== null && owner !== row
+}
+
+// Row activation is selection, not an accordion toggle. Re-activating the open
+// row must not touch logical or DOM state: drafts, scroll and focus live in the
+// mounted card. `setOpenRow` remains the only writer of the logical state.
+function activateRow(el, m, entry, nowMs) {
+  if (openRowId === m.id) {
+    if (selectedId !== m.id) {
+      selectedId = m.id
+      markSelectedRow(m.id)
+      el.focus({ preventScroll: true })
+    }
+    return
+  }
   selectedId = m.id
   markSelectedRow(m.id)
-  setOpenRow(wasOpen ? null : m.id)
+  setOpenRow(m.id, { resume: false })
   for (const other of document.querySelectorAll('.nrow[data-open="1"]')) {
     other.removeAttribute('data-open')
     const card = other.querySelector('.nrow-card')
     if (card) card.remove()
   }
-  if (wasOpen) {
-    renderIfIdle()
-    requestAnimationFrame(() => selectRow(m.id)) // focus returns to the row (spec §13)
-    return
-  }
-  el.dataset.open = '1'
-  el.appendChild(rowCardBodyEl(entry, m, nowMs))
+  const liveEl = needsYouRowEl(m.id) ?? el
+  liveEl.dataset.open = '1'
+  liveEl.appendChild(rowCardBodyEl(entry, m, nowMs))
+  resumeRender()
   requestAnimationFrame(() => {
-    const card = el.querySelector('.nrow-card')
+    const card = needsYouRowEl(m.id)?.querySelector('.nrow-card')
     if (card) { card.tabIndex = -1; card.focus({ preventScroll: true }) } // focus moves into the card (spec §13)
   })
+}
+
+// Explicit collapse is separate from activation so pointer/Enter re-selection is
+// idempotent while Escape still closes and restores focus to the owning row.
+function collapseRow(id) {
+  if (openRowId !== id) return
+  selectedId = id
+  markSelectedRow(id)
+  setOpenRow(null)
+  const el = needsYouRowEl(id)
+  el?.removeAttribute('data-open')
+  el?.querySelector('.nrow-card')?.remove()
+  renderIfIdle()
+  requestAnimationFrame(() => selectRow(id))
 }
 
 // notes keep a card list, but flat: no project h3, no agent h4 (§15)
@@ -5109,17 +5136,14 @@ function runIntent(intent) {
       return
     }
     case 'expand': {
-      // dispatched as a real click on the row — toggleRow is the single
-      // open/close path and owns the focus-into-card behaviour (spec §13)
+      // A real row click shares pointer activation and focus-into-card behavior.
       if (!selectedId) return
       rowEls().find((el) => el.dataset.cardId === selectedId)?.click()
       return
     }
     case 'collapse': {
-      // same trick in reverse: clicking the open row closes it and toggleRow
-      // returns focus to the row (spec §13)
       if (!openRowId) return
-      document.querySelector(`.nrow[data-card-id="${CSS.escape(openRowId)}"]`)?.click()
+      collapseRow(openRowId)
       return
     }
     case 'exitPeek': {

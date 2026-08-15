@@ -479,6 +479,74 @@ body.settings-open #topbar > :not(#gear) { opacity: .32; }
 .structured-text ul, .structured-text ol { margin: .35em 0 .65em; padding-left: 1.4em; }
 .structured-text li + li { margin-top: .2em; }
 .structured-link { overflow-wrap: anywhere; word-break: break-word; }
+.structured-code {
+  margin: .55em 0 .7em;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, CanvasText 18%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, CanvasText 5%, Canvas);
+  overflow-wrap: normal;
+}
+.structured-code-toolbar {
+  display: flex;
+  min-width: 0;
+  min-height: 30px;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px 4px 10px;
+  border-bottom: 1px solid color-mix(in srgb, CanvasText 12%, transparent);
+}
+.structured-code-language {
+  max-width: 50%;
+  overflow: hidden;
+  color: inherit;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  opacity: .62;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.structured-code-status {
+  width: 6.5em;
+  margin-inline-start: auto;
+  color: inherit;
+  font-size: 11px;
+  text-align: end;
+  white-space: nowrap;
+}
+.structured-code-status[data-state="success"] { color: color-mix(in srgb, seagreen 76%, CanvasText); }
+.structured-code-status[data-state="error"] { color: color-mix(in srgb, crimson 76%, CanvasText); }
+.structured-code-copy {
+  flex: 0 0 auto;
+  padding: 2px 9px;
+  border: 1px solid color-mix(in srgb, CanvasText 24%, transparent);
+  border-radius: 6px;
+  background: Canvas;
+  color: CanvasText;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+}
+.structured-code-copy:hover { background: color-mix(in srgb, CanvasText 6%, Canvas); }
+.structured-code-copy:focus-visible { outline: 2px solid LinkText; outline-offset: 2px; }
+.structured-code pre {
+  max-width: 100%;
+  margin: 0;
+  overflow: auto;
+  padding: 11px 12px 12px;
+  background: transparent;
+}
+.structured-code code {
+  display: block;
+  min-width: max-content;
+  color: inherit;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  text-align: start;
+  white-space: pre;
+}
 .card-meta { display: flex; align-items: center; gap: 6px; }
 .card-title { font-weight: 600; font-size: 16px; margin: 4px 0 2px; }
 .card-next, .card-tldr { margin: 8px 0; padding: 8px 10px; border-radius: 8px; }

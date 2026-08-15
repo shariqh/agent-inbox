@@ -25,6 +25,7 @@ import { keyAction, rovingIndex, ariaAnswerLabel, livenessGlyph, deckEntryAt } f
 import { partitionNotes, unreadNoteCount, ambientChips, seenWatermark, markSeenIds } from '/notes.js'
 import { liveSummary, lastActivityAt, isDormant, activitySynopsis } from '/livebar.js'
 import { esc } from '/esc.js'
+import { initStructuredTextCopy } from '/structured-copy.js'
 import { renderStructuredText } from '/structured-text.js'
 import { boardRowsView, boardRowLine, progressLabel, hiddenDoneCount, lingeringBoards } from '/boards.js'
 import { titleWithBadge, focusHashFor, parseFocusHash } from '/badge.js'
@@ -5886,7 +5887,8 @@ async function renderSetup() {
 //   initProjectDisclosure →
 //   initKeys (Task 17) → initFocusHash (Task 17) → initStagedFlush →
 //   initPressGuard (#38) → initScrollGuard → initAgentSelect →
-//   initGear → initLiveBar → renderSetup → load → setInterval(load, 3000)
+//   initStructuredTextCopy → initGear → initLiveBar → renderSetup → load →
+//   setInterval(load, 3000)
 initTabs()
 initTriage()
 initRelay()
@@ -5901,6 +5903,7 @@ initStagedFlush()
 initPressGuard()
 initScrollGuard()
 initAgentSelect()
+initStructuredTextCopy()
 initGear()
 initLiveBar()
 renderSetup()

@@ -36,6 +36,7 @@ import { actionCategory, actionOwnerLabel, agentFollowupChip, changeKind, lifecy
 import { buildRelay } from '/relay.js'
 import { buildMission } from '/mission.js'
 import { PANE_DEFAULTS, paneKeyValue, paneValueFromPointer, resolvePaneLayout } from '/panes.js'
+import { createThemeController } from '/theme.js'
 
 void paginateGroups // kept exported+tested (spec §15); the viewer no longer calls it
 
@@ -72,6 +73,26 @@ let shown = { ...PAGE }
 function resetPaging() { shown = { ...PAGE } }
 
 let lastData = null
+let renderedTheme = document.documentElement.dataset.theme ?? 'light'
+function syncThemeChoices(preference) {
+  for (const input of document.querySelectorAll('input[name="theme-preference"]')) {
+    input.checked = input.value === preference
+  }
+}
+const themeController = createThemeController({
+  storage: localStorage,
+  root: document.documentElement,
+  media: window.matchMedia('(prefers-color-scheme: dark)'),
+  onChange(preference, effective) {
+    const changed = renderedTheme !== effective
+    renderedTheme = effective
+    window.agentInboxTheme?.setPreference?.(preference)
+    syncThemeChoices(preference)
+    // OS appearance changes are ambient. CSS updates immediately from data-theme;
+    // inline project colors can wait for the poll gate so drafts and scroll stay put.
+    if (changed && lastData) renderIfIdle()
+  },
+})
 let authoritativeClosed = []
 let loadGeneration = 0
 let appliedLoadGeneration = 0
@@ -5836,12 +5857,62 @@ function setupMenu(s, host, canInstall) {
   host.appendChild(wrap)
 }
 
+function renderThemeSettings(host) {
+  const section = document.createElement('section')
+  section.className = 'setup-block theme-picker'
+  const title = document.createElement('h3')
+  title.textContent = 'Appearance'
+  const hint = document.createElement('p')
+  hint.className = 'setup-hint'
+  hint.textContent = 'Choose a theme for this browser or app profile.'
+  const choices = document.createElement('fieldset')
+  choices.setAttribute('aria-label', 'Appearance')
+
+  for (const option of [
+    { value: 'light', label: 'Light', detail: 'Always use the light editorial palette.' },
+    { value: 'dark', label: 'Dark', detail: 'Always use the low-light editorial palette.' },
+    { value: 'system', label: 'System', detail: 'Follow this device and update automatically.' },
+  ]) {
+    const choice = document.createElement('label')
+    choice.className = 'theme-choice'
+    const input = document.createElement('input')
+    input.type = 'radio'
+    input.name = 'theme-preference'
+    input.value = option.value
+    input.checked = themeController.preference === option.value
+    input.addEventListener('change', () => {
+      if (!input.checked) return
+      try {
+        themeController.setPreference(option.value)
+      } catch (err) {
+        syncThemeChoices(themeController.preference)
+        console.error('Theme preference could not be saved', err)
+        document.getElementById('status').textContent = 'theme preference not saved'
+      }
+    })
+    const copy = document.createElement('span')
+    copy.className = 'theme-choice-copy'
+    const label = document.createElement('strong')
+    label.textContent = option.label
+    const detail = document.createElement('small')
+    detail.textContent = option.detail
+    copy.append(label, detail)
+    choice.append(input, copy)
+    choices.appendChild(choice)
+  }
+
+  section.append(title, hint, choices)
+  host.appendChild(section)
+}
+
 // Setup section: configure new agents or copy the exact setup command. Fetched
 // once, not on the poll.
 async function renderSetup() {
+  const host = document.querySelector('#setup .setup-body')
+  host.replaceChildren()
+  renderThemeSettings(host)
   try {
     const s = await (await fetch('/api/setup')).json()
-    const host = document.querySelector('#setup .setup-body')
     const block = (title, text, hint) => {
       const wrap = document.createElement('div')
       wrap.className = 'setup-block'

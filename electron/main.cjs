@@ -17,7 +17,7 @@
 //      before and kill that child on quit — only because we own it.
 //   4. Open a BrowserWindow on the viewer URL once the server responds.
 
-const { app, BrowserWindow, ipcMain, Menu, Notification, shell } = require('electron')
+const { app, BrowserWindow, ipcMain, Menu, Notification, nativeTheme, shell } = require('electron')
 const { spawn } = require('node:child_process')
 const { randomBytes } = require('node:crypto')
 const { existsSync } = require('node:fs')
@@ -49,6 +49,11 @@ const REPO_ROOT = path.resolve(__dirname, '..')
 const responseWatch = createResponseWatch()
 const notificationRetainer = createNotificationRetainer()
 const wakeAdapter = wakeAdapterFromEnv(process.env)
+const THEME_SOURCE_VALUES = new Set(['light', 'dark', 'system'])
+const THEME_BACKGROUND_COLORS = {
+  light: '#f7f4ef',
+  dark: '#171516',
+}
 let setupInstallRunning = false
 let setupInstallEnabled = false
 let setupInstallWebContentsId = null
@@ -60,6 +65,16 @@ let quitAfterSetup = false
 // its unresolved default for a dev/legacy checkout — installerRepoRoot alone
 // still gates that path, exactly as before.
 let runtimeSelection = { ok: false, reason: 'unresolved', key: runtimeKey(process.platform, process.arch) }
+let themeWindow = null
+let themeWindowWebContentsId = null
+
+function isTrustedThemeSender(senderUrl) {
+  try {
+    return new URL(senderUrl).origin === new URL(URL_BASE).origin
+  } catch {
+    return false
+  }
+}
 
 ipcMain.handle('agent-inbox:install-available', (event) =>
   setupInstallEnabled &&
@@ -112,6 +127,19 @@ ipcMain.handle('agent-inbox:install', async (event, target) => {
   }
 })
 
+ipcMain.handle('agent-inbox:set-theme-preference', (event, preference) => {
+  const senderUrl = event.senderFrame?.url ?? ''
+  if (!THEME_SOURCE_VALUES.has(preference) ||
+      event.sender.id !== themeWindowWebContentsId ||
+      !isTrustedThemeSender(senderUrl)) {
+    return false
+  }
+  nativeTheme.themeSource = preference
+  syncThemeChrome()
+  if (themeWindow && !themeWindow.isDestroyed()) themeWindow.show()
+  return true
+})
+
 // One attention predicate for the whole product (spec §7 / tenet 3): the dock
 // badge imports the very module the viewer renders from. ESM from CJS →
 // dynamic import, started once and awaited per poll.
@@ -146,6 +174,15 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 /** The viewer child process, ONLY if this app spawned it. Never set for a pre-existing server. */
 let spawnedViewer = null
+
+function themeBackgroundColor() {
+  return nativeTheme.shouldUseDarkColors ? THEME_BACKGROUND_COLORS.dark : THEME_BACKGROUND_COLORS.light
+}
+
+function syncThemeChrome(win = themeWindow) {
+  if (!win || win.isDestroyed()) return
+  win.setBackgroundColor(themeBackgroundColor())
+}
 
 function probeResponse(accept) {
   return new Promise((resolve) => {
@@ -415,15 +452,21 @@ function startAttentionWatch(win) {
 
 function createWindow() {
   const win = new BrowserWindow({
+    show: false,
     width: 1100,
     height: 850,
     title: 'Agent Inbox',
+    backgroundColor: themeBackgroundColor(),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
       preload: path.join(__dirname, 'setup-preload.cjs'),
     },
   })
+  themeWindow = win
+  const webContentsId = win.webContents.id
+  themeWindowWebContentsId = webContentsId
+  syncThemeChrome(win)
   // Keep our title; the page's <title> would otherwise overwrite it.
   win.on('page-title-updated', (e) => e.preventDefault())
 
@@ -439,9 +482,30 @@ function createWindow() {
       shell.openExternal(url)
     }
   })
+  win.webContents.on('did-finish-load', async () => {
+    if (win.isDestroyed() || win.isVisible()) return
+    try {
+      const preference = await win.webContents.executeJavaScript(
+        'document.documentElement.dataset.themePreference'
+      )
+      nativeTheme.themeSource = THEME_SOURCE_VALUES.has(preference) ? preference : 'light'
+      syncThemeChrome(win)
+    } catch (err) {
+      console.error('[agent-inbox] could not synchronize native theme before showing the window', err)
+      nativeTheme.themeSource = 'light'
+      syncThemeChrome(win)
+    }
+    if (!win.isDestroyed()) win.show()
+  })
+  win.on('closed', () => {
+    if (themeWindow === win) themeWindow = null
+    if (themeWindowWebContentsId === webContentsId) themeWindowWebContentsId = null
+  })
 
   return win
 }
+
+nativeTheme.on('updated', () => syncThemeChrome())
 
 function installApplicationMenu(win) {
   const settings = {

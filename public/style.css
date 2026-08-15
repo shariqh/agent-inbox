@@ -13,32 +13,34 @@
   --app-accent: #b11f4b;
   --app-accent-hover: #9a1a41;
   --app-accent-soft: rgba(177, 31, 75, .08);
-  --app-success: #16a34a;
+  --app-success: #0b7a36;
   --app-danger: #dc2626;
   --app-warning: #a16207;
   --app-link: #0078d4;
+  --app-on-accent: #ffffff;
   --app-shadow: 0 0 2px rgba(0, 0, 0, .12), 0 1px 2px rgba(0, 0, 0, .14);
   --sidebar-width: 220px;
   --inspector-width: 520px;
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --app-bg: #3d3b3a;
-  --app-elevated: #343231;
-  --app-surface: #292929;
-  --app-soft: #2e2e2e;
-  --app-border: #474747;
-  --app-border-strong: #5f5f5f;
-  --app-text: #dedede;
-  --app-muted: #919191;
-  --app-text-soft: #b0b0b0;
-  --app-accent: #fd8ea1;
-  --app-accent-hover: #fb7b91;
-  --app-accent-soft: rgba(253, 142, 161, .14);
-  --app-success: #4ade80;
-  --app-danger: #f87171;
-  --app-warning: #fbbf24;
-  --app-link: #4da6ff;
+  --app-bg: #171516;
+  --app-elevated: #211e20;
+  --app-surface: #292529;
+  --app-soft: #342f33;
+  --app-border: #51494f;
+  --app-border-strong: #81747d;
+  --app-text: #f2edf0;
+  --app-muted: #c6bbc1;
+  --app-text-soft: #aaa0a6;
+  --app-accent: #ff9ab8;
+  --app-accent-hover: #ffb0c8;
+  --app-accent-soft: rgba(255, 154, 184, .15);
+  --app-success: #6ee7a0;
+  --app-danger: #ff8f95;
+  --app-warning: #f4c56b;
+  --app-link: #8ac7ff;
+  --app-on-accent: #211e20;
   --app-shadow: 0 0 2px rgba(0, 0, 0, .3), 0 1px 2px rgba(0, 0, 0, .34);
 }
 * { box-sizing: border-box; }
@@ -51,8 +53,8 @@ body { font: 15px/1.5 "Segoe UI", Aptos, Calibri, -apple-system, BlinkMacSystemF
 .mission-paths,
 .mission-detail-body,
 .setup-body pre { overscroll-behavior: contain; }
-header { display: flex; align-items: baseline; gap: 12px; padding: 16px 0; position: sticky; top: 0; background: Canvas; z-index: 1; }
-#status { color: crimson; font-size: 13px; }
+header { display: flex; align-items: baseline; gap: 12px; padding: 16px 0; position: sticky; top: 0; background: var(--app-surface); z-index: 1; }
+#status { color: var(--app-danger); font-size: 13px; }
 main { flex: 1; min-width: 0; }
 .card-summary { cursor: pointer; list-style: none; }
 .card-summary::-webkit-details-marker { display: none; }
@@ -60,19 +62,19 @@ main { flex: 1; min-width: 0; }
 .caret::before { content: '▸'; }
 details[open] > .card-summary .caret::before { content: '▾'; }
 header { flex-wrap: wrap; }
-.live-entry { border: 1px solid color-mix(in srgb, CanvasText 12%, transparent); border-radius: 8px; padding: 8px 12px; margin-bottom: 8px; }
+.live-entry { border: 1px solid color-mix(in srgb, var(--app-text) 12%, transparent); border-radius: 8px; padding: 8px 12px; margin-bottom: 8px; }
 .live-summary { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 10px; }
 .live-dot { width: 8px; height: 8px; border-radius: 50%; align-self: center; flex-shrink: 0; }
-.live-dot.fresh { background: seagreen; box-shadow: 0 0 6px color-mix(in srgb, seagreen 60%, transparent); }
-.live-dot.aging { background: goldenrod; }
-.live-dot.quiet { background: color-mix(in srgb, CanvasText 30%, transparent); }
+.live-dot.fresh { background: var(--app-success); box-shadow: 0 0 6px color-mix(in srgb, var(--app-success) 60%, transparent); }
+.live-dot.aging { background: var(--app-warning); }
+.live-dot.quiet { background: color-mix(in srgb, var(--app-text) 30%, transparent); }
 .live-dot.project { background: var(--project-dot); }
 .live-dot.project.working { box-shadow: 0 0 0 3px var(--project-wash); }
 .live-dot.project.idle-session { background: transparent; border: 2px solid var(--project-dot); opacity: .6; }
 .live-session-copy { display: flex; min-width: 0; flex-direction: column; gap: 1px; }
 .live-session-heading { display: flex; min-width: 0; align-items: center; gap: 7px; }
-.live-state-label { flex: none; border: 1px solid color-mix(in srgb, CanvasText 16%, transparent); border-radius: 999px; padding: 0 6px; font-size: 10px; font-weight: 650; }
-.live-state-label.working { border-color: color-mix(in srgb, seagreen 32%, transparent); color: color-mix(in srgb, seagreen 82%, CanvasText); }
+.live-state-label { flex: none; border: 1px solid color-mix(in srgb, var(--app-text) 16%, transparent); border-radius: 999px; padding: 0 6px; font-size: 10px; font-weight: 650; }
+.live-state-label.working { border-color: color-mix(in srgb, var(--app-success) 32%, transparent); color: color-mix(in srgb, var(--app-success) 82%, var(--app-text)); }
 .live-state-label.idle { opacity: .62; }
 .live-who { font-size: 12px; opacity: .55; }
 .live-doing { font-weight: 600; font-size: 13.5px; }
@@ -94,130 +96,130 @@ header { flex-wrap: wrap; }
 .live-state { font-size: 12px; opacity: .6; white-space: nowrap; }
 #lightbox { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; }
 #lightbox[hidden] { display: none; } /* our display:flex would otherwise beat the UA's [hidden] rule */
-.lb-backdrop { position: absolute; inset: 0; background: color-mix(in srgb, CanvasText 25%, transparent); backdrop-filter: blur(2px); }
-.lb-panel { position: relative; background: Canvas; border: 1px solid color-mix(in srgb, LinkText 35%, CanvasText 16%); border-radius: 16px; width: min(760px, 94vw); max-height: 88vh; display: flex; flex-direction: column; padding: 18px 22px 14px; box-shadow: 0 24px 70px color-mix(in srgb, CanvasText 30%, transparent), 0 0 0 5px color-mix(in srgb, LinkText 6%, transparent); }
+.lb-backdrop { position: absolute; inset: 0; background: color-mix(in srgb, var(--app-text) 25%, transparent); backdrop-filter: blur(2px); }
+.lb-panel { position: relative; background: var(--app-surface); border: 1px solid color-mix(in srgb, var(--app-link) 35%, var(--app-text) 16%); border-radius: 16px; width: min(760px, 94vw); max-height: 88vh; display: flex; flex-direction: column; padding: 18px 22px 14px; box-shadow: 0 24px 70px color-mix(in srgb, var(--app-text) 30%, transparent), 0 0 0 5px color-mix(in srgb, var(--app-link) 6%, transparent); }
 .lb-head { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
 .lb-run { display: flex; flex-direction: column; }
-.lb-kicker { color: LinkText; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .11em; }
+.lb-kicker { color: var(--app-link); font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .11em; }
 .lb-count { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; opacity: .65; }
-.lb-owner { margin-left: auto; padding: 2px 9px; border-radius: 999px; background: color-mix(in srgb, LinkText 10%, transparent); color: LinkText; font-size: 10px; font-weight: 650; text-transform: uppercase; letter-spacing: .04em; }
+.lb-owner { margin-left: auto; padding: 2px 9px; border-radius: 999px; background: color-mix(in srgb, var(--app-link) 10%, transparent); color: var(--app-link); font-size: 10px; font-weight: 650; text-transform: uppercase; letter-spacing: .04em; }
 .lb-close { border: none; background: transparent; cursor: pointer; font-size: 15px; opacity: .55; color: inherit; }
 .lb-close:hover { opacity: 1; }
-.lb-progress { height: 6px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, CanvasText 9%, transparent); }
+.lb-progress { height: 6px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, var(--app-text) 9%, transparent); }
 .lb-progress-fill { display: block; width: 0; height: 100%; border-radius: inherit; background: var(--app-accent); transition: width .2s ease; }
-.lb-mix { margin: 8px 1px 12px; color: color-mix(in srgb, CanvasText 55%, transparent); font-size: 11.5px; }
+.lb-mix { margin: 8px 1px 12px; color: color-mix(in srgb, var(--app-text) 55%, transparent); font-size: 11.5px; }
 .lb-card { overflow-y: auto; padding: 2px 1px; }
 .lb-card details.item { margin-bottom: 0; }
 .lb-row-card .title { font-weight: 600; font-size: 15px; margin: 2px 0 6px; }
-.lb-row-card .lb-context { opacity: .7; border-left: 2px solid color-mix(in srgb, CanvasText 15%, transparent); padding-left: 10px; margin-top: 6px; }
+.lb-row-card .lb-context { opacity: .7; border-left: 2px solid color-mix(in srgb, var(--app-text) 15%, transparent); padding-left: 10px; margin-top: 6px; }
 .lb-row-card .reply-row { margin-top: 12px; }
-.lb-clear { text-align: center; padding: 32px 0; font-size: 15px; color: color-mix(in srgb, seagreen 80%, CanvasText); }
-.lb-shortcuts { margin-top: 10px; padding-top: 9px; border-top: 1px solid color-mix(in srgb, CanvasText 9%, transparent); color: color-mix(in srgb, CanvasText 45%, transparent); font-size: 10.5px; text-align: center; }
-.lb-shortcuts kbd { padding: 1px 5px; border: 1px solid color-mix(in srgb, CanvasText 18%, transparent); border-radius: 5px; background: color-mix(in srgb, CanvasText 5%, transparent); font: inherit; }
+.lb-clear { text-align: center; padding: 32px 0; font-size: 15px; color: color-mix(in srgb, var(--app-success) 80%, var(--app-text)); }
+.lb-shortcuts { margin-top: 10px; padding-top: 9px; border-top: 1px solid color-mix(in srgb, var(--app-text) 9%, transparent); color: color-mix(in srgb, var(--app-text) 45%, transparent); font-size: 10.5px; text-align: center; }
+.lb-shortcuts kbd { padding: 1px 5px; border: 1px solid color-mix(in srgb, var(--app-text) 18%, transparent); border-radius: 5px; background: color-mix(in srgb, var(--app-text) 5%, transparent); font: inherit; }
 .lb-nav { display: flex; justify-content: space-between; margin-top: 9px; }
-.lb-nav button { font-size: 12px; padding: 4px 14px; border-radius: 6px; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); background: transparent; cursor: pointer; }
+.lb-nav button { font-size: 12px; padding: 4px 14px; border-radius: 6px; border: 1px solid color-mix(in srgb, var(--app-text) 25%, transparent); background: transparent; cursor: pointer; }
 .lb-nav button:disabled { opacity: .3; cursor: default; }
 .lb-panel .options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; }
-.lb-panel .option { width: auto; padding: 8px 9px; border: 1px solid color-mix(in srgb, CanvasText 12%, transparent); border-radius: 9px; }
+.lb-panel .option { width: auto; padding: 8px 9px; border: 1px solid color-mix(in srgb, var(--app-text) 12%, transparent); border-radius: 9px; }
 .lb-panel .opt-pill { width: 100%; text-align: left; border: none; padding: 2px; }
 .lb-panel .opt-detail { display: block; padding: 0 2px; }
 #relaybox { position: fixed; inset: 0; z-index: 95; display: flex; align-items: center; justify-content: center; }
 #relaybox[hidden] { display: none; }
-.relay-backdrop { position: absolute; inset: 0; background: color-mix(in srgb, CanvasText 23%, transparent); backdrop-filter: blur(2px); }
-.relay-panel { position: relative; width: min(1120px, 96vw); height: min(760px, 90vh); display: flex; flex-direction: column; padding: 18px 20px 14px; border: 1px solid color-mix(in srgb, CanvasText 20%, transparent); border-radius: 16px; background: Canvas; box-shadow: 0 24px 70px color-mix(in srgb, CanvasText 30%, transparent); }
+.relay-backdrop { position: absolute; inset: 0; background: color-mix(in srgb, var(--app-text) 23%, transparent); backdrop-filter: blur(2px); }
+.relay-panel { position: relative; width: min(1120px, 96vw); height: min(760px, 90vh); display: flex; flex-direction: column; padding: 18px 20px 14px; border: 1px solid color-mix(in srgb, var(--app-text) 20%, transparent); border-radius: 16px; background: var(--app-surface); box-shadow: 0 24px 70px color-mix(in srgb, var(--app-text) 30%, transparent); }
 .relay-head { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
 .relay-head h2 { margin: 2px 0 0; font-size: 18px; letter-spacing: -.02em; }
-.relay-kicker { color: LinkText; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .11em; }
-.relay-summary { margin-left: auto; color: color-mix(in srgb, CanvasText 55%, transparent); font-size: 11.5px; }
+.relay-kicker { color: var(--app-link); font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .11em; }
+.relay-summary { margin-left: auto; color: color-mix(in srgb, var(--app-text) 55%, transparent); font-size: 11.5px; }
 .relay-close { border: none; background: transparent; color: inherit; cursor: pointer; font-size: 15px; opacity: .55; }
 .relay-close:hover { opacity: 1; }
 .relay-lanes { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
-.relay-lane { min-width: 0; display: flex; flex-direction: column; overflow: hidden; border: 1px solid color-mix(in srgb, CanvasText 12%, transparent); border-radius: 12px; background: color-mix(in srgb, CanvasText 2.5%, transparent); }
-.relay-lane > header { display: flex; align-items: center; gap: 8px; padding: 11px 12px; border-bottom: 1px solid color-mix(in srgb, CanvasText 10%, transparent); }
+.relay-lane { min-width: 0; display: flex; flex-direction: column; overflow: hidden; border: 1px solid color-mix(in srgb, var(--app-text) 12%, transparent); border-radius: 12px; background: color-mix(in srgb, var(--app-text) 2.5%, transparent); }
+.relay-lane > header { display: flex; align-items: center; gap: 8px; padding: 11px 12px; border-bottom: 1px solid color-mix(in srgb, var(--app-text) 10%, transparent); }
 .relay-lane > header strong { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
-.relay-count { margin-left: auto; min-width: 20px; padding: 0 6px; border-radius: 999px; background: color-mix(in srgb, CanvasText 8%, transparent); text-align: center; font-size: 11px; }
-.relay-dot { width: 8px; height: 8px; border-radius: 50%; background: LinkText; }
-.relay-dot.agent { background: goldenrod; }
-.relay-dot.outcome { background: seagreen; }
+.relay-count { margin-left: auto; min-width: 20px; padding: 0 6px; border-radius: 999px; background: color-mix(in srgb, var(--app-text) 8%, transparent); text-align: center; font-size: 11px; }
+.relay-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--app-link); }
+.relay-dot.agent { background: var(--app-warning); }
+.relay-dot.outcome { background: var(--app-success); }
 .relay-body { flex: 1; min-height: 0; overflow-y: auto; padding: 10px; }
-.relay-card { margin-bottom: 9px; padding: 12px; border: 1px solid color-mix(in srgb, CanvasText 14%, transparent); border-radius: 10px; background: color-mix(in srgb, CanvasText 4%, Canvas); box-shadow: 0 7px 18px color-mix(in srgb, CanvasText 8%, transparent); }
-.relay-card.overdue { border-color: color-mix(in srgb, goldenrod 42%, transparent); }
-.relay-card.relay-outcome { border-color: color-mix(in srgb, seagreen 25%, transparent); opacity: .86; }
-.relay-meta { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; color: color-mix(in srgb, CanvasText 50%, transparent); font-size: 10px; }
-.relay-owner { padding: 1px 6px; border-radius: 999px; color: LinkText; background: color-mix(in srgb, LinkText 9%, transparent); }
+.relay-card { margin-bottom: 9px; padding: 12px; border: 1px solid color-mix(in srgb, var(--app-text) 14%, transparent); border-radius: 10px; background: color-mix(in srgb, var(--app-text) 4%, var(--app-surface)); box-shadow: 0 7px 18px color-mix(in srgb, var(--app-text) 8%, transparent); }
+.relay-card.overdue { border-color: color-mix(in srgb, var(--app-warning) 42%, transparent); }
+.relay-card.relay-outcome { border-color: color-mix(in srgb, var(--app-success) 25%, transparent); opacity: .86; }
+.relay-meta { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; color: color-mix(in srgb, var(--app-text) 50%, transparent); font-size: 10px; }
+.relay-owner { padding: 1px 6px; border-radius: 999px; color: var(--app-link); background: color-mix(in srgb, var(--app-link) 9%, transparent); }
 .relay-card h3 { margin: 0 0 4px; font-size: 13.5px; }
-.relay-summary-text { color: color-mix(in srgb, CanvasText 65%, transparent); font-size: 11.5px; }
-.relay-result { margin-top: 7px; padding: 6px 8px; border-radius: 7px; color: color-mix(in srgb, seagreen 75%, CanvasText); background: color-mix(in srgb, seagreen 8%, transparent); font-size: 11.5px; }
+.relay-summary-text { color: color-mix(in srgb, var(--app-text) 65%, transparent); font-size: 11.5px; }
+.relay-result { margin-top: 7px; padding: 6px 8px; border-radius: 7px; color: color-mix(in srgb, var(--app-success) 75%, var(--app-text)); background: color-mix(in srgb, var(--app-success) 8%, transparent); font-size: 11.5px; }
 .relay-state { display: flex; align-items: center; gap: 6px; margin-top: 9px; }
-.relay-baton { width: 17px; height: 5px; border-radius: 999px; background: LinkText; box-shadow: 0 0 7px color-mix(in srgb, LinkText 45%, transparent); }
-.relay-chip { font-size: 10.5px; color: color-mix(in srgb, CanvasText 60%, transparent); }
-.relay-chip.warm, .relay-chip.hot { color: color-mix(in srgb, goldenrod 80%, CanvasText); }
-.relay-chip.outcome { color: color-mix(in srgb, seagreen 80%, CanvasText); }
-.relay-open { width: 100%; margin-top: 9px; padding: 5px 8px; border: 1px solid color-mix(in srgb, CanvasText 18%, transparent); border-radius: 7px; color: inherit; background: transparent; cursor: pointer; font-size: 11.5px; }
-.relay-open:hover { border-color: LinkText; color: LinkText; }
-.relay-empty { display: grid; place-items: center; min-height: 90px; border: 1px dashed color-mix(in srgb, CanvasText 13%, transparent); border-radius: 9px; color: color-mix(in srgb, CanvasText 35%, transparent); font-size: 11px; }
-.relay-foot { padding-top: 10px; color: color-mix(in srgb, CanvasText 45%, transparent); font-size: 10.5px; text-align: center; }
+.relay-baton { width: 17px; height: 5px; border-radius: 999px; background: var(--app-link); box-shadow: 0 0 7px color-mix(in srgb, var(--app-link) 45%, transparent); }
+.relay-chip { font-size: 10.5px; color: color-mix(in srgb, var(--app-text) 60%, transparent); }
+.relay-chip.warm, .relay-chip.hot { color: color-mix(in srgb, var(--app-warning) 80%, var(--app-text)); }
+.relay-chip.outcome { color: color-mix(in srgb, var(--app-success) 80%, var(--app-text)); }
+.relay-open { width: 100%; margin-top: 9px; padding: 5px 8px; border: 1px solid color-mix(in srgb, var(--app-text) 18%, transparent); border-radius: 7px; color: inherit; background: transparent; cursor: pointer; font-size: 11.5px; }
+.relay-open:hover { border-color: var(--app-link); color: var(--app-link); }
+.relay-empty { display: grid; place-items: center; min-height: 90px; border: 1px dashed color-mix(in srgb, var(--app-text) 13%, transparent); border-radius: 9px; color: color-mix(in srgb, var(--app-text) 35%, transparent); font-size: 11px; }
+.relay-foot { padding-top: 10px; color: color-mix(in srgb, var(--app-text) 45%, transparent); font-size: 10.5px; text-align: center; }
 #missionbox { position: fixed; inset: 0; z-index: 96; display: flex; align-items: center; justify-content: center; }
 #missionbox[hidden] { display: none; }
-.mission-backdrop { position: absolute; inset: 0; background: color-mix(in srgb, CanvasText 23%, transparent); backdrop-filter: blur(2px); }
-.mission-panel { position: relative; width: min(1060px, 96vw); height: min(760px, 90vh); display: flex; flex-direction: column; padding: 18px 20px 14px; border: 1px solid color-mix(in srgb, LinkText 25%, CanvasText 16%); border-radius: 16px; background: Canvas; box-shadow: 0 24px 70px color-mix(in srgb, CanvasText 30%, transparent); }
+.mission-backdrop { position: absolute; inset: 0; background: color-mix(in srgb, var(--app-text) 23%, transparent); backdrop-filter: blur(2px); }
+.mission-panel { position: relative; width: min(1060px, 96vw); height: min(760px, 90vh); display: flex; flex-direction: column; padding: 18px 20px 14px; border: 1px solid color-mix(in srgb, var(--app-link) 25%, var(--app-text) 16%); border-radius: 16px; background: var(--app-surface); box-shadow: 0 24px 70px color-mix(in srgb, var(--app-text) 30%, transparent); }
 .mission-head { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 14px; }
 .mission-head h2 { margin: 1px 0 0; font-size: 18px; letter-spacing: -.02em; }
-.mission-kicker { color: LinkText; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .11em; }
-.mission-subtitle { margin: 3px 0 0; color: color-mix(in srgb, CanvasText 50%, transparent); font-size: 11.5px; }
+.mission-kicker { color: var(--app-link); font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .11em; }
+.mission-subtitle { margin: 3px 0 0; color: color-mix(in srgb, var(--app-text) 50%, transparent); font-size: 11.5px; }
 .mission-close { margin-left: auto; border: none; background: transparent; color: inherit; cursor: pointer; font-size: 15px; opacity: .55; }
 .mission-close:hover { opacity: 1; }
-.mission-graph { flex: 1; min-height: 0; display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 38px; overflow: hidden; padding: 10px; border: 1px solid color-mix(in srgb, CanvasText 9%, transparent); border-radius: 12px; background: var(--app-elevated); }
+.mission-graph { flex: 1; min-height: 0; display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 38px; overflow: hidden; padding: 10px; border: 1px solid color-mix(in srgb, var(--app-text) 9%, transparent); border-radius: 12px; background: var(--app-elevated); }
 .mission-root-column { position: relative; display: flex; align-items: center; }
-.mission-root-column::after { content: ''; position: absolute; top: 12%; right: -20px; bottom: 12%; width: 2px; background: color-mix(in srgb, LinkText 25%, transparent); }
-.mission-root-card { width: 100%; padding: 15px; border: 1px solid color-mix(in srgb, LinkText 38%, transparent); border-radius: 12px; background: color-mix(in srgb, LinkText 7%, Canvas); cursor: pointer; box-shadow: 0 10px 26px color-mix(in srgb, CanvasText 10%, transparent); }
-.mission-root-card:hover { border-color: LinkText; }
-.mission-root-project { display: block; color: LinkText; font-size: 9.5px; text-transform: uppercase; letter-spacing: .09em; }
+.mission-root-column::after { content: ''; position: absolute; top: 12%; right: -20px; bottom: 12%; width: 2px; background: color-mix(in srgb, var(--app-link) 25%, transparent); }
+.mission-root-card { width: 100%; padding: 15px; border: 1px solid color-mix(in srgb, var(--app-link) 38%, transparent); border-radius: 12px; background: color-mix(in srgb, var(--app-link) 7%, var(--app-surface)); cursor: pointer; box-shadow: 0 10px 26px color-mix(in srgb, var(--app-text) 10%, transparent); }
+.mission-root-card:hover { border-color: var(--app-link); }
+.mission-root-project { display: block; color: var(--app-link); font-size: 9.5px; text-transform: uppercase; letter-spacing: .09em; }
 .mission-root-title { display: block; margin: 5px 0; font-size: 15px; }
-.mission-root-progress { color: color-mix(in srgb, CanvasText 55%, transparent); font-size: 11px; }
+.mission-root-progress { color: color-mix(in srgb, var(--app-text) 55%, transparent); font-size: 11px; }
 .mission-paths { min-width: 0; overflow-y: auto; padding: 4px 4px 4px 0; }
 .mission-path { position: relative; display: grid; grid-template-columns: minmax(220px, 1fr) 28px minmax(190px, .9fr); align-items: center; gap: 7px; margin: 8px 0; }
-.mission-path::before { content: ''; position: absolute; left: -20px; width: 20px; height: 2px; background: color-mix(in srgb, LinkText 25%, transparent); }
-.mission-node { min-height: 86px; padding: 10px 11px; border: 1px solid color-mix(in srgb, CanvasText 16%, transparent); border-radius: 10px; color: inherit; background: color-mix(in srgb, CanvasText 4%, Canvas); text-align: left; cursor: pointer; }
-.mission-node:hover { border-color: LinkText; transform: translateY(-1px); }
-.mission-node.mission-blocked { border-color: color-mix(in srgb, crimson 34%, transparent); }
-.mission-node.mission-done { border-color: color-mix(in srgb, seagreen 28%, transparent); }
-.mission-node-meta { display: block; margin-bottom: 4px; color: LinkText; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; }
+.mission-path::before { content: ''; position: absolute; left: -20px; width: 20px; height: 2px; background: color-mix(in srgb, var(--app-link) 25%, transparent); }
+.mission-node { min-height: 86px; padding: 10px 11px; border: 1px solid color-mix(in srgb, var(--app-text) 16%, transparent); border-radius: 10px; color: inherit; background: color-mix(in srgb, var(--app-text) 4%, var(--app-surface)); text-align: left; cursor: pointer; }
+.mission-node:hover { border-color: var(--app-link); transform: translateY(-1px); }
+.mission-node.mission-blocked { border-color: color-mix(in srgb, var(--app-danger) 34%, transparent); }
+.mission-node.mission-done { border-color: color-mix(in srgb, var(--app-success) 28%, transparent); }
+.mission-node-meta { display: block; margin-bottom: 4px; color: var(--app-link); font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; }
 .mission-node strong { display: block; font-size: 12.5px; }
-.mission-node-summary { margin-top: 3px; color: color-mix(in srgb, CanvasText 60%, transparent); font-size: 10.5px; }
-.mission-node-impact { margin-top: 6px; color: color-mix(in srgb, CanvasText 48%, transparent); font-size: 9.5px; }
+.mission-node-summary { margin-top: 3px; color: color-mix(in srgb, var(--app-text) 60%, transparent); font-size: 10.5px; }
+.mission-node-impact { margin-top: 6px; color: color-mix(in srgb, var(--app-text) 48%, transparent); font-size: 9.5px; }
 .mission-node-impact > span { display: block; font-size: 9px; text-transform: uppercase; letter-spacing: .07em; }
-.mission-node-open { margin-top: 7px; padding: 2px 7px; border: 1px solid color-mix(in srgb, CanvasText 18%, transparent); border-radius: 6px; color: inherit; background: transparent; cursor: pointer; font: inherit; font-size: 9.5px; }
-.mission-node-open:hover { border-color: LinkText; color: LinkText; }
-.mission-arrow { color: color-mix(in srgb, LinkText 55%, transparent); text-align: center; font-size: 17px; }
-.mission-result { min-height: 62px; display: flex; flex-direction: column; justify-content: center; padding: 9px 10px; border: 1px dashed color-mix(in srgb, CanvasText 17%, transparent); border-radius: 9px; background: color-mix(in srgb, CanvasText 2%, transparent); }
-.mission-result span { color: color-mix(in srgb, CanvasText 45%, transparent); font-size: 9px; text-transform: uppercase; letter-spacing: .07em; }
+.mission-node-open { margin-top: 7px; padding: 2px 7px; border: 1px solid color-mix(in srgb, var(--app-text) 18%, transparent); border-radius: 6px; color: inherit; background: transparent; cursor: pointer; font: inherit; font-size: 9.5px; }
+.mission-node-open:hover { border-color: var(--app-link); color: var(--app-link); }
+.mission-arrow { color: color-mix(in srgb, var(--app-link) 55%, transparent); text-align: center; font-size: 17px; }
+.mission-result { min-height: 62px; display: flex; flex-direction: column; justify-content: center; padding: 9px 10px; border: 1px dashed color-mix(in srgb, var(--app-text) 17%, transparent); border-radius: 9px; background: color-mix(in srgb, var(--app-text) 2%, transparent); }
+.mission-result span { color: color-mix(in srgb, var(--app-text) 45%, transparent); font-size: 9px; text-transform: uppercase; letter-spacing: .07em; }
 .mission-result .structured-text { margin-top: 3px; font-size: 11.5px; }
-.mission-result.outcome { border-style: solid; border-color: color-mix(in srgb, seagreen 28%, transparent); background: color-mix(in srgb, seagreen 6%, transparent); }
-.mission-result.next { border-color: color-mix(in srgb, LinkText 24%, transparent); }
-.mission-result.empty { color: color-mix(in srgb, CanvasText 35%, transparent); font-size: 10.5px; }
-.mission-empty { display: grid; place-items: center; min-height: 140px; color: color-mix(in srgb, CanvasText 40%, transparent); }
-.mission-foot { padding-top: 10px; color: color-mix(in srgb, CanvasText 45%, transparent); font-size: 10.5px; text-align: center; }
+.mission-result.outcome { border-style: solid; border-color: color-mix(in srgb, var(--app-success) 28%, transparent); background: color-mix(in srgb, var(--app-success) 6%, transparent); }
+.mission-result.next { border-color: color-mix(in srgb, var(--app-link) 24%, transparent); }
+.mission-result.empty { color: color-mix(in srgb, var(--app-text) 35%, transparent); font-size: 10.5px; }
+.mission-empty { display: grid; place-items: center; min-height: 140px; color: color-mix(in srgb, var(--app-text) 40%, transparent); }
+.mission-foot { padding-top: 10px; color: color-mix(in srgb, var(--app-text) 45%, transparent); font-size: 10.5px; text-align: center; }
 .mission-detail { position: absolute; inset: 0; z-index: 3; display: flex; align-items: center; justify-content: center; }
 .mission-detail[hidden] { display: none; }
-.mission-detail-backdrop { position: absolute; inset: 0; background: color-mix(in srgb, CanvasText 28%, transparent); backdrop-filter: blur(2px); }
-.mission-detail-panel { position: relative; width: min(680px, 90vw); max-height: 82vh; display: flex; flex-direction: column; padding: 16px 18px 13px; border: 1px solid color-mix(in srgb, LinkText 30%, CanvasText 15%); border-radius: 14px; background: Canvas; box-shadow: 0 24px 65px color-mix(in srgb, CanvasText 32%, transparent); }
+.mission-detail-backdrop { position: absolute; inset: 0; background: color-mix(in srgb, var(--app-text) 28%, transparent); backdrop-filter: blur(2px); }
+.mission-detail-panel { position: relative; width: min(680px, 90vw); max-height: 82vh; display: flex; flex-direction: column; padding: 16px 18px 13px; border: 1px solid color-mix(in srgb, var(--app-link) 30%, var(--app-text) 15%); border-radius: 14px; background: var(--app-surface); box-shadow: 0 24px 65px color-mix(in srgb, var(--app-text) 32%, transparent); }
 .mission-detail-head { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 9px; }
-.mission-detail-meta { color: LinkText; font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; }
+.mission-detail-meta { color: var(--app-link); font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; }
 .mission-detail-title { margin: 3px 0 0; font-size: 17px; }
 .mission-detail-close { margin-left: auto; border: none; background: transparent; color: inherit; cursor: pointer; font-size: 15px; opacity: .55; }
 .mission-detail-close:hover { opacity: 1; }
 .mission-detail-body { overflow-y: auto; padding: 1px; }
 .mission-detail-body .row-panel { font-size: 13px; }
-.mission-detail-actions { display: flex; justify-content: flex-end; padding-top: 10px; border-top: 1px solid color-mix(in srgb, CanvasText 9%, transparent); }
-.mission-detail-board { padding: 5px 11px; border: 1px solid color-mix(in srgb, CanvasText 20%, transparent); border-radius: 7px; color: inherit; background: transparent; cursor: pointer; font-size: 11.5px; }
-.mission-detail-board:hover { border-color: LinkText; color: LinkText; }
+.mission-detail-actions { display: flex; justify-content: flex-end; padding-top: 10px; border-top: 1px solid color-mix(in srgb, var(--app-text) 9%, transparent); }
+.mission-detail-board { padding: 5px 11px; border: 1px solid color-mix(in srgb, var(--app-text) 20%, transparent); border-radius: 7px; color: inherit; background: transparent; cursor: pointer; font-size: 11.5px; }
+.mission-detail-board:hover { border-color: var(--app-link); color: var(--app-link); }
 .options { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; align-items: flex-start; }
 .options.comparing { flex-direction: column; }
-.options.comparing .option { border: 1px solid color-mix(in srgb, CanvasText 12%, transparent); border-radius: 8px; padding: 8px 10px; width: 100%; }
-.opt-pill { font-size: 12.5px; padding: 4px 12px; border-radius: 999px; border: 1px solid color-mix(in srgb, CanvasText 30%, transparent); background: transparent; cursor: pointer; }
-.opt-pill:hover { border-color: LinkText; color: LinkText; }
-.opt-pill.rec { border-color: color-mix(in srgb, LinkText 60%, transparent); color: LinkText; }
+.options.comparing .option { border: 1px solid color-mix(in srgb, var(--app-text) 12%, transparent); border-radius: 8px; padding: 8px 10px; width: 100%; }
+.opt-pill { font-size: 12.5px; padding: 4px 12px; border-radius: 999px; border: 1px solid color-mix(in srgb, var(--app-text) 30%, transparent); background: transparent; cursor: pointer; }
+.opt-pill:hover { border-color: var(--app-link); color: var(--app-link); }
+.opt-pill.rec { border-color: color-mix(in srgb, var(--app-link) 60%, transparent); color: var(--app-link); }
 .rec-tag { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; opacity: .65; margin-left: 6px; }
 .opt-detail { display: none; font-size: 12.5px; opacity: .75; margin-top: 6px; white-space: pre-wrap; }
 .options.comparing .opt-detail { display: block; }
@@ -225,37 +227,37 @@ header { flex-wrap: wrap; }
 .row-answer { margin-top: 10px; }
 .row-options { margin-top: 0; }
 .disposition-actions { display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0 4px; }
-.disposition-btn { font: inherit; font-size: 11.5px; padding: 2px 9px; border-radius: 999px; border: 1px solid color-mix(in srgb, CanvasText 20%, transparent); background: transparent; color: inherit; cursor: pointer; opacity: .7; }
+.disposition-btn { font: inherit; font-size: 11.5px; padding: 2px 9px; border-radius: 999px; border: 1px solid color-mix(in srgb, var(--app-text) 20%, transparent); background: transparent; color: inherit; cursor: pointer; opacity: .7; }
 .disposition-btn:hover { opacity: 1; }
-.disposition-btn.decline { color: color-mix(in srgb, crimson 70%, CanvasText); }
-.reply-input { flex: 1; min-width: 0; min-height: 34px; max-height: 160px; overflow-y: hidden; resize: none; font: inherit; font-size: 13px; line-height: 1.4; padding: 4px 10px; border-radius: 6px; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); background: transparent; color: inherit; }
-.reply-row button, .compare-toggle { font-size: 12px; padding: 3px 10px; border-radius: 6px; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); background: transparent; cursor: pointer; }
+.disposition-btn.decline { color: color-mix(in srgb, var(--app-danger) 70%, var(--app-text)); }
+.reply-input { flex: 1; min-width: 0; min-height: 34px; max-height: 160px; overflow-y: hidden; resize: none; font: inherit; font-size: 13px; line-height: 1.4; padding: 4px 10px; border-radius: 6px; border: 1px solid color-mix(in srgb, var(--app-text) 25%, transparent); background: transparent; color: inherit; }
+.reply-row button, .compare-toggle { font-size: 12px; padding: 3px 10px; border-radius: 6px; border: 1px solid color-mix(in srgb, var(--app-text) 25%, transparent); background: transparent; cursor: pointer; }
 /* issue #36 — the human's "I've done my part" lever. Weighted, because on a
    blocked TASK row (which is most of them) it is the primary action, not the
    text box beside it. */
 .handled-btn { font-weight: 600; white-space: nowrap; }
 /* …and what stands in its place once an agent has been handed the mark, because
-   un-marking cannot un-tell them. Not crimson: nothing failed and nothing was
+   un-marking cannot un-tell them. Not var(--app-danger): nothing failed and nothing was
    lost — this is an explanation, not the .write-error slot beside it. */
 .handled-refusal { font-size: 12px; opacity: .7; white-space: nowrap; }
 /* the mark's own block in the card, beside the annotation's. Green, because it is
    the human reporting a thing DONE, where 📝 is them reporting words said. */
-.handled-mark { color: color-mix(in srgb, seagreen 55%, CanvasText); opacity: .85; }
-.reply-block { min-width: 0; max-width: 100%; overflow-wrap: anywhere; white-space: pre-wrap; font-size: 13px; margin-top: 8px; padding: 6px 10px; border-radius: 6px; background: color-mix(in srgb, seagreen 8%, transparent); }
-.outcome-block { font-size: 13px; margin-top: 8px; padding: 7px 10px; border-radius: 7px; background: color-mix(in srgb, seagreen 10%, transparent); color: color-mix(in srgb, seagreen 70%, CanvasText); }
+.handled-mark { color: color-mix(in srgb, var(--app-success) 55%, var(--app-text)); opacity: .85; }
+.reply-block { min-width: 0; max-width: 100%; overflow-wrap: anywhere; white-space: pre-wrap; font-size: 13px; margin-top: 8px; padding: 6px 10px; border-radius: 6px; background: color-mix(in srgb, var(--app-success) 8%, transparent); }
+.outcome-block { font-size: 13px; margin-top: 8px; padding: 7px 10px; border-radius: 7px; background: color-mix(in srgb, var(--app-success) 10%, transparent); color: color-mix(in srgb, var(--app-success) 70%, var(--app-text)); }
 .outcome-label { margin-bottom: 3px; font-size: 10px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; }
 .lifecycle-receipt { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; margin-top: 8px; font-size: 11px; opacity: .65; }
-.lifecycle-step { padding: 1px 6px; border-radius: 999px; background: color-mix(in srgb, CanvasText 6%, transparent); }
+.lifecycle-step { padding: 1px 6px; border-radius: 999px; background: color-mix(in srgb, var(--app-text) 6%, transparent); }
 .lifecycle-age { margin-left: 3px; }
 .lifecycle-arrow { opacity: .45; }
 .action-history { margin-top: 8px; font-size: 12px; opacity: .75; }
 .action-history > summary { cursor: pointer; }
-.history-entry { margin: 6px 0; padding-left: 9px; border-left: 2px solid color-mix(in srgb, CanvasText 15%, transparent); }
+.history-entry { margin: 6px 0; padding-left: 9px; border-left: 2px solid color-mix(in srgb, var(--app-text) 15%, transparent); }
 .history-title { font-weight: 600; }
 .reply-context { min-width: 0; max-width: 100%; overflow-wrap: anywhere; margin-top: 4px; font-size: 12.5px; opacity: .8; white-space: pre-wrap; }
 .pickup { margin-left: 10px; font-size: 11.5px; }
-.pickup.awaiting { color: color-mix(in srgb, goldenrod 80%, CanvasText); }
-.pickup.picked { color: color-mix(in srgb, seagreen 80%, CanvasText); }
+.pickup.awaiting { color: color-mix(in srgb, var(--app-warning) 80%, var(--app-text)); }
+.pickup.picked { color: color-mix(in srgb, var(--app-success) 80%, var(--app-text)); }
 .reply-source { margin-left: 8px; font-size: 11.5px; opacity: .6; }
 .reply-context-row { margin-top: 2px; }
 .reply-context-input { font-size: 12.5px; }
@@ -264,19 +266,19 @@ header { flex-wrap: wrap; }
 .setup-block { margin-bottom: 18px; }
 .setup-block h3 { font-size: 13px; margin: 0 0 4px; opacity: .85; }
 .setup-hint { font-size: 12.5px; opacity: .6; margin: 2px 0 6px; }
-.setup-body pre { font-size: 12px; padding: 10px 12px; border-radius: 8px; background: color-mix(in srgb, CanvasText 6%, transparent); overflow-x: auto; white-space: pre-wrap; word-break: break-all; max-height: 300px; overflow-y: auto; }
-.copy-btn { font-size: 12px; padding: 3px 12px; border-radius: 6px; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); background: transparent; cursor: pointer; }
-.setup-menu { margin: 12px 0 22px; padding: 14px; border: 1px solid color-mix(in srgb, CanvasText 18%, transparent); border-radius: 10px; }
+.setup-body pre { font-size: 12px; padding: 10px 12px; border-radius: 8px; background: color-mix(in srgb, var(--app-text) 6%, transparent); overflow-x: auto; white-space: pre-wrap; word-break: break-all; max-height: 300px; overflow-y: auto; }
+.copy-btn { font-size: 12px; padding: 3px 12px; border-radius: 6px; border: 1px solid color-mix(in srgb, var(--app-text) 25%, transparent); background: transparent; cursor: pointer; }
+.setup-menu { margin: 12px 0 22px; padding: 14px; border: 1px solid color-mix(in srgb, var(--app-text) 18%, transparent); border-radius: 10px; }
 .setup-menu h3 { margin: 0 0 4px; font-size: 15px; }
 .setup-target { min-width: 280px; max-width: 100%; padding: 6px 8px; border-radius: 7px; }
 .setup-menu-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
-.setup-menu-actions button { padding: 6px 11px; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); border-radius: 7px; background: transparent; cursor: pointer; }
-.setup-menu-actions .setup-run-btn { color: white; background: seagreen; border-color: seagreen; }
+.setup-menu-actions button { padding: 6px 11px; border: 1px solid color-mix(in srgb, var(--app-text) 25%, transparent); border-radius: 7px; background: transparent; cursor: pointer; }
+.setup-menu-actions .setup-run-btn { color: var(--app-on-accent); background: var(--app-success); border-color: var(--app-success); }
 .setup-menu-actions button:disabled { cursor: wait; opacity: .55; }
 .setup-result { margin: 10px 0 0; }
-.setup-result.success { border-left: 3px solid seagreen; }
-.setup-result.failure { border-left: 3px solid crimson; }
-#setup { padding: 16px; border: 1px solid color-mix(in srgb, CanvasText 14%, transparent); border-radius: 12px; background: Canvas; box-shadow: 0 18px 48px color-mix(in srgb, CanvasText 14%, transparent); }
+.setup-result.success { border-left: 3px solid var(--app-success); }
+.setup-result.failure { border-left: 3px solid var(--app-danger); }
+#setup { padding: 16px; border: 1px solid color-mix(in srgb, var(--app-text) 14%, transparent); border-radius: 12px; background: var(--app-surface); box-shadow: 0 18px 48px color-mix(in srgb, var(--app-text) 14%, transparent); }
 body.settings-open #rail,
 body.settings-open #tabs,
 body.settings-open #liveBar,
@@ -287,62 +289,62 @@ body.settings-open #topbar > :not(#gear) { opacity: .32; }
 .detail, .annotation { font-size: 13px; opacity: .8; white-space: pre-wrap; }
 .annotation { min-width: 0; max-width: 100%; overflow-wrap: anywhere; margin-top: 4px; opacity: .7; }
 .actions { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
-.actions button { font-size: 12px; padding: 3px 10px; border-radius: 6px; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); background: transparent; cursor: pointer; }
-.actions button.confirm { border-color: crimson; color: crimson; }
+.actions button { font-size: 12px; padding: 3px 10px; border-radius: 6px; border: 1px solid color-mix(in srgb, var(--app-text) 25%, transparent); background: transparent; cursor: pointer; }
+.actions button.confirm { border-color: var(--app-danger); color: var(--app-danger); }
 .refusal-msg { font-size: 12px; opacity: .7; }
 /* a failed write's reason, parked beside its Send until the next attempt — the
    #status line auto-clears on the next successful poll, this must not (C3) */
-.write-error { font-size: 12px; color: crimson; margin-left: 8px; }
+.write-error { font-size: 12px; color: var(--app-danger); margin-left: 8px; }
 .stale-draft { margin: 5px 0 0; }
 .stale-drafts-fold { opacity: .85; }
-.stale-draft-line { display: flex; align-items: center; gap: 8px; padding: 5px 8px; font-size: 12px; color: color-mix(in srgb, crimson 70%, CanvasText); }
+.stale-draft-line { display: flex; align-items: center; gap: 8px; padding: 5px 8px; font-size: 12px; color: color-mix(in srgb, var(--app-danger) 70%, var(--app-text)); }
 .empty { opacity: .4; font-size: 13px; }
-.board { border: 1px solid color-mix(in srgb, CanvasText 15%, transparent); border-radius: 8px; padding: 12px; margin-bottom: var(--gap); }
+.board { border: 1px solid color-mix(in srgb, var(--app-text) 15%, transparent); border-radius: 8px; padding: 12px; margin-bottom: var(--gap); }
 .board-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .board-title { font-weight: 600; }
 .board-id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; font-weight: 400; opacity: .35; margin-left: 8px; }
 .board-meta { font-size: 12px; opacity: .55; }
-.bar { height: 6px; border-radius: 3px; background: color-mix(in srgb, CanvasText 12%, transparent); margin: 8px 0 4px; overflow: hidden; }
-.bar-fill { height: 100%; background: seagreen; }
-.board.complete .bar-fill { background: limegreen; }
-.complete-badge { color: limegreen; font-size: 11px; font-weight: 600; margin-left: 8px; }
+.bar { height: 6px; border-radius: 3px; background: color-mix(in srgb, var(--app-text) 12%, transparent); margin: 8px 0 4px; overflow: hidden; }
+.bar-fill { height: 100%; background: var(--app-success); }
+.board.complete .bar-fill { background: var(--app-success); }
+.complete-badge { color: var(--app-success); font-size: 11px; font-weight: 600; margin-left: 8px; }
 .bar-label { font-size: 12px; opacity: .6; margin-bottom: 6px; }
 .board-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.board-table td { padding: 4px 6px; border-top: 1px solid color-mix(in srgb, CanvasText 8%, transparent); vertical-align: top; }
+.board-table td { padding: 4px 6px; border-top: 1px solid color-mix(in srgb, var(--app-text) 8%, transparent); vertical-align: top; }
 .board-table .row-num { width: 1%; text-align: right; font-size: 11px; opacity: .35; font-variant-numeric: tabular-nums; }
 .board-table .row-label { font-weight: 500; white-space: nowrap; }
 .board-table .row-note { opacity: .8; width: 100%; white-space: pre-wrap; }
-.unseen { color: LinkText; font-size: 9px; margin-left: 6px; vertical-align: middle; }
+.unseen { color: var(--app-link); font-size: 9px; margin-left: 6px; vertical-align: middle; }
 .board-table .row-action { text-align: right; }
 /* status accents on the label text so state reads at a glance even past the glyph */
-.board-table tr .missing ~ td, .board-table tr:has(.missing) .row-label { color: color-mix(in srgb, crimson 70%, CanvasText); }
-.board-table tr:has(.blocked) .row-label { color: color-mix(in srgb, crimson 70%, CanvasText); font-weight: 600; }
-.board-table tr:has(.blocked) td { background: color-mix(in srgb, crimson 6%, transparent); }
+.board-table tr .missing ~ td, .board-table tr:has(.missing) .row-label { color: color-mix(in srgb, var(--app-danger) 70%, var(--app-text)); }
+.board-table tr:has(.blocked) .row-label { color: color-mix(in srgb, var(--app-danger) 70%, var(--app-text)); font-weight: 600; }
+.board-table tr:has(.blocked) td { background: color-mix(in srgb, var(--app-danger) 6%, transparent); }
 .show-more {
   display: block;
   width: 100%;
   margin: 8px 0 4px;
   padding: 8px;
   background: transparent;
-  border: 1px dashed color-mix(in srgb, CanvasText 25%, transparent);
+  border: 1px dashed color-mix(in srgb, var(--app-text) 25%, transparent);
   border-radius: 6px;
-  color: CanvasText;
+  color: var(--app-text);
   opacity: .55;
   cursor: pointer;
   font-size: 13px;
 }
-.show-more:hover { opacity: .9; border-color: color-mix(in srgb, CanvasText 45%, transparent); }
+.show-more:hover { opacity: .9; border-color: color-mix(in srgb, var(--app-text) 45%, transparent); }
 .search-box {
   min-width: 220px;
   padding: 6px 10px;
-  background: Canvas;
-  border: 1px solid color-mix(in srgb, CanvasText 25%, transparent);
+  background: var(--app-surface);
+  border: 1px solid color-mix(in srgb, var(--app-text) 25%, transparent);
   border-radius: 6px;
-  color: CanvasText;
+  color: var(--app-text);
   font-size: 13px;
 }
-.search-box::placeholder { color: color-mix(in srgb, CanvasText 45%, transparent); }
-.search-box:focus { outline: none; border-color: LinkText; }
+.search-box::placeholder { color: color-mix(in srgb, var(--app-text) 45%, transparent); }
+.search-box:focus { outline: none; border-color: var(--app-link); }
 
 /* ── shell: top bar · project rail · content tabs ── */
 #topbar { display: flex; align-items: center; gap: 12px; padding: 12px 0; }
@@ -350,35 +352,35 @@ body.settings-open #topbar > :not(#gear) { opacity: .32; }
 #pauseHint { font-size: 12px; opacity: .55; }
 .tab-label { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; opacity: .45; margin-right: 2px; }
 .agent-pick { display: flex; align-items: center; gap: 6px; margin-left: auto; }
-#agentSelect { font: inherit; font-size: 12.5px; padding: 3px 8px; border-radius: 6px; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); background: Canvas; color: inherit; }
+#agentSelect { font: inherit; font-size: 12.5px; padding: 3px 8px; border-radius: 6px; border: 1px solid color-mix(in srgb, var(--app-text) 25%, transparent); background: var(--app-surface); color: inherit; }
 .gear { font-size: 15px; line-height: 1; padding: 4px 8px; border-radius: 6px; border: 1px solid transparent; background: transparent; color: inherit; cursor: pointer; opacity: .55; }
-.gear:hover, .gear.active { opacity: 1; border-color: color-mix(in srgb, CanvasText 25%, transparent); }
+.gear:hover, .gear.active { opacity: 1; border-color: color-mix(in srgb, var(--app-text) 25%, transparent); }
 .layout { display: flex; gap: 24px; align-items: flex-start; }
 #rail { position: sticky; top: 56px; width: 176px; flex-shrink: 0; display: flex; flex-direction: column; gap: 2px; padding-top: 8px; max-height: calc(100vh - 72px); overflow-y: auto; overscroll-behavior-y: contain; }
 .content { flex: 1; min-width: 0; }
-.tabstrip { display: flex; gap: 4px; border-bottom: 1px solid color-mix(in srgb, CanvasText 12%, transparent); margin-bottom: 10px; overflow-x: auto; }
+.tabstrip { display: flex; gap: 4px; border-bottom: 1px solid color-mix(in srgb, var(--app-text) 12%, transparent); margin-bottom: 10px; overflow-x: auto; }
 .tab { font: inherit; font-size: 13px; padding: 7px 12px; border: none; border-bottom: 2px solid transparent; background: transparent; color: inherit; opacity: .55; cursor: pointer; white-space: nowrap; }
 .tab:hover { opacity: .85; }
-.tab[aria-selected="true"] { opacity: 1; font-weight: 600; border-bottom-color: LinkText; }
-.tab-count { margin-left: 6px; font-size: 11.5px; font-variant-numeric: tabular-nums; padding: 0 6px; border-radius: 999px; background: color-mix(in srgb, CanvasText 12%, transparent); }
+.tab[aria-selected="true"] { opacity: 1; font-weight: 600; border-bottom-color: var(--app-link); }
+.tab-count { margin-left: 6px; font-size: 11.5px; font-variant-numeric: tabular-nums; padding: 0 6px; border-radius: 999px; background: color-mix(in srgb, var(--app-text) 12%, transparent); }
 .tab-count[hidden] { display: none; }
 .panel[hidden] { display: none; }
 .rows { display: flex; flex-direction: column; gap: 6px; }
 [data-card-id] { scroll-margin-top: 64px; }
-.item { border: 1px solid color-mix(in srgb, CanvasText 15%, transparent); border-radius: 8px; padding: 10px 12px; margin-bottom: var(--gap); }
+.item { border: 1px solid color-mix(in srgb, var(--app-text) 15%, transparent); border-radius: 8px; padding: 10px 12px; margin-bottom: var(--gap); }
 
-.rail-filter { width: 100%; margin-bottom: 6px; padding: 4px 8px; border: 1px solid color-mix(in srgb, CanvasText 14%, transparent); border-radius: 7px; background: transparent; color: inherit; font: inherit; font-size: 12px; }
+.rail-filter { width: 100%; margin-bottom: 6px; padding: 4px 8px; border: 1px solid color-mix(in srgb, var(--app-text) 14%, transparent); border-radius: 7px; background: transparent; color: inherit; font: inherit; font-size: 12px; }
 .rail-tab { display: flex; align-items: center; gap: 8px; width: 100%; padding: 5px 9px; border: none; border-radius: 7px; background: transparent; color: inherit; font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
-.rail-tab:hover { background: color-mix(in srgb, CanvasText 6%, transparent); }
+.rail-tab:hover { background: color-mix(in srgb, var(--app-text) 6%, transparent); }
 .rail-tab.quiet { opacity: .5; }
 .rail-tab[aria-selected="true"] { opacity: 1; font-weight: 600; }
-.rail-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; background: color-mix(in srgb, CanvasText 35%, transparent); }
+.rail-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; background: color-mix(in srgb, var(--app-text) 35%, transparent); }
 .rail-dot.all { background: var(--app-border-strong); }
-.rail-tab.unknown .rail-dot { background: color-mix(in srgb, CanvasText 28%, transparent); }
+.rail-tab.unknown .rail-dot { background: color-mix(in srgb, var(--app-text) 28%, transparent); }
 .rail-tab.unknown .rail-name { font-style: italic; opacity: .75; }
 .rail-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rail-badge { font-size: 11px; font-variant-numeric: tabular-nums; padding: 0 6px; border-radius: 999px; background: color-mix(in srgb, CanvasText 12%, transparent); }
-.rail-badge.escalated { background: color-mix(in srgb, crimson 18%, transparent); color: color-mix(in srgb, crimson 80%, CanvasText); font-weight: 600; }
+.rail-badge { font-size: 11px; font-variant-numeric: tabular-nums; padding: 0 6px; border-radius: 999px; background: color-mix(in srgb, var(--app-text) 12%, transparent); }
+.rail-badge.escalated { background: color-mix(in srgb, var(--app-danger) 18%, transparent); color: color-mix(in srgb, var(--app-danger) 80%, var(--app-text)); font-weight: 600; }
 /* issue #32: the tab and its ×/↩ are SIBLINGS in this wrapper, never nested —
    .rail-tab is a <button role="tab"> and a button may not contain interactive
    content. Everything that selects `.rail-tab` as a descendant of #rail keeps
@@ -394,24 +396,24 @@ body.settings-open #topbar > :not(#gear) { opacity: .32; }
    of bug this repo already hit once). */
 .closed-fold .rail-reopen { opacity: .5; pointer-events: auto; }
 .rail-row:hover .rail-close, .rail-row:focus-within .rail-close, .rail-close:focus-visible { opacity: .65; pointer-events: auto; }
-.rail-close:hover, .rail-reopen:hover { opacity: 1; background: color-mix(in srgb, CanvasText 10%, transparent); }
+.rail-close:hover, .rail-reopen:hover { opacity: 1; background: color-mix(in srgb, var(--app-text) 10%, transparent); }
 .rail-action-label { display: none; }
 .closed-fold { margin-top: 6px; }
-.closed-fold > summary { cursor: pointer; font-size: 11.5px; opacity: .5; padding: 6px 9px; border-top: 1px solid color-mix(in srgb, CanvasText 10%, transparent); }
+.closed-fold > summary { cursor: pointer; font-size: 11.5px; opacity: .5; padding: 6px 9px; border-top: 1px solid color-mix(in srgb, var(--app-text) 10%, transparent); }
 .closed-fold > summary:hover { opacity: .85; }
 /* dims the TAB only, not its sibling ↩ — nested opacity multiplies */
 .closed-fold .rail-tab { opacity: .6; }
 /* #rail's own `gap` does not reach inside the <details> */
 .closed-fold .rail-row + .rail-row { margin-top: 2px; }
-/* never crimson: a project the badge is deliberately ignoring must not alarm */
-.closed-fold .rail-badge { background: color-mix(in srgb, CanvasText 10%, transparent); color: inherit; font-weight: 400; }
+/* never var(--app-danger): a project the badge is deliberately ignoring must not alarm */
+.closed-fold .rail-badge { background: color-mix(in srgb, var(--app-text) 10%, transparent); color: inherit; font-weight: 400; }
 .closed-muted { margin-left: 6px; font-size: 10.5px; opacity: .7; font-variant-numeric: tabular-nums; }
-.closed-banner { display: flex; align-items: center; gap: 8px; font-size: 12.5px; opacity: .75; padding: 6px 10px; margin-bottom: 8px; border-radius: 8px; background: color-mix(in srgb, CanvasText 6%, transparent); }
-.closed-reopen { font: inherit; font-size: 11.5px; padding: 1px 8px; border-radius: 6px; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); background: transparent; color: inherit; cursor: pointer; }
+.closed-banner { display: flex; align-items: center; gap: 8px; font-size: 12.5px; opacity: .75; padding: 6px 10px; margin-bottom: 8px; border-radius: 8px; background: color-mix(in srgb, var(--app-text) 6%, transparent); }
+.closed-reopen { font: inherit; font-size: 11.5px; padding: 1px 8px; border-radius: 6px; border: 1px solid color-mix(in srgb, var(--app-text) 25%, transparent); background: transparent; color: inherit; cursor: pointer; }
 #pauseHint { font-size: 12px; opacity: .5; font-style: italic; white-space: nowrap; }
 
-.nrow { display: flex; flex-direction: column; gap: 1px; padding: 7px 10px; border-radius: 8px; border: 1px solid color-mix(in srgb, CanvasText 10%, transparent); margin-bottom: 6px; background: var(--wash, transparent); cursor: pointer; }
-.nrow:focus-visible { outline: 2px solid LinkText; outline-offset: 1px; }
+.nrow { display: flex; flex-direction: column; gap: 1px; padding: 7px 10px; border-radius: 8px; border: 1px solid color-mix(in srgb, var(--app-text) 10%, transparent); margin-bottom: 6px; background: var(--wash, transparent); cursor: pointer; }
+.nrow:focus-visible { outline: 2px solid var(--app-link); outline-offset: 1px; }
 .nrow.answered { opacity: .55; }
 .nrow.staged { opacity: .45; }
 .nrow-l1 { display: flex; align-items: center; gap: 8px; min-width: 0; }
@@ -420,9 +422,9 @@ body.settings-open #topbar > :not(#gear) { opacity: .32; }
 .nrow-meta { flex: 0 0 auto; }
 .nrow-title { font-weight: 600; font-size: 14px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nrow-owner, .nrow-change { flex-shrink: 0; font-size: 9.5px; padding: 0 6px; border-radius: 999px; text-transform: uppercase; letter-spacing: .04em; }
-.nrow-owner { background: color-mix(in srgb, CanvasText 7%, transparent); opacity: .7; }
-.nrow-owner.owner-decision { color: LinkText; }
-.nrow-change { color: color-mix(in srgb, seagreen 75%, CanvasText); border: 1px solid color-mix(in srgb, seagreen 30%, transparent); font-weight: 700; }
+.nrow-owner { background: color-mix(in srgb, var(--app-text) 7%, transparent); opacity: .7; }
+.nrow-owner.owner-decision { color: var(--app-link); }
+.nrow-change { color: color-mix(in srgb, var(--app-success) 75%, var(--app-text)); border: 1px solid color-mix(in srgb, var(--app-success) 30%, transparent); font-weight: 700; }
 .nrow-l2 { display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; opacity: .6; min-width: 0; padding-left: 18px; }
 .nrow-sec { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nrow-agent, .nrow-stream { flex-shrink: 0; opacity: .8; font-variant: all-small-caps; }
@@ -436,10 +438,10 @@ body.settings-open #topbar > :not(#gear) { opacity: .32; }
   width: max-content;
   max-width: min(280px, 80vw);
   padding: 5px 7px;
-  border: 1px solid color-mix(in srgb, CanvasText 20%, transparent);
+  border: 1px solid color-mix(in srgb, var(--app-text) 20%, transparent);
   border-radius: 6px;
-  background: Canvas;
-  color: CanvasText;
+  background: var(--app-surface);
+  color: var(--app-text);
   content: attr(data-exact);
   font-size: 11px;
   font-style: normal;
@@ -455,16 +457,16 @@ body.settings-open #topbar > :not(#gear) { opacity: .32; }
 .nrow-caret { font-size: 10px; opacity: .4; }
 .nrow[data-open="1"] .nrow-caret { transform: rotate(90deg); }
 .nrow-dismiss { border: none; background: transparent; color: inherit; cursor: pointer; font-size: 12px; opacity: 0; }
-.nrow-wake { font: inherit; font-size: 10.5px; padding: 1px 7px; border-radius: 999px; border: 1px solid color-mix(in srgb, LinkText 35%, transparent); background: transparent; color: LinkText; cursor: pointer; }
+.nrow-wake { font: inherit; font-size: 10.5px; padding: 1px 7px; border-radius: 999px; border: 1px solid color-mix(in srgb, var(--app-link) 35%, transparent); background: transparent; color: var(--app-link); cursor: pointer; }
 .nrow:hover .nrow-dismiss, .nrow:focus-within .nrow-dismiss { opacity: .5; }
 .nrow-dismiss:hover { opacity: 1; }
 .chip { font-size: 11px; padding: 1px 8px; border-radius: 999px; white-space: nowrap; border: 1px solid transparent; }
-.chip-hot { background: color-mix(in srgb, crimson 16%, transparent); color: color-mix(in srgb, crimson 75%, CanvasText); border-color: color-mix(in srgb, crimson 40%, transparent); }
-.chip-warm { background: color-mix(in srgb, goldenrod 16%, transparent); color: color-mix(in srgb, goldenrod 80%, CanvasText); }
-.chip-neutral { background: color-mix(in srgb, CanvasText 8%, transparent); opacity: .7; }
+.chip-hot { background: color-mix(in srgb, var(--app-danger) 16%, transparent); color: color-mix(in srgb, var(--app-danger) 75%, var(--app-text)); border-color: color-mix(in srgb, var(--app-danger) 40%, transparent); }
+.chip-warm { background: color-mix(in srgb, var(--app-warning) 16%, transparent); color: color-mix(in srgb, var(--app-warning) 80%, var(--app-text)); }
+.chip-neutral { background: color-mix(in srgb, var(--app-text) 8%, transparent); opacity: .7; }
 .chip-muted { opacity: .45; }
-.chip-blocked { background: color-mix(in srgb, crimson 12%, transparent); color: color-mix(in srgb, crimson 70%, CanvasText); }
-.undo-btn { font-size: 11.5px; padding: 1px 8px; border-radius: 6px; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); background: transparent; color: inherit; cursor: pointer; }
+.chip-blocked { background: color-mix(in srgb, var(--app-danger) 12%, transparent); color: color-mix(in srgb, var(--app-danger) 70%, var(--app-text)); }
+.undo-btn { font-size: 11.5px; padding: 1px 8px; border-radius: 6px; border: 1px solid color-mix(in srgb, var(--app-text) 25%, transparent); background: transparent; color: inherit; cursor: pointer; }
 .stale-fold { margin-top: 10px; opacity: .6; }
 .stale-fold > summary { cursor: pointer; font-size: 12px; letter-spacing: .02em; padding: 4px 0; list-style: none; }
 .stale-fold > summary::before { content: "▸ "; font-size: 10px; }
@@ -550,57 +552,57 @@ body.settings-open #topbar > :not(#gear) { opacity: .32; }
 .card-meta { display: flex; align-items: center; gap: 6px; }
 .card-title { font-weight: 600; font-size: 16px; margin: 4px 0 2px; }
 .card-next, .card-tldr { margin: 8px 0; padding: 8px 10px; border-radius: 8px; }
-.card-next { background: color-mix(in srgb, LinkText 9%, transparent); border-left: 3px solid color-mix(in srgb, LinkText 60%, transparent); }
-.card-tldr { background: color-mix(in srgb, CanvasText 4%, transparent); }
-.action-owner { display: inline-block; margin-top: 7px; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; background: color-mix(in srgb, LinkText 10%, transparent); color: LinkText; }
-.card-impact, .card-after { margin: 6px 0; padding: 6px 10px; font-size: 13px; border-left: 2px solid color-mix(in srgb, CanvasText 18%, transparent); }
+.card-next { background: color-mix(in srgb, var(--app-link) 9%, transparent); border-left: 3px solid color-mix(in srgb, var(--app-link) 60%, transparent); }
+.card-tldr { background: color-mix(in srgb, var(--app-text) 4%, transparent); }
+.action-owner { display: inline-block; margin-top: 7px; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; background: color-mix(in srgb, var(--app-link) 10%, transparent); color: var(--app-link); }
+.card-impact, .card-after { margin: 6px 0; padding: 6px 10px; font-size: 13px; border-left: 2px solid color-mix(in srgb, var(--app-text) 18%, transparent); }
 .card-after { opacity: .78; }
 .card-section-label { font-size: 10px; letter-spacing: .09em; text-transform: uppercase; opacity: .55; margin-bottom: 3px; }
 .card-next-body { font-size: 14px; font-weight: 600; white-space: pre-wrap; }
 .card-tldr-body { font-size: 13px; opacity: .85; white-space: pre-wrap; }
-.card-context { margin: 8px 0; padding: 8px 10px; border-radius: 8px; background: color-mix(in srgb, CanvasText 5%, transparent); }
+.card-context { margin: 8px 0; padding: 8px 10px; border-radius: 8px; background: color-mix(in srgb, var(--app-text) 5%, transparent); }
 .card-context-label { cursor: pointer; font-size: 11px; letter-spacing: .05em; text-transform: uppercase; opacity: .55; }
 .card-context-body { font-size: 13px; opacity: .85; white-space: pre-wrap; margin-top: 6px; }
-.rec-warning { font-size: 12px; margin-top: 6px; color: color-mix(in srgb, goldenrod 80%, CanvasText); }
-.nrow-card { margin: 8px 0 2px; padding: 10px 12px 4px 18px; border-top: 1px solid color-mix(in srgb, CanvasText 10%, transparent); cursor: default; }
-.nrow[data-open="1"] { background: color-mix(in srgb, CanvasText 4%, transparent); }
+.rec-warning { font-size: 12px; margin-top: 6px; color: color-mix(in srgb, var(--app-warning) 80%, var(--app-text)); }
+.nrow-card { margin: 8px 0 2px; padding: 10px 12px 4px 18px; border-top: 1px solid color-mix(in srgb, var(--app-text) 10%, transparent); cursor: default; }
+.nrow[data-open="1"] { background: color-mix(in srgb, var(--app-text) 4%, transparent); }
 .nrow[data-open="1"] .nrow-l2 { white-space: normal; }
 
-.star-btn { border: none; background: transparent; color: color-mix(in srgb, goldenrod 85%, CanvasText); cursor: pointer; font-size: 14px; line-height: 1; padding: 0 2px; opacity: .75; }
+.star-btn { border: none; background: transparent; color: color-mix(in srgb, var(--app-warning) 85%, var(--app-text)); cursor: pointer; font-size: 14px; line-height: 1; padding: 0 2px; opacity: .75; }
 .star-btn:hover, .star-btn:focus-visible { opacity: 1; transform: scale(1.15); }
 .nrow-star { display: flex; align-items: center; gap: 4px; font-size: 11.5px; white-space: nowrap; max-width: 45%; min-width: 0; }
 .sent-label { opacity: .7; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .nrow.staged .nrow-title { text-decoration: line-through; text-decoration-thickness: 1px; opacity: .7; }
 
-.calm-panel { border: 1px solid color-mix(in srgb, seagreen 22%, transparent); background: color-mix(in srgb, seagreen 6%, transparent); border-radius: 10px; padding: 22px 18px; text-align: center; }
+.calm-panel { border: 1px solid color-mix(in srgb, var(--app-success) 22%, transparent); background: color-mix(in srgb, var(--app-success) 6%, transparent); border-radius: 10px; padding: 22px 18px; text-align: center; }
 .calm-head { font-size: 15px; opacity: .75; }
 .calm-chips { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; margin-top: 12px; }
-.calm-chip { font-size: 12px; padding: 2px 10px; border-radius: 999px; border: 1px solid color-mix(in srgb, CanvasText 15%, transparent); opacity: .6; }
-.notes-chip { display: block; width: 100%; margin: 14px 0 2px; padding: 6px; font: inherit; font-size: 12.5px; background: transparent; border: 1px dashed color-mix(in srgb, CanvasText 20%, transparent); border-radius: 6px; color: inherit; opacity: .5; cursor: pointer; }
+.calm-chip { font-size: 12px; padding: 2px 10px; border-radius: 999px; border: 1px solid color-mix(in srgb, var(--app-text) 15%, transparent); opacity: .6; }
+.notes-chip { display: block; width: 100%; margin: 14px 0 2px; padding: 6px; font: inherit; font-size: 12.5px; background: transparent; border: 1px dashed color-mix(in srgb, var(--app-text) 20%, transparent); border-radius: 6px; color: inherit; opacity: .5; cursor: pointer; }
 .notes-chip:hover { opacity: .85; }
 
 /* Live footer strip (spec §16): ambient presence, always visible. */
 #liveBar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 50; }
 #liveStrip { display: flex; align-items: center; gap: 8px; width: 100%; height: 28px; padding: 0 12px;
-  border: none; border-top: 1px solid color-mix(in srgb, CanvasText 14%, transparent);
-  background: Canvas; color: inherit; font: inherit; font-size: 12px; cursor: pointer; text-align: left; }
-#liveStrip:hover { background: color-mix(in srgb, CanvasText 4%, Canvas); }
+  border: none; border-top: 1px solid color-mix(in srgb, var(--app-text) 14%, transparent);
+  background: var(--app-surface); color: inherit; font: inherit; font-size: 12px; cursor: pointer; text-align: left; }
+#liveStrip:hover { background: color-mix(in srgb, var(--app-text) 4%, var(--app-surface)); }
 #liveStrip .live-label { opacity: .75; }
 #liveStrip .live-sessions { display: flex; gap: 10px; overflow: hidden; opacity: .6; min-width: 0; }
 #liveStrip .live-session { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #liveStrip .live-session .live-dot { width: 6px; height: 6px; box-shadow: none; }
 #liveStrip .live-caret { margin-left: auto; opacity: .5; }
 #liveStrip[aria-expanded="true"] .live-caret { transform: rotate(180deg); }
-.live-dot.idle { background: color-mix(in srgb, CanvasText 30%, transparent); }
+.live-dot.idle { background: color-mix(in srgb, var(--app-text) 30%, transparent); }
 /* the drawer rises OVER the content: nothing reflows, scroll position survives */
 .live-drawer { position: fixed; left: 0; right: 0; bottom: 28px; max-height: 46vh; overflow: auto;
-  background: Canvas; border-top: 1px solid color-mix(in srgb, CanvasText 14%, transparent);
-  box-shadow: 0 -12px 32px color-mix(in srgb, CanvasText 18%, transparent); padding: 0 12px 10px; }
+  background: var(--app-surface); border-top: 1px solid color-mix(in srgb, var(--app-text) 14%, transparent);
+  box-shadow: 0 -12px 32px color-mix(in srgb, var(--app-text) 18%, transparent); padding: 0 12px 10px; }
 .live-drawer-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; padding: 9px 0 8px; background: inherit; }
 .live-drawer-title { font-size: 11px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; opacity: .55; }
 .live-pin { display: grid; width: 28px; height: 28px; place-items: center; border: 1px solid transparent; border-radius: 7px; background: transparent; color: inherit; cursor: pointer; opacity: .5; }
-.live-pin:hover, .live-pin:focus-visible { border-color: color-mix(in srgb, CanvasText 18%, transparent); opacity: 1; }
-.live-pin[aria-pressed="true"] { border-color: LinkText; background: color-mix(in srgb, LinkText 8%, transparent); color: LinkText; opacity: 1; }
+.live-pin:hover, .live-pin:focus-visible { border-color: color-mix(in srgb, var(--app-text) 18%, transparent); opacity: 1; }
+.live-pin[aria-pressed="true"] { border-color: var(--app-link); background: color-mix(in srgb, var(--app-link) 8%, transparent); color: var(--app-link); opacity: 1; }
 .live-pin svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linejoin: round; }
 main { padding-bottom: 34px; } /* the fixed strip must never cover the last row */
 
@@ -608,14 +610,14 @@ main { padding-bottom: 34px; } /* the fixed strip must never cover the last row 
    toggle (Task 13 is the sole owner — reconciled here, not duplicated with Task 14's
    incident-fix placeholder, which is deleted). ── */
 .tab-header { display: flex; justify-content: flex-end; gap: 8px; margin: 0 0 10px; }
-.header-toggle { font: inherit; font-size: 12px; padding: 2px 11px; border-radius: 999px; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); background: transparent; color: inherit; cursor: pointer; opacity: .6; }
+.header-toggle { font: inherit; font-size: 12px; padding: 2px 11px; border-radius: 999px; border: 1px solid color-mix(in srgb, var(--app-text) 25%, transparent); background: transparent; color: inherit; cursor: pointer; opacity: .6; }
 .header-toggle:hover { opacity: 1; }
-.header-toggle.active { opacity: 1; border-color: LinkText; color: LinkText; }
+.header-toggle.active { opacity: 1; border-color: var(--app-link); color: var(--app-link); }
 .queue-sort { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; font-size: 11.5px; opacity: .7; white-space: nowrap; }
-.queue-sort select { min-width: 126px; font: inherit; color: inherit; background: Canvas; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); border-radius: 6px; padding: 2px 24px 2px 7px; }
-.triage-btn { font: inherit; font-size: 12.5px; padding: 4px 10px; border-radius: 6px; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); background: transparent; color: inherit; cursor: pointer; opacity: .75; }
+.queue-sort select { min-width: 126px; font: inherit; color: inherit; background: var(--app-surface); border: 1px solid color-mix(in srgb, var(--app-text) 25%, transparent); border-radius: 6px; padding: 2px 24px 2px 7px; }
+.triage-btn { font: inherit; font-size: 12.5px; padding: 4px 10px; border-radius: 6px; border: 1px solid color-mix(in srgb, var(--app-text) 25%, transparent); background: transparent; color: inherit; cursor: pointer; opacity: .75; }
 .triage-btn:hover { opacity: 1; }
-.relay-btn { font: inherit; font-size: 12.5px; padding: 4px 10px; border-radius: 6px; border: 1px solid color-mix(in srgb, seagreen 35%, transparent); background: color-mix(in srgb, seagreen 6%, transparent); color: inherit; cursor: pointer; opacity: .78; }
+.relay-btn { font: inherit; font-size: 12.5px; padding: 4px 10px; border-radius: 6px; border: 1px solid color-mix(in srgb, var(--app-success) 35%, transparent); background: color-mix(in srgb, var(--app-success) 6%, transparent); color: inherit; cursor: pointer; opacity: .78; }
 .relay-btn:hover { opacity: 1; }
 
 /* ── Boards tab: the matrix (spec §9) ── */
@@ -626,41 +628,41 @@ main { padding-bottom: 34px; } /* the fixed strip must never cover the last row 
 .board-table.matrix .row-label { font-weight: 600; white-space: nowrap; }
 .board-table.matrix .row-note { opacity: .75; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 0; }
 .board-table.matrix .board-row { cursor: pointer; }
-.board-table.matrix .board-row:hover td { background: color-mix(in srgb, CanvasText 4%, transparent); }
-.board-table.matrix tr.needs-answer td { background: color-mix(in srgb, crimson 8%, transparent); }
-.board-table.matrix tr.needs-answer .row-label { color: color-mix(in srgb, crimson 72%, CanvasText); }
+.board-table.matrix .board-row:hover td { background: color-mix(in srgb, var(--app-text) 4%, transparent); }
+.board-table.matrix tr.needs-answer td { background: color-mix(in srgb, var(--app-danger) 8%, transparent); }
+.board-table.matrix tr.needs-answer .row-label { color: color-mix(in srgb, var(--app-danger) 72%, var(--app-text)); }
 .more-dot { opacity: .45; margin-left: 6px; }
 .annotation-dot { margin-left: 8px; font-size: 11px; opacity: .7; }
 /* the matrix's at-a-glance "you already did this one" (#36) — the row keeps its
    🚧 status glyph, because only an agent may change that */
-.handled-dot { margin-left: 8px; font-size: 11px; color: color-mix(in srgb, seagreen 70%, CanvasText); }
-.answer-btn { font: inherit; font-size: 11.5px; padding: 1px 10px; border-radius: 999px; border: 1px solid color-mix(in srgb, crimson 45%, transparent); background: transparent; color: inherit; cursor: pointer; font-weight: 600; }
+.handled-dot { margin-left: 8px; font-size: 11px; color: color-mix(in srgb, var(--app-success) 70%, var(--app-text)); }
+.answer-btn { font: inherit; font-size: 11.5px; padding: 1px 10px; border-radius: 999px; border: 1px solid color-mix(in srgb, var(--app-danger) 45%, transparent); background: transparent; color: inherit; cursor: pointer; font-weight: 600; }
 .row-expand { font: inherit; font-size: 11px; padding: 1px 6px; border: none; background: transparent; color: inherit; opacity: .4; cursor: pointer; }
 .row-panel-row td { padding: 6px 10px 10px 34px !important; }
 .row-panel { font-size: 12.5px; }
-.row-context-body { white-space: pre-wrap; opacity: .75; padding-left: 10px; border-left: 2px solid color-mix(in srgb, CanvasText 15%, transparent); margin-bottom: 6px; }
+.row-context-body { white-space: pre-wrap; opacity: .75; padding-left: 10px; border-left: 2px solid color-mix(in srgb, var(--app-text) 15%, transparent); margin-bottom: 6px; }
 .archived-fold > summary { cursor: pointer; font-size: 12.5px; opacity: .5; margin: 14px 0 8px; }
 .archived-fold > summary:hover { opacity: .85; }
 .board.archived { opacity: .72; }
 .board.lingering { opacity: 1; }
-.linger-badge { margin-left: 8px; font-size: 11px; opacity: .6; border: 1px solid color-mix(in srgb, CanvasText 18%, transparent); border-radius: 999px; padding: 0 8px; }
+.linger-badge { margin-left: 8px; font-size: 11px; opacity: .6; border: 1px solid color-mix(in srgb, var(--app-text) 18%, transparent); border-radius: 999px; padding: 0 8px; }
 
 /* ── focus + keyboard selection (spec §13) ───────────────────────────────── */
-:where(button, a, [tabindex]):focus-visible { outline: 2px solid LinkText; outline-offset: 2px; border-radius: 6px; }
-#needsYouList .nrow.selected { background: color-mix(in srgb, LinkText 8%, transparent); }
+:where(button, a, [tabindex]):focus-visible { outline: 2px solid var(--app-link); outline-offset: 2px; border-radius: 6px; }
+#needsYouList .nrow.selected { background: color-mix(in srgb, var(--app-link) 8%, transparent); }
 #needsYouList .nrow.selected:focus-visible { outline-offset: 0; }
 [role="tab"][aria-selected="true"] { font-weight: 600; }
 
 /* ── source links: issue + PR chips (issue #30) ───────────────────────────────
    Ambient by design: these chips are information, never attention. Nothing here
-   borrows the crimson of an urgency chip for a red CI — a failing check is the
+   borrows the var(--app-danger) of an urgency chip for a red CI — a failing check is the
    agent's problem, not a reason to pull the human's eye. */
-.src-chip { font-size: 11px; padding: 1px 7px; border-radius: 999px; white-space: nowrap; text-decoration: none; color: inherit; border: 1px solid color-mix(in srgb, CanvasText 16%, transparent); opacity: .75; }
+.src-chip { font-size: 11px; padding: 1px 7px; border-radius: 999px; white-space: nowrap; text-decoration: none; color: inherit; border: 1px solid color-mix(in srgb, var(--app-text) 16%, transparent); opacity: .75; }
 a.src-chip:hover { opacity: 1; text-decoration: underline; }
-.src-chip.tone-issue { color: LinkText; border-color: color-mix(in srgb, LinkText 32%, transparent); }
+.src-chip.tone-issue { color: var(--app-link); border-color: color-mix(in srgb, var(--app-link) 32%, transparent); }
 .src-chip.tone-merged { color: var(--app-accent); border-color: color-mix(in srgb, var(--app-accent) 40%, transparent); }
-.src-chip.tone-good { color: color-mix(in srgb, seagreen 70%, CanvasText); border-color: color-mix(in srgb, seagreen 40%, transparent); }
-.src-chip.tone-bad { color: color-mix(in srgb, crimson 70%, CanvasText); border-color: color-mix(in srgb, crimson 38%, transparent); }
+.src-chip.tone-good { color: color-mix(in srgb, var(--app-success) 70%, var(--app-text)); border-color: color-mix(in srgb, var(--app-success) 40%, transparent); }
+.src-chip.tone-bad { color: color-mix(in srgb, var(--app-danger) 70%, var(--app-text)); border-color: color-mix(in srgb, var(--app-danger) 38%, transparent); }
 .src-chip.tone-neutral { opacity: .7; }
 .src-chip.tone-muted { opacity: .5; }
 
@@ -1092,7 +1094,7 @@ body:has(.nrow[data-open="1"]) .inspector-empty { display: none; }
 .queue-sort { margin-left: 0; color: var(--app-muted); opacity: 1; }
 .queue-sort select { border-color: var(--app-border); background: var(--app-surface); color: var(--app-text); }
 .relay-btn { margin-left: 0; }
-.triage-btn { border-color: var(--app-accent); background: var(--app-accent); color: #ffffff; opacity: 1; }
+.triage-btn { border-color: var(--app-accent); background: var(--app-accent); color: var(--app-on-accent); opacity: 1; }
 .triage-btn:hover { border-color: var(--app-accent-hover); background: var(--app-accent-hover); }
 .rows { gap: 8px; }
 .nrow {
@@ -1106,6 +1108,7 @@ body:has(.nrow[data-open="1"]) .inspector-empty { display: none; }
 }
 .nrow:hover { border-color: var(--app-border-strong); }
 .nrow.selected, #needsYouList .nrow.selected { border-color: color-mix(in srgb, var(--app-accent) 45%, var(--app-border)); background: var(--app-surface); }
+.nrow.selected .nrow-title { font-weight: 700; }
 .nrow[data-open="1"] { border-color: var(--app-accent); background: var(--app-surface); box-shadow: 0 0 0 2px var(--app-accent-soft); }
 .nrow.answered { opacity: .7; }
 .nrow.staged { opacity: .58; }
@@ -1203,7 +1206,53 @@ body:has(.nrow[data-open="1"]) .inspector-empty { display: none; }
 #setup { padding: 22px; }
 .setup-menu { border-color: var(--app-border); border-radius: 12px; background: var(--app-elevated); }
 .setup-body pre { background: var(--app-soft); }
-.setup-menu-actions .setup-run-btn { border-color: var(--app-accent); background: var(--app-accent); color: #ffffff; }
+.setup-menu-actions .setup-run-btn { border-color: var(--app-accent); background: var(--app-accent); color: var(--app-on-accent); }
+.theme-picker { padding-bottom: 18px; border-bottom: 1px solid var(--app-border); }
+.theme-picker fieldset {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 0;
+  border: 0;
+}
+.theme-choice {
+  position: relative;
+  display: block;
+  min-width: 0;
+  cursor: pointer;
+}
+.theme-choice input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+.theme-choice-copy {
+  display: grid;
+  min-height: 82px;
+  align-content: start;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid var(--app-border);
+  border-radius: 10px;
+  background: var(--app-surface);
+  color: var(--app-text);
+}
+.theme-choice-copy strong { font-size: 13px; }
+.theme-choice-copy small { color: var(--app-text-soft); font-size: 11.5px; line-height: 1.4; }
+.theme-choice:hover .theme-choice-copy { border-color: var(--app-border-strong); }
+.theme-choice input:checked + .theme-choice-copy {
+  border-color: var(--app-accent);
+  background: var(--app-accent-soft);
+  box-shadow: inset 0 0 0 1px var(--app-accent);
+}
+.theme-choice input:checked + .theme-choice-copy strong { color: var(--app-accent); }
+.theme-choice input:focus-visible + .theme-choice-copy {
+  outline: 2px solid var(--app-accent);
+  outline-offset: 2px;
+}
+button:disabled { cursor: not-allowed; opacity: .5; }
 .lb-backdrop, .relay-backdrop, .mission-backdrop { background: color-mix(in srgb, var(--app-text) 18%, transparent); }
 .lb-panel, .relay-panel, .mission-panel, .mission-detail-panel {
   border-color: var(--app-border);
@@ -1645,6 +1694,7 @@ body.settings-open .floating-search { opacity: .32; }
     }
     #tabs .tab { min-width: 0; justify-content: center; }
     #tabs .tab-count { display: none; }
+    .theme-picker fieldset { grid-template-columns: minmax(0, 1fr); }
     .sidebar-shell .sidebar-section-label { display: none; }
     .sidebar-shell .project-disclosure {
       grid-column: 1;

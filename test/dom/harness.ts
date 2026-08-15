@@ -146,9 +146,10 @@ interface MediaStub {
 }
 
 const mediaStubs = new Map<string, MediaStub>()
+let systemDark = false
 
 function mediaMatches(query: string): boolean {
-  if (/prefers-color-scheme:\s*dark/.test(query)) return false // the harness is always the light theme
+  if (/prefers-color-scheme:\s*dark/.test(query)) return systemDark
   const max = /max-width:\s*(\d+)px/.exec(query)
   if (max?.[1]) return window.innerWidth <= Number(max[1])
   const min = /min-width:\s*(\d+)px/.exec(query)
@@ -241,6 +242,16 @@ export function setViewport(mode: 'narrow' | 'wide' | number): void {
   }
 }
 
+export function setSystemDark(dark: boolean): void {
+  systemDark = dark
+  for (const stub of mediaStubs.values()) {
+    const next = mediaMatches(stub.media)
+    if (next === stub.matches) continue
+    stub.matches = next
+    for (const fn of [...stub.listeners]) fn({ matches: next, media: stub.media })
+  }
+}
+
 // ── mounting ────────────────────────────────────────────────────────────────
 
 function mountShell(): void {
@@ -301,6 +312,7 @@ export function useDomTest(): void {
     // an earlier test would deep-link the next boot before its own assertions run.
     location.hash = ''
     mediaStubs.clear()
+    systemDark = false
     Object.defineProperty(window, 'innerWidth', { value: 1400, configurable: true, writable: true })
     vi.resetModules()
     localStorage.clear()

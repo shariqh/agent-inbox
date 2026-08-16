@@ -30,7 +30,32 @@ for arg in "$@"; do
   esac
 done
 
-command -v jq >/dev/null 2>&1 || { echo "install-hooks: jq is required (brew install jq)" >&2; exit 1; }
+RUNTIME_MODE=0
+RUNTIME_ROOT="${AGENT_INBOX_RUNTIME_ROOT:-$HOME/.agent-inbox/runtime}"
+CONFIG_HELPER="$ROOT/scripts/runtime-config.mjs"
+if [ -f "$ROOT/runtime-manifest.json" ]; then RUNTIME_MODE=1; fi
+
+LOCK_FILE="${AGENT_INBOX_INSTALL_LOCK_DIR:-$HOME/.agent-inbox/install-agents.lock}"
+acquire_install_lock() {
+  mkdir -p "$(dirname "$LOCK_FILE")" || return 1
+  if [ -d "$LOCK_FILE" ] || [ -L "$LOCK_FILE" ]; then
+    echo "install-hooks: install lock path must be a regular file: $LOCK_FILE" >&2
+    return 1
+  fi
+  exec 9>> "$LOCK_FILE" || return 1
+  if command -v lockf >/dev/null 2>&1; then
+    lockf -s -t 0 9 || { echo "install-hooks: another setup is already running" >&2; return 1; }
+  elif command -v flock >/dev/null 2>&1; then
+    flock -n 9 || { echo "install-hooks: another setup is already running" >&2; return 1; }
+  else
+    echo "install-hooks: setup requires lockf or flock for safe concurrent installation" >&2
+    return 1
+  fi
+}
+
+if [ "$RUNTIME_MODE" -eq 0 ]; then
+  command -v jq >/dev/null 2>&1 || { echo "install-hooks: jq is required for checkout-mode hook setup" >&2; exit 1; }
+fi
 
 ENTRY="${AGENT_INBOX_HOOK_ENTRY:-$ROOT/dist/hook-cli.js}"
 
@@ -68,8 +93,16 @@ resolve_node() {
   stable_path "$(command -v node || true)"
 }
 
-if [ "$UNINSTALL" -eq 0 ]; then
+if [ "$RUNTIME_MODE" -eq 1 ]; then
+  NODE="$ROOT/bin/node"
+  ENTRY="$ROOT/dist/hook-cli.js"
+  [ -x "$NODE" ] || { echo "install-hooks: packaged runtime Node is missing: $NODE" >&2; exit 1; }
+  [ -f "$CONFIG_HELPER" ] || { echo "install-hooks: packaged runtime config helper is missing: $CONFIG_HELPER" >&2; exit 1; }
+else
   NODE="$(resolve_node)"
+fi
+
+if [ "$UNINSTALL" -eq 0 ]; then
   [ -n "$NODE" ] || { echo "install-hooks: no Node binary found — set AGENT_INBOX_NODE" >&2; exit 1; }
   [ -f "$ENTRY" ] || { echo "install-hooks: $ENTRY is missing — run 'npm run build' first" >&2; exit 1; }
   if ! "$NODE" "$ENTRY" selftest >/dev/null 2>&1; then
@@ -80,6 +113,8 @@ if [ "$UNINSTALL" -eq 0 ]; then
   fi
 fi
 
+if [ "$APPLY" -eq 1 ]; then acquire_install_lock || exit 1; fi
+
 # ── build the block ─────────────────────────────────────────────────────────
 # exec form (`args`), never a shell string: paths containing quotes, $ or
 # backticks never reach a shell parser.
@@ -89,55 +124,64 @@ fi
 # ever running for other types — killing both the message fallback for older
 # CLIs and the log line that discovers the real enumeration. The single gate is
 # AGENT_INBOX_HOOK_NOTIFY_TYPES (default: permission_prompt).
-BLOCK="$(jq -n --arg node "${NODE:-node}" --arg entry "$ENTRY" '
-  def h($sub; $t): { type: "command", command: $node, args: [$entry, $sub], timeout: $t };
-  {
-    Notification:     [ { hooks: [ h("notification"; 5) ] } ],
-    SessionStart:     [ { matcher: "startup|resume", hooks: [ h("session-start"; 5) ] } ],
-    SessionEnd:       [ { hooks: [ h("session-end"; 5) ] } ],
-    UserPromptSubmit: [ { hooks: [ h("prompt-submit"; 10) ] } ],
-    Stop: [ { hooks: [
-      h("stop"; 10)    + { statusMessage: "Checking agent-inbox for answered questions…" },
-      h("watch"; 1800) + { statusMessage: "Arming agent-inbox answer watcher…", asyncRewake: true, rewakeSummary: "Agent Inbox: your answer arrived" }
-    ] } ]
-  }')"
-
-CURRENT="$(cat "$SETTINGS" 2>/dev/null || echo '{}')"
-echo "$CURRENT" | jq empty 2>/dev/null || { echo "install-hooks: $SETTINGS is not valid JSON — refusing to touch it" >&2; exit 1; }
-
-ALREADY="$(echo "$CURRENT" | jq --arg entry "$ENTRY" '[ (.hooks // {}) | .[]? | .[]? | .hooks[]? | select((.args // [])[0] == $entry) ] | length')"
-if [ "$UNINSTALL" -eq 0 ] && [ "${ALREADY:-0}" -gt 0 ] && [ "$FORCE" -eq 0 ]; then
-  echo "install-hooks: agent-inbox hooks are already installed in $SETTINGS." >&2
-  echo "  Re-run with --force to replace them, or --uninstall to remove them." >&2
-  exit 1
-fi
-
-# Strip our own entries (idempotent re-install, and the whole of --uninstall).
-# --migrate additionally retires the legacy hand-written shell hooks, leaving
-# the .sh files themselves on disk so the user can roll back by hand.
-STRIPPED="$(echo "$CURRENT" | jq --arg entry "$ENTRY" --argjson migrate "$MIGRATE" '
-  def mine: (.args // [])[0] == $entry
-            or (($migrate == 1) and (((.command // "") | test("agent-inbox-(pending|watch)\\.sh"))));
-  if (.hooks | type) == "object" then
-    .hooks |= ( with_entries(.value |= ( map(.hooks |= map(select(mine | not)))
-                                       | map(select((.hooks // []) | length > 0)) ))
-              | with_entries(select((.value | length) > 0)) )
-  else . end
-  | if (.hooks == {}) then del(.hooks) else . end')"
-
-if [ "$UNINSTALL" -eq 1 ]; then
-  MERGED="$STRIPPED"
+if [ "$RUNTIME_MODE" -eq 1 ]; then
+  hook_args=(hooks --settings "$SETTINGS" --node "$NODE" --entry "$ENTRY" --runtime-root "$RUNTIME_ROOT")
+  [ "$UNINSTALL" -eq 1 ] && hook_args+=(--uninstall)
+  [ "$MIGRATE" -eq 1 ] && hook_args+=(--migrate)
+  # Packaged mode deliberately never forwards --force: only exact
+  # manifest-owned release hooks may be replaced or removed.
+  MERGED="$("$NODE" "$CONFIG_HELPER" "${hook_args[@]}")" || exit 1
 else
-  # Our groups are appended as SIBLINGS of anything already registered for the
-  # same event — an existing PostToolUse (or anyone else's Stop hook) survives.
-  MERGED="$(echo "$STRIPPED" | jq --argjson block "$BLOCK" '
-    .hooks = ((.hooks // {}) as $h
-      | reduce ($block | keys_unsorted[]) as $k ($h; .[$k] = (($h[$k] // []) + $block[$k])))')"
+  BLOCK="$(jq -n --arg node "${NODE:-node}" --arg entry "$ENTRY" '
+    def h($sub; $t): { type: "command", command: $node, args: [$entry, $sub], timeout: $t };
+    {
+      Notification:     [ { hooks: [ h("notification"; 5) ] } ],
+      SessionStart:     [ { matcher: "startup|resume", hooks: [ h("session-start"; 5) ] } ],
+      SessionEnd:       [ { hooks: [ h("session-end"; 5) ] } ],
+      UserPromptSubmit: [ { hooks: [ h("prompt-submit"; 10) ] } ],
+      Stop: [ { hooks: [
+        h("stop"; 10)    + { statusMessage: "Checking agent-inbox for answered questions…" },
+        h("watch"; 1800) + { statusMessage: "Arming agent-inbox answer watcher…", asyncRewake: true, rewakeSummary: "Agent Inbox: your answer arrived" }
+      ] } ]
+    }')"
+
+  CURRENT="$(cat "$SETTINGS" 2>/dev/null || echo '{}')"
+  echo "$CURRENT" | jq empty 2>/dev/null || { echo "install-hooks: $SETTINGS is not valid JSON — refusing to touch it" >&2; exit 1; }
+
+  ALREADY="$(echo "$CURRENT" | jq --arg entry "$ENTRY" '[ (.hooks // {}) | .[]? | .[]? | .hooks[]? | select((.args // [])[0] == $entry) ] | length')"
+  if [ "$UNINSTALL" -eq 0 ] && [ "${ALREADY:-0}" -gt 0 ] && [ "$FORCE" -eq 0 ]; then
+    echo "install-hooks: agent-inbox hooks are already installed in $SETTINGS." >&2
+    echo "  Re-run with --force to replace them, or --uninstall to remove them." >&2
+    exit 1
+  fi
+
+  # Strip our own entries (idempotent re-install, and the whole of --uninstall).
+  # --migrate additionally retires the legacy hand-written shell hooks, leaving
+  # the .sh files themselves on disk so the user can roll back by hand.
+  STRIPPED="$(echo "$CURRENT" | jq --arg entry "$ENTRY" --argjson migrate "$MIGRATE" '
+    def mine: (.args // [])[0] == $entry
+              or (($migrate == 1) and (((.command // "") | test("agent-inbox-(pending|watch)\\.sh"))));
+    if (.hooks | type) == "object" then
+      .hooks |= ( with_entries(.value |= ( map(.hooks |= map(select(mine | not)))
+                                         | map(select((.hooks // []) | length > 0)) ))
+                | with_entries(select((.value | length) > 0)) )
+    else . end
+    | if (.hooks == {}) then del(.hooks) else . end')"
+
+  if [ "$UNINSTALL" -eq 1 ]; then
+    MERGED="$STRIPPED"
+  else
+    # Our groups are appended as SIBLINGS of anything already registered for the
+    # same event — an existing PostToolUse (or anyone else's Stop hook) survives.
+    MERGED="$(echo "$STRIPPED" | jq --argjson block "$BLOCK" '
+      .hooks = ((.hooks // {}) as $h
+        | reduce ($block | keys_unsorted[]) as $k ($h; .[$k] = (($h[$k] // []) + $block[$k])))')"
+  fi
 fi
 
 if [ "$APPLY" -eq 0 ]; then
   echo "── dry run: nothing was written. Re-run with --apply to install. ──" >&2
-  echo "$MERGED" | jq .
+  if [ "$RUNTIME_MODE" -eq 1 ]; then printf '%s\n' "$MERGED"; else echo "$MERGED" | jq .; fi
   exit 0
 fi
 
@@ -148,7 +192,11 @@ if [ -f "$SETTINGS" ]; then
   echo "backed up → $BACKUP" >&2
 fi
 TMP="$SETTINGS.tmp.$$"
-echo "$MERGED" | jq . > "$TMP" && mv "$TMP" "$SETTINGS"
+if [ "$RUNTIME_MODE" -eq 1 ]; then
+  printf '%s\n' "$MERGED" > "$TMP" && mv "$TMP" "$SETTINGS"
+else
+  echo "$MERGED" | jq . > "$TMP" && mv "$TMP" "$SETTINGS"
+fi
 if [ "$UNINSTALL" -eq 1 ]; then
   echo "agent-inbox hooks removed from $SETTINGS" >&2
 else

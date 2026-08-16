@@ -83,6 +83,18 @@ export function buildSummary(build) {
         tone: 'info',
       }
 
+    // A signed release build (issue #74): there is no builder checkout to
+    // compare against — the whole point of a release is that it does not
+    // depend on one — so this NEVER claims "current"/"stale"/"behind" and
+    // NEVER offers a rebuild command. Just the honest, checkable facts: which
+    // version this is, and when it was built.
+    case 'release':
+      return {
+        text: `Agent Inbox v${build.version ?? '?'}${build.commit ? ` (${short(build.commit)})` : ''}${build.builtAt ? `, packaged ${when(build.builtAt)}` : ''}.`,
+        command: null,
+        tone: 'info',
+      }
+
     // Packaged, and something could not be read — no commit baked in, or the
     // checkout has moved/vanished. Answer "which build is this" anyway; that
     // alone is more than existed before #40.

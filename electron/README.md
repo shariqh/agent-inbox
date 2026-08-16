@@ -18,6 +18,41 @@ with @electron/packager (`--no-asar`: the server chdirs into the app dir and ser
 `./public` from the real filesystem). Same launch rules as dev: reuse a running 4319
 viewer, else serve in-process; quitting frees the port only if the app started the server.
 
+### Portable agent runtime staging
+
+Release packages carry separate Node 24 payloads for MCP, hooks, and watchers. Stage each
+architecture from a full Node distribution; the staging command uses that distribution's
+own Node/npm, installs the locked production dependencies, runs the native-addon selftest,
+and writes `runtime-manifest.json`:
+
+```sh
+npm run build
+npm run stage:runtime -- \
+  --node-root /path/to/node-v24-darwin-arm64 \
+  --platform darwin --arch arm64 \
+  --output build/runtime/darwin-arm64
+npm run stage:runtime -- \
+  --node-root /path/to/node-v24-darwin-x64 \
+  --platform darwin --arch x64 \
+  --output build/runtime/darwin-x64
+
+AGENT_INBOX_RUNTIME_DARWIN_ARM64="$PWD/build/runtime/darwin-arm64" \
+AGENT_INBOX_RUNTIME_DARWIN_X64="$PWD/build/runtime/darwin-x64" \
+  npm run package:app
+```
+
+Portable mode requires both payloads and writes architecture-keyed release metadata with
+no builder checkout or Node path. Electron selects only its exact
+`process.platform`/`process.arch` key; there is no `uname` or Rosetta fallback. Setup
+atomically copies the selected payload to
+`~/.agent-inbox/runtime/<content-derived-runtime-id>/`, then registers that installed
+Node and MCP entrypoint. Moving or deleting the app afterward does not break agents.
+
+Layer 1 leaves the portable app unsigned. The signing layer must finalize the layout,
+sign every nested runtime Mach-O, regenerate both manifests from those signed bytes,
+write `setup-info.json`, sign only the outer app without `--deep`, then strictly verify
+outer/nested signatures and both manifests. Nothing nested may change afterward.
+
 ## Dev run — prerequisites
 
 - **Node 24** (the repo's better-sqlite3 binding is compiled for Node 24): `fnm use 24`,

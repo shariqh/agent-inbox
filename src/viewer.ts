@@ -1,6 +1,8 @@
 import { Hono } from 'hono'
-import { readFileSync, existsSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { readFileSync, existsSync, readdirSync, lstatSync, realpathSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { homedir } from 'node:os'
+import { dirname, isAbsolute, resolve, sep } from 'node:path'
 import type Database from 'better-sqlite3'
 import {
   listItems, resolveItem, dismissItem, annotateItem, replyItem, snoozeItem,
@@ -14,6 +16,34 @@ import { hooksSettingsBlock } from './hook.js'
 import { buildStamp, readBakedInfo } from './stamp.js'
 import type { BakedInfo, BuildStamp } from './stamp.js'
 
+const require = createRequire(import.meta.url)
+const {
+  EXPECTED_NODE_MAJOR,
+  EXPECTED_NODE_MODULES_ABI,
+  EXPECTED_PRODUCT,
+  REQUIRED_ENTRYPOINTS,
+  REQUIRED_FILES,
+  verifyRuntimePayload,
+} = require('../electron/runtime-verify.cjs') as {
+  EXPECTED_NODE_MAJOR: number
+  EXPECTED_NODE_MODULES_ABI: string
+  EXPECTED_PRODUCT: string
+  REQUIRED_ENTRYPOINTS: string[]
+  REQUIRED_FILES: string[]
+  verifyRuntimePayload(opts: {
+    root: string
+    expectedManifestDigest?: string
+    expectedPlatform?: string
+    expectedArch?: string
+    expectedPackageVersion?: string
+    expectedProduct?: string
+    expectedNodeMajor?: number
+    expectedNodeModulesAbi?: string
+    requiredEntrypoints?: string[]
+    requiredFiles?: string[]
+  }): { manifest: { runtimeId: string } }
+}
+
 /** Seams, both test-only today — the production path passes neither. */
 export interface ViewerOpts {
   /** where the packaged app's setup-info.json lives (a checkout has none) */
@@ -22,17 +52,165 @@ export interface ViewerOpts {
   stamp?: (baked: BakedInfo | null, cwd: string) => Promise<BuildStamp>
   /** Electron-only readiness capability; absent for browser/dev viewers. */
   ownerToken?: string
+  /** issue #74: `${process.platform}-${process.arch}` override, so a test can
+   *  pin a host key without touching the real process. */
+  runtimeHostKey?: string
+  /** issue #74: root directory a portable runtime gets installed under
+   *  (`~/.agent-inbox/runtime` in production); overridable so a test never
+   *  touches the real home directory. */
+  runtimeRoot?: string
+  /** issue #74: the app bundle root a release payload's contained relative
+   *  path is resolved against (the directory setup-info.json itself lives
+   *  in); overridable so a test never depends on cwd. Production derives it
+   *  from `dirname(setupInfoPath)`. */
+  appRoot?: string
 }
 
-// Registration info for hooking new agents up to the MCP server. In a repo
-// checkout the paths come from the running process; the packaged app instead
-// ships a setup-info.json captured at package time (its own bundle cannot host
-// the MCP server — the native module there is built for Electron, not Node).
-function shellQuote(value: string): string {
-  return `'${value.replaceAll(`'`, `'\\''`)}'`
+/** Split a fixed `darwin-arm64`/`darwin-x64` runtime key into platform/arch —
+ *  the same convention scripts/write-setup-info.mjs and electron/setup-
+ *  runner.cjs use to validate a runtime-manifest.json against its map key. */
+function platformArchOf(key: string): { platform: string; arch: string } {
+  const i = key.indexOf('-')
+  return { platform: key.slice(0, i), arch: key.slice(i + 1) }
 }
 
-function setupInfo(baked: BakedInfo | null): {
+/** A contained relative path: never absolute, never a `..` traversal segment —
+ *  the exact same rule write-setup-info.mjs and setup-runner.cjs enforce. */
+function isContainedRelativePath(p: unknown): p is string {
+  if (typeof p !== 'string' || !p) return false
+  if (isAbsolute(p)) return false
+  const segments = p.split(/[\\/]+/)
+  return segments.every((s) => s !== '' && s !== '.' && s !== '..')
+}
+
+const DIGEST_RE = /^sha256:[0-9a-f]{64}$/i
+/**
+ * Resolves and verifies the release's SOURCE runtime payload directory for
+ * this exact host (issue #74). Containment is established here, then the same
+ * trusted, Electron-independent verifier used immediately before spawn checks
+ * every manifested file/hash/mode, rejects symlinks and extras, and re-derives
+ * the payload digest/runtime ID before this API exposes a command.
+ *
+ * A payload verifying here means it is safe to REFERENCE in the one-click
+ * install command (running that command is what installs it) — it does NOT
+ * mean the runtime is already installed; that is `installedRuntime()` below.
+ */
+function resolveReleaseRuntimeSource(
+  appRoot: string,
+  hostKey: string,
+  payload: { path: string; digest: string } | null | undefined,
+  packageVersion: string,
+): { dir: string; installer: string } | null {
+  if (!payload) return null
+  if (!isContainedRelativePath(payload.path)) return null
+  if (!DIGEST_RE.test(payload.digest)) return null
+  if (!isAbsolute(appRoot) || !existsSync(appRoot)) return null
+  const realRoot = realpathSync(appRoot)
+  const resolved = resolve(appRoot, payload.path)
+  if (resolved !== resolve(appRoot) && !resolved.startsWith(resolve(appRoot) + sep)) return null
+  if (!existsSync(resolved) || lstatSync(resolved).isSymbolicLink()) return null
+  const realResolved = realpathSync(resolved)
+  if (realResolved !== realRoot && !realResolved.startsWith(realRoot + sep)) return null
+  if (!lstatSync(realResolved).isDirectory()) return null
+
+  const { platform, arch } = platformArchOf(hostKey)
+  try {
+    verifyRuntimePayload({
+      root: realResolved,
+      expectedManifestDigest: payload.digest,
+      expectedPlatform: platform,
+      expectedArch: arch,
+      expectedProduct: EXPECTED_PRODUCT,
+      expectedPackageVersion: packageVersion,
+      expectedNodeMajor: EXPECTED_NODE_MAJOR,
+      expectedNodeModulesAbi: EXPECTED_NODE_MODULES_ABI,
+      requiredEntrypoints: REQUIRED_ENTRYPOINTS,
+      requiredFiles: REQUIRED_FILES,
+    })
+  } catch {
+    return null
+  }
+
+  const installer = resolve(realResolved, 'scripts', 'install-agents.sh')
+  if (!existsSync(installer)) return null
+  return { dir: realResolved, installer }
+}
+
+/**
+ * Whether a portable runtime matching THIS release's exact source payload for
+ * THIS host is already installed under `runtimeRoot` (issue #74). Scans
+ * `runtimeRoot`'s direct children (never symlinked — an installer contract,
+ * not agent-authored text) for a `runtime-manifest.json` whose declared
+ * `runtimeId` equals the child directory's OWN name, whose `platform`/`arch`/
+ * `packageVersion` match this host's release, and whose manifest file is
+ * byte-identical (SHA-256) to the SOURCE manifest digest baked into
+ * setup-info.json — a valid identity check because the installer that copies
+ * a verified payload into `runtimeRoot/<runtimeId>` copies the whole payload
+ * tree, so the installed manifest is byte-for-byte the source manifest.
+ *
+ * The trusted verifier checks the complete installed file list as well; a
+ * matching manifest alone can never make manual commands appear.
+ */
+function installedRuntime(
+  runtimeRoot: string,
+  version: string,
+  hostKey: string,
+  expectedDigest: string,
+): { nodeBin: string; entry: string; hookEntry: string } | null {
+  let entries: string[]
+  try {
+    entries = readdirSync(runtimeRoot)
+  } catch {
+    return null
+  }
+  const { platform, arch } = platformArchOf(hostKey)
+  for (const name of entries) {
+    const dir = resolve(runtimeRoot, name)
+    let dirStat: import('node:fs').Stats
+    try {
+      dirStat = lstatSync(dir)
+    } catch {
+      continue
+    }
+    if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) continue
+    let verified: { manifest: { runtimeId: string } }
+    try {
+      verified = verifyRuntimePayload({
+        root: dir,
+        expectedManifestDigest: expectedDigest,
+        expectedPlatform: platform,
+        expectedArch: arch,
+        expectedPackageVersion: version,
+        expectedProduct: EXPECTED_PRODUCT,
+        expectedNodeMajor: EXPECTED_NODE_MAJOR,
+        expectedNodeModulesAbi: EXPECTED_NODE_MODULES_ABI,
+        requiredEntrypoints: REQUIRED_ENTRYPOINTS,
+        requiredFiles: REQUIRED_FILES,
+      })
+    } catch {
+      continue
+    }
+    if (verified.manifest.runtimeId !== name) continue
+
+    const nodeBin = resolve(dir, 'bin', 'node')
+    const entry = resolve(dir, 'dist', 'mcp-server.js')
+    const hookEntry = resolve(dir, 'dist', 'hook-cli.js')
+    if (!existsSync(nodeBin) || !existsSync(entry)) continue
+    return { nodeBin, entry, hookEntry }
+  }
+  return null
+}
+
+interface SetupInfoResult {
+  /** 'release' for a signed release build (setup-info schema 2, issue #74);
+   *  'dev' for a source checkout or a pre-#74 packaged bundle. */
+  mode: 'dev' | 'release'
+  /** the released version, or null outside release mode */
+  version: string | null
+  /** `${process.platform}-${process.arch}`, or null outside release mode */
+  runtimeKey: string | null
+  /** whether an installed runtime matching this host's exact payload validated */
+  runtimeAvailable: boolean
   agentInstallCommand: string
   claudeInstallCommand: string
   copilotInstallCommand: string
@@ -43,7 +221,13 @@ function setupInfo(baked: BakedInfo | null): {
   note: string
   hooksSettings: string
   hooksNote: string
-} {
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll(`'`, `'\\''`)}'`
+}
+
+function devSetupInfo(baked: BakedInfo | null): SetupInfoResult {
   let nodeBin = process.execPath
   let root = process.cwd()
   let note = ''
@@ -63,6 +247,10 @@ function setupInfo(baked: BakedInfo | null): {
   const snippetPath = resolve(process.cwd(), 'docs', 'reporting-snippet.md')
   const install = `cd ${shellQuote(root)} && npm run install:agents -- --apply`
   return {
+    mode: 'dev',
+    version: null,
+    runtimeKey: null,
+    runtimeAvailable: false,
     agentInstallCommand: install,
     claudeInstallCommand: `${install} --target claude`,
     copilotInstallCommand: `${install} --target copilot`,
@@ -87,6 +275,79 @@ function setupInfo(baked: BakedInfo | null): {
   }
 }
 
+// A release build (issue #74) never bakes repoRoot/nodeBin at all — there is
+// no checkout to `cd` into, so the shell one-liners that assume one are
+// simply absent (empty string), never a fabricated command pointing at a
+// path that does not exist. The one-click install commands become truthful
+// as soon as this host's SOURCE runtime payload verifies (contained,
+// non-symlink, digest+platform/arch-matched, installer present) — running
+// that very command is what installs the runtime, so it does not need to be
+// installed first. Direct MCP/hook registration commands are different: they
+// name an ALREADY-INSTALLED runtime's exact paths, so they stay withheld
+// until `installedRuntime()` validates a matching install — never a
+// "success-shaped" command aimed at a runtime that is not there.
+function releaseSetupInfo(baked: BakedInfo, hostKey: string, runtimeRoot: string, appRoot: string): SetupInfoResult {
+  const version = baked.version ?? null
+  const payload = baked.runtimePayloads?.[hostKey] ?? null
+  const snippetPath = resolve(process.cwd(), 'docs', 'reporting-snippet.md')
+  const snippet = existsSync(snippetPath) ? readFileSync(snippetPath, 'utf8') : ''
+  const dbPath = defaultDbPath()
+
+  const result: SetupInfoResult = {
+    mode: 'release',
+    version,
+    runtimeKey: hostKey,
+    runtimeAvailable: false,
+    agentInstallCommand: '',
+    claudeInstallCommand: '',
+    copilotInstallCommand: '',
+    claudeCommand: '',
+    copilotConfig: '',
+    snippet,
+    dbPath,
+    note: version
+      ? `The portable MCP runtime for Agent Inbox v${version} (${hostKey}) has not been installed yet. Run setup from this panel to install it.`
+      : 'This release build has no runtime metadata for this host — one-click and manual agent setup are unavailable.',
+    hooksSettings: '',
+    hooksNote: '',
+  }
+  if (!version || !payload) return result
+  if (!DIGEST_RE.test(payload.digest)) return result
+
+  // The embedded installer script lives INSIDE the verified source payload
+  // directory — never a builder's own checkout path.
+  const source = resolveReleaseRuntimeSource(appRoot, hostKey, payload, version)
+  if (source) {
+    const install = `bash ${shellQuote(source.installer)} --apply --runtime-source ${shellQuote(source.dir)} --runtime-digest ${shellQuote(payload.digest)}`
+    result.agentInstallCommand = install
+    result.claudeInstallCommand = `${install} --target claude`
+    result.copilotInstallCommand = `${install} --target copilot`
+    result.note = `Run setup below to install the portable MCP runtime for Agent Inbox v${version} (${hostKey}).`
+  }
+
+  const runtime = installedRuntime(runtimeRoot, version, hostKey, payload.digest)
+  if (!runtime) return result
+
+  return {
+    ...result,
+    runtimeAvailable: true,
+    note: '',
+    claudeCommand: `claude mcp add --scope user agent-inbox -- ${runtime.nodeBin} ${runtime.entry}`,
+    copilotConfig: JSON.stringify(
+      { mcpServers: { 'agent-inbox': { command: runtime.nodeBin, args: [runtime.entry] } } },
+      null,
+      2,
+    ),
+    hooksSettings: JSON.stringify(hooksSettingsBlock(runtime.nodeBin, runtime.hookEntry), null, 2),
+    hooksNote: 'Optional. Merge into ~/.claude/settings.json, then restart Claude Code.',
+  }
+}
+
+function setupInfo(baked: BakedInfo | null, hostKey: string, runtimeRoot: string, appRoot: string): SetupInfoResult {
+  if (baked?.schema === 2) return releaseSetupInfo(baked, hostKey, runtimeRoot, appRoot)
+  return devSetupInfo(baked)
+}
+
 // A close/reopen body carries one agent-authored project name. An unparseable
 // body arrives here as null (the caller's .catch) and is refused like any other
 // missing name — a 400, never a 500.
@@ -103,6 +364,11 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
   const app = new Hono()
   const bakedPath = opts.setupInfoPath ?? resolve(process.cwd(), 'setup-info.json')
   const stamp = opts.stamp ?? buildStamp
+  const runtimeHostKey = opts.runtimeHostKey ?? `${process.platform}-${process.arch}`
+  const runtimeRoot = opts.runtimeRoot ?? resolve(homedir(), '.agent-inbox', 'runtime')
+  // A release payload's contained relative path is resolved against the app
+  // bundle root — the same directory setup-info.json itself lives in.
+  const appRoot = opts.appRoot ?? dirname(bakedPath)
 
   // boot id lets a long-lived tab detect a server restart (= likely deploy)
   // and reload itself instead of polling forever with stale frontend code
@@ -130,7 +396,7 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
     } catch {
       build = null
     }
-    return c.json({ ...setupInfo(baked), build })
+    return c.json({ ...setupInfo(baked, runtimeHostKey, runtimeRoot, appRoot), build })
   })
 
   if (opts.ownerToken) {

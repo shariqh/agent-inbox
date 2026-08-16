@@ -13,6 +13,8 @@
 #   npm run install:agents -- --apply --target copilot
 #   npm run install:agents -- --apply --force
 #   npm run install:agents -- --apply --uninstall
+# Packaged releases additionally pass the fixed, verified runtime payload:
+#   install-agents.sh --apply --runtime-source <dir> --runtime-digest sha256:<hex>
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -20,6 +22,8 @@ APPLY=0
 FORCE=0
 UNINSTALL=0
 TARGET="all"
+RUNTIME_SOURCE=""
+RUNTIME_DIGEST=""
 BEGIN='<!-- agent-inbox:begin -->'
 END='<!-- agent-inbox:end -->'
 SNIPPET_SOURCE="$ROOT/docs/reporting-snippet.md"
@@ -30,6 +34,16 @@ while [ "$#" -gt 0 ]; do
     --dry-run) APPLY=0; shift ;;
     --force) FORCE=1; shift ;;
     --uninstall) UNINSTALL=1; shift ;;
+    --runtime-source)
+      [ "$#" -ge 2 ] || { echo "install-agents: --runtime-source needs a payload directory" >&2; exit 2; }
+      RUNTIME_SOURCE="$2"
+      shift 2
+      ;;
+    --runtime-digest)
+      [ "$#" -ge 2 ] || { echo "install-agents: --runtime-digest needs sha256:<hex>" >&2; exit 2; }
+      RUNTIME_DIGEST="$2"
+      shift 2
+      ;;
     --target)
       [ "$#" -ge 2 ] || { echo "install-agents: --target needs all, claude, or copilot" >&2; exit 2; }
       TARGET="$2"
@@ -38,7 +52,22 @@ while [ "$#" -gt 0 ]; do
     -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
     *) echo "install-agents: unknown flag: $1 (try --help)" >&2; exit 2 ;;
   esac
+
 done
+
+RUNTIME_MODE=0
+if [ -n "$RUNTIME_SOURCE" ] || [ -n "$RUNTIME_DIGEST" ]; then
+  [ -n "$RUNTIME_SOURCE" ] && [ -n "$RUNTIME_DIGEST" ] || {
+    echo "install-agents: --runtime-source and --runtime-digest must be provided together" >&2
+    exit 2
+  }
+  RUNTIME_MODE=1
+elif [ -f "$ROOT/runtime-manifest.json" ]; then
+  # An installed runtime remains able to uninstall/update itself after the app
+  # bundle has moved or gone away.
+  RUNTIME_SOURCE="$ROOT"
+  RUNTIME_MODE=1
+fi
 
 case "$TARGET" in
   all) TARGETS=(claude copilot) ;;
@@ -353,6 +382,27 @@ user_registration_state() {
   esac
 }
 
+release_registration_status() {
+  local target="$1" config output
+  config="$(registration_config_file "$target")"
+  output="$("$SOURCE_NODE" "$CONFIG_HELPER" registration \
+    --file "$config" --runtime-root "$RUNTIME_ROOT" --server agent-inbox 2>/dev/null)" || {
+    echo unknown
+    return
+  }
+  printf '%s' "$output" | "$SOURCE_NODE" -e '
+    let text = ""
+    process.stdin.setEncoding("utf8")
+    process.stdin.on("data", (chunk) => { text += chunk })
+    process.stdin.on("end", () => {
+      try {
+        const status = JSON.parse(text).status
+        process.stdout.write(typeof status === "string" ? status : "unknown")
+      } catch { process.stdout.write("unknown") }
+    })
+  '
+}
+
 NEWLY_ADDED=""
 NEEDS_RESTORE=""
 capture_registration_config() {
@@ -409,22 +459,96 @@ rollback_mcp_changes() {
       echo "install-agents: warning: could not restore $target MCP registration; recovery snapshot retained at $WORK/$target.mcp-config" >&2
     fi
   done
+  rollback_runtime
 }
 
-ENTRY="${AGENT_INBOX_MCP_ENTRY:-$ROOT/dist/mcp-server.js}"
-SELFTEST="${AGENT_INBOX_SELFTEST_ENTRY:-$ROOT/dist/hook-cli.js}"
-JSON_NODE="$(resolve_node)"
-NODE=""
-if [ "$UNINSTALL" -eq 0 ]; then
-  NODE="$JSON_NODE"
-  [ -n "$NODE" ] || { echo "install-agents: no Node binary found — set AGENT_INBOX_NODE" >&2; exit 1; }
-  NODE_MAJOR="$("$NODE" -p 'process.versions.node.split(".")[0]' 2>/dev/null || true)"
-  [ "$NODE_MAJOR" = 24 ] || { echo "install-agents: Node 24 is required; resolved '$NODE' reports major ${NODE_MAJOR:-unknown}" >&2; exit 1; }
-  [ -f "$ENTRY" ] || { echo "install-agents: $ENTRY is missing — run 'npm run build' first" >&2; exit 1; }
-  [ -f "$SELFTEST" ] || { echo "install-agents: $SELFTEST is missing — run 'npm run build' first" >&2; exit 1; }
-  if [ "$APPLY" -eq 1 ] && ! "$NODE" "$SELFTEST" selftest >/dev/null 2>&1; then
-    echo "install-agents: Node selftest failed; use Node 24 or set AGENT_INBOX_NODE" >&2
+RUNTIME_ROOT="${AGENT_INBOX_RUNTIME_ROOT:-$HOME/.agent-inbox/runtime}"
+RUNTIME_ID=""
+RUNTIME_PATH=""
+RUNTIME_INSTALLED_THIS_RUN=0
+PAYLOAD_HELPER=""
+CONFIG_HELPER=""
+SOURCE_NODE=""
+
+runtime_manifest_value() {
+  "$SOURCE_NODE" -e '
+    const fs = require("node:fs")
+    const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"))[process.argv[2]]
+    if (typeof value !== "string" || !value) process.exit(1)
+    process.stdout.write(value)
+  ' "$RUNTIME_SOURCE/runtime-manifest.json" "$1"
+}
+
+if [ "$RUNTIME_MODE" -eq 1 ]; then
+  RUNTIME_SOURCE="$(realpath "$RUNTIME_SOURCE" 2>/dev/null)" || {
+    echo "install-agents: runtime payload cannot be resolved: $RUNTIME_SOURCE" >&2
     exit 1
+  }
+  SOURCE_NODE="$RUNTIME_SOURCE/bin/node"
+  PAYLOAD_HELPER="$RUNTIME_SOURCE/scripts/runtime-payload.mjs"
+  CONFIG_HELPER="$RUNTIME_SOURCE/scripts/runtime-config.mjs"
+  [ -x "$SOURCE_NODE" ] || { echo "install-agents: runtime payload Node is missing: $SOURCE_NODE" >&2; exit 1; }
+  [ -f "$PAYLOAD_HELPER" ] || { echo "install-agents: runtime payload helper is missing: $PAYLOAD_HELPER" >&2; exit 1; }
+  [ -f "$CONFIG_HELPER" ] || { echo "install-agents: runtime config helper is missing: $CONFIG_HELPER" >&2; exit 1; }
+  [ -f "$RUNTIME_SOURCE/runtime-manifest.json" ] || {
+    echo "install-agents: runtime manifest is missing from $RUNTIME_SOURCE" >&2
+    exit 1
+  }
+  if [ -n "$RUNTIME_DIGEST" ]; then
+    expected_digest="${RUNTIME_DIGEST#sha256:}"
+    case "$expected_digest" in
+      *[!0-9a-fA-F]*|'') echo "install-agents: --runtime-digest must be sha256:<64 hex>" >&2; exit 2 ;;
+    esac
+    [ "${#expected_digest}" -eq 64 ] || {
+      echo "install-agents: --runtime-digest must be sha256:<64 hex>" >&2
+      exit 2
+    }
+    actual_digest="$("$SOURCE_NODE" -e '
+      const fs = require("node:fs"), crypto = require("node:crypto")
+      process.stdout.write(crypto.createHash("sha256").update(fs.readFileSync(process.argv[1])).digest("hex"))
+    ' "$RUNTIME_SOURCE/runtime-manifest.json")" || exit 1
+    [ "$actual_digest" = "$(printf '%s' "$expected_digest" | tr 'A-F' 'a-f')" ] || {
+      echo "install-agents: runtime manifest digest mismatch" >&2
+      exit 1
+    }
+  fi
+  "$SOURCE_NODE" "$PAYLOAD_HELPER" verify \
+    --root "$RUNTIME_SOURCE" --product agent-inbox-runtime >/dev/null || exit 1
+  RUNTIME_ID="$(runtime_manifest_value runtimeId)" || {
+    echo "install-agents: runtime manifest has no runtimeId" >&2
+    exit 1
+  }
+  RUNTIME_PATH="$RUNTIME_ROOT/$RUNTIME_ID"
+  NODE="$RUNTIME_PATH/bin/node"
+  ENTRY="$RUNTIME_PATH/dist/mcp-server.js"
+  SELFTEST="$RUNTIME_PATH/dist/hook-cli.js"
+  JSON_NODE="$SOURCE_NODE"
+  SOURCE_MAJOR="$("$SOURCE_NODE" -p 'process.versions.node.split(".")[0]' 2>/dev/null || true)"
+  [ "$SOURCE_MAJOR" = 24 ] || {
+    echo "install-agents: packaged runtime requires Node 24; payload reports major ${SOURCE_MAJOR:-unknown}" >&2
+    exit 1
+  }
+  if [ "$UNINSTALL" -eq 0 ] && [ "$APPLY" -eq 1 ] &&
+      ! "$SOURCE_NODE" "$RUNTIME_SOURCE/dist/hook-cli.js" selftest >/dev/null 2>&1; then
+    echo "install-agents: packaged runtime selftest failed before installation" >&2
+    exit 1
+  fi
+else
+  ENTRY="${AGENT_INBOX_MCP_ENTRY:-$ROOT/dist/mcp-server.js}"
+  SELFTEST="${AGENT_INBOX_SELFTEST_ENTRY:-$ROOT/dist/hook-cli.js}"
+  JSON_NODE="$(resolve_node)"
+  NODE=""
+  if [ "$UNINSTALL" -eq 0 ]; then
+    NODE="$JSON_NODE"
+    [ -n "$NODE" ] || { echo "install-agents: no Node binary found — set AGENT_INBOX_NODE" >&2; exit 1; }
+    NODE_MAJOR="$("$NODE" -p 'process.versions.node.split(".")[0]' 2>/dev/null || true)"
+    [ "$NODE_MAJOR" = 24 ] || { echo "install-agents: Node 24 is required; resolved '$NODE' reports major ${NODE_MAJOR:-unknown}" >&2; exit 1; }
+    [ -f "$ENTRY" ] || { echo "install-agents: $ENTRY is missing — run 'npm run build' first" >&2; exit 1; }
+    [ -f "$SELFTEST" ] || { echo "install-agents: $SELFTEST is missing — run 'npm run build' first" >&2; exit 1; }
+    if [ "$APPLY" -eq 1 ] && ! "$NODE" "$SELFTEST" selftest >/dev/null 2>&1; then
+      echo "install-agents: Node selftest failed; use Node 24 or set AGENT_INBOX_NODE" >&2
+      exit 1
+    fi
   fi
 fi
 
@@ -453,6 +577,109 @@ cleanup() {
     rm -f "$WORK/$target.preserve-mcp-snapshot"
   done
   rmdir "$WORK" 2>/dev/null || true
+}
+
+runtime_reference_status() {
+  local runtime_id="$1" output
+  [ "$RUNTIME_MODE" -eq 1 ] || { echo unreferenced; return; }
+  output="$("$SOURCE_NODE" "$CONFIG_HELPER" references \
+    --runtime-root "$RUNTIME_ROOT" --runtime-id "$runtime_id" \
+    --file "$HOME/.claude.json" \
+    --file "$HOME/.copilot/mcp-config.json" \
+    --file "$HOME/.claude/settings.json" \
+    --file "$HOME/.claude/settings.local.json" 2>/dev/null)" || {
+    echo unknown
+    return
+  }
+  printf '%s' "$output" | "$SOURCE_NODE" -e '
+    let text = ""
+    process.stdin.setEncoding("utf8")
+    process.stdin.on("data", (chunk) => { text += chunk })
+    process.stdin.on("end", () => {
+      try {
+        const status = JSON.parse(text).status
+        process.stdout.write(typeof status === "string" ? status : "unknown")
+      } catch { process.stdout.write("unknown") }
+    })
+  '
+}
+
+rollback_runtime() {
+  [ "$RUNTIME_MODE" -eq 1 ] || return
+  [ -f "$WORK/runtime-installed" ] || return
+  if [ "$(runtime_reference_status "$RUNTIME_ID")" != unreferenced ]; then
+    echo "install-agents: retained newly installed runtime because a reference exists or could not be ruled out: $RUNTIME_PATH" >&2
+    return
+  fi
+  if "$SOURCE_NODE" "$PAYLOAD_HELPER" prune \
+    --runtime-root "$RUNTIME_ROOT" --runtime-id "$RUNTIME_ID" >/dev/null 2>&1; then
+    echo "install-agents: removed unreferenced runtime after failed install: $RUNTIME_PATH" >&2
+  else
+    echo "install-agents: warning: could not remove runtime after failed install: $RUNTIME_PATH" >&2
+  fi
+}
+
+prune_runtime_if_unreferenced() {
+  local id="$1" status
+  status="$(runtime_reference_status "$id")"
+  if [ "$status" != unreferenced ]; then
+    echo "install-agents: retained runtime $id ($status)" >&2
+    return
+  fi
+  if "$SOURCE_NODE" "$PAYLOAD_HELPER" prune \
+    --runtime-root "$RUNTIME_ROOT" --runtime-id "$id" >/dev/null 2>&1; then
+    echo "install-agents: removed unreferenced runtime $id" >&2
+  else
+    echo "install-agents: warning: could not remove unreferenced runtime $id" >&2
+  fi
+}
+
+prune_old_runtimes() {
+  local remove_current="${1:-0}" list ids id previous_kept=0 current_deferred=0
+  [ "$RUNTIME_MODE" -eq 1 ] || return
+  list="$("$SOURCE_NODE" "$PAYLOAD_HELPER" list --runtime-root "$RUNTIME_ROOT" 2>/dev/null)" || {
+    echo "install-agents: warning: could not enumerate installed runtimes; none were removed" >&2
+    return
+  }
+  ids="$(printf '%s' "$list" | "$SOURCE_NODE" -e '
+    const fs = require("node:fs")
+    let text = ""
+    process.stdin.setEncoding("utf8")
+    process.stdin.on("data", (chunk) => { text += chunk })
+    process.stdin.on("end", () => {
+      try {
+        const ids = JSON.parse(text)
+          .filter((x) => x.valid)
+          .map((x) => ({ id: x.runtimeId, mtime: fs.statSync(x.path).mtimeMs }))
+          .sort((a, b) => b.mtime - a.mtime || b.id.localeCompare(a.id))
+          .map((x) => x.id)
+        process.stdout.write(ids.join("\n"))
+      } catch { process.exit(1) }
+    })
+  ')" || {
+    echo "install-agents: warning: could not inspect installed runtimes; none were removed" >&2
+    return
+  }
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    if [ "$remove_current" -eq 1 ] && [ "$id" = "$RUNTIME_ID" ]; then
+      current_deferred=1
+      continue
+    fi
+    if [ "$remove_current" -eq 0 ] && [ "$id" = "$RUNTIME_ID" ]; then continue; fi
+    if [ "$remove_current" -eq 0 ] && [ "$previous_kept" -eq 0 ]; then
+      previous_kept=1
+      continue
+    fi
+    prune_runtime_if_unreferenced "$id"
+  done <<EOF
+$ids
+EOF
+  # When uninstall runs from the installed runtime itself, its Node/helpers
+  # must remain available until every older candidate has been processed.
+  if [ "$current_deferred" -eq 1 ]; then
+    prune_runtime_if_unreferenced "$RUNTIME_ID"
+  fi
 }
 
 rollback_files() {
@@ -571,6 +798,26 @@ for target in "${TARGETS[@]}"; do
 done
 
 TRANSACTION_ACTIVE=1
+if [ "$RUNTIME_MODE" -eq 1 ] && [ "$UNINSTALL" -eq 0 ]; then
+  runtime_was_present=0
+  [ -e "$RUNTIME_PATH" ] && runtime_was_present=1
+  if ! "$SOURCE_NODE" "$PAYLOAD_HELPER" install \
+    --payload-root "$RUNTIME_SOURCE" --runtime-root "$RUNTIME_ROOT" \
+    --product agent-inbox-runtime >/dev/null; then
+    TRANSACTION_ACTIVE=0
+    echo "install-agents: could not install the packaged runtime; host configuration was not changed" >&2
+    exit 1
+  fi
+  if [ "$runtime_was_present" -eq 0 ]; then : > "$WORK/runtime-installed"; fi
+  JSON_NODE="$NODE"
+  if ! "$NODE" "$SELFTEST" selftest >/dev/null 2>&1; then
+    rollback_runtime
+    TRANSACTION_ACTIVE=0
+    echo "install-agents: installed runtime selftest failed; host configuration was not changed" >&2
+    exit 1
+  fi
+fi
+
 for target in "${TARGETS[@]}"; do
   if ! command -v "$target" >/dev/null 2>&1; then
     echo "$target: CLI is unavailable; removing the managed instruction block only" >&2
@@ -585,7 +832,18 @@ for target in "${TARGETS[@]}"; do
   had_user=0
   if [ "$registration_state" = present ]; then
     had_user=1
-    if [ "$UNINSTALL" -eq 1 ] || [ "$FORCE" -eq 1 ]; then
+    release_owned=0
+    if [ "$RUNTIME_MODE" -eq 1 ]; then
+      ownership="$(release_registration_status "$target")"
+      if [ "$ownership" = owned ]; then
+        release_owned=1
+      else
+        rollback_mcp_changes
+        echo "install-agents: refusing to replace or remove the $target registration because it is $ownership, not an exact manifest-owned release runtime" >&2
+        exit 1
+      fi
+    fi
+    if [ "$UNINSTALL" -eq 1 ] || [ "$FORCE" -eq 1 ] || [ "$release_owned" -eq 1 ]; then
       if ! capture_registration_config "$target"; then
         rollback_mcp_changes
         echo "install-agents: existing MCP registrations and instructions were not changed" >&2
@@ -655,4 +913,7 @@ for target in "${TARGETS[@]}"; do
 done
 
 TRANSACTION_ACTIVE=0
+if [ "$RUNTIME_MODE" -eq 1 ]; then
+  if [ "$UNINSTALL" -eq 1 ]; then prune_old_runtimes 1; else prune_old_runtimes 0; fi
+fi
 echo "Start a fresh agent session to load MCP and instruction changes." >&2

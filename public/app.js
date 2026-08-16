@@ -5666,7 +5666,13 @@ function setupMenu(s, host, canInstall) {
 
   const updateLabels = () => {
     if (run) run.textContent = `Install ${setupTargetLabel(select.value)} now`
-    commandPreview.textContent = commands[select.value]
+    const command = commands[select.value]
+    // A release build with no runtime installed yet has nothing real to copy
+    // (issue #74) — say so plainly instead of handing over an empty command
+    // that LOOKS like it worked.
+    commandPreview.textContent = command || '(not available yet — no command to copy)'
+    agent.disabled = !command
+    terminal.disabled = !command
     if (agent.textContent.startsWith('Copied')) agent.textContent = 'Copy prompt for agent'
     if (terminal.textContent.startsWith('Copied')) terminal.textContent = 'Copy terminal command'
   }
@@ -5724,9 +5730,17 @@ async function renderSetup() {
     }
     const canInstall = await window.agentInboxSetup?.available?.().catch(() => false) ?? false
     setupMenu(s, host, canInstall)
-    block('Advanced · Manual MCP registration — Claude Code', s.claudeCommand,
-      'Use the installer above unless you intentionally manage configuration by hand.')
-    block('Advanced · Manual Copilot MCP config', s.copilotConfig)
+    // issue #74: a release build withholds these manual/direct commands
+    // entirely (empty string) until a runtime matching this exact host's
+    // verified payload is installed — render nothing rather than an empty
+    // "fake" block with a header and no content.
+    if (s.claudeCommand) {
+      block('Advanced · Manual MCP registration — Claude Code', s.claudeCommand,
+        'Use the installer above unless you intentionally manage configuration by hand.')
+    }
+    if (s.copilotConfig) {
+      block('Advanced · Manual Copilot MCP config', s.copilotConfig)
+    }
     block('Advanced · Manual shared instructions', s.snippet,
       'This snippet is the signal-quality lever: it tells agents when to raise questions/notes, attach options, poll for your replies, and keep boards. '
       + 'Claude Code can instead import docs/reporting-snippet.md with an @path line, which stays current by itself — the installer detects that and skips its inlined copy. Copilot CLI cannot import, so it always gets the text.')

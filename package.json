@@ -32,6 +32,9 @@
     "install:agents": "bash scripts/install-agents.sh",
     "install:hooks": "bash scripts/install-hooks.sh",
     "electron": "electron .",
+    "stage:runtime": "node scripts/stage-runtime.mjs",
+    "runtime:payload": "node scripts/runtime-payload.mjs",
+    "package:smoke": "vitest run test/runtime-payload.test.ts test/install-runtime.test.ts test/setup-runner.test.ts test/package-stamp.test.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
@@ -57,7 +60,7 @@
     "vitest": "^4.1.10"
   },
   "allowScripts": {
-    "better-sqlite3@11.10.0": true,
+    "better-sqlite3@12.11.1": true,
     "electron@43.1.1": true,
     "esbuild@0.28.1": true,
     "esbuild@0.21.5": true,

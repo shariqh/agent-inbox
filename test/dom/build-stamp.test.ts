@@ -30,7 +30,7 @@ const SHA = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678'
 const HEAD = '99887766554433221100ffeeddccbbaa99887766'
 
 const stamp = (over: Partial<BuildStamp>): BuildStamp => ({
-  commit: SHA, builtAt: '2026-07-25T12:34:56.000Z', head: HEAD, repoRoot: '/repo', drift: 'stale', ...over,
+  commit: SHA, builtAt: '2026-07-25T12:34:56.000Z', head: HEAD, repoRoot: '/repo', drift: 'stale', version: null, ...over,
 })
 
 /** Boot with a pinned build stamp — no git, no timing race. */
@@ -101,6 +101,24 @@ describe('the Setup panel answers "which build is this"', () => {
 
     expect(setupBlocks(), 'a broken build probe emptied the whole Setup panel').toBeGreaterThanOrEqual(3)
     expect(setupText()).toContain('claude mcp add')
+  })
+
+  // issue #74 — a signed release build never claims current/stale/behind/
+  // diverged (there is no builder checkout to compare against); it reports
+  // only the honest, checkable facts it was packaged with.
+  it('a release build reports version/commit/builtAt and makes no checkout/repackage claim', async () => {
+    const d = open()
+    await bootApp(d, withBuild(stamp({
+      drift: 'release', version: '1.2.3', commit: SHA, builtAt: '2026-07-25T12:34:00.000Z', head: null, repoRoot: null,
+    })))
+    await settle()
+
+    const text = setupText()
+    expect(text).toContain('1.2.3')
+    expect(text).toContain('a1b2c3d')
+    expect(text).not.toContain('package:app')
+    expect(text.toLowerCase()).not.toContain('checkout')
+    expect(text).not.toContain('⚠')
   })
 })
 

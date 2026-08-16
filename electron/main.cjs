@@ -25,7 +25,7 @@ const http = require('node:http')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 const { classifyReuse, watchUpstream } = require('./reuse.cjs')
-const { canRunSetup, installerRepoRoot, runAgentInstall } = require('./setup-runner.cjs')
+const { canRunSetup, installerRepoRoot, runAgentInstall, runtimeKey, selectRuntimePayload } = require('./setup-runner.cjs')
 const {
   cannedResponseActions,
   createNotificationRetainer,
@@ -55,6 +55,11 @@ let setupInstallWebContentsId = null
 let setupInstallPromise = null
 let cancelSetupInstall = null
 let quitAfterSetup = false
+// Issue #74: which exact runtime payload (if any) this release build selected
+// for this host, computed once ownership of the viewer is proven. Stays at
+// its unresolved default for a dev/legacy checkout — installerRepoRoot alone
+// still gates that path, exactly as before.
+let runtimeSelection = { ok: false, reason: 'unresolved', key: runtimeKey(process.platform, process.arch) }
 
 ipcMain.handle('agent-inbox:install-available', (event) =>
   setupInstallEnabled &&
@@ -69,14 +74,32 @@ ipcMain.handle('agent-inbox:install', async (event, target) => {
   if (setupInstallRunning) {
     return { ok: false, exitCode: null, output: 'Agent setup is already running.', target, timedOut: false }
   }
-  const repoRoot = installerRepoRoot(REPO_ROOT)
+  // Issue #74: a release build's installer script lives INSIDE the exact,
+  // digest-verified runtime payload DIRECTORY selectRuntimePayload resolved —
+  // never installerRepoRoot(REPO_ROOT), which only ever finds a builder's own
+  // checkout. A dev/legacy checkout (no runtimePayloads at all) is unaffected
+  // and keeps looking for scripts/install-agents.sh via installerRepoRoot.
+  const isReleaseBuild = runtimeSelection.reason !== 'no-release-payloads'
+  const repoRoot = isReleaseBuild
+    ? (runtimeSelection.ok ? runtimeSelection.path : null)
+    : installerRepoRoot(REPO_ROOT)
   if (!repoRoot) {
     return { ok: false, exitCode: null, output: 'The agent-inbox checkout or installer could not be found.', target, timedOut: false }
   }
   setupInstallRunning = true
+  // Release builds (issue #74) pass the exact, digest-verified runtime payload
+  // through so the installer stages a portable runtime instead of assuming a
+  // source checkout; dev/legacy builds pass none and keep today's invocation.
   const install = runAgentInstall({
     repoRoot,
     target,
+    runtimePayload: runtimeSelection.ok
+      ? {
+          path: runtimeSelection.path,
+          digest: runtimeSelection.digest,
+          packageVersion: runtimeSelection.packageVersion,
+        }
+      : null,
     onCancel(cancel) { cancelSetupInstall = cancel },
   })
   setupInstallPromise = install
@@ -488,7 +511,15 @@ app.whenReady().then(async () => {
     app.exit(1)
     return
   } else if (await waitForOwnership()) {
-    setupInstallEnabled = true
+    // Issue #74: for a release build (setup-info.json carries runtimePayloads
+    // for this host's architecture), one-click setup is only ever enabled
+    // when the EXACT selected payload is present and digest-verified — never
+    // when it is missing, mismatched, or for an unsupported architecture.
+    // A dev/legacy checkout (no runtimePayloads at all — `reason ===
+    // 'no-release-payloads'`) keeps today's behavior unchanged.
+    runtimeSelection = selectRuntimePayload({ appRoot: REPO_ROOT })
+    const isReleaseBuild = runtimeSelection.reason !== 'no-release-payloads'
+    setupInstallEnabled = isReleaseBuild ? runtimeSelection.ok : true
   } else {
     console.error('[agent-inbox] started viewer did not prove ownership; refusing to load it')
     app.exit(1)

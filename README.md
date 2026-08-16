@@ -80,7 +80,11 @@ open "out/Agent Inbox-darwin-arm64/Agent Inbox.app"
 ```
 
 There are no downloadable Electron binaries yet; the package is built from your
-checkout and ad-hoc signed locally.
+checkout and ad-hoc signed locally. The release prerequisite now supports staging
+separate `darwin-arm64` and `darwin-x64` Node 24 agent runtimes; see
+[`electron/README.md`](electron/README.md#portable-agent-runtime-staging). A portable
+package installs the selected payload under `~/.agent-inbox/runtime/`, so registered
+agents do not depend on the app bundle remaining in place.
 
 ### Browser viewer on macOS or Linux
 

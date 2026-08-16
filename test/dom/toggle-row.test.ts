@@ -16,7 +16,7 @@ import type Database from 'better-sqlite3'
 import { insertItem, listItems, markReplySeen, replyItem } from '../../src/store.js'
 import {
   advanceClock, answerInput, bootApp, buttonLabelled, click, collapseRow, expectConsoleError, freshDb,
-  pollTick, row, rowTitles, rows, sendButton, settle, type, useDomTest,
+  pollTick, row, rowTitles, rows, sendButton, settle, setViewport, type, useDomTest,
 } from './harness.js'
 
 useDomTest()
@@ -32,26 +32,30 @@ function open(): Database.Database {
 const AGENT = { project: 'alpha', stream: 'main', agent: 'claude' } as const
 
 describe('Needs-you row selection is idempotent and single-open', () => {
-  it('opens the clicked row and closes whatever was open', async () => {
-    const d = open()
-    const a = insertItem(d, { ...AGENT, kind: 'question', title: 'first' })
-    advanceClock()
-    const b = insertItem(d, { ...AGENT, kind: 'question', title: 'second' })
-    await bootApp(d)
+  for (const mode of ['wide', 'narrow'] as const) {
+    it(`opens the clicked row and switches the single inspector in ${mode} layout`, async () => {
+      setViewport(mode)
+      const d = open()
+      const a = insertItem(d, { ...AGENT, kind: 'question', title: 'first' })
+      advanceClock()
+      const b = insertItem(d, { ...AGENT, kind: 'question', title: 'second' })
+      await bootApp(d)
 
-    click(row(a))
-    await settle()
-    expect(row(a)?.dataset['open']).toBe('1')
-    expect(document.querySelectorAll('.nrow-card').length).toBe(1)
+      click(row(a))
+      await settle()
+      expect(row(a)?.dataset['open']).toBe('1')
+      expect(document.querySelectorAll('.nrow-card').length).toBe(1)
 
-    click(row(b))
-    await settle()
-    expect(row(a)?.hasAttribute('data-open')).toBe(false)
-    expect(row(b)?.dataset['open']).toBe('1')
-    expect(document.querySelectorAll('.nrow-card').length).toBe(1)
-  })
+      click(row(b))
+      await settle()
+      expect(row(a)?.hasAttribute('data-open')).toBe(false)
+      expect(row(b)?.dataset['open']).toBe('1')
+      expect(document.querySelectorAll('.nrow-card').length).toBe(1)
+    })
+  }
 
-  it('keeps the exact card, draft, scroll, and focus on repeated pointer activation', async () => {
+  it('keeps the exact desktop card, draft, scroll, and focus on repeated pointer activation', async () => {
+    setViewport('wide')
     const d = open()
     const id = insertItem(d, { ...AGENT, kind: 'question', title: 'stable selection' })
     await bootApp(d)
@@ -151,7 +155,8 @@ describe('Needs-you row selection is idempotent and single-open', () => {
     expect(answerInput(first)).toBe(editor)
   })
 
-  it('keeps the exact card mounted when Enter reactivates the selected row', async () => {
+  it('keeps the exact desktop card mounted when Enter reactivates the selected row', async () => {
+    setViewport('wide')
     const d = open()
     const id = insertItem(d, { ...AGENT, kind: 'question', title: 'keyboard selection' })
     await bootApp(d)
@@ -179,7 +184,81 @@ describe('Needs-you row selection is idempotent and single-open', () => {
     expect(document.activeElement).toBe(row(id))
   })
 
+  it('collapses the compact inline card on repeated pointer activation', async () => {
+    setViewport('narrow')
+    const d = open()
+    const id = insertItem(d, { ...AGENT, kind: 'question', title: 'compact pointer' })
+    await bootApp(d)
+
+    click(row(id))
+    await settle()
+    expect(row(id)?.dataset['open']).toBe('1')
+
+    click(row(id))
+    await settle()
+
+    expect(row(id)?.hasAttribute('data-open')).toBe(false)
+    expect(row(id)?.querySelector('.nrow-card')).toBeNull()
+    expect(document.activeElement).toBe(row(id))
+  })
+
+  it('collapses the compact inline card when Enter reactivates its row', async () => {
+    setViewport('narrow')
+    const d = open()
+    const id = insertItem(d, { ...AGENT, kind: 'question', title: 'compact keyboard' })
+    await bootApp(d)
+
+    row(id)!.focus()
+    row(id)!.dispatchEvent(new window.KeyboardEvent('keydown', {
+      key: 'Enter',
+      bubbles: true,
+      cancelable: true,
+    }))
+    await settle()
+    row(id)!.focus()
+
+    row(id)!.dispatchEvent(new window.KeyboardEvent('keydown', {
+      key: 'Enter',
+      bubbles: true,
+      cancelable: true,
+    }))
+    await settle()
+
+    expect(row(id)?.hasAttribute('data-open')).toBe(false)
+    expect(row(id)?.querySelector('.nrow-card')).toBeNull()
+    expect(document.activeElement).toBe(row(id))
+  })
+
+  it('uses the current responsive mode when an open row crosses the breakpoint', async () => {
+    setViewport('wide')
+    const d = open()
+    const id = insertItem(d, { ...AGENT, kind: 'question', title: 'responsive activation' })
+    await bootApp(d)
+
+    click(row(id))
+    await settle()
+    setViewport('narrow')
+    await settle()
+    expect(row(id)?.dataset['open']).toBe('1')
+
+    click(row(id))
+    await settle()
+    expect(row(id)?.hasAttribute('data-open')).toBe(false)
+
+    click(row(id))
+    await settle()
+    setViewport('wide')
+    await settle()
+    const desktopCard = row(id)?.querySelector('.nrow-card')
+
+    click(row(id))
+    await settle()
+    expect(row(id)?.dataset['open']).toBe('1')
+    expect(row(id)?.querySelector('.nrow-card')).toBe(desktopCard)
+  })
+
   it('explicitly collapses with Escape and restores row focus', async () => {
+    setViewport('wide')
     const d = open()
     const id = insertItem(d, { ...AGENT, kind: 'question', title: 'collapse me' })
     await bootApp(d)

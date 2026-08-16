@@ -4108,11 +4108,14 @@ function rowInteractiveDescendant(target, row) {
   return owner !== null && owner !== row
 }
 
-// Row activation is selection, not an accordion toggle. Re-activating the open
-// row must not touch logical or DOM state: drafts, scroll and focus live in the
-// mounted card. `setOpenRow` remains the only writer of the logical state.
+// The fixed desktop inspector is selection, while the compact inline card keeps
+// its accordion toggle. `setOpenRow` remains the only writer of logical state.
 function activateRow(el, m, entry, nowMs) {
   if (openRowId === m.id) {
+    if (layout !== 'wide') {
+      collapseRow(m.id)
+      return
+    }
     if (selectedId !== m.id) {
       selectedId = m.id
       markSelectedRow(m.id)

@@ -105,6 +105,8 @@ describe('app.js wiring (source-level pins)', () => {
     expect(activateStart, 'activateRow is missing').toBeGreaterThan(-1)
     const activate = js.slice(activateStart, js.indexOf('\nfunction ', activateStart))
     expect(activate).toContain('if (openRowId === m.id)')
+    expect(activate).toContain("if (layout !== 'wide')")
+    expect(activate).toContain('collapseRow(m.id)')
     expect(activate).toContain('if (selectedId !== m.id)')
     expect(activate).toContain('setOpenRow(m.id, { resume: false })')
     expect(activate).toContain('resumeRender()')

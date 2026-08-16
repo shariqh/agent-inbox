@@ -122,6 +122,7 @@ describe('Needs-you row selection is idempotent and single-open', () => {
   })
 
   it('keeps the real multiline editor mounted and focused when its open row is reselected', async () => {
+    setViewport('wide')
     const d = open()
     const first = insertItem(d, { ...AGENT, kind: 'question', title: 'first' })
     advanceClock()
@@ -182,6 +183,33 @@ describe('Needs-you row selection is idempotent and single-open', () => {
     expect(row(id)?.dataset['open']).toBe('1')
     expect(row(id)?.querySelector('.nrow-card')).toBe(card)
     expect(document.activeElement).toBe(row(id))
+  })
+
+  it('keeps the compact multiline editor open when its interactive surface is used', async () => {
+    setViewport('narrow')
+    const d = open()
+    const id = insertItem(d, { ...AGENT, kind: 'question', title: 'compact multiline editor' })
+    await bootApp(d)
+
+    click(row(id))
+    await settle()
+    const card = row(id)!.querySelector('.nrow-card')
+    const editor = answerInput(id)!
+    editor.focus()
+    type(editor, 'line one\nline two')
+    editor.dispatchEvent(new window.MouseEvent('mousedown', {
+      button: 0,
+      bubbles: true,
+      cancelable: true,
+    }))
+    editor.click()
+    await settle()
+
+    expect(row(id)?.dataset['open']).toBe('1')
+    expect(row(id)?.querySelector('.nrow-card')).toBe(card)
+    expect(answerInput(id)).toBe(editor)
+    expect(editor.value).toBe('line one\nline two')
+    expect(document.activeElement).toBe(editor)
   })
 
   it('collapses the compact inline card on repeated pointer activation', async () => {

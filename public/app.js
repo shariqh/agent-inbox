@@ -4116,7 +4116,8 @@ function activateRow(el, m, entry, nowMs) {
     if (selectedId !== m.id) {
       selectedId = m.id
       markSelectedRow(m.id)
-      el.focus({ preventScroll: true })
+      const card = el.querySelector('.nrow-card')
+      if (!card?.contains(document.activeElement)) el.focus({ preventScroll: true })
     }
     return
   }
@@ -4134,7 +4135,10 @@ function activateRow(el, m, entry, nowMs) {
   resumeRender()
   requestAnimationFrame(() => {
     const card = needsYouRowEl(m.id)?.querySelector('.nrow-card')
-    if (card) { card.tabIndex = -1; card.focus({ preventScroll: true }) } // focus moves into the card (spec §13)
+    if (card && !card.contains(document.activeElement)) {
+      card.tabIndex = -1
+      card.focus({ preventScroll: true }) // focus moves into the card (spec §13)
+    }
   })
 }
 

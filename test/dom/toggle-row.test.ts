@@ -117,7 +117,7 @@ describe('Needs-you row selection is idempotent and single-open', () => {
     expect(listItems(d).find((item) => item.id === second)?.status).toBe('open')
   })
 
-  it('leaves a textarea editor in control after roving selection moves away', async () => {
+  it('keeps the real multiline editor mounted and focused when its open row is reselected', async () => {
     const d = open()
     const first = insertItem(d, { ...AGENT, kind: 'question', title: 'first' })
     advanceClock()
@@ -126,23 +126,29 @@ describe('Needs-you row selection is idempotent and single-open', () => {
 
     click(row(first))
     await settle()
-    const card = row(first)!.querySelector('.nrow-card')
+    const card = row(first)!.querySelector('.nrow-card')!
     document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'j', bubbles: true }))
     await settle()
     expect(row(first)?.classList.contains('selected')).toBe(false)
 
-    const editor = document.createElement('textarea')
-    editor.className = 'reply-input'
-    row(first)!.appendChild(editor)
+    const editor = answerInput(first)!
     editor.focus()
-    editor.click()
-    editor.value = 'line one\nline two'
-    editor.dispatchEvent(new window.Event('input', { bubbles: true }))
+    type(editor, 'line one\nline two')
+    const down = new window.MouseEvent('mousedown', {
+      button: 0,
+      bubbles: true,
+      cancelable: true,
+    })
+    row(first)!.dispatchEvent(down)
+    expect(down.defaultPrevented).toBe(true)
+    click(row(first))
+    await settle()
 
     expect(document.activeElement).toBe(editor)
     expect(editor.value).toBe('line one\nline two')
-    expect(row(first)?.classList.contains('selected')).toBe(false)
+    expect(row(first)?.classList.contains('selected')).toBe(true)
     expect(row(first)?.querySelector('.nrow-card')).toBe(card)
+    expect(answerInput(first)).toBe(editor)
   })
 
   it('keeps the exact card mounted when Enter reactivates the selected row', async () => {

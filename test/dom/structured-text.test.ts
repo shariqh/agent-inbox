@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
 import { insertItem, listBoards, replyItem, resolveItem, upsertBoard } from '../../src/store.js'
 import {
-  bootApp, buttonLabelled, click, freshDb, row, settle, useDomTest,
+  bootApp, buttonLabelled, click, freshDb, row, setSystemDark, settle, useDomTest,
 } from './harness.js'
 
 useDomTest()
@@ -185,6 +185,42 @@ describe('structured agent text on cards and plans', () => {
 
     await vi.advanceTimersByTimeAsync(300)
     expect(document.getElementById('structured-copy-announcer')?.textContent).toBe('Copied')
+  })
+
+  it.each([
+    ['Dark', 'dark', false],
+    ['System dark', 'system', true],
+  ])('renders and copies fenced commands through the shared path in %s', async (_name, preference, systemDark) => {
+    const d = open()
+    const source = 'printf \'%s\\n\' "themed command"'
+    const writeText = vi.fn(async () => undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+    localStorage.setItem('agent-inbox-theme', preference)
+    setSystemDark(systemDark)
+    const id = insertItem(d, {
+      ...AGENT,
+      kind: 'question',
+      title: 'Themed command',
+      detail: ['Run:', '', '```sh', source, '```'].join('\n'),
+    })
+
+    await bootApp(d)
+    expect(document.documentElement.dataset.theme).toBe('dark')
+    expect(document.documentElement.dataset.themePreference).toBe(preference)
+    click(row(id))
+    await settle()
+
+    const block = row(id)?.querySelector('.structured-code')
+    const button = block?.querySelector<HTMLButtonElement>('.structured-code-copy')
+    expect(block?.querySelector('code')?.textContent).toBe(source)
+    expect(button?.textContent).toBe('Copy')
+    click(button)
+    await settle()
+    expect(writeText).toHaveBeenCalledWith(source)
+    expect(block?.querySelector('.structured-code-status')?.textContent).toBe('Copied')
   })
 
   it('falls back after Clipboard API denial and never reports false success', async () => {

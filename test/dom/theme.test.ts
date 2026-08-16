@@ -101,16 +101,20 @@ describe('viewer theme controls', () => {
     click(row(id))
 
     const editor = answerInput(id)!
+    Object.defineProperty(editor, 'scrollHeight', { configurable: true, value: 240 })
     editor.focus()
-    type(editor, 'Keep this draft intact')
+    type(editor, 'Keep this draft intact\nacross multiple lines')
+    expect(editor.style.height).toBe('160px')
+    expect(editor.style.overflowY).toBe('auto')
 
     setSystemDark(true)
 
     expect(document.documentElement.dataset.theme).toBe('dark')
     expect(answerInput(id)).toBe(editor)
     expect(document.activeElement).toBe(editor)
-    expect(editor.value).toBe('Keep this draft intact')
+    expect(editor.value).toBe('Keep this draft intact\nacross multiple lines')
 
+    Object.defineProperty(editor, 'scrollHeight', { configurable: true, value: 32 })
     type(editor, '')
     await settle()
 

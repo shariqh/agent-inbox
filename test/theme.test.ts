@@ -159,6 +159,9 @@ describe('early theme bootstrap and palette', () => {
       }
       expect(contrast(token['app-border-strong']!, token['app-surface']!), `${name} strong border`).toBeGreaterThanOrEqual(3)
       expect(contrast(token['app-on-accent']!, token['app-accent']!), `${name} on-accent text`).toBeGreaterThanOrEqual(4.5)
+      expect(contrast(token['app-code-border']!, token['app-soft']!), `${name} code control boundary`).toBeGreaterThanOrEqual(3)
+      expect(contrast(token['app-code-error']!, token['app-soft']!), `${name} code error`).toBeGreaterThanOrEqual(4.5)
+      expect(contrast(token['app-success']!, token['app-soft']!), `${name} code success`).toBeGreaterThanOrEqual(4.5)
     }
   })
 
@@ -168,5 +171,22 @@ describe('early theme bootstrap and palette', () => {
     expect(css).toMatch(/button:disabled\s*\{[^}]*cursor:[^}]*opacity:/s)
     expect(css).toMatch(/tr:has\(\.blocked\) \.row-label\s*\{[^}]*font-weight:/s)
     expect(css).toMatch(/\.outcome-label\s*\{[^}]*text-transform:/s)
+  })
+
+  it('themes fenced commands only through the semantic palette', () => {
+    const start = css.indexOf('.structured-code {')
+    const end = css.indexOf('.card-meta', start)
+    const rules = css.slice(start, end)
+
+    expect(start).toBeGreaterThanOrEqual(0)
+    expect(end).toBeGreaterThan(start)
+    expect(rules).toContain('var(--app-soft)')
+    expect(rules).toContain('var(--app-surface)')
+    expect(rules).toContain('var(--app-text)')
+    expect(rules).toContain('var(--app-success)')
+    expect(rules).toContain('var(--app-code-border)')
+    expect(rules).toContain('var(--app-code-error)')
+    expect(rules).toContain('var(--app-link)')
+    expect(rules).not.toMatch(/\b(?:Canvas|CanvasText|LinkText|seagreen|crimson)\b/)
   })
 })

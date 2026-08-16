@@ -18,6 +18,8 @@
   --app-warning: #a16207;
   --app-link: #0078d4;
   --app-on-accent: #ffffff;
+  --app-code-border: #6f6f6f;
+  --app-code-error: #b92525;
   --app-shadow: 0 0 2px rgba(0, 0, 0, .12), 0 1px 2px rgba(0, 0, 0, .14);
   --sidebar-width: 220px;
   --inspector-width: 520px;
@@ -41,6 +43,8 @@
   --app-warning: #f4c56b;
   --app-link: #8ac7ff;
   --app-on-accent: #211e20;
+  --app-code-border: #aaa0a6;
+  --app-code-error: #fca2a8;
   --app-shadow: 0 0 2px rgba(0, 0, 0, .3), 0 1px 2px rgba(0, 0, 0, .34);
 }
 * { box-sizing: border-box; }
@@ -484,9 +488,9 @@ body.settings-open #topbar > :not(#gear) { opacity: .32; }
 .structured-code {
   margin: .55em 0 .7em;
   overflow: hidden;
-  border: 1px solid color-mix(in srgb, CanvasText 18%, transparent);
+  border: 1px solid var(--app-code-border);
   border-radius: 8px;
-  background: color-mix(in srgb, CanvasText 5%, Canvas);
+  background: var(--app-soft);
   overflow-wrap: normal;
 }
 .structured-code-toolbar {
@@ -496,7 +500,7 @@ body.settings-open #topbar > :not(#gear) { opacity: .32; }
   align-items: center;
   gap: 8px;
   padding: 4px 6px 4px 10px;
-  border-bottom: 1px solid color-mix(in srgb, CanvasText 12%, transparent);
+  border-bottom: 1px solid var(--app-border);
 }
 .structured-code-language {
   max-width: 50%;
@@ -516,22 +520,22 @@ body.settings-open #topbar > :not(#gear) { opacity: .32; }
   text-align: end;
   white-space: nowrap;
 }
-.structured-code-status[data-state="success"] { color: color-mix(in srgb, seagreen 76%, CanvasText); }
-.structured-code-status[data-state="error"] { color: color-mix(in srgb, crimson 76%, CanvasText); }
+.structured-code-status[data-state="success"] { color: var(--app-success); }
+.structured-code-status[data-state="error"] { color: var(--app-code-error); }
 .structured-code-copy {
   flex: 0 0 auto;
   padding: 2px 9px;
-  border: 1px solid color-mix(in srgb, CanvasText 24%, transparent);
+  border: 1px solid var(--app-code-border);
   border-radius: 6px;
-  background: Canvas;
-  color: CanvasText;
+  background: var(--app-surface);
+  color: var(--app-text);
   cursor: pointer;
   font: inherit;
   font-size: 11px;
   font-weight: 600;
 }
-.structured-code-copy:hover { background: color-mix(in srgb, CanvasText 6%, Canvas); }
-.structured-code-copy:focus-visible { outline: 2px solid LinkText; outline-offset: 2px; }
+.structured-code-copy:hover { background: var(--app-soft); }
+.structured-code-copy:focus-visible { outline: 2px solid var(--app-link); outline-offset: 2px; }
 .structured-code pre {
   max-width: 100%;
   margin: 0;

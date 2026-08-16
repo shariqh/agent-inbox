@@ -25,6 +25,7 @@ if [ -n "$RUNTIME_ARM64" ] || [ -n "$RUNTIME_X64" ]; then
 fi
 
 cd "$ROOT"
+npm run generate:icons -- --check
 npm run build
 
 rm -rf "$STAGE"

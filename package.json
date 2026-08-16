@@ -29,6 +29,7 @@
     "view": "tsx src/viewer-server.ts",
     "hook": "tsx src/hook-cli.ts",
     "watch": "tsx src/watch-cli.ts",
+    "generate:icons": "bash scripts/generate-icons.sh",
     "install:agents": "bash scripts/install-agents.sh",
     "install:hooks": "bash scripts/install-hooks.sh",
     "electron": "electron .",

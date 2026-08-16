@@ -75,9 +75,20 @@ workspace. Its **Setup** panel can also run the same audited host installer.
 To build a standalone local macOS app:
 
 ```sh
+npm run generate:icons
 npm run package:app
 open "out/Agent Inbox-darwin-arm64/Agent Inbox.app"
 ```
+
+`assets/icon.svg` is the editable full-color source of truth.
+`assets/icon-mark.svg` is its deliberately simplified single-color derivative for
+tiny in-product use. `npm run generate:icons` deterministically refreshes
+`assets/icon-1024.png`, browser favicon/mark assets under `public/`, and
+`electron/icon.icns`; `assets/icon-manifest.json` pins the source and generated
+output hashes. `npm run generate:icons -- --check` validates that manifest,
+dimensions, SVG copies, and the complete ICNS representation set without
+rerasterizing. Generation requires `rsvg-convert`; generation and checking use
+macOS `iconutil`.
 
 There are no downloadable Electron binaries yet; the package is built from your
 checkout and ad-hoc signed locally. The release prerequisite now supports staging

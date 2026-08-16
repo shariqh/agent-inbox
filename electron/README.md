@@ -10,6 +10,12 @@ npm run package:app
 # → out/Agent Inbox-darwin-arm64/Agent Inbox.app  (drag to /Applications if you like)
 ```
 
+Packaging first runs `npm run generate:icons -- --check` and consumes the
+checked-in `electron/icon.icns`. Regenerate it, the 1024px PNG, and browser icon
+assets from `assets/icon.svg` with `npm run generate:icons` (macOS with
+`rsvg-convert` and `iconutil`). The single-color `assets/icon-mark.svg` is the
+documented optical derivative used in the viewer chrome.
+
 The .app needs **no terminal and no system Node**: the viewer server runs inside
 Electron's bundled Node. `scripts/package-app.sh` stages `dist/ + public/ + electron/`
 into `build/stage`, installs production deps there, rebuilds better-sqlite3 against

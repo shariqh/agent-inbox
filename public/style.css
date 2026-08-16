@@ -656,7 +656,14 @@ body.resizing-pane .pane-resizer::after {
 }
 body.resizing-pane, body.resizing-pane * { cursor: col-resize !important; user-select: none !important; }
 .brand { display: flex; align-items: center; gap: 10px; margin: 0 8px 28px; font-size: 15px; font-weight: 600; }
-.brand-dot { width: 11px; height: 11px; flex: 0 0 auto; border-radius: 50%; background: var(--app-accent); }
+.brand-mark {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  background: var(--app-accent);
+  -webkit-mask: url("/icon-mark.svg") center / contain no-repeat;
+  mask: url("/icon-mark.svg") center / contain no-repeat;
+}
 .brand-copy { display: flex; min-width: 0; flex-direction: column; line-height: 1.25; }
 .brand-copy strong { font-size: 15px; letter-spacing: -.01em; }
 .brand-copy small { margin-top: 2px; color: var(--app-text-soft); font-size: 11px; font-weight: 400; }

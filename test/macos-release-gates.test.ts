@@ -28,6 +28,98 @@ import {
 import { treeIdentity } from '../scripts/tree-identity.mjs'
 
 const root = resolve(process.cwd())
+const signingIdentity = 'Developer ID Application: Release Test (AB12CD34EF)'
+
+function makeSigningHarness(emptySearchList = false) {
+  const temp = mkdtempSync(join(tmpdir(), 'release-signing-'))
+  const state = join(temp, 'signing state')
+  const bin = join(temp, 'bin')
+  const security = join(bin, 'security')
+  const securityLog = join(temp, 'security.log')
+  const certificate = join(temp, 'certificate.pem')
+  const certificateKey = join(temp, 'certificate-key.pem')
+  const githubOutput = join(temp, 'github-output')
+  const originalKeychains = emptySearchList
+    ? []
+    : [
+        join(temp, 'Original Login.keychain-db'),
+        join(temp, 'Original Build.keychain-db'),
+      ]
+  mkdirSync(bin)
+  execFileSync('/usr/bin/openssl', [
+    'req',
+    '-x509',
+    '-newkey', 'rsa:2048',
+    '-keyout', certificateKey,
+    '-out', certificate,
+    '-days', '1',
+    '-nodes',
+    '-subj', '/CN=Release Test/OU=AB12CD34EF',
+  ], { stdio: 'ignore' })
+  writeFileSync(security, `#!/bin/sh
+set -eu
+{
+  printf '%s' "$1"
+  first=1
+  for arg do
+    if [ "$first" = 1 ]; then
+      first=0
+    else
+      printf '\\t%s' "$arg"
+    fi
+  done
+  printf '\\n'
+} >> "$SECURITY_LOG"
+case "$1" in
+  list-keychains)
+    if [ "$#" -eq 3 ]; then
+      if [ -n "\${ORIGINAL_KEYCHAIN_ONE:-}" ]; then
+        printf '    "%s"\\n' "$ORIGINAL_KEYCHAIN_ONE"
+      fi
+      if [ -n "\${ORIGINAL_KEYCHAIN_TWO:-}" ]; then
+        printf '    "%s"\\n' "$ORIGINAL_KEYCHAIN_TWO"
+      fi
+    elif [ "$4" = "-s" ]; then
+      if [ "\${FAIL_ACTIVATION:-0}" = 1 ] && [ "\${5:-}" = "$EXPECTED_TEMP_KEYCHAIN" ]; then
+        exit 9
+      fi
+      if [ "\${FAIL_RESTORE:-0}" = 1 ] && [ "\${5:-}" != "$EXPECTED_TEMP_KEYCHAIN" ]; then
+        exit 10
+      fi
+    fi
+    ;;
+  create-keychain)
+    for last do :; done
+    : > "$last"
+    ;;
+  find-identity)
+    printf '  1) ABCDEF "%s"\\n     1 valid identities found\\n' "$EXPECTED_IDENTITY"
+    ;;
+  find-certificate)
+    cat "$CERTIFICATE_FILE"
+    ;;
+esac
+`)
+  chmodSync(security, 0o755)
+  const keychain = join(state, 'agent-inbox.keychain-db')
+  const env = {
+    ...process.env,
+    APPLE_SECURITY_BIN: security,
+    APPLE_SIGNING_STATE_DIR: state,
+    APPLE_DEVELOPER_ID_P12_BASE64: Buffer.from('not-a-real-p12').toString('base64'),
+    APPLE_DEVELOPER_ID_P12_PASSWORD: 'p12-password',
+    APPLE_DEVELOPER_IDENTITY: signingIdentity,
+    APPLE_TEAM_ID: 'AB12CD34EF',
+    GITHUB_OUTPUT: githubOutput,
+    SECURITY_LOG: securityLog,
+    CERTIFICATE_FILE: certificate,
+    EXPECTED_IDENTITY: signingIdentity,
+    EXPECTED_TEMP_KEYCHAIN: keychain,
+    ORIGINAL_KEYCHAIN_ONE: originalKeychains[0] ?? '',
+    ORIGINAL_KEYCHAIN_TWO: originalKeychains[1] ?? '',
+  }
+  return { state, securityLog, githubOutput, originalKeychains, keychain, env }
+}
 
 function makeTaggedRepo(version = '1.2.3', lockRootVersion = version) {
   const repo = mkdtempSync(join(tmpdir(), 'release-tag-'))
@@ -53,23 +145,23 @@ function makeTaggedRepo(version = '1.2.3', lockRootVersion = version) {
 }
 
 describe('macOS release gates', () => {
-  it('accepts v1.0.0 only when every package version field matches', () => {
-    const fixture = makeTaggedRepo('1.0.0')
+  it('accepts v1.0.1 only when every package version field matches', () => {
+    const fixture = makeTaggedRepo('1.0.1')
     expect(validateReleaseTag({
       repoRoot: fixture.repo,
-      ref: 'refs/tags/v1.0.0',
+      ref: 'refs/tags/v1.0.1',
       sha: fixture.sha,
     })).toMatchObject({
-      tag: 'v1.0.0',
-      version: '1.0.0',
+      tag: 'v1.0.1',
+      version: '1.0.1',
       sourceCommit: fixture.sha,
       annotated: true,
     })
 
-    const mismatch = makeTaggedRepo('1.0.0', '0.1.0')
+    const mismatch = makeTaggedRepo('1.0.1', '1.0.0')
     expect(() => validateReleaseTag({
       repoRoot: mismatch.repo,
-      ref: 'refs/tags/v1.0.0',
+      ref: 'refs/tags/v1.0.1',
       sha: mismatch.sha,
     })).toThrow(/tag\/package version mismatch/)
   })
@@ -486,28 +578,93 @@ describe('macOS release gates', () => {
     ])
   })
 
-  it('cleans credential material through a real subprocess', () => {
-    const temp = mkdtempSync(join(tmpdir(), 'release-cleanup-'))
-    const state = join(temp, 'signing')
-    mkdirSync(state)
-    writeFileSync(join(state, 'developer-id.p12'), 'secret')
-    writeFileSync(join(state, 'agent-inbox.keychain-db'), 'keychain')
-    const bin = join(temp, 'bin')
-    mkdirSync(bin)
-    const securityLog = join(temp, 'security.log')
-    writeFileSync(join(bin, 'security'), `#!/bin/sh\nprintf '%s\\n' "$*" >> "${securityLog}"\n`)
-    chmodSync(join(bin, 'security'), 0o755)
+  it('activates the temporary keychain and exactly restores the original user search list', () => {
+    const harness = makeSigningHarness()
+    const imported = spawnSync('bash', [join(root, 'scripts', 'import-apple-signing.sh'), 'import'], {
+      env: harness.env,
+      encoding: 'utf8',
+    })
+    expect(imported.status, imported.stderr).toBe(0)
+    expect(readFileSync(harness.githubOutput, 'utf8')).toContain(`keychain=${harness.keychain}`)
+    const importCalls = readFileSync(harness.securityLog, 'utf8').trim().split('\n')
+    const activated = [
+      'list-keychains', '-d', 'user', '-s',
+      harness.keychain,
+      ...harness.originalKeychains,
+    ].join('\t')
+    expect(importCalls).toContain(activated)
+    expect(importCalls.indexOf(activated)).toBeLessThan(
+      importCalls.findIndex((call) => call.startsWith('find-identity\t')),
+    )
+
     const cleanup = spawnSync('bash', [join(root, 'scripts', 'import-apple-signing.sh'), 'cleanup'], {
-      env: {
-        ...process.env,
-        APPLE_SECURITY_BIN: join(bin, 'security'),
-        APPLE_SIGNING_STATE_DIR: state,
-      },
+      env: harness.env,
       encoding: 'utf8',
     })
     expect(cleanup.status).toBe(0)
-    expect(existsSync(state)).toBe(false)
-    expect(readFileSync(securityLog, 'utf8')).toContain('delete-keychain')
+    expect(existsSync(harness.state)).toBe(false)
+    const cleanupCalls = readFileSync(harness.securityLog, 'utf8').trim().split('\n')
+    const restored = [
+      'list-keychains', '-d', 'user', '-s', ...harness.originalKeychains,
+    ].join('\t')
+    expect(cleanupCalls).toContain(restored)
+    expect(cleanupCalls.indexOf(restored)).toBeLessThan(
+      cleanupCalls.findIndex((call) => call === `delete-keychain\t${harness.keychain}`),
+    )
+  })
+
+  it('supports an empty original search list under Bash noun-set mode', () => {
+    const harness = makeSigningHarness(true)
+    const imported = spawnSync('/bin/bash', [join(root, 'scripts', 'import-apple-signing.sh'), 'import'], {
+      env: harness.env,
+      encoding: 'utf8',
+    })
+    expect(imported.status, imported.stderr).toBe(0)
+    expect(readFileSync(harness.securityLog, 'utf8').trim().split('\n')).toContain(
+      ['list-keychains', '-d', 'user', '-s', harness.keychain].join('\t'),
+    )
+
+    const cleanup = spawnSync('/bin/bash', [join(root, 'scripts', 'import-apple-signing.sh'), 'cleanup'], {
+      env: harness.env,
+      encoding: 'utf8',
+    })
+    expect(cleanup.status, cleanup.stderr).toBe(0)
+    expect(existsSync(harness.state)).toBe(false)
+    expect(readFileSync(harness.securityLog, 'utf8').trim().split('\n')).toContain(
+      ['list-keychains', '-d', 'user', '-s'].join('\t'),
+    )
+  })
+
+  it('restores and destroys signing state when search-list activation fails', () => {
+    const harness = makeSigningHarness()
+    const imported = spawnSync('bash', [join(root, 'scripts', 'import-apple-signing.sh'), 'import'], {
+      env: { ...harness.env, FAIL_ACTIVATION: '1' },
+      encoding: 'utf8',
+    })
+    expect(imported.status).not.toBe(0)
+    expect(existsSync(harness.state)).toBe(false)
+    const calls = readFileSync(harness.securityLog, 'utf8').trim().split('\n')
+    expect(calls).toContain([
+      'list-keychains', '-d', 'user', '-s', ...harness.originalKeychains,
+    ].join('\t'))
+    expect(calls.at(-1)).toBe(`delete-keychain\t${harness.keychain}`)
+  })
+
+  it('fails closed but still destroys signing state when restoration fails', () => {
+    const harness = makeSigningHarness()
+    const imported = spawnSync('bash', [join(root, 'scripts', 'import-apple-signing.sh'), 'import'], {
+      env: harness.env,
+      encoding: 'utf8',
+    })
+    expect(imported.status, imported.stderr).toBe(0)
+    const cleanup = spawnSync('bash', [join(root, 'scripts', 'import-apple-signing.sh'), 'cleanup'], {
+      env: { ...harness.env, FAIL_RESTORE: '1' },
+      encoding: 'utf8',
+    })
+    expect(cleanup.status).not.toBe(0)
+    expect(existsSync(harness.state)).toBe(false)
+    expect(readFileSync(harness.securityLog, 'utf8').trim().split('\n').at(-1))
+      .toBe(`delete-keychain\t${harness.keychain}`)
   })
 
   it('keeps notary key bytes temporary and staples only after an accepted receipt', () => {

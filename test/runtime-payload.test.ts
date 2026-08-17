@@ -510,45 +510,51 @@ describe('runtime-payload install: atomic install, idempotency, and collision re
   // the fixed /usr/bin/xattr so the invocation itself — and its failure
   // handling — can be tested deterministically. Production code never sets
   // this variable; it always resolves the real fixed system path.
-  it('invokes the (overridden) xattr binary against the temp install directory before publishing', () => {
-    const payloadRoot = tmp('install-xattr-payload-')
-    buildFixturePayload(payloadRoot)
-    buildAndWriteManifest(payloadRoot)
-    const runtimeRoot = tmp('install-xattr-root-')
-    const logDir = tmp('install-xattr-log-')
-    const logFile = join(logDir, 'xattr-invocations.log')
+  it.runIf(process.platform === 'darwin')(
+    'invokes the (overridden) xattr binary against the temp install directory before publishing',
+    () => {
+      const payloadRoot = tmp('install-xattr-payload-')
+      buildFixturePayload(payloadRoot)
+      buildAndWriteManifest(payloadRoot)
+      const runtimeRoot = tmp('install-xattr-root-')
+      const logDir = tmp('install-xattr-log-')
+      const logFile = join(logDir, 'xattr-invocations.log')
 
-    const result = runOk(PAYLOAD_CLI, ['install', '--payload-root', payloadRoot, '--runtime-root', runtimeRoot], {
-      ...process.env,
-      AGENT_INBOX_XATTR_BIN: FAKE_XATTR_RECORD_FIXTURE,
-      FAKE_XATTR_LOG: logFile,
-    }) as { installed: boolean; path: string }
+      const result = runOk(PAYLOAD_CLI, ['install', '--payload-root', payloadRoot, '--runtime-root', runtimeRoot], {
+        ...process.env,
+        AGENT_INBOX_XATTR_BIN: FAKE_XATTR_RECORD_FIXTURE,
+        FAKE_XATTR_LOG: logFile,
+      }) as { installed: boolean; path: string }
 
-    expect(result.installed).toBe(true)
-    const invocations = readFileSync(logFile, 'utf8').trim().split('\n')
-    expect(invocations).toHaveLength(1)
-    // -rd com.apple.quarantine <temp install dir> — recorded BEFORE the
-    // atomic rename that publishes it under result.path, so the logged
-    // directory is the .tmp-install-* precursor, not the final name.
-    expect(invocations[0]).toMatch(/^-rd com\.apple\.quarantine .*\.tmp-install-/)
-    expect(invocations[0]).toContain(runtimeRoot)
-  })
+      expect(result.installed).toBe(true)
+      const invocations = readFileSync(logFile, 'utf8').trim().split('\n')
+      expect(invocations).toHaveLength(1)
+      // -rd com.apple.quarantine <temp install dir> — recorded BEFORE the
+      // atomic rename that publishes it under result.path, so the logged
+      // directory is the .tmp-install-* precursor, not the final name.
+      expect(invocations[0]).toMatch(/^-rd com\.apple\.quarantine .*\.tmp-install-/)
+      expect(invocations[0]).toContain(runtimeRoot)
+    },
+  )
 
-  it('refuses to publish when clearing com.apple.quarantine fails: nothing is installed', () => {
-    const payloadRoot = tmp('install-xattr-fail-payload-')
-    buildFixturePayload(payloadRoot)
-    const manifest = buildAndWriteManifest(payloadRoot)
-    const runtimeRoot = tmp('install-xattr-fail-root-')
+  it.runIf(process.platform === 'darwin')(
+    'refuses to publish when clearing com.apple.quarantine fails: nothing is installed',
+    () => {
+      const payloadRoot = tmp('install-xattr-fail-payload-')
+      buildFixturePayload(payloadRoot)
+      const manifest = buildAndWriteManifest(payloadRoot)
+      const runtimeRoot = tmp('install-xattr-fail-root-')
 
-    const result = runFail(PAYLOAD_CLI, ['install', '--payload-root', payloadRoot, '--runtime-root', runtimeRoot], {
-      ...process.env,
-      AGENT_INBOX_XATTR_BIN: FAKE_XATTR_FAIL_FIXTURE,
-    })
-    expect(result.stderr).toMatch(/failed to clear com\.apple\.quarantine/)
-    expect(existsSync(join(runtimeRoot, manifest.runtimeId as string))).toBe(false)
-    // No leftover temp directory either — the failed copy must be cleaned up.
-    const entries = existsSync(runtimeRoot) ? readdirSync(runtimeRoot) : []
-    expect(entries.some((e) => e.startsWith('.tmp-install-'))).toBe(false)
+      const result = runFail(PAYLOAD_CLI, ['install', '--payload-root', payloadRoot, '--runtime-root', runtimeRoot], {
+        ...process.env,
+        AGENT_INBOX_XATTR_BIN: FAKE_XATTR_FAIL_FIXTURE,
+      },
+      )
+      expect(result.stderr).toMatch(/failed to clear com\.apple\.quarantine/)
+      expect(existsSync(join(runtimeRoot, manifest.runtimeId as string))).toBe(false)
+      // No leftover temp directory either — the failed copy must be cleaned up.
+      const entries = existsSync(runtimeRoot) ? readdirSync(runtimeRoot) : []
+      expect(entries.some((e) => e.startsWith('.tmp-install-'))).toBe(false)
   })
 
   it('skips quarantine clearing cleanly when the (overridden) xattr binary does not exist', () => {
@@ -1673,7 +1679,7 @@ function buildFixtureRepoRoot(): string {
   return repoRoot
 }
 
-describe.skipIf(!REAL_NODE_ROOT)(
+describe.skipIf(!REAL_NODE_ROOT || process.platform !== 'darwin' || process.arch !== 'arm64')(
   'stage-runtime full staging: allowScripts passthrough + pre-publish selftest gate (correction #1)',
   () => {
     it(

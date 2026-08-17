@@ -326,6 +326,12 @@ describe('universal finalization contract', () => {
     })
   })
 
+  it('keeps the MCP handshake version aligned with the package release version', () => {
+    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+    const mcp = readFileSync(join(root, 'src', 'mcp.ts'), 'utf8')
+    expect(mcp).toContain(`new McpServer({ name: 'agent-inbox', version: '${pkg.version}' })`)
+  })
+
   it('makes ad-hoc output ineligible for notarization until Developer ID re-finalization', () => {
     const source = readFileSync(join(root, 'scripts', 'assemble-macos-release.mjs'), 'utf8')
     expect(source).toContain("notarized: false")

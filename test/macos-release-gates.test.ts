@@ -29,11 +29,14 @@ import { treeIdentity } from '../scripts/tree-identity.mjs'
 
 const root = resolve(process.cwd())
 
-function makeTaggedRepo(version = '1.2.3') {
+function makeTaggedRepo(version = '1.2.3', lockRootVersion = version) {
   const repo = mkdtempSync(join(tmpdir(), 'release-tag-'))
   execFileSync('git', ['init', '--quiet'], { cwd: repo })
   writeFileSync(join(repo, 'package.json'), `${JSON.stringify({ version })}\n`)
-  writeFileSync(join(repo, 'package-lock.json'), `${JSON.stringify({ version, packages: { '': { version } } })}\n`)
+  writeFileSync(
+    join(repo, 'package-lock.json'),
+    `${JSON.stringify({ version, packages: { '': { version: lockRootVersion } } })}\n`,
+  )
   execFileSync('git', ['add', '.'], { cwd: repo })
   execFileSync('git', [
     '-c', 'user.name=Release Test',
@@ -50,6 +53,27 @@ function makeTaggedRepo(version = '1.2.3') {
 }
 
 describe('macOS release gates', () => {
+  it('accepts v1.0.0 only when every package version field matches', () => {
+    const fixture = makeTaggedRepo('1.0.0')
+    expect(validateReleaseTag({
+      repoRoot: fixture.repo,
+      ref: 'refs/tags/v1.0.0',
+      sha: fixture.sha,
+    })).toMatchObject({
+      tag: 'v1.0.0',
+      version: '1.0.0',
+      sourceCommit: fixture.sha,
+      annotated: true,
+    })
+
+    const mismatch = makeTaggedRepo('1.0.0', '0.1.0')
+    expect(() => validateReleaseTag({
+      repoRoot: mismatch.repo,
+      ref: 'refs/tags/v1.0.0',
+      sha: mismatch.sha,
+    })).toThrow(/tag\/package version mismatch/)
+  })
+
   it('accepts only an annotated exact-version tag at checkout HEAD', () => {
     const fixture = makeTaggedRepo()
     expect(validateReleaseTag({

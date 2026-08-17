@@ -4,14 +4,33 @@
 
 | Surface | Support |
 |---|---|
+| Notarized desktop app | macOS 13.5+ on Apple silicon and Intel |
 | MCP server and browser viewer | macOS and Linux with Node 24 |
 | Agent setup installer | Claude Code and GitHub Copilot CLI on macOS/Linux |
-| Electron app packaging | Apple Silicon macOS, built from source |
+| Electron source package | Apple silicon macOS with Node 24 |
 | Windows | Not currently supported by the shell installers or Electron packager |
 
-The source repository is the v0.1 distribution; the package is not published to npm.
+Agent Inbox is not published to npm. When a public release is available, download its
+notarized universal DMG from
+[GitHub Releases](https://github.com/shariqh/agent-inbox/releases). If no public release
+is listed yet, use the source-build path below.
+
+## Recommended macOS installation
+
+When a public release is available, download the DMG from GitHub Releases, drag
+**Agent Inbox** to `/Applications`, and launch it. The app requires macOS 13.5
+(Ventura) or later and supports Apple silicon and Intel. It includes the matching Node
+24 agent runtime; no system Node installation is required.
+
+On first launch, open **Setup**, select GitHub Copilot CLI, Claude Code, or both, then
+choose **Install now**. Setup verifies and installs the bundled architecture-specific
+runtime under `~/.agent-inbox/runtime/<content-derived-runtime-id>/`, registers the MCP
+server, and adds the reporting instructions. Start a fresh agent session afterward.
+
+## Source-build installation
+
 GitHub CLI (`gh`) is optional and adds live PR state. Source-checkout Claude hook setup
-requires `jq`; a portable app runtime uses its bundled Node helper instead.
+requires `jq`; a portable release runtime uses its bundled Node helper instead.
 
 The transactional agent installer requires a kernel-backed `lockf` or `flock`
 command. Linux normally includes `flock`, and newer macOS versions include `lockf`.

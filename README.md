@@ -31,14 +31,28 @@ share one SQLite database on your machine.
 
 ### Requirements
 
-- **Node.js 24**
-- macOS or Linux for the MCP server and browser viewer
-- Apple Silicon macOS for the source-built Electron package
+- macOS 13.5 (Ventura) or later on Apple silicon or Intel for the desktop app
+- **Node.js 24** for source builds, the MCP server, and the browser viewer
+- macOS or Linux for the source-build path
 - GitHub Copilot CLI and/or Claude Code
 
-The v0.1 distribution is source-first and is not published to npm.
+Agent Inbox is not published to npm. When a public release is available, download its
+notarized universal macOS app from
+[GitHub Releases](https://github.com/shariqh/agent-inbox/releases).
 
-### 1. Clone and build
+### 1. Install the macOS app
+
+When a public release is available, download the DMG from
+[GitHub Releases](https://github.com/shariqh/agent-inbox/releases), drag **Agent Inbox**
+to `/Applications`, and launch it. The universal app supports Apple silicon and Intel
+and includes the Node 24 agent runtime, so it does not require a system Node installation.
+
+On first launch, open **Setup**, choose GitHub Copilot CLI, Claude Code, or both, and
+select **Install now**. Setup verifies and installs the bundled runtime, registers the MCP
+server, and adds the reporting instructions. Start a fresh agent session afterward.
+
+If no public release is listed yet, or if you want to develop Agent Inbox, use the
+source-build fallback:
 
 ```sh
 git clone https://github.com/shariqh/agent-inbox.git
@@ -47,7 +61,7 @@ npm ci
 npm run build
 ```
 
-### 2. Connect your coding agents
+### 2. Connect your coding agents from a source build
 
 Preview the changes first, then install the MCP registration and global reporting
 instructions:
@@ -63,7 +77,7 @@ instruction files before changing them, and owns only its marked block.
 
 Start a fresh agent session after installation.
 
-### 3. Launch the Electron app
+### 3. Launch a source build
 
 ```sh
 npm run electron
@@ -72,7 +86,7 @@ npm run electron
 The Electron app starts or safely reuses the local viewer and opens the desktop
 workspace. Its **Setup** panel can also run the same audited host installer.
 
-To build a standalone local development macOS app:
+To package a standalone local development app on an Apple silicon Mac:
 
 ```sh
 npm run generate:icons
@@ -80,10 +94,10 @@ npm run package:app
 open "out/Agent Inbox-darwin-arm64/Agent Inbox.app"
 ```
 
-The no-secret universal arm64+x64 app and provisional DMG are produced by the native
-architecture workflow in `.github/workflows/macos-universal.yml`. Release inputs,
-signing modes, verification evidence, and the Layer 3 notarization handoff are
-documented in [`docs/macos-release.md`](docs/macos-release.md).
+The protected release pipeline builds, signs, notarizes, verifies, and publishes the
+universal arm64+x64 DMG. Release inputs, signing modes, verification evidence, and the
+publication runbook are documented in
+[`docs/macos-release.md`](docs/macos-release.md).
 
 `assets/icon.svg` is the editable full-color source of truth.
 `assets/icon-mark.svg` is its deliberately simplified single-color derivative for
@@ -95,12 +109,10 @@ dimensions, SVG copies, and the complete ICNS representation set without
 rerasterizing. Generation requires `rsvg-convert`; generation and checking use
 macOS `iconutil`.
 
-There are no downloadable Electron binaries yet; the package is built from your
-checkout and ad-hoc signed locally. The release prerequisite now supports staging
-separate `darwin-arm64` and `darwin-x64` Node 24 agent runtimes; see
-[`electron/README.md`](electron/README.md#portable-agent-runtime-staging). A portable
-package installs the selected payload under `~/.agent-inbox/runtime/`, so registered
-agents do not depend on the app bundle remaining in place.
+Release packages carry separate `darwin-arm64` and `darwin-x64` Node 24 agent runtimes;
+see [`electron/README.md`](electron/README.md#portable-agent-runtime-staging). Setup
+installs the matching payload under `~/.agent-inbox/runtime/`, so registered agents do
+not depend on the app bundle remaining in place.
 
 ### Browser viewer on macOS or Linux
 
@@ -219,10 +231,10 @@ invariants in [CLAUDE.md](CLAUDE.md).
 
 - [Hosted mode with streamable HTTP and authentication](https://github.com/shariqh/agent-inbox/issues/8)
 - [Remote answer to exact local-session wake and continuation](https://github.com/shariqh/agent-inbox/issues/51)
-- Downloadable, signed Electron release artifacts
 
 ## Project links
 
+- [Downloads](https://github.com/shariqh/agent-inbox/releases)
 - [Installation](docs/INSTALL.md)
 - [Claude hook integration](docs/hooks.md)
 - [Contributing](CONTRIBUTING.md)

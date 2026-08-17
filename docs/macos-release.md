@@ -284,6 +284,9 @@ No credential value is written to a job output or artifact.
 
 ### Failure recovery
 
+- The immutable annotated `v1.0.0` tag remains at its original commit after the
+  pre-publication signing failure. Recover only from the corrected source as `v1.0.1`;
+  never move, replace, or delete `v1.0.0`.
 - A failure before publication creates no GitHub Release.
 - A publication upload or remote asset mismatch removes the draft release and leaves
   the annotated tag unchanged.

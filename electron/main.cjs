@@ -17,7 +17,7 @@
 //      before and kill that child on quit — only because we own it.
 //   4. Open a BrowserWindow on the viewer URL once the server responds.
 
-const { app, BrowserWindow, ipcMain, Menu, Notification, shell } = require('electron')
+const { app, BrowserWindow, ipcMain, Menu, Notification, nativeTheme, shell } = require('electron')
 const { spawn } = require('node:child_process')
 const { randomBytes } = require('node:crypto')
 const { existsSync } = require('node:fs')
@@ -25,7 +25,7 @@ const http = require('node:http')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 const { classifyReuse, watchUpstream } = require('./reuse.cjs')
-const { canRunSetup, installerRepoRoot, runAgentInstall } = require('./setup-runner.cjs')
+const { canRunSetup, installerRepoRoot, runAgentInstall, runtimeKey, selectRuntimePayload } = require('./setup-runner.cjs')
 const {
   cannedResponseActions,
   createNotificationRetainer,
@@ -49,12 +49,32 @@ const REPO_ROOT = path.resolve(__dirname, '..')
 const responseWatch = createResponseWatch()
 const notificationRetainer = createNotificationRetainer()
 const wakeAdapter = wakeAdapterFromEnv(process.env)
+const THEME_SOURCE_VALUES = new Set(['light', 'dark', 'system'])
+const THEME_BACKGROUND_COLORS = {
+  light: '#f8f3f4',
+  dark: '#171113',
+}
 let setupInstallRunning = false
 let setupInstallEnabled = false
 let setupInstallWebContentsId = null
 let setupInstallPromise = null
 let cancelSetupInstall = null
 let quitAfterSetup = false
+// Issue #74: which exact runtime payload (if any) this release build selected
+// for this host, computed once ownership of the viewer is proven. Stays at
+// its unresolved default for a dev/legacy checkout — installerRepoRoot alone
+// still gates that path, exactly as before.
+let runtimeSelection = { ok: false, reason: 'unresolved', key: runtimeKey(process.platform, process.arch) }
+let themeWindow = null
+let themeWindowWebContentsId = null
+
+function isTrustedThemeSender(senderUrl) {
+  try {
+    return new URL(senderUrl).origin === new URL(URL_BASE).origin
+  } catch {
+    return false
+  }
+}
 
 ipcMain.handle('agent-inbox:install-available', (event) =>
   setupInstallEnabled &&
@@ -69,14 +89,32 @@ ipcMain.handle('agent-inbox:install', async (event, target) => {
   if (setupInstallRunning) {
     return { ok: false, exitCode: null, output: 'Agent setup is already running.', target, timedOut: false }
   }
-  const repoRoot = installerRepoRoot(REPO_ROOT)
+  // Issue #74: a release build's installer script lives INSIDE the exact,
+  // digest-verified runtime payload DIRECTORY selectRuntimePayload resolved —
+  // never installerRepoRoot(REPO_ROOT), which only ever finds a builder's own
+  // checkout. A dev/legacy checkout (no runtimePayloads at all) is unaffected
+  // and keeps looking for scripts/install-agents.sh via installerRepoRoot.
+  const isReleaseBuild = runtimeSelection.reason !== 'no-release-payloads'
+  const repoRoot = isReleaseBuild
+    ? (runtimeSelection.ok ? runtimeSelection.path : null)
+    : installerRepoRoot(REPO_ROOT)
   if (!repoRoot) {
     return { ok: false, exitCode: null, output: 'The agent-inbox checkout or installer could not be found.', target, timedOut: false }
   }
   setupInstallRunning = true
+  // Release builds (issue #74) pass the exact, digest-verified runtime payload
+  // through so the installer stages a portable runtime instead of assuming a
+  // source checkout; dev/legacy builds pass none and keep today's invocation.
   const install = runAgentInstall({
     repoRoot,
     target,
+    runtimePayload: runtimeSelection.ok
+      ? {
+          path: runtimeSelection.path,
+          digest: runtimeSelection.digest,
+          packageVersion: runtimeSelection.packageVersion,
+        }
+      : null,
     onCancel(cancel) { cancelSetupInstall = cancel },
   })
   setupInstallPromise = install
@@ -87,6 +125,19 @@ ipcMain.handle('agent-inbox:install', async (event, target) => {
     if (setupInstallPromise === install) setupInstallPromise = null
     cancelSetupInstall = null
   }
+})
+
+ipcMain.handle('agent-inbox:set-theme-preference', (event, preference) => {
+  const senderUrl = event.senderFrame?.url ?? ''
+  if (!THEME_SOURCE_VALUES.has(preference) ||
+      event.sender.id !== themeWindowWebContentsId ||
+      !isTrustedThemeSender(senderUrl)) {
+    return false
+  }
+  nativeTheme.themeSource = preference
+  syncThemeChrome()
+  if (themeWindow && !themeWindow.isDestroyed()) themeWindow.show()
+  return true
 })
 
 // One attention predicate for the whole product (spec §7 / tenet 3): the dock
@@ -123,6 +174,15 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 /** The viewer child process, ONLY if this app spawned it. Never set for a pre-existing server. */
 let spawnedViewer = null
+
+function themeBackgroundColor() {
+  return nativeTheme.shouldUseDarkColors ? THEME_BACKGROUND_COLORS.dark : THEME_BACKGROUND_COLORS.light
+}
+
+function syncThemeChrome(win = themeWindow) {
+  if (!win || win.isDestroyed()) return
+  win.setBackgroundColor(themeBackgroundColor())
+}
 
 function probeResponse(accept) {
   return new Promise((resolve) => {
@@ -392,15 +452,21 @@ function startAttentionWatch(win) {
 
 function createWindow() {
   const win = new BrowserWindow({
+    show: false,
     width: 1100,
     height: 850,
     title: 'Agent Inbox',
+    backgroundColor: themeBackgroundColor(),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
       preload: path.join(__dirname, 'setup-preload.cjs'),
     },
   })
+  themeWindow = win
+  const webContentsId = win.webContents.id
+  themeWindowWebContentsId = webContentsId
+  syncThemeChrome(win)
   // Keep our title; the page's <title> would otherwise overwrite it.
   win.on('page-title-updated', (e) => e.preventDefault())
 
@@ -416,9 +482,30 @@ function createWindow() {
       shell.openExternal(url)
     }
   })
+  win.webContents.on('did-finish-load', async () => {
+    if (win.isDestroyed() || win.isVisible()) return
+    try {
+      const preference = await win.webContents.executeJavaScript(
+        'document.documentElement.dataset.themePreference'
+      )
+      nativeTheme.themeSource = THEME_SOURCE_VALUES.has(preference) ? preference : 'light'
+      syncThemeChrome(win)
+    } catch (err) {
+      console.error('[agent-inbox] could not synchronize native theme before showing the window', err)
+      nativeTheme.themeSource = 'light'
+      syncThemeChrome(win)
+    }
+    if (!win.isDestroyed()) win.show()
+  })
+  win.on('closed', () => {
+    if (themeWindow === win) themeWindow = null
+    if (themeWindowWebContentsId === webContentsId) themeWindowWebContentsId = null
+  })
 
   return win
 }
+
+nativeTheme.on('updated', () => syncThemeChrome())
 
 function installApplicationMenu(win) {
   const settings = {
@@ -488,7 +575,15 @@ app.whenReady().then(async () => {
     app.exit(1)
     return
   } else if (await waitForOwnership()) {
-    setupInstallEnabled = true
+    // Issue #74: for a release build (setup-info.json carries runtimePayloads
+    // for this host's architecture), one-click setup is only ever enabled
+    // when the EXACT selected payload is present and digest-verified — never
+    // when it is missing, mismatched, or for an unsupported architecture.
+    // A dev/legacy checkout (no runtimePayloads at all — `reason ===
+    // 'no-release-payloads'`) keeps today's behavior unchanged.
+    runtimeSelection = selectRuntimePayload({ appRoot: REPO_ROOT })
+    const isReleaseBuild = runtimeSelection.reason !== 'no-release-payloads'
+    setupInstallEnabled = isReleaseBuild ? runtimeSelection.ok : true
   } else {
     console.error('[agent-inbox] started viewer did not prove ownership; refusing to load it')
     app.exit(1)

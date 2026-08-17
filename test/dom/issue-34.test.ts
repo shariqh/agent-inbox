@@ -15,6 +15,7 @@ import {
   bootApp,
   buttonLabelled,
   click,
+  collapseRow,
   freshDb,
   pollTick,
   row,
@@ -94,8 +95,7 @@ describe('issue #34 · correcting a chat-recorded answer', () => {
 
     click(row(id))
     await settle()
-    click(row(id))
-    await settle()
+    await collapseRow(id)
     document.dispatchEvent(new window.KeyboardEvent('keydown', { key: '2', bubbles: true }))
     await settle()
 

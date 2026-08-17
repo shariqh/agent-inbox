@@ -216,6 +216,51 @@ describe('buildStamp · fails open on every broken input', () => {
   })
 })
 
+// ── issue #74: a signed release build makes NO checkout/repackage claim ─────
+
+describe('buildStamp · a release build (schema 2) is a third case, never dev/current/stale', () => {
+  it('short-circuits to drift "release" with version/commit/builtAt, no head, no git spawn', async () => {
+    const git = countingGit()
+    const releaseBaked: BakedInfo = {
+      schema: 2,
+      version: '1.2.3',
+      commit: 'a'.repeat(40),
+      builtAt: '2026-07-25T12:00:00.000Z',
+      runtimePayloads: {
+        'darwin-arm64': { path: 'runtime/darwin-arm64.tar.gz', digest: `sha256:${'b'.repeat(64)}` },
+        'darwin-x64': { path: 'runtime/darwin-x64.tar.gz', digest: `sha256:${'c'.repeat(64)}` },
+      },
+    }
+
+    const stamp = await buildStamp(releaseBaked, '/some/cwd', { ...fresh(), git })
+
+    expect(stamp.drift).toBe('release')
+    expect(stamp.version).toBe('1.2.3')
+    expect(stamp.commit).toBe('a'.repeat(40))
+    expect(stamp.builtAt).toBe('2026-07-25T12:00:00.000Z')
+    expect(stamp.head).toBeNull()
+    expect(stamp.repoRoot).toBeNull()
+    expect(git.calls, 'a release has no builder checkout to probe').toEqual([])
+  })
+
+  it('never claims repoRoot/nodeBin exist for a release build even if hand-added to the baked JSON', async () => {
+    const stamp = await buildStamp(
+      { schema: 2, version: '9.9.9', repoRoot: '/builder/machine/checkout' } as BakedInfo,
+      '/x',
+      fresh(),
+    )
+    expect(stamp.drift).toBe('release')
+    expect(stamp.repoRoot).toBeNull()
+  })
+
+  it('reports version: null for dev and legacy (pre-#74) bundles', async () => {
+    const dir = tmpRepo()
+    commitIn(dir, 'one')
+    expect((await buildStamp(null, dir, fresh())).version).toBeNull()
+    expect((await buildStamp({ repoRoot: dir, nodeBin: '/n' }, '/x', fresh())).version).toBeNull()
+  })
+})
+
 describe('readBakedInfo · a corrupt setup-info.json can never break the viewer', () => {
   const write = (body: string): string => {
     const dir = mkdtempSync(join(tmpdir(), 'baked-'))
@@ -245,6 +290,47 @@ describe('readBakedInfo · a corrupt setup-info.json can never break the viewer'
   it('reads the real shape the packager writes', () => {
     const info = readBakedInfo(write(JSON.stringify({ repoRoot: '/r', nodeBin: '/n', commit: 'abc123', builtAt: '2026-07-25T12:00:00.000Z' })))
     expect(info).toEqual({ repoRoot: '/r', nodeBin: '/n', commit: 'abc123', builtAt: '2026-07-25T12:00:00.000Z' })
+  })
+
+  // issue #74 — the release shape write-setup-info.mjs --release bakes.
+  it('reads a release bake (schema 2, version, runtimePayloads) with no repoRoot/nodeBin', () => {
+    const info = readBakedInfo(write(JSON.stringify({
+      schema: 2,
+      version: '1.0.0',
+      builtAt: '2026-07-25T12:00:00.000Z',
+      commit: 'a'.repeat(40),
+      runtimePayloads: {
+        'darwin-arm64': { path: 'runtime/darwin-arm64.tar.gz', digest: `sha256:${'b'.repeat(64)}` },
+        'darwin-x64': { path: 'runtime/darwin-x64.tar.gz', digest: `sha256:${'c'.repeat(64)}` },
+      },
+    })))
+    expect(info).toEqual({
+      schema: 2,
+      version: '1.0.0',
+      builtAt: '2026-07-25T12:00:00.000Z',
+      commit: 'a'.repeat(40),
+      runtimePayloads: {
+        'darwin-arm64': { path: 'runtime/darwin-arm64.tar.gz', digest: `sha256:${'b'.repeat(64)}` },
+        'darwin-x64': { path: 'runtime/darwin-x64.tar.gz', digest: `sha256:${'c'.repeat(64)}` },
+      },
+    })
+    expect(info!.repoRoot).toBeUndefined()
+    expect(info!.nodeBin).toBeUndefined()
+  })
+
+  it('drops malformed runtimePayloads entries instead of trusting them', () => {
+    const info = readBakedInfo(write(JSON.stringify({
+      schema: 2,
+      version: '1.0.0',
+      runtimePayloads: {
+        'darwin-arm64': { path: 'runtime/darwin-arm64.tar.gz', digest: `sha256:${'b'.repeat(64)}` },
+        'darwin-x64': { path: 123, digest: null },
+        junk: 'not-an-object',
+      },
+    })))
+    expect(info!.runtimePayloads).toEqual({
+      'darwin-arm64': { path: 'runtime/darwin-arm64.tar.gz', digest: `sha256:${'b'.repeat(64)}` },
+    })
   })
 })
 

@@ -1,0 +1,156 @@
+name: macOS release inputs
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate-tag:
+    name: Validate annotated release tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
+      source-commit: ${{ steps.tag.outputs.source-commit }}
+      node-version: ${{ steps.release-inputs.outputs.node-version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.ref }}
+      - id: release-inputs
+        name: Resolve pinned Node version
+        run: echo "node-version=$(node scripts/release-inputs.mjs --node-version)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ steps.release-inputs.outputs.node-version }}
+          cache: npm
+      - run: npm ci
+      - run: npm run release:inputs
+      - id: tag
+        name: Require annotated tag, exact version, and exact checkout
+        run: >-
+          node scripts/macos-release-gates.mjs tag
+          --repo-root "$GITHUB_WORKSPACE"
+          --ref "$GITHUB_REF"
+          --sha "$GITHUB_SHA"
+          --output build/release-context.json
+      - run: npx vitest run test/macos-release-gates.test.ts test/macos-release-workflow.test.ts
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-context
+          path: build/release-context.json
+          if-no-files-found: error
+          retention-days: 7
+
+  runtime:
+    name: Release runtime / ${{ matrix.key }}
+    needs: validate-tag
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - key: darwin-arm64
+            arch: arm64
+            runner: macos-15
+          - key: darwin-x64
+            arch: x64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.ref }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ needs.validate-tag.outputs.node-version }}
+          architecture: ${{ matrix.arch }}
+          cache: npm
+      - run: npm ci
+      - run: echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct '${{ needs.validate-tag.outputs.source-commit }}')" >> "$GITHUB_ENV"
+      - run: npm run build
+      - name: Stage verified native runtime
+        run: >-
+          npm run stage:runtime:native --
+          --key "${{ matrix.key }}"
+          --output "build/runtime/${{ matrix.key }}"
+      - name: Preserve runtime modes
+        run: >-
+          node scripts/archive-tree.mjs create
+          --source "build/runtime/${{ matrix.key }}"
+          --archive "build/${{ matrix.key }}.tar.gz"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-runtime-${{ matrix.key }}
+          path: build/${{ matrix.key }}.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  thin:
+    name: Release thin app / ${{ matrix.key }}
+    needs:
+      - validate-tag
+      - runtime
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - key: darwin-arm64
+            arch: arm64
+            runner: macos-15
+          - key: darwin-x64
+            arch: x64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.ref }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ needs.validate-tag.outputs.node-version }}
+          architecture: ${{ matrix.arch }}
+          cache: npm
+      - run: npm ci
+      - run: echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct '${{ needs.validate-tag.outputs.source-commit }}')" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: release-runtime-darwin-*
+          path: build/runtime-artifacts
+          merge-multiple: true
+      - name: Restore both verified runtime payloads
+        run: |
+          mkdir -p build/runtimes
+          node scripts/archive-tree.mjs extract --archive build/runtime-artifacts/darwin-arm64.tar.gz --destination build/runtimes --expected-root darwin-arm64
+          node scripts/archive-tree.mjs extract --archive build/runtime-artifacts/darwin-x64.tar.gz --destination build/runtimes --expected-root darwin-x64
+      - name: Build architecture-correct thin app from release tag
+        run: >-
+          npm run package:thin --
+          --arch "${{ matrix.arch }}"
+          --runtime-arm64 build/runtimes/darwin-arm64
+          --runtime-x64 build/runtimes/darwin-x64
+          --output "build/thin/${{ matrix.key }}/Agent Inbox.app"
+      - name: Preserve thin app symlinks and modes
+        run: >-
+          node scripts/archive-tree.mjs create
+          --source "build/thin/${{ matrix.key }}"
+          --archive "build/thin-${{ matrix.key }}.tar.gz"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-thin-${{ matrix.key }}
+          path: build/thin-${{ matrix.key }}.tar.gz
+          if-no-files-found: error
+          retention-days: 7

@@ -25,6 +25,7 @@ import { keyAction, rovingIndex, ariaAnswerLabel, livenessGlyph, deckEntryAt } f
 import { partitionNotes, unreadNoteCount, ambientChips, seenWatermark, markSeenIds } from '/notes.js'
 import { liveSummary, lastActivityAt, isDormant, activitySynopsis } from '/livebar.js'
 import { esc } from '/esc.js'
+import { initStructuredTextCopy } from '/structured-copy.js'
 import { renderStructuredText } from '/structured-text.js'
 import { boardRowsView, boardRowLine, progressLabel, hiddenDoneCount, lingeringBoards } from '/boards.js'
 import { titleWithBadge, focusHashFor, parseFocusHash } from '/badge.js'
@@ -35,6 +36,7 @@ import { actionCategory, actionOwnerLabel, agentFollowupChip, changeKind, lifecy
 import { buildRelay } from '/relay.js'
 import { buildMission } from '/mission.js'
 import { PANE_DEFAULTS, paneKeyValue, paneValueFromPointer, resolvePaneLayout } from '/panes.js'
+import { createThemeController } from '/theme.js'
 
 void paginateGroups // kept exported+tested (spec §15); the viewer no longer calls it
 
@@ -71,6 +73,26 @@ let shown = { ...PAGE }
 function resetPaging() { shown = { ...PAGE } }
 
 let lastData = null
+let renderedTheme = document.documentElement.dataset.theme ?? 'light'
+function syncThemeChoices(preference) {
+  for (const input of document.querySelectorAll('input[name="theme-preference"]')) {
+    input.checked = input.value === preference
+  }
+}
+const themeController = createThemeController({
+  storage: localStorage,
+  root: document.documentElement,
+  media: window.matchMedia('(prefers-color-scheme: dark)'),
+  onChange(preference, effective) {
+    const changed = renderedTheme !== effective
+    renderedTheme = effective
+    window.agentInboxTheme?.setPreference?.(preference)
+    syncThemeChoices(preference)
+    // OS appearance changes are ambient. CSS updates immediately from data-theme;
+    // inline project colors can wait for the poll gate so drafts and scroll stay put.
+    if (changed && lastData) renderIfIdle()
+  },
+})
 let authoritativeClosed = []
 let loadGeneration = 0
 let appliedLoadGeneration = 0
@@ -635,14 +657,14 @@ function focusItem(id, source = null) {
   if (location.hash !== hash) location.hash = hash // survives reload
   forceRender()
   // fix round 2 (C1): this used to call setOpenRow(id) for EVERY target. The
-  // accordion is a Needs-you affordance — `toggleRow` is the only thing that
-  // clears openRowId and it is reachable only from a rendered `.nrow`. A board
+  // inspector is a Needs-you affordance — explicit collapse is reachable only
+  // from a rendered `.nrow`. A board
   // id (electron/main.cjs deep-links a blocked row with focusHashFor(board.id),
   // one notification click away) or a notes/done item id has none, so
   // shouldSuspendRender() stayed true forever: load() kept updating lastData
   // while the DOM, all four tab counts and document.title froze, and Escape's
   // `collapse` intent no-op'd against a `.nrow` that never existed. Claim the
-  // accordion only once the target has actually landed in the list — render()
+  // inspector only once the target has actually landed in the list — render()
   // above put it there — then render again so the card body mounts under it.
   const queueTarget = needsYouRowEl(id)
   if (queueTarget) {
@@ -1177,6 +1199,7 @@ function paintEditableSurfaces({ agents, g, boards, archived, live }) {
 function render() {
   const frame = preparedFrame ?? paintAmbient()
   preparedFrame = null
+  const missionFocus = captureMissionFocus()
   const draftFocus = activeDraftFocusBookmark() ?? requestedDraftFocusBookmark
   const pagedFocus = pagedCardFocusBookmark()
   pagedFocusId = pagedFocus?.id ?? null
@@ -1185,7 +1208,9 @@ function render() {
   requestedDraftFocusBookmark = null
   paintEditableSurfaces(frame)
   pagedFocusId = null
-  if (!restoreDraftRecoveryFocus() && !restoreDraftFocus(draftFocus)) {
+  if (missionFocus && missionBoardId) {
+    restoreMissionFocus(missionFocus)
+  } else if (!restoreDraftRecoveryFocus() && !restoreDraftFocus(draftFocus)) {
     restorePagedCardFocus(pagedFocus)
   }
   applySearchJumpHighlight()
@@ -1346,7 +1371,7 @@ function openTriage() {
   }
   triageReturnFocus = captureTriageReturnFocus()
   if (relayOpen) closeRelay()
-  if (missionBoardId) closeMission()
+  if (missionBoardId) closeMission({ restoreFocus: false })
   triageDeck = { entries: buildDeck(), index: 0 }
   renderTriage()
   document.querySelector('#lightbox .lb-panel')?.focus({ preventScroll: true })
@@ -1541,7 +1566,27 @@ function rowHandledEl(b, r) {
   return why
 }
 
-// The ONE write path for a row annotation — single-line input, no window.prompt.
+const REPLY_EDITOR_MAX_HEIGHT = 160
+
+function resizeReplyEditor(editor) {
+  editor.style.height = 'auto'
+  const naturalHeight = editor.scrollHeight
+  if (naturalHeight > 0) editor.style.height = `${Math.min(naturalHeight, REPLY_EDITOR_MAX_HEIGHT)}px`
+  editor.style.overflowY = naturalHeight > REPLY_EDITOR_MAX_HEIGHT ? 'auto' : 'hidden'
+}
+
+function bindReplyEditor(editor, submit) {
+  editor.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' || (!event.ctrlKey && !event.metaKey)) return
+    event.preventDefault()
+    submit()
+  })
+  requestAnimationFrame(() => {
+    if (editor.isConnected) resizeReplyEditor(editor)
+  })
+}
+
+// The ONE write path for a row annotation — multiline editor, no window.prompt.
 // Shared by the boards matrix and the triage card (spec §7).
 //
 // It also carries #36's lever, so all THREE surfaces that let a human act on a
@@ -1557,8 +1602,10 @@ function rowAnswerEl(b, r, onSaved) {
   wrap.className = 'row-answer'
   const row = document.createElement('div')
   row.className = 'reply-row'
-  const input = document.createElement('input')
+  const input = document.createElement('textarea')
   input.className = 'reply-input'
+  input.rows = 1
+  input.setAttribute('aria-keyshortcuts', 'Control+Enter Meta+Enter')
   input.dataset.draftFocusKey = `row:${r.id}`
   input.placeholder = r.options?.length
     ? 'or answer in your own words…'
@@ -1587,6 +1634,7 @@ function rowAnswerEl(b, r, onSaved) {
     editorGeneration = bumpDraftGeneration(rowDraftGenerations, r.id)
     rowDrafts[r.id] = input.value
     rowDraftKinds[r.id] = input.dataset.responseKind ?? rowDraftKinds[r.id] ?? 'answer'
+    resizeReplyEditor(input)
     if (input.value.trim()) {
       rowDraftMeta[r.id] = {
         revision: r.revision,
@@ -1726,7 +1774,7 @@ function rowAnswerEl(b, r, onSaved) {
       },
     ))
   }
-  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') save() })
+  bindReplyEditor(input, save)
   row.appendChild(input)
   row.appendChild(btn('Send', save))
   const handled = rowHandledEl(b, r)
@@ -1937,7 +1985,7 @@ let relayOpen = false
 
 function openRelay() {
   if (triageDeck) closeTriage()
-  if (missionBoardId) closeMission()
+  if (missionBoardId) closeMission({ restoreFocus: false })
   relayOpen = true
   renderRelay()
 }
@@ -2062,22 +2110,109 @@ function initRelay() {
 
 let missionBoardId = null
 let missionDetailRowId = null
+let missionReturnFocus = null
+let missionDetailReturnFocus = null
+
+function missionPanel() {
+  return document.querySelector('#missionbox .mission-panel')
+}
+
+function missionDetailPanel() {
+  return document.querySelector('#missionbox .mission-detail-panel')
+}
+
+function captureMissionFocus() {
+  const active = document.activeElement
+  if (!missionBoardId || !active?.closest?.('#missionbox')) return null
+  const detail = active.closest('.mission-detail-panel')
+  const surface = detail ? 'detail' : 'flow'
+  const rowId = surface === 'detail'
+    ? missionDetailRowId
+    : active.closest('.mission-path[data-row-id]')?.dataset.rowId ?? null
+  const scope = surface === 'detail'
+    ? detail
+    : (rowId ? active.closest('.mission-path[data-row-id]') : missionPanel())
+  if (!scope) return null
+  const targets = cardFocusTargets(scope)
+  if (active === scope || !targets.includes(active)) {
+    return { boardId: missionBoardId, surface, rowId, key: null, ordinal: 0 }
+  }
+  const key = cardFocusKey(active)
+  return {
+    boardId: missionBoardId,
+    surface,
+    rowId,
+    key,
+    ordinal: targets.filter((target) => cardFocusKey(target) === key).indexOf(active),
+  }
+}
+
+function focusMissionPanel() {
+  const panel = missionPanel()
+  panel?.focus({ preventScroll: true })
+  return document.activeElement === panel
+}
+
+function restoreMissionFocus(bookmark) {
+  if (!bookmark || bookmark.boardId !== missionBoardId) return false
+  if (bookmark.surface === 'detail' && bookmark.rowId !== missionDetailRowId) {
+    return focusMissionPanel()
+  }
+  const scope = bookmark.surface === 'detail'
+    ? missionDetailPanel()
+    : (bookmark.rowId
+        ? document.querySelector(`#missionbox .mission-path[data-row-id="${CSS.escape(bookmark.rowId)}"]`)
+        : missionPanel())
+  if (!scope || scope.closest('[hidden]')) return focusMissionPanel()
+  const matches = bookmark.key
+    ? cardFocusTargets(scope).filter((target) => cardFocusKey(target) === bookmark.key)
+    : []
+  const target = matches[bookmark.ordinal] ?? (bookmark.key ? null : scope)
+  if (!target) return focusMissionPanel()
+  target.focus({ preventScroll: true })
+  return document.activeElement === target || focusMissionPanel()
+}
+
+function restoreMissionDetailReturnFocus(bookmark) {
+  if (!bookmark || bookmark.boardId !== missionBoardId || !bookmark.rowId) {
+    return focusMissionPanel()
+  }
+  const scope = document.querySelector(
+    `#missionbox .mission-path[data-row-id="${CSS.escape(bookmark.rowId)}"]`,
+  )
+  if (!scope) return focusMissionPanel()
+  const matches = bookmark.key
+    ? cardFocusTargets(scope).filter((target) => cardFocusKey(target) === bookmark.key)
+    : []
+  const target = matches[bookmark.ordinal] ?? cardFocusTargets(scope)[0]
+  if (!target) return focusMissionPanel()
+  target.focus({ preventScroll: true })
+  return document.activeElement === target || focusMissionPanel()
+}
 
 function openMission(board) {
   if (triageDeck) closeTriage()
   if (relayOpen) closeRelay()
+  missionReturnFocus = pagedCardFocusBookmark()
   missionBoardId = board.id
-  renderMission()
+  renderMission({ restoreFocus: false })
+  focusMissionPanel()
 }
 
-function closeMission() {
+function closeMission({ restoreFocus = true } = {}) {
+  const returnFocus = missionReturnFocus
   missionBoardId = null
   missionDetailRowId = null
+  missionReturnFocus = null
+  missionDetailReturnFocus = null
   document.getElementById('missionbox').hidden = true
+  if (restoreFocus && !restorePagedCardFocus(returnFocus)) {
+    document.querySelector('.tab[data-tab="boards"]')?.focus({ preventScroll: true })
+  }
 }
 
 function focusMissionRow(board, row) {
-  closeMission()
+  closeMission({ restoreFocus: false })
   focusItem(board.id)
   openRows.add(row.id)
   forceRender()
@@ -2088,19 +2223,28 @@ function focusMissionRow(board, row) {
 }
 
 function openMissionDetail(row) {
+  const current = captureMissionFocus()
+  missionDetailReturnFocus = current?.surface === 'flow' && current.rowId === row.id
+    ? current
+    : { boardId: missionBoardId, surface: 'flow', rowId: row.id, key: null, ordinal: 0 }
   missionDetailRowId = row.id
-  renderMission()
+  renderMission({ restoreFocus: false })
+  missionDetailPanel()?.focus({ preventScroll: true })
 }
 
-function closeMissionDetail() {
+function closeMissionDetail({ restoreFocus = true } = {}) {
+  const returnFocus = missionDetailReturnFocus
   missionDetailRowId = null
+  missionDetailReturnFocus = null
   document.querySelector('#missionbox .mission-detail').hidden = true
+  if (restoreFocus) restoreMissionDetailReturnFocus(returnFocus)
 }
 
 function missionPathEl(path, board) {
   const row = path.row
   const line = document.createElement('div')
   line.className = 'mission-path'
+  line.dataset.rowId = row.id
   const action = document.createElement('article')
   action.className = `mission-node mission-${row.status}`
   const owner = row.action_owner ? actionOwnerLabel(row) : (STATUS_LABEL[row.status] ?? row.status)
@@ -2130,8 +2274,9 @@ function missionPathEl(path, board) {
   return line
 }
 
-function renderMission() {
+function renderMission({ restoreFocus = true } = {}) {
   if (!missionBoardId || !lastData) return
+  const focusBookmark = restoreFocus ? captureMissionFocus() : null
   if (reconcileDraftOwners()) {
     forceRender()
     return
@@ -2155,7 +2300,7 @@ function renderMission() {
     for (const path of mission.paths) paths.appendChild(missionPathEl(path, board))
   }
   box.querySelector('.mission-root-card').onclick = () => {
-    closeMission()
+    closeMission({ restoreFocus: false })
     focusItem(board.id)
   }
   const detail = box.querySelector('.mission-detail')
@@ -2169,12 +2314,13 @@ function renderMission() {
       detail.querySelector('.mission-detail-board').onclick = () => focusMissionRow(board, row)
       detail.hidden = false
     } else {
-      closeMissionDetail()
+      closeMissionDetail({ restoreFocus: false })
     }
   } else {
     detail.hidden = true
   }
   box.hidden = false
+  if (restoreFocus) restoreMissionFocus(focusBookmark)
 }
 
 function initMission() {
@@ -3906,14 +4052,21 @@ function needsRowEl(m, entry, nowMs) {
     undo.className = 'undo-btn'
     el.querySelector('.nrow-l2').replaceChildren(document.createTextNode('Dismissed — '), undo)
   }
+  el.addEventListener('mousedown', (ev) => {
+    if (openRowId !== m.id || ev.button !== 0) return
+    if (rowInteractiveDescendant(ev.target, el)) return
+    const card = el.querySelector('.nrow-card')
+    if (!card?.contains(document.activeElement)) return
+    ev.preventDefault()
+  })
   el.addEventListener('click', (ev) => {
-    if (ev.target.closest('button, input, a')) return
-    toggleRow(el, m, entry, nowMs)
+    if (rowInteractiveDescendant(ev.target, el)) return
+    activateRow(el, m, entry, nowMs)
   })
   el.addEventListener('keydown', (ev) => {
     if (ev.target !== el) return
-    if (ev.key === 'Enter') { ev.preventDefault(); toggleRow(el, m, entry, nowMs) }
-    if (ev.key === 'Escape' && openRowId === m.id) { ev.preventDefault(); toggleRow(el, m, entry, nowMs) }
+    if (ev.key === 'Enter') { ev.preventDefault(); activateRow(el, m, entry, nowMs) }
+    if (ev.key === 'Escape' && openRowId === m.id) { ev.preventDefault(); collapseRow(m.id) }
   })
   // a full render (poll or user action) rebuilds the open row from openRowId
   if (openRowId === m.id) {
@@ -3947,36 +4100,63 @@ function rowCardBodyEl(entry, m, nowMs) {
   return body
 }
 
-// Single-open accordion. `setOpenRow` owns the logical state; the DOM is patched
-// in place for immediate interaction, then polling rebuilds it from that state.
-//
-// This is the ONE function that opens/closes a row — a mouse click, the row's
-// own Enter/Escape keydown handler below, and Task 17's keyboard 'expand'/
-// 'collapse' intents (dispatched as a synthetic click on the row) all end up
-// here — so focus management (spec §13: focus moves into the card on expand,
-// returns to the row on collapse) lives in exactly one place instead of being
-// duplicated per trigger.
-function toggleRow(el, m, entry, nowMs) {
-  const wasOpen = openRowId === m.id
+const ROW_INTERACTIVE_SELECTOR = `${CARD_FOCUS_SELECTOR}, label, [role="button"], [contenteditable]:not([contenteditable="false"])`
+
+function rowInteractiveDescendant(target, row) {
+  if (!(target instanceof Element)) return false
+  const owner = target.closest(ROW_INTERACTIVE_SELECTOR)
+  return owner !== null && owner !== row
+}
+
+// The fixed desktop inspector is selection, while the compact inline card keeps
+// its accordion toggle. `setOpenRow` remains the only writer of logical state.
+function activateRow(el, m, entry, nowMs) {
+  if (openRowId === m.id) {
+    if (layout !== 'wide') {
+      collapseRow(m.id)
+      return
+    }
+    if (selectedId !== m.id) {
+      selectedId = m.id
+      markSelectedRow(m.id)
+      const card = el.querySelector('.nrow-card')
+      if (!card?.contains(document.activeElement)) el.focus({ preventScroll: true })
+    }
+    return
+  }
   selectedId = m.id
   markSelectedRow(m.id)
-  setOpenRow(wasOpen ? null : m.id)
+  setOpenRow(m.id, { resume: false })
   for (const other of document.querySelectorAll('.nrow[data-open="1"]')) {
     other.removeAttribute('data-open')
     const card = other.querySelector('.nrow-card')
     if (card) card.remove()
   }
-  if (wasOpen) {
-    renderIfIdle()
-    requestAnimationFrame(() => selectRow(m.id)) // focus returns to the row (spec §13)
-    return
-  }
-  el.dataset.open = '1'
-  el.appendChild(rowCardBodyEl(entry, m, nowMs))
+  const liveEl = needsYouRowEl(m.id) ?? el
+  liveEl.dataset.open = '1'
+  liveEl.appendChild(rowCardBodyEl(entry, m, nowMs))
+  resumeRender()
   requestAnimationFrame(() => {
-    const card = el.querySelector('.nrow-card')
-    if (card) { card.tabIndex = -1; card.focus({ preventScroll: true }) } // focus moves into the card (spec §13)
+    const card = needsYouRowEl(m.id)?.querySelector('.nrow-card')
+    if (card && !card.contains(document.activeElement)) {
+      card.tabIndex = -1
+      card.focus({ preventScroll: true }) // focus moves into the card (spec §13)
+    }
   })
+}
+
+// Explicit collapse is separate from activation so pointer/Enter re-selection is
+// idempotent while Escape still closes and restores focus to the owning row.
+function collapseRow(id) {
+  if (openRowId !== id) return
+  selectedId = id
+  markSelectedRow(id)
+  setOpenRow(null)
+  const el = needsYouRowEl(id)
+  el?.removeAttribute('data-open')
+  el?.querySelector('.nrow-card')?.remove()
+  renderIfIdle()
+  requestAnimationFrame(() => selectRow(id))
 }
 
 // notes keep a card list, but flat: no project h3, no agent h4 (§15)
@@ -4471,7 +4651,7 @@ function requestDraftRecovery(target = draftRecoveryTarget) {
     selectRow(target.rowId)
   }
   if (triageDeck) closeTriage({ restoreFocus: false })
-  if (missionBoardId) closeMission()
+  if (missionBoardId) closeMission({ restoreFocus: false })
   if (relayOpen) closeRelay()
   selectTab('needsYou')
 }
@@ -4787,7 +4967,7 @@ async function sendReply(
   }
   showWriteError(id, '')
   // issue #38, the reported surface. Also the entry for the option pills, the ★'s
-  // staged send, Enter in the input and the triage card — all of them were silent.
+  // staged send, the editor shortcut and the triage card — all of them were silent.
   await reloadAndPaint()
 }
 
@@ -4826,8 +5006,10 @@ function answerEl(it) {
     cmp.className = 'compare-toggle'
     row.appendChild(cmp)
   }
-  const input = document.createElement('input')
+  const input = document.createElement('textarea')
   input.className = 'reply-input'
+  input.rows = 1
+  input.setAttribute('aria-keyshortcuts', 'Control+Enter Meta+Enter')
   input.dataset.draftFocusKey = `${it.id}:answer`
   input.placeholder = opts.length ? 'or answer in your own words…' : 'answer…'
   input.value = effectiveReply(it)
@@ -4839,24 +5021,24 @@ function answerEl(it) {
     invalidateItemDraftIntents(it.id)
     editorGeneration = bumpDraftGeneration(itemDraftGenerations, it.id)
     draftReplies[it.id] = input.value
+    resizeReplyEditor(input)
     rememberDraftOwner()
     resumeRender()
   })
-  input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-      sendReply(it.id, input.value, ctxInput.value, 'answer', editorGeneration, null, true, true)
-    }
-  })
-  row.appendChild(input)
-  row.appendChild(btn('Send', () => sendReply(
+  const submit = () => sendReply(
     it.id, input.value, ctxInput.value, 'answer', editorGeneration, null, true, true,
-  )))
+  )
+  bindReplyEditor(input, submit)
+  row.appendChild(input)
+  row.appendChild(btn('Send', submit))
   row.appendChild(writeErrorEl(it.id)) // persists a failed write's reason across the poll rebuild (C3)
   wrap.appendChild(row)
   const ctxRow = document.createElement('div')
   ctxRow.className = 'reply-row reply-context-row'
-  const ctxInput = document.createElement('input')
+  const ctxInput = document.createElement('textarea')
   ctxInput.className = 'reply-input reply-context-input'
+  ctxInput.rows = 1
+  ctxInput.setAttribute('aria-keyshortcuts', 'Control+Enter Meta+Enter')
   ctxInput.dataset.draftFocusKey = `${it.id}:context`
   ctxInput.placeholder = 'optional context for the agent (applies to Send or option picks)…'
   ctxInput.value = effectiveReplyContext(it)
@@ -4864,9 +5046,11 @@ function answerEl(it) {
     invalidateItemDraftIntents(it.id)
     editorGeneration = bumpDraftGeneration(itemDraftGenerations, it.id)
     draftReplyContexts[it.id] = ctxInput.value
+    resizeReplyEditor(ctxInput)
     rememberDraftOwner()
     resumeRender()
   })
+  bindReplyEditor(ctxInput, submit)
   ctxRow.appendChild(ctxInput)
   wrap.appendChild(ctxRow)
   wrap.appendChild(dispositionEl(
@@ -5109,17 +5293,14 @@ function runIntent(intent) {
       return
     }
     case 'expand': {
-      // dispatched as a real click on the row — toggleRow is the single
-      // open/close path and owns the focus-into-card behaviour (spec §13)
+      // A real row click shares pointer activation and focus-into-card behavior.
       if (!selectedId) return
       rowEls().find((el) => el.dataset.cardId === selectedId)?.click()
       return
     }
     case 'collapse': {
-      // same trick in reverse: clicking the open row closes it and toggleRow
-      // returns focus to the row (spec §13)
       if (!openRowId) return
-      document.querySelector(`.nrow[data-card-id="${CSS.escape(openRowId)}"]`)?.click()
+      collapseRow(openRowId)
       return
     }
     case 'exitPeek': {
@@ -5666,7 +5847,13 @@ function setupMenu(s, host, canInstall) {
 
   const updateLabels = () => {
     if (run) run.textContent = `Install ${setupTargetLabel(select.value)} now`
-    commandPreview.textContent = commands[select.value]
+    const command = commands[select.value]
+    // A release build with no runtime installed yet has nothing real to copy
+    // (issue #74) — say so plainly instead of handing over an empty command
+    // that LOOKS like it worked.
+    commandPreview.textContent = command || '(not available yet — no command to copy)'
+    agent.disabled = !command
+    terminal.disabled = !command
     if (agent.textContent.startsWith('Copied')) agent.textContent = 'Copy prompt for agent'
     if (terminal.textContent.startsWith('Copied')) terminal.textContent = 'Copy terminal command'
   }
@@ -5677,12 +5864,62 @@ function setupMenu(s, host, canInstall) {
   host.appendChild(wrap)
 }
 
+function renderThemeSettings(host) {
+  const section = document.createElement('section')
+  section.className = 'setup-block theme-picker'
+  const title = document.createElement('h3')
+  title.textContent = 'Appearance'
+  const hint = document.createElement('p')
+  hint.className = 'setup-hint'
+  hint.textContent = 'Choose a theme for this browser or app profile.'
+  const choices = document.createElement('fieldset')
+  choices.setAttribute('aria-label', 'Appearance')
+
+  for (const option of [
+    { value: 'light', label: 'Light', detail: 'Always use the light editorial palette.' },
+    { value: 'dark', label: 'Dark', detail: 'Always use the low-light editorial palette.' },
+    { value: 'system', label: 'System', detail: 'Follow this device and update automatically.' },
+  ]) {
+    const choice = document.createElement('label')
+    choice.className = 'theme-choice'
+    const input = document.createElement('input')
+    input.type = 'radio'
+    input.name = 'theme-preference'
+    input.value = option.value
+    input.checked = themeController.preference === option.value
+    input.addEventListener('change', () => {
+      if (!input.checked) return
+      try {
+        themeController.setPreference(option.value)
+      } catch (err) {
+        syncThemeChoices(themeController.preference)
+        console.error('Theme preference could not be saved', err)
+        document.getElementById('status').textContent = 'theme preference not saved'
+      }
+    })
+    const copy = document.createElement('span')
+    copy.className = 'theme-choice-copy'
+    const label = document.createElement('strong')
+    label.textContent = option.label
+    const detail = document.createElement('small')
+    detail.textContent = option.detail
+    copy.append(label, detail)
+    choice.append(input, copy)
+    choices.appendChild(choice)
+  }
+
+  section.append(title, hint, choices)
+  host.appendChild(section)
+}
+
 // Setup section: configure new agents or copy the exact setup command. Fetched
 // once, not on the poll.
 async function renderSetup() {
+  const host = document.querySelector('#setup .setup-body')
+  host.replaceChildren()
+  renderThemeSettings(host)
   try {
     const s = await (await fetch('/api/setup')).json()
-    const host = document.querySelector('#setup .setup-body')
     const block = (title, text, hint) => {
       const wrap = document.createElement('div')
       wrap.className = 'setup-block'
@@ -5724,9 +5961,17 @@ async function renderSetup() {
     }
     const canInstall = await window.agentInboxSetup?.available?.().catch(() => false) ?? false
     setupMenu(s, host, canInstall)
-    block('Advanced · Manual MCP registration — Claude Code', s.claudeCommand,
-      'Use the installer above unless you intentionally manage configuration by hand.')
-    block('Advanced · Manual Copilot MCP config', s.copilotConfig)
+    // issue #74: a release build withholds these manual/direct commands
+    // entirely (empty string) until a runtime matching this exact host's
+    // verified payload is installed — render nothing rather than an empty
+    // "fake" block with a header and no content.
+    if (s.claudeCommand) {
+      block('Advanced · Manual MCP registration — Claude Code', s.claudeCommand,
+        'Use the installer above unless you intentionally manage configuration by hand.')
+    }
+    if (s.copilotConfig) {
+      block('Advanced · Manual Copilot MCP config', s.copilotConfig)
+    }
     block('Advanced · Manual shared instructions', s.snippet,
       'This snippet is the signal-quality lever: it tells agents when to raise questions/notes, attach options, poll for your replies, and keep boards. '
       + 'Claude Code can instead import docs/reporting-snippet.md with an @path line, which stays current by itself — the installer detects that and skips its inlined copy. Copilot CLI cannot import, so it always gets the text.')
@@ -5747,7 +5992,8 @@ async function renderSetup() {
 //   initProjectDisclosure →
 //   initKeys (Task 17) → initFocusHash (Task 17) → initStagedFlush →
 //   initPressGuard (#38) → initScrollGuard → initAgentSelect →
-//   initGear → initLiveBar → renderSetup → load → setInterval(load, 3000)
+//   initStructuredTextCopy → initGear → initLiveBar → renderSetup → load →
+//   setInterval(load, 3000)
 initTabs()
 initTriage()
 initRelay()
@@ -5762,6 +6008,7 @@ initStagedFlush()
 initPressGuard()
 initScrollGuard()
 initAgentSelect()
+initStructuredTextCopy()
 initGear()
 initLiveBar()
 renderSetup()

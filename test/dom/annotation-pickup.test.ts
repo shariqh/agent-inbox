@@ -19,7 +19,7 @@ import { describe, it, expect, afterEach } from 'vitest'
 import type Database from 'better-sqlite3'
 import { annotateBoardRow, listBoards, markAnnotationDelivered, upsertBoard } from '../../src/store.js'
 import {
-  advanceClock, answerInput, badgeCount, bootApp, click, freshDb, pollTick, row, rowTitles,
+  advanceClock, answerInput, badgeCount, bootApp, click, collapseRow, freshDb, pollTick, row, rowTitles,
   sendButton, settle, tabCount, type, useDomTest,
 } from './harness.js'
 
@@ -125,8 +125,7 @@ describe('#37 · annotated-and-unpicked renders differently from annotated-and-p
     // shut the card — and THAT is what hands the suspended poll its pending data
     // back. §10 still holds the 3s rebuild while a card is open; what it no longer
     // does is hold the frame a human action asked for.
-    click(row(rowId))
-    await settle()
+    await collapseRow(rowId)
 
     // an agent finally polls pending() — modelled by the exact store call that
     // tool makes. STAMP FIRST, then move the clock: markAnnotationDelivered

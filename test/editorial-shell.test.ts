@@ -7,9 +7,10 @@ const html = readFileSync(resolve(root, 'public/index.html'), 'utf8')
 const css = readFileSync(resolve(root, 'public/style.css'), 'utf8')
 
 describe('the editorial desk shell', () => {
-  it('is light-first, warm, and uses the approved desktop typography', () => {
+  it('is light-first, Burgundy Coral, and uses the approved desktop typography', () => {
     expect(css).toMatch(/:root\s*\{[^}]*color-scheme:\s*light\s*;/s)
-    expect(css).toContain('--app-bg: #f7f4ef')
+    expect(css).toContain('--app-bg: #f8f3f4')
+    expect(css).toContain('--brand-coral-400: #eb84bb')
     expect(css).toContain('"Segoe UI", Aptos, Calibri')
     expect(css).not.toContain('mediumpurple')
     expect(css).not.toContain('rebeccapurple')

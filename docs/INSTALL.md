@@ -10,8 +10,8 @@
 | Windows | Not currently supported by the shell installers or Electron packager |
 
 The source repository is the v0.1 distribution; the package is not published to npm.
-GitHub CLI (`gh`) is optional and adds live PR state. The optional Claude hooks also
-require `jq`.
+GitHub CLI (`gh`) is optional and adds live PR state. Source-checkout Claude hook setup
+requires `jq`; a portable app runtime uses its bundled Node helper instead.
 
 The transactional agent installer requires a kernel-backed `lockf` or `flock`
 command. Linux normally includes `flock`, and newer macOS versions include `lockf`.
@@ -57,6 +57,15 @@ agent**, or **Copy terminal command**. The direct button calls the same audited
 installer and is available only in an Electron window backed by the viewer
 process that app started; browser tabs and reused third-party localhost pages
 never receive command-execution access.
+
+In a portable package, Setup verifies the exact architecture payload embedded in the
+app, atomically installs it under
+`~/.agent-inbox/runtime/<content-derived-runtime-id>/`, proves its Node 24 native addon,
+and registers the installed paths. The release metadata and host configuration contain
+no CI checkout, build-machine Node, or movable app path. A packaged upgrade replaces
+only a prior manifest-owned release registration; a checkout/custom registration is
+left untouched. Uninstall likewise removes only exact owned release state and retains
+any runtime still referenced by another host or Claude hook.
 
 ### Host-specific behavior
 
@@ -153,7 +162,12 @@ npm run install:hooks -- --apply --migrate    # also retire the older hand-writt
 npm run install:hooks -- --apply --uninstall  # remove every agent-inbox entry again
 ```
 
-Requires `jq`. Nothing about this runs from `npm install`, `npm run build` or the Electron app, and new hook registrations are picked up only on a **fresh** Claude Code session.
+Source-checkout installation requires `jq`. Packaged installation uses the runtime's
+bundled Node config helper and works without ambient `node` or `jq`. Both paths share
+the same kernel-backed setup lock; packaged hook upgrade/uninstall changes only entries
+whose Node and hook entrypoint resolve to the same valid manifest-owned runtime.
+Nothing about this runs from `npm install` or `npm run build`, and new hook
+registrations are picked up only on a **fresh** Claude Code session.
 
 > **Node 24, again.** The installer resolves a Node 24 binary, **proves it** by running `dist/hook-cli.js selftest`, and only then bakes the absolute path into `settings.json`. It refuses to write if that fails. Do not hand-write `"command": "node"` — a hook spawned under Node 26 cannot load `better-sqlite3` and dies silently on every invocation, forever. Override the choice with `AGENT_INBOX_NODE=/abs/path/to/node24`.
 

@@ -375,7 +375,12 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   three fixed targets and only while the app owns the exact local-viewer origin. A
   reused viewer never gets execution access, and there is no HTTP setup-write route.
   `electron/setup-runner.cjs` invokes `/bin/bash` directly (no command shell), bounds
-  output/time, and resolves the packaged checkout through baked `setup-info.json`.
+  output/time, and selects only the exact architecture-keyed runtime payload from release
+  `setup-info.json`; checkout/dev mode retains its local fallback.
+  `electron/runtime-verify.cjs` is the trusted, Electron-independent verifier shared by
+  the runner and viewer Setup API: it verifies the complete manifest file list, hashes,
+  modes, entrypoints, digest and runtime identity before a command is shown or spawned.
+  Never execute a verifier from inside the payload to establish that payload's trust.
   Every applied install also holds a kernel-backed user-scoped lock on
   `~/.agent-inbox/install-agents.lock` across preflight, mutation, and rollback,
   using `lockf` on macOS or `flock` on Linux. The descriptor stays open for the
@@ -488,6 +493,15 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
 - **`done`/milestone bucket** *(#9)* — `flag({ kind:'done' })`, surfaced in the viewer's Done section.
 - **Electron packaging** *(#11)* — `electron/` wraps the `public/` viewer; `scripts/package-app.sh`
   stages `dist` + `public` + `electron` and rebuilds `better-sqlite3` for Electron's ABI.
+- **Portable release runtime** *(#74 Layer 1)* — the app may additionally embed
+  `darwin-arm64` and `darwin-x64` Node 24 payloads staged outside the Electron dependency
+  tree. Each payload has a content-derived `runtime-manifest.json`; Electron selects only
+  `process.platform`/`process.arch`, and Setup atomically installs it under
+  `~/.agent-inbox/runtime/<runtime-id>/`. Packaged upgrades/uninstalls touch only exact
+  manifest-owned registrations/hooks, share one kernel lock, and retain every runtime
+  whose canonical Node+entry pair is still structurally referenced. Release signing order
+  is fixed: nested runtime Mach-O files, manifests, setup-info, outer app without
+  `--deep`, then strict verification; nested bytes never change afterward.
 - **Session presence** *(#28, corrected by #45)* — every MCP session is a Live row; `status()`
   upgrades it, process exit ends it, and a row that stops being heartbeated expires after ~15 min.
   That expiry only ever fires for a **crashed** process: a live one heartbeats itself, so what

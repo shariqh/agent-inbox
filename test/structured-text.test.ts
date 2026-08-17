@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { esc } from '../public/esc.js'
 import { renderStructuredText } from '../public/structured-text.js'
 
 const REPO = new URL('..', import.meta.url).pathname
@@ -30,6 +31,75 @@ describe('renderStructuredText block structure', () => {
       .toBe('<div class="structured-text"><p>Version 1. ships<br>-compact<br>*also compact</p></div>')
     expect(renderStructuredText('')).toBe('')
     expect(renderStructuredText(null)).toBe('')
+  })
+})
+
+describe('renderStructuredText fenced code blocks', () => {
+  function expectFence(html: string, source: string, language?: string): void {
+    expect(html).toContain('class="structured-code"')
+    expect(html).toContain(`<code>${esc(source)}</code>`)
+    expect(html).toContain(`data-copy-source="${esc(JSON.stringify(source))}"`)
+    if (language) expect(html).toContain(`<span class="structured-code-language">${language}</span>`)
+  }
+
+  it('renders labelled multiline source and preserves exact shell characters for copying', () => {
+    const source = [
+      'printf \'%s\\n\' "<tag>& $HOME `tick`"',
+      'curl "https://example.com/a?x=1&y=2" \\',
+      '  --header \'X-Test: $VALUE\'',
+    ].join('\n')
+    const html = renderStructuredText(['Before', '', '```sh', source, '```', '', 'After'].join('\n'))
+
+    expectFence(html, source, 'sh')
+    expect(html).toContain('<p>Before</p>')
+    expect(html).toContain('<p>After</p>')
+    expect(html).not.toContain('<tag>')
+    expect(html).not.toContain('<a ')
+  })
+
+  it('supports empty and multiple fences without copying markers or language labels', () => {
+    const html = renderStructuredText([
+      '```',
+      '```',
+      '',
+      '```typescript',
+      'const value = 1',
+      '```',
+    ].join('\n'))
+
+    expect(html.match(/class="structured-code"/g)).toHaveLength(2)
+    expectFence(html, '')
+    expectFence(html, 'const value = 1', 'typescript')
+    expect(html).not.toContain('data-copy-source="&quot;typescript')
+  })
+
+  it('preserves intentional interior blank lines without a structural trailing newline', () => {
+    const source = 'first\r\n\r\nthird'
+    const html = renderStructuredText(`\`\`\`text\r\n${source}\r\n\`\`\``)
+    expectFence(html, source, 'text')
+  })
+
+  it.each([
+    ['unclosed', 'Before\n```sh\necho "<unsafe>"'],
+    ['language with spaces', '```shell script\necho ok\n```'],
+    ['overlong language', `\`\`\`${'x'.repeat(33)}\necho ok\n\`\`\``],
+  ])('degrades a %s fence to escaped plain text', (_name, value) => {
+    const html = renderStructuredText(value)
+    expect(html).not.toContain('class="structured-code"')
+    expect(html).toContain('```')
+    expect(html).not.toContain('<unsafe>')
+  })
+
+  it('does not reinterpret a malformed fence closer as a later opener', () => {
+    const html = renderStructuredText([
+      '```bad label',
+      'payload',
+      '```',
+      'prose <tag>',
+      '```',
+    ].join('\n'))
+    expect(html).not.toContain('class="structured-code"')
+    expect(html).toContain('prose &lt;tag&gt;')
   })
 })
 
@@ -254,6 +324,15 @@ describe('structured text quarantine architecture', () => {
     expect(renderStructuredText('See https://fresh.example/x'))
       .toContain('href="https://fresh.example/x"')
   }, 10_000)
+
+  it('keeps repeated malformed fence candidates linear', () => {
+    const malformed = `${'```bad label\n'.repeat(8_000)}tail`
+    const started = performance.now()
+    const html = renderStructuredText(malformed)
+    expect(performance.now() - started).toBeLessThan(250)
+    expect(html).not.toContain('class="structured-code"')
+    expect(html).toContain('tail')
+  })
 
   it('pins wrapping in source because jsdom cannot prove long-content layout', () => {
     const css = readFileSync(join(REPO, 'public/style.css'), 'utf8')

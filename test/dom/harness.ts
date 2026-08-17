@@ -146,9 +146,10 @@ interface MediaStub {
 }
 
 const mediaStubs = new Map<string, MediaStub>()
+let systemDark = false
 
 function mediaMatches(query: string): boolean {
-  if (/prefers-color-scheme:\s*dark/.test(query)) return false // the harness is always the light theme
+  if (/prefers-color-scheme:\s*dark/.test(query)) return systemDark
   const max = /max-width:\s*(\d+)px/.exec(query)
   if (max?.[1]) return window.innerWidth <= Number(max[1])
   const min = /min-width:\s*(\d+)px/.exec(query)
@@ -241,6 +242,16 @@ export function setViewport(mode: 'narrow' | 'wide' | number): void {
   }
 }
 
+export function setSystemDark(dark: boolean): void {
+  systemDark = dark
+  for (const stub of mediaStubs.values()) {
+    const next = mediaMatches(stub.media)
+    if (next === stub.matches) continue
+    stub.matches = next
+    for (const fn of [...stub.listeners]) fn({ matches: next, media: stub.media })
+  }
+}
+
 // ── mounting ────────────────────────────────────────────────────────────────
 
 function mountShell(): void {
@@ -301,6 +312,7 @@ export function useDomTest(): void {
     // an earlier test would deep-link the next boot before its own assertions run.
     location.hash = ''
     mediaStubs.clear()
+    systemDark = false
     Object.defineProperty(window, 'innerWidth', { value: 1400, configurable: true, writable: true })
     vi.resetModules()
     localStorage.clear()
@@ -387,13 +399,13 @@ export function badgeCount(): number {
   return m?.[1] ? Number(m[1]) : 0
 }
 
-/** The open accordion card's free-text answer input (NOT the context input beside it). */
-export function answerInput(id?: string): HTMLInputElement | null {
+/** The open Needs-you inspector's free-text answer editor (NOT its context editor). */
+export function answerInput(id?: string): HTMLTextAreaElement | null {
   const scope = id ? `.nrow[data-card-id="${cssEscape(id)}"] ` : ''
-  return document.querySelector<HTMLInputElement>(`${scope}.nrow-card .reply-input:not(.reply-context-input)`)
+  return document.querySelector<HTMLTextAreaElement>(`${scope}.nrow-card .reply-input:not(.reply-context-input)`)
 }
 
-/** The open accordion card's Send button — `btn('Send', …)` carries no class of its own. */
+/** The open Needs-you inspector's Send button — `btn('Send', …)` has no class of its own. */
 export function sendButton(id?: string): HTMLButtonElement | null {
   const scope = id ? `.nrow[data-card-id="${cssEscape(id)}"] ` : ''
   return [...document.querySelectorAll<HTMLButtonElement>(`${scope}.nrow-card .reply-row button`)]
@@ -412,8 +424,20 @@ export function click(el: Element | null | undefined): void {
   ;(el as HTMLElement).click()
 }
 
-/** Set an input's value and fire the bubbling `input` event app.js listens for. */
-export function type(el: HTMLInputElement | null | undefined, value: string): void {
+/** Close an open Needs-you inspector through its explicit Escape action. */
+export async function collapseRow(id: string): Promise<void> {
+  const el = row(id)
+  if (!el?.querySelector('.nrow-card')) return
+  el.dispatchEvent(new window.KeyboardEvent('keydown', {
+    key: 'Escape',
+    bubbles: true,
+    cancelable: true,
+  }))
+  await settle()
+}
+
+/** Set an editor's value and fire the bubbling `input` event app.js listens for. */
+export function type(el: HTMLInputElement | HTMLTextAreaElement | null | undefined, value: string): void {
   if (!el) throw new Error('type(): nothing to type into — the selector matched nothing')
   if (!document.contains(el)) throw new Error('type(): stale node — re-query after every render/await')
   el.value = value

@@ -5,7 +5,7 @@ import {
   advanceBoardRow, getBoard, insertItem, recordActivityCall, resolveItem, upsertActivity, upsertBoard,
 } from '../../src/store.js'
 import {
-  advanceClock, answerInput, bootApp, click, freshDb, pollTick, row, rowTitles, settle, setViewport, type, useDomTest,
+  advanceClock, answerInput, bootApp, click, collapseRow, freshDb, pollTick, row, rowTitles, settle, setViewport, type, useDomTest,
 } from './harness.js'
 
 useDomTest()
@@ -339,8 +339,7 @@ describe('current ask time and queue sorting (#64)', () => {
 
     click(row(ids[0]!))
     await settle()
-    click(row(ids[0]!))
-    await settle()
+    await collapseRow(ids[0]!)
     const selected = document.querySelector<HTMLElement>('#needsYouList .nrow.selected')!
     const selectedId = selected.dataset.cardId!
     expect(selectedId).toBe(ids[0])

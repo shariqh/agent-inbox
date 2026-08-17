@@ -42,16 +42,31 @@ const GIT_MAX_BUFFER = 256 * 1024
 export interface GitResult { code: number; stdout: string }
 export type GitRun = (cwd: string, args: string[]) => Promise<GitResult | null>
 
+/** One architecture-keyed runtime payload record (issue #74). `path` is
+ *  relative to the app's Resources root; `digest` is `sha256:<64 hex>`. */
+export interface RuntimePayload {
+  path: string
+  digest: string
+}
+
 /**
  * What `setup-info.json` carries. Every field optional on purpose: bundles
  * packaged before #40 have only the first two, and a hand-edited file can have
  * anything at all.
+ *
+ * `schema: 2` marks a RELEASE build (issue #74): it carries `version` and
+ * `runtimePayloads` instead of `repoRoot`/`nodeBin` — a signed release must
+ * never bake a path back to the machine that built it. A dev/legacy bundle has
+ * no `schema` at all and keeps the original repoRoot/nodeBin shape untouched.
  */
 export interface BakedInfo {
   repoRoot?: string
   nodeBin?: string
   commit?: string
   builtAt?: string
+  schema?: number
+  version?: string
+  runtimePayloads?: Record<string, RuntimePayload>
 }
 
 /**
@@ -66,17 +81,23 @@ export interface BakedInfo {
  *               would be a lie that costs a five-minute rebuild.
  * `diverged`  — they differ and neither is an ancestor of the other, or the
  *               baked commit is not in this checkout at all.
+ * `release`   — a signed release build (issue #74, `schema: 2`). There is no
+ *               builder checkout to compare against — the release IS the
+ *               artifact — so this makes no checkout/repackage claim at all;
+ *               it only reports what was baked (version/commit/builtAt).
  */
-export type Drift = 'dev' | 'unknown' | 'current' | 'stale' | 'behind' | 'diverged'
+export type Drift = 'dev' | 'unknown' | 'current' | 'stale' | 'behind' | 'diverged' | 'release'
 
 export interface BuildStamp {
   /** the commit this bundle was built from — null in a checkout */
   commit: string | null
   builtAt: string | null
-  /** the checkout's HEAD right now, read live */
+  /** the checkout's HEAD right now, read live — always null for a release build */
   head: string | null
   repoRoot: string | null
   drift: Drift
+  /** the released version (issue #74) — null for dev/legacy bundles */
+  version: string | null
 }
 
 export type StampCache = Map<string, { at: number; value: BuildStamp }>
@@ -130,11 +151,35 @@ function str(v: unknown): string | undefined {
   return typeof v === 'string' && v.trim() ? v : undefined
 }
 
+/** A single `runtimePayloads` entry, or undefined if its shape is not usable.
+ *  This is a display/version-comparison reader, not the security boundary —
+ *  electron/setup-runner.cjs independently re-validates path containment and
+ *  digest format before it ever selects or runs anything. */
+function runtimePayload(v: unknown): RuntimePayload | undefined {
+  if (!v || typeof v !== 'object') return undefined
+  const o = v as Record<string, unknown>
+  const path = str(o['path'])
+  const digest = str(o['digest'])
+  return path && digest ? { path, digest } : undefined
+}
+
+function runtimePayloads(v: unknown): Record<string, RuntimePayload> | undefined {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return undefined
+  const out: Record<string, RuntimePayload> = {}
+  for (const [key, value] of Object.entries(v as Record<string, unknown>)) {
+    const payload = runtimePayload(value)
+    if (payload) out[key] = payload
+  }
+  return out
+}
+
 /**
  * Parse the baked setup-info.json, or null if there isn't a usable one.
  *
  * Fail-open is the whole point: before #40 a corrupt file threw straight out of
- * the /api/setup handler and took the Setup panel with it.
+ * the /api/setup handler and took the Setup panel with it. Issue #74's release
+ * shape (`schema: 2`, `version`, `runtimePayloads`) is parsed the same
+ * fail-open way — a malformed field is simply dropped, never thrown.
  */
 export function readBakedInfo(path: string): BakedInfo | null {
   try {
@@ -147,10 +192,15 @@ export function readBakedInfo(path: string): BakedInfo | null {
     const nodeBin = str(o['nodeBin'])
     const commit = str(o['commit'])
     const builtAt = str(o['builtAt'])
+    const version = str(o['version'])
+    const payloads = runtimePayloads(o['runtimePayloads'])
     if (repoRoot) info.repoRoot = repoRoot
     if (nodeBin) info.nodeBin = nodeBin
     if (commit) info.commit = commit
     if (builtAt) info.builtAt = builtAt
+    if (typeof o['schema'] === 'number') info.schema = o['schema']
+    if (version) info.version = version
+    if (payloads) info.runtimePayloads = payloads
     return info
   } catch {
     return null
@@ -179,6 +229,10 @@ async function compare(root: string, commit: string, head: string, run: GitRun):
  * The stamp for this running viewer. `baked` is null in a checkout (`npm run
  * view` / `npm run electron`), where the honest answer is the live HEAD and NO
  * staleness claim at all — a dev build cannot be stale against itself.
+ *
+ * A release build (`baked.schema === 2`, issue #74) is a third case: there is
+ * no builder checkout to probe at all, so this returns immediately with
+ * `drift: 'release'` and never spawns git.
  */
 export async function buildStamp(baked: BakedInfo | null, cwd: string, opts: StampOpts = {}): Promise<BuildStamp> {
   const run = opts.git ?? defaultGitRun
@@ -187,6 +241,15 @@ export async function buildStamp(baked: BakedInfo | null, cwd: string, opts: Sta
 
   const commit = baked?.commit && SHA.test(baked.commit) ? baked.commit : null
   const builtAt = baked?.builtAt && Number.isFinite(Date.parse(baked.builtAt)) ? baked.builtAt : null
+  const version = baked?.version ?? null
+
+  if (baked?.schema === 2) {
+    // A release build IS the artifact — there is no checkout to compare
+    // against, so no drift value but 'release' is honest, and none of them
+    // (stale/behind/diverged/current) may ever be claimed here.
+    return { commit, builtAt, head: null, repoRoot: null, drift: 'release', version }
+  }
+
   const root = baked ? (baked.repoRoot ?? null) : cwd
 
   const key = `${baked ? 'app' : 'dev'}|${root ?? ''}|${commit ?? ''}`
@@ -203,7 +266,7 @@ async function probe(
   run: GitRun,
 ): Promise<BuildStamp> {
   const { baked, commit, builtAt, root } = input
-  const base = { commit, builtAt, repoRoot: root }
+  const base = { commit, builtAt, repoRoot: root, version: null }
 
   // A checkout: report HEAD, claim nothing.
   if (!baked) {

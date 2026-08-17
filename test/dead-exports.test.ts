@@ -59,6 +59,7 @@ const ALLOWED = new Map<string, string>([
 // asserted below to exist and to be genuinely unimported, so a stale exemption
 // cannot sit here silently widening the guard.
 const ENTRY_POINTS = new Map<string, string>([
+  ['public/theme-bootstrap.js', 'blocking classic script loaded before style.css in public/index.html'],
   ['public/app.js', 'loaded by <script type="module" src="/app.js"> in public/index.html'],
   ['src/mcp-server.ts', 'the stdio MCP entry — `npm run mcp`, dist/mcp-server.js in the packaged app'],
   ['src/viewer-server.ts', 'the viewer entry — `npm run view`'],

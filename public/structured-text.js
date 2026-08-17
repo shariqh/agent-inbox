@@ -8,6 +8,9 @@ const LINE_LEADING_WRAPPER_RE = /[\s(\[{"'`«“‘]/u
 const JSX_LEFT_PUNCTUATION = new Set('=([{,:;')
 const BULLET_RE = /^ {0,3}[-*]\s+(.+)$/
 const NUMBERED_RE = /^ {0,3}([0-9]+)\.\s+(.+)$/
+const FENCE_START_RE = /^ {0,3}```/
+const FENCE_OPEN_RE = /^ {0,3}```[ \t]*([A-Za-z0-9][A-Za-z0-9_+.-]{0,31})?[ \t]*$/
+const FENCE_CLOSE_RE = /^ {0,3}```[ \t]*$/
 const JSX_IDENTIFIER_RE = /^[\p{ID_Start}_$][\p{ID_Continue}\u200c\u200d_$:-]*$/u
 
 const TRAILING_PUNCTUATION = new Set('.,!?;:…⋯。！？؛؟،۔；：，、“”‘’—–«»）】》」』］｝')
@@ -229,21 +232,66 @@ function renderBlockLines(lines) {
 function paragraphHtml(lines) {
   return `<p>${renderBlockLines(lines)}</p>`
 }
-
 function listHtml(kind, items, start) {
   const startAttr = kind === 'ol' && start !== 1 ? ` start="${start}"` : ''
   return `<${kind}${startAttr}>${items.map((item) => `<li>${renderBlockLines([item])}</li>`).join('')}</${kind}>`
 }
 
+function sourceLines(value) {
+  const lines = []
+  const lineRe = /([^\r\n]*)(\r\n|\r|\n|$)/g
+  for (let match = lineRe.exec(value); match && match[0]; match = lineRe.exec(value)) {
+    lines.push({ text: match[1] ?? '', ending: match[2] ?? '' })
+  }
+  return lines
+}
+function fencedSource(lines, start, end) {
+  let source = ''
+  for (let index = start + 1; index < end; index++) {
+    const line = lines[index]
+    source += line.text
+    if (index < end - 1) source += line.ending || '\n'
+  }
+  return source
+}
+function fencedHtml(source, language) {
+  const languageHtml = language
+    ? `<span class="structured-code-language">${esc(language)}</span>`
+    : ''
+  return '<div class="structured-code">' +
+    `<div class="structured-code-toolbar">${languageHtml}<span class="structured-code-status" aria-hidden="true"></span>` +
+      `<button type="button" class="structured-code-copy" aria-label="Copy code block" data-copy-source="${esc(JSON.stringify(source))}">Copy</button>` +
+    '</div>' +
+    `<pre><code>${esc(source)}</code></pre>` +
+  '</div>'
+}
+function fencedBlocks(lines) {
+  const blocks = new Map()
+  let open = null
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index]?.text ?? ''
+    if (open) {
+      if (!FENCE_CLOSE_RE.test(line)) continue
+      if (open.valid) blocks.set(open.index, { end: index, language: open.language })
+      open = null
+      continue
+    }
+    const fence = FENCE_OPEN_RE.exec(line)
+    if (fence) open = { index, language: fence[1], valid: true }
+    else if (FENCE_START_RE.test(line)) open = { index, valid: false }
+  }
+  return blocks
+}
 // A deliberately small presentation grammar: paragraphs, explicit line breaks,
-// simple "-"/"*" bullets, "1." numbered items, and safe HTTP(S) autolinks.
+// simple lists, inert fenced code blocks, and safe HTTP(S) autolinks.
 // A credible markup-like start quarantines the rest of its paragraph or list item.
 export function renderStructuredText(value) {
   if (value === null || value === undefined || value === '') return ''
-  const lines = String(value).replace(/\r\n?/g, '\n').split('\n')
+  const lines = sourceLines(String(value))
   const blocks = []
   let paragraph = []
   let list = null
+  const fences = fencedBlocks(lines)
 
   const flushParagraph = () => {
     if (!paragraph.length) return
@@ -256,7 +304,16 @@ export function renderStructuredText(value) {
     list = null
   }
 
-  for (const line of lines) {
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index]?.text ?? ''
+    const fence = fences.get(index)
+    if (fence) {
+      flushParagraph()
+      flushList()
+      blocks.push(fencedHtml(fencedSource(lines, index, fence.end), fence.language))
+      index = fence.end
+      continue
+    }
     if (!line.trim()) {
       flushParagraph()
       flushList()

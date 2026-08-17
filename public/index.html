@@ -4,13 +4,17 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Agent Inbox</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png" />
+  <script src="/theme-bootstrap.js"></script>
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
   <div class="app-shell">
     <aside class="sidebar-shell">
       <div class="brand">
-        <span class="brand-dot" aria-hidden="true"></span>
+        <img class="brand-mark" src="/favicon-32.png" alt="" aria-hidden="true" width="22" height="22" />
         <span class="brand-copy"><strong>Agent Inbox</strong><small>Local workspace</small></span>
       </div>
       <div id="tabs" class="tabstrip" role="tablist" aria-label="Library">
@@ -154,7 +158,7 @@
   </div>
   <div id="missionbox" hidden>
     <div class="mission-backdrop"></div>
-    <div class="mission-panel" role="dialog" aria-modal="true" aria-label="Plan flow">
+    <div class="mission-panel" role="dialog" aria-modal="true" aria-label="Plan flow" tabindex="-1">
       <div class="mission-head">
         <div>
           <span class="mission-kicker">Plan flow</span>
@@ -177,7 +181,7 @@
     </div>
     <div class="mission-detail" hidden>
       <div class="mission-detail-backdrop"></div>
-      <section class="mission-detail-panel" role="dialog" aria-modal="true" aria-label="Plan step detail">
+      <section class="mission-detail-panel" role="dialog" aria-modal="true" aria-label="Plan step detail" tabindex="-1">
         <div class="mission-detail-head">
           <div>
             <span class="mission-detail-meta"></span>

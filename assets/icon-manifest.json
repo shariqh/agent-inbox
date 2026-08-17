@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "sources": {
+    "icon": "71183ad55bd7722858d22684f4d154772cab00b03ea5e2aed2b2c94bcf4d7da1",
+    "mark": "b4168cf611e4015e9fbb22d005f770aba36de05860ab4ece51d96debbbf528d8"
+  },
+  "outputs": {
+    "icon1024": "7d87b311310d69ab600bceba4228af6c06c30085778cf72fe7b41fd04884cc57",
+    "faviconSvg": "71183ad55bd7722858d22684f4d154772cab00b03ea5e2aed2b2c94bcf4d7da1",
+    "favicon16": "2ec1eb7e5efce2fad1ee38fe2e517db389ba9dfbf7adb166ea566a65148e54d4",
+    "favicon32": "291ad09419b4b542731bdd83d395e2be69858797f5d53742aa1bbd950e2ad481",
+    "markSvg": "b4168cf611e4015e9fbb22d005f770aba36de05860ab4ece51d96debbbf528d8",
+    "icns": "1c3b58564d3cd705d4ad2c15e9bf8b9fc9e091ef52152d09425c07dfc8881fe3"
+  }
+}

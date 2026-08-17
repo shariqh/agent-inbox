@@ -6,7 +6,7 @@
 // The original bug: focusItem() called setOpenRow(id) for EVERY target while
 // openRowId still participated in poll suspension. A board id (which
 // electron/main.cjs deep-links for a blocked row, one notification click away)
-// or a notes/done item id had no toggleRow clearing path, so the poll suspended
+// or a notes/done item id had no explicit collapse path, so the poll suspended
 // forever. Expansion no longer suspends polling, but reconciliation still keeps
 // stale deep-link state from leaking into a later render.
 //

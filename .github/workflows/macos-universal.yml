@@ -1,0 +1,278 @@
+name: Universal macOS package
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/macos-universal.yml"
+      - "electron/**"
+      - "release/**"
+      - "scripts/archive-tree.mjs"
+      - "scripts/assemble-macos-release.mjs"
+      - "scripts/build-thin-app.mjs"
+      - "scripts/license.mjs"
+      - "scripts/release-inputs.mjs"
+      - "scripts/runtime-provenance.mjs"
+      - "scripts/source-provenance.mjs"
+      - "scripts/stage-native-runtime.mjs"
+      - "scripts/stage-runtime.mjs"
+      - "scripts/tree-identity.mjs"
+      - "scripts/write-setup-info.mjs"
+      - "package.json"
+      - "package-lock.json"
+      - "LICENSE"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-universal-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  inputs:
+    name: Validate pinned release inputs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: release-inputs
+        name: Resolve pinned Node version
+        run: echo "node-version=$(node scripts/release-inputs.mjs --node-version)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ steps.release-inputs.outputs.node-version }}
+          cache: npm
+      - run: npm ci
+      - run: npm run release:inputs
+      - run: npx vitest run test/release-inputs.test.ts test/release-pipeline.test.ts
+
+  runtime:
+    name: Native runtime / ${{ matrix.key }}
+    needs: inputs
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - key: darwin-arm64
+            arch: arm64
+            runner: macos-15
+          - key: darwin-x64
+            arch: x64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: release-inputs
+        name: Resolve pinned Node version
+        run: echo "node-version=$(node scripts/release-inputs.mjs --node-version)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ steps.release-inputs.outputs.node-version }}
+          architecture: ${{ matrix.arch }}
+          cache: npm
+      - run: npm ci
+      - run: echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
+      - run: npm run build
+      - name: Stage verified native runtime
+        run: >-
+          npm run stage:runtime:native --
+          --key "${{ matrix.key }}"
+          --output "build/runtime/${{ matrix.key }}"
+      - name: Preserve runtime modes
+        run: >-
+          node scripts/archive-tree.mjs create
+          --source "build/runtime/${{ matrix.key }}"
+          --archive "build/${{ matrix.key }}.tar.gz"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: runtime-${{ matrix.key }}
+          path: build/${{ matrix.key }}.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  thin:
+    name: Thin Electron app / ${{ matrix.key }}
+    needs: runtime
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - key: darwin-arm64
+            arch: arm64
+            runner: macos-15
+          - key: darwin-x64
+            arch: x64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: release-inputs
+        name: Resolve pinned Node version
+        run: echo "node-version=$(node scripts/release-inputs.mjs --node-version)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ steps.release-inputs.outputs.node-version }}
+          architecture: ${{ matrix.arch }}
+          cache: npm
+      - run: npm ci
+      - run: echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: runtime-darwin-*
+          path: build/runtime-artifacts
+          merge-multiple: true
+      - name: Restore both runtime payloads
+        run: |
+          mkdir -p build/runtimes
+          node scripts/archive-tree.mjs extract --archive build/runtime-artifacts/darwin-arm64.tar.gz --destination build/runtimes --expected-root darwin-arm64
+          node scripts/archive-tree.mjs extract --archive build/runtime-artifacts/darwin-x64.tar.gz --destination build/runtimes --expected-root darwin-x64
+      - name: Build architecture-correct thin app
+        run: >-
+          npm run package:thin --
+          --arch "${{ matrix.arch }}"
+          --runtime-arm64 build/runtimes/darwin-arm64
+          --runtime-x64 build/runtimes/darwin-x64
+          --output "build/thin/${{ matrix.key }}/Agent Inbox.app"
+      - name: Preserve app symlinks and modes
+        run: >-
+          node scripts/archive-tree.mjs create
+          --source "build/thin/${{ matrix.key }}"
+          --archive "build/thin-${{ matrix.key }}.tar.gz"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: thin-${{ matrix.key }}
+          path: build/thin-${{ matrix.key }}.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  universal:
+    name: Ad-hoc universal app and provisional DMG
+    needs: thin
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: release-inputs
+        name: Resolve pinned Node version
+        run: echo "node-version=$(node scripts/release-inputs.mjs --node-version)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ steps.release-inputs.outputs.node-version }}
+          architecture: arm64
+          cache: npm
+      - run: npm ci
+      - run: echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: thin-darwin-*
+          path: build/thin-artifacts
+          merge-multiple: true
+      - name: Restore thin apps
+        run: |
+          mkdir -p build/thin
+          node scripts/archive-tree.mjs extract --archive build/thin-artifacts/thin-darwin-arm64.tar.gz --destination build/thin --expected-root darwin-arm64
+          node scripts/archive-tree.mjs extract --archive build/thin-artifacts/thin-darwin-x64.tar.gz --destination build/thin --expected-root darwin-x64
+      - name: Merge, finalize, sign ad-hoc, and create provisional DMG
+        run: >-
+          npm run package:macos --
+          --mode adhoc
+          --arm64-app "build/thin/darwin-arm64/Agent Inbox.app"
+          --x64-app "build/thin/darwin-x64/Agent Inbox.app"
+          --arm64-report "build/thin/darwin-arm64/Agent Inbox.app.thin-report.json"
+          --x64-report "build/thin/darwin-x64/Agent Inbox.app.thin-report.json"
+          --output out/macos-universal
+      - name: Mount, copy, launch, verify boundary, and remove portable runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          DMG="$(find out/macos-universal -maxdepth 1 -name '*-provisional.dmg' -print -quit)"
+          MOUNT="$RUNNER_TEMP/agent-inbox-dmg"
+          COPIED="$RUNNER_TEMP/Agent Inbox.app"
+          TEST_HOME="$RUNNER_TEMP/agent-inbox-home"
+          mkdir -p "$MOUNT" "$TEST_HOME"
+          hdiutil attach -nobrowse -readonly -mountpoint "$MOUNT" "$DMG"
+          trap 'hdiutil detach "$MOUNT" >/dev/null 2>&1 || true' EXIT
+          ditto "$MOUNT/Agent Inbox.app" "$COPIED"
+          codesign --verify --deep --strict --verbose=2 "$COPIED"
+          PORT=14319
+          HOME="$TEST_HOME" AGENT_INBOX_PORT="$PORT" "$COPIED/Contents/MacOS/Agent Inbox" >"$RUNNER_TEMP/agent-inbox.log" 2>&1 &
+          APP_PID=$!
+          trap 'kill "$APP_PID" >/dev/null 2>&1 || true; hdiutil detach "$MOUNT" >/dev/null 2>&1 || true' EXIT
+          for _ in {1..60}; do
+            curl -fsSI "http://127.0.0.1:$PORT/" | grep -qi '^x-agent-inbox-local-boundary: loopback-v1' && break
+            sleep 1
+          done
+          curl -fsSI "http://127.0.0.1:$PORT/" | grep -qi '^x-agent-inbox-local-boundary: loopback-v1'
+          RUNTIME="$COPIED/Contents/Resources/app/runtime/darwin-arm64"
+          "$RUNTIME/bin/node" "$RUNTIME/scripts/runtime-payload.mjs" install \
+            --payload-root "$RUNTIME" --runtime-root "$TEST_HOME/.agent-inbox/runtime" >"$RUNNER_TEMP/runtime-install.json"
+          RUNTIME_ID="$(node -p "JSON.parse(require('fs').readFileSync('$RUNNER_TEMP/runtime-install.json')).runtimeId")"
+          "$RUNTIME/bin/node" "$RUNTIME/scripts/runtime-payload.mjs" prune \
+            --runtime-root "$TEST_HOME/.agent-inbox/runtime" --runtime-id "$RUNTIME_ID"
+          kill "$APP_PID"
+          wait "$APP_PID" || true
+          rm -rf "$COPIED" "$TEST_HOME"
+          hdiutil detach "$MOUNT"
+          trap - EXIT
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: macos-universal-provisional
+          path: out/macos-universal
+          if-no-files-found: error
+          retention-days: 7
+      - name: Retain reproducible Layer 3 inputs
+        run: |
+          mkdir -p out/layer3-inputs
+          cp build/thin-artifacts/*.tar.gz release/macos-inputs.json out/layer3-inputs/
+          shasum -a 256 out/layer3-inputs/* > out/layer3-inputs/SHA256SUMS
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: macos-layer3-reproducible-inputs
+          path: out/layer3-inputs
+          if-no-files-found: error
+          retention-days: 7
+
+  verify-x64-final:
+    name: Native x64 signed-runtime verification
+    needs: universal
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: release-inputs
+        name: Resolve pinned Node version
+        run: echo "node-version=$(node scripts/release-inputs.mjs --node-version)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ steps.release-inputs.outputs.node-version }}
+          architecture: x64
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: macos-universal-provisional
+          path: build/final-artifact
+      - name: Verify finalized x64 runtime natively
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARCHIVE="$(find build/final-artifact -maxdepth 1 -name '*-universal-adhoc.tar.gz' -print -quit)"
+          mkdir -p build/final-app build/x64-selftest
+          node scripts/archive-tree.mjs extract \
+            --archive "$ARCHIVE" \
+            --destination build/final-app \
+            --expected-root "Agent Inbox.app"
+          APP="$PWD/build/final-app/Agent Inbox.app"
+          RUNTIME="$APP/Contents/Resources/app/runtime/darwin-x64"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          test "$(/usr/bin/lipo -archs "$RUNTIME/bin/node")" = "x86_64"
+          AGENT_INBOX_DB="$PWD/build/x64-selftest/inbox.db" \
+            "$RUNTIME/bin/node" "$RUNTIME/dist/hook-cli.js" selftest
+          NODE_VERSION="$(node -p "require('./release/macos-inputs.json').node.version")"
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          "$RUNTIME/bin/node" "$RUNTIME/scripts/runtime-payload.mjs" verify \
+            --root "$RUNTIME" --platform darwin --arch x64 \
+            --node-version "$NODE_VERSION" --package-version "$PACKAGE_VERSION" \
+            > build/x64-final-verification.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: macos-universal-x64-final-verification
+          path: build/x64-final-verification.json
+          if-no-files-found: error
+          retention-days: 7

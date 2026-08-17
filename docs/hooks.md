@@ -20,6 +20,12 @@ npm run install:hooks -- --apply --migrate    # also retire the legacy .sh Stop 
 npm run install:hooks -- --apply --uninstall  # remove every agent-inbox entry
 ```
 
+From a source checkout this installer uses `jq`. A portable release runtime instead
+uses its bundled Node 24 plus `scripts/runtime-config.mjs`, so install, upgrade, and
+uninstall work on a clean Mac with no ambient Node or `jq`. Packaged hook changes share
+the agent setup kernel lock and replace/remove only hook entries whose command and
+entrypoint canonicalize to the same valid manifest-owned runtime directory.
+
 ## Events → subcommands
 
 One binary, `dist/hook-cli.js`, dispatches every event. `src/hook.ts` holds the

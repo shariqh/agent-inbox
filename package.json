@@ -29,9 +29,17 @@
     "view": "tsx src/viewer-server.ts",
     "hook": "tsx src/hook-cli.ts",
     "watch": "tsx src/watch-cli.ts",
+    "generate:icons": "bash scripts/generate-icons.sh",
     "install:agents": "bash scripts/install-agents.sh",
     "install:hooks": "bash scripts/install-hooks.sh",
     "electron": "electron .",
+    "release:inputs": "node scripts/release-inputs.mjs",
+    "stage:runtime": "node scripts/stage-runtime.mjs",
+    "stage:runtime:native": "node scripts/stage-native-runtime.mjs",
+    "runtime:payload": "node scripts/runtime-payload.mjs",
+    "package:thin": "node scripts/build-thin-app.mjs",
+    "package:macos": "node scripts/assemble-macos-release.mjs",
+    "package:smoke": "vitest run test/runtime-payload.test.ts test/install-runtime.test.ts test/setup-runner.test.ts test/package-stamp.test.ts test/release-inputs.test.ts test/release-pipeline.test.ts test/macos-release-gates.test.ts test/macos-release-workflow.test.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
@@ -45,22 +53,27 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@electron/packager": "^20.0.3",
-    "@electron/rebuild": "^4.2.0",
+    "@electron/osx-sign": "2.6.0",
+    "@electron/packager": "20.3.0",
+    "@electron/rebuild": "4.2.0",
+    "@electron/universal": "3.0.6",
     "@leeoniya/ufuzzy": "^1.0.19",
     "@types/better-sqlite3": "^7.6.11",
     "@types/node": "^24.0.0",
-    "electron": "^43.1.1",
+    "electron": "43.1.1",
+    "electron-installer-dmg": "5.0.1",
     "jsdom": "^29.1.1",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0",
     "vitest": "^4.1.10"
   },
   "allowScripts": {
-    "better-sqlite3@11.10.0": true,
+    "better-sqlite3@12.11.1": true,
     "electron@43.1.1": true,
     "esbuild@0.28.1": true,
     "esbuild@0.21.5": true,
-    "fsevents@2.3.3": true
+    "fsevents@2.3.3": true,
+    "fs-xattr@0.3.1": true,
+    "macos-alias@0.2.12": true
   }
 }

@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
 import { insertItem } from '../../src/store.js'
-import { bootApp, buttonLabelled, click, freshDb, pollTick, row, settle, T0, useDomTest } from './harness.js'
+import { bootApp, buttonLabelled, click, collapseRow, freshDb, pollTick, row, settle, T0, useDomTest } from './harness.js'
 
 useDomTest()
 
@@ -157,8 +157,7 @@ describe('item inspector scroll', () => {
     await settle()
     expect(row(secondId)?.querySelector<HTMLElement>('.nrow-card')?.scrollTop).toBe(0)
 
-    click(row(secondId))
-    await settle()
+    await collapseRow(secondId)
     click(row(firstId))
     await settle()
     expect(row(firstId)?.querySelector<HTMLElement>('.nrow-card')?.scrollTop).toBe(0)

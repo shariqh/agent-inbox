@@ -1,15 +1,21 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
 import { insertItem, listBoards, replyItem, resolveItem, upsertBoard } from '../../src/store.js'
 import {
-  bootApp, buttonLabelled, click, freshDb, row, settle, useDomTest,
+  bootApp, buttonLabelled, click, freshDb, row, setSystemDark, settle, useDomTest,
 } from './harness.js'
 
 useDomTest()
 
 let db: Database.Database | null = null
-afterEach(() => { db?.close(); db = null })
+afterEach(() => {
+  db?.close()
+  db = null
+  vi.restoreAllMocks()
+  Reflect.deleteProperty(document, 'execCommand')
+  Reflect.deleteProperty(navigator, 'clipboard')
+})
 
 const AGENT = { project: 'alpha', stream: 'main', agent: 'claude' } as const
 
@@ -140,6 +146,151 @@ describe('structured agent text on cards and plans', () => {
       panel?.querySelector<HTMLAnchorElement>('.card-context .structured-link') ?? null,
       'https://example.com/evidence',
     )
+  })
+
+  it('copies exact fenced source from a native button without moving focus', async () => {
+    const d = open()
+    const source = 'printf \'%s\\n\' "<tag>& $HOME"\ncurl https://example.com/x'
+    const writeText = vi.fn(async () => undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+    const id = insertItem(d, {
+      ...AGENT,
+      kind: 'question',
+      title: 'Run locally',
+      detail: ['Command:', '', '```sh', source, '```'].join('\n'),
+    })
+
+    await bootApp(d)
+    click(row(id))
+    await settle()
+
+    const card = row(id)?.querySelector('.nrow-card')
+    const button = card?.querySelector<HTMLButtonElement>('.structured-code-copy')
+    expect(button?.tagName).toBe('BUTTON')
+    expect(button?.type).toBe('button')
+    expect(card?.querySelector('.structured-code code')?.textContent).toBe(source)
+    expect(Reflect.get(document, Symbol.for('agent-inbox.structured-text-copy'))).toBeTruthy()
+    await vi.advanceTimersByTimeAsync(2800)
+    button?.focus()
+    button?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 0 }))
+    await settle()
+
+    expect(writeText).toHaveBeenCalledWith(source)
+    expect(document.activeElement).toBe(button)
+    expect(card?.querySelector('.structured-code-status')?.textContent).toBe('Copied')
+    expect(document.getElementById('structured-copy-announcer')?.textContent).toBe('Copied')
+
+    await vi.advanceTimersByTimeAsync(300)
+    expect(document.getElementById('structured-copy-announcer')?.textContent).toBe('Copied')
+  })
+
+  it.each([
+    ['Dark', 'dark', false],
+    ['System dark', 'system', true],
+  ])('renders and copies fenced commands through the shared path in %s', async (_name, preference, systemDark) => {
+    const d = open()
+    const source = 'printf \'%s\\n\' "themed command"'
+    const writeText = vi.fn(async () => undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+    localStorage.setItem('agent-inbox-theme', preference)
+    setSystemDark(systemDark)
+    const id = insertItem(d, {
+      ...AGENT,
+      kind: 'question',
+      title: 'Themed command',
+      detail: ['Run:', '', '```sh', source, '```'].join('\n'),
+    })
+
+    await bootApp(d)
+    expect(document.documentElement.dataset.theme).toBe('dark')
+    expect(document.documentElement.dataset.themePreference).toBe(preference)
+    click(row(id))
+    await settle()
+
+    const block = row(id)?.querySelector('.structured-code')
+    const button = block?.querySelector<HTMLButtonElement>('.structured-code-copy')
+    expect(block?.querySelector('code')?.textContent).toBe(source)
+    expect(button?.textContent).toBe('Copy')
+    click(button)
+    await settle()
+    expect(writeText).toHaveBeenCalledWith(source)
+    expect(block?.querySelector('.structured-code-status')?.textContent).toBe('Copied')
+  })
+
+  it('falls back after Clipboard API denial and never reports false success', async () => {
+    const d = open()
+    const writeText = vi.fn(async () => { throw new DOMException('Denied', 'NotAllowedError') })
+    const execCommand = vi.fn(() => true)
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+    Object.defineProperty(document, 'execCommand', {
+      configurable: true,
+      value: execCommand,
+    })
+    const id = insertItem(d, {
+      ...AGENT,
+      kind: 'question',
+      title: 'Fallback',
+      detail: '```\necho "$HOME"\n```',
+    })
+
+    await bootApp(d)
+    click(row(id))
+    await settle()
+    click(row(id)?.querySelector('.structured-code-copy'))
+    await settle()
+
+    expect(writeText).toHaveBeenCalledOnce()
+    expect(execCommand).toHaveBeenCalledWith('copy')
+    expect(row(id)?.querySelector('.structured-code-status')?.textContent).toBe('Copied')
+
+    execCommand.mockReturnValue(false)
+    click(row(id)?.querySelector('.structured-code-copy'))
+    await settle()
+    expect(row(id)?.querySelector('.structured-code-status')?.textContent).toBe('Copy failed')
+  })
+
+  it('renders fenced blocks through card context, board context, and outcome projections', async () => {
+    const d = open()
+    const id = insertItem(d, {
+      ...AGENT,
+      kind: 'question',
+      title: 'Card command',
+      detail: '```\necho card\n```',
+      context: '```sh\necho card-context\n```',
+    })
+    upsertBoard(d, {
+      ...AGENT,
+      title: 'Command plan',
+      rows: [{
+        label: 'Publish',
+        status: 'tracked',
+        context: '```sh\necho board-context\n```',
+        outcome: '```text\nrelease complete\n```',
+      }],
+    })
+
+    await bootApp(d)
+    click(row(id))
+    await settle()
+    const card = row(id)?.querySelector('.nrow-card')
+    expect(card?.querySelectorAll('.structured-code')).toHaveLength(2)
+
+    click(document.querySelector('.tab[data-tab="boards"]'))
+    await settle()
+    click(document.querySelector('#boards .board-row'))
+    await settle()
+    const panel = document.querySelector('#boards .row-panel')
+    expect(panel?.querySelector('.card-context .structured-code code')?.textContent).toBe('echo board-context')
+    expect(panel?.querySelector('.outcome-block .structured-code code')?.textContent).toBe('release complete')
   })
 })
 

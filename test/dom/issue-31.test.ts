@@ -28,7 +28,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest'
 import type Database from 'better-sqlite3'
 import { insertItem, replyItem } from '../../src/store.js'
 import {
-  advanceClock, answerInput, bootApp, buttonLabelled, click, expectConsoleError, freshDb, pollTick,
+  advanceClock, answerInput, bootApp, buttonLabelled, click, collapseRow, expectConsoleError, freshDb, pollTick,
   row, rowTitles, searchFor, settle, tabCount, type, useDomTest,
 } from './harness.js'
 
@@ -78,8 +78,7 @@ describe('31.1 · an accepted "Change answer" must show the surface it staged a 
     await settle()
 
     type(answerInput(id), '')      // the human abandons the change
-    click(row(id))                 // collapse — nothing is suspending the poll now
-    await settle()
+    await collapseRow(id)          // nothing is suspending the poll now
 
     advanceClock()
     insertItem(d, { ...AGENT, kind: 'question', title: 'SECOND question' })

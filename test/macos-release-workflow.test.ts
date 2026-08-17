@@ -288,6 +288,18 @@ describe('notarized macOS release workflow', () => {
     expect(docs).toContain('Requires macOS 13.5 (Ventura) or later.')
     expect(docs).toContain('Electron 43 itself supports macOS 12')
     expect(docs).toContain('official Node 24 runtime')
+    const readme = readFileSync(join(root, 'README.md'), 'utf8')
+    const install = readFileSync(join(root, 'docs', 'INSTALL.md'), 'utf8')
+    for (const publicDoc of [readme, install]) {
+      expect(publicDoc).toContain('https://github.com/shariqh/agent-inbox/releases')
+      expect(publicDoc).toContain('When a public release is available')
+      expect(publicDoc).toContain('macOS 13.5')
+      expect(publicDoc).toMatch(/Apple\s+silicon and Intel/i)
+      expect(publicDoc).not.toContain('v0.1 distribution')
+    }
+    expect(install).not.toContain('is distributed through')
+    expect(readme).not.toContain('There are no downloadable Electron binaries yet')
+    expect(readme).not.toContain('Downloadable, signed Electron release artifacts')
     const inputs = JSON.parse(readFileSync(join(root, 'release', 'macos-inputs.json'), 'utf8'))
     expect(inputs.electron.version).toMatch(/^43\./)
     expect(inputs.node.version).toMatch(/^v24\./)

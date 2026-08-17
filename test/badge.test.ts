@@ -43,7 +43,7 @@ describe('focus hash', () => {
 describe('packaged app can resolve public/ from REPO_ROOT', () => {
   const sh = readFileSync(new URL('../scripts/package-app.sh', import.meta.url), 'utf8')
   it('stages public/ alongside electron/ and dist/', () => {
-    expect(sh).toContain('cp -R "$ROOT/dist" "$ROOT/public" "$ROOT/electron" "$STAGE/"')
+    expect(sh).toContain('cp -R "$ROOT/dist" "$ROOT/public" "$ROOT/electron" "$ROOT/release" "$STAGE/"')
   })
   it('packages unarchived, so plain file paths resolve at runtime', () => {
     expect(sh).toContain('--no-asar')

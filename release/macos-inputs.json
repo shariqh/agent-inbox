@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "product": "Agent Inbox",
+  "bundleId": "io.github.shariqh.agent-inbox",
+  "node": {
+    "version": "v24.19.0",
+    "modulesAbi": "137",
+    "distributions": {
+      "darwin-arm64": {
+        "platform": "darwin",
+        "arch": "arm64",
+        "archive": "node-v24.19.0-darwin-arm64.tar.xz",
+        "root": "node-v24.19.0-darwin-arm64",
+        "url": "https://nodejs.org/dist/v24.19.0/node-v24.19.0-darwin-arm64.tar.xz",
+        "sha256": "3f1cf157479c1480352083105e13faf9d008ede98e7e157746b6df940d197b94"
+      },
+      "darwin-x64": {
+        "platform": "darwin",
+        "arch": "x64",
+        "archive": "node-v24.19.0-darwin-x64.tar.xz",
+        "root": "node-v24.19.0-darwin-x64",
+        "url": "https://nodejs.org/dist/v24.19.0/node-v24.19.0-darwin-x64.tar.xz",
+        "sha256": "d35e95230f46f6f0751df497c56622c6735e05d5e1fb1630996a005b9d328fe4"
+      }
+    }
+  },
+  "electron": {
+    "version": "43.1.1",
+    "packagerVersion": "20.3.0",
+    "rebuildVersion": "4.2.0",
+    "universalVersion": "3.0.6",
+    "osxSignVersion": "2.6.0",
+    "dmgVersion": "5.0.1"
+  }
+}

@@ -112,8 +112,17 @@ function sha256File(path) {
   return createHash('sha256').update(readFileSync(path)).digest('hex')
 }
 
+function buildTimestamp() {
+  const epoch = process.env.SOURCE_DATE_EPOCH
+  if (epoch === undefined || epoch === '') return new Date().toISOString()
+  if (!/^\d+$/.test(epoch)) fail('SOURCE_DATE_EPOCH must be a non-negative integer')
+  const date = new Date(Number(epoch) * 1000)
+  if (!Number.isFinite(date.getTime())) fail('SOURCE_DATE_EPOCH is outside the supported date range')
+  return date.toISOString()
+}
+
 function writeDev(repoRoot, outFile) {
-  const info = { repoRoot, nodeBin: process.execPath, builtAt: new Date().toISOString() }
+  const info = { repoRoot, nodeBin: process.execPath, builtAt: buildTimestamp() }
   const commit = head(repoRoot)
   if (commit) info.commit = commit
   writeFileSync(outFile, `${JSON.stringify(info, null, 2)}\n`)
@@ -243,7 +252,7 @@ function writeRelease(outFile, argv) {
   const info = {
     schema: 2,
     version: opts.version,
-    builtAt: new Date().toISOString(),
+    builtAt: buildTimestamp(),
     runtimePayloads,
   }
   if (commit) info.commit = commit

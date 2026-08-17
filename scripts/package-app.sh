@@ -30,7 +30,7 @@ npm run build
 
 rm -rf "$STAGE"
 mkdir -p "$STAGE/docs"
-cp -R "$ROOT/dist" "$ROOT/public" "$ROOT/electron" "$STAGE/"
+cp -R "$ROOT/dist" "$ROOT/public" "$ROOT/electron" "$ROOT/release" "$STAGE/"
 cp "$ROOT/docs/reporting-snippet.md" "$STAGE/docs/"
 
 if [ "$PORTABLE_RELEASE" -eq 1 ]; then

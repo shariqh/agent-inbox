@@ -72,13 +72,18 @@ npm run electron
 The Electron app starts or safely reuses the local viewer and opens the desktop
 workspace. Its **Setup** panel can also run the same audited host installer.
 
-To build a standalone local macOS app:
+To build a standalone local development macOS app:
 
 ```sh
 npm run generate:icons
 npm run package:app
 open "out/Agent Inbox-darwin-arm64/Agent Inbox.app"
 ```
+
+The no-secret universal arm64+x64 app and provisional DMG are produced by the native
+architecture workflow in `.github/workflows/macos-universal.yml`. Release inputs,
+signing modes, verification evidence, and the Layer 3 notarization handoff are
+documented in [`docs/macos-release.md`](docs/macos-release.md).
 
 `assets/icon.svg` is the editable full-color source of truth.
 `assets/icon-mark.svg` is its deliberately simplified single-color derivative for

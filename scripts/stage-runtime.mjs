@@ -46,6 +46,7 @@ import { parseArgs } from 'node:util'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildManifest, copyTreePreservingMode, isMainModule, verifyPayload, writeManifestFile } from './runtime-payload.mjs'
+import { copyAgentInboxLicense } from './license.mjs'
 
 const PRODUCT = 'agent-inbox-runtime'
 const SUPPORTED_PLATFORM = 'darwin'
@@ -59,7 +60,6 @@ export class StageRuntimeError extends Error {
     this.name = 'StageRuntimeError'
   }
 }
-
 // ── Node-root validation ───────────────────────────────────────────────
 // Runs the DISTRIBUTION's own node binary (never ambient `node`) to ask it,
 // authoritatively, what it actually is — a claimed --platform/--arch on the
@@ -200,7 +200,20 @@ function copyNodeModulesDereferenced(srcRoot, destRoot) {
       } else if (entry.isFile()) {
         copyFilePreserving(absSrc, join(destRoot, relPath))
       }
+
     }
+  }
+}
+
+function probeStagedNativeDependency(stageDir, nodeBin, phase) {
+  try {
+    execFileSync(nodeBin, ['-e', "const Database=require('better-sqlite3'); new Database(':memory:').close()"], {
+      cwd: stageDir,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 30_000,
+    })
+  } catch (err) {
+    throw new StageRuntimeError(`staged better-sqlite3 failed ${phase}: ${err.message}`)
   }
 }
 
@@ -290,6 +303,7 @@ function stageInto(stageDir, {
     throw new StageRuntimeError(`Node distribution is missing its LICENSE at ${nodeLicense}`)
   }
   copyFilePreserving(nodeLicense, join(stageDir, 'LICENSE'))
+  copyAgentInboxLicense(repoRoot, join(stageDir, 'LICENSE.agent-inbox'))
 
   writeJsonFile(join(stageDir, 'package.json'), buildRuntimePackageJson(repoPkg))
 
@@ -301,8 +315,20 @@ function stageInto(stageDir, {
 
   const npmCli = resolveNpmCli(nodeRoot)
   execFileSync(nodeBin, [npmCli, 'ci', '--omit=dev', '--no-audit', '--no-fund'], {
-    cwd: stageDir, stdio: ['ignore', 'pipe', 'pipe'], timeout: 10 * 60_000,
+    cwd: stageDir,
+    env: {
+      ...process.env,
+      npm_config_runtime: 'node',
+      npm_config_target: nodeVersion.replace(/^v/, ''),
+      npm_config_platform: platform,
+      npm_config_arch: arch,
+      npm_config_build_from_source: 'true',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 10 * 60_000,
   })
+  const hasBetterSqlite = Object.hasOwn(repoPkg.dependencies ?? {}, 'better-sqlite3')
+  if (hasBetterSqlite) probeStagedNativeDependency(stageDir, nodeBin, 'immediately after npm ci')
 
   const srcModules = join(stageDir, 'node_modules')
   if (existsSync(srcModules)) {
@@ -310,6 +336,7 @@ function stageInto(stageDir, {
     copyNodeModulesDereferenced(srcModules, dereffed)
     rmSync(srcModules, { recursive: true, force: true })
     renameSync(dereffed, srcModules)
+    if (hasBetterSqlite) probeStagedNativeDependency(stageDir, nodeBin, 'after node_modules normalization')
   }
 
   const distDir = join(repoRoot, 'dist')

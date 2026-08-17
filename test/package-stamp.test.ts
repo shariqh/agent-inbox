@@ -71,6 +71,11 @@ describe('scripts/write-setup-info.mjs bakes what the bundle was built from', ()
     expect('commit' in info).toBe(false)
     expect(info['repoRoot']).toBe(root)
   })
+
+  it('uses SOURCE_DATE_EPOCH for reproducible package metadata', () => {
+    const info = bake(tmpRepo(), { ...process.env, SOURCE_DATE_EPOCH: '1767225600' })
+    expect(info['builtAt']).toBe('2026-01-01T00:00:00.000Z')
+  })
 })
 
 // issue #74 — RELEASE mode bakes architecture-keyed runtime metadata instead

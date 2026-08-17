@@ -8,6 +8,7 @@ export type ReleaseInputs = {
   schema: 1
   product: string
   bundleId: string
+  minimumMacosVersion: string
   node: {
     version: string
     modulesAbi: string

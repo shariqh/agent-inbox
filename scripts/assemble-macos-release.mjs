@@ -222,11 +222,11 @@ function writeSetupInfo({ repoRoot, appResources, packageVersion }) {
   })
 }
 
-function markProvisionalBuild(app, mode) {
+function markBuildProperties(app, mode, minimumMacosVersion) {
   const plist = join(app, 'Contents', 'Info.plist')
   for (const [key, type, value] of [
     ['AgentInboxBuildMode', 'string', mode],
-    ['AgentInboxNotarized', 'bool', 'false'],
+    ['LSMinimumSystemVersion', 'string', minimumMacosVersion],
     ['NSUserNotificationAlertStyle', 'string', 'alert'],
   ]) {
     try {
@@ -463,7 +463,7 @@ export async function assembleMacRelease({
     })
     const appResources = join(app, 'Contents', 'Resources', 'app')
     const entitlementsRoot = join(repoRoot, 'release', 'entitlements')
-    markProvisionalBuild(app, mode)
+    markBuildProperties(app, mode, inputs.minimumMacosVersion)
 
     const manifests = {}
     const signedRuntimeMachOs = {}
@@ -511,6 +511,7 @@ export async function assembleMacRelease({
 
     const architectures = verifyUniversalMachOs(app, appResources)
     const nativeSelftest = runNativeRuntimeSelftest(appResources)
+    const appTreeDigest = treeIdentity(app)
     const { sourceCommit, sourceDirty } = provenance
     const base = `Agent-Inbox-${pkg.version}-macos-universal-${mode}`
     const archiveName = `${base}.tar.gz`
@@ -561,6 +562,7 @@ export async function assembleMacRelease({
       signedRuntimeMachOs,
       architectures,
       nativeSelftest,
+      appTreeDigest,
       thinReports: {
         arm64: {
           appTreeDigest: thinReports.arm64.appTreeDigest,

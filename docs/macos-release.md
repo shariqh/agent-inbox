@@ -17,6 +17,11 @@ The Node SHA-256 values are copied from the official
 `https://nodejs.org/dist/v24.19.0/SHASUMS256.txt` distribution metadata. Runtime
 staging rejects any hash, URL, archive root, platform, ABI, or architecture mismatch.
 
+**Requires macOS 13.5 (Ventura) or later.** Release builds support both Apple silicon and
+Intel. Electron 43 itself supports macOS 12, but the bundled official Node 24 runtime
+requires macOS 13.5, so the shipped product must use the stricter minimum. Revisit the
+stated minimum before updating either pinned major.
+
 ## Architecture pipeline
 
 `.github/workflows/macos-universal.yml` uses native macOS runners:
@@ -119,6 +124,205 @@ signature verification against that exact Developer ID app. Layer 3 then rebuild
 final DMG from the stapled app, notarizes/staples/validates the DMG, writes final
 checksums, and publishes. It must not submit or publish Layer 2's ad-hoc app or
 provisional DMG.
+
+## Notarized GitHub Release
+
+Layer 3 uses a two-workflow trust boundary:
+
+- `.github/workflows/macos-release.yml` is an unprivileged producer that runs only for a
+  `vX.Y.Z` tag push. It validates the tag and rebuilds both native runtimes and thin apps
+  with read-only repository permissions and no environment access.
+- `.github/workflows/macos-release-protected.yml` is a default-branch `workflow_run`
+  consumer. GitHub resolves this workflow from the trusted default branch, not from the
+  tag. It is the only workflow allowed to reference `macos-release`.
+
+The producer immediately refuses:
+
+- a lightweight or malformed tag;
+- a tag version that differs from `package.json`, `package-lock.json`, or the lockfile
+  root package;
+- a checkout whose `HEAD`, `GITHUB_SHA`, and annotated-tag target differ; or
+- tracked working-tree changes.
+
+The producer does not reuse Layer 2 or pull-request artifacts. It rebuilds both pinned
+Node runtimes and both thin Electron apps from the exact tagged commit. Only the
+Developer ID signing, Apple notarization/finalization, and GitHub publication jobs
+reference the protected `macos-release` environment.
+
+Before any protected job starts, the default-branch consumer requires the upstream
+workflow's exact trusted workflow ID, repository, event type, successful conclusion, and
+run ID. Trusted code then checks that the artifact context, upstream `head_sha`, peeled
+annotated tag, package versions, and source commit all agree. The tag commit must occur
+on the **first-parent history** of the consumer's trusted `github.workflow_sha`; a tag
+reachable only through a merged side branch is rejected. This lets an unrelated
+default-branch commit land after the tag without creating a timing race, while preventing
+second-parent or arbitrary-ancestor release tags.
+
+Authorization runs from `github.workflow_sha`. After that trust proof succeeds, the
+no-secret `verify-handoff` job checks out the validated tag commit and uses that commit's
+Node version, release inputs, package code, and provenance checks. It downloads the
+triggering run's thin archives by exact run ID, extracts them only through the trusted
+archive validator, checks both reports against complete app tree identities and clean
+source provenance, and publishes a new allowlisted handoff artifact inside the protected
+run. Every source-dependent downstream job also checks out this validated source commit;
+the newer trusted workflow SHA remains audit evidence only. Credentialed jobs consume only
+the protected handoff. No artifact-provided script is sourced or executed during preflight.
+
+The credentialed sequence is intentionally split:
+
+1. Import the P12 into a generated, ephemeral keychain and validate exactly one
+   configured Developer ID Application identity and its Team ID.
+2. Re-run `package:macos --mode developer-id` from the freshly rebuilt thin inputs.
+   Only the app archive and its verification report cross the job boundary; the
+   provisional DMG is discarded.
+3. On a native Intel runner, re-extract the exact archive and bind its SHA-256, complete
+   app-tree identity, finalization report, signature identity, x64 runtime manifest, and
+   x64 selftest into a verification record.
+4. Revalidate that record before submitting a `ditto` ZIP of the app. Require an
+   `Accepted` app ticket and matching notary log before stapling or validating the app.
+5. Build the final DMG from that stapled app, sign the DMG, submit it separately, and
+   require a distinct `Accepted` DMG ticket before stapling and validating the DMG.
+6. Inspect the DMG's exact Developer ID authority and Team ID, mount the final post-staple
+   DMG read-only, require its expected app/Applications-link shape, and copy the transported
+   app with `ditto` into clean temporary storage. Verify the copied app's signature,
+   authority/team, staple, Gatekeeper assessment, universal executable/addon, both runtime
+   manifests and architectures, source/version/setup metadata, icon, and notices. Launch
+   that copied app under a disposable `HOME`, require its hardened loopback marker, and
+   exercise portable-runtime install and prune without touching production
+   `~/.agent-inbox`. Detach the DMG even when any check fails.
+7. Generate `SHA256SUMS.txt` only after the mounted-copy acceptance and from the final
+   post-staple DMG bytes.
+8. Revalidate the complete evidence and exact two-file asset allowlist. Immediately before
+   draft creation, the sole write-token step re-reads the remote tag ref, requires an
+   annotated tag object, peels it to a commit, and requires that commit to remain the
+   authorized source commit. Publication starts as a draft; after upload it compares the
+   remote asset API's SHA-256 digests when present, otherwise downloads both draft assets
+   and verifies their bytes and checksum in isolated storage. A moved tag, upload,
+   allowlist, or byte mismatch deletes/refuses the draft. The release becomes public only
+   after both assets match:
+   `Agent-Inbox-vX.Y.Z-universal.dmg` and `SHA256SUMS.txt`.
+
+The protected workflow grants `contents: write` only to the final publication job.
+Every earlier checkout sets `persist-credentials: false` and every earlier job has
+`contents: read` and `actions: read`. The write job contains no third-party action or
+checkout and exactly one trusted shell step; the write-scoped `github.token` exists only
+in that step.
+
+### One-time operator prerequisites
+
+Before pushing a release tag, configure the repository's `macos-release` environment:
+
+1. Require reviewer approval, prevent self-review, disable administrator bypass if the
+   repository plan supports it, and allow only the protected default branch. The
+   credentialed workflow is a default-branch `workflow_run`; the unprivileged producer,
+   not the environment deployment, owns the `v*.*.*` tag trigger.
+2. Add a repository ruleset for `refs/tags/v*` that restricts tag updates and deletions
+   after creation. The publisher still peels the remote annotated tag immediately before
+   draft creation and again immediately before undrafting, but immutable release tags
+   close the remaining between-request race and protect published source links afterward.
+3. Add these environment **secrets**:
+
+   | Name | Format |
+   | --- | --- |
+   | `APPLE_DEVELOPER_ID_P12_BASE64` | Canonical base64 of a password-protected P12 containing the Developer ID Application certificate and private key |
+   | `APPLE_DEVELOPER_ID_P12_PASSWORD` | P12 export password |
+   | `APPLE_NOTARY_PRIVATE_KEY_BASE64` | Canonical base64 of the App Store Connect Team API `.p8` PEM |
+
+4. Add these environment **variables**:
+
+   | Name | Format |
+   | --- | --- |
+   | `APPLE_DEVELOPER_IDENTITY` | Exact `Developer ID Application: Name (TEAMID1234)` identity |
+   | `APPLE_TEAM_ID` | Ten-character Apple Developer Team ID matching the identity |
+   | `APPLE_NOTARY_KEY_ID` | App Store Connect Team API Key ID |
+   | `APPLE_NOTARY_ISSUER_ID` | App Store Connect Team API Issuer UUID |
+
+Use the minimum App Store Connect role Apple documents for Developer ID notarization.
+Do not paste, request, or store any P12, password, private key, or encoded credential in
+the repository, an issue, workflow logs, or release assets. The environment does not
+need to be created through the API; creating and reviewing it in repository Settings
+keeps the protection policy explicit.
+
+The workflow uses current `xcrun notarytool` Team API authentication (`--key`,
+`--key-id`, and `--issuer`) and `--wait`. Each private key is decoded into a mode-0600
+temporary directory for one submission and removed by a shell trap. Each P12 is deleted
+immediately after import; the generated keychain is deleted in an `if: always()` step.
+No credential value is written to a job output or artifact.
+
+### Release runbook
+
+1. Confirm the portable-runtime and universal-package prerequisite changes are merged,
+   the default branch is green, and `package.json` plus both lockfile version fields are
+   the intended `X.Y.Z`.
+2. Run the no-secret gates locally:
+
+   ```sh
+   fnm exec --using=24 npm run package:smoke
+   fnm exec --using=24 npm test
+   fnm exec --using=24 npm run typecheck
+   fnm exec --using=24 npm run build
+   ```
+
+3. Create an **annotated** tag on the reviewed release commit and push that exact tag:
+
+   ```sh
+   git tag -a vX.Y.Z -m "Agent Inbox vX.Y.Z"
+   git push origin vX.Y.Z
+   ```
+
+4. Review the `macos-release` deployment when GitHub requests approval. Confirm the
+   producer run ID, annotated tag, upstream `head_sha`, protected workflow SHA, and
+   first-parent relationship before approving each protected stage.
+5. Require all jobs to finish. Do not treat an uploaded Actions artifact or a draft
+   release as published success.
+6. CI already mounts the final DMG and validates a copied app, Setup runtime lifecycle,
+   and loopback launch in disposable state. Separately, on a clean Apple-silicon Mac and
+   a clean Intel Mac, download the public DMG in a browser so quarantine is present, copy
+   the app to `/Applications` in Finder, launch it from Finder, run in-app Setup, and
+   confirm a later offline launch. This clean-Mac browser/Finder/quarantine check cannot
+   be replaced by CI; keep issue #74 open until both checks pass with real credentials.
+
+### Failure recovery
+
+- A failure before publication creates no GitHub Release.
+- A publication upload or remote asset mismatch removes the draft release and leaves
+  the annotated tag unchanged.
+- A signing, Intel, notarization, stapling, Gatekeeper, provenance, or checksum failure
+  cannot reach publication because every downstream job has a hard `needs` dependency.
+- An unrelated default-branch advance after the tag is accepted when the tag remains on
+  first-parent history. If trusted release tooling or pinned packaging inputs changed
+  incompatibly before protected preflight, the handoff fails before credentials are
+  available; increment the version and create a new annotated tag after reconciling the
+  release inputs.
+- Do not retry by hand-uploading an artifact or by using Layer 2's provisional DMG.
+  Correct the source/configuration, increment the package version, and create a new
+  annotated tag. Never move or replace a published release tag.
+- Apple notary request IDs and the sanitized allowlisted receipt fields are retained in
+  release evidence. Raw logs and API private keys remain temporary. Use the request ID
+  in App Store Connect or rerun `notarytool log` from a secured operator machine when
+  diagnosing an Apple rejection.
+
+### Download verification
+
+From the directory containing both release assets:
+
+```sh
+shasum -a 256 -c SHA256SUMS.txt
+xcrun stapler validate Agent-Inbox-vX.Y.Z-universal.dmg
+spctl --assess --type open --context context:primary-signature --verbose=4 \
+  Agent-Inbox-vX.Y.Z-universal.dmg
+```
+
+After mounting the DMG, the app must also pass:
+
+```sh
+codesign --verify --deep --strict --verbose=2 "/Volumes/Agent Inbox/Agent Inbox.app"
+xcrun stapler validate "/Volumes/Agent Inbox/Agent Inbox.app"
+spctl --assess --type execute --verbose=4 "/Volumes/Agent Inbox/Agent Inbox.app"
+```
+
+These commands follow Apple's current notarization/stapling flow, Electron's current
+Developer ID and hardened-runtime guidance, and GitHub's protected-environment model.
 
 ## Dependency updates
 

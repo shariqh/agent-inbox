@@ -18,6 +18,7 @@ describe('macOS release inputs', () => {
     const inputs = loadReleaseInputs()
     expect(inputs.node.version).toBe('v24.19.0')
     expect(inputs.node.modulesAbi).toBe('137')
+    expect(inputs.minimumMacosVersion).toBe('13.5')
     expect(Object.keys(inputs.node.distributions)).toEqual(RUNTIME_KEYS)
     expect(inputs.electron).toEqual({
       version: '43.1.1',

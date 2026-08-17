@@ -2,6 +2,7 @@
   "schema": 1,
   "product": "Agent Inbox",
   "bundleId": "io.github.shariqh.agent-inbox",
+  "minimumMacosVersion": "13.5",
   "node": {
     "version": "v24.19.0",
     "modulesAbi": "137",

@@ -74,6 +74,13 @@ describe('native architecture release stages', () => {
       sourceCommit: head,
       sourceDirty: false,
     })
+    expect(resolveSourceProvenance(repo, {
+      GITHUB_SHA: 'b'.repeat(40),
+      AGENT_INBOX_RELEASE_SOURCE_SHA: head,
+    })).toEqual({
+      sourceCommit: head,
+      sourceDirty: false,
+    })
     expect(() => resolveSourceProvenance(repo, { GITHUB_SHA: 'b'.repeat(40) }))
       .toThrow(/does not match checkout HEAD/)
     writeFileSync(join(repo, 'file'), 'dirty\n')
@@ -322,6 +329,8 @@ describe('universal finalization contract', () => {
   it('makes ad-hoc output ineligible for notarization until Developer ID re-finalization', () => {
     const source = readFileSync(join(root, 'scripts', 'assemble-macos-release.mjs'), 'utf8')
     expect(source).toContain("notarized: false")
+    expect(source).not.toContain('AgentInboxNotarized')
+    expect(source).toContain('LSMinimumSystemVersion')
     expect(source).toContain("gatekeeperTrusted: false")
     expect(source).toContain('-provisional.dmg')
     expect(source).toContain('title: `${APP_NAME} ${pkg.version}`')

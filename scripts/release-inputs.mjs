@@ -47,10 +47,15 @@ function requireString(value, field, pattern) {
 }
 
 export function validateReleaseInputs(value) {
-  requireExactKeys(value, ['schema', 'product', 'bundleId', 'node', 'electron'], 'release inputs')
+  requireExactKeys(
+    value,
+    ['schema', 'product', 'bundleId', 'minimumMacosVersion', 'node', 'electron'],
+    'release inputs',
+  )
   if (value.schema !== 1) throw new ReleaseInputError(`unsupported release input schema: ${value.schema}`)
   requireString(value.product, 'product')
   requireString(value.bundleId, 'bundleId', /^[A-Za-z0-9.-]+$/)
+  requireString(value.minimumMacosVersion, 'minimumMacosVersion', /^\d+\.\d+$/)
 
   requireExactKeys(value.node, ['version', 'modulesAbi', 'distributions'], 'node')
   requireString(value.node.version, 'node.version', VERSION_RE)

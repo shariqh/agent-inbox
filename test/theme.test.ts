@@ -54,6 +54,15 @@ function themeTokens(css: string, selector: string): Record<string, string> {
   )
 }
 
+function declaredThemeTokens(css: string, selector: string): Record<string, string> {
+  const start = css.indexOf(selector)
+  expect(start, `missing ${selector}`).toBeGreaterThanOrEqual(0)
+  const body = css.slice(css.indexOf('{', start) + 1, css.indexOf('}', start))
+  return Object.fromEntries(
+    [...body.matchAll(/--([\w-]+):\s*([^;]+)\s*;/g)].map((match) => [match[1]!, match[2]!.trim()]),
+  )
+}
+
 describe('theme preference model', () => {
   it('defaults invalid, missing, and unreadable preferences to Light', () => {
     expect(readThemePreference(store())).toBe('light')
@@ -146,6 +155,59 @@ describe('early theme bootstrap and palette', () => {
     })
   })
 
+  it('derives both semantic palettes from the approved Burgundy Coral identity', () => {
+    const light = declaredThemeTokens(css, ':root {')
+    const dark = declaredThemeTokens(css, ':root[data-theme="dark"]')
+
+    expect(light).toMatchObject({
+      'brand-ink-900': '#211013',
+      'brand-ink-700': '#391b20',
+      'brand-envelope': '#5b3036',
+      'brand-flap': '#6d3b43',
+      'brand-coral-600': '#d76298',
+      'brand-coral-400': '#eb84bb',
+      'brand-coral-200': '#f6a6d1',
+      'app-bg': '#f8f3f4',
+      'app-elevated': '#fcf8f9',
+      'app-surface': '#fffdfd',
+      'app-soft': '#f4eaed',
+      'app-border': '#e4d5da',
+      'app-border-strong': '#9b7683',
+      'app-text': '#2f1c22',
+      'app-muted': '#6d505a',
+      'app-text-soft': '#7e616b',
+      'app-accent': '#a63864',
+      'app-accent-hover': '#8e2f55',
+      'app-accent-soft': 'rgba(166, 56, 100, .10)',
+      'app-link': '#87345f',
+      'app-focus': '#87345f',
+      'app-action-secondary': '#87345f',
+      'app-on-accent': '#ffffff',
+      'app-code-border': '#856a73',
+      'app-code-error': '#b5263f',
+    })
+    expect(dark).toMatchObject({
+      'app-bg': '#171113',
+      'app-elevated': '#21171b',
+      'app-surface': '#2b1d22',
+      'app-soft': '#37262c',
+      'app-border': '#5c414a',
+      'app-border-strong': '#96717e',
+      'app-text': '#f8eef2',
+      'app-muted': '#d0bbc3',
+      'app-text-soft': '#b8a1aa',
+      'app-accent': '#eb84bb',
+      'app-accent-hover': '#f6a6d1',
+      'app-accent-soft': 'rgba(235, 132, 187, .16)',
+      'app-link': '#f0a1c7',
+      'app-focus': '#f0a1c7',
+      'app-action-secondary': '#f0a1c7',
+      'app-on-accent': '#30181d',
+      'app-code-border': '#b89aa5',
+      'app-code-error': '#ff9aa5',
+    })
+  })
+
   it('keeps normal text at 4.5:1 and structural/interactive colors at 3:1', () => {
     for (const [name, selector] of [['light', ':root {'], ['dark', ':root[data-theme="dark"]']] as const) {
       const token = themeTokens(css, selector)
@@ -186,7 +248,7 @@ describe('early theme bootstrap and palette', () => {
     expect(rules).toContain('var(--app-success)')
     expect(rules).toContain('var(--app-code-border)')
     expect(rules).toContain('var(--app-code-error)')
-    expect(rules).toContain('var(--app-link)')
+    expect(rules).toContain('var(--app-focus)')
     expect(rules).not.toMatch(/\b(?:Canvas|CanvasText|LinkText|seagreen|crimson)\b/)
   })
 })

@@ -12,14 +12,14 @@ const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as {
 }
 
 describe('the Agent Inbox identity assets', () => {
-  it('wires generated browser icons and the optical in-product mark', () => {
+  it('wires generated browser icons and the same full-color in-product mark', () => {
     expect(html).toContain('<link rel="icon" type="image/svg+xml" href="/favicon.svg" />')
     expect(html).toContain('<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />')
     expect(html).toContain('<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png" />')
-    expect(html).toContain('<span class="brand-mark" aria-hidden="true"></span>')
+    expect(html).toContain('<img class="brand-mark" src="/favicon-32.png" alt="" aria-hidden="true"')
     expect(html).not.toContain('class="brand-dot"')
-    expect(css).toMatch(/\.brand-mark\s*\{[^}]*mask:\s*url\("\/icon-mark\.svg"\)\s*center\s*\/\s*contain\s*no-repeat/s)
-    expect(css).toMatch(/\.brand-mark\s*\{[^}]*background:\s*var\(--app-accent\)/s)
+    expect(css).toMatch(/\.brand-mark\s*\{[^}]*width:\s*22px[^}]*height:\s*22px/s)
+    expect(css).not.toMatch(/\.brand-mark\s*\{[^}]*(?:mask|background):/s)
   })
 
   it('keeps the icon generator and package consumer explicit', () => {

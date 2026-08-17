@@ -23,6 +23,7 @@ describe('Electron theme bridge wiring', () => {
 
     expect(main).toContain("const { app, BrowserWindow, ipcMain, Menu, Notification, nativeTheme, shell } = require('electron')")
     expect(main).toContain("const THEME_SOURCE_VALUES = new Set(['light', 'dark', 'system'])")
+    expect(main).toMatch(/const THEME_BACKGROUND_COLORS = \{\s*light: '#f8f3f4',\s*dark: '#171113',\s*\}/)
     expect(main).toContain("ipcMain.handle('agent-inbox:set-theme-preference'")
     expect(main).toContain('event.sender.id !== themeWindowWebContentsId')
     expect(main).toContain('new URL(senderUrl).origin === new URL(URL_BASE).origin')

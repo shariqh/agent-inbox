@@ -15,7 +15,7 @@ import {
 } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, relative, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { makeUniversalApp } from '@electron/universal'
 import { copyElectronNotices } from '../scripts/build-thin-app.mjs'
@@ -40,6 +40,23 @@ import { assertRuntimeSourceCommit } from '../scripts/runtime-provenance.mjs'
 import { resolveSourceProvenance } from '../scripts/source-provenance.mjs'
 
 const root = resolve(process.cwd())
+
+function transitiveLocalModules(entry: string): string[] {
+  const found = new Set<string>()
+  const visit = (path: string) => {
+    const repoPath = relative(root, path).split('\\').join('/')
+    if (found.has(repoPath)) return
+    found.add(repoPath)
+    const source = readFileSync(path, 'utf8')
+    for (const match of source.matchAll(/from\s+['"](\.[^'"]+\.mjs)['"]/g)) {
+      const specifier = match[1]
+      if (!specifier) continue
+      visit(resolve(dirname(path), specifier))
+    }
+  }
+  visit(resolve(root, entry))
+  return [...found].sort()
+}
 
 describe('native architecture release stages', () => {
   it('refuses cross-architecture runtime staging and partial archive roots', () => {
@@ -432,13 +449,25 @@ describe('universal finalization contract', () => {
     expect(readFileSync(join(root, '.github', 'dependabot.yml'), 'utf8')).toContain('package-ecosystem: github-actions')
   })
 
-  it('runs the universal package gate when the runtime target contract changes', () => {
+  it('runs the universal package gate for every transitive native staging module', () => {
     const workflow = readFileSync(join(root, '.github', 'workflows', 'macos-universal.yml'), 'utf8')
     const pullRequestTrigger = workflow.slice(
       workflow.indexOf('  pull_request:'),
       workflow.indexOf('\npermissions:'),
     )
-    expect(pullRequestTrigger).toContain('      - "scripts/runtime-targets.mjs"')
+    const stagingModules = new Set([
+      ...transitiveLocalModules('scripts/stage-native-runtime.mjs'),
+      ...transitiveLocalModules('scripts/stage-runtime.mjs'),
+    ])
+    for (const module of stagingModules) {
+      expect(pullRequestTrigger, `${module} must trigger the universal package gate`)
+        .toContain(`      - "${module}"`)
+    }
+  })
+
+  it('keeps native staging adapter coverage in the package smoke gate', () => {
+    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+    expect(pkg.scripts['package:smoke']).toContain('test/native-runtime-adapter.test.ts')
   })
 
   it('pins every repository workflow action and disables checkout credential persistence', () => {

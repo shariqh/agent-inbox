@@ -1512,17 +1512,19 @@ describe('runtime-config hooks: packaged Claude Code hook-settings transformatio
 // build required: a fixture "node" stands in for the real distribution).
 // ═══════════════════════════════════════════════════════════════════════
 describe('stage-runtime --check-only: validates the node-root distribution before ever staging anything', () => {
-  function fakeNodeRoot(env: Partial<Record<'FAKE_PLATFORM' | 'FAKE_ARCH' | 'FAKE_VERSION' | 'FAKE_MODULES_ABI', string>>): string {
+  function fakeNodeRoot(
+    platform: 'darwin' | 'linux' | 'win32' = 'darwin',
+  ): string {
     const root = tmp('fake-node-root-')
-    mkdirSync(join(root, 'bin'), { recursive: true })
-    copyFileSync(FAKE_NODE_FIXTURE, join(root, 'bin', 'node'))
-    chmodSync(join(root, 'bin', 'node'), 0o755)
-    void env
+    const nodeBin = platform === 'win32' ? join(root, 'node.exe') : join(root, 'bin', 'node')
+    mkdirSync(dirname(nodeBin), { recursive: true })
+    copyFileSync(FAKE_NODE_FIXTURE, nodeBin)
+    chmodSync(nodeBin, 0o755)
     return root
   }
 
   it('accepts a Node 24 darwin/arm64 distribution matching the requested platform/arch', () => {
-    const root = fakeNodeRoot({})
+    const root = fakeNodeRoot()
     const result = runOk(STAGE_CLI, ['--node-root', root, '--platform', 'darwin', '--arch', 'arm64', '--check-only'], {
       ...process.env, FAKE_PLATFORM: 'darwin', FAKE_ARCH: 'arm64', FAKE_VERSION: 'v24.18.0',
     }) as { ok: boolean; version: string }
@@ -1531,7 +1533,7 @@ describe('stage-runtime --check-only: validates the node-root distribution befor
   })
 
   it('rejects a distribution whose major version is not 24', () => {
-    const root = fakeNodeRoot({})
+    const root = fakeNodeRoot()
     const result = runFail(STAGE_CLI, ['--node-root', root, '--platform', 'darwin', '--arch', 'arm64', '--check-only'], {
       ...process.env, FAKE_PLATFORM: 'darwin', FAKE_ARCH: 'arm64', FAKE_VERSION: 'v22.10.0',
     })
@@ -1539,7 +1541,7 @@ describe('stage-runtime --check-only: validates the node-root distribution befor
   })
 
   it('rejects a distribution whose own reported arch does not match the requested --arch', () => {
-    const root = fakeNodeRoot({})
+    const root = fakeNodeRoot()
     const result = runFail(STAGE_CLI, ['--node-root', root, '--platform', 'darwin', '--arch', 'arm64', '--check-only'], {
       ...process.env, FAKE_PLATFORM: 'darwin', FAKE_ARCH: 'x64', FAKE_VERSION: 'v24.18.0',
     })
@@ -1547,22 +1549,31 @@ describe('stage-runtime --check-only: validates the node-root distribution befor
   })
 
   it('rejects a distribution whose own reported platform does not match the requested --platform', () => {
-    const root = fakeNodeRoot({})
+    const root = fakeNodeRoot()
     const result = runFail(STAGE_CLI, ['--node-root', root, '--platform', 'darwin', '--arch', 'arm64', '--check-only'], {
       ...process.env, FAKE_PLATFORM: 'linux', FAKE_ARCH: 'arm64', FAKE_VERSION: 'v24.18.0',
     })
     expect(result.stderr).toMatch(/reports linux\/arm64, not the requested darwin\/arm64/)
   })
 
-  it('rejects an unsupported requested --platform before ever touching the node-root', () => {
-    const result = runFail(STAGE_CLI, ['--node-root', '/nonexistent', '--platform', 'linux', '--arch', 'arm64', '--check-only'])
-    expect(result.stderr).toMatch(/unsupported --platform/)
+  it('accepts the descriptor-defined Linux executable layout', () => {
+    const linuxRoot = fakeNodeRoot('linux')
+    expect(runOk(STAGE_CLI, [
+      '--node-root', linuxRoot, '--platform', 'linux', '--arch', 'x64', '--check-only',
+    ], {
+      ...process.env, FAKE_PLATFORM: 'linux', FAKE_ARCH: 'x64', FAKE_VERSION: 'v24.18.0',
+    })).toMatchObject({ ok: true, nodeBin: join(linuxRoot, 'bin', 'node') })
+  })
+
+  it('rejects an unsupported target before ever touching the node-root', () => {
+    const result = runFail(STAGE_CLI, ['--node-root', '/nonexistent', '--platform', 'freebsd', '--arch', 'x64', '--check-only'])
+    expect(result.stderr).toMatch(/unknown runtime target/)
   })
 
   it('rejects an unsupported requested --arch', () => {
-    const root = fakeNodeRoot({})
+    const root = fakeNodeRoot()
     const result = runFail(STAGE_CLI, ['--node-root', root, '--platform', 'darwin', '--arch', 'arm', '--check-only'])
-    expect(result.stderr).toMatch(/unsupported --arch/)
+    expect(result.stderr).toMatch(/unknown runtime target/)
   })
 
   it('rejects a --node-root with no bin/node at all', () => {
@@ -1572,7 +1583,7 @@ describe('stage-runtime --check-only: validates the node-root distribution befor
   })
 
   it('requires --output unless --check-only is given', () => {
-    const root = fakeNodeRoot({})
+    const root = fakeNodeRoot()
     const result = runFail(STAGE_CLI, ['--node-root', root, '--platform', 'darwin', '--arch', 'arm64'])
     expect(result.stderr).toMatch(/--output is required/)
   })
@@ -1680,7 +1691,7 @@ function buildFixtureRepoRoot(): string {
   return repoRoot
 }
 
-describe.skipIf(!REAL_NODE_ROOT || process.platform !== 'darwin' || process.arch !== 'arm64')(
+describe.skipIf(!REAL_NODE_ROOT || !['darwin', 'linux'].includes(process.platform))(
   'stage-runtime full staging: allowScripts passthrough + pre-publish selftest gate (correction #1)',
   () => {
     it(
@@ -1692,13 +1703,16 @@ describe.skipIf(!REAL_NODE_ROOT || process.platform !== 'darwin' || process.arch
         const output = join(outputParent, 'runtime')
 
         const result = runOk(STAGE_CLI, [
-          '--node-root', REAL_NODE_ROOT as string, '--platform', 'darwin', '--arch', 'arm64',
+          '--node-root', REAL_NODE_ROOT as string, '--platform', process.platform, '--arch', process.arch,
           '--output', output, '--repo-root', repoRoot,
         ]) as { ok: boolean; runtimeId: string; output: string }
 
         expect(result.ok).toBe(true)
         expect(existsSync(output)).toBe(true)
         expect(existsSync(join(output, 'runtime-manifest.json'))).toBe(true)
+        expect(existsSync(join(output, 'bin', 'node'))).toBe(true)
+        expect(statSync(join(output, 'bin', 'node')).mode & 0o777).toBe(0o755)
+        expect(existsSync(join(output, 'node.exe'))).toBe(false)
         expect(readFileSync(join(output, 'LICENSE.agent-inbox'), 'utf8')).toBe('fixture Agent Inbox license\n')
 
         // The manifest verifies cleanly on its own — the same gate
@@ -1717,8 +1731,10 @@ describe.skipIf(!REAL_NODE_ROOT || process.platform !== 'darwin' || process.arch
         // before manifesting or every copied app payload fails verification.
         expect(existsSync(join(output, 'package-lock.json'))).toBe(false)
         const manifest = JSON.parse(readFileSync(join(output, 'runtime-manifest.json'), 'utf8')) as {
-          files: Array<{ path: string }>
+          files: Array<{ path: string; mode: number }>
         }
+        expect(manifest.files).toContainEqual(expect.objectContaining({ path: 'bin/node', mode: 0o755 }))
+        expect(manifest.files.some((file) => file.path === 'node.exe')).toBe(false)
         for (const file of manifest.files) {
           expect(file.path).not.toMatch(/(^|\/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml)$/)
           expect(file.path).not.toMatch(/(^|\/)(\.git|\.bin|node_gyp_bins)(\/|$)|\.o(bj)?$/)
@@ -1739,7 +1755,7 @@ describe.skipIf(!REAL_NODE_ROOT || process.platform !== 'darwin' || process.arch
         const output = join(outputParent, 'runtime')
 
         const result = runFail(STAGE_CLI, [
-          '--node-root', REAL_NODE_ROOT as string, '--platform', 'darwin', '--arch', 'arm64',
+          '--node-root', REAL_NODE_ROOT as string, '--platform', process.platform, '--arch', process.arch,
           '--output', output, '--repo-root', repoRoot,
         ], { ...process.env, FAKE_SELFTEST_FAIL: '1' })
 

@@ -432,6 +432,45 @@ describe('universal finalization contract', () => {
     expect(readFileSync(join(root, '.github', 'dependabot.yml'), 'utf8')).toContain('package-ecosystem: github-actions')
   })
 
+  it('pins every repository workflow action and disables checkout credential persistence', () => {
+    const workflowsDir = join(root, '.github', 'workflows')
+    const workflowFiles = readdirSync(workflowsDir)
+      .filter((file) => /\.ya?ml$/.test(file))
+    let actionCount = 0
+    let checkoutCount = 0
+
+    expect(workflowFiles.length).toBeGreaterThan(0)
+    for (const file of workflowFiles) {
+      const lines = readFileSync(join(workflowsDir, file), 'utf8').split(/\r?\n/)
+      for (const [index, line] of lines.entries()) {
+        if (!/^\s*(?:-\s+)?uses:\s+actions\//.test(line)) continue
+        actionCount += 1
+        const match = line.match(
+          /^(\s*)(-\s+)?uses:\s+(actions\/[^@\s]+)@([0-9a-f]{40})\s+#\s+(v\d+\.\d+\.\d+)\s*$/,
+        )
+        expect(match, `${file}:${index + 1} must pin the action with a version comment`).not.toBeNull()
+        if (!match || match[3] !== 'actions/checkout') continue
+
+        checkoutCount += 1
+        expect(match[2], `${file}:${index + 1} checkout must be a workflow step`).toBe('- ')
+        const stepIndent = match[1]?.length ?? 0
+        const stepLines: string[] = []
+        for (const following of lines.slice(index + 1)) {
+          if (following.trim() && (following.match(/^\s*/)?.[0].length ?? 0) <= stepIndent) break
+          stepLines.push(following)
+        }
+        expect(
+          stepLines.some((following) =>
+            following.trim() === 'persist-credentials: false'
+            && (following.match(/^\s*/)?.[0].length ?? 0) === stepIndent + 4),
+          `${file}:${index + 1} checkout must disable persisted credentials`,
+        ).toBe(true)
+      }
+    }
+    expect(actionCount).toBeGreaterThan(0)
+    expect(checkoutCount).toBeGreaterThan(0)
+  })
+
   it('publishes only checksummed transfer artifacts and never a raw app bundle', () => {
     const output = mkdtempSync(join(tmpdir(), 'release-output-'))
     for (const name of [

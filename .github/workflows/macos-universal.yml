@@ -12,6 +12,7 @@ on:
       - "scripts/build-thin-app.mjs"
       - "scripts/license.mjs"
       - "scripts/release-inputs.mjs"
+      - "scripts/runtime-targets.mjs"
       - "scripts/runtime-provenance.mjs"
       - "scripts/source-provenance.mjs"
       - "scripts/stage-native-runtime.mjs"

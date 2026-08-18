@@ -54,12 +54,31 @@ atomically copies the selected payload to
 `~/.agent-inbox/runtime/<content-derived-runtime-id>/`, then registers that installed
 Node and MCP entrypoint. Moving or deleting the app afterward does not break agents.
 
+`electron/setup-core.cjs` is the dependency-free Setup control plane in Electron main.
+The Darwin execution adapter owns a frozen host identity derived directly from
+`process.platform` and `process.arch`; the selected setup-info key and verified manifest
+must match that exact identity before `/bin/bash` can start. The core does not load the
+Node-ABI agent runtime or model shell-internal self-test, rollback, or pruning work.
+
+The externally anchored integrity check is `electron/runtime-verify.cjs`, using the
+manifest digest from the signed app's `setup-info.json`. It hashes the full payload at
+selection and synchronously again immediately before process start, which currently blocks
+Electron main. The installer's later check under the payload's own Node is self-attesting:
+it catches corruption and argv/source mismatch before managed runtime or host mutation, but
+cannot rule out substitution after the app-side check. The current verify-by-path then
+execute-by-path window remains open until a later filesystem/process adapter can hand off a
+stable snapshot or filesystem identity.
+
 `scripts/runtime-targets.mjs` defines the build-time target vocabulary and official Node
 artifact/layout facts for planned Darwin, Linux, and Windows runtimes. That descriptor
 table is not a Setup capability list: the active macOS release profile remains exactly
 `darwin-arm64` plus `darwin-x64`, and the packaged Setup runner remains Darwin-only until
 a platform has a verified staging and installer adapter. Windows arm64 is deliberately
 outside the current target set.
+
+The Darwin shell acquires its user lock before its payload-internal verification. Graceful
+termination attempts transactional rollback, but forced `SIGKILL` escalation can end
+without shell cleanup; Setup retains that existing cancellation behavior.
 
 Layer 1 leaves the portable app unsigned. The signing layer must finalize the layout,
 sign every nested runtime Mach-O, regenerate both manifests from those signed bytes,

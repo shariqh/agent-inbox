@@ -2,6 +2,7 @@ const { existsSync, lstatSync, readFileSync, realpathSync } = require('node:fs')
 const { homedir } = require('node:os')
 const { isAbsolute, join, resolve, sep } = require('node:path')
 const { spawn } = require('node:child_process')
+const { runTrustedSetup } = require('./setup-core.cjs')
 const {
   EXPECTED_NODE_MAJOR,
   EXPECTED_NODE_MODULES_ABI,
@@ -12,6 +13,7 @@ const {
 } = require('./runtime-verify.cjs')
 
 const TARGETS = new Set(['all', 'claude', 'copilot'])
+const TARGET_NAMES = Object.freeze([...TARGETS])
 const DEFAULT_MAX_OUTPUT = 64 * 1024
 const DEFAULT_TIMEOUT_MS = 120_000
 
@@ -19,6 +21,7 @@ const DEFAULT_TIMEOUT_MS = 120_000
 // `${process.platform}-${process.arch}` only, never `uname`, never a Rosetta
 // (x64-under-arm64) fallback. An unsupported host simply gets no payload.
 const RUNTIME_KEYS = new Set(['darwin-arm64', 'darwin-x64'])
+const RELEASE_KEYS = Object.freeze([...RUNTIME_KEYS])
 const DIGEST_RE = /^(sha256:)?[0-9a-f]{64}$/i
 
 function runtimeKey(platform, arch) {
@@ -40,6 +43,11 @@ function readSetupInfo(appRoot) {
 function normalizeDigest(digest) {
   if (typeof digest !== 'string' || !DIGEST_RE.test(digest)) return null
   return digest.replace(/^sha256:/i, '').toLowerCase()
+}
+
+function nodeMajor(version) {
+  const match = typeof version === 'string' ? /^v?(\d+)\.\d+\.\d+(?:[-+].*)?$/.exec(version) : null
+  return match ? Number(match[1]) : null
 }
 
 /**
@@ -232,82 +240,17 @@ function installerEnv(env) {
   return { ...env, PATH: [...extra, env.PATH || ''].filter(Boolean).join(':') }
 }
 
-function runAgentInstall({
+function runInstallerProcess({
   repoRoot,
   target,
-  runtimePayload = null,
+  runtimeArgs,
   env = process.env,
   maxOutput = DEFAULT_MAX_OUTPUT,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   spawnImpl = spawn,
   onCancel = () => {},
 }) {
-  if (!TARGETS.has(target)) {
-    return Promise.resolve({
-      ok: false,
-      exitCode: null,
-      output: `Invalid setup target: ${String(target)}`,
-      target: String(target),
-      timedOut: false,
-      cancelled: false,
-    })
-  }
   const script = installerPath(repoRoot)
-  if (!existsSync(script)) {
-    return Promise.resolve({
-      ok: false,
-      exitCode: null,
-      output: `Installer not found at ${script}`,
-      target,
-      timedOut: false,
-      cancelled: false,
-    })
-  }
-  // Release installs (issue #74) pass the EXACT verified runtime — the
-  // digest-checked absolute path `selectRuntimePayload` resolved, never a
-  // repoRoot/nodeBin builder path — so the installer can stage a portable
-  // runtime instead of assuming a source checkout. Dev/legacy installs keep
-  // the exact argv they always had.
-  let runtimeArgs = []
-  if (runtimePayload !== null) {
-    const path = runtimePayload?.path
-    const digest = normalizeDigest(runtimePayload?.digest)
-    const packageVersion = runtimePayload?.packageVersion
-    if (typeof path !== 'string' || !path || !digest ||
-        typeof packageVersion !== 'string' || !packageVersion.trim()) {
-      return Promise.resolve({
-        ok: false,
-        exitCode: null,
-        output: 'Invalid release runtime payload — refusing to run the installer.',
-        target,
-        timedOut: false,
-        cancelled: false,
-      })
-    }
-    try {
-      if (realpathSync(path) !== realpathSync(repoRoot)) throw new Error('runtime root mismatch')
-      verifyRuntimePayload({
-        root: path,
-        expectedManifestDigest: `sha256:${digest}`,
-        expectedProduct: EXPECTED_PRODUCT,
-        expectedPackageVersion: packageVersion,
-        expectedNodeMajor: EXPECTED_NODE_MAJOR,
-        expectedNodeModulesAbi: EXPECTED_NODE_MODULES_ABI,
-        requiredEntrypoints: REQUIRED_ENTRYPOINTS,
-        requiredFiles: REQUIRED_FILES,
-      })
-    } catch {
-      return Promise.resolve({
-        ok: false,
-        exitCode: null,
-        output: 'Release runtime payload failed integrity verification — refusing to run the installer.',
-        target,
-        timedOut: false,
-        cancelled: false,
-      })
-    }
-    runtimeArgs = ['--runtime-source', path, '--runtime-digest', `sha256:${digest}`]
-  }
 
   return new Promise((resolveResult) => {
     let output = ''
@@ -379,6 +322,141 @@ function runAgentInstall({
     }
     onCancel(() => terminate('Installer cancelled because Agent Inbox is closing.'))
     timer = setTimeout(() => terminate(`Installer timed out after ${timeoutMs}ms.`, true), timeoutMs)
+  })
+}
+
+function createReleaseSetupAdapter({
+  repoRoot,
+  env,
+  maxOutput,
+  timeoutMs,
+  spawnImpl,
+}) {
+  const host = Object.freeze({
+    platform: process.platform,
+    arch: process.arch,
+    key: runtimeKey(process.platform, process.arch),
+  })
+
+  return Object.freeze({
+    id: 'darwin-shell-v1',
+    host,
+    releaseKeys: RELEASE_KEYS,
+    targets: TARGET_NAMES,
+    verify(request) {
+      const { selection } = request
+      if (realpathSync(selection.sourceRoot) !== realpathSync(repoRoot)) {
+        throw new Error('runtime root mismatch')
+      }
+      const verified = verifyRuntimePayload({
+        root: selection.sourceRoot,
+        expectedManifestDigest: selection.manifestDigest,
+        expectedPlatform: host.platform,
+        expectedArch: host.arch,
+        expectedProduct: EXPECTED_PRODUCT,
+        expectedPackageVersion: selection.packageVersion,
+        expectedNodeMajor: EXPECTED_NODE_MAJOR,
+        expectedNodeModulesAbi: EXPECTED_NODE_MODULES_ABI,
+        requiredEntrypoints: REQUIRED_ENTRYPOINTS,
+        requiredFiles: REQUIRED_FILES,
+      })
+      const { manifest } = verified
+      return {
+        sourceRoot: selection.sourceRoot,
+        manifestDigest: `sha256:${verified.manifestDigest}`,
+        packageVersion: manifest.packageVersion,
+        product: manifest.product,
+        runtimeId: manifest.runtimeId,
+        payloadDigest: manifest.payloadDigest,
+        platform: manifest.platform,
+        arch: manifest.arch,
+        nodeMajor: nodeMajor(manifest.nodeVersion),
+        nodeModulesAbi: manifest.nodeModulesAbi,
+      }
+    },
+    start(operation, { onCancel }) {
+      return runInstallerProcess({
+        repoRoot,
+        target: operation.target,
+        runtimeArgs: [
+          '--runtime-source',
+          operation.sourceRoot,
+          '--runtime-digest',
+          operation.manifestDigest,
+        ],
+        env,
+        maxOutput,
+        timeoutMs,
+        spawnImpl,
+        onCancel,
+      })
+    },
+  })
+}
+
+function runAgentInstall({
+  repoRoot,
+  target,
+  runtimePayload = null,
+  env = process.env,
+  maxOutput = DEFAULT_MAX_OUTPUT,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+  spawnImpl = spawn,
+  onCancel = () => {},
+}) {
+  if (!TARGETS.has(target)) {
+    return Promise.resolve({
+      ok: false,
+      exitCode: null,
+      output: `Invalid setup target: ${String(target)}`,
+      target: String(target),
+      timedOut: false,
+      cancelled: false,
+    })
+  }
+  const script = installerPath(repoRoot)
+  if (!existsSync(script)) {
+    return Promise.resolve({
+      ok: false,
+      exitCode: null,
+      output: `Installer not found at ${script}`,
+      target,
+      timedOut: false,
+      cancelled: false,
+    })
+  }
+
+  if (runtimePayload === null) {
+    return runInstallerProcess({
+      repoRoot,
+      target,
+      runtimeArgs: [],
+      env,
+      maxOutput,
+      timeoutMs,
+      spawnImpl,
+      onCancel,
+    })
+  }
+
+  const digest = normalizeDigest(runtimePayload?.digest)
+  const selection = {
+    key: runtimePayload?.key,
+    sourceRoot: runtimePayload?.path,
+    manifestDigest: digest ? `sha256:${digest}` : runtimePayload?.digest,
+    packageVersion: runtimePayload?.packageVersion,
+  }
+  const adapter = createReleaseSetupAdapter({
+    repoRoot,
+    env,
+    maxOutput,
+    timeoutMs,
+    spawnImpl,
+  })
+  return runTrustedSetup({
+    request: { target, selection },
+    adapter,
+    onCancel,
   })
 }
 

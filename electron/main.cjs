@@ -110,6 +110,7 @@ ipcMain.handle('agent-inbox:install', async (event, target) => {
     target,
     runtimePayload: runtimeSelection.ok
       ? {
+          key: runtimeSelection.key,
           path: runtimeSelection.path,
           digest: runtimeSelection.digest,
           packageVersion: runtimeSelection.packageVersion,

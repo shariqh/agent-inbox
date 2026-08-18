@@ -14,6 +14,7 @@ import {
   archiveExtractCommand,
   archiveListCommand,
   assertPlainFile,
+  assertSystemTool,
   nativeRuntimeAdapterFor,
   resolveNodeDistributionPaths,
   validateArchiveEntries,
@@ -112,6 +113,8 @@ describe('native runtime staging adapters', () => {
       'node-v24.19.0-win-x64/../evil.exe',
       'node-v24.19.0-win-x64/./node.exe',
       'node-v24.19.0-win-x64//node.exe',
+      'node-v24.19.0-win-x64//',
+      'node-v24.19.0-win-x64/node_modules//',
       'other-root/node.exe',
       'node-v24.19.0-win-x64/\0evil',
     ]) {
@@ -136,11 +139,14 @@ describe('native runtime staging adapters', () => {
     const directory = join(root, 'directory')
     mkdirSync(directory)
     expect(() => assertPlainFile(directory, 'archive tool')).toThrow(/plain regular file/)
+    expect(() => assertSystemTool(directory, 'archive tool')).toThrow(/resolve to a regular file/)
 
     const link = join(root, 'link')
     symlinkSync(file, link)
     expect(() => assertPlainFile(link, 'archive tool')).toThrow(/plain regular file/)
+    expect(assertSystemTool(link, 'archive tool')).toBe(link)
     expect(() => assertPlainFile(join(root, 'missing'), 'archive tool')).toThrow(/missing/)
+    expect(() => assertSystemTool(join(root, 'missing'), 'archive tool')).toThrow(/missing/)
   })
 
   it('keeps both staging entrypoints on the shared adapter boundary', () => {

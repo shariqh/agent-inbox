@@ -1,4 +1,4 @@
-import { lstatSync } from 'node:fs'
+import { lstatSync, statSync } from 'node:fs'
 import { posix, win32 } from 'node:path'
 import { targetFor } from './runtime-targets.mjs'
 
@@ -118,6 +118,19 @@ export function assertPlainFile(path, label) {
   return path
 }
 
+export function assertSystemTool(path, label) {
+  let stat
+  try {
+    stat = statSync(path)
+  } catch {
+    throw new NativeRuntimeAdapterError(`${label} is missing: ${path}`)
+  }
+  if (!stat.isFile()) {
+    throw new NativeRuntimeAdapterError(`${label} must resolve to a regular file: ${path}`)
+  }
+  return path
+}
+
 export function validateArchiveEntries(entries, expectedRoot) {
   assertSafeRelativePath(expectedRoot, 'expected archive root')
   if (!Array.isArray(entries) || entries.length === 0) {
@@ -131,7 +144,10 @@ export function validateArchiveEntries(entries, expectedRoot) {
     if (typeof rawEntry !== 'string' || !rawEntry) {
       throw new NativeRuntimeAdapterError('Node archive contains an empty path')
     }
-    const entry = rawEntry.replace(/\/+$/, '')
+    if (rawEntry.endsWith('//')) {
+      throw new NativeRuntimeAdapterError(`Node archive entry contains an empty path segment: ${rawEntry}`)
+    }
+    const entry = rawEntry.endsWith('/') ? rawEntry.slice(0, -1) : rawEntry
     assertSafeRelativePath(entry, 'Node archive entry')
     if (entry !== expectedRoot && !entry.startsWith(prefix)) {
       throw new NativeRuntimeAdapterError(`Node archive contains a path outside ${expectedRoot}: ${entry}`)

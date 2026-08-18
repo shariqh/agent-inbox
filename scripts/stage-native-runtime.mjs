@@ -8,11 +8,12 @@ import { parseArgs } from 'node:util'
 import {
   archiveExtractCommand,
   archiveListCommand,
-  assertPlainFile,
+  assertSystemTool,
   nativeRuntimeAdapterFor,
   validateArchiveEntries,
 } from './native-runtime-adapter.mjs'
 import { downloadArchive, loadReleaseInputs, verifyArchiveDigest } from './release-inputs.mjs'
+import { targetFor } from './runtime-targets.mjs'
 import { stageRuntime } from './stage-runtime.mjs'
 import { resolveSourceProvenance } from './source-provenance.mjs'
 
@@ -40,9 +41,17 @@ function adapterFor(key) {
   }
 }
 
+function assertKnownRuntimeKey(key) {
+  try {
+    targetFor(key)
+  } catch (err) {
+    throw new NativeRuntimeStageError(err.message)
+  }
+}
+
 function runArchiveCommand(command, options) {
   try {
-    assertPlainFile(command.executable, 'native archive tool')
+    assertSystemTool(command.executable, 'native archive tool')
   } catch (err) {
     throw new NativeRuntimeStageError(err.message)
   }
@@ -67,12 +76,13 @@ export async function stageNativeRuntime({
   cacheDir,
   force = false,
 }) {
-  const inputs = loadReleaseInputs(inputsPath)
-  const provenance = resolveSourceProvenance(repoRoot)
-  const distribution = inputs.node.distributions[key]
-  if (!distribution) throw new NativeRuntimeStageError(`unknown runtime key: ${key}`)
+  assertKnownRuntimeKey(key)
   assertNativeRuntimeKey(key)
   const adapter = adapterFor(key)
+  const inputs = loadReleaseInputs(inputsPath)
+  const distribution = inputs.node.distributions[key]
+  if (!distribution) throw new NativeRuntimeStageError(`unknown runtime key: ${key}`)
+  const provenance = resolveSourceProvenance(repoRoot)
 
   const cacheRoot = resolve(cacheDir ?? join(repoRoot, 'build', 'downloads'))
   const archive = resolve(archivePath ?? join(cacheRoot, distribution.archive))

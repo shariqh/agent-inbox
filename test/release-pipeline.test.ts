@@ -32,12 +32,17 @@ import {
   validateSigningOptions,
   verifyThinReports,
 } from '../scripts/assemble-macos-release.mjs'
-import { assertNativeRuntimeKey, validateArchiveEntries } from '../scripts/stage-native-runtime.mjs'
+import {
+  assertNativeRuntimeKey,
+  stageNativeRuntime,
+  validateArchiveEntries,
+} from '../scripts/stage-native-runtime.mjs'
 import { loadReleaseInputs } from '../scripts/release-inputs.mjs'
 import { copyAgentInboxLicense } from '../scripts/license.mjs'
 import { treeIdentity } from '../scripts/tree-identity.mjs'
 import { assertRuntimeSourceCommit } from '../scripts/runtime-provenance.mjs'
 import { resolveSourceProvenance } from '../scripts/source-provenance.mjs'
+import { RUNTIME_TARGETS } from '../scripts/runtime-targets.mjs'
 
 const root = resolve(process.cwd())
 
@@ -65,6 +70,24 @@ describe('native architecture release stages', () => {
       'node-v24.19.0-darwin-arm64/bin/node',
       'other-root/LICENSE',
     ], 'node-v24.19.0-darwin-arm64')).toThrow(/outside/)
+  })
+
+  it('rejects mismatched and unknown targets before reading release or repository paths', async () => {
+    const nativeKey = `${process.platform}-${process.arch}`
+    const mismatchedKey = Object.keys(RUNTIME_TARGETS).find((key) => key !== nativeKey)
+    if (!mismatchedKey) throw new Error('fixture requires a non-native runtime target')
+    const unreachable = join(tmpdir(), 'must-not-be-read', String(process.pid))
+    const options = {
+      output: join(unreachable, 'output'),
+      repoRoot: join(unreachable, 'repo'),
+      inputsPath: join(unreachable, 'release-inputs.json'),
+      archivePath: join(unreachable, 'archive'),
+    }
+
+    await expect(stageNativeRuntime({ ...options, key: mismatchedKey }))
+      .rejects.toThrow(/must be staged natively/)
+    await expect(stageNativeRuntime({ ...options, key: 'unknown-x64' }))
+      .rejects.toThrow(/unknown runtime target/)
   })
 
   it('pins npm lifecycle builds to the runtime target architecture', () => {

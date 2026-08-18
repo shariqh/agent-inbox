@@ -42,4 +42,5 @@ export function resolveNodeDistributionPaths(
 }
 
 export function assertPlainFile(path: string, label: string): string
+export function assertSystemTool(path: string, label: string): string
 export function validateArchiveEntries(entries: string[], expectedRoot: string): string[]

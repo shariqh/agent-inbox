@@ -69,6 +69,33 @@ cannot rule out substitution after the app-side check. The current verify-by-pat
 execute-by-path window remains open until a later filesystem/process adapter can hand off a
 stable snapshot or filesystem identity.
 
+The payload's `scripts/setup-filesystem.cjs` adapter now owns runtime filesystem identity,
+same-parent staging, publication, build-time replacement, and exact prune removal. The
+shipping install path records plain-entry device/inode identity, rejects links and unusable
+identity, rechecks before each path mutation, and verifies the final published name. This is
+point-in-time detection, not a handle held across verification or execution, so it does not
+close the window above. Immutable runtime install never replaces an existing name:
+byte-identical content remains a no-op and any collision is refused. Build-time `--force`
+replacement is a two-rename backup swap with a visibility gap; failed restoration or
+post-commit cleanup retains and reports recovery data. Restore and recursive cleanup
+re-identify the scratch and prior-tree backup first; an identity mismatch refuses the
+mutation rather than restoring or deleting a substituted path. The adapter creates and
+identifies the empty stage before producer code runs, and cleanup requires that same stage
+identity or verified post-publication absence.
+
+The payload CLI distinguishes a committed install failure with exit 3 (ordinary failure
+remains 1; usage remains 2). Before treating that runtime as newly installed, the Darwin
+shell requires a plain exact destination, a full payload verification, the expected
+content-derived runtime ID, and the exact source-manifest digest. Only a path absent before
+the attempt and passing every check enters the existing reference-gated rollback. A
+substituted or unverifiable destination is retained and reported as unsafe/unknown; host
+configuration is never changed and Setup still fails.
+
+Win32 policy tests model fully-qualified drive/UNC paths, separator normalization,
+case-independent filesystem identity, junction/link refusal, and sharing failures. They
+also reject drive-relative, drive-less-rooted, device/extended-namespace, and alternate-data-
+stream-like paths. Those injected tests do not prove NTFS behavior or enable Windows Setup.
+
 `scripts/runtime-targets.mjs` defines the build-time target vocabulary and official Node
 artifact/layout facts for planned Darwin, Linux, and Windows runtimes. That descriptor
 table is not a Setup capability list: the active macOS release profile remains exactly
@@ -78,7 +105,8 @@ outside the current target set.
 
 The Darwin shell acquires its user lock before its payload-internal verification. Graceful
 termination attempts transactional rollback, but forced `SIGKILL` escalation can end
-without shell cleanup; Setup retains that existing cancellation behavior.
+without shell or filesystem-adapter cleanup; Setup retains that existing cancellation
+behavior.
 
 Layer 1 leaves the portable app unsigned. The signing layer must finalize the layout,
 sign every nested runtime Mach-O, regenerate both manifests from those signed bytes,

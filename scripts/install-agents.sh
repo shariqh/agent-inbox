@@ -466,6 +466,7 @@ RUNTIME_ROOT="${AGENT_INBOX_RUNTIME_ROOT:-$HOME/.agent-inbox/runtime}"
 RUNTIME_ID=""
 RUNTIME_PATH=""
 RUNTIME_INSTALLED_THIS_RUN=0
+RUNTIME_MANIFEST_DIGEST=""
 PAYLOAD_HELPER=""
 CONFIG_HELPER=""
 SOURCE_NODE=""
@@ -494,6 +495,10 @@ if [ "$RUNTIME_MODE" -eq 1 ]; then
     echo "install-agents: runtime manifest is missing from $RUNTIME_SOURCE" >&2
     exit 1
   }
+  RUNTIME_MANIFEST_DIGEST="$("$SOURCE_NODE" -e '
+    const fs = require("node:fs"), crypto = require("node:crypto")
+    process.stdout.write(crypto.createHash("sha256").update(fs.readFileSync(process.argv[1])).digest("hex"))
+  ' "$RUNTIME_SOURCE/runtime-manifest.json")" || exit 1
   if [ -n "$RUNTIME_DIGEST" ]; then
     expected_digest="${RUNTIME_DIGEST#sha256:}"
     case "$expected_digest" in
@@ -503,11 +508,7 @@ if [ "$RUNTIME_MODE" -eq 1 ]; then
       echo "install-agents: --runtime-digest must be sha256:<64 hex>" >&2
       exit 2
     }
-    actual_digest="$("$SOURCE_NODE" -e '
-      const fs = require("node:fs"), crypto = require("node:crypto")
-      process.stdout.write(crypto.createHash("sha256").update(fs.readFileSync(process.argv[1])).digest("hex"))
-    ' "$RUNTIME_SOURCE/runtime-manifest.json")" || exit 1
-    [ "$actual_digest" = "$(printf '%s' "$expected_digest" | tr 'A-F' 'a-f')" ] || {
+    [ "$RUNTIME_MANIFEST_DIGEST" = "$(printf '%s' "$expected_digest" | tr 'A-F' 'a-f')" ] || {
       echo "install-agents: runtime manifest digest mismatch" >&2
       exit 1
     }
@@ -551,6 +552,20 @@ else
     fi
   fi
 fi
+
+verify_expected_runtime() {
+  [ "$RUNTIME_MODE" -eq 1 ] || return 1
+  [ -d "$RUNTIME_PATH" ] && [ ! -L "$RUNTIME_PATH" ] || return 1
+  "$SOURCE_NODE" "$PAYLOAD_HELPER" verify \
+    --root "$RUNTIME_PATH" --product agent-inbox-runtime >/dev/null 2>&1 || return 1
+  "$SOURCE_NODE" -e '
+    const fs = require("node:fs"), crypto = require("node:crypto")
+    const raw = fs.readFileSync(process.argv[1])
+    const manifest = JSON.parse(raw)
+    if (manifest.runtimeId !== process.argv[2]) process.exit(1)
+    if (crypto.createHash("sha256").update(raw).digest("hex") !== process.argv[3]) process.exit(1)
+  ' "$RUNTIME_PATH/runtime-manifest.json" "$RUNTIME_ID" "$RUNTIME_MANIFEST_DIGEST" >/dev/null 2>&1
+}
 
 for target in "${TARGETS[@]}"; do
   file="$(instruction_write_file "$target")" || exit 1
@@ -801,9 +816,28 @@ TRANSACTION_ACTIVE=1
 if [ "$RUNTIME_MODE" -eq 1 ] && [ "$UNINSTALL" -eq 0 ]; then
   runtime_was_present=0
   [ -e "$RUNTIME_PATH" ] && runtime_was_present=1
-  if ! "$SOURCE_NODE" "$PAYLOAD_HELPER" install \
+  runtime_install_status=0
+  # runtime-payload exit 3 means publication may have committed. Re-establish
+  # exact source identity before marking it for the existing safe rollback.
+  "$SOURCE_NODE" "$PAYLOAD_HELPER" install \
     --payload-root "$RUNTIME_SOURCE" --runtime-root "$RUNTIME_ROOT" \
-    --product agent-inbox-runtime >/dev/null; then
+    --product agent-inbox-runtime >/dev/null || runtime_install_status=$?
+  if [ "$runtime_install_status" -ne 0 ]; then
+    if [ "$runtime_install_status" -eq 3 ]; then
+      if [ "$runtime_was_present" -eq 0 ]; then
+        if verify_expected_runtime; then
+          : > "$WORK/runtime-installed"
+          echo "install-agents: committed install failure published the exact expected runtime; attempting ownership-safe rollback" >&2
+          rollback_runtime
+        else
+          echo "install-agents: committed install failure could not verify the exact expected runtime; retained unsafe or unknown path: $RUNTIME_PATH" >&2
+        fi
+      elif verify_expected_runtime; then
+        echo "install-agents: committed install failure reported for a pre-existing exact runtime; retained it unchanged: $RUNTIME_PATH" >&2
+      else
+        echo "install-agents: committed install failure left a pre-existing runtime path unsafe or unknown; retained it: $RUNTIME_PATH" >&2
+      fi
+    fi
     TRANSACTION_ACTIVE=0
     echo "install-agents: could not install the packaged runtime; host configuration was not changed" >&2
     exit 1

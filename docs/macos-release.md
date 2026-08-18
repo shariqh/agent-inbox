@@ -63,6 +63,13 @@ The signed app also preserves Electron's upstream `LICENSE.electron` and
 There is no signing-time `codesign --deep`. Deep verification is allowed; a late deep
 signature is not.
 
+Package smoke exercises the shipped `scripts/setup-filesystem.cjs` through runtime
+install/prune and the build-time publisher. It proves the same-parent identity/staging path
+on native macOS, including full manifest and mode verification before publication. The
+Win32 drive, namespace, ADS, case, junction, and rename-failure cases are injected policy
+models only; they are not native Windows release evidence and do not widen the Darwin-only
+release profile.
+
 ## Signing modes
 
 `adhoc` is the no-secret PR/local mode. It signs with `-`, disables secure timestamps,

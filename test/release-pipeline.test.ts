@@ -53,7 +53,7 @@ function transitiveLocalModules(entry: string): string[] {
     if (found.has(repoPath)) return
     found.add(repoPath)
     const source = readFileSync(path, 'utf8')
-    for (const match of source.matchAll(/from\s+['"](\.[^'"]+\.mjs)['"]/g)) {
+    for (const match of source.matchAll(/(?:from\s+|require\()\s*['"](\.[^'"]+\.(?:mjs|cjs))['"]/g)) {
       const specifier = match[1]
       if (!specifier) continue
       visit(resolve(dirname(path), specifier))
@@ -503,6 +503,8 @@ describe('universal finalization contract', () => {
       expect(pullRequestTrigger, `${module} must trigger the universal package gate`)
         .toContain(`      - "${module}"`)
     }
+    expect(stagingModules).toContain('scripts/setup-filesystem.cjs')
+    expect(pullRequestTrigger).toContain('      - "scripts/setup-filesystem.d.cts"')
   })
 
   it('runs the universal package gate for the complete Electron Setup require chain', () => {
@@ -532,6 +534,16 @@ describe('universal finalization contract', () => {
   it('keeps the trusted Setup core in the package smoke gate', () => {
     const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
     expect(pkg.scripts['package:smoke']).toContain('test/setup-core.test.ts')
+  })
+
+  it('keeps the Setup filesystem adapter in payload verification and package smoke', () => {
+    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+    const verifier = readFileSync(join(root, 'electron', 'runtime-verify.cjs'), 'utf8')
+    const staging = readFileSync(join(root, 'scripts', 'stage-runtime.mjs'), 'utf8')
+
+    expect(pkg.scripts['package:smoke']).toContain('test/setup-filesystem.test.ts')
+    expect(verifier).toContain("'scripts/setup-filesystem.cjs'")
+    expect(staging).toContain("'setup-filesystem.cjs'")
   })
 
   it('pins every repository workflow action and disables checkout credential persistence', () => {

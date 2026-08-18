@@ -17,6 +17,7 @@ const REQUIRED_FILES = [
   'scripts/install-agents.sh',
   'scripts/runtime-payload.mjs',
   'scripts/runtime-config.mjs',
+  'scripts/setup-filesystem.cjs',
 ]
 
 class RuntimeVerificationError extends Error {

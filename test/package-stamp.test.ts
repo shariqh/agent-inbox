@@ -111,6 +111,7 @@ function stagePayloadDir(
     'scripts/install-agents.sh': '#!/bin/bash\n',
     'scripts/runtime-payload.mjs': '// verifier\n',
     'scripts/runtime-config.mjs': '// config\n',
+    'scripts/setup-filesystem.cjs': '// filesystem adapter\n',
   }
   for (const [path, contents] of Object.entries(files)) {
     if (path === opts.omitFile) continue
@@ -202,6 +203,7 @@ describe('scripts/write-setup-info.mjs --release (issue #74)', () => {
     ['missing installer', { omitFile: 'scripts/install-agents.sh' }],
     ['missing runtime verifier', { omitFile: 'scripts/runtime-payload.mjs' }],
     ['missing runtime config helper', { omitFile: 'scripts/runtime-config.mjs' }],
+    ['missing setup filesystem adapter', { omitFile: 'scripts/setup-filesystem.cjs' }],
   ])('refuses release metadata for %s', (_label, override) => {
     const payloadRoot = mkdtempSync(join(tmpdir(), 'payload-root-identity-'))
     stagePayloadDir(payloadRoot, 'runtime/darwin-arm64', 'darwin', 'arm64', override)

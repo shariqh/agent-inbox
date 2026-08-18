@@ -32,6 +32,7 @@ const REPO = resolve(import.meta.dirname, '..')
 const PAYLOAD_CLI = join(REPO, 'scripts', 'runtime-payload.mjs')
 const CONFIG_CLI = join(REPO, 'scripts', 'runtime-config.mjs')
 const STAGE_CLI = join(REPO, 'scripts', 'stage-runtime.mjs')
+const SETUP_FILESYSTEM = join(REPO, 'scripts', 'setup-filesystem.cjs')
 const FAKE_NODE_FIXTURE = join(REPO, 'test', 'fixtures', 'runtime', 'fake-node.sh')
 const FAKE_XATTR_FAIL_FIXTURE = join(REPO, 'test', 'fixtures', 'runtime', 'fake-xattr-fail.sh')
 const FAKE_XATTR_RECORD_FIXTURE = join(REPO, 'test', 'fixtures', 'runtime', 'fake-xattr-record.sh')
@@ -65,6 +66,30 @@ function runFail(script: string, args: string[], env?: NodeJS.ProcessEnv): CliRe
   const result = runCli(script, args, env)
   expect(result.status, 'expected a non-zero exit').not.toBe(0)
   return result
+}
+
+function committedFailureCli(): string {
+  const root = tmp('committed-runtime-cli-')
+  const cli = join(root, 'runtime-payload.mjs')
+  copyFileSync(PAYLOAD_CLI, cli)
+  writeFileSync(join(root, 'setup-filesystem.cjs'), `
+const original = require(${JSON.stringify(SETUP_FILESYSTEM)})
+module.exports = {
+  createSetupFilesystem(options) {
+    const filesystem = original.createSetupFilesystem(options)
+    return Object.freeze({
+      ...filesystem,
+      stageDirectory(transaction) {
+        filesystem.stageDirectory(transaction)
+        const error = new Error('committed publication fixture')
+        error.committed = true
+        throw error
+      },
+    })
+  },
+}
+`)
+  return cli
 }
 
 // Copies `scriptPaths` into a fresh real directory, then places a *separate*
@@ -413,6 +438,36 @@ describe('runtime-payload verify: rejects every form of divergence from the mani
 // runtime-payload.mjs — install: atomic, idempotent, collision-safe
 // ═══════════════════════════════════════════════════════════════════════
 describe('runtime-payload install: atomic install, idempotency, and collision refusal', () => {
+  it('uses exit 3 only for a committed install failure and preserves existing CLI streams', () => {
+    const payloadRoot = tmp('install-committed-payload-')
+    buildFixturePayload(payloadRoot)
+    const manifest = buildAndWriteManifest(payloadRoot)
+    const runtimeRoot = tmp('install-committed-root-')
+    const cli = committedFailureCli()
+
+    const committed = runCli(cli, [
+      'install',
+      '--payload-root', payloadRoot,
+      '--runtime-root', runtimeRoot,
+    ])
+    expect(committed).toEqual({
+      status: 3,
+      stdout: '',
+      stderr: 'runtime-payload: committed publication fixture\n',
+    })
+    runOk(PAYLOAD_CLI, ['verify', '--root', join(runtimeRoot, manifest.runtimeId as string)])
+
+    const ordinary = runCli(cli, ['verify', '--root', join(runtimeRoot, 'missing')])
+    expect(ordinary.status).toBe(1)
+    expect(ordinary.stdout).toBe('')
+    expect(ordinary.stderr).toMatch(/^runtime-payload: /)
+
+    const usage = runCli(cli, [])
+    expect(usage.status).toBe(2)
+    expect(usage.stdout).toBe('')
+    expect(usage.stderr).toMatch(/^usage: runtime-payload\.mjs /)
+  })
+
   it('installs a verified payload into runtimeRoot/<runtimeId>, verifiable afterward', () => {
     const payloadRoot = tmp('install-payload-')
     buildFixturePayload(payloadRoot)
@@ -529,10 +584,10 @@ describe('runtime-payload install: atomic install, idempotency, and collision re
       expect(result.installed).toBe(true)
       const invocations = readFileSync(logFile, 'utf8').trim().split('\n')
       expect(invocations).toHaveLength(1)
-      // -rd com.apple.quarantine <temp install dir> — recorded BEFORE the
+      // -rd com.apple.quarantine <staged install dir> — recorded BEFORE the
       // atomic rename that publishes it under result.path, so the logged
-      // directory is the .tmp-install-* precursor, not the final name.
-      expect(invocations[0]).toMatch(/^-rd com\.apple\.quarantine .*\.tmp-install-/)
+      // directory is the transaction stage, not the final name.
+      expect(invocations[0]).toMatch(/^-rd com\.apple\.quarantine .*\.agent-inbox-stage-.*\/tree/)
       expect(invocations[0]).toContain(runtimeRoot)
     },
   )
@@ -1680,7 +1735,13 @@ function buildFixtureRepoRoot(): string {
     + "console.error('unknown subcommand'); process.exit(1)\n",
   )
 
-  for (const name of ['install-agents.sh', 'install-hooks.sh', 'runtime-payload.mjs', 'runtime-config.mjs']) {
+  for (const name of [
+    'install-agents.sh',
+    'install-hooks.sh',
+    'runtime-payload.mjs',
+    'runtime-config.mjs',
+    'setup-filesystem.cjs',
+  ]) {
     writeFileSync(join(repoRoot, 'scripts', name), `# fixture placeholder for ${name}\n`)
   }
   writeFileSync(join(repoRoot, 'docs', 'reporting-snippet.md'), '# fixture reporting snippet\n')
@@ -1742,7 +1803,7 @@ describe.skipIf(!REAL_NODE_ROOT || !['darwin', 'linux'].includes(process.platfor
 
         // No leftover staging temp directory beside the published output.
         const siblings = readdirSync(outputParent)
-        expect(siblings.some((e) => e.startsWith('.stage-runtime-'))).toBe(false)
+        expect(siblings.some((e) => e.startsWith('.agent-inbox-stage-'))).toBe(false)
       },
       30_000,
     )
@@ -1762,7 +1823,7 @@ describe.skipIf(!REAL_NODE_ROOT || !['darwin', 'linux'].includes(process.platfor
         expect(result.stderr).toMatch(/failed its selftest/)
         expect(existsSync(output)).toBe(false)
         const siblings = readdirSync(outputParent)
-        expect(siblings.some((e) => e.startsWith('.stage-runtime-'))).toBe(false)
+        expect(siblings.some((e) => e.startsWith('.agent-inbox-stage-'))).toBe(false)
       },
       30_000,
     )
@@ -1777,7 +1838,7 @@ describe.skipIf(!REAL_NODE_ROOT || !['darwin', 'linux'].includes(process.platfor
 // ═══════════════════════════════════════════════════════════════════════
 describe('main-entrypoint detection: symlinked ancestor / alias paths', () => {
   it('runtime-payload.mjs runs its CLI (not a silent no-op) when invoked through a symlinked parent directory', () => {
-    const [aliasedPayloadCli] = createSymlinkedAlias([PAYLOAD_CLI])
+    const [aliasedPayloadCli] = createSymlinkedAlias([PAYLOAD_CLI, SETUP_FILESYSTEM])
     const payloadRoot = tmp('sym-payload-')
     buildFixturePayload(payloadRoot)
 
@@ -1791,7 +1852,7 @@ describe('main-entrypoint detection: symlinked ancestor / alias paths', () => {
     // runtime-config.mjs imports from './runtime-payload.mjs' — both must be
     // copied into the same aliased directory for the relative import to
     // resolve once reached through the alias.
-    const [aliasedConfigCli] = createSymlinkedAlias([CONFIG_CLI, PAYLOAD_CLI])
+    const [aliasedConfigCli] = createSymlinkedAlias([CONFIG_CLI, PAYLOAD_CLI, SETUP_FILESYSTEM])
     const dir = tmp('sym-config-')
     const configFile = join(dir, 'config.json')
     writeFileSync(configFile, JSON.stringify({}))

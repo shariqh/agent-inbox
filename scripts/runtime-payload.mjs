@@ -34,24 +34,26 @@
 // itself, before any node_modules exist, and be trivially callable from Bash.
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
+import { createRequire } from 'node:module'
 import {
   chmodSync,
   copyFileSync,
   existsSync,
   lstatSync,
   mkdirSync,
-  mkdtempSync,
   readdirSync,
   readFileSync,
   realpathSync,
-  renameSync,
-  rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs'
 import { parseArgs } from 'node:util'
 import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+const require = createRequire(import.meta.url)
+const { createSetupFilesystem } = require('./setup-filesystem.cjs')
+const setupFilesystem = createSetupFilesystem()
 
 export const MANIFEST_SCHEMA = 1
 export const DEFAULT_MANIFEST_FILE = 'runtime-manifest.json'
@@ -271,14 +273,13 @@ export function writeManifestFile(root, manifest, manifestFileName = DEFAULT_MAN
  */
 export function readManifestFile(root, manifestFileName = DEFAULT_MANIFEST_FILE) {
   const manifestPath = join(root, manifestFileName)
-  let manifestStat
   try {
-    manifestStat = lstatSync(manifestPath)
-  } catch {
-    throw new RuntimeIntegrityError(`no manifest at ${manifestPath}`)
-  }
-  if (manifestStat.isSymbolicLink() || !manifestStat.isFile()) {
-    throw new RuntimeIntegrityError(`manifest must be a plain regular file, not a symlink or other special file: ${manifestPath}`)
+    setupFilesystem.identify(manifestPath, 'file')
+  } catch (err) {
+    if (err?.code === 'not-found') throw new RuntimeIntegrityError(`no manifest at ${manifestPath}`)
+    throw new RuntimeIntegrityError(
+      `manifest must be a plain regular file, not a symlink or other special file: ${manifestPath} (${err.message})`,
+    )
   }
   const raw = readFileSync(manifestPath, 'utf8')
   return JSON.parse(raw)
@@ -405,14 +406,20 @@ export function verifyPayload({ root, manifestFileName = DEFAULT_MANIFEST_FILE, 
 /**
  * Copy every file from `srcRoot` into `destRoot`, preserving POSIX mode bits
  * and rejecting any symlink encountered on either side. Directories are
- * created as needed; `destRoot` itself must not already exist (callers
- * install into a fresh temp directory, never merge into a live one).
+ * created as needed; `destRoot` must be absent unless the caller explicitly
+ * supplies the empty, adapter-created staging directory. Content is never
+ * merged into a nonempty tree.
  */
-export function copyTreePreservingMode(srcRoot, destRoot) {
+export function copyTreePreservingMode(srcRoot, destRoot, { allowExistingEmpty = false } = {}) {
   if (existsSync(destRoot)) {
-    throw new RuntimeIntegrityError(`copy destination already exists: ${destRoot}`)
+    const destStat = lstatSync(destRoot)
+    if (!allowExistingEmpty || destStat.isSymbolicLink() || !destStat.isDirectory() ||
+        readdirSync(destRoot).length > 0) {
+      throw new RuntimeIntegrityError(`copy destination already exists: ${destRoot}`)
+    }
+  } else {
+    mkdirSync(destRoot, { recursive: true })
   }
-  mkdirSync(destRoot, { recursive: true })
   const relPaths = walkFiles(srcRoot)
   for (const relPath of relPaths) {
     const srcPath = join(srcRoot, relPath)
@@ -467,9 +474,8 @@ function clearDarwinQuarantine(destDir) {
  * Install a verified payload into `runtimeRoot`, keyed by its runtimeId.
  *
  *  · Verifies the SOURCE payload first — nothing unverified is ever copied.
- *  · Copies into a same-parent temp directory (`.tmp-install-*` under
- *    runtimeRoot) so the rename that publishes it is atomic on the same
- *    filesystem.
+ *  · Copies into an isolated same-parent transaction directory under
+ *    runtimeRoot so the rename that publishes it stays on one filesystem.
  *  · On Darwin, clears any inherited `com.apple.quarantine` xattr from that
  *    temp copy before re-verifying it — see clearDarwinQuarantine() above.
  *  · Re-verifies the COPY before publishing — a torn copy must never become
@@ -478,7 +484,9 @@ function clearDarwinQuarantine(destDir) {
  *    is a no-op (idempotent install); anything else is a refused collision.
  */
 export function installRuntime({ payloadRoot, runtimeRoot, manifestFileName = DEFAULT_MANIFEST_FILE, expect = {} }) {
+  const sourceIdentity = setupFilesystem.identify(payloadRoot, 'directory')
   const sourceManifest = verifyPayload({ root: payloadRoot, manifestFileName, expect })
+  setupFilesystem.assertIdentity(sourceIdentity)
   const { runtimeId } = sourceManifest
   mkdirSync(runtimeRoot, { recursive: true })
   // Last gate before runtimeId ever touches a real filesystem operation —
@@ -488,9 +496,14 @@ export function installRuntime({ payloadRoot, runtimeRoot, manifestFileName = DE
   const destDir = assertRuntimeIdContained(runtimeRoot, runtimeId)
 
   if (existsSync(destDir)) {
-    const destStat = lstatSync(destDir)
-    if (destStat.isSymbolicLink()) {
-      throw new RuntimeIntegrityError(`refusing to install over a symlink: ${destDir}`)
+    let destinationIdentity
+    try {
+      destinationIdentity = setupFilesystem.identify(destDir, 'directory')
+    } catch (err) {
+      if (err?.code === 'link-like-entry') {
+        throw new RuntimeIntegrityError(`refusing to install over a symlink or link-like entry: ${destDir}`)
+      }
+      throw new RuntimeIntegrityError(`runtime id collision: ${destDir} is not a plain directory (${err.message})`)
     }
     let existingManifest
     try {
@@ -500,24 +513,27 @@ export function installRuntime({ payloadRoot, runtimeRoot, manifestFileName = DE
         `runtime id collision: ${destDir} exists but is not a valid, matching runtime (${err.message})`,
       )
     }
+    setupFilesystem.assertIdentity(destinationIdentity)
     if (existingManifest.payloadDigest !== sourceManifest.payloadDigest) {
       throw new RuntimeIntegrityError(`runtime id collision: ${destDir} exists with a different payload digest`)
     }
     return { installed: false, runtimeId, path: destDir }
   }
 
-  const tempDir = mkdtempSync(join(runtimeRoot, '.tmp-install-'))
-  rmSync(tempDir, { recursive: true, force: true }) // mkdtemp creates it; copyTreePreservingMode wants a fresh path
-  try {
-    copyTreePreservingMode(payloadRoot, tempDir)
-    clearDarwinQuarantine(tempDir)
-    verifyPayload({ root: tempDir, manifestFileName, expect: { runtimeId } })
-    renameSync(tempDir, destDir)
-  } catch (err) {
-    rmSync(tempDir, { recursive: true, force: true })
-    throw err
-  }
-  return { installed: true, runtimeId, path: destDir }
+  const publication = setupFilesystem.stageDirectory({
+    destination: destDir,
+    replacement: 'refuse',
+    prepare(tempDir) {
+      setupFilesystem.assertIdentity(sourceIdentity)
+      copyTreePreservingMode(payloadRoot, tempDir, { allowExistingEmpty: true })
+      setupFilesystem.assertIdentity(sourceIdentity)
+      clearDarwinQuarantine(tempDir)
+    },
+    validate(tempDir) {
+      verifyPayload({ root: tempDir, manifestFileName, expect: { runtimeId } })
+    },
+  })
+  return { installed: true, runtimeId, path: publication.path }
 }
 
 /**
@@ -528,20 +544,24 @@ export function installRuntime({ payloadRoot, runtimeRoot, manifestFileName = DE
  */
 export function pruneRuntime({ runtimeRoot, runtimeId, manifestFileName = DEFAULT_MANIFEST_FILE }) {
   const targetDir = assertRuntimeIdContained(runtimeRoot, runtimeId)
-  let stat
   try {
-    stat = lstatSync(targetDir)
-  } catch {
-    throw new RuntimeIntegrityError(`no such runtime: ${targetDir}`)
+    setupFilesystem.removeDirectory({
+      target: targetDir,
+      validate(path) {
+        verifyPayload({ root: path, manifestFileName, expect: { runtimeId } })
+      },
+    })
+  } catch (err) {
+    if (err instanceof RuntimeIntegrityError) throw err
+    if (err?.code === 'not-found') throw new RuntimeIntegrityError(`no such runtime: ${targetDir}`)
+    if (err?.code === 'link-like-entry') {
+      throw new RuntimeIntegrityError(`refusing to prune a symlink or link-like entry: ${targetDir}`)
+    }
+    if (err?.code === 'wrong-kind') {
+      throw new RuntimeIntegrityError(`not a directory, refusing to prune: ${targetDir}`)
+    }
+    throw err
   }
-  if (stat.isSymbolicLink()) {
-    throw new RuntimeIntegrityError(`refusing to prune a symlink: ${targetDir}`)
-  }
-  if (!stat.isDirectory()) {
-    throw new RuntimeIntegrityError(`not a directory, refusing to prune: ${targetDir}`)
-  }
-  verifyPayload({ root: targetDir, manifestFileName, expect: { runtimeId } })
-  rmSync(targetDir, { recursive: true, force: false })
   return { pruned: true, runtimeId, path: targetDir }
 }
 
@@ -569,9 +589,9 @@ export function listRuntimes({ runtimeRoot, manifestFileName = DEFAULT_MANIFEST_
 
 // ── CLI ─────────────────────────────────────────────────────────────────
 // Every subcommand prints one JSON object/array to stdout and exits 0 on
-// success, or prints a one-line error to stderr and exits 1 — deliberately
-// simple enough for a Bash caller (install scripts, stage-runtime.mjs) to
-// consume with plain shell/grep, no jq required.
+// success. Usage is 2, ordinary failure is 1, and an install failure that
+// reports `committed:true` is 3 so the shell can verify and roll back a
+// published runtime instead of treating it as wholly uncommitted.
 
 function runManifestCmd(argv) {
   const { values } = parseArgs({
@@ -710,7 +730,7 @@ function main(argv) {
     }
   } catch (err) {
     process.stderr.write(`runtime-payload: ${err.message}\n`)
-    process.exitCode = 1
+    process.exitCode = command === 'install' && err?.committed === true ? 3 : 1
   }
 }
 

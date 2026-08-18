@@ -1,5 +1,8 @@
+import { MACOS_RUNTIME_KEYS } from './runtime-targets.mjs'
+
 export const DEFAULT_RELEASE_INPUTS: string
-export const RUNTIME_KEYS: readonly ['darwin-arm64', 'darwin-x64']
+export { MACOS_RUNTIME_KEYS }
+export const RUNTIME_KEYS: typeof MACOS_RUNTIME_KEYS
 export const RELEASE_TOOL_PACKAGES: Record<string, string>
 export class ReleaseInputError extends Error {}
 

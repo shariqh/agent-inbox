@@ -432,6 +432,15 @@ describe('universal finalization contract', () => {
     expect(readFileSync(join(root, '.github', 'dependabot.yml'), 'utf8')).toContain('package-ecosystem: github-actions')
   })
 
+  it('runs the universal package gate when the runtime target contract changes', () => {
+    const workflow = readFileSync(join(root, '.github', 'workflows', 'macos-universal.yml'), 'utf8')
+    const pullRequestTrigger = workflow.slice(
+      workflow.indexOf('  pull_request:'),
+      workflow.indexOf('\npermissions:'),
+    )
+    expect(pullRequestTrigger).toContain('      - "scripts/runtime-targets.mjs"')
+  })
+
   it('pins every repository workflow action and disables checkout credential persistence', () => {
     const workflowsDir = join(root, '.github', 'workflows')
     const workflowFiles = readdirSync(workflowsDir)

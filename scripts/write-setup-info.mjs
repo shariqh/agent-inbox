@@ -60,6 +60,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, lstatSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { isAbsolute, join, resolve, sep } from 'node:path'
+import { MACOS_RUNTIME_KEYS as RUNTIME_KEYS, targetFor } from './runtime-targets.mjs'
 
 const require = createRequire(import.meta.url)
 const {
@@ -73,14 +74,7 @@ const {
 
 const SHA_RE = /^[0-9a-f]{7,64}$/i
 const DIGEST_RE = /^[0-9a-f]{64}$/i
-const RUNTIME_KEYS = ['darwin-arm64', 'darwin-x64']
 const MANIFEST_FILE = 'runtime-manifest.json'
-
-/** Split a fixed `darwin-arm64`/`darwin-x64` runtime key into platform/arch. */
-function platformArchOf(key) {
-  const i = key.indexOf('-')
-  return { platform: key.slice(0, i), arch: key.slice(i + 1) }
-}
 
 function fail(message) {
   console.error(message)
@@ -214,7 +208,7 @@ function writeRelease(outFile, argv) {
     if (!existsSync(manifestPath) || lstatSync(manifestPath).isSymbolicLink()) {
       fail(`--payload ${key}: no ${MANIFEST_FILE} staged at ${manifestPath}`)
     }
-    const { platform: expectedPlatform, arch: expectedArch } = platformArchOf(key)
+    const { platform: expectedPlatform, arch: expectedArch } = targetFor(key)
     try {
       verifyRuntimePayload({
         root: realResolved,

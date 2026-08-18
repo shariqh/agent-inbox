@@ -5,9 +5,19 @@ import { tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
+import {
+  archiveExtractCommand,
+  archiveListCommand,
+  assertSystemTool,
+  nativeRuntimeAdapterFor,
+  validateArchiveEntries,
+} from './native-runtime-adapter.mjs'
 import { downloadArchive, loadReleaseInputs, verifyArchiveDigest } from './release-inputs.mjs'
+import { targetFor } from './runtime-targets.mjs'
 import { stageRuntime } from './stage-runtime.mjs'
 import { resolveSourceProvenance } from './source-provenance.mjs'
+
+export { validateArchiveEntries } from './native-runtime-adapter.mjs'
 
 export class NativeRuntimeStageError extends Error {
   constructor(message) {
@@ -23,29 +33,38 @@ export function assertNativeRuntimeKey(key, platform = process.platform, arch = 
   }
 }
 
-export function validateArchiveEntries(entries, expectedRoot) {
-  if (!Array.isArray(entries) || entries.length === 0) {
-    throw new NativeRuntimeStageError('Node archive is empty')
+function adapterFor(key) {
+  try {
+    return nativeRuntimeAdapterFor(key)
+  } catch (err) {
+    throw new NativeRuntimeStageError(err.message)
   }
-  const prefix = `${expectedRoot}/`
-  for (const entry of entries) {
-    if (entry !== expectedRoot && !entry.startsWith(prefix)) {
-      throw new NativeRuntimeStageError(`Node archive contains a path outside ${expectedRoot}: ${entry}`)
-    }
-    if (entry.split('/').some((part) => part === '..')) {
-      throw new NativeRuntimeStageError(`Node archive contains a traversal path: ${entry}`)
-    }
-  }
-  return entries
 }
 
-function archiveEntries(archive) {
-  const listing = execFileSync('/usr/bin/tar', ['-tJf', archive], {
+function assertKnownRuntimeKey(key) {
+  try {
+    targetFor(key)
+  } catch (err) {
+    throw new NativeRuntimeStageError(err.message)
+  }
+}
+
+function runArchiveCommand(command, options) {
+  try {
+    assertSystemTool(command.executable, 'native archive tool')
+  } catch (err) {
+    throw new NativeRuntimeStageError(err.message)
+  }
+  return execFileSync(command.executable, command.args, options)
+}
+
+function archiveEntries(adapter, archive) {
+  const listing = runArchiveCommand(archiveListCommand(adapter, archive), {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
     timeout: 30_000,
   })
-  return listing.split('\n').filter(Boolean).map((entry) => entry.replace(/\/$/, ''))
+  return listing.split(/\r?\n/).filter(Boolean)
 }
 
 export async function stageNativeRuntime({
@@ -57,11 +76,13 @@ export async function stageNativeRuntime({
   cacheDir,
   force = false,
 }) {
+  assertKnownRuntimeKey(key)
+  assertNativeRuntimeKey(key)
+  const adapter = adapterFor(key)
   const inputs = loadReleaseInputs(inputsPath)
-  const provenance = resolveSourceProvenance(repoRoot)
   const distribution = inputs.node.distributions[key]
   if (!distribution) throw new NativeRuntimeStageError(`unknown runtime key: ${key}`)
-  assertNativeRuntimeKey(key)
+  const provenance = resolveSourceProvenance(repoRoot)
 
   const cacheRoot = resolve(cacheDir ?? join(repoRoot, 'build', 'downloads'))
   const archive = resolve(archivePath ?? join(cacheRoot, distribution.archive))
@@ -74,11 +95,11 @@ export async function stageNativeRuntime({
       expectedSha256: distribution.sha256,
     })
   }
-  validateArchiveEntries(archiveEntries(archive), distribution.root)
+  validateArchiveEntries(archiveEntries(adapter, archive), distribution.root)
 
   const extractParent = mkdtempSync(join(tmpdir(), 'agent-inbox-node-'))
   try {
-    execFileSync('/usr/bin/tar', ['-xJf', archive, '-C', extractParent], {
+    runArchiveCommand(archiveExtractCommand(adapter, archive, extractParent), {
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 60_000,
     })
@@ -122,7 +143,7 @@ async function main(argv) {
     },
   })
   if (!values.key || !values.output) {
-    throw new NativeRuntimeStageError('usage: stage-native-runtime.mjs --key <darwin-arch> --output <dir>')
+    throw new NativeRuntimeStageError('usage: stage-native-runtime.mjs --key <runtime-key> --output <dir>')
   }
   const result = await stageNativeRuntime({
     key: values.key,

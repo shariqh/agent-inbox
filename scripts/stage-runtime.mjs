@@ -47,10 +47,13 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildManifest, copyTreePreservingMode, isMainModule, verifyPayload, writeManifestFile } from './runtime-payload.mjs'
 import { copyAgentInboxLicense } from './license.mjs'
+import {
+  assertPlainFile,
+  nativeRuntimeAdapterFor,
+  resolveNodeDistributionPaths,
+} from './native-runtime-adapter.mjs'
 
 const PRODUCT = 'agent-inbox-runtime'
-const SUPPORTED_PLATFORM = 'darwin'
-const SUPPORTED_ARCHES = ['arm64', 'x64']
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url))
 const DEFAULT_REPO_ROOT = resolve(SCRIPT_DIR, '..')
 
@@ -64,11 +67,28 @@ export class StageRuntimeError extends Error {
 // Runs the DISTRIBUTION's own node binary (never ambient `node`) to ask it,
 // authoritatively, what it actually is — a claimed --platform/--arch on the
 // command line proves nothing about the bits actually staged from.
-export function probeNodeDistribution(nodeRoot) {
-  const nodeBin = join(nodeRoot, 'bin', 'node')
+function resolveAdapter(platform, arch) {
+  try {
+    return nativeRuntimeAdapterFor(`${platform}-${arch}`)
+  } catch (err) {
+    throw new StageRuntimeError(err.message)
+  }
+}
+
+function requirePlainFile(path, label) {
+  try {
+    return assertPlainFile(path, label)
+  } catch (err) {
+    throw new StageRuntimeError(err.message)
+  }
+}
+
+export function probeNodeDistribution(nodeRoot, adapter) {
+  const { nodeExec: nodeBin } = resolveNodeDistributionPaths(nodeRoot, adapter)
   if (!existsSync(nodeBin)) {
     throw new StageRuntimeError(`no node binary at ${nodeBin} — is --node-root a Node distribution root?`)
   }
+  requirePlainFile(nodeBin, 'Node distribution executable')
   try {
     const stdout = execFileSync(
       nodeBin,
@@ -91,13 +111,8 @@ export function probeNodeDistribution(nodeRoot) {
  * otherwise; never guesses.
  */
 export function validateNodeDistribution({ nodeRoot, platform, arch }) {
-  if (platform !== SUPPORTED_PLATFORM) {
-    throw new StageRuntimeError(`unsupported --platform: ${platform} (only ${SUPPORTED_PLATFORM} is supported)`)
-  }
-  if (!SUPPORTED_ARCHES.includes(arch)) {
-    throw new StageRuntimeError(`unsupported --arch: ${arch} (must be one of ${SUPPORTED_ARCHES.join(', ')})`)
-  }
-  const probe = probeNodeDistribution(nodeRoot)
+  const adapter = resolveAdapter(platform, arch)
+  const probe = probeNodeDistribution(nodeRoot, adapter)
   const major = Number(String(probe.version).replace(/^v/, '').split('.')[0])
   if (major !== 24) {
     throw new StageRuntimeError(`--node-root is Node ${probe.version}, but the runtime requires Node 24`)
@@ -115,12 +130,12 @@ export function validateNodeDistribution({ nodeRoot, platform, arch }) {
  * `nodeBin npmCli ...args`, never through PATH or a shebang, so ambient npm
  * is never used to install this runtime's dependencies.
  */
-export function resolveNpmCli(nodeRoot) {
-  const npmCli = join(nodeRoot, 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js')
+export function resolveNpmCli(nodeRoot, adapter) {
+  const { npmCli } = resolveNodeDistributionPaths(nodeRoot, adapter)
   if (!existsSync(npmCli)) {
     throw new StageRuntimeError(`no npm CLI found at ${npmCli} — --node-root does not look like a full Node distribution`)
   }
-  return npmCli
+  return requirePlainFile(npmCli, 'Node distribution npm CLI')
 }
 
 /**
@@ -267,8 +282,8 @@ const REQUIRED_DOCS = [
  * On failure this throws — the caller must not build/write a manifest or
  * publish anything for a tree that failed this check.
  */
-function runStagedSelftest(stageDir) {
-  const stagedNode = join(stageDir, 'bin', 'node')
+function runStagedSelftest(stageDir, adapter) {
+  const stagedNode = join(stageDir, ...adapter.payloadNodeExecRelPath.split('/'))
   const hookCli = join(stageDir, 'dist', 'hook-cli.js')
   if (!existsSync(hookCli)) {
     throw new StageRuntimeError(`staged dist/ is missing hook-cli.js at ${hookCli} — cannot run the selftest gate`)
@@ -291,12 +306,13 @@ function runStagedSelftest(stageDir) {
 }
 
 function stageInto(stageDir, {
-  repoRoot, repoPkg, nodeRoot, nodeBin, platform, arch, packageVersion, sourceCommit, nodeVersion, nodeModulesAbi,
+  repoRoot, repoPkg, nodeRoot, nodeBin, adapter, platform, arch, packageVersion, sourceCommit, nodeVersion, nodeModulesAbi,
 }) {
   mkdirSync(stageDir, { recursive: true })
 
-  copyFilePreserving(nodeBin, join(stageDir, 'bin', 'node'))
-  chmodSync(join(stageDir, 'bin', 'node'), 0o755)
+  const stagedNode = join(stageDir, ...adapter.payloadNodeExecRelPath.split('/'))
+  copyFilePreserving(nodeBin, stagedNode)
+  if (adapter.payloadNodeMode !== null) chmodSync(stagedNode, adapter.payloadNodeMode)
 
   const nodeLicense = join(nodeRoot, 'LICENSE')
   if (!existsSync(nodeLicense)) {
@@ -313,7 +329,7 @@ function stageInto(stageDir, {
   }
   copyFilePreserving(lockFile, join(stageDir, 'package-lock.json'))
 
-  const npmCli = resolveNpmCli(nodeRoot)
+  const npmCli = resolveNpmCli(nodeRoot, adapter)
   execFileSync(nodeBin, [npmCli, 'ci', '--omit=dev', '--no-audit', '--no-fund'], {
     cwd: stageDir,
     env: {
@@ -345,7 +361,7 @@ function stageInto(stageDir, {
   }
   copyTreePreservingMode(distDir, join(stageDir, 'dist'))
 
-  runStagedSelftest(stageDir)
+  runStagedSelftest(stageDir, adapter)
 
   for (const name of REQUIRED_SCRIPTS) {
     const src = join(repoRoot, 'scripts', name)
@@ -392,6 +408,7 @@ function stageInto(stageDir, {
 export function stageRuntime({
   nodeRoot, platform, arch, output, repoRoot = DEFAULT_REPO_ROOT, packageVersion, sourceCommit, force = false,
 }) {
+  const adapter = resolveAdapter(platform, arch)
   const probe = validateNodeDistribution({ nodeRoot, platform, arch })
   const repoPkg = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8'))
   const resolvedVersion = packageVersion ?? repoPkg.version
@@ -409,6 +426,7 @@ export function stageRuntime({
       repoPkg,
       nodeRoot,
       nodeBin: probe.nodeBin,
+      adapter,
       platform,
       arch,
       packageVersion: resolvedVersion,

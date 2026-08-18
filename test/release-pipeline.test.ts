@@ -15,7 +15,7 @@ import {
 } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, relative, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { makeUniversalApp } from '@electron/universal'
 import { copyElectronNotices } from '../scripts/build-thin-app.mjs'
@@ -32,14 +32,36 @@ import {
   validateSigningOptions,
   verifyThinReports,
 } from '../scripts/assemble-macos-release.mjs'
-import { assertNativeRuntimeKey, validateArchiveEntries } from '../scripts/stage-native-runtime.mjs'
+import {
+  assertNativeRuntimeKey,
+  stageNativeRuntime,
+  validateArchiveEntries,
+} from '../scripts/stage-native-runtime.mjs'
 import { loadReleaseInputs } from '../scripts/release-inputs.mjs'
 import { copyAgentInboxLicense } from '../scripts/license.mjs'
 import { treeIdentity } from '../scripts/tree-identity.mjs'
 import { assertRuntimeSourceCommit } from '../scripts/runtime-provenance.mjs'
 import { resolveSourceProvenance } from '../scripts/source-provenance.mjs'
+import { RUNTIME_TARGETS } from '../scripts/runtime-targets.mjs'
 
 const root = resolve(process.cwd())
+
+function transitiveLocalModules(entry: string): string[] {
+  const found = new Set<string>()
+  const visit = (path: string) => {
+    const repoPath = relative(root, path).split('\\').join('/')
+    if (found.has(repoPath)) return
+    found.add(repoPath)
+    const source = readFileSync(path, 'utf8')
+    for (const match of source.matchAll(/from\s+['"](\.[^'"]+\.mjs)['"]/g)) {
+      const specifier = match[1]
+      if (!specifier) continue
+      visit(resolve(dirname(path), specifier))
+    }
+  }
+  visit(resolve(root, entry))
+  return [...found].sort()
+}
 
 describe('native architecture release stages', () => {
   it('refuses cross-architecture runtime staging and partial archive roots', () => {
@@ -48,6 +70,24 @@ describe('native architecture release stages', () => {
       'node-v24.19.0-darwin-arm64/bin/node',
       'other-root/LICENSE',
     ], 'node-v24.19.0-darwin-arm64')).toThrow(/outside/)
+  })
+
+  it('rejects mismatched and unknown targets before reading release or repository paths', async () => {
+    const nativeKey = `${process.platform}-${process.arch}`
+    const mismatchedKey = Object.keys(RUNTIME_TARGETS).find((key) => key !== nativeKey)
+    if (!mismatchedKey) throw new Error('fixture requires a non-native runtime target')
+    const unreachable = join(tmpdir(), 'must-not-be-read', String(process.pid))
+    const options = {
+      output: join(unreachable, 'output'),
+      repoRoot: join(unreachable, 'repo'),
+      inputsPath: join(unreachable, 'release-inputs.json'),
+      archivePath: join(unreachable, 'archive'),
+    }
+
+    await expect(stageNativeRuntime({ ...options, key: mismatchedKey }))
+      .rejects.toThrow(/must be staged natively/)
+    await expect(stageNativeRuntime({ ...options, key: 'unknown-x64' }))
+      .rejects.toThrow(/unknown runtime target/)
   })
 
   it('pins npm lifecycle builds to the runtime target architecture', () => {
@@ -432,13 +472,25 @@ describe('universal finalization contract', () => {
     expect(readFileSync(join(root, '.github', 'dependabot.yml'), 'utf8')).toContain('package-ecosystem: github-actions')
   })
 
-  it('runs the universal package gate when the runtime target contract changes', () => {
+  it('runs the universal package gate for every transitive native staging module', () => {
     const workflow = readFileSync(join(root, '.github', 'workflows', 'macos-universal.yml'), 'utf8')
     const pullRequestTrigger = workflow.slice(
       workflow.indexOf('  pull_request:'),
       workflow.indexOf('\npermissions:'),
     )
-    expect(pullRequestTrigger).toContain('      - "scripts/runtime-targets.mjs"')
+    const stagingModules = new Set([
+      ...transitiveLocalModules('scripts/stage-native-runtime.mjs'),
+      ...transitiveLocalModules('scripts/stage-runtime.mjs'),
+    ])
+    for (const module of stagingModules) {
+      expect(pullRequestTrigger, `${module} must trigger the universal package gate`)
+        .toContain(`      - "${module}"`)
+    }
+  })
+
+  it('keeps native staging adapter coverage in the package smoke gate', () => {
+    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+    expect(pkg.scripts['package:smoke']).toContain('test/native-runtime-adapter.test.ts')
   })
 
   it('pins every repository workflow action and disables checkout credential persistence', () => {

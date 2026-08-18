@@ -31,7 +31,7 @@ const {
   runAgentInstall(opts: {
     repoRoot: string
     target: string
-    runtimePayload?: { path: string; digest: string; packageVersion: string } | null
+    runtimePayload?: { key: string; path: string; digest: string; packageVersion: string } | null
     env?: NodeJS.ProcessEnv
     maxOutput?: number
     timeoutMs?: number
@@ -217,6 +217,7 @@ while :; do sleep 1; done
   it('wires the bridge through an isolated preload rather than an HTTP command route', () => {
     const main = readFileSync(join(import.meta.dirname, '..', 'electron', 'main.cjs'), 'utf8')
     const preload = readFileSync(join(import.meta.dirname, '..', 'electron', 'setup-preload.cjs'), 'utf8')
+    const runner = readFileSync(join(import.meta.dirname, '..', 'electron', 'setup-runner.cjs'), 'utf8')
 
     expect(main).toContain("ipcMain.handle('agent-inbox:install'")
     expect(main).toContain('canRunSetup(senderUrl, URL_BASE, event.sender.id, setupInstallWebContentsId)')
@@ -238,6 +239,22 @@ while :; do sleep 1; done
     expect(preload).toContain("contextBridge.exposeInMainWorld('agentInboxSetup'")
     expect(preload).toContain('onToggleSettings')
     expect(preload).not.toContain('child_process')
+    expect(runner).toContain("require('./setup-core.cjs')")
+    expect(runner).toContain('runTrustedSetup({')
+    expect(main).toContain('key: runtimeSelection.key')
+  })
+
+  it('keeps child verification after lock acquisition and before managed runtime or host mutation', () => {
+    const installer = readFileSync(join(import.meta.dirname, '..', 'scripts', 'install-agents.sh'), 'utf8')
+    const lock = installer.indexOf('acquire_install_lock || exit 1')
+    const innerVerify = installer.indexOf('"$SOURCE_NODE" "$PAYLOAD_HELPER" verify')
+    const runtimeInstall = installer.indexOf('"$SOURCE_NODE" "$PAYLOAD_HELPER" install')
+    const hostRegistration = installer.indexOf('registration_state="$(user_registration_state')
+
+    expect(lock).toBeGreaterThan(-1)
+    expect(innerVerify).toBeGreaterThan(lock)
+    expect(runtimeInstall).toBeGreaterThan(innerVerify)
+    expect(hostRegistration).toBeGreaterThan(runtimeInstall)
   })
 })
 
@@ -314,7 +331,7 @@ describe('selectRuntimePayload (issue #74)', () => {
     const result = await runAgentInstall({
       repoRoot: payloadRoot,
       target: 'all',
-      runtimePayload: { path: payloadRoot, digest: payload.digest, packageVersion: '1.2.3' },
+      runtimePayload: { key: 'darwin-arm64', path: payloadRoot, digest: payload.digest, packageVersion: '1.2.3' },
       spawnImpl: () => {
         spawned = true
         throw new Error('must not spawn')
@@ -442,15 +459,20 @@ describe('selectRuntimePayload (issue #74)', () => {
     expect(result).toMatchObject({ ok: false, reason: 'symlinked-payload' })
   })
 
-  it('re-verifies a release payload immediately before spawn and refuses tampering', async () => {
-    const { root, arm } = releaseRoot()
-    const payloadRoot = join(root, arm.path)
+  it.skipIf(process.platform !== 'darwin')('re-verifies a release payload immediately before spawn and refuses tampering', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'runtime-reverify-'))
+    const key = `darwin-${process.arch}`
+    const payload = stagePayloadDir(root, `runtime/${key}`, {
+      platform: 'darwin',
+      arch: process.arch,
+    })
+    const payloadRoot = join(root, payload.path)
     const marker = join(root, 'spawned')
     writeFileSync(join(payloadRoot, 'scripts', 'install-agents.sh'), `#!/bin/bash\ntouch '${marker}'\n`)
     const result = await runAgentInstall({
       repoRoot: payloadRoot,
       target: 'all',
-      runtimePayload: { path: payloadRoot, digest: arm.digest, packageVersion: '1.2.3' },
+      runtimePayload: { key, path: payloadRoot, digest: payload.digest, packageVersion: '1.2.3' },
     })
     expect(result.ok).toBe(false)
     expect(result.output).toMatch(/integrity verification/i)
@@ -582,12 +604,51 @@ describe('selectRuntimePayload (issue #74)', () => {
 })
 
 describe('runAgentInstall runtime payload argv (issue #74)', () => {
-  it('passes explicit --runtime-source/--runtime-digest for a release install, and dev installs stay unchanged', async () => {
+  it.skipIf(process.platform !== 'darwin')(
+    'refuses a valid payload for the other Darwin architecture even when both universal payloads verify',
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), 'setup-runtime-cross-arch-'))
+      const hostKey = `darwin-${process.arch}`
+      const otherArch = process.arch === 'arm64' ? 'x64' : 'arm64'
+      const otherKey = `darwin-${otherArch}`
+      stagePayloadDir(root, `runtime/${hostKey}`, {
+        platform: 'darwin',
+        arch: process.arch,
+      })
+      const other = stagePayloadDir(root, `runtime/${otherKey}`, {
+        platform: 'darwin',
+        arch: otherArch,
+      })
+      let spawned = false
+
+      const actual = await runAgentInstall({
+        repoRoot: join(root, other.path),
+        target: 'all',
+        runtimePayload: {
+          key: otherKey,
+          path: join(root, other.path),
+          digest: other.digest,
+          packageVersion: '1.2.3',
+        },
+        spawnImpl: () => {
+          spawned = true
+          throw new Error('must not spawn')
+        },
+      })
+
+      expect(spawned).toBe(false)
+      expect(actual.ok).toBe(false)
+      expect(actual.output).toMatch(/integrity verification/i)
+    },
+  )
+
+  it.skipIf(process.platform !== 'darwin')('passes explicit --runtime-source/--runtime-digest for a release install, and dev installs stay unchanged', async () => {
     const argsFile = join(tmpdir(), `setup-runtime-args-${process.pid}-${Date.now()}`)
     const root = mkdtempSync(join(tmpdir(), 'setup-runtime-payload-'))
-    const payload = stagePayloadDir(root, 'runtime/darwin-arm64', {
+    const key = `darwin-${process.arch}`
+    const payload = stagePayloadDir(root, `runtime/${key}`, {
       platform: 'darwin',
-      arch: 'arm64',
+      arch: process.arch,
       installerScript: `#!/bin/bash
 printf '%s\\n' "$@" > "$ARGS_FILE"
 printf 'installed %s\\n' "$3"
@@ -598,7 +659,7 @@ printf 'installed %s\\n' "$3"
     const result = await runAgentInstall({
       repoRoot: payloadRoot,
       target: 'all',
-      runtimePayload: { path: payloadRoot, digest: payload.digest, packageVersion: '1.2.3' },
+      runtimePayload: { key, path: payloadRoot, digest: payload.digest, packageVersion: '1.2.3' },
       env: { ...process.env, ARGS_FILE: argsFile },
     })
 
@@ -613,7 +674,7 @@ printf 'installed %s\\n' "$3"
     const result = await runAgentInstall({
       repoRoot: root,
       target: 'all',
-      runtimePayload: { path: '', digest: 'sha256:' + '0'.repeat(64), packageVersion: '1.2.3' },
+      runtimePayload: { key: 'darwin-arm64', path: '', digest: 'sha256:' + '0'.repeat(64), packageVersion: '1.2.3' },
     })
     expect(result.ok).toBe(false)
     expect(result.output).toMatch(/invalid release runtime payload/i)

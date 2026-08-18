@@ -63,6 +63,23 @@ function transitiveLocalModules(entry: string): string[] {
   return [...found].sort()
 }
 
+function transitiveCommonJsModules(entry: string): string[] {
+  const found = new Set<string>()
+  const visit = (path: string) => {
+    const repoPath = relative(root, path).split('\\').join('/')
+    if (found.has(repoPath)) return
+    found.add(repoPath)
+    const source = readFileSync(path, 'utf8')
+    for (const match of source.matchAll(/require\(['"](\.[^'"]+\.cjs)['"]\)/g)) {
+      const specifier = match[1]
+      if (!specifier) continue
+      visit(resolve(dirname(path), specifier))
+    }
+  }
+  visit(resolve(root, entry))
+  return [...found].sort()
+}
+
 describe('native architecture release stages', () => {
   it('refuses cross-architecture runtime staging and partial archive roots', () => {
     expect(() => assertNativeRuntimeKey('darwin-x64', 'darwin', 'arm64')).toThrow(/must be staged natively/)
@@ -488,9 +505,33 @@ describe('universal finalization contract', () => {
     }
   })
 
+  it('runs the universal package gate for the complete Electron Setup require chain', () => {
+    const workflow = readFileSync(join(root, '.github', 'workflows', 'macos-universal.yml'), 'utf8')
+    const pullRequestTrigger = workflow.slice(
+      workflow.indexOf('  pull_request:'),
+      workflow.indexOf('\npermissions:'),
+    )
+    const electronModules = transitiveCommonJsModules('electron/main.cjs')
+
+    expect(electronModules).toContain('electron/setup-runner.cjs')
+    expect(electronModules).toContain('electron/setup-core.cjs')
+    expect(electronModules).toContain('electron/runtime-verify.cjs')
+    expect(electronModules.every((module) => module.startsWith('electron/'))).toBe(true)
+    expect(pullRequestTrigger).toContain('      - "electron/**"')
+    const packageApp = readFileSync(join(root, 'scripts', 'package-app.sh'), 'utf8')
+    const thinApp = readFileSync(join(root, 'scripts', 'build-thin-app.mjs'), 'utf8')
+    expect(packageApp).toContain('"$ROOT/electron"')
+    expect(thinApp).toContain("['dist', 'public', 'electron', 'release']")
+  })
+
   it('keeps native staging adapter coverage in the package smoke gate', () => {
     const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
     expect(pkg.scripts['package:smoke']).toContain('test/native-runtime-adapter.test.ts')
+  })
+
+  it('keeps the trusted Setup core in the package smoke gate', () => {
+    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+    expect(pkg.scripts['package:smoke']).toContain('test/setup-core.test.ts')
   })
 
   it('pins every repository workflow action and disables checkout credential persistence', () => {

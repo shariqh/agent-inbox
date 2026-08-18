@@ -331,7 +331,8 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   `scripts/install-agents.sh` is the supported bridge between two configuration systems:
   MCP registration can store a server command but cannot inject a global prompt, so the
   installer performs both operations visibly. It defaults to a side-effect-free dry run;
-  `--apply` verifies the pinned Node runtime through `hook-cli selftest` before mutation.
+  `--apply` verifies the pinned Node runtime through `hook-cli selftest` before managed
+  runtime or host mutation (the user-scoped install lock is created/acquired first).
   Instruction content is fully rendered and staged before MCP changes, and it writes only between
   `<!-- agent-inbox:begin -->` / `<!-- agent-inbox:end -->` in
   `~/.claude/CLAUDE.md` or `~/.copilot/copilot-instructions.md`, with a timestamped backup
@@ -374,13 +375,24 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   `contextIsolation:true` and `nodeIntegration:false`; `main.cjs` accepts only the
   three fixed targets and only while the app owns the exact local-viewer origin. A
   reused viewer never gets execution access, and there is no HTTP setup-write route.
+  `electron/setup-core.cjs` is the dependency-free control plane. It trusts the Darwin
+  adapter's frozen host identity derived from the real `process.platform`/`process.arch`
+  and requires the selected key plus verified manifest platform/architecture to match it
+  exactly. The core carries only values the current adapter consumes; shell-internal
+  self-tests, rollback and pruning are not self-certified policy fields.
   `electron/setup-runner.cjs` invokes `/bin/bash` directly (no command shell), bounds
   output/time, and selects only the exact architecture-keyed runtime payload from release
-  `setup-info.json`; checkout/dev mode retains its local fallback.
-  `electron/runtime-verify.cjs` is the trusted, Electron-independent verifier shared by
-  the runner and viewer Setup API: it verifies the complete manifest file list, hashes,
-  modes, entrypoints, digest and runtime identity before a command is shown or spawned.
-  Never execute a verifier from inside the payload to establish that payload's trust.
+  `setup-info.json`; checkout/dev mode retains its local fallback and exact argv.
+  `electron/runtime-verify.cjs` is the externally anchored verifier: using the digest from
+  signed-bundle `setup-info.json`, it synchronously verifies the complete manifest file
+  list, hashes, modes, entrypoints and runtime identity at selection and immediately before
+  process start. This full hashing blocks Electron main today. The payload's later
+  Node/helper verification is self-attesting and catches corruption or argv/source
+  mismatch before managed runtime/host mutation, but it cannot establish trust after a
+  substitution. The verify-by-path then execute-by-path TOCTOU window remains until a
+  filesystem/process adapter can provide a stable snapshot or identity-based handoff.
+  Graceful process termination lets the shell attempt rollback; forced `SIGKILL` can
+  terminate without cleanup, so never claim rollback precedes every terminal result.
   Every applied install also holds a kernel-backed user-scoped lock on
   `~/.agent-inbox/install-agents.lock` across preflight, mutation, and rollback,
   using `lockf` on macOS or `flock` on Linux. The descriptor stays open for the

@@ -142,6 +142,7 @@ describe('release mode (issue #74) — truthful Setup API + conditional renderin
     if (opts.omitFile !== 'scripts/install-agents.sh') writeFileSync(join(payloadDir, 'scripts', 'install-agents.sh'), '#!/bin/bash\necho noop\n')
     if (opts.omitFile !== 'scripts/runtime-payload.mjs') writeFileSync(join(payloadDir, 'scripts', 'runtime-payload.mjs'), '// helper\n')
     if (opts.omitFile !== 'scripts/runtime-config.mjs') writeFileSync(join(payloadDir, 'scripts', 'runtime-config.mjs'), '// config helper\n')
+    if (opts.omitFile !== 'scripts/setup-filesystem.cjs') writeFileSync(join(payloadDir, 'scripts', 'setup-filesystem.cjs'), '// filesystem adapter\n')
     mkdirSync(join(payloadDir, 'bin'), { recursive: true })
     mkdirSync(join(payloadDir, 'dist'), { recursive: true })
     mkdirSync(join(payloadDir, 'node_modules', 'better-sqlite3', 'build', 'Release'), { recursive: true })
@@ -234,6 +235,7 @@ describe('release mode (issue #74) — truthful Setup API + conditional renderin
     ['missing installer', { omitFile: 'scripts/install-agents.sh' }],
     ['missing runtime verifier', { omitFile: 'scripts/runtime-payload.mjs' }],
     ['missing config helper', { omitFile: 'scripts/runtime-config.mjs' }],
+    ['missing filesystem adapter', { omitFile: 'scripts/setup-filesystem.cjs' }],
   ])('withholds source and manual commands for %s', async (_label, override) => {
     const { setupInfoPath, runtimeRoot, payloadDir } = releaseBundle(override)
     await bootApp(open(), {

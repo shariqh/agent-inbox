@@ -390,9 +390,30 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   Node/helper verification is self-attesting and catches corruption or argv/source
   mismatch before managed runtime/host mutation, but it cannot establish trust after a
   substitution. The verify-by-path then execute-by-path TOCTOU window remains until a
-  filesystem/process adapter can provide a stable snapshot or identity-based handoff.
+  later stable-handle/process adapter can provide a snapshot or identity-based handoff.
+  `scripts/setup-filesystem.cjs` is the Node-core-only filesystem transaction boundary
+  shared by the shipping runtime installer and build-time runtime publisher. It identifies
+  plain files/directories with bigint device+inode values (canonical paths are diagnostic,
+  never case-folded identity), rejects unusable/zero identity and link-like leaves, stages
+  under the destination parent, rechecks identity at each transition, and verifies the
+  published name. Immutable runtime install refuses replacement; `stage-runtime --force`
+  uses a two-rename backup swap with a visibility gap and explicit recovery retention.
+  This is point-in-time detection, not a stable handle: inode reuse and races after the
+  last check remain. The modeled Win32 policy additionally rejects drive-relative,
+  drive-less-rooted, device/extended-namespace and ADS-like paths plus junction/reparse
+  entries exposed as links. Those tests do not establish Windows support; release inputs
+  and Setup remain exact Darwin-only until native Windows evidence exists.
+  Recursive rollback/cleanup must re-identify both the private scratch directory and any
+  prior-tree backup immediately before mutation. An identity mismatch refuses restore or
+  deletion and retains the untrusted path for recovery; never “clean up” a path whose
+  identity check just failed. The adapter creates the empty stage exclusively and captures
+  its identity before producer code runs; cleanup also requires that same stage identity
+  (or verified absence after publication), so a substituted child is never recursively
+  removed merely because its parent scratch directory still matches.
   Graceful process termination lets the shell attempt rollback; forced `SIGKILL` can
-  terminate without cleanup, so never claim rollback precedes every terminal result.
+  terminate without shell or adapter cleanup, so never claim rollback precedes every
+  terminal result. A failed post-publication cleanup is a committed failure and retains
+  its recovery path rather than deleting the only prior tree.
   Every applied install also holds a kernel-backed user-scoped lock on
   `~/.agent-inbox/install-agents.lock` across preflight, mutation, and rollback,
   using `lockf` on macOS or `flock` on Linux. The descriptor stays open for the

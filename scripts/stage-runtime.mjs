@@ -12,12 +12,11 @@
 // better-sqlite3 combination actually loads — the same gate
 // install-hooks.sh already applies to a resolved host Node, applied here to
 // what this script is about to ship. Only then is the manifest generated,
-// verified, and the tree atomically published.
+// verified, and the tree published through the same-parent transaction below.
 //
-// There is no caller wiring yet (no packaging step invokes this): it is a
-// robust, standalone CLI that can be exercised against a real local Node 24
-// distribution (e.g. one already installed by fnm) without requiring a real
-// cross-arch (x64-on-arm64) build to validate its structure.
+// Native release staging calls this after archive validation/extraction. It
+// also remains a standalone CLI that can be exercised against a real local
+// Node 24 distribution without requiring a cross-architecture build.
 //
 //   node scripts/stage-runtime.mjs \
 //     --node-root ~/.local/share/fnm/node-versions/v24.18.0/installation \
@@ -26,7 +25,7 @@
 //     [--repo-root <dir>] [--package-version <v>] [--source-commit <sha>] \
 //     [--check-only] [--force]
 import { execFileSync } from 'node:child_process'
-import { randomBytes } from 'node:crypto'
+import { createRequire } from 'node:module'
 import {
   chmodSync,
   copyFileSync,
@@ -52,6 +51,10 @@ import {
   nativeRuntimeAdapterFor,
   resolveNodeDistributionPaths,
 } from './native-runtime-adapter.mjs'
+
+const require = createRequire(import.meta.url)
+const { createSetupFilesystem } = require('./setup-filesystem.cjs')
+const setupFilesystem = createSetupFilesystem()
 
 const PRODUCT = 'agent-inbox-runtime'
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url))
@@ -261,7 +264,13 @@ function removePackagerIgnoredArtifacts(root) {
   }
 }
 
-const REQUIRED_SCRIPTS = ['install-agents.sh', 'install-hooks.sh', 'runtime-payload.mjs', 'runtime-config.mjs']
+const REQUIRED_SCRIPTS = [
+  'install-agents.sh',
+  'install-hooks.sh',
+  'runtime-payload.mjs',
+  'runtime-config.mjs',
+  'setup-filesystem.cjs',
+]
 const REQUIRED_DOCS = [
   'reporting-snippet.md',
   'hooks.md',
@@ -392,18 +401,17 @@ function stageInto(stageDir, {
     entrypoints,
   })
   writeManifestFile(stageDir, manifest)
-  verifyPayload({ root: stageDir, expect: { platform, arch, packageVersion, nodeVersion, product: PRODUCT } })
   return manifest
 }
 
 /**
- * Stage a full runtime payload and atomically publish it to `output`.
+ * Stage a full runtime payload and publish it to `output`.
  * Returns {runtimeId, output, manifest}. On any failure the in-progress
  * staging directory is removed — nothing partial is ever left where a
- * caller might mistake it for a finished payload. Publishing is a same-
- * parent-directory rename (so it is atomic on one filesystem); replacing an
- * existing --output requires --force and is itself a rename-swap, never an
- * in-place overwrite that could be observed half-done.
+ * caller might mistake it for a finished payload. A new output is published
+ * with one same-parent rename. Replacing an existing --output requires
+ * --force and uses a two-rename backup swap with a visibility gap and
+ * explicit recovery retention; it is not a globally atomic replacement.
  */
 export function stageRuntime({
   nodeRoot, platform, arch, output, repoRoot = DEFAULT_REPO_ROOT, packageVersion, sourceCommit, force = false,
@@ -415,48 +423,49 @@ export function stageRuntime({
   const resolvedCommit = sourceCommit ?? bestEffortSourceCommit(repoRoot)
 
   const outputResolved = resolve(output)
-  const outputParent = dirname(outputResolved)
-  mkdirSync(outputParent, { recursive: true })
-  const stageDir = join(outputParent, `.stage-runtime-${process.pid}-${randomBytes(4).toString('hex')}`)
-
-  let manifest
   try {
-    manifest = stageInto(stageDir, {
-      repoRoot,
-      repoPkg,
-      nodeRoot,
-      nodeBin: probe.nodeBin,
-      adapter,
-      platform,
-      arch,
-      packageVersion: resolvedVersion,
-      sourceCommit: resolvedCommit,
-      nodeVersion: probe.version,
-      nodeModulesAbi: probe.modulesAbi,
+    const publication = setupFilesystem.stageDirectory({
+      destination: outputResolved,
+      replacement: force ? 'swap' : 'refuse',
+      prepare(stageDir) {
+        return stageInto(stageDir, {
+          repoRoot,
+          repoPkg,
+          nodeRoot,
+          nodeBin: probe.nodeBin,
+          adapter,
+          platform,
+          arch,
+          packageVersion: resolvedVersion,
+          sourceCommit: resolvedCommit,
+          nodeVersion: probe.version,
+          nodeModulesAbi: probe.modulesAbi,
+        })
+      },
+      validate(stageDir) {
+        verifyPayload({
+          root: stageDir,
+          expect: {
+            platform,
+            arch,
+            packageVersion: resolvedVersion,
+            nodeVersion: probe.version,
+            product: PRODUCT,
+          },
+        })
+      },
     })
-
-    if (existsSync(outputResolved)) {
-      if (!force) {
-        throw new StageRuntimeError(`--output already exists: ${outputResolved} (pass --force to replace it)`)
-      }
-      const backup = `${outputResolved}.old-${Date.now()}`
-      renameSync(outputResolved, backup)
-      try {
-        renameSync(stageDir, outputResolved)
-      } catch (err) {
-        renameSync(backup, outputResolved)
-        throw err
-      }
-      rmSync(backup, { recursive: true, force: true })
-    } else {
-      renameSync(stageDir, outputResolved)
-    }
+    return { runtimeId: publication.prepared.runtimeId, output: publication.path, manifest: publication.prepared }
   } catch (err) {
-    rmSync(stageDir, { recursive: true, force: true })
-    throw err
+    if (err?.code === 'already-exists' && !force) {
+      throw new StageRuntimeError(`--output already exists: ${outputResolved} (pass --force to replace it)`)
+    }
+    const wrapped = new StageRuntimeError(err.message)
+    for (const field of ['code', 'committed', 'recoveryPath']) {
+      if (err?.[field] !== undefined) wrapped[field] = err[field]
+    }
+    throw wrapped
   }
-
-  return { runtimeId: manifest.runtimeId, output: outputResolved, manifest }
 }
 
 // ── CLI ─────────────────────────────────────────────────────────────────

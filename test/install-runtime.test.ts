@@ -42,7 +42,13 @@ function runtimePayload(version: string): { root: string; digest: string; runtim
   writeFileSync(join(root, 'dist', 'watch-cli.js'), 'process.exit(0)\n')
   writeFileSync(join(root, 'package.json'), JSON.stringify({ type: 'module' }))
 
-  for (const script of ['install-agents.sh', 'install-hooks.sh', 'runtime-payload.mjs', 'runtime-config.mjs']) {
+  for (const script of [
+    'install-agents.sh',
+    'install-hooks.sh',
+    'runtime-payload.mjs',
+    'runtime-config.mjs',
+    'setup-filesystem.cjs',
+  ]) {
     copy(join(REPO, 'scripts', script), join(root, 'scripts', script))
   }
   copy(join(REPO, 'docs', 'reporting-snippet.md'), join(root, 'docs', 'reporting-snippet.md'))

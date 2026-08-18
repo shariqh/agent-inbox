@@ -517,6 +517,7 @@ describe('universal finalization contract', () => {
 
     expect(electronModules).toContain('electron/setup-runner.cjs')
     expect(electronModules).toContain('electron/setup-core.cjs')
+    expect(electronModules).toContain('electron/setup-process.cjs')
     expect(electronModules).toContain('electron/runtime-verify.cjs')
     expect(electronModules.every((module) => module.startsWith('electron/'))).toBe(true)
     expect(pullRequestTrigger).toContain('      - "electron/**"')
@@ -534,6 +535,11 @@ describe('universal finalization contract', () => {
   it('keeps the trusted Setup core in the package smoke gate', () => {
     const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
     expect(pkg.scripts['package:smoke']).toContain('test/setup-core.test.ts')
+  })
+
+  it('keeps the fixed-purpose Setup process adapter in package smoke', () => {
+    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+    expect(pkg.scripts['package:smoke']).toContain('test/setup-process.test.ts')
   })
 
   it('keeps the Setup filesystem adapter in payload verification and package smoke', () => {

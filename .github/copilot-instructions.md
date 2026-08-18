@@ -74,7 +74,9 @@ Run the build before `npm run electron`; the development shell starts the built
   Node-core-only runtime identity/staging/publication/removal boundary used by
   the shipped Darwin install path and build-time runtime publisher. Its Win32
   policy is modeled only; do not treat it as Windows Setup availability or as
-  a stable-handle fix for the verify-to-execute TOCTOU.
+  a stable-handle fix for the verify-to-execute TOCTOU. Runtime-payload install
+  exit 3 means publication may have committed; the shell must exact-verify it
+  before invoking ownership-safe rollback and must retain unverifiable paths.
 - **Shared presentation rules:** `public/attention.js` is the single attention
   predicate used by the viewer and Electron dock badge. Pure modules under
   `public/` hold grouping, ordering, search, badge, polling, and rendering rules;

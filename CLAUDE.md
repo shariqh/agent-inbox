@@ -410,6 +410,14 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   its identity before producer code runs; cleanup also requires that same stage identity
   (or verified absence after publication), so a substituted child is never recursively
   removed merely because its parent scratch directory still matches.
+  `runtime-payload.mjs install` reserves exit 3 for an error carrying
+  `committed:true` (usage remains 2 and ordinary failure 1). The shell must treat
+  that as “publication may have happened,” reverify a plain exact
+  `runtimeRoot/runtimeId` against both the expected runtime ID and source-manifest
+  digest, and only then mark a previously absent runtime for the existing
+  reference-gated rollback. A substituted/unverified path is retained with an
+  explicit unsafe/unknown diagnostic; host configuration remains unchanged and
+  the overall install still fails.
   Graceful process termination lets the shell attempt rollback; forced `SIGKILL` can
   terminate without shell or adapter cleanup, so never claim rollback precedes every
   terminal result. A failed post-publication cleanup is a committed failure and retains

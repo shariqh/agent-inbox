@@ -589,9 +589,9 @@ export function listRuntimes({ runtimeRoot, manifestFileName = DEFAULT_MANIFEST_
 
 // ── CLI ─────────────────────────────────────────────────────────────────
 // Every subcommand prints one JSON object/array to stdout and exits 0 on
-// success, or prints a one-line error to stderr and exits 1 — deliberately
-// simple enough for a Bash caller (install scripts, stage-runtime.mjs) to
-// consume with plain shell/grep, no jq required.
+// success. Usage is 2, ordinary failure is 1, and an install failure that
+// reports `committed:true` is 3 so the shell can verify and roll back a
+// published runtime instead of treating it as wholly uncommitted.
 
 function runManifestCmd(argv) {
   const { values } = parseArgs({
@@ -730,7 +730,7 @@ function main(argv) {
     }
   } catch (err) {
     process.stderr.write(`runtime-payload: ${err.message}\n`)
-    process.exitCode = 1
+    process.exitCode = command === 'install' && err?.committed === true ? 3 : 1
   }
 }
 

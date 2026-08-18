@@ -83,6 +83,14 @@ mutation rather than restoring or deleting a substituted path. The adapter creat
 identifies the empty stage before producer code runs, and cleanup requires that same stage
 identity or verified post-publication absence.
 
+The payload CLI distinguishes a committed install failure with exit 3 (ordinary failure
+remains 1; usage remains 2). Before treating that runtime as newly installed, the Darwin
+shell requires a plain exact destination, a full payload verification, the expected
+content-derived runtime ID, and the exact source-manifest digest. Only a path absent before
+the attempt and passing every check enters the existing reference-gated rollback. A
+substituted or unverifiable destination is retained and reported as unsafe/unknown; host
+configuration is never changed and Setup still fails.
+
 Win32 policy tests model fully-qualified drive/UNC paths, separator normalization,
 case-independent filesystem identity, junction/link refusal, and sharing failures. They
 also reject drive-relative, drive-less-rooted, device/extended-namespace, and alternate-data-

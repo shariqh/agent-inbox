@@ -28,7 +28,10 @@ function copy(src: string, dest: string): void {
   copyFileSync(src, dest)
 }
 
-function runtimePayload(version: string): { root: string; digest: string; runtimeId: string } {
+function runtimePayload(
+  version: string,
+  options: { committedFailure?: 'exact' | 'substituted' } = {},
+): { root: string; digest: string; runtimeId: string } {
   const root = temp(`agent-runtime-${version}-`)
   mkdirSync(join(root, 'bin'), { recursive: true })
   writeFileSync(join(root, 'bin', 'node'), `#!/bin/sh\nexec '${process.execPath}' "$@"\n`)
@@ -50,6 +53,45 @@ function runtimePayload(version: string): { root: string; digest: string; runtim
     'setup-filesystem.cjs',
   ]) {
     copy(join(REPO, 'scripts', script), join(root, 'scripts', script))
+  }
+  if (options.committedFailure) {
+    const realHelper = join(root, 'scripts', 'runtime-payload-real.mjs')
+    copy(join(REPO, 'scripts', 'runtime-payload.mjs'), realHelper)
+    writeFileSync(join(root, 'scripts', 'runtime-payload.mjs'), `
+export * from './runtime-payload-real.mjs'
+
+import { spawnSync } from 'node:child_process'
+import { readFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const mode = ${JSON.stringify(options.committedFailure)}
+const scriptDir = dirname(fileURLToPath(import.meta.url))
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const args = process.argv.slice(2)
+  const result = spawnSync(process.execPath, [join(scriptDir, 'runtime-payload-real.mjs'), ...args], {
+    stdio: 'inherit',
+  })
+  if (args[0] !== 'install' || result.status !== 0) process.exit(result.status ?? 1)
+
+  if (mode === 'substituted') {
+    const value = (name) => {
+      const index = args.indexOf(name)
+      return index >= 0 ? args[index + 1] : null
+    }
+    const payloadRoot = value('--payload-root')
+    const runtimeRoot = value('--runtime-root')
+    const manifest = JSON.parse(readFileSync(join(payloadRoot, 'runtime-manifest.json'), 'utf8'))
+    const destination = join(runtimeRoot, manifest.runtimeId)
+    rmSync(destination, { recursive: true, force: true })
+    mkdirSync(destination, { recursive: true })
+    writeFileSync(join(destination, 'substituted.txt'), 'not the committed runtime\\n')
+  }
+
+  process.stderr.write('runtime-payload: committed install fixture\\n')
+  process.exit(3)
+}
+`)
   }
   copy(join(REPO, 'docs', 'reporting-snippet.md'), join(root, 'docs', 'reporting-snippet.md'))
   copy(join(REPO, 'docs', 'hooks.md'), join(root, 'docs', 'hooks.md'))
@@ -166,6 +208,39 @@ function registration(path: string): { command: string; args: string[] } | undef
 }
 
 describe('portable release installer', () => {
+  it('rolls back a newly published exact runtime when the helper reports a committed failure', () => {
+    const f = fixture()
+    const payload = runtimePayload('1.0.0-committed', { committedFailure: 'exact' })
+    const claudeBefore = readFileSync(f.claudeConfig, 'utf8')
+    const copilotBefore = readFileSync(f.copilotConfig, 'utf8')
+
+    const result = install(f, payload)
+
+    expect(result.status).toBe(1)
+    expect(result.stderr).toMatch(/committed install/i)
+    expect(result.stderr).toMatch(/removed unreferenced runtime after failed install/i)
+    expect(existsSync(join(f.runtimeRoot, payload.runtimeId))).toBe(false)
+    expect(readFileSync(f.claudeConfig, 'utf8')).toBe(claudeBefore)
+    expect(readFileSync(f.copilotConfig, 'utf8')).toBe(copilotBefore)
+  })
+
+  it('retains an unverified substituted destination after a committed failure', () => {
+    const f = fixture()
+    const payload = runtimePayload('1.0.0-substituted', { committedFailure: 'substituted' })
+    const claudeBefore = readFileSync(f.claudeConfig, 'utf8')
+    const copilotBefore = readFileSync(f.copilotConfig, 'utf8')
+    const installed = join(f.runtimeRoot, payload.runtimeId)
+
+    const result = install(f, payload)
+
+    expect(result.status).toBe(1)
+    expect(result.stderr).toMatch(/committed install/i)
+    expect(result.stderr).toMatch(/could not verify the exact expected runtime/i)
+    expect(readFileSync(join(installed, 'substituted.txt'), 'utf8')).toBe('not the committed runtime\n')
+    expect(readFileSync(f.claudeConfig, 'utf8')).toBe(claudeBefore)
+    expect(readFileSync(f.copilotConfig, 'utf8')).toBe(copilotBefore)
+  })
+
   it('installs both hosts into a stable runtime that survives deleting the app payload', () => {
     const f = fixture()
     const payload = runtimePayload('1.0.0')
@@ -214,7 +289,7 @@ describe('portable release installer', () => {
 
   it('upgrades owned registrations and keeps only current plus one previous runtime', () => {
     const f = fixture()
-    const payloads = ['1.0.0', '1.1.0', '1.2.0'].map(runtimePayload)
+    const payloads = ['1.0.0', '1.1.0', '1.2.0'].map((version) => runtimePayload(version))
     for (const payload of payloads) {
       const result = install(f, payload)
       expect(result.status, result.stderr).toBe(0)

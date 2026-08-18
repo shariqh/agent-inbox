@@ -68,6 +68,30 @@ function runFail(script: string, args: string[], env?: NodeJS.ProcessEnv): CliRe
   return result
 }
 
+function committedFailureCli(): string {
+  const root = tmp('committed-runtime-cli-')
+  const cli = join(root, 'runtime-payload.mjs')
+  copyFileSync(PAYLOAD_CLI, cli)
+  writeFileSync(join(root, 'setup-filesystem.cjs'), `
+const original = require(${JSON.stringify(SETUP_FILESYSTEM)})
+module.exports = {
+  createSetupFilesystem(options) {
+    const filesystem = original.createSetupFilesystem(options)
+    return Object.freeze({
+      ...filesystem,
+      stageDirectory(transaction) {
+        filesystem.stageDirectory(transaction)
+        const error = new Error('committed publication fixture')
+        error.committed = true
+        throw error
+      },
+    })
+  },
+}
+`)
+  return cli
+}
+
 // Copies `scriptPaths` into a fresh real directory, then places a *separate*
 // symlink alias directory pointing at it, and returns the scripts' paths as
 // reached through that alias. This reproduces the real-world failure mode
@@ -414,6 +438,36 @@ describe('runtime-payload verify: rejects every form of divergence from the mani
 // runtime-payload.mjs — install: atomic, idempotent, collision-safe
 // ═══════════════════════════════════════════════════════════════════════
 describe('runtime-payload install: atomic install, idempotency, and collision refusal', () => {
+  it('uses exit 3 only for a committed install failure and preserves existing CLI streams', () => {
+    const payloadRoot = tmp('install-committed-payload-')
+    buildFixturePayload(payloadRoot)
+    const manifest = buildAndWriteManifest(payloadRoot)
+    const runtimeRoot = tmp('install-committed-root-')
+    const cli = committedFailureCli()
+
+    const committed = runCli(cli, [
+      'install',
+      '--payload-root', payloadRoot,
+      '--runtime-root', runtimeRoot,
+    ])
+    expect(committed).toEqual({
+      status: 3,
+      stdout: '',
+      stderr: 'runtime-payload: committed publication fixture\n',
+    })
+    runOk(PAYLOAD_CLI, ['verify', '--root', join(runtimeRoot, manifest.runtimeId as string)])
+
+    const ordinary = runCli(cli, ['verify', '--root', join(runtimeRoot, 'missing')])
+    expect(ordinary.status).toBe(1)
+    expect(ordinary.stdout).toBe('')
+    expect(ordinary.stderr).toMatch(/^runtime-payload: /)
+
+    const usage = runCli(cli, [])
+    expect(usage.status).toBe(2)
+    expect(usage.stdout).toBe('')
+    expect(usage.stderr).toMatch(/^usage: runtime-payload\.mjs /)
+  })
+
   it('installs a verified payload into runtimeRoot/<runtimeId>, verifiable afterward', () => {
     const payloadRoot = tmp('install-payload-')
     buildFixturePayload(payloadRoot)

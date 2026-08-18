@@ -54,6 +54,13 @@ atomically copies the selected payload to
 `~/.agent-inbox/runtime/<content-derived-runtime-id>/`, then registers that installed
 Node and MCP entrypoint. Moving or deleting the app afterward does not break agents.
 
+`scripts/runtime-targets.mjs` defines the build-time target vocabulary and official Node
+artifact/layout facts for planned Darwin, Linux, and Windows runtimes. That descriptor
+table is not a Setup capability list: the active macOS release profile remains exactly
+`darwin-arm64` plus `darwin-x64`, and the packaged Setup runner remains Darwin-only until
+a platform has a verified staging and installer adapter. Windows arm64 is deliberately
+outside the current target set.
+
 Layer 1 leaves the portable app unsigned. The signing layer must finalize the layout,
 sign every nested runtime Mach-O, regenerate both manifests from those signed bytes,
 write `setup-info.json`, sign only the outer app without `--deep`, then strictly verify

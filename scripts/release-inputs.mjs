@@ -6,10 +6,16 @@ import { mkdir } from 'node:fs/promises'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { parseArgs } from 'node:util'
+import {
+  MACOS_RUNTIME_KEYS,
+  nodeDistributionIdentity,
+  targetFor,
+} from './runtime-targets.mjs'
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 export const DEFAULT_RELEASE_INPUTS = resolve(REPO_ROOT, 'release', 'macos-inputs.json')
-export const RUNTIME_KEYS = ['darwin-arm64', 'darwin-x64']
+export { MACOS_RUNTIME_KEYS }
+export const RUNTIME_KEYS = MACOS_RUNTIME_KEYS
 export const RELEASE_TOOL_PACKAGES = {
   version: 'electron',
   packagerVersion: '@electron/packager',
@@ -65,22 +71,20 @@ export function validateReleaseInputs(value) {
   for (const key of RUNTIME_KEYS) {
     const distribution = value.node.distributions[key]
     requireExactKeys(distribution, ['platform', 'arch', 'archive', 'root', 'url', 'sha256'], `node.distributions.${key}`)
-    const [, expectedArch] = key.split('-')
-    const expectedArchive = `node-${value.node.version}-${key}.tar.xz`
+    const target = targetFor(key)
+    const expected = nodeDistributionIdentity(value.node.version, key)
     requireString(distribution.platform, `${key}.platform`)
     requireString(distribution.arch, `${key}.arch`)
-    if (distribution.platform !== 'darwin' || distribution.arch !== expectedArch) {
+    if (distribution.platform !== target.platform || distribution.arch !== target.arch) {
       throw new ReleaseInputError(`${key} platform/arch does not match its runtime key`)
     }
-    if (distribution.archive !== expectedArchive) {
-      throw new ReleaseInputError(`${key}.archive must be ${expectedArchive}`)
+    if (distribution.archive !== expected.archive) {
+      throw new ReleaseInputError(`${key}.archive must be ${expected.archive}`)
     }
-    const expectedRoot = expectedArchive.replace(/\.tar\.xz$/, '')
-    if (distribution.root !== expectedRoot) {
-      throw new ReleaseInputError(`${key}.root must be ${expectedRoot}`)
+    if (distribution.root !== expected.root) {
+      throw new ReleaseInputError(`${key}.root must be ${expected.root}`)
     }
-    const expectedUrl = `https://nodejs.org/dist/${value.node.version}/${expectedArchive}`
-    if (distribution.url !== expectedUrl) {
+    if (distribution.url !== expected.url) {
       throw new ReleaseInputError(`${key}.url must be the official Node distribution URL`)
     }
     requireString(distribution.sha256, `${key}.sha256`, SHA256_RE)

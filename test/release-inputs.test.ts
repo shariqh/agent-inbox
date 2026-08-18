@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_RELEASE_INPUTS,
+  MACOS_RUNTIME_KEYS,
   ReleaseInputError,
   RUNTIME_KEYS,
   downloadArchive,
@@ -19,6 +20,8 @@ describe('macOS release inputs', () => {
     expect(inputs.node.version).toBe('v24.19.0')
     expect(inputs.node.modulesAbi).toBe('137')
     expect(inputs.minimumMacosVersion).toBe('13.5')
+    expect(RUNTIME_KEYS).toBe(MACOS_RUNTIME_KEYS)
+    expect(RUNTIME_KEYS).toEqual(['darwin-arm64', 'darwin-x64'])
     expect(Object.keys(inputs.node.distributions)).toEqual(RUNTIME_KEYS)
     expect(inputs.electron).toEqual({
       version: '43.1.1',

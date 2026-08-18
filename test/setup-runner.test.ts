@@ -459,15 +459,20 @@ describe('selectRuntimePayload (issue #74)', () => {
     expect(result).toMatchObject({ ok: false, reason: 'symlinked-payload' })
   })
 
-  it('re-verifies a release payload immediately before spawn and refuses tampering', async () => {
-    const { root, arm } = releaseRoot()
-    const payloadRoot = join(root, arm.path)
+  it.skipIf(process.platform !== 'darwin')('re-verifies a release payload immediately before spawn and refuses tampering', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'runtime-reverify-'))
+    const key = `darwin-${process.arch}`
+    const payload = stagePayloadDir(root, `runtime/${key}`, {
+      platform: 'darwin',
+      arch: process.arch,
+    })
+    const payloadRoot = join(root, payload.path)
     const marker = join(root, 'spawned')
     writeFileSync(join(payloadRoot, 'scripts', 'install-agents.sh'), `#!/bin/bash\ntouch '${marker}'\n`)
     const result = await runAgentInstall({
       repoRoot: payloadRoot,
       target: 'all',
-      runtimePayload: { key: 'darwin-arm64', path: payloadRoot, digest: arm.digest, packageVersion: '1.2.3' },
+      runtimePayload: { key, path: payloadRoot, digest: payload.digest, packageVersion: '1.2.3' },
     })
     expect(result.ok).toBe(false)
     expect(result.output).toMatch(/integrity verification/i)

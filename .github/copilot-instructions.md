@@ -69,8 +69,12 @@ Run the build before `npm run electron`; the development shell starts the built
 - **Setup path:** `scripts/install-agents.sh` is the canonical dry-run-first
   installer for MCP registration and managed host instructions. Electron exposes
   only fixed setup targets through `electron/setup-preload.cjs` and invokes that
-  same script through `electron/setup-runner.cjs`; there is no HTTP setup-write
-  route or general-purpose shell bridge. `scripts/setup-filesystem.cjs` is the
+  same script through `electron/setup-runner.cjs` and the fixed-purpose
+  `electron/setup-process.cjs` boundary. The process boundary constructs only
+  exact `/bin/bash` installer argv for macOS/Linux and fails closed before spawn
+  on Windows or unknown platforms; it is not a general-purpose shell bridge and
+  does not enable non-Darwin release Setup. There is no HTTP setup-write route.
+  `scripts/setup-filesystem.cjs` is the
   Node-core-only runtime identity/staging/publication/removal boundary used by
   the shipped Darwin install path and build-time runtime publisher. Its Win32
   policy is modeled only; do not treat it as Windows Setup availability or as

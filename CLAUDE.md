@@ -380,9 +380,13 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   and requires the selected key plus verified manifest platform/architecture to match it
   exactly. The core carries only values the current adapter consumes; shell-internal
   self-tests, rollback and pruning are not self-certified policy fields.
-  `electron/setup-runner.cjs` invokes `/bin/bash` directly (no command shell), bounds
-  output/time, and selects only the exact architecture-keyed runtime payload from release
-  `setup-info.json`; checkout/dev mode retains its local fallback and exact argv.
+  `electron/setup-runner.cjs` selects only the exact architecture-keyed runtime payload
+  from release `setup-info.json`. Both its verified release path and checkout/dev fallback
+  delegate execution to the fixed-purpose `electron/setup-process.cjs` boundary, which
+  constructs only exact `/bin/bash scripts/install-agents.sh` argv, bounds output/time,
+  and preserves POSIX process-group cancellation. It accepts no executable or arbitrary
+  argv from callers, permits macOS/Linux shell execution, and fails closed before spawn on
+  Windows or unknown platforms. This does not enable non-Darwin release Setup.
   `electron/runtime-verify.cjs` is the externally anchored verifier: using the digest from
   signed-bundle `setup-info.json`, it synchronously verifies the complete manifest file
   list, hashes, modes, entrypoints and runtime identity at selection and immediately before

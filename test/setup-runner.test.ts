@@ -241,7 +241,9 @@ while :; do sleep 1; done
     expect(preload).toContain('onToggleSettings')
     expect(preload).not.toContain('child_process')
     expect(runner).toContain("require('./setup-core.cjs')")
+    expect(runner).toContain("require('./setup-process.cjs')")
     expect(runner).toContain('runTrustedSetup({')
+    expect(runner).not.toContain('function runInstallerProcess(')
     expect(main).toContain('key: runtimeSelection.key')
   })
 

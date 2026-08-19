@@ -55,10 +55,15 @@ atomically copies the selected payload to
 Node and MCP entrypoint. Moving or deleting the app afterward does not break agents.
 
 `electron/setup-core.cjs` is the dependency-free Setup control plane in Electron main.
-The Darwin execution adapter owns a frozen host identity derived directly from
+The Darwin release adapter owns a frozen host identity derived directly from
 `process.platform` and `process.arch`; the selected setup-info key and verified manifest
-must match that exact identity before `/bin/bash` can start. The core does not load the
-Node-ABI agent runtime or model shell-internal self-test, rollback, or pruning work.
+must match that exact identity before execution can start. Both verified release Setup and
+the checkout/dev fallback then use the fixed-purpose `electron/setup-process.cjs` boundary.
+That boundary constructs only exact `/bin/bash scripts/install-agents.sh` argv on macOS and
+Linux, and fails closed before spawn on Windows or an unknown platform. It accepts no
+caller-provided executable, argv, or shell string. This does not enable Linux or Windows
+release Setup. The core does not load the Node-ABI agent runtime or model shell-internal
+self-test, rollback, or pruning work.
 
 The externally anchored integrity check is `electron/runtime-verify.cjs`, using the
 manifest digest from the signed app's `setup-info.json`. It hashes the full payload at

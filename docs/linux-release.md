@@ -1,8 +1,9 @@
-# Native Linux release folders
+# Native Linux release folders and x64 AppImage
 
 Issue #86's first delivery layer produces native, architecture-matched release
-inputs for `linux-x64` and `linux-arm64`. It does not yet create an installable
-Linux package.
+inputs for `linux-x64` and `linux-arm64`. The next focused layer packages the
+verified `linux-x64` folder as a deterministic AppImage. Linux arm64 packaging,
+DEB packages, and GitHub Release publication remain later units.
 
 ## Pinned compatibility contract
 
@@ -13,6 +14,17 @@ layer. It also pins Clang 15.0.7 for native addon compilation. GCC 11 cannot
 parse Electron 43's deprecation-plus-visibility attribute ordering in the V8
 headers; the build verifies both compiler commands, the exact compiler version,
 and the native target tuple before rebuilding.
+
+`release/linux-appimage-x64.json` is the separate exact package contract. It
+pins appimagetool 1.9.1 and the AppImage type-2 runtime release `20251108` to
+immutable tagged URLs, source commits, byte sizes, and SHA-256 values; pins the
+complete Linux-input manifest and icon by SHA-256; and fixes the x86-64 AppDir
+layout and desktop metadata. The build passes the verified runtime through
+appimagetool's `--runtime-file`, so appimagetool never fetches its mutable
+`continuous` runtime. The build verifies this contract before downloading or
+executing appimagetool. Downloaded bytes remain untrusted until their
+plain-file identity, exact size, and SHA-256 have passed; the tool additionally
+requires executable mode before use.
 
 The final native folders set the product floor:
 
@@ -62,9 +74,87 @@ The workflow uploads short-lived Actions artifacts for review. It has
 read-only repository permissions, persists no checkout credentials, uses no
 secrets, and does not publish GitHub Release assets.
 
+## Build the x64 AppImage
+
+On a native x86-64 Linux host using Node 24, first produce the verified thin
+folder as described above. Then run:
+
+```sh
+npm run package:linux-appimage -- \
+  --app "build/thin/linux-x64/Agent Inbox" \
+  --inputs release/linux-inputs.json \
+  --appimage-inputs release/linux-appimage-x64.json \
+  --output-dir build/appimage
+```
+
+The command derives the version and source timestamp from the exact checkout,
+validates the input manifest and thin folder, SHA-verifies the pinned packaging
+tool before execution, and emits:
+
+- `Agent-Inbox-vX.Y.Z-linux-x86_64.AppImage`
+- `Agent-Inbox-vX.Y.Z-linux-x86_64.AppImage.sha256`
+- `Agent-Inbox-vX.Y.Z-linux-x86_64.AppImage.report.json`
+
+The final verifier checks the outer type-2 AppImage marker, exact pinned runtime
+prefix, executable mode, x86-64 ELF identity and libc floor; extracts the image
+without FUSE; requires the exact AppDir root; validates the launcher, desktop
+version/name metadata, icon digest, and Chromium sandbox mode; then reruns the
+complete thin-folder ELF, ABI, addon, runtime, Setup-selection, source-commit,
+and single-`linux-x64` payload gates. The extracted inner application tree and
+version must exactly match the already-verified source folder; the sole
+permission transformation is the standard AppImage `chrome-sandbox` mode from
+the Electron archive's exact `0755` to the packaged setuid-root `4755`; the
+builder rejects privileged mode bits on every source entry, and the final
+verifier requires the sandbox to be the sole privileged entry. appimagetool
+runs from an empty isolated working directory and HOME, so an ambient
+`.appimageignore` cannot alter the output. CI builds the AppImage twice from
+the same inputs and requires byte-identical artifacts, checksums, and reports.
+
+## Launch requirements and no-FUSE fallback
+
+The tested baseline is x86-64 Ubuntu 22.04 with glibc 2.34 and the desktop
+runtime libraries installed explicitly by
+`.github/workflows/linux-x64-appimage.yml`: GTK 3, NSS, ALSA, ATK bridge, CUPS,
+DRM/GBM, X11 composition/damage/fix/randr/xss, xkbcommon, CA certificates, and
+an X server. Normal AppImage mounting additionally requires FUSE.
+
+Run normally:
+
+```sh
+./Agent-Inbox-vX.Y.Z-linux-x86_64.AppImage
+```
+
+When `/dev/fuse` is unavailable, use the AppImage runtime's supported
+extract-and-run path:
+
+```sh
+APPIMAGE_TMPDIR="$(mktemp -d)"
+chmod 0700 "$APPIMAGE_TMPDIR"
+trap 'rm -rf -- "$APPIMAGE_TMPDIR"' EXIT
+TMPDIR="$APPIMAGE_TMPDIR" APPIMAGE_EXTRACT_AND_RUN=1 \
+  ./Agent-Inbox-vX.Y.Z-linux-x86_64.AppImage
+```
+
+This fallback extracts to a temporary directory for each launch. It is not a
+desktop installation flow and does not install or remove host launchers,
+icons, or user data. Keep the unique mode-`0700` `TMPDIR`: the pinned AppImage
+runtime uses a predictable child name while extracting, so a shared `/tmp`
+base would let another local user prepopulate files before launch.
+
+The CI acceptance gate runs both paths as an unprivileged user, without
+`--no-sandbox`, in digest-pinned clean Ubuntu 22.04 containers. Each container
+receives only the final artifact and the smoke harness, has no repository
+checkout or system Node, isolates HOME, XDG configuration/cache/data/state, and
+the inbox database, then requires the packaged in-process viewer to answer on
+`127.0.0.1` with the hardened
+`x-agent-inbox-local-boundary: loopback-v1` marker. The no-FUSE container has
+no `/dev/fuse`; the normal container receives the FUSE device explicitly.
+
 ## Retained limitations
 
-This layer intentionally has no AppImage, DEB, RPM, Snap, Flatpak, desktop
-launcher, icon integration, checksums file, release publication, or
-clean-machine package acceptance. Those belong to later issue #86 delivery
-units.
+This layer intentionally has no Linux arm64 AppImage, DEB, RPM, Snap, Flatpak,
+host-level desktop install/uninstall flow, aggregated release checksum file,
+signing/attestation, or GitHub Release publication. Those belong to later
+issue #86 delivery units. The x64 evidence supports the documented
+Ubuntu/Debian-class glibc baseline only; it is not a claim of universal Linux
+compatibility.

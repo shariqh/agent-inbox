@@ -1,0 +1,324 @@
+#!/usr/bin/env node
+import { execFileSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import {
+  accessSync,
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  lstatSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  readSync,
+  readdirSync,
+  readlinkSync,
+  rmSync,
+} from 'node:fs'
+import { tmpdir } from 'node:os'
+import { basename, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { parseArgs } from 'node:util'
+import { appImageArtifactName, renderAppRun, renderDesktopEntry } from './build-linux-appimage.mjs'
+import {
+  DEFAULT_LINUX_APPIMAGE_INPUTS,
+  loadLinuxAppImageInputs,
+  sha256File,
+} from './linux-appimage-inputs.mjs'
+import { assertBinaryCompatibility } from './linux-binary-gates.mjs'
+import {
+  DEFAULT_LINUX_RELEASE_INPUTS,
+  loadLinuxReleaseInputs,
+} from './linux-release-inputs.mjs'
+import { treeIdentity } from './tree-identity.mjs'
+import { verifyLinuxThinApp } from './verify-linux-thin-app.mjs'
+
+const COMMIT_RE = /^[0-9a-f]{40}$/
+
+export class LinuxAppImageVerificationError extends Error {
+  constructor(message) {
+    super(message)
+    this.name = 'LinuxAppImageVerificationError'
+  }
+}
+
+function assertLinuxX64Host() {
+  if (process.platform !== 'linux' || process.arch !== 'x64') {
+    throw new LinuxAppImageVerificationError(
+      `x64 AppImage must be verified natively on linux/x64; this process is ${process.platform}/${process.arch}`,
+    )
+  }
+}
+
+function assertPlainFile(path, label) {
+  const stat = lstatSync(path)
+  if (stat.isSymbolicLink() || !stat.isFile()) {
+    throw new LinuxAppImageVerificationError(`${label} must be a plain regular file: ${path}`)
+  }
+  return stat
+}
+
+function assertExactRootEntries(appDir) {
+  const expected = ['.DirIcon', 'AppRun', 'agent-inbox.desktop', 'agent-inbox.png', 'usr']
+  const actual = readdirSync(appDir).sort()
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new LinuxAppImageVerificationError(
+      `AppImage root entries must be exactly ${expected.join(', ')}; found ${actual.join(', ')}`,
+    )
+  }
+}
+
+function assertOnlyExpectedPrivilegedMode(directory, sandbox) {
+  for (const name of readdirSync(directory).sort()) {
+    const path = join(directory, name)
+    const stat = lstatSync(path)
+    if (stat.isSymbolicLink()) continue
+    if (path === sandbox) {
+      if (!stat.isFile() || (stat.mode & 0o7777) !== 0o4755) {
+        throw new LinuxAppImageVerificationError('chrome-sandbox must be the sole mode-4755 file')
+      }
+      continue
+    }
+    if ((stat.mode & 0o7000) !== 0) {
+      throw new LinuxAppImageVerificationError(`unexpected privileged mode bits in AppImage: ${path}`)
+    }
+    if (stat.isDirectory()) assertOnlyExpectedPrivilegedMode(path, sandbox)
+  }
+}
+
+function assertAppImageMarker(path) {
+  let fd
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW)
+    if (!fstatSync(fd).isFile()) {
+      throw new LinuxAppImageVerificationError('AppImage artifact must remain a plain regular file')
+    }
+    const header = Buffer.alloc(11)
+    if (
+      readSync(fd, header, 0, header.length, 0) !== header.length ||
+      header[8] !== 0x41 ||
+      header[9] !== 0x49 ||
+      header[10] !== 0x02
+    ) {
+      throw new LinuxAppImageVerificationError('artifact is not an AppImage type-2 image')
+    }
+  } finally {
+    if (fd !== undefined) closeSync(fd)
+  }
+}
+
+function sha256Prefix(path, size) {
+  const buffer = Buffer.alloc(size)
+  let fd
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW)
+    if (readSync(fd, buffer, 0, size, 0) !== size) {
+      throw new LinuxAppImageVerificationError('AppImage is shorter than the pinned type-2 runtime')
+    }
+    return createHash('sha256').update(buffer).digest('hex')
+  } finally {
+    if (fd !== undefined) closeSync(fd)
+  }
+}
+
+function extractAppImage(appImage) {
+  const work = mkdtempSync(join(tmpdir(), 'verify-appimage-'))
+  try {
+    execFileSync(appImage, ['--appimage-extract'], {
+      cwd: work,
+      env: {
+        ...process.env,
+        HOME: join(work, 'home'),
+        LC_ALL: 'C',
+        TZ: 'UTC',
+      },
+      stdio: ['ignore', 'ignore', 'pipe'],
+      timeout: 10 * 60_000,
+      maxBuffer: 64 * 1024 * 1024,
+    })
+    const extracted = join(work, 'squashfs-root')
+    if (!existsSync(extracted) || !lstatSync(extracted).isDirectory()) {
+      throw new LinuxAppImageVerificationError('AppImage extraction did not produce squashfs-root')
+    }
+    return {
+      appDir: extracted,
+      cleanup: () => rmSync(work, { recursive: true, force: true }),
+    }
+  } catch (err) {
+    rmSync(work, { recursive: true, force: true })
+    throw err
+  }
+}
+
+function verifyChecksumFile(path, artifactFile, expectedSha256) {
+  const expected = `${expectedSha256}  ${artifactFile}\n`
+  const actual = readFileSync(path, 'utf8')
+  if (actual !== expected) {
+    throw new LinuxAppImageVerificationError(`checksum sidecar does not match exact final AppImage bytes`)
+  }
+}
+
+export function verifyLinuxX64AppImage({
+  appImage,
+  packageVersion,
+  sourceCommit,
+  inputsPath,
+  appImageInputsPath,
+  checksum,
+}) {
+  assertLinuxX64Host()
+  if (!COMMIT_RE.test(sourceCommit)) {
+    throw new LinuxAppImageVerificationError('sourceCommit must be a full lowercase Git SHA')
+  }
+  const artifact = resolve(appImage)
+  const artifactFile = appImageArtifactName(packageVersion)
+  if (basename(artifact) !== artifactFile) {
+    throw new LinuxAppImageVerificationError(
+      `AppImage filename mismatch: expected ${artifactFile}, found ${basename(artifact)}`,
+    )
+  }
+  const stat = assertPlainFile(artifact, 'AppImage artifact')
+  try {
+    accessSync(artifact, constants.X_OK)
+  } catch (err) {
+    throw new LinuxAppImageVerificationError(`AppImage artifact is not executable: ${err.message}`)
+  }
+  assertAppImageMarker(artifact)
+
+  const appImageInputsFile = resolve(appImageInputsPath ?? DEFAULT_LINUX_APPIMAGE_INPUTS)
+  const linuxInputsFile = resolve(inputsPath ?? DEFAULT_LINUX_RELEASE_INPUTS)
+  const appImageInputs = loadLinuxAppImageInputs(appImageInputsFile)
+  const linuxInputsSha256 = sha256File(linuxInputsFile)
+  if (linuxInputsSha256 !== appImageInputs.linuxInputs.sha256) {
+    throw new LinuxAppImageVerificationError(
+      `Linux release inputs SHA-256 mismatch: expected ${appImageInputs.linuxInputs.sha256}, found ${linuxInputsSha256}`,
+    )
+  }
+  const linuxInputs = loadLinuxReleaseInputs(linuxInputsFile)
+  const runtimePrefixSha256 = sha256Prefix(artifact, appImageInputs.runtime.size)
+  if (runtimePrefixSha256 !== appImageInputs.runtime.sha256) {
+    throw new LinuxAppImageVerificationError(
+      `AppImage runtime prefix SHA-256 mismatch: expected ${appImageInputs.runtime.sha256}, found ${runtimePrefixSha256}`,
+    )
+  }
+  const outerCompatibility = assertBinaryCompatibility({
+    path: artifact,
+    label: 'AppImage runtime',
+    arch: 'x64',
+    maximumGlibcVersion: linuxInputs.minimumGlibcVersion,
+    maximumLibstdcxxVersion: linuxInputs.maximumGlibcxxVersion,
+  })
+  const appImageSha256 = sha256File(artifact)
+  if (checksum) verifyChecksumFile(resolve(checksum), artifactFile, appImageSha256)
+
+  const extracted = extractAppImage(artifact)
+  try {
+    assertExactRootEntries(extracted.appDir)
+    const dirIcon = join(extracted.appDir, '.DirIcon')
+    if (!lstatSync(dirIcon).isSymbolicLink() || readlinkSync(dirIcon) !== appImageInputs.layout.iconFile) {
+      throw new LinuxAppImageVerificationError('.DirIcon must link exactly to agent-inbox.png')
+    }
+    const appRun = join(extracted.appDir, appImageInputs.layout.appRun)
+    assertPlainFile(appRun, 'AppRun')
+    accessSync(appRun, constants.X_OK)
+    if (readFileSync(appRun, 'utf8') !== renderAppRun(appImageInputs)) {
+      throw new LinuxAppImageVerificationError('AppRun content does not match the pinned launcher')
+    }
+    const desktop = join(extracted.appDir, appImageInputs.layout.desktopFile)
+    assertPlainFile(desktop, 'desktop metadata')
+    if (readFileSync(desktop, 'utf8') !== renderDesktopEntry(appImageInputs, packageVersion)) {
+      throw new LinuxAppImageVerificationError('desktop metadata does not match the pinned package contract')
+    }
+    const icon = join(extracted.appDir, appImageInputs.layout.iconFile)
+    assertPlainFile(icon, 'AppImage icon')
+    if (sha256File(icon) !== appImageInputs.icon.sha256) {
+      throw new LinuxAppImageVerificationError('packaged AppImage icon SHA-256 mismatch')
+    }
+
+    const innerApp = join(
+      extracted.appDir,
+      ...appImageInputs.layout.applicationPath.split('/'),
+    )
+    const sandbox = join(innerApp, 'chrome-sandbox')
+    const sandboxStat = assertPlainFile(sandbox, 'chrome-sandbox')
+    if ((sandboxStat.mode & 0o7777) !== 0o4755) {
+      throw new LinuxAppImageVerificationError(
+        `chrome-sandbox mode must be 4755, found ${(sandboxStat.mode & 0o7777).toString(8)}`,
+      )
+    }
+    assertOnlyExpectedPrivilegedMode(extracted.appDir, sandbox)
+    const thinVerification = verifyLinuxThinApp({
+      app: innerApp,
+      arch: 'x64',
+      inputsPath: linuxInputsFile,
+      sourceCommit,
+    })
+    return {
+      schema: 1,
+      product: linuxInputs.product,
+      packageVersion,
+      artifactFile,
+      artifactArchitecture: appImageInputs.artifactArchitecture,
+      linuxInputsSha256,
+      appImageType: 2,
+      appImageSize: stat.size,
+      appImageSha256,
+      runtimePrefixSha256,
+      executableMode: stat.mode & 0o777,
+      chromeSandboxMode: sandboxStat.mode & 0o7777,
+      outerCompatibility,
+      appDirTreeDigest: treeIdentity(extracted.appDir),
+      desktopFile: appImageInputs.layout.desktopFile,
+      iconFile: appImageInputs.layout.iconFile,
+      setupRuntimeKeys: thinVerification.setupRuntimeKeys,
+      innerAppTreeDigest: thinVerification.appTreeDigest,
+      compatibility: thinVerification.compatibility,
+      electronVersion: thinVerification.electronVersion,
+      electronModulesAbi: thinVerification.electronModulesAbi,
+      nodeVersion: thinVerification.nodeVersion,
+      nodeModulesAbi: thinVerification.nodeModulesAbi,
+      nativeAddonSelftests: thinVerification.nativeAddonSelftests,
+      exactHostSetupSelection: thinVerification.exactHostSetupSelection,
+    }
+  } finally {
+    extracted.cleanup()
+  }
+}
+
+function main(argv) {
+  const { values } = parseArgs({
+    args: argv,
+    options: {
+      appimage: { type: 'string' },
+      version: { type: 'string' },
+      'source-commit': { type: 'string' },
+      inputs: { type: 'string' },
+      'appimage-inputs': { type: 'string' },
+      checksum: { type: 'string' },
+    },
+  })
+  if (!values.appimage || !values.version || !values['source-commit']) {
+    throw new LinuxAppImageVerificationError(
+      'usage: verify-linux-appimage.mjs --appimage <path> --version <version> --source-commit <sha>',
+    )
+  }
+  const report = verifyLinuxX64AppImage({
+    appImage: resolve(values.appimage),
+    packageVersion: values.version,
+    sourceCommit: values['source-commit'],
+    inputsPath: values.inputs && resolve(values.inputs),
+    appImageInputsPath: values['appimage-inputs'] && resolve(values['appimage-inputs']),
+    checksum: values.checksum && resolve(values.checksum),
+  })
+  process.stdout.write(`${JSON.stringify(report, null, 2)}\n`)
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try {
+    main(process.argv.slice(2))
+  } catch (err) {
+    process.stderr.write(`verify-linux-appimage: ${err.message}\n`)
+    process.exitCode = 1
+  }
+}

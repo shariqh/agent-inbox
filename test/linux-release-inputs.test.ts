@@ -19,13 +19,19 @@ describe('Linux release inputs', () => {
       product: 'Agent Inbox',
       bundleId: 'io.github.shariqh.agent-inbox',
       minimumKernelVersion: '4.18',
-      minimumGlibcVersion: '2.28',
-      minimumLibstdcxxVersion: '6.0.25',
-      maximumGlibcxxVersion: '3.4.25',
+      minimumGlibcVersion: '2.34',
+      minimumLibstdcxxVersion: '6.0.29',
+      maximumGlibcxxVersion: '3.4.29',
       distributionFloor: {
-        ubuntu: '20.04',
-        debian: '10',
-        rhel: '8',
+        ubuntu: '22.04',
+        debian: '12',
+        rhel: '9',
+      },
+      compiler: {
+        family: 'clang',
+        version: '15.0.7',
+        cc: 'clang-15',
+        cxx: 'clang++-15',
       },
       node: {
         version: 'v24.19.0',
@@ -75,6 +81,11 @@ describe('Linux release inputs', () => {
     unofficial.node.distributions['linux-x64'].url = 'https://example.invalid/node.tar.xz'
     expect(() => validateLinuxReleaseInputs(unofficial))
       .toThrow(/official Node distribution URL/)
+
+    const wrongCompiler = structuredClone(loadLinuxReleaseInputs())
+    wrongCompiler.compiler.cxx = 'g++'
+    expect(() => validateLinuxReleaseInputs(wrongCompiler))
+      .toThrow(/compiler\.cxx/)
   })
 
   it('keeps the existing macOS manifest schema and exact target set unchanged', () => {

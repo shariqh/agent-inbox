@@ -9,6 +9,8 @@ import {
   readElfArchitecture,
 } from '../scripts/linux-binary-gates.mjs'
 import { buildLinuxThinApp } from '../scripts/build-linux-thin-app.mjs'
+import { resolveLinuxCompilerEnvironment } from '../scripts/linux-release-inputs.mjs'
+import { PROCESS_PROBE } from '../scripts/verify-linux-thin-app.mjs'
 
 function elfFixture(arch: 'x64' | 'arm64', symbols: string[] = []): string {
   const bytes = Buffer.alloc(64)
@@ -64,6 +66,9 @@ describe('native Linux folder gates', () => {
   })
 
   it('requires exact platform, architecture, version, and ABI process probes', () => {
+    expect(typeof PROCESS_PROBE).toBe('string')
+    expect(() => new Function('require', 'process', PROCESS_PROBE)).not.toThrow()
+
     expect(assertProcessIdentity({
       actual: {
         platform: 'linux',
@@ -109,6 +114,39 @@ describe('native Linux folder gates', () => {
       output: join(unreachable, 'output'),
       repoRoot: join(unreachable, 'repo'),
     })).rejects.toThrow(/must be built natively/)
+  })
+
+  it('requires the pinned native Clang identity for Electron addon rebuilds', () => {
+    const inputs = {
+      compiler: {
+        family: 'clang' as const,
+        version: '15.0.7',
+        cc: 'clang-15',
+        cxx: 'clang++-15',
+      },
+    }
+    const run = (command: string, args: string[]) => {
+      if (args[0] === '-dumpmachine') return 'aarch64-unknown-linux-gnu\n'
+      return `Ubuntu clang version 15.0.7 (${command})\n`
+    }
+    expect(resolveLinuxCompilerEnvironment(inputs, 'arm64', run)).toEqual({
+      CC: 'clang-15',
+      CXX: 'clang++-15',
+    })
+
+    const wrongVersion = (command: string, args: string[]) => {
+      if (args[0] === '-dumpmachine') return 'aarch64-unknown-linux-gnu\n'
+      return `Ubuntu clang version 14.0.0 (${command})\n`
+    }
+    expect(() => resolveLinuxCompilerEnvironment(inputs, 'arm64', wrongVersion))
+      .toThrow(/compiler version mismatch.*15\.0\.7.*14\.0\.0/)
+
+    const crossCompiler = (_command: string, args: string[]) => {
+      if (args[0] === '-dumpmachine') return 'x86_64-pc-linux-gnu\n'
+      return 'Ubuntu clang version 15.0.7\n'
+    }
+    expect(() => resolveLinuxCompilerEnvironment(inputs, 'arm64', crossCompiler))
+      .toThrow(/compiler target mismatch.*arm64.*x86_64/)
   })
 
   it('keeps Linux packaging folder-only and delegates Setup metadata to schema 2', () => {

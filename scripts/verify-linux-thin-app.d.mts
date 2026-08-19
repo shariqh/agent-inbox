@@ -1,4 +1,5 @@
 export class LinuxThinVerificationError extends Error {}
+export const PROCESS_PROBE: string
 export type LinuxThinReport = {
   schema: 1
   product: string

@@ -9,21 +9,26 @@ Linux package.
 `release/linux-inputs.json` is the source of truth for both architectures. It
 pins official Node 24 archive names, roots, URLs, SHA-256 values, Node ABI 137,
 Electron 43.1.1 ABI 148, and the exact Packager/Rebuild versions used by this
-layer.
+layer. It also pins Clang 15.0.7 for native addon compilation. GCC 11 cannot
+parse Electron 43's deprecation-plus-visibility attribute ordering in the V8
+headers; the build verifies both compiler commands, the exact compiler version,
+and the native target tuple before rebuilding.
 
-The bundled Node 24.19.0 binaries set the product floor:
+The final native folders set the product floor:
 
 - Linux kernel 4.18 or newer
-- glibc 2.28 or newer
-- libstdc++ `GLIBCXX_3.4.25` (`libstdc++.so.6.0.25`) or newer
-- representative vendor floors: Ubuntu 20.04, Debian 10, and RHEL 8
+- glibc 2.34 or newer
+- libstdc++ `GLIBCXX_3.4.29` (`libstdc++.so.6.0.29`) or newer
+- representative vendor floors: Ubuntu 22.04, Debian 12, and RHEL 9
 
-These values come from Node 24's official `BUILDING.md` support table. Electron
-43.1.1's official Linux binaries are built on Ubuntu 22.04 and advertise no
-newer glibc symbol requirement than the Node runtime. The native-folder gate
-inspects the final Electron executable, both `better_sqlite3.node` builds, and
-the selected Node binary so a native addon built on a newer runner cannot
-silently raise the published floor.
+Node 24's official `BUILDING.md` support table supplies the kernel baseline and
+its portable binary requires glibc 2.28. Electron 43.1.1's executable requires
+glibc 2.25. The two native `better_sqlite3.node` builds produced on the pinned
+Ubuntu 22.04/Clang toolchain raise the complete folder to glibc 2.34 and
+`GLIBCXX_3.4.29`; the representative distribution floors are the first
+supported releases in each listed family that satisfy those requirements. The
+native-folder gate inspects the final Electron executable, both addon builds,
+and the selected Node binary so the measured floor cannot rise silently.
 
 ## Build and verification
 

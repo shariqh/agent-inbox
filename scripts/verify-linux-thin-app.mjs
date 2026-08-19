@@ -25,7 +25,7 @@ export class LinuxThinVerificationError extends Error {
   }
 }
 
-const PROCESS_PROBE = [
+export const PROCESS_PROBE = [
   "const {createRequire}=require('node:module')",
   "const {join}=require('node:path')",
   "const load=createRequire(join(process.cwd(),'package.json'))",
@@ -38,7 +38,7 @@ const PROCESS_PROBE = [
   'version:electron?process.versions.electron:process.version,',
   'modulesAbi:process.versions.modules',
   '}))',
-].join(';')
+].join('\n')
 
 function processProbe(executable, cwd, electron = false) {
   try {

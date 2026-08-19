@@ -22,6 +22,7 @@ import {
 } from './build-thin-app.mjs'
 import {
   loadLinuxReleaseInputs,
+  resolveLinuxCompilerEnvironment,
   validateInstalledLinuxReleaseTools,
 } from './linux-release-inputs.mjs'
 import { copyTreePreservingMode, verifyPayload } from './runtime-payload.mjs'
@@ -54,6 +55,7 @@ export async function buildLinuxThinApp({
   }
   const inputs = loadLinuxReleaseInputs(inputsPath)
   validateInstalledLinuxReleaseTools(inputs, repoRoot)
+  const compilerEnvironment = resolveLinuxCompilerEnvironment(inputs, arch)
   const key = `linux-${arch}`
   const distribution = inputs.node.distributions[key]
   const pkg = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8'))
@@ -96,13 +98,26 @@ export async function buildLinuxThinApp({
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 10 * 60_000,
     })
-    await rebuild({
-      buildPath: stageRoot,
-      electronVersion: inputs.electron.version,
-      arch,
-      force: true,
-      onlyModules: ['better-sqlite3'],
-    })
+    const previousCompilerEnvironment = {
+      CC: process.env.CC,
+      CXX: process.env.CXX,
+    }
+    Object.assign(process.env, compilerEnvironment)
+    try {
+      await rebuild({
+        buildPath: stageRoot,
+        electronVersion: inputs.electron.version,
+        arch,
+        force: true,
+        onlyModules: ['better-sqlite3'],
+      })
+    } finally {
+      for (const name of ['CC', 'CXX']) {
+        const previous = previousCompilerEnvironment[name]
+        if (previous === undefined) delete process.env[name]
+        else process.env[name] = previous
+      }
+    }
     pruneNativeAddonBuildArtifacts(stageRoot)
     execFileSync(process.execPath, [
       join(repoRoot, 'scripts', 'write-setup-info.mjs'),

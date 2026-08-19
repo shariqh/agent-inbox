@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { execFileSync } from 'node:child_process'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
@@ -34,6 +35,7 @@ export function validateLinuxReleaseInputs(value) {
       'minimumLibstdcxxVersion',
       'maximumGlibcxxVersion',
       'distributionFloor',
+      'compiler',
       'node',
       'electron',
     ],
@@ -50,6 +52,20 @@ export function validateLinuxReleaseInputs(value) {
   requireString(value.distributionFloor.ubuntu, 'distributionFloor.ubuntu', /^\d+\.\d+$/)
   requireString(value.distributionFloor.debian, 'distributionFloor.debian', /^\d+$/)
   requireString(value.distributionFloor.rhel, 'distributionFloor.rhel', /^\d+$/)
+  requireExactKeys(value.compiler, ['family', 'version', 'cc', 'cxx'], 'compiler')
+  if (value.compiler.family !== 'clang') {
+    throw new ReleaseInputError(`compiler.family must be clang, got ${value.compiler.family}`)
+  }
+  requireString(value.compiler.version, 'compiler.version', /^\d+\.\d+\.\d+$/)
+  const compilerMajor = value.compiler.version.split('.')[0]
+  requireString(value.compiler.cc, 'compiler.cc', /^clang-\d+$/)
+  requireString(value.compiler.cxx, 'compiler.cxx', /^clang\+\+-\d+$/)
+  if (value.compiler.cc !== `clang-${compilerMajor}`) {
+    throw new ReleaseInputError(`compiler.cc must match compiler.version major ${compilerMajor}`)
+  }
+  if (value.compiler.cxx !== `clang++-${compilerMajor}`) {
+    throw new ReleaseInputError(`compiler.cxx must match compiler.version major ${compilerMajor}`)
+  }
   validateNodeReleaseInputs(value.node, LINUX_RUNTIME_KEYS)
   validateElectronReleaseInputs(
     value.electron,
@@ -72,12 +88,64 @@ export function validateInstalledLinuxReleaseTools(inputs, repoRoot = REPO_ROOT)
   return validateInstalledReleaseToolsFor(inputs, LINUX_RELEASE_TOOL_PACKAGES, repoRoot)
 }
 
+function runCompiler(command, args) {
+  return execFileSync(command, args, {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 10_000,
+  })
+}
+
+export function resolveLinuxCompilerEnvironment(inputs, arch, run = runCompiler) {
+  if (!['arm64', 'x64'].includes(arch)) {
+    throw new ReleaseInputError(`unsupported Linux compiler architecture: ${arch}`)
+  }
+  for (const command of [inputs.compiler.cc, inputs.compiler.cxx]) {
+    let output
+    try {
+      output = String(run(command, ['--version'])).trim()
+    } catch (err) {
+      throw new ReleaseInputError(`could not run pinned compiler ${command}: ${err.message}`)
+    }
+    const actualVersion = /\bclang version (\d+\.\d+\.\d+)\b/.exec(output)?.[1]
+    if (actualVersion !== inputs.compiler.version) {
+      throw new ReleaseInputError(
+        `${command} compiler version mismatch: expected ${inputs.compiler.version}, got ${actualVersion ?? 'unknown'}`,
+      )
+    }
+  }
+
+  let target
+  try {
+    target = String(run(inputs.compiler.cxx, ['-dumpmachine'])).trim()
+  } catch (err) {
+    throw new ReleaseInputError(
+      `could not read pinned compiler target from ${inputs.compiler.cxx}: ${err.message}`,
+    )
+  }
+  const targetArch = target.startsWith('aarch64-')
+    ? 'arm64'
+    : target.startsWith('x86_64-')
+      ? 'x64'
+      : 'unknown'
+  if (targetArch !== arch || !target.includes('linux')) {
+    throw new ReleaseInputError(
+      `${inputs.compiler.cxx} compiler target mismatch: expected linux/${arch}, got ${target}`,
+    )
+  }
+  return {
+    CC: inputs.compiler.cc,
+    CXX: inputs.compiler.cxx,
+  }
+}
+
 function main(argv) {
   const { values } = parseArgs({
     args: argv,
     options: {
       inputs: { type: 'string' },
       'node-version': { type: 'boolean' },
+      'compiler-arch': { type: 'string' },
     },
   })
   const inputs = loadLinuxReleaseInputs(values.inputs && resolve(values.inputs))
@@ -85,6 +153,9 @@ function main(argv) {
     process.stdout.write(`${inputs.node.version.slice(1)}\n`)
     return
   }
+  const compiler = values['compiler-arch']
+    ? resolveLinuxCompilerEnvironment(inputs, values['compiler-arch'])
+    : undefined
   validateInstalledLinuxReleaseTools(inputs)
   process.stdout.write(`${JSON.stringify({
     ok: true,
@@ -92,6 +163,7 @@ function main(argv) {
     nodeModulesAbi: inputs.node.modulesAbi,
     electronModulesAbi: inputs.electron.modulesAbi,
     runtimeKeys: LINUX_RUNTIME_KEYS,
+    ...(compiler && { compiler }),
   })}\n`)
 }
 

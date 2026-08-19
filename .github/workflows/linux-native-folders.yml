@@ -70,6 +70,7 @@ jobs:
       - name: Validate exact Linux release inputs and gates
         run: |
           npm run release:linux-inputs
+          node scripts/linux-release-inputs.mjs --compiler-arch "${{ matrix.arch }}"
           npx vitest run \
             test/linux-release-inputs.test.ts \
             test/linux-native-folder.test.ts \

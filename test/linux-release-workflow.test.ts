@@ -35,6 +35,7 @@ describe('native Linux folder workflow', () => {
     expect(checkoutCount).toBeGreaterThan(0)
     expect(workflow.match(/^\s{10}persist-credentials: false$/gm)).toHaveLength(checkoutCount)
     expect(workflow).toContain('scripts/linux-release-inputs.mjs --node-version')
+    expect(workflow).toContain('scripts/linux-release-inputs.mjs --compiler-arch')
     expect(workflow).toContain('stage:runtime:native --')
     expect(workflow).toContain('--inputs release/linux-inputs.json')
     expect(workflow).toContain('archiveSha256')

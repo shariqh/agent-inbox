@@ -17,6 +17,12 @@ export type LinuxReleaseInputs = {
     debian: string
     rhel: string
   }
+  compiler: {
+    family: 'clang'
+    version: string
+    cc: string
+    cxx: string
+  }
   node: {
     version: string
     modulesAbi: string
@@ -42,3 +48,8 @@ export function validateInstalledLinuxReleaseTools(
   inputs: LinuxReleaseInputs,
   repoRoot?: string,
 ): LinuxReleaseInputs
+export function resolveLinuxCompilerEnvironment(
+  inputs: Pick<LinuxReleaseInputs, 'compiler'>,
+  arch: string,
+  run?: (command: string, args: string[]) => string | Buffer,
+): { CC: string; CXX: string }

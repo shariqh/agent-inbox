@@ -24,7 +24,7 @@ import { loadReleaseInputs, RUNTIME_KEYS, validateInstalledReleaseTools } from '
 import { resolveSourceProvenance } from './source-provenance.mjs'
 import { treeIdentity } from './tree-identity.mjs'
 
-const APP_NAME = 'Agent Inbox'
+export const APP_NAME = 'Agent Inbox'
 
 export class ThinAppBuildError extends Error {
   constructor(message) {
@@ -33,13 +33,13 @@ export class ThinAppBuildError extends Error {
   }
 }
 
-function npmCliForCurrentNode() {
+export function npmCliForCurrentNode() {
   const candidate = resolve(dirname(process.execPath), '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js')
   if (!existsSync(candidate)) throw new ThinAppBuildError(`could not find npm for ${process.execPath}`)
   return candidate
 }
 
-function copyRequiredTree(repoRoot, stageRoot) {
+export function copyRequiredTree(repoRoot, stageRoot) {
   for (const name of ['dist', 'public', 'electron', 'release']) {
     const source = join(repoRoot, name)
     if (!existsSync(source)) throw new ThinAppBuildError(`missing required package input: ${source}`)
@@ -52,7 +52,7 @@ function copyRequiredTree(repoRoot, stageRoot) {
   copyAgentInboxLicense(repoRoot, join(stageRoot, 'LICENSE.agent-inbox'))
 }
 
-function publishAtomically(source, destination, force) {
+export function publishAtomically(source, destination, force) {
   mkdirSync(dirname(destination), { recursive: true })
   if (!existsSync(destination)) {
     renameSync(source, destination)
@@ -78,7 +78,7 @@ function lipoArchs(path) {
   }).trim().split(/\s+/)
 }
 
-function findNativeAddon(root) {
+export function findNativeAddon(root) {
   const path = join(root, 'node_modules', 'better-sqlite3', 'build', 'Release', 'better_sqlite3.node')
   if (!existsSync(path)) throw new ThinAppBuildError(`packaged app is missing better_sqlite3.node at ${path}`)
   return path
@@ -99,7 +99,7 @@ export function copyElectronNotices(packagerOutput, app) {
   }
 }
 
-function runRuntimeSelftest(runtimeRoot) {
+export function runRuntimeSelftest(runtimeRoot) {
   const scratch = mkdtempSync(join(tmpdir(), 'thin-runtime-selftest-'))
   try {
     execFileSync(join(runtimeRoot, 'bin', 'node'), [join(runtimeRoot, 'dist', 'hook-cli.js'), 'selftest'], {
@@ -114,7 +114,7 @@ function runRuntimeSelftest(runtimeRoot) {
 
 }
 
-function pruneNativeAddonBuildArtifacts(stageRoot) {
+export function pruneNativeAddonBuildArtifacts(stageRoot) {
   const moduleRoot = join(stageRoot, 'node_modules', 'better-sqlite3')
   rmSync(join(moduleRoot, 'bin'), { recursive: true, force: true })
   const buildRoot = join(moduleRoot, 'build')

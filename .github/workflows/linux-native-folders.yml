@@ -1,0 +1,185 @@
+name: Native Linux release folders
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/linux-native-folders.yml"
+      - "dist/**"
+      - "docs/linux-release.md"
+      - "electron/**"
+      - "package.json"
+      - "package-lock.json"
+      - "release/linux-inputs.json"
+      - "scripts/archive-tree.mjs"
+      - "scripts/build-linux-thin-app.mjs"
+      - "scripts/build-thin-app.mjs"
+      - "scripts/license.mjs"
+      - "scripts/linux-binary-gates.mjs"
+      - "scripts/linux-release-inputs.mjs"
+      - "scripts/native-runtime-adapter.mjs"
+      - "scripts/release-inputs.mjs"
+      - "scripts/runtime-payload.mjs"
+      - "scripts/runtime-provenance.mjs"
+      - "scripts/runtime-targets.mjs"
+      - "scripts/setup-filesystem.cjs"
+      - "scripts/source-provenance.mjs"
+      - "scripts/stage-native-runtime.mjs"
+      - "scripts/stage-runtime.mjs"
+      - "scripts/tree-identity.mjs"
+      - "scripts/verify-linux-thin-app.mjs"
+      - "scripts/write-setup-info.mjs"
+      - "test/linux-native-folder.test.ts"
+      - "test/linux-release-inputs.test.ts"
+      - "test/linux-release-workflow.test.ts"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-native-folders-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-folder:
+    name: Native folder / ${{ matrix.key }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - key: linux-x64
+            arch: x64
+            runner: ubuntu-22.04
+          - key: linux-arm64
+            arch: arm64
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: release-inputs
+        name: Resolve pinned Node version
+        run: echo "node-version=$(node scripts/linux-release-inputs.mjs --node-version)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ steps.release-inputs.outputs.node-version }}
+          architecture: ${{ matrix.arch }}
+          cache: npm
+      - run: npm ci
+      - name: Validate exact Linux release inputs and gates
+        run: |
+          npm run release:linux-inputs
+          node scripts/linux-release-inputs.mjs --compiler-arch "${{ matrix.arch }}"
+          npx vitest run \
+            test/linux-release-inputs.test.ts \
+            test/linux-native-folder.test.ts \
+            test/linux-release-workflow.test.ts \
+            test/native-runtime-adapter.test.ts \
+            test/package-stamp.test.ts \
+            test/setup-runner.test.ts
+      - run: echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
+      - run: npm run build
+      - name: Stage verified native runtime
+        run: |
+          mkdir -p build/reports
+          npm run --silent stage:runtime:native -- \
+            --key "${{ matrix.key }}" \
+            --inputs release/linux-inputs.json \
+            --output "build/runtime/${{ matrix.key }}" \
+            > "build/reports/${{ matrix.key }}-runtime.json"
+          REPORT="build/reports/${{ matrix.key }}-runtime.json" KEY="${{ matrix.key }}" \
+            node -e '
+              const fs = require("node:fs")
+              const inputs = require("./release/linux-inputs.json")
+              const report = JSON.parse(fs.readFileSync(process.env.REPORT, "utf8"))
+              const expected = inputs.node.distributions[process.env.KEY]
+              if (
+                report.key !== process.env.KEY ||
+                report.archive !== expected.archive ||
+                report.archiveRoot !== expected.root ||
+                report.archiveUrl !== expected.url ||
+                report.archiveSha256 !== expected.sha256
+              ) throw new Error("native runtime archive identity report mismatch")
+            '
+          RUNTIME="build/runtime/${{ matrix.key }}"
+          "$RUNTIME/bin/node" "$RUNTIME/scripts/runtime-payload.mjs" verify \
+            --root "$RUNTIME" \
+            --platform linux \
+            --arch "${{ matrix.arch }}" \
+            --node-version "$(node -p "require('./release/linux-inputs.json').node.version")" \
+            --package-version "$(node -p "require('./package.json').version")" \
+            > "build/reports/${{ matrix.key }}-runtime-verify.json"
+      - name: Build architecture-correct Electron folder
+        run: >-
+          npm run package:linux-thin --
+          --arch "${{ matrix.arch }}"
+          --runtime "build/runtime/${{ matrix.key }}"
+          --inputs release/linux-inputs.json
+          --output "build/thin/${{ matrix.key }}/Agent Inbox"
+      - name: Preserve and restore native folder inputs
+        run: |
+          node scripts/archive-tree.mjs create \
+            --source "build/runtime/${{ matrix.key }}" \
+            --archive "build/${{ matrix.key }}-runtime.tar.gz"
+          node scripts/archive-tree.mjs create \
+            --source "build/thin/${{ matrix.key }}/Agent Inbox" \
+            --archive "build/${{ matrix.key }}-folder.tar.gz"
+          mkdir -p build/restored/runtime build/restored/folder
+          node scripts/archive-tree.mjs extract \
+            --archive "build/${{ matrix.key }}-runtime.tar.gz" \
+            --destination build/restored/runtime \
+            --expected-root "${{ matrix.key }}"
+          node scripts/archive-tree.mjs extract \
+            --archive "build/${{ matrix.key }}-folder.tar.gz" \
+            --destination build/restored/folder \
+            --expected-root "Agent Inbox"
+      - name: Verify restored folder and exact native identities
+        run: >-
+          node scripts/verify-linux-thin-app.mjs
+          --app "build/restored/folder/Agent Inbox"
+          --arch "${{ matrix.arch }}"
+          --inputs release/linux-inputs.json
+          --source-commit "$(git rev-parse HEAD)"
+          > "build/reports/${{ matrix.key }}-restored-folder.json"
+      - name: Launch restored folder and exercise portable runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="$PWD/build/restored/folder/Agent Inbox"
+          RUNTIME="$APP/resources/app/runtime/${{ matrix.key }}"
+          TEST_HOME="$RUNNER_TEMP/agent-inbox-linux-home"
+          PORT=14319
+          mkdir -p "$TEST_HOME"
+          HOME="$TEST_HOME" AGENT_INBOX_PORT="$PORT" \
+            xvfb-run -a "$APP/Agent Inbox" --no-sandbox >"$RUNNER_TEMP/agent-inbox-linux.log" 2>&1 &
+          APP_PID=$!
+          trap 'kill "$APP_PID" >/dev/null 2>&1 || true' EXIT
+          for _ in {1..60}; do
+            curl -fsSI "http://127.0.0.1:$PORT/" | grep -qi '^x-agent-inbox-local-boundary: loopback-v1' && break
+            sleep 1
+          done
+          curl -fsSI "http://127.0.0.1:$PORT/" | grep -qi '^x-agent-inbox-local-boundary: loopback-v1'
+          "$RUNTIME/bin/node" "$RUNTIME/scripts/runtime-payload.mjs" install \
+            --payload-root "$RUNTIME" \
+            --runtime-root "$TEST_HOME/.agent-inbox/runtime" \
+            > "$RUNNER_TEMP/runtime-install.json"
+          RUNTIME_ID="$(node -p "JSON.parse(require('fs').readFileSync('$RUNNER_TEMP/runtime-install.json')).runtimeId")"
+          "$RUNTIME/bin/node" "$RUNTIME/scripts/runtime-payload.mjs" prune \
+            --runtime-root "$TEST_HOME/.agent-inbox/runtime" \
+            --runtime-id "$RUNTIME_ID"
+          kill "$APP_PID"
+          wait "$APP_PID" || true
+          trap - EXIT
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-${{ matrix.key }}-folder-inputs
+          path: |
+            build/${{ matrix.key }}-runtime.tar.gz
+            build/${{ matrix.key }}-folder.tar.gz
+            build/reports/${{ matrix.key }}-runtime.json
+            build/reports/${{ matrix.key }}-runtime-verify.json
+            build/reports/${{ matrix.key }}-restored-folder.json
+            build/thin/${{ matrix.key }}/Agent Inbox.thin-report.json
+          if-no-files-found: error
+          retention-days: 7

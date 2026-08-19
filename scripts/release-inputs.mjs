@@ -35,7 +35,7 @@ export class ReleaseInputError extends Error {
   }
 }
 
-function requireExactKeys(value, expected, field) {
+export function requireExactKeys(value, expected, field) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new ReleaseInputError(`${field} must be an object`)
   }
@@ -46,33 +46,23 @@ function requireExactKeys(value, expected, field) {
   }
 }
 
-function requireString(value, field, pattern) {
+export function requireString(value, field, pattern) {
   if (typeof value !== 'string' || !value || (pattern && !pattern.test(value))) {
     throw new ReleaseInputError(`${field} is invalid`)
   }
 }
 
-export function validateReleaseInputs(value) {
-  requireExactKeys(
-    value,
-    ['schema', 'product', 'bundleId', 'minimumMacosVersion', 'node', 'electron'],
-    'release inputs',
-  )
-  if (value.schema !== 1) throw new ReleaseInputError(`unsupported release input schema: ${value.schema}`)
-  requireString(value.product, 'product')
-  requireString(value.bundleId, 'bundleId', /^[A-Za-z0-9.-]+$/)
-  requireString(value.minimumMacosVersion, 'minimumMacosVersion', /^\d+\.\d+$/)
+export function validateNodeReleaseInputs(node, runtimeKeys) {
+  requireExactKeys(node, ['version', 'modulesAbi', 'distributions'], 'node')
+  requireString(node.version, 'node.version', VERSION_RE)
+  requireString(node.modulesAbi, 'node.modulesAbi', /^\d+$/)
+  requireExactKeys(node.distributions, runtimeKeys, 'node.distributions')
 
-  requireExactKeys(value.node, ['version', 'modulesAbi', 'distributions'], 'node')
-  requireString(value.node.version, 'node.version', VERSION_RE)
-  requireString(value.node.modulesAbi, 'node.modulesAbi', /^\d+$/)
-  requireExactKeys(value.node.distributions, RUNTIME_KEYS, 'node.distributions')
-
-  for (const key of RUNTIME_KEYS) {
-    const distribution = value.node.distributions[key]
+  for (const key of runtimeKeys) {
+    const distribution = node.distributions[key]
     requireExactKeys(distribution, ['platform', 'arch', 'archive', 'root', 'url', 'sha256'], `node.distributions.${key}`)
     const target = targetFor(key)
-    const expected = nodeDistributionIdentity(value.node.version, key)
+    const expected = nodeDistributionIdentity(node.version, key)
     requireString(distribution.platform, `${key}.platform`)
     requireString(distribution.arch, `${key}.arch`)
     if (distribution.platform !== target.platform || distribution.arch !== target.arch) {
@@ -89,15 +79,36 @@ export function validateReleaseInputs(value) {
     }
     requireString(distribution.sha256, `${key}.sha256`, SHA256_RE)
   }
+  return node
+}
 
-  requireExactKeys(
-    value.electron,
-    ['version', 'packagerVersion', 'rebuildVersion', 'universalVersion', 'osxSignVersion', 'dmgVersion'],
-    'electron',
-  )
-  for (const [field, version] of Object.entries(value.electron)) {
+export function validateElectronReleaseInputs(electron, fields) {
+  requireExactKeys(electron, fields, 'electron')
+  for (const [field, version] of Object.entries(electron)) {
+    if (field === 'modulesAbi') {
+      requireString(version, `electron.${field}`, /^\d+$/)
+      continue
+    }
     requireString(version, `electron.${field}`, SEMVER_RE)
   }
+  return electron
+}
+
+export function validateReleaseInputs(value) {
+  requireExactKeys(
+    value,
+    ['schema', 'product', 'bundleId', 'minimumMacosVersion', 'node', 'electron'],
+    'release inputs',
+  )
+  if (value.schema !== 1) throw new ReleaseInputError(`unsupported release input schema: ${value.schema}`)
+  requireString(value.product, 'product')
+  requireString(value.bundleId, 'bundleId', /^[A-Za-z0-9.-]+$/)
+  requireString(value.minimumMacosVersion, 'minimumMacosVersion', /^\d+\.\d+$/)
+  validateNodeReleaseInputs(value.node, RUNTIME_KEYS)
+  validateElectronReleaseInputs(
+    value.electron,
+    ['version', 'packagerVersion', 'rebuildVersion', 'universalVersion', 'osxSignVersion', 'dmgVersion'],
+  )
   return value
 }
 
@@ -111,10 +122,10 @@ export function loadReleaseInputs(path = DEFAULT_RELEASE_INPUTS) {
   return validateReleaseInputs(parsed)
 }
 
-export function validateInstalledReleaseTools(inputs, repoRoot = REPO_ROOT) {
+export function validateInstalledReleaseToolsFor(inputs, toolPackages, repoRoot = REPO_ROOT) {
   const pkg = JSON.parse(readFileSync(resolve(repoRoot, 'package.json'), 'utf8'))
   const lock = JSON.parse(readFileSync(resolve(repoRoot, 'package-lock.json'), 'utf8'))
-  for (const [field, packageName] of Object.entries(RELEASE_TOOL_PACKAGES)) {
+  for (const [field, packageName] of Object.entries(toolPackages)) {
     const expected = inputs.electron[field]
     const rootPin = pkg.devDependencies?.[packageName]
     const lockPin = lock.packages?.['']?.devDependencies?.[packageName]
@@ -136,6 +147,9 @@ export function validateInstalledReleaseTools(inputs, repoRoot = REPO_ROOT) {
   return inputs
 }
 
+export function validateInstalledReleaseTools(inputs, repoRoot = REPO_ROOT) {
+  return validateInstalledReleaseToolsFor(inputs, RELEASE_TOOL_PACKAGES, repoRoot)
+}
 export function sha256File(path) {
   return createHash('sha256').update(readFileSync(path)).digest('hex')
 }

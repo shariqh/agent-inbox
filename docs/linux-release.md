@@ -116,6 +116,8 @@ The final verifier checks the outer type-2 AppImage marker, executable mode,
 architecture-matched ELF identity and libc floor; parses the runtime ELF section table,
 normalizes only appimagetool's reserved 16-byte `.digest_md5` mutation, and
 requires the resulting prefix SHA-256 to equal the exact pinned runtime;
+the outer libc-symbol scan is bounded to that exact runtime prefix so compressed
+SquashFS payload bytes cannot be misclassified as runtime requirements;
 extracts the image without FUSE; requires the exact AppDir root; validates the
 launcher, desktop version/name metadata, icon digest, and Chromium sandbox mode;
 then reruns the complete thin-folder ELF, ABI, addon, runtime, Setup-selection,

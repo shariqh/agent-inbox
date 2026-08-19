@@ -73,6 +73,34 @@ describe('native Linux folder gates', () => {
     })).toThrow(/requires GLIBCXX_3\.4\.30/)
   })
 
+  it('can restrict compatibility symbols to an exact executable prefix', () => {
+    const appImage = elfFixture('arm64', ['GLIBC_2.17'])
+    const runtimeSize = readFileSync(appImage).length
+    writeFileSync(appImage, Buffer.concat([
+      readFileSync(appImage),
+      Buffer.from('\0compressed-payload-GLIBC_2.170\0'),
+    ]))
+
+    expect(() => assertBinaryCompatibility({
+      path: appImage,
+      label: 'AppImage runtime',
+      arch: 'arm64',
+      maximumGlibcVersion: '2.34',
+      maximumLibstdcxxVersion: '3.4.29',
+    })).toThrow(/requires GLIBC_2\.170/)
+    expect(assertBinaryCompatibility({
+      path: appImage,
+      label: 'AppImage runtime',
+      arch: 'arm64',
+      maximumGlibcVersion: '2.34',
+      maximumLibstdcxxVersion: '3.4.29',
+      byteLength: runtimeSize,
+    })).toMatchObject({
+      arch: 'arm64',
+      maximumRequiredGlibc: '2.17',
+    })
+  })
+
   it('gates every plain ELF in the folder and reports sorted relative paths without following links', () => {
     const root = mkdtempSync(join(tmpdir(), 'linux-elf-tree-'))
     writeFileSync(join(root, 'README'), 'not an ELF')

@@ -360,6 +360,7 @@ export function verifyLinuxAppImage({
     arch,
     maximumGlibcVersion: linuxInputs.minimumGlibcVersion,
     maximumLibstdcxxVersion: linuxInputs.maximumGlibcxxVersion,
+    byteLength: appImageInputs.runtime.size,
   })
   const appImageSha256 = sha256File(artifact)
   if (checksum) verifyChecksumFile(resolve(checksum), artifactFile, appImageSha256)

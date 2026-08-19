@@ -118,8 +118,18 @@ export function assertBinaryCompatibility({
   arch,
   maximumGlibcVersion,
   maximumLibstdcxxVersion,
+  byteLength,
 }) {
-  const bytes = readPlainFile(path, label)
+  const fileBytes = readPlainFile(path, label)
+  if (
+    byteLength !== undefined &&
+    (!Number.isSafeInteger(byteLength) || byteLength <= 0 || byteLength > fileBytes.length)
+  ) {
+    throw new LinuxBinaryGateError(
+      `${label} compatibility byte length is invalid: ${String(byteLength)}`,
+    )
+  }
+  const bytes = byteLength === undefined ? fileBytes : fileBytes.subarray(0, byteLength)
   const actualArch = elfArchitecture(bytes, path, label)
   if (actualArch !== arch) {
     throw new LinuxBinaryGateError(`${label} architecture mismatch: found ${actualArch}, expected ${arch}`)

@@ -279,6 +279,7 @@ describe('Linux AppImage packaging', () => {
     expect(build).toContain('chmodSync(stagedReport, 0o644)')
     expect(verify).toContain('normalizedRuntimeSha256')
     expect(verify).toContain("elfSection(prefix, '.digest_md5')")
+    expect(verify).toContain('byteLength: appImageInputs.runtime.size')
     expect(verify).toContain('assertExactDirectoryModes(extracted.appDir)')
     expect(verify).toContain("assertMode(artifact, 0o755, 'AppImage artifact')")
     expect(verify).toContain('chromeSandboxMode')

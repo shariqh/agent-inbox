@@ -51,6 +51,7 @@ function runtimePayload(
     'runtime-payload.mjs',
     'runtime-config.mjs',
     'setup-filesystem.cjs',
+    'setup-lock.sh',
   ]) {
     copy(join(REPO, 'scripts', script), join(root, 'scripts', script))
   }

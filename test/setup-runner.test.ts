@@ -95,6 +95,7 @@ function stagePayloadDir(
     if (opts.omitFile !== 'scripts/runtime-payload.mjs') writeFileSync(join(dir, 'scripts', 'runtime-payload.mjs'), '// verifier helper\n')
     if (opts.omitFile !== 'scripts/runtime-config.mjs') writeFileSync(join(dir, 'scripts', 'runtime-config.mjs'), '// config helper\n')
     if (opts.omitFile !== 'scripts/setup-filesystem.cjs') writeFileSync(join(dir, 'scripts', 'setup-filesystem.cjs'), '// filesystem adapter\n')
+    if (opts.omitFile !== 'scripts/setup-lock.sh') writeFileSync(join(dir, 'scripts', 'setup-lock.sh'), '# shared setup lock\n')
     mkdirSync(join(dir, 'dist'), { recursive: true })
     if (opts.omitFile !== 'dist/mcp-server.js') writeFileSync(join(dir, 'dist', 'mcp-server.js'), '// mcp\n')
     if (opts.omitFile !== 'dist/hook-cli.js') writeFileSync(join(dir, 'dist', 'hook-cli.js'), '// hook\n')
@@ -249,7 +250,7 @@ while :; do sleep 1; done
 
   it('keeps child verification after lock acquisition and before managed runtime or host mutation', () => {
     const installer = readFileSync(join(import.meta.dirname, '..', 'scripts', 'install-agents.sh'), 'utf8')
-    const lock = installer.indexOf('acquire_install_lock || exit 1')
+    const lock = installer.indexOf('acquire_setup_lock install-agents || exit 1')
     const innerVerify = installer.indexOf('"$SOURCE_NODE" "$PAYLOAD_HELPER" verify')
     const runtimeInstall = installer.indexOf('"$SOURCE_NODE" "$PAYLOAD_HELPER" install')
     const hostRegistration = installer.indexOf('registration_state="$(user_registration_state')
@@ -315,6 +316,7 @@ describe('selectRuntimePayload (issue #74)', () => {
     ['missing runtime verifier', { omitFile: 'scripts/runtime-payload.mjs' }],
     ['missing config helper', { omitFile: 'scripts/runtime-config.mjs' }],
     ['missing filesystem adapter', { omitFile: 'scripts/setup-filesystem.cjs' }],
+    ['missing setup lock helper', { omitFile: 'scripts/setup-lock.sh' }],
   ])('rejects %s at selection and immediately before spawn', async (_label, override) => {
     const root = mkdtempSync(join(tmpdir(), 'runtime-identity-'))
     const payload = stagePayloadDir(root, 'runtime/darwin-arm64', {

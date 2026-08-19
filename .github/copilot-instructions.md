@@ -142,10 +142,14 @@ Run the build before `npm run electron`; the development shell starts the built
   inferred locally; live PR state is fetched only by the viewer's `gh` poller.
   PR/check state is ambient information and must not enter the human-attention
   predicate.
-- Treat `scripts/install-agents.sh` as transactional infrastructure. It owns only
-  the named MCP registration and marker-delimited instruction block, preserves
-  unrelated content and symlink targets, uses timestamped backups, and holds a
-  user-scoped `lockf`/`flock` lock while applying or rolling back changes.
+- Treat `scripts/install-agents.sh`, `scripts/install-hooks.sh`, and their shared
+  `scripts/setup-lock.sh` as transactional infrastructure. The mutating Bash
+  process owns fd 9 across apply/rollback; Darwin prefers descriptor-mode
+  `/usr/bin/lockf` and falls back to same-domain `flock`, while Linux uses
+  `flock` only. Repeated acquisition must not reopen fd 9, non-regular lock paths
+  fail before open, and only exit 75 is contention. Preserve the named MCP
+  registration, marker-delimited instruction block, unrelated content,
+  symlink targets, and timestamped backups.
 - All agent-authored text interpolated into HTML must pass through `esc()`.
   Supplied URLs additionally pass through `safeHttpUrl()` in
   `public/source.js`; build anchors through the existing `chipHtml()` path.

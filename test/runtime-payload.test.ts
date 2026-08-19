@@ -282,6 +282,22 @@ describe('runtime-payload manifest: deterministic and structural', () => {
     expect(after.runtimeId).not.toBe(before.runtimeId)
   })
 
+  it('changes the digest when the sourced setup lock helper changes', () => {
+    const root = tmp('payload-setup-lock-change-')
+    buildFixturePayload(root)
+    mkdirSync(join(root, 'scripts'), { recursive: true })
+    const helper = join(root, 'scripts', 'setup-lock.sh')
+    writeFileSync(helper, '# setup lock v1\n')
+    const before = buildAndWriteManifest(root)
+
+    writeFileSync(helper, '# setup lock v2\n')
+    rmSync(join(root, 'runtime-manifest.json'))
+    const after = buildAndWriteManifest(root)
+
+    expect(after.payloadDigest).not.toBe(before.payloadDigest)
+    expect(after.runtimeId).not.toBe(before.runtimeId)
+  })
+
   it('rejects a payload with a symlink anywhere in the tree', () => {
     const root = tmp('payload-symlink-build-')
     buildFixturePayload(root)
@@ -1741,6 +1757,7 @@ function buildFixtureRepoRoot(): string {
     'runtime-payload.mjs',
     'runtime-config.mjs',
     'setup-filesystem.cjs',
+    'setup-lock.sh',
   ]) {
     writeFileSync(join(repoRoot, 'scripts', name), `# fixture placeholder for ${name}\n`)
   }

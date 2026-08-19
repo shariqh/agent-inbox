@@ -32,13 +32,20 @@ server, and adds the reporting instructions. Start a fresh agent session afterwa
 GitHub CLI (`gh`) is optional and adds live PR state. Source-checkout Claude hook setup
 requires `jq`; a portable release runtime uses its bundled Node helper instead.
 
-The transactional agent installer requires a kernel-backed `lockf` or `flock`
-command. Linux normally includes `flock`, and newer macOS versions include `lockf`.
-If neither is available on macOS, install `flock` first:
+Both transactional installers source the same kernel-backed Setup lease. On macOS
+they use descriptor-mode `/usr/bin/lockf` when the OS provides it and otherwise
+fall back to `flock`; Linux uses `flock` only. Newer macOS versions include
+`lockf`, while older supported versions need `flock` on `PATH`. If neither is
+available on macOS, install `flock` first:
 
 ```sh
 brew install flock
 ```
+
+Applied setup fails before protected mutation when its platform utility is
+unavailable or the persistent lock path is not a plain regular file. The lock
+file may remain after a process exits; kernel ownership, not file existence,
+serializes setup.
 
 ## 1. Clone and build
 

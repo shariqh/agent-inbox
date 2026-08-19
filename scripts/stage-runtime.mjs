@@ -270,6 +270,7 @@ const REQUIRED_SCRIPTS = [
   'runtime-payload.mjs',
   'runtime-config.mjs',
   'setup-filesystem.cjs',
+  'setup-lock.sh',
 ]
 const REQUIRED_DOCS = [
   'reporting-snippet.md',

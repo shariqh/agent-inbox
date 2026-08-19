@@ -22,8 +22,11 @@ npm run install:hooks -- --apply --uninstall  # remove every agent-inbox entry
 
 From a source checkout this installer uses `jq`. A portable release runtime instead
 uses its bundled Node 24 plus `scripts/runtime-config.mjs`, so install, upgrade, and
-uninstall work on a clean Mac with no ambient Node or `jq`. Packaged hook changes share
-the agent setup kernel lock and replace/remove only hook entries whose command and
+uninstall work on a clean Mac with no ambient Node or `jq`. Hook and agent setup
+source the same adjacent `scripts/setup-lock.sh`, so their mutating Bash process
+owns one fd-9 kernel lease across the full transaction. Darwin prefers
+descriptor-mode `/usr/bin/lockf` and falls back to same-domain `flock`; Linux uses
+`flock` only. Packaged hook changes replace/remove only entries whose command and
 entrypoint canonicalize to the same valid manifest-owned runtime directory.
 
 ## Events → subcommands

@@ -731,6 +731,8 @@ describe('hook: the shell wrapper', () => {
 
 describe('hook: installer', () => {
   const SCRIPT = join(REPO, 'scripts', 'install-hooks.sh')
+  const AGENT_SCRIPT = join(REPO, 'scripts', 'install-agents.sh')
+  const LOCK_HELPER = join(REPO, 'scripts', 'setup-lock.sh')
 
   function installer(args: string[], home: string, entry: string, extra: NodeJS.ProcessEnv = {}): { code: number | null; out: string; err: string } {
     const r = spawnSync('bash', [SCRIPT, ...args], {
@@ -748,6 +750,27 @@ describe('hook: installer', () => {
     const file = join(dir, '.claude', 'settings.json')
     if (settings !== undefined) writeFileSync(file, JSON.stringify(settings))
     return { dir, entry, file }
+  }
+
+  async function waitForPath(path: string): Promise<void> {
+    const deadline = Date.now() + 3000
+    while (!existsSync(path)) {
+      if (Date.now() >= deadline) throw new Error(`timed out waiting for ${path}`)
+      await new Promise((resolveWait) => setTimeout(resolveWait, 20))
+    }
+  }
+
+  async function waitForGone(pid: number): Promise<void> {
+    const deadline = Date.now() + 3000
+    while (true) {
+      try {
+        process.kill(pid, 0)
+      } catch {
+        return
+      }
+      if (Date.now() >= deadline) throw new Error(`timed out waiting for pid ${pid}`)
+      await new Promise((resolveWait) => setTimeout(resolveWait, 20))
+    }
   }
 
   const withPostToolUse = { model: 'x', hooks: { PostToolUse: [{ hooks: [{ type: 'command', command: 'echo hi' }] }] } }
@@ -856,6 +879,88 @@ describe('hook: installer', () => {
     const s = JSON.parse(readFileSync(file, 'utf8'))
     expect(s.hooks).toEqual(withPostToolUse.hooks)
     expect(s.model).toBe('x')
+  })
+
+  it('releases the shared lease immediately after a normal installer exit', () => {
+    const { dir, entry } = home({})
+    const installed = installer(['--apply', '--uninstall'], dir, entry)
+    expect(installed.code, installed.err).toBe(0)
+
+    const acquired = spawnSync(
+      '/bin/bash',
+      ['-c', 'source "$1"; acquire_setup_lock probe', 'lock-probe', LOCK_HELPER],
+      {
+        encoding: 'utf8',
+        env: { ...process.env, HOME: dir },
+      },
+    )
+
+    expect(acquired.status, acquired.stderr).toBe(0)
+  })
+
+  it('holds the shared domain against agent setup and releases after group SIGKILL', async () => {
+    const { dir } = home({})
+    const fakebin = join(dir, 'lock-holder-bin')
+    const marker = join(dir, 'hook-holder.started')
+    const pidFile = join(dir, 'hook-holder.pid')
+    mkdirSync(fakebin)
+    writeFileSync(join(fakebin, 'jq'), [
+      '#!/bin/sh',
+      'printf \'%s\\n\' "$$" > "$HOOK_HOLDER_PID"',
+      ': > "$HOOK_HOLDER_MARKER"',
+      'trap \'exit 143\' TERM INT',
+      'while :; do sleep 1; done',
+      '',
+    ].join('\n'))
+    chmodSync(join(fakebin, 'jq'), 0o755)
+    if (process.platform !== 'darwin' || !existsSync('/usr/bin/lockf')) {
+      const flock = spawnSync('/bin/sh', ['-c', 'command -v flock'], { encoding: 'utf8' }).stdout.trim()
+      if (!flock) throw new Error('hook installer lock test requires flock')
+      symlinkSync(flock, join(fakebin, 'flock'))
+    }
+    const env = {
+      ...process.env,
+      HOME: dir,
+      PATH: `${fakebin}:/usr/bin:/bin`,
+      HOOK_HOLDER_MARKER: marker,
+      HOOK_HOLDER_PID: pidFile,
+    }
+    const holder = spawn('/bin/bash', [SCRIPT, '--apply', '--uninstall'], {
+      detached: true,
+      env,
+      stdio: 'ignore',
+    })
+    try {
+      await waitForPath(marker)
+      const mutatorPid = Number(readFileSync(pidFile, 'utf8').trim())
+
+      const contender = spawnSync(
+        '/bin/bash',
+        [AGENT_SCRIPT, '--apply', '--target', 'copilot'],
+        { encoding: 'utf8', env },
+      )
+      expect(contender.status).toBe(1)
+      expect(contender.stderr.trim()).toBe('install-agents: another setup is already running')
+
+      process.kill(-holder.pid!, 'SIGKILL')
+      await new Promise<void>((resolveExit) => holder.once('exit', () => resolveExit()))
+      await waitForGone(mutatorPid)
+
+      const after = spawnSync(
+        '/bin/bash',
+        ['-c', 'source "$1"; acquire_setup_lock probe', 'lock-probe', LOCK_HELPER],
+        { encoding: 'utf8', env },
+      )
+      expect(after.status, after.stderr).toBe(0)
+    } finally {
+      if (holder.exitCode === null && holder.signalCode === null) {
+        try {
+          process.kill(-holder.pid!, 'SIGKILL')
+        } catch {
+          // Already gone.
+        }
+      }
+    }
   })
 
   it('--migrate retires the legacy hand-written Stop shell hooks; without it they survive', () => {

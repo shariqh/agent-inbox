@@ -80,7 +80,9 @@ secrets, and does not publish GitHub Release assets.
 ## Build an AppImage
 
 On a native Linux host using Node 24, first produce the verified thin folder for
-that host architecture as described above.
+that host architecture as described above. Final verification also requires
+`/usr/bin/unsquashfs` 4.5; the Ubuntu 22.04 workflows install the exact
+`squashfs-tools` package version `1:4.5-3build1`.
 
 For x64, run:
 
@@ -132,11 +134,11 @@ an ambient `.appimageignore` cannot alter the output. CI builds the AppImage
 twice from the same inputs and requires byte-identical artifacts, checksums, and
 reports. The builder normalizes every AppDir directory to `0755`, pins AppRun
 and the outer artifact to `0755`, pins desktop/icon/checksum/report metadata to
-`0644`, and the final verifier rechecks every mode inside the extracted image;
-the package does not inherit the builder's umask. Verification extracts inside
-a private scratch directory with a fixed `022` extraction umask, then restores
-the caller's umask, so the extractor's synthetic `squashfs-root` directory does
-not turn a hostile ambient `077` into a false mode failure.
+`0644`, and the final verifier reads every stored directory mode directly from
+numeric SquashFS metadata before extraction. It then requires the extracted
+directory count to match that metadata and rechecks required file modes; it
+does not mistake extraction-time umask effects for stored artifact modes. The
+package therefore does not inherit the builder's umask.
 
 The `Linux x64 AppImage` and `Linux arm64 AppImage` workflows run independently
 on native `ubuntu-22.04` and `ubuntu-22.04-arm` runners. Each builds twice from

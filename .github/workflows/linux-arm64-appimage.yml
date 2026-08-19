@@ -28,6 +28,12 @@ jobs:
           architecture: arm64
           cache: npm
       - run: npm ci
+      - name: Install pinned SquashFS verifier
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends squashfs-tools=1:4.5-3build1
+          test "$(dpkg-query -W -f='${Version}' squashfs-tools)" = "1:4.5-3build1"
+          test "$(/usr/bin/unsquashfs -version | head -n 1)" = "unsquashfs version 4.5 (2021/07/22)"
       - name: Validate exact package inputs and source gates
         run: |
           npm run release:linux-inputs

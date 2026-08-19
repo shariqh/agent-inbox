@@ -25,7 +25,7 @@ import {
   verifyLinuxArm64AppImage,
   verifyLinuxX64AppImage,
   verifyNormalizedRuntimePrefix,
-  withAppImageExtractionUmask,
+  verifySquashfsDirectoryModes,
 } from '../scripts/verify-linux-appimage.mjs'
 
 describe('Linux AppImage packaging', () => {
@@ -219,21 +219,22 @@ describe('Linux AppImage packaging', () => {
     })).toThrow(/shorter than the pinned type-2 runtime/)
   })
 
-  it('uses a deterministic extraction umask and restores a hostile caller umask', () => {
-    const root = mkdtempSync(join(tmpdir(), 'appimage-extraction-umask-'))
-    const extracted = join(root, 'squashfs-root')
-    const previousUmask = process.umask(0o077)
-    try {
-      withAppImageExtractionUmask(() => mkdirSync(extracted))
-      expect(statSync(extracted).mode & 0o777).toBe(0o755)
-      expect(process.umask()).toBe(0o077)
-      expect(() => withAppImageExtractionUmask(() => {
-        throw new Error('extract failed')
-      })).toThrow(/extract failed/)
-      expect(process.umask()).toBe(0o077)
-    } finally {
-      process.umask(previousUmask)
-    }
+  it('strictly verifies directory modes from direct SquashFS metadata', () => {
+    const listing = [
+      'drwxr-xr-x 0/0                     100 2026-08-19 20:00 squashfs-root',
+      'drwxr-xr-x 0/0                      80 2026-08-19 20:00 squashfs-root/usr',
+      'drwxr-xr-x 0/0                      60 2026-08-19 20:00 squashfs-root/usr/lib/Agent Inbox',
+      '-rwxr-xr-x 0/0                      10 2026-08-19 20:00 squashfs-root/AppRun',
+    ].join('\n')
+    expect(verifySquashfsDirectoryModes(listing)).toBe(3)
+
+    expect(() => verifySquashfsDirectoryModes(
+      listing.replace('drwxr-xr-x 0/0                      80', 'drwx------ 0/0                      80'),
+    )).toThrow(/squashfs-root\/usr.*0755.*0700/)
+    expect(() => verifySquashfsDirectoryModes(`${listing}\n${listing.split('\n')[1]}`))
+      .toThrow(/duplicate SquashFS path/)
+    expect(() => verifySquashfsDirectoryModes('unparseable metadata'))
+      .toThrow(/invalid SquashFS metadata/)
   })
 
   it.runIf(process.platform !== 'linux' || process.arch !== 'x64')(
@@ -298,7 +299,8 @@ describe('Linux AppImage packaging', () => {
     expect(verify).toContain('normalizedRuntimeSha256')
     expect(verify).toContain("elfSection(prefix, '.digest_md5')")
     expect(verify).toContain('byteLength: appImageInputs.runtime.size')
-    expect(verify).toContain('assertExactDirectoryModes(extracted.appDir)')
+    expect(verify).toContain('verifySquashfsDirectoryModes')
+    expect(verify).toContain('countExtractedDirectories(extracted.appDir)')
     expect(verify).toContain("assertMode(artifact, 0o755, 'AppImage artifact')")
     expect(verify).toContain('chromeSandboxMode')
   })

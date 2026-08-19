@@ -37,6 +37,8 @@ import { treeIdentity } from './tree-identity.mjs'
 import { verifyLinuxThinApp } from './verify-linux-thin-app.mjs'
 
 const COMMIT_RE = /^[0-9a-f]{40}$/
+const UNSQUASHFS = '/usr/bin/unsquashfs'
+const UNSQUASHFS_VERSION = 'unsquashfs version 4.5 (2021/07/22)'
 
 export class LinuxAppImageVerificationError extends Error {
   constructor(message) {
@@ -81,18 +83,17 @@ function assertMode(path, expected, label) {
   return mode
 }
 
-function assertExactDirectoryModes(directory) {
+function countExtractedDirectories(directory) {
   const stat = lstatSync(directory)
   if (stat.isSymbolicLink() || !stat.isDirectory()) {
     throw new LinuxAppImageVerificationError(`AppDir directory must be plain: ${directory}`)
   }
-  assertMode(directory, 0o755, 'AppDir directory')
   let count = 1
   for (const name of readdirSync(directory).sort()) {
     const path = join(directory, name)
     const child = lstatSync(path)
     if (child.isDirectory()) {
-      count += assertExactDirectoryModes(path)
+      count += countExtractedDirectories(path)
     }
   }
   return count
@@ -161,13 +162,83 @@ function readPrefix(path, size) {
   }
 }
 
-export function withAppImageExtractionUmask(operation) {
-  const previousUmask = process.umask(0o022)
-  try {
-    return operation()
-  } finally {
-    process.umask(previousUmask)
+function octalMode(symbolic) {
+  const permissions = symbolic.slice(1)
+  const bits = [0o400, 0o200, 0o100, 0o040, 0o020, 0o010, 0o004, 0o002, 0o001]
+  let mode = 0
+  for (let index = 0; index < permissions.length; index += 1) {
+    const value = permissions[index]
+    if (value !== '-' && !['S', 'T'].includes(value)) mode |= bits[index]
   }
+  if (['s', 'S'].includes(permissions[2])) mode |= 0o4000
+  if (['s', 'S'].includes(permissions[5])) mode |= 0o2000
+  if (['t', 'T'].includes(permissions[8])) mode |= 0o1000
+  return mode
+}
+
+export function verifySquashfsDirectoryModes(listing) {
+  const paths = new Set()
+  let directoryCount = 0
+  let foundRoot = false
+  for (const line of String(listing).split('\n')) {
+    if (!line) continue
+    const match = line.match(
+      /^([bcdlps-][rwxSsTt-]{9}) \d+\/\d+\s+\d+ \d{4}-\d{2}-\d{2} \d{2}:\d{2} (.+)$/,
+    )
+    if (!match) {
+      throw new LinuxAppImageVerificationError(`invalid SquashFS metadata line: ${line}`)
+    }
+    const [, symbolic, path] = match
+    if (paths.has(path)) {
+      throw new LinuxAppImageVerificationError(`duplicate SquashFS path: ${path}`)
+    }
+    paths.add(path)
+    if (!symbolic.startsWith('d')) continue
+    const mode = octalMode(symbolic)
+    if (mode !== 0o755) {
+      throw new LinuxAppImageVerificationError(
+        `SquashFS directory ${path} mode must be 0755, found 0${mode.toString(8)}`,
+      )
+    }
+    if (path === 'squashfs-root') foundRoot = true
+    directoryCount += 1
+  }
+  if (!foundRoot || directoryCount === 0) {
+    throw new LinuxAppImageVerificationError('SquashFS metadata is missing its root directory')
+  }
+  return directoryCount
+}
+
+function squashfsDirectoryCount(appImage, runtimeSize) {
+  const toolStat = assertPlainFile(UNSQUASHFS, 'unsquashfs')
+  if ((toolStat.mode & 0o111) === 0) {
+    throw new LinuxAppImageVerificationError(`unsquashfs must be executable: ${UNSQUASHFS}`)
+  }
+  const version = execFileSync(UNSQUASHFS, ['-version'], {
+    encoding: 'utf8',
+    env: { LC_ALL: 'C', PATH: '/usr/bin:/bin', TZ: 'UTC' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 10_000,
+  }).split('\n')[0]
+  if (version !== UNSQUASHFS_VERSION) {
+    throw new LinuxAppImageVerificationError(
+      `unsquashfs version must be exactly 4.5 (2021/07/22), found ${version}`,
+    )
+  }
+  const listing = execFileSync(UNSQUASHFS, [
+    '-lln',
+    '-UTC',
+    '-o',
+    String(runtimeSize),
+    appImage,
+  ], {
+    encoding: 'utf8',
+    env: { LC_ALL: 'C', PATH: '/usr/bin:/bin', TZ: 'UTC' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 10 * 60_000,
+    maxBuffer: 64 * 1024 * 1024,
+  })
+  return verifySquashfsDirectoryModes(listing)
 }
 
 function safeElfNumber(value, label) {
@@ -283,19 +354,17 @@ export function verifyNormalizedRuntimePrefix(path, runtime) {
 function extractAppImage(appImage) {
   const work = mkdtempSync(join(tmpdir(), 'verify-appimage-'))
   try {
-    withAppImageExtractionUmask(() => {
-      execFileSync(appImage, ['--appimage-extract'], {
-        cwd: work,
-        env: {
-          ...process.env,
-          HOME: join(work, 'home'),
-          LC_ALL: 'C',
-          TZ: 'UTC',
-        },
-        stdio: ['ignore', 'ignore', 'pipe'],
-        timeout: 10 * 60_000,
-        maxBuffer: 64 * 1024 * 1024,
-      })
+    execFileSync(appImage, ['--appimage-extract'], {
+      cwd: work,
+      env: {
+        ...process.env,
+        HOME: join(work, 'home'),
+        LC_ALL: 'C',
+        TZ: 'UTC',
+      },
+      stdio: ['ignore', 'ignore', 'pipe'],
+      timeout: 10 * 60_000,
+      maxBuffer: 64 * 1024 * 1024,
     })
     const extracted = join(work, 'squashfs-root')
     if (!existsSync(extracted) || !lstatSync(extracted).isDirectory()) {
@@ -375,11 +444,17 @@ export function verifyLinuxAppImage({
   })
   const appImageSha256 = sha256File(artifact)
   if (checksum) verifyChecksumFile(resolve(checksum), artifactFile, appImageSha256)
+  const appDirDirectoryCount = squashfsDirectoryCount(artifact, appImageInputs.runtime.size)
 
   const extracted = extractAppImage(artifact)
   try {
     assertExactRootEntries(extracted.appDir)
-    const appDirDirectoryCount = assertExactDirectoryModes(extracted.appDir)
+    const extractedDirectoryCount = countExtractedDirectories(extracted.appDir)
+    if (extractedDirectoryCount !== appDirDirectoryCount) {
+      throw new LinuxAppImageVerificationError(
+        `extracted directory count mismatch: expected ${appDirDirectoryCount}, found ${extractedDirectoryCount}`,
+      )
+    }
     const dirIcon = join(extracted.appDir, '.DirIcon')
     if (!lstatSync(dirIcon).isSymbolicLink() || readlinkSync(dirIcon) !== appImageInputs.layout.iconFile) {
       throw new LinuxAppImageVerificationError('.DirIcon must link exactly to agent-inbox.png')

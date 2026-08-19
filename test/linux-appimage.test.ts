@@ -25,6 +25,7 @@ import {
   verifyLinuxArm64AppImage,
   verifyLinuxX64AppImage,
   verifyNormalizedRuntimePrefix,
+  withAppImageExtractionUmask,
 } from '../scripts/verify-linux-appimage.mjs'
 
 describe('Linux AppImage packaging', () => {
@@ -216,6 +217,23 @@ describe('Linux AppImage packaging', () => {
       size: bytes.length + 1,
       sha256: expectedSha256,
     })).toThrow(/shorter than the pinned type-2 runtime/)
+  })
+
+  it('uses a deterministic extraction umask and restores a hostile caller umask', () => {
+    const root = mkdtempSync(join(tmpdir(), 'appimage-extraction-umask-'))
+    const extracted = join(root, 'squashfs-root')
+    const previousUmask = process.umask(0o077)
+    try {
+      withAppImageExtractionUmask(() => mkdirSync(extracted))
+      expect(statSync(extracted).mode & 0o777).toBe(0o755)
+      expect(process.umask()).toBe(0o077)
+      expect(() => withAppImageExtractionUmask(() => {
+        throw new Error('extract failed')
+      })).toThrow(/extract failed/)
+      expect(process.umask()).toBe(0o077)
+    } finally {
+      process.umask(previousUmask)
+    }
   })
 
   it.runIf(process.platform !== 'linux' || process.arch !== 'x64')(

@@ -133,7 +133,10 @@ twice from the same inputs and requires byte-identical artifacts, checksums, and
 reports. The builder normalizes every AppDir directory to `0755`, pins AppRun
 and the outer artifact to `0755`, pins desktop/icon/checksum/report metadata to
 `0644`, and the final verifier rechecks every mode inside the extracted image;
-the package does not inherit the builder's umask.
+the package does not inherit the builder's umask. Verification extracts inside
+a private scratch directory with a fixed `022` extraction umask, then restores
+the caller's umask, so the extractor's synthetic `squashfs-root` directory does
+not turn a hostile ambient `077` into a false mode failure.
 
 The `Linux x64 AppImage` and `Linux arm64 AppImage` workflows run independently
 on native `ubuntu-22.04` and `ubuntu-22.04-arm` runners. Each builds twice from

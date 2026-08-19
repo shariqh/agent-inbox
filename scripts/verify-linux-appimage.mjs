@@ -161,6 +161,15 @@ function readPrefix(path, size) {
   }
 }
 
+export function withAppImageExtractionUmask(operation) {
+  const previousUmask = process.umask(0o022)
+  try {
+    return operation()
+  } finally {
+    process.umask(previousUmask)
+  }
+}
+
 function safeElfNumber(value, label) {
   if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
     throw new LinuxAppImageVerificationError(`${label} exceeds the safe integer range`)
@@ -274,17 +283,19 @@ export function verifyNormalizedRuntimePrefix(path, runtime) {
 function extractAppImage(appImage) {
   const work = mkdtempSync(join(tmpdir(), 'verify-appimage-'))
   try {
-    execFileSync(appImage, ['--appimage-extract'], {
-      cwd: work,
-      env: {
-        ...process.env,
-        HOME: join(work, 'home'),
-        LC_ALL: 'C',
-        TZ: 'UTC',
-      },
-      stdio: ['ignore', 'ignore', 'pipe'],
-      timeout: 10 * 60_000,
-      maxBuffer: 64 * 1024 * 1024,
+    withAppImageExtractionUmask(() => {
+      execFileSync(appImage, ['--appimage-extract'], {
+        cwd: work,
+        env: {
+          ...process.env,
+          HOME: join(work, 'home'),
+          LC_ALL: 'C',
+          TZ: 'UTC',
+        },
+        stdio: ['ignore', 'ignore', 'pipe'],
+        timeout: 10 * 60_000,
+        maxBuffer: 64 * 1024 * 1024,
+      })
     })
     const extracted = join(work, 'squashfs-root')
     if (!existsSync(extracted) || !lstatSync(extracted).isDirectory()) {

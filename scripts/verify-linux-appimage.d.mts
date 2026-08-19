@@ -1,4 +1,5 @@
 export class LinuxAppImageVerificationError extends Error {}
+export function withAppImageExtractionUmask<T>(operation: () => T): T
 export function verifyNormalizedRuntimePrefix(
   path: string,
   runtime: { size: number; sha256: string },

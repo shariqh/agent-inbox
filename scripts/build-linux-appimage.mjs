@@ -230,6 +230,7 @@ function runAppImageTool({
   sourceDateEpoch,
   home,
   runtime,
+  compression,
 }) {
   const env = {
     APPIMAGE_EXTRACT_AND_RUN: '1',
@@ -248,7 +249,7 @@ function runAppImageTool({
     '--runtime-file',
     runtime,
     '--comp',
-    'gzip',
+    compression,
     appDir,
     output,
   ], {
@@ -338,6 +339,7 @@ export async function buildLinuxX64AppImage({
       sourceDateEpoch,
       home: isolatedHome,
       runtime: runtimePath,
+      compression: appImageInputs.compression,
     })
     chmodSync(stagedImage, 0o755)
     const verification = verifyLinuxX64AppImage({

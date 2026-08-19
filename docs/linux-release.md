@@ -18,8 +18,8 @@ and the native target tuple before rebuilding.
 `release/linux-appimage-x64.json` is the separate exact package contract. It
 pins appimagetool 1.9.1 and the AppImage type-2 runtime release `20251108` to
 immutable tagged URLs, source commits, byte sizes, and SHA-256 values; pins the
-complete Linux-input manifest and icon by SHA-256; and fixes the x86-64 AppDir
-layout and desktop metadata. The build passes the verified runtime through
+complete Linux-input manifest and icon by SHA-256; and fixes zstd compression,
+the x86-64 AppDir layout, and desktop metadata. The build passes the verified runtime through
 appimagetool's `--runtime-file`, so appimagetool never fetches its mutable
 `continuous` runtime. The build verifies this contract before downloading or
 executing appimagetool. Downloaded bytes remain untrusted until their

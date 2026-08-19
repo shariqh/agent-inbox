@@ -50,6 +50,7 @@ export function validateLinuxAppImageInputs(value) {
       'schema',
       'target',
       'artifactArchitecture',
+      'compression',
       'linuxInputs',
       'tool',
       'runtime',
@@ -69,6 +70,9 @@ export function validateLinuxAppImageInputs(value) {
     throw new ReleaseInputError(
       `artifactArchitecture must be x86_64, got ${String(value.artifactArchitecture)}`,
     )
+  }
+  if (value.compression !== 'zstd') {
+    throw new ReleaseInputError(`compression must be zstd, got ${String(value.compression)}`)
   }
 
   requireExactKeys(value.linuxInputs, ['path', 'sha256'], 'linuxInputs')

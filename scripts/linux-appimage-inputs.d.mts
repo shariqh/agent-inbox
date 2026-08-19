@@ -2,6 +2,7 @@ export interface LinuxAppImageInputs {
   schema: 1
   target: 'linux-x64'
   artifactArchitecture: 'x86_64'
+  compression: 'zstd'
   linuxInputs: { path: string; sha256: string }
   tool: {
     name: 'appimagetool'

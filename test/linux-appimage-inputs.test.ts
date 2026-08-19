@@ -17,6 +17,7 @@ describe('Linux x64 AppImage inputs', () => {
       schema: 1,
       target: 'linux-x64',
       artifactArchitecture: 'x86_64',
+      compression: 'zstd',
       linuxInputs: {
         path: 'release/linux-inputs.json',
         sha256: '5061c8d9bf03e5f2515b2f928405ef0dfb3fd6f984ac3120b1257cbc5e4717c1',
@@ -77,6 +78,10 @@ describe('Linux x64 AppImage inputs', () => {
     const wrongArchitecture = structuredClone(loadLinuxAppImageInputs())
     Object.assign(wrongArchitecture, { artifactArchitecture: 'aarch64' })
     expect(() => validateLinuxAppImageInputs(wrongArchitecture)).toThrow(/artifactArchitecture/)
+
+    const wrongCompression = structuredClone(loadLinuxAppImageInputs())
+    Object.assign(wrongCompression, { compression: 'gzip' })
+    expect(() => validateLinuxAppImageInputs(wrongCompression)).toThrow(/compression/)
 
     const malformedHash = structuredClone(loadLinuxAppImageInputs())
     malformedHash.tool.sha256 = 'not-a-digest'

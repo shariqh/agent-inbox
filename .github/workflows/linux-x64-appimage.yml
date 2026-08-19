@@ -141,7 +141,10 @@ jobs:
                 ca-certificates curl fuse libasound2 libatk-bridge2.0-0 libcups2 \
                 libdrm2 libgbm1 libgtk-3-0 libnss3 libxcomposite1 libxdamage1 \
                 libxfixes3 libxkbcommon0 libxrandr2 libxss1 passwd util-linux xvfb
-              ! command -v node
+              if command -v node >/dev/null 2>&1; then
+                echo "linux-x64-appimage: system Node unexpectedly present" >&2
+                exit 1
+              fi
               useradd --create-home --uid 10001 appuser
               install -m 0755 "/artifacts/$ARTIFACT" "/tmp/$ARTIFACT"
               runuser -u appuser -- /gate/smoke-linux-appimage.sh \
@@ -169,7 +172,10 @@ jobs:
                 libdrm2 libfuse2 libgbm1 libgtk-3-0 libnss3 libxcomposite1 \
                 libxdamage1 libxfixes3 libxkbcommon0 libxrandr2 libxss1 \
                 passwd util-linux xvfb
-              ! command -v node
+              if command -v node >/dev/null 2>&1; then
+                echo "linux-x64-appimage: system Node unexpectedly present" >&2
+                exit 1
+              fi
               test ! -e /dev/fuse
               useradd --create-home --uid 10001 appuser
               install -m 0755 "/artifacts/$ARTIFACT" "/tmp/$ARTIFACT"

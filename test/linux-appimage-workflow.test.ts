@@ -53,7 +53,10 @@ describe('Linux x64 AppImage workflow', () => {
     expect(workflow).toContain('--mode extract')
     expect(workflow.match(/--security-opt apparmor:unconfined/g)).toHaveLength(2)
     expect(workflow.match(/--security-opt seccomp=unconfined/g)).toHaveLength(2)
-    expect(workflow).toContain('! command -v node')
+    expect(workflow.match(
+      /if command -v node >\/dev\/null 2>&1; then\n\s+echo "linux-x64-appimage: system Node unexpectedly present" >&2\n\s+exit 1\n\s+fi/g,
+    )).toHaveLength(2)
+    expect(workflow).not.toContain('! command -v node')
     expect(workflow).toContain('runuser -u appuser')
     expect(workflow).not.toContain('--no-sandbox')
     expect(workflow).toContain('/artifacts:ro')

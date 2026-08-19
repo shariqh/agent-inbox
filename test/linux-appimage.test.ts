@@ -14,6 +14,7 @@ import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   appImageArtifactName,
+  buildLinuxArm64AppImage,
   buildLinuxX64AppImage,
   renderAppRun,
   renderDesktopEntry,
@@ -21,15 +22,20 @@ import {
 } from '../scripts/build-linux-appimage.mjs'
 import { loadLinuxAppImageInputs, sha256File } from '../scripts/linux-appimage-inputs.mjs'
 import {
+  verifyLinuxArm64AppImage,
   verifyLinuxX64AppImage,
   verifyNormalizedRuntimePrefix,
 } from '../scripts/verify-linux-appimage.mjs'
 
-describe('Linux x64 AppImage packaging', () => {
+describe('Linux AppImage packaging', () => {
   it('derives the one canonical artifact name from an exact package version', () => {
     expect(appImageArtifactName('1.0.1')).toBe('Agent-Inbox-v1.0.1-linux-x86_64.AppImage')
+    expect(appImageArtifactName('1.0.1', 'arm64')).toBe(
+      'Agent-Inbox-v1.0.1-linux-arm64.AppImage',
+    )
     expect(() => appImageArtifactName('v1.0.1')).toThrow(/package version/)
     expect(() => appImageArtifactName('../1.0.1')).toThrow(/package version/)
+    expect(() => appImageArtifactName('1.0.1', 'ia32' as never)).toThrow(/target/)
   })
 
   it('stages only the required AppImage metadata, icon, launcher, and thin application tree', () => {
@@ -229,6 +235,23 @@ describe('Linux x64 AppImage packaging', () => {
     },
   )
 
+  it.runIf(process.platform !== 'linux' || process.arch !== 'arm64')(
+    'rejects non-native arm64 build and verification before reading artifact inputs',
+    async () => {
+      const unreachable = join(tmpdir(), 'must-not-be-read-arm64', String(process.pid))
+      await expect(buildLinuxArm64AppImage({
+        app: join(unreachable, 'app'),
+        outputDir: join(unreachable, 'output'),
+        repoRoot: join(unreachable, 'repo'),
+      })).rejects.toThrow(/linux\/arm64/)
+      expect(() => verifyLinuxArm64AppImage({
+        appImage: join(unreachable, 'appimage'),
+        packageVersion: '1.0.1',
+        sourceCommit: 'a'.repeat(40),
+      })).toThrow(/linux\/arm64/)
+    },
+  )
+
   it('keeps the clean launch harness Node-free and distinguishes FUSE from extraction fallback', () => {
     const smoke = readFileSync(resolve('scripts/smoke-linux-appimage.sh'), 'utf8')
     const build = readFileSync(resolve('scripts/build-linux-appimage.mjs'), 'utf8')
@@ -237,6 +260,7 @@ describe('Linux x64 AppImage packaging', () => {
     expect(smoke).toContain('"$MODE" == "extract"')
     expect(smoke).toContain('APPIMAGE_EXTRACT_AND_RUN=1')
     expect(smoke).toContain('"TMPDIR=$SCRATCH/tmp"')
+    expect(smoke).toContain('chmod 0700 "$SCRATCH"')
     expect(smoke).toContain('chmod 0700 "$SCRATCH/tmp"')
     expect(smoke).toContain('unshare --user --map-root-user true')
     expect(smoke).toContain("'^NoNewPrivs:[[:space:]]+1$'")

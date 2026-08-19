@@ -22,8 +22,10 @@ import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { appImageArtifactName, renderAppRun, renderDesktopEntry } from './build-linux-appimage.mjs'
 import {
+  DEFAULT_LINUX_ARM64_APPIMAGE_INPUTS,
   DEFAULT_LINUX_APPIMAGE_INPUTS,
   loadLinuxAppImageInputs,
+  resolveLinuxAppImageTarget,
   sha256File,
 } from './linux-appimage-inputs.mjs'
 import { assertBinaryCompatibility } from './linux-binary-gates.mjs'
@@ -43,12 +45,22 @@ export class LinuxAppImageVerificationError extends Error {
   }
 }
 
-function assertLinuxX64Host() {
-  if (process.platform !== 'linux' || process.arch !== 'x64') {
+function assertLinuxHost(arch) {
+  if (process.platform !== 'linux' || process.arch !== arch) {
     throw new LinuxAppImageVerificationError(
-      `x64 AppImage must be verified natively on linux/x64; this process is ${process.platform}/${process.arch}`,
+      `${arch} AppImage must be verified natively on linux/${arch}; this process is ${process.platform}/${process.arch}`,
     )
   }
+}
+
+function profileForArch(arch) {
+  return resolveLinuxAppImageTarget(`linux-${arch}`)
+}
+
+function defaultInputsForArch(arch) {
+  return arch === 'arm64'
+    ? DEFAULT_LINUX_ARM64_APPIMAGE_INPUTS
+    : DEFAULT_LINUX_APPIMAGE_INPUTS
 }
 
 function assertPlainFile(path, label) {
@@ -296,7 +308,8 @@ function verifyChecksumFile(path, artifactFile, expectedSha256) {
   }
 }
 
-export function verifyLinuxX64AppImage({
+export function verifyLinuxAppImage({
+  arch = 'x64',
   appImage,
   packageVersion,
   sourceCommit,
@@ -304,12 +317,13 @@ export function verifyLinuxX64AppImage({
   appImageInputsPath,
   checksum,
 }) {
-  assertLinuxX64Host()
+  assertLinuxHost(arch)
+  const profile = profileForArch(arch)
   if (!COMMIT_RE.test(sourceCommit)) {
     throw new LinuxAppImageVerificationError('sourceCommit must be a full lowercase Git SHA')
   }
   const artifact = resolve(appImage)
-  const artifactFile = appImageArtifactName(packageVersion)
+  const artifactFile = appImageArtifactName(packageVersion, arch)
   if (basename(artifact) !== artifactFile) {
     throw new LinuxAppImageVerificationError(
       `AppImage filename mismatch: expected ${artifactFile}, found ${basename(artifact)}`,
@@ -324,9 +338,14 @@ export function verifyLinuxX64AppImage({
   }
   assertAppImageMarker(artifact)
 
-  const appImageInputsFile = resolve(appImageInputsPath ?? DEFAULT_LINUX_APPIMAGE_INPUTS)
+  const appImageInputsFile = resolve(appImageInputsPath ?? defaultInputsForArch(arch))
   const linuxInputsFile = resolve(inputsPath ?? DEFAULT_LINUX_RELEASE_INPUTS)
   const appImageInputs = loadLinuxAppImageInputs(appImageInputsFile)
+  if (appImageInputs.target !== profile.target) {
+    throw new LinuxAppImageVerificationError(
+      `AppImage input target mismatch: expected ${profile.target}, found ${appImageInputs.target}`,
+    )
+  }
   const linuxInputsSha256 = sha256File(linuxInputsFile)
   if (linuxInputsSha256 !== appImageInputs.linuxInputs.sha256) {
     throw new LinuxAppImageVerificationError(
@@ -338,7 +357,7 @@ export function verifyLinuxX64AppImage({
   const outerCompatibility = assertBinaryCompatibility({
     path: artifact,
     label: 'AppImage runtime',
-    arch: 'x64',
+    arch,
     maximumGlibcVersion: linuxInputs.minimumGlibcVersion,
     maximumLibstdcxxVersion: linuxInputs.maximumGlibcxxVersion,
   })
@@ -387,7 +406,7 @@ export function verifyLinuxX64AppImage({
     assertOnlyExpectedPrivilegedMode(extracted.appDir, sandbox)
     const thinVerification = verifyLinuxThinApp({
       app: innerApp,
-      arch: 'x64',
+      arch,
       inputsPath: linuxInputsFile,
       sourceCommit,
     })
@@ -431,11 +450,20 @@ export function verifyLinuxX64AppImage({
   }
 }
 
+export function verifyLinuxX64AppImage(options) {
+  return verifyLinuxAppImage({ ...options, arch: 'x64' })
+}
+
+export function verifyLinuxArm64AppImage(options) {
+  return verifyLinuxAppImage({ ...options, arch: 'arm64' })
+}
+
 function main(argv) {
   const { values } = parseArgs({
     args: argv,
     options: {
       appimage: { type: 'string' },
+      arch: { type: 'string', default: 'x64' },
       version: { type: 'string' },
       'source-commit': { type: 'string' },
       inputs: { type: 'string' },
@@ -448,7 +476,8 @@ function main(argv) {
       'usage: verify-linux-appimage.mjs --appimage <path> --version <version> --source-commit <sha>',
     )
   }
-  const report = verifyLinuxX64AppImage({
+  const report = verifyLinuxAppImage({
+    arch: values.arch,
     appImage: resolve(values.appimage),
     packageVersion: values.version,
     sourceCommit: values['source-commit'],

@@ -1,7 +1,7 @@
 import type { LinuxAppImageInputs } from './linux-appimage-inputs.mjs'
 
 export class LinuxAppImageBuildError extends Error {}
-export function appImageArtifactName(packageVersion: string): string
+export function appImageArtifactName(packageVersion: string, arch?: 'x64' | 'arm64'): string
 export function renderAppRun(inputs: LinuxAppImageInputs): string
 export function renderDesktopEntry(inputs: LinuxAppImageInputs, packageVersion: string): string
 export function stageLinuxAppImageDirectory(options: {
@@ -12,7 +12,7 @@ export function stageLinuxAppImageDirectory(options: {
   inputs: LinuxAppImageInputs
   sourceDateEpoch: number
 }): string
-export function buildLinuxX64AppImage(options: {
+interface LinuxAppImageBuildOptions {
   app: string
   outputDir: string
   repoRoot: string
@@ -23,7 +23,18 @@ export function buildLinuxX64AppImage(options: {
   runtime?: string
   runtimeCache?: string
   force?: boolean
+}
+export function buildLinuxAppImage(options: LinuxAppImageBuildOptions & {
+  arch?: 'x64' | 'arm64'
 }): Promise<{
+  appImage: string
+  report: Record<string, unknown> & { appImageSha256: string }
+}>
+export function buildLinuxX64AppImage(options: LinuxAppImageBuildOptions): Promise<{
+  appImage: string
+  report: Record<string, unknown> & { appImageSha256: string }
+}>
+export function buildLinuxArm64AppImage(options: LinuxAppImageBuildOptions): Promise<{
   appImage: string
   report: Record<string, unknown> & { appImageSha256: string }
 }>

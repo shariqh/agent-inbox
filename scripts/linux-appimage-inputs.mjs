@@ -32,6 +32,36 @@ export const DEFAULT_LINUX_APPIMAGE_INPUTS = resolve(
   'release',
   'linux-appimage-x64.json',
 )
+export const DEFAULT_LINUX_ARM64_APPIMAGE_INPUTS = resolve(
+  REPO_ROOT,
+  'release',
+  'linux-appimage-arm64.json',
+)
+
+const TARGET_PROFILES = Object.freeze({
+  'linux-x64': Object.freeze({
+    target: 'linux-x64',
+    processArch: 'x64',
+    artifactArchitecture: 'x86_64',
+    artifactNameArchitecture: 'x86_64',
+    upstreamArchitecture: 'x86_64',
+  }),
+  'linux-arm64': Object.freeze({
+    target: 'linux-arm64',
+    processArch: 'arm64',
+    artifactArchitecture: 'aarch64',
+    artifactNameArchitecture: 'arm64',
+    upstreamArchitecture: 'aarch64',
+  }),
+})
+
+export function resolveLinuxAppImageTarget(target) {
+  const profile = TARGET_PROFILES[target]
+  if (!profile) {
+    throw new ReleaseInputError(`target must be linux-x64 or linux-arm64, got ${String(target)}`)
+  }
+  return profile
+}
 
 function requireBoolean(value, field) {
   if (typeof value !== 'boolean') throw new ReleaseInputError(`${field} is invalid`)
@@ -63,12 +93,10 @@ export function validateLinuxAppImageInputs(value) {
   if (value.schema !== 1) {
     throw new ReleaseInputError(`unsupported Linux AppImage input schema: ${value.schema}`)
   }
-  if (value.target !== 'linux-x64') {
-    throw new ReleaseInputError(`target must be linux-x64, got ${String(value.target)}`)
-  }
-  if (value.artifactArchitecture !== 'x86_64') {
+  const profile = resolveLinuxAppImageTarget(value.target)
+  if (value.artifactArchitecture !== profile.artifactArchitecture) {
     throw new ReleaseInputError(
-      `artifactArchitecture must be x86_64, got ${String(value.artifactArchitecture)}`,
+      `artifactArchitecture must be ${profile.artifactArchitecture}, got ${String(value.artifactArchitecture)}`,
     )
   }
   if (value.compression !== 'zstd') {
@@ -93,7 +121,7 @@ export function validateLinuxAppImageInputs(value) {
   requireString(value.tool.sourceCommit, 'tool.sourceCommit', COMMIT_RE)
   const expectedToolUrl =
     `https://github.com/AppImage/appimagetool/releases/download/${value.tool.version}/` +
-    'appimagetool-x86_64.AppImage'
+    `appimagetool-${profile.upstreamArchitecture}.AppImage`
   if (value.tool.url !== expectedToolUrl) {
     throw new ReleaseInputError(`tool.url must be the exact tagged appimagetool release ${expectedToolUrl}`)
   }
@@ -112,7 +140,7 @@ export function validateLinuxAppImageInputs(value) {
   requireString(value.runtime.sourceCommit, 'runtime.sourceCommit', COMMIT_RE)
   const expectedRuntimeUrl =
     `https://github.com/AppImage/type2-runtime/releases/download/${value.runtime.version}/` +
-    'runtime-x86_64'
+    `runtime-${profile.upstreamArchitecture}`
   if (value.runtime.url !== expectedRuntimeUrl) {
     throw new ReleaseInputError(`runtime.url must be the exact tagged type2 runtime ${expectedRuntimeUrl}`)
   }

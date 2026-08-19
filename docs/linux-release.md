@@ -1,9 +1,9 @@
-# Native Linux release folders and x64 AppImage
+# Native Linux release folders and AppImages
 
 Issue #86's first delivery layer produces native, architecture-matched release
-inputs for `linux-x64` and `linux-arm64`. The next focused layer packages the
-verified `linux-x64` folder as a deterministic AppImage. Linux arm64 packaging,
-DEB packages, and GitHub Release publication remain later units.
+inputs for `linux-x64` and `linux-arm64`. The AppImage layers package both
+verified folders as deterministic, architecture-matched images. DEB packages
+and GitHub Release publication remain later units.
 
 ## Pinned compatibility contract
 
@@ -15,11 +15,14 @@ parse Electron 43's deprecation-plus-visibility attribute ordering in the V8
 headers; the build verifies both compiler commands, the exact compiler version,
 and the native target tuple before rebuilding.
 
-`release/linux-appimage-x64.json` is the separate exact package contract. It
-pins appimagetool 1.9.1 and the AppImage type-2 runtime release `20251108` to
-immutable tagged URLs, source commits, byte sizes, and SHA-256 values; pins the
-complete Linux-input manifest and icon by SHA-256; and fixes zstd compression,
-the x86-64 AppDir layout, and desktop metadata. The build passes the verified runtime through
+`release/linux-appimage-x64.json` and `release/linux-appimage-arm64.json` are
+separate exact package contracts. Each pins its architecture-matched
+appimagetool 1.9.1 and AppImage type-2 runtime release `20251108` to immutable
+tagged URLs, source commits, byte sizes, and SHA-256 values; pins the complete
+Linux-input manifest and icon by SHA-256; and fixes zstd compression, the
+AppDir layout, and desktop metadata. The x64 contract uses upstream `x86_64`
+assets; the arm64 contract uses upstream `aarch64` assets while the product
+artifact name remains `linux-arm64`. The build passes the verified runtime through
 appimagetool's `--runtime-file`, so appimagetool never fetches its mutable
 `continuous` runtime. The build verifies this contract before downloading or
 executing appimagetool. Downloaded bytes remain untrusted until their
@@ -74,16 +77,27 @@ The workflow uploads short-lived Actions artifacts for review. It has
 read-only repository permissions, persists no checkout credentials, uses no
 secrets, and does not publish GitHub Release assets.
 
-## Build the x64 AppImage
+## Build an AppImage
 
-On a native x86-64 Linux host using Node 24, first produce the verified thin
-folder as described above. Then run:
+On a native Linux host using Node 24, first produce the verified thin folder for
+that host architecture as described above.
+
+For x64, run:
 
 ```sh
 npm run package:linux-appimage -- \
   --app "build/thin/linux-x64/Agent Inbox" \
   --inputs release/linux-inputs.json \
   --appimage-inputs release/linux-appimage-x64.json \
+  --output-dir build/appimage
+```
+
+For arm64, run:
+
+```sh
+npm run package:linux-appimage:arm64 -- \
+  --app "build/thin/linux-arm64/Agent Inbox" \
+  --inputs release/linux-inputs.json \
   --output-dir build/appimage
 ```
 
@@ -94,15 +108,18 @@ tool before execution, and emits:
 - `Agent-Inbox-vX.Y.Z-linux-x86_64.AppImage`
 - `Agent-Inbox-vX.Y.Z-linux-x86_64.AppImage.sha256`
 - `Agent-Inbox-vX.Y.Z-linux-x86_64.AppImage.report.json`
+- `Agent-Inbox-vX.Y.Z-linux-arm64.AppImage`
+- `Agent-Inbox-vX.Y.Z-linux-arm64.AppImage.sha256`
+- `Agent-Inbox-vX.Y.Z-linux-arm64.AppImage.report.json`
 
 The final verifier checks the outer type-2 AppImage marker, executable mode,
-x86-64 ELF identity and libc floor; parses the runtime ELF section table,
+architecture-matched ELF identity and libc floor; parses the runtime ELF section table,
 normalizes only appimagetool's reserved 16-byte `.digest_md5` mutation, and
 requires the resulting prefix SHA-256 to equal the exact pinned runtime;
 extracts the image without FUSE; requires the exact AppDir root; validates the
 launcher, desktop version/name metadata, icon digest, and Chromium sandbox mode;
 then reruns the complete thin-folder ELF, ABI, addon, runtime, Setup-selection,
-source-commit, and single-`linux-x64` payload gates. The extracted inner
+source-commit, and single matching `linux-x64` or `linux-arm64` payload gates. The extracted inner
 application tree and version must exactly match the already-verified source
 folder; the sole permission transformation is the standard AppImage
 `chrome-sandbox` mode from the Electron archive's exact `0755` to the packaged
@@ -116,14 +133,20 @@ and the outer artifact to `0755`, pins desktop/icon/checksum/report metadata to
 `0644`, and the final verifier rechecks every mode inside the extracted image;
 the package does not inherit the builder's umask.
 
+The `Linux x64 AppImage` and `Linux arm64 AppImage` workflows run independently
+on native `ubuntu-22.04` and `ubuntu-22.04-arm` runners. Each builds twice from
+the same exact inputs and requires byte-identical images, checksum sidecars, and
+reports. The arm64 workflow sets ambient `umask 077` before both builds to prove
+that the package contract, rather than the runner's defaults, controls modes.
+
 ## Launch requirements and no-FUSE fallback
 
-The tested baseline is x86-64 Ubuntu 22.04 with glibc 2.34 and the desktop
-runtime libraries installed explicitly by
-`.github/workflows/linux-x64-appimage.yml`: GTK 3, NSS, ALSA, ATK bridge, CUPS,
-DRM/GBM, X11 composition/damage/fix/randr/xss, xkbcommon, CA certificates, and
-an X server. Normal AppImage mounting additionally requires FUSE. Both launch
-paths require unprivileged user namespaces. The AppRun launcher passes
+The tested baseline is native x64 and arm64 Ubuntu 22.04 with glibc 2.34 and the
+desktop runtime libraries installed explicitly by the two AppImage workflows:
+GTK 3, NSS, ALSA, ATK bridge, CUPS, DRM/GBM, X11
+composition/damage/fix/randr/xss, xkbcommon, CA certificates, and an X server.
+Normal AppImage mounting additionally requires FUSE. Both launch paths require
+unprivileged user namespaces. The AppRun launcher passes
 Chromium's `--disable-setuid-sandbox` because FUSE mounts do not honor setuid
 and an unprivileged extract-and-run cannot preserve root ownership; this leaves
 Chromium's user-namespace and seccomp sandboxes enabled and never adds
@@ -133,6 +156,8 @@ Run normally:
 
 ```sh
 ./Agent-Inbox-vX.Y.Z-linux-x86_64.AppImage
+# or, on arm64:
+./Agent-Inbox-vX.Y.Z-linux-arm64.AppImage
 ```
 
 When `/dev/fuse` is unavailable, use the AppImage runtime's supported
@@ -144,6 +169,7 @@ chmod 0700 "$APPIMAGE_TMPDIR"
 trap 'rm -rf -- "$APPIMAGE_TMPDIR"' EXIT
 TMPDIR="$APPIMAGE_TMPDIR" APPIMAGE_EXTRACT_AND_RUN=1 \
   ./Agent-Inbox-vX.Y.Z-linux-x86_64.AppImage
+# Use Agent-Inbox-vX.Y.Z-linux-arm64.AppImage on arm64.
 ```
 
 This fallback extracts to a temporary directory for each launch. It is not a
@@ -152,14 +178,16 @@ icons, or user data. Keep the unique mode-`0700` `TMPDIR`: the pinned AppImage
 runtime uses a predictable child name while extracting, so a shared `/tmp`
 base would let another local user prepopulate files before launch.
 
-The CI acceptance gate runs both paths as an unprivileged user, with the
-user-namespace sandbox and without `--no-sandbox`, in digest-pinned clean Ubuntu
-22.04 containers. Each container receives only the final artifact and the smoke
-harness, has no repository checkout or system Node, isolates HOME, XDG
-configuration/cache/data/state, and the inbox database, then requires the
-packaged in-process viewer to answer on `127.0.0.1` with the hardened
-`x-agent-inbox-local-boundary: loopback-v1` marker. The no-FUSE container has
-no `/dev/fuse`; the normal container receives the FUSE device explicitly.
+Each architecture's CI acceptance gate runs both paths as an unprivileged user,
+with the user-namespace sandbox and without `--no-sandbox`, in an
+architecture-specific digest-pinned clean Ubuntu 22.04 container on a native
+runner. Each container receives only the final artifact and the smoke harness,
+has no repository checkout or system Node, isolates HOME, XDG
+configuration/cache/data/state, the inbox database, and a private mode-`0700`
+scratch tree, then requires the packaged in-process viewer to answer on
+`127.0.0.1` with the hardened
+`x-agent-inbox-local-boundary: loopback-v1` marker. The no-FUSE container has no
+`/dev/fuse`; the normal container receives the FUSE device explicitly.
 Because neither container has a `node` executable, that response cannot come
 from Electron's development-only host-Node fallback.
 Docker's outer AppArmor and seccomp profiles are disabled for both containers
@@ -173,9 +201,11 @@ the same isolation layers.
 
 ## Retained limitations
 
-This layer intentionally has no Linux arm64 AppImage, DEB, RPM, Snap, Flatpak,
-host-level desktop install/uninstall flow, aggregated release checksum file,
-signing/attestation, or GitHub Release publication. Those belong to later
-issue #86 delivery units. The x64 evidence supports the documented
+This layer intentionally has no DEB, RPM, Snap, Flatpak, host-level desktop
+install/uninstall flow, aggregated release checksum file, signing/attestation,
+or GitHub Release publication. Those belong to later issue #86 delivery units.
+The native x64 and arm64 evidence supports the documented
 Ubuntu/Debian-class glibc baseline only; it is not a claim of universal Linux
-compatibility.
+compatibility. If a future hosted runner cannot expose FUSE or unprivileged user
+namespaces, that architecture's gate must fail or state the missing evidence;
+it must not turn the unsupported path into a success-shaped result.

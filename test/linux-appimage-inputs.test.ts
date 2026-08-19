@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
+  DEFAULT_LINUX_ARM64_APPIMAGE_INPUTS,
   DEFAULT_LINUX_APPIMAGE_INPUTS,
   loadLinuxAppImageInputs,
   sha256File,
@@ -10,7 +11,7 @@ import {
   verifyPinnedAppImageTool,
 } from '../scripts/linux-appimage-inputs.mjs'
 
-describe('Linux x64 AppImage inputs', () => {
+describe('Linux AppImage inputs', () => {
   it('pins the exact thin profile, tagged packaging tool, icon, and desktop contract', () => {
     const inputs = loadLinuxAppImageInputs()
     expect(inputs).toEqual({
@@ -63,6 +64,37 @@ describe('Linux x64 AppImage inputs', () => {
     expect(sha256File(resolve(inputs.icon.path))).toBe(inputs.icon.sha256)
   })
 
+  it('pins a separate architecture-correct arm64 package contract', () => {
+    const inputs = loadLinuxAppImageInputs(DEFAULT_LINUX_ARM64_APPIMAGE_INPUTS)
+    expect(inputs).toMatchObject({
+      schema: 1,
+      target: 'linux-arm64',
+      artifactArchitecture: 'aarch64',
+      compression: 'zstd',
+      tool: {
+        name: 'appimagetool',
+        version: '1.9.1',
+        sourceCommit: '8c8c91f762b412a19f4e8d2c4b35afb98f2d7c81',
+        url: 'https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-aarch64.AppImage',
+        size: 14678536,
+        sha256: 'f0837e7448a0c1e4e650a93bb3e85802546e60654ef287576f46c71c126a9158',
+      },
+      runtime: {
+        name: 'type2-runtime',
+        version: '20251108',
+        sourceCommit: 'dd6cebedcbddde9c82f89b011e8e1d40b6e43868',
+        url: 'https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-aarch64',
+        size: 936456,
+        sha256: '00cbdfcf917cc6c0ff6d3347d59e0ca1f7f45a6df1a428a0d6d8a78664d87444',
+      },
+    })
+    expect(inputs.linuxInputs).toEqual(loadLinuxAppImageInputs().linuxInputs)
+    expect(inputs.layout).toEqual(loadLinuxAppImageInputs().layout)
+    expect(inputs.desktop).toEqual(loadLinuxAppImageInputs().desktop)
+    expect(inputs.icon).toEqual(loadLinuxAppImageInputs().icon)
+    expect(readFileSync(DEFAULT_LINUX_ARM64_APPIMAGE_INPUTS, 'utf8')).not.toContain('continuous')
+  })
+
   it('rejects extra keys, mutable tool URLs, architecture substitutions, and malformed hashes', () => {
     const extra = { ...structuredClone(loadLinuxAppImageInputs()), surprise: true }
     expect(() => validateLinuxAppImageInputs(extra)).toThrow(/exactly/)
@@ -78,6 +110,20 @@ describe('Linux x64 AppImage inputs', () => {
     const wrongArchitecture = structuredClone(loadLinuxAppImageInputs())
     Object.assign(wrongArchitecture, { artifactArchitecture: 'aarch64' })
     expect(() => validateLinuxAppImageInputs(wrongArchitecture)).toThrow(/artifactArchitecture/)
+
+    const arm64WithX64Tool = structuredClone(
+      loadLinuxAppImageInputs(DEFAULT_LINUX_ARM64_APPIMAGE_INPUTS),
+    )
+    arm64WithX64Tool.tool.url =
+      'https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage'
+    expect(() => validateLinuxAppImageInputs(arm64WithX64Tool)).toThrow(/tagged appimagetool release/)
+
+    const arm64WithX64Runtime = structuredClone(
+      loadLinuxAppImageInputs(DEFAULT_LINUX_ARM64_APPIMAGE_INPUTS),
+    )
+    arm64WithX64Runtime.runtime.url =
+      'https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64'
+    expect(() => validateLinuxAppImageInputs(arm64WithX64Runtime)).toThrow(/tagged type2 runtime/)
 
     const wrongCompression = structuredClone(loadLinuxAppImageInputs())
     Object.assign(wrongCompression, { compression: 'gzip' })

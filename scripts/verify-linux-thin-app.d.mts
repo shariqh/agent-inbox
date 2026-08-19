@@ -13,7 +13,8 @@ export type LinuxThinReport = {
   runtimeManifestDigest: string
   setupInfoSchema: 2
   setupRuntimeKeys: string[]
-  compatibility: Record<string, {
+  compatibility: Array<{
+    path: string
     arch: 'arm64' | 'x64'
     maximumRequiredGlibc: string | null
     maximumRequiredLibstdcxx: string | null

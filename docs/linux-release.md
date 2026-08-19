@@ -27,8 +27,13 @@ glibc 2.25. The two native `better_sqlite3.node` builds produced on the pinned
 Ubuntu 22.04/Clang toolchain raise the complete folder to glibc 2.34 and
 `GLIBCXX_3.4.29`; the representative distribution floors are the first
 supported releases in each listed family that satisfy those requirements. The
-native-folder gate inspects the final Electron executable, both addon builds,
-and the selected Node binary so the measured floor cannot rise silently.
+native-folder gate recursively enumerates every plain regular ELF in the
+complete application folder without following symlinks, then verifies each
+file's architecture and maximum GLIBC/GLIBCXX requirements. Its persisted
+report lists the gated paths in deterministic relative-path order, with no
+builder-local paths. The Electron executable, both addon builds, and the
+selected Node binary remain explicit required files and native process/addon
+probes, so the measured complete-folder floor cannot rise silently.
 
 ## Build and verification
 

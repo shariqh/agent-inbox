@@ -1,9 +1,20 @@
-import { lstatSync, readFileSync } from 'node:fs'
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  readSync,
+  readdirSync,
+} from 'node:fs'
+import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 const ELF_MACHINE = Object.freeze({
   62: 'x64',
   183: 'arm64',
 })
+const compareText = (left, right) => left < right ? -1 : left > right ? 1 : 0
 
 export class LinuxBinaryGateError extends Error {
   constructor(message) {
@@ -22,7 +33,37 @@ function readPlainFile(path, label) {
   if (stat.isSymbolicLink() || !stat.isFile()) {
     throw new LinuxBinaryGateError(`${label} must be a plain regular file: ${path}`)
   }
-  return readFileSync(path)
+  let fd
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW)
+    if (!fstatSync(fd).isFile()) {
+      throw new LinuxBinaryGateError(`${label} must remain a plain regular file: ${path}`)
+    }
+    return readFileSync(fd)
+  } catch (err) {
+    if (err instanceof LinuxBinaryGateError) throw err
+    throw new LinuxBinaryGateError(`${label} could not be read without following links at ${path}: ${err.message}`)
+  } finally {
+    if (fd !== undefined) closeSync(fd)
+  }
+}
+
+function hasElfMagic(path, label) {
+  let fd
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW)
+    if (!fstatSync(fd).isFile()) {
+      throw new LinuxBinaryGateError(`${label} must remain a plain regular file: ${path}`)
+    }
+    const header = Buffer.alloc(4)
+    if (readSync(fd, header, 0, header.length, 0) !== header.length) return false
+    return header[0] === 0x7f && header[1] === 0x45 && header[2] === 0x4c && header[3] === 0x46
+  } catch (err) {
+    if (err instanceof LinuxBinaryGateError) throw err
+    throw new LinuxBinaryGateError(`${label} could not be inspected without following links at ${path}: ${err.message}`)
+  } finally {
+    if (fd !== undefined) closeSync(fd)
+  }
 }
 
 function versionParts(version) {
@@ -45,8 +86,7 @@ function maximumVersion(buffer, pattern) {
   return versions.sort(compareVersions).at(-1) ?? null
 }
 
-export function readElfArchitecture(path, label = 'ELF binary') {
-  const bytes = readPlainFile(path, label)
+function elfArchitecture(bytes, path, label) {
   if (
     bytes.length < 20 ||
     bytes[0] !== 0x7f ||
@@ -68,6 +108,10 @@ export function readElfArchitecture(path, label = 'ELF binary') {
   return arch
 }
 
+export function readElfArchitecture(path, label = 'ELF binary') {
+  return elfArchitecture(readPlainFile(path, label), path, label)
+}
+
 export function assertBinaryCompatibility({
   path,
   label,
@@ -75,11 +119,11 @@ export function assertBinaryCompatibility({
   maximumGlibcVersion,
   maximumLibstdcxxVersion,
 }) {
-  const actualArch = readElfArchitecture(path, label)
+  const bytes = readPlainFile(path, label)
+  const actualArch = elfArchitecture(bytes, path, label)
   if (actualArch !== arch) {
     throw new LinuxBinaryGateError(`${label} architecture mismatch: found ${actualArch}, expected ${arch}`)
   }
-  const bytes = readPlainFile(path, label)
   const maximumRequiredGlibc = maximumVersion(bytes, /GLIBC_(\d+\.\d+(?:\.\d+)?)/g)
   const maximumRequiredLibstdcxx = maximumVersion(bytes, /GLIBCXX_(\d+\.\d+(?:\.\d+)?)/g)
   if (maximumRequiredGlibc && compareVersions(maximumRequiredGlibc, maximumGlibcVersion) > 0) {
@@ -97,6 +141,63 @@ export function assertBinaryCompatibility({
     maximumRequiredGlibc,
     maximumRequiredLibstdcxx,
   }
+}
+
+export function listPlainElfFiles(root) {
+  const rootPath = resolve(root)
+  let rootStat
+  try {
+    rootStat = lstatSync(rootPath)
+  } catch (err) {
+    throw new LinuxBinaryGateError(`packaged app folder is missing at ${rootPath}: ${err.message}`)
+  }
+  if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
+    throw new LinuxBinaryGateError(`packaged app folder must be a plain directory: ${rootPath}`)
+  }
+
+  const files = []
+  const visit = (directory) => {
+    const entries = readdirSync(directory, { withFileTypes: true })
+      .sort((left, right) => compareText(left.name, right.name))
+    for (const entry of entries) {
+      const path = join(directory, entry.name)
+      const stat = lstatSync(path)
+      if (stat.isSymbolicLink()) continue
+      if (stat.isDirectory()) {
+        visit(path)
+        continue
+      }
+      if (!stat.isFile() || !hasElfMagic(path, `packaged file ${entry.name}`)) continue
+      const relativePath = relative(rootPath, path)
+      if (!relativePath || isAbsolute(relativePath) || relativePath === '..' || relativePath.startsWith(`..${sep}`)) {
+        throw new LinuxBinaryGateError(`packaged ELF escaped the app folder: ${path}`)
+      }
+      files.push({
+        path,
+        relativePath: relativePath.split(sep).join('/'),
+      })
+    }
+  }
+  visit(rootPath)
+  return files.sort((left, right) => compareText(left.relativePath, right.relativePath))
+}
+
+export function assertElfTreeCompatibility({
+  root,
+  arch,
+  maximumGlibcVersion,
+  maximumLibstdcxxVersion,
+}) {
+  return listPlainElfFiles(root).map(({ path, relativePath }) => ({
+    path: relativePath,
+    ...assertBinaryCompatibility({
+      path,
+      label: `packaged ELF ${relativePath}`,
+      arch,
+      maximumGlibcVersion,
+      maximumLibstdcxxVersion,
+    }),
+  }))
 }
 
 export function assertProcessIdentity({ actual, expected, label }) {

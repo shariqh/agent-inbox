@@ -2,12 +2,12 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { join, resolve } from 'node:path'
+import { join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { APP_NAME, findNativeAddon } from './build-thin-app.mjs'
 import {
-  assertBinaryCompatibility,
+  assertElfTreeCompatibility,
   assertProcessIdentity,
 } from './linux-binary-gates.mjs'
 import { loadLinuxReleaseInputs } from './linux-release-inputs.mjs'
@@ -78,6 +78,22 @@ function assertNoBuilderPaths(value) {
   }
 }
 
+function relativeAppPath(appRoot, path) {
+  return relative(appRoot, path).split(sep).join('/')
+}
+
+function assertKnownElfEvidence(appRoot, compatibility, knownFiles) {
+  const gated = new Set(compatibility.map((entry) => entry.path))
+  for (const [label, path] of Object.entries(knownFiles)) {
+    const relativePath = relativeAppPath(appRoot, path)
+    if (!gated.has(relativePath)) {
+      throw new LinuxThinVerificationError(
+        `${label} is not a gated plain ELF inside the packaged app: ${relativePath}`,
+      )
+    }
+  }
+}
+
 export function verifyLinuxThinApp({
   app,
   arch,
@@ -134,36 +150,18 @@ export function verifyLinuxThinApp({
   })
   if (sourceCommit) assertRuntimeSourceCommit(runtimeManifest, sourceCommit, key)
 
-  const compatibility = {
-    electron: assertBinaryCompatibility({
-      path: executable,
-      label: 'Electron executable',
-      arch,
-      maximumGlibcVersion: inputs.minimumGlibcVersion,
-      maximumLibstdcxxVersion: inputs.maximumGlibcxxVersion,
-    }),
-    electronAddon: assertBinaryCompatibility({
-      path: electronAddon,
-      label: 'Electron-ABI addon',
-      arch,
-      maximumGlibcVersion: inputs.minimumGlibcVersion,
-      maximumLibstdcxxVersion: inputs.maximumGlibcxxVersion,
-    }),
-    runtimeNode: assertBinaryCompatibility({
-      path: runtimeNode,
-      label: 'runtime Node',
-      arch,
-      maximumGlibcVersion: inputs.minimumGlibcVersion,
-      maximumLibstdcxxVersion: inputs.maximumGlibcxxVersion,
-    }),
-    runtimeAddon: assertBinaryCompatibility({
-      path: runtimeAddon,
-      label: 'Node-ABI addon',
-      arch,
-      maximumGlibcVersion: inputs.minimumGlibcVersion,
-      maximumLibstdcxxVersion: inputs.maximumGlibcxxVersion,
-    }),
-  }
+  const compatibility = assertElfTreeCompatibility({
+    root: appRoot,
+    arch,
+    maximumGlibcVersion: inputs.minimumGlibcVersion,
+    maximumLibstdcxxVersion: inputs.maximumGlibcxxVersion,
+  })
+  assertKnownElfEvidence(appRoot, compatibility, {
+    'Electron executable': executable,
+    'Electron-ABI addon': electronAddon,
+    'runtime Node': runtimeNode,
+    'Node-ABI addon': runtimeAddon,
+  })
   const electronProbe = assertProcessIdentity({
     actual: processProbe(executable, resources, true),
     expected: {

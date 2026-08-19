@@ -12,6 +12,21 @@ export function assertBinaryCompatibility(options: {
   maximumRequiredGlibc: string | null
   maximumRequiredLibstdcxx: string | null
 }
+export function listPlainElfFiles(root: string): Array<{
+  path: string
+  relativePath: string
+}>
+export function assertElfTreeCompatibility(options: {
+  root: string
+  arch: LinuxArch
+  maximumGlibcVersion: string
+  maximumLibstdcxxVersion: string
+}): Array<{
+  path: string
+  arch: LinuxArch
+  maximumRequiredGlibc: string | null
+  maximumRequiredLibstdcxx: string | null
+}>
 export function assertProcessIdentity<T extends Record<string, unknown>>(options: {
   actual: T
   expected: Partial<T>

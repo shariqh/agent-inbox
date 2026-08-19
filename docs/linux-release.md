@@ -111,7 +111,10 @@ entry, and the final verifier requires the sandbox to be the sole privileged
 entry. appimagetool runs from an empty isolated working directory and HOME, so
 an ambient `.appimageignore` cannot alter the output. CI builds the AppImage
 twice from the same inputs and requires byte-identical artifacts, checksums, and
-reports.
+reports. The builder normalizes every AppDir directory to `0755`, pins AppRun
+and the outer artifact to `0755`, pins desktop/icon/checksum/report metadata to
+`0644`, and the final verifier rechecks every mode inside the extracted image;
+the package does not inherit the builder's umask.
 
 ## Launch requirements and no-FUSE fallback
 
@@ -157,6 +160,8 @@ configuration/cache/data/state, and the inbox database, then requires the
 packaged in-process viewer to answer on `127.0.0.1` with the hardened
 `x-agent-inbox-local-boundary: loopback-v1` marker. The no-FUSE container has
 no `/dev/fuse`; the normal container receives the FUSE device explicitly.
+Because neither container has a `node` executable, that response cannot come
+from Electron's development-only host-Node fallback.
 Docker's outer AppArmor and seccomp profiles are disabled for both containers
 because their default namespace restrictions do not model a desktop host; the
 gate first proves the unprivileged user-namespace prerequisite with `unshare`,

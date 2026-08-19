@@ -53,6 +53,8 @@ describe('Linux x64 AppImage packaging', () => {
     writeFileSync(join(thinApp, 'Agent Inbox'), 'electron')
     writeFileSync(join(thinApp, 'chrome-sandbox'), 'sandbox')
     writeFileSync(join(thinApp, 'unexpected-helper'), 'unexpected')
+    mkdirSync(join(thinApp, 'resources'), { mode: 0o700 })
+    writeFileSync(join(thinApp, 'resources', 'payload'), 'payload')
     symlinkSync('Agent Inbox', join(thinApp, 'agent-inbox-link'))
     chmodSync(join(thinApp, 'Agent Inbox'), 0o755)
     chmodSync(join(thinApp, 'chrome-sandbox'), 0o755)
@@ -66,14 +68,19 @@ describe('Linux x64 AppImage packaging', () => {
       sourceDateEpoch: 1_700_000_000,
     })).toThrow(/privileged mode bits/)
     chmodSync(join(thinApp, 'unexpected-helper'), 0o644)
-    stageLinuxAppImageDirectory({
-      appDir,
-      thinApp,
-      icon,
-      packageVersion: '1.0.1',
-      inputs: loadLinuxAppImageInputs(),
-      sourceDateEpoch: 1_700_000_000,
-    })
+    const previousUmask = process.umask(0o077)
+    try {
+      stageLinuxAppImageDirectory({
+        appDir,
+        thinApp,
+        icon,
+        packageVersion: '1.0.1',
+        inputs: loadLinuxAppImageInputs(),
+        sourceDateEpoch: 1_700_000_000,
+      })
+    } finally {
+      process.umask(previousUmask)
+    }
     expect(readdirSync(appDir).sort()).toEqual([
       '.DirIcon',
       'AppRun',
@@ -85,6 +92,10 @@ describe('Linux x64 AppImage packaging', () => {
     expect(statSync(join(appDir, 'AppRun')).mode & 0o777).toBe(0o755)
     expect(statSync(join(appDir, 'agent-inbox.desktop')).mode & 0o777).toBe(0o644)
     expect(statSync(join(appDir, 'agent-inbox.png')).mode & 0o777).toBe(0o644)
+    expect(statSync(appDir).mode & 0o777).toBe(0o755)
+    expect(statSync(join(appDir, 'usr')).mode & 0o777).toBe(0o755)
+    expect(statSync(join(appDir, 'usr/lib')).mode & 0o777).toBe(0o755)
+    expect(statSync(join(appDir, 'usr/lib/agent-inbox/resources')).mode & 0o777).toBe(0o755)
     expect(statSync(join(appDir, 'usr/lib/agent-inbox/Agent Inbox')).mode & 0o777).toBe(0o755)
     expect(statSync(join(appDir, 'usr/lib/agent-inbox/chrome-sandbox')).mode & 0o7777).toBe(0o4755)
     expect(readlinkSync(join(appDir, 'usr/lib/agent-inbox/agent-inbox-link'))).toBe('Agent Inbox')
@@ -232,14 +243,20 @@ describe('Linux x64 AppImage packaging', () => {
     expect(smoke).toContain("'^Seccomp:[[:space:]]+2$'")
     expect(smoke).toContain('"/proc/$pid/ns/user"')
     expect(smoke).toContain('x-agent-inbox-local-boundary: loopback-v1')
+    expect(smoke).not.toContain('viewer running in-process')
+    expect(smoke).not.toContain('falling back to spawning node')
     expect(smoke).not.toContain('--no-sandbox')
     expect(smoke).not.toMatch(/(?:^|\s)node(?:\s|$)/m)
     expect(build).toContain("'--runtime-file'")
     expect(build).toContain('cwd: home')
     expect(build).not.toContain('...process.env')
     expect(build).toContain('verification.innerAppTreeDigest !== thinVerification.appTreeDigest')
+    expect(build).toContain('chmodSync(stagedChecksum, 0o644)')
+    expect(build).toContain('chmodSync(stagedReport, 0o644)')
     expect(verify).toContain('normalizedRuntimeSha256')
     expect(verify).toContain("elfSection(prefix, '.digest_md5')")
+    expect(verify).toContain('assertExactDirectoryModes(extracted.appDir)')
+    expect(verify).toContain("assertMode(artifact, 0o755, 'AppImage artifact')")
     expect(verify).toContain('chromeSandboxMode')
   })
 })

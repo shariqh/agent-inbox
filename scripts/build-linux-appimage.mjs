@@ -100,7 +100,7 @@ function normalizeTreeTimes(path, seconds) {
   }
 }
 
-function copyPlainTreePreservingMode(source, destination, sourceRoot = realpathSync(source)) {
+function copyPlainTreeWithDeterministicModes(source, destination, sourceRoot = realpathSync(source)) {
   const stat = lstatSync(source)
   if (stat.isSymbolicLink()) {
     const target = readlinkSync(source)
@@ -121,11 +121,11 @@ function copyPlainTreePreservingMode(source, destination, sourceRoot = realpathS
     if ((stat.mode & 0o7000) !== 0) {
       throw new LinuxAppImageBuildError(`thin application directory has privileged mode bits: ${source}`)
     }
-    mkdirSync(destination, { mode: stat.mode & 0o777 })
+    mkdirSync(destination, { mode: 0o755 })
     for (const name of readdirSync(source).sort()) {
-      copyPlainTreePreservingMode(join(source, name), join(destination, name), sourceRoot)
+      copyPlainTreeWithDeterministicModes(join(source, name), join(destination, name), sourceRoot)
     }
-    chmodSync(destination, stat.mode & 0o777)
+    chmodSync(destination, 0o755)
     return
   }
   if (!stat.isFile()) {
@@ -176,9 +176,16 @@ export function stageLinuxAppImageDirectory({
     throw new LinuxAppImageBuildError(`AppDir already exists: ${destination}`)
   }
   mkdirSync(destination, { recursive: true })
-  const applicationRoot = join(destination, ...inputs.layout.applicationPath.split('/'))
+  chmodSync(destination, 0o755)
+  const applicationParts = inputs.layout.applicationPath.split('/')
+  const applicationRoot = join(destination, ...applicationParts)
   mkdirSync(dirname(applicationRoot), { recursive: true })
-  copyPlainTreePreservingMode(source, applicationRoot)
+  let generatedDirectory = destination
+  for (const part of applicationParts.slice(0, -1)) {
+    generatedDirectory = join(generatedDirectory, part)
+    chmodSync(generatedDirectory, 0o755)
+  }
+  copyPlainTreeWithDeterministicModes(source, applicationRoot)
   chmodSync(join(applicationRoot, 'chrome-sandbox'), 0o4755)
 
   const appRun = join(destination, inputs.layout.appRun)
@@ -186,6 +193,7 @@ export function stageLinuxAppImageDirectory({
   chmodSync(appRun, 0o755)
   const desktop = join(destination, inputs.layout.desktopFile)
   writeFileSync(desktop, renderDesktopEntry(inputs, packageVersion), { mode: 0o644 })
+  chmodSync(desktop, 0o644)
   const packagedIcon = join(destination, inputs.layout.iconFile)
   copyFileSync(iconPath, packagedIcon)
   chmodSync(packagedIcon, 0o644)
@@ -387,6 +395,8 @@ export async function buildLinuxX64AppImage({
     const stagedReport = `${stagedImage}.report.json`
     writeFileSync(stagedChecksum, `${verification.appImageSha256}  ${artifactFile}\n`)
     writeFileSync(stagedReport, `${JSON.stringify(report, null, 2)}\n`)
+    chmodSync(stagedChecksum, 0o644)
+    chmodSync(stagedReport, 0o644)
 
     const destination = join(destinationDir, artifactFile)
     publishAtomically(stagedImage, destination, force)

@@ -59,6 +59,33 @@ function assertPlainFile(path, label) {
   return stat
 }
 
+function assertMode(path, expected, label) {
+  const mode = lstatSync(path).mode & 0o7777
+  if (mode !== expected) {
+    throw new LinuxAppImageVerificationError(
+      `${label} mode must be ${expected.toString(8)}, found ${mode.toString(8)}`,
+    )
+  }
+  return mode
+}
+
+function assertExactDirectoryModes(directory) {
+  const stat = lstatSync(directory)
+  if (stat.isSymbolicLink() || !stat.isDirectory()) {
+    throw new LinuxAppImageVerificationError(`AppDir directory must be plain: ${directory}`)
+  }
+  assertMode(directory, 0o755, 'AppDir directory')
+  let count = 1
+  for (const name of readdirSync(directory).sort()) {
+    const path = join(directory, name)
+    const child = lstatSync(path)
+    if (child.isDirectory()) {
+      count += assertExactDirectoryModes(path)
+    }
+  }
+  return count
+}
+
 function assertExactRootEntries(appDir) {
   const expected = ['.DirIcon', 'AppRun', 'agent-inbox.desktop', 'agent-inbox.png', 'usr']
   const actual = readdirSync(appDir).sort()
@@ -289,6 +316,7 @@ export function verifyLinuxX64AppImage({
     )
   }
   const stat = assertPlainFile(artifact, 'AppImage artifact')
+  assertMode(artifact, 0o755, 'AppImage artifact')
   try {
     accessSync(artifact, constants.X_OK)
   } catch (err) {
@@ -320,23 +348,27 @@ export function verifyLinuxX64AppImage({
   const extracted = extractAppImage(artifact)
   try {
     assertExactRootEntries(extracted.appDir)
+    const appDirDirectoryCount = assertExactDirectoryModes(extracted.appDir)
     const dirIcon = join(extracted.appDir, '.DirIcon')
     if (!lstatSync(dirIcon).isSymbolicLink() || readlinkSync(dirIcon) !== appImageInputs.layout.iconFile) {
       throw new LinuxAppImageVerificationError('.DirIcon must link exactly to agent-inbox.png')
     }
     const appRun = join(extracted.appDir, appImageInputs.layout.appRun)
     assertPlainFile(appRun, 'AppRun')
+    assertMode(appRun, 0o755, 'AppRun')
     accessSync(appRun, constants.X_OK)
     if (readFileSync(appRun, 'utf8') !== renderAppRun(appImageInputs)) {
       throw new LinuxAppImageVerificationError('AppRun content does not match the pinned launcher')
     }
     const desktop = join(extracted.appDir, appImageInputs.layout.desktopFile)
     assertPlainFile(desktop, 'desktop metadata')
+    assertMode(desktop, 0o644, 'desktop metadata')
     if (readFileSync(desktop, 'utf8') !== renderDesktopEntry(appImageInputs, packageVersion)) {
       throw new LinuxAppImageVerificationError('desktop metadata does not match the pinned package contract')
     }
     const icon = join(extracted.appDir, appImageInputs.layout.iconFile)
     assertPlainFile(icon, 'AppImage icon')
+    assertMode(icon, 0o644, 'AppImage icon')
     if (sha256File(icon) !== appImageInputs.icon.sha256) {
       throw new LinuxAppImageVerificationError('packaged AppImage icon SHA-256 mismatch')
     }
@@ -374,6 +406,11 @@ export function verifyLinuxX64AppImage({
       embeddedDigestMd5: runtimePrefix.embeddedDigestMd5,
       runtimeDigestSection: runtimePrefix.digestSection,
       executableMode: stat.mode & 0o777,
+      appDirDirectoryMode: 0o755,
+      appDirDirectoryCount,
+      appRunMode: 0o755,
+      desktopMode: 0o644,
+      iconMode: 0o644,
       chromeSandboxMode: sandboxStat.mode & 0o7777,
       outerCompatibility,
       appDirTreeDigest: treeIdentity(extracted.appDir),

@@ -204,6 +204,8 @@ export async function buildThinApp({
       '--version', pkg.version,
       '--source-root', repoRoot,
       '--payload-root', stageRoot,
+      '--runtime-key', 'darwin-arm64',
+      '--runtime-key', 'darwin-x64',
       '--payload', 'darwin-arm64=runtime/darwin-arm64',
       '--payload', 'darwin-x64=runtime/darwin-x64',
     ], {

@@ -6,6 +6,7 @@ on:
     paths:
       - ".github/workflows/macos-universal.yml"
       - "electron/**"
+      - "electron/runtime-targets.cjs"
       - "release/**"
       - "scripts/archive-tree.mjs"
       - "scripts/assemble-macos-release.mjs"

@@ -35,6 +35,14 @@ jobs:
       - run: npm ci
       - name: Verify native Setup lock lease
         run: npx vitest run test/setup-lock.test.ts
+      - name: Verify native Linux release Setup path
+        if: runner.os == 'Linux'
+        run: >-
+          npx vitest run
+          test/package-stamp.test.ts
+          test/setup-runner.test.ts
+          test/install-runtime.test.ts
+          test/setup-lock.test.ts
       - run: npm test
       - run: npm run typecheck
       - run: npm run build

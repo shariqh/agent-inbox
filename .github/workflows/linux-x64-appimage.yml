@@ -130,6 +130,7 @@ jobs:
             --device /dev/fuse \
             --cap-add SYS_ADMIN \
             --security-opt apparmor:unconfined \
+            --security-opt seccomp=unconfined \
             -e "ARTIFACT=$ARTIFACT" \
             -v "$PWD/build/appimage:/artifacts:ro" \
             -v "$PWD/scripts/smoke-linux-appimage.sh:/gate/smoke-linux-appimage.sh:ro" \
@@ -155,6 +156,8 @@ jobs:
           VERSION="$(node -p "require('./package.json').version")"
           ARTIFACT="Agent-Inbox-v${VERSION}-linux-x86_64.AppImage"
           docker run --rm --platform linux/amd64 \
+            --security-opt apparmor:unconfined \
+            --security-opt seccomp=unconfined \
             -e "ARTIFACT=$ARTIFACT" \
             -v "$PWD/build/appimage:/artifacts:ro" \
             -v "$PWD/scripts/smoke-linux-appimage.sh:/gate/smoke-linux-appimage.sh:ro" \

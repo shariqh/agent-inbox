@@ -129,9 +129,23 @@ function safeElfNumber(value, label) {
   return Number(value)
 }
 
+function assertElfSpan(offset, size, total, label) {
+  if (
+    !Number.isSafeInteger(offset) ||
+    !Number.isSafeInteger(size) ||
+    offset < 0 ||
+    size < 0 ||
+    offset > total ||
+    size > total - offset
+  ) {
+    throw new LinuxAppImageVerificationError(`${label} is out of bounds`)
+  }
+}
+
 function elfSection(bytes, wantedName) {
   if (
     bytes.length < 64 ||
+    !bytes.subarray(0, 4).equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46])) ||
     bytes[4] !== 2 ||
     bytes[5] !== 1
   ) {
@@ -144,35 +158,47 @@ function elfSection(bytes, wantedName) {
   if (
     sectionEntrySize < 64 ||
     sectionCount === 0 ||
-    namesIndex >= sectionCount ||
-    sectionTableOffset + sectionEntrySize * sectionCount > bytes.length
+    namesIndex === 0 ||
+    namesIndex >= sectionCount
   ) {
     throw new LinuxAppImageVerificationError('AppImage runtime has an invalid ELF section table')
   }
+  assertElfSpan(
+    sectionTableOffset,
+    sectionEntrySize * sectionCount,
+    bytes.length,
+    'AppImage runtime ELF section table',
+  )
   const header = (index) => sectionTableOffset + sectionEntrySize * index
   const namesHeader = header(namesIndex)
+  if (bytes.readUInt32LE(namesHeader + 4) !== 3) {
+    throw new LinuxAppImageVerificationError('AppImage runtime ELF names section is not a string table')
+  }
   const namesOffset = safeElfNumber(bytes.readBigUInt64LE(namesHeader + 0x18), 'ELF names offset')
   const namesSize = safeElfNumber(bytes.readBigUInt64LE(namesHeader + 0x20), 'ELF names size')
-  if (namesOffset + namesSize > bytes.length) {
-    throw new LinuxAppImageVerificationError('AppImage runtime ELF names table is out of bounds')
-  }
+  assertElfSpan(namesOffset, namesSize, bytes.length, 'AppImage runtime ELF names table')
+  let found
   for (let index = 0; index < sectionCount; index += 1) {
     const sectionHeader = header(index)
     const nameOffset = bytes.readUInt32LE(sectionHeader)
-    if (nameOffset >= namesSize) continue
+    if (nameOffset >= namesSize) {
+      throw new LinuxAppImageVerificationError('AppImage runtime ELF section name is out of bounds')
+    }
     const nameEnd = bytes.indexOf(0, namesOffset + nameOffset)
-    if (nameEnd < 0 || nameEnd > namesOffset + namesSize) {
+    if (nameEnd < 0 || nameEnd >= namesOffset + namesSize) {
       throw new LinuxAppImageVerificationError('AppImage runtime ELF section name is invalid')
     }
     const name = bytes.toString('utf8', namesOffset + nameOffset, nameEnd)
     if (name !== wantedName) continue
     const offset = safeElfNumber(bytes.readBigUInt64LE(sectionHeader + 0x18), `${name} offset`)
     const size = safeElfNumber(bytes.readBigUInt64LE(sectionHeader + 0x20), `${name} size`)
-    if (offset + size > bytes.length) {
-      throw new LinuxAppImageVerificationError(`${name} section is out of bounds`)
+    assertElfSpan(offset, size, bytes.length, `${name} section`)
+    if (found) {
+      throw new LinuxAppImageVerificationError(`AppImage runtime has duplicate ${wantedName} sections`)
     }
-    return { offset, size }
+    found = { offset, size }
   }
+  if (found) return found
   throw new LinuxAppImageVerificationError(`AppImage runtime is missing ${wantedName}`)
 }
 

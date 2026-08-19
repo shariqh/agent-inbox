@@ -96,9 +96,10 @@ describe('Linux x64 AppImage packaging', () => {
       '#!/bin/sh',
       'set -eu',
       'APPDIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"',
-      'exec "$APPDIR/usr/lib/agent-inbox/Agent Inbox" "$@"',
+      'exec "$APPDIR/usr/lib/agent-inbox/Agent Inbox" --disable-setuid-sandbox "$@"',
       '',
     ].join('\n'))
+    expect(renderAppRun(inputs)).not.toContain('--no-sandbox')
     expect(renderDesktopEntry(inputs, '1.0.1')).toBe([
       '[Desktop Entry]',
       'Type=Application',
@@ -125,6 +126,7 @@ describe('Linux x64 AppImage packaging', () => {
     bytes.writeUInt16LE(1, 0x3e)
     const names = Buffer.from('\0.shstrtab\0.digest_md5\0')
     bytes.writeUInt32LE(1, 128)
+    bytes.writeUInt32LE(3, 128 + 4)
     bytes.writeBigUInt64LE(320n, 128 + 0x18)
     bytes.writeBigUInt64LE(BigInt(names.length), 128 + 0x20)
     bytes.writeUInt32LE(11, 192)
@@ -133,6 +135,11 @@ describe('Linux x64 AppImage packaging', () => {
     names.copy(bytes, 320)
     writeFileSync(runtime, bytes)
     const expectedSha256 = sha256File(runtime)
+
+    expect(() => verifyNormalizedRuntimePrefix(runtime, {
+      size: bytes.length,
+      sha256: expectedSha256,
+    })).toThrow(/no embedded MD5 digest/)
 
     bytes.fill(0xab, 400, 416)
     writeFileSync(runtime, bytes)
@@ -151,6 +158,47 @@ describe('Linux x64 AppImage packaging', () => {
       size: bytes.length,
       sha256: expectedSha256,
     })).toThrow(/normalized AppImage runtime SHA-256 mismatch/)
+
+    bytes[300] = 0
+    bytes.writeBigUInt64LE(15n, 192 + 0x20)
+    writeFileSync(runtime, bytes)
+    expect(() => verifyNormalizedRuntimePrefix(runtime, {
+      size: bytes.length,
+      sha256: expectedSha256,
+    })).toThrow(/\.digest_md5 size must be 16 bytes/)
+
+    bytes.writeBigUInt64LE(16n, 192 + 0x20)
+    bytes.writeBigUInt64LE(BigInt(names.length - 1), 128 + 0x20)
+    writeFileSync(runtime, bytes)
+    expect(() => verifyNormalizedRuntimePrefix(runtime, {
+      size: bytes.length,
+      sha256: expectedSha256,
+    })).toThrow(/ELF section name is invalid/)
+
+    bytes.writeBigUInt64LE(BigInt(names.length), 128 + 0x20)
+    bytes.writeUInt16LE(4, 0x3c)
+    bytes.writeUInt32LE(11, 256)
+    bytes.writeBigUInt64LE(416n, 256 + 0x18)
+    bytes.writeBigUInt64LE(16n, 256 + 0x20)
+    bytes.fill(0xcd, 416, 432)
+    writeFileSync(runtime, bytes)
+    expect(() => verifyNormalizedRuntimePrefix(runtime, {
+      size: bytes.length,
+      sha256: expectedSha256,
+    })).toThrow(/duplicate \.digest_md5 sections/)
+
+    bytes.writeUInt16LE(3, 0x3c)
+    bytes.writeBigUInt64LE(BigInt(Number.MAX_SAFE_INTEGER) + 1n, 128 + 0x18)
+    writeFileSync(runtime, bytes)
+    expect(() => verifyNormalizedRuntimePrefix(runtime, {
+      size: bytes.length,
+      sha256: expectedSha256,
+    })).toThrow(/ELF names offset exceeds the safe integer range/)
+
+    expect(() => verifyNormalizedRuntimePrefix(runtime, {
+      size: bytes.length + 1,
+      sha256: expectedSha256,
+    })).toThrow(/shorter than the pinned type-2 runtime/)
   })
 
   it.runIf(process.platform !== 'linux' || process.arch !== 'x64')(
@@ -179,6 +227,10 @@ describe('Linux x64 AppImage packaging', () => {
     expect(smoke).toContain('APPIMAGE_EXTRACT_AND_RUN=1')
     expect(smoke).toContain('"TMPDIR=$SCRATCH/tmp"')
     expect(smoke).toContain('chmod 0700 "$SCRATCH/tmp"')
+    expect(smoke).toContain('unshare --user --map-root-user true')
+    expect(smoke).toContain("'^NoNewPrivs:[[:space:]]+1$'")
+    expect(smoke).toContain("'^Seccomp:[[:space:]]+2$'")
+    expect(smoke).toContain('"/proc/$pid/ns/user"')
     expect(smoke).toContain('x-agent-inbox-local-boundary: loopback-v1')
     expect(smoke).not.toContain('--no-sandbox')
     expect(smoke).not.toMatch(/(?:^|\s)node(?:\s|$)/m)

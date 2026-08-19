@@ -65,7 +65,7 @@ export function renderAppRun(inputs) {
     '#!/bin/sh',
     'set -eu',
     'APPDIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"',
-    `exec "$APPDIR/${inputs.layout.applicationPath}/Agent Inbox" "$@"`,
+    `exec "$APPDIR/${inputs.layout.applicationPath}/Agent Inbox" --disable-setuid-sandbox "$@"`,
     '',
   ].join('\n')
 }

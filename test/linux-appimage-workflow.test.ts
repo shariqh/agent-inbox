@@ -51,6 +51,8 @@ describe('Linux x64 AppImage workflow', () => {
     expect(workflow).toContain('--device /dev/fuse')
     expect(workflow).toContain('--mode fuse')
     expect(workflow).toContain('--mode extract')
+    expect(workflow.match(/--security-opt apparmor:unconfined/g)).toHaveLength(2)
+    expect(workflow.match(/--security-opt seccomp=unconfined/g)).toHaveLength(2)
     expect(workflow).toContain('! command -v node')
     expect(workflow).toContain('runuser -u appuser')
     expect(workflow).not.toContain('--no-sandbox')

@@ -98,19 +98,20 @@ tool before execution, and emits:
 The final verifier checks the outer type-2 AppImage marker, executable mode,
 x86-64 ELF identity and libc floor; parses the runtime ELF section table,
 normalizes only appimagetool's reserved 16-byte `.digest_md5` mutation, and
-requires the resulting prefix SHA-256 to equal the exact pinned runtime; extracts the image
-without FUSE; requires the exact AppDir root; validates the launcher, desktop
-version/name metadata, icon digest, and Chromium sandbox mode; then reruns the
-complete thin-folder ELF, ABI, addon, runtime, Setup-selection, source-commit,
-and single-`linux-x64` payload gates. The extracted inner application tree and
-version must exactly match the already-verified source folder; the sole
-permission transformation is the standard AppImage `chrome-sandbox` mode from
-the Electron archive's exact `0755` to the packaged setuid-root `4755`; the
-builder rejects privileged mode bits on every source entry, and the final
-verifier requires the sandbox to be the sole privileged entry. appimagetool
-runs from an empty isolated working directory and HOME, so an ambient
-`.appimageignore` cannot alter the output. CI builds the AppImage twice from
-the same inputs and requires byte-identical artifacts, checksums, and reports.
+requires the resulting prefix SHA-256 to equal the exact pinned runtime;
+extracts the image without FUSE; requires the exact AppDir root; validates the
+launcher, desktop version/name metadata, icon digest, and Chromium sandbox mode;
+then reruns the complete thin-folder ELF, ABI, addon, runtime, Setup-selection,
+source-commit, and single-`linux-x64` payload gates. The extracted inner
+application tree and version must exactly match the already-verified source
+folder; the sole permission transformation is the standard AppImage
+`chrome-sandbox` mode from the Electron archive's exact `0755` to the packaged
+setuid-root `4755`; the builder rejects privileged mode bits on every source
+entry, and the final verifier requires the sandbox to be the sole privileged
+entry. appimagetool runs from an empty isolated working directory and HOME, so
+an ambient `.appimageignore` cannot alter the output. CI builds the AppImage
+twice from the same inputs and requires byte-identical artifacts, checksums, and
+reports.
 
 ## Launch requirements and no-FUSE fallback
 
@@ -118,7 +119,12 @@ The tested baseline is x86-64 Ubuntu 22.04 with glibc 2.34 and the desktop
 runtime libraries installed explicitly by
 `.github/workflows/linux-x64-appimage.yml`: GTK 3, NSS, ALSA, ATK bridge, CUPS,
 DRM/GBM, X11 composition/damage/fix/randr/xss, xkbcommon, CA certificates, and
-an X server. Normal AppImage mounting additionally requires FUSE.
+an X server. Normal AppImage mounting additionally requires FUSE. Both launch
+paths require unprivileged user namespaces. The AppRun launcher passes
+Chromium's `--disable-setuid-sandbox` because FUSE mounts do not honor setuid
+and an unprivileged extract-and-run cannot preserve root ownership; this leaves
+Chromium's user-namespace and seccomp sandboxes enabled and never adds
+`--no-sandbox`.
 
 Run normally:
 
@@ -143,14 +149,22 @@ icons, or user data. Keep the unique mode-`0700` `TMPDIR`: the pinned AppImage
 runtime uses a predictable child name while extracting, so a shared `/tmp`
 base would let another local user prepopulate files before launch.
 
-The CI acceptance gate runs both paths as an unprivileged user, without
-`--no-sandbox`, in digest-pinned clean Ubuntu 22.04 containers. Each container
-receives only the final artifact and the smoke harness, has no repository
-checkout or system Node, isolates HOME, XDG configuration/cache/data/state, and
-the inbox database, then requires the packaged in-process viewer to answer on
-`127.0.0.1` with the hardened
+The CI acceptance gate runs both paths as an unprivileged user, with the
+user-namespace sandbox and without `--no-sandbox`, in digest-pinned clean Ubuntu
+22.04 containers. Each container receives only the final artifact and the smoke
+harness, has no repository checkout or system Node, isolates HOME, XDG
+configuration/cache/data/state, and the inbox database, then requires the
+packaged in-process viewer to answer on `127.0.0.1` with the hardened
 `x-agent-inbox-local-boundary: loopback-v1` marker. The no-FUSE container has
 no `/dev/fuse`; the normal container receives the FUSE device explicitly.
+Docker's outer AppArmor and seccomp profiles are disabled for both containers
+because their default namespace restrictions do not model a desktop host; the
+gate first proves the unprivileged user-namespace prerequisite with `unshare`,
+then requires a live Chromium child to have entered a distinct user namespace
+with `NoNewPrivs: 1` and seccomp filter mode 2. This `/proc` evidence proves
+those kernel mechanisms are active for at least one Chromium child; it does not
+instrument Chromium's internal sandbox policy or claim that every child uses
+the same isolation layers.
 
 ## Retained limitations
 

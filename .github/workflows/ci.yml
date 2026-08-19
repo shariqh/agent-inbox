@@ -29,10 +29,12 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - name: Install macOS lock utility
+      - name: Install pre-macOS-15 flock fallback
         if: runner.os == 'macOS'
         run: brew install flock
       - run: npm ci
+      - name: Verify native Setup lock lease
+        run: npx vitest run test/setup-lock.test.ts
       - run: npm test
       - run: npm run typecheck
       - run: npm run build

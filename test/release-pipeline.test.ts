@@ -552,6 +552,34 @@ describe('universal finalization contract', () => {
     expect(staging).toContain("'setup-filesystem.cjs'")
   })
 
+  it('keeps the shared Setup lease in payload verification, package smoke, and native workflows', () => {
+    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+    const verifier = readFileSync(join(root, 'electron', 'runtime-verify.cjs'), 'utf8')
+    const staging = readFileSync(join(root, 'scripts', 'stage-runtime.mjs'), 'utf8')
+    const ci = readFileSync(join(root, '.github', 'workflows', 'ci.yml'), 'utf8')
+    const universal = readFileSync(join(root, '.github', 'workflows', 'macos-universal.yml'), 'utf8')
+    const trigger = universal.slice(
+      universal.indexOf('  pull_request:'),
+      universal.indexOf('\npermissions:'),
+    )
+
+    expect(pkg.scripts['package:smoke']).toContain('test/setup-lock.test.ts')
+    expect(verifier).toContain("'scripts/setup-lock.sh'")
+    expect(staging).toContain("'setup-lock.sh'")
+    expect(ci).toContain('os: [ubuntu-latest, macos-14]')
+    expect(ci).toContain('brew install flock')
+    expect(ci).toContain('npx vitest run test/setup-lock.test.ts')
+    expect(universal).toContain('npx vitest run test/setup-lock.test.ts')
+    for (const path of [
+      'scripts/install-agents.sh',
+      'scripts/install-hooks.sh',
+      'scripts/setup-lock.sh',
+      'test/setup-lock.test.ts',
+    ]) {
+      expect(trigger).toContain(`      - "${path}"`)
+    }
+  })
+
   it('pins every repository workflow action and disables checkout credential persistence', () => {
     const workflowsDir = join(root, '.github', 'workflows')
     const workflowFiles = readdirSync(workflowsDir)

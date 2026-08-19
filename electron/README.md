@@ -108,10 +108,14 @@ table is not a Setup capability list: the active macOS release profile remains e
 a platform has a verified staging and installer adapter. Windows arm64 is deliberately
 outside the current target set.
 
-The Darwin shell acquires its user lock before its payload-internal verification. Graceful
-termination attempts transactional rollback, but forced `SIGKILL` escalation can end
-without shell or filesystem-adapter cleanup; Setup retains that existing cancellation
-behavior.
+The mutating shell sources the verified adjacent `scripts/setup-lock.sh` and owns
+fd 9 itself for the full transaction. Darwin uses descriptor-mode
+`/usr/bin/lockf` when present and otherwise same-domain `flock`; Linux source
+setup uses `flock` only. The helper is hashed with the runtime payload, but
+sourcing it by path after the final app-side verification remains inside the
+existing verify-to-execute window. Graceful termination attempts transactional
+rollback, while forced `SIGKILL` escalation can end without shell or
+filesystem-adapter cleanup; Setup retains that cancellation behavior.
 
 Layer 1 leaves the portable app unsigned. The signing layer must finalize the layout,
 sign every nested runtime Mach-O, regenerate both manifests from those signed bytes,

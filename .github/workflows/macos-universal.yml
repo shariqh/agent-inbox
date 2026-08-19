@@ -14,6 +14,9 @@ on:
       - "scripts/native-runtime-adapter.mjs"
       - "scripts/release-inputs.mjs"
       - "scripts/runtime-payload.mjs"
+      - "scripts/install-agents.sh"
+      - "scripts/install-hooks.sh"
+      - "scripts/setup-lock.sh"
       - "scripts/setup-filesystem.cjs"
       - "scripts/setup-filesystem.d.cts"
       - "scripts/runtime-targets.mjs"
@@ -23,6 +26,7 @@ on:
       - "scripts/stage-runtime.mjs"
       - "scripts/tree-identity.mjs"
       - "scripts/write-setup-info.mjs"
+      - "test/setup-lock.test.ts"
       - "package.json"
       - "package-lock.json"
       - "LICENSE"
@@ -80,6 +84,8 @@ jobs:
           architecture: ${{ matrix.arch }}
           cache: npm
       - run: npm ci
+      - name: Verify native Setup lock lease
+        run: npx vitest run test/setup-lock.test.ts
       - run: echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
       - run: npm run build
       - name: Stage verified native runtime

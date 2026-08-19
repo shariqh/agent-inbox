@@ -17,6 +17,7 @@ import { describe, expect, it } from 'vitest'
 
 const REPO = resolve(import.meta.dirname, '..')
 const SCRIPT = join(REPO, 'scripts', 'install-agents.sh')
+const HOOK_SCRIPT = join(REPO, 'scripts', 'install-hooks.sh')
 const BEGIN = '<!-- agent-inbox:begin -->'
 const END = '<!-- agent-inbox:end -->'
 const SNIPPET_PATH = join(REPO, 'docs', 'reporting-snippet.md')
@@ -69,6 +70,7 @@ case "$1:$2" in
       while :; do sleep 1; done
     fi
     if [ "\${HANG_ADD:-}" = "$name" ]; then
+      printf '%s\\n' "$$" > "$INSTALL_STATE/$name.hanging-pid"
       touch "$INSTALL_STATE/$name.hanging"
       trap 'exit 143' TERM INT
       while :; do sleep 1; done
@@ -93,13 +95,13 @@ esac
     writeFileSync(path, cli)
     chmodSync(path, 0o755)
   }
-  const lockCommand = spawnSync(
-    '/bin/sh',
-    ['-c', 'command -v lockf || command -v flock'],
-    { encoding: 'utf8' },
-  ).stdout.trim()
-  if (!lockCommand) throw new Error('install-agents tests require lockf or flock')
-  symlinkSync(lockCommand, join(fakebin, lockCommand.slice(lockCommand.lastIndexOf('/') + 1)))
+  writeFileSync(join(fakebin, 'jq'), '#!/bin/sh\nexit 0\n')
+  chmodSync(join(fakebin, 'jq'), 0o755)
+  if (process.platform !== 'darwin' || !existsSync('/usr/bin/lockf')) {
+    const lockCommand = spawnSync('/bin/sh', ['-c', 'command -v flock'], { encoding: 'utf8' }).stdout.trim()
+    if (!lockCommand) throw new Error('install-agents tests require flock')
+    symlinkSync(lockCommand, join(fakebin, 'flock'))
+  }
 
   const selftest = join(home, 'selftest.js')
   const selftestMarker = join(state, 'selftest-ran')
@@ -177,6 +179,19 @@ async function waitFor(path: string): Promise<void> {
   while (!existsSync(path)) {
     if (Date.now() >= deadline) throw new Error(`timed out waiting for ${path}`)
     await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+}
+
+async function waitForGone(pid: number): Promise<void> {
+  const deadline = Date.now() + 3000
+  while (true) {
+    try {
+      process.kill(pid, 0)
+    } catch {
+      return
+    }
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for pid ${pid}`)
+    await new Promise((resolveWait) => setTimeout(resolveWait, 20))
   }
 }
 
@@ -397,6 +412,13 @@ describe('agent setup installer', () => {
     expect(second.err).toMatch(/another setup is already running/i)
     expect(existsSync(f.log)).toBe(true)
     expect(readFileSync(f.log, 'utf8')).toBe('')
+    const hooks = spawnSync('bash', [HOOK_SCRIPT, '--apply', '--uninstall'], {
+      encoding: 'utf8',
+      env: f.env,
+    })
+    expect(hooks.status).not.toBe(0)
+    expect(hooks.stderr).toMatch(/install-hooks: another setup is already running/i)
+    expect(existsSync(join(f.home, '.claude', 'settings.json'))).toBe(false)
     process.kill(-first.pid!, 'SIGTERM')
     await new Promise<number | null>((resolveCode) => first.on('close', resolveCode))
   })
@@ -422,8 +444,10 @@ describe('agent setup installer', () => {
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     await waitFor(join(f.state, 'claude.hanging'))
+    const mutatorPid = Number(readFileSync(join(f.state, 'claude.hanging-pid'), 'utf8').trim())
     process.kill(-first.pid!, 'SIGKILL')
     await new Promise<number | null>((resolveCode) => first.on('close', resolveCode))
+    await waitForGone(mutatorPid)
     delete f.env.HANG_ADD
 
     const result = run(f, ['--apply', '--target', 'copilot'])

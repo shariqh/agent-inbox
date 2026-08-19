@@ -426,11 +426,19 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   terminate without shell or adapter cleanup, so never claim rollback precedes every
   terminal result. A failed post-publication cleanup is a committed failure and retains
   its recovery path rather than deleting the only prior tree.
-  Every applied install also holds a kernel-backed user-scoped lock on
-  `~/.agent-inbox/install-agents.lock` across preflight, mutation, and rollback,
-  using `lockf` on macOS or `flock` on Linux. The descriptor stays open for the
-  whole script, so contention fails closed and the kernel releases ownership
-  after normal exit, signals, or crashes; file existence never implies ownership.
+  Every applied agent or hook install sources the adjacent
+  `scripts/setup-lock.sh` and holds one kernel-backed user-scoped lease on
+  `~/.agent-inbox/install-agents.lock` across preflight, mutation, and rollback.
+  The mutating Bash process opens fd 9 itself: Darwin prefers descriptor-mode
+  `/usr/bin/lockf` and falls back to same-domain `flock`; Linux uses `flock`
+  only. Repeated acquisition in one shell must never reopen fd 9. Every existing
+  non-regular lock path is rejected before open, and only conflict exit 75 means
+  another setup is running. The descriptor stays open for the whole process
+  tree, so an in-flight child cannot outlive a helper-held lease; whole-group
+  exit/crash releases ownership, while an unexpectedly long-lived descendant
+  can retain it. File existence never implies ownership. The helper is part of
+  the signed runtime manifest, but sourcing it by path extends the already
+  retained verify-to-execute race rather than closing it.
 
 ### DOM harness — what it can and cannot see
 

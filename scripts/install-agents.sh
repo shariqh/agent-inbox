@@ -17,7 +17,8 @@
 #   install-agents.sh --apply --runtime-source <dir> --runtime-digest sha256:<hex>
 set -u
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 APPLY=0
 FORCE=0
 UNINSTALL=0
@@ -75,34 +76,22 @@ case "$TARGET" in
   *) echo "install-agents: --target must be all, claude, or copilot" >&2; exit 2 ;;
 esac
 
-LOCK_FILE="${AGENT_INBOX_INSTALL_LOCK_DIR:-$HOME/.agent-inbox/install-agents.lock}"
-LOCK_ACQUIRED=0
-acquire_install_lock() {
-  mkdir -p "$(dirname "$LOCK_FILE")" || return 1
-  if [ -d "$LOCK_FILE" ] || [ -L "$LOCK_FILE" ]; then
-    echo "install-agents: install lock path must be a regular file: $LOCK_FILE" >&2
-    return 1
-  fi
-  exec 9>> "$LOCK_FILE" || return 1
-  if command -v lockf >/dev/null 2>&1; then
-    lockf -s -t 0 9 || {
-      echo "install-agents: another setup is already running" >&2
-      return 1
-    }
-  elif command -v flock >/dev/null 2>&1; then
-    flock -n 9 || {
-      echo "install-agents: another setup is already running" >&2
-      return 1
-    }
-  else
-    echo "install-agents: setup requires lockf or flock for safe concurrent installation" >&2
-    return 1
-  fi
-  LOCK_ACQUIRED=1
-}
+SETUP_LOCK_HELPER="$SCRIPT_DIR/setup-lock.sh"
+if [ ! -r "$SETUP_LOCK_HELPER" ]; then
+  echo "install-agents: failed to load shared setup lock helper: $SETUP_LOCK_HELPER" >&2
+  exit 1
+fi
+if ! source "$SETUP_LOCK_HELPER"; then
+  echo "install-agents: failed to load shared setup lock helper: $SETUP_LOCK_HELPER" >&2
+  exit 1
+fi
+if ! declare -F acquire_setup_lock >/dev/null; then
+  echo "install-agents: failed to load shared setup lock helper: $SETUP_LOCK_HELPER" >&2
+  exit 1
+fi
 
 if [ "$APPLY" -eq 1 ]; then
-  acquire_install_lock || exit 1
+  acquire_setup_lock install-agents || exit 1
 fi
 
 stable_path() {

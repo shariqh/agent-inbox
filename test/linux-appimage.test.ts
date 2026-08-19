@@ -19,8 +19,11 @@ import {
   renderDesktopEntry,
   stageLinuxAppImageDirectory,
 } from '../scripts/build-linux-appimage.mjs'
-import { loadLinuxAppImageInputs } from '../scripts/linux-appimage-inputs.mjs'
-import { verifyLinuxX64AppImage } from '../scripts/verify-linux-appimage.mjs'
+import { loadLinuxAppImageInputs, sha256File } from '../scripts/linux-appimage-inputs.mjs'
+import {
+  verifyLinuxX64AppImage,
+  verifyNormalizedRuntimePrefix,
+} from '../scripts/verify-linux-appimage.mjs'
 
 describe('Linux x64 AppImage packaging', () => {
   it('derives the one canonical artifact name from an exact package version', () => {
@@ -111,6 +114,45 @@ describe('Linux x64 AppImage packaging', () => {
     expect(renderDesktopEntry(inputs, '1.0.1')).not.toMatch(/install|uninstall/i)
   })
 
+  it('normalizes only appimagetool reserved MD5 bytes in the pinned runtime prefix', () => {
+    const root = mkdtempSync(join(tmpdir(), 'appimage-runtime-prefix-'))
+    const runtime = join(root, 'runtime')
+    const bytes = Buffer.alloc(512)
+    bytes.set([0x7f, 0x45, 0x4c, 0x46, 2, 1])
+    bytes.writeBigUInt64LE(64n, 0x28)
+    bytes.writeUInt16LE(64, 0x3a)
+    bytes.writeUInt16LE(3, 0x3c)
+    bytes.writeUInt16LE(1, 0x3e)
+    const names = Buffer.from('\0.shstrtab\0.digest_md5\0')
+    bytes.writeUInt32LE(1, 128)
+    bytes.writeBigUInt64LE(320n, 128 + 0x18)
+    bytes.writeBigUInt64LE(BigInt(names.length), 128 + 0x20)
+    bytes.writeUInt32LE(11, 192)
+    bytes.writeBigUInt64LE(400n, 192 + 0x18)
+    bytes.writeBigUInt64LE(16n, 192 + 0x20)
+    names.copy(bytes, 320)
+    writeFileSync(runtime, bytes)
+    const expectedSha256 = sha256File(runtime)
+
+    bytes.fill(0xab, 400, 416)
+    writeFileSync(runtime, bytes)
+    expect(verifyNormalizedRuntimePrefix(runtime, {
+      size: bytes.length,
+      sha256: expectedSha256,
+    })).toMatchObject({
+      normalizedSha256: expectedSha256,
+      embeddedDigestMd5: 'ab'.repeat(16),
+      digestSection: { offset: 400, size: 16 },
+    })
+
+    bytes[300] = 1
+    writeFileSync(runtime, bytes)
+    expect(() => verifyNormalizedRuntimePrefix(runtime, {
+      size: bytes.length,
+      sha256: expectedSha256,
+    })).toThrow(/normalized AppImage runtime SHA-256 mismatch/)
+  })
+
   it.runIf(process.platform !== 'linux' || process.arch !== 'x64')(
     'rejects non-native build and verification before reading artifact inputs',
     async () => {
@@ -144,7 +186,8 @@ describe('Linux x64 AppImage packaging', () => {
     expect(build).toContain('cwd: home')
     expect(build).not.toContain('...process.env')
     expect(build).toContain('verification.innerAppTreeDigest !== thinVerification.appTreeDigest')
-    expect(verify).toContain('runtimePrefixSha256')
+    expect(verify).toContain('normalizedRuntimeSha256')
+    expect(verify).toContain("elfSection(prefix, '.digest_md5')")
     expect(verify).toContain('chromeSandboxMode')
   })
 })

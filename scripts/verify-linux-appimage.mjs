@@ -108,7 +108,7 @@ function assertAppImageMarker(path) {
   }
 }
 
-function sha256Prefix(path, size) {
+function readPrefix(path, size) {
   const buffer = Buffer.alloc(size)
   let fd
   try {
@@ -116,9 +116,93 @@ function sha256Prefix(path, size) {
     if (readSync(fd, buffer, 0, size, 0) !== size) {
       throw new LinuxAppImageVerificationError('AppImage is shorter than the pinned type-2 runtime')
     }
-    return createHash('sha256').update(buffer).digest('hex')
+    return buffer
   } finally {
     if (fd !== undefined) closeSync(fd)
+  }
+}
+
+function safeElfNumber(value, label) {
+  if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new LinuxAppImageVerificationError(`${label} exceeds the safe integer range`)
+  }
+  return Number(value)
+}
+
+function elfSection(bytes, wantedName) {
+  if (
+    bytes.length < 64 ||
+    bytes[4] !== 2 ||
+    bytes[5] !== 1
+  ) {
+    throw new LinuxAppImageVerificationError('pinned AppImage runtime must be 64-bit little-endian ELF')
+  }
+  const sectionTableOffset = safeElfNumber(bytes.readBigUInt64LE(0x28), 'ELF section table offset')
+  const sectionEntrySize = bytes.readUInt16LE(0x3a)
+  const sectionCount = bytes.readUInt16LE(0x3c)
+  const namesIndex = bytes.readUInt16LE(0x3e)
+  if (
+    sectionEntrySize < 64 ||
+    sectionCount === 0 ||
+    namesIndex >= sectionCount ||
+    sectionTableOffset + sectionEntrySize * sectionCount > bytes.length
+  ) {
+    throw new LinuxAppImageVerificationError('AppImage runtime has an invalid ELF section table')
+  }
+  const header = (index) => sectionTableOffset + sectionEntrySize * index
+  const namesHeader = header(namesIndex)
+  const namesOffset = safeElfNumber(bytes.readBigUInt64LE(namesHeader + 0x18), 'ELF names offset')
+  const namesSize = safeElfNumber(bytes.readBigUInt64LE(namesHeader + 0x20), 'ELF names size')
+  if (namesOffset + namesSize > bytes.length) {
+    throw new LinuxAppImageVerificationError('AppImage runtime ELF names table is out of bounds')
+  }
+  for (let index = 0; index < sectionCount; index += 1) {
+    const sectionHeader = header(index)
+    const nameOffset = bytes.readUInt32LE(sectionHeader)
+    if (nameOffset >= namesSize) continue
+    const nameEnd = bytes.indexOf(0, namesOffset + nameOffset)
+    if (nameEnd < 0 || nameEnd > namesOffset + namesSize) {
+      throw new LinuxAppImageVerificationError('AppImage runtime ELF section name is invalid')
+    }
+    const name = bytes.toString('utf8', namesOffset + nameOffset, nameEnd)
+    if (name !== wantedName) continue
+    const offset = safeElfNumber(bytes.readBigUInt64LE(sectionHeader + 0x18), `${name} offset`)
+    const size = safeElfNumber(bytes.readBigUInt64LE(sectionHeader + 0x20), `${name} size`)
+    if (offset + size > bytes.length) {
+      throw new LinuxAppImageVerificationError(`${name} section is out of bounds`)
+    }
+    return { offset, size }
+  }
+  throw new LinuxAppImageVerificationError(`AppImage runtime is missing ${wantedName}`)
+}
+
+export function verifyNormalizedRuntimePrefix(path, runtime) {
+  const prefix = readPrefix(path, runtime.size)
+  const rawSha256 = createHash('sha256').update(prefix).digest('hex')
+  const digestSection = elfSection(prefix, '.digest_md5')
+  if (digestSection.size !== 16) {
+    throw new LinuxAppImageVerificationError(
+      `.digest_md5 size must be 16 bytes, found ${digestSection.size}`,
+    )
+  }
+  const embeddedDigestMd5 = prefix
+    .subarray(digestSection.offset, digestSection.offset + digestSection.size)
+    .toString('hex')
+  if (/^0+$/.test(embeddedDigestMd5)) {
+    throw new LinuxAppImageVerificationError('AppImage runtime has no embedded MD5 digest')
+  }
+  prefix.fill(0, digestSection.offset, digestSection.offset + digestSection.size)
+  const normalizedSha256 = createHash('sha256').update(prefix).digest('hex')
+  if (normalizedSha256 !== runtime.sha256) {
+    throw new LinuxAppImageVerificationError(
+      `normalized AppImage runtime SHA-256 mismatch: expected ${runtime.sha256}, found ${normalizedSha256}`,
+    )
+  }
+  return {
+    rawSha256,
+    normalizedSha256,
+    embeddedDigestMd5,
+    digestSection,
   }
 }
 
@@ -196,12 +280,7 @@ export function verifyLinuxX64AppImage({
     )
   }
   const linuxInputs = loadLinuxReleaseInputs(linuxInputsFile)
-  const runtimePrefixSha256 = sha256Prefix(artifact, appImageInputs.runtime.size)
-  if (runtimePrefixSha256 !== appImageInputs.runtime.sha256) {
-    throw new LinuxAppImageVerificationError(
-      `AppImage runtime prefix SHA-256 mismatch: expected ${appImageInputs.runtime.sha256}, found ${runtimePrefixSha256}`,
-    )
-  }
+  const runtimePrefix = verifyNormalizedRuntimePrefix(artifact, appImageInputs.runtime)
   const outerCompatibility = assertBinaryCompatibility({
     path: artifact,
     label: 'AppImage runtime',
@@ -264,7 +343,10 @@ export function verifyLinuxX64AppImage({
       appImageType: 2,
       appImageSize: stat.size,
       appImageSha256,
-      runtimePrefixSha256,
+      runtimePrefixSha256: runtimePrefix.rawSha256,
+      normalizedRuntimeSha256: runtimePrefix.normalizedSha256,
+      embeddedDigestMd5: runtimePrefix.embeddedDigestMd5,
+      runtimeDigestSection: runtimePrefix.digestSection,
       executableMode: stat.mode & 0o777,
       chromeSandboxMode: sandboxStat.mode & 0o7777,
       outerCompatibility,

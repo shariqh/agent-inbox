@@ -95,8 +95,10 @@ tool before execution, and emits:
 - `Agent-Inbox-vX.Y.Z-linux-x86_64.AppImage.sha256`
 - `Agent-Inbox-vX.Y.Z-linux-x86_64.AppImage.report.json`
 
-The final verifier checks the outer type-2 AppImage marker, exact pinned runtime
-prefix, executable mode, x86-64 ELF identity and libc floor; extracts the image
+The final verifier checks the outer type-2 AppImage marker, executable mode,
+x86-64 ELF identity and libc floor; parses the runtime ELF section table,
+normalizes only appimagetool's reserved 16-byte `.digest_md5` mutation, and
+requires the resulting prefix SHA-256 to equal the exact pinned runtime; extracts the image
 without FUSE; requires the exact AppDir root; validates the launcher, desktop
 version/name metadata, icon digest, and Chromium sandbox mode; then reruns the
 complete thin-folder ELF, ABI, addon, runtime, Setup-selection, source-commit,

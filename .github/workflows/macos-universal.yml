@@ -12,6 +12,7 @@ on:
       - "scripts/assemble-macos-release.mjs"
       - "scripts/build-thin-app.mjs"
       - "scripts/license.mjs"
+      - "scripts/linux-release-inputs.mjs"
       - "scripts/native-runtime-adapter.mjs"
       - "scripts/release-inputs.mjs"
       - "scripts/runtime-payload.mjs"

@@ -12,6 +12,7 @@ import {
   nativeRuntimeAdapterFor,
   validateArchiveEntries,
 } from './native-runtime-adapter.mjs'
+import { loadLinuxReleaseInputs } from './linux-release-inputs.mjs'
 import { downloadArchive, loadReleaseInputs, verifyArchiveDigest } from './release-inputs.mjs'
 import { targetFor } from './runtime-targets.mjs'
 import { stageRuntime } from './stage-runtime.mjs'
@@ -41,12 +42,18 @@ function adapterFor(key) {
   }
 }
 
-function assertKnownRuntimeKey(key) {
+function knownTarget(key) {
   try {
-    targetFor(key)
+    return targetFor(key)
   } catch (err) {
     throw new NativeRuntimeStageError(err.message)
   }
+}
+
+function releaseInputsFor(target, inputsPath) {
+  if (target.platform === 'darwin') return loadReleaseInputs(inputsPath)
+  if (target.platform === 'linux') return loadLinuxReleaseInputs(inputsPath)
+  throw new NativeRuntimeStageError(`no release input profile for runtime target: ${target.key}`)
 }
 
 function runArchiveCommand(command, options) {
@@ -76,10 +83,10 @@ export async function stageNativeRuntime({
   cacheDir,
   force = false,
 }) {
-  assertKnownRuntimeKey(key)
+  const target = knownTarget(key)
   assertNativeRuntimeKey(key)
+  const inputs = releaseInputsFor(target, inputsPath)
   const adapter = adapterFor(key)
-  const inputs = loadReleaseInputs(inputsPath)
   const distribution = inputs.node.distributions[key]
   if (!distribution) throw new NativeRuntimeStageError(`unknown runtime key: ${key}`)
   const provenance = resolveSourceProvenance(repoRoot)
@@ -123,7 +130,15 @@ export async function stageNativeRuntime({
         `staged Node identity mismatch: expected ${inputs.node.version}/ABI ${inputs.node.modulesAbi}`,
       )
     }
-    return result
+    return {
+      ...result,
+      archiveIdentity: {
+        archive: distribution.archive,
+        root: distribution.root,
+        url: distribution.url,
+        sha256: verifyArchiveDigest(archive, distribution.sha256),
+      },
+    }
   } finally {
     rmSync(extractParent, { recursive: true, force: true })
   }
@@ -159,7 +174,10 @@ async function main(argv) {
     key: values.key,
     output: result.output,
     runtimeId: result.runtimeId,
-    archive: basename(values.archive ?? loadReleaseInputs(values.inputs).node.distributions[values.key].archive),
+    archive: basename(result.archiveIdentity.archive),
+    archiveRoot: result.archiveIdentity.root,
+    archiveUrl: result.archiveIdentity.url,
+    archiveSha256: result.archiveIdentity.sha256,
   })}\n`)
 }
 

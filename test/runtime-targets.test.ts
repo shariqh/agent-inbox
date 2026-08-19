@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  LINUX_RUNTIME_KEYS,
   MACOS_RUNTIME_KEYS,
   POSIX_SETUP_RUNTIME_KEYS,
   RUNTIME_TARGETS,
@@ -109,6 +110,8 @@ describe('portable runtime target contract', () => {
     }
     expect(Object.isFrozen(MACOS_RUNTIME_KEYS)).toBe(true)
     expect(MACOS_RUNTIME_KEYS).toEqual(['darwin-arm64', 'darwin-x64'])
+    expect(Object.isFrozen(LINUX_RUNTIME_KEYS)).toBe(true)
+    expect(LINUX_RUNTIME_KEYS).toEqual(['linux-arm64', 'linux-x64'])
     expect(Object.isFrozen(POSIX_SETUP_RUNTIME_KEYS)).toBe(true)
     expect(POSIX_SETUP_RUNTIME_KEYS).toEqual([
       'darwin-arm64',

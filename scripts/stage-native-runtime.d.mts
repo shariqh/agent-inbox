@@ -17,4 +17,10 @@ export function stageNativeRuntime(options: {
     nodeModulesAbi: string
     [key: string]: unknown
   }
+  archiveIdentity: {
+    archive: string
+    root: string
+    url: string
+    sha256: string
+  }
 }>

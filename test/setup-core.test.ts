@@ -79,7 +79,7 @@ function adapterFor(
 ): SetupExecutionAdapter {
   const host = hostFor(key)
   return Object.freeze({
-    id: 'darwin-shell-v1',
+    id: 'posix-shell-v1',
     host: Object.freeze(host),
     releaseKeys,
     targets,

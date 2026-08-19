@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest'
 
 const require = createRequire(import.meta.url)
 const PAYLOAD_CLI = resolve(import.meta.dirname, '..', 'scripts', 'runtime-payload.mjs')
+const SETUP_INFO_CLI = resolve(import.meta.dirname, '..', 'scripts', 'write-setup-info.mjs')
 const {
   canRunSetup,
   installerRepoRoot,
@@ -27,7 +28,7 @@ const {
     platform?: string
     arch?: string
     info?: unknown
-  }): { ok: boolean; reason?: string; key: string; path?: string; relativePath?: string; digest?: string }
+  }): { ok: boolean; reason?: string; key: string; path?: string; relativePath?: string; digest?: string; packageVersion?: string }
   runAgentInstall(opts: {
     repoRoot: string
     target: string
@@ -45,7 +46,7 @@ function selectRuntimePayload(opts: {
   platform?: string
   arch?: string
   info?: unknown
-}): { ok: boolean; reason?: string; key: string; path?: string; relativePath?: string; digest?: string } {
+}): { ok: boolean; reason?: string; key: string; path?: string; relativePath?: string; digest?: string; packageVersion?: string } {
   const info = opts.info as Record<string, unknown> | null | undefined
   return selectRuntimePayloadRaw({
     ...opts,
@@ -347,7 +348,7 @@ describe('selectRuntimePayload (issue #74)', () => {
     expect(spawned).toBe(false)
   })
 
-  it('rejects an unsupported platform/arch with no Rosetta/uname fallback', () => {
+  it('selects Linux exact-host payloads while preserving missing and cross-architecture refusal', () => {
     const { root, arm, x64 } = releaseRoot()
     const result = selectRuntimePayload({
       appRoot: root,
@@ -362,14 +363,48 @@ describe('selectRuntimePayload (issue #74)', () => {
     expect(result.reason).toBe('missing-payload')
     expect(result.key).toBe('darwin-x64')
 
-    const linux = selectRuntimePayload({
-      appRoot: root,
+    const linuxRoot = mkdtempSync(join(tmpdir(), 'runtime-select-linux-'))
+    const linuxPayloads = {
+      'linux-x64': stagePayloadDir(linuxRoot, 'runtime/linux-x64', { platform: 'linux', arch: 'x64' }),
+      'linux-arm64': stagePayloadDir(linuxRoot, 'runtime/linux-arm64', { platform: 'linux', arch: 'arm64' }),
+    }
+    for (const [arch, key] of [['x64', 'linux-x64'], ['arm64', 'linux-arm64']] as const) {
+      const linux = selectRuntimePayload({
+        appRoot: linuxRoot,
+        platform: 'linux',
+        arch,
+        info: { runtimePayloads: linuxPayloads },
+      })
+      expect(linux.ok).toBe(true)
+      expect(linux.key).toBe(key)
+    }
+
+    const crossArch = selectRuntimePayload({
+      appRoot: linuxRoot,
       platform: 'linux',
-      arch: 'x64',
-      info: { runtimePayloads: { 'darwin-arm64': arm, 'darwin-x64': x64 } },
+      arch: 'arm64',
+      info: { runtimePayloads: { 'linux-x64': linuxPayloads['linux-x64'] } },
     })
-    expect(linux.ok).toBe(false)
-    expect(linux.reason).toBe('unsupported-platform')
+    expect(crossArch).toMatchObject({ ok: false, reason: 'missing-payload', key: 'linux-arm64' })
+  })
+
+  it('rejects Win32 and unknown hosts even when metadata contains matching payload keys', () => {
+    const root = mkdtempSync(join(tmpdir(), 'runtime-select-unsupported-'))
+    const win32 = selectRuntimePayload({
+      appRoot: root,
+      platform: 'win32',
+      arch: 'x64',
+      info: { runtimePayloads: { 'win32-x64': { path: 'runtime/win32-x64', digest: `sha256:${'0'.repeat(64)}` } } },
+    })
+    expect(win32).toMatchObject({ ok: false, reason: 'unsupported-platform', key: 'win32-x64' })
+
+    const unknown = selectRuntimePayload({
+      appRoot: root,
+      platform: 'aix',
+      arch: 'ppc64',
+      info: { runtimePayloads: { 'aix-ppc64': { path: 'runtime/aix-ppc64', digest: `sha256:${'0'.repeat(64)}` } } },
+    })
+    expect(unknown).toMatchObject({ ok: false, reason: 'unsupported-platform', key: 'aix-ppc64' })
   })
 
   it('reports no-release-payloads for a dev/legacy bundle so callers fall back untouched', () => {
@@ -465,11 +500,11 @@ describe('selectRuntimePayload (issue #74)', () => {
     expect(result).toMatchObject({ ok: false, reason: 'symlinked-payload' })
   })
 
-  it.skipIf(process.platform !== 'darwin')('re-verifies a release payload immediately before spawn and refuses tampering', async () => {
+  it.skipIf(!['darwin', 'linux'].includes(process.platform))('re-verifies a release payload immediately before spawn and refuses tampering', async () => {
     const root = mkdtempSync(join(tmpdir(), 'runtime-reverify-'))
-    const key = `darwin-${process.arch}`
+    const key = `${process.platform}-${process.arch}`
     const payload = stagePayloadDir(root, `runtime/${key}`, {
-      platform: 'darwin',
+      platform: process.platform,
       arch: process.arch,
     })
     const payloadRoot = join(root, payload.path)
@@ -610,19 +645,70 @@ describe('selectRuntimePayload (issue #74)', () => {
 })
 
 describe('runAgentInstall runtime payload argv (issue #74)', () => {
-  it.skipIf(process.platform !== 'darwin')(
-    'refuses a valid payload for the other Darwin architecture even when both universal payloads verify',
+  it.skipIf(process.platform !== 'linux' || process.arch !== 'x64')(
+    'flows a baked linux-x64 release through exact selection, re-verification, trusted core, and fixed argv',
+    async () => {
+      const argsFile = join(tmpdir(), `setup-linux-release-args-${process.pid}-${Date.now()}`)
+      const root = mkdtempSync(join(tmpdir(), 'setup-linux-release-'))
+      const payload = stagePayloadDir(root, 'runtime/linux-x64', {
+        platform: 'linux',
+        arch: 'x64',
+        installerScript: `#!/bin/bash
+printf '%s\\n' "$@" > "$ARGS_FILE"
+`,
+      })
+      execFileSync(process.execPath, [
+        SETUP_INFO_CLI,
+        '--release', join(root, 'setup-info.json'),
+        '--version', '1.2.3',
+        '--runtime-key', 'linux-x64',
+        '--payload-root', root,
+        '--payload', 'linux-x64=runtime/linux-x64',
+      ])
+
+      const selected = selectRuntimePayloadRaw({ appRoot: root })
+      expect(selected).toMatchObject({
+        ok: true,
+        key: 'linux-x64',
+        relativePath: 'runtime/linux-x64',
+        packageVersion: '1.2.3',
+      })
+      if (!selected.ok || !selected.path || !selected.digest || !selected.packageVersion) {
+        throw new Error('expected a selected linux-x64 payload')
+      }
+
+      const result = await runAgentInstall({
+        repoRoot: selected.path,
+        target: 'all',
+        runtimePayload: {
+          key: selected.key,
+          path: selected.path,
+          digest: selected.digest,
+          packageVersion: selected.packageVersion,
+        },
+        env: { ...process.env, ARGS_FILE: argsFile },
+      })
+
+      expect(result).toMatchObject({ ok: true, exitCode: 0, cancelled: false, timedOut: false })
+      expect(readFileSync(argsFile, 'utf8')).toBe(
+        `--apply\n--target\nall\n--runtime-source\n${selected.path}\n--runtime-digest\n${payload.digest}\n`,
+      )
+    },
+  )
+
+  it.skipIf(!['darwin', 'linux'].includes(process.platform))(
+    'refuses a valid payload for the other POSIX architecture even when both payloads verify',
     async () => {
       const root = mkdtempSync(join(tmpdir(), 'setup-runtime-cross-arch-'))
-      const hostKey = `darwin-${process.arch}`
+      const hostKey = `${process.platform}-${process.arch}`
       const otherArch = process.arch === 'arm64' ? 'x64' : 'arm64'
-      const otherKey = `darwin-${otherArch}`
+      const otherKey = `${process.platform}-${otherArch}`
       stagePayloadDir(root, `runtime/${hostKey}`, {
-        platform: 'darwin',
+        platform: process.platform,
         arch: process.arch,
       })
       const other = stagePayloadDir(root, `runtime/${otherKey}`, {
-        platform: 'darwin',
+        platform: process.platform,
         arch: otherArch,
       })
       let spawned = false
@@ -648,12 +734,12 @@ describe('runAgentInstall runtime payload argv (issue #74)', () => {
     },
   )
 
-  it.skipIf(process.platform !== 'darwin')('passes explicit --runtime-source/--runtime-digest for a release install, and dev installs stay unchanged', async () => {
+  it.skipIf(!['darwin', 'linux'].includes(process.platform))('passes explicit --runtime-source/--runtime-digest for a release install, and dev installs stay unchanged', async () => {
     const argsFile = join(tmpdir(), `setup-runtime-args-${process.pid}-${Date.now()}`)
     const root = mkdtempSync(join(tmpdir(), 'setup-runtime-payload-'))
-    const key = `darwin-${process.arch}`
+    const key = `${process.platform}-${process.arch}`
     const payload = stagePayloadDir(root, `runtime/${key}`, {
-      platform: 'darwin',
+      platform: process.platform,
       arch: process.arch,
       installerScript: `#!/bin/bash
 printf '%s\\n' "$@" > "$ARGS_FILE"

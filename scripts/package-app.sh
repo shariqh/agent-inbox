@@ -40,6 +40,8 @@ if [ "$PORTABLE_RELEASE" -eq 1 ]; then
   VERSION="$(node -p "require('$ROOT/package.json').version")"
   node "$ROOT/scripts/write-setup-info.mjs" --release "$STAGE/setup-info.json" \
     --version "$VERSION" --source-root "$ROOT" --payload-root "$STAGE" \
+    --runtime-key darwin-arm64 \
+    --runtime-key darwin-x64 \
     --payload darwin-arm64=runtime/darwin-arm64 \
     --payload darwin-x64=runtime/darwin-x64
 else

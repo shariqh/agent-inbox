@@ -22,6 +22,12 @@ export interface RuntimeTarget {
 
 export const RUNTIME_TARGETS: Readonly<Record<RuntimeTargetKey, RuntimeTarget>>
 export const MACOS_RUNTIME_KEYS: readonly ['darwin-arm64', 'darwin-x64']
+export const POSIX_SETUP_RUNTIME_KEYS: readonly [
+  'darwin-arm64',
+  'darwin-x64',
+  'linux-arm64',
+  'linux-x64',
+]
 
 export function targetFor(key: string): RuntimeTarget
 export function nodeDistributionIdentity(nodeVersion: string, key: string): {

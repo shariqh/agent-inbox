@@ -375,7 +375,7 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   `contextIsolation:true` and `nodeIntegration:false`; `main.cjs` accepts only the
   three fixed targets and only while the app owns the exact local-viewer origin. A
   reused viewer never gets execution access, and there is no HTTP setup-write route.
-  `electron/setup-core.cjs` is the dependency-free control plane. It trusts the Darwin
+  `electron/setup-core.cjs` is the dependency-free control plane. It trusts the POSIX
   adapter's frozen host identity derived from the real `process.platform`/`process.arch`
   and requires the selected key plus verified manifest platform/architecture to match it
   exactly. The core carries only values the current adapter consumes; shell-internal
@@ -385,8 +385,9 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   delegate execution to the fixed-purpose `electron/setup-process.cjs` boundary, which
   constructs only exact `/bin/bash scripts/install-agents.sh` argv, bounds output/time,
   and preserves POSIX process-group cancellation. It accepts no executable or arbitrary
-  argv from callers, permits macOS/Linux shell execution, and fails closed before spawn on
-  Windows or unknown platforms. This does not enable non-Darwin release Setup.
+  argv from callers, permits exact-host macOS/Linux shell execution, and fails closed before
+  spawn on Windows or unknown platforms. Release setup-info callers declare an exact key set
+  from the shared runtime registry; current macOS callers remain Darwin-only.
   `electron/runtime-verify.cjs` is the externally anchored verifier: using the digest from
   signed-bundle `setup-info.json`, it synchronously verifies the complete manifest file
   list, hashes, modes, entrypoints and runtime identity at selection and immediately before
@@ -405,8 +406,8 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   This is point-in-time detection, not a stable handle: inode reuse and races after the
   last check remain. The modeled Win32 policy additionally rejects drive-relative,
   drive-less-rooted, device/extended-namespace and ADS-like paths plus junction/reparse
-  entries exposed as links. Those tests do not establish Windows support; release inputs
-  and Setup remain exact Darwin-only until native Windows evidence exists.
+  entries exposed as links. Those tests do not establish Windows support; Setup remains
+  limited to exact Darwin/Linux x64/arm64 hosts until native Windows evidence exists.
   Recursive rollback/cleanup must re-identify both the private scratch directory and any
   prior-tree backup immediately before mutation. An identity mismatch refuses restore or
   deletion and retains the untrusted path for recovery; never “clean up” a path whose

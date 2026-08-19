@@ -2,6 +2,7 @@ const { existsSync, lstatSync, readFileSync, realpathSync } = require('node:fs')
 const { isAbsolute, join, resolve, sep } = require('node:path')
 const { runTrustedSetup } = require('./setup-core.cjs')
 const { createSetupProcessRunner } = require('./setup-process.cjs')
+const { POSIX_SETUP_RUNTIME_KEYS } = require('./runtime-targets.cjs')
 const {
   EXPECTED_NODE_MAJOR,
   EXPECTED_NODE_MODULES_ABI,
@@ -14,11 +15,11 @@ const {
 const TARGETS = new Set(['all', 'claude', 'copilot'])
 const TARGET_NAMES = Object.freeze([...TARGETS])
 
-// The only two release-runtime keys issue #74 ships. Selection is STRICT —
-// `${process.platform}-${process.arch}` only, never `uname`, never a Rosetta
-// (x64-under-arm64) fallback. An unsupported host simply gets no payload.
-const RUNTIME_KEYS = new Set(['darwin-arm64', 'darwin-x64'])
-const RELEASE_KEYS = Object.freeze([...RUNTIME_KEYS])
+// Setup is available only for the four targets handled by the fixed-purpose
+// POSIX shell adapter. Selection is STRICT `${process.platform}-${process.arch}`
+// only: never uname, cross-architecture fallback, or Windows execution.
+const RUNTIME_KEYS = new Set(POSIX_SETUP_RUNTIME_KEYS)
+const RELEASE_KEYS = POSIX_SETUP_RUNTIME_KEYS
 const DIGEST_RE = /^(sha256:)?[0-9a-f]{64}$/i
 
 function runtimeKey(platform, arch) {
@@ -55,7 +56,7 @@ function nodeMajor(version) {
  *   - 'no-release-payloads' — this is a dev/legacy bundle (no `runtimePayloads`
  *     map at all); callers should fall back to the dev-checkout path untouched.
  *   - 'unsupported-platform' — this host's `${platform}-${arch}` key is not
- *     one of the two shipped architectures. No `uname`, no Rosetta fallback.
+ *     one of the four POSIX Setup architectures. No `uname` or arch fallback.
  *   - 'missing-payload' — the map exists but has no entry for this key.
  *   - 'invalid-path' — the payload's `path` is absolute, empty, or contains a
  *     `..` traversal segment.
@@ -237,7 +238,7 @@ function createReleaseSetupAdapter({
   })
 
   return Object.freeze({
-    id: 'darwin-shell-v1',
+    id: 'posix-shell-v1',
     host,
     releaseKeys: RELEASE_KEYS,
     targets: TARGET_NAMES,

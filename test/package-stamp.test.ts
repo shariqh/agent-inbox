@@ -18,6 +18,10 @@ import { execFileSync } from 'node:child_process'
 
 const REPO = new URL('..', import.meta.url).pathname
 const SCRIPT = join(REPO, 'scripts', 'write-setup-info.mjs')
+const DARWIN_RUNTIME_KEYS = [
+  '--runtime-key', 'darwin-arm64',
+  '--runtime-key', 'darwin-x64',
+]
 const PAYLOAD_CLI = join(REPO, 'scripts', 'runtime-payload.mjs')
 
 function tmpRepo(): string {
@@ -161,6 +165,7 @@ describe('scripts/write-setup-info.mjs --release (issue #74)', () => {
 
     const { code, stdout, out } = bakeRelease([
       '--version', '1.2.3',
+      ...DARWIN_RUNTIME_KEYS,
       '--payload-root', payloadRoot,
       '--payload', 'darwin-arm64=runtime/darwin-arm64',
       '--payload', 'darwin-x64=runtime/darwin-x64',
@@ -191,6 +196,28 @@ describe('scripts/write-setup-info.mjs --release (issue #74)', () => {
     }
   })
 
+  it('bakes an explicitly selected Linux x64/arm64 payload set without changing schema 2', () => {
+    const payloadRoot = mkdtempSync(join(tmpdir(), 'payload-root-linux-'))
+    stagePayloadDir(payloadRoot, 'runtime/linux-x64', 'linux', 'x64')
+    stagePayloadDir(payloadRoot, 'runtime/linux-arm64', 'linux', 'arm64')
+
+    const result = bakeRelease([
+      '--version', '1.2.3',
+      '--runtime-key', 'linux-x64',
+      '--runtime-key', 'linux-arm64',
+      '--payload-root', payloadRoot,
+      '--payload', 'linux-x64=runtime/linux-x64',
+      '--payload', 'linux-arm64=runtime/linux-arm64',
+    ])
+
+    expect(result.code, result.stderr).toBe(0)
+    const info = JSON.parse(readFileSync(result.out, 'utf8')) as Record<string, unknown>
+    expect(info['schema']).toBe(2)
+    expect(Object.keys(info['runtimePayloads'] as object)).toEqual(['linux-x64', 'linux-arm64'])
+    expect('repoRoot' in info).toBe(false)
+    expect('nodeBin' in info).toBe(false)
+  })
+
   it.each([
     ['wrong product', { product: 'other-runtime' }],
     ['package version mismatch', { packageVersion: '9.9.9' }],
@@ -212,6 +239,7 @@ describe('scripts/write-setup-info.mjs --release (issue #74)', () => {
     stagePayloadDir(payloadRoot, 'runtime/darwin-x64', 'darwin', 'x64')
     const result = bakeRelease([
       '--version', '1.2.3',
+      ...DARWIN_RUNTIME_KEYS,
       '--payload-root', payloadRoot,
       '--payload', 'darwin-arm64=runtime/darwin-arm64',
       '--payload', 'darwin-x64=runtime/darwin-x64',
@@ -227,6 +255,7 @@ describe('scripts/write-setup-info.mjs --release (issue #74)', () => {
 
     const { code, stderr } = bakeRelease([
       '--version', '1.0.0',
+      ...DARWIN_RUNTIME_KEYS,
       '--payload-root', payloadRoot,
       '--payload', 'darwin-arm64=runtime/darwin-arm64',
     ])
@@ -239,6 +268,7 @@ describe('scripts/write-setup-info.mjs --release (issue #74)', () => {
     stagePayloadDir(payloadRoot, 'runtime/darwin-arm64', 'darwin', 'arm64')
     stagePayloadDir(payloadRoot, 'runtime/darwin-x64', 'darwin', 'x64')
     const { code, stderr } = bakeRelease([
+      ...DARWIN_RUNTIME_KEYS,
       '--payload-root', payloadRoot,
       '--payload', 'darwin-arm64=runtime/darwin-arm64',
       '--payload', 'darwin-x64=runtime/darwin-x64',
@@ -252,6 +282,7 @@ describe('scripts/write-setup-info.mjs --release (issue #74)', () => {
     stagePayloadDir(payloadRoot, 'runtime/darwin-x64', 'darwin', 'x64')
     const { code, stderr, out } = bakeRelease([
       '--version', '1.0.0',
+      ...DARWIN_RUNTIME_KEYS,
       '--payload-root', payloadRoot,
       '--payload', 'darwin-arm64=/etc/passwd',
       '--payload', 'darwin-x64=runtime/darwin-x64',
@@ -262,6 +293,7 @@ describe('scripts/write-setup-info.mjs --release (issue #74)', () => {
 
     const traversal = bakeRelease([
       '--version', '1.0.0',
+      ...DARWIN_RUNTIME_KEYS,
       '--payload-root', payloadRoot,
       '--payload', 'darwin-arm64=../outside',
       '--payload', 'darwin-x64=runtime/darwin-x64',
@@ -274,6 +306,7 @@ describe('scripts/write-setup-info.mjs --release (issue #74)', () => {
     stagePayloadDir(payloadRoot, 'runtime/darwin-x64', 'darwin', 'x64')
     const { code, stderr } = bakeRelease([
       '--version', '1.0.0',
+      ...DARWIN_RUNTIME_KEYS,
       '--payload-root', payloadRoot,
       '--payload', 'darwin-arm64=runtime/does-not-exist',
       '--payload', 'darwin-x64=runtime/darwin-x64',
@@ -288,6 +321,7 @@ describe('scripts/write-setup-info.mjs --release (issue #74)', () => {
     stagePayloadDir(payloadRoot, 'runtime/darwin-x64', 'darwin', 'x64')
     const { code, stderr } = bakeRelease([
       '--version', '1.0.0',
+      ...DARWIN_RUNTIME_KEYS,
       '--payload-root', payloadRoot,
       '--payload', 'darwin-arm64=runtime/darwin-arm64',
       '--payload', 'darwin-x64=runtime/darwin-x64',
@@ -304,6 +338,7 @@ describe('scripts/write-setup-info.mjs --release (issue #74)', () => {
     stagePayloadDir(payloadRoot, 'runtime/darwin-x64', 'darwin', 'x64')
     const { code, stderr } = bakeRelease([
       '--version', '1.0.0',
+      ...DARWIN_RUNTIME_KEYS,
       '--payload-root', payloadRoot,
       '--payload', 'darwin-arm64=runtime/darwin-arm64',
       '--payload', 'darwin-x64=runtime/darwin-x64',
@@ -311,10 +346,85 @@ describe('scripts/write-setup-info.mjs --release (issue #74)', () => {
     expect(code).not.toBe(0)
     expect(stderr).toMatch(/architecture mismatch/)
   })
+
+  it('requires an explicit runtime key set before inspecting payload paths', () => {
+    const payloadRoot = mkdtempSync(join(tmpdir(), 'payload-root-no-keys-'))
+    const result = bakeRelease([
+      '--version', '1.0.0',
+      '--payload-root', payloadRoot,
+      '--payload', 'darwin-arm64=missing',
+    ])
+
+    expect(result.code).not.toBe(0)
+    expect(result.stderr).toMatch(/--runtime-key/)
+    expect(result.stderr).not.toMatch(/no runtime payload directory/)
+    expect(existsSync(result.out)).toBe(false)
+  })
+
+  it.each([
+    ['unknown key', ['--runtime-key', 'plan9-x64'], /unknown runtime target/i],
+    ['duplicate key', ['--runtime-key', 'linux-x64', '--runtime-key', 'linux-x64'], /duplicate --runtime-key/i],
+  ])('rejects an %s before writing output', (_label, keys, error) => {
+    const payloadRoot = mkdtempSync(join(tmpdir(), 'payload-root-invalid-keys-'))
+    const result = bakeRelease([
+      '--version', '1.0.0',
+      ...keys,
+      '--payload-root', payloadRoot,
+    ])
+
+    expect(result.code).not.toBe(0)
+    expect(result.stderr).toMatch(error)
+    expect(existsSync(result.out)).toBe(false)
+  })
+
+  it('requires supplied payload keys to match the declared set exactly', () => {
+    const payloadRoot = mkdtempSync(join(tmpdir(), 'payload-root-exact-set-'))
+    stagePayloadDir(payloadRoot, 'runtime/linux-x64', 'linux', 'x64')
+    stagePayloadDir(payloadRoot, 'runtime/darwin-x64', 'darwin', 'x64')
+
+    const missing = bakeRelease([
+      '--version', '1.0.0',
+      '--runtime-key', 'linux-x64',
+      '--runtime-key', 'linux-arm64',
+      '--payload-root', payloadRoot,
+      '--payload', 'linux-x64=runtime/linux-x64',
+    ])
+    expect(missing.code).not.toBe(0)
+    expect(missing.stderr).toMatch(/missing: linux-arm64/)
+    expect(existsSync(missing.out)).toBe(false)
+
+    const extra = bakeRelease([
+      '--version', '1.0.0',
+      '--runtime-key', 'linux-x64',
+      '--payload-root', payloadRoot,
+      '--payload', 'linux-x64=runtime/linux-x64',
+      '--payload', 'darwin-x64=runtime/darwin-x64',
+    ])
+    expect(extra.code).not.toBe(0)
+    expect(extra.stderr).toMatch(/extra: darwin-x64/)
+    expect(existsSync(extra.out)).toBe(false)
+  })
+
+  it('rejects duplicate payload declarations instead of silently replacing one', () => {
+    const payloadRoot = mkdtempSync(join(tmpdir(), 'payload-root-duplicate-payload-'))
+    const result = bakeRelease([
+      '--version', '1.0.0',
+      '--runtime-key', 'linux-x64',
+      '--payload-root', payloadRoot,
+      '--payload', 'linux-x64=first',
+      '--payload', 'linux-x64=second',
+    ])
+
+    expect(result.code).not.toBe(0)
+    expect(result.stderr).toMatch(/duplicate --payload/i)
+    expect(existsSync(result.out)).toBe(false)
+  })
 })
 
 describe('the packager delegates to it', () => {
   const sh = readFileSync(join(REPO, 'scripts', 'package-app.sh'), 'utf8')
+  const thin = readFileSync(join(REPO, 'scripts', 'build-thin-app.mjs'), 'utf8')
+  const universal = readFileSync(join(REPO, 'scripts', 'assemble-macos-release.mjs'), 'utf8')
 
   it('package-app.sh calls the script instead of writing setup-info.json inline', () => {
     expect(sh).toContain('write-setup-info.mjs')
@@ -335,5 +445,15 @@ describe('the packager delegates to it', () => {
 
   it('stamps the STAGED copy, from the repo root it also bakes as repoRoot', () => {
     expect(sh).toMatch(/write-setup-info\.mjs" "\$ROOT" "\$STAGE\/setup-info\.json"/)
+  })
+
+  it('keeps every existing macOS release caller explicit and Darwin-only', () => {
+    for (const source of [sh, thin, universal]) {
+      expect(source).toContain('--runtime-key')
+      expect(source).toContain('darwin-arm64')
+      expect(source).toContain('darwin-x64')
+      expect(source).not.toContain("'linux-x64=runtime/linux-x64'")
+      expect(source).not.toContain('linux-x64=runtime/linux-x64')
+    }
   })
 })

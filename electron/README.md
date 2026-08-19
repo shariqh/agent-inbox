@@ -101,12 +101,13 @@ case-independent filesystem identity, junction/link refusal, and sharing failure
 also reject drive-relative, drive-less-rooted, device/extended-namespace, and alternate-data-
 stream-like paths. Those injected tests do not prove NTFS behavior or enable Windows Setup.
 
-`scripts/runtime-targets.mjs` defines the build-time target vocabulary and official Node
-artifact/layout facts for planned Darwin, Linux, and Windows runtimes. That descriptor
-table is not a Setup capability list: the active macOS release profile remains exactly
-`darwin-arm64` plus `darwin-x64`, and the packaged Setup runner remains Darwin-only until
-a platform has a verified staging and installer adapter. Windows arm64 is deliberately
-outside the current target set.
+`electron/runtime-targets.cjs`, re-exported to ESM builders by
+`scripts/runtime-targets.mjs`, is the single target vocabulary and source of official Node
+artifact/layout facts. Release setup-info callers declare their exact required key set;
+the macOS release profile remains exactly `darwin-arm64` plus `darwin-x64`. Packaged Setup
+accepts only the exact process-derived Darwin/Linux x64/arm64 key and routes it through the
+fixed-purpose POSIX installer adapter. A verified Win32 payload still cannot advertise or
+run Setup. Windows arm64 remains outside the target set.
 
 The mutating shell sources the verified adjacent `scripts/setup-lock.sh` and owns
 fd 9 itself for the full transaction. Darwin uses descriptor-mode

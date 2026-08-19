@@ -18,6 +18,8 @@
 //   node scripts/write-setup-info.mjs --release <outFile> \
 //     --version <semver> \
 //     --payload-root <dir> \
+//     --runtime-key darwin-arm64 \
+//     --runtime-key darwin-x64 \
 //     --payload darwin-arm64=<relDir> \
 //     --payload darwin-x64=<relDir> \
 //     [--source-root <path>] [--commit <sha>]
@@ -42,9 +44,11 @@
 // the manifest already commits to every payload file's own hash, so a tampered
 // or truncated payload changes the manifest's bytes too.
 //
-// Both mandatory keys (darwin-arm64, darwin-x64) are REQUIRED — a partial map
-// is a hard failure, nothing is written, because the runner has no fallback
-// for a missing architecture.
+// The release caller explicitly declares its complete required key set with
+// repeated `--runtime-key` arguments. Every key must come from the shared
+// runtime-target registry, and the supplied payload keys must match that set
+// exactly. Missing, extra, duplicate, or unknown declarations fail before the
+// output is written; there is no architecture fallback.
 //
 // `--source-root` is a BUILD INPUT ONLY, exactly like dev mode's `<repoRoot>`:
 // it is read (to derive `commit` via git) and never persisted to the output
@@ -60,7 +64,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, lstatSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { isAbsolute, join, resolve, sep } from 'node:path'
-import { MACOS_RUNTIME_KEYS as RUNTIME_KEYS, targetFor } from './runtime-targets.mjs'
+import { targetFor } from './runtime-targets.mjs'
 
 const require = createRequire(import.meta.url)
 const {
@@ -123,7 +127,7 @@ function writeDev(repoRoot, outFile) {
 }
 
 function parseReleaseArgs(argv) {
-  const opts = { payloads: {} }
+  const opts = { runtimeKeys: [], payloads: new Map() }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     switch (a) {
@@ -139,11 +143,20 @@ function parseReleaseArgs(argv) {
       case '--commit':
         opts.commit = argv[++i]
         break
+      case '--runtime-key': {
+        const key = argv[++i]
+        if (typeof key !== 'string' || !key) fail('--runtime-key requires a runtime target key')
+        if (opts.runtimeKeys.includes(key)) fail(`duplicate --runtime-key declaration: ${key}`)
+        opts.runtimeKeys.push(key)
+        break
+      }
       case '--payload': {
         const raw = argv[++i]
         const eq = typeof raw === 'string' ? raw.indexOf('=') : -1
         if (eq < 1) fail(`--payload must be <key>=<relative-path>, got ${JSON.stringify(raw)}`)
-        opts.payloads[raw.slice(0, eq)] = raw.slice(eq + 1)
+        const key = raw.slice(0, eq)
+        if (opts.payloads.has(key)) fail(`duplicate --payload declaration: ${key}`)
+        opts.payloads.set(key, raw.slice(eq + 1))
         break
       }
       default:
@@ -160,14 +173,25 @@ function writeRelease(outFile, argv) {
     fail('--release requires --version <version>')
   }
 
-  const given = Object.keys(opts.payloads)
-  const missing = RUNTIME_KEYS.filter((k) => !given.includes(k))
-  if (missing.length) {
-    fail(`--release requires a --payload for every mandatory runtime key; missing: ${missing.join(', ')}`)
+  if (opts.runtimeKeys.length === 0) {
+    fail('--release requires at least one --runtime-key <key>')
   }
-  const unknown = given.filter((k) => !RUNTIME_KEYS.includes(k))
-  if (unknown.length) {
-    fail(`--release does not recognise these runtime keys: ${unknown.join(', ')}`)
+  for (const key of opts.runtimeKeys) {
+    try {
+      targetFor(key)
+    } catch (err) {
+      fail(err.message)
+    }
+  }
+
+  const given = [...opts.payloads.keys()]
+  const missing = opts.runtimeKeys.filter((key) => !opts.payloads.has(key))
+  if (missing.length) {
+    fail(`--release payload set does not match declared runtime keys; missing: ${missing.join(', ')}`)
+  }
+  const extra = given.filter((key) => !opts.runtimeKeys.includes(key))
+  if (extra.length) {
+    fail(`--release payload set does not match declared runtime keys; extra: ${extra.join(', ')}`)
   }
 
   if (typeof opts.payloadRoot !== 'string' || !opts.payloadRoot) {
@@ -179,8 +203,8 @@ function writeRelease(outFile, argv) {
   const realRoot = realpathSync(opts.payloadRoot)
 
   const runtimePayloads = {}
-  for (const key of RUNTIME_KEYS) {
-    const relPath = opts.payloads[key]
+  for (const key of opts.runtimeKeys) {
+    const relPath = opts.payloads.get(key)
     if (!isContainedRelativePath(relPath)) {
       fail(`--payload ${key}: path must be a relative, traversal-free path, got ${JSON.stringify(relPath)}`)
     }
@@ -260,7 +284,7 @@ if (argv[0] === '--release') {
   if (!outFile) {
     fail(
       'usage: write-setup-info.mjs --release <outFile> --version <v> --payload-root <dir> ' +
-      '--payload darwin-arm64=<relDir> --payload darwin-x64=<relDir> [--source-root <path>] [--commit <sha>]',
+      '--runtime-key <key> --payload <key>=<relDir> [--source-root <path>] [--commit <sha>]',
     )
   }
   writeRelease(outFile, argv.slice(2))

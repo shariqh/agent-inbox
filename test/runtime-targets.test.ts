@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   MACOS_RUNTIME_KEYS,
+  POSIX_SETUP_RUNTIME_KEYS,
   RUNTIME_TARGETS,
   nodeDistributionIdentity,
   targetFor,
@@ -101,13 +102,21 @@ describe('portable runtime target contract', () => {
     })
   })
 
-  it('exposes a deeply frozen table and exact macOS release profile', () => {
+  it('exposes a deeply frozen table plus exact macOS release and POSIX Setup profiles', () => {
     expect(Object.isFrozen(RUNTIME_TARGETS)).toBe(true)
     for (const target of Object.values(RUNTIME_TARGETS)) {
       expect(Object.isFrozen(target)).toBe(true)
     }
     expect(Object.isFrozen(MACOS_RUNTIME_KEYS)).toBe(true)
     expect(MACOS_RUNTIME_KEYS).toEqual(['darwin-arm64', 'darwin-x64'])
+    expect(Object.isFrozen(POSIX_SETUP_RUNTIME_KEYS)).toBe(true)
+    expect(POSIX_SETUP_RUNTIME_KEYS).toEqual([
+      'darwin-arm64',
+      'darwin-x64',
+      'linux-arm64',
+      'linux-x64',
+    ])
+    expect(POSIX_SETUP_RUNTIME_KEYS).not.toContain('win32-x64')
   })
 
   it('returns a descriptor or throws for an unknown target', () => {

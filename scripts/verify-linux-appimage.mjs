@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import {
   accessSync,
@@ -22,8 +22,10 @@ import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { appImageArtifactName, renderAppRun, renderDesktopEntry } from './build-linux-appimage.mjs'
 import {
+  DEFAULT_LINUX_ARM64_APPIMAGE_INPUTS,
   DEFAULT_LINUX_APPIMAGE_INPUTS,
   loadLinuxAppImageInputs,
+  resolveLinuxAppImageTarget,
   sha256File,
 } from './linux-appimage-inputs.mjs'
 import { assertBinaryCompatibility } from './linux-binary-gates.mjs'
@@ -35,6 +37,8 @@ import { treeIdentity } from './tree-identity.mjs'
 import { verifyLinuxThinApp } from './verify-linux-thin-app.mjs'
 
 const COMMIT_RE = /^[0-9a-f]{40}$/
+const UNSQUASHFS = '/usr/bin/unsquashfs'
+const UNSQUASHFS_VERSION = 'unsquashfs version 4.5 (2021/07/22)'
 
 export class LinuxAppImageVerificationError extends Error {
   constructor(message) {
@@ -43,12 +47,22 @@ export class LinuxAppImageVerificationError extends Error {
   }
 }
 
-function assertLinuxX64Host() {
-  if (process.platform !== 'linux' || process.arch !== 'x64') {
+function assertLinuxHost(arch) {
+  if (process.platform !== 'linux' || process.arch !== arch) {
     throw new LinuxAppImageVerificationError(
-      `x64 AppImage must be verified natively on linux/x64; this process is ${process.platform}/${process.arch}`,
+      `${arch} AppImage must be verified natively on linux/${arch}; this process is ${process.platform}/${process.arch}`,
     )
   }
+}
+
+function profileForArch(arch) {
+  return resolveLinuxAppImageTarget(`linux-${arch}`)
+}
+
+function defaultInputsForArch(arch) {
+  return arch === 'arm64'
+    ? DEFAULT_LINUX_ARM64_APPIMAGE_INPUTS
+    : DEFAULT_LINUX_APPIMAGE_INPUTS
 }
 
 function assertPlainFile(path, label) {
@@ -69,18 +83,17 @@ function assertMode(path, expected, label) {
   return mode
 }
 
-function assertExactDirectoryModes(directory) {
+function countExtractedDirectories(directory) {
   const stat = lstatSync(directory)
   if (stat.isSymbolicLink() || !stat.isDirectory()) {
     throw new LinuxAppImageVerificationError(`AppDir directory must be plain: ${directory}`)
   }
-  assertMode(directory, 0o755, 'AppDir directory')
   let count = 1
   for (const name of readdirSync(directory).sort()) {
     const path = join(directory, name)
     const child = lstatSync(path)
     if (child.isDirectory()) {
-      count += assertExactDirectoryModes(path)
+      count += countExtractedDirectories(path)
     }
   }
   return count
@@ -93,24 +106,6 @@ function assertExactRootEntries(appDir) {
     throw new LinuxAppImageVerificationError(
       `AppImage root entries must be exactly ${expected.join(', ')}; found ${actual.join(', ')}`,
     )
-  }
-}
-
-function assertOnlyExpectedPrivilegedMode(directory, sandbox) {
-  for (const name of readdirSync(directory).sort()) {
-    const path = join(directory, name)
-    const stat = lstatSync(path)
-    if (stat.isSymbolicLink()) continue
-    if (path === sandbox) {
-      if (!stat.isFile() || (stat.mode & 0o7777) !== 0o4755) {
-        throw new LinuxAppImageVerificationError('chrome-sandbox must be the sole mode-4755 file')
-      }
-      continue
-    }
-    if ((stat.mode & 0o7000) !== 0) {
-      throw new LinuxAppImageVerificationError(`unexpected privileged mode bits in AppImage: ${path}`)
-    }
-    if (stat.isDirectory()) assertOnlyExpectedPrivilegedMode(path, sandbox)
   }
 }
 
@@ -147,6 +142,131 @@ function readPrefix(path, size) {
   } finally {
     if (fd !== undefined) closeSync(fd)
   }
+}
+
+function octalMode(symbolic) {
+  const permissions = symbolic.slice(1)
+  const bits = [0o400, 0o200, 0o100, 0o040, 0o020, 0o010, 0o004, 0o002, 0o001]
+  let mode = 0
+  for (let index = 0; index < permissions.length; index += 1) {
+    const value = permissions[index]
+    if (value !== '-' && !['S', 'T'].includes(value)) mode |= bits[index]
+  }
+  if (['s', 'S'].includes(permissions[2])) mode |= 0o4000
+  if (['s', 'S'].includes(permissions[5])) mode |= 0o2000
+  if (['t', 'T'].includes(permissions[8])) mode |= 0o1000
+  return mode
+}
+
+export function verifySquashfsModes(listing, { expectedModes, privilegedPath }) {
+  const paths = new Set()
+  const modes = new Map()
+  let directoryCount = 0
+  let foundRoot = false
+  for (const line of String(listing).split('\n')) {
+    if (!line) continue
+    const match = line.match(
+      /^([bcdlps-][rwxSsTt-]{9}) \d+\/\d+\s+\d+ \d{4}-\d{2}-\d{2} \d{2}:\d{2} (.+)$/,
+    )
+    if (!match) {
+      throw new LinuxAppImageVerificationError(`invalid SquashFS metadata line: ${line}`)
+    }
+    const [, symbolic, path] = match
+    if (paths.has(path)) {
+      throw new LinuxAppImageVerificationError(`duplicate SquashFS path: ${path}`)
+    }
+    paths.add(path)
+    const mode = octalMode(symbolic)
+    modes.set(path, mode)
+    if (symbolic.startsWith('d') && mode !== 0o755) {
+      throw new LinuxAppImageVerificationError(
+        `SquashFS directory ${path} mode must be 0755, found 0${mode.toString(8)}`,
+      )
+    }
+    if (symbolic.startsWith('d')) {
+      if (path === 'squashfs-root') foundRoot = true
+      directoryCount += 1
+    }
+    if ((mode & 0o7000) !== 0 && path !== privilegedPath) {
+      throw new LinuxAppImageVerificationError(
+        `SquashFS path ${path} has unexpected privileged mode 0${mode.toString(8)}`,
+      )
+    }
+  }
+  if (!foundRoot || directoryCount === 0) {
+    throw new LinuxAppImageVerificationError('SquashFS metadata is missing its root directory')
+  }
+  for (const [path, expected] of expectedModes) {
+    const actual = modes.get(path)
+    if (actual === undefined) {
+      throw new LinuxAppImageVerificationError(`SquashFS metadata is missing required path ${path}`)
+    }
+    if (actual !== expected) {
+      throw new LinuxAppImageVerificationError(
+        `SquashFS path ${path} mode must be 0${expected.toString(8)}, found 0${actual.toString(8)}`,
+      )
+    }
+  }
+  return { directoryCount }
+}
+
+export function assertPinnedUnsquashfsVersion(result) {
+  if (result.error) {
+    throw new LinuxAppImageVerificationError(
+      `could not run pinned unsquashfs: ${result.error.message}`,
+    )
+  }
+  if (result.status !== 1) {
+    throw new LinuxAppImageVerificationError(
+      `unsquashfs -version exit status ${String(result.status)} is invalid`,
+    )
+  }
+  if (result.stderr !== '') {
+    throw new LinuxAppImageVerificationError('unsquashfs -version emitted unexpected stderr')
+  }
+  const version = result.stdout.split('\n')[0]
+  if (version !== UNSQUASHFS_VERSION) {
+    throw new LinuxAppImageVerificationError(
+      `unsquashfs version must be exactly 4.5 (2021/07/22), found ${version}`,
+    )
+  }
+}
+
+function squashfsDirectoryCount(appImage, runtimeSize, inputs) {
+  const toolStat = assertPlainFile(UNSQUASHFS, 'unsquashfs')
+  if ((toolStat.mode & 0o111) === 0) {
+    throw new LinuxAppImageVerificationError(`unsquashfs must be executable: ${UNSQUASHFS}`)
+  }
+  const version = spawnSync(UNSQUASHFS, ['-version'], {
+    encoding: 'utf8',
+    env: { LC_ALL: 'C', PATH: '/usr/bin:/bin', TZ: 'UTC' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 10_000,
+  })
+  assertPinnedUnsquashfsVersion(version)
+  const listing = execFileSync(UNSQUASHFS, [
+    '-lln',
+    '-UTC',
+    '-o',
+    String(runtimeSize),
+    appImage,
+  ], {
+    encoding: 'utf8',
+    env: { LC_ALL: 'C', PATH: '/usr/bin:/bin', TZ: 'UTC' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 10 * 60_000,
+    maxBuffer: 64 * 1024 * 1024,
+  })
+  const applicationRoot = `squashfs-root/${inputs.layout.applicationPath}`
+  return verifySquashfsModes(listing, {
+    expectedModes: new Map([
+      [`squashfs-root/${inputs.layout.appRun}`, 0o755],
+      [`squashfs-root/${inputs.layout.desktopFile}`, 0o644],
+      [`squashfs-root/${inputs.layout.iconFile}`, 0o644],
+      [`${applicationRoot}/chrome-sandbox`, 0o4755],
+    ]),
+    privilegedPath: `${applicationRoot}/chrome-sandbox`,
+  }).directoryCount
 }
 
 function safeElfNumber(value, label) {
@@ -259,10 +379,15 @@ export function verifyNormalizedRuntimePrefix(path, runtime) {
   }
 }
 
-function extractAppImage(appImage) {
+export function extractAppImage(appImage) {
   const work = mkdtempSync(join(tmpdir(), 'verify-appimage-'))
   try {
-    execFileSync(appImage, ['--appimage-extract'], {
+    execFileSync('/bin/sh', [
+      '-c',
+      'umask 000; exec "$1" --appimage-extract',
+      'appimage-extract',
+      appImage,
+    ], {
       cwd: work,
       env: {
         ...process.env,
@@ -296,7 +421,8 @@ function verifyChecksumFile(path, artifactFile, expectedSha256) {
   }
 }
 
-export function verifyLinuxX64AppImage({
+export function verifyLinuxAppImage({
+  arch = 'x64',
   appImage,
   packageVersion,
   sourceCommit,
@@ -304,12 +430,13 @@ export function verifyLinuxX64AppImage({
   appImageInputsPath,
   checksum,
 }) {
-  assertLinuxX64Host()
+  assertLinuxHost(arch)
+  const profile = profileForArch(arch)
   if (!COMMIT_RE.test(sourceCommit)) {
     throw new LinuxAppImageVerificationError('sourceCommit must be a full lowercase Git SHA')
   }
   const artifact = resolve(appImage)
-  const artifactFile = appImageArtifactName(packageVersion)
+  const artifactFile = appImageArtifactName(packageVersion, arch)
   if (basename(artifact) !== artifactFile) {
     throw new LinuxAppImageVerificationError(
       `AppImage filename mismatch: expected ${artifactFile}, found ${basename(artifact)}`,
@@ -324,9 +451,14 @@ export function verifyLinuxX64AppImage({
   }
   assertAppImageMarker(artifact)
 
-  const appImageInputsFile = resolve(appImageInputsPath ?? DEFAULT_LINUX_APPIMAGE_INPUTS)
+  const appImageInputsFile = resolve(appImageInputsPath ?? defaultInputsForArch(arch))
   const linuxInputsFile = resolve(inputsPath ?? DEFAULT_LINUX_RELEASE_INPUTS)
   const appImageInputs = loadLinuxAppImageInputs(appImageInputsFile)
+  if (appImageInputs.target !== profile.target) {
+    throw new LinuxAppImageVerificationError(
+      `AppImage input target mismatch: expected ${profile.target}, found ${appImageInputs.target}`,
+    )
+  }
   const linuxInputsSha256 = sha256File(linuxInputsFile)
   if (linuxInputsSha256 !== appImageInputs.linuxInputs.sha256) {
     throw new LinuxAppImageVerificationError(
@@ -338,37 +470,44 @@ export function verifyLinuxX64AppImage({
   const outerCompatibility = assertBinaryCompatibility({
     path: artifact,
     label: 'AppImage runtime',
-    arch: 'x64',
+    arch,
     maximumGlibcVersion: linuxInputs.minimumGlibcVersion,
     maximumLibstdcxxVersion: linuxInputs.maximumGlibcxxVersion,
+    byteLength: appImageInputs.runtime.size,
   })
   const appImageSha256 = sha256File(artifact)
   if (checksum) verifyChecksumFile(resolve(checksum), artifactFile, appImageSha256)
+  const appDirDirectoryCount = squashfsDirectoryCount(
+    artifact,
+    appImageInputs.runtime.size,
+    appImageInputs,
+  )
 
   const extracted = extractAppImage(artifact)
   try {
     assertExactRootEntries(extracted.appDir)
-    const appDirDirectoryCount = assertExactDirectoryModes(extracted.appDir)
+    const extractedDirectoryCount = countExtractedDirectories(extracted.appDir)
+    if (extractedDirectoryCount !== appDirDirectoryCount) {
+      throw new LinuxAppImageVerificationError(
+        `extracted directory count mismatch: expected ${appDirDirectoryCount}, found ${extractedDirectoryCount}`,
+      )
+    }
     const dirIcon = join(extracted.appDir, '.DirIcon')
     if (!lstatSync(dirIcon).isSymbolicLink() || readlinkSync(dirIcon) !== appImageInputs.layout.iconFile) {
       throw new LinuxAppImageVerificationError('.DirIcon must link exactly to agent-inbox.png')
     }
     const appRun = join(extracted.appDir, appImageInputs.layout.appRun)
     assertPlainFile(appRun, 'AppRun')
-    assertMode(appRun, 0o755, 'AppRun')
-    accessSync(appRun, constants.X_OK)
     if (readFileSync(appRun, 'utf8') !== renderAppRun(appImageInputs)) {
       throw new LinuxAppImageVerificationError('AppRun content does not match the pinned launcher')
     }
     const desktop = join(extracted.appDir, appImageInputs.layout.desktopFile)
     assertPlainFile(desktop, 'desktop metadata')
-    assertMode(desktop, 0o644, 'desktop metadata')
     if (readFileSync(desktop, 'utf8') !== renderDesktopEntry(appImageInputs, packageVersion)) {
       throw new LinuxAppImageVerificationError('desktop metadata does not match the pinned package contract')
     }
     const icon = join(extracted.appDir, appImageInputs.layout.iconFile)
     assertPlainFile(icon, 'AppImage icon')
-    assertMode(icon, 0o644, 'AppImage icon')
     if (sha256File(icon) !== appImageInputs.icon.sha256) {
       throw new LinuxAppImageVerificationError('packaged AppImage icon SHA-256 mismatch')
     }
@@ -378,16 +517,10 @@ export function verifyLinuxX64AppImage({
       ...appImageInputs.layout.applicationPath.split('/'),
     )
     const sandbox = join(innerApp, 'chrome-sandbox')
-    const sandboxStat = assertPlainFile(sandbox, 'chrome-sandbox')
-    if ((sandboxStat.mode & 0o7777) !== 0o4755) {
-      throw new LinuxAppImageVerificationError(
-        `chrome-sandbox mode must be 4755, found ${(sandboxStat.mode & 0o7777).toString(8)}`,
-      )
-    }
-    assertOnlyExpectedPrivilegedMode(extracted.appDir, sandbox)
+    assertPlainFile(sandbox, 'chrome-sandbox')
     const thinVerification = verifyLinuxThinApp({
       app: innerApp,
-      arch: 'x64',
+      arch,
       inputsPath: linuxInputsFile,
       sourceCommit,
     })
@@ -411,7 +544,7 @@ export function verifyLinuxX64AppImage({
       appRunMode: 0o755,
       desktopMode: 0o644,
       iconMode: 0o644,
-      chromeSandboxMode: sandboxStat.mode & 0o7777,
+      chromeSandboxMode: 0o4755,
       outerCompatibility,
       appDirTreeDigest: treeIdentity(extracted.appDir),
       desktopFile: appImageInputs.layout.desktopFile,
@@ -431,11 +564,20 @@ export function verifyLinuxX64AppImage({
   }
 }
 
+export function verifyLinuxX64AppImage(options) {
+  return verifyLinuxAppImage({ ...options, arch: 'x64' })
+}
+
+export function verifyLinuxArm64AppImage(options) {
+  return verifyLinuxAppImage({ ...options, arch: 'arm64' })
+}
+
 function main(argv) {
   const { values } = parseArgs({
     args: argv,
     options: {
       appimage: { type: 'string' },
+      arch: { type: 'string', default: 'x64' },
       version: { type: 'string' },
       'source-commit': { type: 'string' },
       inputs: { type: 'string' },
@@ -448,7 +590,8 @@ function main(argv) {
       'usage: verify-linux-appimage.mjs --appimage <path> --version <version> --source-commit <sha>',
     )
   }
-  const report = verifyLinuxX64AppImage({
+  const report = verifyLinuxAppImage({
+    arch: values.arch,
     appImage: resolve(values.appimage),
     packageVersion: values.version,
     sourceCommit: values['source-commit'],

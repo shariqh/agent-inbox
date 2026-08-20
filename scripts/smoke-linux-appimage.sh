@@ -44,6 +44,7 @@ done
 [[ "$PORT" =~ ^[0-9]+$ ]] || usage
 
 SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/agent-inbox-appimage-smoke.XXXXXX")"
+chmod 0700 "$SCRATCH"
 APP_PID=""
 LOG=""
 cleanup() {

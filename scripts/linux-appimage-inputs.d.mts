@@ -1,7 +1,7 @@
 export interface LinuxAppImageInputs {
   schema: 1
-  target: 'linux-x64'
-  artifactArchitecture: 'x86_64'
+  target: 'linux-x64' | 'linux-arm64'
+  artifactArchitecture: 'x86_64' | 'aarch64'
   compression: 'zstd'
   linuxInputs: { path: string; sha256: string }
   tool: {
@@ -39,6 +39,14 @@ export interface LinuxAppImageInputs {
 }
 
 export const DEFAULT_LINUX_APPIMAGE_INPUTS: string
+export const DEFAULT_LINUX_ARM64_APPIMAGE_INPUTS: string
+export function resolveLinuxAppImageTarget(target: unknown): {
+  target: LinuxAppImageInputs['target']
+  processArch: 'x64' | 'arm64'
+  artifactArchitecture: LinuxAppImageInputs['artifactArchitecture']
+  artifactNameArchitecture: 'x86_64' | 'arm64'
+  upstreamArchitecture: 'x86_64' | 'aarch64'
+}
 export function validateLinuxAppImageInputs(value: unknown): LinuxAppImageInputs
 export function loadLinuxAppImageInputs(path?: string): LinuxAppImageInputs
 export function sha256File(path: string): string

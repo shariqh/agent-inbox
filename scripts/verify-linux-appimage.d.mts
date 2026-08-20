@@ -1,4 +1,21 @@
 export class LinuxAppImageVerificationError extends Error {}
+export function assertPinnedUnsquashfsVersion(result: {
+  status: number | null
+  stdout: string
+  stderr: string
+  error?: Error
+}): void
+export function verifySquashfsModes(
+  listing: string,
+  options: {
+    expectedModes: ReadonlyMap<string, number>
+    privilegedPath: string
+  },
+): { directoryCount: number }
+export function extractAppImage(appImage: string): {
+  appDir: string
+  cleanup: () => void
+}
 export function verifyNormalizedRuntimePrefix(
   path: string,
   runtime: { size: number; sha256: string },
@@ -8,11 +25,20 @@ export function verifyNormalizedRuntimePrefix(
   embeddedDigestMd5: string
   digestSection: { offset: number; size: number }
 }
-export function verifyLinuxX64AppImage(options: {
+interface LinuxAppImageVerifyOptions {
   appImage: string
   packageVersion: string
   sourceCommit: string
   inputsPath?: string
   appImageInputsPath?: string
   checksum?: string
+}
+export function verifyLinuxAppImage(options: LinuxAppImageVerifyOptions & {
+  arch?: 'x64' | 'arm64'
 }): Record<string, unknown> & { appImageSha256: string }
+export function verifyLinuxX64AppImage(
+  options: LinuxAppImageVerifyOptions,
+): Record<string, unknown> & { appImageSha256: string }
+export function verifyLinuxArm64AppImage(
+  options: LinuxAppImageVerifyOptions,
+): Record<string, unknown> & { appImageSha256: string }

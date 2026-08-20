@@ -1,4 +1,4 @@
-name: Linux x64 AppImage
+name: Linux arm64 AppImage
 
 on:
   workflow_dispatch:
@@ -8,13 +8,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: linux-x64-appimage-${{ github.workflow }}-${{ github.ref }}
+  group: linux-arm64-appimage-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   appimage:
-    name: Package and launch / linux-x64
-    runs-on: ubuntu-22.04
+    name: Package and launch / linux-arm64
+    runs-on: ubuntu-22.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -25,7 +25,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ steps.release-inputs.outputs.node-version }}
-          architecture: x64
+          architecture: arm64
           cache: npm
       - run: npm ci
       - name: Install pinned SquashFS verifier
@@ -37,8 +37,8 @@ jobs:
       - name: Validate exact package inputs and source gates
         run: |
           npm run release:linux-inputs
-          npm run release:linux-appimage-inputs
-          node scripts/linux-release-inputs.mjs --compiler-arch x64
+          npm run release:linux-appimage-inputs:arm64
+          node scripts/linux-release-inputs.mjs --compiler-arch arm64
           npx vitest run \
             test/linux-release-inputs.test.ts \
             test/linux-native-folder.test.ts \
@@ -51,64 +51,63 @@ jobs:
             test/setup-runner.test.ts
       - run: echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
       - run: npm run build
-      - name: Stage verified native x64 runtime
+      - name: Stage verified native arm64 runtime
         run: |
           mkdir -p build/reports
           npm run --silent stage:runtime:native -- \
-            --key linux-x64 \
+            --key linux-arm64 \
             --inputs release/linux-inputs.json \
-            --output build/runtime/linux-x64 \
-            > build/reports/linux-x64-runtime.json
-          REPORT=build/reports/linux-x64-runtime.json node -e '
+            --output build/runtime/linux-arm64 \
+            > build/reports/linux-arm64-runtime.json
+          REPORT=build/reports/linux-arm64-runtime.json node -e '
             const fs = require("node:fs")
             const inputs = require("./release/linux-inputs.json")
             const report = JSON.parse(fs.readFileSync(process.env.REPORT, "utf8"))
-            const expected = inputs.node.distributions["linux-x64"]
+            const expected = inputs.node.distributions["linux-arm64"]
             if (
-              report.key !== "linux-x64" ||
+              report.key !== "linux-arm64" ||
               report.archive !== expected.archive ||
               report.archiveRoot !== expected.root ||
               report.archiveUrl !== expected.url ||
               report.archiveSha256 !== expected.sha256
             ) throw new Error("native runtime archive identity report mismatch")
           '
-          RUNTIME=build/runtime/linux-x64
+          RUNTIME=build/runtime/linux-arm64
           "$RUNTIME/bin/node" "$RUNTIME/scripts/runtime-payload.mjs" verify \
             --root "$RUNTIME" \
             --platform linux \
-            --arch x64 \
+            --arch arm64 \
             --node-version "$(node -p "require('./release/linux-inputs.json').node.version")" \
             --package-version "$(node -p "require('./package.json').version")" \
-            > build/reports/linux-x64-runtime-verify.json
-      - name: Build verified x64 Electron folder
+            > build/reports/linux-arm64-runtime-verify.json
+      - name: Build verified arm64 Electron folder
         run: >-
           npm run package:linux-thin --
-          --arch x64
-          --runtime build/runtime/linux-x64
+          --arch arm64
+          --runtime build/runtime/linux-arm64
           --inputs release/linux-inputs.json
-          --output "build/thin/linux-x64/Agent Inbox"
+          --output "build/thin/linux-arm64/Agent Inbox"
       - name: Build twice and require byte-identical AppImages
         shell: bash
         run: |
           set -euo pipefail
-          TOOL_CACHE="$RUNNER_TEMP/appimagetool-1.9.1-x86_64.AppImage"
-          RUNTIME_CACHE="$RUNNER_TEMP/type2-runtime-20251108-x86_64"
-          npm run package:linux-appimage -- \
-            --app "build/thin/linux-x64/Agent Inbox" \
+          umask 077
+          TOOL_CACHE="$RUNNER_TEMP/appimagetool-1.9.1-aarch64.AppImage"
+          RUNTIME_CACHE="$RUNNER_TEMP/type2-runtime-20251108-aarch64"
+          npm run package:linux-appimage:arm64 -- \
+            --app "build/thin/linux-arm64/Agent Inbox" \
             --inputs release/linux-inputs.json \
-            --appimage-inputs release/linux-appimage-x64.json \
             --tool-cache "$TOOL_CACHE" \
             --runtime-cache "$RUNTIME_CACHE" \
             --output-dir build/appimage-a
-          npm run package:linux-appimage -- \
-            --app "build/thin/linux-x64/Agent Inbox" \
+          npm run package:linux-appimage:arm64 -- \
+            --app "build/thin/linux-arm64/Agent Inbox" \
             --inputs release/linux-inputs.json \
-            --appimage-inputs release/linux-appimage-x64.json \
             --tool-cache "$TOOL_CACHE" \
             --runtime-cache "$RUNTIME_CACHE" \
             --output-dir build/appimage-b
           VERSION="$(node -p "require('./package.json').version")"
-          ARTIFACT="Agent-Inbox-v${VERSION}-linux-x86_64.AppImage"
+          ARTIFACT="Agent-Inbox-v${VERSION}-linux-arm64.AppImage"
           cmp -- "build/appimage-a/$ARTIFACT" "build/appimage-b/$ARTIFACT"
           cmp -- "build/appimage-a/$ARTIFACT.sha256" "build/appimage-b/$ARTIFACT.sha256"
           cmp -- "build/appimage-a/$ARTIFACT.report.json" "build/appimage-b/$ARTIFACT.report.json"
@@ -118,21 +117,20 @@ jobs:
             "build/appimage-a/$ARTIFACT.sha256" \
             "build/appimage-a/$ARTIFACT.report.json" \
             build/appimage/
-          node scripts/verify-linux-appimage.mjs \
+          npm run --silent verify:linux-appimage:arm64 -- \
             --appimage "build/appimage/$ARTIFACT" \
             --version "$VERSION" \
             --source-commit "$(git rev-parse HEAD)" \
             --inputs release/linux-inputs.json \
-            --appimage-inputs release/linux-appimage-x64.json \
             --checksum "build/appimage/$ARTIFACT.sha256" \
-            > build/reports/linux-x64-appimage-verify.json
-      - name: Clean Ubuntu 22.04 FUSE launch gate
+            > build/reports/linux-arm64-appimage-verify.json
+      - name: Clean Ubuntu 22.04 arm64 FUSE launch gate
         shell: bash
         run: |
           set -euo pipefail
           VERSION="$(node -p "require('./package.json').version")"
-          ARTIFACT="Agent-Inbox-v${VERSION}-linux-x86_64.AppImage"
-          docker run --rm --platform linux/amd64 \
+          ARTIFACT="Agent-Inbox-v${VERSION}-linux-arm64.AppImage"
+          docker run --rm --platform linux/arm64 \
             --device /dev/fuse \
             --cap-add SYS_ADMIN \
             --security-opt apparmor:unconfined \
@@ -140,7 +138,7 @@ jobs:
             -e "ARTIFACT=$ARTIFACT" \
             -v "$PWD/build/appimage:/artifacts:ro" \
             -v "$PWD/scripts/smoke-linux-appimage.sh:/gate/smoke-linux-appimage.sh:ro" \
-            ubuntu@sha256:79676deb51ebb02885b0b9d33788e78a37cf1045ad79d1bb04c6a222c3556b3d \
+            ubuntu@sha256:8c71efb5d8170edf0965b2ac5e867cc70d3d8f73d1c9c0573d690d6203fc5866 \
             bash -euc '
               apt-get update
               DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
@@ -148,7 +146,7 @@ jobs:
                 libdrm2 libgbm1 libgtk-3-0 libnss3 libxcomposite1 libxdamage1 \
                 libxfixes3 libxkbcommon0 libxrandr2 libxss1 passwd util-linux xvfb
               if command -v node >/dev/null 2>&1; then
-                echo "linux-x64-appimage: system Node unexpectedly present" >&2
+                echo "linux-arm64-appimage: system Node unexpectedly present" >&2
                 exit 1
               fi
               useradd --create-home --uid 10001 appuser
@@ -158,19 +156,19 @@ jobs:
                 --mode fuse \
                 --port 14319
             '
-      - name: Clean Ubuntu 22.04 no-FUSE extraction gate
+      - name: Clean Ubuntu 22.04 arm64 no-FUSE extraction gate
         shell: bash
         run: |
           set -euo pipefail
           VERSION="$(node -p "require('./package.json').version")"
-          ARTIFACT="Agent-Inbox-v${VERSION}-linux-x86_64.AppImage"
-          docker run --rm --platform linux/amd64 \
+          ARTIFACT="Agent-Inbox-v${VERSION}-linux-arm64.AppImage"
+          docker run --rm --platform linux/arm64 \
             --security-opt apparmor:unconfined \
             --security-opt seccomp=unconfined \
             -e "ARTIFACT=$ARTIFACT" \
             -v "$PWD/build/appimage:/artifacts:ro" \
             -v "$PWD/scripts/smoke-linux-appimage.sh:/gate/smoke-linux-appimage.sh:ro" \
-            ubuntu@sha256:79676deb51ebb02885b0b9d33788e78a37cf1045ad79d1bb04c6a222c3556b3d \
+            ubuntu@sha256:8c71efb5d8170edf0965b2ac5e867cc70d3d8f73d1c9c0573d690d6203fc5866 \
             bash -euc '
               apt-get update
               DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
@@ -179,7 +177,7 @@ jobs:
                 libxdamage1 libxfixes3 libxkbcommon0 libxrandr2 libxss1 \
                 passwd util-linux xvfb
               if command -v node >/dev/null 2>&1; then
-                echo "linux-x64-appimage: system Node unexpectedly present" >&2
+                echo "linux-arm64-appimage: system Node unexpectedly present" >&2
                 exit 1
               fi
               test ! -e /dev/fuse
@@ -192,14 +190,14 @@ jobs:
             '
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: linux-x64-appimage
+          name: linux-arm64-appimage
           path: |
             build/appimage/*.AppImage
             build/appimage/*.AppImage.sha256
             build/appimage/*.AppImage.report.json
-            build/reports/linux-x64-appimage-verify.json
-            build/reports/linux-x64-runtime.json
-            build/reports/linux-x64-runtime-verify.json
-            build/thin/linux-x64/Agent Inbox.thin-report.json
+            build/reports/linux-arm64-appimage-verify.json
+            build/reports/linux-arm64-runtime.json
+            build/reports/linux-arm64-runtime-verify.json
+            build/thin/linux-arm64/Agent Inbox.thin-report.json
           if-no-files-found: error
           retention-days: 7

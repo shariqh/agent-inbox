@@ -25,8 +25,10 @@ import { publishAtomically } from './build-thin-app.mjs'
 import {
   acquirePinnedAppImageRuntime,
   acquirePinnedAppImageTool,
+  DEFAULT_LINUX_ARM64_APPIMAGE_INPUTS,
   DEFAULT_LINUX_APPIMAGE_INPUTS,
   loadLinuxAppImageInputs,
+  resolveLinuxAppImageTarget,
   sha256File,
   verifyPinnedAppImageRuntime,
   verifyPinnedAppImageTool,
@@ -34,7 +36,7 @@ import {
 import { loadLinuxReleaseInputs } from './linux-release-inputs.mjs'
 import { resolveSourceProvenance } from './source-provenance.mjs'
 import { verifyLinuxThinApp } from './verify-linux-thin-app.mjs'
-import { verifyLinuxX64AppImage } from './verify-linux-appimage.mjs'
+import { verifyLinuxAppImage } from './verify-linux-appimage.mjs'
 
 const PACKAGE_VERSION_RE = /^\d+\.\d+\.\d+$/
 
@@ -45,19 +47,30 @@ export class LinuxAppImageBuildError extends Error {
   }
 }
 
-function assertLinuxX64Host() {
-  if (process.platform !== 'linux' || process.arch !== 'x64') {
+function assertLinuxHost(arch) {
+  if (process.platform !== 'linux' || process.arch !== arch) {
     throw new LinuxAppImageBuildError(
-      `x64 AppImage must be built natively on linux/x64; this process is ${process.platform}/${process.arch}`,
+      `${arch} AppImage must be built natively on linux/${arch}; this process is ${process.platform}/${process.arch}`,
     )
   }
 }
 
-export function appImageArtifactName(packageVersion) {
+function profileForArch(arch) {
+  return resolveLinuxAppImageTarget(`linux-${arch}`)
+}
+
+function defaultInputsForArch(arch) {
+  return arch === 'arm64'
+    ? DEFAULT_LINUX_ARM64_APPIMAGE_INPUTS
+    : DEFAULT_LINUX_APPIMAGE_INPUTS
+}
+
+export function appImageArtifactName(packageVersion, arch = 'x64') {
   if (!PACKAGE_VERSION_RE.test(packageVersion)) {
     throw new LinuxAppImageBuildError(`invalid package version for AppImage: ${String(packageVersion)}`)
   }
-  return `Agent-Inbox-v${packageVersion}-linux-x86_64.AppImage`
+  const profile = profileForArch(arch)
+  return `Agent-Inbox-v${packageVersion}-linux-${profile.artifactNameArchitecture}.AppImage`
 }
 
 export function renderAppRun(inputs) {
@@ -71,7 +84,7 @@ export function renderAppRun(inputs) {
 }
 
 export function renderDesktopEntry(inputs, packageVersion) {
-  appImageArtifactName(packageVersion)
+  appImageArtifactName(packageVersion, resolveLinuxAppImageTarget(inputs.target).processArch)
   return [
     '[Desktop Entry]',
     `Type=${inputs.desktop.type}`,
@@ -230,7 +243,7 @@ function assertSourceInput(path, expectedSha256, label) {
   }
 }
 
-function runAppImageTool({
+export function runAppImageTool({
   tool,
   appDir,
   output,
@@ -239,10 +252,11 @@ function runAppImageTool({
   home,
   runtime,
   compression,
+  upstreamArchitecture,
 }) {
   const env = {
     APPIMAGE_EXTRACT_AND_RUN: '1',
-    ARCH: 'x86_64',
+    ARCH: upstreamArchitecture,
     HOME: home,
     LC_ALL: 'C',
     PATH: '/usr/bin:/bin',
@@ -252,7 +266,7 @@ function runAppImageTool({
     VERSION: packageVersion,
   }
   mkdirSync(env.TMPDIR)
-  execFileSync(tool, [
+  const args = [
     '--no-appstream',
     '--runtime-file',
     runtime,
@@ -260,6 +274,13 @@ function runAppImageTool({
     compression,
     appDir,
     output,
+  ]
+  execFileSync('/bin/sh', [
+    '-c',
+    'umask 022; exec "$@"',
+    'appimagetool',
+    tool,
+    ...args,
   ], {
     cwd: home,
     env,
@@ -269,7 +290,8 @@ function runAppImageTool({
   })
 }
 
-export async function buildLinuxX64AppImage({
+export async function buildLinuxAppImage({
+  arch = 'x64',
   app,
   outputDir,
   repoRoot,
@@ -281,10 +303,16 @@ export async function buildLinuxX64AppImage({
   runtimeCache,
   force = false,
 }) {
-  assertLinuxX64Host()
+  assertLinuxHost(arch)
+  const profile = profileForArch(arch)
   const root = resolve(repoRoot)
-  const appImageInputsFile = resolve(appImageInputsPath ?? DEFAULT_LINUX_APPIMAGE_INPUTS)
+  const appImageInputsFile = resolve(appImageInputsPath ?? defaultInputsForArch(arch))
   const appImageInputs = loadLinuxAppImageInputs(appImageInputsFile)
+  if (appImageInputs.target !== profile.target) {
+    throw new LinuxAppImageBuildError(
+      `AppImage input target mismatch: expected ${profile.target}, found ${appImageInputs.target}`,
+    )
+  }
   const linuxInputsFile = resolve(inputsPath ?? join(root, appImageInputs.linuxInputs.path))
   const icon = resolve(root, appImageInputs.icon.path)
   assertSourceInput(linuxInputsFile, appImageInputs.linuxInputs.sha256, 'Linux release inputs')
@@ -296,12 +324,12 @@ export async function buildLinuxX64AppImage({
   if (pkg.version !== lock.version) {
     throw new LinuxAppImageBuildError('package.json and package-lock.json versions differ')
   }
-  const artifactFile = appImageArtifactName(pkg.version)
+  const artifactFile = appImageArtifactName(pkg.version, arch)
   const provenance = resolveSourceProvenance(root)
   const sourceDateEpoch = resolveSourceDateEpoch(root)
   const thinVerification = verifyLinuxThinApp({
     app: resolve(app),
-    arch: 'x64',
+    arch,
     inputsPath: linuxInputsFile,
     sourceCommit: provenance.sourceCommit,
   })
@@ -313,13 +341,13 @@ export async function buildLinuxX64AppImage({
   const toolPath = tool
     ? verifyPinnedAppImageTool(tool, appImageInputs.tool)
     : await acquirePinnedAppImageTool({
-        destination: toolCache ?? join(root, 'build', 'tools', `appimagetool-${appImageInputs.tool.version}-x86_64.AppImage`),
+        destination: toolCache ?? join(root, 'build', 'tools', `appimagetool-${appImageInputs.tool.version}-${profile.upstreamArchitecture}.AppImage`),
         expected: appImageInputs.tool,
       })
   const runtimePath = runtime
     ? verifyPinnedAppImageRuntime(runtime, appImageInputs.runtime)
     : await acquirePinnedAppImageRuntime({
-        destination: runtimeCache ?? join(root, 'build', 'tools', `type2-runtime-${appImageInputs.runtime.version}-x86_64`),
+        destination: runtimeCache ?? join(root, 'build', 'tools', `type2-runtime-${appImageInputs.runtime.version}-${profile.upstreamArchitecture}`),
         expected: appImageInputs.runtime,
       })
 
@@ -348,14 +376,16 @@ export async function buildLinuxX64AppImage({
       home: isolatedHome,
       runtime: runtimePath,
       compression: appImageInputs.compression,
+      upstreamArchitecture: profile.upstreamArchitecture,
     })
     chmodSync(stagedImage, 0o755)
-    const verification = verifyLinuxX64AppImage({
+    const verification = verifyLinuxAppImage({
+      arch,
       appImage: stagedImage,
       packageVersion: pkg.version,
       sourceCommit: provenance.sourceCommit,
       inputsPath: linuxInputsFile,
-      appImageInputsPath,
+      appImageInputsPath: appImageInputsFile,
     })
     if (verification.packageVersion !== thinVerification.packageVersion) {
       throw new LinuxAppImageBuildError(
@@ -414,15 +444,24 @@ export async function buildLinuxX64AppImage({
   }
 }
 
+export function buildLinuxX64AppImage(options) {
+  return buildLinuxAppImage({ ...options, arch: 'x64' })
+}
+
+export function buildLinuxArm64AppImage(options) {
+  return buildLinuxAppImage({ ...options, arch: 'arm64' })
+}
+
 async function main(argv) {
   const { values } = parseArgs({
     args: argv,
     options: {
       app: { type: 'string' },
+      arch: { type: 'string', default: 'x64' },
       'output-dir': { type: 'string' },
       'repo-root': { type: 'string', default: resolve(import.meta.dirname, '..') },
       inputs: { type: 'string' },
-      'appimage-inputs': { type: 'string', default: resolve(import.meta.dirname, '..', 'release', 'linux-appimage-x64.json') },
+      'appimage-inputs': { type: 'string' },
       tool: { type: 'string' },
       'tool-cache': { type: 'string' },
       runtime: { type: 'string' },
@@ -435,12 +474,13 @@ async function main(argv) {
       'usage: build-linux-appimage.mjs --app <linux-x64 folder> --output-dir <directory>',
     )
   }
-  const result = await buildLinuxX64AppImage({
+  const result = await buildLinuxAppImage({
+    arch: values.arch,
     app: resolve(values.app),
     outputDir: resolve(values['output-dir']),
     repoRoot: resolve(values['repo-root']),
     inputsPath: values.inputs && resolve(values.inputs),
-    appImageInputsPath: resolve(values['appimage-inputs']),
+    appImageInputsPath: values['appimage-inputs'] && resolve(values['appimage-inputs']),
     tool: values.tool && resolve(values.tool),
     toolCache: values['tool-cache'] && resolve(values['tool-cache']),
     runtime: values.runtime && resolve(values.runtime),

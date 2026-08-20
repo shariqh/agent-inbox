@@ -7,6 +7,7 @@ export function assertBinaryCompatibility(options: {
   arch: LinuxArch
   maximumGlibcVersion: string
   maximumLibstdcxxVersion: string
+  byteLength?: number
 }): {
   arch: LinuxArch
   maximumRequiredGlibc: string | null

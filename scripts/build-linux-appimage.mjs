@@ -277,7 +277,7 @@ export function runAppImageTool({
   ]
   execFileSync('/bin/sh', [
     '-c',
-    'umask 000; exec "$@"',
+    'umask 022; exec "$@"',
     'appimagetool',
     tool,
     ...args,

@@ -130,7 +130,7 @@ folder; the sole permission transformation is the standard AppImage
 setuid-root `4755`; the builder rejects privileged mode bits on every source
 entry, and the final verifier requires the sandbox to be the sole privileged
 entry. appimagetool runs from an empty isolated working directory and HOME
-through a dedicated child process with a zero umask, so an ambient
+through a dedicated child process with the canonical `022` umask, so an ambient
 `.appimageignore` or caller umask cannot alter the output. CI builds the AppImage
 twice from the same inputs and requires byte-identical artifacts, checksums, and
 reports. The builder normalizes every AppDir directory to `0755`, pins AppRun

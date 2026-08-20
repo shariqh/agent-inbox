@@ -323,7 +323,7 @@ describe('Linux AppImage packaging', () => {
     }
   })
 
-  it('runs appimagetool under a child-only zero umask and preserves exact argv', () => {
+  it('runs appimagetool under a child-only canonical umask and preserves exact argv', () => {
     const root = mkdtempSync(join(tmpdir(), 'appimagetool-umask-'))
     const home = join(root, 'home')
     const tool = join(root, 'fake-appimagetool')
@@ -354,7 +354,7 @@ describe('Linux AppImage packaging', () => {
         compression: 'gzip',
         upstreamArchitecture: 'x86_64',
       })
-      expect(statSync(join(home, 'tool-umask-probe')).mode & 0o777).toBe(0o666)
+      expect(statSync(join(home, 'tool-umask-probe')).mode & 0o777).toBe(0o644)
       expect(process.umask()).toBe(0o077)
     } finally {
       process.umask(previousUmask)
@@ -426,7 +426,7 @@ describe('Linux AppImage packaging', () => {
     expect(smoke).not.toMatch(/(?:^|\s)node(?:\s|$)/m)
     expect(build).toContain("'--runtime-file'")
     expect(build).toContain('cwd: home')
-    expect(build).toContain('umask 000; exec "$@"')
+    expect(build).toContain('umask 022; exec "$@"')
     expect(build).not.toContain('...process.env')
     expect(build).toContain('verification.innerAppTreeDigest !== thinVerification.appTreeDigest')
     expect(build).toContain('chmodSync(stagedChecksum, 0o644)')

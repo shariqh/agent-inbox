@@ -1,4 +1,10 @@
 export class LinuxAppImageVerificationError extends Error {}
+export function assertPinnedUnsquashfsVersion(result: {
+  status: number | null
+  stdout: string
+  stderr: string
+  error?: Error
+}): void
 export function verifySquashfsDirectoryModes(listing: string): number
 export function verifyNormalizedRuntimePrefix(
   path: string,

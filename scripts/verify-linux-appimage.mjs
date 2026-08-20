@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import {
   accessSync,
@@ -209,22 +209,40 @@ export function verifySquashfsDirectoryModes(listing) {
   return directoryCount
 }
 
-function squashfsDirectoryCount(appImage, runtimeSize) {
-  const toolStat = assertPlainFile(UNSQUASHFS, 'unsquashfs')
-  if ((toolStat.mode & 0o111) === 0) {
-    throw new LinuxAppImageVerificationError(`unsquashfs must be executable: ${UNSQUASHFS}`)
+export function assertPinnedUnsquashfsVersion(result) {
+  if (result.error) {
+    throw new LinuxAppImageVerificationError(
+      `could not run pinned unsquashfs: ${result.error.message}`,
+    )
   }
-  const version = execFileSync(UNSQUASHFS, ['-version'], {
-    encoding: 'utf8',
-    env: { LC_ALL: 'C', PATH: '/usr/bin:/bin', TZ: 'UTC' },
-    stdio: ['ignore', 'pipe', 'pipe'],
-    timeout: 10_000,
-  }).split('\n')[0]
+  if (result.status !== 1) {
+    throw new LinuxAppImageVerificationError(
+      `unsquashfs -version exit status ${String(result.status)} is invalid`,
+    )
+  }
+  if (result.stderr !== '') {
+    throw new LinuxAppImageVerificationError('unsquashfs -version emitted unexpected stderr')
+  }
+  const version = result.stdout.split('\n')[0]
   if (version !== UNSQUASHFS_VERSION) {
     throw new LinuxAppImageVerificationError(
       `unsquashfs version must be exactly 4.5 (2021/07/22), found ${version}`,
     )
   }
+}
+
+function squashfsDirectoryCount(appImage, runtimeSize) {
+  const toolStat = assertPlainFile(UNSQUASHFS, 'unsquashfs')
+  if ((toolStat.mode & 0o111) === 0) {
+    throw new LinuxAppImageVerificationError(`unsquashfs must be executable: ${UNSQUASHFS}`)
+  }
+  const version = spawnSync(UNSQUASHFS, ['-version'], {
+    encoding: 'utf8',
+    env: { LC_ALL: 'C', PATH: '/usr/bin:/bin', TZ: 'UTC' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 10_000,
+  })
+  assertPinnedUnsquashfsVersion(version)
   const listing = execFileSync(UNSQUASHFS, [
     '-lln',
     '-UTC',

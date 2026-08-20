@@ -22,6 +22,7 @@ import {
 } from '../scripts/build-linux-appimage.mjs'
 import { loadLinuxAppImageInputs, sha256File } from '../scripts/linux-appimage-inputs.mjs'
 import {
+  assertPinnedUnsquashfsVersion,
   verifyLinuxArm64AppImage,
   verifyLinuxX64AppImage,
   verifyNormalizedRuntimePrefix,
@@ -235,6 +236,40 @@ describe('Linux AppImage packaging', () => {
       .toThrow(/duplicate SquashFS path/)
     expect(() => verifySquashfsDirectoryModes('unparseable metadata'))
       .toThrow(/invalid SquashFS metadata/)
+  })
+
+  it('accepts the pinned unsquashfs version command exact exit-1 contract only', () => {
+    const exact = 'unsquashfs version 4.5 (2021/07/22)\nlicence text\n'
+    expect(() => assertPinnedUnsquashfsVersion({
+      status: 1,
+      stdout: exact,
+      stderr: '',
+      error: undefined,
+    })).not.toThrow()
+    expect(() => assertPinnedUnsquashfsVersion({
+      status: 0,
+      stdout: exact,
+      stderr: '',
+      error: undefined,
+    })).toThrow(/exit status 0/)
+    expect(() => assertPinnedUnsquashfsVersion({
+      status: 2,
+      stdout: exact,
+      stderr: '',
+      error: undefined,
+    })).toThrow(/exit status 2/)
+    expect(() => assertPinnedUnsquashfsVersion({
+      status: 1,
+      stdout: 'unsquashfs version 4.6.1\n',
+      stderr: '',
+      error: undefined,
+    })).toThrow(/version must be exactly/)
+    expect(() => assertPinnedUnsquashfsVersion({
+      status: 1,
+      stdout: exact,
+      stderr: 'warning',
+      error: undefined,
+    })).toThrow(/unexpected stderr/)
   })
 
   it.runIf(process.platform !== 'linux' || process.arch !== 'x64')(

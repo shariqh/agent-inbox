@@ -134,11 +134,14 @@ an ambient `.appimageignore` cannot alter the output. CI builds the AppImage
 twice from the same inputs and requires byte-identical artifacts, checksums, and
 reports. The builder normalizes every AppDir directory to `0755`, pins AppRun
 and the outer artifact to `0755`, pins desktop/icon/checksum/report metadata to
-`0644`, and the final verifier reads every stored directory mode directly from
-numeric SquashFS metadata before extraction. It then requires the extracted
-directory count to match that metadata and rechecks required file modes; it
-does not mistake extraction-time umask effects for stored artifact modes. The
-package therefore does not inherit the builder's umask.
+`0644`, and the final verifier reads every stored directory mode plus the
+AppRun, desktop, icon, and sole privileged sandbox modes directly from numeric
+SquashFS metadata before extraction. It rejects every other privileged entry
+and requires the extracted directory count to match that metadata. Content
+extraction runs in a dedicated child process with a zero umask so extracted
+file modes retain their stored values for exact inner-tree identity without
+changing the verifier process's ambient umask. The package therefore does not
+inherit the builder's umask.
 
 The `Linux x64 AppImage` and `Linux arm64 AppImage` workflows run independently
 on native `ubuntu-22.04` and `ubuntu-22.04-arm` runners. Each builds twice from

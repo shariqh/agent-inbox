@@ -23,10 +23,11 @@ import {
 import { loadLinuxAppImageInputs, sha256File } from '../scripts/linux-appimage-inputs.mjs'
 import {
   assertPinnedUnsquashfsVersion,
+  extractAppImage,
   verifyLinuxArm64AppImage,
   verifyLinuxX64AppImage,
   verifyNormalizedRuntimePrefix,
-  verifySquashfsDirectoryModes,
+  verifySquashfsModes,
 } from '../scripts/verify-linux-appimage.mjs'
 
 describe('Linux AppImage packaging', () => {
@@ -220,22 +221,43 @@ describe('Linux AppImage packaging', () => {
     })).toThrow(/shorter than the pinned type-2 runtime/)
   })
 
-  it('strictly verifies directory modes from direct SquashFS metadata', () => {
+  it('strictly verifies contract modes from direct SquashFS metadata', () => {
     const listing = [
       'drwxr-xr-x 0/0                     100 2026-08-19 20:00 squashfs-root',
       'drwxr-xr-x 0/0                      80 2026-08-19 20:00 squashfs-root/usr',
       'drwxr-xr-x 0/0                      60 2026-08-19 20:00 squashfs-root/usr/lib/Agent Inbox',
       '-rwxr-xr-x 0/0                      10 2026-08-19 20:00 squashfs-root/AppRun',
+      '-rw-r--r-- 0/0                      10 2026-08-19 20:00 squashfs-root/agent-inbox.desktop',
+      '-rw-r--r-- 0/0                      10 2026-08-19 20:00 squashfs-root/agent-inbox.png',
+      '-rwsr-xr-x 0/0                      10 2026-08-19 20:00 squashfs-root/usr/lib/Agent Inbox/chrome-sandbox',
     ].join('\n')
-    expect(verifySquashfsDirectoryModes(listing)).toBe(3)
+    const options = {
+      expectedModes: new Map([
+        ['squashfs-root/AppRun', 0o755],
+        ['squashfs-root/agent-inbox.desktop', 0o644],
+        ['squashfs-root/agent-inbox.png', 0o644],
+        ['squashfs-root/usr/lib/Agent Inbox/chrome-sandbox', 0o4755],
+      ]),
+      privilegedPath: 'squashfs-root/usr/lib/Agent Inbox/chrome-sandbox',
+    }
+    expect(verifySquashfsModes(listing, options)).toMatchObject({ directoryCount: 3 })
 
-    expect(() => verifySquashfsDirectoryModes(
+    expect(() => verifySquashfsModes(
       listing.replace('drwxr-xr-x 0/0                      80', 'drwx------ 0/0                      80'),
+      options,
     )).toThrow(/squashfs-root\/usr.*0755.*0700/)
-    expect(() => verifySquashfsDirectoryModes(`${listing}\n${listing.split('\n')[1]}`))
+    expect(() => verifySquashfsModes(`${listing}\n${listing.split('\n')[1]}`, options))
       .toThrow(/duplicate SquashFS path/)
-    expect(() => verifySquashfsDirectoryModes('unparseable metadata'))
+    expect(() => verifySquashfsModes('unparseable metadata', options))
       .toThrow(/invalid SquashFS metadata/)
+    expect(() => verifySquashfsModes(
+      listing.replace('-rw-r--r-- 0/0                      10', '-rw------- 0/0                      10'),
+      options,
+    )).toThrow(/agent-inbox\.desktop.*0644.*0600/)
+    expect(() => verifySquashfsModes(
+      `${listing}\n-rwsr-xr-x 0/0 10 2026-08-19 20:00 squashfs-root/unexpected-suid`,
+      options,
+    )).toThrow(/unexpected privileged mode/)
   })
 
   it('accepts the pinned unsquashfs version command exact exit-1 contract only', () => {
@@ -270,6 +292,32 @@ describe('Linux AppImage packaging', () => {
       stderr: 'warning',
       error: undefined,
     })).toThrow(/unexpected stderr/)
+  })
+
+  it('extracts under a child-only zero umask and preserves the caller umask', () => {
+    const root = mkdtempSync(join(tmpdir(), 'appimage-extraction-'))
+    const fakeAppImage = join(root, 'fake.AppImage')
+    writeFileSync(fakeAppImage, [
+      '#!/bin/sh',
+      'set -eu',
+      'test "$1" = "--appimage-extract"',
+      'mkdir squashfs-root',
+      'install -m 0644 /dev/null squashfs-root/agent-inbox.desktop',
+      '',
+    ].join('\n'))
+    chmodSync(fakeAppImage, 0o755)
+    const previousUmask = process.umask(0o077)
+    try {
+      const extracted = extractAppImage(fakeAppImage)
+      try {
+        expect(statSync(join(extracted.appDir, 'agent-inbox.desktop')).mode & 0o777).toBe(0o644)
+        expect(process.umask()).toBe(0o077)
+      } finally {
+        extracted.cleanup()
+      }
+    } finally {
+      process.umask(previousUmask)
+    }
   })
 
   it.runIf(process.platform !== 'linux' || process.arch !== 'x64')(
@@ -334,7 +382,7 @@ describe('Linux AppImage packaging', () => {
     expect(verify).toContain('normalizedRuntimeSha256')
     expect(verify).toContain("elfSection(prefix, '.digest_md5')")
     expect(verify).toContain('byteLength: appImageInputs.runtime.size')
-    expect(verify).toContain('verifySquashfsDirectoryModes')
+    expect(verify).toContain('verifySquashfsModes')
     expect(verify).toContain('countExtractedDirectories(extracted.appDir)')
     expect(verify).toContain("assertMode(artifact, 0o755, 'AppImage artifact')")
     expect(verify).toContain('chromeSandboxMode')

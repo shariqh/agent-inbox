@@ -5,7 +5,17 @@ export function assertPinnedUnsquashfsVersion(result: {
   stderr: string
   error?: Error
 }): void
-export function verifySquashfsDirectoryModes(listing: string): number
+export function verifySquashfsModes(
+  listing: string,
+  options: {
+    expectedModes: ReadonlyMap<string, number>
+    privilegedPath: string
+  },
+): { directoryCount: number }
+export function extractAppImage(appImage: string): {
+  appDir: string
+  cleanup: () => void
+}
 export function verifyNormalizedRuntimePrefix(
   path: string,
   runtime: { size: number; sha256: string },

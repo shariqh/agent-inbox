@@ -1,0 +1,382 @@
+name: Linux x64 DEB
+
+on:
+  workflow_dispatch:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-x64-deb-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Runtime libraries an installed Agent Inbox DEB depends on (release/linux-deb.json's
+  # `dependencies`, minus the versioned libc6/libstdc++6 constraints already satisfied by
+  # the base image). The packaged build itself launches the bundled Electron binary in
+  # Node mode to verify it (verify-linux-thin-app.mjs's process probe), so these must be
+  # present inside the pinned build container too, not only at the clean install gate.
+  DEB_RUNTIME_DEPS: >-
+    ca-certificates libasound2 libatk-bridge2.0-0 libatk1.0-0 libatspi2.0-0 libcairo2
+    libcups2 libdbus-1-3 libdrm2 libexpat1 libgbm1 libglib2.0-0 libgtk-3-0 libnspr4
+    libnss3 libpango-1.0-0 libuuid1 libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6
+    libxfixes3 libxkbcommon0 libxrandr2 libxss1 xdg-utils
+
+jobs:
+  deb:
+    name: Package and install / linux-x64
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: release-inputs
+        name: Resolve pinned Node version
+        run: echo "node-version=$(node scripts/linux-release-inputs.mjs --node-version)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ steps.release-inputs.outputs.node-version }}
+          architecture: x64
+          cache: npm
+      - run: npm ci
+      - name: Validate exact package inputs and source gates
+        run: |
+          npm run release:linux-inputs
+          npm run release:linux-deb-inputs
+          node scripts/linux-release-inputs.mjs --compiler-arch x64
+          npx vitest run \
+            test/linux-release-inputs.test.ts \
+            test/linux-native-folder.test.ts \
+            test/linux-release-workflow.test.ts \
+            test/linux-deb-inputs.test.ts \
+            test/linux-deb.test.ts \
+            test/linux-deb-workflow.test.ts \
+            test/native-runtime-adapter.test.ts \
+            test/package-stamp.test.ts \
+            test/setup-runner.test.ts
+      - run: echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
+      - run: npm run build
+      - name: Stage verified native x64 runtime
+        run: |
+          mkdir -p build/reports
+          npm run --silent stage:runtime:native -- \
+            --key linux-x64 \
+            --inputs release/linux-inputs.json \
+            --output build/runtime/linux-x64 \
+            > build/reports/linux-x64-runtime.json
+          REPORT=build/reports/linux-x64-runtime.json node -e '
+            const fs = require("node:fs")
+            const inputs = require("./release/linux-inputs.json")
+            const report = JSON.parse(fs.readFileSync(process.env.REPORT, "utf8"))
+            const expected = inputs.node.distributions["linux-x64"]
+            if (
+              report.key !== "linux-x64" ||
+              report.archive !== expected.archive ||
+              report.archiveRoot !== expected.root ||
+              report.archiveUrl !== expected.url ||
+              report.archiveSha256 !== expected.sha256
+            ) throw new Error("native runtime archive identity report mismatch")
+          '
+          RUNTIME=build/runtime/linux-x64
+          "$RUNTIME/bin/node" "$RUNTIME/scripts/runtime-payload.mjs" verify \
+            --root "$RUNTIME" \
+            --platform linux \
+            --arch x64 \
+            --node-version "$(node -p "require('./release/linux-inputs.json').node.version")" \
+            --package-version "$(node -p "require('./package.json').version")" \
+            > build/reports/linux-x64-runtime-verify.json
+      - name: Build verified x64 Electron folder
+        run: >-
+          npm run package:linux-thin --
+          --arch x64
+          --runtime build/runtime/linux-x64
+          --inputs release/linux-inputs.json
+          --output "build/thin/linux-x64/Agent Inbox"
+      - id: version
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+      - name: Build twice under hostile umasks and require byte-identical DEBs
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          ARTIFACT="agent-inbox_${VERSION}_amd64.deb"
+          COMMIT="$(git rev-parse HEAD)"
+          mkdir -p build/deb build/reports
+          docker run --rm --platform linux/amd64 \
+            -e SOURCE_DATE_EPOCH \
+            -e GIT_CONFIG_COUNT=1 \
+            -e GIT_CONFIG_KEY_0=safe.directory \
+            -e GIT_CONFIG_VALUE_0=/repo \
+            -e "VERSION=$VERSION" \
+            -e "ARTIFACT=$ARTIFACT" \
+            -e "COMMIT=$COMMIT" \
+            -e "DEB_RUNTIME_DEPS=$DEB_RUNTIME_DEPS" \
+            -v "$PWD:/repo" \
+            -w /repo \
+            ubuntu@sha256:79676deb51ebb02885b0b9d33788e78a37cf1045ad79d1bb04c6a222c3556b3d \
+            bash -euc '
+              case "$(dpkg-query -W -f="\${Version}" dpkg)" in
+                1.21.1ubuntu*) : ;;
+                *) echo "linux-x64-deb: unexpected pinned dpkg version" >&2; exit 1 ;;
+              esac
+              case "$(dpkg-deb --version | head -n1)" in
+                *"1.21.1 (amd64)."*) : ;;
+                *) echo "linux-x64-deb: unexpected pinned dpkg-deb version" >&2; exit 1 ;;
+              esac
+              apt-get update
+              # shellcheck disable=SC2086
+              DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                git $DEB_RUNTIME_DEPS
+              NODE=build/runtime/linux-x64/bin/node
+              APP="build/thin/linux-x64/Agent Inbox"
+              umask 022
+              "$NODE" scripts/build-linux-deb.mjs \
+                --app "$APP" \
+                --inputs release/linux-inputs.json \
+                --deb-inputs release/linux-deb.json \
+                --output-dir build/deb-a
+              umask 077
+              "$NODE" scripts/build-linux-deb.mjs \
+                --app "$APP" \
+                --inputs release/linux-inputs.json \
+                --deb-inputs release/linux-deb.json \
+                --output-dir build/deb-b
+              umask 022
+              cmp -- "build/deb-a/$ARTIFACT" "build/deb-b/$ARTIFACT"
+              cmp -- "build/deb-a/$ARTIFACT.sha256" "build/deb-b/$ARTIFACT.sha256"
+              cmp -- "build/deb-a/$ARTIFACT.report.json" "build/deb-b/$ARTIFACT.report.json"
+              mkdir -p build/deb
+              cp -p -- \
+                "build/deb-a/$ARTIFACT" \
+                "build/deb-a/$ARTIFACT.sha256" \
+                "build/deb-a/$ARTIFACT.report.json" \
+                build/deb/
+              mkdir -p build/reports
+              "$NODE" scripts/verify-linux-deb.mjs \
+                --deb "build/deb/$ARTIFACT" \
+                --app "$APP" \
+                --arch x64 \
+                --version "$VERSION" \
+                --source-commit "$COMMIT" \
+                --inputs release/linux-inputs.json \
+                --deb-inputs release/linux-deb.json \
+                --checksum "build/deb/$ARTIFACT.sha256" \
+                > build/reports/linux-x64-deb-verify.json
+            '
+      - name: Clean Ubuntu 22.04 install and launch gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          ARTIFACT="agent-inbox_${VERSION}_amd64.deb"
+          docker run --rm --platform linux/amd64 \
+            --security-opt apparmor:unconfined \
+            --security-opt seccomp=unconfined \
+            -e "ARTIFACT=$ARTIFACT" \
+            -v "$PWD/build/deb:/artifacts:ro" \
+            -v "$PWD/scripts/smoke-linux-deb.sh:/gate/smoke-linux-deb.sh:ro" \
+            -v "$PWD/scripts/smoke-linux-deb-setup.cjs:/gate/smoke-linux-deb-setup.cjs:ro" \
+            ubuntu@sha256:79676deb51ebb02885b0b9d33788e78a37cf1045ad79d1bb04c6a222c3556b3d \
+            bash -euc '
+              apt-get update
+              DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                curl passwd util-linux xvfb "/artifacts/$ARTIFACT"
+              if command -v node >/dev/null 2>&1; then
+                echo "linux-x64-deb: system Node unexpectedly present" >&2
+                exit 1
+              fi
+              test -x /usr/bin/agent-inbox
+              test -f /usr/share/applications/agent-inbox.desktop
+              test -f /usr/share/icons/hicolor/1024x1024/apps/agent-inbox.png
+              SANDBOX=/usr/lib/agent-inbox/chrome-sandbox
+              test "$(stat -c "%a" "$SANDBOX")" = "4755"
+              test "$(stat -c "%u" "$SANDBOX")" = "0"
+              useradd --create-home --uid 10001 appuser
+              runuser -u appuser -- /gate/smoke-linux-deb.sh \
+                --app-root /usr/lib/agent-inbox \
+                --launcher /usr/bin/agent-inbox \
+                --mode launcher \
+                --port 14319
+              runuser -u appuser -- /gate/smoke-linux-deb.sh \
+                --app-root /usr/lib/agent-inbox \
+                --launcher /usr/bin/agent-inbox \
+                --desktop /usr/share/applications/agent-inbox.desktop \
+                --mode desktop \
+                --port 14321
+              mkdir -p /home/appuser/setup-home
+              chown appuser:appuser /home/appuser/setup-home
+              # Launch once more against the PERSISTENT setup-home (no DB
+              # override, so the app creates its own true default
+              # `$HOME/.agent-inbox/inbox.db`) so the sentinel below is real,
+              # then run Setup against that same home so both the DB and the
+              # copied runtime live under one directory this gate does not
+              # delete before the reinstall/purge assertions.
+              runuser -u appuser -- /gate/smoke-linux-deb.sh \
+                --app-root /usr/lib/agent-inbox \
+                --launcher /usr/bin/agent-inbox \
+                --mode launcher \
+                --port 14323 \
+                --home /home/appuser/setup-home
+              test -f /home/appuser/setup-home/.agent-inbox/inbox.db
+              runuser -u appuser -- env \
+                ELECTRON_RUN_AS_NODE=1 \
+                /usr/lib/agent-inbox/"Agent Inbox" \
+                /gate/smoke-linux-deb-setup.cjs \
+                --app-root /usr/lib/agent-inbox \
+                --home /home/appuser/setup-home \
+                --target copilot \
+                --arch x64
+              # Reinstall, remove, purge: prove the copied Setup runtime and the
+              # inbox DB sentinel under $HOME/.agent-inbox survive every dpkg
+              # lifecycle transition, since the package owns no home-directory
+              # paths and has no maintainer scripts.
+              apt-get remove -y agent-inbox
+              test -f /home/appuser/setup-home/.agent-inbox/inbox.db
+              test -f /home/appuser/setup-home/.copilot/copilot-instructions.md
+              cp "/artifacts/$ARTIFACT" "/tmp/reinstall-$ARTIFACT"
+              DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                "/tmp/reinstall-$ARTIFACT"
+              test -x /usr/bin/agent-inbox
+              apt-get purge -y agent-inbox
+              test ! -e /usr/bin/agent-inbox
+              test ! -e /usr/lib/agent-inbox
+              test -f /home/appuser/setup-home/.agent-inbox/inbox.db
+              RUNTIME_DIR="$(find /home/appuser/setup-home/.agent-inbox/runtime -mindepth 1 -maxdepth 1 -type d | head -n1)"
+              test -n "$RUNTIME_DIR"
+              test -x "$RUNTIME_DIR/bin/node"
+              runuser -u appuser -- env \
+                AGENT_INBOX_DB=/home/appuser/setup-home/.agent-inbox/post-purge-selftest.db \
+                "$RUNTIME_DIR/bin/node" "$RUNTIME_DIR/dist/hook-cli.js" selftest
+            '
+      - name: Pinned Ubuntu 22.04 offline relaunch gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          ARTIFACT="agent-inbox_${VERSION}_amd64.deb"
+          IMAGE="agent-inbox-deb-offline-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-amd64"
+          cat > build/deb/offline.Dockerfile <<EOF
+          FROM ubuntu@sha256:79676deb51ebb02885b0b9d33788e78a37cf1045ad79d1bb04c6a222c3556b3d
+          ARG ARTIFACT
+          COPY \${ARTIFACT} /tmp/\${ARTIFACT}
+          RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+               curl passwd util-linux xvfb "/tmp/\${ARTIFACT}" && \
+             ! command -v node && useradd --create-home --uid 10001 appuser && \
+             rm -rf /var/lib/apt/lists/*
+          EOF
+          trap 'docker image rm -f "$IMAGE" >/dev/null 2>&1 || true' EXIT
+          docker build --platform linux/amd64 \
+            --build-arg "ARTIFACT=$ARTIFACT" \
+            --file build/deb/offline.Dockerfile \
+            --tag "$IMAGE" \
+            build/deb
+          docker run --rm --network none --platform linux/amd64 \
+            --security-opt apparmor:unconfined \
+            --security-opt seccomp=unconfined \
+            -v "$PWD/scripts/smoke-linux-deb.sh:/gate/smoke-linux-deb.sh:ro" \
+            "$IMAGE" \
+            runuser -u appuser -- /gate/smoke-linux-deb.sh \
+             --app-root /usr/lib/agent-inbox \
+             --launcher /usr/bin/agent-inbox \
+             --mode launcher \
+             --port 14325 \
+             --offline
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-x64-deb
+          path: |
+            build/deb/*.deb
+            build/deb/*.deb.sha256
+            build/deb/*.deb.report.json
+            build/reports/linux-x64-deb-verify.json
+            build/reports/linux-x64-runtime.json
+            build/reports/linux-x64-runtime-verify.json
+            build/thin/linux-x64/Agent Inbox.thin-report.json
+          if-no-files-found: error
+          retention-days: 7
+
+  rehash:
+    name: Rehash and reverify / linux-x64
+    needs: deb
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: release-inputs
+        name: Resolve pinned Node version
+        run: echo "node-version=$(node scripts/linux-release-inputs.mjs --node-version)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ steps.release-inputs.outputs.node-version }}
+          architecture: x64
+          cache: npm
+      - run: npm ci
+      - name: Stage verified native x64 runtime
+        run: |
+          npm run --silent stage:runtime:native -- \
+            --key linux-x64 \
+            --inputs release/linux-inputs.json \
+            --output build/runtime/linux-x64 \
+            > /dev/null
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: linux-x64-deb
+          path: build/downloaded
+      - name: Independently reverify the uploaded artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.deb.outputs.version }}"
+          ARTIFACT="agent-inbox_${VERSION}_amd64.deb"
+          COMMIT="$(git rev-parse HEAD)"
+          (
+            cd build/downloaded/deb
+            sha256sum -c "$ARTIFACT.sha256"
+          )
+          docker run --rm --platform linux/amd64 \
+            -e GIT_CONFIG_COUNT=1 \
+            -e GIT_CONFIG_KEY_0=safe.directory \
+            -e GIT_CONFIG_VALUE_0=/repo \
+            -e "VERSION=$VERSION" \
+            -e "ARTIFACT=$ARTIFACT" \
+            -e "COMMIT=$COMMIT" \
+            -e "DEB_RUNTIME_DEPS=$DEB_RUNTIME_DEPS" \
+            -v "$PWD:/repo" \
+            -w /repo \
+            ubuntu@sha256:79676deb51ebb02885b0b9d33788e78a37cf1045ad79d1bb04c6a222c3556b3d \
+            bash -euc '
+              apt-get update
+              # shellcheck disable=SC2086
+              DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                git $DEB_RUNTIME_DEPS
+              mkdir -p build/reports
+              build/runtime/linux-x64/bin/node scripts/verify-linux-deb.mjs \
+                --deb "build/downloaded/deb/$ARTIFACT" \
+                --arch x64 \
+                --version "$VERSION" \
+                --source-commit "$COMMIT" \
+                --inputs release/linux-inputs.json \
+                --deb-inputs release/linux-deb.json \
+                --checksum "build/downloaded/deb/$ARTIFACT.sha256" \
+                > build/reports/linux-x64-deb-rehash-verify.json
+            '
+          VERSION="$VERSION" node - <<'NODE'
+          const fs = require('node:fs')
+          const built = JSON.parse(fs.readFileSync(
+            `build/downloaded/deb/agent-inbox_${process.env.VERSION}_amd64.deb.report.json`,
+            'utf8',
+          ))
+          const verified = JSON.parse(fs.readFileSync(
+            'build/reports/linux-x64-deb-rehash-verify.json',
+            'utf8',
+          ))
+          for (const [key, value] of Object.entries(verified)) {
+            if (JSON.stringify(built[key]) !== JSON.stringify(value)) {
+              throw new Error(`downloaded DEB report mismatch for ${key}`)
+            }
+          }
+          NODE

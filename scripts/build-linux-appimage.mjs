@@ -5,20 +5,15 @@ import {
   copyFileSync,
   existsSync,
   lstatSync,
-  lutimesSync,
   mkdirSync,
   mkdtempSync,
-  readlinkSync,
   readFileSync,
-  readdirSync,
-  realpathSync,
   rmSync,
   symlinkSync,
-  utimesSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { publishAtomically } from './build-thin-app.mjs'
@@ -34,6 +29,12 @@ import {
   verifyPinnedAppImageTool,
 } from './linux-appimage-inputs.mjs'
 import { loadLinuxReleaseInputs } from './linux-release-inputs.mjs'
+import {
+  assertChromeSandboxInput,
+  copyPlainTreeWithDeterministicModes,
+  normalizeTreeTimes,
+  renderLinuxDesktopEntry,
+} from './linux-package-common.mjs'
 import { resolveSourceProvenance } from './source-provenance.mjs'
 import { verifyLinuxThinApp } from './verify-linux-thin-app.mjs'
 import { verifyLinuxAppImage } from './verify-linux-appimage.mjs'
@@ -85,80 +86,10 @@ export function renderAppRun(inputs) {
 
 export function renderDesktopEntry(inputs, packageVersion) {
   appImageArtifactName(packageVersion, resolveLinuxAppImageTarget(inputs.target).processArch)
-  return [
-    '[Desktop Entry]',
-    `Type=${inputs.desktop.type}`,
-    `Name=${inputs.desktop.name}`,
-    `Comment=${inputs.desktop.comment}`,
-    `Exec=${inputs.desktop.exec}`,
-    `Icon=${inputs.desktop.icon}`,
-    `Categories=${inputs.desktop.categories.join(';')};`,
-    `Terminal=${String(inputs.desktop.terminal)}`,
-    `X-AppImage-Version=${packageVersion}`,
-    '',
-  ].join('\n')
-}
-
-function normalizeTreeTimes(path, seconds) {
-  const stat = lstatSync(path)
-  if (stat.isDirectory()) {
-    for (const name of readdirSync(path).sort()) normalizeTreeTimes(join(path, name), seconds)
-    utimesSync(path, seconds, seconds)
-  } else if (stat.isSymbolicLink()) {
-    lutimesSync(path, seconds, seconds)
-  } else if (stat.isFile()) {
-    utimesSync(path, seconds, seconds)
-  } else {
-    throw new LinuxAppImageBuildError(`AppDir contains unsupported filesystem entry: ${path}`)
-  }
-}
-
-function copyPlainTreeWithDeterministicModes(source, destination, sourceRoot = realpathSync(source)) {
-  const stat = lstatSync(source)
-  if (stat.isSymbolicLink()) {
-    const target = readlinkSync(source)
-    const resolvedTarget = realpathSync(source)
-    const fromRoot = relative(sourceRoot, resolvedTarget)
-    if (
-      isAbsolute(target) ||
-      fromRoot === '..' ||
-      fromRoot.startsWith(`..${sep}`) ||
-      isAbsolute(fromRoot)
-    ) {
-      throw new LinuxAppImageBuildError(`thin application symlink escapes its root: ${source}`)
-    }
-    symlinkSync(target, destination)
-    return
-  }
-  if (stat.isDirectory()) {
-    if ((stat.mode & 0o7000) !== 0) {
-      throw new LinuxAppImageBuildError(`thin application directory has privileged mode bits: ${source}`)
-    }
-    mkdirSync(destination, { mode: 0o755 })
-    for (const name of readdirSync(source).sort()) {
-      copyPlainTreeWithDeterministicModes(join(source, name), join(destination, name), sourceRoot)
-    }
-    chmodSync(destination, 0o755)
-    return
-  }
-  if (!stat.isFile()) {
-    throw new LinuxAppImageBuildError(`thin application contains an unsupported entry: ${source}`)
-  }
-  if ((stat.mode & 0o7000) !== 0) {
-    throw new LinuxAppImageBuildError(`thin application file has privileged mode bits: ${source}`)
-  }
-  copyFileSync(source, destination)
-  chmodSync(destination, stat.mode & 0o777)
-}
-
-function assertChromeSandboxInput(app) {
-  const sandbox = join(app, 'chrome-sandbox')
-  const stat = lstatSync(sandbox)
-  if (stat.isSymbolicLink() || !stat.isFile() || (stat.mode & 0o7777) !== 0o755) {
-    throw new LinuxAppImageBuildError(
-      'source thin application chrome-sandbox must be a plain executable with mode 0755',
-    )
-  }
+  return renderLinuxDesktopEntry(
+    inputs.desktop,
+    [['X-AppImage-Version', packageVersion]],
+  )
 }
 
 export function stageLinuxAppImageDirectory({

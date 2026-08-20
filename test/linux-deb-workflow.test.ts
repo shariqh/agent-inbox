@@ -233,7 +233,7 @@ describe('Linux arm64 DEB workflow', () => {
     expect(workflow).toContain('umask 022')
     expect(workflow).toContain('umask 077')
     expect(workflow.match(/scripts\/build-linux-deb\.mjs/g)).toHaveLength(2)
-    expect(workflow).toContain('--arch arm64')
+    expect(workflow.match(/--arch arm64/g)?.length).toBeGreaterThanOrEqual(4)
     expect(workflow).toContain('--output-dir build/deb-a')
     expect(workflow).toContain('--output-dir build/deb-b')
     expect(workflow).toContain('mkdir -p build/deb build/reports')
@@ -308,6 +308,17 @@ describe('Linux arm64 DEB workflow', () => {
     )
     expect(pkg.scripts['package:linux-deb:arm64']).toContain('--arch arm64')
     expect(pkg.scripts['verify:linux-deb:arm64']).toContain('--arch arm64')
+  })
+
+  it('rebuilds dist before staging a fresh runtime in both rehash jobs', () => {
+    for (const path of [workflowPath, arm64WorkflowPath]) {
+      const workflow = readFileSync(path, 'utf8')
+      const rehash = workflow.slice(workflow.indexOf('  rehash:'))
+      expect(rehash.indexOf('- run: npm run build')).toBeGreaterThan(rehash.indexOf('- run: npm ci'))
+      expect(rehash.indexOf('- name: Stage verified native')).toBeGreaterThan(
+        rehash.indexOf('- run: npm run build'),
+      )
+    }
   })
 })
 

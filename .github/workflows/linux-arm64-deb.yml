@@ -135,12 +135,14 @@ jobs:
               umask 022
               "$NODE" scripts/build-linux-deb.mjs \
                 --app "$APP" \
+                --arch arm64 \
                 --inputs release/linux-inputs.json \
                 --deb-inputs release/linux-deb.json \
                 --output-dir build/deb-a
               umask 077
               "$NODE" scripts/build-linux-deb.mjs \
                 --app "$APP" \
+                --arch arm64 \
                 --inputs release/linux-inputs.json \
                 --deb-inputs release/linux-deb.json \
                 --output-dir build/deb-b
@@ -315,6 +317,7 @@ jobs:
           architecture: arm64
           cache: npm
       - run: npm ci
+      - run: npm run build
       - name: Stage verified native arm64 runtime
         run: |
           npm run --silent stage:runtime:native -- \

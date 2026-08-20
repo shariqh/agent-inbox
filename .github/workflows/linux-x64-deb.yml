@@ -315,6 +315,7 @@ jobs:
           architecture: x64
           cache: npm
       - run: npm ci
+      - run: npm run build
       - name: Stage verified native x64 runtime
         run: |
           npm run --silent stage:runtime:native -- \

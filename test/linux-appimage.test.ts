@@ -302,6 +302,7 @@ describe('Linux AppImage packaging', () => {
       'set -eu',
       'test "$1" = "--appimage-extract"',
       'mkdir squashfs-root',
+      ': > squashfs-root/umask-probe',
       'install -m 0644 /dev/null squashfs-root/agent-inbox.desktop',
       '',
     ].join('\n'))
@@ -310,6 +311,7 @@ describe('Linux AppImage packaging', () => {
     try {
       const extracted = extractAppImage(fakeAppImage)
       try {
+        expect(statSync(join(extracted.appDir, 'umask-probe')).mode & 0o777).toBe(0o666)
         expect(statSync(join(extracted.appDir, 'agent-inbox.desktop')).mode & 0o777).toBe(0o644)
         expect(process.umask()).toBe(0o077)
       } finally {
@@ -384,6 +386,7 @@ describe('Linux AppImage packaging', () => {
     expect(verify).toContain('byteLength: appImageInputs.runtime.size')
     expect(verify).toContain('verifySquashfsModes')
     expect(verify).toContain('countExtractedDirectories(extracted.appDir)')
+    expect(verify).toContain('umask 000; exec "$1" --appimage-extract')
     expect(verify).toContain("assertMode(artifact, 0o755, 'AppImage artifact')")
     expect(verify).toContain('chromeSandboxMode')
   })

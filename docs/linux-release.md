@@ -129,8 +129,9 @@ folder; the sole permission transformation is the standard AppImage
 `chrome-sandbox` mode from the Electron archive's exact `0755` to the packaged
 setuid-root `4755`; the builder rejects privileged mode bits on every source
 entry, and the final verifier requires the sandbox to be the sole privileged
-entry. appimagetool runs from an empty isolated working directory and HOME, so
-an ambient `.appimageignore` cannot alter the output. CI builds the AppImage
+entry. appimagetool runs from an empty isolated working directory and HOME
+through a dedicated child process with a zero umask, so an ambient
+`.appimageignore` or caller umask cannot alter the output. CI builds the AppImage
 twice from the same inputs and requires byte-identical artifacts, checksums, and
 reports. The builder normalizes every AppDir directory to `0755`, pins AppRun
 and the outer artifact to `0755`, pins desktop/icon/checksum/report metadata to

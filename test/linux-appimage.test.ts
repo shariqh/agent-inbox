@@ -18,6 +18,7 @@ import {
   buildLinuxX64AppImage,
   renderAppRun,
   renderDesktopEntry,
+  runAppImageTool,
   stageLinuxAppImageDirectory,
 } from '../scripts/build-linux-appimage.mjs'
 import { loadLinuxAppImageInputs, sha256File } from '../scripts/linux-appimage-inputs.mjs'
@@ -322,6 +323,54 @@ describe('Linux AppImage packaging', () => {
     }
   })
 
+  it('runs appimagetool under a child-only zero umask and preserves exact argv', () => {
+    const root = mkdtempSync(join(tmpdir(), 'appimagetool-umask-'))
+    const home = join(root, 'home')
+    const tool = join(root, 'fake-appimagetool')
+    const runtime = join(root, 'runtime')
+    const appDir = join(root, 'AppDir')
+    const output = join(root, 'output.AppImage')
+    mkdirSync(home)
+    writeFileSync(runtime, 'runtime')
+    writeFileSync(tool, [
+      '#!/bin/sh',
+      'set -eu',
+      ': > "$HOME/tool-umask-probe"',
+      'printf "%s\\n" "$@" > "$HOME/tool-argv"',
+      '',
+    ].join('\n'))
+    chmodSync(tool, 0o755)
+
+    const previousUmask = process.umask(0o077)
+    try {
+      runAppImageTool({
+        tool,
+        appDir,
+        output,
+        packageVersion: '1.0.1',
+        sourceDateEpoch: 1_700_000_000,
+        home,
+        runtime,
+        compression: 'gzip',
+        upstreamArchitecture: 'x86_64',
+      })
+      expect(statSync(join(home, 'tool-umask-probe')).mode & 0o777).toBe(0o666)
+      expect(process.umask()).toBe(0o077)
+    } finally {
+      process.umask(previousUmask)
+    }
+    expect(readFileSync(join(home, 'tool-argv'), 'utf8').split('\n')).toEqual([
+      '--no-appstream',
+      '--runtime-file',
+      runtime,
+      '--comp',
+      'gzip',
+      appDir,
+      output,
+      '',
+    ])
+  })
+
   it.runIf(process.platform !== 'linux' || process.arch !== 'x64')(
     'rejects non-native build and verification before reading artifact inputs',
     async () => {
@@ -377,6 +426,7 @@ describe('Linux AppImage packaging', () => {
     expect(smoke).not.toMatch(/(?:^|\s)node(?:\s|$)/m)
     expect(build).toContain("'--runtime-file'")
     expect(build).toContain('cwd: home')
+    expect(build).toContain('umask 000; exec "$@"')
     expect(build).not.toContain('...process.env')
     expect(build).toContain('verification.innerAppTreeDigest !== thinVerification.appTreeDigest')
     expect(build).toContain('chmodSync(stagedChecksum, 0o644)')

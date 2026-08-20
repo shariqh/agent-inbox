@@ -12,6 +12,17 @@ export function stageLinuxAppImageDirectory(options: {
   inputs: LinuxAppImageInputs
   sourceDateEpoch: number
 }): string
+export function runAppImageTool(options: {
+  tool: string
+  appDir: string
+  output: string
+  packageVersion: string
+  sourceDateEpoch: number
+  home: string
+  runtime: string
+  compression: string
+  upstreamArchitecture: string
+}): void
 interface LinuxAppImageBuildOptions {
   app: string
   outputDir: string

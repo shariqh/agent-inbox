@@ -243,7 +243,7 @@ function assertSourceInput(path, expectedSha256, label) {
   }
 }
 
-function runAppImageTool({
+export function runAppImageTool({
   tool,
   appDir,
   output,
@@ -266,7 +266,7 @@ function runAppImageTool({
     VERSION: packageVersion,
   }
   mkdirSync(env.TMPDIR)
-  execFileSync(tool, [
+  const args = [
     '--no-appstream',
     '--runtime-file',
     runtime,
@@ -274,6 +274,13 @@ function runAppImageTool({
     compression,
     appDir,
     output,
+  ]
+  execFileSync('/bin/sh', [
+    '-c',
+    'umask 000; exec "$@"',
+    'appimagetool',
+    tool,
+    ...args,
   ], {
     cwd: home,
     env,

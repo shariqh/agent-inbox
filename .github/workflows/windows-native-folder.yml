@@ -176,14 +176,21 @@ jobs:
           $env:HOME = $testHome
           $env:APPDATA = Join-Path $testHome "AppData\Roaming"
           $env:LOCALAPPDATA = Join-Path $testHome "AppData\Local"
+          New-Item -ItemType Directory -Force $env:APPDATA, $env:LOCALAPPDATA | Out-Null
           $env:AGENT_INBOX_PORT = "14319"
+          $env:ELECTRON_ENABLE_LOGGING = "1"
           $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
-          $process = Start-Process -FilePath $app -PassThru `
-            -RedirectStandardOutput "$env:RUNNER_TEMP\agent-inbox-win32.log" `
-            -RedirectStandardError "$env:RUNNER_TEMP\agent-inbox-win32-error.log"
+          $stdoutLog = "$env:RUNNER_TEMP\agent-inbox-win32.log"
+          $stderrLog = "$env:RUNNER_TEMP\agent-inbox-win32-error.log"
+          $process = Start-Process -FilePath $app `
+            -WorkingDirectory (Split-Path $app) `
+            -PassThru `
+            -RedirectStandardOutput $stdoutLog `
+            -RedirectStandardError $stderrLog
           try {
             $ready = $false
             for ($attempt = 0; $attempt -lt 60; $attempt += 1) {
+              if ($process.HasExited) { break }
               try {
                 $response = Invoke-WebRequest -Method Head -Uri "http://127.0.0.1:14319/"
                 if ($response.Headers["x-agent-inbox-local-boundary"] -eq "loopback-v1") {
@@ -193,7 +200,12 @@ jobs:
               } catch {}
               Start-Sleep -Seconds 1
             }
-            if (-not $ready) { throw "packaged Windows viewer did not prove the loopback boundary" }
+            if (-not $ready) {
+              Write-Host "Electron exited=$($process.HasExited) code=$($process.ExitCode)"
+              if (Test-Path $stdoutLog) { Get-Content $stdoutLog | Write-Host }
+              if (Test-Path $stderrLog) { Get-Content $stderrLog | Write-Host }
+              throw "packaged Windows viewer did not prove the loopback boundary"
+            }
 
             $runtimeNode = Join-Path $runtime "node.exe"
             $payload = Join-Path $runtime "scripts\runtime-payload.mjs"

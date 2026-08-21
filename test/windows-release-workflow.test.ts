@@ -4,10 +4,11 @@ import { describe, expect, it } from 'vitest'
 
 const root = resolve(process.cwd())
 const workflowPath = join(root, '.github', 'workflows', 'windows-native-folder.yml')
+const readWorkflow = (): string => readFileSync(workflowPath, 'utf8').replace(/\r\n/g, '\n')
 
 describe('native Windows folder workflow', () => {
   it('uses one exact native x64 runner with read-only fork-safe permissions', () => {
-    const workflow = readFileSync(workflowPath, 'utf8')
+    const workflow = readWorkflow()
     expect(workflow).toContain('pull_request:')
     expect(workflow).toContain('workflow_dispatch:')
     expect(workflow).toContain('runs-on: windows-2022')
@@ -18,7 +19,7 @@ describe('native Windows folder workflow', () => {
   })
 
   it('pins actions and proves the runtime, restored folder, PE identities, and launch', () => {
-    const workflow = readFileSync(workflowPath, 'utf8')
+    const workflow = readWorkflow()
     const refs = [...workflow.matchAll(
       /^\s*-\s+uses:\s+([^@\s]+)@([^\s#]+)(?:\s+#\s+(.+))?$/gm,
     )]
@@ -52,7 +53,7 @@ describe('native Windows folder workflow', () => {
   })
 
   it('runs native NTFS identity and fail-closed Setup evidence', () => {
-    const workflow = readFileSync(workflowPath, 'utf8')
+    const workflow = readWorkflow()
     expect(workflow).toContain('test/windows-setup-filesystem.test.ts')
     expect(workflow).toContain('test/setup-runner.test.ts')
     expect(workflow).toContain('test/setup-process.test.ts')

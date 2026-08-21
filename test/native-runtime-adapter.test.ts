@@ -87,7 +87,7 @@ describe('native runtime staging adapters', () => {
   })
 
   it('fails closed for malformed Windows roots and unknown targets', () => {
-    expect(() => nativeRuntimeAdapterFor('win32-x64', { systemRoot: undefined }))
+    expect(() => nativeRuntimeAdapterFor('win32-x64', { systemRoot: '' }))
       .toThrow(/SystemRoot is required/)
     expect(() => nativeRuntimeAdapterFor('win32-x64', { systemRoot: 'Windows' }))
       .toThrow(/absolute Windows path/)

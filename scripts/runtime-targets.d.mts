@@ -23,6 +23,7 @@ export interface RuntimeTarget {
 export const RUNTIME_TARGETS: Readonly<Record<RuntimeTargetKey, RuntimeTarget>>
 export const MACOS_RUNTIME_KEYS: readonly ['darwin-arm64', 'darwin-x64']
 export const LINUX_RUNTIME_KEYS: readonly ['linux-arm64', 'linux-x64']
+export const WINDOWS_RUNTIME_KEYS: readonly ['win32-x64']
 export const POSIX_SETUP_RUNTIME_KEYS: readonly [
   'darwin-arm64',
   'darwin-x64',

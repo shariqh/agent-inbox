@@ -117,7 +117,7 @@ runbook are documented in [`docs/macos-release.md`](docs/macos-release.md) and
 `assets/icon-mark.svg` is its deliberately simplified single-color derivative for
 tiny in-product use. `npm run generate:icons` deterministically refreshes
 `assets/icon-1024.png`, browser favicon/mark assets under `public/`, and
-`electron/icon.icns`; `assets/icon-manifest.json` pins the source and generated
+`electron/icon.icns`, and `electron/icon.ico`; `assets/icon-manifest.json` pins the source and generated
 output hashes. `npm run generate:icons -- --check` validates that manifest,
 dimensions, SVG copies, and the complete ICNS representation set without
 rerasterizing. Generation requires `rsvg-convert`; generation and checking use

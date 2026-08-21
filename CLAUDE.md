@@ -406,8 +406,10 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   This is point-in-time detection, not a stable handle: inode reuse and races after the
   last check remain. The modeled Win32 policy additionally rejects drive-relative,
   drive-less-rooted, device/extended-namespace and ADS-like paths plus junction/reparse
-  entries exposed as links. Those tests do not establish Windows support; Setup remains
-  limited to exact Darwin/Linux x64/arm64 hosts until native Windows evidence exists.
+  entries exposed as links. Native Windows x64 folder CI proves only the existing
+  immutable runtime create/publish/remove path on NTFS; it does not establish replacement,
+  locking, host-mutation, or process-cancellation behavior. Setup therefore remains
+  limited to exact Darwin/Linux x64/arm64 hosts.
   Recursive rollback/cleanup must re-identify both the private scratch directory and any
   prior-tree backup immediately before mutation. An identity mismatch refuses restore or
   deletion and retains the untrusted path for recovery; never “clean up” a path whose

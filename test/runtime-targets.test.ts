@@ -4,6 +4,7 @@ import {
   MACOS_RUNTIME_KEYS,
   POSIX_SETUP_RUNTIME_KEYS,
   RUNTIME_TARGETS,
+  WINDOWS_RUNTIME_KEYS,
   nodeDistributionIdentity,
   targetFor,
 } from '../scripts/runtime-targets.mjs'
@@ -120,6 +121,8 @@ describe('portable runtime target contract', () => {
       'linux-x64',
     ])
     expect(POSIX_SETUP_RUNTIME_KEYS).not.toContain('win32-x64')
+    expect(Object.isFrozen(WINDOWS_RUNTIME_KEYS)).toBe(true)
+    expect(WINDOWS_RUNTIME_KEYS).toEqual(['win32-x64'])
   })
 
   it('returns a descriptor or throws for an unknown target', () => {

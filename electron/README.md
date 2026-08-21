@@ -11,7 +11,7 @@ npm run package:app
 ```
 
 Packaging first runs `npm run generate:icons -- --check` and consumes the
-checked-in `electron/icon.icns`. Regenerate it, the 1024px PNG, and browser icon
+checked-in `electron/icon.icns` or `electron/icon.ico`. Regenerate them, the 1024px PNG, and browser icon
 assets from `assets/icon.svg` with `npm run generate:icons` (macOS with
 `rsvg-convert` and `iconutil`). The single-color `assets/icon-mark.svg` is the
 documented optical derivative used in the viewer chrome.
@@ -97,17 +97,21 @@ substituted or unverifiable destination is retained and reported as unsafe/unkno
 configuration is never changed and Setup still fails.
 
 Win32 policy tests model fully-qualified drive/UNC paths, separator normalization,
-case-independent filesystem identity, junction/link refusal, and sharing failures. They
-also reject drive-relative, drive-less-rooted, device/extended-namespace, and alternate-data-
-stream-like paths. Those injected tests do not prove NTFS behavior or enable Windows Setup.
+case-independent filesystem identity, junction/link refusal, and sharing failures. Native
+Windows x64 folder CI additionally exercises the existing immutable runtime
+create/publish/remove path on NTFS, including stable identity, canonical path behavior,
+mode/read-only cleanup, and junction refusal. That evidence does not prove the replacement,
+locking, host-mutation, or process-cancellation semantics needed to enable Windows Setup.
 
 `electron/runtime-targets.cjs`, re-exported to ESM builders by
 `scripts/runtime-targets.mjs`, is the single target vocabulary and source of official Node
 artifact/layout facts. Release setup-info callers declare their exact required key set;
 the macOS release profile remains exactly `darwin-arm64` plus `darwin-x64`. Packaged Setup
 accepts only the exact process-derived Darwin/Linux x64/arm64 key and routes it through the
-fixed-purpose POSIX installer adapter. A verified Win32 payload still cannot advertise or
-run Setup. Windows arm64 remains outside the target set.
+fixed-purpose POSIX installer adapter. The native Windows folder embeds a verified
+`win32-x64` payload under schema-2 metadata but still cannot advertise or run Setup.
+Windows arm64 remains outside the target set. See
+[`docs/windows-release.md`](../docs/windows-release.md) for the evidence boundary.
 
 The mutating shell sources the verified adjacent `scripts/setup-lock.sh` and owns
 fd 9 itself for the full transaction. Darwin uses descriptor-mode

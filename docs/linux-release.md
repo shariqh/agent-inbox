@@ -343,10 +343,15 @@ the protected handoff, and rehashes all five packages through the downloaded
 checksum manifest. Only then does one API update install the final title/notes
 and make the release public. An exact already-public rerun is a verified no-op;
 an existing draft or any conflicting tag, metadata, asset, byte, or checksum
-fails closed. A failed private draft is deleted only by its recorded numeric
-release ID. If cleanup cannot prove the release is still a draft or cannot
-delete it, the private release is retained and identified in the failed run for
-safe recovery.
+fails closed. Draft creation captures the numeric release ID directly from the
+API response and writes a private ownership marker binding the tag, source
+commit/tree, producer run ID/attempt, and inventory digest. Cleanup GETs only
+that ID and deletes only while the complete marker, unique title, draft state,
+tag, and source still match this run. A replaced or edited draft is retained.
+Once the final publication PATCH may have been attempted, cleanup never
+auto-deletes; the ID/tag remain recovery evidence. Final public notes carry the
+same identity in a non-rendering marker, so exact-public reruns can verify and
+no-op while marker mismatches fail without mutation.
 
 `.github/workflows/release-aggregate.yml` provides the PR/fork/manual validation
 path. It invokes the same five secret-free package workflows and the same Linux

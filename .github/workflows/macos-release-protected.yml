@@ -556,39 +556,42 @@ jobs:
           RELEASE_TAG: ${{ needs.authorize.outputs.tag }}
           RELEASE_VERSION: ${{ needs.authorize.outputs.version }}
           RELEASE_SOURCE: ${{ needs.authorize.outputs.source-commit }}
+          PRODUCER_RUN_ID: ${{ needs.authorize.outputs.run-id }}
+          PRODUCER_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
         shell: bash
         run: |
           set -euo pipefail
           WORK="$(mktemp -d "${RUNNER_TEMP}/agent-inbox-publish.XXXXXX")"
           CREATED=false
           PUBLISHED=false
+          PUBLICATION_ATTEMPTED=false
           RELEASE_ID=
           CLEANUP_FAILED=false
+          STAGING_TITLE=
+          STAGING_MARKER="$WORK/STAGING_MARKER.json"
+          PUBLIC_MARKER="$WORK/PUBLIC_MARKER.txt"
+          FINAL_NOTES="$WORK/FINAL_NOTES.md"
+          export FINAL_NOTES
           cleanup() {
             local status=$?
             trap - EXIT
             if [[ "$CREATED" == true && "$PUBLISHED" != true ]]; then
-              if [[ "$RELEASE_ID" =~ ^[0-9]+$ ]]; then
-                set +e
-                REMOTE_DRAFT="$(gh api "repos/$GH_REPO/releases/$RELEASE_ID" --jq .draft 2>/dev/null)"
-                REMOTE_STATE_STATUS=$?
-                set -e
-                if [[ "$REMOTE_STATE_STATUS" == 0 && "$REMOTE_DRAFT" == false ]]; then
-                  echo "::warning::publication response was ambiguous; retained public release id $RELEASE_ID for exact-match rerun verification" >&2
-                elif [[ "$REMOTE_STATE_STATUS" != 0 ]]; then
-                  echo "::error::could not prove release id $RELEASE_ID remained a draft; retained it for safe recovery" >&2
-                  CLEANUP_FAILED=true
-                elif [[ "$REMOTE_DRAFT" != true ]]; then
-                  echo "::error::release id $RELEASE_ID returned an invalid draft state; retained it for safe recovery" >&2
-                  CLEANUP_FAILED=true
-                elif gh api --method DELETE "repos/$GH_REPO/releases/$RELEASE_ID" >/dev/null; then
-                  echo "deleted failed private draft release id $RELEASE_ID" >&2
-                else
-                  echo "::error::failed to delete retained private draft release id $RELEASE_ID for $RELEASE_TAG" >&2
-                  CLEANUP_FAILED=true
-                fi
-              else
+              if [[ "$PUBLICATION_ATTEMPTED" == true ]]; then
+                echo "::error::publication may have been attempted; retained release id $RELEASE_ID for $RELEASE_TAG as recovery evidence" >&2
+                CLEANUP_FAILED=true
+              elif [[ ! "$RELEASE_ID" =~ ^[0-9]+$ ]]; then
                 echo "::error::retained private draft for $RELEASE_TAG because its numeric release id was not proven" >&2
+                CLEANUP_FAILED=true
+              elif ! validate_owned_draft "$WORK/cleanup-release.json"; then
+                echo "::error::release id $RELEASE_ID no longer matches this run's owned private draft marker/source; retained it for safe recovery" >&2
+                CLEANUP_FAILED=true
+              elif ! check_remote_tag >/dev/null 2>&1; then
+                echo "::error::release tag/source changed before cleanup; retained release id $RELEASE_ID for safe recovery" >&2
+                CLEANUP_FAILED=true
+              elif gh api --method DELETE "repos/$GH_REPO/releases/$RELEASE_ID" >/dev/null; then
+                echo "deleted failed private draft release id $RELEASE_ID" >&2
+              else
+                echo "::error::failed to delete retained private draft release id $RELEASE_ID for $RELEASE_TAG" >&2
                 CLEANUP_FAILED=true
               fi
             fi
@@ -611,6 +614,54 @@ jobs:
             peeled_sha="$(node -e 'const x=JSON.parse(process.argv[1]); process.stdout.write(x.object?.sha || "")' "$tag_object")"
             test "$peeled_type" = commit
             test "$peeled_sha" = "$RELEASE_SOURCE"
+          }
+          validate_owned_draft() {
+            local output="$1"
+            gh api "repos/$GH_REPO/releases/$RELEASE_ID" > "$output" || return 1
+            node - "$output" "$STAGING_MARKER" "$STAGING_TITLE" "$RELEASE_ID" \
+              "$RELEASE_TAG" "$RELEASE_SOURCE" "$PRODUCER_RUN_ID" "$PRODUCER_RUN_ATTEMPT" <<'NODE'
+          const { readFileSync } = require('node:fs')
+          const [
+            releasePath,
+            markerPath,
+            expectedTitle,
+            expectedId,
+            expectedTag,
+            expectedSource,
+            expectedRunId,
+            expectedRunAttempt,
+          ] = process.argv.slice(2)
+          const release = JSON.parse(readFileSync(releasePath, 'utf8'))
+          const markerText = readFileSync(markerPath, 'utf8')
+          const marker = JSON.parse(markerText)
+          const markerKeys = [
+            'inventorySha256',
+            'kind',
+            'producerRunAttempt',
+            'producerRunId',
+            'schema',
+            'sourceCommit',
+            'sourceTree',
+            'tag',
+          ]
+          if (
+            String(release.id) !== expectedId ||
+            release.tag_name !== expectedTag ||
+            release.draft !== true ||
+            release.prerelease !== false ||
+            release.name !== expectedTitle ||
+            release.body !== markerText ||
+            JSON.stringify(Object.keys(marker).sort()) !== JSON.stringify(markerKeys) ||
+            marker.schema !== 1 ||
+            marker.kind !== 'agent-inbox-release-staging' ||
+            marker.tag !== expectedTag ||
+            marker.sourceCommit !== expectedSource ||
+            !/^[0-9a-f]{40}$/.test(marker.sourceTree || '') ||
+            marker.producerRunId !== expectedRunId ||
+            marker.producerRunAttempt !== expectedRunAttempt ||
+            !/^[0-9a-f]{64}$/.test(marker.inventorySha256 || '')
+          ) process.exit(1)
+          NODE
           }
           PACKAGE_NAMES=(
             "Agent-Inbox-$RELEASE_TAG-linux-arm64.AppImage"
@@ -701,6 +752,64 @@ jobs:
           }
           NODE
 
+          STAGING_TITLE="Agent Inbox $RELEASE_TAG staging run $PRODUCER_RUN_ID/$PRODUCER_RUN_ATTEMPT"
+          node - "$WORK" "$RELEASE_TAG" "$RELEASE_SOURCE" "$PRODUCER_RUN_ID" \
+            "$PRODUCER_RUN_ATTEMPT" "$STAGING_TITLE" "$STAGING_MARKER" \
+            "$PUBLIC_MARKER" "$FINAL_NOTES" "$WORK/create-release.json" <<'NODE'
+          const { createHash } = require('node:crypto')
+          const { readFileSync, writeFileSync } = require('node:fs')
+          const [
+            root,
+            tag,
+            sourceCommit,
+            producerRunId,
+            producerRunAttempt,
+            title,
+            stagingMarkerPath,
+            publicMarkerPath,
+            finalNotesPath,
+            requestPath,
+          ] = process.argv.slice(2)
+          const evidencePath = `${root}/release-aggregation-evidence.json`
+          const evidenceBytes = readFileSync(evidencePath)
+          const evidence = JSON.parse(evidenceBytes)
+          if (
+            evidence.tag !== tag ||
+            evidence.sourceCommit !== sourceCommit ||
+            !/^[0-9a-f]{40}$/.test(evidence.sourceTree || '')
+          ) throw new Error('aggregate evidence cannot bind release ownership markers')
+          const identity = {
+            schema: 1,
+            tag,
+            sourceCommit,
+            sourceTree: evidence.sourceTree,
+            producerRunId,
+            producerRunAttempt,
+            inventorySha256: createHash('sha256').update(evidenceBytes).digest('hex'),
+          }
+          const stagingMarkerText = JSON.stringify({
+            ...identity,
+            kind: 'agent-inbox-release-staging',
+          })
+          const publicMarkerText =
+            `<!-- agent-inbox-release:${JSON.stringify({
+              ...identity,
+              kind: 'agent-inbox-release-public',
+            })} -->`
+          const humanNotes = readFileSync(`${root}/RELEASE_NOTES.md`, 'utf8').trimEnd()
+          writeFileSync(stagingMarkerPath, stagingMarkerText)
+          writeFileSync(publicMarkerPath, publicMarkerText)
+          writeFileSync(finalNotesPath, `${humanNotes}\n\n${publicMarkerText}\n`)
+          writeFileSync(requestPath, `${JSON.stringify({
+            tag_name: tag,
+            target_commitish: sourceCommit,
+            name: title,
+            body: stagingMarkerText,
+            draft: true,
+            prerelease: false,
+          })}\n`)
+          NODE
+
           verify_remote_release() {
             local expected_draft="$1"
             local expected_title="$2"
@@ -776,7 +885,7 @@ jobs:
           set -e
           if [[ "$EXISTING_STATUS" == 0 ]]; then
             check_remote_tag
-            verify_remote_release false "Agent Inbox $RELEASE_TAG" "$WORK/RELEASE_NOTES.md"
+            verify_remote_release false "Agent Inbox $RELEASE_TAG" "$FINAL_NOTES"
             echo "release $RELEASE_TAG is already public and matches the exact verified handoff"
             PUBLISHED=true
             exit 0
@@ -788,24 +897,43 @@ jobs:
 
           check_remote_tag
 
-          printf '%s' "Private staging transaction; not published." > "$WORK/STAGING_NOTES.md"
-          gh release create "$RELEASE_TAG" \
-            --repo "$GH_REPO" \
-            --verify-tag \
-            --draft \
-            --title "Agent Inbox $RELEASE_TAG (staging)" \
-            --notes-file "$WORK/STAGING_NOTES.md"
+          gh api --method POST "repos/$GH_REPO/releases" \
+            --input "$WORK/create-release.json" > "$WORK/create-release-response.json"
           CREATED=true
-          RELEASE_ID="$(gh release view "$RELEASE_TAG" --repo "$GH_REPO" --json databaseId --jq .databaseId)"
+          RELEASE_ID="$(node -e '
+            const { readFileSync } = require("node:fs")
+            const release = JSON.parse(readFileSync(process.argv[1], "utf8"))
+            const id = String(release.id ?? "")
+            if (!/^[0-9]+$/.test(id)) process.exit(1)
+            process.stdout.write(id)
+          ' "$WORK/create-release-response.json")"
           [[ "$RELEASE_ID" =~ ^[0-9]+$ ]]
+          node - "$WORK/create-release-response.json" "$STAGING_MARKER" \
+            "$STAGING_TITLE" "$RELEASE_TAG" "$RELEASE_SOURCE" "$RELEASE_ID" <<'NODE'
+          const { readFileSync } = require('node:fs')
+          const [responsePath, markerPath, title, tag, source, expectedId] = process.argv.slice(2)
+          const release = JSON.parse(readFileSync(responsePath, 'utf8'))
+          const markerText = readFileSync(markerPath, 'utf8')
+          const id = String(release.id ?? '')
+          if (
+            id !== expectedId ||
+            release.tag_name !== tag ||
+            release.draft !== true ||
+            release.prerelease !== false ||
+            release.name !== title ||
+            release.body !== markerText ||
+            JSON.parse(markerText).sourceCommit !== source
+          ) throw new Error('release creation response does not match the owned staging draft')
+          NODE
           UPLOAD_PATHS=()
           for name in "${ASSET_NAMES[@]}"; do
             UPLOAD_PATHS+=("$WORK/release-assets/$name")
           done
           gh release upload "$RELEASE_TAG" "${UPLOAD_PATHS[@]}" --repo "$GH_REPO"
-          verify_remote_release true "Agent Inbox $RELEASE_TAG (staging)" "$WORK/STAGING_NOTES.md"
+          validate_owned_draft "$WORK/prepublish-owned-release.json"
+          verify_remote_release true "$STAGING_TITLE" "$STAGING_MARKER"
           check_remote_tag
-          node - "$WORK/RELEASE_NOTES.md" "$WORK/final-release.json" "$RELEASE_TAG" <<'NODE'
+          node - "$FINAL_NOTES" "$WORK/final-release.json" "$RELEASE_TAG" <<'NODE'
           const { readFileSync, writeFileSync } = require('node:fs')
           const [notes, output, tag] = process.argv.slice(2)
           writeFileSync(output, `${JSON.stringify({
@@ -814,6 +942,7 @@ jobs:
             draft: false,
           })}\n`)
           NODE
+          PUBLICATION_ATTEMPTED=true
           gh api --method PATCH "repos/$GH_REPO/releases/$RELEASE_ID" \
             --input "$WORK/final-release.json" > "$WORK/final-release-response.json"
           node - "$WORK/final-release-response.json" "$RELEASE_TAG" <<'NODE'

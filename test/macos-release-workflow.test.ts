@@ -93,6 +93,9 @@ function runPublisher(
     failDownload?: boolean
     failDelete?: boolean
     patchTransportFailure?: boolean
+    cleanupOwnership?: 'owned' | 'replacement' | 'source-mismatch'
+    publicMarkerMismatch?: boolean
+    createResponseMismatch?: boolean
   } = {},
 ) {
   const temp = mkdtempSync(join(tmpdir(), 'release-publisher-'))
@@ -130,24 +133,50 @@ elif [[ "$1 $2" == "api --include" ]]; then
     exit 1
   fi
   printf 'HTTP/2 200 OK\\n'
-elif [[ "$1" == api && "$2" == repos/*/releases/42 && "$*" == *"--jq .draft"* ]]; then
-  if [[ -f "$PUBLISHED_STATE_FILE" ]]; then printf 'false\\n'; else printf 'true\\n'; fi
-elif [[ "$1 $2 $3" == "api --method PATCH" ]]; then
+elif [[ "$1 $2 \${3:-}" == "api --method POST" && "\${4:-}" == repos/*/releases ]]; then
+  while [[ "$1" != "--input" ]]; do shift; done
+  REQUEST="$2" OWNED_RELEASE_STATE="$OWNED_RELEASE_STATE" CREATE_RESPONSE_MISMATCH="$CREATE_RESPONSE_MISMATCH" node <<'NODE'
+const { readFileSync, writeFileSync } = require('node:fs')
+const request = JSON.parse(readFileSync(process.env.REQUEST, 'utf8'))
+const release = {
+  id: 42,
+  tag_name: request.tag_name,
+  draft: request.draft,
+  prerelease: request.prerelease,
+  name: request.name,
+  body: request.body,
+  assets: [],
+}
+writeFileSync(process.env.OWNED_RELEASE_STATE, JSON.stringify(release))
+const response = { ...release }
+if (process.env.CREATE_RESPONSE_MISMATCH === '1') response.name = 'mismatched response title'
+process.stdout.write(JSON.stringify(response) + '\\n')
+NODE
+elif [[ "$1" == api && "$2" == repos/*/releases/42 ]]; then
+  if [[ "$CLEANUP_OWNERSHIP" == replacement ]]; then exit 44; fi
+  OWNED_RELEASE_STATE="$OWNED_RELEASE_STATE" CLEANUP_OWNERSHIP="$CLEANUP_OWNERSHIP" node <<'NODE'
+const { readFileSync } = require('node:fs')
+const release = JSON.parse(readFileSync(process.env.OWNED_RELEASE_STATE, 'utf8'))
+if (process.env.CLEANUP_OWNERSHIP === 'source-mismatch') {
+  const marker = JSON.parse(release.body)
+  marker.sourceCommit = 'd'.repeat(40)
+  release.body = JSON.stringify(marker)
+}
+process.stdout.write(JSON.stringify(release) + '\\n')
+NODE
+elif [[ "$1 $2 \${3:-}" == "api --method PATCH" ]]; then
   if [[ "$PATCH_TRANSPORT_FAILURE" == 1 ]]; then
     : > "$PUBLISHED_STATE_FILE"
     exit 12
   fi
   printf '{"tag_name":"v1.2.3","draft":false}\\n'
-elif [[ "$1 $2 $3" == "api --method DELETE" ]]; then
+elif [[ "$1 $2 \${3:-}" == "api --method DELETE" ]]; then
   if [[ "$FAIL_DELETE" == 1 ]]; then exit 11; fi
   exit 0
 elif [[ "$1 $2" == "release view" ]]; then
-  if [[ "$*" == *"--json databaseId"* ]]; then
-    printf '42\\n'
-  else
-    HANDOFF="$HANDOFF" REMOTE_DIGEST_MODE="$REMOTE_DIGEST_MODE" EXISTING_MODE="$EXISTING_MODE" node <<'NODE'
+  HANDOFF="$HANDOFF" REMOTE_DIGEST_MODE="$REMOTE_DIGEST_MODE" EXISTING_MODE="$EXISTING_MODE" OWNED_RELEASE_STATE="$OWNED_RELEASE_STATE" PUBLIC_MARKER_MISMATCH="$PUBLIC_MARKER_MISMATCH" node <<'NODE'
 const { createHash } = require('node:crypto')
-const { readdirSync, readFileSync, statSync } = require('node:fs')
+const { existsSync, readdirSync, readFileSync, statSync } = require('node:fs')
 const { join } = require('node:path')
 const root = join(process.env.HANDOFF, 'release-assets')
 const assets = readdirSync(root).map((name, index) => ({
@@ -158,18 +187,22 @@ const assets = readdirSync(root).map((name, index) => ({
     : \`sha256:\${createHash('sha256').update(readFileSync(join(root, name))).digest('hex')}\`,
 }))
 const isPublic = process.env.EXISTING_MODE === 'public'
+const owned = existsSync(process.env.OWNED_RELEASE_STATE)
+  ? JSON.parse(readFileSync(process.env.OWNED_RELEASE_STATE, 'utf8'))
+  : null
+const publicBody = readFileSync(process.env.FINAL_NOTES, 'utf8') +
+  (process.env.PUBLIC_MARKER_MISMATCH === '1' ? 'tampered' : '')
 process.stdout.write(JSON.stringify({
   tagName: 'v1.2.3',
   isDraft: !isPublic,
   isPrerelease: false,
-  name: isPublic ? 'Agent Inbox v1.2.3' : 'Agent Inbox v1.2.3 (staging)',
+  name: isPublic ? 'Agent Inbox v1.2.3' : (owned?.name ?? 'unowned draft'),
   body: isPublic
-    ? readFileSync(join(process.env.HANDOFF, 'RELEASE_NOTES.md'), 'utf8')
-    : 'Private staging transaction; not published.',
+    ? publicBody
+    : (owned?.body ?? 'unowned draft'),
   assets,
 }) + '\\n')
 NODE
-  fi
 elif [[ "$1 $2" == "release upload" ]]; then
   if [[ "$FAIL_UPLOAD" == 1 ]]; then exit 9; fi
 elif [[ "$1 $2" == "release download" ]]; then
@@ -190,6 +223,8 @@ fi
       RELEASE_TAG: 'v1.2.3',
       RELEASE_VERSION: '1.2.3',
       RELEASE_SOURCE: sourceCommit,
+      PRODUCER_RUN_ID: '777',
+      PRODUCER_RUN_ATTEMPT: '3',
       GITHUB_RUN_ID: '12345',
       RUNNER_TEMP: temp,
       HANDOFF: handoff,
@@ -199,11 +234,15 @@ fi
       REMOTE_DIGEST_MODE: remoteDigestMode,
       TAG_CHECK_COUNT_FILE: join(temp, 'tag-check-count'),
       PUBLISHED_STATE_FILE: join(temp, 'published-state'),
+      OWNED_RELEASE_STATE: join(temp, 'owned-release-state'),
       EXISTING_MODE: behavior.existing ?? 'absent',
       FAIL_UPLOAD: behavior.failUpload ? '1' : '0',
       FAIL_DOWNLOAD: behavior.failDownload ? '1' : '0',
       FAIL_DELETE: behavior.failDelete ? '1' : '0',
       PATCH_TRANSPORT_FAILURE: behavior.patchTransportFailure ? '1' : '0',
+      CLEANUP_OWNERSHIP: behavior.cleanupOwnership ?? 'owned',
+      PUBLIC_MARKER_MISMATCH: behavior.publicMarkerMismatch ? '1' : '0',
+      CREATE_RESPONSE_MISMATCH: behavior.createResponseMismatch ? '1' : '0',
     },
   })
   return { result, log: readFileSync(log, 'utf8') }
@@ -378,9 +417,23 @@ describe('notarized macOS release workflow', () => {
     expect(publishJob).toContain('gh release download "$RELEASE_TAG"')
     expect(publishJob).toContain('for name in "${ASSET_NAMES[@]}"; do')
     expect(publishJob).toContain('cmp "$WORK/release-assets/$name" "$WORK/remote-assets/$name"')
-    expect(publishJob).toContain('could not prove release id $RELEASE_ID remained a draft')
+    expect(publishJob).toContain('gh api --method POST "repos/$GH_REPO/releases"')
+    expect(publishJob).toContain('producerRunAttempt')
+    expect(publishJob).toContain('inventorySha256')
+    expect(publishJob).toContain('agent-inbox-release-public')
+    expect(publishJob).toContain('<!-- agent-inbox-release:')
+    expect(publishJob).toContain('verify_remote_release false "Agent Inbox $RELEASE_TAG" "$FINAL_NOTES"')
+    expect(publishJob).toContain('node - "$FINAL_NOTES" "$WORK/final-release.json"')
+    expect(publishJob).toContain('validate_owned_draft "$WORK/cleanup-release.json"')
+    expect(publishJob).toContain("release.body !== markerText")
+    expect(publishJob.indexOf('CREATED=true'))
+      .toBeGreaterThan(publishJob.indexOf('gh api --method POST "repos/$GH_REPO/releases"'))
+    expect(publishJob.indexOf('release creation response does not match the owned staging draft'))
+      .toBeGreaterThan(publishJob.indexOf('CREATED=true'))
+    expect(publishJob).toContain('PUBLICATION_ATTEMPTED=true')
+    expect(publishJob).toContain('publication may have been attempted; retained release id')
     expect(publishJob.indexOf('gh api --method PATCH "repos/$GH_REPO/releases/$RELEASE_ID"'))
-      .toBeGreaterThan(publishJob.indexOf('shasum -a 256 -c SHA256SUMS.txt'))
+      .toBeGreaterThan(publishJob.indexOf('PUBLICATION_ATTEMPTED=true'))
   })
 
   it('refuses publication when the remote annotated tag moved after authorization', () => {
@@ -388,33 +441,49 @@ describe('notarized macOS release workflow', () => {
     expect(result.status).not.toBe(0)
     expect(log).toContain('git/ref/tags/v1.2.3')
     expect(log).toContain('git/tags/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')
-    expect(log).not.toContain('release create')
+    expect(log).not.toContain('api --method POST repos/example/agent-inbox/releases')
   })
 
   it('deletes the draft when uploaded release asset bytes do not match', () => {
     const { result, log } = runPublisher(sourceCommit, 'mismatch')
     expect(result.status).not.toBe(0)
     expect(`${result.stdout}\n${result.stderr}`).toContain('remote asset digest mismatch')
-    expect(log).toContain('release create v1.2.3')
+    expect(log).toContain('api --method POST repos/example/agent-inbox/releases')
     expect(log).toContain('release upload v1.2.3')
     expect(log).toContain('api --method DELETE repos/example/agent-inbox/releases/42')
     expect(log).not.toContain('api --method PATCH')
   })
 
-  it('deletes the draft when the remote tag moves during upload verification', () => {
+  it('tracks and safely cleans a created draft when response validation fails', () => {
+    const { result, log } = runPublisher(sourceCommit, 'match', sourceCommit, {
+      createResponseMismatch: true,
+    })
+    expect(result.status).not.toBe(0)
+    expect(`${result.stdout}\n${result.stderr}`).toContain(
+      'release creation response does not match the owned staging draft',
+    )
+    expect(log).toContain('api --method POST repos/example/agent-inbox/releases')
+    expect(log).toContain('api repos/example/agent-inbox/releases/42')
+    expect(log).toContain('api --method DELETE repos/example/agent-inbox/releases/42')
+    expect(log).not.toContain('release upload')
+    expect(log).not.toContain('api --method PATCH')
+  })
+
+  it('retains the owned draft when the remote tag moves before cleanup', () => {
     const { result, log } = runPublisher(sourceCommit, 'match', 'c'.repeat(40))
     expect(result.status).not.toBe(0)
-    expect(log).toContain('release create v1.2.3')
+    expect(log).toContain('api --method POST repos/example/agent-inbox/releases')
     expect(log).toContain('release upload v1.2.3')
-    expect(log.match(/git\/ref\/tags\/v1\.2\.3/g)).toHaveLength(2)
-    expect(log).toContain('api --method DELETE repos/example/agent-inbox/releases/42')
+    expect(log.match(/git\/ref\/tags\/v1\.2\.3/g)).toHaveLength(3)
+    expect(`${result.stdout}\n${result.stderr}`).toContain('release tag/source changed before cleanup')
+    expect(log).not.toContain('api --method DELETE repos/example/agent-inbox/releases/42')
     expect(log).not.toContain('api --method PATCH')
   })
 
   it('publishes only after every remote asset is downloaded and rehashed', () => {
     const { result, log } = runPublisher(sourceCommit, 'match')
     expect(result.status).toBe(0)
-    expect(log).toContain('release create v1.2.3')
+    expect(log).toContain('api --method POST repos/example/agent-inbox/releases')
     expect(log).toContain('release upload v1.2.3')
     expect(log).toContain('release download v1.2.3')
     expect(log).toContain('api --method PATCH repos/example/agent-inbox/releases/42')
@@ -429,7 +498,21 @@ describe('notarized macOS release workflow', () => {
     expect(result.status).toBe(0)
     expect(result.stdout).toContain('already public and matches the exact verified handoff')
     expect(log).toContain('release download v1.2.3')
-    expect(log).not.toContain('release create')
+    expect(log).not.toContain('api --method POST repos/example/agent-inbox/releases')
+    expect(log).not.toContain('release upload')
+    expect(log).not.toContain('api --method PATCH')
+    expect(log).not.toContain('api --method DELETE')
+  })
+
+  it('refuses an already-public release whose ownership marker does not match', () => {
+    const { result, log } = runPublisher(sourceCommit, 'match', sourceCommit, {
+      existing: 'public',
+      publicMarkerMismatch: true,
+    })
+    expect(result.status).not.toBe(0)
+    expect(`${result.stdout}\n${result.stderr}`).toContain('remote release metadata')
+    expect(log).toContain('release view v1.2.3')
+    expect(log).not.toContain('api --method POST repos/example/agent-inbox/releases')
     expect(log).not.toContain('release upload')
     expect(log).not.toContain('api --method PATCH')
     expect(log).not.toContain('api --method DELETE')
@@ -441,7 +524,7 @@ describe('notarized macOS release workflow', () => {
     })
     expect(result.status).not.toBe(0)
     expect(`${result.stdout}\n${result.stderr}`).toContain('remote release metadata')
-    expect(log).not.toContain('release create')
+    expect(log).not.toContain('api --method POST repos/example/agent-inbox/releases')
     expect(log).not.toContain('release upload')
     expect(log).not.toContain('api --method PATCH')
     expect(log).not.toContain('api --method DELETE')
@@ -451,8 +534,8 @@ describe('notarized macOS release workflow', () => {
     for (const behavior of [{ failUpload: true }, { failDownload: true }]) {
       const { result, log } = runPublisher(sourceCommit, 'match', sourceCommit, behavior)
       expect(result.status).not.toBe(0)
-      expect(log).toContain('release create v1.2.3')
-      expect(log).toContain('api repos/example/agent-inbox/releases/42 --jq .draft')
+      expect(log).toContain('api --method POST repos/example/agent-inbox/releases')
+      expect(log).toContain('api repos/example/agent-inbox/releases/42')
       expect(log).toContain('api --method DELETE repos/example/agent-inbox/releases/42')
       expect(log).not.toContain('api --method PATCH')
     }
@@ -463,9 +546,9 @@ describe('notarized macOS release workflow', () => {
       patchTransportFailure: true,
     })
     expect(result.status).not.toBe(0)
-    expect(`${result.stdout}\n${result.stderr}`).toContain('retained public release id 42')
+    expect(`${result.stdout}\n${result.stderr}`).toContain('publication may have been attempted; retained release id 42')
     expect(log).toContain('api --method PATCH repos/example/agent-inbox/releases/42')
-    expect(log).toContain('api repos/example/agent-inbox/releases/42 --jq .draft')
+    expect(log.match(/api repos\/example\/agent-inbox\/releases\/42/g)).toHaveLength(1)
     expect(log).not.toContain('api --method DELETE')
   })
 
@@ -476,5 +559,31 @@ describe('notarized macOS release workflow', () => {
     expect(result.status).not.toBe(0)
     expect(`${result.stdout}\n${result.stderr}`).toContain('retained private draft release id 42')
     expect(log).toContain('api --method DELETE repos/example/agent-inbox/releases/42')
+  })
+
+  it('never deletes a replacement draft that appears under the same tag', () => {
+    const { result, log } = runPublisher(sourceCommit, 'match', sourceCommit, {
+      failUpload: true,
+      cleanupOwnership: 'replacement',
+    })
+    expect(result.status).not.toBe(0)
+    expect(`${result.stdout}\n${result.stderr}`).toContain(
+      "no longer matches this run's owned private draft marker/source",
+    )
+    expect(log).toContain('api repos/example/agent-inbox/releases/42')
+    expect(log).not.toContain('api --method DELETE')
+  })
+
+  it('never deletes a draft whose marker source no longer matches this run', () => {
+    const { result, log } = runPublisher(sourceCommit, 'match', sourceCommit, {
+      failUpload: true,
+      cleanupOwnership: 'source-mismatch',
+    })
+    expect(result.status).not.toBe(0)
+    expect(`${result.stdout}\n${result.stderr}`).toContain(
+      "no longer matches this run's owned private draft marker/source",
+    )
+    expect(log).toContain('api repos/example/agent-inbox/releases/42')
+    expect(log).not.toContain('api --method DELETE')
   })
 })

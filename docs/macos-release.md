@@ -311,15 +311,20 @@ No credential value is written to a job output or artifact.
   pre-publication signing failure. Recover only from the corrected source as `v1.0.1`;
   never move, replace, or delete `v1.0.0`.
 - A failure before publication creates no GitHub Release.
-- A publication upload or remote asset mismatch removes only the private draft created by
-  that run, using its recorded numeric release ID, and leaves the annotated tag unchanged.
-- Cleanup first re-reads the release state. It never deletes a release that may already
-  have become public after a transport-ambiguous final API response. If state cannot be
-  proven or draft deletion fails, the release is retained with its numeric ID in the failed
-  run; subsequent reruns refuse that draft until an operator resolves it.
-- An exact already-public rerun downloads and re-verifies the full inventory and exits as
-  a no-op. Any existing draft or conflicting public asset, metadata, byte, or checksum
-  fails closed without mutation.
+- Draft creation uses the Releases API response directly; no second tag lookup is trusted
+  to discover ownership. Its private machine marker binds schema, tag, source commit/tree,
+  producer run ID/attempt, and the aggregate inventory digest. Cleanup GETs only that
+  captured numeric ID and deletes it only while the ID, tag, draft state, unique staging
+  title, complete marker, and current annotated-tag source still match this run. A missing,
+  replaced, or edited draft is retained rather than deleting another operator's release.
+- Immediately before the final publication PATCH, the job crosses an explicit
+  publication-attempted boundary. After that point it never auto-deletes the release,
+  including after a transport-ambiguous response; the numeric ID/tag are retained as
+  recovery evidence for an exact-match rerun.
+- Final public notes carry a non-rendering machine marker with the same source/run/inventory
+  identity. An exact already-public rerun requires that marker, downloads and re-verifies
+  the full inventory, and exits as a no-op. Any existing draft or conflicting public
+  marker, asset, metadata, byte, or checksum fails closed without mutation.
 - A signing, Intel, notarization, stapling, Gatekeeper, provenance, or checksum failure
   cannot reach publication because every downstream job has a hard `needs` dependency.
 - An unrelated default-branch advance after the tag is accepted when the tag remains on

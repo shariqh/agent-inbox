@@ -3,7 +3,7 @@ name: Notarized macOS release
 on:
   workflow_run:
     workflows:
-      - "macOS release inputs"
+      - "Multi-platform release inputs"
     types:
       - completed
 
@@ -21,7 +21,7 @@ jobs:
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.name == 'macOS release inputs' &&
+      github.event.workflow_run.name == 'Multi-platform release inputs' &&
       github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
     outputs:
@@ -107,6 +107,30 @@ jobs:
           merge-multiple: true
           run-id: ${{ needs.authorize.outputs.run-id }}
           github-token: ${{ github.token }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: linux-x64-appimage
+          path: build/upstream-linux/linux-x64-appimage
+          run-id: ${{ needs.authorize.outputs.run-id }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: linux-arm64-appimage
+          path: build/upstream-linux/linux-arm64-appimage
+          run-id: ${{ needs.authorize.outputs.run-id }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: linux-x64-deb
+          path: build/upstream-linux/linux-x64-deb
+          run-id: ${{ needs.authorize.outputs.run-id }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: linux-arm64-deb
+          path: build/upstream-linux/linux-arm64-deb
+          run-id: ${{ needs.authorize.outputs.run-id }}
+          github-token: ${{ github.token }}
       - name: Revalidate source context and bind exact thin artifacts
         run: |
           set -euo pipefail
@@ -140,10 +164,28 @@ jobs:
           cp build/source-release-context.json build/protected-handoff/release-context.json
           cp build/thin-handoff-evidence.json build/protected-handoff/
           test "$(find build/protected-handoff -maxdepth 1 -type f | wc -l | tr -d ' ')" = 4
+          SOURCE_TREE="$(git rev-parse '${{ needs.authorize.outputs.source-commit }}^{tree}')"
+          node scripts/release-aggregation.mjs linux-handoff \
+            --artifacts-root build/upstream-linux \
+            --context build/source-release-context.json \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --source-tree "$SOURCE_TREE" \
+            --output build/linux-handoff-evidence.json
+          mkdir -p build/protected-linux-handoff
+          cp -R build/upstream-linux build/protected-linux-handoff/artifacts
+          cp build/source-release-context.json build/protected-linux-handoff/release-context.json
+          cp build/linux-handoff-evidence.json build/protected-linux-handoff/
+          test "$(find build/protected-linux-handoff -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" = 3
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: protected-thin-handoff
           path: build/protected-handoff
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: protected-linux-handoff
+          path: build/protected-linux-handoff
           if-no-files-found: error
           retention-days: 7
 
@@ -398,22 +440,33 @@ jobs:
           printf '%s\n' \
             "# Agent Inbox ${{ needs.authorize.outputs.tag }}" \
             "" \
-            "Universal macOS release for Apple silicon and Intel." \
-            "Requires macOS 13.5 (Ventura) or later." \
-            "The minimum reflects the pinned Node 24 runtime; Electron 43 itself supports macOS 12. Revisit this requirement before updating either pinned major." \
+            "Desktop packages for macOS and supported glibc-based Linux systems." \
             "" \
-            "## Install" \
-            "1. Download and open \`Agent-Inbox-${{ needs.authorize.outputs.tag }}-universal.dmg\`." \
-            "2. Drag Agent Inbox to Applications and launch it from Finder." \
-            "3. Open Settings in Agent Inbox to install the Claude Code and/or Copilot CLI integration." \
+            "## Packages" \
+            "- macOS 13.5 or later, Apple silicon or Intel: \`Agent-Inbox-${{ needs.authorize.outputs.tag }}-universal.dmg\`" \
+            "- Linux x86_64 AppImage: \`Agent-Inbox-${{ needs.authorize.outputs.tag }}-linux-x86_64.AppImage\`" \
+            "- Linux arm64 AppImage: \`Agent-Inbox-${{ needs.authorize.outputs.tag }}-linux-arm64.AppImage\`" \
+            "- Debian/Ubuntu amd64: \`agent-inbox_${{ needs.authorize.outputs.version }}_amd64.deb\`" \
+            "- Debian/Ubuntu arm64: \`agent-inbox_${{ needs.authorize.outputs.version }}_arm64.deb\`" \
             "" \
-            "The bundled setup installs a verified Node 24 runtime under \`~/.agent-inbox/runtime/\`; moving the app later does not break the installed integration." \
+            "Linux packages require kernel 4.18+, glibc 2.34+, and GLIBCXX_3.4.29+; tested representative floors are Ubuntu 22.04, Debian 12, and RHEL 9." \
+            "AppImages may use \`APPIMAGE_EXTRACT_AND_RUN=1\` with a private mode-0700 TMPDIR when FUSE is unavailable." \
+            "Install DEBs with \`sudo apt install ./PACKAGE.deb\`; remove with \`sudo apt remove agent-inbox\` or \`sudo apt purge agent-inbox\`. User inbox data and Setup runtimes under \`~/.agent-inbox\` are preserved." \
+            "On macOS, open the DMG, drag Agent Inbox to Applications, and launch it from Finder. Gatekeeper trust applies only to the notarized macOS package; Linux packages are checksum-verified but not OS-wide signed." \
+            "" \
+            "Open Setup after launch to install the bundled architecture-specific Node 24 runtime and register Claude Code and/or GitHub Copilot CLI. Setup copies the runtime under \`~/.agent-inbox/runtime/\`, so moving or removing the package later does not break the installed integration." \
             "" \
             "## Verify" \
             "\`\`\`sh" \
+            "# macOS" \
             "shasum -a 256 -c SHA256SUMS.txt" \
             "spctl --assess --type open --context context:primary-signature --verbose=4 Agent-Inbox-${{ needs.authorize.outputs.tag }}-universal.dmg" \
+            "" \
+            "# Linux" \
+            "sha256sum -c SHA256SUMS.txt" \
             "\`\`\`" \
+            "" \
+            "See the repository installation guide for AppImage no-FUSE commands, DEB lifecycle details, and the Node 24 source-build fallback." \
             > build/RELEASE_NOTES.md
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -445,22 +498,38 @@ jobs:
         with:
           name: final-notarized-release
           path: build/final
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: protected-linux-handoff
+          path: build/linux
       - name: Revalidate exact publication allowlist and evidence
-        run: >-
-          node scripts/macos-release-gates.mjs publication
-          --context build/final/signed/release-context.json
-          --assets-dir build/final/release-assets
-          --evidence build/final/release-evidence.json
+        run: |
+          set -euo pipefail
+          node scripts/macos-release-gates.mjs publication \
+            --context build/final/signed/release-context.json \
+            --assets-dir build/final/release-assets \
+            --evidence build/final/release-evidence.json
+          cmp build/linux/release-context.json build/final/signed/release-context.json
+          mkdir -p build/aggregate
+          SOURCE_TREE="$(git rev-parse '${{ needs.authorize.outputs.source-commit }}^{tree}')"
+          node scripts/release-aggregation.mjs aggregate \
+            --artifacts-root build/linux/artifacts \
+            --mac-assets build/final/release-assets \
+            --mac-evidence build/final/release-evidence.json \
+            --context build/final/signed/release-context.json \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --source-tree "$SOURCE_TREE" \
+            --output build/aggregate
       - name: Bind exact verified publication handoff
         run: |
           set -euo pipefail
           mkdir -p build/verified-publish-handoff
-          cp -R build/final/release-assets build/verified-publish-handoff/
-          cp build/final/release-evidence.json build/verified-publish-handoff/
+          cp -R build/aggregate/release-assets build/verified-publish-handoff/
+          cp build/aggregate/release-aggregation-evidence.json build/verified-publish-handoff/
           cp build/final/signed/release-context.json build/verified-publish-handoff/release-context.json
           cp build/final/RELEASE_NOTES.md build/verified-publish-handoff/
           test "$(find build/verified-publish-handoff -maxdepth 1 -type f | wc -l | tr -d ' ')" = 3
-          test "$(find build/verified-publish-handoff/release-assets -maxdepth 1 -type f | wc -l | tr -d ' ')" = 2
+          test "$(find build/verified-publish-handoff/release-assets -maxdepth 1 -type f | wc -l | tr -d ' ')" = 6
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: verified-publish-handoff
@@ -494,17 +563,39 @@ jobs:
           CREATED=false
           PUBLISHED=false
           RELEASE_ID=
+          CLEANUP_FAILED=false
           cleanup() {
             local status=$?
             trap - EXIT
             if [[ "$CREATED" == true && "$PUBLISHED" != true ]]; then
               if [[ "$RELEASE_ID" =~ ^[0-9]+$ ]]; then
-                gh api --method DELETE "repos/$GH_REPO/releases/$RELEASE_ID" >/dev/null 2>&1 || true
+                set +e
+                REMOTE_DRAFT="$(gh api "repos/$GH_REPO/releases/$RELEASE_ID" --jq .draft 2>/dev/null)"
+                REMOTE_STATE_STATUS=$?
+                set -e
+                if [[ "$REMOTE_STATE_STATUS" == 0 && "$REMOTE_DRAFT" == false ]]; then
+                  echo "::warning::publication response was ambiguous; retained public release id $RELEASE_ID for exact-match rerun verification" >&2
+                elif [[ "$REMOTE_STATE_STATUS" != 0 ]]; then
+                  echo "::error::could not prove release id $RELEASE_ID remained a draft; retained it for safe recovery" >&2
+                  CLEANUP_FAILED=true
+                elif [[ "$REMOTE_DRAFT" != true ]]; then
+                  echo "::error::release id $RELEASE_ID returned an invalid draft state; retained it for safe recovery" >&2
+                  CLEANUP_FAILED=true
+                elif gh api --method DELETE "repos/$GH_REPO/releases/$RELEASE_ID" >/dev/null; then
+                  echo "deleted failed private draft release id $RELEASE_ID" >&2
+                else
+                  echo "::error::failed to delete retained private draft release id $RELEASE_ID for $RELEASE_TAG" >&2
+                  CLEANUP_FAILED=true
+                fi
               else
-                gh release delete "$RELEASE_TAG" --repo "$GH_REPO" --yes >/dev/null 2>&1 || true
+                echo "::error::retained private draft for $RELEASE_TAG because its numeric release id was not proven" >&2
+                CLEANUP_FAILED=true
               fi
             fi
             rm -rf "$WORK"
+            if [[ "$CLEANUP_FAILED" == true ]]; then
+              exit 1
+            fi
             exit "$status"
           }
           trap cleanup EXIT
@@ -521,6 +612,14 @@ jobs:
             test "$peeled_type" = commit
             test "$peeled_sha" = "$RELEASE_SOURCE"
           }
+          PACKAGE_NAMES=(
+            "Agent-Inbox-$RELEASE_TAG-linux-arm64.AppImage"
+            "Agent-Inbox-$RELEASE_TAG-linux-x86_64.AppImage"
+            "Agent-Inbox-$RELEASE_TAG-universal.dmg"
+            "agent-inbox_${RELEASE_VERSION}_amd64.deb"
+            "agent-inbox_${RELEASE_VERSION}_arm64.deb"
+          )
+          ASSET_NAMES=("${PACKAGE_NAMES[@]}" "SHA256SUMS.txt")
 
           gh run download "$GITHUB_RUN_ID" \
             --repo "$GH_REPO" \
@@ -544,16 +643,24 @@ jobs:
           exact(readdirSync(root), [
             'RELEASE_NOTES.md',
             'release-assets',
+            'release-aggregation-evidence.json',
             'release-context.json',
-            'release-evidence.json',
           ], 'publish handoff')
-          const dmgName = `Agent-Inbox-${tag}-universal.dmg`
+          const packageNames = [
+            `Agent-Inbox-${tag}-linux-arm64.AppImage`,
+            `Agent-Inbox-${tag}-linux-x86_64.AppImage`,
+            `Agent-Inbox-${tag}-universal.dmg`,
+            `agent-inbox_${version}_amd64.deb`,
+            `agent-inbox_${version}_arm64.deb`,
+          ]
           const assets = join(root, 'release-assets')
-          exact(readdirSync(assets), [dmgName, 'SHA256SUMS.txt'], 'release asset')
-          const dmg = join(assets, dmgName)
-          const checksum = sha256(dmg)
-          if (readFileSync(join(assets, 'SHA256SUMS.txt'), 'utf8') !== `${checksum}  ${dmgName}\n`) {
-            fail('post-staple checksum mismatch')
+          exact(readdirSync(assets), [...packageNames, 'SHA256SUMS.txt'], 'release asset')
+          const checksumText = packageNames.map((name) => `${sha256(join(assets, name))}  ${name}\n`).join('')
+          if (readFileSync(join(assets, 'SHA256SUMS.txt'), 'utf8') !== checksumText) {
+            fail('multi-platform checksum mismatch')
+          }
+          for (const name of packageNames) {
+            if (statSync(join(assets, name)).size <= 0) fail(`release asset is empty: ${name}`)
           }
           if (statSync(join(root, 'RELEASE_NOTES.md')).size === 0) fail('release notes are empty')
 
@@ -567,67 +674,112 @@ jobs:
             context.sourceCommit !== source
           ) fail('release context mismatch')
 
-          const evidence = readJson(join(root, 'release-evidence.json'))
-          const verification = evidence.verification || {}
-          const transported = evidence.transportedApp || {}
-          exact(Object.keys(verification), [
-            'appCodesign',
-            'appGatekeeper',
-            'appStapler',
-            'checksumAfterStaple',
-            'dmgCodesign',
-            'dmgGatekeeper',
-            'dmgIdentity',
-            'dmgStapler',
-            'transportedApp',
-          ], 'verification')
+          const evidence = readJson(join(root, 'release-aggregation-evidence.json'))
+          const evidenceAssets = evidence.assets || []
+          exact(evidenceAssets.map((asset) => asset.name), packageNames, 'aggregate evidence asset')
           if (
             evidence.schema !== 1 ||
             evidence.tag !== tag ||
             evidence.packageVersion !== version ||
             evidence.sourceCommit !== source ||
+            !/^[0-9a-f]{40}$/.test(evidence.sourceTree || '') ||
             evidence.annotatedTag !== true ||
-            evidence.finalDmgName !== dmgName ||
-            evidence.finalDmgSha256 !== checksum ||
-            evidence.appNotarization?.status !== 'Accepted' ||
-            evidence.dmgNotarization?.status !== 'Accepted' ||
-            !evidence.appNotarization?.submissionId ||
-            evidence.appNotarization.submissionId === evidence.dmgNotarization?.submissionId ||
-            transported.schema !== 1 ||
-            transported.status !== 'passed' ||
-            transported.sourceCommit !== source ||
-            transported.packageVersion !== version ||
-            transported.finalDmgSha256 !== checksum ||
-            transported.identity !== evidence.identity ||
-            transported.teamId !== evidence.teamId ||
-            transported.dmgSignatureIdentity !== 'passed' ||
-            transported.copiedAppCodesign !== 'passed' ||
-            transported.copiedAppStapler !== 'passed' ||
-            transported.copiedAppGatekeeper !== 'passed' ||
-            transported.universalEnvelope !== 'passed' ||
-            transported.runtimeManifests !== 'passed' ||
-            transported.releaseSetupInfo !== 'passed' ||
-            transported.loopbackLaunch !== 'passed' ||
-            transported.portableRuntimeLifecycle !== 'passed' ||
-            verification.appCodesign !== 'passed' ||
-            verification.appGatekeeper !== 'passed' ||
-            verification.appStapler !== 'passed' ||
-            verification.dmgCodesign !== 'passed' ||
-            verification.dmgGatekeeper !== 'passed' ||
-            verification.dmgIdentity !== 'passed' ||
-            verification.dmgStapler !== 'passed' ||
-            verification.transportedApp !== 'passed' ||
-            verification.checksumAfterStaple !== true
+            evidence.publishable !== true ||
+            evidence.checksumManifest?.name !== 'SHA256SUMS.txt' ||
+            JSON.stringify(evidence.checksumManifest?.entries) !== JSON.stringify(packageNames) ||
+            evidence.checksumManifest?.sha256 !== sha256(join(assets, 'SHA256SUMS.txt')) ||
+            evidence.verification?.linuxHandoff !== 'passed' ||
+            evidence.verification?.macosNotarization !== 'passed' ||
+            evidence.verification?.exactReleaseAllowlist !== 'passed' ||
+            evidence.verification?.deterministicChecksums !== 'passed'
           ) fail('release evidence does not authorize publication')
+          for (const asset of evidenceAssets) {
+            if (
+              asset.size !== statSync(join(assets, asset.name)).size ||
+              asset.sha256 !== sha256(join(assets, asset.name))
+            ) fail(`aggregate evidence mismatch for ${asset.name}`)
+          }
           NODE
+
+          verify_remote_release() {
+            local expected_draft="$1"
+            local expected_title="$2"
+            local expected_body_file="$3"
+            rm -rf "$WORK/remote-assets"
+            mkdir -p "$WORK/remote-assets"
+            gh release view "$RELEASE_TAG" \
+              --repo "$GH_REPO" \
+              --json tagName,isDraft,isPrerelease,name,body,assets > "$WORK/remote.json"
+            node - "$WORK/remote.json" "$RELEASE_TAG" "$expected_draft" "$expected_title" "$expected_body_file" "$WORK/release-assets" <<'NODE'
+          const { createHash } = require('node:crypto')
+          const { readFileSync, statSync } = require('node:fs')
+          const { join } = require('node:path')
+          const [path, tag, expectedDraft, expectedTitle, expectedBodyFile, assetsDir] = process.argv.slice(2)
+          const release = JSON.parse(readFileSync(path, 'utf8'))
+          const version = tag.slice(1)
+          const names = [
+            `Agent-Inbox-${tag}-linux-arm64.AppImage`,
+            `Agent-Inbox-${tag}-linux-x86_64.AppImage`,
+            `Agent-Inbox-${tag}-universal.dmg`,
+            `agent-inbox_${version}_amd64.deb`,
+            `agent-inbox_${version}_arm64.deb`,
+            'SHA256SUMS.txt',
+          ]
+          const actual = (release.assets || []).map(({ name, size, digest }) => ({ name, size, digest }))
+          if (
+            release.tagName !== tag ||
+            release.isDraft !== (expectedDraft === 'true') ||
+            release.isPrerelease !== false ||
+            release.name !== expectedTitle ||
+            release.body !== readFileSync(expectedBodyFile, 'utf8') ||
+            actual.length !== names.length ||
+            new Set(actual.map((asset) => asset.name)).size !== names.length ||
+            names.some((name) => !actual.some((asset) =>
+              asset.name === name &&
+              asset.size === statSync(join(assetsDir, name)).size &&
+              asset.size > 0
+            ))
+          ) throw new Error('remote release metadata or exact asset allowlist mismatch')
+          const digest = (name) =>
+            `sha256:${createHash('sha256').update(readFileSync(join(assetsDir, name))).digest('hex')}`
+          for (const asset of actual) {
+            if (
+              asset.digest !== null &&
+              asset.digest !== undefined &&
+              asset.digest !== '' &&
+              (!/^sha256:[0-9a-f]{64}$/i.test(asset.digest) ||
+                asset.digest.toLowerCase() !== digest(asset.name))
+            ) throw new Error(`remote asset digest mismatch for ${asset.name}`)
+          }
+          NODE
+            gh release download "$RELEASE_TAG" \
+              --repo "$GH_REPO" \
+              --pattern "Agent-Inbox-$RELEASE_TAG-linux-arm64.AppImage" \
+              --pattern "Agent-Inbox-$RELEASE_TAG-linux-x86_64.AppImage" \
+              --pattern "Agent-Inbox-$RELEASE_TAG-universal.dmg" \
+              --pattern "agent-inbox_${RELEASE_VERSION}_amd64.deb" \
+              --pattern "agent-inbox_${RELEASE_VERSION}_arm64.deb" \
+              --pattern SHA256SUMS.txt \
+              --dir "$WORK/remote-assets"
+            for name in "${ASSET_NAMES[@]}"; do
+              cmp "$WORK/release-assets/$name" "$WORK/remote-assets/$name"
+            done
+            (
+              cd "$WORK/remote-assets"
+              shasum -a 256 -c SHA256SUMS.txt
+            )
+          }
 
           set +e
           EXISTING="$(gh api --include "repos/$GH_REPO/releases/tags/$RELEASE_TAG" 2>&1)"
           EXISTING_STATUS=$?
           set -e
           if [[ "$EXISTING_STATUS" == 0 ]]; then
-            echo "release $RELEASE_TAG already exists" >&2
-            exit 1
+            check_remote_tag
+            verify_remote_release false "Agent Inbox $RELEASE_TAG" "$WORK/RELEASE_NOTES.md"
+            echo "release $RELEASE_TAG is already public and matches the exact verified handoff"
+            PUBLISHED=true
+            exit 0
           fi
           if ! grep -Eq '^HTTP/[^ ]+ 404' <<<"$EXISTING"; then
             echo "could not prove release $RELEASE_TAG is absent" >&2
@@ -636,68 +788,40 @@ jobs:
 
           check_remote_tag
 
+          printf '%s' "Private staging transaction; not published." > "$WORK/STAGING_NOTES.md"
           gh release create "$RELEASE_TAG" \
             --repo "$GH_REPO" \
             --verify-tag \
             --draft \
-            --title "Agent Inbox $RELEASE_TAG" \
-            --notes-file "$WORK/RELEASE_NOTES.md"
+            --title "Agent Inbox $RELEASE_TAG (staging)" \
+            --notes-file "$WORK/STAGING_NOTES.md"
           CREATED=true
           RELEASE_ID="$(gh release view "$RELEASE_TAG" --repo "$GH_REPO" --json databaseId --jq .databaseId)"
           [[ "$RELEASE_ID" =~ ^[0-9]+$ ]]
-          gh release upload "$RELEASE_TAG" \
-            "$WORK/release-assets/Agent-Inbox-$RELEASE_TAG-universal.dmg" \
-            "$WORK/release-assets/SHA256SUMS.txt" \
-            --repo "$GH_REPO"
-          gh release view "$RELEASE_TAG" \
-            --repo "$GH_REPO" \
-            --json tagName,isDraft,assets > "$WORK/remote.json"
-          REMOTE_MODE="$(node - "$WORK/remote.json" "$RELEASE_TAG" "$WORK/release-assets" <<'NODE'
-          const { createHash } = require('node:crypto')
+          UPLOAD_PATHS=()
+          for name in "${ASSET_NAMES[@]}"; do
+            UPLOAD_PATHS+=("$WORK/release-assets/$name")
+          done
+          gh release upload "$RELEASE_TAG" "${UPLOAD_PATHS[@]}" --repo "$GH_REPO"
+          verify_remote_release true "Agent Inbox $RELEASE_TAG (staging)" "$WORK/STAGING_NOTES.md"
+          check_remote_tag
+          node - "$WORK/RELEASE_NOTES.md" "$WORK/final-release.json" "$RELEASE_TAG" <<'NODE'
+          const { readFileSync, writeFileSync } = require('node:fs')
+          const [notes, output, tag] = process.argv.slice(2)
+          writeFileSync(output, `${JSON.stringify({
+            name: `Agent Inbox ${tag}`,
+            body: readFileSync(notes, 'utf8'),
+            draft: false,
+          })}\n`)
+          NODE
+          gh api --method PATCH "repos/$GH_REPO/releases/$RELEASE_ID" \
+            --input "$WORK/final-release.json" > "$WORK/final-release-response.json"
+          node - "$WORK/final-release-response.json" "$RELEASE_TAG" <<'NODE'
           const { readFileSync } = require('node:fs')
-          const { join } = require('node:path')
-          const [path, tag, assetsDir] = process.argv.slice(2)
+          const [path, tag] = process.argv.slice(2)
           const release = JSON.parse(readFileSync(path, 'utf8'))
-          const actual = (release.assets || []).map(({ name, size, digest }) => ({ name, size, digest }))
-          const names = [`Agent-Inbox-${tag}-universal.dmg`, 'SHA256SUMS.txt']
-          if (
-            release.tagName !== tag ||
-            release.isDraft !== true ||
-            actual.length !== names.length ||
-            names.some((name) => !actual.some((asset) => asset.name === name && asset.size > 0))
-          ) throw new Error('remote draft does not match the exact nonempty asset allowlist')
-          const sha256 = (name) => `sha256:${createHash('sha256').update(readFileSync(join(assetsDir, name))).digest('hex')}`
-          const completeDigests = actual.every((asset) => /^sha256:[0-9a-f]{64}$/i.test(asset.digest || ''))
-          if (completeDigests) {
-            for (const name of names) {
-              if (actual.find((asset) => asset.name === name).digest.toLowerCase() !== sha256(name)) {
-                throw new Error(`remote asset digest mismatch for ${name}`)
-              }
-            }
-            process.stdout.write('digest')
-          } else {
-            process.stdout.write('download')
+          if (release.tag_name !== tag || release.draft !== false) {
+            throw new Error('final release metadata did not confirm publication')
           }
           NODE
-          )"
-          if [[ "$REMOTE_MODE" == download ]]; then
-            mkdir -p "$WORK/remote-assets"
-            gh release download "$RELEASE_TAG" \
-              --repo "$GH_REPO" \
-              --pattern "Agent-Inbox-$RELEASE_TAG-universal.dmg" \
-              --pattern SHA256SUMS.txt \
-              --dir "$WORK/remote-assets"
-            cmp "$WORK/release-assets/SHA256SUMS.txt" "$WORK/remote-assets/SHA256SUMS.txt"
-            cmp "$WORK/release-assets/Agent-Inbox-$RELEASE_TAG-universal.dmg" \
-              "$WORK/remote-assets/Agent-Inbox-$RELEASE_TAG-universal.dmg"
-            (
-              cd "$WORK/remote-assets"
-              shasum -a 256 -c SHA256SUMS.txt
-            )
-          elif [[ "$REMOTE_MODE" != digest ]]; then
-            echo "remote asset verification did not produce a valid mode" >&2
-            exit 1
-          fi
-          check_remote_tag
-          gh api --method PATCH "repos/$GH_REPO/releases/$RELEASE_ID" -F draft=false >/dev/null
           PUBLISHED=true

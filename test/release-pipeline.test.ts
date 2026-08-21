@@ -490,7 +490,7 @@ describe('universal finalization contract', () => {
   })
 
   it('runs the universal package gate for every transitive native staging module', () => {
-    const workflow = readFileSync(join(root, '.github', 'workflows', 'macos-universal.yml'), 'utf8')
+    const workflow = readFileSync(join(root, '.github', 'workflows', 'release-aggregate.yml'), 'utf8')
     const pullRequestTrigger = workflow.slice(
       workflow.indexOf('  pull_request:'),
       workflow.indexOf('\npermissions:'),
@@ -501,14 +501,14 @@ describe('universal finalization contract', () => {
     ])
     for (const module of stagingModules) {
       expect(pullRequestTrigger, `${module} must trigger the universal package gate`)
-        .toContain(`      - "${module}"`)
+        .toContain('      - "scripts/**"')
     }
     expect(stagingModules).toContain('scripts/setup-filesystem.cjs')
-    expect(pullRequestTrigger).toContain('      - "scripts/setup-filesystem.d.cts"')
+    expect(pullRequestTrigger).toContain('      - "scripts/**"')
   })
 
   it('runs the universal package gate for the complete Electron Setup require chain', () => {
-    const workflow = readFileSync(join(root, '.github', 'workflows', 'macos-universal.yml'), 'utf8')
+    const workflow = readFileSync(join(root, '.github', 'workflows', 'release-aggregate.yml'), 'utf8')
     const pullRequestTrigger = workflow.slice(
       workflow.indexOf('  pull_request:'),
       workflow.indexOf('\npermissions:'),
@@ -557,10 +557,11 @@ describe('universal finalization contract', () => {
     const verifier = readFileSync(join(root, 'electron', 'runtime-verify.cjs'), 'utf8')
     const staging = readFileSync(join(root, 'scripts', 'stage-runtime.mjs'), 'utf8')
     const ci = readFileSync(join(root, '.github', 'workflows', 'ci.yml'), 'utf8')
+    const aggregate = readFileSync(join(root, '.github', 'workflows', 'release-aggregate.yml'), 'utf8')
     const universal = readFileSync(join(root, '.github', 'workflows', 'macos-universal.yml'), 'utf8')
-    const trigger = universal.slice(
-      universal.indexOf('  pull_request:'),
-      universal.indexOf('\npermissions:'),
+    const trigger = aggregate.slice(
+      aggregate.indexOf('  pull_request:'),
+      aggregate.indexOf('\npermissions:'),
     )
 
     expect(pkg.scripts['package:smoke']).toContain('test/setup-lock.test.ts')
@@ -570,14 +571,8 @@ describe('universal finalization contract', () => {
     expect(ci).toContain('brew install flock')
     expect(ci).toContain('npx vitest run test/setup-lock.test.ts')
     expect(universal).toContain('npx vitest run test/setup-lock.test.ts')
-    for (const path of [
-      'scripts/install-agents.sh',
-      'scripts/install-hooks.sh',
-      'scripts/setup-lock.sh',
-      'test/setup-lock.test.ts',
-    ]) {
-      expect(trigger).toContain(`      - "${path}"`)
-    }
+    expect(trigger).toContain('      - "scripts/**"')
+    expect(trigger).toContain('      - "test/setup-*.test.ts"')
   })
 
   it('pins every repository workflow action and disables checkout credential persistence', () => {

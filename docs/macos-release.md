@@ -132,13 +132,16 @@ final DMG from the stapled app, notarizes/staples/validates the DMG, writes fina
 checksums, and publishes. It must not submit or publish Layer 2's ad-hoc app or
 provisional DMG.
 
-## Notarized GitHub Release
+## Protected multi-platform GitHub Release
 
 Layer 3 uses a two-workflow trust boundary:
 
-- `.github/workflows/macos-release.yml` is an unprivileged producer that runs only for a
-  `vX.Y.Z` tag push. It validates the tag and rebuilds both native runtimes and thin apps
-  with read-only repository permissions and no environment access.
+- `.github/workflows/macos-release.yml` is the unprivileged
+  `Multi-platform release inputs` producer that runs only for a `vX.Y.Z` tag push. It
+  validates the tag, rebuilds both macOS native runtimes and thin apps, and calls all four
+  native Linux package workflows with read-only repository permissions and no environment
+  access. The run cannot succeed unless both AppImages and both DEBs pass their independent
+  reproducibility, launch/install, Setup, sandbox, persistence, and rehash gates.
 - `.github/workflows/macos-release-protected.yml` is a default-branch `workflow_run`
   consumer. GitHub resolves this workflow from the trusted default branch, not from the
   tag. It is the only workflow allowed to reference `macos-release`.
@@ -197,17 +200,30 @@ The credentialed sequence is intentionally split:
    that copied app under a disposable `HOME`, require its hardened loopback marker, and
    exercise portable-runtime install and prune without touching production
    `~/.agent-inbox`. Detach the DMG even when any check fails.
-7. Generate `SHA256SUMS.txt` only after the mounted-copy acceptance and from the final
-   post-staple DMG bytes.
-8. Revalidate the complete evidence and exact two-file asset allowlist. Immediately before
-   draft creation, the sole write-token step re-reads the remote tag ref, requires an
-   annotated tag object, peels it to a commit, and requires that commit to remain the
-   authorized source commit. Publication starts as a draft; after upload it compares the
-   remote asset API's SHA-256 digests when present, otherwise downloads both draft assets
-   and verifies their bytes and checksum in isolated storage. A moved tag, upload,
-   allowlist, or byte mismatch deletes/refuses the draft. The release becomes public only
-   after both assets match:
-   `Agent-Inbox-vX.Y.Z-universal.dmg` and `SHA256SUMS.txt`.
+7. Generate the macOS-only internal checksum only after mounted-copy acceptance and from
+   the final post-staple DMG bytes.
+8. In an unprivileged aggregation job, revalidate the four exact-run Linux package
+   artifacts and reports, combine their final bytes with the notarized DMG, and generate
+   the canonical `SHA256SUMS.txt` from all five binary packages in ascending bytewise
+   filename order.
+9. Revalidate the complete aggregate evidence and exact six-file public allowlist.
+   Immediately before draft creation, the sole write-token step re-reads the remote tag
+   ref, requires an annotated tag object, peels it to a commit, and requires that commit
+   to remain the authorized source commit. Publication starts as a private draft with
+   neutral staging metadata. After upload it validates exact remote names, uniqueness,
+   nonzero sizes, and API SHA-256 digests when present; it then always downloads all six
+   assets, compares every byte with the protected handoff, and rehashes all five packages
+   through the downloaded checksum manifest. Only one final API update installs the public
+   title/notes and clears the draft bit.
+
+The public allowlist is exactly:
+
+- `Agent-Inbox-vX.Y.Z-universal.dmg`
+- `Agent-Inbox-vX.Y.Z-linux-x86_64.AppImage`
+- `Agent-Inbox-vX.Y.Z-linux-arm64.AppImage`
+- `agent-inbox_X.Y.Z_amd64.deb`
+- `agent-inbox_X.Y.Z_arm64.deb`
+- `SHA256SUMS.txt`
 
 The protected workflow grants `contents: write` only to the final publication job.
 Every earlier checkout sets `persist-credentials: false` and every earlier job has
@@ -280,8 +296,8 @@ No credential value is written to a job output or artifact.
 4. Review the `macos-release` deployment when GitHub requests approval. Confirm the
    producer run ID, annotated tag, upstream `head_sha`, protected workflow SHA, and
    first-parent relationship before approving each protected stage.
-5. Require all jobs to finish. Do not treat an uploaded Actions artifact or a draft
-   release as published success.
+5. Require all jobs to finish. Do not treat an uploaded Actions artifact, provisional
+   package, or private draft release as published success.
 6. CI already mounts the final DMG and validates a copied app, Setup runtime lifecycle,
    and loopback launch in disposable state. Separately, on a clean Apple-silicon Mac and
    a clean Intel Mac, download the public DMG in a browser so quarantine is present, copy
@@ -295,8 +311,15 @@ No credential value is written to a job output or artifact.
   pre-publication signing failure. Recover only from the corrected source as `v1.0.1`;
   never move, replace, or delete `v1.0.0`.
 - A failure before publication creates no GitHub Release.
-- A publication upload or remote asset mismatch removes the draft release and leaves
-  the annotated tag unchanged.
+- A publication upload or remote asset mismatch removes only the private draft created by
+  that run, using its recorded numeric release ID, and leaves the annotated tag unchanged.
+- Cleanup first re-reads the release state. It never deletes a release that may already
+  have become public after a transport-ambiguous final API response. If state cannot be
+  proven or draft deletion fails, the release is retained with its numeric ID in the failed
+  run; subsequent reruns refuse that draft until an operator resolves it.
+- An exact already-public rerun downloads and re-verifies the full inventory and exits as
+  a no-op. Any existing draft or conflicting public asset, metadata, byte, or checksum
+  fails closed without mutation.
 - A signing, Intel, notarization, stapling, Gatekeeper, provenance, or checksum failure
   cannot reach publication because every downstream job has a hard `needs` dependency.
 - An unrelated default-branch advance after the tag is accepted when the tag remains on
@@ -314,13 +337,16 @@ No credential value is written to a job output or artifact.
 
 ### Download verification
 
-From the directory containing both release assets:
+From a directory containing `SHA256SUMS.txt` and the selected asset, verify only that
+asset's exact manifest entry (running the manifest wholesale requires downloading all
+five packages):
 
 ```sh
-shasum -a 256 -c SHA256SUMS.txt
-xcrun stapler validate Agent-Inbox-vX.Y.Z-universal.dmg
+ASSET=Agent-Inbox-vX.Y.Z-universal.dmg
+grep -F "  $ASSET" SHA256SUMS.txt | shasum -a 256 -c -
+xcrun stapler validate "$ASSET"
 spctl --assess --type open --context context:primary-signature --verbose=4 \
-  Agent-Inbox-vX.Y.Z-universal.dmg
+  "$ASSET"
 ```
 
 After mounting the DMG, the app must also pass:

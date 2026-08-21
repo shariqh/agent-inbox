@@ -1,0 +1,130 @@
+name: Multi-platform release validation
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/ci.yml"
+      - ".github/workflows/macos-universal.yml"
+      - ".github/workflows/linux-*-appimage.yml"
+      - ".github/workflows/linux-*-deb.yml"
+      - ".github/workflows/release-aggregate.yml"
+      - "assets/**"
+      - "electron/**"
+      - "public/**"
+      - "release/**"
+      - "scripts/**"
+      - "src/**"
+      - "test/linux-*.test.ts"
+      - "test/macos-*.test.ts"
+      - "test/native-runtime-adapter.test.ts"
+      - "test/package-stamp.test.ts"
+      - "test/release-*.test.ts"
+      - "test/runtime-payload.test.ts"
+      - "test/setup-*.test.ts"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig*.json"
+      - "LICENSE"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-aggregate-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos-universal:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/macos-universal.yml
+
+  linux-x64-appimage:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/linux-x64-appimage.yml
+
+  linux-arm64-appimage:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/linux-arm64-appimage.yml
+
+  linux-x64-deb:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/linux-x64-deb.yml
+
+  linux-arm64-deb:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/linux-arm64-deb.yml
+
+  aggregate-dry-run:
+    name: Verify complete non-publishable inventory
+    needs:
+      - macos-universal
+      - linux-x64-appimage
+      - linux-arm64-appimage
+      - linux-x64-deb
+      - linux-arm64-deb
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: release-inputs
+        name: Resolve pinned Node version
+        run: echo "node-version=$(node scripts/release-inputs.mjs --node-version)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ steps.release-inputs.outputs.node-version }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: macos-universal-provisional
+          path: build/macos
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: linux-x64-appimage
+          path: build/linux/linux-x64-appimage
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: linux-arm64-appimage
+          path: build/linux/linux-arm64-appimage
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: linux-x64-deb
+          path: build/linux/linux-x64-deb
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: linux-arm64-deb
+          path: build/linux/linux-arm64-deb
+      - name: Validate exact dry-run inventory
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./package.json').version")"
+          SOURCE_COMMIT="$(git rev-parse HEAD)"
+          SOURCE_TREE="$(git rev-parse 'HEAD^{tree}')"
+          node scripts/release-aggregation.mjs dry-run \
+            --artifacts-root build/linux \
+            --mac-artifacts build/macos \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --version "$VERSION" \
+            --source-commit "$SOURCE_COMMIT" \
+            --source-tree "$SOURCE_TREE" \
+            --output build/release-aggregation-dry-run.json
+          node -e '
+            const evidence = require("./build/release-aggregation-dry-run.json")
+            if (
+              evidence.publishable !== false ||
+              evidence.annotatedTag !== false ||
+              evidence.verification?.releaseMutation !== "disabled"
+            ) throw new Error("dry-run evidence is not explicitly non-publishable")
+          '
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-aggregation-dry-run
+          path: build/release-aggregation-dry-run.json
+          if-no-files-found: error
+          retention-days: 7

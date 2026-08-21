@@ -1,4 +1,4 @@
-name: macOS release inputs
+name: Multi-platform release inputs
 
 on:
   push:
@@ -13,6 +13,26 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  linux-x64-appimage:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/linux-x64-appimage.yml
+
+  linux-arm64-appimage:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/linux-arm64-appimage.yml
+
+  linux-x64-deb:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/linux-x64-deb.yml
+
+  linux-arm64-deb:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/linux-arm64-deb.yml
+
   validate-tag:
     name: Validate annotated release tag
     runs-on: ubuntu-latest

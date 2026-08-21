@@ -9,8 +9,9 @@ const arm64WorkflowPath = join(root, '.github', 'workflows', 'linux-arm64-deb.ym
 describe('Linux x64 DEB workflow', () => {
   it('is a read-only, fork-safe, exact-action x64 package workflow', () => {
     const workflow = readFileSync(workflowPath, 'utf8')
-    expect(workflow).toContain('pull_request:')
     expect(workflow).toContain('workflow_dispatch:')
+    expect(workflow).toContain('workflow_call:')
+    expect(workflow).not.toContain('pull_request:')
     expect(workflow).toContain('permissions:\n  contents: read')
     expect(workflow).toContain('runs-on: ubuntu-22.04')
     expect(workflow).not.toContain('ubuntu-22.04-arm')
@@ -164,7 +165,7 @@ describe('Linux x64 DEB workflow', () => {
     expect(workflow.match(/scripts\/verify-linux-deb\.mjs/g)?.length).toBeGreaterThanOrEqual(2)
   })
 
-  it('includes the DEB tests in package smoke without touching macOS workflows', () => {
+  it('includes the DEB tests in package smoke and reuses the workflow without duplicating its builder', () => {
     const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
     expect(pkg.scripts['package:smoke']).toContain('test/linux-deb-inputs.test.ts')
     expect(pkg.scripts['package:smoke']).toContain('test/linux-deb.test.ts')
@@ -177,17 +178,19 @@ describe('Linux x64 DEB workflow', () => {
       '.github/workflows/macos-universal.yml',
     ].map((path) => readFileSync(join(root, path), 'utf8'))
     for (const workflow of macosWorkflows) {
-      expect(workflow).not.toContain('linux-x64-deb')
       expect(workflow).not.toContain('package:linux-deb')
     }
+    expect(macosWorkflows[0]).toContain('uses: ./.github/workflows/linux-x64-deb.yml')
+    expect(macosWorkflows[0]).toContain('uses: ./.github/workflows/linux-arm64-deb.yml')
   })
 })
 
 describe('Linux arm64 DEB workflow', () => {
   it('is a read-only, fork-safe, exact-action native arm64 workflow', () => {
     const workflow = readFileSync(arm64WorkflowPath, 'utf8')
-    expect(workflow).toContain('pull_request:')
     expect(workflow).toContain('workflow_dispatch:')
+    expect(workflow).toContain('workflow_call:')
+    expect(workflow).not.toContain('pull_request:')
     expect(workflow).toContain('permissions:\n  contents: read')
     expect(workflow).toContain('runs-on: ubuntu-22.04-arm')
     expect(workflow).toContain('architecture: arm64')

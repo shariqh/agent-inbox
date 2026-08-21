@@ -2,8 +2,10 @@
 
 Issue #86's first delivery layer produces native, architecture-matched release
 inputs for `linux-x64` and `linux-arm64`. The AppImage and DEB layers package
-both verified folders as deterministic, architecture-matched artifacts. GitHub
-Release publication remains a later unit.
+both verified folders as deterministic, architecture-matched artifacts. The
+protected multi-platform release flow consumes those exact native artifacts,
+combines them with the notarized universal macOS DMG, and publishes only after
+the complete remote draft has been downloaded and rehashed.
 
 ## Pinned compatibility contract
 
@@ -73,9 +75,9 @@ Each job:
 7. archives and restores the runtime and app folder, repeats verification,
    launches the restored app under Xvfb, and exercises runtime install/prune.
 
-The workflow uploads short-lived Actions artifacts for review. It has
-read-only repository permissions, persists no checkout credentials, uses no
-secrets, and does not publish GitHub Release assets.
+The workflow uploads short-lived Actions artifacts for review and protected
+aggregation. It has read-only repository permissions, persists no checkout
+credentials, uses no secrets, and cannot publish GitHub Release assets itself.
 
 ## Build an AppImage
 
@@ -309,11 +311,55 @@ those kernel mechanisms are active for at least one Chromium child; it does not
 instrument Chromium's internal sandbox policy or claim that every child uses
 the same isolation layers.
 
+## Protected multi-platform publication
+
+One exact annotated `vX.Y.Z` tag drives the macOS and four Linux package jobs.
+The unprivileged producer run must complete every native build, reproducibility,
+launch/install, Setup, sandbox, persistence, and rehash gate. The trusted
+default-branch `workflow_run` consumer then downloads each artifact by exact
+run ID and requires its version, source commit/tree, architecture, package
+report, native verification report, checksum sidecar, and pinned input-manifest
+digests to agree before any protected job receives credentials.
+
+The public allowlist is exactly:
+
+- `Agent-Inbox-vX.Y.Z-universal.dmg`
+- `Agent-Inbox-vX.Y.Z-linux-x86_64.AppImage`
+- `Agent-Inbox-vX.Y.Z-linux-arm64.AppImage`
+- `agent-inbox_X.Y.Z_amd64.deb`
+- `agent-inbox_X.Y.Z_arm64.deb`
+- `SHA256SUMS.txt`
+
+The checksum manifest contains the five binary-package names in ascending
+bytewise filename order. Build reports and per-package checksum sidecars remain
+retained Actions evidence; they are not duplicate public assets. Aggregate
+evidence contains only canonical relative names, hashes, sizes, source and
+manifest identities, and verification outcomes—never builder-local paths.
+
+Publication starts with a private draft carrying neutral staging metadata. The
+write-scoped job uploads the exact allowlist, verifies the remote API inventory,
+always downloads all six assets into isolated storage, compares each file with
+the protected handoff, and rehashes all five packages through the downloaded
+checksum manifest. Only then does one API update install the final title/notes
+and make the release public. An exact already-public rerun is a verified no-op;
+an existing draft or any conflicting tag, metadata, asset, byte, or checksum
+fails closed. A failed private draft is deleted only by its recorded numeric
+release ID. If cleanup cannot prove the release is still a draft or cannot
+delete it, the private release is retained and identified in the failed run for
+safe recovery.
+
+`.github/workflows/release-aggregate.yml` provides the PR/fork/manual validation
+path. It invokes the same five secret-free package workflows and the same Linux
+aggregation verifier, but its macOS artifact is explicitly ad-hoc/provisional
+and its evidence says `publishable: false`; it has no release-write permission,
+protected environment, Apple credential, or Release API mutation.
+
 ## Retained limitations
 
-This layer intentionally has no RPM, Snap, Flatpak, aggregated release checksum
-file, signing/attestation, or GitHub Release publication. Those belong to later
-issue #86 delivery units.
+The release intentionally has no RPM, Snap, Flatpak, distro repository,
+Linux signing/attestation provider, or auto-update. SHA-256 verifies downloaded
+bytes against the protected release transaction but is not an OS-wide Linux
+trust claim.
 The native x64 and arm64 evidence supports the documented
 Ubuntu/Debian-class glibc baseline only; it is not a claim of universal Linux
 compatibility. If a future hosted runner cannot expose FUSE or unprivileged user

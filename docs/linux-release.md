@@ -1,9 +1,9 @@
-# Native Linux release folders and AppImages
+# Native Linux release folders, AppImages, and DEBs
 
 Issue #86's first delivery layer produces native, architecture-matched release
-inputs for `linux-x64` and `linux-arm64`. The AppImage layers package both
-verified folders as deterministic, architecture-matched images. DEB packages
-and GitHub Release publication remain later units.
+inputs for `linux-x64` and `linux-arm64`. The AppImage and DEB layers package
+both verified folders as deterministic, architecture-matched artifacts. GitHub
+Release publication remains a later unit.
 
 ## Pinned compatibility contract
 
@@ -150,6 +150,105 @@ the same exact inputs and requires byte-identical images, checksum sidecars, and
 reports. The arm64 workflow sets ambient `umask 077` before both builds to prove
 that the package contract, rather than the runner's defaults, controls modes.
 
+## Build and install a DEB
+
+`release/linux-deb.json` is the single exact DEB contract shared by both
+architectures. It maps `linux-x64` to Debian `amd64` and `linux-arm64` to Debian
+`arm64`; pins the Linux-input and icon digests, package metadata, dependencies,
+layout, desktop entry, immutable Ubuntu container images, and `dpkg-deb` 1.21.1.
+The package builder runs inside the matching digest-pinned Ubuntu image with the
+matching bundled Node runtime. It uses native
+`dpkg-deb --root-owner-group --uniform-compression -Zxz -z9`, not a separate
+Electron packaging framework.
+
+After producing the matching verified thin folder, build x64 with:
+
+```sh
+npm run package:linux-deb -- \
+  --app "build/thin/linux-x64/Agent Inbox" \
+  --inputs release/linux-inputs.json \
+  --deb-inputs release/linux-deb.json \
+  --output-dir build/deb
+```
+
+Build arm64 with:
+
+```sh
+npm run package:linux-deb:arm64 -- \
+  --app "build/thin/linux-arm64/Agent Inbox" \
+  --inputs release/linux-inputs.json \
+  --deb-inputs release/linux-deb.json \
+  --output-dir build/deb
+```
+
+The canonical outputs are:
+
+- `agent-inbox_X.Y.Z_amd64.deb`
+- `agent-inbox_X.Y.Z_amd64.deb.sha256`
+- `agent-inbox_X.Y.Z_amd64.deb.report.json`
+- `agent-inbox_X.Y.Z_arm64.deb`
+- `agent-inbox_X.Y.Z_arm64.deb.sha256`
+- `agent-inbox_X.Y.Z_arm64.deb.report.json`
+
+Install through apt so declared desktop-library dependencies are resolved:
+
+```sh
+sudo apt install ./agent-inbox_X.Y.Z_amd64.deb
+# or, on arm64:
+sudo apt install ./agent-inbox_X.Y.Z_arm64.deb
+```
+
+Launch `Agent Inbox` from the desktop menu or run `agent-inbox`. The package
+installs the application under `/usr/lib/agent-inbox`, the launcher under
+`/usr/bin`, the desktop entry under `/usr/share/applications`, and the pinned
+icon under the hicolor theme. `chrome-sandbox` is the sole privileged package
+entry and is stored as root-owned mode `4755`; the DEB launcher never disables
+Chromium's sandbox.
+
+The clean launch gate checks the helper's stored ownership and mode separately
+from live Chromium `/proc` evidence. The live evidence demonstrates a Chromium
+child using a distinct user namespace, `NoNewPrivs`, and seccomp filtering on
+the tested host; it does not claim the setuid helper was the mechanism Chromium
+selected for that particular launch.
+
+Verify downloaded bytes before installation:
+
+```sh
+sha256sum --check agent-inbox_X.Y.Z_amd64.deb.sha256
+# use the arm64 sidecar with the arm64 package
+```
+
+The strict verifier checks the outer ar member order and metadata, exact control
+fields, every control/data tar owner, group, mode, timestamp and symlink, the
+complete allowed root layout, package notices, icon and launcher, and the sole
+sandbox privilege directly from archive metadata. It then extracts with a
+child-only zero umask and reruns the complete thin-folder ELF architecture,
+Electron/Node ABI, native-addon, GLIBC/GLIBCXX, runtime-manifest, Setup-selection
+and source-tree gates.
+
+Upgrades and reinstalls replace only package-owned `/usr` files. The package has
+no maintainer scripts, conffiles, `/etc` files, or package-owned home-directory
+paths. Remove or purge with:
+
+```sh
+sudo apt remove agent-inbox
+sudo apt purge agent-inbox
+```
+
+Both operations deliberately preserve `~/.agent-inbox`, including the inbox
+database and any Setup runtime copied there. A runtime installed through the
+in-app Setup panel remains usable after the DEB is removed because registration
+points to that copied runtime, not `/usr/lib/agent-inbox`.
+
+The `Linux x64 DEB` and `Linux arm64 DEB` workflows are independent, read-only,
+secret-free native gates. Each builds twice under different ambient umasks,
+requires byte-identical packages/checksums/reports, installs into its matching
+digest-pinned clean Ubuntu image with no system Node, launches directly and
+through the desktop entry, verifies the loopback boundary and live Chromium
+sandbox evidence, exercises bundled Setup in an isolated HOME, relaunches
+offline, reinstalls, removes and purges, proves user data and the copied runtime
+survive, then downloads and rehashes its own uploaded Actions artifact.
+
 ## Launch requirements and no-FUSE fallback
 
 The tested baseline is native x64 and arm64 Ubuntu 22.04 with glibc 2.34 and the
@@ -212,9 +311,9 @@ the same isolation layers.
 
 ## Retained limitations
 
-This layer intentionally has no DEB, RPM, Snap, Flatpak, host-level desktop
-install/uninstall flow, aggregated release checksum file, signing/attestation,
-or GitHub Release publication. Those belong to later issue #86 delivery units.
+This layer intentionally has no RPM, Snap, Flatpak, aggregated release checksum
+file, signing/attestation, or GitHub Release publication. Those belong to later
+issue #86 delivery units.
 The native x64 and arm64 evidence supports the documented
 Ubuntu/Debian-class glibc baseline only; it is not a claim of universal Linux
 compatibility. If a future hosted runner cannot expose FUSE or unprivileged user

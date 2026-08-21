@@ -3,6 +3,7 @@ import { LINUX_RUNTIME_KEYS } from './runtime-targets.mjs'
 export const DEFAULT_LINUX_RELEASE_INPUTS: string
 export { LINUX_RUNTIME_KEYS }
 export const LINUX_RELEASE_TOOL_PACKAGES: Record<string, string>
+export const LINUX_COMPILER_PROBE_TIMEOUT_MS: 30000
 export type LinuxRuntimeKey = (typeof LINUX_RUNTIME_KEYS)[number]
 export type LinuxReleaseInputs = {
   schema: 1

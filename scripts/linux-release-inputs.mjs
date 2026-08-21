@@ -22,6 +22,7 @@ export const LINUX_RELEASE_TOOL_PACKAGES = {
   packagerVersion: '@electron/packager',
   rebuildVersion: '@electron/rebuild',
 }
+export const LINUX_COMPILER_PROBE_TIMEOUT_MS = 30_000
 
 export function validateLinuxReleaseInputs(value) {
   requireExactKeys(
@@ -92,7 +93,7 @@ function runCompiler(command, args) {
   return execFileSync(command, args, {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
-    timeout: 10_000,
+    timeout: LINUX_COMPILER_PROBE_TIMEOUT_MS,
   })
 }
 

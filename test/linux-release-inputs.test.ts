@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
+  LINUX_COMPILER_PROBE_TIMEOUT_MS,
   DEFAULT_LINUX_RELEASE_INPUTS,
   LINUX_RUNTIME_KEYS,
   loadLinuxReleaseInputs,
@@ -10,6 +11,9 @@ import {
 } from '../scripts/linux-release-inputs.mjs'
 
 describe('Linux release inputs', () => {
+  it('keeps native compiler identity probes bounded for hosted arm64 startup latency', () => {
+    expect(LINUX_COMPILER_PROBE_TIMEOUT_MS).toBe(30_000)
+  })
   it('pins the exact native Linux Node, Electron, ABI, and support contract', () => {
     const inputs = loadLinuxReleaseInputs()
     expect(LINUX_RUNTIME_KEYS).toEqual(['linux-arm64', 'linux-x64'])

@@ -15,8 +15,10 @@ for later installer work, not a downloadable Windows release.
 - Every `.exe`, `.dll`, and `.node` in the restored folder is a plain AMD64 PE32+
   image. Native process probes require Electron ABI 148 and Node ABI 137 to load their
   respective addons.
-- The bundled runtime manifest, source commit, setup metadata, and builder-path
-  exclusions survive an archive round trip.
+- Original and restored application tree digests must match exactly. The separately
+  restored runtime is reverified against the original manifest digest, source commit,
+  `win32-x64`/Node/ABI identity, and native-addon selftest; setup metadata is rechecked
+  for builder-path leakage before upload.
 - The restored app launches with system Node removed from `PATH`, serves the hardened
   loopback boundary, and its bundled runtime selftests, installs, and prunes under a
   disposable user profile.

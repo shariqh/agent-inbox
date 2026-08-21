@@ -79,6 +79,7 @@ describe('native Windows x64 folder foundation', () => {
       'test/windows-binary-gates.test.ts',
       'test/windows-native-folder.test.ts',
       'test/windows-release-workflow.test.ts',
+      'test/windows-roundtrip.test.ts',
     ]) {
       expect(pkg.scripts['package:smoke']).toContain(test)
     }

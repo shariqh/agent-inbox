@@ -154,16 +154,56 @@ jobs:
         shell: pwsh
         run: |
           $PSNativeCommandUseErrorActionPreference = $true
+          $sourceCommit = git rev-parse HEAD
+          $nodeVersion = node -p "require('./release/windows-inputs.json').node.version"
+          $nodeModulesAbi = node -p "require('./release/windows-inputs.json').node.modulesAbi"
+          $packageVersion = node -p "require('./package.json').version"
+          $originalRuntime = Resolve-Path build/runtime/win32-x64
+          $restoredRuntime = Resolve-Path build/restored/runtime/win32-x64
+          $restoredRuntimeNode = Join-Path $restoredRuntime "node.exe"
+          $restoredPayload = Join-Path $restoredRuntime "scripts\runtime-payload.mjs"
+          & $restoredRuntimeNode $restoredPayload verify `
+            --root "$restoredRuntime" `
+            --product agent-inbox-runtime `
+            --platform win32 `
+            --arch x64 `
+            --node-version $nodeVersion `
+            --package-version $packageVersion |
+            Set-Content build/reports/win32-x64-restored-runtime-verify.json
+          $selftestRoot = Join-Path $env:RUNNER_TEMP "agent-inbox-restored-runtime-selftest"
+          New-Item -ItemType Directory -Force $selftestRoot | Out-Null
+          $env:AGENT_INBOX_DB = Join-Path $selftestRoot "inbox.db"
+          & $restoredRuntimeNode (Join-Path $restoredRuntime "dist\hook-cli.js") selftest
+          Remove-Item Env:\AGENT_INBOX_DB
           node scripts/verify-windows-thin-app.mjs `
             --app "build/restored/folder/Agent Inbox" `
             --inputs release/windows-inputs.json `
-            --source-commit (git rev-parse HEAD) |
+            --source-commit $sourceCommit |
             Set-Content build/reports/win32-x64-restored-folder.json
           $report = Get-Content build/reports/win32-x64-restored-folder.json -Raw |
             ConvertFrom-Json
+          $originalReport = Get-Content "build/thin/win32-x64/Agent Inbox.thin-report.json" -Raw |
+            ConvertFrom-Json
+          if ($originalReport.appTreeDigest -ne $report.appTreeDigest) {
+            throw "original and restored Windows application tree digests differ"
+          }
           if ($report.setupAvailable -ne $false) {
             throw "Windows Setup must remain unavailable in the folder foundation"
           }
+          node scripts/verify-windows-roundtrip.mjs `
+            --original-app "build/thin/win32-x64/Agent Inbox" `
+            --restored-app "build/restored/folder/Agent Inbox" `
+            --original-runtime "$originalRuntime" `
+            --restored-runtime "$restoredRuntime" `
+            --original-app-report "build/thin/win32-x64/Agent Inbox.thin-report.json" `
+            --restored-app-report build/reports/win32-x64-restored-folder.json `
+            --original-runtime-report build/reports/win32-x64-runtime-verify.json `
+            --restored-runtime-report build/reports/win32-x64-restored-runtime-verify.json `
+            --source-commit $sourceCommit `
+            --package-version $packageVersion `
+            --node-version $nodeVersion `
+            --node-modules-abi $nodeModulesAbi |
+            Set-Content build/reports/win32-x64-roundtrip.json
       - name: Launch restored folder without system Node and exercise runtime publication
         shell: pwsh
         run: |
@@ -231,6 +271,8 @@ jobs:
             build/reports/win32-x64-runtime.json
             build/reports/win32-x64-runtime-verify.json
             build/reports/win32-x64-restored-folder.json
+            build/reports/win32-x64-restored-runtime-verify.json
+            build/reports/win32-x64-roundtrip.json
             build/reports/win32-x64-toolchain.txt
             build/thin/win32-x64/Agent Inbox.thin-report.json
           if-no-files-found: error

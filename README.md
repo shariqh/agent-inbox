@@ -31,21 +31,34 @@ share one SQLite database on your machine.
 
 ### Requirements
 
-- macOS 13.5 (Ventura) or later on Apple silicon or Intel for the desktop app
+- macOS 13.5 (Ventura) or later on Apple silicon or Intel for the notarized desktop app
+- Linux x64 or arm64 with kernel 4.18+, glibc 2.34+, and GLIBCXX_3.4.29+ for AppImage/DEB packages
 - **Node.js 24** for source builds, the MCP server, and the browser viewer
 - macOS or Linux for the source-build path
 - GitHub Copilot CLI and/or Claude Code
 
-Agent Inbox is not published to npm. When a public release is available, download its
-notarized universal macOS app from
+Agent Inbox is not published to npm. When a public release is available, download the
+matching macOS DMG, Linux AppImage, or Debian package from
 [GitHub Releases](https://github.com/shariqh/agent-inbox/releases).
 
-### 1. Install the macOS app
+### 1. Install a desktop package
 
-When a public release is available, download the DMG from
+On macOS, download the universal DMG from
 [GitHub Releases](https://github.com/shariqh/agent-inbox/releases), drag **Agent Inbox**
 to `/Applications`, and launch it. The universal app supports Apple silicon and Intel
 and includes the Node 24 agent runtime, so it does not require a system Node installation.
+
+On Linux, choose the filename matching the machine:
+
+| Architecture | Portable | Debian/Ubuntu |
+|---|---|---|
+| x64 / amd64 | `Agent-Inbox-vX.Y.Z-linux-x86_64.AppImage` | `agent-inbox_X.Y.Z_amd64.deb` |
+| arm64 | `Agent-Inbox-vX.Y.Z-linux-arm64.AppImage` | `agent-inbox_X.Y.Z_arm64.deb` |
+
+Verify `SHA256SUMS.txt` before launch or installation. AppImages require `chmod +x`;
+install DEBs with `sudo apt install ./agent-inbox_X.Y.Z_ARCH.deb`. The complete
+no-FUSE AppImage fallback, supported distribution floor, package lifecycle, and macOS
+trust checks are in the [installation guide](docs/INSTALL.md).
 
 On first launch, open **Setup**, choose GitHub Copilot CLI, Claude Code, or both, and
 select **Install now**. Setup verifies and installs the bundled runtime, registers the MCP
@@ -94,10 +107,11 @@ npm run package:app
 open "out/Agent Inbox-darwin-arm64/Agent Inbox.app"
 ```
 
-The protected release pipeline builds, signs, notarizes, verifies, and publishes the
-universal arm64+x64 DMG. Release inputs, signing modes, verification evidence, and the
-publication runbook are documented in
-[`docs/macos-release.md`](docs/macos-release.md).
+The protected release pipeline builds and verifies every native package, signs/notarizes
+the universal macOS DMG, and publishes the DMG plus both AppImages and both DEBs only
+after remote download and rehash. Release inputs, platform evidence, and the publication
+runbook are documented in [`docs/macos-release.md`](docs/macos-release.md) and
+[`docs/linux-release.md`](docs/linux-release.md).
 
 `assets/icon.svg` is the editable full-color source of truth.
 `assets/icon-mark.svg` is its deliberately simplified single-color derivative for

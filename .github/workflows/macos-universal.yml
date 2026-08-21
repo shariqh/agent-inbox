@@ -1,37 +1,8 @@
 name: Universal macOS package
 
 on:
+  workflow_call:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - ".github/workflows/macos-universal.yml"
-      - "electron/**"
-      - "electron/runtime-targets.cjs"
-      - "release/**"
-      - "scripts/archive-tree.mjs"
-      - "scripts/assemble-macos-release.mjs"
-      - "scripts/build-thin-app.mjs"
-      - "scripts/license.mjs"
-      - "scripts/linux-release-inputs.mjs"
-      - "scripts/native-runtime-adapter.mjs"
-      - "scripts/release-inputs.mjs"
-      - "scripts/runtime-payload.mjs"
-      - "scripts/install-agents.sh"
-      - "scripts/install-hooks.sh"
-      - "scripts/setup-lock.sh"
-      - "scripts/setup-filesystem.cjs"
-      - "scripts/setup-filesystem.d.cts"
-      - "scripts/runtime-targets.mjs"
-      - "scripts/runtime-provenance.mjs"
-      - "scripts/source-provenance.mjs"
-      - "scripts/stage-native-runtime.mjs"
-      - "scripts/stage-runtime.mjs"
-      - "scripts/tree-identity.mjs"
-      - "scripts/write-setup-info.mjs"
-      - "test/setup-lock.test.ts"
-      - "package.json"
-      - "package-lock.json"
-      - "LICENSE"
 
 permissions:
   contents: read

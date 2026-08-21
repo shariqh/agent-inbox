@@ -5,13 +5,15 @@
 | Surface | Support |
 |---|---|
 | Notarized desktop app | macOS 13.5+ on Apple silicon and Intel |
+| Portable Linux desktop app | x64/arm64 AppImage; kernel 4.18+, glibc 2.34+, GLIBCXX_3.4.29+ |
+| Debian package | Ubuntu 22.04+/Debian 12+ on amd64 or arm64 |
 | MCP server and browser viewer | macOS and Linux with Node 24 |
 | Agent setup installer | Claude Code and GitHub Copilot CLI on macOS/Linux |
 | Electron source package | Apple silicon macOS with Node 24 |
 | Windows | Not currently supported by the shell installers or Electron packager |
 
 Agent Inbox is not published to npm. When a public release is available, download its
-notarized universal DMG from
+macOS DMG, Linux AppImage, or Debian package from
 [GitHub Releases](https://github.com/shariqh/agent-inbox/releases). If no public release
 is listed yet, use the source-build path below.
 
@@ -26,6 +28,101 @@ On first launch, open **Setup**, select GitHub Copilot CLI, Claude Code, or both
 choose **Install now**. Setup verifies and installs the bundled architecture-specific
 runtime under `~/.agent-inbox/runtime/<content-derived-runtime-id>/`, registers the MCP
 server, and adds the reporting instructions. Start a fresh agent session afterward.
+
+Verify the selected DMG against the release checksum manifest:
+
+```sh
+ASSET=Agent-Inbox-vX.Y.Z-universal.dmg
+grep -F "  $ASSET" SHA256SUMS.txt | shasum -a 256 -c -
+xcrun stapler validate "$ASSET"
+spctl --assess --type open --context context:primary-signature --verbose=4 "$ASSET"
+```
+
+After copying the app to `/Applications`, macOS must also accept the app:
+
+```sh
+codesign --verify --deep --strict --verbose=2 "/Applications/Agent Inbox.app"
+xcrun stapler validate "/Applications/Agent Inbox.app"
+spctl --assess --type execute --verbose=4 "/Applications/Agent Inbox.app"
+```
+
+These Gatekeeper and notarization claims apply only to the macOS package. Linux packages
+currently use the exact release checksum manifest, not an OS-wide signing or attestation
+claim.
+
+## Recommended Linux installation
+
+The Linux packages are native to their advertised architecture:
+
+| Machine | AppImage | DEB |
+|---|---|---|
+| x86_64 / amd64 | `Agent-Inbox-vX.Y.Z-linux-x86_64.AppImage` | `agent-inbox_X.Y.Z_amd64.deb` |
+| arm64 / aarch64 | `Agent-Inbox-vX.Y.Z-linux-arm64.AppImage` | `agent-inbox_X.Y.Z_arm64.deb` |
+
+The supported binary floor is Linux kernel 4.18 or newer, glibc 2.34 or newer, and
+`GLIBCXX_3.4.29` (`libstdc++.so.6.0.29`) or newer. Representative first supported
+distribution releases are Ubuntu 22.04, Debian 12, and RHEL 9. Other glibc-based
+distributions meeting the same binary and desktop-library requirements may work, but are
+not claimed as tested. Musl-only distributions and WSL desktop environments are not
+supported.
+
+### AppImage
+
+Download `SHA256SUMS.txt` and the AppImage matching the host, then:
+
+```sh
+ASSET=Agent-Inbox-vX.Y.Z-linux-x86_64.AppImage
+# Use Agent-Inbox-vX.Y.Z-linux-arm64.AppImage on arm64.
+grep -F "  $ASSET" SHA256SUMS.txt | sha256sum -c -
+chmod +x "$ASSET"
+./"$ASSET"
+```
+
+Normal AppImage mounting requires FUSE and unprivileged user namespaces. If `/dev/fuse`
+is unavailable, use the AppImage runtime's extract-and-run mode with a private temporary
+base:
+
+```sh
+ASSET=Agent-Inbox-vX.Y.Z-linux-x86_64.AppImage
+APPIMAGE_TMPDIR="$(mktemp -d)"
+chmod 0700 "$APPIMAGE_TMPDIR"
+trap 'rm -rf -- "$APPIMAGE_TMPDIR"' EXIT
+TMPDIR="$APPIMAGE_TMPDIR" APPIMAGE_EXTRACT_AND_RUN=1 ./"$ASSET"
+```
+
+Use the arm64 filename on arm64. The private mode-`0700` `TMPDIR` is required because
+the pinned AppImage runtime uses a predictable child name while extracting. This fallback
+extracts on every launch; it does not install a system launcher or delete user data.
+
+### Debian/Ubuntu package
+
+Download `SHA256SUMS.txt` and the DEB matching the host, then install through apt so its
+desktop-library dependencies are resolved:
+
+```sh
+ASSET=agent-inbox_X.Y.Z_amd64.deb
+# Use agent-inbox_X.Y.Z_arm64.deb on arm64.
+grep -F "  $ASSET" SHA256SUMS.txt | sha256sum -c -
+sudo apt install "./$ASSET"
+```
+
+Launch **Agent Inbox** from the desktop menu or run `agent-inbox`. Remove package-owned
+files with either command:
+
+```sh
+sudo apt remove agent-inbox
+sudo apt purge agent-inbox
+```
+
+Both operations preserve `~/.agent-inbox`, including the inbox database and any runtime
+copied there by Setup. The DEB owns no home-directory paths, maintainer scripts, or
+configuration under `/etc`; reinstall and upgrade replace only package-owned `/usr`
+files.
+
+The AppImage and DEB both bundle the matching Linux Node 24 runtime. In **Setup**, choose
+Claude Code, GitHub Copilot CLI, or both. Setup verifies and copies the runtime under
+`~/.agent-inbox/runtime/<content-derived-runtime-id>/` before registering it, so moving
+an AppImage or removing a DEB later does not break an installed agent integration.
 
 ## Source-build installation
 

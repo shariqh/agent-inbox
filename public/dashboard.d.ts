@@ -32,7 +32,7 @@ export interface DashboardInput {
 
 export interface DashboardModel {
   signals: {
-    agents: { working: number; quiet: number; total: number }
+    agents: { working: number; quiet: number; total: number; reportedChildren: number }
     waiting: number
     withAgents: number
     plans: number

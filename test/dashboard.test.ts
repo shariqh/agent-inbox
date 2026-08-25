@@ -1,9 +1,21 @@
 import { describe, expect, it } from 'vitest'
 import { buildActivitySeries, buildDashboard } from '../public/dashboard.js'
+import type { DashboardModel } from '../public/dashboard.js'
 
 const NOW = Date.parse('2026-08-24T20:00:00.000Z')
 
 describe('buildDashboard', () => {
+  it('keeps the reported child count in the exported model contract', () => {
+    const agents: DashboardModel['signals']['agents'] = {
+      working: 3,
+      quiet: 1,
+      total: 4,
+      reportedChildren: 2,
+    }
+
+    expect(agents.reportedChildren).toBe(2)
+  })
+
   it('projects current data through the existing ownership and live models', () => {
     const model = buildDashboard({
       items: [

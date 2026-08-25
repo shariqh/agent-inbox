@@ -1,5 +1,12 @@
 <!doctype html>
-<html lang="en" data-theme="light">
+<!--
+THESIS: Agent work is organized by ownership and handoff, not generic productivity analytics. Refuse the equal-weight card maze.
+OWN-WORLD: Graphite canvas, flat layered panels, precise 1px boundaries, compact sans type, tabular figures, and semantic coral/cyan/amber/green for human attention, active agents, plans, and outcomes.
+STORY: See what agents are doing, what waits on you, what is moving, and what finished; every summary drills into the existing working surface.
+FIRST VIEWPORT: Persistent project navigation and search frame four truthful signals, an activity timeline, ownership flow, live dispatch, and recent outcomes. Review queue is the primary action.
+FORM: Dark-first Live Operations Desk with a complete light counterpart and structural 4-to-2-to-1 reflow. User-pinned reference and approved v3 mockup; no concept seed was needed.
+-->
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -18,7 +25,8 @@
         <span class="brand-copy"><strong>Agent Inbox</strong><small>Local workspace</small></span>
       </div>
       <div id="tabs" class="tabstrip" role="tablist" aria-label="Library">
-        <button class="tab" type="button" role="tab" data-tab="needsYou" aria-selected="true">Inbox<span class="tab-count" hidden></span></button>
+        <button class="tab" type="button" role="tab" data-tab="dashboard" aria-selected="true">Dashboard</button>
+        <button class="tab" type="button" role="tab" data-tab="needsYou" aria-selected="false">Inbox<span class="tab-count" hidden></span></button>
         <button class="tab" type="button" role="tab" data-tab="boards" aria-selected="false">Plans<span class="tab-count" hidden></span></button>
         <button class="tab" type="button" role="tab" data-tab="notes" aria-selected="false">Notes<span class="tab-count" hidden></span></button>
         <button class="tab" type="button" role="tab" data-tab="done" aria-selected="false">History<span class="tab-count" hidden></span></button>
@@ -54,14 +62,29 @@
     <div class="workspace-shell content">
       <header id="topbar">
         <div class="page-heading">
-          <span class="page-kicker" id="pageKicker">Inbox</span>
-          <h1 id="pageTitle">Your queue</h1>
+          <span class="page-kicker" id="pageKicker">Monitor</span>
+          <h1 id="pageTitle">Live Operations Desk</h1>
+        </div>
+        <div class="floating-search" role="search" aria-label="Workspace search">
+          <svg class="floating-search-icon" viewBox="0 0 16 16" aria-hidden="true">
+            <circle cx="7" cy="7" r="4.5"></circle>
+            <path d="m10.5 10.5 3 3"></path>
+          </svg>
+          <input id="search" class="search-box" type="search" placeholder="Search this workspace"
+            role="combobox" aria-label="Search items and plans" aria-autocomplete="list"
+            aria-controls="searchResults" aria-expanded="false"
+            aria-keyshortcuts="Meta+K Control+K" autocomplete="off" />
+          <kbd class="floating-search-key" aria-hidden="true">⌘K</kbd>
+          <div id="searchResults" class="search-results" role="listbox"
+            aria-label="Workspace search results" hidden></div>
+          <span id="searchStatus" class="visually-hidden" role="status" aria-live="polite"></span>
         </div>
         <div class="topbar-notices"><span id="status"></span><span id="pauseHint"></span></div>
       </header>
       <main>
-        <section class="panel" id="needsYou" role="tabpanel">
-          <div id="needsYouList" class="rows"></div>
+        <section class="panel" id="dashboard" role="tabpanel"><div class="dashboard"></div></section>
+        <section class="panel" id="needsYou" role="tabpanel" hidden>
+          <div id="needsYouList" class="rows" role="list" aria-label="Items needing attention"></div>
           <aside class="inspector-empty" aria-hidden="true">
             <span>Select an item</span>
             <p>Choose something from the queue to review the context and respond.</p>
@@ -75,20 +98,6 @@
         <section class="panel" id="setup" role="tabpanel" hidden><div class="setup-body"></div></section>
       </main>
     </div>
-  </div>
-  <div class="floating-search" role="search" aria-label="Workspace search">
-    <svg class="floating-search-icon" viewBox="0 0 16 16" aria-hidden="true">
-      <circle cx="7" cy="7" r="4.5"></circle>
-      <path d="m10.5 10.5 3 3"></path>
-    </svg>
-    <input id="search" class="search-box" type="search" placeholder="Search this workspace"
-      role="combobox" aria-label="Search items and plans" aria-autocomplete="list"
-      aria-controls="searchResults" aria-expanded="false"
-      aria-keyshortcuts="Meta+K Control+K" autocomplete="off" />
-    <kbd class="floating-search-key" aria-hidden="true">⌘K</kbd>
-    <div id="searchResults" class="search-results" role="listbox"
-      aria-label="Workspace search results" hidden></div>
-    <span id="searchStatus" class="visually-hidden" role="status" aria-live="polite"></span>
   </div>
   <footer id="liveBar">
     <button id="liveStrip" type="button" aria-expanded="false" aria-controls="liveDrawer">

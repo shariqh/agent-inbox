@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import type Database from 'better-sqlite3'
 import { insertItem, listItems } from '../../src/store.js'
-import { advanceClock, bootApp, click, freshDb, row, settle, useDomTest } from './harness.js'
+import { advanceClock, bootApp, click, freshDb, row, settle, showInbox, useDomTest } from './harness.js'
 
 useDomTest()
 
@@ -36,6 +36,7 @@ describe('Needs-you inspector keyboard ownership', () => {
       options: [{ label: 'Approve', recommended: true }, { label: 'Hold' }],
     })
     await bootApp(d)
+    await showInbox()
 
     click(row(second))
     await settle()
@@ -67,6 +68,7 @@ describe('Needs-you inspector keyboard ownership', () => {
       options: [{ label: 'Approve', recommended: true }, { label: 'Hold' }],
     })
     await bootApp(d)
+    await showInbox()
     click(row(id))
     await settle()
 

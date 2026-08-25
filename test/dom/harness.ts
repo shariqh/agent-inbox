@@ -424,6 +424,12 @@ export function click(el: Element | null | undefined): void {
   ;(el as HTMLElement).click()
 }
 
+/** Enter the focused action queue explicitly now that Dashboard is the cold-launch view. */
+export async function showInbox(): Promise<void> {
+  click(document.querySelector('.tab[data-tab="needsYou"]'))
+  await settle()
+}
+
 /** Close an open Needs-you inspector through its explicit Escape action. */
 export async function collapseRow(id: string): Promise<void> {
   const el = row(id)

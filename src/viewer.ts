@@ -7,7 +7,7 @@ import type Database from 'better-sqlite3'
 import {
   listItems, resolveItem, dismissItem, annotateItem, replyItem, snoozeItem,
   listBoards, archiveBoard, unarchiveBoard, annotateBoardRow, snoozeBoardRow,
-  markRowHandled, clearRowHandled, listActivity, listSourceLinks, defaultDbPath,
+  markRowHandled, clearRowHandled, listActivity, listActivitySpans, listSourceLinks, defaultDbPath,
   closeProject, reopenProject, closedProjects,
 } from './store.js'
 import type { ResponseKind } from './store.js'
@@ -404,6 +404,24 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
   }
 
   app.get('/api/activity', (c) => c.json(listActivity(db)))
+
+  // Read-only, truthful claim-interval history for the dashboard: independent
+  // of `/api/activity` and never imported into any attention/badge path.
+  // `since_ms` is optional; when present it must be a finite number of epoch
+  // milliseconds — a malformed value is a 400, not a silently-ignored filter.
+  app.get('/api/activity/history', (c) => {
+    const project = c.req.query('project')
+    const sinceParam = c.req.query('since_ms')
+    let sinceMs: number | undefined
+    if (sinceParam !== undefined) {
+      const parsed = Number(sinceParam)
+      if (!Number.isFinite(parsed) || !Number.isFinite(new Date(parsed).getTime())) {
+        return c.json({ ok: false, error: 'since_ms must be a valid epoch-millisecond date' }, 400)
+      }
+      sinceMs = parsed
+    }
+    return c.json(listActivitySpans(db, { project: project || undefined, sinceMs }))
+  })
 
   // issue #30 — the cached PR state, one row per (repo, branch). Deliberately
   // PURE: it never triggers a gh fetch, so the frontend's 3s poll can hit it

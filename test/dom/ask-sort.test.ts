@@ -5,7 +5,7 @@ import {
   advanceBoardRow, getBoard, insertItem, recordActivityCall, resolveItem, upsertActivity, upsertBoard,
 } from '../../src/store.js'
 import {
-  advanceClock, answerInput, bootApp, click, collapseRow, freshDb, pollTick, row, rowTitles, settle, setViewport, type, useDomTest,
+  advanceClock, answerInput, bootApp, click, collapseRow, freshDb, pollTick, row, rowTitles, settle, setViewport, showInbox, type, useDomTest,
 } from './harness.js'
 
 useDomTest()
@@ -335,6 +335,7 @@ describe('current ask time and queue sorting (#64)', () => {
       advanceClock(60_000)
     }
     await bootApp(d)
+    await showInbox()
     await chooseSort('newest')
 
     click(row(ids[0]!))

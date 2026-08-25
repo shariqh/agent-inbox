@@ -34,7 +34,7 @@ describe('viewer boots against a real DB', () => {
     expect(tabCount('needsYou')).toBe('1')
   })
 
-  it('cold-opens Needs you across all projects, agents, and action types', async () => {
+  it('cold-opens Dashboard across all projects and agents without restoring stale filters', async () => {
     const d = open()
     insertItem(d, { project: 'alpha', stream: 'main', agent: 'claude', kind: 'question', title: 'alpha decision' })
     advanceClock()
@@ -57,9 +57,11 @@ describe('viewer boots against a real DB', () => {
 
     await bootApp(d)
 
-    expect(document.querySelector('.tab[data-tab="needsYou"]')?.getAttribute('aria-selected')).toBe('true')
+    expect(document.querySelector('.tab[data-tab="dashboard"]')?.getAttribute('aria-selected')).toBe('true')
     expect(document.querySelector('#rail [data-project="__all__"]')?.getAttribute('aria-selected')).toBe('true')
     expect((document.getElementById('agentSelect') as HTMLSelectElement).value).toBe('')
+    click(document.querySelector('.tab[data-tab="needsYou"]'))
+    await settle()
     expect(rowTitles().sort()).toEqual(['alpha decision', 'beta task'])
     expect(document.querySelector('.header-toggle.active')?.textContent).toBe('All')
     expect(document.querySelector('.nrow[data-open="1"]')).toBeNull()
@@ -95,9 +97,12 @@ describe('viewer boots against a real DB', () => {
     await bootApp(d)
 
     expect(document.querySelector('.brand')?.textContent).toContain('Agent Inbox')
-    expect(document.getElementById('pageTitle')?.textContent).toBe('Your queue')
+    expect(document.getElementById('pageTitle')?.textContent).toBe('Live Operations Desk')
     expect([...document.querySelectorAll('#tabs .tab')].map((tab) => tab.childNodes[0]?.textContent))
-      .toEqual(['Inbox', 'Plans', 'Notes', 'History'])
+      .toEqual(['Dashboard', 'Inbox', 'Plans', 'Notes', 'History'])
+    click(document.querySelector('.tab[data-tab="needsYou"]'))
+    await settle()
+    expect(document.getElementById('pageTitle')?.textContent).toBe('Your queue')
     expect(document.querySelector('#needsYouList .tab-header')?.textContent)
       .toContain('AllDecisionsTo doUpdatesSortPriorityNewestOldestHandoffsReview queue')
     expect(document.querySelectorAll('#needsYouList .queue-filter-group > .header-toggle')).toHaveLength(4)

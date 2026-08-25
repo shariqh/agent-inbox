@@ -66,12 +66,12 @@ function relative(ms) {
 export function lifecycleReceipt(entity) {
   const steps = []
   const askedAt = entity?.action_started_at ?? entity?.created_at
-  if (askedAt) steps.push({ label: 'Asked', at: askedAt })
+  if (askedAt) steps.push({ kind: 'asked', label: 'Asked', at: askedAt })
   const response = responseLabel(entity)
   const responseAt = latestIso(entity?.replied_at, entity?.annotated_at, entity?.handled_at)
-  if (response) steps.push({ label: response, at: responseAt })
+  if (response) steps.push({ kind: 'response', label: response, at: responseAt })
   const pickupAt = latestIso(entity?.reply_seen_at, entity?.annotation_seen_at, entity?.handled_seen_at)
-  if (pickupAt) steps.push({ label: 'With the agent', at: pickupAt })
-  if (entity?.outcome) steps.push({ label: entity.outcome, at: entity.outcome_at })
+  if (pickupAt) steps.push({ kind: 'pickup', label: 'With the agent', at: pickupAt })
+  if (entity?.outcome) steps.push({ kind: 'outcome', label: entity.outcome, at: entity.outcome_at })
   return steps
 }

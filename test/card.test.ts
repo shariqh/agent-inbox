@@ -155,7 +155,8 @@ describe('app.js wiring (source-level pins)', () => {
   it('the background block is identity-keyed, safely rendered, and rebound after rendering', () => {
     const start = js.indexOf('function itemCardEl(')
     const fn = js.slice(start, js.indexOf('\nasync function changeAnswer('))
-    expect(fn).toContain('actionBlocksHtml(s.detail, s.nextStep, s.actionOwner, s.impact, s.nextAfter, s.context, `item:${it.id}`)')
+    expect(fn).toContain('const nextStep = done && s.outcome ? null : s.nextStep')
+    expect(fn).toContain('actionBlocksHtml(s.detail, nextStep, s.actionOwner, s.impact, s.nextAfter, s.context, `item:${it.id}`)')
     expect(fn).toContain('bindContextDisclosures(el)')
     const blocks = js.slice(js.indexOf('function contextHtml('), js.indexOf('\n// the inline expansion'))
     expect(blocks).toContain('data-context-key="${esc(key)}"')

@@ -2,10 +2,10 @@
 // attention count is INJECTED rather than imported, so the filter-blindness
 // rule is stated here instead of hiding inside a call site.
 
-export const TAB_IDS = ['needsYou', 'boards', 'notes', 'done']
+export const TAB_IDS = ['dashboard', 'needsYou', 'boards', 'notes', 'done']
 
-// the active tab is never persisted — the app always opens where the action is
-export const DEFAULT_TAB = 'needsYou'
+// the active tab is never persisted — the app always opens at the live desk
+export const DEFAULT_TAB = 'dashboard'
 
 // `globalAttention` is the §7 predicate over UNFILTERED data; `scoped` is the
 // project/agent/search-narrowed view; `unreadNotes` is an ALREADY-COMPUTED

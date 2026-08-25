@@ -1,10 +1,10 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
-import { openDb, insertItem, listItems, answerItem, markReplySeen, upsertBoard as writeBoard, listBoards, annotateBoardRow, markHandledDelivered, upsertActivity, closeProject, closedProjects, upsertSourceLink } from '../src/store.js'
+import { openDb, insertItem, listItems, answerItem, markReplySeen, upsertBoard as writeBoard, listBoards, annotateBoardRow, markHandledDelivered, upsertActivity, endActivity, closeProject, closedProjects, upsertSourceLink } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
 
 function freshDb(): Database.Database {
@@ -105,6 +105,84 @@ describe('viewer api', () => {
     expect(res.status).toBe(200)
     const body = await res.json()
     expect(body.needsYou[0].items[0].title).toBe('q')
+  })
+
+  describe('GET /api/activity/history — truthful claim-interval history', () => {
+    const START = Date.parse('2026-08-01T09:00:00.000Z')
+
+    beforeEach(() => {
+      vi.useFakeTimers()
+      vi.setSystemTime(START)
+    })
+    afterEach(() => { vi.useRealTimers() })
+
+    it('returns an empty list when nothing has ever claimed work', async () => {
+      const res = await createViewer(db).request('/api/activity/history')
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual([])
+    })
+
+    it('returns closed and open spans with the shape the dashboard needs', async () => {
+      upsertActivity(db, { session: 's1', project: 'p', stream: 'main', agent: 'claude-code', doing: 'reviewing #74' })
+      vi.setSystemTime(START + 5 * 60_000)
+      endActivity(db, 's1')
+      upsertActivity(db, { session: 's2', project: 'p', stream: 'main', agent: 'claude-code', doing: 'shipping' })
+
+      const res = await createViewer(db).request('/api/activity/history')
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body).toHaveLength(2)
+      const closed = body.find((s: { session: string }) => s.session === 's1')
+      const open = body.find((s: { session: string }) => s.session === 's2')
+      expect(closed.doing).toBe('reviewing #74')
+      expect(closed.ended_at).toBe(new Date(START + 5 * 60_000).toISOString())
+      expect(closed.effective_ended_at).toBe(closed.ended_at)
+      expect(open.ended_at).toBeNull()
+      expect(open.effective_ended_at).toBeNull()
+    })
+
+    it('filters by project', async () => {
+      upsertActivity(db, { session: 's1', project: 'proj-a', stream: '', agent: 'a', doing: 'task a' })
+      upsertActivity(db, { session: 's2', project: 'proj-b', stream: '', agent: 'a', doing: 'task b' })
+      const res = await createViewer(db).request('/api/activity/history?project=proj-a')
+      const body = await res.json()
+      expect(body.map((s: { session: string }) => s.session)).toEqual(['s1'])
+    })
+
+    it('filters by since_ms, excluding spans that ended before the window and keeping ongoing ones', async () => {
+      upsertActivity(db, { session: 'old', project: 'p', stream: '', agent: 'a', doing: 'old task' })
+      vi.setSystemTime(START + 5 * 60_000)
+      endActivity(db, 'old')
+      vi.setSystemTime(START + 20 * 60_000)
+      upsertActivity(db, { session: 'ongoing', project: 'p', stream: '', agent: 'a', doing: 'still going' })
+
+      const res = await createViewer(db).request(`/api/activity/history?since_ms=${START + 15 * 60_000}`)
+      const body = await res.json()
+      expect(body.map((s: { session: string }) => s.session)).toEqual(['ongoing'])
+    })
+
+    it('rejects a non-numeric since_ms with 400 rather than silently ignoring it', async () => {
+      const res = await createViewer(db).request('/api/activity/history?since_ms=not-a-number')
+      expect(res.status).toBe(400)
+      const body = await res.json()
+      expect(body.ok).toBe(false)
+    })
+
+    it('rejects a finite number outside the JavaScript date range', async () => {
+      const res = await createViewer(db).request('/api/activity/history?since_ms=1e20')
+      expect(res.status).toBe(400)
+      const body = await res.json()
+      expect(body.ok).toBe(false)
+    })
+
+    it('is independent of /api/activity — a span survives a session ending even though live presence drops it', async () => {
+      upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'a', doing: 'reviewing' })
+      endActivity(db, 's1')
+      const live = await (await createViewer(db).request('/api/activity')).json()
+      expect(live).toEqual([]) // ended session drops out of live presence
+      const history = await (await createViewer(db).request('/api/activity/history')).json()
+      expect(history).toHaveLength(1) // but the span survives
+    })
   })
 
   it('POST resolve, dismiss, annotate mutate the row', async () => {

@@ -22,21 +22,22 @@ function themeChoice(value: string): HTMLInputElement | null {
 }
 
 describe('viewer theme controls', () => {
-  it('defaults to Light and exposes an accessible three-choice Settings control', async () => {
+  it('defaults to Dark and exposes an accessible three-choice Settings control', async () => {
     await bootApp(open())
     click(document.getElementById('gear'))
 
-    expect(document.documentElement.dataset.theme).toBe('light')
-    expect(document.documentElement.dataset.themePreference).toBe('light')
+    expect(document.documentElement.dataset.theme).toBe('dark')
+    expect(document.documentElement.dataset.themePreference).toBe('dark')
     expect(document.querySelector('.theme-picker fieldset')?.getAttribute('aria-label')).toBe('Appearance')
     expect([...document.querySelectorAll<HTMLInputElement>('input[name="theme-preference"]')].map((input) => input.value))
       .toEqual(['light', 'dark', 'system'])
-    expect(themeChoice('light')?.checked).toBe(true)
+    expect(themeChoice('dark')?.checked).toBe(true)
   })
 
   it('persists pointer-selected Dark and applies it immediately', async () => {
     await bootApp(open())
     click(document.getElementById('gear'))
+    click(themeChoice('light'))
     click(themeChoice('dark'))
 
     expect(document.documentElement.dataset.theme).toBe('dark')
@@ -60,11 +61,11 @@ describe('viewer theme controls', () => {
       throw new Error('quota exceeded')
     })
 
-    click(themeChoice('dark'))
+    click(themeChoice('light'))
 
-    expect(themeChoice('light')?.checked).toBe(true)
-    expect(themeChoice('dark')?.checked).toBe(false)
-    expect(document.documentElement.dataset.theme).toBe('light')
+    expect(themeChoice('dark')?.checked).toBe(true)
+    expect(themeChoice('light')?.checked).toBe(false)
+    expect(document.documentElement.dataset.theme).toBe('dark')
   })
 
   it('tracks live OS changes in System and ignores them in explicit Dark', async () => {

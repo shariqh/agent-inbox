@@ -1,12 +1,12 @@
 (() => {
   const key = 'agent-inbox-theme'
   const valid = new Set(['light', 'dark', 'system'])
-  let preference = 'light'
+  let preference = 'dark'
   try {
     const saved = localStorage.getItem(key)
     if (valid.has(saved)) preference = saved
   } catch {
-    // Storage-disabled contexts retain the product's light-first default.
+    // Storage-disabled contexts retain the product's dark operations default.
   }
   const systemDark = window.matchMedia?.('(prefers-color-scheme: dark)').matches === true
   document.documentElement.dataset.theme =

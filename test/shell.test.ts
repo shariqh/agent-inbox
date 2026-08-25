@@ -32,7 +32,7 @@ describe('shell markup', () => {
     const topbar = html.slice(html.indexOf('<header id="topbar">'), html.indexOf('</header>'))
     expect(sidebar).toContain('id="agentSelect"')
     expect(topbar).not.toContain('id="agentSelect"')
-    expect(topbar).not.toContain('id="search"')
+    expect(topbar).toContain('id="search"')
     expect(html).toMatch(/class="floating-search"[^>]*role="search"/)
   })
 
@@ -43,10 +43,10 @@ describe('shell markup', () => {
     expect(css).not.toMatch(/settings-open[^}]*transition/)
   })
 
-  it('has a project rail and the four content tabs in spec order (Live is a footer strip, not a tab — spec §16)', () => {
+  it('has a project rail and the five content tabs in product order (Live is a footer strip, not a tab)', () => {
     expect(html).toContain('id="rail"')
     const tabs = [...html.matchAll(/<button class="tab"[^>]*data-tab="(\w+)"/g)].map((m) => m[1])
-    expect(tabs).toEqual(['needsYou', 'boards', 'notes', 'done'])
+    expect(tabs).toEqual(['dashboard', 'needsYou', 'boards', 'notes', 'done'])
     expect(html).not.toContain('data-tab="live"')
   })
 
@@ -58,7 +58,7 @@ describe('shell markup', () => {
 
   it('keeps every render host the viewer writes into', () => {
     for (const host of [
-      'id="needsYou"', 'id="boards"', 'id="notes"', 'id="done"', 'id="setup"',
+      'id="dashboard"', 'id="needsYou"', 'id="boards"', 'id="notes"', 'id="done"', 'id="setup"',
       'id="needsYouList"', 'class="rows"', 'class="groups"',
       'class="boards"', 'class="items"', 'class="setup-body"',
     ]) expect(html, host).toContain(host)
@@ -482,7 +482,7 @@ describe('#38 · the poll keeps its gate, the human bypasses it', () => {
 
   it('refreshes ambient signals before the draft gate, but defers everything during a held press (#39)', () => {
     const body = sourceFn('function renderIfIdle()', '\n// called whenever a draft may have cleared')
-    expect(body).toMatch(/if \(pressHeld\([^)]*\)\)[\s\S]*const frame = paintAmbient\(\)[\s\S]*if \(shouldDeferRender\(/)
+    expect(body).toMatch(/if \(pressHeld\([^)]*\)\)[\s\S]*const frame = paintAmbient\(\)[\s\S]*dashboardInteractionActive\(\)[\s\S]*shouldDeferRender\(/)
 
     const ambient = sourceFn('function paintAmbient()', '\nfunction paintEditableSurfaces(')
     for (const call of ['applyBadge()', 'renderRail()', 'renderLiveBar(', 'setCount(']) {

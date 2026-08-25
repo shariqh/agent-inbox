@@ -1,0 +1,279 @@
+name: Native Windows x64 release folder
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/windows-native-folder.yml"
+      - "assets/**"
+      - "dist/**"
+      - "docs/windows-release.md"
+      - "electron/**"
+      - "package.json"
+      - "package-lock.json"
+      - "public/**"
+      - "release/windows-inputs.json"
+      - "scripts/**"
+      - "src/**"
+      - "test/setup-process.test.ts"
+      - "test/setup-runner.test.ts"
+      - "test/windows-*.test.ts"
+      - "tsconfig*.json"
+      - "LICENSE"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-native-folder-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-folder:
+    name: Native folder / win32-x64
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: release-inputs
+        name: Resolve pinned Node version
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          "node-version=$(node scripts/windows-release-inputs.mjs --node-version)" |
+            Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ steps.release-inputs.outputs.node-version }}
+          architecture: x64
+          cache: npm
+      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: "3.12"
+      - run: npm ci
+      - name: Record native compiler and SDK identity
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installation = & $vswhere -latest -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath
+          if (-not $installation) { throw "Visual Studio 2022 x64 build tools were not found" }
+          $msbuild = Join-Path $installation "MSBuild\Current\Bin\MSBuild.exe"
+          $cl = Get-ChildItem (Join-Path $installation "VC\Tools\MSVC\*\bin\Hostx64\x64\cl.exe") |
+            Sort-Object FullName |
+            Select-Object -Last 1
+          if (-not $cl) { throw "MSVC x64 compiler was not found" }
+          New-Item -ItemType Directory -Force build\reports | Out-Null
+          @(
+            "runner=windows-2022"
+            "node=$(node --version)"
+            "python=$(python --version)"
+            "msbuild=$(& $msbuild -version | Select-Object -Last 1)"
+            "cl=$($cl.FullName)"
+            "clVersion=$($cl.VersionInfo.ProductVersion)"
+          ) | Set-Content build\reports\win32-x64-toolchain.txt
+      - name: Validate Windows release inputs and fail-closed Setup boundary
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          npm run release:windows-inputs
+          npx vitest run `
+            test/windows-release-inputs.test.ts `
+            test/windows-binary-gates.test.ts `
+            test/windows-native-folder.test.ts `
+            test/windows-release-workflow.test.ts `
+            test/windows-setup-filesystem.test.ts `
+            test/native-runtime-adapter.test.ts `
+            test/runtime-targets.test.ts
+          npx vitest run test/setup-runner.test.ts -t "rejects Win32 and unknown hosts"
+          npx vitest run test/setup-process.test.ts -t "fails closed on unsupported platform win32"
+      - name: Build source and stage verified native runtime
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          npm run build
+          npm run --silent stage:runtime:native -- `
+            --key win32-x64 `
+            --inputs release/windows-inputs.json `
+            --output build/runtime/win32-x64 |
+            Set-Content build/reports/win32-x64-runtime.json
+          $stageReport = Get-Content build/reports/win32-x64-runtime.json -Raw |
+            ConvertFrom-Json
+          $expected = (Get-Content release/windows-inputs.json -Raw |
+            ConvertFrom-Json).node.distributions.'win32-x64'
+          if (
+            $stageReport.key -ne "win32-x64" -or
+            $stageReport.archive -ne $expected.archive -or
+            $stageReport.archiveRoot -ne $expected.root -or
+            $stageReport.archiveUrl -ne $expected.url -or
+            $stageReport.archiveSha256 -ne $expected.sha256
+          ) {
+            throw "native runtime archive identity report mismatch"
+          }
+          $runtime = Resolve-Path build/runtime/win32-x64
+          & "$runtime\node.exe" "$runtime\scripts\runtime-payload.mjs" verify `
+            --root "$runtime" `
+            --platform win32 `
+            --arch x64 `
+            --node-version (node -p "require('./release/windows-inputs.json').node.version") `
+            --package-version (node -p "require('./package.json').version") |
+            Set-Content build/reports/win32-x64-runtime-verify.json
+      - name: Build architecture-correct Electron folder
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          npm run package:windows-thin -- `
+            --runtime build/runtime/win32-x64 `
+            --inputs release/windows-inputs.json `
+            --output "build/thin/win32-x64/Agent Inbox"
+      - name: Preserve and restore native folder inputs
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          node scripts/archive-tree.mjs create `
+            --source build/runtime/win32-x64 `
+            --archive build/win32-x64-runtime.tar.gz
+          node scripts/archive-tree.mjs create `
+            --source "build/thin/win32-x64/Agent Inbox" `
+            --archive build/win32-x64-folder.tar.gz
+          New-Item -ItemType Directory -Force build/restored/runtime, build/restored/folder | Out-Null
+          node scripts/archive-tree.mjs extract `
+            --archive build/win32-x64-runtime.tar.gz `
+            --destination build/restored/runtime `
+            --expected-root win32-x64
+          node scripts/archive-tree.mjs extract `
+            --archive build/win32-x64-folder.tar.gz `
+            --destination build/restored/folder `
+            --expected-root "Agent Inbox"
+      - name: Verify restored folder and exact native identities
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          $sourceCommit = git rev-parse HEAD
+          $nodeVersion = node -p "require('./release/windows-inputs.json').node.version"
+          $nodeModulesAbi = node -p "require('./release/windows-inputs.json').node.modulesAbi"
+          $packageVersion = node -p "require('./package.json').version"
+          $originalRuntime = Resolve-Path build/runtime/win32-x64
+          $restoredRuntime = Resolve-Path build/restored/runtime/win32-x64
+          $restoredRuntimeNode = Join-Path $restoredRuntime "node.exe"
+          $restoredPayload = Join-Path $restoredRuntime "scripts\runtime-payload.mjs"
+          & $restoredRuntimeNode $restoredPayload verify `
+            --root "$restoredRuntime" `
+            --product agent-inbox-runtime `
+            --platform win32 `
+            --arch x64 `
+            --node-version $nodeVersion `
+            --package-version $packageVersion |
+            Set-Content build/reports/win32-x64-restored-runtime-verify.json
+          $selftestRoot = Join-Path $env:RUNNER_TEMP "agent-inbox-restored-runtime-selftest"
+          New-Item -ItemType Directory -Force $selftestRoot | Out-Null
+          $env:AGENT_INBOX_DB = Join-Path $selftestRoot "inbox.db"
+          & $restoredRuntimeNode (Join-Path $restoredRuntime "dist\hook-cli.js") selftest
+          Remove-Item Env:\AGENT_INBOX_DB
+          node scripts/verify-windows-thin-app.mjs `
+            --app "build/restored/folder/Agent Inbox" `
+            --inputs release/windows-inputs.json `
+            --source-commit $sourceCommit |
+            Set-Content build/reports/win32-x64-restored-folder.json
+          $report = Get-Content build/reports/win32-x64-restored-folder.json -Raw |
+            ConvertFrom-Json
+          $originalReport = Get-Content "build/thin/win32-x64/Agent Inbox.thin-report.json" -Raw |
+            ConvertFrom-Json
+          if ($originalReport.appTreeDigest -ne $report.appTreeDigest) {
+            throw "original and restored Windows application tree digests differ"
+          }
+          if ($report.setupAvailable -ne $false) {
+            throw "Windows Setup must remain unavailable in the folder foundation"
+          }
+          node scripts/verify-windows-roundtrip.mjs `
+            --original-app "build/thin/win32-x64/Agent Inbox" `
+            --restored-app "build/restored/folder/Agent Inbox" `
+            --original-runtime "$originalRuntime" `
+            --restored-runtime "$restoredRuntime" `
+            --original-app-report "build/thin/win32-x64/Agent Inbox.thin-report.json" `
+            --restored-app-report build/reports/win32-x64-restored-folder.json `
+            --original-runtime-report build/reports/win32-x64-runtime-verify.json `
+            --restored-runtime-report build/reports/win32-x64-restored-runtime-verify.json `
+            --source-commit $sourceCommit `
+            --package-version $packageVersion `
+            --node-version $nodeVersion `
+            --node-modules-abi $nodeModulesAbi |
+            Set-Content build/reports/win32-x64-roundtrip.json
+      - name: Launch restored folder without system Node and exercise runtime publication
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          $app = Resolve-Path "build/restored/folder/Agent Inbox/Agent Inbox.exe"
+          $runtime = Resolve-Path "build/restored/folder/Agent Inbox/resources/app/runtime/win32-x64"
+          $testHome = Join-Path $env:RUNNER_TEMP "agent-inbox-win32-home"
+          New-Item -ItemType Directory -Force $testHome | Out-Null
+          $env:USERPROFILE = $testHome
+          $env:HOME = $testHome
+          $env:APPDATA = Join-Path $testHome "AppData\Roaming"
+          $env:LOCALAPPDATA = Join-Path $testHome "AppData\Local"
+          New-Item -ItemType Directory -Force $env:APPDATA, $env:LOCALAPPDATA | Out-Null
+          $env:AGENT_INBOX_PORT = "14319"
+          $env:ELECTRON_ENABLE_LOGGING = "1"
+          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+          $stdoutLog = "$env:RUNNER_TEMP\agent-inbox-win32.log"
+          $stderrLog = "$env:RUNNER_TEMP\agent-inbox-win32-error.log"
+          $process = Start-Process -FilePath $app `
+            -WorkingDirectory (Split-Path $app) `
+            -PassThru `
+            -RedirectStandardOutput $stdoutLog `
+            -RedirectStandardError $stderrLog
+          try {
+            $ready = $false
+            for ($attempt = 0; $attempt -lt 60; $attempt += 1) {
+              if ($process.HasExited) { break }
+              try {
+                $response = Invoke-WebRequest -Method Head -Uri "http://127.0.0.1:14319/"
+                if ($response.Headers["x-agent-inbox-local-boundary"] -eq "loopback-v1") {
+                  $ready = $true
+                  break
+                }
+              } catch {}
+              Start-Sleep -Seconds 1
+            }
+            if (-not $ready) {
+              Write-Host "Electron exited=$($process.HasExited) code=$($process.ExitCode)"
+              if (Test-Path $stdoutLog) { Get-Content $stdoutLog | Write-Host }
+              if (Test-Path $stderrLog) { Get-Content $stderrLog | Write-Host }
+              throw "packaged Windows viewer did not prove the loopback boundary"
+            }
+
+            $runtimeNode = Join-Path $runtime "node.exe"
+            $payload = Join-Path $runtime "scripts\runtime-payload.mjs"
+            $installJson = & $runtimeNode $payload install `
+              --payload-root "$runtime" `
+              --runtime-root (Join-Path $testHome ".agent-inbox\runtime")
+            $installed = $installJson | ConvertFrom-Json
+            & $runtimeNode $payload prune `
+              --runtime-root (Join-Path $testHome ".agent-inbox\runtime") `
+              --runtime-id $installed.runtimeId
+            if ($LASTEXITCODE -ne 0) { throw "runtime prune failed" }
+          } finally {
+            if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
+            $process.WaitForExit()
+          }
+      - run: npm run typecheck
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-win32-x64-folder-inputs
+          path: |
+            build/win32-x64-runtime.tar.gz
+            build/win32-x64-folder.tar.gz
+            build/reports/win32-x64-runtime.json
+            build/reports/win32-x64-runtime-verify.json
+            build/reports/win32-x64-restored-folder.json
+            build/reports/win32-x64-restored-runtime-verify.json
+            build/reports/win32-x64-roundtrip.json
+            build/reports/win32-x64-toolchain.txt
+            build/thin/win32-x64/Agent Inbox.thin-report.json
+          if-no-files-found: error
+          retention-days: 7

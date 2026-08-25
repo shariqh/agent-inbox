@@ -238,6 +238,23 @@ describe('native architecture release stages', () => {
     expect(existsSync(join(destination, 'expected-root'))).toBe(false)
     expect(() => validateTreeArchiveEntries(['expected-root/../escape'], 'expected-root'))
       .toThrow(/unsafe path/)
+    expect(() => validateTreeArchiveEntries(['expected-root/file'], 'expected\\root'))
+      .toThrow(/safe path component/)
+    for (const entry of [
+      'C:/expected-root/file',
+      'expected-root\\file',
+      'expected-root/./file',
+      'expected-root//file',
+      'expected-root//',
+      'expected-root/\0file',
+    ]) {
+      expect(() => validateTreeArchiveEntries([entry], 'expected-root'), entry)
+        .toThrow(/unsafe path/)
+    }
+    expect(() => validateTreeArchiveEntries([
+      'expected-root/file',
+      'expected-root/file',
+    ], 'expected-root')).toThrow(/duplicate path/)
 
     const hardlinkRoot = join(temp, 'hardlink-root')
     mkdirSync(hardlinkRoot)
@@ -259,6 +276,13 @@ describe('native architecture release stages', () => {
     expect(source).toContain("finalAddon = join(buildRoot, 'Release', 'better_sqlite3.node')")
     expect(source.indexOf('pruneNativeAddonBuildArtifacts(stageRoot)'))
       .toBeLessThan(source.indexOf('const packagerOut'))
+  })
+
+  it('uses the fixed native Windows archive adapter without changing POSIX tar selection', () => {
+    const source = readFileSync(join(root, 'scripts', 'archive-tree.mjs'), 'utf8')
+    expect(source).toContain("nativeRuntimeAdapterFor('win32-x64').archiveExecutable")
+    expect(source).toContain(": '/usr/bin/tar'")
+    expect(source).not.toMatch(/powershell|cmd\\.exe|shell:\\s*true/i)
   })
 })
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deterministically derive browser and macOS icon assets from assets/icon.svg
+# Deterministically derive browser, macOS, and Windows icon assets from assets/icon.svg
 # and the tiny single-color derivative in assets/icon-mark.svg.
 set -euo pipefail
 
@@ -62,6 +62,7 @@ if $CHECK; then
   check_hash "outputs.favicon32" "$ROOT/public/favicon-32.png" || stale=true
   check_hash "outputs.markSvg" "$ROOT/public/icon-mark.svg" || stale=true
   check_hash "outputs.icns" "$ROOT/electron/icon.icns" || stale=true
+  check_hash "outputs.ico" "$ROOT/electron/icon.ico" || stale=true
   cmp -s "$ROOT/assets/icon.svg" "$ROOT/public/favicon.svg" || {
     echo "generate-icons: public/favicon.svg does not match assets/icon.svg" >&2
     stale=true
@@ -106,6 +107,7 @@ cp "$ROOT/assets/icon.svg" "$TMP/public/favicon.svg"
 cp "$ROOT/assets/icon-mark.svg" "$TMP/public/icon-mark.svg"
 render "$ROOT/assets/icon.svg" 16 "$TMP/public/favicon-16.png"
 render "$ROOT/assets/icon.svg" 32 "$TMP/public/favicon-32.png"
+render "$ROOT/assets/icon.svg" 256 "$TMP/electron/icon-256.png"
 
 render "$ROOT/assets/icon.svg" 16 "$ICONSET/icon_16x16.png"
 render "$ROOT/assets/icon.svg" 32 "$ICONSET/icon_16x16@2x.png"
@@ -118,6 +120,9 @@ render "$ROOT/assets/icon.svg" 512 "$ICONSET/icon_256x256@2x.png"
 render "$ROOT/assets/icon.svg" 512 "$ICONSET/icon_512x512.png"
 render "$ROOT/assets/icon.svg" 1024 "$ICONSET/icon_512x512@2x.png"
 iconutil --convert icns --output "$TMP/electron/icon.icns" "$ICONSET"
+node "$ROOT/scripts/build-windows-ico.mjs" "$TMP/electron/icon.ico" \
+  "$TMP/public/favicon-16.png" "$TMP/public/favicon-32.png" "$TMP/electron/icon-256.png"
+rm "$TMP/electron/icon-256.png"
 
 cat > "$TMP/assets/icon-manifest.json" <<EOF
 {
@@ -132,7 +137,8 @@ cat > "$TMP/assets/icon-manifest.json" <<EOF
     "favicon16": "$(sha256 "$TMP/public/favicon-16.png")",
     "favicon32": "$(sha256 "$TMP/public/favicon-32.png")",
     "markSvg": "$(sha256 "$TMP/public/icon-mark.svg")",
-    "icns": "$(sha256 "$TMP/electron/icon.icns")"
+    "icns": "$(sha256 "$TMP/electron/icon.icns")",
+    "ico": "$(sha256 "$TMP/electron/icon.ico")"
   }
 }
 EOF
@@ -145,6 +151,7 @@ outputs=(
   "public/favicon-32.png"
   "public/icon-mark.svg"
   "electron/icon.icns"
+  "electron/icon.ico"
 )
 
 for output in "${outputs[@]}"; do

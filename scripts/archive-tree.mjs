@@ -13,6 +13,7 @@ import {
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
+import { nativeRuntimeAdapterFor } from './native-runtime-adapter.mjs'
 
 export class ArchiveTreeError extends Error {
   constructor(message) {
@@ -22,25 +23,39 @@ export class ArchiveTreeError extends Error {
 }
 
 export function validateArchiveEntries(entries, expectedRoot) {
-  if (typeof expectedRoot !== 'string' || !expectedRoot || expectedRoot.includes('/') || expectedRoot === '.' || expectedRoot === '..') {
+  if (typeof expectedRoot !== 'string' || !expectedRoot || /[\\/\0]/.test(expectedRoot) || expectedRoot === '.' || expectedRoot === '..') {
     throw new ArchiveTreeError('expected archive root must be one safe path component')
   }
   if (!Array.isArray(entries) || entries.length === 0) throw new ArchiveTreeError('archive is empty')
   const rootPrefix = `${expectedRoot}/`
+  const seen = new Set()
   for (const rawEntry of entries) {
+    if (typeof rawEntry !== 'string' || !rawEntry || rawEntry.includes('\\') ||
+        rawEntry.includes('\0') || /^[A-Za-z]:/.test(rawEntry) || rawEntry.endsWith('//')) {
+      throw new ArchiveTreeError(`archive contains an unsafe path: ${String(rawEntry)}`)
+    }
     const entry = rawEntry.replace(/\/$/, '')
-    if (!entry || entry.startsWith('/') || entry.split('/').some((part) => part === '..')) {
+    if (!entry || entry.startsWith('/') ||
+        entry.split('/').some((part) => part === '' || part === '.' || part === '..')) {
       throw new ArchiveTreeError(`archive contains an unsafe path: ${rawEntry}`)
     }
     if (entry !== expectedRoot && !entry.startsWith(rootPrefix)) {
       throw new ArchiveTreeError(`archive entry is outside expected root ${expectedRoot}: ${rawEntry}`)
     }
+    if (seen.has(entry)) throw new ArchiveTreeError(`archive contains a duplicate path: ${entry}`)
+    seen.add(entry)
   }
   return entries
 }
 
+function archiveExecutable() {
+  return process.platform === 'win32'
+    ? nativeRuntimeAdapterFor('win32-x64').archiveExecutable
+    : '/usr/bin/tar'
+}
+
 function archiveEntries(archive) {
-  return execFileSync('/usr/bin/tar', ['-tzf', resolve(archive)], {
+  return execFileSync(archiveExecutable(), ['-tzf', resolve(archive)], {
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -49,7 +64,7 @@ function archiveEntries(archive) {
 }
 
 function rejectArchiveHardlinks(archive) {
-  const verbose = execFileSync('/usr/bin/tar', ['-tvzf', resolve(archive)], {
+  const verbose = execFileSync(archiveExecutable(), ['-tvzf', resolve(archive)], {
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -84,7 +99,7 @@ export function createTreeArchive({ source, archive }) {
   const sourcePath = resolve(source)
   if (!existsSync(sourcePath)) throw new ArchiveTreeError(`archive source does not exist: ${sourcePath}`)
   mkdirSync(dirname(resolve(archive)), { recursive: true })
-  execFileSync('/usr/bin/tar', ['-czf', resolve(archive), '-C', dirname(sourcePath), basename(sourcePath)], {
+  execFileSync(archiveExecutable(), ['-czf', resolve(archive), '-C', dirname(sourcePath), basename(sourcePath)], {
     stdio: ['ignore', 'pipe', 'pipe'],
     timeout: 10 * 60_000,
   })
@@ -102,7 +117,7 @@ export function extractTreeArchive({ archive, destination, expectedRoot }) {
   try {
     // bsdtar rejects path and symlink traversal while writing; the isolated stage
     // is additionally inspected before its sole expected root is atomically published.
-    execFileSync('/usr/bin/tar', ['-xzf', archivePath, '-C', stage, '--no-same-owner'], {
+    execFileSync(archiveExecutable(), ['-xzf', archivePath, '-C', stage, '--no-same-owner'], {
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 10 * 60_000,
     })

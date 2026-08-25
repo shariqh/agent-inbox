@@ -14,6 +14,7 @@ import {
 } from './native-runtime-adapter.mjs'
 import { loadLinuxReleaseInputs } from './linux-release-inputs.mjs'
 import { downloadArchive, loadReleaseInputs, verifyArchiveDigest } from './release-inputs.mjs'
+import { loadWindowsReleaseInputs } from './windows-release-inputs.mjs'
 import { targetFor } from './runtime-targets.mjs'
 import { stageRuntime } from './stage-runtime.mjs'
 import { resolveSourceProvenance } from './source-provenance.mjs'
@@ -53,6 +54,7 @@ function knownTarget(key) {
 function releaseInputsFor(target, inputsPath) {
   if (target.platform === 'darwin') return loadReleaseInputs(inputsPath)
   if (target.platform === 'linux') return loadLinuxReleaseInputs(inputsPath)
+  if (target.platform === 'win32') return loadWindowsReleaseInputs(inputsPath)
   throw new NativeRuntimeStageError(`no release input profile for runtime target: ${target.key}`)
 }
 

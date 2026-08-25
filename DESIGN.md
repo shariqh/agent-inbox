@@ -23,16 +23,17 @@ outrank novelty.
 
 ### Color
 
-The shell is neutral graphite. Color is semantic and restrained:
+The shell comes from the existing Agent Inbox icon: burgundy ink, envelope mauves,
+and the monogram's three pink stops. Color is semantic and restrained:
 
 | Role | Dark | Light | Meaning |
 |---|---|---|---|
-| Canvas | `#090b0d` | `#edf0f2` | Workspace background |
-| Surface | `#15181b` | `#ffffff` | Working panels |
-| Human attention | `#ff7a59` | `#b03f26` | A real decision or task waits on the user |
-| Active agent | `#38d6c0` | `#087f72` | Ambient live work |
-| Plan | `#e7c54b` | `#8c6f00` | Durable tracked work |
-| Outcome | `#77d995` | `#237c42` | Closed loops and success |
+| Canvas | `#171113` | `#f8f3f4` | Workspace background |
+| Surface | `#2b1d22` | `#fffdfd` | Working panels |
+| Human attention | `#eb84bb` | `#a63864` | A real decision or task waits on the user |
+| Active agent | `#f6a6d1` | `#87345f` | Ambient live work |
+| Plan | `#d76298` | `#8e315c` | Durable tracked work |
+| Outcome | `#6ee7a0` | `#1f743c` | Closed loops and success |
 
 Project colors remain identity markers, never the only carrier of status.
 

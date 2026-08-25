@@ -63,6 +63,9 @@ durable human-attention and work-status surface.
   composition benchmark. Future work should translate its disciplined grid, confident
   hierarchy, dense-but-calm surfaces, and restrained semantic accents into Agent Inbox
   rather than copying its CRM content.
+- The existing Agent Inbox icon is the palette authority: its burgundy shell and
+  monogram pinks own the product surfaces and primary semantic accents. Unrelated
+  orange, cyan, or generic dashboard accent systems must not compete with it.
 - Professionalism should come from clarity, precision, and operational confidence,
   not decorative complexity or invented enterprise claims.
 

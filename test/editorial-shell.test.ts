@@ -7,11 +7,12 @@ const html = readFileSync(resolve(root, 'public/index.html'), 'utf8')
 const css = readFileSync(resolve(root, 'public/style.css'), 'utf8')
 
 describe('the editorial desk shell', () => {
-  it('is dark-first, graphite, and uses the approved operations typography', () => {
+  it('is dark-first, icon-derived, and uses the approved operations typography', () => {
     expect(css).toMatch(/:root\s*\{[^}]*color-scheme:\s*light\s*;/s)
     expect(html).toContain('<html lang="en" data-theme="dark">')
-    expect(css).toContain('--app-bg: #090b0d')
-    expect(css).toContain('--app-agent: #38d6c0')
+    expect(css).toContain('--app-bg: #171113')
+    expect(css).toContain('--app-agent: #f6a6d1')
+    expect(css).toContain('--app-accent: #eb84bb')
     expect(css).toContain('ui-sans-serif')
     expect(css).toContain('"Segoe UI Variable"')
     expect(css).not.toContain('mediumpurple')

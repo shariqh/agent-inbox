@@ -19,6 +19,12 @@ describe('the editorial desk shell', () => {
     expect(css).not.toContain('rebeccapurple')
   })
 
+  it('uses the agent accent and a neutral quiet state for dashboard lane dots', () => {
+    expect(css).toMatch(/\.dashboard-agent-dot\s*\{[^}]*background:\s*var\(--app-border-strong\)/s)
+    expect(css).toMatch(/\.dashboard-agent-dot\.active\s*\{[^}]*background:\s*var\(--signal\)/s)
+    expect(css).toMatch(/\.dashboard-agent-dots\s*\{[^}]*flex-wrap:\s*wrap/s)
+  })
+
   it('moves navigation into a real sidebar and gives the work area an editorial heading', () => {
     expect(html).toContain('class="sidebar-shell"')
     expect(html).toContain('id="pageTitle"')

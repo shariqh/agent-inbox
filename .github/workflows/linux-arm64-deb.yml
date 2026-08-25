@@ -115,6 +115,7 @@ jobs:
             -e "COMMIT=$COMMIT" \
             -e "DEB_RUNTIME_DEPS=$DEB_RUNTIME_DEPS" \
             -v "$PWD:/repo" \
+            -v "$PWD/scripts/apt-install-with-retry.sh:/usr/local/bin/apt-install-with-retry:ro" \
             -w /repo \
             ubuntu@sha256:8c71efb5d8170edf0965b2ac5e867cc70d3d8f73d1c9c0573d690d6203fc5866 \
             bash -euc '
@@ -126,10 +127,8 @@ jobs:
                 *"1.21.1 (arm64)."*) : ;;
                 *) echo "linux-arm64-deb: unexpected pinned dpkg-deb version" >&2; exit 1 ;;
               esac
-              apt-get update
               # shellcheck disable=SC2086
-              DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-                git $DEB_RUNTIME_DEPS
+              /usr/local/bin/apt-install-with-retry git $DEB_RUNTIME_DEPS
               NODE=build/runtime/linux-arm64/bin/node
               APP="build/thin/linux-arm64/Agent Inbox"
               umask 022
@@ -181,11 +180,10 @@ jobs:
             -v "$PWD/build/deb:/artifacts:ro" \
             -v "$PWD/scripts/smoke-linux-deb.sh:/gate/smoke-linux-deb.sh:ro" \
             -v "$PWD/scripts/smoke-linux-deb-setup.cjs:/gate/smoke-linux-deb-setup.cjs:ro" \
+            -v "$PWD/scripts/apt-install-with-retry.sh:/usr/local/bin/apt-install-with-retry:ro" \
             ubuntu@sha256:8c71efb5d8170edf0965b2ac5e867cc70d3d8f73d1c9c0573d690d6203fc5866 \
             bash -euc '
-              apt-get update
-              DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-                curl passwd util-linux xvfb "/artifacts/$ARTIFACT"
+              /usr/local/bin/apt-install-with-retry curl passwd util-linux xvfb "/artifacts/$ARTIFACT"
               if command -v node >/dev/null 2>&1; then
                 echo "linux-arm64-deb: system Node unexpectedly present" >&2
                 exit 1
@@ -260,12 +258,14 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           ARTIFACT="agent-inbox_${VERSION}_arm64.deb"
           IMAGE="agent-inbox-deb-offline-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-arm64"
+          cp scripts/apt-install-with-retry.sh build/deb/apt-install-with-retry
           cat > build/deb/offline.Dockerfile <<EOF
           FROM ubuntu@sha256:8c71efb5d8170edf0965b2ac5e867cc70d3d8f73d1c9c0573d690d6203fc5866
           ARG ARTIFACT
           COPY \${ARTIFACT} /tmp/\${ARTIFACT}
-          RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-               curl passwd util-linux xvfb "/tmp/\${ARTIFACT}" && \
+          COPY apt-install-with-retry /tmp/apt-install-with-retry
+          RUN /tmp/apt-install-with-retry curl passwd util-linux xvfb "/tmp/\${ARTIFACT}" && \
+             rm -f /tmp/apt-install-with-retry && \
              ! command -v node && useradd --create-home --uid 10001 appuser && \
              rm -rf /var/lib/apt/lists/*
           EOF
@@ -349,13 +349,12 @@ jobs:
             -e "COMMIT=$COMMIT" \
             -e "DEB_RUNTIME_DEPS=$DEB_RUNTIME_DEPS" \
             -v "$PWD:/repo" \
+            -v "$PWD/scripts/apt-install-with-retry.sh:/usr/local/bin/apt-install-with-retry:ro" \
             -w /repo \
             ubuntu@sha256:8c71efb5d8170edf0965b2ac5e867cc70d3d8f73d1c9c0573d690d6203fc5866 \
             bash -euc '
-              apt-get update
               # shellcheck disable=SC2086
-              DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-                git $DEB_RUNTIME_DEPS
+              /usr/local/bin/apt-install-with-retry git $DEB_RUNTIME_DEPS
               mkdir -p build/reports
               build/runtime/linux-arm64/bin/node scripts/verify-linux-deb.mjs \
                 --deb "build/downloaded/deb/$ARTIFACT" \

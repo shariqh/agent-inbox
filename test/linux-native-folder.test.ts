@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -13,6 +13,7 @@ import {
 import { buildLinuxThinApp } from '../scripts/build-linux-thin-app.mjs'
 import { resolveLinuxCompilerEnvironment } from '../scripts/linux-release-inputs.mjs'
 import { PROCESS_PROBE } from '../scripts/verify-linux-thin-app.mjs'
+import { verifyPackagedUpdateTrust } from '../scripts/package-update-trust.mjs'
 
 function elfFixture(arch: 'x64' | 'arm64', symbols: string[] = []): string {
   const bytes = Buffer.alloc(64)
@@ -241,5 +242,24 @@ describe('native Linux folder gates', () => {
     expect(build).toContain('write-setup-info.mjs')
     expect(build).toContain("'--runtime-key', key")
     expect(build).not.toMatch(/AppImage|\.deb\b|electron-builder|electron-forge/i)
+  })
+
+  it('loads the shipped update verifier and pinned registry from a Linux app folder', () => {
+    const appResources = join(
+      mkdtempSync(join(tmpdir(), 'linux-update-trust-')),
+      'Agent Inbox',
+      'resources',
+      'app',
+    )
+    mkdirSync(join(appResources, 'electron'), { recursive: true })
+    mkdirSync(join(appResources, 'release'), { recursive: true })
+    const repo = resolve(process.cwd())
+    cpSync(join(repo, 'electron/update-manifest.cjs'), join(appResources, 'electron/update-manifest.cjs'))
+    cpSync(join(repo, 'release/update-keys.json'), join(appResources, 'release/update-keys.json'))
+
+    expect(verifyPackagedUpdateTrust(appResources)).toEqual({
+      signingKeyId: 'ed25519-99927ba2f6af6482',
+      trustedKeyIds: ['ed25519-99927ba2f6af6482'],
+    })
   })
 })

@@ -1215,8 +1215,22 @@ function renderDashboardAmbient(model) {
   }
   const total = document.querySelector('[data-dashboard-signal="agents"] .dashboard-value-total')
   if (total) total.textContent = `/${model.signals.agents.total}`
+  const dots = document.querySelector('[data-dashboard-signal="agents"] .dashboard-agent-dots')
+  if (dots) {
+    const fragment = document.createDocumentFragment()
+    for (let index = 0; index < model.signals.agents.total; index += 1) {
+      const dot = document.createElement('span')
+      dot.className = `dashboard-agent-dot ${index < model.signals.agents.working ? 'active' : 'quiet'}`
+      fragment.appendChild(dot)
+    }
+    dots.replaceChildren(fragment)
+  }
+  const childCount = model.signals.agents.reportedChildren
+  const childContribution = childCount > 0
+    ? `, including ${childCount} reported child agent${childCount === 1 ? '' : 's'}`
+    : ''
   const labels = {
-    agents: `Active agents: ${model.signals.agents.working} of ${model.signals.agents.total} present`,
+    agents: `Active agents: ${model.signals.agents.working} of ${model.signals.agents.total} present${childContribution}`,
     waiting: `Needs you: ${model.signals.waiting} open action${model.signals.waiting === 1 ? '' : 's'}`,
     plans: `Plans: ${model.signals.plans} across ${model.signals.projects} project${model.signals.projects === 1 ? '' : 's'}`,
     outcomes: `Recorded outcomes: ${model.signals.outcomes} across items and plan rows`,
@@ -1234,7 +1248,7 @@ const DASHBOARD_SIGNAL_ICONS = {
   outcomes: '<circle cx="8" cy="8" r="6"></circle><path d="m5 8 2 2 4-4"></path>',
 }
 
-function dashboardSignal({ name, label, value, total = null, target, tone }) {
+function dashboardSignal({ name, label, value, total = null, target, tone, meter = false }) {
   const card = document.createElement('button')
   card.type = 'button'
   card.className = `dashboard-signal tone-${tone}`
@@ -1250,6 +1264,7 @@ function dashboardSignal({ name, label, value, total = null, target, tone }) {
       <span class="dashboard-value">${esc(String(value))}</span>
       ${total == null ? '' : `<span class="dashboard-value-total">/${esc(String(total))}</span>`}
     </span>
+    ${meter ? '<span class="dashboard-agent-dots" aria-hidden="true"></span>' : ''}
     <span class="dashboard-signal-arrow" aria-hidden="true">→</span>`
   card.addEventListener('click', () => dashboardTarget(target))
   return card
@@ -1278,6 +1293,7 @@ function renderDashboard(model) {
       total: model.signals.agents.total,
       target: 'live',
       tone: 'agent',
+      meter: true,
     }),
     dashboardSignal({
       name: 'waiting',

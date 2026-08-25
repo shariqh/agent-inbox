@@ -1,9 +1,21 @@
 import { describe, expect, it } from 'vitest'
 import { buildActivitySeries, buildDashboard } from '../public/dashboard.js'
+import type { DashboardModel } from '../public/dashboard.js'
 
 const NOW = Date.parse('2026-08-24T20:00:00.000Z')
 
 describe('buildDashboard', () => {
+  it('keeps the reported child count in the exported model contract', () => {
+    const agents: DashboardModel['signals']['agents'] = {
+      working: 3,
+      quiet: 1,
+      total: 4,
+      reportedChildren: 2,
+    }
+
+    expect(agents.reportedChildren).toBe(2)
+  })
+
   it('projects current data through the existing ownership and live models', () => {
     const model = buildDashboard({
       items: [
@@ -93,7 +105,7 @@ describe('buildDashboard', () => {
     })
 
     expect(model.signals).toEqual({
-      agents: { working: 1, quiet: 1, total: 2 },
+      agents: { working: 1, quiet: 1, total: 2, reportedChildren: 0 },
       waiting: 1,
       withAgents: 1,
       plans: 1,
@@ -104,6 +116,87 @@ describe('buildDashboard', () => {
     expect(model.sessions.map((session) => session.session)).toEqual(['working', 'quiet'])
     expect(model.recentOutcomes.map((entry) => entry.kind === 'item' ? entry.item.id : entry.row.id))
       .toEqual(['row-done', 'done'])
+  })
+
+  it('counts child lanes only under visible working parents', () => {
+    const model = buildDashboard({
+      items: [],
+      boards: [],
+      archived: [],
+      activity: [
+        {
+          session: 'manager',
+          project: 'alpha',
+          agent: 'copilot',
+          doing: 'Coordinating',
+          idle: false,
+          children: [
+            {
+              name: 'worker-a',
+              doing: 'Testing',
+              project: 'closed-project',
+              agent: 'claude',
+            },
+            { name: 'worker-b', doing: 'Reviewing', state: 'idle' },
+          ],
+          started_at: '2026-08-24T18:00:00.000Z',
+          last_call_at: '2026-08-24T19:59:00.000Z',
+        },
+        {
+          session: 'quiet',
+          project: 'alpha',
+          agent: 'copilot',
+          doing: 'open',
+          idle: true,
+          children: [{ name: 'stale-worker', doing: 'Must not count' }],
+          started_at: '2026-08-24T16:00:00.000Z',
+          last_call_at: '2026-08-24T17:00:00.000Z',
+        },
+        {
+          session: 'malformed',
+          project: 'alpha',
+          agent: 'copilot',
+          doing: 'Working without a valid child list',
+          idle: false,
+          children: { name: 'not-an-array' },
+          started_at: '2026-08-24T18:30:00.000Z',
+          last_call_at: '2026-08-24T19:58:00.000Z',
+        },
+        {
+          session: 'closed-manager',
+          project: 'closed-project',
+          agent: 'copilot',
+          doing: 'Hidden with its children',
+          idle: false,
+          children: [
+            {
+              name: 'closed-worker-a',
+              doing: 'Hidden',
+              project: 'alpha',
+              agent: 'copilot',
+            },
+            { name: 'closed-worker-b', doing: 'Hidden' },
+          ],
+          started_at: '2026-08-24T18:00:00.000Z',
+          last_call_at: '2026-08-24T19:57:00.000Z',
+        },
+      ],
+      nowMs: NOW,
+      liveSessionIds: new Set(['manager', 'quiet', 'malformed', 'closed-manager']),
+      closedProjects: ['closed-project'],
+    })
+
+    expect(model.signals.agents).toEqual({
+      working: 4,
+      quiet: 1,
+      total: 5,
+      reportedChildren: 2,
+    })
+    expect(model.sessions.map((session) => session.session)).toEqual([
+      'manager',
+      'malformed',
+      'quiet',
+    ])
   })
 
   it('returns an empty, honest model when no work exists', () => {
@@ -117,7 +210,7 @@ describe('buildDashboard', () => {
     })
 
     expect(model.signals).toEqual({
-      agents: { working: 0, quiet: 0, total: 0 },
+      agents: { working: 0, quiet: 0, total: 0, reportedChildren: 0 },
       waiting: 0,
       withAgents: 0,
       plans: 0,

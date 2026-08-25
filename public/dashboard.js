@@ -32,6 +32,9 @@ export function buildDashboard({
   const visibleActivity = (activity ?? []).filter((row) => validProject(row, closed))
   const relay = buildRelay(items, boards, archived, nowMs, liveSessionIds, closedProjects)
   const live = liveSummary(visibleActivity, nowMs)
+  const reportedChildren = visibleActivity.reduce((count, row) =>
+    count + (!row.idle && Array.isArray(row.children) ? row.children.length : 0), 0)
+  const workingLanes = live.count + reportedChildren
   const projects = new Set([
     ...visibleItems.map((item) => item.project),
     ...visibleBoards.map((board) => board.project),
@@ -45,9 +48,10 @@ export function buildDashboard({
   return {
     signals: {
       agents: {
-        working: live.count,
+        working: workingLanes,
         quiet: live.idleCount,
-        total: live.count + live.idleCount,
+        total: workingLanes + live.idleCount,
+        reportedChildren,
       },
       waiting: relay.human.length,
       withAgents: relay.agent.length,

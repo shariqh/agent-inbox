@@ -1,7 +1,7 @@
 <!doctype html>
 <!--
 THESIS: Agent work is organized by ownership and handoff, not generic productivity analytics. Refuse the equal-weight card maze.
-OWN-WORLD: Burgundy-ink canvas, flat layered panels, precise 1px boundaries, compact sans type, tabular figures, and the icon's monogram pinks for human attention, active agents, and plans, with green reserved for outcomes.
+OWN-WORLD: Cool graphite canvas, flat layered panels, precise 1px boundaries, compact sans type, tabular figures, and the icon's monogram pink as the primary accent and human-attention color; cyan, yellow, and green stay confined to agent, plan, and outcome semantics.
 STORY: See what agents are doing, what waits on you, what is moving, and what finished; every summary drills into the existing working surface.
 FIRST VIEWPORT: Persistent project navigation and search frame four truthful signals, an activity timeline, ownership flow, live dispatch, and recent outcomes. Review queue is the primary action.
 FORM: Dark-first Live Operations Desk with a complete light counterpart and structural 4-to-2-to-1 reflow. User-pinned reference and approved v3 mockup; no concept seed was needed.
@@ -23,13 +23,35 @@ FORM: Dark-first Live Operations Desk with a complete light counterpart and stru
       <div class="brand">
         <img class="brand-mark" src="/favicon-32.png" alt="" aria-hidden="true" width="22" height="22" />
         <span class="brand-copy"><strong>Agent Inbox</strong><small>Local workspace</small></span>
+        <button id="sidebarCollapse" class="sidebar-collapse" type="button"
+          aria-label="Collapse sidebar" aria-expanded="true" title="Collapse sidebar">
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <rect x="1.5" y="2" width="13" height="12" rx="2"></rect>
+            <path d="M5.5 2v12M11 5.5 8.5 8 11 10.5"></path>
+          </svg>
+        </button>
       </div>
       <div id="tabs" class="tabstrip" role="tablist" aria-label="Library">
-        <button class="tab" type="button" role="tab" data-tab="dashboard" aria-selected="true">Dashboard</button>
-        <button class="tab" type="button" role="tab" data-tab="needsYou" aria-selected="false">Inbox<span class="tab-count" hidden></span></button>
-        <button class="tab" type="button" role="tab" data-tab="boards" aria-selected="false">Plans<span class="tab-count" hidden></span></button>
-        <button class="tab" type="button" role="tab" data-tab="notes" aria-selected="false">Notes<span class="tab-count" hidden></span></button>
-        <button class="tab" type="button" role="tab" data-tab="done" aria-selected="false">History<span class="tab-count" hidden></span></button>
+        <button class="tab" type="button" role="tab" data-tab="dashboard" aria-selected="true">
+          <svg class="tab-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 2h5v5H2zM9 2h5v3H9zM9 7h5v7H9zM2 9h5v5H2z"></path></svg>
+          <span class="tab-name">Dashboard</span>
+        </button>
+        <button class="tab" type="button" role="tab" data-tab="needsYou" aria-selected="false">
+          <svg class="tab-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3h12v10H2zM2 9h3l1.5 2h3L11 9h3"></path></svg>
+          <span class="tab-name">Inbox</span><span class="tab-count" hidden></span>
+        </button>
+        <button class="tab" type="button" role="tab" data-tab="boards" aria-selected="false">
+          <svg class="tab-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 2h10v12H3zM5.5 5h5M5.5 8h5M5.5 11h3"></path></svg>
+          <span class="tab-name">Plans</span><span class="tab-count" hidden></span>
+        </button>
+        <button class="tab" type="button" role="tab" data-tab="notes" aria-selected="false">
+          <svg class="tab-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 2h10v12H3zM5.5 5h5M5.5 8h5M5.5 11h3"></path></svg>
+          <span class="tab-name">Notes</span><span class="tab-count" hidden></span>
+        </button>
+        <button class="tab" type="button" role="tab" data-tab="done" aria-selected="false">
+          <svg class="tab-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.5"></circle><path d="M8 4.5V8l2.5 1.5"></path></svg>
+          <span class="tab-name">History</span><span class="tab-count" hidden></span>
+        </button>
       </div>
       <div class="sidebar-section-label">Projects</div>
       <div id="projectDisclosure" class="project-disclosure" data-open="false">

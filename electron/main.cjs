@@ -51,8 +51,8 @@ const notificationRetainer = createNotificationRetainer()
 const wakeAdapter = wakeAdapterFromEnv(process.env)
 const THEME_SOURCE_VALUES = new Set(['light', 'dark', 'system'])
 const THEME_BACKGROUND_COLORS = {
-  light: '#f8f3f4',
-  dark: '#171113',
+  light: '#edf0f2',
+  dark: '#090b0d',
 }
 let setupInstallRunning = false
 let setupInstallEnabled = false

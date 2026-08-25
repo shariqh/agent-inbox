@@ -28,6 +28,7 @@ describe('shell markup', () => {
     expect(html).toContain('id="agentSelect"')
     expect(html).toContain('id="search"')
     expect(html).toContain('id="gear"')
+    expect(html).toContain('id="sidebarCollapse"')
     const sidebar = html.slice(html.indexOf('<aside class="sidebar-shell">'), html.indexOf('</aside>'))
     const topbar = html.slice(html.indexOf('<header id="topbar">'), html.indexOf('</header>'))
     expect(sidebar).toContain('id="agentSelect"')
@@ -52,7 +53,7 @@ describe('shell markup', () => {
 
   it('gives every tab a count slot', () => {
     for (const t of ['needsYou', 'boards', 'notes', 'done']) {
-      expect(html, t).toMatch(new RegExp(`data-tab="${t}"[^>]*>[^<]*<span class="tab-count"`))
+      expect(html, t).toMatch(new RegExp(`data-tab="${t}"[\\s\\S]*?<span class="tab-name">[^<]+</span><span class="tab-count"`))
     }
   })
 

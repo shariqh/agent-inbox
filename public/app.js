@@ -2786,6 +2786,9 @@ const PANE_KEYS = {
   sidebar: 'agent-inbox-sidebar-width',
   inspector: 'agent-inbox-inspector-width',
 }
+const SIDEBAR_COLLAPSED_KEY = 'agent-inbox-sidebar-collapsed'
+const SIDEBAR_COLLAPSED_WIDTH = 72
+let sidebarCollapsed = localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true'
 const panePreferences = {
   sidebar: savedPaneWidth('sidebar'),
   inspector: savedPaneWidth('inspector'),
@@ -2808,10 +2811,16 @@ function updatePaneHandle(kind, pane) {
 function applyPaneLayout() {
   const panes = resolvePaneLayout(window.innerWidth, panePreferences)
   const root = document.documentElement.style
-  root.setProperty('--sidebar-width', `${panes.sidebar.value}px`)
+  const collapsed = layout === 'wide' && sidebarCollapsed
+  root.setProperty('--sidebar-width', `${collapsed ? SIDEBAR_COLLAPSED_WIDTH : panes.sidebar.value}px`)
   root.setProperty('--inspector-width', `${panes.inspector.value}px`)
   updatePaneHandle('sidebar', panes.sidebar)
   updatePaneHandle('inspector', panes.inspector)
+  const sidebarHandle = document.getElementById('sidebarResize')
+  if (sidebarHandle) {
+    sidebarHandle.tabIndex = collapsed ? -1 : 0
+    sidebarHandle.setAttribute('aria-hidden', String(collapsed))
+  }
   return panes
 }
 
@@ -2827,6 +2836,34 @@ function resetPanePreference(kind) {
   panePreferences[kind] = PANE_DEFAULTS[kind]
   localStorage.removeItem(PANE_KEYS[kind])
   applyPaneLayout()
+}
+
+function applySidebarCollapse({ focus = false } = {}) {
+  const active = layout === 'wide' && sidebarCollapsed
+  if (active && railQuery) {
+    railQuery = ''
+    if (lastData) renderRail()
+  }
+  document.body.classList.toggle('sidebar-collapsed', active)
+  const button = document.getElementById('sidebarCollapse')
+  if (button) {
+    button.setAttribute('aria-expanded', String(!active))
+    button.setAttribute('aria-label', active ? 'Expand sidebar' : 'Collapse sidebar')
+    button.title = active ? 'Expand sidebar' : 'Collapse sidebar'
+    if (focus) button.focus({ preventScroll: true })
+  }
+  applyPaneLayout()
+}
+
+function initSidebarCollapse() {
+  const button = document.getElementById('sidebarCollapse')
+  if (!button) return
+  button.addEventListener('click', () => {
+    sidebarCollapsed = !sidebarCollapsed
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(sidebarCollapsed))
+    applySidebarCollapse({ focus: true })
+  })
+  applySidebarCollapse()
 }
 
 function initPaneResizers() {
@@ -2875,6 +2912,7 @@ function initResponsive() {
     const next = mq.matches ? 'narrow' : 'wide'
     if (next === layout) return
     layout = next
+    applySidebarCollapse()
     if (lastData) forceRender() // the rail's visible labels change, so rebuild it
   }
   mq.addEventListener('change', apply)
@@ -3593,6 +3631,7 @@ function renderRail() {
 // option text goes through textContent, never innerHTML: agent names are agent-authored.
 function renderAgentSelect(agents) {
   const sel = document.getElementById('agentSelect')
+  document.body.classList.toggle('agent-filtered', Boolean(agentFilter))
   const sig = JSON.stringify([agents, agentFilter])
   if (sel.dataset.sig === sig) return
   sel.dataset.sig = sig
@@ -6424,8 +6463,8 @@ async function renderSetup() {
 // ── init ────────────────────────────────────────────────────────────────────
 // Canonical order for the finished app; later tasks add their one line at the
 // slot named here and never rewrite this block:
-//   initTabs → initTriage → initSearch → initResponsive → initPaneResizers →
-//   initProjectDisclosure →
+//   initTabs → initTriage → initRelay → initMission → initSearch →
+//   initResponsive → initSidebarCollapse → initPaneResizers → initProjectDisclosure →
 //   initKeys (Task 17) → initFocusHash (Task 17) → initStagedFlush →
 //   initPressGuard (#38) → initScrollGuard → initAgentSelect →
 //   initStructuredTextCopy → initGear → initLiveBar → renderSetup → load →
@@ -6436,6 +6475,7 @@ initRelay()
 initMission()
 initSearch()
 initResponsive()
+initSidebarCollapse()
 initPaneResizers()
 initProjectDisclosure()
 initKeys()

@@ -7,11 +7,11 @@ const html = readFileSync(resolve(root, 'public/index.html'), 'utf8')
 const css = readFileSync(resolve(root, 'public/style.css'), 'utf8')
 
 describe('the editorial desk shell', () => {
-  it('is dark-first, icon-derived, and uses the approved operations typography', () => {
+  it('is dark-first, graphite with icon-derived accent, and uses the approved operations typography', () => {
     expect(css).toMatch(/:root\s*\{[^}]*color-scheme:\s*light\s*;/s)
     expect(html).toContain('<html lang="en" data-theme="dark">')
-    expect(css).toContain('--app-bg: #171113')
-    expect(css).toContain('--app-agent: #f6a6d1')
+    expect(css).toContain('--app-bg: #090b0d')
+    expect(css).toContain('--app-agent: #38d6c0')
     expect(css).toContain('--app-accent: #eb84bb')
     expect(css).toContain('ui-sans-serif')
     expect(css).toContain('"Segoe UI Variable"')
@@ -23,10 +23,10 @@ describe('the editorial desk shell', () => {
     expect(html).toContain('class="sidebar-shell"')
     expect(html).toContain('id="pageTitle"')
     expect(html).toContain('Live Operations Desk')
-    expect(html).toContain('>Dashboard</button>')
-    expect(html).toContain('>Inbox<span class="tab-count"')
-    expect(html).toContain('>Plans<span class="tab-count"')
-    expect(html).toContain('>History<span class="tab-count"')
+    expect(html).toContain('class="tab-name">Dashboard</span>')
+    expect(html).toContain('class="tab-name">Inbox</span><span class="tab-count"')
+    expect(html).toContain('class="tab-name">Plans</span><span class="tab-count"')
+    expect(html).toContain('class="tab-name">History</span><span class="tab-count"')
   })
 
   it('keeps workspace search in the utility bar and gives the sidebar ownership of the agent picker', () => {
@@ -97,7 +97,18 @@ describe('the editorial desk shell', () => {
     expect(compact).toMatch(/@container compact-masthead \(max-width:\s*620px\)[\s\S]*#tabs\s*\{[^}]*display:\s*flex[^}]*grid-column:\s*1\s*\/\s*-1[^}]*grid-row:\s*2[^}]*overflow-x:\s*auto/s)
     expect(compact).toMatch(/@container compact-masthead \(max-width:\s*620px\)[\s\S]*#tabs \.tab-count\s*\{[^}]*display:\s*inline-block/s)
     expect(compact).toMatch(/@container compact-masthead \(max-width:\s*620px\)[\s\S]*\.sidebar-shell \.project-disclosure\s*\{[^}]*grid-column:\s*1[^}]*grid-row:\s*3[\s\S]*\.sidebar-shell \.agent-pick\s*\{[^}]*grid-column:\s*2[^}]*grid-row:\s*3/s)
-    expect(compact).toMatch(/@container compact-masthead \(max-width:\s*440px\)[\s\S]*\.sidebar-shell \.project-disclosure\s*\{[^}]*grid-column:\s*1\s*\/\s*-1[^}]*grid-row:\s*3[\s\S]*\.sidebar-shell \.agent-pick\s*\{[^}]*grid-column:\s*1\s*\/\s*-1[^}]*grid-row:\s*4/s)
+    expect(compact).toMatch(/@container compact-masthead \(max-width:\s*440px\)[\s\S]*\.sidebar-shell\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)[^}]*grid-template-rows:\s*auto auto auto[\s\S]*\.sidebar-shell \.project-disclosure\s*\{[^}]*grid-column:\s*1[^}]*grid-row:\s*3[\s\S]*\.sidebar-shell \.agent-pick\s*\{[^}]*grid-column:\s*2[^}]*grid-row:\s*3/s)
+  })
+
+  it('collapses the wide sidebar into an icon rail without changing compact mastheads', () => {
+    expect(html).toMatch(/id="sidebarCollapse"[^>]*aria-expanded="true"/)
+    expect(css).toMatch(/body\.sidebar-collapsed \.sidebar-shell\s*\{[^}]*padding:/s)
+    expect(css).toMatch(/body\.sidebar-collapsed \.tab-name[\s\S]*display:\s*none/s)
+    expect(css).toMatch(/body\.sidebar-collapsed #rail \.rail-name[\s\S]*display:\s*none/s)
+    expect(css).toMatch(/body\.sidebar-collapsed #liveBar,[\s\S]*left:\s*72px/s)
+    expect(css).toMatch(/body\.sidebar-collapsed #agentSelect option\s*\{[^}]*color:\s*var\(--app-text\)[^}]*font-size:\s*12px/s)
+    const compact = css.slice(css.indexOf('@media (max-width: 1279px)'))
+    expect(compact).toMatch(/\.sidebar-collapse\s*\{[^}]*display:\s*none/s)
   })
 
   it('reflows queue controls by queue width instead of scrolling them under adjacent panes', () => {

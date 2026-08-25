@@ -23,17 +23,17 @@ outrank novelty.
 
 ### Color
 
-The shell comes from the existing Agent Inbox icon: burgundy ink, envelope mauves,
-and the monogram's three pink stops. Color is semantic and restrained:
+The shell stays cool black/graphite. The existing Agent Inbox icon supplies the
+primary accent through its monogram pinks; semantic status colors remain restrained:
 
 | Role | Dark | Light | Meaning |
 |---|---|---|---|
-| Canvas | `#171113` | `#f8f3f4` | Workspace background |
-| Surface | `#2b1d22` | `#fffdfd` | Working panels |
+| Canvas | `#090b0d` | `#edf0f2` | Workspace background |
+| Surface | `#15181b` | `#ffffff` | Working panels |
 | Human attention | `#eb84bb` | `#a63864` | A real decision or task waits on the user |
-| Active agent | `#f6a6d1` | `#87345f` | Ambient live work |
-| Plan | `#d76298` | `#8e315c` | Durable tracked work |
-| Outcome | `#6ee7a0` | `#1f743c` | Closed loops and success |
+| Active agent | `#38d6c0` | `#087f72` | Ambient live work |
+| Plan | `#e7c54b` | `#8c6f00` | Durable tracked work |
+| Outcome | `#77d995` | `#1f743c` | Closed loops and success |
 
 Project colors remain identity markers, never the only carrier of status.
 
@@ -65,6 +65,10 @@ The primary navigation order is:
 Dashboard is the cold-launch view. It monitors real current state and truthful local
 claim history. Inbox remains the focused action queue. History is an outcome ledger
 that expands into audit detail.
+
+At wide widths the project library can collapse to a 72px icon rail. The collapse
+state is window-persistent, preserves the prior resizable width, and never changes
+the compact masthead used below 1280px.
 
 The ownership grammar is consistent everywhere:
 
@@ -114,9 +118,11 @@ No portal or duplicate action component is permitted.
   detail.
 - **620–899px:** stacked dashboard regions and reflowed metadata.
 - **Below 620px:** horizontally scrollable navigation preserves every tab and
-  count; dashboard is single-column.
+  count; dashboard is single-column. The masthead uses three compact rows:
+  identity/settings, tabs, then project and agent selectors side by side.
 - **440px and below:** full-viewport action card. Verify at 320px, 375px, and
-  430px.
+  430px. Project and agent selectors remain side by side rather than adding a
+  fourth masthead row.
 
 Responsive design reflows meaning. It never removes ownership, attention, actions,
 outcomes, or global counts.

@@ -66,9 +66,26 @@ describe('Live Operations Desk dashboard', () => {
     expect(signal('waiting')).toBe('1')
     expect(signal('plans')).toBe('1')
     expect(signal('outcomes')).toBe('1')
+    expect(document.querySelector('[data-dashboard-signal="agents"] .dashboard-value-total')?.textContent).toBe('/1')
+    expect(document.querySelector('[data-dashboard-signal="plans"]')?.getAttribute('aria-label')).toBe('Plans: 1 across 1 project')
     expect(document.querySelector('.dashboard-live-session')?.textContent).toContain('Building the dashboard')
     expect(document.querySelector('.dashboard-outcome')?.textContent).toContain('Package verified.')
     expect(document.querySelector('.dashboard-bars')).not.toBeNull()
+  })
+
+  it('uses visuals instead of explanatory dashboard subtext', async () => {
+    const d = open()
+    await bootApp(d)
+
+    expect(document.querySelector('.dashboard-summary')).toBeNull()
+    expect(document.querySelector('.dashboard-signal-detail')).toBeNull()
+    expect(document.querySelector('.dashboard-card-head p')).toBeNull()
+    expect(document.querySelector('.dashboard-history-empty')?.getAttribute('aria-label')).toBe('No activity history yet')
+    expect(document.querySelector('.dashboard-history-empty')?.getAttribute('role')).toBe('img')
+    expect(document.querySelector('.dashboard-history-empty')?.getAttribute('title')).toBe('No activity history yet')
+    expect(document.querySelector('.dashboard-history-empty .dashboard-empty-icon')).not.toBeNull()
+    expect(document.querySelector('.dashboard-history-empty')?.textContent?.trim()).toBe('')
+    expect(document.querySelectorAll('.dashboard-signal-icon')).toHaveLength(4)
   })
 
   it('drills from the waiting signal into the existing Inbox queue', async () => {
@@ -193,6 +210,6 @@ describe('Live Operations Desk dashboard', () => {
     await settle()
 
     expect(signal('waiting')).toBe('1')
-    expect(document.querySelector('.dashboard-summary')?.textContent).toContain('1 project')
+    expect(document.querySelector('[data-dashboard-signal="waiting"]')?.getAttribute('aria-label')).toBe('Needs you: 1 open action')
   })
 })

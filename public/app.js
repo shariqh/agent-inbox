@@ -1213,13 +1213,28 @@ function renderDashboardAmbient(model) {
     const el = document.querySelector(`[data-dashboard-signal="${name}"] .dashboard-value`)
     if (el) el.textContent = String(value)
   }
-  const summary = document.querySelector('.dashboard-summary')
-  if (summary) {
-    summary.textContent = `${model.signals.projects} project${model.signals.projects === 1 ? '' : 's'} · ${model.signals.agents.working} agent${model.signals.agents.working === 1 ? '' : 's'} working · updated just now`
+  const total = document.querySelector('[data-dashboard-signal="agents"] .dashboard-value-total')
+  if (total) total.textContent = `/${model.signals.agents.total}`
+  const labels = {
+    agents: `Active agents: ${model.signals.agents.working} of ${model.signals.agents.total} present`,
+    waiting: `Needs you: ${model.signals.waiting} open action${model.signals.waiting === 1 ? '' : 's'}`,
+    plans: `Plans: ${model.signals.plans} across ${model.signals.projects} project${model.signals.projects === 1 ? '' : 's'}`,
+    outcomes: `Recorded outcomes: ${model.signals.outcomes} across items and plan rows`,
+  }
+  for (const [name, label] of Object.entries(labels)) {
+    const card = document.querySelector(`[data-dashboard-signal="${name}"]`)
+    if (card) card.setAttribute('aria-label', label)
   }
 }
 
-function dashboardSignal({ name, label, value, detail, target, tone }) {
+const DASHBOARD_SIGNAL_ICONS = {
+  agents: '<circle cx="8" cy="4" r="2"></circle><circle cx="4" cy="12" r="2"></circle><circle cx="12" cy="12" r="2"></circle><path d="M8 6v3M6.5 9.5 5 10.5M9.5 9.5l1.5 1"></path>',
+  waiting: '<path d="M2 3h12v10H2zM2 9h3l1.5 2h3L11 9h3"></path>',
+  plans: '<path d="M3 2h10v12H3zM5.5 5h5M5.5 8h5M5.5 11h3"></path>',
+  outcomes: '<circle cx="8" cy="8" r="6"></circle><path d="m5 8 2 2 4-4"></path>',
+}
+
+function dashboardSignal({ name, label, value, total = null, target, tone }) {
   const card = document.createElement('button')
   card.type = 'button'
   card.className = `dashboard-signal tone-${tone}`
@@ -1227,9 +1242,14 @@ function dashboardSignal({ name, label, value, detail, target, tone }) {
   card.dataset.dashboardTarget = target
   card.dataset.dashboardFocusKey = `signal:${name}`
   card.innerHTML = `
-    <span class="dashboard-signal-label">${esc(label)}</span>
-    <span class="dashboard-value">${esc(String(value))}</span>
-    <span class="dashboard-signal-detail">${esc(detail)}</span>
+    <span class="dashboard-signal-head">
+      <span class="dashboard-signal-label">${esc(label)}</span>
+      <svg class="dashboard-signal-icon" viewBox="0 0 16 16" aria-hidden="true">${DASHBOARD_SIGNAL_ICONS[name] ?? ''}</svg>
+    </span>
+    <span class="dashboard-value-group">
+      <span class="dashboard-value">${esc(String(value))}</span>
+      ${total == null ? '' : `<span class="dashboard-value-total">/${esc(String(total))}</span>`}
+    </span>
     <span class="dashboard-signal-arrow" aria-hidden="true">→</span>`
   card.addEventListener('click', () => dashboardTarget(target))
   return card
@@ -1248,13 +1268,6 @@ function renderDashboard(model) {
   if (!host) return
   host.replaceChildren()
 
-  const intro = document.createElement('div')
-  intro.className = 'dashboard-intro'
-  const summary = document.createElement('p')
-  summary.className = 'dashboard-summary'
-  intro.appendChild(summary)
-  host.appendChild(intro)
-
   const signals = document.createElement('div')
   signals.className = 'dashboard-signals'
   signals.append(
@@ -1262,7 +1275,7 @@ function renderDashboard(model) {
       name: 'agents',
       label: 'Active agents',
       value: model.signals.agents.working,
-      detail: `${model.signals.agents.quiet} quiet · ${model.signals.agents.total} present`,
+      total: model.signals.agents.total,
       target: 'live',
       tone: 'agent',
     }),
@@ -1270,7 +1283,6 @@ function renderDashboard(model) {
       name: 'waiting',
       label: 'Needs you',
       value: model.signals.waiting,
-      detail: model.signals.waiting ? 'Open the focused action queue' : 'Nothing needs your action',
       target: 'needsYou',
       tone: 'attention',
     }),
@@ -1278,7 +1290,6 @@ function renderDashboard(model) {
       name: 'plans',
       label: 'Plans',
       value: model.signals.plans,
-      detail: `Across ${model.signals.projects} project${model.signals.projects === 1 ? '' : 's'}`,
       target: 'boards',
       tone: 'plan',
     }),
@@ -1286,7 +1297,6 @@ function renderDashboard(model) {
       name: 'outcomes',
       label: 'Recorded outcomes',
       value: model.signals.outcomes,
-      detail: 'Across items and plan rows',
       target: 'outcomes',
       tone: 'outcome',
     }),
@@ -1300,8 +1310,7 @@ function renderDashboard(model) {
   activityPanel.className = 'dashboard-card dashboard-activity'
   const activityHead = document.createElement('div')
   activityHead.className = 'dashboard-card-head'
-  activityHead.innerHTML = `
-    <div><h2>Agent activity</h2><p>Truthful local claim time over the selected range</p></div>`
+  activityHead.innerHTML = '<h2>Agent activity</h2>'
   const range = document.createElement('select')
   range.className = 'dashboard-range'
   range.dataset.dashboardFocusKey = 'activity-range'
@@ -1336,18 +1345,22 @@ function renderDashboard(model) {
     activityPanel.classList.add('is-empty')
     const error = document.createElement('div')
     error.className = 'dashboard-history-empty dashboard-history-error'
-    error.innerHTML = `<strong>Activity history is unavailable.</strong><span>${esc(history.message)}</span>`
+    error.title = history.message
+    error.innerHTML = '<strong>History unavailable</strong>'
     activityPanel.appendChild(error)
   } else if (!series.hasHistory) {
     activityPanel.classList.add('is-empty')
     const empty = document.createElement('div')
     empty.className = 'dashboard-history-empty'
-    empty.innerHTML = '<strong>History starts with new agent claims.</strong><span>The current Live state remains available while this local timeline fills in.</span>'
+    empty.setAttribute('role', 'img')
+    empty.setAttribute('aria-label', 'No activity history yet')
+    empty.title = 'No activity history yet'
+    empty.innerHTML = '<svg class="dashboard-empty-icon" viewBox="0 0 32 20" aria-hidden="true"><path d="M1 15h5l3-9 5 12 4-8 3 5h10"></path></svg>'
     activityPanel.appendChild(empty)
   } else {
     const total = document.createElement('div')
     total.className = 'dashboard-activity-total'
-    total.innerHTML = `<strong>${esc(formatDuration(series.totalActiveMs))}</strong><span>agent claim time</span>`
+    total.innerHTML = `<strong>${esc(formatDuration(series.totalActiveMs))}</strong>`
     activityPanel.appendChild(total)
     const max = Math.max(...series.buckets.map((bucket) => bucket.activeMs), 1)
     const bars = document.createElement('div')
@@ -1368,7 +1381,7 @@ function renderDashboard(model) {
   const ownership = document.createElement('section')
   ownership.className = 'dashboard-card dashboard-ownership'
   ownership.innerHTML = `
-    <div class="dashboard-card-head"><div><h2>Ownership flow</h2><p>Where the next move sits right now</p></div></div>
+    <div class="dashboard-card-head"><h2>Ownership flow</h2></div>
     <div class="dashboard-flow">
       <button type="button" data-flow-target="needsYou" data-dashboard-focus-key="flow:human" class="flow-human"><span>Waiting on you</span><strong>${esc(String(model.ownership.human))}</strong></button>
       <div class="dashboard-flow-line" aria-hidden="true"></div>
@@ -1383,11 +1396,11 @@ function renderDashboard(model) {
 
   const live = document.createElement('section')
   live.className = 'dashboard-card dashboard-dispatch'
-  live.innerHTML = '<div class="dashboard-card-head"><div><h2>Live dispatch</h2><p>Current claims without turning activity into alerts</p></div></div>'
+  live.innerHTML = '<div class="dashboard-card-head"><h2>Live dispatch</h2></div>'
   const sessionList = document.createElement('div')
   sessionList.className = 'dashboard-live-list'
   if (!model.sessions.length) {
-    sessionList.innerHTML = '<p class="dashboard-empty">No agent sessions are present.</p>'
+    sessionList.innerHTML = '<div class="dashboard-empty" role="img" aria-label="No agent sessions" title="No agent sessions"><svg class="dashboard-empty-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v4M12 18v4M2 12h4M18 12h4"></path></svg></div>'
   } else {
     for (const session of model.sessions.slice(0, 4)) {
       const row = document.createElement('div')
@@ -1407,11 +1420,11 @@ function renderDashboard(model) {
 
   const outcomes = document.createElement('section')
   outcomes.className = 'dashboard-card dashboard-outcomes'
-  outcomes.innerHTML = '<div class="dashboard-card-head"><div><h2>Recent outcomes</h2><p>Finished work reads as closure, not another queue</p></div></div>'
+  outcomes.innerHTML = '<div class="dashboard-card-head"><h2>Recent outcomes</h2></div>'
   const outcomeList = document.createElement('div')
   outcomeList.className = 'dashboard-outcome-list'
   if (!model.recentOutcomes.length) {
-    outcomeList.innerHTML = '<p class="dashboard-empty">No recorded outcomes yet.</p>'
+    outcomeList.innerHTML = '<div class="dashboard-empty" role="img" aria-label="No recorded outcomes" title="No recorded outcomes"><svg class="dashboard-empty-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"></circle><path d="m8 12 2.5 2.5L16 9"></path></svg></div>'
   } else {
     for (const entry of model.recentOutcomes.slice(0, 4)) {
       const entity = dashboardEntryEntity(entry)

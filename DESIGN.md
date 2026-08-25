@@ -87,6 +87,11 @@ The first viewport contains:
 Every summary is a working entry point into an existing view. Dashboard data never
 enters the attention predicate, badge count, or alert system.
 
+Dashboard composition is label-and-data first. Semantic icons, number relationships,
+color roles, and chart form carry intent; explanatory subtitles are omitted. Longer
+words remain only when they are the work itself (agent synopses and recorded outcomes),
+an explicit error state, or assistive text in `aria-label`/tooltips.
+
 ## Action Surfaces
 
 Action comes before explanation:

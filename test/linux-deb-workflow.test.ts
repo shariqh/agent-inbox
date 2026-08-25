@@ -1,10 +1,61 @@
-import { readFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 const root = resolve(process.cwd())
 const workflowPath = join(root, '.github', 'workflows', 'linux-x64-deb.yml')
 const arm64WorkflowPath = join(root, '.github', 'workflows', 'linux-arm64-deb.yml')
+const aptRetryPath = join(root, 'scripts', 'apt-install-with-retry.sh')
+
+function runAptRetry(packages: string[], succeedAfter: number) {
+  const scratch = mkdtempSync(join(tmpdir(), 'agent-inbox-apt-retry-'))
+  try {
+    const bin = join(scratch, 'bin')
+    const lists = join(scratch, 'lists')
+    const log = join(scratch, 'apt.log')
+    const count = join(scratch, 'install-count')
+    mkdirSync(bin)
+    mkdirSync(lists)
+    const fakeApt = join(bin, 'apt-get')
+    writeFileSync(fakeApt, `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "$APT_TEST_LOG"
+if [[ "$1" == install ]]; then
+  attempts=0
+  [[ ! -f "$APT_TEST_COUNT" ]] || attempts="$(cat "$APT_TEST_COUNT")"
+  attempts=$((attempts + 1))
+  printf '%s\\n' "$attempts" > "$APT_TEST_COUNT"
+  if (( attempts >= APT_TEST_SUCCEED_AFTER )); then
+    exit 0
+  fi
+  exit 100
+fi
+`)
+    chmodSync(fakeApt, 0o755)
+
+    const result = spawnSync(aptRetryPath, packages, {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH ?? ''}`,
+        APT_LISTS_DIR: lists,
+        APT_RETRY_DELAY_SECONDS: '0',
+        APT_TEST_LOG: log,
+        APT_TEST_COUNT: count,
+        APT_TEST_SUCCEED_AFTER: String(succeedAfter),
+      },
+    })
+    return {
+      calls: readFileSync(log, 'utf8').trim().split('\n'),
+      status: result.status,
+      stderr: result.stderr,
+    }
+  } finally {
+    rmSync(scratch, { recursive: true, force: true })
+  }
+}
 
 describe('Linux x64 DEB workflow', () => {
   it('is a read-only, fork-safe, exact-action x64 package workflow', () => {
@@ -227,6 +278,26 @@ describe('Linux arm64 DEB workflow', () => {
     expect(workflow).toContain('node scripts/linux-release-inputs.mjs --compiler-arch arm64')
   })
 
+  it('refreshes package metadata and retries every network-backed APT install with a bounded helper', () => {
+    const workflow = readFileSync(arm64WorkflowPath, 'utf8')
+    expect(workflow).not.toContain('apt-get update')
+    expect(workflow.match(
+      /\/usr\/local\/bin\/apt-install-with-retry git \$DEB_RUNTIME_DEPS/g,
+    )).toHaveLength(2)
+    expect(workflow).toContain(
+      '/usr/local/bin/apt-install-with-retry curl passwd util-linux xvfb "/artifacts/$ARTIFACT"',
+    )
+    expect(workflow).toContain(
+      '/tmp/apt-install-with-retry curl passwd util-linux xvfb "/tmp/\\${ARTIFACT}"',
+    )
+    expect(workflow.match(
+      /scripts\/apt-install-with-retry\.sh:\/usr\/local\/bin\/apt-install-with-retry:ro/g,
+    )).toHaveLength(3)
+    expect(workflow).toContain(
+      'cp scripts/apt-install-with-retry.sh build/deb/apt-install-with-retry',
+    )
+  })
+
   it('builds arm64 twice under hostile umasks inside the pinned dpkg-deb 1.21.1 arm64 container', () => {
     const workflow = readFileSync(arm64WorkflowPath, 'utf8')
     expect(workflow).toContain('ubuntu@sha256:8c71efb5d8170edf0965b2ac5e867cc70d3d8f73d1c9c0573d690d6203fc5866')
@@ -322,6 +393,38 @@ describe('Linux arm64 DEB workflow', () => {
         rehash.indexOf('- run: npm run build'),
       )
     }
+  })
+})
+
+describe('apt-install-with-retry.sh', () => {
+  it('refreshes metadata after a failed install and preserves the exact package argv', () => {
+    const result = runAptRetry(['git', 'libgtk-3-0'], 2)
+    expect(result.status, result.stderr).toBe(0)
+    expect(result.calls).toEqual([
+      'update',
+      'install -y --no-install-recommends git libgtk-3-0',
+      'clean',
+      'update',
+      'install -y --no-install-recommends git libgtk-3-0',
+    ])
+    expect(result.stderr).toContain('attempt 1/3 failed')
+    expect(result.stderr).toContain('attempt 2/3')
+  })
+
+  it('stops after three attempts and preserves a persistent APT failure', () => {
+    const result = runAptRetry(['curl'], 99)
+    expect(result.status, result.stderr).toBe(100)
+    expect(result.calls).toEqual([
+      'update',
+      'install -y --no-install-recommends curl',
+      'clean',
+      'update',
+      'install -y --no-install-recommends curl',
+      'clean',
+      'update',
+      'install -y --no-install-recommends curl',
+    ])
+    expect(result.stderr).toContain('failed after 3 attempts (last exit 100)')
   })
 })
 

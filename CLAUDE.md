@@ -560,8 +560,11 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   five packages, package-only `SHA256SUMS.txt`, deterministic `update-manifest.json`, and
   `update-manifest.json.sig`. The exact manifest bytes are signed with Ed25519 after
   package aggregation; `electron/update-manifest.cjs` is the side-effect-free verifier
-  staged with every app, while `scripts/update-manifest.mjs` owns build-time generation,
-  history authorization, and signing. The committed `release/update-keys.json` labels keys
+  staged with every app. `electron/update-trust.cjs` is the optional startup boundary:
+  it catches only registry read/parse initialization failure, logs one generic
+  updater-disabled error without file/key contents, and returns `null` so the core app
+  continues. `scripts/update-manifest.mjs` owns build-time generation, history
+  authorization, and signing. The committed `release/update-keys.json` labels keys
   only after deriving each id from SPKI DER. Signature-envelope schema 1 is a canonical
   sorted array so rotations can overlap old and new signatures; production currently emits
   one. Verification validates every entry's shape, ignores entries for keys absent from the

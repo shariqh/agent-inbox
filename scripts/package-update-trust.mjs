@@ -28,20 +28,25 @@ function requirePlainFile(path, label) {
 export function verifyPackagedUpdateTrust(appResources) {
   const root = resolve(appResources)
   const verifierPath = join(root, 'electron', 'update-manifest.cjs')
+  const boundaryPath = join(root, 'electron', 'update-trust.cjs')
   const registryPath = join(root, 'release', 'update-keys.json')
   requirePlainFile(verifierPath, 'update manifest verifier')
+  requirePlainFile(boundaryPath, 'update trust initialization boundary')
   requirePlainFile(registryPath, 'update key registry')
 
   const packagedVerifier = readFileSync(verifierPath)
   const expectedVerifier = readFileSync(join(sourceRoot, 'electron', 'update-manifest.cjs'))
+  const packagedBoundary = readFileSync(boundaryPath)
+  const expectedBoundary = readFileSync(join(sourceRoot, 'electron', 'update-trust.cjs'))
   const packagedRegistry = readFileSync(registryPath)
   const expectedRegistry = readFileSync(join(sourceRoot, 'release', 'update-keys.json'))
   if (
     !packagedVerifier.equals(expectedVerifier)
+    || !packagedBoundary.equals(expectedBoundary)
     || !packagedRegistry.equals(expectedRegistry)
   ) {
     throw new PackagedUpdateTrustError(
-      'packaged update verifier or key registry does not match the trusted release source',
+      'packaged update trust runtime or key registry does not match the trusted release source',
     )
   }
   const registry = verifier.parseRegistry(packagedRegistry)

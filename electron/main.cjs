@@ -20,13 +20,13 @@
 const { app, BrowserWindow, ipcMain, Menu, Notification, nativeTheme, shell } = require('electron')
 const { spawn } = require('node:child_process')
 const { randomBytes } = require('node:crypto')
-const { existsSync, readFileSync } = require('node:fs')
+const { existsSync } = require('node:fs')
 const http = require('node:http')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 const { classifyReuse, watchUpstream } = require('./reuse.cjs')
 const { canRunSetup, installerRepoRoot, runAgentInstall, runtimeKey, selectRuntimePayload } = require('./setup-runner.cjs')
-const { parseRegistry } = require('./update-manifest.cjs')
+const { loadUpdateRegistry } = require('./update-trust.cjs')
 const {
   cannedResponseActions,
   createNotificationRetainer,
@@ -47,8 +47,9 @@ const BOUNDARY_HEADER = 'x-agent-inbox-local-boundary'
 const BOUNDARY_VERSION = 'loopback-v1'
 const OWNER_TOKEN = randomBytes(32).toString('hex')
 const REPO_ROOT = path.resolve(__dirname, '..')
-// Fail before opening the UI if the bundled update trust root is missing or malformed.
-parseRegistry(readFileSync(path.join(REPO_ROOT, 'release', 'update-keys.json')))
+const updateKeyRegistry = loadUpdateRegistry({
+  registryPath: path.join(REPO_ROOT, 'release', 'update-keys.json'),
+})
 const responseWatch = createResponseWatch()
 const notificationRetainer = createNotificationRetainer()
 const wakeAdapter = wakeAdapterFromEnv(process.env)

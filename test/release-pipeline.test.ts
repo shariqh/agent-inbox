@@ -192,6 +192,7 @@ describe('native architecture release stages', () => {
     mkdirSync(join(appResources, 'electron'), { recursive: true })
     mkdirSync(join(appResources, 'release'), { recursive: true })
     cpSync(join(root, 'electron/update-manifest.cjs'), join(appResources, 'electron/update-manifest.cjs'))
+    cpSync(join(root, 'electron/update-trust.cjs'), join(appResources, 'electron/update-trust.cjs'))
     cpSync(join(root, 'release/update-keys.json'), join(appResources, 'release/update-keys.json'))
 
     expect(verifyPackagedUpdateTrust(appResources)).toEqual({

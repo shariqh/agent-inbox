@@ -255,6 +255,7 @@ describe('native Linux folder gates', () => {
     mkdirSync(join(appResources, 'release'), { recursive: true })
     const repo = resolve(process.cwd())
     cpSync(join(repo, 'electron/update-manifest.cjs'), join(appResources, 'electron/update-manifest.cjs'))
+    cpSync(join(repo, 'electron/update-trust.cjs'), join(appResources, 'electron/update-trust.cjs'))
     cpSync(join(repo, 'release/update-keys.json'), join(appResources, 'release/update-keys.json'))
 
     expect(verifyPackagedUpdateTrust(appResources)).toEqual({

@@ -34,7 +34,7 @@ describe('viewer boots against a real DB', () => {
     expect(tabCount('needsYou')).toBe('1')
   })
 
-  it('cold-opens Needs you across all projects, agents, and action types', async () => {
+  it('cold-opens Dashboard across all projects and agents without restoring stale filters', async () => {
     const d = open()
     insertItem(d, { project: 'alpha', stream: 'main', agent: 'claude', kind: 'question', title: 'alpha decision' })
     advanceClock()
@@ -57,9 +57,11 @@ describe('viewer boots against a real DB', () => {
 
     await bootApp(d)
 
-    expect(document.querySelector('.tab[data-tab="needsYou"]')?.getAttribute('aria-selected')).toBe('true')
+    expect(document.querySelector('.tab[data-tab="dashboard"]')?.getAttribute('aria-selected')).toBe('true')
     expect(document.querySelector('#rail [data-project="__all__"]')?.getAttribute('aria-selected')).toBe('true')
     expect((document.getElementById('agentSelect') as HTMLSelectElement).value).toBe('')
+    click(document.querySelector('.tab[data-tab="needsYou"]'))
+    await settle()
     expect(rowTitles().sort()).toEqual(['alpha decision', 'beta task'])
     expect(document.querySelector('.header-toggle.active')?.textContent).toBe('All')
     expect(document.querySelector('.nrow[data-open="1"]')).toBeNull()
@@ -95,9 +97,12 @@ describe('viewer boots against a real DB', () => {
     await bootApp(d)
 
     expect(document.querySelector('.brand')?.textContent).toContain('Agent Inbox')
+    expect(document.getElementById('pageTitle')?.textContent).toBe('Live Operations Desk')
+    expect([...document.querySelectorAll('#tabs .tab .tab-name')].map((tab) => tab.textContent))
+      .toEqual(['Dashboard', 'Inbox', 'Plans', 'Notes', 'History'])
+    click(document.querySelector('.tab[data-tab="needsYou"]'))
+    await settle()
     expect(document.getElementById('pageTitle')?.textContent).toBe('Your queue')
-    expect([...document.querySelectorAll('#tabs .tab')].map((tab) => tab.childNodes[0]?.textContent))
-      .toEqual(['Inbox', 'Plans', 'Notes', 'History'])
     expect(document.querySelector('#needsYouList .tab-header')?.textContent)
       .toContain('AllDecisionsTo doUpdatesSortPriorityNewestOldestHandoffsReview queue')
     expect(document.querySelectorAll('#needsYouList .queue-filter-group > .header-toggle')).toHaveLength(4)
@@ -139,6 +144,74 @@ describe('viewer boots against a real DB', () => {
     sidebar.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
     expect(root.getPropertyValue('--inspector-width')).toBe('520px')
     expect(root.getPropertyValue('--sidebar-width')).toBe('220px')
+  })
+
+  it('collapses the wide sidebar to a persistent icon rail and restores its saved width', async () => {
+    const d = open()
+    setViewport('wide')
+    localStorage.setItem('agent-inbox-sidebar-width', '260')
+    await bootApp(d)
+
+    const toggle = document.getElementById('sidebarCollapse')!
+    click(toggle)
+    expect(document.body.classList.contains('sidebar-collapsed')).toBe(true)
+    expect(document.documentElement.style.getPropertyValue('--sidebar-width')).toBe('72px')
+    expect(localStorage.getItem('agent-inbox-sidebar-collapsed')).toBe('true')
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    expect(document.getElementById('sidebarResize')?.tabIndex).toBe(-1)
+
+    click(toggle)
+    expect(document.body.classList.contains('sidebar-collapsed')).toBe(false)
+    expect(document.documentElement.style.getPropertyValue('--sidebar-width')).toBe('260px')
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+  })
+
+  it('keeps a saved collapse preference wide-only across breakpoint changes', async () => {
+    const d = open()
+    setViewport('wide')
+    localStorage.setItem('agent-inbox-sidebar-width', '260')
+    localStorage.setItem('agent-inbox-sidebar-collapsed', 'true')
+    await bootApp(d)
+
+    expect(document.body.classList.contains('sidebar-collapsed')).toBe(true)
+    expect(document.documentElement.style.getPropertyValue('--sidebar-width')).toBe('72px')
+
+    setViewport('narrow')
+    await settle()
+    expect(document.body.classList.contains('sidebar-collapsed')).toBe(false)
+    expect(document.documentElement.style.getPropertyValue('--sidebar-width')).toBe('180px')
+
+    setViewport('wide')
+    await settle()
+    expect(document.body.classList.contains('sidebar-collapsed')).toBe(true)
+    expect(document.documentElement.style.getPropertyValue('--sidebar-width')).toBe('72px')
+  })
+
+  it('clears a project query before hiding the rail filter in collapsed mode', async () => {
+    const d = open()
+    setViewport('wide')
+    for (let index = 0; index < 13; index += 1) {
+      insertItem(d, {
+        project: `project-${String(index).padStart(2, '0')}`,
+        stream: 'main',
+        agent: 'copilot',
+        kind: 'question',
+        title: `Decision ${index}`,
+      })
+      advanceClock()
+    }
+    await bootApp(d)
+
+    const filter = document.querySelector<HTMLInputElement>('#rail .rail-filter')!
+    filter.value = 'project-12'
+    filter.dispatchEvent(new Event('input', { bubbles: true }))
+    await settle()
+    expect(document.querySelectorAll('#rail .rail-row')).toHaveLength(2) // All projects + the match
+
+    click(document.getElementById('sidebarCollapse'))
+    expect(document.querySelectorAll('#rail .rail-row')).toHaveLength(14) // All projects + 13 projects
+    click(document.getElementById('sidebarCollapse'))
+    expect(document.querySelector<HTMLInputElement>('#rail .rail-filter')?.value).toBe('')
   })
 
   it('logs nothing to console.error on a clean boot, and #status stays empty', async () => {

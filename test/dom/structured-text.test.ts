@@ -314,7 +314,7 @@ describe('structured agent text on outcome, relay, and mission projections', () 
 
     const doneCard = document.querySelector(`[data-card-id="${id}"] .card`)
     expect(doneCard?.querySelectorAll('.outcome-block li')).toHaveLength(2)
-    expect(doneCard?.querySelectorAll('.lifecycle-step li')).toHaveLength(2)
+    expect(doneCard?.querySelectorAll('.lifecycle-step li')).toHaveLength(0)
 
     click(document.querySelector('.relay-btn'))
     await settle()

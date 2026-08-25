@@ -16,7 +16,7 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import type Database from 'better-sqlite3'
 import { insertItem, listBoards, upsertBoard } from '../../src/store.js'
-import { advanceClock, bootApp, freshDb, row, rowTitles, settle, useDomTest } from './harness.js'
+import { advanceClock, bootApp, freshDb, row, rowTitles, settle, showInbox, useDomTest } from './harness.js'
 
 useDomTest()
 
@@ -39,6 +39,7 @@ describe('the ✕ on a Needs-you row (issue #36, the half that is in scope)', ()
     const itemId = insertItem(d, { ...AGENT, kind: 'question', title: 'which storage?' })
 
     await bootApp(d)
+    await showInbox()
     // a blocked row sorts ahead of an asking question, so 'j' lands on it first
     expect(rowTitles()).toEqual(['Merge', 'which storage?'])
 

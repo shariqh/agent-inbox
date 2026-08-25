@@ -51,8 +51,8 @@ const notificationRetainer = createNotificationRetainer()
 const wakeAdapter = wakeAdapterFromEnv(process.env)
 const THEME_SOURCE_VALUES = new Set(['light', 'dark', 'system'])
 const THEME_BACKGROUND_COLORS = {
-  light: '#f8f3f4',
-  dark: '#171113',
+  light: '#edf0f2',
+  dark: '#090b0d',
 }
 let setupInstallRunning = false
 let setupInstallEnabled = false
@@ -489,11 +489,11 @@ function createWindow() {
       const preference = await win.webContents.executeJavaScript(
         'document.documentElement.dataset.themePreference'
       )
-      nativeTheme.themeSource = THEME_SOURCE_VALUES.has(preference) ? preference : 'light'
+      nativeTheme.themeSource = THEME_SOURCE_VALUES.has(preference) ? preference : 'dark'
       syncThemeChrome(win)
     } catch (err) {
       console.error('[agent-inbox] could not synchronize native theme before showing the window', err)
-      nativeTheme.themeSource = 'light'
+      nativeTheme.themeSource = 'dark'
       syncThemeChrome(win)
     }
     if (!win.isDestroyed()) win.show()

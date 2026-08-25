@@ -16,9 +16,9 @@ const boards = [
 ]
 
 describe('tab model', () => {
-  it('boots to Needs you and lists the four content tabs in order (Live is a footer strip, not a tab — spec §16)', () => {
-    expect(DEFAULT_TAB).toBe('needsYou')
-    expect(TAB_IDS).toEqual(['needsYou', 'boards', 'notes', 'done'])
+  it('boots to Dashboard and keeps Live as a footer strip rather than a tab', () => {
+    expect(DEFAULT_TAB).toBe('dashboard')
+    expect(TAB_IDS).toEqual(['dashboard', 'needsYou', 'boards', 'notes', 'done'])
     expect(TAB_IDS[0]).toBe(DEFAULT_TAB)
   })
 

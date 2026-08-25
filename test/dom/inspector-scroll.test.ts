@@ -28,14 +28,14 @@ describe('item inspector scroll', () => {
     click(row(id))
     await settle()
 
-    const before = row(id)?.querySelector<HTMLElement>('.nrow-card')
+    const before = row(id)?.querySelector<HTMLElement>('.nrow-card-scroll')
     before!.scrollTop = 240
     before!.dispatchEvent(new Event('scroll'))
 
     await pollTick()
     await settle()
 
-    const after = row(id)?.querySelector<HTMLElement>('.nrow-card')
+    const after = row(id)?.querySelector<HTMLElement>('.nrow-card-scroll')
     expect(after, 'the open item should survive the poll rebuild').not.toBeNull()
     expect(after).not.toBe(before)
     expect(after?.scrollTop).toBe(240)
@@ -58,7 +58,7 @@ describe('item inspector scroll', () => {
     click(row(id))
     await settle()
 
-    const before = row(id)?.querySelector<HTMLElement>('.nrow-card')
+    const before = row(id)?.querySelector<HTMLElement>('.nrow-card-scroll')
     before!.scrollTop = 240
 
     // Land a scroll event immediately before the 3-second poll. Replacing this
@@ -70,7 +70,7 @@ describe('item inspector scroll', () => {
     await vi.advanceTimersByTimeAsync(50)
     await settle()
 
-    expect(row(id)?.querySelector('.nrow-card')).toBe(before)
+    expect(row(id)?.querySelector('.nrow-card-scroll')).toBe(before)
 
     // Continued momentum moves the quiet deadline instead of letting the first
     // event's timer replace the card underneath a still-moving gesture.
@@ -78,12 +78,12 @@ describe('item inspector scroll', () => {
     before!.scrollTop = 320
     before!.dispatchEvent(new Event('scroll'))
     await vi.advanceTimersByTimeAsync(150)
-    expect(row(id)?.querySelector('.nrow-card')).toBe(before)
+    expect(row(id)?.querySelector('.nrow-card-scroll')).toBe(before)
 
     // Once scrolling has settled, the held fresh frame should paint normally.
     await vi.advanceTimersByTimeAsync(50)
     await settle()
-    const after = row(id)?.querySelector<HTMLElement>('.nrow-card')
+    const after = row(id)?.querySelector<HTMLElement>('.nrow-card-scroll')
     expect(after).not.toBe(before)
     expect(after?.scrollTop).toBe(320)
   })
@@ -151,16 +151,16 @@ describe('item inspector scroll', () => {
     await bootApp(d)
     click(row(firstId))
     await settle()
-    row(firstId)!.querySelector<HTMLElement>('.nrow-card')!.scrollTop = 180
+    row(firstId)!.querySelector<HTMLElement>('.nrow-card-scroll')!.scrollTop = 180
 
     click(row(secondId))
     await settle()
-    expect(row(secondId)?.querySelector<HTMLElement>('.nrow-card')?.scrollTop).toBe(0)
+    expect(row(secondId)?.querySelector<HTMLElement>('.nrow-card-scroll')?.scrollTop).toBe(0)
 
     await collapseRow(secondId)
     click(row(firstId))
     await settle()
-    expect(row(firstId)?.querySelector<HTMLElement>('.nrow-card')?.scrollTop).toBe(0)
+    expect(row(firstId)?.querySelector<HTMLElement>('.nrow-card-scroll')?.scrollTop).toBe(0)
   })
 
   it('restores the focused inspector control after a polling rebuild', async () => {

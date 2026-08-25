@@ -62,13 +62,13 @@ describe('native settings navigation', () => {
     expect(getComputedStyle(document.querySelector('.floating-search')!).opacity).toBe('0.32')
     expect(document.getElementById('gear')?.getAttribute('aria-pressed')).toBe('true')
     shortcut()
-    expect(panelIsOpen('needsYou')).toBe(true)
+    expect(panelIsOpen('dashboard')).toBe(true)
     expect(document.body.classList.contains('settings-open')).toBe(false)
 
     toggleFromAppMenu()
     expect(panelIsOpen('setup')).toBe(true)
     toggleFromAppMenu()
-    expect(panelIsOpen('needsYou')).toBe(true)
+    expect(panelIsOpen('dashboard')).toBe(true)
 
     click(document.getElementById('gear'))
     click(document.querySelector('#tabs [data-tab="boards"]'))

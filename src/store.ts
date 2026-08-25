@@ -208,6 +208,19 @@ function runMigrations(db: Database.Database): void {
       ended_at TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_activity_live ON activity(ended_at, updated_at);
+    CREATE TABLE IF NOT EXISTS activity_spans (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session TEXT NOT NULL,
+      project TEXT NOT NULL,
+      stream TEXT NOT NULL DEFAULT '',
+      agent TEXT NOT NULL DEFAULT 'unknown',
+      doing TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      last_active_at TEXT NOT NULL,
+      ended_at TEXT
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_activity_spans_open ON activity_spans(session) WHERE ended_at IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_activity_spans_project_started ON activity_spans(project, started_at);
     CREATE TABLE IF NOT EXISTS projects (
       project TEXT PRIMARY KEY,
       closed_at TEXT NOT NULL
@@ -1812,8 +1825,13 @@ export interface ActivityUpdate {
   claim?: boolean
 }
 
-export function upsertActivity(db: Database.Database, a: ActivityUpdate): void {
+// One statement for the `activity` presence row, plus (when this write is a
+// real claim, not mere registration) a span transition — both inside the same
+// transaction, so a crash between them can never leave a claim recorded in one
+// table and not the other. See "── activity spans" below for the span rules.
+const upsertActivityTxn = (db: Database.Database, a: ActivityUpdate): void => {
   const now = new Date().toISOString()
+  const nowMs = Date.now()
   // One statement, two modes. Registration can create idle presence but can
   // neither replace a live claim nor write its historical caption.
   db.prepare(
@@ -1846,13 +1864,38 @@ export function upsertActivity(db: Database.Database, a: ActivityUpdate): void {
     claim: a.claim === false ? 0 : 1,
     now,
   })
+  // Registration (`claim: false`) never touches spans — it is not speaking for
+  // the agent, so it must not open, extend or close one.
+  if (a.claim !== false) {
+    const isMeaningful = !a.idle && a.doing !== '' && a.doing !== 'open'
+    transitionClaimSpan(db, {
+      session: a.session,
+      project: a.project,
+      stream: a.stream,
+      agent: a.agent,
+      doing: a.doing,
+      isMeaningful,
+      nowIso: now,
+      nowMs,
+    })
+  }
   // housekeeping: rows dead (ended or silent) for over a day serve no one
-  const dayAgo = new Date(Date.now() - 24 * 60 * 60000).toISOString()
+  const dayAgo = new Date(nowMs - 24 * 60 * 60000).toISOString()
   db.prepare(`DELETE FROM activity WHERE (ended_at IS NOT NULL AND ended_at < ?) OR updated_at < ?`).run(dayAgo, dayAgo)
+  pruneActivitySpans(db, { nowMs })
+}
+
+export function upsertActivity(db: Database.Database, a: ActivityUpdate): void {
+  db.transaction(() => upsertActivityTxn(db, a))()
 }
 
 export function endActivity(db: Database.Database, session: string): void {
-  db.prepare(`UPDATE activity SET ended_at = ? WHERE session = ?`).run(new Date().toISOString(), session)
+  db.transaction(() => {
+    const now = new Date().toISOString()
+    const nowMs = Date.now()
+    db.prepare(`UPDATE activity SET ended_at = ? WHERE session = ?`).run(now, session)
+    closeOpenSpan(db, session, nowMs)
+  })()
 }
 
 // heartbeat: keep a live session's row from going stale without changing it.
@@ -1888,18 +1931,36 @@ const claimCutoff = (nowMs: number): string => new Date(nowMs - CLAIM_COLD_MS).t
 // clear and the stamp cannot be split. `last_doing` deliberately stays out of
 // this UPDATE: it is a historical caption, never a current claim.
 export function recordActivityCall(db: Database.Database, session: string): void {
-  const now = new Date().toISOString()
-  const cold = claimCutoff(Date.now())
-  db.prepare(
-    `UPDATE activity SET
-       doing    = CASE WHEN COALESCE(last_call_at, started_at) < @cold THEN 'open' ELSE doing END,
-       detail   = CASE WHEN COALESCE(last_call_at, started_at) < @cold THEN ''     ELSE detail END,
-       children = CASE WHEN COALESCE(last_call_at, started_at) < @cold THEN NULL   ELSE children END,
-       idle     = CASE WHEN COALESCE(last_call_at, started_at) < @cold THEN 1      ELSE idle END,
-       last_call_at = @now,
-       updated_at = @now
-     WHERE session = @session AND ended_at IS NULL`,
-  ).run({ session, now, cold })
+  db.transaction(() => {
+    const now = new Date().toISOString()
+    const nowMs = Date.now()
+    const cold = claimCutoff(nowMs)
+    db.prepare(
+      `UPDATE activity SET
+         doing    = CASE WHEN COALESCE(last_call_at, started_at) < @cold THEN 'open' ELSE doing END,
+         detail   = CASE WHEN COALESCE(last_call_at, started_at) < @cold THEN ''     ELSE detail END,
+         children = CASE WHEN COALESCE(last_call_at, started_at) < @cold THEN NULL   ELSE children END,
+         idle     = CASE WHEN COALESCE(last_call_at, started_at) < @cold THEN 1      ELSE idle END,
+         last_call_at = @now,
+         updated_at = @now
+       WHERE session = @session AND ended_at IS NULL`,
+    ).run({ session, now, cold })
+    // Mirror the same warm/cold split onto the open span, if any: still warm
+    // just proves continued work (bump last_active_at to now); already cold
+    // closes it at the exact cap it went stale at — never extended to now, or
+    // a routine poll after a long silence would overstate how long it ran.
+    const open = db
+      .prepare(`SELECT id, last_active_at FROM activity_spans WHERE session = ? AND ended_at IS NULL`)
+      .get(session) as { id: number; last_active_at: string } | undefined
+    if (open) {
+      if (open.last_active_at < cold) {
+        db.prepare(`UPDATE activity_spans SET ended_at = ? WHERE id = ?`)
+          .run(cappedSpanEnd(open.last_active_at, nowMs), open.id)
+      } else {
+        db.prepare(`UPDATE activity_spans SET last_active_at = ? WHERE id = ?`).run(now, open.id)
+      }
+    }
+  })()
 }
 
 export function listActivity(db: Database.Database, opts: { staleMinutes?: number } = {}): Activity[] {
@@ -1933,6 +1994,151 @@ export function listActivity(db: Database.Database, opts: { staleMinutes?: numbe
     if (a.idle) return lastActive(a) < lastActive(b) ? 1 : lastActive(a) > lastActive(b) ? -1 : 0
     return a.started_at < b.started_at ? -1 : a.started_at > b.started_at ? 1 : 0
   })
+}
+
+// ── activity spans: truthful claim intervals, read-only for the dashboard ────
+//
+// `activity` is presence — one row per session, overwritten in place, with no
+// history. A span records WHEN a meaningful, non-idle `doing` claim started and
+// (once it ends) stopped, so a dashboard can draw "who worked on what, when"
+// without changing a single bit of the existing attention/liveness semantics
+// above. A span is additive and derived: nothing here is read by
+// `listActivity`, `classifyLiveness` or any attention path.
+//
+// "Meaningful" mirrors the exact `last_doing` predicate already in
+// `upsertActivityTxn`: a live claim (`claim !== false`), not idle, and a
+// `doing` that is neither empty nor the synthetic `'open'` placeholder.
+// Registration (`claim: false`) never reaches span code at all — see the call
+// site in `upsertActivityTxn`.
+export interface ActivitySpan {
+  id: number
+  session: string
+  project: string
+  stream: string
+  agent: string
+  doing: string
+  started_at: string
+  last_active_at: string
+  ended_at: string | null
+  /**
+   * `ended_at` when the span is closed. For a still-open span: `null` while it
+   * is genuinely warm (still within `CLAIM_COLD_MS` of `last_active_at`), or
+   * the read-time cold cap (`last_active_at + CLAIM_COLD_MS`) once it has gone
+   * stale without anything (a heartbeat, a call, a clean exit) closing it —
+   * the kill-9 case. Never mutates the row; purely a read-time projection.
+   */
+  effective_ended_at: string | null
+}
+
+// A crash, a `kill -9`, a laptop closing mid-task — none of them call
+// `endActivity`. Without a cap, that open span would silently claim work all
+// the way up to whenever `listActivitySpans` happens to be read. The cap
+// matches `recordActivityCall`'s and `listActivity`'s own decay: an untouched
+// claim is only ever truthful up to `last_active_at + CLAIM_COLD_MS`.
+function cappedSpanEnd(lastActiveAt: string, nowMs: number): string {
+  const cap = Date.parse(lastActiveAt) + CLAIM_COLD_MS
+  return cap < nowMs ? new Date(cap).toISOString() : new Date(nowMs).toISOString()
+}
+
+function openSpan(db: Database.Database, session: string): { id: number; doing: string; last_active_at: string } | undefined {
+  return db
+    .prepare(`SELECT id, doing, last_active_at FROM activity_spans WHERE session = ? AND ended_at IS NULL`)
+    .get(session) as { id: number; doing: string; last_active_at: string } | undefined
+}
+
+function closeOpenSpan(db: Database.Database, session: string, nowMs: number): void {
+  const open = openSpan(db, session)
+  if (!open) return
+  db.prepare(`UPDATE activity_spans SET ended_at = ? WHERE id = ?`).run(cappedSpanEnd(open.last_active_at, nowMs), open.id)
+}
+
+interface ClaimSpanInput {
+  session: string
+  project: string
+  stream: string
+  agent: string
+  doing: string
+  isMeaningful: boolean
+  nowIso: string
+  nowMs: number
+}
+
+// The one place that decides span lifecycle for a real (`claim !== false`)
+// activity write. There are exactly four outcomes, and the "stale" case is not
+// a fifth branch bolted on — it falls out of comparing against the SAME cold
+// cutoff `recordActivityCall`/`listActivity` already use:
+//   • no open span, meaningful doing   → open one
+//   • no open span, not meaningful     → nothing to do
+//   • open span, same doing, still warm → same live claim: bump last_active_at,
+//                                          no new row
+//   • open span, otherwise (doing changed, now idle/open/done, OR the prior
+//     span already went cold) → close the prior span truthfully (capped, so a
+//     stale close can never read as "worked until now") and, if this write is
+//     itself meaningful, open a fresh span — this is also how a claim
+//     reasserted after a cold gap gets its own new interval instead of
+//     silently extending the old one across the gap.
+function transitionClaimSpan(db: Database.Database, input: ClaimSpanInput): void {
+  const { session, project, stream, agent, doing, isMeaningful, nowIso, nowMs } = input
+  const open = openSpan(db, session)
+  if (open) {
+    const stale = open.last_active_at < claimCutoff(nowMs)
+    const sameLiveClaim = isMeaningful && open.doing === doing && !stale
+    if (sameLiveClaim) {
+      db.prepare(`UPDATE activity_spans SET last_active_at = ? WHERE id = ?`).run(nowIso, open.id)
+      return
+    }
+    db.prepare(`UPDATE activity_spans SET ended_at = ? WHERE id = ?`).run(cappedSpanEnd(open.last_active_at, nowMs), open.id)
+  }
+  if (isMeaningful) {
+    db.prepare(
+      `INSERT INTO activity_spans (session, project, stream, agent, doing, started_at, last_active_at, ended_at)
+       VALUES (@session, @project, @stream, @agent, @doing, @now, @now, NULL)`,
+    ).run({ session, project, stream, agent, doing, now: nowIso })
+  }
+}
+
+// 90 days is a generous, opportunistic backstop — not a feature. It exists so
+// that a crash-only session (never ended, never heartbeated again) cannot
+// accumulate rows forever; it rides along on the same cleanup pass as the
+// day-old `activity` sweep, so there is no separate timer or table to forget.
+const ACTIVITY_SPAN_RETENTION_MS = 90 * 24 * 60 * 60000
+
+function pruneActivitySpans(db: Database.Database, opts: { nowMs?: number } = {}): void {
+  const nowMs = opts.nowMs ?? Date.now()
+  const closedCutoff = new Date(nowMs - ACTIVITY_SPAN_RETENTION_MS).toISOString()
+  db.prepare(`DELETE FROM activity_spans WHERE ended_at IS NOT NULL AND ended_at < ?`).run(closedCutoff)
+  // A still-open span whose EFFECTIVE (capped) end already fell out of
+  // retention is a kill-9 leftover: last_active_at + CLAIM_COLD_MS < cutoff.
+  const staleOpenCutoff = new Date(nowMs - ACTIVITY_SPAN_RETENTION_MS - CLAIM_COLD_MS).toISOString()
+  db.prepare(`DELETE FROM activity_spans WHERE ended_at IS NULL AND last_active_at < ?`).run(staleOpenCutoff)
+}
+
+// Read-only, for the dashboard. `project`/`sinceMs` narrow the result, but
+// deliberately by OVERLAP, not by start time: a span that started before the
+// window but is still open (or closed inside it) is still relevant to "what
+// happened since sinceMs", so it must not be filtered out just because it
+// started earlier.
+export function listActivitySpans(
+  db: Database.Database,
+  opts: { project?: string; sinceMs?: number } = {},
+): ActivitySpan[] {
+  const nowMs = Date.now()
+  const cold = claimCutoff(nowMs)
+  const rows = db
+    .prepare(
+      `SELECT id, session, project, stream, agent, doing, started_at, last_active_at, ended_at
+         FROM activity_spans
+        WHERE (@project IS NULL OR project = @project)
+        ORDER BY started_at ASC`,
+    )
+    .all({ project: opts.project ?? null }) as Array<Omit<ActivitySpan, 'effective_ended_at'>>
+  const sinceIso = opts.sinceMs !== undefined ? new Date(opts.sinceMs).toISOString() : null
+  const withEffectiveEnd = rows.map((r): ActivitySpan => {
+    const stillOpenButStale = r.ended_at === null && r.last_active_at < cold
+    return { ...r, effective_ended_at: r.ended_at ?? (stillOpenButStale ? cappedSpanEnd(r.last_active_at, nowMs) : null) }
+  })
+  if (sinceIso === null) return withEffectiveEnd
+  return withEffectiveEnd.filter((s) => s.effective_ended_at === null || s.effective_ended_at >= sinceIso)
 }
 
 export function getBoard(db: Database.Database, project: string, title: string): BoardWithRows | undefined {

@@ -20,6 +20,7 @@ import {
   pollTick,
   row,
   sendButton,
+  showInbox,
   settle,
   type,
   useDomTest,
@@ -48,6 +49,7 @@ describe('issue #34 · correcting a chat-recorded answer', () => {
     })
     expect(answerItem(d, id, 'SQLite', 'keep operations simple')).toEqual({ ok: true })
     await bootApp(d)
+    await showInbox()
 
     click(row(id))
     await settle()
@@ -92,6 +94,7 @@ describe('issue #34 · correcting a chat-recorded answer', () => {
     })
     expect(answerItem(d, id, 'SQLite', 'keep operations simple')).toEqual({ ok: true })
     await bootApp(d)
+    await showInbox()
 
     click(row(id))
     await settle()

@@ -9,6 +9,8 @@
 Agent Inbox gives GitHub Copilot CLI and Claude Code one shared place to surface
 decisions, handoffs, notes, milestones, and multi-step plans. You respond in the
 Electron app; agents pick the response up through MCP and continue working.
+Its default Live Operations Desk shows active claims, trustworthy attention,
+ownership flow, plan movement, and recorded outcomes across every project.
 
 ![Agent Inbox showing a synthetic decision queue, plan row, response options, and live agents](docs/assets/agent-inbox-overview.png)
 
@@ -20,6 +22,7 @@ share one SQLite database on your machine.
 
 | Capability | What you get |
 |---|---|
+| **Live operations dashboard** | Real current state plus locally persisted agent-claim history, with every signal drilling into a working view |
 | **Cross-project inbox** | Questions and handoffs from every active coding session in one prioritized queue |
 | **Action-aware responses** | Recommended options, free-text answers, snooze, clarify, and decline controls |
 | **Durable plans** | Tracking boards with stable rows, progress, next steps, outcomes, and human-owned actions |
@@ -199,7 +202,7 @@ contract plus the host-specific appendix under [`docs/instructions/`](docs/instr
 ## Architecture
 
 - **`src/store.ts`** owns schema, migrations, WAL configuration, and every database
-  read/write.
+  read/write, including the bounded local activity spans used by the dashboard.
 - **`src/mcp-server.ts`** serves MCP over stdio. Its stdout is protocol-only and the
   process makes no network calls.
 - **`src/viewer-server.ts`** serves the Hono API and static frontend through the

@@ -29,6 +29,29 @@ function chipText(id: string): string {
 }
 
 describe('human disposition controls', () => {
+  it('keeps More responses open across a poll rebuild', async () => {
+    const d = open()
+    const id = insertItem(d, {
+      ...AGENT,
+      kind: 'question',
+      title: 'Keep secondary responses open',
+      action_owner: 'approval',
+      options: [{ label: 'Approve', recommended: true }, { label: 'Hold' }],
+    })
+    await bootApp(d)
+    click(row(id))
+    await settle()
+
+    const before = row(id)?.querySelector<HTMLDetailsElement>('.disposition-menu')!
+    before.open = true
+    before.dispatchEvent(new Event('toggle'))
+    await pollTick()
+
+    const after = row(id)?.querySelector<HTMLDetailsElement>('.disposition-menu')
+    expect(after).not.toBe(before)
+    expect(after?.open).toBe(true)
+  })
+
   it('snoozes an item into a visible fold and can wake it immediately', async () => {
     const d = open()
     const id = insertItem(d, {

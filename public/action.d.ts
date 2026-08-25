@@ -29,4 +29,8 @@ export function agentFollowupChip(
   model: { answered?: boolean; pickedUp?: boolean; pickedUpAt?: string | null },
   nowMs: number,
 ): { text: string; tone: 'muted' | 'warm' | 'hot' } | null
-export function lifecycleReceipt(entity: ActionLike): Array<{ label: string; at: string | null }>
+export function lifecycleReceipt(entity: ActionLike): Array<{
+  kind: 'asked' | 'response' | 'pickup' | 'outcome'
+  label: string
+  at: string | null
+}>

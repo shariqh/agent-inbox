@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import type Database from 'better-sqlite3'
 import { insertItem, listItems } from '../../src/store.js'
-import { bootApp, click, freshDb, row, settle, useDomTest } from './harness.js'
+import { bootApp, click, freshDb, row, settle, showInbox, useDomTest } from './harness.js'
 
 useDomTest()
 
@@ -33,6 +33,7 @@ describe('Needs-you timestamp keyboard ownership', () => {
       options: [{ label: 'Approve', recommended: true }, { label: 'Hold' }],
     })
     await bootApp(db)
+    await showInbox()
     click(row(first))
     await settle()
     await settle()

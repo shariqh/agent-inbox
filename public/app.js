@@ -35,6 +35,7 @@ import { buildSummary } from '/buildstamp.js'
 import { actionCategory, actionOwnerLabel, agentFollowupChip, changeKind, lifecycleReceipt, responseLabel } from '/action.js'
 import { buildRelay } from '/relay.js'
 import { buildMission } from '/mission.js'
+import { buildActivitySeries, buildDashboard } from '/dashboard.js'
 import { PANE_DEFAULTS, paneKeyValue, paneValueFromPointer, resolvePaneLayout } from '/panes.js'
 import { createThemeController } from '/theme.js'
 
@@ -73,6 +74,7 @@ let shown = { ...PAGE }
 function resetPaging() { shown = { ...PAGE } }
 
 let lastData = null
+let dashboardRangeMs = 24 * 60 * 60 * 1000
 let renderedTheme = document.documentElement.dataset.theme ?? 'light'
 function syncThemeChoices(preference) {
   for (const input of document.querySelectorAll('input[name="theme-preference"]')) {
@@ -222,6 +224,10 @@ function noteScrollActivity() {
   }, SCROLL_IDLE_MS)
 }
 
+function cardScrollHost(card) {
+  return card?.querySelector('.nrow-card-scroll') ?? card
+}
+
 function noteInspectorScroll(id, card) {
   if (openRowId !== id) return
   openRowScrollTop = card.scrollTop
@@ -260,7 +266,8 @@ function renderIfIdle() {
   const frame = paintAmbient()
   // Drafts and active inspector/page scrolling protect only editable lists. Counts,
   // the badge, rail and Live strip above keep reporting fresh data.
-  if (shouldDeferRender({ ...suspendState(), pressedAt, scrolledAt: lastInteractionScrollAt }, now)) {
+  if (dashboardInteractionActive()
+    || shouldDeferRender({ ...suspendState(), pressedAt, scrolledAt: lastInteractionScrollAt }, now)) {
     renderDirty = true
     showPauseHint()
     return
@@ -362,6 +369,20 @@ async function load() {
     const boards = await (await fetch('/api/boards')).json()
     const archived = await (await fetch('/api/boards/archived')).json()
     const activity = await (await fetch('/api/activity')).json()
+    const historySinceMs = Date.now() - 30 * 24 * 60 * 60 * 1000
+    const activityHistory = await fetch(`/api/activity/history?since_ms=${historySinceMs}`)
+      .then(async (response) => {
+        if (!response.ok) return { state: 'error', spans: [], message: `History unavailable (${response.status})` }
+        const spans = await response.json()
+        return Array.isArray(spans)
+          ? { state: 'ready', spans, message: '' }
+          : { state: 'error', spans: [], message: 'History returned an invalid payload' }
+      })
+      .catch((error) => ({
+        state: 'error',
+        spans: [],
+        message: error instanceof Error ? `History unavailable: ${error.message}` : 'History unavailable',
+      }))
     // Projects the human closed (issue #32). Defensive on purpose: a viewer that
     // predates this route answers 404 with HTML, a bare .json() would throw into
     // the catch below, and the WHOLE page would read 'disconnected'. An unknown
@@ -385,6 +406,7 @@ async function load() {
       boards,
       archived,
       activity,
+      activityHistory,
       closed: [...authoritativeClosed],
       links,
     }
@@ -637,7 +659,12 @@ function focusItem(id, source = null) {
   const board = [...lastData.boards, ...lastData.archived].find((b) => b.id === id)
   const target = item ?? board
   if (!target) return
-  if (source) searchJumpSource = { targetId: id, ...source }
+  const hasSearchSource = source && (
+    typeof source.text === 'string'
+    || Array.isArray(source.fragments)
+    || typeof source.field === 'string'
+  )
+  if (hasSearchSource) searchJumpSource = { targetId: id, ...source }
   else if (searchJumpSource?.targetId !== id) searchJumpSource = null
   pendingFocusId = id
   if (source?.rowId) {
@@ -1134,6 +1161,298 @@ function projectScoped({ g, boards, archived }) {
   }
 }
 
+function dashboardEntryEntity(entry) {
+  return entry?.kind === 'row' ? entry.row : entry?.item
+}
+
+function dashboardEntryTitle(entry) {
+  const entity = dashboardEntryEntity(entry)
+  return entry?.kind === 'row' ? entity?.label : entity?.title
+}
+
+function dashboardEntryProject(entry) {
+  return entry?.kind === 'row' ? entry.board?.project : entry?.item?.project
+}
+
+function dashboardTarget(target) {
+  if (target === 'live') {
+    document.getElementById('liveStrip')?.click()
+    return
+  }
+  if (target === 'outcomes') {
+    openRelay()
+    return
+  }
+  selectTab(target)
+}
+
+function dashboardInteractionActive() {
+  return activeTab === 'dashboard' && Boolean(document.activeElement?.closest?.('#dashboard'))
+}
+
+function dashboardFocusBookmark() {
+  return document.activeElement?.closest?.('#dashboard [data-dashboard-focus-key]')?.dataset.dashboardFocusKey ?? null
+}
+
+function restoreDashboardFocus(key) {
+  if (!key || activeTab !== 'dashboard') return false
+  const target = document.querySelector(`#dashboard [data-dashboard-focus-key="${CSS.escape(key)}"]`)
+  if (!target) return false
+  target.focus({ preventScroll: true })
+  return document.activeElement === target
+}
+
+function renderDashboardAmbient(model) {
+  const values = {
+    agents: model.signals.agents.working,
+    waiting: model.signals.waiting,
+    plans: model.signals.plans,
+    outcomes: model.signals.outcomes,
+  }
+  for (const [name, value] of Object.entries(values)) {
+    const el = document.querySelector(`[data-dashboard-signal="${name}"] .dashboard-value`)
+    if (el) el.textContent = String(value)
+  }
+  const total = document.querySelector('[data-dashboard-signal="agents"] .dashboard-value-total')
+  if (total) total.textContent = `/${model.signals.agents.total}`
+  const labels = {
+    agents: `Active agents: ${model.signals.agents.working} of ${model.signals.agents.total} present`,
+    waiting: `Needs you: ${model.signals.waiting} open action${model.signals.waiting === 1 ? '' : 's'}`,
+    plans: `Plans: ${model.signals.plans} across ${model.signals.projects} project${model.signals.projects === 1 ? '' : 's'}`,
+    outcomes: `Recorded outcomes: ${model.signals.outcomes} across items and plan rows`,
+  }
+  for (const [name, label] of Object.entries(labels)) {
+    const card = document.querySelector(`[data-dashboard-signal="${name}"]`)
+    if (card) card.setAttribute('aria-label', label)
+  }
+}
+
+const DASHBOARD_SIGNAL_ICONS = {
+  agents: '<circle cx="8" cy="4" r="2"></circle><circle cx="4" cy="12" r="2"></circle><circle cx="12" cy="12" r="2"></circle><path d="M8 6v3M6.5 9.5 5 10.5M9.5 9.5l1.5 1"></path>',
+  waiting: '<path d="M2 3h12v10H2zM2 9h3l1.5 2h3L11 9h3"></path>',
+  plans: '<path d="M3 2h10v12H3zM5.5 5h5M5.5 8h5M5.5 11h3"></path>',
+  outcomes: '<circle cx="8" cy="8" r="6"></circle><path d="m5 8 2 2 4-4"></path>',
+}
+
+function dashboardSignal({ name, label, value, total = null, target, tone }) {
+  const card = document.createElement('button')
+  card.type = 'button'
+  card.className = `dashboard-signal tone-${tone}`
+  card.dataset.dashboardSignal = name
+  card.dataset.dashboardTarget = target
+  card.dataset.dashboardFocusKey = `signal:${name}`
+  card.innerHTML = `
+    <span class="dashboard-signal-head">
+      <span class="dashboard-signal-label">${esc(label)}</span>
+      <svg class="dashboard-signal-icon" viewBox="0 0 16 16" aria-hidden="true">${DASHBOARD_SIGNAL_ICONS[name] ?? ''}</svg>
+    </span>
+    <span class="dashboard-value-group">
+      <span class="dashboard-value">${esc(String(value))}</span>
+      ${total == null ? '' : `<span class="dashboard-value-total">/${esc(String(total))}</span>`}
+    </span>
+    <span class="dashboard-signal-arrow" aria-hidden="true">→</span>`
+  card.addEventListener('click', () => dashboardTarget(target))
+  return card
+}
+
+function formatDuration(ms) {
+  const totalMinutes = Math.round(ms / 60000)
+  const hours = Math.floor(totalMinutes / 60)
+  const minutes = totalMinutes % 60
+  if (!hours) return `${minutes}m`
+  return minutes ? `${hours}h ${minutes}m` : `${hours}h`
+}
+
+function renderDashboard(model) {
+  const host = document.querySelector('#dashboard .dashboard')
+  if (!host) return
+  host.replaceChildren()
+
+  const signals = document.createElement('div')
+  signals.className = 'dashboard-signals'
+  signals.append(
+    dashboardSignal({
+      name: 'agents',
+      label: 'Active agents',
+      value: model.signals.agents.working,
+      total: model.signals.agents.total,
+      target: 'live',
+      tone: 'agent',
+    }),
+    dashboardSignal({
+      name: 'waiting',
+      label: 'Needs you',
+      value: model.signals.waiting,
+      target: 'needsYou',
+      tone: 'attention',
+    }),
+    dashboardSignal({
+      name: 'plans',
+      label: 'Plans',
+      value: model.signals.plans,
+      target: 'boards',
+      tone: 'plan',
+    }),
+    dashboardSignal({
+      name: 'outcomes',
+      label: 'Recorded outcomes',
+      value: model.signals.outcomes,
+      target: 'outcomes',
+      tone: 'outcome',
+    }),
+  )
+  host.appendChild(signals)
+
+  const grid = document.createElement('div')
+  grid.className = 'dashboard-grid'
+
+  const activityPanel = document.createElement('section')
+  activityPanel.className = 'dashboard-card dashboard-activity'
+  const activityHead = document.createElement('div')
+  activityHead.className = 'dashboard-card-head'
+  activityHead.innerHTML = '<h2>Agent activity</h2>'
+  const range = document.createElement('select')
+  range.className = 'dashboard-range'
+  range.dataset.dashboardFocusKey = 'activity-range'
+  range.setAttribute('aria-label', 'Dashboard activity range')
+  for (const [label, value] of [['24 hours', 86400000], ['7 days', 604800000], ['30 days', 2592000000]]) {
+    const option = document.createElement('option')
+    option.textContent = label
+    option.value = String(value)
+    range.appendChild(option)
+  }
+  range.value = String(dashboardRangeMs)
+  range.addEventListener('change', () => {
+    dashboardRangeMs = Number(range.value)
+    forceRender()
+  })
+  activityHead.appendChild(range)
+  activityPanel.appendChild(activityHead)
+
+  const endMs = Date.now()
+  const bucketCount = dashboardRangeMs === 86400000 ? 24 : dashboardRangeMs === 604800000 ? 14 : 30
+  const history = lastData.activityHistory ?? { state: 'ready', spans: [], message: '' }
+  const historySpans = (history.spans ?? []).filter((span) =>
+    !dashboardClosedSet().has(span.project)
+    && (!projectFilter || span.project === projectFilter)
+    && (!agentFilter || span.agent === agentFilter))
+  const series = buildActivitySeries(historySpans, {
+    startMs: endMs - dashboardRangeMs,
+    endMs,
+    bucketCount,
+  })
+  if (history.state === 'error') {
+    activityPanel.classList.add('is-empty')
+    const error = document.createElement('div')
+    error.className = 'dashboard-history-empty dashboard-history-error'
+    error.title = history.message
+    error.innerHTML = '<strong>History unavailable</strong>'
+    activityPanel.appendChild(error)
+  } else if (!series.hasHistory) {
+    activityPanel.classList.add('is-empty')
+    const empty = document.createElement('div')
+    empty.className = 'dashboard-history-empty'
+    empty.setAttribute('role', 'img')
+    empty.setAttribute('aria-label', 'No activity history yet')
+    empty.title = 'No activity history yet'
+    empty.innerHTML = '<svg class="dashboard-empty-icon" viewBox="0 0 32 20" aria-hidden="true"><path d="M1 15h5l3-9 5 12 4-8 3 5h10"></path></svg>'
+    activityPanel.appendChild(empty)
+  } else {
+    const total = document.createElement('div')
+    total.className = 'dashboard-activity-total'
+    total.innerHTML = `<strong>${esc(formatDuration(series.totalActiveMs))}</strong>`
+    activityPanel.appendChild(total)
+    const max = Math.max(...series.buckets.map((bucket) => bucket.activeMs), 1)
+    const bars = document.createElement('div')
+    bars.className = 'dashboard-bars'
+    bars.setAttribute('role', 'img')
+    bars.setAttribute('aria-label', `${formatDuration(series.totalActiveMs)} of agent claim time`)
+    for (const bucket of series.buckets) {
+      const bar = document.createElement('span')
+      bar.className = 'dashboard-bar'
+      bar.style.height = `${Math.max(4, (bucket.activeMs / max) * 100)}%`
+      bar.title = `${formatDuration(bucket.activeMs)} · ${bucket.sessions} session${bucket.sessions === 1 ? '' : 's'}`
+      bars.appendChild(bar)
+    }
+    activityPanel.appendChild(bars)
+  }
+  grid.appendChild(activityPanel)
+
+  const ownership = document.createElement('section')
+  ownership.className = 'dashboard-card dashboard-ownership'
+  ownership.innerHTML = `
+    <div class="dashboard-card-head"><h2>Ownership flow</h2></div>
+    <div class="dashboard-flow">
+      <button type="button" data-flow-target="needsYou" data-dashboard-focus-key="flow:human" class="flow-human"><span>Waiting on you</span><strong>${esc(String(model.ownership.human))}</strong></button>
+      <div class="dashboard-flow-line" aria-hidden="true"></div>
+      <button type="button" data-flow-target="needsYou" data-dashboard-focus-key="flow:agent" class="flow-agent"><span>With agents</span><strong>${esc(String(model.ownership.agent))}</strong></button>
+      <div class="dashboard-flow-line" aria-hidden="true"></div>
+      <button type="button" data-flow-target="outcomes" data-dashboard-focus-key="flow:outcome" class="flow-outcome"><span>Outcome</span><strong>${esc(String(model.ownership.outcome))}</strong></button>
+    </div>`
+  for (const button of ownership.querySelectorAll('[data-flow-target]')) {
+    button.addEventListener('click', () => dashboardTarget(button.dataset.flowTarget))
+  }
+  grid.appendChild(ownership)
+
+  const live = document.createElement('section')
+  live.className = 'dashboard-card dashboard-dispatch'
+  live.innerHTML = '<div class="dashboard-card-head"><h2>Live dispatch</h2></div>'
+  const sessionList = document.createElement('div')
+  sessionList.className = 'dashboard-live-list'
+  if (!model.sessions.length) {
+    sessionList.innerHTML = '<div class="dashboard-empty" role="img" aria-label="No agent sessions" title="No agent sessions"><svg class="dashboard-empty-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v4M12 18v4M2 12h4M18 12h4"></path></svg></div>'
+  } else {
+    for (const session of model.sessions.slice(0, 4)) {
+      const row = document.createElement('div')
+      row.className = `dashboard-live-session${session.idle ? ' idle' : ''}`
+      const identity = document.createElement('strong')
+      identity.textContent = `${session.project} / ${session.agent}`
+      const doing = document.createElement('span')
+      doing.textContent = session.synopsis
+      const state = document.createElement('small')
+      state.textContent = session.idle ? 'quiet' : 'working'
+      row.append(identity, doing, state)
+      sessionList.appendChild(row)
+    }
+  }
+  live.appendChild(sessionList)
+  grid.appendChild(live)
+
+  const outcomes = document.createElement('section')
+  outcomes.className = 'dashboard-card dashboard-outcomes'
+  outcomes.innerHTML = '<div class="dashboard-card-head"><h2>Recent outcomes</h2></div>'
+  const outcomeList = document.createElement('div')
+  outcomeList.className = 'dashboard-outcome-list'
+  if (!model.recentOutcomes.length) {
+    outcomeList.innerHTML = '<div class="dashboard-empty" role="img" aria-label="No recorded outcomes" title="No recorded outcomes"><svg class="dashboard-empty-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"></circle><path d="m8 12 2.5 2.5L16 9"></path></svg></div>'
+  } else {
+    for (const entry of model.recentOutcomes.slice(0, 4)) {
+      const entity = dashboardEntryEntity(entry)
+      const row = document.createElement('button')
+      row.type = 'button'
+      row.className = 'dashboard-outcome'
+      row.dataset.dashboardFocusKey = `outcome:${entry.kind === 'item' ? entry.item.id : entry.row.id}`
+      const title = document.createElement('strong')
+      title.textContent = dashboardEntryTitle(entry) ?? 'Recorded outcome'
+      const result = document.createElement('span')
+      result.textContent = entity?.outcome ?? ''
+      const meta = document.createElement('small')
+      meta.textContent = dashboardEntryProject(entry) ?? ''
+      row.append(title, result, meta)
+      row.addEventListener('click', () => {
+        if (entry.kind === 'item') focusItem(entry.item.id)
+        else focusItem(entry.board.id, { rowId: entry.row.id })
+      })
+      outcomeList.appendChild(row)
+    }
+  }
+  outcomes.appendChild(outcomeList)
+  grid.appendChild(outcomes)
+
+  host.appendChild(grid)
+  renderDashboardAmbient(model)
+}
+
 function paintAmbient() {
   applyBadge()
   // issue #30 — rebuilt ONCE here, before any renderer runs, so the row chips,
@@ -1156,9 +1475,19 @@ function paintAmbient() {
   const pillLive = (lastData.activity ?? []).filter((a) =>
     (!projectFilter || a.project === projectFilter) && (!agentFilter || a.agent === agentFilter))
   const live = pillLive
+  const dashboard = buildDashboard({
+    items: allItems(g),
+    boards,
+    archived,
+    activity: live,
+    nowMs: Date.now(),
+    liveSessionIds: liveSessionIds(),
+    closedProjects: dashboardClosedProjects(),
+  })
   renderLiveBar(lastData.activity ?? [])    // collapsed strip — GLOBAL, never scoped (§7 filter-blindness, generalized)
+  renderDashboardAmbient(dashboard)
   paintTabCounts(g, boards)
-  return { agents, g, boards, archived, live }
+  return { agents, g, boards, archived, live, dashboard }
 }
 
 function paintTabCounts(g, boards) {
@@ -1172,11 +1501,12 @@ function paintTabCounts(g, boards) {
   for (const id of TAB_IDS) setCount(id, counts[id])
 }
 
-function paintEditableSurfaces({ agents, g, boards, archived, live }) {
+function paintEditableSurfaces({ agents, g, boards, archived, live, dashboard }) {
   renderSearchResults()
   renderClosedBanner()
   renderAgentSelect(agents)
   renderLive(live) // drawer's expanded list — stays FILTERED (rail-scoped, like every other tab)
+  renderDashboard(dashboard)
   renderNeedsYou(g, boards, Date.now())
   renderGroups('notes', g.notes)
   renderDone(g.done)
@@ -1200,6 +1530,7 @@ function render() {
   const frame = preparedFrame ?? paintAmbient()
   preparedFrame = null
   const missionFocus = captureMissionFocus()
+  const dashboardFocus = dashboardFocusBookmark()
   const draftFocus = activeDraftFocusBookmark() ?? requestedDraftFocusBookmark
   const pagedFocus = pagedCardFocusBookmark()
   pagedFocusId = pagedFocus?.id ?? null
@@ -1210,7 +1541,8 @@ function render() {
   pagedFocusId = null
   if (missionFocus && missionBoardId) {
     restoreMissionFocus(missionFocus)
-  } else if (!restoreDraftRecoveryFocus() && !restoreDraftFocus(draftFocus)) {
+  } else if (!restoreDashboardFocus(dashboardFocus)
+    && !restoreDraftRecoveryFocus() && !restoreDraftFocus(draftFocus)) {
     restorePagedCardFocus(pagedFocus)
   }
   applySearchJumpHighlight()
@@ -1474,7 +1806,16 @@ const openContexts = new Set()
 const HANDLED_LABEL = 'I’ve done my part'
 const UNHANDLED_LABEL = 'Not done after all'
 
-function dispositionEl(onResponse, onSnooze) {
+function dispositionEl(onResponse, onSnooze, key) {
+  const menu = document.createElement('details')
+  menu.className = 'disposition-menu'
+  menu.open = openDispositionMenus.has(key)
+  menu.addEventListener('toggle', () => {
+    if (menu.open) openDispositionMenus.add(key)
+    else openDispositionMenus.delete(key)
+  })
+  const summary = document.createElement('summary')
+  summary.textContent = 'More responses'
   const wrap = document.createElement('div')
   wrap.className = 'disposition-actions'
   const snooze = (label, ms) => {
@@ -1493,7 +1834,8 @@ function dispositionEl(onResponse, onSnooze) {
   const decline = btn('Decline', () => onResponse('decline', 'Declined'))
   decline.className = 'disposition-btn decline'
   wrap.appendChild(decline)
-  return wrap
+  menu.append(summary, wrap)
+  return menu
 }
 
 // The human's own exit from a blocked row (#36) — the deed, beside the words.
@@ -1729,7 +2071,7 @@ function rowAnswerEl(b, r, onSaved) {
   const options = r.status === 'blocked' ? optionOrder(r.options) : []
   if (options.length) {
     const choices = document.createElement('div')
-    choices.className = 'options row-options comparing'
+    choices.className = `options row-options${openRowCompares.has(r.id) ? ' comparing' : ''}`
     for (const option of options) {
       const box = document.createElement('div')
       box.className = 'option'
@@ -1750,6 +2092,15 @@ function rowAnswerEl(b, r, onSaved) {
         box.appendChild(detail)
       }
       choices.appendChild(box)
+    }
+    if (options.some((option) => option.detail)) {
+      const compare = btn(openRowCompares.has(r.id) ? 'Hide option details' : 'Compare options', () => {
+        if (openRowCompares.has(r.id)) openRowCompares.delete(r.id)
+        else openRowCompares.add(r.id)
+        forceRender()
+      })
+      compare.className = 'compare-toggle'
+      wrap.appendChild(compare)
     }
     wrap.appendChild(choices)
   }
@@ -1772,6 +2123,7 @@ function rowAnswerEl(b, r, onSaved) {
         onSaved?.()
         await reloadAndPaint()
       },
+      `row:${r.id}`,
     ))
   }
   bindReplyEditor(input, save)
@@ -1854,15 +2206,16 @@ function actionBlocksHtml(tldr, nextStep, actionOwner, impact, nextAfter, contex
 function lifecycleHtml(entity, { includeAsked = true } = {}) {
   const steps = lifecycleReceipt(entity)
     .filter((step) => includeAsked || step.label !== 'Asked')
+    .filter((step) => step.kind !== 'outcome')
   if (!steps.length) return ''
   return `<div class="lifecycle-receipt">${steps.map((step) => (
     `<div class="lifecycle-step">${renderStructuredText(step.label)}${step.at ? `<span class="lifecycle-age">· ${esc(rel(step.at))}</span>` : ''}</div>`
   )).join('<span class="lifecycle-arrow">→</span>')}</div>`
 }
 
-function outcomeHtml(outcome) {
+function outcomeHtml(outcome, at = null) {
   return outcome
-    ? `<div class="outcome-block"><div class="outcome-label">Outcome</div>${renderStructuredText(outcome)}</div>`
+    ? `<div class="outcome-block"><div class="outcome-label">Outcome${at ? `<span class="outcome-age">· ${esc(rel(at))}</span>` : ''}</div>${renderStructuredText(outcome)}</div>`
     : ''
 }
 
@@ -1877,7 +2230,7 @@ function historyHtml(r) {
     return `<div class="history-entry">
       <div class="history-title">Step ${esc(String(entry.version))} · ${esc(entry.note || entry.next_step || entry.status)}</div>
       ${response ? `<div>${esc(response)}${entry.response ? `: ${esc(entry.response)}` : ''}</div>` : ''}
-      ${outcomeHtml(entry.outcome)}
+      ${outcomeHtml(entry.outcome, entry.outcome_at)}
     </div>`
   }).join('')
   return `<details class="action-history"><summary>Prior steps (${r.history.length})</summary>${entries}</details>`
@@ -1890,7 +2243,7 @@ function rowPanelEl(b, r, readOnly = false) {
   wrap.innerHTML = `
     ${actionBlocksHtml(r.note, r.status === 'blocked' ? r.next_step : '', r.action_owner, r.impact, r.next_after, r.context, `row:${r.id}`)}
     ${rowHumanStateHtml(r)}
-    ${outcomeHtml(r.outcome)}
+    ${outcomeHtml(r.outcome, r.outcome_at)}
     ${lifecycleHtml(r)}
     ${historyHtml(r)}`
   bindContextDisclosures(wrap)
@@ -1911,7 +2264,7 @@ function rowCardEl(b, r, onSaved, { includeAsked = true } = {}) {
     <div class="title">${esc(r.label)}</div>
     ${actionBlocksHtml(r.note, r.next_step, r.action_owner, r.impact, r.next_after, r.context, `row:${r.id}`)}
     ${rowHumanStateHtml(r)}
-    ${outcomeHtml(r.outcome)}
+    ${outcomeHtml(r.outcome, r.outcome_at)}
     ${lifecycleHtml(r, { includeAsked })}
     ${historyHtml(r)}`
   bindContextDisclosures(wrap)
@@ -1941,12 +2294,12 @@ function renderTriage({
     lb.querySelector('.lb-count').textContent = 'all clear'
     lb.querySelector('.lb-mix').textContent = 'Review complete'
     owner.textContent = ''
-    progress.style.width = '100%'
+    progress.style.transform = 'scaleX(1)'
     card.innerHTML = '<div class="lb-clear">All clear. There is nothing left to review.</div>'
   } else {
     lb.querySelector('.lb-count').textContent = `${triageDeck.index + 1} of ${n}`
     lb.querySelector('.lb-mix').textContent = triageActionMix(triageDeck.entries)
-    progress.style.width = `${((triageDeck.index + 1) / n) * 100}%`
+    progress.style.transform = `scaleX(${(triageDeck.index + 1) / n})`
     const data = findEntryData(triageDeck.entries[triageDeck.index])
     const renderedDeck = triageDeck
     const renderedEntryKey = triageEntryKey(triageDeck.entries[triageDeck.index])
@@ -2031,7 +2384,7 @@ function focusRelayEntry(entry, lane) {
     return
   }
   if (lane === 'outcome') {
-    focusItem(entry.board.id)
+    focusItem(entry.board.id, { rowId: entry.row.id })
     return
   }
   jumpToCard('needsYou', entry.row.id)
@@ -2390,6 +2743,7 @@ function filterData({ g, boards, archived }) {
 }
 
 const PAGE_META = {
+  dashboard: { kicker: 'Monitor', title: 'Live Operations Desk' },
   needsYou: { kicker: 'Inbox', title: 'Your queue' },
   boards: { kicker: 'Workspace', title: 'Plans' },
   notes: { kicker: 'Workspace', title: 'Notes' },
@@ -2401,6 +2755,10 @@ const liveSessionIds = () => new Set((lastData.activity ?? []).map((a) => a.sess
 // projects the human retired (issue #32) — server state, not localStorage, so the
 // Electron dock badge (a different OS process) reads the very same set
 const closedSet = () => new Set(lastData.closed ?? [])
+// An explicitly selected closed project is a deliberate peek, not a suppressed
+// default. Dashboard/history must mirror withoutClosed() and keep that project.
+const dashboardClosedProjects = () => (lastData.closed ?? []).filter((project) => project !== projectFilter)
+const dashboardClosedSet = () => new Set(dashboardClosedProjects())
 const themeName = () => document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light'
 
 // spec §2: color persistence. Every caller that paints a project dot/wash goes
@@ -2441,6 +2799,9 @@ const PANE_KEYS = {
   sidebar: 'agent-inbox-sidebar-width',
   inspector: 'agent-inbox-inspector-width',
 }
+const SIDEBAR_COLLAPSED_KEY = 'agent-inbox-sidebar-collapsed'
+const SIDEBAR_COLLAPSED_WIDTH = 72
+let sidebarCollapsed = localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true'
 const panePreferences = {
   sidebar: savedPaneWidth('sidebar'),
   inspector: savedPaneWidth('inspector'),
@@ -2463,10 +2824,16 @@ function updatePaneHandle(kind, pane) {
 function applyPaneLayout() {
   const panes = resolvePaneLayout(window.innerWidth, panePreferences)
   const root = document.documentElement.style
-  root.setProperty('--sidebar-width', `${panes.sidebar.value}px`)
+  const collapsed = layout === 'wide' && sidebarCollapsed
+  root.setProperty('--sidebar-width', `${collapsed ? SIDEBAR_COLLAPSED_WIDTH : panes.sidebar.value}px`)
   root.setProperty('--inspector-width', `${panes.inspector.value}px`)
   updatePaneHandle('sidebar', panes.sidebar)
   updatePaneHandle('inspector', panes.inspector)
+  const sidebarHandle = document.getElementById('sidebarResize')
+  if (sidebarHandle) {
+    sidebarHandle.tabIndex = collapsed ? -1 : 0
+    sidebarHandle.setAttribute('aria-hidden', String(collapsed))
+  }
   return panes
 }
 
@@ -2482,6 +2849,34 @@ function resetPanePreference(kind) {
   panePreferences[kind] = PANE_DEFAULTS[kind]
   localStorage.removeItem(PANE_KEYS[kind])
   applyPaneLayout()
+}
+
+function applySidebarCollapse({ focus = false } = {}) {
+  const active = layout === 'wide' && sidebarCollapsed
+  if (active && railQuery) {
+    railQuery = ''
+    if (lastData) renderRail()
+  }
+  document.body.classList.toggle('sidebar-collapsed', active)
+  const button = document.getElementById('sidebarCollapse')
+  if (button) {
+    button.setAttribute('aria-expanded', String(!active))
+    button.setAttribute('aria-label', active ? 'Expand sidebar' : 'Collapse sidebar')
+    button.title = active ? 'Expand sidebar' : 'Collapse sidebar'
+    if (focus) button.focus({ preventScroll: true })
+  }
+  applyPaneLayout()
+}
+
+function initSidebarCollapse() {
+  const button = document.getElementById('sidebarCollapse')
+  if (!button) return
+  button.addEventListener('click', () => {
+    sidebarCollapsed = !sidebarCollapsed
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(sidebarCollapsed))
+    applySidebarCollapse({ focus: true })
+  })
+  applySidebarCollapse()
 }
 
 function initPaneResizers() {
@@ -2530,6 +2925,7 @@ function initResponsive() {
     const next = mq.matches ? 'narrow' : 'wide'
     if (next === layout) return
     layout = next
+    applySidebarCollapse()
     if (lastData) forceRender() // the rail's visible labels change, so rebuild it
   }
   mq.addEventListener('change', apply)
@@ -3248,6 +3644,7 @@ function renderRail() {
 // option text goes through textContent, never innerHTML: agent names are agent-authored.
 function renderAgentSelect(agents) {
   const sel = document.getElementById('agentSelect')
+  document.body.classList.toggle('agent-filtered', Boolean(agentFilter))
   const sig = JSON.stringify([agents, agentFilter])
   if (sel.dataset.sig === sig) return
   sel.dataset.sig = sig
@@ -3720,7 +4117,7 @@ function renderNeedsYou(g, boardsInView, nowMs) {
   const openRowViewportTop = openQueueRow?.getBoundingClientRect().top ?? null
   const cardFocus = openCard ? captureCardFocus(openCard, openRowId) : null
   const askedTimeFocusId = focusedAskedTimeId()
-  if (openCard) openRowScrollTop = openCard.scrollTop
+  if (openCard) openRowScrollTop = cardScrollHost(openCard).scrollTop
   // §13: this rebuilds every row from scratch (poll tick or user action) — capture
   // this BEFORE the list gets cleared below, since clearing a focused element's
   // subtree shifts document.activeElement immediately (to <body>, typically).
@@ -3776,7 +4173,7 @@ function renderNeedsYou(g, boardsInView, nowMs) {
   renderNeedsYouExtras(host, g.notes.flatMap((gr) => gr.items))
   const restoredRow = openRowId ? needsYouRowEl(openRowId) : null
   const restoredCard = restoredRow?.querySelector('.nrow-card') ?? null
-  if (restoredCard && openRowScrollTop > 0) restoredCard.scrollTop = openRowScrollTop
+  if (restoredCard && openRowScrollTop > 0) cardScrollHost(restoredCard).scrollTop = openRowScrollTop
   if (restoredRow && openRowViewportTop !== null) {
     const viewportDelta = restoredRow.getBoundingClientRect().top - openRowViewportTop
     if (Number.isFinite(viewportDelta) && Math.abs(viewportDelta) > 0.5) {
@@ -3917,8 +4314,12 @@ function needsRowEl(m, entry, nowMs) {
   const el = document.createElement('div')
   el.className = `nrow nrow-${m.kind}${m.answered ? ' answered' : ''}${stagedDismiss.has(m.id) ? ' staged' : ''}`
   el.dataset.cardId = m.id
+  el.setAttribute('role', 'listitem')
+  el.setAttribute('aria-current', 'false')
+  el.setAttribute('aria-expanded', String(openRowId === m.id))
   el.tabIndex = -1
   const chip = urgencyChip(m, nowMs)
+  el.setAttribute('aria-label', `${m.title}. ${m.ownerLabel}. ${chip.text}.`)
   const color = pcolor(m.project)
   const glyph = m.kind === 'row' ? `<button class="nrow-glyph" title="Open plan: ${esc(m.boardTitle ?? '')}">Plan</button>` : ''
   // Items only. Board rows deliberately have no line-level ✕: their expanded
@@ -4071,6 +4472,7 @@ function needsRowEl(m, entry, nowMs) {
   // a full render (poll or user action) rebuilds the open row from openRowId
   if (openRowId === m.id) {
     el.dataset.open = '1'
+    el.setAttribute('aria-expanded', 'true')
     el.appendChild(rowCardBodyEl(entry, m, nowMs))
   }
   return el
@@ -4082,21 +4484,52 @@ function rowCardBodyEl(entry, m, nowMs) {
   body.className = 'nrow-card'
   body.tabIndex = -1
   body.addEventListener('click', (ev) => ev.stopPropagation()) // clicks in the card must not collapse it
-  const trackScroll = () => noteInspectorScroll(m.id, body)
-  body.addEventListener('wheel', trackScroll, { passive: true })
-  body.addEventListener('scroll', trackScroll, { passive: true })
+  const head = document.createElement('div')
+  head.className = 'nrow-card-head'
+  const heading = document.createElement('div')
+  const title = document.createElement('strong')
+  title.textContent = m.title
+  const meta = document.createElement('span')
+  meta.textContent = [m.project, m.agent].filter(Boolean).join(' · ')
+  heading.append(title, meta)
+  const close = document.createElement('button')
+  close.type = 'button'
+  close.className = 'nrow-card-close'
+  close.setAttribute('aria-label', 'Close action')
+  close.title = 'Close action (Esc)'
+  close.textContent = '×'
+  close.addEventListener('click', (ev) => {
+    ev.stopPropagation()
+    collapseRow(m.id)
+  })
+  head.append(heading, close)
+
+  const scroll = document.createElement('div')
+  scroll.className = 'nrow-card-scroll'
+  const trackScroll = () => noteInspectorScroll(m.id, scroll)
+  scroll.addEventListener('wheel', trackScroll, { passive: true })
+  scroll.addEventListener('scroll', trackScroll, { passive: true })
   // `entry` is a render-time closure and the §10 gate can hold a render for
   // minutes, so the snapshot inside it goes stale (issue #31.1, layer 2: a row
   // reopened after a Change answer would otherwise re-mount the OLD reply and
   // hide the answer surface again). Same freshItem() precedent as the star's
   // Undo fallback. Resolved in place: `entry.item` is undefined for board rows.
-  body.appendChild(entry.kind === 'row'
+  const card = entry.kind === 'row'
     ? rowCardEl(entry.board, entry.row, undefined, { includeAsked: false })
     : itemCardEl(freshItem(entry.item.id) ?? entry.item, {
         nowMs,
         liveness: m.liveness,
         includeAsked: false,
-      }))
+      })
+  const answer = card.querySelector(':scope > .row-answer, :scope > .options')
+  scroll.appendChild(card)
+  body.append(head, scroll)
+  if (answer) {
+    const compose = document.createElement('div')
+    compose.className = 'nrow-card-compose'
+    compose.appendChild(answer)
+    body.appendChild(compose)
+  }
   return body
 }
 
@@ -4129,11 +4562,13 @@ function activateRow(el, m, entry, nowMs) {
   setOpenRow(m.id, { resume: false })
   for (const other of document.querySelectorAll('.nrow[data-open="1"]')) {
     other.removeAttribute('data-open')
+    other.setAttribute('aria-expanded', 'false')
     const card = other.querySelector('.nrow-card')
     if (card) card.remove()
   }
   const liveEl = needsYouRowEl(m.id) ?? el
   liveEl.dataset.open = '1'
+  liveEl.setAttribute('aria-expanded', 'true')
   liveEl.appendChild(rowCardBodyEl(entry, m, nowMs))
   resumeRender()
   requestAnimationFrame(() => {
@@ -4154,6 +4589,7 @@ function collapseRow(id) {
   setOpenRow(null)
   const el = needsYouRowEl(id)
   el?.removeAttribute('data-open')
+  el?.setAttribute('aria-expanded', 'false')
   el?.querySelector('.nrow-card')?.remove()
   renderIfIdle()
   requestAnimationFrame(() => selectRow(id))
@@ -4178,11 +4614,59 @@ function renderGroups(sectionId, groups) {
   }
 }
 
+const openHistoryItems = new Set()
+
+function historyItemEl(it) {
+  const el = document.createElement('details')
+  el.className = `history-row item ${it.kind}`
+  el.dataset.cardId = it.id
+  liveCardIds.add(it.id)
+  el.open = openHistoryItems.has(it.id) || pendingFocusId === it.id || pagedFocusId === it.id
+  el.addEventListener('toggle', () => {
+    if (el.open) openHistoryItems.add(it.id)
+    else openHistoryItems.delete(it.id)
+  })
+
+  const summary = document.createElement('summary')
+  summary.className = 'history-summary'
+  const color = pcolor(it.project)
+  const dot = document.createElement('span')
+  dot.className = 'history-dot'
+  dot.style.background = color.dot
+  dot.setAttribute('aria-hidden', 'true')
+  const copy = document.createElement('span')
+  copy.className = 'history-copy'
+  const title = document.createElement('strong')
+  title.textContent = it.title
+  const outcome = document.createElement('span')
+  outcome.className = 'history-outcome'
+  outcome.textContent = it.outcome
+    || (it.reply ? `You answered: ${it.reply}` : '')
+    || it.detail
+    || (it.status === 'dismissed' ? 'Dismissed' : 'Completed')
+  copy.append(title, outcome)
+  const meta = document.createElement('span')
+  meta.className = 'history-meta'
+  meta.textContent = `${it.project} · ${it.agent}`
+  const stamp = it.outcome_at ?? it.resolved_at ?? it.updated_at ?? it.created_at
+  const time = document.createElement('time')
+  time.dateTime = stamp
+  time.textContent = rel(stamp)
+  meta.appendChild(time)
+  const arrow = document.createElement('span')
+  arrow.className = 'history-arrow'
+  arrow.setAttribute('aria-hidden', 'true')
+  arrow.textContent = '›'
+  summary.append(dot, copy, meta, arrow)
+  el.append(summary, itemCardEl(it, { done: it.status !== 'open', header: false }))
+  return el
+}
+
 function renderDone(items) {
   const host = document.querySelector('#done .items')
   const { visible, remaining } = paginateWithPending(items, 'done')
   host.innerHTML = items.length ? '' : '<p class="empty">Nothing yet.</p>'
-  for (const it of visible) host.appendChild(itemEl(it, it.status !== 'open'))
+  for (const it of visible) host.appendChild(historyItemEl(it))
   if (remaining > 0) host.appendChild(moreButton('done', remaining))
 }
 
@@ -4235,7 +4719,7 @@ const sessionActiveBoards = new Set() // board ids seen active at some point thi
 function boardsHeader() {
   const bar = document.createElement('div')
   bar.className = 'tab-header'
-  const t = btn('hide completed rows', () => {
+  const t = btn(hideCompleted ? 'Show completed rows' : 'Hide completed rows', () => {
     hideCompleted = !hideCompleted
     localStorage.setItem(HIDE_DONE_KEY, String(hideCompleted))
     forceRender()
@@ -4289,7 +4773,7 @@ function boardEl(b, archived = false, lingering = false) {
         <div class="board-meta">${esc(b.project)}${stream} · ${esc(b.agent)}</div>
       </div>
       <div class="bar"><div class="bar-fill" style="width:${p.secondary}"></div></div>
-      <div class="bar-label"><strong class="prog-primary">${p.primary}</strong> done <span class="prog-secondary">${p.secondary}</span>${p.complete ? '<span class="complete-badge">✓ complete</span>' : ''}${lingering ? '<span class="linger-badge">completed — archived</span>' : ''}${hidden ? `<span class="hidden-hint" title="show this board's completed rows">· ${hidden} done hidden — show</span>` : ''}</div>
+      <div class="bar-label"><strong class="prog-primary">${p.primary}</strong> done <span class="prog-secondary">${p.secondary} weighted</span>${p.complete ? '<span class="complete-badge">✓ complete</span>' : ''}${lingering ? '<span class="linger-badge">completed — archived</span>' : ''}${hidden ? `<span class="hidden-hint" title="show this board's completed rows">· ${hidden} done hidden — show</span>` : ''}</div>
     </summary>`
   cardify(el, b.id)
   const hint = el.querySelector('.hidden-hint')
@@ -4396,6 +4880,8 @@ function archiveBtn(board) {
 
 // answer-back UI state that must survive the 3s poll rebuild
 const openCompares = new Set()   // item ids with the compare view expanded
+const openRowCompares = new Set() // blocked-row ids with option tradeoffs expanded
+const openDispositionMenus = new Set() // item/row keys with secondary responses expanded
 const draftReplies = {}          // item id → in-progress free-text answer
 const draftReplyContexts = {}    // item id → optional context attached to the answer
 const itemDraftMeta = {}         // item id → recovery labels if its answer surface disappears
@@ -5062,6 +5548,7 @@ function answerEl(it) {
       if (res === null) return
       await reloadAndPaint()
     },
+    `item:${it.id}`,
   ))
   return wrap
 }
@@ -5088,14 +5575,15 @@ function itemCardEl(it, {
       <span class="chip chip-${chip.tone}"><span aria-hidden="true">${livenessGlyph(liveness).glyph}</span> ${esc(chip.text)}</span>
     </div>
     <div class="card-title">${esc(it.title)}</div>` : ''
+  const nextStep = done && s.outcome ? null : s.nextStep
   el.innerHTML = `
     ${head}
     ${sourceBlockHtml(linkIndex, it, nowMs)}
-    ${actionBlocksHtml(s.detail, s.nextStep, s.actionOwner, s.impact, s.nextAfter, s.context, `item:${it.id}`)}
+    ${actionBlocksHtml(s.detail, nextStep, s.actionOwner, s.impact, s.nextAfter, s.context, `item:${it.id}`)}
     ${s.annotation ? `<div class="annotation"><strong>Note:</strong> ${esc(s.annotation)}</div>` : ''}
     ${s.recWarning ? `<div class="rec-warning">Review: ${esc(s.recWarning)}</div>` : ''}
     ${s.reply || it.reply_kind ? `<div class="reply-block"><strong>${esc(responseLabel(it) || 'You answered')}:</strong> ${esc(s.reply ?? '')}${it.reply_context ? `<div class="reply-context">Context: ${esc(it.reply_context)}</div>` : ''}${it.reply_source === 'agent' ? '<span class="reply-source">via chat</span>' : ''}${s.showPickup ? `<span class="pickup ${it.reply_seen_at ? 'picked' : 'awaiting'}">${it.reply_seen_at ? 'With the agent' : 'Waiting for the agent'}</span>` : ''}</div>` : ''}
-    ${outcomeHtml(s.outcome)}
+    ${outcomeHtml(s.outcome, it.outcome_at)}
     ${lifecycleHtml(it, { includeAsked })}`
   bindContextDisclosures(el)
   if (s.showAnswer) el.appendChild(answerEl(it))
@@ -5212,7 +5700,7 @@ function markSelectedRow(id) {
   for (const el of allRowEls()) {
     const on = operable.has(el) && el.dataset.cardId === id
     el.classList.toggle('selected', on)
-    el.setAttribute('aria-selected', String(on))
+    el.setAttribute('aria-current', String(on))
     el.tabIndex = on ? 0 : -1
   }
 }
@@ -5988,8 +6476,8 @@ async function renderSetup() {
 // ── init ────────────────────────────────────────────────────────────────────
 // Canonical order for the finished app; later tasks add their one line at the
 // slot named here and never rewrite this block:
-//   initTabs → initTriage → initSearch → initResponsive → initPaneResizers →
-//   initProjectDisclosure →
+//   initTabs → initTriage → initRelay → initMission → initSearch →
+//   initResponsive → initSidebarCollapse → initPaneResizers → initProjectDisclosure →
 //   initKeys (Task 17) → initFocusHash (Task 17) → initStagedFlush →
 //   initPressGuard (#38) → initScrollGuard → initAgentSelect →
 //   initStructuredTextCopy → initGear → initLiveBar → renderSetup → load →
@@ -6000,6 +6488,7 @@ initRelay()
 initMission()
 initSearch()
 initResponsive()
+initSidebarCollapse()
 initPaneResizers()
 initProjectDisclosure()
 initKeys()

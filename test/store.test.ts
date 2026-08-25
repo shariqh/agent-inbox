@@ -44,6 +44,7 @@ import {
   listSourceLinks,
   listLinkTargets,
   pruneSourceLinks,
+  listActivitySpans,
 } from '../src/store.js'
 import type { BoardRow, RowStatus } from '../src/store.js'
 
@@ -1025,6 +1026,213 @@ describe('live activity — registering presence never overwrites a claim', () =
     expect(live.idle).toBe(true)
     expect(live.children).toEqual([])
     expect(live.last_doing).toBe('planning the migration')
+  })
+})
+
+// ── activity_spans: truthful claim intervals, additive and read-only ────────
+describe('activity spans', () => {
+  let db: Database.Database
+  const START = Date.parse('2026-08-01T09:00:00.000Z')
+
+  beforeEach(() => {
+    db = freshDb()
+    vi.useFakeTimers()
+    vi.setSystemTime(START)
+  })
+  afterEach(() => { vi.useRealTimers() })
+
+  it('migration is additive with no backfill — pre-existing activity rows produce no spans', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'inbox-legacy-spans-')), 'inbox.db')
+    const legacy = new Database(path)
+    const now = new Date().toISOString()
+    legacy.exec(`
+      CREATE TABLE activity (
+        session TEXT PRIMARY KEY,
+        project TEXT NOT NULL,
+        stream TEXT NOT NULL DEFAULT '',
+        agent TEXT NOT NULL DEFAULT 'unknown',
+        doing TEXT NOT NULL,
+        detail TEXT NOT NULL DEFAULT '',
+        children TEXT,
+        idle INTEGER NOT NULL DEFAULT 0,
+        started_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        last_call_at TEXT,
+        ended_at TEXT
+      );
+    `)
+    legacy.prepare(
+      `INSERT INTO activity (session, project, agent, doing, idle, started_at, updated_at, last_call_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run('legacy', 'p', 'claude-code', 'shipping the release', 0, now, now, now)
+    legacy.close()
+
+    const migrated = openDb(path)
+    expect(listActivitySpans(migrated)).toEqual([])
+    migrated.close()
+  })
+
+  it('registration (claim: false) never creates a span, even with a meaningful-looking doing', () => {
+    upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'a', doing: 'reviewing PR', claim: false })
+    expect(listActivitySpans(db)).toEqual([])
+  })
+
+  it('a meaningful claim opens exactly one span', () => {
+    upsertActivity(db, { session: 's1', project: 'p', stream: 'main', agent: 'claude-code', doing: 'migrating tests' })
+    const spans = listActivitySpans(db)
+    expect(spans).toHaveLength(1)
+    expect(spans[0]!.session).toBe('s1')
+    expect(spans[0]!.doing).toBe('migrating tests')
+    expect(spans[0]!.started_at).toBe(new Date(START).toISOString())
+    expect(spans[0]!.last_active_at).toBe(new Date(START).toISOString())
+    expect(spans[0]!.ended_at).toBeNull()
+    expect(spans[0]!.effective_ended_at).toBeNull() // still warm
+  })
+
+  it('an idle/empty/"open" doing never opens a span', () => {
+    upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'a', doing: 'open', idle: true })
+    expect(listActivitySpans(db)).toEqual([])
+    upsertActivity(db, { session: 's2', project: 'p', stream: '', agent: 'a', doing: '' })
+    expect(listActivitySpans(db)).toEqual([])
+  })
+
+  it('the same live claim asserted again does not spam a new row — it bumps last_active_at', () => {
+    upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'a', doing: 'writing tests' })
+    vi.setSystemTime(START + 5 * 60_000)
+    upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'a', doing: 'writing tests' })
+    const spans = listActivitySpans(db)
+    expect(spans).toHaveLength(1)
+    expect(spans[0]!.started_at).toBe(new Date(START).toISOString())
+    expect(spans[0]!.last_active_at).toBe(new Date(START + 5 * 60_000).toISOString())
+    expect(spans[0]!.ended_at).toBeNull()
+  })
+
+  it('a changed claim truthfully closes the prior span (at now) and opens a new one', () => {
+    upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'a', doing: 'writing tests' })
+    vi.setSystemTime(START + 5 * 60_000)
+    upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'a', doing: 'running suite' })
+    const spans = listActivitySpans(db)
+    expect(spans).toHaveLength(2)
+    expect(spans[0]!.doing).toBe('writing tests')
+    expect(spans[0]!.ended_at).toBe(new Date(START + 5 * 60_000).toISOString())
+    expect(spans[0]!.effective_ended_at).toBe(spans[0]!.ended_at)
+    expect(spans[1]!.doing).toBe('running suite')
+    expect(spans[1]!.started_at).toBe(new Date(START + 5 * 60_000).toISOString())
+    expect(spans[1]!.ended_at).toBeNull()
+  })
+
+  it('an explicit idle/open/done claim closes the prior span and opens none', () => {
+    upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'a', doing: 'writing tests' })
+    vi.setSystemTime(START + 5 * 60_000)
+    upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'a', doing: 'open', idle: true })
+    const spans = listActivitySpans(db)
+    expect(spans).toHaveLength(1)
+    expect(spans[0]!.ended_at).toBe(new Date(START + 5 * 60_000).toISOString())
+  })
+
+  it('a stale prior span closes at last_active_at + CLAIM_COLD_MS, not at now, even without a heartbeat first', () => {
+    upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'a', doing: 'writing tests' })
+    // silence past the cold threshold — no recordActivityCall/touchActivity in between
+    vi.setSystemTime(START + CLAIM_COLD_MS + 60 * 60_000)
+    upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'a', doing: 'open', idle: true })
+    const spans = listActivitySpans(db)
+    expect(spans).toHaveLength(1)
+    expect(spans[0]!.ended_at).toBe(new Date(START + CLAIM_COLD_MS).toISOString()) // capped, not "now"
+  })
+
+  it('reasserting the SAME claim text after a cold gap opens a fresh span rather than extending the old one', () => {
+    upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'a', doing: 'writing tests' })
+    vi.setSystemTime(START + CLAIM_COLD_MS + 60 * 60_000)
+    upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'a', doing: 'writing tests' })
+    const spans = listActivitySpans(db)
+    expect(spans).toHaveLength(2)
+    expect(spans[0]!.ended_at).toBe(new Date(START + CLAIM_COLD_MS).toISOString())
+    expect(spans[1]!.started_at).toBe(new Date(START + CLAIM_COLD_MS + 60 * 60_000).toISOString())
+    expect(spans[1]!.ended_at).toBeNull()
+  })
+
+  it('recordActivityCall while still warm bumps last_active_at on the open span', () => {
+    upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'a', doing: 'writing tests' })
+    vi.setSystemTime(START + 10 * 60_000)
+    recordActivityCall(db, 's1')
+    const spans = listActivitySpans(db)
+    expect(spans).toHaveLength(1)
+    expect(spans[0]!.last_active_at).toBe(new Date(START + 10 * 60_000).toISOString())
+    expect(spans[0]!.ended_at).toBeNull()
+  })
+
+  it('recordActivityCall after going cold closes the span at the exact cap, never extending it to now', () => {
+    upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'a', doing: 'writing tests' })
+    vi.setSystemTime(START + 3 * 60 * 60_000) // 3 hours of silence, well past the cap
+    recordActivityCall(db, 's1')
+    const spans = listActivitySpans(db)
+    expect(spans).toHaveLength(1)
+    expect(spans[0]!.ended_at).toBe(new Date(START + CLAIM_COLD_MS).toISOString())
+  })
+
+  it('endActivity after a short stretch of work closes the span at "now"', () => {
+    upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'a', doing: 'writing tests' })
+    vi.setSystemTime(START + 5 * 60_000)
+    endActivity(db, 's1')
+    const spans = listActivitySpans(db)
+    expect(spans[0]!.ended_at).toBe(new Date(START + 5 * 60_000).toISOString())
+  })
+
+  it('endActivity after hours of silence caps the close at last_active_at + CLAIM_COLD_MS, never overstating the work', () => {
+    upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'a', doing: 'writing tests' })
+    vi.setSystemTime(START + 6 * 60 * 60_000) // process exits after a long silence
+    endActivity(db, 's1')
+    const spans = listActivitySpans(db)
+    expect(spans[0]!.ended_at).toBe(new Date(START + CLAIM_COLD_MS).toISOString())
+  })
+
+  it('a crashed session (nothing ever closes it) reads as capped at query time without mutating the stored row', () => {
+    upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'a', doing: 'writing tests' })
+    vi.setSystemTime(START + 2 * 24 * 60 * 60_000) // two days of silence, no heartbeat, no exit
+    const spans = listActivitySpans(db)
+    expect(spans).toHaveLength(1)
+    expect(spans[0]!.ended_at).toBeNull() // the stored row is honest: nobody closed it
+    expect(spans[0]!.effective_ended_at).toBe(new Date(START + CLAIM_COLD_MS).toISOString())
+  })
+
+  it('project and since filters include spans that started before the window but overlap it', () => {
+    upsertActivity(db, { session: 'p1-old', project: 'proj-a', stream: '', agent: 'a', doing: 'first task' })
+    vi.setSystemTime(START + 10 * 60_000)
+    endActivity(db, 'p1-old') // ends inside what will be the "since" window
+    vi.setSystemTime(START + 20 * 60_000)
+    upsertActivity(db, { session: 'p1-new', project: 'proj-a', stream: '', agent: 'a', doing: 'second task' })
+    upsertActivity(db, { session: 'other-project', project: 'proj-b', stream: '', agent: 'a', doing: 'unrelated' })
+
+    const since = START + 15 * 60_000
+    const spans = listActivitySpans(db, { project: 'proj-a', sinceMs: since })
+    // p1-old started and ended before `since` → excluded; p1-new is ongoing → included
+    expect(spans.map((s) => s.session)).toEqual(['p1-new'])
+  })
+
+  it('a span spanning the since boundary (started before, still open) is included as an overlap', () => {
+    upsertActivity(db, { session: 'spanning', project: 'proj-a', stream: '', agent: 'a', doing: 'long task' })
+    vi.setSystemTime(START + 30 * 60_000)
+    const spans = listActivitySpans(db, { project: 'proj-a', sinceMs: START + 15 * 60_000 })
+    expect(spans.map((s) => s.session)).toEqual(['spanning'])
+  })
+
+  it('90-day pruning drops old closed spans and kill-9-style stale open spans, keeping recent ones', () => {
+    // A closed span far outside retention.
+    upsertActivity(db, { session: 'ancient', project: 'p', stream: '', agent: 'a', doing: 'long ago' })
+    endActivity(db, 'ancient')
+    // A "kill -9" style span: opened, never closed, abandoned long enough that
+    // even its capped effective end is outside retention.
+    upsertActivity(db, { session: 'crashed', project: 'p', stream: '', agent: 'a', doing: 'never finished' })
+
+    const past90 = START + 91 * 24 * 60 * 60_000 + CLAIM_COLD_MS + 60_000
+    vi.setSystemTime(past90)
+    // A fresh claim now, to trigger the opportunistic prune inside upsertActivity.
+    upsertActivity(db, { session: 'recent', project: 'p', stream: '', agent: 'a', doing: 'current work' })
+
+    const sessions = listActivitySpans(db).map((s) => s.session)
+    expect(sessions).not.toContain('ancient')
+    expect(sessions).not.toContain('crashed')
+    expect(sessions).toContain('recent')
   })
 })
 

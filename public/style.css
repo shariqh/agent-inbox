@@ -1493,6 +1493,21 @@ body.settings-open #liveBar { opacity: .32; }
   line-height: 1;
 }
 .dashboard-value-total { color: var(--app-text-soft); font-size: 17px; font-weight: 550; font-variant-numeric: tabular-nums; }
+.dashboard-agent-dots {
+  display: flex;
+  max-width: calc(100% - 24px);
+  flex-wrap: wrap;
+  align-self: end;
+  gap: 4px;
+}
+.dashboard-agent-dot {
+  width: 5px;
+  height: 5px;
+  flex: 0 0 5px;
+  border-radius: 50%;
+  background: var(--app-border-strong);
+}
+.dashboard-agent-dot.active { background: var(--signal); }
 .dashboard-signal-arrow { position: absolute; right: 14px; bottom: 13px; color: var(--signal); }
 .dashboard-signal.tone-agent { --signal: var(--app-agent); }
 .dashboard-signal.tone-attention { --signal: var(--app-attention); }

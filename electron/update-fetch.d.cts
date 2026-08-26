@@ -38,6 +38,7 @@ export interface FetchResponse {
   status: number
   headers?: { get(name: string): string | null }
   body?: {
+    cancel?(): Promise<unknown>
     getReader?(): {
       read(): Promise<{ done: boolean; value?: Uint8Array }>
       cancel?(): Promise<unknown>

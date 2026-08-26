@@ -561,6 +561,14 @@ function startAttentionWatch(win) {
   }, 3000)
 }
 
+function refreshUpdatesAfterLoad() {
+  if (!updateController) return
+  updateController.rendererReady().then(sendUpdateState).catch(() => {
+    console.error('[agent-inbox] update preferences unavailable; automatic checks disabled')
+    sendUpdateState(updateController.getState())
+  })
+}
+
 function createWindow() {
   const win = new BrowserWindow({
     show: false,
@@ -596,28 +604,21 @@ function createWindow() {
     }
   })
   win.webContents.on('did-finish-load', async () => {
-    if (updateController) {
+    if (!win.isDestroyed() && !win.isVisible()) {
       try {
-        const state = await updateController.rendererReady()
-        sendUpdateState(state)
-      } catch {
-        console.error('[agent-inbox] update preferences unavailable; automatic checks disabled')
-        sendUpdateState(updateController.getState())
+        const preference = await win.webContents.executeJavaScript(
+          'document.documentElement.dataset.themePreference'
+        )
+        nativeTheme.themeSource = THEME_SOURCE_VALUES.has(preference) ? preference : 'dark'
+        syncThemeChrome(win)
+      } catch (err) {
+        console.error('[agent-inbox] could not synchronize native theme before showing the window', err)
+        nativeTheme.themeSource = 'dark'
+        syncThemeChrome(win)
       }
+      if (!win.isDestroyed()) win.show()
     }
-    if (win.isDestroyed() || win.isVisible()) return
-    try {
-      const preference = await win.webContents.executeJavaScript(
-        'document.documentElement.dataset.themePreference'
-      )
-      nativeTheme.themeSource = THEME_SOURCE_VALUES.has(preference) ? preference : 'dark'
-      syncThemeChrome(win)
-    } catch (err) {
-      console.error('[agent-inbox] could not synchronize native theme before showing the window', err)
-      nativeTheme.themeSource = 'dark'
-      syncThemeChrome(win)
-    }
-    if (!win.isDestroyed()) win.show()
+    refreshUpdatesAfterLoad()
   })
   win.on('closed', () => {
     if (themeWindow === win) themeWindow = null

@@ -65,6 +65,15 @@ function contentLength(response, cap) {
   if (!Number.isSafeInteger(length) || length > cap) fail('update response exceeds its size limit')
 }
 
+function cancelBody(body) {
+  if (!body || typeof body.cancel !== 'function') return
+  try {
+    Promise.resolve(body.cancel()).catch(() => {})
+  } catch {
+    // Fetch may have already torn down the response after its signal aborted.
+  }
+}
+
 function withAbort(promise, signal) {
   if (signal.aborted) return Promise.reject(new UpdateFetchError('update request timed out'))
   return new Promise((resolve, reject) => {
@@ -84,7 +93,12 @@ function withAbort(promise, signal) {
 }
 
 async function readCappedBody(response, cap, signal) {
-  contentLength(response, cap)
+  try {
+    contentLength(response, cap)
+  } catch (error) {
+    cancelBody(response.body)
+    throw error
+  }
   if (!response.body) return Buffer.alloc(0)
 
   const chunks = []
@@ -98,14 +112,18 @@ async function readCappedBody(response, cap, signal) {
 
   if (typeof response.body.getReader === 'function') {
     const reader = response.body.getReader()
+    let complete = false
     try {
       while (true) {
         const { done, value } = await withAbort(reader.read(), signal)
-        if (done) break
+        if (done) {
+          complete = true
+          break
+        }
         if (value !== undefined) append(value)
       }
     } finally {
-      if (signal.aborted) {
+      if (!complete || signal.aborted) {
         try {
           reader.cancel?.().catch?.(() => {})
         } catch {
@@ -120,22 +138,27 @@ async function readCappedBody(response, cap, signal) {
     }
   } else if (typeof response.body[Symbol.asyncIterator] === 'function') {
     const iterator = response.body[Symbol.asyncIterator]()
+    let complete = false
     try {
       while (true) {
         const { done, value } = await withAbort(iterator.next(), signal)
-        if (done) break
+        if (done) {
+          complete = true
+          break
+        }
         append(value)
       }
     } finally {
-      if (signal.aborted) {
+      if (!complete || signal.aborted) {
         try {
-          iterator.return?.()
+          Promise.resolve(iterator.return?.()).catch(() => {})
         } catch {
           // The iterator may already have been closed by fetch's signal.
         }
       }
     }
   } else {
+    cancelBody(response.body)
     fail('update response body is not stream-readable')
   }
   return Buffer.concat(chunks, total)
@@ -159,6 +182,7 @@ async function fetchAsset({ fetchImpl, initialUrl, expectedAsset, cap, signal })
     }
 
     if (isRedirect(response.status)) {
+      cancelBody(response.body)
       if (redirects >= MAX_REDIRECTS) fail('update request exceeded its redirect limit')
       const location = response.headers?.get?.('location')
       if (!location) fail('update redirect is missing a Location header')
@@ -174,6 +198,7 @@ async function fetchAsset({ fetchImpl, initialUrl, expectedAsset, cap, signal })
     }
 
     if (response.status < 200 || response.status >= 300) {
+      cancelBody(response.body)
       fail('update endpoint did not return a successful response')
     }
     return readCappedBody(response, cap, signal)
@@ -290,6 +315,9 @@ async function checkForUpdate(options) {
         },
       },
     }
+  } catch (error) {
+    controller.abort()
+    throw error
   } finally {
     clearTimeoutImpl(deadline)
   }

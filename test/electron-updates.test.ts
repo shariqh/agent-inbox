@@ -40,6 +40,19 @@ describe('Electron updater integration', () => {
     expect(main).toContain("win.webContents.on('did-finish-load'")
   })
 
+  it('shows the core window before starting optional updater preference I/O', () => {
+    const main = read('electron/main.cjs')
+    const didFinishLoad = main.slice(
+      main.indexOf("win.webContents.on('did-finish-load'"),
+      main.indexOf("win.on('closed'"),
+    )
+
+    expect(didFinishLoad).not.toContain('await updateController.rendererReady()')
+    expect(didFinishLoad.indexOf('win.show()')).toBeGreaterThan(-1)
+    expect(didFinishLoad.indexOf('refreshUpdatesAfterLoad()')).toBeGreaterThan(didFinishLoad.indexOf('win.show()'))
+    expect(main).toContain('updateController.rendererReady().then(sendUpdateState).catch(() => {')
+  })
+
   it('uses a dedicated menu event and revalidates the main-owned release URL at openExternal', () => {
     const main = read('electron/main.cjs')
     const updateMenu = main.slice(

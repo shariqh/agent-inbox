@@ -161,6 +161,27 @@ describe('signed update fetching', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(7)
   })
 
+  it('cancels each accepted redirect response before following it', async () => {
+    const fixture = signedFixture()
+    const cancelRedirect = vi.fn(async () => {})
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url === MANIFEST_URL) {
+        return {
+          status: 302,
+          headers: new Headers({
+            location: 'https://github.com/shariqh/agent-inbox/releases/download/v2.0.0/update-manifest.json',
+          }),
+          body: { cancel: cancelRedirect },
+        }
+      }
+      if (url.endsWith('/update-manifest.json')) return response(fixture.manifestBytes)
+      return response(fixture.signatureBytes)
+    })
+
+    await expect(checkForUpdate(baseOptions(fixture, { fetchImpl }))).resolves.toMatchObject({ status: 'available' })
+    expect(cancelRedirect).toHaveBeenCalledOnce()
+  })
+
   it.each([
     'https://evilgithubusercontent.com/github-production-release-asset/1/2',
     'https://release-assets.githubusercontent.com/not-a-release-asset/1/2',
@@ -169,13 +190,18 @@ describe('signed update fetching', () => {
     'https://user:pass@github.com/shariqh/agent-inbox/releases/download/v2.0.0/update-manifest.json',
   ])('rejects an unsafe redirect target: %s', async (location) => {
     const fixture = signedFixture()
-    const fetchImpl = vi.fn(async (url: string) => (
-      url === MANIFEST_URL
-        ? response(null, 302, { location })
+    const cancel = vi.fn(async () => {})
+    let signal: AbortSignal | undefined
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      signal = init?.signal ?? undefined
+      return url === MANIFEST_URL
+        ? { status: 302, headers: new Headers({ location }), body: { cancel } }
         : response(fixture.signatureBytes)
-    ))
+    })
     await expect(checkForUpdate(baseOptions(fixture, { fetchImpl }))).rejects.toThrow()
     expect(fetchImpl).toHaveBeenCalledTimes(1)
+    expect(cancel).toHaveBeenCalledOnce()
+    expect(signal?.aborted).toBe(true)
   })
 
   it('rejects more than five redirects', async () => {
@@ -196,15 +222,24 @@ describe('signed update fetching', () => {
     ['signature', 16 * 1024 + 1],
   ] as const)('rejects oversized %s Content-Length before reading', async (kind, size) => {
     const fixture = signedFixture()
-    const fetchImpl = vi.fn(async (url: string) => {
+    const cancel = vi.fn(async () => {})
+    let signal: AbortSignal | undefined
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      signal = init?.signal ?? undefined
       if ((kind === 'manifest') === (url === MANIFEST_URL)) {
-        return response('small', 200, { 'content-length': String(size) })
+        return {
+          status: 200,
+          headers: new Headers({ 'content-length': String(size) }),
+          body: { cancel },
+        }
       }
       return url === MANIFEST_URL
         ? response(fixture.manifestBytes)
         : response(fixture.signatureBytes)
     })
     await expect(checkForUpdate(baseOptions(fixture, { fetchImpl }))).rejects.toThrow()
+    expect(cancel).toHaveBeenCalledOnce()
+    expect(signal?.aborted).toBe(true)
   })
 
   it.each([
@@ -212,26 +247,35 @@ describe('signed update fetching', () => {
     ['signature', 16 * 1024],
   ] as const)('rejects streaming %s overflow without arrayBuffer()', async (kind, cap) => {
     const fixture = signedFixture()
-    const stream = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(new Uint8Array(cap))
-        controller.enqueue(new Uint8Array(1))
-        controller.close()
+    const cancel = vi.fn(async () => {})
+    const chunks = [new Uint8Array(cap), new Uint8Array(1)]
+    let signal: AbortSignal | undefined
+    const oversized = {
+      status: 200,
+      headers: new Headers(),
+      body: {
+        getReader() {
+          return {
+            async read() {
+              const value = chunks.shift()
+              return value ? { done: false, value } : { done: true }
+            },
+            cancel,
+            releaseLock() {},
+          }
+        },
       },
-    })
-    const oversized = response(stream)
-    Object.defineProperty(oversized, 'arrayBuffer', {
-      value: () => {
-        throw new Error('arrayBuffer must not be used')
-      },
-    })
-    const fetchImpl = vi.fn(async (url: string) => {
+    }
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      signal = init?.signal ?? undefined
       if ((kind === 'manifest') === (url === MANIFEST_URL)) return oversized
       return url === MANIFEST_URL
         ? response(fixture.manifestBytes)
         : response(fixture.signatureBytes)
     })
     await expect(checkForUpdate(baseOptions(fixture, { fetchImpl }))).rejects.toThrow()
+    expect(cancel).toHaveBeenCalledOnce()
+    expect(signal?.aborted).toBe(true)
   })
 
   it('uses one abort deadline across response headers and body', async () => {
@@ -289,14 +333,21 @@ describe('signed update fetching', () => {
     }
   })
 
-  it('fails closed on network errors and non-2xx final responses', async () => {
+  it('fails closed on network errors and tears down non-2xx final responses', async () => {
     const fixture = signedFixture()
     await expect(checkForUpdate(baseOptions(fixture, {
       fetchImpl: vi.fn(async () => { throw new Error('secret proxy detail') }),
     }))).rejects.toThrow()
+    const cancel = vi.fn(async () => {})
+    let signal: AbortSignal | undefined
     await expect(checkForUpdate(baseOptions(fixture, {
-      fetchImpl: vi.fn(async () => response('nope', 500)),
+      fetchImpl: vi.fn(async (_url: string, init?: RequestInit) => {
+        signal = init?.signal ?? undefined
+        return { status: 500, headers: new Headers(), body: { cancel } }
+      }),
     }))).rejects.toThrow()
+    expect(cancel).toHaveBeenCalledOnce()
+    expect(signal?.aborted).toBe(true)
   })
 })
 

@@ -94,10 +94,15 @@ describe('structured-text performance CI gate', () => {
     const testJob = jobSource('test')
     expect(testJob).toContain('node-version: 24')
     expect(testJob).toContain('os: [ubuntu-latest, macos-14]')
-    expect(testJob).toContain(
-      '- name: Verify structured-text hostile-input performance\n' +
-      '        run: npm run test:structured-text:perf',
-    )
+    const stepMarker = '- name: Verify structured-text hostile-input performance\n'
+    const stepStart = testJob.indexOf(stepMarker)
+    const afterStep = testJob.slice(stepStart + stepMarker.length)
+    const nextStep = afterStep.search(/^\s{6}- /m)
+    const performanceStep = nextStep < 0 ? afterStep : afterStep.slice(0, nextStep)
+    expect(stepStart).toBeGreaterThanOrEqual(0)
+    expect(performanceStep).toContain('run: npm run test:structured-text:perf')
+    expect(performanceStep).not.toMatch(/^\s+if:/m)
+    expect(testJob.match(/npm run test:structured-text:perf/g)).toHaveLength(1)
   })
 
   it('keeps correctness in the normal suite and gates only the wall-clock expectation', () => {

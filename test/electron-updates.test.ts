@@ -83,6 +83,8 @@ describe('Electron updater integration', () => {
     expect(renderSetup.indexOf('renderUpdateSettings(host)')).toBeLessThan(renderSetup.indexOf('try {'))
     expect(app).toContain('window.agentInboxUpdates?.onOpenUpdates?.(openUpdates)')
     expect(app).toContain("if (!settingsOpen()) showPanel('setup')")
+    expect(app).toContain("section.scrollIntoView({ block: 'center' })")
+    expect(app).not.toContain("section.scrollIntoView({ block: 'start' })")
     expect(css).toContain('.updates-actions button {\n  min-height: 44px;')
     expect(css).toContain('.updates-actions { display: grid; grid-template-columns: minmax(0, 1fr); }')
   })

@@ -3714,7 +3714,7 @@ function openUpdates() {
   if (!settingsOpen()) showPanel('setup')
   const section = document.getElementById('updates-settings')
   if (!section) return
-  section.scrollIntoView({ block: 'start' })
+  section.scrollIntoView({ block: 'center' })
   section.focus()
   window.agentInboxUpdates?.check?.().catch(() => {})
 }

@@ -146,11 +146,13 @@ describe('desktop update settings', () => {
 
   it('opens Settings without toggling it closed, focuses Updates, then checks', async () => {
     const bridge = await boot()
+    const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView')
     bridge.open()
     await settle()
     expect(document.getElementById('setup')?.hidden).toBe(false)
     expect(document.activeElement).toBe(document.getElementById('updates-settings'))
     expect(bridge.check).toHaveBeenCalledTimes(1)
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'center' })
 
     bridge.open()
     await settle()

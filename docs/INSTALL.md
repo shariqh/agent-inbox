@@ -17,6 +17,14 @@ macOS DMG, Linux AppImage, or Debian package from
 [GitHub Releases](https://github.com/shariqh/agent-inbox/releases). If no public release
 is listed yet, use the source-build path below.
 
+Packaged desktop apps can check the signed release manifest from **Settings → Updates**
+or **Check for Updates…** in the app menu. Automatic checks are off by default and can
+be enabled explicitly in Settings. A check makes a plain request to GitHub Releases,
+sends no telemetry, and notifies once when a newer verified version is available. This
+release does not download or install packages: **Review release** opens the verified
+GitHub release page so you can choose and install the package yourself. Browser viewers
+and source/dev Electron runs do not expose update checks.
+
 ## Recommended macOS installation
 
 When a public release is available, download the DMG from GitHub Releases, drag

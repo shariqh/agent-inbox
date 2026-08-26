@@ -3710,9 +3710,19 @@ function toggleSettings() {
   if (!closeSettings()) showPanel('setup')
 }
 
+function openUpdates() {
+  if (!settingsOpen()) showPanel('setup')
+  const section = document.getElementById('updates-settings')
+  if (!section) return
+  section.scrollIntoView({ block: 'center' })
+  section.focus()
+  window.agentInboxUpdates?.check?.().catch(() => {})
+}
+
 function initGear() {
   document.getElementById('gear').addEventListener('click', toggleSettings)
   window.agentInboxSetup?.onToggleSettings?.(toggleSettings)
+  window.agentInboxUpdates?.onOpenUpdates?.(openUpdates)
 }
 
 // live entries the user has expanded, by session id — survives the poll rebuild
@@ -6416,12 +6426,130 @@ function renderThemeSettings(host) {
   host.appendChild(section)
 }
 
+let updateSettings = null
+let updateSubscriptionStarted = false
+
+function updateStateCopy(state) {
+  switch (state.status) {
+    case 'checking': return 'Checking GitHub for a signed release…'
+    case 'current': return 'Agent Inbox is up to date.'
+    case 'available': return `Agent Inbox ${state.available?.version ?? ''} is available.`
+    case 'unverified': return 'Couldn’t check right now. You can review Releases manually.'
+    case 'unsupported': return 'Updates are not available for this app build.'
+    default: return 'Ready to check GitHub for a signed release.'
+  }
+}
+
+function paintUpdateSettings(state) {
+  if (!updateSettings) return
+  const {
+    appVersion,
+    automatic,
+    check,
+    checked,
+    releases,
+    review,
+    status,
+  } = updateSettings
+  appVersion.textContent = `Agent Inbox app ${state.currentVersion || 'version unavailable'}`
+  status.textContent = updateStateCopy(state)
+  status.dataset.state = state.status
+  check.disabled = state.status === 'checking'
+  check.textContent = state.status === 'checking' ? 'Checking…' : 'Check now'
+  automatic.checked = Boolean(state.automaticChecks)
+  checked.textContent = state.checkedAt
+    ? `Last checked ${new Date(state.checkedAt).toLocaleString()}`
+    : 'Not checked yet'
+  review.hidden = state.status !== 'available'
+  releases.hidden = state.status !== 'unverified'
+}
+
+function renderUpdateSettings(host) {
+  const bridge = window.agentInboxUpdates
+  if (!bridge || bridge.available !== true) return
+
+  const section = document.createElement('section')
+  section.id = 'updates-settings'
+  section.className = 'setup-block updates-settings'
+  section.tabIndex = -1
+
+  const heading = document.createElement('div')
+  heading.className = 'updates-heading'
+  const title = document.createElement('h3')
+  title.textContent = 'Updates'
+  const appVersion = document.createElement('span')
+  appVersion.className = 'updates-version'
+  appVersion.textContent = 'Agent Inbox app'
+  heading.append(title, appVersion)
+
+  const status = document.createElement('p')
+  status.className = 'updates-state'
+  status.setAttribute('role', 'status')
+  status.setAttribute('aria-live', 'polite')
+  status.textContent = 'Ready to check GitHub for a signed release.'
+
+  const checked = document.createElement('p')
+  checked.className = 'updates-checked'
+  checked.textContent = 'Not checked yet'
+
+  const actions = document.createElement('div')
+  actions.className = 'updates-actions'
+  const check = btn('Check now', () => bridge.check().catch(() => {}))
+  check.className = 'updates-check'
+  const review = btn('Review release', () => bridge.openRelease().catch(() => {}))
+  review.className = 'updates-review'
+  review.hidden = true
+  const releases = btn('Open Releases', () => bridge.openRelease().catch(() => {}))
+  releases.className = 'updates-releases'
+  releases.hidden = true
+  actions.append(check, review, releases)
+
+  const preference = document.createElement('label')
+  preference.className = 'updates-preference'
+  const automatic = document.createElement('input')
+  automatic.type = 'checkbox'
+  automatic.className = 'updates-automatic'
+  automatic.setAttribute('aria-describedby', 'updates-automatic-detail')
+  const preferenceCopy = document.createElement('span')
+  const preferenceLabel = document.createElement('strong')
+  preferenceLabel.textContent = 'Check automatically'
+  const preferenceDetail = document.createElement('small')
+  preferenceDetail.id = 'updates-automatic-detail'
+  preferenceDetail.textContent = 'Makes one plain GitHub request on schedule. No telemetry is sent.'
+  preferenceCopy.append(preferenceLabel, preferenceDetail)
+  preference.append(automatic, preferenceCopy)
+  automatic.addEventListener('change', () => {
+    const enabled = automatic.checked
+    bridge.setAutomatic(enabled).catch(() => {
+      automatic.checked = !enabled
+      status.textContent = 'Automatic check preference could not be saved.'
+      status.dataset.state = 'unverified'
+    })
+  })
+
+  section.append(heading, status, checked, actions, preference)
+  host.appendChild(section)
+  updateSettings = { appVersion, automatic, check, checked, releases, review, status }
+
+  if (!updateSubscriptionStarted) {
+    updateSubscriptionStarted = true
+    bridge.onState?.(paintUpdateSettings)
+  }
+  bridge.getState().then(paintUpdateSettings).catch(() => paintUpdateSettings({
+    status: 'unverified',
+    currentVersion: '',
+    automaticChecks: false,
+    checkedAt: null,
+  }))
+}
+
 // Setup section: configure new agents or copy the exact setup command. Fetched
 // once, not on the poll.
 async function renderSetup() {
   const host = document.querySelector('#setup .setup-body')
   host.replaceChildren()
   renderThemeSettings(host)
+  renderUpdateSettings(host)
   try {
     const s = await (await fetch('/api/setup')).json()
     const block = (title, text, hint) => {

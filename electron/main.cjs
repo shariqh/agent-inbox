@@ -26,6 +26,9 @@ const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 const { classifyReuse, watchUpstream } = require('./reuse.cjs')
 const { canRunSetup, installerRepoRoot, runAgentInstall, runtimeKey, selectRuntimePayload } = require('./setup-runner.cjs')
+const { MANUAL_RELEASES_URL, createUpdateController } = require('./update-controller.cjs')
+const { checkForUpdate } = require('./update-fetch.cjs')
+const { createUpdatePreferences } = require('./update-preferences.cjs')
 const { loadUpdateRegistry } = require('./update-trust.cjs')
 const {
   cannedResponseActions,
@@ -50,6 +53,14 @@ const REPO_ROOT = path.resolve(__dirname, '..')
 const updateKeyRegistry = loadUpdateRegistry({
   registryPath: path.join(REPO_ROOT, 'release', 'update-keys.json'),
 })
+const UPDATE_PLATFORMS = new Set(['darwin', 'linux'])
+const UPDATE_ARCHITECTURES = new Set(['x64', 'arm64'])
+const updateFeatureAvailable = (
+  app.isPackaged &&
+  updateKeyRegistry !== null &&
+  UPDATE_PLATFORMS.has(process.platform) &&
+  UPDATE_ARCHITECTURES.has(process.arch)
+)
 const responseWatch = createResponseWatch()
 const notificationRetainer = createNotificationRetainer()
 const wakeAdapter = wakeAdapterFromEnv(process.env)
@@ -71,6 +82,8 @@ let quitAfterSetup = false
 let runtimeSelection = { ok: false, reason: 'unresolved', key: runtimeKey(process.platform, process.arch) }
 let themeWindow = null
 let themeWindowWebContentsId = null
+let updateWindow = null
+let updateController = null
 
 function isTrustedThemeSender(senderUrl) {
   try {
@@ -79,6 +92,99 @@ function isTrustedThemeSender(senderUrl) {
     return false
   }
 }
+
+function isTrustedUpdateSender(senderUrl, sender) {
+  if (!updateFeatureAvailable || !updateWindow || updateWindow.isDestroyed()) return false
+  if (updateWindow.webContents.isDestroyed() || sender !== updateWindow.webContents) return false
+  try {
+    return new URL(senderUrl).origin === new URL(URL_BASE).origin
+  } catch {
+    return false
+  }
+}
+
+function unavailableUpdateState() {
+  return {
+    status: 'unsupported',
+    currentVersion: app.getVersion(),
+    automaticChecks: false,
+    checkedAt: null,
+    message: 'Updates are not available for this app build.',
+  }
+}
+
+function sendUpdateState(state) {
+  if (!updateWindow || updateWindow.isDestroyed() || updateWindow.webContents.isDestroyed()) return
+  updateWindow.webContents.send('agent-inbox:update-state-changed', state)
+}
+
+function validateReleaseUrl(value, version) {
+  if (typeof value !== 'string' || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version)) {
+    return null
+  }
+  try {
+    const url = new URL(value)
+    if (
+      url.protocol !== 'https:' ||
+      url.hostname !== 'github.com' ||
+      url.port !== '' ||
+      url.username !== '' ||
+      url.password !== '' ||
+      url.search !== '' ||
+      url.hash !== '' ||
+      url.pathname !== `/shariqh/agent-inbox/releases/tag/v${version}`
+    ) {
+      return null
+    }
+    return url.href
+  } catch {
+    return null
+  }
+}
+
+function openUpdatesWindow(win) {
+  if (win.isDestroyed() || win.webContents.isDestroyed()) return
+  if (win.isMinimized()) win.restore()
+  win.show()
+  win.focus()
+  win.webContents.send('agent-inbox:open-updates')
+}
+
+ipcMain.handle('agent-inbox:update-state', (event, ...args) => {
+  if (args.length !== 0 || !isTrustedUpdateSender(event.senderFrame?.url ?? '', event.sender)) {
+    return unavailableUpdateState()
+  }
+  return updateController?.getState() ?? unavailableUpdateState()
+})
+
+ipcMain.handle('agent-inbox:update-check', (event, ...args) => {
+  if (args.length !== 0 || !isTrustedUpdateSender(event.senderFrame?.url ?? '', event.sender)) {
+    return unavailableUpdateState()
+  }
+  return updateController?.checkNow() ?? unavailableUpdateState()
+})
+
+ipcMain.handle('agent-inbox:update-automatic', (event, enabled, ...args) => {
+  if (
+    args.length !== 0 ||
+    typeof enabled !== 'boolean' ||
+    !isTrustedUpdateSender(event.senderFrame?.url ?? '', event.sender)
+  ) {
+    return false
+  }
+  return updateController?.setAutomaticChecks(enabled) ?? false
+})
+
+ipcMain.handle('agent-inbox:update-open-release', async (event, ...args) => {
+  if (args.length !== 0 || !isTrustedUpdateSender(event.senderFrame?.url ?? '', event.sender)) return false
+  const state = updateController?.getState()
+  const verifiedUrl = state?.status === 'available'
+    ? validateReleaseUrl(state.available?.releaseUrl, state.available?.version)
+    : null
+  const releaseUrl = verifiedUrl ?? MANUAL_RELEASES_URL
+  await shell.openExternal(releaseUrl)
+  return true
+})
 
 ipcMain.handle('agent-inbox:install-available', (event) =>
   setupInstallEnabled &&
@@ -455,6 +561,14 @@ function startAttentionWatch(win) {
   }, 3000)
 }
 
+function refreshUpdatesAfterLoad() {
+  if (!updateController) return
+  updateController.rendererReady().then(sendUpdateState).catch(() => {
+    console.error('[agent-inbox] update preferences unavailable; automatic checks disabled')
+    sendUpdateState(updateController.getState())
+  })
+}
+
 function createWindow() {
   const win = new BrowserWindow({
     show: false,
@@ -466,9 +580,11 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       preload: path.join(__dirname, 'setup-preload.cjs'),
+      additionalArguments: updateFeatureAvailable ? ['--agent-inbox-updates=1'] : [],
     },
   })
   themeWindow = win
+  updateWindow = win
   const webContentsId = win.webContents.id
   themeWindowWebContentsId = webContentsId
   syncThemeChrome(win)
@@ -488,23 +604,26 @@ function createWindow() {
     }
   })
   win.webContents.on('did-finish-load', async () => {
-    if (win.isDestroyed() || win.isVisible()) return
-    try {
-      const preference = await win.webContents.executeJavaScript(
-        'document.documentElement.dataset.themePreference'
-      )
-      nativeTheme.themeSource = THEME_SOURCE_VALUES.has(preference) ? preference : 'dark'
-      syncThemeChrome(win)
-    } catch (err) {
-      console.error('[agent-inbox] could not synchronize native theme before showing the window', err)
-      nativeTheme.themeSource = 'dark'
-      syncThemeChrome(win)
+    if (!win.isDestroyed() && !win.isVisible()) {
+      try {
+        const preference = await win.webContents.executeJavaScript(
+          'document.documentElement.dataset.themePreference'
+        )
+        nativeTheme.themeSource = THEME_SOURCE_VALUES.has(preference) ? preference : 'dark'
+        syncThemeChrome(win)
+      } catch (err) {
+        console.error('[agent-inbox] could not synchronize native theme before showing the window', err)
+        nativeTheme.themeSource = 'dark'
+        syncThemeChrome(win)
+      }
+      if (!win.isDestroyed()) win.show()
     }
-    if (!win.isDestroyed()) win.show()
+    refreshUpdatesAfterLoad()
   })
   win.on('closed', () => {
     if (themeWindow === win) themeWindow = null
     if (themeWindowWebContentsId === webContentsId) themeWindowWebContentsId = null
+    if (updateWindow === win) updateWindow = null
   })
 
   return win
@@ -513,6 +632,13 @@ function createWindow() {
 nativeTheme.on('updated', () => syncThemeChrome())
 
 function installApplicationMenu(win) {
+  const updates = {
+    label: 'Check for Updates…',
+    enabled: updateFeatureAvailable,
+    click() {
+      openUpdatesWindow(win)
+    },
+  }
   const settings = {
     label: 'Settings…',
     accelerator: 'CommandOrControl+,',
@@ -526,6 +652,7 @@ function installApplicationMenu(win) {
         label: app.name,
         submenu: [
           { role: 'about' },
+          updates,
           { type: 'separator' },
           settings,
           { type: 'separator' },
@@ -538,8 +665,42 @@ function installApplicationMenu(win) {
           { role: 'quit' },
         ],
       }, ...standardMenus]
-    : [{ label: 'File', submenu: [settings, { type: 'separator' }, { role: 'quit' }] }, ...standardMenus]
+    : [{
+        label: 'File',
+        submenu: [updates, { type: 'separator' }, settings, { type: 'separator' }, { role: 'quit' }],
+      }, ...standardMenus]
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+}
+
+function initializeUpdateController() {
+  if (!updateFeatureAvailable) return null
+  const preferences = createUpdatePreferences({ app })
+  return createUpdateController({
+    currentVersion: app.getVersion(),
+    preferences,
+    checker: ({ currentVersion, automaticChecks }) => checkForUpdate({
+      fetchImpl: fetch,
+      registry: updateKeyRegistry,
+      currentVersion,
+      automaticChecks,
+      platform: process.platform,
+      arch: process.arch,
+      isPackaged: app.isPackaged,
+      appImagePath: process.env.APPIMAGE,
+    }),
+    notifier: ({ version }) => {
+      if (!Notification.isSupported()) return
+      const note = new Notification({
+        title: 'Agent Inbox update available',
+        body: `Version ${version} is ready to review on GitHub Releases.`,
+      })
+      note.on('click', () => {
+        if (updateWindow) openUpdatesWindow(updateWindow)
+      })
+      notificationRetainer.show(note)
+    },
+    emit: sendUpdateState,
+  })
 }
 
 /**
@@ -604,6 +765,7 @@ app.whenReady().then(async () => {
     return
   }
 
+  updateController = initializeUpdateController()
   const win = createWindow()
   installApplicationMenu(win)
   const setupWindowWebContentsId = win.webContents.id
@@ -657,6 +819,7 @@ app.on('before-quit', (event) => {
 
 // Kill the viewer only if we spawned it; a pre-existing server is left untouched.
 app.on('will-quit', () => {
+  updateController?.dispose()
   if (spawnedViewer && spawnedViewer.exitCode === null) {
     spawnedViewer.kill()
   }

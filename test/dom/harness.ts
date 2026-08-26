@@ -103,6 +103,12 @@ export interface BootOptions {
    * Inject a plain object and `/api/setup` is deterministic.
    */
   viewer?: ViewerOpts
+  /** Intercept selected viewer requests while forwarding all others to the real Hono app. */
+  interceptFetch?: (
+    input: RequestInfo | URL,
+    init: RequestInit | undefined,
+    next: () => Promise<Response>,
+  ) => Promise<Response>
 }
 
 /**
@@ -111,7 +117,7 @@ export interface BootOptions {
  * The bridge is `async` on purpose: Hono types `.request()` as
  * `Response | Promise<Response>`, which is not assignable to `fetch` directly.
  */
-export function mountViewer(db: Database.Database, { holdFetch = false, viewer }: BootOptions = {}): ViewerBridge {
+export function mountViewer(db: Database.Database, { holdFetch = false, viewer, interceptFetch }: BootOptions = {}): ViewerBridge {
   const app = createViewer(db, viewer)
   const posts: PostRecord[] = []
   let failStatus: number | null = null
@@ -124,7 +130,8 @@ export function mountViewer(db: Database.Database, { holdFetch = false, viewer }
       if (failStatus !== null) return new Response('boom', { status: failStatus })
     }
     if (parked) await parked
-    return await app.request(url, init)
+    const next = async () => await app.request(url, init)
+    return interceptFetch ? await interceptFetch(input, init, next) : await next()
   }
   return {
     posts,

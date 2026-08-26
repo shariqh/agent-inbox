@@ -3,6 +3,15 @@
 A desktop window around the existing viewer (`public/` + `dist/viewer-server.js`).
 Two modes: a dev run from the repo, and a packaged self-contained `Agent Inbox.app`.
 
+Packaged macOS and Linux apps expose signed, notify-only release checks in
+**Settings → Updates** and through **Check for Updates…** in the app menu. The checker
+fetches and verifies the release manifest and signature against the key registry bundled
+with the app before using release metadata. Automatic checks are explicit and off by
+default. They make no telemetry requests and notify at most once per verified version.
+This layer does not download, replace, or install an app; the release action opens the
+verified GitHub release page for a manual package update. Dev Electron and browser
+viewers intentionally omit the feature.
+
 ## Packaged app (self-contained)
 
 ```sh

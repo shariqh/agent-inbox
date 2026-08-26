@@ -43,6 +43,7 @@ import { treeIdentity } from '../scripts/tree-identity.mjs'
 import { assertRuntimeSourceCommit } from '../scripts/runtime-provenance.mjs'
 import { resolveSourceProvenance } from '../scripts/source-provenance.mjs'
 import { RUNTIME_TARGETS } from '../scripts/runtime-targets.mjs'
+import { verifyPackagedUpdateTrust } from '../scripts/package-update-trust.mjs'
 
 const root = resolve(process.cwd())
 
@@ -178,6 +179,26 @@ describe('native architecture release stages', () => {
       .toBe('<p>Chromium notices</p>\n')
     writeFileSync(join(packagerOutput, 'LICENSE'), '')
     expect(() => copyElectronNotices(packagerOutput, app)).toThrow(/missing nonempty LICENSE/)
+  })
+
+  it('loads the shipped update verifier and pinned registry from a macOS app folder', () => {
+    const appResources = join(
+      mkdtempSync(join(tmpdir(), 'macos-update-trust-')),
+      'Agent Inbox.app',
+      'Contents',
+      'Resources',
+      'app',
+    )
+    mkdirSync(join(appResources, 'electron'), { recursive: true })
+    mkdirSync(join(appResources, 'release'), { recursive: true })
+    cpSync(join(root, 'electron/update-manifest.cjs'), join(appResources, 'electron/update-manifest.cjs'))
+    cpSync(join(root, 'electron/update-trust.cjs'), join(appResources, 'electron/update-trust.cjs'))
+    cpSync(join(root, 'release/update-keys.json'), join(appResources, 'release/update-keys.json'))
+
+    expect(verifyPackagedUpdateTrust(appResources)).toEqual({
+      signingKeyId: 'ed25519-99927ba2f6af6482',
+      trustedKeyIds: ['ed25519-99927ba2f6af6482'],
+    })
   })
 
   it('rejects stale or missing runtime source commits', () => {

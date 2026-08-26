@@ -18,11 +18,13 @@ import {
 const root = resolve(process.cwd())
 const sourceCommit = 'a'.repeat(40)
 const sourceTree = 'b'.repeat(40)
+const taggedAt = '2026-08-25T20:12:51Z'
 const context = {
   schema: 1,
   tag: 'v1.0.1',
   version: '1.0.1',
   sourceCommit,
+  taggedAt,
   annotated: true,
 } as const
 const work: string[] = []
@@ -394,7 +396,7 @@ describe('multi-platform release aggregation', () => {
     })).toThrow(/checksum|sha-256|digest/i)
   })
 
-  it('assembles five packages plus one deterministic exact-name checksum manifest', () => {
+  it('assembles five packages, the exact checksum file, and a deterministic update manifest', () => {
     const linux = makeLinuxFixture()
     const mac = makeMacFixture()
     const output = tempDir()
@@ -415,6 +417,7 @@ describe('multi-platform release aggregation', () => {
       'agent-inbox_1.0.1_amd64.deb',
       'agent-inbox_1.0.1_arm64.deb',
       'SHA256SUMS.txt',
+      'update-manifest.json',
     ])
     const checksums = readFileSync(join(output, 'release-assets', 'SHA256SUMS.txt'), 'utf8')
     const lines = checksums.trimEnd().split('\n')
@@ -431,9 +434,54 @@ describe('multi-platform release aggregation', () => {
       expect(name).toBeTruthy()
       expect(line.startsWith(sha256File(join(output, 'release-assets', name!)))).toBe(true)
     }
+    const updateManifestPath = join(output, 'release-assets', 'update-manifest.json')
+    const updateManifestBytes = readFileSync(updateManifestPath, 'utf8')
+    expect(updateManifestBytes.endsWith('\n')).toBe(true)
+    const updateManifest = JSON.parse(updateManifestBytes)
+    expect(updateManifest).toMatchObject({
+      schema: 1,
+      kind: 'agent-inbox-update-manifest',
+      repository: 'shariqh/agent-inbox',
+      version: '1.0.1',
+      tag: 'v1.0.1',
+      source: {
+        commit: sourceCommit,
+        tree: sourceTree,
+      },
+      publishedAt: taggedAt,
+      signingKeyId: 'ed25519-99927ba2f6af6482',
+      trustedKeyIds: ['ed25519-99927ba2f6af6482'],
+    })
+    expect(updateManifest.targets).toHaveLength(5)
+    expect(updateManifest.targets.map((target: {
+      platform: string
+      architecture: string
+      packageType: string
+    }) => `${target.platform}/${target.architecture}/${target.packageType}`)).toEqual([
+      'darwin/universal/dmg',
+      'linux/arm64/appimage',
+      'linux/arm64/deb',
+      'linux/x64/appimage',
+      'linux/x64/deb',
+    ])
+    expect(updateManifest.targets.map((target: { filename: string }) => target.filename).sort())
+      .toEqual(lines.map((line) => line.slice(66)).sort())
+    for (const target of updateManifest.targets) {
+      const checksum = lines.find((line) => line.endsWith(`  ${target.filename}`))
+      expect(checksum?.slice(0, 64)).toBe(target.sha256)
+      expect(target.byteLength).toBe(
+        readFileSync(join(output, 'release-assets', target.filename)).byteLength,
+      )
+    }
     const aggregateEvidence = readFileSync(result.evidencePath, 'utf8')
     expect(aggregateEvidence).not.toContain(output)
     expect(aggregateEvidence).not.toContain(basename(mac.evidence))
+    expect(JSON.parse(aggregateEvidence).updateManifest).toEqual({
+      name: 'update-manifest.json',
+      size: Buffer.byteLength(updateManifestBytes),
+      sha256: sha256Bytes(updateManifestBytes),
+      keyRegistrySha256: sha256File(join(root, 'release/update-keys.json')),
+    })
   })
 
   it('marks PR/manual aggregation evidence non-publishable while proving the complete inventory', () => {
@@ -467,6 +515,8 @@ describe('multi-platform release aggregation', () => {
       'agent-inbox_1.0.1_amd64.deb',
       'agent-inbox_1.0.1_arm64.deb',
       'SHA256SUMS.txt',
+      'update-manifest.json',
+      'update-manifest.json.sig',
     ])
     expect(evidence.assets.find((asset) => asset.platform === 'macos')).toMatchObject({
       provisional: true,

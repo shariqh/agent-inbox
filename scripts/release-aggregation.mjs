@@ -15,6 +15,10 @@ import {
   validatePublicationInputs,
   validateReleaseContext,
 } from './macos-release-gates.mjs'
+import {
+  generateManifest,
+  parseRegistry,
+} from './update-manifest.mjs'
 
 const SHA_RE = /^[0-9a-f]{40}$/
 const VERSION_RE = /^\d+\.\d+\.\d+$/
@@ -467,6 +471,8 @@ export function validateDryRunReleaseArtifacts({
       `agent-inbox_${release.version}_amd64.deb`,
       `agent-inbox_${release.version}_arm64.deb`,
       'SHA256SUMS.txt',
+      'update-manifest.json',
+      'update-manifest.json.sig',
     ],
     verification: {
       linuxNativePackages: 'passed',
@@ -490,6 +496,46 @@ function copyPackage(source, destination) {
   const mode = lstatSync(source).mode & 0o777
   copyFileSync(source, destination)
   chmodSync(destination, mode)
+}
+
+function updateManifestAsset(asset) {
+  if (asset.platform === 'macos') {
+    if (
+      asset.packageType !== 'DMG'
+      || asset.architecture !== 'universal'
+      || asset.target !== 'darwin-arm64+darwin-x64'
+    ) {
+      fail(`macOS update target evidence is malformed for ${asset.name}`)
+    }
+    return {
+      name: asset.name,
+      packageType: 'dmg',
+      platform: 'darwin',
+      architecture: 'universal',
+      size: asset.size,
+      sha256: asset.sha256,
+    }
+  }
+  if (
+    asset.platform !== 'linux'
+    || !['linux-x64', 'linux-arm64'].includes(asset.target)
+  ) {
+    fail(`Linux update target evidence is malformed for ${asset.name}`)
+  }
+  const packageType = asset.packageType === 'AppImage'
+    ? 'appimage'
+    : asset.packageType === 'DEB'
+      ? 'deb'
+      : null
+  if (!packageType) fail(`Linux update package type is malformed for ${asset.name}`)
+  return {
+    name: asset.name,
+    packageType,
+    platform: 'linux',
+    architecture: asset.target === 'linux-x64' ? 'x64' : 'arm64',
+    size: asset.size,
+    sha256: asset.sha256,
+  }
 }
 
 export function aggregateReleaseAssets({
@@ -566,10 +612,37 @@ export function aggregateReleaseAssets({
       deterministicChecksums: 'passed',
     },
   }
+  const registryPath = join(resolve(repoRoot), 'release/update-keys.json')
+  const registry = parseRegistry(readFileSync(registryPath))
+  const macosInputs = readJson(
+    join(resolve(repoRoot), 'release/macos-inputs.json'),
+    'macOS release inputs',
+  )
+  const { bytes: updateManifestBytes } = generateManifest({
+    registry,
+    evidence: {
+      tag: evidence.tag,
+      packageVersion: evidence.packageVersion,
+      sourceCommit: evidence.sourceCommit,
+      sourceTree: evidence.sourceTree,
+      assets: evidence.assets.map(updateManifestAsset),
+    },
+    minimumMacosVersion: macosInputs.minimumMacosVersion,
+    publishedAt: release.taggedAt,
+  })
+  const updateManifestPath = join(assets, 'update-manifest.json')
+  writeFileSync(updateManifestPath, updateManifestBytes, { mode: DATA_MODE })
+  chmodSync(updateManifestPath, DATA_MODE)
+  evidence.updateManifest = {
+    name: 'update-manifest.json',
+    size: updateManifestBytes.length,
+    sha256: sha256File(updateManifestPath),
+    keyRegistrySha256: sha256File(registryPath),
+  }
   const evidencePath = join(output, 'release-aggregation-evidence.json')
   writeFileSync(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, { mode: DATA_MODE })
   return {
-    assetNames: [...packageNames, 'SHA256SUMS.txt'],
+    assetNames: [...packageNames, 'SHA256SUMS.txt', 'update-manifest.json'],
     assetsDir: assets,
     evidencePath,
   }

@@ -329,25 +329,41 @@ The public allowlist is exactly:
 - `agent-inbox_X.Y.Z_amd64.deb`
 - `agent-inbox_X.Y.Z_arm64.deb`
 - `SHA256SUMS.txt`
+- `update-manifest.json`
+- `update-manifest.json.sig`
 
 The checksum manifest contains the five binary-package names in ascending
 bytewise filename order. Build reports and per-package checksum sidecars remain
 retained Actions evidence; they are not duplicate public assets. Aggregate
 evidence contains only canonical relative names, hashes, sizes, source and
-manifest identities, and verification outcomes—never builder-local paths.
+manifest identities, and verification outcomes—never builder-local paths. The
+deterministic update manifest repeats the exact five package names, byte lengths,
+and SHA-256 values with platform/architecture/install-strategy metadata. Its
+detached Ed25519 envelope covers the exact manifest bytes and carries a canonical
+key-id-sorted signature array. Production emits one signature; future key rotation
+can overlap old and new signatures without a schema change, and verification accepts
+any valid signature from a pinned trusted key. Structurally valid entries for keys an
+installed client does not yet pin are ignored; an unknown-only envelope still fails.
+The current protected signer remains single-key, so routine rotation must wait for a
+future dual-key signing extension rather than merely flipping the active key. Neither
+manifest asset is added to the package-only checksum file.
 
 Publication starts with a private draft carrying neutral staging metadata. The
 write-scoped job uploads the exact allowlist, verifies the remote API inventory,
-always downloads all six assets into isolated storage, compares each file with
-the protected handoff, and rehashes all five packages through the downloaded
-checksum manifest. Only then does one API update install the final title/notes
-and make the release public. An exact already-public rerun is a verified no-op;
-an existing draft or any conflicting tag, metadata, asset, byte, or checksum
-fails closed. Draft creation captures the numeric release ID directly from the
-API response and writes a private ownership marker binding the tag, source
-commit/tree, producer run ID/attempt, and inventory digest. Cleanup GETs only
-that ID and deletes only while the complete marker, unique title, draft state,
-tag, and source still match this run. A replaced or edited draft is retained.
+always downloads all eight assets into isolated storage, compares each file with
+the protected handoff, rehashes all five packages through the downloaded
+checksum manifest, and independently verifies the manifest signature and target
+metadata. Only then does one API update install the final title/notes and make
+the release public. Before signing, a separate read-only protected job proves
+that this is the first manifest-bearing release or verifies the latest prior
+manifest pair and signed key continuity. An exact already-public rerun is a
+verified no-op; an existing draft or any conflicting tag, metadata, asset, byte,
+checksum, or signature fails closed. Draft creation captures the numeric release
+ID directly from the API response and writes a private ownership marker binding
+the tag, source commit/tree, producer run ID/attempt, and inventory digest.
+Cleanup GETs only that ID and deletes only while the complete marker, unique
+title, draft state, tag, and source still match this run. A replaced or edited
+draft is retained.
 Once the final publication PATCH may have been attempted, cleanup never
 auto-deletes; the ID/tag remain recovery evidence. Final public notes carry the
 same identity in a non-rendering marker, so exact-public reruns can verify and
@@ -362,9 +378,10 @@ protected environment, Apple credential, or Release API mutation.
 ## Retained limitations
 
 The release intentionally has no RPM, Snap, Flatpak, distro repository,
-Linux signing/attestation provider, or auto-update. SHA-256 verifies downloaded
-bytes against the protected release transaction but is not an OS-wide Linux
-trust claim.
+Linux signing/attestation provider, or Electron update client yet. The signed
+manifest authenticates project-published bytes but does not by itself download
+or install anything. SHA-256 verifies downloaded bytes against the protected
+release transaction but is not an OS-wide Linux trust claim.
 The native x64 and arm64 evidence supports the documented
 Ubuntu/Debian-class glibc baseline only; it is not a claim of universal Linux
 compatibility. If a future hosted runner cannot expose FUSE or unprivileged user

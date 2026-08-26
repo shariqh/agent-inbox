@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "signingKeyId": "ed25519-99927ba2f6af6482",
+  "keys": [
+    {
+      "keyId": "ed25519-99927ba2f6af6482",
+      "algorithm": "ed25519",
+      "publicKeySpkiBase64": "MCowBQYDK2VwAyEAshsgCvPUphCyxSv/sgvDCBvdde/Ws+CU0Fgdl62SU/k="
+    }
+  ]
+}

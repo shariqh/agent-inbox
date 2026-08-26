@@ -29,6 +29,16 @@ import { treeIdentity } from '../scripts/tree-identity.mjs'
 
 const root = resolve(process.cwd())
 const signingIdentity = 'Developer ID Application: Release Test (AB12CD34EF)'
+const fixtureTaggedAt = '2026-08-25T20:12:51Z'
+
+function taggedAt(repo: string, tag: string) {
+  const value = execFileSync(
+    'git',
+    ['for-each-ref', '--format=%(taggerdate:iso8601-strict)', `refs/tags/${tag}`],
+    { cwd: repo, encoding: 'utf8' },
+  ).trim()
+  return new Date(value).toISOString().replace('.000Z', 'Z')
+}
 
 function makeSigningHarness(emptySearchList = false) {
   const temp = mkdtempSync(join(tmpdir(), 'release-signing-'))
@@ -139,9 +149,15 @@ function makeTaggedRepo(version = '1.2.3', lockRootVersion = version) {
     '-c', 'user.name=Release Test',
     '-c', 'user.email=release@example.invalid',
     'tag', '-a', `v${version}`, '-m', `Release v${version}`,
-  ], { cwd: repo })
+  ], {
+    cwd: repo,
+    env: {
+      ...process.env,
+      GIT_COMMITTER_DATE: fixtureTaggedAt,
+    },
+  })
   const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim()
-  return { repo, sha, tag: `v${version}` }
+  return { repo, sha, tag: `v${version}`, taggedAt: fixtureTaggedAt }
 }
 
 describe('macOS release gates', () => {
@@ -155,6 +171,7 @@ describe('macOS release gates', () => {
       tag: 'v1.0.1',
       version: '1.0.1',
       sourceCommit: fixture.sha,
+      taggedAt: fixtureTaggedAt,
       annotated: true,
     })
 
@@ -176,6 +193,7 @@ describe('macOS release gates', () => {
       tag: 'v1.2.3',
       version: '1.2.3',
       sourceCommit: fixture.sha,
+      taggedAt: fixtureTaggedAt,
       annotated: true,
     })
 
@@ -212,6 +230,7 @@ describe('macOS release gates', () => {
         tag: fixture.tag,
         version: '1.2.3',
         sourceCommit: fixture.sha,
+        taggedAt: fixture.taggedAt,
         annotated: true,
       },
       trustedSha,
@@ -224,6 +243,20 @@ describe('macOS release gates', () => {
         tag: fixture.tag,
         version: '1.2.3',
         sourceCommit: fixture.sha,
+        taggedAt: '2026-08-25T20:12:52Z',
+        annotated: true,
+      },
+      trustedSha,
+      runHeadSha: fixture.sha,
+    })).toThrow(/tag timestamp/)
+    expect(() => validateProtectedRelease({
+      repoRoot: fixture.repo,
+      context: {
+        schema: 1,
+        tag: fixture.tag,
+        version: '1.2.3',
+        sourceCommit: fixture.sha,
+        taggedAt: fixture.taggedAt,
         annotated: true,
       },
       trustedSha,
@@ -236,6 +269,7 @@ describe('macOS release gates', () => {
         tag: fixture.tag,
         version: '1.2.3',
         sourceCommit: fixture.sha,
+        taggedAt: fixture.taggedAt,
         annotated: true,
       },
       trustedSha: fixture.sha,
@@ -261,6 +295,7 @@ describe('macOS release gates', () => {
       tag: fixture.tag,
       version: '1.2.3',
       sourceCommit: fixture.sha,
+      taggedAt: fixture.taggedAt,
       annotated: true,
     } as const
     validateProtectedRelease({
@@ -383,6 +418,7 @@ describe('macOS release gates', () => {
         tag: 'v1.2.3',
         version: '1.2.3',
         sourceCommit,
+        taggedAt: taggedAt(repo, 'v1.2.3'),
         annotated: true,
       },
       trustedSha,
@@ -490,6 +526,7 @@ describe('macOS release gates', () => {
       tag: 'v1.2.3',
       version: '1.2.3',
       sourceCommit: 'a'.repeat(40),
+      taggedAt: fixtureTaggedAt,
       annotated: true,
     } as const
     const identity = 'Developer ID Application: Example Corp (AB12CD34EF)'

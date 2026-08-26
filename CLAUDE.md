@@ -556,6 +556,28 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   whose canonical Node+entry pair is still structurally referenced. Release signing order
   is fixed: nested runtime Mach-O files, manifests, setup-info, outer app without
   `--deep`, then strict verification; nested bytes never change afterward.
+- **Signed update-manifest trust contract** *(#106 Layer 1)* — protected releases contain
+  five packages, package-only `SHA256SUMS.txt`, deterministic `update-manifest.json`, and
+  `update-manifest.json.sig`. The exact manifest bytes are signed with Ed25519 after
+  package aggregation; `electron/update-manifest.cjs` is the side-effect-free verifier
+  staged with every app. `electron/update-trust.cjs` is the optional startup boundary:
+  it catches only registry read/parse initialization failure, logs one generic
+  updater-disabled error without file/key contents, and returns `null` so the core app
+  continues. `scripts/update-manifest.mjs` owns build-time generation, history
+  authorization, and signing. The committed `release/update-keys.json` labels keys
+  only after deriving each id from SPKI DER. Signature-envelope schema 1 is a canonical
+  sorted array so rotations can overlap old and new signatures; production currently emits
+  one. Verification validates every entry's shape, ignores entries for keys absent from the
+  installed registry, and requires at least one pinned-key signature to pass; rejecting an
+  old+new envelope merely because the new key is unknown would brick skipped-version clients.
+  The current protected signer is deliberately single-key: do not flip `signingKeyId` for
+  routine rotation until a separate change adds protected dual-key signing and keeps overlap
+  signatures through the supported direct-upgrade floor.
+  Bootstrap requires proving no prior published stable release has either manifest asset.
+  Later releases verify the latest prior pair and signed `trustedKeyIds` continuity before the one secret-bearing signing step. The sole write job still stages a private
+  draft, independently verifies all eight remote bytes plus the five-entry checksum and
+  signature, then exposes them atomically by undrafting. This layer adds no Electron
+  fetching, scheduling, download, or install behavior.
 - **Session presence** *(#28, corrected by #45)* — every MCP session is a Live row; `status()`
   upgrades it, process exit ends it, and a row that stops being heartbeated expires after ~15 min.
   That expiry only ever fires for a **crashed** process: a live one heartbeats itself, so what

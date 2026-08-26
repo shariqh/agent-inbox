@@ -19,12 +19,14 @@ import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { loadReleaseInputs, sha256File } from './release-inputs.mjs'
+import { verifyPackagedUpdateTrust } from './package-update-trust.mjs'
 import { verifyPayload } from './runtime-payload.mjs'
 import { treeIdentity } from './tree-identity.mjs'
 
 const APP_NAME = 'Agent Inbox'
 const TAG_RE = /^v(\d+\.\d+\.\d+)$/
 const SHA_RE = /^[0-9a-f]{40}$/
+const UTC_SECONDS_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/
 const TEAM_RE = /^[A-Z0-9]{10}$/
 const KEY_ID_RE = /^[A-Z0-9]{10}$/
 const ISSUER_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -80,6 +82,19 @@ function decodeBase64(value, label) {
   return decoded
 }
 
+function annotatedTagTimestamp(repoRoot, tagRef) {
+  const value = git(repoRoot, [
+    'for-each-ref',
+    '--format=%(taggerdate:iso8601-strict)',
+    tagRef,
+  ])
+  const instant = new Date(value)
+  if (!value || Number.isNaN(instant.getTime())) {
+    throw new ReleaseGateError(`${tagRef} annotated tag timestamp is invalid`)
+  }
+  return instant.toISOString().replace('.000Z', 'Z')
+}
+
 export function validateReleaseTag({ repoRoot, ref, sha }) {
   const match = /^refs\/tags\/(v\d+\.\d+\.\d+)$/.exec(ref ?? '')
   if (!match) throw new ReleaseGateError('release ref must be an exact vX.Y.Z tag')
@@ -92,6 +107,7 @@ export function validateReleaseTag({ repoRoot, ref, sha }) {
     throw new ReleaseGateError(`${tag} must be an annotated tag`)
   }
   const sourceCommit = git(repoRoot, ['rev-parse', `${tagRef}^{commit}`])
+  const taggedAt = annotatedTagTimestamp(repoRoot, tagRef)
   const head = git(repoRoot, ['rev-parse', 'HEAD'])
   if (sourceCommit !== sha || head !== sha) {
     throw new ReleaseGateError(`annotated tag, checkout commit, and supplied source SHA must match (${sourceCommit}, ${head}, ${sha})`)
@@ -106,7 +122,7 @@ export function validateReleaseTag({ repoRoot, ref, sha }) {
   if (git(repoRoot, ['status', '--porcelain', '--untracked-files=no'])) {
     throw new ReleaseGateError('release checkout has tracked working-tree changes')
   }
-  return { schema: 1, tag, version, sourceCommit, annotated: true }
+  return { schema: 1, tag, version, sourceCommit, taggedAt, annotated: true }
 }
 
 export function validateReleaseContext(value) {
@@ -118,7 +134,11 @@ export function validateReleaseContext(value) {
     value.version !== TAG_RE.exec(value.tag)?.[1] ||
     typeof value.sourceCommit !== 'string' ||
     !SHA_RE.test(value.sourceCommit) ||
-    Object.keys(value).sort().join(',') !== 'annotated,schema,sourceCommit,tag,version'
+    typeof value.taggedAt !== 'string' ||
+    !UTC_SECONDS_RE.test(value.taggedAt) ||
+    Number.isNaN(new Date(value.taggedAt).getTime()) ||
+    new Date(value.taggedAt).toISOString().replace('.000Z', 'Z') !== value.taggedAt ||
+    Object.keys(value).sort().join(',') !== 'annotated,schema,sourceCommit,tag,taggedAt,version'
   ) {
     throw new ReleaseGateError('release context is malformed')
   }
@@ -148,6 +168,9 @@ export function validateProtectedRelease({ repoRoot, context, trustedSha, runHea
   }
   if (git(repoRoot, ['rev-parse', `${tagRef}^{commit}`]) !== release.sourceCommit) {
     throw new ReleaseGateError('peeled annotated-tag commit does not match release source')
+  }
+  if (annotatedTagTimestamp(repoRoot, tagRef) !== release.taggedAt) {
+    throw new ReleaseGateError('annotated-tag timestamp does not match release context')
   }
   const firstParent = new Set(git(repoRoot, ['rev-list', '--first-parent', trustedSha]).split('\n'))
   if (!firstParent.has(release.sourceCommit)) {
@@ -615,6 +638,7 @@ export async function verifyFinalDmg({
           [join(resources, 'LICENSES.chromium.html'), 'Chromium notices'],
           [join(appResources, 'LICENSE.agent-inbox'), 'Agent Inbox license'],
         ]) requireNonemptyFile(path, label)
+        verifyPackagedUpdateTrust(appResources)
 
         requireExactArchitectures(join(contents, 'MacOS', APP_NAME), ['arm64', 'x86_64'])
         requireExactArchitectures(

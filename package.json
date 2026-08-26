@@ -1,6 +1,6 @@
 {
   "name": "agent-inbox",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Local, cross-project attention inbox for coding agents",
   "private": true,
   "license": "MIT",

@@ -56,6 +56,7 @@
     "package:smoke": "vitest run test/native-runtime-adapter.test.ts test/runtime-payload.test.ts test/install-runtime.test.ts test/setup-core.test.ts test/setup-process.test.ts test/setup-filesystem.test.ts test/setup-lock.test.ts test/setup-runner.test.ts test/package-stamp.test.ts test/release-inputs.test.ts test/linux-release-inputs.test.ts test/linux-native-folder.test.ts test/linux-release-workflow.test.ts test/linux-appimage-inputs.test.ts test/linux-appimage.test.ts test/linux-appimage-workflow.test.ts test/linux-deb-inputs.test.ts test/linux-deb.test.ts test/linux-deb-workflow.test.ts test/release-aggregation.test.ts test/release-aggregation-workflow.test.ts test/release-pipeline.test.ts test/macos-release-gates.test.ts test/macos-release-workflow.test.ts",
     "test:package": "npm run package:smoke",
     "test": "vitest run",
+    "test:structured-text:perf": "AGENT_INBOX_STRUCTURED_TEXT_PERF_GATE=1 vitest run test/structured-text.test.ts -t \"keeps hostile 50k-candidate input linear and isolated between renders\"",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "package:app": "bash scripts/package-app.sh"

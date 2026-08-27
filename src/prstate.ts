@@ -315,17 +315,15 @@ export async function resolvePreviewPayload(
     return { preview_url: null, preview_environment: null, preview_deployment_id: null, preview_updated_at: null }
   }
   const deployments = parseDeploymentsPayload(await runApi(`repos/${repo}/deployments?sha=${encodeURIComponent(headSha)}&per_page=20`))
+  const settled = await Promise.allSettled(deployments.map(async (deployment) => {
+    const status = parseLatestDeploymentStatusPayload(
+      await runApi(`repos/${repo}/deployments/${deployment.id}/statuses?per_page=1`),
+    )
+    return candidateFromDeployment(deployment, status, headSha)
+  }))
   const candidates: PreviewCandidate[] = []
-  for (const deployment of deployments) {
-    try {
-      const status = parseLatestDeploymentStatusPayload(
-        await runApi(`repos/${repo}/deployments/${deployment.id}/statuses?per_page=1`),
-      )
-      const candidate = candidateFromDeployment(deployment, status, headSha)
-      if (candidate) candidates.push(candidate)
-    } catch {
-      // one broken deployment status response should not drop the whole PR update
-    }
+  for (const result of settled) {
+    if (result.status === 'fulfilled' && result.value) candidates.push(result.value)
   }
   return choosePreviewCandidate(candidates)
 }

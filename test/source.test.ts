@@ -6,6 +6,7 @@ import {
   indexLinks,
   linkFor,
   issueRef,
+  previewRef,
   prChip,
   prDetail,
   safeHttpUrl,
@@ -22,9 +23,10 @@ function link(over: Partial<CachedLink> = {}): CachedLink {
   return {
     repo: 'shariqh/agent-inbox', branch: '30-x', provider: 'github',
     pr_number: 41, pr_url: 'https://github.com/shariqh/agent-inbox/pull/41',
-    pr_title: 'source + PR links', pr_state: 'OPEN', pr_draft: false,
+    pr_title: 'source + PR links', pr_state: 'OPEN', pr_head_sha: 'abc123', pr_draft: false,
     review_decision: null, checks: 'none',
     issue_number: null, issue_url: null, issue_title: null,
+    preview_url: null, preview_environment: null, preview_deployment_id: null, preview_updated_at: null,
     tldr: 'Links the inbox to its source issue and PR.',
     fetched_at: new Date(NOW - 60_000).toISOString(),
     checked_at: new Date(NOW - 60_000).toISOString(),
@@ -185,6 +187,19 @@ describe('sourceTooltip and prDetail', () => {
     expect(sourceTooltip(entity(), null, NOW)).toContain('#30')
     expect(prDetail(null, NOW)).toBeNull()
   })
+
+  it('includes preview environment when a validated preview URL exists', () => {
+    const tip = sourceTooltip(entity(), link({ preview_url: 'https://preview.example/41', preview_environment: 'staging' }), NOW)
+    expect(tip).toContain('preview — staging')
+  })
+})
+
+describe('previewRef', () => {
+  it('returns a preview only for safe URLs and non-error rows', () => {
+    expect(previewRef(link({ preview_url: 'https://preview.example/41' }))?.url).toBe('https://preview.example/41')
+    expect(previewRef(link({ preview_url: 'javascript:alert(1)' }))).toBeNull()
+    expect(previewRef(link({ preview_url: 'https://preview.example/41', error: 'offline' }))).toBeNull()
+  })
 })
 
 // The escaping burden lives ENTIRELY inside public/source.js: app.js
@@ -199,6 +214,7 @@ describe('sourceChipsHtml / sourceBlockHtml escape every network-sourced field',
     issue_number: 30,
     issue_url: 'javascript:alert(1)',
     pr_url: 'javascript:alert(1)',
+    preview_url: 'javascript:alert(1)',
   })
 
   it('never emits a raw < or a raw " out of a PR title or body', () => {
@@ -236,8 +252,9 @@ describe('sourceChipsHtml / sourceBlockHtml escape every network-sourced field',
   })
 
   it('builds a real anchor for a good https url, opening out of the app safely', () => {
-    const html = sourceChipsHtml(indexLinks([link()]), entity(), NOW)
+    const html = sourceChipsHtml(indexLinks([link({ preview_url: 'https://preview.example/41' })]), entity(), NOW)
     expect(html).toContain('href="https://github.com/shariqh/agent-inbox/pull/41"')
+    expect(html).toContain('href="https://preview.example/41"')
     expect(html).toContain('rel="noopener noreferrer"')
     expect(html).toContain('target="_blank"')
     // §13's roving tab order belongs to the ROWS — chips must not interleave into it
@@ -259,10 +276,11 @@ describe('sourceChipsHtml / sourceBlockHtml escape every network-sourced field',
   })
 
   it('the card block carries the SOURCE label, the state word and the TL;DR', () => {
-    const html = sourceBlockHtml(indexLinks([link({ pr_state: 'MERGED' })]), entity(), NOW)
+    const html = sourceBlockHtml(indexLinks([link({ pr_state: 'MERGED', preview_url: 'https://preview.example/41', preview_environment: 'preview' })]), entity(), NOW)
     expect(html).toContain('card-source')
     expect(html).toContain('SOURCE')
     expect(html).toContain('merged')
+    expect(html).toContain('Preview')
     expect(html).toContain('Links the inbox to its source issue and PR.')
     // card chips ARE tabbable — they are inside an already-expanded surface
     expect(html).not.toContain('tabindex="-1"')

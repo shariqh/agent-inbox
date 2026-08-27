@@ -68,6 +68,16 @@ export function issueRef(entity, link) {
   return { num, url: safeHttpUrl(url), title }
 }
 
+export function previewRef(link) {
+  if (!link || link.error) return null
+  const preview = safeHttpUrl(link.preview_url)
+  if (!preview) return null
+  const environment = typeof link.preview_environment === 'string' && link.preview_environment
+    ? link.preview_environment
+    : 'preview'
+  return { url: preview, environment }
+}
+
 // The ONE priority order, worst-and-most-final first:
 //   MERGED > CLOSED > draft > checks failing > changes requested > approved >
 //   checks running > open
@@ -130,11 +140,13 @@ export function sourceTooltip(entity, link, nowMs) {
   const lines = []
   const issue = issueRef(entity, link)
   const detail = prDetail(link, nowMs)
+  const preview = previewRef(link)
   if (detail) {
     lines.push(`${detail.chip.text} — ${detail.chip.word}`)
     if (detail.title) lines.push(detail.title)
     if (detail.tldr) lines.push(detail.tldr)
   }
+  if (preview) lines.push(`preview — ${preview.environment}`)
   if (issue) lines.push(`issue #${issue.num}${issue.title ? ` — ${issue.title}` : ''}`)
   if (detail && detail.error) lines.push(detail.error)
   if (detail && detail.checked) lines.push(detail.checked)
@@ -174,12 +186,14 @@ export function sourceChipsHtml(index, entity, nowMs, opts = {}) {
   const link = linkFor(index, entity)
   const issue = issueRef(entity, link)
   const chip = prChip(link)
-  if (!issue && !chip) return ''
+  const preview = previewRef(link)
+  if (!issue && !chip && !preview) return ''
   const tabbable = opts.tabbable === true
   const tip = sourceTooltip(entity, link, nowMs)
   let html = ''
   if (issue) html += chipHtml(issue.url, 'issue', `#${esc(issue.num)}`, tip, tabbable)
   if (chip) html += chipHtml(link.pr_url, chip.tone, prChipInner(chip), tip, tabbable)
+  if (preview) html += chipHtml(preview.url, 'neutral', `Preview <span class="src-word">${esc(preview.environment)}</span>`, tip, tabbable)
   return html
 }
 
@@ -189,7 +203,8 @@ export function sourceBlockHtml(index, entity, nowMs) {
   const link = linkFor(index, entity)
   const issue = issueRef(entity, link)
   const detail = prDetail(link, nowMs)
-  if (!issue && !detail) return ''
+  const preview = previewRef(link)
+  if (!issue && !detail && !preview) return ''
   let rows = ''
   if (issue) {
     rows += `<div class="src-row">${chipHtml(issue.url, 'issue', `#${esc(issue.num)}`, '', true)}` +
@@ -201,6 +216,7 @@ export function sourceBlockHtml(index, entity, nowMs) {
     if (detail.tldr) rows += `<div class="src-tldr">${esc(detail.tldr)}</div>`
     if (detail.error) rows += `<div class="src-checked">${esc(detail.error)}</div>`
   }
+  if (preview) rows += `<div class="src-row">${chipHtml(preview.url, 'neutral', `Preview <span class="src-word">${esc(preview.environment)}</span>`, '', true)}</div>`
   const checked = detail && detail.checked ? `<div class="src-checked">${esc(detail.checked)}</div>` : ''
   return `<div class="card-source"><div class="card-source-label">SOURCE</div>${rows}${checked}</div>`
 }

@@ -23,6 +23,7 @@ import {
   parsePrPayload,
   dueTargets,
   refreshOnce,
+  resolvePreviewPayload,
   resolveGh,
   TTL,
   MAX_PER_TICK,
@@ -41,6 +42,7 @@ function ghPayload(over: Record<string, unknown> = {}): string {
     title: 'source + PR links',
     url: 'https://github.com/shariqh/agent-inbox/pull/41',
     state: 'OPEN',
+    headRefOid: 'abc123',
     isDraft: false,
     reviewDecision: 'REVIEW_REQUIRED',
     statusCheckRollup: [{ __typename: 'CheckRun', status: 'COMPLETED', conclusion: 'SUCCESS', name: 'test' }],
@@ -136,6 +138,7 @@ describe('parsePrPayload', () => {
     expect(pr.pr_title).toBe('source + PR links')
     expect(pr.pr_url).toBe('https://github.com/shariqh/agent-inbox/pull/41')
     expect(pr.pr_state).toBe('OPEN')
+    expect(pr.pr_head_sha).toBe('abc123')
     expect(pr.pr_draft).toBe(false)
     expect(pr.review_decision).toBe('REVIEW_REQUIRED')
     expect(pr.checks).toBe('passing')
@@ -181,6 +184,72 @@ describe('classifyError', () => {
     expect(classifyError(1, 'could not resolve to a Repository')).toBe('gh-failed')
     expect(classifyError(undefined, '')).toBe('gh-failed')
   })
+
+  describe('resolvePreviewPayload', () => {
+    it('prefers an active deployment environment url for the current head sha', async () => {
+      const preview = await resolvePreviewPayload('o/n', 'abc', async (endpoint) => {
+        if (endpoint.includes('/deployments?')) {
+          return JSON.stringify([{ id: 11, sha: 'abc', environment: 'preview' }])
+        }
+        if (endpoint.includes('/deployments/11/statuses')) {
+          return JSON.stringify([{ state: 'success', environment_url: 'https://preview.example/p/11', updated_at: '2026-07-26T11:00:00Z' }])
+        }
+        return '[]'
+      })
+      expect(preview.preview_url).toBe('https://preview.example/p/11')
+      expect(preview.preview_environment).toBe('preview')
+      expect(preview.preview_deployment_id).toBe(11)
+    })
+
+    it('omits stale-head, inactive, missing-url, and ambiguous same-environment previews', async () => {
+      const preview = await resolvePreviewPayload('o/n', 'abc', async (endpoint) => {
+        if (endpoint.includes('/deployments?')) {
+          return JSON.stringify([
+            { id: 11, sha: 'stale', environment: 'preview' },
+            { id: 12, sha: 'abc', environment: 'preview' },
+            { id: 13, sha: 'abc', environment: 'preview' },
+            { id: 14, sha: 'abc', environment: 'staging' },
+            { id: 15, sha: 'abc', environment: 'staging' },
+          ])
+        }
+        if (endpoint.includes('/deployments/12/statuses')) {
+          return JSON.stringify([{ state: 'success', environment_url: 'https://one.example/preview', updated_at: '2026-07-26T11:00:00Z' }])
+        }
+        if (endpoint.includes('/deployments/13/statuses')) {
+          return JSON.stringify([{ state: 'success', environment_url: 'https://two.example/preview', updated_at: '2026-07-26T12:00:00Z' }])
+        }
+        if (endpoint.includes('/deployments/14/statuses')) {
+          return JSON.stringify([{ state: 'inactive', environment_url: 'https://staging.example/inactive', updated_at: '2026-07-26T12:00:00Z' }])
+        }
+        if (endpoint.includes('/deployments/15/statuses')) {
+          return JSON.stringify([{ state: 'success', environment_url: null, updated_at: '2026-07-26T12:00:00Z' }])
+        }
+        return '[]'
+      })
+      expect(preview.preview_url).toBeNull()
+      expect(preview.preview_environment).toBeNull()
+    })
+
+    it('chooses deterministically across multiple environments', async () => {
+      const preview = await resolvePreviewPayload('o/n', 'abc', async (endpoint) => {
+        if (endpoint.includes('/deployments?')) {
+          return JSON.stringify([
+            { id: 11, sha: 'abc', environment: 'staging' },
+            { id: 12, sha: 'abc', environment: 'preview' },
+          ])
+        }
+        if (endpoint.includes('/deployments/11/statuses')) {
+          return JSON.stringify([{ state: 'success', environment_url: 'https://staging.example', updated_at: '2026-07-26T12:00:00Z' }])
+        }
+        if (endpoint.includes('/deployments/12/statuses')) {
+          return JSON.stringify([{ state: 'in_progress', environment_url: 'https://preview.example', updated_at: '2026-07-26T13:00:00Z' }])
+        }
+        return '[]'
+      })
+      expect(preview.preview_url).toBe('https://staging.example')
+      expect(preview.preview_environment).toBe('staging')
+    })
+  })
 })
 
 describe('dueTargets (TTL policy)', () => {
@@ -188,8 +257,9 @@ describe('dueTargets (TTL policy)', () => {
   const target = (branch: string): LinkTarget => ({ repo: 'o/n', branch })
   const link = (branch: string, over: Partial<SourceLink> = {}): SourceLink => ({
     repo: 'o/n', branch, provider: 'github',
-    pr_number: 41, pr_url: null, pr_title: null, pr_state: 'OPEN', pr_draft: false,
+    pr_number: 41, pr_url: null, pr_title: null, pr_state: 'OPEN', pr_head_sha: 'abc', pr_draft: false,
     review_decision: null, checks: null, issue_number: null, issue_url: null, issue_title: null,
+    preview_url: null, preview_environment: null, preview_deployment_id: null, preview_updated_at: null,
     tldr: null, fetched_at: new Date(T0).toISOString(), checked_at: new Date(T0).toISOString(), error: null,
     ...over,
   })
@@ -254,8 +324,35 @@ describe('refreshOnce', () => {
     const link = listSourceLinks(db)[0]!
     expect(link.pr_number).toBe(41)
     expect(link.checks).toBe('passing')
+    expect(link.pr_head_sha).toBe('abc123')
     expect(link.tldr).toBe('Links the inbox to its source issue and PR.')
     expect(link.error).toBeNull()
+  })
+
+  it('stores a preview link proven by a current-head deployment and clears it when unavailable', async () => {
+    seedItem('30-x')
+    await refreshOnce(db, {
+      run: async () => ghPayload(),
+      runApi: async (endpoint) => {
+        if (endpoint.includes('/deployments?')) {
+          return JSON.stringify([{ id: 10, sha: 'abc123', environment: 'preview' }])
+        }
+        if (endpoint.includes('/deployments/10/statuses')) {
+          return JSON.stringify([{ state: 'success', environment_url: 'https://preview.example/10', updated_at: '2026-07-26T11:00:00Z' }])
+        }
+        return '[]'
+      },
+    })
+    expect(listSourceLinks(db)[0]!.preview_url).toBe('https://preview.example/10')
+
+    await refreshOnce(db, {
+      run: async () => ghPayload({ headRefOid: 'def456' }),
+      runApi: async () => '[]',
+      nowMs: Date.now() + TTL.openPr + 1000,
+    })
+    const next = listSourceLinks(db)[0]!
+    expect(next.pr_head_sha).toBe('def456')
+    expect(next.preview_url).toBeNull()
   })
 
   it('never runs gh twice for two items on the same branch', async () => {
@@ -283,9 +380,18 @@ describe('refreshOnce', () => {
     expect(link.fetched_at).not.toBeNull()
   })
 
-  it('a gh failure records the error and leaves the previous good PR state intact', async () => {
+  it('a gh failure records the error, clears preview, and leaves the previous core PR state intact', async () => {
     seedItem('30-x')
-    await refreshOnce(db, { run: async () => ghPayload({ state: 'MERGED' }) })
+    await refreshOnce(db, {
+      run: async () => ghPayload({ state: 'MERGED' }),
+      runApi: async (endpoint) => {
+        if (endpoint.includes('/deployments?')) return JSON.stringify([{ id: 10, sha: 'abc123', environment: 'preview' }])
+        if (endpoint.includes('/deployments/10/statuses')) {
+          return JSON.stringify([{ state: 'success', environment_url: 'https://preview.example/10', updated_at: '2026-07-26T11:00:00Z' }])
+        }
+        return '[]'
+      },
+    })
     await refreshOnce(db, {
       run: async () => { const e = new Error('boom') as NodeJS.ErrnoException; e.code = 'ENOENT'; throw e },
       nowMs: Date.now() + TTL.settled + 1000,
@@ -294,6 +400,7 @@ describe('refreshOnce', () => {
     expect(link.pr_state).toBe('MERGED') // still the last good answer
     expect(link.pr_number).toBe(41)
     expect(link.error).toBe('no-gh')
+    expect(link.preview_url).toBeNull()
   })
 
   it('a branch whose item was resolved stops being refreshed but keeps its last cached state', async () => {

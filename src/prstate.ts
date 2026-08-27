@@ -59,6 +59,7 @@ export interface PrPayload {
   pr_url: string | null
   pr_title: string | null
   pr_state: string | null
+  pr_head_sha: string | null
   pr_draft: boolean
   review_decision: string | null
   checks: ChecksState
@@ -155,6 +156,7 @@ export function parsePrPayload(json: string): PrPayload | null {
     pr_url: str(pr.url),
     pr_title: clip(pr.title, TITLE_MAX),
     pr_state: str(pr.state),
+    pr_head_sha: str(pr.headRefOid),
     pr_draft: pr.isDraft === true,
     review_decision: str(pr.reviewDecision),
     checks: classifyChecks(pr.statusCheckRollup),
@@ -166,6 +168,166 @@ export function parsePrPayload(json: string): PrPayload | null {
     issue_title: null,
     tldr: firstLine(pr.body),
   }
+}
+
+interface DeploymentPayload {
+  id: number
+  sha: string | null
+  environment: string | null
+}
+
+interface DeploymentStatusPayload {
+  state: string | null
+  environment_url: string | null
+  updated_at: string | null
+}
+
+export interface PreviewPayload {
+  preview_url: string | null
+  preview_environment: string | null
+  preview_deployment_id: number | null
+  preview_updated_at: string | null
+}
+
+interface PreviewCandidate {
+  url: string
+  environment: string
+  environmentKey: string
+  deploymentId: number
+  updatedAt: string
+  stateRank: number
+}
+
+const ACTIVE_DEPLOYMENT_STATES = new Set(['success', 'in_progress', 'queued', 'pending'])
+
+const PREVIEW_STATE_RANK: Record<string, number> = {
+  success: 0,
+  in_progress: 1,
+  queued: 2,
+  pending: 3,
+}
+
+function parseDeploymentsPayload(json: string): DeploymentPayload[] {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(json)
+  } catch {
+    return []
+  }
+  if (!Array.isArray(parsed)) return []
+  const out: DeploymentPayload[] = []
+  for (const raw of parsed) {
+    if (!raw || typeof raw !== 'object') continue
+    const d = raw as { id?: unknown; sha?: unknown; environment?: unknown }
+    if (typeof d.id !== 'number') continue
+    out.push({
+      id: d.id,
+      sha: str(d.sha),
+      environment: str(d.environment),
+    })
+  }
+  return out
+}
+
+function parseLatestDeploymentStatusPayload(json: string): DeploymentStatusPayload | null {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(json)
+  } catch {
+    return null
+  }
+  if (!Array.isArray(parsed)) return null
+  const first = parsed[0]
+  if (!first || typeof first !== 'object') return null
+  const s = first as { state?: unknown; environment_url?: unknown; updated_at?: unknown }
+  return {
+    state: str(s.state),
+    environment_url: str(s.environment_url),
+    updated_at: str(s.updated_at),
+  }
+}
+
+function candidateFromDeployment(
+  deployment: DeploymentPayload,
+  status: DeploymentStatusPayload | null,
+  headSha: string,
+): PreviewCandidate | null {
+  if (!status || deployment.sha !== headSha || !status.environment_url) return null
+  const state = (status.state ?? '').toLowerCase()
+  if (!ACTIVE_DEPLOYMENT_STATES.has(state)) return null
+  const env = deployment.environment ?? ''
+  const envKey = env.trim().toLowerCase()
+  const rank = PREVIEW_STATE_RANK[state]
+  if (rank === undefined) return null
+  return {
+    url: status.environment_url,
+    environment: env || 'preview',
+    environmentKey: envKey || 'preview',
+    deploymentId: deployment.id,
+    updatedAt: status.updated_at ?? '',
+    stateRank: rank,
+  }
+}
+
+export function choosePreviewCandidate(candidates: PreviewCandidate[]): PreviewPayload {
+  if (!Array.isArray(candidates) || candidates.length === 0) {
+    return { preview_url: null, preview_environment: null, preview_deployment_id: null, preview_updated_at: null }
+  }
+  const byEnv = new Map<string, Set<string>>()
+  for (const c of candidates) {
+    if (!byEnv.has(c.environmentKey)) byEnv.set(c.environmentKey, new Set())
+    byEnv.get(c.environmentKey)!.add(c.url)
+  }
+  const filtered = candidates.filter((c) => (byEnv.get(c.environmentKey)?.size ?? 0) <= 1)
+  if (filtered.length === 0) {
+    return { preview_url: null, preview_environment: null, preview_deployment_id: null, preview_updated_at: null }
+  }
+  filtered.sort((a, b) => {
+    if (a.stateRank !== b.stateRank) return a.stateRank - b.stateRank
+    const aMs = Date.parse(a.updatedAt || '')
+    const bMs = Date.parse(b.updatedAt || '')
+    if (!Number.isNaN(aMs) || !Number.isNaN(bMs)) {
+      const ax = Number.isNaN(aMs) ? -Infinity : aMs
+      const bx = Number.isNaN(bMs) ? -Infinity : bMs
+      if (ax !== bx) return bx - ax
+    }
+    const envCmp = a.environmentKey.localeCompare(b.environmentKey)
+    if (envCmp !== 0) return envCmp
+    return b.deploymentId - a.deploymentId
+  })
+  const best = filtered[0]!
+  return {
+    preview_url: best.url,
+    preview_environment: best.environment,
+    preview_deployment_id: best.deploymentId,
+    preview_updated_at: best.updatedAt || null,
+  }
+}
+
+export type GhApiRun = (endpoint: string) => Promise<string> | string
+
+export async function resolvePreviewPayload(
+  repo: string,
+  headSha: string | null,
+  runApi: GhApiRun,
+): Promise<PreviewPayload> {
+  if (!headSha) {
+    return { preview_url: null, preview_environment: null, preview_deployment_id: null, preview_updated_at: null }
+  }
+  const deployments = parseDeploymentsPayload(await runApi(`repos/${repo}/deployments?sha=${encodeURIComponent(headSha)}&per_page=20`))
+  const candidates: PreviewCandidate[] = []
+  for (const deployment of deployments) {
+    try {
+      const status = parseLatestDeploymentStatusPayload(
+        await runApi(`repos/${repo}/deployments/${deployment.id}/statuses?per_page=1`),
+      )
+      const candidate = candidateFromDeployment(deployment, status, headSha)
+      if (candidate) candidates.push(candidate)
+    } catch {
+      // one broken deployment status response should not drop the whole PR update
+    }
+  }
+  return choosePreviewCandidate(candidates)
 }
 
 export function classifyError(code: string | number | undefined, stderr: string): LinkError {
@@ -216,6 +378,7 @@ export function dueTargets(targets: LinkTarget[], links: SourceLink[], nowMs: nu
 
 export interface RefreshOpts {
   run?: GhRun
+  runApi?: GhApiRun
   nowMs?: number
   max?: number
 }
@@ -226,6 +389,7 @@ export interface RefreshOpts {
 // A background PR-title fetcher must never be able to take the inbox down.
 export async function refreshOnce(db: Database.Database, opts: RefreshOpts = {}): Promise<number> {
   const run = opts.run ?? defaultGhRun
+  const runApi = opts.runApi ?? defaultGhApiRun
   const nowMs = opts.nowMs ?? Date.now()
   const max = opts.max ?? MAX_PER_TICK
   let targets: LinkTarget[]
@@ -240,9 +404,27 @@ export async function refreshOnce(db: Database.Database, opts: RefreshOpts = {})
     try {
       const out = await run(t.repo, t.branch)
       const pr = parsePrPayload(String(out))
+      let preview: PreviewPayload = {
+        preview_url: null,
+        preview_environment: null,
+        preview_deployment_id: null,
+        preview_updated_at: null,
+      }
+      if (pr && typeof pr.pr_number === 'number') {
+        try {
+          preview = await resolvePreviewPayload(t.repo, pr?.pr_head_sha ?? null, runApi)
+        } catch {
+          preview = {
+            preview_url: null,
+            preview_environment: null,
+            preview_deployment_id: null,
+            preview_updated_at: null,
+          }
+        }
+      }
       // an empty array is a real answer ("this branch has no PR"), cached like
       // any other so the TTL backs off instead of re-asking every minute
-      upsertSourceLink(db, { repo: t.repo, branch: t.branch, provider: 'github', ...(pr ?? {}) })
+      upsertSourceLink(db, { repo: t.repo, branch: t.branch, provider: 'github', ...(pr ?? {}), ...preview })
       done++
     } catch (err) {
       const e = err as { code?: string | number; stderr?: unknown; message?: unknown }
@@ -288,7 +470,7 @@ export const defaultGhRun: GhRun = async (repo, branch) => {
       '--head', branch,
       '--state', 'all',
       '--limit', '1',
-      '--json', 'number,title,url,state,isDraft,reviewDecision,statusCheckRollup,closingIssuesReferences,body,updatedAt',
+      '--json', 'number,title,url,state,headRefOid,isDraft,reviewDecision,statusCheckRollup,closingIssuesReferences,body,updatedAt',
     ],
     {
       timeout: GH_TIMEOUT_MS,
@@ -297,6 +479,21 @@ export const defaultGhRun: GhRun = async (repo, branch) => {
       encoding: 'utf8',
       // quiet gh down: a pager or an update notice on stdout would land in the
       // JSON we parse
+      env: { ...process.env, GH_PAGER: 'cat', NO_COLOR: '1', GH_NO_UPDATE_NOTIFIER: '1' },
+    },
+  )
+  return stdout
+}
+
+export const defaultGhApiRun: GhApiRun = async (endpoint) => {
+  const { stdout } = await execFileAsync(
+    resolveGh(),
+    ['api', endpoint],
+    {
+      timeout: GH_TIMEOUT_MS,
+      maxBuffer: GH_MAX_BUFFER,
+      windowsHide: true,
+      encoding: 'utf8',
       env: { ...process.env, GH_PAGER: 'cat', NO_COLOR: '1', GH_NO_UPDATE_NOTIFIER: '1' },
     },
   )

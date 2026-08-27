@@ -398,8 +398,12 @@ describe('source links api (issue #30)', () => {
     upsertSourceLink(db, {
       repo: 'shariqh/agent-inbox', branch: '30-x', pr_number: 41,
       pr_url: 'https://github.com/shariqh/agent-inbox/pull/41', pr_title: 'source + PR links',
-      pr_state: 'OPEN', pr_draft: true, review_decision: 'APPROVED', checks: 'passing',
+      pr_state: 'OPEN', pr_head_sha: 'abc123', pr_draft: true, review_decision: 'APPROVED', checks: 'passing',
       issue_number: 30, issue_url: 'https://github.com/shariqh/agent-inbox/issues/30',
+      preview_url: 'https://preview.example/agent-inbox',
+      preview_environment: 'preview',
+      preview_deployment_id: 10,
+      preview_updated_at: '2026-07-26T11:00:00.000Z',
       tldr: 'links the inbox to its PR',
     })
     const res = await createViewer(db).request('/api/links')
@@ -410,7 +414,10 @@ describe('source links api (issue #30)', () => {
     expect(body[0].branch).toBe('30-x')
     expect(body[0].pr_number).toBe(41)
     expect(body[0].pr_state).toBe('OPEN')
+    expect(body[0].pr_head_sha).toBe('abc123')
     expect(body[0].checks).toBe('passing')
+    expect(body[0].preview_url).toBe('https://preview.example/agent-inbox')
+    expect(body[0].preview_environment).toBe('preview')
     expect(body[0].tldr).toBe('links the inbox to its PR')
     // a boolean over the wire, never SQLite's 0/1 — the frontend branches on it
     expect(body[0].pr_draft).toBe(true)

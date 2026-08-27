@@ -2489,10 +2489,15 @@ describe('source links', () => {
   const good = {
     repo: 'shariqh/agent-inbox', branch: '30-x', provider: 'github',
     pr_number: 41, pr_url: 'https://github.com/shariqh/agent-inbox/pull/41',
-    pr_title: 'source + PR links', pr_state: 'OPEN', pr_draft: false,
+    pr_title: 'source + PR links', pr_state: 'OPEN', pr_head_sha: 'abc123', pr_draft: false,
     review_decision: 'APPROVED', checks: 'passing',
     issue_number: 30, issue_url: 'https://github.com/shariqh/agent-inbox/issues/30',
-    issue_title: 'source + PR links', tldr: 'links the inbox to its PR',
+    issue_title: 'source + PR links',
+    preview_url: 'https://preview.example/agent-inbox',
+    preview_environment: 'preview',
+    preview_deployment_id: 10,
+    preview_updated_at: '2026-07-26T11:00:00.000Z',
+    tldr: 'links the inbox to its PR',
   }
 
   it('upsertSourceLink is idempotent by (repo, branch) and stamps fetched_at', () => {
@@ -2502,6 +2507,8 @@ describe('source links', () => {
     expect(links).toHaveLength(1)
     expect(links[0]!.pr_state).toBe('MERGED')
     expect(links[0]!.pr_title).toBe('source + PR links (merged)')
+    expect(links[0]!.pr_head_sha).toBe('abc123')
+    expect(links[0]!.preview_url).toBe('https://preview.example/agent-inbox')
     expect(links[0]!.fetched_at).toMatch(/^\d{4}-\d{2}-\d{2}T/)
     expect(links[0]!.checked_at).toMatch(/^\d{4}-\d{2}-\d{2}T/)
     expect(links[0]!.error).toBeNull()
@@ -2517,8 +2524,9 @@ describe('source links', () => {
   })
 
   // the naive "upsert with nulls" implementation blanks a merged PR the moment
-  // the laptop goes offline — that is the bug this test exists to prevent
-  it('recordLinkFailure never blanks a previously good row — only checked_at and error move', () => {
+  // the laptop goes offline — that is the bug this test exists to prevent. Preview
+  // links are the exception: they must be re-proven on a successful fetch.
+  it('recordLinkFailure keeps core PR state, but clears preview fields', () => {
     upsertSourceLink(db, good)
     const before = listSourceLinks(db)[0]!
     recordLinkFailure(db, { repo: good.repo, branch: good.branch, error: 'offline' })
@@ -2527,6 +2535,10 @@ describe('source links', () => {
     expect(after.pr_title).toBe('source + PR links')
     expect(after.pr_state).toBe('OPEN')
     expect(after.tldr).toBe('links the inbox to its PR')
+    expect(after.preview_url).toBeNull()
+    expect(after.preview_environment).toBeNull()
+    expect(after.preview_deployment_id).toBeNull()
+    expect(after.preview_updated_at).toBeNull()
     expect(after.fetched_at).toBe(before.fetched_at)
     expect(after.error).toBe('offline')
     expect(after.checked_at >= before.checked_at).toBe(true)

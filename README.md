@@ -199,6 +199,21 @@ The recommended agent behavior is defined in
 [`docs/reporting-snippet.md`](docs/reporting-snippet.md). The installer adds that
 contract plus the host-specific appendix under [`docs/instructions/`](docs/instructions/).
 
+## PR preview links in approval context
+
+When GitHub exposes a deployment preview for a PR head commit, Agent Inbox shows a
+**Preview** chip next to the existing issue/PR source chips on merge-approval items
+and blocked approval rows.
+
+- Source: GitHub deployments for the exact `(repo, PR head SHA)`, using an active
+  deployment status `environment_url`.
+- Selection: ambiguous same-environment previews are omitted; otherwise the winner is
+  deterministic (`success` before `in_progress`/`queued`/`pending`, then newest update).
+- Safety: preview URLs are rendered only through `safeHttpUrl()` + `chipHtml()`, so
+  non-`http(s)` schemes are dropped.
+- Limitation: providers/check runs that do not expose a GitHub-associated deployment
+  `environment_url` do not currently produce a Preview chip.
+
 ## Architecture
 
 - **`src/store.ts`** owns schema, migrations, WAL configuration, and every database

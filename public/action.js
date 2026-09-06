@@ -51,7 +51,7 @@ export function agentFollowupChip(model, nowMs) {
   if (age >= 60 * 60_000) {
     return { text: `follow-up due ${relative(age)}`, tone: age >= 4 * 60 * 60_000 ? 'hot' : 'warm' }
   }
-  return { text: `with agent ${relative(age)}`, tone: 'muted' }
+  return { text: `delivered ${relative(age)}`, tone: 'muted' }
 }
 
 function relative(ms) {
@@ -71,7 +71,7 @@ export function lifecycleReceipt(entity) {
   const responseAt = latestIso(entity?.replied_at, entity?.annotated_at, entity?.handled_at)
   if (response) steps.push({ kind: 'response', label: response, at: responseAt })
   const pickupAt = latestIso(entity?.reply_seen_at, entity?.annotation_seen_at, entity?.handled_seen_at)
-  if (pickupAt) steps.push({ kind: 'pickup', label: 'With the agent', at: pickupAt })
+  if (pickupAt) steps.push({ kind: 'pickup', label: 'Delivered to an agent', at: pickupAt })
   if (entity?.outcome) steps.push({ kind: 'outcome', label: entity.outcome, at: entity.outcome_at })
   return steps
 }

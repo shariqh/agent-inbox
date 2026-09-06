@@ -14,7 +14,7 @@ describe('liveSummary', () => {
     const s = liveSummary([sess(), sess({ session: 's2', project: 'api', idle: true })], NOW)
     expect(s.count).toBe(1)
     expect(s.idleCount).toBe(1)
-    expect(s.label).toBe('1 working')
+    expect(s.label).toBe('1 reporting work')
     expect(s.sessions).toEqual([{
       session: 's1', project: 'oris', agent: 'claude-code',
       label: 'oris/claude-code', tone: 'fresh',
@@ -23,21 +23,31 @@ describe('liveSummary', () => {
 
   it('pluralises', () => {
     const s = liveSummary([sess(), sess({ session: 's2', project: 'api' })], NOW)
-    expect(s.label).toBe('2 working')
+    expect(s.label).toBe('2 reporting work')
   })
 
-  it('reads idle when nothing is running — the strip still renders', () => {
+  it('does not mistake a connected agent with no task report for no running agents', () => {
     const s = liveSummary([sess({ idle: true })], NOW)
     expect(s.count).toBe(0)
     expect(s.idleCount).toBe(1)
     expect(s.tone).toBe('idle')
-    expect(s.label).toBe('no agents running')
+    expect(s.label).toBe('1 connected · no task reported')
     expect(s.sessions).toEqual([])
   })
 
   it('empty activity is idle, never a crash', () => {
-    expect(liveSummary([], NOW).label).toBe('no agents running')
-    expect(liveSummary(undefined as never, NOW).label).toBe('no agents running')
+    expect(liveSummary([], NOW).label).toBe('no agent connections')
+    expect(liveSummary(undefined as never, NOW).label).toBe('no agent connections')
+  })
+
+  it('keeps connections without task reports visible even when they make recent calls', () => {
+    const s = liveSummary([
+      sess({ idle: true, doing: 'open', last_doing: '', last_call_at: at(0) }),
+      sess({ session: 's2', idle: true, doing: 'open', last_doing: '', last_call_at: null }),
+    ], NOW)
+    expect(s.label).toBe('2 connected · no task reported')
+    expect(s.count).toBe(0)
+    expect(s.idleCount).toBe(2)
   })
 
   it('strip tone is the FRESHEST session — one live agent must not read as quiet', () => {
@@ -88,7 +98,7 @@ describe('activitySynopsis', () => {
 
   it('is explicit when a session has never reported an activity summary', () => {
     expect(activitySynopsis(sess({ doing: 'open', idle: true, last_doing: '' }))).toEqual({
-      text: 'No activity summary yet',
+      text: 'No task reported yet',
       historical: false,
     })
   })

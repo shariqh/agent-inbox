@@ -136,12 +136,12 @@ describe('closing a project from the rail (issue #32)', () => {
     q(d, 'beta', 'b-question')
     upsertActivity(d, { session: 's1', project: 'beta', stream: 'main', agent: 'claude', doing: 'still working' })
     await bootApp(d)
-    expect(document.getElementById('liveStripLabel')?.textContent).toBe('1 working')
+    expect(document.getElementById('liveStripLabel')?.textContent).toBe('1 reporting work')
 
     click(rowAction('beta', 'rail-close'))
     await settle()
 
-    expect(document.getElementById('liveStripLabel')?.textContent, 'the strip is global, never closure-scoped').toBe('1 working')
+    expect(document.getElementById('liveStripLabel')?.textContent, 'the strip is global, never closure-scoped').toBe('1 reporting work')
     expect(document.querySelectorAll('#liveStripSessions .live-session')).toHaveLength(1)
   })
 })

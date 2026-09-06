@@ -70,8 +70,11 @@ describe('Live Operations Desk dashboard', () => {
     expect(signal('plans')).toBe('1')
     expect(signal('outcomes')).toBe('1')
     expect(document.querySelector('[data-dashboard-signal="agents"] .dashboard-value-total')?.textContent).toBe('/1')
+    expect(document.querySelector('[data-dashboard-signal="agents"] .dashboard-signal-label')?.textContent).toBe('Reported work')
+    expect(document.querySelector('[data-dashboard-signal="agents"]')?.getAttribute('aria-label')).toBe('Agents reporting work: 1 of 1')
     expect(document.querySelector('[data-dashboard-signal="plans"]')?.getAttribute('aria-label')).toBe('Plans: 1 across 1 project')
     expect(document.querySelector('.dashboard-live-session')?.textContent).toContain('Building the dashboard')
+    expect(document.querySelector('.dashboard-live-session small')?.textContent).toBe('Reported work')
     expect(document.querySelector('.dashboard-outcome')?.textContent).toContain('Package verified.')
     expect(document.querySelector('.dashboard-bars')).not.toBeNull()
   })
@@ -88,6 +91,7 @@ describe('Live Operations Desk dashboard', () => {
     expect(document.querySelector('.dashboard-history-empty')?.getAttribute('title')).toBe('No activity history yet')
     expect(document.querySelector('.dashboard-history-empty .dashboard-empty-icon')).not.toBeNull()
     expect(document.querySelector('.dashboard-history-empty')?.textContent?.trim()).toBe('')
+    expect(document.querySelector('.dashboard-live-list .dashboard-empty')?.getAttribute('aria-label')).toBe('No agent connections')
     expect(document.querySelectorAll('.dashboard-signal-icon')).toHaveLength(4)
   })
 
@@ -158,8 +162,8 @@ describe('Live Operations Desk dashboard', () => {
     expect(agentDots().filter((dot) => dot.classList.contains('active'))).toHaveLength(6)
     expect(agentDots().filter((dot) => dot.classList.contains('quiet'))).toHaveLength(8)
     expect(document.querySelector('[data-dashboard-signal="agents"]')?.getAttribute('aria-label'))
-      .toBe('Active agents: 6 of 14 present, including 5 reported child agents')
-    expect(document.getElementById('liveStripLabel')?.textContent).toBe('1 working')
+      .toBe('Agents reporting work: 6 of 14, including 5 reported child agents')
+    expect(document.getElementById('liveStripLabel')?.textContent).toBe('1 reporting work')
   })
 
   it('renders no lane dots when no agents are present', async () => {
@@ -169,6 +173,24 @@ describe('Live Operations Desk dashboard', () => {
     expect(signal('agents')).toBe('0')
     expect(document.querySelector('[data-dashboard-signal="agents"] .dashboard-value-total')?.textContent).toBe('/0')
     expect(agentDots()).toHaveLength(0)
+  })
+
+  it('keeps the last work report historical when the connection has no current task', async () => {
+    const d = open()
+    upsertActivity(d, {
+      session: 'quiet', project: 'alpha', stream: 'main', agent: 'copilot', doing: 'Checking the build',
+    })
+    upsertActivity(d, {
+      session: 'quiet', project: 'alpha', stream: 'main', agent: 'copilot', doing: 'open', idle: true,
+    })
+
+    await bootApp(d)
+
+    expect(signal('agents')).toBe('0')
+    expect(document.querySelector('[data-dashboard-signal="agents"]')?.getAttribute('aria-label'))
+      .toBe('Agents reporting work: 0 of 1')
+    expect(document.querySelector('.dashboard-live-session small')?.textContent).toBe('Connected')
+    expect(document.querySelector('.dashboard-live-session span')?.textContent).toBe('Last report: Checking the build')
   })
 
   it('drills from the waiting signal into the existing Inbox queue', async () => {
@@ -285,7 +307,7 @@ describe('Live Operations Desk dashboard', () => {
     expect(agentDots().filter((dot) => dot.classList.contains('active'))).toHaveLength(3)
     expect(agentDots().filter((dot) => dot.classList.contains('quiet'))).toHaveLength(1)
     expect(document.querySelector('[data-dashboard-signal="agents"]')?.getAttribute('aria-label'))
-      .toBe('Active agents: 3 of 4 present, including 2 reported child agents')
+      .toBe('Agents reporting work: 3 of 4, including 2 reported child agents')
     expect(document.activeElement).toBe(range)
     expect(document.querySelector('.dashboard-range')).toBe(range)
     expect(document.getElementById('pauseHint')?.textContent).toContain('paused')

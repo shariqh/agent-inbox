@@ -1719,6 +1719,25 @@ export interface PendingRow {
   updated_at: string
 }
 
+export function getActiveBoardRow(db: Database.Database, rowId: string): BoardRow | undefined {
+  const row = db.prepare(`SELECT ${ROW_COLUMNS} FROM board_rows
+    WHERE id = ? AND EXISTS (
+      SELECT 1 FROM boards WHERE boards.id = board_rows.board_id AND boards.status = 'active'
+    )`).get(rowId) as BoardRowRecord | undefined
+  return row ? withUnseen([row])[0] : undefined
+}
+
+export function listUnansweredBoardRows(
+  db: Database.Database,
+  project: string,
+): Array<Pick<BoardRow, 'id' | 'action_version'>> {
+  return db.prepare(`SELECT r.id, r.action_version
+    FROM board_rows r JOIN boards b ON b.id = r.board_id
+    WHERE b.project = ? AND b.status = 'active' AND r.status = 'blocked'
+      AND COALESCE(r.annotation, '') = '' AND r.annotation_kind IS NULL
+      AND r.handled_at IS NULL`).all(project) as Array<Pick<BoardRow, 'id' | 'action_version'>>
+}
+
 export function listPendingRows(db: Database.Database, project: string): PendingRow[] {
   const now = new Date().toISOString()
   const rows = db

@@ -9,7 +9,11 @@ import {
   runHook, sweepStale, hooksSettingsBlock, SUBCOMMANDS,
 } from '../src/hook.js'
 import type { SessionMarker } from '../src/hook.js'
-import { openDb, insertItem, listItems, replyItem, markReplySeen, resolveItem } from '../src/store.js'
+import {
+  openDb, insertItem, listItems, replyItem, markReplySeen, resolveItem,
+  upsertBoard, getBoard, annotateBoardRow, markRowHandled, markAnnotationDelivered,
+  updateBoardRow, archiveBoard, advanceBoardRow,
+} from '../src/store.js'
 import type { Item } from '../src/store.js'
 
 const REPO = fileURLToPath(new URL('..', import.meta.url))
@@ -191,6 +195,14 @@ function freshEnv(extra: Record<string, string> = {}): { env: Record<string, str
 
 function ev(over: Record<string, unknown> = {}): string {
   return JSON.stringify({ session_id: 'S1', cwd: process.cwd(), notification_type: 'permission_prompt', message: 'Claude needs your permission to run Bash', ...over })
+}
+
+function waitingRow(db: ReturnType<typeof openDb>, project = 'agent-inbox') {
+  upsertBoard(db, {
+    project, stream: 'main', agent: 'claude-code', title: 'Release',
+    rows: [{ label: 'Upload', status: 'blocked', action_owner: 'task', note: 'The release is ready.', next_step: 'Upload the build.' }],
+  })
+  return getBoard(db, project, 'Release')!.rows[0]!
 }
 
 // the deferred commit is what actually writes the row; the notification hook
@@ -498,7 +510,7 @@ describe('hook: pickup nudge (#21)', () => {
     const other = insertItem(db, { project: 'elsewhere', stream: '', agent: 'claude-code', kind: 'question', title: 'SECRET-TITLE' })
     replyItem(db, other, 'do it')
     const out = JSON.parse((await runHook(['stop'], ev(), env)).stdout)
-    expect(out.reason).toContain('1 of your open question(s)')
+    expect(out.reason).toContain('1 response(s)')
     expect(out.reason).not.toContain('SECRET-TITLE')
     expect(out.reason).not.toContain('elsewhere')
   })
@@ -506,6 +518,53 @@ describe('hook: pickup nudge (#21)', () => {
   it('session-end stays byte-clean whatever is waiting', async () => {
     const { env } = answered()
     expect(await runHook(['session-end'], ev({ reason: 'clear' }), env)).toEqual({ stdout: '' })
+  })
+})
+
+describe('hook: board-response pickup (#130)', () => {
+  it.each(['answer', 'clarify', 'decline'] as const)('nudges for a board %s without a question item', async (kind) => {
+    const { env, dbPath } = freshEnv()
+    const db = openDb(dbPath)
+    const row = waitingRow(db)
+    annotateBoardRow(db, row.id, 'Please continue.', kind)
+    const result = await runHook(['stop'], ev(), env)
+    const body = JSON.parse(result.stdout)
+    expect(body.decision).toBe('block')
+    expect(body.reason).toMatch(/pending/)
+    expect(body.reason).toMatch(/board_row/)
+    expect(getBoard(db, 'agent-inbox', 'Release')!.rows[0]!.annotation_seen_at).toBeNull()
+    expect(await runHook(['stop'], ev({ stop_hook_active: true }), env)).toEqual({ stdout: '' })
+    db.close()
+  })
+
+  it.each(['session-start', 'prompt-submit'] as const)('%s notices a completed human task', async (sub) => {
+    const { env, dbPath } = freshEnv()
+    const db = openDb(dbPath)
+    const row = waitingRow(db)
+    markRowHandled(db, row.id)
+    expect((await runHook([sub], ev(), env)).stdout).toMatch(/pending/)
+    expect(getBoard(db, 'agent-inbox', 'Release')!.rows[0]!.handled_seen_at).toBeNull()
+    db.close()
+  })
+
+  it('does not wake for completed, archived, or other-project rows', async () => {
+    const { env, dbPath } = freshEnv()
+    const db = openDb(dbPath)
+    const row = waitingRow(db)
+    annotateBoardRow(db, row.id, 'Done')
+    const board = getBoard(db, 'agent-inbox', 'Release')!
+    updateBoardRow(db, {
+      project: board.project, stream: board.stream, agent: board.agent, title: board.title,
+      label: row.label, status: 'partial',
+      expectedBoardVersion: board.revision, expectedRevision: board.rows[0]!.revision,
+    })
+    expect(await runHook(['stop'], ev(), env)).toEqual({ stdout: '' })
+    const updated = getBoard(db, 'agent-inbox', 'Release')!
+    archiveBoard(db, updated.id, updated.revision)
+    const other = waitingRow(db, 'elsewhere')
+    annotateBoardRow(db, other.id, 'Do not wake this project')
+    expect(await runHook(['stop'], ev(), env)).toEqual({ stdout: '' })
+    db.close()
   })
 })
 
@@ -522,6 +581,115 @@ describe('hook: watch', () => {
     expect(res.exitCode).toBe(2)
     expect(res.stdout).toBe('') // stdout stays clean; stderr carries the payload
     expect(res.stderr).toMatch(/pending/)
+  })
+
+  it.each(['annotation', 'handled'] as const)('wakes for a board-only %s response', async (response) => {
+    const { env, dbPath } = freshEnv(fast)
+    const db = openDb(dbPath)
+    const row = waitingRow(db)
+    const running = runHook(['watch'], ev(), env)
+    const timer = setTimeout(() => {
+      if (response === 'annotation') annotateBoardRow(db, row.id, 'Continue')
+      else markRowHandled(db, row.id)
+    }, 50)
+    const result = await running
+    clearTimeout(timer)
+    expect(result).toMatchObject({ stdout: '', exitCode: 2, stderr: expect.stringMatching(/pending/) })
+    const current = getBoard(db, 'agent-inbox', 'Release')!.rows[0]!
+    expect(current.annotation_seen_at).toBeNull()
+    expect(current.handled_seen_at).toBeNull()
+    db.close()
+  })
+
+  it('checks answers already waiting before deciding whether to arm', async () => {
+    const { env, dbPath } = freshEnv(fast)
+    const db = openDb(dbPath)
+    const row = waitingRow(db)
+    annotateBoardRow(db, row.id, 'Continue')
+    expect(await runHook(['watch'], ev(), env)).toMatchObject({ stdout: '', exitCode: 2 })
+    db.close()
+  })
+
+  it('does not turn an unread response into repeated Stop continuation wakes', async () => {
+    const { env, dbPath } = freshEnv(fast)
+    const db = openDb(dbPath)
+    const row = waitingRow(db)
+    annotateBoardRow(db, row.id, 'Continue')
+    const question = insertItem(db, { project: 'agent-inbox', stream: '', agent: 'claude-code', kind: 'question', title: 'Proceed?' })
+    replyItem(db, question, 'Yes')
+    for (let attempt = 0; attempt < 2; attempt++) {
+      expect(await runHook(['watch'], ev({ stop_hook_active: true }), env)).toEqual({ stdout: '' })
+    }
+    db.close()
+  })
+
+  it('a Stop continuation can still wait for a future response without repeating the old one', async () => {
+    const { env, dbPath } = freshEnv(fast)
+    const db = openDb(dbPath)
+    const old = insertItem(db, { project: 'agent-inbox', stream: '', agent: 'claude-code', kind: 'question', title: 'Old request' })
+    replyItem(db, old, 'Already waiting')
+    const row = waitingRow(db)
+    const running = runHook(['watch'], ev({ stop_hook_active: true }), env)
+    let answered = false
+    const timer = setTimeout(() => {
+      markRowHandled(db, row.id)
+      answered = true
+    }, 50)
+    const result = await running
+    clearTimeout(timer)
+    expect(answered).toBe(true)
+    expect(result.exitCode).toBe(2)
+    db.close()
+  })
+
+  it('does not let a replacement action bypass the armed row version', async () => {
+    const { env, dbPath } = freshEnv(fast)
+    const db = openDb(dbPath)
+    const row = waitingRow(db)
+    const running = runHook(['watch'], ev(), env)
+    const timer = setTimeout(() => {
+      const board = getBoard(db, 'agent-inbox', 'Release')!
+      advanceBoardRow(db, {
+        project: board.project, title: board.title, label: row.label,
+        expectedBoardVersion: board.revision, expectedRevision: row.revision,
+        note: 'A later request.', next_step: 'Upload the next build.', action_owner: 'task', impact: 'Next release.',
+      })
+      annotateBoardRow(db, row.id, 'Answer to the later request')
+    }, 50)
+    const result = await running
+    clearTimeout(timer)
+    expect(result).toEqual({ stdout: '' })
+    db.close()
+  })
+
+  it('an armed board watch still wakes if another session stamps delivery first', async () => {
+    const { env, dbPath } = freshEnv(fast)
+    const db = openDb(dbPath)
+    const row = waitingRow(db)
+    const running = runHook(['watch'], ev(), env)
+    const timer = setTimeout(() => {
+      annotateBoardRow(db, row.id, 'Continue')
+      const answered = getBoard(db, 'agent-inbox', 'Release')!.rows[0]!
+      markAnnotationDelivered(db, row.id, answered.annotated_at, 'sibling')
+    }, 50)
+    const result = await running
+    clearTimeout(timer)
+    expect(result.exitCode).toBe(2)
+    db.close()
+  })
+
+  it('stands down when its only blocked board is archived', async () => {
+    const { env, dbPath } = freshEnv(fast)
+    const db = openDb(dbPath)
+    waitingRow(db)
+    const running = runHook(['watch'], ev(), env)
+    const timer = setTimeout(() => {
+      const board = getBoard(db, 'agent-inbox', 'Release')!
+      archiveBoard(db, board.id, board.revision)
+    }, 50)
+    expect(await running).toEqual({ stdout: '' })
+    clearTimeout(timer)
+    db.close()
   })
 
   it('exits 0 immediately when the project has no unanswered question', async () => {
@@ -541,7 +709,7 @@ describe('hook: watch', () => {
     expect(await running).toEqual({ stdout: '' })
   })
 
-  it('a second watcher for the same project stands down while the lock is held', async () => {
+  it('a second watcher for the same host session stands down while the lock is held', async () => {
     const { env, dbPath } = freshEnv(fast)
     insertItem(openDb(dbPath), { project: 'agent-inbox', stream: '', agent: 'claude-code', kind: 'question', title: 'which?' })
     const first = runHook(['watch'], ev(), env)
@@ -552,14 +720,27 @@ describe('hook: watch', () => {
     await first
   })
 
+  it('another host session in the same project retains its own wake source', async () => {
+    const { env, dbPath } = freshEnv(fast)
+    const db = openDb(dbPath)
+    const row = waitingRow(db)
+    const first = runHook(['watch'], ev({ session_id: 'S1' }), env)
+    const second = runHook(['watch'], ev({ session_id: 'S2' }), env)
+    const timer = setTimeout(() => markRowHandled(db, row.id), 50)
+    const results = await Promise.all([first, second])
+    clearTimeout(timer)
+    expect(results.map((result) => result.exitCode)).toEqual([2, 2])
+    db.close()
+  })
+
   it('takes its lock beside the db, never in TMPDIR where the legacy shell watcher lives', async () => {
     const { env, dbPath } = freshEnv(fast)
     insertItem(openDb(dbPath), { project: 'agent-inbox', stream: '', agent: 'claude-code', kind: 'question', title: 'which?' })
     const running = runHook(['watch'], ev(), env)
     await new Promise((r) => setTimeout(r, 100))
-    expect(existsSync(join(dirname(dbPath), 'hook-state', 'watch-agent-inbox.lock'))).toBe(true)
+    expect(existsSync(join(dirname(dbPath), 'hook-state', 'watch-agent-inbox-S1.lock'))).toBe(true)
     await running
-    expect(existsSync(join(dirname(dbPath), 'hook-state', 'watch-agent-inbox.lock'))).toBe(false)
+    expect(existsSync(join(dirname(dbPath), 'hook-state', 'watch-agent-inbox-S1.lock'))).toBe(false)
   })
 })
 
@@ -593,7 +774,7 @@ describe('hook: real spawn round-trip', () => {
     const db = openDb(dbPath)
     const id = insertItem(db, { project: 'agent-inbox', stream: '', agent: 'claude-code', kind: 'question', title: 'which?' })
     const running = run(['watch'], ev(), env)
-    const lock = join(dirname(dbPath), 'hook-state', 'watch-agent-inbox.lock')
+    const lock = join(dirname(dbPath), 'hook-state', 'watch-agent-inbox-S1.lock')
     const deadline = Date.now() + 9000
     while (!existsSync(lock) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50))
     const armed = existsSync(lock)
@@ -604,6 +785,17 @@ describe('hook: real spawn round-trip', () => {
     expect(res.code).toBe(2)
     expect(res.err).toMatch(/pending/)
     expect(res.out).toBe('')
+  })
+
+  it('a board-only answer wakes the real hook child and remains available to pending', async () => {
+    const { env, dbPath } = freshEnv({ AGENT_INBOX_WATCH_SECS: '2', AGENT_INBOX_WATCH_POLL_MS: '20' })
+    const db = openDb(dbPath)
+    const row = waitingRow(db)
+    markRowHandled(db, row.id)
+    const result = await run(['watch'], ev(), env)
+    expect(result).toMatchObject({ code: 2, out: '', err: expect.stringMatching(/pending/) })
+    expect(getBoard(db, 'agent-inbox', 'Release')!.rows[0]!.handled_seen_at).toBeNull()
+    db.close()
   })
 
   it('selftest exits 0 against a usable db and non-zero against a broken one', async () => {

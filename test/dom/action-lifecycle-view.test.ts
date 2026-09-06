@@ -5,14 +5,18 @@ import {
   advanceBoardRow,
   annotateBoardRow,
   getBoard,
+  getItem,
   insertItem,
   listBoards,
   markAnnotationDelivered,
+  markReplySeen,
+  replyItem,
+  resolveItem,
   updateBoardRow,
   upsertBoard,
 } from '../../src/store.js'
 import {
-  advanceClock, bootApp, buttonLabelled, click, freshDb, row, rowTitles, settle, useDomTest,
+  advanceClock, badgeCount, bootApp, buttonLabelled, click, freshDb, pollTick, row, rowTitles, settle, useDomTest,
 } from './harness.js'
 
 useDomTest()
@@ -142,7 +146,7 @@ describe('action lifecycle presentation', () => {
     expect(card?.querySelector('.action-history')?.textContent).toContain('People Pipeline')
   })
 
-  it('flags answered work that an agent picked up but has not finished', async () => {
+  it('flags a delivered response with no recorded result, without claiming the asking agent resumed', async () => {
     const d = open()
     upsertBoard(d, {
       ...AGENT,
@@ -168,6 +172,53 @@ describe('action lifecycle presentation', () => {
     expect(chipText(rowId)).toBe('follow-up due 2h')
     click(row(rowId))
     await settle()
-    expect(row(rowId)?.textContent).toContain('With the agent')
+    expect(row(rowId)?.textContent).toContain('Delivered to claude-code')
+    expect(row(rowId)?.querySelector('.lifecycle-receipt')?.textContent).toContain('Delivered to an agent')
+    expect(row(rowId)?.querySelector('.outcome-block')).toBeNull()
+  })
+
+  it('distinguishes an unanswered request, a saved response, delivery, and a recorded result', async () => {
+    const d = open()
+    const id = insertItem(d, {
+      ...AGENT,
+      kind: 'question',
+      title: 'Publish the release?',
+      detail: 'The release is ready.',
+      next_step: 'Choose whether to publish.',
+      options: [{ label: 'Publish', recommended: true }, { label: 'Hold' }],
+    })
+
+    await bootApp(d)
+    expect(badgeCount()).toBe(1)
+    click(row(id))
+    await settle()
+    expect(row(id)?.querySelector('.pickup')).toBeNull()
+    expect(row(id)?.querySelector('.opt-pill.rec')?.textContent).toContain('Publish')
+
+    advanceClock()
+    replyItem(d, id, 'Publish')
+    await pollTick()
+    expect(row(id)?.querySelector('.pickup.awaiting')?.textContent).toBe('Saved · waiting for delivery')
+    expect(row(id)?.querySelector('.outcome-block')).toBeNull()
+    expect(badgeCount()).toBe(0)
+
+    advanceClock()
+    markReplySeen(d, id, getItem(d, id)!.replied_at)
+    await pollTick()
+    expect(row(id)?.querySelector('.pickup.picked')?.textContent).toBe('Delivered to an agent')
+    expect(row(id)?.querySelector('.pickup.picked')?.getAttribute('title'))
+      .toBe('Delivery does not confirm the asking agent has resumed.')
+    expect(row(id)?.querySelector('.outcome-block')).toBeNull()
+    expect(getItem(d, id)?.status).toBe('open')
+    expect(badgeCount()).toBe(0)
+
+    advanceClock()
+    resolveItem(d, id, 'Release published.')
+    await pollTick()
+    click(document.querySelector('.tab[data-tab="done"]'))
+    await settle()
+    const result = document.querySelector(`[data-card-id="${id}"]`)
+    expect(result?.textContent).toContain('Release published.')
+    expect(result?.querySelector('.outcome-block')?.textContent).toContain('Release published.')
   })
 })

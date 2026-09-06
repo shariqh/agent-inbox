@@ -206,7 +206,7 @@ export function urgencyChip(model, nowMs) {
     // The alarm is relabeled, never removed, so a pickup that never happens
     // stays on screen as the agent's failure rather than as your to-do.
     if (!model.answered) return { text: 'Needs input', tone: 'blocked' }
-    return agentFollowupChip(model, nowMs) ?? { text: 'Waiting for agent', tone: 'muted' }
+    return agentFollowupChip(model, nowMs) ?? { text: 'Waiting for delivery', tone: 'muted' }
   }
   if (model.answered) return agentFollowupChip(model, nowMs) ?? { text: 'Answered', tone: 'muted' }
   const age = nowMs - Date.parse(model.created_at)
@@ -270,7 +270,7 @@ export function stagedLabel(staged) {
 // Undo cannot win the race against a picked-up reply — say so instead of lying.
 export function undoRefusal(item, nowMs) {
   if (canUndo(item)) return null
-  return `Picked up ${relMs(nowMs - Date.parse(item.reply_seen_at))} ago — answering again will not un-do it`
+  return `Delivered ${relMs(nowMs - Date.parse(item.reply_seen_at))} ago — this answer can no longer be withdrawn`
 }
 
 // The mark's own twin of the above (#36). store.ts's clearRowHandled refuses once
@@ -282,7 +282,7 @@ export function undoRefusal(item, nowMs) {
 // it is the evidence about how long an agent has been sitting on this.
 export function handledUndoRefusal(row, nowMs) {
   if (!row.handled_seen_at) return null
-  return `Delivered ${relMs(nowMs - Date.parse(row.handled_seen_at))} ago — un-marking will not un-tell the agent`
+  return `Delivered ${relMs(nowMs - Date.parse(row.handled_seen_at))} ago — this confirmation can no longer be withdrawn`
 }
 
 // Replying does not resolve (§5): answered questions leave the active set and

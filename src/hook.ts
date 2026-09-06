@@ -13,9 +13,10 @@ import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, statSync, unlinkSync, rmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type Database from 'better-sqlite3'
-import { defaultDbPath, insertItem, listItems, listPending, openDb, resolveItem } from './store.js'
+import { defaultDbPath, insertItem, listItems, listPending, listPendingRows, listUnansweredBoardRows, openDb, resolveItem } from './store.js'
 import type { Item } from './store.js'
 import { inferProject, inferStream } from './infer.js'
+import { boardResponseState } from './watch.js'
 
 // Every subcommand the dispatcher answers to. docs/hooks.md is checked against
 // this list by test/hook.test.ts so the reference cannot drift from the code.
@@ -195,10 +196,11 @@ export function shouldBackstop({ pending, sessionId, nowMs, marker, opts }: Back
 
 export function nudgeText(count: number, project: string): string {
   return (
-    `agent-inbox: the human answered ${count} of your open question(s) in project ${project} — ` +
-    `call the agent-inbox \`pending\` tool now, act on the reply (and reply_context), then \`resolve\` the item. ` +
+    `agent-inbox: the human sent ${count} response(s) in project ${project} — ` +
+    `call the agent-inbox \`pending\` tool now and act on the reply, reply_context, annotation, or handled_at. ` +
+    `Then \`resolve\` the item or use \`board_row\` to change the row status and record an outcome. ` +
     `If this session has no pending tool, read the reply from the viewer API ` +
-    `(curl -s 127.0.0.1:4319/api/items) and tell the human this session predates it and needs a restart.`
+    `(curl -s 127.0.0.1:4319/api/items and /api/boards) and tell the human the Inbox connection needs to be restored.`
   )
 }
 
@@ -324,6 +326,15 @@ export function sweepStale(db: Database.Database, nowMs: number, maxAgeMs: numbe
 // how many of this project's open questions have an answer nobody picked up
 function unpickedReplies(pending: Item[]): number {
   return pending.filter((p) => p.reply != null && p.reply !== '' && p.reply_seen_at == null).length
+}
+
+function unpickedBoardRows(db: Database.Database, project: string): Set<string> {
+  return new Set(listPendingRows(db, project)
+    .filter((row) => row.status === 'blocked' && (
+      ((row.annotation || row.annotation_kind) && !row.annotation_seen_at)
+      || (row.handled_at && !row.handled_seen_at)
+    ))
+    .map((row) => row.row_id))
 }
 
 // ── the dispatcher ──────────────────────────────────────────────────────────
@@ -560,7 +571,7 @@ function cmdSessionStep(ctx: Ctx): HookResult {
       disarm(ctx.dbPath, ctx.ev.session_id)
     }
     if (ctx.sub === 'session-end') return EMPTY
-    const n = unpickedReplies(listPending(db, project))
+    const n = unpickedReplies(listPending(db, project)) + unpickedBoardRows(db, project).size
     if (n === 0) return EMPTY
     const text = nudgeText(n, project)
     if (ctx.sub === 'prompt-submit') {
@@ -593,8 +604,9 @@ function cmdSweep(ctx: Ctx): HookResult {
 
 // ── #21's async half: the answer watcher ────────────────────────────────────
 
-function lockPath(dbPath: string, project: string): string {
-  return join(stateDir(dbPath), `watch-${safeSegment(project)}.lock`)
+function lockPath(dbPath: string, project: string, sessionId?: string): string {
+  const session = sessionId ? `-${safeSegment(sessionId)}` : ''
+  return join(stateDir(dbPath), `watch-${safeSegment(project)}${session}.lock`)
 }
 
 function lockHeld(file: string): boolean {
@@ -614,20 +626,35 @@ function lockHeld(file: string): boolean {
 async function cmdWatch(ctx: Ctx): Promise<HookResult> {
   const { project } = scopeOf(ctx.ev)
   const db = openDb(ctx.dbPath) // opened ONCE for the whole loop
-  const lock = lockPath(ctx.dbPath, project)
+  const lock = lockPath(ctx.dbPath, project, ctx.ev.session_id)
   let held = false
   try {
-    if (listPending(db, project).filter((p) => !p.reply).length === 0) return EMPTY
+    const initialItems = listPending(db, project)
+    const watchedItems = new Set(initialItems.filter((item) => !item.reply).map((item) => item.id))
+    const watchedRows = listUnansweredBoardRows(db, project)
+    const ready = unpickedReplies(initialItems) + unpickedBoardRows(db, project).size
+    if (ready && ctx.ev.stop_hook_active !== true) {
+      return { stdout: '', stderr: `${nudgeText(ready, project)}\n`, exitCode: 2 }
+    }
+    if (!watchedItems.size && !watchedRows.length) return EMPTY
     if (lockHeld(lock)) return EMPTY
     mkdirSync(stateDir(ctx.dbPath), { recursive: true })
     writeFileSync(lock, String(process.pid))
     held = true
     const deadline = Date.now() + ctx.opts.watchSecs * 1000
     while (Date.now() < deadline) {
-      const pending = listPending(db, project)
-      const n = unpickedReplies(pending)
+      const pending = listPending(db, project).filter((item) => watchedItems.has(item.id))
+      let rowResponses = 0
+      let waitingOnRow = false
+      for (const row of watchedRows) {
+        const state = boardResponseState(db, row.id, row.action_version)
+        if (state === 'reply') rowResponses++
+        if (state === undefined) waitingOnRow = true
+      }
+      // Only requests captured when arming can wake this host; delivery is not acknowledgement.
+      const n = pending.filter((item) => item.reply).length + rowResponses
       if (n > 0) return { stdout: '', stderr: `${nudgeText(n, project)}\n`, exitCode: 2 }
-      if (pending.length === 0) return EMPTY // resolved out from under us — stand down
+      if (pending.length === 0 && !waitingOnRow) return EMPTY
       await delay(ctx.opts.watchPollMs)
     }
     return EMPTY

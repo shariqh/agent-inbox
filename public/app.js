@@ -1230,7 +1230,7 @@ function renderDashboardAmbient(model) {
     ? `, including ${childCount} reported child agent${childCount === 1 ? '' : 's'}`
     : ''
   const labels = {
-    agents: `Active agents: ${model.signals.agents.working} of ${model.signals.agents.total} present${childContribution}`,
+    agents: `Agents reporting work: ${model.signals.agents.working} of ${model.signals.agents.total}${childContribution}`,
     waiting: `Needs you: ${model.signals.waiting} open action${model.signals.waiting === 1 ? '' : 's'}`,
     plans: `Plans: ${model.signals.plans} across ${model.signals.projects} project${model.signals.projects === 1 ? '' : 's'}`,
     outcomes: `Recorded outcomes: ${model.signals.outcomes} across items and plan rows`,
@@ -1288,7 +1288,7 @@ function renderDashboard(model) {
   signals.append(
     dashboardSignal({
       name: 'agents',
-      label: 'Active agents',
+      label: 'Reported work',
       value: model.signals.agents.working,
       total: model.signals.agents.total,
       target: 'live',
@@ -1416,7 +1416,7 @@ function renderDashboard(model) {
   const sessionList = document.createElement('div')
   sessionList.className = 'dashboard-live-list'
   if (!model.sessions.length) {
-    sessionList.innerHTML = '<div class="dashboard-empty" role="img" aria-label="No agent sessions" title="No agent sessions"><svg class="dashboard-empty-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v4M12 18v4M2 12h4M18 12h4"></path></svg></div>'
+    sessionList.innerHTML = '<div class="dashboard-empty" role="img" aria-label="No agent connections" title="No agent connections"><svg class="dashboard-empty-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v4M12 18v4M2 12h4M18 12h4"></path></svg></div>'
   } else {
     for (const session of model.sessions.slice(0, 4)) {
       const row = document.createElement('div')
@@ -1424,9 +1424,9 @@ function renderDashboard(model) {
       const identity = document.createElement('strong')
       identity.textContent = `${session.project} / ${session.agent}`
       const doing = document.createElement('span')
-      doing.textContent = session.synopsis
+      doing.textContent = session.historical ? `Last report: ${session.synopsis}` : session.synopsis
       const state = document.createElement('small')
-      state.textContent = session.idle ? 'quiet' : 'working'
+      state.textContent = session.idle ? 'Connected' : 'Reported work'
       row.append(identity, doing, state)
       sessionList.appendChild(row)
     }
@@ -2172,8 +2172,8 @@ function rowAnswerEl(b, r, onSaved) {
 // disagree between them.
 function pickupMarkHtml(seenAt, seenBy) {
   return seenAt
-    ? `<span class="pickup picked">With ${seenBy ? esc(seenBy) : 'the agent'} · ${esc(rel(seenAt))} ago</span>`
-    : '<span class="pickup awaiting">Waiting for the agent</span>'
+    ? `<span class="pickup picked" title="Delivery does not confirm the asking agent has resumed.">Delivered to ${seenBy ? esc(seenBy) : 'an agent'} · ${esc(rel(seenAt))} ago</span>`
+    : '<span class="pickup awaiting">Saved · waiting for delivery</span>'
 }
 
 // Everything the human has left on a row: their words (#37), their "I did my
@@ -2212,10 +2212,10 @@ function bindContextDisclosures(root) {
 function actionBlocksHtml(tldr, nextStep, actionOwner, impact, nextAfter, context, contextKey) {
   return `
     ${actionOwner ? `<div class="action-owner">${esc(actionOwnerLabel({ action_owner: actionOwner }))}</div>` : ''}
-    ${nextStep ? `<div class="card-next"><div class="card-section-label">NEXT STEP</div><div class="card-next-body">${renderStructuredText(nextStep)}</div></div>` : ''}
-    ${impact ? `<div class="card-impact"><div class="card-section-label">WHY NOW</div>${renderStructuredText(impact)}</div>` : ''}
-    ${nextAfter ? `<div class="card-after"><div class="card-section-label">AFTER THIS</div>${renderStructuredText(nextAfter)}</div>` : ''}
-    ${tldr ? `<div class="card-tldr"><div class="card-section-label">TL;DR</div><div class="card-tldr-body">${renderStructuredText(tldr)}</div></div>` : ''}
+    ${nextStep ? `<div class="card-next"><div class="card-section-label">Next step</div><div class="card-next-body">${renderStructuredText(nextStep)}</div></div>` : ''}
+    ${impact ? `<div class="card-impact"><div class="card-section-label">Why it matters</div>${renderStructuredText(impact)}</div>` : ''}
+    ${nextAfter ? `<div class="card-after"><div class="card-section-label">What happens next</div>${renderStructuredText(nextAfter)}</div>` : ''}
+    ${tldr ? `<div class="card-tldr"><div class="card-section-label">Summary</div><div class="card-tldr-body">${renderStructuredText(tldr)}</div></div>` : ''}
     ${contextHtml(context, contextKey)}`
 }
 
@@ -2384,13 +2384,13 @@ function relaySummaryText(entry) {
 }
 
 function relayPickupChip(entity) {
-  const pickup = lifecycleReceipt(entity).find((step) => step.label === 'With the agent')
-  if (!pickup?.at) return { text: 'Waiting for agent', tone: 'awaiting' }
+  const pickup = lifecycleReceipt(entity).find((step) => step.kind === 'pickup')
+  if (!pickup?.at) return { text: 'Waiting for delivery', tone: 'awaiting' }
   return agentFollowupChip({
     answered: true,
     pickedUp: true,
     pickedUpAt: pickup.at,
-  }, Date.now()) ?? { text: 'With agent', tone: 'muted' }
+  }, Date.now()) ?? { text: 'Delivered', tone: 'muted' }
 }
 
 function focusRelayEntry(entry, lane) {
@@ -3739,33 +3739,35 @@ function renderLive(entries) {
   const host = document.querySelector('#liveDrawer .live-list')
   const active = entries.filter((a) => !a.idle)
   const idle = entries.filter((a) => a.idle)
-  host.innerHTML = entries.length ? '' : '<p class="empty">No sessions.</p>'
+  host.title = 'Connections can be shared by multiple agents. Task reports are not proof an agent is running.'
+  host.innerHTML = entries.length ? '' : '<p class="empty">No agent connections.</p>'
   for (const a of active) {
     const el = document.createElement('details')
     el.className = 'live-entry'
     if (openLive.has(a.session)) el.open = true
     el.addEventListener('toggle', () => { el.open ? openLive.add(a.session) : openLive.delete(a.session) })
     const seen = lastActivityAt(a)
+    const age = a.last_call_at ? `Inbox call ${rel(seen)} ago` : `connected ${rel(seen)} ago`
     const { tone: fresh } = ageChip(Date.now() - Date.parse(seen))
     const stream = a.stream ? ` · ${esc(a.stream)}` : ''
-    const kids = a.children.length ? `<span class="live-kids">▸ ${a.children.length} agent${a.children.length > 1 ? 's' : ''}</span>` : ''
+    const kids = a.children.length ? `<span class="live-kids">▸ ${a.children.length} reported agent${a.children.length > 1 ? 's' : ''}</span>` : ''
     el.innerHTML = `
       <summary class="card-summary live-summary">
         <span class="live-dot"></span>
         <span class="live-session-copy">
           <span class="live-session-heading">
-            <span class="live-state-label working">Working</span>
+            <span class="live-state-label working">Reported work</span>
             <span class="live-who">${esc(a.agent)} · ${esc(a.project)}${stream}</span>
           </span>
           <span class="live-doing">${esc(a.doing)}</span>
         </span>
         ${kids}
-        <span class="live-age ${fresh}" title="started ${rel(a.started_at)} ago">last call ${rel(seen)}</span>
+        <span class="live-age ${fresh}" title="connected ${esc(rel(a.started_at))} ago">${esc(age)}</span>
       </summary>
       ${a.detail ? `<div class="detail live-detail">${renderStructuredText(a.detail)}</div>` : ''}`
     const dot = el.querySelector('.live-dot')
     paintLiveProjectDot(dot, a.project, 'working')
-    dot.title = `${a.project} · working · last call ${rel(seen)} ago`
+    dot.title = `${a.project} · reported work · ${age}`
     if (a.children.length) {
       const table = document.createElement('table')
       table.className = 'board-table live-children'
@@ -3789,7 +3791,7 @@ function renderLive(entries) {
     fold.className = 'idle-fold'
     if (openLive.has('__idle__')) fold.open = true
     fold.addEventListener('toggle', () => { fold.open ? openLive.add('__idle__') : openLive.delete('__idle__') })
-    fold.innerHTML = `<summary>${idle.length} idle session${idle.length > 1 ? 's' : ''}</summary>`
+    fold.innerHTML = `<summary>${idle.length} connection${idle.length > 1 ? 's' : ''} · no task reported</summary>`
     for (const a of idle) {
       const row = document.createElement('div')
       // #45: hours-quiet sessions keep their row (they ARE present, and their
@@ -3801,20 +3803,20 @@ function renderLive(entries) {
       const seen = lastActivityAt(a)
       const { tone: fresh } = ageChip(Date.now() - Date.parse(seen))
       const synopsis = activitySynopsis(a)
-      const age = dormant ? `quiet ${rel(seen)}` : `last call ${rel(seen)}`
+      const age = a.last_call_at ? `Inbox call ${rel(seen)} ago` : `connected ${rel(seen)} ago`
       row.innerHTML = `
         <span class="live-dot"></span>
         <span class="live-session-copy">
           <span class="live-session-heading">
-            <span class="live-state-label idle">Idle</span>
+            <span class="live-state-label idle">Connected</span>
             <span class="live-who">${esc(a.agent)} · ${esc(a.project)}${stream}</span>
           </span>
-          <span class="live-doing ${synopsis.historical ? 'historical' : 'empty-summary'}">${synopsis.historical ? 'Last activity: ' : ''}${esc(synopsis.text)}</span>
+          <span class="live-doing ${synopsis.historical ? 'historical' : 'empty-summary'}">${synopsis.historical ? 'Last report: ' : ''}${esc(synopsis.text)}</span>
         </span>
-        <span class="live-age ${fresh}" title="last call ${rel(seen)} ago">${age}</span>`
+        <span class="live-age ${fresh}" title="${esc(age)}">${esc(age)}</span>`
       const dot = row.querySelector('.live-dot')
       paintLiveProjectDot(dot, a.project, 'idle-session')
-      dot.title = `${a.project} · idle · last call ${rel(seen)} ago`
+      dot.title = `${a.project} · connected · ${age}`
       fold.appendChild(row)
     }
     host.appendChild(fold)
@@ -3838,8 +3840,8 @@ function renderLiveBar(entries) {
     dot.style.removeProperty('--project-wash')
   }
   dot.title = s.count
-    ? `${s.count} working across ${projects.length} project${projects.length === 1 ? '' : 's'}`
-    : `${s.idleCount} idle session${s.idleCount === 1 ? '' : 's'}`
+    ? `${s.count} of ${entries.length} connections reporting work across ${projects.length} project${projects.length === 1 ? '' : 's'}`
+    : s.label
   label.textContent = s.label
   list.replaceChildren()
   for (const x of s.sessions) {
@@ -5608,7 +5610,7 @@ function itemCardEl(it, {
     ${actionBlocksHtml(s.detail, nextStep, s.actionOwner, s.impact, s.nextAfter, s.context, `item:${it.id}`)}
     ${s.annotation ? `<div class="annotation"><strong>Note:</strong> ${esc(s.annotation)}</div>` : ''}
     ${s.recWarning ? `<div class="rec-warning">Review: ${esc(s.recWarning)}</div>` : ''}
-    ${s.reply || it.reply_kind ? `<div class="reply-block"><strong>${esc(responseLabel(it) || 'You answered')}:</strong> ${esc(s.reply ?? '')}${it.reply_context ? `<div class="reply-context">Context: ${esc(it.reply_context)}</div>` : ''}${it.reply_source === 'agent' ? '<span class="reply-source">via chat</span>' : ''}${s.showPickup ? `<span class="pickup ${it.reply_seen_at ? 'picked' : 'awaiting'}">${it.reply_seen_at ? 'With the agent' : 'Waiting for the agent'}</span>` : ''}</div>` : ''}
+    ${s.reply || it.reply_kind ? `<div class="reply-block"><strong>${esc(responseLabel(it) || 'You answered')}:</strong> ${esc(s.reply ?? '')}${it.reply_context ? `<div class="reply-context">Context: ${esc(it.reply_context)}</div>` : ''}${it.reply_source === 'agent' ? '<span class="reply-source">via chat</span>' : ''}${s.showPickup ? `<span class="pickup ${it.reply_seen_at ? 'picked' : 'awaiting'}"${it.reply_seen_at ? ' title="Delivery does not confirm the asking agent has resumed."' : ''}>${it.reply_seen_at ? 'Delivered to an agent' : 'Saved · waiting for delivery'}</span>` : ''}</div>` : ''}
     ${outcomeHtml(s.outcome, it.outcome_at)}
     ${lifecycleHtml(it, { includeAsked })}`
   bindContextDisclosures(el)

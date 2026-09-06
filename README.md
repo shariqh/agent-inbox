@@ -174,23 +174,47 @@ flowchart LR
 4. The agent calls `pending`, receives the response, acknowledges it, and continues.
 
 Claude Code can use the optional deterministic hooks in
-[`docs/hooks.md`](docs/hooks.md) for automatic idle-session pickup. Copilot questions
-return an exact-item watcher command so the owning CLI session wakes when the answer
-arrives.
+[`docs/hooks.md`](docs/hooks.md) for idle-session pickup of question replies and
+responses on blocked plan rows, including "I've done my part", clarification, and
+decline. The hook checks for an answer before it starts waiting. An armed watcher
+does not lose a later answer just because another agent received it first. A Stop
+continuation does not wake repeatedly for the same unread response; it can still
+wait for answers to requests that were unanswered when it started.
+
+Copilot questions and new blocked plan actions return host-owned watcher commands.
+The agent must launch them in its CLI session; the MCP server never does so.
+Each plan watcher follows one row action, not every future use of that row.
+Routine plan edits do not create duplicate watchers. After a timeout or restart,
+`board_get({title, watch:true})` returns watches for the plan's remaining blocked
+actions. `pending({project:"..."})` retrieves answers for the original project
+without changing the current session scope.
+
+**Saved, delivered, and acted on are different states.** Watchers only notify the
+host; they never mark a response delivered or complete. An agent receives the
+response through `pending`, then records the result by resolving the question or
+changing the plan row's status. A delivery receipt is not proof that the intended
+agent resumed. Hooks still select requests by project, but each host session keeps
+its own watcher so one session cannot take away another's wake source. An
+unavailable host connection cannot be repaired by a database watcher.
+
+Live shows connected MCP processes and the work they report, not an authoritative
+inventory of every agent or subagent. A connection with no task report is unknown
+activity, not proof of inactivity. `register` updates its displayed project and
+branch immediately; child-agent descriptions still come from the manager.
 
 ## MCP tools
 
 | Tool | Purpose |
 |---|---|
 | `flag` | Raise a question, non-blocking note, or completed milestone |
-| `pending` | Read open questions and human responses on blocked board rows |
+| `pending` | Read open questions and plan responses, optionally for an explicit project |
 | `answer` | Record an answer the human gave in chat while preserving inbox precedence |
 | `resolve` | Close an item after the agent acts on it |
 | `status` | Publish ephemeral live work and child-agent presence |
 | `board_upsert` | Create or refresh an entire tracking board |
 | `board_row` | Update one stable board row |
 | `board_advance` | Advance a row to its next human action without changing its label |
-| `board_get` | Read board state and human annotations |
+| `board_get` | Read board state and human annotations; optionally re-arm Copilot row watches |
 | `board_archive` | Archive a finished board |
 | `register` | Override automatically inferred project, stream, repository, or issue scope |
 | `whoami` | Report the current inferred scope |
@@ -198,6 +222,11 @@ arrives.
 The recommended agent behavior is defined in
 [`docs/reporting-snippet.md`](docs/reporting-snippet.md). The installer adds that
 contract plus the host-specific appendix under [`docs/instructions/`](docs/instructions/).
+
+Summaries should say what changed, what remains, or what needs a decision in plain
+language. For example, "The fix is ready for review, but has not shipped" is more
+useful than a commit hash and a review transcript. Keep that evidence in the
+expandable details, and do not label a prepared pull request as a shipped result.
 
 ## Architecture
 

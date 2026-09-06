@@ -57,7 +57,7 @@ describe('issue #34 · correcting a chat-recorded answer', () => {
     const card = row(id)!
     expect(card.querySelector('.reply-block')?.textContent).toContain('SQLite')
     expect(card.querySelector('.reply-source')?.textContent).toBe('via chat')
-    expect(card.querySelector('.pickup')?.textContent).toBe('With the agent')
+    expect(card.querySelector('.pickup')?.textContent).toBe('Delivered to an agent')
     expect(card.querySelector('.pickup.awaiting')).toBeNull()
     expect(answerInput(id)?.value).toBe('SQLite')
     expect(card.querySelector<HTMLInputElement>('.reply-context-input')?.value)
@@ -81,7 +81,7 @@ describe('issue #34 · correcting a chat-recorded answer', () => {
       reply: 'Postgres',
     })
     expect(row(id)?.querySelector('.reply-source')).toBeNull()
-    expect(row(id)?.querySelector('.pickup')?.textContent).toBe('Waiting for the agent')
+    expect(row(id)?.querySelector('.pickup')?.textContent).toBe('Saved · waiting for delivery')
   })
 
   it('preserves chat context when correcting with a keyboard option', async () => {

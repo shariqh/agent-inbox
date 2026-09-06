@@ -38,7 +38,7 @@ describe('History outcome ledger', () => {
     const rows = [...document.querySelectorAll<HTMLDetailsElement>('#done .history-row')]
     expect(rows).toHaveLength(2)
     expect(rows.every((row) => !row.open)).toBe(true)
-    expect(document.querySelector('#done .history-row summary')?.textContent).not.toContain('NEXT STEP')
+    expect(document.querySelector('#done .history-row summary')?.textContent).not.toContain('Next step')
     expect(document.querySelector('#done')?.textContent).toContain('Every artifact matched its manifest.')
     expect(document.querySelector('#done')?.textContent).toContain('The signed release is available.')
   })

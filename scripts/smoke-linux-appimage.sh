@@ -103,13 +103,15 @@ fi
 
 setsid xvfb-run -a "${launch[@]}" "$APPIMAGE" >"$LOG" 2>&1 &
 APP_PID=$!
+# Cache preparation can keep renderer startup behind the server's readiness.
 for _ in {1..90}; do
   if ! kill -0 "$APP_PID" >/dev/null 2>&1; then
-    echo "smoke-linux-appimage: application exited before the viewer responded" >&2
+    echo "smoke-linux-appimage: application exited before the viewer and sandbox were ready" >&2
     exit 1
   fi
   if curl -fsSI "http://127.0.0.1:$PORT/" |
-      grep -qi '^x-agent-inbox-local-boundary: loopback-v1'; then
+      grep -qi '^x-agent-inbox-local-boundary: loopback-v1' &&
+      assert_chromium_sandbox 2>/dev/null; then
     break
   fi
   sleep 1

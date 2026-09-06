@@ -25,6 +25,7 @@ const http = require('node:http')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 const { classifyReuse, watchUpstream } = require('./reuse.cjs')
+const { loadViewer, reloadViewer } = require('./viewer-navigation.cjs')
 const { canRunSetup, installerRepoRoot, runAgentInstall, runtimeKey, selectRuntimePayload } = require('./setup-runner.cjs')
 const { MANUAL_RELEASES_URL, createUpdateController } = require('./update-controller.cjs')
 const { checkForUpdate } = require('./update-fetch.cjs')
@@ -786,7 +787,13 @@ app.whenReady().then(async () => {
   })
   win.webContents.on('render-process-gone', revokeSetup)
   win.on('closed', revokeSetup)
-  win.loadURL(URL_BASE)
+  try {
+    await loadViewer(win, URL_BASE)
+  } catch (err) {
+    console.error('[agent-inbox] could not load viewer with a fresh HTTP cache', err)
+    app.quit()
+    return
+  }
   startAttentionWatch(win)
 
   // Self-heal (issue #23): while reusing a viewer we don't own, watch it — if it
@@ -795,7 +802,11 @@ app.whenReady().then(async () => {
     watchUpstream(probe, async () => {
       console.log(`[agent-inbox] reused viewer vanished — starting our own server`)
       if ((await startOwnServer()) && (await waitForOwnership())) {
-        if (!win.isDestroyed()) win.webContents.reload()
+        try {
+          await reloadViewer(win)
+        } catch (err) {
+          console.error('[agent-inbox] could not reload viewer with a fresh HTTP cache after failover', err)
+        }
       }
     })
   }

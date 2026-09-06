@@ -3,11 +3,14 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { testLinuxSmokeReadiness } from './linux-smoke-readiness.js'
 
 const root = resolve(process.cwd())
 const workflowPath = join(root, '.github', 'workflows', 'linux-x64-deb.yml')
 const arm64WorkflowPath = join(root, '.github', 'workflows', 'linux-arm64-deb.yml')
 const aptRetryPath = join(root, 'scripts', 'apt-install-with-retry.sh')
+
+testLinuxSmokeReadiness(join(root, 'scripts', 'smoke-linux-deb.sh'))
 
 function runAptRetry(packages: string[], succeedAfter: number) {
   const scratch = mkdtempSync(join(tmpdir(), 'agent-inbox-apt-retry-'))

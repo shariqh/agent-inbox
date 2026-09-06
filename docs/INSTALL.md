@@ -25,6 +25,14 @@ release does not download or install packages: **Review release** opens the veri
 GitHub release page so you can choose and install the package yourself. Browser viewers
 and source/dev Electron runs do not expose update checks.
 
+### App opens blank after an upgrade
+
+Older builds can mix cached interface files from different versions. If the app opens
+but never loads its content or responds to clicks, choose **View → Force Reload**
+(`Command-Shift-R` on macOS, `Ctrl-Shift-R` on Linux). This reloads the interface without
+deleting saved Inbox data or preferences. Do not delete the database or reset browser
+storage to recover from this problem.
+
 ## Recommended macOS installation
 
 When a public release is available, download the DMG from GitHub Releases, drag

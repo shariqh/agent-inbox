@@ -2,6 +2,32 @@
 // Which sections the unified item card shows (spec §4). Pure so the one
 // component behind the inline accordion and the triage lightbox has a single,
 // tested definition of "what belongs on a card".
+import { humanActedOnRow } from './attention.js'
+
+export function actionPresentation(entity, { done = false } = {}) {
+  const isRow = typeof entity.label === 'string'
+  const originalTitle = (isRow ? entity.label : entity.title) ?? ''
+  const unanswered = isRow
+    ? entity.status === 'blocked' && !humanActedOnRow(entity)
+    : entity.kind === 'question' && (entity.status ?? 'open') === 'open' && !entity.reply && !entity.reply_kind
+  const hasRequest = !done && !entity.outcome && unanswered
+    && typeof entity.next_step === 'string' && Boolean(entity.next_step.trim())
+  const headline = hasRequest ? entity.next_step : originalTitle
+  const shown = new Set([headline])
+  const distinct = (text) => {
+    if (typeof text !== 'string' || !text.trim() || shown.has(text)) return ''
+    shown.add(text)
+    return text
+  }
+  return {
+    headline,
+    headlineField: hasRequest ? 'next-step' : isRow ? 'label' : 'title',
+    originalTitle,
+    detail: distinct(isRow ? entity.note : entity.detail),
+    impact: distinct(entity.impact),
+    nextAfter: distinct(entity.next_after),
+  }
+}
 
 // Recommended first, everything else in author order (stable sort).
 export function optionOrder(options) {

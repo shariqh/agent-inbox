@@ -20,7 +20,7 @@ import {
   rowStarOption, stagedLabel, staleFoldLabel, streamCounts, undoRefusal, urgencyChip,
   ASK_SORT_OPTIONS, askTimeModel, sortNeedsYouByAsk,
 } from '/rowview.js'
-import { cardSections, optionOrder } from '/card.js'
+import { cardSections, optionOrder, actionPresentation } from '/card.js'
 import { keyAction, rovingIndex, ariaAnswerLabel, livenessGlyph, deckEntryAt } from '/keys.js'
 import { partitionNotes, unreadNoteCount, ambientChips, seenWatermark, markSeenIds } from '/notes.js'
 import { liveSummary, lastActivityAt, isDormant, activitySynopsis } from '/livebar.js'
@@ -165,6 +165,8 @@ let bootId = null
 // protect clicks and trackpad momentum.
 let openRowId = null    // the single inline-expanded Needs-you row (§4)
 let openRowScrollTop = 0 // the inspector's viewport survives the 3s DOM rebuild
+let openRowHeadScrollTop = 0
+let openRowComposeScrollTop = 0
 let pendingFocusId = null // explicit deep link protected through filter + pagination reconciliation
 let pagedFocusId = null // non-Inbox focused card protected only for the current rebuild
 let lastInteractionScrollAt = null // bounded inspector/page scroll activity; never a suspension
@@ -230,7 +232,9 @@ function cardScrollHost(card) {
 
 function noteInspectorScroll(id, card) {
   if (openRowId !== id) return
-  openRowScrollTop = card.scrollTop
+  if (card.classList.contains('nrow-card-head')) openRowHeadScrollTop = card.scrollTop
+  else if (card.classList.contains('nrow-card-compose')) openRowComposeScrollTop = card.scrollTop
+  else openRowScrollTop = card.scrollTop
   noteScrollActivity()
 }
 
@@ -344,6 +348,8 @@ async function reloadAndPaint() {
 function setOpenRow(id, { resume = true } = {}) {
   if (openRowId !== id) {
     openRowScrollTop = 0
+    openRowHeadScrollTop = 0
+    openRowComposeScrollTop = 0
     clearScrollActivity()
   }
   openRowId = id
@@ -674,6 +680,10 @@ function focusItem(id, source = null) {
   if (source?.field === 'context') {
     openContexts.add(source.rowId ? `row:${source.rowId}` : `item:${id}`)
   }
+  if (source?.field === 'option-detail') {
+    if (source.rowId) closedRowCompares.delete(source.rowId)
+    else closedCompares.delete(id)
+  }
   projectFilter = target.project
   agentFilter = null
   actionFilter = 'all'
@@ -899,14 +909,14 @@ function searchJumpRoot(source) {
 }
 
 const SEARCH_SOURCE_SELECTORS = {
-  title: '.nrow-title, .card-title, .board-title',
+  title: '.card-original-title, .nrow-title, .card-title, .board-title',
   label: '.row-label',
-  detail: '.card-tldr-body',
-  note: '.card-tldr-body, .note-line',
-  'next-step': '.card-next-body',
+  detail: '.card-tldr-body, .card-title, .card-original-title',
+  note: '.card-tldr-body, .card-title, .card-original-title, .note-line',
+  'next-step': '.card-next-body, .card-title, .card-original-title, .card-recorded-request',
   owner: '.action-owner',
-  impact: '.card-impact',
-  next: '.card-after',
+  impact: '.card-impact, .card-tldr-body, .card-title, .card-original-title',
+  next: '.card-after, .card-impact, .card-tldr-body, .card-title, .card-original-title',
   context: '.card-context-body',
   annotation: '.annotation',
   reply: '.reply-block',
@@ -2087,7 +2097,7 @@ function rowAnswerEl(b, r, onSaved) {
   const options = r.status === 'blocked' ? optionOrder(r.options) : []
   if (options.length) {
     const choices = document.createElement('div')
-    choices.className = `options row-options${openRowCompares.has(r.id) ? ' comparing' : ''}`
+    choices.className = `options row-options${closedRowCompares.has(r.id) ? '' : ' comparing'}`
     for (const option of options) {
       const box = document.createElement('div')
       box.className = 'option'
@@ -2110,9 +2120,9 @@ function rowAnswerEl(b, r, onSaved) {
       choices.appendChild(box)
     }
     if (options.some((option) => option.detail)) {
-      const compare = btn(openRowCompares.has(r.id) ? 'Hide option details' : 'Compare options', () => {
-        if (openRowCompares.has(r.id)) openRowCompares.delete(r.id)
-        else openRowCompares.add(r.id)
+      const compare = btn(closedRowCompares.has(r.id) ? 'Compare options' : 'Hide option details', () => {
+        if (closedRowCompares.has(r.id)) closedRowCompares.delete(r.id)
+        else closedRowCompares.add(r.id)
         forceRender()
       })
       compare.className = 'compare-toggle'
@@ -2194,13 +2204,24 @@ function rowHumanStateHtml(r) {
   return parts.join('')
 }
 
-function contextHtml(context, key) {
-  if (!context) return ''
-  return `<details class="card-context" data-context-key="${esc(key)}"${openContexts.has(key) ? ' open' : ''}><summary class="card-context-label">Background</summary><div class="card-context-body">${renderStructuredText(context)}</div></details>`
+function cardDetailsHtml(entity, identity, key, presentation, { includeAsked = true } = {}) {
+  const metadata = [identity.project, identity.agent, identity.stream].filter(Boolean)
+  return `<details class="card-context" data-context-key="${esc(key)}"${openContexts.has(key) ? ' open' : ''}>
+    <summary class="card-context-label">Details &amp; history</summary>
+    <div class="card-tracking-label">Original ${entity.label === undefined ? 'title' : 'label'}</div>
+    <div class="card-original-title">${esc(presentation.originalTitle)}</div>
+    <div class="meta card-meta">${metadata.map(esc).join(' · ')}</div>
+    ${identity.title && entity.label !== undefined ? `<div class="meta">Plan · ${esc(identity.title)} <span class="board-id">#${esc(identity.id.slice(0, 6))}</span></div>` : ''}
+    ${entity.next_step && entity.next_step !== presentation.headline ? `<div class="card-recorded-request"><span class="card-tracking-label">Recorded request</span>${renderStructuredText(entity.next_step)}</div>` : ''}
+    ${entity.context ? `<div class="card-context-body">${renderStructuredText(entity.context)}</div>` : ''}
+    ${sourceBlockHtml(linkIndex, identity, Date.now())}
+    ${lifecycleHtml(entity, { includeAsked })}
+    ${historyHtml(entity)}
+  </details>`
 }
 
 function bindContextDisclosures(root) {
-  for (const details of root.querySelectorAll('.card-context[data-context-key]')) {
+  for (const details of root.querySelectorAll('details[data-context-key]')) {
     details.addEventListener('toggle', () => {
       const key = details.dataset.contextKey
       if (!key) return
@@ -2209,14 +2230,24 @@ function bindContextDisclosures(root) {
   }
 }
 
-function actionBlocksHtml(tldr, nextStep, actionOwner, impact, nextAfter, context, contextKey) {
+function actionBlocksHtml(presentation) {
   return `
-    ${actionOwner ? `<div class="action-owner">${esc(actionOwnerLabel({ action_owner: actionOwner }))}</div>` : ''}
-    ${nextStep ? `<div class="card-next"><div class="card-section-label">Next step</div><div class="card-next-body">${renderStructuredText(nextStep)}</div></div>` : ''}
-    ${impact ? `<div class="card-impact"><div class="card-section-label">Why it matters</div>${renderStructuredText(impact)}</div>` : ''}
-    ${nextAfter ? `<div class="card-after"><div class="card-section-label">What happens next</div>${renderStructuredText(nextAfter)}</div>` : ''}
-    ${tldr ? `<div class="card-tldr"><div class="card-section-label">Summary</div><div class="card-tldr-body">${renderStructuredText(tldr)}</div></div>` : ''}
-    ${contextHtml(context, contextKey)}`
+    ${presentation.detail ? `<div class="card-tldr"><div class="card-tldr-body">${renderStructuredText(presentation.detail)}</div></div>` : ''}
+    ${presentation.impact ? `<div class="card-impact"><div class="card-section-label">Why it matters</div>${renderStructuredText(presentation.impact)}</div>` : ''}
+    ${presentation.nextAfter ? `<div class="card-after"><div class="card-section-label">Then</div>${renderStructuredText(presentation.nextAfter)}</div>` : ''}`
+}
+
+function cardHeadingHtml(presentation) {
+  return `<div class="card-title${presentation.headlineField === 'next-step' ? ' card-next-body' : ''}" role="heading" aria-level="2">${renderStructuredText(presentation.headline)}</div>`
+}
+
+function cardOriginHtml(entity, identity, { showProject = true } = {}) {
+  return `<div class="card-origin">
+    ${showProject ? `<span>${esc(identity.project)}</span>` : ''}
+    ${entity.label !== undefined ? `<span>Plan · ${esc(identity.title)}</span>` : ''}
+    ${entity.action_owner ? `<span class="action-owner">${esc(actionOwnerLabel(entity))}</span>` : ''}
+    ${sourceChipsHtml(linkIndex, identity, Date.now(), { tabbable: true })}
+  </div>`
 }
 
 function lifecycleHtml(entity, { includeAsked = true } = {}) {
@@ -2237,6 +2268,7 @@ function outcomeHtml(outcome, at = null) {
 
 function historyHtml(r) {
   if (!r.history?.length) return ''
+  const key = `history:${r.id}`
   const entries = [...r.history].reverse().map((entry) => {
     const response = responseLabel({
       annotation_kind: entry.response_kind,
@@ -2249,19 +2281,21 @@ function historyHtml(r) {
       ${outcomeHtml(entry.outcome, entry.outcome_at)}
     </div>`
   }).join('')
-  return `<details class="action-history"><summary>Prior steps (${r.history.length})</summary>${entries}</details>`
+  return `<details class="action-history" data-context-key="${esc(key)}"${openContexts.has(key) ? ' open' : ''}><summary>Prior steps (${r.history.length})</summary>${entries}</details>`
 }
 
 // the inline expansion under a matrix row: long context + existing annotation + answer
 function rowPanelEl(b, r, readOnly = false) {
   const wrap = document.createElement('div')
   wrap.className = 'row-panel'
+  const presentation = actionPresentation(r, { done: readOnly })
   wrap.innerHTML = `
-    ${actionBlocksHtml(r.note, r.status === 'blocked' ? r.next_step : '', r.action_owner, r.impact, r.next_after, r.context, `row:${r.id}`)}
+    ${cardHeadingHtml(presentation)}
+    ${cardOriginHtml(r, b)}
+    ${actionBlocksHtml(presentation)}
     ${rowHumanStateHtml(r)}
     ${outcomeHtml(r.outcome, r.outcome_at)}
-    ${lifecycleHtml(r)}
-    ${historyHtml(r)}`
+    ${cardDetailsHtml(r, b, `row:${r.id}`, presentation)}`
   bindContextDisclosures(wrap)
   if (!readOnly) wrap.appendChild(rowAnswerEl(b, r))
   return wrap
@@ -2272,17 +2306,17 @@ function rowPanelEl(b, r, readOnly = false) {
 // Guard the onSaved callback here, at the definition, so neither call site has
 // to know which context it is in — answering a blocked row from the list must
 // not throw just because there is no deck to remove it from.
-function rowCardEl(b, r, onSaved, { includeAsked = true } = {}) {
+function rowCardEl(b, r, onSaved, { includeAsked = true, header = true } = {}) {
   const wrap = document.createElement('div')
   wrap.className = 'lb-row-card'
+  const presentation = actionPresentation(r, { done: b.status === 'archived' })
   wrap.innerHTML = `
-    <div class="meta">Plan · ${esc(b.title)} <span class="board-id">#${esc(b.id.slice(0, 6))}</span></div>
-    <div class="title">${esc(r.label)}</div>
-    ${actionBlocksHtml(r.note, r.next_step, r.action_owner, r.impact, r.next_after, r.context, `row:${r.id}`)}
+    ${header ? cardHeadingHtml(presentation) : ''}
+    ${cardOriginHtml(r, b, { showProject: header })}
+    ${actionBlocksHtml(presentation)}
     ${rowHumanStateHtml(r)}
     ${outcomeHtml(r.outcome, r.outcome_at)}
-    ${lifecycleHtml(r, { includeAsked })}
-    ${historyHtml(r)}`
+    ${cardDetailsHtml(r, b, `row:${r.id}`, presentation, { includeAsked })}`
   bindContextDisclosures(wrap)
   wrap.appendChild(rowAnswerEl(b, r, onSaved))
   return wrap
@@ -4145,7 +4179,11 @@ function renderNeedsYou(g, boardsInView, nowMs) {
   const openRowViewportTop = openQueueRow?.getBoundingClientRect().top ?? null
   const cardFocus = openCard ? captureCardFocus(openCard, openRowId) : null
   const askedTimeFocusId = focusedAskedTimeId()
-  if (openCard) openRowScrollTop = cardScrollHost(openCard).scrollTop
+  if (openCard) {
+    openRowScrollTop = cardScrollHost(openCard).scrollTop
+    openRowHeadScrollTop = openCard.querySelector('.nrow-card-head')?.scrollTop ?? 0
+    openRowComposeScrollTop = openCard.querySelector('.nrow-card-compose')?.scrollTop ?? 0
+  }
   // §13: this rebuilds every row from scratch (poll tick or user action) — capture
   // this BEFORE the list gets cleared below, since clearing a focused element's
   // subtree shifts document.activeElement immediately (to <body>, typically).
@@ -4201,7 +4239,13 @@ function renderNeedsYou(g, boardsInView, nowMs) {
   renderNeedsYouExtras(host, g.notes.flatMap((gr) => gr.items))
   const restoredRow = openRowId ? needsYouRowEl(openRowId) : null
   const restoredCard = restoredRow?.querySelector('.nrow-card') ?? null
-  if (restoredCard && openRowScrollTop > 0) cardScrollHost(restoredCard).scrollTop = openRowScrollTop
+  if (restoredCard) {
+    cardScrollHost(restoredCard).scrollTop = openRowScrollTop
+    const head = restoredCard.querySelector('.nrow-card-head')
+    const compose = restoredCard.querySelector('.nrow-card-compose')
+    if (head) head.scrollTop = openRowHeadScrollTop
+    if (compose) compose.scrollTop = openRowComposeScrollTop
+  }
   if (restoredRow && openRowViewportTop !== null) {
     const viewportDelta = restoredRow.getBoundingClientRect().top - openRowViewportTop
     if (Number.isFinite(viewportDelta) && Math.abs(viewportDelta) > 0.5) {
@@ -4299,6 +4343,7 @@ function revealDetailsAncestors(target) {
   for (let node = target; node; node = node.parentElement) {
     if (node.tagName !== 'DETAILS') continue
     node.open = true
+    if (node.dataset.contextKey) openContexts.add(node.dataset.contextKey)
     if (node.dataset.cardId) setCardCollapsed(node.dataset.cardId, false)
     if (node.classList.contains('snoozed-fold')) snoozedFoldOpen = true
     else if (node.classList.contains('stale-fold')) staleFoldOpen = true
@@ -4357,7 +4402,6 @@ function needsRowEl(m, entry, nowMs) {
   const wakeBit = m.snoozedUntil ? '<button class="nrow-wake" title="Return to Needs you now">Wake now</button>' : ''
   const projBit = m.projectLabel ? `<span class="nrow-proj" title="${esc(m.project)}">${esc(m.projectLabel)}</span>` : ''
   const agentBit = m.agent ? `<span class="nrow-agent">${esc(m.agent)}</span>` : ''
-  const streamBit = m.stream ? `<span class="nrow-stream">${esc(m.stream)}</span>` : ''
   const ownerBit = `<span class="nrow-owner owner-${esc(m.actionCategory)}">${esc(m.ownerLabel)}</span>`
   const changeBit = m.changeKind ? `<span class="nrow-change">${esc(m.changeKind)}</span>` : ''
   const asked = askTimeModel(m.askedAt, nowMs)
@@ -4368,15 +4412,15 @@ function needsRowEl(m, entry, nowMs) {
   // chip, no stream — otherwise it leaves a padded empty line under the row.
   // Still built (with staged-dismiss's own content) when a dismiss is staged,
   // since the ✕ handler below replaces this div's children in place.
-  const showL2 = m.secondary || agentBit || streamBit || stagedDismiss.has(m.id)
-  const l2 = showL2 ? `<div class="nrow-l2"><span class="nrow-sec">${esc(m.secondary)}</span>${agentBit}${streamBit}</div>` : ''
+  const showL2 = m.secondary || agentBit || stagedDismiss.has(m.id)
+  const l2 = showL2 ? `<div class="nrow-l2"><span class="nrow-sec">${esc(m.secondary)}</span>${agentBit}</div>` : ''
   el.innerHTML = `
     <div class="nrow-l1">
       <div class="nrow-primary">
         <span class="pdot" style="background:${color.dot}" title="${esc(m.project)}"></span>
         ${projBit}
         ${glyph}
-        <span class="nrow-title" title="${esc(m.title)}">${esc(m.title)}</span>
+        <span class="nrow-title" title="${esc(m.originalTitle)}">${esc(m.title)}</span>
       </div>
       <div class="nrow-meta">
         ${ownerBit}
@@ -4515,8 +4559,11 @@ function rowCardBodyEl(entry, m, nowMs) {
   const head = document.createElement('div')
   head.className = 'nrow-card-head'
   const heading = document.createElement('div')
-  const title = document.createElement('strong')
-  title.textContent = m.title
+  const title = document.createElement('div')
+  title.className = `card-title${m.headlineField === 'next-step' ? ' card-next-body' : ''}`
+  title.setAttribute('role', 'heading')
+  title.setAttribute('aria-level', '2')
+  title.innerHTML = renderStructuredText(m.title)
   const meta = document.createElement('span')
   meta.textContent = [m.project, m.agent].filter(Boolean).join(' · ')
   heading.append(title, meta)
@@ -4534,29 +4581,34 @@ function rowCardBodyEl(entry, m, nowMs) {
 
   const scroll = document.createElement('div')
   scroll.className = 'nrow-card-scroll'
-  const trackScroll = () => noteInspectorScroll(m.id, scroll)
-  scroll.addEventListener('wheel', trackScroll, { passive: true })
-  scroll.addEventListener('scroll', trackScroll, { passive: true })
   // `entry` is a render-time closure and the §10 gate can hold a render for
   // minutes, so the snapshot inside it goes stale (issue #31.1, layer 2: a row
   // reopened after a Change answer would otherwise re-mount the OLD reply and
   // hide the answer surface again). Same freshItem() precedent as the star's
   // Undo fallback. Resolved in place: `entry.item` is undefined for board rows.
   const card = entry.kind === 'row'
-    ? rowCardEl(entry.board, entry.row, undefined, { includeAsked: false })
+    ? rowCardEl(entry.board, entry.row, undefined, { includeAsked: false, header: false })
     : itemCardEl(freshItem(entry.item.id) ?? entry.item, {
         nowMs,
         liveness: m.liveness,
         includeAsked: false,
+        header: false,
       })
   const answer = card.querySelector(':scope > .row-answer, :scope > .options')
+  const actions = card.querySelector(':scope > .actions')
   scroll.appendChild(card)
   body.append(head, scroll)
-  if (answer) {
+  if (answer || actions) {
     const compose = document.createElement('div')
     compose.className = 'nrow-card-compose'
-    compose.appendChild(answer)
+    if (answer) compose.appendChild(answer)
+    if (actions) compose.appendChild(actions)
     body.appendChild(compose)
+  }
+  for (const host of body.children) {
+    const trackScroll = () => noteInspectorScroll(m.id, host)
+    host.addEventListener('wheel', trackScroll, { passive: true })
+    host.addEventListener('scroll', trackScroll, { passive: true })
   }
   return body
 }
@@ -4907,8 +4959,8 @@ function archiveBtn(board) {
 }
 
 // answer-back UI state that must survive the 3s poll rebuild
-const openCompares = new Set()   // item ids with the compare view expanded
-const openRowCompares = new Set() // blocked-row ids with option tradeoffs expanded
+const closedCompares = new Set() // option details stay visible until the human collapses them
+const closedRowCompares = new Set()
 const openDispositionMenus = new Set() // item/row keys with secondary responses expanded
 const draftReplies = {}          // item id → in-progress free-text answer
 const draftReplyContexts = {}    // item id → optional context attached to the answer
@@ -5489,7 +5541,7 @@ async function sendReply(
 // first), a Compare toggle for the tradeoffs, and a free-text answer
 function answerEl(it) {
   const wrap = document.createElement('div')
-  wrap.className = `options${openCompares.has(it.id) ? ' comparing' : ''}`
+  wrap.className = `options${closedCompares.has(it.id) ? '' : ' comparing'}`
   let editorGeneration = itemDraftGenerations[it.id] ?? 0
   const opts = optionOrder(it.options)
   for (const o of opts) {
@@ -5513,8 +5565,8 @@ function answerEl(it) {
   const row = document.createElement('div')
   row.className = 'reply-row'
   if (opts.some((o) => o.detail)) {
-    const cmp = btn(openCompares.has(it.id) ? 'Hide compare' : 'Compare', () => {
-      openCompares.has(it.id) ? openCompares.delete(it.id) : openCompares.add(it.id)
+    const cmp = btn(closedCompares.has(it.id) ? 'Compare options' : 'Hide option details', () => {
+      closedCompares.has(it.id) ? closedCompares.delete(it.id) : closedCompares.add(it.id)
       forceRender()
     })
     cmp.className = 'compare-toggle'
@@ -5593,26 +5645,16 @@ function itemCardEl(it, {
   const el = document.createElement('div')
   el.className = `card card-${it.kind}`
   const s = cardSections(it, { done })
-  const color = pcolor(it.project)
-  const chip = urgencyChip(
-    { kind: 'item', liveness, created_at: it.created_at, answered: s.answered }, nowMs)
-  const head = header ? `
-    <div class="meta card-meta">
-      <span class="pdot" style="background:${color.dot}"></span>
-      <span>${esc(it.project)}</span> · <span>${esc(it.agent)}</span>${it.stream ? ` · <span>${esc(it.stream)}</span>` : ''}
-      <span class="chip chip-${chip.tone}"><span aria-hidden="true">${livenessGlyph(liveness).glyph}</span> ${esc(chip.text)}</span>
-    </div>
-    <div class="card-title">${esc(it.title)}</div>` : ''
-  const nextStep = done && s.outcome ? null : s.nextStep
+  const presentation = actionPresentation(it, { done })
   el.innerHTML = `
-    ${head}
-    ${sourceBlockHtml(linkIndex, it, nowMs)}
-    ${actionBlocksHtml(s.detail, nextStep, s.actionOwner, s.impact, s.nextAfter, s.context, `item:${it.id}`)}
+    ${header ? cardHeadingHtml(presentation) : ''}
+    ${cardOriginHtml(it, it, { showProject: header })}
+    ${actionBlocksHtml(presentation)}
     ${s.annotation ? `<div class="annotation"><strong>Note:</strong> ${esc(s.annotation)}</div>` : ''}
     ${s.recWarning ? `<div class="rec-warning">Review: ${esc(s.recWarning)}</div>` : ''}
     ${s.reply || it.reply_kind ? `<div class="reply-block"><strong>${esc(responseLabel(it) || 'You answered')}:</strong> ${esc(s.reply ?? '')}${it.reply_context ? `<div class="reply-context">Context: ${esc(it.reply_context)}</div>` : ''}${it.reply_source === 'agent' ? '<span class="reply-source">via chat</span>' : ''}${s.showPickup ? `<span class="pickup ${it.reply_seen_at ? 'picked' : 'awaiting'}"${it.reply_seen_at ? ' title="Delivery does not confirm the asking agent has resumed."' : ''}>${it.reply_seen_at ? 'Delivered to an agent' : 'Saved · waiting for delivery'}</span>` : ''}</div>` : ''}
     ${outcomeHtml(s.outcome, it.outcome_at)}
-    ${lifecycleHtml(it, { includeAsked })}`
+    ${cardDetailsHtml(it, it, `item:${it.id}`, presentation, { includeAsked })}`
   bindContextDisclosures(el)
   if (s.showAnswer) el.appendChild(answerEl(it))
   if (s.showActions) {

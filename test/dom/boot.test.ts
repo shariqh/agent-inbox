@@ -62,7 +62,7 @@ describe('viewer boots against a real DB', () => {
     expect((document.getElementById('agentSelect') as HTMLSelectElement).value).toBe('')
     click(document.querySelector('.tab[data-tab="needsYou"]'))
     await settle()
-    expect(rowTitles().sort()).toEqual(['alpha decision', 'beta task'])
+    expect(rowTitles().sort()).toEqual(['Complete the handoff.', 'alpha decision'])
     expect(document.querySelector('.header-toggle.active')?.textContent).toBe('All')
     expect(document.querySelector('.nrow[data-open="1"]')).toBeNull()
     expect(localStorage.getItem('agent-inbox-project-filter')).toBeNull()

@@ -19,9 +19,14 @@ const base: RowItem = {
 const item = (over: Partial<RowItem> = {}): RowItem => ({ ...base, ...over })
 
 describe('secondaryLine', () => {
-  it('leads with the concrete next step when one is present', () => {
+  it('uses the explanation below the action-first headline without repeating the request', () => {
     expect(secondaryLine(item({ detail: 'reviews are green', next_step: 'Merge PR #42.' })))
-      .toBe('Next: Merge PR #42.')
+      .toBe('reviews are green')
+    expect(rowModel({
+      kind: 'item',
+      item: item({ title: 'PR-42 gate', detail: 'reviews are green', next_step: 'Merge PR #42.' }),
+      liveness: 'waiting',
+    })).toMatchObject({ title: 'Merge PR #42.', originalTitle: 'PR-42 gate', secondary: 'reviews are green' })
   })
   it('prefers the item detail', () => {
     expect(secondaryLine(item({ detail: 'one glanceable line' }))).toBe('one glanceable line')
@@ -107,8 +112,8 @@ describe('rowModel', () => {
       board: { id: 'b1', project: 'web', stream: '', title: 'Rollout' },
     })
     expect(m).toMatchObject({
-      kind: 'row', id: 'r1', project: 'web', title: 'Deploy staging',
-      secondary: 'Next: Create the production token.',
+      kind: 'row', id: 'r1', project: 'web', title: 'Create the production token.',
+      originalTitle: 'Deploy staging', secondary: 'needs a prod token',
       boardId: 'b1', boardTitle: 'Rollout', liveness: 'blocked',
     })
   })

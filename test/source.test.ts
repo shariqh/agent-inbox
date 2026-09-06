@@ -342,11 +342,13 @@ describe('app.js wires the source chips without re-implementing the escaping', (
   it('renders the card block OUTSIDE the header gate, so notes and done cards get it too', () => {
     const start = js.indexOf('function itemCardEl(')
     const fn = js.slice(start, js.indexOf('\nasync function changeAnswer('))
-    expect(fn).toContain('sourceBlockHtml(')
-    // the `header ? ... : ''` ternary is what builds `head`; the source block
-    // must not live inside it
-    const headBlock = fn.slice(fn.indexOf('const head = header ?'), fn.indexOf('el.innerHTML'))
-    expect(headBlock).not.toContain('sourceBlockHtml(')
+    const headBlock = fn.match(/\$\{header \?[\s\S]*?: ''\}/)?.[0]
+    expect(headBlock).toBeDefined()
+    expect(headBlock).not.toContain('cardDetailsHtml(')
+    expect(fn).toContain('${cardDetailsHtml(it, it, `item:${it.id}`, presentation, { includeAsked })}')
+    const detailsStart = js.indexOf('function cardDetailsHtml(')
+    const details = js.slice(detailsStart, js.indexOf('\nfunction bindContextDisclosures(', detailsStart))
+    expect(details).toContain('${sourceBlockHtml(linkIndex, identity, Date.now())}')
   })
 
   // a <summary>'s activation toggles its <details>: a chip inside .board-meta

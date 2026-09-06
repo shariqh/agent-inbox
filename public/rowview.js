@@ -5,6 +5,7 @@ import { canUndo, starOption } from './star.js'
 import { attentionEntries, classifyLiveness, humanActedOnRow, sortNeedsYou, ESCALATE_MS } from './attention.js'
 import { projectMonogram } from './colors.js'
 import { actionCategory, actionOwnerLabel, agentFollowupChip, changeKind } from './action.js'
+import { actionPresentation } from './card.js'
 
 export const ASK_SORT_OPTIONS = [
   { value: 'priority', label: 'Priority' },
@@ -64,10 +65,10 @@ export function askTimeModel(askedAt, nowMs) {
 // Line 2 is what makes one-tap defensible (§5): you accept what you just read.
 // The item's own detail wins; otherwise the recommended option's detail.
 export function secondaryLine(item) {
-  if (item.next_step) return `Next: ${item.next_step}`
-  if (item.detail) return item.detail
+  const presentation = actionPresentation(item)
+  if (presentation.detail) return presentation.detail
   const rec = starOption(item)
-  return rec && rec.detail ? rec.detail : ''
+  return rec?.detail && rec.detail !== presentation.headline ? rec.detail : ''
 }
 
 function countDistinct(entities, field) {
@@ -121,6 +122,7 @@ export function rowModel(entry, {
 } = {}) {
   if (entry.kind === 'row') {
     const { row, board } = entry
+    const presentation = actionPresentation(row)
     return {
       kind: 'row',
       id: row.id,
@@ -128,8 +130,10 @@ export function rowModel(entry, {
       projectLabel: showProject ? projectMonogram(board.project) : '',
       stream: (streams.get(board.project) ?? 0) > 1 ? (board.stream ?? '') : '',
       agent: (agents.get(board.project) ?? 0) > 1 ? (board.agent ?? '') : '',
-      title: row.label,
-      secondary: row.next_step ? `Next: ${row.next_step}` : (row.note ?? ''),
+      title: presentation.headline,
+      headlineField: presentation.headlineField,
+      originalTitle: presentation.originalTitle,
+      secondary: presentation.detail,
       liveness: entry.liveness ?? 'blocked',
       boardId: board.id,
       boardTitle: board.title,
@@ -155,6 +159,7 @@ export function rowModel(entry, {
     }
   }
   const it = entry.item
+  const presentation = actionPresentation(it)
   return {
     kind: 'item',
     id: it.id,
@@ -162,7 +167,9 @@ export function rowModel(entry, {
     projectLabel: showProject ? projectMonogram(it.project) : '',
     stream: (streams.get(it.project) ?? 0) > 1 ? (it.stream ?? '') : '',
     agent: (agents.get(it.project) ?? 0) > 1 ? (it.agent ?? '') : '',
-    title: it.title,
+    title: presentation.headline,
+    headlineField: presentation.headlineField,
+    originalTitle: presentation.originalTitle,
     secondary: secondaryLine(it),
     liveness: entry.liveness,
     boardId: null,

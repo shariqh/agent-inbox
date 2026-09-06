@@ -73,6 +73,8 @@ export function startLocalViewer(app: Hono, port: number): Server {
     }
 
     await next()
+    // The unversioned ESM graph must not mix heuristically cached releases.
+    c.header('Cache-Control', 'no-store')
     c.header(BOUNDARY_HEADER, BOUNDARY_VERSION)
     c.header('Content-Security-Policy', "frame-ancestors 'none'")
     c.header('X-Frame-Options', 'DENY')

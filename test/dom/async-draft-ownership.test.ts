@@ -1271,12 +1271,12 @@ describe('direct overlay draft reconciliation', () => {
     const release = deferPost(`/rows/${first.id}/annotate`)
     click(buttonLabelled('Send', lightbox))
     click(lightbox.querySelector('.lb-next'))
-    expect(lightbox.querySelector('.title')?.textContent).toContain('Current row B')
+    expect(lightbox.querySelector('.card-title')?.textContent).toContain('Current row B')
     release()
     await settle()
 
     expect(lightbox.hidden).toBe(false)
-    expect(lightbox.querySelector('.title')?.textContent).toContain('Current row B')
+    expect(lightbox.querySelector('.card-title')?.textContent).toContain('Current row B')
     expect(lightbox.querySelector('.lb-count')?.textContent).toBe('1 of 1')
   })
 
@@ -1296,13 +1296,13 @@ describe('direct overlay draft reconciliation', () => {
     await settle()
 
     const lightbox = document.getElementById('lightbox')!
-    const compare = buttonLabelled('Compare', lightbox)!
+    const compare = buttonLabelled('Hide option details', lightbox)!
     compare.focus()
     click(compare)
     await settle()
 
     expect(document.activeElement).toBe(lightbox.querySelector('.lb-panel'))
-    expect(buttonLabelled('Hide compare', lightbox)).not.toBeNull()
+    expect(buttonLabelled('Compare options', lightbox)).not.toBeNull()
   })
 
   it('does not transfer focus from a removed Review queue entry to the next row', async () => {
@@ -1329,7 +1329,7 @@ describe('direct overlay draft reconciliation', () => {
     release()
     await settle()
 
-    expect(lightbox.querySelector('.title')?.textContent).toContain('Next row B')
+    expect(lightbox.querySelector('.card-title')?.textContent).toContain('Next row B')
     expect(document.activeElement).toBe(lightbox.querySelector('.lb-panel'))
   })
 })

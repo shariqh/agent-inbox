@@ -52,7 +52,7 @@ describe('structured agent text on cards and plans', () => {
     expect(card?.querySelector('.card-context')?.hasAttribute('open')).toBe(false)
     expect(card?.querySelectorAll('.card-context li')).toHaveLength(2)
     expectSafeLink(
-      card?.querySelector<HTMLAnchorElement>('.card-next .structured-link') ?? null,
+      card?.querySelector<HTMLAnchorElement>('.card-title .structured-link') ?? null,
       'https://example.com/decision',
     )
   })

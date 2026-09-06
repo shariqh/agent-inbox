@@ -66,6 +66,8 @@ export interface RowModel {
   stream: string
   agent: string
   title: string
+  originalTitle: string
+  headlineField: 'next-step' | 'title' | 'label'
   secondary: string
   liveness: string
   boardId: string | null

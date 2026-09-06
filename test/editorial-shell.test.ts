@@ -69,6 +69,16 @@ describe('the editorial desk shell', () => {
     expect(css).toMatch(/\.nrow-card-compose\s*\{[^}]*max-height:\s*min\(50%,\s*360px\)[^}]*overflow-y:\s*auto[^}]*overscroll-behavior:\s*contain/s)
   })
 
+  it('wraps action headlines and option labels without clipping warnings or crowding touch controls', () => {
+    expect(css).toMatch(/\.nrow-title\s*\{[^}]*white-space:\s*normal[^}]*overflow-wrap:\s*anywhere/s)
+    expect(css).toMatch(/\.opt-pill\s*\{[^}]*min-width:\s*0[^}]*max-width:\s*100%[^}]*white-space:\s*normal[^}]*overflow-wrap:\s*anywhere/s)
+    expect(css).toMatch(/\.card-tldr,\s*\.card-impact,\s*\.card-after\s*\{[^}]*padding:\s*0[^}]*border:\s*0[^}]*background:\s*transparent/s)
+    expect(css).toMatch(/\.nrow-card-head\s*\{[^}]*display:\s*flex/s)
+    expect(css).toMatch(/\.opt-pill,\s*\.reply-row button,\s*\.disposition-btn\s*\{[^}]*min-height:\s*44px/s)
+    const compact = css.slice(css.indexOf('@media (max-width: 1279px)'))
+    expect(compact).toMatch(/\.nrow-card-compose \.options\.comparing\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s)
+  })
+
   it('exposes keyboard-accessible splitters for both adjustable panes', () => {
     expect(html).toMatch(/id="sidebarResize"[^>]*role="separator"/)
     expect(html).toMatch(/id="inspectorResize"[^>]*role="separator"/)

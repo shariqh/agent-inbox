@@ -73,7 +73,7 @@ describe('human disposition controls', () => {
     await settle()
 
     expect(badgeCount()).toBe(0)
-    expect(rowTitles()).toContain('Merge?')
+    expect(rowTitles()).toContain('Choose whether to merge.')
     expect(chipText(id)).toMatch(/^snoozed /)
     expect(document.querySelector('.snoozed-fold')?.textContent).toContain('Merge?')
 

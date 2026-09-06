@@ -30,6 +30,11 @@ share one SQLite database on your machine.
 | **Dual-host setup** | Audited installers and instructions for GitHub Copilot CLI and Claude Code |
 | **Local security boundary** | A loopback-only viewer with strict Host, Origin, Fetch Metadata, and anti-framing checks |
 
+Pending requests use the stated next step as their headline when one is available.
+Cards keep explanations, warnings, and option tradeoffs visible, with response
+controls close at hand. Open **Details & history** for the original tracking title,
+branch, background, and delivery timeline.
+
 ## Quick start
 
 ### Requirements

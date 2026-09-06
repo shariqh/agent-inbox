@@ -1,7 +1,7 @@
 // test/card.test.ts
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
-import { optionOrder, recommendedWarning, cardSections } from '../public/card.js'
+import { actionPresentation, optionOrder, recommendedWarning, cardSections } from '../public/card.js'
 import type { CardItem } from '../public/card.js'
 
 const base: CardItem = {
@@ -10,6 +10,60 @@ const base: CardItem = {
   options: null, reply: null, reply_context: null, reply_seen_at: null, reply_source: null,
 }
 const item = (over: Partial<CardItem> = {}): CardItem => ({ ...base, ...over })
+
+describe('action-first presentation', () => {
+  it('uses the pending request without changing its stored tracking title', () => {
+    const source = item({ title: '#132 / release-gate', next_step: 'Approve the release.' })
+    expect(actionPresentation(source)).toMatchObject({
+      headline: 'Approve the release.',
+      headlineField: 'next-step',
+      originalTitle: '#132 / release-gate',
+      detail: 'one line',
+    })
+    expect(source.title).toBe('#132 / release-gate')
+    expect(actionPresentation({ label: 'QA-17', status: 'blocked', next_step: 'Upload the recording.' }).headline)
+      .toBe('Upload the recording.')
+  })
+
+  it('keeps legacy, non-action, answered, and completed titles truthful', () => {
+    for (const source of [
+      item({ next_step: ' \n ' }),
+      item({ kind: 'note' }),
+      item({ kind: 'done' }),
+      item({ reply: 'Yes' }),
+      item({ reply_kind: 'decline' }),
+      item({ status: 'resolved' }),
+      item({ outcome: 'Already published.' }),
+    ]) expect(actionPresentation(source).headline).toBe(source.title)
+    expect(actionPresentation(item(), { done: true }).headline).toBe(base.title)
+    for (const source of [
+      { label: 'QA-17', status: 'done', next_step: 'Upload the recording.' },
+      { label: 'QA-17', status: 'blocked', next_step: 'Upload the recording.', annotation: 'Uploaded' },
+      { label: 'QA-17', status: 'blocked', next_step: 'Upload the recording.', handled_at: '2026-09-01' },
+      { label: 'QA-17', status: 'blocked', next_step: 'Upload the recording.', annotation_kind: 'clarify' },
+    ]) expect(actionPresentation(source).headline).toBe('QA-17')
+  })
+
+  it('removes only exact repetition and preserves full warnings and consequences', () => {
+    const warning = 'Do not publish before the backup finishes.\n\nThe old client will stop working.'
+    expect(actionPresentation(item({
+      detail: warning,
+      impact: warning,
+      next_after: 'I will verify the backup before publishing.',
+    }))).toMatchObject({
+      detail: warning,
+      impact: '',
+      nextAfter: 'I will verify the backup before publishing.',
+    })
+    expect(actionPresentation(item({
+      detail: 'Choose whether to drop it.',
+      impact: 'Choose whether to drop it. This permanently deletes data.',
+    }))).toMatchObject({
+      detail: '',
+      impact: 'Choose whether to drop it. This permanently deletes data.',
+    })
+  })
+})
 
 describe('optionOrder', () => {
   it('puts the recommended option first and keeps the rest stable', () => {
@@ -83,7 +137,7 @@ describe('app.js wiring (source-level pins)', () => {
   const js = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8')
 
   it('imports the shared card builders instead of re-declaring them', () => {
-    expect(js).toMatch(/import\s*\{\s*cardSections,\s*optionOrder\s*\}\s*from\s*'\/card\.js'/)
+    expect(js).toMatch(/import\s*\{\s*cardSections,\s*optionOrder,\s*actionPresentation\s*\}\s*from\s*'\/card\.js'/)
   })
 
   it('has no separate expansion-state variable — only Task 9\'s openRowId/setOpenRow', () => {
@@ -155,13 +209,14 @@ describe('app.js wiring (source-level pins)', () => {
   it('the background block is identity-keyed, safely rendered, and rebound after rendering', () => {
     const start = js.indexOf('function itemCardEl(')
     const fn = js.slice(start, js.indexOf('\nasync function changeAnswer('))
-    expect(fn).toContain('const nextStep = done && s.outcome ? null : s.nextStep')
-    expect(fn).toContain('actionBlocksHtml(s.detail, nextStep, s.actionOwner, s.impact, s.nextAfter, s.context, `item:${it.id}`)')
+    expect(fn).toContain('actionPresentation(it, { done })')
+    expect(fn).toContain('actionBlocksHtml(presentation)')
+    expect(fn).toContain('cardDetailsHtml(it, it, `item:${it.id}`, presentation, { includeAsked })')
     expect(fn).toContain('bindContextDisclosures(el)')
-    const blocks = js.slice(js.indexOf('function contextHtml('), js.indexOf('\n// the inline expansion'))
+    const blocks = js.slice(js.indexOf('function cardDetailsHtml('), js.indexOf('\n// the inline expansion'))
     expect(blocks).toContain('data-context-key="${esc(key)}"')
     expect(blocks).toContain("openContexts.has(key) ? ' open' : ''")
-    expect(blocks).toMatch(/card-context-body">\$\{renderStructuredText\(context\)\}/)
+    expect(blocks).toMatch(/card-context-body">\$\{renderStructuredText\(entity\.context\)\}/)
   })
 
   // #29: an answer an agent recorded from chat must be visibly agent-written, and the

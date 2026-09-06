@@ -89,16 +89,16 @@ describe('action lifecycle presentation', () => {
 
     click(buttonLabelled('Decisions'))
     await settle()
-    expect(rowTitles()).toEqual(['Publish?'])
+    expect(rowTitles()).toEqual(['Choose whether to publish.'])
 
     click(buttonLabelled('To do'))
     await settle()
-    expect(rowTitles()).toEqual(['Upload notarized build'])
+    expect(rowTitles()).toEqual(['Upload the build.'])
 
     click(buttonLabelled('All'))
     click(buttonLabelled('Updates'))
     await settle()
-    expect(new Set(rowTitles())).toEqual(new Set(['Publish?', 'Upload notarized build']))
+    expect(new Set(rowTitles())).toEqual(new Set(['Choose whether to publish.', 'Upload the build.']))
   })
 
   it('shows impact, next-after, lifecycle history, and outcomes without expanding background', async () => {
@@ -144,6 +144,14 @@ describe('action lifecycle presentation', () => {
     expect(card?.textContent).toContain('Starts the design-partner evidence loop.')
     expect(card?.textContent).toContain('Review replies and schedule interviews.')
     expect(card?.querySelector('.action-history')?.textContent).toContain('People Pipeline')
+    for (const selector of ['.card-context', '.action-history']) {
+      const disclosure = card?.querySelector<HTMLDetailsElement>(selector)
+      disclosure!.open = true
+      disclosure!.dispatchEvent(new window.Event('toggle'))
+    }
+    await pollTick()
+    expect(row(current.id)?.querySelector<HTMLDetailsElement>('.card-context')?.open).toBe(true)
+    expect(row(current.id)?.querySelector<HTMLDetailsElement>('.action-history')?.open).toBe(true)
   })
 
   it('flags a delivered response with no recorded result, without claiming the asking agent resumed', async () => {

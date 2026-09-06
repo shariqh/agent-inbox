@@ -1,5 +1,32 @@
 export interface CardOption { label: string; detail?: string; recommended?: boolean }
 
+export interface ActionPresentation {
+  headline: string
+  headlineField: 'next-step' | 'title' | 'label'
+  originalTitle: string
+  detail: string
+  impact: string
+  nextAfter: string
+}
+
+export function actionPresentation(entity: {
+  title?: string
+  label?: string
+  kind?: string
+  status?: string | null
+  next_step?: string
+  detail?: string
+  note?: string
+  impact?: string
+  next_after?: string
+  outcome?: string
+  reply?: string | null
+  reply_kind?: string | null
+  annotation?: string | null
+  annotation_kind?: string | null
+  handled_at?: string | null
+}, opts?: { done?: boolean }): ActionPresentation
+
 export interface CardItem {
   id: string
   kind?: string

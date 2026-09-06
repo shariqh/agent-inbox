@@ -198,6 +198,77 @@ describe('workspace search index', () => {
       .toBe('Auckland')
   })
 
+  it.each([
+    ['quartz-internal', '.card-original-title'],
+    ['release-canary-132', '.card-meta'],
+  ])('reveals quieter tracking metadata when searching for %s', async (query, selector) => {
+    const d = open()
+    const target = insertItem(d, {
+      project: 'alpha', stream: 'release-canary-132', agent: 'copilot', kind: 'question',
+      title: 'quartz-internal handoff', next_step: 'Choose a release date.',
+      detail: 'The update is ready.',
+    })
+    await bootApp(d)
+    await searchFor(query)
+    click(option(target))
+    await settle()
+    const details = row(target)?.querySelector<HTMLDetailsElement>('.card-context')
+    expect(row(target)?.querySelector('.nrow-title')?.textContent).toBe('Choose a release date.')
+    expect(details?.open).toBe(true)
+    expect(details?.querySelector(selector)?.textContent).toContain(query)
+    expect([...details!.querySelectorAll(`${selector} .search-jump-highlight`)].map((mark) => mark.textContent))
+      .toEqual(query.split('-'))
+    expect(document.activeElement).toBe(details?.querySelector('summary'))
+    await pollTick()
+    expect(row(target)?.querySelector<HTMLDetailsElement>('.card-context')?.open).toBe(true)
+    expect([...row(target)!.querySelectorAll(`${selector} .search-jump-highlight`)].map((mark) => mark.textContent))
+      .toEqual(query.split('-'))
+  })
+
+  it('reveals a promoted request and an exact duplicate explanation at their remaining source', async () => {
+    const d = open()
+    const target = insertItem(d, {
+      project: 'alpha', stream: 'main', agent: 'copilot', kind: 'question',
+      title: 'Gate 132', next_step: 'Confirm the backup.',
+      detail: 'An incomplete backup risks losing customer data.',
+      impact: 'An incomplete backup risks losing customer data.',
+    })
+    await bootApp(d)
+    await searchFor('backup')
+    click(option(target))
+    await settle()
+    expect(row(target)?.querySelector('.search-jump-highlight')?.textContent).toBe('backup')
+    expect(row(target)?.querySelector('.card-impact')).toBeNull()
+    expect(row(target)?.querySelector('.card-tldr')?.textContent).toContain('risks losing customer data')
+  })
+
+  it('reveals a matching option consequence even after its comparison was collapsed', async () => {
+    const d = open()
+    const target = insertItem(d, {
+      project: 'alpha', stream: 'main', agent: 'copilot', kind: 'question',
+      title: 'Deployment gate', next_step: 'Choose a deployment path.',
+      options: [
+        { label: 'Canary', detail: 'Avoid downtime by checking a small group first.' },
+        { label: 'Full rollout', detail: 'Update every customer at once.' },
+      ],
+    })
+    await bootApp(d)
+    click(row(target))
+    await settle()
+    click(row(target)?.querySelector('.compare-toggle'))
+    await settle()
+    expect(row(target)?.querySelector('.options.comparing')).toBeNull()
+
+    await searchFor('downtime')
+    click(option(target))
+    await settle()
+    expect(row(target)?.querySelector('.options.comparing .opt-detail .search-jump-highlight')?.textContent)
+      .toBe('downtime')
+    await pollTick()
+    expect(row(target)?.querySelector('.options.comparing .opt-detail .search-jump-highlight')?.textContent)
+      .toBe('downtime')
+  })
+
   it('ranks the strongest match first and highlights it instead of preserving queue order', async () => {
     const d = open()
     const strongest = insertItem(d, {

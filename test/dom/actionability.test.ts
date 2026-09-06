@@ -17,10 +17,11 @@ function open(): Database.Database {
 }
 
 describe('action-first attention cards', () => {
-  it('uses plain section labels without changing the action, summary, or collapsed background', async () => {
+  it('leads with the request and keeps all warnings visible ahead of collapsed tracking details', async () => {
     const d = open()
     upsertBoard(d, {
       ...AGENT,
+      stream: 'feat/internal-rollout-132',
       title: 'Launch',
       rows: [{
         label: 'Design-partner outreach',
@@ -35,16 +36,21 @@ describe('action-first attention cards', () => {
     const rowId = listBoards(d)[0]!.rows[0]!.id
 
     await bootApp(d)
+    expect(row(rowId)?.querySelector('.nrow-title')?.textContent)
+      .toBe('Choose the tracker and send the first three messages.')
     expect(row(rowId)?.querySelector('.nrow-sec')?.textContent)
-      .toBe('Next: Choose the tracker and send the first three messages.')
+      .toBe('The outreach kit is ready; nothing has been sent.')
+    expect(row(rowId)?.querySelector('.nrow-stream')).toBeNull()
 
     click(row(rowId))
     await settle()
     const card = row(rowId)?.querySelector('.nrow-card')
     expect([...card!.querySelectorAll('.card-section-label')].map((label) => label.textContent))
-      .toEqual(['Next step', 'Why it matters', 'What happens next', 'Summary'])
-    expect(card?.querySelector('.card-next')?.textContent)
-      .toContain('Choose the tracker and send the first three messages.')
+      .toEqual(['Why it matters', 'Then'])
+    expect(card?.querySelectorAll('.card-title')).toHaveLength(1)
+    expect(card?.querySelector('.card-title')?.textContent)
+      .toBe('Choose the tracker and send the first three messages.')
+    expect(card?.querySelector('.card-next')).toBeNull()
     expect(card?.querySelector('.card-tldr')?.textContent)
       .toContain('The outreach kit is ready; nothing has been sent.')
     expect(card?.querySelector('.card-impact')?.textContent)
@@ -52,7 +58,14 @@ describe('action-first attention cards', () => {
     expect(card?.querySelector('.card-after')?.textContent).toContain('Review the replies together.')
     const background = card?.querySelector<HTMLDetailsElement>('.card-context')
     expect(background?.open).toBe(false)
+    expect(background?.querySelector('summary')?.textContent).toBe('Details & history')
+    expect(background?.querySelector('.card-original-title')?.textContent).toBe('Design-partner outreach')
+    expect(background?.querySelector('.card-meta')?.textContent).toContain('feat/internal-rollout-132')
     expect(background?.textContent).toContain('Candidate profiles')
+    for (const selector of ['.card-tldr', '.card-impact', '.card-after']) {
+      expect(card?.querySelector(selector)?.closest('details')).toBeNull()
+    }
+    expect(card?.querySelector('.nrow-card-compose > .row-answer')).not.toBeNull()
   })
 
   it('gives question items the same next-step, summary, collapsed-background order', async () => {
@@ -70,13 +83,13 @@ describe('action-first attention cards', () => {
     click(row(id))
     await settle()
     const card = row(id)?.querySelector('.nrow-card')
-    expect([...card!.querySelectorAll('.card-section-label')].map((label) => label.textContent))
-      .toEqual(['Next step', 'Summary'])
-    expect(card?.querySelector('.card-next')?.textContent)
-      .toContain('Choose Merge now (recommended) or Hold.')
+    expect(card?.querySelector('.card-section-label')).toBeNull()
+    expect(card?.querySelectorAll('.card-title')).toHaveLength(1)
+    expect(card?.querySelector('.card-title')?.textContent).toBe('Choose Merge now (recommended) or Hold.')
     expect(card?.querySelector('.card-tldr')?.textContent)
       .toContain('Six review rounds are complete and every gate is green.')
     expect(card?.querySelector<HTMLDetailsElement>('.card-context')?.open).toBe(false)
+    expect(card?.querySelector('.nrow-card-compose > .actions')).not.toBeNull()
   })
 
   it('keeps Background open across forced and polling rebuilds', async () => {
@@ -155,5 +168,41 @@ describe('action-first attention cards', () => {
     click(merge)
     await settle()
     expect(listBoards(d)[0]!.rows[0]!.annotation).toBe('Merge PR #582')
+    expect(row(rowId)?.querySelector('.nrow-title')?.textContent).toBe('#334 PR-X0 spec (#582)')
+  })
+
+  it('uses the same request and full explanation in Review queue and Plans', async () => {
+    const d = open()
+    upsertBoard(d, {
+      ...AGENT, title: 'Release',
+      rows: [{
+        label: 'R-14 technical gate', status: 'blocked',
+        next_step: 'Approve the release after verifying the backup.',
+        note: 'The older client will stop working. Do not skip the backup.',
+        impact: 'The older client will stop working. Do not skip the backup.',
+        next_after: 'The agent will publish and check the service.',
+        options: [
+          { label: 'Approve', detail: 'Customers receive the update.', recommended: true },
+          { label: 'Hold', detail: 'No customer changes yet.' },
+        ],
+      }],
+    })
+    await bootApp(d)
+    click(document.querySelector('.triage-btn'))
+    await settle()
+    const review = document.querySelector('#lightbox .lb-row-card')!
+    expect(review.querySelector('.card-title')?.textContent).toBe('Approve the release after verifying the backup.')
+    expect(review.querySelectorAll('.card-tldr, .card-impact')).toHaveLength(1)
+    expect(review.querySelector('.card-tldr')?.textContent).toContain('Do not skip the backup.')
+    expect(review.querySelector('.card-context .card-original-title')?.textContent).toBe('R-14 technical gate')
+    click(document.querySelector('#lightbox .lb-close'))
+    click(document.querySelector('.tab[data-tab="boards"]'))
+    await settle()
+    click(document.querySelector('#boards .board-row'))
+    await settle()
+    const plan = document.querySelector('#boards .row-panel')!
+    expect(plan.querySelector('.card-title')?.textContent).toBe('Approve the release after verifying the backup.')
+    expect(plan.querySelector('.card-tldr')?.textContent).toContain('Do not skip the backup.')
+    expect(plan.querySelector('.row-options.comparing .opt-detail')?.textContent).toBe('Customers receive the update.')
   })
 })

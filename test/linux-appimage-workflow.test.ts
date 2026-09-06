@@ -1,10 +1,13 @@
 import { readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { testLinuxSmokeReadiness } from './linux-smoke-readiness.js'
 
 const root = resolve(process.cwd())
 const workflowPath = join(root, '.github', 'workflows', 'linux-x64-appimage.yml')
 const arm64WorkflowPath = join(root, '.github', 'workflows', 'linux-arm64-appimage.yml')
+
+testLinuxSmokeReadiness(join(root, 'scripts', 'smoke-linux-appimage.sh'))
 
 describe('Linux x64 AppImage workflow', () => {
   it('is a read-only, fork-safe, exact-action x64 package workflow', () => {

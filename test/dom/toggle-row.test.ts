@@ -413,7 +413,7 @@ describe('C2 · a REFUSED change-answer must not freeze the viewer', () => {
 
     // `?.textContent` on a missing node is undefined, and `expect(undefined).not.toBe('')`
     // passes — so match the copy instead of asserting "not empty".
-    expect(document.querySelector('.refusal-msg')?.textContent ?? '').toMatch(/Picked up/)
+    expect(document.querySelector('.refusal-msg')?.textContent ?? '').toMatch(/Delivered/)
     expect(listItems(d)[0]?.reply, 'the picked-up answer must survive the refusal').toBe(ANSWER)
 
     await collapseRow(id) // the rejected reply draft remains the only suspend reason

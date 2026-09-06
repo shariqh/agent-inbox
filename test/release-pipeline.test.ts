@@ -407,7 +407,7 @@ describe('universal finalization contract', () => {
   it('keeps the MCP handshake version aligned with the package release version', () => {
     const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
     const mcp = readFileSync(join(root, 'src', 'mcp.ts'), 'utf8')
-    expect(pkg.version).toBe('1.2.1')
+    expect(pkg.version).toBe('1.2.2')
     expect(mcp).toContain(`new McpServer({ name: 'agent-inbox', version: '${pkg.version}' })`)
   })
 

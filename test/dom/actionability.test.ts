@@ -17,7 +17,7 @@ function open(): Database.Database {
 }
 
 describe('action-first attention cards', () => {
-  it('shows a blocked row next step before its TL;DR and keeps background collapsed', async () => {
+  it('uses plain section labels without changing the action, summary, or collapsed background', async () => {
     const d = open()
     upsertBoard(d, {
       ...AGENT,
@@ -27,6 +27,8 @@ describe('action-first attention cards', () => {
         status: 'blocked',
         note: 'The outreach kit is ready; nothing has been sent.',
         next_step: 'Choose the tracker and send the first three messages.',
+        impact: 'The first replies will help us choose the release date.',
+        next_after: 'Review the replies together.',
         context: 'Candidate profiles, venue research, message drafts, and cadence details live here.',
       }],
     })
@@ -39,16 +41,21 @@ describe('action-first attention cards', () => {
     click(row(rowId))
     await settle()
     const card = row(rowId)?.querySelector('.nrow-card')
+    expect([...card!.querySelectorAll('.card-section-label')].map((label) => label.textContent))
+      .toEqual(['Next step', 'Why it matters', 'What happens next', 'Summary'])
     expect(card?.querySelector('.card-next')?.textContent)
       .toContain('Choose the tracker and send the first three messages.')
     expect(card?.querySelector('.card-tldr')?.textContent)
       .toContain('The outreach kit is ready; nothing has been sent.')
+    expect(card?.querySelector('.card-impact')?.textContent)
+      .toContain('The first replies will help us choose the release date.')
+    expect(card?.querySelector('.card-after')?.textContent).toContain('Review the replies together.')
     const background = card?.querySelector<HTMLDetailsElement>('.card-context')
     expect(background?.open).toBe(false)
     expect(background?.textContent).toContain('Candidate profiles')
   })
 
-  it('gives question items the same next-step, TL;DR, collapsed-background order', async () => {
+  it('gives question items the same next-step, summary, collapsed-background order', async () => {
     const d = open()
     const id = insertItem(d, {
       ...AGENT,
@@ -63,6 +70,8 @@ describe('action-first attention cards', () => {
     click(row(id))
     await settle()
     const card = row(id)?.querySelector('.nrow-card')
+    expect([...card!.querySelectorAll('.card-section-label')].map((label) => label.textContent))
+      .toEqual(['Next step', 'Summary'])
     expect(card?.querySelector('.card-next')?.textContent)
       .toContain('Choose Merge now (recommended) or Hold.')
     expect(card?.querySelector('.card-tldr')?.textContent)

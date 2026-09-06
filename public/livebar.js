@@ -28,7 +28,9 @@ export function liveSummary(activity, nowMs) {
     count: active.length,
     idleCount: rows.length - active.length,
     tone,
-    label: active.length ? `${active.length} working` : 'no agents running',
+    label: active.length
+      ? `${active.length} reporting work`
+      : rows.length ? `${rows.length} connected · no task reported` : 'no agent connections',
     sessions,
   }
 }
@@ -65,5 +67,5 @@ export function activitySynopsis(a) {
   if (!a?.idle && current && current !== 'open') return { text: current, historical: false }
   const last = typeof a?.last_doing === 'string' ? a.last_doing.trim() : ''
   if (last && last !== 'open') return { text: last, historical: true }
-  return { text: 'No activity summary yet', historical: false }
+  return { text: 'No task reported yet', historical: false }
 }

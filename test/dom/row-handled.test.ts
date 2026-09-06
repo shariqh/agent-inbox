@@ -91,7 +91,7 @@ describe('#36 · marking a blocked row done clears the badge with no agent round
     // …and the row must NOT vanish: a mark nobody collected is still a fact the
     // human needs to see, just no longer as their own to-do.
     expect(rowTitles()).toContain('Paddle account')
-    expect(chipText(rowId)).toBe('Waiting for agent')
+    expect(chipText(rowId)).toBe('Waiting for delivery')
     expect(row(rowId)?.className, 'it renders dimmed, like an answered question').toContain('answered')
   })
 
@@ -115,7 +115,7 @@ describe('#36 · marking a blocked row done clears the badge with no agent round
     await settle()
     const card = await openCard(rowId)
     expect(card.textContent).toContain('You marked your part done')
-    expect(card.textContent).toContain('Waiting for the agent')
+    expect(card.textContent).toContain('Saved · waiting for delivery')
   })
 
   it('the triage deck agrees with the badge — marking empties it too (tenet 3)', async () => {
@@ -162,9 +162,9 @@ describe('#36 · the mark is undoable only while it is still the human’s own b
     await bootApp(d)
     const card = await openCard(rowId)
     expect(buttonLabelled(UNMARK, card), 'a control that cannot work must not be drawn (#38)').toBeNull()
-    expect(card.textContent).toContain('will not un-tell the agent')
+    expect(card.textContent).toContain('this confirmation can no longer be withdrawn')
     // the chip flips to the delivered vocabulary, and the row is still on screen
-    expect(chipText(rowId)).toBe('with agent 4m')
+    expect(chipText(rowId)).toBe('delivered 4m')
     expect(rowTitles()).toContain('Paddle account')
     expect(badgeCount()).toBe(0)
   })
@@ -183,7 +183,7 @@ describe('#36 · the mark is undoable only while it is still the human’s own b
     await settle()
 
     expect(document.querySelector(`.write-error[data-error-for="${rowId}"]`)?.textContent)
-      .toContain('will not un-tell the agent')
+      .toContain('this confirmation can no longer be withdrawn')
     expect(listBoards(d)[0]!.rows[0]!.handled_at, 'the refusal must not half-apply').not.toBeNull()
     expect(badgeCount(), 'the row is still out of the attention set — the mark stands').toBe(0)
   })
@@ -253,7 +253,7 @@ describe('#36 · the mark survives the agent, and only a status change retires t
 
     expect(badgeCount(), 'a routine re-send must not wipe the human’s action').toBe(0)
     expect(rowTitles()).toContain('Paddle account')
-    expect(chipText(rowId)).toBe('Waiting for agent')
+    expect(chipText(rowId)).toBe('Waiting for delivery')
   })
 
   it('the row leaves the list only when an agent flips the status', async () => {

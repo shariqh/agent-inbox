@@ -3,7 +3,7 @@ import { describe, it, expect, afterEach } from 'vitest'
 import type Database from 'better-sqlite3'
 import { upsertActivity, recordActivityCall } from '../../src/store.js'
 import { projectColor } from '../../public/colors.js'
-import { bootApp, click, freshDb, useDomTest } from './harness.js'
+import { advanceClock, bootApp, click, freshDb, useDomTest } from './harness.js'
 
 useDomTest()
 
@@ -23,7 +23,7 @@ const pointerDown = (el: Element): void => {
 }
 
 describe('Live session state and project identity', () => {
-  it('uses project colors while naming working and idle states explicitly', async () => {
+  it('uses project colors while distinguishing reported work from connection presence', async () => {
     const d = open()
     upsertActivity(d, { session: 'active', project: 'alpha', stream: 'main', agent: 'copilot', doing: 'Reviewing session state' })
     recordActivityCall(d, 'active')
@@ -37,15 +37,41 @@ describe('Live session state and project identity', () => {
     const idle = drawer().querySelector<HTMLElement>('.idle-row')
     const activeDot = active?.querySelector<HTMLElement>('.live-dot')
     const idleDot = idle?.querySelector<HTMLElement>('.live-dot')
-    expect(active?.querySelector('.live-state-label')?.textContent).toBe('Working')
-    expect(idle?.querySelector('.live-state-label')?.textContent).toBe('Idle')
-    expect(idle?.querySelector('.live-doing')?.textContent).toBe('Last activity: Preparing the release')
+    expect(active?.querySelector('.live-state-label')?.textContent).toBe('Reported work')
+    expect(idle?.querySelector('.live-state-label')?.textContent).toBe('Connected')
+    expect(idle?.querySelector('.live-doing')?.textContent).toBe('Last report: Preparing the release')
     expect(activeDot?.classList.contains('working')).toBe(true)
     expect(idleDot?.classList.contains('idle-session')).toBe(true)
     expect(activeDot?.style.getPropertyValue('--project-dot')).toBe(projectColor('alpha', 'dark').dot)
     expect(idleDot?.style.getPropertyValue('--project-dot')).toBe(projectColor('beta', 'dark').dot)
     expect(document.getElementById('liveStripDot')?.style.getPropertyValue('--project-dot')).toBe(projectColor('alpha', 'dark').dot)
     expect(document.querySelector('#liveStripSessions .live-session .live-dot')?.getAttribute('style')).toContain('--project-dot')
+  })
+
+  it('separates a recent Inbox call from a connection that has never made one', async () => {
+    const d = open()
+    upsertActivity(d, { session: 'called', project: 'alpha', stream: 'main', agent: 'copilot', doing: 'open', idle: true })
+    recordActivityCall(d, 'called')
+    upsertActivity(d, { session: 'uncalled', project: 'beta', stream: 'main', agent: 'claude', doing: 'open', idle: true })
+    advanceClock(2 * 60_000)
+
+    await bootApp(d)
+
+    const connections = [...drawer().querySelectorAll('.idle-row')]
+    const called = connections.find((entry) => entry.querySelector('.live-who')?.textContent?.includes('alpha'))
+    const uncalled = connections.find((entry) => entry.querySelector('.live-who')?.textContent?.includes('beta'))
+    expect(called?.querySelector('.live-age')?.textContent).toBe('Inbox call 2m ago')
+    expect(uncalled?.querySelector('.live-age')?.textContent).toBe('connected 2m ago')
+    expect(connections.every((entry) => entry.querySelector('.live-doing')?.textContent === 'No task reported yet')).toBe(true)
+    expect(drawer().querySelector('.idle-fold > summary')?.textContent).toBe('2 connections · no task reported')
+    expect(document.getElementById('liveStripLabel')?.textContent).toBe('2 connected · no task reported')
+    expect(drawer().textContent).not.toMatch(/\bIdle\b|\bWorking\b|no agents running/)
+  })
+
+  it('says there are no connections only when none are present', async () => {
+    await bootApp(open())
+    expect(drawer().querySelector('.empty')?.textContent).toBe('No agent connections.')
+    expect(document.getElementById('liveStripLabel')?.textContent).toBe('no agent connections')
   })
 })
 

@@ -73,7 +73,8 @@ describe('shell markup', () => {
     expect(html).toMatch(/id="livePin"[^>]*aria-pressed="false"/)
     expect(html).toContain('Pin Live sessions open')
     expect(html).toContain('class="live-list"')
-    expect(html).toContain('no agents running')
+    expect(html).toContain('Checking connections...')
+    expect(html).not.toContain('no agents running')
   })
 
   it('leaves the pieces later tasks build in JS out of the static markup', () => {

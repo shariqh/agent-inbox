@@ -245,9 +245,9 @@ describe('urgencyChip', () => {
   // chip, three states, and the un-delivered one is never silent.
   it('gives an annotated row the two-state pickup vocabulary', () => {
     const row = (over: Record<string, unknown>) => model({ kind: 'row', answered: true, pickedUp: false, pickedUpAt: null, pickedUpBy: '', ...over })
-    expect(urgencyChip(row({}), T0)).toEqual({ text: 'Waiting for agent', tone: 'muted' })
+    expect(urgencyChip(row({}), T0)).toEqual({ text: 'Waiting for delivery', tone: 'muted' })
     expect(urgencyChip(row({ pickedUp: true, pickedUpAt: new Date(T0 - 3 * 60_000).toISOString() }), T0))
-      .toEqual({ text: 'with agent 3m', tone: 'muted' })
+      .toEqual({ text: 'delivered 3m', tone: 'muted' })
   })
   it('an un-picked-up row is never rendered as blocked — the human already answered', () => {
     const m = model({ kind: 'row', answered: true, pickedUp: false, pickedUpAt: null, pickedUpBy: '' })
@@ -259,9 +259,9 @@ describe('urgencyChip', () => {
   // not a third one nobody has to learn.
   it('gives a row marked handled the same two-state pickup vocabulary as an annotated one', () => {
     const marked = model({ kind: 'row', answered: true, handled: true, pickedUp: false, pickedUpAt: null, pickedUpBy: '' })
-    expect(urgencyChip(marked, T0)).toEqual({ text: 'Waiting for agent', tone: 'muted' })
+    expect(urgencyChip(marked, T0)).toEqual({ text: 'Waiting for delivery', tone: 'muted' })
     const collected = { ...marked, pickedUp: true, pickedUpAt: new Date(T0 - 3 * 60_000).toISOString() }
-    expect(urgencyChip(collected, T0)).toEqual({ text: 'with agent 3m', tone: 'muted' })
+    expect(urgencyChip(collected, T0)).toEqual({ text: 'delivered 3m', tone: 'muted' })
   })
 })
 
@@ -274,7 +274,7 @@ describe('handledUndoRefusal (#36)', () => {
   it('names the delivery age once an agent has been handed the mark', () => {
     const msg = handledUndoRefusal({ id: 'r1', label: 'x', handled_at: '2026-07-24T11:00:00Z', handled_seen_at: new Date(T0 - 4 * 60_000).toISOString() }, T0)
     expect(msg).toContain('4m')
-    expect(msg).toMatch(/will not un-tell the agent/)
+    expect(msg).toBe('Delivered 4m ago — this confirmation can no longer be withdrawn')
   })
 })
 
@@ -505,7 +505,7 @@ describe('undoRefusal', () => {
   it('explains the lost race once the agent picked it up', () => {
     const picked = item({ reply: 'go', reply_seen_at: new Date(T0).toISOString() })
     expect(undoRefusal(picked, T0 + 2 * 60_000))
-      .toBe('Picked up 2m ago — answering again will not un-do it')
+      .toBe('Delivered 2m ago — this answer can no longer be withdrawn')
   })
 })
 

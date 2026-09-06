@@ -2,9 +2,11 @@ import { describe, it, expect } from 'vitest'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { spawn } from 'node:child_process'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { openDb, listItems, listBoards, getBoard, annotateBoardRow, markRowHandled, listPendingRows, replyItem, listActivity } from '../src/store.js'
+import { createViewer } from '../src/viewer.js'
 
 const QUESTION_SHAPE = {
   detail: 'A concise summary of the current state.',
@@ -105,6 +107,141 @@ describe('mcp round-trip', () => {
     expect(JSON.parse((note.content as Array<{ text: string }>)[0]!.text).watch).toBeUndefined()
     await client.close()
   })
+
+  it('returns exact-action Copilot watches for new board asks and explicit re-arming', async () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-board-watch-')), 'inbox.db')
+    const transport = new StdioClientTransport({
+      command: 'npx', args: ['tsx', 'src/mcp-server.ts'],
+      env: { ...process.env, AGENT_INBOX_DB: dbPath },
+    })
+    const client = new Client({ name: 'copilot', version: '1.0.0' })
+    await client.connect(transport)
+    const db = openDb(dbPath)
+    const call = async (name: string, args: Record<string, unknown>) => {
+      const result = await client.callTool({ name, arguments: args })
+      expect(result.isError, JSON.stringify(result)).not.toBe(true)
+      return JSON.parse((result.content as Array<{ text: string }>)[0]!.text)
+    }
+    try {
+      await call('register', { project: 'watch-project' })
+      const created = await call('board_upsert', {
+        title: 'Release', rows: [blockedRow('Upload'), { label: 'Documentation', status: 'tracked' }],
+      })
+      let board = getBoard(db, 'watch-project', 'Release')!
+      let row = board.rows[0]!
+      expect(created.watches).toHaveLength(1)
+      expect(created.watches[0]).toMatchObject({
+        row_id: row.id, action_version: 1, mode: 'async', detach: true,
+        shell_id: `agent-inbox-row-${row.id}-1`,
+      })
+      expect(created.watches[0].shell_command).toContain("'--row'")
+      expect(created.watches[0].on_completion).toContain('pending({project:"watch-project"})')
+
+      const refresh = await call('board_upsert', {
+        title: board.title, board_version: board.revision,
+        rows: board.rows.map(({ label, status, revision }) => ({ label, status, revision })),
+      })
+      expect(refresh.watches).toBeUndefined()
+      const plain = await call('board_get', { title: board.title })
+      expect(plain.watches).toBeUndefined()
+      const rearmed = await call('board_get', { title: board.title, watch: true })
+      expect(rearmed.watches).toHaveLength(1)
+      expect(rearmed.watches[0].shell_id).toBe(created.watches[0].shell_id)
+
+      board = getBoard(db, 'watch-project', 'Release')!
+      row = board.rows[0]!
+      const extra = await call('board_row', {
+        title: board.title, board_version: board.revision, ...blockedRow('Choose date'),
+      })
+      expect(extra.watch).toMatchObject({ action_version: 1, detach: true })
+      expect(extra.watch.row_id).not.toBe(row.id)
+      board = getBoard(db, 'watch-project', 'Release')!
+      const advanced = await call('board_advance', {
+        title: board.title, board_version: board.revision, label: row.label,
+        expected_revision: row.revision,
+        note: 'The next release is ready.', next_step: 'Upload the next build.',
+        action_owner: 'task', impact: 'Makes the release available.',
+      })
+      expect(advanced.watch).toMatchObject({ row_id: row.id, action_version: 2 })
+      expect(advanced.watch.shell_id).not.toBe(created.watches[0].shell_id)
+      const stale = await call('board_advance', {
+        title: board.title, board_version: board.revision, label: row.label,
+        expected_revision: row.revision,
+        note: 'An outdated request.', next_step: 'Do not act.', action_owner: 'task', impact: 'Stale.',
+      })
+      expect(stale.ok).toBe(false)
+      expect(stale.watch).toBeUndefined()
+      const missingTitle = await client.callTool({ name: 'board_get', arguments: { watch: true } })
+      expect(missingTitle.isError).toBe(true)
+    } finally {
+      db.close()
+      await client.close()
+    }
+  }, 20000)
+
+  it('a resumed watcher can retrieve its original project without changing the current scope', async () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-project-wake-')), 'inbox.db')
+    const transport = new StdioClientTransport({
+      command: 'npx', args: ['tsx', 'src/mcp-server.ts'],
+      env: { ...process.env, AGENT_INBOX_DB: dbPath },
+    })
+    const client = new Client({ name: 'copilot', version: '1.0.0' })
+    await client.connect(transport)
+    const db = openDb(dbPath)
+    const call = async (name: string, args: Record<string, unknown>) => {
+      const result = await client.callTool({ name, arguments: args })
+      expect(result.isError).not.toBe(true)
+      return JSON.parse((result.content as Array<{ text: string }>)[0]!.text)
+    }
+    try {
+      await call('register', { project: 'original-project' })
+      const created = await call('board_upsert', { title: 'Release', rows: [blockedRow('Upload')] })
+      const board = getBoard(db, 'original-project', 'Release')!
+      const row = board.rows[0]!
+      const child = spawn('/bin/sh', ['-c', created.watches[0].shell_command], {
+        env: { ...process.env, AGENT_INBOX_WATCH_TIMEOUT_MS: '1000', AGENT_INBOX_WATCH_POLL_MS: '50' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+      let stdout = ''
+      let stderr = ''
+      child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk })
+      child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk })
+      const completion = new Promise<number | null>((resolve, reject) => {
+        child.once('error', reject)
+        child.once('close', resolve)
+      })
+      const response = await createViewer(db).request(`/api/boards/${board.id}/rows/${row.id}/handled`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ expected_revision: row.revision, expected_board_version: board.revision }),
+      })
+      expect(response.status).toBe(200)
+      expect(await completion, stderr).toBe(0)
+      expect(stdout).toContain('Call pending()')
+      expect(getBoard(db, board.project, board.title)!.rows[0]!.handled_seen_at).toBeNull()
+      await call('register', { project: 'different-project', stream: 'different-branch' })
+      expect(listActivity(db)).toEqual([
+        expect.objectContaining({ project: 'different-project', stream: 'different-branch' }),
+      ])
+      expect((await call('pending', {})).rows).toHaveLength(0)
+      const pending = await call('pending', { project: 'original-project' })
+      expect(pending.rows).toEqual([expect.objectContaining({ row_id: row.id, handled_at: expect.any(String) })])
+      expect((await call('whoami', {})).project).toBe('different-project')
+      await call('register', { project: board.project })
+      await call('board_row', {
+        title: board.title, label: row.label,
+        board_version: pending.rows[0].board_revision, expected_revision: pending.rows[0].revision,
+        status: 'partial', outcome: 'Your upload was received; preparing the release.',
+      })
+      expect((await call('pending', {})).rows).toHaveLength(0)
+      expect(getBoard(db, board.project, board.title)!.rows[0]).toMatchObject({
+        status: 'partial', outcome: 'Your upload was received; preparing the release.',
+      })
+    } finally {
+      db.close()
+      await client.close()
+    }
+  }, 20000)
 
   it('flag accepts options; pending returns the human reply and stamps pickup', async () => {
     const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-pending-')), 'inbox.db')
@@ -813,7 +950,15 @@ describe('mcp round-trip', () => {
     }
     expect(flagSchema.required).toEqual(expect.arrayContaining(['detail', 'next_step']))
     expect(flagSchema.properties['detail']?.description).toMatch(/TL;DR/)
+    expect(flagSchema.properties['detail']?.description).toMatch(/plain language/)
+    expect(flagSchema.properties['detail']?.description).toMatch(/commit hashes.*context/)
     expect(flagSchema.properties['next_step']?.description).toMatch(/ONE concrete action/)
+    expect(pending.inputSchema.properties).toHaveProperty('project')
+    expect(tools.get('board_get')!.inputSchema.properties).toHaveProperty('watch')
+    for (const name of ['board_upsert', 'board_row', 'board_advance']) {
+      expect(tools.get(name)!.description).toMatch(/watch/)
+      expect(tools.get(name)!.description).toMatch(/host|Copilot/)
+    }
 
     expect(tools.get('board_get')!.description).toContain('full: true')
     expect(tools.get('board_get')!.description).toMatch(/UTF-16 code units/)

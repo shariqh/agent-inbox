@@ -47,12 +47,12 @@ describe('action presentation helpers', () => {
     expect(responseLabel({ handled_at: '2026-08-05T11:00:00.000Z' })).toBe('You did your part')
   })
 
-  it('turns picked-up-but-unfinished work into an agent-overdue chip without making it human attention', () => {
+  it('dates delivery, not resumed work, and keeps follow-up separate from human attention', () => {
     expect(agentFollowupChip({
       answered: true,
       pickedUp: true,
       pickedUpAt: new Date(T0 - 30 * 60_000).toISOString(),
-    }, T0)).toEqual({ text: 'with agent 30m', tone: 'muted' })
+    }, T0)).toEqual({ text: 'delivered 30m', tone: 'muted' })
     expect(agentFollowupChip({
       answered: true,
       pickedUp: true,
@@ -73,7 +73,7 @@ describe('action presentation helpers', () => {
     expect(receipt.map((step) => step.label)).toEqual([
       'Asked',
       'You answered',
-      'With the agent',
+      'Delivered to an agent',
       'Merged PR #42.',
     ])
   })

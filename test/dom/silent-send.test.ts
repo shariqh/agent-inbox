@@ -144,7 +144,7 @@ describe('#38 · a board-row answer shows itself, with no collapse and no poll t
     const panel = document.querySelector('#boards .row-panel')
     expect(panel?.querySelector('.annotation')?.textContent,
       'an expanded card on ANOTHER tab must not silence this write').toContain('go ahead and merge')
-    expect(panel?.textContent).toContain('Waiting for the agent')
+    expect(panel?.textContent).toContain('Saved · waiting for delivery')
     expect(panelInput()?.value).toBe('')
     // and the row's own state moved: it is answered, so it leaves the attention set
     expect(badgeCount(), 'the badge must agree with what the human just did').toBe(1) // the question only
@@ -176,7 +176,7 @@ describe('#38 · a board-row answer shows itself, with no collapse and no poll t
     expect(card, 'the card must still be on screen, or this proves nothing').not.toBeNull()
     expect(card!.querySelector('.reply-block')?.textContent ?? '(no reply block — the card still shows the question)',
       "the human's own answer must be on screen before anything else happens").toContain('yes — 30s')
-    expect(card!.textContent, 'and it must say the agent has not collected it yet').toContain('Waiting for the agent')
+    expect(card!.textContent, 'and it must say the response has not been delivered yet').toContain('Saved · waiting for delivery')
     expect(answerInput(id), 'an answered question has no answer box left to re-send from').toBeNull()
     expect(row(id)?.className, 'the row must wear its answered state').toContain('answered')
     expect(badgeCount(), 'an answered question has stopped needing the human').toBe(0)
@@ -422,7 +422,7 @@ describe('#38 · §10 protects typed work without hiding new inbox items', () =>
     expect(document.querySelector('.rail-tab[data-project="alpha"] .rail-badge')?.textContent,
       'the project rail count must stay live while the list is paused').toBe('2')
     expect(document.getElementById('liveStripLabel')?.textContent,
-      'the global Live strip must stay live while the list is paused').toBe('1 working')
+      'the global Live strip must stay live while the list is paused').toBe('1 reporting work')
 
     type(answerInput(id), '')
     await settle()

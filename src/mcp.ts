@@ -3,7 +3,7 @@ import { z } from 'zod'
 import type Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
 import { insertItem, resolveItem, listPending, markReplySeen, answerItem, upsertBoard, updateBoardRow, advanceBoardRow, findBoard, archiveBoard, getBoard, listBoards, markBoardRead, markAnnotationDelivered, markHandledDelivered, listPendingRows, upsertActivity, endActivity, touchActivity, recordActivityCall } from './store.js'
-import type { ActionOwner, BoardWithRows, QuestionOption } from './store.js'
+import type { ActionOwner, BoardRow, BoardWithRows, QuestionOption } from './store.js'
 import { makeContextLedger, deliverContext, shapeBoard, summariseBoard, rowKey, itemKey } from './shape.js'
 import { makeScope } from './scope.js'
 import { copilotWatchLaunch } from './watch.js'
@@ -21,7 +21,7 @@ export function livenessTick(db: Database.Database, session: string): void {
 }
 
 export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
-  const server = new McpServer({ name: 'agent-inbox', version: '1.2.1' })
+  const server = new McpServer({ name: 'agent-inbox', version: '1.2.2' })
   const scope = makeScope(cwd)
   // issue #42 — what THIS SERVER PROCESS has already handed over. Per-process,
   // NOT per session or per agent: this server is long-lived and a subagent's
@@ -85,6 +85,14 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
   )
   const impactField = z.string().max(180).describe('Why this matters now: the one downstream result or dependency this action unblocks.')
   const nextAfterField = z.string().max(180).describe('What happens immediately after the human responds or completes the task.')
+  const summaryDescription = 'TL;DR: one sentence in plain language explaining what changed, what is not finished, or what needs a decision. Write for someone returning without the technical history. Example: "The release is ready, but still needs your approval." Put commit hashes, file paths, test counts, and technical terms such as CAS or converged in context, not the summary.'
+  const rowWatch = (row: Pick<BoardRow, 'id' | 'label' | 'action_version'>, project: string) => ({
+    row_id: row.id,
+    label: row.label,
+    action_version: row.action_version,
+    ...copilotWatchLaunch(row.id, { rowActionVersion: row.action_version, project }),
+  })
+  const boardWatchDescription = ' Copilot: a new blocked action returns a host-owned watch (or watches for a full board). Immediately launch each returned shell_command as the specified detached background task; the MCP server never launches it. On completion follow on_completion, then acknowledge the response with a status change and outcome. Routine edits do not start another watch; use board_get({title, watch:true}) to re-arm after a timeout or session restart.'
 
   const requireActionShape = (
     label: string,
@@ -112,7 +120,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
       inputSchema: {
         kind: z.enum(['question', 'note', 'done']),
         title: z.string().min(1).max(120),
-        detail: z.string().min(1).max(240).describe('TL;DR: one plain-language sentence summarizing the current state. No history or transcript.'),
+        detail: z.string().min(1).max(240).describe(summaryDescription),
         next_step: z.string().min(1).max(180).describe('The ONE concrete action the human should take now. Start with a verb; use "No action" for informational items.'),
         action_owner: actionOwner.optional(),
         impact: impactField.optional(),
@@ -153,7 +161,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
         options,
       })
       const result = kind === 'question' && s.agent === 'copilot'
-        ? { id, watch: copilotWatchLaunch(id) }
+        ? { id, watch: copilotWatchLaunch(id, { project: s.project }) }
         : { id }
       return { content: [{ type: 'text', text: JSON.stringify(result) }] }
     },
@@ -177,12 +185,16 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     {
       description:
         'Poll for everything the human has said to you in this project — the ONE polling call. Returns {items, rows}. Read reply_kind/annotation_kind: answer = act normally; clarify = rewrite the ask (for a board use board_advance on the same label/version; for an item resolve and raise a corrected replacement); decline = stop/cancel the proposed path and acknowledge it with an outcome. handled_at means the human completed their task. snoozed_until means they deferred an unanswered ask; do not nag or treat it as an answer. After acting, resolve an item with outcome or move a row out of blocked with outcome. If another human step remains, use board_advance rather than stacking another row. Questions reappear until resolve; blocked rows reappear until status changes, so delivery stamps are never acknowledgements. Human words are always returned; agent context is handed over once per SERVER PROCESS and recoverable with pending({full:true}) or board_get({title, full:true}); context_chars uses UTF-16 code units.',
-      inputSchema: { full: z.boolean().optional() },
+      inputSchema: {
+        full: z.boolean().optional(),
+        project: z.string().min(1).optional().describe('Read responses for this project without changing the session scope. Use the project in a watcher launch contract after a restart or scope change.'),
+      },
     },
-    async ({ full }) => {
+    async ({ full, project }) => {
       heartbeat()
       const s = scope.get(clientName())
-      const items = listPending(db, s.project)
+      const responseProject = project ?? s.project
+      const items = listPending(db, responseProject)
       for (const it of items) if (it.reply && !it.reply_seen_at) markReplySeen(db, it.id, it.replied_at)
       // issue #37 — the human's board-row notes had NO delivery path: pending()
       // was items-only, so an agent following the contract perfectly still never
@@ -202,7 +214,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
       // dropped row is never half-recorded as delivered. (The reverse race
       // stamps the annotation on a row it then drops; the row is still blocked,
       // so the next poll carries both — at-least-once is what absorbs it.)
-      const rows = listPendingRows(db, s.project).filter((r) => {
+      const rows = listPendingRows(db, responseProject).filter((r) => {
         if (r.annotation && !markAnnotationDelivered(db, r.row_id, r.annotated_at, s.agent)) return false
         if (r.handled_at && !markHandledDelivered(db, r.row_id, r.handled_at, s.agent)) return false
         return true
@@ -260,8 +272,8 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
       description:
         'Ephemeral "what am I doing right now" for the human\'s live view — NOT for tasks (use boards) or attention (use flag). Call at meaningful PHASE changes only, not every step: starting a long effort, entering a new phase, fanning out subagents, wrapping up. children is a full-replace list of the subagents you are running ({name, doing, state?}) — resend the current set whenever it changes; the human can expand them under your entry. Times are stamped server-side; never call this just because time passed. Call with done:true when the effort ends — your entry reverts to an idle presence row. Your session stays listed for as long as it is running, but the CLAIM decays: after ~30 minutes with no MCP calls from you at all, "doing" reverts to open on its own, so a claim can never outlive the work. You do not need to keep it alive — just say what you are doing at your next real phase change, and it re-asserts instantly.',
       inputSchema: {
-        doing: z.string().min(1).optional(),
-        detail: z.string().optional(),
+        doing: z.string().min(1).optional().describe('A short, recognizable task name in plain language, such as "Fixing missed Inbox replies". Report actual work, not a PR hash or a review transcript.'),
+        detail: z.string().optional().describe('One sentence about the current step or what remains. This is a self-reported update, not automatic tracking of every agent.'),
         children: z.array(z.object({ name: z.string().min(1), doing: z.string(), state: z.string().optional() })).max(32).optional(),
         done: z.boolean().optional(),
       },
@@ -295,6 +307,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     async ({ project, stream, repo, issue }) => {
       heartbeat()
       scope.override({ project, stream, repo, issue })
+      registerPresence()
       return { content: [{ type: 'text', text: JSON.stringify(scope.get(clientName())) }] }
     },
   )
@@ -320,7 +333,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     .describe(
       'Row status. done|partial|missing|tracked|na are descriptive. blocked is the ONE escalation: waiting on the HUMAN and nobody else. A blocked row requires note, next_step, action_owner and impact; decision/approval requires 2-4 options, task omits options. The row is the ask — ONE ASK, ONE SURFACE, never a duplicate question item. Work stuck on a failing test, missing build, another PR or long job is partial/tracked, NEVER blocked. Moving into blocked is a NEW request and archives the prior action; use board_advance when deliberately chaining the same stable row.',
     )
-  const rowNote = z.string().max(240).describe('TL;DR: one plain-language sentence summarizing this row’s current state.')
+  const rowNote = z.string().max(240).describe(summaryDescription)
   const rowNextStep = z.string().max(180).describe('The ONE concrete action the human should take now. Required and non-empty when status is blocked.')
   const rowOptions = z.array(responseOption).max(4)
     .refine((options) => options.length === 0 || options.length >= 2, 'options must be empty or contain 2-4 choices')
@@ -346,7 +359,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     'board_upsert',
     {
       description:
-        'Create or refresh a tracking board. Idempotent by title; rows match stable labels and omitted ROWS are deleted. Every existing board MUST carry board_version and every existing row MUST carry its current revision from board_get/pending; stale snapshots abort the whole write. blocked means waiting on the HUMAN and is itself the ask — ONE ASK, ONE SURFACE, never a duplicate question item. Every blocked row requires note (TL;DR), next_step, action_owner and impact; decision/approval requires 2-4 options, task omits options. A failing test, missing build, another PR or long job is partial/tracked, never blocked. context is collapsed background. Omitted agent fields preserve stored values; context:"", next_step:"" and options:[] clear deliberately. Routine re-sends never erase the human annotation or handled_at ("I did my part"). When acknowledging a response, move the row out of blocked and include outcome; when another human step follows, use board_advance.',
+        'Create or refresh a tracking board. Idempotent by title; rows match stable labels and omitted ROWS are deleted. Every existing board MUST carry board_version and every existing row MUST carry its current revision from board_get/pending; stale snapshots abort the whole write. blocked means waiting on the HUMAN and is itself the ask — ONE ASK, ONE SURFACE, never a duplicate question item. Every blocked row requires note (TL;DR), next_step, action_owner and impact; decision/approval requires 2-4 options, task omits options. A failing test, missing build, another PR or long job is partial/tracked, never blocked. context is collapsed background. Omitted agent fields preserve stored values; context:"", next_step:"" and options:[] clear deliberately. Routine re-sends never erase the human annotation or handled_at ("I did my part"). When acknowledging a response, move the row out of blocked and include outcome; when another human step follows, use board_advance.' + boardWatchDescription,
       inputSchema: {
         title: z.string().min(1),
         board_version: z.number().int().positive().optional().describe('Required for an existing board; use revision from board_get.'),
@@ -376,12 +389,14 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
       if (existing && board_version === undefined) {
         throw new Error(`existing board "${title}" requires board_version ${existing.revision}`)
       }
+      const newActions = new Map<string, number>()
       for (const row of rows) {
         const previous = existing?.rows.find((candidate) => candidate.label === row.label)
         if (previous && row.revision === undefined) {
           throw new Error(`existing row "${row.label}" requires revision ${previous.revision}`)
         }
         const newAsk = row.status === 'blocked' && previous?.status !== 'blocked'
+        if (newAsk) newActions.set(row.label, (previous?.action_version ?? 0) + 1)
         requireBlockedShape(
           row.label,
           row.status,
@@ -402,7 +417,14 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
         repo: s.repo,
         issueRef: s.issue,
       })
-      return { content: [{ type: 'text', text: JSON.stringify(out) }] }
+      const watches = s.agent === 'copilot' && newActions.size
+        ? getBoard(db, s.project, title)?.rows
+          .filter((row) => row.status === 'blocked' && newActions.get(row.label) === row.action_version)
+          .map((row) => rowWatch(row, s.project)) ?? []
+        : []
+      return { content: [{ type: 'text', text: JSON.stringify({
+        ...out, ...(watches.length ? { watches } : {}),
+      }) }] }
     },
   )
 
@@ -410,7 +432,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     'board_row',
     {
       description:
-        'Update or add ONE board row by stable label. Existing rows require expected_revision from board_get/pending; a stale revision is refused. Omitted fields preserve the current value. blocked means the row needs the HUMAN and nobody else; it requires note, next_step, action_owner and impact. decision/approval requires 2-4 options; task omits options. The row is the ask — ONE ASK, ONE SURFACE, never a duplicate question item. A failing test, missing build or another PR is partial/tracked, not blocked. After pending delivers answer/clarify/decline/handled_at, either move the row out of blocked with outcome or use board_advance for the next human step. A nonblocked→blocked transition is a NEW request and archives the prior action.',
+        'Update or add ONE board row by stable label. Existing rows require expected_revision from board_get/pending; a stale revision is refused. Omitted fields preserve the current value. blocked means the row needs the HUMAN and nobody else; it requires note, next_step, action_owner and impact. decision/approval requires 2-4 options; task omits options. The row is the ask — ONE ASK, ONE SURFACE, never a duplicate question item. A failing test, missing build or another PR is partial/tracked, not blocked. After pending delivers answer/clarify/decline/handled_at, either move the row out of blocked with outcome or use board_advance for the next human step. A nonblocked→blocked transition is a NEW request and archives the prior action.' + boardWatchDescription,
       inputSchema: {
         title: z.string().min(1),
         board_version: z.number().int().positive().optional().describe('Required when the board already exists; use revision from board_get.'),
@@ -470,7 +492,10 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
         repo: s.repo,
         issueRef: s.issue,
       })
-      return { content: [{ type: 'text', text: JSON.stringify(out) }] }
+      const watch = s.agent === 'copilot' && newAsk
+        ? rowWatch({ id: out.rowId, label, action_version: (existing?.action_version ?? 0) + 1 }, s.project)
+        : undefined
+      return { content: [{ type: 'text', text: JSON.stringify({ ...out, watch }) }] }
     },
   )
 
@@ -478,7 +503,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     'board_advance',
     {
       description:
-        'Advance an existing board row into its NEXT human action without changing its stable label. Use this after the human answered/declined/requested clarification and more human work remains. It atomically archives the prior step (including their response and pickup state), clears the old response/snooze/outcome, increments action_version, and installs a fresh blocked action. board_version and expected_revision are required so a sibling agent cannot overwrite newer board, human or agent state. action_owner=task must omit options; decision/approval requires 2-4 options.',
+        'Advance an existing board row into its NEXT human action without changing its stable label. Use this after the human answered/declined/requested clarification and more human work remains. It atomically archives the prior step (including their response and pickup state), clears the old response/snooze/outcome, increments action_version, and installs a fresh blocked action. board_version and expected_revision are required so a sibling agent cannot overwrite newer board, human or agent state. action_owner=task must omit options; decision/approval requires 2-4 options.' + boardWatchDescription,
       inputSchema: {
         title: z.string().min(1),
         label: z.string().min(1),
@@ -497,6 +522,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
       heartbeat()
       requireBlockedShape(label, 'blocked', note, next_step, action_owner, impact, options)
       const s = scope.get(clientName())
+      const previous = getBoard(db, s.project, title)?.rows.find((row) => row.label === label)
       const out = advanceBoardRow(db, {
         project: s.project,
         title,
@@ -511,7 +537,10 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
         options,
         context,
       })
-      return { content: [{ type: 'text', text: JSON.stringify(out) }] }
+      const watch = s.agent === 'copilot' && previous && out.ok
+        ? rowWatch({ ...previous, action_version: out.action_version }, s.project)
+        : undefined
+      return { content: [{ type: 'text', text: JSON.stringify({ ...out, watch }) }] }
     },
   )
 
@@ -535,11 +564,18 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     {
       description:
         'Re-read a tracking board before updating it. pending() already delivers human responses/handled_at. With a title: full row state; without: a summary of active boards. Board revision protects full snapshots/archive state; row revision is the CAS token for board_row/board_advance; action_version numbers chained steps. history_count says prior steps exist but history text is viewer-only and never sent to agents. Human response fields are always returned. Agent context is replaced by context_chars unless a titled read uses full: true (its size is UTF-16 code units, so an emoji counts 2).',
-      inputSchema: { title: z.string().optional(), full: z.boolean().optional() },
+      inputSchema: {
+        title: z.string().optional(),
+        full: z.boolean().optional(),
+        watch: z.boolean().optional().describe('Copilot only: with a title, return host-owned watches for this board’s blocked actions. Use to re-arm after a timeout or restart; do not launch a second copy of a watch already running.'),
+      },
     },
-    async ({ title, full }) => {
+    async ({ title, full, watch }) => {
       heartbeat()
       const s = scope.get(clientName())
+      if (watch && (title === undefined || s.agent !== 'copilot')) {
+        throw new Error('watch requires a board title and a Copilot client; other hosts use their hook adapter')
+      }
       // issue #37 — per-ROW delivery, exactly like pending(). markBoardRead still
       // records "an agent read this board", but it no longer marks any annotation
       // seen: board-level read-marking is what silenced rows the agent never
@@ -571,8 +607,12 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
       const board = getBoard(db, s.project, title)
         ?? listBoards(db, { status: 'archived' }).find((candidate) => candidate.project === s.project && candidate.title === title)
       if (board) deliver(board)
+      const watches = watch && board?.status === 'active'
+        ? board.rows.filter((row) => row.status === 'blocked').map((row) => rowWatch(row, s.project))
+        : undefined
+      const payload = board ? shapeBoard(board, { full, ledger }) : { found: false }
       return {
-        content: [{ type: 'text', text: JSON.stringify(board ? shapeBoard(board, { full, ledger }) : { found: false }) }],
+        content: [{ type: 'text', text: JSON.stringify({ ...payload, ...(watches ? { watches } : {}) }) }],
       }
     },
   )

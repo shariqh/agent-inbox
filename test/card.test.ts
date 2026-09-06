@@ -177,15 +177,15 @@ describe('app.js wiring (source-level pins)', () => {
     // helper and the guard moved with it into rowHumanStateHtml, where every
     // branch is gated on the field it describes. Pin the helper as the single
     // source and both guards by name, rather than loosening the count.
-    expect((fn.match(/Waiting for the agent/g) ?? []).length).toBe(1)
+    expect((fn.match(/Saved · waiting for delivery/g) ?? []).length).toBe(1)
     const markFn = js.slice(js.indexOf('function pickupMarkHtml('), js.indexOf('function rowHumanStateHtml('))
-    expect((markFn.match(/Waiting for the agent/g) ?? []).length).toBe(1)
+    expect((markFn.match(/Saved · waiting for delivery/g) ?? []).length).toBe(1)
     const rowFn = js.slice(js.indexOf('function rowHumanStateHtml('), js.indexOf('\nfunction rowPanelEl('))
-    expect(rowFn, 'the row marker is never printed outside a guarded branch').not.toMatch(/Waiting for the agent/)
+    expect(rowFn, 'the row marker is never printed outside a guarded branch').not.toMatch(/Saved · waiting for delivery/)
     expect(rowFn).toContain('if (r.annotation || r.annotation_kind)')
     expect(rowFn).toContain('if (r.handled_at) parts.push(')
-    expect((js.match(/Waiting for the agent/g) ?? []).length, 'exactly one per noun, nowhere else').toBe(2)
-    const replyBlock = fn.split('\n').find((l) => l.includes('Waiting for the agent'))!
+    expect((js.match(/Saved · waiting for delivery/g) ?? []).length, 'exactly one per noun, nowhere else').toBe(2)
+    const replyBlock = fn.split('\n').find((l) => l.includes('Saved · waiting for delivery'))!
     expect(replyBlock).toContain('${s.reply || it.reply_kind ?')
     expect(replyBlock).toContain('reply-block')
     // the chip is a FIXED string selected by an equality test — interpolating the

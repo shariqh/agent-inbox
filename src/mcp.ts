@@ -21,7 +21,7 @@ export function livenessTick(db: Database.Database, session: string): void {
 }
 
 export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
-  const server = new McpServer({ name: 'agent-inbox', version: '1.2.1' })
+  const server = new McpServer({ name: 'agent-inbox', version: '1.2.2' })
   const scope = makeScope(cwd)
   // issue #42 — what THIS SERVER PROCESS has already handed over. Per-process,
   // NOT per session or per agent: this server is long-lived and a subagent's

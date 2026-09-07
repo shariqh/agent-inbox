@@ -780,6 +780,7 @@ body.resizing-pane, body.resizing-pane * { cursor: col-resize !important; user-s
 .sidebar-collapse:hover { border-color: var(--app-border-strong); background: var(--app-soft); color: var(--app-text); }
 .sidebar-collapse svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.25; }
 .sidebar-section-label {
+  display: flex;
   margin: 24px 10px 8px;
   color: var(--app-text-soft);
   font-size: 10px;
@@ -876,7 +877,7 @@ body.resizing-pane, body.resizing-pane * { cursor: col-resize !important; user-s
   display: grid;
   width: 100%;
   min-width: 0;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   align-items: center;
   gap: 8px;
   margin: 12px 0 0;
@@ -1003,9 +1004,9 @@ body.sidebar-collapsed .live-drawer { left: 72px; }
   top: 0;
   z-index: 20;
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) minmax(280px, 520px);
+  grid-template-columns: minmax(180px, 1fr) minmax(220px, 400px) auto;
   align-items: center;
-  gap: 8px 24px;
+  gap: 8px 16px;
   padding: 24px 32px 16px;
   border: 0;
   background: color-mix(in srgb, var(--app-bg) 94%, transparent);
@@ -1805,6 +1806,125 @@ body.settings-open #liveBar { opacity: .32; }
   .relay-btn, .triage-btn { width: 100%; }
 }
 
+/* Shortcut tiles are presentation only; control labels remain the sent text. */
+[data-shortcut]::after,
+.keyboard-panel kbd {
+  display: inline-flex;
+  min-width: 20px;
+  min-height: 20px;
+  align-items: center;
+  justify-content: center;
+  padding: 1px 5px;
+  border: 1px solid var(--app-border-strong);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--app-soft);
+  color: var(--app-muted);
+  font: 550 10px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace;
+  letter-spacing: 0;
+  text-transform: none;
+  vertical-align: middle;
+}
+[data-shortcut]::after { content: attr(data-shortcut); flex: 0 0 auto; margin-inline-start: 6px; white-space: nowrap; }
+.tab[data-shortcut]::after, .gear[data-shortcut]::after { margin-inline-start: auto; }
+.sidebar-section-label[data-shortcut] { align-items: center; justify-content: space-between; }
+.agent-pick .tab-label[data-shortcut] { display: flex; align-items: center; justify-content: space-between; white-space: nowrap; }
+body.sidebar-collapsed .tab[data-shortcut]::after,
+body.sidebar-collapsed .gear[data-shortcut]::after { display: none; }
+.opt-pill[data-shortcut] { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 8px; align-items: start; }
+.opt-pill[data-shortcut]::after { grid-column: 2; grid-row: 1; justify-self: end; margin: 0; }
+.opt-pill[data-shortcut] .rec-tag { grid-column: 1; grid-row: 2; justify-self: start; margin: 0; }
+.reply-row[data-shortcut] { position: relative; padding-inline-start: 26px; }
+.reply-row[data-shortcut]::after { position: absolute; top: 10px; left: 0; margin: 0; }
+.nrow-dismiss[data-shortcut] { opacity: 1; }
+.keyboard-tools { display: flex; align-items: center; gap: 6px; }
+.keyboard-tools button,
+.keyboard-panel button {
+  min-height: 36px;
+  padding: 6px 8px;
+  border: 1px solid var(--app-border);
+  border-radius: 7px;
+  background: var(--app-surface);
+  color: var(--app-muted);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.keyboard-tools button:hover, .keyboard-panel button:hover { border-color: var(--app-border-strong); color: var(--app-text); }
+.keyboard-tools button:focus-visible, .keyboard-panel button:focus-visible { outline: 2px solid var(--app-focus); outline-offset: 3px; }
+.keyboard-tools button[aria-pressed="true"], .keyboard-tools[data-go-prefix] button { border-color: var(--app-accent); color: var(--app-accent); }
+.keyboard-status {
+  position: fixed;
+  bottom: 44px;
+  left: 50%;
+  z-index: 2020;
+  width: max-content;
+  max-width: calc(100vw - 24px);
+  padding: 10px 14px;
+  transform: translateX(-50%);
+  border: 1px solid var(--app-border-strong);
+  border-radius: 8px;
+  background: var(--app-surface);
+  color: var(--app-text);
+  box-shadow: var(--app-shadow);
+  font-size: 12px;
+  pointer-events: none;
+}
+.keyboard-status:empty { display: none; }
+.keyboard-box { position: fixed; inset: 0; z-index: 1900; display: grid; place-items: center; padding: 16px; }
+.keyboard-box[hidden] { display: none; }
+.keyboard-backdrop { position: absolute; inset: 0; background: rgba(0, 0, 0, .56); }
+.keyboard-panel {
+  position: relative;
+  display: flex;
+  width: min(760px, 100%);
+  max-height: min(800px, calc(100dvh - 32px));
+  min-height: 0;
+  flex-direction: column;
+  gap: 20px;
+  padding: clamp(16px, 3vw, 26px);
+  border: 1px solid var(--app-border-strong);
+  border-radius: 12px;
+  background: var(--app-surface);
+  color: var(--app-text);
+  box-shadow: var(--app-shadow);
+}
+.keyboard-panel:focus { outline: none; }
+.keyboard-head { display: flex; align-items: flex-start; flex: 0 0 auto; justify-content: space-between; flex-wrap: nowrap; gap: 16px; padding: 0; background: transparent; }
+.keyboard-head h2 { margin: 0 0 7px; font-size: 22px; line-height: 1.2; letter-spacing: -.02em; }
+.keyboard-head p, .keyboard-foot p { margin: 0; color: var(--app-muted); font-size: 12px; }
+.keyboard-close { flex: 0 0 auto; }
+.keyboard-groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr)); gap: 24px; overflow-y: auto; overscroll-behavior: contain; min-height: 0; padding: 2px; }
+.keyboard-groups h3 { margin: 0 0 10px; padding-bottom: 7px; border-bottom: 1px solid var(--app-border); color: var(--app-text); font-size: 13px; font-weight: 650; }
+.keyboard-groups dl { margin: 0; }
+.keyboard-groups dl > div { display: grid; grid-template-columns: minmax(86px, .55fr) minmax(0, 1fr); gap: 12px; align-items: start; margin: 0 0 10px; }
+.keyboard-groups dt, .keyboard-groups dd { margin: 0; }
+.keyboard-groups dd { color: var(--app-muted); font-size: 12px; }
+.keyboard-panel kbd { max-width: 100%; white-space: normal; text-align: center; }
+.keyboard-foot { display: flex; flex: 0 0 auto; flex-wrap: wrap; align-items: center; gap: 12px; padding-top: 16px; border-top: 1px solid var(--app-border); }
+.keyboard-foot p { flex: 1 1 280px; }
+.keyboard-foot button { min-height: 44px; }
+.key-hints-layer { position: fixed; inset: 0; z-index: 2100; overflow: clip; pointer-events: none; }
+.key-hint {
+  position: absolute;
+  display: block;
+  min-width: 22px;
+  padding: 2px 5px;
+  border: 1px solid var(--app-border-strong);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--app-text);
+  color: var(--app-bg);
+  font: 750 12px/1.35 ui-monospace, SFMono-Regular, Consolas, monospace;
+  letter-spacing: .04em;
+  text-align: center;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .28);
+}
+.key-hint[hidden] { display: none; }
+.key-hint.is-match { outline: 2px solid var(--app-accent); outline-offset: 2px; }
+.key-hint.is-dim { opacity: .28; }
+
 /* ── responsive (spec §14) ───────────────────────────────────────────────────
    The ONLY @media block in the file — deliberately last so it wins over the
    shell (Task 6), boards chrome (Task 13) and focus rules (Task 17) above it.
@@ -2127,6 +2247,10 @@ body.settings-open #liveBar { opacity: .32; }
     backdrop-filter: none;
   }
   .page-heading { min-width: 150px; flex: 0 1 auto; }
+  .keyboard-tools { order: 1; margin-left: auto; }
+  .sidebar-shell .agent-pick .tab-label[data-shortcut] { display: none; }
+  #topbar .floating-search { order: 2; }
+  #topbar .topbar-notices { order: 3; }
   .page-heading h1 { font-size: clamp(21px, 3vw, 25px); }
   .topbar-notices { min-height: 0; flex: 1 0 100%; margin-top: -4px; }
   main { padding: 0 16px 64px; }
@@ -2146,6 +2270,19 @@ body.settings-open #liveBar { opacity: .32; }
     border-top: 1px solid var(--app-border);
     border-radius: 0;
     box-shadow: none;
+  }
+  /* Inline cards scroll with the page. Keep this complementary to the fixed
+     phone card below so its bounded scroll regions stay intact. */
+  @container needs-queue (width > 440px) {
+    .nrow-card { overscroll-behavior: auto; }
+    .nrow-card-head,
+    .nrow-card-scroll,
+    .nrow-card-compose {
+      flex: 0 0 auto;
+      max-height: none;
+      overflow: visible;
+      overscroll-behavior: auto;
+    }
   }
   .nrow-owner { display: inline-flex; }
 
@@ -2219,6 +2356,7 @@ body.settings-open #liveBar { opacity: .32; }
     .project-disclosure-name { font-size: 11px; }
     #agentSelect { font-size: 11px; }
     #topbar { padding: 10px; }
+    .page-heading { min-width: 0; flex: 1 1 110px; }
     .page-kicker { display: none; }
     .page-heading h1 { font-size: 22px; }
     #setup { padding: 16px; }

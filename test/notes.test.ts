@@ -141,7 +141,7 @@ describe('triage stays reachable from Needs-you', () => {
   const appJs = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8')
 
   it('the Inbox header carries the opt-in Review queue button', () => {
-    expect(appJs).toMatch(/function needsYouHeader\(\)[\s\S]*?btn\('Review queue', openTriage\)/)
+    expect(appJs).toMatch(/function needsYouHeader\(\)[\s\S]*?btn\('Review queue', openTriage, 'review'\)/)
   })
   it('renderNeedsYou renders that header', () => {
     expect(appJs).toMatch(/function renderNeedsYou\([^)]*\)\s*\{[\s\S]*?needsYouHeader\(\)/)

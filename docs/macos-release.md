@@ -14,8 +14,30 @@ fnm exec --using=24 npm run release:inputs
 ```
 
 The Node SHA-256 values are copied from the official
-`https://nodejs.org/dist/v24.19.0/SHASUMS256.txt` distribution metadata. Runtime
+`https://nodejs.org/dist/v24.18.1/SHASUMS256.txt` distribution metadata. Runtime
 staging rejects any hash, URL, archive root, platform, ABI, or architecture mismatch.
+
+### Node 24.18.1 compatibility hold (#135)
+
+Portable runtimes use **Node 24.18.1**, including its security fixes over 24.18.0.
+Node 24.19.0's `node::ObjectWrap` headers added cleanup hooks without the companion
+runtime registry fix ([upstream #65446](https://github.com/nodejs/node/issues/65446)).
+The resulting `better-sqlite3` statement destructor can abort during allocation-driven
+GC, including MCP/watcher startup. ABI 137 compatibility and a passing hook selftest
+do not prove safety.
+
+Staging rebuilds the addon from source using the verified distribution's own headers
+(`npm_config_nodedir`), then runs `scripts/runtime-sqlite-check.mjs` with the staged
+Node against the staged `dist/store.js`. Its private in-memory store creates and
+releases 300,000 statements under ordinary allocation pressure; explicit `global.gc()`
+is deliberately not a substitute. A failure or signal refuses publication.
+An executable-only downgrade with a 24.19-built addon still reproduces the assertion:
+**both the runtime and addon must be rebuilt**, never patched into a signed payload.
+
+This is a release compatibility mitigation, not an upstream fix. Revisit the pin when
+a corrected Node 24 release passes the same native GC and packaged MCP/watcher checks.
+Each architecture still needs its own native release evidence; Apple-silicon or
+emulated x64 results do not establish native Intel or Linux behavior.
 
 **Requires macOS 13.5 (Ventura) or later.** Release builds support both Apple silicon and
 Intel. Electron 43 itself supports macOS 12, but the bundled official Node 24 runtime

@@ -17,6 +17,13 @@ parse Electron 43's deprecation-plus-visibility attribute ordering in the V8
 headers; the build verifies both compiler commands, the exact compiler version,
 and the native target tuple before rebuilding.
 
+The portable Node pin is **24.18.1**, matching the
+[macOS compatibility hold for #135](macos-release.md#node-24181-compatibility-hold-135).
+Both architectures rebuild `better-sqlite3` against those verified archive headers
+and run the allocation-driven SQLite cleanup gate before publication. The pin
+avoids Node 24.19's header regression without dropping 24.18.1's security fixes;
+Linux native runtime verification remains required, not inferred from macOS tests.
+
 `release/linux-appimage-x64.json` and `release/linux-appimage-arm64.json` are
 separate exact package contracts. Each pins its architecture-matched
 appimagetool 1.9.1 and AppImage type-2 runtime release `20251108` to immutable
@@ -65,7 +72,7 @@ Each job:
 1. validates the exact Linux release profile;
 2. downloads and SHA-verifies the official Node archive;
 3. stages the portable runtime with its own Node/npm and runs the runtime
-   manifest, Node ABI, `better-sqlite3`, and hook self-tests;
+   manifest, Node ABI, `better-sqlite3`, hook, and allocation-driven SQLite self-tests;
 4. rebuilds `better-sqlite3` for the pinned Electron ABI;
 5. creates a thin Electron application folder containing only the matching
    Linux runtime key;

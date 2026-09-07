@@ -8,8 +8,9 @@
 // the EXACT repo lockfile, the built dist/, and the install scripts + docs
 // the staged runtime needs to register itself with a host agent. Before any
 // of that is pinned under a manifest, `bin/node dist/hook-cli.js selftest`
-// is run against the staged tree itself, proving the exact staged Node +
-// better-sqlite3 combination actually loads — the same gate
+// and an allocation-driven SQLite cleanup check run against the staged tree,
+// proving the exact staged Node + better-sqlite3 combination loads and survives
+// garbage collection. The hook selftest is the same gate
 // install-hooks.sh already applies to a resolved host Node, applied here to
 // what this script is about to ship. Only then is the manifest generated,
 // verified, and the tree published through the same-parent transaction below.
@@ -289,8 +290,9 @@ const REQUIRED_DOCS = [
  * repo's, since it is the staged copy (and its staged node_modules) that
  * ships. Runs against a scratch, disposable database path (never the real
  * ~/.agent-inbox/inbox.db) so staging a runtime can never touch host state.
- * On failure this throws — the caller must not build/write a manifest or
- * publish anything for a tree that failed this check.
+ * The separate allocation-driven check catches native statement cleanup
+ * failures that open/close and explicit GC miss (#135). On failure this throws
+ * before the caller can manifest or publish the tree.
  */
 function runStagedSelftest(stageDir, adapter) {
   const stagedNode = join(stageDir, ...adapter.payloadNodeExecRelPath.split('/'))
@@ -300,16 +302,23 @@ function runStagedSelftest(stageDir, adapter) {
   }
   const scratchDir = mkdtempSync(join(tmpdir(), 'stage-runtime-selftest-'))
   try {
-    execFileSync(stagedNode, [hookCli, 'selftest'], {
-      cwd: stageDir,
-      env: { ...process.env, AGENT_INBOX_DB: join(scratchDir, 'inbox.db') },
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 30_000,
-    })
-  } catch (err) {
-    throw new StageRuntimeError(
-      `staged runtime failed its selftest (bin/node dist/hook-cli.js selftest) — refusing to publish: ${err.message}`,
-    )
+    for (const [label, args] of [
+      ['selftest (bin/node dist/hook-cli.js selftest)', [hookCli, 'selftest']],
+      ['allocation-driven SQLite check', [
+        join(SCRIPT_DIR, 'runtime-sqlite-check.mjs'), join(stageDir, 'dist', 'store.js'),
+      ]],
+    ]) {
+      try {
+        execFileSync(stagedNode, args, {
+          cwd: stageDir,
+          env: { ...process.env, AGENT_INBOX_DB: join(scratchDir, 'inbox.db') },
+          stdio: ['ignore', 'pipe', 'pipe'],
+          timeout: 30_000,
+        })
+      } catch (err) {
+        throw new StageRuntimeError(`staged runtime failed its ${label} — refusing to publish: ${err.message}`)
+      }
+    }
   } finally {
     rmSync(scratchDir, { recursive: true, force: true })
   }
@@ -349,6 +358,7 @@ function stageInto(stageDir, {
       npm_config_platform: platform,
       npm_config_arch: arch,
       npm_config_build_from_source: 'true',
+      npm_config_nodedir: nodeRoot,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
     timeout: 10 * 60_000,

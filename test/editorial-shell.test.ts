@@ -35,7 +35,7 @@ describe('the editorial desk shell', () => {
     expect(html).toContain('class="tab-name">History</span><span class="tab-count"')
   })
 
-  it('keeps workspace search in the utility bar and gives the sidebar ownership of the agent picker', () => {
+  it('keeps search and keyboard controls in the utility bar and the agent picker in the sidebar', () => {
     const sidebar = html.slice(html.indexOf('<aside class="sidebar-shell">'), html.indexOf('</aside>'))
     const topbar = html.slice(html.indexOf('<header id="topbar">'), html.indexOf('</header>'))
     expect(sidebar).toContain('class="agent-pick"')
@@ -43,11 +43,12 @@ describe('the editorial desk shell', () => {
     expect(sidebar.indexOf('class="agent-pick"')).toBeLessThan(sidebar.indexOf('id="gear"'))
     expect(topbar).not.toContain('class="agent-pick"')
     expect(topbar).toContain('id="search"')
+    expect(topbar).toContain('id="keyboardTools"')
     expect(html).toMatch(/class="floating-search"[^>]*role="search"[\s\S]*id="search"[^>]*aria-keyshortcuts="Meta\+K Control\+K"/)
-    expect(css).toMatch(/#topbar\s*\{[^}]*grid-template-columns:\s*minmax\(180px,\s*1fr\)\s+minmax\(280px,\s*520px\)/s)
+    expect(css).toMatch(/#topbar\s*\{[^}]*grid-template-columns:\s*minmax\(180px,\s*1fr\)\s+minmax\(220px,\s*400px\)\s+auto/s)
     expect(css).toMatch(/\.floating-search\s*\{[^}]*position:\s*relative[^}]*width:\s*100%/s)
     expect(css).toMatch(/\.search-results\s*\{[^}]*top:\s*calc\(100% \+ 8px\)[^}]*bottom:\s*auto/s)
-    expect(css).toMatch(/\.agent-pick\s*\{[^}]*display:\s*grid[^}]*grid-template-columns:\s*auto minmax\(0,\s*1fr\)[^}]*border-top:\s*1px solid var\(--app-border\)/s)
+    expect(css).toMatch(/\.agent-pick\s*\{[^}]*display:\s*grid[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)[^}]*border-top:\s*1px solid var\(--app-border\)/s)
     expect(css).toMatch(/\.nrow-card\s*\{[^}]*bottom:\s*104px/s)
   })
 
@@ -67,6 +68,35 @@ describe('the editorial desk shell', () => {
     expect(css).toMatch(/\.nrow-card\s*\{[^}]*width:\s*var\(--inspector-width\)\s*;/s)
     expect(css).toMatch(/#needsYouList\s*\{[^}]*padding-right:\s*calc\(var\(--inspector-width\)/s)
     expect(css).toMatch(/\.nrow-card-compose\s*\{[^}]*max-height:\s*min\(50%,\s*360px\)[^}]*overflow-y:\s*auto[^}]*overscroll-behavior:\s*contain/s)
+  })
+
+  it('lets inline card regions grow with the page instead of trapping wheel scrolling', () => {
+    // jsdom cannot evaluate these queries. The release must be inside both the
+    // compact media layer and the exact complement of the phone card container.
+    const compact = css.slice(css.indexOf('@media (max-width: 1279px)'))
+    const inline = compact.match(/@container needs-queue \(width > 440px\)\s*\{((?:[^{}]|\{[^{}]*\})*)\}/s)?.[1] ?? ''
+    expect(compact).toMatch(/#needsYouList \.nrow-card\s*\{[^}]*position:\s*static[^}]*overflow:\s*visible/s)
+    expect(inline).toMatch(/\.nrow-card\s*\{[^}]*overscroll-behavior:\s*auto/s)
+    expect(inline).toMatch(/\.nrow-card-head,\s*\.nrow-card-scroll,\s*\.nrow-card-compose\s*\{[^}]*flex:\s*0 0 auto[^}]*max-height:\s*none[^}]*overflow:\s*visible[^}]*overscroll-behavior:\s*auto/s)
+  })
+
+  it('keeps fixed desktop and phone card scrolling bounded and contained', () => {
+    const desktop = css.slice(0, css.indexOf('@media (max-width: 1279px)'))
+    expect(desktop).toMatch(/\.nrow-card-head\s*\{[^}]*max-height:\s*40%[^}]*overflow-y:\s*auto[^}]*overscroll-behavior:\s*contain/s)
+    expect(desktop).toMatch(/\.nrow-card-scroll\s*\{[^}]*flex:\s*1 1 auto[^}]*overflow-y:\s*auto[^}]*overscroll-behavior:\s*contain/s)
+    expect(desktop).toMatch(/\.nrow-card-compose\s*\{[^}]*max-height:\s*min\(50%,\s*360px\)[^}]*overflow-y:\s*auto[^}]*overscroll-behavior:\s*contain/s)
+    const compact = css.slice(css.indexOf('@media (max-width: 1279px)'))
+    const phone = compact.slice(compact.indexOf('@container needs-queue (max-width: 440px)'))
+    expect(phone).toMatch(/#needsYouList \.nrow-card\s*\{[^}]*position:\s*fixed[^}]*inset:\s*0[^}]*height:\s*100dvh[^}]*overflow:\s*hidden/s)
+    expect(phone).toMatch(/\.nrow-card-scroll\s*\{[^}]*min-height:\s*0[^}]*flex:\s*1 1 auto[^}]*overflow-y:\s*auto/s)
+    expect(phone).toMatch(/\.nrow-card-compose\s*\{[^}]*max-height:\s*min\(42dvh,\s*320px\)[^}]*overflow-y:\s*auto[^}]*overscroll-behavior:\s*contain/s)
+    expect(phone).not.toMatch(/overscroll-behavior(?:-y)?:\s*auto/)
+  })
+
+  it('keeps code blocks horizontally scrollable without trapping vertical chaining', () => {
+    const code = css.match(/\.structured-code pre\s*\{([^}]*)\}/s)?.[1] ?? ''
+    expect(code).toMatch(/overflow:\s*auto/)
+    expect(code).not.toMatch(/overscroll-behavior(?:-y)?:\s*(?:contain|none)/)
   })
 
   it('wraps action headlines and option labels without clipping warnings or crowding touch controls', () => {

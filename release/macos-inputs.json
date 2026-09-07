@@ -4,24 +4,24 @@
   "bundleId": "io.github.shariqh.agent-inbox",
   "minimumMacosVersion": "13.5",
   "node": {
-    "version": "v24.19.0",
+    "version": "v24.18.1",
     "modulesAbi": "137",
     "distributions": {
       "darwin-arm64": {
         "platform": "darwin",
         "arch": "arm64",
-        "archive": "node-v24.19.0-darwin-arm64.tar.xz",
-        "root": "node-v24.19.0-darwin-arm64",
-        "url": "https://nodejs.org/dist/v24.19.0/node-v24.19.0-darwin-arm64.tar.xz",
-        "sha256": "3f1cf157479c1480352083105e13faf9d008ede98e7e157746b6df940d197b94"
+        "archive": "node-v24.18.1-darwin-arm64.tar.xz",
+        "root": "node-v24.18.1-darwin-arm64",
+        "url": "https://nodejs.org/dist/v24.18.1/node-v24.18.1-darwin-arm64.tar.xz",
+        "sha256": "1d60b703fe5d7e7072489be8187f430f1a095a658c31e5e1e281331a5873fac3"
       },
       "darwin-x64": {
         "platform": "darwin",
         "arch": "x64",
-        "archive": "node-v24.19.0-darwin-x64.tar.xz",
-        "root": "node-v24.19.0-darwin-x64",
-        "url": "https://nodejs.org/dist/v24.19.0/node-v24.19.0-darwin-x64.tar.xz",
-        "sha256": "d35e95230f46f6f0751df497c56622c6735e05d5e1fb1630996a005b9d328fe4"
+        "archive": "node-v24.18.1-darwin-x64.tar.xz",
+        "root": "node-v24.18.1-darwin-x64",
+        "url": "https://nodejs.org/dist/v24.18.1/node-v24.18.1-darwin-x64.tar.xz",
+        "sha256": "f892c7895720f40d3750bde24f3554242d36f23602b5167b5b73ec4d13938aef"
       }
     }
   },

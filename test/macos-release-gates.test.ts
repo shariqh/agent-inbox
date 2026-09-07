@@ -330,7 +330,7 @@ describe('macOS release gates', () => {
         arch,
         packageVersion: context.version,
         electronVersion: '43.1.1',
-        nodeVersion: 'v24.19.0',
+        nodeVersion: 'v24.18.1',
         nodeModulesAbi: '137',
         sourceCommit: context.sourceCommit,
         sourceDirty: false,

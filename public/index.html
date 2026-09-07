@@ -101,6 +101,12 @@ FORM: Dark-first Live Operations Desk with a complete light counterpart and stru
             aria-label="Workspace search results" hidden></div>
           <span id="searchStatus" class="visually-hidden" role="status" aria-live="polite"></span>
         </div>
+        <div id="keyboardTools" class="keyboard-tools">
+          <button id="keyboardHints" type="button" aria-pressed="false"
+            data-key-hints-ignore title="Show keys for controls on this screen">Show keys</button>
+          <button id="keyboardHelp" type="button" aria-haspopup="dialog"
+            aria-controls="keyboardbox" title="Keyboard shortcuts">Keyboard</button>
+        </div>
         <div class="topbar-notices"><span id="status"></span><span id="pauseHint"></span></div>
       </header>
       <main>
@@ -161,7 +167,7 @@ FORM: Dark-first Live Operations Desk with a complete light counterpart and stru
   </div>
   <div id="relaybox" hidden>
     <div class="relay-backdrop"></div>
-    <div class="relay-panel" role="dialog" aria-modal="true" aria-label="Handoffs">
+    <div class="relay-panel" role="dialog" aria-modal="true" aria-label="Handoffs" tabindex="-1">
       <div class="relay-head">
         <div>
           <span class="relay-kicker">Handoffs</span>
@@ -227,6 +233,27 @@ FORM: Dark-first Live Operations Desk with a complete light counterpart and stru
       </section>
     </div>
   </div>
+  <div id="keyboardbox" class="keyboard-box" hidden>
+    <div class="keyboard-backdrop"></div>
+    <section class="keyboard-panel" role="dialog" aria-modal="true"
+      aria-labelledby="keyboardTitle" aria-describedby="keyboardIntro" tabindex="-1">
+      <header class="keyboard-head">
+        <div>
+          <h2 id="keyboardTitle">Keyboard shortcuts</h2>
+          <p id="keyboardIntro">Start with <kbd>F</kbd>: type the keys shown beside a control to use it.</p>
+        </div>
+        <button class="keyboard-close" type="button" aria-label="Close keyboard shortcuts"
+          title="Close keyboard shortcuts (Esc)">×</button>
+      </header>
+      <div class="keyboard-groups"></div>
+      <footer class="keyboard-foot">
+        <p>Letters stay yours while typing. Go-to shortcuts use <kbd>G</kbd>, then the next key.
+          <kbd>Esc</kbd> cancels. Close a dialog before navigating elsewhere.</p>
+        <button id="keyboardHintsFromHelp" type="button">Show keys on this screen</button>
+      </footer>
+    </section>
+  </div>
+  <span id="keyboardStatus" class="keyboard-status" role="status" aria-live="polite"></span>
   <script src="/ufuzzy.iife.min.js"></script>
   <script type="module" src="/app.js"></script>
 </body>

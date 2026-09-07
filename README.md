@@ -207,6 +207,33 @@ inventory of every agent or subagent. A connection with no task report is unknow
 activity, not proof of inactivity. `register` updates its displayed project and
 branch immediately; child-agent descriptions still come from the manager.
 
+## Keyboard controls
+
+Press **F** (or choose **Show keys**) to place short letter codes on the visible
+controls. Type a code to click a button, open a link or disclosure, or focus an
+editor or native selector. Hints stay inside the active dialog; press **Esc** to
+cancel. A changed action loses its old code instead of silently reusing it.
+
+Common actions also have permanent key tiles. Press **?** for the full guide.
+Letters do not run shortcuts while you are typing or using a select.
+
+| Keys | Action |
+|---|---|
+| `G D` / `G I` / `G P` / `G N` / `G H` | Dashboard / Inbox / Plans / Notes / History |
+| `G S` / `G O` / `G A` / `G L` | Settings / project picker / agent filter / Live |
+| `Cmd/Ctrl K` or `/` | Focus search |
+| `J` / `K`, then `Enter` | Move through the queue and expand an item |
+| `R` / `1`-`4` | Focus the current reply / choose an answer |
+| `Cmd/Ctrl Enter` | Send a multiline response; plain Enter adds a line |
+| `E` / `X` | Resolve / dismiss the current item, with an undo window for dismiss |
+| `T` | Open the review queue |
+| `Tab` / `Shift Tab` | Move between native controls |
+
+`G` starts a sequence: release it, then press the destination letter. `Esc`
+cancels a sequence without closing the item underneath. Expanded cards scroll
+with the page at intermediate widths; the desktop inspector and full-screen
+phone card retain their own scrolling.
+
 ## MCP tools
 
 | Tool | Purpose |

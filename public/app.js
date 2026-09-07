@@ -22,6 +22,7 @@ import {
 } from '/rowview.js'
 import { cardSections, optionOrder, actionPresentation } from '/card.js'
 import { keyAction, rovingIndex, ariaAnswerLabel, livenessGlyph, deckEntryAt } from '/keys.js'
+import { createKeyboardUI } from '/keyboard-ui.js'
 import { partitionNotes, unreadNoteCount, ambientChips, seenWatermark, markSeenIds } from '/notes.js'
 import { liveSummary, lastActivityAt, isDormant, activitySynopsis } from '/livebar.js'
 import { esc } from '/esc.js'
@@ -60,6 +61,7 @@ let searchResultCache = []
 let searchResultSignature = ''
 let searchUpdating = false
 let searchJumpSource = null
+let keyboardUI = null
 
 function nativeKeyOwner(event) {
   if (!(event.target instanceof Element)) return false
@@ -1572,6 +1574,7 @@ function render() {
     restorePagedCardFocus(pagedFocus)
   }
   applySearchJumpHighlight()
+  keyboardUI?.refresh()
 }
 
 // one age vocabulary for every surface (§6): rows, chips, Live and tooltips all
@@ -1945,6 +1948,7 @@ function resizeReplyEditor(editor) {
 
 function bindReplyEditor(editor, submit) {
   editor.addEventListener('keydown', (event) => {
+    if (event.isComposing || event.keyCode === 229 || event.repeat || event.altKey) return
     if (event.key !== 'Enter' || (!event.ctrlKey && !event.metaKey)) return
     event.preventDefault()
     submit()
@@ -1968,6 +1972,7 @@ function rowAnswerEl(b, r, onSaved) {
   recoverMismatchedRenderedRowDraft(b, r)
   const wrap = document.createElement('div')
   wrap.className = 'row-answer'
+  setHintOwner(wrap, r, b)
   const row = document.createElement('div')
   row.className = 'reply-row'
   const input = document.createElement('textarea')
@@ -2154,7 +2159,7 @@ function rowAnswerEl(b, r, onSaved) {
   }
   bindReplyEditor(input, save)
   row.appendChild(input)
-  row.appendChild(btn('Send', save))
+  row.appendChild(btn('Send', save, 'submit'))
   const handled = rowHandledEl(b, r)
   if (handled) row.appendChild(handled)
   row.appendChild(writeErrorEl(r.id))
@@ -2288,6 +2293,7 @@ function historyHtml(r) {
 function rowPanelEl(b, r, readOnly = false) {
   const wrap = document.createElement('div')
   wrap.className = 'row-panel'
+  setHintOwner(wrap, r, b)
   const presentation = actionPresentation(r, { done: readOnly })
   wrap.innerHTML = `
     ${cardHeadingHtml(presentation)}
@@ -2309,6 +2315,7 @@ function rowPanelEl(b, r, readOnly = false) {
 function rowCardEl(b, r, onSaved, { includeAsked = true, header = true } = {}) {
   const wrap = document.createElement('div')
   wrap.className = 'lb-row-card'
+  setHintOwner(wrap, r, b)
   const presentation = actionPresentation(r, { done: b.status === 'archived' })
   wrap.innerHTML = `
     ${header ? cardHeadingHtml(presentation) : ''}
@@ -3004,8 +3011,7 @@ function projectNavigationMode() {
 
 function higherPriorityEscapeSurfaceOpen() {
   const liveDrawer = document.getElementById('liveDrawer')
-  const visibleModal = [...document.querySelectorAll('[aria-modal="true"]')]
-    .some((dialog) => !dialog.closest('[hidden]'))
+  const visibleModal = keyboardScope() !== document
   return !!(
     triageDeck
     || missionDetailRowId
@@ -4071,7 +4077,7 @@ function needsYouHeader() {
   const relay = btn('Handoffs', openRelay)
   relay.className = 'relay-btn'
   tools.appendChild(relay)
-  const tri = btn('Review queue', openTriage)
+  const tri = btn('Review queue', openTriage, 'review')
   tri.className = 'triage-btn'
   tools.appendChild(tri)
   bar.append(filters, tools)
@@ -4387,6 +4393,7 @@ function needsRowEl(m, entry, nowMs) {
   const el = document.createElement('div')
   el.className = `nrow nrow-${m.kind}${m.answered ? ' answered' : ''}${stagedDismiss.has(m.id) ? ' staged' : ''}`
   el.dataset.cardId = m.id
+  setHintOwner(el, entry.kind === 'row' ? entry.row : entry.item, entry.kind === 'row' ? entry.board : null)
   el.setAttribute('role', 'listitem')
   el.setAttribute('aria-current', 'false')
   el.setAttribute('aria-expanded', String(openRowId === m.id))
@@ -4458,6 +4465,7 @@ function needsRowEl(m, entry, nowMs) {
     })
   }
   const dismissBtn = el.querySelector('.nrow-dismiss')
+  if (dismissBtn) dismissBtn.dataset.shortcutId = 'dismiss'
   if (dismissBtn) dismissBtn.addEventListener('click', (ev) => {
     ev.stopPropagation()
     stageDismiss(m.id)
@@ -5542,6 +5550,7 @@ async function sendReply(
 function answerEl(it) {
   const wrap = document.createElement('div')
   wrap.className = `options${closedCompares.has(it.id) ? '' : ' comparing'}`
+  setHintOwner(wrap, it)
   let editorGeneration = itemDraftGenerations[it.id] ?? 0
   const opts = optionOrder(it.options)
   for (const o of opts) {
@@ -5596,7 +5605,7 @@ function answerEl(it) {
   )
   bindReplyEditor(input, submit)
   row.appendChild(input)
-  row.appendChild(btn('Send', submit))
+  row.appendChild(btn('Send', submit, 'submit'))
   row.appendChild(writeErrorEl(it.id)) // persists a failed write's reason across the poll rebuild (C3)
   wrap.appendChild(row)
   const ctxRow = document.createElement('div')
@@ -5644,6 +5653,7 @@ function itemCardEl(it, {
 } = {}) {
   const el = document.createElement('div')
   el.className = `card card-${it.kind}`
+  setHintOwner(el, it)
   const s = cardSections(it, { done })
   const presentation = actionPresentation(it, { done })
   el.innerHTML = `
@@ -5660,7 +5670,7 @@ function itemCardEl(it, {
   if (s.showActions) {
     const actions = document.createElement('div')
     actions.className = 'actions'
-    actions.appendChild(btn('Resolve', () => act(it.id, 'resolve')))
+    actions.appendChild(btn('Resolve', () => act(it.id, 'resolve'), 'resolve'))
     actions.appendChild(btn('Dismiss', () => act(it.id, 'dismiss')))
     if (s.answered && !s.showAnswer) {
       // fix round 1 (hardening): a small inline slot beside the button for the
@@ -5922,8 +5932,66 @@ function focusSearch(selectText = false) {
   if (selectText) search.select()
 }
 
+function keyboardScope() {
+  const dialogs = [...document.querySelectorAll('[aria-modal="true"]')]
+    .filter((dialog) => !dialog.closest('[hidden], [inert]'))
+  const dialog = dialogs.at(-1)
+  if (dialog) return dialog
+  if (layout === 'narrow' && openRowId) {
+    const card = needsYouRowEl(openRowId)?.querySelector('.nrow-card')
+    if (card && !card.closest('[hidden]') && getComputedStyle(card).position === 'fixed') return card
+  }
+  return document
+}
+
+function keyboardActionScope() {
+  const scope = keyboardScope()
+  if (scope !== document) return scope
+  const focused = document.activeElement?.closest?.(
+    '#needsYouList .nrow[data-card-id], .row-panel-row, .board-row, details.item',
+  )
+  if (focused && !focused.closest('[hidden]')) return focused
+  const rows = rowEls()
+  return rows.find((element) => element.dataset.cardId === selectedId)
+    ?? rows.find((element) => element.dataset.cardId === openRowId)
+    ?? null
+}
+
+function focusKeyboardPanel(id) {
+  if (window.scrollY !== 0) window.scrollTo(0, 0)
+  const firstRow = id === 'needsYou' ? rowEls()[0] : null
+  if (firstRow) { firstRow.focus(); return }
+  const panel = document.getElementById(id)
+  panel.tabIndex = -1
+  panel.focus({ preventScroll: true })
+}
+
+function navigateKeyboard(destination) {
+  if (destination === 'setup') {
+    showPanel('setup')
+    focusKeyboardPanel('setup')
+  } else if (destination === 'agents') {
+    document.getElementById('agentSelect').focus()
+  } else if (destination === 'projects') {
+    if (layout === 'narrow') setProjectDisclosure(true)
+    focusProjectFallback(projectFilter)
+  } else if (destination === 'live') {
+    document.getElementById('liveStrip').click()
+  } else if (TAB_IDS.includes(destination)) {
+    selectTab(destination)
+    focusKeyboardPanel(destination)
+  }
+}
+
 function initKeys() {
+  keyboardUI = createKeyboardUI({
+    getScope: keyboardScope,
+    getActionScope: keyboardActionScope,
+    navigate: navigateKeyboard,
+  })
   document.addEventListener('keydown', (e) => {
+    if (e.isComposing || e.keyCode === 229) return
+    if (e.repeat && !['j', 'k', 'ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight'].includes(e.key)) return
     const t = e.target
     const typing = !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)
     const triageOwnsKey = !!triageDeck
@@ -5940,6 +6008,7 @@ function initKeys() {
     if (!triageOwnsKey && nativeKeyOwner(e)) return
     if (e.key === ',' && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
       e.preventDefault()
+      if (keyboardScope() !== document) return
       toggleSettings()
       return
     }
@@ -5958,6 +6027,12 @@ function initKeys() {
       e.preventDefault()
       closeRelay()
       return
+    }
+    const activeScope = keyboardScope()
+    if (!triageDeck && activeScope !== document && e.key !== 'Escape') {
+      const currentCardAction = activeScope.matches('.nrow-card')
+        && activeScope.contains(e.target) && ['e', 'x'].includes(e.key)
+      if (!currentCardAction) return
     }
     // The row's own keydown listener (needsRowEl) already handles Enter/Escape
     // when the row itself has focus and calls preventDefault() — don't run the
@@ -6019,9 +6094,15 @@ function wireTablist(host, orientation) {
   })
 }
 
-function btn(label, onClick) {
+function setHintOwner(element, entity, board = null) {
+  element.dataset.keyHintOwner = `${board ? 'row' : 'item'}:${entity.id}`
+  element.dataset.keyHintVersion = board ? `${board.revision}:${entity.revision}` : entity.updated_at
+}
+
+function btn(label, onClick, shortcut = null) {
   const b = document.createElement('button')
   b.textContent = label
+  if (shortcut) b.dataset.shortcutId = shortcut
   b.addEventListener('click', onClick)
   return b
 }

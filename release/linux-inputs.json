@@ -18,24 +18,24 @@
     "cxx": "clang++-15"
   },
   "node": {
-    "version": "v24.19.0",
+    "version": "v24.18.1",
     "modulesAbi": "137",
     "distributions": {
       "linux-arm64": {
         "platform": "linux",
         "arch": "arm64",
-        "archive": "node-v24.19.0-linux-arm64.tar.xz",
-        "root": "node-v24.19.0-linux-arm64",
-        "url": "https://nodejs.org/dist/v24.19.0/node-v24.19.0-linux-arm64.tar.xz",
-        "sha256": "01443c1e1a29e531ccad5a46fefa6df490d2189c49f7955904aecdbb0fe86fdc"
+        "archive": "node-v24.18.1-linux-arm64.tar.xz",
+        "root": "node-v24.18.1-linux-arm64",
+        "url": "https://nodejs.org/dist/v24.18.1/node-v24.18.1-linux-arm64.tar.xz",
+        "sha256": "7201e3a09dc825bac57867c81913e2b8f0ef87d04cb9082af4cda82f6ff3d88c"
       },
       "linux-x64": {
         "platform": "linux",
         "arch": "x64",
-        "archive": "node-v24.19.0-linux-x64.tar.xz",
-        "root": "node-v24.19.0-linux-x64",
-        "url": "https://nodejs.org/dist/v24.19.0/node-v24.19.0-linux-x64.tar.xz",
-        "sha256": "14b342e71204f811bde6153be8e04b62aef63c236fef92b55f9c83154b409647"
+        "archive": "node-v24.18.1-linux-x64.tar.xz",
+        "root": "node-v24.18.1-linux-x64",
+        "url": "https://nodejs.org/dist/v24.18.1/node-v24.18.1-linux-x64.tar.xz",
+        "sha256": "d6c664df3f3f61458e8c277585571328522d705166723a7c7823a9253a4d15a0"
       }
     }
   },

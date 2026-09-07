@@ -27,11 +27,13 @@ import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { execFileSync, spawnSync } from 'node:child_process'
+import { pathToFileURL } from 'node:url'
 
 const REPO = resolve(import.meta.dirname, '..')
 const PAYLOAD_CLI = join(REPO, 'scripts', 'runtime-payload.mjs')
 const CONFIG_CLI = join(REPO, 'scripts', 'runtime-config.mjs')
 const STAGE_CLI = join(REPO, 'scripts', 'stage-runtime.mjs')
+const SQLITE_CHECK_CLI = join(REPO, 'scripts', 'runtime-sqlite-check.mjs')
 const SETUP_FILESYSTEM = join(REPO, 'scripts', 'setup-filesystem.cjs')
 const FAKE_NODE_FIXTURE = join(REPO, 'test', 'fixtures', 'runtime', 'fake-node.sh')
 const FAKE_XATTR_FAIL_FIXTURE = join(REPO, 'test', 'fixtures', 'runtime', 'fake-xattr-fail.sh')
@@ -1750,6 +1752,24 @@ function buildFixtureRepoRoot(): string {
     + "}\n"
     + "console.error('unknown subcommand'); process.exit(1)\n",
   )
+  writeFileSync(join(repoRoot, 'dist', 'store.js'), `
+import { writeFileSync } from 'node:fs'
+import { openDb as realOpenDb, getItem as realGetItem } from ${JSON.stringify(pathToFileURL(join(REPO, 'src', 'store.ts')).href)}
+let reads = 0
+process.once('exit', (code) => {
+  if (code === 0) writeFileSync(new URL('../gc-check.marker', import.meta.url), String(reads))
+})
+export function openDb(path) {
+  if (path !== ':memory:') throw new Error('GC check must use a private in-memory store')
+  return realOpenDb(path)
+}
+export function getItem(db, id) {
+  reads++
+  if (process.env.FAKE_GC_FAIL === '1') throw new Error('fake allocation-driven GC failure')
+  if (process.env.FAKE_GC_SIGNAL === '1') process.kill(process.pid, 'SIGTERM')
+  return realGetItem(db, id)
+}
+`)
 
   for (const name of [
     'install-agents.sh',
@@ -1804,6 +1824,7 @@ describe.skipIf(!REAL_NODE_ROOT || !['darwin', 'linux'].includes(process.platfor
         // Lifecycle scripts actually ran — proves --ignore-scripts was
         // dropped: marker-pkg's own postinstall wrote this file.
         expect(existsSync(join(output, 'node_modules', 'marker-pkg', 'postinstall-ran.marker'))).toBe(true)
+        expect(readFileSync(join(output, 'gc-check.marker'), 'utf8')).toBe('300000')
 
         // @electron/packager always strips these names. They must be removed
         // before manifesting or every copied app payload fails verification.
@@ -1844,8 +1865,43 @@ describe.skipIf(!REAL_NODE_ROOT || !['darwin', 'linux'].includes(process.platfor
       },
       30_000,
     )
+
+    it.each(['FAKE_GC_FAIL', 'FAKE_GC_SIGNAL'])(
+      'refuses publication when SQLite cleanup fails after hook selftest passes (%s)',
+      (failure) => {
+        const repoRoot = buildFixtureRepoRoot()
+        const outputParent = tmp('stage-gc-fail-')
+        const output = join(outputParent, 'runtime')
+        const result = runFail(STAGE_CLI, [
+          '--node-root', REAL_NODE_ROOT as string, '--platform', process.platform, '--arch', process.arch,
+          '--output', output, '--repo-root', repoRoot,
+        ], { ...process.env, [failure]: '1' })
+
+        expect(result.stderr).toMatch(/failed its allocation-driven SQLite check/)
+        expect(existsSync(output)).toBe(false)
+        expect(readdirSync(outputParent).some((entry) => entry.startsWith('.agent-inbox-stage-'))).toBe(false)
+      },
+      30_000,
+    )
   },
 )
+
+describe('runtime SQLite cleanup gate', () => {
+  it('exercises the real store in a separate ESM process without an explicit GC or user database', () => {
+    const unusedDb = join(tmp('gc-unused-db-'), 'must-not-exist.db')
+    const result = spawnSync(process.execPath, [
+      '--import', 'tsx', SQLITE_CHECK_CLI, join(REPO, 'src', 'store.ts'),
+    ], {
+      cwd: REPO, encoding: 'utf8', timeout: 30_000,
+      env: { ...process.env, AGENT_INBOX_DB: unusedDb },
+    })
+    expect(result.status, result.stderr).toBe(0)
+    expect(result.signal).toBeNull()
+    expect(result.stdout).toBe('')
+    expect(result.stderr).toBe('')
+    expect(existsSync(unusedDb)).toBe(false)
+  }, 35_000)
+})
 
 
 // ═══════════════════════════════════════════════════════════════════════

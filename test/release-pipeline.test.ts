@@ -115,6 +115,7 @@ describe('native architecture release stages', () => {
     expect(source).toContain('npm_config_platform: platform')
     expect(source).toContain('npm_config_arch: arch')
     expect(source).toContain("npm_config_build_from_source: 'true'")
+    expect(source).toContain('npm_config_nodedir: nodeRoot')
   })
 
   it('binds CI provenance to checkout HEAD and records local dirty state', () => {
@@ -407,7 +408,7 @@ describe('universal finalization contract', () => {
   it('keeps the MCP handshake version aligned with the package release version', () => {
     const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
     const mcp = readFileSync(join(root, 'src', 'mcp.ts'), 'utf8')
-    expect(pkg.version).toBe('1.2.3')
+    expect(pkg.version).toBe('1.2.4')
     expect(mcp).toContain(`new McpServer({ name: 'agent-inbox', version: '${pkg.version}' })`)
   })
 

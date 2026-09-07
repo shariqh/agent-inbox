@@ -17,12 +17,16 @@ import {
 describe('macOS release inputs', () => {
   it('pins the exact Node and Electron release contract in one validated manifest', () => {
     const inputs = loadReleaseInputs()
-    expect(inputs.node.version).toBe('v24.19.0')
+    expect(inputs.node.version).toBe('v24.18.1')
     expect(inputs.node.modulesAbi).toBe('137')
     expect(inputs.minimumMacosVersion).toBe('13.5')
     expect(RUNTIME_KEYS).toBe(MACOS_RUNTIME_KEYS)
     expect(RUNTIME_KEYS).toEqual(['darwin-arm64', 'darwin-x64'])
     expect(Object.keys(inputs.node.distributions)).toEqual(RUNTIME_KEYS)
+    expect(inputs.node.distributions['darwin-arm64'].sha256)
+      .toBe('1d60b703fe5d7e7072489be8187f430f1a095a658c31e5e1e281331a5873fac3')
+    expect(inputs.node.distributions['darwin-x64'].sha256)
+      .toBe('f892c7895720f40d3750bde24f3554242d36f23602b5167b5b73ec4d13938aef')
     expect(inputs.electron).toEqual({
       version: '43.1.1',
       packagerVersion: '20.3.0',

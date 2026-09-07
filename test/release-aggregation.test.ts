@@ -14,6 +14,7 @@ import {
   validateDryRunReleaseArtifacts,
   validateLinuxReleaseArtifacts,
 } from '../scripts/release-aggregation.mjs'
+import { loadLinuxReleaseInputs } from '../scripts/linux-release-inputs.mjs'
 
 const root = resolve(process.cwd())
 const sourceCommit = 'a'.repeat(40)
@@ -91,7 +92,9 @@ function writePackageArtifact(
   const digest = sha256Bytes(bytes)
   writeFileSync(`${artifact}.sha256`, `${digest}  ${artifactName}\n`)
 
-  const linuxInputsSha256 = sha256File(join(root, 'release/linux-inputs.json'))
+  const linuxInputsPath = join(root, 'release/linux-inputs.json')
+  const linuxInputs = loadLinuxReleaseInputs(linuxInputsPath)
+  const linuxInputsSha256 = sha256File(linuxInputsPath)
   const common = {
     schema: 1,
     product: 'Agent Inbox',
@@ -102,7 +105,7 @@ function writePackageArtifact(
     linuxInputsSha256,
     setupRuntimeKeys: [target],
     electronVersion: '43.1.1',
-    nodeVersion: 'v24.19.0',
+    nodeVersion: linuxInputs.node.version,
     exactHostSetupSelection: 'passed',
     chromeSandboxMode: 0o4755,
   }
@@ -140,7 +143,7 @@ function writePackageArtifact(
         chromeSandboxMode: 0o4755,
         setupRuntimeKeys: [target],
         electronVersion: '43.1.1',
-        nodeVersion: 'v24.19.0',
+        nodeVersion: linuxInputs.node.version,
         exactHostSetupSelection: 'passed',
       }
     : {
@@ -155,15 +158,13 @@ function writePackageArtifact(
         chromeSandboxMode: 0o4755,
         setupRuntimeKeys: [target],
         electronVersion: '43.1.1',
-        nodeVersion: 'v24.19.0',
+        nodeVersion: linuxInputs.node.version,
         exactHostSetupSelection: 'passed',
       }
   writeJson(join(reportsDir, verifyName), verification)
   writeJson(join(reportsDir, `${target}-runtime.json`), {
     key: target,
-    archiveSha256: target === 'linux-x64'
-      ? '14b342e71204f811bde6153be8e04b62aef63c236fef92b55f9c83154b409647'
-      : '01443c1e1a29e531ccad5a46fefa6df490d2189c49f7955904aecdbb0fe86fdc',
+    archiveSha256: linuxInputs.node.distributions[target].sha256,
   })
   writeJson(join(reportsDir, `${target}-runtime-verify.json`), {
     schema: 1,

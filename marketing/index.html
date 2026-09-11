@@ -1,0 +1,1075 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Inbox — An inbox for your coding agents</title>
+  <meta name="description" content="Collect questions, approvals, and status updates from Copilot CLI and Claude Code in one local app. Free and open source, with no account to create.">
+  <script>
+    (() => {
+      const param = new URLSearchParams(window.location.search).get("scoutTheme");
+      const theme =
+        param || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+      document.documentElement.setAttribute("data-theme", theme);
+    })();
+    if (new URLSearchParams(window.location.search).get("scoutTheme") !== "dark") {
+      document.documentElement.setAttribute("data-theme", "light");
+    }
+  </script>
+  <style>
+    :root {
+      color-scheme: light;
+      --cp-bg: #f7f4ef;
+      --cp-bg-elevated: #fcfbf8;
+      --cp-surface: #ffffff;
+      --cp-surface-soft: #f5f5f5;
+      --cp-border: #dedede;
+      --cp-border-strong: #919191;
+      --cp-text: #242424;
+      --cp-text-muted: #5c5c5c;
+      --cp-text-soft: #6f6f6f;
+      --cp-accent: #b11f4b;
+      --cp-accent-hover: #9a1a41;
+      --cp-accent-soft: rgba(177, 31, 75, 0.08);
+      --cp-accent-fg: #ffffff;
+      --cp-success: #16a34a;
+      --cp-danger: #dc2626;
+      --cp-warning: #f59e0b;
+      --cp-link: #0078d4;
+      --cp-shadow: 0 18px 48px rgba(0, 0, 0, 0.12);
+      --cp-overlay: rgba(255, 255, 255, 0.8);
+      --cp-panel: rgba(255, 255, 255, 0.86);
+      --cp-panel-strong: rgba(255, 255, 255, 0.96);
+      --cp-sheen: rgba(255, 255, 255, 0.55);
+      --cp-highlight: rgba(177, 31, 75, 0.12);
+    }
+    html[data-theme="dark"] {
+      color-scheme: dark;
+      --cp-bg: #3d3b3a;
+      --cp-bg-elevated: #343231;
+      --cp-surface: #292929;
+      --cp-surface-soft: #2e2e2e;
+      --cp-border: #474747;
+      --cp-border-strong: #5f5f5f;
+      --cp-text: #dedede;
+      --cp-text-muted: #919191;
+      --cp-text-soft: #b0b0b0;
+      --cp-accent: #fd8ea1;
+      --cp-accent-hover: #fb7b91;
+      --cp-accent-soft: rgba(253, 142, 161, 0.14);
+      --cp-accent-fg: #1a1a1a;
+      --cp-success: #4ade80;
+      --cp-danger: #f87171;
+      --cp-warning: #fbbf24;
+      --cp-link: #4da6ff;
+      --cp-shadow: 0 18px 48px rgba(0, 0, 0, 0.32);
+      --cp-overlay: rgba(41, 41, 41, 0.88);
+      --cp-panel: rgba(41, 41, 41, 0.72);
+      --cp-panel-strong: rgba(41, 41, 41, 0.96);
+      --cp-sheen: rgba(255, 255, 255, 0.04);
+      --cp-highlight: rgba(253, 142, 161, 0.12);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; scroll-padding-top: 100px; }
+    body { margin: 0; background: var(--cp-surface); color: var(--cp-text); font-family: "Segoe UI", Aptos, Calibri, -apple-system, BlinkMacSystemFont, sans-serif; font-size: 1rem; line-height: 1.6; -webkit-font-smoothing: antialiased; }
+    button, input { font: inherit; }
+    button, a { -webkit-tap-highlight-color: var(--cp-highlight); }
+    button { cursor: pointer; }
+    button:disabled { cursor: default; }
+    a { color: inherit; text-decoration: none; }
+    p, h1, h2, h3, h4 { margin: 0; }
+    h1, h2, h3 { text-wrap: balance; }
+    p { text-wrap: pretty; }
+    svg { display: inline-block; width: 20px; height: 20px; flex: none; vertical-align: middle; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+    [hidden] { display: none !important; }
+    :focus-visible { outline: 3px solid var(--cp-accent); outline-offset: 5px; }
+    ::selection { color: var(--cp-text); background: var(--cp-highlight); }
+    .svg-defs { position: absolute; width: 0; height: 0; overflow: hidden; }
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+    .skip-link { position: fixed; top: 12px; left: 12px; z-index: 100; transform: translateY(-160%); padding: 12px 20px; color: var(--cp-accent-fg); background: var(--cp-accent); border-radius: 10px; }
+    .skip-link:focus { transform: translateY(0); }
+    .wrap { width: min(1280px, calc(100% - 96px)); margin-inline: auto; }
+    .site-header { position: sticky; top: 0; z-index: 20; background: var(--cp-surface); border-bottom: 1px solid var(--cp-border); }
+    .header-inner { min-height: 84px; display: flex; align-items: center; gap: 40px; }
+    .brand { display: inline-flex; align-items: center; gap: 10px; font-size: 1.3rem; font-weight: 700; letter-spacing: -.035em; white-space: nowrap; }
+    .brand-mark { width: 34px; height: 34px; stroke: none; }
+    .site-nav { display: flex; align-items: center; gap: 28px; margin-left: 20px; font-size: .875rem; font-weight: 500; }
+    .site-nav a { padding-block: 12px; }
+    .site-nav a:hover, .text-link:hover, .footer-links a:hover { color: var(--cp-accent); }
+    .header-actions { margin-left: auto; display: flex; align-items: center; gap: 20px; }
+    .icon-link { display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; }
+    .github-icon { fill: currentColor; stroke: none; width: 24px; height: 24px; }
+    .button { display: inline-flex; align-items: center; justify-content: center; gap: 16px; min-height: 50px; padding: 12px 22px; border: 1px solid var(--cp-text); border-radius: 10px; font-size: .9375rem; font-weight: 600; line-height: 1.4; }
+    .button-dark { background: var(--cp-text); color: var(--cp-surface); }
+    .button-dark:hover { background: var(--cp-accent); border-color: var(--cp-accent); color: var(--cp-accent-fg); }
+    .button-outline { background: var(--cp-surface); color: var(--cp-text); border-color: var(--cp-border-strong); }
+    .button-outline:hover { border-color: var(--cp-text); background: var(--cp-surface-soft); }
+    .button-small { min-height: 40px; padding: 9px 16px; font-size: .8125rem; gap: 12px; }
+    .button-small svg { width: 16px; height: 16px; }
+    .menu-toggle { display: none; width: 44px; height: 44px; align-items: center; justify-content: center; border: 1px solid var(--cp-border); border-radius: 10px; background: var(--cp-surface); color: var(--cp-text); }
+    .page-frame { border-inline: 1px solid var(--cp-border); }
+    .release-line { display: flex; align-items: center; justify-content: center; gap: 10px; min-height: 48px; border-bottom: 1px solid var(--cp-border); background: var(--cp-bg-elevated); font-size: .8125rem; color: var(--cp-text-muted); }
+    .release-line a { display: inline-flex; align-items: center; gap: 8px; }
+    .release-line a:hover { color: var(--cp-accent); }
+    .release-line svg { width: 14px; height: 14px; }
+    .version { color: var(--cp-accent); font-weight: 600; }
+    .hero { display: grid; grid-template-columns: 1.35fr 1fr; min-height: 366px; border-bottom: 1px solid var(--cp-border); }
+    .hero-heading { display: flex; align-items: center; padding: 64px 48px; }
+    h1 { font-size: clamp(3.25rem, 5.35vw, 4.75rem); font-weight: 600; line-height: 1.06; letter-spacing: -.04em; }
+    h1 span { color: var(--cp-accent); }
+    .hero-copy { display: flex; flex-direction: column; justify-content: center; align-items: flex-start; padding: 52px 40px; border-left: 1px solid var(--cp-border); }
+    .hero-copy > p { max-width: 36ch; font-size: 1.125rem; line-height: 1.65; color: var(--cp-text-muted); }
+    .hero-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 20px; margin-top: 28px; }
+    .text-link { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; font-size: .875rem; font-weight: 600; }
+    .hero-fine { margin-top: 16px; color: var(--cp-text-soft); font-size: .75rem; }
+    .demo-stage { padding: 36px 40px 24px; background: var(--cp-bg); border-bottom: 1px solid var(--cp-border); }
+    .demo-topline { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 20px; }
+    .demo-topline h2 { font-size: 1rem; font-weight: 600; letter-spacing: -.02em; }
+    .demo-tabs { display: flex; gap: 4px; padding: 4px; border: 1px solid var(--cp-border); border-radius: 10px; background: var(--cp-surface); }
+    .demo-tabs button { display: inline-flex; justify-content: center; align-items: center; gap: 8px; padding: 8px 16px; min-height: 36px; color: var(--cp-text-muted); background: var(--cp-surface); border: 0; border-radius: 6px; font-size: .8125rem; font-weight: 600; }
+    .demo-tabs button svg { width: 16px; height: 16px; }
+    .demo-tabs button[aria-selected="true"] { color: var(--cp-accent); background: var(--cp-accent-soft); }
+    .demo-tabs button:hover { color: var(--cp-accent); }
+    .app-window { background: var(--cp-surface); border: 1px solid var(--cp-border-strong); border-radius: 12px; overflow: clip; box-shadow: 0 2px 3px var(--cp-border); }
+    .window-bar { display: flex; align-items: center; justify-content: space-between; height: 40px; padding-inline: 16px; background: var(--cp-bg-elevated); border-bottom: 1px solid var(--cp-border); font-size: .625rem; color: var(--cp-text-soft); }
+    .window-dots { display: flex; gap: 6px; }
+    .window-dots i { width: 8px; height: 8px; border: 1px solid var(--cp-border-strong); border-radius: 50%; }
+    .window-title { display: inline-flex; align-items: center; gap: 6px; }
+    .window-title svg { width: 12px; height: 12px; }
+    .window-bar > span:last-child { font-size: .625rem; }
+    .window-body { display: grid; grid-template-columns: 174px minmax(0, 1fr); }
+    .demo-sidebar { display: flex; flex-direction: column; padding: 22px 12px 16px; background: var(--cp-bg-elevated); border-right: 1px solid var(--cp-border); }
+    .mini-brand { display: flex; align-items: center; gap: 7px; padding: 0 8px 23px; font-size: .8125rem; font-weight: 700; }
+    .mini-brand .brand-mark { width: 23px; height: 23px; }
+    .app-nav { display: grid; gap: 5px; }
+    .app-nav button { display: flex; align-items: center; gap: 9px; min-height: 37px; padding: 8px 10px; border: 0; border-radius: 6px; color: var(--cp-text-muted); background: var(--cp-bg-elevated); text-align: left; font-size: .75rem; }
+    .app-nav button svg { width: 16px; height: 16px; }
+    .app-nav button.is-active { color: var(--cp-accent); background: var(--cp-accent-soft); font-weight: 600; }
+    .app-nav button:hover { background: var(--cp-surface-soft); }
+    .nav-count { margin-left: auto; font-size: .625rem; }
+    .project-caption { color: var(--cp-text-soft); font-size: .625rem; padding: 26px 10px 10px; }
+    .project-name { display: flex; align-items: center; gap: 8px; padding: 8px 10px; font-size: .625rem; color: var(--cp-text-muted); }
+    .project-dot { width: 6px; height: 6px; border-radius: 2px; background: var(--cp-accent); flex: none; }
+    .project-dot.neutral { background: var(--cp-border-strong); }
+    .project-dot.outline { background: var(--cp-bg-elevated); border: 1px solid var(--cp-text-soft); }
+    .sidebar-bottom { display: flex; gap: 6px; align-items: center; padding: 32px 8px 0; margin-top: auto; color: var(--cp-text-soft); font-size: .5625rem; }
+    .sidebar-bottom svg { width: 12px; height: 12px; }
+    .demo-panel { min-height: 390px; }
+    .inbox-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 20px 24px 17px; border-bottom: 1px solid var(--cp-border); }
+    .inbox-heading h3 { font-size: 1.0625rem; letter-spacing: -.02em; font-weight: 650; }
+    .inbox-heading p { margin-top: 2px; font-size: .625rem; color: var(--cp-text-soft); }
+    .small-label { display: inline-flex; align-items: center; gap: 6px; font-size: .625rem; color: var(--cp-text-muted); }
+    .small-label svg { width: 13px; height: 13px; }
+    .inbox-layout { display: grid; grid-template-columns: minmax(0, .85fr) minmax(0, 1.2fr); }
+    .request-list { padding: 12px; border-right: 1px solid var(--cp-border); }
+    .sample-request { display: block; width: 100%; padding: 14px 12px; margin-bottom: 6px; border: 1px solid var(--cp-surface); border-radius: 8px; background: var(--cp-surface); color: var(--cp-text); text-align: left; }
+    .sample-request:hover { background: var(--cp-bg-elevated); }
+    .sample-request[aria-pressed="true"] { background: var(--cp-accent-soft); border-color: var(--cp-highlight); }
+    .request-meta { display: flex; justify-content: space-between; gap: 8px; font-size: .5625rem; color: var(--cp-text-soft); }
+    .sample-request strong { display: block; margin: 6px 0 7px; font-size: .75rem; line-height: 1.45; font-weight: 600; }
+    .request-bottom { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: .5625rem; color: var(--cp-text-soft); }
+    .request-state { color: var(--cp-accent); font-size: .5625rem; font-weight: 500; white-space: nowrap; }
+    .sample-request.answered .request-state { color: var(--cp-text-muted); }
+    .request-footer { display: flex; align-items: center; gap: 6px; padding: 12px; font-size: .5625rem; color: var(--cp-text-soft); }
+    .request-footer svg { width: 12px; height: 12px; }
+    .decision-detail { padding: 22px 24px; min-width: 0; }
+    .decision-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: .625rem; color: var(--cp-text-muted); }
+    .request-kind { display: inline-block; padding: 2px 7px; border: 1px solid var(--cp-border); border-radius: 5px; font-size: .5625rem; }
+    .decision-detail h4 { margin-top: 14px; font-size: 1.0625rem; line-height: 1.35; font-weight: 650; letter-spacing: -.025em; }
+    .decision-body { margin-top: 9px; color: var(--cp-text-muted); font-size: .6875rem; line-height: 1.6; }
+    .decision-options { display: grid; gap: 8px; margin-top: 18px; }
+    .decision-option { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 42px; padding: 10px 12px; border: 1px solid var(--cp-border-strong); border-radius: 6px; color: var(--cp-text); background: var(--cp-surface); text-align: left; font-size: .6875rem; font-weight: 500; }
+    .decision-option:first-child { border-color: var(--cp-accent); color: var(--cp-accent); background: var(--cp-accent-soft); }
+    .decision-option:hover:not(:disabled) { border-color: var(--cp-accent); background: var(--cp-highlight); }
+    .recommendation { padding: 2px 5px; font-size: .5rem; font-weight: 500; border: 1px solid var(--cp-highlight); border-radius: 4px; white-space: nowrap; }
+    .decision-option:disabled { color: var(--cp-text-soft); border-color: var(--cp-border); background: var(--cp-surface-soft); }
+    .sample-background { margin-top: 14px; font-size: .625rem; color: var(--cp-text-muted); }
+    .sample-background summary { cursor: pointer; padding-block: 5px; }
+    .sample-background p { padding-top: 7px; }
+    .receipt { margin-top: 14px; padding: 12px; border: 1px solid var(--cp-border); border-radius: 6px; color: var(--cp-text); font-size: .625rem; background: var(--cp-bg-elevated); }
+    .receipt strong { display: flex; align-items: center; gap: 6px; font-weight: 600; }
+    .receipt svg { width: 14px; height: 14px; }
+    .receipt p { margin-top: 4px; color: var(--cp-text-muted); }
+    .demo-caption { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 16px; color: var(--cp-text-muted); font-size: .6875rem; }
+    .demo-caption > span { display: inline-flex; align-items: center; gap: 7px; }
+    .demo-caption svg { width: 14px; height: 14px; }
+    .reset-button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 36px; padding: 6px 0 6px 12px; background: var(--cp-bg); color: var(--cp-text-muted); border: 0; font-size: .6875rem; white-space: nowrap; }
+    .reset-button:hover { color: var(--cp-accent); }
+    .plan-content, .live-content { padding: 26px 28px; }
+    .plan-title, .live-title { font-size: 1.125rem; line-height: 1.4; letter-spacing: -.02em; }
+    .panel-description { margin-top: 6px; font-size: .75rem; color: var(--cp-text-muted); }
+    .plan-progress { display: flex; align-items: center; gap: 12px; margin-top: 20px; font-size: .625rem; color: var(--cp-text-muted); }
+    progress { display: block; width: 160px; height: 5px; border: 0; border-radius: 4px; overflow: hidden; accent-color: var(--cp-accent); background: var(--cp-border); }
+    progress::-webkit-progress-bar { background: var(--cp-border); }
+    progress::-webkit-progress-value { background: var(--cp-accent); }
+    progress::-moz-progress-bar { background: var(--cp-accent); }
+    .plan-rows { margin-top: 18px; }
+    .plan-row { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 13px 0; border-bottom: 1px solid var(--cp-border); }
+    .plan-row > svg { width: 16px; height: 16px; color: var(--cp-text-muted); }
+    .plan-row strong { display: block; font-size: .75rem; font-weight: 600; }
+    .plan-row p { font-size: .625rem; color: var(--cp-text-soft); }
+    .state-pill { display: inline-flex; align-items: center; gap: 5px; padding: 3px 7px; border: 1px solid var(--cp-border); border-radius: 5px; font-size: .5625rem; line-height: 1.4; white-space: nowrap; color: var(--cp-text-muted); }
+    .state-pill.attention { border-color: var(--cp-highlight); background: var(--cp-accent-soft); color: var(--cp-accent); }
+    .state-pill.working::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--cp-success); }
+    .plan-action { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 16px; }
+    .plan-action p { font-size: .625rem; color: var(--cp-text-muted); }
+    .inline-button { display: inline-flex; align-items: center; gap: 6px; padding: 7px 0; min-height: 36px; border: 0; background: var(--cp-surface); color: var(--cp-accent); font-size: .6875rem; font-weight: 600; }
+    .inline-button svg { width: 14px; height: 14px; }
+    .live-table { width: 100%; border-collapse: collapse; text-align: left; margin-top: 22px; }
+    .live-table caption { text-align: left; font-size: .625rem; color: var(--cp-text-soft); margin-bottom: 10px; }
+    .live-table th { font-size: .5625rem; font-weight: 500; color: var(--cp-text-soft); padding: 8px 12px 8px 0; border-bottom: 1px solid var(--cp-border); }
+    .live-table td { font-size: .6875rem; padding: 15px 12px 15px 0; border-bottom: 1px solid var(--cp-border); vertical-align: middle; }
+    .live-table td:last-child, .live-table th:last-child { text-align: right; padding-right: 0; }
+    .live-table strong { display: block; font-size: .6875rem; font-weight: 600; }
+    .live-table small { display: block; color: var(--cp-text-soft); font-size: .5625rem; }
+    .live-footnote { margin-top: 18px; font-size: .625rem; color: var(--cp-text-muted); }
+    .integrations { padding: 42px 32px 46px; text-align: center; border-bottom: 1px solid var(--cp-border); }
+    .integrations p { font-size: .8125rem; color: var(--cp-text-muted); }
+    .integration-list { display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 56px; margin-top: 24px; }
+    .integration { display: flex; align-items: center; gap: 12px; font-size: 1.0625rem; font-weight: 600; letter-spacing: -.02em; }
+    .integration svg { width: 26px; height: 26px; }
+    .integration .protocol { font-weight: 400; }
+    .section { padding: 100px 48px; }
+    .section-heading { display: grid; grid-template-columns: 1.2fr 1fr; gap: 72px; align-items: end; margin-bottom: 52px; }
+    h2.display { font-size: clamp(2.25rem, 3.7vw, 3.25rem); font-weight: 600; line-height: 1.12; letter-spacing: -.04em; }
+    .section-heading > p { max-width: 41ch; font-size: 1rem; color: var(--cp-text-muted); }
+    .feature-layout { display: grid; grid-template-columns: 1.12fr 1fr; gap: 64px; }
+    .notification-scene { padding: 40px 28px; background: var(--cp-bg); border: 1px solid var(--cp-border); border-radius: 16px; }
+    .notification { background: var(--cp-surface); border: 1px solid var(--cp-border); border-radius: 12px; padding: 22px; box-shadow: 0 2px 3px var(--cp-border); }
+    .notification-app { display: flex; align-items: center; gap: 8px; font-size: .75rem; font-weight: 600; }
+    .notification-app .brand-mark { width: 23px; height: 23px; }
+    .notification-time { color: var(--cp-text-soft); margin-left: auto; font-size: .625rem; font-weight: 400; }
+    .notification h3 { font-size: 1.0625rem; letter-spacing: -.02em; line-height: 1.4; margin-top: 16px; }
+    .notification p { color: var(--cp-text-muted); margin-top: 6px; font-size: .75rem; }
+    .notification-options { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 20px; }
+    .notification-options span { text-align: center; padding: 8px 10px; border: 1px solid var(--cp-border); border-radius: 6px; font-size: .6875rem; }
+    .notification-options span:first-child { background: var(--cp-accent-soft); color: var(--cp-accent); border-color: var(--cp-highlight); }
+    .illustration-caption { display: flex; align-items: center; justify-content: center; gap: 6px; margin-top: 22px; font-size: .6875rem; color: var(--cp-text-muted); }
+    .illustration-caption svg { width: 14px; height: 14px; }
+    .feature-copy { padding-top: 28px; }
+    .feature-copy h3, .feature-aside h3 { font-size: 1.375rem; letter-spacing: -.03em; line-height: 1.35; font-weight: 600; }
+    .feature-copy p, .feature-aside p { margin-top: 12px; color: var(--cp-text-muted); font-size: .9375rem; line-height: 1.7; max-width: 48ch; }
+    .feature-copy .text-link { margin-top: 12px; color: var(--cp-accent); }
+    .feature-aside + .feature-aside { margin-top: 34px; border-top: 1px solid var(--cp-border); padding-top: 32px; }
+    .ownership { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 28px; padding: 18px 0; border-block: 1px solid var(--cp-border); }
+    .ownership span { font-size: .6875rem; font-weight: 600; }
+    .ownership span:first-child { color: var(--cp-accent); }
+    .ownership svg { width: 14px; height: 14px; color: var(--cp-text-soft); }
+    .dispatch-example { padding-top: 22px; }
+    .dispatch-line { display: flex; align-items: center; gap: 10px; padding: 8px 0; font-size: .6875rem; }
+    .dispatch-line > svg { width: 16px; height: 16px; }
+    .dispatch-line small { margin-left: auto; font-size: .625rem; color: var(--cp-text-soft); }
+    .dispatch-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--cp-success); }
+    .dispatch-dot.idle { background: var(--cp-border-strong); }
+    .how-section { background: var(--cp-bg-elevated); border-block: 1px solid var(--cp-border); display: grid; grid-template-columns: 1fr 1.15fr; gap: 80px; }
+    .how-intro > p { margin-top: 24px; color: var(--cp-text-muted); font-size: .9375rem; max-width: 35ch; }
+    .protocol-note { display: inline-flex; align-items: center; gap: 8px; margin-top: 30px; font-size: .75rem; color: var(--cp-accent); font-weight: 600; }
+    .protocol-note svg { width: 18px; height: 18px; }
+    .steps { list-style: none; margin: 0; padding: 0; counter-reset: steps; }
+    .steps li { position: relative; padding: 0 0 38px 58px; counter-increment: steps; }
+    .steps li:last-child { padding-bottom: 0; }
+    .steps li::before { content: counter(steps); position: absolute; left: 0; top: 0; display: grid; place-items: center; width: 32px; height: 32px; border: 1px solid var(--cp-border-strong); border-radius: 50%; background: var(--cp-bg-elevated); font-size: .75rem; font-weight: 600; z-index: 1; }
+    .steps li:not(:last-child)::after { content: ""; position: absolute; top: 32px; bottom: 0; left: 16px; width: 1px; background: var(--cp-border); }
+    .steps h3 { font-size: 1.125rem; font-weight: 600; line-height: 1.45; letter-spacing: -.02em; padding-top: 2px; }
+    .steps p { margin-top: 8px; font-size: .875rem; color: var(--cp-text-muted); max-width: 44ch; }
+    .local-section { display: grid; grid-template-columns: 1fr 1fr; gap: 80px; align-items: center; }
+    .local-art { position: relative; display: grid; place-items: center; min-height: 280px; }
+    .local-orbit { position: absolute; width: 260px; height: 260px; border: 1px solid var(--cp-border); border-radius: 50%; }
+    .local-orbit::before { content: ""; position: absolute; inset: 34px; border: 1px solid var(--cp-border); border-radius: 50%; }
+    .device { position: relative; width: 250px; padding: 8px; border: 1px solid var(--cp-border-strong); border-radius: 12px; background: var(--cp-surface); }
+    .device-screen { display: flex; align-items: center; justify-content: center; flex-direction: column; min-height: 140px; background: var(--cp-bg); border: 1px solid var(--cp-border); border-radius: 6px; }
+    .device-screen .brand-mark { width: 50px; height: 50px; }
+    .device-screen code { margin-top: 10px; font: .6875rem Consolas, "Courier New", Courier, monospace; color: var(--cp-text-muted); }
+    .device::after { content: ""; position: absolute; height: 9px; left: -18px; right: -18px; bottom: -9px; border: 1px solid var(--cp-border-strong); border-radius: 2px 2px 12px 12px; background: var(--cp-surface-soft); }
+    .local-seal { position: absolute; bottom: 20px; display: flex; align-items: center; gap: 7px; padding: 7px 12px; border: 1px solid var(--cp-border); border-radius: 7px; background: var(--cp-surface); color: var(--cp-text-muted); font-size: .6875rem; }
+    .local-seal svg { width: 14px; height: 14px; }
+    .local-copy > p { margin-top: 24px; font-size: .9375rem; color: var(--cp-text-muted); max-width: 41ch; }
+    .local-facts { display: flex; flex-wrap: wrap; gap: 22px; margin-top: 24px; font-size: .75rem; font-weight: 600; }
+    .local-facts span { display: inline-flex; align-items: center; gap: 6px; }
+    .local-facts svg { width: 15px; height: 15px; color: var(--cp-accent); }
+    .get-started { border-top: 1px solid var(--cp-border); background: var(--cp-bg); }
+    .get-started > h2, .get-started > p { text-align: center; }
+    .get-started > p { margin-top: 18px; color: var(--cp-text-muted); font-size: .9375rem; }
+    .install-grid { display: grid; grid-template-columns: .95fr 1.05fr; margin-top: 44px; border: 1px solid var(--cp-border); border-radius: 16px; overflow: clip; background: var(--cp-surface); }
+    .desktop-install { padding: 34px; }
+    .desktop-install > svg { width: 28px; height: 28px; margin-bottom: 18px; color: var(--cp-accent); }
+    .desktop-install h3, .source-install h3 { font-size: 1.25rem; line-height: 1.4; font-weight: 600; letter-spacing: -.025em; }
+    .desktop-install > p { margin-top: 10px; font-size: .875rem; color: var(--cp-text-muted); max-width: 38ch; }
+    .desktop-install .button { margin-top: 25px; }
+    .desktop-install > .text-link { display: flex; width: fit-content; margin-top: 10px; font-size: .75rem; color: var(--cp-text-muted); }
+    .install-footnote { display: flex; align-items: center; gap: 6px; margin-top: 18px; color: var(--cp-text-soft); font-size: .6875rem; }
+    .install-footnote svg { width: 13px; height: 13px; }
+    .source-install { min-width: 0; padding: 34px; border-left: 1px solid var(--cp-border); }
+    .source-install > p { font-size: .75rem; color: var(--cp-text-muted); margin-top: 8px; }
+    .code-block { margin-top: 24px; border: 1px solid var(--cp-border); border-radius: 8px; background: var(--cp-bg-elevated); overflow: hidden; }
+    .code-top { display: flex; align-items: center; justify-content: space-between; min-height: 36px; padding: 0 12px; border-bottom: 1px solid var(--cp-border); font-size: .625rem; color: var(--cp-text-soft); }
+    .copy-button { display: inline-flex; align-items: center; gap: 5px; min-height: 34px; padding: 4px 6px; border: 0; background: var(--cp-bg-elevated); color: var(--cp-text-muted); font-size: .625rem; }
+    .copy-button svg { width: 13px; height: 13px; }
+    .copy-button:hover { color: var(--cp-accent); }
+    pre { margin: 0; padding: 18px 16px; white-space: pre-wrap; overflow-wrap: anywhere; font: .6875rem/1.85 Consolas, "Courier New", Courier, monospace; color: var(--cp-text); }
+    pre code { font: inherit; }
+    .copy-status { min-height: 20px; margin-top: 8px; font-size: .625rem; color: var(--cp-text-muted); }
+    .source-install > .text-link { color: var(--cp-accent); font-size: .75rem; }
+    .faq-section { display: grid; grid-template-columns: .8fr 1.2fr; gap: 70px; border-top: 1px solid var(--cp-border); }
+    .faq-intro p { margin-top: 20px; color: var(--cp-text-muted); font-size: .875rem; max-width: 30ch; }
+    .faq-intro .text-link { margin-top: 14px; color: var(--cp-accent); }
+    .faq-item { border-bottom: 1px solid var(--cp-border); }
+    .faq-item:first-child { border-top: 1px solid var(--cp-border); }
+    .faq-item summary { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding-block: 23px; cursor: pointer; list-style: none; font-size: .9375rem; font-weight: 500; line-height: 1.5; }
+    .faq-item summary::-webkit-details-marker { display: none; }
+    .faq-item summary::after { content: "+"; font-size: 1.125rem; font-weight: 400; color: var(--cp-text-soft); }
+    .faq-item[open] summary::after { content: "−"; }
+    .faq-item summary:hover { color: var(--cp-accent); }
+    .faq-item p { padding: 0 26px 24px 0; font-size: .875rem; color: var(--cp-text-muted); line-height: 1.7; }
+    .faq-item p a { color: var(--cp-accent); text-decoration: underline; text-underline-offset: 3px; }
+    .site-footer { padding: 36px 0 28px; border-top: 1px solid var(--cp-border); }
+    .footer-inner { display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+    .footer-brand .brand { font-size: 1rem; }
+    .footer-brand .brand-mark { width: 26px; height: 26px; }
+    .footer-brand p { font-size: .6875rem; color: var(--cp-text-soft); margin-top: 8px; }
+    .footer-links { display: flex; align-items: center; flex-wrap: wrap; gap: 24px; color: var(--cp-text-muted); font-size: .75rem; }
+    .theme-toggle { display: inline-flex; align-items: center; justify-content: center; width: 38px; height: 38px; background: var(--cp-surface); color: var(--cp-text-muted); border: 1px solid var(--cp-border); border-radius: 10px; }
+    .theme-toggle svg { width: 16px; height: 16px; }
+    html[data-theme="light"] .sun-icon, html[data-theme="dark"] .moon-icon { display: none; }
+    .footer-bottom { display: flex; justify-content: space-between; gap: 20px; margin-top: 30px; padding-top: 20px; border-top: 1px solid var(--cp-border); font-size: .625rem; color: var(--cp-text-soft); }
+    .footer-bottom a { text-decoration: underline; text-underline-offset: 3px; }
+    @media (prefers-reduced-motion: no-preference) {
+      .button, .decision-option, .demo-tabs button, .sample-request { transition: background-color 160ms ease-out, border-color 160ms ease-out, color 160ms ease-out; }
+      .receipt:not([hidden]) { animation: receipt-arrival 260ms cubic-bezier(.16, 1, .3, 1); }
+      @keyframes receipt-arrival { from { transform: translateY(5px); opacity: .6; } to { transform: translateY(0); opacity: 1; } }
+    }
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+    @media (max-width: 1100px) {
+      .wrap { width: calc(100% - 48px); }
+      .header-inner { gap: 24px; }
+      .site-nav { margin-left: 0; gap: 20px; }
+      .hero-heading { padding: 48px 32px; }
+      .hero-copy { padding: 40px 28px; }
+      .hero-copy > p { font-size: 1rem; }
+      .hero-actions { gap: 12px; }
+      .hero-actions .button { padding-inline: 16px; font-size: .875rem; }
+      .demo-stage { padding: 28px 24px 20px; }
+      .window-body { grid-template-columns: 150px minmax(0, 1fr); }
+      .decision-detail { padding: 20px 18px; }
+      .section { padding: 80px 32px; }
+      .section-heading, .feature-layout { gap: 40px; }
+      .how-section, .local-section { gap: 48px; }
+      .desktop-install, .source-install { padding: 28px; }
+      .faq-section { gap: 40px; }
+    }
+    @media (max-width: 800px) {
+      .header-inner { min-height: 72px; }
+      .header-actions { gap: 10px; }
+      .header-actions .icon-link { display: none; }
+      .menu-toggle { display: inline-flex; }
+      .site-nav { display: none; position: absolute; top: 100%; left: 0; right: 0; margin: 0; padding: 18px 24px; background: var(--cp-surface); border-bottom: 1px solid var(--cp-border); }
+      .site-nav.is-open { display: flex; flex-direction: column; align-items: stretch; gap: 4px; }
+      .site-nav a { padding: 12px 16px; }
+      .hero { grid-template-columns: 1fr; }
+      .hero-heading { padding: 46px 32px 26px; }
+      h1 { font-size: clamp(3.25rem, 7.5vw, 4rem); }
+      .hero-copy { border-left: 0; padding: 0 32px 40px; }
+      .hero-copy > p { max-width: 56ch; }
+      .hero-actions { gap: 24px; margin-top: 22px; }
+      .window-body { grid-template-columns: minmax(0, 1fr); }
+      .demo-sidebar { display: none; }
+      .demo-panel { min-height: 390px; }
+      .section-heading { grid-template-columns: 1fr; gap: 24px; }
+      .section-heading > p { max-width: 55ch; }
+      .feature-layout { gap: 32px; }
+      .notification-scene { padding: 28px 18px; }
+      .notification { padding: 18px; }
+      .notification-options { grid-template-columns: 1fr; }
+      .how-section, .local-section { gap: 36px; }
+      .how-section { grid-template-columns: .9fr 1.1fr; }
+      .steps li { padding-left: 44px; }
+      .steps h3 { font-size: 1rem; }
+      .local-art { min-height: 250px; }
+      .local-orbit { width: 230px; height: 230px; }
+      .device { width: 210px; }
+      .local-facts { gap: 12px; }
+      .install-grid { grid-template-columns: 1fr; }
+      .source-install { border-left: 0; border-top: 1px solid var(--cp-border); }
+      .desktop-install > p { max-width: 56ch; }
+      .faq-section { grid-template-columns: 1fr; gap: 36px; }
+      .faq-intro p { max-width: 50ch; }
+      .footer-inner { align-items: flex-start; }
+      .footer-links { gap: 16px; }
+    }
+    @media (max-width: 640px) {
+      html { scroll-padding-top: 86px; }
+      .wrap { width: calc(100% - 32px); }
+      .header-inner { gap: 10px; }
+      .brand { font-size: 1.0625rem; gap: 7px; }
+      .brand-mark { width: 30px; height: 30px; }
+      .header-actions .button { font-size: .6875rem; padding: 9px 10px; min-height: 40px; gap: 7px; }
+      .header-actions .button svg { display: none; }
+      .header-actions { gap: 8px; }
+      .menu-toggle { width: 40px; height: 40px; }
+      .release-line { padding: 11px 14px; font-size: .6875rem; gap: 7px; min-height: 44px; flex-wrap: wrap; }
+      .hero-heading { padding: 36px 24px 24px; }
+      h1 { font-size: clamp(2.5rem, 9.8vw, 3.75rem); line-height: 1.08; }
+      .hero-copy { padding: 0 24px 32px; }
+      .hero-copy > p { font-size: .9375rem; line-height: 1.65; }
+      .hero-actions { gap: 16px; }
+      .hero-actions .button { min-height: 46px; padding: 12px 15px; font-size: .8125rem; gap: 12px; }
+      .hero-actions .text-link { font-size: .75rem; gap: 6px; }
+      .hero-fine { font-size: .6875rem; }
+      .demo-stage { padding: 24px 12px 16px; }
+      .demo-topline { align-items: stretch; flex-direction: column; gap: 14px; margin-bottom: 16px; padding-inline: 4px; }
+      .demo-topline h2 { text-align: center; font-size: .8125rem; }
+      .demo-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .demo-tabs button { min-height: 40px; padding-inline: 6px; font-size: .75rem; }
+      .window-bar { padding-inline: 10px; }
+      .window-bar > span:last-child { font-size: .5625rem; }
+      .window-dots { gap: 4px; }
+      .window-dots i { width: 6px; height: 6px; }
+      .window-title { font-size: .5625rem; }
+      .demo-panel { min-height: 0; }
+      .inbox-heading { padding: 18px 16px 14px; }
+      .inbox-heading h3 { font-size: 1rem; }
+      .inbox-heading p { font-size: .6875rem; }
+      .inbox-heading .small-label { display: none; }
+      .inbox-layout { grid-template-columns: minmax(0, 1fr); }
+      .request-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); padding: 8px; border-right: 0; border-bottom: 1px solid var(--cp-border); gap: 4px; }
+      .sample-request { padding: 10px 7px; margin: 0; }
+      .request-meta { font-size: .5625rem; }
+      .request-meta time { display: none; }
+      .sample-request strong { margin: 5px 0 7px; font-size: .625rem; line-height: 1.4; }
+      .request-bottom { align-items: flex-start; flex-direction: column; gap: 4px; }
+      .request-bottom > span:first-child { display: none; }
+      .request-state { font-size: .5625rem; }
+      .request-footer { display: none; }
+      .decision-detail { padding: 20px 18px 22px; }
+      .decision-detail h4 { font-size: 1.125rem; margin-top: 12px; }
+      .decision-meta { font-size: .6875rem; }
+      .decision-body { font-size: .8125rem; }
+      .decision-option { font-size: .75rem; min-height: 48px; }
+      .recommendation { font-size: .5rem; }
+      .sample-background { font-size: .75rem; }
+      .receipt { font-size: .75rem; }
+      .demo-caption { align-items: flex-start; padding: 12px 4px 0; font-size: .625rem; gap: 10px; }
+      .demo-caption > span { align-items: flex-start; max-width: 28ch; }
+      .demo-caption > span svg { margin-top: 3px; }
+      .reset-button { padding-top: 0; min-height: 32px; font-size: .625rem; }
+      .plan-content, .live-content { padding: 22px 16px; }
+      .plan-title, .live-title { font-size: 1.0625rem; }
+      .panel-description { font-size: .75rem; }
+      .plan-row { grid-template-columns: 18px minmax(0, 1fr); gap: 8px; }
+      .plan-row > .state-pill { grid-column: 2; justify-self: start; }
+      .plan-row strong { font-size: .8125rem; }
+      .plan-row p, .plan-action p { font-size: .6875rem; }
+      .plan-action { align-items: flex-start; flex-direction: column; }
+      .inline-button { font-size: .75rem; }
+      .live-table td { font-size: .625rem; padding-right: 6px; }
+      .live-table strong { font-size: .625rem; }
+      .live-table small { font-size: .5625rem; overflow-wrap: anywhere; }
+      .live-table .state-pill { font-size: .5rem; padding: 3px 4px; }
+      .live-footnote { font-size: .6875rem; }
+      .integrations { padding: 30px 24px; }
+      .integrations p { font-size: .75rem; }
+      .integration-list { column-gap: 24px; row-gap: 20px; margin-top: 24px; }
+      .integration { font-size: .875rem; gap: 8px; }
+      .integration svg { width: 22px; height: 22px; }
+      .section { padding: 64px 24px; }
+      h2.display { font-size: 2.25rem; line-height: 1.14; }
+      .section-heading { gap: 20px; margin-bottom: 32px; }
+      .section-heading > p { font-size: .9375rem; }
+      .feature-layout { grid-template-columns: 1fr; gap: 36px; }
+      .notification-scene { padding: 32px 20px; }
+      .notification-options { grid-template-columns: 1fr 1fr; }
+      .notification h3 { font-size: 1rem; }
+      .feature-copy, .feature-aside + .feature-aside { padding-top: 24px; }
+      .feature-copy h3, .feature-aside h3 { font-size: 1.25rem; }
+      .feature-copy p, .feature-aside p { font-size: .875rem; }
+      .feature-aside:first-child { border-top: 1px solid var(--cp-border); padding-top: 28px; }
+      .feature-aside + .feature-aside { margin-top: 28px; }
+      .ownership { margin-top: 20px; }
+      .how-section { grid-template-columns: 1fr; gap: 36px; }
+      .how-intro > p { max-width: 46ch; margin-top: 20px; }
+      .protocol-note { margin-top: 20px; }
+      .steps li { padding-left: 48px; padding-bottom: 32px; }
+      .steps h3 { font-size: 1.0625rem; }
+      .local-section { grid-template-columns: 1fr; gap: 28px; }
+      .local-art { min-height: 250px; }
+      .local-copy > p { font-size: .875rem; margin-top: 20px; }
+      .local-facts { gap: 18px; }
+      .get-started > h2, .get-started > p { text-align: left; }
+      .get-started > p { font-size: .875rem; }
+      .install-grid { margin-top: 32px; }
+      .desktop-install, .source-install { padding: 26px 22px; }
+      .desktop-install h3, .source-install h3 { font-size: 1.125rem; }
+      .desktop-install > p { font-size: .8125rem; }
+      .desktop-install .button { font-size: .8125rem; padding-inline: 14px; gap: 10px; }
+      pre { font-size: .6875rem; padding: 16px 12px; }
+      .faq-item summary { font-size: .875rem; padding-block: 20px; }
+      .faq-item p { font-size: .8125rem; }
+      .site-footer { padding-block: 28px; }
+      .footer-inner { flex-direction: column; gap: 24px; }
+      .footer-links { width: 100%; font-size: .6875rem; gap: 20px; }
+      .theme-toggle { margin-left: auto; }
+      .footer-bottom { flex-direction: column; gap: 10px; margin-top: 24px; }
+    }
+    @media (max-width: 360px) {
+      .wrap { width: calc(100% - 24px); }
+      .hero-heading { padding-inline: 20px; }
+      .hero-copy { padding-inline: 20px; }
+      .header-actions .button { display: none; }
+      .hero-actions { gap: 10px; }
+      .hero-actions .button { padding-inline: 12px; }
+      .hero-actions .text-link { font-size: .6875rem; }
+      .decision-detail { padding-inline: 14px; }
+      .recommendation { display: none; }
+      .section { padding-inline: 20px; }
+      .notification-scene { padding-inline: 14px; }
+      .notification-options { grid-template-columns: 1fr; }
+      .footer-links { gap: 14px; }
+    }
+  </style>
+</head>
+<body>
+  <!--
+    THESIS: Make cross-agent attention tangible through one answerable inbox.
+    OWN-WORLD: White and warm neutral fields, rose identity, precise rules, workhorse type.
+    STORY: Recognize the interruption problem, try a decision, understand local ownership, install.
+    FIRST VIEWPORT: Split headline and action, followed by a large working sample.
+    FORM: Product-led editorial page; the application demonstration is the main visual.
+  -->
+  <a class="skip-link" href="#main">Skip to content</a>
+  <svg class="svg-defs" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+    <defs>
+      <symbol id="mark" viewBox="0 0 1024 1024">
+        <defs>
+          <linearGradient id="shell" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#46242b"/>
+            <stop offset=".5" stop-color="#30181d"/>
+            <stop offset="1" stop-color="#211013"/>
+          </linearGradient>
+          <linearGradient id="envelope" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#5b3036"/>
+            <stop offset="1" stop-color="#391b20"/>
+          </linearGradient>
+          <linearGradient id="flap" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#6d3b43"/>
+            <stop offset="1" stop-color="#47242a"/>
+          </linearGradient>
+          <linearGradient id="monogram" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#f6a6d1"/>
+            <stop offset=".48" stop-color="#eb84bb"/>
+            <stop offset="1" stop-color="#d76298"/>
+          </linearGradient>
+          <filter id="shellShadow" x="-20%" y="-20%" width="140%" height="150%">
+            <feDropShadow dx="0" dy="20" stdDeviation="24" flood-color="#170707" flood-opacity=".34"/>
+          </filter>
+          <filter id="envelopeShadow" x="-20%" y="-20%" width="140%" height="160%">
+            <feDropShadow dx="0" dy="18" stdDeviation="16" flood-color="#120606" flood-opacity=".48"/>
+          </filter>
+          <filter id="letterShadow" x="-15%" y="-15%" width="130%" height="145%">
+            <feDropShadow dx="0" dy="5" stdDeviation="4" flood-color="#39100f" flood-opacity=".38"/>
+          </filter>
+        </defs>
+        <rect x="100" y="100" width="824" height="824" rx="188" fill="url(#shell)" filter="url(#shellShadow)"/>
+        <g filter="url(#envelopeShadow)">
+          <rect x="202" y="266" width="620" height="456" rx="20" fill="url(#envelope)" stroke="#75403d" stroke-width="8"/>
+          <path d="M206 300 446 514q28 25 66 25t66-25L818 300v-14q0-16-16-16H222q-16 0-16 16Z"
+            fill="url(#flap)"/>
+          <path d="m206 700 220-195q36-32 86-32t86 32l220 195q-7 18-28 18H234q-21 0-28-18Z"
+            fill="#341716"/>
+          <path d="m206 302 238 212q28 25 68 25t68-25l238-212" fill="none"
+            stroke="#1e0c0c" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="m206 700 222-197M818 700 596 503" fill="none" stroke="#552724" stroke-width="10"
+            stroke-linecap="round"/>
+          <path d="M220 282h584" fill="none" stroke="#8a4a46" stroke-width="8" stroke-linecap="round" opacity=".72"/>
+        </g>
+        <g fill="url(#monogram)" filter="url(#letterShadow)">
+          <path d="M394 312h98l138 388h-94l-34-104H383l-33 104h-86Zm16 202h66l-33-112Z"/>
+          <path d="M646 312h68v388h-68Z"/>
+        </g>
+      </symbol>
+      <symbol id="arrow" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6"/></symbol>
+      <symbol id="arrow-up" viewBox="0 0 24 24"><path d="M7 17 17 7M7 7h10v10"/></symbol>
+      <symbol id="inbox" viewBox="0 0 24 24"><path d="m4 5-2 9v5h20v-5l-2-9Z"/><path d="M2 14h6l2 3h4l2-3h6"/></symbol>
+      <symbol id="plan" viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="m8 9 1 1 2-2m3 1h3m-9 6 1 1 2-2m3 1h3"/></symbol>
+      <symbol id="activity" viewBox="0 0 24 24"><path d="M2 12h5l3-8 4 16 3-8h5"/></symbol>
+      <symbol id="terminal" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="3"/><path d="m6 9 3 3-3 3m7 0h5"/></symbol>
+      <symbol id="spark" viewBox="0 0 24 24"><path d="M12 2v20M2 12h20M5 5l14 14M5 19 19 5m-8-2 2 18M3 13l18-2"/></symbol>
+      <symbol id="protocol" viewBox="0 0 24 24"><path d="m4 10 7-7a3 3 0 0 1 4 4l-8 8m2 3 8-8a3 3 0 0 1 4 4l-7 7M3 16l5 5"/></symbol>
+      <symbol id="check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+      <symbol id="circle-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></symbol>
+      <symbol id="circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/></symbol>
+      <symbol id="clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+      <symbol id="lock" viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3m-4 5v2"/></symbol>
+      <symbol id="monitor" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M12 17v4m-4 0h8"/></symbol>
+      <symbol id="download" viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M4 15v6h16v-6"/></symbol>
+      <symbol id="play" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m10 8 6 4-6 4Z"/></symbol>
+      <symbol id="refresh" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6 6a8 8 0 0 1 13 2m-1 10A8 8 0 0 1 5 16"/></symbol>
+      <symbol id="copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V3H3v13h5"/></symbol>
+      <symbol id="menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+      <symbol id="sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1 1m12 12 1 1M5 19l1-1M18 6l1-1"/></symbol>
+      <symbol id="moon" viewBox="0 0 24 24"><path d="M20.8 13A9 9 0 0 1 11 3.2 9 9 0 1 0 20.8 13Z"/></symbol>
+      <symbol id="github" viewBox="0 0 24 24"><path d="M12 .8a11.2 11.2 0 0 0-3.54 21.83c.56.1.77-.24.77-.54v-2.09c-3.13.68-3.79-1.33-3.79-1.33-.51-1.3-1.25-1.65-1.25-1.65-1.03-.7.08-.69.08-.69 1.14.08 1.74 1.17 1.74 1.17 1.01 1.73 2.65 1.23 3.29.94.1-.73.4-1.23.72-1.51-2.5-.28-5.12-1.25-5.12-5.57 0-1.23.44-2.24 1.16-3.03-.12-.28-.5-1.43.11-2.99 0 0 .94-.3 3.08 1.15a10.7 10.7 0 0 1 5.6 0c2.14-1.45 3.08-1.15 3.08-1.15.61 1.56.23 2.71.11 2.99.72.79 1.16 1.8 1.16 3.03 0 4.33-2.63 5.29-5.13 5.57.4.35.76 1.04.76 2.09v3.07c0 .3.2.65.77.54A11.2 11.2 0 0 0 12 .8Z"/></symbol>
+    </defs>
+  </svg>
+
+  <header class="site-header">
+    <div class="header-inner wrap">
+      <a class="brand" href="#main" aria-label="Agent Inbox home"><svg class="brand-mark" aria-hidden="true"><use href="#mark"/></svg>Agent Inbox</a>
+      <nav class="site-nav" id="site-nav" aria-label="Main navigation">
+        <a href="#features">Why Agent Inbox</a>
+        <a href="#how-it-works">How it works</a>
+        <a href="#faq">FAQ</a>
+      </nav>
+      <div class="header-actions">
+        <a class="icon-link" href="https://github.com/shariqh/agent-inbox" aria-label="Agent Inbox on GitHub"><svg class="github-icon" aria-hidden="true"><use href="#github"/></svg></a>
+        <a class="button button-dark button-small" href="#get-started">Get started<svg aria-hidden="true"><use href="#arrow"/></svg></a>
+        <button class="menu-toggle" id="menu-toggle" type="button" aria-label="Toggle navigation" aria-expanded="false" aria-controls="site-nav"><svg aria-hidden="true"><use href="#menu"/></svg></button>
+      </div>
+    </div>
+  </header>
+
+  <main id="main" class="wrap page-frame">
+    <div class="release-line">
+      <a href="https://github.com/shariqh/agent-inbox/releases"><span class="version">v1.2.4</span><span>Available for macOS and Linux</span><svg aria-hidden="true"><use href="#arrow"/></svg></a>
+    </div>
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="hero-heading"><h1 id="hero-title">Stop checking<br><span>every terminal.</span></h1></div>
+      <div class="hero-copy">
+        <p>Agent Inbox collects questions, approvals, and status updates from Copilot CLI and Claude Code. Answer in one place instead of hunting through your sessions.</p>
+        <div class="hero-actions">
+          <a class="button button-dark" href="#get-started">Get Agent Inbox<svg aria-hidden="true"><use href="#arrow"/></svg></a>
+          <a class="text-link" href="#demo"><svg aria-hidden="true"><use href="#play"/></svg>Try the demo</a>
+        </div>
+        <div class="hero-fine">Free and open source, with no account to create.</div>
+      </div>
+    </section>
+
+    <section class="demo-stage" id="demo" aria-label="Interactive Agent Inbox demo">
+      <div class="demo-topline">
+        <h2>Try answering a sample request.</h2>
+        <div class="demo-tabs" role="tablist" aria-label="Explore Agent Inbox">
+          <button id="tab-inbox" type="button" role="tab" aria-selected="true" aria-controls="panel-inbox" tabindex="0" data-tab="inbox"><svg aria-hidden="true"><use href="#inbox"/></svg>Inbox</button>
+          <button id="tab-plans" type="button" role="tab" aria-selected="false" aria-controls="panel-plans" tabindex="-1" data-tab="plans"><svg aria-hidden="true"><use href="#plan"/></svg>Plans</button>
+          <button id="tab-live" type="button" role="tab" aria-selected="false" aria-controls="panel-live" tabindex="-1" data-tab="live"><svg aria-hidden="true"><use href="#activity"/></svg>Live</button>
+        </div>
+      </div>
+      <div class="app-window">
+        <div class="window-bar">
+          <div class="window-dots" aria-hidden="true"><i></i><i></i><i></i></div>
+          <span class="window-title"><svg aria-hidden="true"><use href="#lock"/></svg>Agent Inbox / All projects</span>
+          <span>Sample data</span>
+        </div>
+        <div class="window-body">
+          <aside class="demo-sidebar" aria-label="Demo workspace">
+            <div class="mini-brand"><svg class="brand-mark" aria-hidden="true"><use href="#mark"/></svg>Agent Inbox</div>
+            <div class="app-nav">
+              <button class="is-active" type="button" data-select-tab="inbox" aria-label="Show demo inbox"><svg aria-hidden="true"><use href="#inbox"/></svg>Inbox<span class="nav-count" id="attention-count">3</span></button>
+              <button type="button" data-select-tab="plans" aria-label="Show demo plans"><svg aria-hidden="true"><use href="#plan"/></svg>Plans<span class="nav-count">1</span></button>
+              <button type="button" data-select-tab="live" aria-label="Show demo live sessions"><svg aria-hidden="true"><use href="#activity"/></svg>Live<span class="nav-count">4</span></button>
+            </div>
+            <div class="project-caption">Projects</div>
+            <div class="project-name"><span class="project-dot"></span>customer-portal</div>
+            <div class="project-name"><span class="project-dot neutral"></span>docs-site</div>
+            <div class="project-name"><span class="project-dot outline"></span>billing-api</div>
+            <div class="sidebar-bottom"><svg aria-hidden="true"><use href="#monitor"/></svg>On this device</div>
+          </aside>
+          <div class="demo-panels">
+            <section class="demo-panel" id="panel-inbox" role="tabpanel" aria-labelledby="tab-inbox" tabindex="0">
+              <div class="inbox-heading">
+                <div><h3>Needs you</h3><p id="queue-summary">3 open requests across your projects</p></div>
+                <span class="small-label"><svg aria-hidden="true"><use href="#inbox"/></svg>All requests</span>
+              </div>
+              <div class="inbox-layout">
+                <div class="request-list" role="group" aria-label="Sample requests">
+                  <button class="sample-request" type="button" data-question="auth" aria-pressed="true">
+                    <span class="request-meta"><span>Copilot CLI</span><time>2m ago</time></span>
+                    <strong>Choose a sign-in approach</strong>
+                    <span class="request-bottom"><span>customer-portal</span><span class="request-state">Decision</span></span>
+                  </button>
+                  <button class="sample-request" type="button" data-question="release" aria-pressed="false">
+                    <span class="request-meta"><span>Claude Code</span><time>5m ago</time></span>
+                    <strong>Review the release notes</strong>
+                    <span class="request-bottom"><span>docs-site</span><span class="request-state">Approval</span></span>
+                  </button>
+                  <button class="sample-request" type="button" data-question="keys" aria-pressed="false">
+                    <span class="request-meta"><span>Copilot CLI</span><time>8m ago</time></span>
+                    <strong>Add the staging API key</strong>
+                    <span class="request-bottom"><span>billing-api</span><span class="request-state">Your task</span></span>
+                  </button>
+                  <div class="request-footer"><svg aria-hidden="true"><use href="#check"/></svg>Questions and tasks from your projects.</div>
+                </div>
+                <article class="decision-detail" aria-labelledby="question-title">
+                  <div class="decision-meta"><span id="question-project">customer-portal</span><span class="request-kind" id="question-type">Decision</span></div>
+                  <h4 id="question-title">Which sign-in approach should I use?</h4>
+                  <p class="decision-body" id="question-body">The portal is ready for authentication. Using your existing provider keeps accounts in one place.</p>
+                  <div class="decision-options" id="decision-options">
+                    <button class="decision-option" type="button">Use the existing provider<span class="recommendation">Recommended</span></button>
+                    <button class="decision-option" type="button">Build a separate sign-in</button>
+                  </div>
+                  <details class="sample-background">
+                    <summary>Why this needs you</summary>
+                    <p id="question-context">This choice determines how customers access the portal. After your decision, the agent will wire up sign-in and add the integration tests.</p>
+                  </details>
+                  <div class="receipt" id="receipt" tabindex="-1" hidden>
+                    <strong><svg aria-hidden="true"><use href="#check"/></svg>Response recorded</strong>
+                    <p id="receipt-choice"></p>
+                    <p>Waiting for agent pickup.</p>
+                  </div>
+                </article>
+              </div>
+            </section>
+            <section class="demo-panel" id="panel-plans" role="tabpanel" aria-labelledby="tab-plans" tabindex="0" hidden>
+              <div class="plan-content">
+                <h3 class="plan-title">Ship the customer portal</h3>
+                <p class="panel-description">Keep the next steps and completed work together.</p>
+                <div class="plan-progress"><progress value="2" max="4" aria-label="2 of 4 milestones complete"></progress><span>2 of 4 milestones complete</span></div>
+                <div class="plan-rows">
+                  <div class="plan-row"><svg aria-hidden="true"><use href="#circle-check"/></svg><div><strong>Account settings</strong><p>Profile editing and preferences are ready.</p></div><span class="state-pill">Done</span></div>
+                  <div class="plan-row"><svg aria-hidden="true"><use href="#circle-check"/></svg><div><strong>Accessibility review</strong><p>Keyboard and screen reader fixes are in.</p></div><span class="state-pill">Done</span></div>
+                  <div class="plan-row"><svg aria-hidden="true"><use href="#clock"/></svg><div><strong>Billing integration</strong><p>The agent is connecting the checkout flow.</p></div><span class="state-pill working">In progress</span></div>
+                  <div class="plan-row"><svg aria-hidden="true"><use href="#circle"/></svg><div><strong>Staging credentials</strong><p>Add the API key so staging can be connected.</p></div><span class="state-pill attention">Needs you</span></div>
+                </div>
+                <div class="plan-action"><p>The staging connection needs your API key.</p><button class="inline-button" type="button" data-select-question="keys">Review the request<svg aria-hidden="true"><use href="#arrow"/></svg></button></div>
+              </div>
+            </section>
+            <section class="demo-panel" id="panel-live" role="tabpanel" aria-labelledby="tab-live" tabindex="0" hidden>
+              <div class="live-content">
+                <h3 class="live-title">See who's working on what.</h3>
+                <p class="panel-description">The latest status reported by each connected agent.</p>
+                <table class="live-table">
+                  <caption>Illustrative snapshot · 4 sessions across 3 projects</caption>
+                  <thead><tr><th scope="col">Session</th><th scope="col">Current work</th><th scope="col">State</th></tr></thead>
+                  <tbody>
+                    <tr><td><strong>Copilot CLI</strong><small>customer-portal</small></td><td>Choosing a sign-in approach</td><td><span class="state-pill attention">Needs you</span></td></tr>
+                    <tr><td><strong>Claude Code</strong><small>docs-site</small></td><td>Writing accessibility notes</td><td><span class="state-pill working">Working</span></td></tr>
+                    <tr><td><strong>Copilot CLI</strong><small>billing-api</small></td><td>Running checkout tests</td><td><span class="state-pill working">Working</span></td></tr>
+                    <tr><td><strong>Claude Code</strong><small>customer-portal</small></td><td>Account settings review</td><td><span class="state-pill">Idle</span></td></tr>
+                  </tbody>
+                </table>
+                <p class="live-footnote">Working and idle statuses don't add to your attention count.</p>
+              </div>
+            </section>
+          </div>
+        </div>
+      </div>
+      <div class="demo-caption"><span><svg aria-hidden="true"><use href="#play"/></svg>Interactive demo. Try a response; nothing is sent.</span><button class="reset-button" id="demo-reset" type="button"><svg aria-hidden="true"><use href="#refresh"/></svg>Reset demo</button></div>
+      <div class="sr-only" id="demo-announcement" role="status" aria-live="polite"></div>
+      <noscript><p>The preview is a sample workspace. Enable JavaScript to switch views and try responding.</p></noscript>
+    </section>
+
+    <section class="integrations" aria-label="Coding tool compatibility">
+      <p>Connect your CLI through MCP.</p>
+      <div class="integration-list">
+        <span class="integration"><svg aria-hidden="true"><use href="#terminal"/></svg>GitHub Copilot CLI</span>
+        <span class="integration"><svg aria-hidden="true"><use href="#spark"/></svg>Claude Code</span>
+        <span class="integration"><svg aria-hidden="true"><use href="#protocol"/></svg><span class="protocol">Built on MCP</span></span>
+      </div>
+    </section>
+
+    <section class="section" id="features" aria-labelledby="features-title">
+      <div class="section-heading">
+        <h2 class="display" id="features-title">Answer without<br>switching terminals.</h2>
+        <p>Open a request to see the project and what needs your attention. Respond there, with the background close by.</p>
+      </div>
+      <div class="feature-layout">
+        <div>
+          <div class="notification-scene" role="img" aria-label="Illustrative notification: Agent Inbox asks whether to use the existing auth provider, with Use existing and Start fresh options.">
+            <div class="notification" aria-hidden="true">
+              <div class="notification-app"><svg class="brand-mark"><use href="#mark"/></svg>Agent Inbox<span class="notification-time">now</span></div>
+              <h3>Can I use the existing auth provider?</h3>
+              <p>customer-portal · Copilot CLI</p>
+              <div class="notification-options"><span>Use existing</span><span>Start fresh</span></div>
+            </div>
+            <div class="illustration-caption" aria-hidden="true"><svg><use href="#inbox"/></svg>Answer from a desktop notification.</div>
+          </div>
+          <div class="feature-copy">
+            <h3>Questions with enough context.</h3>
+            <p>Each question includes the decision and why it matters. Choose an option, write your own answer, ask for clarification, or snooze it.</p>
+            <a class="text-link" href="#demo">Try a sample question<svg aria-hidden="true"><use href="#arrow"/></svg></a>
+          </div>
+        </div>
+        <div>
+          <article class="feature-aside">
+            <h3>Keep decisions with their plans.</h3>
+            <p>Boards keep tasks, responses, and recorded outcomes together, so you can see what happened on each project.</p>
+            <div class="ownership" aria-label="Work moves from waiting on you, to with agents, to an outcome"><span>Waiting on you</span><svg aria-hidden="true"><use href="#arrow"/></svg><span>With agents</span><svg aria-hidden="true"><use href="#arrow"/></svg><span>Outcome</span></div>
+          </article>
+          <article class="feature-aside">
+            <h3>See what each agent reports.</h3>
+            <p>Check the latest status from connected sessions. Working, waiting, and idle are separate states; an idle session isn't a new request.</p>
+            <div class="dispatch-example" aria-label="Illustrative agent statuses">
+              <div class="dispatch-line"><span class="dispatch-dot"></span><span>Copilot CLI</span><small>Running checkout tests</small></div>
+              <div class="dispatch-line"><span class="dispatch-dot"></span><span>Claude Code</span><small>Updating the docs</small></div>
+              <div class="dispatch-line"><span class="dispatch-dot idle"></span><span>Copilot CLI</span><small>Idle</small></div>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section how-section" id="how-it-works" aria-labelledby="how-title">
+      <div class="how-intro">
+        <h2 class="display" id="how-title">How it works</h2>
+        <p>Agents send requests through MCP. You answer in Agent Inbox, and they read your response through the same connection.</p>
+        <span class="protocol-note"><svg aria-hidden="true"><use href="#protocol"/></svg>Connected through MCP</span>
+      </div>
+      <ol class="steps">
+        <li><h3>An agent asks for input.</h3><p>It sends the question and background to Agent Inbox, along with the project it belongs to.</p></li>
+        <li><h3>You respond in Agent Inbox.</h3><p>Pick an option, write your own answer, or mark a task done. You can also ask for clarification or snooze the request.</p></li>
+        <li><h3>The agent reads your reply.</h3><p>Your agent checks MCP for responses. You'll see when it has picked up your answer and when it records an outcome.</p></li>
+      </ol>
+    </section>
+
+    <section class="section local-section" aria-labelledby="local-title">
+      <div class="local-art" role="img" aria-label="Agent Inbox and its SQLite inbox run locally on your device.">
+        <div class="local-orbit" aria-hidden="true"></div>
+        <div class="device" aria-hidden="true"><div class="device-screen"><svg class="brand-mark"><use href="#mark"/></svg><code>127.0.0.1</code></div></div>
+        <div class="local-seal" aria-hidden="true"><svg><use href="#lock"/></svg>Stored locally</div>
+      </div>
+      <div class="local-copy">
+        <h2 class="display" id="local-title">Your inbox lives<br>on your machine.</h2>
+        <p>Questions, plans, and responses are stored in a local SQLite database. Agent Inbox doesn't call a model or run a hosted service.</p>
+        <div class="local-facts"><span><svg aria-hidden="true"><use href="#check"/></svg>No telemetry</span><span><svg aria-hidden="true"><use href="#check"/></svg>MIT licensed</span></div>
+      </div>
+    </section>
+
+    <section class="section get-started" id="get-started" aria-labelledby="install-title">
+      <h2 class="display" id="install-title">Get Agent Inbox</h2>
+      <p>Start with the desktop app, or run it from a Node.js checkout.</p>
+      <div class="install-grid">
+        <div class="desktop-install">
+          <svg aria-hidden="true"><use href="#monitor"/></svg>
+          <h3>Desktop app</h3>
+          <p>After installing, open Settings → Setup and choose your coding tools. Start a fresh CLI session to load the connection.</p>
+          <a class="button button-dark" href="https://github.com/shariqh/agent-inbox/releases/latest">Get the desktop app<svg aria-hidden="true"><use href="#download"/></svg></a>
+          <a class="text-link" href="https://github.com/shariqh/agent-inbox/blob/main/docs/INSTALL.md">Installation guide<svg aria-hidden="true"><use href="#arrow-up"/></svg></a>
+          <span class="install-footnote"><svg aria-hidden="true"><use href="#check"/></svg>macOS 13.5+ · Linux x64 &amp; arm64</span>
+        </div>
+        <div class="source-install">
+          <h3>Run from source</h3>
+          <p>Use Node.js 24. These commands build the app and preview the agent setup.</p>
+          <div class="code-block">
+            <div class="code-top"><span>Terminal</span><button class="copy-button" id="copy-command" type="button" aria-label="Copy source setup commands"><svg aria-hidden="true"><use href="#copy"/></svg>Copy</button></div>
+            <pre tabindex="0" aria-label="Source setup commands"><code id="install-command">git clone https://github.com/shariqh/agent-inbox.git
+cd agent-inbox
+npm ci
+npm run build
+npm run install:agents</code></pre>
+          </div>
+          <div class="copy-status" id="copy-status" role="status" aria-live="polite">The final command previews MCP and instruction changes.</div>
+          <a class="text-link" href="https://github.com/shariqh/agent-inbox#readme">Read the full setup guide<svg aria-hidden="true"><use href="#arrow"/></svg></a>
+        </div>
+      </div>
+    </section>
+
+    <section class="section faq-section" id="faq" aria-labelledby="faq-title">
+      <div class="faq-intro"><h2 class="display" id="faq-title">Common questions</h2><a class="text-link" href="https://github.com/shariqh/agent-inbox#readme">Read the documentation<svg aria-hidden="true"><use href="#arrow"/></svg></a></div>
+      <div class="faq-list">
+        <details class="faq-item"><summary>Is this another coding agent?</summary><p>No. It stores the questions, plans, and updates your coding agents send, along with your replies. It doesn't write code or make model calls.</p></details>
+        <details class="faq-item"><summary>Which coding tools does it work with?</summary><p>The installer supports GitHub Copilot CLI and Claude Code. It registers the stdio MCP server and adds reporting instructions so agents know when to ask and how to read your replies. Other MCP clients need manual configuration.</p></details>
+        <details class="faq-item"><summary>Does my inbox leave my machine?</summary><p>Your inbox is stored locally, with no Agent Inbox telemetry or hosted service. Optional update checks and pull request lookups contact GitHub. Your coding tools still have their own data and model policies.</p></details>
+        <details class="faq-item"><summary>How does an agent receive my answer?</summary><p>Agents read replies through the MCP pending tool. Copilot CLI can use background watchers for questions and blocked plan actions; Claude Code has opt-in wake-up hooks. Wake-up depends on your setup. The receipt shows whether the agent has picked up your answer.</p></details>
+        <details class="faq-item"><summary>Where can I run Agent Inbox?</summary><p>Desktop packages are available for macOS 13.5+ on Apple silicon and Intel, and Linux on x64 and arm64. You can also run the local browser viewer from a Node.js 24 checkout. See the <a href="https://github.com/shariqh/agent-inbox/blob/main/docs/INSTALL.md">installation guide</a> for Linux runtime requirements and package verification. Windows and hosted deployments are not currently supported.</p></details>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap">
+      <div class="footer-inner">
+        <div class="footer-brand"><a class="brand" href="#main"><svg class="brand-mark" aria-hidden="true"><use href="#mark"/></svg>Agent Inbox</a><p>A local inbox for coding agents.</p></div>
+        <nav class="footer-links" aria-label="Project links">
+          <a href="https://github.com/shariqh/agent-inbox">GitHub</a>
+          <a href="https://github.com/shariqh/agent-inbox#readme">Documentation</a>
+          <a href="https://github.com/shariqh/agent-inbox/releases">Releases</a>
+          <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Switch to dark mode"><svg class="moon-icon" aria-hidden="true"><use href="#moon"/></svg><svg class="sun-icon" aria-hidden="true"><use href="#sun"/></svg></button>
+        </nav>
+      </div>
+      <div class="footer-bottom"><span>An independent, open-source project. Not affiliated with GitHub or Anthropic.</span><span>Made available under the <a href="https://github.com/shariqh/agent-inbox/blob/main/LICENSE">MIT license</a>.</span></div>
+    </div>
+  </footer>
+
+  <script>
+    (() => {
+      const questions = {
+        auth: {
+          title: 'Which sign-in approach should I use?',
+          project: 'customer-portal',
+          kind: 'Decision',
+          body: 'The portal is ready for authentication. Using your existing provider keeps accounts in one place.',
+          context: 'This choice determines how customers access the portal. After your decision, the agent will wire up sign-in and add the integration tests.',
+          options: ['Use the existing provider', 'Build a separate sign-in'],
+          recommended: true,
+        },
+        release: {
+          title: 'Ready to publish the release notes?',
+          project: 'docs-site',
+          kind: 'Approval',
+          body: 'The release notes cover the new account settings and accessibility fixes. Review the wording before the agent publishes them.',
+          context: 'Publishing is a separate action from preparing a draft. The agent needs your approval before making the release notes public.',
+          options: ['Publish as written', 'Revise the draft'],
+          recommended: false,
+        },
+        keys: {
+          title: 'Add the staging API key',
+          project: 'billing-api',
+          kind: 'Your task',
+          body: 'Add the staging key in your local environment, then let the agent know your part is done. Never paste a key into the inbox.',
+          context: 'The agent can prepare the integration but cannot create your credentials. After you add them locally, it can check the staging connection.',
+          options: ["I've done my part"],
+          recommended: false,
+        },
+      };
+      const responses = new Map();
+      let selectedQuestion = 'auth';
+      const tabs = [...document.querySelectorAll('[data-tab]')];
+      const requestButtons = [...document.querySelectorAll('[data-question]')];
+      const options = document.getElementById('decision-options');
+      const receipt = document.getElementById('receipt');
+      const announcement = document.getElementById('demo-announcement');
+      const menuButton = document.getElementById('menu-toggle');
+      const siteNav = document.getElementById('site-nav');
+      const themeButton = document.getElementById('theme-toggle');
+
+      function selectTab(name, moveFocus = false) {
+        for (const tab of tabs) {
+          const selected = tab.dataset.tab === name;
+          tab.setAttribute('aria-selected', String(selected));
+          tab.tabIndex = selected ? 0 : -1;
+          document.getElementById(tab.getAttribute('aria-controls')).hidden = !selected;
+          if (selected && moveFocus) tab.focus();
+        }
+        for (const button of document.querySelectorAll('[data-select-tab]')) {
+          button.classList.toggle('is-active', button.dataset.selectTab === name);
+        }
+      }
+
+      function renderQuestion() {
+        const question = questions[selectedQuestion];
+        document.getElementById('question-title').textContent = question.title;
+        document.getElementById('question-project').textContent = question.project;
+        document.getElementById('question-type').textContent = question.kind;
+        document.getElementById('question-body').textContent = question.body;
+        document.getElementById('question-context').textContent = question.context;
+        const remaining = Object.keys(questions).length - responses.size;
+        document.getElementById('attention-count').textContent = String(remaining);
+        document.getElementById('queue-summary').textContent = remaining
+          ? `${remaining} open ${remaining === 1 ? 'request' : 'requests'} across your projects`
+          : 'All responses recorded. Waiting for agent pickup.';
+        for (const button of requestButtons) {
+          const key = button.dataset.question;
+          button.setAttribute('aria-pressed', String(key === selectedQuestion));
+          button.classList.toggle('answered', responses.has(key));
+          button.querySelector('.request-state').textContent = responses.has(key) ? 'With agent' : questions[key].kind;
+        }
+        options.replaceChildren();
+        question.options.forEach((choice, index) => {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'decision-option';
+          button.textContent = choice;
+          button.disabled = responses.has(selectedQuestion);
+          if (index === 0 && question.recommended) {
+            const label = document.createElement('span');
+            label.className = 'recommendation';
+            label.textContent = 'Recommended';
+            button.append(label);
+          }
+          button.addEventListener('click', () => {
+            responses.set(selectedQuestion, choice);
+            renderQuestion();
+            announcement.textContent = `Demo response recorded: ${choice}. Waiting for agent pickup. Nothing was sent.`;
+            receipt.focus({ preventScroll: true });
+          });
+          options.append(button);
+        });
+        receipt.hidden = !responses.has(selectedQuestion);
+        document.getElementById('receipt-choice').textContent = responses.get(selectedQuestion) ?? '';
+      }
+
+      for (const tab of tabs) {
+        tab.addEventListener('click', () => selectTab(tab.dataset.tab));
+        tab.addEventListener('keydown', event => {
+          let index = tabs.indexOf(tab);
+          if (event.key === 'ArrowRight') index = (index + 1) % tabs.length;
+          else if (event.key === 'ArrowLeft') index = (index + tabs.length - 1) % tabs.length;
+          else if (event.key === 'Home') index = 0;
+          else if (event.key === 'End') index = tabs.length - 1;
+          else return;
+          event.preventDefault();
+          selectTab(tabs[index].dataset.tab, true);
+        });
+      }
+      for (const button of document.querySelectorAll('[data-select-tab]')) {
+        button.addEventListener('click', () => selectTab(button.dataset.selectTab));
+      }
+      for (const button of requestButtons) {
+        button.addEventListener('click', () => {
+          selectedQuestion = button.dataset.question;
+          renderQuestion();
+        });
+      }
+      for (const button of document.querySelectorAll('[data-select-question]')) {
+        button.addEventListener('click', () => {
+          selectedQuestion = button.dataset.selectQuestion;
+          selectTab('inbox');
+          renderQuestion();
+          requestButtons.find(request => request.dataset.question === selectedQuestion).focus({ preventScroll: true });
+        });
+      }
+      document.getElementById('demo-reset').addEventListener('click', () => {
+        responses.clear();
+        selectedQuestion = 'auth';
+        selectTab('inbox');
+        renderQuestion();
+        announcement.textContent = 'Demo reset. Three sample requests need your response.';
+      });
+      document.getElementById('copy-command').addEventListener('click', async () => {
+        const status = document.getElementById('copy-status');
+        try {
+          if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable');
+          await navigator.clipboard.writeText(document.getElementById('install-command').textContent);
+          status.textContent = 'Copied. The final command previews agent setup.';
+        } catch {
+          status.textContent = 'Clipboard unavailable. Select and copy the commands above.';
+        }
+      });
+      function closeMenu(restoreFocus = false) {
+        menuButton.setAttribute('aria-expanded', 'false');
+        siteNav.classList.remove('is-open');
+        if (restoreFocus) menuButton.focus();
+      }
+      menuButton.addEventListener('click', () => {
+        const open = menuButton.getAttribute('aria-expanded') !== 'true';
+        menuButton.setAttribute('aria-expanded', String(open));
+        siteNav.classList.toggle('is-open', open);
+      });
+      siteNav.addEventListener('click', event => {
+        if (event.target.closest('a')) closeMenu();
+      });
+      document.addEventListener('keydown', event => {
+        if (event.key === 'Escape' && menuButton.getAttribute('aria-expanded') === 'true') {
+          closeMenu(true);
+        }
+      });
+      document.addEventListener('pointerdown', event => {
+        if (!event.target.closest('.site-header')) closeMenu();
+      });
+      document.addEventListener('focusin', event => {
+        if (!event.target.closest('.site-header')) closeMenu();
+      });
+      window.matchMedia('(max-width: 800px)').addEventListener('change', () => closeMenu());
+      function updateThemeLabel() {
+        const dark = document.documentElement.dataset.theme === 'dark';
+        themeButton.setAttribute('aria-label', `Switch to ${dark ? 'light' : 'dark'} mode`);
+      }
+      themeButton.addEventListener('click', () => {
+        const dark = document.documentElement.dataset.theme === 'dark';
+        document.documentElement.dataset.theme = dark ? 'light' : 'dark';
+        updateThemeLabel();
+      });
+      updateThemeLabel();
+      renderQuestion();
+    })();
+  </script>
+</body>
+</html>

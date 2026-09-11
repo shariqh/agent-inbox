@@ -189,6 +189,8 @@ describe('dueTargets (TTL policy)', () => {
   const link = (branch: string, over: Partial<SourceLink> = {}): SourceLink => ({
     repo: 'o/n', branch, provider: 'github',
     pr_number: 41, pr_url: null, pr_title: null, pr_state: 'OPEN', pr_draft: false,
+    pr_head_sha: null, preview_url: null, preview_environment: null, preview_deployment_id: null,
+    preview_updated_at: null, preview_error: null, revision: 1,
     review_decision: null, checks: null, issue_number: null, issue_url: null, issue_title: null,
     tldr: null, fetched_at: new Date(T0).toISOString(), checked_at: new Date(T0).toISOString(), error: null,
     ...over,

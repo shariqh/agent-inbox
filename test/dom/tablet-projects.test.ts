@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
 import { closeProject, closedProjects, insertItem, reopenProject } from '../../src/store.js'
 import {
@@ -526,6 +526,8 @@ describe('tablet archived-project popover behavior', () => {
     const peek = archivedPopover()
       ?.querySelector<HTMLButtonElement>('[aria-label="View archived project beta"]')!
     peek.focus()
+    // CSS hides a control, not the active browser document; jsdom conflates the two.
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
     setViewport(560)
     peek.blur()
     expect(document.activeElement).toBe(document.body)
@@ -546,6 +548,7 @@ describe('tablet archived-project popover behavior', () => {
 
     const trigger = archivedTrigger()!
     trigger.focus()
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
     pointer(trigger.querySelector('span')!, 'pointerdown')
     setViewport(560)
     trigger.blur()

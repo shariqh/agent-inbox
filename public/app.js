@@ -31,7 +31,7 @@ import { renderStructuredText } from '/structured-text.js'
 import { boardRowsView, boardRowLine, progressLabel, hiddenDoneCount, lingeringBoards } from '/boards.js'
 import { titleWithBadge, focusHashFor, parseFocusHash } from '/badge.js'
 import { layoutMode, railLabel, NARROW_MAX, PROJECT_DISCLOSURE_MAX } from '/layout.js'
-import { indexLinks, sourceChipsHtml, sourceBlockHtml } from '/source.js'
+import { indexLinks, PREVIEW_TTL_MS, previewRef, sourceChipsHtml, sourceBlockHtml } from '/source.js'
 import { buildSummary } from '/buildstamp.js'
 import { actionCategory, actionOwnerLabel, agentFollowupChip, changeKind, lifecycleReceipt, responseLabel } from '/action.js'
 import { buildRelay } from '/relay.js'
@@ -107,6 +107,8 @@ let preparedFrame = null
 // reach a renderer before the first /api/links response lands, and linkFor(null)
 // would throw into load()'s catch and blank the whole page.
 let linkIndex = new Map()
+let previewExpiryTimer = null
+const boundPreviewLinks = new WeakSet()
 const HIDE_DONE_KEY = 'agent-inbox-hide-completed'
 // The product is a cross-project attention inbox, so a cold launch must never
 // reopen behind yesterday's project/agent lens while the global badge counts
@@ -434,7 +436,53 @@ async function load() {
     console.error(err)
     document.getElementById('status').textContent = 'disconnected'
     return false
+  } finally {
+    invalidatePreviewLinks()
   }
+}
+
+// Invalidate rather than retarget a link inside a protected draft or held press.
+// The next normal rebuild supplies the new link without replacing the editor.
+function invalidatePreviewLinks(root = document) {
+  clearTimeout(previewExpiryTimer)
+  previewExpiryTimer = null
+  const nowMs = Date.now()
+  const closed = new Set(lastData?.closed ?? [])
+  let nextExpiry = Infinity
+  const links = Array.isArray(lastData?.links) ? lastData.links : []
+  const current = new Map([...indexLinks(links)].map(([key, link]) => [encodeURIComponent(key), link]))
+  for (const link of current.values()) {
+    if (previewRef(link, nowMs)) nextExpiry = Math.min(nextExpiry, Date.parse(link.fetched_at) + PREVIEW_TTL_MS)
+  }
+  for (const anchor of root.querySelectorAll('a[data-preview-key][href]')) {
+    const link = current.get(anchor.dataset.previewKey)
+    const preview = previewRef(link, nowMs)
+    if (preview && !closed.has(anchor.dataset.previewProject) && preview.url === anchor.getAttribute('href')
+      && preview.headSha === anchor.dataset.previewHead
+      && String(preview.deploymentId) === anchor.dataset.previewDeployment) {
+      if (!boundPreviewLinks.has(anchor)) {
+        for (const event of ['click', 'auxclick', 'contextmenu']) anchor.addEventListener(event, guardPreviewActivation, true)
+        boundPreviewLinks.add(anchor)
+      }
+      continue
+    }
+    anchor.removeAttribute('href')
+    anchor.setAttribute('aria-disabled', 'true')
+    anchor.tabIndex = -1
+    anchor.classList.add('tone-muted')
+    anchor.textContent = 'Preview unavailable'
+    anchor.title = 'The preview changed or could not be confirmed. Finish your response to refresh the card.'
+  }
+  if (Number.isFinite(nextExpiry)) {
+    previewExpiryTimer = setTimeout(invalidatePreviewLinks, Math.max(1, nextExpiry - nowMs))
+  }
+}
+
+function guardPreviewActivation(event) {
+  const anchor = event.target.closest?.('a[data-preview-key]')
+  if (!anchor) return
+  invalidatePreviewLinks()
+  if (!anchor.hasAttribute('href')) event.preventDefault()
 }
 
 // fix round 1 (hardening): every write-path fetch used to await an unguarded request
@@ -567,8 +615,14 @@ function cardFocusKey(el) {
   ])
 }
 
+// A blurred tab or embedded webview retains activeElement. Remember focus only
+// while this document owns it, before replacing any focused DOM.
+function activeFocusElement() {
+  return document.hasFocus() ? document.activeElement : null
+}
+
 function captureCardFocus(card, id) {
-  const active = document.activeElement
+  const active = activeFocusElement()
   if (!active || (active !== card && !card.contains(active))) return null
   const targets = cardFocusTargets(card)
   if (active === card || !targets.includes(active)) return { id, key: null, ordinal: 0 }
@@ -595,7 +649,7 @@ function restoreCardFocus(bookmark) {
 }
 
 function focusedAskedTimeId() {
-  const active = document.activeElement
+  const active = activeFocusElement()
   if (!active?.matches?.('.nrow-asked')) return null
   return active.closest('.nrow[data-card-id]')?.dataset.cardId ?? null
 }
@@ -609,7 +663,7 @@ function restoreAskedTimeFocus(id) {
 }
 
 function pagedCardFocusBookmark() {
-  const active = document.activeElement
+  const active = activeFocusElement()
   const card = active?.closest?.('#notes [data-card-id], #done [data-card-id], #boards [data-card-id]')
   if (!card) return null
   const rowId = active.closest('[data-row-id]')?.dataset.rowId ?? null
@@ -1199,11 +1253,11 @@ function dashboardTarget(target) {
 }
 
 function dashboardInteractionActive() {
-  return activeTab === 'dashboard' && Boolean(document.activeElement?.closest?.('#dashboard'))
+  return activeTab === 'dashboard' && Boolean(activeFocusElement()?.closest?.('#dashboard'))
 }
 
 function dashboardFocusBookmark() {
-  return document.activeElement?.closest?.('#dashboard [data-dashboard-focus-key]')?.dataset.dashboardFocusKey ?? null
+  return activeFocusElement()?.closest?.('#dashboard [data-dashboard-focus-key]')?.dataset.dashboardFocusKey ?? null
 }
 
 function restoreDashboardFocus(key) {
@@ -1557,23 +1611,27 @@ function paintEditableSurfaces({ agents, g, boards, archived, live, dashboard })
 function render() {
   const frame = preparedFrame ?? paintAmbient()
   preparedFrame = null
+  const ownsFocus = document.hasFocus()
   const missionFocus = captureMissionFocus()
   const dashboardFocus = dashboardFocusBookmark()
-  const draftFocus = activeDraftFocusBookmark() ?? requestedDraftFocusBookmark
+  const draftFocus = ownsFocus ? activeDraftFocusBookmark() ?? requestedDraftFocusBookmark : null
   const pagedFocus = pagedCardFocusBookmark()
   pagedFocusId = pagedFocus?.id ?? null
-  if (document.activeElement?.closest?.('.stale-drafts-fold')) draftRecoveryFocusPending = true
+  if (activeFocusElement()?.closest?.('.stale-drafts-fold')) draftRecoveryFocusPending = true
   reconcileDraftOwners()
   requestedDraftFocusBookmark = null
   paintEditableSurfaces(frame)
   pagedFocusId = null
-  if (missionFocus && missionBoardId) {
-    restoreMissionFocus(missionFocus)
-  } else if (!restoreDashboardFocus(dashboardFocus)
-    && !restoreDraftRecoveryFocus() && !restoreDraftFocus(draftFocus)) {
-    restorePagedCardFocus(pagedFocus)
+  if (ownsFocus) {
+    if (missionFocus && missionBoardId) {
+      restoreMissionFocus(missionFocus)
+    } else if (!restoreDashboardFocus(dashboardFocus)
+      && !restoreDraftRecoveryFocus() && !restoreDraftFocus(draftFocus)) {
+      restorePagedCardFocus(pagedFocus)
+    }
   }
   applySearchJumpHighlight()
+  invalidatePreviewLinks()
   keyboardUI?.refresh()
 }
 
@@ -1639,7 +1697,7 @@ function recoverMismatchedRenderedRowDraft(b, r) {
 }
 
 function activeDraftFocusBookmark() {
-  const active = document.activeElement
+  const active = activeFocusElement()
   const key = active?.dataset?.draftFocusKey
   if (!key) return null
   return { key, scopeId: active.closest('[id]')?.id ?? null }
@@ -1769,7 +1827,7 @@ function triageEntryKey(entry) {
 function captureTriageFocus() {
   if (!triageDeck) return null
   const card = document.querySelector('#lightbox .lb-card')
-  const active = document.activeElement
+  const active = activeFocusElement()
   if (!card || !active || !card.contains(active)) return null
   const targets = cardFocusTargets(card)
   if (!targets.includes(active)) return null
@@ -2209,6 +2267,13 @@ function rowHumanStateHtml(r) {
   return parts.join('')
 }
 
+function sourceOptions(entity, identity = entity) {
+  return {
+    preview: entity.action_owner === 'approval' && (entity.status === 'open' || entity.status === 'blocked')
+      && !(lastData?.closed ?? []).includes(identity.project),
+  }
+}
+
 function cardDetailsHtml(entity, identity, key, presentation, { includeAsked = true } = {}) {
   const metadata = [identity.project, identity.agent, identity.stream].filter(Boolean)
   return `<details class="card-context" data-context-key="${esc(key)}"${openContexts.has(key) ? ' open' : ''}>
@@ -2219,13 +2284,14 @@ function cardDetailsHtml(entity, identity, key, presentation, { includeAsked = t
     ${identity.title && entity.label !== undefined ? `<div class="meta">Plan · ${esc(identity.title)} <span class="board-id">#${esc(identity.id.slice(0, 6))}</span></div>` : ''}
     ${entity.next_step && entity.next_step !== presentation.headline ? `<div class="card-recorded-request"><span class="card-tracking-label">Recorded request</span>${renderStructuredText(entity.next_step)}</div>` : ''}
     ${entity.context ? `<div class="card-context-body">${renderStructuredText(entity.context)}</div>` : ''}
-    ${sourceBlockHtml(linkIndex, identity, Date.now())}
+    ${sourceBlockHtml(linkIndex, identity, Date.now(), sourceOptions(entity, identity))}
     ${lifecycleHtml(entity, { includeAsked })}
     ${historyHtml(entity)}
   </details>`
 }
 
 function bindContextDisclosures(root) {
+  invalidatePreviewLinks(root)
   for (const details of root.querySelectorAll('details[data-context-key]')) {
     details.addEventListener('toggle', () => {
       const key = details.dataset.contextKey
@@ -2251,7 +2317,7 @@ function cardOriginHtml(entity, identity, { showProject = true } = {}) {
     ${showProject ? `<span>${esc(identity.project)}</span>` : ''}
     ${entity.label !== undefined ? `<span>Plan · ${esc(identity.title)}</span>` : ''}
     ${entity.action_owner ? `<span class="action-owner">${esc(actionOwnerLabel(entity))}</span>` : ''}
-    ${sourceChipsHtml(linkIndex, identity, Date.now(), { tabbable: true })}
+    ${sourceChipsHtml(linkIndex, identity, Date.now(), { ...sourceOptions(entity, identity), tabbable: true })}
   </div>`
 }
 
@@ -2532,7 +2598,7 @@ function missionDetailPanel() {
 }
 
 function captureMissionFocus() {
-  const active = document.activeElement
+  const active = activeFocusElement()
   if (!missionBoardId || !active?.closest?.('#missionbox')) return null
   const detail = active.closest('.mission-detail-panel')
   const surface = detail ? 'detail' : 'flow'
@@ -3099,9 +3165,10 @@ function initProjectDisclosure() {
     if (!disclosure.isConnected || document.getElementById('projectDisclosure') !== disclosure) return
     const next = projectNavigationMode()
     if (next === projectMode) return
-    const activeFocusState = projectFocusState(document.activeElement)
+    const active = activeFocusElement()
+    const activeFocusState = projectFocusState(active)
     const focusState = activeFocusState
-      ?? (document.activeElement === document.body ? projectFocusBookmark : null)
+      ?? (active === document.body ? projectFocusBookmark : null)
     projectMode = next
     setProjectDisclosure(false)
     setClosedProjectsOpen(false)
@@ -3632,7 +3699,7 @@ function renderRail() {
   if (host.dataset.sig === sig) return
   if (tablet) closedFoldOpen = foldOpen
   // rebuilding blows away focus; remember the caret so typing in the filter survives
-  const active = document.activeElement
+  const active = activeFocusElement()
   const focusState = projectFocusState(active)
   const caret = active && active.classList.contains('rail-filter') ? active.selectionStart : null
   host.dataset.sig = sig
@@ -4193,7 +4260,7 @@ function renderNeedsYou(g, boardsInView, nowMs) {
   // §13: this rebuilds every row from scratch (poll tick or user action) — capture
   // this BEFORE the list gets cleared below, since clearing a focused element's
   // subtree shifts document.activeElement immediately (to <body>, typically).
-  const hadListFocus = !!document.activeElement?.closest?.('#needsYouList .nrow[data-card-id]')
+  const hadListFocus = !!activeFocusElement()?.closest?.('#needsYouList .nrow[data-card-id]')
   const items = g.needsYou.flatMap((gr) => gr.items)
   const live = liveSessionIds()
   // §7: the LIST is scoped by the rail + search (boardsInView); the tab count is
@@ -4391,6 +4458,8 @@ function staleFoldEl(entries, opts, nowMs) {
 
 function needsRowEl(m, entry, nowMs) {
   const el = document.createElement('div')
+  const sourceIdentity = entry.kind === 'row' ? entry.board : entry.item
+  const sourceAction = entry.kind === 'row' ? entry.row : entry.item
   el.className = `nrow nrow-${m.kind}${m.answered ? ' answered' : ''}${stagedDismiss.has(m.id) ? ' staged' : ''}`
   el.dataset.cardId = m.id
   setHintOwner(el, entry.kind === 'row' ? entry.row : entry.item, entry.kind === 'row' ? entry.board : null)
@@ -4434,7 +4503,7 @@ function needsRowEl(m, entry, nowMs) {
         ${changeBit}
         ${askedBit}
         <span class="chip chip-${chip.tone}"><span aria-hidden="true">${livenessGlyph(m.liveness).glyph}</span> ${esc(chip.text)}</span>
-        <span class="nrow-src">${sourceChipsHtml(linkIndex, entry.kind === 'row' ? entry.board : entry.item, nowMs)}</span>
+        <span class="nrow-src">${sourceChipsHtml(linkIndex, sourceIdentity, nowMs, sourceOptions(sourceAction, sourceIdentity))}</span>
         <span class="nrow-star"></span>
         ${wakeBit}
         ${dismissBit}

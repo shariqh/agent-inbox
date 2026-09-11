@@ -12,6 +12,8 @@ import {
   sourceTooltip,
   sourceChipsHtml,
   sourceBlockHtml,
+  previewRef,
+  PREVIEW_TTL_MS,
 } from '../public/source.js'
 import type { CachedLink, LinkedEntity } from '../public/source.js'
 
@@ -23,8 +25,11 @@ function link(over: Partial<CachedLink> = {}): CachedLink {
     repo: 'shariqh/agent-inbox', branch: '30-x', provider: 'github',
     pr_number: 41, pr_url: 'https://github.com/shariqh/agent-inbox/pull/41',
     pr_title: 'source + PR links', pr_state: 'OPEN', pr_draft: false,
+    pr_head_sha: null,
     review_decision: null, checks: 'none',
     issue_number: null, issue_url: null, issue_title: null,
+    preview_url: null, preview_environment: null, preview_deployment_id: null,
+    preview_updated_at: null, preview_error: null, revision: 1,
     tldr: 'Links the inbox to its source issue and PR.',
     fetched_at: new Date(NOW - 60_000).toISOString(),
     checked_at: new Date(NOW - 60_000).toISOString(),
@@ -42,6 +47,45 @@ describe('indexLinks / linkFor', () => {
     expect(linkFor(index, entity())!.pr_number).toBe(41)
     expect(linkFor(index, entity({ stream: 'other' }))!.pr_number).toBe(9)
     expect(linkFor(index, entity({ repo: 'someone/else' }))).toBeNull()
+  })
+
+  describe('preview provenance and freshness', () => {
+    const ready = () => link({
+      pr_head_sha: 'a'.repeat(40),
+      preview_url: 'https://preview.example/?x=1&y=2',
+      preview_environment: 'Preview',
+      preview_deployment_id: 1,
+      preview_updated_at: new Date(NOW).toISOString(),
+      fetched_at: new Date(NOW).toISOString(),
+    })
+
+    it('expires without another successful poll and rejects future cache timestamps', () => {
+      expect(previewRef(ready(), NOW)).not.toBeNull()
+      expect(previewRef(ready(), NOW + PREVIEW_TTL_MS)).toBeNull()
+      expect(previewRef(ready(), NOW - 1)).toBeNull()
+    })
+
+    it('requires current PR provenance and a complete successful snapshot', () => {
+      for (const change of [
+        { pr_head_sha: null }, { pr_state: 'MERGED' }, { pr_number: null },
+        { provider: 'gitlab' }, { preview_deployment_id: null }, { preview_updated_at: 'bad' },
+        { fetched_at: 'bad' }, { error: 'offline' }, { preview_error: 'head-changed' },
+      ]) {
+        expect(previewRef({ ...ready(), ...change }, NOW)).toBeNull()
+      }
+    })
+
+    it('escapes environment metadata and makes previews opt-in on each action surface', () => {
+      const cached = { ...ready(), preview_environment: '"><img src=x onerror=alert(1)>' }
+      const index = indexLinks([cached])
+      expect(sourceChipsHtml(index, entity(), NOW)).not.toContain('data-preview-key')
+      const html = sourceChipsHtml(index, entity(), NOW, { preview: true })
+      expect(html).not.toContain('<img')
+      expect(html).toContain('&quot;&gt;&lt;img')
+      expect(html).toContain('href="https://preview.example/?x=1&amp;y=2"')
+      expect(html).toContain('tabindex="-1"')
+      expect(sourceBlockHtml(index, entity(), NOW, { preview: true })).not.toContain('tabindex="-1"')
+    })
   })
 
   it('is null-safe for an entity with no repo or no branch, and for junk input', () => {
@@ -348,7 +392,7 @@ describe('app.js wires the source chips without re-implementing the escaping', (
     expect(fn).toContain('${cardDetailsHtml(it, it, `item:${it.id}`, presentation, { includeAsked })}')
     const detailsStart = js.indexOf('function cardDetailsHtml(')
     const details = js.slice(detailsStart, js.indexOf('\nfunction bindContextDisclosures(', detailsStart))
-    expect(details).toContain('${sourceBlockHtml(linkIndex, identity, Date.now())}')
+    expect(details).toContain('${sourceBlockHtml(linkIndex, identity, Date.now(), sourceOptions(entity, identity))}')
   })
 
   // a <summary>'s activation toggles its <details>: a chip inside .board-meta

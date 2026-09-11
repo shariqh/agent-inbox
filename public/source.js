@@ -17,6 +17,8 @@
 //      place below, through esc(safeHttpUrl(...)).
 import { esc } from './esc.js'
 
+export const PREVIEW_TTL_MS = 5 * 60_000
+
 // A '/' is legal in both a repo slug and a branch name, so the separator has to
 // be something neither can contain.
 export function linkKey(repo, branch) {
@@ -66,6 +68,19 @@ export function issueRef(entity, link) {
   const url = cached || constructed
   const title = fromPr === num && link && link.issue_title ? link.issue_title : ''
   return { num, url: safeHttpUrl(url), title }
+}
+
+export function previewRef(link, nowMs) {
+  if (!link || link.provider !== 'github' || link.error || link.preview_error
+    || link.pr_state !== 'OPEN' || !Number.isSafeInteger(link.pr_number) || link.pr_number <= 0
+    || !/^[a-f0-9]{40}$/.test(link.pr_head_sha ?? '')
+    || !Number.isSafeInteger(link.preview_deployment_id) || link.preview_deployment_id <= 0) return null
+  const age = nowMs - Date.parse(link.fetched_at ?? '')
+  if (!Number.isFinite(age) || age < 0 || age >= PREVIEW_TTL_MS) return null
+  const url = safeHttpUrl(link.preview_url)
+  const environment = typeof link.preview_environment === 'string' ? link.preview_environment.trim() : ''
+  if (!url || !environment || !Number.isFinite(Date.parse(link.preview_updated_at ?? ''))) return null
+  return { url, environment, headSha: link.pr_head_sha, deploymentId: link.preview_deployment_id }
 }
 
 // The ONE priority order, worst-and-most-final first:
@@ -126,7 +141,7 @@ export function prDetail(link, nowMs) {
 // The hover TL;DR, as PLAIN TEXT for the native title= attribute — zero JS, zero
 // CSS, identical in Electron and the browser, and it cannot inject HTML once
 // esc()'d at the interpolation below.
-export function sourceTooltip(entity, link, nowMs) {
+export function sourceTooltip(entity, link, nowMs, opts = {}) {
   const lines = []
   const issue = issueRef(entity, link)
   const detail = prDetail(link, nowMs)
@@ -136,6 +151,9 @@ export function sourceTooltip(entity, link, nowMs) {
     if (detail.tldr) lines.push(detail.tldr)
   }
   if (issue) lines.push(`issue #${issue.num}${issue.title ? ` — ${issue.title}` : ''}`)
+  const preview = opts.preview ? previewRef(link, nowMs) : null
+  if (preview) lines.push(`Preview — ${preview.environment}`)
+  if (opts.preview && link?.preview_error) lines.push('Preview unavailable — its current deployment could not be confirmed')
   if (detail && detail.error) lines.push(detail.error)
   if (detail && detail.checked) lines.push(detail.checked)
   return lines.join('\n')
@@ -158,13 +176,19 @@ export function textLinkHtml(url, label) {
 
 // A source-chip URL that does not survive safeHttpUrl renders as a plain span:
 // the chip still says what it knows, and no dead-or-hostile link is emitted.
-function chipHtml(url, tone, innerHtml, title, tabbable) {
-  const attrs = `class="src-chip tone-${esc(tone)}"${title ? ` title="${esc(title)}"` : ''}${tabbable ? '' : ' tabindex="-1"'}`
+function chipHtml(url, tone, innerHtml, title, tabbable, extraAttrs = '') {
+  const attrs = `class="src-chip tone-${esc(tone)}"${title ? ` title="${esc(title)}"` : ''}${tabbable ? '' : ' tabindex="-1"'}${extraAttrs ? ` ${extraAttrs}` : ''}`
   return anchorHtml(url, innerHtml, attrs) || `<span ${attrs}>${innerHtml}</span>`
 }
 
 function prChipInner(chip) {
   return `<span aria-hidden="true">${esc(chip.glyph)}</span> ${esc(chip.text)} <span class="src-word">${esc(chip.word)}</span>`
+}
+
+function previewChipHtml(link, preview, entity, tabbable) {
+  const attrs = `data-preview-key="${esc(encodeURIComponent(linkKey(link.repo, link.branch)))}" data-preview-head="${esc(preview.headSha)}" data-preview-deployment="${esc(preview.deploymentId)}" data-preview-project="${esc(entity?.project ?? '')}"`
+  return chipHtml(preview.url, 'neutral', 'Preview',
+    `Open ${preview.environment} preview for the current PR commit (new tab)`, tabbable, attrs)
 }
 
 // The compact row/board chips. `tabbable` defaults to false: §13's roving tab
@@ -174,21 +198,24 @@ export function sourceChipsHtml(index, entity, nowMs, opts = {}) {
   const link = linkFor(index, entity)
   const issue = issueRef(entity, link)
   const chip = prChip(link)
+  const preview = opts.preview ? previewRef(link, nowMs) : null
   if (!issue && !chip) return ''
   const tabbable = opts.tabbable === true
-  const tip = sourceTooltip(entity, link, nowMs)
+  const tip = sourceTooltip(entity, link, nowMs, opts)
   let html = ''
   if (issue) html += chipHtml(issue.url, 'issue', `#${esc(issue.num)}`, tip, tabbable)
   if (chip) html += chipHtml(link.pr_url, chip.tone, prChipInner(chip), tip, tabbable)
+  if (preview) html += previewChipHtml(link, preview, entity, tabbable)
   return html
 }
 
 // The full block inside an expanded card. Chips here ARE tabbable — the surface
 // is already open, so they are part of its natural reading order.
-export function sourceBlockHtml(index, entity, nowMs) {
+export function sourceBlockHtml(index, entity, nowMs, opts = {}) {
   const link = linkFor(index, entity)
   const issue = issueRef(entity, link)
   const detail = prDetail(link, nowMs)
+  const preview = opts.preview ? previewRef(link, nowMs) : null
   if (!issue && !detail) return ''
   let rows = ''
   if (issue) {
@@ -201,6 +228,7 @@ export function sourceBlockHtml(index, entity, nowMs) {
     if (detail.tldr) rows += `<div class="src-tldr">${esc(detail.tldr)}</div>`
     if (detail.error) rows += `<div class="src-checked">${esc(detail.error)}</div>`
   }
+  if (preview) rows += `<div class="src-row">${previewChipHtml(link, preview, entity, true)}</div>`
   const checked = detail && detail.checked ? `<div class="src-checked">${esc(detail.checked)}</div>` : ''
   return `<div class="card-source"><div class="card-source-label">SOURCE</div>${rows}${checked}</div>`
 }

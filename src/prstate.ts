@@ -20,8 +20,9 @@ import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, delimiter } from 'node:path'
 import type Database from 'better-sqlite3'
-import { listLinkTargets, listSourceLinks, upsertSourceLink, recordLinkFailure } from './store.js'
-import type { LinkTarget, SourceLink } from './store.js'
+import { listLinkTargets, listSourceLinks, upsertSourceLink, recordLinkFailure, setSourcePreview } from './store.js'
+import type { LinkTarget, SourceLink, SourcePreview } from './store.js'
+import { PREVIEW_TTL_MS, safeHttpUrl } from '../public/source.js'
 
 // ── cadence, TTLs and subprocess limits: every tunable number, in one place ──
 const MIN = 60_000
@@ -29,15 +30,15 @@ const MIN = 60_000
 export const POLL_INTERVAL_MS = 60_000
 /** a prompt first refresh shortly after the viewer boots, without blocking start */
 export const FIRST_TICK_DELAY_MS = 2_000
-/** ceiling on gh calls per tick — with a handful of live branches this stays far
- *  under 100 calls/hour against a 5000/hour authenticated limit */
+/** ceiling on branches per tick; optional preview reads are bounded separately */
 export const MAX_PER_TICK = 4
 export const GH_TIMEOUT_MS = 10_000
 export const GH_MAX_BUFFER = 8 * 1024 * 1024
+const MAX_PREVIEW_DEPLOYMENTS = 5
 /** how long a cached answer stays good, by what the answer was */
 export const TTL = {
   /** an open PR moves: checks land, reviews arrive */
-  openPr: 5 * MIN,
+  openPr: PREVIEW_TTL_MS,
   /** no PR yet — worth re-asking, but not urgently */
   noPr: 15 * MIN,
   /** MERGED or CLOSED is terminal; we only re-ask in case it reopens */
@@ -53,12 +54,14 @@ export type ChecksState = 'failing' | 'pending' | 'passing' | 'none'
 
 /** Injected so tests never shell out. Returns gh's raw stdout. */
 export type GhRun = (repo: string, branch: string) => Promise<string> | string
+export type GhApiRun = (endpoint: string) => Promise<string> | string
 
 export interface PrPayload {
   pr_number: number
   pr_url: string | null
   pr_title: string | null
   pr_state: string | null
+  pr_head_sha: string | null
   pr_draft: boolean
   review_decision: string | null
   checks: ChecksState
@@ -155,6 +158,8 @@ export function parsePrPayload(json: string): PrPayload | null {
     pr_url: str(pr.url),
     pr_title: clip(pr.title, TITLE_MAX),
     pr_state: str(pr.state),
+    pr_head_sha: typeof pr.headRefOid === 'string' && /^[a-f0-9]{40}$/i.test(pr.headRefOid)
+      ? pr.headRefOid.toLowerCase() : null,
     pr_draft: pr.isDraft === true,
     review_decision: str(pr.reviewDecision),
     checks: classifyChecks(pr.statusCheckRollup),
@@ -166,6 +171,67 @@ export function parsePrPayload(json: string): PrPayload | null {
     issue_title: null,
     tldr: firstLine(pr.body),
   }
+}
+
+function emptyPreview(error: string | null = null): SourcePreview {
+  return {
+    preview_url: null, preview_environment: null, preview_deployment_id: null,
+    preview_updated_at: null, preview_error: error,
+  }
+}
+
+function metadataArray(json: string): Record<string, unknown>[] {
+  const parsed: unknown = JSON.parse(json)
+  if (!Array.isArray(parsed) || parsed.some((row: unknown) => !row || typeof row !== 'object' || Array.isArray(row))) {
+    throw new Error('Invalid deployment metadata')
+  }
+  return parsed
+}
+
+// A limit hit or failed status read leaves selection incomplete. Do not choose a
+// plausible winner from a partial list, or reinterpret a build/check URL as a preview.
+export async function resolvePreviewPayload(repo: string, headSha: string, runApi: GhApiRun): Promise<SourcePreview> {
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo) || repo.split('/').some((part) => part === '.' || part === '..')
+    || !/^[a-f0-9]{40}$/.test(headSha)) {
+    throw new Error('Invalid preview source identity')
+  }
+  const deployments = metadataArray(await runApi(`repos/${repo}/deployments?sha=${headSha}&per_page=${MAX_PREVIEW_DEPLOYMENTS + 1}`))
+  if (deployments.length > MAX_PREVIEW_DEPLOYMENTS) throw new Error('Preview deployment lookup limit exceeded')
+  const eligible = deployments.flatMap((deployment) => {
+    if (typeof deployment.id !== 'number' || !Number.isSafeInteger(deployment.id) || deployment.id <= 0
+      || typeof deployment.sha !== 'string') {
+      throw new Error('Invalid deployment identity')
+    }
+    return deployment.sha === headSha && deployment.production_environment === false
+      ? [{ id: deployment.id, environment: deployment.environment }] : []
+  })
+  const candidates = await Promise.all(eligible.map(async (deployment) => {
+    const [status] = metadataArray(await runApi(`repos/${repo}/deployments/${deployment.id}/statuses?per_page=1`))
+    if (!status || status.state !== 'success') return null
+    const url = safeHttpUrl(status.environment_url)
+    const environment = str(deployment.environment)?.trim()
+    const updatedAt = str(status.updated_at)
+    if (!url || !environment || !updatedAt || !Number.isFinite(Date.parse(updatedAt))) return null
+    return {
+      url, environment, environmentKey: environment.toLowerCase(),
+      deploymentId: deployment.id, updatedAt,
+    }
+  }))
+  const ready = candidates.filter((candidate) => candidate !== null)
+  const byEnvironment = new Map<string, string>()
+  for (const candidate of ready) {
+    const previous = byEnvironment.get(candidate.environmentKey)
+    if (previous && previous !== candidate.url) throw new Error('Ambiguous preview deployment URLs')
+    byEnvironment.set(candidate.environmentKey, candidate.url)
+  }
+  ready.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt)
+    || (a.environmentKey < b.environmentKey ? -1 : a.environmentKey > b.environmentKey ? 1 : 0)
+    || b.deploymentId - a.deploymentId)
+  const best = ready[0]
+  return best ? {
+    preview_url: best.url, preview_environment: best.environment,
+    preview_deployment_id: best.deploymentId, preview_updated_at: best.updatedAt, preview_error: null,
+  } : emptyPreview()
 }
 
 export function classifyError(code: string | number | undefined, stderr: string): LinkError {
@@ -216,6 +282,7 @@ export function dueTargets(targets: LinkTarget[], links: SourceLink[], nowMs: nu
 
 export interface RefreshOpts {
   run?: GhRun
+  runApi?: GhApiRun
   nowMs?: number
   max?: number
 }
@@ -226,6 +293,7 @@ export interface RefreshOpts {
 // A background PR-title fetcher must never be able to take the inbox down.
 export async function refreshOnce(db: Database.Database, opts: RefreshOpts = {}): Promise<number> {
   const run = opts.run ?? defaultGhRun
+  const runApi = opts.runApi ?? defaultGhApiRun
   const nowMs = opts.nowMs ?? Date.now()
   const max = opts.max ?? MAX_PER_TICK
   let targets: LinkTarget[]
@@ -242,8 +310,23 @@ export async function refreshOnce(db: Database.Database, opts: RefreshOpts = {})
       const pr = parsePrPayload(String(out))
       // an empty array is a real answer ("this branch has no PR"), cached like
       // any other so the TTL backs off instead of re-asking every minute
-      upsertSourceLink(db, { repo: t.repo, branch: t.branch, provider: 'github', ...(pr ?? {}) })
+      const revision = upsertSourceLink(db, { repo: t.repo, branch: t.branch, provider: 'github', ...(pr ?? {}) })
       done++
+      if (pr?.pr_state !== 'OPEN' || !pr.pr_head_sha) continue
+      let preview: SourcePreview
+      try {
+        preview = await resolvePreviewPayload(t.repo, pr.pr_head_sha, runApi)
+        if (preview.preview_url) {
+          const current = parsePrPayload(String(await run(t.repo, t.branch)))
+          if (current?.pr_number !== pr.pr_number || current.pr_head_sha !== pr.pr_head_sha || current.pr_state !== 'OPEN') {
+            preview = emptyPreview('head-changed')
+          }
+        }
+      } catch (err) {
+        const e = err as { code?: string | number; stderr?: unknown; message?: unknown }
+        preview = emptyPreview(classifyError(e?.code, String(e?.stderr ?? e?.message ?? '')))
+      }
+      setSourcePreview(db, { ...t, revision }, preview)
     } catch (err) {
       const e = err as { code?: string | number; stderr?: unknown; message?: unknown }
       const reason = classifyError(e?.code, String(e?.stderr ?? e?.message ?? ''))
@@ -288,7 +371,7 @@ export const defaultGhRun: GhRun = async (repo, branch) => {
       '--head', branch,
       '--state', 'all',
       '--limit', '1',
-      '--json', 'number,title,url,state,isDraft,reviewDecision,statusCheckRollup,closingIssuesReferences,body,updatedAt',
+      '--json', 'number,title,url,state,headRefOid,isDraft,reviewDecision,statusCheckRollup,closingIssuesReferences,body,updatedAt',
     ],
     {
       timeout: GH_TIMEOUT_MS,
@@ -303,8 +386,20 @@ export const defaultGhRun: GhRun = async (repo, branch) => {
   return stdout
 }
 
+const defaultGhApiRun: GhApiRun = async (endpoint) => {
+  const { stdout } = await execFileAsync(resolveGh(), ['api', endpoint], {
+    timeout: GH_TIMEOUT_MS,
+    maxBuffer: GH_MAX_BUFFER,
+    windowsHide: true,
+    encoding: 'utf8',
+    env: { ...process.env, GH_PAGER: 'cat', NO_COLOR: '1', GH_NO_UPDATE_NOTIFIER: '1' },
+  })
+  return stdout
+}
+
 export interface PollerOpts {
   run?: GhRun
+  runApi?: GhApiRun
   intervalMs?: number
 }
 
@@ -315,7 +410,7 @@ export function startPrPoller(db: Database.Database, opts: PollerOpts = {}): { s
   const tick = (): void => {
     if (busy) return // a slow tick must never overlap the next one
     busy = true
-    refreshOnce(db, { run })
+    refreshOnce(db, { run, runApi: opts.runApi })
       .catch((err: unknown) => console.error('[agent-inbox] pr refresh failed', err))
       .finally(() => { busy = false })
   }

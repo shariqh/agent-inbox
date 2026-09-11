@@ -27,6 +27,7 @@
     "build": "tsc -p tsconfig.build.json",
     "mcp": "tsx src/mcp-server.ts",
     "view": "tsx src/viewer-server.ts",
+    "marketing": "node scripts/serve-marketing.mjs",
     "hook": "tsx src/hook-cli.ts",
     "watch": "tsx src/watch-cli.ts",
     "generate:icons": "bash scripts/generate-icons.sh",

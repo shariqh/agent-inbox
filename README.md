@@ -323,6 +323,11 @@ npm run typecheck
 npm run build
 ```
 
+For the local marketing site, run `npm run marketing` and open
+`http://127.0.0.1:4320`. The self-contained page at `marketing/index.html`
+uses fictional demo data and does not connect to your inbox.
+See [Marketing preview](CONTRIBUTING.md#marketing-preview) for the port option.
+
 The test suite uses real temporary SQLite databases and real stdio MCP integration
 round trips. Node 24 is required because this checkout's `better-sqlite3` binding is
 compiled for that ABI.

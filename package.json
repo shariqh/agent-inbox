@@ -66,7 +66,7 @@
     "@hono/node-server": "2.0.12",
     "@modelcontextprotocol/sdk": "1.30.0",
     "better-sqlite3": "^12.11.1",
-    "hono": "^4.12.34",
+    "hono": "^4.13.7",
     "zod": "^4.4.3"
   },
   "devDependencies": {

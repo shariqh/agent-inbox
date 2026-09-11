@@ -263,6 +263,17 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   live ambient signals) is `test/dom/silent-send.test.ts`.
   Nested Background disclosures are keyed by item/row id in `openContexts`; a poll or forced
   rebuild must restore their `open` state instead of collapsing text under the reader.
+- **Remembered DOM focus is not keyboard ownership.** A blurred tab or embedded viewer
+  keeps its last `document.activeElement`. Passive polling must capture focus bookmarks
+  only while `document.hasFocus()` is true, before replacing DOM; otherwise restoring a
+  card, plan, or project control can steal focus from the host chat composer or another
+  application. Background data/ambient updates still run. Explicit user navigation can
+  focus its destination, and an active viewer must retain its logical focused control
+  across rebuilds. `test/dom/background-focus.test.ts` covers the background and
+  foreground halves. In jsdom, a control's `.blur()` also makes `hasFocus()` false;
+  tests modeling CSS hiding a control in an active window must explicitly retain
+  document focus rather than accidentally model a background webview.
+
 - **A held pointer defers the rebuild, and it is NOT a suspension (#38 / D2).** The 3s render
   detaches the node under the cursor, so `pointerdown`/`pointerup` share no ancestor and the
   browser dispatches **no click at all** (measured in Chrome: ~1 in 24 at human hold times, on

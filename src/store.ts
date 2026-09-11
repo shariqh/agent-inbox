@@ -234,16 +234,23 @@ function runMigrations(db: Database.Database): void {
       pr_url TEXT,
       pr_title TEXT,
       pr_state TEXT,
+      pr_head_sha TEXT,
       pr_draft INTEGER,
       review_decision TEXT,
       checks TEXT,
       issue_number INTEGER,
       issue_url TEXT,
       issue_title TEXT,
+      preview_url TEXT,
+      preview_environment TEXT,
+      preview_deployment_id INTEGER,
+      preview_updated_at TEXT,
+      preview_error TEXT,
       tldr TEXT,
       fetched_at TEXT,
       checked_at TEXT NOT NULL,
       error TEXT,
+      revision INTEGER NOT NULL DEFAULT 1,
       PRIMARY KEY (repo, branch)
     );
   `)
@@ -282,6 +289,13 @@ function runMigrations(db: Database.Database): void {
   ensureColumn(db, 'board_rows', 'handled_at', 'TEXT')
   ensureColumn(db, 'board_rows', 'handled_seen_at', 'TEXT')
   ensureColumn(db, 'board_rows', 'handled_seen_by', 'TEXT')
+  ensureColumn(db, 'source_links', 'pr_head_sha', 'TEXT')
+  ensureColumn(db, 'source_links', 'preview_url', 'TEXT')
+  ensureColumn(db, 'source_links', 'preview_environment', 'TEXT')
+  ensureColumn(db, 'source_links', 'preview_deployment_id', 'INTEGER')
+  ensureColumn(db, 'source_links', 'preview_updated_at', 'TEXT')
+  ensureColumn(db, 'source_links', 'preview_error', 'TEXT')
+  ensureColumn(db, 'source_links', 'revision', 'INTEGER NOT NULL DEFAULT 1')
   migrateActionLifecycle(db)
   migrateAnnotationDelivery(db)
 }
@@ -2176,7 +2190,15 @@ export function getBoard(db: Database.Database, project: string, title: string):
 // own repo + stream. Keyed per BRANCH rather than per item so N items raised on
 // one branch cost one `gh` call, and a merge updates all of them at once.
 
-export interface SourceLink {
+export interface SourcePreview {
+  preview_url: string | null
+  preview_environment: string | null
+  preview_deployment_id: number | null
+  preview_updated_at: string | null
+  preview_error: string | null
+}
+
+export interface SourceLink extends SourcePreview {
   repo: string
   branch: string
   provider: string
@@ -2184,6 +2206,7 @@ export interface SourceLink {
   pr_url: string | null
   pr_title: string | null
   pr_state: string | null
+  pr_head_sha: string | null
   pr_draft: boolean
   review_decision: string | null
   checks: string | null
@@ -2196,9 +2219,10 @@ export interface SourceLink {
   fetched_at: string | null
   checked_at: string
   error: string | null
+  revision: number
 }
 
-export interface NewSourceLink {
+export interface NewSourceLink extends Partial<SourcePreview> {
   repo: string
   branch: string
   provider?: string
@@ -2206,6 +2230,7 @@ export interface NewSourceLink {
   pr_url?: string | null
   pr_title?: string | null
   pr_state?: string | null
+  pr_head_sha?: string | null
   pr_draft?: boolean
   review_decision?: string | null
   checks?: string | null
@@ -2227,19 +2252,25 @@ const MAX_LINK_TARGETS = 50
 
 // A successful fetch: writes every field, stamps BOTH timestamps and clears the
 // error. Housekeeping rides along, mirroring upsertActivity's day-old sweep.
-export function upsertSourceLink(db: Database.Database, link: NewSourceLink): void {
+export function upsertSourceLink(db: Database.Database, link: NewSourceLink): number {
   const now = new Date().toISOString()
-  db.prepare(
-    `INSERT INTO source_links (repo, branch, provider, pr_number, pr_url, pr_title, pr_state, pr_draft,
-       review_decision, checks, issue_number, issue_url, issue_title, tldr, fetched_at, checked_at, error)
-     VALUES (@repo, @branch, @provider, @pr_number, @pr_url, @pr_title, @pr_state, @pr_draft,
-       @review_decision, @checks, @issue_number, @issue_url, @issue_title, @tldr, @now, @now, NULL)
+  const result = db.prepare(
+    `INSERT INTO source_links (repo, branch, provider, pr_number, pr_url, pr_title, pr_state, pr_head_sha, pr_draft,
+       review_decision, checks, issue_number, issue_url, issue_title, tldr, fetched_at, checked_at, error,
+       preview_url, preview_environment, preview_deployment_id, preview_updated_at, preview_error)
+     VALUES (@repo, @branch, @provider, @pr_number, @pr_url, @pr_title, @pr_state, @pr_head_sha, @pr_draft,
+       @review_decision, @checks, @issue_number, @issue_url, @issue_title, @tldr, @now, @now, NULL,
+       @preview_url, @preview_environment, @preview_deployment_id, @preview_updated_at, @preview_error)
      ON CONFLICT(repo, branch) DO UPDATE SET
        provider = @provider, pr_number = @pr_number, pr_url = @pr_url, pr_title = @pr_title,
-       pr_state = @pr_state, pr_draft = @pr_draft, review_decision = @review_decision, checks = @checks,
+       pr_state = @pr_state, pr_head_sha = @pr_head_sha, pr_draft = @pr_draft, review_decision = @review_decision, checks = @checks,
        issue_number = @issue_number, issue_url = @issue_url, issue_title = @issue_title, tldr = @tldr,
-       fetched_at = @now, checked_at = @now, error = NULL`,
-  ).run({
+       preview_url = @preview_url, preview_environment = @preview_environment,
+       preview_deployment_id = @preview_deployment_id, preview_updated_at = @preview_updated_at,
+       preview_error = @preview_error, revision = source_links.revision + 1,
+       fetched_at = @now, checked_at = @now, error = NULL
+     RETURNING revision`,
+  ).get({
     repo: link.repo,
     branch: link.branch,
     provider: link.provider ?? 'github',
@@ -2247,27 +2278,50 @@ export function upsertSourceLink(db: Database.Database, link: NewSourceLink): vo
     pr_url: link.pr_url ?? null,
     pr_title: link.pr_title ?? null,
     pr_state: link.pr_state ?? null,
+    pr_head_sha: link.pr_head_sha ?? null,
     pr_draft: link.pr_draft ? 1 : 0,
     review_decision: link.review_decision ?? null,
     checks: link.checks ?? null,
     issue_number: link.issue_number ?? null,
     issue_url: link.issue_url ?? null,
     issue_title: link.issue_title ?? null,
+    preview_url: link.preview_url ?? null,
+    preview_environment: link.preview_environment ?? null,
+    preview_deployment_id: link.preview_deployment_id ?? null,
+    preview_updated_at: link.preview_updated_at ?? null,
+    preview_error: link.preview_error ?? null,
     tldr: link.tldr ?? null,
     now,
-  })
+  }) as { revision: number }
   pruneSourceLinks(db)
+  return result.revision
 }
 
-// A FAILED fetch: touches checked_at and error and NOTHING else, so a laptop
-// going offline can never blank a good cached row — the human keeps seeing the
-// merged PR they saw a minute ago, with an honest "checked N ago" beside it.
+// A slow preview lookup must not overwrite a newer PR snapshot or failure.
+export function setSourcePreview(
+  db: Database.Database,
+  target: LinkTarget & { revision: number },
+  preview: SourcePreview,
+): boolean {
+  return db.prepare(
+    `UPDATE source_links SET preview_url = @preview_url, preview_environment = @preview_environment,
+       preview_deployment_id = @preview_deployment_id, preview_updated_at = @preview_updated_at,
+       preview_error = @preview_error, revision = revision + 1
+     WHERE repo = @repo AND branch = @branch AND revision = @revision`,
+  ).run({ ...target, ...preview }).changes > 0
+}
+
+// A failed fetch keeps ordinary PR history, but invalidates its actionable
+// preview: a URL whose current-head provenance cannot be refreshed is not safe
+// to present as the change the human is being asked to approve.
 // Every column except repo/branch/checked_at is nullable precisely so this
 // INSERT half can succeed for a branch that has never been fetched.
 export function recordLinkFailure(db: Database.Database, f: { repo: string; branch: string; error: string }): void {
   db.prepare(
     `INSERT INTO source_links (repo, branch, checked_at, error) VALUES (@repo, @branch, @now, @error)
-     ON CONFLICT(repo, branch) DO UPDATE SET checked_at = @now, error = @error`,
+     ON CONFLICT(repo, branch) DO UPDATE SET checked_at = @now, error = @error,
+       preview_url = NULL, preview_environment = NULL, preview_deployment_id = NULL,
+       preview_updated_at = NULL, preview_error = NULL, revision = source_links.revision + 1`,
   ).run({ repo: f.repo, branch: f.branch, error: f.error, now: new Date().toISOString() })
 }
 
@@ -2275,7 +2329,17 @@ export function listSourceLinks(db: Database.Database): SourceLink[] {
   const rows = db.prepare(`SELECT * FROM source_links ORDER BY repo ASC, branch ASC`).all() as Array<
     Omit<SourceLink, 'pr_draft'> & { pr_draft: number | null }
   >
-  return rows.map((r) => ({ ...r, pr_draft: r.pr_draft === 1 }))
+  const active = rows.some((r) => r.preview_url)
+    ? new Set(listLinkTargets(db).map((target) => `${target.repo}\u0000${target.branch}`))
+    : null
+  return rows.map((r) => ({
+    ...r,
+    pr_draft: r.pr_draft === 1,
+    ...((r.preview_url && !active?.has(`${r.repo}\u0000${r.branch}`)) ? {
+      preview_url: null, preview_environment: null, preview_deployment_id: null,
+      preview_updated_at: null, preview_error: null,
+    } : {}),
+  }))
 }
 
 // Which (repo, branch) pairs are worth spending a `gh` call on: the branches

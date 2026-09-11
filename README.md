@@ -260,6 +260,31 @@ language. For example, "The fix is ready for review, but has not shipped" is mor
 useful than a commit hash and a review transcript. Keep that evidence in the
 expandable details, and do not label a prepared pull request as a shipped result.
 
+## PR previews in approval cards
+
+When GitHub reports a successful, explicitly non-production deployment for the
+current PR commit, approval questions and blocked approval rows show a **Preview**
+link beside their PR. Preview links use the existing source-chip controls and work
+with the keyboard hints.
+
+The viewer reads deployment `environment_url` values, never arbitrary check URLs
+or links from agent prose. It rechecks the PR head before accepting a result.
+Across environments it selects the newest successful status, then environment
+name and deployment id as stable tie-breakers. Conflicting URLs for the same
+environment, incomplete reads, and pending or inactive deployments produce no link.
+
+Preview lookup is optional: ordinary PR state appears first, and a failure cannot
+hide an approval request. Links expire after five minutes even if polling stops,
+are withheld from closed projects (including shared branches), and are disabled rather than
+silently retargeted if the PR changes while a reply draft protects the card.
+Other PR history remains available when a refresh fails.
+
+To bound background work, each branch lookup considers at most five deployments
+and declines a larger result instead of choosing from a truncated page. Providers
+that do not supply GitHub deployment URLs and explicit non-production metadata
+are not supported. A Preview link reports GitHub's last observed deployment
+state; it does not independently verify a provider's served content.
+
 ## Architecture
 
 - **`src/store.ts`** owns schema, migrations, WAL configuration, and every database

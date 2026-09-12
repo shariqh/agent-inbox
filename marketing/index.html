@@ -177,6 +177,8 @@
     .request-kind { display: inline-block; padding: 2px 7px; border: 1px solid var(--cp-border); border-radius: 5px; font-size: .5625rem; }
     .decision-detail h4 { margin-top: 14px; font-size: 1.0625rem; line-height: 1.35; font-weight: 650; letter-spacing: -.025em; }
     .decision-body { margin-top: 9px; color: var(--cp-text-muted); font-size: .6875rem; line-height: 1.6; }
+    .preview-availability { display: inline-flex; align-items: center; gap: 6px; margin-top: 12px; padding: 5px 7px; border: 1px solid var(--cp-highlight); border-radius: 5px; background: var(--cp-accent-soft); color: var(--cp-accent); font-size: .5625rem; font-weight: 600; }
+    .preview-availability svg { width: 12px; height: 12px; }
     .decision-options { display: grid; gap: 8px; margin-top: 18px; }
     .decision-option { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 42px; padding: 10px 12px; border: 1px solid var(--cp-border-strong); border-radius: 6px; color: var(--cp-text); background: var(--cp-surface); text-align: left; font-size: .6875rem; font-weight: 500; }
     .decision-option:first-child { border-color: var(--cp-accent); color: var(--cp-accent); background: var(--cp-accent-soft); }
@@ -629,7 +631,7 @@
 
   <main id="main" class="wrap page-frame">
     <div class="release-line">
-      <a href="https://github.com/shariqh/agent-inbox/releases"><span class="version">v1.2.4</span><span>Available for macOS and Linux</span><svg aria-hidden="true"><use href="#arrow"/></svg></a>
+      <a href="https://github.com/shariqh/agent-inbox/releases"><span class="version">v1.2.5</span><span>Available for macOS and Linux</span><svg aria-hidden="true"><use href="#arrow"/></svg></a>
     </div>
     <section class="hero" aria-labelledby="hero-title">
       <div class="hero-heading"><h1 id="hero-title">Stop checking<br><span>every terminal.</span></h1></div>
@@ -701,6 +703,7 @@
                   <div class="decision-meta"><span id="question-project">customer-portal</span><span class="request-kind" id="question-type">Decision</span></div>
                   <h4 id="question-title">Which sign-in approach should I use?</h4>
                   <p class="decision-body" id="question-body">The portal is ready for authentication. Using your existing provider keeps accounts in one place.</p>
+                  <div class="preview-availability" id="question-preview" role="note" hidden><svg aria-hidden="true"><use href="#arrow-up"/></svg>Preview link · current PR</div>
                   <div class="decision-options" id="decision-options">
                     <button class="decision-option" type="button">Use the existing provider<span class="recommendation">Recommended</span></button>
                     <button class="decision-option" type="button">Build a separate sign-in</button>
@@ -783,7 +786,7 @@
           </div>
           <div class="feature-copy">
             <h3>Questions with enough context.</h3>
-            <p>Each question includes the decision and why it matters. Choose an option, write your own answer, ask for clarification, or snooze it.</p>
+            <p>Each question includes the decision and why it matters. Choose an option, write your own answer, ask for clarification, or snooze it. Open approvals can also show a Preview link for the current PR head when your project publishes successful, non-production GitHub deployment metadata.</p>
             <a class="text-link" href="#demo">Try a sample question<svg aria-hidden="true"><use href="#arrow"/></svg></a>
           </div>
         </div>
@@ -795,7 +798,7 @@
           </article>
           <article class="feature-aside">
             <h3>See what each agent reports.</h3>
-            <p>Check the latest status from connected sessions. Working, waiting, and idle are separate states; an idle session isn't a new request.</p>
+            <p>Check the latest status from connected sessions. Background refreshes keep the inbox current without pulling keyboard focus away from chat or another app; in the active viewer, keyboard focus stays where you left it. Working, waiting, and idle are separate states.</p>
             <div class="dispatch-example" aria-label="Illustrative agent statuses">
               <div class="dispatch-line"><span class="dispatch-dot"></span><span>Copilot CLI</span><small>Running checkout tests</small></div>
               <div class="dispatch-line"><span class="dispatch-dot"></span><span>Claude Code</span><small>Updating the docs</small></div>
@@ -867,6 +870,7 @@ npm run install:agents</code></pre>
         <details class="faq-item"><summary>Is this another coding agent?</summary><p>No. It stores the questions, plans, and updates your coding agents send, along with your replies. It doesn't write code or make model calls.</p></details>
         <details class="faq-item"><summary>Which coding tools does it work with?</summary><p>The installer supports GitHub Copilot CLI and Claude Code. It registers the stdio MCP server and adds reporting instructions so agents know when to ask and how to read your replies. Other MCP clients need manual configuration.</p></details>
         <details class="faq-item"><summary>Does my inbox leave my machine?</summary><p>Your inbox is stored locally, with no Agent Inbox telemetry or hosted service. Optional update checks and pull request lookups contact GitHub. Your coding tools still have their own data and model policies.</p></details>
+        <details class="faq-item"><summary>When does an approval show a Preview link?</summary><p>Agent Inbox shows Preview only on an open approval question or blocked approval plan row when GitHub reports a successful, explicitly non-production deployment for the current PR head. Your project must publish standard GitHub deployment metadata. Missing, stale, or conflicting records leave the Preview link out; the approval controls stay available.</p></details>
         <details class="faq-item"><summary>How does an agent receive my answer?</summary><p>Agents read replies through the MCP pending tool. Copilot CLI can use background watchers for questions and blocked plan actions; Claude Code has opt-in wake-up hooks. Wake-up depends on your setup. The receipt shows whether the agent has picked up your answer.</p></details>
         <details class="faq-item"><summary>Where can I run Agent Inbox?</summary><p>Desktop packages are available for macOS 13.5+ on Apple silicon and Intel, and Linux on x64 and arm64. You can also run the local browser viewer from a Node.js 24 checkout. See the <a href="https://github.com/shariqh/agent-inbox/blob/main/docs/INSTALL.md">installation guide</a> for Linux runtime requirements and package verification. Windows and hosted deployments are not currently supported.</p></details>
       </div>
@@ -908,6 +912,7 @@ npm run install:agents</code></pre>
           context: 'Publishing is a separate action from preparing a draft. The agent needs your approval before making the release notes public.',
           options: ['Publish as written', 'Revise the draft'],
           recommended: false,
+          preview: true,
         },
         keys: {
           title: 'Add the staging API key',
@@ -950,6 +955,7 @@ npm run install:agents</code></pre>
         document.getElementById('question-type').textContent = question.kind;
         document.getElementById('question-body').textContent = question.body;
         document.getElementById('question-context').textContent = question.context;
+        document.getElementById('question-preview').hidden = !question.preview;
         const remaining = Object.keys(questions).length - responses.size;
         document.getElementById('attention-count').textContent = String(remaining);
         document.getElementById('queue-summary').textContent = remaining

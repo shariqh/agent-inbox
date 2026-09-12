@@ -52,6 +52,7 @@ describe('local marketing page', () => {
   it('has a complete, self-contained light-first page with no live inbox connection', () => {
     const { html } = boot({ dark: true })
     expect(document.title).toContain('Agent Inbox')
+    expect(document.querySelector('.release-line .version')?.textContent).toBe('v1.2.5')
     expect(document.documentElement.dataset.theme).toBe('light')
     expect(document.querySelectorAll('h1')).toHaveLength(1)
     expect(document.querySelector('h1')?.textContent).toContain('every terminal.')
@@ -142,6 +143,31 @@ describe('local marketing page', () => {
     expect(document.querySelector('#receipt')?.textContent).toContain('Waiting for agent pickup')
   })
 
+  it('explains conditional current-head previews and quiet background refresh', () => {
+    boot()
+    const preview = document.querySelector<HTMLElement>('#question-preview')
+    expect(preview?.hidden).toBe(true)
+    button('[data-question="release"]').click()
+    expect(preview?.hidden).toBe(false)
+    expect(preview?.textContent).toContain('Preview link · current PR')
+    button('[data-question="keys"]').click()
+    expect(preview?.hidden).toBe(true)
+
+    const features = document.querySelector('#features')?.textContent ?? ''
+    expect(features).toContain('successful, non-production GitHub deployment metadata')
+    expect(features).toContain('without pulling keyboard focus away from chat or another app')
+
+    const previewFaq = [...document.querySelectorAll('details.faq-item')].find(
+      item => item.querySelector('summary')?.textContent?.includes('Preview link'),
+    )
+    expect(previewFaq?.textContent).toContain('open approval question')
+    expect(previewFaq?.textContent).toContain('blocked approval plan row')
+    expect(previewFaq?.textContent).toContain('successful, explicitly non-production deployment')
+    expect(previewFaq?.textContent).toContain('current PR head')
+    expect(previewFaq?.textContent).toContain('Missing, stale, or conflicting records')
+    expect(previewFaq?.textContent).toContain('approval controls stay available')
+  })
+
   it('supports feature tabs with keyboard navigation and an exposed selected state', () => {
     boot()
     const inbox = button('#tab-inbox')
@@ -204,7 +230,7 @@ describe('local marketing page', () => {
     expect(html).toContain(':focus-visible')
     expect(html).toContain('@media (max-width: 640px)')
     expect(html).toContain('minmax(0, 1fr)')
-    expect(document.querySelectorAll('details.faq-item')).toHaveLength(5)
+    expect(document.querySelectorAll('details.faq-item')).toHaveLength(6)
     for (const element of document.querySelectorAll('button')) {
       expect(element.getAttribute('aria-label') || element.textContent?.trim()).toBeTruthy()
     }

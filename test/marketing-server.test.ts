@@ -41,6 +41,7 @@ describe('isolated marketing preview server', () => {
     expect(response.headers.get('cache-control')).toBe('no-store')
     expect(response.headers.get('x-content-type-options')).toBe('nosniff')
     expect(response.headers.get('content-security-policy')).toContain("connect-src 'none'")
+    expect(response.headers.get('content-security-policy')).toContain('https://cdn.jsdelivr.net')
     expect(response.headers.get('content-security-policy')).toContain("frame-ancestors 'none'")
     expect(await response.text()).toContain('every terminal.')
   })

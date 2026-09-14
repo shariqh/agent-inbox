@@ -57,15 +57,69 @@ describe('local marketing page', () => {
     expect(document.querySelectorAll('h1')).toHaveLength(1)
     expect(document.querySelector('h1')?.textContent).toContain('every terminal.')
     expect(document.querySelector('a.skip-link')?.getAttribute('href')).toBe('#main')
-    expect(document.querySelector('#demo')?.textContent).toContain('Interactive demo')
     expect(document.querySelector('#demo')?.textContent).toContain('Sample data')
     expect(document.querySelectorAll('script[src], link[rel="stylesheet"], iframe')).toHaveLength(0)
     expect(html).not.toMatch(/\b(?:fetch|XMLHttpRequest|WebSocket|EventSource|sendBeacon)\s*\(/)
     expect(html).not.toMatch(/https?:\/\/(?:localhost|127\.0\.0\.1):4319/)
+    expect(html).not.toContain('Not affiliated with GitHub or Anthropic.')
+    expect(html).not.toContain('with no account to create')
+    expect(html).not.toContain("Working and idle statuses don't add to your attention count.")
+    expect(html).not.toContain('Interactive demo. Try a response; nothing is sent.')
+    expect(html).not.toContain('Connect your CLI through MCP.')
+    expect(document.querySelector('a[href="https://shariq.dev"]')?.textContent).toBe('Shariq Hirani')
     expect(document.querySelector('a[href="https://github.com/shariqh/agent-inbox"]')).not.toBeNull()
     for (const link of document.querySelectorAll<HTMLAnchorElement>('a[href^="#"]')) {
       expect(document.getElementById(link.hash.slice(1)), `Broken link ${link.hash}`).not.toBeNull()
     }
+  })
+
+  it('includes a palette-matched Three.js visual with a motion-safe fallback', () => {
+    const { html } = boot()
+    const canvas = document.querySelector<HTMLCanvasElement>('#agent-visual')
+    expect(canvas).not.toBeNull()
+    expect(canvas?.getAttribute('aria-hidden')).toBe('true')
+    expect(html).toContain("from 'https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.module.min.js'")
+    expect(html).toContain("matchMedia('(prefers-reduced-motion: reduce)')")
+    expect(html).toContain('var(--cp-accent)')
+  })
+
+  it('keeps demo panels and response space mounted so interactions do not resize the demo', () => {
+    const { html } = boot()
+    const panels = [...document.querySelectorAll<HTMLElement>('.demo-panel')]
+    expect(panels).toHaveLength(3)
+    expect(panels.every(panel => !panel.hidden)).toBe(true)
+    expect(document.querySelectorAll('.demo-panel.is-active')).toHaveLength(1)
+    expect(document.querySelector('#panel-plans')?.getAttribute('aria-hidden')).toBe('true')
+    expect(html).toContain('.demo-panel[aria-hidden="true"]')
+    expect(html).toContain('.receipt[hidden]')
+
+    button('#tab-plans').click()
+    expect(document.querySelectorAll('.demo-panel.is-active')).toHaveLength(1)
+    expect(document.querySelector('#panel-plans')?.getAttribute('aria-hidden')).toBe('false')
+    expect(panels.every(panel => !panel.hidden)).toBe(true)
+
+    button('#tab-inbox').click()
+    button('#decision-options button').click()
+    expect(document.querySelector<HTMLElement>('#receipt')?.hidden).toBe(false)
+    expect(panels.every(panel => !panel.hidden)).toBe(true)
+  })
+
+  it('states the concrete problems solved and labels maintainer usage honestly', () => {
+    boot()
+    const proofElement = document.querySelector('#proof')
+    const proof = proofElement?.textContent ?? ''
+    const stats = [...(proofElement?.querySelectorAll('.proof-stat') ?? [])].map(
+      stat => stat.textContent?.replace(/\s+/g, ' ').trim(),
+    )
+    expect(stats).toContain('389requests captured')
+    expect(stats).toContain('145plans tracked')
+    expect(stats).toContain('1,008plan rows kept with their outcomes')
+    expect(stats).toContain('62–77%smaller agent-read payload estimates in internal scenarios')
+    expect(proof).toContain('Based on maintainer usage')
+    expect(proof).toContain('One queue across projects')
+    expect(proof).toContain('From request to outcome')
+    expect(proof).toContain('Durable plans.')
+    expect(proof).not.toContain('Durable plans, not transcripts.')
   })
 
   it('respects an explicit dark preview and supports the appearance control', () => {
@@ -175,12 +229,12 @@ describe('local marketing page', () => {
     inbox.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
     expect(document.activeElement?.id).toBe('tab-plans')
     expect(button('#tab-plans').getAttribute('aria-selected')).toBe('true')
-    expect(document.querySelector<HTMLElement>('#panel-inbox')?.hidden).toBe(true)
-    expect(document.querySelector<HTMLElement>('#panel-plans')?.hidden).toBe(false)
+    expect(document.querySelector<HTMLElement>('#panel-inbox')?.getAttribute('aria-hidden')).toBe('true')
+    expect(document.querySelector<HTMLElement>('#panel-plans')?.getAttribute('aria-hidden')).toBe('false')
     expect(document.querySelector('#panel-plans')?.textContent).toContain('Ship the customer portal')
     button('#tab-plans').dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }))
     expect(document.activeElement?.id).toBe('tab-live')
-    expect(document.querySelector<HTMLElement>('#panel-live')?.hidden).toBe(false)
+    expect(document.querySelector<HTMLElement>('#panel-live')?.getAttribute('aria-hidden')).toBe('false')
     button('#tab-live').dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }))
     expect(document.activeElement?.id).toBe('tab-inbox')
   })

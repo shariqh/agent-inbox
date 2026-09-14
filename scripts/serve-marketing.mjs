@@ -44,13 +44,13 @@ const server = createServer(async (request, response) => {
 
   try {
     const html = await readFile(pageUrl, 'utf8');
-    const scriptHashes = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)]
+    const scriptHashes = [...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)]
       .map(([, source]) => `'sha256-${createHash('sha256').update(source).digest('base64')}'`);
     const styleHashes = [...html.matchAll(/<style>([\s\S]*?)<\/style>/g)]
       .map(([, source]) => `'sha256-${createHash('sha256').update(source).digest('base64')}'`);
     response.setHeader('Content-Security-Policy', [
       "default-src 'none'",
-      `script-src ${scriptHashes.join(' ')}`,
+      `script-src ${scriptHashes.join(' ')} https://cdn.jsdelivr.net`,
       `style-src ${styleHashes.join(' ')}`,
       "img-src data:",
       "connect-src 'none'",

@@ -115,12 +115,11 @@ describe('local marketing page', () => {
     expect(stats).toContain('145plans tracked')
     expect(stats).toContain('1,008plan rows kept with their outcomes')
     expect(stats).toContain('62–77%smaller agent-read payload estimates in internal scenarios')
-    expect(proof).toContain('Maintainer usage')
-    expect(proof).toContain('September 14, 2026')
-    expect(proof).toContain('not provider billing')
+    expect(proof).toContain('Based on maintainer usage')
     expect(proof).toContain('One queue across projects')
     expect(proof).toContain('From request to outcome')
-    expect(proof).toContain('Durable plans')
+    expect(proof).toContain('Durable plans.')
+    expect(proof).not.toContain('Durable plans, not transcripts.')
   })
 
   it('respects an explicit dark preview and supports the appearance control', () => {

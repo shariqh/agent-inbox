@@ -725,6 +725,7 @@ exec "${process.execPath}" "$@"
     expect(count(block, SNIPPET_HEADING)).toBe(1)
     expect(count(block, 'Claude Code wake behavior')).toBe(1)
     expect(count(block, 'Copilot CLI wake behavior')).toBe(1)
+    expect(block).toContain('\n\n## Copilot CLI wake behavior')
     expect(block.indexOf('Claude Code wake behavior')).toBeLessThan(block.indexOf('Copilot CLI wake behavior'))
 
     const second = run(f, ['--apply'])

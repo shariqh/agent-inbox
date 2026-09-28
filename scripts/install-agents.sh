@@ -283,6 +283,7 @@ build_block() {
     echo || return 1
     if [ "$shared_file" -eq 1 ]; then
       cat "$(instruction_appendix claude)" || return 1
+      echo || return 1
       cat "$(instruction_appendix copilot)" || return 1
     else
       cat "$(instruction_appendix "$target")" || return 1

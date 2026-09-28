@@ -208,6 +208,12 @@ any runtime still referenced by another host or Claude hook.
 
 ### Host-specific behavior
 
+If `~/.claude/CLAUDE.md` and `~/.copilot/copilot-instructions.md` are symlinks or
+hard links to the same real file, the installer writes one managed block to that shared
+file. The shared block inlines the reporting snippet once, then appends the Claude Code
+and Copilot CLI host notes in that order, even when `--target` selects only one host,
+because both hosts may read the shared instructions.
+
 <details>
 <summary><strong>Claude Code</strong></summary>
 

@@ -174,6 +174,17 @@ function backups(file: string): string[] {
   return readdirSync(dirname(file)).filter((name) => name.startsWith(`${base}.bak.`))
 }
 
+function shareInstructionFile(f: Fixture): string {
+  const shared = join(f.home, 'dotfiles', 'shared-agent-instructions.md')
+  mkdirSync(dirname(shared), { recursive: true })
+  writeFileSync(shared, '# Shared agent rules\n\nKeep this shared.\n')
+  rmSync(f.claudeFile)
+  rmSync(f.copilotFile)
+  symlinkSync(shared, f.claudeFile)
+  symlinkSync(shared, f.copilotFile)
+  return shared
+}
+
 async function waitFor(path: string): Promise<void> {
   const deadline = Date.now() + 3000
   while (!existsSync(path)) {
@@ -694,6 +705,66 @@ exec "${process.execPath}" "$@"
     expect(readFileSync(target, 'utf8')).toContain('Copilot CLI wake behavior')
     expect(readdirSync(dirname(target)).some((name) =>
       name.startsWith('copilot-instructions.md.bak.'))).toBe(true)
+  })
+
+  it('writes one combined block when both host instruction paths share a file', () => {
+    const f = fixture()
+    const shared = shareInstructionFile(f)
+
+    const result = run(f, ['--apply'])
+
+    expect(result.code, result.err).toBe(0)
+    expect(lstatSync(f.claudeFile).isSymbolicLink()).toBe(true)
+    expect(lstatSync(f.copilotFile).isSymbolicLink()).toBe(true)
+    const installed = readFileSync(shared, 'utf8')
+    expect(installed).toContain('Keep this shared.')
+    expect(count(installed, BEGIN)).toBe(1)
+    expect(count(installed, END)).toBe(1)
+    const block = managedBlock(installed)
+    expect(count(block, SNIPPET_LINE)).toBe(1)
+    expect(count(block, SNIPPET_HEADING)).toBe(1)
+    expect(count(block, 'Claude Code wake behavior')).toBe(1)
+    expect(count(block, 'Copilot CLI wake behavior')).toBe(1)
+    expect(block.indexOf('Claude Code wake behavior')).toBeLessThan(block.indexOf('Copilot CLI wake behavior'))
+
+    const second = run(f, ['--apply'])
+
+    expect(second.code, second.err).toBe(0)
+    expect(readFileSync(shared, 'utf8')).toBe(installed)
+
+    const uninstall = run(f, ['--apply', '--uninstall'])
+
+    expect(uninstall.code, uninstall.err).toBe(0)
+    expect(readFileSync(shared, 'utf8')).toBe('# Shared agent rules\n\nKeep this shared.\n')
+  })
+
+  it('still writes both appendices for a shared file when only copilot is targeted', () => {
+    const f = fixture()
+    const shared = shareInstructionFile(f)
+
+    const result = run(f, ['--apply', '--target', 'copilot'])
+
+    expect(result.code, result.err).toBe(0)
+    const block = managedBlock(readFileSync(shared, 'utf8'))
+    expect(count(block, SNIPPET_LINE)).toBe(1)
+    expect(count(block, 'Claude Code wake behavior')).toBe(1)
+    expect(count(block, 'Copilot CLI wake behavior')).toBe(1)
+    expect(block.indexOf('Claude Code wake behavior')).toBeLessThan(block.indexOf('Copilot CLI wake behavior'))
+  })
+
+  it('inlines the snippet for a shared file even when the claude path imports it', () => {
+    const f = fixture()
+    const shared = shareInstructionFile(f)
+    writeFileSync(shared, `# Shared agent rules\n\n${IMPORT_LINE}\n`)
+
+    const result = run(f, ['--apply', '--target', 'copilot'])
+
+    expect(result.code, result.err).toBe(0)
+    const text = readFileSync(shared, 'utf8')
+    expect(text).toContain(IMPORT_LINE)
+    expect(text).toContain(SNIPPET_LINE)
+    expect(text).toContain(SNIPPET_HEADING)
+    expect(text).not.toContain('Not inlined here')
   })
 
   it('omits the inlined snippet from the claude block when that file imports the snippet itself', () => {

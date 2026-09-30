@@ -5,6 +5,8 @@
 # managed instruction block while preserving every unrelated line.
 # If the target file already imports docs/reporting-snippet.md itself (Claude Code
 # only), the managed block cites that import instead of inlining a second copy.
+# When Claude and Copilot resolve to one real instruction file, one shared
+# managed block carries the shared snippet and both host appendices.
 #
 # Usage:
 #   npm run install:agents
@@ -136,6 +138,13 @@ instruction_write_file() {
   fi
 }
 
+hosts_share_instruction_write_file() {
+  local claude_file copilot_file
+  claude_file="$(instruction_write_file claude 2>/dev/null)" || return 1
+  copilot_file="$(instruction_write_file copilot 2>/dev/null)" || return 1
+  [ -e "$claude_file" ] && [ -e "$copilot_file" ] && [ "$claude_file" -ef "$copilot_file" ]
+}
+
 instruction_appendix() {
   case "$1" in
     claude) echo "$ROOT/docs/instructions/claude-code.md" ;;
@@ -263,7 +272,7 @@ NOTE
 }
 
 build_block() {
-  local target="$1" output="$2" omit_snippet="$3"
+  local target="$1" output="$2" omit_snippet="$3" shared_file="${4:-0}"
   {
     echo "$BEGIN" || return 1
     if [ "$omit_snippet" -eq 1 ]; then
@@ -272,7 +281,13 @@ build_block() {
       sed '1s/^# /## /' "$SNIPPET_SOURCE" || return 1
     fi
     echo || return 1
-    cat "$(instruction_appendix "$target")" || return 1
+    if [ "$shared_file" -eq 1 ]; then
+      cat "$(instruction_appendix claude)" || return 1
+      echo || return 1
+      cat "$(instruction_appendix copilot)" || return 1
+    else
+      cat "$(instruction_appendix "$target")" || return 1
+    fi
     echo "$END" || return 1
   } > "$output"
 }
@@ -725,17 +740,22 @@ if [ "$APPLY" -eq 0 ]; then
   echo "── dry run: nothing was written or registered. Re-run with --apply. ──" >&2
 fi
 
+SHARED_INSTRUCTION_FILE=0
+if hosts_share_instruction_write_file; then
+  SHARED_INSTRUCTION_FILE=1
+fi
+
 for target in "${TARGETS[@]}"; do
   display_file="$(instruction_file "$target")"
   file="$(instruction_write_file "$target")" || exit 1
   block="$WORK/$target.block"
   rendered="$WORK/$target.rendered"
   omit_snippet=0
-  if [ "$UNINSTALL" -eq 0 ] && host_resolves_imports "$target" && imports_snippet "$file"; then
+  if [ "$UNINSTALL" -eq 0 ] && [ "$SHARED_INSTRUCTION_FILE" -eq 0 ] && host_resolves_imports "$target" && imports_snippet "$file"; then
     omit_snippet=1
     echo "$target: $display_file already imports docs/reporting-snippet.md — skipping the inlined snippet; the managed block carries the $target appendix only" >&2
   fi
-  if ! build_block "$target" "$block" "$omit_snippet"; then
+  if ! build_block "$target" "$block" "$omit_snippet" "$SHARED_INSTRUCTION_FILE"; then
     echo "install-agents: could not build the $target instruction block" >&2
     exit 1
   fi

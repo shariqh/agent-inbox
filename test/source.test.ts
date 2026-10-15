@@ -22,7 +22,7 @@ const NOW = Date.parse('2026-07-26T12:00:00.000Z')
 
 function link(over: Partial<CachedLink> = {}): CachedLink {
   return {
-    repo: 'shariqh/agent-inbox', branch: '30-x', provider: 'github',
+    repo: 'shariqh/agent-inbox', branch: '30-x', head_repo: 'shariqh/agent-inbox', provider: 'github',
     pr_number: 41, pr_url: 'https://github.com/shariqh/agent-inbox/pull/41',
     pr_title: 'source + PR links', pr_state: 'OPEN', pr_draft: false,
     pr_head_sha: null,
@@ -47,6 +47,18 @@ describe('indexLinks / linkFor', () => {
     expect(linkFor(index, entity())!.pr_number).toBe(41)
     expect(linkFor(index, entity({ stream: 'other' }))!.pr_number).toBe(9)
     expect(linkFor(index, entity({ repo: 'someone/else' }))).toBeNull()
+  })
+
+  // issue #157 — a branch name is only unique within the repository it is pushed
+  // to, so the join includes the head repository the cached PR was verified for
+  it('joins only the row verified for the repository the entity\'s branch is pushed to', () => {
+    const index = indexLinks([link(), link({ head_repo: 'me/agent-inbox', pr_number: 52 })])
+    expect(linkFor(index, entity({ head_repo: 'me/agent-inbox' }))!.pr_number).toBe(52)
+    expect(linkFor(index, entity({ head_repo: 'shariqh/agent-inbox' }))!.pr_number).toBe(41)
+    // an entity raised before #157 recorded no head: it expects a same-repository PR
+    expect(linkFor(index, entity())!.pr_number).toBe(41)
+    expect(linkFor(index, entity({ head_repo: 'stranger/agent-inbox' }))).toBeNull()
+    expect(linkFor(indexLinks([link({ head_repo: 'me/agent-inbox' })]), entity())).toBeNull()
   })
 
   describe('preview provenance and freshness', () => {
@@ -85,6 +97,16 @@ describe('indexLinks / linkFor', () => {
       expect(html).toContain('href="https://preview.example/?x=1&amp;y=2"')
       expect(html).toContain('tabindex="-1"')
       expect(sourceBlockHtml(index, entity(), NOW, { preview: true })).not.toContain('tabindex="-1"')
+    })
+
+    // app.js re-validates a rendered preview anchor by looking its key up in
+    // indexLinks(); a key built without the head would orphan a fork-PR preview
+    it('keys a preview anchor exactly as indexLinks keys its cache row', () => {
+      const fromFork = { ...ready(), head_repo: 'me/agent-inbox' }
+      const index = indexLinks([fromFork])
+      const [key] = [...index.keys()]
+      const html = sourceChipsHtml(index, entity({ head_repo: 'me/agent-inbox' }), NOW, { preview: true })
+      expect(html).toContain(`data-preview-key="${encodeURIComponent(key!)}"`)
     })
   })
 

@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
 import { spawn, spawnSync } from 'node:child_process'
-import { fileURLToPath } from 'node:url'
+import { createRequire } from 'node:module'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import {
@@ -17,6 +18,8 @@ import {
 import type { Item } from '../src/store.js'
 
 const REPO = fileURLToPath(new URL('..', import.meta.url))
+// lets a test hand the installer the real hook CLI from source, with no dist/ build
+const TSX_LOADER = pathToFileURL(createRequire(import.meta.url).resolve('tsx')).href
 const NOW = Date.parse('2026-07-26T12:00:00Z')
 
 function q(over: Partial<Item> = {}): Item {
@@ -52,6 +55,7 @@ function q(over: Partial<Item> = {}): Item {
     outcome_at: null,
     repo: null,
     issue_ref: null,
+    head_repo: null,
     created_at: new Date(NOW - 60_000).toISOString(),
     updated_at: new Date(NOW - 60_000).toISOString(),
     resolved_at: null,
@@ -1205,6 +1209,187 @@ describe('hook: installer', () => {
     expect(r.err).toMatch(/selftest.*failed/i)
     expect(existsSync(file)).toBe(true)
     expect(JSON.parse(readFileSync(file, 'utf8')).hooks).toBeUndefined()
+  })
+
+  // #155: a dotfiles-managed settings.json is a symlink. Replacing the link with a
+  // regular file silently forks the live config away from the dotfiles copy.
+  const LINK = '../dotfiles/claude-settings.json'
+
+  function linkedHome(contents: string): { dir: string; entry: string; file: string; target: string } {
+    const { dir, entry, file } = home()
+    const target = join(dir, 'dotfiles', 'claude-settings.json')
+    mkdirSync(dirname(target))
+    writeFileSync(target, contents)
+    symlinkSync(LINK, file)
+    return { dir, entry, file, target }
+  }
+
+  function backupsOf(file: string): string[] {
+    const base = file.slice(file.lastIndexOf('/') + 1)
+    return readdirSync(dirname(file)).filter((f) => f.startsWith(`${base}.bak.`))
+  }
+
+  it('--apply writes through a symlinked settings.json: the link survives, its target is backed up and updated', () => {
+    const before = JSON.stringify(withPostToolUse)
+    const { dir, entry, file, target } = linkedHome(before)
+
+    const r = installer(['--apply'], dir, entry)
+
+    expect(r.code, r.err).toBe(0)
+    expect(lstatSync(file).isSymbolicLink()).toBe(true)
+    expect(readlinkSync(file)).toBe(LINK)
+    const s = JSON.parse(readFileSync(target, 'utf8'))
+    expect(s.model).toBe('x')
+    expect(s.hooks.PostToolUse).toHaveLength(1)
+    expect(s.hooks.Notification[0].hooks[0].args).toEqual([entry, 'notification'])
+    const backups = backupsOf(target)
+    expect(backups).toHaveLength(1)
+    expect(readFileSync(join(dirname(target), backups[0]!), 'utf8')).toBe(before)
+    expect(readdirSync(join(dir, '.claude'))).toEqual(['settings.json'])
+  })
+
+  it('--uninstall writes through a symlinked settings.json and leaves the link in place', () => {
+    const { dir, entry, file, target } = linkedHome('{}')
+    const installed = { ...withPostToolUse, hooks: { ...withPostToolUse.hooks, ...hooksSettingsBlock(process.execPath, entry).hooks } }
+    writeFileSync(target, JSON.stringify(installed))
+
+    const r = installer(['--apply', '--uninstall'], dir, entry)
+
+    expect(r.code, r.err).toBe(0)
+    expect(lstatSync(file).isSymbolicLink()).toBe(true)
+    expect(readlinkSync(file)).toBe(LINK)
+    expect(JSON.parse(readFileSync(target, 'utf8'))).toEqual(withPostToolUse)
+    expect(backupsOf(target)).toHaveLength(1)
+  })
+
+  it.each([
+    ['a dangling symlink', '../dotfiles/missing.json', /dangling symlink/],
+    ['a symlink to a directory', '../dotfiles', /not a regular file/],
+  ])('refuses %s with a non-zero exit and writes nothing', (_label, link, reason) => {
+    const { dir, entry, file } = home()
+    const dotfiles = join(dir, 'dotfiles')
+    mkdirSync(dotfiles)
+    symlinkSync(link, file)
+
+    const r = installer(['--apply'], dir, entry)
+
+    expect(r.code).not.toBe(0)
+    expect(r.err).toMatch(reason)
+    expect(r.err).not.toMatch(/hooks installed/)
+    expect(readlinkSync(file)).toBe(link)
+    expect(readdirSync(join(dir, '.claude'))).toEqual(['settings.json'])
+    expect(readdirSync(dotfiles)).toEqual([])
+  })
+
+  // root ignores directory modes, so the unwritable directory cannot be modelled there
+  it.skipIf(process.getuid?.() === 0)('an unwritable ~/.claude exits non-zero, claims nothing and leaves nothing behind', () => {
+    const { dir, entry } = home()
+    const claude = join(dir, '.claude')
+    chmodSync(claude, 0o555)
+    try {
+      const r = installer(['--apply'], dir, entry)
+      expect(r.code).not.toBe(0)
+      expect(r.err).not.toMatch(/hooks installed/)
+      expect(readdirSync(claude)).toEqual([])
+    } finally {
+      chmodSync(claude, 0o755)
+    }
+  })
+
+  it('a rename that fails exits non-zero, claims nothing and removes its staged copy', () => {
+    const { dir, entry, file } = home(withPostToolUse)
+    const before = readFileSync(file, 'utf8')
+    const fakebin = join(dir, 'fakebin')
+    mkdirSync(fakebin)
+    writeFileSync(join(fakebin, 'mv'), '#!/bin/sh\nexit 1\n')
+    chmodSync(join(fakebin, 'mv'), 0o755)
+
+    const r = installer(['--apply'], dir, entry, { PATH: `${fakebin}:${process.env.PATH}` })
+
+    expect(r.code).not.toBe(0)
+    expect(r.err).not.toMatch(/hooks installed/)
+    expect(readFileSync(file, 'utf8')).toBe(before)
+    expect(readdirSync(join(dir, '.claude')).filter((f) => f.includes('.tmp.'))).toEqual([])
+  })
+
+  it('refuses settings it cannot merge into instead of writing an empty file and claiming success', () => {
+    const { dir, entry, file } = home([])
+
+    const r = installer(['--apply'], dir, entry)
+
+    expect(r.code).not.toBe(0)
+    expect(r.err).not.toMatch(/hooks installed/)
+    expect(readFileSync(file, 'utf8')).toBe('[]')
+    expect(readdirSync(join(dir, '.claude'))).toEqual(['settings.json'])
+  })
+
+  // the packaged runtime-config.mjs reads a blank file as {}; checkout mode must agree
+  it.each([
+    ['an empty', ''],
+    ['a whitespace-only', ' \n\t\n'],
+  ])('installs into %s settings.json as if it were {}, backing it up first', (_label, contents) => {
+    const { dir, entry, file } = home()
+    writeFileSync(file, contents)
+
+    const r = installer(['--apply'], dir, entry)
+
+    expect(r.code, r.err).toBe(0)
+    const s = JSON.parse(readFileSync(file, 'utf8'))
+    expect(s.hooks.Notification[0].hooks[0].args).toEqual([entry, 'notification'])
+    const backups = backupsOf(file)
+    expect(backups).toHaveLength(1)
+    expect(readFileSync(join(dirname(file), backups[0]!), 'utf8')).toBe(contents)
+  })
+
+  // root ignores file modes, so a read-only settings file cannot be modelled there
+  it.skipIf(process.getuid?.() === 0)('refuses a read-only settings.json up front, says so, and leaves nothing behind', () => {
+    const { dir, entry, file } = home(withPostToolUse)
+    const before = readFileSync(file, 'utf8')
+    chmodSync(file, 0o444)
+    try {
+      const r = installer(['--apply'], dir, entry)
+
+      expect(r.code).not.toBe(0)
+      expect(r.err).toContain(`${file} is read-only`)
+      expect(r.err).not.toMatch(/hooks installed/)
+      expect(readFileSync(file, 'utf8')).toBe(before)
+      expect(readdirSync(join(dir, '.claude'))).toEqual(['settings.json'])
+    } finally {
+      chmodSync(file, 0o644)
+    }
+  })
+
+  it('the dry run proves Node against a throwaway database and never creates the hub', () => {
+    const { dir, file } = home(withPostToolUse)
+    const before = readFileSync(file, 'utf8')
+    // The REAL hook CLI, run from source: CI runs the suite before it builds dist/.
+    // tsx keeps a transform cache in TMPDIR, so it gets its own; the installer's
+    // TMPDIR then records only what the installer itself leaves behind.
+    const node = join(dir, 'node-with-tsx')
+    writeFileSync(node, [
+      '#!/bin/sh',
+      `TMPDIR='${join(dir, 'tsx-tmp')}'; export TMPDIR`,
+      `exec '${process.execPath}' --import '${TSX_LOADER}' "$@"`,
+      '',
+    ].join('\n'))
+    chmodSync(node, 0o755)
+    const hub = join(dir, 'hub', 'inbox.db')
+    const scratch = join(dir, 'scratch')
+    mkdirSync(scratch)
+
+    const r = installer([], dir, join(REPO, 'src', 'hook-cli.ts'), {
+      AGENT_INBOX_NODE: node,
+      AGENT_INBOX_DB: hub,
+      TMPDIR: scratch,
+    })
+
+    expect(r.code, r.err).toBe(0)
+    expect(existsSync(dirname(hub))).toBe(false)
+    expect(readdirSync(scratch)).toEqual([]) // the throwaway database is gone too
+    expect(readFileSync(file, 'utf8')).toBe(before)
+    expect(Object.keys(JSON.parse(r.out).hooks).sort()).toEqual(
+      ['Notification', 'PostToolUse', 'SessionEnd', 'SessionStart', 'Stop', 'UserPromptSubmit'],
+    )
   })
 })
 

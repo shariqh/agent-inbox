@@ -1318,6 +1318,157 @@ describe('activity spans', () => {
   })
 })
 
+// ── issue #161: the `sinceMs` overlap runs in SQL, with unchanged semantics ──
+describe('activity spans: since overlap in SQL (issue #161)', () => {
+  let db: Database.Database
+  const NOW = Date.parse('2026-08-01T09:00:00.000Z')
+  const DAY = 24 * 60 * 60_000
+  const iso = (ms: number): string => new Date(ms).toISOString()
+
+  beforeEach(() => {
+    db = freshDb()
+    vi.useFakeTimers()
+    vi.setSystemTime(NOW)
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  // Rows go in directly: these cases sit on exact millisecond boundaries that
+  // the claim lifecycle cannot be steered onto.
+  function insertSpan(span: { session: string; project?: string; started: number; lastActive: number; ended: number | null }): void {
+    db.prepare(
+      `INSERT INTO activity_spans (session, project, stream, agent, doing, started_at, last_active_at, ended_at)
+       VALUES (?, ?, '', 'agent', 'work', ?, ?, ?)`,
+    ).run(span.session, span.project ?? 'p', iso(span.started), iso(span.lastActive), span.ended === null ? null : iso(span.ended))
+  }
+
+  // The pre-#161 implementation, verbatim: read every retained span, then
+  // apply the overlap filter in JavaScript.
+  function referenceSpans(opts: { project?: string; sinceMs?: number } = {}): unknown[] {
+    const nowMs = Date.now()
+    const cold = new Date(nowMs - CLAIM_COLD_MS).toISOString()
+    const capped = (lastActiveAt: string): string => {
+      const cap = Date.parse(lastActiveAt) + CLAIM_COLD_MS
+      return cap < nowMs ? new Date(cap).toISOString() : new Date(nowMs).toISOString()
+    }
+    const rows = db
+      .prepare(
+        `SELECT id, session, project, stream, agent, doing, started_at, last_active_at, ended_at
+           FROM activity_spans
+          WHERE (@project IS NULL OR project = @project)
+          ORDER BY started_at ASC`,
+      )
+      .all({ project: opts.project ?? null }) as Array<{ last_active_at: string; ended_at: string | null }>
+    const sinceIso = opts.sinceMs !== undefined ? new Date(opts.sinceMs).toISOString() : null
+    const withEffectiveEnd = rows.map((r) => {
+      const stillOpenButStale = r.ended_at === null && r.last_active_at < cold
+      return { ...r, effective_ended_at: r.ended_at ?? (stillOpenButStale ? capped(r.last_active_at) : null) }
+    })
+    if (sinceIso === null) return withEffectiveEnd
+    return withEffectiveEnd.filter((s) => s.effective_ended_at === null || s.effective_ended_at >= sinceIso)
+  }
+
+  it('keeps exactly the spans that overlap since, at every boundary', () => {
+    const since = NOW - 30 * DAY
+    insertSpan({ session: 'closed-before', started: since - 2 * DAY, lastActive: since - 2 * DAY, ended: since - 1 })
+    insertSpan({ session: 'closed-at-since', started: since - DAY, lastActive: since - DAY, ended: since })
+    insertSpan({ session: 'closed-recent', started: since + DAY, lastActive: since + DAY, ended: since + 2 * DAY })
+    insertSpan({ session: 'stale-capped-before', started: since - 3 * DAY, lastActive: since - CLAIM_COLD_MS - 1, ended: null })
+    insertSpan({ session: 'stale-capped-at-since', started: since - 3 * DAY, lastActive: since - CLAIM_COLD_MS, ended: null })
+    insertSpan({ session: 'stale-capped-after', started: since - DAY, lastActive: since + DAY, ended: null })
+    insertSpan({ session: 'stale-just-cold', started: NOW - DAY, lastActive: NOW - CLAIM_COLD_MS - 1, ended: null })
+    insertSpan({ session: 'warm-at-cold', started: NOW - DAY, lastActive: NOW - CLAIM_COLD_MS, ended: null })
+    insertSpan({ session: 'warm', started: since - 10 * DAY, lastActive: NOW - 60_000, ended: null })
+    insertSpan({ session: 'other-project', project: 'q', started: since + DAY, lastActive: since + DAY, ended: since + 2 * DAY })
+
+    const spans = listActivitySpans(db, { sinceMs: since })
+    expect(spans).toEqual(referenceSpans({ sinceMs: since }))
+    // Equal start times keep the full scan's insertion order.
+    expect(spans.map((s) => [s.session, s.effective_ended_at])).toEqual([
+      ['warm', null],
+      ['stale-capped-at-since', iso(since)],
+      ['closed-at-since', iso(since)],
+      ['stale-capped-after', iso(since + DAY + CLAIM_COLD_MS)],
+      ['closed-recent', iso(since + 2 * DAY)],
+      ['other-project', iso(since + 2 * DAY)],
+      ['stale-just-cold', iso(NOW - 1)],
+      ['warm-at-cold', null],
+    ])
+    expect(listActivitySpans(db, { project: 'q', sinceMs: since }).map((s) => s.session)).toEqual(['other-project'])
+    expect(listActivitySpans(db, { project: 'p', sinceMs: since })).toEqual(referenceSpans({ project: 'p', sinceMs: since }))
+  })
+
+  it('matches the full-scan filter over a seeded fixture for every since and project', () => {
+    let seed = 161
+    const random = (): number => {
+      seed = (seed * 1103515245 + 12345) % 2 ** 31
+      return seed / 2 ** 31
+    }
+    const pick = <T>(values: T[]): T => values[Math.floor(random() * values.length)]!
+    const since = NOW - 30 * DAY
+    const edges = [
+      since, since - 1, since + 1,
+      since - CLAIM_COLD_MS, since - CLAIM_COLD_MS - 1, since - CLAIM_COLD_MS + 1,
+      NOW - CLAIM_COLD_MS, NOW - CLAIM_COLD_MS - 1, NOW - CLAIM_COLD_MS + 1,
+      NOW, NOW - DAY, NOW - 89 * DAY, since + DAY,
+    ]
+    for (let i = 0; i < 400; i++) {
+      const lastActive = random() < 0.6 ? pick(edges) : NOW - Math.floor(random() * 90 * DAY)
+      const ended = random() < 0.5 ? null : random() < 0.6 ? pick(edges) : lastActive + Math.floor(random() * DAY)
+      // Few distinct start times, so ties are common.
+      insertSpan({ session: `s${i}`, project: pick(['p', 'q']), started: pick([lastActive - DAY, since - DAY, since]), lastActive, ended })
+    }
+    const sinces = [
+      undefined, since, since + 0.5, since - 0.5, since - CLAIM_COLD_MS, NOW - CLAIM_COLD_MS, NOW, NOW + DAY, 0, -1,
+      // Extended-year bounds compare as strings, exactly as before.
+      Date.parse('0000-01-01T00:10:00.000Z'), Date.parse('+010000-01-01T00:10:00.000Z'), -8.64e15, 8.64e15,
+    ]
+    for (const sinceMs of sinces) {
+      for (const project of [undefined, 'p', 'q', 'missing']) {
+        expect(listActivitySpans(db, { project, sinceMs }), `since=${sinceMs} project=${project}`)
+          .toEqual(referenceSpans({ project, sinceMs }))
+      }
+    }
+  })
+
+  it('reads only the overlapping rows, through the ended_at index', () => {
+    const since = NOW - 30 * DAY
+    for (let i = 0; i < 2000; i++) {
+      const start = NOW - 89 * DAY + i * 60_000
+      insertSpan({ session: `old-${i}`, started: start, lastActive: start, ended: start + 60_000 })
+    }
+    insertSpan({ session: 'abandoned', started: NOW - 80 * DAY, lastActive: NOW - 80 * DAY, ended: null })
+    insertSpan({ session: 'stale', started: NOW - 2 * DAY, lastActive: NOW - 2 * DAY, ended: null })
+    insertSpan({ session: 'recent', started: NOW - DAY, lastActive: NOW - DAY, ended: NOW - DAY + 60_000 })
+    insertSpan({ session: 'warm', started: NOW - 60_000, lastActive: NOW - 60_000, ended: null })
+
+    // Count what SQLite hands back to JavaScript, statement by statement.
+    const reads: Array<{ source: string; params: unknown[]; rows: number }> = []
+    const prepare = db.prepare.bind(db)
+    vi.spyOn(db, 'prepare').mockImplementation(((source: string) => {
+      const statement = prepare(source)
+      if (!/\bFROM activity_spans\b/.test(source)) return statement
+      const all = statement.all.bind(statement) as (...params: unknown[]) => unknown[]
+      statement.all = ((...params: unknown[]) => {
+        const rows = all(...params)
+        reads.push({ source, params, rows: rows.length })
+        return rows
+      }) as typeof statement.all
+      return statement
+    }) as typeof db.prepare)
+
+    expect(listActivitySpans(db, { sinceMs: since }).map((s) => s.session)).toEqual(['stale', 'recent', 'warm'])
+    expect(reads.map((read) => read.rows)).toEqual([3])
+    const plan = (prepare(`EXPLAIN QUERY PLAN ${reads[0]!.source}`).all(...(reads[0]!.params as [])) as Array<{ detail: string }>)
+      .map((step) => step.detail)
+      .join('\n')
+    expect(plan).not.toMatch(/\bSCAN (TABLE )?activity_spans\b/)
+    expect(plan).toMatch(/USING INDEX idx_activity_spans_ended\b/)
+  })
+})
+
 describe('boards', () => {
   let db: Database.Database
   beforeEach(() => { db = freshDb() })
@@ -2602,6 +2753,53 @@ describe('items and boards carry the link identity they were raised on', () => {
     upsertBoard(migrated, { project: 'p', stream: '30-x', agent: 'a', title: 't', rows: [], repo: 'o/n', issueRef: 30 })
     expect(findBoard(migrated, 'p', 't')!.repo).toBe('o/n')
   })
+
+  // issue #157 — beside the BASE repo (where the PR is searched for) items and
+  // boards record the HEAD repo their branch is pushed to (where the PR must
+  // come from). Restamped on every board write, exactly like repo and issue_ref.
+  it('items and boards record the expected head repository, null when none was inferred', () => {
+    insertItem(db, { project: 'p', stream: 'feature', agent: 'a', kind: 'question', title: 'q', repo: 'upstream/x', head_repo: 'me/x' })
+    insertItem(db, { project: 'p', stream: 'feature', agent: 'a', kind: 'note', title: 'n', repo: 'upstream/x' })
+    expect(listItems(db).find((i) => i.title === 'q')!.head_repo).toBe('me/x')
+    expect(listItems(db).find((i) => i.title === 'n')!.head_repo).toBeNull()
+    upsertBoard(db, { project: 'p', stream: 'feature', agent: 'a', title: 'cov', rows: [{ label: 'a', status: 'tracked' }], repo: 'upstream/x', headRepo: 'me/x' })
+    expect(findBoard(db, 'p', 'cov')!.head_repo).toBe('me/x')
+    updateBoardRow(db, { project: 'p', stream: 'feature', agent: 'a', title: 'cov', label: 'a', status: 'done', repo: 'upstream/x', headRepo: 'other/x' })
+    expect(findBoard(db, 'p', 'cov')!.head_repo).toBe('other/x')
+    upsertBoard(db, { project: 'p', stream: 'feature', agent: 'a', title: 'cov', rows: [{ label: 'a', status: 'done' }], repo: 'upstream/x' })
+    expect(findBoard(db, 'p', 'cov')!.head_repo).toBeNull()
+  })
+
+  it('openDb gives legacy items/boards a NULL head_repo, and new writes persist one', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'inbox-legacy157-')), 'inbox.db')
+    const legacy = new Database(path)
+    legacy.exec(`
+      CREATE TABLE items (
+        id TEXT PRIMARY KEY, project TEXT NOT NULL, stream TEXT NOT NULL DEFAULT '',
+        agent TEXT NOT NULL DEFAULT 'unknown', kind TEXT NOT NULL, title TEXT NOT NULL,
+        detail TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'open',
+        annotation TEXT, created_at TEXT NOT NULL, resolved_at TEXT, repo TEXT, issue_ref INTEGER
+      );
+      CREATE TABLE boards (
+        id TEXT PRIMARY KEY, project TEXT NOT NULL, stream TEXT NOT NULL DEFAULT '',
+        agent TEXT NOT NULL DEFAULT 'unknown', title TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        repo TEXT, issue_ref INTEGER, UNIQUE(project, title)
+      );
+      INSERT INTO items (id, project, stream, kind, title, created_at, repo) VALUES ('old', 'p', 'feature', 'question', 'legacy?', '2026-01-01T00:00:00.000Z', 'o/n');
+      INSERT INTO boards (id, project, stream, title, created_at, updated_at, repo) VALUES ('b-old', 'p', 'feature', 'legacy', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', 'o/n');
+    `)
+    legacy.close()
+    const migrated = openDb(path)
+    expect(listItems(migrated).find((i) => i.id === 'old')!.head_repo).toBeNull()
+    expect(findBoard(migrated, 'p', 'legacy')!.head_repo).toBeNull()
+    // a legacy row can only ever expect a same-repository PR
+    expect(listLinkTargets(migrated)).toEqual([{ repo: 'o/n', branch: 'feature', head_repo: 'o/n' }])
+    insertItem(migrated, { project: 'p', stream: 'feature', agent: 'a', kind: 'question', title: 'new', repo: 'o/n', head_repo: 'me/n' })
+    expect(listItems(migrated).find((i) => i.title === 'new')!.head_repo).toBe('me/n')
+    upsertBoard(migrated, { project: 'p', stream: 'feature', agent: 'a', title: 'legacy', rows: [], repo: 'o/n', headRepo: 'me/n' })
+    expect(findBoard(migrated, 'p', 'legacy')!.head_repo).toBe('me/n')
+  })
 })
 
 describe('source links', () => {
@@ -2677,8 +2875,8 @@ describe('source links', () => {
     resolveItem(db, resolved)
     upsertBoard(db, { project: 'p', stream: 'board-branch', agent: 'a', title: 'cov', rows: [{ label: 'a', status: 'tracked' }], repo: 'o/n', issueRef: 2 })
     const targets = listLinkTargets(db)
-    expect(targets).toContainEqual({ repo: 'o/n', branch: '30-x' })
-    expect(targets).toContainEqual({ repo: 'o/n', branch: 'board-branch' })
+    expect(targets).toContainEqual({ repo: 'o/n', branch: '30-x', head_repo: 'o/n' })
+    expect(targets).toContainEqual({ repo: 'o/n', branch: 'board-branch', head_repo: 'o/n' })
     // two items on ONE branch is ONE target — that is the whole point of caching
     // per (repo, branch) instead of per item
     expect(targets.filter((t) => t.branch === '30-x')).toHaveLength(1)
@@ -2712,7 +2910,7 @@ describe('source links', () => {
     insertItem(db, { project: 'dead', stream: 'shared', agent: 'a', kind: 'question', title: 'q', repo: 'o/n' })
     upsertBoard(db, { project: 'dead', stream: 'board-br', agent: 'a', title: 'cov', rows: [{ label: 'a', status: 'tracked' }], repo: 'o/n' })
     closeProject(db, 'dead')
-    expect(listLinkTargets(db)).toEqual([{ repo: 'o/n', branch: 'shared' }])
+    expect(listLinkTargets(db)).toEqual([{ repo: 'o/n', branch: 'shared', head_repo: 'o/n' }])
   })
 
   it('caps the target list so a huge inbox cannot turn into an unbounded gh fan-out', () => {
@@ -2720,6 +2918,52 @@ describe('source links', () => {
       insertItem(db, { project: 'p', stream: `br-${i}`, agent: 'a', kind: 'question', title: `q${i}`, repo: 'o/n', issue_ref: 1 })
     }
     expect(listLinkTargets(db).length).toBe(50)
+  })
+
+  // issue #157 — a branch NAME is only unique within the repository it is pushed
+  // to. The target and the cache row therefore carry the expected head too.
+  it('listLinkTargets carries each expected head; a row with none expects a same-repository PR', () => {
+    insertItem(db, { project: 'p', stream: 'f', agent: 'a', kind: 'question', title: 'legacy', repo: 'o/n' })
+    insertItem(db, { project: 'p', stream: 'f', agent: 'a', kind: 'question', title: 'same', repo: 'o/n', head_repo: 'o/n' })
+    insertItem(db, { project: 'p', stream: 'f', agent: 'a', kind: 'question', title: 'fork', repo: 'o/n', head_repo: 'me/n' })
+    upsertBoard(db, { project: 'p', stream: 'f', agent: 'a', title: 'cov', rows: [{ label: 'a', status: 'tracked' }], repo: 'o/n', headRepo: 'me/n' })
+    expect(listLinkTargets(db)).toEqual([
+      { repo: 'o/n', branch: 'f', head_repo: 'me/n' },
+      { repo: 'o/n', branch: 'f', head_repo: 'o/n' },
+    ])
+  })
+
+  it('keeps one cache row per expected head, and a write with no head records the same-repository one', () => {
+    upsertSourceLink(db, good)
+    upsertSourceLink(db, { ...good, head_repo: 'me/agent-inbox', pr_number: 52 })
+    recordLinkFailure(db, { repo: good.repo, branch: good.branch, head_repo: 'me/agent-inbox', error: 'offline' })
+    expect(listSourceLinks(db).map((l) => [l.head_repo, l.pr_number, l.error])).toEqual([
+      ['me/agent-inbox', 52, 'offline'],
+      ['shariqh/agent-inbox', 41, null],
+    ])
+  })
+
+  // the pre-#157 cache never recorded which repository its PR's head came from,
+  // so none of its rows can be verified — and some are exactly the fork PRs this
+  // fix exists to stop showing. Older processes may still write that table.
+  it('never serves a row from the unverifiable pre-#157 source_links cache', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'inbox-legacy157-links-')), 'inbox.db')
+    const legacy = new Database(path)
+    legacy.exec(`
+      CREATE TABLE source_links (
+        repo TEXT NOT NULL, branch TEXT NOT NULL, provider TEXT NOT NULL DEFAULT 'github',
+        pr_number INTEGER, pr_url TEXT, pr_title TEXT, pr_state TEXT, pr_draft INTEGER,
+        review_decision TEXT, checks TEXT, issue_number INTEGER, issue_url TEXT, issue_title TEXT,
+        tldr TEXT, fetched_at TEXT, checked_at TEXT NOT NULL, error TEXT,
+        PRIMARY KEY (repo, branch)
+      );
+      INSERT INTO source_links (repo, branch, pr_number, issue_number, checked_at)
+        VALUES ('cli/cli', 'trunk', 14481, 9999, '${new Date().toISOString()}');
+    `)
+    legacy.close()
+    const migrated = openDb(path)
+    insertItem(migrated, { project: 'p', stream: 'trunk', agent: 'a', kind: 'question', title: 'q', repo: 'cli/cli' })
+    expect(listSourceLinks(migrated)).toEqual([])
   })
 
   it('pruneSourceLinks keeps freshly-checked rows and drops ones unchecked for 30 days', () => {

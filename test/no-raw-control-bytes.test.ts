@@ -169,6 +169,8 @@ describe('the repo|branch separator survived the escape as a real U+0000', () =>
     const { linkKey } = await import('../public/source.js')
     const key = linkKey('owner/repo', 'feat/x')
     expect([...key].map((c) => c.codePointAt(0))).toContain(0)
-    expect(key).toBe(`owner/repo${String.fromCharCode(0)}feat/x`)
+    // issue #157: the head repository is the third part, the repo itself when omitted
+    const nul = String.fromCharCode(0)
+    expect(key).toBe(`owner/repo${nul}feat/x${nul}owner/repo`)
   })
 })

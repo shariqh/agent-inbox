@@ -151,6 +151,9 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
         agent: s.agent,
         repo: s.repo,
         issue_ref: scope.issueFor(branch),
+        // issue #157 — where the branch is pushed; only worth a git call when
+        // there is a base repo to link against at all
+        head_repo: s.repo ? scope.headFor(branch) : null,
         // stamp the asking session so the viewer can tell "waiting" (this
         // session is still in /api/activity) from "parked" (agent long gone)
         session: sessionId,
@@ -428,6 +431,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
         expectedVersion: board_version,
         repo: s.repo,
         issueRef: s.issue,
+        headRepo: s.repo ? scope.headFor(s.stream) : null,
       })
       const watches = s.agent === 'copilot' && newActions.size
         ? getBoard(db, s.project, title)?.rows
@@ -502,6 +506,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
         context,
         repo: s.repo,
         issueRef: s.issue,
+        headRepo: s.repo ? scope.headFor(s.stream) : null,
       })
       const watch = s.agent === 'copilot' && newAsk
         ? rowWatch({ id: out.rowId, label, action_version: (existing?.action_version ?? 0) + 1 }, s.project)

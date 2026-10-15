@@ -400,49 +400,76 @@ function orderedIds(ids) {
   return pinnedIds
 }
 
+// Promise.allSettled keeps every concurrent read's rejection observed; the tick
+// then reports failures in the order the reads used to run one after another.
+function settledValue(result) {
+  if (result.status === 'rejected') throw result.reason
+  return result.value
+}
+
 async function load() {
   if (reloadRequested) return false
   const generation = ++loadGeneration
+  // Issue #161: the reads are independent, so the tick starts them together and
+  // lasts as long as the slowest one. Each still degrades exactly as it did when
+  // they ran in sequence. Every response names its server instance (#165).
+  const boots = []
+  const marked = (response) => {
+    boots.push(response.headers.get('x-inbox-boot'))
+    return response
+  }
+  const historySinceMs = Date.now() - 30 * 24 * 60 * 60 * 1000
   try {
-    const res = await readSnapshot('/api/items')
+    const [items, boardsRead, archivedRead, activityRead, historyRead, closedRead, linksRead] = await Promise.allSettled([
+      readSnapshot('/api/items').then(marked),
+      readSnapshot('/api/boards').then(marked),
+      readSnapshot('/api/boards/archived').then(marked),
+      fetch('/api/activity').then(marked),
+      fetch(`/api/activity/history?since_ms=${historySinceMs}`).then(marked)
+        .then(async (response) => {
+          if (!response.ok) return { state: 'error', spans: [], message: `History unavailable (${response.status})` }
+          const spans = await response.json()
+          return Array.isArray(spans)
+            ? { state: 'ready', spans, message: '' }
+            : { state: 'error', spans: [], message: 'History returned an invalid payload' }
+        })
+        .catch((error) => ({
+          state: 'error',
+          spans: [],
+          message: error instanceof Error ? `History unavailable: ${error.message}` : 'History unavailable',
+        })),
+      // Projects the human closed (issue #32). Defensive on purpose: a viewer that
+      // predates this route answers 404 with HTML, a bare .json() would throw into
+      // the catch below, and the WHOLE page would read 'disconnected'. An unknown
+      // closed set must mean "suppress nothing", never a dead page.
+      fetch('/api/projects/closed').then(marked)
+        .then((r) => (r.ok ? r.json() : null))
+        .catch(() => null),
+      // Cached PR state (issue #30), same defensive shape and for the same reason:
+      // an empty links set must mean "render exactly as before this feature", never
+      // a dead page. A viewer that predates this route answers 404 with HTML.
+      fetch('/api/links').then(marked).then((r) => (r.ok ? r.json() : [])).catch(() => []),
+    ])
     if (reloadRequested || generation < appliedLoadGeneration) return false
-    const boot = res.headers.get('x-inbox-boot')
-    if (bootId && boot && bootId !== boot) refreshPending = true
-    if (!bootId && boot) bootId = boot
+    const res = settledValue(items)
+    // A restart between two reads of one tick would mix two instances' data, so
+    // any disagreement is a restart, and that tick is never applied.
+    const marks = new Set(boots.filter(Boolean))
+    bootId ??= marks.size === 1 ? [...marks][0] : null
+    if ([...marks].some((mark) => mark !== bootId)) refreshPending = true
     if (refreshPending && !shouldDeferBootReload()) {
       reloadRequested = true
       location.reload()
       return false
     }
-    const g = await res.json()
-    const boards = await (await readSnapshot('/api/boards')).json()
-    const archived = await (await readSnapshot('/api/boards/archived')).json()
-    const activity = await (await fetch('/api/activity')).json()
-    const historySinceMs = Date.now() - 30 * 24 * 60 * 60 * 1000
-    const activityHistory = await fetch(`/api/activity/history?since_ms=${historySinceMs}`)
-      .then(async (response) => {
-        if (!response.ok) return { state: 'error', spans: [], message: `History unavailable (${response.status})` }
-        const spans = await response.json()
-        return Array.isArray(spans)
-          ? { state: 'ready', spans, message: '' }
-          : { state: 'error', spans: [], message: 'History returned an invalid payload' }
-      })
-      .catch((error) => ({
-        state: 'error',
-        spans: [],
-        message: error instanceof Error ? `History unavailable: ${error.message}` : 'History unavailable',
-      }))
-    // Projects the human closed (issue #32). Defensive on purpose: a viewer that
-    // predates this route answers 404 with HTML, a bare .json() would throw into
-    // the catch below, and the WHOLE page would read 'disconnected'. An unknown
-    // closed set must mean "suppress nothing", never a dead page.
-    const closedSnapshot = await fetch('/api/projects/closed')
-      .then((r) => (r.ok ? r.json() : null))
-      .catch(() => null)
-    // Cached PR state (issue #30), same defensive shape and for the same reason:
-    // an empty links set must mean "render exactly as before this feature", never
-    // a dead page. A viewer that predates this route answers 404 with HTML.
-    const links = await fetch('/api/links').then((r) => (r.ok ? r.json() : [])).catch(() => [])
+    if (marks.size > 1) return false
+    // Bodies only after the live boot decision: a 304 resolves to cached data.
+    const body = (read) => (read.status === 'fulfilled' ? read.value.json() : Promise.reject(read.reason))
+    const bodies = await Promise.allSettled([res.json(), body(boardsRead), body(archivedRead), body(activityRead)])
+    const [g, boards, archived, activity] = bodies.map(settledValue)
+    const activityHistory = settledValue(historyRead)
+    const closedSnapshot = settledValue(closedRead)
+    const links = settledValue(linksRead)
     if (reloadRequested || generation < appliedLoadGeneration) return false
     appliedLoadGeneration = generation
     if (closedSnapshot !== null) {

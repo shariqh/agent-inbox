@@ -2,7 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
 import type Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
-import { insertItem, resolveItem, listPending, markReplySeen, markItemAnnotationDelivered, answerItem, upsertBoard, updateBoardRow, advanceBoardRow, findBoard, archiveBoard, getBoard, listBoards, markBoardRead, markAnnotationDelivered, markHandledDelivered, listPendingRows, upsertActivity, endActivity, touchActivity, recordActivityCall } from './store.js'
+import { insertItem, resolveItem, listPending, markReplySeen, markItemAnnotationDelivered, answerItem, upsertBoard, updateBoardRow, advanceBoardRow, findBoard, archiveBoard, getBoard, getBoardByTitle, listBoards, markBoardRead, markAnnotationDelivered, markHandledDelivered, listPendingRows, upsertActivity, endActivity, touchActivity, recordActivityCall } from './store.js'
 import type { ActionOwner, BoardRow, BoardWithRows, QuestionOption } from './store.js'
 import { makeContextLedger, deliverContext, shapeBoard, summariseBoard, rowKey, itemKey } from './shape.js'
 import { makeScope } from './scope.js'
@@ -393,8 +393,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     async ({ title, board_version, rows }) => {
       heartbeat()
       const s = scope.get(clientName())
-      const existing = getBoard(db, s.project, title)
-        ?? listBoards(db, { status: 'archived' }).find((board) => board.project === s.project && board.title === title)
+      const existing = getBoardByTitle(db, s.project, title)
       if (existing && board_version === undefined) {
         throw new Error(`existing board "${title}" requires board_version ${existing.revision}`)
       }
@@ -461,8 +460,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     async ({ title, board_version, label, expected_revision, status, note, next_step, action_owner, impact, next_after, options, outcome, context }) => {
       heartbeat()
       const s = scope.get(clientName())
-      const existingBoard = getBoard(db, s.project, title)
-        ?? listBoards(db, { status: 'archived' }).find((board) => board.project === s.project && board.title === title)
+      const existingBoard = getBoardByTitle(db, s.project, title)
       const existing = existingBoard?.rows.find((row) => row.label === label)
       if (existingBoard && board_version === undefined) {
         throw new Error(`existing board "${title}" requires board_version ${existingBoard.revision}`)
@@ -612,8 +610,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
           const payload = full === true ? { boards: summary, full_requires_title: true } : { boards: summary }
           return { content: [{ type: 'text', text: JSON.stringify(payload) }] }
         }
-        const board = getBoard(db, s.project, title)
-          ?? listBoards(db, { status: 'archived' }).find((candidate) => candidate.project === s.project && candidate.title === title)
+        const board = getBoardByTitle(db, s.project, title)
         if (board && !deliver(board)) continue
         const watches = watch && board?.status === 'active'
           ? board.rows.filter((row) => row.status === 'blocked').map((row) => rowWatch(row, s.project))

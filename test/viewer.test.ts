@@ -913,6 +913,20 @@ describe('write routes refuse invalid bodies before touching the store (#163)', 
       expect(await res.json()).toEqual({ ok: true })
       expect(listBoards(db)[0]!.rows[0]!.snoozed_until).toBe(OFFSET_DATE_UTC)
     })
+
+    // #177 classifies the store's refusal of a VALID body; an invalid body is a
+    // 400 before that store call, even on a row that could not be snoozed anyway.
+    it('validates before classifying a refusal: same answered row and current pins', async () => {
+      annotateBoardRow(db, blockedRow(), 'answered')
+      const { path, pins } = rowTarget()
+      const before = listBoards(db)
+      await expectInvalid(await post(`${path}/snooze`, JSON.stringify({ until: 'tomorrow', ...pins })))
+      expect(listBoards(db)).toEqual(before)
+      const valid = await post(`${path}/snooze`, JSON.stringify({ until: FUTURE, ...pins }))
+      expect(valid.status).toBe(200)
+      expect(await valid.json()).toEqual({ ok: false, reason: 'not_snoozable' })
+      expect(listBoards(db)).toEqual(before)
+    })
   })
 
   // An absent `handled` still MARKS (the documented affirmative default); a

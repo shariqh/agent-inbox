@@ -35,9 +35,10 @@ database, so a preview never creates or migrates the hub. `--apply` writes
 timestamped backup, the staged copy and the rename all happen beside the link's
 target, so the link survives and the target is what changes. A dangling link, or
 a settings path that is not a regular file, is refused before anything is read or
-written. Every write step is checked: a failure exits non-zero, leaves the file
-unchanged and removes the staged copy, and nothing reports success before the
-final rename lands.
+written, and a read-only (or immutable) one before anything is staged. A blank
+settings file reads as `{}`, in both checkout and packaged modes. Every write step
+is checked: a failure exits non-zero, leaves the file unchanged and removes the
+staged copy, and nothing reports success before the final rename lands.
 
 ## Events → subcommands
 

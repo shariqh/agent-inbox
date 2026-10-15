@@ -727,8 +727,8 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   their settings entries. *(#155)* The installer's dry run stays side-effect free: its
   selftest gets a throwaway database, because opening the hub creates and migrates it.
   `--apply` writes through a symlinked `settings.json` (backup, staged copy and rename beside
-  the target), refuses a dangling or non-regular target, and checks every write before it
-  reports success.
+  the target), refuses a dangling, non-regular or read-only target, and checks every write
+  before it reports success.
 - **Close / reopen a project** *(#32)* — a sparse `projects(project, closed_at)` table; **reopen is
   DERIVED, never written** (a project un-closes the moment an item or board is CREATED in it after
   `closed_at`), so `insertItem` stays byte-identical and the un-close is atomic with the very insert

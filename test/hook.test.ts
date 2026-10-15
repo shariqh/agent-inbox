@@ -1322,6 +1322,42 @@ describe('hook: installer', () => {
     expect(readdirSync(join(dir, '.claude'))).toEqual(['settings.json'])
   })
 
+  // the packaged runtime-config.mjs reads a blank file as {}; checkout mode must agree
+  it.each([
+    ['an empty', ''],
+    ['a whitespace-only', ' \n\t\n'],
+  ])('installs into %s settings.json as if it were {}, backing it up first', (_label, contents) => {
+    const { dir, entry, file } = home()
+    writeFileSync(file, contents)
+
+    const r = installer(['--apply'], dir, entry)
+
+    expect(r.code, r.err).toBe(0)
+    const s = JSON.parse(readFileSync(file, 'utf8'))
+    expect(s.hooks.Notification[0].hooks[0].args).toEqual([entry, 'notification'])
+    const backups = backupsOf(file)
+    expect(backups).toHaveLength(1)
+    expect(readFileSync(join(dirname(file), backups[0]!), 'utf8')).toBe(contents)
+  })
+
+  // root ignores file modes, so a read-only settings file cannot be modelled there
+  it.skipIf(process.getuid?.() === 0)('refuses a read-only settings.json up front, says so, and leaves nothing behind', () => {
+    const { dir, entry, file } = home(withPostToolUse)
+    const before = readFileSync(file, 'utf8')
+    chmodSync(file, 0o444)
+    try {
+      const r = installer(['--apply'], dir, entry)
+
+      expect(r.code).not.toBe(0)
+      expect(r.err).toContain(`${file} is read-only`)
+      expect(r.err).not.toMatch(/hooks installed/)
+      expect(readFileSync(file, 'utf8')).toBe(before)
+      expect(readdirSync(join(dir, '.claude'))).toEqual(['settings.json'])
+    } finally {
+      chmodSync(file, 0o644)
+    }
+  })
+
   it('the dry run proves Node against a throwaway database and never creates the hub', () => {
     const { dir, file } = home(withPostToolUse)
     const before = readFileSync(file, 'utf8')

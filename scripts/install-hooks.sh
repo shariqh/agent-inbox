@@ -203,6 +203,8 @@ else
   else
     CURRENT='{}'
   fi
+  # A blank file holds no settings: read it as {}, as runtime-config.mjs does.
+  case "$CURRENT" in *[![:space:]]*) ;; *) CURRENT='{}' ;; esac
   echo "$CURRENT" | jq empty 2>/dev/null || { echo "install-hooks: $SETTINGS is not valid JSON — refusing to touch it" >&2; exit 1; }
 
   # Every jq step is checked: a failed one prints nothing, and writing that
@@ -249,7 +251,13 @@ fi
 # Every step is checked and nothing is reported until the rename has landed: a
 # step that fails exits non-zero with the target unchanged, and the EXIT trap
 # removes the staged copy. The copy starts as a clone of the target so the
-# published file keeps the target's mode (settings.json can carry secrets).
+# published file keeps the target's mode (settings.json can carry secrets) —
+# which is why a target this user cannot write (read-only, or immutable on
+# macOS) is refused first: its clone could be neither filled nor removed.
+if [ -f "$TARGET" ] && [ ! -w "$TARGET" ]; then
+  echo "install-hooks: $TARGET is read-only — nothing was written; make it writable and retry" >&2
+  exit 1
+fi
 TARGET_DIR="$(dirname "$TARGET")"
 mkdir -p "$TARGET_DIR" || { echo "install-hooks: could not create $TARGET_DIR — nothing was written" >&2; exit 1; }
 STAGED="$(mktemp "$TARGET_DIR/$(basename "$TARGET").tmp.XXXXXX")" || {

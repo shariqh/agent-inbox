@@ -30,6 +30,7 @@ import {
   listBoards,
   computeProgress,
   getBoard,
+  getBoardByTitle,
   markBoardRead,
   upsertActivity,
   endActivity,
@@ -1202,6 +1203,36 @@ describe('activity spans', () => {
     expect(spans[1]!.ended_at).toBeNull()
   })
 
+  // Issue #162. Presence takes the latest scope on every write, but a span compared
+  // only `doing`: after register() or a branch checkout moved the session, the same
+  // claim kept extending the OLD span, so Live said one project while history
+  // credited the work to another.
+  it.each([
+    ['project', { project: 'proj-b' }],
+    ['stream', { stream: 'feature' }],
+    ['agent', { agent: 'copilot' }],
+  ] as const)('re-claiming the same doing under a different %s closes the old-scope span and opens a new-scope one', (_field, change) => {
+    const scope = { session: 's1', project: 'proj-a', stream: 'main', agent: 'claude-code' }
+    upsertActivity(db, { ...scope, doing: 'Testing' })
+    vi.setSystemTime(START + 5 * 60_000)
+    upsertActivity(db, { ...scope, ...change, doing: 'Testing' })
+    const spans = listActivitySpans(db)
+    expect(spans).toHaveLength(2)
+    expect(spans[0]).toMatchObject({ ...scope, doing: 'Testing', ended_at: new Date(START + 5 * 60_000).toISOString() })
+    expect(spans[1]).toMatchObject({ ...scope, ...change, doing: 'Testing', started_at: new Date(START + 5 * 60_000).toISOString(), ended_at: null })
+    expect(listActivity(db)[0]).toMatchObject({ ...scope, ...change }) // Live and history agree
+  })
+
+  it('registration (claim: false) into a new scope neither closes, extends nor re-scopes the open span', () => {
+    upsertActivity(db, { session: 's1', project: 'proj-a', stream: 'main', agent: 'claude-code', doing: 'Testing' })
+    const before = listActivitySpans(db)
+    vi.setSystemTime(START + 5 * 60_000)
+    // what register() sends through registerPresence after scope.override
+    upsertActivity(db, { session: 's1', project: 'proj-b', stream: 'feature', agent: 'claude-code', doing: 'open', idle: true, claim: false })
+    expect(listActivity(db)[0]!.project).toBe('proj-b')
+    expect(listActivitySpans(db)).toEqual(before)
+  })
+
   it('recordActivityCall while still warm bumps last_active_at on the open span', () => {
     upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'a', doing: 'writing tests' })
     vi.setSystemTime(START + 10 * 60_000)
@@ -2270,6 +2301,46 @@ describe('getBoard (agent read)', () => {
     const { boardId } = upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'cov', rows: [{ label: 'x', status: 'done' }] })
     archiveBoard(db, boardId)
     expect(getBoard(db, 'p', 'cov')).toBeUndefined()
+  })
+})
+
+// Issue #159 — the titled MCP board tools need a board WHATEVER its status
+// (board_get hands back an archived board's CAS revisions; board_upsert and
+// board_row demand board_version before a write reactivates it). They used to
+// find one by loading every archived board in every project.
+describe('getBoardByTitle (titled agent read, any status — issue #159)', () => {
+  let db: Database.Database
+  beforeEach(() => { db = freshDb() })
+
+  it('returns an active board exactly as getBoard does', () => {
+    upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'cov', rows: [
+      { label: 'x', status: 'done' }, { label: 'y', status: 'partial' },
+    ] })
+    expect(getBoardByTitle(db, 'p', 'cov')).toEqual(getBoard(db, 'p', 'cov'))
+  })
+
+  it('returns an archived board with its rows and progress, while getBoard stays active-only', () => {
+    const { boardId } = upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'cov', rows: [
+      { label: 'x', status: 'partial' }, { label: 'y', status: 'missing' },
+    ] })
+    archiveBoard(db, boardId)
+    const archived = getBoardByTitle(db, 'p', 'cov')!
+    expect(archived).toMatchObject({ id: boardId, status: 'archived', revision: 2 })
+    expect(archived.rows.map((r) => r.label)).toEqual(['x', 'y'])
+    expect(archived.progress.fraction).toBeCloseTo(0.5 / 2)
+    // the same snapshot the old all-archived-boards scan produced
+    expect(archived).toEqual(listBoards(db, { status: 'archived' })[0])
+    expect(getBoard(db, 'p', 'cov')).toBeUndefined()
+  })
+
+  it('is scoped by project and title: a missing title, or the same title in another project, is undefined', () => {
+    upsertBoard(db, { project: 'other', stream: '', agent: 'a', title: 'cov', rows: [{ label: 'z', status: 'missing' }] })
+    expect(getBoardByTitle(db, 'p', 'cov')).toBeUndefined()
+    expect(getBoardByTitle(db, 'other', 'nope')).toBeUndefined()
+    upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'cov', rows: [{ label: 'x', status: 'done' }] })
+    expect(getBoardByTitle(db, 'p', 'cov')).toMatchObject({ project: 'p', status: 'archived' })
+    expect(getBoardByTitle(db, 'p', 'cov')!.rows.map((r) => r.label)).toEqual(['x'])
+    expect(getBoardByTitle(db, 'other', 'cov')!.rows.map((r) => r.label)).toEqual(['z'])
   })
 })
 

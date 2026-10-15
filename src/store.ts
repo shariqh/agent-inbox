@@ -2085,7 +2085,7 @@ const upsertActivityTxn = (db: Database.Database, a: ActivityUpdate): void => {
 }
 
 export function upsertActivity(db: Database.Database, a: ActivityUpdate): void {
-  db.transaction(() => upsertActivityTxn(db, a))()
+  db.transaction(() => upsertActivityTxn(db, a)).immediate()
 }
 
 export function endActivity(db: Database.Database, session: string): void {
@@ -2239,10 +2239,12 @@ function cappedSpanEnd(lastActiveAt: string, nowMs: number): string {
   return cap < nowMs ? new Date(cap).toISOString() : new Date(nowMs).toISOString()
 }
 
-function openSpan(db: Database.Database, session: string): { id: number; doing: string; last_active_at: string } | undefined {
+type OpenSpan = Pick<ActivitySpan, 'id' | 'project' | 'stream' | 'agent' | 'doing' | 'last_active_at'>
+
+function openSpan(db: Database.Database, session: string): OpenSpan | undefined {
   return db
-    .prepare(`SELECT id, doing, last_active_at FROM activity_spans WHERE session = ? AND ended_at IS NULL`)
-    .get(session) as { id: number; doing: string; last_active_at: string } | undefined
+    .prepare(`SELECT id, project, stream, agent, doing, last_active_at FROM activity_spans WHERE session = ? AND ended_at IS NULL`)
+    .get(session) as OpenSpan | undefined
 }
 
 function closeOpenSpan(db: Database.Database, session: string, nowMs: number): void {
@@ -2268,20 +2270,24 @@ interface ClaimSpanInput {
 // cutoff `recordActivityCall`/`listActivity` already use:
 //   • no open span, meaningful doing   → open one
 //   • no open span, not meaningful     → nothing to do
-//   • open span, same doing, still warm → same live claim: bump last_active_at,
-//                                          no new row
-//   • open span, otherwise (doing changed, now idle/open/done, OR the prior
-//     span already went cold) → close the prior span truthfully (capped, so a
-//     stale close can never read as "worked until now") and, if this write is
-//     itself meaningful, open a fresh span — this is also how a claim
+//   • open span, same doing in the same scope (project, stream, agent), still
+//     warm → same live claim: bump last_active_at, no new row
+//   • open span, otherwise (doing or scope changed, now idle/open/done, OR the
+//     prior span already went cold) → close the prior span truthfully (capped,
+//     so a stale close can never read as "worked until now") and, if this write
+//     is itself meaningful, open a fresh span — this is also how a claim
 //     reasserted after a cold gap gets its own new interval instead of
 //     silently extending the old one across the gap.
+// Scope is part of a claim's identity (#162). Presence takes the latest scope on
+// every write, so comparing `doing` alone kept crediting a claim re-reported after
+// register() or a branch checkout to the OLD project and stream.
 function transitionClaimSpan(db: Database.Database, input: ClaimSpanInput): void {
   const { session, project, stream, agent, doing, isMeaningful, nowIso, nowMs } = input
   const open = openSpan(db, session)
   if (open) {
     const stale = open.last_active_at < claimCutoff(nowMs)
-    const sameLiveClaim = isMeaningful && open.doing === doing && !stale
+    const sameScope = open.project === project && open.stream === stream && open.agent === agent
+    const sameLiveClaim = isMeaningful && open.doing === doing && sameScope && !stale
     if (sameLiveClaim) {
       db.prepare(`UPDATE activity_spans SET last_active_at = ? WHERE id = ?`).run(nowIso, open.id)
       return
@@ -2343,6 +2349,21 @@ export function listActivitySpans(
 export function getBoard(db: Database.Database, project: string, title: string): BoardWithRows | undefined {
   const board = findBoard(db, project, title)
   if (!board || board.status !== 'active') return undefined
+  return boardWithRows(db, board)
+}
+
+// Issue #159 — ONE board by (project, title) WHATEVER its status. The titled MCP
+// tools need an archived board too: board_get hands back its CAS revisions, and
+// board_upsert/board_row demand board_version before a write reactivates it.
+// They used to fall back to listBoards({ status: 'archived' }), loading and
+// parsing every archived board in every project to find this one; this is the
+// unique-key lookup plus that board's rows. getBoard() stays active-only.
+export function getBoardByTitle(db: Database.Database, project: string, title: string): BoardWithRows | undefined {
+  const board = findBoard(db, project, title)
+  return board ? boardWithRows(db, board) : undefined
+}
+
+function boardWithRows(db: Database.Database, board: Board): BoardWithRows {
   const rows = withUnseen(
     db.prepare(`SELECT ${ROW_COLUMNS} FROM board_rows WHERE board_id = ? ORDER BY position ASC`).all(board.id) as BoardRowRecord[],
   )

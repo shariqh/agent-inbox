@@ -216,7 +216,10 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   (measured: servers observed running 4+ days), so a fan-out shares one process, one `sessionId`
   and one in-memory ledger. All instances write to the same `~/.agent-inbox/inbox.db`. Concurrency
   is handled by **WAL + `busy_timeout=5000`** set in `openDb` — keep both. Writes are single tiny
-  inserts; this is WAL's happy path.
+  inserts; this is WAL's happy path. `busy_timeout` never applies when a deferred transaction's
+  read snapshot is promoted to the writer — that fails at once with `SQLITE_BUSY` or
+  `SQLITE_BUSY_SNAPSHOT` — so any transaction that reads before it may write must be
+  `.immediate()` (#154).
 - **Two activity stamps, and only one of them means work** *(issue #45)*. `activity.updated_at` is
   LIVENESS: the 5-minute `touchActivity` timer bumps it whether or not the agent has done
   anything, so `listActivity`'s 15-minute cutoff can only ever catch a **crashed** process and is

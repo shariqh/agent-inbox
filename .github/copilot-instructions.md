@@ -94,7 +94,9 @@ Run the build before `npm run electron`; the development shell starts the built
 - Keep `zod` as a direct dependency: `src/mcp.ts` uses it for MCP tool schemas.
 - Do not issue raw SQL outside `src/store.ts`. The viewer, MCP server, hooks,
   watcher, and PR poller all share one database across OS processes. Preserve
-  `journal_mode=WAL` and `busy_timeout=5000`.
+  `journal_mode=WAL` and `busy_timeout=5000`, and make any transaction that
+  reads before it may write `.immediate()`: SQLite never waits when a deferred
+  reader is promoted to the writer.
 - Conditional viewer snapshots retain only items and active/archived boards.
   Invalidate on same/other-connection writes, schema changes and pickup stamps;
   never cache an uncommitted snapshot. Keep dynamic routes fresh, no-store and

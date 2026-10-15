@@ -102,6 +102,9 @@ export function defaultDbPath(): string {
 export function openDb(path: string = defaultDbPath()): Database.Database {
   mkdirSync(dirname(path), { recursive: true })
   const db = new Database(path)
+  // Every process shares this file through WAL + busy_timeout, but SQLite never
+  // waits when a deferred reader is promoted to the writer, so any transaction
+  // whose first statement reads and that may later write must be `.immediate()`.
   db.pragma('busy_timeout = 5000')
   db.pragma('journal_mode = WAL')
   migrate(db)
@@ -533,13 +536,21 @@ function migrateAnnotationDelivery(db: Database.Database): void {
 
 export function insertItem(db: Database.Database, item: NewItem): string {
   // milestones are announcements — re-announcing the same open milestone
-  // (agent retries, re-runs) must not stack duplicates
+  // (agent retries, re-runs) must not stack duplicates. The lookup and the INSERT
+  // share one IMMEDIATE transaction, so another process cannot announce the same
+  // milestone between them; a duplicate gets the id that already exists.
   if (item.kind === 'done') {
-    const existing = db
-      .prepare(`SELECT id FROM items WHERE kind = 'done' AND status = 'open' AND project = ? AND title = ?`)
-      .get(item.project, item.title) as { id: string } | undefined
-    if (existing) return existing.id
+    return db.transaction((): string => {
+      const existing = db
+        .prepare(`SELECT id FROM items WHERE kind = 'done' AND status = 'open' AND project = ? AND title = ?`)
+        .get(item.project, item.title) as { id: string } | undefined
+      return existing ? existing.id : insertItemRow(db, item)
+    }).immediate()
   }
+  return insertItemRow(db, item)
+}
+
+function insertItemRow(db: Database.Database, item: NewItem): string {
   const id = randomUUID()
   const now = new Date().toISOString()
   db.prepare(
@@ -1182,7 +1193,7 @@ export function upsertBoard(db: Database.Database, input: UpsertBoardInput): { b
     if (before && boardChanged) bumpBoardRevision(db, boardId, now)
     return { boardId, rowCount: inp.rows.length }
   })
-  return run(input)
+  return run.immediate(input)
 }
 
 interface UpdateRowInput {
@@ -1475,7 +1486,7 @@ export function updateBoardRow(db: Database.Database, input: UpdateRowInput): { 
     if (before) bumpBoardRevision(db, boardId, now)
     return { boardId, rowId }
   })
-  return run(input)
+  return run.immediate(input)
 }
 
 // After every agent write, a board's active/archived status follows its

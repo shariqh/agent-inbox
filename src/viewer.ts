@@ -7,7 +7,7 @@ import { homedir } from 'node:os'
 import { dirname, isAbsolute, resolve, sep } from 'node:path'
 import type Database from 'better-sqlite3'
 import {
-  listItems, resolveItem, dismissItem, annotateItem, replyItem, snoozeItem,
+  listItems, listOpenQuestions, resolveItem, dismissItem, annotateItem, replyItem, snoozeItem,
   listBoards, archiveBoard, unarchiveBoard, annotateBoardRow, snoozeBoardRow,
   markRowHandled, clearRowHandled, listActivity, listActivitySpans, listSourceLinks, defaultDbPath,
   closeProject, reopenProject, closedProjects, readSnapshotState,
@@ -384,10 +384,10 @@ function sameSnapshotState(a: SnapshotReadState, b: SnapshotReadState): boolean 
 
 function conditionalSnapshot(
   db: Database.Database,
-  name: 'items' | 'boards' | 'archived-boards',
+  name: 'items' | 'attention-items' | 'boards' | 'archived-boards',
   read: () => object,
 ): Handler {
-  // One representation per registered endpoint, local to this viewer instance.
+  // One representation per registration, local to this viewer instance.
   let cached: { state: SnapshotReadState; body: string; etag: string } | undefined
   return (c) => {
     c.header('Cache-Control', 'no-store')
@@ -436,7 +436,14 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
     c.res.headers.set('x-inbox-boot', boot)
   })
 
-  app.get('/api/items', conditionalSnapshot(db, 'items', () => groupItems(listItems(db))))
+  const allItems = conditionalSnapshot(db, 'items', () => groupItems(listItems(db)))
+  // Issue #156: the Electron dock watcher polls every 3 seconds from the main
+  // process and reads only needsYou. `?scope=attention` serves the same Grouped
+  // shape built from the open questions alone. It is a separate cached
+  // representation with its own validator, so neither can revalidate the other;
+  // any other query string keeps the full response.
+  const attentionItems = conditionalSnapshot(db, 'attention-items', () => groupItems(listOpenQuestions(db)))
+  app.get('/api/items', (c, next) => (c.req.query('scope') === 'attention' ? attentionItems : allItems)(c, next))
 
   // The build stamp (#40) rides along here rather than on its own route: the
   // Setup panel is the one surface that asks "which build is this", and it is

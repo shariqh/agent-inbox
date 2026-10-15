@@ -57,7 +57,11 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   stdio MCP import graph.
 - **Conditional snapshots must remain authoritative.** Only `/api/items`,
   `/api/boards` and `/api/boards/archived` retain one serialized representation
-  each per viewer. Matching `If-None-Match` returns a bodyless 304; unconditional
+  each per viewer, plus `/api/items?scope=attention` (issue #156): the Electron
+  dock watcher's lean read, built from open questions alone and registered
+  separately with its own validator so neither `/api/items` representation can
+  revalidate the other. Any other query string keeps the full items response.
+  Matching `If-None-Match` returns a bodyless 304; unconditional
   clients still receive full JSON. Keep `Cache-Control: no-store` and the current
   outer `x-inbox-boot` marker on 304 responses too. Store-only invalidation reads
   combine `data_version`, `total_changes()`, `schema_version` and transaction state:

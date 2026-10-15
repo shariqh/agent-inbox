@@ -97,7 +97,9 @@ Run the build before `npm run electron`; the development shell starts the built
   `journal_mode=WAL` and `busy_timeout=5000`, and make any transaction that
   reads before it may write `.immediate()`: SQLite never waits when a deferred
   reader is promoted to the writer.
-- Conditional viewer snapshots retain only items and active/archived boards.
+- Conditional viewer snapshots retain only items, the dock watcher's
+  `/api/items?scope=attention` projection (its own validator, never the default
+  representation's) and active/archived boards.
   Invalidate on same/other-connection writes, schema changes and pickup stamps;
   never cache an uncommitted snapshot. Keep dynamic routes fresh, no-store and
   the boot marker intact, and never turn a read failure into cached success.

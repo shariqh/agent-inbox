@@ -7,6 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import replyWatch from '../electron/reply-watch.cjs'
 import { attentionEntries } from '../public/attention.js'
 import type { AttentionBoard, AttentionItem } from '../public/attention.js'
+import { optionOrder } from '../public/card.js'
+import type { CardOption } from '../public/card.js'
 import {
   annotateBoardRow, annotateItem, closeProject, dismissItem, getBoard, getItem, insertItem,
   markReplySeen, openDb, replyItem, resolveItem, snoozeItem, upsertBoard,
@@ -243,20 +245,15 @@ describe('native attention notifications', () => {
     rmSync(directory, { recursive: true, force: true })
   })
 
-  // One startAttentionWatch poll without the Electron side effects.
+  // One startAttentionWatch poll without the Electron side effects, reading what
+  // main.cjs reads: the lean item projection (#156) and the active boards.
   function watch() {
     let known: Set<string> | null = null
     return async () => {
-      const grouped = await (await request(`${BASE}api/items`)).json() as {
+      const grouped = await (await request(`${BASE}api/items?scope=attention`)).json() as {
         needsYou: Array<{ items: AttentionItem[] }>
-        notes: Array<{ items: AttentionItem[] }>
-        done: AttentionItem[]
       }
-      const items = [
-        ...grouped.needsYou.flatMap((group) => group.items),
-        ...grouped.notes.flatMap((group) => group.items),
-        ...grouped.done,
-      ]
+      const items = grouped.needsYou.flatMap((group) => group.items)
       const entries = attentionEntries(items, await latestBoards(), Date.now(), []).map(replyWatch.attentionNotification)
       const fresh = replyWatch.freshAttentionNotifications(known, entries)
       known = new Set(entries.map((entry) => entry.id))
@@ -450,7 +447,10 @@ describe('the dock watcher lean item read (issue #156)', () => {
       insertItem(db, { ...scope('alpha'), kind: 'question', title: 'Nobody listening any more' })
       // One frozen millisecond from here on, so tie order is exercised as well.
       vi.setSystemTime(NOW - 10 * MINUTE)
-      insertItem(db, { ...scope('alpha'), session: 'live', kind: 'question', title: 'Waiting on you' })
+      const waiting = insertItem(db, {
+        ...scope('alpha'), session: 'live', kind: 'question', title: 'Waiting on you',
+        options: [{ label: 'Hold' }, { label: 'Ship it', recommended: true }],
+      })
       insertItem(db, { ...scope('alpha'), kind: 'question', title: 'Parked' })
       replyItem(db, insertItem(db, { ...scope('alpha'), session: 'live', kind: 'question', title: 'Answered' }), 'Go')
       const read = insertItem(db, { ...scope('beta'), kind: 'question', title: 'Answered and read' })
@@ -505,6 +505,14 @@ describe('the dock watcher lean item read (issue #156)', () => {
       }
       expect(attentionEntries(after, boards, NOW + 2 * HOUR, ['live']).length)
         .toBeGreaterThan(attentionEntries(after, boards, NOW, ['live']).length)
+
+      // main.cjs builds native notifications from these entries (#179): each
+      // question's id and title, and its options as the action buttons.
+      const notifications = attentionEntries(after, boards, NOW, ['live'], closed).map(replyWatch.attentionNotification)
+      const ask = notifications.find((notification) => notification.itemId === waiting)!
+      expect(ask).toMatchObject({ id: `q:${waiting}`, text: 'Waiting on you', target: { source: 'item', id: waiting } })
+      expect(replyWatch.cannedResponseActions(optionOrder((ask.item as { options: CardOption[] }).options)).responses)
+        .toEqual(['Ship it', 'Hold'])
 
       expect(replyWatch.responseTargets(lean, boards)).toEqual(replyWatch.responseTargets(full, boards))
       const fromFull = replyWatch.createResponseWatch()

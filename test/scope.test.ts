@@ -1,9 +1,22 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, basename } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { makeScope } from '../src/scope.js'
+
+// Issue #159 counts REAL git spawns: the spy delegates to the genuine
+// execFileSync, so every repo below is still built and read by git itself.
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>()
+  return { ...actual, execFileSync: vi.fn(actual.execFileSync) }
+})
+
+// How many times git ran with exactly these arguments in `cwd`.
+function gitSpawns(cwd: string, ...args: string[]): number {
+  return vi.mocked(execFileSync).mock.calls.filter(([file, argv, options]) =>
+    file === 'git' && JSON.stringify(argv) === JSON.stringify(args) && options?.cwd === cwd).length
+}
 
 describe('makeScope', () => {
   it('infers project/stream from cwd and agent from the client name', () => {
@@ -74,6 +87,64 @@ describe('makeScope carries the source link identity (issue #30)', () => {
     // parses to a different number must not defeat it
     expect(scope.issueFor('feat/41-links')).toBe(30)
     expect(scope.issueFor('trunk')).toBe(30)
+  })
+})
+
+// ── issue #159: origin is read once per server process; the branch stays live ──
+// One stdio server serves a CLI and all its subagents, and scope.get() runs on
+// nearly every tool call — so each blocking git spawn here serializes them all.
+
+describe('makeScope reads origin once per process but follows the branch (issue #159)', () => {
+  const ORIGIN = ['remote', 'get-url', 'origin'] as const
+  const BRANCH = ['branch', '--show-current'] as const
+
+  it('N get() calls spawn ONE origin lookup and N branch lookups; project and repo both come from it', () => {
+    const dir = tmpGitRepo({ remote: 'git@github.com:shariqh/agent-inbox.git', branch: '159-request-path' })
+    const scope = makeScope(dir)
+    for (let i = 0; i < 5; i++) {
+      expect(scope.get('claude-code')).toMatchObject({
+        project: 'agent-inbox', repo: 'shariqh/agent-inbox', stream: '159-request-path', issue: 159,
+      })
+    }
+    expect(gitSpawns(dir, ...ORIGIN)).toBe(1)
+    expect(gitSpawns(dir, ...BRANCH)).toBe(5)
+  })
+
+  it('remembers a missing origin too: the project falls back to the directory and the repo stays null', () => {
+    const dir = tmpGitRepo()
+    const scope = makeScope(dir)
+    for (let i = 0; i < 3; i++) expect(scope.get('claude-code')).toMatchObject({ project: basename(dir), repo: null })
+    expect(gitSpawns(dir, ...ORIGIN)).toBe(1)
+  })
+
+  it('a branch switch mid-session is reflected on the very next call', () => {
+    const dir = tmpGitRepo({ remote: 'git@github.com:shariqh/agent-inbox.git', branch: 'trunk' })
+    const scope = makeScope(dir)
+    expect(scope.get('claude-code')).toMatchObject({ stream: 'trunk', issue: null })
+    execFileSync('git', ['checkout', '-q', '-b', 'feat/41-links'], { cwd: dir })
+    expect(scope.get('claude-code')).toMatchObject({ project: 'agent-inbox', stream: 'feat/41-links', issue: 41 })
+    expect(gitSpawns(dir, ...ORIGIN)).toBe(1)
+    expect(gitSpawns(dir, ...BRANCH)).toBe(2)
+  })
+
+  it('register overrides still win, and skip the lookups they replace', () => {
+    const dir = tmpGitRepo({ remote: 'git@github.com:shariqh/agent-inbox.git', branch: '30-source-links' })
+    const overridden = makeScope(dir)
+    overridden.override({ project: 'oris', repo: 'acme/other', stream: 'release' })
+    for (let i = 0; i < 3; i++) {
+      expect(overridden.get('claude-code')).toMatchObject({ project: 'oris', repo: 'acme/other', stream: 'release' })
+    }
+    expect(gitSpawns(dir, ...ORIGIN)).toBe(0)
+    expect(gitSpawns(dir, ...BRANCH)).toBe(0)
+
+    // an override registered after origin was read still outranks it
+    const later = makeScope(dir)
+    expect(later.get('claude-code')).toMatchObject({ project: 'agent-inbox', repo: 'shariqh/agent-inbox' })
+    later.override({ project: 'renamed' })
+    expect(later.get('claude-code')).toMatchObject({ project: 'renamed', repo: 'shariqh/agent-inbox' })
+    later.override({ repo: 'acme/other' })
+    expect(later.get('claude-code')).toMatchObject({ project: 'renamed', repo: 'acme/other' })
+    expect(gitSpawns(dir, ...ORIGIN)).toBe(1)
   })
 })
 

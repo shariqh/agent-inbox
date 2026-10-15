@@ -245,7 +245,11 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   backfills atomically from a legacy non-`open` claim (or a preserved idle detail) so upgrading
   cannot erase the only synopsis a session reported.
 - **Session scope is Solo-style** (`src/scope.ts`): inferred lazily per call, overridable via
-  `register`. The client name for `inferAgent` **must be read lazily** inside handlers
+  `register`. The one memo is the origin remote (#159): `git remote get-url origin` runs at
+  most once per server process and feeds both `project` and `repo`. The branch (and the issue
+  parsed from it) is re-read on every call because worktrees and checkouts move mid-session,
+  so never cache the whole scope.
+  The client name for `inferAgent` **must be read lazily** inside handlers
   (`server.server.getClientVersion()?.name`) — it's only populated after the initialize
   handshake. Capturing it at build time yields `undefined`/`'unknown'`. Don't regress this.
 - **stdio channel is sacred.** The server speaks MCP over stdout — never `console.log` to

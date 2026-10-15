@@ -1,4 +1,4 @@
-import { inferProject, inferStream, inferAgent, inferRepo, inferIssueRef } from './infer.js'
+import { remoteUrl, inferProject, inferStream, inferAgent, inferRepo, inferIssueRef } from './infer.js'
 
 export interface Scope {
   project: string
@@ -21,14 +21,17 @@ export function makeScope(cwd: string): {
   let repoOverride: string | undefined
   let issueOverride: number | undefined
   // the cwd of a stdio session never changes, and `git remote get-url` is the
-  // one lookup here that cannot change under us — memoize it. The BRANCH is
-  // deliberately NOT memoized (worktrees, mid-session checkouts), so the issue
-  // is re-derived on every read.
-  let repoCache: { value: string | null } | undefined
-  const repo = (): string | null => {
-    if (repoOverride !== undefined) return repoOverride
-    if (repoCache === undefined) repoCache = { value: inferRepo(cwd) }
-    return repoCache.value
+  // one lookup here that cannot change under us — so it runs at most ONCE per
+  // server process, and both project and repo are derived from that one answer
+  // (a missing origin is remembered too). Issue #159: re-reading it blocked
+  // nearly every tool call on a subprocess, serializing a CLI and all of its
+  // subagents. The BRANCH is deliberately NOT memoized (worktrees, mid-session
+  // checkouts), so the stream and its issue are re-derived on every read — and
+  // the scope as a whole is never cached: the client name arrives lazily.
+  let originCache: { value: string | null } | undefined
+  const origin = (): string | null => {
+    if (originCache === undefined) originCache = { value: remoteUrl(cwd) }
+    return originCache.value
   }
   // The ONE place the override-then-infer precedence for `issue` lives. mcp.ts
   // calls this with the branch a flag was actually raised on (its per-call
@@ -41,10 +44,10 @@ export function makeScope(cwd: string): {
     get(clientName) {
       const stream = streamOverride ?? inferStream(cwd)
       return {
-        project: projectOverride ?? inferProject(cwd),
+        project: projectOverride ?? inferProject(cwd, origin()),
         stream,
         agent: inferAgent(clientName),
-        repo: repo(),
+        repo: repoOverride ?? inferRepo(cwd, origin()),
         issue: issueFor(stream),
       }
     },

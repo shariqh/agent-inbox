@@ -15,8 +15,11 @@ export function remoteUrl(cwd: string): string | null {
   return git(cwd, ['remote', 'get-url', 'origin']) || null
 }
 
-export function inferProject(cwd: string): string {
-  const remote = remoteUrl(cwd)
+// `remote` is an origin the caller has ALREADY read: src/scope.ts reads it once
+// per MCP server process and derives both project and repo from it (issue
+// #159). Omitted, it is read here. Only `undefined` triggers that read — an
+// explicit null means "no origin" and is not looked up again.
+export function inferProject(cwd: string, remote: string | null = remoteUrl(cwd)): string {
   if (remote) {
     const name = basename(remote.replace(/\.git$/, ''))
     if (name) return name
@@ -79,8 +82,9 @@ export function parseRepoSlug(url: string | null): string | null {
   return `${owner}/${name}`
 }
 
-export function inferRepo(cwd: string): string | null {
-  return parseRepoSlug(remoteUrl(cwd))
+// `remote` follows inferProject's rule: a pre-read origin, or read here.
+export function inferRepo(cwd: string, remote: string | null = remoteUrl(cwd)): string | null {
+  return parseRepoSlug(remote)
 }
 
 // The CONSERVATIVE branch→issue heuristic. A link to the WRONG issue in the

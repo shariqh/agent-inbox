@@ -140,6 +140,8 @@ Run the build before `npm run electron`; the development shell starts the built
   full history.
 - Every existing-row agent mutation and every human/browser/native row action is
   pinned to row `revision`; never weaken those writes back to row-id-only updates.
+  A move alone bumps only the board revision, never the row `revision` or
+  `updated_at`; otherwise native notifications re-announce unchanged asks (#158).
 - Item/row `updated_at` is for content changes only. Delivery stamp writes must
   never bump it or the New/changed filter becomes a polling firehose.
 - Activity has two meanings: `updated_at` is process liveness and

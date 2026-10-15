@@ -1,7 +1,15 @@
 import { EventEmitter } from 'node:events'
-import { readFileSync } from 'node:fs'
-import { describe, expect, it, vi } from 'vitest'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import type Database from 'better-sqlite3'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import replyWatch from '../electron/reply-watch.cjs'
+import { attentionEntries } from '../public/attention.js'
+import type { AttentionBoard, AttentionItem } from '../public/attention.js'
+import { getBoard, insertItem, openDb, upsertBoard } from '../src/store.js'
+import type { NewBoardRow } from '../src/store.js'
+import { createViewer } from '../src/viewer.js'
 
 const NOW = Date.parse('2026-07-31T12:00:00.000Z')
 const MINUTE = 60_000
@@ -185,7 +193,9 @@ describe('canned notification responses', () => {
   it('is wired into the Electron notification action event', () => {
     const main = readFileSync(new URL('../electron/main.cjs', import.meta.url), 'utf8')
     expect(main).toContain('cannedResponseActions(actionable ? optionOrder(actionable.item.options) : [])')
-    expect(main).toContain('id: `r:${e.row.id}:v${e.row.revision}`')
+    expect(main).toContain('const entries = attn.map(attentionNotification)')
+    expect(main).toContain('const fresh = freshAttentionNotifications(known, entries)')
+    expect(main).toContain('known = new Set(everything.map(attentionNotification).map((e) => e.id))')
     expect(main).toContain("note.on('action'")
     expect(main).toContain('submitNotificationResponse(URL_BASE, actionable.target, answer)')
     expect(main).toContain('refreshNotificationTarget')
@@ -193,6 +203,151 @@ describe('canned notification responses', () => {
     expect(main).toContain('if (polling) return')
     expect(main).toContain("poll().finally(() => { polling = false })")
     expect(main).toContain('notificationRetainer.show(note)')
+  })
+})
+
+// #158. Drives the identity helpers main.cjs uses over real viewer routes, the
+// real store and the shared attention predicate, so the store's revision rules
+// and the notification identity are exercised together.
+describe('native attention notifications', () => {
+  const BASE = 'http://127.0.0.1:4319/'
+  const PROJECT = 'release'
+  const TITLE = 'Release plan'
+  const ASK = {
+    label: 'Deploy window',
+    status: 'blocked' as const,
+    note: 'The release candidate is ready.',
+    next_step: 'Choose the deploy window.',
+    action_owner: 'decision' as const,
+    impact: 'Schedules the release.',
+    options: [{ label: 'Today', recommended: true }, { label: 'Tomorrow' }],
+  }
+  let directory: string
+  let db: Database.Database
+  let viewer: ReturnType<typeof createViewer>
+  const request = async (url: string, init?: RequestInit) => viewer.request(url, init)
+  const latestBoards = async () => (await request(`${BASE}api/boards`)).json() as Promise<AttentionBoard[]>
+  const askRow = () => getBoard(db, PROJECT, TITLE)!.rows.find((row) => row.label === ASK.label)!
+
+  beforeEach(() => {
+    directory = mkdtempSync(join(tmpdir(), 'notification-identity-'))
+    db = openDb(join(directory, 'inbox.db'))
+    viewer = createViewer(db)
+  })
+
+  afterEach(() => {
+    db.close()
+    rmSync(directory, { recursive: true, force: true })
+  })
+
+  // One startAttentionWatch poll without the Electron side effects.
+  function watch() {
+    let known: Set<string> | null = null
+    return async () => {
+      const grouped = await (await request(`${BASE}api/items`)).json() as {
+        needsYou: Array<{ items: AttentionItem[] }>
+        notes: Array<{ items: AttentionItem[] }>
+        done: AttentionItem[]
+      }
+      const items = [
+        ...grouped.needsYou.flatMap((group) => group.items),
+        ...grouped.notes.flatMap((group) => group.items),
+        ...grouped.done,
+      ]
+      const entries = attentionEntries(items, await latestBoards(), Date.now(), []).map(replyWatch.attentionNotification)
+      const fresh = replyWatch.freshAttentionNotifications(known, entries)
+      known = new Set(entries.map((entry) => entry.id))
+      return fresh
+    }
+  }
+
+  async function announceAsk(poll: ReturnType<typeof watch>) {
+    expect(await poll()).toEqual([])
+    upsertBoard(db, { project: PROJECT, stream: '', agent: 'copilot', title: TITLE, rows: [ASK] })
+    const fresh = await poll()
+    expect(fresh).toHaveLength(1)
+    expect(fresh[0]!.text).toBe(`🚧 ${TITLE} · ${ASK.label}`)
+    return fresh[0]!
+  }
+
+  it('does not re-announce an unchanged ask after rows move around it, and its buttons still apply', async () => {
+    const poll = watch()
+    const shown = await announceAsk(poll)
+    const before = getBoard(db, PROJECT, TITLE)!
+    upsertBoard(db, {
+      project: PROJECT,
+      stream: '',
+      agent: 'copilot',
+      title: TITLE,
+      expectedVersion: before.revision,
+      rows: [
+        { label: 'Build', status: 'partial', note: 'CI is green.' },
+        { label: ASK.label, revision: askRow().revision, status: 'blocked' },
+      ],
+    })
+    expect(await poll()).toEqual([])
+
+    // The move changed the board token, so main.cjs's first attempt is refused…
+    await expect(replyWatch.submitNotificationResponse(BASE, shown.target, 'Tomorrow', request))
+      .rejects.toThrow('refused')
+    // …and its board-token refresh applies the original choice.
+    const refreshed = replyWatch.refreshNotificationTarget(await latestBoards(), shown.target)
+    expect(refreshed).not.toBeNull()
+    await replyWatch.submitNotificationResponse(BASE, refreshed!, 'Tomorrow', request)
+    expect(askRow()).toMatchObject({ annotation: 'Tomorrow', annotation_kind: 'answer' })
+  })
+
+  it.each<[string, Partial<NewBoardRow>]>([
+    ['note', { note: 'The window moved to Friday.' }],
+    ['next step', { next_step: 'Choose a window after the freeze.' }],
+    ['options', { options: [{ label: 'Friday', recommended: true }, { label: 'Monday' }] }],
+    ['context', { context: 'Legal asked for a later window.' }],
+  ])('re-announces a changed %s with fresh buttons a stale choice cannot answer', async (_field, change) => {
+    const poll = watch()
+    const shown = await announceAsk(poll)
+    const before = getBoard(db, PROJECT, TITLE)!
+    upsertBoard(db, {
+      project: PROJECT,
+      stream: '',
+      agent: 'copilot',
+      title: TITLE,
+      expectedVersion: before.revision,
+      rows: [{ label: ASK.label, revision: askRow().revision, status: 'blocked', ...change }],
+    })
+    const after = getBoard(db, PROJECT, TITLE)!
+    const fresh = await poll()
+    expect(fresh).toHaveLength(1)
+    expect(fresh[0]!.id).not.toBe(shown.id)
+    expect(fresh[0]!.item).toMatchObject(change)
+    expect(fresh[0]!.target).toEqual({
+      source: 'row',
+      boardId: after.id,
+      rowId: askRow().id,
+      revision: askRow().revision,
+      boardRevision: after.revision,
+    })
+
+    await expect(replyWatch.submitNotificationResponse(BASE, shown.target, 'Today', request))
+      .rejects.toThrow('refused')
+    expect(replyWatch.refreshNotificationTarget(await latestBoards(), shown.target)).toBeNull()
+    expect(askRow().annotation).toBeNull()
+
+    const choice = askRow().options![1]!.label
+    await replyWatch.submitNotificationResponse(BASE, fresh[0]!.target, choice, request)
+    expect(askRow().annotation).toBe(choice)
+  })
+
+  it('keys a question by its id alone', async () => {
+    const poll = watch()
+    expect(await poll()).toEqual([])
+    const id = insertItem(db, { project: PROJECT, stream: '', agent: 'copilot', kind: 'question', title: 'Ship it?' })
+    expect(await poll()).toEqual([expect.objectContaining({
+      id: `q:${id}`,
+      itemId: id,
+      text: 'Ship it?',
+      target: { source: 'item', id },
+    })])
+    expect(await poll()).toEqual([])
   })
 })
 

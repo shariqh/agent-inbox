@@ -1611,11 +1611,13 @@ export function snoozeBoardRow(
 ): boolean {
   const now = new Date().toISOString()
   const run = db.transaction((): boolean => {
+    // Unanswered means empty-or-NULL, as in listUnansweredBoardRows and
+    // attention.js: annotateBoardRow stores a cleared note as '' (#160).
     const row = db.prepare(`UPDATE board_rows
                                SET snoozed_until = ?, updated_at = ?, revision = revision + 1
                              WHERE id = ? AND status = 'blocked'
                                AND (? IS NULL OR revision = ?)
-                               AND annotation IS NULL AND annotation_kind IS NULL
+                               AND COALESCE(annotation, '') = '' AND annotation_kind IS NULL
                                AND handled_at IS NULL
                                AND EXISTS (
                                  SELECT 1 FROM boards b

@@ -14,6 +14,7 @@ import {
   listBoards,
   listItems,
   listPendingRows,
+  listUnansweredBoardRows,
   markAnnotationDelivered,
   markReplySeen,
   markRowHandled,
@@ -281,6 +282,88 @@ describe('action lifecycle storage', () => {
     })
     expect(snoozeBoardRow(db, rowId, null)).toBe(true)
     expect(getBoard(db, 'p', 'B')!.rows[0]!.snoozed_until).toBeNull()
+  })
+
+  // #160: annotateBoardRow stores the TRIMMED text, so a cleared note is '' with
+  // no kind — still unanswered for listUnansweredBoardRows and attention.js, which
+  // therefore keep offering Snooze on the row. The snooze write must agree.
+  it('snoozes and wakes a blocked row whose annotation the human cleared', () => {
+    upsertBoard(db, {
+      project: 'p', stream: '', agent: 'a', title: 'B',
+      rows: [{ label: 'Task', status: 'blocked' }],
+    })
+    let board = getBoard(db, 'p', 'B')!
+    const rowId = board.rows[0]!.id
+    expect(annotateBoardRow(db, rowId, 'Merge it', 'answer', board.rows[0]!.revision, board.revision)).toBe(true)
+    board = getBoard(db, 'p', 'B')!
+    expect(annotateBoardRow(db, rowId, '', 'answer', board.rows[0]!.revision, board.revision)).toBe(true)
+    board = getBoard(db, 'p', 'B')!
+    let row = board.rows[0]!
+    expect(row).toMatchObject({ annotation: '', annotation_kind: null, handled_at: null })
+    expect(listUnansweredBoardRows(db, 'p').map((candidate) => candidate.id)).toEqual([rowId])
+
+    const until = new Date(Date.now() + 60 * 60_000).toISOString()
+    expect(snoozeBoardRow(db, rowId, until, row.revision, board.revision)).toBe(true)
+    board = getBoard(db, 'p', 'B')!
+    row = board.rows[0]!
+    expect(row.snoozed_until).toBe(until)
+
+    expect(snoozeBoardRow(db, rowId, null, row.revision, board.revision)).toBe(true)
+    expect(getBoard(db, 'p', 'B')!.rows[0]!.snoozed_until).toBeNull()
+  })
+
+  it('still refuses to snooze an answered, handled, unblocked or stale row', () => {
+    upsertBoard(db, {
+      project: 'p', stream: '', agent: 'a', title: 'B',
+      rows: [
+        { label: 'Answered', status: 'blocked' },
+        { label: 'Kind only', status: 'blocked' },
+        { label: 'Handled', status: 'blocked' },
+        { label: 'Not blocked', status: 'partial' },
+        { label: 'Stale', status: 'blocked' },
+      ],
+    })
+    const current = (label: string) => {
+      const board = getBoard(db, 'p', 'B')!
+      return { board, row: board.rows.find((candidate) => candidate.label === label)! }
+    }
+    const until = new Date(Date.now() + 60 * 60_000).toISOString()
+    const snooze = (label: string) => {
+      const { board, row } = current(label)
+      return snoozeBoardRow(db, row.id, until, row.revision, board.revision)
+    }
+
+    annotateBoardRow(db, current('Answered').row.id, 'Merge it')
+    expect(snooze('Answered')).toBe(false)
+
+    // Shapes annotateBoardRow cannot write, built directly so each guard is pinned
+    // on its own: a legacy answer from before annotation_kind existed (text, NULL
+    // kind) and a kind without text. Raw SQL is allowed HERE, in a test; store.ts
+    // remains the only door for production code.
+    const setResponse = (label: string, annotation: string, kind: string | null) => {
+      db.prepare(`UPDATE board_rows SET annotation = ?, annotation_kind = ? WHERE id = ?`)
+        .run(annotation, kind, current(label).row.id)
+    }
+    setResponse('Answered', 'Merge it', null)
+    expect(snooze('Answered')).toBe(false)
+    setResponse('Kind only', '', 'clarify')
+    expect(snooze('Kind only')).toBe(false)
+
+    // The rest carry a cleared annotation, so only their other guard can refuse.
+    for (const label of ['Handled', 'Not blocked', 'Stale']) annotateBoardRow(db, current(label).row.id, '')
+    expect(markRowHandled(db, current('Handled').row.id)).toBe(true)
+    expect(snooze('Handled')).toBe(false)
+    expect(snooze('Not blocked')).toBe(false)
+
+    const { board, row } = current('Stale')
+    expect(snoozeBoardRow(db, row.id, until, row.revision - 1, board.revision)).toBe(false)
+    expect(snoozeBoardRow(db, row.id, until, row.revision, board.revision - 1)).toBe(false)
+    expect(current('Stale').row.snoozed_until).toBeNull()
+    expect(snooze('Stale')).toBe(true)
+
+    expect(getBoard(db, 'p', 'B')!.rows.map((candidate) => [candidate.label, candidate.snoozed_until])).toEqual([
+      ['Answered', null], ['Kind only', null], ['Handled', null], ['Not blocked', null], ['Stale', until],
+    ])
   })
 
   it('records outcomes when agents acknowledge items and rows', () => {

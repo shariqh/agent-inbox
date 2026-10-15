@@ -63,7 +63,7 @@ describe('item annotation delivery', () => {
 
   async function connect() {
     const events: EventEmitter = process
-    for (const signal of ['exit', 'SIGINT', 'SIGTERM'] as const) {
+    for (const signal of ['exit', 'SIGHUP', 'SIGINT', 'SIGTERM'] as const) {
       const previous = events.listeners(signal)
       removeListeners.push(() => {
         for (const listener of events.listeners(signal)) {

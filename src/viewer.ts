@@ -598,14 +598,30 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
       return c.json({ ok: false, error: 'expected_revision and expected_board_version required' }, 400)
     }
     const until = body?.until === null || typeof body?.until === 'string' ? body.until : null
+    const rowId = c.req.param('rowId')
     const ok = snoozeBoardRow(
       db,
-      c.req.param('rowId'),
+      rowId,
       until,
       body?.expected_revision,
       body?.expected_board_version,
     )
-    return c.json(ok ? { ok: true } : { ok: false, reason: 'version_mismatch' })
+    if (ok) return c.json({ ok: true })
+    // Refused against the caller's CURRENT snapshot ⇒ the row itself cannot be
+    // snoozed (answered, handled, not blocked, or archived). Anything else, a moved
+    // revision or a vanished row, is a stale snapshot (#160).
+    const currentBoard = [
+      ...listBoards(db),
+      ...listBoards(db, { status: 'archived' }),
+    ].find((board) => board.rows.some((row) => row.id === rowId))
+    const current = currentBoard?.rows.find((row) => row.id === rowId)
+    return c.json(
+      current
+        && current.revision === body?.expected_revision
+        && currentBoard?.revision === body?.expected_board_version
+        ? { ok: false, reason: 'not_snoozable' }
+        : { ok: false, reason: 'version_mismatch' },
+    )
   })
 
   // issue #36 — the human's OTHER answer on a blocked row: "I have done my part".

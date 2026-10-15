@@ -221,7 +221,10 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   (measured: servers observed running 4+ days), so a fan-out shares one process, one `sessionId`
   and one in-memory ledger. All instances write to the same `~/.agent-inbox/inbox.db`. Concurrency
   is handled by **WAL + `busy_timeout=5000`** set in `openDb` — keep both. Writes are single tiny
-  inserts; this is WAL's happy path.
+  inserts; this is WAL's happy path. `busy_timeout` never applies when a deferred transaction's
+  read snapshot is promoted to the writer — that fails at once with `SQLITE_BUSY` or
+  `SQLITE_BUSY_SNAPSHOT` — so any transaction that reads before it may write must be
+  `.immediate()` (#154).
 - **Two activity stamps, and only one of them means work** *(issue #45)*. `activity.updated_at` is
   LIVENESS: the 5-minute `touchActivity` timer bumps it whether or not the agent has done
   anything, so `listActivity`'s 15-minute cutoff can only ever catch a **crashed** process and is
@@ -250,7 +253,15 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   backfills atomically from a legacy non-`open` claim (or a preserved idle detail) so upgrading
   cannot erase the only synopsis a session reported.
 - **Session scope is Solo-style** (`src/scope.ts`): inferred lazily per call, overridable via
-  `register`. The client name for `inferAgent` **must be read lazily** inside handlers
+  `register`. The one memo is a FOUND origin remote (#159): once `git remote get-url origin`
+  succeeds, the server reuses it for both `project` and `repo` for the process's life (the
+  accepted cost: a later `git remote set-url` is not followed). A missing origin is never
+  cached — it is re-read on every call, because `src/hook.ts` infers the project live on every
+  hook event and the two must keep agreeing (a mid-session `git remote add origin`, or one
+  transient git failure, must not pin the folder name). The branch (and the issue parsed from
+  it) is re-read on every call because worktrees and checkouts move mid-session, so never
+  cache the whole scope.
+  The client name for `inferAgent` **must be read lazily** inside handlers
   (`server.server.getClientVersion()?.name`) — it's only populated after the initialize
   handshake. Capturing it at build time yields `undefined`/`'unknown'`. Don't regress this.
 - **stdio channel is sacred.** The server speaks MCP over stdout — never `console.log` to

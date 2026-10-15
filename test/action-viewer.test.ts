@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
 import { createViewer } from '../src/viewer.js'
-import { getBoard, insertItem, listItems, openDb, updateBoardRow, upsertBoard } from '../src/store.js'
+import { annotateBoardRow, getBoard, insertItem, listItems, openDb, updateBoardRow, upsertBoard } from '../src/store.js'
 
 function freshDb(): Database.Database {
   return openDb(join(mkdtempSync(join(tmpdir(), 'action-viewer-')), 'inbox.db'))
@@ -78,6 +78,44 @@ describe('viewer action dispositions', () => {
       annotation_kind: 'decline',
       snoozed_until: null,
     })
+  })
+
+  it('snoozes a row with a cleared annotation and says why a current snapshot is refused', async () => {
+    upsertBoard(db, {
+      project: 'p', stream: '', agent: 'a', title: 'Launch',
+      rows: [{ label: 'Upload build', status: 'blocked' }, { label: 'Merge', status: 'blocked' }],
+    })
+    const until = '2026-08-06T12:00:00.000Z'
+    const current = (label: string) => {
+      const board = getBoard(db, 'p', 'Launch')!
+      return { board, row: board.rows.find((candidate) => candidate.label === label)! }
+    }
+    const app = createViewer(db)
+    const snooze = async (label: string, staleRowBy = 0, staleBoardBy = 0) => {
+      const { board, row } = current(label)
+      const response = await app.request(`/api/boards/${board.id}/rows/${row.id}/snooze`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          until,
+          expected_revision: row.revision - staleRowBy,
+          expected_board_version: board.revision - staleBoardBy,
+        }),
+      })
+      expect(response.status).toBe(200)
+      return response.json()
+    }
+
+    annotateBoardRow(db, current('Upload build').row.id, 'Uploaded')
+    annotateBoardRow(db, current('Upload build').row.id, '')
+    expect(await snooze('Upload build')).toEqual({ ok: true })
+    expect(current('Upload build').row.snoozed_until).toBe(until)
+
+    annotateBoardRow(db, current('Merge').row.id, 'Merge it')
+    expect(await snooze('Merge')).toEqual({ ok: false, reason: 'not_snoozable' })
+    expect(await snooze('Merge', 1)).toEqual({ ok: false, reason: 'version_mismatch' })
+    expect(await snooze('Merge', 0, 1)).toEqual({ ok: false, reason: 'version_mismatch' })
+    expect(current('Merge').row.snoozed_until).toBeNull()
   })
 
   it('refuses a stale human action after the row advances', async () => {

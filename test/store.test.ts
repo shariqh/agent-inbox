@@ -28,6 +28,7 @@ import {
   listBoards,
   computeProgress,
   getBoard,
+  getBoardByTitle,
   markBoardRead,
   upsertActivity,
   endActivity,
@@ -2298,6 +2299,46 @@ describe('getBoard (agent read)', () => {
     const { boardId } = upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'cov', rows: [{ label: 'x', status: 'done' }] })
     archiveBoard(db, boardId)
     expect(getBoard(db, 'p', 'cov')).toBeUndefined()
+  })
+})
+
+// Issue #159 — the titled MCP board tools need a board WHATEVER its status
+// (board_get hands back an archived board's CAS revisions; board_upsert and
+// board_row demand board_version before a write reactivates it). They used to
+// find one by loading every archived board in every project.
+describe('getBoardByTitle (titled agent read, any status — issue #159)', () => {
+  let db: Database.Database
+  beforeEach(() => { db = freshDb() })
+
+  it('returns an active board exactly as getBoard does', () => {
+    upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'cov', rows: [
+      { label: 'x', status: 'done' }, { label: 'y', status: 'partial' },
+    ] })
+    expect(getBoardByTitle(db, 'p', 'cov')).toEqual(getBoard(db, 'p', 'cov'))
+  })
+
+  it('returns an archived board with its rows and progress, while getBoard stays active-only', () => {
+    const { boardId } = upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'cov', rows: [
+      { label: 'x', status: 'partial' }, { label: 'y', status: 'missing' },
+    ] })
+    archiveBoard(db, boardId)
+    const archived = getBoardByTitle(db, 'p', 'cov')!
+    expect(archived).toMatchObject({ id: boardId, status: 'archived', revision: 2 })
+    expect(archived.rows.map((r) => r.label)).toEqual(['x', 'y'])
+    expect(archived.progress.fraction).toBeCloseTo(0.5 / 2)
+    // the same snapshot the old all-archived-boards scan produced
+    expect(archived).toEqual(listBoards(db, { status: 'archived' })[0])
+    expect(getBoard(db, 'p', 'cov')).toBeUndefined()
+  })
+
+  it('is scoped by project and title: a missing title, or the same title in another project, is undefined', () => {
+    upsertBoard(db, { project: 'other', stream: '', agent: 'a', title: 'cov', rows: [{ label: 'z', status: 'missing' }] })
+    expect(getBoardByTitle(db, 'p', 'cov')).toBeUndefined()
+    expect(getBoardByTitle(db, 'other', 'nope')).toBeUndefined()
+    upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'cov', rows: [{ label: 'x', status: 'done' }] })
+    expect(getBoardByTitle(db, 'p', 'cov')).toMatchObject({ project: 'p', status: 'archived' })
+    expect(getBoardByTitle(db, 'p', 'cov')!.rows.map((r) => r.label)).toEqual(['x'])
+    expect(getBoardByTitle(db, 'other', 'cov')!.rows.map((r) => r.label)).toEqual(['z'])
   })
 })
 

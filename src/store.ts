@@ -2338,6 +2338,21 @@ export function listActivitySpans(
 export function getBoard(db: Database.Database, project: string, title: string): BoardWithRows | undefined {
   const board = findBoard(db, project, title)
   if (!board || board.status !== 'active') return undefined
+  return boardWithRows(db, board)
+}
+
+// Issue #159 — ONE board by (project, title) WHATEVER its status. The titled MCP
+// tools need an archived board too: board_get hands back its CAS revisions, and
+// board_upsert/board_row demand board_version before a write reactivates it.
+// They used to fall back to listBoards({ status: 'archived' }), loading and
+// parsing every archived board in every project to find this one; this is the
+// unique-key lookup plus that board's rows. getBoard() stays active-only.
+export function getBoardByTitle(db: Database.Database, project: string, title: string): BoardWithRows | undefined {
+  const board = findBoard(db, project, title)
+  return board ? boardWithRows(db, board) : undefined
+}
+
+function boardWithRows(db: Database.Database, board: Board): BoardWithRows {
   const rows = withUnseen(
     db.prepare(`SELECT ${ROW_COLUMNS} FROM board_rows WHERE board_id = ? ORDER BY position ASC`).all(board.id) as BoardRowRecord[],
   )

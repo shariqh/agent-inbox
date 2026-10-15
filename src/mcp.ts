@@ -73,7 +73,11 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
   process.on('exit', () => {
     try { endActivity(db, sessionId) } catch { /* ignore */ }
   })
-  for (const sig of ['SIGINT', 'SIGTERM'] as const) process.on(sig, () => process.exit(0))
+  // Every handled signal exits through the one 'exit' handler above. SIGHUP is how
+  // a closed terminal tab or window ends this process (#162): left at Node's default
+  // disposition it kills the process without emitting 'exit', leaving a ghost Live
+  // row and an open span. SIGKILL cannot be handled; the read-time caps cover it.
+  for (const sig of ['SIGHUP', 'SIGINT', 'SIGTERM'] as const) process.on(sig, () => process.exit(0))
 
   const responseOption = z.object({
     label: z.string().min(1),

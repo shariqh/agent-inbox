@@ -88,19 +88,57 @@ export function inferRepo(cwd: string, remote: string | null = remoteUrl(cwd)): 
   return parseRepoSlug(remote)
 }
 
+// ── issue #157: the HEAD repository, i.e. where this branch is pushed ────────
+//
+// `repo` above is the BASE: where a PR for this work is searched for. GitHub's
+// branch filter matches the head branch NAME in every fork, so the viewer must
+// also know which repository the branch lives in to tell this branch's PR from a
+// stranger's same-named one. Git already answers that locally: the remote
+// `git push` would use for the branch. Read per write (the push config can
+// change mid-session), never per call.
+
+// git's own precedence: branch.<name>.pushRemote, then remote.pushDefault, then
+// branch.<name>.remote (the tracking remote). Empty when none is configured, so
+// the caller falls back to origin, which is git's default too. for-each-ref takes
+// a PATTERN that also matches below a `/`, so only an exact refname line counts.
+function pushRemoteName(cwd: string, branch: string): string | null {
+  const ref = `refs/heads/${branch}`
+  const out = git(cwd, ['for-each-ref', '--format=%(refname) %(push:remotename)', ref])
+  for (const line of out?.split('\n') ?? []) {
+    const space = line.indexOf(' ')
+    if ((space < 0 ? line : line.slice(0, space)) !== ref) continue
+    const name = space < 0 ? '' : line.slice(space + 1).trim()
+    return name && !name.startsWith('-') ? name : null
+  }
+  return null
+}
+
+// `owner/name` of the github.com repository this branch is pushed to: the push
+// remote's when it is on github.com, else origin's (git's default push target).
+// Null when neither is on github.com.
+export function inferHeadRepo(cwd: string, branch: string): string | null {
+  if (!branch) return null
+  const remote = pushRemoteName(cwd, branch)
+  const pushed = remote && remote !== 'origin' ? parseRepoSlug(git(cwd, ['remote', 'get-url', remote]) || null) : null
+  return pushed ?? inferRepo(cwd)
+}
+
 // The CONSERVATIVE branch→issue heuristic. A link to the WRONG issue in the
 // right repo is worse than no link at all, so a number only counts when a whole
 // `/`-separated segment is essentially just that number:
 //   30-source-links · feat/30-links · fix/issue-30 · issues/30 · gh-30 · gh30
 // and deliberately NOT: agent-inbox-2026 (trailing year), v2-api, release/2.1,
-// or 0. `gh pr list`'s closingIssuesReferences overrides this the moment a PR
-// exists, and `register({ issue })` is the manual escape hatch.
+// a segment that starts with a complete date (2026-10-14-review is not #2026,
+// issue #157), or 0. `gh pr list`'s closingIssuesReferences overrides this the
+// moment a PR exists, and `register({ issue })` is the manual escape hatch.
 const ISSUE_BARE = /^(\d{1,6})(?:[-_].*)?$/
 const ISSUE_PREFIXED = /^(?:issue|issues|gh)[-_]?#?(\d{1,6})(?:[-_].*)?$/i
+const LEADING_DATE = /^\d{4}[-_]\d{2}[-_]\d{2}(?:$|[-_])/
 
 export function inferIssueRef(branch: string | null | undefined): number | null {
   if (!branch) return null
   for (const segment of branch.split('/')) {
+    if (LEADING_DATE.test(segment)) continue
     const m = ISSUE_BARE.exec(segment) ?? ISSUE_PREFIXED.exec(segment)
     if (!m) continue
     const n = Number(m[1])

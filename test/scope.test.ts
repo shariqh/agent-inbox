@@ -88,6 +88,26 @@ describe('makeScope carries the source link identity (issue #30)', () => {
     expect(scope.issueFor('feat/41-links')).toBe(30)
     expect(scope.issueFor('trunk')).toBe(30)
   })
+
+  // issue #157 — the HEAD repository is where the branch is pushed, which a
+  // register({ repo }) override of the BASE must not change: a fork contributor
+  // registers the upstream as the base and still pushes to their fork.
+  it('headFor names the repository a branch is pushed to, independent of the registered base repo', () => {
+    const dir = tmpGitRepo({ remote: 'git@github.com:me/agent-inbox.git', branch: 'feature' })
+    const scope = makeScope(dir)
+    scope.override({ repo: 'shariqh/agent-inbox' })
+    expect(scope.get('claude-code').repo).toBe('shariqh/agent-inbox')
+    expect(scope.headFor('feature')).toBe('me/agent-inbox')
+    execFileSync('git', ['remote', 'add', 'fork', 'git@github.com:fork/agent-inbox.git'], { cwd: dir })
+    // pushRemote outranks any global remote.pushDefault on the machine running this
+    execFileSync('git', ['config', 'branch.feature.pushRemote', 'fork'], { cwd: dir })
+    expect(scope.headFor('feature'), 'the push config is re-read, never memoized').toBe('fork/agent-inbox')
+  })
+
+  it('headFor is null with no branch or no github remote', () => {
+    expect(makeScope(mkdtempSync(join(tmpdir(), 'plain-'))).headFor('feature')).toBeNull()
+    expect(makeScope(tmpGitRepo({ remote: 'git@github.com:me/agent-inbox.git' })).headFor('')).toBeNull()
+  })
 })
 
 // ── issue #159: a found origin is read once per server process; the branch stays live ──

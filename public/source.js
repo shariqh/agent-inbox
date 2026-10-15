@@ -20,23 +20,33 @@ import { esc } from './esc.js'
 export const PREVIEW_TTL_MS = 5 * 60_000
 
 // A '/' is legal in both a repo slug and a branch name, so the separator has to
-// be something neither can contain.
-export function linkKey(repo, branch) {
-  return `${repo}\u0000${branch}`
+// be something neither can contain. The HEAD repository is part of the key
+// (issue #157): a branch name is only unique within the repository it is pushed
+// to, and the store caches one verified answer per (repo, branch, head_repo).
+// Omitted, the head is the base repo itself: a same-repository PR.
+export function linkKey(repo, branch, head = repo) {
+  return `${repo}\u0000${branch}\u0000${head}`
+}
+
+function cachedKey(l) {
+  return linkKey(l.repo, l.branch, l.head_repo || l.repo)
 }
 
 export function indexLinks(links) {
   const map = new Map()
-  for (const l of links ?? []) if (l && l.repo && l.branch) map.set(linkKey(l.repo, l.branch), l)
+  for (const l of links ?? []) if (l && l.repo && l.branch) map.set(cachedKey(l), l)
   return map
 }
 
-// The join: an item/board carries the repo it was raised in and the branch as
-// its `stream`; the cache is keyed by exactly that pair. N items on one branch
-// therefore share ONE cache row, and a merge updates all of them at once.
+// The join: an item/board carries the repo it was raised in, the branch as its
+// `stream` and the repository that branch is pushed to as `head_repo`; the cache
+// is keyed by exactly that triple. N items on one branch therefore share ONE
+// cache row, and a merge updates all of them at once. An entity that recorded no
+// head (raised before #157) expects a same-repository PR, exactly as the store's
+// listLinkTargets() treats it, so it can never be shown a fork's PR.
 export function linkFor(index, entity) {
   if (!index || !entity || !entity.repo || !entity.stream) return null
-  return index.get(linkKey(entity.repo, entity.stream)) ?? null
+  return index.get(linkKey(entity.repo, entity.stream, entity.head_repo || entity.repo)) ?? null
 }
 
 // ONLY http: and https:, decided by the URL parser rather than by string
@@ -186,7 +196,7 @@ function prChipInner(chip) {
 }
 
 function previewChipHtml(link, preview, entity, tabbable) {
-  const attrs = `data-preview-key="${esc(encodeURIComponent(linkKey(link.repo, link.branch)))}" data-preview-head="${esc(preview.headSha)}" data-preview-deployment="${esc(preview.deploymentId)}" data-preview-project="${esc(entity?.project ?? '')}"`
+  const attrs = `data-preview-key="${esc(encodeURIComponent(cachedKey(link)))}" data-preview-head="${esc(preview.headSha)}" data-preview-deployment="${esc(preview.deploymentId)}" data-preview-project="${esc(entity?.project ?? '')}"`
   return chipHtml(preview.url, 'neutral', 'Preview',
     `Open ${preview.environment} preview for the current PR commit (new tab)`, tabbable, attrs)
 }

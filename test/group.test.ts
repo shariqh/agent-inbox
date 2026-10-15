@@ -18,7 +18,7 @@ function item(p: Partial<Item>): Item {
     response_revision: p.response_revision ?? 0,
     snoozed_until: p.snoozed_until ?? null, outcome: p.outcome ?? '', outcome_at: p.outcome_at ?? null,
     updated_at: p.updated_at ?? p.created_at ?? '2026-07-12T00:00:00.000Z',
-    repo: p.repo ?? null, issue_ref: p.issue_ref ?? null,
+    repo: p.repo ?? null, issue_ref: p.issue_ref ?? null, head_repo: p.head_repo ?? null,
   }
 }
 

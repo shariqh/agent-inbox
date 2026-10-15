@@ -105,6 +105,10 @@ Run the build before `npm run electron`; the development shell starts the built
   Do not replace conditioned/version-pinned updates with SELECT-then-UPDATE.
   Human replies, annotations, and handled marks can change from another process
   between reads and writes.
+- Viewer JSON write routes parse with `.catch(() => null)` and type-check every
+  field before any store call. Invalid input is `400 { ok: false, error }`; a
+  store refusal of a valid request stays `200 { ok: false }` because `postJSON()`
+  treats any non-2xx as "the write never happened". An explicit `''` still clears.
 - Inbox answers have precedence over chat-recorded answers. `answerItem()` must
   refuse to overwrite an unread inbox answer; this is intentionally not
   timestamp-based last-write-wins.

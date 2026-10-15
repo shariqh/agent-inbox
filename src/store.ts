@@ -249,6 +249,9 @@ function runMigrations(db: Database.Database): void {
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_activity_spans_open ON activity_spans(session) WHERE ended_at IS NULL;
     CREATE INDEX IF NOT EXISTS idx_activity_spans_project_started ON activity_spans(project, started_at);
+    -- listActivitySpans' since overlap: a range over closed ends plus the
+    -- open (NULL) group. Deliberately not last_active_at, which every call bumps.
+    CREATE INDEX IF NOT EXISTS idx_activity_spans_ended ON activity_spans(ended_at);
     CREATE TABLE IF NOT EXISTS projects (
       project TEXT PRIMARY KEY,
       closed_at TEXT NOT NULL
@@ -2329,27 +2332,46 @@ function pruneActivitySpans(db: Database.Database, opts: { nowMs?: number } = {}
 // window but is still open (or closed inside it) is still relevant to "what
 // happened since sinceMs", so it must not be filtered out just because it
 // started earlier.
+//
+// The overlap runs in SQL (issue #161), so only overlapping rows are read, with
+// the comparisons the old JavaScript filter made: a closed span overlaps when
+// `ended_at >= since`; an open one while warm (`last_active_at >= cold`) or
+// while its capped end still reaches `since`. Stamps are fixed-width
+// toISOString() values, so that end (`last_active_at + CLAIM_COLD_MS`, below
+// now once stale) reaches `since` exactly when `last_active_at` reaches
+// `since - CLAIM_COLD_MS`. An extended-year `since` ('+010000-…') sorts below
+// every four-digit stamp, so it admits every stale span, as before. `id` pins
+// the tie order the old full scan produced, whatever plan the index allows.
 export function listActivitySpans(
   db: Database.Database,
   opts: { project?: string; sinceMs?: number } = {},
 ): ActivitySpan[] {
   const nowMs = Date.now()
   const cold = claimCutoff(nowMs)
-  const rows = db
-    .prepare(
-      `SELECT id, session, project, stream, agent, doing, started_at, last_active_at, ended_at
+  const select = `SELECT id, session, project, stream, agent, doing, started_at, last_active_at, ended_at
          FROM activity_spans
-        WHERE (@project IS NULL OR project = @project)
-        ORDER BY started_at ASC`,
-    )
-    .all({ project: opts.project ?? null }) as Array<Omit<ActivitySpan, 'effective_ended_at'>>
-  const sinceIso = opts.sinceMs !== undefined ? new Date(opts.sinceMs).toISOString() : null
-  const withEffectiveEnd = rows.map((r): ActivitySpan => {
+        WHERE (@project IS NULL OR project = @project)`
+  const project = opts.project ?? null
+  let rows: Array<Omit<ActivitySpan, 'effective_ended_at'>>
+  if (opts.sinceMs === undefined) {
+    rows = db.prepare(`${select} ORDER BY started_at ASC, id ASC`).all({ project }) as typeof rows
+  } else {
+    const sinceDate = new Date(opts.sinceMs)
+    const since = sinceDate.toISOString()
+    const staleSince = /^\d{4}-/.test(since) ? new Date(sinceDate.getTime() - CLAIM_COLD_MS).toISOString() : ''
+    rows = db
+      .prepare(
+        `${select}
+          AND (ended_at >= @since
+               OR (ended_at IS NULL AND (last_active_at >= @cold OR last_active_at >= @staleSince)))
+        ORDER BY started_at ASC, id ASC`,
+      )
+      .all({ project, since, cold, staleSince }) as typeof rows
+  }
+  return rows.map((r): ActivitySpan => {
     const stillOpenButStale = r.ended_at === null && r.last_active_at < cold
     return { ...r, effective_ended_at: r.ended_at ?? (stillOpenButStale ? cappedSpanEnd(r.last_active_at, nowMs) : null) }
   })
-  if (sinceIso === null) return withEffectiveEnd
-  return withEffectiveEnd.filter((s) => s.effective_ended_at === null || s.effective_ended_at >= sinceIso)
 }
 
 export function getBoard(db: Database.Database, project: string, title: string): BoardWithRows | undefined {

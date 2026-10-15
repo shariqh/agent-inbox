@@ -170,7 +170,9 @@ Run the build before `npm run electron`; the development shell starts the built
 - All agent-authored text interpolated into HTML must pass through `esc()`.
   Supplied URLs additionally pass through `safeHttpUrl()` in
   `public/source.js`; build anchors through the existing `chipHtml()` path.
-- The 3-second poll uses the gated `load()`/`renderIfIdle()` path. A successful
+- The 3-second poll uses the gated `load()`/`renderIfIdle()` path. Its reads
+  run concurrently, but a tick applies only after all settle, and only if no newer
+  tick has applied and every boot marker agrees. A successful
   human-initiated write must end in `reloadAndPaint()` so an unrelated draft
   cannot hide the result. A held pointer defers rendering but is not a
   suspension and must not appear in `suspendState()`.

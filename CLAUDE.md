@@ -74,7 +74,11 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   Read the live boot header before consuming cached data. Untagged servers retain
   full-fetch behavior, malformed replies fail explicitly, and no snapshot content
   is persisted to browser storage. Derive mutable view state rather than changing
-  authoritative cached records.
+  authoritative cached records. A poll tick starts its seven reads together (#161)
+  and applies nothing until all settle: history, closed projects and links keep
+  their fallbacks, any other failure still fails the whole tick (reported in the
+  old serial order) without blanking the frame, and `loadGeneration` still
+  discards an older tick that finishes late.
 - **`src/store.ts` is the only door to the database.** Every read/write goes through its
   exported functions — items: `insertItem`/`resolveItem`/`dismissItem`/`annotateItem`/
   `replyItem`/`answerItem`/`listItems`; boards: `upsertBoard`/`updateBoardRow`/`getBoard`/`listBoards`/
@@ -354,6 +358,9 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   pointer/scroll activity remain. The existing frontend keeps polling and updating
   ambient attention during that hold. Once protected work clears, an ordinary poll
   reloads exactly once; drafts are never automatically sent to make refresh possible.
+  Every response of a tick carries its server's marker; markers that disagree within
+  one tick mean a restart landed between two reads, so that tick counts as a restart
+  and is never applied, because it would mix two servers' data.
   The quiet status hint explains an unsent-work hold without labeling an in-flight
   write or pointer interaction as a human blocker. Failed staged choices use the same
   exact-intent recovery path as other replies. This is automatic-restart protection,

@@ -2,6 +2,7 @@ import {
   chmodSync,
   copyFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -327,5 +328,29 @@ describe('portable release installer', () => {
     const removed = spawnSync('/bin/bash', [script, '--apply', '--uninstall'], { encoding: 'utf8', env: f.env })
     expect(removed.status, removed.stderr).toBe(0)
     expect(readFileSync(settings, 'utf8')).not.toContain('hook-cli.js')
+  })
+
+  it('writes packaged hooks through a symlinked settings.json without replacing the link', () => {
+    const f = fixture()
+    const payload = runtimePayload('1.0.0')
+    expect(install(f, payload).status).toBe(0)
+    const installed = join(f.runtimeRoot, payload.runtimeId)
+    const script = join(installed, 'scripts', 'install-hooks.sh')
+    const settings = join(f.home, '.claude', 'settings.json')
+    const target = join(f.home, 'dotfiles', 'claude-settings.json')
+    mkdirSync(dirname(settings), { recursive: true })
+    mkdirSync(dirname(target), { recursive: true })
+    writeFileSync(target, '{"model":"x"}\n')
+    symlinkSync(target, settings)
+
+    const applied = spawnSync('/bin/bash', [script, '--apply'], { encoding: 'utf8', env: f.env })
+    expect(applied.status, applied.stderr).toBe(0)
+    expect(lstatSync(settings).isSymbolicLink()).toBe(true)
+    expect(readFileSync(target, 'utf8')).toContain(join(installed, 'dist', 'hook-cli.js'))
+
+    const removed = spawnSync('/bin/bash', [script, '--apply', '--uninstall'], { encoding: 'utf8', env: f.env })
+    expect(removed.status, removed.stderr).toBe(0)
+    expect(lstatSync(settings).isSymbolicLink()).toBe(true)
+    expect(JSON.parse(readFileSync(target, 'utf8'))).toEqual({ model: 'x' })
   })
 })

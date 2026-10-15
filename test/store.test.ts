@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { spawn } from 'node:child_process'
 import { mkdtempSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
@@ -28,6 +30,7 @@ import {
   listBoards,
   computeProgress,
   getBoard,
+  getBoardByTitle,
   markBoardRead,
   upsertActivity,
   endActivity,
@@ -46,7 +49,7 @@ import {
   pruneSourceLinks,
   listActivitySpans,
 } from '../src/store.js'
-import type { BoardRow, RowStatus } from '../src/store.js'
+import type { BoardRow, BoardWithRows, RowStatus } from '../src/store.js'
 
 function freshDb(): Database.Database {
   const dir = mkdtempSync(join(tmpdir(), 'inbox-'))
@@ -1198,6 +1201,36 @@ describe('activity spans', () => {
     expect(spans[0]!.ended_at).toBe(new Date(START + CLAIM_COLD_MS).toISOString())
     expect(spans[1]!.started_at).toBe(new Date(START + CLAIM_COLD_MS + 60 * 60_000).toISOString())
     expect(spans[1]!.ended_at).toBeNull()
+  })
+
+  // Issue #162. Presence takes the latest scope on every write, but a span compared
+  // only `doing`: after register() or a branch checkout moved the session, the same
+  // claim kept extending the OLD span, so Live said one project while history
+  // credited the work to another.
+  it.each([
+    ['project', { project: 'proj-b' }],
+    ['stream', { stream: 'feature' }],
+    ['agent', { agent: 'copilot' }],
+  ] as const)('re-claiming the same doing under a different %s closes the old-scope span and opens a new-scope one', (_field, change) => {
+    const scope = { session: 's1', project: 'proj-a', stream: 'main', agent: 'claude-code' }
+    upsertActivity(db, { ...scope, doing: 'Testing' })
+    vi.setSystemTime(START + 5 * 60_000)
+    upsertActivity(db, { ...scope, ...change, doing: 'Testing' })
+    const spans = listActivitySpans(db)
+    expect(spans).toHaveLength(2)
+    expect(spans[0]).toMatchObject({ ...scope, doing: 'Testing', ended_at: new Date(START + 5 * 60_000).toISOString() })
+    expect(spans[1]).toMatchObject({ ...scope, ...change, doing: 'Testing', started_at: new Date(START + 5 * 60_000).toISOString(), ended_at: null })
+    expect(listActivity(db)[0]).toMatchObject({ ...scope, ...change }) // Live and history agree
+  })
+
+  it('registration (claim: false) into a new scope neither closes, extends nor re-scopes the open span', () => {
+    upsertActivity(db, { session: 's1', project: 'proj-a', stream: 'main', agent: 'claude-code', doing: 'Testing' })
+    const before = listActivitySpans(db)
+    vi.setSystemTime(START + 5 * 60_000)
+    // what register() sends through registerPresence after scope.override
+    upsertActivity(db, { session: 's1', project: 'proj-b', stream: 'feature', agent: 'claude-code', doing: 'open', idle: true, claim: false })
+    expect(listActivity(db)[0]!.project).toBe('proj-b')
+    expect(listActivitySpans(db)).toEqual(before)
   })
 
   it('recordActivityCall while still warm bumps last_active_at on the open span', () => {
@@ -2422,6 +2455,46 @@ describe('getBoard (agent read)', () => {
   })
 })
 
+// Issue #159 — the titled MCP board tools need a board WHATEVER its status
+// (board_get hands back an archived board's CAS revisions; board_upsert and
+// board_row demand board_version before a write reactivates it). They used to
+// find one by loading every archived board in every project.
+describe('getBoardByTitle (titled agent read, any status — issue #159)', () => {
+  let db: Database.Database
+  beforeEach(() => { db = freshDb() })
+
+  it('returns an active board exactly as getBoard does', () => {
+    upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'cov', rows: [
+      { label: 'x', status: 'done' }, { label: 'y', status: 'partial' },
+    ] })
+    expect(getBoardByTitle(db, 'p', 'cov')).toEqual(getBoard(db, 'p', 'cov'))
+  })
+
+  it('returns an archived board with its rows and progress, while getBoard stays active-only', () => {
+    const { boardId } = upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'cov', rows: [
+      { label: 'x', status: 'partial' }, { label: 'y', status: 'missing' },
+    ] })
+    archiveBoard(db, boardId)
+    const archived = getBoardByTitle(db, 'p', 'cov')!
+    expect(archived).toMatchObject({ id: boardId, status: 'archived', revision: 2 })
+    expect(archived.rows.map((r) => r.label)).toEqual(['x', 'y'])
+    expect(archived.progress.fraction).toBeCloseTo(0.5 / 2)
+    // the same snapshot the old all-archived-boards scan produced
+    expect(archived).toEqual(listBoards(db, { status: 'archived' })[0])
+    expect(getBoard(db, 'p', 'cov')).toBeUndefined()
+  })
+
+  it('is scoped by project and title: a missing title, or the same title in another project, is undefined', () => {
+    upsertBoard(db, { project: 'other', stream: '', agent: 'a', title: 'cov', rows: [{ label: 'z', status: 'missing' }] })
+    expect(getBoardByTitle(db, 'p', 'cov')).toBeUndefined()
+    expect(getBoardByTitle(db, 'other', 'nope')).toBeUndefined()
+    upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'cov', rows: [{ label: 'x', status: 'done' }] })
+    expect(getBoardByTitle(db, 'p', 'cov')).toMatchObject({ project: 'p', status: 'archived' })
+    expect(getBoardByTitle(db, 'p', 'cov')!.rows.map((r) => r.label)).toEqual(['x'])
+    expect(getBoardByTitle(db, 'other', 'cov')!.rows.map((r) => r.label)).toEqual(['z'])
+  })
+})
+
 describe('item session (liveness)', () => {
   let db: Database.Database
   beforeEach(() => { db = freshDb() })
@@ -2808,5 +2881,195 @@ describe('source links', () => {
     // the clock moves, never the row: checked_at is stamped inside the store
     pruneSourceLinks(db, { nowMs: Date.now() + 31 * 24 * 60 * 60000 })
     expect(listSourceLinks(db)).toHaveLength(0)
+  })
+})
+
+// Issue #154. A DEFERRED transaction that reads first holds a WAL read snapshot,
+// and SQLite never runs the busy handler when that reader is promoted to the
+// writer: another connection holding the write lock fails it with SQLITE_BUSY at
+// once, and a commit that lands after its read fails it with SQLITE_BUSY_SNAPSHOT.
+// busy_timeout only protects a transaction that reserves the writer before it reads.
+describe('read-then-write transactions reserve the WAL writer (#154)', () => {
+  const HOLD_MS = 500
+  const betterSqlite3 = createRequire(import.meta.url).resolve('better-sqlite3')
+  // A second OS process (the viewer, a hook, a sibling MCP server) that takes the
+  // write lock, runs optional `sql` inside it, says `held`, and commits HOLD_MS later.
+  const HOLD_WRITER = `
+    const Database = require(process.argv[1])
+    const db = new Database(process.argv[2])
+    db.pragma('busy_timeout = 5000')
+    db.exec('BEGIN IMMEDIATE')
+    if (process.argv[4]) db.exec(process.argv[4])
+    process.stdout.write('held\\n')
+    setTimeout(() => {
+      db.exec('COMMIT')
+      db.close()
+    }, Number(process.argv[3]))
+  `
+
+  async function holdWriteLock(path: string, sql = ''): Promise<{ exit: Promise<{ code: number | null; stderr: string }> }> {
+    const holder = spawn(process.execPath, ['-e', HOLD_WRITER, betterSqlite3, path, String(HOLD_MS), sql], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let stderr = ''
+    holder.stderr.on('data', (chunk) => { stderr += String(chunk) })
+    const exit = new Promise<{ code: number | null; stderr: string }>((resolve) => {
+      holder.once('close', (code) => resolve({ code, stderr }))
+    })
+    await new Promise<void>((resolve, reject) => {
+      holder.stdout.once('data', (chunk) => {
+        if (String(chunk) === 'held\n') resolve()
+        else reject(new Error(`unexpected lock-holder output: ${String(chunk)}`))
+      })
+      holder.once('error', reject)
+      void exit.then(({ code }) => reject(new Error(`lock holder exited before taking the lock (${code}): ${stderr}`)))
+    })
+    return { exit }
+  }
+
+  // Run `between` once, inside the store call, right after the first statement
+  // whose SQL matches `pattern` has returned its read and before anything writes.
+  function afterFirstRead(db: Database.Database, pattern: RegExp, between: () => void): () => void {
+    const realPrepare = db.prepare.bind(db)
+    let fired = false
+    db.prepare = ((source: string) => {
+      const stmt = realPrepare(source)
+      if (!fired && pattern.test(source)) {
+        const realGet = stmt.get.bind(stmt)
+        stmt.get = ((...args: unknown[]) => {
+          const row = realGet(...(args as []))
+          if (!fired) {
+            fired = true
+            between()
+          }
+          return row
+        }) as typeof stmt.get
+      }
+      return stmt
+    }) as typeof db.prepare
+    return () => { db.prepare = realPrepare }
+  }
+
+  // One thread cannot wait for a lock it holds itself, so the in-process second
+  // connection runs with busy_timeout 0: SQLITE_BUSY means it would have queued.
+  function busyOrCommitted(write: () => void): 'busy' | 'committed' {
+    try {
+      write()
+      return 'committed'
+    } catch (err) {
+      if ((err as { code?: string }).code === 'SQLITE_BUSY') return 'busy'
+      throw err
+    }
+  }
+
+  function seeded(): { path: string; db: Database.Database; board: BoardWithRows } {
+    const path = join(mkdtempSync(join(tmpdir(), 'inbox-writer-')), 'inbox.db')
+    const db = openDb(path)
+    upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'B', rows: [{ label: 'one', status: 'tracked' }] })
+    return { path, db, board: getBoard(db, 'p', 'B')! }
+  }
+
+  // Each writer, called with exactly the versions the agent last read.
+  const upsertAsRead = (db: Database.Database, board: BoardWithRows): void => {
+    writeBoard(db, {
+      project: 'p', stream: '', agent: 'a', title: 'B', expectedVersion: board.revision,
+      rows: [{ label: 'one', revision: board.rows[0]!.revision, status: 'partial', note: 'written' }],
+    })
+  }
+  const updateRowAsRead = (db: Database.Database, board: BoardWithRows): void => {
+    writeBoardRow(db, {
+      project: 'p', stream: '', agent: 'a', title: 'B', label: 'one',
+      expectedBoardVersion: board.revision, expectedRevision: board.rows[0]!.revision,
+      status: 'partial', note: 'written',
+    })
+  }
+  const writes: Array<[string, typeof upsertAsRead]> = [['upsertBoard', upsertAsRead], ['updateBoardRow', updateRowAsRead]]
+
+  it.each(writes)('%s waits out another process\'s write lock, then writes', async (_name, write) => {
+    const { path, db, board } = seeded()
+    const { exit } = await holdWriteLock(path)
+
+    const started = Date.now()
+    write(db, board)
+    const waitedMs = Date.now() - started
+
+    expect(waitedMs, 'the write must wait for the holder, not fail at once').toBeGreaterThanOrEqual(250)
+    expect(getBoard(db, 'p', 'B')!.rows[0]).toMatchObject({ status: 'partial', note: 'written' })
+    expect(await exit).toMatchObject({ code: 0 })
+    db.close()
+  })
+
+  it.each(writes)('a commit cannot land between %s\'s read and its write', (_name, write) => {
+    const { path, db, board } = seeded()
+    const other = openDb(path)
+    other.pragma('busy_timeout = 0')
+    const unrelated = { project: 'p', stream: '', agent: 'b', kind: 'note' as const, title: 'unrelated write' }
+    let raced: 'busy' | 'committed' | undefined
+    const restore = afterFirstRead(db, /^SELECT \* FROM boards WHERE project = \? AND title = \?$/, () => {
+      raced = busyOrCommitted(() => { insertItem(other, unrelated) })
+    })
+    try {
+      write(db, board)
+    } finally {
+      restore()
+    }
+
+    expect(raced, 'a concurrent writer queues behind the transaction instead of landing inside it').toBe('busy')
+    insertItem(other, unrelated)
+    expect(getBoard(db, 'p', 'B')!.rows[0]).toMatchObject({ status: 'partial', note: 'written' })
+    expect(listItems(db).map((item) => item.title)).toEqual(['unrelated write'])
+    other.close()
+    db.close()
+  })
+
+  // The waiting writer reads only once it owns the lock, so a revision bumped by
+  // the holder is a genuine CAS refusal: the same error as ever, never a lock error.
+  it('upsertBoard that waited still refuses a board version bumped under the lock', async () => {
+    const { path, db, board } = seeded()
+    const { exit } = await holdWriteLock(path, `UPDATE boards SET revision = revision + 1 WHERE id = '${board.id}'`)
+
+    expect(() => { upsertAsRead(db, board) })
+      .toThrow(`board version mismatch for "B": expected ${board.revision}, found ${board.revision + 1}`)
+    expect(await exit).toMatchObject({ code: 0 })
+    expect(getBoard(db, 'p', 'B')!.rows[0]).toMatchObject({ status: 'tracked', note: '' })
+    db.close()
+  })
+
+  it('updateBoardRow that waited still refuses a row revision bumped under the lock', async () => {
+    const { path, db, board } = seeded()
+    const row = board.rows[0]!
+    const { exit } = await holdWriteLock(path, `UPDATE board_rows SET revision = revision + 1 WHERE id = '${row.id}'`)
+
+    expect(() => { updateRowAsRead(db, board) })
+      .toThrow(`board row revision mismatch for "one": expected ${row.revision}, found ${row.revision + 1}`)
+    expect(await exit).toMatchObject({ code: 0 })
+    expect(getBoard(db, 'p', 'B')!.rows[0]).toMatchObject({ status: 'tracked', note: '' })
+    db.close()
+  })
+
+  it('the same milestone announced from two connections at once is ONE row with ONE id', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'inbox-milestone-')), 'inbox.db')
+    const db = openDb(path)
+    const other = openDb(path)
+    other.pragma('busy_timeout = 0')
+    const milestone = { project: 'p', stream: '', agent: 'a', kind: 'done' as const, title: 'shipped v2' }
+    const ids: string[] = []
+    let queued = false
+    // the second announcement arrives right after the first one's lookup missed
+    const restore = afterFirstRead(db, /kind = 'done'/, () => {
+      queued = busyOrCommitted(() => { ids.push(insertItem(other, milestone)) }) === 'busy'
+    })
+    try {
+      ids.push(insertItem(db, milestone))
+    } finally {
+      restore()
+    }
+    if (queued) ids.push(insertItem(other, milestone)) // what the waiting second process does next
+
+    const open = listItems(db, { status: 'open' }).filter((item) => item.kind === 'done')
+    expect(open).toHaveLength(1)
+    expect(ids).toEqual([open[0]!.id, open[0]!.id])
+    other.close()
+    db.close()
   })
 })

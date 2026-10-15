@@ -102,6 +102,9 @@ export function defaultDbPath(): string {
 export function openDb(path: string = defaultDbPath()): Database.Database {
   mkdirSync(dirname(path), { recursive: true })
   const db = new Database(path)
+  // Every process shares this file through WAL + busy_timeout, but SQLite never
+  // waits when a deferred reader is promoted to the writer, so any transaction
+  // whose first statement reads and that may later write must be `.immediate()`.
   db.pragma('busy_timeout = 5000')
   db.pragma('journal_mode = WAL')
   migrate(db)
@@ -536,13 +539,21 @@ function migrateAnnotationDelivery(db: Database.Database): void {
 
 export function insertItem(db: Database.Database, item: NewItem): string {
   // milestones are announcements — re-announcing the same open milestone
-  // (agent retries, re-runs) must not stack duplicates
+  // (agent retries, re-runs) must not stack duplicates. The lookup and the INSERT
+  // share one IMMEDIATE transaction, so another process cannot announce the same
+  // milestone between them; a duplicate gets the id that already exists.
   if (item.kind === 'done') {
-    const existing = db
-      .prepare(`SELECT id FROM items WHERE kind = 'done' AND status = 'open' AND project = ? AND title = ?`)
-      .get(item.project, item.title) as { id: string } | undefined
-    if (existing) return existing.id
+    return db.transaction((): string => {
+      const existing = db
+        .prepare(`SELECT id FROM items WHERE kind = 'done' AND status = 'open' AND project = ? AND title = ?`)
+        .get(item.project, item.title) as { id: string } | undefined
+      return existing ? existing.id : insertItemRow(db, item)
+    }).immediate()
   }
+  return insertItemRow(db, item)
+}
+
+function insertItemRow(db: Database.Database, item: NewItem): string {
   const id = randomUUID()
   const now = new Date().toISOString()
   db.prepare(
@@ -1101,7 +1112,11 @@ export function upsertBoard(db: Database.Database, input: UpsertBoardInput): { b
         let rowChanged = newAction
           || prev.status !== r.status
           || prev.note !== (r.note ?? prev.note)
-          || prev.position !== i
+        // Moving a row is not a change to the row (#158). Its revision is the CAS
+        // token a native notification pins, and its updated_at means content
+        // changed, so a move bumps neither. Only the board revision records it,
+        // which still refuses any full-table snapshot taken before the move.
+        const moved = prev.position !== i
         // annotation column is deliberately NOT touched — human notes survive
         db.prepare(`
           UPDATE board_rows
@@ -1109,7 +1124,7 @@ export function upsertBoard(db: Database.Database, input: UpsertBoardInput): { b
                  note = @note,
                  position = @position,
                  updated_at = CASE
-                   WHEN status IS NOT @status OR note IS NOT @note OR position IS NOT @position
+                   WHEN status IS NOT @status OR note IS NOT @note
                    THEN @now ELSE updated_at END
            WHERE id = @id`).run({
           status: r.status,
@@ -1146,7 +1161,7 @@ export function upsertBoard(db: Database.Database, input: UpsertBoardInput): { b
         rowChanged = updateRowTextField(db, existingId, 'context', r.context, now) || rowChanged
         if (r.outcome !== undefined) rowChanged = setRowOutcome(db, existingId, r.outcome, now) || rowChanged
         if (!newAction && rowChanged) incrementRowRevision(db, existingId)
-        boardChanged = boardChanged || rowChanged
+        boardChanged = boardChanged || rowChanged || moved
       } else {
         boardChanged = true
         db.prepare(`
@@ -1185,7 +1200,7 @@ export function upsertBoard(db: Database.Database, input: UpsertBoardInput): { b
     if (before && boardChanged) bumpBoardRevision(db, boardId, now)
     return { boardId, rowCount: inp.rows.length }
   })
-  return run(input)
+  return run.immediate(input)
 }
 
 interface UpdateRowInput {
@@ -1478,7 +1493,7 @@ export function updateBoardRow(db: Database.Database, input: UpdateRowInput): { 
     if (before) bumpBoardRevision(db, boardId, now)
     return { boardId, rowId }
   })
-  return run(input)
+  return run.immediate(input)
 }
 
 // After every agent write, a board's active/archived status follows its
@@ -1603,11 +1618,13 @@ export function snoozeBoardRow(
 ): boolean {
   const now = new Date().toISOString()
   const run = db.transaction((): boolean => {
+    // Unanswered means empty-or-NULL, as in listUnansweredBoardRows and
+    // attention.js: annotateBoardRow stores a cleared note as '' (#160).
     const row = db.prepare(`UPDATE board_rows
                                SET snoozed_until = ?, updated_at = ?, revision = revision + 1
                              WHERE id = ? AND status = 'blocked'
                                AND (? IS NULL OR revision = ?)
-                               AND annotation IS NULL AND annotation_kind IS NULL
+                               AND COALESCE(annotation, '') = '' AND annotation_kind IS NULL
                                AND handled_at IS NULL
                                AND EXISTS (
                                  SELECT 1 FROM boards b
@@ -2077,7 +2094,7 @@ const upsertActivityTxn = (db: Database.Database, a: ActivityUpdate): void => {
 }
 
 export function upsertActivity(db: Database.Database, a: ActivityUpdate): void {
-  db.transaction(() => upsertActivityTxn(db, a))()
+  db.transaction(() => upsertActivityTxn(db, a)).immediate()
 }
 
 export function endActivity(db: Database.Database, session: string): void {
@@ -2231,10 +2248,12 @@ function cappedSpanEnd(lastActiveAt: string, nowMs: number): string {
   return cap < nowMs ? new Date(cap).toISOString() : new Date(nowMs).toISOString()
 }
 
-function openSpan(db: Database.Database, session: string): { id: number; doing: string; last_active_at: string } | undefined {
+type OpenSpan = Pick<ActivitySpan, 'id' | 'project' | 'stream' | 'agent' | 'doing' | 'last_active_at'>
+
+function openSpan(db: Database.Database, session: string): OpenSpan | undefined {
   return db
-    .prepare(`SELECT id, doing, last_active_at FROM activity_spans WHERE session = ? AND ended_at IS NULL`)
-    .get(session) as { id: number; doing: string; last_active_at: string } | undefined
+    .prepare(`SELECT id, project, stream, agent, doing, last_active_at FROM activity_spans WHERE session = ? AND ended_at IS NULL`)
+    .get(session) as OpenSpan | undefined
 }
 
 function closeOpenSpan(db: Database.Database, session: string, nowMs: number): void {
@@ -2260,20 +2279,24 @@ interface ClaimSpanInput {
 // cutoff `recordActivityCall`/`listActivity` already use:
 //   • no open span, meaningful doing   → open one
 //   • no open span, not meaningful     → nothing to do
-//   • open span, same doing, still warm → same live claim: bump last_active_at,
-//                                          no new row
-//   • open span, otherwise (doing changed, now idle/open/done, OR the prior
-//     span already went cold) → close the prior span truthfully (capped, so a
-//     stale close can never read as "worked until now") and, if this write is
-//     itself meaningful, open a fresh span — this is also how a claim
+//   • open span, same doing in the same scope (project, stream, agent), still
+//     warm → same live claim: bump last_active_at, no new row
+//   • open span, otherwise (doing or scope changed, now idle/open/done, OR the
+//     prior span already went cold) → close the prior span truthfully (capped,
+//     so a stale close can never read as "worked until now") and, if this write
+//     is itself meaningful, open a fresh span — this is also how a claim
 //     reasserted after a cold gap gets its own new interval instead of
 //     silently extending the old one across the gap.
+// Scope is part of a claim's identity (#162). Presence takes the latest scope on
+// every write, so comparing `doing` alone kept crediting a claim re-reported after
+// register() or a branch checkout to the OLD project and stream.
 function transitionClaimSpan(db: Database.Database, input: ClaimSpanInput): void {
   const { session, project, stream, agent, doing, isMeaningful, nowIso, nowMs } = input
   const open = openSpan(db, session)
   if (open) {
     const stale = open.last_active_at < claimCutoff(nowMs)
-    const sameLiveClaim = isMeaningful && open.doing === doing && !stale
+    const sameScope = open.project === project && open.stream === stream && open.agent === agent
+    const sameLiveClaim = isMeaningful && open.doing === doing && sameScope && !stale
     if (sameLiveClaim) {
       db.prepare(`UPDATE activity_spans SET last_active_at = ? WHERE id = ?`).run(nowIso, open.id)
       return
@@ -2354,6 +2377,21 @@ export function listActivitySpans(
 export function getBoard(db: Database.Database, project: string, title: string): BoardWithRows | undefined {
   const board = findBoard(db, project, title)
   if (!board || board.status !== 'active') return undefined
+  return boardWithRows(db, board)
+}
+
+// Issue #159 — ONE board by (project, title) WHATEVER its status. The titled MCP
+// tools need an archived board too: board_get hands back its CAS revisions, and
+// board_upsert/board_row demand board_version before a write reactivates it.
+// They used to fall back to listBoards({ status: 'archived' }), loading and
+// parsing every archived board in every project to find this one; this is the
+// unique-key lookup plus that board's rows. getBoard() stays active-only.
+export function getBoardByTitle(db: Database.Database, project: string, title: string): BoardWithRows | undefined {
+  const board = findBoard(db, project, title)
+  return board ? boardWithRows(db, board) : undefined
+}
+
+function boardWithRows(db: Database.Database, board: Board): BoardWithRows {
   const rows = withUnseen(
     db.prepare(`SELECT ${ROW_COLUMNS} FROM board_rows WHERE board_id = ? ORDER BY position ASC`).all(board.id) as BoardRowRecord[],
   )

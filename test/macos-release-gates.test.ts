@@ -160,6 +160,137 @@ function makeTaggedRepo(version = '1.2.3', lockRootVersion = version) {
   return { repo, sha, tag: `v${version}`, taggedAt: fixtureTaggedAt }
 }
 
+type StaplerAction = 'staple' | 'validate'
+type StaplerFailure = { output: string, status: number }
+
+const cloudKitTicketLookup =
+  'https://api.apple-cloudkit.com/database/1/com.apple.gk.ticket-delivery/production/public/records/lookup'
+
+// The stapler failure that sank all three Notarize attempts of release run 38783536267.
+function staplerConnectionLost(
+  action: StaplerAction,
+  task = 'FB9BCA30-16D9-4A0D-B99D-F769D2C53AD7',
+): StaplerFailure {
+  return {
+    status: 68,
+    output: [
+      'error is Error Domain=NSURLErrorDomain Code=-1005 "The network connection was lost." '
+        + 'UserInfo={_kCFStreamErrorCodeKey=-4, NSUnderlyingError=0x6000025f41b0 '
+        + '{Error Domain=kCFErrorDomainCFNetwork Code=-1005 "(null)" '
+        + 'UserInfo={_kCFStreamErrorCodeKey=-4, _kCFStreamErrorDomainKey=4}}, '
+        + `_NSURLErrorFailingURLSessionTaskErrorKey=LocalDataTask <${task}>.<1>, `
+        + '_NSURLErrorRelatedURLSessionTaskErrorKey=(',
+      `    "LocalDataTask <${task}>.<1>"`,
+      '), NSLocalizedDescription=The network connection was lost., '
+        + `NSErrorFailingURLStringKey=${cloudKitTicketLookup}, `
+        + `NSErrorFailingURLKey=${cloudKitTicketLookup}, _kCFStreamErrorDomainKey=4}`,
+      "CloudKit's response is inconsistent with expections: (null)",
+      `The ${action === 'staple' ? 'staple and validate' : 'validate'} action failed! Error 68.`,
+    ].join('\n'),
+  }
+}
+
+// Stapler's report when Apple's ticket service has not published an accepted ticket yet.
+const staplerTicketNotPublished: StaplerFailure = {
+  status: 65,
+  output: [
+    'CloudKit query for Agent Inbox.app (2/0123456789abcdef0123456789abcdef01234567) '
+      + 'failed due to "Record not found".',
+    'Could not find base64 encoded ticket in response for 2/0123456789abcdef0123456789abcdef01234567',
+    'The staple and validate action failed! Error 65.',
+  ].join('\n'),
+}
+
+function runNotarize(failures: Partial<Record<StaplerAction, StaplerFailure[]>> = {}) {
+  const temp = mkdtempSync(join(tmpdir(), 'notary-process-'))
+  try {
+    const submitted = join(temp, 'Agent Inbox.zip')
+    const stapleTarget = join(temp, 'Agent Inbox.app')
+    const receipt = join(temp, 'receipt.json')
+    const fakes = join(temp, 'fakes')
+    const xcrun = join(fakes, 'xcrun')
+    const sleep = join(fakes, 'sleep')
+    const xcrunLog = join(temp, 'xcrun.log')
+    const sleepLog = join(temp, 'sleep.log')
+    const digest = createHash('sha256').update('zip bytes').digest('hex')
+    writeFileSync(submitted, 'zip bytes')
+    mkdirSync(stapleTarget)
+    mkdirSync(fakes)
+    for (const action of ['staple', 'validate'] as const) {
+      for (const [index, failure] of (failures[action] ?? []).entries()) {
+        writeFileSync(join(fakes, `${action}.${index + 1}.out`), `${failure.output}\n`)
+        writeFileSync(join(fakes, `${action}.${index + 1}.status`), `${failure.status}\n`)
+      }
+    }
+    // Stapler attempt N replays fakes/<action>.N.{out,status} when present, else succeeds.
+    writeFileSync(xcrun, `#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> "$FAKE_XCRUN_LOG"
+if [ "$1 $2" = "notarytool submit" ]; then
+  printf '%s\\n' '{"id":"11111111-2222-3333-4444-555555555555","status":"Accepted"}'
+elif [ "$1 $2" = "notarytool log" ]; then
+  printf '%s\\n' '{"jobId":"11111111-2222-3333-4444-555555555555","status":"Accepted","statusCode":0,"archiveFilename":"Agent Inbox.zip","sha256":"${digest}","issues":[]}' > "$4"
+elif [ "$1" = stapler ]; then
+  attempt=1
+  [ ! -f "$FAKE_XCRUN_DIR/$2.count" ] || attempt=$(( $(cat "$FAKE_XCRUN_DIR/$2.count") + 1 ))
+  printf '%s\\n' "$attempt" > "$FAKE_XCRUN_DIR/$2.count"
+  printf 'Processing: %s\\n' "$3"
+  if [ -f "$FAKE_XCRUN_DIR/$2.$attempt.status" ]; then
+    cat "$FAKE_XCRUN_DIR/$2.$attempt.out" >&2
+    exit "$(cat "$FAKE_XCRUN_DIR/$2.$attempt.status")"
+  fi
+  if [ "$2" = staple ]; then
+    echo 'The staple and validate action worked!'
+  else
+    echo 'The validate action worked!'
+  fi
+fi
+`)
+    writeFileSync(sleep, `#!/bin/sh
+printf '%s\\n' "$*" >> "$FAKE_SLEEP_LOG"
+`)
+    chmodSync(xcrun, 0o755)
+    chmodSync(sleep, 0o755)
+    const result = spawnSync('/bin/bash', [
+      join(root, 'scripts', 'notarize-macos.sh'),
+      'app',
+      submitted,
+      stapleTarget,
+      receipt,
+    ], {
+      cwd: root,
+      env: {
+        ...process.env,
+        APPLE_XCRUN_BIN: xcrun,
+        STAPLER_RETRY_SLEEP_BIN: sleep,
+        APPLE_NOTARY_PRIVATE_KEY_BASE64: Buffer.from(
+          '-----BEGIN PRIVATE KEY-----\nfixture\n-----END PRIVATE KEY-----\n',
+        ).toString('base64'),
+        APPLE_NOTARY_KEY_ID: 'A1B2C3D4E5',
+        APPLE_NOTARY_ISSUER_ID: '12345678-1234-1234-1234-123456789abc',
+        RUNNER_TEMP: temp,
+        FAKE_XCRUN_LOG: xcrunLog,
+        FAKE_XCRUN_DIR: fakes,
+        FAKE_SLEEP_LOG: sleepLog,
+      },
+      encoding: 'utf8',
+    })
+    const lines = (path: string) => (existsSync(path) ? readFileSync(path, 'utf8').trim().split('\n') : [])
+    return {
+      status: result.status,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      output: `${result.stdout}${result.stderr}`,
+      receipt: existsSync(receipt) ? readFileSync(receipt, 'utf8') : '',
+      calls: lines(xcrunLog).map((call) => call.split(' ').slice(0, 2).join(' ')),
+      sleeps: lines(sleepLog).map(Number),
+      notaryWorkDirs: readdirSync(temp).filter((name) => name.startsWith('agent-inbox-notary.')),
+    }
+  } finally {
+    rmSync(temp, { recursive: true, force: true })
+  }
+}
+
 describe('macOS release gates', () => {
   it('accepts v1.0.1 only when every package version field matches', () => {
     const fixture = makeTaggedRepo('1.0.1')
@@ -705,51 +836,71 @@ describe('macOS release gates', () => {
   })
 
   it('keeps notary key bytes temporary and staples only after an accepted receipt', () => {
-    const temp = mkdtempSync(join(tmpdir(), 'notary-process-'))
-    const submitted = join(temp, 'Agent Inbox.zip')
-    const stapleTarget = join(temp, 'Agent Inbox.app')
-    const receipt = join(temp, 'receipt.json')
-    const xcrun = join(temp, 'xcrun')
-    const xcrunLog = join(temp, 'xcrun.log')
-    const digest = createHash('sha256').update('zip bytes').digest('hex')
-    writeFileSync(submitted, 'zip bytes')
-    mkdirSync(stapleTarget)
-    writeFileSync(xcrun, `#!/bin/sh
-set -eu
-printf '%s\\n' "$*" >> "${xcrunLog}"
-if [ "$1 $2" = "notarytool submit" ]; then
-  printf '%s\\n' '{"id":"11111111-2222-3333-4444-555555555555","status":"Accepted"}'
-elif [ "$1 $2" = "notarytool log" ]; then
-  printf '%s\\n' '{"jobId":"11111111-2222-3333-4444-555555555555","status":"Accepted","statusCode":0,"archiveFilename":"Agent Inbox.zip","sha256":"${digest}","issues":[]}' > "$4"
-fi
-`)
-    chmodSync(xcrun, 0o755)
-    const result = spawnSync('bash', [
-      join(root, 'scripts', 'notarize-macos.sh'),
-      'app',
-      submitted,
-      stapleTarget,
-      receipt,
-    ], {
-      cwd: root,
-      env: {
-        ...process.env,
-        APPLE_XCRUN_BIN: xcrun,
-        APPLE_NOTARY_PRIVATE_KEY_BASE64: Buffer.from(
-          '-----BEGIN PRIVATE KEY-----\nfixture\n-----END PRIVATE KEY-----\n',
-        ).toString('base64'),
-        APPLE_NOTARY_KEY_ID: 'A1B2C3D4E5',
-        APPLE_NOTARY_ISSUER_ID: '12345678-1234-1234-1234-123456789abc',
-        RUNNER_TEMP: temp,
-      },
-      encoding: 'utf8',
+    const run = runNotarize()
+    expect(run.status, run.stderr).toBe(0)
+    expect(run.receipt).toContain('"status": "Accepted"')
+    expect(run.calls).toEqual(['notarytool submit', 'notarytool log', 'stapler staple', 'stapler validate'])
+    expect(run.sleeps).toEqual([])
+    expect(run.notaryWorkDirs).toEqual([])
+  })
+
+  it('retries a dropped Apple ticket connection or unpublished ticket with bounded backoff', () => {
+    const run = runNotarize({
+      staple: [staplerConnectionLost('staple'), staplerTicketNotPublished],
+      validate: [staplerConnectionLost('validate')],
     })
-    expect(result.status, result.stderr).toBe(0)
-    expect(readFileSync(receipt, 'utf8')).toContain('"status": "Accepted"')
-    const calls = readFileSync(xcrunLog, 'utf8')
-    expect(calls.indexOf('notarytool submit')).toBeLessThan(calls.indexOf('notarytool log'))
-    expect(calls.indexOf('notarytool log')).toBeLessThan(calls.indexOf('stapler staple'))
-    expect(calls.indexOf('stapler staple')).toBeLessThan(calls.indexOf('stapler validate'))
-    expect(readdirSync(temp).filter((name) => name.startsWith('agent-inbox-notary.'))).toEqual([])
+    expect(run.status, run.output).toBe(0)
+    expect(run.calls).toEqual([
+      'notarytool submit',
+      'notarytool log',
+      'stapler staple',
+      'stapler staple',
+      'stapler staple',
+      'stapler validate',
+      'stapler validate',
+    ])
+    expect(run.sleeps).toEqual([15, 30, 15])
+    expect(run.output).toContain(staplerConnectionLost('staple').output)
+    expect(run.output).toContain(staplerTicketNotPublished.output)
+    expect(run.output).toContain(staplerConnectionLost('validate').output)
+    expect(run.output).toContain('The staple and validate action worked!')
+    expect(run.output).toContain('The validate action worked!')
+    expect(run.notaryWorkDirs).toEqual([])
+  })
+
+  it.each([
+    {
+      action: 'validate' as const,
+      failure: {
+        status: 65,
+        output: 'Agent Inbox.app does not have a ticket stapled to it.\nThe validate action failed! Error 65.',
+      },
+      staplerCalls: ['stapler staple', 'stapler validate'],
+    },
+    {
+      action: 'staple' as const,
+      failure: { status: 68, output: 'The staple and validate action failed! Error 68.' },
+      staplerCalls: ['stapler staple'],
+    },
+  ])('stops at once with stapler output and status for a non-transient $action failure', (
+    { action, failure, staplerCalls },
+  ) => {
+    const run = runNotarize({ [action]: [failure, failure] })
+    expect(run.status).toBe(failure.status)
+    expect(run.calls).toEqual(['notarytool submit', 'notarytool log', ...staplerCalls])
+    expect(run.sleeps).toEqual([])
+    expect(run.output).toContain(failure.output)
+  })
+
+  it('gives up after five transient stapler failures with the last output and status', () => {
+    const failures = [1, 2, 3, 4, 5, 6].map((attempt) =>
+      staplerConnectionLost('staple', `00000000-0000-4000-8000-00000000000${attempt}`))
+    const run = runNotarize({ staple: failures })
+    expect(run.status).toBe(68)
+    expect(run.calls).toEqual(['notarytool submit', 'notarytool log', ...Array(5).fill('stapler staple')])
+    expect(run.sleeps).toEqual([15, 30, 60, 120])
+    const last = failures[4]!.output
+    expect(run.stdout.trimEnd().slice(-last.length)).toBe(last)
+    expect(run.notaryWorkDirs).toEqual([])
   })
 })

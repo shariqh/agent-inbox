@@ -3,9 +3,13 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawn } from 'node:child_process'
+import type { ChildProcessByStdio } from 'node:child_process'
+import type { Readable, Writable } from 'node:stream'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
-import { openDb, listItems, listBoards, getBoard, annotateBoardRow, markRowHandled, listPendingRows, replyItem, listActivity } from '../src/store.js'
+import { ReadBuffer, serializeMessage } from '@modelcontextprotocol/sdk/shared/stdio.js'
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
+import { openDb, listItems, listBoards, getBoard, annotateBoardRow, markRowHandled, listPendingRows, replyItem, listActivity, listActivitySpans } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
 
 const QUESTION_SHAPE = {
@@ -33,6 +37,27 @@ const blockedRow = (label: string, over: Record<string, unknown> = {}) => ({
   impact: 'Required before the work can continue.',
   ...over,
 })
+
+// A stdio Transport over a server process the test spawned and owns, so the test
+// controls exactly how that process ends. close() only reaps a still-running child.
+const childTransport = (child: ChildProcessByStdio<Writable, Readable, null>): Transport => {
+  const buffer = new ReadBuffer()
+  const transport: Transport = {
+    start: async () => {
+      child.stdout.on('data', (chunk: Buffer) => {
+        buffer.append(chunk)
+        for (let message = buffer.readMessage(); message; message = buffer.readMessage()) transport.onmessage?.(message)
+      })
+      child.stdin.on('error', (error) => transport.onerror?.(error))
+      child.once('close', () => transport.onclose?.())
+    },
+    send: async (message) => { child.stdin.write(serializeMessage(message)) },
+    close: async () => {
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
+    },
+  }
+  return transport
+}
 
 describe('mcp round-trip', () => {
   it('flag writes a row attributed to this session, and whoami reflects register', async () => {
@@ -374,6 +399,49 @@ describe('mcp round-trip', () => {
     await client.close()
     await new Promise((r) => setTimeout(r, 500))
     expect(listActivity(openDb(dbPath))).toHaveLength(0) // process exit ends the row
+  }, 20000)
+
+  // Issue #162. Closing a terminal tab or window delivers SIGHUP, and Node's default
+  // disposition for it kills the process WITHOUT emitting 'exit': the session never
+  // recorded its end, lingered as a ghost Live row for up to 15 minutes and left its
+  // span open. The server runs directly under Node, not through the npx/tsx wrappers
+  // (tsx relays only SIGINT/SIGTERM), so the signal reaches the server process exactly
+  // as a terminal hangup would, and the test, not the SDK's close() fallback to
+  // SIGTERM, decides how it ends.
+  it.each(['SIGHUP', 'SIGTERM', 'stdin EOF'] as const)('%s ends the session: ended_at is recorded and the open span closed', async (ending) => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-ending-')), 'inbox.db')
+    const child = spawn(process.execPath, ['--import', 'tsx', 'src/mcp-server.ts'], {
+      env: { ...process.env, AGENT_INBOX_DB: dbPath },
+      stdio: ['pipe', 'pipe', 'inherit'],
+    })
+    const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+      child.once('exit', (code, signal) => resolve({ code, signal }))
+    })
+    const client = new Client({ name: 'claude-code', version: '1.0.0' })
+    const db = openDb(dbPath)
+    try {
+      await client.connect(childTransport(child))
+      await client.callTool({ name: 'status', arguments: { doing: 'closing the terminal' } })
+      const [live] = listActivity(db)
+      expect(live?.doing).toBe('closing the terminal')
+      expect(listActivitySpans(db).map((span) => span.ended_at)).toEqual([null])
+
+      if (ending === 'stdin EOF') child.stdin.end()
+      else child.kill(ending)
+      const exit = await exited
+
+      const row = db.prepare(`SELECT ended_at FROM activity WHERE session = ?`).get(live!.session) as { ended_at: string | null }
+      expect(row.ended_at, `server exit: ${JSON.stringify(exit)}`).not.toBeNull()
+      expect(listActivity(db)).toEqual([])
+      const spans = listActivitySpans(db)
+      expect(spans).toHaveLength(1)
+      expect(spans[0]!.session).toBe(live!.session)
+      expect(spans[0]!.ended_at).not.toBeNull()
+      expect(exit).toEqual({ code: 0, signal: null })
+    } finally {
+      await client.close()
+      db.close()
+    }
   }, 20000)
 
   // src/mcp.ts registers presence twice — on the initialize notification, and

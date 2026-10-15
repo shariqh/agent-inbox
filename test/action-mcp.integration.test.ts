@@ -11,6 +11,7 @@ import {
   listItems,
   openDb,
   replyItem,
+  upsertBoard,
 } from '../src/store.js'
 
 async function connection(dbPath: string): Promise<Client> {
@@ -266,6 +267,63 @@ describe('MCP action lifecycle contract', () => {
     const read = await call(client, 'board_get', { title: 'Completed rollout' })
     expect(read.body).toMatchObject({ title: 'Completed rollout', status: 'archived', revision: 1 })
     expect(read.body.rows[0]).toMatchObject({ label: 'Ship', revision: 1 })
+    await client.close()
+  }, 20000)
+
+  // Issue #159 — board_get, board_row and board_upsert each name ONE board, yet
+  // an archived or brand-new title used to load and parse every archived board
+  // in EVERY project. The other projects' archived boards below hold a row whose
+  // history is not JSON: a tripwire no store write can produce, so any path that
+  // still loads them fails loudly here instead of merely slowly in production.
+  it('resolves archived and new titles exactly as before without loading other projects’ archived boards', async () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-archived-titles-')), 'inbox.db')
+    const store = openDb(dbPath)
+    for (const project of ['decoy-a', 'decoy-b']) {
+      const { boardId } = upsertBoard(store, {
+        project, stream: '', agent: 'test', title: 'Completed rollout', rows: [{ label: 'Ship', status: 'done' }],
+      })
+      store.prepare(`UPDATE board_rows SET history = 'tripwire: not JSON' WHERE board_id = ?`).run(boardId)
+    }
+    const text = (result: Awaited<ReturnType<Client['callTool']>>) =>
+      (result.content as Array<{ text: string }>)[0]!.text
+    const client = await connection(dbPath)
+    await call(client, 'register', { project: 'home' })
+
+    const created = await client.callTool({
+      name: 'board_upsert',
+      arguments: { title: 'Completed rollout', rows: [{ label: 'Ship', status: 'done' }] },
+    })
+    expect(created.isError, text(created)).not.toBe(true)
+    expect((await call(client, 'board_get', { title: 'Never written' })).body).toEqual({ found: false })
+    const read = await call(client, 'board_get', { title: 'Completed rollout' })
+    expect(read.body).toMatchObject({ project: 'home', status: 'archived', revision: 1 })
+    expect(read.body.rows).toMatchObject([{ label: 'Ship', revision: 1 }])
+
+    // an archived board still demands its CAS versions before a write reactivates it
+    const unversioned = await client.callTool({
+      name: 'board_row',
+      arguments: { title: 'Completed rollout', label: 'Follow-up', status: 'tracked' },
+    })
+    expect(unversioned.isError).toBe(true)
+    expect(text(unversioned)).toContain('existing board "Completed rollout" requires board_version 1')
+    const unrevised = await client.callTool({
+      name: 'board_upsert',
+      arguments: {
+        title: 'Completed rollout',
+        board_version: 1,
+        rows: [{ label: 'Ship', status: 'done' }, { label: 'Follow-up', status: 'tracked' }],
+      },
+    })
+    expect(unrevised.isError).toBe(true)
+    expect(text(unrevised)).toContain('existing row "Ship" requires revision 1')
+
+    const reopened = await client.callTool({
+      name: 'board_row',
+      arguments: { title: 'Completed rollout', board_version: 1, label: 'Follow-up', status: 'tracked' },
+    })
+    expect(reopened.isError, text(reopened)).not.toBe(true)
+    expect(getBoard(openDb(dbPath), 'home', 'Completed rollout')!.rows.map((row) => row.label))
+      .toEqual(['Ship', 'Follow-up'])
     await client.close()
   }, 20000)
 })

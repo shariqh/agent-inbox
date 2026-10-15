@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -26,6 +26,7 @@ import {
   resolveGh,
   TTL,
   MAX_PER_TICK,
+  PR_WINDOW,
 } from '../src/prstate.js'
 
 const REPO = new URL('..', import.meta.url).pathname
@@ -34,7 +35,8 @@ function freshDb(): Database.Database {
   return openDb(join(mkdtempSync(join(tmpdir(), 'prstate-')), 'inbox.db'))
 }
 
-// the shape `gh pr list --json …` actually emits (verified live against cli/cli)
+// the shape `gh pr list --json …` actually emits (verified live against cli/cli),
+// including the head identity issue #157 verifies against the expected head
 function ghPayload(over: Record<string, unknown> = {}): string {
   return JSON.stringify([{
     number: 41,
@@ -47,9 +49,15 @@ function ghPayload(over: Record<string, unknown> = {}): string {
     closingIssuesReferences: [{ number: 30, url: 'https://github.com/shariqh/agent-inbox/issues/30' }],
     body: 'Links the inbox to its source issue and PR.',
     updatedAt: '2026-07-26T10:00:00Z',
+    isCrossRepository: false,
+    headRepository: { id: 'R_1', name: 'agent-inbox', nameWithOwner: 'shariqh/agent-inbox' },
+    headRepositoryOwner: { id: 'U_1', login: 'shariqh' },
     ...over,
   }])
 }
+
+// a branch pushed to the repository its PRs are opened against
+const SAME = { repo: 'shariqh/agent-inbox', head_repo: 'shariqh/agent-inbox' }
 
 describe('classifyChecks', () => {
   const run = (conclusion: string, status = 'COMPLETED') => ({ __typename: 'CheckRun', status, conclusion })
@@ -131,7 +139,7 @@ describe('firstLine (the TL;DR)', () => {
 
 describe('parsePrPayload', () => {
   it('reads number/title/url/state/isDraft/reviewDecision off gh pr list output', () => {
-    const pr = parsePrPayload(ghPayload())!
+    const pr = parsePrPayload(ghPayload(), SAME)!
     expect(pr.pr_number).toBe(41)
     expect(pr.pr_title).toBe('source + PR links')
     expect(pr.pr_url).toBe('https://github.com/shariqh/agent-inbox/pull/41')
@@ -143,32 +151,32 @@ describe('parsePrPayload', () => {
   })
 
   it('carries the authoritative issue from closingIssuesReferences', () => {
-    const pr = parsePrPayload(ghPayload())!
+    const pr = parsePrPayload(ghPayload(), SAME)!
     expect(pr.issue_number).toBe(30)
     expect(pr.issue_url).toBe('https://github.com/shariqh/agent-inbox/issues/30')
   })
 
   it('leaves the issue null when the PR closes nothing', () => {
-    const pr = parsePrPayload(ghPayload({ closingIssuesReferences: [] }))!
+    const pr = parsePrPayload(ghPayload({ closingIssuesReferences: [] }), SAME)!
     expect(pr.issue_number).toBeNull()
     expect(pr.issue_url).toBeNull()
   })
 
   it('returns null for the empty array gh emits when there is no PR, and for junk', () => {
-    expect(parsePrPayload('[]')).toBeNull()
-    expect(parsePrPayload('not json')).toBeNull()
-    expect(parsePrPayload('{}')).toBeNull()
-    expect(parsePrPayload('[{"title":"no number"}]')).toBeNull()
+    expect(parsePrPayload('[]', SAME)).toBeNull()
+    expect(parsePrPayload('not json', SAME)).toBeNull()
+    expect(parsePrPayload('{}', SAME)).toBeNull()
+    expect(parsePrPayload('[{"title":"no number"}]', SAME)).toBeNull()
   })
 
   it('truncates an absurdly long PR title rather than storing it whole', () => {
-    const pr = parsePrPayload(ghPayload({ title: 'y'.repeat(900) }))!
+    const pr = parsePrPayload(ghPayload({ title: 'y'.repeat(900) }), SAME)!
     expect(pr.pr_title!.length).toBeLessThanOrEqual(301)
   })
 
   it('reads draft and merged state', () => {
-    expect(parsePrPayload(ghPayload({ isDraft: true }))!.pr_draft).toBe(true)
-    expect(parsePrPayload(ghPayload({ state: 'MERGED' }))!.pr_state).toBe('MERGED')
+    expect(parsePrPayload(ghPayload({ isDraft: true }), SAME)!.pr_draft).toBe(true)
+    expect(parsePrPayload(ghPayload({ state: 'MERGED' }), SAME)!.pr_state).toBe('MERGED')
   })
 })
 
@@ -185,9 +193,9 @@ describe('classifyError', () => {
 
 describe('dueTargets (TTL policy)', () => {
   const T0 = Date.parse('2026-07-26T12:00:00.000Z')
-  const target = (branch: string): LinkTarget => ({ repo: 'o/n', branch })
+  const target = (branch: string): LinkTarget => ({ repo: 'o/n', branch, head_repo: 'o/n' })
   const link = (branch: string, over: Partial<SourceLink> = {}): SourceLink => ({
-    repo: 'o/n', branch, provider: 'github',
+    repo: 'o/n', branch, head_repo: 'o/n', provider: 'github',
     pr_number: 41, pr_url: null, pr_title: null, pr_state: 'OPEN', pr_draft: false,
     pr_head_sha: null, preview_url: null, preview_environment: null, preview_deployment_id: null,
     preview_updated_at: null, preview_error: null, revision: 1,
@@ -371,6 +379,122 @@ describe('refreshOnce', () => {
   })
 })
 
+// ── issue #157: a PR counts only when its HEAD repository is the expected one ──
+// `gh pr list -R <base> --head <branch>` filters on the head branch NAME across
+// every fork (`--head owner:branch` is not supported), so a stranger's fork PR
+// from a same-named branch used to be cached as this branch's PR — chip, title,
+// TL;DR and the closing issue that overrides the item's own issue.
+describe('head repository verification (issue #157)', () => {
+  const BASE = 'upstream/x'
+  const SHA = 'c'.repeat(40)
+  let db: Database.Database
+  beforeEach(() => { db = freshDb() })
+
+  // one PR the way `gh pr list --json` lists it, opened from the `head` repository
+  const prFrom = (head: string, number: number, over: Record<string, unknown> = {}) => ({
+    number,
+    title: `PR ${number} from ${head}`,
+    url: `https://github.com/${BASE}/pull/${number}`,
+    state: 'OPEN',
+    headRefOid: SHA,
+    isCrossRepository: head.toLowerCase() !== BASE,
+    headRepository: { id: `R_${number}`, name: head.split('/')[1], nameWithOwner: head },
+    headRepositoryOwner: { id: `U_${number}`, login: head.split('/')[0] },
+    closingIssuesReferences: [{ number: number + 1000, url: `https://github.com/${BASE}/issues/${number + 1000}` }],
+    body: `body of ${number}`,
+    ...over,
+  })
+  const list = (...prs: object[]): string => JSON.stringify(prs)
+  const seed = (branch: string, head_repo?: string) => insertItem(db, {
+    project: 'p', stream: branch, agent: 'a', kind: 'question', title: `q ${branch} ${String(head_repo)}`, repo: BASE, head_repo,
+  })
+  const rowFor = (head: string) => listSourceLinks(db).find((l) => l.head_repo === head)
+  const api = (endpoint: string): string => JSON.stringify(endpoint.includes('/statuses')
+    ? [{ state: 'success', environment_url: 'https://preview.example/pr', updated_at: new Date().toISOString() }]
+    : [{ id: 1, sha: SHA, environment: 'Preview', production_environment: false }])
+
+  it('selects the valid PR when a fork\'s same-named branch is listed first', async () => {
+    seed('main', BASE)
+    await refreshOnce(db, { run: () => list(prFrom('stranger/x', 90), prFrom(BASE, 41)), runApi: () => '[]' })
+    expect(rowFor(BASE)).toMatchObject({ pr_number: 41, pr_title: `PR 41 from ${BASE}`, issue_number: 1041, error: null })
+  })
+
+  it('caches no PR, no closing-issue override and resolves no preview when every result is a fork\'s', async () => {
+    seed('trunk', BASE)
+    const runApi = vi.fn(api)
+    await refreshOnce(db, { run: () => list(prFrom('stranger/x', 90), prFrom('other/x', 91)), runApi })
+    expect(rowFor(BASE)).toMatchObject({
+      pr_number: null, pr_url: null, pr_title: null, pr_head_sha: null, tldr: null,
+      issue_number: null, issue_url: null, preview_url: null, error: null,
+    })
+    expect(runApi).not.toHaveBeenCalled()
+  })
+
+  // the contributor workflow that must KEEP working: origin (or register({ repo }))
+  // names the upstream, and the branch is pushed to the contributor's own fork
+  it('selects the contributor\'s own cross-repository PR when the branch is pushed to their fork', async () => {
+    seed('feature', 'me/x')
+    const runApi = vi.fn(api)
+    const run = vi.fn(() => list(prFrom('stranger/x', 90), prFrom(BASE, 88), prFrom('Me/X', 41)))
+    await refreshOnce(db, { run, runApi })
+    expect(run).toHaveBeenCalledWith(BASE, 'feature')
+    expect(rowFor('me/x')).toMatchObject({ pr_number: 41, issue_number: 1041, preview_url: 'https://preview.example/pr' })
+    // the preview is read from the BASE repository, for the VERIFIED head only
+    expect(runApi).toHaveBeenCalledWith(`repos/${BASE}/deployments?sha=${SHA}&per_page=6`)
+  })
+
+  it('reports a full window with no match as no PR, never as a guess', async () => {
+    seed('patch-1', BASE)
+    const forks = Array.from({ length: PR_WINDOW }, (_, i) => prFrom(`fork${i}/x`, 100 + i))
+    const runApi = vi.fn(api)
+    await refreshOnce(db, { run: () => list(...forks), runApi })
+    expect(rowFor(BASE)).toMatchObject({ pr_number: null, issue_number: null, preview_url: null })
+    expect(runApi).not.toHaveBeenCalled()
+  })
+
+  // an item written before #157 recorded no head: the only PR it can safely
+  // claim is one opened from the base repository itself
+  it('a legacy row with no expected head accepts only a same-repository PR', async () => {
+    seed('feature')
+    await refreshOnce(db, { run: () => list(prFrom('me/x', 41)), runApi: () => '[]' })
+    expect(rowFor(BASE)).toMatchObject({ pr_number: null, issue_number: null })
+    await refreshOnce(db, {
+      run: () => list(prFrom('me/x', 41), prFrom(BASE, 40)), runApi: () => '[]', nowMs: Date.now() + TTL.noPr + 1,
+    })
+    expect(rowFor(BASE)).toMatchObject({ pr_number: 40, issue_number: 1040 })
+  })
+
+  it('caches one branch name pushed to two repositories as two separate answers', async () => {
+    seed('feature', BASE)
+    seed('feature', 'me/x')
+    await refreshOnce(db, { run: () => list(prFrom('me/x', 41), prFrom(BASE, 40)), runApi: () => '[]' })
+    expect(rowFor(BASE)?.pr_number).toBe(40)
+    expect(rowFor('me/x')?.pr_number).toBe(41)
+  })
+
+  // the head re-read that guards a preview runs through the SAME selection
+  it('re-verifies a preview\'s head with the same rule', async () => {
+    seed('main', BASE)
+    let reads = 0
+    // a newer fork PR appearing between the two reads leaves the verified head alone …
+    await refreshOnce(db, {
+      run: () => (++reads === 1 ? list(prFrom(BASE, 41)) : list(prFrom('stranger/x', 95, { headRefOid: 'd'.repeat(40) }), prFrom(BASE, 41))),
+      runApi: api,
+    })
+    expect(reads).toBe(2)
+    expect(rowFor(BASE)).toMatchObject({ pr_number: 41, preview_url: 'https://preview.example/pr' })
+    // … and a re-read whose only PR is a fork's no longer confirms it, however alike it looks
+    reads = 0
+    await refreshOnce(db, {
+      run: () => (++reads === 1 ? list(prFrom(BASE, 41)) : list(prFrom('stranger/x', 41))),
+      runApi: api,
+      nowMs: Date.now() + TTL.openPr + 1,
+    })
+    expect(reads).toBe(2)
+    expect(rowFor(BASE)).toMatchObject({ pr_number: 41, preview_url: null, preview_error: 'head-changed' })
+  })
+})
+
 // ── invariants no unit test can observe, pinned as source text ───────────────
 
 describe('the gh subprocess contract', () => {
@@ -400,6 +524,15 @@ describe('the gh subprocess contract', () => {
   it('passes -R and --head so the fetch never depends on the viewer\'s cwd', () => {
     expect(src).toContain("'-R'")
     expect(src).toContain("'--head'")
+  })
+
+  // issue #157 — gh cannot filter by head repository, so the call asks for the
+  // head identity and examines a small bounded window instead of trusting row 0
+  it('requests the head identity over a small bounded window', () => {
+    expect(src).toMatch(/'--limit',\s*String\(PR_WINDOW\)/)
+    for (const field of ['headRepository', 'headRepositoryOwner', 'isCrossRepository']) expect(src).toContain(field)
+    expect(PR_WINDOW).toBeGreaterThan(1)
+    expect(PR_WINDOW).toBeLessThanOrEqual(20)
   })
 
   it('caps maxBuffer and timeout so a wedged gh cannot hang or balloon the viewer', () => {

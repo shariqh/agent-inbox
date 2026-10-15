@@ -107,6 +107,10 @@ Run the build before `npm run electron`; the development shell starts the built
   Do not replace conditioned/version-pinned updates with SELECT-then-UPDATE.
   Human replies, annotations, and handled marks can change from another process
   between reads and writes.
+- Viewer JSON write routes parse with `.catch(() => null)` and type-check every
+  field before any store call. Invalid input is `400 { ok: false, error }`; a
+  store refusal of a valid request stays `200 { ok: false }` because `postJSON()`
+  treats any non-2xx as "the write never happened". An explicit `''` still clears.
 - Inbox answers have precedence over chat-recorded answers. `answerItem()` must
   refuse to overwrite an unread inbox answer; this is intentionally not
   timestamp-based last-write-wins.
@@ -172,7 +176,9 @@ Run the build before `npm run electron`; the development shell starts the built
 - All agent-authored text interpolated into HTML must pass through `esc()`.
   Supplied URLs additionally pass through `safeHttpUrl()` in
   `public/source.js`; build anchors through the existing `chipHtml()` path.
-- The 3-second poll uses the gated `load()`/`renderIfIdle()` path. A successful
+- The 3-second poll uses the gated `load()`/`renderIfIdle()` path. Its reads
+  run concurrently, but a tick applies only after all settle, and only if no newer
+  tick has applied and every boot marker agrees. A successful
   human-initiated write must end in `reloadAndPaint()` so an unrelated draft
   cannot hide the result. A held pointer defers rendering but is not a
   suspension and must not appear in `suspendState()`.

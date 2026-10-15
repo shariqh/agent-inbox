@@ -29,6 +29,17 @@ descriptor-mode `/usr/bin/lockf` and falls back to same-domain `flock`; Linux us
 `flock` only. Packaged hook changes replace/remove only entries whose command and
 entrypoint canonicalize to the same valid manifest-owned runtime directory.
 
+The dry run writes nothing anywhere: its Node selftest runs against a throwaway
+database, so a preview never creates or migrates the hub. `--apply` writes
+*through* a symlinked `~/.claude/settings.json` (a dotfiles checkout, say): the
+timestamped backup, the staged copy and the rename all happen beside the link's
+target, so the link survives and the target is what changes. A dangling link, or
+a settings path that is not a regular file, is refused before anything is read or
+written, and a read-only (or immutable) one before anything is staged. A blank
+settings file reads as `{}`, in both checkout and packaged modes. Every write step
+is checked: a failure exits non-zero, leaves the file unchanged and removes the
+staged copy, and nothing reports success before the final rename lands.
+
 ## Events → subcommands
 
 One binary, `dist/hook-cli.js`, dispatches every event. `src/hook.ts` holds the
@@ -150,7 +161,8 @@ cannot stop nagging is exactly what the viewer rebuild was designed against
    opens the database for session work — `notification`, `notification-commit`,
    `stop`, `session-start`, `session-end`, `prompt-submit` — plus the standalone
    `sweep`. It does **not** run from `watch` or `selftest`, and neither needs it:
-   `selftest` is read-only, and `watch` is the second hook in the same `Stop`
+   `selftest` writes no items (though opening the hub creates and migrates it —
+   see the Node 24 rule below), and `watch` is the second hook in the same `Stop`
    group as `stop`, which has already swept by the time it starts. The cutoff is
    inclusive (`age >= maxAge`), so
    `AGENT_INBOX_HOOK_MAX_AGE_MS=0` deterministically means "clear every
@@ -238,7 +250,9 @@ means you will not notice. So the installer:
    and execs it immediately, so it never persists a path that could rot. Only a
    path written into `settings.json` needs to be stable;
 2. **proves it** by running `"$NODE" dist/hook-cli.js selftest` and aborts with
-   a clear message if that fails. Nothing is written to `settings.json` first;
+   a clear message if that fails. Nothing is written to `settings.json` first.
+   Opening a database creates and migrates it, so the dry run points the
+   selftest at a throwaway database instead of the hub;
 3. bakes the absolute path into exec-form `args`, so no shell parser ever sees
    a path containing a quote, `$` or a backtick.
 

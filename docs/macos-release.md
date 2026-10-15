@@ -378,6 +378,19 @@ on every path. No credential value is written to argv, logs, job output, or an a
   marker, asset, metadata, byte, or checksum fails closed without mutation.
 - A signing, Intel, notarization, stapling, Gatekeeper, provenance, or checksum failure
   cannot reach publication because every downstream job has a hard `needs` dependency.
+- Stapling starts only after Apple has accepted the submission, and only fetches and
+  checks the ticket through Apple's CloudKit ticket service. Every `xcrun stapler` call in
+  the Notarize job therefore runs through one retry helper, `runStapler()` in
+  `scripts/macos-release-gates.mjs`: the app and DMG `staple`/`validate` in
+  `scripts/notarize-macos.sh`, and the `stapler validate` checks in `build-dmg`,
+  `verify-final-dmg` and `final-evidence`. Each call gets up to five attempts with 15,
+  30, 60 and 120 second waits, but only when stapler's output shows a dropped connection
+  to that service (`NSURLErrorDomain`, `network connection`,
+  `CloudKit's response is inconsistent`) or a ticket Apple has not published yet
+  (`Record not found`). Every attempt's output stays in the log. Any other stapler
+  failure, or a fifth transient one, fails the step with stapler's own output and exit
+  status. The protected jobs run the tagged commit's scripts, so a re-run of an older
+  tag does not gain this retry.
 - An incomplete prior manifest pair, invalid previous signature, unknown signing key, or
   missing signed `trustedKeyIds` authorization fails before the new private key is exposed.
   Do not set the rotation override or change `signingKeyId` for routine releases with the

@@ -1098,7 +1098,11 @@ export function upsertBoard(db: Database.Database, input: UpsertBoardInput): { b
         let rowChanged = newAction
           || prev.status !== r.status
           || prev.note !== (r.note ?? prev.note)
-          || prev.position !== i
+        // Moving a row is not a change to the row (#158). Its revision is the CAS
+        // token a native notification pins, and its updated_at means content
+        // changed, so a move bumps neither. Only the board revision records it,
+        // which still refuses any full-table snapshot taken before the move.
+        const moved = prev.position !== i
         // annotation column is deliberately NOT touched — human notes survive
         db.prepare(`
           UPDATE board_rows
@@ -1106,7 +1110,7 @@ export function upsertBoard(db: Database.Database, input: UpsertBoardInput): { b
                  note = @note,
                  position = @position,
                  updated_at = CASE
-                   WHEN status IS NOT @status OR note IS NOT @note OR position IS NOT @position
+                   WHEN status IS NOT @status OR note IS NOT @note
                    THEN @now ELSE updated_at END
            WHERE id = @id`).run({
           status: r.status,
@@ -1143,7 +1147,7 @@ export function upsertBoard(db: Database.Database, input: UpsertBoardInput): { b
         rowChanged = updateRowTextField(db, existingId, 'context', r.context, now) || rowChanged
         if (r.outcome !== undefined) rowChanged = setRowOutcome(db, existingId, r.outcome, now) || rowChanged
         if (!newAction && rowChanged) incrementRowRevision(db, existingId)
-        boardChanged = boardChanged || rowChanged
+        boardChanged = boardChanged || rowChanged || moved
       } else {
         boardChanged = true
         db.prepare(`
@@ -1182,7 +1186,7 @@ export function upsertBoard(db: Database.Database, input: UpsertBoardInput): { b
     if (before && boardChanged) bumpBoardRevision(db, boardId, now)
     return { boardId, rowCount: inp.rows.length }
   })
-  return run(input)
+  return run.immediate(input)
 }
 
 interface UpdateRowInput {

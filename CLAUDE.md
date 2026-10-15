@@ -120,6 +120,11 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   `revision`; `board_row` carries `expected_revision`; browser/native annotate, snooze and
   handled writes carry row revision plus board revision. A stale notification or sibling
   therefore cannot answer or complete the newer action that reused the stable row id.
+  A move alone is not a row change (#158): a reorder bumps the board revision, which still
+  refuses a pre-move full-table snapshot, but never the row `revision` or `updated_at`.
+  Native notifications key rows by revision (`attentionNotification` in
+  `electron/reply-watch.cjs`), so an unchanged ask is not re-announced and its earlier
+  buttons still apply through the board-token refresh.
 - **`updated_at` means content changed.** Item/row human or agent content writes bump it;
   delivery stamps (`markReplySeen`, `markAnnotationDelivered`, `markHandledDelivered`) never
   do. The viewer's New/changed filter depends on this distinction just as Live depends on

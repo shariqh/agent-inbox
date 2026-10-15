@@ -32,10 +32,12 @@ const { checkForUpdate } = require('./update-fetch.cjs')
 const { createUpdatePreferences } = require('./update-preferences.cjs')
 const { loadUpdateRegistry } = require('./update-trust.cjs')
 const {
+  attentionNotification,
   cannedResponseActions,
   createNotificationRetainer,
   createResponseWatch,
   formatResponseReminder,
+  freshAttentionNotifications,
   refreshNotificationTarget,
   responseForNotificationAction,
   runWakeAdapter,
@@ -464,28 +466,7 @@ function startAttentionWatch(win) {
       // badge and fills the notification body.
       const attn = attentionEntries(items, boards, Date.now(), liveSessions, closed)
       if (typeof app.setBadgeCount === 'function') app.setBadgeCount(attn.length)
-      const idOf = (e) => e.kind === 'item'
-        ? {
-            id: `q:${e.item.id}`,
-            itemId: e.item.id,
-            text: e.item.title,
-            item: e.item,
-            target: { source: 'item', id: e.item.id },
-          }
-        : {
-            id: `r:${e.row.id}:v${e.row.revision}`,
-            itemId: e.board.id,
-            text: `🚧 ${e.board.title} · ${e.row.label}`,
-            item: e.row,
-            target: {
-              source: 'row',
-              boardId: e.board.id,
-              rowId: e.row.id,
-              revision: e.row.revision,
-              boardRevision: e.board.revision,
-            },
-          }
-      const entries = attn.map(idOf)
+      const entries = attn.map(attentionNotification)
       // …but `known` is maintained from the UNSUPPRESSED set. If it tracked only
       // what is visible, closing a project would drop its items from `known` and
       // reopening would re-announce every one of them as new — an OS notification
@@ -493,8 +474,8 @@ function startAttentionWatch(win) {
       // so that would fire routinely. `known` tracks what EXISTS; the badge and
       // the notification body track what is VISIBLE.
       const everything = attentionEntries(items, boards, Date.now(), liveSessions)
-      const fresh = known === null ? [] : entries.filter((e) => !known.has(e.id))
-      known = new Set(everything.map(idOf).map((e) => e.id))
+      const fresh = freshAttentionNotifications(known, entries)
+      known = new Set(everything.map(attentionNotification).map((e) => e.id))
       // Per-item notifications stay (owner's call) — informational only.
       if (fresh.length && Notification.isSupported()) {
         console.log(`[agent-inbox] notifying: ${fresh.length} new (${fresh[0].text})`)

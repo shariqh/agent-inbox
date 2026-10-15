@@ -32,6 +32,11 @@ export const POLL_INTERVAL_MS = 60_000
 export const FIRST_TICK_DELAY_MS = 2_000
 /** ceiling on branches per tick; optional preview reads are bounded separately */
 export const MAX_PER_TICK = 4
+/**
+ * how many PRs sharing a head branch NAME one lookup examines (issue #157):
+ * enough to see past a few forks' same-named branches, never an unbounded list
+ */
+export const PR_WINDOW = 10
 export const GH_TIMEOUT_MS = 10_000
 export const GH_MAX_BUFFER = 8 * 1024 * 1024
 const MAX_PREVIEW_DEPLOYMENTS = 5
@@ -135,11 +140,41 @@ function clip(v: unknown, max: number): string | null {
   return s.length > max ? `${s.slice(0, max)}…` : s
 }
 
-// `gh pr list --json …` emits an ARRAY — empty when the branch has no PR, which
-// is a real answer rather than a failure. noUncheckedIndexedAccess is why every
-// index here is guarded rather than asserted: the array is genuinely empty in
-// the ordinary case.
-export function parsePrPayload(json: string): PrPayload | null {
+function record(v: unknown): Record<string, unknown> | null {
+  return v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : null
+}
+
+// `owner/name` of the repository a listed PR was opened FROM, or null when gh
+// did not say (a deleted fork has no head repository at all).
+function headSlug(pr: Record<string, unknown>): string | null {
+  const repo = record(pr.headRepository)
+  const nameWithOwner = str(repo?.nameWithOwner)
+  if (nameWithOwner) return nameWithOwner
+  const login = str(record(pr.headRepositoryOwner)?.login)
+  const name = str(repo?.name)
+  return login && name ? `${login}/${name}` : null
+}
+
+// Issue #157: `gh pr list --head <branch>` matches the head branch NAME in every
+// fork (gh has no `--head owner:branch`), so a stranger's PR from a same-named
+// branch can come back first. A PR is this branch's PR only when its head
+// repository is the one the branch is pushed to. A same-repository expectation
+// is decided by isCrossRepository alone, which survives a rename; a fork is
+// compared by owner/name, case-insensitively as GitHub compares them. Anything
+// gh did not state plainly is not a match.
+function headMatches(pr: Record<string, unknown>, target: Pick<LinkTarget, 'repo' | 'head_repo'>): boolean {
+  if (typeof pr.isCrossRepository !== 'boolean') return false
+  const expected = target.head_repo.toLowerCase()
+  if (expected === target.repo.toLowerCase()) return !pr.isCrossRepository
+  return pr.isCrossRepository && headSlug(pr)?.toLowerCase() === expected
+}
+
+// `gh pr list --json …` emits an ARRAY, newest first — empty when the branch has
+// no PR, which is a real answer rather than a failure. The answer is the newest
+// PR whose head repository is the target's expected one. When none is, even
+// across a FULL window of other repositories' PRs, that is reported as no PR: a
+// match older than the window is unknown, and a guess is worse than no link.
+export function parsePrPayload(json: string, target: Pick<LinkTarget, 'repo' | 'head_repo'>): PrPayload | null {
   let parsed: unknown
   try {
     parsed = JSON.parse(json)
@@ -147,10 +182,9 @@ export function parsePrPayload(json: string): PrPayload | null {
     return null
   }
   if (!Array.isArray(parsed)) return null
-  const first = (parsed as unknown[])[0]
-  if (!first || typeof first !== 'object') return null
-  const pr = first as Record<string, unknown>
-  if (typeof pr.number !== 'number') return null
+  const pr = (parsed as unknown[]).map(record)
+    .find((candidate) => candidate !== null && typeof candidate.number === 'number' && headMatches(candidate, target))
+  if (!pr || typeof pr.number !== 'number') return null
   const closes = Array.isArray(pr.closingIssuesReferences) ? (pr.closingIssuesReferences as unknown[])[0] : undefined
   const issue = closes && typeof closes === 'object' ? (closes as Record<string, unknown>) : undefined
   return {
@@ -256,16 +290,16 @@ function ttlFor(link: SourceLink): number {
   return TTL.openPr
 }
 
-const keyOf = (repo: string, branch: string): string => `${repo}\u0000${branch}`
+const keyOf = (repo: string, branch: string, head: string): string => `${repo}\u0000${branch}\u0000${head}`
 
 // Pure: everything it needs already came out of store.ts. A branch with no cache
 // row is due immediately and sorts first, so a newly-flagged item lights up on
 // the next tick rather than waiting behind an established branch.
 export function dueTargets(targets: LinkTarget[], links: SourceLink[], nowMs: number): LinkTarget[] {
-  const byKey = new Map(links.map((l) => [keyOf(l.repo, l.branch), l]))
+  const byKey = new Map(links.map((l) => [keyOf(l.repo, l.branch, l.head_repo), l]))
   const due: Array<{ target: LinkTarget; checkedMs: number }> = []
   for (const t of targets) {
-    const link = byKey.get(keyOf(t.repo, t.branch))
+    const link = byKey.get(keyOf(t.repo, t.branch, t.head_repo))
     if (!link) {
       due.push({ target: t, checkedMs: -Infinity })
       continue
@@ -307,17 +341,20 @@ export async function refreshOnce(db: Database.Database, opts: RefreshOpts = {})
   for (const t of targets) {
     try {
       const out = await run(t.repo, t.branch)
-      const pr = parsePrPayload(String(out))
-      // an empty array is a real answer ("this branch has no PR"), cached like
-      // any other so the TTL backs off instead of re-asking every minute
-      const revision = upsertSourceLink(db, { repo: t.repo, branch: t.branch, provider: 'github', ...(pr ?? {}) })
+      const pr = parsePrPayload(String(out), t)
+      // an empty array, or no PR from the expected head repository, is a real
+      // answer ("this branch has no PR"), cached like any other so the TTL backs
+      // off instead of re-asking every minute
+      const revision = upsertSourceLink(db, { repo: t.repo, branch: t.branch, head_repo: t.head_repo, provider: 'github', ...(pr ?? {}) })
       done++
       if (pr?.pr_state !== 'OPEN' || !pr.pr_head_sha) continue
       let preview: SourcePreview
       try {
         preview = await resolvePreviewPayload(t.repo, pr.pr_head_sha, runApi)
         if (preview.preview_url) {
-          const current = parsePrPayload(String(await run(t.repo, t.branch)))
+          // the same head verification as the first read: only the SAME verified
+          // PR, still at the same commit, keeps the preview
+          const current = parsePrPayload(String(await run(t.repo, t.branch)), t)
           if (current?.pr_number !== pr.pr_number || current.pr_head_sha !== pr.pr_head_sha || current.pr_state !== 'OPEN') {
             preview = emptyPreview('head-changed')
           }
@@ -331,7 +368,7 @@ export async function refreshOnce(db: Database.Database, opts: RefreshOpts = {})
       const e = err as { code?: string | number; stderr?: unknown; message?: unknown }
       const reason = classifyError(e?.code, String(e?.stderr ?? e?.message ?? ''))
       try {
-        recordLinkFailure(db, { repo: t.repo, branch: t.branch, error: reason })
+        recordLinkFailure(db, { repo: t.repo, branch: t.branch, head_repo: t.head_repo, error: reason })
       } catch (writeErr) {
         console.error('[agent-inbox] pr refresh could not record a failure', writeErr)
       }
@@ -362,6 +399,9 @@ export function resolveGh(): string {
 
 // -R and --head are what make this independent of the viewer's cwd: the viewer
 // runs from the agent-inbox checkout while the branch may belong to any repo.
+// --head matches the branch NAME in every fork and gh has no `owner:branch` form
+// (issue #157), so it lists a small window and returns each PR's head identity
+// for parsePrPayload to verify against the repository the branch is pushed to.
 export const defaultGhRun: GhRun = async (repo, branch) => {
   const { stdout } = await execFileAsync(
     resolveGh(),
@@ -370,8 +410,9 @@ export const defaultGhRun: GhRun = async (repo, branch) => {
       '-R', repo,
       '--head', branch,
       '--state', 'all',
-      '--limit', '1',
-      '--json', 'number,title,url,state,headRefOid,isDraft,reviewDecision,statusCheckRollup,closingIssuesReferences,body,updatedAt',
+      '--limit', String(PR_WINDOW),
+      '--json', 'number,title,url,state,headRefOid,isDraft,reviewDecision,statusCheckRollup,closingIssuesReferences,body,updatedAt,'
+        + 'isCrossRepository,headRepository,headRepositoryOwner',
     ],
     {
       timeout: GH_TIMEOUT_MS,

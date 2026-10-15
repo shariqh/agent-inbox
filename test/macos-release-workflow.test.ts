@@ -468,7 +468,7 @@ describe('notarized macOS release workflow', () => {
     expect(publish).toBeGreaterThan(checksums)
     expect(workflow).toContain('scripts/notarize-macos.sh')
     expect(readFileSync(join(root, 'scripts', 'notarize-macos.sh'), 'utf8'))
-      .toContain('"$XCRUN_BIN" stapler validate')
+      .toContain('node scripts/macos-release-gates.mjs stapler validate "$STAPLE_TARGET"')
     expect(workflow).toContain('spctl --assess')
     expect(workflow).toContain('verify-final-dmg')
     expect(workflow).toContain('--transport-evidence build/transported-app-evidence.json')

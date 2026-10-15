@@ -7,7 +7,7 @@ import { homedir } from 'node:os'
 import { dirname, isAbsolute, resolve, sep } from 'node:path'
 import type Database from 'better-sqlite3'
 import {
-  listItems, resolveItem, dismissItem, annotateItem, replyItem, snoozeItem,
+  listItems, listOpenQuestions, resolveItem, dismissItem, annotateItem, replyItem, snoozeItem,
   listBoards, archiveBoard, unarchiveBoard, annotateBoardRow, snoozeBoardRow,
   markRowHandled, clearRowHandled, listActivity, listActivitySpans, listSourceLinks, defaultDbPath,
   closeProject, reopenProject, closedProjects, readSnapshotState,
@@ -362,6 +362,20 @@ function responseKind(value: unknown): ResponseKind | null {
   return value === 'answer' || value === 'clarify' || value === 'decline' ? value : null
 }
 
+// The whole snooze instruction (issue #163): null wakes, a parseable date
+// snoozes. A date is stored as UTC ISO with a 4-digit year because the store
+// compares snoozed_until as TEXT (`> now`); a verbatim "tomorrow" or "" sorts
+// wrongly there and reads as awake to the viewer's Date.parse — a silent wake
+// answered with 200. undefined = invalid, refused before any store call.
+function snoozeUntil(value: unknown): string | null | undefined {
+  if (value === null) return null
+  if (typeof value !== 'string') return undefined
+  const ms = Date.parse(value)
+  if (!Number.isFinite(ms)) return undefined
+  const iso = new Date(ms).toISOString()
+  return /^\d{4}-/.test(iso) ? iso : undefined
+}
+
 function sameSnapshotState(a: SnapshotReadState, b: SnapshotReadState): boolean {
   return !a.inTransaction && !b.inTransaction
     && a.dataVersion === b.dataVersion && a.totalChanges === b.totalChanges
@@ -370,10 +384,10 @@ function sameSnapshotState(a: SnapshotReadState, b: SnapshotReadState): boolean 
 
 function conditionalSnapshot(
   db: Database.Database,
-  name: 'items' | 'boards' | 'archived-boards',
+  name: 'items' | 'attention-items' | 'boards' | 'archived-boards',
   read: () => object,
 ): Handler {
-  // One representation per registered endpoint, local to this viewer instance.
+  // One representation per registration, local to this viewer instance.
   let cached: { state: SnapshotReadState; body: string; etag: string } | undefined
   return (c) => {
     c.header('Cache-Control', 'no-store')
@@ -422,7 +436,14 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
     c.res.headers.set('x-inbox-boot', boot)
   })
 
-  app.get('/api/items', conditionalSnapshot(db, 'items', () => groupItems(listItems(db))))
+  const allItems = conditionalSnapshot(db, 'items', () => groupItems(listItems(db)))
+  // Issue #156: the Electron dock watcher polls every 3 seconds from the main
+  // process and reads only needsYou. `?scope=attention` serves the same Grouped
+  // shape built from the open questions alone. It is a separate cached
+  // representation with its own validator, so neither can revalidate the other;
+  // any other query string keeps the full response.
+  const attentionItems = conditionalSnapshot(db, 'attention-items', () => groupItems(listOpenQuestions(db)))
+  app.get('/api/items', (c, next) => (c.req.query('scope') === 'attention' ? attentionItems : allItems)(c, next))
 
   // The build stamp (#40) rides along here rather than on its own route: the
   // Setup panel is the one surface that asks "which build is this", and it is
@@ -497,14 +518,20 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
       intent_client_id: intentClientId,
       intent_sequence: intentSequence,
       intent_action_id: intentActionId,
-    } = await c.req.json<{
-      text: string
-      context?: string
-      kind?: string
+    } = (await c.req.json<{
+      text?: unknown
+      context?: unknown
+      kind?: unknown
       intent_client_id?: unknown
       intent_sequence?: unknown
       intent_action_id?: unknown
-    }>()
+    }>().catch(() => null)) ?? {}
+    // Invalid input is a 400 before any store call (issue #163); it used to
+    // throw out as a 500. An explicit '' is still the clear.
+    if (typeof text !== 'string') return c.json({ ok: false, error: 'text must be a string' }, 400)
+    if (context !== undefined && typeof context !== 'string') {
+      return c.json({ ok: false, error: 'context must be a string' }, 400)
+    }
     const parsedKind = kind === undefined ? 'answer' : responseKind(kind)
     if (parsedKind === null) return c.json({ ok: false, error: 'invalid response kind' }, 400)
     const hasIntentClient = intentClientId !== undefined
@@ -541,8 +568,9 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
   })
 
   app.post('/api/items/:id/snooze', async (c) => {
-    const body = await c.req.json<{ until?: string | null }>().catch(() => null)
-    const until = body?.until === null || typeof body?.until === 'string' ? body.until : null
+    const body = await c.req.json<{ until?: unknown }>().catch(() => null)
+    const until = snoozeUntil(body?.until)
+    if (until === undefined) return c.json({ ok: false, error: 'until must be a date or null' }, 400)
     const ok = snoozeItem(db, c.req.param('id'), until)
     return c.json({ ok })
   })
@@ -566,12 +594,14 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
   })
 
   app.post('/api/boards/:id/rows/:rowId/annotate', async (c) => {
-    const { text, kind, expected_revision, expected_board_version } = await c.req.json<{
-      text: string
-      kind?: string
+    const { text, kind, expected_revision, expected_board_version } = (await c.req.json<{
+      text?: unknown
+      kind?: unknown
       expected_revision?: number
       expected_board_version?: number
-    }>()
+    }>().catch(() => null)) ?? {}
+    // As for an item reply (issue #163): invalid input is a 400, never a 500.
+    if (typeof text !== 'string') return c.json({ ok: false, error: 'text must be a string' }, 400)
     const parsedKind = kind === undefined ? 'answer' : responseKind(kind)
     if (parsedKind === null) return c.json({ ok: false, error: 'invalid response kind' }, 400)
     if (!Number.isInteger(expected_revision) || !Number.isInteger(expected_board_version)) {
@@ -590,14 +620,15 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
 
   app.post('/api/boards/:id/rows/:rowId/snooze', async (c) => {
     const body = await c.req.json<{
-      until?: string | null
+      until?: unknown
       expected_revision?: number
       expected_board_version?: number
     }>().catch(() => null)
     if (!Number.isInteger(body?.expected_revision) || !Number.isInteger(body?.expected_board_version)) {
       return c.json({ ok: false, error: 'expected_revision and expected_board_version required' }, 400)
     }
-    const until = body?.until === null || typeof body?.until === 'string' ? body.until : null
+    const until = snoozeUntil(body?.until)
+    if (until === undefined) return c.json({ ok: false, error: 'until must be a date or null' }, 400)
     const rowId = c.req.param('rowId')
     const ok = snoozeBoardRow(
       db,
@@ -636,9 +667,12 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
   // would show the human WRITE_FAILED and invite a retry that can never succeed.
   // Exactly the /api/items/:id/reply precedent.
   //
-  // Missing/unparseable body ⇒ MARK. The affirmative action is the default because
-  // it is the one the human reaches for, and because a body-less POST that quietly
-  // UN-marked would be the most destructive possible reading of a dropped payload.
+  // A missing `handled` ⇒ MARK. The affirmative action is the default because it
+  // is the one the human reaches for, and because a POST that quietly UN-marked
+  // would be the most destructive possible reading of a dropped field. A PRESENT
+  // non-boolean is no instruction either way (the string "false" must not
+  // re-mark), so it is a 400 before any store call — as is an unparseable body,
+  // which cannot carry the revision pins (issue #163).
   // `ok:false` also covers an unknown row id: both store writes report whether they
   // matched a row, so the route never claims a success that never touched the
   // database.
@@ -653,12 +687,15 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
   // ever gains a failure mode that leaves the row on screen.
   app.post('/api/boards/:id/rows/:rowId/handled', async (c) => {
     const body = await c.req.json<{
-      handled?: boolean
+      handled?: unknown
       expected_revision?: number
       expected_board_version?: number
     }>().catch(() => null)
     if (!Number.isInteger(body?.expected_revision) || !Number.isInteger(body?.expected_board_version)) {
       return c.json({ ok: false, error: 'expected_revision and expected_board_version required' }, 400)
+    }
+    if (body?.handled !== undefined && typeof body.handled !== 'boolean') {
+      return c.json({ ok: false, error: 'handled must be a boolean' }, 400)
     }
     const rowId = c.req.param('rowId')
     const ok = body?.handled === false

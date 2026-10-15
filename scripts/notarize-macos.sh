@@ -54,5 +54,7 @@ node scripts/macos-release-gates.mjs receipt \
   --log-json "$LOG_JSON" \
   --output "$RECEIPT" >/dev/null
 
-"$XCRUN_BIN" stapler staple "$STAPLE_TARGET"
-"$XCRUN_BIN" stapler validate "$STAPLE_TARGET"
+# Stapling retries a dropped connection to Apple's ticket service with bounded backoff;
+# the one copy of that policy is runStapler() in scripts/macos-release-gates.mjs.
+APPLE_XCRUN_BIN="$XCRUN_BIN" node scripts/macos-release-gates.mjs stapler staple "$STAPLE_TARGET"
+APPLE_XCRUN_BIN="$XCRUN_BIN" node scripts/macos-release-gates.mjs stapler validate "$STAPLE_TARGET"

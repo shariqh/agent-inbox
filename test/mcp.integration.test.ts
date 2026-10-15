@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { spawn } from 'node:child_process'
+import { spawn, execFileSync } from 'node:child_process'
 import type { ChildProcessByStdio } from 'node:child_process'
 import type { Readable, Writable } from 'node:stream'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
@@ -11,6 +11,8 @@ import { ReadBuffer, serializeMessage } from '@modelcontextprotocol/sdk/shared/s
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { openDb, listItems, listBoards, getBoard, annotateBoardRow, markRowHandled, listPendingRows, replyItem, listActivity, listActivitySpans } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
+
+const REPO_ROOT = new URL('..', import.meta.url).pathname
 
 const QUESTION_SHAPE = {
   detail: 'A concise summary of the current state.',
@@ -103,6 +105,41 @@ describe('mcp round-trip', () => {
     const d = items.find((i) => i.kind === 'done')!
     expect(d.title).toBe('shipped v2')
     expect(d.status).toBe('open')
+  })
+
+  // issue #157 — the HEAD repository a branch is pushed to is inferred from git in
+  // the MCP process (its tracking/push remote, else origin) and stamped beside
+  // the BASE repo. Those git subprocesses run mid-protocol, so this round trip is
+  // also the proof that they never write to the server's stdout.
+  it('flag and board writes stamp the repository the branch is pushed to, beside a registered base', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mcp-head-'))
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: dir, stdio: 'ignore' })
+    git('init', '-q')
+    git('config', 'user.email', 't@t.dev')
+    git('config', 'user.name', 't')
+    git('commit', '--allow-empty', '-q', '-m', 'init')
+    git('checkout', '-q', '-b', 'feature')
+    git('remote', 'add', 'origin', 'git@github.com:me/x.git')
+    git('remote', 'add', 'fork', 'https://github.com/fork/x.git')
+    git('config', 'branch.feature.remote', 'fork')
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-head-db-')), 'inbox.db')
+    const transport = new StdioClientTransport({
+      command: join(REPO_ROOT, 'node_modules', '.bin', 'tsx'),
+      args: [join(REPO_ROOT, 'src', 'mcp-server.ts')],
+      cwd: dir,
+      // hermetic: a global remote.pushDefault would outrank the tracking remote
+      env: { ...process.env, AGENT_INBOX_DB: dbPath, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' },
+    })
+    const client = new Client({ name: 'claude-code', version: '1.0.0' })
+    await client.connect(transport)
+    await client.callTool({ name: 'register', arguments: { repo: 'upstream/x' } })
+    await client.callTool({ name: 'flag', arguments: { kind: 'note', title: 'pushed to the fork', ...INFO_SHAPE } })
+    await client.callTool({ name: 'board_upsert', arguments: { title: 'plan', rows: [{ label: 'a', status: 'tracked' }] } })
+    await client.close()
+
+    const db = openDb(dbPath)
+    expect(listItems(db)[0]).toMatchObject({ repo: 'upstream/x', stream: 'feature', head_repo: 'fork/x' })
+    expect(listBoards(db)[0]).toMatchObject({ repo: 'upstream/x', stream: 'feature', head_repo: 'fork/x' })
   })
 
   it('returns a host-launched answer watcher only for Copilot questions', async () => {

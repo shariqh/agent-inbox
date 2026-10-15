@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
 import {
-  annotateBoardRow, annotateItem, archiveBoard, getBoard, getItem, insertItem,
+  annotateBoardRow, annotateItem, archiveBoard, dismissItem, getBoard, getItem, insertItem,
   listBoards, listItems, markAnnotationDelivered, markHandledDelivered,
   markItemAnnotationDelivered, markReplySeen, markRowHandled, openDb,
   replyItem, resolveItem, touchActivity, unarchiveBoard, updateBoardRow,
@@ -441,5 +441,85 @@ describe('viewer conditional snapshots', () => {
     expect((await send({ 'if-none-match': etag }, 'HEAD')).status).toBe(304)
     expect((await send({ host: `attacker.example:${port}`, 'if-none-match': etag })).status).toBe(403)
     expect((await send({ origin: 'https://attacker.example', 'if-none-match': etag })).status).toBe(403)
+  })
+
+  // issue #156: the Electron dock watcher polls every 3 seconds and needs none of
+  // the closed history the default representation carries.
+  describe('the dock watcher item projection', () => {
+    const LEAN = '/api/items?scope=attention'
+
+    it('serves only open questions, grouped exactly like the default needsYou', async () => {
+      // The frozen clock gives every item one created_at, so equality also pins
+      // that the filtered read breaks same-millisecond ties like the default read.
+      const answered = question(db, 'Answered')
+      question(db, 'First')
+      question(db, 'Second')
+      replyItem(db, answered, 'Proceed')
+      insertItem(db, { ...SCOPE, project: 'another-project', kind: 'question', title: 'Elsewhere' })
+      const hidden = [
+        insertItem(db, { ...SCOPE, kind: 'note', title: 'Assumption' }),
+        insertItem(db, { ...SCOPE, kind: 'done', title: 'Shipped' }),
+        question(db, 'Resolved'),
+        question(db, 'Dismissed'),
+      ]
+      resolveItem(db, hidden[2]!, 'Finished.')
+      dismissItem(db, hidden[3]!)
+
+      const full = await (await app.request('/api/items')).json()
+      expect(full.needsYou.flatMap((group: { items: unknown[] }) => group.items)).toHaveLength(4)
+      const response = await app.request(LEAN)
+      expect(response.status).toBe(200)
+      const wire = await response.text()
+      expect(JSON.parse(wire)).toEqual({ needsYou: full.needsYou, notes: [], done: [] })
+      for (const id of hidden) expect(wire).not.toContain(id)
+    })
+
+    it('keeps its own body and validator, so a 304 revalidates only its own representation', async () => {
+      const id = question()
+      const fullResponse = await app.request('/api/items')
+      const leanResponse = await app.request(LEAN)
+      const fullTag = fullResponse.headers.get('etag')!
+      const leanTag = leanResponse.headers.get('etag')!
+      // With nothing but an open question the two bodies are byte-identical, so
+      // only distinct validators keep one from revalidating the other.
+      expect(await leanResponse.text()).toBe(await fullResponse.text())
+      expect(leanTag).toMatch(/^"[^"]+"$/)
+      expect(leanTag).not.toBe(fullTag)
+      const own = await conditional(LEAN, leanTag)
+      expect(own.status).toBe(304)
+      expect(own.headers.get('cache-control')).toBe('no-store')
+      expect(own.headers.get('x-inbox-boot')).toBe(leanResponse.headers.get('x-inbox-boot'))
+      for (const [route, foreign, expected] of [[LEAN, fullTag, leanTag], ['/api/items', leanTag, fullTag]] as const) {
+        const crossed = await conditional(route, foreign)
+        expect(crossed.status, route).toBe(200)
+        expect(crossed.headers.get('etag'), route).toBe(expected)
+      }
+      // An unrecognized scope is the default representation, not a third one.
+      expect((await conditional('/api/items?scope=everything', fullTag)).status).toBe(304)
+
+      const note = insertItem(writer, { ...SCOPE, kind: 'note', title: 'Assumption' })
+      expect((await conditional(LEAN, leanTag)).status).toBe(304)
+      expect((await changed('/api/items', fullTag)).body.notes[0].items[0].id).toBe(note)
+      resolveItem(writer, id, 'Finished.')
+      const resolved = await changed(LEAN, leanTag)
+      expect(resolved.body).toEqual({ needsYou: [], notes: [], done: [] })
+
+      const queries: string[] = []
+      const prepare = db.prepare.bind(db)
+      db.prepare = ((sql: string) => { queries.push(sql); return prepare(sql) }) as typeof db.prepare
+      const stringify = vi.spyOn(JSON, 'stringify')
+      let serializations = 0
+      try {
+        for (let request = 0; request < 3; request++) {
+          expect((await conditional(`${LEAN}&probe=${request}`, resolved.etag)).status).toBe(304)
+        }
+        serializations = stringify.mock.calls.length
+      } finally {
+        stringify.mockRestore()
+        db.prepare = prepare
+      }
+      expect(serializations).toBe(0)
+      expect(queries.filter((sql) => /\bFROM\s+items\b/i.test(sql))).toEqual([])
+    })
   })
 })

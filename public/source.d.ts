@@ -7,12 +7,15 @@ export interface LinkedEntity {
   stream?: string | null
   repo?: string | null
   issue_ref?: number | null
+  /** issue #157 — where the branch is pushed; absent/null means `repo` itself */
+  head_repo?: string | null
 }
 
 /** One cached /api/links row — the store's SourceLink, over the wire. */
 export interface CachedLink {
   repo: string
   branch: string
+  head_repo: string
   provider: string
   pr_number: number | null
   pr_url: string | null
@@ -73,7 +76,7 @@ export interface PrDetail {
   error: string
 }
 
-export function linkKey(repo: string, branch: string): string
+export function linkKey(repo: string, branch: string, head?: string): string
 export function indexLinks(links: CachedLink[] | null | undefined): Map<string, CachedLink>
 export function linkFor(index: Map<string, CachedLink> | null, entity: LinkedEntity | null): CachedLink | null
 export function safeHttpUrl(url: unknown): string

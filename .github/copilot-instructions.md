@@ -97,7 +97,9 @@ Run the build before `npm run electron`; the development shell starts the built
   `journal_mode=WAL` and `busy_timeout=5000`, and make any transaction that
   reads before it may write `.immediate()`: SQLite never waits when a deferred
   reader is promoted to the writer.
-- Conditional viewer snapshots retain only items and active/archived boards.
+- Conditional viewer snapshots retain only items, the dock watcher's
+  `/api/items?scope=attention` projection (its own validator, never the default
+  representation's) and active/archived boards.
   Invalidate on same/other-connection writes, schema changes and pickup stamps;
   never cache an uncommitted snapshot. Keep dynamic routes fresh, no-store and
   the boot marker intact, and never turn a read failure into cached success.
@@ -105,6 +107,10 @@ Run the build before `npm run electron`; the development shell starts the built
   Do not replace conditioned/version-pinned updates with SELECT-then-UPDATE.
   Human replies, annotations, and handled marks can change from another process
   between reads and writes.
+- Viewer JSON write routes parse with `.catch(() => null)` and type-check every
+  field before any store call. Invalid input is `400 { ok: false, error }`; a
+  store refusal of a valid request stays `200 { ok: false }` because `postJSON()`
+  treats any non-2xx as "the write never happened". An explicit `''` still clears.
 - Inbox answers have precedence over chat-recorded answers. `answerItem()` must
   refuse to overwrite an unread inbox answer; this is intentionally not
   timestamp-based last-write-wins.

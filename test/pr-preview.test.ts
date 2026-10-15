@@ -15,8 +15,10 @@ const NOW = '2026-09-09T03:00:00.000Z'
 const URL = 'https://preview.example/pr-41'
 const pr = (over: Record<string, unknown> = {}) => JSON.stringify([{
   number: 41, state: 'OPEN', headRefOid: HEAD, title: 'Preview this change',
-  url: 'https://github.com/o/n/pull/41', ...over,
+  url: 'https://github.com/o/n/pull/41', isCrossRepository: false,
+  headRepository: { name: 'n', nameWithOwner: 'o/n' }, headRepositoryOwner: { login: 'o' }, ...over,
 }])
+const SAME = { repo: 'o/n', head_repo: 'o/n' }
 const deployment = (id = 1, over: Record<string, unknown> = {}) => ({
   id, sha: HEAD, environment: 'Preview', production_environment: false, ...over,
 })
@@ -30,9 +32,9 @@ const preview = {
 
 describe('current-head deployment previews', () => {
   it('reads only a complete head SHA from the PR payload', () => {
-    expect(parsePrPayload(pr())?.pr_head_sha).toBe(HEAD)
+    expect(parsePrPayload(pr(), SAME)?.pr_head_sha).toBe(HEAD)
     for (const headRefOid of [null, '', 'main', '../head', 'a'.repeat(39)]) {
-      expect(parsePrPayload(pr({ headRefOid }))?.pr_head_sha).toBeNull()
+      expect(parsePrPayload(pr({ headRefOid }), SAME)?.pr_head_sha).toBeNull()
     }
   })
 

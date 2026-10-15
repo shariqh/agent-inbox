@@ -420,7 +420,12 @@ function startAttentionWatch(win) {
     }
     const { attentionEntries, focusHashFor, optionOrder } = mods
     try {
-      const g = await (await fetch(`${URL_BASE}api/items`)).json()
+      // The lean item projection (issue #156): the same Grouped shape without the
+      // closed history this watcher never reads, which would otherwise be built,
+      // sent and parsed in this process every 3 seconds. An older reused viewer
+      // ignores the parameter and sends the full payload, whose needsYou groups
+      // are the same; test/reply-watch.test.ts pins that both yield one result.
+      const g = await (await fetch(`${URL_BASE}api/items?scope=attention`)).json()
       const boards = await (await fetch(`${URL_BASE}api/boards`)).json()
       const activity = await (await fetch(`${URL_BASE}api/activity`)).json()
       // Projects the human closed (issue #32). FAIL OPEN, deliberately: an older
@@ -430,11 +435,7 @@ function startAttentionWatch(win) {
       const closed = await fetch(`${URL_BASE}api/projects/closed`)
         .then((r) => (r.ok ? r.json() : []))
         .catch(() => [])
-      const items = [
-        ...g.needsYou.flatMap((gr) => gr.items),
-        ...g.notes.flatMap((gr) => gr.items),
-        ...g.done,
-      ]
+      const items = g.needsYou.flatMap((gr) => gr.items)
       const { newTargets, reminders } = responseWatch.scan(g, boards, Date.now())
       const dueByKey = new Map([...newTargets, ...reminders].map((target) => [target.key, target]))
       const due = [...dueByKey.values()]

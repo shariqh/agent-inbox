@@ -905,6 +905,18 @@ export function listItems(db: Database.Database, opts: { status?: Status } = {})
   return (rows as Array<Omit<Item, 'options'> & { options: string | null }>).map(parseItem)
 }
 
+// Issue #156: only the open questions, for the Electron dock watcher's 3-second
+// poll, so its read never materializes or serializes closed history and notes.
+// listItems(db) is served by a backwards walk of idx_items_created, which orders
+// same-millisecond ties by descending rowid; this filtered read sorts in a temp
+// b-tree instead, so it names that tiebreaker and keeps the watcher's results
+// identical to the full read's (test/reply-watch.test.ts).
+export function listOpenQuestions(db: Database.Database): Item[] {
+  const rows = db.prepare(`SELECT * FROM items WHERE status = 'open' AND kind = 'question'
+    ORDER BY created_at DESC, rowid DESC`).all()
+  return (rows as StoredItem[]).map(parseItem)
+}
+
 // 'blocked' = the row needs human input and escalates into the attention layer
 export type RowStatus = 'done' | 'partial' | 'missing' | 'tracked' | 'na' | 'blocked'
 

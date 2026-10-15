@@ -127,6 +127,19 @@ describe('the Electron dock badge shares the §7 attention predicate (no duplica
     // forever with no signal — the import failure path must log loudly
     expect(main).toMatch(/console\.error\([^)]*attention/i)
   })
+
+  // issue #156: the watcher polls every 3 seconds in the main process, so it
+  // reads the lean item projection rather than re-downloading the whole history,
+  // and hands the shared predicate only the groups that projection carries.
+  // test/reply-watch.test.ts pins that both inputs derive identical results.
+  it('polls the lean item projection and reads only its needsYou groups', () => {
+    const start = main.indexOf('function startAttentionWatch')
+    const watch = main.slice(start, main.indexOf('\nfunction ', start + 1))
+    expect(watch).toContain('fetch(`${URL_BASE}api/items?scope=attention`)')
+    expect(watch).not.toContain('fetch(`${URL_BASE}api/items`)')
+    expect(watch).toMatch(/const items = g\.needsYou\.flatMap\(/)
+    expect(watch).not.toMatch(/\bg\.(notes|done)\b/)
+  })
 })
 
 // Fix round 1: focusItem() used to open only the target [data-card-id]

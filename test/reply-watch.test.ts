@@ -7,7 +7,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import replyWatch from '../electron/reply-watch.cjs'
 import { attentionEntries } from '../public/attention.js'
 import type { AttentionBoard, AttentionItem } from '../public/attention.js'
-import { getBoard, insertItem, openDb, upsertBoard } from '../src/store.js'
+import {
+  annotateBoardRow, annotateItem, closeProject, dismissItem, getBoard, getItem, insertItem,
+  markReplySeen, openDb, replyItem, resolveItem, snoozeItem, upsertBoard,
+} from '../src/store.js'
 import type { NewBoardRow } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
 
@@ -426,6 +429,102 @@ describe('createResponseWatch', () => {
       replied_at: new Date(NOW + 2 * MINUTE).toISOString(),
     })
     expect(watch.scan(grouped([changed]), [], NOW + 2 * MINUTE).newTargets).toHaveLength(1)
+  })
+})
+
+// issue #156: electron/main.cjs cannot be imported here, so this pins the two
+// inputs it switched between. It used to feed attentionEntries the whole history
+// (needsYou + notes + done) and responseWatch.scan the full payload; it now reads
+// ?scope=attention and feeds them needsYou and that lean payload. Everything the
+// watcher derives must come out identical.
+describe('the dock watcher lean item read (issue #156)', () => {
+  const HOUR = 60 * MINUTE
+
+  it('derives the same attention sets, response targets and reminders as the full payload', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'dock-watch-'))
+    const db = openDb(join(directory, 'inbox.db'))
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      const scope = (project: string) => ({ project, stream: 'drafts', agent: 'copilot' })
+      vi.setSystemTime(NOW - 96 * HOUR)
+      insertItem(db, { ...scope('alpha'), kind: 'question', title: 'Nobody listening any more' })
+      // One frozen millisecond from here on, so tie order is exercised as well.
+      vi.setSystemTime(NOW - 10 * MINUTE)
+      insertItem(db, { ...scope('alpha'), session: 'live', kind: 'question', title: 'Waiting on you' })
+      insertItem(db, { ...scope('alpha'), kind: 'question', title: 'Parked' })
+      replyItem(db, insertItem(db, { ...scope('alpha'), session: 'live', kind: 'question', title: 'Answered' }), 'Go')
+      const read = insertItem(db, { ...scope('beta'), kind: 'question', title: 'Answered and read' })
+      replyItem(db, read, 'Done')
+      expect(markReplySeen(db, read, getItem(db, read)!.replied_at)).toBe(true)
+      snoozeItem(db, insertItem(db, { ...scope('beta'), kind: 'question', title: 'Snoozed' }), new Date(NOW + HOUR).toISOString())
+      resolveItem(db, insertItem(db, { ...scope('beta'), kind: 'question', title: 'Resolved' }), 'Finished.')
+      dismissItem(db, insertItem(db, { ...scope('beta'), kind: 'question', title: 'Dismissed' }))
+      annotateItem(db, insertItem(db, { ...scope('beta'), kind: 'note', title: 'Open note' }), 'Noted')
+      resolveItem(db, insertItem(db, { ...scope('beta'), kind: 'note', title: 'Closed note' }))
+      insertItem(db, { ...scope('beta'), kind: 'done', title: 'Shipped' })
+      insertItem(db, { ...scope('gamma'), session: 'live', kind: 'question', title: 'In a closed project' })
+      closeProject(db, 'gamma')
+      upsertBoard(db, {
+        ...scope('alpha'),
+        title: 'Release',
+        rows: [
+          { label: 'Approve', status: 'blocked' },
+          { label: 'Choose', status: 'blocked' },
+          { label: 'Track', status: 'tracked' },
+        ],
+      })
+      annotateBoardRow(db, getBoard(db, 'alpha', 'Release')!.rows[1]!.id, 'Option B')
+      vi.setSystemTime(NOW)
+
+      const app = createViewer(db)
+      const get = async (route: string) => (await app.request(route)).json()
+      const full = await get('/api/items')
+      const lean = await get('/api/items?scope=attention')
+      const boards = await get('/api/boards')
+      const closed = await get('/api/projects/closed')
+      type Group = { items: AttentionItem[] }
+      const before: AttentionItem[] = [
+        ...full.needsYou.flatMap((group: Group) => group.items),
+        ...full.notes.flatMap((group: Group) => group.items),
+        ...full.done,
+      ]
+      const after: AttentionItem[] = lean.needsYou.flatMap((group: Group) => group.items)
+      expect(full.notes).not.toEqual([])
+      expect(full.done).not.toEqual([])
+      expect(lean.notes).toEqual([])
+      expect(lean.done).toEqual([])
+      expect(closed).toEqual(['gamma'])
+
+      for (const nowMs of [NOW, NOW + 2 * HOUR]) {
+        const visible = attentionEntries(after, boards, nowMs, ['live'], closed)
+        const everything = attentionEntries(after, boards, nowMs, ['live'])
+        expect(visible).toEqual(attentionEntries(before, boards, nowMs, ['live'], closed))
+        expect(everything).toEqual(attentionEntries(before, boards, nowMs, ['live']))
+        expect(new Set(visible.map((entry) => entry.kind))).toEqual(new Set(['item', 'row']))
+        expect(everything.length).toBeGreaterThan(visible.length)
+      }
+      expect(attentionEntries(after, boards, NOW + 2 * HOUR, ['live']).length)
+        .toBeGreaterThan(attentionEntries(after, boards, NOW, ['live']).length)
+
+      expect(replyWatch.responseTargets(lean, boards)).toEqual(replyWatch.responseTargets(full, boards))
+      const fromFull = replyWatch.createResponseWatch()
+      const fromLean = replyWatch.createResponseWatch()
+      for (const nowMs of [NOW, NOW + 2 * MINUTE, NOW + 20 * MINUTE]) {
+        const expected = fromFull.scan(full, boards, nowMs)
+        const actual = fromLean.scan(lean, boards, nowMs)
+        expect(actual).toEqual(expected)
+        expect(replyWatch.wakeAdapterPayload([...actual.newTargets, ...actual.reminders]))
+          .toEqual(replyWatch.wakeAdapterPayload([...expected.newTargets, ...expected.reminders]))
+        if (nowMs === NOW) {
+          expect(actual.newTargets.map((target) => target.source).sort()).toEqual(['item', 'row'])
+          expect(actual.reminders).toHaveLength(2)
+        }
+      }
+    } finally {
+      vi.useRealTimers()
+      db.close()
+      rmSync(directory, { recursive: true, force: true })
+    }
   })
 })
 

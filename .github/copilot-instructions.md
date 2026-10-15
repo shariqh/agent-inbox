@@ -94,7 +94,9 @@ Run the build before `npm run electron`; the development shell starts the built
 - Keep `zod` as a direct dependency: `src/mcp.ts` uses it for MCP tool schemas.
 - Do not issue raw SQL outside `src/store.ts`. The viewer, MCP server, hooks,
   watcher, and PR poller all share one database across OS processes. Preserve
-  `journal_mode=WAL` and `busy_timeout=5000`.
+  `journal_mode=WAL` and `busy_timeout=5000`, and make any transaction that
+  reads before it may write `.immediate()`: SQLite never waits when a deferred
+  reader is promoted to the writer.
 - Conditional viewer snapshots retain only items and active/archived boards.
   Invalidate on same/other-connection writes, schema changes and pickup stamps;
   never cache an uncommitted snapshot. Keep dynamic routes fresh, no-store and
@@ -138,6 +140,8 @@ Run the build before `npm run electron`; the development shell starts the built
   full history.
 - Every existing-row agent mutation and every human/browser/native row action is
   pinned to row `revision`; never weaken those writes back to row-id-only updates.
+  A move alone bumps only the board revision, never the row `revision` or
+  `updated_at`; otherwise native notifications re-announce unchanged asks (#158).
 - Item/row `updated_at` is for content changes only. Delivery stamp writes must
   never bump it or the New/changed filter becomes a polling firehose.
 - Activity has two meanings: `updated_at` is process liveness and

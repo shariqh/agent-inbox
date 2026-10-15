@@ -235,7 +235,7 @@ correct at **one process per session**. Under HTTP, one process holds N sessions
 3. **`setTimeout(registerPresence, 2000).unref()`** — must be cleared by `dispose()`.
 4. **`process.on('exit', …)`** — N listeners per process. Each ends only its own row so the
    semantics survive, but Node warns past 10.
-5. **the `SIGINT`/`SIGTERM` → `process.exit(0)` loop** — must not be registered per session
+5. **the `SIGHUP`/`SIGINT`/`SIGTERM` → `process.exit(0)` loop** — must not be registered per session
    under HTTP. A hosted server wants a graceful drain, not instant exit on the first signal.
 
 **Proposed signature change:**
@@ -256,7 +256,11 @@ Defaults reproduce today's stdio behaviour: `sessionId` = a fresh `randomUUID()`
 items 4 and 5 move out of `buildMcpServer` into the entry files. State it precisely instead:
 
 > `src/mcp-server.ts` must re-register **both** `process.on('exit', () => dispose())` **and**
-> `for (const sig of ['SIGINT','SIGTERM'] as const) process.on(sig, () => process.exit(0))`.
+> `for (const sig of ['SIGHUP','SIGINT','SIGTERM'] as const) process.on(sig, () => process.exit(0))`.
+>
+> Keep `SIGHUP` in that list (#162): a closed terminal delivers it, and Node's default
+> disposition exits without emitting `'exit'`, leaving a ghost Live row and an open span.
+> `test/mcp.integration.test.ts`'s *"SIGHUP ends the session…"* case is its regression gate.
 
 If the `exit` handler is not re-registered, `test/mcp.integration.test.ts`'s
 *"sessions auto-register presence; status upgrades it; done reverts; exit removes"* goes red —
@@ -781,14 +785,14 @@ that will actually edit these files.
 ### Modified source
 
 - **`src/mcp.ts`** — the presence/lifecycle block (`registerPresence`, `heartbeat`, the
-  `setTimeout`/`setInterval`/`process.on('exit')`/SIGINT-SIGTERM lines) plus the `register` and
+  `setTimeout`/`setInterval`/`process.on('exit')`/SIGHUP-SIGINT-SIGTERM lines) plus the `register` and
   `whoami` handlers (optional `agent`; `origins` on `whoami`). **Only these two handlers** —
   the construction-time seeding of §4 Gap 2 is what keeps the other eight `registerTool`
   callbacks at their current signature. Do not take the `extra`-threading path.
 - **`src/scope.ts`** — `makeScope(cwd, opts?: { infer?, seed? })`, `override` gains `agent`,
   new `origins()`.
 - **`src/mcp-server.ts`** — picks up the new `buildMcpServer` signature and **owns both**
-  `process.on('exit', () => dispose())` and the SIGINT/SIGTERM loop (§3).
+  `process.on('exit', () => dispose())` and the SIGHUP/SIGINT/SIGTERM loop (§3).
 - **`src/viewer-server.ts`** — explicit `hostname` only, if §11.6 says yes.
 - **`src/viewer.ts`** — **only** if `POST /api/items` lands there rather than in the hosted
   entry. Recommendation (§11.5) is that it does not, keeping `viewer.ts` local-only.

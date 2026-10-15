@@ -55,6 +55,7 @@ function q(over: Partial<Item> = {}): Item {
     outcome_at: null,
     repo: null,
     issue_ref: null,
+    head_repo: null,
     created_at: new Date(NOW - 60_000).toISOString(),
     updated_at: new Date(NOW - 60_000).toISOString(),
     resolved_at: null,

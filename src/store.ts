@@ -71,6 +71,10 @@ export interface Item {
   // there is no way to know what a historical item's remote was).
   repo: string | null
   issue_ref: number | null
+  // issue #157 — the `owner/name` this item's branch is PUSHED to, where its PR
+  // must come from (`repo` is the base the PR is opened against). NULL when none
+  // was inferred and on every row written before #157: a same-repository PR.
+  head_repo: string | null
   created_at: string
   updated_at: string
   resolved_at: string | null
@@ -93,6 +97,7 @@ export interface NewItem {
   // optional on the WRITE shape: every pre-#30 call site passes neither
   repo?: string | null
   issue_ref?: number | null
+  head_repo?: string | null
 }
 
 export function defaultDbPath(): string {
@@ -284,6 +289,34 @@ function runMigrations(db: Database.Database): void {
       revision INTEGER NOT NULL DEFAULT 1,
       PRIMARY KEY (repo, branch)
     );
+    CREATE TABLE IF NOT EXISTS source_links_by_head (
+      repo TEXT NOT NULL,
+      branch TEXT NOT NULL,
+      head_repo TEXT NOT NULL,
+      provider TEXT NOT NULL DEFAULT 'github',
+      pr_number INTEGER,
+      pr_url TEXT,
+      pr_title TEXT,
+      pr_state TEXT,
+      pr_head_sha TEXT,
+      pr_draft INTEGER,
+      review_decision TEXT,
+      checks TEXT,
+      issue_number INTEGER,
+      issue_url TEXT,
+      issue_title TEXT,
+      preview_url TEXT,
+      preview_environment TEXT,
+      preview_deployment_id INTEGER,
+      preview_updated_at TEXT,
+      preview_error TEXT,
+      tldr TEXT,
+      fetched_at TEXT,
+      checked_at TEXT NOT NULL,
+      error TEXT,
+      revision INTEGER NOT NULL DEFAULT 1,
+      PRIMARY KEY (repo, branch, head_repo)
+    );
   `)
   ensureColumn(db, 'board_rows', 'context', `TEXT NOT NULL DEFAULT ''`)
   ensureColumn(db, 'board_rows', 'annotated_at', 'TEXT')
@@ -307,9 +340,13 @@ function runMigrations(db: Database.Database): void {
   ensureColumn(db, 'items', 'session', 'TEXT')
   ensureColumn(db, 'items', 'repo', 'TEXT')
   ensureColumn(db, 'items', 'issue_ref', 'INTEGER')
+  // issue #157 — the head repository the branch is pushed to. NULL on every
+  // legacy row: it then expects a same-repository PR (see listLinkTargets).
+  ensureColumn(db, 'items', 'head_repo', 'TEXT')
   migrateReplyIntentLedger(db)
   ensureColumn(db, 'boards', 'repo', 'TEXT')
   ensureColumn(db, 'boards', 'issue_ref', 'INTEGER')
+  ensureColumn(db, 'boards', 'head_repo', 'TEXT')
   ensureColumn(db, 'boards', 'revision', 'INTEGER NOT NULL DEFAULT 1')
   ensureColumn(db, 'board_rows', 'next_step', `TEXT NOT NULL DEFAULT ''`)
   ensureColumn(db, 'board_rows', 'options', 'TEXT')
@@ -559,11 +596,11 @@ function insertItemRow(db: Database.Database, item: NewItem): string {
   db.prepare(
     `INSERT INTO items (
        id, project, stream, agent, session, kind, title, detail, next_step,
-       action_owner, impact, next_after, context, options, repo, issue_ref,
+       action_owner, impact, next_after, context, options, repo, issue_ref, head_repo,
        status, created_at, updated_at)
      VALUES (
        @id, @project, @stream, @agent, @session, @kind, @title, @detail, @next_step,
-       @action_owner, @impact, @next_after, @context, @options, @repo, @issue_ref,
+       @action_owner, @impact, @next_after, @context, @options, @repo, @issue_ref, @head_repo,
        'open', @created_at, @updated_at)`,
   ).run({
     id,
@@ -582,6 +619,7 @@ function insertItemRow(db: Database.Database, item: NewItem): string {
     options: item.options?.length ? JSON.stringify(item.options) : null,
     repo: item.repo ?? null,
     issue_ref: item.issue_ref ?? null,
+    head_repo: item.head_repo ?? null,
     created_at: now,
     updated_at: now,
   })
@@ -943,6 +981,8 @@ export interface Board {
   // board written before #30
   repo: string | null
   issue_ref: number | null
+  // issue #157 — as on items; null on every board written before #157
+  head_repo: string | null
   created_at: string
   updated_at: string
   last_read_at: string | null
@@ -1071,6 +1111,7 @@ interface UpsertBoardInput {
   // optional on the WRITE shape: every pre-#30 call site passes neither
   repo?: string | null
   issueRef?: number | null
+  headRepo?: string | null
 }
 
 export function upsertBoard(db: Database.Database, input: UpsertBoardInput): { boardId: string; rowCount: number } {
@@ -1087,6 +1128,7 @@ export function upsertBoard(db: Database.Database, input: UpsertBoardInput): { b
       || before.agent !== inp.agent
       || before.repo !== (inp.repo ?? null)
       || before.issue_ref !== (inp.issueRef ?? null)
+      || before.head_repo !== (inp.headRepo ?? null)
     const boardId = ensureBoard(db, inp, now)
     const existing = db.prepare(`SELECT id, label, status, note, position, action_version, revision FROM board_rows WHERE board_id = ?`).all(boardId) as Array<{
       id: string
@@ -1222,6 +1264,7 @@ interface UpdateRowInput {
   context?: string
   repo?: string | null
   issueRef?: number | null
+  headRepo?: string | null
 }
 
 type RowTextColumn = 'note' | 'next_step' | 'impact' | 'next_after' | 'context'
@@ -1419,6 +1462,7 @@ export function updateBoardRow(db: Database.Database, input: UpdateRowInput): { 
       || before!.agent !== inp.agent
       || before!.repo !== (inp.repo ?? null)
       || before!.issue_ref !== (inp.issueRef ?? null)
+      || before!.head_repo !== (inp.headRepo ?? null)
     )
     const boardId = ensureBoard(db, inp, now)
     const existing = db.prepare(`SELECT id, status, action_version, revision FROM board_rows WHERE board_id = ? AND label = ?`).get(boardId, inp.label) as {
@@ -1515,19 +1559,19 @@ function syncBoardStatus(db: Database.Database, boardId: string): boolean {
 // Find-or-create the board row and stamp the last writer. Shared by upsertBoard/updateBoardRow.
 function ensureBoard(
   db: Database.Database,
-  inp: { project: string; stream: string; agent: string; title: string; repo?: string | null; issueRef?: number | null },
+  inp: { project: string; stream: string; agent: string; title: string; repo?: string | null; issueRef?: number | null; headRepo?: string | null },
   now: string,
 ): string {
   const board = findBoard(db, inp.project, inp.title)
-  // #30's repo/issue_ref are restamped on every write, exactly like stream and
-  // agent — the board follows whoever is writing to it now. They belong on the
-  // `boards` row and nowhere near board_rows, whose annotation column is the
-  // human's and must survive every re-upsert untouched.
+  // #30's repo/issue_ref (and #157's head_repo) are restamped on every write,
+  // exactly like stream and agent — the board follows whoever is writing to it
+  // now. They belong on the `boards` row and nowhere near board_rows, whose
+  // annotation column is the human's and must survive every re-upsert untouched.
   if (board) {
     db.prepare(`UPDATE boards
-                   SET stream = ?, agent = ?, repo = ?, issue_ref = ?,
+                   SET stream = ?, agent = ?, repo = ?, issue_ref = ?, head_repo = ?,
                        updated_at = CASE
-                         WHEN stream IS NOT ? OR agent IS NOT ? OR repo IS NOT ? OR issue_ref IS NOT ?
+                         WHEN stream IS NOT ? OR agent IS NOT ? OR repo IS NOT ? OR issue_ref IS NOT ? OR head_repo IS NOT ?
                          THEN ? ELSE updated_at END
                  WHERE id = ?`)
       .run(
@@ -1535,18 +1579,20 @@ function ensureBoard(
         inp.agent,
         inp.repo ?? null,
         inp.issueRef ?? null,
+        inp.headRepo ?? null,
         inp.stream,
         inp.agent,
         inp.repo ?? null,
         inp.issueRef ?? null,
+        inp.headRepo ?? null,
         now,
         board.id,
       )
     return board.id
   }
   const boardId = randomUUID()
-  db.prepare(`INSERT INTO boards (id, project, stream, agent, title, repo, issue_ref, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`)
-    .run(boardId, inp.project, inp.stream, inp.agent, inp.title, inp.repo ?? null, inp.issueRef ?? null, now, now)
+  db.prepare(`INSERT INTO boards (id, project, stream, agent, title, repo, issue_ref, head_repo, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`)
+    .run(boardId, inp.project, inp.stream, inp.agent, inp.title, inp.repo ?? null, inp.issueRef ?? null, inp.headRepo ?? null, now, now)
   return boardId
 }
 
@@ -2404,6 +2450,17 @@ function boardWithRows(db: Database.Database, board: Board): BoardWithRows {
 // read by the viewer's /api/links and joined in the frontend against each item's
 // own repo + stream. Keyed per BRANCH rather than per item so N items raised on
 // one branch cost one `gh` call, and a merge updates all of them at once.
+//
+// Issue #157: a branch NAME is only unique within the repository it is pushed
+// to, and `gh pr list --head` matches it in every fork. So the key is really
+// (repo, branch, head_repo): the base the PR is searched in, the branch, and the
+// head repository the cached PR was verified to come from. That lives in
+// `source_links_by_head`. The original `source_links` table never recorded a
+// head, so none of its rows can be verified (some are exactly the fork PRs #157
+// is about); it is left in place only because older processes sharing this file
+// still read and write it. Nothing here touches it. Changing its PRIMARY KEY in
+// place would need a table rebuild, and that would break those processes'
+// `ON CONFLICT(repo, branch)` upserts the moment any newer process migrated.
 
 export interface SourcePreview {
   preview_url: string | null
@@ -2416,6 +2473,7 @@ export interface SourcePreview {
 export interface SourceLink extends SourcePreview {
   repo: string
   branch: string
+  head_repo: string
   provider: string
   pr_number: number | null
   pr_url: string | null
@@ -2440,6 +2498,8 @@ export interface SourceLink extends SourcePreview {
 export interface NewSourceLink extends Partial<SourcePreview> {
   repo: string
   branch: string
+  // omitted means `repo` itself: the same-repository expectation
+  head_repo?: string
   provider?: string
   pr_number?: number | null
   pr_url?: string | null
@@ -2458,6 +2518,8 @@ export interface NewSourceLink extends Partial<SourcePreview> {
 export interface LinkTarget {
   repo: string
   branch: string
+  // the EFFECTIVE expected head: the recorded head_repo, else `repo` itself
+  head_repo: string
 }
 
 // a cache row unchecked for this long belongs to a branch nobody works on
@@ -2465,29 +2527,34 @@ const LINK_TTL_DAYS = 30
 // hard ceiling on how many branches one refresh pass can ever consider
 const MAX_LINK_TARGETS = 50
 
+// The cache key. A '/' is legal in a slug and in a branch name, so the separator
+// is a byte neither can contain (public/source.js keys its index the same way).
+const linkKey = (repo: string, branch: string, head: string): string => `${repo}\u0000${branch}\u0000${head}`
+
 // A successful fetch: writes every field, stamps BOTH timestamps and clears the
 // error. Housekeeping rides along, mirroring upsertActivity's day-old sweep.
 export function upsertSourceLink(db: Database.Database, link: NewSourceLink): number {
   const now = new Date().toISOString()
   const result = db.prepare(
-    `INSERT INTO source_links (repo, branch, provider, pr_number, pr_url, pr_title, pr_state, pr_head_sha, pr_draft,
+    `INSERT INTO source_links_by_head (repo, branch, head_repo, provider, pr_number, pr_url, pr_title, pr_state, pr_head_sha, pr_draft,
        review_decision, checks, issue_number, issue_url, issue_title, tldr, fetched_at, checked_at, error,
        preview_url, preview_environment, preview_deployment_id, preview_updated_at, preview_error)
-     VALUES (@repo, @branch, @provider, @pr_number, @pr_url, @pr_title, @pr_state, @pr_head_sha, @pr_draft,
+     VALUES (@repo, @branch, @head_repo, @provider, @pr_number, @pr_url, @pr_title, @pr_state, @pr_head_sha, @pr_draft,
        @review_decision, @checks, @issue_number, @issue_url, @issue_title, @tldr, @now, @now, NULL,
        @preview_url, @preview_environment, @preview_deployment_id, @preview_updated_at, @preview_error)
-     ON CONFLICT(repo, branch) DO UPDATE SET
+     ON CONFLICT(repo, branch, head_repo) DO UPDATE SET
        provider = @provider, pr_number = @pr_number, pr_url = @pr_url, pr_title = @pr_title,
        pr_state = @pr_state, pr_head_sha = @pr_head_sha, pr_draft = @pr_draft, review_decision = @review_decision, checks = @checks,
        issue_number = @issue_number, issue_url = @issue_url, issue_title = @issue_title, tldr = @tldr,
        preview_url = @preview_url, preview_environment = @preview_environment,
        preview_deployment_id = @preview_deployment_id, preview_updated_at = @preview_updated_at,
-       preview_error = @preview_error, revision = source_links.revision + 1,
+       preview_error = @preview_error, revision = source_links_by_head.revision + 1,
        fetched_at = @now, checked_at = @now, error = NULL
      RETURNING revision`,
   ).get({
     repo: link.repo,
     branch: link.branch,
+    head_repo: link.head_repo ?? link.repo,
     provider: link.provider ?? 'github',
     pr_number: link.pr_number ?? null,
     pr_url: link.pr_url ?? null,
@@ -2515,51 +2582,60 @@ export function upsertSourceLink(db: Database.Database, link: NewSourceLink): nu
 // A slow preview lookup must not overwrite a newer PR snapshot or failure.
 export function setSourcePreview(
   db: Database.Database,
-  target: LinkTarget & { revision: number },
+  target: { repo: string; branch: string; head_repo?: string; revision: number },
   preview: SourcePreview,
 ): boolean {
   return db.prepare(
-    `UPDATE source_links SET preview_url = @preview_url, preview_environment = @preview_environment,
+    `UPDATE source_links_by_head SET preview_url = @preview_url, preview_environment = @preview_environment,
        preview_deployment_id = @preview_deployment_id, preview_updated_at = @preview_updated_at,
        preview_error = @preview_error, revision = revision + 1
-     WHERE repo = @repo AND branch = @branch AND revision = @revision`,
-  ).run({ ...target, ...preview }).changes > 0
+     WHERE repo = @repo AND branch = @branch AND head_repo = @head_repo AND revision = @revision`,
+  ).run({
+    repo: target.repo, branch: target.branch, head_repo: target.head_repo ?? target.repo,
+    revision: target.revision, ...preview,
+  }).changes > 0
 }
 
 // A failed fetch keeps ordinary PR history, but invalidates its actionable
 // preview: a URL whose current-head provenance cannot be refreshed is not safe
 // to present as the change the human is being asked to approve.
-// Every column except repo/branch/checked_at is nullable precisely so this
+// Every column except the key and checked_at is nullable precisely so this
 // INSERT half can succeed for a branch that has never been fetched.
-export function recordLinkFailure(db: Database.Database, f: { repo: string; branch: string; error: string }): void {
+export function recordLinkFailure(
+  db: Database.Database,
+  f: { repo: string; branch: string; head_repo?: string; error: string },
+): void {
   db.prepare(
-    `INSERT INTO source_links (repo, branch, checked_at, error) VALUES (@repo, @branch, @now, @error)
-     ON CONFLICT(repo, branch) DO UPDATE SET checked_at = @now, error = @error,
+    `INSERT INTO source_links_by_head (repo, branch, head_repo, checked_at, error) VALUES (@repo, @branch, @head_repo, @now, @error)
+     ON CONFLICT(repo, branch, head_repo) DO UPDATE SET checked_at = @now, error = @error,
        preview_url = NULL, preview_environment = NULL, preview_deployment_id = NULL,
-       preview_updated_at = NULL, preview_error = NULL, revision = source_links.revision + 1`,
-  ).run({ repo: f.repo, branch: f.branch, error: f.error, now: new Date().toISOString() })
+       preview_updated_at = NULL, preview_error = NULL, revision = source_links_by_head.revision + 1`,
+  ).run({ repo: f.repo, branch: f.branch, head_repo: f.head_repo ?? f.repo, error: f.error, now: new Date().toISOString() })
 }
 
 export function listSourceLinks(db: Database.Database): SourceLink[] {
-  const rows = db.prepare(`SELECT * FROM source_links ORDER BY repo ASC, branch ASC`).all() as Array<
+  const rows = db.prepare(`SELECT * FROM source_links_by_head ORDER BY repo ASC, branch ASC, head_repo ASC`).all() as Array<
     Omit<SourceLink, 'pr_draft'> & { pr_draft: number | null }
   >
   const active = rows.some((r) => r.preview_url)
-    ? new Set(listLinkTargets(db).map((target) => `${target.repo}\u0000${target.branch}`))
+    ? new Set(listLinkTargets(db).map((target) => linkKey(target.repo, target.branch, target.head_repo)))
     : null
   return rows.map((r) => ({
     ...r,
     pr_draft: r.pr_draft === 1,
-    ...((r.preview_url && !active?.has(`${r.repo}\u0000${r.branch}`)) ? {
+    ...((r.preview_url && !active?.has(linkKey(r.repo, r.branch, r.head_repo))) ? {
       preview_url: null, preview_environment: null, preview_deployment_id: null,
       preview_updated_at: null, preview_error: null,
     } : {}),
   }))
 }
 
-// Which (repo, branch) pairs are worth spending a `gh` call on: the branches
-// OPEN items and ACTIVE boards actually sit on. A resolved item's branch stops
-// being refreshed but keeps whatever it last cached.
+// Which (repo, branch, head_repo) triples are worth spending a `gh` call on: the
+// branches OPEN items and ACTIVE boards actually sit on, with the repository each
+// expects its PR's head to come from (#157). A row that recorded no head (every
+// row written before #157, or one with no github.com push remote or origin)
+// expects a same-repository PR: its effective head is its own base `repo`. A
+// resolved item's branch stops being refreshed but keeps whatever it last cached.
 //
 // #32 × #30: a project the human CLOSED is retired from the poller too — it kept
 // spawning a `gh` subprocess every 60s and kept eating the shared per-tick budget,
@@ -2572,30 +2648,32 @@ export function listSourceLinks(db: Database.Database): SourceLink[] {
 export function listLinkTargets(db: Database.Database): LinkTarget[] {
   const rows = db
     .prepare(
-      `SELECT project, repo, stream AS branch FROM items  WHERE status = 'open'   AND repo IS NOT NULL AND repo <> '' AND stream <> ''
+      `SELECT project, repo, stream AS branch, COALESCE(NULLIF(head_repo, ''), repo) AS head_repo
+         FROM items  WHERE status = 'open'   AND repo IS NOT NULL AND repo <> '' AND stream <> ''
        UNION
-       SELECT project, repo, stream AS branch FROM boards WHERE status = 'active' AND repo IS NOT NULL AND repo <> '' AND stream <> ''
-       ORDER BY repo ASC, branch ASC`,
+       SELECT project, repo, stream AS branch, COALESCE(NULLIF(head_repo, ''), repo) AS head_repo
+         FROM boards WHERE status = 'active' AND repo IS NOT NULL AND repo <> '' AND stream <> ''
+       ORDER BY repo ASC, branch ASC, head_repo ASC`,
     )
     .all() as Array<LinkTarget & { project: string }>
   const closed = new Set(closedProjects(db))
-  // the UNION dedupes on (project, repo, branch); (repo, branch) is the cache key,
-  // so the collapse to one target per pair happens here instead
+  // the UNION dedupes per project; the cache key is the triple, so the collapse
+  // to one target per (repo, branch, head_repo) happens here instead
   const seen = new Set<string>()
   const targets: LinkTarget[] = []
   for (const row of rows) {
     if (closed.has(row.project)) continue
-    const key = `${row.repo}\u0000${row.branch}`
+    const key = linkKey(row.repo, row.branch, row.head_repo)
     if (seen.has(key)) continue
     seen.add(key)
-    targets.push({ repo: row.repo, branch: row.branch })
+    targets.push({ repo: row.repo, branch: row.branch, head_repo: row.head_repo })
   }
   return targets.slice(0, MAX_LINK_TARGETS)
 }
 
 export function pruneSourceLinks(db: Database.Database, opts: { nowMs?: number } = {}): void {
   const cutoff = new Date((opts.nowMs ?? Date.now()) - LINK_TTL_DAYS * 24 * 60 * 60000).toISOString()
-  db.prepare(`DELETE FROM source_links WHERE checked_at < ?`).run(cutoff)
+  db.prepare(`DELETE FROM source_links_by_head WHERE checked_at < ?`).run(cutoff)
 }
 
 // ── project closure: retiring a dead project tab without losing it (issue #32) ──

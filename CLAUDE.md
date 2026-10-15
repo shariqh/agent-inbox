@@ -264,7 +264,9 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   hook event and the two must keep agreeing (a mid-session `git remote add origin`, or one
   transient git failure, must not pin the folder name). The branch (and the issue parsed from
   it) is re-read on every call because worktrees and checkouts move mid-session, so never
-  cache the whole scope.
+  cache the whole scope. Head inference (`headFor`, #157) stays outside both `get()` and that
+  memo: it runs only on flag/board writes and reads git's push destination live, because it
+  needs origin's PUSH url, which the cached fetch url cannot answer.
   The client name for `inferAgent` **must be read lazily** inside handlers
   (`server.server.getClientVersion()?.name`) — it's only populated after the initialize
   handshake. Capturing it at build time yields `undefined`/`'unknown'`. Don't regress this.
@@ -776,16 +778,28 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   locally at write time by the stdio server (`inferRepo`/`inferIssueRef` in `src/infer.ts`, carried
   on the scope, stamped as `items.repo`/`items.issue_ref` and the same two on `boards`); live PR
   STATE is fetched only by the viewer process (`src/prstate.ts` → `gh pr list`), cached one row per
-  `(repo, branch)` in `source_links`, and served read-only at `GET /api/links`. `public/source.js`
-  joins the two and renders an issue chip plus a PR chip with a native `title=` TL;DR. The
-  branch→issue heuristic is deliberately CONSERVATIVE (`30-x`, `feat/30-x`, `issue-30`, `issues/30`,
-  `gh-30` — never a trailing year or `release/2.1`), because a link to the wrong issue is worse than
-  no link; `gh`'s `closingIssuesReferences` overrides it and `register({ issue })` is the manual
-  escape hatch. Non-github remotes render NOTHING (the `provider` column + `parseRepoSlug`'s host
-  check are the GitLab/GHE seam). **Two honest limitations:** every item and board written before
-  this shipped has `repo = NULL` and shows no chip at all — there is no backfill, and there cannot
-  be a correct one; and `gh pr list` does not return the linked issue's TITLE, so `issue_title` is
-  always null in v1 and the chip reads `#30`.
+  `(repo, branch, head_repo)` in `source_links_by_head`, and served read-only at `GET /api/links`.
+  `public/source.js` joins the two and renders an issue chip plus a PR chip with a native `title=`
+  TL;DR. The branch→issue heuristic is deliberately CONSERVATIVE (`30-x`, `feat/30-x`, `issue-30`,
+  `issues/30`, `gh-30` — never a trailing year, a segment starting with a complete date such as
+  `2026-10-14-x`, or `release/2.1`), because a link to the wrong issue is worse than no link; `gh`'s
+  `closingIssuesReferences` overrides it and `register({ issue })` is the manual escape hatch.
+  Non-github remotes render NOTHING (the `provider` column + `parseRepoSlug`'s host check are the
+  GitLab/GHE seam). **Head verification (#157):** `gh pr list --head` matches the branch NAME in
+  every fork, so `repo` is only the BASE the PR is searched in. Flag/board writes also stamp
+  `head_repo`, the github repository the branch is pushed to (`inferHeadRepo`: the push url —
+  `git remote get-url --push`, so pushurl counts — of git's push remote for that branch, or the URL
+  configured in its place as `gh pr checkout` and `git push -u <url>` write it, else origin's; local
+  git only, independent of `register({ repo })`). The poller
+  examines a small `PR_WINDOW` and accepts only a PR from that head repository (a same-repo
+  expectation means `isCrossRepository: false`); a row with no `head_repo` expects a same-repo PR.
+  No match, even a full window, is cached as no PR — no title, closing issue or preview — and the
+  preview's head re-read applies the same rule. The unverifiable pre-#157 `source_links` table is
+  never read; it stays only for older processes sharing the file (rebuilding its primary key would
+  break their `ON CONFLICT(repo, branch)` upserts). **Two honest limitations:** every item and
+  board written before #30 shipped has `repo = NULL` and shows no chip at all — there is no
+  backfill, and there cannot be a correct one; and `gh pr list` does not return the linked issue's
+  TITLE, so `issue_title` is always null in v1 and the chip reads `#30`.
 - **Board-annotation delivery** *(#37)* — `pending()` returns `{items, rows}`: the human's per-row
   board notes ride the one poll every agent already makes, project-scoped like items, and a
   `blocked` row keeps arriving until an agent acknowledges it by flipping the status. See the

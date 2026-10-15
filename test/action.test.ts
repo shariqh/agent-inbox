@@ -77,4 +77,34 @@ describe('action presentation helpers', () => {
       'Merged PR #42.',
     ])
   })
+
+  it('keeps question reply timeline stamps independent from a newer note', () => {
+    const receipt = lifecycleReceipt({
+      kind: 'question', status: 'open',
+      reply: 'Approved', replied_at: '2026-09-20T09:00:00.000Z',
+      reply_seen_at: '2026-09-20T09:05:00.000Z',
+      annotation: 'Keep the backup.', annotated_at: '2026-09-20T10:00:00.000Z',
+      annotation_seen_at: null,
+    })
+    expect(receipt).toEqual([
+      { kind: 'response', label: 'You answered', at: '2026-09-20T09:00:00.000Z' },
+      { kind: 'pickup', label: 'Delivered to an agent', at: '2026-09-20T09:05:00.000Z' },
+    ])
+    expect(lifecycleReceipt({
+      kind: 'question', annotation: 'Not my decision.',
+      annotated_at: '2026-09-20T10:00:00.000Z',
+      annotation_seen_at: '2026-09-20T10:05:00.000Z',
+    })).toEqual([])
+  })
+
+  it('dates informational note saves and clears from their own receipt', () => {
+    expect(lifecycleReceipt({
+      kind: 'done', status: 'open', annotation: '',
+      annotated_at: '2026-09-20T10:00:00.000Z',
+      annotation_seen_at: '2026-09-20T10:05:00.000Z',
+    })).toEqual([
+      { kind: 'response', label: 'Note cleared', at: '2026-09-20T10:00:00.000Z' },
+      { kind: 'pickup', label: 'Note delivered to an agent', at: '2026-09-20T10:05:00.000Z' },
+    ])
+  })
 })

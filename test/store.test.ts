@@ -143,7 +143,7 @@ describe('store', () => {
     expect(listItems(db)[0]!.status).toBe('dismissed')
   })
 
-  it('annotate stores my private note', () => {
+  it('annotate stores human feedback on an open item', () => {
     const id = insertItem(db, { project: 'p', stream: '', agent: 'claude-code', kind: 'question', title: 'which db?' })
     annotateItem(db, id, 'use sqlite')
     expect(listItems(db)[0]!.annotation).toBe('use sqlite')
@@ -535,7 +535,7 @@ describe('dual-channel answers (#29)', () => {
 
   it('answerItem records a chat answer as already picked up, sourced to the agent, item still open', () => {
     const id = ask()
-    expect(answerItem(db, id, 'use postgres', 'ship behind a flag')).toEqual({ ok: true })
+    expect(answerItem(db, id, 'use postgres', 'ship behind a flag')).toEqual({ ok: true, response_revision: 1 })
     const it = row(id)
     expect(it.reply).toBe('use postgres')
     expect(it.reply_context).toBe('ship behind a flag')
@@ -545,6 +545,50 @@ describe('dual-channel answers (#29)', () => {
     expect(it.reply_seen_at).toBe(it.replied_at)
     expect(it.reply_source).toBe('agent')
     expect(it.status).toBe('open') // recording an answer is not resolving; the agent still has to act
+  })
+
+  it('migrates response history and versions older-writer corrections without changing timestamps', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'inbox-response-revision-')), 'inbox.db')
+    const legacy = new Database(path)
+    legacy.exec(`
+      CREATE TABLE items (
+        id TEXT PRIMARY KEY, project TEXT NOT NULL, stream TEXT NOT NULL DEFAULT '',
+        agent TEXT NOT NULL DEFAULT 'unknown', kind TEXT NOT NULL, title TEXT NOT NULL,
+        detail TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'open',
+        annotation TEXT, created_at TEXT NOT NULL, resolved_at TEXT,
+        reply TEXT, replied_at TEXT, reply_seen_at TEXT
+      );
+      INSERT INTO items (id, project, kind, title, created_at, reply, replied_at, annotation)
+      VALUES
+        ('answered', 'p', 'question', 'q', '2026-01-01T00:00:00.000Z', 'yes', '2026-01-01T00:00:00.000Z', NULL),
+        ('cleared', 'p', 'question', 'q', '2026-01-01T00:00:00.000Z', NULL, '2026-01-01T00:00:00.000Z', NULL),
+        ('annotated', 'p', 'question', 'q', '2026-01-01T00:00:00.000Z', NULL, NULL, 'stop'),
+        ('unanswered', 'p', 'question', 'q', '2026-01-01T00:00:00.000Z', NULL, NULL, NULL);
+    `)
+    legacy.close()
+    const migrated = openDb(path)
+    try {
+      const revisions = Object.fromEntries(listItems(migrated).map((item) => [item.id, item.response_revision]))
+      expect(revisions).toEqual({ answered: 1, cleared: 1, annotated: 1, unanswered: 0 })
+      const original = listItems(migrated).find((item) => item.id === 'answered')!
+      // Model a still-running older viewer: its statement knows nothing of the new counter.
+      migrated.prepare(`UPDATE items SET reply = ?, reply_seen_at = NULL WHERE id = 'answered'`).run('no')
+      migrated.prepare(`UPDATE items SET reply = ?, reply_seen_at = NULL WHERE id = 'answered'`).run('yes')
+      const current = listItems(migrated).find((item) => item.id === 'answered')!
+      expect(current.response_revision).toBe(3)
+      expect(current.replied_at).toBe(original.replied_at)
+      expect(current.updated_at).toBe(original.updated_at)
+      expect(markReplySeen(migrated, current.id, original.replied_at, original.response_revision)).toBe(false)
+      expect(markReplySeen(migrated, current.id, current.replied_at, current.response_revision)).toBe(true)
+      const reopened = openDb(path)
+      try {
+        expect(listItems(reopened).find((item) => item.id === 'answered')!.response_revision).toBe(3)
+      } finally {
+        reopened.close()
+      }
+    } finally {
+      migrated.close()
+    }
   })
 
   it('answerItem refuses an empty answer, an unknown id, a note and a resolved question, each with a reason', () => {
@@ -637,6 +681,11 @@ describe('dual-channel answers (#29)', () => {
         const realGet = stmt.get.bind(stmt)
         const realRun = stmt.run.bind(stmt)
         stmt.get = ((...args: unknown[]) => {
+          // UPDATE ... RETURNING uses get too; land the reply before its write.
+          if (!stmt.readonly) {
+            replyItem(db2, id, 'from the inbox')
+            return realGet(...(args as []))
+          }
           const result = realGet(...(args as []))
           replyItem(db2, id, 'from the inbox') // race lands right after a (stale) read
           return result

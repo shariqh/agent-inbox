@@ -963,7 +963,7 @@ describe('async project mutation focus', () => {
   })
 
   it('keeps a confirmed Archive intent until a failed authoritative refresh recovers', async () => {
-    expectConsoleError(/JSON|Unexpected token/)
+    expectConsoleError(/^Snapshot \/api\/items failed \(HTTP 500\)(?:\n|$)/)
     const d = open()
     question(d, 'alpha')
     advanceClock()
@@ -985,7 +985,7 @@ describe('async project mutation focus', () => {
   })
 
   it('does not retire a confirmed Archive from an older poll snapshot', async () => {
-    expectConsoleError(/JSON|Unexpected token/)
+    expectConsoleError(/^Snapshot \/api\/items failed \(HTTP 500\)(?:\n|$)/)
     const d = open()
     question(d, 'alpha')
     advanceClock()

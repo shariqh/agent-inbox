@@ -2,7 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
 import type Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
-import { insertItem, resolveItem, listPending, markReplySeen, answerItem, upsertBoard, updateBoardRow, advanceBoardRow, findBoard, archiveBoard, getBoard, listBoards, markBoardRead, markAnnotationDelivered, markHandledDelivered, listPendingRows, upsertActivity, endActivity, touchActivity, recordActivityCall } from './store.js'
+import { insertItem, resolveItem, listPending, markReplySeen, markItemAnnotationDelivered, answerItem, upsertBoard, updateBoardRow, advanceBoardRow, findBoard, archiveBoard, getBoard, listBoards, markBoardRead, markAnnotationDelivered, markHandledDelivered, listPendingRows, upsertActivity, endActivity, touchActivity, recordActivityCall } from './store.js'
 import type { ActionOwner, BoardRow, BoardWithRows, QuestionOption } from './store.js'
 import { makeContextLedger, deliverContext, shapeBoard, summariseBoard, rowKey, itemKey } from './shape.js'
 import { makeScope } from './scope.js'
@@ -21,7 +21,7 @@ export function livenessTick(db: Database.Database, session: string): void {
 }
 
 export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
-  const server = new McpServer({ name: 'agent-inbox', version: '1.2.5' })
+  const server = new McpServer({ name: 'agent-inbox', version: '1.2.6' })
   const scope = makeScope(cwd)
   // issue #42 — what THIS SERVER PROCESS has already handed over. Per-process,
   // NOT per session or per agent: this server is long-lived and a subagent's
@@ -170,13 +170,18 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
   server.registerTool(
     'resolve',
     {
-      description: 'Mark one of your own inbox items resolved once you acted on the human response or it became moot. Include outcome as the one-line result so the human can see what happened after their answer.',
-      inputSchema: { id: z.string(), outcome: z.string().max(240).optional() },
+      description: 'Mark one of your own inbox items resolved once its work is complete or it became moot, not merely because you picked up an annotation. For ANY item with response/annotation history, pass expected_response_revision from the exact pending item or successful answer result you handled. Missing or stale revisions return ok:false (response_revision_required or response_changed): use pending({item_id:id}) to re-read the current open item, handle the correction, then retry with its revision. This also recovers informational feedback another reader already picked up and annotations the human cleared. Another caller reading new text never authorizes your older snapshot. Items with no response history can still be resolved without a revision. Include outcome as the one-line result so the human can see what happened.',
+      inputSchema: {
+        id: z.string(),
+        outcome: z.string().max(240).optional(),
+        expected_response_revision: z.number().int().nonnegative().optional()
+          .describe('response_revision of the exact item response you handled, from pending or answer. Required after any reply or annotation history, including clears. Recover current state with pending({item_id:id}); never substitute a sibling’s revision without handling its response.'),
+      },
     },
-    async ({ id, outcome }) => {
+    async ({ id, outcome, expected_response_revision }) => {
       heartbeat()
-      resolveItem(db, id, outcome)
-      return { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] }
+      const result = resolveItem(db, id, outcome, { expectedRevision: expected_response_revision })
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] }
     },
   )
 
@@ -184,18 +189,21 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     'pending',
     {
       description:
-        'Poll for everything the human has said to you in this project — the ONE polling call. Returns {items, rows}. Read reply_kind/annotation_kind: answer = act normally; clarify = rewrite the ask (for a board use board_advance on the same label/version; for an item resolve and raise a corrected replacement); decline = stop/cancel the proposed path and acknowledge it with an outcome. handled_at means the human completed their task. snoozed_until means they deferred an unanswered ask; do not nag or treat it as an answer. After acting, resolve an item with outcome or move a row out of blocked with outcome. If another human step remains, use board_advance rather than stacking another row. Questions reappear until resolve; blocked rows reappear until status changes, so delivery stamps are never acknowledgements. Human words are always returned; agent context is handed over once per SERVER PROCESS and recoverable with pending({full:true}) or board_get({title, full:true}); context_chars uses UTF-16 code units.',
+        'Poll for human responses in this project — the ONE polling call. Returns {items, rows}. Items include open questions plus unpicked annotations on open notes/milestones. Informational feedback (including a clear: empty annotation with annotated_at) normally leaves this queue after pickup; it does not create human attention or auto-resolve the item. Use pending({item_id:id}) to re-read one current open item even after pickup, including its response_revision; this targeted read returns no board rows. Pickup means handed to a reader, not acted on by the intended session, and informational feedback has no new automatic host-wake guarantee. Questions reappear until resolve; blocked rows until status changes. Read reply_kind/annotation_kind: answer = act normally; clarify = rewrite the ask; decline = cancel and record an outcome. handled_at means the human completed their task; snoozed_until means they deferred it. When the item itself is complete, resolve with outcome and expected_response_revision from the exact response handled; move a board row out of blocked with outcome, or use board_advance for its next human step. Changed snapshots are withheld rather than handing over superseded words. Human text is never trimmed. Agent context is handed over once per SERVER PROCESS, recoverable with pending({full:true}), pending({item_id:id,full:true}), or board_get({title, full:true}); context_chars counts UTF-16 code units.',
       inputSchema: {
         full: z.boolean().optional(),
         project: z.string().min(1).optional().describe('Read responses for this project without changing the session scope. Use the project in a watcher launch contract after a restart or scope change.'),
+        item_id: z.string().min(1).optional().describe('Re-read this open item in the selected project, including already-picked-up or cleared annotation state and its response_revision. Returns no board rows; add full:true to recover its agent-authored context.'),
       },
     },
-    async ({ full, project }) => {
+    async ({ full, project, item_id }) => {
       heartbeat()
       const s = scope.get(clientName())
       const responseProject = project ?? s.project
-      const items = listPending(db, responseProject)
-      for (const it of items) if (it.reply && !it.reply_seen_at) markReplySeen(db, it.id, it.replied_at)
+      const items = listPending(db, responseProject, { includeInformational: true, itemId: item_id })
+        .filter((it) => it.kind === 'question'
+          ? markReplySeen(db, it.id, it.replied_at, it.response_revision, s.agent)
+          : markItemAnnotationDelivered(db, it.id, it.response_revision, s.agent))
       // issue #37 — the human's board-row notes had NO delivery path: pending()
       // was items-only, so an agent following the contract perfectly still never
       // saw one. The store decides WHAT is still pending (gated on the row being
@@ -214,11 +222,12 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
       // dropped row is never half-recorded as delivered. (The reverse race
       // stamps the annotation on a row it then drops; the row is still blocked,
       // so the next poll carries both — at-least-once is what absorbs it.)
-      const rows = listPendingRows(db, responseProject).filter((r) => {
-        if (r.annotation && !markAnnotationDelivered(db, r.row_id, r.annotated_at, s.agent)) return false
-        if (r.handled_at && !markHandledDelivered(db, r.row_id, r.handled_at, s.agent)) return false
+      const rows = item_id === undefined ? listPendingRows(db, responseProject).filter((r) => {
+        const version = { row: r.revision, board: r.board_revision }
+        if ((r.annotation || r.annotation_kind) && !markAnnotationDelivered(db, r.row_id, r.annotated_at, s.agent, version)) return false
+        if (r.handled_at && !markHandledDelivered(db, r.row_id, r.handled_at, s.agent, version)) return false
         return true
-      })
+      }) : []
       // issue #42 — at-least-once is about the HUMAN's words, not the agent's own
       // backstory. The annotation/reply comes back on every poll for as long as
       // #37 says it should; `context` is handed over on its first delivery out of
@@ -247,7 +256,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     'answer',
     {
       description:
-        'Record an answer the HUMAN gave you in CHAT onto one of your open inbox questions, so the inbox stops showing it unanswered. This is NOT for answering your own question — if the question became moot, call resolve instead; writing an answer here removes the item from the human’s attention list, so inventing one hides a real question from them. id comes from flag’s return value or from pending. Returns {ok:true}, or {ok:false, reason} — reason "unread_inbox_answer" means they ALSO answered in the inbox and you have not read it: that answer is returned alongside the refusal and it wins, so follow it, and call pending() so the card stops telling them you are still waiting to read it. Other reasons: "empty" (no text), "not_found", "not_a_question", "not_open". Recording an answer is not resolving — once you have acted on it, call resolve.',
+        'Record an answer the HUMAN gave you in CHAT onto one of your open inbox questions, so the inbox stops showing it unanswered. This is NOT for answering your own question — if the question became moot, call resolve instead; writing an answer here removes the item from the human’s attention list, so inventing one hides a real question from them. id comes from flag’s return value or from pending. Returns {ok:true, response_revision}, or {ok:false, reason} — reason "unread_inbox_answer" means they ALSO answered in the inbox and you have not read it: that answer is returned alongside the refusal and it wins, so follow it, and call pending() so the card stops telling them you are still waiting to read it. Other reasons: "empty" (no text), "not_found", "not_a_question", "not_open". Recording an answer is not resolving — once you have acted on it, call resolve with expected_response_revision from this successful result or the pending response you handled.',
       inputSchema: {
         id: z.string(),
         text: z.string(),
@@ -563,7 +572,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     'board_get',
     {
       description:
-        'Re-read a tracking board before updating it. pending() already delivers human responses/handled_at. With a title: full row state; without: a summary of active boards. Board revision protects full snapshots/archive state; row revision is the CAS token for board_row/board_advance; action_version numbers chained steps. history_count says prior steps exist but history text is viewer-only and never sent to agents. Human response fields are always returned. Agent context is replaced by context_chars unless a titled read uses full: true (its size is UTF-16 code units, so an emoji counts 2).',
+        'Re-read a tracking board before updating it. pending() already delivers human responses/handled_at. With a title: full row state; without: a summary of active boards. Board revision protects full snapshots/archive state; row revision is the CAS token for board_row/board_advance; action_version numbers chained steps. history_count says prior steps exist but history text is viewer-only and never sent to agents. Human response fields are always returned. A response changed during the read triggers a fresh snapshot; if it keeps changing, retry the read after the tool error. Rows are never silently omitted from a board snapshot. Agent context is replaced by context_chars unless a titled read uses full: true (its size is UTF-16 code units, so an emoji counts 2).',
       inputSchema: {
         title: z.string().optional(),
         full: z.boolean().optional(),
@@ -581,39 +590,40 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
       // seen: board-level read-marking is what silenced rows the agent never
       // looked at. The payload is built BEFORE stamping on purpose, so this read
       // still reports annotation_unseen: true for what it is handing over.
-      const deliver = (b: BoardWithRows): void => {
+      const deliver = (b: BoardWithRows): boolean => {
         for (const r of b.rows) {
-          if (r.annotation && !r.annotation_seen_at) markAnnotationDelivered(db, r.id, r.annotated_at, s.agent)
-          // #36 — the mark is delivered by this read too, or the human's card
-          // would say "waiting for agent pickup" about something an agent is
-          // holding in its hands right now.
-          if (r.handled_at && !r.handled_seen_at) markHandledDelivered(db, r.id, r.handled_at, s.agent)
+          const version = { row: r.revision, board: b.revision }
+          if ((r.annotation || r.annotation_kind) && !markAnnotationDelivered(db, r.id, r.annotated_at, s.agent, version)) return false
+          if (r.handled_at && !markHandledDelivered(db, r.id, r.handled_at, s.agent, version)) return false
         }
         markBoardRead(db, b.id)
+        return true
       }
       // issue #42 — the shape is decided AFTER delivery, never instead of it:
       // every annotation in the payload is stamped exactly as before, whichever
       // form was asked for. Only agent-authored `context` changes hands here.
-      if (title === undefined) {
-        const boards = listBoards(db).filter((b) => b.project === s.project)
-        for (const b of boards) deliver(b)
-        // "what are my boards" is a summary — naming a board is what buys rows
-        // with their context, so `full` here is refused out loud rather than
-        // silently ignored.
-        const summary = boards.map(summariseBoard)
-        const payload = full === true ? { boards: summary, full_requires_title: true } : { boards: summary }
-        return { content: [{ type: 'text', text: JSON.stringify(payload) }] }
+      // Retry the WHOLE snapshot: dropping one stale row would make a later
+      // full-board upsert delete it. Bound retries rather than waiting forever.
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (title === undefined) {
+          const boards = listBoards(db).filter((b) => b.project === s.project)
+          if (!boards.every(deliver)) continue
+          const summary = boards.map(summariseBoard)
+          const payload = full === true ? { boards: summary, full_requires_title: true } : { boards: summary }
+          return { content: [{ type: 'text', text: JSON.stringify(payload) }] }
+        }
+        const board = getBoard(db, s.project, title)
+          ?? listBoards(db, { status: 'archived' }).find((candidate) => candidate.project === s.project && candidate.title === title)
+        if (board && !deliver(board)) continue
+        const watches = watch && board?.status === 'active'
+          ? board.rows.filter((row) => row.status === 'blocked').map((row) => rowWatch(row, s.project))
+          : undefined
+        const payload = board ? shapeBoard(board, { full, ledger }) : { found: false }
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ ...payload, ...(watches ? { watches } : {}) }) }],
+        }
       }
-      const board = getBoard(db, s.project, title)
-        ?? listBoards(db, { status: 'archived' }).find((candidate) => candidate.project === s.project && candidate.title === title)
-      if (board) deliver(board)
-      const watches = watch && board?.status === 'active'
-        ? board.rows.filter((row) => row.status === 'blocked').map((row) => rowWatch(row, s.project))
-        : undefined
-      const payload = board ? shapeBoard(board, { full, ledger }) : { found: false }
-      return {
-        content: [{ type: 'text', text: JSON.stringify({ ...payload, ...(watches ? { watches } : {}) }) }],
-      }
+      throw new Error('Board responses changed during the read; retry board_get before acting or updating.')
     },
   )
 

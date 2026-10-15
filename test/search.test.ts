@@ -1,5 +1,17 @@
 import { describe, it, expect } from 'vitest'
-import { haystackFor, paginate, paginateGroups } from '../public/search.js'
+import { haystackFor, paginate, paginateGroups, searchTerms } from '../public/search.js'
+
+describe('searchTerms', () => {
+  it('keeps quoted phrases intact and treats punctuation like the configured fuzzy engine', () => {
+    expect(searchTerms('release-canary-132 "C++"'))
+      .toEqual(['release', 'canary', '132', '"C++"'])
+  })
+
+  it('omits exclusions from positive match evidence', () => {
+    expect(searchTerms('release -private "safest canary" -"blocked region"'))
+      .toEqual(['release', '"safest canary"'])
+  })
+})
 
 describe('haystackFor', () => {
   it('includes item fields, lowercased', () => {

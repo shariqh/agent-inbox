@@ -65,27 +65,30 @@ describe('every write-path fetch has a catch with a visible signal (fix 3)', () 
   it('no write-path call site is a bare unguarded `await fetch(` any more', () => {
     // load() (GET, already wrapped) and renderSetup() (GET, already wrapped) and
     // postJSON's own internal fetch are the only remaining `await fetch(` call sites.
-    const bareFetchLines = js
-      .split('\n')
-      .map((line, i) => ({ line, i }))
-      .filter(({ line }) => /await fetch\(/.test(line))
-    // every remaining bare `await fetch(` must be inside load(), renderSetup(), or postJSON
-    for (const { line, i } of bareFetchLines) {
-      const context = js.split('\n').slice(Math.max(0, i - 40), i).join('\n')
-      const inKnownWrapped = /async function load\(\)/.test(context.split('\n').slice(-40).join('\n'))
-        || /async function renderSetup\(\)/.test(context.split('\n').slice(-40).join('\n'))
-        || /async function postJSON\(/.test(context.split('\n').slice(-10).join('\n'))
-      expect(inKnownWrapped, `unexpected bare await fetch(: ${line}`).toBe(true)
+    const wrappedRanges = ['load', 'renderSetup', 'postJSON'].map((name) => {
+      const match = new RegExp(`^async function ${name}\\([\\s\\S]*?\\n\\}`, 'm').exec(js)
+      expect(match, `${name}() not found`).toBeTruthy()
+      return { start: match!.index, end: match!.index + match![0].length }
+    })
+    // Check actual function boundaries, not a lookback window whose size changes
+    // when boot protection or conditional reads add legitimate lines to load().
+    for (const match of js.matchAll(/await fetch\(/g)) {
+      const inKnownWrapped = wrappedRanges.some(({ start, end }) => match.index >= start && match.index < end)
+      expect(inKnownWrapped, `unexpected bare await fetch( at offset ${match.index}`).toBe(true)
     }
   })
 
   it('save(), sendReply(), act(), changeAnswer(), and the board annotate/archive/unarchive handlers all route through postJSON', () => {
-    for (const marker of [
-      /const save = async \(\) => \{[\s\S]*?postJSON\(/,
-      /async function sendReply\([\s\S]*?postJSON\(/,
-      /async function act\([\s\S]*?postJSON\(/,
-      /async function changeAnswer\([\s\S]*?postJSON\(/,
-    ]) expect(js, marker.toString()).toMatch(marker)
+    const functionBody = (name: string) => {
+      const match = new RegExp(`^(?:async )?function ${name}\\([\\s\\S]*?\\n\\}`, 'm').exec(js)
+      expect(match, `${name}() not found`).toBeTruthy()
+      return match![0]
+    }
+    expect(functionBody('sendReply')).toMatch(/withPendingResponse\(\(\) => submitItemReply\(\.\.\.args\)\)/)
+    expect(functionBody('submitItemReply')).toMatch(/await postItemReply\(/)
+    expect(functionBody('changeAnswer')).toMatch(/await postItemReply\(/)
+    expect(functionBody('postItemReply')).toMatch(/return postJSON\(/)
+    expect(functionBody('act')).toMatch(/await postJSON\(/)
     // board row note (shared by the matrix and the triage card since Task 13),
     // the archived-board Un-archive handler, and the Archive-confirm button —
     // a per-function existence check rather than a whole-file occurrence count:
@@ -95,6 +98,7 @@ describe('every write-path fetch has a catch with a visible signal (fix 3)', () 
 
     const rowAnswerEl = js.match(/function rowAnswerEl\([\s\S]*?\n\}/)
     expect(rowAnswerEl, 'rowAnswerEl is missing').toBeTruthy()
+    expect(rowAnswerEl![0]).toMatch(/const save = \(\) => withPendingResponse\(async \(\) => \{/)
     expect(rowAnswerEl![0], 'rowAnswerEl does not call postJSON(').toMatch(boardsApiPattern)
 
     const unarchiveHandler = js.match(/btn\('Un-archive',[\s\S]*?\}\)\)/)

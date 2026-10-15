@@ -185,16 +185,21 @@ describe('viewer api', () => {
     })
   })
 
-  it('POST resolve, dismiss, annotate mutate the row', async () => {
+  it('POST resolve, dismiss, annotate preserve feedback and refuse closed annotation edits', async () => {
     const a = insertItem(db, { project: 'p', stream: '', agent: 'claude-code', kind: 'question', title: 'a' })
     const b = insertItem(db, { project: 'p', stream: '', agent: 'claude-code', kind: 'note', title: 'b' })
     const app = createViewer(db)
-    expect((await app.request(`/api/items/${a}/resolve`, { method: 'POST' })).status).toBe(200)
-    expect((await app.request(`/api/items/${b}/dismiss`, { method: 'POST' })).status).toBe(200)
     const annRes = await app.request(`/api/items/${a}/annotate`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'noted' }),
     })
     expect(annRes.status).toBe(200)
+    expect(await annRes.json()).toEqual({ ok: true })
+    expect((await app.request(`/api/items/${a}/resolve`, { method: 'POST' })).status).toBe(200)
+    expect((await app.request(`/api/items/${b}/dismiss`, { method: 'POST' })).status).toBe(200)
+    const late = await app.request(`/api/items/${a}/annotate`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'late rewrite' }),
+    })
+    expect(await late.json()).toEqual({ ok: false })
     const rows = listItems(db)
     expect(rows.find((r) => r.id === a)!.status).toBe('resolved')
     expect(rows.find((r) => r.id === a)!.annotation).toBe('noted')

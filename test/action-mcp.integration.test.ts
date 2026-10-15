@@ -242,8 +242,13 @@ describe('MCP action lifecycle contract', () => {
       options: [{ label: 'Ship', recommended: true }, { label: 'Hold' }],
     })
     replyItem(openDb(dbPath), item.body.id, 'Ship', undefined, 'answer')
-    await call(client, 'pending', {})
-    await call(client, 'resolve', { id: item.body.id, outcome: 'Release shipped successfully.' })
+    const answered = (await call(client, 'pending', {})).body.items
+      .find((candidate: { id: string }) => candidate.id === item.body.id)
+    await call(client, 'resolve', {
+      id: item.body.id,
+      expected_response_revision: answered.response_revision,
+      outcome: 'Release shipped successfully.',
+    })
     expect(listItems(openDb(dbPath)).find((candidate) => candidate.id === item.body.id)).toMatchObject({
       status: 'resolved',
       outcome: 'Release shipped successfully.',

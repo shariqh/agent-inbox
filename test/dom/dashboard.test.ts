@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
 import {
   archiveBoard, closeProject, getBoard, insertItem, resolveItem, upsertActivity, upsertBoard,
@@ -311,6 +311,8 @@ describe('Live Operations Desk dashboard', () => {
     expect(document.activeElement).toBe(range)
     expect(document.querySelector('.dashboard-range')).toBe(range)
     expect(document.getElementById('pauseHint')?.textContent).toContain('paused')
+    expect(document.querySelector('.flow-human strong')?.textContent).toBe('2')
+    expect(answerInput(first)?.value).toBe('unfinished answer')
   })
 
   it('does not replace a focused dashboard control during polling', async () => {
@@ -334,6 +336,173 @@ describe('Live Operations Desk dashboard', () => {
     range.dispatchEvent(new Event('change', { bubbles: true }))
     await settle()
     expect((document.activeElement as HTMLElement)?.dataset.dashboardFocusKey).toBe('activity-range')
+    expect(document.querySelector('.dashboard-range')).toBe(range)
+  })
+
+  it('refreshes all monitoring detail after choosing 7 days without blurring or replacing the range', async () => {
+    const d = open()
+    for (let index = 0; index < 5; index += 1) {
+      insertItem(d, { project: 'alpha', stream: 'main', agent: 'copilot', kind: 'question', title: `Decision ${index}` })
+    }
+    upsertActivity(d, {
+      session: 'live', project: 'alpha', stream: 'main', agent: 'copilot',
+      doing: 'Running release checks', idle: false,
+    })
+    advanceClock(60_000)
+    await bootApp(d)
+    const initial = document.querySelector<HTMLSelectElement>('.dashboard-range')!
+    initial.focus()
+    initial.value = String(7 * 24 * 60 * 60 * 1000)
+    initial.dispatchEvent(new Event('change', { bubbles: true }))
+    await settle()
+    const range = document.querySelector<HTMLSelectElement>('.dashboard-range')!
+    expect(signal('waiting')).toBe('5')
+    expect(signal('agents')).toBe('1')
+    expect(document.querySelector('.dashboard-activity-total strong')?.textContent).toBe('1m')
+
+    advanceClock(60_000)
+    insertItem(d, { project: 'alpha', stream: 'main', agent: 'copilot', kind: 'question', title: 'New decision' })
+    upsertActivity(d, {
+      session: 'live', project: 'alpha', stream: 'main', agent: 'copilot',
+      doing: 'open', idle: true,
+    })
+    const outcome = insertItem(d, {
+      project: 'alpha', stream: 'main', agent: 'copilot', kind: 'done', title: 'Verification finished',
+    })
+    resolveItem(d, outcome, 'Checks completed.')
+    await pollTick()
+
+    expect(signal('waiting')).toBe('6')
+    expect(signal('agents')).toBe('0')
+    expect(document.querySelector('.flow-human strong')?.textContent).toBe('6')
+    expect(document.querySelector('.flow-outcome strong')?.textContent).toBe('1')
+    expect(document.querySelector('.dashboard-live-session small')?.textContent).toBe('Connected')
+    expect(document.querySelector('.dashboard-live-session span')?.textContent).toBe('Last report: Running release checks')
+    expect(document.querySelector('.dashboard-outcome')?.textContent).toContain('Checks completed.')
+    expect(document.querySelector('.dashboard-activity-total strong')?.textContent).toBe('2m')
+    expect(document.querySelectorAll('.dashboard-bar')).toHaveLength(14)
+    expect(document.querySelector('.dashboard-range')).toBe(range)
+    expect(range.value).toBe(String(7 * 24 * 60 * 60 * 1000))
+    expect(document.activeElement).toBe(range)
+    expect(document.getElementById('pauseHint')?.textContent).toBe('')
+  })
+
+  it('refreshes history error and recovery while the native range keeps ownership', async () => {
+    const d = open()
+    upsertActivity(d, {
+      session: 'live', project: 'alpha', stream: 'main', agent: 'copilot', doing: 'Working',
+    })
+    advanceClock(60_000)
+    let failHistory = false
+    await bootApp(d, {
+      interceptFetch: async (input, _init, next) => failHistory && String(input).startsWith('/api/activity/history')
+        ? new Response('unavailable', { status: 503 })
+        : next(),
+    })
+    const range = document.querySelector<HTMLSelectElement>('.dashboard-range')!
+    range.focus()
+    failHistory = true
+    await pollTick()
+    expect(document.querySelector('.dashboard-history-error')?.textContent).toBe('History unavailable')
+    expect(document.querySelector('.dashboard-bars')).toBeNull()
+    expect(document.querySelector('.dashboard-range')).toBe(range)
+    expect(document.activeElement).toBe(range)
+
+    failHistory = false
+    await pollTick()
+    expect(document.querySelector('.dashboard-history-error')).toBeNull()
+    expect(document.querySelector('.dashboard-bars')).not.toBeNull()
+    expect(document.querySelector('.dashboard-range')).toBe(range)
+    expect(document.activeElement).toBe(range)
+  })
+
+  it('keeps a focused outcome button while updating its text and surrounding recent results', async () => {
+    const d = open()
+    const first = insertItem(d, { project: 'alpha', stream: 'main', agent: 'copilot', kind: 'done', title: 'First result' })
+    resolveItem(d, first, 'Original result.')
+    advanceClock()
+    const second = insertItem(d, { project: 'alpha', stream: 'main', agent: 'copilot', kind: 'done', title: 'Second result' })
+    resolveItem(d, second, 'Second result recorded.')
+    await bootApp(d)
+    const focused = document.querySelector<HTMLButtonElement>(`[data-dashboard-focus-key="outcome:${first}"]`)!
+    focused.focus()
+
+    advanceClock()
+    resolveItem(d, first, 'Updated result.')
+    await pollTick()
+    expect(document.querySelector(`[data-dashboard-focus-key="outcome:${first}"]`)).toBe(focused)
+    expect(focused.textContent).toContain('Updated result.')
+    expect(document.querySelector('.dashboard-outcome')).toBe(focused)
+    expect(document.activeElement).toBe(focused)
+    click(focused)
+    await settle()
+    expect(document.getElementById('done')?.hidden).toBe(false)
+    expect(document.querySelector<HTMLDetailsElement>(`#done [data-card-id="${first}"]`)?.open).toBe(true)
+    expect(document.querySelector(`#done [data-card-id="${first}"]`)?.textContent).toContain('Updated result.')
+  })
+
+  it.each([true, false])('handles a result leaving the recent list without stealing background focus (owns focus: %s)', async (ownsFocus) => {
+    const d = open()
+    const old = insertItem(d, { project: 'alpha', stream: 'main', agent: 'copilot', kind: 'done', title: 'Old result' })
+    resolveItem(d, old, 'Old outcome.')
+    await bootApp(d)
+    const focused = document.querySelector<HTMLButtonElement>('.dashboard-outcome')!
+    focused.focus()
+    vi.spyOn(document, 'hasFocus').mockReturnValue(ownsFocus)
+    const focus = vi.spyOn(HTMLElement.prototype, 'focus')
+    for (let index = 0; index < 5; index += 1) {
+      advanceClock()
+      const id = insertItem(d, { project: 'alpha', stream: 'main', agent: 'copilot', kind: 'done', title: `New result ${index}` })
+      resolveItem(d, id, `New outcome ${index}.`)
+    }
+    await pollTick()
+    expect(focused.isConnected).toBe(false)
+    expect(document.querySelectorAll('.dashboard-outcome')).toHaveLength(4)
+    if (ownsFocus) expect(document.activeElement?.matches('.dashboard-outcome')).toBe(true)
+    else expect(focus).not.toHaveBeenCalled()
+  })
+
+  it('keeps Dashboard detail scoped while the title badge remains global', async () => {
+    const d = open()
+    for (const project of ['alpha', 'beta']) {
+      insertItem(d, { project, stream: 'main', agent: 'copilot', kind: 'question', title: `${project} decision` })
+      upsertActivity(d, { session: project, project, stream: 'main', agent: 'copilot', doing: `${project} work` })
+    }
+    await bootApp(d)
+    click(document.querySelector('#rail .rail-tab[data-project="alpha"]'))
+    await settle()
+    const range = document.querySelector<HTMLSelectElement>('.dashboard-range')!
+    range.focus()
+    for (const project of ['alpha', 'beta']) {
+      insertItem(d, { project, stream: 'main', agent: 'copilot', kind: 'question', title: `New ${project} decision` })
+    }
+    await pollTick()
+    expect(document.title).toBe('(4) Agent Inbox')
+    expect(signal('waiting')).toBe('2')
+    expect(document.querySelector('.flow-human strong')?.textContent).toBe('2')
+    expect(document.querySelectorAll('.dashboard-live-session')).toHaveLength(1)
+    expect(document.querySelector('.dashboard-live-session strong')?.textContent).toContain('alpha')
+    expect(document.activeElement).toBe(range)
+  })
+
+  it('holds Dashboard detail through a pointer press, then refreshes without a false pause notice', async () => {
+    const d = open()
+    insertItem(d, { project: 'alpha', stream: 'main', agent: 'copilot', kind: 'question', title: 'First decision' })
+    await bootApp(d)
+    const range = document.querySelector<HTMLSelectElement>('.dashboard-range')!
+    range.focus()
+    await vi.advanceTimersByTimeAsync(2800)
+    range.dispatchEvent(new Event('pointerdown', { bubbles: true }))
+    insertItem(d, { project: 'alpha', stream: 'main', agent: 'copilot', kind: 'question', title: 'Next decision' })
+    await vi.advanceTimersByTimeAsync(200)
+    expect(signal('waiting')).toBe('1')
+    expect(document.querySelector('.flow-human strong')?.textContent).toBe('1')
+    expect(document.getElementById('pauseHint')?.textContent).toBe('')
+    range.dispatchEvent(new Event('pointerup', { bubbles: true }))
+    await pollTick()
+    expect(signal('waiting')).toBe('2')
+    expect(document.querySelector('.flow-human strong')?.textContent).toBe('2')
+    expect(document.querySelector('.dashboard-range')).toBe(range)
   })
 
   it('shows an explicitly selected closed project as a deliberate dashboard peek', async () => {

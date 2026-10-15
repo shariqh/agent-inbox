@@ -239,7 +239,7 @@ phone card retain their own scrolling.
 | Tool | Purpose |
 |---|---|
 | `flag` | Raise a question, non-blocking note, or completed milestone |
-| `pending` | Read open questions and plan responses, optionally for an explicit project |
+| `pending` | Read open questions, informational feedback, and plan responses; optionally re-read one open item |
 | `answer` | Record an answer the human gave in chat while preserving inbox precedence |
 | `resolve` | Close an item after the agent acts on it |
 | `status` | Publish ephemeral live work and child-agent presence |
@@ -254,6 +254,22 @@ phone card retain their own scrolling.
 The recommended agent behavior is defined in
 [`docs/reporting-snippet.md`](docs/reporting-snippet.md). The installer adds that
 contract plus the host-specific appendix under [`docs/instructions/`](docs/instructions/).
+
+Item responses and annotations carry a monotonic `response_revision`. After handling a response,
+call `resolve` with `expected_response_revision` from that exact `pending` item or
+successful `answer` result. A missing or stale revision is refused: read and handle
+the current response before retrying. Another agent's pickup does not authorize an
+older response. Items without response history still support ordinary resolution.
+Replies and annotations on closed items are refused rather than rewriting history.
+
+Feedback on an open note or milestone reaches `pending()` until picked up; pickup
+does not close the item or add human attention. `annotated_at`, `annotation_seen_at`,
+and `annotation_seen_by` report saved/pickup state, not proof that the intended
+session acted. Legacy annotations keep unknown timestamps rather than fabricated
+receipts. Clearing feedback queues its empty, versioned state once. Use
+`pending({item_id: id})` to recover the current open item after pickup or a clear,
+and add `full: true` for its complete background. This adds no automatic host-wake
+guarantee for informational feedback.
 
 Summaries should say what changed, what remains, or what needs a decision in plain
 language. For example, "The fix is ready for review, but has not shipped" is more

@@ -119,11 +119,17 @@ describe('C2 · changeAnswer only stages the draft once the server accepted', ()
 // app) then left the typed answer gone: #status's "disconnected" is wiped by the
 // next successful poll ≤3s later and the next render rebuilds an empty input.
 describe('C3 · a failed write restores the draft and leaves a persistent inline error', () => {
-  const send = fn('async function sendReply(', '\n// the answer surface')
-  const save = fn('  const save = async () => {', '\n  input.addEventListener')
+  const send = fn('async function submitItemReply(', '\n// the answer surface')
+  const save = fn('  const save = () => withPendingResponse(async () => {', '\n  input.addEventListener')
+
+  it('sendReply keeps response settlement protected while delegating the write', () => {
+    expect(fn('function sendReply(', '\n}'))
+      .toMatch(/return withPendingResponse\(\(\) => submitItemReply\(\.\.\.args\)\)/)
+  })
 
   it('sendReply clears the drafts only after the write succeeded', () => {
-    const post = send.indexOf('postJSON(')
+    const post = send.indexOf('await postItemReply(')
+    expect(post, 'the reply write is missing').toBeGreaterThan(-1)
     expect(send.indexOf('delete draftReplies[id]')).toBeGreaterThan(post)
   })
 
@@ -135,6 +141,7 @@ describe('C3 · a failed write restores the draft and leaves a persistent inline
 
   it('the row answer save does the same', () => {
     const post = save.indexOf('postJSON(')
+    expect(post, 'the row write is missing').toBeGreaterThan(-1)
     expect(save.indexOf('delete rowDrafts[r.id]')).toBeGreaterThan(post)
     const fail = save.slice(save.indexOf('res === null'))
     expect(fail).toMatch(/rowDrafts\[r\.id\]\s*=/)

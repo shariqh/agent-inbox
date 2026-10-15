@@ -1,3 +1,5 @@
+import type { ItemAnnotationReceipt } from './action.js'
+
 export interface CardOption { label: string; detail?: string; recommended?: boolean }
 
 export interface ActionPresentation {
@@ -41,6 +43,9 @@ export interface CardItem {
   outcome_at?: string | null
   context?: string
   annotation?: string | null
+  annotated_at?: string | null
+  annotation_seen_at?: string | null
+  annotation_seen_by?: string | null
   options?: CardOption[] | null
   reply?: string | null
   reply_kind?: 'answer' | 'clarify' | 'decline' | null
@@ -59,6 +64,7 @@ export interface CardSections {
   outcomeAt: string | null
   context: string
   annotation: string
+  annotationReceipt: ItemAnnotationReceipt | null
   reply: string
   options: CardOption[]
   recWarning: string | null

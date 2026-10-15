@@ -128,6 +128,28 @@ describe('cardSections', () => {
     expect(s.recWarning).toContain('2 options are marked recommended')
     expect(s.options.length).toBe(2)
   })
+
+  it('distinguishes current, legacy, older-payload and closed annotation receipts without inventing pickup', () => {
+    const note = item({
+      kind: 'note', annotation: 'Legacy feedback.',
+      annotated_at: null, annotation_seen_at: null, annotation_seen_by: null,
+    })
+    expect(cardSections(note).annotationReceipt).toMatchObject({
+      state: 'waiting', text: 'Legacy feedback.', savedAt: null, seenAt: null, cleared: false,
+    })
+    expect(cardSections(item({ kind: 'note', annotation: 'Old payload.' })).annotationReceipt)
+      .toMatchObject({ state: 'untracked', seenAt: null })
+    expect(cardSections({ ...note, status: 'resolved' }).annotationReceipt)
+      .toMatchObject({ state: 'closed', seenAt: null })
+    expect(cardSections({ ...note, annotation_seen_at: 'not-a-time' }).annotationReceipt)
+      .toMatchObject({ state: 'untracked', seenAt: null })
+    expect(cardSections({ ...note, status: undefined }).annotationReceipt)
+      .toMatchObject({ state: 'untracked', seenAt: null })
+    expect(cardSections({ ...note, annotation: '', annotated_at: null }).annotationReceipt).toBeNull()
+    expect(cardSections({
+      ...note, annotation: '', annotated_at: '2026-09-20T10:00:00.000Z',
+    }).annotationReceipt).toMatchObject({ state: 'waiting', cleared: true })
+  })
 })
 
 // Source-level pins: which shared builder app.js imports, rather than what it

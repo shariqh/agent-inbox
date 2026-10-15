@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
 import { insertItem } from '../../src/store.js'
-import { bootApp, buttonLabelled, click, collapseRow, freshDb, pollTick, row, settle, T0, useDomTest } from './harness.js'
+import { bootApp, buttonLabelled, click, collapseRow, freshDb, pollTick, row, settle, showInbox, T0, useDomTest } from './harness.js'
 
 useDomTest()
 
@@ -41,6 +41,48 @@ describe('item inspector scroll', () => {
     expect(after, 'the open item should survive the poll rebuild').not.toBeNull()
     expect(after).not.toBe(before)
     expect(after?.scrollTop).toBe(240)
+  })
+
+  it('restores the footer against decorated geometry without moving its focused action', async () => {
+    const nativeSet = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop')!.set!
+    vi.spyOn(Element.prototype, 'scrollTop', 'set').mockImplementation(function (this: Element, value: number) {
+      // jsdom does not lay out/clamp scroll containers. Model the measured phone
+      // footer's shorter range until decoration and editor sizing are complete.
+      const sized = [...this.querySelectorAll<HTMLTextAreaElement>('textarea')]
+        .every((editor) => Boolean(editor.style.height))
+      const maximum = this.matches('.nrow-card-compose')
+        ? this.querySelector('.opt-pill[data-shortcut]') ? sized ? 170 : 149 : 99
+        : Infinity
+      nativeSet.call(this, Math.min(value, maximum))
+    })
+    db = freshDb()
+    const id = insertItem(db, {
+      project: 'alpha', stream: 'main', agent: 'copilot', kind: 'question',
+      title: 'Keep the focused footer action visible',
+      options: [
+        { label: 'Approve', detail: 'Continue the rollout.', recommended: true },
+        { label: 'Hold', detail: 'Keep it unchanged.' },
+      ],
+    })
+    await bootApp(db)
+    await showInbox()
+    click(row(id))
+    await settle()
+    buttonLabelled('Note', row(id)!)!.focus()
+    await settle()
+    const before = row(id)!.querySelector<HTMLElement>('.nrow-card-compose')!
+    expect(before.querySelector('.opt-pill[data-shortcut]')).not.toBeNull()
+    before.scrollTop = 158
+    before.dispatchEvent(new Event('scroll'))
+
+    await pollTick()
+    await settle()
+
+    const after = row(id)!.querySelector<HTMLElement>('.nrow-card-compose')!
+    expect(after).not.toBe(before)
+    expect(after.querySelector('.opt-pill[data-shortcut]')).not.toBeNull()
+    expect(after.scrollTop).toBe(158)
+    expect(document.activeElement).toBe(buttonLabelled('Note', row(id)!))
   })
 
   it.each(scrollHosts)('does not replace the inspector while %s is still scrolling', async (selector) => {

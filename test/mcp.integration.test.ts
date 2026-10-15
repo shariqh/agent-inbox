@@ -297,7 +297,8 @@ describe('mcp round-trip', () => {
     // a refusal is JSON the agent can branch on, never a thrown MCP error
     expect(await call('answer', { id, text: '   ' })).toEqual({ ok: false, reason: 'empty' })
 
-    expect(await call('answer', { id, text: 'sqlite', context: 'stay local until remote mode' })).toEqual({ ok: true })
+    expect(await call('answer', { id, text: 'sqlite', context: 'stay local until remote mode' }))
+      .toEqual({ ok: true, response_revision: 1 })
     let item = listItems(openDb(dbPath))[0]!
     expect(item.reply).toBe('sqlite')
     expect(item.reply_context).toBe('stay local until remote mode')
@@ -325,8 +326,9 @@ describe('mcp round-trip', () => {
     expect(item.reply).toBe('no — postgres')
     expect(item.reply_source).toBe('inbox')
 
-    // and either channel's answer survives the agent resolving afterwards
-    expect(await call('resolve', { id })).toEqual({ ok: true })
+    // Resolve the response actually handled, not an older answer a sibling read.
+    const current = (await call('pending', {})).items[0]
+    expect(await call('resolve', { id, expected_response_revision: current.response_revision })).toEqual({ ok: true })
     await client.close()
     item = listItems(openDb(dbPath))[0]!
     expect(item.status).toBe('resolved')

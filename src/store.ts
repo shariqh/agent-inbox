@@ -107,6 +107,9 @@ export function defaultDbPath(): string {
 export function openDb(path: string = defaultDbPath()): Database.Database {
   mkdirSync(dirname(path), { recursive: true })
   const db = new Database(path)
+  // Every process shares this file through WAL + busy_timeout, but SQLite never
+  // waits when a deferred reader is promoted to the writer, so any transaction
+  // whose first statement reads and that may later write must be `.immediate()`.
   db.pragma('busy_timeout = 5000')
   db.pragma('journal_mode = WAL')
   migrate(db)
@@ -251,6 +254,9 @@ function runMigrations(db: Database.Database): void {
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_activity_spans_open ON activity_spans(session) WHERE ended_at IS NULL;
     CREATE INDEX IF NOT EXISTS idx_activity_spans_project_started ON activity_spans(project, started_at);
+    -- listActivitySpans' since overlap: a range over closed ends plus the
+    -- open (NULL) group. Deliberately not last_active_at, which every call bumps.
+    CREATE INDEX IF NOT EXISTS idx_activity_spans_ended ON activity_spans(ended_at);
     CREATE TABLE IF NOT EXISTS projects (
       project TEXT PRIMARY KEY,
       closed_at TEXT NOT NULL
@@ -570,13 +576,21 @@ function migrateAnnotationDelivery(db: Database.Database): void {
 
 export function insertItem(db: Database.Database, item: NewItem): string {
   // milestones are announcements — re-announcing the same open milestone
-  // (agent retries, re-runs) must not stack duplicates
+  // (agent retries, re-runs) must not stack duplicates. The lookup and the INSERT
+  // share one IMMEDIATE transaction, so another process cannot announce the same
+  // milestone between them; a duplicate gets the id that already exists.
   if (item.kind === 'done') {
-    const existing = db
-      .prepare(`SELECT id FROM items WHERE kind = 'done' AND status = 'open' AND project = ? AND title = ?`)
-      .get(item.project, item.title) as { id: string } | undefined
-    if (existing) return existing.id
+    return db.transaction((): string => {
+      const existing = db
+        .prepare(`SELECT id FROM items WHERE kind = 'done' AND status = 'open' AND project = ? AND title = ?`)
+        .get(item.project, item.title) as { id: string } | undefined
+      return existing ? existing.id : insertItemRow(db, item)
+    }).immediate()
   }
+  return insertItemRow(db, item)
+}
+
+function insertItemRow(db: Database.Database, item: NewItem): string {
   const id = randomUUID()
   const now = new Date().toISOString()
   db.prepare(
@@ -1140,7 +1154,11 @@ export function upsertBoard(db: Database.Database, input: UpsertBoardInput): { b
         let rowChanged = newAction
           || prev.status !== r.status
           || prev.note !== (r.note ?? prev.note)
-          || prev.position !== i
+        // Moving a row is not a change to the row (#158). Its revision is the CAS
+        // token a native notification pins, and its updated_at means content
+        // changed, so a move bumps neither. Only the board revision records it,
+        // which still refuses any full-table snapshot taken before the move.
+        const moved = prev.position !== i
         // annotation column is deliberately NOT touched — human notes survive
         db.prepare(`
           UPDATE board_rows
@@ -1148,7 +1166,7 @@ export function upsertBoard(db: Database.Database, input: UpsertBoardInput): { b
                  note = @note,
                  position = @position,
                  updated_at = CASE
-                   WHEN status IS NOT @status OR note IS NOT @note OR position IS NOT @position
+                   WHEN status IS NOT @status OR note IS NOT @note
                    THEN @now ELSE updated_at END
            WHERE id = @id`).run({
           status: r.status,
@@ -1185,7 +1203,7 @@ export function upsertBoard(db: Database.Database, input: UpsertBoardInput): { b
         rowChanged = updateRowTextField(db, existingId, 'context', r.context, now) || rowChanged
         if (r.outcome !== undefined) rowChanged = setRowOutcome(db, existingId, r.outcome, now) || rowChanged
         if (!newAction && rowChanged) incrementRowRevision(db, existingId)
-        boardChanged = boardChanged || rowChanged
+        boardChanged = boardChanged || rowChanged || moved
       } else {
         boardChanged = true
         db.prepare(`
@@ -1224,7 +1242,7 @@ export function upsertBoard(db: Database.Database, input: UpsertBoardInput): { b
     if (before && boardChanged) bumpBoardRevision(db, boardId, now)
     return { boardId, rowCount: inp.rows.length }
   })
-  return run(input)
+  return run.immediate(input)
 }
 
 interface UpdateRowInput {
@@ -1519,7 +1537,7 @@ export function updateBoardRow(db: Database.Database, input: UpdateRowInput): { 
     if (before) bumpBoardRevision(db, boardId, now)
     return { boardId, rowId }
   })
-  return run(input)
+  return run.immediate(input)
 }
 
 // After every agent write, a board's active/archived status follows its
@@ -1646,11 +1664,13 @@ export function snoozeBoardRow(
 ): boolean {
   const now = new Date().toISOString()
   const run = db.transaction((): boolean => {
+    // Unanswered means empty-or-NULL, as in listUnansweredBoardRows and
+    // attention.js: annotateBoardRow stores a cleared note as '' (#160).
     const row = db.prepare(`UPDATE board_rows
                                SET snoozed_until = ?, updated_at = ?, revision = revision + 1
                              WHERE id = ? AND status = 'blocked'
                                AND (? IS NULL OR revision = ?)
-                               AND annotation IS NULL AND annotation_kind IS NULL
+                               AND COALESCE(annotation, '') = '' AND annotation_kind IS NULL
                                AND handled_at IS NULL
                                AND EXISTS (
                                  SELECT 1 FROM boards b
@@ -2358,27 +2378,46 @@ function pruneActivitySpans(db: Database.Database, opts: { nowMs?: number } = {}
 // window but is still open (or closed inside it) is still relevant to "what
 // happened since sinceMs", so it must not be filtered out just because it
 // started earlier.
+//
+// The overlap runs in SQL (issue #161), so only overlapping rows are read, with
+// the comparisons the old JavaScript filter made: a closed span overlaps when
+// `ended_at >= since`; an open one while warm (`last_active_at >= cold`) or
+// while its capped end still reaches `since`. Stamps are fixed-width
+// toISOString() values, so that end (`last_active_at + CLAIM_COLD_MS`, below
+// now once stale) reaches `since` exactly when `last_active_at` reaches
+// `since - CLAIM_COLD_MS`. An extended-year `since` ('+010000-…') sorts below
+// every four-digit stamp, so it admits every stale span, as before. `id` pins
+// the tie order the old full scan produced, whatever plan the index allows.
 export function listActivitySpans(
   db: Database.Database,
   opts: { project?: string; sinceMs?: number } = {},
 ): ActivitySpan[] {
   const nowMs = Date.now()
   const cold = claimCutoff(nowMs)
-  const rows = db
-    .prepare(
-      `SELECT id, session, project, stream, agent, doing, started_at, last_active_at, ended_at
+  const select = `SELECT id, session, project, stream, agent, doing, started_at, last_active_at, ended_at
          FROM activity_spans
-        WHERE (@project IS NULL OR project = @project)
-        ORDER BY started_at ASC`,
-    )
-    .all({ project: opts.project ?? null }) as Array<Omit<ActivitySpan, 'effective_ended_at'>>
-  const sinceIso = opts.sinceMs !== undefined ? new Date(opts.sinceMs).toISOString() : null
-  const withEffectiveEnd = rows.map((r): ActivitySpan => {
+        WHERE (@project IS NULL OR project = @project)`
+  const project = opts.project ?? null
+  let rows: Array<Omit<ActivitySpan, 'effective_ended_at'>>
+  if (opts.sinceMs === undefined) {
+    rows = db.prepare(`${select} ORDER BY started_at ASC, id ASC`).all({ project }) as typeof rows
+  } else {
+    const sinceDate = new Date(opts.sinceMs)
+    const since = sinceDate.toISOString()
+    const staleSince = /^\d{4}-/.test(since) ? new Date(sinceDate.getTime() - CLAIM_COLD_MS).toISOString() : ''
+    rows = db
+      .prepare(
+        `${select}
+          AND (ended_at >= @since
+               OR (ended_at IS NULL AND (last_active_at >= @cold OR last_active_at >= @staleSince)))
+        ORDER BY started_at ASC, id ASC`,
+      )
+      .all({ project, since, cold, staleSince }) as typeof rows
+  }
+  return rows.map((r): ActivitySpan => {
     const stillOpenButStale = r.ended_at === null && r.last_active_at < cold
     return { ...r, effective_ended_at: r.ended_at ?? (stillOpenButStale ? cappedSpanEnd(r.last_active_at, nowMs) : null) }
   })
-  if (sinceIso === null) return withEffectiveEnd
-  return withEffectiveEnd.filter((s) => s.effective_ended_at === null || s.effective_ended_at >= sinceIso)
 }
 
 export function getBoard(db: Database.Database, project: string, title: string): BoardWithRows | undefined {

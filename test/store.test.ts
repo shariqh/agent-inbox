@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { spawn } from 'node:child_process'
 import { mkdtempSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
@@ -47,7 +49,7 @@ import {
   pruneSourceLinks,
   listActivitySpans,
 } from '../src/store.js'
-import type { BoardRow, RowStatus } from '../src/store.js'
+import type { BoardRow, BoardWithRows, RowStatus } from '../src/store.js'
 
 function freshDb(): Database.Database {
   const dir = mkdtempSync(join(tmpdir(), 'inbox-'))
@@ -1313,6 +1315,157 @@ describe('activity spans', () => {
     expect(sessions).not.toContain('ancient')
     expect(sessions).not.toContain('crashed')
     expect(sessions).toContain('recent')
+  })
+})
+
+// ── issue #161: the `sinceMs` overlap runs in SQL, with unchanged semantics ──
+describe('activity spans: since overlap in SQL (issue #161)', () => {
+  let db: Database.Database
+  const NOW = Date.parse('2026-08-01T09:00:00.000Z')
+  const DAY = 24 * 60 * 60_000
+  const iso = (ms: number): string => new Date(ms).toISOString()
+
+  beforeEach(() => {
+    db = freshDb()
+    vi.useFakeTimers()
+    vi.setSystemTime(NOW)
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  // Rows go in directly: these cases sit on exact millisecond boundaries that
+  // the claim lifecycle cannot be steered onto.
+  function insertSpan(span: { session: string; project?: string; started: number; lastActive: number; ended: number | null }): void {
+    db.prepare(
+      `INSERT INTO activity_spans (session, project, stream, agent, doing, started_at, last_active_at, ended_at)
+       VALUES (?, ?, '', 'agent', 'work', ?, ?, ?)`,
+    ).run(span.session, span.project ?? 'p', iso(span.started), iso(span.lastActive), span.ended === null ? null : iso(span.ended))
+  }
+
+  // The pre-#161 implementation, verbatim: read every retained span, then
+  // apply the overlap filter in JavaScript.
+  function referenceSpans(opts: { project?: string; sinceMs?: number } = {}): unknown[] {
+    const nowMs = Date.now()
+    const cold = new Date(nowMs - CLAIM_COLD_MS).toISOString()
+    const capped = (lastActiveAt: string): string => {
+      const cap = Date.parse(lastActiveAt) + CLAIM_COLD_MS
+      return cap < nowMs ? new Date(cap).toISOString() : new Date(nowMs).toISOString()
+    }
+    const rows = db
+      .prepare(
+        `SELECT id, session, project, stream, agent, doing, started_at, last_active_at, ended_at
+           FROM activity_spans
+          WHERE (@project IS NULL OR project = @project)
+          ORDER BY started_at ASC`,
+      )
+      .all({ project: opts.project ?? null }) as Array<{ last_active_at: string; ended_at: string | null }>
+    const sinceIso = opts.sinceMs !== undefined ? new Date(opts.sinceMs).toISOString() : null
+    const withEffectiveEnd = rows.map((r) => {
+      const stillOpenButStale = r.ended_at === null && r.last_active_at < cold
+      return { ...r, effective_ended_at: r.ended_at ?? (stillOpenButStale ? capped(r.last_active_at) : null) }
+    })
+    if (sinceIso === null) return withEffectiveEnd
+    return withEffectiveEnd.filter((s) => s.effective_ended_at === null || s.effective_ended_at >= sinceIso)
+  }
+
+  it('keeps exactly the spans that overlap since, at every boundary', () => {
+    const since = NOW - 30 * DAY
+    insertSpan({ session: 'closed-before', started: since - 2 * DAY, lastActive: since - 2 * DAY, ended: since - 1 })
+    insertSpan({ session: 'closed-at-since', started: since - DAY, lastActive: since - DAY, ended: since })
+    insertSpan({ session: 'closed-recent', started: since + DAY, lastActive: since + DAY, ended: since + 2 * DAY })
+    insertSpan({ session: 'stale-capped-before', started: since - 3 * DAY, lastActive: since - CLAIM_COLD_MS - 1, ended: null })
+    insertSpan({ session: 'stale-capped-at-since', started: since - 3 * DAY, lastActive: since - CLAIM_COLD_MS, ended: null })
+    insertSpan({ session: 'stale-capped-after', started: since - DAY, lastActive: since + DAY, ended: null })
+    insertSpan({ session: 'stale-just-cold', started: NOW - DAY, lastActive: NOW - CLAIM_COLD_MS - 1, ended: null })
+    insertSpan({ session: 'warm-at-cold', started: NOW - DAY, lastActive: NOW - CLAIM_COLD_MS, ended: null })
+    insertSpan({ session: 'warm', started: since - 10 * DAY, lastActive: NOW - 60_000, ended: null })
+    insertSpan({ session: 'other-project', project: 'q', started: since + DAY, lastActive: since + DAY, ended: since + 2 * DAY })
+
+    const spans = listActivitySpans(db, { sinceMs: since })
+    expect(spans).toEqual(referenceSpans({ sinceMs: since }))
+    // Equal start times keep the full scan's insertion order.
+    expect(spans.map((s) => [s.session, s.effective_ended_at])).toEqual([
+      ['warm', null],
+      ['stale-capped-at-since', iso(since)],
+      ['closed-at-since', iso(since)],
+      ['stale-capped-after', iso(since + DAY + CLAIM_COLD_MS)],
+      ['closed-recent', iso(since + 2 * DAY)],
+      ['other-project', iso(since + 2 * DAY)],
+      ['stale-just-cold', iso(NOW - 1)],
+      ['warm-at-cold', null],
+    ])
+    expect(listActivitySpans(db, { project: 'q', sinceMs: since }).map((s) => s.session)).toEqual(['other-project'])
+    expect(listActivitySpans(db, { project: 'p', sinceMs: since })).toEqual(referenceSpans({ project: 'p', sinceMs: since }))
+  })
+
+  it('matches the full-scan filter over a seeded fixture for every since and project', () => {
+    let seed = 161
+    const random = (): number => {
+      seed = (seed * 1103515245 + 12345) % 2 ** 31
+      return seed / 2 ** 31
+    }
+    const pick = <T>(values: T[]): T => values[Math.floor(random() * values.length)]!
+    const since = NOW - 30 * DAY
+    const edges = [
+      since, since - 1, since + 1,
+      since - CLAIM_COLD_MS, since - CLAIM_COLD_MS - 1, since - CLAIM_COLD_MS + 1,
+      NOW - CLAIM_COLD_MS, NOW - CLAIM_COLD_MS - 1, NOW - CLAIM_COLD_MS + 1,
+      NOW, NOW - DAY, NOW - 89 * DAY, since + DAY,
+    ]
+    for (let i = 0; i < 400; i++) {
+      const lastActive = random() < 0.6 ? pick(edges) : NOW - Math.floor(random() * 90 * DAY)
+      const ended = random() < 0.5 ? null : random() < 0.6 ? pick(edges) : lastActive + Math.floor(random() * DAY)
+      // Few distinct start times, so ties are common.
+      insertSpan({ session: `s${i}`, project: pick(['p', 'q']), started: pick([lastActive - DAY, since - DAY, since]), lastActive, ended })
+    }
+    const sinces = [
+      undefined, since, since + 0.5, since - 0.5, since - CLAIM_COLD_MS, NOW - CLAIM_COLD_MS, NOW, NOW + DAY, 0, -1,
+      // Extended-year bounds compare as strings, exactly as before.
+      Date.parse('0000-01-01T00:10:00.000Z'), Date.parse('+010000-01-01T00:10:00.000Z'), -8.64e15, 8.64e15,
+    ]
+    for (const sinceMs of sinces) {
+      for (const project of [undefined, 'p', 'q', 'missing']) {
+        expect(listActivitySpans(db, { project, sinceMs }), `since=${sinceMs} project=${project}`)
+          .toEqual(referenceSpans({ project, sinceMs }))
+      }
+    }
+  })
+
+  it('reads only the overlapping rows, through the ended_at index', () => {
+    const since = NOW - 30 * DAY
+    for (let i = 0; i < 2000; i++) {
+      const start = NOW - 89 * DAY + i * 60_000
+      insertSpan({ session: `old-${i}`, started: start, lastActive: start, ended: start + 60_000 })
+    }
+    insertSpan({ session: 'abandoned', started: NOW - 80 * DAY, lastActive: NOW - 80 * DAY, ended: null })
+    insertSpan({ session: 'stale', started: NOW - 2 * DAY, lastActive: NOW - 2 * DAY, ended: null })
+    insertSpan({ session: 'recent', started: NOW - DAY, lastActive: NOW - DAY, ended: NOW - DAY + 60_000 })
+    insertSpan({ session: 'warm', started: NOW - 60_000, lastActive: NOW - 60_000, ended: null })
+
+    // Count what SQLite hands back to JavaScript, statement by statement.
+    const reads: Array<{ source: string; params: unknown[]; rows: number }> = []
+    const prepare = db.prepare.bind(db)
+    vi.spyOn(db, 'prepare').mockImplementation(((source: string) => {
+      const statement = prepare(source)
+      if (!/\bFROM activity_spans\b/.test(source)) return statement
+      const all = statement.all.bind(statement) as (...params: unknown[]) => unknown[]
+      statement.all = ((...params: unknown[]) => {
+        const rows = all(...params)
+        reads.push({ source, params, rows: rows.length })
+        return rows
+      }) as typeof statement.all
+      return statement
+    }) as typeof db.prepare)
+
+    expect(listActivitySpans(db, { sinceMs: since }).map((s) => s.session)).toEqual(['stale', 'recent', 'warm'])
+    expect(reads.map((read) => read.rows)).toEqual([3])
+    const plan = (prepare(`EXPLAIN QUERY PLAN ${reads[0]!.source}`).all(...(reads[0]!.params as [])) as Array<{ detail: string }>)
+      .map((step) => step.detail)
+      .join('\n')
+    expect(plan).not.toMatch(/\bSCAN (TABLE )?activity_spans\b/)
+    expect(plan).toMatch(/USING INDEX idx_activity_spans_ended\b/)
   })
 })
 
@@ -2821,5 +2974,195 @@ describe('source links', () => {
     // the clock moves, never the row: checked_at is stamped inside the store
     pruneSourceLinks(db, { nowMs: Date.now() + 31 * 24 * 60 * 60000 })
     expect(listSourceLinks(db)).toHaveLength(0)
+  })
+})
+
+// Issue #154. A DEFERRED transaction that reads first holds a WAL read snapshot,
+// and SQLite never runs the busy handler when that reader is promoted to the
+// writer: another connection holding the write lock fails it with SQLITE_BUSY at
+// once, and a commit that lands after its read fails it with SQLITE_BUSY_SNAPSHOT.
+// busy_timeout only protects a transaction that reserves the writer before it reads.
+describe('read-then-write transactions reserve the WAL writer (#154)', () => {
+  const HOLD_MS = 500
+  const betterSqlite3 = createRequire(import.meta.url).resolve('better-sqlite3')
+  // A second OS process (the viewer, a hook, a sibling MCP server) that takes the
+  // write lock, runs optional `sql` inside it, says `held`, and commits HOLD_MS later.
+  const HOLD_WRITER = `
+    const Database = require(process.argv[1])
+    const db = new Database(process.argv[2])
+    db.pragma('busy_timeout = 5000')
+    db.exec('BEGIN IMMEDIATE')
+    if (process.argv[4]) db.exec(process.argv[4])
+    process.stdout.write('held\\n')
+    setTimeout(() => {
+      db.exec('COMMIT')
+      db.close()
+    }, Number(process.argv[3]))
+  `
+
+  async function holdWriteLock(path: string, sql = ''): Promise<{ exit: Promise<{ code: number | null; stderr: string }> }> {
+    const holder = spawn(process.execPath, ['-e', HOLD_WRITER, betterSqlite3, path, String(HOLD_MS), sql], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let stderr = ''
+    holder.stderr.on('data', (chunk) => { stderr += String(chunk) })
+    const exit = new Promise<{ code: number | null; stderr: string }>((resolve) => {
+      holder.once('close', (code) => resolve({ code, stderr }))
+    })
+    await new Promise<void>((resolve, reject) => {
+      holder.stdout.once('data', (chunk) => {
+        if (String(chunk) === 'held\n') resolve()
+        else reject(new Error(`unexpected lock-holder output: ${String(chunk)}`))
+      })
+      holder.once('error', reject)
+      void exit.then(({ code }) => reject(new Error(`lock holder exited before taking the lock (${code}): ${stderr}`)))
+    })
+    return { exit }
+  }
+
+  // Run `between` once, inside the store call, right after the first statement
+  // whose SQL matches `pattern` has returned its read and before anything writes.
+  function afterFirstRead(db: Database.Database, pattern: RegExp, between: () => void): () => void {
+    const realPrepare = db.prepare.bind(db)
+    let fired = false
+    db.prepare = ((source: string) => {
+      const stmt = realPrepare(source)
+      if (!fired && pattern.test(source)) {
+        const realGet = stmt.get.bind(stmt)
+        stmt.get = ((...args: unknown[]) => {
+          const row = realGet(...(args as []))
+          if (!fired) {
+            fired = true
+            between()
+          }
+          return row
+        }) as typeof stmt.get
+      }
+      return stmt
+    }) as typeof db.prepare
+    return () => { db.prepare = realPrepare }
+  }
+
+  // One thread cannot wait for a lock it holds itself, so the in-process second
+  // connection runs with busy_timeout 0: SQLITE_BUSY means it would have queued.
+  function busyOrCommitted(write: () => void): 'busy' | 'committed' {
+    try {
+      write()
+      return 'committed'
+    } catch (err) {
+      if ((err as { code?: string }).code === 'SQLITE_BUSY') return 'busy'
+      throw err
+    }
+  }
+
+  function seeded(): { path: string; db: Database.Database; board: BoardWithRows } {
+    const path = join(mkdtempSync(join(tmpdir(), 'inbox-writer-')), 'inbox.db')
+    const db = openDb(path)
+    upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'B', rows: [{ label: 'one', status: 'tracked' }] })
+    return { path, db, board: getBoard(db, 'p', 'B')! }
+  }
+
+  // Each writer, called with exactly the versions the agent last read.
+  const upsertAsRead = (db: Database.Database, board: BoardWithRows): void => {
+    writeBoard(db, {
+      project: 'p', stream: '', agent: 'a', title: 'B', expectedVersion: board.revision,
+      rows: [{ label: 'one', revision: board.rows[0]!.revision, status: 'partial', note: 'written' }],
+    })
+  }
+  const updateRowAsRead = (db: Database.Database, board: BoardWithRows): void => {
+    writeBoardRow(db, {
+      project: 'p', stream: '', agent: 'a', title: 'B', label: 'one',
+      expectedBoardVersion: board.revision, expectedRevision: board.rows[0]!.revision,
+      status: 'partial', note: 'written',
+    })
+  }
+  const writes: Array<[string, typeof upsertAsRead]> = [['upsertBoard', upsertAsRead], ['updateBoardRow', updateRowAsRead]]
+
+  it.each(writes)('%s waits out another process\'s write lock, then writes', async (_name, write) => {
+    const { path, db, board } = seeded()
+    const { exit } = await holdWriteLock(path)
+
+    const started = Date.now()
+    write(db, board)
+    const waitedMs = Date.now() - started
+
+    expect(waitedMs, 'the write must wait for the holder, not fail at once').toBeGreaterThanOrEqual(250)
+    expect(getBoard(db, 'p', 'B')!.rows[0]).toMatchObject({ status: 'partial', note: 'written' })
+    expect(await exit).toMatchObject({ code: 0 })
+    db.close()
+  })
+
+  it.each(writes)('a commit cannot land between %s\'s read and its write', (_name, write) => {
+    const { path, db, board } = seeded()
+    const other = openDb(path)
+    other.pragma('busy_timeout = 0')
+    const unrelated = { project: 'p', stream: '', agent: 'b', kind: 'note' as const, title: 'unrelated write' }
+    let raced: 'busy' | 'committed' | undefined
+    const restore = afterFirstRead(db, /^SELECT \* FROM boards WHERE project = \? AND title = \?$/, () => {
+      raced = busyOrCommitted(() => { insertItem(other, unrelated) })
+    })
+    try {
+      write(db, board)
+    } finally {
+      restore()
+    }
+
+    expect(raced, 'a concurrent writer queues behind the transaction instead of landing inside it').toBe('busy')
+    insertItem(other, unrelated)
+    expect(getBoard(db, 'p', 'B')!.rows[0]).toMatchObject({ status: 'partial', note: 'written' })
+    expect(listItems(db).map((item) => item.title)).toEqual(['unrelated write'])
+    other.close()
+    db.close()
+  })
+
+  // The waiting writer reads only once it owns the lock, so a revision bumped by
+  // the holder is a genuine CAS refusal: the same error as ever, never a lock error.
+  it('upsertBoard that waited still refuses a board version bumped under the lock', async () => {
+    const { path, db, board } = seeded()
+    const { exit } = await holdWriteLock(path, `UPDATE boards SET revision = revision + 1 WHERE id = '${board.id}'`)
+
+    expect(() => { upsertAsRead(db, board) })
+      .toThrow(`board version mismatch for "B": expected ${board.revision}, found ${board.revision + 1}`)
+    expect(await exit).toMatchObject({ code: 0 })
+    expect(getBoard(db, 'p', 'B')!.rows[0]).toMatchObject({ status: 'tracked', note: '' })
+    db.close()
+  })
+
+  it('updateBoardRow that waited still refuses a row revision bumped under the lock', async () => {
+    const { path, db, board } = seeded()
+    const row = board.rows[0]!
+    const { exit } = await holdWriteLock(path, `UPDATE board_rows SET revision = revision + 1 WHERE id = '${row.id}'`)
+
+    expect(() => { updateRowAsRead(db, board) })
+      .toThrow(`board row revision mismatch for "one": expected ${row.revision}, found ${row.revision + 1}`)
+    expect(await exit).toMatchObject({ code: 0 })
+    expect(getBoard(db, 'p', 'B')!.rows[0]).toMatchObject({ status: 'tracked', note: '' })
+    db.close()
+  })
+
+  it('the same milestone announced from two connections at once is ONE row with ONE id', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'inbox-milestone-')), 'inbox.db')
+    const db = openDb(path)
+    const other = openDb(path)
+    other.pragma('busy_timeout = 0')
+    const milestone = { project: 'p', stream: '', agent: 'a', kind: 'done' as const, title: 'shipped v2' }
+    const ids: string[] = []
+    let queued = false
+    // the second announcement arrives right after the first one's lookup missed
+    const restore = afterFirstRead(db, /kind = 'done'/, () => {
+      queued = busyOrCommitted(() => { ids.push(insertItem(other, milestone)) }) === 'busy'
+    })
+    try {
+      ids.push(insertItem(db, milestone))
+    } finally {
+      restore()
+    }
+    if (queued) ids.push(insertItem(other, milestone)) // what the waiting second process does next
+
+    const open = listItems(db, { status: 'open' }).filter((item) => item.kind === 'done')
+    expect(open).toHaveLength(1)
+    expect(ids).toEqual([open[0]!.id, open[0]!.id])
+    other.close()
+    db.close()
   })
 })

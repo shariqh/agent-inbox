@@ -26,9 +26,10 @@ const AGENT = { project: 'alpha', stream: 'main', agent: 'copilot' } as const
 async function bootWithRestart(d: Database.Database) {
   let boot = 'original-viewer'
   const bridge = await bootApp(d, {
-    interceptFetch: async (input, _init, next) => {
+    // A restarted viewer marks every response, and one tick reads them all (#161).
+    interceptFetch: async (_input, _init, next) => {
       const response = await next()
-      if (String(input) === '/api/items') response.headers.set('x-inbox-boot', boot)
+      response.headers.set('x-inbox-boot', boot)
       return response
     },
   })

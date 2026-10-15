@@ -8,13 +8,16 @@ import {
   advanceBoardRow,
   annotateBoardRow,
   archiveBoard,
+  clearRowHandled,
   getBoard,
   insertItem,
   listBoards,
   listItems,
   listPendingRows,
+  listUnansweredBoardRows,
   markAnnotationDelivered,
   markReplySeen,
+  markRowHandled,
   openDb,
   replyItem,
   resolveItem,
@@ -279,6 +282,88 @@ describe('action lifecycle storage', () => {
     })
     expect(snoozeBoardRow(db, rowId, null)).toBe(true)
     expect(getBoard(db, 'p', 'B')!.rows[0]!.snoozed_until).toBeNull()
+  })
+
+  // #160: annotateBoardRow stores the TRIMMED text, so a cleared note is '' with
+  // no kind — still unanswered for listUnansweredBoardRows and attention.js, which
+  // therefore keep offering Snooze on the row. The snooze write must agree.
+  it('snoozes and wakes a blocked row whose annotation the human cleared', () => {
+    upsertBoard(db, {
+      project: 'p', stream: '', agent: 'a', title: 'B',
+      rows: [{ label: 'Task', status: 'blocked' }],
+    })
+    let board = getBoard(db, 'p', 'B')!
+    const rowId = board.rows[0]!.id
+    expect(annotateBoardRow(db, rowId, 'Merge it', 'answer', board.rows[0]!.revision, board.revision)).toBe(true)
+    board = getBoard(db, 'p', 'B')!
+    expect(annotateBoardRow(db, rowId, '', 'answer', board.rows[0]!.revision, board.revision)).toBe(true)
+    board = getBoard(db, 'p', 'B')!
+    let row = board.rows[0]!
+    expect(row).toMatchObject({ annotation: '', annotation_kind: null, handled_at: null })
+    expect(listUnansweredBoardRows(db, 'p').map((candidate) => candidate.id)).toEqual([rowId])
+
+    const until = new Date(Date.now() + 60 * 60_000).toISOString()
+    expect(snoozeBoardRow(db, rowId, until, row.revision, board.revision)).toBe(true)
+    board = getBoard(db, 'p', 'B')!
+    row = board.rows[0]!
+    expect(row.snoozed_until).toBe(until)
+
+    expect(snoozeBoardRow(db, rowId, null, row.revision, board.revision)).toBe(true)
+    expect(getBoard(db, 'p', 'B')!.rows[0]!.snoozed_until).toBeNull()
+  })
+
+  it('still refuses to snooze an answered, handled, unblocked or stale row', () => {
+    upsertBoard(db, {
+      project: 'p', stream: '', agent: 'a', title: 'B',
+      rows: [
+        { label: 'Answered', status: 'blocked' },
+        { label: 'Kind only', status: 'blocked' },
+        { label: 'Handled', status: 'blocked' },
+        { label: 'Not blocked', status: 'partial' },
+        { label: 'Stale', status: 'blocked' },
+      ],
+    })
+    const current = (label: string) => {
+      const board = getBoard(db, 'p', 'B')!
+      return { board, row: board.rows.find((candidate) => candidate.label === label)! }
+    }
+    const until = new Date(Date.now() + 60 * 60_000).toISOString()
+    const snooze = (label: string) => {
+      const { board, row } = current(label)
+      return snoozeBoardRow(db, row.id, until, row.revision, board.revision)
+    }
+
+    annotateBoardRow(db, current('Answered').row.id, 'Merge it')
+    expect(snooze('Answered')).toBe(false)
+
+    // Shapes annotateBoardRow cannot write, built directly so each guard is pinned
+    // on its own: a legacy answer from before annotation_kind existed (text, NULL
+    // kind) and a kind without text. Raw SQL is allowed HERE, in a test; store.ts
+    // remains the only door for production code.
+    const setResponse = (label: string, annotation: string, kind: string | null) => {
+      db.prepare(`UPDATE board_rows SET annotation = ?, annotation_kind = ? WHERE id = ?`)
+        .run(annotation, kind, current(label).row.id)
+    }
+    setResponse('Answered', 'Merge it', null)
+    expect(snooze('Answered')).toBe(false)
+    setResponse('Kind only', '', 'clarify')
+    expect(snooze('Kind only')).toBe(false)
+
+    // The rest carry a cleared annotation, so only their other guard can refuse.
+    for (const label of ['Handled', 'Not blocked', 'Stale']) annotateBoardRow(db, current(label).row.id, '')
+    expect(markRowHandled(db, current('Handled').row.id)).toBe(true)
+    expect(snooze('Handled')).toBe(false)
+    expect(snooze('Not blocked')).toBe(false)
+
+    const { board, row } = current('Stale')
+    expect(snoozeBoardRow(db, row.id, until, row.revision - 1, board.revision)).toBe(false)
+    expect(snoozeBoardRow(db, row.id, until, row.revision, board.revision - 1)).toBe(false)
+    expect(current('Stale').row.snoozed_until).toBeNull()
+    expect(snooze('Stale')).toBe(true)
+
+    expect(getBoard(db, 'p', 'B')!.rows.map((candidate) => [candidate.label, candidate.snoozed_until])).toEqual([
+      ['Answered', null], ['Kind only', null], ['Handled', null], ['Not blocked', null], ['Stale', until],
+    ])
   })
 
   it('records outcomes when agents acknowledge items and rows', () => {
@@ -626,5 +711,180 @@ describe('action lifecycle storage', () => {
         impact: 'Wrong.',
       }],
     })).toThrow(/revision/)
+  })
+
+  // #158: a row's revision is the CAS token the native notification pins, so a
+  // re-send that only MOVES a row must not version it. The board revision still
+  // records the move, because it is what protects a full-table snapshot.
+  describe('position-only re-sends (#158)', () => {
+    const DEPLOY = {
+      label: 'Deploy',
+      status: 'blocked' as const,
+      note: 'The release candidate is ready.',
+      next_step: 'Choose the deploy window.',
+      action_owner: 'decision' as const,
+      impact: 'Schedules the release.',
+      options: [{ label: 'Today', recommended: true }, { label: 'Tomorrow' }],
+    }
+    const UPLOAD = {
+      label: 'Upload',
+      status: 'blocked' as const,
+      note: 'The build is notarized.',
+      next_step: 'Upload the build to the store.',
+      action_owner: 'task' as const,
+      impact: 'Required before release.',
+    }
+    const tick = () => new Promise((resolve) => setTimeout(resolve, 2))
+    const board = () => getBoard(db, 'p', 'B')!
+    const labels = () => board().rows.map((row) => row.label)
+
+    it('moves unchanged rows without a row revision or content stamp, but versions the board', async () => {
+      upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'B', rows: [DEPLOY, UPLOAD] })
+      const original = board()
+      const [deploy, upload] = original.rows
+      await tick()
+
+      writeBoard(db, {
+        project: 'p', stream: '', agent: 'a', title: 'B',
+        expectedVersion: original.revision,
+        rows: [
+          { label: 'Build', status: 'partial', note: 'CI is running.' },
+          { label: 'Deploy', revision: deploy!.revision, status: 'blocked' },
+          { label: 'Upload', revision: upload!.revision, status: 'blocked' },
+        ],
+      })
+      const inserted = board()
+      expect(labels()).toEqual(['Build', 'Deploy', 'Upload'])
+      expect(inserted.revision).toBeGreaterThan(original.revision)
+      for (const before of [deploy!, upload!]) {
+        expect(inserted.rows.find((row) => row.id === before.id)).toMatchObject({
+          revision: before.revision,
+          updated_at: before.updated_at,
+          action_version: before.action_version,
+        })
+      }
+      await tick()
+
+      // A pure swap changes nothing but order: only the board version records it.
+      writeBoard(db, {
+        project: 'p', stream: '', agent: 'a', title: 'B',
+        expectedVersion: inserted.revision,
+        rows: [...inserted.rows].reverse().map((row) => ({ label: row.label, revision: row.revision, status: row.status })),
+      })
+      const swapped = board()
+      expect(labels()).toEqual(['Upload', 'Deploy', 'Build'])
+      expect(swapped.revision).toBeGreaterThan(inserted.revision)
+      for (const before of inserted.rows) {
+        expect(swapped.rows.find((row) => row.id === before.id)).toMatchObject({
+          revision: before.revision,
+          updated_at: before.updated_at,
+        })
+      }
+
+      // Every row revision in the pre-swap snapshot is still current, so the
+      // board version is the only thing that refuses it.
+      expect(() => writeBoard(db, {
+        project: 'p', stream: '', agent: 'a', title: 'B',
+        expectedVersion: inserted.revision,
+        rows: inserted.rows.map((row) => ({ label: row.label, revision: row.revision, status: row.status })),
+      })).toThrow(/board version mismatch/)
+      expect(board()).toEqual(swapped)
+    })
+
+    it('still versions a moved row whose content changed', async () => {
+      upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'B', rows: [DEPLOY, UPLOAD] })
+      const original = board()
+      const [deploy, upload] = original.rows
+      await tick()
+
+      writeBoard(db, {
+        project: 'p', stream: '', agent: 'a', title: 'B',
+        expectedVersion: original.revision,
+        rows: [
+          { label: 'Upload', revision: upload!.revision, status: 'blocked' },
+          { label: 'Deploy', revision: deploy!.revision, status: 'blocked', note: 'The window moved to Friday.' },
+        ],
+      })
+      const after = board()
+      const changed = after.rows.find((row) => row.id === deploy!.id)!
+      expect(changed).toMatchObject({ position: 1, note: 'The window moved to Friday.', revision: deploy!.revision + 1 })
+      expect(changed.updated_at > deploy!.updated_at).toBe(true)
+      expect(after.rows.find((row) => row.id === upload!.id)).toMatchObject({
+        position: 0,
+        revision: upload!.revision,
+        updated_at: upload!.updated_at,
+      })
+      expect(after.revision).toBeGreaterThan(original.revision)
+    })
+
+    it('refuses human writes pinned to the pre-move board revision, even with a current row revision', () => {
+      upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'B', rows: [DEPLOY, UPLOAD] })
+      const original = board()
+      const [deploy, upload] = original.rows
+      writeBoard(db, {
+        project: 'p', stream: '', agent: 'a', title: 'B',
+        expectedVersion: original.revision,
+        rows: [
+          { label: 'Upload', revision: upload!.revision, status: 'blocked' },
+          { label: 'Deploy', revision: deploy!.revision, status: 'blocked' },
+        ],
+      })
+      const moved = board()
+      const current = (id: string) => moved.rows.find((row) => row.id === id)!.revision
+      expect(moved.revision).toBeGreaterThan(original.revision)
+
+      expect(annotateBoardRow(db, deploy!.id, 'Today', 'answer', current(deploy!.id), original.revision)).toBe(false)
+      expect(snoozeBoardRow(db, deploy!.id, '2099-01-01T00:00:00.000Z', current(deploy!.id), original.revision)).toBe(false)
+      expect(markRowHandled(db, upload!.id, current(upload!.id), original.revision)).toBe(false)
+      expect(clearRowHandled(db, upload!.id, current(upload!.id), original.revision)).toBe(false)
+      expect(board()).toEqual(moved)
+
+      // A response captured before the move needs only a refreshed board token.
+      expect(annotateBoardRow(db, deploy!.id, 'Today', 'answer', deploy!.revision, moved.revision)).toBe(true)
+      expect(markRowHandled(db, upload!.id, upload!.revision, board().revision)).toBe(true)
+      expect(board().rows.map((row) => [row.label, row.annotation, Boolean(row.handled_at)])).toEqual([
+        ['Upload', null, true],
+        ['Deploy', 'Today', false],
+      ])
+    })
+
+    it('lets board_row and board_advance use an unchanged row revision after a sibling move', () => {
+      upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'B', rows: [DEPLOY, UPLOAD] })
+      const original = board()
+      const [deploy, upload] = original.rows
+      writeBoard(db, {
+        project: 'p', stream: '', agent: 'a', title: 'B',
+        expectedVersion: original.revision,
+        rows: [
+          { label: 'Build', status: 'partial', note: 'CI is running.' },
+          { label: 'Deploy', revision: deploy!.revision, status: 'blocked' },
+          { label: 'Upload', revision: upload!.revision, status: 'blocked' },
+        ],
+      })
+
+      writeBoardRow(db, {
+        project: 'p', stream: '', agent: 'a', title: 'B', label: 'Deploy',
+        expectedBoardVersion: board().revision,
+        expectedRevision: deploy!.revision,
+        impact: 'Customers are waiting on the fix.',
+      })
+      expect(board().rows.find((row) => row.id === deploy!.id)).toMatchObject({
+        impact: 'Customers are waiting on the fix.',
+        revision: deploy!.revision + 1,
+      })
+
+      expect(advanceBoardRow(db, {
+        project: 'p',
+        title: 'B',
+        label: 'Upload',
+        expectedBoardVersion: board().revision,
+        expectedRevision: upload!.revision,
+        note: 'The build is uploaded.',
+        next_step: 'Confirm the store listing.',
+        action_owner: 'task',
+        impact: 'Required before release.',
+      })).toEqual({ ok: true, action_version: upload!.action_version + 1, revision: upload!.revision + 1 })
+      expect(labels()).toEqual(['Build', 'Deploy', 'Upload'])
+    })
   })
 })

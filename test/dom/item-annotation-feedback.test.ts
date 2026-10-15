@@ -201,7 +201,7 @@ describe('informational item feedback', () => {
     const bridge = await bootApp(db, {
       interceptFetch: async (input, init, next) => {
         const response = await next()
-        if (String(input) === '/api/items') response.headers.set('x-inbox-boot', boot)
+        response.headers.set('x-inbox-boot', boot)
         if (loseReply && init?.method === 'POST' && String(input).endsWith('/annotate')) {
           loseReply = false
           throw new Error('lost annotation response')

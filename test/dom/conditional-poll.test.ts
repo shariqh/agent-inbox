@@ -22,7 +22,11 @@ function conditionalProxy(reads: Read[], state: { boot: string; tags: boolean; m
   return async (input, init, next) => {
     const path = String(input)
     const response = await next()
-    if (!SNAPSHOTS.has(path)) return response
+    // A viewer marks every response it serves; one tick reads them all (#161).
+    if (!SNAPSHOTS.has(path)) {
+      response.headers.set('x-inbox-boot', state.boot)
+      return response
+    }
     const sent = new Headers(init?.headers).get('if-none-match')
     if (path === '/api/items' && state.malformed) {
       return new Response('{"needsYou":[],"notes":[],"done":"broken"}', {
@@ -38,7 +42,7 @@ function conditionalProxy(reads: Read[], state: { boot: string; tags: boolean; m
       : null
     if (tag) headers.set('etag', tag)
     else headers.delete('etag')
-    if (path === '/api/items') headers.set('x-inbox-boot', state.boot)
+    headers.set('x-inbox-boot', state.boot)
     const status = tag && sent === tag ? 304 : response.status
     reads.push({ path, sent, tag, status })
     return new Response(status === 304 ? null : body, { status, headers })
@@ -66,7 +70,10 @@ describe('conditional snapshot polling', () => {
       rows: [{ label: 'Step', revision: board.rows[0]!.revision, status: 'tracked', note: 'Updated' }],
     })
     await pollTick()
-    expect(reads.slice(-3).map((entry) => entry.status)).toEqual([200, 200, 304])
+    // One tick's reads now finish in any order (#161), so compare them by route.
+    expect(Object.fromEntries(reads.slice(-3).map((entry) => [entry.path, entry.status]))).toEqual({
+      '/api/items': 200, '/api/boards': 200, '/api/boards/archived': 304,
+    })
     expect(document.title).toBe('Agent Inbox')
     click(document.querySelector('.tab[data-tab="boards"]'))
     await settle()

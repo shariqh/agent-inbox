@@ -74,7 +74,11 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   Read the live boot header before consuming cached data. Untagged servers retain
   full-fetch behavior, malformed replies fail explicitly, and no snapshot content
   is persisted to browser storage. Derive mutable view state rather than changing
-  authoritative cached records.
+  authoritative cached records. A poll tick starts its seven reads together (#161)
+  and applies nothing until all settle: history, closed projects and links keep
+  their fallbacks, any other failure still fails the whole tick (reported in the
+  old serial order) without blanking the frame, and `loadGeneration` still
+  discards an older tick that finishes late.
 - **`src/store.ts` is the only door to the database.** Every read/write goes through its
   exported functions — items: `insertItem`/`resolveItem`/`dismissItem`/`annotateItem`/
   `replyItem`/`answerItem`/`listItems`; boards: `upsertBoard`/`updateBoardRow`/`getBoard`/`listBoards`/
@@ -120,6 +124,11 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   `revision`; `board_row` carries `expected_revision`; browser/native annotate, snooze and
   handled writes carry row revision plus board revision. A stale notification or sibling
   therefore cannot answer or complete the newer action that reused the stable row id.
+  A move alone is not a row change (#158): a reorder bumps the board revision, which still
+  refuses a pre-move full-table snapshot, but never the row `revision` or `updated_at`.
+  Native notifications key rows by revision (`attentionNotification` in
+  `electron/reply-watch.cjs`), so an unchanged ask is not re-announced and its earlier
+  buttons still apply through the board-token refresh.
 - **`updated_at` means content changed.** Item/row human or agent content writes bump it;
   delivery stamps (`markReplySeen`, `markAnnotationDelivered`, `markHandledDelivered`) never
   do. The viewer's New/changed filter depends on this distinction just as Live depends on
@@ -216,7 +225,10 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   (measured: servers observed running 4+ days), so a fan-out shares one process, one `sessionId`
   and one in-memory ledger. All instances write to the same `~/.agent-inbox/inbox.db`. Concurrency
   is handled by **WAL + `busy_timeout=5000`** set in `openDb` — keep both. Writes are single tiny
-  inserts; this is WAL's happy path.
+  inserts; this is WAL's happy path. `busy_timeout` never applies when a deferred transaction's
+  read snapshot is promoted to the writer — that fails at once with `SQLITE_BUSY` or
+  `SQLITE_BUSY_SNAPSHOT` — so any transaction that reads before it may write must be
+  `.immediate()` (#154).
 - **Two activity stamps, and only one of them means work** *(issue #45)*. `activity.updated_at` is
   LIVENESS: the 5-minute `touchActivity` timer bumps it whether or not the agent has done
   anything, so `listActivity`'s 15-minute cutoff can only ever catch a **crashed** process and is
@@ -348,6 +360,9 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   pointer/scroll activity remain. The existing frontend keeps polling and updating
   ambient attention during that hold. Once protected work clears, an ordinary poll
   reloads exactly once; drafts are never automatically sent to make refresh possible.
+  Every response of a tick carries its server's marker; markers that disagree within
+  one tick mean a restart landed between two reads, so that tick counts as a restart
+  and is never applied, because it would mix two servers' data.
   The quiet status hint explains an unsent-work hold without labeling an in-flight
   write or pointer interaction as a human blocker. Failed staged choices use the same
   exact-intent recovery path as other replies. This is automatic-restart protection,
@@ -734,7 +749,11 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   `prompt-submit` and `session-start` nudge an idle agent to call `pending()`, and the
   `watch` subcommand (asyncRewake, exit 2) wakes it the moment you answer. The two legacy
   untracked `~/.claude/hooks/agent-inbox-*.sh` scripts are superseded — `--migrate` retires
-  their settings entries.
+  their settings entries. *(#155)* The installer's dry run stays side-effect free: its
+  selftest gets a throwaway database, because opening the hub creates and migrates it.
+  `--apply` writes through a symlinked `settings.json` (backup, staged copy and rename beside
+  the target), refuses a dangling, non-regular or read-only target, and checks every write
+  before it reports success.
 - **Close / reopen a project** *(#32)* — a sparse `projects(project, closed_at)` table; **reopen is
   DERIVED, never written** (a project un-closes the moment an item or board is CREATED in it after
   `closed_at`), so `insertItem` stays byte-identical and the un-close is atomic with the very insert

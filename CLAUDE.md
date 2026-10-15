@@ -292,8 +292,12 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   `context` alone when the field is absent and clears it only on an explicit `''`, because
   the prescribed flow is `board_get` → `board_upsert` and MCP reads no longer carry the
   text: omitting what you were never handed would wipe it. This does NOT weaken the rule
-  that a ROW absent from an upsert is deleted — that one stands. `note` still clears on
-  omission, deliberately: reads do hand `note` back, so leaving it out is a real choice.
+  that a ROW absent from an upsert is deleted — that one stands. The same omission rule
+  covers every agent-owned row field: an omitted `note`, `next_step`, `impact`,
+  `next_after`, `action_owner`, `options`, `context` or `outcome` keeps its stored value
+  (`upsertBoard`: `note: r.note ?? prev.note`), and only an explicit `''` (or
+  `options: []`) clears it. Do not "fix" `note` to clear on omission: agents re-send
+  full tables, and that would wipe every row's TL;DR.
 - **`store.ts`/`mcp.ts`/`viewer.ts` inverse round-trip:** the store's `Item` and
   `BoardWithRows` shapes are the contract shared by MCP writes/reads and viewer reads.
   Change them in `store.ts` and update both consumers (+ `group.ts` for items;

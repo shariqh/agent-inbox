@@ -116,8 +116,9 @@ Run the build before `npm run electron`; the development shell starts the built
   default, retain first-pickup receipts, and refuse annotation writes to closed items.
 - Boards are idempotent by `(project, title)` and rows by stable `label`.
   A full `board_upsert` deletes rows omitted from the payload, but omitting a
-  row's `context`, `next_step`, or `options` preserves the stored value; explicit
-  empty values clear them.
+  row's `note`, `next_step`, `impact`, `next_after`, `action_owner`, `options`,
+  `context`, or `outcome` preserves the stored value; explicit empty values
+  (`''`, `options: []`) clear them.
   Never overwrite or reset human-owned annotation, handled, or delivery fields
   during routine upserts.
 - `blocked` is the only row status that means the human must act. A failing

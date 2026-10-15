@@ -362,6 +362,20 @@ function responseKind(value: unknown): ResponseKind | null {
   return value === 'answer' || value === 'clarify' || value === 'decline' ? value : null
 }
 
+// The whole snooze instruction (issue #163): null wakes, a parseable date
+// snoozes. A date is stored as UTC ISO with a 4-digit year because the store
+// compares snoozed_until as TEXT (`> now`); a verbatim "tomorrow" or "" sorts
+// wrongly there and reads as awake to the viewer's Date.parse — a silent wake
+// answered with 200. undefined = invalid, refused before any store call.
+function snoozeUntil(value: unknown): string | null | undefined {
+  if (value === null) return null
+  if (typeof value !== 'string') return undefined
+  const ms = Date.parse(value)
+  if (!Number.isFinite(ms)) return undefined
+  const iso = new Date(ms).toISOString()
+  return /^\d{4}-/.test(iso) ? iso : undefined
+}
+
 function sameSnapshotState(a: SnapshotReadState, b: SnapshotReadState): boolean {
   return !a.inTransaction && !b.inTransaction
     && a.dataVersion === b.dataVersion && a.totalChanges === b.totalChanges
@@ -548,13 +562,8 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
 
   app.post('/api/items/:id/snooze', async (c) => {
     const body = await c.req.json<{ until?: unknown }>().catch(() => null)
-    const until = body?.until
-    // `until` is the whole instruction: a string snoozes, null wakes. Anything
-    // else, an unparseable body included, used to be coerced to null — a silent
-    // wake answered with 200 (issue #163).
-    if (until !== null && typeof until !== 'string') {
-      return c.json({ ok: false, error: 'until must be a string or null' }, 400)
-    }
+    const until = snoozeUntil(body?.until)
+    if (until === undefined) return c.json({ ok: false, error: 'until must be a date or null' }, 400)
     const ok = snoozeItem(db, c.req.param('id'), until)
     return c.json({ ok })
   })
@@ -611,10 +620,8 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
     if (!Number.isInteger(body?.expected_revision) || !Number.isInteger(body?.expected_board_version)) {
       return c.json({ ok: false, error: 'expected_revision and expected_board_version required' }, 400)
     }
-    const until = body?.until
-    if (until !== null && typeof until !== 'string') {
-      return c.json({ ok: false, error: 'until must be a string or null' }, 400)
-    }
+    const until = snoozeUntil(body?.until)
+    if (until === undefined) return c.json({ ok: false, error: 'until must be a date or null' }, 400)
     const rowId = c.req.param('rowId')
     const ok = snoozeBoardRow(
       db,

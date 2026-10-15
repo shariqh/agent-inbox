@@ -751,8 +751,9 @@ describe('write routes refuse invalid bodies before touching the store (#163)', 
     ['an object text', (valid) => JSON.stringify({ ...valid, text: { value: 'nested' } })],
   ]
   const FUTURE = '2099-01-01T00:00:00.000Z'
-  // `until` is the whole instruction: a string snoozes, null wakes. Anything
-  // else used to be coerced to null — a silent WAKE answered with 200.
+  // `until` is the whole instruction: a date snoozes, null wakes. Anything else
+  // used to reach the store — coerced to null, or a string stored verbatim that
+  // the viewer cannot parse — and silently WOKE the item or row with a 200.
   const INVALID_UNTIL: BodyCase[] = [
     ['malformed JSON', () => '{"until": '],
     ['a JSON null body', () => 'null'],
@@ -760,7 +761,15 @@ describe('write routes refuse invalid bodies before touching the store (#163)', 
     ['a numeric until', (valid) => JSON.stringify({ ...valid, until: Date.parse(FUTURE) })],
     ['an object until', (valid) => JSON.stringify({ ...valid, until: { at: FUTURE } })],
     ['a boolean until', (valid) => JSON.stringify({ ...valid, until: false })],
+    ['an empty until', (valid) => JSON.stringify({ ...valid, until: '' })],
+    ['an unparseable until', (valid) => JSON.stringify({ ...valid, until: 'not-a-date' })],
+    ['a relative-word until', (valid) => JSON.stringify({ ...valid, until: 'tomorrow' })],
+    // parseable, but its +YYYYYY form would sort below every 4-digit-year stamp
+    ['a beyond-year-9999 until', (valid) => JSON.stringify({ ...valid, until: '+010000-01-01T00:00:00.000Z' })],
   ]
+  // The store compares snoozed_until as TEXT, so a valid date is stored as UTC ISO.
+  const OFFSET_DATE = '2099-01-01T00:00:00+02:00'
+  const OFFSET_DATE_UTC = '2098-12-31T22:00:00.000Z'
 
   const question = () => insertItem(db, { project: 'p', stream: '', agent: 'a', kind: 'question', title: 'q' })
 
@@ -868,6 +877,14 @@ describe('write routes refuse invalid bodies before touching the store (#163)', 
       expect(await res.json()).toEqual({ ok: true })
       expect(getItem(db, id)!.snoozed_until).toBeNull()
     })
+
+    it('stores a valid non-UTC date as UTC ISO', async () => {
+      const id = question()
+      const res = await post(`/api/items/${id}/snooze`, JSON.stringify({ until: OFFSET_DATE }))
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ ok: true })
+      expect(getItem(db, id)!.snoozed_until).toBe(OFFSET_DATE_UTC)
+    })
   })
 
   describe('POST /api/boards/:id/rows/:rowId/snooze', () => {
@@ -886,6 +903,15 @@ describe('write routes refuse invalid bodies before touching the store (#163)', 
       expect(res.status).toBe(200)
       expect(await res.json()).toEqual({ ok: true })
       expect(listBoards(db)[0]!.rows[0]!.snoozed_until).toBeNull()
+    })
+
+    it('stores a valid non-UTC date as UTC ISO', async () => {
+      blockedRow()
+      const { path, pins } = rowTarget()
+      const res = await post(`${path}/snooze`, JSON.stringify({ until: OFFSET_DATE, ...pins }))
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ ok: true })
+      expect(listBoards(db)[0]!.rows[0]!.snoozed_until).toBe(OFFSET_DATE_UTC)
     })
   })
 

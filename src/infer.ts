@@ -15,10 +15,11 @@ export function remoteUrl(cwd: string): string | null {
   return git(cwd, ['remote', 'get-url', 'origin']) || null
 }
 
-// `remote` is an origin the caller has ALREADY read: src/scope.ts reads it once
-// per MCP server process and derives both project and repo from it (issue
-// #159). Omitted, it is read here. Only `undefined` triggers that read — an
-// explicit null means "no origin" and is not looked up again.
+// `remote` is an origin the caller has ALREADY read: src/scope.ts reads it at
+// most once per call, keeps a found one for the MCP server process's life, and
+// derives both project and repo from it (issue #159). Omitted, it is read here.
+// Only `undefined` triggers that read — an explicit null means "no origin" and
+// is not looked up again.
 export function inferProject(cwd: string, remote: string | null = remoteUrl(cwd)): string {
   if (remote) {
     const name = basename(remote.replace(/\.git$/, ''))

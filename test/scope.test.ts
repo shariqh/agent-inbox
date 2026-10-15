@@ -90,11 +90,11 @@ describe('makeScope carries the source link identity (issue #30)', () => {
   })
 })
 
-// ── issue #159: origin is read once per server process; the branch stays live ──
+// ── issue #159: a found origin is read once per server process; the branch stays live ──
 // One stdio server serves a CLI and all its subagents, and scope.get() runs on
 // nearly every tool call — so each blocking git spawn here serializes them all.
 
-describe('makeScope reads origin once per process but follows the branch (issue #159)', () => {
+describe('makeScope caches a found origin per process but follows the branch (issue #159)', () => {
   const ORIGIN = ['remote', 'get-url', 'origin'] as const
   const BRANCH = ['branch', '--show-current'] as const
 
@@ -110,11 +110,21 @@ describe('makeScope reads origin once per process but follows the branch (issue 
     expect(gitSpawns(dir, ...BRANCH)).toBe(5)
   })
 
-  it('remembers a missing origin too: the project falls back to the directory and the repo stays null', () => {
+  // A missing origin must NOT be pinned: src/hook.ts infers the project live on
+  // every hook event, so after `git remote add origin` / `gh repo create` in a
+  // new folder (or one transient git failure) a server stuck on the folder name
+  // would file work where the Stop-hook watch and prompt nudges never look.
+  it('re-reads a missing origin once per call, then picks up and caches one added later', () => {
     const dir = tmpGitRepo()
     const scope = makeScope(dir)
     for (let i = 0; i < 3; i++) expect(scope.get('claude-code')).toMatchObject({ project: basename(dir), repo: null })
-    expect(gitSpawns(dir, ...ORIGIN)).toBe(1)
+    expect(gitSpawns(dir, ...ORIGIN)).toBe(3)
+
+    execFileSync('git', ['remote', 'add', 'origin', 'git@github.com:shariqh/shipped-app.git'], { cwd: dir })
+    for (let i = 0; i < 3; i++) {
+      expect(scope.get('claude-code')).toMatchObject({ project: 'shipped-app', repo: 'shariqh/shipped-app' })
+    }
+    expect(gitSpawns(dir, ...ORIGIN)).toBe(4)
   })
 
   it('a branch switch mid-session is reflected on the very next call', () => {

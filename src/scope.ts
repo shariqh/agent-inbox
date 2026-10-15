@@ -20,18 +20,22 @@ export function makeScope(cwd: string): {
   let streamOverride: string | undefined
   let repoOverride: string | undefined
   let issueOverride: number | undefined
-  // the cwd of a stdio session never changes, and `git remote get-url` is the
-  // one lookup here that cannot change under us — so it runs at most ONCE per
-  // server process, and both project and repo are derived from that one answer
-  // (a missing origin is remembered too). Issue #159: re-reading it blocked
+  // the cwd of a stdio session never changes, so once `git remote get-url origin`
+  // FINDS an origin it is reused for the life of the server process, and both
+  // project and repo are derived from it. Issue #159: re-reading it blocked
   // nearly every tool call on a subprocess, serializing a CLI and all of its
-  // subagents. The BRANCH is deliberately NOT memoized (worktrees, mid-session
-  // checkouts), so the stream and its issue are re-derived on every read — and
-  // the scope as a whole is never cached: the client name arrives lazily.
-  let originCache: { value: string | null } | undefined
+  // subagents; the accepted cost is that a later `git remote set-url` is not
+  // followed. A MISSING origin is never cached: src/hook.ts infers the project
+  // live on every hook event, so after a `git remote add origin` (or one
+  // transient git failure) the server has to follow, or it files work where the
+  // Stop-hook watch never looks. The BRANCH is deliberately NOT memoized
+  // (worktrees, mid-session checkouts), so the stream and its issue are
+  // re-derived on every read — and the scope as a whole is never cached: the
+  // client name arrives lazily.
+  let originCache: string | undefined
   const origin = (): string | null => {
-    if (originCache === undefined) originCache = { value: remoteUrl(cwd) }
-    return originCache.value
+    if (originCache === undefined) originCache = remoteUrl(cwd) ?? undefined
+    return originCache ?? null
   }
   // The ONE place the override-then-infer precedence for `issue` lives. mcp.ts
   // calls this with the branch a flag was actually raised on (its per-call
@@ -43,11 +47,14 @@ export function makeScope(cwd: string): {
   return {
     get(clientName) {
       const stream = streamOverride ?? inferStream(cwd)
+      // at most one origin read per call (a missing one is re-read), and none
+      // when both values it feeds are overridden
+      const remote = projectOverride === undefined || repoOverride === undefined ? origin() : null
       return {
-        project: projectOverride ?? inferProject(cwd, origin()),
+        project: projectOverride ?? inferProject(cwd, remote),
         stream,
         agent: inferAgent(clientName),
-        repo: repoOverride ?? inferRepo(cwd, origin()),
+        repo: repoOverride ?? inferRepo(cwd, remote),
         issue: issueFor(stream),
       }
     },

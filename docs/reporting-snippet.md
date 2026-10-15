@@ -35,6 +35,7 @@ Call `flag` when:
   option label or free text — follow it either way), plus optional `reply_context` when they
   attach extra direction with their answer, **and `rows`: the human's per-row notes on your
   boards** (see Boards below). Act on both: call `resolve` after handling a question item,
+  passing `expected_response_revision` from that item's `response_revision`,
   and move a board row out of `blocked` after handling its response. `pending()` is the ONE poll —
   everything they have said to you arrives through it. Do
   not park forever waiting in the terminal. If you end a turn with a Copilot question still
@@ -46,6 +47,20 @@ Call `flag` when:
   the inbox stops showing it open and unread. If that comes back
   `{ ok:false, reason:"unread_inbox_answer" }` they also answered in the inbox and you have
   not read it — poll `pending()` and follow that one; the inbox wins.
+  A successful `answer` returns `response_revision`; use it when resolving that answer.
+  Once an item has response or annotation history, including a clear, `resolve` requires
+  the exact revision you handled. `response_changed` or `response_revision_required`
+  means re-read with `pending({item_id: id})`, handle the current response, and retry explicitly —
+  never borrow a sibling's newer revision to acknowledge an answer you did not handle.
+  Items with no response history can still be resolved without a revision.
+  `pending()` also delivers human annotations on open notes and milestones, including
+  a clear (empty `annotation` with `annotated_at`). This informational feedback normally
+  leaves the queue after pickup; use `pending({item_id: id})` to recover it afterward,
+  adding `full: true` for its background or `project` when needed.
+  `annotation_seen_at`/`annotation_seen_by` mean handed to a reader, not handled by the
+  intended session. Informational feedback creates no new human attention or automatic
+  host-wake guarantee. Do not resolve a note or milestone merely because you read its
+  feedback; close it only when the item itself is complete or moot.
   Read `reply_kind`: `clarify` means resolve this wording and raise a corrected replacement
   question; `decline` means stop/cancel the proposed path and resolve with an `outcome`.
   `snoozed_until` means the human deferred the ask; do not nag or treat it as an answer.

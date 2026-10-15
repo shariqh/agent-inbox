@@ -2,6 +2,8 @@ export type ActionOwner = 'decision' | 'task' | 'approval'
 export type ResponseKind = 'answer' | 'clarify' | 'decline'
 
 export interface ActionLike {
+  kind?: string
+  status?: string | null
   action_owner?: ActionOwner | null
   options?: Array<{ label?: string }> | null
   created_at?: string | null
@@ -15,12 +17,23 @@ export interface ActionLike {
   annotation_kind?: ResponseKind | null
   annotated_at?: string | null
   annotation_seen_at?: string | null
+  annotation_seen_by?: string | null
   handled_at?: string | null
   handled_seen_at?: string | null
   outcome?: string | null
   outcome_at?: string | null
 }
 
+export interface ItemAnnotationReceipt {
+  text: string
+  cleared: boolean
+  savedAt: string | null
+  seenAt: string | null
+  seenBy: string | null
+  state: 'waiting' | 'picked' | 'untracked' | 'closed'
+}
+
+export function itemAnnotationReceipt(entity: ActionLike): ItemAnnotationReceipt | null
 export function actionOwnerLabel(entity: ActionLike): string
 export function actionCategory(entity: ActionLike): 'decision' | 'task'
 export function changeKind(entity: ActionLike, lastVisitAt: string | null): 'new' | 'changed' | null

@@ -47,7 +47,7 @@ describe('issue #34 · correcting a chat-recorded answer', () => {
       title: 'which database?',
       options: [{ label: 'SQLite' }, { label: 'Postgres' }],
     })
-    expect(answerItem(d, id, 'SQLite', 'keep operations simple')).toEqual({ ok: true })
+    expect(answerItem(d, id, 'SQLite', 'keep operations simple')).toEqual({ ok: true, response_revision: 1 })
     await bootApp(d)
     await showInbox()
 
@@ -92,7 +92,7 @@ describe('issue #34 · correcting a chat-recorded answer', () => {
       title: 'which database?',
       options: [{ label: 'SQLite' }, { label: 'Postgres' }],
     })
-    expect(answerItem(d, id, 'SQLite', 'keep operations simple')).toEqual({ ok: true })
+    expect(answerItem(d, id, 'SQLite', 'keep operations simple')).toEqual({ ok: true, response_revision: 1 })
     await bootApp(d)
     await showInbox()
 
@@ -112,7 +112,7 @@ describe('issue #34 · correcting a chat-recorded answer', () => {
   it('preserves chat context when correcting with a disposition', async () => {
     const d = open()
     const id = insertItem(d, { ...AGENT, kind: 'question', title: 'ship now?' })
-    expect(answerItem(d, id, 'Ship', 'only after the canary')).toEqual({ ok: true })
+    expect(answerItem(d, id, 'Ship', 'only after the canary')).toEqual({ ok: true, response_revision: 1 })
     await bootApp(d)
 
     click(row(id))
@@ -130,7 +130,7 @@ describe('issue #34 · correcting a chat-recorded answer', () => {
   it('does not steal focus back after the human leaves an untouched prefill', async () => {
     const d = open()
     const id = insertItem(d, { ...AGENT, kind: 'question', title: 'which database?' })
-    expect(answerItem(d, id, 'SQLite', 'keep operations simple')).toEqual({ ok: true })
+    expect(answerItem(d, id, 'SQLite', 'keep operations simple')).toEqual({ ok: true, response_revision: 1 })
     await bootApp(d)
 
     click(row(id))
@@ -146,7 +146,7 @@ describe('issue #34 · correcting a chat-recorded answer', () => {
   it('does not steal focus back after the human clears a prefilled draft', async () => {
     const d = open()
     const id = insertItem(d, { ...AGENT, kind: 'question', title: 'which database?' })
-    expect(answerItem(d, id, 'SQLite', 'keep operations simple')).toEqual({ ok: true })
+    expect(answerItem(d, id, 'SQLite', 'keep operations simple')).toEqual({ ok: true, response_revision: 1 })
     await bootApp(d)
 
     click(row(id))
@@ -165,7 +165,7 @@ describe('issue #34 · resolved answer receipt', () => {
   it('keeps the chat answer and provenance visible on the History card without pickup copy', async () => {
     const d = open()
     const id = insertItem(d, { ...AGENT, kind: 'question', title: 'which database?' })
-    expect(answerItem(d, id, 'SQLite', 'keep operations simple')).toEqual({ ok: true })
+    expect(answerItem(d, id, 'SQLite', 'keep operations simple')).toEqual({ ok: true, response_revision: 1 })
     resolveItem(d, id)
     await bootApp(d)
 

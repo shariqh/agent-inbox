@@ -95,6 +95,10 @@ Run the build before `npm run electron`; the development shell starts the built
 - Do not issue raw SQL outside `src/store.ts`. The viewer, MCP server, hooks,
   watcher, and PR poller all share one database across OS processes. Preserve
   `journal_mode=WAL` and `busy_timeout=5000`.
+- Conditional viewer snapshots retain only items and active/archived boards.
+  Invalidate on same/other-connection writes, schema changes and pickup stamps;
+  never cache an uncommitted snapshot. Keep dynamic routes fresh, no-store and
+  the boot marker intact, and never turn a read failure into cached success.
 - Race-sensitive state changes must be atomic SQL statements or transactions.
   Do not replace conditioned/version-pinned updates with SELECT-then-UPDATE.
   Human replies, annotations, and handled marks can change from another process
@@ -102,10 +106,19 @@ Run the build before `npm run electron`; the development shell starts the built
 - Inbox answers have precedence over chat-recorded answers. `answerItem()` must
   refuse to overwrite an unread inbox answer; this is intentionally not
   timestamp-based last-write-wins.
+- Item response and annotation snapshots use monotonic `response_revision`, not
+  timestamps alone. MCP resolution after response history requires the exact
+  `expected_response_revision` handled by that caller. Question reply/annotation
+  pickup is atomic; another reader's pickup cannot authorize a stale resolution.
+- Informational annotations enter MCP `pending` until picked up, without adding
+  attention or closing the item. `pending({item_id})` recovers current open-item
+  feedback and clear state afterward. Keep hook/backstop reads question-only by
+  default, retain first-pickup receipts, and refuse annotation writes to closed items.
 - Boards are idempotent by `(project, title)` and rows by stable `label`.
   A full `board_upsert` deletes rows omitted from the payload, but omitting a
-  row's `context`, `next_step`, or `options` preserves the stored value; explicit
-  empty values clear them.
+  row's `note`, `next_step`, `impact`, `next_after`, `action_owner`, `options`,
+  `context`, or `outcome` preserves the stored value; explicit empty values
+  (`''`, `options: []`) clear them.
   Never overwrite or reset human-owned annotation, handled, or delivery fields
   during routine upserts.
 - `blocked` is the only row status that means the human must act. A failing
@@ -157,6 +170,10 @@ Run the build before `npm run electron`; the development shell starts the built
   human-initiated write must end in `reloadAndPaint()` so an unrelated draft
   cannot hide the result. A held pointer defers rendering but is not a
   suspension and must not appear in `suspendState()`.
+- Browser snapshot reuse is window-local and immutable; a 304 belongs to the
+  representation that request sent, and its live boot header still controls safe
+  refresh. Passive polls may retain inactive document panes, but navigation and
+  human writes must paint current data without hiding ambient or recovery state.
 - Every value export in `src/*.ts` and `public/*.js` must be reachable from
   production code. Tests are not consumers. `test/dead-exports.test.ts` enforces
   this; deliberate exceptions require the existing documented mechanisms.

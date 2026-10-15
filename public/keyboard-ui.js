@@ -223,6 +223,24 @@ export function createKeyboardUI({ getScope, getActionScope, navigate }) {
     return true
   }
 
+  function revealControl(target, scope) {
+    for (let owner = target.parentElement; owner && scope.contains(owner); owner = owner.parentElement) {
+      const style = getComputedStyle(owner)
+      const bounds = owner.getBoundingClientRect()
+      const rect = target.getBoundingClientRect()
+      const top = bounds.top + owner.clientTop
+      const left = bounds.left + owner.clientLeft
+      if (/^(auto|scroll)$/.test(style.overflowY) && owner.scrollHeight > owner.clientHeight) {
+        if (rect.top < top) owner.scrollTop += Math.floor(rect.top - top)
+        else if (rect.bottom > top + owner.clientHeight) owner.scrollTop += Math.ceil(rect.bottom - top - owner.clientHeight)
+      }
+      if (/^(auto|scroll)$/.test(style.overflowX) && owner.scrollWidth > owner.clientWidth) {
+        if (rect.left < left) owner.scrollLeft += Math.floor(rect.left - left)
+        else if (rect.right > left + owner.clientWidth) owner.scrollLeft += Math.ceil(rect.right - left - owner.clientWidth)
+      }
+    }
+  }
+
   function moveDialogFocus(event, scope) {
     const controls = [...scope.querySelectorAll(
       'button, input:not([type="hidden"]), textarea, select, a[href], summary, [tabindex], [contenteditable="true"]',
@@ -231,7 +249,11 @@ export function createKeyboardUI({ getScope, getActionScope, navigate }) {
     const next = event.shiftKey ? (at <= 0 ? controls.length - 1 : at - 1)
       : (at < 0 || at === controls.length - 1 ? 0 : at + 1)
     consume(event)
-    ;(controls[next] ?? scope).focus({ preventScroll: true })
+    const target = controls[next] ?? scope
+    // Native focus scrolling can also move the phone card's overflow-hidden shell.
+    // Reveal only intentional scrollers inside this action/dialog, never its backdrop.
+    target.focus({ preventScroll: true })
+    revealControl(target, scope)
   }
 
   function onKey(event) {

@@ -340,4 +340,112 @@ describe('buildSearchResults', () => {
       text: 'Best fit for relational workloads',
     })
   })
+
+  it('keeps distant full Background text, multiword ranges, and its exact plan-row owner', () => {
+    const context = `${'Earlier release evidence. '.repeat(2000)}Auckland rotation verified.`
+    const longData = {
+      boards: [{
+        id: 'long-plan', title: 'Regional rollout',
+        rows: [
+          { id: 'other-row', label: 'Build', context: 'Unrelated Auckland notes.' },
+          { id: 'late-row', label: 'Canary gate', context },
+        ],
+      }],
+    }
+    const [result] = buildSearchResults(longData, 'auckland rotation', fuzzy)
+    expect(result?.targetId).toBe('long-plan')
+    expect(result?.source).toEqual({
+      field: 'context', rowId: 'late-row', text: context, fragments: ['Auckland', 'rotation'],
+    })
+    expect(result?.match?.text).toContain('Auckland rotation')
+    expect(result?.match?.text.length).toBeLessThanOrEqual(162)
+    expect(highlighted(result!.match!.text, result!.match!.ranges)).toBe('Aucklandrotation')
+  })
+
+  it('matches across a row label and distant Background without losing the useful hidden source', () => {
+    const context = `${'Earlier release evidence. '.repeat(2000)}Auckland is ready.`
+    const [result] = buildSearchResults({
+      boards: [{
+        id: 'long-plan', title: 'Regional rollout',
+        rows: [{ id: 'late-row', label: 'Canary gate', context }],
+      }],
+    }, 'gate auckland', fuzzy)
+    expect(result?.source).toEqual({
+      field: 'context', rowId: 'late-row', text: context, fragments: ['Auckland'],
+    })
+    expect(result?.match?.label).toBe('Canary gate · Background')
+    expect(highlighted(result!.match!.text, result!.match!.ranges)).toBe('Auckland')
+  })
+
+  it('keeps hidden human-annotation evidence and row identity for multiword queries', () => {
+    const [result] = buildSearchResults({
+      boards: [{
+        id: 'annotated-plan', title: 'Release',
+        rows: [
+          { id: 'first-row', label: 'Build', annotation: 'Ready.' },
+          { id: 'answered-row', label: 'Canary gate', annotation: 'Approver requires rollback verification.' },
+        ],
+      }],
+    }, 'requires rollback', fuzzy)
+    expect(result?.source).toEqual({
+      field: 'annotation', rowId: 'answered-row',
+      text: 'Approver requires rollback verification.', fragments: ['requires', 'rollback'],
+    })
+    expect(result?.match?.label).toBe('Canary gate · Human note')
+  })
+
+  it('retains typo tolerance without letting a later exact term hide an earlier valid ordered match', () => {
+    const cases = [
+      { query: 'rolback verfied', title: 'Rollback verified', expected: 'Rollbackverified' },
+      { query: 'release canary', title: 'releaze canary; a later release', expected: 'releazecanary' },
+    ]
+    for (const { query, title, expected } of cases) {
+      const [result] = buildSearchResults({
+        g: { done: [{ id: 'typo', title }] },
+      }, query, fuzzy)
+      expect(result?.targetId).toBe('typo')
+      expect(highlighted(result!.title, result!.titleRanges)).toBe(expected)
+    }
+  })
+
+  it('keeps exact multiword matches ahead of fuzzy matches deterministically', () => {
+    const rankedData = {
+      g: { done: [
+        { id: 'fuzzy', title: 'Releaze canary' },
+        { id: 'exact', title: 'Release canary' },
+      ] },
+    }
+    const ids = () => buildSearchResults(rankedData, 'release canary', fuzzy).map((result) => result.targetId)
+    expect(ids()).toEqual(['exact', 'fuzzy'])
+    expect(ids()).toEqual(ids())
+  })
+
+  it('preserves quoted phrases and exclusions even when the excluded text is at the end', () => {
+    const long = `${'Release evidence. '.repeat(2000)}private window`
+    const queryData = {
+      g: { done: [
+        { id: 'accepted', title: 'Release C++ plan', context: 'Target the safest canary.' },
+        { id: 'excluded', title: 'Release C++ plan', context: `The safest canary. ${long}` },
+      ] },
+    }
+    expect(buildSearchResults(queryData, 'release "C++" "safest canary" -"private window"', fuzzy)
+      .map((result) => result.targetId)).toEqual(['accepted'])
+    const [result] = buildSearchResults(queryData, 'release "C++"', fuzzy)
+    expect(highlighted(result!.title, result!.titleRanges)).toBe('ReleaseC++')
+    expect(buildSearchResults(queryData, '"safest canary" -private', fuzzy)
+      .map((result) => result.targetId)).toEqual(['accepted'])
+  })
+
+  it('does not reuse one occurrence for repeated query terms or reverse their order', () => {
+    const orderedData = {
+      g: { done: [
+        { id: 'one', title: 'release' },
+        { id: 'two', title: 'release release' },
+        { id: 'reverse', title: 'canary release' },
+      ] },
+    }
+    expect(buildSearchResults(orderedData, 'release release', fuzzy)
+      .map((result) => result.targetId)).toEqual(['two'])
+    expect(buildSearchResults(orderedData, 'release canary', fuzzy)).toEqual([])
+  })
 })

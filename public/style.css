@@ -1012,6 +1012,8 @@ body.sidebar-collapsed .live-drawer { left: 72px; }
   background: color-mix(in srgb, var(--app-bg) 94%, transparent);
   backdrop-filter: blur(12px);
 }
+/* Lift the dropdown's parent above the inspector, but below Live and modal owners. */
+#topbar:has(#searchResults:not([hidden])) { z-index: 45; }
 .page-heading { min-width: 0; }
 .page-kicker {
   display: block;

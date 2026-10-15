@@ -526,6 +526,18 @@ describe('#38 · the poll keeps its gate, the human bypasses it', () => {
     expect(m![0]).toMatch(/await load\(\)[\s\S]*forceRender\(\)/)
   })
 
+  it('restores queue geometry only after shortcut decoration has finalized the frame', () => {
+    const body = sourceFn('function render()', '\n// one age vocabulary')
+    expect(body).toMatch(/const restoreQueueView = paintEditableSurfaces\(frame\)/)
+    expect(body).toMatch(/keyboardUI\?\.refresh\(\)[\s\S]*restoreQueueView\(\)/)
+    const editable = sourceFn('function paintEditableSurfaces(', '\nfunction render(')
+    expect(editable).toMatch(/const restoreQueueView = renderNeedsYou\(/)
+    expect(editable).toContain('return restoreQueueView')
+    const queue = sourceFn('function renderNeedsYou(', '\nfunction renderOrphanedDrafts(')
+    expect(queue).toMatch(/resizeReplyEditor\(editor\)[\s\S]*cardScrollHost\(restoredCard\)\.scrollTop/)
+    expect(js).toMatch(/if \(editor\.isConnected && !editor\.style\.height\) resizeReplyEditor\(editor\)/)
+  })
+
   it('every write a click initiates goes through it — one bare load() survives, the boot call', () => {
     // A bare `load()` as the last statement of a successful POST handler is
     // precisely the #38 defect, and it hid in EIGHT call sites (row annotate,

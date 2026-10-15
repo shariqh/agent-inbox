@@ -16,6 +16,16 @@ afterEach(() => { db?.close(); db = null })
 
 const AGENT = { project: 'alpha', stream: 'main', agent: 'copilot' } as const
 
+function removeAnswerEditor(d: Database.Database, id: string): void {
+  // Another window's answer removes the editor without closing response admission.
+  // Resolving the item would now correctly reject every held new reply.
+  expect(replyItem(d, id, 'Answered in another window', undefined, 'answer', {
+    clientId: 'editor-removal-window',
+    sequence: 1,
+    actionId: 'editor-removal',
+  })).toBe(true)
+}
+
 function deferPost(match: string, response?: Response): () => void {
   const fetchNow = globalThis.fetch
   let release!: () => void
@@ -666,7 +676,7 @@ describe('async draft ownership', () => {
     type(answerInput(id), 'Submission A')
     const release = deferPost(`/items/${id}/reply`)
     click(buttonLabelled('Send', row(id)!))
-    resolveItem(db, id)
+    removeAnswerEditor(db, id)
     await pollTick()
     click(buttonLabelled('Review queue'))
     await settle()
@@ -711,7 +721,7 @@ describe('async draft ownership', () => {
     await settle()
     type(answerInput(id), 'Original X')
     click(buttonLabelled('Send', row(id)!))
-    resolveItem(db, id)
+    removeAnswerEditor(db, id)
     await pollTick()
     click(buttonLabelled('Review queue'))
     await settle()
@@ -756,7 +766,7 @@ describe('async draft ownership', () => {
     const release = deferPost(`/items/${id}/reply`)
     click(buttonLabelled('Send', row(id)!))
     type(input, 'Newer draft B')
-    resolveItem(db, id)
+    removeAnswerEditor(db, id)
     await pollTick()
     click(buttonLabelled('Review queue'))
     await settle()
@@ -789,7 +799,7 @@ describe('async draft ownership', () => {
     await vi.advanceTimersByTimeAsync(0)
     await collapseRow(id)
     click(row(id)?.querySelector('.star-btn'))
-    resolveItem(db, id)
+    removeAnswerEditor(db, id)
     await pollTick()
     click(buttonLabelled('Review queue'))
     await settle()
@@ -836,7 +846,7 @@ describe('async draft ownership', () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(count).toBe(2)
 
-    resolveItem(db, id)
+    removeAnswerEditor(db, id)
     await pollTick()
     click(buttonLabelled('Review queue'))
     await settle()
@@ -893,7 +903,7 @@ describe('async draft ownership', () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(count).toBe(2)
 
-    resolveItem(db, id)
+    removeAnswerEditor(db, id)
     await pollTick()
     click(buttonLabelled('Review queue'))
     await settle()

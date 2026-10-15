@@ -50,6 +50,9 @@ export interface Item {
   context: string
   status: Status
   annotation: string | null
+  annotated_at: string | null
+  annotation_seen_at: string | null
+  annotation_seen_by: string | null
   options: QuestionOption[] | null
   reply: string | null
   reply_context: string | null
@@ -57,6 +60,7 @@ export interface Item {
   reply_seen_at: string | null
   reply_source: ReplySource | null
   reply_kind: ResponseKind | null
+  response_revision: number
   snoozed_until: string | null
   outcome: string
   outcome_at: string | null
@@ -104,6 +108,23 @@ export function openDb(path: string = defaultDbPath()): Database.Database {
   return db
 }
 
+export interface SnapshotReadState {
+  dataVersion: number
+  totalChanges: number
+  schemaVersion: number
+  inTransaction: boolean
+}
+
+export function readSnapshotState(db: Database.Database): SnapshotReadState {
+  // data_version observes other connections; total_changes observes this one's
+  // row writes, and schema_version also catches its DDL/read failures.
+  // Transactional reads cannot be cached: a rollback does not undo total_changes.
+  const state = db.prepare(`SELECT data_version AS dataVersion, total_changes() AS totalChanges,
+      schema_version AS schemaVersion
+    FROM pragma_data_version, pragma_schema_version`).get() as Omit<SnapshotReadState, 'inTransaction'>
+  return { ...state, inTransaction: db.inTransaction }
+}
+
 function migrate(db: Database.Database): void {
   // Reserve the WAL writer before any migration reads. A deferred transaction
   // cannot wait when a stale read snapshot is promoted to a writer.
@@ -126,9 +147,13 @@ function runMigrations(db: Database.Database): void {
       next_after TEXT NOT NULL DEFAULT '',
       status TEXT NOT NULL DEFAULT 'open',
       annotation TEXT,
+      annotated_at TEXT,
+      annotation_seen_at TEXT,
+      annotation_seen_by TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT,
       reply_kind TEXT,
+      response_revision INTEGER NOT NULL DEFAULT 0,
       snoozed_until TEXT,
       outcome TEXT NOT NULL DEFAULT '',
       outcome_at TEXT,
@@ -297,7 +322,54 @@ function runMigrations(db: Database.Database): void {
   ensureColumn(db, 'source_links', 'preview_error', 'TEXT')
   ensureColumn(db, 'source_links', 'revision', 'INTEGER NOT NULL DEFAULT 1')
   migrateActionLifecycle(db)
+  migrateItemResponseRevision(db)
+  migrateItemAnnotationDelivery(db)
   migrateAnnotationDelivery(db)
+}
+
+function migrateItemResponseRevision(db: Database.Database): void {
+  if (!hasColumn(db, 'items', 'response_revision')) {
+    db.exec(`ALTER TABLE items ADD COLUMN response_revision INTEGER NOT NULL DEFAULT 0`)
+    db.exec(`UPDATE items SET response_revision = 1
+      WHERE replied_at IS NOT NULL OR COALESCE(reply, '') <> '' OR COALESCE(annotation, '') <> ''`)
+  }
+  // A trigger also versions writes from an older viewer sharing this database.
+  // Delivery stamps do not participate, and repeated same-millisecond replies do.
+  db.exec(`CREATE TRIGGER IF NOT EXISTS increment_item_response_revision
+    AFTER UPDATE OF reply, reply_context, reply_kind, reply_source, replied_at, annotation ON items
+    BEGIN
+      UPDATE items SET response_revision = OLD.response_revision + 1 WHERE id = NEW.id;
+    END`)
+}
+
+function migrateItemAnnotationDelivery(db: Database.Database): void {
+  const introduced = !hasColumn(db, 'items', 'annotation_seen_at')
+  ensureColumn(db, 'items', 'annotated_at', 'TEXT')
+  ensureColumn(db, 'items', 'annotation_seen_at', 'TEXT')
+  ensureColumn(db, 'items', 'annotation_seen_by', 'TEXT')
+  if (introduced) {
+    // Legacy text has no trustworthy edit or pickup time. Only its existence
+    // establishes response history; leave both timestamps unknown.
+    db.exec(`UPDATE items SET response_revision = 1
+      WHERE response_revision = 0 AND COALESCE(annotation, '') <> ''`)
+  }
+  // Older viewers write annotation + updated_at but know nothing of receipts.
+  // Reset delivery in their write too, including same-millisecond replacements.
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS reset_item_annotation_delivery
+    AFTER UPDATE OF annotation ON items
+    BEGIN
+      UPDATE items
+         SET annotated_at = NEW.updated_at, annotation_seen_at = NULL, annotation_seen_by = NULL
+       WHERE id = NEW.id;
+    END;
+    CREATE TRIGGER IF NOT EXISTS refuse_closed_item_annotations
+    BEFORE UPDATE OF annotation ON items
+    WHEN OLD.status <> 'open'
+    BEGIN
+      SELECT RAISE(IGNORE);
+    END;
+  `)
 }
 
 // Additive migration for DBs created before the column existed. Good enough for
@@ -540,7 +612,8 @@ export function replyItem(
         .prepare(`UPDATE items
                      SET reply = NULL, reply_context = NULL, replied_at = @now, reply_seen_at = NULL,
                          reply_source = NULL, reply_kind = NULL, updated_at = @now
-                   WHERE id = @id AND reply_seen_at IS NULL`)
+                   WHERE id = @id AND kind = 'question' AND status = 'open'
+                     AND reply_seen_at IS NULL`)
         .run(params)
       return info.changes > 0
     }
@@ -549,13 +622,15 @@ export function replyItem(
                    SET reply = @reply, reply_context = @replyContext, replied_at = @now, reply_seen_at = NULL,
                        reply_source = 'inbox', reply_kind = @kind,
                        snoozed_until = NULL, updated_at = @now
-                 WHERE id = @id`)
+                 WHERE id = @id AND kind = 'question' AND status = 'open'`)
       .run(params)
     return info.changes > 0
   }
 
   if (!intent) return applyReply()
   return db.transaction(() => {
+    const target = db.prepare(`SELECT id FROM items WHERE id = ? AND kind = 'question' AND status = 'open'`).get(id)
+    if (!target) return false
     const recorded = db.prepare(`
       SELECT applied
         FROM item_reply_intents
@@ -588,20 +663,50 @@ export function replyItem(
   }).immediate()
 }
 
-// Compare-and-swap on the answer's own version stamp, in ONE statement (issue
-// #37). This used to be an unconditional `WHERE id = ?`, while replyItem resets
-// reply_seen_at = NULL from the VIEWER's separate OS process: a reply the human
-// revised between the agent's read and its stamp got marked picked up by an agent
-// that never saw it, and no later pending() would ever return it. Bind the exact
-// replied_at the read returned and check the return value — false means the human
-// moved it under you, so leave it undelivered and let the next poll carry it.
-//
-// `IS`, not `=`: replied_at is NULL on an item that has never been answered
-// (test/viewer.test.ts stamps exactly that shape), and `= NULL` is never true.
-export function markReplySeen(db: Database.Database, id: string, repliedAt: string | null): boolean {
+// True means this snapshot is still current, not that this reader was first.
+// MCP supplies the monotonic revision: timestamps alone cannot distinguish
+// corrections made in the same millisecond. COALESCE preserves the first receipt.
+// Full-question delivery opts into stamping both response halves atomically.
+export function markReplySeen(
+  db: Database.Database,
+  id: string,
+  repliedAt: string | null,
+  expectedResponseRevision?: number,
+  annotationReader?: string | null,
+): boolean {
   const info = db
-    .prepare(`UPDATE items SET reply_seen_at = ? WHERE id = ? AND reply_seen_at IS NULL AND replied_at IS ?`)
-    .run(new Date().toISOString(), id, repliedAt)
+    .prepare(`UPDATE items SET reply_seen_at =
+                CASE WHEN COALESCE(reply, '') <> '' THEN COALESCE(reply_seen_at, @now) ELSE reply_seen_at END,
+              annotation_seen_at =
+                CASE WHEN @annotations = 1 AND (annotated_at IS NOT NULL OR COALESCE(annotation, '') <> '')
+                     THEN COALESCE(annotation_seen_at, @now) ELSE annotation_seen_at END,
+              annotation_seen_by =
+                CASE WHEN @annotations = 1 AND (annotated_at IS NOT NULL OR COALESCE(annotation, '') <> '')
+                     THEN COALESCE(annotation_seen_by, @by) ELSE annotation_seen_by END
+              WHERE id = @id AND kind = 'question' AND status = 'open'
+                AND replied_at IS @repliedAt
+                AND (@revision IS NULL OR response_revision = @revision)`)
+    .run({
+      id, repliedAt, revision: expectedResponseRevision ?? null, now: new Date().toISOString(),
+      annotations: annotationReader === undefined ? 0 : 1, by: annotationReader ?? null,
+    })
+  return info.changes > 0
+}
+
+export function markItemAnnotationDelivered(
+  db: Database.Database,
+  id: string,
+  expectedResponseRevision: number,
+  by: string | null,
+): boolean {
+  const info = db.prepare(`UPDATE items SET annotation_seen_at =
+                  CASE WHEN annotated_at IS NOT NULL OR COALESCE(annotation, '') <> ''
+                       THEN COALESCE(annotation_seen_at, @now) ELSE annotation_seen_at END,
+                annotation_seen_by =
+                  CASE WHEN annotated_at IS NOT NULL OR COALESCE(annotation, '') <> ''
+                       THEN COALESCE(annotation_seen_by, @by) ELSE annotation_seen_by END
+              WHERE id = @id AND status = 'open' AND response_revision = @revision`)
+    .run({ id, revision: expectedResponseRevision, by, now: new Date().toISOString() })
   return info.changes > 0
 }
 
@@ -610,6 +715,7 @@ export type AnswerRefusal = 'empty' | 'not_found' | 'not_a_question' | 'not_open
 export interface AnswerResult {
   ok: boolean
   reason?: AnswerRefusal
+  response_revision?: number
   // on 'unread_inbox_answer': the answer that is waiting, so the caller can act
   // on it without a second round-trip
   reply?: string | null
@@ -643,16 +749,18 @@ export function answerItem(
   // reply between two statements. reply_seen_at = replied_at because the agent IS
   // the reader — rendering "waiting for agent pickup" for an answer it authored
   // itself would be a lie. Status stays 'open': recording is not resolving.
-  const info = db
+  const written = db
     .prepare(
       `UPDATE items
           SET reply = ?, reply_context = ?, replied_at = ?, reply_seen_at = ?,
               reply_source = 'agent', reply_kind = ?, snoozed_until = NULL, updated_at = ?
        WHERE id = ? AND kind = 'question' AND status = 'open'
-         AND (reply IS NULL OR reply = '' OR reply_seen_at IS NOT NULL)`,
+         AND (reply IS NULL OR reply = '' OR reply_seen_at IS NOT NULL)
+       RETURNING response_revision + 1 AS response_revision`,
     )
-    .run(reply, context?.trim() || null, now, now, kind, now, id)
-  if (info.changes > 0) return { ok: true }
+    .get(reply, context?.trim() || null, now, now, kind, now, id) as { response_revision: number } | undefined
+  // RETURNING sees the row before the response-revision AFTER trigger runs.
+  if (written) return { ok: true, response_revision: written.response_revision }
   // Diagnosis is advisory and deliberately runs AFTER the write. Reading first to
   // decide would reopen exactly the TOCTOU window the conditioned UPDATE closes;
   // since nothing was written, a concurrent change here can only make the
@@ -672,10 +780,24 @@ export function answerItem(
   }
 }
 
-export function listPending(db: Database.Database, project: string): Item[] {
+export function listPending(
+  db: Database.Database,
+  project: string,
+  opts: { includeInformational?: boolean; itemId?: string } = {},
+): Item[] {
+  // Hooks/backstops retain their question-only default. MCP explicitly opts in
+  // to informational feedback, with a targeted recovery path after pickup.
   const rows = db
-    .prepare(`SELECT * FROM items WHERE status = 'open' AND kind = 'question' AND project = ? ORDER BY created_at ASC`)
-    .all(project)
+    .prepare(`SELECT * FROM items
+      WHERE status = 'open' AND project = @project
+        AND ((@itemId IS NOT NULL AND id = @itemId)
+             OR (@itemId IS NULL AND (
+               kind = 'question'
+               OR (@informational = 1 AND kind IN ('note', 'done')
+                   AND annotation_seen_at IS NULL
+                   AND (annotated_at IS NOT NULL OR COALESCE(annotation, '') <> '')))))
+      ORDER BY created_at ASC`)
+    .all({ project, itemId: opts.itemId ?? null, informational: opts.includeInformational ? 1 : 0 })
   return (rows as Array<Omit<Item, 'options'> & { options: string | null }>).map(parseItem)
 }
 
@@ -703,10 +825,21 @@ export function getItem(db: Database.Database, id: string): Item | null {
   return row ? parseItem(row) : null
 }
 
-export function resolveItem(db: Database.Database, id: string, outcome?: string): void {
+export type ResolveResult =
+  | { ok: true }
+  | { ok: false; reason: 'not_found' | 'not_open' | 'response_revision_required' | 'response_changed' }
+
+// Viewer/hook closures remain explicit. MCP always supplies a guard, even when
+// its caller omitted the revision; no shared-process read can authorize a sibling.
+export function resolveItem(
+  db: Database.Database,
+  id: string,
+  outcome?: string,
+  responseGuard?: { expectedRevision?: number },
+): ResolveResult {
   const now = new Date().toISOString()
   const text = outcome?.trim() ?? ''
-  db.prepare(`UPDATE items
+  const info = db.prepare(`UPDATE items
                  SET status = 'resolved',
                      resolved_at = COALESCE(resolved_at, @now),
                      updated_at = CASE
@@ -717,8 +850,24 @@ export function resolveItem(db: Database.Database, id: string, outcome?: string)
                      outcome_at = CASE
                        WHEN @text = '' OR outcome IS @text THEN outcome_at
                        ELSE @now END
-               WHERE id = @id`)
-    .run({ now, text, id })
+               WHERE id = @id
+                 AND (@guarded = 0 OR status IN ('open', 'resolved'))
+                 AND (@guarded = 0
+                      OR response_revision = @expected
+                      OR (@expected IS NULL AND response_revision = 0))`)
+    .run({
+      now, text, id,
+      guarded: responseGuard === undefined ? 0 : 1,
+      expected: responseGuard?.expectedRevision ?? null,
+    })
+  if (info.changes > 0) return { ok: true }
+  const current = getItem(db, id)
+  if (!current) return { ok: false, reason: 'not_found' }
+  if (current.status === 'dismissed') return { ok: false, reason: 'not_open' }
+  if (responseGuard?.expectedRevision === undefined) {
+    return { ok: false, reason: 'response_revision_required' }
+  }
+  return { ok: false, reason: 'response_changed' }
 }
 
 export function dismissItem(db: Database.Database, id: string): void {
@@ -726,9 +875,10 @@ export function dismissItem(db: Database.Database, id: string): void {
     .run(new Date().toISOString(), id)
 }
 
-export function annotateItem(db: Database.Database, id: string, text: string): void {
-  db.prepare(`UPDATE items SET annotation = ?, updated_at = ? WHERE id = ?`)
+export function annotateItem(db: Database.Database, id: string, text: string): boolean {
+  const info = db.prepare(`UPDATE items SET annotation = ?, updated_at = ? WHERE id = ? AND status = 'open'`)
     .run(text, new Date().toISOString(), id)
+  return info.changes > 0
 }
 
 export function snoozeItem(db: Database.Database, id: string, until: string | null): boolean {
@@ -1588,12 +1738,17 @@ export function markHandledDelivered(
   rowId: string,
   handledAt: string | null,
   by: string | null,
+  version?: { row: number; board: number },
 ): boolean {
   const info = db
     .prepare(`UPDATE board_rows SET handled_seen_at = COALESCE(handled_seen_at, ?),
                                     handled_seen_by = COALESCE(handled_seen_by, ?)
-               WHERE id = ? AND handled_at IS NOT NULL AND handled_at IS ?`)
-    .run(new Date().toISOString(), by, rowId, handledAt)
+               WHERE id = ? AND handled_at IS NOT NULL AND handled_at IS ?
+                 AND (? IS NULL OR revision = ?)
+                 AND (? IS NULL OR EXISTS (
+                   SELECT 1 FROM boards b WHERE b.id = board_rows.board_id AND b.revision = ?))`)
+    .run(new Date().toISOString(), by, rowId, handledAt,
+      version?.row ?? null, version?.row ?? null, version?.board ?? null, version?.board ?? null)
   return info.changes > 0
 }
 
@@ -1607,11 +1762,6 @@ export function markHandledDelivered(
 // viewer writes annotations from its own OS process, so a SELECT-then-UPDATE
 // would stamp text that no longer exists and bury the human's newest instruction
 // forever. ONE statement, pinning the exact version the caller read.
-//
-// It is NOT markReplySeen's exact shape, and the difference is deliberate. That
-// one also carries `AND reply_seen_at IS NULL`, so it stamps once and reports
-// whether it won. This one drops that clause (see COALESCE below) because for
-// rows a second delivery is the normal case, not a lost race.
 //
 // The return value means EXACTLY ONE THING: the text you read is still the text
 // that is there, so it is safe to hand over. `false` = the human replaced it
@@ -1635,12 +1785,17 @@ export function markAnnotationDelivered(
   rowId: string,
   annotatedAt: string | null,
   by: string | null,
+  version?: { row: number; board: number },
 ): boolean {
   const info = db
     .prepare(`UPDATE board_rows SET annotation_seen_at = COALESCE(annotation_seen_at, ?),
                                     annotation_seen_by = COALESCE(annotation_seen_by, ?)
-               WHERE id = ? AND annotated_at IS ?`)
-    .run(new Date().toISOString(), by, rowId, annotatedAt)
+               WHERE id = ? AND annotated_at IS ?
+                 AND (? IS NULL OR revision = ?)
+                 AND (? IS NULL OR EXISTS (
+                   SELECT 1 FROM boards b WHERE b.id = board_rows.board_id AND b.revision = ?))`)
+    .run(new Date().toISOString(), by, rowId, annotatedAt,
+      version?.row ?? null, version?.row ?? null, version?.board ?? null, version?.board ?? null)
   return info.changes > 0
 }
 

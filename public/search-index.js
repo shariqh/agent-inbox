@@ -1,4 +1,4 @@
-import { haystackFor } from './search.js'
+import { createBoundedMatcher, haystackFor, searchTerms } from './search.js'
 
 const groupedItems = (groups = []) => groups.flatMap((group) => group.items ?? [])
 
@@ -105,9 +105,7 @@ function normalizeRanges(ranges, length) {
 }
 
 function matchTerms(query) {
-  return (query.match(/"[^"]+"|\S+/g) ?? [])
-    .map((term) => term.replace(/^"|"$/g, ''))
-    .filter((term) => term && !term.startsWith('-'))
+  return searchTerms(query)
     .sort((left, right) => right.length - left.length)
 }
 
@@ -242,6 +240,7 @@ function buildResult(entity, section, query, searchFn) {
 export function buildSearchResults(data, query, searchFn, limit = 20) {
   const needle = (query ?? '').trim()
   if (!needle || !data) return []
+  searchFn = createBoundedMatcher(searchFn)
 
   const sections = [
     { ...SECTION_DEFS[0], entities: groupedItems(data.g?.needsYou) },

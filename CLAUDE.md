@@ -55,6 +55,26 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   no `::1` listener or host-widening environment variable. Keep this module
   viewer-process-only: hosted auth is a separate entry, and no network code may enter the
   stdio MCP import graph.
+- **Conditional snapshots must remain authoritative.** Only `/api/items`,
+  `/api/boards` and `/api/boards/archived` retain one serialized representation
+  each per viewer. Matching `If-None-Match` returns a bodyless 304; unconditional
+  clients still receive full JSON. Keep `Cache-Control: no-store` and the current
+  outer `x-inbox-boot` marker on 304 responses too. Store-only invalidation reads
+  combine `data_version`, `total_changes()`, `schema_version` and transaction state:
+  neither `updated_at` nor `data_version` alone observes every relevant write.
+  Publish a cache entry only when matching before/after tokens prove it was read
+  outside a transaction without intervening changes. Never cache uncommitted data,
+  label an old body with a newer token, or fall back to cached success on a read
+  failure. Activity, history and the other dynamic routes remain fresh; time
+  passing without a database write still changes claim expiry and history.
+  This is bounded snapshot reuse, not a cross-endpoint synchronization protocol.
+  The browser keeps its own window-local, deeply frozen representations. A 304
+  reuses the exact representation that request revalidated, not a later overlapping
+  load's cache entry; older completions cannot overwrite a newer validator/body.
+  Read the live boot header before consuming cached data. Untagged servers retain
+  full-fetch behavior, malformed replies fail explicitly, and no snapshot content
+  is persisted to browser storage. Derive mutable view state rather than changing
+  authoritative cached records.
 - **`src/store.ts` is the only door to the database.** Every read/write goes through its
   exported functions — items: `insertItem`/`resolveItem`/`dismissItem`/`annotateItem`/
   `replyItem`/`answerItem`/`listItems`; boards: `upsertBoard`/`updateBoardRow`/`getBoard`/`listBoards`/
@@ -128,20 +148,58 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   still staring at it — and the payload carries the stamp so a re-delivery is self-labelling.
   A non-blocked row has nothing to acknowledge and stays at-most-once; without that half a
   months-old aside would be a permanent firehose.
-- **Every mark-seen write pins the version it read.** `markReplySeen(id, repliedAt)`,
-  `markAnnotationDelivered(rowId, annotatedAt, by)` and `markHandledDelivered(rowId,
-  handledAt, by)` bind the exact version stamp the read returned (`... AND replied_at IS ?` /
+- **Every mark-seen write pins the version it read.** MCP supplies the item's monotonic
+  `response_revision` to `markReplySeen` and the row/board revisions to
+  `markAnnotationDelivered` and `markHandledDelivered`, as well as the exact
+  timestamp the read returned (`... AND replied_at IS ?` /
   `AND annotated_at IS ?` / `AND handled_at IS ?`, `IS` because legacy rows
   carry NULL). The viewer writes answers from its own OS process, so an unconditional stamp
   marks text the human just replaced as picked up. Never SELECT-then-UPDATE with a gap;
   `annotateBoardRow`, `replyItem` and `markRowHandled` reset the stamp in the SAME statement
-  that writes the new value. `markAnnotationDelivered`'s boolean means ONLY "the text you read is still
+  that writes the new value. The delivery functions' boolean means ONLY "the text you read is still
   there, safe to hand over" — never "you were first" (re-delivery is normal now), and its
   `COALESCE` is what keeps the two apart: the stamp records the FIRST delivery and never
   moves, because its AGE is the human's evidence that an agent has sat on the answer.
   `pending()`'s `.filter()` consuming that boolean is what drops replaced text — pinned at
-  the MCP level in `test/mcp.integration.test.ts` with a SQLite trigger, the only way to
-  schedule the human's hand between the handler's SELECT and its stamp.
+  the MCP level in `test/mcp.integration.test.ts` and `test/response-safety.test.ts`.
+  Same-millisecond corrections are distinct revisions; the item trigger also versions
+  response writes from an older process. A question's reply and annotation receipts
+  are stamped atomically against one response revision: withholding a changed
+  snapshot must not leave either half falsely marked picked up.
+  `board_get` retries a whole changed snapshot
+  and fails explicitly if it cannot obtain one; never omit a stale row from a board
+  read, because a subsequent full upsert would delete that row.
+- **Agent resolution acknowledges an exact response, not another reader's pickup.**
+  After an item has any response history, including a cleared reply or annotation,
+  MCP `resolve` requires `expected_response_revision` from the response the caller
+  handled. `pending` and successful `answer` return that revision. Missing or stale
+  revisions are refused; another sibling reading newer text cannot authorize an older
+  response. Items with no response history retain ordinary resolution; explicit
+  human and hook closure paths remain separate. `pending({item_id})` recovers the
+  current open item's text or clear state and revision after ordinary delivery ends.
+  Reply and clear writes require an open question, so stale notifications cannot
+  rewrite closed history. Clients using the older answer-then-resolve contract must
+  adopt the revision argument rather than silently bypassing this guard.
+- **Informational-item annotations are feedback, not another attention alarm.**
+  MCP opts into open note/milestone annotations through `listPending`; its default
+  remains question-only for hooks and backstops. Informational feedback, including a
+  clear, leaves the ordinary poll after pickup without closing the item. Targeted
+  `pending({item_id, project?})` recovers only that current open item in the selected
+  project, without delivering other items or board rows. `annotated_at`,
+  `annotation_seen_at` and `annotation_seen_by` keep edit and first-pickup state
+  distinct; legacy text has unknown edit time and no fabricated pickup.
+  Version-pinned delivery never bumps content `updated_at`; annotation writes reset
+  pickup even from an older writer. Annotations require an open item, and callers
+  must check the JSON `ok` rather than infer success from HTTP 200. Neither pickup
+  nor the reader's client label proves that the intended session acted; no new
+  informational host-wake guarantee or human-attention entry is implied.
+  Item reply and annotation timelines are independent: neither may borrow the
+  other's timestamps to claim pickup. The Note prompt retires an attempt only on
+  JSON `ok:true`; refused or transport-unconfirmed text, including a clear intent,
+  stays in the existing window-local recovery surface and protects automatic
+  restart. Retry requires explicit review, closed targets cannot retry, and local
+  recovery Clear never changes the stored annotation. Do not claim crash-durable
+  persistence or that a transport error proves the write never committed.
 - **Two answer channels, ONE precedence rule: the inbox always wins.** A question can be
   answered on the card (`replyItem`, source `'inbox'`) or out loud in chat and recorded by
   the agent (`answerItem`, source `'agent'`). It is deliberately NOT wall-clock
@@ -149,7 +207,7 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   a fresh inbox one. `answerItem` is ONE conditioned UPDATE that only writes while nothing
   unread is waiting (`reply IS NULL OR reply = '' OR reply_seen_at IS NOT NULL`) and
   otherwise returns `{ok:false, reason:'unread_inbox_answer'}` with the waiting answer;
-  `replyItem` overwrites unconditionally and resets pickup. Never SELECT-then-UPDATE and
+  `replyItem` overwrites an open question's answer and resets pickup. Never SELECT-then-UPDATE and
   never two UPDATEs here: the viewer writes from its own OS process and would land between
   them, leaving the human's newest answer flagged "✓ picked up" and un-clearable. An agent
   may overwrite an answer it has already picked up, but may never blank one.
@@ -234,8 +292,12 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   `context` alone when the field is absent and clears it only on an explicit `''`, because
   the prescribed flow is `board_get` → `board_upsert` and MCP reads no longer carry the
   text: omitting what you were never handed would wipe it. This does NOT weaken the rule
-  that a ROW absent from an upsert is deleted — that one stands. `note` still clears on
-  omission, deliberately: reads do hand `note` back, so leaving it out is a real choice.
+  that a ROW absent from an upsert is deleted — that one stands. The same omission rule
+  covers every agent-owned row field: an omitted `note`, `next_step`, `impact`,
+  `next_after`, `action_owner`, `options`, `context` or `outcome` keeps its stored value
+  (`upsertBoard`: `note: r.note ?? prev.note`), and only an explicit `''` (or
+  `options: []`) clears it. Do not "fix" `note` to clear on omission: agents re-send
+  full tables, and that would wipe every row's TL;DR.
 - **`store.ts`/`mcp.ts`/`viewer.ts` inverse round-trip:** the store's `Item` and
   `BoardWithRows` shapes are the contract shared by MCP writes/reads and viewer reads.
   Change them in `store.ts` and update both consumers (+ `group.ts` for items;
@@ -263,6 +325,32 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   live ambient signals) is `test/dom/silent-send.test.ts`.
   Nested Background disclosures are keyed by item/row id in `openContexts`; a poll or forced
   rebuild must restore their `open` state instead of collapsing text under the reader.
+  Passive polls retain inactive Notes, History and Plans DOM, but not their data:
+  the action/recovery queue, ambient signals and visible overlays still refresh.
+  Boot, library navigation and successful human writes use the existing complete
+  forced paint. Keep active-board tracking outside the skipped Plans painter and
+  mark notes read only when Notes is actually visible, not while Settings retains
+  that tab identity. Deep-link and render-time recovery must preserve their
+  explicit/deferred repaint ownership rather than recursively entering render.
+- **A viewer restart must not discard unsent responses.** A changed `x-inbox-boot`
+  schedules a coherent frontend reload, but `load()` defers it while drafts, recovery
+  entries, response handlers, outstanding writes, staged undo actions, or bounded
+  pointer/scroll activity remain. The existing frontend keeps polling and updating
+  ambient attention during that hold. Once protected work clears, an ordinary poll
+  reloads exactly once; drafts are never automatically sent to make refresh possible.
+  The quiet status hint explains an unsent-work hold without labeling an in-flight
+  write or pointer interaction as a human blocker. Failed staged choices use the same
+  exact-intent recovery path as other replies. This is automatic-restart protection,
+  not durable persistence across a manual reload, window close, or renderer crash.
+  `test/dom/viewer-restart.test.ts` pins the draft, revision, in-flight, and undo boundaries.
+- **Dashboard focus must not freeze monitoring detail.** Mount the structural frame
+  and native range selector once, then refresh ownership, dispatch, recent outcomes
+  and history through the ambient painter as well as headline signals. Preserve the
+  range control's identity, value and focus across polls and history error/recovery.
+  Reuse a focused outcome button while its result remains present; move focus to an
+  adjacent control only when that result actually leaves and the viewer owns focus.
+  This must not bypass the global held-pointer guard, create a third render entry,
+  or pull keyboard ownership back from a background viewer.
 - **Remembered DOM focus is not keyboard ownership.** A blurred tab or embedded viewer
   keeps its last `document.activeElement`. Passive polling must capture focus bookmarks
   only while `document.hasFocus()` is true, before replacing DOM; otherwise restoring a
@@ -298,12 +386,24 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   it is a brief interaction guard, not a user-visible pause, and it must reset when the open item
   changes. A settled rebuild anchors the open row's in-flow `.nrow` viewport position before and
   after replacement, then corrects only the measured delta; anchoring `.nrow-card` would be inert
-  in the desktop fixed-inspector layout. `test/dom/inspector-scroll.test.ts` and
+  in the desktop fixed-inspector layout. Restore queue scroll geometry only after shortcut
+  decoration and initial editor sizing: restoring sooner clamps the phone footer's saved
+  offset to a temporarily smaller range and hides its focused action. The initial editor
+  animation frame must not repeat an already-completed sizing pass and clamp it again.
+  The deferred restoration belongs to the same open-row owner that captured it.
+  `test/dom/inspector-scroll.test.ts` and
   `test/dom/page-scroll.test.ts` pin the momentum, viewport, position, and focus contracts.
   Independently scrolling inspectors, disclosures, drawers, and overlay bodies use
   `overscroll-behavior: contain` so exhausted wheel/trackpad input cannot chain to the page beneath.
   The compact project menu is a vertically contained popover at every narrow width, so its
   exhausted scroll cannot move the workspace behind it.
+- **Explicit keyboard traversal reveals its target; passive restoration does not.**
+  Tab/Shift+Tab inside an action card or dialog focuses with `preventScroll`, then
+  reveals the target through intentional scrolling ancestors inside that scope.
+  Do not scroll the phone card's overflow-hidden shell or background, and do not
+  reuse this explicit-navigation behavior for passive poll focus restoration.
+  `test/dom/explicit-tab-scroll.test.ts` covers the separation; real browser
+  geometry is still required to confirm narrow-footer visibility across rebuilds.
 
 - **The hooks runtime is a SECOND OS process on the same db — and it still goes through
   `store.ts`.** `src/hook.ts` (+ the `src/hook-cli.ts` entry) is spawned by Claude Code, not
@@ -739,12 +839,14 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   selectors stack. The project selector opens the existing rail as a vertically scrollable,
   contained menu with inline counts and project-owned archive/reopen actions. The menu closes on
   project selection, outside pointer/focus, Escape (with focus restoration), or a breakpoint
-  transition. Disclosure state is window-local and non-persistent. Workspace search is a fixed,
-  centered bottom dock outside the app shell: it clears the fixed inspector and sits above the
-  28px Live strip but below Live/modal layers. It is a combobox index over Inbox, Notes, History,
+  transition. Disclosure state is window-local and non-persistent. Workspace search lives in
+  the sticky topbar. While its results are open, raise that parent stacking context above
+  the desktop inspector and resize handles, but below Live, phone action cards and modal
+  owners; raising only the child dropdown cannot escape a lower parent context. Closing
+  results restores the normal header layer. It is a combobox index over Inbox, Notes, History,
   and active/archived Plans; it never filters the queue, project rail, tab badges, or Live
   sessions. Results use one visible lifecycle hierarchy — Open items, Active plans, Notes,
-  History, Archived plans — with uFuzzy relevance inside each section, so past work never
+  History, Archived plans — with relevant matches ranked inside each section, so past work never
   outranks current action. Every result explains its match: visible title characters are rendered
   through safe `<mark>` nodes, while hidden-field matches get a bounded, source-labelled snippet
   with ranges adjusted into snippet coordinates. Agent text still enters the DOM only through
@@ -758,6 +860,15 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   but `aria-busy` and non-activatable; once ready, unchanged result identities update their
   highlights in place. Poll refreshes preserve the active result by identity and do not rebuild
   an unchanged list under the pointer.
+  Multi-term searches use `createBoundedMatcher` to match ordered terms separately
+  over the complete text; uFuzzy remains the finite-edit, single-term matcher.
+  Never send an entire plan's concatenated background through the old multi-term
+  regexp: ordinary repeated release prose caused seconds of cross-term backtracking.
+  Preserve quoted/excluded terms, typo support, full distant-text coverage, source
+  identity and useful ranges; do not substitute context truncation or a larger debounce.
+  The per-build cache must not outlive its data snapshot. `test/search-bounded.test.ts`
+  exercises long positive, negative and wrong-order cases with independent process
+  deadlines so a performance regression cannot hang the test runner itself.
   Command/Ctrl+K focuses and selects its query even from the agent select; `/` remains the
   unmodified keyboard shortcut. The queue itself is an
   inline-size container: filter/tool groups reflow rather than scroll beneath the inspector, and
@@ -799,15 +910,6 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   agents declare scope via `register` instead of auto-inference. `AGENT_INBOX_DB`/`AGENT_INBOX_PORT`
   env overrides are already in place. Design (three blocking decisions, three verified wiring traps):
   [`docs/superpowers/specs/2026-07-26-remote-hosted-mode-design.md`](docs/superpowers/specs/2026-07-26-remote-hosted-mode-design.md).
-- **Item-annotation delivery** *(not yet filed — #37 with a different noun)* — the viewer's Note
-  button renders on EVERY open item (`card.js`'s `showActions: !done`, no kind check), but
-  `listPending` filters `kind='question' AND status='open'`, so a human's note on a `note` item, a
-  `done` milestone or a resolved question reaches no agent, ever — and items have no
-  `annotation_seen_at`, so the viewer cannot even show that it was not delivered. The fix mirrors
-  #37 exactly: `items.annotation_seen_at`/`annotation_seen_by`, the same CAS, and open items of any
-  kind carrying an annotation in `pending()`'s payload. Deliberately NOT bundled into #37 — it is a
-  different noun with its own viewer surface — but the column shape is decided, so it is additive.
-
 Keep all of these additive and behind the existing seams — don't break v1's local,
 zero-config, no-auth path.
 

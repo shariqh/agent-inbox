@@ -21,6 +21,7 @@
 // `var()` is never resolved, and window/document listeners accumulate across boots
 // within one file.
 import { afterEach, beforeEach, expect, vi } from 'vitest'
+import { randomUUID } from 'node:crypto'
 import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -43,6 +44,8 @@ const readPublic = (name: string): string => readFileSync(join(PUBLIC_DIR, name)
 
 /** A real, empty, throwaway SQLite DB. Seed it through `src/store.ts` exports only. */
 export function freshDb(): Database.Database {
+  const root = process.env.AGENT_INBOX_TEST_DB_ROOT
+  if (root) return openDb(join(root, `inbox-dom-${randomUUID()}.db`))
   return openDb(join(mkdtempSync(join(tmpdir(), 'inbox-dom-')), 'inbox.db'))
 }
 

@@ -1,4 +1,6 @@
 import { Hono } from 'hono'
+import type { Handler } from 'hono'
+import { createHash } from 'node:crypto'
 import { readFileSync, existsSync, readdirSync, lstatSync, realpathSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
@@ -8,9 +10,9 @@ import {
   listItems, resolveItem, dismissItem, annotateItem, replyItem, snoozeItem,
   listBoards, archiveBoard, unarchiveBoard, annotateBoardRow, snoozeBoardRow,
   markRowHandled, clearRowHandled, listActivity, listActivitySpans, listSourceLinks, defaultDbPath,
-  closeProject, reopenProject, closedProjects,
+  closeProject, reopenProject, closedProjects, readSnapshotState,
 } from './store.js'
-import type { ResponseKind } from './store.js'
+import type { ResponseKind, SnapshotReadState } from './store.js'
 import { groupItems } from './group.js'
 import { hooksSettingsBlock } from './hook.js'
 import { buildStamp, readBakedInfo } from './stamp.js'
@@ -360,6 +362,48 @@ function responseKind(value: unknown): ResponseKind | null {
   return value === 'answer' || value === 'clarify' || value === 'decline' ? value : null
 }
 
+function sameSnapshotState(a: SnapshotReadState, b: SnapshotReadState): boolean {
+  return !a.inTransaction && !b.inTransaction
+    && a.dataVersion === b.dataVersion && a.totalChanges === b.totalChanges
+    && a.schemaVersion === b.schemaVersion
+}
+
+function conditionalSnapshot(
+  db: Database.Database,
+  name: 'items' | 'boards' | 'archived-boards',
+  read: () => object,
+): Handler {
+  // One representation per registered endpoint, local to this viewer instance.
+  let cached: { state: SnapshotReadState; body: string; etag: string } | undefined
+  return (c) => {
+    c.header('Cache-Control', 'no-store')
+    const before = readSnapshotState(db)
+    let current = cached
+    if (!current || !sameSnapshotState(current.state, before)) {
+      cached = undefined
+      const body = JSON.stringify(read())
+      const after = readSnapshotState(db)
+      current = {
+        state: before,
+        body,
+        etag: `"${name}-${createHash('sha256').update(body).digest('hex')}"`,
+      }
+      // Never publish old bytes under a token read after a concurrent commit.
+      // An unstable/transactional read retains the uncached response behavior.
+      if (sameSnapshotState(before, after)) cached = current
+    }
+    c.header('ETag', current.etag)
+    const requested = c.req.header('If-None-Match')
+    // GET/HEAD use weak comparison, as in Hono's ETag middleware. Generated
+    // opaque tags contain no commas; trim list OWS before comparing members.
+    if (requested?.trim() === '*'
+      || requested?.split(',').some((tag) => tag.trim().replace(/^W\//, '') === current.etag)) {
+      return c.body(null, 304)
+    }
+    return c.body(current.body, 200, { 'Content-Type': 'application/json' })
+  }
+}
+
 export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono {
   const app = new Hono()
   const bakedPath = opts.setupInfoPath ?? resolve(process.cwd(), 'setup-info.json')
@@ -378,7 +422,7 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
     c.res.headers.set('x-inbox-boot', boot)
   })
 
-  app.get('/api/items', (c) => c.json(groupItems(listItems(db))))
+  app.get('/api/items', conditionalSnapshot(db, 'items', () => groupItems(listItems(db))))
 
   // The build stamp (#40) rides along here rather than on its own route: the
   // Setup panel is the one surface that asks "which build is this", and it is
@@ -439,9 +483,10 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
   })
 
   app.post('/api/items/:id/annotate', async (c) => {
-    const { text } = await c.req.json<{ text: string }>()
-    annotateItem(db, c.req.param('id'), text)
-    return c.json({ ok: true })
+    const body = await c.req.json<{ text?: unknown }>().catch(() => null)
+    if (typeof body?.text !== 'string') return c.json({ ok: false, error: 'text must be a string' }, 400)
+    const ok = annotateItem(db, c.req.param('id'), body.text)
+    return c.json({ ok })
   })
 
   app.post('/api/items/:id/reply', async (c) => {
@@ -502,9 +547,9 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
     return c.json({ ok })
   })
 
-  app.get('/api/boards', (c) => c.json(listBoards(db)))
+  app.get('/api/boards', conditionalSnapshot(db, 'boards', () => listBoards(db)))
 
-  app.get('/api/boards/archived', (c) => c.json(listBoards(db, { status: 'archived' })))
+  app.get('/api/boards/archived', conditionalSnapshot(db, 'archived-boards', () => listBoards(db, { status: 'archived' })))
 
   app.post('/api/boards/:id/archive', async (c) => {
     const body = await c.req.json<{ expected_version?: number }>().catch(() => null)

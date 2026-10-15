@@ -39,6 +39,7 @@ import { buildMission } from '/mission.js'
 import { buildActivitySeries, buildDashboard } from '/dashboard.js'
 import { PANE_DEFAULTS, paneKeyValue, paneValueFromPointer, resolvePaneLayout } from '/panes.js'
 import { createThemeController } from '/theme.js'
+import { createSnapshotReader } from '/snapshots.js'
 
 void paginateGroups // kept exported+tested (spec §15); the viewer no longer calls it
 
@@ -76,6 +77,7 @@ let shown = { ...PAGE }
 function resetPaging() { shown = { ...PAGE } }
 
 let lastData = null
+const readSnapshot = createSnapshotReader((url, init) => fetch(url, init))
 let dashboardRangeMs = 24 * 60 * 60 * 1000
 let renderedTheme = document.documentElement.dataset.theme ?? 'light'
 function syncThemeChoices(preference) {
@@ -102,6 +104,7 @@ let loadGeneration = 0
 let appliedLoadGeneration = 0
 let appliedClosedGeneration = 0
 let preparedFrame = null
+let editablePanesPainted = false
 // issue #30 — the (repo, branch) → cached PR state index, rebuilt once per
 // render. A Map from the start, never null: the deep-link and setup paths can
 // reach a renderer before the first /api/links response lands, and linkFor(null)
@@ -161,6 +164,32 @@ function sortDeferredEntries(entries) {
 }
 
 let bootId = null
+let refreshPending = false
+let reloadRequested = false
+let pendingWrites = 0
+
+function hasUnsentResponses() {
+  return Boolean(suspendHint(suspendState())) || hasDraftRecovery()
+}
+
+function shouldDeferBootReload() {
+  const now = Date.now()
+  return hasUnsentResponses() || pendingWrites > 0
+    || stagedStars.size > 0 || stagedDismiss.size > 0
+    || pressHeld(pressedAt, now) || scrollActive(lastInteractionScrollAt, now)
+}
+
+// An HTTP result is not settled until its caller has applied draft ownership or
+// failure recovery. Keep undrafted option picks protected through that work too.
+async function withPendingResponse(action) {
+  pendingWrites += 1
+  try {
+    return await action()
+  } finally {
+    pendingWrites -= 1
+    showPauseHint()
+  }
+}
 
 // ── poll suspension (spec §10) ──────────────────────────────────────────────
 // The 3s rebuild holds for typed drafts and bounded active interactions. A
@@ -256,8 +285,11 @@ function initScrollGuard() {
 function showPauseHint() {
   const el = document.getElementById('pauseHint')
   if (!el) return
-  const hint = renderDirty ? suspendHint(suspendState()) : null
-  el.textContent = hint ?? ''
+  const hint = refreshPending && hasUnsentResponses()
+    ? 'Viewer updated — finish or clear unsent responses to refresh.'
+    : renderDirty ? suspendHint(suspendState()) : null
+  el.setAttribute('role', 'status')
+  if (el.textContent !== (hint ?? '')) el.textContent = hint ?? ''
   el.hidden = !hint
 }
 
@@ -369,15 +401,22 @@ function orderedIds(ids) {
 }
 
 async function load() {
+  if (reloadRequested) return false
   const generation = ++loadGeneration
   try {
-    const res = await fetch('/api/items')
+    const res = await readSnapshot('/api/items')
+    if (reloadRequested || generation < appliedLoadGeneration) return false
     const boot = res.headers.get('x-inbox-boot')
-    if (bootId && boot && bootId !== boot) { location.reload(); return false } // server restarted → pick up fresh frontend
-    if (boot) bootId = boot
+    if (bootId && boot && bootId !== boot) refreshPending = true
+    if (!bootId && boot) bootId = boot
+    if (refreshPending && !shouldDeferBootReload()) {
+      reloadRequested = true
+      location.reload()
+      return false
+    }
     const g = await res.json()
-    const boards = await (await fetch('/api/boards')).json()
-    const archived = await (await fetch('/api/boards/archived')).json()
+    const boards = await (await readSnapshot('/api/boards')).json()
+    const archived = await (await readSnapshot('/api/boards/archived')).json()
     const activity = await (await fetch('/api/activity')).json()
     const historySinceMs = Date.now() - 30 * 24 * 60 * 60 * 1000
     const activityHistory = await fetch(`/api/activity/history?since_ms=${historySinceMs}`)
@@ -404,7 +443,7 @@ async function load() {
     // an empty links set must mean "render exactly as before this feature", never
     // a dead page. A viewer that predates this route answers 404 with HTML.
     const links = await fetch('/api/links').then((r) => (r.ok ? r.json() : [])).catch(() => [])
-    if (generation < appliedLoadGeneration) return false
+    if (reloadRequested || generation < appliedLoadGeneration) return false
     appliedLoadGeneration = generation
     if (closedSnapshot !== null) {
       appliedClosedGeneration = generation
@@ -494,6 +533,7 @@ function guardPreviewActivation(event) {
 // bespoke handlers. Returns the parsed JSON body on success, or null on network failure
 // (callers must treat null as "nothing happened, already signaled" and bail out).
 async function postJSON(url, body) {
+  pendingWrites += 1
   try {
     const res = await fetch(url, {
       // fix round 2 (I5): a staged ★ is flushed from `beforeunload`, where a
@@ -522,6 +562,8 @@ async function postJSON(url, body) {
     console.error(`POST ${url} failed`, err)
     document.getElementById('status').textContent = 'disconnected'
     return null
+  } finally {
+    pendingWrites -= 1
   }
 }
 
@@ -745,7 +787,7 @@ function focusItem(id, source = null) {
   actionFilter = 'all'
   changedOnly = false
   resetSearch()
-  selectTab(board ? 'boards' : tabForItem(item)) // Task 8: sets activeTab AND shows the panel
+  selectTab(board ? 'boards' : tabForItem(item), { paint: false }) // the explicit forceRender below paints the target
   const hash = focusHashFor(id)
   if (location.hash !== hash) location.hash = hash // survives reload
   forceRender()
@@ -1264,11 +1306,13 @@ function restoreDashboardFocus(key) {
   if (!key || activeTab !== 'dashboard') return false
   const target = document.querySelector(`#dashboard [data-dashboard-focus-key="${CSS.escape(key)}"]`)
   if (!target) return false
-  target.focus({ preventScroll: true })
+  if (document.activeElement !== target) target.focus({ preventScroll: true })
   return document.activeElement === target
 }
 
 function renderDashboardAmbient(model) {
+  const host = document.querySelector('#dashboard .dashboard')
+  if (!host?.querySelector('.dashboard-grid')) return
   const values = {
     agents: model.signals.agents.working,
     waiting: model.signals.waiting,
@@ -1305,6 +1349,13 @@ function renderDashboardAmbient(model) {
     const card = document.querySelector(`[data-dashboard-signal="${name}"]`)
     if (card) card.setAttribute('aria-label', label)
   }
+  for (const [owner, count] of Object.entries(model.ownership)) {
+    const value = host.querySelector(`.flow-${owner} strong`)
+    if (value) value.textContent = String(count)
+  }
+  renderDashboardHistory(host.querySelector('.dashboard-activity'))
+  renderDashboardDispatch(host.querySelector('.dashboard-live-list'), model.sessions)
+  renderDashboardOutcomes(host.querySelector('.dashboard-outcome-list'), model.recentOutcomes)
 }
 
 const DASHBOARD_SIGNAL_ICONS = {
@@ -1344,10 +1395,128 @@ function formatDuration(ms) {
   return minutes ? `${hours}h ${minutes}m` : `${hours}h`
 }
 
+function renderDashboardHistory(panel) {
+  const head = panel.querySelector('.dashboard-card-head')
+  for (const child of [...panel.children]) if (child !== head) child.remove()
+  panel.classList.remove('is-empty')
+  const endMs = Date.now()
+  const bucketCount = dashboardRangeMs === 86400000 ? 24 : dashboardRangeMs === 604800000 ? 14 : 30
+  const history = lastData.activityHistory ?? { state: 'ready', spans: [], message: '' }
+  const historySpans = (history.spans ?? []).filter((span) =>
+    !dashboardClosedSet().has(span.project)
+    && (!projectFilter || span.project === projectFilter)
+    && (!agentFilter || span.agent === agentFilter))
+  const series = buildActivitySeries(historySpans, {
+    startMs: endMs - dashboardRangeMs,
+    endMs,
+    bucketCount,
+  })
+  if (history.state === 'error') {
+    panel.classList.add('is-empty')
+    const error = document.createElement('div')
+    error.className = 'dashboard-history-empty dashboard-history-error'
+    error.title = history.message
+    error.innerHTML = '<strong>History unavailable</strong>'
+    panel.appendChild(error)
+  } else if (!series.hasHistory) {
+    panel.classList.add('is-empty')
+    const empty = document.createElement('div')
+    empty.className = 'dashboard-history-empty'
+    empty.setAttribute('role', 'img')
+    empty.setAttribute('aria-label', 'No activity history yet')
+    empty.title = 'No activity history yet'
+    empty.innerHTML = '<svg class="dashboard-empty-icon" viewBox="0 0 32 20" aria-hidden="true"><path d="M1 15h5l3-9 5 12 4-8 3 5h10"></path></svg>'
+    panel.appendChild(empty)
+  } else {
+    const total = document.createElement('div')
+    total.className = 'dashboard-activity-total'
+    total.innerHTML = `<strong>${esc(formatDuration(series.totalActiveMs))}</strong>`
+    panel.appendChild(total)
+    const max = Math.max(...series.buckets.map((bucket) => bucket.activeMs), 1)
+    const bars = document.createElement('div')
+    bars.className = 'dashboard-bars'
+    bars.setAttribute('role', 'img')
+    bars.setAttribute('aria-label', `${formatDuration(series.totalActiveMs)} of agent claim time`)
+    for (const bucket of series.buckets) {
+      const bar = document.createElement('span')
+      bar.className = 'dashboard-bar'
+      bar.style.height = `${Math.max(4, (bucket.activeMs / max) * 100)}%`
+      bar.title = `${formatDuration(bucket.activeMs)} · ${bucket.sessions} session${bucket.sessions === 1 ? '' : 's'}`
+      bars.appendChild(bar)
+    }
+    panel.appendChild(bars)
+  }
+}
+
+function renderDashboardDispatch(list, sessions) {
+  list.replaceChildren()
+  if (!sessions.length) {
+    list.innerHTML = '<div class="dashboard-empty" role="img" aria-label="No agent connections" title="No agent connections"><svg class="dashboard-empty-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v4M12 18v4M2 12h4M18 12h4"></path></svg></div>'
+    return
+  }
+  for (const session of sessions.slice(0, 4)) {
+    const row = document.createElement('div')
+    row.className = `dashboard-live-session${session.idle ? ' idle' : ''}`
+    const identity = document.createElement('strong')
+    identity.textContent = `${session.project} / ${session.agent}`
+    const doing = document.createElement('span')
+    doing.textContent = session.historical ? `Last report: ${session.synopsis}` : session.synopsis
+    const state = document.createElement('small')
+    state.textContent = session.idle ? 'Connected' : 'Reported work'
+    row.append(identity, doing, state)
+    list.appendChild(row)
+  }
+}
+
+function renderDashboardOutcomes(list, entries) {
+  const existing = new Map([...list.querySelectorAll('.dashboard-outcome')]
+    .map((row) => [row.dataset.dashboardFocusKey, row]))
+  const active = activeFocusElement()?.closest?.('.dashboard-outcome')
+  const focused = active && list.contains(active) ? active : null
+  const focusedIndex = focused ? [...list.children].indexOf(focused) : -1
+  const rows = entries.slice(0, 4).map((entry) => {
+    const key = `outcome:${entry.kind === 'item' ? entry.item.id : entry.row.id}`
+    let row = existing.get(key)
+    if (!row) {
+      row = document.createElement('button')
+      row.type = 'button'
+      row.className = 'dashboard-outcome'
+      row.dataset.dashboardFocusKey = key
+      row.append(document.createElement('strong'), document.createElement('span'), document.createElement('small'))
+      row.addEventListener('click', () => {
+        if (entry.kind === 'item') focusItem(entry.item.id)
+        else focusItem(entry.board.id, { rowId: entry.row.id })
+      })
+    }
+    row.querySelector('strong').textContent = dashboardEntryTitle(entry) ?? 'Recorded outcome'
+    row.querySelector('span').textContent = dashboardEntryEntity(entry)?.outcome ?? ''
+    row.querySelector('small').textContent = dashboardEntryProject(entry) ?? ''
+    return row
+  })
+  if (focused && rows.includes(focused)) {
+    // Move the other rows around the focused button; detaching that button would
+    // lose native keyboard ownership even if it were immediately reinserted.
+    for (const child of [...list.children]) if (child !== focused) child.remove()
+    const index = rows.indexOf(focused)
+    focused.before(...rows.slice(0, index))
+    focused.after(...rows.slice(index + 1))
+  } else {
+    list.replaceChildren(...rows)
+    if (!rows.length) {
+      list.innerHTML = '<div class="dashboard-empty" role="img" aria-label="No recorded outcomes" title="No recorded outcomes"><svg class="dashboard-empty-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"></circle><path d="m8 12 2.5 2.5L16 9"></path></svg></div>'
+    }
+    if (focused) {
+      const next = rows[Math.min(focusedIndex, rows.length - 1)]
+        ?? document.querySelector('[data-dashboard-signal="outcomes"]')
+      next?.focus({ preventScroll: true })
+    }
+  }
+}
+
 function renderDashboard(model) {
   const host = document.querySelector('#dashboard .dashboard')
-  if (!host) return
-  host.replaceChildren()
+  // Keep native controls mounted; ambient updates replace only their data regions.
+  if (!host || host.querySelector('.dashboard-grid')) return
 
   const signals = document.createElement('div')
   signals.className = 'dashboard-signals'
@@ -1410,54 +1579,6 @@ function renderDashboard(model) {
   })
   activityHead.appendChild(range)
   activityPanel.appendChild(activityHead)
-
-  const endMs = Date.now()
-  const bucketCount = dashboardRangeMs === 86400000 ? 24 : dashboardRangeMs === 604800000 ? 14 : 30
-  const history = lastData.activityHistory ?? { state: 'ready', spans: [], message: '' }
-  const historySpans = (history.spans ?? []).filter((span) =>
-    !dashboardClosedSet().has(span.project)
-    && (!projectFilter || span.project === projectFilter)
-    && (!agentFilter || span.agent === agentFilter))
-  const series = buildActivitySeries(historySpans, {
-    startMs: endMs - dashboardRangeMs,
-    endMs,
-    bucketCount,
-  })
-  if (history.state === 'error') {
-    activityPanel.classList.add('is-empty')
-    const error = document.createElement('div')
-    error.className = 'dashboard-history-empty dashboard-history-error'
-    error.title = history.message
-    error.innerHTML = '<strong>History unavailable</strong>'
-    activityPanel.appendChild(error)
-  } else if (!series.hasHistory) {
-    activityPanel.classList.add('is-empty')
-    const empty = document.createElement('div')
-    empty.className = 'dashboard-history-empty'
-    empty.setAttribute('role', 'img')
-    empty.setAttribute('aria-label', 'No activity history yet')
-    empty.title = 'No activity history yet'
-    empty.innerHTML = '<svg class="dashboard-empty-icon" viewBox="0 0 32 20" aria-hidden="true"><path d="M1 15h5l3-9 5 12 4-8 3 5h10"></path></svg>'
-    activityPanel.appendChild(empty)
-  } else {
-    const total = document.createElement('div')
-    total.className = 'dashboard-activity-total'
-    total.innerHTML = `<strong>${esc(formatDuration(series.totalActiveMs))}</strong>`
-    activityPanel.appendChild(total)
-    const max = Math.max(...series.buckets.map((bucket) => bucket.activeMs), 1)
-    const bars = document.createElement('div')
-    bars.className = 'dashboard-bars'
-    bars.setAttribute('role', 'img')
-    bars.setAttribute('aria-label', `${formatDuration(series.totalActiveMs)} of agent claim time`)
-    for (const bucket of series.buckets) {
-      const bar = document.createElement('span')
-      bar.className = 'dashboard-bar'
-      bar.style.height = `${Math.max(4, (bucket.activeMs / max) * 100)}%`
-      bar.title = `${formatDuration(bucket.activeMs)} · ${bucket.sessions} session${bucket.sessions === 1 ? '' : 's'}`
-      bars.appendChild(bar)
-    }
-    activityPanel.appendChild(bars)
-  }
   grid.appendChild(activityPanel)
 
   const ownership = document.createElement('section')
@@ -1481,22 +1602,6 @@ function renderDashboard(model) {
   live.innerHTML = '<div class="dashboard-card-head"><h2>Live dispatch</h2></div>'
   const sessionList = document.createElement('div')
   sessionList.className = 'dashboard-live-list'
-  if (!model.sessions.length) {
-    sessionList.innerHTML = '<div class="dashboard-empty" role="img" aria-label="No agent connections" title="No agent connections"><svg class="dashboard-empty-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v4M12 18v4M2 12h4M18 12h4"></path></svg></div>'
-  } else {
-    for (const session of model.sessions.slice(0, 4)) {
-      const row = document.createElement('div')
-      row.className = `dashboard-live-session${session.idle ? ' idle' : ''}`
-      const identity = document.createElement('strong')
-      identity.textContent = `${session.project} / ${session.agent}`
-      const doing = document.createElement('span')
-      doing.textContent = session.historical ? `Last report: ${session.synopsis}` : session.synopsis
-      const state = document.createElement('small')
-      state.textContent = session.idle ? 'Connected' : 'Reported work'
-      row.append(identity, doing, state)
-      sessionList.appendChild(row)
-    }
-  }
   live.appendChild(sessionList)
   grid.appendChild(live)
 
@@ -1505,29 +1610,6 @@ function renderDashboard(model) {
   outcomes.innerHTML = '<div class="dashboard-card-head"><h2>Recent outcomes</h2></div>'
   const outcomeList = document.createElement('div')
   outcomeList.className = 'dashboard-outcome-list'
-  if (!model.recentOutcomes.length) {
-    outcomeList.innerHTML = '<div class="dashboard-empty" role="img" aria-label="No recorded outcomes" title="No recorded outcomes"><svg class="dashboard-empty-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"></circle><path d="m8 12 2.5 2.5L16 9"></path></svg></div>'
-  } else {
-    for (const entry of model.recentOutcomes.slice(0, 4)) {
-      const entity = dashboardEntryEntity(entry)
-      const row = document.createElement('button')
-      row.type = 'button'
-      row.className = 'dashboard-outcome'
-      row.dataset.dashboardFocusKey = `outcome:${entry.kind === 'item' ? entry.item.id : entry.row.id}`
-      const title = document.createElement('strong')
-      title.textContent = dashboardEntryTitle(entry) ?? 'Recorded outcome'
-      const result = document.createElement('span')
-      result.textContent = entity?.outcome ?? ''
-      const meta = document.createElement('small')
-      meta.textContent = dashboardEntryProject(entry) ?? ''
-      row.append(title, result, meta)
-      row.addEventListener('click', () => {
-        if (entry.kind === 'item') focusItem(entry.item.id)
-        else focusItem(entry.board.id, { rowId: entry.row.id })
-      })
-      outcomeList.appendChild(row)
-    }
-  }
   outcomes.appendChild(outcomeList)
   grid.appendChild(outcomes)
 
@@ -1583,16 +1665,19 @@ function paintTabCounts(g, boards) {
   for (const id of TAB_IDS) setCount(id, counts[id])
 }
 
-function paintEditableSurfaces({ agents, g, boards, archived, live, dashboard }) {
+function paintEditableSurfaces({ agents, g, boards, archived, live, dashboard, paintAllPanes }) {
   renderSearchResults()
   renderClosedBanner()
   renderAgentSelect(agents)
   renderLive(live) // drawer's expanded list — stays FILTERED (rail-scoped, like every other tab)
   renderDashboard(dashboard)
-  renderNeedsYou(g, boards, Date.now())
-  renderGroups('notes', g.notes)
-  renderDone(g.done)
-  renderBoards(boards, archived)
+  // Keep the action/recovery queue and overlays current. Only inactive document
+  // panes skip ordinary polls; boot and explicit human repaints remain complete.
+  const restoreQueueView = renderNeedsYou(g, boards, Date.now())
+  if (paintAllPanes || !document.getElementById('notes').hidden) renderGroups('notes', g.notes)
+  if (paintAllPanes || !document.getElementById('done').hidden) renderDone(g.done)
+  for (const board of boards) sessionActiveBoards.add(board.id)
+  if (paintAllPanes || !document.getElementById('boards').hidden) renderBoards(boards, archived)
   // renderGroups may have marked visible notes read. Recount only on a full
   // editable frame; a draft-gated ambient frame must never mark unseen notes.
   paintTabCounts(g, boards)
@@ -1606,10 +1691,14 @@ function paintEditableSurfaces({ agents, g, boards, archived, live, dashboard })
   renderTriage() // keep the open lightbox in sync with fresh data
   renderRelay() // same entities, projected into human → agent → outcome lanes
   renderMission() // selected board, projected through explicit row next/outcome edges
+  return restoreQueueView
 }
 
 function render() {
+  // A prepared frame belongs to the poll; explicit forceRender enters without one.
+  const paintAllPanes = preparedFrame === null || !editablePanesPainted
   const frame = preparedFrame ?? paintAmbient()
+  frame.paintAllPanes = paintAllPanes
   preparedFrame = null
   const ownsFocus = document.hasFocus()
   const missionFocus = captureMissionFocus()
@@ -1620,7 +1709,7 @@ function render() {
   if (activeFocusElement()?.closest?.('.stale-drafts-fold')) draftRecoveryFocusPending = true
   reconcileDraftOwners()
   requestedDraftFocusBookmark = null
-  paintEditableSurfaces(frame)
+  const restoreQueueView = paintEditableSurfaces(frame)
   pagedFocusId = null
   if (ownsFocus) {
     if (missionFocus && missionBoardId) {
@@ -1633,6 +1722,8 @@ function render() {
   applySearchJumpHighlight()
   invalidatePreviewLinks()
   keyboardUI?.refresh()
+  restoreQueueView()
+  editablePanesPainted = true
 }
 
 // one age vocabulary for every surface (§6): rows, chips, Live and tooltips all
@@ -2012,7 +2103,9 @@ function bindReplyEditor(editor, submit) {
     submit()
   })
   requestAnimationFrame(() => {
-    if (editor.isConnected) resizeReplyEditor(editor)
+    // Queue restoration may have sized this editor already. A second auto-height
+    // measurement would temporarily shrink and clamp its restored scroll parent.
+    if (editor.isConnected && !editor.style.height) resizeReplyEditor(editor)
   })
 }
 
@@ -2081,7 +2174,7 @@ function rowAnswerEl(b, r, onSaved) {
     clearRowRecoveryTarget(r.id, r.revision)
     resumeRender()
   })
-  const save = async () => {
+  const save = () => withPendingResponse(async () => {
     const typed = input.value
     if (!typed.trim()) return
     const kind = input.dataset.responseKind ?? 'answer'
@@ -2111,7 +2204,10 @@ function rowAnswerEl(b, r, onSaved) {
         input.value = typed
       }
       showWriteError(r.id, WRITE_FAILED)
-      resumeRender()
+      // An option POST may outlive a poll rebuild; restore the current editor,
+      // rather than leaving the response only on the detached captured input.
+      if (ownsSubmission && !input.isConnected) forceRender()
+      else resumeRender()
       return
     }
     if (!res.ok) {
@@ -2156,7 +2252,7 @@ function rowAnswerEl(b, r, onSaved) {
     // is global — one unrelated draft anywhere and this write showed the human
     // nothing at all, box still full, ready to send the same string twice.
     await reloadAndPaint()
-  }
+  })
   const options = r.status === 'blocked' ? optionOrder(r.options) : []
   if (options.length) {
     const choices = document.createElement('div')
@@ -2243,10 +2339,24 @@ function rowAnswerEl(b, r, onSaved) {
 // Parameterised over the pair of stamps rather than reading the row, because #36
 // gave a row two INDEPENDENTLY delivered halves and the marker has to be able to
 // disagree between them.
-function pickupMarkHtml(seenAt, seenBy) {
+function pickupMarkHtml(seenAt, seenBy, { clientLabel = false } = {}) {
+  const recipient = seenBy ? `${esc(seenBy)}${clientLabel ? ' client' : ''}` : 'an agent'
+  const explanation = clientLabel
+    ? 'Client label, not a unique session. Delivery does not confirm the asking agent has resumed or acted.'
+    : 'Delivery does not confirm the asking agent has resumed.'
   return seenAt
-    ? `<span class="pickup picked" title="Delivery does not confirm the asking agent has resumed.">Delivered to ${seenBy ? esc(seenBy) : 'an agent'} · ${esc(rel(seenAt))} ago</span>`
+    ? `<span class="pickup picked" title="${esc(explanation)}">Delivered to ${recipient} · ${esc(rel(seenAt))} ago</span>`
     : '<span class="pickup awaiting">Saved · waiting for delivery</span>'
+}
+
+function itemAnnotationHtml(receipt) {
+  if (!receipt) return ''
+  const text = receipt.cleared ? '<strong>Note cleared</strong>' : `<strong>Note:</strong> ${esc(receipt.text)}`
+  const pickup = receipt.state === 'waiting' || receipt.state === 'picked'
+    ? pickupMarkHtml(receipt.seenAt, receipt.seenBy, { clientLabel: true })
+    : `<span class="pickup">${receipt.state === 'closed' ? 'Saved · item closed' : 'Saved · delivery not recorded'}</span>`
+  // Keep pickup text outside .annotation, the exact human-text search source.
+  return `<div class="item-annotation" data-note-state="${esc(receipt.state)}"><div class="annotation">${text}</div>${pickup}</div>`
 }
 
 // Everything the human has left on a row: their words (#37), their "I did my
@@ -2829,7 +2939,7 @@ let activeTab = DEFAULT_TAB
 
 // single routing entry point: state + DOM together, so no caller can set one
 // without the other
-function selectTab(id) {
+function selectTab(id, { paint = true } = {}) {
   if (!TAB_IDS.includes(id)) return
   activeTab = id
   for (const t of document.querySelectorAll('#tabs .tab')) {
@@ -2837,6 +2947,7 @@ function selectTab(id) {
     t.tabIndex = t.dataset.tab === id ? 0 : -1 // roving tabindex (spec §13)
   }
   showPanel(id)
+  if (paint) forceRender()
   if (id === 'needsYou') restoreRowSelection(false)
 }
 
@@ -4052,7 +4163,7 @@ const starStage = createStagedSend({
     stagedStars.delete(id)
     invalidateItemDraftIntents(id)
     itemLatestIntents[id] = intent
-    sendReply(id, label, context, 'answer', generation, intent, false)
+    sendReply(id, label, context, 'answer', generation, intent)
   },
 })
 
@@ -4247,6 +4358,7 @@ function renderEmptyState(host) {
 function renderNeedsYou(g, boardsInView, nowMs) {
   const host = document.getElementById('needsYouList')
   const protectedIds = protectedNeedsYouIds()
+  const scrollOwnerId = openRowId
   const openQueueRow = openRowId ? needsYouRowEl(openRowId) : null
   const openCard = openQueueRow?.querySelector('.nrow-card') ?? null
   const openRowViewportTop = openQueueRow?.getBoundingClientRect().top ?? null
@@ -4310,19 +4422,25 @@ function renderNeedsYou(g, boardsInView, nowMs) {
   // count is computed from (render()'s `g.notes`). It used to read the GLOBAL
   // lastData.g.notes, so the chip and the badge disagreed under any rail filter.
   renderNeedsYouExtras(host, g.notes.flatMap((gr) => gr.items))
-  const restoredRow = openRowId ? needsYouRowEl(openRowId) : null
-  const restoredCard = restoredRow?.querySelector('.nrow-card') ?? null
-  if (restoredCard) {
-    cardScrollHost(restoredCard).scrollTop = openRowScrollTop
-    const head = restoredCard.querySelector('.nrow-card-head')
-    const compose = restoredCard.querySelector('.nrow-card-compose')
-    if (head) head.scrollTop = openRowHeadScrollTop
-    if (compose) compose.scrollTop = openRowComposeScrollTop
-  }
-  if (restoredRow && openRowViewportTop !== null) {
-    const viewportDelta = restoredRow.getBoundingClientRect().top - openRowViewportTop
-    if (Number.isFinite(viewportDelta) && Math.abs(viewportDelta) > 0.5) {
-      window.scrollBy(0, viewportDelta)
+  // Badges and editor sizing change the footer's scroll range. Restore against
+  // their final geometry, otherwise the browser clamps a valid saved offset early.
+  const restoreQueueView = () => {
+    if (openRowId !== scrollOwnerId) return
+    const restoredRow = openRowId ? needsYouRowEl(openRowId) : null
+    const restoredCard = restoredRow?.querySelector('.nrow-card') ?? null
+    if (restoredCard) {
+      for (const editor of restoredCard.querySelectorAll('textarea.reply-input')) resizeReplyEditor(editor)
+      cardScrollHost(restoredCard).scrollTop = openRowScrollTop
+      const head = restoredCard.querySelector('.nrow-card-head')
+      const compose = restoredCard.querySelector('.nrow-card-compose')
+      if (head) head.scrollTop = openRowHeadScrollTop
+      if (compose) compose.scrollTop = openRowComposeScrollTop
+    }
+    if (restoredRow && openRowViewportTop !== null) {
+      const viewportDelta = restoredRow.getBoundingClientRect().top - openRowViewportTop
+      if (Number.isFinite(viewportDelta) && Math.abs(viewportDelta) > 0.5) {
+        window.scrollBy(0, viewportDelta)
+      }
     }
   }
   const restoredCardFocus = restoreCardFocus(cardFocus)
@@ -4333,6 +4451,7 @@ function renderNeedsYou(g, boardsInView, nowMs) {
   // row focus only when focus was already inside the list and the open card did
   // not restore its own control; a poll must never yank focus from elsewhere.
   restoreRowSelection(hadListFocus && !restoredCardFocus && !restoredAskedTimeFocus)
+  return restoreQueueView
 }
 
 function renderOrphanedDrafts(host) {
@@ -4370,6 +4489,21 @@ function renderOrphanedDrafts(host) {
           draft.context ? `context: ${draft.context}` : '',
         ].filter(Boolean).join(' · '),
       })),
+    ...Object.entries(itemNoteDrafts)
+      .filter(([, draft]) => !draft.pending || draft.error)
+      .map(([id, draft]) => ({
+        id: `note:${id}`,
+        draft,
+        retry: freshItem(id)?.status === 'open' ? () => editItemNote({ id, title: draft.title }) : null,
+        clear: () => {
+          if (itemNoteDrafts[id] !== draft || draft.pending) return false
+          delete itemNoteDrafts[id]
+          return true
+        },
+        text: `${draft.title} · ${draft.pending ? 'Saving note…' : draft.error}\n${draft.text === '' ? 'Clear note' : `Note: ${draft.text}`}`,
+        textClass: 'annotation',
+        pending: draft.pending,
+      })),
   ]
   if (!entries.length) return
   const fold = document.createElement('details')
@@ -4382,10 +4516,16 @@ function renderOrphanedDrafts(host) {
   for (const entry of entries) {
     const line = document.createElement('div')
     line.className = 'stale-draft-line'
-    line.textContent = entry.text
+    if (entry.textClass) {
+      const text = document.createElement('span')
+      text.className = entry.textClass
+      text.textContent = entry.text
+      line.appendChild(text)
+    } else line.textContent = entry.text
     if (entry.retry) {
       const retry = btn('Retry', entry.retry)
       retry.className = 'undo-btn'
+      retry.disabled = Boolean(entry.pending)
       line.appendChild(retry)
     }
     const clear = btn('Clear', () => {
@@ -4400,6 +4540,7 @@ function renderOrphanedDrafts(host) {
       renderIfIdle()
     })
     clear.className = 'undo-btn'
+    clear.disabled = Boolean(entry.pending)
     line.appendChild(clear)
     fold.appendChild(line)
   }
@@ -4764,7 +4905,7 @@ function renderGroups(sectionId, groups) {
   // is the GLOBAL note list minus what rendered — a note behind the "Show N
   // more" pager and a note behind the rail's project filter were equally unseen,
   // and there is one watermark covering every scope.
-  if (sectionId === 'notes' && activeTab === 'notes') {
+  if (sectionId === 'notes' && !document.getElementById('notes').hidden) {
     const shownIds = new Set(viewed.map((it) => it.id))
     const all = lastData.g.notes.flatMap((gr) => gr.items)
     markNotesSeen(viewed, all.filter((n) => !shownIds.has(n.id)), all)
@@ -4890,7 +5031,6 @@ function renderBoards(boards, archived) {
   const host = document.querySelector('#boards .boards')
   host.innerHTML = ''
   host.appendChild(boardsHeader())
-  for (const b of boards) sessionActiveBoards.add(b.id)
   // a board that reaches 100% is archived by its agent seconds later; it lingers
   // here as a "completed — archived" card so finished work never blinks out (§9)
   const lingering = lingeringBoards(sessionActiveBoards, boards, archived)
@@ -5048,6 +5188,7 @@ const itemLatestIntents = {}     // item id → latest non-cancelled human inten
 const itemDraftRetryIntents = {} // item id → exact ambiguous intent while its draft generation is unchanged
 const itemDraftSubmissions = {}  // item id → in-flight free-text intents keyed by draft generation
 const staleItemDrafts = {}       // recovery key → refused/orphaned answer preserved outside the poll gate
+const itemNoteDrafts = {}        // item id → pending or unconfirmed native Note attempt
 const ITEM_REPLY_INTENT_SESSION_KEY = 'agent-inbox-reply-intent'
 
 function effectiveReply(it) {
@@ -5279,10 +5420,12 @@ function reusableDraftIntent(id, generation) {
 
 function hasDraftRecovery() {
   return Object.keys(staleItemDrafts).length > 0 || Object.keys(staleRowDrafts).length > 0
+    || Object.values(itemNoteDrafts).some((draft) => !draft.pending)
 }
 
 function requestDraftRecovery(target = draftRecoveryTarget) {
   draftRecoveryFocusPending = true
+  if (target === null) draftRecoveryTarget = null
   if (target) {
     draftRecoveryTarget = target
     projectFilter = target.project
@@ -5296,7 +5439,7 @@ function requestDraftRecovery(target = draftRecoveryTarget) {
   if (triageDeck) closeTriage({ restoreFocus: false })
   if (missionBoardId) closeMission({ restoreFocus: false })
   if (relayOpen) closeRelay()
-  selectTab('needsYou')
+  selectTab('needsYou', { paint: false })
 }
 
 function restoreDraftRecoveryFocus() {
@@ -5387,7 +5530,11 @@ function reconcileDraftOwners() {
   return recovered
 }
 
-async function sendReply(
+function sendReply(...args) {
+  return withPendingResponse(() => submitItemReply(...args))
+}
+
+async function submitItemReply(
   id,
   text,
   context = '',
@@ -5711,6 +5858,44 @@ function answerEl(it) {
   return wrap
 }
 
+function itemNoteAction(it) {
+  const pending = Boolean(itemNoteDrafts[it.id]?.pending)
+  const action = btn(pending ? 'Saving note…' : 'Note', () => editItemNote(it))
+  action.dataset.noteItem = it.id
+  action.disabled = pending
+  action.title = 'Add or edit feedback for agents; leave it blank to clear.'
+  return action
+}
+
+function editItemNote(it) {
+  if (itemNoteDrafts[it.id]?.pending) return
+  return withPendingResponse(async () => {
+    const prior = itemNoteDrafts[it.id]
+    const current = freshItem(it.id) ?? it
+    const text = prompt('Your note (leave blank to clear):', prior?.text ?? current.annotation ?? '')
+    if (text == null) return
+    const draft = { title: current.title, text, pending: true, error: prior?.error ?? '' }
+    itemNoteDrafts[it.id] = draft
+    for (const button of document.querySelectorAll(`[data-note-item="${CSS.escape(it.id)}"]`)) {
+      button.disabled = true
+      button.textContent = 'Saving note…'
+    }
+    if (draft.error) forceRender()
+    const result = await postJSON(`/api/items/${it.id}/annotate`, { text })
+    if (itemNoteDrafts[it.id] !== draft) return
+    if (result?.ok === true) {
+      delete itemNoteDrafts[it.id]
+    } else {
+      draft.pending = false
+      draft.error = result?.ok === false
+        ? 'Note was not saved — this item is closed or no longer available.'
+        : 'Note save was not confirmed — review the stored note before retrying.'
+      requestDraftRecovery(null)
+    }
+    await reloadAndPaint()
+  })
+}
+
 // THE card (§4): meta → title → detail → labeled CONTEXT → options → answer →
 // actions. Mounted inline by the Needs-you accordion and by the triage lightbox.
 function itemCardEl(it, {
@@ -5729,7 +5914,7 @@ function itemCardEl(it, {
     ${header ? cardHeadingHtml(presentation) : ''}
     ${cardOriginHtml(it, it, { showProject: header })}
     ${actionBlocksHtml(presentation)}
-    ${s.annotation ? `<div class="annotation"><strong>Note:</strong> ${esc(s.annotation)}</div>` : ''}
+    ${itemAnnotationHtml(s.annotationReceipt)}
     ${s.recWarning ? `<div class="rec-warning">Review: ${esc(s.recWarning)}</div>` : ''}
     ${s.reply || it.reply_kind ? `<div class="reply-block"><strong>${esc(responseLabel(it) || 'You answered')}:</strong> ${esc(s.reply ?? '')}${it.reply_context ? `<div class="reply-context">Context: ${esc(it.reply_context)}</div>` : ''}${it.reply_source === 'agent' ? '<span class="reply-source">via chat</span>' : ''}${s.showPickup ? `<span class="pickup ${it.reply_seen_at ? 'picked' : 'awaiting'}"${it.reply_seen_at ? ' title="Delivery does not confirm the asking agent has resumed."' : ''}>${it.reply_seen_at ? 'Delivered to an agent' : 'Saved · waiting for delivery'}</span>` : ''}</div>` : ''}
     ${outcomeHtml(s.outcome, it.outcome_at)}
@@ -5749,16 +5934,7 @@ function itemCardEl(it, {
       actions.appendChild(btn('Change answer', () => changeAnswer(it, msg)))
       actions.appendChild(msg)
     }
-    actions.appendChild(btn('Note', async () => {
-      const text = prompt('Your note:')
-      if (text == null) return
-      const res = await postJSON(`/api/items/${it.id}/annotate`, { text })
-      if (res === null) return // network failure — postJSON already signaled it
-      // #38: this button only exists INSIDE the expanded card, so openRowId is
-      // set by construction — a bare load() here could never paint. Guaranteed
-      // self-silencing, not merely unlucky.
-      await reloadAndPaint()
-    }))
+    actions.appendChild(itemNoteAction(it))
     el.appendChild(actions)
   }
   return el

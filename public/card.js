@@ -3,6 +3,7 @@
 // component behind the inline accordion and the triage lightbox has a single,
 // tested definition of "what belongs on a card".
 import { humanActedOnRow } from './attention.js'
+import { itemAnnotationReceipt } from './action.js'
 
 export function actionPresentation(entity, { done = false } = {}) {
   const isRow = typeof entity.label === 'string'
@@ -54,6 +55,7 @@ export function cardSections(it, { done = false } = {}) {
     outcomeAt: it.outcome_at ?? null,
     context: it.context ?? '',
     annotation: it.annotation ?? '',
+    annotationReceipt: itemAnnotationReceipt(it),
     reply: responded ? (it.reply ?? '') : '',
     options: optionOrder(it.options),
     recWarning: it.kind === 'question' && !answered ? recommendedWarning(it.options) : null,

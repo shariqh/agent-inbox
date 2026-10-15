@@ -26,10 +26,10 @@
 // test/issue-31-followups.test.ts. Keep both — they cover different things.
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import type Database from 'better-sqlite3'
-import { insertItem, replyItem } from '../../src/store.js'
+import { getItem, insertItem, replyItem } from '../../src/store.js'
 import {
   advanceClock, answerInput, bootApp, buttonLabelled, click, collapseRow, expectConsoleError, freshDb, pollTick,
-  row, rowTitles, searchFor, settle, tabCount, type, useDomTest,
+  row, rowTitles, searchFor, settle, showInbox, tabCount, type, useDomTest,
 } from './harness.js'
 
 useDomTest()
@@ -87,23 +87,10 @@ describe('31.1 · an accepted "Change answer" must show the surface it staged a 
     expect(rowTitles()).toContain('SECOND question')
   })
 
-  it('opens the row on the star-Undo path too, where nothing was expanded to begin with', async () => {
-    // The other of changeAnswer's two call sites. The ★/Undo affordance sits on line 1
-    // of a COLLAPSED row, so a repaint alone builds no answer surface at all: the fix
-    // has to guarantee the surface, not merely repaint.
-    //
-    // REACHABILITY, rewritten for issue #38. This test used to reach the stale Undo by
-    // letting the staged send flush while §10 held the repaint — i.e. it used the #38
-    // bug as its setup, and documented that bug as intent ("exactly the real-world
-    // sequence"). A successful send now repaints (reloadAndPaint), so that route is
-    // gone, and good riddance. The state is still perfectly reachable, from the two
-    // things #38 deliberately does NOT change:
-    //   · a FAILED write must not repaint the human's context away — it shows the
-    //     error and leaves everything where it was; and
-    //   · the POLL is still suspended by the expanded row, so nothing else repaints
-    //     either.
-    // Meanwhile the agent answered the same question in chat (issue #29's dual
-    // channel), so the item genuinely carries a reply the human may want to change.
+  it('recovers a failed collapsed-row star, retries its exact intent, and opens the correct correction surface', async () => {
+    // A failed staged choice now becomes an exact-intent recovery, not a stale
+    // "Sent / Undo" control. Follow the supported recovery → retry → correction
+    // path, while a real unrelated draft (not mere expansion) holds the poll gate.
     const d = open()
     const starred = insertItem(d, {
       ...AGENT, kind: 'question', title: 'deploy now?', detail: 'the canary is green',
@@ -112,38 +99,63 @@ describe('31.1 · an accepted "Change answer" must show the surface it staged a 
     advanceClock()
     const other = insertItem(d, { ...AGENT, kind: 'question', title: 'other question' })
     const bridge = await bootApp(d)
-
-    // Expanding a DIFFERENT row suspends the poll (spec §10) — nothing on screen is
-    // rebuilt from here on unless a human action asks for it.
+    await showInbox()
     click(row(other))
     await settle()
+    type(answerInput(other), 'Keep this unrelated answer.')
 
     click(row(starred)!.querySelector('.star-btn'))
     await settle()
     expect(buttonLabelled('Undo', row(starred)!), 'the ★ should stage with an undo window').toBeTruthy()
+    expect(row(starred)?.querySelector('.nrow-card')).toBeNull()
 
-    // the agent answers the same question in chat while the ★ sits staged
-    advanceClock()
-    replyItem(d, starred, 'Deploy')
-    await pollTick() // lastData learns about it; §10 keeps it off screen
-
-    // …and the staged send then fails on the wire. stagedStars was already cleared by
-    // the stager, so the "Sent: … — Undo" line on screen is now stale.
     bridge.failPostsWith(500)
-    expectConsoleError(/HTTP 500/)
-    await vi.advanceTimersByTimeAsync(2000) // REPLY_DELAY_MS elapses — the send fires
+    expectConsoleError(new RegExp(`POST /api/items/${starred}/reply failed: HTTP 500`))
+    await vi.advanceTimersByTimeAsync(5000)
     await settle()
     bridge.failPostsWith(null)
 
-    click(buttonLabelled('Undo', row(starred)!)) // too late to cancel → falls through to changeAnswer
+    const recovery = document.querySelector<HTMLDetailsElement>('.stale-drafts-fold')!
+    expect(recovery?.open).toBe(true)
+    expect(recovery?.textContent).toContain('deploy now?')
+    expect(recovery?.textContent).toContain('answer: Deploy')
+    expect(buttonLabelled('Undo', row(starred)!)).toBeNull()
+    expect(getItem(d, starred)?.reply).toBeNull()
+    expect(answerInput(other)?.value).toBe('Keep this unrelated answer.')
+    const failed = bridge.posts.filter((post) => post.url === `/api/items/${starred}/reply`)
+    expect(failed).toHaveLength(1)
+    const failedBody = JSON.parse(String(failed[0]!.init?.body))
+    expect(failedBody).toMatchObject({ text: 'Deploy', kind: 'answer' })
+
+    click(buttonLabelled('Retry', recovery))
+    await settle()
+    const retried = bridge.posts.filter((post) => post.url === `/api/items/${starred}/reply`)
+    expect(retried).toHaveLength(2)
+    expect(JSON.parse(String(retried[1]!.init?.body))).toEqual(failedBody)
+    expect(getItem(d, starred)?.reply).toBe('Deploy')
+    expect(getItem(d, other)?.reply).toBeNull()
+    expect(document.querySelector('.stale-drafts-fold')).toBeNull()
+    expect(answerInput(other)?.value).toBe('Keep this unrelated answer.')
+
+    click(row(starred))
+    await settle()
+    expect(row(starred)?.dataset.open).toBe('1')
+    expect(row(starred)?.querySelector('.reply-block')?.textContent).toContain('Deploy')
+    click(buttonLabelled('Change answer', row(starred)!))
     await settle()
 
-    expect(answerInput(starred), 'the un-done answer has nowhere to live').toBeTruthy()
+    expect(answerInput(starred), 'the recovered answer must remain reviewable and editable').toBeTruthy()
     expect(answerInput(starred)?.value).toBe('Deploy')
+    click(row(other))
+    await settle()
+    expect(answerInput(other)?.value).toBe('Keep this unrelated answer.')
+    click(row(starred))
+    await settle()
+    expect(answerInput(starred)?.value).toBe('Deploy')
+    expect(bridge.posts.some((post) => post.url === `/api/items/${other}/reply`)).toBe(false)
   })
 
-  // The #38 half of the same surface: the sequence above, but with the network
-  // WORKING. The stale affordance must not survive its own send any more.
+  // The working-network path likewise retires the staged affordance on its send.
   it('a staged ★ that lands repaints itself away, even with another card expanded', async () => {
     const d = open()
     const starred = insertItem(d, {

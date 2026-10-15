@@ -125,6 +125,14 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   Native notifications key rows by revision (`attentionNotification` in
   `electron/reply-watch.cjs`), so an unchanged ask is not re-announced and its earlier
   buttons still apply through the board-token refresh.
+- **Viewer write bodies are validated before the store sees them** *(issue #163)*. Every
+  JSON write route in `src/viewer.ts` parses with `.catch(() => null)` and type-checks each
+  field it uses: `text` a string; when present, `context` a string, `kind` a response kind
+  and `handled` a boolean; `until` a string or null; revisions integers. Invalid
+  input is `400 { ok:false, error }` with no store call: never a 500 from a parse or `trim()`
+  throw, and never a coerced default that silently overwrites state with a 200. The split is
+  `postJSON()`'s contract (a non-2xx means "the write never happened"), so a store REFUSAL of
+  a valid request stays `200 { ok:false }`. An explicit `''` is still a clear.
 - **`updated_at` means content changed.** Item/row human or agent content writes bump it;
   delivery stamps (`markReplySeen`, `markAnnotationDelivered`, `markHandledDelivered`) never
   do. The viewer's New/changed filter depends on this distinction just as Live depends on

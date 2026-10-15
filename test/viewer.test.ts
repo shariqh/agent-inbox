@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
-import { openDb, insertItem, listItems, answerItem, markReplySeen, upsertBoard as writeBoard, listBoards, annotateBoardRow, markHandledDelivered, upsertActivity, endActivity, closeProject, closedProjects, upsertSourceLink } from '../src/store.js'
+import { openDb, insertItem, listItems, getItem, annotateItem, replyItem, snoozeItem, answerItem, markReplySeen, upsertBoard as writeBoard, listBoards, annotateBoardRow, snoozeBoardRow, markRowHandled, markHandledDelivered, upsertActivity, endActivity, closeProject, closedProjects, upsertSourceLink } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
 
 function freshDb(): Database.Database {
@@ -717,5 +717,193 @@ describe('the human’s payloads never route through the agent-side shaping (#42
     const src = readFileSync(new URL('../src/viewer.ts', import.meta.url), 'utf8')
     expect(src).not.toMatch(/from '\.\/shape\.js'/)
     expect(src).not.toContain('context_chars')
+  })
+})
+
+// ── issue #163: an invalid write body is refused BEFORE any store call ──────
+// postJSON() in public/app.js keys on the HTTP status: a 4xx means "the write
+// never happened", while a 200 { ok:false } is the store refusing a VALID
+// request. So invalid input must be a 400 that leaves the stored state exactly
+// as it was — never a 500 (a parse or trim() throw), and never a 200 that
+// silently overwrote something. An explicit '' stays a legitimate clear.
+describe('write routes refuse invalid bodies before touching the store (#163)', () => {
+  let db: Database.Database
+  beforeEach(() => { db = freshDb() })
+
+  const post = (path: string, body: string) => createViewer(db).request(path, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body,
+  })
+
+  async function expectInvalid(res: Response) {
+    expect(res.status).toBe(400)
+    expect(await res.json()).toMatchObject({ ok: false, error: expect.any(String) })
+  }
+
+  // Each case receives the route's other fields, valid, so the field under
+  // test is the ONLY thing wrong with the request.
+  type BodyCase = [label: string, body: (valid: Record<string, unknown>) => string]
+  const INVALID_TEXT: BodyCase[] = [
+    ['malformed JSON', () => '{"text": "unterminated'],
+    ['a JSON null body', () => 'null'],
+    ['a missing text', (valid) => JSON.stringify(valid)],
+    ['a null text', (valid) => JSON.stringify({ ...valid, text: null })],
+    ['a numeric text', (valid) => JSON.stringify({ ...valid, text: 123 })],
+    ['an object text', (valid) => JSON.stringify({ ...valid, text: { value: 'nested' } })],
+  ]
+  const FUTURE = '2099-01-01T00:00:00.000Z'
+  // `until` is the whole instruction: a string snoozes, null wakes. Anything
+  // else used to be coerced to null — a silent WAKE answered with 200.
+  const INVALID_UNTIL: BodyCase[] = [
+    ['malformed JSON', () => '{"until": '],
+    ['a JSON null body', () => 'null'],
+    ['a missing until', (valid) => JSON.stringify(valid)],
+    ['a numeric until', (valid) => JSON.stringify({ ...valid, until: Date.parse(FUTURE) })],
+    ['an object until', (valid) => JSON.stringify({ ...valid, until: { at: FUTURE } })],
+    ['a boolean until', (valid) => JSON.stringify({ ...valid, until: false })],
+  ]
+
+  const question = () => insertItem(db, { project: 'p', stream: '', agent: 'a', kind: 'question', title: 'q' })
+
+  function blockedRow(): string {
+    upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'c', rows: [{ label: 'x', status: 'blocked' }] })
+    return listBoards(db)[0]!.rows[0]!.id
+  }
+
+  // the row's CURRENT pins — every seeding write bumps them
+  function rowTarget() {
+    const board = listBoards(db)[0]!
+    const row = board.rows[0]!
+    return {
+      path: `/api/boards/${board.id}/rows/${row.id}`,
+      pins: { expected_revision: row.revision, expected_board_version: board.revision },
+    }
+  }
+
+  describe('POST /api/items/:id/annotate', () => {
+    it.each(INVALID_TEXT)('refuses %s and keeps the stored note', async (_label, body) => {
+      const id = question()
+      annotateItem(db, id, 'keep this note')
+      const before = getItem(db, id)
+      await expectInvalid(await post(`/api/items/${id}/annotate`, body({})))
+      expect(getItem(db, id)).toEqual(before)
+    })
+
+    it('still clears the note on an explicit empty string', async () => {
+      const id = question()
+      annotateItem(db, id, 'old note')
+      const res = await post(`/api/items/${id}/annotate`, JSON.stringify({ text: '' }))
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ ok: true })
+      expect(getItem(db, id)!.annotation).toBe('')
+    })
+  })
+
+  describe('POST /api/items/:id/reply', () => {
+    const INVALID_REPLY: BodyCase[] = [
+      ...INVALID_TEXT,
+      ['a numeric context', () => JSON.stringify({ text: 'Correction', context: 5 })],
+      ['an object context', () => JSON.stringify({ text: 'Correction', context: { value: 'nested' } })],
+      ['a null context', () => JSON.stringify({ text: 'Correction', context: null })],
+    ]
+
+    it.each(INVALID_REPLY)('refuses %s and keeps the stored answer', async (_label, body) => {
+      const id = question()
+      replyItem(db, id, 'keep this answer', 'and its context')
+      const before = getItem(db, id)
+      await expectInvalid(await post(`/api/items/${id}/reply`, body({ context: 'new context' })))
+      expect(getItem(db, id)).toEqual(before)
+    })
+
+    it('still clears an unread answer on an explicit empty string — and still refuses a read one with 200', async () => {
+      const unread = question()
+      replyItem(db, unread, 'take it back')
+      let res = await post(`/api/items/${unread}/reply`, JSON.stringify({ text: '' }))
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ ok: true })
+      expect(getItem(db, unread)!.reply).toBeNull()
+
+      const read = question()
+      replyItem(db, read, 'already read')
+      markReplySeen(db, read, getItem(db, read)!.replied_at)
+      res = await post(`/api/items/${read}/reply`, JSON.stringify({ text: '' }))
+      expect(res.status, 'a refusal of a valid request is not an error').toBe(200)
+      expect(await res.json()).toEqual({ ok: false })
+      expect(getItem(db, read)!.reply).toBe('already read')
+    })
+  })
+
+  describe('POST /api/boards/:id/rows/:rowId/annotate', () => {
+    it.each(INVALID_TEXT)('refuses %s and keeps the stored note', async (_label, body) => {
+      annotateBoardRow(db, blockedRow(), 'keep this note')
+      const { path, pins } = rowTarget()
+      const before = listBoards(db)
+      await expectInvalid(await post(`${path}/annotate`, body({ kind: 'answer', ...pins })))
+      expect(listBoards(db)).toEqual(before)
+    })
+
+    it('still clears the note on an explicit empty string', async () => {
+      annotateBoardRow(db, blockedRow(), 'old note')
+      const { path, pins } = rowTarget()
+      const res = await post(`${path}/annotate`, JSON.stringify({ text: '', ...pins }))
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ ok: true })
+      expect(listBoards(db)[0]!.rows[0]!.annotation).toBe('')
+    })
+  })
+
+  describe('POST /api/items/:id/snooze', () => {
+    it.each(INVALID_UNTIL)('refuses %s and keeps the snooze', async (_label, body) => {
+      const id = question()
+      snoozeItem(db, id, FUTURE)
+      const before = getItem(db, id)
+      await expectInvalid(await post(`/api/items/${id}/snooze`, body({})))
+      expect(getItem(db, id)).toEqual(before)
+    })
+
+    it('still wakes on an explicit null', async () => {
+      const id = question()
+      snoozeItem(db, id, FUTURE)
+      const res = await post(`/api/items/${id}/snooze`, JSON.stringify({ until: null }))
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ ok: true })
+      expect(getItem(db, id)!.snoozed_until).toBeNull()
+    })
+  })
+
+  describe('POST /api/boards/:id/rows/:rowId/snooze', () => {
+    it.each(INVALID_UNTIL)('refuses %s and keeps the snooze', async (_label, body) => {
+      snoozeBoardRow(db, blockedRow(), FUTURE)
+      const { path, pins } = rowTarget()
+      const before = listBoards(db)
+      await expectInvalid(await post(`${path}/snooze`, body(pins)))
+      expect(listBoards(db)).toEqual(before)
+    })
+
+    it('still wakes on an explicit null', async () => {
+      snoozeBoardRow(db, blockedRow(), FUTURE)
+      const { path, pins } = rowTarget()
+      const res = await post(`${path}/snooze`, JSON.stringify({ until: null, ...pins }))
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ ok: true })
+      expect(listBoards(db)[0]!.rows[0]!.snoozed_until).toBeNull()
+    })
+  })
+
+  // An absent `handled` still MARKS (the documented affirmative default); a
+  // present non-boolean is no instruction at all — "false" must not re-mark.
+  describe('POST /api/boards/:id/rows/:rowId/handled', () => {
+    const INVALID_HANDLED: BodyCase[] = [
+      ['a string handled', (valid) => JSON.stringify({ ...valid, handled: 'false' })],
+      ['a numeric handled', (valid) => JSON.stringify({ ...valid, handled: 0 })],
+      ['a null handled', (valid) => JSON.stringify({ ...valid, handled: null })],
+    ]
+
+    it.each(INVALID_HANDLED)('refuses %s and keeps the mark', async (_label, body) => {
+      markRowHandled(db, blockedRow())
+      const { path, pins } = rowTarget()
+      const before = listBoards(db)
+      await expectInvalid(await post(`${path}/handled`, body(pins)))
+      expect(listBoards(db)).toEqual(before)
+    })
   })
 })

@@ -178,3 +178,27 @@ describe('makeScope caches a found origin per process but follows the branch (is
   })
 })
 
+
+// ── issues #157 × #159: head inference is a LIVE read, and only on writes ──────
+// It resolves origin's PUSH url (pushurl, pushInsteadOf), which #159's cached
+// fetch url cannot answer, and push config can change mid-session. So get() —
+// the path nearly every tool call takes — never runs it, and headFor() never
+// borrows the cache: each write pays its own two spawns.
+
+describe('headFor stays a live, write-only read beside the origin cache (issues #157, #159)', () => {
+  const ORIGIN = ['remote', 'get-url', 'origin'] as const
+  const PUSH_REMOTE = ['for-each-ref', '--format=%(refname) %(push:remotename)', 'refs/heads/feature'] as const
+  const PUSH_URL = ['remote', 'get-url', '--push', 'origin'] as const
+
+  it('get() spawns no head lookup; each headFor() spawns exactly its two, leaving the origin cache alone', () => {
+    const dir = tmpGitRepo({ remote: 'git@github.com:shariqh/agent-inbox.git', branch: 'feature' })
+    const scope = makeScope(dir)
+    for (let i = 0; i < 3; i++) scope.get('claude-code')
+    expect(gitSpawns(dir, ...PUSH_REMOTE)).toBe(0)
+    expect(gitSpawns(dir, ...PUSH_URL)).toBe(0)
+    for (let i = 0; i < 3; i++) expect(scope.headFor('feature')).toBe('shariqh/agent-inbox')
+    expect(gitSpawns(dir, ...PUSH_REMOTE)).toBe(3)
+    expect(gitSpawns(dir, ...PUSH_URL)).toBe(3)
+    expect(gitSpawns(dir, ...ORIGIN)).toBe(1)
+  })
+})

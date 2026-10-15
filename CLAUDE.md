@@ -252,7 +252,9 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   hook event and the two must keep agreeing (a mid-session `git remote add origin`, or one
   transient git failure, must not pin the folder name). The branch (and the issue parsed from
   it) is re-read on every call because worktrees and checkouts move mid-session, so never
-  cache the whole scope.
+  cache the whole scope. Head inference (`headFor`, #157) stays outside both `get()` and that
+  memo: it runs only on flag/board writes and reads git's push destination live, because it
+  needs origin's PUSH url, which the cached fetch url cannot answer.
   The client name for `inferAgent` **must be read lazily** inside handlers
   (`server.server.getClientVersion()?.name`) — it's only populated after the initialize
   handshake. Capturing it at build time yields `undefined`/`'unknown'`. Don't regress this.

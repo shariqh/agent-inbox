@@ -47,9 +47,12 @@ export function makeScope(cwd: string): {
     issueOverride !== undefined ? issueOverride : inferIssueRef(branch)
   // issue #157 — the repository the branch is PUSHED to, which a PR must come
   // from to be this branch's PR. Deliberately not part of get(): it costs git
-  // calls, so mcp.ts asks only when it writes. And deliberately independent of
-  // register({ repo }), which overrides the BASE: a fork contributor registers
-  // the upstream and still pushes to their own fork.
+  // calls, so mcp.ts asks only when it writes. Deliberately LIVE as well, never
+  // the origin cached above: it resolves origin's PUSH url (a pushurl or a
+  // pushInsteadOf rewrite), which that cached fetch url cannot answer, and push
+  // config can change mid-session. And independent of register({ repo }), which
+  // overrides the BASE: a fork contributor registers the upstream and still
+  // pushes to their own fork.
   const headFor = (branch: string): string | null => inferHeadRepo(cwd, branch)
   return {
     get(clientName) {

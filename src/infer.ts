@@ -98,9 +98,10 @@ export function inferRepo(cwd: string, remote: string | null = remoteUrl(cwd)): 
 // change mid-session), never per call.
 
 // git's own precedence: branch.<name>.pushRemote, then remote.pushDefault, then
-// branch.<name>.remote (the tracking remote). Empty when none is configured, so
-// the caller falls back to origin, which is git's default too. for-each-ref takes
-// a PATTERN that also matches below a `/`, so only an exact refname line counts.
+// branch.<name>.remote (the tracking remote). Each may hold a remote NAME or a
+// URL. Empty when none is configured, so the caller falls back to origin, which
+// is git's default too. for-each-ref takes a PATTERN that also matches below a
+// `/`, so only an exact refname line counts.
 function pushRemoteName(cwd: string, branch: string): string | null {
   const ref = `refs/heads/${branch}`
   const out = git(cwd, ['for-each-ref', '--format=%(refname) %(push:remotename)', ref])
@@ -113,14 +114,23 @@ function pushRemoteName(cwd: string, branch: string): string | null {
   return null
 }
 
-// `owner/name` of the github.com repository this branch is pushed to: the push
-// remote's when it is on github.com, else origin's (git's default push target).
-// Null when neither is on github.com.
+// The repository `git push <remote>` sends to: a configured remote's first PUSH
+// url (its pushurl, else its url, with insteadOf/pushInsteadOf applied). Git also
+// takes a URL in place of a remote name — `gh pr checkout` writes one for a fork
+// with no local remote, and so does `git push -u <url>` — and that is no
+// configured remote, so the value is read as the URL it is. A plain name cannot
+// parse as one: it has no `:`.
+function pushRepo(cwd: string, remote: string): string | null {
+  return parseRepoSlug(git(cwd, ['remote', 'get-url', '--push', remote])?.split('\n')[0] || remote)
+}
+
+// `owner/name` of the github.com repository this branch is pushed to: its push
+// destination's when that is on github.com, else origin's push url (origin is
+// git's default push target). Null when neither is on github.com.
 export function inferHeadRepo(cwd: string, branch: string): string | null {
   if (!branch) return null
-  const remote = pushRemoteName(cwd, branch)
-  const pushed = remote && remote !== 'origin' ? parseRepoSlug(git(cwd, ['remote', 'get-url', remote]) || null) : null
-  return pushed ?? inferRepo(cwd)
+  const remote = pushRemoteName(cwd, branch) ?? 'origin'
+  return pushRepo(cwd, remote) ?? (remote === 'origin' ? null : pushRepo(cwd, 'origin'))
 }
 
 // The CONSERVATIVE branch→issue heuristic. A link to the WRONG issue in the

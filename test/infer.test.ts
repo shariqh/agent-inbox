@@ -230,6 +230,55 @@ describe('inferHeadRepo', () => {
     expect(inferHeadRepo(dir, '')).toBeNull()
   })
 
+  // Git takes a URL wherever a remote NAME goes. `gh pr checkout` writes one into
+  // branch.<name>.remote AND .pushRemote for a fork PR with no local fork remote
+  // (cli/cli cmdsForMissingRemote), and `git push -u <url>` writes one too. Such a
+  // value is no configured remote, so it is read as the URL it is — falling back
+  // to origin here is what picked the base repo's same-named PR instead.
+  const URL_VALUED: Array<[string, Array<[string, string]>]> = [
+    ['gh pr checkout, https', [
+      ['branch.patch-1.remote', 'https://github.com/contributor/x.git'],
+      ['branch.patch-1.pushRemote', 'https://github.com/contributor/x.git'],
+      ['branch.patch-1.merge', 'refs/heads/patch-1'],
+    ]],
+    ['gh pr checkout, ssh', [
+      ['branch.patch-1.remote', 'git@github.com:contributor/x.git'],
+      ['branch.patch-1.pushRemote', 'git@github.com:contributor/x.git'],
+      ['branch.patch-1.merge', 'refs/heads/patch-1'],
+    ]],
+    ['git push -u <url>', [
+      ['branch.patch-1.remote', 'https://github.com/contributor/x'],
+      ['branch.patch-1.merge', 'refs/heads/patch-1'],
+    ]],
+    ['remote.pushDefault', [['remote.pushDefault', 'git@github.com:contributor/x.git']]],
+  ]
+  it.each(URL_VALUED)('reads a push destination written as a URL (%s)', (_how, config) => {
+    const dir = tmpGitRepo({ remote: 'https://github.com/upstream/x.git', branch: 'patch-1' })
+    for (const [key, value] of config) git(dir, 'config', key, value)
+    expect(inferHeadRepo(dir, 'patch-1')).toBe('contributor/x')
+  })
+
+  it('never mistakes a plain name that is no configured remote for a URL', () => {
+    const dir = tmpGitRepo({ remote: 'https://github.com/upstream/x.git', branch: 'patch-1' })
+    git(dir, 'config', 'branch.patch-1.remote', 'fork')
+    expect(inferHeadRepo(dir, 'patch-1')).toBe('upstream/x')
+  })
+
+  // `git push` sends to a remote's pushurl when it has one — origin included
+  const PUSHURL: Array<[string, Array<[string, string]>, string]> = [
+    ['origin, with no push config', [], 'me/x'],
+    ['origin, named as the tracking remote', [['branch.feature.remote', 'origin']], 'me/x'],
+    ['another remote', [['branch.feature.remote', 'fork']], 'fork-push/x'],
+  ]
+  it.each(PUSHURL)("follows a remote's pushurl (%s)", (_which, config, expected) => {
+    const dir = tmpGitRepo({ remote: 'https://github.com/upstream/x.git', branch: 'feature' })
+    git(dir, 'config', 'remote.origin.pushurl', 'git@github.com:me/x.git')
+    git(dir, 'remote', 'add', 'fork', 'https://github.com/fork/x.git')
+    git(dir, 'config', 'remote.fork.pushurl', 'https://github.com/fork-push/x.git')
+    for (const [key, value] of config) git(dir, 'config', key, value)
+    expect(inferHeadRepo(dir, 'feature')).toBe(expected)
+  })
+
   // the stdio MCP server speaks its protocol on stdout: git's answer has to be
   // CAPTURED, never inherited. Run in a child whose stdout we can inspect whole.
   it("keeps git's output off the caller's stdout", () => {

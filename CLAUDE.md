@@ -766,8 +766,10 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   Non-github remotes render NOTHING (the `provider` column + `parseRepoSlug`'s host check are the
   GitLab/GHE seam). **Head verification (#157):** `gh pr list --head` matches the branch NAME in
   every fork, so `repo` is only the BASE the PR is searched in. Flag/board writes also stamp
-  `head_repo`, the github repository the branch is pushed to (`inferHeadRepo`: git's push remote
-  for that branch, else origin — local git only, independent of `register({ repo })`). The poller
+  `head_repo`, the github repository the branch is pushed to (`inferHeadRepo`: the push url —
+  `git remote get-url --push`, so pushurl counts — of git's push remote for that branch, or the URL
+  configured in its place as `gh pr checkout` and `git push -u <url>` write it, else origin's; local
+  git only, independent of `register({ repo })`). The poller
   examines a small `PR_WINDOW` and accepts only a PR from that head repository (a same-repo
   expectation means `isCrossRepository: false`); a row with no `head_repo` expects a same-repo PR.
   No match, even a full window, is cached as no PR — no title, closing issue or preview — and the

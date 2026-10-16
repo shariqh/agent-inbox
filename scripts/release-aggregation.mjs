@@ -198,6 +198,9 @@ function validateAuxiliaryReports({ artifactRoot, profile, context, linuxInputs 
   if (thin.target !== undefined && thin.target !== profile.target) {
     fail(`${profile.key} thin report target mismatch`)
   }
+  if (thin.electronSqliteCheck !== 'passed') {
+    fail(`${profile.key} thin report lacks the Electron-embedded SQLite check (#135)`)
+  }
 }
 
 function validateProfile({

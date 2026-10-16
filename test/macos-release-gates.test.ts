@@ -25,6 +25,7 @@ import {
   validateThinHandoff,
   withMountedDmg,
 } from '../scripts/macos-release-gates.mjs'
+import { loadReleaseInputs } from '../scripts/release-inputs.mjs'
 import { treeIdentity } from '../scripts/tree-identity.mjs'
 
 const root = resolve(process.cwd())
@@ -511,13 +512,14 @@ describe('macOS release gates', () => {
         product: 'Agent Inbox',
         arch,
         packageVersion: context.version,
-        electronVersion: '43.1.1',
+        electronVersion: loadReleaseInputs().electron.version,
         nodeVersion: 'v24.18.1',
         nodeModulesAbi: '137',
         sourceCommit: context.sourceCommit,
         sourceDirty: false,
         runtimeSourceCommit: context.sourceCommit,
         nativeRuntimeSelftest: 'passed',
+        electronSqliteCheck: 'passed',
         runtimeKeys: ['darwin-arm64', 'darwin-x64'],
         nativeAddonArchitectures: arch === 'arm64' ? ['arm64'] : ['x86_64'],
         appTreeDigest: treeIdentity(app),

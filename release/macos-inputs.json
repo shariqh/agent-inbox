@@ -26,7 +26,7 @@
     }
   },
   "electron": {
-    "version": "43.1.1",
+    "version": "43.8.0",
     "packagerVersion": "20.3.0",
     "rebuildVersion": "4.2.0",
     "universalVersion": "3.0.6",

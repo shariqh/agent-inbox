@@ -104,7 +104,7 @@ function writePackageArtifact(
     sourceDirty: false,
     linuxInputsSha256,
     setupRuntimeKeys: [target],
-    electronVersion: '43.1.1',
+    electronVersion: linuxInputs.electron.version,
     nodeVersion: linuxInputs.node.version,
     exactHostSetupSelection: 'passed',
     chromeSandboxMode: 0o4755,
@@ -142,7 +142,7 @@ function writePackageArtifact(
         appImageSha256: digest,
         chromeSandboxMode: 0o4755,
         setupRuntimeKeys: [target],
-        electronVersion: '43.1.1',
+        electronVersion: linuxInputs.electron.version,
         nodeVersion: linuxInputs.node.version,
         exactHostSetupSelection: 'passed',
       }
@@ -157,7 +157,7 @@ function writePackageArtifact(
         debSha256: digest,
         chromeSandboxMode: 0o4755,
         setupRuntimeKeys: [target],
-        electronVersion: '43.1.1',
+        electronVersion: linuxInputs.electron.version,
         nodeVersion: linuxInputs.node.version,
         exactHostSetupSelection: 'passed',
       }
@@ -178,6 +178,7 @@ function writePackageArtifact(
     packageVersion: context.version,
     sourceCommit,
     target,
+    electronSqliteCheck: 'passed',
   })
   return {
     artifact,
@@ -395,6 +396,20 @@ describe('multi-platform release aggregation', () => {
       repoRoot: root,
       sourceTree,
     })).toThrow(/checksum|sha-256|digest/i)
+  })
+
+  it('requires Electron-embedded SQLite check evidence from every native thin folder (#135)', () => {
+    const fixture = makeLinuxFixture()
+    const thinReport = join(fixture.root, 'linux-arm64-deb', 'thin', 'linux-arm64', 'Agent Inbox.thin-report.json')
+    const thin = JSON.parse(readFileSync(thinReport, 'utf8')) as Record<string, unknown>
+    delete thin.electronSqliteCheck
+    writeJson(thinReport, thin)
+    expect(() => validateLinuxReleaseArtifacts({
+      artifactsRoot: fixture.root,
+      context,
+      repoRoot: root,
+      sourceTree,
+    })).toThrow(/linux-arm64-deb thin report lacks the Electron-embedded SQLite check \(#135\)/)
   })
 
   it('assembles five packages, the exact checksum file, and a deterministic update manifest', () => {

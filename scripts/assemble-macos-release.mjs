@@ -353,6 +353,7 @@ export function verifyThinReports({
       report.sourceDirty !== provenance.sourceDirty ||
       report.runtimeSourceCommit !== provenance.sourceCommit ||
       report.nativeRuntimeSelftest !== 'passed' ||
+      report.electronSqliteCheck !== 'passed' ||
       JSON.stringify(report.runtimeKeys) !== JSON.stringify(RUNTIME_KEYS) ||
       JSON.stringify(report.nativeAddonArchitectures?.slice().sort()) !== JSON.stringify(expectedAddonArch)
     ) {

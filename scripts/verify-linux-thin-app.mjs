@@ -6,6 +6,7 @@ import { join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { APP_NAME, findNativeAddon } from './build-thin-app.mjs'
+import { runElectronSqliteCheck } from './electron-sqlite-check.mjs'
 import {
   assertElfTreeCompatibility,
   assertProcessIdentity,
@@ -174,6 +175,17 @@ export function verifyLinuxThinApp({
     },
     label: 'packaged Electron',
   })
+  runElectronSqliteCheck({
+    executable,
+    storePath: join(resources, 'dist', 'store.js'),
+    expected: {
+      platform: 'linux',
+      arch,
+      electron: inputs.electron.version,
+      modulesAbi: inputs.electron.modulesAbi,
+    },
+    label: `packaged Electron (${key})`,
+  })
   const runtimeProbe = assertProcessIdentity({
     actual: processProbe(runtimeNode, runtimeRoot),
     expected: {
@@ -201,6 +213,7 @@ export function verifyLinuxThinApp({
     compatibility,
     appTreeDigest: treeIdentity(appRoot),
     nativeAddonSelftests: 'passed',
+    electronSqliteCheck: 'passed',
     exactHostSetupSelection: 'passed',
   }
 }

@@ -77,7 +77,7 @@
     "@leeoniya/ufuzzy": "^1.0.19",
     "@types/better-sqlite3": "^7.6.11",
     "@types/node": "^24.0.0",
-    "electron": "43.1.1",
+    "electron": "43.8.0",
     "electron-installer-dmg": "5.0.1",
     "jsdom": "^29.1.1",
     "tsx": "^4.19.0",
@@ -86,7 +86,7 @@
   },
   "allowScripts": {
     "better-sqlite3@12.11.1": true,
-    "electron@43.1.1": true,
+    "electron@43.8.0": true,
     "esbuild@0.28.1": true,
     "esbuild@0.21.5": true,
     "fsevents@2.3.3": true,

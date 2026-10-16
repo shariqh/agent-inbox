@@ -104,7 +104,7 @@ function writePackageArtifact(
     sourceDirty: false,
     linuxInputsSha256,
     setupRuntimeKeys: [target],
-    electronVersion: '43.1.1',
+    electronVersion: '43.8.0',
     nodeVersion: linuxInputs.node.version,
     exactHostSetupSelection: 'passed',
     chromeSandboxMode: 0o4755,
@@ -142,7 +142,7 @@ function writePackageArtifact(
         appImageSha256: digest,
         chromeSandboxMode: 0o4755,
         setupRuntimeKeys: [target],
-        electronVersion: '43.1.1',
+        electronVersion: '43.8.0',
         nodeVersion: linuxInputs.node.version,
         exactHostSetupSelection: 'passed',
       }
@@ -157,7 +157,7 @@ function writePackageArtifact(
         debSha256: digest,
         chromeSandboxMode: 0o4755,
         setupRuntimeKeys: [target],
-        electronVersion: '43.1.1',
+        electronVersion: '43.8.0',
         nodeVersion: linuxInputs.node.version,
         exactHostSetupSelection: 'passed',
       }

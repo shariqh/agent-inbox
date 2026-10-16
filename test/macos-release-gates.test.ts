@@ -511,7 +511,7 @@ describe('macOS release gates', () => {
         product: 'Agent Inbox',
         arch,
         packageVersion: context.version,
-        electronVersion: '43.1.1',
+        electronVersion: '43.8.0',
         nodeVersion: 'v24.18.1',
         nodeModulesAbi: '137',
         sourceCommit: context.sourceCommit,

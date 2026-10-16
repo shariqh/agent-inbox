@@ -175,13 +175,13 @@ describe('native Linux folder gates', () => {
       actual: {
         platform: 'linux',
         arch: 'x64',
-        version: '43.1.1',
+        version: '43.8.0',
         modulesAbi: '146',
       },
       expected: {
         platform: 'linux',
         arch: 'x64',
-        version: '43.1.1',
+        version: '43.8.0',
         modulesAbi: '148',
       },
       label: 'packaged Electron',

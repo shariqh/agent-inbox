@@ -400,7 +400,7 @@ describe('universal finalization contract', () => {
       '@electron/packager': '20.3.0',
       '@electron/rebuild': '4.2.0',
       '@electron/universal': '3.0.6',
-      electron: '43.1.1',
+      electron: '43.8.0',
       'electron-installer-dmg': '5.0.1',
     })
   })

@@ -52,7 +52,7 @@ stated minimum before updating either pinned major.
 
 1. Stage and self-test the arm64 and x64 Node runtime payloads independently.
 2. Restore both verified payloads into each native thin Electron build.
-3. Rebuild `better-sqlite3` for Electron 43.1.1 on that architecture.
+3. Rebuild `better-sqlite3` for Electron 43.8.0 on that architecture.
 4. Preserve each thin app with a tar archive so framework symlinks and executable
    modes survive artifact transfer.
 5. Merge the thin apps with `@electron/universal`. The two

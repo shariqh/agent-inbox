@@ -71,7 +71,7 @@ jobs:
           node scripts/archive-tree.mjs create
           --source "build/runtime/${{ matrix.key }}"
           --archive "build/${{ matrix.key }}.tar.gz"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: runtime-${{ matrix.key }}
           path: build/${{ matrix.key }}.tar.gz
@@ -128,7 +128,7 @@ jobs:
           node scripts/archive-tree.mjs create
           --source "build/thin/${{ matrix.key }}"
           --archive "build/thin-${{ matrix.key }}.tar.gz"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: thin-${{ matrix.key }}
           path: build/thin-${{ matrix.key }}.tar.gz
@@ -205,7 +205,7 @@ jobs:
           rm -rf "$COPIED" "$TEST_HOME"
           hdiutil detach "$MOUNT"
           trap - EXIT
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: macos-universal-provisional
           path: out/macos-universal
@@ -216,7 +216,7 @@ jobs:
           mkdir -p out/layer3-inputs
           cp build/thin-artifacts/*.tar.gz release/macos-inputs.json out/layer3-inputs/
           shasum -a 256 out/layer3-inputs/* > out/layer3-inputs/SHA256SUMS
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: macos-layer3-reproducible-inputs
           path: out/layer3-inputs
@@ -264,7 +264,7 @@ jobs:
             --root "$RUNTIME" --platform darwin --arch x64 \
             --node-version "$NODE_VERSION" --package-version "$PACKAGE_VERSION" \
             > build/x64-final-verification.json
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: macos-universal-x64-final-verification
           path: build/x64-final-verification.json

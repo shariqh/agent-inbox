@@ -65,7 +65,7 @@ jobs:
           --sha "$GITHUB_SHA"
           --output build/release-context.json
       - run: npx vitest run test/macos-release-gates.test.ts test/macos-release-workflow.test.ts
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-context
           path: build/release-context.json
@@ -110,7 +110,7 @@ jobs:
           node scripts/archive-tree.mjs create
           --source "build/runtime/${{ matrix.key }}"
           --archive "build/${{ matrix.key }}.tar.gz"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-runtime-${{ matrix.key }}
           path: build/${{ matrix.key }}.tar.gz
@@ -168,7 +168,7 @@ jobs:
           node scripts/archive-tree.mjs create
           --source "build/thin/${{ matrix.key }}"
           --archive "build/thin-${{ matrix.key }}.tar.gz"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-thin-${{ matrix.key }}
           path: build/thin-${{ matrix.key }}.tar.gz

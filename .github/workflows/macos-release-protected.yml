@@ -176,13 +176,13 @@ jobs:
           cp build/source-release-context.json build/protected-linux-handoff/release-context.json
           cp build/linux-handoff-evidence.json build/protected-linux-handoff/
           test "$(find build/protected-linux-handoff -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" = 3
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: protected-thin-handoff
           path: build/protected-handoff
           if-no-files-found: error
           retention-days: 7
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: protected-linux-handoff
           path: build/protected-linux-handoff
@@ -260,7 +260,7 @@ jobs:
           node scripts/macos-release-gates.mjs identity \
             --output build/signed-transfer/signing-identity.json >/dev/null
           test "$(find build/signed-transfer -maxdepth 1 -type f | wc -l | tr -d ' ')" = 4
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: developer-id-app
           path: build/signed-transfer
@@ -311,7 +311,7 @@ jobs:
           --source "${{ needs.authorize.outputs.source-commit }}"
           --version "${{ needs.authorize.outputs.version }}"
           --output build/intel-verification.json
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: developer-id-intel-verification
           path: build/intel-verification.json
@@ -468,7 +468,7 @@ jobs:
             "" \
             "See the repository installation guide for AppImage no-FUSE commands, DEB lifecycle details, and the Node 24 source-build fallback." \
             > build/RELEASE_NOTES.md
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: final-notarized-release
           path: |
@@ -530,7 +530,7 @@ jobs:
           cp build/final/RELEASE_NOTES.md build/verified-publish-handoff/
           test "$(find build/verified-publish-handoff -maxdepth 1 -type f | wc -l | tr -d ' ')" = 3
           test "$(find build/verified-publish-handoff/release-assets -maxdepth 1 -type f | wc -l | tr -d ' ')" = 7
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: verified-publish-handoff
           path: build/verified-publish-handoff
@@ -760,7 +760,7 @@ jobs:
           NODE
           test "$(find build/signed-publish-handoff -maxdepth 1 -type f | wc -l | tr -d ' ')" = 5
           test "$(find build/signed-publish-handoff/release-assets -maxdepth 1 -type f | wc -l | tr -d ' ')" = 8
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: signed-publish-handoff
           path: build/signed-publish-handoff

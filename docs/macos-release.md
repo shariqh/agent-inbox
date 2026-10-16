@@ -30,7 +30,9 @@ Staging rebuilds the addon from source using the verified distribution's own hea
 (`npm_config_nodedir`), then runs `scripts/runtime-sqlite-check.mjs` with the staged
 Node against the staged `dist/store.js`. Its private in-memory store creates and
 releases 300,000 statements under ordinary allocation pressure; explicit `global.gc()`
-is deliberately not a substitute. A failure or signal refuses publication.
+is deliberately not a substitute. A failure, signal, or timeout refuses publication.
+The check has a 180-second ceiling: GitHub's Intel runners need roughly 25–30 seconds
+for it, so the previous 30-second ceiling timed out about a quarter of their runs (#187).
 An executable-only downgrade with a 24.19-built addon still reproduces the assertion:
 **both the runtime and addon must be rebuilt**, never patched into a signed payload.
 

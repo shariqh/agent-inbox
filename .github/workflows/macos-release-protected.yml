@@ -39,7 +39,7 @@ jobs:
       - id: release-inputs
         name: Resolve trusted pinned Node version
         run: echo "node-version=$(node scripts/release-inputs.mjs --node-version)" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ steps.release-inputs.outputs.node-version }}
       - name: Require the triggering workflow's trusted repository identity
@@ -89,7 +89,7 @@ jobs:
       - id: release-inputs
         name: Resolve source-commit Node version
         run: echo "node-version=$(node scripts/release-inputs.mjs --node-version)" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ steps.release-inputs.outputs.node-version }}
           cache: npm
@@ -205,7 +205,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
           ref: ${{ needs.authorize.outputs.source-commit }}
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ needs.verify-handoff.outputs.node-version }}
           architecture: arm64
@@ -278,7 +278,7 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ needs.authorize.outputs.source-commit }}
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ needs.verify-handoff.outputs.node-version }}
           architecture: x64
@@ -338,7 +338,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
           ref: ${{ needs.authorize.outputs.source-commit }}
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ needs.verify-handoff.outputs.node-version }}
           architecture: arm64
@@ -491,7 +491,7 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ needs.authorize.outputs.source-commit }}
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ needs.verify-handoff.outputs.node-version }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -554,7 +554,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
           ref: ${{ github.workflow_sha }}
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ needs.verify-handoff.outputs.node-version }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1

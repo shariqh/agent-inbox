@@ -280,6 +280,12 @@ const REQUIRED_DOCS = [
   join('instructions', 'copilot-cli.md'),
 ]
 
+// The allocation-driven check runs 300,000 statements on purpose (#135). GitHub's
+// Intel macOS runners need roughly 25-30 s for it, so a 30 s ceiling timed out
+// about a quarter of darwin-x64 (macos-15-intel) stagings (#187). The loop is
+// bounded and a real hang still fails.
+const SQLITE_CHECK_TIMEOUT_MS = 180_000
+
 /**
  * Prove the exact staged Node + better-sqlite3 combination actually loads,
  * BEFORE this tree is ever allowed to become a manifest or a published
@@ -302,18 +308,18 @@ function runStagedSelftest(stageDir, adapter) {
   }
   const scratchDir = mkdtempSync(join(tmpdir(), 'stage-runtime-selftest-'))
   try {
-    for (const [label, args] of [
-      ['selftest (bin/node dist/hook-cli.js selftest)', [hookCli, 'selftest']],
+    for (const [label, args, timeout] of [
+      ['selftest (bin/node dist/hook-cli.js selftest)', [hookCli, 'selftest'], 30_000],
       ['allocation-driven SQLite check', [
         join(SCRIPT_DIR, 'runtime-sqlite-check.mjs'), join(stageDir, 'dist', 'store.js'),
-      ]],
+      ], SQLITE_CHECK_TIMEOUT_MS],
     ]) {
       try {
         execFileSync(stagedNode, args, {
           cwd: stageDir,
           env: { ...process.env, AGENT_INBOX_DB: join(scratchDir, 'inbox.db') },
           stdio: ['ignore', 'pipe', 'pipe'],
-          timeout: 30_000,
+          timeout,
         })
       } catch (err) {
         throw new StageRuntimeError(`staged runtime failed its ${label} — refusing to publish: ${err.message}`)

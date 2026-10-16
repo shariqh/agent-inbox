@@ -51,7 +51,7 @@ jobs:
             "repos/${{ github.repository }}/actions/workflows/macos-release.yml" \
             --jq .id)"
           test "$TRUSTED_WORKFLOW_ID" = "${{ github.event.workflow_run.workflow_id }}"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-context
           path: build/untrusted-context
@@ -94,38 +94,38 @@ jobs:
           node-version: ${{ steps.release-inputs.outputs.node-version }}
           cache: npm
       - run: npm ci
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-context
           path: build/upstream-context
           run-id: ${{ needs.authorize.outputs.run-id }}
           github-token: ${{ github.token }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: release-thin-darwin-*
           path: build/upstream-thin
           merge-multiple: true
           run-id: ${{ needs.authorize.outputs.run-id }}
           github-token: ${{ github.token }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: linux-x64-appimage
           path: build/upstream-linux/linux-x64-appimage
           run-id: ${{ needs.authorize.outputs.run-id }}
           github-token: ${{ github.token }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: linux-arm64-appimage
           path: build/upstream-linux/linux-arm64-appimage
           run-id: ${{ needs.authorize.outputs.run-id }}
           github-token: ${{ github.token }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: linux-x64-deb
           path: build/upstream-linux/linux-x64-deb
           run-id: ${{ needs.authorize.outputs.run-id }}
           github-token: ${{ github.token }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: linux-arm64-deb
           path: build/upstream-linux/linux-arm64-deb
@@ -212,7 +212,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct '${{ needs.authorize.outputs.source-commit }}')" >> "$GITHUB_ENV"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: protected-thin-handoff
           path: build/handoff
@@ -282,7 +282,7 @@ jobs:
         with:
           node-version: ${{ needs.verify-handoff.outputs.node-version }}
           architecture: x64
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: developer-id-app
           path: build/signed
@@ -344,11 +344,11 @@ jobs:
           architecture: arm64
           cache: npm
       - run: npm ci
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: developer-id-app
           path: build/signed
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: developer-id-intel-verification
           path: build/intel
@@ -494,11 +494,11 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ needs.verify-handoff.outputs.node-version }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: final-notarized-release
           path: build/final
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: protected-linux-handoff
           path: build/linux
@@ -557,7 +557,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ needs.verify-handoff.outputs.node-version }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: verified-publish-handoff
           path: build/unsigned-publish-handoff

@@ -191,6 +191,22 @@ describe('native Linux folder gates', () => {
       .toThrow(LinuxBinaryGateError)
   })
 
+  it('runs the Electron-embedded SQLite check after the packaged Electron identity probe (#135)', () => {
+    const source = readFileSync(join(resolve(process.cwd()), 'scripts', 'verify-linux-thin-app.mjs'), 'utf8')
+    const probe = source.indexOf('processProbe(executable, resources, true)')
+    const check = source.indexOf('runElectronSqliteCheck({')
+    const report = source.indexOf('return {', check)
+    expect(probe).toBeGreaterThan(-1)
+    expect(check).toBeGreaterThan(probe)
+    expect(report).toBeGreaterThan(check)
+    const call = source.slice(check, report)
+    expect(call).toContain('executable,')
+    expect(call).toContain("storePath: join(resources, 'dist', 'store.js')")
+    expect(call).toContain('electron: inputs.electron.version')
+    expect(call).toContain('modulesAbi: inputs.electron.modulesAbi')
+    expect(source.slice(report)).toContain("electronSqliteCheck: 'passed'")
+  })
+
   it('rejects non-native thin builds before reading runtime or repository paths', async () => {
     const arch = process.arch === 'arm64' ? 'x64' : 'arm64'
     const unreachable = join(tmpdir(), 'must-not-be-read', String(process.pid))

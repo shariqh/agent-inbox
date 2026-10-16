@@ -41,6 +41,29 @@ a corrected Node 24 release passes the same native GC and packaged MCP/watcher c
 Each architecture still needs its own native release evidence; Apple-silicon or
 emulated x64 results do not establish native Intel or Linux behavior.
 
+#### Electron's embedded Node
+
+The same header change reaches the app itself through the Node.js that Electron embeds.
+Electron 43.5.0 bundles Node 24.19.0. A `better-sqlite3` rebuilt against its headers
+imports `node::RemoveEnvironmentCleanupHook` and aborts in statement cleanup
+(`hooks.cc:142`, `Assertion failed: (env) != nullptr`) both under `ELECTRON_RUN_AS_NODE`
+and in Electron's main process. That main process is where the packaged app runs its viewer
+and store. Electron 43.6.0 backported the runtime fix
+([electron/electron#53393](https://github.com/electron/electron/pull/53393)). The pinned
+Electron 43.8.0 (Node 24.22.0) therefore needs no hold, but each build still proves it:
+
+- After the `lipo` check, each native thin-app build runs `scripts/runtime-sqlite-check.mjs`
+  with the packaged `Contents/MacOS/Agent Inbox` in Node mode (`ELECTRON_RUN_AS_NODE=1`).
+- The check runs against that app's own Electron-rebuilt `better_sqlite3.node` and packaged
+  `dist/store.js`.
+- The child's `HOME`, `TMPDIR`, XDG directories and `AGENT_INBOX_DB` point into a scratch
+  directory. No other inherited variable reaches it, including `NODE_OPTIONS`.
+- Electron must first report the pinned version in Node mode. The app does not flip Electron
+  fuses, so `RunAsNode` remains enabled.
+- The check has the same 180-second ceiling as runtime staging.
+- A failure, signal or timeout fails the build.
+- The thin report records `electronSqliteCheck: "passed"`, and universal assembly requires it.
+
 **Requires macOS 13.5 (Ventura) or later.** Release builds support both Apple silicon and
 Intel. Electron 43 itself supports macOS 12, but the bundled official Node 24 runtime
 requires macOS 13.5, so the shipped product must use the stricter minimum. Revisit the
@@ -52,7 +75,9 @@ stated minimum before updating either pinned major.
 
 1. Stage and self-test the arm64 and x64 Node runtime payloads independently.
 2. Restore both verified payloads into each native thin Electron build.
-3. Rebuild `better-sqlite3` for Electron 43.8.0 on that architecture.
+3. Rebuild `better-sqlite3` for Electron 43.8.0 on that architecture, then run the
+   allocation-driven SQLite check under that packaged Electron
+   ([Electron's embedded Node](#electrons-embedded-node)).
 4. Preserve each thin app with a tar archive so framework symlinks and executable
    modes survive artifact transfer.
 5. Merge the thin apps with `@electron/universal`. The two

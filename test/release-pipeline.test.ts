@@ -282,6 +282,21 @@ describe('native architecture release stages', () => {
     expect(source.indexOf('pruneNativeAddonBuildArtifacts(stageRoot)'))
       .toBeLessThan(source.indexOf('const packagerOut'))
   })
+
+  it('runs the Electron-embedded SQLite check in every native thin app before publication (#135)', () => {
+    const source = readFileSync(join(root, 'scripts', 'build-thin-app.mjs'), 'utf8')
+    const lipo = source.indexOf('lipoArchs(nativeAddon)')
+    const check = source.indexOf('runElectronSqliteCheck({')
+    const publish = source.indexOf('publishAtomically(app, destination, force)')
+    expect(lipo).toBeGreaterThan(-1)
+    expect(check).toBeGreaterThan(lipo)
+    expect(publish).toBeGreaterThan(check)
+    const call = source.slice(check, publish)
+    expect(call).toContain("executable: join(app, 'Contents', 'MacOS', APP_NAME)")
+    expect(call).toContain("storePath: join(resources, 'dist', 'store.js')")
+    expect(call).toContain('electron: inputs.electron.version')
+    expect(source.slice(publish)).toContain("electronSqliteCheck: 'passed'")
+  })
 })
 
 describe('universal finalization contract', () => {
@@ -464,6 +479,7 @@ describe('universal finalization contract', () => {
         runtimeManifestDigests,
         appTreeDigest: treeIdentity(app),
         nativeRuntimeSelftest: 'passed',
+        electronSqliteCheck: 'passed',
         nativeAddonArchitectures: [arch === 'arm64' ? 'arm64' : 'x86_64'],
       }))
       return { app, report }
@@ -482,6 +498,12 @@ describe('universal finalization contract', () => {
       mode: 'adhoc' as const,
     }
     expect(verifyThinReports(options)).toHaveProperty('arm64.appTreeDigest')
+    const unchecked = JSON.parse(readFileSync(armFixture.report, 'utf8')) as Record<string, unknown>
+    delete unchecked.electronSqliteCheck
+    const uncheckedReport = join(temp, 'arm64-without-electron-sqlite-check.json')
+    writeFileSync(uncheckedReport, JSON.stringify(unchecked))
+    expect(() => verifyThinReports({ ...options, arm64Report: uncheckedReport }))
+      .toThrow(/thin arm64 verification report is invalid/)
     expect(() => verifyThinReports({
       ...options,
       arm64Report: x64Fixture.report,

@@ -23,6 +23,11 @@ Both architectures rebuild `better-sqlite3` against those verified archive heade
 and run the allocation-driven SQLite cleanup gate before publication. The pin
 avoids Node 24.19's header regression without dropping 24.18.1's security fixes;
 Linux native runtime verification remains required, not inferred from macOS tests.
+Electron's embedded Node carried the same regression from Electron 43.5.0 until
+Electron 43.6.0's backported fix. Thin-folder verification therefore also runs that
+gate with the packaged Electron executable in Node mode, against its Electron-ABI
+addon and packaged `dist/store.js`
+([Electron's embedded Node](macos-release.md#electrons-embedded-node)).
 
 `release/linux-appimage-x64.json` and `release/linux-appimage-arm64.json` are
 separate exact package contracts. Each pins its architecture-matched
@@ -78,7 +83,8 @@ Each job:
    Linux runtime key;
 6. verifies ELF architecture, libc symbol floors, Electron/Node versions and
    ABIs, both native addons, schema-2 Setup metadata, and exact-host payload
-   selection;
+   selection, then runs the allocation-driven SQLite check under the packaged
+   Electron (180-second ceiling, scratch `HOME`/XDG/`AGENT_INBOX_DB`);
 7. archives and restores the runtime and app folder, repeats verification,
    launches the restored app under Xvfb, and exercises runtime install/prune.
 

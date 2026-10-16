@@ -22,7 +22,7 @@ jobs:
       - id: release-inputs
         name: Resolve pinned Node version
         run: echo "node-version=$(node scripts/release-inputs.mjs --node-version)" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ steps.release-inputs.outputs.node-version }}
           cache: npm
@@ -51,7 +51,7 @@ jobs:
       - id: release-inputs
         name: Resolve pinned Node version
         run: echo "node-version=$(node scripts/release-inputs.mjs --node-version)" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ steps.release-inputs.outputs.node-version }}
           architecture: ${{ matrix.arch }}
@@ -71,7 +71,7 @@ jobs:
           node scripts/archive-tree.mjs create
           --source "build/runtime/${{ matrix.key }}"
           --archive "build/${{ matrix.key }}.tar.gz"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: runtime-${{ matrix.key }}
           path: build/${{ matrix.key }}.tar.gz
@@ -99,14 +99,14 @@ jobs:
       - id: release-inputs
         name: Resolve pinned Node version
         run: echo "node-version=$(node scripts/release-inputs.mjs --node-version)" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ steps.release-inputs.outputs.node-version }}
           architecture: ${{ matrix.arch }}
           cache: npm
       - run: npm ci
       - run: echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: runtime-darwin-*
           path: build/runtime-artifacts
@@ -128,7 +128,7 @@ jobs:
           node scripts/archive-tree.mjs create
           --source "build/thin/${{ matrix.key }}"
           --archive "build/thin-${{ matrix.key }}.tar.gz"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: thin-${{ matrix.key }}
           path: build/thin-${{ matrix.key }}.tar.gz
@@ -146,14 +146,14 @@ jobs:
       - id: release-inputs
         name: Resolve pinned Node version
         run: echo "node-version=$(node scripts/release-inputs.mjs --node-version)" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ steps.release-inputs.outputs.node-version }}
           architecture: arm64
           cache: npm
       - run: npm ci
       - run: echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: thin-darwin-*
           path: build/thin-artifacts
@@ -205,7 +205,7 @@ jobs:
           rm -rf "$COPIED" "$TEST_HOME"
           hdiutil detach "$MOUNT"
           trap - EXIT
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: macos-universal-provisional
           path: out/macos-universal
@@ -216,7 +216,7 @@ jobs:
           mkdir -p out/layer3-inputs
           cp build/thin-artifacts/*.tar.gz release/macos-inputs.json out/layer3-inputs/
           shasum -a 256 out/layer3-inputs/* > out/layer3-inputs/SHA256SUMS
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: macos-layer3-reproducible-inputs
           path: out/layer3-inputs
@@ -234,11 +234,11 @@ jobs:
       - id: release-inputs
         name: Resolve pinned Node version
         run: echo "node-version=$(node scripts/release-inputs.mjs --node-version)" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ steps.release-inputs.outputs.node-version }}
           architecture: x64
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: macos-universal-provisional
           path: build/final-artifact
@@ -264,7 +264,7 @@ jobs:
             --root "$RUNTIME" --platform darwin --arch x64 \
             --node-version "$NODE_VERSION" --package-version "$PACKAGE_VERSION" \
             > build/x64-final-verification.json
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: macos-universal-x64-final-verification
           path: build/x64-final-verification.json

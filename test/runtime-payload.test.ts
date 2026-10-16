@@ -1883,6 +1883,47 @@ describe.skipIf(!REAL_NODE_ROOT || !['darwin', 'linux'].includes(process.platfor
       },
       30_000,
     )
+
+    it(
+      'gives the allocation-driven SQLite check a 180 s ceiling, once, and keeps the hook selftest at 30 s (#187)',
+      () => {
+        // Record the options the real staging run passes to execFileSync rather
+        // than waiting out a timeout.
+        const repoRoot = buildFixtureRepoRoot()
+        const spyRoot = tmp('stage-timeout-spy-')
+        const spy = join(spyRoot, 'record-exec-timeouts.mjs')
+        const calls = join(spyRoot, 'calls.jsonl')
+        writeFileSync(spy, [
+          "import childProcess from 'node:child_process'",
+          "import { appendFileSync } from 'node:fs'",
+          "import { syncBuiltinESMExports } from 'node:module'",
+          'const realExecFileSync = childProcess.execFileSync',
+          'childProcess.execFileSync = (file, args, options) => {',
+          `  appendFileSync(${JSON.stringify(calls)}, JSON.stringify({ args, timeout: options?.timeout }) + '\\n')`,
+          '  return realExecFileSync(file, args, options)',
+          '}',
+          'syncBuiltinESMExports()',
+        ].join('\n'))
+        const output = join(tmp('stage-timeouts-'), 'runtime')
+
+        const result = spawnSync(process.execPath, [
+          '--import', pathToFileURL(spy).href, STAGE_CLI,
+          '--node-root', REAL_NODE_ROOT as string, '--platform', process.platform, '--arch', process.arch,
+          '--output', output, '--repo-root', repoRoot,
+        ], { encoding: 'utf8' })
+        expect(result.status, result.stderr).toBe(0)
+        expect(existsSync(join(output, 'runtime-manifest.json'))).toBe(true)
+
+        const recorded = readFileSync(calls, 'utf8').trim().split('\n')
+          .map((line) => JSON.parse(line) as { args?: string[]; timeout?: number })
+        const timeoutsFor = (matches: (args: string[]) => boolean) =>
+          recorded.filter((call) => matches(call.args ?? [])).map((call) => call.timeout)
+        expect(timeoutsFor((args) => basename(args[0] ?? '') === 'runtime-sqlite-check.mjs')).toEqual([180_000])
+        expect(timeoutsFor((args) => basename(args[0] ?? '') === 'hook-cli.js' && args[1] === 'selftest'))
+          .toEqual([30_000])
+      },
+      30_000,
+    )
   },
 )
 

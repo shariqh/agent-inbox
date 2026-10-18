@@ -9,10 +9,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
 import {
-  annotateBoardRow, annotateItem, archiveBoard, dismissItem, getBoard, getItem, insertItem,
-  listBoards, listItems, markAnnotationDelivered, markHandledDelivered,
-  markItemAnnotationDelivered, markReplySeen, markRowHandled, openDb,
-  replyItem, resolveItem, touchActivity, unarchiveBoard, updateBoardRow,
+  CLAIM_COLD_MS, annotateBoardRow, annotateItem, archiveBoard, dismissItem, endActivity, getBoard, getItem,
+  insertItem, listBoards, listItems, markAnnotationDelivered, markHandledDelivered,
+  markItemAnnotationDelivered, markReplySeen, markRowHandled, openDb, readSnapshotState,
+  recordActivityCall, replyItem, resolveItem, touchActivity, unarchiveBoard, updateBoardRow,
   upsertActivity, upsertBoard,
 } from '../src/store.js'
 import { groupItems } from '../src/group.js'
@@ -520,6 +520,171 @@ describe('viewer conditional snapshots', () => {
       }
       expect(serializations).toBe(0)
       expect(queries.filter((sql) => /\bFROM\s+items\b/i.test(sql))).toEqual([])
+    })
+  })
+
+  // Issue #185: history's bytes also change with TIME alone. An open span gains
+  // its capped end once it goes cold, without any database write, so the store's
+  // write tokens cannot validate it. Its validator comes from the bytes and the
+  // window that selected them.
+  describe('the activity history representation (issue #185)', () => {
+    const SINCE = NOW.getTime() - 30 * 24 * 60 * 60_000
+    const HISTORY = `/api/activity/history?since_ms=${SINCE}`
+
+    function claim(connection = db, session = 'live') {
+      upsertActivity(connection, { ...SCOPE, session, doing: 'Working' })
+    }
+
+    it('returns a tagged full representation, then a bodyless no-store 304 with the boot marker', async () => {
+      claim()
+      const initial = await app.request(HISTORY)
+      expect(initial.status).toBe(200)
+      expect(initial.headers.get('content-type')).toContain('application/json')
+      expect(initial.headers.get('cache-control')).toBe('no-store')
+      const etag = initial.headers.get('etag')!
+      expect(etag).toMatch(/^"[^"]+"$/)
+      const body = await initial.text()
+      expect(JSON.parse(body).map((span: { session: string }) => span.session)).toEqual(['live'])
+      for (const value of [etag, `W/${etag}`, '*', `"other", ${etag}`]) {
+        const unchanged = await conditional(HISTORY, value)
+        expect(unchanged.status, value).toBe(304)
+        expect(await unchanged.text()).toBe('')
+        expect(unchanged.headers.get('etag')).toBe(etag)
+        expect(unchanged.headers.get('cache-control')).toBe('no-store')
+        expect(unchanged.headers.get('x-inbox-boot')).toBe(initial.headers.get('x-inbox-boot'))
+      }
+      expect((await conditional(HISTORY, etag, 'HEAD')).status).toBe(304)
+      expect((await conditional(HISTORY, '"other"')).status).toBe(200)
+      expect(await (await app.request(HISTORY)).text()).toBe(body)
+      // A malformed window is refused before any validator can answer for it.
+      expect((await conditional('/api/activity/history?since_ms=not-a-number', '*')).status).toBe(400)
+    })
+
+    describe.each(['same', 'other'] as const)('%s-connection writes', (source) => {
+      const connection = () => source === 'same' ? db : writer
+
+      it('answers 200 when a span starts, is renewed, or ends', async () => {
+        const initial = await tag(HISTORY)
+        claim(connection())
+        const started = await changed(HISTORY, initial)
+        expect(started.body[0]).toMatchObject({ session: 'live', ended_at: null, effective_ended_at: null })
+        expect((await conditional(HISTORY, started.etag)).status).toBe(304)
+        vi.setSystemTime(new Date(NOW.getTime() + 60_000))
+        recordActivityCall(connection(), 'live')
+        const renewed = await changed(HISTORY, started.etag)
+        expect(renewed.body[0].last_active_at).toBe(new Date().toISOString())
+        endActivity(connection(), 'live')
+        const ended = await changed(HISTORY, renewed.etag)
+        expect(ended.body[0].ended_at).toBe(new Date().toISOString())
+        expect((await conditional(HISTORY, ended.etag)).status).toBe(304)
+      })
+    })
+
+    it.each([HISTORY, '/api/activity/history'])(
+      'answers 200 for %s when only the clock carries an open span past its cold cutoff',
+      async (url) => {
+        claim()
+        const lastActive = Date.now()
+        const etag = await tag(url)
+        const before = readSnapshotState(db)
+        // Exactly at the cutoff the claim is still warm, so the bytes are unchanged.
+        vi.setSystemTime(new Date(lastActive + CLAIM_COLD_MS))
+        expect((await conditional(url, etag)).status).toBe(304)
+        // A millisecond later nothing but time has moved: the store's write tokens
+        // are identical, so a validator built from them alone would hide the cap.
+        vi.setSystemTime(new Date(lastActive + CLAIM_COLD_MS + 1))
+        const capped = await changed(url, etag)
+        expect(readSnapshotState(db)).toEqual(before)
+        expect(capped.body[0]).toMatchObject({
+          ended_at: null, effective_ended_at: new Date(lastActive + CLAIM_COLD_MS).toISOString(),
+        })
+        // Once capped, the bytes stop moving with time and revalidate again.
+        vi.setSystemTime(new Date(lastActive + 3 * CLAIM_COLD_MS))
+        expect((await conditional(url, capped.etag)).status).toBe(304)
+      },
+    )
+
+    it('never shares a validator between windows or project filters, even for identical bytes', async () => {
+      claim()
+      const urls = [
+        HISTORY,
+        `/api/activity/history?since_ms=${SINCE + 1}`,
+        '/api/activity/history',
+        `${HISTORY}&project=${SCOPE.project}`,
+      ]
+      const tags: string[] = []
+      const bodies = new Set<string>()
+      for (const url of urls) {
+        const response = await app.request(url)
+        tags.push(response.headers.get('etag')!)
+        bodies.add(await response.text())
+      }
+      // The same one span answers every request, so only validators tell them apart.
+      expect(bodies.size).toBe(1)
+      expect(new Set(tags).size).toBe(urls.length)
+      for (const [index, url] of urls.entries()) {
+        expect((await conditional(url, tags[index]!)).status, url).toBe(304)
+        for (const foreign of tags.filter((_, other) => other !== index)) {
+          expect((await conditional(url, foreign)).status, `${url} with ${foreign}`).toBe(200)
+        }
+      }
+      // The window is the parsed number, so another spelling of it is the same window.
+      expect((await conditional(`/api/activity/history?since_ms=${SINCE}.0`, tags[0]!)).status).toBe(304)
+    })
+
+    it('never revalidates or is revalidated by another route with byte-identical JSON', async () => {
+      const boards = await app.request('/api/boards')
+      const history = await app.request(HISTORY)
+      expect(await history.text()).toBe(await boards.text())
+      const boardsTag = boards.headers.get('etag')!
+      const historyTag = history.headers.get('etag')!
+      expect(historyTag).toMatch(/^"[^"]+"$/)
+      expect(historyTag).not.toBe(boardsTag)
+      expect((await conditional(HISTORY, boardsTag)).status).toBe(200)
+      expect((await conditional('/api/boards', historyTag)).status).toBe(200)
+    })
+
+    it('does not let an uncommitted read validate after its transaction rolls back', async () => {
+      const initial = await tag(HISTORY)
+      let pending: Promise<Response> | undefined
+      const rollback = new Error('rollback fixture')
+      expect(() => db.transaction(() => {
+        claim()
+        pending = Promise.resolve(app.request(HISTORY))
+        throw rollback
+      })()).toThrow(rollback)
+      const transient = await pending!
+      const transientTag = transient.headers.get('etag')!
+      expect(await transient.json()).toHaveLength(1)
+      expect(transientTag).not.toBe(initial)
+      const restored = await changed(HISTORY, transientTag)
+      expect(restored.body).toEqual([])
+      expect(restored.etag).toBe(initial)
+    })
+
+    it('revalidates across a viewer restart while carrying the new boot marker', async () => {
+      claim()
+      const initial = await app.request(HISTORY)
+      const etag = initial.headers.get('etag')!
+      vi.setSystemTime(new Date(NOW.getTime() + 1000))
+      const restarted = createViewer(writer)
+      const unchanged = await restarted.request(HISTORY, { headers: { 'If-None-Match': etag } })
+      expect(unchanged.status).toBe(304)
+      expect(unchanged.headers.get('x-inbox-boot')).not.toBe(initial.headers.get('x-inbox-boot'))
+      expect(await unchanged.text()).toBe('')
+    })
+
+    it('never answers a failed read with a cached success', async () => {
+      claim()
+      const etag = await tag(HISTORY)
+      db.close()
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+      for (const value of [etag, '*']) {
+        const response = await conditional(HISTORY, value)
+        expect(response.status, value).toBe(500)
+        expect(response.headers.get('etag')).toBeNull()
+      }
+      expect(error).toHaveBeenCalled()
     })
   })
 })

@@ -103,6 +103,9 @@ Run the build before `npm run electron`; the development shell starts the built
   Invalidate on same/other-connection writes, schema changes and pickup stamps;
   never cache an uncommitted snapshot. Keep dynamic routes fresh, no-store and
   the boot marker intact, and never turn a read failure into cached success.
+  Activity history changes with time alone, so it is conditional only on a hash
+  of its freshly computed bytes plus the window and project that selected them;
+  never validate it with store tokens or cache it server-side (#185).
 - Race-sensitive state changes must be atomic SQL statements or transactions.
   Do not replace conditioned/version-pinned updates with SELECT-then-UPDATE.
   Human replies, annotations, and handled marks can change from another process

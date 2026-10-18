@@ -39,7 +39,7 @@ import { buildMission } from '/mission.js'
 import { buildActivitySeries, buildDashboard } from '/dashboard.js'
 import { PANE_DEFAULTS, paneKeyValue, paneValueFromPointer, resolvePaneLayout } from '/panes.js'
 import { createThemeController } from '/theme.js'
-import { createSnapshotReader } from '/snapshots.js'
+import { activityHistoryUrl, createSnapshotReader } from '/snapshots.js'
 
 void paginateGroups // kept exported+tested (spec §15); the viewer no longer calls it
 
@@ -407,6 +407,25 @@ function settledValue(result) {
   return result.value
 }
 
+// History keeps its own fallback: any failure renders "History unavailable"
+// without failing the tick. Like the other snapshot bodies it is read only after
+// the tick's boot decision, because a 304 resolves to cached spans (#185).
+async function historyBody(read) {
+  try {
+    const response = settledValue(read)
+    if (response.status !== 200 && response.status !== 304) {
+      return { state: 'error', spans: [], message: `History unavailable (${response.status})` }
+    }
+    return { state: 'ready', spans: await response.json(), message: '' }
+  } catch (error) {
+    return {
+      state: 'error',
+      spans: [],
+      message: error instanceof Error ? `History unavailable: ${error.message}` : 'History unavailable',
+    }
+  }
+}
+
 async function load() {
   if (reloadRequested) return false
   const generation = ++loadGeneration
@@ -418,26 +437,13 @@ async function load() {
     boots.push(response.headers.get('x-inbox-boot'))
     return response
   }
-  const historySinceMs = Date.now() - 30 * 24 * 60 * 60 * 1000
   try {
     const [items, boardsRead, archivedRead, activityRead, historyRead, closedRead, linksRead] = await Promise.allSettled([
       readSnapshot('/api/items').then(marked),
       readSnapshot('/api/boards').then(marked),
       readSnapshot('/api/boards/archived').then(marked),
       fetch('/api/activity').then(marked),
-      fetch(`/api/activity/history?since_ms=${historySinceMs}`).then(marked)
-        .then(async (response) => {
-          if (!response.ok) return { state: 'error', spans: [], message: `History unavailable (${response.status})` }
-          const spans = await response.json()
-          return Array.isArray(spans)
-            ? { state: 'ready', spans, message: '' }
-            : { state: 'error', spans: [], message: 'History returned an invalid payload' }
-        })
-        .catch((error) => ({
-          state: 'error',
-          spans: [],
-          message: error instanceof Error ? `History unavailable: ${error.message}` : 'History unavailable',
-        })),
+      readSnapshot(activityHistoryUrl(Date.now())).then(marked),
       // Projects the human closed (issue #32). Defensive on purpose: a viewer that
       // predates this route answers 404 with HTML, a bare .json() would throw into
       // the catch below, and the WHOLE page would read 'disconnected'. An unknown
@@ -465,9 +471,10 @@ async function load() {
     if (marks.size > 1) return false
     // Bodies only after the live boot decision: a 304 resolves to cached data.
     const body = (read) => (read.status === 'fulfilled' ? read.value.json() : Promise.reject(read.reason))
-    const bodies = await Promise.allSettled([res.json(), body(boardsRead), body(archivedRead), body(activityRead)])
-    const [g, boards, archived, activity] = bodies.map(settledValue)
-    const activityHistory = settledValue(historyRead)
+    const bodies = await Promise.allSettled([
+      res.json(), body(boardsRead), body(archivedRead), body(activityRead), historyBody(historyRead),
+    ])
+    const [g, boards, archived, activity, activityHistory] = bodies.map(settledValue)
     const closedSnapshot = settledValue(closedRead)
     const links = settledValue(linksRead)
     if (reloadRequested || generation < appliedLoadGeneration) return false

@@ -476,6 +476,13 @@ function sameSnapshotState(a: SnapshotReadState, b: SnapshotReadState): boolean 
     && a.schemaVersion === b.schemaVersion
 }
 
+// GET/HEAD use weak comparison, as in Hono's ETag middleware. Generated opaque
+// tags contain no commas; trim list OWS before comparing members.
+function etagMatches(requested: string | undefined, etag: string): boolean {
+  return requested?.trim() === '*'
+    || requested?.split(',').some((tag) => tag.trim().replace(/^W\//, '') === etag) === true
+}
+
 function conditionalSnapshot(
   db: Database.Database,
   name: 'items' | 'attention-items' | 'boards' | 'archived-boards',
@@ -501,13 +508,7 @@ function conditionalSnapshot(
       if (sameSnapshotState(before, after)) cached = current
     }
     c.header('ETag', current.etag)
-    const requested = c.req.header('If-None-Match')
-    // GET/HEAD use weak comparison, as in Hono's ETag middleware. Generated
-    // opaque tags contain no commas; trim list OWS before comparing members.
-    if (requested?.trim() === '*'
-      || requested?.split(',').some((tag) => tag.trim().replace(/^W\//, '') === current.etag)) {
-      return c.body(null, 304)
-    }
+    if (etagMatches(c.req.header('If-None-Match'), current.etag)) return c.body(null, 304)
     return c.body(current.body, 200, { 'Content-Type': 'application/json' })
   }
 }
@@ -605,10 +606,16 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
   // of `/api/activity` and never imported into any attention/badge path.
   // `since_ms` is optional; when present it must be a finite number of epoch
   // milliseconds — a malformed value is a 400, not a silently-ignored filter.
+  //
+  // Conditional (issue #185), but never on database tokens: time alone changes
+  // these bytes once an open span goes cold and gains its capped end. The tag
+  // hashes the bytes plus the window and project that selected them, so a 304
+  // means identical bytes and no two windows share a validator. Nothing is
+  // cached; a failed read throws before any tag exists.
   app.get('/api/activity/history', (c) => {
-    const project = c.req.query('project')
+    const project = c.req.query('project') || null
     const sinceParam = c.req.query('since_ms')
-    let sinceMs: number | undefined
+    let sinceMs: number | null = null
     if (sinceParam !== undefined) {
       const parsed = Number(sinceParam)
       if (!Number.isFinite(parsed) || !Number.isFinite(new Date(parsed).getTime())) {
@@ -616,7 +623,14 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
       }
       sinceMs = parsed
     }
-    return c.json(listActivitySpans(db, { project: project || undefined, sinceMs }))
+    c.header('Cache-Control', 'no-store')
+    const body = JSON.stringify(listActivitySpans(db, { project: project ?? undefined, sinceMs: sinceMs ?? undefined }))
+    // JSON.stringify never emits a raw newline, so the key cannot run into the body.
+    const etag = `"activity-history-${createHash('sha256')
+      .update(`${JSON.stringify([project, sinceMs])}\n`).update(body).digest('hex')}"`
+    c.header('ETag', etag)
+    if (etagMatches(c.req.header('If-None-Match'), etag)) return c.body(null, 304)
+    return c.body(body, 200, { 'Content-Type': 'application/json' })
   })
 
   // issue #30 — the cached PR state, one row per (repo, branch). Deliberately

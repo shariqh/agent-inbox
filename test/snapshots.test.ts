@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createSnapshotReader } from '../public/snapshots.js'
+import { activityHistoryUrl, createSnapshotReader } from '../public/snapshots.js'
 
 function payload(title = 'A') {
   return {
@@ -155,6 +155,66 @@ describe('per-window conditional snapshots', () => {
     await (await read('/api/boards/archived')).json()
     await expect((await read('/api/boards/archived')).json()).rejects.toThrow('Invalid snapshot payload')
     expect(await (await read('/api/boards/archived')).json()).toEqual([])
+    expect(fetcher.mock.calls[2]?.[1]?.headers).toEqual({ 'If-None-Match': '"good"' })
+  })
+})
+
+// Issue #185: the poll's history read names its window in the query string.
+describe('activity history snapshots', () => {
+  const HOUR = 60 * 60 * 1000
+  const WINDOW = 30 * 24 * HOUR
+  const since = (url: string): number => Number(new URL(url, 'http://viewer.test').searchParams.get('since_ms'))
+
+  it('requests one stable window per hour that always covers the last 30 days', () => {
+    const start = Date.parse('2026-07-20T10:00:00.000Z')
+    const url = activityHistoryUrl(start)
+    expect(url).toBe(`/api/activity/history?since_ms=${start - WINDOW}`)
+    expect(activityHistoryUrl(start + HOUR - 1)).toBe(url)
+    expect(since(activityHistoryUrl(start + HOUR))).toBe(start - WINDOW + HOUR)
+    for (const now of [start + 1, start + 1_234_567, start + HOUR - 1, start + 7 * HOUR + 5]) {
+      expect(since(activityHistoryUrl(now))).toBeLessThanOrEqual(now - WINDOW)
+      expect(since(activityHistoryUrl(now))).toBeGreaterThan(now - WINDOW - HOUR)
+    }
+  })
+
+  it('reuses a history representation only for the exact window that fetched it', async () => {
+    const first = '/api/activity/history?since_ms=1000'
+    const next = '/api/activity/history?since_ms=2000'
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response('[{"session":"a"}]', { headers: { etag: '"first"' } }))
+      .mockResolvedValueOnce(new Response(null, { status: 304 }))
+      .mockResolvedValueOnce(new Response('[{"session":"b"}]', { headers: { etag: '"next"' } }))
+      .mockResolvedValueOnce(new Response(null, { status: 304 }))
+      .mockResolvedValueOnce(new Response(null, { status: 304 }))
+    const read = createSnapshotReader(fetcher)
+    const a = await (await read(first)).json()
+    expect(await (await read(first)).json()).toBe(a)
+    expect(fetcher.mock.calls[1]?.[1]?.headers).toEqual({ 'If-None-Match': '"first"' })
+    const b = await (await read(next)).json()
+    expect(b).toEqual([{ session: 'b' }])
+    expect(fetcher.mock.calls[2]?.[1]?.headers).toBeUndefined()
+    expect(await (await read(next)).json()).toBe(b)
+    expect(fetcher.mock.calls[3]?.[1]?.headers).toEqual({ 'If-None-Match': '"next"' })
+    // The newer window retired the older one; nothing can answer for it with a 304.
+    await expect((await read(first)).json()).rejects.toThrow('without a representation')
+    expect(fetcher.mock.calls[4]?.[1]?.headers).toBeUndefined()
+  })
+
+  it.each([
+    () => new Response('unavailable', { status: 503, headers: { etag: '"bad"' } }),
+    () => new Response('{"spans":[]}', { headers: { etag: '"bad"' } }),
+    () => new Response('[null]', { headers: { etag: '"bad"' } }),
+  ])('keeps the good history representation after a failed or malformed response', async (bad) => {
+    const url = activityHistoryUrl(Date.parse('2026-07-20T10:00:00.000Z'))
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response('[]', { headers: { etag: '"good"' } }))
+      .mockResolvedValueOnce(bad())
+      .mockResolvedValueOnce(new Response(null, { status: 304 }))
+    const read = createSnapshotReader(fetcher)
+    const good = await (await read(url)).json()
+    await expect((await read(url)).json()).rejects.toThrow()
+    expect(await (await read(url)).json()).toBe(good)
+    expect(Object.isFrozen(good)).toBe(true)
     expect(fetcher.mock.calls[2]?.[1]?.headers).toEqual({ 'If-None-Match': '"good"' })
   })
 })

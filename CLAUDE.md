@@ -69,12 +69,22 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   Publish a cache entry only when matching before/after tokens prove it was read
   outside a transaction without intervening changes. Never cache uncommitted data,
   label an old body with a newer token, or fall back to cached success on a read
-  failure. Activity, history and the other dynamic routes remain fresh; time
-  passing without a database write still changes claim expiry and history.
+  failure. Activity and the other dynamic routes remain fresh; time passing
+  without a database write still changes claim expiry. `/api/activity/history`
+  (issue #185) is conditional on its bytes instead, because time alone changes
+  them too: an open span gains its capped end once it goes cold. Its tag hashes
+  the freshly computed body plus the parsed `since_ms` and project that selected
+  it, so a 304 means identical bytes and no two windows share a validator. Never
+  derive that tag from store tokens or cache the body server-side; the whole
+  route costs under a millisecond on a #161-sized hub. The poll floors its 30-day
+  `since_ms` to the hour (`activityHistoryUrl`), so successive ticks name one
+  representation.
   This is bounded snapshot reuse, not a cross-endpoint synchronization protocol.
   The browser keeps its own window-local, deeply frozen representations. A 304
   reuses the exact representation that request revalidated, not a later overlapping
   load's cache entry; older completions cannot overwrite a newer validator/body.
+  A query string selects one representation of its route; the reader retains only
+  each route's newest one and reuses it only for the exact URL that fetched it.
   Read the live boot header before consuming cached data. Untagged servers retain
   full-fetch behavior, malformed replies fail explicitly, and no snapshot content
   is persisted to browser storage. Derive mutable view state rather than changing

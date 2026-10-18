@@ -10,11 +10,24 @@ const boards = (value) => Array.isArray(value) && value.every((board) =>
   strings(board, ['id', 'title', 'project', 'agent'])
   && Array.isArray(board.rows) && board.rows.every((row) => strings(row, ['id', 'label', 'status']))
   && record(board.progress) && ['done', 'countable', 'fraction'].every((key) => Number.isFinite(board.progress[key])))
+const spans = (value) => Array.isArray(value) && value.every(record)
 const validators = new Map([
   ['/api/items', items],
   ['/api/boards', boards],
   ['/api/boards/archived', boards],
+  ['/api/activity/history', spans],
 ])
+
+const HISTORY_WINDOW_MS = 30 * 24 * 60 * 60 * 1000
+const HISTORY_STEP_MS = 60 * 60 * 1000
+
+// The poll's 30-day history window (issue #185). Its start is floored to the
+// hour, so successive ticks name the same representation and can revalidate it.
+// The extra hour is clipped by the dashboard's own range.
+export function activityHistoryUrl(nowMs) {
+  const sinceMs = Math.floor((nowMs - HISTORY_WINDOW_MS) / HISTORY_STEP_MS) * HISTORY_STEP_MS
+  return `/api/activity/history?since_ms=${sinceMs}`
+}
 
 function freezeSnapshot(value) {
   if (value && typeof value === 'object' && !Object.isFrozen(value)) {
@@ -26,16 +39,20 @@ function freezeSnapshot(value) {
 
 // Window-local authoritative snapshots. Consumers derive views without mutating
 // these frozen values; optimistic state (such as closed projects) stays separate.
+// A query string selects one representation of its route. Each route retains only
+// its newest representation, reused only for the exact URL that fetched it.
 export function createSnapshotReader(fetcher) {
   const cache = new Map()
   const latest = new Map()
   let generation = 0
   return async (url) => {
-    const validate = validators.get(url)
+    const route = url.split('?')[0]
+    const validate = validators.get(route)
     if (!validate) throw new Error(`Unsupported snapshot route: ${url}`)
-    const requested = cache.get(url)
+    const held = cache.get(route)
+    const requested = held?.url === url ? held : undefined
     const requestGeneration = ++generation
-    latest.set(url, requestGeneration)
+    latest.set(route, requestGeneration)
     const response = await fetcher(url, {
       cache: 'no-store',
       ...(requested ? { headers: { 'If-None-Match': requested.etag } } : {}),
@@ -57,9 +74,9 @@ export function createSnapshotReader(fetcher) {
           try { value = await response.json() } catch { throw new Error(`Invalid snapshot JSON: ${url}`) }
           if (!validate(value)) throw new Error(`Invalid snapshot payload: ${url}`)
           freezeSnapshot(value)
-          if (latest.get(url) === requestGeneration) {
-            if (etag) cache.set(url, { etag, value })
-            else cache.delete(url)
+          if (latest.get(route) === requestGeneration) {
+            if (etag) cache.set(route, { url, etag, value })
+            else cache.delete(route)
           }
           return value
         })()

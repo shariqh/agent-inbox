@@ -22,7 +22,7 @@ const { constants } = require('node:fs')
 const fs = require('node:fs/promises')
 const path = require('node:path')
 const { runsFromAppImage } = require('./update-fetch.cjs')
-const { UpdateInstallError, copyVerifiedSource } = require('./update-install.cjs')
+const { INSTALL_HELPER_EXIT, UpdateInstallError, copyVerifiedSource } = require('./update-install.cjs')
 
 const STRATEGY = 'appimage-self-replace'
 const SHA256_RE = /^[0-9a-f]{64}$/
@@ -51,32 +51,57 @@ const HELPER_SHELL = '/bin/sh'
 const HELPER_NAME = 'agent-inbox-relaunch'
 const HELPER_POLL_MS = 200
 const DEFAULT_HELPER_TIMEOUT_MS = 120_000
+const EXIT = INSTALL_HELPER_EXIT
 // Constant text: every input arrives as an argument and is expanded only inside
 // double quotes. Waits while the app or the viewer process it started (`-` when
 // the viewer runs in-process or was reused) is alive, then replaces itself with
-// the new AppImage, which the commit already renamed into place. Exit codes:
-// 64 bad arguments, 75 they never exited (nothing started).
+// the new AppImage, which the commit already renamed into place. Before every
+// exit, and just before that exec, it writes its INSTALL_HELPER_EXIT code to
+// <result> (temp file + rename, `-` for no report); an invalid <result> is
+// checked first and exits 64 writing nowhere. 64 bad arguments, 75 the app never
+// exited (nothing started), 65 the AppImage path no longer holds a regular,
+// executable, non-symlink file (nothing started), 0 about to start it.
 const RELAUNCH_SCRIPT = `set -u
-[ "$#" -eq 4 ] || exit 64
+[ "$#" -eq 5 ] || exit ${EXIT.badArguments}
 app_pid="$1"
 viewer_pid="$2"
 polls="$3"
 target="$4"
-case "$app_pid" in ''|0*|*[!0-9]*) exit 64 ;; esac
-case "$viewer_pid" in -) ;; ''|0*|*[!0-9]*) exit 64 ;; esac
-case "$polls" in ''|0*|*[!0-9]*) exit 64 ;; esac
-case "$target" in /*) ;; *) exit 64 ;; esac
-case "$target" in */../*|*/..|*/./*|*/.) exit 64 ;; esac
+result="$5"
+valid_path() {
+  case "$1" in /*) ;; *) return 1 ;; esac
+  case "$1" in */|*/../*|*/..|*/./*|*/.) return 1 ;; esac
+  return 0
+}
+[ "$result" = - ] || valid_path "$result" || exit ${EXIT.badArguments}
+report() {
+  [ "$result" = - ] && return 0
+  if (umask 077 && printf '%s\n' "$1" > "$result.tmp.$$") 2>/dev/null; then
+    mv -f "$result.tmp.$$" "$result" 2>/dev/null || rm -f "$result.tmp.$$"
+  fi
+}
+finish() {
+  report "$1"
+  exit "$1"
+}
+case "$app_pid" in ''|0*|*[!0-9]*) finish ${EXIT.badArguments} ;; esac
+case "$viewer_pid" in -) ;; ''|0*|*[!0-9]*) finish ${EXIT.badArguments} ;; esac
+case "$polls" in ''|0*|*[!0-9]*) finish ${EXIT.badArguments} ;; esac
+valid_path "$target" || finish ${EXIT.badArguments}
 running() {
   kill -0 "$app_pid" 2>/dev/null && return 0
   [ "$viewer_pid" != - ] && kill -0 "$viewer_pid" 2>/dev/null
 }
 waited=0
 while running; do
-  [ "$waited" -lt "$polls" ] || exit 75
+  [ "$waited" -lt "$polls" ] || finish ${EXIT.timedOut}
   waited=$((waited + 1))
   sleep 0.2 2>/dev/null || sleep 1
 done
+if [ ! -f "$target" ] || [ -L "$target" ] || [ ! -x "$target" ]; then
+  finish ${EXIT.refused}
+fi
+report ${EXIT.installed}
 exec "$target"
 `
 // The new AppImage sets these afresh; inherited, they would describe the old one.
@@ -157,6 +182,11 @@ function validUid(uid) {
 
 function isPid(value) {
   return Number.isSafeInteger(value) && value > 0
+}
+
+// The helper's own rule for its report location: absolute, no dot segments, no trailing slash.
+function validResultPath(value) {
+  return typeof value === 'string' && path.isAbsolute(value) && path.normalize(value) === value && !value.endsWith('/')
 }
 
 // The new AppImage must not inherit anything that points into the old one's
@@ -408,13 +438,13 @@ function createAppImageInstaller(options) {
   }
 
   // Resolves true once the detached helper is running, false if it could not start.
-  function startHelper(target) {
+  function startHelper(target, report) {
     return new Promise((resolveStart) => {
       let child
       try {
         child = spawnImpl(
           HELPER_SHELL,
-          ['-c', RELAUNCH_SCRIPT, HELPER_NAME, String(pid), viewerArgument(), String(helperPolls), target.appImage],
+          ['-c', RELAUNCH_SCRIPT, HELPER_NAME, String(pid), viewerArgument(), String(helperPolls), target.appImage, report],
           { detached: true, stdio: 'ignore', env: relaunchEnvironment(env, target.appDir), cwd: '/' },
         )
         child.once('spawn', () => {
@@ -456,9 +486,12 @@ function createAppImageInstaller(options) {
       }
     }
 
-    async function runCommit() {
+    // `resultPath` is where the helper reports its exit code; the controller
+    // passes the attempt store's path. Without one the helper reports nowhere.
+    async function runCommit(commitOptions) {
+      const resultPath = commitOptions?.resultPath
       let renamed = false
-      if (await unchanged()) {
+      if ((resultPath === undefined || validResultPath(resultPath)) && (await unchanged())) {
         try {
           await fsImpl.rename(stage.path, target.appImage)
           renamed = true
@@ -475,17 +508,17 @@ function createAppImageInstaller(options) {
       state = 'committed'
       live.delete(stage.path)
       await syncDirectory(target.parent)
-      if (!(await startHelper(target))) {
+      if (!(await startHelper(target, resultPath ?? '-'))) {
         console.error('[agent-inbox] the update is installed, but Agent Inbox could not schedule its restart; open it again to use the new version')
       }
     }
 
     return Object.freeze({
-      commit() {
+      commit(commitOptions) {
         if (committing === null) {
           if (state !== 'prepared') return Promise.reject(new UpdateInstallError('commit-failed'))
           state = 'committing'
-          committing = runCommit()
+          committing = runCommit(commitOptions)
         }
         return committing
       },

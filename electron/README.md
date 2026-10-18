@@ -87,10 +87,17 @@ type-2 magic in the staged bytes, `fchmod 0755` and fsync. `commit()` re-checks 
 AppImage, its folder and the stage, and makes one atomic rename over the AppImage, which
 is the commit point. The running app keeps its mount of the old inode. After the rename
 `commit()` never rejects: it fsyncs the folder and starts a detached host `/bin/sh -c`
-helper with constant text, argv `<app-pid> <viewer-pid|-> <polls> <target>`, `cwd '/'`
-and `stdio: 'ignore'`, and resolves on its `spawn` event. The helper validates its
-arguments (exit 64), polls `kill -0` every 0.2 s, gives up after about two minutes
-(exit 75) and then execs the new AppImage. Its environment drops `APPDIR`, `APPIMAGE`,
+helper with constant text, argv `<app-pid> <viewer-pid|-> <polls> <target> <result|->`,
+`cwd '/'` and `stdio: 'ignore'`, and resolves on its `spawn` event (an invalid
+`resultPath` is refused before the rename). The helper checks `<result>` first (invalid:
+exit 64, writing nowhere). Before every exit, and just before it execs the new AppImage,
+it writes its shared `INSTALL_HELPER_EXIT` code there, temp file then rename, under
+`umask 077` that the app does not inherit. The codes: 64 bad arguments, 75 the app never
+exited within about two minutes, 65 the AppImage path no longer holds a regular,
+executable, non-symlink file (the closest code to "could not start it"), and 0 just
+before the exec. The file was replaced before the helper ran, so the app opened next
+from that path is the new version, and the controller's next-start report is silent
+whatever the helper wrote. Its environment drops `APPDIR`, `APPIMAGE`,
 `ARGV0`, `OWD`, `TARGET_APPIMAGE` and every path-list entry inside the old `APPDIR`.
 Electron's own relaunch is never used: its relauncher runs from the old mount, which the
 AppImage runtime tears down when the app exits. If the helper cannot start, the new file

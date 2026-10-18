@@ -125,6 +125,10 @@ again yourself. With the extract-and-run fallback below, the new version reuses 
 command's private `TMPDIR`; if the app does not reopen (for example because a script
 already removed that folder), run the same command again.
 
+Unlike on macOS, there is no failed-install note to show after an AppImage restart: the
+file is already the new version before Agent Inbox quits, so whatever you open next from
+it is the update.
+
 The file keeps its name even when that name contains the previous version number; Settings
 shows the version that is installed. The previous version is not kept, so to go back,
 download it again from GitHub Releases. A hidden `.update-` file left by an interrupted

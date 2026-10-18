@@ -961,10 +961,18 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   helper, never `app.relaunch()`:** Electron's relauncher execs `/proc/self/exe` inside
   the AppImage's FUSE mount, which the runtime tears down when the app exits. Instead a
   detached host `/bin/sh -c` runs constant text with argv `<app-pid> <viewer-pid|->
-  <polls> <target>`, `set -u`, arguments validated (exit 64), `cwd:'/'`,
+  <polls> <target> <result|->`, `set -u`, arguments validated (exit 64), `cwd:'/'`,
   `stdio:'ignore'`, unref'd, and `commit()` resolves only on its `spawn` event. It polls
   `kill -0` for the app AND the viewer child (the same port race as macOS), exits 75
-  untouched after ~120 s, then execs the target. Its env is `process.env` minus APPDIR,
+  after ~120 s without starting anything, then execs the target. It reuses #207's report
+  seam: `commit({ resultPath })` (validated before the rename; none means `-`, no
+  report), `<result>` checked first (invalid: 64, writes nowhere), and the shared
+  `INSTALL_HELPER_EXIT` code written (temp + rename, a `umask 077` subshell the app never
+  inherits) before every exit AND just before the exec: 0 right before it, 65 when the
+  path no longer holds a regular executable non-symlink file (the closest code to a
+  failed exec; an execve failure after that check still reads 0). Because the commit
+  replaced the file first, the app opened next from that path is the new version, so the
+  controller's next-start report is silent whatever the code. Its env is `process.env` minus APPDIR,
   APPIMAGE, ARGV0, OWD, TARGET_APPIMAGE and every `:`-entry resolving inside the old
   APPDIR. The module never imports `child_process` (`spawnImpl` is injected) or Electron.
   (6) **No rollback copy:** the rename frees the old inode at exit; going back means

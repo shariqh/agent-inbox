@@ -41,7 +41,7 @@ import type { VerifiedArtifact } from '../electron/update-download.cjs'
 
 const { createAppImageInstaller } = appImageInstall
 // The installer's own require, not vitest's import, so instanceof sees the class it throws.
-const { UpdateInstallError } = createRequire(import.meta.url)('../electron/update-install.cjs') as typeof import('../electron/update-install.cjs')
+const { INSTALL_HELPER_EXIT, UpdateInstallError } = createRequire(import.meta.url)('../electron/update-install.cjs') as typeof import('../electron/update-install.cjs')
 type InstallerOptions = Parameters<typeof createAppImageInstaller>[0]
 
 const repoRoot = resolve(import.meta.dirname, '..')
@@ -1203,6 +1203,22 @@ describe('the AppImage file the app started from', () => {
   })
 })
 
+/** True when every `$` in the script sits inside double quotes or starts an arithmetic `$((`. */
+function dollarsQuoted(script: string) {
+  let double = false
+  let single = false
+  for (let index = 0; index < script.length; index += 1) {
+    const char = script[index]
+    if (char === '\\' && !single) index += 1
+    else if (char === "'" && !double) single = !single
+    else if (char === '"' && !single) double = !double
+    else if (char === '$' && !single && !double && !script.startsWith('$((', index)) return false
+  }
+  return !single && !double
+}
+
+const RESULT_PATH = '/private/userData/update-install/last-attempt.result'
+
 describe('scheduling the restart into the new AppImage', () => {
   it('starts one detached host /bin/sh helper with a constant script, argv-only inputs and a scrubbed environment', async () => {
     const fx = fixture()
@@ -1231,18 +1247,23 @@ describe('scheduling the restart into the new AppImage', () => {
     }
     const prepared = await fx.installer({ env, viewerPid: () => 5151 }).prepare(await fx.source())
 
-    await expect(prepared.commit()).resolves.toBeUndefined()
+    await expect(prepared.commit({ resultPath: RESULT_PATH })).resolves.toBeUndefined()
     expect(fx.helper.calls).toHaveLength(1)
     const call = fx.helper.calls[0]!
     expect(call.replacedBefore).toBe(true)
     expect(call.command).toBe('/bin/sh')
-    expect(call.args).toEqual(['-c', expect.any(String), 'agent-inbox-relaunch', String(APP_PID), '5151', '600', fx.appImage])
+    expect(call.args).toEqual(['-c', expect.any(String), 'agent-inbox-relaunch', String(APP_PID), '5151', '600', fx.appImage, RESULT_PATH])
     const script = call.args[1]!
     expect(script.startsWith('set -u\n')).toBe(true)
     expect(script).not.toContain(fx.work)
     expect(script).not.toMatch(/\beval\b/)
-    expect(script.match(/(?<!")\$(?!\(\()/g)).toBeNull()
+    expect(dollarsQuoted(script)).toBe(true)
     expect(script.trimEnd().endsWith('exec "$target"')).toBe(true)
+    // The shared helper convention, reported to the attempt store's result file.
+    for (const code of [INSTALL_HELPER_EXIT.badArguments, INSTALL_HELPER_EXIT.refused, INSTALL_HELPER_EXIT.timedOut]) {
+      expect(script).toContain(`finish ${code}`)
+    }
+    expect(script).toContain(`report ${INSTALL_HELPER_EXIT.installed}\nexec "$target"`)
     expect(call.options).toEqual({
       detached: true,
       stdio: 'ignore',
@@ -1268,9 +1289,24 @@ describe('scheduling the restart into the new AppImage', () => {
     expect(() => call.child.emit('error', new Error('late'))).not.toThrow()
     expect(() => call.child.emit('error', new Error('later'))).not.toThrow()
 
+    // Without a result path the helper reports nowhere.
     const other = fixture()
     await (await other.installer().prepare(await other.source())).commit()
     expect(other.helper.calls[0]!.args[1]).toBe(script)
+    expect(other.helper.calls[0]!.args.at(-1)).toBe('-')
+  })
+
+  it('refuses a result path the helper would reject, before changing anything', async () => {
+    for (const resultPath of ['relative/last-attempt.result', '/a/../last-attempt.result', '/a/./last-attempt.result', '/a/b/', '/', '', '-']) {
+      const fx = fixture()
+      const prepared = await fx.installer().prepare(await fx.source())
+
+      const error = await failure(prepared.commit({ resultPath }))
+      expect(error, resultPath).toMatchObject({ name: 'UpdateInstallError', code: 'commit-failed' })
+      expect(readFileSync(fx.appImage).equals(fx.oldBytes)).toBe(true)
+      expect(stagesIn(fx.folder)).toEqual([])
+      expect(fx.helper.impl).not.toHaveBeenCalled()
+    }
   })
 
   it('resolves the commit only once the helper has started', async () => {
@@ -1367,6 +1403,7 @@ describe('the restart helper under a real /bin/sh', () => {
     })
   }
 
+  /** Records how it was started, including the helper's report as it stood at that moment. */
   function recorder(fx: Fixture) {
     const path = join(fx.work, 'record-launch.sh')
     writeFileSync(path, [
@@ -1375,6 +1412,8 @@ describe('the restart helper under a real /bin/sh', () => {
       '{',
       '  printf "argc=%s\\n" "$#"',
       '  printf "cwd=%s\\n" "$(pwd -P)"',
+      '  printf "umask=%s\\n" "$(umask)"',
+      '  printf "result=%s\\n" "$(cat "${RESULT_FOR_TEST:-/nonexistent}" 2>/dev/null)"',
       '  env',
       '} > "$out.tmp"',
       'mv "$out.tmp" "$out"',
@@ -1384,11 +1423,23 @@ describe('the restart helper under a real /bin/sh', () => {
     return path
   }
 
+  /** A private folder like the attempt store's, for the helper's report. */
+  function reportFolder(fx: Fixture) {
+    const folder = join(fx.work, 'update-install')
+    mkdirSync(folder, { mode: 0o700 })
+    return folder
+  }
+
+  // argv: -c <script> <name> <app-pid> <viewer-pid|-> <polls> <target> <result|->
+  const TARGET_ARG = 6
+
   /** The real spawn, with the exec target swapped for a script that records how it was started. */
   function spawnInto(target: string, expected: string): AppImageSpawn {
     return (command, args, options) => {
-      expect(args.at(-1)).toBe(expected)
-      const child = spawn(command, [...args.slice(0, -1), target], options)
+      expect(args[TARGET_ARG]).toBe(expected)
+      const swapped = [...args]
+      swapped[TARGET_ARG] = target
+      const child = spawn(command, swapped, options)
       children.push(child)
       return child
     }
@@ -1406,11 +1457,11 @@ describe('the restart helper under a real /bin/sh', () => {
   function readRecord(path: string) {
     const lines = readFileSync(path, 'utf8').split('\n').filter((line) => line !== '')
     const env = new Map<string, string>()
-    for (const line of lines.slice(2)) {
+    for (const line of lines.slice(4)) {
       const split = line.indexOf('=')
       env.set(line.slice(0, split), line.slice(split + 1))
     }
-    return { argc: lines[0], cwd: lines[1], env }
+    return { argc: lines[0], cwd: lines[1], umask: lines[2], result: lines[3], env }
   }
 
   it('waits for the app and its viewer to exit, then starts the new file with a scrubbed environment', async () => {
@@ -1436,7 +1487,11 @@ describe('the restart helper under a real /bin/sh', () => {
       USER: 'tester',
       LANG: 'en_US.UTF-8',
       LC_ALL: 'C',
+      RESULT_FOR_TEST: '',
     }
+    const folder = reportFolder(fx)
+    const resultPath = join(folder, 'last-attempt.result')
+    env.RESULT_FOR_TEST = resultPath
     const installer = fx.installer({
       env,
       pid: app.pid!,
@@ -1445,7 +1500,7 @@ describe('the restart helper under a real /bin/sh', () => {
       helperTimeoutMs: 20_000,
     })
     const prepared = await installer.prepare(await fx.source())
-    await prepared.commit()
+    await prepared.commit({ resultPath })
     const record = `${script}.ran`
 
     await exited(app)
@@ -1457,6 +1512,12 @@ describe('the restart helper under a real /bin/sh', () => {
     const seen = readRecord(record)
     expect(seen.argc).toBe('argc=0')
     expect(seen.cwd).toBe('cwd=/')
+    // Reported before the exec, atomically and privately, without changing the app's own umask.
+    expect(seen.result).toBe(`result=${INSTALL_HELPER_EXIT.installed}`)
+    expect(readFileSync(resultPath, 'utf8')).toBe(`${INSTALL_HELPER_EXIT.installed}\n`)
+    expect(statSync(resultPath).mode & 0o777).toBe(0o600)
+    expect(readdirSync(folder)).toEqual(['last-attempt.result'])
+    expect(seen.umask).toBe(`umask=${execFileSync('/bin/sh', ['-c', 'umask'], { encoding: 'utf8' }).trim()}`)
     expect(Object.fromEntries([...seen.env].filter(([key]) => !SHELL_VARIABLES.has(key)))).toEqual({
       PATH: '/usr/bin:/bin',
       XDG_DATA_DIRS: '/usr/share',
@@ -1469,47 +1530,107 @@ describe('the restart helper under a real /bin/sh', () => {
       USER: 'tester',
       LANG: 'en_US.UTF-8',
       LC_ALL: 'C',
+      RESULT_FOR_TEST: resultPath,
     })
   })
 
-  it('refuses malformed arguments before waiting or starting anything', async () => {
+  async function helperScript() {
     const fx = fixture()
     await (await fx.installer().prepare(await fx.source())).commit()
-    const script = fx.helper.calls[0]!.args[1]!
+    return { fx, script: fx.helper.calls[0]!.args[1]! }
+  }
+
+  function runHelper(script: string, args: string[], cwd: string) {
+    return spawnSync('/bin/sh', ['-c', script, 'agent-inbox-relaunch', ...args], { cwd, stdio: 'ignore', timeout: 5_000 }).status
+  }
+
+  it('refuses malformed arguments before waiting or starting anything, and reports 64', async () => {
+    const { fx, script } = await helperScript()
     const target = recorder(fx)
+    const folder = reportFolder(fx)
+    const resultPath = join(folder, 'last-attempt.result')
     const alive = String(process.pid)
     for (const args of [
-      ['0', '-', '5', target],
-      ['012', '-', '5', target],
-      ['12a', '-', '5', target],
-      ['', '-', '5', target],
-      [alive, '0', '5', target],
-      [alive, '', '5', target],
-      [alive, '-', '0', target],
-      [alive, '-', 'x', target],
-      [alive, '-', '5', 'relative/target'],
-      [alive, '-', '5', `${fx.work}/../record-launch.sh`],
-      [alive, '-', '5', `${fx.work}/./record-launch.sh`],
-      [alive, '-', '5'],
-      [alive, '-', '5', target, 'extra'],
+      ['0', '-', '5', target, resultPath],
+      ['012', '-', '5', target, resultPath],
+      ['12a', '-', '5', target, resultPath],
+      ['', '-', '5', target, resultPath],
+      [alive, '0', '5', target, resultPath],
+      [alive, '', '5', target, resultPath],
+      [alive, '-', '0', target, resultPath],
+      [alive, '-', 'x', target, resultPath],
+      [alive, '-', '5', 'relative/target', resultPath],
+      [alive, '-', '5', `${fx.work}/../record-launch.sh`, resultPath],
+      [alive, '-', '5', `${fx.work}/./record-launch.sh`, resultPath],
+      [alive, '-', '5', `${target}/`, resultPath],
     ]) {
-      const result = spawnSync('/bin/sh', ['-c', script, 'agent-inbox-relaunch', ...args], { stdio: 'ignore', timeout: 5_000 })
-      expect(result.status, JSON.stringify(args)).toBe(64)
+      expect(runHelper(script, args, fx.work), JSON.stringify(args)).toBe(INSTALL_HELPER_EXIT.badArguments)
+      expect(readFileSync(resultPath, 'utf8'), JSON.stringify(args)).toBe(`${INSTALL_HELPER_EXIT.badArguments}\n`)
+      unlinkSync(resultPath)
     }
     expect(existsSync(`${target}.ran`)).toBe(false)
   })
 
-  it('gives up without starting anything when the app never exits', async () => {
+  it('writes nowhere when the report location itself or the argument count is invalid', async () => {
+    const { fx, script } = await helperScript()
+    const target = recorder(fx)
+    const folder = reportFolder(fx)
+    const scratch = join(fx.work, 'cwd')
+    mkdirSync(scratch)
+    const alive = String(process.pid)
+    for (const args of [
+      [alive, '-', '5', target, 'relative.result'],
+      [alive, '-', '5', target, `${folder}/../last-attempt.result`],
+      [alive, '-', '5', target, `${folder}/./last-attempt.result`],
+      [alive, '-', '5', target, `${folder}/`],
+      [alive, '-', '5', target, ''],
+      ['0', '-', '5', target, '-'],
+      [alive, '-', '5', target],
+      [alive, '-', '5', target, join(folder, 'last-attempt.result'), 'extra'],
+    ]) {
+      expect(runHelper(script, args, scratch), JSON.stringify(args)).toBe(INSTALL_HELPER_EXIT.badArguments)
+    }
+    expect(readdirSync(folder)).toEqual([])
+    expect(readdirSync(scratch)).toEqual([])
+    expect(readdirSync(fx.work).filter((name) => name.includes('result'))).toEqual([])
+    expect(existsSync(`${target}.ran`)).toBe(false)
+  })
+
+  it('refuses, and reports 65, when the installed file is no longer a startable regular file', async () => {
+    const { fx, script } = await helperScript()
+    const live = recorder(fx)
+    const folder = reportFolder(fx)
+    const resultPath = join(folder, 'last-attempt.result')
+    const gone = sleeper(0)
+    await exited(gone)
+    const notExecutable = join(fx.work, 'not-executable.sh')
+    writeFileSync(notExecutable, readFileSync(live))
+    chmodSync(notExecutable, 0o644)
+    const link = join(fx.work, 'link.sh')
+    symlinkSync(live, link)
+    const directory = join(fx.work, 'directory.sh')
+    mkdirSync(directory)
+    for (const target of [notExecutable, link, directory, join(fx.work, 'missing.sh')]) {
+      expect(runHelper(script, [String(gone.pid), '-', '5', target, resultPath], fx.work), target).toBe(INSTALL_HELPER_EXIT.refused)
+      expect(readFileSync(resultPath, 'utf8'), target).toBe(`${INSTALL_HELPER_EXIT.refused}\n`)
+      unlinkSync(resultPath)
+    }
+    expect(readdirSync(fx.work).filter((name) => name.endsWith('.ran'))).toEqual([])
+  })
+
+  it('gives up without starting anything when the app never exits, and reports 75', async () => {
     const fx = fixture()
     const script = recorder(fx)
     const app = sleeper(30)
+    const resultPath = join(reportFolder(fx), 'last-attempt.result')
     const installer = fx.installer({ pid: app.pid!, spawnImpl: spawnInto(script, fx.appImage), helperTimeoutMs: 600 })
     const prepared = await installer.prepare(await fx.source())
-    await prepared.commit()
+    await prepared.commit({ resultPath })
     const helper = children.at(-1)!
 
     await exited(helper)
-    expect(helper.exitCode).toBe(75)
+    expect(helper.exitCode).toBe(INSTALL_HELPER_EXIT.timedOut)
+    expect(readFileSync(resultPath, 'utf8')).toBe(`${INSTALL_HELPER_EXIT.timedOut}\n`)
     await new Promise((resolveWait) => setTimeout(resolveWait, 200))
     expect(existsSync(`${script}.ran`)).toBe(false)
     expect(app.exitCode).toBeNull()

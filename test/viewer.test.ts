@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs'
+import { cpSync, mkdtempSync, writeFileSync, readFileSync, renameSync, rmSync, statSync, utimesSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -102,16 +103,16 @@ describe('viewer api', () => {
   // issue #197 — one additive per-row field. The response stays a bare array of
   // rows: electron/main.cjs and the Live strip both read it as one.
   it('GET /api/activity rows carry the server build each session registered with, null for a legacy row', async () => {
-    upsertActivity(db, { session: 'new', project: 'p', stream: 'main', agent: 'copilot', doing: 'open', idle: true, claim: false, server_version: '1.2.8' })
+    upsertActivity(db, { session: 'new', project: 'p', stream: 'main', agent: 'copilot', doing: 'open', idle: true, claim: false, server_version: '1.2.8', server_source: 'runtime' })
     upsertActivity(db, { session: 'old', project: 'p', stream: 'main', agent: 'claude-code', doing: 'open', idle: true, claim: false })
     const body = await (await createViewer(db).request('/api/activity')).json() as Array<Record<string, unknown>>
     expect(Array.isArray(body)).toBe(true)
     const bySession = new Map(body.map((a) => [a.session, a]))
-    expect(bySession.get('new')!.server_version).toBe('1.2.8')
-    expect(bySession.get('old')!.server_version).toBeNull()
+    expect(bySession.get('new')).toMatchObject({ server_version: '1.2.8', server_source: 'runtime' })
+    expect(bySession.get('old')).toMatchObject({ server_version: null, server_source: null })
     expect(Object.keys(bySession.get('new')!).sort()).toEqual([
       'agent', 'children', 'detail', 'doing', 'idle', 'last_call_at', 'last_doing',
-      'project', 'server_version', 'session', 'started_at', 'stream', 'updated_at',
+      'project', 'server_source', 'server_version', 'session', 'started_at', 'stream', 'updated_at',
     ])
   })
 
@@ -158,18 +159,86 @@ describe('viewer api', () => {
       expect(await read(app)).toEqual({ current: null, mode: 'release', runtimeInstalled: null })
     })
 
-    it('re-verifies an installed runtime once its brief memo expires', async () => {
+    // /api/setup and /api/version share ONE verified runtime lookup. Verifying
+    // hashes a whole runtime on the viewer thread (Electron main in the packaged
+    // app), so it runs again only when something it looked at has changed.
+    const RUNTIME_VERIFY = createRequire(import.meta.url)('../electron/runtime-verify.cjs') as {
+      verifyRuntimePayload(opts: { root: string }): { manifest: { runtimeId: string } }
+    }
+    const counting = () => {
+      const roots: string[] = []
+      const runtimeVerifier = (opts: { root: string }) => {
+        roots.push(opts.root)
+        return RUNTIME_VERIFY.verifyRuntimePayload(opts)
+      }
+      return { roots, runtimeVerifier }
+    }
+
+    it('verifies once for /api/setup and /api/version together, and repeated reads do not re-hash', async () => {
+      const release = releaseRuntime('2.0.0')
+      release.install()
+      const verifier = counting()
+      const app = createViewer(db, { ...release.viewer, runtimeVerifier: verifier.runtimeVerifier })
+      expect((await (await app.request('/api/setup')).json()).runtimeAvailable).toBe(true)
+      const verified = verifier.roots.length
+      expect(verified).toBeGreaterThan(0)
+      expect(await read(app)).toMatchObject({ runtimeInstalled: true })
+      expect((await (await app.request('/api/setup')).json()).runtimeAvailable).toBe(true)
+      expect(await read(app)).toMatchObject({ runtimeInstalled: true })
+      expect(verifier.roots).toHaveLength(verified)
+    })
+
+    it('re-verifies after an install, a manifest change, an atomic replace or a removal', async () => {
+      const release = releaseRuntime('2.0.0')
+      const verifier = counting()
+      const app = createViewer(db, { ...release.viewer, runtimeVerifier: verifier.runtimeVerifier })
+      const reverified = async (expected: boolean | null): Promise<void> => {
+        const before = verifier.roots.length
+        expect(await read(app)).toMatchObject({ runtimeInstalled: expected })
+        expect(verifier.roots.length).toBeGreaterThan(before)
+      }
+      await reverified(false) // nothing installed yet; Setup can install it
+      const installed = release.install()
+      await reverified(true) // a Setup install
+      const manifest = join(installed, 'runtime-manifest.json')
+      const original = readFileSync(manifest)
+      writeFileSync(manifest, Buffer.concat([original, Buffer.from('\n')]))
+      await reverified(false) // its manifest changed in place
+      writeFileSync(manifest, original)
+      // pin every time the key reads to a whole millisecond, so the replace below
+      // can put each one back exactly
+      const PINNED = new Date('2026-10-17T10:00:00.000Z')
+      const pin = (...paths: string[]): void => { for (const path of paths) utimesSync(path, PINNED, PINNED) }
+      pin(release.runtimeRoot, installed, manifest)
+      await reverified(true)
+      // an atomic replace: a staged tree renamed over the same name, with every
+      // size and mtime the key reads unchanged — only identity and ctime differ
+      const staged = join(release.runtimeRoot, '.staged')
+      cpSync(installed, staged, { recursive: true })
+      writeFileSync(join(staged, 'dist', 'mcp-server.js'), '// tampered\n')
+      rmSync(installed, { recursive: true })
+      renameSync(staged, installed)
+      pin(release.runtimeRoot, installed, manifest)
+      await reverified(false)
+      rmSync(installed, { recursive: true })
+      await reverified(false) // removed
+      // the app's own payload is part of the key too
+      writeFileSync(join(release.payloadDir, 'runtime-manifest.json'), '{}')
+      await reverified(null)
+    })
+
+    it('still re-verifies an edit deep inside an installed runtime after a long backstop', async () => {
       vi.useFakeTimers({ toFake: ['Date'] })
       try {
         const release = releaseRuntime('2.0.0')
         const installed = release.install()
         const app = createViewer(db, release.viewer)
         expect(await read(app)).toMatchObject({ runtimeInstalled: true })
-        // a change inside the installed runtime does not alter the runtime root,
-        // so only the memo's expiry re-verifies it
+        // an in-place edit below the runtime directory changes nothing the key reads
         writeFileSync(join(installed, 'dist', 'mcp-server.js'), '// tampered after install\n')
+        vi.setSystemTime(Date.now() + 5 * 60_000)
         expect(await read(app)).toMatchObject({ runtimeInstalled: true })
-        vi.setSystemTime(Date.now() + 31_000)
+        vi.setSystemTime(Date.now() + 6 * 60_000)
         expect(await read(app)).toMatchObject({ runtimeInstalled: false })
       } finally {
         vi.useRealTimers()

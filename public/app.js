@@ -3975,8 +3975,9 @@ const openLive = new Set()
 
 // Issue #197 — the /api/version body: the build a restarted session would load
 // and the runtime state that decides which advice the hint may give. Read at
-// boot and whenever the drawer opens, so the advice follows a Setup install made
-// since. It stays null when the viewer cannot say, and then no hint renders.
+// boot, whenever the drawer opens and after a Setup install, so the advice
+// follows an install made since. It stays null when the viewer cannot say, and
+// then no hint renders.
 let liveVersion = null
 
 function refreshLiveVersion() {
@@ -6787,6 +6788,8 @@ function setupMenu(s, host, canInstall) {
         run.disabled = false
         select.disabled = false
         updateLabels()
+        // #197: an install changes what Live's older-build hints may advise
+        refreshLiveVersion()
       }
     })
     run.className = 'setup-run-btn'

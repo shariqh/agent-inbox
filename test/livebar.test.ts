@@ -104,15 +104,17 @@ describe('activitySynopsis', () => {
   })
 })
 
-// Issue #197 — which Agent Inbox build a session runs, and what a restart would
-// load. Display only, and it never gives advice the viewer cannot back: both
-// versions must be strict semver before anything is compared, a session whose
-// own version is unknown renders nothing, and the remedy follows the viewer's
-// verified state (`/api/version`) or is left out.
+// Issue #197 — which Agent Inbox build a session runs, and what would update it.
+// Display only, and it never gives advice nothing backs: both versions must be
+// strict semver before anything is compared, a session whose own version is
+// unknown renders nothing, and the advice follows where THAT SESSION runs from
+// (its recorded server_source) and the viewer's verified runtime state.
 describe('sessionBuild', () => {
   const RELEASE_READY = { current: '1.3.0', mode: 'release', runtimeInstalled: true }
-  const build = (own: unknown, info: unknown = RELEASE_READY) => sessionBuild(sess({ server_version: own }), info)
+  const build = (own: unknown, info: unknown = RELEASE_READY, source: unknown = 'runtime') =>
+    sessionBuild(sess({ server_version: own, server_source: source }), info)
   const isOlder = (own: string, current: string) => build(own, { ...RELEASE_READY, current })?.older
+  const hint = (info: unknown, source: unknown) => build('1.2.8', info, source)?.hint
 
   it('labels a session on the current build and says nothing more', () => {
     expect(build('1.3.0')).toEqual({ label: 'v1.3.0', older: false, hint: '' })
@@ -120,7 +122,7 @@ describe('sessionBuild', () => {
     expect(build('1.4.0')).toEqual({ label: 'v1.4.0', older: false, hint: '' })
   })
 
-  it('in a release whose runtime for the current build is installed, says a restart loads it', () => {
+  it('a session on an installed runtime: restart once the new runtime is installed', () => {
     expect(build('1.2.8')).toEqual({
       label: 'v1.2.8',
       older: true,
@@ -128,24 +130,38 @@ describe('sessionBuild', () => {
     })
   })
 
-  it('in a release whose runtime is not installed yet, points at Setup instead of promising a restart', () => {
-    expect(build('1.2.8', { ...RELEASE_READY, runtimeInstalled: false })?.hint)
+  it('a session on an installed runtime: Setup first while the new runtime is not installed', () => {
+    expect(hint({ ...RELEASE_READY, runtimeInstalled: false }, 'runtime'))
       .toBe('older build (v1.2.8) — install the v1.3.0 agent runtime from Setup, then restart this session')
   })
 
-  it('in a checkout, says to rebuild before restarting', () => {
-    expect(build('1.2.8', { current: '1.3.0', mode: 'dev', runtimeInstalled: null })?.hint)
-      .toBe('older build (v1.2.8) — rebuild (npm run build) and restart this session to load v1.3.0')
-  })
-
-  it('offers no remedy it cannot back: an unknown runtime state or mode only says the build is older', () => {
+  it('a session on an installed runtime: no advice when this viewer cannot install one', () => {
     for (const info of [
       { ...RELEASE_READY, runtimeInstalled: null },
       { ...RELEASE_READY, runtimeInstalled: 'yes' },
+      { current: '1.3.0', mode: 'dev', runtimeInstalled: null },
       { ...RELEASE_READY, mode: 'hosted' },
-      { current: '1.3.0' },
     ]) {
-      expect(build('1.2.8', info), JSON.stringify(info)).toEqual({ label: 'v1.2.8', older: true, hint: 'older build (v1.2.8)' })
+      expect(hint(info, 'runtime'), JSON.stringify(info)).toBe('older build (v1.2.8)')
+    }
+  })
+
+  it('a session running from a checkout: update and rebuild it, whatever the viewer is', () => {
+    for (const info of [
+      RELEASE_READY,
+      { ...RELEASE_READY, runtimeInstalled: false },
+      { ...RELEASE_READY, runtimeInstalled: null },
+      { current: '1.3.0', mode: 'dev', runtimeInstalled: null },
+    ]) {
+      expect(hint(info, 'checkout'), JSON.stringify(info))
+        .toBe('older build (v1.2.8) — update and rebuild its checkout, then restart this session')
+    }
+  })
+
+  it('a session whose source is unknown, as on a legacy row, gets no advice', () => {
+    for (const source of [null, undefined, '', 'app', 'RUNTIME']) {
+      expect(sessionBuild(sess({ server_version: '1.2.8', server_source: source }), RELEASE_READY)?.hint, String(source))
+        .toBe('older build (v1.2.8)')
     }
   })
 
@@ -177,7 +193,7 @@ describe('sessionBuild', () => {
 
   it('still labels the session, but never hints, when the current build is unknown', () => {
     for (const info of [undefined, null, {}, { ...RELEASE_READY, current: null }, { ...RELEASE_READY, current: '1.3' }, { ...RELEASE_READY, current: '<b>1.4.0</b>' }]) {
-      expect(sessionBuild(sess({ server_version: '1.2.6' }), info), JSON.stringify(info))
+      expect(sessionBuild(sess({ server_version: '1.2.6', server_source: 'runtime' }), info), JSON.stringify(info))
         .toEqual({ label: 'v1.2.6', older: false, hint: '' })
     }
   })

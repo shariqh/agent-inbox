@@ -207,10 +207,11 @@ inventory of every agent or subagent. A connection with no task report is unknow
 activity, not proof of inactivity. `register` updates its displayed project and
 branch immediately; child-agent descriptions still come from the manager.
 Each connection also shows the Agent Inbox build its MCP server runs. A session on
-an older build gets a quiet hint whose advice matches what this machine can do: a
-restart once the new agent runtime is installed, Setup's runtime install before
-that, or a rebuild in a checkout. A server too old to report its build shows
-nothing rather than a guess.
+an older build gets a quiet hint whose advice fits where that session runs from: a
+session on Setup's agent runtime is told to restart once the new runtime is
+installed (or to install it from Setup first), and a session running from a source
+checkout is told to update and rebuild it. A server too old to report its build
+shows nothing rather than a guess.
 
 ## Keyboard controls
 

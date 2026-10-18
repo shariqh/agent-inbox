@@ -72,14 +72,15 @@ export function activitySynopsis(a) {
 
 // ── issue #197: which Agent Inbox build a session runs ───────────────────────
 //
-// Each session's MCP server records its own version when it registers, and the
-// viewer says what a restart would load (`/api/version`). A session strictly
-// older than that gets a quiet hint whose advice follows the viewer's verified
-// state, and is left out when nothing backs it. Presence, not attention:
-// nothing here reaches the badge, Needs-you or a notification. And it never
-// guesses — both versions must be strict semver (https://semver.org) before
-// anything is compared, and a session whose own version is unknown renders
-// nothing at all.
+// Each session's MCP server records its own version when it registers, and
+// whether it runs from an installed agent runtime or a checkout; the viewer says
+// what the current build is and what it has verified (`/api/version`). A session
+// strictly older than the current build gets a quiet hint whose advice fits
+// where THAT session runs from, and is left out when nothing backs it. Presence,
+// not attention: nothing here reaches the badge, Needs-you or a notification.
+// And it never guesses — both versions must be strict semver
+// (https://semver.org) before anything is compared, and a session whose own
+// version is unknown renders nothing at all.
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+[0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*)?$/
 // Display only: a "version" longer than any real release is not shown at all.
 const MAX_VERSION_LENGTH = 64
@@ -126,19 +127,21 @@ function compareSemver(a, b) {
   return a.pre.length === b.pre.length ? 0 : a.pre.length < b.pre.length ? -1 : 1
 }
 
-// The advice the viewer's verified state backs for reaching `target`, or none.
-// A release says "restart" only when that exact runtime is installed, and
-// points at Setup only when Setup can install it.
-function remedy(info, target) {
-  if (info.mode === 'dev') return ` — rebuild (npm run build) and restart this session to load ${target}`
-  if (info.mode !== 'release') return ''
+// The advice that would update THIS session to `target`, or none. A checkout
+// session is updated in its checkout, whatever this viewer is. A runtime
+// session restarts into the new runtime only once a release viewer has verified
+// it is installed, and is pointed at Setup only when Setup can install it. An
+// unknown source (a legacy row) gets no advice.
+function remedy(a, info, target) {
+  if (a.server_source === 'checkout') return ' — update and rebuild its checkout, then restart this session'
+  if (a.server_source !== 'runtime' || info.mode !== 'release') return ''
   if (info.runtimeInstalled === true) return ` — restart this session to load ${target}`
   if (info.runtimeInstalled === false) return ` — install the ${target} agent runtime from Setup, then restart this session`
   return ''
 }
 
 /**
- * @param {any} a an /api/activity row
+ * @param {any} a an /api/activity row, with its server_version and server_source
  * @param {any} info the /api/version body: {current, mode, runtimeInstalled}, or null
  * @returns {{label: string, older: boolean, hint: string} | null} null renders nothing
  */
@@ -148,5 +151,5 @@ export function sessionBuild(a, info) {
   const label = `v${a.server_version}`
   const current = parseSemver(info?.current)
   if (!current || compareSemver(own, current) >= 0) return { label, older: false, hint: '' }
-  return { label, older: true, hint: `older build (${label})${remedy(info, `v${info.current}`)}` }
+  return { label, older: true, hint: `older build (${label})${remedy(a, info, `v${info.current}`)}` }
 }

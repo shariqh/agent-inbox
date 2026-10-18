@@ -24,6 +24,7 @@ const {
   EXPECTED_NODE_MAJOR,
   EXPECTED_NODE_MODULES_ABI,
   EXPECTED_PRODUCT,
+  MANIFEST_FILE,
   REQUIRED_ENTRYPOINTS,
   REQUIRED_FILES,
   verifyRuntimePayload,
@@ -31,21 +32,24 @@ const {
   EXPECTED_NODE_MAJOR: number
   EXPECTED_NODE_MODULES_ABI: string
   EXPECTED_PRODUCT: string
+  MANIFEST_FILE: string
   REQUIRED_ENTRYPOINTS: string[]
   REQUIRED_FILES: string[]
-  verifyRuntimePayload(opts: {
-    root: string
-    expectedManifestDigest?: string
-    expectedPlatform?: string
-    expectedArch?: string
-    expectedPackageVersion?: string
-    expectedProduct?: string
-    expectedNodeMajor?: number
-    expectedNodeModulesAbi?: string
-    requiredEntrypoints?: string[]
-    requiredFiles?: string[]
-  }): { manifest: { runtimeId: string } }
+  verifyRuntimePayload: RuntimeVerifier
 }
+
+type RuntimeVerifier = (opts: {
+  root: string
+  expectedManifestDigest?: string
+  expectedPlatform?: string
+  expectedArch?: string
+  expectedPackageVersion?: string
+  expectedProduct?: string
+  expectedNodeMajor?: number
+  expectedNodeModulesAbi?: string
+  requiredEntrypoints?: string[]
+  requiredFiles?: string[]
+}) => { manifest: { runtimeId: string } }
 
 /** Seams, both test-only today — the production path passes neither. */
 export interface ViewerOpts {
@@ -67,6 +71,9 @@ export interface ViewerOpts {
    *  in); overridable so a test never depends on cwd. Production derives it
    *  from `dirname(setupInfoPath)`. */
   appRoot?: string
+  /** issue #197: the runtime payload verifier, injected so a test can count
+   *  the whole-runtime hashing the shared runtime lookup exists to avoid. */
+  runtimeVerifier?: RuntimeVerifier
 }
 
 /** Split a fixed `darwin-arm64`/`darwin-x64` runtime key into platform/arch —
@@ -103,6 +110,7 @@ function resolveReleaseRuntimeSource(
   hostKey: string,
   payload: { path: string; digest: string } | null | undefined,
   packageVersion: string,
+  verify: RuntimeVerifier,
 ): { dir: string; installer: string } | null {
   if (!payload) return null
   if (!isContainedRelativePath(payload.path)) return null
@@ -118,7 +126,7 @@ function resolveReleaseRuntimeSource(
 
   const { platform, arch } = platformArchOf(hostKey)
   try {
-    verifyRuntimePayload({
+    verify({
       root: realResolved,
       expectedManifestDigest: payload.digest,
       expectedPlatform: platform,
@@ -159,6 +167,7 @@ function installedRuntime(
   version: string,
   hostKey: string,
   expectedDigest: string,
+  verify: RuntimeVerifier,
 ): { nodeBin: string; entry: string; hookEntry: string } | null {
   let entries: string[]
   try {
@@ -178,7 +187,7 @@ function installedRuntime(
     if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) continue
     let verified: { manifest: { runtimeId: string } }
     try {
-      verified = verifyRuntimePayload({
+      verified = verify({
         root: dir,
         expectedManifestDigest: expectedDigest,
         expectedPlatform: platform,
@@ -288,8 +297,9 @@ function devSetupInfo(baked: BakedInfo | null): SetupInfoResult {
 // installed first. Direct MCP/hook registration commands are different: they
 // name an ALREADY-INSTALLED runtime's exact paths, so they stay withheld
 // until `installedRuntime()` validates a matching install — never a
-// "success-shaped" command aimed at a runtime that is not there.
-function releaseSetupInfo(baked: BakedInfo, hostKey: string, runtimeRoot: string, appRoot: string): SetupInfoResult {
+// "success-shaped" command aimed at a runtime that is not there. Both verified
+// lookups arrive in `lookup` (see `releaseRuntimeLookup`, issue #197).
+function releaseSetupInfo(baked: BakedInfo, hostKey: string, lookup: ReleaseRuntime | null): SetupInfoResult {
   const version = baked.version ?? null
   const payload = baked.runtimePayloads?.[hostKey] ?? null
   const snippetPath = resolve(process.cwd(), 'docs', 'reporting-snippet.md')
@@ -319,7 +329,7 @@ function releaseSetupInfo(baked: BakedInfo, hostKey: string, runtimeRoot: string
 
   // The embedded installer script lives INSIDE the verified source payload
   // directory — never a builder's own checkout path.
-  const source = resolveReleaseRuntimeSource(appRoot, hostKey, payload, version)
+  const source = lookup?.source ?? null
   if (source) {
     const install = `bash ${shellQuote(source.installer)} --apply --runtime-source ${shellQuote(source.dir)} --runtime-digest ${shellQuote(payload.digest)}`
     result.agentInstallCommand = install
@@ -328,7 +338,7 @@ function releaseSetupInfo(baked: BakedInfo, hostKey: string, runtimeRoot: string
     result.note = `Run setup below to install the portable MCP runtime for Agent Inbox v${version} (${hostKey}).`
   }
 
-  const runtime = installedRuntime(runtimeRoot, version, hostKey, payload.digest)
+  const runtime = lookup?.runtime ?? null
   if (!runtime) return result
 
   return {
@@ -346,16 +356,85 @@ function releaseSetupInfo(baked: BakedInfo, hostKey: string, runtimeRoot: string
   }
 }
 
-function setupInfo(baked: BakedInfo | null, hostKey: string, runtimeRoot: string, appRoot: string): SetupInfoResult {
-  if (baked?.schema === 2) return releaseSetupInfo(baked, hostKey, runtimeRoot, appRoot)
+function setupInfo(baked: BakedInfo | null, hostKey: string, lookup: ReleaseRuntime | null): SetupInfoResult {
+  if (baked?.schema === 2) return releaseSetupInfo(baked, hostKey, lookup)
   return devSetupInfo(baked)
 }
 
-// Issue #197 — what a restarted agent session would load, for Live's older-build
-// hint. A release answers with its baked version, the one /api/setup and the
-// build stamp report; anything else with the version this viewer's own code is,
-// which a release bump keeps equal to package.json. `runtimeInstalled` comes from
-// the same verified lookups /api/setup uses, so Live and Setup never disagree:
+// ── issue #197: one verified runtime lookup for /api/setup and /api/version ──
+//
+// Both routes need the same two answers for this host: does the bundled SOURCE
+// payload verify (Setup can install it), and is that exact runtime INSTALLED.
+// Each answer hashes a whole runtime (~166 MB) on the viewer thread, which is
+// Electron's main process in the packaged app. So both routes share one cached
+// lookup, recomputed only when something it examined changed: the runtime
+// root's listing, each installed runtime directory and its manifest, and the
+// source payload directory and its manifest — identity, size and change times.
+// That catches an install, a removal, an atomic rename-over and any manifest
+// edit on the next read. An edit deep inside an installed runtime changes none
+// of them, so a long backstop re-verifies anyway; executing a runtime is still
+// guarded separately, immediately before spawn, by electron/setup-runner.cjs.
+interface ReleaseRuntime {
+  source: { dir: string; installer: string } | null
+  runtime: { nodeBin: string; entry: string; hookEntry: string } | null
+}
+
+const RUNTIME_LOOKUP_BACKSTOP_MS = 10 * 60_000
+
+function releaseRuntimeLookup(
+  baked: BakedInfo,
+  hostKey: string,
+  runtimeRoot: string,
+  appRoot: string,
+  verify: RuntimeVerifier,
+): ReleaseRuntime | null {
+  const version = baked.version
+  const payload = baked.runtimePayloads?.[hostKey]
+  if (!version || !payload || !DIGEST_RE.test(payload.digest)) return null
+  return {
+    source: resolveReleaseRuntimeSource(appRoot, hostKey, payload, version, verify),
+    runtime: installedRuntime(runtimeRoot, version, hostKey, payload.digest, verify),
+  }
+}
+
+// Identity, size and both change times of one entry, without following a
+// symlink or reading any content — or null when it is absent.
+function entryStamp(path: string): string | null {
+  try {
+    const st = lstatSync(path, { bigint: true })
+    return `${st.dev}:${st.ino}:${st.size}:${st.mtimeNs}:${st.ctimeNs}`
+  } catch {
+    return null
+  }
+}
+
+function releaseRuntimeKey(baked: BakedInfo, hostKey: string, runtimeRoot: string, appRoot: string): string {
+  const payload = baked.runtimePayloads?.[hostKey]
+  const source = payload && isContainedRelativePath(payload.path) ? resolve(appRoot, payload.path) : null
+  let installed: Array<[string, string | null, string | null]> | null
+  try {
+    installed = readdirSync(runtimeRoot).sort().map((name) => {
+      const dir = resolve(runtimeRoot, name)
+      return [name, entryStamp(dir), entryStamp(resolve(dir, MANIFEST_FILE))]
+    })
+  } catch {
+    installed = null
+  }
+  return JSON.stringify([
+    baked.version ?? null,
+    payload?.path ?? null,
+    payload?.digest ?? null,
+    source ? [entryStamp(source), entryStamp(resolve(source, MANIFEST_FILE))] : null,
+    entryStamp(runtimeRoot),
+    installed,
+  ])
+}
+
+// What a restarted agent session would load, for Live's older-build hint. A
+// release answers with its baked version, the one /api/setup and the build
+// stamp report; anything else with the version this viewer's own code is,
+// which a release bump keeps equal to package.json. `runtimeInstalled` comes
+// from the shared lookup, so Live and Setup never disagree:
 //   true  — this release's exact runtime is installed for this host
 //   false — it is not, but Setup can install it (the source payload verifies)
 //   null  — a checkout (not applicable), or nothing Setup could install here
@@ -363,28 +442,6 @@ interface AgentVersion {
   current: string | null
   mode: 'dev' | 'release'
   runtimeInstalled: boolean | null
-}
-
-function releaseRuntimeState(baked: BakedInfo, hostKey: string, runtimeRoot: string, appRoot: string): boolean | null {
-  const version = baked.version
-  const payload = baked.runtimePayloads?.[hostKey]
-  if (!version || !payload || !DIGEST_RE.test(payload.digest)) return null
-  if (installedRuntime(runtimeRoot, version, hostKey, payload.digest)) return true
-  return resolveReleaseRuntimeSource(appRoot, hostKey, payload, version) ? false : null
-}
-
-// Both lookups hash a whole runtime, and /api/version is read on every page load
-// and whenever the Live drawer opens. The memo is keyed on the runtime root's
-// listing, so an install or removal is noticed on the very next read; the TTL
-// bounds how long a change INSIDE an installed runtime can go unnoticed.
-const RUNTIME_STATE_TTL_MS = 30_000
-
-function runtimeRootListing(runtimeRoot: string): string[] | null {
-  try {
-    return readdirSync(runtimeRoot).sort()
-  } catch {
-    return null
-  }
 }
 
 // A close/reopen body carries one agent-authored project name. An unparseable
@@ -465,6 +522,27 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
   // bundle root — the same directory setup-info.json itself lives in.
   const appRoot = opts.appRoot ?? dirname(bakedPath)
 
+  // Issue #197: the one cached runtime lookup /api/setup and /api/version share
+  // (see releaseRuntimeKey). A lookup that throws is answered as unavailable and
+  // never cached, so the next read tries again.
+  const verify = opts.runtimeVerifier ?? verifyRuntimePayload
+  let runtimeCache: { key: string; at: number; value: ReleaseRuntime | null } | undefined
+  const releaseRuntime = (baked: BakedInfo): ReleaseRuntime | null => {
+    const key = releaseRuntimeKey(baked, runtimeHostKey, runtimeRoot, appRoot)
+    const now = Date.now()
+    if (runtimeCache && runtimeCache.key === key && now - runtimeCache.at < RUNTIME_LOOKUP_BACKSTOP_MS) {
+      return runtimeCache.value
+    }
+    try {
+      const value = releaseRuntimeLookup(baked, runtimeHostKey, runtimeRoot, appRoot, verify)
+      runtimeCache = { key, at: now, value }
+      return value
+    } catch {
+      runtimeCache = undefined
+      return null
+    }
+  }
+
   // boot id lets a long-lived tab detect a server restart (= likely deploy)
   // and reload itself instead of polling forever with stale frontend code
   const boot = new Date().toISOString()
@@ -498,7 +576,8 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
     } catch {
       build = null
     }
-    return c.json({ ...setupInfo(baked, runtimeHostKey, runtimeRoot, appRoot), build })
+    const lookup = baked?.schema === 2 ? releaseRuntime(baked) : null
+    return c.json({ ...setupInfo(baked, runtimeHostKey, lookup), build })
   })
 
   if (opts.ownerToken) {
@@ -507,27 +586,20 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
 
   app.get('/api/activity', (c) => c.json(listActivity(db)))
 
-  // Read by the Live bar at page load and whenever its drawer opens, never on
-  // the poll. Local reads only — no git, no network — memoized as noted above.
-  let runtimeState: { key: string; at: number; value: boolean | null } | undefined
-  const agentVersion = (): AgentVersion => {
+  // Read by the Live bar at page load, whenever its drawer opens and after a
+  // Setup install — never on the poll. Local reads only, no git, no network.
+  app.get('/api/version', (c) => {
     const baked = readBakedInfo(bakedPath)
-    if (baked?.schema !== 2) return { current: AGENT_INBOX_VERSION, mode: 'dev', runtimeInstalled: null }
-    const payload = baked.runtimePayloads?.[runtimeHostKey]
-    const key = JSON.stringify([baked.version, payload?.path, payload?.digest, runtimeRootListing(runtimeRoot)])
-    const now = Date.now()
-    if (!runtimeState || runtimeState.key !== key || now - runtimeState.at >= RUNTIME_STATE_TTL_MS) {
-      let value: boolean | null
-      try {
-        value = releaseRuntimeState(baked, runtimeHostKey, runtimeRoot, appRoot)
-      } catch {
-        value = null
-      }
-      runtimeState = { key, at: now, value }
+    if (baked?.schema !== 2) {
+      return c.json({ current: AGENT_INBOX_VERSION, mode: 'dev', runtimeInstalled: null } satisfies AgentVersion)
     }
-    return { current: baked.version ?? null, mode: 'release', runtimeInstalled: runtimeState.value }
-  }
-  app.get('/api/version', (c) => c.json(agentVersion()))
+    const lookup = releaseRuntime(baked)
+    return c.json({
+      current: baked.version ?? null,
+      mode: 'release',
+      runtimeInstalled: lookup?.runtime ? true : lookup?.source ? false : null,
+    } satisfies AgentVersion)
+  })
 
   // Read-only, truthful claim-interval history for the dashboard: independent
   // of `/api/activity` and never imported into any attention/badge path.

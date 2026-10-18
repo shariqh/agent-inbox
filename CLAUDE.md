@@ -957,27 +957,35 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   free: a fresh checkout that attaches to a stale packaged server renders that server's stamp.
 - **Session build in Live** *(#197, part 1)* — `src/version.ts` is the one place the release version
   lives in code: `AGENT_INBOX_VERSION` is what the MCP handshake reports AND what presence records.
-  A release bumps it beside package.json (`test/release-pipeline.test.ts` pins the pair). Registration
-  and `status` write it to the additive `activity.server_version` column; a write that omits it keeps
-  the stored value, and legacy rows stay NULL. It rides on writes that already happen and is never
-  evidence of liveness or work: `updated_at`, `last_call_at`, claims and spans are untouched.
-  `/api/activity` rows carry it (still a bare array — electron/main.cjs reads it as one).
-  `GET /api/version` answers `{current, mode, runtimeInstalled}`. A release answers its baked
-  setup-info version with `mode:'release'` and whether THIS release's exact runtime is installed for
-  this host (`true`), is not but Setup can install it because its source payload verifies (`false`),
-  or neither (`null`); a checkout answers its own constant with `mode:'dev', runtimeInstalled:null`.
-  It reuses Setup's own verified lookups (`installedRuntime`, `resolveReleaseRuntimeSource`), so Live
-  and Setup cannot disagree, memoized for 30s and keyed on the runtime root's listing so an install
-  is noticed on the next read. Live reads it at page load and whenever the drawer opens, never on
+  A release bumps it beside package.json (`test/release-pipeline.test.ts` pins the pair). At startup
+  the server also detects where it runs from (`src/server-source.ts`): `'runtime'` when
+  `runtime-manifest.json` sits beside its `dist/` — the installer's own marker, true of Setup's
+  `~/.agent-inbox/runtime/<id>/` and of a payload under the app's `runtime/<platform-arch>/` — and
+  `'checkout'` otherwise. Registration and `status` write both to the additive
+  `activity.server_version`/`server_source` columns; a write that omits either keeps the stored value,
+  and legacy rows stay NULL. They ride on writes that already happen and are never evidence of
+  liveness or work: `updated_at`, `last_call_at`, claims and spans are untouched. `/api/activity`
+  rows carry both (still a bare array — electron/main.cjs reads it as one).
+  `GET /api/version` answers `{current, mode, runtimeInstalled}`: a release's baked setup-info version
+  with `mode:'release'` and whether THIS release's exact runtime is installed for this host (`true`),
+  is not but Setup can install it because its source payload verifies (`false`), or neither (`null`);
+  a checkout answers its own constant with `mode:'dev', runtimeInstalled:null`. `/api/setup` and
+  `/api/version` share ONE cached verified lookup (`installedRuntime` + `resolveReleaseRuntimeSource`),
+  because each hashes a whole runtime on the viewer thread — Electron main in the packaged app. Its
+  key stamps (identity, size, mtime, ctime) the runtime root, each installed runtime directory and its
+  manifest, and the source payload and its manifest, so an install, removal, atomic rename-over or
+  manifest edit re-verifies on the next read; a 10-minute backstop covers edits deep inside a
+  runtime. Live reads it at page load, when the drawer opens and after a Setup install — never on
   the poll. `sessionBuild()` in `public/livebar.js` compares strict semver only and **gives only the
-  advice that state backs**: "restart this session to load vX" needs `runtimeInstalled:true`;
-  `false` points at Setup's runtime install; a checkout says rebuild and restart; anything else says
-  only "older build (vY)". Unknown versions on either side render no hint. The drawer shows every
-  label and the full hint (the collapsed idle fold counts older builds); the strip adds only an
-  "older build" marker. Presence, not attention: no badge, Needs-you, count or notification.
-  Remaining limit: "installed" is per machine, not per host registration — a host Setup did not
-  register for the new runtime still restarts into its old one. The Setup half of #197 (registered
-  runtime detection, "Update agents") is where that narrows.
+  advice that backs THAT session**: a checkout session is told to update and rebuild its checkout; a
+  runtime session is told to restart only when a release viewer verified the runtime is installed
+  (`true`), and pointed at Setup only when Setup can install it (`false`); anything else, including a
+  legacy row with no source, says only "older build (vY)". Unknown versions on either side render no
+  hint. The drawer shows every label and the full hint (the collapsed idle fold counts older builds);
+  the strip adds only an "older build" marker. Presence, not attention: no badge, Needs-you, count or
+  notification. Remaining limit: "installed" is per machine, not per host registration — a host Setup
+  did not register for the new runtime still restarts into its old one. The Setup half of #197
+  (registered-runtime detection, "Update agents") is where that narrows.
 
 ## Open backlog — and the seams already in place
 

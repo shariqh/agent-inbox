@@ -3,14 +3,14 @@
 //
 // Issue #197, through the real viewer over a real DB: Live says which Agent
 // Inbox build each session runs, and quietly marks a session that runs an OLDER
-// build than the current one. The advice it gives follows the viewer's verified
-// state — a restart, Setup's runtime install, or a rebuild — and is left out
-// when nothing backs it. That is presence, not attention: it never moves the
-// badge, the Needs-you count or anything else the human is asked to act on.
+// build than the current one. The advice follows where THAT session runs from —
+// an installed agent runtime or a checkout — and what this viewer has verified,
+// and it is left out when nothing backs it. That is presence, not attention: it
+// never moves the badge, the Needs-you count or anything else the human is asked
+// to act on.
 import { describe, it, expect, afterEach } from 'vitest'
 import type Database from 'better-sqlite3'
 import { insertItem, recordActivityCall, upsertActivity } from '../../src/store.js'
-import { AGENT_INBOX_VERSION } from '../../src/version.js'
 import { releaseRuntime } from '../release-runtime.js'
 import {
   advanceClock, badgeCount, bootApp, click, freshDb, pollTick, rows, settle, showInbox, tabCount, useDomTest,
@@ -19,19 +19,25 @@ import {
 useDomTest()
 
 let db: Database.Database | null = null
-afterEach(() => { db?.close(); db = null })
+afterEach(() => {
+  db?.close()
+  db = null
+  delete (window as unknown as Record<string, unknown>).agentInboxSetup
+})
 
 function open(): Database.Database {
   db = freshDb()
   return db
 }
 
-type Seed = { session: string; project: string; agent: string; version?: string; working?: boolean }
+type Seed = { session: string; project: string; agent: string; version?: string; source?: 'runtime' | 'checkout' | null; working?: boolean }
 function seed(d: Database.Database, s: Seed): void {
+  const source = s.source === undefined ? 'runtime' : s.source
   upsertActivity(d, {
     session: s.session, project: s.project, stream: 'main', agent: s.agent,
     doing: 'open', idle: true, claim: false,
     ...(s.version === undefined ? {} : { server_version: s.version }),
+    ...(source === null ? {} : { server_source: source }),
   })
   if (s.working) {
     upsertActivity(d, { session: s.session, project: s.project, stream: 'main', agent: s.agent, doing: `Working in ${s.project}` })
@@ -53,6 +59,7 @@ const hint = (project: string): string | null => text(drawerEntry(project), '.li
 
 const RESTART = 'older build (v1.2.6) — restart this session to load v2.0.0'
 const SETUP = 'older build (v1.2.6) — install the v2.0.0 agent runtime from Setup, then restart this session'
+const CHECKOUT = 'older build (v1.2.6) — update and rebuild its checkout, then restart this session'
 
 describe('Live shows the build each session runs (#197)', () => {
   it('labels every known build in the drawer and marks only older sessions in the strip', async () => {
@@ -111,6 +118,52 @@ describe('Live shows the build each session runs (#197)', () => {
     expect(hint('beta')).toBe(RESTART)
   })
 
+  it('re-reads the runtime state when a Setup install finishes, so a closed or pinned drawer stops pointing at Setup', async () => {
+    const d = open()
+    seed(d, { session: 'stale', project: 'beta', agent: 'claude-code', version: '1.2.6', working: true })
+    const release = releaseRuntime('2.0.0')
+    Object.defineProperty(window, 'agentInboxSetup', {
+      configurable: true,
+      value: {
+        available: async () => true,
+        install: async (target: string) => {
+          release.install()
+          return { ok: true, exitCode: 0, target, timedOut: false, output: 'installed' }
+        },
+      },
+    })
+
+    await bootApp(d, { viewer: release.viewer })
+    await pollTick()
+    expect(hint('beta')).toBe(SETUP)
+
+    click(document.querySelector('.setup-run-btn'))
+    await settle()
+    await pollTick()
+    expect(drawer().hidden).toBe(true) // never reopened
+    expect(hint('beta')).toBe(RESTART)
+    expect(stripChip('beta')?.title).toBe(RESTART)
+  })
+
+  it('follows each session\'s own install source: a runtime, a checkout, or unknown', async () => {
+    const d = open()
+    seed(d, { session: 'runtime', project: 'beta', agent: 'claude-code', version: '1.2.6', working: true })
+    seed(d, { session: 'checkout', project: 'gamma', agent: 'copilot', version: '1.2.6', source: 'checkout', working: true })
+    seed(d, { session: 'legacy', project: 'delta', agent: 'copilot', version: '1.2.6', source: null, working: true })
+    const release = releaseRuntime('2.0.0')
+    release.install()
+
+    await bootApp(d, { viewer: release.viewer })
+    await pollTick()
+
+    expect(hint('beta')).toBe(RESTART)
+    expect(hint('gamma')).toBe(CHECKOUT)
+    expect(hint('delta')).toBe('older build (v1.2.6)')
+    // every older build is still marked in the strip, with its own advice
+    expect(stripChip('gamma')?.title).toBe(CHECKOUT)
+    expect(text(stripChip('delta'), '.live-build-marker')).toBe('older build')
+  })
+
   it('offers no remedy when Setup could not install the runtime here', async () => {
     const d = open()
     seed(d, { session: 'stale', project: 'beta', agent: 'claude-code', version: '1.2.6', working: true })
@@ -122,14 +175,16 @@ describe('Live shows the build each session runs (#197)', () => {
     expect(text(stripChip('beta'), '.live-build-marker')).toBe('older build')
   })
 
-  it('in a checkout, says to rebuild and restart to load the checkout\'s version', async () => {
+  it('a checkout viewer advises its checkout sessions, and nothing for runtime sessions it cannot update', async () => {
     const d = open()
-    seed(d, { session: 'stale', project: 'beta', agent: 'claude-code', version: '0.0.1', working: true })
+    seed(d, { session: 'checkout', project: 'beta', agent: 'claude-code', version: '0.0.1', source: 'checkout', working: true })
+    seed(d, { session: 'runtime', project: 'gamma', agent: 'copilot', version: '0.0.1', working: true })
 
     await bootApp(d)
     await pollTick()
 
-    expect(hint('beta')).toBe(`older build (v0.0.1) — rebuild (npm run build) and restart this session to load v${AGENT_INBOX_VERSION}`)
+    expect(hint('beta')).toBe('older build (v0.0.1) — update and rebuild its checkout, then restart this session')
+    expect(hint('gamma')).toBe('older build (v0.0.1)')
   })
 
   it('never guesses the current build: without one, the drawer keeps its labels and nothing is marked older', async () => {

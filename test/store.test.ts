@@ -1083,14 +1083,17 @@ describe('live activity — registering presence never overwrites a claim', () =
 
 // ── issue #197: which Agent Inbox build each session runs ───────────────────
 //
-// Registration records the MCP server's own version on its presence row, so Live
-// can say which sessions still run an older build. It rides on a write that
-// already happens: it is never a liveness or work signal, a later write that does
-// not carry it never clears it, and a legacy row reads NULL rather than a guess.
+// Registration records the MCP server's own build on its presence row — its
+// version and whether it runs from an installed agent runtime or a checkout — so
+// Live can say which sessions still run an older build and what would update
+// them. It rides on a write that already happens: it is never a liveness or work
+// signal, a later write that does not carry it never clears it, and a legacy row
+// reads NULL rather than a guess.
 describe('live activity — the server build a session registered with (#197)', () => {
   let db: Database.Database
   const START = Date.parse('2026-10-17T09:00:00.000Z')
   const SCOPE = { session: 's1', project: 'agent-inbox', stream: 'main', agent: 'copilot' } as const
+  const BUILD = { server_version: '1.2.8', server_source: 'runtime' } as const
 
   beforeEach(() => {
     db = freshDb()
@@ -1099,37 +1102,34 @@ describe('live activity — the server build a session registered with (#197)', 
   })
   afterEach(() => { vi.useRealTimers() })
 
-  const register = (version?: string, session = 's1'): void => {
-    upsertActivity(db, {
-      ...SCOPE, session, doing: 'open', idle: true, claim: false,
-      ...(version === undefined ? {} : { server_version: version }),
-    })
+  const register = (build: Partial<typeof BUILD> = {}, session = 's1'): void => {
+    upsertActivity(db, { ...SCOPE, session, doing: 'open', idle: true, claim: false, ...build })
   }
   const row = (session = 's1') => listActivity(db).find((a) => a.session === session)!
 
-  it('registration persists the version, and later writes that omit it keep it', () => {
-    register('1.2.8')
-    expect(row().server_version).toBe('1.2.8')
+  it('registration persists the version and install source, and later writes that omit them keep both', () => {
+    register(BUILD)
+    expect(row()).toMatchObject(BUILD)
     vi.setSystemTime(START + 60_000)
     upsertActivity(db, { ...SCOPE, doing: 'Shipping the release', detail: 'step 2' }) // status({doing})
-    expect(row().server_version).toBe('1.2.8')
+    expect(row()).toMatchObject(BUILD)
     upsertActivity(db, { ...SCOPE, doing: 'open', idle: true, children: [] }) // status({done:true})
-    expect(row().server_version).toBe('1.2.8')
-    register() // the 2-second fallback, from a caller that sends no version
+    expect(row()).toMatchObject(BUILD)
+    register() // the 2-second fallback, from a caller that sends no build
     recordActivityCall(db, 's1')
     touchActivity(db, 's1')
-    expect(row().server_version).toBe('1.2.8')
+    expect(row()).toMatchObject(BUILD)
   })
 
-  it('a session that never reported a version reads null, never a guess', () => {
+  it('a session that never reported its build reads null for both, never a guess', () => {
     register()
-    expect(row().server_version).toBeNull()
+    expect(row()).toMatchObject({ server_version: null, server_source: null })
   })
 
   it('is inert to liveness and work: the same stamps, claim and spans as a registration without it', () => {
-    register('1.2.8')
-    register(undefined, 'plain')
-    expect({ ...row(), session: 'plain', server_version: null }).toEqual(row('plain'))
+    register(BUILD)
+    register({}, 'plain')
+    expect({ ...row(), session: 'plain', server_version: null, server_source: null }).toEqual(row('plain'))
     expect(row().last_call_at).toBeNull() // registration is still not a tool call
     expect(listActivitySpans(db)).toEqual([])
 
@@ -1139,11 +1139,11 @@ describe('live activity — the server build a session registered with (#197)', 
     expect(row()).toMatchObject({
       updated_at: new Date(START + 5 * 60_000).toISOString(),
       last_call_at: null,
-      server_version: '1.2.8',
+      ...BUILD,
     })
   })
 
-  it('migrates a legacy activity table: existing rows read null until their session registers a version', () => {
+  it('migrates a legacy activity table: existing rows read null until their session registers a build', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'inbox-legacy-build-')), 'inbox.db')
     const legacy = new Database(path)
     const now = new Date(START).toISOString()
@@ -1171,9 +1171,9 @@ describe('live activity — the server build a session registered with (#197)', 
     legacy.close()
 
     db = openDb(path)
-    expect(row().server_version).toBeNull()
-    register('1.2.8')
-    expect(row().server_version).toBe('1.2.8')
+    expect(row()).toMatchObject({ server_version: null, server_source: null })
+    register(BUILD)
+    expect(row()).toMatchObject(BUILD)
   })
 })
 

@@ -47,3 +47,5 @@ export function buildRelay(
   agent: RelayEntry[]
   outcomes: RelayEntry[]
 }
+
+export function stamp(entity: RelayItem | RelayRow): number

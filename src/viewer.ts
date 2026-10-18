@@ -7,7 +7,7 @@ import { homedir } from 'node:os'
 import { dirname, isAbsolute, resolve, sep } from 'node:path'
 import type Database from 'better-sqlite3'
 import {
-  listItems, listOpenQuestions, resolveItem, dismissItem, annotateItem, replyItem, snoozeItem,
+  listItems, listItemsPage, listOpenQuestions, resolveItem, dismissItem, annotateItem, replyItem, snoozeItem,
   listBoards, archiveBoard, unarchiveBoard, annotateBoardRow, snoozeBoardRow,
   markRowHandled, clearRowHandled, listActivity, listActivitySpans, listSourceLinks, defaultDbPath,
   closeProject, reopenProject, closedProjects, readSnapshotState,
@@ -470,6 +470,13 @@ function snoozeUntil(value: unknown): string | null | undefined {
   return /^\d{4}-/.test(iso) ? iso : undefined
 }
 
+// Issue #184: closed items the default /api/items snapshot carries, newest touch
+// first. Fifty fill ten History pages (PAGE.done = 5) and the Dashboard's five
+// recent outcomes several times over, while bounding a changed tick at about a
+// tenth of a long-lived hub's full history. Anything beyond is summarized in
+// `history` and fetched from /api/items/history only while a surface needs it.
+const RECENT_CLOSED_ITEMS = 50
+
 function sameSnapshotState(a: SnapshotReadState, b: SnapshotReadState): boolean {
   return !a.inTransaction && !b.inTransaction
     && a.dataVersion === b.dataVersion && a.totalChanges === b.totalChanges
@@ -485,7 +492,7 @@ function etagMatches(requested: string | undefined, etag: string): boolean {
 
 function conditionalSnapshot(
   db: Database.Database,
-  name: 'items' | 'attention-items' | 'boards' | 'archived-boards',
+  name: 'items' | 'attention-items' | 'history-items' | 'boards' | 'archived-boards',
   read: () => object,
 ): Handler {
   // One representation per registration, local to this viewer instance.
@@ -552,7 +559,15 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
     c.res.headers.set('x-inbox-boot', boot)
   })
 
-  const allItems = conditionalSnapshot(db, 'items', () => groupItems(listItems(db)))
+  const allItems = conditionalSnapshot(db, 'items', () => {
+    const page = listItemsPage(db, RECENT_CLOSED_ITEMS)
+    return { ...groupItems(page.items), history: page.history }
+  })
+  // Issue #184: the complete History list (closed items plus open milestones,
+  // exactly the `done` group of the unpaged items), fetched only while a surface
+  // needs older history. Its own representation and validator: it changes only
+  // when closed history or a milestone does, and no other route can revalidate it.
+  app.get('/api/items/history', conditionalSnapshot(db, 'history-items', () => ({ done: groupItems(listItems(db)).done })))
   // Issue #156: the Electron dock watcher polls every 3 seconds from the main
   // process and reads only needsYou. `?scope=attention` serves the same Grouped
   // shape built from the open questions alone. It is a separate cached

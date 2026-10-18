@@ -60,7 +60,8 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   each per viewer, plus `/api/items?scope=attention` (issue #156): the Electron
   dock watcher's lean read, built from open questions alone and registered
   separately with its own validator so neither `/api/items` representation can
-  revalidate the other. Any other query string keeps the full items response.
+  revalidate the other, and `/api/items/history` (issue #184, below), likewise its
+  own registration and validator. Any other query string keeps the default items response.
   Matching `If-None-Match` returns a bodyless 304; unconditional
   clients still receive full JSON. Keep `Cache-Control: no-store` and the current
   outer `x-inbox-boot` marker on 304 responses too. Store-only invalidation reads
@@ -93,9 +94,28 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   their fallbacks, any other failure still fails the whole tick (reported in the
   old serial order) without blanking the frame, and `loadGeneration` still
   discards an older tick that finishes late.
+- **Closed history is paged out of the default items snapshot (issue #184).**
+  `/api/items` carries every open item but only the `RECENT_CLOSED_ITEMS` (50)
+  most recently TOUCHED closed items (`listItemsPage`: the newest of every item
+  stamp), plus a `history` summary: exact totals, `before` and per
+  project/agent counts of what it omitted, read in one snapshot. A touch is never
+  earlier than creation or than the Dashboard's outcome stamp, so whatever the page
+  carries from after `before` is a complete, correctly ordered History prefix and
+  a correct recent-outcome prefix (`public/closed-history.js`). Counts (History tab,
+  Dashboard outcomes/projects, rail projects, agent picker) add the summary, so
+  they never depend on the omitted bodies. `/api/items/history` returns exactly the
+  unpaged `done` list; a tick adds it as an eighth read only while a surface needs
+  older history (`historyWanted`: a search query, the Handoffs overlay, History
+  paged past what the page proves, a History deep link, a pending deep link to an
+  omitted item, or Dashboard recent outcomes the page cannot prove). Decide that on
+  the PAGE (`lastData.page`), never on merged data, or loading history would end
+  the need for it. Its failure fails the tick like the page's. The page stays
+  authoritative for every item it carries when the two are merged. Surfaces still
+  waiting show known entries and a loading state, never an incomplete list as if
+  complete: search stays busy, History and Handoffs say older items are loading.
 - **`src/store.ts` is the only door to the database.** Every read/write goes through its
   exported functions — items: `insertItem`/`resolveItem`/`dismissItem`/`annotateItem`/
-  `replyItem`/`answerItem`/`listItems`; boards: `upsertBoard`/`updateBoardRow`/`getBoard`/`listBoards`/
+  `replyItem`/`answerItem`/`listItems`/`listItemsPage`; boards: `upsertBoard`/`updateBoardRow`/`getBoard`/`listBoards`/
   `archiveBoard`/`annotateBoardRow`/`markAnnotationDelivered`/`markRowHandled`/
   `clearRowHandled`/`markHandledDelivered`/`listPendingRows`;
   projects: `closeProject`/`reopenProject`/`listClosedProjects`/`closedProjects` — plus `openDb`. No raw SQL anywhere else. To change

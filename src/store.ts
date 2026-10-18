@@ -969,6 +969,85 @@ export function listOpenQuestions(db: Database.Database): Item[] {
   return (rows as StoredItem[]).map(parseItem)
 }
 
+// Issue #184: the viewer's default item snapshot used to carry every closed item
+// ever, re-sent in full whenever any item changed. A page carries every open
+// item plus the `closedLimit` most recently TOUCHED closed items; `history`
+// summarizes the rest so counts stay exact without them.
+export interface ClosedHistoryGroup {
+  project: string
+  agent: string
+  /** omitted closed items for this project and agent */
+  items: number
+  /** how many of them record an outcome */
+  outcomes: number
+}
+
+export interface ClosedHistorySummary {
+  /** every closed (resolved or dismissed) item */
+  total: number
+  /** closed items the page carries */
+  loaded: number
+  /** No omitted item was touched after this instant (null: nothing omitted). A
+   *  touch is the newest of the item's stamps, so it is never before the item's
+   *  creation or any stamp the Dashboard sorts outcomes by: whatever the page
+   *  carries from after it is a complete, correctly ordered prefix. */
+  before: string | null
+  older: ClosedHistoryGroup[]
+}
+
+export interface ItemsPage {
+  items: Item[]
+  history: ClosedHistorySummary
+}
+
+// Canonical ISO strings order chronologically as text; '' stands in for NULL
+// because multi-argument max() is NULL when any argument is.
+const CLOSED_TOUCHED_AT = `MAX(created_at, IFNULL(updated_at, ''), IFNULL(resolved_at, ''),
+  IFNULL(outcome_at, ''), IFNULL(replied_at, ''), IFNULL(reply_seen_at, ''),
+  IFNULL(annotated_at, ''), IFNULL(annotation_seen_at, ''))`
+
+export function listItemsPage(db: Database.Database, closedLimit: number): ItemsPage {
+  // Read-only, so a deferred transaction suffices: it pins one snapshot across
+  // both statements, so the summary and the page can never disagree.
+  return db.transaction((): ItemsPage => {
+    const ranked = db.prepare(`SELECT id, project, agent, outcome <> '' AS has_outcome,
+        ${CLOSED_TOUCHED_AT} AS touched_at
+      FROM items WHERE status <> 'open'
+      ORDER BY touched_at DESC, rowid DESC`).all() as Array<{
+      id: string
+      project: string
+      agent: string
+      has_outcome: number
+      touched_at: string
+    }>
+    const kept = ranked.slice(0, Math.max(0, closedLimit))
+    const omitted = ranked.slice(kept.length)
+    const groups = new Map<string, ClosedHistoryGroup>()
+    for (const row of omitted) {
+      const key = JSON.stringify([row.project, row.agent])
+      const group = groups.get(key) ?? { project: row.project, agent: row.agent, items: 0, outcomes: 0 }
+      group.items += 1
+      group.outcomes += row.has_outcome ? 1 : 0
+      groups.set(key, group)
+    }
+    // The same created_at-then-rowid order listItems walks, so a page is an
+    // order-preserving subset of the complete list.
+    const rows = db.prepare(`SELECT * FROM items
+      WHERE status = 'open' OR id IN (SELECT value FROM json_each(?))
+      ORDER BY created_at DESC, rowid DESC`).all(JSON.stringify(kept.map((row) => row.id)))
+    const byName = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0)
+    return {
+      items: (rows as StoredItem[]).map(parseItem),
+      history: {
+        total: ranked.length,
+        loaded: kept.length,
+        before: omitted[0]?.touched_at ?? null,
+        older: [...groups.values()].sort((a, b) => byName(a.project, b.project) || byName(a.agent, b.agent)),
+      },
+    }
+  })()
+}
+
 // 'blocked' = the row needs human input and escalates into the attention layer
 export type RowStatus = 'done' | 'partial' | 'missing' | 'tracked' | 'na' | 'blocked'
 

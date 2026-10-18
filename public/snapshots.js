@@ -1,11 +1,19 @@
 const record = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
 const strings = (value, keys) => record(value) && keys.every((key) => typeof value[key] === 'string')
+const counts = (value, keys) => record(value) && keys.every((key) => Number.isInteger(value[key]) && value[key] >= 0)
 const item = (value) => strings(value, ['id', 'title', 'project', 'agent', 'kind', 'status'])
 const group = (value) => strings(value, ['project']) && Array.isArray(value.items) && value.items.every(item)
+// Issue #184: what a page omitted from closed history. Absent means complete.
+const closedHistory = (value) => value === undefined || (counts(value, ['total', 'loaded'])
+  && (value.before === null || typeof value.before === 'string')
+  && Array.isArray(value.older)
+  && value.older.every((older) => strings(older, ['project', 'agent']) && counts(older, ['items', 'outcomes'])))
 const items = (value) => record(value)
   && Array.isArray(value.needsYou) && value.needsYou.every(group)
   && Array.isArray(value.notes) && value.notes.every(group)
   && Array.isArray(value.done) && value.done.every(item)
+  && closedHistory(value.history)
+const history = (value) => record(value) && Array.isArray(value.done) && value.done.every(item)
 const boards = (value) => Array.isArray(value) && value.every((board) =>
   strings(board, ['id', 'title', 'project', 'agent'])
   && Array.isArray(board.rows) && board.rows.every((row) => strings(row, ['id', 'label', 'status']))
@@ -13,6 +21,7 @@ const boards = (value) => Array.isArray(value) && value.every((board) =>
 const spans = (value) => Array.isArray(value) && value.every(record)
 const validators = new Map([
   ['/api/items', items],
+  ['/api/items/history', history],
   ['/api/boards', boards],
   ['/api/boards/archived', boards],
   ['/api/activity/history', spans],

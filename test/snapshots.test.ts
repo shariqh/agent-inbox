@@ -157,6 +157,40 @@ describe('per-window conditional snapshots', () => {
     expect(await (await read('/api/boards/archived')).json()).toEqual([])
     expect(fetcher.mock.calls[2]?.[1]?.headers).toEqual({ 'If-None-Match': '"good"' })
   })
+
+  // Issue #184: the page carries a closed-history summary, and the complete
+  // History list is a separate representation with its own validator.
+  it('validates the closed-history summary and the separate History representation', async () => {
+    const summary = { total: 3, loaded: 1, before: '2026-10-01T00:00:00.000Z', older: [{ project: 'alpha', agent: 'copilot', items: 2, outcomes: 1 }] }
+    const done = { done: [{ id: 'old', title: 'Old', project: 'alpha', agent: 'copilot', kind: 'note', status: 'resolved' }] }
+    const json = (value: unknown, etag: string) => new Response(JSON.stringify(value), { headers: { etag } })
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(json({ ...payload('A'), history: summary }, '"page"'))
+      .mockResolvedValueOnce(json(done, '"history"'))
+      .mockResolvedValueOnce(new Response(null, { status: 304 }))
+      .mockResolvedValueOnce(new Response(null, { status: 304 }))
+    const read = createSnapshotReader(fetcher)
+    const page = await (await read('/api/items')).json()
+    const history = await (await read('/api/items/history')).json()
+    expect(page).toEqual({ ...payload('A'), history: summary })
+    expect(history).toEqual(done)
+    expect(Object.isFrozen((history as typeof done).done[0])).toBe(true)
+    expect(await (await read('/api/items/history')).json()).toBe(history)
+    expect(fetcher.mock.calls[2]?.[0]).toBe('/api/items/history')
+    expect(fetcher.mock.calls[2]?.[1]?.headers).toEqual({ 'If-None-Match': '"history"' })
+    expect(await (await read('/api/items')).json()).toBe(page)
+    expect(fetcher.mock.calls[3]?.[1]?.headers).toEqual({ 'If-None-Match': '"page"' })
+  })
+
+  it.each([
+    ['/api/items', { ...payload('A'), history: { total: 1, loaded: 0, before: 7, older: [] } }],
+    ['/api/items', { ...payload('A'), history: { total: 1, loaded: 0, before: null, older: [{ project: 'alpha', items: 1, outcomes: 0 }] } }],
+    ['/api/items/history', { done: 'broken' }],
+    ['/api/items/history', [{ id: 'bare-array' }]],
+  ])('rejects a malformed %s closed-history payload', async (route, value) => {
+    const read = createSnapshotReader(vi.fn().mockResolvedValue(new Response(JSON.stringify(value), { headers: { etag: '"bad"' } })))
+    await expect((await read(route)).json()).rejects.toThrow('Invalid snapshot payload')
+  })
 })
 
 // Issue #185: the poll's history read names its window in the query string.

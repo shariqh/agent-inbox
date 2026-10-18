@@ -35,6 +35,13 @@ describe('railProjects', () => {
     expect(railProjects({})).toEqual([])
     expect(railProjects()).toEqual([])
   })
+
+  // Issue #184: a project whose only items are old closed history keeps its tab
+  // even though the page omits those items.
+  it('includes a project whose only trace is omitted closed history', () => {
+    const projects = railProjects({ items: [{ project: 'api' }], older: [{ project: 'archive' }] })
+    expect(projects).toEqual(['api', 'archive'])
+  })
 })
 
 describe('railEntries', () => {

@@ -220,6 +220,44 @@ describe('buildDashboard', () => {
     expect(model.sessions).toEqual([])
     expect(model.recentOutcomes).toEqual([])
   })
+
+  // Issue #184: the page omits older closed items; the summary keeps every count
+  // exact, and recent outcomes list only what nothing omitted could outrank.
+  it('counts omitted outcomes and projects, and lists only outcomes no omitted item can outrank', () => {
+    const outcome = (id: string, at: string) => ({
+      id, project: 'alpha', kind: 'question', status: 'resolved', title: id,
+      created_at: '2026-08-20T00:00:00.000Z', outcome: `${id} done`, outcome_at: at,
+    })
+    const input = {
+      items: [outcome('newest', '2026-08-24T19:00:00.000Z'), outcome('boundary', '2026-08-24T12:00:00.000Z')],
+      boards: [],
+      archived: [{
+        id: 'archive', project: 'alpha', title: 'Rollout',
+        rows: [{
+          id: 'row', label: 'Canary', status: 'done', annotation: null, annotation_unseen: false,
+          outcome: 'Shipped.', outcome_at: '2026-08-24T18:00:00.000Z',
+        }],
+      }],
+      activity: [],
+      nowMs: NOW,
+      liveSessionIds: new Set<string>(),
+    }
+    const complete = buildDashboard(input)
+    expect(buildDashboard({ ...input, history: { older: { items: 0, outcomes: 0, projects: [], agents: [] }, before: null } }))
+      .toEqual(complete)
+    expect(complete.recentOutcomesComplete).toBe(true)
+
+    const paged = buildDashboard({
+      ...input,
+      history: { older: { items: 5, outcomes: 2, projects: ['alpha', 'archive-only'], agents: ['copilot'] }, before: '2026-08-24T12:00:00.000Z' },
+    })
+    expect(paged.signals.outcomes).toBe(complete.signals.outcomes + 2)
+    expect(paged.ownership.outcome).toBe(complete.ownership.outcome + 2)
+    expect(paged.signals.projects).toBe(2)
+    expect(paged.recentOutcomes.map((entry) => entry.kind === 'item' ? entry.item.id : entry.row.id))
+      .toEqual(['newest', 'row'])
+    expect(paged.recentOutcomesComplete).toBe(false)
+  })
 })
 
 describe('buildActivitySeries', () => {

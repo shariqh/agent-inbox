@@ -1,7 +1,7 @@
 const { contextBridge, ipcRenderer } = require('electron')
 
 const THEME_SOURCE_VALUES = new Set(['light', 'dark', 'system'])
-const UPDATE_STATE_VALUES = new Set(['idle', 'checking', 'current', 'available', 'unverified', 'unsupported'])
+const UPDATE_STATE_VALUES = new Set(['idle', 'checking', 'current', 'available', 'stale', 'unverified', 'unsupported'])
 const updatesAvailable = process.argv.includes('--agent-inbox-updates=1')
 
 contextBridge.exposeInMainWorld('agentInboxSetup', {

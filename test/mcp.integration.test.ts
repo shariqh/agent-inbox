@@ -122,6 +122,12 @@ describe('mcp round-trip', () => {
     git('remote', 'add', 'origin', 'git@github.com:me/x.git')
     git('remote', 'add', 'fork', 'https://github.com/fork/x.git')
     git('config', 'branch.feature.remote', 'fork')
+    // issue #183 — the config gh pr checkout writes for a fork PR whose author did
+    // not allow maintainer edits: its upstream is the base's refs/pull/<n>/head
+    git('branch', 'patch-1')
+    git('config', 'branch.patch-1.remote', 'origin')
+    git('config', 'branch.patch-1.pushRemote', 'origin')
+    git('config', 'branch.patch-1.merge', 'refs/pull/7/head')
     const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-head-db-')), 'inbox.db')
     const transport = new StdioClientTransport({
       command: join(REPO_ROOT, 'node_modules', '.bin', 'tsx'),
@@ -135,11 +141,15 @@ describe('mcp round-trip', () => {
     await client.callTool({ name: 'register', arguments: { repo: 'upstream/x' } })
     await client.callTool({ name: 'flag', arguments: { kind: 'note', title: 'pushed to the fork', ...INFO_SHAPE } })
     await client.callTool({ name: 'board_upsert', arguments: { title: 'plan', rows: [{ label: 'a', status: 'tracked' }] } })
+    await client.callTool({ name: 'flag', arguments: { kind: 'note', title: 'reviewing a fork PR', stream: 'patch-1', ...INFO_SHAPE } })
     await client.close()
 
     const db = openDb(dbPath)
-    expect(listItems(db)[0]).toMatchObject({ repo: 'upstream/x', stream: 'feature', head_repo: 'fork/x' })
+    expect(listItems(db).find((i) => i.title === 'pushed to the fork')).toMatchObject({ repo: 'upstream/x', stream: 'feature', head_repo: 'fork/x' })
     expect(listBoards(db)[0]).toMatchObject({ repo: 'upstream/x', stream: 'feature', head_repo: 'fork/x' })
+    // the pull ref names no repository, so no listed PR can verify against it
+    expect(listItems(db).find((i) => i.title === 'reviewing a fork PR'))
+      .toMatchObject({ repo: 'upstream/x', stream: 'patch-1', head_repo: 'refs/pull/7/head' })
   })
 
   it('returns a host-launched answer watcher only for Copilot questions', async () => {

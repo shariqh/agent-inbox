@@ -278,8 +278,9 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   transient git failure, must not pin the folder name). The branch (and the issue parsed from
   it) is re-read on every call because worktrees and checkouts move mid-session, so never
   cache the whole scope. Head inference (`headFor`, #157) stays outside both `get()` and that
-  memo: it runs only on flag/board writes and reads git's push destination live, because it
-  needs origin's PUSH url, which the cached fetch url cannot answer.
+  memo: it runs only on flag/board writes and reads git's push destination (and, #183, the
+  branch's upstream ref) live, because it needs origin's PUSH url, which the cached fetch url
+  cannot answer.
   The client name for `inferAgent` **must be read lazily** inside handlers
   (`server.server.getClientVersion()?.name`) — it's only populated after the initialize
   handshake. Capturing it at build time yields `undefined`/`'unknown'`. Don't regress this.
@@ -727,6 +728,35 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   draft, independently verifies all eight remote bytes plus the five-entry checksum and
   signature, then exposes them atomically by undrafting. This layer adds no Electron
   fetching, scheduling, download, or install behavior.
+- **Rollback high-water mark** *(#148, rollback half only)* — the packaged notify-only
+  checker (`electron/update-fetch.cjs` + `update-controller.cjs`) persists the highest
+  release version whose manifest passed signature, schema and expiry verification in its
+  own Electron userData file, `update-trust-state.json` (`{ schema: 1,
+  highestVerifiedVersion }`; `createUpdateTrustState` in `update-preferences.cjs`, with its
+  own lock and the shared temp-file + rename helper). **Never add a key to
+  `update-preferences.json`:** 1.2.0–1.2.8 accept that file only with exactly
+  `schema`/`automaticChecks`/`lastNotifiedVersion` and otherwise read defaults, silently
+  turning automatic checks off; its format and strict parser stay as 1.2.x shipped them.
+  `checkForUpdate()` calls the controller-supplied `recordVerifiedVersion` exactly once,
+  only after `verifyManifest()` succeeds. The controller saves the highest version verified
+  in this process under the lock (no write when not higher, so a release whose own save
+  failed is saved by the next successful one) and returns max(stored or still-readable
+  mark, that session high), so the stale decision matches the stored mark and an
+  unsaveable mark still holds for the session. A verified manifest below the mark returns
+  `stale`: no offer, no notification, no attention/badge change, normal retry schedule.
+  Offers still need a version above the running app, so the effective floor is max(mark,
+  running version), and a deliberate downgrade is still offered the newest release at or
+  above the mark. The trust-state reader is tolerant of newer builds: a valid mark counts
+  whatever else the file holds, unknown fields survive a raise, and a newer `schema` is
+  enforced but never overwritten, so later trust state (e.g. key rotation) can live there.
+  A missing or corrupt file means no mark (floor = running version) and is replaced by the
+  next verified check. 1.2.x builds ignore the file, so a reinstalled 1.2.x build enforces
+  no mark until 1.3+ runs again. Not covered: the first check after install or a userData
+  reset, a newer release withheld before this installation verified it, and the
+  dual-signed key-rotation transition — the other half of #148 — so the single-key signer
+  rule above still stands. The publisher already refuses to sign a version that is not
+  newer than every prior stable release, so re-pointing GitHub's latest at an older
+  release shows `stale` to every client that already verified the newer one; fix forward.
 - **Session presence** *(#28, corrected by #45)* — every MCP session is a Live row; `status()`
   upgrades it, process exit ends it, and a row that stops being heartbeated expires after ~15 min.
   That expiry only ever fires for a **crashed** process: a live one heartbeats itself, so what
@@ -807,7 +837,23 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   examines a small `PR_WINDOW` and accepts only a PR from that head repository (a same-repo
   expectation means `isCrossRepository: false`); a row with no `head_repo` expects a same-repo PR.
   No match, even a full window, is cached as no PR — no title, closing issue or preview — and the
-  preview's head re-read applies the same rule. The unverifiable pre-#157 `source_links` table is
+  preview's head re-read applies the same rule. **Pull-ref checkouts (#183):** for a fork PR whose
+  author did not allow maintainer edits, `gh pr checkout` tracks the base's `refs/pull/<n>/head`
+  and names the BASE as remote and pushRemote (cli/cli `cmdsForMissingRemote`), so the push
+  destination alone would let the base's own same-named branch PR verify. A branch whose upstream
+  merge ref is a pull ref, and that pushes back to the remote it tracks (gh always writes
+  pushRemote = remote; an unmapped upstream reports no tracking remote at all), is stamped with
+  that ref as its `head_repo` instead: it names no repository, `listLinkTargets` skips it (no
+  `gh` call, no cache row, no PR chip), and an older #157 viewer sharing the file can never match
+  it either. Work stacked on a PR ref and pushed to another remote (`remote.pushDefault` = a
+  fork) keeps its push destination and links as usual. The one `for-each-ref` also reports any
+  upstream git maps, with its remote, so `git config --get-all branch.<b>.merge` runs only for a
+  branch with a push remote but no mapped upstream; an ordinary write still costs two spawns.
+  Items stamped before #183 keep the head they were written with (boards restamp on their next
+  write). Linking the exact PR (`gh pr view <n>`) is a deliberate non-goal until reviewer
+  checkouts are in scope, and it would need the FETCH repository recorded as well: `<n>` belongs
+  to the repository of `branch.<b>.remote`, which can differ from `repo`, and the stored ref does
+  not say which. The unverifiable pre-#157 `source_links` table is
   never read; it stays only for older processes sharing the file (rebuilding its primary key would
   break their `ON CONFLICT(repo, branch)` upserts). **Two honest limitations:** every item and
   board written before #30 shipped has `repo = NULL` and shows no chip at all — there is no

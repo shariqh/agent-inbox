@@ -6887,6 +6887,9 @@ function updateStateCopy(state) {
     case 'checking': return 'Checking GitHub for a signed release…'
     case 'current': return 'Agent Inbox is up to date.'
     case 'available': return `Agent Inbox ${state.available?.version ?? ''} is available.`
+    case 'stale': return state.automaticChecks
+      ? 'Release information was out of date. Agent Inbox will check again automatically.'
+      : 'Release information was out of date. Check again later.'
     case 'unverified': return 'Couldn’t check right now. You can review Releases manually.'
     case 'unsupported': return 'Updates are not available for this app build.'
     default: return 'Ready to check GitHub for a signed release.'
@@ -6914,7 +6917,7 @@ function paintUpdateSettings(state) {
     ? `Last checked ${new Date(state.checkedAt).toLocaleString()}`
     : 'Not checked yet'
   review.hidden = state.status !== 'available'
-  releases.hidden = state.status !== 'unverified'
+  releases.hidden = state.status !== 'unverified' && state.status !== 'stale'
 }
 
 function renderUpdateSettings(host) {

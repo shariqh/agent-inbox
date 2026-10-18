@@ -12,6 +12,7 @@ export type UpdateStatus =
   | 'checking'
   | 'current'
   | 'available'
+  | 'stale'
   | 'unverified'
   | 'unsupported'
 
@@ -60,6 +61,12 @@ export interface UpdateCheckOptions {
   registry: UpdateRegistry
   currentVersion: string
   automaticChecks?: boolean
+  /**
+   * Called once, only after the manifest's signature, schema and expiry verify: persists
+   * that version as a rollback high-water candidate and resolves the stored mark (or null).
+   * A verified manifest below the resolved mark yields the `stale` status.
+   */
+  recordVerifiedVersion?(version: string): Promise<string | null>
   platform: string
   arch: string
   isPackaged: boolean

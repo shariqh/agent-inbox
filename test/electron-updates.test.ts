@@ -82,6 +82,8 @@ describe('Electron updater integration', () => {
       main.indexOf('async function startOwnServer()'),
     )
 
+    expect(main).toContain("const { createUpdatePreferences, createUpdateTrustState } = require('./update-preferences.cjs')")
+    expect(initializer).toContain('trustState: createUpdateTrustState({ app }),')
     expect(initializer).toContain('checker: ({ currentVersion, automaticChecks, recordVerifiedVersion }) => checkForUpdate({')
     expect(initializer).toMatch(/checkForUpdate\(\{[^}]*\n\s+recordVerifiedVersion,\n/)
     expect(read('electron/setup-preload.cjs')).toMatch(/const UPDATE_STATE_VALUES = new Set\(\[[^\]]*'stale'/)

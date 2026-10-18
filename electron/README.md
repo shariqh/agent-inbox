@@ -13,18 +13,25 @@ verified GitHub release page for a manual package update. Dev Electron and brows
 viewers intentionally omit the feature.
 
 Checks also refuse to move backwards. After a manifest's signature, schema and expiry
-verify, the app records that release version as a high-water mark
-(`highestVerifiedVersion` in `update-preferences.json` under the app's user-data
-directory, written under the same lock and atomic rename as the other update
-preferences; it only ever rises). A later manifest below the mark is reported as stale
+verify, the app records that release version as a high-water mark in its own user-data
+file, `update-trust-state.json` (`{ "schema": 1, "highestVerifiedVersion": "X.Y.Z" }`),
+written under its own lock with the same temp-file + rename helper as
+`update-preferences.json`; the mark only ever rises. `update-preferences.json` keeps its
+1.2.x format because 1.2.x builds reset that file to defaults (automatic checks off) when
+it carries a key they do not know. A later manifest below the mark is reported as stale
 update information even when its signature and 180-day validity are intact: nothing is
 offered or announced, the attention badge is untouched, and the next manual or
 scheduled check tries again. An offer still requires a version newer than the running
 app, so the effective floor is the higher of the mark and the running version, and an
-app reinstalled at an older version is still offered the newest release at or above the
-mark. A missing, corrupt or unrecognized preferences file counts as no mark (the running
-version is the floor) and is rewritten by the next verified check. If the mark cannot be
-saved, the check keeps enforcing the mark it read instead of disabling updates. The mark
+app reinstalled at an older 1.3+ version is still offered the newest release at or above
+the mark. The reader is tolerant of newer builds: a valid mark is enforced whatever else
+the file holds, unknown fields survive a raise, and a file with a newer schema is
+enforced but never overwritten. A missing or corrupt trust-state file counts as no mark
+(the running version is the floor) and is replaced by the next verified check. If the
+mark cannot be saved, the app keeps enforcing the last readable mark and the highest
+version it verified during the current session instead of disabling updates. Builds
+before 1.3 neither read nor write the mark, so a reinstalled 1.2.x build has no rollback
+protection until a 1.3+ build runs again; the file survives that round trip. The mark
 cannot protect the first check after install or after the user-data directory is reset,
 and it cannot reveal a newer release that is withheld before this installation has
 verified it; the dual-signed key-rotation transition tracked in issue #148 is not

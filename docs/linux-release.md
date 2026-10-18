@@ -359,10 +359,10 @@ any valid signature from a pinned trusted key. Structurally valid entries for ke
 installed client does not yet pin are ignored; an unknown-only envelope still fails.
 The current protected signer remains single-key, so routine rotation must wait for a
 future dual-key signing extension rather than merely flipping the active key. Neither
-manifest asset is added to the package-only checksum file. Installed apps persist the
-highest release version whose manifest they verified and report any older signed
-manifest as stale, so marking an older release as latest cannot roll clients back; fix
-forward with a newer version instead.
+manifest asset is added to the package-only checksum file. Agent Inbox 1.3 and later
+persist the highest release version whose manifest they verified and report any older
+signed manifest as stale, so marking an older release as latest cannot roll those
+clients back; fix forward with a newer version instead.
 
 Publication starts with a private draft carrying neutral staging metadata. The
 write-scoped job uploads the exact allowlist, verifies the remote API inventory,

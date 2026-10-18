@@ -2,16 +2,12 @@ export interface UpdatePreferences {
   schema: 1
   automaticChecks: boolean
   lastNotifiedVersion: string | null
-  /** Highest release version whose signed manifest verified here; absent until the first one. */
-  highestVerifiedVersion?: string
 }
 
 export interface UpdatePreferencesStore {
   read(): Promise<UpdatePreferences>
   setAutomatic(automaticChecks: boolean): Promise<UpdatePreferences>
   setLastNotifiedVersion(lastNotifiedVersion: string): Promise<UpdatePreferences>
-  /** Raises the high-water mark to `version` when higher; never lowers it. */
-  recordVerifiedVersion(version: string): Promise<UpdatePreferences>
 }
 
 export interface UpdatePreferencesFs {
@@ -37,3 +33,27 @@ export function createUpdatePreferences(options:
       fsImpl?: UpdatePreferencesFs
     }
 ): UpdatePreferencesStore
+
+/** Rollback high-water mark (#148), kept in userData `update-trust-state.json`. */
+export interface UpdateTrustState {
+  /** Highest release version whose signed manifest verified; null until the first one. */
+  highestVerifiedVersion: string | null
+}
+
+export interface UpdateTrustStateStore {
+  read(): Promise<UpdateTrustState>
+  /** Raises the mark when `version` is higher; never lowers it or rewrites a newer schema. */
+  recordVerifiedVersion(version: string): Promise<UpdateTrustState>
+}
+
+export function createUpdateTrustState(options:
+  | {
+      filePath: string
+      fsImpl?: UpdatePreferencesFs
+    }
+  | {
+      app: { getPath(name: 'userData'): string }
+      filename?: string
+      fsImpl?: UpdatePreferencesFs
+    }
+): UpdateTrustStateStore

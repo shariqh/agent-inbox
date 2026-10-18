@@ -47,6 +47,15 @@ function checkingState(currentVersion, automaticChecks) {
   }
 }
 
+function isNewerVersion(candidate, current) {
+  const left = VERSION_RE.exec(candidate).slice(1).map(BigInt)
+  const right = VERSION_RE.exec(current).slice(1).map(BigInt)
+  for (let index = 0; index < 3; index += 1) {
+    if (left[index] !== right[index]) return left[index] > right[index]
+  }
+  return false
+}
+
 function createUpdateController(options) {
   if (!options || typeof options.currentVersion !== 'string') throw new TypeError('currentVersion is required')
   if (!options.preferences || typeof options.preferences.read !== 'function') {
@@ -57,6 +66,7 @@ function createUpdateController(options) {
 
   const currentVersion = options.currentVersion
   const preferences = options.preferences
+  const trustState = options.trustState ?? null
   const checker = options.checker
   const notifier = options.notifier
   const clock = options.clock ?? (() => new Date())
@@ -73,6 +83,7 @@ function createUpdateController(options) {
   let timer = null
   let inFlight = null
   let disposed = false
+  let highestVerifiedVersion = null
 
   function publish(next) {
     const available = next.available
@@ -184,14 +195,32 @@ function createUpdateController(options) {
     }
   }
 
-  async function recordVerifiedVersion(version, startingPreferences) {
-    try {
-      const recorded = await preferences.recordVerifiedVersion(version)
-      return recorded.highestVerifiedVersion ?? null
-    } catch {
-      // An unsaved mark must not disable updates; keep enforcing the mark this check read.
-      return startingPreferences.highestVerifiedVersion ?? null
+  function rememberVerified(version) {
+    if (
+      typeof version === 'string'
+      && VERSION_RE.test(version)
+      && (highestVerifiedVersion === null || isNewerVersion(version, highestVerifiedVersion))
+    ) {
+      highestVerifiedVersion = version
     }
+  }
+
+  // The checker calls this only after a manifest verifies. Memory keeps the mark for this
+  // session even when it cannot be saved; the saved or still-readable mark covers restarts.
+  async function recordVerifiedVersion(version) {
+    rememberVerified(version)
+    if (trustState !== null) {
+      try {
+        rememberVerified((await trustState.recordVerifiedVersion(version)).highestVerifiedVersion)
+      } catch {
+        try {
+          rememberVerified((await trustState.read()).highestVerifiedVersion)
+        } catch {
+          // Unreadable storage leaves the in-memory mark for this session.
+        }
+      }
+    }
+    return highestVerifiedVersion
   }
 
   function runCheck(mode) {
@@ -215,7 +244,7 @@ function createUpdateController(options) {
         const candidate = await checker({
           currentVersion,
           automaticChecks: prefs.automaticChecks,
-          recordVerifiedVersion: (version) => recordVerifiedVersion(version, prefs),
+          recordVerifiedVersion,
         })
         let latestPreferences = prefs
         try {

@@ -171,6 +171,9 @@ function createUpdateController(options) {
   if (options.isSetupRunning !== undefined && typeof options.isSetupRunning !== 'function') {
     throw new TypeError('isSetupRunning must be a function')
   }
+  if (options.isQuitting !== undefined && typeof options.isQuitting !== 'function') {
+    throw new TypeError('isQuitting must be a function')
+  }
   const attemptStore = options.attemptStore ?? null
   if (attemptStore !== null && ['begin', 'abandon', 'take'].some((name) => typeof attemptStore[name] !== 'function')) {
     throw new TypeError('attemptStore adapter is invalid')
@@ -193,6 +196,7 @@ function createUpdateController(options) {
   const requestRestart = options.requestRestart
   const installers = registerInstallers(options.installers, downloader, requestRestart)
   const isSetupRunning = typeof options.isSetupRunning === 'function' ? options.isSetupRunning : () => false
+  const isQuitting = typeof options.isQuitting === 'function' ? options.isQuitting : () => false
 
   let state = idleState(currentVersion)
   let rendererIsReady = false
@@ -642,6 +646,15 @@ function createUpdateController(options) {
     }
   }
 
+  // Once the app has begun to quit, no new install starts (#205's beginAppQuit()).
+  function appQuitting() {
+    try {
+      return Boolean(isQuitting())
+    } catch {
+      return true
+    }
+  }
+
   async function runInstall(operation, installer, record, available) {
     const { signal } = operation.controller
     let prepared = null
@@ -693,6 +706,11 @@ function createUpdateController(options) {
       const attempt = attemptStore === null
         ? null
         : await attemptStore.begin({ from: currentVersion, to: record.version, strategy: record.installStrategy })
+      // A quit while the record was being written still stops the install.
+      if (signal.aborted) {
+        if (attempt !== null) await Promise.resolve().then(() => attemptStore.abandon()).catch(() => {})
+        throw new Error('install cancelled')
+      }
       operation.committing = true
       try {
         await prepared.commit(attempt === null ? undefined : { resultPath: attempt.resultPath })
@@ -728,7 +746,7 @@ function createUpdateController(options) {
   // User-initiated; never rejects. Claims the controller synchronously so no
   // check, download or second install can interleave with it.
   function installNow() {
-    if (disposed || installBusy() || downloadOperation !== null) return Promise.resolve(state)
+    if (disposed || appQuitting() || installBusy() || downloadOperation !== null) return Promise.resolve(state)
     const target = installTarget()
     if (target === null) return Promise.resolve(state)
     const operation = { controller: new AbortController(), committing: false, promise: null }
@@ -738,10 +756,12 @@ function createUpdateController(options) {
     return operation.promise
   }
 
-  // Reads and deletes the previous attempt once. An app that is still older than
-  // the release it tried to install says so; one that reached it says nothing.
+  // Reads and deletes the previous attempt once, and only in an instance that
+  // can install (another instance sharing userData must not consume it). An app
+  // still older than the release it tried to install says so, unless the helper
+  // reported success (this copy was restored by hand, or is a second copy).
   async function reportPreviousAttempt() {
-    if (attemptStore === null) return
+    if (attemptStore === null || installers.size === 0) return
     let outcome = null
     try {
       outcome = await attemptStore.take()
@@ -749,7 +769,7 @@ function createUpdateController(options) {
       return
     }
     if (!outcome || typeof outcome.to !== 'string' || !VERSION_RE.test(outcome.to)) return
-    if (!isNewerVersion(outcome.to, currentVersion)) return
+    if (outcome.exitCode === 0 || !isNewerVersion(outcome.to, currentVersion)) return
     const text = attemptNotice(outcome, currentVersion)
     installNotice = { version: outcome.to, text }
     publish({ ...state, message: text })

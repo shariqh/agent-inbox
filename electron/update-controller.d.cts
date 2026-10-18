@@ -146,6 +146,8 @@ export function createUpdateController(options: {
   notifyInstallFailure?: (report: InstallFailureReport) => Promise<unknown> | unknown
   /** Consulted synchronously when an install starts; an install is refused while it returns true. */
   isSetupRunning?: () => boolean
+  /** True once the app has begun to quit (main's beginAppQuit()); no new install starts then. */
+  isQuitting?: () => boolean
   /** Called once, right after a commit resolves; main quits so the helper can swap the app. */
   requestRestart?: () => void
   clock?: () => Date

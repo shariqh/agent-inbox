@@ -1301,7 +1301,12 @@ describe('reporting an install that did not take effect', () => {
     return { from: '1.0.0', to: '2.0.0', at: '2026-02-01T00:00:00.000Z', platform: 'darwin', strategy: 'macos-dmg', exitCode, ...overrides }
   }
 
-  async function harness(options: { outcome?: unknown; versions?: () => UpdateCheckResult } = {}) {
+  async function harness(options: {
+    outcome?: unknown
+    versions?: () => UpdateCheckResult
+    withInstaller?: boolean
+    isQuitting?: () => boolean
+  } = {}) {
     const fake = fakeDownloader()
     const attempts = attemptStoreFake(options.outcome ?? null)
     const calls = attempts.calls
@@ -1327,10 +1332,11 @@ describe('reporting an install that did not take effect', () => {
       checker: vi.fn(async () => result()),
       notifier: vi.fn(),
       downloader: fake.downloader,
-      installers: { 'macos-dmg': installer },
+      installers: options.withInstaller === false ? {} : { 'macos-dmg': installer },
       attemptStore: attempts.store,
       notifyInstallFailure,
       requestRestart,
+      ...(options.isQuitting ? { isQuitting: options.isQuitting } : {}),
       clock: () => new Date('2026-02-01T00:00:00Z'),
     })
     async function verify() {
@@ -1462,6 +1468,56 @@ describe('reporting an install that did not take effect', () => {
     h.attempts.store.take.mockRejectedValueOnce(new Error('EIO'))
     await expect(h.controller.rendererReady()).resolves.toMatchObject({ status: 'idle' })
     expect(h.notifyInstallFailure).not.toHaveBeenCalled()
+  })
+
+  it.each(['cancelInstall', 'dispose'] as const)('%s while the attempt is being recorded stops before the hand-off', async (how) => {
+    const h = await harness()
+    await h.verify()
+    let release!: (value: { resultPath: string }) => void
+    h.attempts.store.begin.mockImplementationOnce(async () => {
+      h.calls.push('begin')
+      return new Promise<{ resultPath: string }>((resolveBegin) => { release = resolveBegin })
+    })
+
+    const installing = h.controller.installNow()
+    await vi.waitFor(() => expect(h.attempts.store.begin).toHaveBeenCalledOnce())
+    const cancelled = how === 'dispose' ? (h.controller.dispose(), Promise.resolve()) : h.controller.cancelInstall()
+    release({ resultPath: '/private/userData/update-install/last-attempt.result' })
+    await cancelled
+    await installing
+
+    expect(h.prepared.commit).not.toHaveBeenCalled()
+    expect(h.requestRestart).not.toHaveBeenCalled()
+    expect(h.calls).toEqual(['prepare', 'begin', 'abandon', 'discard'])
+    expect(h.controller.isInstalling()).toBe(false)
+    expect(h.controller.getState()).toMatchObject({ status: 'install-failed', message: 'The update install was cancelled. Nothing was changed.' })
+  })
+
+  it('starts no new install once the app has begun to quit', async () => {
+    let quitting = false
+    const h = await harness({ isQuitting: () => quitting })
+    const verified = await h.verify()
+    quitting = true
+
+    await expect(h.controller.installNow()).resolves.toBe(verified)
+    expect(h.installer.prepare).not.toHaveBeenCalled()
+    expect(h.fake.downloader.openVerified).not.toHaveBeenCalled()
+    expect(h.controller.isInstalling()).toBe(false)
+  })
+
+  it('says nothing when the helper reported success, even if this copy is older', async () => {
+    const h = await harness({ outcome: outcome(0) })
+    const ready = await h.controller.rendererReady()
+    expect(ready).not.toHaveProperty('installNotice')
+    expect(h.notifyInstallFailure).not.toHaveBeenCalled()
+    expect(h.attempts.store.take).toHaveBeenCalledOnce()
+  })
+
+  it('leaves the attempt record alone in an instance that cannot install', async () => {
+    const h = await harness({ outcome: outcome(70), withInstaller: false })
+    const ready = await h.controller.rendererReady()
+    expect(h.attempts.store.take).not.toHaveBeenCalled()
+    expect(ready).not.toHaveProperty('installNotice')
   })
 
   it('validates the attempt store', () => {

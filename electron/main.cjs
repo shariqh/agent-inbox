@@ -214,6 +214,8 @@ ipcMain.handle('agent-inbox:update-install', (event, ...args) => {
     return unavailableUpdateState()
   }
   if (!updateController) return unavailableUpdateState()
+  // Once the app has begun to quit, no update install starts (#205).
+  if (installGate.quitting()) return updateController.getState()
   if (!canRunSetup(senderUrl, URL_BASE, event.sender.id, updateInstallWebContentsId)) {
     return updateController.refuseInstall('Restart Agent Inbox to install this update.')
   }
@@ -236,10 +238,12 @@ ipcMain.handle('agent-inbox:update-open-release', async (event, ...args) => {
 // other quit or restart path (an update restart included) — and waits for the
 // promise it returns before the app exits. From then on Setup starts nothing:
 // an install started mid-shutdown can be killed halfway through replacing a
-// registration (#205 review). It takes Setup away from the window and cancels
-// the install already running; the promise settles once nothing runs.
+// registration (#205 review). It takes Setup and update installs away from the
+// window (the update controller also checks installGate.quitting()) and cancels
+// the Setup install already running; the promise settles once nothing runs.
 function beginAppQuit() {
   setupInstallWebContentsId = null
+  updateInstallWebContentsId = null
   return installGate.beginQuit()
 }
 
@@ -761,6 +765,7 @@ function initializeUpdateController() {
     // Read once at startup, so an install that did not take effect is reported.
     attemptStore: createInstallAttemptStore({ directory: path.join(app.getPath('userData'), 'update-install') }),
     isSetupRunning: () => installGate.running(),
+    isQuitting: () => installGate.quitting(),
     requestRestart: requestUpdateRestart,
     notifyInstallFailure: ({ message }) => {
       if (!Notification.isSupported()) return

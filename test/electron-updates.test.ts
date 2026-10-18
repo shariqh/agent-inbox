@@ -10,6 +10,8 @@ import type { UpdateArtifact, UpdateControllerState } from '../electron/update-c
 const setupRunner = createRequire(import.meta.url)('../electron/setup-runner.cjs') as {
   createInstallGate(): {
     running(): boolean
+    quitting(): boolean
+    beginQuit(): Promise<void> | null
     run(start: (onCancel: (cancel: () => void) => void) => Promise<unknown>): { promise: Promise<unknown> } | { refused: string }
   }
 }
@@ -417,6 +419,31 @@ describe('Electron updater integration', () => {
     expect(beforeQuit.indexOf('const running = beginAppQuit()')).toBeGreaterThan(-1)
     expect(beforeQuit.indexOf('const running = beginAppQuit()')).toBeLessThan(beforeQuit.indexOf('if (updateRestartRequested) return'))
     expect(beforeQuit.indexOf('if (updateRestartRequested) return')).toBeLessThan(beforeQuit.indexOf('updateController.cancelInstall()'))
+  })
+
+  it('starts no update install once the app has begun to quit', () => {
+    const main = read('electron/main.cjs')
+    const start = main.indexOf("ipcMain.handle('agent-inbox:update-install'")
+    const handler = main.slice(start, main.indexOf('\n})', start))
+    const beginAppQuit = main.slice(main.indexOf('function beginAppQuit()'), main.indexOf('\n}\n', main.indexOf('function beginAppQuit()')))
+
+    // The quit takes the update install away from the window as well as Setup.
+    expect(beginAppQuit).toContain('updateInstallWebContentsId = null')
+    expect(beginAppQuit).toContain('setupInstallWebContentsId = null')
+    expect(handler.indexOf('if (installGate.quitting())')).toBeGreaterThan(-1)
+    expect(handler.indexOf('if (installGate.quitting())')).toBeLessThan(handler.indexOf('updateController.installNow()'))
+    expect(main).toContain('isQuitting: () => installGate.quitting(),')
+  })
+
+  it('wires isQuitting to the real install gate', () => {
+    const main = read('electron/main.cjs')
+    const match = /isQuitting: (\(\) => [^,\n]+),\n/.exec(main)
+    expect(match).not.toBeNull()
+    const gate = setupRunner.createInstallGate()
+    const isQuitting = new Function('installGate', `return ${match![1]}`)(gate) as () => boolean
+    expect(isQuitting()).toBe(false)
+    expect(gate.beginQuit()).toBeNull()
+    expect(isQuitting()).toBe(true)
   })
 
   it('wires isSetupRunning to the real install gate', async () => {

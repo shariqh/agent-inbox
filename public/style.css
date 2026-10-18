@@ -1507,6 +1507,14 @@ body:has(.nrow[data-open="1"]) .inspector-empty { display: none; }
   font-size: 11.5px;
   line-height: 1.4;
 }
+.updates-notice {
+  margin: 0;
+  padding-left: 10px;
+  border-left: 3px solid var(--app-accent);
+  color: var(--app-text);
+  font-size: 12px;
+  line-height: 1.45;
+}
 .updates-preference {
   display: grid;
   min-height: 44px;

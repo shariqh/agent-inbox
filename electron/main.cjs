@@ -29,6 +29,7 @@ const { loadViewer, reloadViewer } = require('./viewer-navigation.cjs')
 const { canRunSetup, createInstallGate, installerRepoRoot, runAgentInstall, runtimeKey, selectRuntimePayload } = require('./setup-runner.cjs')
 const { MANUAL_RELEASES_URL, createUpdateController } = require('./update-controller.cjs')
 const { createUpdateDownloader } = require('./update-download.cjs')
+const { createInstallAttemptStore } = require('./update-install.cjs')
 const { bundlePathFromExecPath, createMacInstaller } = require('./update-install-macos.cjs')
 const { checkForUpdate } = require('./update-fetch.cjs')
 const { createUpdatePreferences, createUpdateTrustState } = require('./update-preferences.cjs')
@@ -757,14 +758,27 @@ function initializeUpdateController() {
       fetchImpl: fetch,
     }),
     installers: updateInstallers(),
+    // Read once at startup, so an install that did not take effect is reported.
+    attemptStore: createInstallAttemptStore({ directory: path.join(app.getPath('userData'), 'update-install') }),
     isSetupRunning: () => installGate.running(),
     requestRestart: requestUpdateRestart,
+    notifyInstallFailure: ({ message }) => {
+      if (!Notification.isSupported()) return
+      const note = new Notification({
+        title: 'Agent Inbox update was not installed',
+        body: message,
+      })
+      note.on('click', () => {
+        if (updateWindow) openUpdatesWindow(updateWindow)
+      })
+      notificationRetainer.show(note)
+    },
     notifier: ({ version, downloadable, installable }) => {
       if (!Notification.isSupported()) return
       const note = new Notification({
         title: 'Agent Inbox update available',
         body: installable
-          ? `Version ${version} is available. Install it from Settings → Updates.`
+          ? `Version ${version} is available. Download and install it from Settings → Updates.`
           : downloadable
             ? `Version ${version} is available. Download and verify it from Settings → Updates.`
             : `Version ${version} is ready to review on GitHub Releases.`,

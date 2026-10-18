@@ -7364,10 +7364,13 @@ function updateDetailCopy(state) {
       return download ? `${formatMegabytes(download.receivedBytes)} of ${formatMegabytes(download.totalBytes)}` : ''
     case 'verified':
       return state.available?.installable === true
-        ? 'Its size and SHA-256 match the signed release. Agent Inbox will quit, install it, and reopen.'
+        ? 'Its size and SHA-256 match the signed release. Agent Inbox will install it and restart.'
         : 'Its size and SHA-256 match the signed release. Installing from the app arrives in a later update; until then, use Review release to install it yourself.'
     case 'download-failed':
-      return 'Nothing unverified was kept. Try again, or review the release on GitHub.'
+      // Main says why (for example, a verified file that changed on disk).
+      return typeof state.message === 'string' && state.message !== ''
+        ? state.message
+        : 'Nothing unverified was kept. Try again, or review the release on GitHub.'
     case 'install-failed':
       return typeof state.message === 'string' && state.message !== ''
         ? state.message
@@ -7388,6 +7391,7 @@ function paintUpdateSettings(state) {
     detail,
     download,
     install,
+    notice,
     progress,
     releases,
     review,
@@ -7416,6 +7420,9 @@ function paintUpdateSettings(state) {
   }
   detail.textContent = updateDetailCopy(state)
   detail.hidden = detail.textContent === ''
+  // An earlier install that did not take effect, reported by main after the restart.
+  notice.textContent = typeof state.installNotice === 'string' ? state.installNotice : ''
+  notice.hidden = notice.textContent === ''
   automatic.checked = Boolean(state.automaticChecks)
   checked.textContent = state.checkedAt
     ? `Last checked ${new Date(state.checkedAt).toLocaleString()}`
@@ -7424,7 +7431,7 @@ function paintUpdateSettings(state) {
   review.hidden = !state.available || installing
   // The download or install is the primary action while it is offered or running.
   review.classList.toggle('updates-secondary', !download.hidden || !cancel.hidden || !install.hidden)
-  releases.hidden = state.status !== 'unverified' && state.status !== 'stale'
+  releases.hidden = state.status !== 'unverified' && state.status !== 'stale' && !(notice.textContent !== '' && !state.available)
   // A pressed action can hide itself (Download → Cancel, Install → installing);
   // keep keyboard focus inside Updates instead of dropping it to the document,
   // but never take focus while the window is in the background.
@@ -7457,6 +7464,10 @@ function renderUpdateSettings(host) {
   status.setAttribute('role', 'status')
   status.setAttribute('aria-live', 'polite')
   status.textContent = 'Ready to check GitHub for a signed release.'
+
+  const notice = document.createElement('p')
+  notice.className = 'updates-notice'
+  notice.hidden = true
 
   const checked = document.createElement('p')
   checked.className = 'updates-checked'
@@ -7515,7 +7526,7 @@ function renderUpdateSettings(host) {
     })
   })
 
-  section.append(heading, status, progress, detail, checked, actions, preference)
+  section.append(heading, status, notice, progress, detail, checked, actions, preference)
   host.appendChild(section)
   updateSettings = {
     appVersion,
@@ -7526,6 +7537,7 @@ function renderUpdateSettings(host) {
     detail,
     download,
     install,
+    notice,
     progress,
     releases,
     review,

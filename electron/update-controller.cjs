@@ -21,7 +21,7 @@ const DOWNLOADABLE_STRATEGIES = new Set(['macos-dmg', 'appimage-self-replace'])
 const DOWNLOAD_MESSAGES = {
   downloading: 'Downloading the verified update…',
   verified: 'The update was downloaded and verified.',
-  'download-failed': 'The update could not be downloaded and verified. Try again or use the releases page.',
+  'download-failed': 'Nothing unverified was kept. Try again, or review the release on GitHub.',
 }
 const INSTALL_MESSAGES = Object.freeze({
   failed: 'The update could not be installed. Nothing was changed. Try again or use Review release.',

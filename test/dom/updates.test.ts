@@ -13,6 +13,7 @@ type UpdateState = {
   automaticChecks: boolean
   checkedAt: string | null
   message?: string
+  installNotice?: string
   available?: {
     version: string
     tag: string
@@ -337,6 +338,8 @@ describe('verified update downloads', () => {
       offered('verified', true, { receivedBytes: 2 * MB, totalBytes: 2 * MB }, { installable: true }),
       offered('installing', true, undefined, { installable: true }),
       offered('install-failed', true, undefined, { installable: true, message: FAILED }),
+      state('idle', { installNotice: NOTICE }),
+      { ...offered('verified', true, { receivedBytes: 2 * MB, totalBytes: 2 * MB }, { installable: true }), installNotice: NOTICE },
     ]) {
       bridge.emit(next)
       await settle()
@@ -346,6 +349,7 @@ describe('verified update downloads', () => {
 })
 
 const NOT_HERE = 'Move Agent Inbox to your Applications folder to install updates from the app.'
+const NOTICE = 'Version 1.3.0 could not be installed, so Agent Inbox is still on 1.1.1. macOS did not allow replacing the app. You can install it manually from the release page.'
 const FAILED = 'The update could not be installed. Nothing was changed. Try again or use Review release.'
 
 describe('installing a verified update', () => {
@@ -358,7 +362,7 @@ describe('installing a verified update', () => {
 
     expect(document.querySelector('.updates-state')?.textContent).toBe('Agent Inbox 1.3.0 is downloaded and verified.')
     expect(document.querySelector('.updates-detail')?.textContent).toBe(
-      'Its size and SHA-256 match the signed release. Agent Inbox will quit, install it, and reopen.',
+      'Its size and SHA-256 match the signed release. Agent Inbox will install it and restart.',
     )
     expect(visibleActions()).toEqual(['Check now', 'Install and restart', 'Review release'])
     expect(document.querySelector('.updates-review')?.classList.contains('updates-secondary')).toBe(true)
@@ -419,5 +423,44 @@ describe('installing a verified update', () => {
     vi.spyOn(document, 'hasFocus').mockReturnValue(false)
     bridge.emit(offered('installing', true, undefined, { installable: true }))
     expect(document.activeElement).not.toBe(document.getElementById('updates-settings'))
+  })
+})
+
+describe('after an install that did not take effect', () => {
+  const MB = 1024 * 1024
+  const notice = () => document.querySelector('.updates-notice') as HTMLElement
+
+  it('says so on startup and offers the release page', async () => {
+    const bridge = await boot(state('idle', { installNotice: NOTICE }))
+
+    expect(notice().hidden).toBe(false)
+    expect(notice().textContent).toBe(NOTICE)
+    expect(visibleActions()).toEqual(['Check now', 'Open Releases'])
+    click(document.querySelector('.updates-releases'))
+    expect(bridge.openRelease).toHaveBeenCalledOnce()
+  })
+
+  it('keeps the explanation on the next offer of that version and still allows Try again', async () => {
+    const bridge = await boot()
+    bridge.emit({ ...offered('verified', true, { receivedBytes: 2 * MB, totalBytes: 2 * MB }, { installable: true }), installNotice: NOTICE })
+
+    expect(notice().textContent).toBe(NOTICE)
+    expect(visibleActions()).toEqual(['Check now', 'Install and restart', 'Review release'])
+
+    bridge.emit(offered('verified', true, { receivedBytes: 2 * MB, totalBytes: 2 * MB }, { installable: true }))
+    expect(notice().hidden).toBe(true)
+    expect(notice().textContent).toBe('')
+  })
+
+  it('shows why a verified download had to be fetched again', async () => {
+    const bridge = await boot()
+    const changed = 'The downloaded update changed on disk, so it was removed. Download it again.'
+    bridge.emit(offered('download-failed', true, { receivedBytes: 0, totalBytes: 338 * MB }, { installable: true, message: changed }))
+
+    expect(document.querySelector('.updates-detail')?.textContent).toBe(changed)
+    expect(visibleActions()).toEqual(['Check now', 'Try again', 'Review release'])
+
+    bridge.emit(offered('download-failed', true, { receivedBytes: 10 * MB, totalBytes: 338 * MB }))
+    expect(document.querySelector('.updates-detail')?.textContent).toBe('Nothing unverified was kept. Try again, or review the release on GitHub.')
   })
 })

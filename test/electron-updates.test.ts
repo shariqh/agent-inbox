@@ -147,8 +147,14 @@ async function controllerStates(): Promise<UpdateControllerState[]> {
     },
     isSetupRunning: () => setupRunning,
     requestRestart: () => {},
+    attemptStore: {
+      begin: async () => ({ resultPath: '/private/update-install/last-attempt.result' }),
+      abandon: async () => {},
+      take: async () => ({ from: '1.0.0', to: '2.0.0', at: '2026-02-01T00:00:00.000Z', platform: 'darwin', strategy: 'macos-dmg', exitCode: 70 }),
+    },
     emit: (state) => emitted.push(state),
   })
+  await controller.rendererReady()
   const download = async (outcome: 'fail' | 'verify') => {
     const pending = controller.downloadNow()
     if (outcome === 'fail') {
@@ -203,6 +209,10 @@ describe('Electron updater integration', () => {
     expect(states.some((state) => state.available?.reason !== undefined && state.available.installable === false)).toBe(true)
     expect(states.some((state) => state.status === 'verified' && state.available?.installable === true)).toBe(true)
     expect(states.filter((state) => state.status === 'download-failed').map((state) => state.download?.receivedBytes)).toEqual([50, 0])
+    expect(states.some((state) => typeof state.installNotice === 'string' && state.status === 'idle')).toBe(true)
+    expect(states.some((state) => typeof state.installNotice === 'string' && state.status === 'verified')).toBe(true)
+    expect(states.at(-1)).toMatchObject({ status: 'installing' })
+    expect(states.at(-1)).not.toHaveProperty('installNotice')
     expect(JSON.stringify(states)).not.toContain('/private/')
     const { updates, deliver } = loadPreload(() => null)
     const received: unknown[] = []
@@ -239,6 +249,8 @@ describe('Electron updater integration', () => {
     ['a reason on an installable offer', 'verified', { available: { reason: 'Move it.' } }],
     ['a reason that is not text', 'available', { available: { installable: false, downloadable: false, reason: 5 } }],
     ['an installable offer that cannot download', 'verified', { available: { downloadable: false } }],
+    ['an install notice that is not text', 'verified', { installNotice: 5 }],
+    ['an overlong install notice', 'verified', { installNotice: 'x'.repeat(401) }],
   ] as const)('rejects %s from main', async (_label, status, patch) => {
     const states = await controllerStates()
     const base = states.find((state) => state.status === status)!
@@ -444,7 +456,11 @@ describe('Electron updater integration', () => {
     expect(initializer).toContain('uid: process.getuid(),')
     expect(initializer).toContain('isPackaged: app.isPackaged,')
     expect(initializer).toContain("workDirectory: path.join(app.getPath('userData'), 'update-install'),")
-    expect(initializer).toContain('`Version ${version} is available. Install it from Settings → Updates.`')
+    expect(initializer).toContain('`Version ${version} is available. Download and install it from Settings → Updates.`')
+    expect(main).toContain("const { createInstallAttemptStore } = require('./update-install.cjs')")
+    expect(initializer).toContain("attemptStore: createInstallAttemptStore({ directory: path.join(app.getPath('userData'), 'update-install') }),")
+    expect(initializer).toContain('notifyInstallFailure: ({ message }) => {')
+    expect(initializer).toContain("title: 'Agent Inbox update was not installed',")
     const viewerPid = main.slice(main.indexOf('function spawnedViewerPid()'), main.indexOf('\n}', main.indexOf('function spawnedViewerPid()')))
     expect(viewerPid).toContain('spawnedViewer.exitCode === null')
     expect(viewerPid).toContain('spawnedViewer.signalCode === null')

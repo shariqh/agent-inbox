@@ -49,6 +49,8 @@ function isByteCount(value) {
 }
 
 // installable implies downloadable; a reason explains only a notify-only offer.
+const MAX_INSTALL_NOTICE_LENGTH = 400
+
 function isOffer(available, status) {
   return (
     typeof available === 'object' &&
@@ -83,6 +85,10 @@ function isUpdateState(value) {
     typeof value.automaticChecks === 'boolean' &&
     (value.checkedAt === null || typeof value.checkedAt === 'string') &&
     typeof value.message === 'string' &&
+    (value.installNotice === undefined || (
+      typeof value.installNotice === 'string' &&
+      value.installNotice.length <= MAX_INSTALL_NOTICE_LENGTH
+    )) &&
     (OFFERED_UPDATE_STATES.has(value.status)
       ? isOffer(available, value.status)
       : available === undefined) &&

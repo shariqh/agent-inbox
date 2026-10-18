@@ -52,6 +52,19 @@ have exited (giving up unchanged after about two minutes), renames the running a
 removes stage and work folders more than an hour old, by exact name, owner and without
 following links, so the previous app stays restorable by hand for at least an hour.
 
+A swap that fails after the app quit is reported, not repeated blindly. Just before
+`commit()`, the controller writes `userData/update-install/last-attempt.json` (`{ schema:
+1, from, to, at, platform, strategy }`, temp file + rename) through
+`createInstallAttemptStore()`; an install it cannot record is not handed off, and a
+rejected `commit()` removes the record. The helper's last argument is the store's
+`last-attempt.result`, where it writes only its exit code (shared `INSTALL_HELPER_EXIT`:
+0 installed, 64 bad arguments, 65 refused, 70/71 could not move the app aside/in, 75 timed
+out) before every exit. The first `rendererReady()` takes both files before any cleanup. If
+the app is still older than the attempted release, every published state carries
+`installNotice` with the cause, Settings shows it (with Open Releases when nothing is
+offered), and one native notification fires; it stays on the next offer of that version.
+An app now on that release says nothing.
+
 Checks also refuse to move backwards. After a manifest's signature, schema and expiry
 verify, the app records that release version as a high-water mark in its own user-data
 file, `update-trust-state.json` (`{ "schema": 1, "highestVerifiedVersion": "X.Y.Z" }`),

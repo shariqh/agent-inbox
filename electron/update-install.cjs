@@ -267,7 +267,7 @@ function createInstallAttemptStore(options = {}) {
       await abandon()
       const record = recordText === null ? null : parseRecord(recordText)
       if (record === null) return null
-      const match = resultText === null ? null : RESULT_RE.exec(resultText)
+      const match = resultText === null ? null : resultText.match(RESULT_RE)
       return Object.freeze({ ...record, exitCode: match ? Number(match[1]) : null })
     } catch {
       return null

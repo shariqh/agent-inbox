@@ -899,7 +899,18 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   payload; a reused or failed-over viewer never gets installs. Setup and an update
   install exclude each other in both directions. `requestRestart()` (flag + `app.quit()`)
   is the ONLY quit path for an update and `before-quit` never blocks it; a user quit
-  during an uncommitted install cancels it first. Update state still never enters
+  during an uncommitted install cancels it first. (8) **A failed swap is reported, not
+  looped:** the controller writes `userData/update-install/last-attempt.json` (`{schema:1,
+  from, to, at, platform, strategy}`, atomic) through `createInstallAttemptStore()` just
+  before `commit()` and never commits an attempt it could not record; a rejected commit
+  removes it. `commit({ resultPath })` hands the helper `last-attempt.result`, where it
+  writes only its exit code (shared `INSTALL_HELPER_EXIT`) before every exit; its argv
+  validation refuses relative, dot-segment and trailing-slash paths (a trailing slash
+  would make its symlink checks test the link's target). The first `rendererReady()`
+  takes both files BEFORE any cleanup (cleanup only matches `install-XXXXXX`, pinned); an
+  app still older than `to` publishes `installNotice` on every state until that release
+  stops being offered or a new install starts, and notifies once. Part 3 reuses the store,
+  the exit codes and `resultPath`. Update state still never enters
   `public/attention.js`, badges or Needs-you. Open: the real `/Applications` swap under
   macOS App Management needs the planned 1.3.0 → 1.3.1 end-to-end run.
 - **Session presence** *(#28, corrected by #45)* — every MCP session is a Live row; `status()`

@@ -69,6 +69,13 @@ new app cannot be moved into place, the helper puts the previous app back and re
 If the helper waits more than about two minutes for Agent Inbox to exit, it gives up
 without changing anything.
 
+When the swap does not happen, Agent Inbox says so the next time it opens: Settings →
+Updates (and one notification) reads, for example, "Version 1.3.1 could not be installed,
+so Agent Inbox is still on 1.3.0. macOS did not allow replacing the app." The same note
+stays on the next offer of that version, so you can **Try again** knowingly or install it
+manually. The app keeps this record in `last-attempt.json` (and the helper's
+`last-attempt.result`) in its private `update-install` folder and deletes both once read.
+
 The manual path always works: **Review release** opens the verified GitHub release; download
 the DMG and drag Agent Inbox to Applications as described below.
 

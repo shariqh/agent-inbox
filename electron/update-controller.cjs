@@ -403,6 +403,8 @@ function createUpdateController(options) {
       disposed
       || downloader === null
       || artifact === null
+      // A starting check may still replace the offer; never race it.
+      || inFlight !== null
       || (state.status !== 'available' && state.status !== 'download-failed')
       || state.available?.version !== artifact.version
     ) {

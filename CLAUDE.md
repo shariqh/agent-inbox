@@ -777,7 +777,8 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   Cleanup is bounded and pattern-only: it never follows symlinks, removes staging
   directories only after an hour without writes (two app processes can share
   `userData`), and drops downloads at or below the running version, superseded by a
-  newer verified offer, or no longer offered. Checks never run during a download; a
+  newer verified offer, or no longer offered. Checks and downloads never overlap (a
+  download waits for a starting check, and checks are skipped during a download); a
   re-check while verified is quiet and keeps the file unless a successful check offers
   something else. The install steps
   consume `getVerifiedArtifact()` (`{ path, version, tag, filename, sha256, byteLength,

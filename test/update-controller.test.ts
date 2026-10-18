@@ -581,6 +581,18 @@ describe('user-initiated verified downloads', () => {
     expect(controller.getState().status).toBe('downloading')
   })
 
+  it('does not start a download while a check is still starting', async () => {
+    const { controller, fake, emitted } = setup(async () => availableWith(artifactFor('2.1.0')))
+    await controller.checkNow()
+
+    const rechecking = controller.checkNow()
+    expect(controller.getState().status).toBe('available')
+    await expect(controller.downloadNow()).resolves.toMatchObject({ status: 'available' })
+    await rechecking
+    expect(fake.downloader.download).not.toHaveBeenCalled()
+    expect(emitted.map((value) => value.status)).not.toContain('downloading')
+  })
+
   it('keeps a verified download across a quiet re-check of the same release or a failed check', async () => {
     let checkedAt = '2026-02-01T00:00:00.000Z'
     let offline = false

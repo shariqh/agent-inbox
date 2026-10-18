@@ -257,6 +257,16 @@ describe('buildDashboard', () => {
     expect(paged.recentOutcomes.map((entry) => entry.kind === 'item' ? entry.item.id : entry.row.id))
       .toEqual(['newest', 'row'])
     expect(paged.recentOutcomesComplete).toBe(false)
+
+    // The Dashboard lists four: once four are proven, omitted history is not needed.
+    const proven = buildDashboard({
+      ...input,
+      items: ['19', '18', '17', '16'].map((hour) => outcome(`at-${hour}`, `2026-08-24T${hour}:00:00.000Z`)),
+      archived: [],
+      history: { older: { items: 9, outcomes: 9, projects: ['alpha'], agents: ['copilot'] }, before: '2026-08-24T12:00:00.000Z' },
+    })
+    expect(proven.recentOutcomes).toHaveLength(4)
+    expect(proven.recentOutcomesComplete).toBe(true)
   })
 })
 

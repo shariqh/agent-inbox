@@ -5,7 +5,8 @@ import { knownOutcomes } from './closed-history.js'
 const asSet = (values) => values instanceof Set ? values : new Set(values ?? [])
 // Issue #184: what the paged item snapshot omitted within this lens.
 const NO_OLDER_HISTORY = { older: { items: 0, outcomes: 0, projects: [] }, before: null }
-const RECENT_OUTCOMES = 5
+// The recent outcomes the Dashboard lists, and so the most it needs to prove.
+const RECENT_OUTCOMES = 4
 
 function validProject(entity, closed) {
   return entity?.project && !closed.has(entity.project)

@@ -1201,12 +1201,12 @@ function renderSearchResults() {
   if (!lastData) return
   // Issue #184: results always cover all of History. While the closed history
   // the page omits is still being read, keep any prior list busy rather than
-  // listing an incomplete result set.
+  // listing an incomplete result set. The read itself belongs to the human's
+  // entry points (typing, focusing) or the next poll — never to a render.
   if (omitsHistory()) {
     searchAwaitingHistory = true
     beginSearchUpdate()
     if (status) status.textContent = 'Searching older history…'
-    requestHistory()
     return
   }
   searchAwaitingHistory = false
@@ -1338,8 +1338,12 @@ function pageView() {
 function historyWanted() {
   const summary = lastData?.pageHistory
   if (!summary || summary.loaded >= summary.total) return false
-  // Search covers every project and a deep link may name any omitted item.
-  if (historyLookup || document.getElementById('search')?.value.trim()) return true
+  // A deep link may name any omitted item, and search covers every project
+  // while it is in use: open results, a pending query, or a focused query. Text
+  // left in a closed box waits for the human to return to it.
+  if (historyLookup) return true
+  const input = document.getElementById('search')
+  if (input?.value.trim() && (searchIndexOpen || searchTimer || document.activeElement === input)) return true
   const older = olderHistory(summary, olderLens())
   if (relayOpen && older.outcomes > 0) return true
   if (activeTab === 'done' && older.items > 0) {
@@ -6825,8 +6829,6 @@ function initSearch() {
       return
     }
     beginSearchUpdate()
-    // Issue #184: overlap reading the closed history the page omits with the debounce.
-    requestHistory()
     searchTimer = setTimeout(() => {
       searchTimer = null
       searchQuery = value
@@ -6834,6 +6836,8 @@ function initSearch() {
       searchActiveIndex = -1
       renderSearchResults()
     }, 120)
+    // Issue #184: overlap reading the closed history the page omits with the debounce.
+    requestHistory()
   })
   input.addEventListener('focus', () => {
     const value = input.value.trim()
@@ -6841,6 +6845,7 @@ function initSearch() {
     searchQuery = input.value
     searchIndexOpen = true
     renderSearchResults()
+    requestHistory()
   })
   input.addEventListener('keydown', (event) => {
     if (event.isComposing) {

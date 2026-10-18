@@ -331,6 +331,32 @@ describe('paged closed history (issue #184)', () => {
     expect(historyTitles().at(-1)).toBe('Early question, late outcome')
   })
 
+  it('stops reading older history once a search is left, and resumes when it is reopened', async () => {
+    db = freshDb()
+    const { archive } = seedHub(db)
+    const { reads, interceptFetch } = recorder()
+    await bootApp(db, { interceptFetch })
+    const input = document.getElementById('search') as HTMLInputElement
+    const option = () => document.querySelector(`#searchResults [role="option"][data-search-target="${archive[1]}"]`)
+    input.focus()
+    await searchFor('quokka')
+    expect(historyReads(reads)).toHaveLength(1)
+    expect(option()).not.toBeNull()
+
+    // Leaving the dock closes the results but keeps the query.
+    document.querySelector('#tabs')?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }))
+    expect(document.getElementById('searchResults')?.hidden).toBe(true)
+    expect(input.value).toBe('quokka')
+    await pollTick()
+    await pollTick()
+    expect(historyReads(reads)).toHaveLength(1)
+
+    input.focus()
+    await settle()
+    expect(historyReads(reads).map((read) => read.status)).toEqual([200, 304])
+    expect(option()).not.toBeNull()
+  })
+
   it('keeps a typed search waiting for older history across a held read', async () => {
     db = freshDb()
     seedHub(db)

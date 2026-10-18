@@ -101,6 +101,17 @@ describe('31.1 · changeAnswer paints the surface it just staged a draft into', 
     expect(js).not.toMatch(/setInterval\(\s*forceRender/)
   })
 
+  // Issue #184: requestHistory() ends in reloadAndPaint() → forceRender(). A
+  // render that started that read would hand the poll a forced, ungated frame.
+  it('no render path starts the older-history read that ends in forceRender (#184)', () => {
+    for (const decl of [
+      'async function load()', 'function renderIfIdle()', 'function render()', 'function paintAmbient()',
+      'function paintEditableSurfaces(', 'function renderSearchResults()', 'function renderDone(',
+    ]) {
+      expect(topLevelFn(decl), decl).not.toContain('requestHistory')
+    }
+  })
+
   // This replaces the old "forceRender() has exactly ONE caller" count, which was
   // standing in for an invariant it could only approximate. Issue #38 gave
   // forceRender the callers it was always owed: every user-initiated repaint. The

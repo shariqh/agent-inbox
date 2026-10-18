@@ -795,6 +795,24 @@ describe('something planted at a verified path', () => {
     expect(lstatSync(keyDir).isDirectory()).toBe(true)
     expect(readFileSync(join(outside, artifact.filename)).equals(body)).toBe(true)
   })
+
+  it('never verifies through a symlinked download root, even one holding the signed bytes', async () => {
+    const work = workDir()
+    const root = join(work, 'update-downloads')
+    const body = randomBytes(2 * CHUNK)
+    const artifact = artifactFor(body)
+    const record = recordFor(root, artifact)
+    const outside = join(work, 'outside-root')
+    const outsideKeyDir = join(outside, `${artifact.tag}-${artifact.sha256}`)
+    mkdirSync(outsideKeyDir, { recursive: true, mode: 0o700 })
+    writeFileSync(join(outsideKeyDir, artifact.filename), body)
+    symlinkSync(outside, root)
+    const downloader = createUpdateDownloader({ directory: root, fetchImpl: vi.fn() })
+
+    expect(await codeOf(downloader.verify(record))).toMatchObject({ code: 'not-verified' })
+    expect(lstatSync(root).isSymbolicLink()).toBe(true)
+    expect(readFileSync(join(outsideKeyDir, artifact.filename)).equals(body)).toBe(true)
+  })
 })
 
 describe('download cleanup', () => {

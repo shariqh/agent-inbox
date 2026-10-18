@@ -9,7 +9,7 @@ import type {
   UpdateDownloader,
   VerifiedArtifact,
 } from './update-download.cjs'
-import type { PlatformInstaller } from './update-install.cjs'
+import type { InstallAttemptStore, PlatformInstaller } from './update-install.cjs'
 import type {
   UpdatePreferences,
   UpdatePreferencesStore,
@@ -61,6 +61,21 @@ export interface UpdateControllerState {
   message: string
   available?: OfferedUpdate
   download?: UpdateDownloadProgress
+  /**
+   * Plain-language report, without any path, that the previous install attempt
+   * left this app on its old version. Kept until that release is no longer
+   * offered or a new install starts.
+   */
+  installNotice?: string
+}
+
+export interface InstallFailureReport {
+  /** The version that could not be installed. */
+  version: string
+  /** The version still running. */
+  currentVersion: string
+  /** The same text as UpdateControllerState.installNotice. */
+  message: string
 }
 
 export interface UpdateNotification {
@@ -121,6 +136,14 @@ export function createUpdateController(options: {
    * installer requires `downloader.openVerified` and `requestRestart`.
    */
   installers?: Partial<Record<DownloadableInstallStrategy, PlatformInstaller>>
+  /**
+   * Records each attempt just before commit() (an attempt that cannot be
+   * recorded is not handed off) and is read once by the first rendererReady(),
+   * before any cleanup, to report an install that did not take effect.
+   */
+  attemptStore?: Pick<InstallAttemptStore, 'begin' | 'abandon' | 'take'>
+  /** Called once when the previous attempt left this app on its old version. */
+  notifyInstallFailure?: (report: InstallFailureReport) => Promise<unknown> | unknown
   /** Consulted synchronously when an install starts; an install is refused while it returns true. */
   isSetupRunning?: () => boolean
   /** Called once, right after a commit resolves; main quits so the helper can swap the app. */

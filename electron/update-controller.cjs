@@ -36,6 +36,25 @@ const INSTALL_MESSAGES = Object.freeze({
 const MAX_INSTALL_MESSAGE_LENGTH = 240
 // Copy shown to the renderer must never carry a path: no slashes, no control characters.
 const UNSAFE_MESSAGE_RE = /[\u0000-\u001f\u007f/\\]/
+// Helper exit codes (INSTALL_HELPER_EXIT in update-install.cjs) with a known cause.
+const PERMISSION_EXIT_CODES = new Set([70, 71])
+const TIMED_OUT_EXIT_CODE = 75
+const REFUSED_EXIT_CODE = 65
+
+// What the next app start says about an install that left it on its old version.
+function attemptNotice(outcome, runningVersion) {
+  let cause = ''
+  if (PERMISSION_EXIT_CODES.has(outcome.exitCode)) {
+    cause = outcome.platform === 'darwin'
+      ? 'macOS did not allow replacing the app. '
+      : 'The system did not allow replacing the app. '
+  } else if (outcome.exitCode === TIMED_OUT_EXIT_CODE) {
+    cause = 'The old app did not quit in time. '
+  } else if (outcome.exitCode === REFUSED_EXIT_CODE) {
+    cause = 'The app\'s folder changed before the update could replace it. '
+  }
+  return `Version ${outcome.to} could not be installed, so Agent Inbox is still on ${runningVersion}. ${cause}You can install it manually from the release page.`
+}
 
 function idleState(currentVersion, automaticChecks = false) {
   return {
@@ -152,6 +171,11 @@ function createUpdateController(options) {
   if (options.isSetupRunning !== undefined && typeof options.isSetupRunning !== 'function') {
     throw new TypeError('isSetupRunning must be a function')
   }
+  const attemptStore = options.attemptStore ?? null
+  if (attemptStore !== null && ['begin', 'abandon', 'take'].some((name) => typeof attemptStore[name] !== 'function')) {
+    throw new TypeError('attemptStore adapter is invalid')
+  }
+  const notifyInstallFailure = typeof options.notifyInstallFailure === 'function' ? options.notifyInstallFailure : null
 
   const currentVersion = options.currentVersion
   const preferences = options.preferences
@@ -186,6 +210,10 @@ function createUpdateController(options) {
   // settles; once commit() resolves, nothing else may run until the app quits.
   let installOperation = null
   let installCommitted = false
+  // A previous attempt that left this app on its old version: { version, text }.
+  // It rides on every published state until that release stops being offered
+  // or a new install starts.
+  let installNotice = null
 
   function publish(next) {
     const available = next.available
@@ -195,11 +223,12 @@ function createUpdateController(options) {
         })
       : undefined
     const download = next.download ? Object.freeze({ ...next.download }) : undefined
-    const { available: _available, download: _download, ...rest } = next
+    const { available: _available, download: _download, installNotice: _installNotice, ...rest } = next
     state = Object.freeze({
       ...rest,
       ...(available ? { available } : {}),
       ...(download ? { download } : {}),
+      ...(installNotice !== null ? { installNotice: installNotice.text } : {}),
     })
     emit(state)
     return state
@@ -456,6 +485,13 @@ function createUpdateController(options) {
       if (!keepVerified) return publish(next)
       return publish({ ...state, automaticChecks: next.automaticChecks, checkedAt: next.checkedAt })
     }
+    // The explanation stays with the release it is about.
+    if (
+      installNotice !== null
+      && (next.status === 'current' || (next.status === 'available' && next.available.version !== installNotice.version))
+    ) {
+      installNotice = null
+    }
     if (keepVerified && next.status === 'available' && sameArtifact(artifact, checked.artifact)) {
       return publish({ ...state, automaticChecks: next.automaticChecks, checkedAt: next.checkedAt })
     }
@@ -621,6 +657,7 @@ function createUpdateController(options) {
       if (!feasible.ok) return refuse(feasible.message)
       if (signal.aborted) return refuse(INSTALL_MESSAGES.cancelled)
 
+      installNotice = null
       publish(installState('installing', available, `Installing version ${available.version}. Agent Inbox will restart when it is ready.`))
       let opened
       try {
@@ -651,8 +688,18 @@ function createUpdateController(options) {
         await Promise.resolve().then(() => opened?.close()).catch(() => {})
       }
       if (signal.aborted) throw new Error('install cancelled')
+      // Recorded before the hand-off, so the next start can say what happened;
+      // an install that cannot be recorded is not handed off.
+      const attempt = attemptStore === null
+        ? null
+        : await attemptStore.begin({ from: currentVersion, to: record.version, strategy: record.installStrategy })
       operation.committing = true
-      await prepared.commit()
+      try {
+        await prepared.commit(attempt === null ? undefined : { resultPath: attempt.resultPath })
+      } catch (error) {
+        if (attempt !== null) await Promise.resolve().then(() => attemptStore.abandon()).catch(() => {})
+        throw error
+      }
       installCommitted = true
       try {
         requestRestart()
@@ -691,6 +738,29 @@ function createUpdateController(options) {
     return operation.promise
   }
 
+  // Reads and deletes the previous attempt once. An app that is still older than
+  // the release it tried to install says so; one that reached it says nothing.
+  async function reportPreviousAttempt() {
+    if (attemptStore === null) return
+    let outcome = null
+    try {
+      outcome = await attemptStore.take()
+    } catch {
+      return
+    }
+    if (!outcome || typeof outcome.to !== 'string' || !VERSION_RE.test(outcome.to)) return
+    if (!isNewerVersion(outcome.to, currentVersion)) return
+    const text = attemptNotice(outcome, currentVersion)
+    installNotice = { version: outcome.to, text }
+    publish({ ...state, message: text })
+    if (notifyInstallFailure === null) return
+    try {
+      await notifyInstallFailure({ version: outcome.to, currentVersion, message: text })
+    } catch {
+      // Notification delivery is best-effort; Settings → Updates still says it.
+    }
+  }
+
   return Object.freeze({
     getState() {
       return state
@@ -700,6 +770,8 @@ function createUpdateController(options) {
       rendererIsReady = true
       if (!startupPruned && !installBusy()) {
         startupPruned = true
+        // Before any cleanup, so nothing about the last attempt is lost.
+        await reportPreviousAttempt()
         prune({ currentVersion })
         for (const installer of installers.values()) {
           if (typeof installer.cleanup !== 'function') continue

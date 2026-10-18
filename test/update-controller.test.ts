@@ -1272,3 +1272,202 @@ describe('installing a verified update', () => {
     expect(() => createUpdateController({ ...base, installers: { 'deb-notify': installer } as never })).toThrow(TypeError)
   })
 })
+
+describe('reporting an install that did not take effect', () => {
+  const PERMISSION = 'Version 2.0.0 could not be installed, so Agent Inbox is still on 1.0.0. macOS did not allow replacing the app. You can install it manually from the release page.'
+
+  function attemptStoreFake(outcome: unknown = null) {
+    const calls: string[] = []
+    return {
+      calls,
+      store: {
+        begin: vi.fn(async (_attempt: { from: string; to: string; strategy: string }) => {
+          calls.push('begin')
+          return { resultPath: '/private/userData/update-install/last-attempt.result' }
+        }),
+        abandon: vi.fn(async () => { calls.push('abandon') }),
+        take: vi.fn(async () => {
+          calls.push('take')
+          return outcome as never
+        }),
+      },
+    }
+  }
+
+  function outcome(exitCode: number | null, overrides: Record<string, unknown> = {}) {
+    return { from: '1.0.0', to: '2.0.0', at: '2026-02-01T00:00:00.000Z', platform: 'darwin', strategy: 'macos-dmg', exitCode, ...overrides }
+  }
+
+  async function harness(options: { outcome?: unknown; versions?: () => UpdateCheckResult } = {}) {
+    const fake = fakeDownloader()
+    const attempts = attemptStoreFake(options.outcome ?? null)
+    const calls = attempts.calls
+    const prepared = {
+      commit: vi.fn(async (_options?: { resultPath?: string }) => { calls.push('commit') }),
+      discard: vi.fn(async () => { calls.push('discard') }),
+    }
+    const installer = {
+      strategy: 'macos-dmg' as const,
+      feasibility: vi.fn(async (): Promise<InstallFeasibility> => ({ ok: true })),
+      prepare: vi.fn(async (): Promise<PreparedInstall> => {
+        calls.push('prepare')
+        return prepared
+      }),
+      cleanup: vi.fn(async () => { calls.push('cleanup') }),
+    }
+    const notifyInstallFailure = vi.fn()
+    const requestRestart = vi.fn(() => { calls.push('restart') })
+    let result = options.versions ?? (() => availableWith(artifactFor('2.0.0')))
+    const controller = createUpdateController({
+      currentVersion: '1.0.0',
+      preferences: prefs(),
+      checker: vi.fn(async () => result()),
+      notifier: vi.fn(),
+      downloader: fake.downloader,
+      installers: { 'macos-dmg': installer },
+      attemptStore: attempts.store,
+      notifyInstallFailure,
+      requestRestart,
+      clock: () => new Date('2026-02-01T00:00:00Z'),
+    })
+    async function verify() {
+      await controller.checkNow()
+      const done = controller.downloadNow()
+      fake.succeed()
+      return done
+    }
+    return { controller, fake, attempts, calls, prepared, installer, notifyInstallFailure, requestRestart, verify, setResult(next: () => UpdateCheckResult) { result = next } }
+  }
+
+  it('records the attempt just before the hand-off and tells the helper where to report', async () => {
+    const h = await harness()
+    await h.verify()
+
+    await expect(h.controller.installNow()).resolves.toMatchObject({ status: 'installing' })
+    expect(h.calls).toEqual(['prepare', 'begin', 'commit', 'restart'])
+    expect(h.attempts.store.begin).toHaveBeenCalledWith({ from: '1.0.0', to: '2.0.0', strategy: 'macos-dmg' })
+    expect(h.prepared.commit).toHaveBeenCalledWith({ resultPath: '/private/userData/update-install/last-attempt.result' })
+    expect(h.attempts.store.abandon).not.toHaveBeenCalled()
+  })
+
+  it('forgets the attempt when the hand-off fails', async () => {
+    const h = await harness()
+    await h.verify()
+    h.prepared.commit.mockRejectedValueOnce(new Error('spawn failed'))
+
+    await expect(h.controller.installNow()).resolves.toMatchObject({ status: 'install-failed' })
+    expect(h.calls).toEqual(['prepare', 'begin', 'abandon', 'discard'])
+    expect(h.requestRestart).not.toHaveBeenCalled()
+  })
+
+  it('does not hand off an install it could not record', async () => {
+    const h = await harness()
+    await h.verify()
+    h.attempts.store.begin.mockRejectedValueOnce(new Error('disk full'))
+
+    await expect(h.controller.installNow()).resolves.toMatchObject({
+      status: 'install-failed',
+      message: 'The update could not be installed. Nothing was changed. Try again or use Review release.',
+    })
+    expect(h.prepared.commit).not.toHaveBeenCalled()
+    expect(h.prepared.discard).toHaveBeenCalledOnce()
+    expect(h.controller.getVerifiedArtifact()).not.toBeNull()
+  })
+
+  it('reports, once, a previous attempt that left the app on its old version', async () => {
+    const h = await harness({ outcome: outcome(70) })
+
+    const ready = await h.controller.rendererReady()
+    expect(ready).toMatchObject({ status: 'idle', message: PERMISSION, installNotice: PERMISSION })
+    expect(h.notifyInstallFailure).toHaveBeenCalledExactlyOnceWith({ version: '2.0.0', currentVersion: '1.0.0', message: PERMISSION })
+    await h.controller.rendererReady()
+    expect(h.attempts.store.take).toHaveBeenCalledOnce()
+    expect(h.notifyInstallFailure).toHaveBeenCalledOnce()
+  })
+
+  it('reads the previous attempt before any startup cleanup', async () => {
+    const h = await harness({ outcome: outcome(70) })
+    await h.controller.rendererReady()
+    await Promise.resolve()
+    expect(h.calls.indexOf('take')).toBeGreaterThan(-1)
+    expect(h.calls.indexOf('take')).toBeLessThan(h.calls.indexOf('cleanup'))
+  })
+
+  it.each([
+    ['macOS refused to move the app aside', outcome(70), 'macOS did not allow replacing the app. '],
+    ['macOS refused to move the new app in', outcome(71), 'macOS did not allow replacing the app. '],
+    ['another system refused', outcome(70, { platform: 'linux', strategy: 'appimage-self-replace' }), 'The system did not allow replacing the app. '],
+    ['the old app never quit', outcome(75), 'The old app did not quit in time. '],
+    ['the folder changed first', outcome(65), 'The app\'s folder changed before the update could replace it. '],
+    ['the helper never reported', outcome(null), ''],
+    ['the helper rejected its arguments', outcome(64), ''],
+  ] as const)('explains the cause when %s', async (_label, attempt, cause) => {
+    const h = await harness({ outcome: attempt })
+    const ready = await h.controller.rendererReady()
+    expect(ready.installNotice).toBe(
+      `Version 2.0.0 could not be installed, so Agent Inbox is still on 1.0.0. ${cause}You can install it manually from the release page.`,
+    )
+  })
+
+  it.each([
+    ['the attempted version', outcome(0, { to: '1.0.0', from: '0.9.0' })],
+    ['an older version', outcome(70, { to: '0.9.0', from: '0.8.0' })],
+  ])('says nothing when the app now runs %s', async (_label, attempt) => {
+    const h = await harness({ outcome: attempt })
+    const ready = await h.controller.rendererReady()
+    expect(ready).not.toHaveProperty('installNotice')
+    expect(ready.message).toBe('Updates have not been checked.')
+    expect(h.notifyInstallFailure).not.toHaveBeenCalled()
+    expect(h.attempts.store.take).toHaveBeenCalledOnce()
+  })
+
+  it('keeps the explanation on the next offer of that version and drops it for another release', async () => {
+    const h = await harness({ outcome: outcome(70) })
+    await h.controller.rendererReady()
+
+    await expect(h.verify()).resolves.toMatchObject({
+      status: 'verified',
+      installNotice: PERMISSION,
+      available: { version: '2.0.0', installable: true },
+    })
+    h.setResult(() => availableWith(artifactFor('2.1.0')))
+    const newer = await h.controller.checkNow()
+    expect(newer).toMatchObject({ status: 'available', available: { version: '2.1.0' } })
+    expect(newer).not.toHaveProperty('installNotice')
+  })
+
+  it('drops the explanation when no update is offered any more', async () => {
+    const h = await harness({ outcome: outcome(70), versions: () => ({ ...state('current', false), currentVersion: '1.0.0' }) })
+    await h.controller.rendererReady()
+    const current = await h.controller.checkNow()
+    expect(current.status).toBe('current')
+    expect(current).not.toHaveProperty('installNotice')
+  })
+
+  it('lets the user try again and clears the explanation once the install starts', async () => {
+    const h = await harness({ outcome: outcome(75) })
+    await h.controller.rendererReady()
+    await h.verify()
+
+    const installing = await h.controller.installNow()
+    expect(installing.status).toBe('installing')
+    expect(installing).not.toHaveProperty('installNotice')
+  })
+
+  it('survives an attempt store that fails to read', async () => {
+    const h = await harness()
+    h.attempts.store.take.mockRejectedValueOnce(new Error('EIO'))
+    await expect(h.controller.rendererReady()).resolves.toMatchObject({ status: 'idle' })
+    expect(h.notifyInstallFailure).not.toHaveBeenCalled()
+  })
+
+  it('validates the attempt store', () => {
+    expect(() => createUpdateController({
+      currentVersion: '1.0.0',
+      preferences: prefs(),
+      checker: vi.fn(),
+      notifier: vi.fn(),
+      attemptStore: { begin: vi.fn() } as never,
+    })).toThrow(TypeError)
+  })
+})

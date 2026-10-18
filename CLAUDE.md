@@ -955,6 +955,21 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   Cadence: the git probe is **lazy and memoized for 60s** (`STAMP_TTL_MS`) — there is no poller, and
   `/api/setup` is fetched once per page load, not on the 3s poll. The #23 reuse path is covered for
   free: a fresh checkout that attaches to a stale packaged server renders that server's stamp.
+- **Session build in Live** *(#197, part 1)* — `src/version.ts` is the one place the release version
+  lives in code: `AGENT_INBOX_VERSION` is what the MCP handshake reports AND what presence records.
+  A release bumps it beside package.json (`test/release-pipeline.test.ts` pins the pair). Registration
+  and `status` write it to the additive `activity.server_version` column; a write that omits it keeps
+  the stored value, and legacy rows stay NULL. It rides on writes that already happen and is never
+  evidence of liveness or work: `updated_at`, `last_call_at`, claims and spans are untouched.
+  `/api/activity` rows carry it (still a bare array — electron/main.cjs reads it as one), and
+  `GET /api/version` answers the build a restart should load: a release's baked setup-info version,
+  else the viewer's own constant. `initLiveBar` reads it once per page load, outside the poll.
+  `sessionBuild()` in `public/livebar.js` compares strict semver only: an unknown session version
+  renders nothing, and an unknown current version renders no hint. The strip and drawer show the
+  label plus "older build — restart this session to load vX"; the collapsed idle fold counts them.
+  Presence, not attention: no badge, Needs-you, count or notification. **Honest limitation:** a
+  release compares against the APP's version, so until Setup installs that version's runtime a
+  restart can still load the older build — the Setup half of #197 closes that gap.
 
 ## Open backlog — and the seams already in place
 

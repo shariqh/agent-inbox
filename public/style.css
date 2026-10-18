@@ -118,6 +118,10 @@ header { flex-wrap: wrap; }
 .idle-row.dormant { opacity: .58; }
 .live-children { margin-top: 8px; }
 .live-state { font-size: 12px; opacity: .6; white-space: nowrap; }
+/* #197: the build a session runs is quiet metadata; an older one is a gentle note, never an alarm */
+.live-build { flex: none; font-size: 11px; opacity: .5; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.live-build.older { opacity: 1; color: color-mix(in srgb, var(--app-warning) 80%, var(--app-text)); }
+.live-build-hint { font-size: 12px; color: color-mix(in srgb, var(--app-warning) 80%, var(--app-text)); }
 #lightbox { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; }
 #lightbox[hidden] { display: none; } /* our display:flex would otherwise beat the UA's [hidden] rule */
 .lb-backdrop { position: absolute; inset: 0; background: color-mix(in srgb, var(--app-text) 25%, transparent); backdrop-filter: blur(2px); }

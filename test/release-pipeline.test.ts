@@ -420,11 +420,17 @@ describe('universal finalization contract', () => {
     })
   })
 
+  // Issue #197: one constant is the version the MCP server reports in its
+  // initialize handshake AND records on its Live presence row, and the viewer
+  // compares sessions against it. A release bumps it in src/version.ts.
   it('keeps the MCP handshake version aligned with the package release version', () => {
     const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+    const version = readFileSync(join(root, 'src', 'version.ts'), 'utf8')
     const mcp = readFileSync(join(root, 'src', 'mcp.ts'), 'utf8')
     expect(pkg.version).toBe('1.2.8')
-    expect(mcp).toContain(`new McpServer({ name: 'agent-inbox', version: '${pkg.version}' })`)
+    expect(version).toContain(`export const AGENT_INBOX_VERSION = '${pkg.version}'`)
+    expect(mcp).toContain(`new McpServer({ name: 'agent-inbox', version: AGENT_INBOX_VERSION })`)
+    expect(mcp).toContain('server_version: AGENT_INBOX_VERSION')
   })
 
   it('makes ad-hoc output ineligible for notarization until Developer ID re-finalization', () => {

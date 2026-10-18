@@ -69,3 +69,74 @@ export function activitySynopsis(a) {
   if (last && last !== 'open') return { text: last, historical: true }
   return { text: 'No task reported yet', historical: false }
 }
+
+// ── issue #197: which Agent Inbox build a session runs ───────────────────────
+//
+// Each session's MCP server records its own version when it registers, and the
+// viewer says which build a restart would load. A session strictly older than
+// that gets a quiet restart hint. Presence, not attention: nothing here reaches
+// the badge, Needs-you or a notification. And it never guesses — both versions
+// must be strict semver (https://semver.org) before anything is compared, and a
+// session whose own version is unknown renders nothing at all.
+const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+[0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*)?$/
+// Display only: a "version" longer than any real release is not shown at all.
+const MAX_VERSION_LENGTH = 64
+
+function parseSemver(value) {
+  if (typeof value !== 'string' || value.length > MAX_VERSION_LENGTH) return null
+  const m = SEMVER.exec(value)
+  return m ? { core: [m[1], m[2], m[3]], pre: m[4] ? m[4].split('.') : [] } : null
+}
+
+// Digit strings without leading zeros: the longer one is larger, and equal
+// lengths compare as text. No Number(), so nothing rounds past 2^53.
+function compareDigits(a, b) {
+  if (a.length !== b.length) return a.length < b.length ? -1 : 1
+  return a < b ? -1 : a > b ? 1 : 0
+}
+
+// semver §11: numeric identifiers compare numerically and sort below
+// alphanumeric ones, which compare in ASCII order.
+function compareIdentifiers(a, b) {
+  const numeric = /^\d+$/
+  const an = numeric.test(a)
+  const bn = numeric.test(b)
+  if (an && bn) return compareDigits(a, b)
+  if (an !== bn) return an ? -1 : 1
+  return a < b ? -1 : a > b ? 1 : 0
+}
+
+// Precedence only: build metadata never counts, and a release outranks its
+// own pre-releases.
+function compareSemver(a, b) {
+  for (let i = 0; i < 3; i++) {
+    const c = compareDigits(a.core[i], b.core[i])
+    if (c) return c
+  }
+  if (!a.pre.length || !b.pre.length) {
+    if (a.pre.length === b.pre.length) return 0
+    return a.pre.length ? -1 : 1
+  }
+  for (let i = 0; i < Math.min(a.pre.length, b.pre.length); i++) {
+    const c = compareIdentifiers(a.pre[i], b.pre[i])
+    if (c) return c
+  }
+  return a.pre.length === b.pre.length ? 0 : a.pre.length < b.pre.length ? -1 : 1
+}
+
+/**
+ * @param {any} a an /api/activity row
+ * @param {unknown} currentVersion the build a restarted session would load, or null
+ * @returns {{label: string, older: boolean, hint: string} | null} null renders nothing
+ */
+export function sessionBuild(a, currentVersion) {
+  const own = parseSemver(a?.server_version)
+  if (!own) return null
+  const current = parseSemver(currentVersion)
+  const older = current !== null && compareSemver(own, current) < 0
+  return {
+    label: `v${a.server_version}`,
+    older,
+    hint: older ? `older build — restart this session to load v${currentVersion}` : '',
+  }
+}

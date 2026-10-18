@@ -98,6 +98,48 @@ describe('viewer api', () => {
     expect(body[0].children[0].name).toBe('kid')
   })
 
+  // issue #197 — one additive per-row field. The response stays a bare array of
+  // rows: electron/main.cjs and the Live strip both read it as one.
+  it('GET /api/activity rows carry the server build each session registered with, null for a legacy row', async () => {
+    upsertActivity(db, { session: 'new', project: 'p', stream: 'main', agent: 'copilot', doing: 'open', idle: true, claim: false, server_version: '1.2.8' })
+    upsertActivity(db, { session: 'old', project: 'p', stream: 'main', agent: 'claude-code', doing: 'open', idle: true, claim: false })
+    const body = await (await createViewer(db).request('/api/activity')).json() as Array<Record<string, unknown>>
+    expect(Array.isArray(body)).toBe(true)
+    const bySession = new Map(body.map((a) => [a.session, a]))
+    expect(bySession.get('new')!.server_version).toBe('1.2.8')
+    expect(bySession.get('old')!.server_version).toBeNull()
+    expect(Object.keys(bySession.get('new')!).sort()).toEqual([
+      'agent', 'children', 'detail', 'doing', 'idle', 'last_call_at', 'last_doing',
+      'project', 'server_version', 'session', 'started_at', 'stream', 'updated_at',
+    ])
+  })
+
+  describe('GET /api/version — the build a restarted session should load (#197)', () => {
+    const PKG = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }
+    const setupInfo = (info: unknown): string => {
+      const path = join(mkdtempSync(join(tmpdir(), 'view-version-')), 'setup-info.json')
+      writeFileSync(path, JSON.stringify(info))
+      return path
+    }
+
+    it('a checkout answers with the version its own code is: the package version', async () => {
+      const missing = join(mkdtempSync(join(tmpdir(), 'view-version-')), 'setup-info.json')
+      const res = await createViewer(db, { setupInfoPath: missing }).request('/api/version')
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ version: PKG.version })
+    })
+
+    it('a release build answers with the version baked into its setup-info, the one Setup installs', async () => {
+      const app = createViewer(db, { setupInfoPath: setupInfo({ schema: 2, version: '9.4.1', runtimePayloads: {} }) })
+      expect(await (await app.request('/api/version')).json()).toEqual({ version: '9.4.1' })
+    })
+
+    it('a release build with no baked version answers null rather than guessing', async () => {
+      const app = createViewer(db, { setupInfoPath: setupInfo({ schema: 2, runtimePayloads: {} }) })
+      expect(await (await app.request('/api/version')).json()).toEqual({ version: null })
+    })
+  })
+
   it('GET /api/items returns grouped items', async () => {
     insertItem(db, { project: 'p', stream: '', agent: 'claude-code', kind: 'question', title: 'q' })
     const app = createViewer(db)

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawn, execFileSync } from 'node:child_process'
@@ -415,6 +415,11 @@ describe('mcp round-trip', () => {
     // nothing to claim yet. `last_call_at` IS the alive-vs-working distinction:
     // only heartbeat() writes it, and heartbeat() runs on real calls only.
     expect(live[0]!.last_call_at).toBeNull()
+    // issue #197 — registration records which build this server runs: the very
+    // version its initialize handshake reported, which is the package version.
+    const handshake = client.getServerVersion()?.version
+    expect(handshake).toBe(JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8')).version)
+    expect(live[0]!.server_version).toBe(handshake)
 
     await client.callTool({ name: 'status', arguments: {
       doing: 'fan-out: migrating 3 modules',
@@ -426,12 +431,24 @@ describe('mcp round-trip', () => {
     expect(live[0]!.doing).toBe('fan-out: migrating 3 modules')
     expect(live[0]!.children.map((c) => c.name)).toEqual(['mig-a', 'mig-b'])
     expect(live[0]!.last_call_at).not.toBeNull() // a real call — the claim is now backed by one
+    expect(live[0]!.server_version).toBe(handshake)
 
     await client.callTool({ name: 'status', arguments: { done: true } })
     live = listActivity(openDb(dbPath))
     expect(live).toHaveLength(1) // effort over, session alive → back to idle presence
     expect(live[0]!.idle).toBe(true)
     expect(live[0]!.last_doing).toBe('fan-out: migrating 3 modules')
+    expect(live[0]!.server_version).toBe(handshake)
+
+    // A row the day-old housekeeping swept while the machine slept is recreated
+    // by the session's next status call, which still says which build it runs.
+    // (Fixture instrumentation: raw SQL stands in for a day of fake time that
+    // cannot reach the spawned server's clock.)
+    openDb(dbPath).prepare('DELETE FROM activity').run()
+    await client.callTool({ name: 'status', arguments: { doing: 'back after a long sleep' } })
+    live = listActivity(openDb(dbPath))
+    expect(live).toHaveLength(1)
+    expect(live[0]!.server_version).toBe(handshake)
 
     await client.close()
     await new Promise((r) => setTimeout(r, 500))

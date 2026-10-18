@@ -153,6 +153,9 @@ Run the build before `npm run electron`; the development shell starts the built
 - Activity has two meanings: `updated_at` is process liveness and
   `last_call_at` is real MCP work. The periodic liveness tick must call only
   `touchActivity`; tool calls record work with `recordActivityCall`.
+  `server_version` (#197) is display-only build identity carried by existing
+  presence/status writes; an omitted value keeps the stored one, and it is never
+  evidence of liveness, work or attention.
 - MCP stdout is the protocol channel. Never add `console.log` in the MCP server
   path or let subprocess stdout inherit it. Capture subprocess output. Viewer
   logging is allowed. Hook CLI stdout/stderr and exit codes are also protocol

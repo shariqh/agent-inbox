@@ -24,7 +24,7 @@ import { cardSections, optionOrder, actionPresentation } from '/card.js'
 import { keyAction, rovingIndex, ariaAnswerLabel, livenessGlyph, deckEntryAt } from '/keys.js'
 import { createKeyboardUI } from '/keyboard-ui.js'
 import { partitionNotes, unreadNoteCount, ambientChips, seenWatermark, markSeenIds } from '/notes.js'
-import { liveSummary, lastActivityAt, isDormant, activitySynopsis } from '/livebar.js'
+import { liveSummary, lastActivityAt, isDormant, activitySynopsis, sessionBuild } from '/livebar.js'
 import { esc } from '/esc.js'
 import { initStructuredTextCopy } from '/structured-copy.js'
 import { renderStructuredText } from '/structured-text.js'
@@ -3973,6 +3973,24 @@ function initGear() {
 // live entries the user has expanded, by session id — survives the poll rebuild
 const openLive = new Set()
 
+// Issue #197 — the build a restarted session would load. initLiveBar fetches it
+// once per page load (a viewer restart reloads the page). It stays null when the
+// viewer cannot say, and every restart hint needs it, so then none renders.
+let liveCurrentVersion = null
+
+// A session's build label for the drawer, and its restart hint when it runs an
+// older build. Both empty when its version is unknown: never a guess.
+function liveBuildHtml(a) {
+  const build = sessionBuild(a, liveCurrentVersion)
+  if (!build) return { label: '', hint: '', older: false }
+  const title = build.older ? build.hint : `This session runs Agent Inbox ${build.label}`
+  return {
+    label: `<span class="live-build${build.older ? ' older' : ''}" title="${esc(title)}">${esc(build.label)}</span>`,
+    hint: build.older ? `<span class="live-build-hint">${esc(build.hint)}</span>` : '',
+    older: build.older,
+  }
+}
+
 function paintLiveProjectDot(dot, project, state) {
   const color = pcolor(project)
   dot.className = `live-dot project ${state}`
@@ -3996,6 +4014,7 @@ function renderLive(entries) {
     const { tone: fresh } = ageChip(Date.now() - Date.parse(seen))
     const stream = a.stream ? ` · ${esc(a.stream)}` : ''
     const kids = a.children.length ? `<span class="live-kids">▸ ${a.children.length} reported agent${a.children.length > 1 ? 's' : ''}</span>` : ''
+    const build = liveBuildHtml(a)
     el.innerHTML = `
       <summary class="card-summary live-summary">
         <span class="live-dot"></span>
@@ -4003,8 +4022,10 @@ function renderLive(entries) {
           <span class="live-session-heading">
             <span class="live-state-label working">Reported work</span>
             <span class="live-who">${esc(a.agent)} · ${esc(a.project)}${stream}</span>
+            ${build.label}
           </span>
           <span class="live-doing">${esc(a.doing)}</span>
+          ${build.hint}
         </span>
         ${kids}
         <span class="live-age ${fresh}" title="connected ${esc(rel(a.started_at))} ago">${esc(age)}</span>
@@ -4036,7 +4057,11 @@ function renderLive(entries) {
     fold.className = 'idle-fold'
     if (openLive.has('__idle__')) fold.open = true
     fold.addEventListener('toggle', () => { fold.open ? openLive.add('__idle__') : openLive.delete('__idle__') })
-    fold.innerHTML = `<summary>${idle.length} connection${idle.length > 1 ? 's' : ''} · no task reported</summary>`
+    // #197: the fold is collapsed by default, so it says when a session inside
+    // runs an older build — the idle ones are exactly the long-lived sessions.
+    const builds = new Map(idle.map((a) => [a, liveBuildHtml(a)]))
+    const older = [...builds.values()].filter((b) => b.older).length
+    fold.innerHTML = `<summary>${idle.length} connection${idle.length > 1 ? 's' : ''} · no task reported${older ? ` · ${older} on an older build` : ''}</summary>`
     for (const a of idle) {
       const row = document.createElement('div')
       // #45: hours-quiet sessions keep their row (they ARE present, and their
@@ -4049,14 +4074,17 @@ function renderLive(entries) {
       const { tone: fresh } = ageChip(Date.now() - Date.parse(seen))
       const synopsis = activitySynopsis(a)
       const age = a.last_call_at ? `Inbox call ${rel(seen)} ago` : `connected ${rel(seen)} ago`
+      const build = builds.get(a)
       row.innerHTML = `
         <span class="live-dot"></span>
         <span class="live-session-copy">
           <span class="live-session-heading">
             <span class="live-state-label idle">Connected</span>
             <span class="live-who">${esc(a.agent)} · ${esc(a.project)}${stream}</span>
+            ${build.label}
           </span>
           <span class="live-doing ${synopsis.historical ? 'historical' : 'empty-summary'}">${synopsis.historical ? 'Last report: ' : ''}${esc(synopsis.text)}</span>
+          ${build.hint}
         </span>
         <span class="live-age ${fresh}" title="${esc(age)}">${esc(age)}</span>`
       const dot = row.querySelector('.live-dot')
@@ -4089,6 +4117,7 @@ function renderLiveBar(entries) {
     : s.label
   label.textContent = s.label
   list.replaceChildren()
+  const rowsBySession = new Map(entries.filter(Boolean).map((a) => [a.session, a]))
   for (const x of s.sessions) {
     const el = document.createElement('span')
     el.className = `live-session ${x.tone}`
@@ -4098,6 +4127,16 @@ function renderLiveBar(entries) {
     const text = document.createElement('span')
     text.textContent = x.label
     el.append(projectDot, text)
+    // #197: the build this session runs; an older one says so, and its title
+    // carries the whole restart hint the drawer spells out
+    const build = sessionBuild(rowsBySession.get(x.session), liveCurrentVersion)
+    if (build) {
+      const tag = document.createElement('span')
+      tag.className = build.older ? 'live-build older' : 'live-build'
+      tag.textContent = build.older ? `${build.label} · older build` : build.label
+      el.appendChild(tag)
+      if (build.older) el.title = build.hint
+    }
     list.appendChild(el)
   }
 }
@@ -4152,6 +4191,12 @@ function initLiveBar() {
       toggleLiveDrawer(false, { restoreFocus: true })
     }
   })
+  // #197: read once, outside the poll. The next paint shows the hints; a failed
+  // or older viewer leaves the current build unknown, which hides every hint.
+  fetch('/api/version')
+    .then((r) => (r.ok ? r.json() : null))
+    .then((body) => { liveCurrentVersion = typeof body?.version === 'string' ? body.version : null })
+    .catch(() => {})
 }
 
 // dismissing noise must not cost an expansion: staged 5s, undoable, flushed on blur

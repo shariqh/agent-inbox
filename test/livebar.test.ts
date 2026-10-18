@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { liveSummary, lastActivityAt, isDormant, activitySynopsis } from '../public/livebar.js'
+import { liveSummary, lastActivityAt, isDormant, activitySynopsis, sessionBuild } from '../public/livebar.js'
 
 const NOW = Date.parse('2026-07-24T12:00:00.000Z')
 const at = (msAgo: number) => new Date(NOW - msAgo).toISOString()
@@ -101,5 +101,61 @@ describe('activitySynopsis', () => {
       text: 'No task reported yet',
       historical: false,
     })
+  })
+})
+
+// Issue #197 — which Agent Inbox build a session runs, and whether a restart
+// would load a newer one. Display only, and it never guesses: both versions must
+// be strict semver before anything is compared, and a session whose own version
+// is unknown renders nothing at all.
+describe('sessionBuild', () => {
+  const build = (own: unknown, current: unknown) => sessionBuild(sess({ server_version: own }), current)
+  const isOlder = (own: string, current: string) => build(own, current)?.older
+
+  it('labels a current session and says nothing more', () => {
+    expect(build('1.2.8', '1.2.8')).toEqual({ label: 'v1.2.8', older: false, hint: '' })
+  })
+
+  it('hints a restart only when the session is strictly older than the current build', () => {
+    expect(build('1.2.6', '1.2.8')).toEqual({
+      label: 'v1.2.6',
+      older: true,
+      hint: 'older build — restart this session to load v1.2.8',
+    })
+    expect(isOlder('1.1.9', '1.2.0')).toBe(true)
+    expect(isOlder('0.9.9', '1.0.0')).toBe(true)
+    // a session NEWER than this viewer is not an older build
+    expect(isOlder('1.3.0', '1.2.8')).toBe(false)
+  })
+
+  it('compares numerically, never as text, without losing precision', () => {
+    expect(isOlder('1.9.0', '1.10.0')).toBe(true)
+    expect(isOlder('1.10.0', '1.9.0')).toBe(false)
+    expect(isOlder('1.2.9', '1.2.10')).toBe(true)
+    expect(isOlder('1.2.9007199254740992', '1.2.9007199254740993')).toBe(true)
+  })
+
+  it('follows semver precedence for pre-releases and ignores build metadata', () => {
+    // the precedence chain from semver.org §11, each strictly older than the next
+    const chain = ['1.0.0-alpha', '1.0.0-alpha.1', '1.0.0-alpha.beta', '1.0.0-beta', '1.0.0-beta.2', '1.0.0-beta.11', '1.0.0-rc.1', '1.0.0']
+    for (let i = 1; i < chain.length; i++) {
+      expect(isOlder(chain[i - 1]!, chain[i]!), `${chain[i - 1]} < ${chain[i]}`).toBe(true)
+      expect(isOlder(chain[i]!, chain[i - 1]!), `${chain[i]} !< ${chain[i - 1]}`).toBe(false)
+    }
+    expect(build('1.2.8+abc123', '1.2.8')).toEqual({ label: 'v1.2.8+abc123', older: false, hint: '' })
+    expect(isOlder('1.2.8', '1.2.8+abc123')).toBe(false)
+  })
+
+  it('renders nothing for a session with no version or one that is not semver', () => {
+    for (const own of [undefined, null, '', 'v1.2.8', '1.2', '1.2.8.1', '01.2.8', '1.2.8-', 'latest', '<img src=x onerror=alert(1)>', 128, `1.2.8-${'x'.repeat(80)}`]) {
+      expect(build(own, '1.2.8'), String(own)).toBeNull()
+    }
+    expect(sessionBuild(null, '1.2.8')).toBeNull()
+  })
+
+  it('still labels the session, but never hints, when the current build is unknown', () => {
+    for (const current of [undefined, null, '', 'unknown', '1.2', '<b>1.3.0</b>']) {
+      expect(build('1.2.6', current), String(current)).toEqual({ label: 'v1.2.6', older: false, hint: '' })
+    }
   })
 })

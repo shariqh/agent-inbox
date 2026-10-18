@@ -206,6 +206,9 @@ Live shows connected MCP processes and the work they report, not an authoritativ
 inventory of every agent or subagent. A connection with no task report is unknown
 activity, not proof of inactivity. `register` updates its displayed project and
 branch immediately; child-agent descriptions still come from the manager.
+Each connection also shows the Agent Inbox build its MCP server runs. A session on
+an older build than this viewer gets a quiet "restart this session" hint; a server
+too old to report its build shows nothing rather than a guess.
 
 ## Keyboard controls
 

@@ -17,6 +17,7 @@ import { groupItems } from './group.js'
 import { hooksSettingsBlock } from './hook.js'
 import { buildStamp, readBakedInfo } from './stamp.js'
 import type { BakedInfo, BuildStamp } from './stamp.js'
+import { AGENT_INBOX_VERSION } from './version.js'
 
 const require = createRequire(import.meta.url)
 const {
@@ -350,6 +351,16 @@ function setupInfo(baked: BakedInfo | null, hostKey: string, runtimeRoot: string
   return devSetupInfo(baked)
 }
 
+// Issue #197 — the build Live compares each session's server version against.
+// A release build answers with its baked version: the one /api/setup and the
+// build stamp report, and the runtime Setup installs. Anything else answers with
+// the version this viewer's own code is, which a release bump keeps equal to
+// package.json. A release that baked no version answers null: no guess.
+function currentAgentVersion(baked: BakedInfo | null): string | null {
+  if (baked?.schema === 2) return baked.version ?? null
+  return AGENT_INBOX_VERSION
+}
+
 // A close/reopen body carries one agent-authored project name. An unparseable
 // body arrives here as null (the caller's .catch) and is refused like any other
 // missing name — a 400, never a 500.
@@ -469,6 +480,10 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
   }
 
   app.get('/api/activity', (c) => c.json(listActivity(db)))
+
+  // Fetched once per page load by the Live bar, never on the poll: a viewer
+  // restart reloads the page. A local file read at most — no git, no network.
+  app.get('/api/version', (c) => c.json({ version: currentAgentVersion(readBakedInfo(bakedPath)) }))
 
   // Read-only, truthful claim-interval history for the dashboard: independent
   // of `/api/activity` and never imported into any attention/badge path.

@@ -25,6 +25,16 @@ release does not download or install packages: **Review release** opens the veri
 GitHub release page so you can choose and install the package yourself. Browser viewers
 and source/dev Electron runs do not expose update checks.
 
+The app remembers the newest release version it has verified, in its own file
+(`update-trust-state.json`) in the app's settings folder. If a later check receives older
+signed release information, Settings → Updates says the information was out of date,
+nothing older is offered, and the next check tries again. Reinstalling an older 1.3 or
+later version still offers the newest verified release. Versions before 1.3 do not read
+this file, so while a 1.2.x build is installed there is no rollback protection; it
+resumes when a 1.3 or later build runs again. Update preferences keep their 1.2.x format,
+so automatic checks stay as you set them in either direction. This protection starts
+after the first successful check and resets if the app's settings folder is deleted.
+
 ### App opens blank after an upgrade
 
 Older builds can mix cached interface files from different versions. If the app opens

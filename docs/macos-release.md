@@ -465,6 +465,10 @@ workflow clock; `expiresAt` is deterministically 180 days later. The signer refu
 already-expired manifest, while previous-release continuity checks intentionally verify
 historical structure/signatures without applying current-time expiry so expiry cannot
 prevent a fix-forward release.
+Agent Inbox 1.3 and later also persist the highest release version whose manifest they
+verified and report any older signed manifest as stale instead of offering it. Marking an
+older release as GitHub's latest therefore cannot roll those clients back; retract a bad
+release by publishing a newer fixed version.
 The signed manifest contains the same five package SHA-256 values and byte lengths, but it
 does not replace the package-only `SHA256SUMS.txt` command above.
 

@@ -6,7 +6,7 @@ import { bootApp, click, freshDb, settle, useDomTest } from './harness.js'
 useDomTest()
 
 type UpdateState = {
-  status: 'idle' | 'checking' | 'current' | 'available' | 'unverified' | 'unsupported'
+  status: 'idle' | 'checking' | 'current' | 'available' | 'stale' | 'unverified' | 'unsupported'
   currentVersion: string
   automaticChecks: boolean
   checkedAt: string | null
@@ -126,6 +126,20 @@ describe('desktop update settings', () => {
     expect((document.querySelector('.updates-check') as HTMLButtonElement).disabled).toBe(disabled)
     expect(document.querySelector('.updates-review')?.hasAttribute('hidden')).toBe(!review)
     expect(document.activeElement).toBe(check)
+  })
+
+  it('explains stale release information calmly and keeps only the manual Releases action', async () => {
+    const bridge = await boot()
+    const status = () => document.querySelector('.updates-state')
+    bridge.emit(state('stale', { automaticChecks: true, checkedAt: '2026-02-01T00:00:00.000Z' }))
+
+    expect(status()?.textContent).toBe('Release information was out of date. Agent Inbox will check again automatically.')
+    expect(status()?.getAttribute('data-state')).toBe('stale')
+    expect(document.querySelector('.updates-review')?.hasAttribute('hidden')).toBe(true)
+    expect(document.querySelector('.updates-releases')?.hasAttribute('hidden')).toBe(false)
+
+    bridge.emit(state('stale', { automaticChecks: false, checkedAt: '2026-02-01T00:00:00.000Z' }))
+    expect(status()?.textContent).toBe('Release information was out of date. Check again later.')
   })
 
   it('checks manually, saves automatic checks, and opens only main-owned release actions', async () => {

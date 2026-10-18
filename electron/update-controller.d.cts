@@ -5,6 +5,7 @@ import type {
 import type {
   UpdatePreferences,
   UpdatePreferencesStore,
+  UpdateTrustStateStore,
 } from './update-preferences.cjs'
 
 export type {
@@ -24,6 +25,8 @@ export interface UpdateNotification {
 export interface UpdateCheckerInput {
   currentVersion: string
   automaticChecks: boolean
+  /** Records a just-verified release, saves the session's highest one, and resolves the rollback high-water mark. */
+  recordVerifiedVersion(version: string): Promise<string | null>
 }
 
 export interface UpdateController {
@@ -39,6 +42,8 @@ export interface UpdateController {
 export function createUpdateController(options: {
   currentVersion: string
   preferences: UpdatePreferencesStore
+  /** Persists the rollback high-water mark; without it the mark lasts only for this process. */
+  trustState?: UpdateTrustStateStore
   checker(input: UpdateCheckerInput): Promise<UpdateRendererState>
   notifier(notification: UpdateNotification): Promise<unknown> | unknown
   clock?: () => Date

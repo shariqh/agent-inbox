@@ -200,6 +200,19 @@ describe('activity history snapshots', () => {
     expect(fetcher.mock.calls[4]?.[1]?.headers).toBeUndefined()
   })
 
+  it('retires a history validator once its server stops tagging', async () => {
+    const url = activityHistoryUrl(Date.parse('2026-07-20T10:00:00.000Z'))
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response('[{"session":"a"}]', { headers: { etag: '"a"' } }))
+      .mockResolvedValueOnce(new Response('[{"session":"b"}]'))
+      .mockResolvedValueOnce(new Response('[{"session":"c"}]'))
+    const read = createSnapshotReader(fetcher)
+    await (await read(url)).json()
+    expect(await (await read(url)).json()).toEqual([{ session: 'b' }])
+    expect(await (await read(url)).json()).toEqual([{ session: 'c' }])
+    expect(fetcher.mock.calls[2]?.[1]?.headers).toBeUndefined()
+  })
+
   it.each([
     () => new Response('unavailable', { status: 503, headers: { etag: '"bad"' } }),
     () => new Response('{"spans":[]}', { headers: { etag: '"bad"' } }),

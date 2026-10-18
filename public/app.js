@@ -25,6 +25,7 @@ import { keyAction, rovingIndex, ariaAnswerLabel, livenessGlyph, deckEntryAt } f
 import { createKeyboardUI } from '/keyboard-ui.js'
 import { partitionNotes, unreadNoteCount, ambientChips, seenWatermark, markSeenIds } from '/notes.js'
 import { liveSummary, lastActivityAt, isDormant, activitySynopsis, sessionBuild } from '/livebar.js'
+import { hostLabel, hostLine, outdatedHosts, restartGuidance, updateTarget } from '/agents.js'
 import { esc } from '/esc.js'
 import { initStructuredTextCopy } from '/structured-copy.js'
 import { renderStructuredText } from '/structured-text.js'
@@ -3980,15 +3981,15 @@ function initGear() {
 // live entries the user has expanded, by session id — survives the poll rebuild
 const openLive = new Set()
 
-// Issue #197 — the /api/version body: the build a restarted session would load
-// and the runtime state that decides which advice the hint may give. Read at
-// boot, whenever the drawer opens and after a Setup install, so the advice
-// follows an install made since. It stays null when the viewer cannot say, and
-// then no hint renders.
+// Issue #197 — the /api/version body: the build a restarted session would load,
+// the runtime state and what each host is registered to run, which together
+// decide which advice the hint may give. Read at boot, whenever the drawer opens
+// and after a Setup install, so the advice follows an install made since. It
+// stays null when the viewer cannot say, and then no hint renders.
 let liveVersion = null
 
 function refreshLiveVersion() {
-  fetch('/api/version')
+  return fetch('/api/version')
     .then((r) => (r.ok ? r.json() : null))
     .then((body) => { liveVersion = body && typeof body === 'object' ? body : null })
     .catch(() => {})
@@ -6716,6 +6717,155 @@ function initSearch() {
   }, true)
 }
 
+// ── Agents (#197 part 2) ────────────────────────────────────────────────────
+// Which build each host's agents are registered to run, and ONE explicit
+// "Update agents" for the Setup-managed hosts whose runtime is older than this
+// app's. It runs the existing fixed-target install (claude, copilot or all,
+// through the same Electron bridge as the menu below) for exactly those hosts:
+// no new command, nothing at startup, and a checkout or custom registration is
+// reported, never switched. The installer refuses to replace a registration it
+// does not own, and this never asks it to force one. Paths come from host
+// config files, so every string here is textContent.
+let agentsBlock = null
+
+function renderAgents(host, s, canInstall) {
+  agentsBlock = null
+  if (!s?.agents || typeof s.agents !== 'object') return
+  const section = document.createElement('section')
+  section.className = 'setup-block agents-status'
+  const title = document.createElement('h3')
+  title.textContent = 'Agents'
+  const list = document.createElement('ul')
+  list.className = 'agents-hosts'
+  const actions = document.createElement('div')
+  actions.className = 'agents-actions'
+  const result = document.createElement('pre')
+  result.className = 'agents-result'
+  result.hidden = true
+  const restart = document.createElement('div')
+  restart.className = 'agents-restart'
+  restart.setAttribute('role', 'status')
+  restart.hidden = true
+  section.append(title, list, actions, result, restart)
+  host.appendChild(section)
+  agentsBlock = { list, actions, result, restart, canInstall, running: false }
+  paintAgents(s.agents)
+}
+
+function agentsHint(text) {
+  const p = document.createElement('p')
+  p.className = 'setup-hint'
+  p.textContent = text
+  agentsBlock.actions.appendChild(p)
+}
+
+function paintAgents(agents) {
+  const block = agentsBlock
+  if (!block) return
+  block.list.replaceChildren()
+  block.actions.replaceChildren()
+  const current = typeof agents.current === 'string' ? agents.current : null
+  const lines = ['claude', 'copilot', 'hooks'].map((h) => hostLine(h, agents[h], current))
+  for (const line of lines) {
+    const item = document.createElement('li')
+    item.dataset.host = line.host
+    item.classList.toggle('outdated', line.outdated)
+    const name = document.createElement('strong')
+    name.textContent = `${line.label}:`
+    item.append(name, ` ${line.text}`)
+    block.list.appendChild(item)
+  }
+  const outdated = outdatedHosts(agents)
+  const target = agents.updatable === true ? updateTarget(outdated) : null
+  if (target) {
+    const names = outdated.map(hostLabel).join(' and ')
+    if (block.canInstall && window.agentInboxSetup?.install) {
+      agentsHint(`Update agents moves ${names} to the v${current} runtime. Running sessions keep their build until you restart them.`)
+      const run = btn('Update agents', () => updateAgents(target, outdated, current, run))
+      run.className = 'agents-update-btn'
+      run.disabled = block.running
+      block.actions.appendChild(run)
+    } else {
+      agentsHint(`Open Settings in the Agent Inbox app to update ${names} to the v${current} runtime.`)
+    }
+  }
+  if (lines.some((line) => line.kind === 'checkout')) {
+    agentsHint('Setup does not update a source checkout: run git pull and npm run build in it, then restart its sessions.')
+  }
+  if (lines[2]?.outdated) {
+    if (typeof agents.hooksCommand === 'string' && agents.hooksCommand) {
+      agentsHint(`Update agents does not move Claude hooks. To move them to v${current}, run this in a terminal:`)
+      const command = document.createElement('pre')
+      command.className = 'agents-hooks-command'
+      command.textContent = agents.hooksCommand
+      const copy = btn('Copy', async () => {
+        try {
+          await navigator.clipboard.writeText(agents.hooksCommand)
+          copy.textContent = 'Copied ✓'
+        } catch {
+          copy.textContent = 'Copy failed'
+        }
+        setTimeout(() => { copy.textContent = 'Copy' }, 1500)
+      })
+      copy.className = 'copy-btn'
+      block.actions.append(command, copy)
+    } else {
+      agentsHint(`Update agents does not move Claude hooks. Once the v${current} runtime is installed, the command that moves them appears here.`)
+    }
+  }
+}
+
+// Re-read what each host is registered to run, after any install.
+function refreshAgents() {
+  if (!agentsBlock) return Promise.resolve()
+  return fetch('/api/setup')
+    .then((r) => (r.ok ? r.json() : null))
+    .then((s) => { if (s?.agents && typeof s.agents === 'object') paintAgents(s.agents) })
+    .catch(() => { /* keep the status already shown */ })
+}
+
+async function updateAgents(target, hosts, current, button) {
+  const block = agentsBlock
+  if (!block || block.running) return
+  block.running = true
+  button.disabled = true
+  block.restart.hidden = true
+  block.restart.replaceChildren()
+  const names = hosts.map(hostLabel).join(' and ')
+  const show = (text, state) => {
+    block.result.textContent = text
+    block.result.hidden = false
+    block.result.classList.toggle('success', state === 'ok')
+    block.result.classList.toggle('failure', state === 'failed')
+  }
+  show(`Updating ${names}…`, 'running')
+  let ok = false
+  try {
+    const outcome = await window.agentInboxSetup.install(target)
+    ok = outcome?.ok === true
+    show(outcome?.output || (ok ? `${names} updated.` : 'Update failed without output.'), ok ? 'ok' : 'failed')
+  } catch (err) {
+    show(`Update failed: ${err instanceof Error ? err.message : String(err)}`, 'failed')
+  } finally {
+    block.running = false
+  }
+  await Promise.all([refreshAgents(), refreshLiveVersion()])
+  if (!ok) return
+  // A running session keeps the MCP server it started with: say which ones
+  // still need a restart, and how, rather than imply anything reloaded.
+  const lead = document.createElement('p')
+  lead.className = 'setup-hint'
+  lead.textContent = 'Running sessions keep the build they started with until you restart them.'
+  const list = document.createElement('ul')
+  for (const text of restartGuidance(lastData?.activity ?? [], hosts, current)) {
+    const item = document.createElement('li')
+    item.textContent = text
+    list.appendChild(item)
+  }
+  block.restart.replaceChildren(lead, list)
+  block.restart.hidden = false
+}
+
 function setupTargetLabel(target) {
   return {
     all: 'Claude Code + Copilot CLI',
@@ -6795,8 +6945,10 @@ function setupMenu(s, host, canInstall) {
         run.disabled = false
         select.disabled = false
         updateLabels()
-        // #197: an install changes what Live's older-build hints may advise
+        // #197: an install changes what Live's older-build hints may advise,
+        // and what each host is registered to run
         refreshLiveVersion()
+        refreshAgents()
       }
     })
     run.className = 'setup-run-btn'
@@ -7133,6 +7285,7 @@ async function renderSetup() {
       host.appendChild(note)
     }
     const canInstall = await window.agentInboxSetup?.available?.().catch(() => false) ?? false
+    renderAgents(host, s, canInstall)
     setupMenu(s, host, canInstall)
     // issue #74: a release build withholds these manual/direct commands
     // entirely (empty string) until a runtime matching this exact host's

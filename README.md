@@ -71,6 +71,10 @@ trust checks are in the [installation guide](docs/INSTALL.md).
 On first launch, open **Setup**, choose GitHub Copilot CLI, Claude Code, or both, and
 select **Install now**. Setup verifies and installs the bundled runtime, registers the MCP
 server, and adds the reporting instructions. Start a fresh agent session afterward.
+After an app update, Setup's **Agents** section shows which build each host's agents
+are registered to run; **Update agents** moves the ones Setup manages to the new
+runtime and says which running sessions still need a restart. See
+[After an app update](docs/INSTALL.md#after-an-app-update).
 
 If no public release is listed yet, or if you want to develop Agent Inbox, use the
 source-build fallback:
@@ -208,10 +212,10 @@ activity, not proof of inactivity. `register` updates its displayed project and
 branch immediately; child-agent descriptions still come from the manager.
 Each connection also shows the Agent Inbox build its MCP server runs. A session on
 an older build gets a quiet hint whose advice fits where that session runs from: a
-session on Setup's agent runtime is told to restart once the new runtime is
-installed (or to install it from Setup first), and a session running from a source
-checkout is told to update and rebuild it. A server too old to report its build
-shows nothing rather than a guess.
+session on Setup's agent runtime is told to restart once its own host (Claude Code
+or Copilot CLI) is registered to the new runtime, or to update agents from Setup
+first, and a session running from a source checkout is told to update and rebuild
+it. A server too old to report its build shows nothing rather than a guess.
 
 ## Keyboard controls
 

@@ -6,5 +6,9 @@ export function lastActivityAt(a: unknown): string
 export const DORMANT_MS: number
 export function isDormant(a: unknown, nowMs: number): boolean
 export function activitySynopsis(a: unknown): { text: string; historical: boolean }
-/** issue #197 — a session's own build label, plus a hint when it is strictly older than `info.current`; its advice follows the session's server_source and `info` (the /api/version body). */
+/** issue #197 — a session's own build label, plus a hint when it is strictly older than `info.current`; its advice follows the session's server_source, its host's registration in `info.hosts` and `info` (the /api/version body). */
 export function sessionBuild(a: unknown, info: unknown): { label: string; older: boolean; hint: string } | null
+/** issue #197 part 2 — the Setup host ('claude' | 'copilot') behind a session's inferred agent name, or null. */
+export function hostOfAgent(agent: unknown): 'claude' | 'copilot' | null
+/** issue #197 part 2 — semver precedence (-1, 0, 1), or null unless both are strict semver. */
+export function compareVersions(a: unknown, b: unknown): -1 | 0 | 1 | null

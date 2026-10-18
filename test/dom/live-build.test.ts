@@ -4,14 +4,17 @@
 // Issue #197, through the real viewer over a real DB: Live says which Agent
 // Inbox build each session runs, and quietly marks a session that runs an OLDER
 // build than the current one. The advice follows where THAT session runs from —
-// an installed agent runtime or a checkout — and what this viewer has verified,
-// and it is left out when nothing backs it. That is presence, not attention: it
-// never moves the badge, the Needs-you count or anything else the human is asked
-// to act on.
+// an installed agent runtime or a checkout — what ITS HOST is registered to run
+// (part 2: a restart loads the registration, not whatever is installed), and
+// what this viewer has verified; it is left out when nothing backs it. That is
+// presence, not attention: it never moves the badge, the Needs-you count or
+// anything else the human is asked to act on.
 import { describe, it, expect, afterEach } from 'vitest'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import type Database from 'better-sqlite3'
 import { insertItem, recordActivityCall, upsertActivity } from '../../src/store.js'
-import { releaseRuntime } from '../release-runtime.js'
+import { registerHost, releaseRuntime } from '../release-runtime.js'
 import {
   advanceClock, badgeCount, bootApp, click, freshDb, pollTick, rows, settle, showInbox, tabCount, useDomTest,
 } from './harness.js'
@@ -58,7 +61,7 @@ const text = (el: Element | null | undefined, selector: string): string | null =
 const hint = (project: string): string | null => text(drawerEntry(project), '.live-build-hint')
 
 const RESTART = 'older build (v1.2.6) — restart this session to load v2.0.0'
-const SETUP = 'older build (v1.2.6) — install the v2.0.0 agent runtime from Setup, then restart this session'
+const UPDATE = 'older build (v1.2.6) — update agents from Setup, then restart this session'
 const CHECKOUT = 'older build (v1.2.6) — update and rebuild its checkout, then restart this session'
 
 describe('Live shows the build each session runs (#197)', () => {
@@ -70,7 +73,9 @@ describe('Live shows the build each session runs (#197)', () => {
     seed(d, { session: 'legacy', project: 'delta', agent: 'claude-code' })
     seed(d, { session: 'garbage', project: 'epsilon', agent: 'copilot', version: '<img src=x onerror=alert(1)>' })
     const release = releaseRuntime('2.0.0')
-    release.install()
+    const current = release.install()
+    release.register('claude', current)
+    release.register('copilot', current)
 
     await bootApp(d, { viewer: release.viewer })
     await pollTick()
@@ -101,20 +106,31 @@ describe('Live shows the build each session runs (#197)', () => {
     expect(stripChip('beta')?.title).toBe(RESTART)
   })
 
-  it('points at Setup while the runtime is not installed, and says restart once the drawer is reopened after an install', async () => {
+  it('points at Update agents while the host still runs the old runtime, installed or not, and says restart once it is registered to the new one', async () => {
     const d = open()
     seed(d, { session: 'stale', project: 'beta', agent: 'claude-code', version: '1.2.6', working: true })
     const release = releaseRuntime('2.0.0')
+    release.register('claude', release.installVersion('1.2.6'))
+    const reopen = async (): Promise<void> => {
+      click(document.getElementById('liveStrip'))
+      await settle()
+      await pollTick()
+    }
 
     await bootApp(d, { viewer: release.viewer })
     await pollTick()
-    expect(hint('beta')).toBe(SETUP)
-    expect(stripChip('beta')?.title).toBe(SETUP)
+    expect(hint('beta')).toBe(UPDATE)
+    expect(stripChip('beta')?.title).toBe(UPDATE)
 
-    release.install()
+    // the new runtime is installed, but Claude Code is still registered to the
+    // old one: a restart alone would load v1.2.6 again (part 1's per-machine gap)
+    const current = release.install()
+    await reopen()
+    expect(hint('beta')).toBe(UPDATE)
+
+    release.register('claude', current)
     click(document.getElementById('liveStrip'))
-    await settle()
-    await pollTick()
+    await reopen()
     expect(hint('beta')).toBe(RESTART)
   })
 
@@ -122,12 +138,13 @@ describe('Live shows the build each session runs (#197)', () => {
     const d = open()
     seed(d, { session: 'stale', project: 'beta', agent: 'claude-code', version: '1.2.6', working: true })
     const release = releaseRuntime('2.0.0')
+    release.register('claude', release.installVersion('1.2.6'))
     Object.defineProperty(window, 'agentInboxSetup', {
       configurable: true,
       value: {
         available: async () => true,
         install: async (target: string) => {
-          release.install()
+          release.register('claude', release.install())
           return { ok: true, exitCode: 0, target, timedOut: false, output: 'installed' }
         },
       },
@@ -135,7 +152,7 @@ describe('Live shows the build each session runs (#197)', () => {
 
     await bootApp(d, { viewer: release.viewer })
     await pollTick()
-    expect(hint('beta')).toBe(SETUP)
+    expect(hint('beta')).toBe(UPDATE)
 
     click(document.querySelector('.setup-run-btn'))
     await settle()
@@ -151,7 +168,7 @@ describe('Live shows the build each session runs (#197)', () => {
     seed(d, { session: 'checkout', project: 'gamma', agent: 'copilot', version: '1.2.6', source: 'checkout', working: true })
     seed(d, { session: 'legacy', project: 'delta', agent: 'copilot', version: '1.2.6', source: null, working: true })
     const release = releaseRuntime('2.0.0')
-    release.install()
+    release.register('claude', release.install())
 
     await bootApp(d, { viewer: release.viewer })
     await pollTick()
@@ -167,8 +184,10 @@ describe('Live shows the build each session runs (#197)', () => {
   it('offers no remedy when Setup could not install the runtime here', async () => {
     const d = open()
     seed(d, { session: 'stale', project: 'beta', agent: 'claude-code', version: '1.2.6', working: true })
+    const release = releaseRuntime('2.0.0', { hostPayload: false })
+    release.register('claude', release.installVersion('1.2.6'))
 
-    await bootApp(d, { viewer: releaseRuntime('2.0.0', { hostPayload: false }).viewer })
+    await bootApp(d, { viewer: release.viewer })
     await pollTick()
 
     expect(hint('beta')).toBe('older build (v1.2.6)')
@@ -206,6 +225,45 @@ describe('Live shows the build each session runs (#197)', () => {
     expect(drawer().querySelector('.idle-fold > summary')?.textContent).toBe('1 connection · no task reported')
     expect(stripChip('beta')?.textContent).toBe('beta/claude-code')
     expect(stripChip('beta')?.title).toBe('')
+  })
+
+  it('narrows the advice to each session\'s own host: Copilot still on the old runtime is told to update, Claude on the new one to restart', async () => {
+    const d = open()
+    seed(d, { session: 'claude', project: 'beta', agent: 'claude-code', version: '1.2.6', working: true })
+    seed(d, { session: 'copilot', project: 'gamma', agent: 'copilot', version: '1.2.6', working: true })
+    const release = releaseRuntime('2.0.0')
+    release.register('claude', release.install())
+    release.register('copilot', release.installVersion('1.2.6'))
+
+    await bootApp(d, { viewer: release.viewer })
+    await pollTick()
+
+    expect(hint('beta')).toBe(RESTART)
+    expect(hint('gamma')).toBe(UPDATE)
+    expect(stripChip('gamma')?.title).toBe(UPDATE)
+  })
+
+  it('gives a runtime session no advice when its host is not registered to Setup\'s runtime, or is not a host Setup registers', async () => {
+    const d = open()
+    seed(d, { session: 'unregistered', project: 'beta', agent: 'claude-code', version: '1.2.6', working: true })
+    seed(d, { session: 'checkout-host', project: 'gamma', agent: 'copilot', version: '1.2.6', working: true })
+    seed(d, { session: 'other-client', project: 'delta', agent: 'codex', version: '1.2.6', working: true })
+    const release = releaseRuntime('2.0.0')
+    release.install()
+    // Copilot CLI is registered to a source checkout; Claude Code to nothing
+    const checkout = join(release.home, 'checkout')
+    mkdirSync(join(checkout, 'dist'), { recursive: true })
+    writeFileSync(join(checkout, 'package.json'), '{"name":"agent-inbox"}')
+    writeFileSync(join(checkout, 'dist', 'mcp-server.js'), '')
+    registerHost(release.home, 'copilot', process.execPath, join(checkout, 'dist', 'mcp-server.js'))
+
+    await bootApp(d, { viewer: release.viewer })
+    await pollTick()
+
+    for (const project of ['beta', 'gamma', 'delta']) {
+      expect(hint(project), project).toBe('older build (v1.2.6)')
+      expect(text(stripChip(project), '.live-build-marker'), project).toBe('older build')
+    }
   })
 
   it('is presence, not attention: an older build moves no badge or count', async () => {

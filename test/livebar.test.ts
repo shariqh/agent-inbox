@@ -108,13 +108,20 @@ describe('activitySynopsis', () => {
 // Display only, and it never gives advice nothing backs: both versions must be
 // strict semver before anything is compared, a session whose own version is
 // unknown renders nothing, and the advice follows where THAT SESSION runs from
-// (its recorded server_source) and the viewer's verified runtime state.
+// (its recorded server_source), what ITS HOST is registered to run (part 2) and
+// the viewer's verified runtime state.
 describe('sessionBuild', () => {
-  const RELEASE_READY = { current: '1.3.0', mode: 'release', runtimeInstalled: true }
-  const build = (own: unknown, info: unknown = RELEASE_READY, source: unknown = 'runtime') =>
-    sessionBuild(sess({ server_version: own, server_source: source }), info)
+  const ON_CURRENT = { claude: { kind: 'runtime', version: '1.3.0' }, copilot: { kind: 'runtime', version: '1.3.0' } }
+  const RELEASE_READY = { current: '1.3.0', mode: 'release', runtimeInstalled: true, hosts: ON_CURRENT }
+  const build = (own: unknown, info: unknown = RELEASE_READY, source: unknown = 'runtime', agent = 'claude-code') =>
+    sessionBuild(sess({ server_version: own, server_source: source, agent }), info)
   const isOlder = (own: string, current: string) => build(own, { ...RELEASE_READY, current })?.older
-  const hint = (info: unknown, source: unknown) => build('1.2.8', info, source)?.hint
+  const hint = (info: unknown, source: unknown, agent = 'claude-code') => build('1.2.8', info, source, agent)?.hint
+  const RESTART = 'older build (v1.2.8) — restart this session to load v1.3.0'
+  const UPDATE = 'older build (v1.2.8) — update agents from Setup, then restart this session'
+  const NONE = 'older build (v1.2.8)'
+  const withClaude = (claude: unknown, info: Record<string, unknown> = RELEASE_READY) =>
+    ({ ...info, hosts: { ...ON_CURRENT, claude } })
 
   it('labels a session on the current build and says nothing more', () => {
     expect(build('1.3.0')).toEqual({ label: 'v1.3.0', older: false, hint: '' })
@@ -122,27 +129,60 @@ describe('sessionBuild', () => {
     expect(build('1.4.0')).toEqual({ label: 'v1.4.0', older: false, hint: '' })
   })
 
-  it('a session on an installed runtime: restart once the new runtime is installed', () => {
-    expect(build('1.2.8')).toEqual({
-      label: 'v1.2.8',
-      older: true,
-      hint: 'older build (v1.2.8) — restart this session to load v1.3.0',
-    })
+  it('a runtime session restarts into the new build only once its own host is registered to it', () => {
+    expect(build('1.2.8')).toEqual({ label: 'v1.2.8', older: true, hint: RESTART })
+    // the host is registered to a build newer still: a restart loads that one
+    expect(hint(withClaude({ kind: 'runtime', version: '1.4.0' }), 'runtime'))
+      .toBe('older build (v1.2.8) — restart this session to load v1.4.0')
   })
 
-  it('a session on an installed runtime: Setup first while the new runtime is not installed', () => {
-    expect(hint({ ...RELEASE_READY, runtimeInstalled: false }, 'runtime'))
-      .toBe('older build (v1.2.8) — install the v1.3.0 agent runtime from Setup, then restart this session')
+  it('maps each session to its own host: a Copilot session follows Copilot\'s registration, not Claude\'s', () => {
+    const split = { ...RELEASE_READY, hosts: { claude: { kind: 'runtime', version: '1.3.0' }, copilot: { kind: 'runtime', version: '1.2.8' } } }
+    expect(hint(split, 'runtime', 'claude-code')).toBe(RESTART)
+    expect(hint(split, 'runtime', 'copilot')).toBe(UPDATE)
   })
 
-  it('a session on an installed runtime: no advice when this viewer cannot install one', () => {
+  it('a runtime session whose host still runs an older Setup runtime: update agents from Setup first', () => {
+    for (const runtimeInstalled of [true, false]) {
+      expect(hint(withClaude({ kind: 'runtime', version: '1.2.8' }, { ...RELEASE_READY, runtimeInstalled }), 'runtime'), String(runtimeInstalled))
+        .toBe(UPDATE)
+    }
+    // even while the new runtime is not installed yet, a restart alone changes nothing
+    expect(hint(withClaude({ kind: 'runtime', version: '1.1.0' }, { ...RELEASE_READY, runtimeInstalled: false }), 'runtime'))
+      .toBe(UPDATE)
+  })
+
+  it('a runtime session gets no advice its host registration cannot back', () => {
+    for (const claude of [
+      { kind: 'none' },
+      { kind: 'checkout' },
+      { kind: 'other' },
+      { kind: 'unknown' },
+      { kind: 'runtime' }, // a runtime whose version could not be read
+      { kind: 'runtime', version: 'latest' },
+      undefined,
+      null,
+    ]) {
+      expect(hint(withClaude(claude), 'runtime'), JSON.stringify(claude)).toBe(NONE)
+    }
+    // an older viewer, or one that could not read any registration
+    for (const hosts of [undefined, null, {}, 'claude']) {
+      expect(hint({ ...RELEASE_READY, hosts }, 'runtime'), JSON.stringify(hosts)).toBe(NONE)
+    }
+    // a client that is neither host Setup manages
+    for (const agent of ['codex', 'unknown', '']) {
+      expect(hint(RELEASE_READY, 'runtime', agent), agent).toBe(NONE)
+    }
+  })
+
+  it('a runtime session: no advice when this viewer cannot install or update one', () => {
     for (const info of [
-      { ...RELEASE_READY, runtimeInstalled: null },
-      { ...RELEASE_READY, runtimeInstalled: 'yes' },
-      { current: '1.3.0', mode: 'dev', runtimeInstalled: null },
+      { ...withClaude({ kind: 'runtime', version: '1.2.8' }), runtimeInstalled: null },
+      { ...withClaude({ kind: 'runtime', version: '1.2.8' }), runtimeInstalled: 'yes' },
+      { current: '1.3.0', mode: 'dev', runtimeInstalled: null, hosts: ON_CURRENT },
       { ...RELEASE_READY, mode: 'hosted' },
     ]) {
-      expect(hint(info, 'runtime'), JSON.stringify(info)).toBe('older build (v1.2.8)')
+      expect(hint(info, 'runtime'), JSON.stringify(info)).toBe(NONE)
     }
   })
 

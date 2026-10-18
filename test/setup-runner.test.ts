@@ -249,6 +249,28 @@ while :; do sleep 1; done
     expect(main).toContain('key: runtimeSelection.key')
   })
 
+  it('adds no execution surface to read agent status or update agents (#197 part 2)', () => {
+    const read = (...parts: string[]) => readFileSync(join(import.meta.dirname, '..', ...parts), 'utf8')
+    const main = read('electron', 'main.cjs')
+    const preload = read('electron', 'setup-preload.cjs')
+    const hosts = read('src', 'agent-hosts.ts')
+    const viewer = read('src', 'viewer.ts')
+
+    // the renderer's Setup bridge is still exactly available() and install(target):
+    // one fixed target string, never argv, a path or a status command
+    const bridge = preload.slice(preload.indexOf("exposeInMainWorld('agentInboxSetup'"), preload.indexOf("exposeInMainWorld('agentInboxTheme'"))
+    expect([...bridge.matchAll(/ipcRenderer\.invoke\('([^']+)'/g)].map((m) => m[1]))
+      .toEqual(['agent-inbox:install-available', 'agent-inbox:install'])
+    expect(bridge).toContain("ipcRenderer.invoke('agent-inbox:install', target)")
+    expect([...main.matchAll(/ipcMain\.handle\('(agent-inbox:install[^']*)'/g)].map((m) => m[1]))
+      .toEqual(['agent-inbox:install-available', 'agent-inbox:install'])
+
+    // status is READ in the viewer, from files: no process, no network, no lock
+    expect([...hosts.matchAll(/^import .* from '([^']+)'/gm)].map((m) => m[1])).toEqual(['node:fs', 'node:path'])
+    // and no HTTP route writes or runs setup
+    expect(viewer).not.toMatch(/app\.(post|put|patch|delete)\('\/api\/(setup|version|agents)/)
+  })
+
   it('keeps child verification after lock acquisition and before managed runtime or host mutation', () => {
     const installer = readFileSync(join(import.meta.dirname, '..', 'scripts', 'install-agents.sh'), 'utf8')
     const lock = installer.indexOf('acquire_setup_lock install-agents || exit 1')

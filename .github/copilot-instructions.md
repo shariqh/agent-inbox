@@ -66,6 +66,10 @@ Run the build before `npm run electron`; the development shell starts the built
   `src/shape.ts` trims agent-facing MCP read payloads and must not affect viewer
   API payloads. `src/hook.ts`/`hook-cli.ts` and `src/watch.ts`/`watch-cli.ts` are
   separate host adapters that still access data through `store.ts`.
+  `src/agent-hosts.ts` (#197) is viewer-process-only and read-only: it keeps only
+  the `agent-inbox` entry of each host config (and agent-inbox hook entries), never
+  returns or logs anything else, and never spawns a process — not even a host CLI.
+  Its runtime rule must stay the installer's ownership rule; a test pins agreement.
 - **Setup path:** `scripts/install-agents.sh` is the canonical dry-run-first
   installer for MCP registration and managed host instructions. Electron exposes
   only fixed setup targets through `electron/setup-preload.cjs` and invokes that
@@ -74,6 +78,9 @@ Run the build before `npm run electron`; the development shell starts the built
   exact `/bin/bash` installer argv for macOS/Linux and fails closed before spawn
   on Windows or unknown platforms; it is not a general-purpose shell bridge and
   does not enable non-Darwin release Setup. There is no HTTP setup-write route.
+  Setup's "Update agents" (#197) reuses the same `install(target)` with only the
+  Setup-managed hosts that are behind, never `--force`; status is read by the
+  viewer, so there is no status IPC or installer status mode.
   `scripts/setup-filesystem.cjs` is the
   Node-core-only runtime identity/staging/publication/removal boundary used by
   the shipped Darwin install path and build-time runtime publisher. Its Win32

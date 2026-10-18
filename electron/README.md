@@ -3,13 +3,19 @@
 A desktop window around the existing viewer (`public/` + `dist/viewer-server.js`).
 Two modes: a dev run from the repo, and a packaged self-contained `Agent Inbox.app`.
 
-Packaged macOS and Linux apps expose signed, notify-only release checks in
+Packaged macOS and Linux apps expose signed release checks in
 **Settings → Updates** and through **Check for Updates…** in the app menu. The checker
 fetches and verifies the release manifest and signature against the key registry bundled
 with the app before using release metadata. Automatic checks are explicit and off by
 default. They make no telemetry requests and notify at most once per verified version.
-This layer does not download, replace, or install an app; the release action opens the
-verified GitHub release page for a manual package update. Dev Electron and browser
+For `macos-dmg` and `appimage-self-replace` targets, a user-initiated **Download update**
+runs `update-download.cjs` in Electron main: it fetches only the manifest's canonical
+release URL, follows at most five redirects to GitHub's release-asset hosts, streams into
+a private `0700` staging directory under `userData/update-downloads`, enforces the signed
+length as a hard cap, and renames the file into place only after its SHA-256 matches.
+The renderer never sees the URL, digest or path. This layer does not mount, open,
+replace, or install anything; `deb-notify` stays notify-only and the release action opens
+the verified GitHub release page for a manual package update. Dev Electron and browser
 viewers intentionally omit the feature.
 
 Checks also refuse to move backwards. After a manifest's signature, schema and expiry

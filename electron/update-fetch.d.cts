@@ -1,5 +1,6 @@
 import type {
   UpdateInstallStrategy,
+  UpdateManifestTarget,
   UpdateRegistry,
   UpdateTargetPackageType,
 } from './update-manifest.cjs'
@@ -33,6 +34,20 @@ export interface UpdateRendererState {
   checkedAt: string | null
   message: string
   available?: VerifiedAvailableUpdate
+}
+
+/**
+ * The signed manifest's exact target for this host plus its release identity.
+ * Main-process only: it carries the download URL, length and digest, so it is
+ * returned only when `includeArtifact` is set and is never sent to a renderer.
+ */
+export interface UpdateArtifact extends UpdateManifestTarget {
+  version: string
+  tag: string
+}
+
+export interface UpdateCheckResult extends UpdateRendererState {
+  artifact?: UpdateArtifact
 }
 
 export interface FetchResponse {
@@ -71,10 +86,12 @@ export interface UpdateCheckOptions {
   arch: string
   isPackaged: boolean
   appImagePath?: string
+  /** Attach the verified target as `artifact` for the main-process downloader. */
+  includeArtifact?: boolean
   now?: () => Date
   timeoutMs?: number
   setTimeoutImpl?: (callback: () => void, delay: number) => unknown
   clearTimeoutImpl?: (timer: any) => void
 }
 
-export function checkForUpdate(options: UpdateCheckOptions): Promise<UpdateRendererState>
+export function checkForUpdate(options: UpdateCheckOptions): Promise<UpdateCheckResult>

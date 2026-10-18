@@ -6883,16 +6883,39 @@ let updateSettings = null
 let updateSubscriptionStarted = false
 
 function updateStateCopy(state) {
+  const version = state.available?.version ?? ''
   switch (state.status) {
     case 'checking': return 'Checking GitHub for a signed release…'
     case 'current': return 'Agent Inbox is up to date.'
-    case 'available': return `Agent Inbox ${state.available?.version ?? ''} is available.`
+    case 'available': return `Agent Inbox ${version} is available.`
     case 'stale': return state.automaticChecks
       ? 'Release information was out of date. Agent Inbox will check again automatically.'
       : 'Release information was out of date. Check again later.'
+    case 'downloading': return `Downloading Agent Inbox ${version}…`
+    case 'verified': return `Agent Inbox ${version} is downloaded and verified.`
+    case 'download-failed': return `Agent Inbox ${version} couldn’t be downloaded and verified.`
     case 'unverified': return 'Couldn’t check right now. You can review Releases manually.'
     case 'unsupported': return 'Updates are not available for this app build.'
     default: return 'Ready to check GitHub for a signed release.'
+  }
+}
+
+function formatMegabytes(bytes) {
+  const megabytes = bytes / (1024 * 1024)
+  return `${megabytes >= 100 ? Math.round(megabytes) : megabytes.toFixed(1)} MB`
+}
+
+function updateDetailCopy(state) {
+  const download = state.download
+  switch (state.status) {
+    case 'downloading':
+      return download ? `${formatMegabytes(download.receivedBytes)} of ${formatMegabytes(download.totalBytes)}` : ''
+    case 'verified':
+      return 'Its size and SHA-256 match the signed release. Installing from the app arrives in a later update; until then, use Review release to install it yourself.'
+    case 'download-failed':
+      return 'Nothing unverified was kept. Try again, or review the release on GitHub.'
+    default:
+      return ''
   }
 }
 
@@ -6901,23 +6924,50 @@ function paintUpdateSettings(state) {
   const {
     appVersion,
     automatic,
+    cancel,
     check,
     checked,
+    detail,
+    download,
+    progress,
     releases,
     review,
+    section,
     status,
   } = updateSettings
+  const focused = document.activeElement
+  const downloadable = state.available?.downloadable === true
+  const downloading = state.status === 'downloading'
   appVersion.textContent = `Agent Inbox app ${state.currentVersion || 'version unavailable'}`
   status.textContent = updateStateCopy(state)
   status.dataset.state = state.status
-  check.disabled = state.status === 'checking'
+  check.disabled = state.status === 'checking' || downloading
   check.textContent = state.status === 'checking' ? 'Checking…' : 'Check now'
+  download.hidden = !(downloadable && (state.status === 'available' || state.status === 'download-failed'))
+  download.textContent = state.status === 'download-failed' ? 'Try again' : 'Download update'
+  cancel.hidden = !downloading
+  progress.hidden = !downloading
+  if (downloading && state.download) {
+    progress.max = state.download.totalBytes
+    progress.value = state.download.receivedBytes
+  }
+  detail.textContent = updateDetailCopy(state)
+  detail.hidden = detail.textContent === ''
   automatic.checked = Boolean(state.automaticChecks)
   checked.textContent = state.checkedAt
     ? `Last checked ${new Date(state.checkedAt).toLocaleString()}`
     : 'Not checked yet'
-  review.hidden = state.status !== 'available'
+  review.hidden = !state.available
+  // The download is the primary action while it is offered or running.
+  review.classList.toggle('updates-secondary', !download.hidden || !cancel.hidden)
   releases.hidden = state.status !== 'unverified' && state.status !== 'stale'
+  // A pressed action can hide itself (Download → Cancel); keep keyboard focus
+  // inside Updates instead of dropping it to the document, but never take
+  // focus while the window is in the background.
+  if (focused instanceof HTMLElement && focused.hidden && section.contains(focused) && document.hasFocus()) {
+    const next = [cancel, download, review, releases, check].find((button) => !button.hidden && !button.disabled)
+    next?.focus()
+  }
 }
 
 function renderUpdateSettings(host) {
@@ -6948,17 +6998,32 @@ function renderUpdateSettings(host) {
   checked.className = 'updates-checked'
   checked.textContent = 'Not checked yet'
 
+  const progress = document.createElement('progress')
+  progress.className = 'updates-progress'
+  progress.setAttribute('aria-label', 'Update download progress')
+  progress.hidden = true
+
+  const detail = document.createElement('p')
+  detail.className = 'updates-detail'
+  detail.hidden = true
+
   const actions = document.createElement('div')
   actions.className = 'updates-actions'
   const check = btn('Check now', () => bridge.check().catch(() => {}))
   check.className = 'updates-check'
+  const download = btn('Download update', () => bridge.download().catch(() => {}))
+  download.className = 'updates-download'
+  download.hidden = true
+  const cancel = btn('Cancel download', () => bridge.cancelDownload().catch(() => {}))
+  cancel.className = 'updates-cancel'
+  cancel.hidden = true
   const review = btn('Review release', () => bridge.openRelease().catch(() => {}))
   review.className = 'updates-review'
   review.hidden = true
   const releases = btn('Open Releases', () => bridge.openRelease().catch(() => {}))
   releases.className = 'updates-releases'
   releases.hidden = true
-  actions.append(check, review, releases)
+  actions.append(check, download, cancel, review, releases)
 
   const preference = document.createElement('label')
   preference.className = 'updates-preference'
@@ -6983,9 +7048,22 @@ function renderUpdateSettings(host) {
     })
   })
 
-  section.append(heading, status, checked, actions, preference)
+  section.append(heading, status, progress, detail, checked, actions, preference)
   host.appendChild(section)
-  updateSettings = { appVersion, automatic, check, checked, releases, review, status }
+  updateSettings = {
+    appVersion,
+    automatic,
+    cancel,
+    check,
+    checked,
+    detail,
+    download,
+    progress,
+    releases,
+    review,
+    section,
+    status,
+  }
 
   if (!updateSubscriptionStarted) {
     updateSubscriptionStarted = true

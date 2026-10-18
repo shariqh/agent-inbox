@@ -1470,10 +1470,30 @@ body:has(.nrow[data-open="1"]) .inspector-empty { display: none; }
   outline-offset: 2px;
 }
 .updates-actions button:disabled { cursor: wait; opacity: .55; }
-.updates-actions .updates-review {
+.updates-actions .updates-review,
+.updates-actions .updates-download {
   border-color: var(--app-accent);
   background: var(--app-accent);
   color: var(--app-on-accent);
+}
+.updates-actions .updates-review:not(.updates-secondary):hover,
+.updates-actions .updates-download:hover { color: var(--app-on-accent); }
+.updates-actions .updates-review.updates-secondary {
+  border-color: var(--app-border-strong);
+  background: var(--app-surface);
+  color: var(--app-text);
+}
+.updates-actions .updates-review.updates-secondary:hover { border-color: var(--app-accent); color: var(--app-accent); }
+.updates-progress {
+  width: 100%;
+  height: 8px;
+  accent-color: var(--app-accent);
+}
+.updates-detail {
+  margin: -4px 0 0;
+  color: var(--app-text-soft);
+  font-size: 11.5px;
+  line-height: 1.4;
 }
 .updates-preference {
   display: grid;

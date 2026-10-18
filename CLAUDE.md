@@ -728,6 +728,35 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   draft, independently verifies all eight remote bytes plus the five-entry checksum and
   signature, then exposes them atomically by undrafting. This layer adds no Electron
   fetching, scheduling, download, or install behavior.
+- **Rollback high-water mark** *(#148, rollback half only)* — the packaged notify-only
+  checker (`electron/update-fetch.cjs` + `update-controller.cjs`) persists the highest
+  release version whose manifest passed signature, schema and expiry verification in its
+  own Electron userData file, `update-trust-state.json` (`{ schema: 1,
+  highestVerifiedVersion }`; `createUpdateTrustState` in `update-preferences.cjs`, with its
+  own lock and the shared temp-file + rename helper). **Never add a key to
+  `update-preferences.json`:** 1.2.0–1.2.8 accept that file only with exactly
+  `schema`/`automaticChecks`/`lastNotifiedVersion` and otherwise read defaults, silently
+  turning automatic checks off; its format and strict parser stay as 1.2.x shipped them.
+  `checkForUpdate()` calls the controller-supplied `recordVerifiedVersion` exactly once,
+  only after `verifyManifest()` succeeds. The controller saves the highest version verified
+  in this process under the lock (no write when not higher, so a release whose own save
+  failed is saved by the next successful one) and returns max(stored or still-readable
+  mark, that session high), so the stale decision matches the stored mark and an
+  unsaveable mark still holds for the session. A verified manifest below the mark returns
+  `stale`: no offer, no notification, no attention/badge change, normal retry schedule.
+  Offers still need a version above the running app, so the effective floor is max(mark,
+  running version), and a deliberate downgrade is still offered the newest release at or
+  above the mark. The trust-state reader is tolerant of newer builds: a valid mark counts
+  whatever else the file holds, unknown fields survive a raise, and a newer `schema` is
+  enforced but never overwritten, so later trust state (e.g. key rotation) can live there.
+  A missing or corrupt file means no mark (floor = running version) and is replaced by the
+  next verified check. 1.2.x builds ignore the file, so a reinstalled 1.2.x build enforces
+  no mark until 1.3+ runs again. Not covered: the first check after install or a userData
+  reset, a newer release withheld before this installation verified it, and the
+  dual-signed key-rotation transition — the other half of #148 — so the single-key signer
+  rule above still stands. The publisher already refuses to sign a version that is not
+  newer than every prior stable release, so re-pointing GitHub's latest at an older
+  release shows `stale` to every client that already verified the newer one; fix forward.
 - **Session presence** *(#28, corrected by #45)* — every MCP session is a Live row; `status()`
   upgrades it, process exit ends it, and a row that stops being heartbeated expires after ~15 min.
   That expiry only ever fires for a **crashed** process: a live one heartbeats itself, so what

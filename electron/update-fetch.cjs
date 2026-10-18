@@ -256,6 +256,16 @@ function baseState(status, options, checkedAt, message) {
   }
 }
 
+// Rollback high-water mark (#148): record the just-verified version and read back the
+// persisted maximum in one step, so the stale decision below uses the stored mark.
+async function recordHighWater(options, verifiedVersion) {
+  if (typeof options.recordVerifiedVersion !== 'function') return null
+  const highWater = await options.recordVerifiedVersion(verifiedVersion)
+  if (highWater === null || highWater === undefined) return null
+  versionParts(highWater, 'high-water mark')
+  return highWater
+}
+
 async function checkForUpdate(options) {
   if (!options || typeof options.fetchImpl !== 'function') fail('fetchImpl is required')
   versionParts(options.currentVersion, 'currentVersion')
@@ -291,6 +301,15 @@ async function checkForUpdate(options) {
       registry: options.registry,
       now,
     })
+    const highWater = await recordHighWater(options, manifest.version)
+    if (highWater !== null && compareVersions(manifest.version, highWater) < 0) {
+      return baseState(
+        'stale',
+        options,
+        checkedAt,
+        'Update information is older than a release this app already verified.',
+      )
+    }
     const target = selectTarget(manifest, options)
     if (!target) {
       return baseState(

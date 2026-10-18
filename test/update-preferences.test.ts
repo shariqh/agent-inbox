@@ -1,10 +1,10 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import updatePreferences from '../electron/update-preferences.cjs'
 
-const { createUpdatePreferences } = updatePreferences
+const { createUpdatePreferences, createUpdateTrustState } = updatePreferences
 const root = resolve(import.meta.dirname, '..')
 const workDirs: string[] = []
 
@@ -156,5 +156,86 @@ describe('update preferences', () => {
     await preferences.setAutomatic(true)
     expect(getPath).toHaveBeenCalledWith('userData')
     expect(JSON.parse(readFileSync(join(dir, 'updates.json'), 'utf8')).automaticChecks).toBe(true)
+  })
+})
+
+describe('update trust state (rollback high-water mark, #148)', () => {
+  it('keeps only the highest verified version in its own userData file', async () => {
+    const dir = workDir()
+    const trustState = createUpdateTrustState({ app: { getPath: () => dir } })
+    const filePath = join(dir, 'update-trust-state.json')
+    await expect(trustState.read()).resolves.toEqual({ highestVerifiedVersion: null })
+
+    await expect(trustState.recordVerifiedVersion('2.0.0')).resolves.toEqual({ highestVerifiedVersion: '2.0.0' })
+    expect(readFileSync(filePath, 'utf8')).toBe('{\n  "schema": 1,\n  "highestVerifiedVersion": "2.0.0"\n}\n')
+    const written = statSync(filePath).ino
+    for (const notHigher of ['1.99.99', '2.0.0']) {
+      await expect(trustState.recordVerifiedVersion(notHigher)).resolves.toEqual({ highestVerifiedVersion: '2.0.0' })
+    }
+    expect(statSync(filePath).ino).toBe(written)
+
+    await trustState.recordVerifiedVersion('10.0.0')
+    await trustState.recordVerifiedVersion('9.99.99')
+    await expect(trustState.read()).resolves.toEqual({ highestVerifiedVersion: '10.0.0' })
+    await expect(trustState.recordVerifiedVersion('11.0')).rejects.toThrow(TypeError)
+    expect(existsSync(join(dir, 'update-preferences.json'))).toBe(false)
+  })
+
+  it('honors the mark in a newer-schema file but never overwrites it', async () => {
+    const filePath = join(workDir(), 'update-trust-state.json')
+    const newer = '{"schema":2,"highestVerifiedVersion":"3.0.0","trustedKeyIds":["ed25519-0123456789abcdef"]}'
+    writeFileSync(filePath, newer)
+    const trustState = createUpdateTrustState({ filePath })
+
+    await expect(trustState.read()).resolves.toEqual({ highestVerifiedVersion: '3.0.0' })
+    await expect(trustState.recordVerifiedVersion('2.0.0')).resolves.toEqual({ highestVerifiedVersion: '3.0.0' })
+    await expect(trustState.recordVerifiedVersion('3.1.0')).resolves.toEqual({ highestVerifiedVersion: '3.0.0' })
+    expect(readFileSync(filePath, 'utf8')).toBe(newer)
+  })
+
+  it('honors the mark beside unknown fields and keeps those fields when raising it', async () => {
+    const filePath = join(workDir(), 'update-trust-state.json')
+    writeFileSync(filePath, '{"schema":1,"highestVerifiedVersion":"3.0.0","futureField":{"kept":true}}')
+    const trustState = createUpdateTrustState({ filePath })
+
+    await expect(trustState.recordVerifiedVersion('2.0.0')).resolves.toEqual({ highestVerifiedVersion: '3.0.0' })
+    await expect(trustState.recordVerifiedVersion('3.1.0')).resolves.toEqual({ highestVerifiedVersion: '3.1.0' })
+    expect(JSON.parse(readFileSync(filePath, 'utf8'))).toEqual({
+      schema: 1,
+      highestVerifiedVersion: '3.1.0',
+      futureField: { kept: true },
+    })
+  })
+
+  it.each([
+    '{"schema":1,"highestVerifiedVersion":"9.0',
+    '["9.0.0"]',
+    '{"highestVerifiedVersion":"9.0.0"}',
+    '{"schema":1,"highestVerifiedVersion":"9.0"}',
+  ])('treats a corrupt trust file as no mark and replaces it on the next verified version: %s', async (bytes) => {
+    const filePath = join(workDir(), 'update-trust-state.json')
+    writeFileSync(filePath, bytes)
+    const trustState = createUpdateTrustState({ filePath })
+
+    await expect(trustState.read()).resolves.toEqual({ highestVerifiedVersion: null })
+    await expect(trustState.recordVerifiedVersion('2.0.0')).resolves.toEqual({ highestVerifiedVersion: '2.0.0' })
+    expect(JSON.parse(readFileSync(filePath, 'utf8'))).toEqual({ schema: 1, highestVerifiedVersion: '2.0.0' })
+  })
+
+  it('serializes records across store instances under its own lock and never lowers the mark', async () => {
+    const dir = workDir()
+    const filePath = join(dir, 'update-trust-state.json')
+    writeFileSync(join(dir, 'update-preferences.json.lock'), '')
+    const firstProcess = createUpdateTrustState({ filePath })
+    const secondProcess = createUpdateTrustState({ filePath })
+
+    await Promise.all([
+      firstProcess.recordVerifiedVersion('2.0.0'),
+      secondProcess.recordVerifiedVersion('3.0.0'),
+      firstProcess.recordVerifiedVersion('2.5.0'),
+    ])
+
+    await expect(secondProcess.read()).resolves.toEqual({ highestVerifiedVersion: '3.0.0' })
+    expect(existsSync(`${filePath}.lock`)).toBe(false)
   })
 })

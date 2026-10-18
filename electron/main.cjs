@@ -29,7 +29,7 @@ const { loadViewer, reloadViewer } = require('./viewer-navigation.cjs')
 const { canRunSetup, installerRepoRoot, runAgentInstall, runtimeKey, selectRuntimePayload } = require('./setup-runner.cjs')
 const { MANUAL_RELEASES_URL, createUpdateController } = require('./update-controller.cjs')
 const { checkForUpdate } = require('./update-fetch.cjs')
-const { createUpdatePreferences } = require('./update-preferences.cjs')
+const { createUpdatePreferences, createUpdateTrustState } = require('./update-preferences.cjs')
 const { loadUpdateRegistry } = require('./update-trust.cjs')
 const {
   attentionNotification,
@@ -661,11 +661,13 @@ function initializeUpdateController() {
   return createUpdateController({
     currentVersion: app.getVersion(),
     preferences,
-    checker: ({ currentVersion, automaticChecks }) => checkForUpdate({
+    trustState: createUpdateTrustState({ app }),
+    checker: ({ currentVersion, automaticChecks, recordVerifiedVersion }) => checkForUpdate({
       fetchImpl: fetch,
       registry: updateKeyRegistry,
       currentVersion,
       automaticChecks,
+      recordVerifiedVersion,
       platform: process.platform,
       arch: process.arch,
       isPackaged: app.isPackaged,

@@ -4,7 +4,12 @@ const MANUAL_RELEASES_URL = 'https://github.com/shariqh/agent-inbox/releases'
 const DAY_MS = 24 * 60 * 60_000
 const DEFAULT_INITIAL_DELAY_MS = 30_000
 const DEFAULT_JITTER_RATIO = 0.1
-const ALLOWED_STATUSES = new Set(['current', 'available', 'unsupported'])
+const ALLOWED_STATUSES = new Set(['current', 'available', 'stale', 'unsupported'])
+const CHECKED_MESSAGES = Object.freeze({
+  current: 'Agent Inbox is up to date.',
+  stale: 'Update information is older than a release this app already verified.',
+  unsupported: 'Automatic updates are not supported for this installation.',
+})
 const VERSION_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
 const TARGET_STRATEGIES = new Map([
   ['dmg', 'macos-dmg'],
@@ -42,6 +47,15 @@ function checkingState(currentVersion, automaticChecks) {
   }
 }
 
+function isNewerVersion(candidate, current) {
+  const left = VERSION_RE.exec(candidate).slice(1).map(BigInt)
+  const right = VERSION_RE.exec(current).slice(1).map(BigInt)
+  for (let index = 0; index < 3; index += 1) {
+    if (left[index] !== right[index]) return left[index] > right[index]
+  }
+  return false
+}
+
 function createUpdateController(options) {
   if (!options || typeof options.currentVersion !== 'string') throw new TypeError('currentVersion is required')
   if (!options.preferences || typeof options.preferences.read !== 'function') {
@@ -52,6 +66,7 @@ function createUpdateController(options) {
 
   const currentVersion = options.currentVersion
   const preferences = options.preferences
+  const trustState = options.trustState ?? null
   const checker = options.checker
   const notifier = options.notifier
   const clock = options.clock ?? (() => new Date())
@@ -68,6 +83,7 @@ function createUpdateController(options) {
   let timer = null
   let inFlight = null
   let disposed = false
+  let highestVerifiedVersion = null
 
   function publish(next) {
     const available = next.available
@@ -175,10 +191,37 @@ function createUpdateController(options) {
       currentVersion,
       automaticChecks,
       checkedAt: candidate.checkedAt,
-      message: candidate.status === 'current'
-        ? 'Agent Inbox is up to date.'
-        : 'Automatic updates are not supported for this installation.',
+      message: CHECKED_MESSAGES[candidate.status],
     }
+  }
+
+  function rememberVerified(version) {
+    if (
+      typeof version === 'string'
+      && VERSION_RE.test(version)
+      && (highestVerifiedVersion === null || isNewerVersion(version, highestVerifiedVersion))
+    ) {
+      highestVerifiedVersion = version
+    }
+  }
+
+  // The checker calls this only after a manifest verifies. Memory keeps the mark for this
+  // session even when it cannot be saved, and every save writes that session high, so a
+  // later successful save also records a release whose own save failed.
+  async function recordVerifiedVersion(version) {
+    rememberVerified(version)
+    if (trustState !== null) {
+      try {
+        rememberVerified((await trustState.recordVerifiedVersion(highestVerifiedVersion)).highestVerifiedVersion)
+      } catch {
+        try {
+          rememberVerified((await trustState.read()).highestVerifiedVersion)
+        } catch {
+          // Unreadable storage leaves the in-memory mark for this session.
+        }
+      }
+    }
+    return highestVerifiedVersion
   }
 
   function runCheck(mode) {
@@ -202,6 +245,7 @@ function createUpdateController(options) {
         const candidate = await checker({
           currentVersion,
           automaticChecks: prefs.automaticChecks,
+          recordVerifiedVersion,
         })
         let latestPreferences = prefs
         try {

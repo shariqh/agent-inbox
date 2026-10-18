@@ -333,6 +333,11 @@ async function checkForUpdate(options) {
           installStrategy: target.installStrategy,
         },
       },
+      // Main-process only: the downloader needs the signed URL, length and digest,
+      // which the renderer-facing state deliberately never carries.
+      ...(options.includeArtifact === true
+        ? { artifact: Object.freeze({ version: manifest.version, tag: manifest.tag, ...target }) }
+        : {}),
     }
   } catch (error) {
     controller.abort()

@@ -1,12 +1,14 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
-import { bootApp, click, freshDb, settle, useDomTest } from './harness.js'
+import { insertItem, upsertBoard } from '../../src/store.js'
+import { badgeCount, bootApp, click, freshDb, rowTitles, settle, tabCount, useDomTest } from './harness.js'
 
 useDomTest()
 
 type UpdateState = {
   status: 'idle' | 'checking' | 'current' | 'available' | 'stale' | 'unverified' | 'unsupported'
+    | 'downloading' | 'verified' | 'download-failed'
   currentVersion: string
   automaticChecks: boolean
   checkedAt: string | null
@@ -15,7 +17,9 @@ type UpdateState = {
     tag: string
     releaseUrl: string
     target: { packageType: string; installStrategy: string }
+    downloadable?: boolean
   }
+  download?: { receivedBytes: number; totalBytes: number }
 }
 
 let db: Database.Database | null = null
@@ -41,6 +45,8 @@ function installBridge(initial: UpdateState) {
   const check = vi.fn(async () => {})
   const setAutomatic = vi.fn(async () => {})
   const openRelease = vi.fn(async () => {})
+  const download = vi.fn(async () => {})
+  const cancelDownload = vi.fn(async () => {})
   Object.defineProperty(window, 'agentInboxUpdates', {
     configurable: true,
     value: {
@@ -49,6 +55,8 @@ function installBridge(initial: UpdateState) {
       check,
       setAutomatic,
       openRelease,
+      download,
+      cancelDownload,
       onState(callback: (next: UpdateState) => void) {
         listener = callback
         return () => { listener = null }
@@ -63,14 +71,17 @@ function installBridge(initial: UpdateState) {
     check,
     setAutomatic,
     openRelease,
+    download,
+    cancelDownload,
     emit(next: UpdateState) { listener?.(next) },
     open() { opener?.() },
   }
 }
 
-async function boot(initial = state('idle')) {
+async function boot(initial = state('idle'), seed?: (database: Database.Database) => void) {
   const bridge = installBridge(initial)
   db = freshDb()
+  seed?.(db)
   await bootApp(db, {
     viewer: {
       setupInfoPath: '/nonexistent/setup-info.json',
@@ -190,5 +201,126 @@ describe('desktop update settings', () => {
     await settle()
     expect(bridge).toBeTruthy()
     expect(document.getElementById('updates-settings')).not.toBeNull()
+  })
+})
+
+function offered(status: UpdateState['status'], downloadable: boolean, download?: UpdateState['download']): UpdateState {
+  return state(status, {
+    checkedAt: '2026-02-01T00:00:00.000Z',
+    available: {
+      version: '1.3.0',
+      tag: 'v1.3.0',
+      releaseUrl: 'https://github.com/shariqh/agent-inbox/releases/tag/v1.3.0',
+      target: downloadable
+        ? { packageType: 'dmg', installStrategy: 'macos-dmg' }
+        : { packageType: 'deb', installStrategy: 'deb-notify' },
+      downloadable,
+    },
+    ...(download ? { download } : {}),
+  })
+}
+
+function visibleActions() {
+  return [...document.querySelectorAll<HTMLButtonElement>('#updates-settings .updates-actions button')]
+    .filter((button) => !button.hidden)
+    .map((button) => button.textContent)
+}
+
+describe('verified update downloads', () => {
+  const MB = 1024 * 1024
+
+  it('offers Download update only for downloadable releases and starts it only on click', async () => {
+    const bridge = await boot()
+    bridge.emit(offered('available', true))
+    expect(visibleActions()).toEqual(['Check now', 'Download update', 'Review release'])
+    expect(bridge.download).not.toHaveBeenCalled()
+
+    click(document.querySelector('.updates-download'))
+    expect(bridge.download).toHaveBeenCalledOnce()
+
+    bridge.emit(offered('available', false))
+    expect(visibleActions()).toEqual(['Check now', 'Review release'])
+    expect(document.querySelector('.updates-review')?.classList.contains('updates-secondary')).toBe(false)
+  })
+
+  it('shows download progress with a cancel action and no live byte counter', async () => {
+    const bridge = await boot()
+    bridge.emit(offered('downloading', true, { receivedBytes: 45 * MB, totalBytes: 338 * MB }))
+
+    const progress = document.querySelector('.updates-progress') as HTMLProgressElement
+    expect(progress.hidden).toBe(false)
+    expect(progress.max).toBe(338 * MB)
+    expect(progress.value).toBe(45 * MB)
+    expect(document.querySelector('.updates-state')?.textContent).toBe('Downloading Agent Inbox 1.3.0…')
+    expect(document.querySelector('.updates-detail')?.textContent).toBe('45.0 MB of 338 MB')
+    expect(document.querySelector('.updates-detail')?.closest('[aria-live]')).toBeNull()
+    expect(visibleActions()).toEqual(['Check now', 'Cancel download', 'Review release'])
+    expect((document.querySelector('.updates-check') as HTMLButtonElement).disabled).toBe(true)
+
+    click(document.querySelector('.updates-cancel'))
+    expect(bridge.cancelDownload).toHaveBeenCalledOnce()
+  })
+
+  it('says a verified download is ready without offering an install that does not exist yet', async () => {
+    const bridge = await boot()
+    bridge.emit(offered('verified', true, { receivedBytes: 338 * MB, totalBytes: 338 * MB }))
+
+    expect(document.querySelector('.updates-state')?.textContent).toBe('Agent Inbox 1.3.0 is downloaded and verified.')
+    expect(document.querySelector('.updates-detail')?.textContent).toContain('SHA-256 match the signed release')
+    expect(document.querySelector('.updates-detail')?.textContent).toContain('later update')
+    expect((document.querySelector('.updates-progress') as HTMLProgressElement).hidden).toBe(true)
+    expect(visibleActions()).toEqual(['Check now', 'Review release'])
+    expect(visibleActions().some((label) => /install/i.test(label ?? ''))).toBe(false)
+    expect(document.querySelector('.updates-review')?.classList.contains('updates-secondary')).toBe(false)
+  })
+
+  it('offers a retry after a failed download', async () => {
+    const bridge = await boot()
+    bridge.emit(offered('download-failed', true, { receivedBytes: 10 * MB, totalBytes: 338 * MB }))
+
+    expect(document.querySelector('.updates-state')?.textContent).toBe('Agent Inbox 1.3.0 couldn’t be downloaded and verified.')
+    expect(visibleActions()).toEqual(['Check now', 'Try again', 'Review release'])
+    click(document.querySelector('.updates-download'))
+    expect(bridge.download).toHaveBeenCalledOnce()
+  })
+
+  it('keeps keyboard focus inside Updates when the pressed action hides itself', async () => {
+    const bridge = await boot()
+    bridge.emit(offered('available', true))
+    const download = document.querySelector('.updates-download') as HTMLButtonElement
+    download.focus()
+
+    bridge.emit(offered('downloading', true, { receivedBytes: 0, totalBytes: 338 * MB }))
+    expect(document.activeElement).toBe(document.querySelector('.updates-cancel'))
+  })
+
+  it('never moves the attention badge, Needs-you count or rows', async () => {
+    const seed = (database: Database.Database) => {
+      insertItem(database, { project: 'alpha', stream: 'main', agent: 'claude', kind: 'question', title: 'blocked on you' })
+      upsertBoard(database, {
+        project: 'alpha', stream: 'main', agent: 'claude', title: 'rollout',
+        rows: [{ label: 'step', status: 'blocked', note: 'needs you' }],
+      })
+    }
+    const signal = () => ({
+      badge: badgeCount(),
+      title: document.title,
+      needsYou: tabCount('needsYou'),
+      rows: rowTitles(),
+    })
+    const bridge = await boot(state('idle'), seed)
+    const before = signal()
+    expect(before.badge).toBe(2)
+
+    for (const next of [
+      offered('available', true),
+      offered('downloading', true, { receivedBytes: MB, totalBytes: 2 * MB }),
+      offered('verified', true, { receivedBytes: 2 * MB, totalBytes: 2 * MB }),
+      offered('download-failed', true, { receivedBytes: MB, totalBytes: 2 * MB }),
+    ]) {
+      bridge.emit(next)
+      await settle()
+      expect(signal()).toEqual(before)
+    }
   })
 })

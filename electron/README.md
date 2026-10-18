@@ -29,13 +29,13 @@ the file holds, unknown fields survive a raise, and a file with a newer schema i
 enforced but never overwritten. A missing or corrupt trust-state file counts as no mark
 (the running version is the floor) and is replaced by the next verified check. If the
 mark cannot be saved, the app keeps enforcing the last readable mark and the highest
-version it verified during the current session instead of disabling updates. Builds
-before 1.3 neither read nor write the mark, so a reinstalled 1.2.x build has no rollback
-protection until a 1.3+ build runs again; the file survives that round trip. The mark
-cannot protect the first check after install or after the user-data directory is reset,
-and it cannot reveal a newer release that is withheld before this installation has
-verified it; the dual-signed key-rotation transition tracked in issue #148 is not
-implemented yet.
+version it verified during the current session instead of disabling updates, and the
+next successful save records that session high. Builds before 1.3 neither read nor write
+the mark, so a reinstalled 1.2.x build has no rollback protection until a 1.3+ build runs
+again; the file survives that round trip. The mark cannot protect the first check after
+install or after the user-data directory is reset, and it cannot reveal a newer release
+that is withheld before this installation has verified it; the dual-signed key-rotation
+transition tracked in issue #148 is not implemented yet.
 
 ## Packaged app (self-contained)
 

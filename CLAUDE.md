@@ -737,9 +737,10 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   `schema`/`automaticChecks`/`lastNotifiedVersion` and otherwise read defaults, silently
   turning automatic checks off; its format and strict parser stay as 1.2.x shipped them.
   `checkForUpdate()` calls the controller-supplied `recordVerifiedVersion` exactly once,
-  only after `verifyManifest()` succeeds. The controller raises the stored mark under the
-  lock (no write when not higher) and returns max(stored or still-readable mark, highest
-  version verified in this process), so the stale decision matches the stored mark and an
+  only after `verifyManifest()` succeeds. The controller saves the highest version verified
+  in this process under the lock (no write when not higher, so a release whose own save
+  failed is saved by the next successful one) and returns max(stored or still-readable
+  mark, that session high), so the stale decision matches the stored mark and an
   unsaveable mark still holds for the session. A verified manifest below the mark returns
   `stale`: no offer, no notification, no attention/badge change, normal retry schedule.
   Offers still need a version above the running app, so the effective floor is max(mark,

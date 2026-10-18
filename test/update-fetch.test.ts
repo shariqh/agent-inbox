@@ -1,6 +1,6 @@
 import { createHash, generateKeyPairSync, sign } from 'node:crypto'
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { readFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -9,7 +9,7 @@ import updateController from '../electron/update-controller.cjs'
 import updateFetch from '../electron/update-fetch.cjs'
 import updatePreferences from '../electron/update-preferences.cjs'
 import type { UpdateCheckOptions } from '../electron/update-fetch.cjs'
-import type { UpdatePreferencesFs } from '../electron/update-preferences.cjs'
+import type { UpdatePreferencesFs, UpdateTrustStateStore } from '../electron/update-preferences.cjs'
 
 const require = createRequire(import.meta.url)
 const layer1 = require('../electron/update-manifest.cjs') as typeof import('../electron/update-manifest.cjs')
@@ -458,17 +458,20 @@ describe('rollback high-water mark (#148)', () => {
     return bytes
   }
 
-  function unwritable(code: string): UpdatePreferencesFs {
+  function failingWrites(code: string, failures = Number.POSITIVE_INFINITY): UpdatePreferencesFs {
+    let remaining = failures
     return {
       readFile: (path) => readFile(path),
-      async writeFile() {
-        throw Object.assign(new Error(`write refused (${code})`), { code })
+      async writeFile(path, data, options) {
+        if (remaining > 0) {
+          remaining -= 1
+          throw Object.assign(new Error(`write refused (${code})`), { code })
+        }
+        return writeFile(path, data, options)
       },
-      async rename() {
-        throw new Error('not reached')
-      },
-      async unlink() {},
-      async mkdir() {},
+      rename: (from, to) => rename(from, to),
+      unlink: (path) => unlink(path),
+      mkdir: (path, options) => mkdir(path, options),
     }
   }
 
@@ -478,6 +481,7 @@ describe('rollback high-water mark (#148)', () => {
     dir: string
     fixtures: Fixture[]
     trustFs?: UpdatePreferencesFs
+    wrapTrustState?: (store: UpdateTrustStateStore) => UpdateTrustStateStore
   }) {
     const [first] = options.fixtures
     let served = first!
@@ -495,11 +499,12 @@ describe('rollback high-water mark (#148)', () => {
     })
     const app = { getPath: () => options.dir }
     const preferences = createUpdatePreferences({ app })
+    const trustState = createUpdateTrustState({ app, fsImpl: options.trustFs })
     const notifier = vi.fn()
     const controller = createUpdateController({
       currentVersion: options.currentVersion,
       preferences,
-      trustState: createUpdateTrustState({ app, fsImpl: options.trustFs }),
+      trustState: options.wrapTrustState ? options.wrapTrustState(trustState) : trustState,
       checker: ({ currentVersion, automaticChecks, recordVerifiedVersion }) => checkForUpdate({
         fetchImpl,
         registry,
@@ -681,11 +686,11 @@ describe('rollback high-water mark (#148)', () => {
     expect(update.mark()).toBe('3.0.0')
   })
 
-  it('keeps enforcing the last readable mark when a new mark cannot be saved', async () => {
+  it('keeps the stored mark and still offers newer releases when writes fail', async () => {
     const paths = userData()
     const seeded = seedMark(paths.trustPath, '3.0.0')
     const [v25, v31] = ['2.5.0', '3.1.0'].map((version) => signedFixture(version)) as [Fixture, Fixture]
-    const update = updater({ currentVersion: '2.0.0', dir: paths.dir, fixtures: [v25, v31], trustFs: unwritable('EROFS') })
+    const update = updater({ currentVersion: '2.0.0', dir: paths.dir, fixtures: [v25, v31], trustFs: failingWrites('EROFS') })
 
     await expect(update.checkEach(v25, v31)).resolves.toEqual([
       ['stale', undefined],
@@ -694,15 +699,53 @@ describe('rollback high-water mark (#148)', () => {
     expect(readFileSync(paths.trustPath, 'utf8')).toBe(seeded)
   })
 
+  it('enforces the still-readable mark when the trust store refuses to record', async () => {
+    const paths = userData()
+    seedMark(paths.trustPath, '3.0.0')
+    const v25 = signedFixture('2.5.0')
+    const update = updater({
+      currentVersion: '2.0.0',
+      dir: paths.dir,
+      fixtures: [v25],
+      wrapTrustState: (store) => ({
+        read: () => store.read(),
+        async recordVerifiedVersion() {
+          throw Object.assign(new Error('permission denied opening the trust-state lock'), { code: 'EACCES' })
+        },
+      }),
+    })
+
+    await expect(update.checkEach(v25)).resolves.toEqual([['stale', undefined]])
+  })
+
   it('remembers a release verified earlier in the session when no mark can be saved', async () => {
     const paths = userData()
     const [v3, v2] = ['3.0.0', '2.0.0'].map((version) => signedFixture(version)) as [Fixture, Fixture]
-    const update = updater({ currentVersion: '2.0.0', dir: paths.dir, fixtures: [v3, v2], trustFs: unwritable('ENOSPC') })
+    const update = updater({ currentVersion: '2.0.0', dir: paths.dir, fixtures: [v3, v2], trustFs: failingWrites('ENOSPC') })
 
     await expect(update.checkEach(v3, v2)).resolves.toEqual([
       ['available', '3.0.0'],
       ['stale', undefined],
     ])
+  })
+
+  it('saves the session mark at the next successful save', async () => {
+    const paths = userData()
+    const [v3, v25] = ['3.0.0', '2.5.0'].map((version) => signedFixture(version)) as [Fixture, Fixture]
+    const firstSaveFails = updater({
+      currentVersion: '2.0.0',
+      dir: paths.dir,
+      fixtures: [v3, v25],
+      trustFs: failingWrites('ENOSPC', 1),
+    })
+
+    await expect(firstSaveFails.checkEach(v3, v25)).resolves.toEqual([
+      ['available', '3.0.0'],
+      ['stale', undefined],
+    ])
+    expect(firstSaveFails.mark()).toBe('3.0.0')
+    const relaunched = updater({ currentVersion: '2.0.0', dir: paths.dir, fixtures: [v3, v25] })
+    await expect(relaunched.checkEach(v25)).resolves.toEqual([['stale', undefined]])
   })
 
   it('fails closed when the high-water recorder reports a malformed mark', async () => {

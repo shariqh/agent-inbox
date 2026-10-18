@@ -206,12 +206,13 @@ function createUpdateController(options) {
   }
 
   // The checker calls this only after a manifest verifies. Memory keeps the mark for this
-  // session even when it cannot be saved; the saved or still-readable mark covers restarts.
+  // session even when it cannot be saved, and every save writes that session high, so a
+  // later successful save also records a release whose own save failed.
   async function recordVerifiedVersion(version) {
     rememberVerified(version)
     if (trustState !== null) {
       try {
-        rememberVerified((await trustState.recordVerifiedVersion(version)).highestVerifiedVersion)
+        rememberVerified((await trustState.recordVerifiedVersion(highestVerifiedVersion)).highestVerifiedVersion)
       } catch {
         try {
           rememberVerified((await trustState.read()).highestVerifiedVersion)

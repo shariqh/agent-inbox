@@ -111,8 +111,11 @@ Run the build before `npm run electron`; the development shell starts the built
   `history` summary that keeps every count exact. Only `load()` reads
   `/api/items/history`, while `historyWanted()` says a surface needs older items,
   judged on a page alone (`lastData.page` or the tick's new one), never on merged
-  data; `requestHistory()` only schedules that `load()`. A failed read degrades:
-  the page still applies and waiting surfaces say older history is unavailable.
+  data. Explicit human entry points use `requestHistoryPaint()` (ends in
+  `reloadAndPaint()`, #38); search and waiting deep links use `requestHistory()`,
+  which only schedules that `load()`; `forceRender`, renders and the poll use
+  neither. A failed read degrades: the page still applies and waiting surfaces
+  say older history is unavailable.
 - Race-sensitive state changes must be atomic SQL statements or transactions.
   Do not replace conditioned/version-pinned updates with SELECT-then-UPDATE.
   Human replies, annotations, and handled marks can change from another process

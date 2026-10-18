@@ -111,6 +111,7 @@ let historyLookup = null // a deep link to an item the page omitted
 let historyTabPinned = false // History keeps an omitted target until the tab changes
 let historyRequestedFor = -1 // the applied tick an early poll was requested for
 let historyLoadScheduled = false // that early poll has not started yet
+let historyPaintRequestedFor = -1 // the applied tick a human's history read-and-paint started for
 let searchAwaitingHistory = false
 let preparedFrame = null
 let editablePanesPainted = false
@@ -365,9 +366,6 @@ function forceRender() {
   renderDirty = false
   render()
   showPauseHint()
-  // A navigation that now needs closed history the page omits (#184) has just
-  // painted what is known; read the rest without waiting for the next poll.
-  requestHistory()
 }
 
 // The human's own write ends HERE. The POLL still ends in load()/renderIfIdle().
@@ -515,7 +513,10 @@ async function load() {
     if (!wantHistory && lastData && historyWanted({ page, pageHistory: g.history ?? null, boards, archived, activity })) {
       const [late] = await Promise.allSettled([readSnapshot('/api/items/history').then(marked)])
       if (reloadRequested || generation < appliedLoadGeneration) return false
-      if (boots.some((mark) => mark && mark !== bootId)) {
+      // As on the main path: only markers that disagree within this tick are a
+      // restart between its reads. A restart already being held for unsent work
+      // keeps applying ticks, whose markers all name the new server.
+      if (new Set(boots.filter(Boolean)).size > 1) {
         refreshPending = true
         return false
       }
@@ -903,6 +904,7 @@ function focusItem(id, source = null) {
   const hash = focusHashFor(id)
   if (location.hash !== hash) location.hash = hash // survives reload
   forceRender()
+  requestHistoryPaint() // a History target the page alone cannot place (#184)
   // fix round 2 (C1): this used to call setOpenRow(id) for EVERY target. The
   // inspector is a Needs-you affordance — explicit collapse is reachable only
   // from a rendered `.nrow`. A board
@@ -1412,6 +1414,17 @@ function requestHistory() {
     historyLoadScheduled = false
     void load()
   }, 0)
+}
+
+// A human action that needs older history has just painted what is known; this
+// reads the rest and paints it outside the poll's gate, like every frame the
+// human asks for (#38): an unrelated draft or a focused Dashboard control must
+// not hide it. Called only from explicit entry points, never from forceRender,
+// a render or the poll, so passive paths still never force a paint.
+function requestHistoryPaint() {
+  if (!lastData || !omitsHistory() || historyPaintRequestedFor === appliedLoadGeneration || !historyWanted()) return
+  historyPaintRequestedFor = appliedLoadGeneration
+  void reloadAndPaint()
 }
 
 // Shown where a surface waits on older history the last tick could not read.
@@ -2793,7 +2806,7 @@ function openRelay() {
   if (missionBoardId) closeMission({ restoreFocus: false })
   relayOpen = true
   renderRelay()
-  requestHistory() // the outcome lane lists every recorded outcome (#184)
+  requestHistoryPaint() // the outcome lane lists every recorded outcome (#184)
 }
 
 function closeRelay() {
@@ -3183,7 +3196,10 @@ function selectTab(id, { paint = true } = {}) {
     t.tabIndex = t.dataset.tab === id ? 0 : -1 // roving tabindex (spec §13)
   }
   showPanel(id)
-  if (paint) forceRender()
+  if (paint) {
+    forceRender()
+    requestHistoryPaint()
+  }
   if (id === 'needsYou') restoreRowSelection(false)
 }
 
@@ -3622,6 +3638,7 @@ function railRowEl(e, { withFilter, closed = false }) {
     setProjectDisclosure(false, { restoreFocus: layout === 'narrow' })
     resetPaging()
     forceRender()
+    requestHistoryPaint()
   })
   // the keyboard half of close/reopen, since the button itself is out of the tab
   // order. `ev` is the keyboard event; `e` is the rail entry — do not merge them.
@@ -3908,6 +3925,7 @@ function closedProjectEntryEl(entry) {
     tabletDismissedOpenKey = null
     resetPaging()
     forceRender()
+    requestHistoryPaint()
   })
 
   const reopen = document.createElement('button')
@@ -4134,6 +4152,7 @@ function initAgentSelect() {
     agentFilter = e.target.value || null
     resetPaging()
     forceRender()
+    requestHistoryPaint()
   })
 }
 
@@ -6664,7 +6683,11 @@ function btn(label, onClick, shortcut = null) {
 // the pager at the foot of a capped section — reveals PAGE[section] more cards
 function moreButton(section, remaining) {
   const n = Math.min(PAGE[section], remaining)
-  const b = btn(`Show ${n} more (${remaining} hidden)`, () => { shown[section] += PAGE[section]; forceRender() })
+  const b = btn(`Show ${n} more (${remaining} hidden)`, () => {
+    shown[section] += PAGE[section]
+    forceRender()
+    requestHistoryPaint()
+  })
   b.className = 'show-more'
   return b
 }

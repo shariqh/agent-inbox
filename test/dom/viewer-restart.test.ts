@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
 import { advanceBoardRow, getBoard, getItem, insertItem, resolveItem, upsertBoard } from '../../src/store.js'
 import {
-  answerInput, badgeCount, bootApp, buttonLabelled, click, expectConsoleError, freshDb,
+  advanceClock, answerInput, badgeCount, bootApp, buttonLabelled, click, expectConsoleError, freshDb,
   pollTick, repaint, row, sendButton, settle, showInbox, type, useDomTest,
 } from './harness.js'
 
@@ -55,6 +55,41 @@ function holdPost(match: string, response?: Response) {
 }
 
 describe('viewer restart with human-owned work', () => {
+  // Issue #184: a tick that reads older history within itself must apply like
+  // any other once every response agrees on the new server, so the badge and
+  // counts stay current while a reload waits for unsent work.
+  it('keeps applying ticks whose own page needs older history while a restart reload waits', async () => {
+    db = freshDb()
+    const backstops: string[] = []
+    for (let index = 0; index < 55; index += 1) {
+      advanceClock()
+      backstops.push(insertItem(db, { project: 'sweep', stream: '', agent: 'hook', kind: 'note', title: `Backstop ${index}` }))
+    }
+    for (let index = 0; index < 60; index += 1) {
+      advanceClock()
+      resolveItem(db, insertItem(db, { ...AGENT, kind: 'note', title: `Closed ${index}` }), `Outcome ${index}`)
+    }
+    advanceClock()
+    const id = insertItem(db, { ...AGENT, kind: 'question', title: 'Hold a draft here' })
+    const { restart } = await bootWithRestart(db)
+    await showInbox()
+    click(row(id))
+    await settle()
+    type(answerInput(id), 'Unsent reply.')
+    click(document.querySelector('.tab[data-tab="done"]'))
+    await settle()
+    expect(badgeCount()).toBe(1)
+
+    restart()
+    advanceClock()
+    for (const backstop of backstops) resolveItem(db, backstop)
+    insertItem(db, { ...AGENT, kind: 'question', title: 'Arrives after the restart' })
+    await pollTick()
+    expect(reload).not.toHaveBeenCalled()
+    expect(badgeCount()).toBe(2)
+    expect(answerInput(id)?.value).toBe('Unsent reply.')
+  })
+
   it('preserves an unsent answer and context while refreshing ambient data, then reloads after Send', async () => {
     db = freshDb()
     const id = insertItem(db, { ...AGENT, kind: 'question', title: 'Release approval' })

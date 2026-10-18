@@ -120,9 +120,17 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   under the same boot-marker and generation rules, when the tick's own new page
   needs it, so a sweep never paints a blank History frame. Decide on a PAGE
   (`lastData.page`, or the tick's new one), never on merged data, or loading
-  history would end the need for it. Anything else that needs it — a navigation,
-  a render, a deep link — only calls `requestHistory()`, which schedules an early
-  `load()` and paints nothing, so no history path forces a frame. A failed read
+  history would end the need for it. Explicit human entry points (tab select, the
+  History pager, rail project/agent picks, opening Handoffs, a deep link that
+  found its target) call `requestHistoryPaint()`, which ends in `reloadAndPaint()`
+  so an unrelated draft or a focused Dashboard control cannot hide the frame the
+  click asked for (#38). Typing or focusing search, and a deep link waiting on an
+  omitted item, only call `requestHistory()`: it schedules an early `load()` and
+  paints nothing, because search renders its results directly and the deep-link
+  retry paints through `focusItem`. `forceRender`, every render and the poll call
+  neither, so passive paths never force a paint and render paths never fetch. An
+  in-tick read rejects only markers that disagree within its tick, as the main
+  path does, so ticks keep applying while a restart reload waits. A failed read
   degrades like activity history: the page still applies, and the surfaces waiting
   on older history say "Older history is unavailable right now." The page stays
   authoritative for every item it carries when the two are merged. Surfaces still

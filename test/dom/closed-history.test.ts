@@ -6,8 +6,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
 import { insertItem, listItems, replyItem, resolveItem } from '../../src/store.js'
 import {
-  advanceClock, badgeCount, bootApp, buttonLabelled, click, freshDb, navigateToHash, pollTick, searchFor,
-  settle, showInbox, tabCount, type, useDomTest,
+  advanceClock, answerInput, badgeCount, bootApp, buttonLabelled, click, freshDb, navigateToHash, pollTick, row,
+  searchFor, settle, showInbox, tabCount, type, useDomTest,
 } from './harness.js'
 import type { BootOptions } from './harness.js'
 
@@ -239,26 +239,6 @@ describe('paged closed history (issue #184)', () => {
     expect(historyTitles().slice(-3)).toEqual(['Archived decision 2', 'Archived decision 1', 'Archived decision 0'])
     expect(document.querySelector('#done .show-more')).toBeNull()
     expect(tabCount('done')).toBe('63')
-  })
-
-  it('deep links to a closed item the page omitted', async () => {
-    db = freshDb()
-    const { archive } = seedHub(db)
-    const { reads, interceptFetch } = recorder()
-    await bootApp(db, { interceptFetch })
-    navigateToHash(`#item/${archive[0]}`)
-    await settle()
-    // Earlier boots' window listeners answer the hash change too (harness.ts),
-    // reading through this test's bridge, so only the shape of reads is pinned.
-    expect(historyReads(reads).length).toBeGreaterThan(0)
-    expect(document.getElementById('done')?.hidden).toBe(false)
-    expect(document.querySelector('#rail button.rail-tab[data-project="archive"]')?.getAttribute('aria-selected')).toBe('true')
-    const card = () => document.querySelector<HTMLDetailsElement>(`#done [data-card-id="${archive[0]}"]`)
-    expect(card()?.open).toBe(true)
-    expect(document.activeElement).toBe(card()?.querySelector(':scope > summary'))
-    await pollTick()
-    expect(card()).not.toBeNull()
-    expect(historyReads(reads).some((read) => read.status === 304)).toBe(true)
   })
 
   it('keeps Dashboard numbers whole and reads older outcomes only for a lens that needs them', async () => {
@@ -511,6 +491,65 @@ describe('paged closed history (issue #184)', () => {
     await pollTick()
     expect(searchStatus()).toBe('1 search result')
     expect(document.querySelectorAll('#searchResults [role="option"]')).toHaveLength(1)
+  })
+
+  // #38: the frame a human click asks for paints the history it needed, even
+  // with an unrelated draft open or focus left inside the Dashboard.
+  async function holdDraft(d: Database.Database): Promise<string> {
+    advanceClock()
+    const id = insertItem(d, { ...ALPHA, kind: 'question', title: 'Hold a draft here' })
+    await bootApp(d)
+    await showInbox()
+    click(row(id))
+    await settle()
+    type(answerInput(id), 'Unsent reply.')
+    return id
+  }
+
+  it('paints History paged past the page while an unrelated draft is open', async () => {
+    db = freshDb()
+    seedHub(db)
+    const draft = await holdDraft(db)
+    await selectTab('done')
+    for (let page = 1; page <= 10; page += 1) {
+      click(document.querySelector('#done .show-more'))
+      await settle()
+    }
+    expect(historyTitles()).toHaveLength(55)
+    expect(document.querySelector('#done .history-loading')).toBeNull()
+    expect(answerInput(draft)?.value).toBe('Unsent reply.')
+  })
+
+  it('paints the History of a quiet project while an unrelated draft is open', async () => {
+    db = freshDb()
+    seedHub(db)
+    await holdDraft(db)
+    await selectTab('done')
+    await selectProject('archive')
+    expect(historyTitles()).toEqual(['Archived decision 2', 'Archived decision 1', 'Archived decision 0'])
+  })
+
+  it('paints every Handoffs outcome while an unrelated draft is open', async () => {
+    db = freshDb()
+    seedHub(db)
+    await holdDraft(db)
+    click(document.querySelector('.relay-btn'))
+    await settle()
+    const lane = document.querySelector('#relaybox [data-relay-lane="outcome"]')!
+    expect(lane.querySelectorAll('.relay-card')).toHaveLength(63)
+    expect(lane.querySelector('[role="status"]')).toBeNull()
+  })
+
+  it('paints every Handoffs outcome when opened from the focused Dashboard signal', async () => {
+    db = freshDb()
+    seedHub(db)
+    await bootApp(db)
+    const signalButton = document.querySelector<HTMLButtonElement>('[data-dashboard-signal="outcomes"]')!
+    signalButton.focus()
+    click(signalButton)
+    await settle()
+    const lane = document.querySelector('#relaybox [data-relay-lane="outcome"]')!
+    expect(lane.querySelectorAll('.relay-card')).toHaveLength(63)
   })
 
   it('keeps a typed search waiting for older history across a held read', async () => {

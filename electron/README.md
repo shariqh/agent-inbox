@@ -59,11 +59,16 @@ A swap that fails after the app quit is reported, not repeated blindly. Just bef
 rejected `commit()` removes the record. The helper's last argument is the store's
 `last-attempt.result`, where it writes only its exit code (shared `INSTALL_HELPER_EXIT`:
 0 installed, 64 bad arguments, 65 refused, 70/71 could not move the app aside/in, 75 timed
-out) before every exit. The first `rendererReady()` takes both files before any cleanup. If
+out) before every exit, and before it reopens the app. The first `rendererReady()` of an
+instance that registered an installer takes both files before any cleanup; a record
+without a result that is younger than 150 s may still be in flight and is left alone. If
 the app is still older than the attempted release, every published state carries
 `installNotice` with the cause, Settings shows it (with Open Releases when nothing is
 offered), and one native notification fires; it stays on the next offer of that version.
-An app now on that release says nothing.
+An app now on that release, or one whose helper reported success, says nothing. Update
+installs follow #205's quit contract: `beginAppQuit()` (called first by `before-quit` and
+by the update restart) refuses new Setup and update installs and revokes both window
+bindings, and a quit while the attempt record is written still stops the install.
 
 Checks also refuse to move backwards. After a manifest's signature, schema and expiry
 verify, the app records that release version as a high-water mark in its own user-data

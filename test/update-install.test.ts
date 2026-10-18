@@ -199,9 +199,11 @@ describe('copying a verified source while hashing it', () => {
 
 describe('recording an install attempt across the restart', () => {
   const at = new Date('2026-10-18T05:00:00.000Z')
-  function store(directory: string, platform = 'darwin') {
-    return createInstallAttemptStore({ directory, platform, now: () => at })
+  function store(directory: string, platform = 'darwin', clock = () => at) {
+    return createInstallAttemptStore({ directory, platform, now: clock })
   }
+  // Past the helper's wait (about two minutes), an attempt without a result is over.
+  const later = () => new Date(at.getTime() + 151_000)
 
   it('names one exit-code convention for every platform helper', () => {
     expect(INSTALL_HELPER_EXIT).toEqual({
@@ -255,13 +257,37 @@ describe('recording an install attempt across the restart', () => {
 
   it('reports no exit code when the helper never wrote one, or wrote anything but a code', async () => {
     const directory = join(workDir(), 'update-install')
-    const attempts = store(directory)
+    const writer = store(directory)
+    const reader = store(directory, 'darwin', later)
     for (const content of [null, '', 'seventy', '70; rm -rf /', '1000', `${'7'.repeat(40)}`]) {
-      const { resultPath } = await attempts.begin({ from: '1.3.0', to: '1.3.1', strategy: 'macos-dmg' })
+      const { resultPath } = await writer.begin({ from: '1.3.0', to: '1.3.1', strategy: 'macos-dmg' })
       if (content !== null) writeFileSync(resultPath, content)
-      await expect(attempts.take(), String(content)).resolves.toMatchObject({ to: '1.3.1', exitCode: null })
+      await expect(reader.take(), String(content)).resolves.toMatchObject({ to: '1.3.1', exitCode: null })
       expect(readdirSync(directory)).toEqual([])
     }
+  })
+
+  it('leaves an attempt the helper may still be finishing for the app it reopens', async () => {
+    const directory = join(workDir(), 'update-install')
+    let clock = at
+    const attempts = store(directory, 'darwin', () => clock)
+    const { resultPath } = await attempts.begin({ from: '1.3.0', to: '1.3.1', strategy: 'macos-dmg' })
+
+    // A second instance starting mid-install: no result yet, and still young.
+    clock = new Date(at.getTime() + 90_000)
+    await expect(attempts.take()).resolves.toBeNull()
+    expect(readdirSync(directory)).toEqual(['last-attempt.json'])
+
+    // The helper reported: the attempt is over, whatever its age.
+    writeFileSync(resultPath, '70\n')
+    await expect(attempts.take()).resolves.toMatchObject({ exitCode: 70 })
+    expect(readdirSync(directory)).toEqual([])
+
+    // Without a result, an attempt older than the helper's wait is over too.
+    await attempts.begin({ from: '1.3.0', to: '1.3.1', strategy: 'macos-dmg' })
+    clock = new Date(clock.getTime() + 151_000)
+    await expect(attempts.take()).resolves.toMatchObject({ exitCode: null })
+    expect(readdirSync(directory)).toEqual([])
   })
 
   it('drops a stale helper result when a new attempt begins, and both files when the hand-off never started', async () => {

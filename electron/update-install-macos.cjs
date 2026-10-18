@@ -114,10 +114,14 @@ valid_path() {
 valid_path "$result" || exit 64
 
 finish() {
+  report "$1"
+  exit "$1"
+}
+
+report() {
   if printf '%s\\n' "$1" > "$result.tmp.$$" 2>/dev/null; then
     mv -f "$result.tmp.$$" "$result" 2>/dev/null || rm -f "$result.tmp.$$"
   fi
-  exit "$1"
 }
 
 case "$pid" in
@@ -162,24 +166,30 @@ while running; do
   sleep 0.2
 done
 
+# Each outcome is reported before the app reopens, because the reopened app
+# reads the attempt as it starts.
 if [ ! -d "$target" ] || [ -L "$target" ] || [ ! -d "$staged" ] || [ -L "$staged" ] || [ -e "$backup" ] || [ -L "$backup" ]; then
+  report 65
   relaunch
-  finish 65
+  exit 65
 fi
 
 if ! mv "$target" "$backup"; then
+  report 70
   relaunch
-  finish 70
+  exit 70
 fi
 
 if ! mv "$staged" "$target"; then
   mv "$backup" "$target" || :
+  report 71
   relaunch
-  finish 71
+  exit 71
 fi
 
+report 0
 "$opener" "$target" >/dev/null 2>&1 || :
-finish 0
+exit 0
 `
 
 // <X>.app/Contents/MacOS/<executable> -> <X>.app

@@ -772,6 +772,22 @@ describe('the swap helper script', () => {
     expect(h.opened()).toBe(`${h.target}\n`)
   })
 
+  // The reopened app reads the attempt at startup, so the result must exist before open runs.
+  it.each([
+    ['after a successful swap', 0, (h: Awaited<ReturnType<typeof helperFixture>>) => h.backup],
+    ['after a refusal', 65, (h: Awaited<ReturnType<typeof helperFixture>>) => {
+      mkdirSync(h.backup)
+      return h.backup
+    }],
+  ] as const)('writes its result before it reopens the app %s', async (_label, code, backup) => {
+    const h = await helperFixture()
+    const bin = dirname(h.opener)
+    writeFileSync(h.opener, `#!/bin/sh\nprintf "%s\\n" "$@" >> "${bin}/open.log"\nif [ -f "${h.result}" ]; then cat "${h.result}" > "${bin}/open.result"; else echo missing > "${bin}/open.result"; fi\n`, { mode: 0o755 })
+    expect(await h.runHelper([await h.exitedPid(), '-', h.target, h.staged, backup(h), h.opener])).toBe(code)
+    expect(h.opened()).toBe(`${h.target}\n`)
+    expect(readFileSync(join(bin, 'open.result'), 'utf8')).toBe(`${code}\n`)
+  })
+
   it.skipIf(UID === 0)('rolls back and relaunches the previous app when the second rename fails', async () => {
     const h = await helperFixture()
     const backupDir = join(h.work, 'backups')

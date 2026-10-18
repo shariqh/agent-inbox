@@ -152,7 +152,9 @@ export interface InstallAttemptStore {
   abandon(): Promise<void>
   /**
    * Reads and deletes the record and the result, once, without following links.
-   * Null when there was no valid record. Never rejects.
+   * Null when there was no valid record. A record without a result that is
+   * younger than `inFlightMs` (default 150 s, the helpers' wait plus margin) is
+   * left untouched for the app the helper reopens. Never rejects.
    */
   take(): Promise<InstallAttemptOutcome | null>
 }
@@ -178,4 +180,5 @@ export function createInstallAttemptStore(options: {
   uid?: number
   fsImpl?: InstallAttemptFs
   now?: () => Date
+  inFlightMs?: number
 }): InstallAttemptStore

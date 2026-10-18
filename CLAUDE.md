@@ -897,9 +897,16 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   window bound at the first navigation of a viewer this app started and proved it owns
   (`viewerOwned`, set only in the `waitForOwnership()` branch) — not Setup's runtime
   payload; a reused or failed-over viewer never gets installs. Setup and an update
-  install exclude each other in both directions. `requestRestart()` (flag + `app.quit()`)
-  is the ONLY quit path for an update and `before-quit` never blocks it; a user quit
-  during an uncommitted install cancels it first. (8) **A failed swap is reported, not
+  install exclude each other in both directions: the controller's `isSetupRunning` is
+  `installGate.running()` (#205's gate; a source pin evaluates that exact expression
+  against a real gate), and the Setup handler checks `isInstalling()` synchronously right
+  before `installGate.run()`. #205's `beginAppQuit()` also ends update installs: it clears
+  `updateInstallWebContentsId`, the install IPC returns early once `installGate.quitting()`,
+  and the controller's `isQuitting` refuses `installNow()`. `requestRestart()` (flag +
+  `beginAppQuit()` + `app.quit()`) is the ONLY quit path for an update; `before-quit`
+  calls `beginAppQuit()` first every time and never blocks the restart otherwise; a user
+  quit during an uncommitted install cancels it first, and the abort is re-checked after
+  the attempt record is written, before `commit()`. (8) **A failed swap is reported, not
   looped:** the controller writes `userData/update-install/last-attempt.json` (`{schema:1,
   from, to, at, platform, strategy}`, atomic) through `createInstallAttemptStore()` just
   before `commit()` and never commits an attempt it could not record; a rejected commit
@@ -907,7 +914,10 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   writes only its exit code (shared `INSTALL_HELPER_EXIT`) before every exit; its argv
   validation refuses relative, dot-segment and trailing-slash paths (a trailing slash
   would make its symlink checks test the link's target). The first `rendererReady()`
-  takes both files BEFORE any cleanup (cleanup only matches `install-XXXXXX`, pinned); an
+  takes both files BEFORE any cleanup (cleanup only matches `install-XXXXXX`, pinned), and
+  only in an instance with a registered installer; a record without a result younger than
+  150 s (the helper's wait plus margin) is left for the app the helper reopens. The helper
+  writes its result BEFORE reopening the app. Exit 0 is never reported as a failure; an
   app still older than `to` publishes `installNotice` on every state until that release
   stops being offered or a new install starts, and notifies once. Part 3 reuses the store,
   the exit codes and `resultPath`. Update state still never enters

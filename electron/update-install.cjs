@@ -23,6 +23,9 @@ const ATTEMPT_RESULT = 'last-attempt.result'
 const MAX_RECORD_BYTES = 4096
 const MAX_RESULT_BYTES = 16
 const RESULT_RE = /^(\d{1,3})\n?$/
+// The helpers give up after about two minutes; until then an attempt without a
+// result may still be in flight, and belongs to the app the helper reopens.
+const DEFAULT_IN_FLIGHT_MS = 150_000
 
 // Every platform's swap helper reports one of these before it exits, so the
 // app that starts next can say what happened without knowing the platform.
@@ -213,6 +216,8 @@ function createInstallAttemptStore(options = {}) {
   const uid = options.uid ?? (typeof process.getuid === 'function' ? process.getuid() : null)
   const fsImpl = options.fsImpl ?? fs
   const now = options.now ?? (() => new Date())
+  const inFlightMs = options.inFlightMs ?? DEFAULT_IN_FLIGHT_MS
+  if (!Number.isFinite(inFlightMs) || inFlightMs < 0) throw new TypeError('inFlightMs must be a non-negative number')
   const recordPath = path.join(directory, ATTEMPT_RECORD)
   const resultPath = path.join(directory, ATTEMPT_RESULT)
 
@@ -264,8 +269,11 @@ function createInstallAttemptStore(options = {}) {
     try {
       const recordText = await readSmallFile(fsImpl, recordPath, MAX_RECORD_BYTES)
       const resultText = await readSmallFile(fsImpl, resultPath, MAX_RESULT_BYTES)
-      await abandon()
       const record = recordText === null ? null : parseRecord(recordText)
+      // Another process sharing userData may start while the helper still waits
+      // to swap: a young attempt without a result is left for the reopened app.
+      if (record !== null && resultText === null && now().getTime() - Date.parse(record.at) < inFlightMs) return null
+      await abandon()
       if (record === null) return null
       const match = resultText === null ? null : resultText.match(RESULT_RE)
       return Object.freeze({ ...record, exitCode: match ? Number(match[1]) : null })

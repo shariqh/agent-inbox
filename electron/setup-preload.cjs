@@ -12,10 +12,14 @@ const UPDATE_STATE_VALUES = new Set([
   'downloading',
   'verified',
   'download-failed',
+  'installing',
+  'install-failed',
 ])
 // `stale` carries no offer: it stays out of both sets below.
-const OFFERED_UPDATE_STATES = new Set(['available', 'downloading', 'verified', 'download-failed'])
+const OFFERED_UPDATE_STATES = new Set(['available', 'downloading', 'verified', 'download-failed', 'installing', 'install-failed'])
 const DOWNLOAD_STATES = new Set(['downloading', 'verified', 'download-failed'])
+// An install exists only for an installable offer and carries no byte progress.
+const INSTALL_STATES = new Set(['installing', 'install-failed'])
 const updatesAvailable = process.argv.includes('--agent-inbox-updates=1')
 
 contextBridge.exposeInMainWorld('agentInboxSetup', {
@@ -44,6 +48,32 @@ function isByteCount(value) {
   return Number.isSafeInteger(value) && value >= 0
 }
 
+// installable implies downloadable; a reason explains only a notify-only offer.
+const MAX_INSTALL_NOTICE_LENGTH = 400
+
+function isOffer(available, status) {
+  return (
+    typeof available === 'object' &&
+    available !== null &&
+    typeof available.version === 'string' &&
+    typeof available.tag === 'string' &&
+    typeof available.releaseUrl === 'string' &&
+    typeof available.downloadable === 'boolean' &&
+    typeof available.installable === 'boolean' &&
+    (!available.installable || available.downloadable) &&
+    (available.reason === undefined || (
+      typeof available.reason === 'string' &&
+      !available.installable &&
+      !available.downloadable
+    )) &&
+    (!INSTALL_STATES.has(status) || available.installable) &&
+    typeof available.target === 'object' &&
+    available.target !== null &&
+    typeof available.target.packageType === 'string' &&
+    typeof available.target.installStrategy === 'string'
+  )
+}
+
 function isUpdateState(value) {
   const available = value?.available
   const download = value?.download
@@ -55,18 +85,12 @@ function isUpdateState(value) {
     typeof value.automaticChecks === 'boolean' &&
     (value.checkedAt === null || typeof value.checkedAt === 'string') &&
     typeof value.message === 'string' &&
+    (value.installNotice === undefined || (
+      typeof value.installNotice === 'string' &&
+      value.installNotice.length <= MAX_INSTALL_NOTICE_LENGTH
+    )) &&
     (OFFERED_UPDATE_STATES.has(value.status)
-      ? (
-          typeof available === 'object' &&
-          available !== null &&
-          typeof available.version === 'string' &&
-          typeof available.tag === 'string' &&
-          typeof available.releaseUrl === 'string' &&
-          typeof available.downloadable === 'boolean' &&
-          typeof available.target === 'object' &&
-          typeof available.target.packageType === 'string' &&
-          typeof available.target.installStrategy === 'string'
-        )
+      ? isOffer(available, value.status)
       : available === undefined) &&
     (DOWNLOAD_STATES.has(value.status)
       ? (
@@ -109,6 +133,10 @@ if (updatesAvailable) {
     cancelDownload(...args) {
       if (args.length !== 0) return false
       return invokeUpdateState('agent-inbox:update-download-cancel')
+    },
+    install(...args) {
+      if (args.length !== 0) return false
+      return invokeUpdateState('agent-inbox:update-install')
     },
     openRelease(...args) {
       if (args.length !== 0) return false

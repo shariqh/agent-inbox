@@ -1481,13 +1481,15 @@ body:has(.nrow[data-open="1"]) .inspector-empty { display: none; }
 }
 .updates-actions button:disabled { cursor: wait; opacity: .55; }
 .updates-actions .updates-review,
-.updates-actions .updates-download {
+.updates-actions .updates-download,
+.updates-actions .updates-install {
   border-color: var(--app-accent);
   background: var(--app-accent);
   color: var(--app-on-accent);
 }
 .updates-actions .updates-review:not(.updates-secondary):hover,
-.updates-actions .updates-download:hover { color: var(--app-on-accent); }
+.updates-actions .updates-download:hover,
+.updates-actions .updates-install:hover { color: var(--app-on-accent); }
 .updates-actions .updates-review.updates-secondary {
   border-color: var(--app-border-strong);
   background: var(--app-surface);
@@ -1504,6 +1506,14 @@ body:has(.nrow[data-open="1"]) .inspector-empty { display: none; }
   color: var(--app-text-soft);
   font-size: 11.5px;
   line-height: 1.4;
+}
+.updates-notice {
+  margin: 0;
+  padding-left: 10px;
+  border-left: 3px solid var(--app-accent);
+  color: var(--app-text);
+  font-size: 12px;
+  line-height: 1.45;
 }
 .updates-preference {
   display: grid;

@@ -7,8 +7,8 @@ export type DownloadableInstallStrategy = 'macos-dmg' | 'appimage-self-replace'
 
 /**
  * A file whose exact length and SHA-256 matched the signed manifest. This is
- * the seam the install steps consume; call `verify()` again immediately before
- * acting on it, because the file can change after it was verified.
+ * the seam the install steps consume through `openVerified()`, because the file
+ * can change after it was verified.
  */
 export interface VerifiedArtifact {
   path: string
@@ -58,6 +58,14 @@ export interface UpdateDownloadFileHandle {
   close(): Promise<void>
 }
 
+/** A verified artifact plus the read-only handle its bytes were just hashed through. */
+export interface OpenedVerifiedArtifact {
+  record: VerifiedArtifact
+  handle: UpdateDownloadFileHandle
+  /** Idempotent; never rejects. */
+  close(): Promise<void>
+}
+
 export interface UpdateDownloadStat {
   isDirectory(): boolean
   isFile(): boolean
@@ -100,6 +108,13 @@ export interface UpdateDownloader {
   cancel(): Promise<void>
   /** Re-hashes a verified artifact at its expected location. */
   verify(record: VerifiedArtifact): Promise<VerifiedArtifact>
+  /**
+   * Applies `verify()`'s location and directory checks, opens the file once
+   * (`O_RDONLY | O_NOFOLLOW | O_NONBLOCK`) and re-hashes it through that handle.
+   * Resolves with the still-open handle; the caller closes it. Rejects with
+   * `UpdateDownloadError('not-verified')` without leaking a handle.
+   */
+  openVerified(record: VerifiedArtifact): Promise<OpenedVerifiedArtifact>
   /**
    * Bounded cleanup. Removes abandoned staging directories, downloads at or
    * below `currentVersion`, and, when `keep` is supplied, every download other

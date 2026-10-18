@@ -86,7 +86,8 @@ Run the build before `npm run electron`; the development shell starts the built
   restart path calls `beginAppQuit()` in `electron/main.cjs` first, which refuses
   later installs through `createInstallGate()`, revokes the window's Setup, and
   cancels and awaits the running install; the renderer stops its per-host loop
-  at a cancelled, timed-out or failed step.
+  at a step that was cancelled, timed out or could not run (a plain failure,
+  such as a missing CLI, continues).
   `scripts/setup-filesystem.cjs` is the
   Node-core-only runtime identity/staging/publication/removal boundary used by
   the shipped Darwin install path and build-time runtime publisher. Its Win32

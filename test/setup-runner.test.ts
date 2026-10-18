@@ -22,6 +22,7 @@ const {
   canRunSetup(senderUrl: string, viewerUrl: string, senderId: number, authorizedWebContentsId: number | null): boolean
   createInstallGate(): {
     quitting(): boolean
+    running(): boolean
     run<T>(start: (onCancel: (cancel: () => void) => void) => Promise<T>): { promise: Promise<T> } | { refused: 'quitting' | 'running' }
     beginQuit(): Promise<void> | null
   }
@@ -368,6 +369,36 @@ describe('createInstallGate (#205)', () => {
     await Promise.all([first, again])
     expect(settled).toBe(true)
     expect(gate.beginQuit()).toBeNull()
+  })
+
+  it('says whether an install is running, from start until it settles either way', async () => {
+    const gate = createInstallGate()
+    expect(gate.running()).toBe(false)
+    const first = deferred<string>()
+    const started = gate.run(() => first.promise) as { promise: Promise<string> }
+    expect(gate.running()).toBe(true)
+    expect(gate.run(async () => 'second')).toEqual({ refused: 'running' })
+    expect(gate.running()).toBe(true)
+    first.resolve('done')
+    await started.promise
+    expect(gate.running()).toBe(false)
+
+    const failing = gate.run(async () => { throw new Error('spawn failed') }) as { promise: Promise<unknown> }
+    expect(gate.running()).toBe(true)
+    await expect(failing.promise).rejects.toThrow('spawn failed')
+    expect(gate.running()).toBe(false)
+
+    const last = deferred<string>()
+    gate.run((onCancel) => {
+      onCancel(() => last.resolve('cancelled'))
+      return last.promise
+    })
+    const waiting = gate.beginQuit()
+    expect(gate.running()).toBe(true)
+    await waiting
+    expect(gate.running()).toBe(false)
+    expect(gate.run(async () => 'late')).toEqual({ refused: 'quitting' })
+    expect(gate.running()).toBe(false)
   })
 
   it('a quit with nothing running refuses later installs, and a failed install never wedges the gate or the quit', async () => {

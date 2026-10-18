@@ -9,6 +9,7 @@ import {
   openSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -908,5 +909,192 @@ describe('download cleanup', () => {
 
     expect(await codeOf(downloader.download(artifact))).toMatchObject({ code: 'disk' })
     expect(readdirSync(elsewhere)).toEqual([])
+  })
+})
+
+describe('opening a verified artifact for install', () => {
+  type Tracked = { path: string; flags: unknown; bytesRead: number; positions: Array<number | null>; closed: boolean; handle: unknown }
+
+  // Wraps real file handles so a test can tell which handle was hashed and handed over.
+  function trackingFs() {
+    const opened: Tracked[] = []
+    const fsImpl: UpdateDownloadFs = {
+      ...(fsp as unknown as UpdateDownloadFs),
+      async open(path, flags, mode) {
+        const real = await fsp.open(path, flags as never, mode)
+        const entry: Tracked = { path, flags, bytesRead: 0, positions: [], closed: false, handle: null }
+        const handle = {
+          write: real.write.bind(real),
+          async read(buffer: Uint8Array, offset: number, length: number, position: number | null) {
+            entry.positions.push(position)
+            const result = await real.read(buffer, offset, length, position)
+            entry.bytesRead += result.bytesRead
+            return result
+          },
+          stat: real.stat.bind(real),
+          sync: real.sync.bind(real),
+          async close() {
+            entry.closed = true
+            await real.close()
+          },
+        }
+        entry.handle = handle
+        opened.push(entry)
+        return handle as never
+      },
+    }
+    return { fsImpl, opened }
+  }
+
+  function plantedRecord(root: string, artifact: UpdateArtifact): VerifiedArtifact {
+    return {
+      path: join(root, `${artifact.tag}-${artifact.sha256}`, artifact.filename),
+      version: artifact.version,
+      tag: artifact.tag,
+      filename: artifact.filename,
+      sha256: artifact.sha256,
+      byteLength: artifact.byteLength,
+      packageType: artifact.packageType,
+      installStrategy: artifact.installStrategy as VerifiedArtifact['installStrategy'],
+      ...(artifact.minimumSystemVersion ? { minimumSystemVersion: artifact.minimumSystemVersion } : {}),
+    }
+  }
+
+  async function downloaded(fsImpl?: UpdateDownloadFs) {
+    const work = workDir()
+    const root = join(work, 'update-downloads')
+    const body = randomBytes(3 * CHUNK + 17)
+    const artifact = artifactFor(body)
+    const downloader = createUpdateDownloader({
+      directory: root,
+      fetchImpl: releaseFetch(new Map([[artifact.url, body]])),
+      ...(fsImpl ? { fsImpl } : {}),
+    })
+    const record = await downloader.download(artifact)
+    return { work, root, body, artifact, downloader, record }
+  }
+
+  it('hashes the file through the one handle it opens and hands that handle to the caller', async () => {
+    const tracking = trackingFs()
+    const { body, downloader, record } = await downloaded(tracking.fsImpl)
+    tracking.opened.length = 0
+
+    const opened = await downloader.openVerified(record)
+
+    expect(opened.record).toEqual(record)
+    expect(Object.isFrozen(opened.record)).toBe(true)
+    expect(tracking.opened).toHaveLength(1)
+    const [entry] = tracking.opened
+    expect(entry!.path).toBe(record.path)
+    expect(entry!.flags).toBe(constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+    expect(opened.handle).toBe(entry!.handle)
+    expect(entry!.bytesRead).toBe(body.length)
+    expect(entry!.positions.every((position) => typeof position === 'number')).toBe(true)
+    expect(entry!.closed).toBe(false)
+
+    const copy = Buffer.alloc(body.length)
+    const { bytesRead } = await opened.handle.read(copy, 0, body.length, 0)
+    expect(bytesRead).toBe(body.length)
+    expect(copy.equals(body)).toBe(true)
+
+    await opened.close()
+    expect(entry!.closed).toBe(true)
+    await expect(opened.close()).resolves.toBeUndefined()
+  })
+
+  it('keeps reading the verified bytes after the file is replaced at its path', async () => {
+    const { body, downloader, record } = await downloaded()
+    const opened = await downloader.openVerified(record)
+    writeFileSync(`${record.path}.swap`, randomBytes(body.length))
+    renameSync(`${record.path}.swap`, record.path)
+
+    const copy = Buffer.alloc(body.length)
+    await opened.handle.read(copy, 0, body.length, 0)
+    await opened.close()
+    expect(copy.equals(body)).toBe(true)
+  })
+
+  it('refuses a tampered or resized file and closes the handle it opened', async () => {
+    const tracking = trackingFs()
+    const { body, downloader, record } = await downloaded(tracking.fsImpl)
+
+    const tampered = Buffer.from(body)
+    tampered[body.length - 1] = (tampered[body.length - 1] ?? 0) ^ 0x01
+    writeFileSync(record.path, tampered)
+    tracking.opened.length = 0
+    expect(await codeOf(downloader.openVerified(record))).toMatchObject({ code: 'not-verified' })
+    expect(tracking.opened.map((entry) => entry.closed)).toEqual([true])
+
+    writeFileSync(record.path, Buffer.concat([body, Buffer.from([0])]))
+    tracking.opened.length = 0
+    expect(await codeOf(downloader.openVerified(record))).toMatchObject({ code: 'not-verified' })
+    expect(tracking.opened.map((entry) => entry.closed)).toEqual([true])
+  })
+
+  it('refuses a record that names any other location without opening it', async () => {
+    const tracking = trackingFs()
+    const { root, downloader, record } = await downloaded(tracking.fsImpl)
+    tracking.opened.length = 0
+
+    expect(await codeOf(downloader.openVerified({ ...record, path: join(root, '..', 'elsewhere.dmg') }))).toMatchObject({ code: 'not-verified' })
+    expect(await codeOf(downloader.openVerified({ ...record, sha256: 'e'.repeat(64) }))).toMatchObject({ code: 'not-verified' })
+    expect(await codeOf(downloader.openVerified(null as unknown as VerifiedArtifact))).toMatchObject({ code: 'not-verified' })
+    expect(tracking.opened).toEqual([])
+  })
+
+  it('refuses a symlinked file, download directory or download root holding the signed bytes', async () => {
+    const work = workDir()
+    const body = randomBytes(2 * CHUNK)
+    const artifact = artifactFor(body)
+
+    const fileRoot = join(work, 'file-root')
+    const fileRecord = plantedRecord(fileRoot, artifact)
+    writeFileSync(join(work, 'outside.dmg'), body)
+    mkdirSync(join(fileRoot, `${artifact.tag}-${artifact.sha256}`), { recursive: true, mode: 0o700 })
+    symlinkSync(join(work, 'outside.dmg'), fileRecord.path)
+
+    const dirRoot = join(work, 'dir-root')
+    const dirRecord = plantedRecord(dirRoot, artifact)
+    mkdirSync(join(work, 'outside-dir'))
+    writeFileSync(join(work, 'outside-dir', artifact.filename), body)
+    mkdirSync(dirRoot, { recursive: true, mode: 0o700 })
+    symlinkSync(join(work, 'outside-dir'), join(dirRoot, `${artifact.tag}-${artifact.sha256}`))
+
+    const linkedRoot = join(work, 'linked-root')
+    const rootRecord = plantedRecord(linkedRoot, artifact)
+    mkdirSync(join(work, 'outside-root', `${artifact.tag}-${artifact.sha256}`), { recursive: true, mode: 0o700 })
+    writeFileSync(join(work, 'outside-root', `${artifact.tag}-${artifact.sha256}`, artifact.filename), body)
+    symlinkSync(join(work, 'outside-root'), linkedRoot)
+
+    for (const [root, record] of [[fileRoot, fileRecord], [dirRoot, dirRecord], [linkedRoot, rootRecord]] as const) {
+      const downloader = createUpdateDownloader({ directory: root, fetchImpl: vi.fn() })
+      expect(await codeOf(downloader.openVerified(record)), root).toMatchObject({ code: 'not-verified' })
+    }
+  })
+
+  it('fails a named pipe at the verified path instead of blocking on it', async () => {
+    const root = join(workDir(), 'update-downloads')
+    const body = randomBytes(CHUNK)
+    const artifact = artifactFor(body)
+    const record = plantedRecord(root, artifact)
+    mkdirSync(join(root, `${artifact.tag}-${artifact.sha256}`), { recursive: true, mode: 0o700 })
+    execFileSync('mkfifo', [record.path])
+    const downloader = createUpdateDownloader({ directory: root, fetchImpl: vi.fn() })
+
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      const outcome = await Promise.race([
+        codeOf(downloader.openVerified(record)),
+        new Promise<'hung'>((resolveHung) => { timer = setTimeout(() => resolveHung('hung'), 2_000) }),
+      ])
+      expect(outcome).toMatchObject({ code: 'not-verified' })
+    } finally {
+      clearTimeout(timer)
+      try {
+        closeSync(openSync(record.path, constants.O_WRONLY | constants.O_NONBLOCK))
+      } catch {
+        // No blocked reader to release.
+      }
+    }
   })
 })

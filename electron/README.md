@@ -13,10 +13,62 @@ runs `update-download.cjs` in Electron main: it fetches only the manifest's cano
 release URL, follows at most five redirects to GitHub's release-asset hosts, streams into
 a private `0700` staging directory under `userData/update-downloads`, enforces the signed
 length as a hard cap, and renames the file into place only after its SHA-256 matches.
-The renderer never sees the URL, digest or path. This layer does not mount, open,
-replace, or install anything; `deb-notify` stays notify-only and the release action opens
-the verified GitHub release page for a manual package update. Dev Electron and browser
-viewers intentionally omit the feature.
+The renderer never sees the URL, digest or path. The downloader itself never mounts,
+opens, replaces, or installs anything; `deb-notify` stays notify-only and the release
+action opens the verified GitHub release page for a manual package update. Dev Electron
+and browser viewers intentionally omit the feature.
+
+Installing goes through the platform-neutral contract in `update-install.cjs`: a
+`PlatformInstaller` answers `feasibility()` without side effects, `prepare()` stages and
+fully verifies the new build without touching the running one, and the returned
+`commit()` is the only step that changes the installation (`discard()` removes what was
+staged). `update-controller.cjs` consults feasibility on every check, so an installation
+that cannot install an offer gets a notify-only offer with the installer's plain reason.
+A strategy with no registered installer (AppImage today) stays download-only. On
+**Install and restart** the controller re-checks the running version, the high-water mark
+re-read from `update-trust-state.json`, agent Setup, any check in flight and feasibility,
+then reopens the download through `downloader.openVerified()`, which re-hashes it through
+the one read-only handle it hands to `prepare()`; installers hash the bytes they consume
+from that handle again (`copyVerifiedSource`). Main accepts the argument-free
+`agent-inbox:update-install` IPC only from the window bound at the first navigation of a
+viewer this app started and proved it owns, refuses it while Setup runs (and Setup refuses
+while an install runs), and quits through `requestRestart()` once `commit()` resolves.
+
+On macOS, `update-install-macos.cjs` refuses a translocated, read-only, foreign-owned,
+symlinked or unwritable bundle and a macOS below the signed minimum. `prepare()` copies
+the handle into a private `0700` folder under `userData/update-install`, attaches that
+copy read-only with `hdiutil` (`-nobrowse -noautoopen`, image checksums on, stdin closed),
+requires exactly one real `Agent Inbox.app`, copies it with `ditto` into a `0700`
+`.agent-inbox-update-*` folder beside the running app on the same volume, always detaches,
+and then verifies the STAGED copy: `plutil` bundle identifier and version, `codesign
+--verify --deep --strict` against a requirement built from the bundle id and Team ID
+`VVR2DKR923`, and `spctl --assess --type execute`. Files Node writes carry no quarantine,
+so that `spctl` call is the only Gatekeeper evaluation. `commit()` re-checks both bundle
+identities and starts a constant `/bin/sh` helper, detached, with fixed argv and a
+minimal environment. The helper waits until the app and any viewer process it started
+have exited (giving up unchanged after about two minutes), renames the running app to
+`Agent Inbox.app.previous` inside the stage folder, renames the staged app into place
+(restoring the previous one if that fails) and reopens Agent Inbox. Startup cleanup
+removes stage and work folders more than an hour old, by exact name, owner and without
+following links, so the previous app stays restorable by hand for at least an hour.
+
+A swap that fails after the app quit is reported, not repeated blindly. Just before
+`commit()`, the controller writes `userData/update-install/last-attempt.json` (`{ schema:
+1, from, to, at, platform, strategy }`, temp file + rename) through
+`createInstallAttemptStore()`; an install it cannot record is not handed off, and a
+rejected `commit()` removes the record. The helper's last argument is the store's
+`last-attempt.result`, where it writes only its exit code (shared `INSTALL_HELPER_EXIT`:
+0 installed, 64 bad arguments, 65 refused, 70/71 could not move the app aside/in, 75 timed
+out) before every exit, and before it reopens the app. The first `rendererReady()` of an
+instance that registered an installer takes both files before any cleanup; a record
+without a result that is younger than 150 s may still be in flight and is left alone. If
+the app is still older than the attempted release, every published state carries
+`installNotice` with the cause, Settings shows it (with Open Releases when nothing is
+offered), and one native notification fires; it stays on the next offer of that version.
+An app now on that release, or one whose helper reported success, says nothing. Update
+installs follow #205's quit contract: `beginAppQuit()` (called first by `before-quit` and
+by the update restart) refuses new Setup and update installs and revokes both window
+bindings, and a quit while the attempt record is written still stops the install.
 
 Checks also refuse to move backwards. After a manifest's signature, schema and expiry
 verify, the app records that release version as a high-water mark in its own user-data

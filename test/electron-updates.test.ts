@@ -1,10 +1,20 @@
 import { readdirSync, readFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import vm from 'node:vm'
 import { describe, expect, it, vi } from 'vitest'
 
 import updateController from '../electron/update-controller.cjs'
 import type { UpdateArtifact, UpdateControllerState } from '../electron/update-controller.cjs'
+
+const setupRunner = createRequire(import.meta.url)('../electron/setup-runner.cjs') as {
+  createInstallGate(): {
+    running(): boolean
+    quitting(): boolean
+    beginQuit(): Promise<void> | null
+    run(start: (onCancel: (cancel: () => void) => void) => Promise<unknown>): { promise: Promise<unknown> } | { refused: string }
+  }
+}
 
 function read(relPath: string): string {
   return readFileSync(join(import.meta.dirname, '..', relPath), 'utf8')
@@ -13,6 +23,7 @@ function read(relPath: string): string {
 type UpdatesBridge = {
   download(...args: unknown[]): Promise<unknown> | false
   cancelDownload(...args: unknown[]): Promise<unknown> | false
+  install(...args: unknown[]): Promise<unknown> | false
   onState(callback: (state: unknown) => void): () => void
 }
 
@@ -64,6 +75,13 @@ async function controllerStates(): Promise<UpdateControllerState[]> {
   let progress: ((received: number) => void) | undefined
   let settle: { resolve(value: unknown): void; reject(error: unknown): void } | undefined
   let stale = true
+  let feasible = false
+  let setupRunning = true
+  let reopenFails = true
+  const record = {
+    path: '/private/x.dmg', version: '2.0.0', tag, filename, sha256: 'd'.repeat(64), byteLength: 200,
+    packageType: 'dmg' as const, installStrategy: 'macos-dmg' as const, minimumSystemVersion: '13.5',
+  }
   const controller = updateController.createUpdateController({
     currentVersion: '1.0.0',
     preferences: {
@@ -102,20 +120,66 @@ async function controllerStates(): Promise<UpdateControllerState[]> {
       }),
       cancel: async () => {},
       prune: async () => {},
+      openVerified: async (value) => {
+        if (reopenFails) {
+          reopenFails = false
+          throw Object.assign(new Error('changed on disk'), { code: 'not-verified' })
+        }
+        return {
+          record: value,
+          handle: {
+            read: async () => ({ bytesRead: 0 }),
+            stat: async () => ({ isFile: () => true, size: 200 }),
+            write: async () => ({ bytesWritten: 0 }),
+            sync: async () => {},
+            close: async () => {},
+          },
+          close: async () => {},
+        }
+      },
+    },
+    installers: {
+      'macos-dmg': {
+        strategy: 'macos-dmg',
+        feasibility: async () => (feasible
+          ? { ok: true }
+          : { ok: false, reason: 'translocated', message: 'Move Agent Inbox to your Applications folder to install updates from the app.' }),
+        prepare: async () => ({ commit: async () => {}, discard: async () => {} }),
+      },
+    },
+    isSetupRunning: () => setupRunning,
+    requestRestart: () => {},
+    attemptStore: {
+      begin: async () => ({ resultPath: '/private/update-install/last-attempt.result' }),
+      abandon: async () => {},
+      take: async () => ({ from: '1.0.0', to: '2.0.0', at: '2026-02-01T00:00:00.000Z', platform: 'darwin', strategy: 'macos-dmg', exitCode: 70 }),
     },
     emit: (state) => emitted.push(state),
   })
+  await controller.rendererReady()
+  const download = async (outcome: 'fail' | 'verify') => {
+    const pending = controller.downloadNow()
+    if (outcome === 'fail') {
+      progress?.(50)
+      settle?.reject(Object.assign(new Error('bad digest'), { code: 'hash-mismatch' }))
+    } else {
+      progress?.(200)
+      settle?.resolve(record)
+    }
+    await pending
+  }
   await controller.checkNow()
   stale = false
   await controller.checkNow()
-  const failed = controller.downloadNow()
-  progress?.(50)
-  settle?.reject(Object.assign(new Error('bad digest'), { code: 'hash-mismatch' }))
-  await failed
-  const verified = controller.downloadNow()
-  progress?.(200)
-  settle?.resolve({ path: '/private/x.dmg', version: '2.0.0', tag, filename, sha256: 'd'.repeat(64), byteLength: 200, packageType: 'dmg', installStrategy: 'macos-dmg' })
-  await verified
+  feasible = true
+  await controller.checkNow()
+  await download('fail')
+  await download('verify')
+  await controller.installNow()
+  setupRunning = false
+  await controller.installNow()
+  await download('verify')
+  await controller.installNow()
   return emitted
 }
 
@@ -135,14 +199,23 @@ describe('Electron updater integration', () => {
     expect(preload).toContain("ipcRenderer.on('agent-inbox:open-updates'")
     expect(preload).toContain("invokeUpdateState('agent-inbox:update-download')")
     expect(preload).toContain("invokeUpdateState('agent-inbox:update-download-cancel')")
+    expect(preload).toContain("invokeUpdateState('agent-inbox:update-install')")
     expect(preload).not.toContain('child_process')
   })
 
   it('accepts every state the controller publishes through the real preload validator', async () => {
     const states = await controllerStates()
     expect(states.map((state) => state.status)).toEqual(expect.arrayContaining([
-      'checking', 'stale', 'available', 'downloading', 'download-failed', 'verified',
+      'checking', 'stale', 'available', 'downloading', 'download-failed', 'verified', 'installing', 'install-failed',
     ]))
+    expect(states.some((state) => state.available?.reason !== undefined && state.available.installable === false)).toBe(true)
+    expect(states.some((state) => state.status === 'verified' && state.available?.installable === true)).toBe(true)
+    expect(states.filter((state) => state.status === 'download-failed').map((state) => state.download?.receivedBytes)).toEqual([50, 0])
+    expect(states.some((state) => typeof state.installNotice === 'string' && state.status === 'idle')).toBe(true)
+    expect(states.some((state) => typeof state.installNotice === 'string' && state.status === 'verified')).toBe(true)
+    expect(states.at(-1)).toMatchObject({ status: 'installing' })
+    expect(states.at(-1)).not.toHaveProperty('installNotice')
+    expect(JSON.stringify(states)).not.toContain('/private/')
     const { updates, deliver } = loadPreload(() => null)
     const received: unknown[] = []
     updates.onState((state) => received.push(state))
@@ -167,7 +240,34 @@ describe('Electron updater integration', () => {
     await expect(updates.download()).rejects.toThrow(TypeError)
     expect(updates.download('renderer-chosen-url')).toBe(false)
     expect(updates.cancelDownload('x')).toBe(false)
+    expect(updates.install('renderer-chosen-path')).toBe(false)
     expect(invoke).toHaveBeenCalledOnce()
+  })
+
+  it.each([
+    ['an install while the offer is not installable', 'installing', { available: { installable: false } }],
+    ['an install state with download progress', 'install-failed', { download: { receivedBytes: 1, totalBytes: 200 } }],
+    ['an offer without its install capability', 'verified', { available: { installable: undefined } }],
+    ['a reason on an installable offer', 'verified', { available: { reason: 'Move it.' } }],
+    ['a reason that is not text', 'available', { available: { installable: false, downloadable: false, reason: 5 } }],
+    ['an installable offer that cannot download', 'verified', { available: { downloadable: false } }],
+    ['an install notice that is not text', 'verified', { installNotice: 5 }],
+    ['an overlong install notice', 'verified', { installNotice: 'x'.repeat(401) }],
+  ] as const)('rejects %s from main', async (_label, status, patch) => {
+    const states = await controllerStates()
+    const base = states.find((state) => state.status === status)!
+    const malformed = JSON.parse(JSON.stringify({
+      ...base,
+      ...patch,
+      ...('available' in patch ? { available: { ...base.available, ...patch.available } } : {}),
+    }))
+    const { updates, invoke, deliver } = loadPreload(() => malformed)
+    const received: unknown[] = []
+    updates.onState((state) => received.push(state))
+    deliver(malformed)
+    expect(received).toEqual([])
+    await expect(updates.install()).rejects.toThrow(TypeError)
+    expect(invoke).toHaveBeenCalledWith('agent-inbox:update-install')
   })
 
   it('gates updates to packaged supported hosts and validates the live sender on every call', () => {
@@ -219,7 +319,12 @@ describe('Electron updater integration', () => {
   })
 
   it('keeps update failures out of the attention and badge graph', () => {
-    for (const file of ['electron/update-controller.cjs', 'electron/update-download.cjs']) {
+    for (const file of [
+      'electron/update-controller.cjs',
+      'electron/update-download.cjs',
+      'electron/update-install.cjs',
+      'electron/update-install-macos.cjs',
+    ]) {
       const source = read(file)
       expect(source).not.toContain('attention')
       expect(source).not.toContain('setBadgeCount')
@@ -250,7 +355,142 @@ describe('Electron updater integration', () => {
     }
     for (const name of readdirSync(join(import.meta.dirname, '..', 'src')).filter((file) => file.endsWith('.ts'))) {
       expect(read(`src/${name}`), name).not.toContain('update-download')
+      expect(read(`src/${name}`), name).not.toContain('update-install')
     }
+  })
+
+  it('runs install binaries only by absolute path with argv arrays, outside Electron and the MCP graph', () => {
+    const contract = read('electron/update-install.cjs')
+    const mac = read('electron/update-install-macos.cjs')
+    for (const source of [contract, mac]) {
+      expect(source).not.toContain("require('electron')")
+      expect(source).not.toMatch(/shell:\s*true/)
+      expect(source).not.toMatch(/\bexec(Sync)?\(/)
+      expect(source).not.toContain('execSync')
+      expect(source).not.toContain('spawnSync')
+    }
+    expect(contract).not.toContain('child_process')
+    expect(mac).toContain("require('node:child_process')")
+  })
+
+  it('installs only for the window bound to a viewer this app started and proved it owns', () => {
+    const main = read('electron/main.cjs')
+    const start = main.indexOf("ipcMain.handle('agent-inbox:update-install'")
+    const handler = main.slice(start, main.indexOf('\n})', start))
+
+    expect(start).toBeGreaterThan(-1)
+    expect(handler).toContain('args.length !== 0 || !isTrustedUpdateSender(senderUrl, event.sender)')
+    expect(handler).toContain('canRunSetup(senderUrl, URL_BASE, event.sender.id, updateInstallWebContentsId)')
+    expect(handler).toContain("updateController.refuseInstall('Restart Agent Inbox to install this update.')")
+    expect(handler).toContain('updateController.installNow().catch(() => {})')
+    expect(handler).not.toContain('await')
+    expect(handler).not.toContain('setupInstallEnabled')
+    expect(handler).not.toContain('runtimeSelection')
+    // Ownership is proven once, in the branch that started this app's own viewer.
+    expect(main.match(/viewerOwned = true/g)).toHaveLength(1)
+    expect(main).toMatch(/\} else if \(await waitForOwnership\(\)\) \{\n\s+viewerOwned = true\n/)
+    expect(main).toContain('if (viewerOwned && viewerOrigin) updateInstallWebContentsId = setupWindowWebContentsId')
+    expect(main).toContain('if (updateInstallWebContentsId === setupWindowWebContentsId) updateInstallWebContentsId = null')
+    const failover = main.slice(main.indexOf('watchUpstream(probe'), main.indexOf("app.on('window-all-closed'"))
+    expect(failover).not.toContain('viewerOwned')
+  })
+
+  it('keeps an app update and agent Setup mutually exclusive, and never blocks the update restart', () => {
+    const main = read('electron/main.cjs')
+    const setupStart = main.indexOf("ipcMain.handle('agent-inbox:install'")
+    const setupHandler = main.slice(setupStart, main.indexOf('\n})', setupStart))
+    const restart = main.slice(main.indexOf('function requestUpdateRestart()'), main.indexOf('\n}', main.indexOf('function requestUpdateRestart()')))
+    const beforeQuit = main.slice(main.indexOf("app.on('before-quit'"), main.indexOf("app.on('will-quit'"))
+
+    // Checked synchronously right before the gate starts Setup (#205): no await in between.
+    const refusal = setupHandler.indexOf('if (updateController?.isInstalling())')
+    const start = setupHandler.indexOf('const started = installGate.run(')
+    expect(refusal).toBeGreaterThan(-1)
+    expect(refusal).toBeLessThan(start)
+    expect(setupHandler.slice(refusal, start)).not.toContain('await')
+    expect(main).not.toContain('setupInstallRunning')
+    expect(main).toContain('isSetupRunning: () => installGate.running(),')
+    expect(main).toContain('requestRestart: requestUpdateRestart,')
+    // The update restart is a quit path too: Setup stops before the app quits.
+    expect(restart).toContain('updateRestartRequested = true')
+    expect(restart.indexOf('beginAppQuit()')).toBeGreaterThan(-1)
+    expect(restart.indexOf('beginAppQuit()')).toBeLessThan(restart.indexOf('app.quit()'))
+    // before-quit runs beginAppQuit() every time, before the update restart's early return.
+    expect(beforeQuit.indexOf('const running = beginAppQuit()')).toBeGreaterThan(-1)
+    expect(beforeQuit.indexOf('const running = beginAppQuit()')).toBeLessThan(beforeQuit.indexOf('if (updateRestartRequested) return'))
+    expect(beforeQuit.indexOf('if (updateRestartRequested) return')).toBeLessThan(beforeQuit.indexOf('updateController.cancelInstall()'))
+  })
+
+  it('starts no update install once the app has begun to quit', () => {
+    const main = read('electron/main.cjs')
+    const start = main.indexOf("ipcMain.handle('agent-inbox:update-install'")
+    const handler = main.slice(start, main.indexOf('\n})', start))
+    const beginAppQuit = main.slice(main.indexOf('function beginAppQuit()'), main.indexOf('\n}\n', main.indexOf('function beginAppQuit()')))
+
+    // The quit takes the update install away from the window as well as Setup.
+    expect(beginAppQuit).toContain('updateInstallWebContentsId = null')
+    expect(beginAppQuit).toContain('setupInstallWebContentsId = null')
+    expect(handler.indexOf('if (installGate.quitting())')).toBeGreaterThan(-1)
+    expect(handler.indexOf('if (installGate.quitting())')).toBeLessThan(handler.indexOf('updateController.installNow()'))
+    expect(main).toContain('isQuitting: () => installGate.quitting(),')
+  })
+
+  it('wires isQuitting to the real install gate', () => {
+    const main = read('electron/main.cjs')
+    const match = /isQuitting: (\(\) => [^,\n]+),\n/.exec(main)
+    expect(match).not.toBeNull()
+    const gate = setupRunner.createInstallGate()
+    const isQuitting = new Function('installGate', `return ${match![1]}`)(gate) as () => boolean
+    expect(isQuitting()).toBe(false)
+    expect(gate.beginQuit()).toBeNull()
+    expect(isQuitting()).toBe(true)
+  })
+
+  it('wires isSetupRunning to the real install gate', async () => {
+    // Evaluates main's own expression against a real gate, so a reference to a
+    // variable that no longer exists fails here instead of refusing every install.
+    const main = read('electron/main.cjs')
+    const match = /isSetupRunning: (\(\) => [^,\n]+),\n/.exec(main)
+    expect(match).not.toBeNull()
+    const { createInstallGate } = setupRunner
+    const gate = createInstallGate()
+    const isSetupRunning = new Function('installGate', `return ${match![1]}`)(gate) as () => boolean
+    expect(isSetupRunning()).toBe(false)
+    let finish!: (value: unknown) => void
+    const started = gate.run(() => new Promise((resolve) => { finish = resolve })) as { promise: Promise<unknown> }
+    expect(isSetupRunning()).toBe(true)
+    finish({ ok: true })
+    await started.promise
+    expect(isSetupRunning()).toBe(false)
+  })
+
+  it('registers the macOS installer with the running bundle, its processes and constant identities', () => {
+    const main = read('electron/main.cjs')
+    const initializer = main.slice(
+      main.indexOf('function initializeUpdateController()'),
+      main.indexOf('async function startOwnServer()'),
+    )
+
+    expect(main).toContain("const { bundlePathFromExecPath, createMacInstaller } = require('./update-install-macos.cjs')")
+    expect(initializer).toContain("if (process.platform !== 'darwin' || !viewerOwned) return {}")
+    expect(initializer).toContain('installers: updateInstallers(),')
+    expect(initializer).toContain('bundlePath: bundlePathFromExecPath(process.execPath),')
+    expect(initializer).toContain("expectedBundleId: 'io.github.shariqh.agent-inbox',")
+    expect(initializer).toContain("teamId: 'VVR2DKR923',")
+    expect(initializer).toContain('systemVersion: process.getSystemVersion(),')
+    expect(initializer).toContain('pid: process.pid,')
+    expect(initializer).toContain('viewerPid: spawnedViewerPid,')
+    expect(initializer).toContain('uid: process.getuid(),')
+    expect(initializer).toContain('isPackaged: app.isPackaged,')
+    expect(initializer).toContain("workDirectory: path.join(app.getPath('userData'), 'update-install'),")
+    expect(initializer).toContain('`Version ${version} is available. Download and install it from Settings → Updates.`')
+    expect(main).toContain("const { createInstallAttemptStore } = require('./update-install.cjs')")
+    expect(initializer).toContain("attemptStore: createInstallAttemptStore({ directory: path.join(app.getPath('userData'), 'update-install') }),")
+    expect(initializer).toContain('notifyInstallFailure: ({ message }) => {')
+    expect(initializer).toContain("title: 'Agent Inbox update was not installed',")
+    const viewerPid = main.slice(main.indexOf('function spawnedViewerPid()'), main.indexOf('\n}', main.indexOf('function spawnedViewerPid()')))
+    expect(viewerPid).toContain('spawnedViewer.exitCode === null')
+    expect(viewerPid).toContain('spawnedViewer.signalCode === null')
   })
 
   it('forwards the verified-version recorder and lets stale update states reach the renderer', () => {

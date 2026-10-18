@@ -8,6 +8,7 @@ import { join } from 'node:path'
 import type Database from 'better-sqlite3'
 import {
   dismissItem, insertItem, listItems, listItemsPage, listOpenQuestions, openDb, replyItem, resolveItem,
+  upsertActivity,
 } from '../src/store.js'
 import type { Item } from '../src/store.js'
 import { groupItems } from '../src/group.js'
@@ -193,23 +194,32 @@ describe('viewer closed-history representations (issue #184)', () => {
 
   it('validates each representation independently and never revalidates across routes', async () => {
     seedClosed()
+    upsertActivity(db, { project: 'alpha', stream: 'main', agent: 'copilot', session: 'live', doing: 'Working' })
     const app = createViewer(db)
-    const items = tag(await app.request('/api/items'))
-    const history = tag(await app.request('/api/items/history'))
-    const attention = tag(await app.request('/api/items?scope=attention'))
-    expect(new Set([items, history, attention]).size).toBe(3)
-    expect((await read(app, '/api/items/history', history)).status).toBe(304)
-    const head = await app.request('/api/items/history', { method: 'HEAD', headers: { 'If-None-Match': history } })
+    // #184 and #185: the page, the dock watcher's projection, the complete History
+    // list and activity history are four representations with four validators.
+    const routes = [
+      '/api/items', '/api/items?scope=attention', '/api/items/history',
+      `/api/activity/history?since_ms=${BASE - 30 * 24 * 60 * 60_000}`,
+    ]
+    const tags: string[] = []
+    for (const route of routes) tags.push(tag(await app.request(route)))
+    expect(new Set(tags).size).toBe(routes.length)
+    const head = await app.request('/api/items/history', { method: 'HEAD', headers: { 'If-None-Match': tags[2]! } })
     expect(head.status).toBe(304)
     expect(head.headers.get('cache-control')).toBe('no-store')
     expect(head.headers.get('x-inbox-boot')).toBeTruthy()
-    for (const [route, foreign] of [
-      ['/api/items', history], ['/api/items/history', items], ['/api/items/history', attention],
-      ['/api/items?scope=attention', history],
-    ] as const) {
-      const response = await read(app, route, foreign)
-      expect(response.status, `${route} must not accept ${foreign}`).toBe(200)
-      expect(response.etag).not.toBe(foreign)
+    // Interleaved, every route still answers its own validator and no other.
+    for (const [index, route] of routes.entries()) {
+      for (const [other, foreign] of tags.entries()) {
+        const response = await read(app, route, foreign)
+        if (other === index) {
+          expect(response.status, `${route} with its own tag`).toBe(304)
+        } else {
+          expect(response.status, `${route} must not accept ${foreign}`).toBe(200)
+          expect(response.etag).toBe(tags[index])
+        }
+      }
     }
   })
 

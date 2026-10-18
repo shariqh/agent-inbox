@@ -86,6 +86,9 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   load's cache entry; older completions cannot overwrite a newer validator/body.
   A query string selects one representation of its route; the reader retains only
   each route's newest one and reuses it only for the exact URL that fetched it.
+  Only `/api/activity/history` takes a query in the reader: any other (such as the
+  dock watcher's `?scope=attention`) is refused, so it can never share or evict
+  the page's slot, and `/api/items/history` is a path of its own (#184).
   Read the live boot header before consuming cached data. Untagged servers retain
   full-fetch behavior, malformed replies fail explicitly, and no snapshot content
   is persisted to browser storage. Derive mutable view state rather than changing

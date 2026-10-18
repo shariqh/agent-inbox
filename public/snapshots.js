@@ -26,6 +26,11 @@ const validators = new Map([
   ['/api/boards/archived', boards],
   ['/api/activity/history', spans],
 ])
+// The only route whose query string selects one of its own representations
+// (#185). Anywhere else a query names a different representation, such as the
+// dock watcher's `/api/items?scope=attention`, which must never enter (and so
+// never share or evict) the slot of the route it shares a path with.
+const QUERY_ROUTES = new Set(['/api/activity/history'])
 
 const HISTORY_WINDOW_MS = 30 * 24 * 60 * 60 * 1000
 const HISTORY_STEP_MS = 60 * 60 * 1000
@@ -57,7 +62,7 @@ export function createSnapshotReader(fetcher) {
   return async (url) => {
     const route = url.split('?')[0]
     const validate = validators.get(route)
-    if (!validate) throw new Error(`Unsupported snapshot route: ${url}`)
+    if (!validate || (url !== route && !QUERY_ROUTES.has(route))) throw new Error(`Unsupported snapshot route: ${url}`)
     const held = cache.get(route)
     const requested = held?.url === url ? held : undefined
     const requestGeneration = ++generation

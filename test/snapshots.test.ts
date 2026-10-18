@@ -191,6 +191,39 @@ describe('per-window conditional snapshots', () => {
     const read = createSnapshotReader(vi.fn().mockResolvedValue(new Response(JSON.stringify(value), { headers: { etag: '"bad"' } })))
     await expect((await read(route)).json()).rejects.toThrow('Invalid snapshot payload')
   })
+
+  // #184 + #185: the page, the complete History list and activity history each
+  // keep their own slot, even when every server tag is the same opaque string,
+  // and the dock watcher's `?scope=attention` projection can never enter (and so
+  // never share or evict) the page's slot.
+  it('never lets the item, History or activity-history representations share a slot', async () => {
+    const window = activityHistoryUrl(Date.parse('2026-07-20T10:00:00.000Z'))
+    const bodies: Record<string, unknown> = {
+      '/api/items': payload('page'),
+      '/api/items/history': { done: [{ id: 'old', title: 'Old', project: 'alpha', agent: 'copilot', kind: 'note', status: 'resolved' }] },
+      [window]: [{ session: 'span' }],
+    }
+    const fetcher = vi.fn(async (url: string, init?: RequestInit) => {
+      const sent = new Headers(init?.headers).get('if-none-match')
+      return sent === '"same"'
+        ? new Response(null, { status: 304, headers: { etag: '"same"' } })
+        : new Response(JSON.stringify(bodies[url]), { headers: { etag: '"same"' } })
+    })
+    const read = createSnapshotReader(fetcher)
+    const first = new Map<string, unknown>()
+    for (const url of Object.keys(bodies)) first.set(url, await (await read(url)).json())
+    await expect(read('/api/items?scope=attention')).rejects.toThrow('Unsupported snapshot route')
+    await expect(read('/api/items/history?page=2')).rejects.toThrow('Unsupported snapshot route')
+    expect(fetcher).toHaveBeenCalledTimes(3)
+    for (const url of [...Object.keys(bodies)].reverse()) {
+      const response = await read(url)
+      expect(response.status, url).toBe(304)
+      expect(await response.json(), url).toBe(first.get(url))
+      expect(await response.json(), url).toEqual(bodies[url])
+    }
+    expect(fetcher.mock.calls.slice(3).map(([url, init]) => [url, new Headers(init?.headers).get('if-none-match')]))
+      .toEqual([...Object.keys(bodies)].reverse().map((url) => [url, '"same"']))
+  })
 })
 
 // Issue #185: the poll's history read names its window in the query string.

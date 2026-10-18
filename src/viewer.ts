@@ -471,7 +471,7 @@ function snoozeUntil(value: unknown): string | null | undefined {
 }
 
 // Issue #184: closed items the default /api/items snapshot carries, newest touch
-// first. Fifty fill ten History pages (PAGE.done = 5) and the Dashboard's five
+// first. Fifty fill ten History pages (PAGE.done = 5) and the Dashboard's four
 // recent outcomes several times over, while bounding a changed tick at about a
 // tenth of a long-lived hub's full history. Anything beyond is summarized in
 // `history` and fetched from /api/items/history only while a surface needs it.

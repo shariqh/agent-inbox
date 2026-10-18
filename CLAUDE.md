@@ -636,8 +636,10 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   write into the next command substitution), and exits 128 + the signal. The shell and
   its non-Node commands then ignore those signals, but Node resets them at startup, so
   a repeat signal can still stop a host CLI's `mcp remove` or a runtime helper; that
-  step's warning is reported. An exit that neither committed nor finished the rollback
-  keeps every MCP snapshot, and a kept snapshot or failed step keeps the log too.
+  step's warning is reported. Hosts refuse to remove a server a failed add never
+  registered, so a failed undo counts as failed unless a re-check confirms it absent.
+  An exit that neither committed nor finished the rollback keeps every MCP snapshot,
+  and a kept snapshot or failed step keeps the log too.
   A failed post-publication cleanup is a committed failure and retains
   its recovery path rather than deleting the only prior tree.
   Every applied agent or hook install sources the adjacent

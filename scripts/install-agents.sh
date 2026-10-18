@@ -453,7 +453,10 @@ rollback_mcp_changes() {
     mcp_commands "$target" remove
     if "${MCP_CMD[@]}" >/dev/null 2>&1; then
       echo "$target: rolled back MCP registration from failed install" >&2
-    else
+    elif [ "$(user_registration_state "$target")" != absent ]; then
+      # A host refuses to remove a server it never registered, as after an add
+      # that failed outright: that leaves nothing to undo. Anything else,
+      # including a check that failed or was stopped, is reported.
       ROLLBACK_INCOMPLETE=1
       echo "install-agents: warning: could not roll back $target MCP registration" >&2
     fi

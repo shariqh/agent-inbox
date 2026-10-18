@@ -66,6 +66,11 @@ case "$1:$2" in
     ;;
   mcp:add)
     test "\${FAIL_ADD:-}" != "$name" || exit 9
+    if [ "\${CORRUPT_CONFIG_ON_ADD:-}" = "$name" ]; then
+      touch "$INSTALL_STATE/$name"
+      printf '{ not json\\n' > "$config"
+      exit 0
+    fi
     if [ "\${MUTATE_THEN_HANG_ADD:-}" = "$name" ]; then
       touch "$INSTALL_STATE/$name"
       printf '{"mcpServers":{"agent-inbox":{"command":"partial"}}}\\n' > "$config"
@@ -88,6 +93,11 @@ case "$1:$2" in
     ;;
   mcp:remove)
     test "\${FAIL_REMOVE:-}" != "$name" || exit 9
+    # Like the real hosts, refuse to remove a server that is not registered.
+    if [ ! -f "$INSTALL_STATE/$name" ]; then
+      echo "No user-scoped MCP server found with name: agent-inbox" >&2
+      exit 1
+    fi
     rm -f "$INSTALL_STATE/$name"
     printf '{"mcpServers":{}}\\n' > "$config"
     if [ "\${PAUSE_AFTER_REMOVE:-}" = "$name" ]; then
@@ -430,6 +440,10 @@ describe('agent setup installer', () => {
     expect(result.code).not.toBe(0)
     expect(result.err).toMatch(/could not register/i)
     expect(readFileSync(f.copilotFile, 'utf8')).toBe(before)
+    // The add registered nothing, so the host refusing to remove it is not a
+    // failed rollback: no warning, and no report or work directory left behind.
+    expect(result.err).not.toMatch(/could not roll back|report retained/)
+    expect(workDirs(f)).toEqual([])
   })
 
   it('does not delete an existing registration when the CLI probe fails', () => {
@@ -1457,6 +1471,35 @@ describe('agent setup installer: losing its parent mid-install (#208)', () => {
     expect(readFileSync(join(work[0]!, 'report.log'), 'utf8'))
       .toContain('install-agents: warning: could not roll back claude MCP registration')
     expect(installer.stderr()).toContain(`report retained at ${join(work[0]!, 'report.log')}`)
+  })
+
+  it('keeps the report when it cannot undo a registration it did add', () => {
+    // Claude is registered, Copilot's add then fails, and removing Claude
+    // again fails too. The re-check that follows either still finds Claude's
+    // registration or cannot tell at all; both count as not undone. Copilot
+    // never registered, so it has nothing to undo.
+    for (const recheck of ['finds it', 'cannot tell'] as const) {
+      const f = fixture()
+      f.env.FAIL_ADD = 'copilot'
+      f.env.FAIL_REMOVE = 'claude'
+      if (recheck === 'cannot tell') {
+        f.env.FAIL_GET = 'claude'
+        f.env.CORRUPT_CONFIG_ON_ADD = 'claude'
+      }
+
+      const result = run(f, ['--apply'])
+
+      expect(result.code, recheck).toBe(1)
+      expect(existsSync(join(f.state, 'claude')), recheck).toBe(true)
+      expect(result.err, recheck).toContain('install-agents: warning: could not roll back claude MCP registration')
+      expect(result.err, recheck).not.toContain('could not roll back copilot')
+      const work = workDirs(f)
+      expect(work, `${recheck}: the work directory holding the report`).toHaveLength(1)
+      expect(readdirSync(work[0]!), recheck).toEqual(['report.log'])
+      expect(readFileSync(join(work[0]!, 'report.log'), 'utf8'), recheck)
+        .toContain('install-agents: warning: could not roll back claude MCP registration')
+      expect(result.err, recheck).toContain(`report retained at ${join(work[0]!, 'report.log')}`)
+    }
   })
 
   it('removes a staged instruction copy when staging fails after the reader is gone', async () => {

@@ -812,14 +812,19 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   author did not allow maintainer edits, `gh pr checkout` tracks the base's `refs/pull/<n>/head`
   and names the BASE as remote and pushRemote (cli/cli `cmdsForMissingRemote`), so the push
   destination alone would let the base's own same-named branch PR verify. A branch whose upstream
-  merge ref is a pull ref is stamped with that ref as its `head_repo` instead: it names no
-  repository, `listLinkTargets` skips it (no `gh` call, no cache row, no PR chip), and an older
-  #157 viewer sharing the file can never match it either. The one `for-each-ref` also reports
-  any upstream git maps, so `git config --get-all branch.<b>.merge` runs only for a branch with a
-  push remote but no mapped upstream; an ordinary write still costs two spawns. Items stamped
-  before #183 keep the head they were written with (boards restamp on their next write), and
-  linking the exact PR (`gh pr view <n>`) is a deliberate non-goal until reviewer checkouts are
-  in scope. The unverifiable pre-#157 `source_links` table is
+  merge ref is a pull ref, and that pushes back to the remote it tracks (gh always writes
+  pushRemote = remote; an unmapped upstream reports no tracking remote at all), is stamped with
+  that ref as its `head_repo` instead: it names no repository, `listLinkTargets` skips it (no
+  `gh` call, no cache row, no PR chip), and an older #157 viewer sharing the file can never match
+  it either. Work stacked on a PR ref and pushed to another remote (`remote.pushDefault` = a
+  fork) keeps its push destination and links as usual. The one `for-each-ref` also reports any
+  upstream git maps, with its remote, so `git config --get-all branch.<b>.merge` runs only for a
+  branch with a push remote but no mapped upstream; an ordinary write still costs two spawns.
+  Items stamped before #183 keep the head they were written with (boards restamp on their next
+  write). Linking the exact PR (`gh pr view <n>`) is a deliberate non-goal until reviewer
+  checkouts are in scope, and it would need the FETCH repository recorded as well: `<n>` belongs
+  to the repository of `branch.<b>.remote`, which can differ from `repo`, and the stored ref does
+  not say which. The unverifiable pre-#157 `source_links` table is
   never read; it stays only for older processes sharing the file (rebuilding its primary key would
   break their `ON CONFLICT(repo, branch)` upserts). **Two honest limitations:** every item and
   board written before #30 shipped has `repo = NULL` and shows no chip at all — there is no

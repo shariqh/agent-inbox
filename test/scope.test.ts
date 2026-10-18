@@ -184,12 +184,12 @@ describe('makeScope caches a found origin per process but follows the branch (is
 // fetch url cannot answer, and push config can change mid-session. So get() —
 // the path nearly every tool call takes — never runs it, and headFor() never
 // borrows the cache: each write pays its own spawns. Issue #183 added the
-// branch's upstream ref to the one for-each-ref read; only an upstream git does
-// not map to a remote-tracking ref costs a config read on top.
+// branch's upstream ref and its remote to the one for-each-ref read; only an
+// upstream git does not map to a remote-tracking ref costs a config read on top.
 
 describe('headFor stays a live, write-only read beside the origin cache (issues #157, #159, #183)', () => {
   const ORIGIN = ['remote', 'get-url', 'origin'] as const
-  const refs = (branch: string) => ['for-each-ref', '--format=%(refname)%00%(upstream:remoteref)%00%(push:remotename)', `refs/heads/${branch}`]
+  const refs = (branch: string) => ['for-each-ref', '--format=%(refname)%00%(upstream:remoteref)%00%(upstream:remotename)%00%(push:remotename)', `refs/heads/${branch}`]
   const merge = (branch: string) => ['config', '--get-all', `branch.${branch}.merge`]
   const PUSH_URL = ['remote', 'get-url', '--push', 'origin'] as const
   // hermetic: a global remote.pushDefault names a push remote for every branch

@@ -74,8 +74,9 @@ export interface Item {
   // issue #157 — the `owner/name` this item's branch is PUSHED to, where its PR
   // must come from (`repo` is the base the PR is opened against). NULL when none
   // was inferred and on every row written before #157: a same-repository PR.
-  // Issue #183: a branch that tracks a pull request's ref records that ref
-  // (`refs/pull/<n>/head`) instead, which no PR can verify against.
+  // Issue #183: a `gh pr checkout` branch that tracks a pull request's ref and
+  // pushes back where it fetches from records that ref (`refs/pull/<n>/head`)
+  // instead, which no PR can verify against.
   head_repo: string | null
   created_at: string
   updated_at: string
@@ -2650,8 +2651,8 @@ export function listSourceLinks(db: Database.Database): SourceLink[] {
 // row written before #157, or one with no github.com push remote or origin)
 // expects a same-repository PR: its effective head is its own base `repo`. A
 // resolved item's branch stops being refreshed but keeps whatever it last cached.
-// A branch that tracks a pull request's ref (#183: `gh pr checkout` of a fork PR
-// without maintainer edits) recorded that ref, `refs/pull/<n>/head`, as its head.
+// A `gh pr checkout` branch of a fork PR without maintainer edits (#183)
+// recorded the pull request ref it tracks, `refs/pull/<n>/head`, as its head.
 // It names no repository, so no listed PR could verify: it is no target at all,
 // and with no cache row its items show no PR chip.
 //

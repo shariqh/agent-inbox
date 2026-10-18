@@ -288,6 +288,20 @@ describe('inferHeadRepo', () => {
     expect(inferHeadRepo(dir, 'patch-1')).toBe('refs/pull/7/head')
   })
 
+  // A pull ref names the head only while the branch pushes back to the remote it
+  // tracks, as every gh shape does. Work stacked on a PR's ref and pushed to the
+  // user's own fork is that fork's branch, and its PR still links.
+  it('keeps the push destination of work stacked on a pull ref and pushed to another remote', () => {
+    const dir = tmpGitRepo({ remote: 'https://github.com/upstream/x.git', branch: 'trunk' })
+    git(dir, 'remote', 'add', 'myfork', 'https://github.com/me/x.git')
+    git(dir, 'config', '--add', 'remote.origin.fetch', '+refs/pull/*/head:refs/remotes/origin-pr/*')
+    git(dir, 'config', 'remote.pushDefault', 'myfork')
+    git(dir, 'update-ref', 'refs/remotes/origin-pr/7', 'HEAD')
+    git(dir, 'branch', '--track', 'stacked', 'origin-pr/7')
+    expect(execFileSync('git', ['config', 'branch.stacked.merge'], { cwd: dir, encoding: 'utf8' }).trim()).toBe('refs/pull/7/head')
+    expect(inferHeadRepo(dir, 'stacked')).toBe('me/x')
+  })
+
   it('never mistakes a plain name that is no configured remote for a URL', () => {
     const dir = tmpGitRepo({ remote: 'https://github.com/upstream/x.git', branch: 'patch-1' })
     git(dir, 'config', 'branch.patch-1.remote', 'fork')

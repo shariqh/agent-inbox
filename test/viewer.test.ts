@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import type Database from 'better-sqlite3'
 import { openDb, insertItem, listItems, getItem, annotateItem, replyItem, snoozeItem, answerItem, markReplySeen, upsertBoard as writeBoard, listBoards, annotateBoardRow, snoozeBoardRow, markRowHandled, markHandledDelivered, upsertActivity, endActivity, closeProject, closedProjects, upsertSourceLink } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
+import { releaseRuntime } from './release-runtime.js'
 
 function freshDb(): Database.Database {
   return openDb(join(mkdtempSync(join(tmpdir(), 'view-')), 'inbox.db'))
@@ -114,29 +115,65 @@ describe('viewer api', () => {
     ])
   })
 
-  describe('GET /api/version — the build a restarted session should load (#197)', () => {
+  describe('GET /api/version — what a restarted session would load (#197)', () => {
     const PKG = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }
     const setupInfo = (info: unknown): string => {
       const path = join(mkdtempSync(join(tmpdir(), 'view-version-')), 'setup-info.json')
       writeFileSync(path, JSON.stringify(info))
       return path
     }
+    const read = async (app: ReturnType<typeof createViewer>): Promise<unknown> => (await app.request('/api/version')).json()
 
-    it('a checkout answers with the version its own code is: the package version', async () => {
+    it('a checkout, or a bundle packaged from one, answers with its own package version; the runtime question does not apply', async () => {
       const missing = join(mkdtempSync(join(tmpdir(), 'view-version-')), 'setup-info.json')
       const res = await createViewer(db, { setupInfoPath: missing }).request('/api/version')
       expect(res.status).toBe(200)
-      expect(await res.json()).toEqual({ version: PKG.version })
+      expect(await res.json()).toEqual({ current: PKG.version, mode: 'dev', runtimeInstalled: null })
+      const devBundle = createViewer(db, { setupInfoPath: setupInfo({ repoRoot: '/checkout', nodeBin: '/node' }) })
+      expect(await read(devBundle)).toEqual({ current: PKG.version, mode: 'dev', runtimeInstalled: null })
     })
 
-    it('a release build answers with the version baked into its setup-info, the one Setup installs', async () => {
-      const app = createViewer(db, { setupInfoPath: setupInfo({ schema: 2, version: '9.4.1', runtimePayloads: {} }) })
-      expect(await (await app.request('/api/version')).json()).toEqual({ version: '9.4.1' })
+    it('a release answers with its baked version and whether that exact runtime is installed for this host', async () => {
+      const release = releaseRuntime('2.0.0')
+      const app = createViewer(db, release.viewer)
+      // not installed, and Setup can install it: its source payload verifies
+      expect(await read(app)).toEqual({ current: '2.0.0', mode: 'release', runtimeInstalled: false })
+      // a Setup install is noticed on the very next read, memo or not
+      release.install()
+      expect(await read(app)).toEqual({ current: '2.0.0', mode: 'release', runtimeInstalled: true })
     })
 
-    it('a release build with no baked version answers null rather than guessing', async () => {
+    it('answers null for the runtime when Setup could not install it here, so no advice is offered', async () => {
+      const noHostPayload = releaseRuntime('2.0.0', { hostPayload: false })
+      expect(await read(createViewer(db, noHostPayload.viewer)))
+        .toEqual({ current: '2.0.0', mode: 'release', runtimeInstalled: null })
+      const unverifiable = releaseRuntime('2.0.0')
+      writeFileSync(join(unverifiable.payloadDir, 'dist', 'mcp-server.js'), '// tampered source\n')
+      expect(await read(createViewer(db, unverifiable.viewer)))
+        .toEqual({ current: '2.0.0', mode: 'release', runtimeInstalled: null })
+    })
+
+    it('a release with no baked version answers null rather than guessing', async () => {
       const app = createViewer(db, { setupInfoPath: setupInfo({ schema: 2, runtimePayloads: {} }) })
-      expect(await (await app.request('/api/version')).json()).toEqual({ version: null })
+      expect(await read(app)).toEqual({ current: null, mode: 'release', runtimeInstalled: null })
+    })
+
+    it('re-verifies an installed runtime once its brief memo expires', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] })
+      try {
+        const release = releaseRuntime('2.0.0')
+        const installed = release.install()
+        const app = createViewer(db, release.viewer)
+        expect(await read(app)).toMatchObject({ runtimeInstalled: true })
+        // a change inside the installed runtime does not alter the runtime root,
+        // so only the memo's expiry re-verifies it
+        writeFileSync(join(installed, 'dist', 'mcp-server.js'), '// tampered after install\n')
+        expect(await read(app)).toMatchObject({ runtimeInstalled: true })
+        vi.setSystemTime(Date.now() + 31_000)
+        expect(await read(app)).toMatchObject({ runtimeInstalled: false })
+      } finally {
+        vi.useRealTimers()
+      }
     })
   })
 

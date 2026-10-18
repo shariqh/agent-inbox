@@ -6,5 +6,5 @@ export function lastActivityAt(a: unknown): string
 export const DORMANT_MS: number
 export function isDormant(a: unknown, nowMs: number): boolean
 export function activitySynopsis(a: unknown): { text: string; historical: boolean }
-/** issue #197 — a session's own build label, plus a restart hint when it is strictly older than `currentVersion`. */
-export function sessionBuild(a: unknown, currentVersion: unknown): { label: string; older: boolean; hint: string } | null
+/** issue #197 — a session's own build label, plus a hint when it is strictly older than `info.current`; its advice follows `info` (the /api/version body). */
+export function sessionBuild(a: unknown, info: unknown): { label: string; older: boolean; hint: string } | null

@@ -3973,15 +3973,23 @@ function initGear() {
 // live entries the user has expanded, by session id — survives the poll rebuild
 const openLive = new Set()
 
-// Issue #197 — the build a restarted session would load. initLiveBar fetches it
-// once per page load (a viewer restart reloads the page). It stays null when the
-// viewer cannot say, and every restart hint needs it, so then none renders.
-let liveCurrentVersion = null
+// Issue #197 — the /api/version body: the build a restarted session would load
+// and the runtime state that decides which advice the hint may give. Read at
+// boot and whenever the drawer opens, so the advice follows a Setup install made
+// since. It stays null when the viewer cannot say, and then no hint renders.
+let liveVersion = null
 
-// A session's build label for the drawer, and its restart hint when it runs an
-// older build. Both empty when its version is unknown: never a guess.
+function refreshLiveVersion() {
+  fetch('/api/version')
+    .then((r) => (r.ok ? r.json() : null))
+    .then((body) => { liveVersion = body && typeof body === 'object' ? body : null })
+    .catch(() => {})
+}
+
+// A session's build label for the drawer, and its hint when it runs an older
+// build. Both empty when its version is unknown: never a guess.
 function liveBuildHtml(a) {
-  const build = sessionBuild(a, liveCurrentVersion)
+  const build = sessionBuild(a, liveVersion)
   if (!build) return { label: '', hint: '', older: false }
   const title = build.older ? build.hint : `This session runs Agent Inbox ${build.label}`
   return {
@@ -4127,15 +4135,15 @@ function renderLiveBar(entries) {
     const text = document.createElement('span')
     text.textContent = x.label
     el.append(projectDot, text)
-    // #197: the build this session runs; an older one says so, and its title
-    // carries the whole restart hint the drawer spells out
-    const build = sessionBuild(rowsBySession.get(x.session), liveCurrentVersion)
-    if (build) {
-      const tag = document.createElement('span')
-      tag.className = build.older ? 'live-build older' : 'live-build'
-      tag.textContent = build.older ? `${build.label} · older build` : build.label
-      el.appendChild(tag)
-      if (build.older) el.title = build.hint
+    // #197: the strip stays compact — nothing extra on the current build, and
+    // only a marker on an older one; its title carries the drawer's full hint
+    const build = sessionBuild(rowsBySession.get(x.session), liveVersion)
+    if (build?.older) {
+      const marker = document.createElement('span')
+      marker.className = 'live-build-marker'
+      marker.textContent = 'older build'
+      el.appendChild(marker)
+      el.title = build.hint
     }
     list.appendChild(el)
   }
@@ -4162,6 +4170,9 @@ function toggleLiveDrawer(open, { restoreFocus = false } = {}) {
   const next = open ?? drawer.hidden
   drawer.hidden = !next
   strip.setAttribute('aria-expanded', String(next))
+  // #197: re-read the build state, so advice shown after a Setup install is
+  // current by the next paint
+  if (next) refreshLiveVersion()
   if (!next) {
     setLivePinned(false)
     if (restoreFocus) strip.focus()
@@ -4191,12 +4202,9 @@ function initLiveBar() {
       toggleLiveDrawer(false, { restoreFocus: true })
     }
   })
-  // #197: read once, outside the poll. The next paint shows the hints; a failed
-  // or older viewer leaves the current build unknown, which hides every hint.
-  fetch('/api/version')
-    .then((r) => (r.ok ? r.json() : null))
-    .then((body) => { liveCurrentVersion = typeof body?.version === 'string' ? body.version : null })
-    .catch(() => {})
+  // #197: read outside the poll; the next paint shows the hints. A failed or
+  // older viewer leaves the build state unknown, which hides every hint.
+  refreshLiveVersion()
 }
 
 // dismissing noise must not cost an expansion: staged 5s, undoable, flushed on blur

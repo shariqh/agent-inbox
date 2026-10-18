@@ -961,15 +961,23 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   and `status` write it to the additive `activity.server_version` column; a write that omits it keeps
   the stored value, and legacy rows stay NULL. It rides on writes that already happen and is never
   evidence of liveness or work: `updated_at`, `last_call_at`, claims and spans are untouched.
-  `/api/activity` rows carry it (still a bare array — electron/main.cjs reads it as one), and
-  `GET /api/version` answers the build a restart should load: a release's baked setup-info version,
-  else the viewer's own constant. `initLiveBar` reads it once per page load, outside the poll.
-  `sessionBuild()` in `public/livebar.js` compares strict semver only: an unknown session version
-  renders nothing, and an unknown current version renders no hint. The strip and drawer show the
-  label plus "older build — restart this session to load vX"; the collapsed idle fold counts them.
-  Presence, not attention: no badge, Needs-you, count or notification. **Honest limitation:** a
-  release compares against the APP's version, so until Setup installs that version's runtime a
-  restart can still load the older build — the Setup half of #197 closes that gap.
+  `/api/activity` rows carry it (still a bare array — electron/main.cjs reads it as one).
+  `GET /api/version` answers `{current, mode, runtimeInstalled}`. A release answers its baked
+  setup-info version with `mode:'release'` and whether THIS release's exact runtime is installed for
+  this host (`true`), is not but Setup can install it because its source payload verifies (`false`),
+  or neither (`null`); a checkout answers its own constant with `mode:'dev', runtimeInstalled:null`.
+  It reuses Setup's own verified lookups (`installedRuntime`, `resolveReleaseRuntimeSource`), so Live
+  and Setup cannot disagree, memoized for 30s and keyed on the runtime root's listing so an install
+  is noticed on the next read. Live reads it at page load and whenever the drawer opens, never on
+  the poll. `sessionBuild()` in `public/livebar.js` compares strict semver only and **gives only the
+  advice that state backs**: "restart this session to load vX" needs `runtimeInstalled:true`;
+  `false` points at Setup's runtime install; a checkout says rebuild and restart; anything else says
+  only "older build (vY)". Unknown versions on either side render no hint. The drawer shows every
+  label and the full hint (the collapsed idle fold counts older builds); the strip adds only an
+  "older build" marker. Presence, not attention: no badge, Needs-you, count or notification.
+  Remaining limit: "installed" is per machine, not per host registration — a host Setup did not
+  register for the new runtime still restarts into its old one. The Setup half of #197 (registered
+  runtime detection, "Update agents") is where that narrows.
 
 ## Open backlog — and the seams already in place
 

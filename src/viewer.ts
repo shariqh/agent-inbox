@@ -351,14 +351,40 @@ function setupInfo(baked: BakedInfo | null, hostKey: string, runtimeRoot: string
   return devSetupInfo(baked)
 }
 
-// Issue #197 — the build Live compares each session's server version against.
-// A release build answers with its baked version: the one /api/setup and the
-// build stamp report, and the runtime Setup installs. Anything else answers with
-// the version this viewer's own code is, which a release bump keeps equal to
-// package.json. A release that baked no version answers null: no guess.
-function currentAgentVersion(baked: BakedInfo | null): string | null {
-  if (baked?.schema === 2) return baked.version ?? null
-  return AGENT_INBOX_VERSION
+// Issue #197 — what a restarted agent session would load, for Live's older-build
+// hint. A release answers with its baked version, the one /api/setup and the
+// build stamp report; anything else with the version this viewer's own code is,
+// which a release bump keeps equal to package.json. `runtimeInstalled` comes from
+// the same verified lookups /api/setup uses, so Live and Setup never disagree:
+//   true  — this release's exact runtime is installed for this host
+//   false — it is not, but Setup can install it (the source payload verifies)
+//   null  — a checkout (not applicable), or nothing Setup could install here
+interface AgentVersion {
+  current: string | null
+  mode: 'dev' | 'release'
+  runtimeInstalled: boolean | null
+}
+
+function releaseRuntimeState(baked: BakedInfo, hostKey: string, runtimeRoot: string, appRoot: string): boolean | null {
+  const version = baked.version
+  const payload = baked.runtimePayloads?.[hostKey]
+  if (!version || !payload || !DIGEST_RE.test(payload.digest)) return null
+  if (installedRuntime(runtimeRoot, version, hostKey, payload.digest)) return true
+  return resolveReleaseRuntimeSource(appRoot, hostKey, payload, version) ? false : null
+}
+
+// Both lookups hash a whole runtime, and /api/version is read on every page load
+// and whenever the Live drawer opens. The memo is keyed on the runtime root's
+// listing, so an install or removal is noticed on the very next read; the TTL
+// bounds how long a change INSIDE an installed runtime can go unnoticed.
+const RUNTIME_STATE_TTL_MS = 30_000
+
+function runtimeRootListing(runtimeRoot: string): string[] | null {
+  try {
+    return readdirSync(runtimeRoot).sort()
+  } catch {
+    return null
+  }
 }
 
 // A close/reopen body carries one agent-authored project name. An unparseable
@@ -481,9 +507,27 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
 
   app.get('/api/activity', (c) => c.json(listActivity(db)))
 
-  // Fetched once per page load by the Live bar, never on the poll: a viewer
-  // restart reloads the page. A local file read at most — no git, no network.
-  app.get('/api/version', (c) => c.json({ version: currentAgentVersion(readBakedInfo(bakedPath)) }))
+  // Read by the Live bar at page load and whenever its drawer opens, never on
+  // the poll. Local reads only — no git, no network — memoized as noted above.
+  let runtimeState: { key: string; at: number; value: boolean | null } | undefined
+  const agentVersion = (): AgentVersion => {
+    const baked = readBakedInfo(bakedPath)
+    if (baked?.schema !== 2) return { current: AGENT_INBOX_VERSION, mode: 'dev', runtimeInstalled: null }
+    const payload = baked.runtimePayloads?.[runtimeHostKey]
+    const key = JSON.stringify([baked.version, payload?.path, payload?.digest, runtimeRootListing(runtimeRoot)])
+    const now = Date.now()
+    if (!runtimeState || runtimeState.key !== key || now - runtimeState.at >= RUNTIME_STATE_TTL_MS) {
+      let value: boolean | null
+      try {
+        value = releaseRuntimeState(baked, runtimeHostKey, runtimeRoot, appRoot)
+      } catch {
+        value = null
+      }
+      runtimeState = { key, at: now, value }
+    }
+    return { current: baked.version ?? null, mode: 'release', runtimeInstalled: runtimeState.value }
+  }
+  app.get('/api/version', (c) => c.json(agentVersion()))
 
   // Read-only, truthful claim-interval history for the dashboard: independent
   // of `/api/activity` and never imported into any attention/badge path.

@@ -4,7 +4,7 @@ import { knownOutcomes } from './closed-history.js'
 
 const asSet = (values) => values instanceof Set ? values : new Set(values ?? [])
 // Issue #184: what the paged item snapshot omitted within this lens.
-const NO_OLDER_HISTORY = { older: { items: 0, outcomes: 0, projects: [] }, before: null }
+const NO_OLDER_HISTORY = { older: { items: 0, outcomes: 0, latest: null, projects: [] } }
 // The recent outcomes the Dashboard lists, and so the most it needs to prove.
 const RECENT_OUTCOMES = 4
 
@@ -55,7 +55,7 @@ export function buildDashboard({
   // omitted could outrank it.
   const outcomes = relay.outcomes.length + history.older.outcomes
   const recentOutcomes = (history.older.outcomes
-    ? knownOutcomes(relay.outcomes, history.before)
+    ? knownOutcomes(relay.outcomes, history.older.latest)
     : relay.outcomes).slice(0, RECENT_OUTCOMES)
 
   return {

@@ -26,9 +26,9 @@ const SUMMARY = {
   loaded: 3,
   before: at(30),
   older: [
-    { project: 'alpha', agent: 'claude', items: 1, outcomes: 0 },
-    { project: 'alpha', agent: 'copilot', items: 2, outcomes: 1 },
-    { project: 'beta', agent: 'copilot', items: 3, outcomes: 2 },
+    { project: 'alpha', agent: 'claude', items: 1, outcomes: 0, latest: null },
+    { project: 'alpha', agent: 'copilot', items: 2, outcomes: 1, latest: at(12) },
+    { project: 'beta', agent: 'copilot', items: 3, outcomes: 2, latest: at(25) },
   ],
 }
 
@@ -72,18 +72,24 @@ describe('mergeClosedHistory', () => {
 describe('olderHistory', () => {
   it('sums the omitted groups a lens would show', () => {
     expect(olderHistory(SUMMARY)).toEqual({
-      items: 6, outcomes: 3, projects: ['alpha', 'beta'], agents: ['claude', 'copilot'],
+      items: 6, outcomes: 3, latest: at(25), projects: ['alpha', 'beta'], agents: ['claude', 'copilot'],
     })
     expect(olderHistory(SUMMARY, { project: 'alpha' })).toEqual({
-      items: 3, outcomes: 1, projects: ['alpha'], agents: ['claude', 'copilot'],
+      items: 3, outcomes: 1, latest: at(12), projects: ['alpha'], agents: ['claude', 'copilot'],
     })
     expect(olderHistory(SUMMARY, { agent: 'copilot', hidden: ['beta'] })).toEqual({
-      items: 2, outcomes: 1, projects: ['alpha'], agents: ['copilot'],
+      items: 2, outcomes: 1, latest: at(12), projects: ['alpha'], agents: ['copilot'],
     })
+    expect(olderHistory(SUMMARY, { agent: 'claude' }).latest).toBeNull()
+  })
+
+  it('bounds a group without a newest outcome stamp by the touch boundary', () => {
+    const legacy = { ...SUMMARY, older: [{ project: 'alpha', agent: 'copilot', items: 2, outcomes: 1 }] }
+    expect(olderHistory(legacy).latest).toBe(SUMMARY.before)
   })
 
   it('reports nothing omitted for complete history', () => {
-    const none = { items: 0, outcomes: 0, projects: [], agents: [] }
+    const none = { items: 0, outcomes: 0, latest: null, projects: [], agents: [] }
     expect(olderHistory(null)).toEqual(none)
     expect(olderHistory({ total: 2, loaded: 2, before: null, older: [] })).toEqual(none)
   })

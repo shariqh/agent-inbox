@@ -28,15 +28,23 @@ export function mergeClosedHistory(g, done) {
 
 // The omitted closed items a lens would show: the project/agent filters and the
 // suppressed (closed, not peeked) projects every loaded item passes through.
+// `latest` bounds their Dashboard stamps for knownOutcomes; a group that does
+// not report its own falls back to the page's touch boundary, never later.
 export function olderHistory(summary, { project = null, agent = null, hidden = [] } = {}) {
   const suppressed = asSet(hidden)
   const groups = (summary?.older ?? []).filter((group) =>
     (!project || group.project === project)
     && (!agent || group.agent === agent)
     && !suppressed.has(group.project))
+  let latest = null
+  for (const group of groups) {
+    const bound = group.outcomes > 0 ? group.latest ?? summary.before : null
+    if (bound != null && (latest === null || bound > latest)) latest = bound
+  }
   return {
     items: groups.reduce((total, group) => total + group.items, 0),
     outcomes: groups.reduce((total, group) => total + group.outcomes, 0),
+    latest,
     projects: [...new Set(groups.map((group) => group.project))],
     agents: [...new Set(groups.map((group) => group.agent))],
   }
@@ -57,12 +65,11 @@ export function knownHistory(done, before) {
   return known
 }
 
-// The leading recorded outcomes (newest first) no omitted item can outrank: an
-// omitted item's stamp is never later than its last touch, which is `before` at
-// the latest.
-export function knownOutcomes(outcomes, before) {
-  if (before == null) return outcomes
-  const cutoff = Date.parse(before)
+// The leading recorded outcomes (newest first) no omitted item can outrank:
+// `latest` is the newest stamp any omitted outcome in the lens carries.
+export function knownOutcomes(outcomes, latest) {
+  if (latest == null) return outcomes
+  const cutoff = Date.parse(latest)
   const known = []
   for (const entry of outcomes) {
     if (!(stamp(entry.item ?? entry.row) > cutoff)) break

@@ -243,13 +243,13 @@ describe('buildDashboard', () => {
       liveSessionIds: new Set<string>(),
     }
     const complete = buildDashboard(input)
-    expect(buildDashboard({ ...input, history: { older: { items: 0, outcomes: 0, projects: [], agents: [] }, before: null } }))
+    expect(buildDashboard({ ...input, history: { older: { items: 0, outcomes: 0, latest: null, projects: [], agents: [] } } }))
       .toEqual(complete)
     expect(complete.recentOutcomesComplete).toBe(true)
 
     const paged = buildDashboard({
       ...input,
-      history: { older: { items: 5, outcomes: 2, projects: ['alpha', 'archive-only'], agents: ['copilot'] }, before: '2026-08-24T12:00:00.000Z' },
+      history: { older: { items: 5, outcomes: 2, latest: '2026-08-24T12:00:00.000Z', projects: ['alpha', 'archive-only'], agents: ['copilot'] } },
     })
     expect(paged.signals.outcomes).toBe(complete.signals.outcomes + 2)
     expect(paged.ownership.outcome).toBe(complete.ownership.outcome + 2)
@@ -263,7 +263,7 @@ describe('buildDashboard', () => {
       ...input,
       items: ['19', '18', '17', '16'].map((hour) => outcome(`at-${hour}`, `2026-08-24T${hour}:00:00.000Z`)),
       archived: [],
-      history: { older: { items: 9, outcomes: 9, projects: ['alpha'], agents: ['copilot'] }, before: '2026-08-24T12:00:00.000Z' },
+      history: { older: { items: 9, outcomes: 9, latest: '2026-08-24T12:00:00.000Z', projects: ['alpha'], agents: ['copilot'] } },
     })
     expect(proven.recentOutcomes).toHaveLength(4)
     expect(proven.recentOutcomesComplete).toBe(true)

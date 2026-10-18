@@ -98,28 +98,38 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   old serial order) without blanking the frame, and `loadGeneration` still
   discards an older tick that finishes late.
 - **Closed history is paged out of the default items snapshot (issue #184).**
-  `/api/items` carries every open item but only the `RECENT_CLOSED_ITEMS` (50)
-  most recently TOUCHED closed items (`listItemsPage`: the newest of every item
-  stamp), plus a `history` summary: exact totals, `before` and per
-  project/agent counts of what it omitted, read in one snapshot. A touch is never
-  earlier than creation or than the Dashboard's outcome stamp, so whatever the page
-  carries from after `before` is a complete, correctly ordered History prefix and
-  a correct recent-outcome prefix (`public/closed-history.js`). Counts (History tab,
-  Dashboard outcomes/projects, rail projects, agent picker) add the summary, so
-  they never depend on the omitted bodies. `/api/items/history` returns exactly the
-  unpaged `done` list; a tick adds it as an eighth read only while a surface needs
-  older history (`historyWanted`: a search in use — open results, a pending or
-  focused query, not text left in a closed box — the Handoffs overlay, History
-  paged past what the page proves, a History deep link, a pending deep link to an
-  omitted item, or the four Dashboard recent outcomes the page cannot prove).
-  Decide that on the PAGE (`lastData.page`), never on merged data, or loading
-  history would end the need for it. Only human entry points (`forceRender`,
-  typing/focusing search, opening Handoffs, a deep link) start that read early,
-  through `requestHistory()`: a render never does, so the passive poll cannot
-  reach `forceRender`. Its failure fails the tick like the page's. The page stays
+  `/api/items` carries every open item, the `RECENT_CLOSED_ITEMS` (50) most
+  recently TOUCHED closed items (`listItemsPage`: the newest of every item stamp)
+  and the `RECENT_OUTCOMES` (4) newest outcome-bearing closed items of open
+  projects (plus ties), so closures without an outcome (Inbox resolve/dismiss,
+  hook sweeps) can never push the Dashboard's default lens off the page. A
+  `history` summary, read in the same snapshot, gives exact totals, `before` (the
+  newest touch of any omitted item) and per project/agent counts of what it
+  omitted with `latest`, the newest Dashboard stamp among their outcomes. A touch
+  is never earlier than creation, so page entries created after `before` are a
+  complete, correctly ordered History prefix; outcomes stamped after the lens's
+  `latest` are a correct recent-outcome prefix (`public/closed-history.js`).
+  Counts (History tab, Dashboard outcomes/projects, rail projects, agent picker)
+  add the summary, so they never depend on the omitted bodies.
+  `/api/items/history` returns exactly the unpaged `done` list, and ONLY `load()`
+  reads it: as an extra read when the previous frame needs older history
+  (`historyWanted`: a search in use — open results, a pending or focused query,
+  not text left in a closed box — the Handoffs overlay, History paged past what
+  the page proves, a History deep link, a pending deep link to an omitted item, or
+  Dashboard recent outcomes the page cannot prove), or, within the same tick and
+  under the same boot-marker and generation rules, when the tick's own new page
+  needs it, so a sweep never paints a blank History frame. Decide on a PAGE
+  (`lastData.page`, or the tick's new one), never on merged data, or loading
+  history would end the need for it. Anything else that needs it — a navigation,
+  a render, a deep link — only calls `requestHistory()`, which schedules an early
+  `load()` and paints nothing, so no history path forces a frame. A failed read
+  degrades like activity history: the page still applies, and the surfaces waiting
+  on older history say "Older history is unavailable right now." The page stays
   authoritative for every item it carries when the two are merged. Surfaces still
   waiting show known entries and a loading state, never an incomplete list as if
   complete: search stays busy, History and Handoffs say older items are loading.
+  A deep link waiting on older history lands only if the human has not navigated
+  since (`navigationKey`) and no pointer is held; otherwise it waits or is dropped.
 - **`src/store.ts` is the only door to the database.** Every read/write goes through its
   exported functions — items: `insertItem`/`resolveItem`/`dismissItem`/`annotateItem`/
   `replyItem`/`answerItem`/`listItems`/`listItemsPage`; boards: `upsertBoard`/`updateBoardRow`/`getBoard`/`listBoards`/

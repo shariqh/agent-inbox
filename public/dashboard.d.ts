@@ -30,8 +30,7 @@ export interface DashboardInput {
   closedProjects?: Set<string> | string[]
   /** issue #184: what the paged item snapshot omitted within this lens */
   history?: {
-    older: { items: number; outcomes: number; projects: string[]; agents?: string[] }
-    before: string | null
+    older: { items: number; outcomes: number; latest: string | null; projects: string[]; agents?: string[] }
   }
 }
 

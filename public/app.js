@@ -109,7 +109,8 @@ let appliedClosedGeneration = 0
 // surface needs it (historyWanted); these record needs no rendered state shows.
 let historyLookup = null // a deep link to an item the page omitted
 let historyTabPinned = false // History keeps an omitted target until the tab changes
-let historyRequestedFor = -1 // the applied tick an immediate history read started for
+let historyRequestedFor = -1 // the applied tick an early poll was requested for
+let historyLoadScheduled = false // that early poll has not started yet
 let searchAwaitingHistory = false
 let preparedFrame = null
 let editablePanesPainted = false
@@ -437,6 +438,16 @@ async function historyBody(read) {
   }
 }
 
+// Older closed history (#184) degrades like activity history: a failed read
+// leaves this tick's page applied, and the surfaces waiting on it say so.
+async function closedHistoryBody(read) {
+  try {
+    return { done: (await settledValue(read).json()).done, error: null }
+  } catch {
+    return { done: null, error: OLDER_HISTORY_UNAVAILABLE }
+  }
+}
+
 async function load() {
   if (reloadRequested) return false
   const generation = ++loadGeneration
@@ -488,31 +499,46 @@ async function load() {
     const body = (read) => (read.status === 'fulfilled' ? read.value.json() : Promise.reject(read.reason))
     const bodies = await Promise.allSettled([
       res.json(), body(boardsRead), body(archivedRead), body(activityRead), historyBody(historyRead),
-      // Like the page itself, a failed closed-history read fails the tick rather
-      // than painting a surface that needs it from incomplete data (#184).
-      wantHistory ? body(closedHistoryRead) : null,
+      wantHistory ? closedHistoryBody(closedHistoryRead) : null,
     ])
-    const [g, boards, archived, activity, activityHistory, closedHistory] = bodies.map(settledValue)
+    const [g, boards, archived, activity, activityHistory, firstOlder] = bodies.map(settledValue)
     const closedSnapshot = settledValue(closedRead)
     const links = settledValue(linksRead)
     if (reloadRequested || generation < appliedLoadGeneration) return false
+    const nowMs = Date.now()
+    const page = ageNotes(g, nowMs)
+    let older = firstOlder
+    // Issue #184: this tick's own data may need older history the previous frame
+    // did not (a sweep moving the page's boundary past what History shows, say).
+    // Read it inside the same tick, under the same rules, rather than painting a
+    // frame that lacks it.
+    if (!wantHistory && lastData && historyWanted({ page, pageHistory: g.history ?? null, boards, archived, activity })) {
+      const [late] = await Promise.allSettled([readSnapshot('/api/items/history').then(marked)])
+      if (reloadRequested || generation < appliedLoadGeneration) return false
+      if (boots.some((mark) => mark && mark !== bootId)) {
+        refreshPending = true
+        return false
+      }
+      older = await closedHistoryBody(late)
+      if (reloadRequested || generation < appliedLoadGeneration) return false
+    }
     appliedLoadGeneration = generation
     if (closedSnapshot !== null) {
       appliedClosedGeneration = generation
       authoritativeClosed = [...closedSnapshot]
       retireConfirmedProjectMutationIntents(generation)
     }
-    const nowMs = Date.now()
-    const page = ageNotes(g, nowMs)
     lastData = {
       // Every surface reads `g`: the page, or the page merged with the complete
       // History list while one is loaded. `page` and `pageHistory` stay the page
       // alone, which is what decides whether older history is needed at all.
-      g: closedHistory ? ageNotes(mergeClosedHistory(g, closedHistory.done), nowMs) : page,
+      g: older?.done ? ageNotes(mergeClosedHistory(g, older.done), nowMs) : page,
       page,
       pageHistory: g.history ?? null,
       // the summary of what `g` still omits; null once nothing is omitted
-      older: closedHistory ? null : g.history ?? null,
+      older: older?.done ? null : g.history ?? null,
+      // why a surface that needed older history this tick is still waiting
+      olderError: older?.error ?? null,
       boards,
       archived,
       activity,
@@ -523,15 +549,17 @@ async function load() {
     applyProjectMutationIntents()
     renderIfIdle()
     if (!bootFocusDone) { bootFocusDone = true; applyFocusHash() }
-    if (!omitsHistory()) {
-      // a deep link waiting on older history, and a search the poll gate may hold
-      if (historyLookup) {
-        const { id, source } = historyLookup
-        historyLookup = null
-        focusItem(id, source)
-      }
-      if (searchAwaitingHistory) renderSearchResults()
+    // A deep link waiting on older history lands once it has been read, unless
+    // the human has navigated since. A held press keeps it waiting for the next
+    // tick rather than rebuilding under the pointer (#38).
+    if (historyLookup && historyLookup.view !== navigationKey()) historyLookup = null
+    if (historyLookup && !omitsHistory() && !pressHeld(pressedAt, Date.now())) {
+      const { id, source } = historyLookup
+      historyLookup = null
+      focusItem(id, source)
     }
+    // Search results sit outside the editable gate; refresh the waiting list.
+    if (searchAwaitingHistory) renderSearchResults()
     document.getElementById('status').textContent = ''
     if (closedSnapshot !== null) resolveAuthoritativeRefreshWaiters(generation)
     return closedSnapshot !== null
@@ -837,7 +865,7 @@ function focusItem(id, source = null) {
     // Issue #184: the page may omit this closed item. load() retries the link
     // once the complete history has been read.
     if (omitsHistory()) {
-      historyLookup = { id, source }
+      historyLookup = { id, source, view: navigationKey() }
       requestHistory()
     }
     return
@@ -1189,6 +1217,12 @@ function applySearchJumpHighlight() {
   return source
 }
 
+function searchStatusText(results, query) {
+  return results.length
+    ? `${results.length} search result${results.length === 1 ? '' : 's'}`
+    : `No results for ${query}`
+}
+
 function renderSearchResults() {
   const { input, results, status } = searchElements()
   if (!input || !results) return
@@ -1206,7 +1240,7 @@ function renderSearchResults() {
   if (omitsHistory()) {
     searchAwaitingHistory = true
     beginSearchUpdate()
-    if (status) status.textContent = 'Searching older history…'
+    if (status) status.textContent = olderHistoryWaitText('Searching older history…')
     return
   }
   searchAwaitingHistory = false
@@ -1218,6 +1252,8 @@ function renderSearchResults() {
     searchResultCache = nextResults
     finishSearchUpdate()
     input.setAttribute('aria-expanded', 'true')
+    // the list is unchanged, but a busy wait may have replaced its status (#184)
+    if (status) status.textContent = searchStatusText(nextResults, query)
     return
   }
   const existingOptions = [...results.querySelectorAll('[role="option"]')]
@@ -1236,7 +1272,7 @@ function renderSearchResults() {
     empty.className = 'search-results-empty'
     empty.textContent = `No results for “${query}”`
     results.appendChild(empty)
-    if (status) status.textContent = `No results for ${query}`
+    if (status) status.textContent = searchStatusText(searchResultCache, query)
     finishSearchUpdate()
     setSearchActive(-1)
     return
@@ -1281,7 +1317,7 @@ function renderSearchResults() {
   }
   finishSearchUpdate()
   if (status) {
-    status.textContent = `${searchResultCache.length} search result${searchResultCache.length === 1 ? '' : 's'}`
+    status.textContent = searchStatusText(searchResultCache, query)
   }
   const preservedIndex = previousActiveKey
     ? searchResultCache.findIndex((result) => result.key === previousActiveKey)
@@ -1328,42 +1364,61 @@ function omitsHistory() {
 }
 
 // The page alone, through the same suppression and filters as the view.
-function pageView() {
-  return filterData(withoutClosed({ g: lastData.page, boards: lastData.boards, archived: lastData.archived }))
+function pageView(view = lastData) {
+  return filterData(withoutClosed({ g: view.page, boards: view.boards, archived: view.archived }))
 }
 
-// Which surfaces need the closed history the page omits. Judged on the PAGE,
-// never on merged data, which never needs it: that would drop the history it
-// just loaded and fetch it again on the next tick.
-function historyWanted() {
-  const summary = lastData?.pageHistory
+// What the human is looking at. A deep link still waiting on older history
+// lands only if this has not changed since it was followed (#184).
+function navigationKey() {
+  return JSON.stringify([activeTab, projectFilter, agentFilter, settingsOpen()])
+}
+
+// Which surfaces need the closed history the page omits. Judged on a PAGE
+// (the applied one, or a tick's new one before it applies), never on merged
+// data, which never needs it: that would drop the history it just loaded and
+// fetch it again on the next tick.
+function historyWanted(view = lastData) {
+  const summary = view?.pageHistory
   if (!summary || summary.loaded >= summary.total) return false
   // A deep link may name any omitted item, and search covers every project
   // while it is in use: open results, a pending query, or a focused query. Text
   // left in a closed box waits for the human to return to it.
-  if (historyLookup) return true
+  if (historyLookup?.view === navigationKey()) return true
   const input = document.getElementById('search')
   if (input?.value.trim() && (searchIndexOpen || searchTimer || document.activeElement === input)) return true
   const older = olderHistory(summary, olderLens())
   if (relayOpen && older.outcomes > 0) return true
   if (activeTab === 'done' && older.items > 0) {
-    return historyTabPinned || shown.done > knownHistory(pageView().g.done, summary.before).length
+    return historyTabPinned || shown.done > knownHistory(pageView(view).g.done, summary.before).length
   }
   if (activeTab === 'dashboard' && older.outcomes > 0) {
-    const activity = (lastData.activity ?? []).filter((a) =>
+    const activity = (view.activity ?? []).filter((a) =>
       (!projectFilter || a.project === projectFilter) && (!agentFilter || a.agent === agentFilter))
-    return !dashboardModel(pageView(), summary, activity).recentOutcomesComplete
+    return !dashboardModel(pageView(view), summary, activity).recentOutcomesComplete
   }
   return false
 }
 
-// A surface that needs older history paints what is known, then this starts the
-// read it waits on rather than leaving it to the next poll. One read per applied
-// tick: a failed read is retried by the poll, never in a loop.
+// Only load() reads older history. A navigation or render that needs it may
+// only ask for an early poll tick: that tick decides, reads and paints through
+// the poll's own gate, so no history path ever forces a frame. One request per
+// applied tick: a failed read is retried by the poll, never in a loop.
 function requestHistory() {
-  if (!omitsHistory() || historyRequestedFor === appliedLoadGeneration || !historyWanted()) return
+  if (historyLoadScheduled || !omitsHistory() || historyRequestedFor === appliedLoadGeneration || !historyWanted()) return
   historyRequestedFor = appliedLoadGeneration
-  void reloadAndPaint()
+  historyLoadScheduled = true
+  setTimeout(() => {
+    historyLoadScheduled = false
+    void load()
+  }, 0)
+}
+
+// Shown where a surface waits on older history the last tick could not read.
+const OLDER_HISTORY_UNAVAILABLE = 'Older history is unavailable right now.'
+
+function olderHistoryWaitText(loading) {
+  return lastData?.olderError ? OLDER_HISTORY_UNAVAILABLE : loading
 }
 
 // the CURRENT server state for an item, not a row's closed-over render-time snapshot.
@@ -1656,7 +1711,7 @@ function renderDashboardOutcomes(list, entries, complete = true) {
     if (!rows.length) {
       list.innerHTML = complete
         ? '<div class="dashboard-empty" role="img" aria-label="No recorded outcomes" title="No recorded outcomes"><svg class="dashboard-empty-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"></circle><path d="m8 12 2.5 2.5L16 9"></path></svg></div>'
-        : '<div class="dashboard-empty" role="status">Loading older outcomes…</div>'
+        : `<div class="dashboard-empty" role="status">${esc(olderHistoryWaitText('Loading older outcomes…'))}</div>`
     }
     if (focused) {
       const next = rows[Math.min(focusedIndex, rows.length - 1)]
@@ -1813,7 +1868,7 @@ function dashboardModel({ g, boards, archived }, summary, activity) {
     nowMs: Date.now(),
     liveSessionIds: liveSessionIds(),
     closedProjects: dashboardClosedProjects(),
-    history: { older: olderHistory(summary, olderLens()), before: summary?.before ?? null },
+    history: { older: olderHistory(summary, olderLens()) },
   })
 }
 
@@ -2836,7 +2891,7 @@ function renderRelayLane(box, lane, entries, { count = entries.length, loading =
     const note = document.createElement('div')
     note.className = 'relay-empty'
     note.setAttribute('role', 'status')
-    note.textContent = 'Loading older outcomes…'
+    note.textContent = olderHistoryWaitText('Loading older outcomes…')
     body.appendChild(note)
   }
 }
@@ -2856,10 +2911,10 @@ function renderRelay() {
   renderRelayLane(box, 'agent', relay.agent)
   // Issue #184: outcomes the page omits still count; until they are read, list
   // only the outcomes none of them could outrank.
-  const older = olderHistory(lastData.older, olderLens()).outcomes
-  const outcomes = relay.outcomes.length + older
-  renderRelayLane(box, 'outcome', older ? knownOutcomes(relay.outcomes, lastData.older.before) : relay.outcomes,
-    { count: outcomes, loading: older > 0 })
+  const older = olderHistory(lastData.older, olderLens())
+  const outcomes = relay.outcomes.length + older.outcomes
+  renderRelayLane(box, 'outcome', older.outcomes ? knownOutcomes(relay.outcomes, older.latest) : relay.outcomes,
+    { count: outcomes, loading: older.outcomes > 0 })
   box.querySelector('.relay-summary').textContent =
     `${relay.human.length} waiting on you · ${relay.agent.length} with agent · ${outcomes} outcomes`
   box.hidden = false
@@ -5217,7 +5272,7 @@ function renderDone(items) {
     const loading = document.createElement('p')
     loading.className = 'empty history-loading'
     loading.setAttribute('role', 'status')
-    loading.textContent = 'Loading older history…'
+    loading.textContent = olderHistoryWaitText('Loading older history…')
     host.appendChild(loading)
   } else if (total > listed.length) host.appendChild(moreButton('done', total - listed.length))
 }

@@ -107,9 +107,12 @@ Run the build before `npm run electron`; the development shell starts the built
   of its freshly computed bytes plus the window and project that selected them;
   never validate it with store tokens or cache it server-side (#185).
 - `/api/items` pages closed history (#184): every open item, the 50 most recently
-  touched closed items and a `history` summary that keeps every count exact. The
-  poll reads `/api/items/history` only while `historyWanted()` says a surface needs
-  older items, judged on the page alone (`lastData.page`), never on merged data.
+  touched closed items, the 4 newest outcome-bearing ones of open projects and a
+  `history` summary that keeps every count exact. Only `load()` reads
+  `/api/items/history`, while `historyWanted()` says a surface needs older items,
+  judged on a page alone (`lastData.page` or the tick's new one), never on merged
+  data; `requestHistory()` only schedules that `load()`. A failed read degrades:
+  the page still applies and waiting surfaces say older history is unavailable.
 - Race-sensitive state changes must be atomic SQL statements or transactions.
   Do not replace conditioned/version-pinned updates with SELECT-then-UPDATE.
   Human replies, annotations, and handled marks can change from another process

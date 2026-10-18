@@ -471,11 +471,16 @@ function snoozeUntil(value: unknown): string | null | undefined {
 }
 
 // Issue #184: closed items the default /api/items snapshot carries, newest touch
-// first. Fifty fill ten History pages (PAGE.done = 5) and the Dashboard's four
-// recent outcomes several times over, while bounding a changed tick at about a
-// tenth of a long-lived hub's full history. Anything beyond is summarized in
-// `history` and fetched from /api/items/history only while a surface needs it.
+// first. Fifty fill ten History pages (PAGE.done = 5) while bounding a changed
+// tick at about a tenth of a long-lived hub's full history. Anything beyond is
+// summarized in `history` and fetched from /api/items/history only while a
+// surface needs it.
 const RECENT_CLOSED_ITEMS = 50
+// Plus the newest outcome-bearing closed items of open projects: the four the
+// Dashboard lists, so its default lens never needs older history, however many
+// closures without an outcome (Inbox resolve/dismiss, hook sweeps) fill the
+// recently touched slots.
+const RECENT_OUTCOMES = 4
 
 function sameSnapshotState(a: SnapshotReadState, b: SnapshotReadState): boolean {
   return !a.inTransaction && !b.inTransaction
@@ -560,7 +565,7 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
   })
 
   const allItems = conditionalSnapshot(db, 'items', () => {
-    const page = listItemsPage(db, RECENT_CLOSED_ITEMS)
+    const page = listItemsPage(db, RECENT_CLOSED_ITEMS, RECENT_OUTCOMES)
     return { ...groupItems(page.items), history: page.history }
   })
   // Issue #184: the complete History list (closed items plus open milestones,

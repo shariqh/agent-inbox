@@ -7,8 +7,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
 import {
-  dismissItem, insertItem, listItems, listItemsPage, listOpenQuestions, openDb, replyItem, resolveItem,
-  upsertActivity,
+  closeProject, dismissItem, insertItem, listItems, listItemsPage, listOpenQuestions, openDb, replyItem,
+  resolveItem, upsertActivity,
 } from '../src/store.js'
 import type { Item } from '../src/store.js'
 import { groupItems } from '../src/group.js'
@@ -66,6 +66,10 @@ const touchedAt = (item: Item): string => [
   item.reply_seen_at, item.annotated_at, item.annotation_seen_at,
 ].filter((value): value is string => Boolean(value)).sort().at(-1)!
 const newestTouch = (a: Item, b: Item): number => (touchedAt(a) < touchedAt(b) ? 1 : touchedAt(a) > touchedAt(b) ? -1 : 0)
+// public/relay.js stamp(): the first of these an item has.
+const outcomeStamp = (item: Item): string => (item.outcome_at ?? item.reply_seen_at ?? item.annotation_seen_at
+  ?? item.replied_at ?? item.annotated_at ?? item.updated_at ?? item.created_at)
+const newer = (a: string | null, b: string): string => (a !== null && a > b ? a : b)
 
 describe('listItemsPage (issue #184)', () => {
   it('carries every open item and only the most recently touched closed items', () => {
@@ -99,12 +103,15 @@ describe('listItemsPage (issue #184)', () => {
     expect(page.history.loaded).toBe(SLICE)
     expect(page.history.before).toBe(touchedAt(omitted[0]!))
     expect(omitted.every((item) => touchedAt(item) <= page.history.before!)).toBe(true)
-    const expected = new Map<string, { project: string; agent: string; items: number; outcomes: number }>()
+    const expected = new Map<string, { project: string; agent: string; items: number; outcomes: number; latest: string | null }>()
     for (const item of omitted) {
       const key = `${item.project}\u0000${item.agent}`
-      const group = expected.get(key) ?? { project: item.project, agent: item.agent, items: 0, outcomes: 0 }
+      const group = expected.get(key) ?? { project: item.project, agent: item.agent, items: 0, outcomes: 0, latest: null }
       group.items += 1
-      if (item.outcome) group.outcomes += 1
+      if (item.outcome) {
+        group.outcomes += 1
+        group.latest = newer(group.latest, outcomeStamp(item))
+      }
       expected.set(key, group)
     }
     const binary = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0)
@@ -142,6 +149,57 @@ describe('listItemsPage (issue #184)', () => {
     expect(page.items).toEqual([])
     expect(page.history.loaded).toBe(0)
     expect(page.history.before).toBe(touchedAt(listItems(db)[0]!))
+  })
+
+  // Inbox Resolve/Dismiss and hook sweeps close items without an outcome. Those
+  // touches must not push the Dashboard's newest outcomes out of the page.
+  it('keeps the newest outcomes of open projects in the page whatever else was touched', () => {
+    const outcomes: string[] = []
+    for (let index = 0; index < 6; index += 1) {
+      const id = flag(index % 2 ? 'alpha' : 'beta', 'copilot', 'question', `Decided ${index}`)
+      tick()
+      resolveItem(db, id, `Outcome ${index}`)
+      outcomes.push(id)
+    }
+    const retired = flag('retired', 'copilot', 'question', 'Decided in a closed project')
+    tick()
+    resolveItem(db, retired, 'Newest outcome, but its project is closed')
+    tick()
+    closeProject(db, 'retired')
+    for (let index = 0; index < SLICE + 10; index += 1) {
+      const id = flag('sweep', 'hook', 'question', `Backstop ${index}`)
+      tick()
+      resolveItem(db, id)
+    }
+    const page = listItemsPage(db, SLICE, 4)
+    const kept = new Set(page.items.map((item) => item.id))
+    // the four newest outcomes of projects the human has not closed
+    expect(outcomes.filter((id) => kept.has(id))).toEqual(outcomes.slice(2))
+    expect(kept.has(retired)).toBe(false)
+    expect(page.history.loaded).toBe(SLICE + 4)
+    const latest = Object.fromEntries(page.history.older.map((group) => [group.project, group.latest]))
+    const byId = new Map(listItems(db).map((item) => [item.id, item]))
+    expect(latest).toMatchObject({
+      alpha: outcomeStamp(byId.get(outcomes[1]!)!),
+      beta: outcomeStamp(byId.get(outcomes[0]!)!),
+      retired: outcomeStamp(byId.get(retired)!),
+      sweep: null,
+    })
+    // Every omitted outcome is stamped before every kept one.
+    const keptStamps = outcomes.slice(2).map((id) => outcomeStamp(byId.get(id)!))
+    for (const group of page.history.older) {
+      if (group.project !== 'retired' && group.latest) expect(keptStamps.every((stamp) => stamp > group.latest!)).toBe(true)
+    }
+  })
+
+  it('keeps every outcome tied with the last one it keeps', () => {
+    // The clock never moves, so every stamp ties: all three must stay together.
+    for (let index = 0; index < 3; index += 1) {
+      resolveItem(db, insertItem(db, { project: 'alpha', stream: '', agent: 'copilot', kind: 'note', title: `Tie ${index}` }), 'Same instant')
+    }
+    const page = listItemsPage(db, 0, 2)
+    expect(page.items).toHaveLength(3)
+    expect(page.history.older).toEqual([])
   })
 
   it('keeps listItems order for same-millisecond ties', () => {

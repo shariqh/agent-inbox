@@ -101,14 +101,23 @@ describe('31.1 · changeAnswer paints the surface it just staged a draft into', 
     expect(js).not.toMatch(/setInterval\(\s*forceRender/)
   })
 
-  // Issue #184: requestHistory() ends in reloadAndPaint() → forceRender(). A
-  // render that started that read would hand the poll a forced, ungated frame.
-  it('no render path starts the older-history read that ends in forceRender (#184)', () => {
-    for (const decl of [
-      'async function load()', 'function renderIfIdle()', 'function render()', 'function paintAmbient()',
-      'function paintEditableSurfaces(', 'function renderSearchResults()', 'function renderDone(',
-    ]) {
-      expect(topLevelFn(decl), decl).not.toContain('requestHistory')
+  // Issue #184: only load() reads older closed history. Anything that needs it
+  // (a navigation, a render, a deep link) may only ask for an early poll tick:
+  // requestHistory() schedules load() and paints nothing, so no path through it
+  // (forceRender, renderTriage/renderMission recovery, load() → focusItem) can
+  // force a frame or start a read of its own.
+  it('only load() reads older history; everything else can only schedule a poll tick (#184)', () => {
+    const readers = [...js.matchAll(/'\/api\/items\/history'/g)].map((match) => {
+      const start = js.lastIndexOf('\nfunction ', match.index) + 1
+      const asyncStart = js.lastIndexOf('\nasync function ', match.index) + 1
+      return js.slice(Math.max(start, asyncStart), js.indexOf('(', Math.max(start, asyncStart)))
+    })
+    expect(readers.length).toBeGreaterThan(0)
+    expect(new Set(readers)).toEqual(new Set(['async function load']))
+    const request = topLevelFn('function requestHistory()')
+    expect(request).toMatch(/setTimeout\([\s\S]*\bload\(\)/)
+    for (const painter of ['reloadAndPaint', 'forceRender', 'render(', 'renderIfIdle', 'fetch(', 'readSnapshot']) {
+      expect(request, painter).not.toContain(painter)
     }
   })
 

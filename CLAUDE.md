@@ -822,7 +822,7 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   rule above still stands. The publisher already refuses to sign a version that is not
   newer than every prior stable release, so re-pointing GitHub's latest at an older
   release shows `stale` to every client that already verified the newer one; fix forward.
-- **Verified update download** *(#196 part 1; install steps follow)* — on a packaged
+- **Verified update download** *(#196 part 1)* — on a packaged
   `macos-dmg` or `appimage-self-replace` host, Settings → Updates offers **Download
   update** for the release the signed manifest verified; it never starts on its own and
   `deb-notify` stays notify-only. `checkForUpdate({ includeArtifact: true })` hands the
@@ -854,9 +854,54 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   check time refreshed, so a serving path that is behind cannot delete a verified
   newer download. The install steps
   consume `getVerifiedArtifact()` (`{ path, version, tag, filename, sha256, byteLength,
-  packageType, installStrategy }`) and must call `downloader.verify()` again right before
-  acting. Nothing here executes, mounts, opens or installs, and update state never enters
-  `public/attention.js`, badges or Needs-you.
+  packageType, installStrategy }`) only through `downloader.openVerified()` (part 2,
+  below). The downloader itself never executes, mounts, opens or installs, and update
+  state never enters `public/attention.js`, badges or Needs-you.
+- **Verified update install on macOS** *(#196 part 2)* — **Install and restart** in
+  Settings → Updates installs the verified DMG; AppImage stays download-only until its
+  installer registers (part 3), `deb-notify` stays notify-only. Load-bearing pieces:
+  (1) **The install contract** (`electron/update-install.cjs`): `PlatformInstaller {
+  strategy, feasibility, prepare, cleanup? }`; `prepare()` stages AND fully verifies
+  without touching the running installation, and the returned `commit()` is the only
+  step that changes it (`discard()` is idempotent and never rejects). Feasibility is
+  side-effect free, consulted on every check (not ok ⇒ a notify-only offer with
+  `available.reason`, `downloadable:false`) and again right before install; reasons that
+  could carry a path are replaced by generic copy. (2) **fd hand-off, hash while
+  consuming:** `openVerified()` applies `verify()`'s location/directory checks, opens the
+  file once (`O_RDONLY|O_NOFOLLOW|O_NONBLOCK`) and re-hashes it through that handle,
+  which the controller narrows to positioned `read`/`stat` for `prepare()`;
+  `copyVerifiedSource()` hashes exactly the bytes it copies. A swapped file at the path
+  never reaches the installer; a file that changed is dropped and the download offered
+  again. (3) **Verify the STAGED copy, never the mount:** the DMG copy is attached
+  read-only (`-nobrowse -noautoopen`, checksums on, stdin closed, always detached, `-force`
+  retry, never recursing into a still-mounted volume); exactly one real `Agent Inbox.app`
+  is `ditto`ed into a `0700` `.agent-inbox-update-*` folder beside the running app on the
+  SAME volume; then `plutil` id + version, `codesign --verify --deep --strict` with a
+  requirement built only from constants (`identifier` + Team ID `VVR2DKR923`), and
+  `spctl --assess` — Node-written files carry no quarantine, so this is the only
+  Gatekeeper evaluation. (4) **The helper** is constant `/bin/sh` text, spawned detached
+  with fixed argv, `stdio:'ignore'` and a minimal `PATH`. It waits until BOTH the app PID
+  and the viewer PID it started (`-` for an in-process or reused viewer) have exited —
+  otherwise the relaunched app could find the dying viewer on the port and take the
+  unowned reuse path — giving up unchanged after ~120 s; it refuses symlinks and an
+  occupied backup path, renames the app aside, renames the staged app in with rollback,
+  and relaunches with `open`. (5) **Retained backup:** `Agent Inbox.app.previous` stays in
+  the stage folder; startup `cleanup()` removes stage/work folders only after an hour,
+  by exact name, owner uid and without following links, bounded per pass. (6) **Controller
+  ownership:** `installNow()` claims the controller synchronously; while installing and
+  after commit no check, download, cancel, prune or cleanup runs, and `dispose()` never
+  discards a committed install. It refuses (as `install-failed`, file kept) a version not
+  newer than the running one, one below the high-water mark RE-READ from the trust file,
+  a check in flight, Setup running, or a feasibility failure. (7) **Main gating:** the
+  argument-free `agent-inbox:update-install` IPC needs a trusted update sender AND the
+  window bound at the first navigation of a viewer this app started and proved it owns
+  (`viewerOwned`, set only in the `waitForOwnership()` branch) — not Setup's runtime
+  payload; a reused or failed-over viewer never gets installs. Setup and an update
+  install exclude each other in both directions. `requestRestart()` (flag + `app.quit()`)
+  is the ONLY quit path for an update and `before-quit` never blocks it; a user quit
+  during an uncommitted install cancels it first. Update state still never enters
+  `public/attention.js`, badges or Needs-you. Open: the real `/Applications` swap under
+  macOS App Management needs the planned 1.3.0 → 1.3.1 end-to-end run.
 - **Session presence** *(#28, corrected by #45)* — every MCP session is a Live row; `status()`
   upgrades it, process exit ends it, and a row that stops being heartbeated expires after ~15 min.
   That expiry only ever fires for a **crashed** process: a live one heartbeats itself, so what

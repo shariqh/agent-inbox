@@ -25,10 +25,11 @@ On macOS and AppImage installs, **Download update** fetches exactly the package 
 signed manifest names, only from GitHub Releases, and keeps it only when its size and
 SHA-256 match the manifest. Downloads start only when you click, can be cancelled, and
 are kept in a private `update-downloads` folder inside the app's data directory;
-superseded and installed versions are cleaned up automatically. The app does not install
-the download yet: **Review release** opens the verified GitHub release page so you can
-install the package yourself. DEB installs stay notify-only. Browser viewers and
-source/dev Electron runs do not expose update checks.
+superseded and installed versions are cleaned up automatically. On macOS the verified
+download then offers **Install and restart** (see below). AppImage installs do not
+install the download from the app yet: **Review release** opens the verified GitHub
+release page so you can install the package yourself. DEB installs stay notify-only.
+Browser viewers and source/dev Electron runs do not expose update checks.
 
 The app remembers the newest release version it has verified, in its own file
 (`update-trust-state.json`) in the app's settings folder. If a later check receives older
@@ -39,6 +40,47 @@ this file, so while a 1.2.x build is installed there is no rollback protection; 
 resumes when a 1.3 or later build runs again. Update preferences keep their 1.2.x format,
 so automatic checks stay as you set them in either direction. This protection starts
 after the first successful check and resets if the app's settings folder is deleted.
+
+### Install an update from the app (macOS)
+
+After **Download update** verifies the file, Settings → Updates offers **Install and
+restart**. It never starts on its own. The app can install updates only when:
+
+- Agent Inbox runs from a folder you can change, such as **Applications**. A copy opened
+  straight from the disk image or from a quarantined download (macOS "App Translocation")
+  cannot replace itself; move it to Applications first.
+- The app belongs to your user account and its folder is not read-only.
+- Your Mac runs the macOS version the release requires (13.5 or later today).
+- Agent setup is not running at the same moment.
+
+When one of these is not met, Settings → Updates says why and offers **Review release**
+instead of the download. When you click **Install and restart**, the app:
+
+1. re-checks the downloaded file against the signed size and SHA-256;
+2. copies it to a private folder, opens it read-only, and copies the new Agent Inbox
+   next to the current one;
+3. checks that copy's bundle identifier and version, its Developer ID signature from team
+   `VVR2DKR923`, and Gatekeeper's verdict;
+4. quits. A small helper waits until Agent Inbox has fully exited, moves the current app
+   aside, moves the new one into its place, and opens Agent Inbox again.
+
+If any step before the swap fails, nothing changes and Settings shows **Try again**. If the
+new app cannot be moved into place, the helper puts the previous app back and reopens it.
+If the helper waits more than about two minutes for Agent Inbox to exit, it gives up
+without changing anything.
+
+The manual path always works: **Review release** opens the verified GitHub release; download
+the DMG and drag Agent Inbox to Applications as described below.
+
+The previous version is kept for at least an hour, in a hidden folder next to the app,
+for example `/Applications/.agent-inbox-update-AbC123/Agent Inbox.app.previous`. Agent
+Inbox removes that folder on a later launch. To go back to it by hand, quit Agent Inbox
+and run, with your folder's real name:
+
+```sh
+mv "/Applications/Agent Inbox.app" ~/.Trash/
+mv "/Applications/.agent-inbox-update-AbC123/Agent Inbox.app.previous" "/Applications/Agent Inbox.app"
+```
 
 ### App opens blank after an upgrade
 

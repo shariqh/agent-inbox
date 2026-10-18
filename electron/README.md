@@ -13,10 +13,44 @@ runs `update-download.cjs` in Electron main: it fetches only the manifest's cano
 release URL, follows at most five redirects to GitHub's release-asset hosts, streams into
 a private `0700` staging directory under `userData/update-downloads`, enforces the signed
 length as a hard cap, and renames the file into place only after its SHA-256 matches.
-The renderer never sees the URL, digest or path. This layer does not mount, open,
-replace, or install anything; `deb-notify` stays notify-only and the release action opens
-the verified GitHub release page for a manual package update. Dev Electron and browser
-viewers intentionally omit the feature.
+The renderer never sees the URL, digest or path. The downloader itself never mounts,
+opens, replaces, or installs anything; `deb-notify` stays notify-only and the release
+action opens the verified GitHub release page for a manual package update. Dev Electron
+and browser viewers intentionally omit the feature.
+
+Installing goes through the platform-neutral contract in `update-install.cjs`: a
+`PlatformInstaller` answers `feasibility()` without side effects, `prepare()` stages and
+fully verifies the new build without touching the running one, and the returned
+`commit()` is the only step that changes the installation (`discard()` removes what was
+staged). `update-controller.cjs` consults feasibility on every check, so an installation
+that cannot install an offer gets a notify-only offer with the installer's plain reason.
+A strategy with no registered installer (AppImage today) stays download-only. On
+**Install and restart** the controller re-checks the running version, the high-water mark
+re-read from `update-trust-state.json`, agent Setup, any check in flight and feasibility,
+then reopens the download through `downloader.openVerified()`, which re-hashes it through
+the one read-only handle it hands to `prepare()`; installers hash the bytes they consume
+from that handle again (`copyVerifiedSource`). Main accepts the argument-free
+`agent-inbox:update-install` IPC only from the window bound at the first navigation of a
+viewer this app started and proved it owns, refuses it while Setup runs (and Setup refuses
+while an install runs), and quits through `requestRestart()` once `commit()` resolves.
+
+On macOS, `update-install-macos.cjs` refuses a translocated, read-only, foreign-owned,
+symlinked or unwritable bundle and a macOS below the signed minimum. `prepare()` copies
+the handle into a private `0700` folder under `userData/update-install`, attaches that
+copy read-only with `hdiutil` (`-nobrowse -noautoopen`, image checksums on, stdin closed),
+requires exactly one real `Agent Inbox.app`, copies it with `ditto` into a `0700`
+`.agent-inbox-update-*` folder beside the running app on the same volume, always detaches,
+and then verifies the STAGED copy: `plutil` bundle identifier and version, `codesign
+--verify --deep --strict` against a requirement built from the bundle id and Team ID
+`VVR2DKR923`, and `spctl --assess --type execute`. Files Node writes carry no quarantine,
+so that `spctl` call is the only Gatekeeper evaluation. `commit()` re-checks both bundle
+identities and starts a constant `/bin/sh` helper, detached, with fixed argv and a
+minimal environment. The helper waits until the app and any viewer process it started
+have exited (giving up unchanged after about two minutes), renames the running app to
+`Agent Inbox.app.previous` inside the stage folder, renames the staged app into place
+(restoring the previous one if that fails) and reopens Agent Inbox. Startup cleanup
+removes stage and work folders more than an hour old, by exact name, owner and without
+following links, so the previous app stays restorable by hand for at least an hour.
 
 Checks also refuse to move backwards. After a manifest's signature, schema and expiry
 verify, the app records that release version as a high-water mark in its own user-data

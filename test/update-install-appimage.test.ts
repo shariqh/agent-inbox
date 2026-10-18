@@ -753,6 +753,30 @@ describe('preparing an AppImage update', () => {
     expect(readFileSync(fx.appImage).equals(fx.oldBytes)).toBe(true)
   })
 
+  it('removes the sealed stage when the install is cancelled right after sealing it', async () => {
+    const fx = fixture()
+    const controller = new AbortController()
+    const fsImpl: AppImageInstallFs = {
+      ...realFs,
+      async open(path, flags, mode) {
+        const handle = await realFs.open(path, flags, mode)
+        // The seal reopens the stage read-only; cancel as it finishes.
+        if (!path.includes('.update-') || (flags & constants.O_CREAT) !== 0) return handle
+        return wrapHandle(handle, {
+          close: async () => {
+            await handle.close()
+            controller.abort()
+          },
+        })
+      },
+    }
+
+    const error = await failure(fx.installer({ fsImpl }).prepare(await fx.source(), { signal: controller.signal }))
+    expect(error).toMatchObject({ name: 'UpdateInstallError', code: 'staging' })
+    expect(stagesIn(fx.folder)).toEqual([])
+    expect(readFileSync(fx.appImage).equals(fx.oldBytes)).toBe(true)
+  })
+
   it('creates nothing when the signal has already aborted', async () => {
     const fx = fixture()
     const calls: Call[] = []

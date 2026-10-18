@@ -73,7 +73,8 @@ select **Install now**. Setup verifies and installs the bundled runtime, registe
 server, and adds the reporting instructions. Start a fresh agent session afterward.
 After an app update, Setup's **Agents** section shows which build each host's agents
 are registered to run; **Update agents** moves the ones Setup manages to the new
-runtime and says which running sessions still need a restart. See
+runtime (after a downgrade, **Match agents** moves them back to the app's runtime) and
+says which running sessions still need a restart. See
 [After an app update](docs/INSTALL.md#after-an-app-update).
 
 If no public release is listed yet, or if you want to develop Agent Inbox, use the

@@ -243,12 +243,16 @@ nothing is run to find this out.
   runs the same installer as **Install now** for exactly those hosts, keeping its
   timestamped backups and managed-block rules. It never replaces a checkout or custom
   registration, and it is available only in the Agent Inbox app's own window.
+- **Match agents to vX** appears instead when a host registered by Setup runs a *newer*
+  runtime than the app, for example after you went back to an older app version. It
+  runs the same installer, which moves the host back to the app's runtime; if one host
+  is behind and another ahead, this one action moves both.
 - **Restart running sessions afterward.** Setup then says how many sessions of each
-  updated host still run the older build: exit each one and run `claude --resume` or
-  `copilot --resume` to pick it back up. Live marks those sessions too.
+  moved host still run another build: exit each one and run `claude --resume` or
+  `copilot --resume` to pick it back up. Live marks sessions on an older build too.
 - **A source checkout** updates in place: run `git pull` and `npm run build` in it,
   then restart its sessions.
-- **Claude hooks** are not moved by Update agents. Once the new runtime is installed,
+- **Claude hooks** are not moved with your agents. Once the app's runtime is installed,
   Setup shows the command that moves them, for example
   `bash ~/.agent-inbox/runtime/<runtime-id>/scripts/install-hooks.sh --apply`.
 

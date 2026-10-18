@@ -25,7 +25,7 @@ import { keyAction, rovingIndex, ariaAnswerLabel, livenessGlyph, deckEntryAt } f
 import { createKeyboardUI } from '/keyboard-ui.js'
 import { partitionNotes, unreadNoteCount, ambientChips, seenWatermark, markSeenIds } from '/notes.js'
 import { liveSummary, lastActivityAt, isDormant, activitySynopsis, sessionBuild } from '/livebar.js'
-import { hostLabel, hostLine, outdatedHosts, restartGuidance, updateTarget } from '/agents.js'
+import { agentsAction, hostLine, restartGuidance } from '/agents.js'
 import { esc } from '/esc.js'
 import { initStructuredTextCopy } from '/structured-copy.js'
 import { renderStructuredText } from '/structured-text.js'
@@ -6723,13 +6723,15 @@ function initSearch() {
 
 // ── Agents (#197 part 2) ────────────────────────────────────────────────────
 // Which build each host's agents are registered to run, and ONE explicit
-// "Update agents" for the Setup-managed hosts whose runtime is older than this
-// app's. It runs the existing fixed-target install (claude, copilot or all,
-// through the same Electron bridge as the menu below) for exactly those hosts:
-// no new command, nothing at startup, and a checkout or custom registration is
-// reported, never switched. The installer refuses to replace a registration it
-// does not own, and this never asks it to force one. Paths come from host
-// config files, so every string here is textContent.
+// action for the Setup-managed hosts whose runtime differs from this app's:
+// "Update agents" when they are behind, "Match agents to vX" when one is ahead
+// after an app downgrade (public/agents.js agentsAction). It runs the existing
+// fixed-target install (claude, copilot or all, through the same Electron
+// bridge as the menu below) for exactly those hosts: no new command, nothing at
+// startup, and a checkout or custom registration is reported, never switched.
+// The installer refuses to replace a registration it does not own, and this
+// never asks it to force one. Paths come from host config files, so every
+// string here is textContent.
 let agentsBlock = null
 
 function renderAgents(host, s, canInstall) {
@@ -6773,32 +6775,31 @@ function paintAgents(agents) {
   for (const line of lines) {
     const item = document.createElement('li')
     item.dataset.host = line.host
-    item.classList.toggle('outdated', line.outdated)
+    item.classList.toggle('outdated', line.drift === 'older')
+    item.classList.toggle('newer', line.drift === 'newer')
     const name = document.createElement('strong')
     name.textContent = `${line.label}:`
     item.append(name, ` ${line.text}`)
     block.list.appendChild(item)
   }
-  const outdated = outdatedHosts(agents)
-  const target = agents.updatable === true ? updateTarget(outdated) : null
-  if (target) {
-    const names = outdated.map(hostLabel).join(' and ')
+  const action = agentsAction(agents)
+  if (action) {
     if (block.canInstall && window.agentInboxSetup?.install) {
-      agentsHint(`Update agents moves ${names} to the v${current} runtime. Running sessions keep their build until you restart them.`)
-      const run = btn('Update agents', () => updateAgents(target, outdated, current, run))
+      agentsHint(action.hint)
+      const run = btn(action.label, () => updateAgents(action, current, run))
       run.className = 'agents-update-btn'
       run.disabled = block.running
       block.actions.appendChild(run)
     } else {
-      agentsHint(`Open Settings in the Agent Inbox app to update ${names} to the v${current} runtime.`)
+      agentsHint(action.elsewhere)
     }
   }
   if (lines.some((line) => line.kind === 'checkout')) {
     agentsHint('Setup does not update a source checkout: run git pull and npm run build in it, then restart its sessions.')
   }
-  if (lines[2]?.outdated) {
+  if (lines[2]?.drift) {
     if (typeof agents.hooksCommand === 'string' && agents.hooksCommand) {
-      agentsHint(`Update agents does not move Claude hooks. To move them to v${current}, run this in a terminal:`)
+      agentsHint(`Setup does not move Claude hooks with your agents. To move them to v${current}, run this in a terminal:`)
       const command = document.createElement('pre')
       command.className = 'agents-hooks-command'
       command.textContent = agents.hooksCommand
@@ -6814,7 +6815,7 @@ function paintAgents(agents) {
       copy.className = 'copy-btn'
       block.actions.append(command, copy)
     } else {
-      agentsHint(`Update agents does not move Claude hooks. Once the v${current} runtime is installed, the command that moves them appears here.`)
+      agentsHint(`Setup does not move Claude hooks with your agents. Once the v${current} runtime is installed, the command that moves them appears here.`)
     }
   }
 }
@@ -6828,28 +6829,27 @@ function refreshAgents() {
     .catch(() => { /* keep the status already shown */ })
 }
 
-async function updateAgents(target, hosts, current, button) {
+async function updateAgents(action, current, button) {
   const block = agentsBlock
   if (!block || block.running) return
   block.running = true
   button.disabled = true
   block.restart.hidden = true
   block.restart.replaceChildren()
-  const names = hosts.map(hostLabel).join(' and ')
   const show = (text, state) => {
     block.result.textContent = text
     block.result.hidden = false
     block.result.classList.toggle('success', state === 'ok')
     block.result.classList.toggle('failure', state === 'failed')
   }
-  show(`Updating ${names}…`, 'running')
+  show(action.progress, 'running')
   let ok = false
   try {
-    const outcome = await window.agentInboxSetup.install(target)
+    const outcome = await window.agentInboxSetup.install(action.target)
     ok = outcome?.ok === true
-    show(outcome?.output || (ok ? `${names} updated.` : 'Update failed without output.'), ok ? 'ok' : 'failed')
+    show(outcome?.output || (ok ? action.done : 'Setup failed without output.'), ok ? 'ok' : 'failed')
   } catch (err) {
-    show(`Update failed: ${err instanceof Error ? err.message : String(err)}`, 'failed')
+    show(`Setup failed: ${err instanceof Error ? err.message : String(err)}`, 'failed')
   } finally {
     block.running = false
   }
@@ -6861,7 +6861,7 @@ async function updateAgents(target, hosts, current, button) {
   lead.className = 'setup-hint'
   lead.textContent = 'Running sessions keep the build they started with until you restart them.'
   const list = document.createElement('ul')
-  for (const text of restartGuidance(lastData?.activity ?? [], hosts, current)) {
+  for (const text of restartGuidance(lastData?.activity ?? [], action.hosts, current)) {
     const item = document.createElement('li')
     item.textContent = text
     list.appendChild(item)

@@ -355,6 +355,26 @@ describe('portable release installer', () => {
     expect(readHooks()).toEqual({ kind: 'runtime', version: '1.1.0', runtimeId: second.runtimeId })
   })
 
+  // "Match agents to vX" after an app downgrade runs the same fixed install
+  // with the OLDER bundled payload: the installer replaces the registration it
+  // owns whichever way the version moves.
+  it('matches a host on a newer runtime back to an older payload, leaving the other host alone', () => {
+    const f = fixture()
+    const newer = runtimePayload('1.1.0')
+    expect(install(f, newer).status).toBe(0)
+    const older = runtimePayload('1.0.0')
+    const matched = install(f, older, ['--target', 'copilot'])
+    expect(matched.status, matched.stderr).toBe(0)
+
+    const hosts = readAgentHosts({
+      home: f.home,
+      runtimeRoot: f.runtimeRoot,
+      checkRuntime: (dir, runtimeId) => registeredRuntimeVersion(dir, runtimeId, verifyRuntimePayload),
+    })
+    expect(hosts.copilot).toEqual({ kind: 'runtime', version: '1.0.0', runtimeId: older.runtimeId })
+    expect(hosts.claude).toEqual({ kind: 'runtime', version: '1.1.0', runtimeId: newer.runtimeId })
+  })
+
   it('installs and removes packaged hooks without ambient node or jq', () => {
     const f = fixture()
     const payload = runtimePayload('1.0.0')

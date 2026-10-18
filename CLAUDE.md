@@ -1085,7 +1085,7 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   the strip adds only an "older build" marker. Presence, not attention: no badge, Needs-you, count or
   notification. Part 1's "installed" was per machine, so a host Setup had not moved still restarted into
   its old runtime; part 2 (below) narrows the runtime advice per host.
-- **Agent registrations and "Update agents"** *(#197, part 2)* — what a restarted session loads is what
+- **Agent registrations and "Update agents" / "Match agents"** *(#197, part 2)* — what a restarted session loads is what
   its HOST is registered to run, not what is installed. `src/agent-hosts.ts` (VIEWER-PROCESS-ONLY and
   read-only: no process, network, lock or write) reads it from the files the installer manages and keeps
   only `mcpServers['agent-inbox']` from `~/.claude.json` and `~/.copilot/mcp-config.json`, plus the
@@ -1107,17 +1107,22 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   `hosts:{claude,copilot}` as `{kind, version?}` only — no path, id or config. `/api/setup` adds `agents`:
   each host and Claude's hooks (a checkout's path included; the owner already sees paths there),
   `current`, `updatable` (a release whose runtime Setup can install here) and `hooksCommand`. The Setup
-  panel's Agents block (rules in `public/agents.js`; every string is textContent) offers ONE **Update
-  agents** only in an Electron window whose `available()` is true, only when `updatable`, and only for
-  Setup-managed hosts older than `current`. It calls the existing `install(target)` with exactly
-  `claude`, `copilot` or `all` for those hosts and never `--force`, so a checkout or custom registration is
-  reported, never switched (the runtime-mode installer refuses a registration it does not own anyway).
-  Afterwards it re-reads `/api/setup` and `/api/version` and lists, per updated host, how many running
-  sessions still run an older build and how to restart them (`claude --resume` / `copilot --resume`); it
+  panel's Agents block (rules in `public/agents.js` `agentsAction`; every string is textContent) offers ONE
+  action only in an Electron window whose `available()` is true, only when `updatable`, and only for the
+  Setup-managed hosts whose runtime differs from `current`, in EITHER direction: the installer replaces a
+  registration it owns whichever way the version moves, so a downgraded app restores a matching runtime.
+  Hosts that are only behind get **Update agents**; a host that is ahead (an app downgrade) gets **Match
+  agents to vX**, which also names the one action when hosts differ both ways. Equal versions (build
+  metadata ignored) get nothing. It calls the existing `install(target)` with exactly `claude`, `copilot`
+  or `all` for those hosts and never `--force`, so a checkout or custom registration is reported, never
+  switched (the runtime-mode installer refuses a registration it does not own anyway). Afterwards it
+  re-reads `/api/setup` and `/api/version` and lists, per moved host, how many running sessions still run
+  an older, newer or different build and how to restart them (`claude --resume` / `copilot --resume`); it
   never says a session reloaded. The block also re-reads whenever Settings opens, so a terminal install
   made meanwhile shows up. It does not move Claude's hooks: once the current runtime is installed the
-  panel hands over `bash <runtime>/scripts/install-hooks.sh --apply` to run in a terminal. No IPC channel,
-  preload method, argv shape or HTTP route was added, and nothing runs at startup. Live's `remedy()` maps a
+  panel hands over `bash <runtime>/scripts/install-hooks.sh --apply` (for hooks behind or ahead) to run in
+  a terminal. No IPC channel, preload method, argv shape or HTTP route was added, and nothing runs at
+  startup. Live's `remedy()` maps a
   runtime session to its host by its inferred agent (`claude-code` → claude, `copilot` → copilot) and says
   "restart this session to load vX" only when that host is registered to Setup's runtime at vX or later,
   "update agents from Setup, then restart this session" when it is an older Setup runtime Setup can move,

@@ -868,8 +868,8 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   below). The downloader itself never executes, mounts, opens or installs, and update
   state never enters `public/attention.js`, badges or Needs-you.
 - **Verified update install on macOS** *(#196 part 2)* — **Install and restart** in
-  Settings → Updates installs the verified DMG; AppImage stays download-only until its
-  installer registers (part 3), `deb-notify` stays notify-only. Load-bearing pieces:
+  Settings → Updates installs the verified DMG; an AppImage installs through its own
+  installer (part 3, below), `deb-notify` stays notify-only. Load-bearing pieces:
   (1) **The install contract** (`electron/update-install.cjs`): `PlatformInstaller {
   strategy, feasibility, prepare, cleanup? }`; `prepare()` stages AND fully verifies
   without touching the running installation, and the returned `commit()` is the only
@@ -933,6 +933,46 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   the exit codes and `resultPath`. Update state still never enters
   `public/attention.js`, badges or Needs-you. Open: the real `/Applications` swap under
   macOS App Management needs the planned 1.3.0 → 1.3.1 end-to-end run.
+- **Verified update install for AppImage** *(#196 part 3)* — `electron/update-install-appimage.cjs`
+  replaces the running AppImage FILE in place (same name and path; the name may carry the
+  old version) and restarts into it. (1) **One AppImage proof:** `runsFromAppImage()` in
+  `update-fetch.cjs` decides both the offered target and the installer's
+  `not-appimage`: APPIMAGE and APPDIR canonical absolute, APPDIR not `/`, and
+  `process.execPath` inside APPDIR. A bare inherited APPIMAGE (a `.deb` started from
+  another AppImage) must never select the AppImage target or point the installer at
+  someone else's file. Registered in main only for `viewerOwned` on a packaged Linux app
+  with `APPIMAGE` set. (2) **Bound to the launched file:** the installer snapshots the
+  AppImage's dev, ino, size and `mtimeNs` when it is created at startup. Feasibility,
+  `prepare()` and `commit()` refuse once the file at APPIMAGE differs
+  (`changed-since-launch`), which also blocks a second install before a restart.
+  Feasibility otherwise needs a regular file owned by the uid, W_OK on the file and
+  W_OK|X_OK on a real folder, and the ELF + `AI\x02` magic read through
+  `O_RDONLY|O_NOFOLLOW|O_NONBLOCK` with the fstat bound to the lstat'd inode. Messages are
+  plain, path-free and end "Use Review release instead." (3) **Stage beside the file:**
+  `copyVerifiedSource` writes a hidden `.<name>.update-<16 hex>` sibling (`O_EXCL|O_NOFOLLOW`,
+  `0600`; a planted name fails closed, with no retry). It is then sealed through a fresh
+  read-only `O_NOFOLLOW` handle: same device as the AppImage (the commit is a rename),
+  exactly the signed size, the type-2 magic in the STAGED bytes, `fchmod 0755`, fsync.
+  Every failure removes the stage, identity-checked once its inode is known. (4) **Commit =
+  rename:** re-lstat the AppImage (full snapshot), its folder and the stage (dev+ino),
+  then one `rename(stage, APPIMAGE)`. After that `commit()` NEVER rejects, because the
+  installation already changed: best-effort folder fsync, then the restart helper. A
+  helper that cannot start only logs, and the user opens the new file. (5) **Restart
+  helper, never `app.relaunch()`:** Electron's relauncher execs `/proc/self/exe` inside
+  the AppImage's FUSE mount, which the runtime tears down when the app exits. Instead a
+  detached host `/bin/sh -c` runs constant text with argv `<app-pid> <viewer-pid|->
+  <polls> <target>`, `set -u`, arguments validated (exit 64), `cwd:'/'`,
+  `stdio:'ignore'`, unref'd, and `commit()` resolves only on its `spawn` event. It polls
+  `kill -0` for the app AND the viewer child (the same port race as macOS), exits 75
+  untouched after ~120 s, then execs the target. Its env is `process.env` minus APPDIR,
+  APPIMAGE, ARGV0, OWD, TARGET_APPIMAGE and every `:`-entry resolving inside the old
+  APPDIR. The module never imports `child_process` (`spawnImpl` is injected) or Electron.
+  (6) **No rollback copy:** the rename frees the old inode at exit; going back means
+  downloading the older AppImage. (7) **Cleanup:** at most 16 removals and 64 candidates
+  per pass, exact stage names, regular files or symlinks (unlinked, never followed) owned
+  by the uid and over an hour old, never this process's live stage, and only under the
+  AppImage proof. Open: the real offer → install → FUSE teardown → relaunch needs the first
+  signed 1.3.0 → 1.3.1 pair on a Linux desktop (manual plan in the PR).
 - **Session presence** *(#28, corrected by #45)* — every MCP session is a Live row; `status()`
   upgrades it, process exit ends it, and a row that stops being heartbeated expires after ~15 min.
   That expiry only ever fires for a **crashed** process: a live one heartbeats itself, so what

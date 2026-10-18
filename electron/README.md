@@ -24,7 +24,7 @@ fully verifies the new build without touching the running one, and the returned
 `commit()` is the only step that changes the installation (`discard()` removes what was
 staged). `update-controller.cjs` consults feasibility on every check, so an installation
 that cannot install an offer gets a notify-only offer with the installer's plain reason.
-A strategy with no registered installer (AppImage today) stays download-only. On
+A strategy with no registered installer stays download-only. On
 **Install and restart** the controller re-checks the running version, the high-water mark
 re-read from `update-trust-state.json`, agent Setup, any check in flight and feasibility,
 then reopens the download through `downloader.openVerified()`, which re-hashes it through
@@ -69,6 +69,34 @@ An app now on that release, or one whose helper reported success, says nothing. 
 installs follow #205's quit contract: `beginAppQuit()` (called first by `before-quit` and
 by the update restart) refuses new Setup and update installs and revokes both window
 bindings, and a quit while the attempt record is written still stops the install.
+
+A Linux AppImage registers `update-install-appimage.cjs` only for an owned viewer of a
+packaged app with `APPIMAGE` set. Both the update check's target selection
+(`runsFromAppImage()` in `update-fetch.cjs`) and the installer require proof that this
+process runs from that image: `APPIMAGE` and `APPDIR` are canonical absolute paths and
+the executable sits inside `APPDIR`, the image's mount. A `.deb` install that inherited
+another AppImage's variables therefore keeps `deb-notify`. The installer records the
+AppImage's device, inode, size and modification time when it is created and refuses
+(`changed-since-launch`) once the file differs. It also refuses a symlink, a file owned
+by another user, an unwritable file or folder, and a file without the ELF and `AI\x02`
+type-2 magic, read through an `O_NOFOLLOW | O_NONBLOCK` handle bound to the inspected
+inode. `prepare()` writes the handle with `copyVerifiedSource` into a hidden
+`.<name>.update-<16 hex>` sibling (`O_EXCL | O_NOFOLLOW`, `0600`). It then seals the stage
+through a read-only `O_NOFOLLOW` handle: same device as the AppImage, the signed size, the
+type-2 magic in the staged bytes, `fchmod 0755` and fsync. `commit()` re-checks the
+AppImage, its folder and the stage, and makes one atomic rename over the AppImage, which
+is the commit point. The running app keeps its mount of the old inode. After the rename
+`commit()` never rejects: it fsyncs the folder and starts a detached host `/bin/sh -c`
+helper with constant text, argv `<app-pid> <viewer-pid|-> <polls> <target>`, `cwd '/'`
+and `stdio: 'ignore'`, and resolves on its `spawn` event. The helper validates its
+arguments (exit 64), polls `kill -0` every 0.2 s, gives up after about two minutes
+(exit 75) and then execs the new AppImage. Its environment drops `APPDIR`, `APPIMAGE`,
+`ARGV0`, `OWD`, `TARGET_APPIMAGE` and every path-list entry inside the old `APPDIR`.
+Electron's own relaunch is never used: its relauncher runs from the old mount, which the
+AppImage runtime tears down when the app exits. If the helper cannot start, the new file
+is already installed, so the app only logs and the user opens it again. Startup cleanup
+removes at most 16 stale stages per pass: exact name, owner uid, over an hour old, never
+followed.
 
 Checks also refuse to move backwards. After a manifest's signature, schema and expiry
 verify, the app records that release version as a high-water mark in its own user-data

@@ -431,6 +431,20 @@ describe('Electron updater integration', () => {
     expect(failover).not.toContain('viewerOwned')
   })
 
+  it('stops a multi-host Setup run, like a quit, while an app update installs', () => {
+    const main = read('electron/main.cjs')
+    const setupStart = main.indexOf("ipcMain.handle('agent-inbox:install'")
+    const setupHandler = main.slice(setupStart, main.indexOf('\n})', setupStart))
+    const refusal = setupHandler.slice(setupHandler.indexOf('if (updateController?.isInstalling()) {'))
+    const returned = refusal.slice(0, refusal.indexOf('\n  }'))
+
+    // `cancelled` ends the renderer's host loop with "not started" lines instead
+    // of reporting every remaining host as refused (public/app.js updateAgents).
+    expect(returned).toContain("output: 'An Agent Inbox update is being installed. Try again after it restarts.'")
+    expect(returned).toContain('cancelled: true')
+    expect(read('public/app.js')).toContain("else if (outcome?.cancelled === true) stopped = 'was cancelled'")
+  })
+
   it('keeps an app update and agent Setup mutually exclusive, and never blocks the update restart', () => {
     const main = read('electron/main.cjs')
     const setupStart = main.indexOf("ipcMain.handle('agent-inbox:install'")

@@ -276,8 +276,10 @@ ipcMain.handle('agent-inbox:install', async (event, target) => {
   }
   // An app update and agent Setup never run together. Nothing awaits between
   // this check and installGate.run(), so neither can start in the gap.
+  // `cancelled` stops a multi-host Setup run here, as a quit does, rather than
+  // reporting every remaining host as refused.
   if (updateController?.isInstalling()) {
-    return { ok: false, exitCode: null, output: 'An Agent Inbox update is being installed. Try again after it restarts.', target, timedOut: false }
+    return { ok: false, exitCode: null, output: 'An Agent Inbox update is being installed. Try again after it restarts.', target, timedOut: false, cancelled: true }
   }
   // Release builds (issue #74) pass the exact, digest-verified runtime payload
   // through so the installer stages a portable runtime instead of assuming a

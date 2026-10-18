@@ -150,7 +150,12 @@ describe('conditional snapshot polling', () => {
     const proxy = conditionalProxy(reads, { boot: 'stable', tags: true })
     await bootApp(db, {
       interceptFetch: async (input, init, next) => {
-        if (!SNAPSHOTS.has(String(input))) freshHeaders.push(new Headers(init?.headers).get('if-none-match'))
+        // History revalidates its own content-hashed representation (#185); the
+        // time-driven half of that is pinned in conditional-history.test.ts.
+        const path = String(input).split('?')[0]!
+        if (!SNAPSHOTS.has(path) && path !== '/api/activity/history') {
+          freshHeaders.push(new Headers(init?.headers).get('if-none-match'))
+        }
         return proxy(input, init, next)
       },
     })

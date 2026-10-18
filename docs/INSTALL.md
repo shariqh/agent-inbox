@@ -25,6 +25,12 @@ release does not download or install packages: **Review release** opens the veri
 GitHub release page so you can choose and install the package yourself. Browser viewers
 and source/dev Electron runs do not expose update checks.
 
+The app remembers the newest release version it has verified. If a later check receives
+older signed release information, Settings → Updates says the information was out of
+date, nothing older is offered, and the next check tries again. Reinstalling an older app
+version still offers the newest verified release. This protection starts after the first
+successful check and resets if the app's settings folder is deleted.
+
 ### App opens blank after an upgrade
 
 Older builds can mix cached interface files from different versions. If the app opens

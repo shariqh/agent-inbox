@@ -4,7 +4,12 @@ const MANUAL_RELEASES_URL = 'https://github.com/shariqh/agent-inbox/releases'
 const DAY_MS = 24 * 60 * 60_000
 const DEFAULT_INITIAL_DELAY_MS = 30_000
 const DEFAULT_JITTER_RATIO = 0.1
-const ALLOWED_STATUSES = new Set(['current', 'available', 'unsupported'])
+const ALLOWED_STATUSES = new Set(['current', 'available', 'stale', 'unsupported'])
+const CHECKED_MESSAGES = Object.freeze({
+  current: 'Agent Inbox is up to date.',
+  stale: 'Update information is older than a release this app already verified.',
+  unsupported: 'Automatic updates are not supported for this installation.',
+})
 const VERSION_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
 const TARGET_STRATEGIES = new Map([
   ['dmg', 'macos-dmg'],
@@ -175,9 +180,17 @@ function createUpdateController(options) {
       currentVersion,
       automaticChecks,
       checkedAt: candidate.checkedAt,
-      message: candidate.status === 'current'
-        ? 'Agent Inbox is up to date.'
-        : 'Automatic updates are not supported for this installation.',
+      message: CHECKED_MESSAGES[candidate.status],
+    }
+  }
+
+  async function recordVerifiedVersion(version, startingPreferences) {
+    try {
+      const recorded = await preferences.recordVerifiedVersion(version)
+      return recorded.highestVerifiedVersion ?? null
+    } catch {
+      // An unsaved mark must not disable updates; keep enforcing the mark this check read.
+      return startingPreferences.highestVerifiedVersion ?? null
     }
   }
 
@@ -202,6 +215,7 @@ function createUpdateController(options) {
         const candidate = await checker({
           currentVersion,
           automaticChecks: prefs.automaticChecks,
+          recordVerifiedVersion: (version) => recordVerifiedVersion(version, prefs),
         })
         let latestPreferences = prefs
         try {

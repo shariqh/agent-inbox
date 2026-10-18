@@ -9,6 +9,10 @@ const DEFAULT_FILENAME = 'update-preferences.json'
 const LOCK_RETRY_MS = 25
 const LOCK_TIMEOUT_MS = 5_000
 const LOCK_STALE_MS = 5 * 60_000
+const ACCEPTED_KEY_SETS = new Set([
+  ['automaticChecks', 'lastNotifiedVersion', 'schema'],
+  ['automaticChecks', 'highestVerifiedVersion', 'lastNotifiedVersion', 'schema'],
+].map((keys) => keys.join('\0')))
 
 function defaults() {
   return {
@@ -16,6 +20,19 @@ function defaults() {
     automaticChecks: false,
     lastNotifiedVersion: null,
   }
+}
+
+function isVersion(value) {
+  return typeof value === 'string' && VERSION_RE.test(value)
+}
+
+function isNewerVersion(candidate, current) {
+  const left = VERSION_RE.exec(candidate).slice(1).map(BigInt)
+  const right = VERSION_RE.exec(current).slice(1).map(BigInt)
+  for (let index = 0; index < 3; index += 1) {
+    if (left[index] !== right[index]) return left[index] > right[index]
+  }
+  return false
 }
 
 function parsePreferences(bytes) {
@@ -29,13 +46,14 @@ function parsePreferences(bytes) {
     !value
     || typeof value !== 'object'
     || Array.isArray(value)
-    || Object.keys(value).sort().join('\0') !== ['automaticChecks', 'lastNotifiedVersion', 'schema'].join('\0')
+    || !ACCEPTED_KEY_SETS.has(Object.keys(value).sort().join('\0'))
     || value.schema !== 1
     || typeof value.automaticChecks !== 'boolean'
     || !(
       value.lastNotifiedVersion === null
       || (typeof value.lastNotifiedVersion === 'string' && VERSION_RE.test(value.lastNotifiedVersion))
     )
+    || !(value.highestVerifiedVersion === undefined || isVersion(value.highestVerifiedVersion))
   ) {
     return defaults()
   }
@@ -43,6 +61,7 @@ function parsePreferences(bytes) {
     schema: 1,
     automaticChecks: value.automaticChecks,
     lastNotifiedVersion: value.lastNotifiedVersion,
+    ...(value.highestVerifiedVersion === undefined ? {} : { highestVerifiedVersion: value.highestVerifiedVersion }),
   }
 }
 
@@ -143,7 +162,7 @@ function createUpdatePreferences(options = {}) {
     const operation = mutations.then(() => withFileLock(async () => {
       const current = await readLive()
       const next = update(current)
-      await atomicWrite(next)
+      if (next !== current) await atomicWrite(next)
       return { ...next }
     }))
     mutations = operation.then(() => undefined, () => undefined)
@@ -166,6 +185,17 @@ function createUpdatePreferences(options = {}) {
         return Promise.reject(new TypeError('lastNotifiedVersion must be an exact stable X.Y.Z version'))
       }
       return mutate((current) => ({ ...current, lastNotifiedVersion }))
+    },
+    // Rollback high-water mark (#148): callers pass only versions whose signed manifest verified.
+    recordVerifiedVersion(version) {
+      if (!isVersion(version)) {
+        return Promise.reject(new TypeError('verified version must be an exact stable X.Y.Z version'))
+      }
+      return mutate((current) => (
+        current.highestVerifiedVersion !== undefined && !isNewerVersion(version, current.highestVerifiedVersion)
+          ? current
+          : { ...current, highestVerifiedVersion: version }
+      ))
     },
   })
 }

@@ -661,11 +661,12 @@ function initializeUpdateController() {
   return createUpdateController({
     currentVersion: app.getVersion(),
     preferences,
-    checker: ({ currentVersion, automaticChecks }) => checkForUpdate({
+    checker: ({ currentVersion, automaticChecks, recordVerifiedVersion }) => checkForUpdate({
       fetchImpl: fetch,
       registry: updateKeyRegistry,
       currentVersion,
       automaticChecks,
+      recordVerifiedVersion,
       platform: process.platform,
       arch: process.arch,
       isPackaged: app.isPackaged,

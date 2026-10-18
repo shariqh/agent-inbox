@@ -75,6 +75,18 @@ describe('Electron updater integration', () => {
     expect(controller).not.toContain('setBadgeCount')
   })
 
+  it('forwards the verified-version recorder and lets stale update states reach the renderer', () => {
+    const main = read('electron/main.cjs')
+    const initializer = main.slice(
+      main.indexOf('function initializeUpdateController()'),
+      main.indexOf('async function startOwnServer()'),
+    )
+
+    expect(initializer).toContain('checker: ({ currentVersion, automaticChecks, recordVerifiedVersion }) => checkForUpdate({')
+    expect(initializer).toMatch(/checkForUpdate\(\{[^}]*\n\s+recordVerifiedVersion,\n/)
+    expect(read('electron/setup-preload.cjs')).toMatch(/const UPDATE_STATE_VALUES = new Set\(\[[^\]]*'stale'/)
+  })
+
   it('mounts Updates before the setup fetch and keeps the compact controls usable', () => {
     const app = read('public/app.js')
     const css = read('public/style.css')

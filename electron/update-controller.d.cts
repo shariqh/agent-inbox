@@ -24,6 +24,8 @@ export interface UpdateNotification {
 export interface UpdateCheckerInput {
   currentVersion: string
   automaticChecks: boolean
+  /** Persists a just-verified release version and resolves the rollback high-water mark. */
+  recordVerifiedVersion(version: string): Promise<string | null>
 }
 
 export interface UpdateController {

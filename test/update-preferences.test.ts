@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -156,5 +156,93 @@ describe('update preferences', () => {
     await preferences.setAutomatic(true)
     expect(getPath).toHaveBeenCalledWith('userData')
     expect(JSON.parse(readFileSync(join(dir, 'updates.json'), 'utf8')).automaticChecks).toBe(true)
+  })
+
+  it('keeps only the highest verified version and preserves it across other preference writes', async () => {
+    const filePath = join(workDir(), 'updates.json')
+    const preferences = createUpdatePreferences({ filePath })
+
+    await expect(preferences.recordVerifiedVersion('2.0.0')).resolves.toMatchObject({
+      highestVerifiedVersion: '2.0.0',
+    })
+    const written = statSync(filePath).ino
+    for (const lower of ['1.99.99', '2.0.0']) {
+      await expect(preferences.recordVerifiedVersion(lower)).resolves.toMatchObject({
+        highestVerifiedVersion: '2.0.0',
+      })
+    }
+    expect(statSync(filePath).ino).toBe(written)
+
+    await preferences.recordVerifiedVersion('10.0.0')
+    await preferences.recordVerifiedVersion('9.99.99')
+    await preferences.setAutomatic(true)
+    await preferences.setLastNotifiedVersion('10.0.0')
+    await expect(preferences.read()).resolves.toEqual({
+      schema: 1,
+      automaticChecks: true,
+      lastNotifiedVersion: '10.0.0',
+      highestVerifiedVersion: '10.0.0',
+    })
+    await expect(preferences.recordVerifiedVersion('11.0')).rejects.toThrow(TypeError)
+  })
+
+  it('adds the mark to a legacy preferences file without losing its other values', async () => {
+    const filePath = join(workDir(), 'updates.json')
+    writeFileSync(filePath, JSON.stringify({ schema: 1, automaticChecks: true, lastNotifiedVersion: '1.9.0' }))
+    const preferences = createUpdatePreferences({ filePath })
+    await expect(preferences.read()).resolves.toEqual({
+      schema: 1,
+      automaticChecks: true,
+      lastNotifiedVersion: '1.9.0',
+    })
+
+    await preferences.recordVerifiedVersion('2.0.0')
+    expect(readFileSync(filePath, 'utf8')).toBe(
+      '{\n  "schema": 1,\n  "automaticChecks": true,\n  "lastNotifiedVersion": "1.9.0",\n  "highestVerifiedVersion": "2.0.0"\n}\n',
+    )
+  })
+
+  it.each([
+    '{"schema":1,"automaticChecks":tru',
+    '{"schema":2,"automaticChecks":true,"lastNotifiedVersion":null,"highestVerifiedVersion":"9.0.0"}',
+    '{"schema":1,"automaticChecks":true,"lastNotifiedVersion":null,"highestVerifiedVersion":"9.0"}',
+  ])('treats an unreadable mark as absent and rewrites the file from the next verified version: %s', async (bytes) => {
+    const filePath = join(workDir(), 'updates.json')
+    writeFileSync(filePath, bytes)
+    const preferences = createUpdatePreferences({ filePath })
+    await expect(preferences.read()).resolves.toEqual({
+      schema: 1,
+      automaticChecks: false,
+      lastNotifiedVersion: null,
+    })
+
+    await preferences.recordVerifiedVersion('2.0.0')
+    expect(JSON.parse(readFileSync(filePath, 'utf8'))).toEqual({
+      schema: 1,
+      automaticChecks: false,
+      lastNotifiedVersion: null,
+      highestVerifiedVersion: '2.0.0',
+    })
+  })
+
+  it('serializes mark raises across store instances and never lowers the mark', async () => {
+    const filePath = join(workDir(), 'updates.json')
+    const firstProcess = createUpdatePreferences({ filePath })
+    const secondProcess = createUpdatePreferences({ filePath })
+
+    await Promise.all([
+      firstProcess.recordVerifiedVersion('2.0.0'),
+      secondProcess.recordVerifiedVersion('3.0.0'),
+      firstProcess.setAutomatic(true),
+      secondProcess.recordVerifiedVersion('2.5.0'),
+      firstProcess.setLastNotifiedVersion('3.0.0'),
+    ])
+
+    await expect(secondProcess.read()).resolves.toEqual({
+      schema: 1,
+      automaticChecks: true,
+      lastNotifiedVersion: '3.0.0',
+      highestVerifiedVersion: '3.0.0',
+    })
   })
 })

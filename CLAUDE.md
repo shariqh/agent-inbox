@@ -727,6 +727,28 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   draft, independently verifies all eight remote bytes plus the five-entry checksum and
   signature, then exposes them atomically by undrafting. This layer adds no Electron
   fetching, scheduling, download, or install behavior.
+- **Rollback high-water mark** *(#148, rollback half only)* — the packaged notify-only
+  checker (`electron/update-fetch.cjs` + `update-controller.cjs`) persists the highest
+  release version whose manifest passed signature, schema and expiry verification as the
+  optional `highestVerifiedVersion` in Electron userData `update-preferences.json`.
+  `checkForUpdate()` calls the controller-supplied `recordVerifiedVersion` exactly once,
+  only after `verifyManifest()` succeeds; that one call raises the mark (a max through the
+  existing in-process queue, cross-process lock and atomic rename, skipped when not
+  higher) and returns the stored mark, so the decision and the write cannot disagree. A
+  verified manifest below the mark returns `stale`: no offer, no notification, no
+  attention/badge change, normal retry schedule. Offers still need a version above the
+  running app, so the effective floor is max(mark, running version), and a deliberate
+  downgrade is still offered the newest release at or above the mark. A missing, corrupt
+  or unknown-schema file reads as no mark (floor = running version) and is rewritten by
+  the next verified check; a failed mark write keeps enforcing the mark that check read
+  rather than disabling updates. The parser stays strict, so a downgrade to a pre-mark
+  build (which rejects the extra key) resets update preferences to defaults. Not covered:
+  the first check after install or a userData reset, a newer release withheld before this
+  installation verified it, and the dual-signed key-rotation transition — the other half
+  of #148 — so the single-key signer rule above still stands. The publisher already
+  refuses to sign a version that is not newer than every prior stable release, so
+  re-pointing GitHub's latest at an older release shows `stale` to every client that
+  already verified the newer one; fix forward.
 - **Session presence** *(#28, corrected by #45)* — every MCP session is a Live row; `status()`
   upgrades it, process exit ends it, and a row that stops being heartbeated expires after ~15 min.
   That expiry only ever fires for a **crashed** process: a live one heartbeats itself, so what

@@ -1,9 +1,15 @@
 import { createHash, generateKeyPairSync, sign } from 'node:crypto'
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
-import { describe, expect, it, vi } from 'vitest'
+import { join, resolve } from 'node:path'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import updateController from '../electron/update-controller.cjs'
 import updateFetch from '../electron/update-fetch.cjs'
+import updatePreferences from '../electron/update-preferences.cjs'
 import type { UpdateCheckOptions } from '../electron/update-fetch.cjs'
+import type { UpdatePreferencesFs } from '../electron/update-preferences.cjs'
 
 const require = createRequire(import.meta.url)
 const layer1 = require('../electron/update-manifest.cjs') as typeof import('../electron/update-manifest.cjs')
@@ -419,5 +425,241 @@ describe('verification, versions, and targets', () => {
     const result = await checkForUpdate(baseOptions(signedFixture(), host))
     expect(result).toMatchObject({ status: 'unsupported' })
     expect(result.available).toBeUndefined()
+  })
+})
+
+describe('rollback high-water mark (#148)', () => {
+  const { createUpdateController } = updateController
+  const { createUpdatePreferences } = updatePreferences
+  const root = resolve(import.meta.dirname, '..')
+  const workDirs: string[] = []
+  type Fixture = ReturnType<typeof signedFixture>
+
+  afterEach(() => {
+    for (const dir of workDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+  })
+
+  function preferencesPath() {
+    const dir = join(root, `.test-update-high-water-${process.pid}-${workDirs.length}`)
+    rmSync(dir, { recursive: true, force: true })
+    mkdirSync(dir, { recursive: true })
+    workDirs.push(dir)
+    return join(dir, 'update-preferences.json')
+  }
+
+  function seed(filePath: string, highestVerifiedVersion: string, automaticChecks = false) {
+    const bytes = JSON.stringify({ schema: 1, automaticChecks, lastNotifiedVersion: null, highestVerifiedVersion })
+    writeFileSync(filePath, bytes)
+    return bytes
+  }
+
+  // Wires the real controller, verifier and preferences store the way electron/main.cjs does.
+  function updater(options: {
+    currentVersion: string
+    filePath: string
+    fixtures: Fixture[]
+    fsImpl?: UpdatePreferencesFs
+  }) {
+    const [first] = options.fixtures
+    let served = first!
+    let clock = now
+    const timers: Array<{ callback: () => unknown; delay: number }> = []
+    const registry = {
+      schema: 1 as const,
+      signingKeyId: first!.registry.signingKeyId,
+      keys: options.fixtures.flatMap((fixture) => fixture.registry.keys),
+    }
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url === MANIFEST_URL) return response(served.manifestBytes)
+      if (url === SIGNATURE_URL) return response(served.signatureBytes)
+      throw new Error(`unexpected URL ${url}`)
+    })
+    const preferences = createUpdatePreferences({ filePath: options.filePath, fsImpl: options.fsImpl })
+    const notifier = vi.fn()
+    const controller = createUpdateController({
+      currentVersion: options.currentVersion,
+      preferences,
+      checker: ({ currentVersion, automaticChecks, recordVerifiedVersion }) => checkForUpdate({
+        fetchImpl,
+        registry,
+        currentVersion,
+        automaticChecks,
+        recordVerifiedVersion,
+        platform: 'darwin',
+        arch: 'arm64',
+        isPackaged: true,
+        now: () => clock,
+      }),
+      notifier,
+      clock: () => clock,
+      setTimeoutImpl: (callback, delay) => {
+        const timer = { callback, delay }
+        timers.push(timer)
+        return timer
+      },
+      clearTimeoutImpl: (timer) => {
+        const index = timers.indexOf(timer)
+        if (index !== -1) timers.splice(index, 1)
+      },
+      random: () => 0.5,
+      initialDelayMs: 0,
+    })
+    return {
+      controller,
+      notifier,
+      preferences,
+      timers,
+      serve(fixture: Fixture) {
+        served = fixture
+      },
+      setNow(value: Date) {
+        clock = value
+      },
+      async checkEach(...fixtures: Fixture[]) {
+        const results: Array<[string, string | undefined]> = []
+        for (const fixture of fixtures) {
+          served = fixture
+          const result = await controller.checkNow()
+          results.push([result.status, result.available?.version])
+        }
+        return results
+      },
+      mark() {
+        return JSON.parse(readFileSync(options.filePath, 'utf8')).highestVerifiedVersion as unknown
+      },
+    }
+  }
+
+  it('offers newer releases, treats an equal release as current, and refuses an older signed manifest', async () => {
+    const [v2, v3, v21] = ['2.0.0', '3.0.0', '2.1.0'].map((version) => signedFixture(version)) as [Fixture, Fixture, Fixture]
+    const update = updater({ currentVersion: '2.0.0', filePath: preferencesPath(), fixtures: [v2, v3, v21] })
+
+    await expect(update.checkEach(v2, v3, v21)).resolves.toEqual([
+      ['current', undefined],
+      ['available', '3.0.0'],
+      ['stale', undefined],
+    ])
+    expect(update.mark()).toBe('3.0.0')
+    expect(update.controller.getState()).toEqual({
+      status: 'stale',
+      currentVersion: '2.0.0',
+      automaticChecks: false,
+      checkedAt: now.toISOString(),
+      message: 'Update information is older than a release this app already verified.',
+    })
+  })
+
+  it('still offers the newest release at or above the mark after a deliberate downgrade', async () => {
+    const filePath = preferencesPath()
+    seed(filePath, '3.0.0')
+    const [v25, v3, v31] = ['2.5.0', '3.0.0', '3.1.0'].map((version) => signedFixture(version)) as [Fixture, Fixture, Fixture]
+    const update = updater({ currentVersion: '2.0.0', filePath, fixtures: [v25, v3, v31] })
+
+    await expect(update.checkEach(v25, v3, v31)).resolves.toEqual([
+      ['stale', undefined],
+      ['available', '3.0.0'],
+      ['available', '3.1.0'],
+    ])
+    expect(update.mark()).toBe('3.1.0')
+  })
+
+  it('falls back to the running version when preferences are corrupt, then rewrites them safely', async () => {
+    const filePath = preferencesPath()
+    writeFileSync(filePath, '{"schema":1,"automaticChecks":tru')
+    const [v09, v2] = ['0.9.0', '2.0.0'].map((version) => signedFixture(version)) as [Fixture, Fixture]
+    const update = updater({ currentVersion: '1.0.0', filePath, fixtures: [v09, v2] })
+
+    await expect(update.checkEach(v09, v2)).resolves.toEqual([
+      ['current', undefined],
+      ['available', '2.0.0'],
+    ])
+    expect(readFileSync(filePath, 'utf8')).toBe(
+      '{\n  "schema": 1,\n  "automaticChecks": false,\n  "lastNotifiedVersion": null,\n  "highestVerifiedVersion": "2.0.0"\n}\n',
+    )
+  })
+
+  it('never lets a tampered, unpinned, or expired manifest touch the mark', async () => {
+    const filePath = preferencesPath()
+    const seeded = seed(filePath, '2.0.0')
+    const v3 = signedFixture('3.0.0')
+    const tampered = Buffer.from(v3.manifestBytes)
+    const tamperIndex = tampered.length - 2
+    tampered[tamperIndex] = (tampered[tamperIndex] ?? 0) ^ 1
+    const update = updater({ currentVersion: '1.0.0', filePath, fixtures: [v3] })
+
+    await expect(update.checkEach(
+      { ...v3, manifestBytes: tampered },
+      signedFixture('4.0.0'),
+    )).resolves.toEqual([['unverified', undefined], ['unverified', undefined]])
+    update.setNow(new Date('2027-01-01T00:00:00Z'))
+    await expect(update.checkEach(v3)).resolves.toEqual([['unverified', undefined]])
+    expect(readFileSync(filePath, 'utf8')).toBe(seeded)
+
+    update.setNow(now)
+    await expect(update.checkEach(v3)).resolves.toEqual([['available', '3.0.0']])
+    expect(update.mark()).toBe('3.0.0')
+  })
+
+  it('reports stale information without notifying and keeps the normal automatic schedule', async () => {
+    const filePath = preferencesPath()
+    writeFileSync(filePath, JSON.stringify({ schema: 1, automaticChecks: true, lastNotifiedVersion: null }))
+    const [v3, v2, v31] = ['3.0.0', '2.0.0', '3.1.0'].map((version) => signedFixture(version)) as [Fixture, Fixture, Fixture]
+    const update = updater({ currentVersion: '1.0.0', filePath, fixtures: [v3, v2, v31] })
+    const runScheduled = async () => {
+      const timer = update.timers.shift()
+      expect(timer).toBeDefined()
+      await timer!.callback()
+      return update.controller.getState()
+    }
+
+    await update.controller.rendererReady()
+    await expect(runScheduled()).resolves.toMatchObject({ status: 'available', available: { version: '3.0.0' } })
+    expect(update.notifier).toHaveBeenCalledTimes(1)
+
+    update.serve(v2)
+    await expect(runScheduled()).resolves.toMatchObject({ status: 'stale', automaticChecks: true })
+    expect(update.notifier).toHaveBeenCalledTimes(1)
+    await expect(update.preferences.read()).resolves.toEqual({
+      schema: 1,
+      automaticChecks: true,
+      lastNotifiedVersion: '3.0.0',
+      highestVerifiedVersion: '3.0.0',
+    })
+    expect(update.timers.map((timer) => timer.delay)).toEqual([24 * 60 * 60_000])
+
+    update.serve(v31)
+    await expect(runScheduled()).resolves.toMatchObject({ status: 'available', available: { version: '3.1.0' } })
+    expect(update.notifier).toHaveBeenCalledTimes(2)
+    expect(update.notifier).toHaveBeenLastCalledWith(expect.objectContaining({ version: '3.1.0' }))
+  })
+
+  it('keeps enforcing the last readable mark when a new mark cannot be saved', async () => {
+    const filePath = preferencesPath()
+    const seeded = seed(filePath, '3.0.0')
+    const [v25, v31] = ['2.5.0', '3.1.0'].map((version) => signedFixture(version)) as [Fixture, Fixture]
+    const readOnlyVolume: UpdatePreferencesFs = {
+      readFile: (path) => readFile(path),
+      async writeFile() {
+        throw Object.assign(new Error('read-only file system'), { code: 'EROFS' })
+      },
+      async rename() {
+        throw new Error('not reached')
+      },
+      async unlink() {},
+      async mkdir() {},
+    }
+    const update = updater({ currentVersion: '2.0.0', filePath, fixtures: [v25, v31], fsImpl: readOnlyVolume })
+
+    await expect(update.checkEach(v25, v31)).resolves.toEqual([
+      ['stale', undefined],
+      ['available', '3.1.0'],
+    ])
+    expect(readFileSync(filePath, 'utf8')).toBe(seeded)
+  })
+
+  it('fails closed when the high-water recorder reports a malformed mark', async () => {
+    await expect(checkForUpdate(baseOptions(signedFixture(), {
+      recordVerifiedVersion: async () => '3.0',
+    }))).rejects.toThrow()
   })
 })

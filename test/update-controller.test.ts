@@ -27,6 +27,13 @@ function prefs(initial: UpdatePreferences = {
       value = { ...value, lastNotifiedVersion }
       return { ...value }
     }),
+    recordVerifiedVersion: vi.fn(async (version: string) => {
+      const mark = value.highestVerifiedVersion
+      if (!mark || version.localeCompare(mark, 'en', { numeric: true }) > 0) {
+        value = { ...value, highestVerifiedVersion: version }
+      }
+      return { ...value }
+    }),
     replace(next: UpdatePreferences) {
       value = { ...next }
     },

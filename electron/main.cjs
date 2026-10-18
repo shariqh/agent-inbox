@@ -29,6 +29,7 @@ const { loadViewer, reloadViewer } = require('./viewer-navigation.cjs')
 const { canRunSetup, createInstallGate, installerRepoRoot, runAgentInstall, runtimeKey, selectRuntimePayload } = require('./setup-runner.cjs')
 const { MANUAL_RELEASES_URL, createUpdateController } = require('./update-controller.cjs')
 const { createUpdateDownloader } = require('./update-download.cjs')
+const { bundlePathFromExecPath, createMacInstaller } = require('./update-install-macos.cjs')
 const { checkForUpdate } = require('./update-fetch.cjs')
 const { createUpdatePreferences, createUpdateTrustState } = require('./update-preferences.cjs')
 const { loadUpdateRegistry } = require('./update-trust.cjs')
@@ -87,6 +88,12 @@ let themeWindow = null
 let themeWindowWebContentsId = null
 let updateWindow = null
 let updateController = null
+// True only once waitForOwnership() proved the viewer is the one this app
+// started; a reused or failed-over viewer never gets in-app update installs.
+let viewerOwned = false
+let updateInstallWebContentsId = null
+let updateRestartRequested = false
+let quitAfterUpdateInstall = false
 
 function isTrustedThemeSender(senderUrl) {
   try {
@@ -196,6 +203,23 @@ ipcMain.handle('agent-inbox:update-download-cancel', (event, ...args) => {
   return updateController?.cancelDownload() ?? unavailableUpdateState()
 })
 
+// User-initiated only, and only from the window bound at the first navigation
+// of a viewer this app started and owns. The renderer names nothing: main
+// installs the verified download behind the current offer, and progress
+// arrives as state-changed events.
+ipcMain.handle('agent-inbox:update-install', (event, ...args) => {
+  const senderUrl = event.senderFrame?.url ?? ''
+  if (args.length !== 0 || !isTrustedUpdateSender(senderUrl, event.sender)) {
+    return unavailableUpdateState()
+  }
+  if (!updateController) return unavailableUpdateState()
+  if (!canRunSetup(senderUrl, URL_BASE, event.sender.id, updateInstallWebContentsId)) {
+    return updateController.refuseInstall('Restart Agent Inbox to install this update.')
+  }
+  updateController.installNow().catch(() => {})
+  return updateController.getState()
+})
+
 ipcMain.handle('agent-inbox:update-open-release', async (event, ...args) => {
   if (args.length !== 0 || !isTrustedUpdateSender(event.senderFrame?.url ?? '', event.sender)) return false
   const state = updateController?.getState()
@@ -243,6 +267,11 @@ ipcMain.handle('agent-inbox:install', async (event, target) => {
     : installerRepoRoot(REPO_ROOT)
   if (!repoRoot) {
     return { ok: false, exitCode: null, output: 'The agent-inbox checkout or installer could not be found.', target, timedOut: false }
+  }
+  // An app update and agent Setup never run together. Nothing awaits between
+  // this check and installGate.run(), so neither can start in the gap.
+  if (updateController?.isInstalling()) {
+    return { ok: false, exitCode: null, output: 'An Agent Inbox update is being installed. Try again after it restarts.', target, timedOut: false }
   }
   // Release builds (issue #74) pass the exact, digest-verified runtime payload
   // through so the installer stages a portable runtime instead of assuming a
@@ -316,6 +345,27 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 /** The viewer child process, ONLY if this app spawned it. Never set for a pre-existing server. */
 let spawnedViewer = null
+
+// The viewer child this app started (dev fallback) and stops in will-quit. The
+// update helper waits for it as well, so the relaunched app never finds the old
+// viewer still answering on the port. Null for an in-process or reused viewer.
+function spawnedViewerPid() {
+  return spawnedViewer &&
+    spawnedViewer.exitCode === null &&
+    spawnedViewer.signalCode === null &&
+    Number.isSafeInteger(spawnedViewer.pid)
+    ? spawnedViewer.pid
+    : null
+}
+
+// The only quit path for an update: the committed helper is waiting for this
+// process (and its viewer) to exit before it swaps the app and relaunches it.
+// Like every quit path, it stops Setup first (#205).
+function requestUpdateRestart() {
+  updateRestartRequested = true
+  beginAppQuit()
+  app.quit()
+}
 
 function themeBackgroundColor() {
   return nativeTheme.shouldUseDarkColors ? THEME_BACKGROUND_COLORS.dark : THEME_BACKGROUND_COLORS.light
@@ -702,18 +752,22 @@ function initializeUpdateController() {
       appImagePath: process.env.APPIMAGE,
       includeArtifact: true,
     }),
-    // Downloads only; nothing here mounts, opens or installs the file.
     downloader: createUpdateDownloader({
       directory: path.join(app.getPath('userData'), 'update-downloads'),
       fetchImpl: fetch,
     }),
-    notifier: ({ version, downloadable }) => {
+    installers: updateInstallers(),
+    isSetupRunning: () => installGate.running(),
+    requestRestart: requestUpdateRestart,
+    notifier: ({ version, downloadable, installable }) => {
       if (!Notification.isSupported()) return
       const note = new Notification({
         title: 'Agent Inbox update available',
-        body: downloadable
-          ? `Version ${version} is available. Download and verify it from Settings → Updates.`
-          : `Version ${version} is ready to review on GitHub Releases.`,
+        body: installable
+          ? `Version ${version} is available. Install it from Settings → Updates.`
+          : downloadable
+            ? `Version ${version} is available. Download and verify it from Settings → Updates.`
+            : `Version ${version} is ready to review on GitHub Releases.`,
       })
       note.on('click', () => {
         if (updateWindow) openUpdatesWindow(updateWindow)
@@ -722,6 +776,31 @@ function initializeUpdateController() {
     },
     emit: sendUpdateState,
   })
+}
+
+// In-app install only on macOS and only for a viewer this app started and owns;
+// every other host keeps the download-and-verify flow with a manual install.
+function updateInstallers() {
+  if (process.platform !== 'darwin' || !viewerOwned) return {}
+  try {
+    return {
+      'macos-dmg': createMacInstaller({
+        bundlePath: bundlePathFromExecPath(process.execPath),
+        expectedBundleId: 'io.github.shariqh.agent-inbox',
+        teamId: 'VVR2DKR923',
+        systemVersion: process.getSystemVersion(),
+        pid: process.pid,
+        viewerPid: spawnedViewerPid,
+        uid: process.getuid(),
+        platform: process.platform,
+        isPackaged: app.isPackaged,
+        workDirectory: path.join(app.getPath('userData'), 'update-install'),
+      }),
+    }
+  } catch {
+    console.error('[agent-inbox] update installer unavailable; updates stay download-only')
+    return {}
+  }
 }
 
 /**
@@ -762,6 +841,7 @@ app.whenReady().then(async () => {
     app.exit(1)
     return
   } else if (await waitForOwnership()) {
+    viewerOwned = true
     // Issue #74: for a release build (setup-info.json carries runtimePayloads
     // for this host's architecture), one-click setup is only ever enabled
     // when the EXACT selected payload is present and digest-verified — never
@@ -792,15 +872,19 @@ app.whenReady().then(async () => {
   const setupWindowWebContentsId = win.webContents.id
   const revokeSetup = () => {
     if (setupInstallWebContentsId === setupWindowWebContentsId) setupInstallWebContentsId = null
+    if (updateInstallWebContentsId === setupWindowWebContentsId) updateInstallWebContentsId = null
   }
   let firstMainNavigation = true
   win.webContents.on('did-start-navigation', (_event, url, isInPlace, isMainFrame) => {
     if (!isMainFrame || isInPlace) return
     if (firstMainNavigation) {
       firstMainNavigation = false
-      if (setupInstallEnabled && new URL(url).origin === new URL(URL_BASE).origin) {
+      const viewerOrigin = new URL(url).origin === new URL(URL_BASE).origin
+      if (setupInstallEnabled && viewerOrigin) {
         setupInstallWebContentsId = setupWindowWebContentsId
       }
+      // Update installs need only the owned viewer, not agent Setup's runtime payload.
+      if (viewerOwned && viewerOrigin) updateInstallWebContentsId = setupWindowWebContentsId
       return
     }
     revokeSetup()
@@ -842,9 +926,21 @@ app.on('window-all-closed', () => {
 // install still running before letting the app exit (#205 review).
 app.on('before-quit', (event) => {
   const running = beginAppQuit()
-  if (!running) return
-  event.preventDefault()
-  running.then(() => app.quit())
+  if (running) {
+    event.preventDefault()
+    running.then(() => app.quit())
+    return
+  }
+  // The committed update helper is waiting for this process to exit.
+  if (updateRestartRequested) return
+  // Quitting mid-install stops it first, so nothing staged or mounted is left behind.
+  if (updateController?.isInstalling() && !quitAfterUpdateInstall) {
+    event.preventDefault()
+    updateController.cancelInstall().finally(() => {
+      quitAfterUpdateInstall = true
+      app.quit()
+    })
+  }
 })
 
 // Kill the viewer only if we spawned it; a pre-existing server is left untouched.

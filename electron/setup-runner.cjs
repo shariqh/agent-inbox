@@ -304,6 +304,10 @@ function createInstallGate() {
     quitting() {
       return quitting
     },
+    /** True from the moment an install starts until its promise settles, either way. */
+    running() {
+      return current !== null
+    },
     /**
      * Start one install, `start(onCancel)`, or refuse: 'quitting' once a quit
      * has begun, 'running' while another install runs. A refusal never calls

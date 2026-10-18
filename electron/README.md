@@ -239,7 +239,9 @@ post-commit cleanup retains and reports recovery data. Restore and recursive cle
 re-identify the scratch and prior-tree backup first; an identity mismatch refuses the
 mutation rather than restoring or deleting a substituted path. The adapter creates and
 identifies the empty stage before producer code runs, and cleanup requires that same stage
-identity or verified post-publication absence.
+identity or verified post-publication absence. A prune renames the runtime into a
+`.trash-*` folder beside it before deleting anything, so an interrupted prune leaves only
+trash, which the next install or prune removes; nothing named `.trash-*` is a runtime.
 
 The payload CLI distinguishes a committed install failure with exit 3 (ordinary failure
 remains 1; usage remains 2). Before treating that runtime as newly installed, the Darwin
@@ -269,7 +271,11 @@ setup uses `flock` only. The helper is hashed with the runtime payload, but
 sourcing it by path after the final app-side verification remains inside the
 existing verify-to-execute window. Graceful termination attempts transactional
 rollback, while forced `SIGKILL` escalation can end without shell or
-filesystem-adapter cleanup; Setup retains that cancellation behavior.
+filesystem-adapter cleanup; Setup retains that cancellation behavior. The rollback's
+Node steps run through the payload's `scripts/run-isolated.mjs` in their own session:
+Setup's repeat `SIGTERM` cannot stop them, they never hold Setup's pipes, and one
+already running when `SIGKILL` lands keeps running, still within its 30-second bound,
+and keeps the lock until it ends.
 
 Layer 1 leaves the portable app unsigned. The signing layer must finalize the layout,
 sign every nested runtime Mach-O, regenerate both manifests from those signed bytes,

@@ -59,6 +59,7 @@ function writePayload(payloadDir: string, version: string, opts: PayloadOptions 
     'scripts/runtime-config.mjs': '// config helper\n',
     'scripts/setup-filesystem.cjs': '// filesystem adapter\n',
     'scripts/setup-lock.sh': '# shared setup lock\n',
+    'scripts/run-isolated.mjs': '// rollback step isolation\n',
   }
   for (const [path, content] of Object.entries(files)) {
     if (opts.omitFiles?.includes(path)) continue

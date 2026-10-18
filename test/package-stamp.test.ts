@@ -117,6 +117,7 @@ function stagePayloadDir(
     'scripts/runtime-config.mjs': '// config\n',
     'scripts/setup-filesystem.cjs': '// filesystem adapter\n',
     'scripts/setup-lock.sh': '# shared setup lock\n',
+    'scripts/run-isolated.mjs': '// rollback step isolation\n',
   }
   for (const [path, contents] of Object.entries(files)) {
     if (path === opts.omitFile) continue
@@ -233,6 +234,7 @@ describe('scripts/write-setup-info.mjs --release (issue #74)', () => {
     ['missing runtime config helper', { omitFile: 'scripts/runtime-config.mjs' }],
     ['missing setup filesystem adapter', { omitFile: 'scripts/setup-filesystem.cjs' }],
     ['missing setup lock helper', { omitFile: 'scripts/setup-lock.sh' }],
+    ['missing rollback step helper', { omitFile: 'scripts/run-isolated.mjs' }],
   ])('refuses release metadata for %s', (_label, override) => {
     const payloadRoot = mkdtempSync(join(tmpdir(), 'payload-root-identity-'))
     stagePayloadDir(payloadRoot, 'runtime/darwin-arm64', 'darwin', 'arm64', override)

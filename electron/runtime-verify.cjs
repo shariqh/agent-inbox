@@ -19,6 +19,7 @@ const REQUIRED_FILES = [
   'scripts/runtime-config.mjs',
   'scripts/setup-filesystem.cjs',
   'scripts/setup-lock.sh',
+  'scripts/run-isolated.mjs',
 ]
 
 class RuntimeVerificationError extends Error {

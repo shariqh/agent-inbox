@@ -77,6 +77,7 @@ function committedFailureCli(): string {
   writeFileSync(join(root, 'setup-filesystem.cjs'), `
 const original = require(${JSON.stringify(SETUP_FILESYSTEM)})
 module.exports = {
+  ...original,
   createSetupFilesystem(options) {
     const filesystem = original.createSetupFilesystem(options)
     return Object.freeze({
@@ -699,6 +700,49 @@ describe('runtime-payload prune: deletes only an exact, validly-owned runtime di
     const { runtimeRoot } = installedFixture('prune-traversal')
     const result = runFail(PAYLOAD_CLI, ['prune', '--runtime-root', runtimeRoot, '--runtime-id', '../escape'])
     expect(result.stderr).toMatch(/unsafe runtimeId/)
+  })
+
+  // #211: once the runtime is renamed aside its id is free, so a trash folder
+  // that cannot be deleted yet is left for the next install or prune.
+  it('counts a runtime as pruned once it is renamed aside, even when deleting it fails', () => {
+    const { runtimeRoot, runtimeId } = installedFixture('prune-retained')
+    const preload = join(tmp('prune-retained-preload-'), 'fail-trash-delete.cjs')
+    writeFileSync(preload, [
+      "const fs = require('node:fs')",
+      'const remove = fs.rmSync',
+      'fs.rmSync = function rmSync(path, options) {',
+      "  if (String(path).includes('/.trash-')) throw Object.assign(new Error('permission denied'), { code: 'EACCES' })",
+      '  return remove.call(this, path, options)',
+      '}',
+      '',
+    ].join('\n'))
+
+    const pruned = runOk(PAYLOAD_CLI, ['prune', '--runtime-root', runtimeRoot, '--runtime-id', runtimeId], {
+      ...process.env,
+      NODE_OPTIONS: `--require ${preload}`,
+    }) as { pruned: boolean; retained?: string }
+
+    expect(pruned.pruned).toBe(true)
+    expect(existsSync(join(runtimeRoot, runtimeId))).toBe(false)
+    expect(basename(pruned.retained ?? '')).toMatch(/^\.trash-/)
+    expect(existsSync(pruned.retained!)).toBe(true)
+    expect(runOk(PAYLOAD_CLI, ['list', '--runtime-root', runtimeRoot])).toEqual([])
+
+    // The next prune removes it, even of a runtime id that is already gone.
+    runFail(PAYLOAD_CLI, ['prune', '--runtime-root', runtimeRoot, '--runtime-id', runtimeId])
+    expect(existsSync(pruned.retained!)).toBe(false)
+  })
+
+  // #211: a pruned runtime is renamed into a `.trash-*` folder first, so no
+  // runtime may ever claim that prefix.
+  it('never trusts a manifest whose runtime id is a reserved trash name', () => {
+    const root = tmp('verify-trash-runtime-id-')
+    buildFixturePayload(root)
+    const forged = forgeManifest(root, { product: '.trash-runtime' })
+    writeFileSync(join(root, 'runtime-manifest.json'), JSON.stringify(forged, null, 2))
+
+    const result = runFail(PAYLOAD_CLI, ['verify', '--root', root])
+    expect(result.stderr).toMatch(/reserved trash name/)
   })
 })
 
@@ -1778,6 +1822,7 @@ export function getItem(db, id) {
     'runtime-config.mjs',
     'setup-filesystem.cjs',
     'setup-lock.sh',
+    'run-isolated.mjs',
   ]) {
     writeFileSync(join(repoRoot, 'scripts', name), `# fixture placeholder for ${name}\n`)
   }

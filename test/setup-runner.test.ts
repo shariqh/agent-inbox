@@ -104,6 +104,7 @@ function stagePayloadDir(
     if (opts.omitFile !== 'scripts/runtime-config.mjs') writeFileSync(join(dir, 'scripts', 'runtime-config.mjs'), '// config helper\n')
     if (opts.omitFile !== 'scripts/setup-filesystem.cjs') writeFileSync(join(dir, 'scripts', 'setup-filesystem.cjs'), '// filesystem adapter\n')
     if (opts.omitFile !== 'scripts/setup-lock.sh') writeFileSync(join(dir, 'scripts', 'setup-lock.sh'), '# shared setup lock\n')
+    if (opts.omitFile !== 'scripts/run-isolated.mjs') writeFileSync(join(dir, 'scripts', 'run-isolated.mjs'), '// rollback step isolation\n')
     mkdirSync(join(dir, 'dist'), { recursive: true })
     if (opts.omitFile !== 'dist/mcp-server.js') writeFileSync(join(dir, 'dist', 'mcp-server.js'), '// mcp\n')
     if (opts.omitFile !== 'dist/hook-cli.js') writeFileSync(join(dir, 'dist', 'hook-cli.js'), '// hook\n')
@@ -494,6 +495,7 @@ describe('selectRuntimePayload (issue #74)', () => {
     ['missing config helper', { omitFile: 'scripts/runtime-config.mjs' }],
     ['missing filesystem adapter', { omitFile: 'scripts/setup-filesystem.cjs' }],
     ['missing setup lock helper', { omitFile: 'scripts/setup-lock.sh' }],
+    ['missing rollback step helper', { omitFile: 'scripts/run-isolated.mjs' }],
   ])('rejects %s at selection and immediately before spawn', async (_label, override) => {
     const root = mkdtempSync(join(tmpdir(), 'runtime-identity-'))
     const payload = stagePayloadDir(root, 'runtime/darwin-arm64', {

@@ -349,7 +349,7 @@ mcp_commands() {
 has_user_registration() {
   local target="$1" output
   mcp_commands "$target" get
-  output="$("${MCP_CMD[@]}" 2>/dev/null)" || return 1
+  output="$(run_node_step --stdout -- "${MCP_CMD[@]}" 2>/dev/null)" || return 1
   case "$target" in
     claude) printf '%s\n' "$output" | grep -Fq 'Scope: User config' ;;
     copilot) printf '%s\n' "$output" | grep -Eq '"source"[[:space:]]*:[[:space:]]*"user"' ;;
@@ -375,7 +375,7 @@ user_registration_state() {
     return 0
   fi
   [ -n "$JSON_NODE" ] || return 1
-  "$JSON_NODE" -e '
+  run_node_step -- "$JSON_NODE" -e '
     const fs = require("node:fs")
     const parsed = JSON.parse(fs.readFileSync(process.argv[1], "utf8"))
     process.exit(parsed.mcpServers && parsed.mcpServers["agent-inbox"] ? 10 : 0)
@@ -448,17 +448,23 @@ restore_registration_config() {
 }
 
 rollback_mcp_changes() {
-  local target
+  local target status reason
   for target in $NEWLY_ADDED; do
     mcp_commands "$target" remove
-    if "${MCP_CMD[@]}" >/dev/null 2>&1; then
+    isolated -- "${MCP_CMD[@]}" >/dev/null 2>&1
+    status=$?
+    if [ "$status" -eq 0 ]; then
       echo "$target: rolled back MCP registration from failed install" >&2
     elif [ "$(user_registration_state "$target")" != absent ]; then
       # A host refuses to remove a server it never registered, as after an add
       # that failed outright: that leaves nothing to undo. Anything else,
-      # including a check that failed or was stopped, is reported.
+      # including a check that failed or ran out of time, is reported.
       ROLLBACK_INCOMPLETE=1
-      echo "install-agents: warning: could not roll back $target MCP registration" >&2
+      reason=""
+      if [ "$status" -eq "$ISOLATED_TIMEOUT_STATUS" ]; then
+        reason=": its mcp remove did not finish within $ROLLBACK_STEP_TIMEOUT_MS ms"
+      fi
+      echo "install-agents: warning: could not roll back $target MCP registration$reason" >&2
     fi
   done
   for target in $NEEDS_RESTORE; do
@@ -481,6 +487,62 @@ RUNTIME_MANIFEST_DIGEST=""
 PAYLOAD_HELPER=""
 CONFIG_HELPER=""
 SOURCE_NODE=""
+ISOLATE_HELPER=""
+ISOLATE_NODE=""
+
+# The Node steps of a rollback (a host CLI's `mcp remove` or `mcp get`, and
+# the runtime reference check and prune) run through run-isolated.mjs. It
+# starts each one in a session of its own, where no repeat signal sent to
+# this installer's process group reaches it, and stops it after
+# ROLLBACK_STEP_TIMEOUT_MS, a bound that holds even if this installer is
+# killed outright. The step gets none of this shell's output, only the setup
+# lock (fd 9), which stays held until the step has ended.
+ROLLBACK_ISOLATION=0
+ISOLATED_TIMEOUT_STATUS=124
+ROLLBACK_STEP_TIMEOUT_MS="${AGENT_INBOX_ROLLBACK_STEP_TIMEOUT_MS:-30000}"
+case "$ROLLBACK_STEP_TIMEOUT_MS" in
+  ''|*[!0-9]*|0*|??????????*) ROLLBACK_STEP_TIMEOUT_MS=30000 ;;
+esac
+# A repeat signal can still land while the helper's own Node is starting:
+# Node resets the signals this shell ignores before the helper can ignore
+# them itself. The helper then dies with 128 + that signal before it has
+# started anything, so the step simply runs again, up to three times in all.
+ISOLATE_RESTART_STATUSES=""
+for isolate_signal in HUP INT QUIT ALRM TERM XCPU; do
+  ISOLATE_RESTART_STATUSES="$ISOLATE_RESTART_STATUSES $((128 + $(kill -l "$isolate_signal")))"
+done
+
+# Usage: isolated [--stdout] -- <command> [args...]. With --stdout, the
+# command's stdout is relayed to this function's; otherwise it is discarded.
+isolated() {
+  local attempt=1 status
+  while :; do
+    if [ "$_AGENT_INBOX_SETUP_LOCK_HELD" -eq 1 ]; then
+      "$ISOLATE_NODE" "$ISOLATE_HELPER" --timeout-ms "$ROLLBACK_STEP_TIMEOUT_MS" --lease-fd 9 "$@" 3>&-
+    else
+      "$ISOLATE_NODE" "$ISOLATE_HELPER" --timeout-ms "$ROLLBACK_STEP_TIMEOUT_MS" "$@" 3>&-
+    fi
+    status=$?
+    case " $ISOLATE_RESTART_STATUSES " in
+      *" $status "*) ;;
+      *) return "$status" ;;
+    esac
+    [ "$attempt" -lt 3 ] || return "$status"
+    attempt=$((attempt + 1))
+  done
+}
+
+# A Node step the forward path shares runs directly until a rollback begins,
+# and isolated from then on. Usage: run_node_step [--stdout] -- <command>...
+run_node_step() {
+  if [ "$ROLLBACK_ISOLATION" -eq 1 ]; then
+    isolated "$@"
+    return
+  fi
+  if [ "$1" = --stdout ]; then shift; fi
+  shift
+  "$@"
+}
 
 runtime_manifest_value() {
   "$SOURCE_NODE" -e '
@@ -499,9 +561,12 @@ if [ "$RUNTIME_MODE" -eq 1 ]; then
   SOURCE_NODE="$RUNTIME_SOURCE/bin/node"
   PAYLOAD_HELPER="$RUNTIME_SOURCE/scripts/runtime-payload.mjs"
   CONFIG_HELPER="$RUNTIME_SOURCE/scripts/runtime-config.mjs"
+  ISOLATE_HELPER="$RUNTIME_SOURCE/scripts/run-isolated.mjs"
+  ISOLATE_NODE="$SOURCE_NODE"
   [ -x "$SOURCE_NODE" ] || { echo "install-agents: runtime payload Node is missing: $SOURCE_NODE" >&2; exit 1; }
   [ -f "$PAYLOAD_HELPER" ] || { echo "install-agents: runtime payload helper is missing: $PAYLOAD_HELPER" >&2; exit 1; }
   [ -f "$CONFIG_HELPER" ] || { echo "install-agents: runtime config helper is missing: $CONFIG_HELPER" >&2; exit 1; }
+  [ -f "$ISOLATE_HELPER" ] || { echo "install-agents: runtime rollback helper is missing: $ISOLATE_HELPER" >&2; exit 1; }
   [ -f "$RUNTIME_SOURCE/runtime-manifest.json" ] || {
     echo "install-agents: runtime manifest is missing from $RUNTIME_SOURCE" >&2
     exit 1
@@ -549,7 +614,13 @@ else
   ENTRY="${AGENT_INBOX_MCP_ENTRY:-$ROOT/dist/mcp-server.js}"
   SELFTEST="${AGENT_INBOX_SELFTEST_ENTRY:-$ROOT/dist/hook-cli.js}"
   JSON_NODE="$(resolve_node)"
+  ISOLATE_HELPER="$SCRIPT_DIR/run-isolated.mjs"
+  ISOLATE_NODE="$JSON_NODE"
   NODE=""
+  if [ "$APPLY" -eq 1 ] && [ ! -f "$ISOLATE_HELPER" ]; then
+    echo "install-agents: rollback helper is missing: $ISOLATE_HELPER" >&2
+    exit 1
+  fi
   if [ "$UNINSTALL" -eq 0 ]; then
     NODE="$JSON_NODE"
     [ -n "$NODE" ] || { echo "install-agents: no Node binary found — set AGENT_INBOX_NODE" >&2; exit 1; }
@@ -637,7 +708,7 @@ cleanup() {
 runtime_reference_status() {
   local runtime_id="$1" output
   [ "$RUNTIME_MODE" -eq 1 ] || { echo unreferenced; return; }
-  output="$("$SOURCE_NODE" "$CONFIG_HELPER" references \
+  output="$(run_node_step --stdout -- "$SOURCE_NODE" "$CONFIG_HELPER" references \
     --runtime-root "$RUNTIME_ROOT" --runtime-id "$runtime_id" \
     --file "$HOME/.claude.json" \
     --file "$HOME/.copilot/mcp-config.json" \
@@ -646,20 +717,16 @@ runtime_reference_status() {
     echo unknown
     return
   }
-  printf '%s' "$output" | "$SOURCE_NODE" -e '
-    let text = ""
-    process.stdin.setEncoding("utf8")
-    process.stdin.on("data", (chunk) => { text += chunk })
-    process.stdin.on("end", () => {
-      try {
-        const status = JSON.parse(text).status
-        process.stdout.write(typeof status === "string" ? status : "unknown")
-      } catch { process.stdout.write("unknown") }
-    })
-  '
+  run_node_step --stdout -- "$SOURCE_NODE" -e '
+    try {
+      const status = JSON.parse(process.argv[1]).status
+      process.stdout.write(typeof status === "string" ? status : "unknown")
+    } catch { process.stdout.write("unknown") }
+  ' "$output" 2>/dev/null
 }
 
 rollback_runtime() {
+  local status reason=""
   [ "$RUNTIME_MODE" -eq 1 ] || return
   [ -f "$WORK/runtime-installed" ] || return
   if [ "$(runtime_reference_status "$RUNTIME_ID")" != unreferenced ]; then
@@ -667,12 +734,17 @@ rollback_runtime() {
     echo "install-agents: retained newly installed runtime because a reference exists or could not be ruled out: $RUNTIME_PATH" >&2
     return
   fi
-  if "$SOURCE_NODE" "$PAYLOAD_HELPER" prune \
-    --runtime-root "$RUNTIME_ROOT" --runtime-id "$RUNTIME_ID" >/dev/null 2>&1; then
+  isolated -- "$SOURCE_NODE" "$PAYLOAD_HELPER" prune \
+    --runtime-root "$RUNTIME_ROOT" --runtime-id "$RUNTIME_ID" >/dev/null 2>&1
+  status=$?
+  if [ "$status" -eq 0 ]; then
     echo "install-agents: removed unreferenced runtime after failed install: $RUNTIME_PATH" >&2
   else
     ROLLBACK_INCOMPLETE=1
-    echo "install-agents: warning: could not remove runtime after failed install: $RUNTIME_PATH" >&2
+    if [ "$status" -eq "$ISOLATED_TIMEOUT_STATUS" ]; then
+      reason=": its prune did not finish within $ROLLBACK_STEP_TIMEOUT_MS ms"
+    fi
+    echo "install-agents: warning: could not remove runtime after failed install: $RUNTIME_PATH$reason" >&2
   fi
 }
 
@@ -793,17 +865,19 @@ divert_report() {
 # signal above, and so do the ordinary commands it runs (cp, mv, rm): a second
 # Ctrl-C, a hangup or a write to a vanished reader cannot stop the shell
 # mid-restore or make it start over. Node resets ignored signals other than
-# PIPE and XFSZ to their defaults, though, so a repeat signal can still stop a
-# Node step: a host CLI's `mcp remove` undoing a new registration, or a runtime
-# reference check or prune. Such a step fails like any other: its warning is
-# reported and cleanup keeps the report. Restoring a replaced registration or
-# an instruction file runs no Node. SIGKILL stops everything, and then no EXIT
-# trap runs, so $WORK keeps every snapshot. TRANSACTION_ACTIVE drops only once
-# the restore has run, which is how cleanup knows a snapshot is no longer the
-# only copy.
+# PIPE and XFSZ to their defaults, so every Node step runs isolated instead
+# (see isolated): a host CLI's `mcp remove` undoing a new registration, its
+# `mcp get` re-check, and the runtime reference check and prune. A step that
+# fails or runs out of time is reported, and cleanup keeps the report.
+# Restoring a replaced registration or an instruction file runs no Node.
+# SIGKILL stops everything except a step already running isolated, which
+# still ends within its bound and holds the setup lock until then; no EXIT
+# trap runs, so $WORK keeps every snapshot. TRANSACTION_ACTIVE drops only once the restore
+# has run, which is how cleanup knows a snapshot is no longer the only copy.
 rollback_transaction() {
   [ "$TRANSACTION_ACTIVE" -eq 1 ] || return 0
   trap '' "${INTERRUPT_SIGNALS[@]}"
+  ROLLBACK_ISOLATION=1
   divert_report
   rollback_files
   rollback_mcp_changes

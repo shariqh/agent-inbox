@@ -10,11 +10,20 @@ import type {
   UpdateRendererState,
   VerifiedArtifact,
 } from '../electron/update-controller.cjs'
+import type { OpenedVerifiedArtifact } from '../electron/update-download.cjs'
+import updateInstall from '../electron/update-install.cjs'
+import type {
+  InstallCandidate,
+  InstallFeasibility,
+  PreparedInstall,
+  VerifiedInstallSource,
+} from '../electron/update-install.cjs'
 
 const {
   MANUAL_RELEASES_URL,
   createUpdateController,
 } = updateController
+const { UpdateInstallError } = updateInstall
 
 function prefs(initial: UpdatePreferences = {
   schema: 1,
@@ -416,6 +425,17 @@ function fakeDownloader() {
       pending.shift()?.reject(Object.assign(new Error('cancelled'), { code: 'cancelled' }))
     }),
     verify: vi.fn(),
+    openVerified: vi.fn(async (record: VerifiedArtifact): Promise<OpenedVerifiedArtifact> => ({
+      record,
+      handle: {
+        read: vi.fn(async () => ({ bytesRead: 0 })),
+        stat: vi.fn(async () => ({ isFile: () => true, size: record.byteLength })),
+        write: vi.fn(async () => ({ bytesWritten: 0 })),
+        sync: vi.fn(async () => {}),
+        close: vi.fn(async () => {}),
+      },
+      close: vi.fn(async () => {}),
+    })),
     prune: vi.fn(async () => {}),
   }
   return {
@@ -435,6 +455,9 @@ function fakeDownloader() {
         byteLength: current.artifact.byteLength,
         packageType: current.artifact.packageType,
         installStrategy: current.artifact.installStrategy,
+        ...(current.artifact.minimumSystemVersion !== undefined
+          ? { minimumSystemVersion: current.artifact.minimumSystemVersion }
+          : {}),
       }) as VerifiedArtifact)
     },
     fail(code: string) {
@@ -733,6 +756,519 @@ describe('user-initiated verified downloads', () => {
       tag: 'v2.0.0',
       releaseUrl: 'https://github.com/shariqh/agent-inbox/releases/tag/v2.0.0',
       downloadable,
+      installable: false,
     })
+  })
+})
+
+describe('installing a verified update', () => {
+  const NOT_HERE = 'Move Agent Inbox to your Applications folder to install updates from the app.'
+
+  function installerFake() {
+    const calls: string[] = []
+    const prepared = {
+      commit: vi.fn(async () => { calls.push('commit') }),
+      discard: vi.fn(async () => { calls.push('discard') }),
+    }
+    const installer = {
+      strategy: 'macos-dmg' as const,
+      feasibility: vi.fn(async (_candidate: InstallCandidate): Promise<InstallFeasibility> => ({ ok: true })),
+      prepare: vi.fn(async (_source: VerifiedInstallSource, _options?: { signal?: AbortSignal }): Promise<PreparedInstall> => {
+        calls.push('prepare')
+        return prepared
+      }),
+      cleanup: vi.fn(async () => { calls.push('cleanup') }),
+    }
+    return { installer, prepared, calls }
+  }
+
+  function trustStore(mark: () => string | null) {
+    return {
+      read: vi.fn(async () => ({ highestVerifiedVersion: mark() })),
+      recordVerifiedVersion: vi.fn(async (version: string) => ({ highestVerifiedVersion: version })),
+    }
+  }
+
+  async function setup(options: {
+    currentVersion?: string
+    kind?: 'dmg' | 'appimage'
+    mark?: () => string | null
+    setupRunning?: () => boolean
+    verify?: boolean
+  } = {}) {
+    const currentVersion = options.currentVersion ?? '1.0.0'
+    const fake = fakeDownloader()
+    const install = installerFake()
+    const handleClose = vi.fn(async () => { install.calls.push('close') })
+    const openedHandle = {
+      read: vi.fn(async () => ({ bytesRead: 7 })),
+      stat: vi.fn(async () => ({ isFile: () => true, size: 1000 })),
+      write: vi.fn(async () => ({ bytesWritten: 0 })),
+      sync: vi.fn(async () => {}),
+      close: vi.fn(async () => {}),
+    }
+    fake.downloader.openVerified.mockImplementation(async (record: VerifiedArtifact) => {
+      install.calls.push('openVerified')
+      return { record, handle: openedHandle, close: handleClose }
+    })
+    const requestRestart = vi.fn(() => { install.calls.push('restart') })
+    const isSetupRunning = vi.fn(options.setupRunning ?? (() => false))
+    const trust = trustStore(options.mark ?? (() => null))
+    let hold = false
+    let releaseCheck: ((value: UpdateCheckResult) => void) | null = null
+    let checkedAt = '2026-02-01T00:00:00.000Z'
+    let result = (): UpdateCheckResult => ({ ...availableWith(artifactFor('2.0.0', options.kind ?? 'dmg'), '2.0.0', checkedAt), currentVersion })
+    const checker = vi.fn(async (): Promise<UpdateCheckResult> => {
+      if (!hold) return result()
+      return new Promise<UpdateCheckResult>((resolve) => { releaseCheck = resolve })
+    })
+    const emitted: UpdateControllerState[] = []
+    const notifier = vi.fn()
+    const controller = createUpdateController({
+      currentVersion,
+      preferences: prefs(),
+      trustState: trust,
+      checker,
+      notifier,
+      downloader: fake.downloader,
+      installers: { 'macos-dmg': install.installer },
+      isSetupRunning,
+      requestRestart,
+      clock: () => new Date('2026-02-01T00:00:00Z'),
+      emit: (value) => emitted.push(value),
+    })
+    if (options.verify !== false) {
+      await controller.checkNow()
+      const done = controller.downloadNow()
+      fake.succeed()
+      await done
+    }
+    return {
+      controller,
+      fake,
+      ...install,
+      openedHandle,
+      handleClose,
+      requestRestart,
+      isSetupRunning,
+      trust,
+      checker,
+      notifier,
+      emitted,
+      hold(value: boolean) { hold = value },
+      releaseCheck(value?: UpdateCheckResult) { releaseCheck?.(value ?? result()) },
+      setResult(next: () => UpdateCheckResult) { result = next },
+      setCheckedAt(value: string) { checkedAt = value },
+    }
+  }
+
+  function deferred<T>() {
+    let resolve!: (value: T) => void
+    let reject!: (error: unknown) => void
+    const promise = new Promise<T>((resolveDeferred, rejectDeferred) => {
+      resolve = resolveDeferred
+      reject = rejectDeferred
+    })
+    return { promise, resolve, reject }
+  }
+
+  it('offers an installable download only when the installer can install here', async () => {
+    const { controller, installer } = await setup({ verify: false })
+
+    const checked = await controller.checkNow()
+    expect(checked).toMatchObject({
+      status: 'available',
+      message: 'A verified update is available.',
+      available: { version: '2.0.0', downloadable: true, installable: true },
+    })
+    expect(checked.available).not.toHaveProperty('reason')
+    expect(installer.feasibility).toHaveBeenCalledWith({ version: '2.0.0', minimumSystemVersion: '13.5' })
+  })
+
+  it('keeps an offer notify-only with the installer reason when it cannot install here', async () => {
+    const { controller, installer, fake, notifier } = await setup({ verify: false })
+    installer.feasibility.mockResolvedValue({ ok: false, reason: 'translocated', message: NOT_HERE })
+
+    const checked = await controller.checkNow()
+    expect(checked).toMatchObject({
+      status: 'available',
+      message: NOT_HERE,
+      available: { downloadable: false, installable: false, reason: NOT_HERE },
+    })
+    await expect(controller.downloadNow()).resolves.toBe(checked)
+    expect(fake.downloader.download).not.toHaveBeenCalled()
+    expect(fake.downloader.prune).toHaveBeenLastCalledWith({ keep: null, currentVersion: '1.0.0' })
+    expect(notifier).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['a path', 'Move /Applications/Agent Inbox.app somewhere else.'],
+    ['several lines', 'First line.\nSecond line.'],
+    ['an overlong message', 'x'.repeat(241)],
+    ['an empty message', ''],
+  ])('replaces a feasibility message with %s by generic copy', async (_label, message) => {
+    const { controller, installer } = await setup({ verify: false })
+    installer.feasibility.mockResolvedValue({ ok: false, reason: 'x', message })
+
+    const checked = await controller.checkNow()
+    expect(checked.available?.reason).toBe('Agent Inbox cannot install updates from the app here. Use Review release instead.')
+    expect(checked.message).toBe(checked.available?.reason)
+  })
+
+  it('treats a feasibility check that throws as notify-only', async () => {
+    const { controller, installer } = await setup({ verify: false })
+    installer.feasibility.mockRejectedValue(new Error('/private/var/secret'))
+
+    const checked = await controller.checkNow()
+    expect(checked.available).toMatchObject({ downloadable: false, installable: false })
+    expect(JSON.stringify(checked)).not.toContain('secret')
+  })
+
+  it('re-evaluates feasibility on every check, including while a download is verified', async () => {
+    const { controller, installer, fake } = await setup({ verify: false })
+    installer.feasibility.mockResolvedValueOnce({ ok: false, reason: 'translocated', message: NOT_HERE })
+    await expect(controller.checkNow()).resolves.toMatchObject({ available: { downloadable: false } })
+    await expect(controller.checkNow()).resolves.toMatchObject({ available: { downloadable: true, installable: true } })
+
+    const done = controller.downloadNow()
+    fake.succeed()
+    await expect(done).resolves.toMatchObject({ status: 'verified', available: { installable: true } })
+    installer.feasibility.mockResolvedValueOnce({ ok: false, reason: 'translocated', message: NOT_HERE })
+    await expect(controller.checkNow()).resolves.toMatchObject({
+      status: 'available',
+      available: { downloadable: false, installable: false, reason: NOT_HERE },
+    })
+    expect(controller.getVerifiedArtifact()).toBeNull()
+  })
+
+  it('tells the notifier when an offer installs from the app', async () => {
+    const notifier = vi.fn()
+    const install = installerFake()
+    const fake = fakeDownloader()
+    const controller = createUpdateController({
+      currentVersion: '1.0.0',
+      preferences: prefs({ schema: 1, automaticChecks: true, lastNotifiedVersion: null }),
+      checker: async () => availableWith(artifactFor()),
+      notifier,
+      downloader: fake.downloader,
+      installers: { 'macos-dmg': install.installer },
+      requestRestart: vi.fn(),
+    })
+
+    await controller.runScheduledCheck()
+    expect(notifier).toHaveBeenCalledWith(expect.objectContaining({ version: '2.0.0', downloadable: true, installable: true }))
+  })
+
+  it('installs in order — reopen, stage, close, commit, restart — and stays installing', async () => {
+    const { controller, calls, installer, prepared, openedHandle, emitted, requestRestart, fake } = await setup()
+    const record = controller.getVerifiedArtifact()!
+    emitted.length = 0
+
+    const pending = controller.installNow()
+    expect(controller.isInstalling()).toBe(true)
+    const result = await pending
+
+    expect(calls).toEqual(['openVerified', 'prepare', 'close', 'commit', 'restart'])
+    expect(fake.downloader.openVerified).toHaveBeenCalledWith(record)
+    const [source, prepareOptions] = installer.prepare.mock.calls[0]!
+    expect(source.record).toEqual(record)
+    expect(Object.keys(source.handle).sort()).toEqual(['read', 'stat'])
+    await source.handle.read(new Uint8Array(4), 0, 4, 0)
+    expect(openedHandle.read).toHaveBeenCalledWith(expect.any(Uint8Array), 0, 4, 0)
+    expect(prepareOptions?.signal).toBeInstanceOf(AbortSignal)
+    expect(installer.feasibility).toHaveBeenLastCalledWith({ version: '2.0.0', minimumSystemVersion: '13.5' })
+    expect(result).toMatchObject({
+      status: 'installing',
+      message: 'Installing version 2.0.0. Agent Inbox will restart when it is ready.',
+      available: { version: '2.0.0', downloadable: true, installable: true },
+    })
+    expect(result).not.toHaveProperty('download')
+    expect(emitted.map((value) => value.status)).toEqual(['installing'])
+    expect(JSON.stringify(emitted)).not.toContain('/private/')
+    expect(prepared.discard).not.toHaveBeenCalled()
+    expect(requestRestart).toHaveBeenCalledOnce()
+    expect(controller.getVerifiedArtifact()).toBeNull()
+    expect(controller.isInstalling()).toBe(true)
+  })
+
+  it('does nothing unless a verified, installable download is on screen', async () => {
+    const { controller, fake, installer } = await setup({ verify: false })
+    await expect(controller.installNow()).resolves.toMatchObject({ status: 'idle' })
+    await controller.checkNow()
+    await expect(controller.installNow()).resolves.toMatchObject({ status: 'available' })
+    const downloading = controller.downloadNow()
+    await expect(controller.installNow()).resolves.toMatchObject({ status: 'downloading' })
+    fake.succeed()
+    await downloading
+    expect(fake.downloader.openVerified).not.toHaveBeenCalled()
+    expect(installer.prepare).not.toHaveBeenCalled()
+  })
+
+  it('refuses a version that is not newer than the running app', async () => {
+    const { controller, fake, requestRestart } = await setup({ currentVersion: '2.0.0' })
+
+    await expect(controller.installNow()).resolves.toMatchObject({
+      status: 'install-failed',
+      message: 'This update is not newer than the installed version.',
+    })
+    expect(fake.downloader.openVerified).not.toHaveBeenCalled()
+    expect(requestRestart).not.toHaveBeenCalled()
+  })
+
+  it('re-reads the high-water mark at install time and refuses a download another process has superseded', async () => {
+    let mark: string | null = null
+    const { controller, fake, trust, installer } = await setup({ mark: () => mark })
+    mark = '2.1.0'
+
+    await expect(controller.installNow()).resolves.toMatchObject({
+      status: 'install-failed',
+      message: 'A newer release was verified since this download. Check for updates again.',
+      available: { version: '2.0.0', installable: true },
+    })
+    expect(trust.read).toHaveBeenCalled()
+    expect(fake.downloader.openVerified).not.toHaveBeenCalled()
+    expect(installer.prepare).not.toHaveBeenCalled()
+    expect(controller.getVerifiedArtifact()).not.toBeNull()
+
+    mark = '2.0.0'
+    await expect(controller.installNow()).resolves.toMatchObject({ status: 'installing' })
+  })
+
+  it('refuses while agent setup is running and installs once it has finished', async () => {
+    let running = true
+    const { controller, fake } = await setup({ setupRunning: () => running })
+
+    await expect(controller.installNow()).resolves.toMatchObject({
+      status: 'install-failed',
+      message: 'Agent setup is running. Try again when it finishes.',
+    })
+    expect(fake.downloader.openVerified).not.toHaveBeenCalled()
+    running = false
+    await expect(controller.installNow()).resolves.toMatchObject({ status: 'installing' })
+  })
+
+  it('refuses while a check is in flight and keeps the download through that check', async () => {
+    const harness = await setup()
+    const { controller, fake } = harness
+    harness.hold(true)
+    const checking = controller.checkNow()
+
+    await expect(controller.installNow()).resolves.toMatchObject({
+      status: 'install-failed',
+      message: 'Agent Inbox is checking for updates. Try again in a moment.',
+    })
+    expect(fake.downloader.openVerified).not.toHaveBeenCalled()
+    harness.hold(false)
+    harness.setCheckedAt('2026-02-02T00:00:00.000Z')
+    harness.releaseCheck()
+    await expect(checking).resolves.toMatchObject({ status: 'install-failed', checkedAt: '2026-02-02T00:00:00.000Z' })
+    expect(controller.getVerifiedArtifact()).not.toBeNull()
+
+    await expect(controller.installNow()).resolves.toMatchObject({ status: 'installing' })
+  })
+
+  it('refuses when the installer can no longer install here, keeping the download', async () => {
+    const { controller, installer } = await setup()
+    installer.feasibility.mockResolvedValueOnce({ ok: false, reason: 'read-only', message: NOT_HERE })
+
+    await expect(controller.installNow()).resolves.toMatchObject({ status: 'install-failed', message: NOT_HERE })
+    expect(installer.prepare).not.toHaveBeenCalled()
+    expect(controller.getVerifiedArtifact()).not.toBeNull()
+  })
+
+  it.each([
+    ['the downloader cannot re-verify the file', 'open'],
+    ['the installer finds the bytes it consumed do not match', 'prepare'],
+  ] as const)('drops the download and offers it again when %s', async (_label, where) => {
+    const { controller, fake, installer, handleClose, prepared } = await setup()
+    if (where === 'open') {
+      fake.downloader.openVerified.mockRejectedValueOnce(Object.assign(new Error('not-verified /private/x'), { code: 'not-verified' }))
+    } else {
+      installer.prepare.mockRejectedValueOnce(new UpdateInstallError('not-verified'))
+    }
+    fake.downloader.prune.mockClear()
+
+    const failed = await controller.installNow()
+    expect(failed).toMatchObject({
+      status: 'download-failed',
+      message: 'The downloaded update changed on disk, so it was removed. Download it again.',
+      available: { version: '2.0.0', downloadable: true, installable: true },
+      download: { receivedBytes: 0, totalBytes: 1000 },
+    })
+    expect(controller.getVerifiedArtifact()).toBeNull()
+    expect(fake.downloader.prune).toHaveBeenCalledWith({ keep: null, currentVersion: '1.0.0' })
+    expect(prepared.commit).not.toHaveBeenCalled()
+    if (where === 'prepare') expect(handleClose).toHaveBeenCalledOnce()
+    expect(JSON.stringify(failed)).not.toContain('/private/')
+
+    const again = controller.downloadNow()
+    expect(controller.getState().status).toBe('downloading')
+    fake.succeed()
+    await expect(again).resolves.toMatchObject({ status: 'verified' })
+  })
+
+  it.each([
+    ['staging fails', 'prepare', new UpdateInstallError('staging')],
+    ['the staged build fails verification', 'prepare', new UpdateInstallError('verification-failed')],
+    ['the hand-off fails', 'commit', new Error('spawn /bin/sh EACCES /private/secret')],
+  ] as const)('reports a generic failure when %s, discards what was staged, and keeps the download for Try again', async (_label, where, error) => {
+    const { controller, installer, prepared, handleClose, requestRestart, fake } = await setup()
+    if (where === 'prepare') installer.prepare.mockRejectedValueOnce(error)
+    else prepared.commit.mockRejectedValueOnce(error)
+    fake.downloader.prune.mockClear()
+
+    const failed = await controller.installNow()
+    expect(failed).toMatchObject({
+      status: 'install-failed',
+      message: 'The update could not be installed. Nothing was changed. Try again or use Review release.',
+      available: { version: '2.0.0', downloadable: true, installable: true },
+    })
+    expect(JSON.stringify(failed)).not.toContain('secret')
+    expect(handleClose).toHaveBeenCalledOnce()
+    expect(prepared.discard).toHaveBeenCalledTimes(where === 'commit' ? 1 : 0)
+    expect(requestRestart).not.toHaveBeenCalled()
+    expect(controller.getVerifiedArtifact()).not.toBeNull()
+    expect(controller.isInstalling()).toBe(false)
+    expect(fake.downloader.prune).not.toHaveBeenCalled()
+
+    await expect(controller.installNow()).resolves.toMatchObject({ status: 'installing' })
+    expect(requestRestart).toHaveBeenCalledOnce()
+  })
+
+  it('skips checks, downloads, cancellation, cleanup and prune while installing and after commit', async () => {
+    const { controller, checker, fake, installer, prepared } = await setup()
+    const staged = deferred<PreparedInstall>()
+    installer.prepare.mockImplementationOnce(() => staged.promise)
+    const checks = checker.mock.calls.length
+    fake.downloader.prune.mockClear()
+
+    const installing = controller.installNow()
+    await vi.waitFor(() => expect(installer.prepare).toHaveBeenCalledOnce())
+    expect(controller.getState().status).toBe('installing')
+
+    const assertBlocked = async () => {
+      await expect(controller.checkNow()).resolves.toMatchObject({ status: 'installing' })
+      await expect(controller.runScheduledCheck()).resolves.toMatchObject({ status: 'installing' })
+      await expect(controller.downloadNow()).resolves.toMatchObject({ status: 'installing' })
+      await expect(controller.cancelDownload()).resolves.toMatchObject({ status: 'installing' })
+      await expect(controller.installNow()).resolves.toMatchObject({ status: 'installing' })
+      expect(controller.refuseInstall('Restart Agent Inbox to install this update.')).toMatchObject({ status: 'installing' })
+      expect(checker).toHaveBeenCalledTimes(checks)
+      expect(fake.downloader.download).toHaveBeenCalledOnce()
+      expect(fake.downloader.cancel).not.toHaveBeenCalled()
+      expect(installer.prepare).toHaveBeenCalledOnce()
+    }
+    await assertBlocked()
+    await controller.rendererReady()
+    expect(fake.downloader.prune).not.toHaveBeenCalled()
+    expect(installer.cleanup).not.toHaveBeenCalled()
+
+    staged.resolve(prepared)
+    await installing
+    expect(prepared.commit).toHaveBeenCalledOnce()
+    await assertBlocked()
+    controller.dispose()
+    expect(prepared.discard).not.toHaveBeenCalled()
+    expect(fake.downloader.prune).not.toHaveBeenCalled()
+    expect(controller.getState().status).toBe('installing')
+  })
+
+  it.each(['dispose', 'cancelInstall'] as const)('%s aborts an install that has not committed and discards what it staged', async (how) => {
+    const { controller, installer, prepared, handleClose, requestRestart } = await setup()
+    const staged = deferred<PreparedInstall>()
+    let signal: AbortSignal | undefined
+    installer.prepare.mockImplementationOnce((_source, options) => {
+      signal = options?.signal
+      return staged.promise
+    })
+
+    const installing = controller.installNow()
+    await vi.waitFor(() => expect(signal).toBeDefined())
+    const cancelled = how === 'dispose' ? (controller.dispose(), Promise.resolve()) : controller.cancelInstall()
+    expect(signal!.aborted).toBe(true)
+    staged.resolve(prepared)
+    await cancelled
+    await installing
+
+    expect(prepared.commit).not.toHaveBeenCalled()
+    expect(prepared.discard).toHaveBeenCalledOnce()
+    expect(handleClose).toHaveBeenCalledOnce()
+    expect(requestRestart).not.toHaveBeenCalled()
+    expect(controller.isInstalling()).toBe(false)
+    expect(controller.getState()).toMatchObject({
+      status: 'install-failed',
+      message: 'The update install was cancelled. Nothing was changed.',
+    })
+  })
+
+  it('cancelInstall leaves a commit that already started alone', async () => {
+    const { controller, prepared, requestRestart } = await setup()
+    const committing = deferred<void>()
+    prepared.commit.mockImplementationOnce(() => committing.promise)
+
+    const installing = controller.installNow()
+    await vi.waitFor(() => expect(prepared.commit).toHaveBeenCalledOnce())
+    const cancelled = controller.cancelInstall()
+    committing.resolve()
+    await cancelled
+    await installing
+    expect(prepared.discard).not.toHaveBeenCalled()
+    expect(requestRestart).toHaveBeenCalledOnce()
+    expect(controller.getState().status).toBe('installing')
+  })
+
+  it('publishes a clear refusal on request without dropping the download', async () => {
+    const { controller, installer } = await setup()
+
+    expect(controller.refuseInstall('Restart Agent Inbox to install this update.')).toMatchObject({
+      status: 'install-failed',
+      message: 'Restart Agent Inbox to install this update.',
+    })
+    expect(installer.prepare).not.toHaveBeenCalled()
+    expect(controller.getVerifiedArtifact()).not.toBeNull()
+  })
+
+  it('runs each installer cleanup once at startup alongside the download prune', async () => {
+    const { controller, installer, fake } = await setup({ verify: false })
+    installer.cleanup.mockRejectedValueOnce(new Error('cleanup failed'))
+
+    await controller.rendererReady()
+    await controller.rendererReady()
+    await Promise.resolve()
+    expect(installer.cleanup).toHaveBeenCalledOnce()
+    expect(fake.downloader.prune).toHaveBeenCalledOnce()
+  })
+
+  it('leaves a strategy without an installer exactly as a download-only update', async () => {
+    const { controller, installer, fake } = await setup({ kind: 'appimage' })
+
+    expect(controller.getState()).toMatchObject({
+      status: 'verified',
+      message: 'The update was downloaded and verified.',
+      available: { downloadable: true, installable: false },
+    })
+    expect(installer.feasibility).not.toHaveBeenCalled()
+    const before = controller.getState()
+    await expect(controller.installNow()).resolves.toBe(before)
+    expect(controller.refuseInstall('x')).toBe(before)
+    expect(fake.downloader.openVerified).not.toHaveBeenCalled()
+  })
+
+  it('validates installer registration', () => {
+    const base = {
+      currentVersion: '1.0.0',
+      preferences: prefs(),
+      checker: vi.fn(),
+      notifier: vi.fn(),
+      downloader: fakeDownloader().downloader,
+      requestRestart: vi.fn(),
+    }
+    const { installer } = installerFake()
+    expect(() => createUpdateController({ ...base, installers: { 'appimage-self-replace': installer } })).toThrow(TypeError)
+    expect(() => createUpdateController({ ...base, installers: { 'macos-dmg': { ...installer, prepare: undefined as never } } })).toThrow(TypeError)
+    expect(() => createUpdateController({ ...base, requestRestart: undefined, installers: { 'macos-dmg': installer } })).toThrow(TypeError)
+    const { openVerified: _openVerified, ...withoutOpen } = fakeDownloader().downloader
+    expect(() => createUpdateController({ ...base, downloader: withoutOpen, installers: { 'macos-dmg': installer } })).toThrow(TypeError)
+    expect(() => createUpdateController({ ...base, installers: { 'deb-notify': installer } as never })).toThrow(TypeError)
   })
 })

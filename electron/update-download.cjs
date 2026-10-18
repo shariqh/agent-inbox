@@ -5,8 +5,8 @@
 // canonical GitHub release URL into a private staging directory, hashing while
 // it writes, and publishes the file under its final name only after the signed
 // length and SHA-256 both match. It never executes, mounts, opens or installs
-// anything: the install steps consume the returned VerifiedArtifact and must
-// call verify() again immediately before acting on it.
+// anything: the install steps take the verified file through openVerified(),
+// which re-hashes it through the one read-only handle it hands over.
 //
 // Layout under `directory` (0700):
 //   .staging-XXXXXX/<filename>.part   one private directory per attempt
@@ -333,7 +333,9 @@ function createUpdateDownloader(options) {
     else await fsImpl.unlink(target)
   }
 
-  async function hashFile(filePath, expected, signal) {
+  // Opens the file once and hashes it through that same handle with positioned
+  // reads. Resolves to the still-open handle; every failure closes it.
+  async function openHashed(filePath, expected, signal) {
     let handle
     try {
       handle = await fsImpl.open(filePath, OPEN_READ_FLAGS)
@@ -348,7 +350,7 @@ function createUpdateDownloader(options) {
       let total = 0
       while (total < expected.byteLength) {
         if (signal?.aborted) fail('cancelled')
-        const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, expected.byteLength - total), null)
+        const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, expected.byteLength - total), total)
         if (bytesRead === 0) break
         hash.update(buffer.subarray(0, bytesRead))
         total += bytesRead
@@ -357,12 +359,17 @@ function createUpdateDownloader(options) {
       if (total !== expected.byteLength || after.size !== expected.byteLength || hash.digest('hex') !== expected.sha256) {
         fail('not-verified')
       }
+      return handle
     } catch (error) {
-      if (error instanceof UpdateDownloadError) throw error
-      fail('not-verified')
-    } finally {
       await handle.close().catch(() => {})
+      if (error instanceof UpdateDownloadError) throw error
+      return fail('not-verified')
     }
+  }
+
+  async function hashFile(filePath, expected, signal) {
+    const handle = await openHashed(filePath, expected, signal)
+    await handle.close().catch(() => {})
   }
 
   // An existing verified directory is reused only after its file re-hashes to
@@ -678,7 +685,9 @@ function createUpdateDownloader(options) {
     return operation.promise
   }
 
-  async function verify(record) {
+  // Re-derives a recorded artifact from TARGET_SPECS and pins it to the one path
+  // this downloader would have written, inside directories lstat proves are real.
+  async function locateVerified(record) {
     if (record === null || typeof record !== 'object' || typeof record.path !== 'string') fail('not-verified')
     const spec = typeof record.version === 'string' && VERSION_RE.test(record.version)
       ? TARGET_SPECS.find((candidate) => (
@@ -714,8 +723,30 @@ function createUpdateDownloader(options) {
     // O_NOFOLLOW covers only the file itself; a planted directory symlink must not
     // redirect the hash to bytes outside the private download directory.
     if (!(await isRealDirectory(root)) || !(await isRealDirectory(finalDir))) fail('not-verified')
+    return { artifact, expectedPath }
+  }
+
+  async function verify(record) {
+    const { artifact, expectedPath } = await locateVerified(record)
     await hashFile(expectedPath, artifact, null)
     return recordFor(artifact, expectedPath)
+  }
+
+  // The install hand-off: the bytes were just hashed through `handle`, so a file
+  // swapped in at the path afterwards cannot reach the installer. The caller
+  // owns the handle and must close it.
+  async function openVerified(record) {
+    const { artifact, expectedPath } = await locateVerified(record)
+    const handle = await openHashed(expectedPath, artifact, null)
+    let closing = null
+    return Object.freeze({
+      record: recordFor(artifact, expectedPath),
+      handle,
+      close() {
+        if (closing === null) closing = handle.close().catch(() => {})
+        return closing
+      },
+    })
   }
 
   return Object.freeze({
@@ -728,6 +759,7 @@ function createUpdateDownloader(options) {
       return operation.promise.then(() => undefined, () => undefined)
     },
     verify,
+    openVerified,
     prune,
   })
 }

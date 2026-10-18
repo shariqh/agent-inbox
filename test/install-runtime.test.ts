@@ -1,6 +1,7 @@
 import {
   chmodSync,
   copyFileSync,
+  cpSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -12,7 +13,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { createHash } from 'node:crypto'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -59,6 +60,7 @@ function runtimePayload(
     'runtime-config.mjs',
     'setup-filesystem.cjs',
     'setup-lock.sh',
+    'run-isolated.mjs',
   ]) {
     copy(join(REPO, 'scripts', script), join(root, 'scripts', script))
   }
@@ -163,6 +165,7 @@ case "$1:$2" in
     if [ "$name" = claude ]; then echo "Scope: User config"; else echo '{"source":"user"}'; fi
     ;;
   mcp:add)
+    test "\${FAIL_ADD:-}" != "$name" || exit 9
     if [ "$name" = claude ]; then node="$7"; entry="$8"; else node="$5"; entry="$6"; fi
     "$TEST_NODE" -e 'const fs=require("fs");const f=process.argv[1];const p=JSON.parse(fs.readFileSync(f,"utf8"));p.mcpServers??={};p.mcpServers["agent-inbox"]={command:process.argv[2],args:[process.argv[3]]};fs.writeFileSync(f,JSON.stringify(p)+"\\n")' "$config" "$node" "$entry"
     ;;
@@ -423,4 +426,141 @@ describe('portable release installer', () => {
     expect(lstatSync(settings).isSymbolicLink()).toBe(true)
     expect(JSON.parse(readFileSync(target, 'utf8'))).toEqual({ model: 'x' })
   })
+
+  // #211: a prune renames the runtime under a reserved trash name before it
+  // deletes anything, so killing it partway never leaves a half-deleted tree
+  // under a valid runtime id.
+  it('installs the same version again after a prune was killed partway through deleting it', () => {
+    const f = fixture()
+    const payload = runtimePayload('1.0.0')
+    const helper = join(payload.root, 'scripts', 'runtime-payload.mjs')
+    const installed = join(f.runtimeRoot, payload.runtimeId)
+    const published = spawnSync(process.execPath, [
+      helper, 'install', '--payload-root', payload.root, '--runtime-root', f.runtimeRoot,
+    ], { encoding: 'utf8' })
+    expect(published.status, published.stderr).toBe(0)
+
+    // Deletes one file of the runtime being removed, then dies the way a
+    // SIGKILLed prune does.
+    const killer = join(f.home, 'kill-mid-delete.cjs')
+    writeFileSync(killer, `
+const fs = require('node:fs')
+const { join } = require('node:path')
+const remove = fs.rmSync
+function firstFile(dir) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name)
+    if (entry.isFile()) return path
+    if (entry.isDirectory()) {
+      const found = firstFile(path)
+      if (found) return found
+    }
+  }
+  return null
+}
+fs.rmSync = function rmSync(path, options) {
+  if (options && options.recursive && String(path).includes('/.agent-inbox/runtime/')) {
+    const victim = firstFile(String(path))
+    if (victim) remove(victim)
+    process.kill(process.pid, 'SIGKILL')
+  }
+  return remove.call(this, path, options)
+}
+`)
+    const pruned = spawnSync(process.execPath, [
+      '--require', killer, helper, 'prune', '--runtime-root', f.runtimeRoot, '--runtime-id', payload.runtimeId,
+    ], { encoding: 'utf8' })
+    expect(pruned.signal).toBe('SIGKILL')
+    const trashAfterKill = readdirSync(f.runtimeRoot).filter((name) => name.startsWith('.trash-'))
+
+    const result = install(f, payload)
+
+    expect(result.status, result.stderr).toBe(0)
+    expect(trashAfterKill, 'the interrupted prune left only a trash folder').toHaveLength(1)
+    expect(registration(f.claudeConfig)?.command).toBe(join(installed, 'bin', 'node'))
+    const verified = spawnSync(process.execPath, [PAYLOAD_CLI, 'verify', '--root', installed], { encoding: 'utf8' })
+    expect(verified.status, verified.stderr).toBe(0)
+    // The next install removed the leftover trash.
+    expect(readdirSync(f.runtimeRoot).filter((name) => name.startsWith('.trash-'))).toEqual([])
+  })
+
+  it('never lists, collides with, or follows anything under a reserved trash name', () => {
+    const f = fixture()
+    const payload = runtimePayload('1.0.0')
+    // A complete copy of this very runtime, and a link to a folder elsewhere,
+    // both under trash names.
+    mkdirSync(f.runtimeRoot, { recursive: true })
+    cpSync(payload.root, join(f.runtimeRoot, `.trash-${payload.runtimeId}-copy`), { recursive: true })
+    const outside = temp('agent-runtime-outside-')
+    writeFileSync(join(outside, 'keep.txt'), 'keep\n')
+    symlinkSync(outside, join(f.runtimeRoot, '.trash-link'))
+
+    const listed = spawnSync(process.execPath, [PAYLOAD_CLI, 'list', '--runtime-root', f.runtimeRoot], { encoding: 'utf8' })
+    expect(listed.status, listed.stderr).toBe(0)
+    expect(JSON.parse(listed.stdout)).toEqual([])
+
+    const result = install(f, payload)
+
+    expect(result.status, result.stderr).toBe(0)
+    const installed = join(f.runtimeRoot, payload.runtimeId)
+    expect(registration(f.claudeConfig)?.command).toBe(join(installed, 'bin', 'node'))
+    expect(readdirSync(f.runtimeRoot).filter((name) => name.startsWith('.trash-'))).toEqual([])
+    expect(readFileSync(join(outside, 'keep.txt'), 'utf8')).toBe('keep\n')
+  })
+
+  it('finishes the rollback\'s runtime reference check and prune through repeat signals to the installer (#211)', async () => {
+    const f = fixture()
+    const payload = runtimePayload('1.0.0')
+    // Pauses the rollback's reference check until released, so the signals
+    // provably land while it runs.
+    const paused = join(f.home, 'references.paused')
+    const released = join(f.home, 'references.release')
+    const preload = join(f.home, 'pause-references.cjs')
+    writeFileSync(preload, [
+      "const fs = require('node:fs')",
+      "if (/runtime-config\\.mjs$/.test(process.argv[1] || '') && process.argv[2] === 'references') {",
+      `  fs.writeFileSync(${JSON.stringify(paused)}, String(process.pid))`,
+      `  while (!fs.existsSync(${JSON.stringify(released)})) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20)`,
+      '}',
+      '',
+    ].join('\n'))
+    // Claude registers, then Copilot's registration fails: the rollback
+    // undoes Claude and must then remove the runtime it published.
+    const env = { ...f.env, FAIL_ADD: 'copilot', NODE_OPTIONS: `--require ${preload}` }
+    const installer = spawn('/bin/bash', [
+      join(payload.root, 'scripts', 'install-agents.sh'),
+      '--apply', '--runtime-source', payload.root, '--runtime-digest', payload.digest,
+    ], { detached: true, env, stdio: ['ignore', 'pipe', 'pipe'] })
+    let stderr = ''
+    installer.stdout!.resume()
+    installer.stderr!.setEncoding('utf8')
+    installer.stderr!.on('data', (chunk: string) => { stderr += chunk })
+    const exited = new Promise<number | null>((resolveExit) => installer.once('close', (code) => resolveExit(code)))
+    try {
+      const deadline = Date.now() + 15_000
+      while (!existsSync(paused)) {
+        if (Date.now() > deadline) throw new Error('the rollback never reached its reference check')
+        await new Promise((resolveWait) => setTimeout(resolveWait, 20))
+      }
+      // A second Ctrl-C and Setup's cancel reach the installer's whole group.
+      process.kill(-installer.pid!, 'SIGINT')
+      process.kill(-installer.pid!, 'SIGTERM')
+      await new Promise((resolveWait) => setTimeout(resolveWait, 300))
+      writeFileSync(released, '')
+      expect(await exited).toBe(1)
+    } finally {
+      writeFileSync(released, '')
+      try {
+        process.kill(-installer.pid!, 'SIGKILL')
+      } catch {
+        // Already gone.
+      }
+    }
+
+    expect(stderr).toContain('removed unreferenced runtime after failed install')
+    expect(stderr).not.toContain('retained newly installed runtime')
+    expect(existsSync(join(f.runtimeRoot, payload.runtimeId))).toBe(false)
+    expect(readdirSync(f.runtimeRoot)).toEqual([])
+    expect(registration(f.claudeConfig)).toBeUndefined()
+  }, 30_000)
 })

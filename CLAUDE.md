@@ -620,6 +620,18 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   its identity before producer code runs; cleanup also requires that same stage identity
   (or verified absence after publication), so a substituted child is never recursively
   removed merely because its parent scratch directory still matches.
+  *(#211)* A runtime prune (`removeDirectory`) re-identifies the validated tree and its
+  parent, renames it into a fresh `.trash-<name>-*` folder (`mkdtemp` in the same parent)
+  and only then deletes that folder; recursive deletion removes links, never their
+  targets. Once the rename commits, the runtime id is free: an interrupted, failed or
+  `SIGKILL`ed prune leaves trash, never a half-deleted runtime that a later install of the
+  same version would refuse as a collision. A failed trash deletion still counts as
+  pruned. Each install and prune first removes up to 16 leftover `.trash-*` entries that
+  this uid owns, each pinned by identity and re-checked just before removal (a link is
+  only unlinked); a folder whose contents failed the post-rename identity check carries
+  a `.retained` marker and is kept for recovery. Win32 has no owner to compare, so its
+  model retains all trash. Nothing named `.trash-*` is ever a runtime: manifests,
+  install and prune refuse that id, and `list` skips it.
   `runtime-payload.mjs install` reserves exit 3 for an error carrying
   `committed:true` (usage remains 2 and ordinary failure 1). The shell must treat
   that as “publication may have happened,” reverify a plain exact
@@ -634,12 +646,22 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   TERM, XCPU and XFSZ alike: an active transaction rolls back, reports into a
   work-directory log that is replayed to stderr afterwards (bash 3.2 leaks a failed
   write into the next command substitution), and exits 128 + the signal. The shell and
-  its non-Node commands then ignore those signals, but Node resets them at startup, so
-  a repeat signal can still stop a host CLI's `mcp remove` or a runtime helper; that
-  step's warning is reported. Hosts refuse to remove a server a failed add never
-  registered, so a failed undo counts as failed unless a re-check confirms it absent.
-  An exit that neither committed nor finished the rollback keeps every MCP snapshot,
-  and a kept snapshot or failed step keeps the log too.
+  its non-Node commands then ignore those signals. Node resets them at startup, so
+  *(#211)* every Node step of the rollback (a host CLI's `mcp remove` and `mcp get`
+  re-check, the runtime reference check and prune) runs through
+  `scripts/run-isolated.mjs`, argv only, under the installer's pinned Node. The command
+  starts detached in its own session, the helper ignores HUP/INT/QUIT/ALRM/TERM/XCPU
+  while it waits, and the wait is bounded: after 30 s it signals the command's whole
+  group (TERM, then KILL) and exits 124, which is reported as not finished in time.
+  A helper killed while its own Node is still starting has started nothing and is
+  rerun, at most three times. The command gets none of the installer's stdio (Setup
+  still sees its pipes close when the installer dies) but does get fd 9, so the lease
+  lasts as long as the step. Forward-path Node steps stay in the installer's group.
+  Hosts refuse to remove a server a failed add never registered, so a failed undo
+  counts as failed unless a re-check confirms it absent. An exit that neither committed
+  nor finished the rollback keeps every MCP snapshot, and a kept snapshot or failed step
+  keeps the log too. `SIGKILL` of the installer cannot stop an isolated step that is
+  already running: it finishes with no bound and holds the lease until it ends.
   A failed post-publication cleanup is a committed failure and retains
   its recovery path rather than deleting the only prior tree.
   Every applied agent or hook install sources the adjacent
@@ -651,10 +673,11 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   non-regular lock path is rejected before open, and only conflict exit 75 means
   another setup is running. The descriptor stays open for the whole process
   tree, so an in-flight child cannot outlive a helper-held lease; whole-group
-  exit/crash releases ownership, while an unexpectedly long-lived descendant
-  can retain it. File existence never implies ownership. The helper is part of
-  the signed runtime manifest, but sourcing it by path extends the already
-  retained verify-to-execute race rather than closing it.
+  exit/crash releases ownership unless an isolated rollback step is still
+  running (it keeps the lease until it ends), and an unexpectedly long-lived
+  descendant can retain it too. File existence never implies ownership. The
+  helper is part of the signed runtime manifest, but sourcing it by path
+  extends the already retained verify-to-execute race rather than closing it.
 
 ### DOM harness — what it can and cannot see
 

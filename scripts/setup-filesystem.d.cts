@@ -4,6 +4,7 @@ export type DirectoryReplacement = 'refuse' | 'swap'
 export interface SetupPathStat {
   dev: bigint
   ino: bigint
+  uid?: bigint | number
   isFile(): boolean
   isDirectory(): boolean
   isSymbolicLink(): boolean
@@ -16,11 +17,14 @@ export interface SetupFilesystemIO {
   mkdtemp(prefix: string): string
   rename(from: string, to: string): void
   remove(path: string, options: { recursive: boolean; force: boolean }): void
+  readdir(path: string): string[]
 }
 
 export interface SetupFilesystemOptions {
   platform?: NodeJS.Platform
   io?: SetupFilesystemIO
+  // The owner leftover trash must have to be removed; null retains it all.
+  uid?: number | null
 }
 
 export interface SetupPathIdentity {
@@ -42,6 +46,11 @@ export interface RemoveDirectoryResult {
   readonly identity: SetupPathIdentity
 }
 
+export interface LeftoverTrashResult {
+  readonly removed: string[]
+  readonly retained: string[]
+}
+
 export interface SetupFilesystem {
   identify(path: string, expectedKind: SetupEntryKind): SetupPathIdentity
   assertIdentity(identity: SetupPathIdentity, path?: string): SetupPathIdentity
@@ -55,8 +64,11 @@ export interface SetupFilesystem {
     target: string
     validate(target: string): void
   }): RemoveDirectoryResult
+  removeLeftoverTrash(parent: string): LeftoverTrashResult
 }
 
 export function createSetupFilesystem(
   options?: SetupFilesystemOptions,
 ): Readonly<SetupFilesystem>
+
+export function isTrashName(name: string): boolean

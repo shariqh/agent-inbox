@@ -24,7 +24,10 @@
 //   · pruneRuntime()     deletes exactly one runtime directory, and only if
 //                        it is a real (non-symlink) child of the runtime root
 //                        that itself carries a valid ownership manifest —
-//                        never a glob, never "everything old".
+//                        never a glob, never "everything old". It renames the
+//                        directory into a `.trash-*` folder before deleting
+//                        it, so an interrupted prune never leaves a
+//                        half-deleted tree under a runtime id (#211).
 //
 // The manifest is an INTEGRITY contract, not an authenticity one: it proves
 // "this is the tree that was built", not "you should trust this tree". Code
@@ -52,7 +55,7 @@ import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const require = createRequire(import.meta.url)
-const { createSetupFilesystem } = require('./setup-filesystem.cjs')
+const { createSetupFilesystem, isTrashName } = require('./setup-filesystem.cjs')
 const setupFilesystem = createSetupFilesystem()
 
 export const MANIFEST_SCHEMA = 1
@@ -112,6 +115,17 @@ function assertSafePathComponent(value, label) {
 }
 
 /**
+ * A runtime id never carries the reserved trash prefix: a runtime being
+ * pruned is renamed into a `.trash-*` folder, so nothing named that way is
+ * ever installed, listed, pruned or trusted as a runtime (#211).
+ */
+function assertNotTrashName(value, label) {
+  if (isTrashName(value)) {
+    throw new RuntimeIntegrityError(`unsafe ${label}: ${JSON.stringify(value)} is a reserved trash name`)
+  }
+}
+
+/**
  * Re-derive `runtimeRoot/<runtimeId>` and require it to be an exact,
  * single-segment, direct child of `runtimeRoot` — never a multi-segment
  * path and never anything that resolves outside it. This is the LAST gate,
@@ -125,6 +139,7 @@ function assertSafePathComponent(value, label) {
  */
 function assertRuntimeIdContained(runtimeRoot, runtimeId) {
   assertSafePathComponent(runtimeId, 'runtimeId')
+  assertNotTrashName(runtimeId, 'runtimeId')
   const targetDir = join(runtimeRoot, runtimeId)
   if (dirname(resolve(targetDir)) !== resolve(runtimeRoot)) {
     throw new RuntimeIntegrityError(`runtimeId does not resolve to a direct child of runtimeRoot: ${runtimeId}`)
@@ -235,6 +250,7 @@ export function buildManifest({
   })
   const runtimeId = computeRuntimeId({ product, packageVersion, platform, arch, payloadDigest })
   assertSafePathComponent(runtimeId, 'runtimeId')
+  assertNotTrashName(runtimeId, 'runtimeId')
   return {
     schema: MANIFEST_SCHEMA,
     product,
@@ -316,6 +332,7 @@ export function verifyPayload({ root, manifestFileName = DEFAULT_MANIFEST_FILE, 
   assertSafePathComponent(manifest.platform, 'manifest.platform')
   assertSafePathComponent(manifest.arch, 'manifest.arch')
   assertSafePathComponent(manifest.runtimeId, 'manifest.runtimeId')
+  assertNotTrashName(manifest.runtimeId, 'manifest.runtimeId')
   if (!Array.isArray(manifest.files)) {
     throw new RuntimeIntegrityError('manifest.files is missing or not an array')
   }
@@ -482,6 +499,8 @@ function clearDarwinQuarantine(destDir) {
  *    visible under the final name.
  *  · If `runtimeRoot/<runtimeId>` already exists: identical verified content
  *    is a no-op (idempotent install); anything else is a refused collision.
+ *  · Removes leftover `.trash-*` folders an interrupted prune left behind;
+ *    they never collide with a runtime id.
  */
 export function installRuntime({ payloadRoot, runtimeRoot, manifestFileName = DEFAULT_MANIFEST_FILE, expect = {} }) {
   const sourceIdentity = setupFilesystem.identify(payloadRoot, 'directory')
@@ -494,6 +513,7 @@ export function installRuntime({ payloadRoot, runtimeRoot, manifestFileName = DE
   // here even though verifyPayload() above already validated this exact
   // runtimeId as a safe path component.
   const destDir = assertRuntimeIdContained(runtimeRoot, runtimeId)
+  removeLeftoverTrash(runtimeRoot)
 
   if (existsSync(destDir)) {
     let destinationIdentity
@@ -536,14 +556,29 @@ export function installRuntime({ payloadRoot, runtimeRoot, manifestFileName = DE
   return { installed: true, runtimeId, path: publication.path }
 }
 
+// Best effort: leftover trash never blocks an install or a prune, and
+// whatever is retained now is retried by the next one.
+function removeLeftoverTrash(runtimeRoot) {
+  try {
+    setupFilesystem.removeLeftoverTrash(runtimeRoot)
+  } catch {
+    // Retried next time.
+  }
+}
+
 /**
  * Delete exactly one runtime directory: `runtimeRoot/<runtimeId>`. Refuses
  * unless that path is a direct, non-symlink child of runtimeRoot carrying a
  * valid ownership manifest whose own runtimeId matches — this is never a
- * glob and never "clean up everything old".
+ * glob and never "clean up everything old". The directory is renamed into a
+ * `.trash-*` folder before anything is deleted: once that rename commits the
+ * runtime id is free, and if deleting the trash then fails, the prune still
+ * succeeds and reports the folder as `retained` for a later install or prune
+ * to remove. Leftover trash from earlier prunes is removed first.
  */
 export function pruneRuntime({ runtimeRoot, runtimeId, manifestFileName = DEFAULT_MANIFEST_FILE }) {
   const targetDir = assertRuntimeIdContained(runtimeRoot, runtimeId)
+  removeLeftoverTrash(runtimeRoot)
   try {
     setupFilesystem.removeDirectory({
       target: targetDir,
@@ -553,6 +588,9 @@ export function pruneRuntime({ runtimeRoot, runtimeId, manifestFileName = DEFAUL
     })
   } catch (err) {
     if (err instanceof RuntimeIntegrityError) throw err
+    if (err?.code === 'trash-cleanup-failed') {
+      return { pruned: true, runtimeId, path: targetDir, retained: err.recoveryPath }
+    }
     if (err?.code === 'not-found') throw new RuntimeIntegrityError(`no such runtime: ${targetDir}`)
     if (err?.code === 'link-like-entry') {
       throw new RuntimeIntegrityError(`refusing to prune a symlink or link-like entry: ${targetDir}`)
@@ -569,12 +607,13 @@ export function pruneRuntime({ runtimeRoot, runtimeId, manifestFileName = DEFAUL
  * List every direct child of `runtimeRoot`, reporting whether each one is a
  * validly-owned runtime directory. Never mutates anything — used by prune
  * tooling and runtime-config.mjs's ownership checks to enumerate candidates.
+ * Trash folders left by an interrupted prune are not runtimes and are skipped.
  */
 export function listRuntimes({ runtimeRoot, manifestFileName = DEFAULT_MANIFEST_FILE }) {
   if (!existsSync(runtimeRoot)) return []
   const out = []
   for (const entry of readdirSync(runtimeRoot, { withFileTypes: true })) {
-    if (!entry.isDirectory() || entry.isSymbolicLink()) continue
+    if (!entry.isDirectory() || entry.isSymbolicLink() || isTrashName(entry.name)) continue
     const dir = join(runtimeRoot, entry.name)
     try {
       const manifest = verifyPayload({ root: dir, manifestFileName })

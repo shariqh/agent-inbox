@@ -12,7 +12,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, win32 } from 'node:path'
+import { join, relative, win32 } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import setupFilesystemModule from '../scripts/setup-filesystem.cjs'
 import type {
@@ -46,6 +46,9 @@ function nodeIo(overrides: Partial<SetupFilesystemIO> = {}): SetupFilesystemIO {
     remove(path, options) {
       rmSync(path, options)
     },
+    readdir(path) {
+      return readdirSync(path)
+    },
     ...overrides,
   }
 }
@@ -55,6 +58,10 @@ function stageEntries(parent: string): string[] {
     ? readdirSync(parent).filter((name) => name.startsWith('.agent-inbox-stage-'))
     : []
 }
+
+// Win32 has no POSIX owner; the model supplies one so ownership is injected
+// explicitly rather than assumed.
+const VIRTUAL_UID = 1000
 
 class VirtualWin32Filesystem {
   readonly path = win32
@@ -72,6 +79,7 @@ class VirtualWin32Filesystem {
     return {
       dev: 7n,
       ino: inode,
+      uid: VIRTUAL_UID,
       isFile: () => kind === 'file',
       isDirectory: () => kind === 'directory',
       isSymbolicLink: () => kind === 'link',
@@ -152,6 +160,14 @@ class VirtualWin32Filesystem {
       remove: (path) => {
         if (!this.has(path)) throw Object.assign(new Error(`missing ${path}`), { code: 'ENOENT' })
         this.removeTree(path)
+      },
+      readdir: (path) => {
+        const key = this.key(path)
+        if (!this.has(path)) throw Object.assign(new Error(`missing ${path}`), { code: 'ENOENT' })
+        return [...this.entries.values()]
+          .map((entry) => entry.canonical)
+          .filter((canonical) => this.key(win32.dirname(canonical)) === key && this.key(canonical) !== key)
+          .map((canonical) => win32.basename(canonical))
       },
     }
   }
@@ -511,6 +527,163 @@ describe('Setup filesystem directory transactions', () => {
   })
 })
 
+// #211: removal moves the tree under a reserved trash name first, so an
+// interruption never leaves a half-deleted tree under the name it had.
+describe('Setup filesystem removal through trash', () => {
+  function runtimeTree(parent: string, name = 'runtime-1'): string {
+    const target = join(parent, name)
+    mkdirSync(join(target, 'bin'), { recursive: true })
+    writeFileSync(join(target, 'bin', 'node'), 'node\n')
+    return target
+  }
+
+  function trashEntries(parent: string): string[] {
+    return readdirSync(parent).filter((name) => name.startsWith('.trash-'))
+  }
+
+  it('renames the directory into a trash folder beside it before deleting anything', () => {
+    const parent = realpathSync(temp('setup-fs-trash-'))
+    const target = runtimeTree(parent)
+    const operations: string[] = []
+    const filesystem = createSetupFilesystem({
+      io: nodeIo({
+        rename(from, to) {
+          operations.push(`rename ${relative(parent, from)} -> ${relative(parent, to)}`)
+          renameSync(from, to)
+        },
+        remove(path, options) {
+          operations.push(`remove ${relative(parent, path)}`)
+          rmSync(path, options)
+        },
+      }),
+    })
+
+    filesystem.removeDirectory({ target, validate() {} })
+
+    expect(operations).toHaveLength(2)
+    expect(operations[0]).toMatch(/^rename runtime-1 -> \.trash-runtime-1-[^/]+\/runtime-1$/)
+    expect(operations[1]).toBe(`remove ${operations[0]!.split(' -> ')[1]!.split('/')[0]}`)
+    expect(readdirSync(parent)).toEqual([])
+  })
+
+  it('frees the name even when deleting the renamed tree fails, leaving it as trash', () => {
+    const parent = realpathSync(temp('setup-fs-trash-fail-'))
+    const target = runtimeTree(parent)
+    const filesystem = createSetupFilesystem({
+      io: nodeIo({
+        remove() {
+          throw Object.assign(new Error('permission denied'), { code: 'EACCES' })
+        },
+      }),
+    })
+
+    let failure: unknown
+    try {
+      filesystem.removeDirectory({ target, validate() {} })
+    } catch (error) {
+      failure = error
+    }
+
+    expect(failure).toMatchObject({ code: 'trash-cleanup-failed', committed: true })
+    expect(existsSync(target)).toBe(false)
+    const trash = trashEntries(parent)
+    expect(trash).toHaveLength(1)
+    expect((failure as { recoveryPath?: string }).recoveryPath).toBe(join(parent, trash[0]!))
+    expect(readFileSync(join(parent, trash[0]!, 'runtime-1', 'bin', 'node'), 'utf8')).toBe('node\n')
+  })
+
+  it('keeps for recovery a tree that changed identity while it was being moved aside', () => {
+    const parent = realpathSync(temp('setup-fs-trash-swap-'))
+    const target = runtimeTree(parent)
+    const filesystem = createSetupFilesystem({
+      io: nodeIo({
+        rename(from, to) {
+          renameSync(from, to)
+          // Something else now sits where the validated tree was moved.
+          rmSync(to, { recursive: true })
+          mkdirSync(to)
+          writeFileSync(join(to, 'unrelated.txt'), 'do not delete\n')
+        },
+      }),
+    })
+
+    expect(() => filesystem.removeDirectory({ target, validate() {} })).toThrow(/identity changed/i)
+    const trash = trashEntries(parent)
+    expect(trash).toHaveLength(1)
+    expect(readFileSync(join(parent, trash[0]!, 'runtime-1', 'unrelated.txt'), 'utf8')).toBe('do not delete\n')
+
+    // A later cleanup leaves it alone too.
+    filesystem.removeLeftoverTrash(parent)
+    expect(readFileSync(join(parent, trash[0]!, 'runtime-1', 'unrelated.txt'), 'utf8')).toBe('do not delete\n')
+  })
+
+  it('refuses to remove an entry that already carries a trash name', () => {
+    const parent = temp('setup-fs-trash-name-')
+    const target = runtimeTree(parent, '.trash-runtime-1-abc')
+
+    expect(() => createSetupFilesystem().removeDirectory({ target, validate() {} })).toThrow(/trash/i)
+    expect(existsSync(join(target, 'bin', 'node'))).toBe(true)
+  })
+
+  it('removes leftover trash it owns a bounded batch at a time, unlinking links without following them', () => {
+    const parent = temp('setup-fs-leftover-')
+    const outside = temp('setup-fs-leftover-outside-')
+    writeFileSync(join(outside, 'keep.txt'), 'keep\n')
+    symlinkSync(outside, join(parent, '.trash-link'))
+    for (let index = 0; index < 18; index += 1) {
+      const trash = join(parent, `.trash-runtime-${String(index).padStart(2, '0')}`)
+      mkdirSync(join(trash, 'runtime', 'bin'), { recursive: true })
+      // A link inside a trash tree is removed as a link too.
+      symlinkSync(outside, join(trash, 'runtime', 'bin', 'linked'))
+    }
+    runtimeTree(parent)
+    const filesystem = createSetupFilesystem()
+
+    const first = filesystem.removeLeftoverTrash(parent)
+    expect(first.removed).toHaveLength(16)
+    expect(first.retained).toEqual([])
+    expect(trashEntries(parent)).toHaveLength(3)
+    filesystem.removeLeftoverTrash(parent)
+
+    expect(readdirSync(parent)).toEqual(['runtime-1'])
+    expect(readFileSync(join(outside, 'keep.txt'), 'utf8')).toBe('keep\n')
+  })
+
+  it('retains leftover trash it does not own or whose identity changes before removal', () => {
+    const parent = temp('setup-fs-leftover-retain-')
+    mkdirSync(join(parent, '.trash-foreign'))
+    mkdirSync(join(parent, '.trash-swapped'))
+    const uid = process.getuid!()
+
+    const foreign = createSetupFilesystem({ uid: uid + 1 }).removeLeftoverTrash(parent)
+    expect(foreign.removed).toEqual([])
+    expect(trashEntries(parent)).toEqual(['.trash-foreign', '.trash-swapped'])
+
+    let swappedReads = 0
+    const swapping = createSetupFilesystem({
+      uid,
+      io: nodeIo({
+        lstat(path) {
+          const stat = lstatSync(path, { bigint: true })
+          if (!path.endsWith('.trash-swapped') || ++swappedReads < 2) return stat
+          return {
+            dev: stat.dev,
+            ino: stat.ino + 1n,
+            uid: stat.uid,
+            isFile: () => stat.isFile(),
+            isDirectory: () => stat.isDirectory(),
+            isSymbolicLink: () => stat.isSymbolicLink(),
+          }
+        },
+      }),
+    })
+    const swapped = swapping.removeLeftoverTrash(parent)
+    expect(swapped.removed).toEqual([join(parent, '.trash-foreign')])
+    expect(swapped.retained).toEqual([join(parent, '.trash-swapped')])
+    expect(trashEntries(parent)).toEqual(['.trash-swapped'])
+  })
+})
+
 describe('modeled Win32 filesystem policy', () => {
   it('normalizes fully qualified drive and UNC paths but rejects drive-relative and drive-less roots', () => {
     const virtual = new VirtualWin32Filesystem()
@@ -627,6 +800,48 @@ describe('modeled Win32 filesystem policy', () => {
     })).toThrow(/already exists/i)
     expect(virtual.has('C:\\AgentInbox\\runtime')).toBe(false)
     expect(virtual.has(replacementSentinel)).toBe(true)
+  })
+
+  it('moves a modeled runtime aside before deleting it, and unlinks a modeled junction left as trash', () => {
+    const virtual = new VirtualWin32Filesystem()
+    virtual.add('C:\\', 'directory')
+    virtual.add('C:\\AgentInbox', 'directory')
+    virtual.add('C:\\AgentInbox\\runtime', 'directory')
+    virtual.add('C:\\AgentInbox\\runtime\\rt-1', 'directory')
+    virtual.add('C:\\AgentInbox\\runtime\\rt-1\\node.exe', 'file')
+    virtual.add('C:\\Elsewhere', 'directory')
+    virtual.add('C:\\Elsewhere\\keep.txt', 'file')
+    virtual.add('C:\\AgentInbox\\runtime\\.trash-junction', 'link')
+    const io = virtual.io()
+    const renames: string[] = []
+    const rename = io.rename
+    io.rename = (from, to) => {
+      renames.push(`${from} -> ${to}`)
+      rename(from, to)
+    }
+    const filesystem = createSetupFilesystem({ platform: 'win32', io, uid: VIRTUAL_UID })
+
+    filesystem.removeDirectory({ target: 'C:/AgentInbox/runtime/rt-1', validate() {} })
+    expect(renames).toEqual([
+      expect.stringMatching(/^C:\\AgentInbox\\runtime\\rt-1 -> C:\\AgentInbox\\runtime\\\.trash-rt-1-[^\\]+\\rt-1$/),
+    ])
+    expect(virtual.has('C:\\AgentInbox\\runtime\\rt-1')).toBe(false)
+
+    expect(filesystem.removeLeftoverTrash('C:\\AgentInbox\\runtime').removed)
+      .toEqual(['C:\\AgentInbox\\runtime\\.trash-junction'])
+    expect([...virtual.entries.keys()].some((path) => path.includes('.trash-'))).toBe(false)
+    expect(virtual.has('C:\\Elsewhere\\keep.txt')).toBe(true)
+  })
+
+  it('retains modeled trash when the platform reports no owner to compare', () => {
+    const virtual = new VirtualWin32Filesystem()
+    virtual.add('C:\\', 'directory')
+    virtual.add('C:\\AgentInbox', 'directory')
+    virtual.add('C:\\AgentInbox\\.trash-rt-1-1', 'directory')
+    const filesystem = createSetupFilesystem({ platform: 'win32', io: virtual.io() })
+
+    expect(filesystem.removeLeftoverTrash('C:\\AgentInbox').retained).toEqual(['C:\\AgentInbox\\.trash-rt-1-1'])
+    expect(virtual.has('C:\\AgentInbox\\.trash-rt-1-1')).toBe(true)
   })
 
   it('never recursively cleans a staging tree whose captured identity was replaced', () => {

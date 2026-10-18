@@ -144,6 +144,7 @@ describe('release mode (issue #74) — truthful Setup API + conditional renderin
     if (opts.omitFile !== 'scripts/runtime-config.mjs') writeFileSync(join(payloadDir, 'scripts', 'runtime-config.mjs'), '// config helper\n')
     if (opts.omitFile !== 'scripts/setup-filesystem.cjs') writeFileSync(join(payloadDir, 'scripts', 'setup-filesystem.cjs'), '// filesystem adapter\n')
     if (opts.omitFile !== 'scripts/setup-lock.sh') writeFileSync(join(payloadDir, 'scripts', 'setup-lock.sh'), '# shared setup lock\n')
+    if (opts.omitFile !== 'scripts/run-isolated.mjs') writeFileSync(join(payloadDir, 'scripts', 'run-isolated.mjs'), '// rollback step isolation\n')
     mkdirSync(join(payloadDir, 'bin'), { recursive: true })
     mkdirSync(join(payloadDir, 'dist'), { recursive: true })
     mkdirSync(join(payloadDir, 'node_modules', 'better-sqlite3', 'build', 'Release'), { recursive: true })
@@ -238,6 +239,7 @@ describe('release mode (issue #74) — truthful Setup API + conditional renderin
     ['missing config helper', { omitFile: 'scripts/runtime-config.mjs' }],
     ['missing filesystem adapter', { omitFile: 'scripts/setup-filesystem.cjs' }],
     ['missing setup lock helper', { omitFile: 'scripts/setup-lock.sh' }],
+    ['missing rollback step helper', { omitFile: 'scripts/run-isolated.mjs' }],
   ])('withholds source and manual commands for %s', async (_label, override) => {
     const { setupInfoPath, runtimeRoot, payloadDir } = releaseBundle(override)
     await bootApp(open(), {

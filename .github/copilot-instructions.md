@@ -95,6 +95,9 @@ Run the build before `npm run electron`; the development shell starts the built
   a stable-handle fix for the verify-to-execute TOCTOU. Runtime-payload install
   exit 3 means publication may have committed; the shell must exact-verify it
   before invoking ownership-safe rollback and must retain unverifiable paths.
+  A prune renames the runtime into a `.trash-*` folder before deleting it, so an
+  interrupted one leaves trash, never a half-deleted runtime id; installs and
+  prunes remove leftover trash this user owns, and `.trash-*` is never a runtime.
 - **Shared presentation rules:** `public/attention.js` is the single attention
   predicate used by the viewer and Electron dock badge. Pure modules under
   `public/` hold grouping, ordering, search, badge, polling, and rendering rules;
@@ -204,9 +207,12 @@ Run the build before `npm run electron`; the development shell starts the built
   registration, marker-delimited instruction block, unrelated content,
   symlink targets, and timestamped backups. HUP, INT, QUIT, PIPE, ALRM, TERM,
   XCPU and XFSZ each roll an active install back and exit 128 + the signal;
-  any exit mid-transaction keeps every MCP snapshot. A repeat signal can still
-  stop a Node step of that rollback (host CLI or runtime helper), so it must be
-  reported and its report kept, never claimed as restored.
+  any exit mid-transaction keeps every MCP snapshot. Every Node step of that
+  rollback (host CLI or runtime helper) runs through `scripts/run-isolated.mjs`
+  in its own session, bounded to 30 s, with fd 9 but none of the installer's
+  stdio, so repeat signals cannot stop it. A step that fails or times out must
+  be reported and its report kept, never claimed as restored; one already
+  running survives the installer's SIGKILL and holds the lease until it ends.
 - All agent-authored text interpolated into HTML must pass through `esc()`.
   Supplied URLs additionally pass through `safeHttpUrl()` in
   `public/source.js`; build anchors through the existing `chipHtml()` path.

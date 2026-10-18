@@ -604,6 +604,14 @@ describe('universal finalization contract', () => {
     expect(staging).toContain("'setup-filesystem.cjs'")
   })
 
+  it('keeps the rollback step helper the installer needs in payload verification and staging', () => {
+    const verifier = readFileSync(join(root, 'electron', 'runtime-verify.cjs'), 'utf8')
+    const staging = readFileSync(join(root, 'scripts', 'stage-runtime.mjs'), 'utf8')
+
+    expect(verifier).toContain("'scripts/run-isolated.mjs'")
+    expect(staging).toContain("'run-isolated.mjs'")
+  })
+
   it('keeps the shared Setup lease in payload verification, package smoke, and native workflows', () => {
     const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
     const verifier = readFileSync(join(root, 'electron', 'runtime-verify.cjs'), 'utf8')

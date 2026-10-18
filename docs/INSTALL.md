@@ -382,10 +382,11 @@ Nothing runs when the app starts; updating agents is always your explicit choice
 
 Stopping the installer partway (Ctrl-C, a closed terminal, Setup's cancel when the app
 quits, or the app crashing) puts back what it had changed, then exits with 128 + the
-signal number. A repeated Ctrl-C or cancel does not stop that restore, except a step that
-runs a host CLI or a packaged-runtime helper (Node resets the signals the installer
-ignores). If such a step is stopped, or anything cannot be put back, the installer prints
-a warning and `report retained at …`, and keeps its report in a folder named
+signal number. A repeated Ctrl-C or cancel does not stop that restore. That includes the
+steps that run a host CLI (such as `claude mcp remove`) or a packaged-runtime helper: each
+runs in its own session, out of reach of those signals, for at most 30 seconds. If such a
+step fails or does not finish in time, or anything cannot be put back, the installer
+prints a warning and `report retained at …`, and keeps its report in a folder named
 `agent-inbox-install.XXXXXX` in your temporary directory (`$TMPDIR`; on macOS
 `getconf DARWIN_USER_TEMP_DIR` prints it, on Linux it is usually `/tmp`):
 
@@ -413,7 +414,11 @@ a warning and `report retained at …`, and keeps its report in a folder named
 An installer killed outright (`kill -9`, or Setup's forced stop 10 seconds after a
 cancel) stops wherever it was, but that folder then keeps every copy it took, and a
 staged `.agent-inbox.<host>.*` file may remain beside an instruction file; it is safe to
-delete. To finish the job instead, run the same install again.
+delete. A restore step that was already running, such as a host CLI's `mcp remove`, is
+not stopped with it: it finishes on its own, with no time limit, and until it does, a new
+install reports that another setup is already running. A runtime removal cut short leaves
+a `.trash-…` folder in `~/.agent-inbox/runtime`, never a half-deleted runtime; the next
+install or update deletes it. To finish the job instead, run the same install again.
 
 ### Host-specific behavior
 

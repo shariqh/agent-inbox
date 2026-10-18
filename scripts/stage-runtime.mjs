@@ -272,6 +272,7 @@ const REQUIRED_SCRIPTS = [
   'runtime-config.mjs',
   'setup-filesystem.cjs',
   'setup-lock.sh',
+  'run-isolated.mjs',
 ]
 const REQUIRED_DOCS = [
   'reporting-snippet.md',

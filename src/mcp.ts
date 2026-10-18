@@ -7,6 +7,8 @@ import type { ActionOwner, BoardRow, BoardWithRows, QuestionOption } from './sto
 import { makeContextLedger, deliverContext, shapeBoard, summariseBoard, rowKey, itemKey } from './shape.js'
 import { makeScope } from './scope.js'
 import { copilotWatchLaunch } from './watch.js'
+import { AGENT_INBOX_VERSION } from './version.js'
+import { detectServerSource } from './server-source.js'
 
 // The 5-minute liveness tick, hoisted OUT of its setInterval callback on purpose
 // (#45). This is the line the two-stamp distinction rests on — it moves
@@ -21,7 +23,7 @@ export function livenessTick(db: Database.Database, session: string): void {
 }
 
 export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
-  const server = new McpServer({ name: 'agent-inbox', version: '1.2.8' })
+  const server = new McpServer({ name: 'agent-inbox', version: AGENT_INBOX_VERSION })
   const scope = makeScope(cwd)
   // issue #42 — what THIS SERVER PROCESS has already handed over. Per-process,
   // NOT per session or per agent: this server is long-lived and a subagent's
@@ -49,10 +51,17 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
   // re-asserts instantly" promises cannot happen. Registration says only "this
   // session is here": scope, liveness, not-ended. `doing`/`idle`/`detail`/
   // `children` belong to the agent, and only `status` writes them.
+  //
+  // Issue #197: it also records which build this server runs — the version the
+  // handshake reports, and whether it runs from an installed agent runtime or a
+  // checkout (detected once, here) — so Live can say which sessions need a
+  // restart and what would update each one. That rides on this existing write
+  // and never counts as activity.
+  const build = { server_version: AGENT_INBOX_VERSION, server_source: detectServerSource(import.meta.url) }
   const registerPresence = (): void => {
     try {
       const s = scope.get(clientName())
-      upsertActivity(db, { session: sessionId, project: s.project, stream: s.stream, agent: s.agent, doing: 'open', idle: true, claim: false })
+      upsertActivity(db, { session: sessionId, project: s.project, stream: s.stream, agent: s.agent, doing: 'open', idle: true, claim: false, ...build })
     } catch { /* presence must never break the server */ }
   }
 
@@ -297,13 +306,15 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     async ({ doing, detail, children, done }) => {
       heartbeat()
       const s = scope.get(clientName())
+      // Both writes carry the build too (#197): if the day-old sweep removed this
+      // row while the machine slept, the next status call recreates it whole.
       if (done) {
         // the effort is over but the session lives on — revert to open presence
-        upsertActivity(db, { session: sessionId, project: s.project, stream: s.stream, agent: s.agent, doing: 'open', idle: true, children: [] })
+        upsertActivity(db, { session: sessionId, project: s.project, stream: s.stream, agent: s.agent, doing: 'open', idle: true, children: [], ...build })
         return { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] }
       }
       if (!doing) throw new Error('doing is required unless done: true')
-      upsertActivity(db, { session: sessionId, project: s.project, stream: s.stream, agent: s.agent, doing, detail, children })
+      upsertActivity(db, { session: sessionId, project: s.project, stream: s.stream, agent: s.agent, doing, detail, children, ...build })
       return { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] }
     },
   )

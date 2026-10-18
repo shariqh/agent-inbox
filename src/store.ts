@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { mkdirSync } from 'node:fs'
+import type { ServerSource } from './server-source.js'
 
 export type Kind = 'question' | 'note' | 'done'
 export type Status = 'open' | 'resolved' | 'dismissed'
@@ -331,6 +332,13 @@ function runMigrations(db: Database.Database): void {
   // running the old code. Both fall back to `started_at`, so a fresh connection
   // is never born cold and a days-old legacy claim is.
   ensureColumn(db, 'activity', 'last_call_at', 'TEXT')
+  // issue #197 — the Agent Inbox build the session's MCP server runs, and
+  // whether it runs from an installed agent runtime or a checkout, written by
+  // that server's own presence and status writes. NULL on legacy rows and on
+  // rows written by older servers: Live then shows nothing rather than a guess.
+  // Display only, never a liveness or work signal.
+  ensureColumn(db, 'activity', 'server_version', 'TEXT')
+  ensureColumn(db, 'activity', 'server_source', 'TEXT')
   migrateActivitySynopsis(db)
   ensureColumn(db, 'items', 'context', `TEXT NOT NULL DEFAULT ''`)
   ensureColumn(db, 'items', 'next_step', `TEXT NOT NULL DEFAULT ''`)
@@ -2065,6 +2073,10 @@ export interface Activity {
   updated_at: string
   /** last REAL MCP call (issue #45). NULL until this session makes one. */
   last_call_at: string | null
+  /** The Agent Inbox build the session's MCP server runs (issue #197). NULL when unknown. */
+  server_version: string | null
+  /** Where that server runs from: 'runtime' or 'checkout' (issue #197). NULL when unknown. */
+  server_source: string | null
 }
 
 export interface ActivityUpdate {
@@ -2092,6 +2104,14 @@ export interface ActivityUpdate {
    * fallback two seconds later.
    */
   claim?: boolean
+  /**
+   * The Agent Inbox build this session's MCP server runs, and where it runs
+   * from (issue #197). Written in either mode; a write that omits either keeps
+   * the stored value, so only a caller that knows it can set it and none can
+   * clear it.
+   */
+  server_version?: string
+  server_source?: ServerSource
 }
 
 // One statement for the `activity` presence row, plus (when this write is a
@@ -2104,11 +2124,11 @@ const upsertActivityTxn = (db: Database.Database, a: ActivityUpdate): void => {
   // One statement, two modes. Registration can create idle presence but can
   // neither replace a live claim nor write its historical caption.
   db.prepare(
-    `INSERT INTO activity (session, project, stream, agent, doing, last_doing, detail, children, idle, started_at, updated_at)
+    `INSERT INTO activity (session, project, stream, agent, doing, last_doing, detail, children, idle, started_at, updated_at, server_version, server_source)
      VALUES (
        @session, @project, @stream, @agent, @doing,
        CASE WHEN @claim = 1 AND @idle = 0 AND @doing <> '' AND @doing <> 'open' THEN @doing ELSE '' END,
-       @detail, @children, @idle, @now, @now
+       @detail, @children, @idle, @now, @now, @server_version, @server_source
      )
      ON CONFLICT(session) DO UPDATE SET
        project = @project, stream = @stream, agent = @agent,
@@ -2120,6 +2140,8 @@ const upsertActivityTxn = (db: Database.Database, a: ActivityUpdate): void => {
        detail   = CASE WHEN @claim = 1 THEN COALESCE(NULLIF(@detail, ''), detail) ELSE detail END,
        children = CASE WHEN @claim = 1 THEN COALESCE(@children, children) ELSE children END,
        idle     = CASE WHEN @claim = 1 THEN @idle ELSE idle END,
+       server_version = COALESCE(@server_version, server_version),
+       server_source  = COALESCE(@server_source, server_source),
        updated_at = @now, ended_at = NULL`,
   ).run({
     session: a.session,
@@ -2131,6 +2153,8 @@ const upsertActivityTxn = (db: Database.Database, a: ActivityUpdate): void => {
     children: a.children ? JSON.stringify(a.children) : null,
     idle: a.idle ? 1 : 0,
     claim: a.claim === false ? 0 : 1,
+    server_version: a.server_version ?? null,
+    server_source: a.server_source ?? null,
     now,
   })
   // Registration (`claim: false`) never touches spans — it is not speaking for
@@ -2237,7 +2261,7 @@ export function listActivity(db: Database.Database, opts: { staleMinutes?: numbe
   const cutoff = new Date(now - (opts.staleMinutes ?? 15) * 60000).toISOString()
   const cold = claimCutoff(now)
   const rows = db
-    .prepare(`SELECT session, project, stream, agent, doing, last_doing, detail, children, idle, started_at, updated_at, last_call_at
+    .prepare(`SELECT session, project, stream, agent, doing, last_doing, detail, children, idle, started_at, updated_at, last_call_at, server_version, server_source
               FROM activity WHERE ended_at IS NULL AND updated_at >= ?`)
     .all(cutoff) as Array<Omit<Activity, 'children' | 'idle'> & { children: string | null; idle: number }>
   // The row is kept whatever happens here — the session really is present, and

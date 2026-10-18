@@ -101,6 +101,45 @@ describe('31.1 · changeAnswer paints the surface it just staged a draft into', 
     expect(js).not.toMatch(/setInterval\(\s*forceRender/)
   })
 
+  // Issue #184: only load() reads older closed history. Anything that needs it
+  // (a navigation, a render, a deep link) may only ask for an early poll tick:
+  // requestHistory() schedules load() and paints nothing, so no path through it
+  // (forceRender, renderTriage/renderMission recovery, load() → focusItem) can
+  // force a frame or start a read of its own.
+  it('only load() reads older history; everything else can only schedule a poll tick (#184)', () => {
+    const readers = [...js.matchAll(/'\/api\/items\/history'/g)].map((match) => {
+      const start = js.lastIndexOf('\nfunction ', match.index) + 1
+      const asyncStart = js.lastIndexOf('\nasync function ', match.index) + 1
+      return js.slice(Math.max(start, asyncStart), js.indexOf('(', Math.max(start, asyncStart)))
+    })
+    expect(readers.length).toBeGreaterThan(0)
+    expect(new Set(readers)).toEqual(new Set(['async function load']))
+    const request = topLevelFn('function requestHistory()')
+    expect(request).toMatch(/setTimeout\([\s\S]*\bload\(\)/)
+    for (const painter of ['reloadAndPaint', 'forceRender', 'render(', 'renderIfIdle', 'fetch(', 'readSnapshot']) {
+      expect(request, painter).not.toContain(painter)
+    }
+  })
+
+  // #38 + #184: history a human click asks for ends in a paint the poll gate
+  // cannot hold (requestHistoryPaint → reloadAndPaint), so it is started only by
+  // explicit entry points: never by forceRender (which render-time recovery
+  // reaches), a render, or the poll.
+  it('starts a forced history paint only from explicit entry points (#184)', () => {
+    expect(topLevelFn('function requestHistoryPaint()')).toMatch(/reloadAndPaint\(\)/)
+    expect(topLevelFn('function forceRender()')).not.toMatch(/requestHistory/)
+    for (const decl of [
+      'async function load()', 'function renderIfIdle()', 'function render()', 'function paintAmbient()',
+      'function paintEditableSurfaces(', 'function renderSearchResults()', 'function renderDone(',
+      'function renderRelay()', 'function renderTriage(', 'function renderMission(',
+    ]) {
+      expect(topLevelFn(decl), decl).not.toMatch(/requestHistoryPaint|reloadAndPaint/)
+    }
+    for (const entry of ['function selectTab(', 'function moreButton(', 'function openRelay()', 'function focusItem(']) {
+      expect(topLevelFn(entry), entry).toContain('requestHistoryPaint()')
+    }
+  })
+
   // This replaces the old "forceRender() has exactly ONE caller" count, which was
   // standing in for an invariant it could only approximate. Issue #38 gave
   // forceRender the callers it was always owed: every user-initiated repaint. The

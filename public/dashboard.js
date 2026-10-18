@@ -1,7 +1,12 @@
 import { buildRelay } from './relay.js'
 import { activitySynopsis, lastActivityAt, liveSummary } from './livebar.js'
+import { knownOutcomes } from './closed-history.js'
 
 const asSet = (values) => values instanceof Set ? values : new Set(values ?? [])
+// Issue #184: what the paged item snapshot omitted within this lens.
+const NO_OLDER_HISTORY = { older: { items: 0, outcomes: 0, latest: null, projects: [] } }
+// The recent outcomes the Dashboard lists, and so the most it needs to prove.
+const RECENT_OUTCOMES = 4
 
 function validProject(entity, closed) {
   return entity?.project && !closed.has(entity.project)
@@ -25,6 +30,7 @@ export function buildDashboard({
   nowMs,
   liveSessionIds,
   closedProjects = [],
+  history = NO_OLDER_HISTORY,
 }) {
   const closed = asSet(closedProjects)
   const visibleItems = (items ?? []).filter((item) => validProject(item, closed))
@@ -39,11 +45,18 @@ export function buildDashboard({
     ...visibleItems.map((item) => item.project),
     ...visibleBoards.map((board) => board.project),
     ...visibleActivity.map((row) => row.project),
+    ...history.older.projects,
   ])
   const sessions = visibleActivity
     .map(sessionModel)
     .sort((a, b) => Number(a.idle) - Number(b.idle)
       || Date.parse(b.lastActiveAt) - Date.parse(a.lastActiveAt))
+  // Omitted outcomes still count; a recent one is listed only once nothing
+  // omitted could outrank it.
+  const outcomes = relay.outcomes.length + history.older.outcomes
+  const recentOutcomes = (history.older.outcomes
+    ? knownOutcomes(relay.outcomes, history.older.latest)
+    : relay.outcomes).slice(0, RECENT_OUTCOMES)
 
   return {
     signals: {
@@ -56,17 +69,18 @@ export function buildDashboard({
       waiting: relay.human.length,
       withAgents: relay.agent.length,
       plans: visibleBoards.length,
-      outcomes: relay.outcomes.length,
+      outcomes,
       projects: projects.size,
     },
     ownership: {
       human: relay.human.length,
       agent: relay.agent.length,
-      outcome: relay.outcomes.length,
+      outcome: outcomes,
     },
     waitingEntries: relay.human,
     agentEntries: relay.agent,
-    recentOutcomes: relay.outcomes.slice(0, 5),
+    recentOutcomes,
+    recentOutcomesComplete: recentOutcomes.length === Math.min(RECENT_OUTCOMES, outcomes),
     sessions,
   }
 }

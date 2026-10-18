@@ -28,6 +28,10 @@ export interface DashboardInput {
   nowMs: number
   liveSessionIds: Set<string> | string[]
   closedProjects?: Set<string> | string[]
+  /** issue #184: what the paged item snapshot omitted within this lens */
+  history?: {
+    older: { items: number; outcomes: number; latest: string | null; projects: string[]; agents?: string[] }
+  }
 }
 
 export interface DashboardModel {
@@ -43,6 +47,8 @@ export interface DashboardModel {
   waitingEntries: RelayEntry[]
   agentEntries: RelayEntry[]
   recentOutcomes: RelayEntry[]
+  /** false while omitted closed history could still outrank a listed outcome */
+  recentOutcomesComplete: boolean
   sessions: Array<DashboardActivity & {
     synopsis: string
     historical: boolean

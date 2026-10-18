@@ -112,13 +112,23 @@ Run the build before `npm run electron`; the development shell starts the built
   reader is promoted to the writer.
 - Conditional viewer snapshots retain only items, the dock watcher's
   `/api/items?scope=attention` projection (its own validator, never the default
-  representation's) and active/archived boards.
+  representation's), `/api/items/history` (likewise its own) and active/archived boards.
   Invalidate on same/other-connection writes, schema changes and pickup stamps;
   never cache an uncommitted snapshot. Keep dynamic routes fresh, no-store and
   the boot marker intact, and never turn a read failure into cached success.
   Activity history changes with time alone, so it is conditional only on a hash
   of its freshly computed bytes plus the window and project that selected them;
   never validate it with store tokens or cache it server-side (#185).
+- `/api/items` pages closed history (#184): every open item, the 50 most recently
+  touched closed items, the 4 newest outcome-bearing ones of open projects and a
+  `history` summary that keeps every count exact. Only `load()` reads
+  `/api/items/history`, while `historyWanted()` says a surface needs older items,
+  judged on a page alone (`lastData.page` or the tick's new one), never on merged
+  data. Explicit human entry points use `requestHistoryPaint()` (ends in
+  `reloadAndPaint()`, #38); search and waiting deep links use `requestHistory()`,
+  which only schedules that `load()`; `forceRender`, renders and the poll use
+  neither. A failed read degrades: the page still applies and waiting surfaces
+  say older history is unavailable.
 - Race-sensitive state changes must be atomic SQL statements or transactions.
   Do not replace conditioned/version-pinned updates with SELECT-then-UPDATE.
   Human replies, annotations, and handled marks can change from another process

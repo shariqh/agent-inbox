@@ -60,7 +60,8 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   each per viewer, plus `/api/items?scope=attention` (issue #156): the Electron
   dock watcher's lean read, built from open questions alone and registered
   separately with its own validator so neither `/api/items` representation can
-  revalidate the other. Any other query string keeps the full items response.
+  revalidate the other, and `/api/items/history` (issue #184, below), likewise its
+  own registration and validator. Any other query string keeps the default items response.
   Matching `If-None-Match` returns a bodyless 304; unconditional
   clients still receive full JSON. Keep `Cache-Control: no-store` and the current
   outer `x-inbox-boot` marker on 304 responses too. Store-only invalidation reads
@@ -85,6 +86,9 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   load's cache entry; older completions cannot overwrite a newer validator/body.
   A query string selects one representation of its route; the reader retains only
   each route's newest one and reuses it only for the exact URL that fetched it.
+  Only `/api/activity/history` takes a query in the reader: any other (such as the
+  dock watcher's `?scope=attention`) is refused, so it can never share or evict
+  the page's slot, and `/api/items/history` is a path of its own (#184).
   Read the live boot header before consuming cached data. Untagged servers retain
   full-fetch behavior, malformed replies fail explicitly, and no snapshot content
   is persisted to browser storage. Derive mutable view state rather than changing
@@ -93,9 +97,50 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   their fallbacks, any other failure still fails the whole tick (reported in the
   old serial order) without blanking the frame, and `loadGeneration` still
   discards an older tick that finishes late.
+- **Closed history is paged out of the default items snapshot (issue #184).**
+  `/api/items` carries every open item, the `RECENT_CLOSED_ITEMS` (50) most
+  recently TOUCHED closed items (`listItemsPage`: the newest of every item stamp)
+  and the `RECENT_OUTCOMES` (4) newest outcome-bearing closed items of open
+  projects (plus ties), so closures without an outcome (Inbox resolve/dismiss,
+  hook sweeps) can never push the Dashboard's default lens off the page. A
+  `history` summary, read in the same snapshot, gives exact totals, `before` (the
+  newest touch of any omitted item) and per project/agent counts of what it
+  omitted with `latest`, the newest Dashboard stamp among their outcomes. A touch
+  is never earlier than creation, so page entries created after `before` are a
+  complete, correctly ordered History prefix; outcomes stamped after the lens's
+  `latest` are a correct recent-outcome prefix (`public/closed-history.js`).
+  Counts (History tab, Dashboard outcomes/projects, rail projects, agent picker)
+  add the summary, so they never depend on the omitted bodies.
+  `/api/items/history` returns exactly the unpaged `done` list, and ONLY `load()`
+  reads it: as an extra read when the previous frame needs older history
+  (`historyWanted`: a search in use — open results, a pending or focused query,
+  not text left in a closed box — the Handoffs overlay, History paged past what
+  the page proves, a History deep link, a pending deep link to an omitted item, or
+  Dashboard recent outcomes the page cannot prove), or, within the same tick and
+  under the same boot-marker and generation rules, when the tick's own new page
+  needs it, so a sweep never paints a blank History frame. Decide on a PAGE
+  (`lastData.page`, or the tick's new one), never on merged data, or loading
+  history would end the need for it. Explicit human entry points (tab select, the
+  History pager, rail project/agent picks, opening Handoffs, a deep link that
+  found its target) call `requestHistoryPaint()`, which ends in `reloadAndPaint()`
+  so an unrelated draft or a focused Dashboard control cannot hide the frame the
+  click asked for (#38). Typing or focusing search, and a deep link waiting on an
+  omitted item, only call `requestHistory()`: it schedules an early `load()` and
+  paints nothing, because search renders its results directly and the deep-link
+  retry paints through `focusItem`. `forceRender`, every render and the poll call
+  neither, so passive paths never force a paint and render paths never fetch. An
+  in-tick read rejects only markers that disagree within its tick, as the main
+  path does, so ticks keep applying while a restart reload waits. A failed read
+  degrades like activity history: the page still applies, and the surfaces waiting
+  on older history say "Older history is unavailable right now." The page stays
+  authoritative for every item it carries when the two are merged. Surfaces still
+  waiting show known entries and a loading state, never an incomplete list as if
+  complete: search stays busy, History and Handoffs say older items are loading.
+  A deep link waiting on older history lands only if the human has not navigated
+  since (`navigationKey`) and no pointer is held; otherwise it waits or is dropped.
 - **`src/store.ts` is the only door to the database.** Every read/write goes through its
   exported functions — items: `insertItem`/`resolveItem`/`dismissItem`/`annotateItem`/
-  `replyItem`/`answerItem`/`listItems`; boards: `upsertBoard`/`updateBoardRow`/`getBoard`/`listBoards`/
+  `replyItem`/`answerItem`/`listItems`/`listItemsPage`; boards: `upsertBoard`/`updateBoardRow`/`getBoard`/`listBoards`/
   `archiveBoard`/`annotateBoardRow`/`markAnnotationDelivered`/`markRowHandled`/
   `clearRowHandled`/`markHandledDelivered`/`listPendingRows`;
   projects: `closeProject`/`reopenProject`/`listClosedProjects`/`closedProjects` — plus `openDb`. No raw SQL anywhere else. To change

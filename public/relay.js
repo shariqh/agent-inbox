@@ -2,7 +2,9 @@ import { attentionEntries, awaitingAgentRows } from './attention.js'
 
 const asSet = (values) => values instanceof Set ? values : new Set(values ?? [])
 
-function stamp(entity) {
+// The instant an entry's latest step happened; Handoffs and the Dashboard order
+// by it, and public/closed-history.js bounds omitted history against it.
+export function stamp(entity) {
   for (const value of [
     entity.outcome_at,
     entity.reply_seen_at,

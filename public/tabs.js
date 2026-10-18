@@ -12,13 +12,14 @@ export const DEFAULT_TAB = 'dashboard'
 // number (the caller decides what "unread" means). Needs-you is filter-blind by
 // construction: selecting a project narrows the list, never the global signal.
 // Live is no longer a tab (spec §16) — it's an always-visible footer strip, so
-// it carries no count here at all.
-export function tabCounts({ globalAttention, unreadNotes, scoped }) {
+// it carries no count here at all. `olderDone` counts the closed items in the
+// same scope that the paged item snapshot omitted (issue #184).
+export function tabCounts({ globalAttention, unreadNotes, scoped, olderDone = 0 }) {
   return {
     needsYou: globalAttention,
     boards: scoped.boards.length,
     notes: unreadNotes ?? 0,
-    done: scoped.done.length,
+    done: scoped.done.length + olderDone,
   }
 }
 

@@ -41,6 +41,7 @@ import { buildActivitySeries, buildDashboard } from '/dashboard.js'
 import { PANE_DEFAULTS, paneKeyValue, paneValueFromPointer, resolvePaneLayout } from '/panes.js'
 import { createThemeController } from '/theme.js'
 import { activityHistoryUrl, createSnapshotReader } from '/snapshots.js'
+import { knownHistory, knownOutcomes, mergeClosedHistory, olderHistory } from '/closed-history.js'
 
 void paginateGroups // kept exported+tested (spec §15); the viewer no longer calls it
 
@@ -104,6 +105,15 @@ let authoritativeClosed = []
 let loadGeneration = 0
 let appliedLoadGeneration = 0
 let appliedClosedGeneration = 0
+// Issue #184: /api/items carries open work plus the most recently touched closed
+// items. Older closed history is read from /api/items/history only while some
+// surface needs it (historyWanted); these record needs no rendered state shows.
+let historyLookup = null // a deep link to an item the page omitted
+let historyTabPinned = false // History keeps an omitted target until the tab changes
+let historyRequestedFor = -1 // the applied tick an early poll was requested for
+let historyLoadScheduled = false // that early poll has not started yet
+let historyPaintRequestedFor = -1 // the applied tick a human's history read-and-paint started for
+let searchAwaitingHistory = false
 let preparedFrame = null
 let editablePanesPainted = false
 // issue #30 — the (repo, branch) → cached PR state index, rebuilt once per
@@ -427,6 +437,16 @@ async function historyBody(read) {
   }
 }
 
+// Older closed history (#184) degrades like activity history: a failed read
+// leaves this tick's page applied, and the surfaces waiting on it say so.
+async function closedHistoryBody(read) {
+  try {
+    return { done: (await settledValue(read).json()).done, error: null }
+  } catch {
+    return { done: null, error: OLDER_HISTORY_UNAVAILABLE }
+  }
+}
+
 async function load() {
   if (reloadRequested) return false
   const generation = ++loadGeneration
@@ -438,8 +458,11 @@ async function load() {
     boots.push(response.headers.get('x-inbox-boot'))
     return response
   }
+  // Decided from the previous frame, before any read starts: a passive poll reads
+  // closed history the page omitted only while a surface still needs it (#184).
+  const wantHistory = historyWanted()
   try {
-    const [items, boardsRead, archivedRead, activityRead, historyRead, closedRead, linksRead] = await Promise.allSettled([
+    const [items, boardsRead, archivedRead, activityRead, historyRead, closedRead, linksRead, closedHistoryRead] = await Promise.allSettled([
       readSnapshot('/api/items').then(marked),
       readSnapshot('/api/boards').then(marked),
       readSnapshot('/api/boards/archived').then(marked),
@@ -456,6 +479,7 @@ async function load() {
       // an empty links set must mean "render exactly as before this feature", never
       // a dead page. A viewer that predates this route answers 404 with HTML.
       fetch('/api/links').then(marked).then((r) => (r.ok ? r.json() : [])).catch(() => []),
+      wantHistory ? readSnapshot('/api/items/history').then(marked) : null,
     ])
     if (reloadRequested || generation < appliedLoadGeneration) return false
     const res = settledValue(items)
@@ -474,11 +498,32 @@ async function load() {
     const body = (read) => (read.status === 'fulfilled' ? read.value.json() : Promise.reject(read.reason))
     const bodies = await Promise.allSettled([
       res.json(), body(boardsRead), body(archivedRead), body(activityRead), historyBody(historyRead),
+      wantHistory ? closedHistoryBody(closedHistoryRead) : null,
     ])
-    const [g, boards, archived, activity, activityHistory] = bodies.map(settledValue)
+    const [g, boards, archived, activity, activityHistory, firstOlder] = bodies.map(settledValue)
     const closedSnapshot = settledValue(closedRead)
     const links = settledValue(linksRead)
     if (reloadRequested || generation < appliedLoadGeneration) return false
+    const nowMs = Date.now()
+    const page = ageNotes(g, nowMs)
+    let older = firstOlder
+    // Issue #184: this tick's own data may need older history the previous frame
+    // did not (a sweep moving the page's boundary past what History shows, say).
+    // Read it inside the same tick, under the same rules, rather than painting a
+    // frame that lacks it.
+    if (!wantHistory && lastData && historyWanted({ page, pageHistory: g.history ?? null, boards, archived, activity })) {
+      const [late] = await Promise.allSettled([readSnapshot('/api/items/history').then(marked)])
+      if (reloadRequested || generation < appliedLoadGeneration) return false
+      // As on the main path: only markers that disagree within this tick are a
+      // restart between its reads. A restart already being held for unsent work
+      // keeps applying ticks, whose markers all name the new server.
+      if (new Set(boots.filter(Boolean)).size > 1) {
+        refreshPending = true
+        return false
+      }
+      older = await closedHistoryBody(late)
+      if (reloadRequested || generation < appliedLoadGeneration) return false
+    }
     appliedLoadGeneration = generation
     if (closedSnapshot !== null) {
       appliedClosedGeneration = generation
@@ -486,7 +531,16 @@ async function load() {
       retireConfirmedProjectMutationIntents(generation)
     }
     lastData = {
-      g: ageNotes(g, Date.now()),
+      // Every surface reads `g`: the page, or the page merged with the complete
+      // History list while one is loaded. `page` and `pageHistory` stay the page
+      // alone, which is what decides whether older history is needed at all.
+      g: older?.done ? ageNotes(mergeClosedHistory(g, older.done), nowMs) : page,
+      page,
+      pageHistory: g.history ?? null,
+      // the summary of what `g` still omits; null once nothing is omitted
+      older: older?.done ? null : g.history ?? null,
+      // why a surface that needed older history this tick is still waiting
+      olderError: older?.error ?? null,
       boards,
       archived,
       activity,
@@ -497,6 +551,17 @@ async function load() {
     applyProjectMutationIntents()
     renderIfIdle()
     if (!bootFocusDone) { bootFocusDone = true; applyFocusHash() }
+    // A deep link waiting on older history lands once it has been read, unless
+    // the human has navigated since. A held press keeps it waiting for the next
+    // tick rather than rebuilding under the pointer (#38).
+    if (historyLookup && historyLookup.view !== navigationKey()) historyLookup = null
+    if (historyLookup && !omitsHistory() && !pressHeld(pressedAt, Date.now())) {
+      const { id, source } = historyLookup
+      historyLookup = null
+      focusItem(id, source)
+    }
+    // Search results sit outside the editable gate; refresh the waiting list.
+    if (searchAwaitingHistory) renderSearchResults()
     document.getElementById('status').textContent = ''
     if (closedSnapshot !== null) resolveAuthoritativeRefreshWaiters(generation)
     return closedSnapshot !== null
@@ -794,10 +859,19 @@ function tabForItem(it) {
 // project, switch to its tab, expand it, scroll to it.
 function focusItem(id, source = null) {
   if (!lastData) return
+  historyLookup = null
   const item = allItems(lastData.g).find((i) => i.id === id)
   const board = [...lastData.boards, ...lastData.archived].find((b) => b.id === id)
   const target = item ?? board
-  if (!target) return
+  if (!target) {
+    // Issue #184: the page may omit this closed item. load() retries the link
+    // once the complete history has been read.
+    if (omitsHistory()) {
+      historyLookup = { id, source, view: navigationKey() }
+      requestHistory()
+    }
+    return
+  }
   const hasSearchSource = source && (
     typeof source.text === 'string'
     || Array.isArray(source.fragments)
@@ -823,9 +897,15 @@ function focusItem(id, source = null) {
   changedOnly = false
   resetSearch()
   selectTab(board ? 'boards' : tabForItem(item), { paint: false }) // the explicit forceRender below paints the target
+  // A History target the page alone cannot place keeps the complete history
+  // loaded while History stays open (#184).
+  if (activeTab === 'done') {
+    historyTabPinned = !knownHistory(pageView().g.done, lastData.pageHistory?.before).some((entry) => entry.id === id)
+  }
   const hash = focusHashFor(id)
   if (location.hash !== hash) location.hash = hash // survives reload
   forceRender()
+  requestHistoryPaint() // a History target the page alone cannot place (#184)
   // fix round 2 (C1): this used to call setOpenRow(id) for EVERY target. The
   // inspector is a Needs-you affordance — explicit collapse is reachable only
   // from a rendered `.nrow`. A board
@@ -903,6 +983,7 @@ function clearSearchResultView() {
   const { input, results, status } = searchElements()
   searchIndexOpen = false
   searchUpdating = false
+  searchAwaitingHistory = false
   searchActiveIndex = -1
   searchResultCache = []
   searchResultSignature = ''
@@ -1139,6 +1220,12 @@ function applySearchJumpHighlight() {
   return source
 }
 
+function searchStatusText(results, query) {
+  return results.length
+    ? `${results.length} search result${results.length === 1 ? '' : 's'}`
+    : `No results for ${query}`
+}
+
 function renderSearchResults() {
   const { input, results, status } = searchElements()
   if (!input || !results) return
@@ -1149,6 +1236,17 @@ function renderSearchResults() {
     return
   }
   if (!lastData) return
+  // Issue #184: results always cover all of History. While the closed history
+  // the page omits is still being read, keep any prior list busy rather than
+  // listing an incomplete result set. The read itself belongs to the human's
+  // entry points (typing, focusing) or the next poll — never to a render.
+  if (omitsHistory()) {
+    searchAwaitingHistory = true
+    beginSearchUpdate()
+    if (status) status.textContent = olderHistoryWaitText('Searching older history…')
+    return
+  }
+  searchAwaitingHistory = false
   const previousActiveKey = searchResultCache[searchActiveIndex]?.key
   const previousResults = searchResultCache
   const nextResults = buildSearchResults(lastData, query, fuzzySearch)
@@ -1157,6 +1255,8 @@ function renderSearchResults() {
     searchResultCache = nextResults
     finishSearchUpdate()
     input.setAttribute('aria-expanded', 'true')
+    // the list is unchanged, but a busy wait may have replaced its status (#184)
+    if (status) status.textContent = searchStatusText(nextResults, query)
     return
   }
   const existingOptions = [...results.querySelectorAll('[role="option"]')]
@@ -1175,7 +1275,7 @@ function renderSearchResults() {
     empty.className = 'search-results-empty'
     empty.textContent = `No results for “${query}”`
     results.appendChild(empty)
-    if (status) status.textContent = `No results for ${query}`
+    if (status) status.textContent = searchStatusText(searchResultCache, query)
     finishSearchUpdate()
     setSearchActive(-1)
     return
@@ -1220,7 +1320,7 @@ function renderSearchResults() {
   }
   finishSearchUpdate()
   if (status) {
-    status.textContent = `${searchResultCache.length} search result${searchResultCache.length === 1 ? '' : 's'}`
+    status.textContent = searchStatusText(searchResultCache, query)
   }
   const preservedIndex = previousActiveKey
     ? searchResultCache.findIndex((result) => result.key === previousActiveKey)
@@ -1253,6 +1353,88 @@ function ageNotes(g, nowMs) {
   return { ...g, notes, done: [...g.done, ...aged] }
 }
 
+// ── closed history (issue #184) ─────────────────────────────────────────────
+// The lens every loaded item passes through: project/agent filters plus the
+// suppressed (closed, not peeked) projects. Omitted history obeys it too.
+function olderLens() {
+  return { project: projectFilter, agent: agentFilter, hidden: dashboardClosedProjects() }
+}
+
+// Whether lastData.g still omits closed history anywhere.
+function omitsHistory() {
+  const summary = lastData?.older
+  return Boolean(summary && summary.loaded < summary.total)
+}
+
+// The page alone, through the same suppression and filters as the view.
+function pageView(view = lastData) {
+  return filterData(withoutClosed({ g: view.page, boards: view.boards, archived: view.archived }))
+}
+
+// What the human is looking at. A deep link still waiting on older history
+// lands only if this has not changed since it was followed (#184).
+function navigationKey() {
+  return JSON.stringify([activeTab, projectFilter, agentFilter, settingsOpen()])
+}
+
+// Which surfaces need the closed history the page omits. Judged on a PAGE
+// (the applied one, or a tick's new one before it applies), never on merged
+// data, which never needs it: that would drop the history it just loaded and
+// fetch it again on the next tick.
+function historyWanted(view = lastData) {
+  const summary = view?.pageHistory
+  if (!summary || summary.loaded >= summary.total) return false
+  // A deep link may name any omitted item, and search covers every project
+  // while it is in use: open results, a pending query, or a focused query. Text
+  // left in a closed box waits for the human to return to it.
+  if (historyLookup?.view === navigationKey()) return true
+  const input = document.getElementById('search')
+  if (input?.value.trim() && (searchIndexOpen || searchTimer || document.activeElement === input)) return true
+  const older = olderHistory(summary, olderLens())
+  if (relayOpen && older.outcomes > 0) return true
+  if (activeTab === 'done' && older.items > 0) {
+    return historyTabPinned || shown.done > knownHistory(pageView(view).g.done, summary.before).length
+  }
+  if (activeTab === 'dashboard' && older.outcomes > 0) {
+    const activity = (view.activity ?? []).filter((a) =>
+      (!projectFilter || a.project === projectFilter) && (!agentFilter || a.agent === agentFilter))
+    return !dashboardModel(pageView(view), summary, activity).recentOutcomesComplete
+  }
+  return false
+}
+
+// Only load() reads older history. A navigation or render that needs it may
+// only ask for an early poll tick: that tick decides, reads and paints through
+// the poll's own gate, so no history path ever forces a frame. One request per
+// applied tick: a failed read is retried by the poll, never in a loop.
+function requestHistory() {
+  if (historyLoadScheduled || !omitsHistory() || historyRequestedFor === appliedLoadGeneration || !historyWanted()) return
+  historyRequestedFor = appliedLoadGeneration
+  historyLoadScheduled = true
+  setTimeout(() => {
+    historyLoadScheduled = false
+    void load()
+  }, 0)
+}
+
+// A human action that needs older history has just painted what is known; this
+// reads the rest and paints it outside the poll's gate, like every frame the
+// human asks for (#38): an unrelated draft or a focused Dashboard control must
+// not hide it. Called only from explicit entry points, never from forceRender,
+// a render or the poll, so passive paths still never force a paint.
+function requestHistoryPaint() {
+  if (!lastData || !omitsHistory() || historyPaintRequestedFor === appliedLoadGeneration || !historyWanted()) return
+  historyPaintRequestedFor = appliedLoadGeneration
+  void reloadAndPaint()
+}
+
+// Shown where a surface waits on older history the last tick could not read.
+const OLDER_HISTORY_UNAVAILABLE = 'Older history is unavailable right now.'
+
+function olderHistoryWaitText(loading) {
+  return lastData?.olderError ? OLDER_HISTORY_UNAVAILABLE : loading
+}
+
 // the CURRENT server state for an item, not a row's closed-over render-time snapshot.
 // fix round 1: the star Undo fallback must decide canUndo/undoRefusal off fresh data —
 // a row that hasn't re-rendered since staging still reads reply_seen_at as null even
@@ -1264,8 +1446,8 @@ function freshItem(id) {
   return lastData ? allItems(lastData.g).find((i) => i.id === id) : undefined
 }
 
-function collectAgents({ g, boards }) {
-  return [...new Set([...allItems(g).map((i) => i.agent), ...boards.map((b) => b.agent)])].sort()
+function collectAgents({ g, boards }, olderAgents = []) {
+  return [...new Set([...allItems(g).map((i) => i.agent), ...boards.map((b) => b.agent), ...olderAgents])].sort()
 }
 
 // Closed projects drop out of the DEFAULT view — UNLESS the human has explicitly
@@ -1390,7 +1572,7 @@ function renderDashboardAmbient(model) {
   }
   renderDashboardHistory(host.querySelector('.dashboard-activity'))
   renderDashboardDispatch(host.querySelector('.dashboard-live-list'), model.sessions)
-  renderDashboardOutcomes(host.querySelector('.dashboard-outcome-list'), model.recentOutcomes)
+  renderDashboardOutcomes(host.querySelector('.dashboard-outcome-list'), model.recentOutcomes, model.recentOutcomesComplete)
 }
 
 const DASHBOARD_SIGNAL_ICONS = {
@@ -1503,7 +1685,10 @@ function renderDashboardDispatch(list, sessions) {
   }
 }
 
-function renderDashboardOutcomes(list, entries) {
+function renderDashboardOutcomes(list, entries, complete = true) {
+  // Issue #184: outcomes the page omits may still outrank what is listed.
+  if (complete) list.removeAttribute('aria-busy')
+  else list.setAttribute('aria-busy', 'true')
   const existing = new Map([...list.querySelectorAll('.dashboard-outcome')]
     .map((row) => [row.dataset.dashboardFocusKey, row]))
   const active = activeFocusElement()?.closest?.('.dashboard-outcome')
@@ -1538,7 +1723,9 @@ function renderDashboardOutcomes(list, entries) {
   } else {
     list.replaceChildren(...rows)
     if (!rows.length) {
-      list.innerHTML = '<div class="dashboard-empty" role="img" aria-label="No recorded outcomes" title="No recorded outcomes"><svg class="dashboard-empty-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"></circle><path d="m8 12 2.5 2.5L16 9"></path></svg></div>'
+      list.innerHTML = complete
+        ? '<div class="dashboard-empty" role="img" aria-label="No recorded outcomes" title="No recorded outcomes"><svg class="dashboard-empty-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"></circle><path d="m8 12 2.5 2.5L16 9"></path></svg></div>'
+        : `<div class="dashboard-empty" role="status">${esc(olderHistoryWaitText('Loading older outcomes…'))}</div>`
     }
     if (focused) {
       const next = rows[Math.min(focusedIndex, rows.length - 1)]
@@ -1663,7 +1850,9 @@ function paintAmbient() {
   // AFTER renderRail: renderRail is what reconciles a stale projectFilter, and
   // withoutClosed reads projectFilter to decide whether this is a peek.
   visibleData = withoutClosed(lastData)
-  const agents = collectAgents(projectScoped(visibleData))
+  // Agents whose only items are closed history the page omitted stay selectable.
+  const agents = collectAgents(projectScoped(visibleData),
+    olderHistory(lastData.older, { project: projectFilter, hidden: dashboardClosedProjects() }).agents)
   if (agentFilter && !agents.includes(agentFilter)) agentFilter = null
   // prune collapse state against ALL cards, not the filtered view (nor the
   // closure-narrowed one), so switching tabs never drops state for cards the
@@ -1674,19 +1863,27 @@ function paintAmbient() {
   const pillLive = (lastData.activity ?? []).filter((a) =>
     (!projectFilter || a.project === projectFilter) && (!agentFilter || a.agent === agentFilter))
   const live = pillLive
-  const dashboard = buildDashboard({
-    items: allItems(g),
-    boards,
-    archived,
-    activity: live,
-    nowMs: Date.now(),
-    liveSessionIds: liveSessionIds(),
-    closedProjects: dashboardClosedProjects(),
-  })
+  const dashboard = dashboardModel(filtered, lastData.older, live)
   renderLiveBar(lastData.activity ?? [])    // collapsed strip — GLOBAL, never scoped (§7 filter-blindness, generalized)
   renderDashboardAmbient(dashboard)
   paintTabCounts(g, boards)
   return { agents, g, boards, archived, live, dashboard }
+}
+
+// `summary` is what `view` omits from closed history (issue #184): omitted
+// outcomes still count, and listed recent outcomes are only those nothing
+// omitted could outrank.
+function dashboardModel({ g, boards, archived }, summary, activity) {
+  return buildDashboard({
+    items: allItems(g),
+    boards,
+    archived,
+    activity,
+    nowMs: Date.now(),
+    liveSessionIds: liveSessionIds(),
+    closedProjects: dashboardClosedProjects(),
+    history: { older: olderHistory(summary, olderLens()) },
+  })
 }
 
 function paintTabCounts(g, boards) {
@@ -1696,6 +1893,7 @@ function paintTabCounts(g, boards) {
     globalAttention: attentionCount(allItems(lastData.g), lastData.boards, Date.now(), liveSessionIds(), lastData.closed ?? []),
     unreadNotes: unreadNoteCount(g.notes.flatMap((gr) => gr.items), notesSeenAt, Date.now(), notesSeenIds),
     scoped: { boards, done: g.done },
+    olderDone: olderHistory(lastData.older, olderLens()).items,
   })
   for (const id of TAB_IDS) setCount(id, counts[id])
 }
@@ -2609,6 +2807,7 @@ function openRelay() {
   if (missionBoardId) closeMission({ restoreFocus: false })
   relayOpen = true
   renderRelay()
+  requestHistoryPaint() // the outcome lane lists every recorded outcome (#184)
 }
 
 function closeRelay() {
@@ -2687,12 +2886,12 @@ function relayCardEl(entry, lane) {
   return card
 }
 
-function renderRelayLane(box, lane, entries) {
+function renderRelayLane(box, lane, entries, { count = entries.length, loading = false } = {}) {
   const host = box.querySelector(`[data-relay-lane="${lane}"]`)
-  host.querySelector('.relay-count').textContent = String(entries.length)
+  host.querySelector('.relay-count').textContent = String(count)
   const body = host.querySelector('.relay-body')
   body.replaceChildren()
-  if (!entries.length) {
+  if (!entries.length && !loading) {
     const empty = document.createElement('div')
     empty.className = 'relay-empty'
     empty.textContent = lane === 'human'
@@ -2702,6 +2901,13 @@ function renderRelayLane(box, lane, entries) {
     return
   }
   for (const entry of entries) body.appendChild(relayCardEl(entry, lane))
+  if (loading) {
+    const note = document.createElement('div')
+    note.className = 'relay-empty'
+    note.setAttribute('role', 'status')
+    note.textContent = olderHistoryWaitText('Loading older outcomes…')
+    body.appendChild(note)
+  }
 }
 
 function renderRelay() {
@@ -2717,9 +2923,14 @@ function renderRelay() {
   )
   renderRelayLane(box, 'human', relay.human)
   renderRelayLane(box, 'agent', relay.agent)
-  renderRelayLane(box, 'outcome', relay.outcomes)
+  // Issue #184: outcomes the page omits still count; until they are read, list
+  // only the outcomes none of them could outrank.
+  const older = olderHistory(lastData.older, olderLens())
+  const outcomes = relay.outcomes.length + older.outcomes
+  renderRelayLane(box, 'outcome', older.outcomes ? knownOutcomes(relay.outcomes, older.latest) : relay.outcomes,
+    { count: outcomes, loading: older.outcomes > 0 })
   box.querySelector('.relay-summary').textContent =
-    `${relay.human.length} waiting on you · ${relay.agent.length} with agent · ${relay.outcomes.length} outcomes`
+    `${relay.human.length} waiting on you · ${relay.agent.length} with agent · ${outcomes} outcomes`
   box.hidden = false
 }
 
@@ -2976,13 +3187,20 @@ let activeTab = DEFAULT_TAB
 // without the other
 function selectTab(id, { paint = true } = {}) {
   if (!TAB_IDS.includes(id)) return
+  // Choosing a tab supersedes a deep link still waiting on older history, and
+  // leaving History releases the omitted target it was keeping loaded (#184).
+  historyLookup = null
+  if (id !== 'done') historyTabPinned = false
   activeTab = id
   for (const t of document.querySelectorAll('#tabs .tab')) {
     t.setAttribute('aria-selected', String(t.dataset.tab === id))
     t.tabIndex = t.dataset.tab === id ? 0 : -1 // roving tabindex (spec §13)
   }
   showPanel(id)
-  if (paint) forceRender()
+  if (paint) {
+    forceRender()
+    requestHistoryPaint()
+  }
   if (id === 'needsYou') restoreRowSelection(false)
 }
 
@@ -3421,6 +3639,7 @@ function railRowEl(e, { withFilter, closed = false }) {
     setProjectDisclosure(false, { restoreFocus: layout === 'narrow' })
     resetPaging()
     forceRender()
+    requestHistoryPaint()
   })
   // the keyboard half of close/reopen, since the button itself is out of the tab
   // order. `ev` is the keyboard event; `e` is the rail entry — do not merge them.
@@ -3707,6 +3926,7 @@ function closedProjectEntryEl(entry) {
     tabletDismissedOpenKey = null
     resetPaging()
     forceRender()
+    requestHistoryPaint()
   })
 
   const reopen = document.createElement('button')
@@ -3789,6 +4009,7 @@ function renderRail() {
     boards: lastData.boards,
     archived: lastData.archived,
     activity: lastData.activity ?? [],
+    older: lastData.older?.older ?? [],
   })
   // Reconciled against the FULL list, open AND closed: selecting a closed
   // project IS legal — that is the peek — so this must never read `open`, or the
@@ -3932,6 +4153,7 @@ function initAgentSelect() {
     agentFilter = e.target.value || null
     resetPaging()
     forceRender()
+    requestHistoryPaint()
   })
 }
 
@@ -5061,10 +5283,28 @@ function historyItemEl(it) {
 
 function renderDone(items) {
   const host = document.querySelector('#done .items')
-  const { visible, remaining } = paginateWithPending(items, 'done')
-  host.innerHTML = items.length ? '' : '<p class="empty">Nothing yet.</p>'
-  for (const it of visible) host.appendChild(historyItemEl(it))
-  if (remaining > 0) host.appendChild(moreButton('done', remaining))
+  // Issue #184: until the closed history the page omits has been read, only the
+  // leading entries nothing omitted can precede are in their final place.
+  const older = olderHistory(lastData.older, olderLens()).items
+  const known = older ? knownHistory(items, lastData.older.before) : items
+  const { visible } = paginateWithPending(known, 'done')
+  // A focus target the page carries outside that prefix still shows at once,
+  // after the known page, as any target beyond the page cap does.
+  const protectedId = pendingFocusId ?? pagedFocusId
+  const target = known !== items && protectedId && !visible.some((it) => it.id === protectedId)
+    ? items.find((it) => it.id === protectedId)
+    : null
+  const listed = target ? [...visible, target] : visible
+  const total = items.length + older
+  host.innerHTML = total ? '' : '<p class="empty">Nothing yet.</p>'
+  for (const it of listed) host.appendChild(historyItemEl(it))
+  if (older && (historyTabPinned || shown.done > known.length)) {
+    const loading = document.createElement('p')
+    loading.className = 'empty history-loading'
+    loading.setAttribute('role', 'status')
+    loading.textContent = olderHistoryWaitText('Loading older history…')
+    host.appendChild(loading)
+  } else if (total > listed.length) host.appendChild(moreButton('done', total - listed.length))
 }
 
 const GLYPH = { done: '✓', partial: '◐', missing: '×', tracked: '→', na: '—', blocked: '!' }
@@ -6454,7 +6694,11 @@ function btn(label, onClick, shortcut = null) {
 // the pager at the foot of a capped section — reveals PAGE[section] more cards
 function moreButton(section, remaining) {
   const n = Math.min(PAGE[section], remaining)
-  const b = btn(`Show ${n} more (${remaining} hidden)`, () => { shown[section] += PAGE[section]; forceRender() })
+  const b = btn(`Show ${n} more (${remaining} hidden)`, () => {
+    shown[section] += PAGE[section]
+    forceRender()
+    requestHistoryPaint()
+  })
   b.className = 'show-more'
   return b
 }
@@ -6681,6 +6925,8 @@ function initSearch() {
       searchActiveIndex = -1
       renderSearchResults()
     }, 120)
+    // Issue #184: overlap reading the closed history the page omits with the debounce.
+    requestHistory()
   })
   input.addEventListener('focus', () => {
     const value = input.value.trim()
@@ -6688,6 +6934,7 @@ function initSearch() {
     searchQuery = input.value
     searchIndexOpen = true
     renderSearchResults()
+    requestHistory()
   })
   input.addEventListener('keydown', (event) => {
     if (event.isComposing) {

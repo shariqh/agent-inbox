@@ -12,6 +12,8 @@ export interface RailSources {
   boards?: RailProjected[]
   archived?: RailProjected[]
   activity?: RailActivity[]
+  /** closed-history groups the paged item snapshot omitted (#184) */
+  older?: RailProjected[]
 }
 
 export interface RailEntry {

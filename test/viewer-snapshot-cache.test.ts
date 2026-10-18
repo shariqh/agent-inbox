@@ -116,7 +116,10 @@ describe('viewer conditional snapshots', () => {
     expect(emptyActive).not.toBe(emptyArchived)
     question()
     board()
-    const expected = [groupItems(listItems(db)), listBoards(db), listBoards(db, { status: 'archived' })]
+    // Issue #184: with no closed items the page is the whole item list, plus an
+    // empty closed-history summary.
+    const page = { ...groupItems(listItems(db)), history: { total: 0, loaded: 0, before: null, older: [] } }
+    const expected = [page, listBoards(db), listBoards(db, { status: 'archived' })]
     for (const [index, route] of ROUTES.entries()) {
       expect(await (await app.request(route)).json()).toEqual(expected[index])
     }
@@ -480,9 +483,12 @@ describe('viewer conditional snapshots', () => {
       const leanResponse = await app.request(LEAN)
       const fullTag = fullResponse.headers.get('etag')!
       const leanTag = leanResponse.headers.get('etag')!
-      // With nothing but an open question the two bodies are byte-identical, so
-      // only distinct validators keep one from revalidating the other.
-      expect(await leanResponse.text()).toBe(await fullResponse.text())
+      // With nothing but an open question the two bodies differ only by the
+      // default's empty closed-history summary (#184), so only distinct
+      // validators keep one from revalidating the other.
+      const { history, ...unpaged } = await fullResponse.json()
+      expect(history).toEqual({ total: 0, loaded: 0, before: null, older: [] })
+      expect(await leanResponse.json()).toEqual(unpaged)
       expect(leanTag).toMatch(/^"[^"]+"$/)
       expect(leanTag).not.toBe(fullTag)
       const own = await conditional(LEAN, leanTag)

@@ -1,11 +1,20 @@
 const record = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
 const strings = (value, keys) => record(value) && keys.every((key) => typeof value[key] === 'string')
+const counts = (value, keys) => record(value) && keys.every((key) => Number.isInteger(value[key]) && value[key] >= 0)
 const item = (value) => strings(value, ['id', 'title', 'project', 'agent', 'kind', 'status'])
 const group = (value) => strings(value, ['project']) && Array.isArray(value.items) && value.items.every(item)
+// Issue #184: what a page omitted from closed history. Absent means complete.
+const closedHistory = (value) => value === undefined || (counts(value, ['total', 'loaded'])
+  && (value.before === null || typeof value.before === 'string')
+  && Array.isArray(value.older)
+  && value.older.every((older) => strings(older, ['project', 'agent']) && counts(older, ['items', 'outcomes'])
+    && (older.latest === undefined || older.latest === null || typeof older.latest === 'string')))
 const items = (value) => record(value)
   && Array.isArray(value.needsYou) && value.needsYou.every(group)
   && Array.isArray(value.notes) && value.notes.every(group)
   && Array.isArray(value.done) && value.done.every(item)
+  && closedHistory(value.history)
+const history = (value) => record(value) && Array.isArray(value.done) && value.done.every(item)
 const boards = (value) => Array.isArray(value) && value.every((board) =>
   strings(board, ['id', 'title', 'project', 'agent'])
   && Array.isArray(board.rows) && board.rows.every((row) => strings(row, ['id', 'label', 'status']))
@@ -13,10 +22,16 @@ const boards = (value) => Array.isArray(value) && value.every((board) =>
 const spans = (value) => Array.isArray(value) && value.every(record)
 const validators = new Map([
   ['/api/items', items],
+  ['/api/items/history', history],
   ['/api/boards', boards],
   ['/api/boards/archived', boards],
   ['/api/activity/history', spans],
 ])
+// The only route whose query string selects one of its own representations
+// (#185). Anywhere else a query names a different representation, such as the
+// dock watcher's `/api/items?scope=attention`, which must never enter (and so
+// never share or evict) the slot of the route it shares a path with.
+const QUERY_ROUTES = new Set(['/api/activity/history'])
 
 const HISTORY_WINDOW_MS = 30 * 24 * 60 * 60 * 1000
 const HISTORY_STEP_MS = 60 * 60 * 1000
@@ -48,7 +63,7 @@ export function createSnapshotReader(fetcher) {
   return async (url) => {
     const route = url.split('?')[0]
     const validate = validators.get(route)
-    if (!validate) throw new Error(`Unsupported snapshot route: ${url}`)
+    if (!validate || (url !== route && !QUERY_ROUTES.has(route))) throw new Error(`Unsupported snapshot route: ${url}`)
     const held = cache.get(route)
     const requested = held?.url === url ? held : undefined
     const requestGeneration = ++generation

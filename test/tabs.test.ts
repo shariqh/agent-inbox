@@ -40,6 +40,13 @@ describe('tab model', () => {
   it('treats a missing notes number as zero rather than NaN', () => {
     expect(tabCounts({ globalAttention: 0, scoped: { boards: [], done: [] } }).notes).toBe(0)
   })
+
+  // Issue #184: History counts the closed items the page omitted, so the tab
+  // reads the same with or without the complete history loaded.
+  it('adds the omitted closed history to the History count', () => {
+    const c = tabCounts({ globalAttention: 0, scoped: { boards: [], done: [{ id: 'd1' }] }, olderDone: 41 })
+    expect(c.done).toBe(42)
+  })
 })
 
 describe('filter-blindness invariant (spec §7)', () => {

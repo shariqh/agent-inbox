@@ -969,6 +969,111 @@ export function listOpenQuestions(db: Database.Database): Item[] {
   return (rows as StoredItem[]).map(parseItem)
 }
 
+// Issue #184: the viewer's default item snapshot used to carry every closed item
+// ever, re-sent in full whenever any item changed. A page carries every open
+// item plus the `closedLimit` most recently TOUCHED closed items; `history`
+// summarizes the rest so counts stay exact without them.
+export interface ClosedHistoryGroup {
+  project: string
+  agent: string
+  /** omitted closed items for this project and agent */
+  items: number
+  /** how many of them record an outcome */
+  outcomes: number
+  /** the newest Dashboard stamp (public/relay.js `stamp`) among those outcomes;
+   *  null when none of the omitted items records one */
+  latest: string | null
+}
+
+export interface ClosedHistorySummary {
+  /** every closed (resolved or dismissed) item */
+  total: number
+  /** closed items the page carries */
+  loaded: number
+  /** No omitted item was touched after this instant (null: nothing omitted). A
+   *  touch is the newest of the item's stamps, so it is never before the item's
+   *  creation: whatever the page carries created after it is a complete,
+   *  correctly ordered History prefix. */
+  before: string | null
+  older: ClosedHistoryGroup[]
+}
+
+export interface ItemsPage {
+  items: Item[]
+  history: ClosedHistorySummary
+}
+
+// Canonical ISO strings order chronologically as text; '' stands in for NULL
+// because multi-argument max() is NULL when any argument is.
+const CLOSED_TOUCHED_AT = `MAX(created_at, IFNULL(updated_at, ''), IFNULL(resolved_at, ''),
+  IFNULL(outcome_at, ''), IFNULL(replied_at, ''), IFNULL(reply_seen_at, ''),
+  IFNULL(annotated_at, ''), IFNULL(annotation_seen_at, ''))`
+// The instant public/relay.js `stamp` orders Dashboard outcomes by: the first
+// of these an item has (items carry no handled stamps).
+const OUTCOME_STAMP = `COALESCE(outcome_at, reply_seen_at, annotation_seen_at, replied_at,
+  annotated_at, updated_at, created_at)`
+
+// `closedLimit`: the most recently touched closed items. `outcomeLimit`: the
+// newest outcome-bearing closed items of projects the human has not closed (and
+// any tied with the last), which a page always carries so the Dashboard's
+// default lens never depends on omitted history, however many closures without
+// an outcome (Inbox resolve/dismiss, hook sweeps) have taken the recent slots.
+export function listItemsPage(db: Database.Database, closedLimit: number, outcomeLimit = 0): ItemsPage {
+  // Read-only, so a deferred transaction suffices: it pins one snapshot across
+  // every statement, so the summary and the page can never disagree.
+  return db.transaction((): ItemsPage => {
+    const ranked = db.prepare(`SELECT rowid AS seq, id, project, agent, created_at,
+        outcome <> '' AS has_outcome, ${CLOSED_TOUCHED_AT} AS touched_at, ${OUTCOME_STAMP} AS stamp_at
+      FROM items WHERE status <> 'open'
+      ORDER BY touched_at DESC, rowid DESC`).all() as Array<{
+      seq: number
+      id: string
+      project: string
+      agent: string
+      created_at: string
+      has_outcome: number
+      touched_at: string
+      stamp_at: string
+    }>
+    const byName = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0)
+    const kept = new Set(ranked.slice(0, Math.max(0, closedLimit)).map((row) => row.id))
+    const closed = new Set(closedProjects(db))
+    const outcomes = ranked.filter((row) => row.has_outcome && !closed.has(row.project))
+      .sort((a, b) => byName(b.stamp_at, a.stamp_at) || byName(b.created_at, a.created_at) || b.seq - a.seq)
+    const edge = outcomes[Math.max(0, outcomeLimit) - 1]?.stamp_at
+    for (const [index, row] of outcomes.entries()) {
+      if (index >= outcomeLimit && row.stamp_at !== edge) break
+      kept.add(row.id)
+    }
+    const omitted = ranked.filter((row) => !kept.has(row.id))
+    const groups = new Map<string, ClosedHistoryGroup>()
+    for (const row of omitted) {
+      const key = JSON.stringify([row.project, row.agent])
+      const group = groups.get(key) ?? { project: row.project, agent: row.agent, items: 0, outcomes: 0, latest: null }
+      group.items += 1
+      if (row.has_outcome) {
+        group.outcomes += 1
+        if (group.latest === null || row.stamp_at > group.latest) group.latest = row.stamp_at
+      }
+      groups.set(key, group)
+    }
+    // The same created_at-then-rowid order listItems walks, so a page is an
+    // order-preserving subset of the complete list.
+    const rows = db.prepare(`SELECT * FROM items
+      WHERE status = 'open' OR id IN (SELECT value FROM json_each(?))
+      ORDER BY created_at DESC, rowid DESC`).all(JSON.stringify([...kept]))
+    return {
+      items: (rows as StoredItem[]).map(parseItem),
+      history: {
+        total: ranked.length,
+        loaded: kept.size,
+        before: omitted[0]?.touched_at ?? null,
+        older: [...groups.values()].sort((a, b) => byName(a.project, b.project) || byName(a.agent, b.agent)),
+      },
+    }
+  })()
+}
+
 // 'blocked' = the row needs human input and escalates into the attention layer
 export type RowStatus = 'done' | 'partial' | 'missing' | 'tracked' | 'na' | 'blocked'
 

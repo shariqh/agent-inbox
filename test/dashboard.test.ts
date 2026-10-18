@@ -220,6 +220,54 @@ describe('buildDashboard', () => {
     expect(model.sessions).toEqual([])
     expect(model.recentOutcomes).toEqual([])
   })
+
+  // Issue #184: the page omits older closed items; the summary keeps every count
+  // exact, and recent outcomes list only what nothing omitted could outrank.
+  it('counts omitted outcomes and projects, and lists only outcomes no omitted item can outrank', () => {
+    const outcome = (id: string, at: string) => ({
+      id, project: 'alpha', kind: 'question', status: 'resolved', title: id,
+      created_at: '2026-08-20T00:00:00.000Z', outcome: `${id} done`, outcome_at: at,
+    })
+    const input = {
+      items: [outcome('newest', '2026-08-24T19:00:00.000Z'), outcome('boundary', '2026-08-24T12:00:00.000Z')],
+      boards: [],
+      archived: [{
+        id: 'archive', project: 'alpha', title: 'Rollout',
+        rows: [{
+          id: 'row', label: 'Canary', status: 'done', annotation: null, annotation_unseen: false,
+          outcome: 'Shipped.', outcome_at: '2026-08-24T18:00:00.000Z',
+        }],
+      }],
+      activity: [],
+      nowMs: NOW,
+      liveSessionIds: new Set<string>(),
+    }
+    const complete = buildDashboard(input)
+    expect(buildDashboard({ ...input, history: { older: { items: 0, outcomes: 0, latest: null, projects: [], agents: [] } } }))
+      .toEqual(complete)
+    expect(complete.recentOutcomesComplete).toBe(true)
+
+    const paged = buildDashboard({
+      ...input,
+      history: { older: { items: 5, outcomes: 2, latest: '2026-08-24T12:00:00.000Z', projects: ['alpha', 'archive-only'], agents: ['copilot'] } },
+    })
+    expect(paged.signals.outcomes).toBe(complete.signals.outcomes + 2)
+    expect(paged.ownership.outcome).toBe(complete.ownership.outcome + 2)
+    expect(paged.signals.projects).toBe(2)
+    expect(paged.recentOutcomes.map((entry) => entry.kind === 'item' ? entry.item.id : entry.row.id))
+      .toEqual(['newest', 'row'])
+    expect(paged.recentOutcomesComplete).toBe(false)
+
+    // The Dashboard lists four: once four are proven, omitted history is not needed.
+    const proven = buildDashboard({
+      ...input,
+      items: ['19', '18', '17', '16'].map((hour) => outcome(`at-${hour}`, `2026-08-24T${hour}:00:00.000Z`)),
+      archived: [],
+      history: { older: { items: 9, outcomes: 9, latest: '2026-08-24T12:00:00.000Z', projects: ['alpha'], agents: ['copilot'] } },
+    })
+    expect(proven.recentOutcomes).toHaveLength(4)
+    expect(proven.recentOutcomesComplete).toBe(true)
+  })
 })
 
 describe('buildActivitySeries', () => {

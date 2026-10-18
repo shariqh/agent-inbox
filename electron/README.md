@@ -24,7 +24,7 @@ fully verifies the new build without touching the running one, and the returned
 `commit()` is the only step that changes the installation (`discard()` removes what was
 staged). `update-controller.cjs` consults feasibility on every check, so an installation
 that cannot install an offer gets a notify-only offer with the installer's plain reason.
-A strategy with no registered installer (AppImage today) stays download-only. On
+A strategy with no registered installer stays download-only. On
 **Install and restart** the controller re-checks the running version, the high-water mark
 re-read from `update-trust-state.json`, agent Setup, any check in flight and feasibility,
 then reopens the download through `downloader.openVerified()`, which re-hashes it through
@@ -61,7 +61,8 @@ rejected `commit()` removes the record. The helper's last argument is the store'
 0 installed, 64 bad arguments, 65 refused, 70/71 could not move the app aside/in, 75 timed
 out) before every exit, and before it reopens the app. The first `rendererReady()` of an
 instance that registered an installer takes both files before any cleanup; a record
-without a result that is younger than 150 s may still be in flight and is left alone. If
+without a result stamped within 150 s of now, either way, may still be in flight and is
+left alone (a small clock step back still counts; a stamp far in the future does not). If
 the app is still older than the attempted release, every published state carries
 `installNotice` with the cause, Settings shows it (with Open Releases when nothing is
 offered), and one native notification fires; it stays on the next offer of that version.
@@ -69,6 +70,61 @@ An app now on that release, or one whose helper reported success, says nothing. 
 installs follow #205's quit contract: `beginAppQuit()` (called first by `before-quit` and
 by the update restart) refuses new Setup and update installs and revokes both window
 bindings, and a quit while the attempt record is written still stops the install.
+
+A Linux AppImage registers `update-install-appimage.cjs` only for an owned viewer of a
+packaged app. Registration, the update check's target selection (`runsFromAppImage()` in
+`update-fetch.cjs`) and the installer all require proof that this process runs from that
+image: `APPIMAGE` and `APPDIR` are canonical absolute paths, the executable sits inside
+`APPDIR`, and `APPDIR` is the runtime's FUSE mount of that very file. That is a mount
+point (its `lstat` device differs from its parent's) whose visible `/proc/self/mountinfo`
+entry has type `fuse.<name>` and source `<name>`, `<name>` being `APPIMAGE`'s file name:
+the pinned type2-runtime passes no fsname or subtype, so libfuse names the mount after the
+image's real file. Tests inject that probe (`appImageProbe`); main never does. A `.deb`
+install that inherited another AppImage's variables, an extracted `squashfs-root` started
+from inside another AppImage (our AppRun points `APPDIR` at that plain folder while
+`APPIMAGE` still names the other file), and our image mounted by hand under another
+image's `APPIMAGE` therefore keep `deb-notify` and register no installer, so neither can
+replace that other application's file, and no startup report of their own can take an
+attempt record that AppImage left in a shared `userData`. The installer records the
+AppImage's device, inode, size and modification time when it is created and refuses
+(`changed-since-launch`) once the file differs. It also refuses a symlink, a file owned by
+another user, an unwritable file or folder, and a file without the ELF and `AI\x02` type-2
+magic, read through an `O_NOFOLLOW | O_NONBLOCK` handle bound to the inspected inode. The
+runtime's extract-and-run fallback fails that proof too, and the installer also refuses it
+by name (`extract-and-run`): any `APPIMAGE_EXTRACT_AND_RUN`, which the runtime honors at
+any value and a restart would inherit, or an `APPDIR` named `appimage_extracted_*`, all
+that `--appimage-extract-and-run` leaves. That mode extracts into the predictable
+`$TMPDIR/appimage_extracted_<md5>`, which the runtime recreates mode `0755` when missing
+and reuses when present, and the documented launcher removes its private `TMPDIR` as the
+app exits, so a restart could run files another local user planted there. `commit()`
+re-checks the variable before the rename. `prepare()` writes the handle with
+`copyVerifiedSource` into a hidden `.<name>.update-<16 hex>` sibling
+(`O_EXCL | O_NOFOLLOW`, `0600`). It then seals the stage through a read-only `O_NOFOLLOW`
+handle: same device as the AppImage, the signed size, the type-2 magic in the staged
+bytes, `fchmod 0755` and fsync. `commit()` re-checks the AppImage, its folder and the
+stage, and makes one atomic rename over the AppImage, which is the commit point. The
+running app keeps its mount of the old inode. After the rename `commit()` never rejects:
+it fsyncs the folder and starts a detached host `/bin/sh -c` helper with constant text,
+argv `<app-pid> <viewer-pid|-> <polls> <target> <result|-> -- <app arguments…>`, `cwd '/'`
+and `stdio: 'ignore'`, and resolves on its `spawn` event (an invalid `resultPath` is
+refused before the rename). The app arguments are `process.argv.slice(1)` as captured at
+startup, minus the leading `--disable-setuid-sandbox` our AppRun added, because the new
+AppRun adds it again; the helper passes them to the new AppImage verbatim. It checks the
+`--` and `<result>` first (invalid: exit 64, writing nowhere). Before every exit, and just
+before it execs the new AppImage, it writes its shared `INSTALL_HELPER_EXIT` code there,
+temp file then rename, under `umask 077` that the app does not inherit. The codes: 64 bad
+arguments, 75 the app never exited within about two minutes, 65 the AppImage path no
+longer holds a regular, executable, non-symlink file (the closest code to "could not start
+it"), and 0 just before the exec. The file was replaced before the helper ran, so the app
+opened next from that path is the new version, and the controller's next-start report is
+silent whatever the helper wrote. Its environment drops `APPDIR`, `APPIMAGE`, `ARGV0`,
+`OWD`, `TARGET_APPIMAGE` and every path-list entry inside the old `APPDIR`; a list left
+with only empty entries, and a `PATH` naming no directory at all, is dropped whole, so
+`/bin/sh` finds `sleep` and `mv` on its default search path. Electron's own relaunch is
+never used: its relauncher runs from the old mount, which the AppImage runtime tears down
+when the app exits. If the helper cannot start, the new file is already installed, so the
+app only logs and the user opens it again. Startup cleanup removes at most 16 stale stages
+per pass: exact name, owner uid, over an hour old, never followed.
 
 Checks also refuse to move backwards. After a manifest's signature, schema and expiry
 verify, the app records that release version as a high-water mark in its own user-data

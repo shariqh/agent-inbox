@@ -85,7 +85,14 @@ export interface UpdateCheckOptions {
   platform: string
   arch: string
   isPackaged: boolean
+  /** `process.env.APPIMAGE`; with `appDir` and `execPath`, selects the AppImage target (see runsFromAppImage). */
   appImagePath?: string
+  /** `process.env.APPDIR`, the running AppImage's mount. */
+  appDir?: string
+  /** `process.execPath`; must sit inside `appDir` for the AppImage target. */
+  execPath?: string
+  /** What the AppImage proof reads; this machine's lstat and /proc/self/mountinfo by default. */
+  appImageProbe?: AppImageProbe
   /** Attach the verified target as `artifact` for the main-process downloader. */
   includeArtifact?: boolean
   now?: () => Date
@@ -95,3 +102,27 @@ export interface UpdateCheckOptions {
 }
 
 export function checkForUpdate(options: UpdateCheckOptions): Promise<UpdateCheckResult>
+
+/** What the AppImage proof reads from the system; injectable for tests. */
+export interface AppImageProbe {
+  /** `fs.lstatSync(path, { bigint: true })`. */
+  lstat(path: string): { dev: bigint | number; isDirectory(): boolean }
+  /** The text of `/proc/self/mountinfo`. */
+  mountInfo(): string
+}
+
+/**
+ * True only when APPIMAGE and APPDIR are canonical absolute paths, APPDIR is not
+ * the root, the executable sits inside APPDIR, and APPDIR is the runtime's FUSE
+ * mount of that image: a mount point (another device than its parent) whose
+ * visible /proc/self/mountinfo entry has type `fuse.<name>` and source `<name>`,
+ * `<name>` being APPIMAGE's file name (libfuse's default subtype). Proof the app
+ * runs from that AppImage rather than from a .deb install or an extracted
+ * squashfs-root that inherited another image's variables. Never throws.
+ */
+export function runsFromAppImage(options: {
+  appImagePath?: string
+  appDir?: string
+  execPath?: string
+  appImageProbe?: AppImageProbe
+}): boolean

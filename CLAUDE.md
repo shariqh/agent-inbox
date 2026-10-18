@@ -868,8 +868,8 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   below). The downloader itself never executes, mounts, opens or installs, and update
   state never enters `public/attention.js`, badges or Needs-you.
 - **Verified update install on macOS** *(#196 part 2)* — **Install and restart** in
-  Settings → Updates installs the verified DMG; AppImage stays download-only until its
-  installer registers (part 3), `deb-notify` stays notify-only. Load-bearing pieces:
+  Settings → Updates installs the verified DMG; an AppImage installs through its own
+  installer (part 3, below), `deb-notify` stays notify-only. Load-bearing pieces:
   (1) **The install contract** (`electron/update-install.cjs`): `PlatformInstaller {
   strategy, feasibility, prepare, cleanup? }`; `prepare()` stages AND fully verifies
   without touching the running installation, and the returned `commit()` is the only
@@ -925,14 +925,99 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   validation refuses relative, dot-segment and trailing-slash paths (a trailing slash
   would make its symlink checks test the link's target). The first `rendererReady()`
   takes both files BEFORE any cleanup (cleanup only matches `install-XXXXXX`, pinned), and
-  only in an instance with a registered installer; a record without a result younger than
-  150 s (the helper's wait plus margin) is left for the app the helper reopens. The helper
+  only in an instance with a registered installer; a record without a result stamped
+  within 150 s of now EITHER WAY (the helper's wait plus margin; `Math.abs`, so an NTP
+  step back still counts as in flight) is left for the app the helper reopens, while a
+  stamp far in the future is stale, so it cannot hold a notice. The helper
   writes its result BEFORE reopening the app. Exit 0 is never reported as a failure; an
   app still older than `to` publishes `installNotice` on every state until that release
   stops being offered or a new install starts, and notifies once. Part 3 reuses the store,
   the exit codes and `resultPath`. Update state still never enters
   `public/attention.js`, badges or Needs-you. Open: the real `/Applications` swap under
   macOS App Management needs the planned 1.3.0 → 1.3.1 end-to-end run.
+- **Verified update install for AppImage** *(#196 part 3)* — `electron/update-install-appimage.cjs`
+  replaces the running AppImage FILE in place (same name and path; the name may carry the
+  old version) and restarts into it. (1) **One AppImage proof:** `runsFromAppImage()` in
+  `update-fetch.cjs` decides both the offered target and the installer's
+  `not-appimage`: APPIMAGE and APPDIR canonical absolute, APPDIR not `/`,
+  `process.execPath` inside APPDIR, AND APPDIR the runtime's FUSE mount of that very
+  file: a mount point (`lstat` dev differs from its parent's) whose LAST (visible)
+  `/proc/self/mountinfo` entry has type `fuse.<name>` and source `<name>`, `<name>` =
+  basename(APPIMAGE). The pinned type2-runtime passes no fsname/subtype, so libfuse's
+  default subtype is the image's real file name (seen in a real Docker FUSE run; re-check
+  on any runtime pin change). Paths alone were not enough (#210 review): our AppRun
+  reassigns and exports `APPDIR=$(pwd -P)`, so an extracted `squashfs-root/AppRun` run
+  from a shell another AppImage started had a plain-folder APPDIR holding execPath while
+  APPIMAGE still named the OTHER app's file, and the commit renamed our update over it.
+  The dev check stops that; the mountinfo binding also stops our image mounted by hand
+  (`--appimage-mount`) under another image's APPIMAGE. Any lstat/mountinfo failure is
+  false (notify-only). Tests inject `appImageProbe`; main and target selection use the
+  system. A bare inherited APPIMAGE (a `.deb` or an extracted copy started from another
+  AppImage) must never select the AppImage target or point the installer at someone
+  else's file. Main registers the installer only under that same proof (plus
+  `viewerOwned` and packaged): such a run registers nothing, so no startup report can
+  take an attempt record another AppImage copy left in a shared userData.
+  (2) **Bound to the launched file:** the installer snapshots the
+  AppImage's dev, ino, size and `mtimeNs` when it is created at startup. Feasibility,
+  `prepare()` and `commit()` refuse once the file at APPIMAGE differs
+  (`changed-since-launch`), which also blocks a second install before a restart.
+  Feasibility otherwise needs a regular file owned by the uid, W_OK on the file and
+  W_OK|X_OK on a real folder, and the ELF + `AI\x02` magic read through
+  `O_RDONLY|O_NOFOLLOW|O_NONBLOCK` with the fstat bound to the lstat'd inode. Messages are
+  plain, path-free and end "Use Review release instead." (3) **Stage beside the file:**
+  `copyVerifiedSource` writes a hidden `.<name>.update-<16 hex>` sibling (`O_EXCL|O_NOFOLLOW`,
+  `0600`; a planted name fails closed, with no retry). It is then sealed through a fresh
+  read-only `O_NOFOLLOW` handle: same device as the AppImage (the commit is a rename),
+  exactly the signed size, the type-2 magic in the STAGED bytes, `fchmod 0755`, fsync.
+  Every failure removes the stage, identity-checked once its inode is known. (4) **Commit =
+  rename:** re-lstat the AppImage (full snapshot), its folder and the stage (dev+ino),
+  then one `rename(stage, APPIMAGE)`. After that `commit()` NEVER rejects, because the
+  installation already changed: best-effort folder fsync, then the restart helper. A
+  helper that cannot start only logs, and the user opens the new file. (5) **Restart
+  helper, never `app.relaunch()`:** Electron's relauncher execs `/proc/self/exe` inside
+  the AppImage's FUSE mount, which the runtime tears down when the app exits. Instead a
+  detached host `/bin/sh -c` runs constant text with argv `<app-pid> <viewer-pid|->
+  <polls> <target> <result|-> -- <app args…>`, `set -u`, arguments validated (exit 64;
+  the `--` in sixth place is required), `cwd:'/'`,
+  `stdio:'ignore'`, unref'd, and `commit()` resolves only on its `spawn` event. It polls
+  `kill -0` for the app AND the viewer child (the same port race as macOS), exits 75
+  after ~120 s without starting anything, then `exec "$target" "$@"`. The app args are
+  `process.argv.slice(1)` captured when main creates the installer, minus ONE leading
+  `--disable-setuid-sandbox`: our AppRun (`renderAppRun`) puts it in front of the user's
+  args and the new AppRun adds it again, so forwarding it would add a copy per update; a
+  copy the user typed is kept. It reuses #207's report
+  seam: `commit({ resultPath })` (validated before the rename; none means `-`, no
+  report), `<result>` checked first (invalid: 64, writes nowhere), and the shared
+  `INSTALL_HELPER_EXIT` code written (temp + rename, a `umask 077` subshell the app never
+  inherits) before every exit AND just before the exec: 0 right before it, 65 when the
+  path no longer holds a regular executable non-symlink file (the closest code to a
+  failed exec; an execve failure after that check still reads 0). Because the commit
+  replaced the file first, the app opened next from that path is the new version, so the
+  controller's next-start report is silent whatever the code. Its env is `process.env` minus APPDIR,
+  APPIMAGE, ARGV0, OWD, TARGET_APPIMAGE and every `:`-entry resolving inside the old
+  APPDIR; a list left with only empty entries is dropped whole, and so is a PATH naming no
+  directory at all (an empty PATH left the helper without `sleep`/`mv`: exit 75 in
+  milliseconds, no restart). Unset, `/bin/sh` uses its default search path. The module
+  never imports `child_process` (`spawnImpl` is injected) or Electron.
+  (6) **No rollback copy:** the rename frees the old inode at exit; going back means
+  downloading the older AppImage. (7) **Cleanup:** at most 16 removals and 64 candidates
+  per pass, exact stage names, regular files or symlinks (unlinked, never followed) owned
+  by the uid and over an hour old, never this process's live stage, and only under the
+  AppImage proof. (8) **Extract-and-run is notify-only:** its APPDIR is no mount, so the
+  proof in (1) already fails; the installer also refuses it by name (`extract-and-run`),
+  as defense in depth and for the commit-time re-check. The runtime
+  extracts into the predictable `$TMPDIR/appimage_extracted_<md5>`, recreates it `0755`
+  when missing and reuses existing right-size files, and the documented launcher's `trap`
+  removes its private TMPDIR as the app exits, so a restart could run a planted `AppRun`
+  as the user. Detected by ANY `APPIMAGE_EXTRACT_AND_RUN` (the runtime tests
+  `getenv() != NULL`, and a restart inherits it) or an APPDIR basename starting
+  `appimage_extracted_` (`--appimage-extract-and-run` sets no variable and is stripped
+  from argv). Checked in `inspect()` (so feasibility and `prepare()`) and again before the
+  rename in `commit()`, reading env live; an unreadable env counts as extracted. Cleanup,
+  which needs the proof, does not run there. Install-then-quit was rejected: it needs a no-restart flag through the
+  controller, preload, three Settings strings and the notifier, plus an attempt record
+  with no helper result. Open: the real offer → install → FUSE teardown → relaunch needs
+  the first signed 1.3.0 → 1.3.1 pair on a Linux desktop (manual plan in the PR).
 - **Session presence** *(#28, corrected by #45)* — every MCP session is a Live row; `status()`
   upgrades it, process exit ends it, and a row that stops being heartbeated expires after ~15 min.
   That expiry only ever fires for a **crashed** process: a live one heartbeats itself, so what

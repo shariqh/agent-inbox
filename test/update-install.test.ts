@@ -290,6 +290,23 @@ describe('recording an install attempt across the restart', () => {
     expect(readdirSync(directory)).toEqual([])
   })
 
+  it('keeps an attempt stamped slightly in the future in flight, but not one stamped far in the future', async () => {
+    const directory = join(workDir(), 'update-install')
+    let clock = at
+    const attempts = store(directory, 'darwin', () => clock)
+    await attempts.begin({ from: '1.3.0', to: '1.3.1', strategy: 'macos-dmg' })
+
+    // A small step back (an NTP correction) after the record was written: still in flight.
+    clock = new Date(at.getTime() - 2_000)
+    await expect(attempts.take()).resolves.toBeNull()
+    expect(readdirSync(directory)).toEqual(['last-attempt.json'])
+
+    // The clock moved back a day: a stamp that far ahead cannot hold the report back.
+    clock = new Date(at.getTime() - 24 * 60 * 60_000)
+    await expect(attempts.take()).resolves.toMatchObject({ to: '1.3.1', exitCode: null })
+    expect(readdirSync(directory)).toEqual([])
+  })
+
   it('drops a stale helper result when a new attempt begins, and both files when the hand-off never started', async () => {
     const directory = join(workDir(), 'update-install')
     const attempts = store(directory)

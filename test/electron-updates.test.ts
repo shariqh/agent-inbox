@@ -324,6 +324,7 @@ describe('Electron updater integration', () => {
       'electron/update-download.cjs',
       'electron/update-install.cjs',
       'electron/update-install-macos.cjs',
+      'electron/update-install-appimage.cjs',
     ]) {
       const source = read(file)
       expect(source).not.toContain('attention')
@@ -362,7 +363,8 @@ describe('Electron updater integration', () => {
   it('runs install binaries only by absolute path with argv arrays, outside Electron and the MCP graph', () => {
     const contract = read('electron/update-install.cjs')
     const mac = read('electron/update-install-macos.cjs')
-    for (const source of [contract, mac]) {
+    const appImage = read('electron/update-install-appimage.cjs')
+    for (const source of [contract, mac, appImage]) {
       expect(source).not.toContain("require('electron')")
       expect(source).not.toMatch(/shell:\s*true/)
       expect(source).not.toMatch(/\bexec(Sync)?\(/)
@@ -371,6 +373,49 @@ describe('Electron updater integration', () => {
     }
     expect(contract).not.toContain('child_process')
     expect(mac).toContain("require('node:child_process')")
+    // The AppImage installer starts its one helper only through the injected spawn.
+    expect(appImage).not.toContain('child_process')
+    expect(appImage).toContain("const HELPER_SHELL = '/bin/sh'")
+  })
+
+  it('registers the AppImage installer only for an owned viewer of a packaged app proven to run from its AppImage, never via app.relaunch', () => {
+    const main = read('electron/main.cjs')
+    const start = main.indexOf('function appImageInstallers()')
+    const registration = main.slice(start, main.indexOf('\n}', start))
+
+    expect(main).toContain("const { createAppImageInstaller } = require('./update-install-appimage.cjs')")
+    expect(main).toContain("const { checkForUpdate, runsFromAppImage } = require('./update-fetch.cjs')")
+    expect(main).toContain("if (process.platform === 'linux') return appImageInstallers()")
+    // The same proof that selects the AppImage target: a bare inherited APPIMAGE registers nothing,
+    // so no installer's startup report can take another AppImage copy's attempt record.
+    expect(registration).toContain(
+      'const fromAppImage = runsFromAppImage({ appImagePath: process.env.APPIMAGE, appDir: process.env.APPDIR, execPath: process.execPath })',
+    )
+    expect(registration).toContain('if (!viewerOwned || !app.isPackaged || !fromAppImage) return {}')
+    expect(registration).not.toContain('!process.env.APPIMAGE')
+    for (const line of [
+      "'appimage-self-replace': createAppImageInstaller({",
+      'env: process.env,',
+      'execPath: process.execPath,',
+      'uid: process.getuid(),',
+      'platform: process.platform,',
+      'isPackaged: app.isPackaged,',
+      'pid: process.pid,',
+      // What the user started the app with, as Electron's own relaunch would forward it.
+      'argv: process.argv.slice(1),',
+      'viewerPid: spawnedViewerPid,',
+      'spawnImpl: spawn,',
+    ]) {
+      expect(registration, line).toContain(line)
+    }
+    for (const source of [main, read('electron/update-install-appimage.cjs')]) {
+      expect(source).not.toContain('app.relaunch(')
+    }
+    // One registration, into the one controller whose installs the #205 quit gate guards.
+    expect(main.match(/createAppImageInstaller\(/g)).toHaveLength(1)
+    expect(main.match(/appImageInstallers\(\)/g)).toHaveLength(2)
+    expect(main.match(/installers: updateInstallers\(\),/g)).toHaveLength(1)
+    expect(main.match(/\.installNow\(/g)).toHaveLength(1)
   })
 
   it('installs only for the window bound to a viewer this app started and proved it owns', () => {
@@ -393,6 +438,20 @@ describe('Electron updater integration', () => {
     expect(main).toContain('if (updateInstallWebContentsId === setupWindowWebContentsId) updateInstallWebContentsId = null')
     const failover = main.slice(main.indexOf('watchUpstream(probe'), main.indexOf("app.on('window-all-closed'"))
     expect(failover).not.toContain('viewerOwned')
+  })
+
+  it('stops a multi-host Setup run, like a quit, while an app update installs', () => {
+    const main = read('electron/main.cjs')
+    const setupStart = main.indexOf("ipcMain.handle('agent-inbox:install'")
+    const setupHandler = main.slice(setupStart, main.indexOf('\n})', setupStart))
+    const refusal = setupHandler.slice(setupHandler.indexOf('if (updateController?.isInstalling()) {'))
+    const returned = refusal.slice(0, refusal.indexOf('\n  }'))
+
+    // `cancelled` ends the renderer's host loop with "not started" lines instead
+    // of reporting every remaining host as refused (public/app.js updateAgents).
+    expect(returned).toContain("output: 'An Agent Inbox update is being installed. Try again after it restarts.'")
+    expect(returned).toContain('cancelled: true')
+    expect(read('public/app.js')).toContain("else if (outcome?.cancelled === true) stopped = 'was cancelled'")
   })
 
   it('keeps an app update and agent Setup mutually exclusive, and never blocks the update restart', () => {

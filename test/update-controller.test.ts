@@ -1430,6 +1430,17 @@ describe('reporting an install that did not take effect', () => {
     expect(h.attempts.store.take).toHaveBeenCalledOnce()
   })
 
+  // An AppImage commit replaces the file before its helper runs, so whatever the
+  // helper reported, the app started from that path again is the new version.
+  it.each([0, 65, 75, null])('says nothing for an AppImage attempt that reported %s once the app runs that version', async (exitCode) => {
+    const h = await harness({
+      outcome: outcome(exitCode, { from: '0.9.0', to: '1.0.0', platform: 'linux', strategy: 'appimage-self-replace' }),
+    })
+    const ready = await h.controller.rendererReady()
+    expect(ready).not.toHaveProperty('installNotice')
+    expect(h.notifyInstallFailure).not.toHaveBeenCalled()
+  })
+
   it('keeps the explanation on the next offer of that version and drops it for another release', async () => {
     const h = await harness({ outcome: outcome(70) })
     await h.controller.rendererReady()

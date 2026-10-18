@@ -599,8 +599,10 @@ describe('Setup filesystem removal through trash', () => {
       io: nodeIo({
         rename(from, to) {
           renameSync(from, to)
-          // Something else now sits where the validated tree was moved.
-          rmSync(to, { recursive: true })
+          // Something else now sits where the validated tree was moved. The
+          // tree itself is moved away, not deleted, so its inode stays in use
+          // and the replacement cannot reuse it (ext4 would).
+          renameSync(to, join(parent, 'validated-tree'))
           mkdirSync(to)
           writeFileSync(join(to, 'unrelated.txt'), 'do not delete\n')
         },

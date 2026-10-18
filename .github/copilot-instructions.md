@@ -212,7 +212,8 @@ Run the build before `npm run electron`; the development shell starts the built
   in its own session, bounded to 30 s, with fd 9 but none of the installer's
   stdio, so repeat signals cannot stop it. A step that fails or times out must
   be reported and its report kept, never claimed as restored; one already
-  running survives the installer's SIGKILL and holds the lease until it ends.
+  running survives the installer's SIGKILL, still bounded by a detached
+  guard, and holds the lease until it ends.
 - All agent-authored text interpolated into HTML must pass through `esc()`.
   Supplied URLs additionally pass through `safeHttpUrl()` in
   `public/source.js`; build anchors through the existing `chipHtml()` path.

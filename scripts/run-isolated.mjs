@@ -11,29 +11,33 @@
 // Ctrl-C, or Setup's cancel, sent to the installer's process group would
 // otherwise stop such a step partway.
 //
-// · The command starts detached, in a new session and process group, so no
-//   signal sent to the caller's process group reaches it.
 // · This process ignores HUP, INT, QUIT, ALRM, TERM and XCPU from its first
-//   statement on, so those signals cannot stop it while it waits either.
-//   Node has already reset them by then: a signal that lands while Node is
-//   still starting ends this process before it has started anything, with
-//   status 128 + that signal, and the caller may simply run it again.
+//   statement on, so those signals cannot stop it while it waits. Node has
+//   already reset them by then: a signal that lands while Node is still
+//   starting ends this process before it has started anything, with status
+//   128 + that signal, and the caller may simply run it again.
+// · It starts a guard, this same script with --guard, detached: in a session
+//   of its own, which no signal sent to the caller's process group reaches,
+//   not even the SIGKILL Setup sends 10 s after a cancel. The guard starts the
+//   command detached too, in a session and process group of its own.
+// · The guard waits at most --timeout-ms (default 30000). Then it sends
+//   SIGTERM to the command's process group, SIGKILL 2 s later, and exits 124.
+//   The bound holds even when this process and its caller have been killed.
 // · The command never gets this process's stdin, stdout or stderr, so it
 //   cannot keep a reader's pipe open after the caller has gone. Its stdin,
 //   stdout and stderr are /dev/null; with --stdout, its stdout is relayed
-//   through this process instead. --lease-fd hands on that one descriptor
-//   (the setup lock), so the lock is held for as long as the command runs.
-// · It waits at most --timeout-ms (default 30000). Then it sends SIGTERM to
-//   the command's process group, SIGKILL 2 s later, and exits 124.
+//   back through the guard and this process instead. --lease-fd hands that
+//   one descriptor (the setup lock) to the guard and the command, so the
+//   lock is held until both have ended.
 // · Otherwise it exits with the command's status: its exit code, or 128 + the
 //   signal that ended it. 125 means bad usage, 126 that the command could not
 //   be started, 127 that it was not found.
 //
-// If this process is killed outright (SIGKILL), the command keeps running,
-// without a bound, until it finishes. POSIX only; Node core only.
+// POSIX only; Node core only.
 import { spawn } from 'node:child_process'
 import { writeSync } from 'node:fs'
 import { constants } from 'node:os'
+import { fileURLToPath } from 'node:url'
 
 for (const signal of ['SIGHUP', 'SIGINT', 'SIGQUIT', 'SIGALRM', 'SIGTERM', 'SIGXCPU']) {
   process.on(signal, () => {})
@@ -45,19 +49,27 @@ const EXIT_CANNOT_RUN = 126
 const EXIT_NOT_FOUND = 127
 const DEFAULT_TIMEOUT_MS = 30_000
 // setTimeout's own ceiling; a longer delay would fire at once.
-const MAX_TIMEOUT_MS = 2_147_483_647
+const MAX_TIMEOUT_MS = 2_147_483_647 - 10_000
 const KILL_GRACE_MS = 2_000
-// After SIGKILL, how long to wait for the command's output to close before
-// giving up on it: something it started may have left its process group.
+// After SIGKILL, how long the guard waits for the command's output to close
+// before giving up on it: something it started may have left its group.
 const CLOSE_GRACE_MS = 1_000
+// The guard always ends within its bound plus the two graces above; this
+// further margin only protects the caller from a guard that does not.
+const GUARD_GRACE_MS = 5_000
+
+function writeAll(fd, bytes) {
+  let offset = 0
+  try {
+    while (offset < bytes.length) offset += writeSync(fd, bytes, offset)
+  } catch {
+    // Whoever was reading has gone.
+  }
+}
 
 // Synchronous, so a message is never lost to the process.exit() that follows.
 function report(message) {
-  try {
-    writeSync(2, `run-isolated: ${message}\n`)
-  } catch {
-    // Nobody is reading stderr.
-  }
+  writeAll(2, Buffer.from(`run-isolated: ${message}\n`))
 }
 
 function fail(status, message) {
@@ -66,13 +78,14 @@ function fail(status, message) {
 }
 
 function parseOptions(argv) {
-  const options = { timeoutMs: DEFAULT_TIMEOUT_MS, leaseFd: null, relayStdout: false, command: [] }
+  const options = { guard: false, timeoutMs: DEFAULT_TIMEOUT_MS, leaseFd: null, relayStdout: false, command: [] }
   let index = 0
   while (index < argv.length && argv[index] !== '--') {
     const flag = argv[index]
     const value = argv[index + 1] ?? ''
-    if (flag === '--stdout') {
-      options.relayStdout = true
+    if (flag === '--stdout' || flag === '--guard') {
+      if (flag === '--stdout') options.relayStdout = true
+      else options.guard = true
       index += 1
     } else if (flag === '--timeout-ms' && /^[1-9][0-9]*$/.test(value) && Number(value) <= MAX_TIMEOUT_MS) {
       options.timeoutMs = Number(value)
@@ -96,70 +109,119 @@ function statusOf(code, signal) {
   return 128 + (constants.signals[signal] ?? 0)
 }
 
-const { timeoutMs, leaseFd, relayStdout, command } = parseOptions(process.argv.slice(2))
-const stdio = ['ignore', relayStdout ? 'pipe' : 'ignore', 'ignore']
-if (leaseFd !== null) {
-  while (stdio.length < leaseFd) stdio.push('ignore')
-  stdio[leaseFd] = leaseFd
-}
-
-let child
-try {
-  child = spawn(command[0], command.slice(1), { detached: true, stdio })
-} catch (error) {
-  fail(EXIT_CANNOT_RUN, `could not start ${command[0]}: ${error.message}`)
-}
-
-const output = []
-child.stdout?.on('data', (chunk) => output.push(chunk))
-
-let timedOut = false
-let finished = false
-const timers = []
-
-function signalGroup(signal) {
+function signalGroup(pid, signal) {
   try {
-    process.kill(-child.pid, signal)
+    process.kill(-pid, signal)
   } catch {
     // The whole group is gone already.
   }
 }
 
-function finish(status) {
-  if (finished) return
-  finished = true
-  for (const timer of timers) clearTimeout(timer)
-  const bytes = Buffer.concat(output)
-  let offset = 0
-  try {
-    while (offset < bytes.length) offset += writeSync(1, bytes, offset)
-  } catch {
-    // Whoever was reading has gone.
+// Starts a detached child whose stdin is /dev/null and whose stdout and
+// stderr are either a pipe back to this process or /dev/null, never this
+// process's own. Only the lease descriptor is handed on.
+function startDetached(file, args, { stdout, stderr, leaseFd }) {
+  const stdio = ['ignore', stdout, stderr]
+  if (leaseFd !== null) {
+    while (stdio.length < leaseFd) stdio.push('ignore')
+    stdio[leaseFd] = leaseFd
   }
-  process.exit(status)
+  return spawn(file, args, { detached: true, stdio })
 }
 
-timers.push(setTimeout(() => {
-  timedOut = true
-  report(`${command[0]} did not finish within ${timeoutMs} ms; stopping it`)
-  signalGroup('SIGTERM')
-  timers.push(setTimeout(() => {
-    signalGroup('SIGKILL')
-    timers.push(setTimeout(() => finish(EXIT_TIMEOUT), CLOSE_GRACE_MS))
-  }, KILL_GRACE_MS))
-}, timeoutMs))
+function collect(stream) {
+  const chunks = []
+  stream?.on('data', (chunk) => chunks.push(chunk))
+  return () => Buffer.concat(chunks)
+}
 
-child.on('error', (error) => {
-  report(`could not start ${command[0]}: ${error.message}`)
-  finish(error.code === 'ENOENT' ? EXIT_NOT_FOUND : EXIT_CANNOT_RUN)
-})
-
-child.on('close', (code, signal) => {
-  if (timedOut) {
-    // Anything the command started that is still in its group goes too.
-    signalGroup('SIGKILL')
-    finish(EXIT_TIMEOUT)
-  } else {
-    finish(statusOf(code, signal))
+function runGuard({ timeoutMs, leaseFd, relayStdout, command }) {
+  let child
+  try {
+    child = startDetached(command[0], command.slice(1), {
+      stdout: relayStdout ? 'pipe' : 'ignore',
+      stderr: 'ignore',
+      leaseFd,
+    })
+  } catch (error) {
+    fail(EXIT_CANNOT_RUN, `could not start ${command[0]}: ${error.message}`)
   }
-})
+  const output = collect(child.stdout)
+  let timedOut = false
+  let finished = false
+  const timers = []
+  const finish = (status) => {
+    if (finished) return
+    finished = true
+    for (const timer of timers) clearTimeout(timer)
+    writeAll(1, output())
+    process.exit(status)
+  }
+
+  timers.push(setTimeout(() => {
+    timedOut = true
+    report(`${command[0]} did not finish within ${timeoutMs} ms; stopping it`)
+    signalGroup(child.pid, 'SIGTERM')
+    timers.push(setTimeout(() => {
+      signalGroup(child.pid, 'SIGKILL')
+      timers.push(setTimeout(() => finish(EXIT_TIMEOUT), CLOSE_GRACE_MS))
+    }, KILL_GRACE_MS))
+  }, timeoutMs))
+
+  child.on('error', (error) => {
+    report(`could not start ${command[0]}: ${error.message}`)
+    finish(error.code === 'ENOENT' ? EXIT_NOT_FOUND : EXIT_CANNOT_RUN)
+  })
+  child.on('close', (code, signal) => {
+    if (timedOut) {
+      // Anything the command started that is still in its group goes too.
+      signalGroup(child.pid, 'SIGKILL')
+      finish(EXIT_TIMEOUT)
+    } else {
+      finish(statusOf(code, signal))
+    }
+  })
+}
+
+function runFront({ timeoutMs, leaseFd, relayStdout, command }) {
+  const args = [...process.execArgv, fileURLToPath(import.meta.url), '--guard', '--timeout-ms', String(timeoutMs)]
+  if (relayStdout) args.push('--stdout')
+  if (leaseFd !== null) args.push('--lease-fd', String(leaseFd))
+  args.push('--', ...command)
+  let guard
+  try {
+    guard = startDetached(process.execPath, args, {
+      stdout: relayStdout ? 'pipe' : 'ignore',
+      stderr: 'pipe',
+      leaseFd,
+    })
+  } catch (error) {
+    fail(EXIT_CANNOT_RUN, `could not start its guard: ${error.message}`)
+  }
+  const output = collect(guard.stdout)
+  const errors = collect(guard.stderr)
+  let finished = false
+  const finish = (status) => {
+    if (finished) return
+    finished = true
+    clearTimeout(fallback)
+    writeAll(1, output())
+    writeAll(2, errors())
+    process.exit(status)
+  }
+  const fallback = setTimeout(() => {
+    signalGroup(guard.pid, 'SIGKILL')
+    report(`its guard did not end ${GUARD_GRACE_MS} ms after the ${timeoutMs} ms bound; stopped it`)
+    finish(EXIT_TIMEOUT)
+  }, timeoutMs + KILL_GRACE_MS + CLOSE_GRACE_MS + GUARD_GRACE_MS)
+
+  guard.on('error', (error) => {
+    report(`could not start its guard: ${error.message}`)
+    finish(EXIT_CANNOT_RUN)
+  })
+  guard.on('close', (code, signal) => finish(statusOf(code, signal)))
+}
+
+const options = parseOptions(process.argv.slice(2))
+if (options.guard) runGuard(options)
+else runFront(options)

@@ -1593,6 +1593,37 @@ describe('agent setup installer: losing its parent mid-install (#208)', () => {
     }
   })
 
+  it('stops a hung undo at its bound after Setup force-kills the installer, which frees the lock (#211)', async () => {
+    const f = fixture()
+    f.env.FAIL_ADD = 'copilot'
+    f.env.HANG_REMOVE = 'claude'
+    f.env.AGENT_INBOX_ROLLBACK_STEP_TIMEOUT_MS = '1500'
+    const installer = startInstaller(f, ['--apply'])
+    try {
+      await waitFor(join(f.state, 'claude.remove-pid'), 10_000)
+      const hungPid = Number(readFileSync(join(f.state, 'claude.remove-pid'), 'utf8'))
+      // Setup's forced stop: SIGKILL to the installer's whole process group.
+      process.kill(-installer.child.pid!, 'SIGKILL')
+      expect(await installer.exited).toEqual({ code: null, signal: 'SIGKILL' })
+      // The hung undo still holds the lock, so another install cannot race it.
+      const blocked = run(f, ['--apply', '--target', 'claude'])
+      expect(blocked.code).toBe(1)
+      expect(blocked.err).toContain('another setup is already running')
+      // Its bound still applies: the hung CLI is stopped and the lock freed.
+      const deadline = Date.now() + 10_000
+      while (alive(hungPid) && Date.now() < deadline) await sleep(50)
+      expect(alive(hungPid), 'the hung undo is stopped at its bound').toBe(false)
+      await sleep(300)
+      delete f.env.FAIL_ADD
+      delete f.env.HANG_REMOVE
+      const next = run(f, ['--apply', '--target', 'claude'])
+      expect(next.err).not.toContain('another setup is already running')
+      expect(next.code).toBe(0)
+    } finally {
+      stopInstaller(f, installer)
+    }
+  }, 30_000)
+
   it('keeps the report when it cannot undo a registration it did add', () => {
     // Claude is registered, Copilot's add then fails, and removing Claude
     // again fails too. The re-check that follows either still finds Claude's
@@ -1848,6 +1879,28 @@ describe('rollback step isolation (#211)', () => {
       expect(alive(commandPid)).toBe(true)
       writeFileSync(command.releaseFile, '')
       await waitForGone(commandPid)
+    } finally {
+      writeFileSync(command.releaseFile, '')
+    }
+  })
+
+  it('still stops the command at its bound after it is killed itself', async () => {
+    const command = waitingCommand(scratch())
+    const helper = spawn(process.execPath, [ISOLATE, '--timeout-ms', '1000', '--', ...command.args], {
+      detached: true,
+      stdio: 'ignore',
+    })
+    try {
+      await waitFor(command.pidFile, 10_000)
+      const commandPid = Number(readFileSync(command.pidFile, 'utf8'))
+      // Setup's forced stop kills the helper with the installer's group.
+      process.kill(-helper.pid!, 'SIGKILL')
+      await sleep(300)
+      expect(alive(commandPid), 'the command outlives the helper').toBe(true)
+      // The never-released command is stopped once its bound runs out.
+      const deadline = Date.now() + 8000
+      while (alive(commandPid) && Date.now() < deadline) await sleep(50)
+      expect(alive(commandPid), 'the command is stopped at its bound').toBe(false)
     } finally {
       writeFileSync(command.releaseFile, '')
     }

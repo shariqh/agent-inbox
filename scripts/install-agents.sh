@@ -494,8 +494,9 @@ ISOLATE_NODE=""
 # the runtime reference check and prune) run through run-isolated.mjs. It
 # starts each one in a session of its own, where no repeat signal sent to
 # this installer's process group reaches it, and stops it after
-# ROLLBACK_STEP_TIMEOUT_MS. The step gets none of this shell's output, only
-# the setup lock (fd 9), which it holds for as long as it runs.
+# ROLLBACK_STEP_TIMEOUT_MS, a bound that holds even if this installer is
+# killed outright. The step gets none of this shell's output, only the setup
+# lock (fd 9), which stays held until the step has ended.
 ROLLBACK_ISOLATION=0
 ISOLATED_TIMEOUT_STATUS=124
 ROLLBACK_STEP_TIMEOUT_MS="${AGENT_INBOX_ROLLBACK_STEP_TIMEOUT_MS:-30000}"
@@ -870,8 +871,8 @@ divert_report() {
 # fails or runs out of time is reported, and cleanup keeps the report.
 # Restoring a replaced registration or an instruction file runs no Node.
 # SIGKILL stops everything except a step already running isolated, which
-# finishes unbounded and holds the setup lock until it does; no EXIT trap runs,
-# so $WORK keeps every snapshot. TRANSACTION_ACTIVE drops only once the restore
+# still ends within its bound and holds the setup lock until then; no EXIT
+# trap runs, so $WORK keeps every snapshot. TRANSACTION_ACTIVE drops only once the restore
 # has run, which is how cleanup knows a snapshot is no longer the only copy.
 rollback_transaction() {
   [ "$TRANSACTION_ACTIVE" -eq 1 ] || return 0

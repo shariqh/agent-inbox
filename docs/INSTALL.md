@@ -415,8 +415,8 @@ An installer killed outright (`kill -9`, or Setup's forced stop 10 seconds after
 cancel) stops wherever it was, but that folder then keeps every copy it took, and a
 staged `.agent-inbox.<host>.*` file may remain beside an instruction file; it is safe to
 delete. A restore step that was already running, such as a host CLI's `mcp remove`, is
-not stopped with it: it finishes on its own, with no time limit, and until it does, a new
-install reports that another setup is already running. A runtime removal cut short leaves
+not stopped with it: it finishes on its own or is stopped after its 30 seconds, and until
+then a new install reports that another setup is already running. A runtime removal cut short leaves
 a `.trash-…` folder in `~/.agent-inbox/runtime`, never a half-deleted runtime; the next
 install or update deletes it. To finish the job instead, run the same install again.
 

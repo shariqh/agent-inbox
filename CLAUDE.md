@@ -649,19 +649,22 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   its non-Node commands then ignore those signals. Node resets them at startup, so
   *(#211)* every Node step of the rollback (a host CLI's `mcp remove` and `mcp get`
   re-check, the runtime reference check and prune) runs through
-  `scripts/run-isolated.mjs`, argv only, under the installer's pinned Node. The command
-  starts detached in its own session, the helper ignores HUP/INT/QUIT/ALRM/TERM/XCPU
-  while it waits, and the wait is bounded: after 30 s it signals the command's whole
-  group (TERM, then KILL) and exits 124, which is reported as not finished in time.
-  A helper killed while its own Node is still starting has started nothing and is
-  rerun, at most three times. The command gets none of the installer's stdio (Setup
-  still sees its pipes close when the installer dies) but does get fd 9, so the lease
-  lasts as long as the step. Forward-path Node steps stay in the installer's group.
+  `scripts/run-isolated.mjs`, argv only, under the installer's pinned Node. The helper
+  ignores HUP/INT/QUIT/ALRM/TERM/XCPU while it waits and hands the command to a guard
+  (the same script) started detached in its own session; the guard starts the command
+  detached too and owns the bound: after 30 s it signals the command's whole group
+  (TERM, then KILL) and exits 124, reported as not finished in time. The guard
+  survives the installer's `SIGKILL`, so that bound always applies. A helper killed
+  while its own Node is still starting has started nothing and is rerun, at most three
+  times. Neither the guard nor the command gets the installer's stdio (Setup still
+  sees its pipes close when the installer dies), but both get fd 9, so the lease lasts
+  as long as the step. Forward-path Node steps stay in the installer's group.
   Hosts refuse to remove a server a failed add never registered, so a failed undo
   counts as failed unless a re-check confirms it absent. An exit that neither committed
   nor finished the rollback keeps every MCP snapshot, and a kept snapshot or failed step
-  keeps the log too. `SIGKILL` of the installer cannot stop an isolated step that is
-  already running: it finishes with no bound and holds the lease until it ends.
+  keeps the log too. `SIGKILL` of the installer (Setup's forced stop 10 s after a
+  cancel) cannot stop an isolated step that is already running: it still ends within
+  its bound and holds the lease until then.
   A failed post-publication cleanup is a committed failure and retains
   its recovery path rather than deleting the only prior tree.
   Every applied agent or hook install sources the adjacent
@@ -674,10 +677,11 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   another setup is running. The descriptor stays open for the whole process
   tree, so an in-flight child cannot outlive a helper-held lease; whole-group
   exit/crash releases ownership unless an isolated rollback step is still
-  running (it keeps the lease until it ends), and an unexpectedly long-lived
-  descendant can retain it too. File existence never implies ownership. The
-  helper is part of the signed runtime manifest, but sourcing it by path
-  extends the already retained verify-to-execute race rather than closing it.
+  running (it keeps the lease until it ends, at most its bound), and an
+  unexpectedly long-lived descendant can retain it too. File existence never
+  implies ownership. The helper is part of the signed runtime manifest, but
+  sourcing it by path extends the already retained verify-to-execute race
+  rather than closing it.
 
 ### DOM harness — what it can and cannot see
 

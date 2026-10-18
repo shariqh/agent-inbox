@@ -274,7 +274,8 @@ rollback, while forced `SIGKILL` escalation can end without shell or
 filesystem-adapter cleanup; Setup retains that cancellation behavior. The rollback's
 Node steps run through the payload's `scripts/run-isolated.mjs` in their own session:
 Setup's repeat `SIGTERM` cannot stop them, they never hold Setup's pipes, and one
-already running when `SIGKILL` lands finishes on its own and keeps the lock until then.
+already running when `SIGKILL` lands keeps running, still within its 30-second bound,
+and keeps the lock until it ends.
 
 Layer 1 leaves the portable app unsigned. The signing layer must finalize the layout,
 sign every nested runtime Mach-O, regenerate both manifests from those signed bytes,

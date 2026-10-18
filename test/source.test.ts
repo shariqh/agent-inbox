@@ -59,6 +59,9 @@ describe('indexLinks / linkFor', () => {
     expect(linkFor(index, entity())!.pr_number).toBe(41)
     expect(linkFor(index, entity({ head_repo: 'stranger/agent-inbox' }))).toBeNull()
     expect(linkFor(indexLinks([link({ head_repo: 'me/agent-inbox' })]), entity())).toBeNull()
+    // issue #183 — a branch that tracks a pull request ref records that ref as
+    // its head; it never falls back to the base's same-named branch row
+    expect(linkFor(index, entity({ head_repo: 'refs/pull/7/head' }))).toBeNull()
   })
 
   describe('preview provenance and freshness', () => {

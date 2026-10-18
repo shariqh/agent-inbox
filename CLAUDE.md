@@ -278,8 +278,9 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   transient git failure, must not pin the folder name). The branch (and the issue parsed from
   it) is re-read on every call because worktrees and checkouts move mid-session, so never
   cache the whole scope. Head inference (`headFor`, #157) stays outside both `get()` and that
-  memo: it runs only on flag/board writes and reads git's push destination live, because it
-  needs origin's PUSH url, which the cached fetch url cannot answer.
+  memo: it runs only on flag/board writes and reads git's push destination (and, #183, the
+  branch's upstream ref) live, because it needs origin's PUSH url, which the cached fetch url
+  cannot answer.
   The client name for `inferAgent` **must be read lazily** inside handlers
   (`server.server.getClientVersion()?.name`) — it's only populated after the initialize
   handshake. Capturing it at build time yields `undefined`/`'unknown'`. Don't regress this.
@@ -836,7 +837,23 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   examines a small `PR_WINDOW` and accepts only a PR from that head repository (a same-repo
   expectation means `isCrossRepository: false`); a row with no `head_repo` expects a same-repo PR.
   No match, even a full window, is cached as no PR — no title, closing issue or preview — and the
-  preview's head re-read applies the same rule. The unverifiable pre-#157 `source_links` table is
+  preview's head re-read applies the same rule. **Pull-ref checkouts (#183):** for a fork PR whose
+  author did not allow maintainer edits, `gh pr checkout` tracks the base's `refs/pull/<n>/head`
+  and names the BASE as remote and pushRemote (cli/cli `cmdsForMissingRemote`), so the push
+  destination alone would let the base's own same-named branch PR verify. A branch whose upstream
+  merge ref is a pull ref, and that pushes back to the remote it tracks (gh always writes
+  pushRemote = remote; an unmapped upstream reports no tracking remote at all), is stamped with
+  that ref as its `head_repo` instead: it names no repository, `listLinkTargets` skips it (no
+  `gh` call, no cache row, no PR chip), and an older #157 viewer sharing the file can never match
+  it either. Work stacked on a PR ref and pushed to another remote (`remote.pushDefault` = a
+  fork) keeps its push destination and links as usual. The one `for-each-ref` also reports any
+  upstream git maps, with its remote, so `git config --get-all branch.<b>.merge` runs only for a
+  branch with a push remote but no mapped upstream; an ordinary write still costs two spawns.
+  Items stamped before #183 keep the head they were written with (boards restamp on their next
+  write). Linking the exact PR (`gh pr view <n>`) is a deliberate non-goal until reviewer
+  checkouts are in scope, and it would need the FETCH repository recorded as well: `<n>` belongs
+  to the repository of `branch.<b>.remote`, which can differ from `repo`, and the stored ref does
+  not say which. The unverifiable pre-#157 `source_links` table is
   never read; it stays only for older processes sharing the file (rebuilding its primary key would
   break their `ON CONFLICT(repo, branch)` upserts). **Two honest limitations:** every item and
   board written before #30 shipped has `repo = NULL` and shows no chip at all — there is no

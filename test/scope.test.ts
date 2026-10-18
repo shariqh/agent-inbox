@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, basename } from 'node:path'
@@ -183,22 +183,66 @@ describe('makeScope caches a found origin per process but follows the branch (is
 // It resolves origin's PUSH url (pushurl, pushInsteadOf), which #159's cached
 // fetch url cannot answer, and push config can change mid-session. So get() —
 // the path nearly every tool call takes — never runs it, and headFor() never
-// borrows the cache: each write pays its own two spawns.
+// borrows the cache: each write pays its own spawns. Issue #183 added the
+// branch's upstream ref and its remote to the one for-each-ref read; only an
+// upstream git does not map to a remote-tracking ref costs a config read on top.
 
-describe('headFor stays a live, write-only read beside the origin cache (issues #157, #159)', () => {
+describe('headFor stays a live, write-only read beside the origin cache (issues #157, #159, #183)', () => {
   const ORIGIN = ['remote', 'get-url', 'origin'] as const
-  const PUSH_REMOTE = ['for-each-ref', '--format=%(refname) %(push:remotename)', 'refs/heads/feature'] as const
+  const refs = (branch: string) => ['for-each-ref', '--format=%(refname)%00%(upstream:remoteref)%00%(upstream:remotename)%00%(push:remotename)', `refs/heads/${branch}`]
+  const merge = (branch: string) => ['config', '--get-all', `branch.${branch}.merge`]
   const PUSH_URL = ['remote', 'get-url', '--push', 'origin'] as const
+  // hermetic: a global remote.pushDefault names a push remote for every branch
+  const saved = { global: process.env.GIT_CONFIG_GLOBAL, nosystem: process.env.GIT_CONFIG_NOSYSTEM }
+  beforeAll(() => {
+    process.env.GIT_CONFIG_GLOBAL = '/dev/null'
+    process.env.GIT_CONFIG_NOSYSTEM = '1'
+  })
+  afterAll(() => {
+    for (const [key, value] of [['GIT_CONFIG_GLOBAL', saved.global], ['GIT_CONFIG_NOSYSTEM', saved.nosystem]] as const) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  })
 
   it('get() spawns no head lookup; each headFor() spawns exactly its two, leaving the origin cache alone', () => {
     const dir = tmpGitRepo({ remote: 'git@github.com:shariqh/agent-inbox.git', branch: 'feature' })
     const scope = makeScope(dir)
     for (let i = 0; i < 3; i++) scope.get('claude-code')
-    expect(gitSpawns(dir, ...PUSH_REMOTE)).toBe(0)
+    expect(gitSpawns(dir, ...refs('feature'))).toBe(0)
     expect(gitSpawns(dir, ...PUSH_URL)).toBe(0)
     for (let i = 0; i < 3; i++) expect(scope.headFor('feature')).toBe('shariqh/agent-inbox')
-    expect(gitSpawns(dir, ...PUSH_REMOTE)).toBe(3)
+    expect(gitSpawns(dir, ...refs('feature'))).toBe(3)
     expect(gitSpawns(dir, ...PUSH_URL)).toBe(3)
+    expect(gitSpawns(dir, ...merge('feature'))).toBe(0)
     expect(gitSpawns(dir, ...ORIGIN)).toBe(1)
+  })
+
+  // the common pushed branch: for-each-ref already names its upstream ref
+  it('a tracking branch whose upstream git maps pays no config read', () => {
+    const dir = tmpGitRepo({ remote: 'git@github.com:shariqh/agent-inbox.git', branch: 'feature' })
+    execFileSync('git', ['config', 'branch.feature.remote', 'origin'], { cwd: dir })
+    execFileSync('git', ['config', 'branch.feature.merge', 'refs/heads/feature'], { cwd: dir })
+    expect(makeScope(dir).headFor('feature')).toBe('shariqh/agent-inbox')
+    expect(gitSpawns(dir, ...refs('feature'))).toBe(1)
+    expect(gitSpawns(dir, ...merge('feature'))).toBe(0)
+    expect(gitSpawns(dir, ...PUSH_URL)).toBe(1)
+  })
+
+  // gh pr checkout of a fork PR without maintainer edits: the unmapped
+  // refs/pull/<n>/head upstream costs one config read, and settles the head
+  // without resolving any push url
+  it('a pull-ref checkout reads its merge ref once and no push url; get() still reads neither', () => {
+    const dir = tmpGitRepo({ remote: 'https://github.com/upstream/x.git', branch: 'patch-1' })
+    for (const [key, value] of [['remote', 'origin'], ['pushRemote', 'origin'], ['merge', 'refs/pull/7/head']]) {
+      execFileSync('git', ['config', `branch.patch-1.${key}`, value!], { cwd: dir })
+    }
+    const scope = makeScope(dir)
+    for (let i = 0; i < 3; i++) expect(scope.get('claude-code')).toMatchObject({ repo: 'upstream/x', stream: 'patch-1' })
+    expect(gitSpawns(dir, ...merge('patch-1'))).toBe(0)
+    expect(scope.headFor('patch-1')).toBe('refs/pull/7/head')
+    expect(gitSpawns(dir, ...refs('patch-1'))).toBe(1)
+    expect(gitSpawns(dir, ...merge('patch-1'))).toBe(1)
+    expect(gitSpawns(dir, ...PUSH_URL)).toBe(0)
   })
 })

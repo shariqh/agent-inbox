@@ -326,6 +326,17 @@ describe('macOS install feasibility', () => {
     await f.close()
   })
 
+  it.skipIf(UID === 0)('refuses an app bundle this user cannot write, even in a writable folder', async () => {
+    const f = await fixture()
+    chmodSync(f.target, 0o555)
+    try {
+      await expect(installerFor(f).installer.feasibility({ version: '2.0.0' })).resolves.toMatchObject({ ok: false, reason: 'permission' })
+    } finally {
+      chmodSync(f.target, 0o755)
+    }
+    await f.close()
+  })
+
   it('never rejects, even when the filesystem throws unexpectedly', async () => {
     const f = await fixture()
     const broken: MacInstallerFs = {

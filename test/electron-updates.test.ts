@@ -238,7 +238,7 @@ describe('Electron updater integration', () => {
     ['an offer without its install capability', 'verified', { available: { installable: undefined } }],
     ['a reason on an installable offer', 'verified', { available: { reason: 'Move it.' } }],
     ['a reason that is not text', 'available', { available: { installable: false, downloadable: false, reason: 5 } }],
-    ['an installable offer that cannot download', 'available', { available: { installable: true, downloadable: false } }],
+    ['an installable offer that cannot download', 'verified', { available: { downloadable: false } }],
   ] as const)('rejects %s from main', async (_label, status, patch) => {
     const states = await controllerStates()
     const base = states.find((state) => state.status === status)!

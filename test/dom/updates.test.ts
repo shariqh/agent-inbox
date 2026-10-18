@@ -148,6 +148,8 @@ describe('desktop update settings', () => {
     expect(status()?.getAttribute('data-state')).toBe('stale')
     expect(document.querySelector('.updates-review')?.hasAttribute('hidden')).toBe(true)
     expect(document.querySelector('.updates-releases')?.hasAttribute('hidden')).toBe(false)
+    expect(visibleActions()).toEqual(['Check now', 'Open Releases'])
+    expect((document.querySelector('.updates-progress') as HTMLProgressElement).hidden).toBe(true)
 
     bridge.emit(state('stale', { automaticChecks: false, checkedAt: '2026-02-01T00:00:00.000Z' }))
     expect(status()?.textContent).toBe('Release information was out of date. Check again later.')

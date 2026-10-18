@@ -773,14 +773,20 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   length and digest match. Every failure — network, stall or total timeout, cancellation,
   disk, wrong length or hash — removes the staging directory, so nothing unverified ever
   sits at a verified path. A same-artifact request joins the in-flight download or reuses
-  the file only after re-hashing it (`O_NOFOLLOW`); a different artifact supersedes it.
+  the file only after re-hashing it (`O_NOFOLLOW | O_NONBLOCK`, so a planted symlink is
+  refused and a planted FIFO cannot block, inside a directory `lstat` proves is real);
+  `verify()` applies the same checks. A different artifact supersedes it.
   Cleanup is bounded and pattern-only: it never follows symlinks, removes staging
   directories only after an hour without writes (two app processes can share
   `userData`), and drops downloads at or below the running version, superseded by a
   newer verified offer, or no longer offered. Checks and downloads never overlap (a
-  download waits for a starting check, and checks are skipped during a download); a
+  download request is refused while a check is starting, and checks are skipped during
+  a download); a
   re-check while verified is quiet and keeps the file unless a successful check offers
-  something else. The install steps
+  something else. A `stale` result (#148) is no such offer: like a failed check it never
+  prunes or forgets the offer, and a verified download stays on screen with only its
+  check time refreshed, so a serving path that is behind cannot delete a verified
+  newer download. The install steps
   consume `getVerifiedArtifact()` (`{ path, version, tag, filename, sha256, byteLength,
   packageType, installStrategy }`) and must call `downloader.verify()` again right before
   acting. Nothing here executes, mounts, opens or installs, and update state never enters

@@ -317,23 +317,24 @@ function createUpdateController(options) {
 
   // A re-check that confirms the exact verified artifact keeps it; anything
   // else (a newer release, no release, a notify-only target) discards it.
+  // `stale` is not evidence about a download: release information below the
+  // high-water mark comes only from a serving path that is behind (#148), so,
+  // like a failed check, it never prunes or forgets the offer, and a verified
+  // file stays on screen with only its check time refreshed.
   function settleCheck(checked) {
-    if (
-      state.status === 'verified'
-      && verifiedArtifact !== null
-      && checked.state.status === 'available'
-      && sameArtifact(artifact, checked.artifact)
-    ) {
-      return publish({
-        ...state,
-        automaticChecks: checked.state.automaticChecks,
-        checkedAt: checked.state.checkedAt,
-      })
+    const next = checked.state
+    const keepVerified = state.status === 'verified' && verifiedArtifact !== null
+    if (next.status === 'stale') {
+      if (!keepVerified) return publish(next)
+      return publish({ ...state, automaticChecks: next.automaticChecks, checkedAt: next.checkedAt })
+    }
+    if (keepVerified && next.status === 'available' && sameArtifact(artifact, checked.artifact)) {
+      return publish({ ...state, automaticChecks: next.automaticChecks, checkedAt: next.checkedAt })
     }
     verifiedArtifact = null
     artifact = checked.artifact
-    prune({ keep: checked.state.status === 'available' ? artifact : null, currentVersion })
-    return publish(checked.state)
+    prune({ keep: next.status === 'available' ? artifact : null, currentVersion })
+    return publish(next)
   }
 
   function runCheck(mode) {

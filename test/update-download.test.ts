@@ -1,7 +1,12 @@
+import { execFileSync } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
 import {
+  closeSync,
+  constants,
   existsSync,
+  lstatSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
   rmSync,
@@ -695,6 +700,100 @@ describe('verified update download', () => {
     expect(await codeOf(downloader.verify({ ...record, path: join(root, '..', 'elsewhere.dmg') }))).toMatchObject({ code: 'not-verified' })
     writeFileSync(record.path, Buffer.alloc(body.length))
     expect(await codeOf(downloader.verify(record))).toMatchObject({ code: 'not-verified' })
+  })
+})
+
+describe('something planted at a verified path', () => {
+  function recordFor(root: string, artifact: UpdateArtifact): VerifiedArtifact {
+    return {
+      path: join(root, `${artifact.tag}-${artifact.sha256}`, artifact.filename),
+      version: artifact.version,
+      tag: artifact.tag,
+      filename: artifact.filename,
+      sha256: artifact.sha256,
+      byteLength: artifact.byteLength,
+      packageType: artifact.packageType,
+      installStrategy: artifact.installStrategy as VerifiedArtifact['installStrategy'],
+      ...(artifact.minimumSystemVersion ? { minimumSystemVersion: artifact.minimumSystemVersion } : {}),
+    }
+  }
+
+  // Fails rather than hangs, and releases an open() a regression left blocked on the FIFO.
+  async function settled<T>(promise: Promise<T>, fifo: string): Promise<T | 'hung'> {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      return await Promise.race([
+        promise,
+        new Promise<'hung'>((resolveHung) => { timer = setTimeout(() => resolveHung('hung'), 2_000) }),
+      ])
+    } finally {
+      clearTimeout(timer)
+      try {
+        closeSync(openSync(fifo, constants.O_WRONLY | constants.O_NONBLOCK))
+      } catch {
+        // No blocked reader (or no FIFO left): nothing to release.
+      }
+    }
+  }
+
+  it('fails a named pipe at the verified path instead of blocking on it, then replaces it', async () => {
+    const root = join(workDir(), 'update-downloads')
+    const body = randomBytes(2 * CHUNK)
+    const artifact = artifactFor(body)
+    const record = recordFor(root, artifact)
+    mkdirSync(join(root, `${artifact.tag}-${artifact.sha256}`), { recursive: true, mode: 0o700 })
+    execFileSync('mkfifo', [record.path])
+    const fetchImpl = releaseFetch(new Map([[artifact.url, body]]))
+    const downloader = createUpdateDownloader({ directory: root, fetchImpl })
+
+    expect(await settled(codeOf(downloader.verify(record)), record.path)).toMatchObject({ code: 'not-verified' })
+    expect(await settled(downloader.download(artifact), record.path)).toEqual(record)
+    expect(lstatSync(record.path).isFile()).toBe(true)
+    expect(readFileSync(record.path).equals(body)).toBe(true)
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+  })
+
+  it('never reuses or verifies a symlinked artifact, even one with the signed bytes', async () => {
+    const work = workDir()
+    const root = join(work, 'update-downloads')
+    const body = randomBytes(2 * CHUNK)
+    const artifact = artifactFor(body)
+    const record = recordFor(root, artifact)
+    const outside = join(work, 'outside.dmg')
+    writeFileSync(outside, body)
+    mkdirSync(join(root, `${artifact.tag}-${artifact.sha256}`), { recursive: true, mode: 0o700 })
+    symlinkSync(outside, record.path)
+    const fetchImpl = releaseFetch(new Map([[artifact.url, body]]))
+    const downloader = createUpdateDownloader({ directory: root, fetchImpl })
+
+    expect(await codeOf(downloader.verify(record))).toMatchObject({ code: 'not-verified' })
+    await expect(downloader.download(artifact)).resolves.toEqual(record)
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+    expect(lstatSync(record.path).isSymbolicLink()).toBe(false)
+    expect(readFileSync(outside).equals(body)).toBe(true)
+  })
+
+  it('never reuses or verifies through a symlinked download directory, even one with the signed bytes', async () => {
+    const work = workDir()
+    const root = join(work, 'update-downloads')
+    const body = randomBytes(2 * CHUNK)
+    const artifact = artifactFor(body)
+    const record = recordFor(root, artifact)
+    const keyDir = join(root, `${artifact.tag}-${artifact.sha256}`)
+    const outside = join(work, 'outside')
+    mkdirSync(outside)
+    writeFileSync(join(outside, artifact.filename), body)
+    mkdirSync(root, { recursive: true, mode: 0o700 })
+    symlinkSync(outside, keyDir)
+    const fetchImpl = releaseFetch(new Map([[artifact.url, body]]))
+    const downloader = createUpdateDownloader({ directory: root, fetchImpl })
+
+    expect(await codeOf(downloader.verify(record))).toMatchObject({ code: 'not-verified' })
+    await expect(downloader.download(artifact)).resolves.toEqual(record)
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+    expect(lstatSync(keyDir).isSymbolicLink()).toBe(false)
+    expect(lstatSync(keyDir).isDirectory()).toBe(true)
+    expect(readFileSync(join(outside, artifact.filename)).equals(body)).toBe(true)
   })
 })
 

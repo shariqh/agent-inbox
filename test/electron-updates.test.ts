@@ -63,6 +63,7 @@ async function controllerStates(): Promise<UpdateControllerState[]> {
   const emitted: UpdateControllerState[] = []
   let progress: ((received: number) => void) | undefined
   let settle: { resolve(value: unknown): void; reject(error: unknown): void } | undefined
+  let stale = true
   const controller = updateController.createUpdateController({
     currentVersion: '1.0.0',
     preferences: {
@@ -70,20 +71,28 @@ async function controllerStates(): Promise<UpdateControllerState[]> {
       setAutomatic: async () => ({ schema: 1, automaticChecks: false, lastNotifiedVersion: null }),
       setLastNotifiedVersion: async () => ({ schema: 1, automaticChecks: false, lastNotifiedVersion: null }),
     },
-    checker: async () => ({
-      status: 'available',
-      currentVersion: '1.0.0',
-      automaticChecks: false,
-      checkedAt: '2026-02-01T00:00:00.000Z',
-      message: 'A verified update is available.',
-      available: {
-        version: '2.0.0',
-        tag,
-        releaseUrl: `https://github.com/shariqh/agent-inbox/releases/tag/${tag}`,
-        target: { packageType: 'dmg', installStrategy: 'macos-dmg' },
-      },
-      artifact,
-    }),
+    checker: async () => (stale
+      ? {
+          status: 'stale',
+          currentVersion: '1.0.0',
+          automaticChecks: false,
+          checkedAt: '2026-02-01T00:00:00.000Z',
+          message: 'Update information is older than a release this app already verified.',
+        }
+      : {
+          status: 'available',
+          currentVersion: '1.0.0',
+          automaticChecks: false,
+          checkedAt: '2026-02-01T00:00:00.000Z',
+          message: 'A verified update is available.',
+          available: {
+            version: '2.0.0',
+            tag,
+            releaseUrl: `https://github.com/shariqh/agent-inbox/releases/tag/${tag}`,
+            target: { packageType: 'dmg', installStrategy: 'macos-dmg' },
+          },
+          artifact,
+        }),
     notifier: () => {},
     downloader: {
       normalize: (value) => value as UpdateArtifact,
@@ -96,6 +105,8 @@ async function controllerStates(): Promise<UpdateControllerState[]> {
     },
     emit: (state) => emitted.push(state),
   })
+  await controller.checkNow()
+  stale = false
   await controller.checkNow()
   const failed = controller.downloadNow()
   progress?.(50)
@@ -130,7 +141,7 @@ describe('Electron updater integration', () => {
   it('accepts every state the controller publishes through the real preload validator', async () => {
     const states = await controllerStates()
     expect(states.map((state) => state.status)).toEqual(expect.arrayContaining([
-      'checking', 'available', 'downloading', 'download-failed', 'verified',
+      'checking', 'stale', 'available', 'downloading', 'download-failed', 'verified',
     ]))
     const { updates, deliver } = loadPreload(() => null)
     const received: unknown[] = []

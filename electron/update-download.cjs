@@ -43,7 +43,10 @@ const DEFAULT_STALL_TIMEOUT_MS = 60_000
 const DEFAULT_TOTAL_TIMEOUT_MS = 2 * 60 * 60_000
 const DEFAULT_STALE_AFTER_MS = 60 * 60_000
 const READ_CHUNK_BYTES = 1024 * 1024
-const OPEN_READ_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)
+// O_NOFOLLOW refuses a symlink as the last path component; O_NONBLOCK keeps a
+// named pipe planted at a verified path from blocking open() forever (it then
+// fails the regular-file check instead). Neither changes reads of a real file.
+const OPEN_READ_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0)
 
 const MESSAGES = Object.freeze({
   'invalid-artifact': 'update artifact is not a verified release target',
@@ -314,6 +317,14 @@ function createUpdateDownloader(options) {
     const stat = await disk(() => fsImpl.lstat(root))
     if (!stat.isDirectory()) fail('disk')
     if ((stat.mode & 0o777) !== 0o700) await disk(() => fsImpl.chmod(root, 0o700))
+  }
+
+  async function isRealDirectory(target) {
+    try {
+      return (await fsImpl.lstat(target)).isDirectory()
+    } catch {
+      return false
+    }
   }
 
   async function removeEntry(target) {
@@ -697,8 +708,12 @@ function createUpdateDownloader(options) {
       artifact = null
     }
     if (artifact === null) fail('not-verified')
-    const expectedPath = path.join(root, keyFor(artifact), artifact.filename)
+    const finalDir = path.join(root, keyFor(artifact))
+    const expectedPath = path.join(finalDir, artifact.filename)
     if (record.path !== expectedPath) fail('not-verified')
+    // O_NOFOLLOW covers only the file itself; a planted directory symlink must not
+    // redirect the hash to bytes outside the private download directory.
+    if (!(await isRealDirectory(root)) || !(await isRealDirectory(finalDir))) fail('not-verified')
     await hashFile(expectedPath, artifact, null)
     return recordFor(artifact, expectedPath)
   }

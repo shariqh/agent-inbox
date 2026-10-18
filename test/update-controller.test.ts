@@ -615,6 +615,67 @@ describe('user-initiated verified downloads', () => {
     expect(controller.getVerifiedArtifact()).not.toBeNull()
   })
 
+  function staleResult(checkedAt: string): UpdateCheckResult {
+    return {
+      status: 'stale',
+      currentVersion: '1.0.0',
+      automaticChecks: false,
+      checkedAt,
+      message: 'Update information is older than a release this app already verified.',
+    }
+  }
+
+  it('keeps a verified download and its state when a re-check returns stale release information', async () => {
+    let result: () => UpdateCheckResult = () => availableWith(artifactFor())
+    const { controller, emitted, fake } = setup(async () => result())
+    await controller.checkNow()
+    const done = controller.downloadNow()
+    fake.succeed()
+    const verified = await done
+    const record = controller.getVerifiedArtifact()
+    fake.downloader.prune.mockClear()
+    emitted.length = 0
+
+    result = () => staleResult('2026-02-03T00:00:00.000Z')
+    const rechecked = await controller.checkNow()
+    await Promise.resolve()
+
+    expect(rechecked).toEqual({ ...verified, checkedAt: '2026-02-03T00:00:00.000Z' })
+    expect(controller.getVerifiedArtifact()).toBe(record)
+    expect(fake.downloader.prune).not.toHaveBeenCalled()
+    expect(emitted.map((value) => value.status)).toEqual(['verified'])
+
+    result = () => availableWith(artifactFor(), '2.0.0', '2026-02-04T00:00:00.000Z')
+    await expect(controller.checkNow()).resolves.toMatchObject({ status: 'verified', checkedAt: '2026-02-04T00:00:00.000Z' })
+    expect(controller.getVerifiedArtifact()).toBe(record)
+  })
+
+  it('shows stale release information before a download without pruning or forgetting the offer', async () => {
+    let result: () => UpdateCheckResult = () => availableWith(artifactFor())
+    const { controller, fake } = setup(async () => result())
+    await controller.checkNow()
+    fake.downloader.prune.mockClear()
+
+    result = () => staleResult('2026-02-03T00:00:00.000Z')
+    const stale = await controller.checkNow()
+    await Promise.resolve()
+    expect(stale).toEqual({
+      status: 'stale',
+      currentVersion: '1.0.0',
+      automaticChecks: false,
+      checkedAt: '2026-02-03T00:00:00.000Z',
+      message: 'Update information is older than a release this app already verified.',
+    })
+    expect(fake.downloader.prune).not.toHaveBeenCalled()
+    await expect(controller.downloadNow()).resolves.toBe(stale)
+    expect(fake.downloader.download).not.toHaveBeenCalled()
+
+    result = () => availableWith(artifactFor())
+    await expect(controller.checkNow()).resolves.toMatchObject({ status: 'available', available: { downloadable: true } })
+    void controller.downloadNow()
+    expect(fake.downloader.download).toHaveBeenCalledOnce()
+  })
+
   it.each([
     ['a newer release', () => availableWith(artifactFor('2.1.0')), 'available', '2.1.0'],
     ['no newer release', (): UpdateCheckResult => ({ ...state('current', false), currentVersion: '1.0.0' }), 'current', null],

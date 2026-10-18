@@ -103,7 +103,10 @@ own. The app can install updates only when:
   (`--appimage-extract`, then `squashfs-root/AppRun`) and the extract-and-run fallback
   (`APPIMAGE_EXTRACT_AND_RUN` or `--appimage-extract-and-run`; see
   [the fallback](#appimage)) stay notify-only. A copy started from inside another
-  AppImage, such as a terminal, therefore never replaces that application's file.
+  AppImage, such as a terminal, therefore never replaces that application's file. Hosts
+  that mount or extract the image themselves, such as `firejail --appimage` (a
+  loop-mounted squashfs) or NixOS `appimage-run` (an extracted copy), get the same
+  notify-only offer with **Review release**, by design.
 - The AppImage is a regular file (not a symlink) that belongs to your user account, and
   both the file and its folder are writable, for example `~/Applications`.
 - The file is still the one Agent Inbox started from. If you replaced or edited it while

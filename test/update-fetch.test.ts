@@ -545,11 +545,18 @@ describe('verification, versions, and targets', () => {
     }
 
     // mountinfo escapes space, tab, newline and backslash in paths and names.
-    const image = '/home/tester/My Apps/Agent Inbox\\Beta.AppImage'
+    const image = '/home/tester/My Apps/Agent Inbox.AppImage'
     const mount = '/home/tester/my tmp/.mount_Agent IXyZ12'
     const spaced = { appImagePath: image, appDir: mount, execPath: `${mount}/usr/lib/agent-inbox/Agent Inbox` }
     expect(runsFromAppImage({ ...spaced, appImageProbe: fuseMount(image, mount) })).toBe(true)
     expect(runsFromAppImage({ ...spaced, appImageProbe: fuseMount(image, mount, `79 131 0:62 / ${mount} ro - fuse.${basename(image)} ${basename(image)} ro\n`) })).toBe(false)
+
+    // libfuse's option parser drops a backslash from the name it mounts under, so
+    // `Agent Inbox\Beta.AppImage` mounts as `fuse.Agent InboxBeta.AppImage`. The proof
+    // does not try to undo that: such a rare name fails safe to a notify-only offer.
+    const slashed = '/home/tester/My Apps/Agent Inbox\\Beta.AppImage'
+    const asLibfuseMountsIt = fuseMount(slashed, mount, `${fuseLine(mount, 'Agent InboxBeta.AppImage')}\n`)
+    expect(runsFromAppImage({ ...spaced, appImagePath: slashed, appImageProbe: asLibfuseMountsIt })).toBe(false)
   })
 
   it('never attaches an artifact when no newer release is offered', async () => {

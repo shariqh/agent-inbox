@@ -25,10 +25,10 @@ On macOS and AppImage installs, **Download update** fetches exactly the package 
 signed manifest names, only from GitHub Releases, and keeps it only when its size and
 SHA-256 match the manifest. Downloads start only when you click, can be cancelled, and
 are kept in a private `update-downloads` folder inside the app's data directory;
-superseded and installed versions are cleaned up automatically. On macOS the verified
-download then offers **Install and restart** (see below). AppImage installs do not
-install the download from the app yet: **Review release** opens the verified GitHub
-release page so you can install the package yourself. DEB installs stay notify-only.
+superseded and installed versions are cleaned up automatically. On macOS and AppImage
+installs the verified download then offers **Install and restart** (see below). DEB
+installs stay notify-only: **Review release** opens the verified GitHub release page so
+you can install the package yourself.
 Browser viewers and source/dev Electron runs do not expose update checks.
 
 The app remembers the newest release version it has verified, in its own file
@@ -88,6 +88,63 @@ and run, with your folder's real name:
 mv "/Applications/Agent Inbox.app" ~/.Trash/
 mv "/Applications/.agent-inbox-update-AbC123/Agent Inbox.app.previous" "/Applications/Agent Inbox.app"
 ```
+
+### Install an update from the app (AppImage)
+
+An AppImage updates itself in place. After **Download update** verifies the file,
+Settings → Updates offers **Install and restart**, and the new version replaces the
+AppImage file you started, under the same name and in the same folder, so launchers,
+desktop entries and scripts that point at that file keep working. It never starts on its
+own. The app can install updates only when:
+
+- Agent Inbox runs from its AppImage file. A DEB install stays notify-only, even when it
+  was started from inside another AppImage.
+- It runs from the AppImage runtime's own FUSE mount of that file. An extracted copy
+  (`--appimage-extract`, then `squashfs-root/AppRun`) and the extract-and-run fallback
+  (`APPIMAGE_EXTRACT_AND_RUN` or `--appimage-extract-and-run`; see
+  [the fallback](#appimage)) stay notify-only. A copy started from inside another
+  AppImage, such as a terminal, therefore never replaces that application's file. Hosts
+  that mount or extract the image themselves, such as `firejail --appimage` (a
+  loop-mounted squashfs) or NixOS `appimage-run` (an extracted copy), get the same
+  notify-only offer with **Review release**, by design.
+- The AppImage is a regular file (not a symlink) that belongs to your user account, and
+  both the file and its folder are writable, for example `~/Applications`.
+- The file is still the one Agent Inbox started from. If you replaced or edited it while
+  the app was running, restart Agent Inbox first.
+- Agent setup is not running at the same moment.
+
+When either of the first two is not met, Settings → Updates treats the app like a DEB
+install: it shows the new version with **Review release** and no download. When another
+is not met, it says why and offers **Review release** instead of the download. When you
+click **Install and restart**, the app:
+
+1. re-checks the downloaded file against the signed size and SHA-256;
+2. copies it into a hidden file next to your AppImage, for example
+   `~/Applications/.Agent-Inbox-v1.3.0-linux-x86_64.AppImage.update-1a2b3c4d5e6f7a8b`,
+   checking the size and SHA-256 again as it copies, and checks that the copy is an
+   AppImage;
+3. replaces your AppImage with that copy in one atomic rename. The running app keeps
+   working from the version it started with;
+4. quits. A small helper waits until Agent Inbox has fully exited and starts the new
+   AppImage from the same path, with the arguments you started Agent Inbox with (for
+   example `--no-sandbox` or `--ozone-platform=wayland`).
+
+If any step before the rename fails, nothing changes and Settings shows **Try again**. After
+the rename the new version is installed even if it does not open: when the helper cannot
+start it, or waits more than about two minutes for Agent Inbox to exit, open Agent Inbox
+again yourself.
+
+Unlike on macOS, there is no failed-install note to show after an AppImage restart: the
+file is already the new version before Agent Inbox quits, so whatever you open next from
+it is the update.
+
+The file keeps its name even when that name contains the previous version number; Settings
+shows the version that is installed. The previous version is not kept, so to go back,
+download it again from GitHub Releases. A hidden `.update-` file left by an interrupted
+install is removed on a later launch once it is an hour old.
+
+The manual path always works: **Review release** opens the verified GitHub release; download
+the new AppImage and replace your file as described below.
 
 ### App opens blank after an upgrade
 
@@ -173,6 +230,16 @@ TMPDIR="$APPIMAGE_TMPDIR" APPIMAGE_EXTRACT_AND_RUN=1 ./"$ASSET"
 Use the arm64 filename on arm64. The private mode-`0700` `TMPDIR` is required because
 the pinned AppImage runtime uses a predictable child name while extracting. This fallback
 extracts on every launch; it does not install a system launcher or delete user data.
+
+In this mode Agent Inbox does not install its own updates: Settings → Updates offers
+**Review release** instead. A restart from inside the app would extract into this
+command's `TMPDIR` after the `trap` removed it, and the runtime would recreate that folder
+without the private mode. To update, quit Agent Inbox, download and check the new
+AppImage as above, replace your file with it, and run the same command again.
+
+With normal FUSE mounting, later versions can replace this file in place from Settings →
+Updates; see
+[Install an update from the app (AppImage)](#install-an-update-from-the-app-appimage).
 
 ### Debian/Ubuntu package
 

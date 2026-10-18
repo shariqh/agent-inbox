@@ -1,5 +1,7 @@
 'use strict'
 
+const fs = require('node:fs')
+const path = require('node:path')
 const {
   verifyManifest,
 } = require('./update-manifest.cjs')
@@ -221,6 +223,72 @@ function compareVersions(left, right) {
   return 0
 }
 
+function canonicalAbsolute(value) {
+  return typeof value === 'string' && value !== '' && path.isAbsolute(value) && path.resolve(value) === value
+    ? value
+    : null
+}
+
+// What the AppImage proof reads from this machine; tests inject their own.
+const SYSTEM_PROBE = Object.freeze({
+  lstat: (target) => fs.lstatSync(target, { bigint: true }),
+  mountInfo: () => fs.readFileSync('/proc/self/mountinfo', 'utf8'),
+})
+
+// /proc/self/mountinfo escapes space, tab, newline and backslash as \ooo.
+function mountInfoField(value) {
+  return value.replace(/\\([0-7]{3})/g, (_escape, octal) => String.fromCharCode(Number.parseInt(octal, 8)))
+}
+
+// The type and source of the mount visible at `mountPoint`: the last one listed,
+// since a later mount at the same point hides the earlier ones.
+function mountAt(mountInfo, mountPoint) {
+  let visible = null
+  for (const line of mountInfo.split('\n')) {
+    const fields = line.split(' ')
+    // ID, parent, dev, root, mount point, options, optional fields…, '-', type, source, super options
+    const separator = fields.indexOf('-', 6)
+    if (separator === -1 || separator + 2 >= fields.length) continue
+    if (mountInfoField(fields[4]) !== mountPoint) continue
+    visible = { type: mountInfoField(fields[separator + 1]), source: mountInfoField(fields[separator + 2]) }
+  }
+  return visible
+}
+
+// APPDIR must be the pinned type2-runtime's FUSE mount of the file APPIMAGE
+// names. A mount point has another device than its parent, so an extracted
+// squashfs-root (or an extract-and-run folder) fails here. The runtime passes
+// no fsname or subtype, so libfuse names the mount after the image's real file
+// name: type fuse.<name>, source <name>, as a mount by hand of a different
+// image would not be.
+function mountsImage(image, mount, probe) {
+  try {
+    const mounted = probe.lstat(mount)
+    if (!mounted.isDirectory() || mounted.dev === probe.lstat(path.dirname(mount)).dev) return false
+    const visible = mountAt(probe.mountInfo(), mount)
+    const name = path.basename(image)
+    return visible !== null && visible.type === `fuse.${name}` && visible.source === name
+  } catch {
+    return false
+  }
+}
+
+// A Linux app runs from its AppImage only when APPIMAGE names an image, the
+// executable sits inside APPDIR, and APPDIR is that image's runtime mount. A .deb
+// install started from inside another AppImage inherits both variables but runs
+// from /opt, and an extracted squashfs-root started there gets a plain-folder
+// APPDIR from our AppRun, so both keep the deb target. The AppImage installer
+// and its registration in main apply this same proof.
+function runsFromAppImage({ appImagePath, appDir, execPath, appImageProbe = SYSTEM_PROBE } = {}) {
+  const image = canonicalAbsolute(appImagePath)
+  const mount = canonicalAbsolute(appDir)
+  const executable = canonicalAbsolute(execPath)
+  if (image === null || mount === null || executable === null || mount === path.parse(mount).root) return false
+  const relative = path.relative(mount, executable)
+  if (relative === '' || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return false
+  return mountsImage(image, mount, appImageProbe)
+}
+
 function selectTarget(manifest, options) {
   const packaged = options.isPackaged === true
   const supportedArch = options.arch === 'x64' || options.arch === 'arm64'
@@ -233,9 +301,7 @@ function selectTarget(manifest, options) {
     packageType = 'dmg'
   } else if (options.platform === 'linux') {
     architecture = options.arch
-    packageType = typeof options.appImagePath === 'string' && options.appImagePath !== ''
-      ? 'appimage'
-      : 'deb'
+    packageType = runsFromAppImage(options) ? 'appimage' : 'deb'
   } else {
     return null
   }
@@ -351,4 +417,5 @@ module.exports = {
   MANIFEST_URL,
   SIGNATURE_URL,
   checkForUpdate,
+  runsFromAppImage,
 }

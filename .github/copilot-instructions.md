@@ -82,7 +82,11 @@ Run the build before `npm run electron`; the development shell starts the built
   `install(target)` once per Setup-managed host whose runtime differs from the
   app's (behind, or ahead after a downgrade), `claude` then `copilot`, never
   `all` or `--force`; status is read by the viewer, so there is no status IPC or
-  installer status mode.
+  installer status mode. Once any quit begins, nothing starts: every quit or
+  restart path calls `beginAppQuit()` in `electron/main.cjs` first, which refuses
+  later installs through `createInstallGate()`, revokes the window's Setup, and
+  cancels and awaits the running install; the renderer stops its per-host loop
+  at a cancelled, timed-out or failed step.
   `scripts/setup-filesystem.cjs` is the
   Node-core-only runtime identity/staging/publication/removal boundary used by
   the shipped Darwin install path and build-time runtime publisher. Its Win32

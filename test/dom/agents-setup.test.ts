@@ -30,7 +30,7 @@ afterEach(() => {
   delete (window as unknown as Record<string, unknown>).agentInboxSetup
 })
 
-type InstallResult = { ok: boolean; exitCode: number | null; target: string; timedOut: boolean; output: string }
+type InstallResult = { ok: boolean; exitCode: number | null; target: string; timedOut: boolean; cancelled?: boolean; output: string }
 type Install = (...args: unknown[]) => Promise<InstallResult>
 
 function bridge(install: Install, available = true): void {
@@ -176,6 +176,77 @@ describe('Setup shows what each host\'s agents run (#197)', () => {
       'Running sessions keep the build they started with until you restart them.'
       + 'Copilot CLI: 1 running session still runs an older build. Restart it to load v2.0.0: exit it, then run copilot --resume to pick the conversation back up.',
     )
+  })
+
+  // #205 review (BLOCKER): a quit during the first host's install cancels it.
+  // Starting the next host then would run it mid-shutdown, where the exit can
+  // kill it halfway through replacing a registration. A cancelled or timed-out
+  // step, or a bridge that fails outright, ends the run: no later host starts,
+  // and each host's state is reported as it is.
+  it.each([
+    ['cancelled because Agent Inbox is quitting', 'was cancelled',
+      async () => ({ ok: false, exitCode: null, target: 'claude', timedOut: false, cancelled: true, output: 'started\nInstaller cancelled because Agent Inbox is closing.' }),
+      'started\nInstaller cancelled because Agent Inbox is closing.'],
+    ['refused by main because Agent Inbox is quitting', 'was cancelled',
+      async () => ({ ok: false, exitCode: null, target: 'claude', timedOut: false, cancelled: true, output: 'Agent Inbox is quitting, so setup did not start.' }),
+      'Agent Inbox is quitting, so setup did not start.'],
+    ['timed out', 'timed out',
+      async () => ({ ok: false, exitCode: null, target: 'claude', timedOut: true, cancelled: false, output: 'Installer timed out after 120000ms.' }),
+      'Installer timed out after 120000ms.'],
+    ['failed in the bridge itself', 'could not run',
+      async () => { throw new Error('Error invoking remote method: render frame was disposed') },
+      'Setup failed: Error invoking remote method: render frame was disposed'],
+  ])('stops after a host whose install %s, and never starts the next host', async (_label, stopped, claude, claudeReport) => {
+    const release = releaseRuntime('2.0.0')
+    const old = release.installVersion('1.2.8')
+    release.register('claude', old)
+    release.register('copilot', old)
+    const install = vi.fn<Install>(async (t) => {
+      if (t === 'claude') return claude() as Promise<InstallResult>
+      release.register('copilot', release.install())
+      return ok(String(t))
+    })
+    bridge(install)
+
+    await boot(release)
+    click(updateButton())
+    await settle()
+
+    expect(install.mock.calls).toEqual([['claude']])
+    const result = document.querySelector('.agents-result')
+    expect(result?.textContent).toBe(
+      `Claude Code: ${claudeReport}\n\nCopilot CLI: not started, because Setup stopped after Claude Code ${stopped}.`,
+    )
+    expect(result?.classList.contains('failure')).toBe(true)
+    // nothing moved: both still offered, no restart advice
+    expect(lines().slice(0, 2)).toEqual([
+      'Claude Code: v1.2.8 runtime (Setup) — older than this app\'s v2.0.0',
+      'Copilot CLI: v1.2.8 runtime (Setup) — older than this app\'s v2.0.0',
+    ])
+    expect((document.querySelector('.agents-restart') as HTMLElement).hidden).toBe(true)
+  })
+
+  it('still reports the host that moved when the next one is cancelled', async () => {
+    const release = releaseRuntime('2.0.0')
+    const old = release.installVersion('1.2.8')
+    release.register('claude', old)
+    release.register('copilot', old)
+    const install = vi.fn<Install>(async (t) => {
+      if (t === 'copilot') return { ok: false, exitCode: null, target: 'copilot', timedOut: false, cancelled: true, output: 'Installer cancelled because Agent Inbox is closing.' }
+      release.register('claude', release.install())
+      return ok(String(t))
+    })
+    bridge(install)
+
+    await boot(release)
+    click(updateButton())
+    await settle()
+
+    expect(install.mock.calls).toEqual([['claude'], ['copilot']])
+    expect(document.querySelector('.agents-result')?.textContent)
+      .toBe('Claude Code: claude: registered agent-inbox MCP\n\nCopilot CLI: Installer cancelled because Agent Inbox is closing.')
+    expect(lines()[0]).toBe('Claude Code: v2.0.0 runtime (Setup)')
+    expect((document.querySelector('.agents-restart') as HTMLElement).textContent).toContain('Claude Code: no running sessions.')
   })
 
   it('names the one action for what it does when one host is behind and another ahead', async () => {

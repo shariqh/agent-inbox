@@ -4,13 +4,14 @@ import { execFileSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 const require = createRequire(import.meta.url)
 const PAYLOAD_CLI = resolve(import.meta.dirname, '..', 'scripts', 'runtime-payload.mjs')
 const SETUP_INFO_CLI = resolve(import.meta.dirname, '..', 'scripts', 'write-setup-info.mjs')
 const {
   canRunSetup,
+  createInstallGate,
   installerRepoRoot,
   isTrustedSetupSender,
   readSetupInfo,
@@ -19,6 +20,11 @@ const {
   selectRuntimePayload: selectRuntimePayloadRaw,
 } = require('../electron/setup-runner.cjs') as {
   canRunSetup(senderUrl: string, viewerUrl: string, senderId: number, authorizedWebContentsId: number | null): boolean
+  createInstallGate(): {
+    quitting(): boolean
+    run<T>(start: (onCancel: (cancel: () => void) => void) => Promise<T>): { promise: Promise<T> } | { refused: 'quitting' | 'running' }
+    beginQuit(): Promise<void> | null
+  }
   installerRepoRoot(appRoot: string): string | null
   isTrustedSetupSender(senderUrl: string, viewerUrl: string): boolean
   readSetupInfo(appRoot: string): unknown
@@ -289,6 +295,123 @@ while :; do sleep 1; done
 // is the ONLY place a packaged app decides which of the two shipped runtime
 // tarballs applies to the machine it is running on, and it must do so with zero
 // fallback: a host it does not recognise gets nothing, ever.
+// #205 review (BLOCKER): quitting during one host's install must not start
+// another. Electron cancels the running install on quit, the renderer then
+// asked for the NEXT host's install, main accepted it mid-shutdown, and the
+// exit killed it halfway — after it had removed Copilot CLI's registration and
+// before it added the new one. The gate is main's one record of the running
+// install and of the quit: once any quit begins, nothing starts.
+describe('createInstallGate (#205)', () => {
+  function deferred<T>() {
+    let resolve!: (value: T) => void
+    const promise = new Promise<T>((r) => { resolve = r })
+    return { promise, resolve }
+  }
+
+  it('runs one install at a time and refuses a second while it runs', async () => {
+    const gate = createInstallGate()
+    const first = deferred<string>()
+    const second = vi.fn(async () => 'second')
+    const started = gate.run(() => first.promise)
+    expect('promise' in started).toBe(true)
+    expect(gate.run(second)).toEqual({ refused: 'running' })
+    expect(second).not.toHaveBeenCalled()
+    first.resolve('done')
+    expect(await (started as { promise: Promise<string> }).promise).toBe('done')
+    // free again once it settled
+    const third = gate.run(async () => 'third')
+    expect(await (third as { promise: Promise<string> }).promise).toBe('third')
+  })
+
+  it('a quit cancels the running install, waits for it, and refuses every install after it', async () => {
+    const gate = createInstallGate()
+    const install = deferred<{ ok: boolean; cancelled: boolean }>()
+    const cancel = vi.fn(() => install.resolve({ ok: false, cancelled: true }))
+    gate.run((onCancel) => {
+      onCancel(cancel)
+      return install.promise
+    })
+
+    const waiting = gate.beginQuit()
+    expect(cancel).toHaveBeenCalledTimes(1)
+    expect(gate.quitting()).toBe(true)
+    expect(waiting).not.toBeNull()
+    await expect(waiting).resolves.toBeUndefined()
+
+    // the renderer's next host, asked for after the first was cancelled: never started
+    const next = vi.fn(async () => ({ ok: true }))
+    expect(gate.run(next)).toEqual({ refused: 'quitting' })
+    expect(next).not.toHaveBeenCalled()
+    // the re-quit finds nothing running and nothing it may start
+    expect(gate.beginQuit()).toBeNull()
+    expect(gate.run(next)).toEqual({ refused: 'quitting' })
+    expect(next).not.toHaveBeenCalled()
+  })
+
+  it('cancels again and still waits when a quit fires again before the install has stopped', async () => {
+    const gate = createInstallGate()
+    const install = deferred<string>()
+    const cancel = vi.fn()
+    gate.run((onCancel) => {
+      onCancel(cancel)
+      return install.promise
+    })
+    const first = gate.beginQuit()
+    const again = gate.beginQuit()
+    expect(cancel).toHaveBeenCalledTimes(2)
+    expect(again).not.toBeNull()
+    let settled = false
+    void again!.then(() => { settled = true })
+    await Promise.resolve()
+    expect(settled).toBe(false)
+    install.resolve('stopped')
+    await Promise.all([first, again])
+    expect(settled).toBe(true)
+    expect(gate.beginQuit()).toBeNull()
+  })
+
+  it('a quit with nothing running refuses later installs, and a failed install never wedges the gate or the quit', async () => {
+    const idle = createInstallGate()
+    expect(idle.beginQuit()).toBeNull()
+    expect(idle.run(async () => 'late')).toEqual({ refused: 'quitting' })
+
+    const gate = createInstallGate()
+    const rejected = gate.run(async () => { throw new Error('spawn failed') }) as { promise: Promise<unknown> }
+    await expect(rejected.promise).rejects.toThrow('spawn failed')
+    const thrown = gate.run(() => { throw new Error('sync throw') }) as { promise: Promise<unknown> }
+    await expect(thrown.promise).rejects.toThrow('sync throw')
+    const failing = deferred<never>()
+    const running = gate.run(() => failing.promise) as { promise: Promise<unknown> }
+    running.promise.catch(() => {})
+    const waiting = gate.beginQuit()
+    failing.resolve(Promise.reject(new Error('installer crashed')) as never)
+    await expect(waiting).resolves.toBeUndefined()
+  })
+
+  it('main refuses Setup once a quit begins, revokes the window, and every quit path goes through one function', () => {
+    const main = readFileSync(join(import.meta.dirname, '..', 'electron', 'main.cjs'), 'utf8')
+    const handler = main.slice(main.indexOf("ipcMain.handle('agent-inbox:install',"), main.indexOf("ipcMain.handle('agent-inbox:set-theme-preference'"))
+    const available = main.slice(main.indexOf("ipcMain.handle('agent-inbox:install-available'"), main.indexOf("ipcMain.handle('agent-inbox:install',"))
+    const beginAppQuit = main.slice(main.indexOf('function beginAppQuit()'), main.indexOf('\n}\n', main.indexOf('function beginAppQuit()')))
+    const beforeQuit = main.slice(main.indexOf("app.on('before-quit'"), main.indexOf('\n})\n', main.indexOf("app.on('before-quit'")))
+
+    expect(main).toContain('const installGate = createInstallGate()')
+    // the install handler refuses before anything else, and only the gate starts an install
+    expect(handler.indexOf('if (installGate.quitting())')).toBeGreaterThan(-1)
+    expect(handler.indexOf('if (installGate.quitting())')).toBeLessThan(handler.indexOf('canRunSetup('))
+    expect(handler).toContain('installGate.run(')
+    expect(handler).not.toContain('setupInstallRunning')
+    expect(available).toContain('!installGate.quitting()')
+    // one function every quit path calls first: refuse, revoke, cancel
+    expect(beginAppQuit).toContain('setupInstallWebContentsId = null')
+    expect(beginAppQuit).toContain('installGate.beginQuit()')
+    // before-quit calls it EVERY time it fires, and waits for whatever still runs
+    expect(beforeQuit).toContain('const running = beginAppQuit()')
+    expect(beforeQuit).toContain('event.preventDefault()')
+    expect(main).not.toContain('quitAfterSetup')
+  })
+})
+
 describe('selectRuntimePayload (issue #74)', () => {
   function releaseRoot(): { root: string; arm: { path: string; digest: string }; x64: { path: string; digest: string } } {
     const root = mkdtempSync(join(tmpdir(), 'runtime-select-'))

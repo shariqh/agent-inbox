@@ -6838,8 +6838,11 @@ function refreshAgents() {
 
 // One fixed install target per host, one after another: a host whose CLI is
 // gone fails on its own and never holds the other back, which `--target all`
-// would (the installer stops before changing anything). Each host's outcome is
-// reported as it is.
+// would (the installer stops before changing anything). But a step that was
+// cancelled (Agent Inbox is quitting), timed out, or could not run at all ENDS
+// the run: starting the next host then could have it killed halfway through
+// replacing a registration (#205 review). Each host's outcome is reported as
+// it is, including the hosts that never started.
 async function updateAgents(action, current, button) {
   const block = agentsBlock
   if (!block || block.running) return
@@ -6857,18 +6860,28 @@ async function updateAgents(action, current, button) {
   const reports = []
   const moved = []
   try {
-    for (const step of action.steps) {
+    for (const [index, step] of action.steps.entries()) {
       show([...reports, step.progress].join('\n\n'), 'running')
       let text
+      let stopped = null
       try {
         const outcome = await window.agentInboxSetup.install(step.host)
         const ok = outcome?.ok === true
         if (ok) moved.push(step.host)
+        else if (outcome?.cancelled === true) stopped = 'was cancelled'
+        else if (outcome?.timedOut === true) stopped = 'timed out'
         text = outcome?.output || (ok ? step.done : 'Setup failed without output.')
       } catch (err) {
+        stopped = 'could not run'
         text = `Setup failed: ${err instanceof Error ? err.message : String(err)}`
       }
       reports.push(several ? `${hostLabel(step.host)}: ${text}` : text)
+      if (stopped) {
+        for (const skipped of action.steps.slice(index + 1)) {
+          reports.push(`${hostLabel(skipped.host)}: not started, because Setup stopped after ${hostLabel(step.host)} ${stopped}.`)
+        }
+        break
+      }
     }
   } finally {
     block.running = false

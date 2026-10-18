@@ -1118,8 +1118,15 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   metadata ignored) get nothing. It calls the existing `install(target)` once per host, `claude` then
   `copilot`, never `all` and never `--force`: `--target all` stops before changing anything when one
   host's CLI is gone, which would hold the other host back too, so each host is moved and reported on its
-  own. A checkout or custom registration is reported, never switched (the runtime-mode installer refuses
-  a registration it does not own anyway). Afterwards it re-reads `/api/setup` and `/api/version` and
+  own. A step that was cancelled, timed out or could not run ends the run, and the later hosts are reported
+  as not started: a quit cancels the running install, and starting the next host mid-shutdown could have
+  the exit kill it halfway through replacing a registration. Main enforces the same thing on its side:
+  `createInstallGate()` (`electron/setup-runner.cjs`) is its one record of the running install and of the
+  quit, and `beginAppQuit()` in `main.cjs` is the ONE function every quit or restart path calls first
+  (`before-quit` on every firing; an update-restart path must call it too). It refuses every later install
+  for good, revokes the window's Setup, cancels the running install and returns a never-rejecting promise
+  the caller waits on before exiting. A checkout or custom registration is reported, never switched (the
+  runtime-mode installer refuses a registration it does not own anyway). Afterwards it re-reads `/api/setup` and `/api/version` and
   lists, per host that moved, how many running sessions still run a build that differs from what that
   host now runs (older, newer or both) and how to restart them (`claude --resume` / `copilot --resume`);
   it never says a session reloaded. The block also re-reads whenever Settings opens, so a terminal install

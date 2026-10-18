@@ -1114,7 +1114,8 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   reported, never switched (the runtime-mode installer refuses a registration it does not own anyway).
   Afterwards it re-reads `/api/setup` and `/api/version` and lists, per updated host, how many running
   sessions still run an older build and how to restart them (`claude --resume` / `copilot --resume`); it
-  never says a session reloaded. It does not move Claude's hooks: once the current runtime is installed the
+  never says a session reloaded. The block also re-reads whenever Settings opens, so a terminal install
+  made meanwhile shows up. It does not move Claude's hooks: once the current runtime is installed the
   panel hands over `bash <runtime>/scripts/install-hooks.sh --apply` to run in a terminal. No IPC channel,
   preload method, argv shape or HTTP route was added, and nothing runs at startup. Live's `remedy()` maps a
   runtime session to its host by its inferred agent (`claude-code` → claude, `copilot` → copilot) and says

@@ -13,12 +13,18 @@ import {
 } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { readAgentHosts, registeredRuntimeVersion } from '../src/agent-hosts.js'
+import type { RuntimeVerifier } from '../src/agent-hosts.js'
 
 const REPO = resolve(import.meta.dirname, '..')
 const PAYLOAD_CLI = join(REPO, 'scripts', 'runtime-payload.mjs')
+const { verifyRuntimePayload } = createRequire(import.meta.url)('../electron/runtime-verify.cjs') as {
+  verifyRuntimePayload: RuntimeVerifier
+}
 
 function temp(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix))
@@ -311,6 +317,42 @@ describe('portable release installer', () => {
     )
     expect(removed.status, removed.stderr).toBe(0)
     expect(readdirSync(f.runtimeRoot).filter((name) => !name.startsWith('.'))).toEqual([])
+  })
+
+  // #197 part 2: Setup's Agents block reads back exactly what the installer
+  // wrote, host by host — and "Update agents" for one host moves only that one.
+  it('reads back each host\'s installed runtime and version as Setup reports them', () => {
+    const f = fixture()
+    const first = runtimePayload('1.0.0')
+    expect(install(f, first).status).toBe(0)
+    const second = runtimePayload('1.1.0')
+    const updated = install(f, second, ['--target', 'claude'])
+    expect(updated.status, updated.stderr).toBe(0)
+
+    const hosts = readAgentHosts({
+      home: f.home,
+      runtimeRoot: f.runtimeRoot,
+      checkRuntime: (dir, runtimeId) => registeredRuntimeVersion(dir, runtimeId, verifyRuntimePayload),
+    })
+    expect(hosts.claude).toEqual({ kind: 'runtime', version: '1.1.0', runtimeId: second.runtimeId })
+    expect(hosts.copilot).toEqual({ kind: 'runtime', version: '1.0.0', runtimeId: first.runtimeId })
+    expect(hosts.hooks).toEqual({ kind: 'none' })
+
+    // hooks installed from the older runtime stay there until the command Setup
+    // hands over — install-hooks.sh from the newer runtime — moves them
+    const hooksFrom = (runtimeId: string) => spawnSync('/bin/bash', [
+      join(f.runtimeRoot, runtimeId, 'scripts', 'install-hooks.sh'), '--apply',
+    ], { encoding: 'utf8', env: f.env })
+    const readHooks = () => readAgentHosts({
+      home: f.home,
+      runtimeRoot: f.runtimeRoot,
+      checkRuntime: (dir, runtimeId) => registeredRuntimeVersion(dir, runtimeId, verifyRuntimePayload),
+    }).hooks
+    expect(hooksFrom(first.runtimeId).status).toBe(0)
+    expect(readHooks()).toEqual({ kind: 'runtime', version: '1.0.0', runtimeId: first.runtimeId })
+    const moved = hooksFrom(second.runtimeId)
+    expect(moved.status, moved.stderr).toBe(0)
+    expect(readHooks()).toEqual({ kind: 'runtime', version: '1.1.0', runtimeId: second.runtimeId })
   })
 
   it('installs and removes packaged hooks without ambient node or jq', () => {

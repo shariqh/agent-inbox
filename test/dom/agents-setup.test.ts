@@ -213,6 +213,22 @@ describe('Setup shows what each host\'s agents run (#197)', () => {
     expect(liveHint('gamma')).toBe('older build (v1.2.8) — update and rebuild its checkout, then restart this session')
   })
 
+  it('re-reads what each host runs whenever Settings opens, so a terminal install shows up', async () => {
+    const release = releaseRuntime('2.0.0')
+    release.register('claude', release.installVersion('1.2.8'))
+
+    await boot(release)
+    expect(lines()[0]).toBe('Claude Code: v1.2.8 runtime (Setup) — older than this app\'s v2.0.0')
+
+    // `install-agents.sh --apply --target claude` run from a terminal meanwhile
+    release.register('claude', release.install())
+    click(document.getElementById('gear'))
+    await settle()
+
+    expect(document.getElementById('setup')?.hidden).toBe(false)
+    expect(lines()[0]).toBe('Claude Code: v2.0.0 runtime (Setup)')
+  })
+
   it('a failed update says so, re-reads the hosts, and gives no restart advice', async () => {
     const release = releaseRuntime('2.0.0')
     release.register('claude', release.installVersion('1.2.8'))

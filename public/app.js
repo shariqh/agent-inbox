@@ -3937,6 +3937,7 @@ function initAgentSelect() {
 
 // which content panel is visible; the tab strip drives this in Task 8
 function showPanel(id) {
+  const openingSettings = id === 'setup' && document.getElementById('setup').hidden
   for (const p of document.querySelectorAll('main > .panel')) p.hidden = p.id !== id
   for (const t of document.querySelectorAll('#tabs .tab')) t.setAttribute('aria-selected', String(t.dataset.tab === id))
   document.body.classList.toggle('settings-open', id === 'setup')
@@ -3946,6 +3947,9 @@ function showPanel(id) {
   const gear = document.getElementById('gear')
   gear.classList.toggle('active', id === 'setup')
   gear.setAttribute('aria-pressed', String(id === 'setup'))
+  // #197: a terminal install or an update can change what each host runs while
+  // the app is open, so Settings re-reads it whenever it opens
+  if (openingSettings) refreshAgents()
 }
 
 function settingsOpen() {

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { cpSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, realpathSync, renameSync, rmSync, statSync, utimesSync } from 'node:fs'
+import { cpSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
@@ -288,6 +288,14 @@ describe('viewer api', () => {
       // the shared release lookup already verified the current runtime, more strictly
       expect(verifier.ownership(current)).toBe(0)
 
+      // Claude Code rewrites ~/.claude.json all the time: re-reading it must not
+      // hash the runtime it still points at again
+      const claudeJson = join(release.home, '.claude.json')
+      const config = JSON.parse(readFileSync(claudeJson, 'utf8')) as Record<string, unknown>
+      writeFileSync(claudeJson, JSON.stringify({ ...config, numStartups: 42 }))
+      expect(await read(app)).toMatchObject({ hosts: { claude: { kind: 'runtime', version: '1.2.8' } } })
+      expect(verifier.ownership(old)).toBe(1)
+
       // an update moves Claude to the current runtime: its config changed, so
       // the next read says so without hashing anything again
       release.register('claude', current)
@@ -299,6 +307,25 @@ describe('viewer api', () => {
       release.register('claude', old)
       rmSync(old, { recursive: true })
       expect(await read(app)).toMatchObject({ hosts: { claude: { kind: 'unknown' } } })
+    })
+
+    it('notices a change made through a symlinked host config, at its target', async () => {
+      const release = releaseRuntime('2.0.0')
+      const old = release.installVersion('1.2.8')
+      const current = release.install()
+      const dotfiles = join(release.home, 'dotfiles')
+      mkdirSync(dotfiles)
+      release.register('claude', old)
+      renameSync(join(release.home, '.claude.json'), join(dotfiles, 'claude.json'))
+      symlinkSync(join(dotfiles, 'claude.json'), join(release.home, '.claude.json'))
+      const app = createViewer(db, release.viewer)
+      expect(await read(app)).toMatchObject({ hosts: { claude: { kind: 'runtime', version: '1.2.8' } } })
+
+      // edit only the target, as a dotfiles checkout or `claude mcp add` through the link does
+      const config = JSON.parse(readFileSync(join(dotfiles, 'claude.json'), 'utf8')) as { mcpServers: Record<string, unknown> }
+      config.mcpServers['agent-inbox'] = { command: join(current, 'bin', 'node'), args: [join(current, 'dist', 'mcp-server.js')] }
+      writeFileSync(join(dotfiles, 'claude.json'), JSON.stringify(config))
+      expect(await read(app)).toMatchObject({ hosts: { claude: { kind: 'runtime', version: '2.0.0' } } })
     })
 
     it('verifies once for /api/setup and /api/version together, and repeated reads do not re-hash', async () => {

@@ -707,6 +707,16 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
 - **`done`/milestone bucket** *(#9)* — `flag({ kind:'done' })`, surfaced in the viewer's Done section.
 - **Electron packaging** *(#11)* — `electron/` wraps the `public/` viewer; `scripts/package-app.sh`
   stages `dist` + `public` + `electron` and rebuilds `better-sqlite3` for Electron's ABI.
+  *(#139)* The development path stages through the release `copyRequiredTree()`, so it ships
+  the checked-in `package.json` + `package-lock.json` pair. `npm ci --omit=dev` (with
+  `--prefix "$STAGE"`) installs that graph, the checkout's lockfile-pinned `electron-rebuild`
+  rebuilds the addon from inside the stage, and `scripts/package-app-stage.mjs verify`
+  refuses to package unless the stage and the packaged app hold exactly the lockfile's
+  production versions and integrities. Never stage without the lockfile or install with
+  `npm install` there: either re-resolves ranges. The script works on physical paths
+  (`pwd -P`) and treats a missing staged manifest or an unconfirmed graph check as failure:
+  a step that silently did nothing could otherwise let `npm ci` walk up and strip the
+  checkout's devDependencies.
 - **Portable release runtime** *(#74 Layer 1)* — the app may additionally embed
   `darwin-arm64` and `darwin-x64` Node 24 payloads staged outside the Electron dependency
   tree. Each payload has a content-derived `runtime-manifest.json`; Electron selects only
@@ -767,6 +777,41 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   rule above still stands. The publisher already refuses to sign a version that is not
   newer than every prior stable release, so re-pointing GitHub's latest at an older
   release shows `stale` to every client that already verified the newer one; fix forward.
+- **Verified update download** *(#196 part 1; install steps follow)* — on a packaged
+  `macos-dmg` or `appimage-self-replace` host, Settings → Updates offers **Download
+  update** for the release the signed manifest verified; it never starts on its own and
+  `deb-notify` stays notify-only. `checkForUpdate({ includeArtifact: true })` hands the
+  pinned target (URL, length, SHA-256) to Electron main only; the controller publishes
+  `available.downloadable` and byte progress, never the URL, digest or path.
+  `electron/update-download.cjs` re-validates the target against `TARGET_SPECS`, fetches
+  only the canonical `github.com/shariqh/agent-inbox/releases/download/vX.Y.Z/<file>` URL
+  with manual redirects (at most five, HTTPS, no credentials, `github.com` only to that
+  exact URL, otherwise only `release-assets.githubusercontent.com` or the older
+  `objects.githubusercontent.com` under `/github-production-release-asset…/`), and
+  streams into a fresh `mkdtemp` `0700` staging directory under
+  `userData/update-downloads`. The signed `byteLength` is a hard cap while streaming; the
+  file is fsynced and renamed to `v<version>-<sha256>/<filename>` only after the exact
+  length and digest match. Every failure — network, stall or total timeout, cancellation,
+  disk, wrong length or hash — removes the staging directory, so nothing unverified ever
+  sits at a verified path. A same-artifact request joins the in-flight download or reuses
+  the file only after re-hashing it (`O_NOFOLLOW | O_NONBLOCK`, so a planted symlink is
+  refused and a planted FIFO cannot block, inside a directory `lstat` proves is real);
+  `verify()` applies the same checks. A different artifact supersedes it.
+  Cleanup is bounded and pattern-only: it never follows symlinks, removes staging
+  directories only after an hour without writes (two app processes can share
+  `userData`), and drops downloads at or below the running version, superseded by a
+  newer verified offer, or no longer offered. Checks and downloads never overlap (a
+  download request is refused while a check is starting, and checks are skipped during
+  a download); a
+  re-check while verified is quiet and keeps the file unless a successful check offers
+  something else. A `stale` result (#148) is no such offer: like a failed check it never
+  prunes or forgets the offer, and a verified download stays on screen with only its
+  check time refreshed, so a serving path that is behind cannot delete a verified
+  newer download. The install steps
+  consume `getVerifiedArtifact()` (`{ path, version, tag, filename, sha256, byteLength,
+  packageType, installStrategy }`) and must call `downloader.verify()` again right before
+  acting. Nothing here executes, mounts, opens or installs, and update state never enters
+  `public/attention.js`, badges or Needs-you.
 - **Session presence** *(#28, corrected by #45)* — every MCP session is a Live row; `status()`
   upgrades it, process exit ends it, and a row that stops being heartbeated expires after ~15 min.
   That expiry only ever fires for a **crashed** process: a live one heartbeats itself, so what

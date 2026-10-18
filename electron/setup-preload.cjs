@@ -1,7 +1,21 @@
 const { contextBridge, ipcRenderer } = require('electron')
 
 const THEME_SOURCE_VALUES = new Set(['light', 'dark', 'system'])
-const UPDATE_STATE_VALUES = new Set(['idle', 'checking', 'current', 'available', 'stale', 'unverified', 'unsupported'])
+const UPDATE_STATE_VALUES = new Set([
+  'idle',
+  'checking',
+  'current',
+  'available',
+  'stale',
+  'unverified',
+  'unsupported',
+  'downloading',
+  'verified',
+  'download-failed',
+])
+// `stale` carries no offer: it stays out of both sets below.
+const OFFERED_UPDATE_STATES = new Set(['available', 'downloading', 'verified', 'download-failed'])
+const DOWNLOAD_STATES = new Set(['downloading', 'verified', 'download-failed'])
 const updatesAvailable = process.argv.includes('--agent-inbox-updates=1')
 
 contextBridge.exposeInMainWorld('agentInboxSetup', {
@@ -26,8 +40,13 @@ contextBridge.exposeInMainWorld('agentInboxTheme', {
   },
 })
 
+function isByteCount(value) {
+  return Number.isSafeInteger(value) && value >= 0
+}
+
 function isUpdateState(value) {
   const available = value?.available
+  const download = value?.download
   return Boolean(
     value &&
     typeof value === 'object' &&
@@ -36,17 +55,29 @@ function isUpdateState(value) {
     typeof value.automaticChecks === 'boolean' &&
     (value.checkedAt === null || typeof value.checkedAt === 'string') &&
     typeof value.message === 'string' &&
-    (value.status === 'available'
+    (OFFERED_UPDATE_STATES.has(value.status)
       ? (
           typeof available === 'object' &&
+          available !== null &&
           typeof available.version === 'string' &&
           typeof available.tag === 'string' &&
           typeof available.releaseUrl === 'string' &&
+          typeof available.downloadable === 'boolean' &&
           typeof available.target === 'object' &&
           typeof available.target.packageType === 'string' &&
           typeof available.target.installStrategy === 'string'
         )
-      : available === undefined)
+      : available === undefined) &&
+    (DOWNLOAD_STATES.has(value.status)
+      ? (
+          typeof download === 'object' &&
+          download !== null &&
+          isByteCount(download.receivedBytes) &&
+          isByteCount(download.totalBytes) &&
+          download.totalBytes > 0 &&
+          download.receivedBytes <= download.totalBytes
+        )
+      : download === undefined)
   )
 }
 
@@ -70,6 +101,14 @@ if (updatesAvailable) {
     setAutomatic(enabled) {
       if (typeof enabled !== 'boolean') return false
       return invokeUpdateState('agent-inbox:update-automatic', enabled)
+    },
+    download(...args) {
+      if (args.length !== 0) return false
+      return invokeUpdateState('agent-inbox:update-download')
+    },
+    cancelDownload(...args) {
+      if (args.length !== 0) return false
+      return invokeUpdateState('agent-inbox:update-download-cancel')
     },
     openRelease(...args) {
       if (args.length !== 0) return false

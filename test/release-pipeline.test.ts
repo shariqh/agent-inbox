@@ -572,8 +572,10 @@ describe('universal finalization contract', () => {
     expect(electronModules.every((module) => module.startsWith('electron/'))).toBe(true)
     expect(pullRequestTrigger).toContain('      - "electron/**"')
     const packageApp = readFileSync(join(root, 'scripts', 'package-app.sh'), 'utf8')
+    const packageAppStage = readFileSync(join(root, 'scripts', 'package-app-stage.mjs'), 'utf8')
     const thinApp = readFileSync(join(root, 'scripts', 'build-thin-app.mjs'), 'utf8')
-    expect(packageApp).toContain('"$ROOT/electron"')
+    expect(packageApp).toContain('"$ROOT/scripts/package-app-stage.mjs" stage "$ROOT" "$STAGE"')
+    expect(packageAppStage).toContain('copyRequiredTree(repoRoot, stageRoot)')
     expect(thinApp).toContain("['dist', 'public', 'electron', 'release']")
   })
 

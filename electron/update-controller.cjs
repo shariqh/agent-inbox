@@ -16,6 +16,13 @@ const TARGET_STRATEGIES = new Map([
   ['appimage', 'appimage-self-replace'],
   ['deb', 'deb-notify'],
 ])
+// deb-notify stays notify-only: nothing in the app may write into dpkg-owned paths.
+const DOWNLOADABLE_STRATEGIES = new Set(['macos-dmg', 'appimage-self-replace'])
+const DOWNLOAD_MESSAGES = {
+  downloading: 'Downloading the verified update…',
+  verified: 'The update was downloaded and verified.',
+  'download-failed': 'The update could not be downloaded and verified. Try again or use the releases page.',
+}
 
 function idleState(currentVersion, automaticChecks = false) {
   return {
@@ -56,6 +63,18 @@ function isNewerVersion(candidate, current) {
   return false
 }
 
+function sameArtifact(left, right) {
+  return Boolean(
+    left
+    && right
+    && left.version === right.version
+    && left.installStrategy === right.installStrategy
+    && left.url === right.url
+    && left.byteLength === right.byteLength
+    && left.sha256 === right.sha256,
+  )
+}
+
 function createUpdateController(options) {
   if (!options || typeof options.currentVersion !== 'string') throw new TypeError('currentVersion is required')
   if (!options.preferences || typeof options.preferences.read !== 'function') {
@@ -63,6 +82,13 @@ function createUpdateController(options) {
   }
   if (typeof options.checker !== 'function') throw new TypeError('checker is required')
   if (typeof options.notifier !== 'function') throw new TypeError('notifier is required')
+  const downloader = options.downloader ?? null
+  if (
+    downloader !== null
+    && ['normalize', 'download', 'cancel', 'prune'].some((name) => typeof downloader[name] !== 'function')
+  ) {
+    throw new TypeError('downloader adapter is invalid')
+  }
 
   const currentVersion = options.currentVersion
   const preferences = options.preferences
@@ -84,6 +110,12 @@ function createUpdateController(options) {
   let inFlight = null
   let disposed = false
   let highestVerifiedVersion = null
+  // Main-process only: the signed artifact behind state.available, the verified
+  // file once downloaded, and the running download. None of these is published.
+  let artifact = null
+  let verifiedArtifact = null
+  let downloadOperation = null
+  let startupPruned = false
 
   function publish(next) {
     const available = next.available
@@ -92,12 +124,45 @@ function createUpdateController(options) {
           target: Object.freeze({ ...next.available.target }),
         })
       : undefined
+    const download = next.download ? Object.freeze({ ...next.download }) : undefined
+    const { available: _available, download: _download, ...rest } = next
     state = Object.freeze({
-      ...next,
+      ...rest,
       ...(available ? { available } : {}),
+      ...(download ? { download } : {}),
     })
     emit(state)
     return state
+  }
+
+  function prune(pruneOptions) {
+    if (downloader === null) return
+    Promise.resolve()
+      .then(() => downloader.prune(pruneOptions))
+      .catch(() => {})
+  }
+
+  function downloadState(status, available, receivedBytes, totalBytes) {
+    return {
+      status,
+      currentVersion,
+      automaticChecks: state.automaticChecks,
+      checkedAt: state.checkedAt,
+      message: DOWNLOAD_MESSAGES[status],
+      available,
+      download: { receivedBytes, totalBytes },
+    }
+  }
+
+  function availableState(available) {
+    return {
+      status: 'available',
+      currentVersion,
+      automaticChecks: state.automaticChecks,
+      checkedAt: state.checkedAt,
+      message: 'A verified update is available.',
+      available,
+    }
   }
 
   function clearTimer() {
@@ -139,10 +204,28 @@ function createUpdateController(options) {
         version: available.version,
         tag: available.tag,
         releaseUrl: available.releaseUrl,
+        downloadable: available.downloadable === true,
       })
     } catch {
       // Notification delivery is best-effort after recording the version.
     }
+  }
+
+  // The checker's artifact is accepted only through the downloader's own
+  // validation and only when it is exactly the release being offered.
+  function acceptArtifact(candidateArtifact, available) {
+    if (candidateArtifact === undefined || downloader === null) return null
+    const normalized = downloader.normalize(candidateArtifact)
+    if (normalized === null || !DOWNLOADABLE_STRATEGIES.has(normalized.installStrategy)) return null
+    if (
+      normalized.version !== available.version
+      || normalized.tag !== available.tag
+      || normalized.packageType !== available.target.packageType
+      || normalized.installStrategy !== available.target.installStrategy
+    ) {
+      throw new Error('checker returned an artifact for a different release')
+    }
+    return normalized
   }
 
   function safeCheckerState(candidate, automaticChecks) {
@@ -169,29 +252,37 @@ function createUpdateController(options) {
       ) {
         throw new Error('checker returned invalid verified release metadata')
       }
+      const accepted = acceptArtifact(candidate.artifact, available)
       return {
-        status: 'available',
-        currentVersion,
-        automaticChecks,
-        checkedAt: candidate.checkedAt,
-        message: 'A verified update is available.',
-        available: {
-          version: available.version,
-          tag: available.tag,
-          releaseUrl: available.releaseUrl,
-          target: {
-            packageType: available.target.packageType,
-            installStrategy: available.target.installStrategy,
+        artifact: accepted,
+        state: {
+          status: 'available',
+          currentVersion,
+          automaticChecks,
+          checkedAt: candidate.checkedAt,
+          message: 'A verified update is available.',
+          available: {
+            version: available.version,
+            tag: available.tag,
+            releaseUrl: available.releaseUrl,
+            target: {
+              packageType: available.target.packageType,
+              installStrategy: available.target.installStrategy,
+            },
+            downloadable: accepted !== null,
           },
         },
       }
     }
     return {
-      status: candidate.status,
-      currentVersion,
-      automaticChecks,
-      checkedAt: candidate.checkedAt,
-      message: CHECKED_MESSAGES[candidate.status],
+      artifact: null,
+      state: {
+        status: candidate.status,
+        currentVersion,
+        automaticChecks,
+        checkedAt: candidate.checkedAt,
+        message: CHECKED_MESSAGES[candidate.status],
+      },
     }
   }
 
@@ -224,7 +315,31 @@ function createUpdateController(options) {
     return highestVerifiedVersion
   }
 
+  // A re-check that confirms the exact verified artifact keeps it; anything
+  // else (a newer release, no release, a notify-only target) discards it.
+  // `stale` is not evidence about a download: release information below the
+  // high-water mark comes only from a serving path that is behind (#148), so,
+  // like a failed check, it never prunes or forgets the offer, and a verified
+  // file stays on screen with only its check time refreshed.
+  function settleCheck(checked) {
+    const next = checked.state
+    const keepVerified = state.status === 'verified' && verifiedArtifact !== null
+    if (next.status === 'stale') {
+      if (!keepVerified) return publish(next)
+      return publish({ ...state, automaticChecks: next.automaticChecks, checkedAt: next.checkedAt })
+    }
+    if (keepVerified && next.status === 'available' && sameArtifact(artifact, checked.artifact)) {
+      return publish({ ...state, automaticChecks: next.automaticChecks, checkedAt: next.checkedAt })
+    }
+    verifiedArtifact = null
+    artifact = checked.artifact
+    prune({ keep: next.status === 'available' ? artifact : null, currentVersion })
+    return publish(next)
+  }
+
   function runCheck(mode) {
+    // The running download already belongs to a release verified moments ago.
+    if (state.status === 'downloading') return Promise.resolve(state)
     if (inFlight !== null) {
       if (mode === 'scheduled') inFlight.scheduledRequested = true
       return inFlight.promise
@@ -233,6 +348,8 @@ function createUpdateController(options) {
     const operation = { scheduledRequested: mode === 'scheduled', promise: null }
     operation.promise = (async () => {
       let prefs
+      // A verified download stays on screen while it is re-confirmed.
+      const quiet = state.status === 'verified'
       try {
         prefs = await preferences.read()
         if (mode === 'scheduled' && !prefs.automaticChecks) {
@@ -241,7 +358,7 @@ function createUpdateController(options) {
             automaticChecks: false,
           })
         }
-        publish(checkingState(currentVersion, prefs.automaticChecks))
+        if (!quiet) publish(checkingState(currentVersion, prefs.automaticChecks))
         const candidate = await checker({
           currentVersion,
           automaticChecks: prefs.automaticChecks,
@@ -254,11 +371,12 @@ function createUpdateController(options) {
           latestPreferences = { ...prefs, automaticChecks: state.automaticChecks }
         }
         const checked = safeCheckerState(candidate, latestPreferences.automaticChecks)
-        if (checked.status === 'available' && operation.scheduledRequested && latestPreferences.automaticChecks) {
-          await notifyAvailable(checked.available, latestPreferences)
+        if (checked.state.status === 'available' && operation.scheduledRequested && latestPreferences.automaticChecks) {
+          await notifyAvailable(checked.state.available, latestPreferences)
         }
-        return publish(checked)
+        return settleCheck(checked)
       } catch {
+        if (quiet && state.status === 'verified') return state
         return publish(unverifiedState(currentVersion, state.automaticChecks, clock))
       } finally {
         if (inFlight === operation) inFlight = null
@@ -268,6 +386,64 @@ function createUpdateController(options) {
     return operation.promise
   }
 
+  function validVerifiedRecord(record, target) {
+    return Boolean(
+      record
+      && typeof record === 'object'
+      && typeof record.path === 'string'
+      && record.path !== ''
+      && record.version === target.version
+      && record.sha256 === target.sha256
+      && record.byteLength === target.byteLength
+      && record.installStrategy === target.installStrategy,
+    )
+  }
+
+  async function downloadNow() {
+    if (
+      disposed
+      || downloader === null
+      || artifact === null
+      // A starting check may still replace the offer; never race it.
+      || inFlight !== null
+      || (state.status !== 'available' && state.status !== 'download-failed')
+      || state.available?.version !== artifact.version
+    ) {
+      return state
+    }
+    const target = artifact
+    const available = state.available
+    const totalBytes = target.byteLength
+    const operation = {}
+    let receivedBytes = 0
+    let publishedPercent = 0
+    downloadOperation = operation
+    publish(downloadState('downloading', available, 0, totalBytes))
+    try {
+      const record = await downloader.download(target, {
+        onProgress(received) {
+          if (downloadOperation !== operation || !Number.isFinite(received)) return
+          receivedBytes = Math.min(totalBytes, Math.max(0, Math.trunc(received)))
+          // Whole-percent steps bound renderer IPC to ~100 messages per download.
+          const percent = Math.floor((receivedBytes * 100) / totalBytes)
+          if (percent === publishedPercent) return
+          publishedPercent = percent
+          publish(downloadState('downloading', available, receivedBytes, totalBytes))
+        },
+      })
+      if (downloadOperation !== operation) return state
+      downloadOperation = null
+      if (!validVerifiedRecord(record, target)) throw new Error('downloader returned an unexpected artifact')
+      verifiedArtifact = Object.freeze({ ...record })
+      return publish(downloadState('verified', available, totalBytes, totalBytes))
+    } catch (error) {
+      if (downloadOperation !== operation) return state
+      downloadOperation = null
+      if (error?.code === 'cancelled' || error?.code === 'superseded') return publish(availableState(available))
+      return publish(downloadState('download-failed', available, receivedBytes, totalBytes))
+    }
+  }
+
   return Object.freeze({
     getState() {
       return state
@@ -275,6 +451,10 @@ function createUpdateController(options) {
     async rendererReady() {
       if (disposed) return state
       rendererIsReady = true
+      if (!startupPruned) {
+        startupPruned = true
+        prune({ currentVersion })
+      }
       const prefs = await preferences.read()
       publish({ ...state, automaticChecks: prefs.automaticChecks })
       if (prefs.automaticChecks) arm(initialDelayMs)
@@ -302,9 +482,25 @@ function createUpdateController(options) {
       if (prefs.automaticChecks) arm(initialDelayMs)
       return state
     },
+    downloadNow,
+    async cancelDownload() {
+      if (downloadOperation !== null && downloader !== null) await downloader.cancel()
+      return state
+    },
+    // The install steps' seam: the verified file behind a 'verified' state.
+    getVerifiedArtifact() {
+      return state.status === 'verified' ? verifiedArtifact : null
+    },
     dispose() {
       disposed = true
       clearTimer()
+      if (downloadOperation !== null && downloader !== null) {
+        try {
+          Promise.resolve(downloader.cancel()).catch(() => {})
+        } catch {
+          // Quitting must not depend on cleanup; stale partials are pruned next launch.
+        }
+      }
     },
   })
 }

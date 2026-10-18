@@ -3,13 +3,19 @@
 A desktop window around the existing viewer (`public/` + `dist/viewer-server.js`).
 Two modes: a dev run from the repo, and a packaged self-contained `Agent Inbox.app`.
 
-Packaged macOS and Linux apps expose signed, notify-only release checks in
+Packaged macOS and Linux apps expose signed release checks in
 **Settings → Updates** and through **Check for Updates…** in the app menu. The checker
 fetches and verifies the release manifest and signature against the key registry bundled
 with the app before using release metadata. Automatic checks are explicit and off by
 default. They make no telemetry requests and notify at most once per verified version.
-This layer does not download, replace, or install an app; the release action opens the
-verified GitHub release page for a manual package update. Dev Electron and browser
+For `macos-dmg` and `appimage-self-replace` targets, a user-initiated **Download update**
+runs `update-download.cjs` in Electron main: it fetches only the manifest's canonical
+release URL, follows at most five redirects to GitHub's release-asset hosts, streams into
+a private `0700` staging directory under `userData/update-downloads`, enforces the signed
+length as a hard cap, and renames the file into place only after its SHA-256 matches.
+The renderer never sees the URL, digest or path. This layer does not mount, open,
+replace, or install anything; `deb-notify` stays notify-only and the release action opens
+the verified GitHub release page for a manual package update. Dev Electron and browser
 viewers intentionally omit the feature.
 
 Checks also refuse to move backwards. After a manifest's signature, schema and expiry
@@ -51,12 +57,17 @@ assets from `assets/icon.svg` with `npm run generate:icons` (macOS with
 documented optical derivative used in the viewer chrome.
 
 The .app needs **no terminal and no system Node**: the viewer server runs inside
-Electron's bundled Node. `scripts/package-app.sh` stages `dist/ + public/ + electron/`
-into `build/stage`, installs production deps there, rebuilds better-sqlite3 against
-Electron's ABI (isolated — the repo's node_modules stays built for Node 24), and packages
-with @electron/packager (`--no-asar`: the server chdirs into the app dir and serves
-`./public` from the real filesystem). Same launch rules as dev: reuse a running 4319
-viewer, else serve in-process; quitting frees the port only if the app started the server.
+Electron's bundled Node. `scripts/package-app.sh` stages the release thin app's inputs —
+`dist/ + public/ + electron/ + release/` and the checked-in `package.json` +
+`package-lock.json` pair — into `build/stage`, installs that lockfile's production graph
+with `npm ci --omit=dev`, rebuilds better-sqlite3 against Electron's ABI with the
+checkout's lockfile-pinned `electron-rebuild` (isolated — the repo's node_modules stays
+built for Node 24), and packages with @electron/packager (`--no-asar`: the server chdirs
+into the app dir and serves `./public` from the real filesystem). Packaging stops if the
+stage is missing its manifest or lockfile, or if the staged or packaged dependency graph
+differs from `package-lock.json` in any package version or integrity. Same launch rules as
+dev: reuse a running 4319 viewer, else serve in-process; quitting frees the port only if
+the app started the server.
 
 ### Portable agent runtime staging
 

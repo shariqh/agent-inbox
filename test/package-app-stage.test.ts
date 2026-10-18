@@ -2,16 +2,28 @@
 // path must ship the checked-in lockfile's production graph, not whatever
 // package.json's ranges resolve to on the day it runs.
 //
-// scripts/package-app.sh itself cannot run here (it rebuilds a native module for
-// Electron's ABI and packages a .app), so its contract is split in two: the
-// staging and graph check it delegates to scripts/package-app-stage.mjs run FOR
-// REAL below, including a real `npm ci` over locally packed tarballs, and the
-// order of the shell steps around them is pinned at the source.
+// scripts/package-app.sh cannot run end to end here (it rebuilds a native module
+// for Electron's ABI and packages a .app). The staging and graph check it
+// delegates to scripts/package-app-stage.mjs run FOR REAL below, including a real
+// `npm ci` over locally packed tarballs; the shell's own guards run for real
+// against a fake checkout whose tools only record their calls; and the order of
+// the remaining shell steps is pinned at the source.
 import { afterEach, describe, expect, it } from 'vitest'
-import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { execFileSync, spawnSync } from 'node:child_process'
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { npmCliForCurrentNode } from '../scripts/build-thin-app.mjs'
 import {
   DEVELOPMENT_PRODUCT_NAME,
@@ -60,19 +72,19 @@ describe('package-app.sh installs and verifies the checked-in lockfile graph (#1
   })
 
   it('installs with npm ci from the lockfile, never by resolving package.json ranges', () => {
-    at('npm ci --omit=dev --prefer-offline --no-audit --no-fund')
+    at('npm ci --prefix "$STAGE" --omit=dev --prefer-offline --no-audit --no-fund')
     expect(sh).not.toMatch(/npm install\b/)
   })
 
   it('keeps the Electron rebuild inside the stage and checks the graph before and after packaging', () => {
     const stage = at('"$ROOT/scripts/package-app-stage.mjs" stage')
-    const install = at('npm ci --omit=dev')
+    const install = at('npm ci --prefix "$STAGE" --omit=dev')
     const enterStage = sh.lastIndexOf('cd "$STAGE"', install)
-    const rebuild = at('npx --yes @electron/rebuild -f -w better-sqlite3 -v "$ELECTRON_VERSION" -m "$STAGE"')
-    const stagedCheck = at('verify "$ROOT/package-lock.json" "$STAGE" --label staged')
+    const rebuild = at('"$REBUILD" -f -w better-sqlite3 -v "$ELECTRON_VERSION" -m "$STAGE"')
+    const stagedCheck = at('verify_graph staged "$STAGE"')
     const leaveStage = at('cd "$ROOT"\n# --no-asar')
     const packager = at('npx --yes @electron/packager "$STAGE"')
-    const packagedCheck = at('verify "$ROOT/package-lock.json" "$APP/Contents/Resources/app" --label packaged')
+    const packagedCheck = at('verify_graph packaged "$APP/Contents/Resources/app"')
     const signing = at('codesign --force --deep --sign - "$APP"')
 
     expect(stage).toBeLessThan(install)
@@ -98,6 +110,140 @@ describe('package-app.sh installs and verifies the checked-in lockfile graph (#1
     expect(sh).toContain('echo "Packaged (development, ad-hoc signed): $APP"')
     expect(sh.match(/codesign/g)).toHaveLength(1)
     expect(sh).not.toMatch(/notarytool|stapler/)
+  })
+})
+
+// A step that exits 0 having done nothing: what a skipped entry-point guard looks like.
+const SILENT_STAGE_TOOL = ''
+// Stages only the manifest pair, and its graph check confirms nothing.
+const MANIFEST_ONLY_STAGE_TOOL = `
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs'
+const [command, , stage] = process.argv.slice(2)
+appendFileSync(process.env.CALLS, \`stage-tool \${process.argv[1]} \${process.argv.slice(2).join(' ')}\\n\`)
+if (command === 'stage') {
+  mkdirSync(stage, { recursive: true })
+  for (const name of ['package.json', 'package-lock.json']) writeFileSync(\`\${stage}/\${name}\`, '{}\\n')
+}
+`
+
+/**
+ * A checkout holding the real package-app.sh, a stand-in stage tool, and npm,
+ * npx and the pinned electron-rebuild replaced by recorders, so the script's own
+ * guards run for real while nothing is installed, rebuilt or packaged.
+ */
+function fakeCheckout(stageTool: string, { pinnedRebuild = true } = {}) {
+  const work = realpathSync(tmp('package-app-sh-'))
+  const repo = join(work, 'repo')
+  const bin = join(work, 'bin')
+  const calls = join(work, 'calls.log')
+  for (const dir of [join(repo, 'scripts'), join(repo, 'node_modules', 'electron'), join(repo, 'node_modules', '.bin'), bin]) {
+    mkdirSync(dir, { recursive: true })
+  }
+  copyFileSync(join(root, 'scripts', 'package-app.sh'), join(repo, 'scripts', 'package-app.sh'))
+  writeFileSync(join(repo, 'scripts', 'package-app-stage.mjs'), stageTool)
+  writeFileSync(join(repo, 'scripts', 'write-setup-info.mjs'), '')
+  writeFileSync(join(repo, 'package.json'), JSON.stringify({ name: 'fixture', version: '1.0.0' }))
+  writeFileSync(join(repo, 'node_modules', 'electron', 'package.json'), JSON.stringify({ version: '43.8.0' }))
+  const recorders = [join(bin, 'npm'), join(bin, 'npx')]
+  if (pinnedRebuild) recorders.push(join(repo, 'node_modules', '.bin', 'electron-rebuild'))
+  for (const recorder of recorders) {
+    writeFileSync(recorder, '#!/bin/sh\necho "$(basename "$0") cwd=$(pwd -P) $*" >> "$CALLS"\n')
+    chmodSync(recorder, 0o755)
+  }
+  const runtimes: Record<string, string> = {}
+  for (const key of ['darwin-arm64', 'darwin-x64']) {
+    runtimes[key] = join(work, 'runtime', key)
+    mkdirSync(runtimes[key], { recursive: true })
+    writeFileSync(join(runtimes[key], 'runtime-manifest.json'), '{}\n')
+  }
+  return {
+    work,
+    repo,
+    stage: join(repo, 'build', 'stage'),
+    portableEnv: {
+      AGENT_INBOX_RUNTIME_DARWIN_ARM64: runtimes['darwin-arm64'],
+      AGENT_INBOX_RUNTIME_DARWIN_X64: runtimes['darwin-x64'],
+    },
+    run(env: NodeJS.ProcessEnv = {}, script = join(repo, 'scripts', 'package-app.sh')) {
+      return spawnSync('bash', [script], {
+        encoding: 'utf8',
+        timeout: 30_000,
+        env: { PATH: `${bin}:${dirname(process.execPath)}:/usr/bin:/bin`, HOME: work, CALLS: calls, ...env },
+      })
+    },
+    calls: () => (existsSync(calls) ? readFileSync(calls, 'utf8').trim().split('\n') : []),
+  }
+}
+
+describe('package-app.sh refuses to continue past a step that did nothing', () => {
+  it.each([['portable', true], ['development', false]])(
+    'never runs npm ci when staging left no package.json + package-lock.json (%s package)',
+    (_mode, portable) => {
+      const checkout = fakeCheckout(SILENT_STAGE_TOOL)
+      const result = checkout.run(portable ? checkout.portableEnv : {})
+
+      expect(result.status).toBe(1)
+      expect(result.stderr).toContain(
+        `package-app: ${checkout.stage} is missing its staged package.json or package-lock.json; refusing to run npm ci`,
+      )
+      expect(checkout.calls()).toEqual([
+        `npm cwd=${checkout.repo} run generate:icons -- --check`,
+        `npm cwd=${checkout.repo} run build`,
+      ])
+    },
+  )
+
+  it('resolves a symlinked checkout, rebuilds with the pinned tool in the stage, and requires the graph check to confirm', () => {
+    const checkout = fakeCheckout(MANIFEST_ONLY_STAGE_TOOL)
+    const linked = join(checkout.work, 'linked-checkout')
+    symlinkSync(checkout.repo, linked, 'dir')
+    const result = checkout.run({}, join(linked, 'scripts', 'package-app.sh'))
+    const tool = join(checkout.repo, 'scripts', 'package-app-stage.mjs')
+    const { repo, stage } = checkout
+
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain(`package-app: the staged dependency graph check did not confirm ${stage}`)
+    expect(checkout.calls()).toEqual([
+      `npm cwd=${repo} run generate:icons -- --check`,
+      `npm cwd=${repo} run build`,
+      `stage-tool ${tool} stage ${repo} ${stage}`,
+      `npm cwd=${stage} ci --prefix ${stage} --omit=dev --prefer-offline --no-audit --no-fund`,
+      `electron-rebuild cwd=${stage} -f -w better-sqlite3 -v 43.8.0 -m ${stage}`,
+      `stage-tool ${tool} verify ${join(repo, 'package-lock.json')} ${stage} --label staged`,
+    ])
+  })
+
+  it('stops before staging when the checkout has no lockfile-pinned electron-rebuild', () => {
+    const checkout = fakeCheckout(MANIFEST_ONLY_STAGE_TOOL, { pinnedRebuild: false })
+    const result = checkout.run()
+
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain(
+      `package-app: ${join(checkout.repo, 'node_modules', '.bin', 'electron-rebuild')} is missing; run npm ci in the checkout first`,
+    )
+    expect(checkout.calls()).toEqual([])
+  })
+})
+
+describe('package-app-stage.mjs as a command', () => {
+  it('still runs through a symlinked path, failing loudly on a bad tree instead of exiting 0', () => {
+    const dir = realpathSync(tmp('stage-cli-link-'))
+    const linked = join(dir, 'scripts')
+    symlinkSync(join(root, 'scripts'), linked, 'dir')
+    const bad = join(dir, 'bad')
+    mkdirSync(bad)
+    const cli = (...args: string[]) => spawnSync(process.execPath, [join(linked, 'package-app-stage.mjs'), ...args], {
+      encoding: 'utf8',
+      timeout: 30_000,
+    })
+
+    const staged = cli('stage', bad, join(dir, 'stage'))
+    expect(staged.status).toBe(1)
+    expect(staged.stderr).toContain(`package-app: missing required package input: ${join(bad, 'dist')}`)
+
+    const verified = cli('verify', join(root, 'package-lock.json'), bad)
+    expect(verified.status).toBe(1)
+    expect(verified.stderr).toContain(`package-app: ${join(bad, 'node_modules', '.package-lock.json')} is missing`)
   })
 })
 
@@ -350,7 +496,9 @@ describe.skipIf(!NPM_CLI)('a real npm ci over the staged pair', () => {
   })
 
   it('installs only the locked production graph, which the check then accepts', () => {
-    const work = tmp('stage-npm-')
+    // Physical paths, as package-app.sh's `pwd -P` root provides: npm treats a
+    // --prefix whose real path differs (macOS /var -> /private/var) as a linked root.
+    const work = realpathSync(tmp('stage-npm-'))
     const tarballs = join(work, 'tgz')
     mkdirSync(tarballs)
     for (const name of ['prod-dep', 'dev-dep']) {
@@ -371,7 +519,7 @@ describe.skipIf(!NPM_CLI)('a real npm ci over the staged pair', () => {
     const stage = join(work, 'stage')
     stageDevelopmentApp(repo, stage)
 
-    npm(stage, 'ci', '--omit=dev', '--prefer-offline', '--no-audit', '--no-fund', '--offline')
+    npm(stage, 'ci', '--prefix', stage, '--omit=dev', '--prefer-offline', '--no-audit', '--no-fund', '--offline')
 
     expect(existsSync(join(stage, 'node_modules', 'prod-dep', 'package.json'))).toBe(true)
     expect(existsSync(join(stage, 'node_modules', 'dev-dep'))).toBe(false)
@@ -380,5 +528,11 @@ describe.skipIf(!NPM_CLI)('a real npm ci over the staged pair', () => {
       omittedDev: 1,
       optionalAbsent: [],
     })
+    const command = spawnSync(process.execPath, [
+      join(root, 'scripts', 'package-app-stage.mjs'), 'verify', join(repo, 'package-lock.json'), stage, '--label', 'staged',
+    ], { encoding: 'utf8', timeout: 30_000 })
+    expect(command.status).toBe(0)
+    // package-app.sh will not continue without exactly this confirmation.
+    expect(command.stdout).toMatch(/^package-app: staged dependency graph matches package-lock\.json: /)
   }, 60_000)
 })

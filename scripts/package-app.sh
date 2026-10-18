@@ -14,10 +14,18 @@
 # Usage: npm run package:app   (any Node; the app itself needs none)
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# Physical paths throughout: npm ci --prefix treats a symlinked prefix as a linked
+# root, and nothing below may depend on how the checkout was reached.
+ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 STAGE="$ROOT/build/stage"
 OUT="$ROOT/out"
 ELECTRON_VERSION="$(node -p "require('$ROOT/node_modules/electron/package.json').version")"
+# The checkout's lockfile-pinned rebuild, never whatever npx would fetch.
+REBUILD="$ROOT/node_modules/.bin/electron-rebuild"
+[ -x "$REBUILD" ] || {
+  echo "package-app: $REBUILD is missing; run npm ci in the checkout first" >&2
+  exit 1
+}
 RUNTIME_ARM64="${AGENT_INBOX_RUNTIME_DARWIN_ARM64:-}"
 RUNTIME_X64="${AGENT_INBOX_RUNTIME_DARWIN_X64:-}"
 PORTABLE_RELEASE=0
@@ -29,12 +37,36 @@ if [ -n "$RUNTIME_ARM64" ] || [ -n "$RUNTIME_X64" ]; then
   PORTABLE_RELEASE=1
 fi
 
+# Without its staged manifest and lockfile, npm ci in the stage would walk up
+# and reinstall the checkout itself, production-only.
+require_staged_manifest() {
+  [ -f "$STAGE/package.json" ] && [ -f "$STAGE/package-lock.json" ] || {
+    echo "package-app: $STAGE is missing its staged package.json or package-lock.json; refusing to run npm ci" >&2
+    exit 1
+  }
+}
+
+# Check an installed tree against package-lock.json and require the check's own
+# confirmation, so a check that silently did not run can never pass.
+verify_graph() {
+  local label="$1" app="$2" report
+  report="$(node "$ROOT/scripts/package-app-stage.mjs" verify "$ROOT/package-lock.json" "$app" --label "$label")"
+  case "$report" in
+    "package-app: $label dependency graph matches package-lock.json: "*) printf '%s\n' "$report" ;;
+    *)
+      echo "package-app: the $label dependency graph check did not confirm $app" >&2
+      exit 1
+      ;;
+  esac
+}
+
 cd "$ROOT"
 npm run generate:icons -- --check
 npm run build
 
 rm -rf "$STAGE"
 node "$ROOT/scripts/package-app-stage.mjs" stage "$ROOT" "$STAGE"
+require_staged_manifest
 
 if [ "$PORTABLE_RELEASE" -eq 1 ]; then
   mkdir -p "$STAGE/runtime"
@@ -54,9 +86,9 @@ else
 fi
 
 cd "$STAGE"
-npm ci --omit=dev --prefer-offline --no-audit --no-fund
-npx --yes @electron/rebuild -f -w better-sqlite3 -v "$ELECTRON_VERSION" -m "$STAGE"
-node "$ROOT/scripts/package-app-stage.mjs" verify "$ROOT/package-lock.json" "$STAGE" --label staged
+npm ci --prefix "$STAGE" --omit=dev --prefer-offline --no-audit --no-fund
+"$REBUILD" -f -w better-sqlite3 -v "$ELECTRON_VERSION" -m "$STAGE"
+verify_graph staged "$STAGE"
 
 cd "$ROOT"
 # --no-asar: the server chdirs into the app dir and serves ./public from the
@@ -69,7 +101,7 @@ npx --yes @electron/packager "$STAGE" "Agent Inbox" \
   --app-bundle-id=io.github.shariqh.agent-inbox
 
 APP="$OUT/Agent Inbox-darwin-arm64/Agent Inbox.app"
-node "$ROOT/scripts/package-app-stage.mjs" verify "$ROOT/package-lock.json" "$APP/Contents/Resources/app" --label packaged
+verify_graph packaged "$APP/Contents/Resources/app"
 
 # Electron requires alert-style notifications for native action buttons on
 # macOS. Write the key before signing so the signature covers the final plist.

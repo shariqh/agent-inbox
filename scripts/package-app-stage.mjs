@@ -7,7 +7,7 @@
 // package.json + package-lock.json pair. `npm ci --omit=dev` then installs the
 // lockfile's production graph instead of resolving package.json ranges afresh,
 // and verifyStagedLockGraph() proves the installed graph is that lockfile's.
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
@@ -221,7 +221,19 @@ function main(argv) {
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// Node resolves symlinks for import.meta.url but not for argv[1], so compare
+// real paths: run through a symlinked checkout, a plain comparison would turn
+// every command into a silent exit 0.
+function invokedAsCommand() {
+  if (!process.argv[1]) return false
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))
+  } catch {
+    return false
+  }
+}
+
+if (invokedAsCommand()) {
   try {
     main(process.argv.slice(2))
   } catch (err) {

@@ -118,6 +118,10 @@ header { flex-wrap: wrap; }
 .idle-row.dormant { opacity: .58; }
 .live-children { margin-top: 8px; }
 .live-state { font-size: 12px; opacity: .6; white-space: nowrap; }
+/* #197: the build a session runs is quiet metadata; an older one is a gentle note, never an alarm */
+.live-build { flex: none; font-size: 11px; opacity: .5; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.live-build.older { opacity: 1; color: color-mix(in srgb, var(--app-warning) 80%, var(--app-text)); }
+.live-build-hint { font-size: 12px; color: color-mix(in srgb, var(--app-warning) 80%, var(--app-text)); }
 #lightbox { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; }
 #lightbox[hidden] { display: none; } /* our display:flex would otherwise beat the UA's [hidden] rule */
 .lb-backdrop { position: absolute; inset: 0; background: color-mix(in srgb, var(--app-text) 25%, transparent); backdrop-filter: blur(2px); }
@@ -619,6 +623,8 @@ body.settings-open .floating-search { opacity: .32; }
 #liveStrip .live-sessions { display: flex; gap: 10px; overflow: hidden; opacity: .6; min-width: 0; }
 #liveStrip .live-session { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #liveStrip .live-session .live-dot { width: 6px; height: 6px; box-shadow: none; }
+/* #197: the strip marks only an older build, compactly; the drawer has the full label and advice */
+#liveStrip .live-build-marker { font-size: 11px; color: color-mix(in srgb, var(--app-warning) 80%, var(--app-text)); }
 #liveStrip .live-caret { margin-left: auto; color: var(--app-muted); opacity: 1; }
 #liveStrip[aria-expanded="true"] .live-caret { transform: rotate(180deg); }
 .live-dot.idle { background: color-mix(in srgb, var(--app-text) 30%, transparent); }

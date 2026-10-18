@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { mkdirSync } from 'node:fs'
+import type { ServerSource } from './server-source.js'
 
 export type Kind = 'question' | 'note' | 'done'
 export type Status = 'open' | 'resolved' | 'dismissed'
@@ -74,6 +75,9 @@ export interface Item {
   // issue #157 — the `owner/name` this item's branch is PUSHED to, where its PR
   // must come from (`repo` is the base the PR is opened against). NULL when none
   // was inferred and on every row written before #157: a same-repository PR.
+  // Issue #183: a `gh pr checkout` branch that tracks a pull request's ref and
+  // pushes back where it fetches from records that ref (`refs/pull/<n>/head`)
+  // instead, which no PR can verify against.
   head_repo: string | null
   created_at: string
   updated_at: string
@@ -328,6 +332,13 @@ function runMigrations(db: Database.Database): void {
   // running the old code. Both fall back to `started_at`, so a fresh connection
   // is never born cold and a days-old legacy claim is.
   ensureColumn(db, 'activity', 'last_call_at', 'TEXT')
+  // issue #197 — the Agent Inbox build the session's MCP server runs, and
+  // whether it runs from an installed agent runtime or a checkout, written by
+  // that server's own presence and status writes. NULL on legacy rows and on
+  // rows written by older servers: Live then shows nothing rather than a guess.
+  // Display only, never a liveness or work signal.
+  ensureColumn(db, 'activity', 'server_version', 'TEXT')
+  ensureColumn(db, 'activity', 'server_source', 'TEXT')
   migrateActivitySynopsis(db)
   ensureColumn(db, 'items', 'context', `TEXT NOT NULL DEFAULT ''`)
   ensureColumn(db, 'items', 'next_step', `TEXT NOT NULL DEFAULT ''`)
@@ -2062,6 +2073,10 @@ export interface Activity {
   updated_at: string
   /** last REAL MCP call (issue #45). NULL until this session makes one. */
   last_call_at: string | null
+  /** The Agent Inbox build the session's MCP server runs (issue #197). NULL when unknown. */
+  server_version: string | null
+  /** Where that server runs from: 'runtime' or 'checkout' (issue #197). NULL when unknown. */
+  server_source: string | null
 }
 
 export interface ActivityUpdate {
@@ -2089,6 +2104,14 @@ export interface ActivityUpdate {
    * fallback two seconds later.
    */
   claim?: boolean
+  /**
+   * The Agent Inbox build this session's MCP server runs, and where it runs
+   * from (issue #197). Written in either mode; a write that omits either keeps
+   * the stored value, so only a caller that knows it can set it and none can
+   * clear it.
+   */
+  server_version?: string
+  server_source?: ServerSource
 }
 
 // One statement for the `activity` presence row, plus (when this write is a
@@ -2101,11 +2124,11 @@ const upsertActivityTxn = (db: Database.Database, a: ActivityUpdate): void => {
   // One statement, two modes. Registration can create idle presence but can
   // neither replace a live claim nor write its historical caption.
   db.prepare(
-    `INSERT INTO activity (session, project, stream, agent, doing, last_doing, detail, children, idle, started_at, updated_at)
+    `INSERT INTO activity (session, project, stream, agent, doing, last_doing, detail, children, idle, started_at, updated_at, server_version, server_source)
      VALUES (
        @session, @project, @stream, @agent, @doing,
        CASE WHEN @claim = 1 AND @idle = 0 AND @doing <> '' AND @doing <> 'open' THEN @doing ELSE '' END,
-       @detail, @children, @idle, @now, @now
+       @detail, @children, @idle, @now, @now, @server_version, @server_source
      )
      ON CONFLICT(session) DO UPDATE SET
        project = @project, stream = @stream, agent = @agent,
@@ -2117,6 +2140,8 @@ const upsertActivityTxn = (db: Database.Database, a: ActivityUpdate): void => {
        detail   = CASE WHEN @claim = 1 THEN COALESCE(NULLIF(@detail, ''), detail) ELSE detail END,
        children = CASE WHEN @claim = 1 THEN COALESCE(@children, children) ELSE children END,
        idle     = CASE WHEN @claim = 1 THEN @idle ELSE idle END,
+       server_version = COALESCE(@server_version, server_version),
+       server_source  = COALESCE(@server_source, server_source),
        updated_at = @now, ended_at = NULL`,
   ).run({
     session: a.session,
@@ -2128,6 +2153,8 @@ const upsertActivityTxn = (db: Database.Database, a: ActivityUpdate): void => {
     children: a.children ? JSON.stringify(a.children) : null,
     idle: a.idle ? 1 : 0,
     claim: a.claim === false ? 0 : 1,
+    server_version: a.server_version ?? null,
+    server_source: a.server_source ?? null,
     now,
   })
   // Registration (`claim: false`) never touches spans — it is not speaking for
@@ -2234,7 +2261,7 @@ export function listActivity(db: Database.Database, opts: { staleMinutes?: numbe
   const cutoff = new Date(now - (opts.staleMinutes ?? 15) * 60000).toISOString()
   const cold = claimCutoff(now)
   const rows = db
-    .prepare(`SELECT session, project, stream, agent, doing, last_doing, detail, children, idle, started_at, updated_at, last_call_at
+    .prepare(`SELECT session, project, stream, agent, doing, last_doing, detail, children, idle, started_at, updated_at, last_call_at, server_version, server_source
               FROM activity WHERE ended_at IS NULL AND updated_at >= ?`)
     .all(cutoff) as Array<Omit<Activity, 'children' | 'idle'> & { children: string | null; idle: number }>
   // The row is kept whatever happens here — the session really is present, and
@@ -2648,6 +2675,10 @@ export function listSourceLinks(db: Database.Database): SourceLink[] {
 // row written before #157, or one with no github.com push remote or origin)
 // expects a same-repository PR: its effective head is its own base `repo`. A
 // resolved item's branch stops being refreshed but keeps whatever it last cached.
+// A `gh pr checkout` branch of a fork PR without maintainer edits (#183)
+// recorded the pull request ref it tracks, `refs/pull/<n>/head`, as its head.
+// It names no repository, so no listed PR could verify: it is no target at all,
+// and with no cache row its items show no PR chip.
 //
 // #32 × #30: a project the human CLOSED is retired from the poller too — it kept
 // spawning a `gh` subprocess every 60s and kept eating the shared per-tick budget,
@@ -2675,6 +2706,7 @@ export function listLinkTargets(db: Database.Database): LinkTarget[] {
   const targets: LinkTarget[] = []
   for (const row of rows) {
     if (closed.has(row.project)) continue
+    if (row.head_repo.startsWith('refs/pull/')) continue
     const key = linkKey(row.repo, row.branch, row.head_repo)
     if (seen.has(key)) continue
     seen.add(key)

@@ -258,6 +258,50 @@ describe('inferHeadRepo', () => {
     expect(inferHeadRepo(dir, 'patch-1')).toBe('contributor/x')
   })
 
+  // Issue #183 — for a fork PR whose author did NOT allow maintainer edits,
+  // `gh pr checkout` fetches the PR's head from the BASE repository and records
+  // that as the branch's upstream (cli/cli cmdsForMissingRemote): remote and
+  // pushRemote name the base (its local remote, else its URL) and merge is
+  // refs/pull/<n>/head. Nothing names the fork, so the push destination is the
+  // base, whose own same-named branch's PR would pass verification. The head is
+  // reported as that pull ref instead: no repository, so no PR can verify.
+  const PULL_CHECKOUT: Array<[string, Array<[string, string]>]> = [
+    ['the base has a local remote', [
+      ['branch.patch-1.remote', 'origin'],
+      ['branch.patch-1.pushRemote', 'origin'],
+      ['branch.patch-1.merge', 'refs/pull/7/head'],
+    ]],
+    ['the base has no local remote, so its URL', [
+      ['branch.patch-1.remote', 'https://github.com/upstream/x.git'],
+      ['branch.patch-1.pushRemote', 'https://github.com/upstream/x.git'],
+      ['branch.patch-1.merge', 'refs/pull/7/head'],
+    ]],
+    ['a fetch refspec maps pull refs to remote-tracking refs', [
+      ['remote.origin.fetch', '+refs/pull/*/head:refs/remotes/origin/pr/*'],
+      ['branch.patch-1.remote', 'origin'],
+      ['branch.patch-1.merge', 'refs/pull/7/head'],
+    ]],
+  ]
+  it.each(PULL_CHECKOUT)('reports a branch that tracks a pull request ref as that ref, never the base (%s)', (_how, config) => {
+    const dir = tmpGitRepo({ remote: 'https://github.com/upstream/x.git', branch: 'patch-1' })
+    for (const [key, value] of config) git(dir, 'config', '--add', key, value)
+    expect(inferHeadRepo(dir, 'patch-1')).toBe('refs/pull/7/head')
+  })
+
+  // A pull ref names the head only while the branch pushes back to the remote it
+  // tracks, as every gh shape does. Work stacked on a PR's ref and pushed to the
+  // user's own fork is that fork's branch, and its PR still links.
+  it('keeps the push destination of work stacked on a pull ref and pushed to another remote', () => {
+    const dir = tmpGitRepo({ remote: 'https://github.com/upstream/x.git', branch: 'trunk' })
+    git(dir, 'remote', 'add', 'myfork', 'https://github.com/me/x.git')
+    git(dir, 'config', '--add', 'remote.origin.fetch', '+refs/pull/*/head:refs/remotes/origin-pr/*')
+    git(dir, 'config', 'remote.pushDefault', 'myfork')
+    git(dir, 'update-ref', 'refs/remotes/origin-pr/7', 'HEAD')
+    git(dir, 'branch', '--track', 'stacked', 'origin-pr/7')
+    expect(execFileSync('git', ['config', 'branch.stacked.merge'], { cwd: dir, encoding: 'utf8' }).trim()).toBe('refs/pull/7/head')
+    expect(inferHeadRepo(dir, 'stacked')).toBe('me/x')
+  })
+
   it('never mistakes a plain name that is no configured remote for a URL', () => {
     const dir = tmpGitRepo({ remote: 'https://github.com/upstream/x.git', branch: 'patch-1' })
     git(dir, 'config', 'branch.patch-1.remote', 'fork')
@@ -284,11 +328,15 @@ describe('inferHeadRepo', () => {
   it("keeps git's output off the caller's stdout", () => {
     const dir = withFork()
     git(dir, 'config', 'branch.feature.remote', 'fork')
+    // and a gh pull-ref checkout (#183), whose merge ref costs a config read
+    git(dir, 'branch', 'patch-1')
+    git(dir, 'config', 'branch.patch-1.remote', 'origin')
+    git(dir, 'config', 'branch.patch-1.merge', 'refs/pull/7/head')
     const script = `import { inferHeadRepo } from ${JSON.stringify(join(REPO_ROOT, 'src/infer.ts'))}
-      console.error(JSON.stringify(inferHeadRepo(${JSON.stringify(dir)}, 'feature')))`
+      console.error(JSON.stringify(['feature', 'patch-1'].map((b) => inferHeadRepo(${JSON.stringify(dir)}, b))))`
     const run = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script], { cwd: REPO_ROOT, encoding: 'utf8' })
     expect(run.status, run.stderr).toBe(0)
     expect(run.stdout).toBe('')
-    expect(run.stderr.trim().split('\n').at(-1)).toBe('"me/agent-inbox"')
+    expect(run.stderr.trim().split('\n').at(-1)).toBe('["me/agent-inbox","refs/pull/7/head"]')
   })
 })

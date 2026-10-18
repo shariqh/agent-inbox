@@ -1,11 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs'
+import { cpSync, mkdtempSync, writeFileSync, readFileSync, renameSync, rmSync, statSync, utimesSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
 import { openDb, insertItem, listItems, getItem, annotateItem, replyItem, snoozeItem, answerItem, markReplySeen, upsertBoard as writeBoard, listBoards, annotateBoardRow, snoozeBoardRow, markRowHandled, markHandledDelivered, upsertActivity, endActivity, closeProject, closedProjects, upsertSourceLink } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
+import { releaseRuntime } from './release-runtime.js'
 
 function freshDb(): Database.Database {
   return openDb(join(mkdtempSync(join(tmpdir(), 'view-')), 'inbox.db'))
@@ -96,6 +98,152 @@ describe('viewer api', () => {
     expect(body).toHaveLength(1)
     expect(body[0].doing).toBe('reviewing')
     expect(body[0].children[0].name).toBe('kid')
+  })
+
+  // issue #197 — one additive per-row field. The response stays a bare array of
+  // rows: electron/main.cjs and the Live strip both read it as one.
+  it('GET /api/activity rows carry the server build each session registered with, null for a legacy row', async () => {
+    upsertActivity(db, { session: 'new', project: 'p', stream: 'main', agent: 'copilot', doing: 'open', idle: true, claim: false, server_version: '1.2.8', server_source: 'runtime' })
+    upsertActivity(db, { session: 'old', project: 'p', stream: 'main', agent: 'claude-code', doing: 'open', idle: true, claim: false })
+    const body = await (await createViewer(db).request('/api/activity')).json() as Array<Record<string, unknown>>
+    expect(Array.isArray(body)).toBe(true)
+    const bySession = new Map(body.map((a) => [a.session, a]))
+    expect(bySession.get('new')).toMatchObject({ server_version: '1.2.8', server_source: 'runtime' })
+    expect(bySession.get('old')).toMatchObject({ server_version: null, server_source: null })
+    expect(Object.keys(bySession.get('new')!).sort()).toEqual([
+      'agent', 'children', 'detail', 'doing', 'idle', 'last_call_at', 'last_doing',
+      'project', 'server_source', 'server_version', 'session', 'started_at', 'stream', 'updated_at',
+    ])
+  })
+
+  describe('GET /api/version — what a restarted session would load (#197)', () => {
+    const PKG = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }
+    const setupInfo = (info: unknown): string => {
+      const path = join(mkdtempSync(join(tmpdir(), 'view-version-')), 'setup-info.json')
+      writeFileSync(path, JSON.stringify(info))
+      return path
+    }
+    const read = async (app: ReturnType<typeof createViewer>): Promise<unknown> => (await app.request('/api/version')).json()
+
+    it('a checkout, or a bundle packaged from one, answers with its own package version; the runtime question does not apply', async () => {
+      const missing = join(mkdtempSync(join(tmpdir(), 'view-version-')), 'setup-info.json')
+      const res = await createViewer(db, { setupInfoPath: missing }).request('/api/version')
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ current: PKG.version, mode: 'dev', runtimeInstalled: null })
+      const devBundle = createViewer(db, { setupInfoPath: setupInfo({ repoRoot: '/checkout', nodeBin: '/node' }) })
+      expect(await read(devBundle)).toEqual({ current: PKG.version, mode: 'dev', runtimeInstalled: null })
+    })
+
+    it('a release answers with its baked version and whether that exact runtime is installed for this host', async () => {
+      const release = releaseRuntime('2.0.0')
+      const app = createViewer(db, release.viewer)
+      // not installed, and Setup can install it: its source payload verifies
+      expect(await read(app)).toEqual({ current: '2.0.0', mode: 'release', runtimeInstalled: false })
+      // a Setup install is noticed on the very next read, memo or not
+      release.install()
+      expect(await read(app)).toEqual({ current: '2.0.0', mode: 'release', runtimeInstalled: true })
+    })
+
+    it('answers null for the runtime when Setup could not install it here, so no advice is offered', async () => {
+      const noHostPayload = releaseRuntime('2.0.0', { hostPayload: false })
+      expect(await read(createViewer(db, noHostPayload.viewer)))
+        .toEqual({ current: '2.0.0', mode: 'release', runtimeInstalled: null })
+      const unverifiable = releaseRuntime('2.0.0')
+      writeFileSync(join(unverifiable.payloadDir, 'dist', 'mcp-server.js'), '// tampered source\n')
+      expect(await read(createViewer(db, unverifiable.viewer)))
+        .toEqual({ current: '2.0.0', mode: 'release', runtimeInstalled: null })
+    })
+
+    it('a release with no baked version answers null rather than guessing', async () => {
+      const app = createViewer(db, { setupInfoPath: setupInfo({ schema: 2, runtimePayloads: {} }) })
+      expect(await read(app)).toEqual({ current: null, mode: 'release', runtimeInstalled: null })
+    })
+
+    // /api/setup and /api/version share ONE verified runtime lookup. Verifying
+    // hashes a whole runtime on the viewer thread (Electron main in the packaged
+    // app), so it runs again only when something it looked at has changed.
+    const RUNTIME_VERIFY = createRequire(import.meta.url)('../electron/runtime-verify.cjs') as {
+      verifyRuntimePayload(opts: { root: string }): { manifest: { runtimeId: string } }
+    }
+    const counting = () => {
+      const roots: string[] = []
+      const runtimeVerifier = (opts: { root: string }) => {
+        roots.push(opts.root)
+        return RUNTIME_VERIFY.verifyRuntimePayload(opts)
+      }
+      return { roots, runtimeVerifier }
+    }
+
+    it('verifies once for /api/setup and /api/version together, and repeated reads do not re-hash', async () => {
+      const release = releaseRuntime('2.0.0')
+      release.install()
+      const verifier = counting()
+      const app = createViewer(db, { ...release.viewer, runtimeVerifier: verifier.runtimeVerifier })
+      expect((await (await app.request('/api/setup')).json()).runtimeAvailable).toBe(true)
+      const verified = verifier.roots.length
+      expect(verified).toBeGreaterThan(0)
+      expect(await read(app)).toMatchObject({ runtimeInstalled: true })
+      expect((await (await app.request('/api/setup')).json()).runtimeAvailable).toBe(true)
+      expect(await read(app)).toMatchObject({ runtimeInstalled: true })
+      expect(verifier.roots).toHaveLength(verified)
+    })
+
+    it('re-verifies after an install, a manifest change, an atomic replace or a removal', async () => {
+      const release = releaseRuntime('2.0.0')
+      const verifier = counting()
+      const app = createViewer(db, { ...release.viewer, runtimeVerifier: verifier.runtimeVerifier })
+      const reverified = async (expected: boolean | null): Promise<void> => {
+        const before = verifier.roots.length
+        expect(await read(app)).toMatchObject({ runtimeInstalled: expected })
+        expect(verifier.roots.length).toBeGreaterThan(before)
+      }
+      await reverified(false) // nothing installed yet; Setup can install it
+      const installed = release.install()
+      await reverified(true) // a Setup install
+      const manifest = join(installed, 'runtime-manifest.json')
+      const original = readFileSync(manifest)
+      writeFileSync(manifest, Buffer.concat([original, Buffer.from('\n')]))
+      await reverified(false) // its manifest changed in place
+      writeFileSync(manifest, original)
+      // pin every time the key reads to a whole millisecond, so the replace below
+      // can put each one back exactly
+      const PINNED = new Date('2026-10-17T10:00:00.000Z')
+      const pin = (...paths: string[]): void => { for (const path of paths) utimesSync(path, PINNED, PINNED) }
+      pin(release.runtimeRoot, installed, manifest)
+      await reverified(true)
+      // an atomic replace: a staged tree renamed over the same name, with every
+      // size and mtime the key reads unchanged — only identity and ctime differ
+      const staged = join(release.runtimeRoot, '.staged')
+      cpSync(installed, staged, { recursive: true })
+      writeFileSync(join(staged, 'dist', 'mcp-server.js'), '// tampered\n')
+      rmSync(installed, { recursive: true })
+      renameSync(staged, installed)
+      pin(release.runtimeRoot, installed, manifest)
+      await reverified(false)
+      rmSync(installed, { recursive: true })
+      await reverified(false) // removed
+      // the app's own payload is part of the key too
+      writeFileSync(join(release.payloadDir, 'runtime-manifest.json'), '{}')
+      await reverified(null)
+    })
+
+    it('still re-verifies an edit deep inside an installed runtime after a long backstop', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] })
+      try {
+        const release = releaseRuntime('2.0.0')
+        const installed = release.install()
+        const app = createViewer(db, release.viewer)
+        expect(await read(app)).toMatchObject({ runtimeInstalled: true })
+        // an in-place edit below the runtime directory changes nothing the key reads
+        writeFileSync(join(installed, 'dist', 'mcp-server.js'), '// tampered after install\n')
+        vi.setSystemTime(Date.now() + 5 * 60_000)
+        expect(await read(app)).toMatchObject({ runtimeInstalled: true })
+        vi.setSystemTime(Date.now() + 6 * 60_000)
+        expect(await read(app)).toMatchObject({ runtimeInstalled: false })
+      } finally {
+        vi.useRealTimers()
+      }
+    })
   })
 
   it('GET /api/items returns grouped items', async () => {

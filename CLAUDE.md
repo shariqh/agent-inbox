@@ -278,8 +278,9 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   transient git failure, must not pin the folder name). The branch (and the issue parsed from
   it) is re-read on every call because worktrees and checkouts move mid-session, so never
   cache the whole scope. Head inference (`headFor`, #157) stays outside both `get()` and that
-  memo: it runs only on flag/board writes and reads git's push destination live, because it
-  needs origin's PUSH url, which the cached fetch url cannot answer.
+  memo: it runs only on flag/board writes and reads git's push destination (and, #183, the
+  branch's upstream ref) live, because it needs origin's PUSH url, which the cached fetch url
+  cannot answer.
   The client name for `inferAgent` **must be read lazily** inside handlers
   (`server.server.getClientVersion()?.name`) — it's only populated after the initialize
   handshake. Capturing it at build time yields `undefined`/`'unknown'`. Don't regress this.
@@ -871,7 +872,23 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   examines a small `PR_WINDOW` and accepts only a PR from that head repository (a same-repo
   expectation means `isCrossRepository: false`); a row with no `head_repo` expects a same-repo PR.
   No match, even a full window, is cached as no PR — no title, closing issue or preview — and the
-  preview's head re-read applies the same rule. The unverifiable pre-#157 `source_links` table is
+  preview's head re-read applies the same rule. **Pull-ref checkouts (#183):** for a fork PR whose
+  author did not allow maintainer edits, `gh pr checkout` tracks the base's `refs/pull/<n>/head`
+  and names the BASE as remote and pushRemote (cli/cli `cmdsForMissingRemote`), so the push
+  destination alone would let the base's own same-named branch PR verify. A branch whose upstream
+  merge ref is a pull ref, and that pushes back to the remote it tracks (gh always writes
+  pushRemote = remote; an unmapped upstream reports no tracking remote at all), is stamped with
+  that ref as its `head_repo` instead: it names no repository, `listLinkTargets` skips it (no
+  `gh` call, no cache row, no PR chip), and an older #157 viewer sharing the file can never match
+  it either. Work stacked on a PR ref and pushed to another remote (`remote.pushDefault` = a
+  fork) keeps its push destination and links as usual. The one `for-each-ref` also reports any
+  upstream git maps, with its remote, so `git config --get-all branch.<b>.merge` runs only for a
+  branch with a push remote but no mapped upstream; an ordinary write still costs two spawns.
+  Items stamped before #183 keep the head they were written with (boards restamp on their next
+  write). Linking the exact PR (`gh pr view <n>`) is a deliberate non-goal until reviewer
+  checkouts are in scope, and it would need the FETCH repository recorded as well: `<n>` belongs
+  to the repository of `branch.<b>.remote`, which can differ from `repo`, and the stored ref does
+  not say which. The unverifiable pre-#157 `source_links` table is
   never read; it stays only for older processes sharing the file (rebuilding its primary key would
   break their `ON CONFLICT(repo, branch)` upserts). **Two honest limitations:** every item and
   board written before #30 shipped has `repo = NULL` and shows no chip at all — there is no
@@ -1019,6 +1036,37 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   Cadence: the git probe is **lazy and memoized for 60s** (`STAMP_TTL_MS`) — there is no poller, and
   `/api/setup` is fetched once per page load, not on the 3s poll. The #23 reuse path is covered for
   free: a fresh checkout that attaches to a stale packaged server renders that server's stamp.
+- **Session build in Live** *(#197, part 1)* — `src/version.ts` is the one place the release version
+  lives in code: `AGENT_INBOX_VERSION` is what the MCP handshake reports AND what presence records.
+  A release bumps it beside package.json (`test/release-pipeline.test.ts` pins the pair). At startup
+  the server also detects where it runs from (`src/server-source.ts`): `'runtime'` when
+  `runtime-manifest.json` sits beside its `dist/` — the installer's own marker, true of Setup's
+  `~/.agent-inbox/runtime/<id>/` and of a payload under the app's `runtime/<platform-arch>/` — and
+  `'checkout'` otherwise. Registration and `status` write both to the additive
+  `activity.server_version`/`server_source` columns; a write that omits either keeps the stored value,
+  and legacy rows stay NULL. They ride on writes that already happen and are never evidence of
+  liveness or work: `updated_at`, `last_call_at`, claims and spans are untouched. `/api/activity`
+  rows carry both (still a bare array — electron/main.cjs reads it as one).
+  `GET /api/version` answers `{current, mode, runtimeInstalled}`: a release's baked setup-info version
+  with `mode:'release'` and whether THIS release's exact runtime is installed for this host (`true`),
+  is not but Setup can install it because its source payload verifies (`false`), or neither (`null`);
+  a checkout answers its own constant with `mode:'dev', runtimeInstalled:null`. `/api/setup` and
+  `/api/version` share ONE cached verified lookup (`installedRuntime` + `resolveReleaseRuntimeSource`),
+  because each hashes a whole runtime on the viewer thread — Electron main in the packaged app. Its
+  key stamps (identity, size, mtime, ctime) the runtime root, each installed runtime directory and its
+  manifest, and the source payload and its manifest, so an install, removal, atomic rename-over or
+  manifest edit re-verifies on the next read; a 10-minute backstop covers edits deep inside a
+  runtime. Live reads it at page load, when the drawer opens and after a Setup install — never on
+  the poll. `sessionBuild()` in `public/livebar.js` compares strict semver only and **gives only the
+  advice that backs THAT session**: a checkout session is told to update and rebuild its checkout; a
+  runtime session is told to restart only when a release viewer verified the runtime is installed
+  (`true`), and pointed at Setup only when Setup can install it (`false`); anything else, including a
+  legacy row with no source, says only "older build (vY)". Unknown versions on either side render no
+  hint. The drawer shows every label and the full hint (the collapsed idle fold counts older builds);
+  the strip adds only an "older build" marker. Presence, not attention: no badge, Needs-you, count or
+  notification. Remaining limit: "installed" is per machine, not per host registration — a host Setup
+  did not register for the new runtime still restarts into its old one. The Setup half of #197
+  (registered-runtime detection, "Update agents") is where that narrows.
 
 ## Open backlog — and the seams already in place
 

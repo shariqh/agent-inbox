@@ -1081,6 +1081,102 @@ describe('live activity — registering presence never overwrites a claim', () =
   })
 })
 
+// ── issue #197: which Agent Inbox build each session runs ───────────────────
+//
+// Registration records the MCP server's own build on its presence row — its
+// version and whether it runs from an installed agent runtime or a checkout — so
+// Live can say which sessions still run an older build and what would update
+// them. It rides on a write that already happens: it is never a liveness or work
+// signal, a later write that does not carry it never clears it, and a legacy row
+// reads NULL rather than a guess.
+describe('live activity — the server build a session registered with (#197)', () => {
+  let db: Database.Database
+  const START = Date.parse('2026-10-17T09:00:00.000Z')
+  const SCOPE = { session: 's1', project: 'agent-inbox', stream: 'main', agent: 'copilot' } as const
+  const BUILD = { server_version: '1.2.8', server_source: 'runtime' } as const
+
+  beforeEach(() => {
+    db = freshDb()
+    vi.useFakeTimers()
+    vi.setSystemTime(START)
+  })
+  afterEach(() => { vi.useRealTimers() })
+
+  const register = (build: Partial<typeof BUILD> = {}, session = 's1'): void => {
+    upsertActivity(db, { ...SCOPE, session, doing: 'open', idle: true, claim: false, ...build })
+  }
+  const row = (session = 's1') => listActivity(db).find((a) => a.session === session)!
+
+  it('registration persists the version and install source, and later writes that omit them keep both', () => {
+    register(BUILD)
+    expect(row()).toMatchObject(BUILD)
+    vi.setSystemTime(START + 60_000)
+    upsertActivity(db, { ...SCOPE, doing: 'Shipping the release', detail: 'step 2' }) // status({doing})
+    expect(row()).toMatchObject(BUILD)
+    upsertActivity(db, { ...SCOPE, doing: 'open', idle: true, children: [] }) // status({done:true})
+    expect(row()).toMatchObject(BUILD)
+    register() // the 2-second fallback, from a caller that sends no build
+    recordActivityCall(db, 's1')
+    touchActivity(db, 's1')
+    expect(row()).toMatchObject(BUILD)
+  })
+
+  it('a session that never reported its build reads null for both, never a guess', () => {
+    register()
+    expect(row()).toMatchObject({ server_version: null, server_source: null })
+  })
+
+  it('is inert to liveness and work: the same stamps, claim and spans as a registration without it', () => {
+    register(BUILD)
+    register({}, 'plain')
+    expect({ ...row(), session: 'plain', server_version: null, server_source: null }).toEqual(row('plain'))
+    expect(row().last_call_at).toBeNull() // registration is still not a tool call
+    expect(listActivitySpans(db)).toEqual([])
+
+    // the liveness tick moves updated_at and nothing else
+    vi.setSystemTime(START + 5 * 60_000)
+    touchActivity(db, 's1')
+    expect(row()).toMatchObject({
+      updated_at: new Date(START + 5 * 60_000).toISOString(),
+      last_call_at: null,
+      ...BUILD,
+    })
+  })
+
+  it('migrates a legacy activity table: existing rows read null until their session registers a build', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'inbox-legacy-build-')), 'inbox.db')
+    const legacy = new Database(path)
+    const now = new Date(START).toISOString()
+    legacy.exec(`
+      CREATE TABLE activity (
+        session TEXT PRIMARY KEY,
+        project TEXT NOT NULL,
+        stream TEXT NOT NULL DEFAULT '',
+        agent TEXT NOT NULL DEFAULT 'unknown',
+        doing TEXT NOT NULL,
+        last_doing TEXT NOT NULL DEFAULT '',
+        detail TEXT NOT NULL DEFAULT '',
+        children TEXT,
+        idle INTEGER NOT NULL DEFAULT 0,
+        started_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        last_call_at TEXT,
+        ended_at TEXT
+      );
+    `)
+    legacy.prepare(
+      `INSERT INTO activity (session, project, agent, doing, idle, started_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run('s1', 'agent-inbox', 'claude-code', 'open', 1, now, now)
+    legacy.close()
+
+    db = openDb(path)
+    expect(row()).toMatchObject({ server_version: null, server_source: null })
+    register(BUILD)
+    expect(row()).toMatchObject(BUILD)
+  })
+})
+
 // ── activity_spans: truthful claim intervals, additive and read-only ────────
 describe('activity spans', () => {
   let db: Database.Database
@@ -2931,6 +3027,18 @@ describe('source links', () => {
       { repo: 'o/n', branch: 'f', head_repo: 'me/n' },
       { repo: 'o/n', branch: 'f', head_repo: 'o/n' },
     ])
+  })
+
+  // issue #183 — a branch that tracks a pull request's head ref (gh pr checkout
+  // of a fork PR without maintainer edits) records that ref as its head. It names
+  // no repository, so no listed PR could ever verify: spend no gh call on it,
+  // while a same-named branch of the base repository keeps its own target.
+  it('listLinkTargets spends no gh call on a branch whose head is a pull request ref', () => {
+    insertItem(db, { project: 'review', stream: 'patch-1', agent: 'a', kind: 'question', title: 'pull', repo: 'o/n', head_repo: 'refs/pull/7/head' })
+    upsertBoard(db, { project: 'review', stream: 'patch-1', agent: 'a', title: 'cov', rows: [{ label: 'a', status: 'tracked' }], repo: 'o/n', headRepo: 'refs/pull/7/head' })
+    expect(listLinkTargets(db)).toEqual([])
+    insertItem(db, { project: 'p', stream: 'patch-1', agent: 'a', kind: 'question', title: 'own', repo: 'o/n', head_repo: 'o/n' })
+    expect(listLinkTargets(db)).toEqual([{ repo: 'o/n', branch: 'patch-1', head_repo: 'o/n' }])
   })
 
   it('keeps one cache row per expected head, and a write with no head records the same-repository one', () => {

@@ -1104,7 +1104,9 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   on the three files' link and target stamps plus the runtime root listing (every install changes one)
   with the same 10-minute backstop, hashes each registered runtime once per directory/manifest stamp, and
   reuses the release lookup's stricter verification for the current runtime. `/api/version` adds
-  `hosts:{claude,copilot}` as `{kind, version?}` only — no path, id or config. `/api/setup` adds `agents`:
+  `hosts:{claude,copilot}` as `{kind, version?}` only — no path, id or config — and `updatable`, the one
+  rule (`canUpdateAgents`) Setup's action and Live's "update agents" advice share: a release whose own
+  runtime payload verifies here, installed or not. `/api/setup` adds `agents`:
   each host and Claude's hooks (a checkout's path included; the owner already sees paths there),
   `current`, `updatable` (a release whose runtime Setup can install here) and `hooksCommand`. The Setup
   panel's Agents block (rules in `public/agents.js` `agentsAction`; every string is textContent) offers ONE
@@ -1113,20 +1115,27 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   registration it owns whichever way the version moves, so a downgraded app restores a matching runtime.
   Hosts that are only behind get **Update agents**; a host that is ahead (an app downgrade) gets **Match
   agents to vX**, which also names the one action when hosts differ both ways. Equal versions (build
-  metadata ignored) get nothing. It calls the existing `install(target)` with exactly `claude`, `copilot`
-  or `all` for those hosts and never `--force`, so a checkout or custom registration is reported, never
-  switched (the runtime-mode installer refuses a registration it does not own anyway). Afterwards it
-  re-reads `/api/setup` and `/api/version` and lists, per moved host, how many running sessions still run
-  an older, newer or different build and how to restart them (`claude --resume` / `copilot --resume`); it
-  never says a session reloaded. The block also re-reads whenever Settings opens, so a terminal install
+  metadata ignored) get nothing. It calls the existing `install(target)` once per host, `claude` then
+  `copilot`, never `all` and never `--force`: `--target all` stops before changing anything when one
+  host's CLI is gone, which would hold the other host back too, so each host is moved and reported on its
+  own. A checkout or custom registration is reported, never switched (the runtime-mode installer refuses
+  a registration it does not own anyway). Afterwards it re-reads `/api/setup` and `/api/version` and
+  lists, per host that moved, how many running sessions still run a build that differs from what that
+  host now runs (older, newer or both) and how to restart them (`claude --resume` / `copilot --resume`);
+  it never says a session reloaded. The block also re-reads whenever Settings opens, so a terminal install
   made meanwhile shows up. It does not move Claude's hooks: once the current runtime is installed the
   panel hands over `bash <runtime>/scripts/install-hooks.sh --apply` (for hooks behind or ahead) to run in
-  a terminal. No IPC channel, preload method, argv shape or HTTP route was added, and nothing runs at
-  startup. Live's `remedy()` maps a
-  runtime session to its host by its inferred agent (`claude-code` → claude, `copilot` → copilot) and says
-  "restart this session to load vX" only when that host is registered to Setup's runtime at vX or later,
-  "update agents from Setup, then restart this session" when it is an older Setup runtime Setup can move,
-  and nothing otherwise (a missing `hosts` included). Known limits: `inferAgent` folds every client named
+  a terminal, and promises that command only when it can install that runtime (`updatable`). No IPC
+  channel, preload method, argv shape or HTTP route was added, and nothing runs at startup. Live's
+  `remedy()` maps a runtime session to its host by its inferred agent (`claude-code` → claude, `copilot`
+  → copilot) and, for a session OLDER than the app, says "restart this session to load vX" only when that
+  host is registered to Setup's runtime at vX or later, "update agents from Setup, then restart this
+  session" only when it is an older Setup runtime and `updatable` (so never toward an action Setup does
+  not show), and nothing otherwise (a missing `hosts` included). `sessionBuild()` keeps `older` (older
+  than the app) separate from `newer`: a runtime session NEWER than the app whose host is now registered
+  to exactly the app's build — after Match agents — gets a "newer build (vS) — restart this session to
+  load vX" marker in the strip and drawer; one whose host still runs a newer build, or an older one, gets
+  none, because a restart would not bring it to the app's build. Known limits: `inferAgent` folds every client named
   like "claude" into `claude-code`, so a Claude Desktop session is advised by Claude Code's registration;
   only user-scope registrations are read, not a project or local one that shadows it; and a checkout's
   version is not read, so its sessions keep the checkout advice.

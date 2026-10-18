@@ -7,10 +7,11 @@
 // Setup-managed hosts whose runtime differs from this app's — "Update agents"
 // when they are behind, "Match agents to vX" when one is ahead (an app
 // downgrade). It runs the existing fixed-target install through the existing
-// Electron bridge — no new command — and never switches a checkout or custom
-// registration. Afterwards it re-reads every host, refreshes Live, and says
-// which running sessions still need a restart and how; it never claims a
-// running session reloaded.
+// Electron bridge, one host's fixed target after another — no new command, and
+// one host's missing CLI never blocks the other — and never switches a
+// checkout or custom registration. Afterwards it re-reads every host, refreshes
+// Live, and says which running sessions still need a restart and how; it never
+// claims a running session reloaded.
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mkdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -95,29 +96,30 @@ describe('Setup shows what each host\'s agents run (#197)', () => {
     expect(updateButton()).toBeNull()
   })
 
+  const BOTH = [['claude'], ['copilot']]
   it.each([
-    ['both hosts on an older runtime', 'all', 'Update agents', (r: ReleaseRuntime) => {
+    ['both hosts on an older runtime', BOTH, 'Update agents', (r: ReleaseRuntime) => {
       const old = r.installVersion('1.2.8')
       r.register('claude', old)
       r.register('copilot', old)
     }],
-    ['only Claude Code behind', 'claude', 'Update agents', (r: ReleaseRuntime) => {
+    ['only Claude Code behind', [['claude']], 'Update agents', (r: ReleaseRuntime) => {
       r.register('claude', r.installVersion('1.2.8'))
       r.register('copilot', r.install())
     }],
-    ['Copilot CLI behind, Claude Code on a checkout it must not switch', 'copilot', 'Update agents', (r: ReleaseRuntime) => {
+    ['Copilot CLI behind, Claude Code on a checkout it must not switch', [['copilot']], 'Update agents', (r: ReleaseRuntime) => {
       registerHost(r.home, 'claude', process.execPath, join(checkoutIn(r), 'dist', 'mcp-server.js'))
       r.register('copilot', r.installVersion('1.1.0'))
     }],
-    ['only Claude Code ahead, after an app downgrade', 'claude', 'Match agents to v2.0.0', (r: ReleaseRuntime) => {
+    ['only Claude Code ahead, after an app downgrade', [['claude']], 'Match agents to v2.0.0', (r: ReleaseRuntime) => {
       r.register('claude', r.installVersion('2.1.0'))
       r.register('copilot', r.install())
     }],
-    ['Claude Code behind and Copilot CLI ahead', 'all', 'Match agents to v2.0.0', (r: ReleaseRuntime) => {
+    ['Claude Code behind and Copilot CLI ahead', BOTH, 'Match agents to v2.0.0', (r: ReleaseRuntime) => {
       r.register('claude', r.installVersion('1.2.8'))
       r.register('copilot', r.installVersion('2.1.0'))
     }],
-  ])('offers one action for exactly the Setup-managed hosts that differ: %s', async (_label, target, label, arrange) => {
+  ])('offers one action for exactly the Setup-managed hosts that differ: %s', async (_label, calls, label, arrange) => {
     const release = releaseRuntime('2.0.0')
     arrange(release)
     const install = vi.fn<Install>(async (t) => ok(String(t)))
@@ -130,9 +132,50 @@ describe('Setup shows what each host\'s agents run (#197)', () => {
     run!.click()
     await settle()
 
-    // the existing fixed-target bridge, one call, one fixed target, nothing else
-    expect(install).toHaveBeenCalledTimes(1)
-    expect(install.mock.calls[0]).toEqual([target])
+    // the existing fixed-target bridge: one fixed target per host, nothing else
+    expect(install.mock.calls).toEqual(calls)
+  })
+
+  it('moves each host on its own fixed target, so a host whose CLI is gone does not block the other', async () => {
+    const release = releaseRuntime('2.0.0')
+    const old = release.installVersion('1.2.8')
+    release.register('claude', old)
+    release.register('copilot', old)
+    // Claude Code was uninstalled but its registration remains: it goes FIRST
+    const missing = "install-agents: 'claude' CLI is not installed; choose a different --target"
+    const install = vi.fn<Install>(async (t) => {
+      if (t === 'claude') return { ok: false, exitCode: 1, target: 'claude', timedOut: false, output: missing }
+      release.register('copilot', release.install())
+      return ok(String(t))
+    })
+    bridge(install)
+    db = freshDb()
+    upsertActivity(db, { session: 'c1', project: 'alpha', stream: 'main', agent: 'claude-code', doing: 'open', idle: true, claim: false, server_version: '1.2.8', server_source: 'runtime' })
+    upsertActivity(db, { session: 'p1', project: 'beta', stream: 'main', agent: 'copilot', doing: 'open', idle: true, claim: false, server_version: '1.2.8', server_source: 'runtime' })
+    await bootApp(db, { viewer: { ...release.viewer, stamp: async () => null as never } })
+    await settle()
+
+    click(updateButton())
+    await settle()
+
+    expect(install.mock.calls).toEqual([['claude'], ['copilot']])
+    const result = document.querySelector('.agents-result')
+    // each host's own outcome, and the whole marked as not done
+    expect(result?.textContent).toBe(`Claude Code: ${missing}\n\nCopilot CLI: copilot: registered agent-inbox MCP`)
+    expect(result?.classList.contains('failure')).toBe(true)
+    // Copilot CLI moved; Claude Code did not, and is still offered
+    expect(lines().slice(0, 2)).toEqual([
+      'Claude Code: v1.2.8 runtime (Setup) — older than this app\'s v2.0.0',
+      'Copilot CLI: v2.0.0 runtime (Setup)',
+    ])
+    expect(updateButton()?.textContent).toBe('Update agents')
+    // restart advice only for the host that moved
+    const restart = document.querySelector('.agents-restart') as HTMLElement
+    expect(restart.hidden).toBe(false)
+    expect(restart.textContent).toBe(
+      'Running sessions keep the build they started with until you restart them.'
+      + 'Copilot CLI: 1 running session still runs an older build. Restart it to load v2.0.0: exit it, then run copilot --resume to pick the conversation back up.',
+    )
   })
 
   it('names the one action for what it does when one host is behind and another ahead', async () => {
@@ -299,6 +342,11 @@ describe('Setup shows what each host\'s agents run (#197)', () => {
       + 'Claude Code: 1 running session still runs a newer build. Restart it to load v2.0.0: exit it, then run claude --resume to pick the conversation back up.',
     )
     expect(restart.textContent).not.toMatch(/reloaded|reconnect/i)
+    // and Live marks the session still on the newer build, without reopening anything
+    await pollTick()
+    const ahead = [...document.querySelectorAll('#liveDrawer .idle-row')]
+      .find((el) => el.querySelector('.live-who')?.textContent?.includes('alpha'))
+    expect(ahead?.querySelector('.live-build-hint')?.textContent).toBe('newer build (v2.1.0) — restart this session to load v2.0.0')
   })
 
   it('a failed update says so, re-reads the hosts, and gives no restart advice', async () => {
@@ -345,6 +393,17 @@ describe('Setup shows what each host\'s agents run (#197)', () => {
     expect(document.querySelector('.agents-hooks-command')?.textContent)
       .toBe(`bash '${join(installed, 'scripts', 'install-hooks.sh')}' --apply`)
     expect(updateButton()).toBeNull()
+  })
+
+  it('promises no hooks command where this release cannot install its own runtime', async () => {
+    const release = releaseRuntime('2.0.0', { hostPayload: false })
+    release.registerHooks(release.installVersion('1.2.4'))
+
+    await boot(release)
+
+    expect(lines()[2]).toBe('Claude hooks: v1.2.4 runtime (Setup) — older than this app\'s v2.0.0')
+    expect(agentsText()).not.toContain('the command that moves them appears here')
+    expect(document.querySelector('.agents-hooks-command')).toBeNull()
   })
 
   it('hands over the same command for hooks on a NEWER runtime than this app\'s', async () => {

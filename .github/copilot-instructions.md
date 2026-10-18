@@ -79,9 +79,10 @@ Run the build before `npm run electron`; the development shell starts the built
   on Windows or unknown platforms; it is not a general-purpose shell bridge and
   does not enable non-Darwin release Setup. There is no HTTP setup-write route.
   Setup's "Update agents" / "Match agents to vX" (#197) reuses the same
-  `install(target)` with only the Setup-managed hosts whose runtime differs from
-  the app's (behind, or ahead after a downgrade), never `--force`; status is read
-  by the viewer, so there is no status IPC or installer status mode.
+  `install(target)` once per Setup-managed host whose runtime differs from the
+  app's (behind, or ahead after a downgrade), `claude` then `copilot`, never
+  `all` or `--force`; status is read by the viewer, so there is no status IPC or
+  installer status mode.
   `scripts/setup-filesystem.cjs` is the
   Node-core-only runtime identity/staging/publication/removal boundary used by
   the shipped Darwin install path and build-time runtime publisher. Its Win32

@@ -247,9 +247,13 @@ nothing is run to find this out.
   runtime than the app, for example after you went back to an older app version. It
   runs the same installer, which moves the host back to the app's runtime; if one host
   is behind and another ahead, this one action moves both.
+- **Each host is moved on its own.** Setup runs the installer for Claude Code, then for
+  Copilot CLI, and shows each host's result. If one host cannot be moved (for example
+  its CLI was uninstalled), the other still is.
 - **Restart running sessions afterward.** Setup then says how many sessions of each
   moved host still run another build: exit each one and run `claude --resume` or
-  `copilot --resume` to pick it back up. Live marks sessions on an older build too.
+  `copilot --resume` to pick it back up. Live marks them too: sessions on an older
+  build, and sessions still on a newer build after Match agents.
 - **A source checkout** updates in place: run `git pull` and `npm run build` in it,
   then restart its sessions.
 - **Claude hooks** are not moved with your agents. Once the app's runtime is installed,

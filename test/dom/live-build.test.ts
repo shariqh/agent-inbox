@@ -266,6 +266,47 @@ describe('Live shows the build each session runs (#197)', () => {
     }
   })
 
+  it('marks a session NEWER than what its host now runs, after agents were matched back to this app', async () => {
+    const d = open()
+    seed(d, { session: 'ahead', project: 'beta', agent: 'claude-code', version: '2.1.0', working: true })
+    seed(d, { session: 'ahead-idle', project: 'gamma', agent: 'claude-code', version: '2.1.0' })
+    seed(d, { session: 'unmatched', project: 'delta', agent: 'copilot', version: '2.1.0', working: true })
+    const release = releaseRuntime('2.0.0')
+    // Claude Code was matched back to this app's v2.0.0; Copilot CLI still runs v2.1.0
+    release.register('claude', release.install())
+    release.register('copilot', release.installVersion('2.1.0'))
+
+    await bootApp(d, { viewer: release.viewer })
+    await pollTick()
+
+    const NEWER = 'newer build (v2.1.0) — restart this session to load v2.0.0'
+    expect(hint('beta')).toBe(NEWER)
+    expect(hint('gamma')).toBe(NEWER)
+    expect(drawerEntry('beta')?.querySelector('.live-build')?.classList.contains('newer')).toBe(true)
+    expect(text(stripChip('beta'), '.live-build-marker')).toBe('newer build')
+    expect(stripChip('beta')?.title).toBe(NEWER)
+    expect(drawer().querySelector('.idle-fold > summary')?.textContent)
+      .toBe('1 connection · no task reported · 1 on a newer build')
+    // a restart of the unmatched host's session loads v2.1.0 again: nothing to say
+    expect(hint('delta')).toBeNull()
+    expect(stripChip('delta')?.querySelector('.live-build-marker')).toBeNull()
+  })
+
+  it('points at Setup only when Setup offers the update: not when the app\'s own runtime fails to verify', async () => {
+    const d = open()
+    seed(d, { session: 'stale', project: 'beta', agent: 'claude-code', version: '1.2.6', working: true })
+    const release = releaseRuntime('2.0.0')
+    release.install()
+    release.register('claude', release.installVersion('1.2.6'))
+    // the installed runtime still verifies; the app's copy no longer does, so Setup shows no action
+    writeFileSync(join(release.payloadDir, 'dist', 'mcp-server.js'), '// tampered after install\n')
+
+    await bootApp(d, { viewer: release.viewer })
+    await pollTick()
+
+    expect(hint('beta')).toBe('older build (v1.2.6)')
+  })
+
   it('is presence, not attention: an older build moves no badge or count', async () => {
     const d = open()
     const asked = insertItem(d, { project: 'beta', stream: 'main', agent: 'claude-code', kind: 'question', title: 'Ship the fix?', session: 'stale' })

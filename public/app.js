@@ -25,7 +25,7 @@ import { keyAction, rovingIndex, ariaAnswerLabel, livenessGlyph, deckEntryAt } f
 import { createKeyboardUI } from '/keyboard-ui.js'
 import { partitionNotes, unreadNoteCount, ambientChips, seenWatermark, markSeenIds } from '/notes.js'
 import { liveSummary, lastActivityAt, isDormant, activitySynopsis, sessionBuild } from '/livebar.js'
-import { agentsAction, hostLine, restartGuidance } from '/agents.js'
+import { agentsAction, hostLabel, hostLine, restartGuidance } from '/agents.js'
 import { esc } from '/esc.js'
 import { initStructuredTextCopy } from '/structured-copy.js'
 import { renderStructuredText } from '/structured-text.js'
@@ -4000,15 +4000,19 @@ function refreshLiveVersion() {
 }
 
 // A session's build label for the drawer, and its hint when it runs an older
-// build. Both empty when its version is unknown: never a guess.
+// build — or, once its host was matched back to this app, a newer one. Both
+// empty when its version is unknown: never a guess.
 function liveBuildHtml(a) {
   const build = sessionBuild(a, liveVersion)
-  if (!build) return { label: '', hint: '', older: false }
-  const title = build.older ? build.hint : `This session runs Agent Inbox ${build.label}`
+  if (!build) return { label: '', hint: '', older: false, newer: false }
+  const marked = build.older || build.newer
+  const title = marked ? build.hint : `This session runs Agent Inbox ${build.label}`
+  const tone = build.older ? ' older' : build.newer ? ' newer' : ''
   return {
-    label: `<span class="live-build${build.older ? ' older' : ''}" title="${esc(title)}">${esc(build.label)}</span>`,
-    hint: build.older ? `<span class="live-build-hint">${esc(build.hint)}</span>` : '',
+    label: `<span class="live-build${tone}" title="${esc(title)}">${esc(build.label)}</span>`,
+    hint: marked ? `<span class="live-build-hint">${esc(build.hint)}</span>` : '',
     older: build.older,
+    newer: build.newer,
   }
 }
 
@@ -4082,7 +4086,8 @@ function renderLive(entries) {
     // runs an older build — the idle ones are exactly the long-lived sessions.
     const builds = new Map(idle.map((a) => [a, liveBuildHtml(a)]))
     const older = [...builds.values()].filter((b) => b.older).length
-    fold.innerHTML = `<summary>${idle.length} connection${idle.length > 1 ? 's' : ''} · no task reported${older ? ` · ${older} on an older build` : ''}</summary>`
+    const newer = [...builds.values()].filter((b) => b.newer).length
+    fold.innerHTML = `<summary>${idle.length} connection${idle.length > 1 ? 's' : ''} · no task reported${older ? ` · ${older} on an older build` : ''}${newer ? ` · ${newer} on a newer build` : ''}</summary>`
     for (const a of idle) {
       const row = document.createElement('div')
       // #45: hours-quiet sessions keep their row (they ARE present, and their
@@ -4149,12 +4154,13 @@ function renderLiveBar(entries) {
     text.textContent = x.label
     el.append(projectDot, text)
     // #197: the strip stays compact — nothing extra on the current build, and
-    // only a marker on an older one; its title carries the drawer's full hint
+    // only a marker on an older one (or a newer one its host was matched back
+    // from); its title carries the drawer's full hint
     const build = sessionBuild(rowsBySession.get(x.session), liveVersion)
-    if (build?.older) {
+    if (build?.older || build?.newer) {
       const marker = document.createElement('span')
       marker.className = 'live-build-marker'
-      marker.textContent = 'older build'
+      marker.textContent = build.older ? 'older build' : 'newer build'
       el.appendChild(marker)
       el.title = build.hint
     }
@@ -6814,7 +6820,8 @@ function paintAgents(agents) {
       })
       copy.className = 'copy-btn'
       block.actions.append(command, copy)
-    } else {
+    } else if (agents.updatable === true) {
+      // only a promise Setup can keep: it can install this runtime here
       agentsHint(`Setup does not move Claude hooks with your agents. Once the v${current} runtime is installed, the command that moves them appears here.`)
     }
   }
@@ -6829,6 +6836,10 @@ function refreshAgents() {
     .catch(() => { /* keep the status already shown */ })
 }
 
+// One fixed install target per host, one after another: a host whose CLI is
+// gone fails on its own and never holds the other back, which `--target all`
+// would (the installer stops before changing anything). Each host's outcome is
+// reported as it is.
 async function updateAgents(action, current, button) {
   const block = agentsBlock
   if (!block || block.running) return
@@ -6842,26 +6853,39 @@ async function updateAgents(action, current, button) {
     block.result.classList.toggle('success', state === 'ok')
     block.result.classList.toggle('failure', state === 'failed')
   }
-  show(action.progress, 'running')
-  let ok = false
+  const several = action.steps.length > 1
+  const reports = []
+  const moved = []
   try {
-    const outcome = await window.agentInboxSetup.install(action.target)
-    ok = outcome?.ok === true
-    show(outcome?.output || (ok ? action.done : 'Setup failed without output.'), ok ? 'ok' : 'failed')
-  } catch (err) {
-    show(`Setup failed: ${err instanceof Error ? err.message : String(err)}`, 'failed')
+    for (const step of action.steps) {
+      show([...reports, step.progress].join('\n\n'), 'running')
+      let text
+      try {
+        const outcome = await window.agentInboxSetup.install(step.host)
+        const ok = outcome?.ok === true
+        if (ok) moved.push(step.host)
+        text = outcome?.output || (ok ? step.done : 'Setup failed without output.')
+      } catch (err) {
+        text = `Setup failed: ${err instanceof Error ? err.message : String(err)}`
+      }
+      reports.push(several ? `${hostLabel(step.host)}: ${text}` : text)
+    }
   } finally {
     block.running = false
   }
+  show(reports.join('\n\n'), moved.length === action.steps.length ? 'ok' : 'failed')
   await Promise.all([refreshAgents(), refreshLiveVersion()])
-  if (!ok) return
+  if (!moved.length) return
   // A running session keeps the MCP server it started with: say which ones
-  // still need a restart, and how, rather than imply anything reloaded.
+  // still run another build than their host now loads, and how to restart
+  // them, rather than imply anything reloaded. A successful fixed install
+  // registers exactly this app's verified runtime, so that is `current`.
+  const moves = moved.map((host) => ({ host, version: current }))
   const lead = document.createElement('p')
   lead.className = 'setup-hint'
   lead.textContent = 'Running sessions keep the build they started with until you restart them.'
   const list = document.createElement('ul')
-  for (const text of restartGuidance(lastData?.activity ?? [], action.hosts, current)) {
+  for (const text of restartGuidance(lastData?.activity ?? [], moves)) {
     const item = document.createElement('li')
     item.textContent = text
     list.appendChild(item)

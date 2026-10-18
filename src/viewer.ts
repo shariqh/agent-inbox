@@ -452,10 +452,13 @@ function releaseRuntimeKey(baked: BakedInfo, hostKey: string, runtimeRoot: strin
 // `hosts` (part 2) is what each host is REGISTERED to run, because that, not
 // what is installed, is what a restarted session loads: its kind and, for
 // Setup's runtime, its version. No path, runtime id or config content.
+// `updatable` is whether Setup can move agents onto this release's runtime
+// (see `canUpdateAgents`), so Live points at Setup only when Setup offers it.
 interface AgentVersion {
   current: string | null
   mode: 'dev' | 'release'
   runtimeInstalled: boolean | null
+  updatable: boolean
   hosts: { claude: HostVersion; copilot: HostVersion }
 }
 
@@ -465,10 +468,18 @@ function hostVersion({ kind, version }: HostRegistration): HostVersion {
   return version ? { kind, version } : { kind }
 }
 
+// Whether Setup can move agents onto this release's runtime: a release with a
+// version whose own runtime payload verifies for this host, installed or not.
+// The ONE condition the Setup panel's action and Live's "update agents from
+// Setup" advice share, so Live never points at an action Setup does not show.
+function canUpdateAgents(baked: BakedInfo | null, lookup: ReleaseRuntime | null): boolean {
+  return baked?.schema === 2 && !!baked.version && !!lookup?.source
+}
+
 // The Setup panel's per-host view (#197 part 2). `current` is the runtime
 // version Setup installs, a release's baked one; a checkout has none to offer.
-// `updatable` says Setup can install it here (its source payload verifies), so
-// the panel may offer "Update agents" for a Setup-managed host that is older.
+// `updatable` (`canUpdateAgents`) lets the panel offer its one action for a
+// Setup-managed host whose runtime differs, older or newer.
 // `hooksCommand` moves Claude's hooks onto the installed current runtime: the
 // agent installer never touches hooks, so the panel can only hand this over.
 interface AgentsInfo {
@@ -488,7 +499,7 @@ function agentsInfo(baked: BakedInfo | null, lookup: ReleaseRuntime | null, host
     hosts.hooks.runtimeId !== basename(installed!.dir) && existsSync(hooksInstaller)
   return {
     current,
-    updatable: current !== null && !!lookup?.source,
+    updatable: canUpdateAgents(baked, lookup),
     claude: hosts.claude,
     copilot: hosts.copilot,
     hooks: hosts.hooks,
@@ -703,13 +714,14 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
     const registered = agentHosts(baked)
     const hosts = { claude: hostVersion(registered.claude), copilot: hostVersion(registered.copilot) }
     if (baked?.schema !== 2) {
-      return c.json({ current: AGENT_INBOX_VERSION, mode: 'dev', runtimeInstalled: null, hosts } satisfies AgentVersion)
+      return c.json({ current: AGENT_INBOX_VERSION, mode: 'dev', runtimeInstalled: null, updatable: false, hosts } satisfies AgentVersion)
     }
     const lookup = releaseRuntime(baked)
     return c.json({
       current: baked.version ?? null,
       mode: 'release',
       runtimeInstalled: lookup?.runtime ? true : lookup?.source ? false : null,
+      updatable: canUpdateAgents(baked, lookup),
       hosts,
     } satisfies AgentVersion)
   })

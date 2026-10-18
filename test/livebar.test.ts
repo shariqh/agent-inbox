@@ -112,7 +112,7 @@ describe('activitySynopsis', () => {
 // the viewer's verified runtime state.
 describe('sessionBuild', () => {
   const ON_CURRENT = { claude: { kind: 'runtime', version: '1.3.0' }, copilot: { kind: 'runtime', version: '1.3.0' } }
-  const RELEASE_READY = { current: '1.3.0', mode: 'release', runtimeInstalled: true, hosts: ON_CURRENT }
+  const RELEASE_READY = { current: '1.3.0', mode: 'release', runtimeInstalled: true, updatable: true, hosts: ON_CURRENT }
   const build = (own: unknown, info: unknown = RELEASE_READY, source: unknown = 'runtime', agent = 'claude-code') =>
     sessionBuild(sess({ server_version: own, server_source: source, agent }), info)
   const isOlder = (own: string, current: string) => build(own, { ...RELEASE_READY, current })?.older
@@ -122,15 +122,17 @@ describe('sessionBuild', () => {
   const NONE = 'older build (v1.2.8)'
   const withClaude = (claude: unknown, info: Record<string, unknown> = RELEASE_READY) =>
     ({ ...info, hosts: { ...ON_CURRENT, claude } })
+  const MATCHED_COPILOT = { ...RELEASE_READY, hosts: { claude: { kind: 'none' }, copilot: { kind: 'runtime', version: '1.3.0' } } }
 
   it('labels a session on the current build and says nothing more', () => {
-    expect(build('1.3.0')).toEqual({ label: 'v1.3.0', older: false, hint: '' })
-    // a session NEWER than this viewer is not an older build either
-    expect(build('1.4.0')).toEqual({ label: 'v1.4.0', older: false, hint: '' })
+    expect(build('1.3.0')).toEqual({ label: 'v1.3.0', older: false, newer: false, hint: '' })
+    // a session NEWER than this viewer whose host also runs that newer build:
+    // a restart changes nothing, so there is nothing to say
+    expect(build('1.4.0', withClaude({ kind: 'runtime', version: '1.4.0' }))).toEqual({ label: 'v1.4.0', older: false, newer: false, hint: '' })
   })
 
   it('a runtime session restarts into the new build only once its own host is registered to it', () => {
-    expect(build('1.2.8')).toEqual({ label: 'v1.2.8', older: true, hint: RESTART })
+    expect(build('1.2.8')).toEqual({ label: 'v1.2.8', older: true, newer: false, hint: RESTART })
     // the host is registered to a build newer still: a restart loads that one
     expect(hint(withClaude({ kind: 'runtime', version: '1.4.0' }), 'runtime'))
       .toBe('older build (v1.2.8) — restart this session to load v1.4.0')
@@ -150,6 +152,42 @@ describe('sessionBuild', () => {
     // even while the new runtime is not installed yet, a restart alone changes nothing
     expect(hint(withClaude({ kind: 'runtime', version: '1.1.0' }, { ...RELEASE_READY, runtimeInstalled: false }), 'runtime'))
       .toBe(UPDATE)
+  })
+
+  it('points at Setup only when Setup would offer the update: never when its bundled runtime does not verify', () => {
+    // the runtime is installed, but the app's own copy no longer verifies, so
+    // Setup shows no action: Live must not point at a button that is not there
+    for (const updatable of [false, undefined, 'yes', 1]) {
+      expect(hint(withClaude({ kind: 'runtime', version: '1.2.8' }, { ...RELEASE_READY, runtimeInstalled: true, updatable }), 'runtime'), String(updatable))
+        .toBe(NONE)
+    }
+  })
+
+  it('marks a runtime session NEWER than what its host now runs: after matching agents back to this app', () => {
+    // matched down from v1.4.0: the host now runs this app's v1.3.0, the session still v1.4.0
+    expect(build('1.4.0')).toEqual({
+      label: 'v1.4.0', older: false, newer: true, hint: 'newer build (v1.4.0) — restart this session to load v1.3.0',
+    })
+    expect(build('1.3.1+build.2', MATCHED_COPILOT, 'runtime', 'copilot')).toEqual({
+      label: 'v1.3.1+build.2', older: false, newer: true, hint: 'newer build (v1.3.1+build.2) — restart this session to load v1.3.0',
+    })
+  })
+
+  it('no newer marker unless a restart would load this app\'s build', () => {
+    // the host was not matched: a restart loads the newer build again
+    expect(build('1.4.0', withClaude({ kind: 'runtime', version: '1.4.0' }))?.newer).toBe(false)
+    expect(build('1.5.0', withClaude({ kind: 'runtime', version: '1.4.0' }))?.newer).toBe(false)
+    // the host runs an older runtime: a restart would move this session below the app
+    expect(build('1.4.0', withClaude({ kind: 'runtime', version: '1.2.8' }))?.newer).toBe(false)
+    for (const claude of [{ kind: 'none' }, { kind: 'checkout' }, { kind: 'other' }, { kind: 'unknown' }, null]) {
+      expect(build('1.4.0', withClaude(claude))?.newer, JSON.stringify(claude)).toBe(false)
+    }
+    // a checkout session, a client that is neither host, a legacy row, a checkout viewer
+    expect(build('1.4.0', RELEASE_READY, 'checkout')?.newer).toBe(false)
+    expect(build('1.4.0', RELEASE_READY, 'runtime', 'codex')?.newer).toBe(false)
+    expect(build('1.4.0', RELEASE_READY, null)?.newer).toBe(false)
+    expect(build('1.4.0', { ...RELEASE_READY, mode: 'dev' })?.newer).toBe(false)
+    expect(build('1.4.0', { ...RELEASE_READY, hosts: undefined })?.newer).toBe(false)
   })
 
   it('a runtime session gets no advice its host registration cannot back', () => {
@@ -177,8 +215,8 @@ describe('sessionBuild', () => {
 
   it('a runtime session: no advice when this viewer cannot install or update one', () => {
     for (const info of [
-      { ...withClaude({ kind: 'runtime', version: '1.2.8' }), runtimeInstalled: null },
-      { ...withClaude({ kind: 'runtime', version: '1.2.8' }), runtimeInstalled: 'yes' },
+      { ...withClaude({ kind: 'runtime', version: '1.2.8' }), runtimeInstalled: null, updatable: false },
+      { ...withClaude({ kind: 'runtime', version: '1.2.8' }), runtimeInstalled: 'yes', updatable: false },
       { current: '1.3.0', mode: 'dev', runtimeInstalled: null, hosts: ON_CURRENT },
       { ...RELEASE_READY, mode: 'hosted' },
     ]) {
@@ -220,7 +258,7 @@ describe('sessionBuild', () => {
       expect(isOlder(chain[i - 1]!, chain[i]!), `${chain[i - 1]} < ${chain[i]}`).toBe(true)
       expect(isOlder(chain[i]!, chain[i - 1]!), `${chain[i]} !< ${chain[i - 1]}`).toBe(false)
     }
-    expect(build('1.3.0+abc123')).toEqual({ label: 'v1.3.0+abc123', older: false, hint: '' })
+    expect(build('1.3.0+abc123')).toEqual({ label: 'v1.3.0+abc123', older: false, newer: false, hint: '' })
     expect(isOlder('1.3.0', '1.3.0+abc123')).toBe(false)
   })
 
@@ -234,7 +272,7 @@ describe('sessionBuild', () => {
   it('still labels the session, but never hints, when the current build is unknown', () => {
     for (const info of [undefined, null, {}, { ...RELEASE_READY, current: null }, { ...RELEASE_READY, current: '1.3' }, { ...RELEASE_READY, current: '<b>1.4.0</b>' }]) {
       expect(sessionBuild(sess({ server_version: '1.2.6', server_source: 'runtime' }), info), JSON.stringify(info))
-        .toEqual({ label: 'v1.2.6', older: false, hint: '' })
+        .toEqual({ label: 'v1.2.6', older: false, newer: false, hint: '' })
     }
   })
 })

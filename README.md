@@ -216,7 +216,9 @@ an older build gets a quiet hint whose advice fits where that session runs from:
 session on Setup's agent runtime is told to restart once its own host (Claude Code
 or Copilot CLI) is registered to the new runtime, or to update agents from Setup
 first, and a session running from a source checkout is told to update and rebuild
-it. A server too old to report its build shows nothing rather than a guess.
+it. After Setup matches agents back to an older app, sessions still on the newer
+build are marked too. A server too old to report its build shows nothing rather than
+a guess.
 
 ## Keyboard controls
 

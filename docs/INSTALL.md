@@ -99,6 +99,9 @@ own. The app can install updates only when:
 
 - Agent Inbox runs from its AppImage file. A DEB install stays notify-only, even when it
   was started from inside another AppImage.
+- The AppImage runs through its normal FUSE mount, not the extract-and-run fallback
+  (`APPIMAGE_EXTRACT_AND_RUN` or `--appimage-extract-and-run`); see
+  [the fallback](#appimage) for why that mode stays notify-only.
 - The AppImage is a regular file (not a symlink) that belongs to your user account, and
   both the file and its folder are writable, for example `~/Applications`.
 - The file is still the one Agent Inbox started from. If you replaced or edited it while
@@ -116,14 +119,13 @@ instead of the download. When you click **Install and restart**, the app:
 3. replaces your AppImage with that copy in one atomic rename. The running app keeps
    working from the version it started with;
 4. quits. A small helper waits until Agent Inbox has fully exited and starts the new
-   AppImage from the same path.
+   AppImage from the same path, with the arguments you started Agent Inbox with (for
+   example `--no-sandbox` or `--ozone-platform=wayland`).
 
 If any step before the rename fails, nothing changes and Settings shows **Try again**. After
 the rename the new version is installed even if it does not open: when the helper cannot
 start it, or waits more than about two minutes for Agent Inbox to exit, open Agent Inbox
-again yourself. With the extract-and-run fallback below, the new version reuses that
-command's private `TMPDIR`; if the app does not reopen (for example because a script
-already removed that folder), run the same command again.
+again yourself.
 
 Unlike on macOS, there is no failed-install note to show after an AppImage restart: the
 file is already the new version before Agent Inbox quits, so whatever you open next from
@@ -222,7 +224,14 @@ Use the arm64 filename on arm64. The private mode-`0700` `TMPDIR` is required be
 the pinned AppImage runtime uses a predictable child name while extracting. This fallback
 extracts on every launch; it does not install a system launcher or delete user data.
 
-Later versions can replace this file in place from Settings → Updates; see
+In this mode Agent Inbox does not install its own updates: Settings → Updates offers
+**Review release** instead. A restart from inside the app would extract into this
+command's `TMPDIR` after the `trap` removed it, and the runtime would recreate that folder
+without the private mode. To update, quit Agent Inbox, download and check the new
+AppImage as above, replace your file with it, and run the same command again.
+
+With normal FUSE mounting, later versions can replace this file in place from Settings →
+Updates; see
 [Install an update from the app (AppImage)](#install-an-update-from-the-app-appimage).
 
 ### Debian/Ubuntu package

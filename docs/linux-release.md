@@ -301,7 +301,11 @@ This fallback extracts to a temporary directory for each launch. It is not a
 desktop installation flow and does not install or remove host launchers,
 icons, or user data. Keep the unique mode-`0700` `TMPDIR`: the pinned AppImage
 runtime uses a predictable child name while extracting, so a shared `/tmp`
-base would let another local user prepopulate files before launch.
+base would let another local user prepopulate files before launch. For the
+same reason the app does not install its own updates in this mode (any
+`APPIMAGE_EXTRACT_AND_RUN`, or an `appimage_extracted_*` `APPDIR`): a restart
+would extract into that `TMPDIR` after the launcher removed it, so Settings →
+Updates stays notify-only.
 
 Each architecture's CI acceptance gate runs both paths as an unprivileged user,
 with the user-namespace sandbox and without `--no-sandbox`, in an

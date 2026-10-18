@@ -925,9 +925,10 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   validation refuses relative, dot-segment and trailing-slash paths (a trailing slash
   would make its symlink checks test the link's target). The first `rendererReady()`
   takes both files BEFORE any cleanup (cleanup only matches `install-XXXXXX`, pinned), and
-  only in an instance with a registered installer; a record without a result younger than
-  150 s (the helper's wait plus margin) is left for the app the helper reopens, while a
-  future stamp (a clock set back) is never young, so it cannot hold a notice. The helper
+  only in an instance with a registered installer; a record without a result stamped
+  within 150 s of now EITHER WAY (the helper's wait plus margin; `Math.abs`, so an NTP
+  step back still counts as in flight) is left for the app the helper reopens, while a
+  stamp far in the future is stale, so it cannot hold a notice. The helper
   writes its result BEFORE reopening the app. Exit 0 is never reported as a failure; an
   app still older than `to` publishes `installNotice` on every state until that release
   stops being offered or a new install starts, and notifies once. Part 3 reuses the store,
@@ -941,8 +942,10 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   `not-appimage`: APPIMAGE and APPDIR canonical absolute, APPDIR not `/`, and
   `process.execPath` inside APPDIR. A bare inherited APPIMAGE (a `.deb` started from
   another AppImage) must never select the AppImage target or point the installer at
-  someone else's file. Registered in main only for `viewerOwned` on a packaged Linux app
-  with `APPIMAGE` set. (2) **Bound to the launched file:** the installer snapshots the
+  someone else's file. Main registers the installer only under that same proof (plus
+  `viewerOwned` and packaged): a bare inherited `APPIMAGE` registers nothing, so no
+  startup report can take an attempt record another AppImage copy left in a shared
+  userData. (2) **Bound to the launched file:** the installer snapshots the
   AppImage's dev, ino, size and `mtimeNs` when it is created at startup. Feasibility,
   `prepare()` and `commit()` refuse once the file at APPIMAGE differs
   (`changed-since-launch`), which also blocks a second install before a restart.
@@ -962,10 +965,15 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   helper, never `app.relaunch()`:** Electron's relauncher execs `/proc/self/exe` inside
   the AppImage's FUSE mount, which the runtime tears down when the app exits. Instead a
   detached host `/bin/sh -c` runs constant text with argv `<app-pid> <viewer-pid|->
-  <polls> <target> <result|->`, `set -u`, arguments validated (exit 64), `cwd:'/'`,
+  <polls> <target> <result|-> -- <app args…>`, `set -u`, arguments validated (exit 64;
+  the `--` in sixth place is required), `cwd:'/'`,
   `stdio:'ignore'`, unref'd, and `commit()` resolves only on its `spawn` event. It polls
   `kill -0` for the app AND the viewer child (the same port race as macOS), exits 75
-  after ~120 s without starting anything, then execs the target. It reuses #207's report
+  after ~120 s without starting anything, then `exec "$target" "$@"`. The app args are
+  `process.argv.slice(1)` captured when main creates the installer, minus ONE leading
+  `--disable-setuid-sandbox`: our AppRun (`renderAppRun`) puts it in front of the user's
+  args and the new AppRun adds it again, so forwarding it would add a copy per update; a
+  copy the user typed is kept. It reuses #207's report
   seam: `commit({ resultPath })` (validated before the rename; none means `-`, no
   report), `<result>` checked first (invalid: 64, writes nowhere), and the shared
   `INSTALL_HELPER_EXIT` code written (temp + rename, a `umask 077` subshell the app never
@@ -975,13 +983,27 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   replaced the file first, the app opened next from that path is the new version, so the
   controller's next-start report is silent whatever the code. Its env is `process.env` minus APPDIR,
   APPIMAGE, ARGV0, OWD, TARGET_APPIMAGE and every `:`-entry resolving inside the old
-  APPDIR. The module never imports `child_process` (`spawnImpl` is injected) or Electron.
+  APPDIR; a list left with only empty entries is dropped whole, and so is a PATH naming no
+  directory at all (an empty PATH left the helper without `sleep`/`mv`: exit 75 in
+  milliseconds, no restart). Unset, `/bin/sh` uses its default search path. The module
+  never imports `child_process` (`spawnImpl` is injected) or Electron.
   (6) **No rollback copy:** the rename frees the old inode at exit; going back means
   downloading the older AppImage. (7) **Cleanup:** at most 16 removals and 64 candidates
   per pass, exact stage names, regular files or symlinks (unlinked, never followed) owned
   by the uid and over an hour old, never this process's live stage, and only under the
-  AppImage proof. Open: the real offer → install → FUSE teardown → relaunch needs the first
-  signed 1.3.0 → 1.3.1 pair on a Linux desktop (manual plan in the PR).
+  AppImage proof. (8) **Extract-and-run is notify-only** (`extract-and-run`): the runtime
+  extracts into the predictable `$TMPDIR/appimage_extracted_<md5>`, recreates it `0755`
+  when missing and reuses existing right-size files, and the documented launcher's `trap`
+  removes its private TMPDIR as the app exits, so a restart could run a planted `AppRun`
+  as the user. Detected by ANY `APPIMAGE_EXTRACT_AND_RUN` (the runtime tests
+  `getenv() != NULL`, and a restart inherits it) or an APPDIR basename starting
+  `appimage_extracted_` (`--appimage-extract-and-run` sets no variable and is stripped
+  from argv). Checked in `inspect()` (so feasibility and `prepare()`) and again before the
+  rename in `commit()`, reading env live; an unreadable env counts as extracted. Cleanup
+  still runs. Install-then-quit was rejected: it needs a no-restart flag through the
+  controller, preload, three Settings strings and the notifier, plus an attempt record
+  with no helper result. Open: the real offer → install → FUSE teardown → relaunch needs
+  the first signed 1.3.0 → 1.3.1 pair on a Linux desktop (manual plan in the PR).
 - **Session presence** *(#28, corrected by #45)* — every MCP session is a Live row; `status()`
   upgrades it, process exit ends it, and a row that stops being heartbeated expires after ~15 min.
   That expiry only ever fires for a **crashed** process: a live one heartbeats itself, so what

@@ -17,6 +17,8 @@
 #   npm run install:agents -- --apply --uninstall
 # Packaged releases additionally pass the fixed, verified runtime payload:
 #   install-agents.sh --apply --runtime-source <dir> --runtime-digest sha256:<hex>
+# Interrupted by HUP, INT, QUIT, PIPE, ALRM, TERM, XCPU or XFSZ, an --apply run
+# restores everything it had changed and exits 128 + the signal number.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -581,8 +583,18 @@ for target in "${TARGETS[@]}"; do
 done
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/agent-inbox-install.XXXXXX")" || exit 1
+# The EXIT trap. Bash also runs it before dying from a fatal signal the script
+# has no handler for, so a transaction still active here was neither committed
+# nor rolled back. A removed registration may then survive only in its
+# snapshot, and every snapshot stays in $WORK instead of being deleted with it.
 cleanup() {
-  local target temp_path
+  local target temp_path keep_snapshots=0 kept=0
+  # Whatever ended the run may have taken the reader of stderr with it.
+  trap '' PIPE
+  if [ "$TRANSACTION_ACTIVE" -eq 1 ]; then
+    keep_snapshots=1
+    divert_report
+  fi
   for target in claude copilot; do
     if [ -f "$WORK/$target.temp-path" ]; then
       temp_path="$(< "$WORK/$target.temp-path")"
@@ -590,11 +602,23 @@ cleanup() {
     fi
     rm -f "$WORK/$target.block" "$WORK/$target.rendered" "$WORK/$target.original" \
       "$WORK/$target.temp-path" "$WORK/$target.existed" "$WORK/$target.skip" "$WORK/$target.applied"
-    if [ ! -f "$WORK/$target.preserve-mcp-snapshot" ]; then
+    if [ "$keep_snapshots" -eq 1 ] && [ -f "$WORK/$target.mcp-config" ]; then
+      echo "install-agents: warning: exited before restoring $target MCP registration; recovery snapshot retained at $WORK/$target.mcp-config" >&2
+      kept=1
+    elif [ -f "$WORK/$target.preserve-mcp-snapshot" ]; then
+      kept=1
+    else
       rm -f "$WORK/$target.mcp-config" "$WORK/$target.mcp-config-path"
     fi
     rm -f "$WORK/$target.preserve-mcp-snapshot"
   done
+  rm -f "$WORK/runtime-installed"
+  if [ "$REPORT_DIVERTED" -eq 1 ]; then
+    # A separate process replays the report, so a reader that has gone can
+    # fail only that process. The log stays beside any snapshot it explains.
+    cat "$WORK/report.log" >&3 2>/dev/null
+    if [ "$kept" -eq 0 ]; then rm -f "$WORK/report.log"; fi
+  fi
   rmdir "$WORK" 2>/dev/null || true
 }
 
@@ -722,19 +746,62 @@ rollback_files() {
   done
 }
 
+# Every catchable signal whose default action ends the installer. SIGPIPE and
+# SIGHUP are how a run learns its reader is gone: Electron Setup pipes
+# stdout/stderr, so after an app crash or force quit the next write raises
+# SIGPIPE, and a closed terminal sends SIGHUP. All are handled like INT/TERM.
+INTERRUPT_SIGNALS=(HUP INT QUIT PIPE ALRM TERM XCPU XFSZ)
 TRANSACTION_ACTIVE=0
+REPORT_DIVERTED=0
+
+# Once a rollback, an interrupt or an abnormal exit begins, this shell writes
+# only to $WORK/report.log, never straight to a reader that may be gone. A
+# failed write does more than lose a line: bash 3.2 (macOS /bin/bash) keeps it
+# buffered and flushes it into the next command substitution, corrupting the
+# very paths a restore reads. `echo -n` first drops whatever a failed write
+# already left there. cleanup replays the log to the original stderr, kept on
+# fd 3.
+divert_report() {
+  [ "$REPORT_DIVERTED" -eq 0 ] || return 0
+  REPORT_DIVERTED=1
+  exec 3>&2
+  exec >/dev/null 2>&1
+  echo -n
+  exec 2>>"$WORK/report.log"
+}
+
+# Puts back everything this run changed. From here on every signal above is
+# ignored, by this shell and the commands the restore runs: a second Ctrl-C, a
+# hangup or a write to a vanished reader must not leave the restore half done.
+# Only SIGKILL can stop it, and then no EXIT trap runs, so $WORK keeps every
+# snapshot. TRANSACTION_ACTIVE drops only once the restore has run, which is how
+# cleanup knows a snapshot is no longer the only copy.
+rollback_transaction() {
+  [ "$TRANSACTION_ACTIVE" -eq 1 ] || return 0
+  trap '' "${INTERRUPT_SIGNALS[@]}"
+  divert_report
+  rollback_files
+  rollback_mcp_changes
+  TRANSACTION_ACTIVE=0
+}
+
+# Exits 128 + the signal number, the status a shell reports for a process that
+# signal killed.
 interrupt_install() {
-  trap - INT TERM
+  local signal="$1" status="$2"
+  trap '' "${INTERRUPT_SIGNALS[@]}"
+  divert_report
   if [ "$TRANSACTION_ACTIVE" -eq 1 ]; then
-    TRANSACTION_ACTIVE=0
-    echo "install-agents: interrupted — restoring prior configuration" >&2
-    rollback_files
-    rollback_mcp_changes
+    echo "install-agents: interrupted by SIG$signal — restoring prior configuration" >&2
+    rollback_transaction
   fi
-  exit 130
+  exit "$status"
 }
 trap cleanup EXIT
-trap interrupt_install INT TERM
+for interrupt_signal in "${INTERRUPT_SIGNALS[@]}"; do
+  # shellcheck disable=SC2064 # bind each signal's name and exit status now
+  trap "interrupt_install $interrupt_signal $((128 + $(kill -l "$interrupt_signal")))" "$interrupt_signal"
+done
 
 if [ "$APPLY" -eq 0 ]; then
   echo "── dry run: nothing was written or registered. Re-run with --apply. ──" >&2
@@ -837,7 +904,7 @@ if [ "$RUNTIME_MODE" -eq 1 ] && [ "$UNINSTALL" -eq 0 ]; then
         if verify_expected_runtime; then
           : > "$WORK/runtime-installed"
           echo "install-agents: committed install failure published the exact expected runtime; attempting ownership-safe rollback" >&2
-          rollback_runtime
+          rollback_transaction
         else
           echo "install-agents: committed install failure could not verify the exact expected runtime; retained unsafe or unknown path: $RUNTIME_PATH" >&2
         fi
@@ -854,8 +921,7 @@ if [ "$RUNTIME_MODE" -eq 1 ] && [ "$UNINSTALL" -eq 0 ]; then
   if [ "$runtime_was_present" -eq 0 ]; then : > "$WORK/runtime-installed"; fi
   JSON_NODE="$NODE"
   if ! "$NODE" "$SELFTEST" selftest >/dev/null 2>&1; then
-    rollback_runtime
-    TRANSACTION_ACTIVE=0
+    rollback_transaction
     echo "install-agents: installed runtime selftest failed; host configuration was not changed" >&2
     exit 1
   fi
@@ -868,7 +934,7 @@ for target in "${TARGETS[@]}"; do
   fi
 
   registration_state="$(user_registration_state "$target")" || {
-    rollback_mcp_changes
+    rollback_transaction
     echo "install-agents: could not determine whether $target has a user-scoped agent-inbox registration; refusing to change it" >&2
     exit 1
   }
@@ -881,21 +947,21 @@ for target in "${TARGETS[@]}"; do
       if [ "$ownership" = owned ]; then
         release_owned=1
       else
-        rollback_mcp_changes
+        rollback_transaction
         echo "install-agents: refusing to replace or remove the $target registration because it is $ownership, not an exact manifest-owned release runtime" >&2
         exit 1
       fi
     fi
     if [ "$UNINSTALL" -eq 1 ] || [ "$FORCE" -eq 1 ] || [ "$release_owned" -eq 1 ]; then
       if ! capture_registration_config "$target"; then
-        rollback_mcp_changes
+        rollback_transaction
         echo "install-agents: existing MCP registrations and instructions were not changed" >&2
         exit 1
       fi
       NEEDS_RESTORE="$NEEDS_RESTORE $target"
       mcp_commands "$target" remove
       if ! "${MCP_CMD[@]}" >/dev/null; then
-        rollback_mcp_changes
+        rollback_transaction
         echo "install-agents: could not remove the $target user-scoped MCP registration; instructions were not changed" >&2
         exit 1
       fi
@@ -915,7 +981,7 @@ for target in "${TARGETS[@]}"; do
   fi
   mcp_commands "$target" add
   if ! "${MCP_CMD[@]}" >/dev/null; then
-    rollback_mcp_changes
+    rollback_transaction
     echo "install-agents: could not register the $target user-scoped MCP; instructions were not changed" >&2
     exit 1
   fi
@@ -925,8 +991,7 @@ done
 for target in "${TARGETS[@]}"; do
   [ -f "$WORK/$target.skip" ] && continue
   file="$(instruction_write_file "$target")" || {
-    rollback_files
-    rollback_mcp_changes
+    rollback_transaction
     exit 1
   }
   if [ -f "$WORK/$target.existed" ]; then
@@ -937,8 +1002,7 @@ for target in "${TARGETS[@]}"; do
       backup="$file.bak.$(date +%Y%m%d%H%M%S).$$.$suffix"
     done
     if ! cp -p "$WORK/$target.original" "$backup"; then
-      rollback_files
-      rollback_mcp_changes
+      rollback_transaction
       echo "install-agents: could not back up $file" >&2
       exit 1
     fi
@@ -948,8 +1012,7 @@ for target in "${TARGETS[@]}"; do
   temp="$(< "$WORK/$target.temp-path")"
   : > "$WORK/$target.applied"
   if ! mv "$temp" "$file"; then
-    rollback_files
-    rollback_mcp_changes
+    rollback_transaction
     echo "install-agents: could not replace $file" >&2
     exit 1
   fi

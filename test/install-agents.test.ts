@@ -10,9 +10,9 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { constants, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { describe, expect, it } from 'vitest'
 
 const REPO = resolve(import.meta.dirname, '..')
@@ -36,6 +36,8 @@ interface Fixture {
   log: string
   fakebin: string
   state: string
+  // The installer's TMPDIR, so its private work directory can be inspected.
+  tmp: string
 }
 
 function fixture(): Fixture {
@@ -43,8 +45,10 @@ function fixture(): Fixture {
   const fakebin = join(home, 'fakebin')
   const state = join(home, 'state')
   const log = join(home, 'cli.log')
+  const tmp = join(home, 'tmp')
   mkdirSync(fakebin)
   mkdirSync(state)
+  mkdirSync(tmp)
 
   const cli = `#!/bin/sh
 name="$(basename "$0")"
@@ -86,6 +90,10 @@ case "$1:$2" in
     test "\${FAIL_REMOVE:-}" != "$name" || exit 9
     rm -f "$INSTALL_STATE/$name"
     printf '{"mcpServers":{}}\\n' > "$config"
+    if [ "\${PAUSE_AFTER_REMOVE:-}" = "$name" ]; then
+      touch "$INSTALL_STATE/$name.removed"
+      while [ ! -f "$INSTALL_STATE/$name.release" ]; do sleep 0.05; done
+    fi
     ;;
   *) exit 2 ;;
 esac
@@ -127,9 +135,11 @@ esac
     log,
     fakebin,
     state,
+    tmp,
     env: {
       ...process.env,
       HOME: home,
+      TMPDIR: tmp,
       PATH: `${fakebin}:/usr/bin:/bin`,
       AGENT_INBOX_NODE: process.execPath,
       AGENT_INBOX_MCP_ENTRY: entry,
@@ -185,8 +195,8 @@ function shareInstructionFile(f: Fixture): string {
   return shared
 }
 
-async function waitFor(path: string): Promise<void> {
-  const deadline = Date.now() + 3000
+async function waitFor(path: string, timeoutMs = 3000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
   while (!existsSync(path)) {
     if (Date.now() >= deadline) throw new Error(`timed out waiting for ${path}`)
     await new Promise((resolve) => setTimeout(resolve, 20))
@@ -203,6 +213,93 @@ async function waitForGone(pid: number): Promise<void> {
     }
     if (Date.now() >= deadline) throw new Error(`timed out waiting for pid ${pid}`)
     await new Promise((resolveWait) => setTimeout(resolveWait, 20))
+  }
+}
+
+// The installer's private work directories (`mktemp -d` under its TMPDIR). A
+// finished run leaves none behind unless it is keeping a recovery snapshot.
+function workDirs(f: Fixture): string[] {
+  return readdirSync(f.tmp)
+    .filter((name) => name.startsWith('agent-inbox-install.'))
+    .map((name) => join(f.tmp, name))
+}
+
+// Staged instruction copies and MCP restore temporaries are created beside the
+// files they replace; none may outlive the run.
+function stagedLeftovers(f: Fixture): string[] {
+  return [f.home, dirname(f.claudeFile), dirname(f.copilotFile)].flatMap((dir) =>
+    readdirSync(dir).filter((name) => name.startsWith('.agent-inbox.') || name.startsWith('.agent-inbox-mcp.')))
+}
+
+// A user-scoped registration the installer did not write, beside an unrelated
+// server, so an exact restore is distinguishable from a fresh registration.
+function seedPriorRegistrations(f: Fixture): { claude: string; copilot: string } {
+  const prior = (host: string): string => `${JSON.stringify({
+    mcpServers: {
+      'agent-inbox': { command: `/prior/${host}/node`, args: [`/prior/${host}/mcp-server.js`] },
+      unrelated: { command: 'keep-me' },
+    },
+  }, null, 2)}\n`
+  const claude = prior('claude')
+  const copilot = prior('copilot')
+  writeFileSync(f.env.CLAUDE_CONFIG!, claude)
+  writeFileSync(f.env.COPILOT_CONFIG!, copilot)
+  // The fake host CLIs report a user registration while its state file exists.
+  writeFileSync(join(f.state, 'claude'), '')
+  writeFileSync(join(f.state, 'copilot'), '')
+  return { claude, copilot }
+}
+
+interface RunningInstaller {
+  child: ChildProcess
+  exited: Promise<{ code: number | null; signal: NodeJS.Signals | null }>
+  stderr: () => string
+}
+
+// Spawned the way electron/setup-process.cjs runs Setup: /bin/bash leading
+// its own process group, with stdout and stderr piped back to the parent.
+function startInstaller(f: Fixture, args: string[]): RunningInstaller {
+  const child = spawn('/bin/bash', [SCRIPT, ...args], {
+    detached: true,
+    env: f.env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let stderr = ''
+  child.stdout!.resume()
+  child.stderr!.setEncoding('utf8')
+  child.stderr!.on('data', (chunk: string) => { stderr += chunk })
+  // 'close', not 'exit': it also waits until everything written to stderr has
+  // been read.
+  const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolveExit) => {
+    child.once('close', (code, signal) => resolveExit({ code, signal }))
+  })
+  return { child, exited, stderr: () => stderr }
+}
+
+// What a crashed or force-quit app leaves its installer: nobody reads the pipes
+// any more, so the installer's next write raises SIGPIPE.
+async function closeParentPipes(child: ChildProcess): Promise<void> {
+  await Promise.all([child.stdout!, child.stderr!].map((stream) =>
+    new Promise<void>((resolveClose) => {
+      stream.once('close', () => resolveClose())
+      stream.destroy()
+    })))
+}
+
+// Lets every paused fake (host CLI, mv or mktemp) finish.
+function release(f: Fixture): void {
+  for (const name of ['claude', 'copilot', 'mv', 'mktemp']) writeFileSync(join(f.state, `${name}.release`), '')
+}
+
+// Never leaves a paused fake or a live installer behind a failed assertion.
+function stopInstaller(f: Fixture, installer: RunningInstaller): void {
+  release(f)
+  if (installer.child.exitCode === null && installer.child.signalCode === null) {
+    try {
+      process.kill(-installer.child.pid!, 'SIGKILL')
+    } catch {
+      // Already gone.
+    }
   }
 }
 
@@ -223,6 +320,7 @@ describe('agent setup installer', () => {
     expect(readFileSync(f.copilotFile, 'utf8')).toBe(copilotBefore)
     expect(existsSync(f.log)).toBe(false)
     expect(existsSync(join(f.state, 'selftest-ran'))).toBe(false)
+    expect(workDirs(f)).toEqual([])
   })
 
   it('--apply registers both MCP clients and installs distinct managed instruction blocks', () => {
@@ -280,6 +378,8 @@ describe('agent setup installer', () => {
     expect(calls).toContain('copilot mcp add agent-inbox')
     expect(calls).not.toContain('claude ')
     expect(readFileSync(f.copilotFile, 'utf8')).toContain('Keep this too.')
+    // The replaced registration's snapshot is not kept once the install commits.
+    expect(workDirs(f)).toEqual([])
   })
 
   it('--uninstall removes only managed content and the selected MCP registration', () => {
@@ -397,7 +497,7 @@ describe('agent setup installer', () => {
     process.kill(-child.pid!, 'SIGTERM')
     const code = await new Promise<number | null>((resolveCode) => child.on('close', resolveCode))
 
-    expect(code).not.toBe(0)
+    expect(code).toBe(143)
     expect(stderr).toMatch(/interrupted.+restoring/i)
     expect(existsSync(join(f.state, 'claude'))).toBe(false)
     expect(readFileSync(f.claudeFile, 'utf8')).toBe(claudeBefore)
@@ -1139,5 +1239,270 @@ exec "${process.execPath}" "$@"
     expect(result.code).not.toBe(0)
     expect(lstatSync(logicalConfig).isSymbolicLink()).toBe(true)
     expect(readFileSync(targetConfig, 'utf8')).toBe(originalConfig)
+  })
+})
+
+// issue #208. Electron Setup pipes the installer's stdout/stderr, so after an
+// app crash or force quit its next write raises SIGPIPE; a closed terminal sends
+// SIGHUP. Each must roll the transaction back the way SIGINT/SIGTERM do, and no
+// exit may delete the only copy of a registration the installer already removed.
+// Most cases pause the fake host CLI right after a `--force` removal, before the
+// replacement is registered: the window the issue reproduced.
+describe('agent setup installer: losing its parent mid-install (#208)', () => {
+  type Exit = { code: number | null; signal: NodeJS.Signals | null }
+
+  async function interruptAfterRemoval(
+    f: Fixture,
+    args: string[],
+    interrupt: (installer: RunningInstaller) => Promise<void> | void,
+  ): Promise<{ exit: Exit; stderr: string }> {
+    f.env.PAUSE_AFTER_REMOVE = 'copilot'
+    const installer = startInstaller(f, args)
+    try {
+      await waitFor(join(f.state, 'copilot.removed'), 10_000)
+      // The premise: the registration really is gone when the signal lands.
+      expect(readFileSync(f.env.COPILOT_CONFIG!, 'utf8')).not.toContain('agent-inbox')
+      await interrupt(installer)
+      release(f)
+      const exit = await installer.exited
+      return { exit, stderr: installer.stderr() }
+    } finally {
+      stopInstaller(f, installer)
+    }
+  }
+
+  it('restores the removed registration when the parent pipes close (SIGPIPE)', async () => {
+    const f = fixture()
+    const prior = seedPriorRegistrations(f)
+    const claudeBefore = readFileSync(f.claudeFile, 'utf8')
+    const copilotBefore = readFileSync(f.copilotFile, 'utf8')
+
+    const { exit } = await interruptAfterRemoval(f, ['--apply', '--force'], (installer) =>
+      closeParentPipes(installer.child))
+
+    expect(readFileSync(f.env.COPILOT_CONFIG!, 'utf8')).toBe(prior.copilot)
+    expect(readFileSync(f.env.CLAUDE_CONFIG!, 'utf8')).toBe(prior.claude)
+    expect(readFileSync(f.claudeFile, 'utf8')).toBe(claudeBefore)
+    expect(readFileSync(f.copilotFile, 'utf8')).toBe(copilotBefore)
+    expect(stagedLeftovers(f)).toEqual([])
+    // Restored, so the snapshot is no longer the only copy and is not kept.
+    expect(workDirs(f)).toEqual([])
+    expect(exit).toEqual({ code: 141, signal: null })
+  })
+
+  it('restores the removed registration when the terminal hangs up (SIGHUP)', async () => {
+    const f = fixture()
+    const prior = seedPriorRegistrations(f)
+    const claudeBefore = readFileSync(f.claudeFile, 'utf8')
+    const copilotBefore = readFileSync(f.copilotFile, 'utf8')
+
+    const { exit } = await interruptAfterRemoval(f, ['--apply', '--force'], (installer) => {
+      process.kill(installer.child.pid!, 'SIGHUP')
+    })
+
+    expect(readFileSync(f.env.COPILOT_CONFIG!, 'utf8')).toBe(prior.copilot)
+    expect(readFileSync(f.env.CLAUDE_CONFIG!, 'utf8')).toBe(prior.claude)
+    expect(readFileSync(f.claudeFile, 'utf8')).toBe(claudeBefore)
+    expect(readFileSync(f.copilotFile, 'utf8')).toBe(copilotBefore)
+    expect(stagedLeftovers(f)).toEqual([])
+    expect(workDirs(f)).toEqual([])
+    expect(exit).toEqual({ code: 129, signal: null })
+  })
+
+  it('finishes the rollback when a cancel arrives after the parent pipes closed (SIGTERM)', async () => {
+    const f = fixture()
+    const prior = seedPriorRegistrations(f)
+    const claudeBefore = readFileSync(f.claudeFile, 'utf8')
+    const copilotBefore = readFileSync(f.copilotFile, 'utf8')
+
+    // Only the shell is signalled, so the paused host CLI returns normally and
+    // the TERM handler provably reports into pipes nobody reads any more.
+    const { exit } = await interruptAfterRemoval(f, ['--apply', '--force'], async (installer) => {
+      await closeParentPipes(installer.child)
+      process.kill(installer.child.pid!, 'SIGTERM')
+    })
+
+    expect(readFileSync(f.env.COPILOT_CONFIG!, 'utf8')).toBe(prior.copilot)
+    expect(readFileSync(f.env.CLAUDE_CONFIG!, 'utf8')).toBe(prior.claude)
+    expect(readFileSync(f.claudeFile, 'utf8')).toBe(claudeBefore)
+    expect(readFileSync(f.copilotFile, 'utf8')).toBe(copilotBefore)
+    expect(stagedLeftovers(f)).toEqual([])
+    expect(workDirs(f)).toEqual([])
+    expect(exit).toEqual({ code: 143, signal: null })
+  })
+
+  it('rolls back on every other trapped signal too, exiting 128 + its number', async () => {
+    for (const signal of ['SIGINT', 'SIGQUIT', 'SIGALRM', 'SIGXCPU', 'SIGXFSZ'] as const) {
+      const f = fixture()
+      const prior = seedPriorRegistrations(f)
+
+      const { exit } = await interruptAfterRemoval(f, ['--apply', '--force', '--target', 'copilot'], (installer) => {
+        process.kill(installer.child.pid!, signal)
+      })
+
+      expect(readFileSync(f.env.COPILOT_CONFIG!, 'utf8'), signal).toBe(prior.copilot)
+      expect(workDirs(f), signal).toEqual([])
+      expect(exit, signal).toEqual({ code: 128 + constants.signals[signal], signal: null })
+    }
+  })
+
+  it('ignores further signals mid-restore, so every rollback step runs exactly once', async () => {
+    const f = fixture()
+    const claudeBefore = readFileSync(f.claudeFile, 'utf8')
+    const copilotBefore = readFileSync(f.copilotFile, 'utf8')
+    // Claude is newly registered, Copilot's registration hangs, and the
+    // rollback's own removal of Claude then pauses.
+    f.env.HANG_ADD = 'copilot'
+    f.env.PAUSE_AFTER_REMOVE = 'claude'
+    const installer = startInstaller(f, ['--apply'])
+    let exit: Exit
+    try {
+      await waitFor(join(f.state, 'copilot.hanging'), 10_000)
+      process.kill(-installer.child.pid!, 'SIGTERM')
+      await waitFor(join(f.state, 'claude.removed'), 10_000)
+      // A second cancel and a hangup land on the whole group mid-restore.
+      process.kill(-installer.child.pid!, 'SIGTERM')
+      process.kill(-installer.child.pid!, 'SIGHUP')
+      release(f)
+      exit = await installer.exited
+    } finally {
+      stopInstaller(f, installer)
+    }
+
+    const calls = readFileSync(f.log, 'utf8')
+    expect(count(calls, 'claude mcp remove')).toBe(1)
+    expect(count(calls, 'copilot mcp remove')).toBe(1)
+    expect(existsSync(join(f.state, 'claude'))).toBe(false)
+    expect(readFileSync(f.claudeFile, 'utf8')).toBe(claudeBefore)
+    expect(readFileSync(f.copilotFile, 'utf8')).toBe(copilotBefore)
+    expect(workDirs(f)).toEqual([])
+    expect(exit).toEqual({ code: 143, signal: null })
+  })
+
+  it('removes a staged instruction copy when staging fails after the reader is gone', async () => {
+    const f = fixture()
+    const claudeBefore = readFileSync(f.claudeFile, 'utf8')
+    const copilotBefore = readFileSync(f.copilotFile, 'utf8')
+    // Claude's copy is staged; Copilot's staging then fails once nobody reads,
+    // before any transaction exists, so cleanup alone must find Claude's copy.
+    const fakeMktemp = join(f.fakebin, 'mktemp')
+    writeFileSync(fakeMktemp, `#!/bin/sh
+for arg in "$@"; do last="$arg"; done
+case "$last" in
+  */.agent-inbox.copilot.*)
+    touch "$INSTALL_STATE/mktemp.paused"
+    while [ ! -f "$INSTALL_STATE/mktemp.release" ]; do sleep 0.05; done
+    exit 1 ;;
+esac
+exec /usr/bin/mktemp "$@"
+`)
+    chmodSync(fakeMktemp, 0o755)
+    const installer = startInstaller(f, ['--apply'])
+    let exit: Exit
+    try {
+      await waitFor(join(f.state, 'mktemp.paused'), 10_000)
+      expect(stagedLeftovers(f)).toHaveLength(1)
+      await closeParentPipes(installer.child)
+      release(f)
+      exit = await installer.exited
+    } finally {
+      stopInstaller(f, installer)
+    }
+
+    expect(stagedLeftovers(f)).toEqual([])
+    expect(readFileSync(f.claudeFile, 'utf8')).toBe(claudeBefore)
+    expect(readFileSync(f.copilotFile, 'utf8')).toBe(copilotBefore)
+    expect(existsSync(f.log)).toBe(false)
+    expect(workDirs(f)).toEqual([])
+    expect(exit).toEqual({ code: 141, signal: null })
+  })
+
+  it('keeps the snapshot and its report when the restore itself fails after SIGPIPE', async () => {
+    const f = fixture()
+    const prior = seedPriorRegistrations(f)
+    // A restore renames a temporary copy over the host config; fail only that.
+    const fakeMv = join(f.fakebin, 'mv')
+    writeFileSync(fakeMv, `#!/bin/sh
+case "$(basename "$1")" in
+  .agent-inbox-mcp.*) exit 9 ;;
+esac
+exec /bin/mv "$@"
+`)
+    chmodSync(fakeMv, 0o755)
+
+    const { exit } = await interruptAfterRemoval(f, ['--apply', '--force', '--target', 'copilot'], (installer) =>
+      closeParentPipes(installer.child))
+
+    expect(readFileSync(f.env.COPILOT_CONFIG!, 'utf8')).toBe('{"mcpServers":{}}\n')
+    const work = workDirs(f)
+    expect(work, 'the work directory holding the snapshot').toHaveLength(1)
+    const snapshot = join(work[0]!, 'copilot.mcp-config')
+    expect(readFileSync(snapshot, 'utf8')).toBe(prior.copilot)
+    expect(readFileSync(join(work[0]!, 'copilot.mcp-config-path'), 'utf8')).toBe(`${f.env.COPILOT_CONFIG}\n`)
+    // Nobody could read the warning, so it stays beside the snapshot it names.
+    expect(readFileSync(join(work[0]!, 'report.log'), 'utf8'))
+      .toContain(`could not restore copilot MCP registration; recovery snapshot retained at ${snapshot}`)
+    expect(stagedLeftovers(f)).toEqual([])
+    expect(exit).toEqual({ code: 141, signal: null })
+  })
+
+  it('keeps every MCP snapshot when the shell dies mid-transaction from a signal it does not trap', async () => {
+    const f = fixture()
+    const prior = seedPriorRegistrations(f)
+
+    // Bash still runs the EXIT trap for a fatal signal the script never
+    // trapped, but no rollback runs: the snapshots are the only copies left.
+    const { exit, stderr } = await interruptAfterRemoval(f, ['--apply', '--force'], (installer) => {
+      process.kill(installer.child.pid!, 'SIGUSR1')
+    })
+
+    expect(exit).toEqual({ code: null, signal: 'SIGUSR1' })
+    expect(readFileSync(f.env.COPILOT_CONFIG!, 'utf8')).toBe('{"mcpServers":{}}\n')
+    const work = workDirs(f)
+    expect(work, 'the work directory holding the snapshots').toHaveLength(1)
+    expect(readFileSync(join(work[0]!, 'claude.mcp-config'), 'utf8')).toBe(prior.claude)
+    expect(readFileSync(join(work[0]!, 'copilot.mcp-config'), 'utf8')).toBe(prior.copilot)
+    expect(readFileSync(join(work[0]!, 'copilot.mcp-config-path'), 'utf8')).toBe(`${f.env.COPILOT_CONFIG}\n`)
+    expect(stderr).toContain(`recovery snapshot retained at ${join(work[0]!, 'copilot.mcp-config')}`)
+    expect(stagedLeftovers(f)).toEqual([])
+  })
+
+  it('restores published instructions and both registrations when the pipes close between instruction files', async () => {
+    const f = fixture()
+    const prior = seedPriorRegistrations(f)
+    const claudeBefore = readFileSync(f.claudeFile, 'utf8')
+    const copilotBefore = readFileSync(f.copilotFile, 'utf8')
+    // Pause right after Claude's instructions are published, before Copilot's.
+    const fakeMv = join(f.fakebin, 'mv')
+    writeFileSync(fakeMv, `#!/bin/sh
+last=""
+for arg in "$@"; do last="$arg"; done
+/bin/mv "$@" || exit
+if [ "$last" = "$PAUSE_AFTER_MV" ] && [ ! -f "$INSTALL_STATE/mv.paused" ]; then
+  touch "$INSTALL_STATE/mv.paused"
+  while [ ! -f "$INSTALL_STATE/mv.release" ]; do sleep 0.05; done
+fi
+`)
+    chmodSync(fakeMv, 0o755)
+    f.env.PAUSE_AFTER_MV = f.claudeFile
+    const installer = startInstaller(f, ['--apply', '--force'])
+    let exit: Exit
+    try {
+      await waitFor(join(f.state, 'mv.paused'), 10_000)
+      expect(readFileSync(f.claudeFile, 'utf8')).toContain(BEGIN)
+      await closeParentPipes(installer.child)
+      release(f)
+      exit = await installer.exited
+    } finally {
+      stopInstaller(f, installer)
+    }
+
+    expect(readFileSync(f.claudeFile, 'utf8')).toBe(claudeBefore)
+    expect(readFileSync(f.copilotFile, 'utf8')).toBe(copilotBefore)
+    expect(readFileSync(f.env.CLAUDE_CONFIG!, 'utf8')).toBe(prior.claude)
+    expect(readFileSync(f.env.COPILOT_CONFIG!, 'utf8')).toBe(prior.copilot)
+    expect(stagedLeftovers(f)).toEqual([])
+    expect(workDirs(f)).toEqual([])
+    expect(exit).toEqual({ code: 141, signal: null })
   })
 })

@@ -137,13 +137,17 @@ interface Fixture {
   env: NodeJS.ProcessEnv
   claudeConfig: string
   copilotConfig: string
+  // The installer's TMPDIR, so its private work directory can be inspected.
+  tmp: string
 }
 
 function fixture(): Fixture {
   const home = temp('agent-runtime-home-')
   const fakebin = join(home, 'fakebin')
   const runtimeRoot = join(home, '.agent-inbox', 'runtime')
+  const tmp = join(home, 'tmp')
   mkdirSync(fakebin, { recursive: true })
+  mkdirSync(tmp)
   const claudeConfig = join(home, '.claude.json')
   const copilotConfig = join(home, '.copilot', 'mcp-config.json')
   mkdirSync(dirname(copilotConfig), { recursive: true })
@@ -182,9 +186,11 @@ esac
     runtimeRoot,
     claudeConfig,
     copilotConfig,
+    tmp,
     env: {
       ...process.env,
       HOME: home,
+      TMPDIR: tmp,
       PATH: `${fakebin}:/usr/bin:/bin`,
       TEST_NODE: process.execPath,
       CLAUDE_CONFIG: claudeConfig,
@@ -254,6 +260,8 @@ describe('portable release installer', () => {
     const payload = runtimePayload('1.0.0')
     const result = install(f, payload)
     expect(result.status, result.stderr).toBe(0)
+    // A committed install keeps no private work directory behind.
+    expect(readdirSync(f.tmp).filter((name) => name.startsWith('agent-inbox-install.'))).toEqual([])
 
     const installed = join(f.runtimeRoot, payload.runtimeId)
     for (const config of [f.claudeConfig, f.copilotConfig]) {

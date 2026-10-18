@@ -99,17 +99,21 @@ own. The app can install updates only when:
 
 - Agent Inbox runs from its AppImage file. A DEB install stays notify-only, even when it
   was started from inside another AppImage.
-- The AppImage runs through its normal FUSE mount, not the extract-and-run fallback
-  (`APPIMAGE_EXTRACT_AND_RUN` or `--appimage-extract-and-run`); see
-  [the fallback](#appimage) for why that mode stays notify-only.
+- It runs from the AppImage runtime's own FUSE mount of that file. An extracted copy
+  (`--appimage-extract`, then `squashfs-root/AppRun`) and the extract-and-run fallback
+  (`APPIMAGE_EXTRACT_AND_RUN` or `--appimage-extract-and-run`; see
+  [the fallback](#appimage)) stay notify-only. A copy started from inside another
+  AppImage, such as a terminal, therefore never replaces that application's file.
 - The AppImage is a regular file (not a symlink) that belongs to your user account, and
   both the file and its folder are writable, for example `~/Applications`.
 - The file is still the one Agent Inbox started from. If you replaced or edited it while
   the app was running, restart Agent Inbox first.
 - Agent setup is not running at the same moment.
 
-When one of these is not met, Settings → Updates says why and offers **Review release**
-instead of the download. When you click **Install and restart**, the app:
+When either of the first two is not met, Settings → Updates treats the app like a DEB
+install: it shows the new version with **Review release** and no download. When another
+is not met, it says why and offers **Review release** instead of the download. When you
+click **Install and restart**, the app:
 
 1. re-checks the downloaded file against the signed size and SHA-256;
 2. copies it into a hidden file next to your AppImage, for example

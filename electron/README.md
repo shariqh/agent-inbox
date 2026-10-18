@@ -74,18 +74,26 @@ bindings, and a quit while the attempt record is written still stops the install
 A Linux AppImage registers `update-install-appimage.cjs` only for an owned viewer of a
 packaged app. Registration, the update check's target selection (`runsFromAppImage()` in
 `update-fetch.cjs`) and the installer all require proof that this process runs from that
-image: `APPIMAGE` and `APPDIR` are canonical absolute paths and the executable sits inside
-`APPDIR`, the image's mount. A `.deb` install that inherited another AppImage's variables
-therefore keeps `deb-notify` and registers no installer, so no startup report of its own
-can take an attempt record that AppImage left in a shared `userData`. The installer
-records the AppImage's device, inode, size and modification time when it is created and
-refuses (`changed-since-launch`) once the file differs. It also refuses a symlink, a file
-owned by another user, an unwritable file or folder, and a file without the ELF and
-`AI\x02` type-2 magic, read through an `O_NOFOLLOW | O_NONBLOCK` handle bound to the
-inspected inode. The runtime's extract-and-run fallback is notify-only
-(`extract-and-run`): any `APPIMAGE_EXTRACT_AND_RUN`, which the runtime honors at any value
-and a restart would inherit, or an `APPDIR` named `appimage_extracted_*`, all that
-`--appimage-extract-and-run` leaves. That mode extracts into the predictable
+image: `APPIMAGE` and `APPDIR` are canonical absolute paths, the executable sits inside
+`APPDIR`, and `APPDIR` is the runtime's FUSE mount of that very file. That is a mount
+point (its `lstat` device differs from its parent's) whose visible `/proc/self/mountinfo`
+entry has type `fuse.<name>` and source `<name>`, `<name>` being `APPIMAGE`'s file name:
+the pinned type2-runtime passes no fsname or subtype, so libfuse names the mount after the
+image's real file. Tests inject that probe (`appImageProbe`); main never does. A `.deb`
+install that inherited another AppImage's variables, an extracted `squashfs-root` started
+from inside another AppImage (our AppRun points `APPDIR` at that plain folder while
+`APPIMAGE` still names the other file), and our image mounted by hand under another
+image's `APPIMAGE` therefore keep `deb-notify` and register no installer, so neither can
+replace that other application's file, and no startup report of their own can take an
+attempt record that AppImage left in a shared `userData`. The installer records the
+AppImage's device, inode, size and modification time when it is created and refuses
+(`changed-since-launch`) once the file differs. It also refuses a symlink, a file owned by
+another user, an unwritable file or folder, and a file without the ELF and `AI\x02` type-2
+magic, read through an `O_NOFOLLOW | O_NONBLOCK` handle bound to the inspected inode. The
+runtime's extract-and-run fallback fails that proof too, and the installer also refuses it
+by name (`extract-and-run`): any `APPIMAGE_EXTRACT_AND_RUN`, which the runtime honors at
+any value and a restart would inherit, or an `APPDIR` named `appimage_extracted_*`, all
+that `--appimage-extract-and-run` leaves. That mode extracts into the predictable
 `$TMPDIR/appimage_extracted_<md5>`, which the runtime recreates mode `0755` when missing
 and reuses when present, and the documented launcher removes its private `TMPDIR` as the
 app exits, so a restart could run files another local user planted there. `commit()`

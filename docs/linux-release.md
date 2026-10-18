@@ -43,6 +43,13 @@ executing appimagetool. Downloaded bytes remain untrusted until their
 plain-file identity, exact size, and SHA-256 have passed; the tool additionally
 requires executable mode before use.
 
+The in-app AppImage update (`runsFromAppImage()` in `electron/update-fetch.cjs`)
+relies on how this runtime mounts the image. It passes no `fsname` or `subtype`,
+so libfuse names the mount after the image's real file name, and
+`/proc/self/mountinfo` shows type `fuse.<file name>` with source `<file name>`
+at `APPDIR`. Re-check that whenever the runtime pin changes; a different naming
+would make every AppImage update notify-only.
+
 The final native folders set the product floor:
 
 - Linux kernel 4.18 or newer
@@ -302,10 +309,10 @@ desktop installation flow and does not install or remove host launchers,
 icons, or user data. Keep the unique mode-`0700` `TMPDIR`: the pinned AppImage
 runtime uses a predictable child name while extracting, so a shared `/tmp`
 base would let another local user prepopulate files before launch. For the
-same reason the app does not install its own updates in this mode (any
-`APPIMAGE_EXTRACT_AND_RUN`, or an `appimage_extracted_*` `APPDIR`): a restart
-would extract into that `TMPDIR` after the launcher removed it, so Settings →
-Updates stays notify-only.
+same reason the app does not install its own updates in this mode: a restart
+would extract into that `TMPDIR` after the launcher removed it. Its `APPDIR`
+is not the runtime's FUSE mount, so the update check makes a notify-only offer,
+and the installer also refuses any `APPIMAGE_EXTRACT_AND_RUN` by name.
 
 Each architecture's CI acceptance gate runs both paths as an unprivileged user,
 with the user-namespace sandbox and without `--no-sandbox`, in an

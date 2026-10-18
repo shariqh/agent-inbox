@@ -939,13 +939,25 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   replaces the running AppImage FILE in place (same name and path; the name may carry the
   old version) and restarts into it. (1) **One AppImage proof:** `runsFromAppImage()` in
   `update-fetch.cjs` decides both the offered target and the installer's
-  `not-appimage`: APPIMAGE and APPDIR canonical absolute, APPDIR not `/`, and
-  `process.execPath` inside APPDIR. A bare inherited APPIMAGE (a `.deb` started from
-  another AppImage) must never select the AppImage target or point the installer at
-  someone else's file. Main registers the installer only under that same proof (plus
-  `viewerOwned` and packaged): a bare inherited `APPIMAGE` registers nothing, so no
-  startup report can take an attempt record another AppImage copy left in a shared
-  userData. (2) **Bound to the launched file:** the installer snapshots the
+  `not-appimage`: APPIMAGE and APPDIR canonical absolute, APPDIR not `/`,
+  `process.execPath` inside APPDIR, AND APPDIR the runtime's FUSE mount of that very
+  file: a mount point (`lstat` dev differs from its parent's) whose LAST (visible)
+  `/proc/self/mountinfo` entry has type `fuse.<name>` and source `<name>`, `<name>` =
+  basename(APPIMAGE). The pinned type2-runtime passes no fsname/subtype, so libfuse's
+  default subtype is the image's real file name (seen in a real Docker FUSE run; re-check
+  on any runtime pin change). Paths alone were not enough (#210 review): our AppRun
+  reassigns and exports `APPDIR=$(pwd -P)`, so an extracted `squashfs-root/AppRun` run
+  from a shell another AppImage started had a plain-folder APPDIR holding execPath while
+  APPIMAGE still named the OTHER app's file, and the commit renamed our update over it.
+  The dev check stops that; the mountinfo binding also stops our image mounted by hand
+  (`--appimage-mount`) under another image's APPIMAGE. Any lstat/mountinfo failure is
+  false (notify-only). Tests inject `appImageProbe`; main and target selection use the
+  system. A bare inherited APPIMAGE (a `.deb` or an extracted copy started from another
+  AppImage) must never select the AppImage target or point the installer at someone
+  else's file. Main registers the installer only under that same proof (plus
+  `viewerOwned` and packaged): such a run registers nothing, so no startup report can
+  take an attempt record another AppImage copy left in a shared userData.
+  (2) **Bound to the launched file:** the installer snapshots the
   AppImage's dev, ino, size and `mtimeNs` when it is created at startup. Feasibility,
   `prepare()` and `commit()` refuse once the file at APPIMAGE differs
   (`changed-since-launch`), which also blocks a second install before a restart.
@@ -991,7 +1003,9 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   downloading the older AppImage. (7) **Cleanup:** at most 16 removals and 64 candidates
   per pass, exact stage names, regular files or symlinks (unlinked, never followed) owned
   by the uid and over an hour old, never this process's live stage, and only under the
-  AppImage proof. (8) **Extract-and-run is notify-only** (`extract-and-run`): the runtime
+  AppImage proof. (8) **Extract-and-run is notify-only:** its APPDIR is no mount, so the
+  proof in (1) already fails; the installer also refuses it by name (`extract-and-run`),
+  as defense in depth and for the commit-time re-check. The runtime
   extracts into the predictable `$TMPDIR/appimage_extracted_<md5>`, recreates it `0755`
   when missing and reuses existing right-size files, and the documented launcher's `trap`
   removes its private TMPDIR as the app exits, so a restart could run a planted `AppRun`
@@ -999,8 +1013,8 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   `getenv() != NULL`, and a restart inherits it) or an APPDIR basename starting
   `appimage_extracted_` (`--appimage-extract-and-run` sets no variable and is stripped
   from argv). Checked in `inspect()` (so feasibility and `prepare()`) and again before the
-  rename in `commit()`, reading env live; an unreadable env counts as extracted. Cleanup
-  still runs. Install-then-quit was rejected: it needs a no-restart flag through the
+  rename in `commit()`, reading env live; an unreadable env counts as extracted. Cleanup,
+  which needs the proof, does not run there. Install-then-quit was rejected: it needs a no-restart flag through the
   controller, preload, three Settings strings and the notifier, plus an attempt record
   with no helper result. Open: the real offer → install → FUSE teardown → relaunch needs
   the first signed 1.3.0 → 1.3.1 pair on a Linux desktop (manual plan in the PR).

@@ -563,7 +563,7 @@ describe('committing the hand-off', () => {
     const helper = join(p.workDir, 'helper.sh')
     expect(p.spawner.calls).toEqual([{
       command: '/bin/sh',
-      args: [helper, '4242', '-', p.f.target, p.staged, join(p.stage, 'Agent Inbox.app.previous'), '/usr/bin/open'],
+      args: [helper, '4242', '-', p.f.target, p.staged, join(p.stage, 'Agent Inbox.app.previous'), '/usr/bin/open', join(p.workDir, 'helper.result')],
       options: { detached: true, stdio: 'ignore', env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin' }, cwd: '/' },
     }])
     expect(p.spawner.children[0]!.unref).toHaveBeenCalledOnce()
@@ -574,6 +574,27 @@ describe('committing the hand-off', () => {
     await p.prepared.discard()
     expect(existsSync(p.staged)).toBe(true)
     expect(existsSync(helper)).toBe(true)
+  })
+
+  it('tells the helper where to report its exit code', async () => {
+    const p = await prepared()
+    const resultPath = join(p.f.work, 'userData', 'update-install', 'last-attempt.result')
+    const committing = p.prepared.commit({ resultPath })
+    await vi.waitFor(() => expect(p.spawner.calls).toHaveLength(1))
+    p.spawner.emitSpawn()
+    await committing
+    expect(p.spawner.calls[0]!.args.at(-1)).toBe(resultPath)
+  })
+
+  it.each([
+    ['a relative path', 'last-attempt.result'],
+    ['a trailing slash', '/var/folders/x/last-attempt.result/'],
+    ['a dot-dot segment', '/var/folders/x/../last-attempt.result'],
+  ])('refuses a result path with %s', async (_label, resultPath) => {
+    const p = await prepared()
+    expect(await codeOf(p.prepared.commit({ resultPath }))).toMatchObject({ code: 'commit-failed' })
+    expect(p.spawner.calls).toEqual([])
+    await p.prepared.discard()
   })
 
   it('passes the PID of a viewer the app started, read when it commits', async () => {
@@ -660,9 +681,13 @@ describe('committing the hand-off', () => {
     await f.close()
     const stage = join(f.applications, f.stages()[0]!)
 
-    await result.commit()
+    const report = join(f.work, 'report', 'last-attempt.result')
+    mkdirSync(dirname(report), { mode: 0o700 })
+    await result.commit({ resultPath: report })
     await vi.waitFor(() => expect(existsSync(join(bin, 'open.log'))).toBe(true), { timeout: 10_000, interval: 50 })
+    await vi.waitFor(() => expect(existsSync(report)).toBe(true), { timeout: 5_000, interval: 50 })
 
+    expect(readFileSync(report, 'utf8')).toBe('0\n')
     expect(viewerExited).toBe(true)
     expect(readFileSync(join(f.target, 'Contents', 'MacOS', 'Agent Inbox'), 'utf8')).toBe('new build')
     expect(readFileSync(join(stage, 'Agent Inbox.app.previous', 'Contents', 'MacOS', 'Agent Inbox'), 'utf8')).toBe('old build')
@@ -686,11 +711,16 @@ describe('the swap helper script', () => {
     writeFileSync(opener, '#!/bin/sh\nprintf "%s\\n" "$@" >> "$(dirname "$0")/open.log"\n', { mode: 0o755 })
     const script = join(work, 'helper.sh')
     writeFileSync(script, HELPER_SCRIPT, { mode: 0o600 })
+    const reports = join(work, 'state')
+    mkdirSync(reports, { mode: 0o700 })
+    const result = join(reports, 'last-attempt.result')
+    const reported = () => (existsSync(result) ? readFileSync(result, 'utf8') : null)
     const build = (app: string) => readFileSync(join(app, 'Contents', 'MacOS', 'Agent Inbox'), 'utf8')
     const opened = () => (existsSync(join(bin, 'open.log')) ? readFileSync(join(bin, 'open.log'), 'utf8') : '')
-    async function runHelper(args: string[], env: Record<string, string> = {}) {
+    // Appends the result path unless the test spells out the whole argv.
+    async function runHelper(args: string[], env: Record<string, string> = {}, raw = false) {
       try {
-        await run('/bin/sh', [script, ...args], { env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', ...env } })
+        await run('/bin/sh', [script, ...args, ...(raw ? [] : [result])], { env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', ...env } })
         return 0
       } catch (error) {
         return (error as { code?: number }).code
@@ -706,12 +736,14 @@ describe('the swap helper script', () => {
       const exited = new Promise<void>((resolveExit) => child.once('exit', () => resolveExit()))
       return { pid: String(child.pid), exited }
     }
-    return { work, target, stage, staged, backup, opener, build, opened, runHelper, exitedPid, sleeper }
+    return { work, target, stage, staged, backup, opener, build, opened, runHelper, exitedPid, sleeper, result, reports, reported }
   }
 
-  it('swaps the staged app into place and relaunches it', async () => {
+  it('swaps the staged app into place, relaunches it and reports success', async () => {
     const h = await helperFixture()
     expect(await h.runHelper([await h.exitedPid(), '-', h.target, h.staged, h.backup, h.opener])).toBe(0)
+    expect(h.reported()).toBe('0\n')
+    expect(readdirSync(h.reports)).toEqual(['last-attempt.result'])
     expect(h.build(h.target)).toBe('new build')
     expect(h.build(h.backup)).toBe('old build')
     expect(existsSync(h.staged)).toBe(false)
@@ -751,6 +783,7 @@ describe('the swap helper script', () => {
     } finally {
       chmodSync(h.stage, 0o755)
     }
+    expect(h.reported()).toBe('71\n')
     expect(h.build(h.target)).toBe('old build')
     expect(existsSync(backup)).toBe(false)
     expect(h.build(h.staged)).toBe('new build')
@@ -765,6 +798,7 @@ describe('the swap helper script', () => {
     } finally {
       chmodSync(dirname(h.target), 0o755)
     }
+    expect(h.reported()).toBe('70\n')
     expect(h.build(h.target)).toBe('old build')
     expect(h.opened()).toBe(`${h.target}\n`)
   })
@@ -778,6 +812,7 @@ describe('the swap helper script', () => {
     const started = Date.now()
     const args = [...pids(String(process.pid), await h.exitedPid()), h.target, h.staged, h.backup, h.opener]
     expect(await h.runHelper(args, { AGENT_INBOX_UPDATE_HELPER_TICKS: '3' })).toBe(75)
+    expect(h.reported()).toBe('75\n')
     expect(Date.now() - started).toBeLessThan(5_000)
     expect(h.build(h.target)).toBe('old build')
     expect(h.build(h.staged)).toBe('new build')
@@ -792,6 +827,7 @@ describe('the swap helper script', () => {
     rmSync(h.target, { recursive: true })
     symlinkSync(real, h.target)
     expect(await h.runHelper([await h.exitedPid(), '-', h.target, h.staged, h.backup, h.opener])).toBe(65)
+    expect(h.reported()).toBe('65\n')
     expect(lstatSync(h.target).isSymbolicLink()).toBe(true)
     expect(h.build(real)).toBe('old build')
     expect(h.build(h.staged)).toBe('new build')
@@ -816,12 +852,41 @@ describe('the swap helper script', () => {
     ['a non-numeric viewer pid', (h: Helper, pid: string) => [pid, 'x1', h.target, h.staged, h.backup, h.opener]],
     ['viewer pid zero', (h: Helper, pid: string) => [pid, '0', h.target, h.staged, h.backup, h.opener]],
     ['an empty viewer pid', (h: Helper, pid: string) => [pid, '', h.target, h.staged, h.backup, h.opener]],
-    ['a missing argument', (h: Helper, pid: string) => [pid, h.target, h.staged, h.backup, h.opener]],
-  ])('refuses %s before waiting or touching anything', async (_label, args) => {
+    ['a trailing slash that would bypass the symlink check', (h: Helper, pid: string) => [pid, '-', `${h.target}/`, h.staged, h.backup, h.opener]],
+    ['a trailing slash on the staged app', (h: Helper, pid: string) => [pid, '-', h.target, `${h.staged}/`, h.backup, h.opener]],
+  ])('refuses %s before waiting or touching anything, and says so', async (_label, args) => {
     const h = await helperFixture()
     expect(await h.runHelper(args(h, await h.exitedPid()))).toBe(64)
+    expect(h.reported()).toBe('64\n')
     expect(h.build(h.target)).toBe('old build')
     expect(h.build(h.staged)).toBe('new build')
+    expect(h.opened()).toBe('')
+  })
+
+  it('swaps nothing through a symlinked target named with a trailing slash', async () => {
+    const h = await helperFixture()
+    const real = join(h.work, 'Real.app')
+    cpSync(h.target, real, { recursive: true })
+    rmSync(h.target, { recursive: true })
+    symlinkSync(real, h.target)
+    expect(await h.runHelper([await h.exitedPid(), '-', `${h.target}/`, h.staged, h.backup, h.opener])).toBe(64)
+    expect(lstatSync(h.target).isSymbolicLink()).toBe(true)
+    expect(h.build(real)).toBe('old build')
+    expect(h.build(h.staged)).toBe('new build')
+  })
+
+  type Raw = (h: Helper, pid: string) => string[]
+  it.each<[string, Raw]>([
+    ['a missing argument', (h, pid) => [pid, '-', h.target, h.staged, h.backup, h.opener]],
+    ['a relative result path', (h, pid) => [pid, '-', h.target, h.staged, h.backup, h.opener, 'last-attempt.result']],
+    ['a result path with a trailing slash', (h, pid) => [pid, '-', h.target, h.staged, h.backup, h.opener, `${h.result}/`]],
+    ['a result path with a dot-dot segment', (h, pid) => [pid, '-', h.target, h.staged, h.backup, h.opener, `${h.reports}/../last-attempt.result`]],
+  ])('refuses %s without writing a report anywhere', async (_label, args) => {
+    const h = await helperFixture()
+    expect(await h.runHelper(args(h, await h.exitedPid()), {}, true)).toBe(64)
+    expect(readdirSync(h.reports)).toEqual([])
+    expect(existsSync(join(h.work, 'last-attempt.result'))).toBe(false)
+    expect(h.build(h.target)).toBe('old build')
     expect(h.opened()).toBe('')
   })
 
@@ -833,7 +898,7 @@ describe('the swap helper script', () => {
     // No command substitution; POSIX arithmetic $((…)) is fine.
     expect(HELPER_SCRIPT).not.toMatch(/\$\((?!\()/)
     // Every expansion of an argument variable is quoted.
-    expect(HELPER_SCRIPT).not.toMatch(/[^"]\$(pid|viewer|target|staged|backup|opener)\b/)
+    expect(HELPER_SCRIPT).not.toMatch(/[^"]\$(pid|viewer|target|staged|backup|opener|result)\b/)
     expect(HELPER_SCRIPT).toContain('kill -0 "$pid"')
     expect(HELPER_SCRIPT).toContain('kill -0 "$viewer"')
     expect(HELPER_SCRIPT).toContain('mv "$target" "$backup"')
@@ -886,6 +951,24 @@ describe('startup cleanup', () => {
     expect(readFileSync(join(outside, 'precious.txt'), 'utf8')).toBe('keep me')
     expect(lstatSync(join(f.applications, '.agent-inbox-update-EEEEEE')).isSymbolicLink()).toBe(true)
     f.expectTargetUntouched()
+  })
+
+  it('never removes the install attempt record or the helper result, however old', async () => {
+    const f = await fixture()
+    await f.close()
+    mkdirSync(f.workDirectory, { recursive: true, mode: 0o700 })
+    const record = join(f.workDirectory, 'last-attempt.json')
+    const result = join(f.workDirectory, 'last-attempt.result')
+    writeFileSync(record, '{}')
+    writeFileSync(result, '70\n')
+    const old = new Date(Date.now() - 30 * 24 * HOUR)
+    utimesSync(record, old, old)
+    utimesSync(result, old, old)
+    utimesSync(f.workDirectory, old, old)
+
+    await installerFor(f).installer.cleanup!()
+    expect(readFileSync(record, 'utf8')).toBe('{}')
+    expect(readFileSync(result, 'utf8')).toBe('70\n')
   })
 
   it('leaves directories owned by another user', async () => {

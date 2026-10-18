@@ -43,6 +43,7 @@ const WORK_RE = /^install-[A-Za-z0-9]{6}$/
 const DMG_NAME = 'update.dmg'
 const MOUNT_NAME = 'mnt'
 const HELPER_NAME = 'helper.sh'
+const HELPER_RESULT_NAME = 'helper.result'
 const COMMAND_ENV = Object.freeze({ PATH: '/usr/bin:/bin:/usr/sbin:/sbin', LC_ALL: 'C' })
 const HELPER_ENV = Object.freeze({ PATH: '/usr/bin:/bin:/usr/sbin:/sbin' })
 const TIMEOUTS = Object.freeze({
@@ -74,40 +75,60 @@ const FEASIBILITY_MESSAGES = Object.freeze({
 // double quotes. The helper waits until the app AND the viewer process it
 // started (`-` when the viewer runs in-process or was reused) have both exited,
 // so the relaunched app never finds the old viewer still answering on its port.
-// Exit codes: 64 bad arguments, 75 they never exited (no changes), 65 refused
-// before any change, 70 the app could not be moved aside, 71 the new app could
-// not be moved into place (previous app restored).
+// Before every exit it writes its exit code, and nothing else, to <result>
+// (temp file + rename), using the shared INSTALL_HELPER_EXIT convention:
+// 64 bad arguments, 75 they never exited (no changes), 65 refused before any
+// change, 70 the app could not be moved aside, 71 the new app could not be moved
+// into place (previous app restored), 0 installed.
 const HELPER_SCRIPT = `#!/bin/sh
 # Agent Inbox update helper (#196).
-# Usage: sh helper.sh <app-pid> <viewer-pid|-> <target.app> <staged.app> <backup> <open>
+# Usage: sh helper.sh <app-pid> <viewer-pid|-> <target.app> <staged.app> <backup> <open> <result>
 set -u
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
 export PATH
 umask 077
 
-[ "$#" -eq 6 ] || exit 64
+[ "$#" -eq 7 ] || exit 64
 pid=$1
 viewer=$2
 target=$3
 staged=$4
 backup=$5
 opener=$6
+result=$7
+
+# A path argument is absolute, has no dot segments and no trailing slash (which
+# would make the symlink checks below test the link's target instead).
+valid_path() {
+  case "$1" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  case "$1" in
+    */|*/../*|*/..|*/./*|*/.) return 1 ;;
+  esac
+  return 0
+}
+
+# The report location is checked first: nothing is written anywhere else.
+valid_path "$result" || exit 64
+
+finish() {
+  if printf '%s\\n' "$1" > "$result.tmp.$$" 2>/dev/null; then
+    mv -f "$result.tmp.$$" "$result" 2>/dev/null || rm -f "$result.tmp.$$"
+  fi
+  exit "$1"
+}
 
 case "$pid" in
-  ''|0*|*[!0-9]*) exit 64 ;;
+  ''|0*|*[!0-9]*) finish 64 ;;
 esac
 case "$viewer" in
   -) ;;
-  ''|0*|*[!0-9]*) exit 64 ;;
+  ''|0*|*[!0-9]*) finish 64 ;;
 esac
 for value in "$target" "$staged" "$backup" "$opener"; do
-  case "$value" in
-    /*) ;;
-    *) exit 64 ;;
-  esac
-  case "$value" in
-    */../*|*/..|*/./*|*/.) exit 64 ;;
-  esac
+  valid_path "$value" || finish 64
 done
 
 ticks=\${AGENT_INBOX_UPDATE_HELPER_TICKS:-600}
@@ -135,7 +156,7 @@ running() {
 waited=0
 while running; do
   if [ "$waited" -ge "$ticks" ]; then
-    exit 75
+    finish 75
   fi
   waited=$((waited + 1))
   sleep 0.2
@@ -143,22 +164,22 @@ done
 
 if [ ! -d "$target" ] || [ -L "$target" ] || [ ! -d "$staged" ] || [ -L "$staged" ] || [ -e "$backup" ] || [ -L "$backup" ]; then
   relaunch
-  exit 65
+  finish 65
 fi
 
 if ! mv "$target" "$backup"; then
   relaunch
-  exit 70
+  finish 70
 fi
 
 if ! mv "$staged" "$target"; then
   mv "$backup" "$target" || :
   relaunch
-  exit 71
+  finish 71
 fi
 
 "$opener" "$target" >/dev/null 2>&1 || :
-exit 0
+finish 0
 `
 
 // <X>.app/Contents/MacOS/<executable> -> <X>.app
@@ -178,6 +199,14 @@ function validBundlePath(value) {
     && path.normalize(value) === value
     && value.endsWith('.app')
     && path.basename(value) !== '.app'
+}
+
+// The helper's own rule: absolute, no dot segments, no trailing slash.
+function validHelperPath(value) {
+  return typeof value === 'string'
+    && path.isAbsolute(value)
+    && path.normalize(value) === value
+    && !value.endsWith('/')
 }
 
 function versionNumbers(value) {
@@ -384,11 +413,11 @@ function createMacInstaller(options = {}) {
     return String(value)
   }
 
-  function spawnHelper(script, staged, backup) {
+  function spawnHelper(script, staged, backup, resultPath) {
     return new Promise((resolve, reject) => {
       let child
       try {
-        child = spawnImpl(binaries.sh, [script, String(pid), viewerArgument(), bundlePath, staged, backup, binaries.open], {
+        child = spawnImpl(binaries.sh, [script, String(pid), viewerArgument(), bundlePath, staged, backup, binaries.open, resultPath], {
           detached: true,
           stdio: 'ignore',
           env: { ...HELPER_ENV },
@@ -425,16 +454,20 @@ function createMacInstaller(options = {}) {
     }
 
     return Object.freeze({
-      async commit() {
+      // `resultPath` is where the helper reports its exit code; the controller
+      // passes the attempt store's path so the next app start can read it.
+      async commit(commitOptions = {}) {
         if (phase !== 'prepared') throw new UpdateInstallError('commit-failed')
         phase = 'committing'
         try {
+          const resultPath = commitOptions?.resultPath ?? path.join(work, HELPER_RESULT_NAME)
+          if (!validHelperPath(resultPath)) throw new Error('result path is invalid')
           await sameIdentity(bundlePath, targetIdentity)
           await sameIdentity(staged, stagedIdentity)
           await absent(backup)
           const script = path.join(work, HELPER_NAME)
           await fsImpl.writeFile(script, HELPER_SCRIPT, { mode: 0o600, flag: 'wx' })
-          await spawnHelper(script, staged, backup)
+          await spawnHelper(script, staged, backup, resultPath)
           phase = 'committed'
         } catch {
           phase = 'failed'

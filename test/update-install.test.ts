@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import * as fsp from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -8,7 +8,7 @@ import updateInstall from '../electron/update-install.cjs'
 import type { InstallCopyFs, VerifiedInstallSource } from '../electron/update-install.cjs'
 import type { VerifiedArtifact } from '../electron/update-download.cjs'
 
-const { UpdateInstallError, copyVerifiedSource } = updateInstall
+const { INSTALL_HELPER_EXIT, UpdateInstallError, copyVerifiedSource, createInstallAttemptStore } = updateInstall
 
 const repoRoot = resolve(import.meta.dirname, '..')
 const workDirs: string[] = []
@@ -194,5 +194,137 @@ describe('copying a verified source while hashing it', () => {
     }
     expect(await codeOf(copyVerifiedSource({ record: recordFor(body), handle: slow.handle }, cancelled, { signal: controller.signal }))).toMatchObject({ code: 'staging' })
     expect(existsSync(cancelled)).toBe(false)
+  })
+})
+
+describe('recording an install attempt across the restart', () => {
+  const at = new Date('2026-10-18T05:00:00.000Z')
+  function store(directory: string, platform = 'darwin') {
+    return createInstallAttemptStore({ directory, platform, now: () => at })
+  }
+
+  it('names one exit-code convention for every platform helper', () => {
+    expect(INSTALL_HELPER_EXIT).toEqual({
+      installed: 0,
+      badArguments: 64,
+      refused: 65,
+      couldNotMoveAside: 70,
+      couldNotMoveIn: 71,
+      timedOut: 75,
+    })
+    expect(Object.isFrozen(INSTALL_HELPER_EXIT)).toBe(true)
+  })
+
+  it('writes the record atomically in a private folder and hands back where the helper reports', async () => {
+    const directory = join(workDir(), 'update-install')
+    const attempts = store(directory)
+
+    const { resultPath } = await attempts.begin({ from: '1.3.0', to: '1.3.1', strategy: 'macos-dmg' })
+
+    expect(resultPath).toBe(join(directory, 'last-attempt.result'))
+    expect(JSON.parse(readFileSync(join(directory, 'last-attempt.json'), 'utf8'))).toEqual({
+      schema: 1,
+      from: '1.3.0',
+      to: '1.3.1',
+      at: '2026-10-18T05:00:00.000Z',
+      platform: 'darwin',
+      strategy: 'macos-dmg',
+    })
+    expect(statSync(directory).mode & 0o777).toBe(0o700)
+    expect(statSync(join(directory, 'last-attempt.json')).mode & 0o777).toBe(0o600)
+    expect(readdirSync(directory)).toEqual(['last-attempt.json'])
+  })
+
+  it('reads and deletes the record and the helper result, once', async () => {
+    const directory = join(workDir(), 'update-install')
+    const attempts = store(directory)
+    const { resultPath } = await attempts.begin({ from: '1.3.0', to: '1.3.1', strategy: 'macos-dmg' })
+    writeFileSync(resultPath, '70\n')
+
+    await expect(attempts.take()).resolves.toEqual({
+      from: '1.3.0',
+      to: '1.3.1',
+      at: '2026-10-18T05:00:00.000Z',
+      platform: 'darwin',
+      strategy: 'macos-dmg',
+      exitCode: 70,
+    })
+    expect(readdirSync(directory)).toEqual([])
+    await expect(attempts.take()).resolves.toBeNull()
+  })
+
+  it('reports no exit code when the helper never wrote one, or wrote anything but a code', async () => {
+    const directory = join(workDir(), 'update-install')
+    const attempts = store(directory)
+    for (const content of [null, '', 'seventy', '70; rm -rf /', '1000', `${'7'.repeat(40)}`]) {
+      const { resultPath } = await attempts.begin({ from: '1.3.0', to: '1.3.1', strategy: 'macos-dmg' })
+      if (content !== null) writeFileSync(resultPath, content)
+      await expect(attempts.take(), String(content)).resolves.toMatchObject({ to: '1.3.1', exitCode: null })
+      expect(readdirSync(directory)).toEqual([])
+    }
+  })
+
+  it('drops a stale helper result when a new attempt begins, and both files when the hand-off never started', async () => {
+    const directory = join(workDir(), 'update-install')
+    const attempts = store(directory)
+    mkdirSync(directory, { recursive: true, mode: 0o700 })
+    writeFileSync(join(directory, 'last-attempt.result'), '0\n')
+
+    await attempts.begin({ from: '1.3.0', to: '1.3.1', strategy: 'macos-dmg' })
+    expect(existsSync(join(directory, 'last-attempt.result'))).toBe(false)
+    writeFileSync(join(directory, 'last-attempt.result'), '75\n')
+    await attempts.abandon()
+    await attempts.abandon()
+    expect(readdirSync(directory)).toEqual([])
+    await expect(attempts.take()).resolves.toBeNull()
+  })
+
+  it.each([
+    ['not JSON', '{'],
+    ['another schema', JSON.stringify({ schema: 2, from: '1.3.0', to: '1.3.1', at: '2026-10-18T05:00:00.000Z', platform: 'darwin', strategy: 'macos-dmg' })],
+    ['a malformed version', JSON.stringify({ schema: 1, from: '1.3', to: '1.3.1', at: '2026-10-18T05:00:00.000Z', platform: 'darwin', strategy: 'macos-dmg' })],
+    ['a notify-only strategy', JSON.stringify({ schema: 1, from: '1.3.0', to: '1.3.1', at: '2026-10-18T05:00:00.000Z', platform: 'linux', strategy: 'deb-notify' })],
+    ['an unreadable time', JSON.stringify({ schema: 1, from: '1.3.0', to: '1.3.1', at: 'yesterday', platform: 'darwin', strategy: 'macos-dmg' })],
+  ])('ignores and removes a record with %s', async (_label, content) => {
+    const directory = join(workDir(), 'update-install')
+    mkdirSync(directory, { recursive: true, mode: 0o700 })
+    writeFileSync(join(directory, 'last-attempt.json'), content)
+    writeFileSync(join(directory, 'last-attempt.result'), '70\n')
+
+    await expect(store(directory).take()).resolves.toBeNull()
+    expect(readdirSync(directory)).toEqual([])
+  })
+
+  it('never follows a planted link and never rejects', async () => {
+    const work = workDir()
+    const directory = join(work, 'update-install')
+    mkdirSync(directory, { recursive: true, mode: 0o700 })
+    const outside = join(work, 'outside.json')
+    writeFileSync(outside, JSON.stringify({ schema: 1, from: '1.3.0', to: '1.3.1', at: '2026-10-18T05:00:00.000Z', platform: 'darwin', strategy: 'macos-dmg' }))
+    symlinkSync(outside, join(directory, 'last-attempt.json'))
+
+    await expect(store(directory).take()).resolves.toBeNull()
+    expect(existsSync(outside)).toBe(true)
+    expect(existsSync(join(directory, 'last-attempt.json'))).toBe(false)
+
+    const missing = createInstallAttemptStore({ directory: join(work, 'never-created'), platform: 'darwin' })
+    await expect(missing.take()).resolves.toBeNull()
+    await expect(missing.abandon()).resolves.toBeUndefined()
+  })
+
+  it('refuses to record into a symlinked folder or a malformed attempt', async () => {
+    const work = workDir()
+    const elsewhere = join(work, 'elsewhere')
+    mkdirSync(elsewhere)
+    const directory = join(work, 'update-install')
+    symlinkSync(elsewhere, directory)
+
+    await expect(store(directory).begin({ from: '1.3.0', to: '1.3.1', strategy: 'macos-dmg' })).rejects.toThrow()
+    expect(readdirSync(elsewhere)).toEqual([])
+    expect(lstatSync(directory).isSymbolicLink()).toBe(true)
+
+    const real = join(work, 'real')
+    await expect(store(real).begin({ from: '1.3', to: '1.3.1', strategy: 'macos-dmg' })).rejects.toThrow(TypeError)
+    await expect(store(real).begin({ from: '1.3.0', to: '1.3.1', strategy: 'deb-notify' as never })).rejects.toThrow(TypeError)
   })
 })

@@ -8,12 +8,32 @@
 // re-hashed, never a path, and installers must hash the bytes they actually
 // consume from it (copyVerifiedSource does exactly that).
 
-const { createHash } = require('node:crypto')
+const { createHash, randomBytes } = require('node:crypto')
 const fs = require('node:fs/promises')
+const path = require('node:path')
 
 const SHA256_RE = /^[0-9a-f]{64}$/
+const VERSION_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
+const PLATFORM_RE = /^[a-z0-9]{1,32}$/
+const DOWNLOADABLE_STRATEGIES = new Set(['macos-dmg', 'appimage-self-replace'])
 const MAX_ARTIFACT_BYTES = 2 * 1024 ** 3
 const COPY_CHUNK_BYTES = 1024 * 1024
+const ATTEMPT_RECORD = 'last-attempt.json'
+const ATTEMPT_RESULT = 'last-attempt.result'
+const MAX_RECORD_BYTES = 4096
+const MAX_RESULT_BYTES = 16
+const RESULT_RE = /^(\d{1,3})\n?$/
+
+// Every platform's swap helper reports one of these before it exits, so the
+// app that starts next can say what happened without knowing the platform.
+const INSTALL_HELPER_EXIT = Object.freeze({
+  installed: 0,
+  badArguments: 64,
+  refused: 65,
+  couldNotMoveAside: 70,
+  couldNotMoveIn: 71,
+  timedOut: 75,
+})
 
 const MESSAGES = Object.freeze({
   'not-feasible': 'update cannot be installed from the app on this installation',
@@ -129,7 +149,137 @@ async function copyVerifiedSource(source, destination, options = {}) {
   }
 }
 
+async function unlinkQuietly(fsImpl, target) {
+  try {
+    await fsImpl.unlink(target)
+  } catch {
+    // Already gone, or not ours to remove.
+  }
+}
+
+// Reads a small regular file without following a link; null for anything else.
+async function readSmallFile(fsImpl, target, maxBytes) {
+  let stat
+  try {
+    stat = await fsImpl.lstat(target)
+  } catch {
+    return null
+  }
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > maxBytes) return null
+  try {
+    return String(await fsImpl.readFile(target, 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+function parseRecord(text) {
+  let value
+  try {
+    value = JSON.parse(text)
+  } catch {
+    return null
+  }
+  if (
+    !value
+    || typeof value !== 'object'
+    || value.schema !== 1
+    || typeof value.from !== 'string'
+    || !VERSION_RE.test(value.from)
+    || typeof value.to !== 'string'
+    || !VERSION_RE.test(value.to)
+    || typeof value.at !== 'string'
+    || !Number.isFinite(Date.parse(value.at))
+    || typeof value.platform !== 'string'
+    || !PLATFORM_RE.test(value.platform)
+    || !DOWNLOADABLE_STRATEGIES.has(value.strategy)
+  ) {
+    return null
+  }
+  return { from: value.from, to: value.to, at: value.at, platform: value.platform, strategy: value.strategy }
+}
+
+// The attempt record survives the restart in `directory` (userData/update-install):
+// last-attempt.json is written before commit(), and the platform helper writes
+// its exit code to last-attempt.result before it exits. The next app start takes
+// both, so a swap that failed is reported instead of silently offered again.
+function createInstallAttemptStore(options = {}) {
+  if (typeof options.directory !== 'string' || !path.isAbsolute(options.directory)) {
+    throw new TypeError('directory must be an absolute path')
+  }
+  const directory = path.resolve(options.directory)
+  const platform = options.platform ?? process.platform
+  if (typeof platform !== 'string' || !PLATFORM_RE.test(platform)) throw new TypeError('platform is invalid')
+  const uid = options.uid ?? (typeof process.getuid === 'function' ? process.getuid() : null)
+  const fsImpl = options.fsImpl ?? fs
+  const now = options.now ?? (() => new Date())
+  const recordPath = path.join(directory, ATTEMPT_RECORD)
+  const resultPath = path.join(directory, ATTEMPT_RESULT)
+
+  async function ensureDirectory() {
+    await fsImpl.mkdir(directory, { recursive: true, mode: 0o700 })
+    const stat = await fsImpl.lstat(directory)
+    if (!stat.isDirectory() || stat.isSymbolicLink() || (uid !== null && stat.uid !== uid)) {
+      throw new Error('attempt directory is not a private directory')
+    }
+    if ((stat.mode & 0o777) !== 0o700) await fsImpl.chmod(directory, 0o700)
+  }
+
+  async function begin(attempt) {
+    const from = attempt?.from
+    const to = attempt?.to
+    const strategy = attempt?.strategy
+    if (typeof from !== 'string' || !VERSION_RE.test(from) || typeof to !== 'string' || !VERSION_RE.test(to)) {
+      throw new TypeError('attempt versions must be exact X.Y.Z versions')
+    }
+    if (!DOWNLOADABLE_STRATEGIES.has(strategy)) throw new TypeError('attempt strategy is not installable')
+    await ensureDirectory()
+    // A result from an earlier helper must never be read as this attempt's.
+    await unlinkQuietly(fsImpl, resultPath)
+    const record = { schema: 1, from, to, at: now().toISOString(), platform, strategy }
+    const temp = path.join(directory, `.${ATTEMPT_RECORD}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`)
+    let handle = null
+    try {
+      handle = await fsImpl.open(temp, 'wx', 0o600)
+      await handle.write(`${JSON.stringify(record)}\n`)
+      await handle.sync()
+      const written = handle
+      handle = null
+      await written.close()
+      await fsImpl.rename(temp, recordPath)
+    } catch (error) {
+      if (handle !== null) await handle.close().catch(() => {})
+      await unlinkQuietly(fsImpl, temp)
+      throw error
+    }
+    return Object.freeze({ resultPath })
+  }
+
+  async function abandon() {
+    await unlinkQuietly(fsImpl, recordPath)
+    await unlinkQuietly(fsImpl, resultPath)
+  }
+
+  async function take() {
+    try {
+      const recordText = await readSmallFile(fsImpl, recordPath, MAX_RECORD_BYTES)
+      const resultText = await readSmallFile(fsImpl, resultPath, MAX_RESULT_BYTES)
+      await abandon()
+      const record = recordText === null ? null : parseRecord(recordText)
+      if (record === null) return null
+      const match = resultText === null ? null : RESULT_RE.exec(resultText)
+      return Object.freeze({ ...record, exitCode: match ? Number(match[1]) : null })
+    } catch {
+      return null
+    }
+  }
+
+  return Object.freeze({ begin, abandon, take })
+}
+
 module.exports = {
+  INSTALL_HELPER_EXIT,
   UpdateInstallError,
   copyVerifiedSource,
+  createInstallAttemptStore,
 }

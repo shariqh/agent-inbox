@@ -46,9 +46,12 @@ export interface PreparedInstall {
   /**
    * The only step that changes the installation. Resolves once the swap/relaunch
    * hand-off is arranged; main quits right after. If it rejects, the running
-   * installation must be untouched.
+   * installation must be untouched. `resultPath` (absolute, no dot segments, no
+   * trailing slash) is where the platform helper writes its exit code, from
+   * INSTALL_HELPER_EXIT, before it exits; the controller passes the attempt
+   * store's path. Installers fall back to a path in their own work directory.
    */
-  commit(): Promise<void>
+  commit(options?: { resultPath?: string }): Promise<void>
   /** Removes everything prepare() staged. Idempotent; never rejects. */
   discard(): Promise<void>
 }
@@ -98,3 +101,81 @@ export function copyVerifiedSource(
   destination: string,
   options?: { fsImpl?: InstallCopyFs; signal?: AbortSignal; mode?: number },
 ): Promise<void>
+
+/**
+ * The exit codes every platform's swap helper uses, and writes as its whole
+ * result file (`"<code>\n"`) before it exits.
+ */
+export const INSTALL_HELPER_EXIT: Readonly<{
+  /** The new build is in place and was launched. */
+  installed: 0
+  /** Arguments failed validation; nothing was touched. */
+  badArguments: 64
+  /** Refused before any change (the running app or staged build changed, or the backup path is taken). */
+  refused: 65
+  /** The running app could not be moved aside (for example, permission denied); the old app was reopened. */
+  couldNotMoveAside: 70
+  /** The new build could not be moved into place; the old app was restored and reopened. */
+  couldNotMoveIn: 71
+  /** The app (or its viewer) never exited; nothing was changed and nothing was reopened. */
+  timedOut: 75
+}>
+
+/** last-attempt.json, written atomically just before commit(). */
+export interface InstallAttemptRecord {
+  schema: 1
+  /** The running version that started the install. */
+  from: string
+  /** The version being installed. */
+  to: string
+  /** ISO time the attempt began. */
+  at: string
+  /** process.platform of the app that wrote it. */
+  platform: string
+  strategy: DownloadableInstallStrategy
+}
+
+export interface InstallAttemptOutcome extends Omit<InstallAttemptRecord, 'schema'> {
+  /** The helper's reported exit code, or null when it never wrote a valid one. */
+  exitCode: number | null
+}
+
+export interface InstallAttemptStore {
+  /**
+   * Writes last-attempt.json atomically (0600, in a private 0700 directory that
+   * must not be a link), first removing any stale helper result. Resolves with
+   * the path the helper must report to. Rejects when the record cannot be
+   * written; nothing should be committed then.
+   */
+  begin(attempt: { from: string; to: string; strategy: DownloadableInstallStrategy }): Promise<{ resultPath: string }>
+  /** Removes the record and any result (the hand-off never started). Never rejects. */
+  abandon(): Promise<void>
+  /**
+   * Reads and deletes the record and the result, once, without following links.
+   * Null when there was no valid record. Never rejects.
+   */
+  take(): Promise<InstallAttemptOutcome | null>
+}
+
+export interface InstallAttemptFs {
+  chmod(path: string, mode: number): Promise<void>
+  lstat(path: string): Promise<{ isDirectory(): boolean; isFile(): boolean; isSymbolicLink(): boolean; mode: number; size: number; uid: number }>
+  mkdir(path: string, options: { recursive: true; mode: number }): Promise<unknown>
+  open(path: string, flags: 'wx', mode: number): Promise<{
+    write(data: string): Promise<unknown>
+    sync(): Promise<void>
+    close(): Promise<void>
+  }>
+  readFile(path: string, encoding: 'utf8'): Promise<string>
+  rename(from: string, to: string): Promise<void>
+  unlink(path: string): Promise<void>
+}
+
+/** The record and result live in `directory` (userData/update-install). */
+export function createInstallAttemptStore(options: {
+  directory: string
+  platform?: string
+  uid?: number
+  fsImpl?: InstallAttemptFs
+  now?: () => Date
+}): InstallAttemptStore

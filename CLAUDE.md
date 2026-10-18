@@ -105,11 +105,15 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   Dashboard outcomes/projects, rail projects, agent picker) add the summary, so
   they never depend on the omitted bodies. `/api/items/history` returns exactly the
   unpaged `done` list; a tick adds it as an eighth read only while a surface needs
-  older history (`historyWanted`: a search query, the Handoffs overlay, History
+  older history (`historyWanted`: a search in use — open results, a pending or
+  focused query, not text left in a closed box — the Handoffs overlay, History
   paged past what the page proves, a History deep link, a pending deep link to an
-  omitted item, or Dashboard recent outcomes the page cannot prove). Decide that on
-  the PAGE (`lastData.page`), never on merged data, or loading history would end
-  the need for it. Its failure fails the tick like the page's. The page stays
+  omitted item, or the four Dashboard recent outcomes the page cannot prove).
+  Decide that on the PAGE (`lastData.page`), never on merged data, or loading
+  history would end the need for it. Only human entry points (`forceRender`,
+  typing/focusing search, opening Handoffs, a deep link) start that read early,
+  through `requestHistory()`: a render never does, so the passive poll cannot
+  reach `forceRender`. Its failure fails the tick like the page's. The page stays
   authoritative for every item it carries when the two are merged. Surfaces still
   waiting show known entries and a loading state, never an incomplete list as if
   complete: search stays busy, History and Handoffs say older items are loading.

@@ -697,6 +697,11 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
 - **`done`/milestone bucket** *(#9)* — `flag({ kind:'done' })`, surfaced in the viewer's Done section.
 - **Electron packaging** *(#11)* — `electron/` wraps the `public/` viewer; `scripts/package-app.sh`
   stages `dist` + `public` + `electron` and rebuilds `better-sqlite3` for Electron's ABI.
+  *(#139)* The development path stages through the release `copyRequiredTree()`, so it ships
+  the checked-in `package.json` + `package-lock.json` pair; `npm ci --omit=dev` installs that
+  graph, and `scripts/package-app-stage.mjs verify` refuses to package unless the stage and
+  the packaged app hold exactly the lockfile's production versions and integrities. Never
+  stage without the lockfile or install with `npm install` there: either re-resolves ranges.
 - **Portable release runtime** *(#74 Layer 1)* — the app may additionally embed
   `darwin-arm64` and `darwin-x64` Node 24 payloads staged outside the Electron dependency
   tree. Each payload has a content-derived `runtime-manifest.json`; Electron selects only

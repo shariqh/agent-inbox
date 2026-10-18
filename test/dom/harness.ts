@@ -121,7 +121,10 @@ export interface BootOptions {
  * `Response | Promise<Response>`, which is not assignable to `fetch` directly.
  */
 export function mountViewer(db: Database.Database, { holdFetch = false, viewer, interceptFetch }: BootOptions = {}): ViewerBridge {
-  const app = createViewer(db, viewer)
+  // #197 part 2: /api/setup and /api/version read each host's registration from
+  // a home directory's config files. A test reads an empty scratch home unless
+  // it brings its own — never the real one.
+  const app = createViewer(db, { agentHome: mkdtempSync(join(tmpdir(), 'inbox-dom-home-')), ...viewer })
   const posts: PostRecord[] = []
   let failStatus: number | null = null
   let release: (() => void) | null = null

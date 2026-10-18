@@ -25,6 +25,7 @@ import { keyAction, rovingIndex, ariaAnswerLabel, livenessGlyph, deckEntryAt } f
 import { createKeyboardUI } from '/keyboard-ui.js'
 import { partitionNotes, unreadNoteCount, ambientChips, seenWatermark, markSeenIds } from '/notes.js'
 import { liveSummary, lastActivityAt, isDormant, activitySynopsis, sessionBuild } from '/livebar.js'
+import { agentsAction, hostLabel, hostLine, restartGuidance } from '/agents.js'
 import { esc } from '/esc.js'
 import { initStructuredTextCopy } from '/structured-copy.js'
 import { renderStructuredText } from '/structured-text.js'
@@ -4158,6 +4159,7 @@ function initAgentSelect() {
 
 // which content panel is visible; the tab strip drives this in Task 8
 function showPanel(id) {
+  const openingSettings = id === 'setup' && document.getElementById('setup').hidden
   for (const p of document.querySelectorAll('main > .panel')) p.hidden = p.id !== id
   for (const t of document.querySelectorAll('#tabs .tab')) t.setAttribute('aria-selected', String(t.dataset.tab === id))
   document.body.classList.toggle('settings-open', id === 'setup')
@@ -4167,6 +4169,9 @@ function showPanel(id) {
   const gear = document.getElementById('gear')
   gear.classList.toggle('active', id === 'setup')
   gear.setAttribute('aria-pressed', String(id === 'setup'))
+  // #197: a terminal install or an update can change what each host runs while
+  // the app is open, so Settings re-reads it whenever it opens
+  if (openingSettings) refreshAgents()
 }
 
 function settingsOpen() {
@@ -4202,30 +4207,34 @@ function initGear() {
 // live entries the user has expanded, by session id — survives the poll rebuild
 const openLive = new Set()
 
-// Issue #197 — the /api/version body: the build a restarted session would load
-// and the runtime state that decides which advice the hint may give. Read at
-// boot, whenever the drawer opens and after a Setup install, so the advice
-// follows an install made since. It stays null when the viewer cannot say, and
-// then no hint renders.
+// Issue #197 — the /api/version body: the build a restarted session would load,
+// the runtime state and what each host is registered to run, which together
+// decide which advice the hint may give. Read at boot, whenever the drawer opens
+// and after a Setup install, so the advice follows an install made since. It
+// stays null when the viewer cannot say, and then no hint renders.
 let liveVersion = null
 
 function refreshLiveVersion() {
-  fetch('/api/version')
+  return fetch('/api/version')
     .then((r) => (r.ok ? r.json() : null))
     .then((body) => { liveVersion = body && typeof body === 'object' ? body : null })
     .catch(() => {})
 }
 
 // A session's build label for the drawer, and its hint when it runs an older
-// build. Both empty when its version is unknown: never a guess.
+// build — or, once its host was matched back to this app, a newer one. Both
+// empty when its version is unknown: never a guess.
 function liveBuildHtml(a) {
   const build = sessionBuild(a, liveVersion)
-  if (!build) return { label: '', hint: '', older: false }
-  const title = build.older ? build.hint : `This session runs Agent Inbox ${build.label}`
+  if (!build) return { label: '', hint: '', older: false, newer: false }
+  const marked = build.older || build.newer
+  const title = marked ? build.hint : `This session runs Agent Inbox ${build.label}`
+  const tone = build.older ? ' older' : build.newer ? ' newer' : ''
   return {
-    label: `<span class="live-build${build.older ? ' older' : ''}" title="${esc(title)}">${esc(build.label)}</span>`,
-    hint: build.older ? `<span class="live-build-hint">${esc(build.hint)}</span>` : '',
+    label: `<span class="live-build${tone}" title="${esc(title)}">${esc(build.label)}</span>`,
+    hint: marked ? `<span class="live-build-hint">${esc(build.hint)}</span>` : '',
     older: build.older,
+    newer: build.newer,
   }
 }
 
@@ -4299,7 +4308,8 @@ function renderLive(entries) {
     // runs an older build — the idle ones are exactly the long-lived sessions.
     const builds = new Map(idle.map((a) => [a, liveBuildHtml(a)]))
     const older = [...builds.values()].filter((b) => b.older).length
-    fold.innerHTML = `<summary>${idle.length} connection${idle.length > 1 ? 's' : ''} · no task reported${older ? ` · ${older} on an older build` : ''}</summary>`
+    const newer = [...builds.values()].filter((b) => b.newer).length
+    fold.innerHTML = `<summary>${idle.length} connection${idle.length > 1 ? 's' : ''} · no task reported${older ? ` · ${older} on an older build` : ''}${newer ? ` · ${newer} on a newer build` : ''}</summary>`
     for (const a of idle) {
       const row = document.createElement('div')
       // #45: hours-quiet sessions keep their row (they ARE present, and their
@@ -4366,12 +4376,13 @@ function renderLiveBar(entries) {
     text.textContent = x.label
     el.append(projectDot, text)
     // #197: the strip stays compact — nothing extra on the current build, and
-    // only a marker on an older one; its title carries the drawer's full hint
+    // only a marker on an older one (or a newer one its host was matched back
+    // from); its title carries the drawer's full hint
     const build = sessionBuild(rowsBySession.get(x.session), liveVersion)
-    if (build?.older) {
+    if (build?.older || build?.newer) {
       const marker = document.createElement('span')
       marker.className = 'live-build-marker'
-      marker.textContent = 'older build'
+      marker.textContent = build.older ? 'older build' : 'newer build'
       el.appendChild(marker)
       el.title = build.hint
     }
@@ -6963,6 +6974,186 @@ function initSearch() {
   }, true)
 }
 
+// ── Agents (#197 part 2) ────────────────────────────────────────────────────
+// Which build each host's agents are registered to run, and ONE explicit
+// action for the Setup-managed hosts whose runtime differs from this app's:
+// "Update agents" when they are behind, "Match agents to vX" when one is ahead
+// after an app downgrade (public/agents.js agentsAction). It runs the existing
+// fixed-target install (claude, copilot or all, through the same Electron
+// bridge as the menu below) for exactly those hosts: no new command, nothing at
+// startup, and a checkout or custom registration is reported, never switched.
+// The installer refuses to replace a registration it does not own, and this
+// never asks it to force one. Paths come from host config files, so every
+// string here is textContent.
+let agentsBlock = null
+
+function renderAgents(host, s, canInstall) {
+  agentsBlock = null
+  if (!s?.agents || typeof s.agents !== 'object') return
+  const section = document.createElement('section')
+  section.className = 'setup-block agents-status'
+  const title = document.createElement('h3')
+  title.textContent = 'Agents'
+  const list = document.createElement('ul')
+  list.className = 'agents-hosts'
+  const actions = document.createElement('div')
+  actions.className = 'agents-actions'
+  const result = document.createElement('pre')
+  result.className = 'agents-result'
+  result.hidden = true
+  const restart = document.createElement('div')
+  restart.className = 'agents-restart'
+  restart.setAttribute('role', 'status')
+  restart.hidden = true
+  section.append(title, list, actions, result, restart)
+  host.appendChild(section)
+  agentsBlock = { list, actions, result, restart, canInstall, running: false }
+  paintAgents(s.agents)
+}
+
+function agentsHint(text) {
+  const p = document.createElement('p')
+  p.className = 'setup-hint'
+  p.textContent = text
+  agentsBlock.actions.appendChild(p)
+}
+
+function paintAgents(agents) {
+  const block = agentsBlock
+  if (!block) return
+  block.list.replaceChildren()
+  block.actions.replaceChildren()
+  const current = typeof agents.current === 'string' ? agents.current : null
+  const lines = ['claude', 'copilot', 'hooks'].map((h) => hostLine(h, agents[h], current))
+  for (const line of lines) {
+    const item = document.createElement('li')
+    item.dataset.host = line.host
+    item.classList.toggle('outdated', line.drift === 'older')
+    item.classList.toggle('newer', line.drift === 'newer')
+    const name = document.createElement('strong')
+    name.textContent = `${line.label}:`
+    item.append(name, ` ${line.text}`)
+    block.list.appendChild(item)
+  }
+  const action = agentsAction(agents)
+  if (action) {
+    if (block.canInstall && window.agentInboxSetup?.install) {
+      agentsHint(action.hint)
+      const run = btn(action.label, () => updateAgents(action, current, run))
+      run.className = 'agents-update-btn'
+      run.disabled = block.running
+      block.actions.appendChild(run)
+    } else {
+      agentsHint(action.elsewhere)
+    }
+  }
+  if (lines.some((line) => line.kind === 'checkout')) {
+    agentsHint('Setup does not update a source checkout: run git pull and npm run build in it, then restart its sessions.')
+  }
+  if (lines[2]?.drift) {
+    if (typeof agents.hooksCommand === 'string' && agents.hooksCommand) {
+      agentsHint(`Setup does not move Claude hooks with your agents. To move them to v${current}, run this in a terminal:`)
+      const command = document.createElement('pre')
+      command.className = 'agents-hooks-command'
+      command.textContent = agents.hooksCommand
+      const copy = btn('Copy', async () => {
+        try {
+          await navigator.clipboard.writeText(agents.hooksCommand)
+          copy.textContent = 'Copied ✓'
+        } catch {
+          copy.textContent = 'Copy failed'
+        }
+        setTimeout(() => { copy.textContent = 'Copy' }, 1500)
+      })
+      copy.className = 'copy-btn'
+      block.actions.append(command, copy)
+    } else if (agents.updatable === true) {
+      // only a promise Setup can keep: it can install this runtime here
+      agentsHint(`Setup does not move Claude hooks with your agents. Once the v${current} runtime is installed, the command that moves them appears here.`)
+    }
+  }
+}
+
+// Re-read what each host is registered to run, after any install.
+function refreshAgents() {
+  if (!agentsBlock) return Promise.resolve()
+  return fetch('/api/setup')
+    .then((r) => (r.ok ? r.json() : null))
+    .then((s) => { if (s?.agents && typeof s.agents === 'object') paintAgents(s.agents) })
+    .catch(() => { /* keep the status already shown */ })
+}
+
+// One fixed install target per host, one after another: a host whose CLI is
+// gone fails on its own and never holds the other back, which `--target all`
+// would (the installer stops before changing anything). But a step that was
+// cancelled (Agent Inbox is quitting), timed out, or could not run at all ENDS
+// the run: starting the next host then could have it killed halfway through
+// replacing a registration (#205 review). Each host's outcome is reported as
+// it is, including the hosts that never started.
+async function updateAgents(action, current, button) {
+  const block = agentsBlock
+  if (!block || block.running) return
+  block.running = true
+  button.disabled = true
+  block.restart.hidden = true
+  block.restart.replaceChildren()
+  const show = (text, state) => {
+    block.result.textContent = text
+    block.result.hidden = false
+    block.result.classList.toggle('success', state === 'ok')
+    block.result.classList.toggle('failure', state === 'failed')
+  }
+  const several = action.steps.length > 1
+  const reports = []
+  const moved = []
+  try {
+    for (const [index, step] of action.steps.entries()) {
+      show([...reports, step.progress].join('\n\n'), 'running')
+      let text
+      let stopped = null
+      try {
+        const outcome = await window.agentInboxSetup.install(step.host)
+        const ok = outcome?.ok === true
+        if (ok) moved.push(step.host)
+        else if (outcome?.cancelled === true) stopped = 'was cancelled'
+        else if (outcome?.timedOut === true) stopped = 'timed out'
+        text = outcome?.output || (ok ? step.done : 'Setup failed without output.')
+      } catch (err) {
+        stopped = 'could not run'
+        text = `Setup failed: ${err instanceof Error ? err.message : String(err)}`
+      }
+      reports.push(several ? `${hostLabel(step.host)}: ${text}` : text)
+      if (stopped) {
+        for (const skipped of action.steps.slice(index + 1)) {
+          reports.push(`${hostLabel(skipped.host)}: not started, because Setup stopped after ${hostLabel(step.host)} ${stopped}.`)
+        }
+        break
+      }
+    }
+  } finally {
+    block.running = false
+  }
+  show(reports.join('\n\n'), moved.length === action.steps.length ? 'ok' : 'failed')
+  await Promise.all([refreshAgents(), refreshLiveVersion()])
+  if (!moved.length) return
+  // A running session keeps the MCP server it started with: say which ones
+  // still run another build than their host now loads, and how to restart
+  // them, rather than imply anything reloaded. A successful fixed install
+  // registers exactly this app's verified runtime, so that is `current`.
+  const moves = moved.map((host) => ({ host, version: current }))
+  const lead = document.createElement('p')
+  lead.className = 'setup-hint'
+  lead.textContent = 'Running sessions keep the build they started with until you restart them.'
+  const list = document.createElement('ul')
+  for (const text of restartGuidance(lastData?.activity ?? [], moves)) {
+    const item = document.createElement('li')
+    item.textContent = text
+    list.appendChild(item)
+  }
+  block.restart.replaceChildren(lead, list)
+  block.restart.hidden = false
+}
+
 function setupTargetLabel(target) {
   return {
     all: 'Claude Code + Copilot CLI',
@@ -7042,8 +7233,10 @@ function setupMenu(s, host, canInstall) {
         run.disabled = false
         select.disabled = false
         updateLabels()
-        // #197: an install changes what Live's older-build hints may advise
+        // #197: an install changes what Live's older-build hints may advise,
+        // and what each host is registered to run
         refreshLiveVersion()
+        refreshAgents()
       }
     })
     run.className = 'setup-run-btn'
@@ -7380,6 +7573,7 @@ async function renderSetup() {
       host.appendChild(note)
     }
     const canInstall = await window.agentInboxSetup?.available?.().catch(() => false) ?? false
+    renderAgents(host, s, canInstall)
     setupMenu(s, host, canInstall)
     // issue #74: a release build withholds these manual/direct commands
     // entirely (empty string) until a runtime matching this exact host's

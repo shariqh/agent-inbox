@@ -74,10 +74,12 @@ export function activitySynopsis(a) {
 //
 // Each session's MCP server records its own version when it registers, and
 // whether it runs from an installed agent runtime or a checkout; the viewer says
-// what the current build is and what it has verified (`/api/version`). A session
-// strictly older than the current build gets a quiet hint whose advice fits
-// where THAT session runs from, and is left out when nothing backs it. Presence,
-// not attention: nothing here reaches the badge, Needs-you or a notification.
+// what the current build is, what it has verified, and what each host is
+// registered to run (`/api/version`). A session strictly older than the current
+// build gets a quiet hint whose advice fits where THAT session runs from and
+// what its host would load on restart, and is left out when nothing backs it.
+// Presence, not attention: nothing here reaches the badge, Needs-you or a
+// notification.
 // And it never guesses — both versions must be strict semver
 // (https://semver.org) before anything is compared, and a session whose own
 // version is unknown renders nothing at all.
@@ -127,29 +129,77 @@ function compareSemver(a, b) {
   return a.pre.length === b.pre.length ? 0 : a.pre.length < b.pre.length ? -1 : 1
 }
 
-// The advice that would update THIS session to `target`, or none. A checkout
-// session is updated in its checkout, whatever this viewer is. A runtime
-// session restarts into the new runtime only once a release viewer has verified
-// it is installed, and is pointed at Setup only when Setup can install it. An
-// unknown source (a legacy row) gets no advice.
-function remedy(a, info, target) {
+// The Setup host behind a session's MCP client, by the agent name its server
+// inferred (src/infer.ts inferAgent). Any other client is not one Setup
+// registers, so nothing here can say what a restart of it would load.
+const SETUP_HOSTS = { 'claude-code': 'claude', copilot: 'copilot' }
+
+/** @returns {'claude'|'copilot'|null} */
+export function hostOfAgent(agent) {
+  return typeof agent === 'string' && Object.hasOwn(SETUP_HOSTS, agent) ? SETUP_HOSTS[agent] : null
+}
+
+/** Semver precedence of two versions (-1, 0, 1), or null unless both are strict semver. */
+export function compareVersions(a, b) {
+  const x = parseSemver(a)
+  const y = parseSemver(b)
+  return x && y ? compareSemver(x, y) : null
+}
+
+// What a restart of THIS runtime session would load: its host's registration,
+// when that is Setup's runtime at a known version (#197 part 2). Only a release
+// viewer verifies registrations against a runtime it can install, so a
+// checkout viewer, a checkout or legacy session, a client that is neither host
+// and an older viewer without `hosts` all answer null.
+function registeredRuntime(a, info) {
+  if (a.server_source !== 'runtime' || info.mode !== 'release') return null
+  const host = hostOfAgent(a.agent)
+  const hosts = info.hosts && typeof info.hosts === 'object' ? info.hosts : null
+  const registered = host && hosts ? hosts[host] : null
+  if (registered?.kind !== 'runtime') return null
+  const version = parseSemver(registered.version)
+  return version ? { version, label: `v${registered.version}` } : null
+}
+
+// The advice that would update an OLDER session to the current build, or none.
+// A checkout session is updated in its checkout, whatever this viewer is. A
+// runtime session loads, on restart, whatever ITS HOST is registered to run, not
+// merely what is installed. So it is told to restart only when that
+// registration is Setup's runtime at the current build or later, and to update
+// its agents from Setup first only when Setup would actually offer that
+// (`updatable`: the app's own runtime verifies, so Setup shows the action).
+// Anything else gets no advice.
+function remedy(a, info, current) {
   if (a.server_source === 'checkout') return ' — update and rebuild its checkout, then restart this session'
-  if (a.server_source !== 'runtime' || info.mode !== 'release') return ''
-  if (info.runtimeInstalled === true) return ` — restart this session to load ${target}`
-  if (info.runtimeInstalled === false) return ` — install the ${target} agent runtime from Setup, then restart this session`
+  const registered = registeredRuntime(a, info)
+  if (!registered) return ''
+  if (compareSemver(registered.version, current) >= 0) return ` — restart this session to load ${registered.label}`
+  if (info.updatable === true) return ' — update agents from Setup, then restart this session'
   return ''
 }
 
 /**
- * @param {any} a an /api/activity row, with its server_version and server_source
- * @param {any} info the /api/version body: {current, mode, runtimeInstalled}, or null
- * @returns {{label: string, older: boolean, hint: string} | null} null renders nothing
+ * `older`: the session runs an older build than `info.current`, with the advice
+ * that backs it. `newer` (#197 part 2): it runs a newer build than its host is
+ * now registered to run, and that registration IS this app's build — after
+ * agents were matched back to a downgraded app — so a restart loads it. A newer
+ * session whose host still runs that newer build, or runs an older one than
+ * the app, gets no marker: a restart would not bring it to this app's build.
+ * @param {any} a an /api/activity row, with its agent, server_version and server_source
+ * @param {any} info the /api/version body: {current, mode, runtimeInstalled, updatable, hosts}, or null
+ * @returns {{label: string, older: boolean, newer: boolean, hint: string} | null} null renders nothing
  */
 export function sessionBuild(a, info) {
   const own = parseSemver(a?.server_version)
   if (!own) return null
   const label = `v${a.server_version}`
   const current = parseSemver(info?.current)
-  if (!current || compareSemver(own, current) >= 0) return { label, older: false, hint: '' }
-  return { label, older: true, hint: `older build (${label})${remedy(a, info, `v${info.current}`)}` }
+  const none = { label, older: false, newer: false, hint: '' }
+  if (!current) return none
+  const order = compareSemver(own, current)
+  if (order < 0) return { label, older: true, newer: false, hint: `older build (${label})${remedy(a, info, current)}` }
+  if (order === 0) return none
+  const registered = registeredRuntime(a, info)
+  if (!registered || compareSemver(registered.version, current) !== 0) return none
+  return { label, older: false, newer: true, hint: `newer build (${label}) — restart this session to load ${registered.label}` }
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { cpSync, mkdtempSync, writeFileSync, readFileSync, renameSync, rmSync, statSync, utimesSync } from 'node:fs'
+import { cpSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
@@ -7,11 +7,16 @@ import { join } from 'node:path'
 import type Database from 'better-sqlite3'
 import { openDb, insertItem, listItems, getItem, annotateItem, replyItem, snoozeItem, answerItem, markReplySeen, upsertBoard as writeBoard, listBoards, annotateBoardRow, snoozeBoardRow, markRowHandled, markHandledDelivered, upsertActivity, endActivity, closeProject, closedProjects, upsertSourceLink } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
-import { releaseRuntime } from './release-runtime.js'
+import { releaseRuntime, registerHost } from './release-runtime.js'
 
 function freshDb(): Database.Database {
   return openDb(join(mkdtempSync(join(tmpdir(), 'view-')), 'inbox.db'))
 }
+
+// /api/setup and /api/version read each host's registration from the home
+// directory's config files (#197). Every test here points them at an empty
+// scratch home, never the real one.
+const NO_AGENTS = { agentHome: mkdtempSync(join(tmpdir(), 'view-home-')) }
 
 function upsertBoard(db: Database.Database, input: Parameters<typeof writeBoard>[1]) {
   const existing = [...listBoards(db), ...listBoards(db, { status: 'archived' })]
@@ -42,7 +47,7 @@ describe('viewer api', () => {
   })
 
   it('GET /api/setup returns agent-registration commands and the reporting snippet', async () => {
-    const app = createViewer(db)
+    const app = createViewer(db, NO_AGENTS)
     const res = await app.request('/api/setup')
     expect(res.status).toBe(200)
     const body = await res.json()
@@ -69,7 +74,7 @@ describe('viewer api', () => {
   })
 
   it('GET /api/setup carries a hand-mergeable backstop-hooks block (#10 / #21)', async () => {
-    const body = await (await createViewer(db).request('/api/setup')).json()
+    const body = await (await createViewer(db, NO_AGENTS).request('/api/setup')).json()
     expect(typeof body.hooksSettings).toBe('string')
     const parsed = JSON.parse(body.hooksSettings)
     expect(Object.keys(parsed.hooks).sort()).toEqual(
@@ -124,39 +129,138 @@ describe('viewer api', () => {
       return path
     }
     const read = async (app: ReturnType<typeof createViewer>): Promise<unknown> => (await app.request('/api/version')).json()
+    const UNREGISTERED = { claude: { kind: 'none' }, copilot: { kind: 'none' } }
 
     it('a checkout, or a bundle packaged from one, answers with its own package version; the runtime question does not apply', async () => {
       const missing = join(mkdtempSync(join(tmpdir(), 'view-version-')), 'setup-info.json')
-      const res = await createViewer(db, { setupInfoPath: missing }).request('/api/version')
+      const res = await createViewer(db, { ...NO_AGENTS, setupInfoPath: missing }).request('/api/version')
       expect(res.status).toBe(200)
-      expect(await res.json()).toEqual({ current: PKG.version, mode: 'dev', runtimeInstalled: null })
-      const devBundle = createViewer(db, { setupInfoPath: setupInfo({ repoRoot: '/checkout', nodeBin: '/node' }) })
-      expect(await read(devBundle)).toEqual({ current: PKG.version, mode: 'dev', runtimeInstalled: null })
+      expect(await res.json()).toEqual({ current: PKG.version, mode: 'dev', runtimeInstalled: null, updatable: false, hosts: UNREGISTERED })
+      const devBundle = createViewer(db, { ...NO_AGENTS, setupInfoPath: setupInfo({ repoRoot: '/checkout', nodeBin: '/node' }) })
+      expect(await read(devBundle)).toEqual({ current: PKG.version, mode: 'dev', runtimeInstalled: null, updatable: false, hosts: UNREGISTERED })
     })
 
     it('a release answers with its baked version and whether that exact runtime is installed for this host', async () => {
       const release = releaseRuntime('2.0.0')
       const app = createViewer(db, release.viewer)
       // not installed, and Setup can install it: its source payload verifies
-      expect(await read(app)).toEqual({ current: '2.0.0', mode: 'release', runtimeInstalled: false })
+      expect(await read(app)).toEqual({ current: '2.0.0', mode: 'release', runtimeInstalled: false, updatable: true, hosts: UNREGISTERED })
       // a Setup install is noticed on the very next read, memo or not
       release.install()
-      expect(await read(app)).toEqual({ current: '2.0.0', mode: 'release', runtimeInstalled: true })
+      expect(await read(app)).toEqual({ current: '2.0.0', mode: 'release', runtimeInstalled: true, updatable: true, hosts: UNREGISTERED })
+    })
+
+    // Live may point at Setup's update only when Setup would actually offer it,
+    // and Setup offers it only while the app's own runtime verifies — installed
+    // or not (review of #205).
+    it('says Setup cannot update agents when the app\'s runtime no longer verifies, even with one installed', async () => {
+      const release = releaseRuntime('2.0.0')
+      release.install()
+      writeFileSync(join(release.payloadDir, 'dist', 'mcp-server.js'), '// tampered after install\n')
+      expect(await read(createViewer(db, release.viewer)))
+        .toEqual({ current: '2.0.0', mode: 'release', runtimeInstalled: true, updatable: false, hosts: UNREGISTERED })
     })
 
     it('answers null for the runtime when Setup could not install it here, so no advice is offered', async () => {
       const noHostPayload = releaseRuntime('2.0.0', { hostPayload: false })
       expect(await read(createViewer(db, noHostPayload.viewer)))
-        .toEqual({ current: '2.0.0', mode: 'release', runtimeInstalled: null })
+        .toEqual({ current: '2.0.0', mode: 'release', runtimeInstalled: null, updatable: false, hosts: UNREGISTERED })
       const unverifiable = releaseRuntime('2.0.0')
       writeFileSync(join(unverifiable.payloadDir, 'dist', 'mcp-server.js'), '// tampered source\n')
       expect(await read(createViewer(db, unverifiable.viewer)))
-        .toEqual({ current: '2.0.0', mode: 'release', runtimeInstalled: null })
+        .toEqual({ current: '2.0.0', mode: 'release', runtimeInstalled: null, updatable: false, hosts: UNREGISTERED })
     })
 
     it('a release with no baked version answers null rather than guessing', async () => {
-      const app = createViewer(db, { setupInfoPath: setupInfo({ schema: 2, runtimePayloads: {} }) })
-      expect(await read(app)).toEqual({ current: null, mode: 'release', runtimeInstalled: null })
+      const app = createViewer(db, { ...NO_AGENTS, setupInfoPath: setupInfo({ schema: 2, runtimePayloads: {} }) })
+      expect(await read(app)).toEqual({ current: null, mode: 'release', runtimeInstalled: null, updatable: false, hosts: UNREGISTERED })
+    })
+
+    // Part 2: a restart loads whatever THAT host is registered to run, so Live
+    // gets each host's registration — its kind and, for Setup's runtime, its
+    // version. Nothing else: no path, no runtime id, no config content.
+    it('says which build each host is registered to run, and nothing more', async () => {
+      const release = releaseRuntime('2.0.0')
+      const old = release.installVersion('1.2.8')
+      release.register('claude', old)
+      release.register('copilot', release.install())
+      const app = createViewer(db, release.viewer)
+
+      const body = await read(app)
+      expect(body).toEqual({
+        current: '2.0.0',
+        mode: 'release',
+        runtimeInstalled: true,
+        updatable: true,
+        hosts: { claude: { kind: 'runtime', version: '1.2.8' }, copilot: { kind: 'runtime', version: '2.0.0' } },
+      })
+      expect(JSON.stringify(body)).not.toContain(release.home)
+
+      // a checkout and an unrecognized command are reported by kind alone
+      const checkout = mkdtempSync(join(tmpdir(), 'view-checkout-'))
+      mkdirSync(join(checkout, 'dist'))
+      writeFileSync(join(checkout, 'package.json'), '{"name":"agent-inbox"}')
+      writeFileSync(join(checkout, 'dist', 'mcp-server.js'), '')
+      registerHost(release.home, 'claude', process.execPath, join(checkout, 'dist', 'mcp-server.js'))
+      registerHost(release.home, 'copilot', process.execPath, join(checkout, 'package.json'))
+      const later = await read(app) as { hosts: unknown }
+      expect(later.hosts).toEqual({ claude: { kind: 'checkout' }, copilot: { kind: 'other' } })
+      expect(JSON.stringify(later)).not.toContain(checkout)
+    })
+
+    it('/api/setup carries each host\'s registration for the Setup panel, and how to move hooks once the runtime is installed', async () => {
+      const release = releaseRuntime('2.0.0')
+      const old = release.installVersion('1.2.8')
+      const oldId = old.slice(release.runtimeRoot.length + 1)
+      release.register('claude', old)
+      release.registerHooks(old)
+      const app = createViewer(db, release.viewer)
+      const agents = async () => (await (await app.request('/api/setup')).json()).agents
+
+      expect(await agents()).toEqual({
+        current: '2.0.0',
+        updatable: true,
+        claude: { kind: 'runtime', version: '1.2.8', runtimeId: oldId },
+        copilot: { kind: 'none' },
+        hooks: { kind: 'runtime', version: '1.2.8', runtimeId: oldId },
+        hooksCommand: '',
+      })
+
+      const installed = release.install()
+      expect((await agents()).hooksCommand)
+        .toBe(`bash '${join(installed, 'scripts', 'install-hooks.sh')}' --apply`)
+
+      // a release whose payload Setup cannot install offers no update
+      const noPayload = releaseRuntime('2.0.0', { hostPayload: false })
+      noPayload.register('claude', noPayload.installVersion('1.2.8'))
+      const fixed = (await (await createViewer(db, noPayload.viewer).request('/api/setup')).json()).agents
+      expect(fixed).toMatchObject({ current: '2.0.0', updatable: false, claude: { kind: 'runtime', version: '1.2.8' } })
+
+      // a checkout viewer reports registrations, but Setup does not manage versions there
+      const dev = (await (await createViewer(db, { ...NO_AGENTS, setupInfoPath: join(release.home, 'none.json') }).request('/api/setup')).json()).agents
+      expect(dev).toEqual({
+        current: null, updatable: false,
+        claude: { kind: 'none' }, copilot: { kind: 'none' }, hooks: { kind: 'none' }, hooksCommand: '',
+      })
+    })
+
+    it('never returns another MCP server\'s config from either route', async () => {
+      const release = releaseRuntime('2.0.0')
+      const old = release.installVersion('1.2.8')
+      writeFileSync(join(release.home, '.claude.json'), JSON.stringify({
+        oauthAccount: { emailAddress: 'someone@example.com' },
+        mcpServers: {
+          vault: { command: '/opt/vault/bin/mcp', args: ['--token', 'ghp_SECRET'], env: { VAULT_TOKEN: 'sk-SECRET' } },
+          'agent-inbox': { command: join(old, 'bin', 'node'), args: [join(old, 'dist', 'mcp-server.js')], env: { MINE: 'sk-SECRET-OWN' } },
+        },
+      }))
+      const app = createViewer(db, release.viewer)
+      for (const route of ['/api/version', '/api/setup']) {
+        const text = await (await app.request(route)).text()
+        for (const secret of ['/opt/vault', 'ghp_SECRET', 'sk-SECRET', 'someone@example.com']) {
+          expect(text, `${route}: ${secret}`).not.toContain(secret)
+        }
+      }
     })
 
     // /api/setup and /api/version share ONE verified runtime lookup. Verifying
@@ -167,12 +271,74 @@ describe('viewer api', () => {
     }
     const counting = () => {
       const roots: string[] = []
-      const runtimeVerifier = (opts: { root: string }) => {
+      const calls: Array<{ root: string; requiredFiles?: string[] }> = []
+      const runtimeVerifier = (opts: { root: string; requiredFiles?: string[] }) => {
         roots.push(opts.root)
+        calls.push(opts)
         return RUNTIME_VERIFY.verifyRuntimePayload(opts)
       }
-      return { roots, runtimeVerifier }
+      // a registered runtime is checked for ownership only (#197 part 2): no
+      // required files, unlike the release lookups for this app's own runtime
+      const ownership = (dir: string): number =>
+        calls.filter((c) => c.root === realpathSync(dir) && c.requiredFiles?.length === 0).length
+      return { roots, runtimeVerifier, ownership }
     }
+
+    it('verifies a registered older runtime once, reuses the release lookup for the current one, and re-reads a changed host', async () => {
+      const release = releaseRuntime('2.0.0')
+      const old = release.installVersion('1.2.8')
+      const current = release.install()
+      release.register('claude', old)
+      release.register('copilot', current)
+      const verifier = counting()
+      const app = createViewer(db, { ...release.viewer, runtimeVerifier: verifier.runtimeVerifier })
+
+      expect(await read(app)).toMatchObject({ hosts: { claude: { version: '1.2.8' }, copilot: { version: '2.0.0' } } })
+      expect((await (await app.request('/api/setup')).json()).agents.claude).toMatchObject({ version: '1.2.8' })
+      expect(await read(app)).toMatchObject({ hosts: { claude: { version: '1.2.8' } } })
+      expect(verifier.ownership(old)).toBe(1)
+      // the shared release lookup already verified the current runtime, more strictly
+      expect(verifier.ownership(current)).toBe(0)
+
+      // Claude Code rewrites ~/.claude.json all the time: re-reading it must not
+      // hash the runtime it still points at again
+      const claudeJson = join(release.home, '.claude.json')
+      const config = JSON.parse(readFileSync(claudeJson, 'utf8')) as Record<string, unknown>
+      writeFileSync(claudeJson, JSON.stringify({ ...config, numStartups: 42 }))
+      expect(await read(app)).toMatchObject({ hosts: { claude: { kind: 'runtime', version: '1.2.8' } } })
+      expect(verifier.ownership(old)).toBe(1)
+
+      // an update moves Claude to the current runtime: its config changed, so
+      // the next read says so without hashing anything again
+      release.register('claude', current)
+      expect(await read(app)).toMatchObject({ hosts: { claude: { kind: 'runtime', version: '2.0.0' } } })
+      expect(verifier.ownership(current)).toBe(0)
+      expect(verifier.ownership(old)).toBe(1)
+
+      // a pruned runtime leaves a registration nothing can verify
+      release.register('claude', old)
+      rmSync(old, { recursive: true })
+      expect(await read(app)).toMatchObject({ hosts: { claude: { kind: 'unknown' } } })
+    })
+
+    it('notices a change made through a symlinked host config, at its target', async () => {
+      const release = releaseRuntime('2.0.0')
+      const old = release.installVersion('1.2.8')
+      const current = release.install()
+      const dotfiles = join(release.home, 'dotfiles')
+      mkdirSync(dotfiles)
+      release.register('claude', old)
+      renameSync(join(release.home, '.claude.json'), join(dotfiles, 'claude.json'))
+      symlinkSync(join(dotfiles, 'claude.json'), join(release.home, '.claude.json'))
+      const app = createViewer(db, release.viewer)
+      expect(await read(app)).toMatchObject({ hosts: { claude: { kind: 'runtime', version: '1.2.8' } } })
+
+      // edit only the target, as a dotfiles checkout or `claude mcp add` through the link does
+      const config = JSON.parse(readFileSync(join(dotfiles, 'claude.json'), 'utf8')) as { mcpServers: Record<string, unknown> }
+      config.mcpServers['agent-inbox'] = { command: join(current, 'bin', 'node'), args: [join(current, 'dist', 'mcp-server.js')] }
+      writeFileSync(join(dotfiles, 'claude.json'), JSON.stringify(config))
+      expect(await read(app)).toMatchObject({ hosts: { claude: { kind: 'runtime', version: '2.0.0' } } })
+    })
 
     it('verifies once for /api/setup and /api/version together, and repeated reads do not re-hash', async () => {
       const release = releaseRuntime('2.0.0')
@@ -487,7 +653,7 @@ describe('GET /api/setup carries the build stamp (issue #40)', () => {
     return p
   }
   const setup = async (path?: string): Promise<Record<string, never> & { build: { drift: string; commit: string | null; head: string | null; builtAt: string | null; repoRoot: string | null }; note: string; claudeCommand: string }> => {
-    const res = await createViewer(freshDb(), path ? { setupInfoPath: path } : {}).request('/api/setup')
+    const res = await createViewer(freshDb(), path ? { ...NO_AGENTS, setupInfoPath: path } : NO_AGENTS).request('/api/setup')
     expect(res.status).toBe(200)
     return await res.json()
   }

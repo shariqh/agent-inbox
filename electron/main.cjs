@@ -26,7 +26,7 @@ const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 const { classifyReuse, watchUpstream } = require('./reuse.cjs')
 const { loadViewer, reloadViewer } = require('./viewer-navigation.cjs')
-const { canRunSetup, installerRepoRoot, runAgentInstall, runtimeKey, selectRuntimePayload } = require('./setup-runner.cjs')
+const { canRunSetup, createInstallGate, installerRepoRoot, runAgentInstall, runtimeKey, selectRuntimePayload } = require('./setup-runner.cjs')
 const { MANUAL_RELEASES_URL, createUpdateController } = require('./update-controller.cjs')
 const { createUpdateDownloader } = require('./update-download.cjs')
 const { checkForUpdate } = require('./update-fetch.cjs')
@@ -73,12 +73,11 @@ const THEME_BACKGROUND_COLORS = {
   light: '#edf0f2',
   dark: '#090b0d',
 }
-let setupInstallRunning = false
 let setupInstallEnabled = false
 let setupInstallWebContentsId = null
-let setupInstallPromise = null
-let cancelSetupInstall = null
-let quitAfterSetup = false
+// The one Setup install in flight, and whether the app has begun to quit
+// (#205 review): see beginAppQuit().
+const installGate = createInstallGate()
 // Issue #74: which exact runtime payload (if any) this release build selected
 // for this host, computed once ownership of the viewer is proven. Stays at
 // its unresolved default for a dev/legacy checkout — installerRepoRoot alone
@@ -208,18 +207,30 @@ ipcMain.handle('agent-inbox:update-open-release', async (event, ...args) => {
   return true
 })
 
+// Every path that ends the app calls this FIRST — `before-quit` below, and any
+// other quit or restart path (an update restart included) — and waits for the
+// promise it returns before the app exits. From then on Setup starts nothing:
+// an install started mid-shutdown can be killed halfway through replacing a
+// registration (#205 review). It takes Setup away from the window and cancels
+// the install already running; the promise settles once nothing runs.
+function beginAppQuit() {
+  setupInstallWebContentsId = null
+  return installGate.beginQuit()
+}
+
 ipcMain.handle('agent-inbox:install-available', (event) =>
+  !installGate.quitting() &&
   setupInstallEnabled &&
   canRunSetup(event.senderFrame?.url ?? '', URL_BASE, event.sender.id, setupInstallWebContentsId))
 
 ipcMain.handle('agent-inbox:install', async (event, target) => {
+  if (installGate.quitting()) {
+    return { ok: false, exitCode: null, output: 'Agent Inbox is quitting, so setup did not start.', target, timedOut: false, cancelled: true }
+  }
   const senderUrl = event.senderFrame?.url ?? ''
   if (!setupInstallEnabled ||
       !canRunSetup(senderUrl, URL_BASE, event.sender.id, setupInstallWebContentsId)) {
     return { ok: false, exitCode: null, output: 'One-click setup is unavailable for this viewer.', target, timedOut: false }
-  }
-  if (setupInstallRunning) {
-    return { ok: false, exitCode: null, output: 'Agent setup is already running.', target, timedOut: false }
   }
   // Issue #74: a release build's installer script lives INSIDE the exact,
   // digest-verified runtime payload DIRECTORY selectRuntimePayload resolved —
@@ -233,11 +244,10 @@ ipcMain.handle('agent-inbox:install', async (event, target) => {
   if (!repoRoot) {
     return { ok: false, exitCode: null, output: 'The agent-inbox checkout or installer could not be found.', target, timedOut: false }
   }
-  setupInstallRunning = true
   // Release builds (issue #74) pass the exact, digest-verified runtime payload
   // through so the installer stages a portable runtime instead of assuming a
   // source checkout; dev/legacy builds pass none and keep today's invocation.
-  const install = runAgentInstall({
+  const started = installGate.run((onCancel) => runAgentInstall({
     repoRoot,
     target,
     runtimePayload: runtimeSelection.ok
@@ -248,16 +258,15 @@ ipcMain.handle('agent-inbox:install', async (event, target) => {
           packageVersion: runtimeSelection.packageVersion,
         }
       : null,
-    onCancel(cancel) { cancelSetupInstall = cancel },
-  })
-  setupInstallPromise = install
-  try {
-    return await install
-  } finally {
-    setupInstallRunning = false
-    if (setupInstallPromise === install) setupInstallPromise = null
-    cancelSetupInstall = null
+    onCancel,
+  }))
+  if (started.refused === 'quitting') {
+    return { ok: false, exitCode: null, output: 'Agent Inbox is quitting, so setup did not start.', target, timedOut: false, cancelled: true }
   }
+  if (started.refused) {
+    return { ok: false, exitCode: null, output: 'Agent setup is already running.', target, timedOut: false }
+  }
+  return await started.promise
 })
 
 ipcMain.handle('agent-inbox:set-theme-preference', (event, preference) => {
@@ -829,14 +838,13 @@ app.on('window-all-closed', () => {
   app.quit()
 })
 
+// Every time a quit fires: refuse new installs, and cancel and wait for any
+// install still running before letting the app exit (#205 review).
 app.on('before-quit', (event) => {
-  if (!setupInstallPromise || quitAfterSetup) return
+  const running = beginAppQuit()
+  if (!running) return
   event.preventDefault()
-  cancelSetupInstall?.()
-  setupInstallPromise.finally(() => {
-    quitAfterSetup = true
-    app.quit()
-  })
+  running.then(() => app.quit())
 })
 
 // Kill the viewer only if we spawned it; a pre-existing server is left untouched.

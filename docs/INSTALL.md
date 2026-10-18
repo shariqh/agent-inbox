@@ -311,6 +311,43 @@ nothing is run to find this out.
 
 Nothing runs when the app starts; updating agents is always your explicit choice.
 
+### If an install is interrupted
+
+Stopping the installer partway (Ctrl-C, a closed terminal, Setup's cancel when the app
+quits, or the app crashing) puts back what it had changed, then exits with 128 + the
+signal number. A repeated Ctrl-C or cancel does not stop that restore, except a step that
+runs a host CLI or a packaged-runtime helper (Node resets the signals the installer
+ignores). If such a step is stopped, or anything cannot be put back, the installer prints
+a warning and `report retained at …`, and keeps its report in a folder named
+`agent-inbox-install.XXXXXX` in your temporary directory (`$TMPDIR`; on macOS
+`getconf DARWIN_USER_TEMP_DIR` prints it, on Linux it is usually `/tmp`):
+
+- `report.log` says what was restored and what was not.
+- `claude.mcp-config` or `copilot.mcp-config`, when present, is a copy of that host's
+  whole configuration file from before the install (`~/.claude.json` or
+  `~/.copilot/mcp-config.json`; the matching `*.mcp-config-path` names it). Do not just
+  copy it back: running Claude Code sessions keep rewriting `~/.claude.json` (other MCP
+  servers, project trust and approvals, account state), so an old copy undoes all of that
+  and a session still running can overwrite the restore; `mcp-config.json` likewise holds
+  your other Copilot MCP servers. To restore the registration:
+  1. Quit every session of that host.
+  2. Back up the current file.
+  3. Restore only the `agent-inbox` entry under `mcpServers`: copy it from the snapshot
+     into the current file, or run the host's own `mcp add` with that entry's `command`
+     and `args`, for example `claude mcp add --scope user agent-inbox -- <command> <args…>`
+     or `copilot mcp add agent-inbox -- <command> <args…>`. Running Setup or the installer
+     again also registers it, with the current runtime.
+  4. Copy the whole snapshot back only if nothing else in the file has changed since the
+     install; `diff` the two files to check.
+- An instruction file that could not be restored keeps its timestamped backup beside it,
+  for example `~/.claude/CLAUDE.md.bak.<timestamp>.<pid>`. For a symlinked instruction
+  file, the backup sits beside the file the link points to.
+
+An installer killed outright (`kill -9`, or Setup's forced stop 10 seconds after a
+cancel) stops wherever it was, but that folder then keeps every copy it took, and a
+staged `.agent-inbox.<host>.*` file may remain beside an instruction file; it is safe to
+delete. To finish the job instead, run the same install again.
+
 ### Host-specific behavior
 
 If `~/.claude/CLAUDE.md` and `~/.copilot/copilot-instructions.md` are symlinks or

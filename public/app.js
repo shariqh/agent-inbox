@@ -7341,6 +7341,8 @@ function updateStateCopy(state) {
     case 'downloading': return `Downloading Agent Inbox ${version}…`
     case 'verified': return `Agent Inbox ${version} is downloaded and verified.`
     case 'download-failed': return `Agent Inbox ${version} couldn’t be downloaded and verified.`
+    case 'installing': return `Installing version ${version}. Agent Inbox will restart when it’s ready.`
+    case 'install-failed': return `Agent Inbox ${version} couldn’t be installed.`
     case 'unverified': return 'Couldn’t check right now. You can review Releases manually.'
     case 'unsupported': return 'Updates are not available for this app build.'
     default: return 'Ready to check GitHub for a signed release.'
@@ -7355,12 +7357,21 @@ function formatMegabytes(bytes) {
 function updateDetailCopy(state) {
   const download = state.download
   switch (state.status) {
+    case 'available':
+      // Main's plain reason this installation cannot download or install the offer.
+      return typeof state.available?.reason === 'string' ? state.available.reason : ''
     case 'downloading':
       return download ? `${formatMegabytes(download.receivedBytes)} of ${formatMegabytes(download.totalBytes)}` : ''
     case 'verified':
-      return 'Its size and SHA-256 match the signed release. Installing from the app arrives in a later update; until then, use Review release to install it yourself.'
+      return state.available?.installable === true
+        ? 'Its size and SHA-256 match the signed release. Agent Inbox will quit, install it, and reopen.'
+        : 'Its size and SHA-256 match the signed release. Installing from the app arrives in a later update; until then, use Review release to install it yourself.'
     case 'download-failed':
       return 'Nothing unverified was kept. Try again, or review the release on GitHub.'
+    case 'install-failed':
+      return typeof state.message === 'string' && state.message !== ''
+        ? state.message
+        : 'Nothing was changed. Try again, or review the release on GitHub.'
     default:
       return ''
   }
@@ -7376,6 +7387,7 @@ function paintUpdateSettings(state) {
     checked,
     detail,
     download,
+    install,
     progress,
     releases,
     review,
@@ -7384,14 +7396,18 @@ function paintUpdateSettings(state) {
   } = updateSettings
   const focused = document.activeElement
   const downloadable = state.available?.downloadable === true
+  const installable = state.available?.installable === true
   const downloading = state.status === 'downloading'
+  const installing = state.status === 'installing'
   appVersion.textContent = `Agent Inbox app ${state.currentVersion || 'version unavailable'}`
   status.textContent = updateStateCopy(state)
   status.dataset.state = state.status
-  check.disabled = state.status === 'checking' || downloading
+  check.disabled = state.status === 'checking' || downloading || installing
   check.textContent = state.status === 'checking' ? 'Checking…' : 'Check now'
   download.hidden = !(downloadable && (state.status === 'available' || state.status === 'download-failed'))
   download.textContent = state.status === 'download-failed' ? 'Try again' : 'Download update'
+  install.hidden = !(installable && (state.status === 'verified' || state.status === 'install-failed'))
+  install.textContent = state.status === 'install-failed' ? 'Try again' : 'Install and restart'
   cancel.hidden = !downloading
   progress.hidden = !downloading
   if (downloading && state.download) {
@@ -7404,16 +7420,17 @@ function paintUpdateSettings(state) {
   checked.textContent = state.checkedAt
     ? `Last checked ${new Date(state.checkedAt).toLocaleString()}`
     : 'Not checked yet'
-  review.hidden = !state.available
-  // The download is the primary action while it is offered or running.
-  review.classList.toggle('updates-secondary', !download.hidden || !cancel.hidden)
+  // Nothing competes with an install that is already under way.
+  review.hidden = !state.available || installing
+  // The download or install is the primary action while it is offered or running.
+  review.classList.toggle('updates-secondary', !download.hidden || !cancel.hidden || !install.hidden)
   releases.hidden = state.status !== 'unverified' && state.status !== 'stale'
-  // A pressed action can hide itself (Download → Cancel); keep keyboard focus
-  // inside Updates instead of dropping it to the document, but never take
-  // focus while the window is in the background.
+  // A pressed action can hide itself (Download → Cancel, Install → installing);
+  // keep keyboard focus inside Updates instead of dropping it to the document,
+  // but never take focus while the window is in the background.
   if (focused instanceof HTMLElement && focused.hidden && section.contains(focused) && document.hasFocus()) {
-    const next = [cancel, download, review, releases, check].find((button) => !button.hidden && !button.disabled)
-    next?.focus()
+    const next = [cancel, install, download, review, releases, check].find((button) => !button.hidden && !button.disabled)
+    ;(next ?? section).focus()
   }
 }
 
@@ -7461,6 +7478,9 @@ function renderUpdateSettings(host) {
   const download = btn('Download update', () => bridge.download().catch(() => {}))
   download.className = 'updates-download'
   download.hidden = true
+  const install = btn('Install and restart', () => bridge.install().catch(() => {}))
+  install.className = 'updates-install'
+  install.hidden = true
   const cancel = btn('Cancel download', () => bridge.cancelDownload().catch(() => {}))
   cancel.className = 'updates-cancel'
   cancel.hidden = true
@@ -7470,7 +7490,7 @@ function renderUpdateSettings(host) {
   const releases = btn('Open Releases', () => bridge.openRelease().catch(() => {}))
   releases.className = 'updates-releases'
   releases.hidden = true
-  actions.append(check, download, cancel, review, releases)
+  actions.append(check, download, install, cancel, review, releases)
 
   const preference = document.createElement('label')
   preference.className = 'updates-preference'
@@ -7505,6 +7525,7 @@ function renderUpdateSettings(host) {
     checked,
     detail,
     download,
+    install,
     progress,
     releases,
     review,

@@ -8,16 +8,19 @@ useDomTest()
 
 type UpdateState = {
   status: 'idle' | 'checking' | 'current' | 'available' | 'stale' | 'unverified' | 'unsupported'
-    | 'downloading' | 'verified' | 'download-failed'
+    | 'downloading' | 'verified' | 'download-failed' | 'installing' | 'install-failed'
   currentVersion: string
   automaticChecks: boolean
   checkedAt: string | null
+  message?: string
   available?: {
     version: string
     tag: string
     releaseUrl: string
     target: { packageType: string; installStrategy: string }
     downloadable?: boolean
+    installable?: boolean
+    reason?: string
   }
   download?: { receivedBytes: number; totalBytes: number }
 }
@@ -47,6 +50,7 @@ function installBridge(initial: UpdateState) {
   const openRelease = vi.fn(async () => {})
   const download = vi.fn(async () => {})
   const cancelDownload = vi.fn(async () => {})
+  const install = vi.fn(async () => {})
   Object.defineProperty(window, 'agentInboxUpdates', {
     configurable: true,
     value: {
@@ -57,6 +61,7 @@ function installBridge(initial: UpdateState) {
       openRelease,
       download,
       cancelDownload,
+      install,
       onState(callback: (next: UpdateState) => void) {
         listener = callback
         return () => { listener = null }
@@ -73,6 +78,7 @@ function installBridge(initial: UpdateState) {
     openRelease,
     download,
     cancelDownload,
+    install,
     emit(next: UpdateState) { listener?.(next) },
     open() { opener?.() },
   }
@@ -206,17 +212,25 @@ describe('desktop update settings', () => {
   })
 })
 
-function offered(status: UpdateState['status'], downloadable: boolean, download?: UpdateState['download']): UpdateState {
+function offered(
+  status: UpdateState['status'],
+  downloadable: boolean,
+  download?: UpdateState['download'],
+  extra: { installable?: boolean; reason?: string; message?: string } = {},
+): UpdateState {
   return state(status, {
     checkedAt: '2026-02-01T00:00:00.000Z',
+    ...(extra.message !== undefined ? { message: extra.message } : {}),
     available: {
       version: '1.3.0',
       tag: 'v1.3.0',
       releaseUrl: 'https://github.com/shariqh/agent-inbox/releases/tag/v1.3.0',
-      target: downloadable
+      target: downloadable || extra.reason !== undefined
         ? { packageType: 'dmg', installStrategy: 'macos-dmg' }
         : { packageType: 'deb', installStrategy: 'deb-notify' },
       downloadable,
+      installable: extra.installable ?? false,
+      ...(extra.reason !== undefined ? { reason: extra.reason } : {}),
     },
     ...(download ? { download } : {}),
   })
@@ -319,10 +333,91 @@ describe('verified update downloads', () => {
       offered('downloading', true, { receivedBytes: MB, totalBytes: 2 * MB }),
       offered('verified', true, { receivedBytes: 2 * MB, totalBytes: 2 * MB }),
       offered('download-failed', true, { receivedBytes: MB, totalBytes: 2 * MB }),
+      offered('available', false, undefined, { reason: NOT_HERE }),
+      offered('verified', true, { receivedBytes: 2 * MB, totalBytes: 2 * MB }, { installable: true }),
+      offered('installing', true, undefined, { installable: true }),
+      offered('install-failed', true, undefined, { installable: true, message: FAILED }),
     ]) {
       bridge.emit(next)
       await settle()
       expect(signal()).toEqual(before)
     }
+  })
+})
+
+const NOT_HERE = 'Move Agent Inbox to your Applications folder to install updates from the app.'
+const FAILED = 'The update could not be installed. Nothing was changed. Try again or use Review release.'
+
+describe('installing a verified update', () => {
+  const MB = 1024 * 1024
+  const verified = () => offered('verified', true, { receivedBytes: 338 * MB, totalBytes: 338 * MB }, { installable: true })
+
+  it('offers Install and restart for a verified download this installation can install', async () => {
+    const bridge = await boot()
+    bridge.emit(verified())
+
+    expect(document.querySelector('.updates-state')?.textContent).toBe('Agent Inbox 1.3.0 is downloaded and verified.')
+    expect(document.querySelector('.updates-detail')?.textContent).toBe(
+      'Its size and SHA-256 match the signed release. Agent Inbox will quit, install it, and reopen.',
+    )
+    expect(visibleActions()).toEqual(['Check now', 'Install and restart', 'Review release'])
+    expect(document.querySelector('.updates-review')?.classList.contains('updates-secondary')).toBe(true)
+    expect(bridge.install).not.toHaveBeenCalled()
+
+    click(document.querySelector('.updates-install'))
+    expect(bridge.install).toHaveBeenCalledOnce()
+    expect(bridge.download).not.toHaveBeenCalled()
+  })
+
+  it('shows the install in progress without any conflicting action', async () => {
+    const bridge = await boot()
+    bridge.emit(offered('installing', true, undefined, { installable: true }))
+
+    expect(document.querySelector('.updates-state')?.textContent).toBe(
+      'Installing version 1.3.0. Agent Inbox will restart when it’s ready.',
+    )
+    expect(visibleActions()).toEqual(['Check now'])
+    expect((document.querySelector('.updates-check') as HTMLButtonElement).disabled).toBe(true)
+    expect((document.querySelector('.updates-progress') as HTMLProgressElement).hidden).toBe(true)
+    expect((document.querySelector('.updates-detail') as HTMLElement).hidden).toBe(true)
+  })
+
+  it('explains a failed install and offers Try again and Review release', async () => {
+    const bridge = await boot()
+    bridge.emit(offered('install-failed', true, undefined, { installable: true, message: FAILED }))
+
+    expect(document.querySelector('.updates-state')?.textContent).toBe('Agent Inbox 1.3.0 couldn’t be installed.')
+    expect(document.querySelector('.updates-detail')?.textContent).toBe(FAILED)
+    expect(visibleActions()).toEqual(['Check now', 'Try again', 'Review release'])
+    click(document.querySelector('.updates-install'))
+    expect(bridge.install).toHaveBeenCalledOnce()
+    expect(bridge.download).not.toHaveBeenCalled()
+    click(document.querySelector('.updates-review'))
+    expect(bridge.openRelease).toHaveBeenCalledOnce()
+  })
+
+  it('says why an offer cannot install here and leaves only Review release', async () => {
+    const bridge = await boot()
+    bridge.emit(offered('available', false, undefined, { reason: NOT_HERE }))
+
+    expect(document.querySelector('.updates-state')?.textContent).toBe('Agent Inbox 1.3.0 is available.')
+    expect(document.querySelector('.updates-detail')?.textContent).toBe(NOT_HERE)
+    expect(visibleActions()).toEqual(['Check now', 'Review release'])
+  })
+
+  it('keeps keyboard focus inside Updates when Install hides itself, but only while the window has focus', async () => {
+    const bridge = await boot()
+    bridge.emit(verified())
+    const install = document.querySelector('.updates-install') as HTMLButtonElement
+    install.focus()
+    bridge.emit(offered('installing', true, undefined, { installable: true }))
+    expect(document.activeElement).toBe(document.getElementById('updates-settings'))
+
+    bridge.emit(verified())
+    const again = document.querySelector('.updates-install') as HTMLButtonElement
+    again.focus()
+    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    bridge.emit(offered('installing', true, undefined, { installable: true }))
+    expect(document.activeElement).not.toBe(document.getElementById('updates-settings'))
   })
 })

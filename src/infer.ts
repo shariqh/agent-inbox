@@ -97,21 +97,40 @@ export function inferRepo(cwd: string, remote: string | null = remoteUrl(cwd)): 
 // `git push` would use for the branch. Read per write (the push config can
 // change mid-session), never per call.
 
-// git's own precedence: branch.<name>.pushRemote, then remote.pushDefault, then
-// branch.<name>.remote (the tracking remote). Each may hold a remote NAME or a
-// URL. Empty when none is configured, so the caller falls back to origin, which
-// is git's default too. for-each-ref takes a PATTERN that also matches below a
-// `/`, so only an exact refname line counts.
-function pushRemoteName(cwd: string, branch: string): string | null {
+// One for-each-ref read answers two questions about exactly this branch. Its
+// PUSH remote, by git's own precedence: branch.<name>.pushRemote, then
+// remote.pushDefault, then branch.<name>.remote (the tracking remote). Each may
+// hold a remote NAME or a URL; empty when none is configured, so the caller falls
+// back to origin, which is git's default too. And its UPSTREAM ref on that
+// remote (branch.<name>.merge), which git reports only when a fetch refspec maps
+// it to a remote-tracking ref, as it does for an ordinary tracking branch.
+// for-each-ref takes a PATTERN that also matches below a `/`, so only an exact
+// refname line counts. NUL separates the fields: a URL may hold a space.
+function branchRefs(cwd: string, branch: string): { upstream: string; push: string } | null {
   const ref = `refs/heads/${branch}`
-  const out = git(cwd, ['for-each-ref', '--format=%(refname) %(push:remotename)', ref])
+  const out = git(cwd, ['for-each-ref', '--format=%(refname)%00%(upstream:remoteref)%00%(push:remotename)', ref])
   for (const line of out?.split('\n') ?? []) {
-    const space = line.indexOf(' ')
-    if ((space < 0 ? line : line.slice(0, space)) !== ref) continue
-    const name = space < 0 ? '' : line.slice(space + 1).trim()
-    return name && !name.startsWith('-') ? name : null
+    const [name, upstream = '', push = ''] = line.split('\0')
+    if (name === ref) return { upstream: upstream.trim(), push: push.trim() }
   }
   return null
+}
+
+// Issue #183. For a fork PR whose author did not allow maintainer edits,
+// `gh pr checkout` tracks the PR's head ref in the BASE repository: merge is
+// refs/pull/<n>/head, and remote and pushRemote name the base, because nothing
+// names the fork (cli/cli pkg/cmd/pr/checkout, cmdsForMissingRemote). The push
+// destination is then the base, whose own same-named branch may have a PR that
+// would verify. Under the default refspec git maps refs/pull/* to no
+// remote-tracking ref, and a URL-valued remote maps nothing, so for-each-ref
+// reports no upstream: only then, and only when a remote is configured at all (a
+// merge ref means nothing without one), is the config itself read. Its first
+// value is the one git tracks.
+const PULL_REF = /^refs\/pull\/\d+\/(?:head|merge)$/
+
+function upstreamRef(cwd: string, branch: string, refs: { upstream: string; push: string }): string {
+  if (refs.upstream || !refs.push) return refs.upstream
+  return git(cwd, ['config', '--get-all', `branch.${branch}.merge`])?.split('\n')[0]?.trim() ?? ''
 }
 
 // The repository `git push <remote>` sends to: a configured remote's first PUSH
@@ -126,10 +145,21 @@ function pushRepo(cwd: string, remote: string): string | null {
 
 // `owner/name` of the github.com repository this branch is pushed to: its push
 // destination's when that is on github.com, else origin's push url (origin is
-// git's default push target). Null when neither is on github.com.
+// git's default push target). Null when neither is on github.com. A branch that
+// tracks a pull request's ref is the exception (#183): it is reported as that
+// ref, `refs/pull/<n>/head`, which names no repository, so no listed PR can
+// verify against it and none is linked. A wrong link is worse than no link.
+//
+// Spawns, on writes only: one for-each-ref; one config read only when the branch
+// has a push remote but no upstream git maps; one push-url read unless the
+// upstream is a pull ref, and a second for origin when the push destination is
+// not on github.com. An ordinary branch therefore still costs two.
 export function inferHeadRepo(cwd: string, branch: string): string | null {
   if (!branch) return null
-  const remote = pushRemoteName(cwd, branch) ?? 'origin'
+  const refs = branchRefs(cwd, branch)
+  const upstream = refs ? upstreamRef(cwd, branch, refs) : ''
+  if (PULL_REF.test(upstream)) return upstream
+  const remote = refs?.push && !refs.push.startsWith('-') ? refs.push : 'origin'
   return pushRepo(cwd, remote) ?? (remote === 'origin' ? null : pushRepo(cwd, 'origin'))
 }
 

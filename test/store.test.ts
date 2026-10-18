@@ -2933,6 +2933,18 @@ describe('source links', () => {
     ])
   })
 
+  // issue #183 — a branch that tracks a pull request's head ref (gh pr checkout
+  // of a fork PR without maintainer edits) records that ref as its head. It names
+  // no repository, so no listed PR could ever verify: spend no gh call on it,
+  // while a same-named branch of the base repository keeps its own target.
+  it('listLinkTargets spends no gh call on a branch whose head is a pull request ref', () => {
+    insertItem(db, { project: 'review', stream: 'patch-1', agent: 'a', kind: 'question', title: 'pull', repo: 'o/n', head_repo: 'refs/pull/7/head' })
+    upsertBoard(db, { project: 'review', stream: 'patch-1', agent: 'a', title: 'cov', rows: [{ label: 'a', status: 'tracked' }], repo: 'o/n', headRepo: 'refs/pull/7/head' })
+    expect(listLinkTargets(db)).toEqual([])
+    insertItem(db, { project: 'p', stream: 'patch-1', agent: 'a', kind: 'question', title: 'own', repo: 'o/n', head_repo: 'o/n' })
+    expect(listLinkTargets(db)).toEqual([{ repo: 'o/n', branch: 'patch-1', head_repo: 'o/n' }])
+  })
+
   it('keeps one cache row per expected head, and a write with no head records the same-repository one', () => {
     upsertSourceLink(db, good)
     upsertSourceLink(db, { ...good, head_repo: 'me/agent-inbox', pr_number: 52 })

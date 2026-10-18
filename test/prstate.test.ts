@@ -493,6 +493,22 @@ describe('head repository verification (issue #157)', () => {
     expect(reads).toBe(2)
     expect(rowFor(BASE)).toMatchObject({ pr_number: 41, preview_url: null, preview_error: 'head-changed' })
   })
+
+  // issue #183 — gh pr checkout of a fork PR without maintainer edits leaves a
+  // branch whose upstream is refs/pull/<n>/head of the base, and the base may
+  // have its own same-named branch with a same-repository PR. The recorded head
+  // is that pull ref: this viewer never polls it, and a viewer that still did
+  // (one that predates this fix, sharing the database) could select nothing.
+  it('links no PR to a branch whose head is a pull request ref, not even the base\'s same-named one', async () => {
+    seed('patch-1', 'refs/pull/7/head')
+    const run = vi.fn(() => list(prFrom(BASE, 40), prFrom('contributor/x', 7)))
+    const runApi = vi.fn(api)
+    expect(await refreshOnce(db, { run, runApi })).toBe(0)
+    expect(run).not.toHaveBeenCalled()
+    expect(runApi).not.toHaveBeenCalled()
+    expect(listSourceLinks(db)).toEqual([])
+    expect(parsePrPayload(run(), { repo: BASE, head_repo: 'refs/pull/7/head' })).toBeNull()
+  })
 })
 
 // ── invariants no unit test can observe, pinned as source text ───────────────

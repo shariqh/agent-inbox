@@ -67,8 +67,6 @@ const ENTRY_POINTS = new Map<string, string>([
   ['src/watch-cli.ts', 'the exact-question watcher entry launched by Copilot from flag metadata'],
   ['electron/main.cjs', "Electron's main-process entry"],
   ['electron/setup-preload.cjs', 'loaded by BrowserWindow webPreferences.preload'],
-  // TEMPORARY: the stale-entry check below fails, forcing removal, once main.cjs requires it.
-  ['electron/update-install-appimage.cjs', '#196 part 3 lands before the install seam it plugs into; main.cjs wires it in phase 2'],
 ])
 
 // electron/*.cjs is read as a CONSUMER only, never scanned for exports: it

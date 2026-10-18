@@ -324,6 +324,7 @@ describe('Electron updater integration', () => {
       'electron/update-download.cjs',
       'electron/update-install.cjs',
       'electron/update-install-macos.cjs',
+      'electron/update-install-appimage.cjs',
     ]) {
       const source = read(file)
       expect(source).not.toContain('attention')
@@ -362,7 +363,8 @@ describe('Electron updater integration', () => {
   it('runs install binaries only by absolute path with argv arrays, outside Electron and the MCP graph', () => {
     const contract = read('electron/update-install.cjs')
     const mac = read('electron/update-install-macos.cjs')
-    for (const source of [contract, mac]) {
+    const appImage = read('electron/update-install-appimage.cjs')
+    for (const source of [contract, mac, appImage]) {
       expect(source).not.toContain("require('electron')")
       expect(source).not.toMatch(/shell:\s*true/)
       expect(source).not.toMatch(/\bexec(Sync)?\(/)
@@ -371,6 +373,35 @@ describe('Electron updater integration', () => {
     }
     expect(contract).not.toContain('child_process')
     expect(mac).toContain("require('node:child_process')")
+    // The AppImage installer starts its one helper only through the injected spawn.
+    expect(appImage).not.toContain('child_process')
+    expect(appImage).toContain("const HELPER_SHELL = '/bin/sh'")
+  })
+
+  it('registers the AppImage installer only for an owned viewer of a packaged AppImage, never via app.relaunch', () => {
+    const main = read('electron/main.cjs')
+    const start = main.indexOf('function appImageInstallers()')
+    const registration = main.slice(start, main.indexOf('\n}', start))
+
+    expect(main).toContain("const { createAppImageInstaller } = require('./update-install-appimage.cjs')")
+    expect(main).toContain("if (process.platform === 'linux') return appImageInstallers()")
+    expect(registration).toContain('if (!viewerOwned || !app.isPackaged || !process.env.APPIMAGE) return {}')
+    for (const line of [
+      "'appimage-self-replace': createAppImageInstaller({",
+      'env: process.env,',
+      'execPath: process.execPath,',
+      'uid: process.getuid(),',
+      'platform: process.platform,',
+      'isPackaged: app.isPackaged,',
+      'pid: process.pid,',
+      'viewerPid: spawnedViewerPid,',
+      'spawnImpl: spawn,',
+    ]) {
+      expect(registration, line).toContain(line)
+    }
+    for (const source of [main, read('electron/update-install-appimage.cjs')]) {
+      expect(source).not.toContain('app.relaunch(')
+    }
   })
 
   it('installs only for the window bound to a viewer this app started and proved it owns', () => {

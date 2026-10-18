@@ -21,9 +21,16 @@ const {
   MANIFEST_URL,
   SIGNATURE_URL,
   checkForUpdate,
+  runsFromAppImage,
 } = updateFetch
 
 const now = new Date('2026-02-01T00:00:00Z')
+// The AppImage runtime's variables and where Electron runs from inside its mount.
+const APPIMAGE_HOST = {
+  appImagePath: '/home/tester/Applications/Agent-Inbox-v1.0.0-linux-x86_64.AppImage',
+  appDir: '/tmp/.mount_AgentIn0QvTkK',
+  execPath: '/tmp/.mount_AgentIn0QvTkK/usr/lib/agent-inbox/Agent Inbox',
+}
 
 function signedFixture(version = '2.0.0') {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519')
@@ -407,8 +414,8 @@ describe('verification, versions, and targets', () => {
   it.each([
     [{ platform: 'darwin', arch: 'x64', isPackaged: true }, 'dmg'],
     [{ platform: 'darwin', arch: 'arm64', isPackaged: true }, 'dmg'],
-    [{ platform: 'linux', arch: 'x64', isPackaged: true, appImagePath: '/app' }, 'appimage'],
-    [{ platform: 'linux', arch: 'arm64', isPackaged: true, appImagePath: '/app' }, 'appimage'],
+    [{ platform: 'linux', arch: 'x64', isPackaged: true, ...APPIMAGE_HOST }, 'appimage'],
+    [{ platform: 'linux', arch: 'arm64', isPackaged: true, ...APPIMAGE_HOST }, 'appimage'],
     [{ platform: 'linux', arch: 'x64', isPackaged: true }, 'deb'],
     [{ platform: 'linux', arch: 'arm64', isPackaged: true }, 'deb'],
   ] as const)('selects the exact packaged target for %o', async (host, packageType) => {
@@ -420,7 +427,7 @@ describe('verification, versions, and targets', () => {
 
   it.each([
     [{ platform: 'darwin', arch: 'arm64', isPackaged: true }, 'darwin', 'universal', 'dmg'],
-    [{ platform: 'linux', arch: 'x64', isPackaged: true, appImagePath: '/app' }, 'linux', 'x64', 'appimage'],
+    [{ platform: 'linux', arch: 'x64', isPackaged: true, ...APPIMAGE_HOST }, 'linux', 'x64', 'appimage'],
     [{ platform: 'linux', arch: 'arm64', isPackaged: true }, 'linux', 'arm64', 'deb'],
   ] as const)('attaches the signed target for the main-process downloader only on request: %o', async (host, platform, architecture, packageType) => {
     const fixture = signedFixture()
@@ -437,6 +444,34 @@ describe('verification, versions, and targets', () => {
       installStrategy: target.installStrategy,
     })
     expect(Object.isFrozen(result.artifact)).toBe(true)
+  })
+
+  // A .deb install started from inside another AppImage inherits that image's
+  // APPIMAGE and APPDIR but runs from /opt, so it must keep its deb-notify offer.
+  it.each([
+    ['a stray inherited APPIMAGE and APPDIR', { execPath: '/opt/Agent Inbox/agent-inbox' }],
+    ['APPIMAGE without APPDIR', { appDir: undefined }],
+    ['an empty APPIMAGE', { appImagePath: '' }],
+    ['a relative APPIMAGE', { appImagePath: 'Agent-Inbox.AppImage' }],
+    ['a relative APPDIR', { appDir: '.mount_AgentIn0QvTkK' }],
+    ['a non-canonical APPDIR', { appDir: '/tmp/.mount_AgentIn0QvTkK/../.mount_AgentIn0QvTkK' }],
+    ['APPDIR at the filesystem root', { appDir: '/' }],
+    ['an executable in a sibling folder sharing the APPDIR prefix', { execPath: '/tmp/.mount_AgentIn0QvTkK-other/agent-inbox' }],
+    ['an executable that is APPDIR itself', { execPath: '/tmp/.mount_AgentIn0QvTkK' }],
+    ['no executable path', { execPath: undefined }],
+  ])('keeps the deb target for %s', async (_label, overrides) => {
+    const fixture = signedFixture()
+    const host = { platform: 'linux', arch: 'x64', isPackaged: true, ...APPIMAGE_HOST, ...overrides }
+    const result = await checkForUpdate(baseOptions(fixture, { ...host, includeArtifact: true }))
+
+    expect(result.available?.target).toEqual({ packageType: 'deb', installStrategy: 'deb-notify' })
+    expect(result.artifact?.packageType).toBe('deb')
+  })
+
+  it('exports the AppImage proof the AppImage installer applies too', () => {
+    expect(runsFromAppImage(APPIMAGE_HOST)).toBe(true)
+    expect(runsFromAppImage({ ...APPIMAGE_HOST, execPath: '/opt/Agent Inbox/agent-inbox' })).toBe(false)
+    expect(runsFromAppImage({})).toBe(false)
   })
 
   it('never attaches an artifact when no newer release is offered', async () => {

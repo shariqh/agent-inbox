@@ -31,6 +31,7 @@ const { MANUAL_RELEASES_URL, createUpdateController } = require('./update-contro
 const { createUpdateDownloader } = require('./update-download.cjs')
 const { createInstallAttemptStore } = require('./update-install.cjs')
 const { bundlePathFromExecPath, createMacInstaller } = require('./update-install-macos.cjs')
+const { createAppImageInstaller } = require('./update-install-appimage.cjs')
 const { checkForUpdate } = require('./update-fetch.cjs')
 const { createUpdatePreferences, createUpdateTrustState } = require('./update-preferences.cjs')
 const { loadUpdateRegistry } = require('./update-trust.cjs')
@@ -364,7 +365,8 @@ function spawnedViewerPid() {
 }
 
 // The only quit path for an update: the committed helper is waiting for this
-// process (and its viewer) to exit before it swaps the app and relaunches it.
+// process (and its viewer) to exit before it relaunches the app (on macOS it
+// swaps the bundle first; an AppImage was already replaced by the commit).
 // Like every quit path, it stops Setup first (#205).
 function requestUpdateRestart() {
   updateRestartRequested = true
@@ -755,6 +757,8 @@ function initializeUpdateController() {
       arch: process.arch,
       isPackaged: app.isPackaged,
       appImagePath: process.env.APPIMAGE,
+      appDir: process.env.APPDIR,
+      execPath: process.execPath,
       includeArtifact: true,
     }),
     downloader: createUpdateDownloader({
@@ -797,9 +801,11 @@ function initializeUpdateController() {
   })
 }
 
-// In-app install only on macOS and only for a viewer this app started and owns;
-// every other host keeps the download-and-verify flow with a manual install.
+// In-app install only on macOS or from a Linux AppImage, and only for a viewer
+// this app started and owns; every other host (a .deb install, a reused viewer)
+// keeps the download-and-verify flow with a manual install.
 function updateInstallers() {
+  if (process.platform === 'linux') return appImageInstallers()
   if (process.platform !== 'darwin' || !viewerOwned) return {}
   try {
     return {
@@ -814,6 +820,31 @@ function updateInstallers() {
         platform: process.platform,
         isPackaged: app.isPackaged,
         workDirectory: path.join(app.getPath('userData'), 'update-install'),
+      }),
+    }
+  } catch {
+    console.error('[agent-inbox] update installer unavailable; updates stay download-only')
+    return {}
+  }
+}
+
+// The AppImage replaces its own file, then a host /bin/sh helper starts the new
+// file once this process and its viewer have exited. Electron's own relaunch
+// cannot do it: its relauncher runs from this AppImage's mount, which goes away
+// with the app.
+function appImageInstallers() {
+  if (!viewerOwned || !app.isPackaged || !process.env.APPIMAGE) return {}
+  try {
+    return {
+      'appimage-self-replace': createAppImageInstaller({
+        env: process.env,
+        execPath: process.execPath,
+        uid: process.getuid(),
+        platform: process.platform,
+        isPackaged: app.isPackaged,
+        pid: process.pid,
+        viewerPid: spawnedViewerPid,
+        spawnImpl: spawn,
       }),
     }
   } catch {

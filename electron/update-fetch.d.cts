@@ -85,7 +85,12 @@ export interface UpdateCheckOptions {
   platform: string
   arch: string
   isPackaged: boolean
+  /** `process.env.APPIMAGE`; with `appDir` and `execPath`, selects the AppImage target (see runsFromAppImage). */
   appImagePath?: string
+  /** `process.env.APPDIR`, the running AppImage's mount. */
+  appDir?: string
+  /** `process.execPath`; must sit inside `appDir` for the AppImage target. */
+  execPath?: string
   /** Attach the verified target as `artifact` for the main-process downloader. */
   includeArtifact?: boolean
   now?: () => Date
@@ -95,3 +100,10 @@ export interface UpdateCheckOptions {
 }
 
 export function checkForUpdate(options: UpdateCheckOptions): Promise<UpdateCheckResult>
+
+/**
+ * True only when APPIMAGE and APPDIR are canonical absolute paths, APPDIR is not
+ * the root, and the executable sits inside APPDIR: proof the app runs from that
+ * AppImage rather than from a .deb install that inherited another image's variables.
+ */
+export function runsFromAppImage(options: { appImagePath?: string; appDir?: string; execPath?: string }): boolean

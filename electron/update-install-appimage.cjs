@@ -17,20 +17,20 @@
 // AppImage) therefore never points this module at somebody else's file. The
 // file must also still be the one this process started from.
 
-const { createHash, randomBytes } = require('node:crypto')
+const { randomBytes } = require('node:crypto')
 const { constants } = require('node:fs')
 const fs = require('node:fs/promises')
 const path = require('node:path')
+const { runsFromAppImage } = require('./update-fetch.cjs')
+const { UpdateInstallError, copyVerifiedSource } = require('./update-install.cjs')
 
 const STRATEGY = 'appimage-self-replace'
 const SHA256_RE = /^[0-9a-f]{64}$/
 const STAGE_SUFFIX_RE = /^[0-9a-f]{16}$/
 const STAGE_RANDOM_BYTES = 8
-const STAGE_ATTEMPTS = 3
 const NAME_MAX_BYTES = 255
 // A sanity bound above any real package; the signed byteLength is the real cap.
 const MAX_ARTIFACT_BYTES = 2 * 1024 ** 3
-const COPY_CHUNK_BYTES = 1024 * 1024
 const MAGIC_BYTES = 11
 const ELF_MAGIC = Buffer.from([0x7f, 0x45, 0x4c, 0x46])
 // AppImage type 2 stores "AI" and the type byte at offset 8 of the ELF header.
@@ -43,6 +43,7 @@ const MAX_CLEANUP_CANDIDATES = 64
 const BIGINT = Object.freeze({ bigint: true })
 // O_NOFOLLOW refuses a symlink swapped in after the lstat; O_NONBLOCK keeps a
 // named pipe swapped in from blocking open() (it then fails the file check).
+// The stage is created like copyVerifiedSource's `wx`, plus O_NOFOLLOW.
 const OPEN_READ_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0)
 const OPEN_STAGE_FLAGS = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0)
 const OPEN_DIRECTORY_FLAGS = constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0)
@@ -50,76 +51,64 @@ const HELPER_SHELL = '/bin/sh'
 const HELPER_NAME = 'agent-inbox-relaunch'
 const HELPER_POLL_MS = 200
 const DEFAULT_HELPER_TIMEOUT_MS = 120_000
-// Waits while the app or its viewer child is alive, then replaces itself with
-// the new AppImage. Every input arrives as argv; after the poll budget it gives
-// up and starts nothing, and the user opens the already-installed file.
-const RELAUNCH_SCRIPT = [
-  'set -u',
-  'app_pid="$1"',
-  'viewer_pid="$2"',
-  'polls="$3"',
-  'target="$4"',
-  'waited=0',
-  'while kill -0 "$app_pid" 2>/dev/null || { [ "$viewer_pid" -gt 0 ] && kill -0 "$viewer_pid" 2>/dev/null; }; do',
-  '  [ "$waited" -lt "$polls" ] || exit 0',
-  '  sleep 0.2 2>/dev/null || sleep 1',
-  '  waited=$((waited + 1))',
-  'done',
-  'exec "$target"',
-  '',
-].join('\n')
+// Constant text: every input arrives as an argument and is expanded only inside
+// double quotes. Waits while the app or the viewer process it started (`-` when
+// the viewer runs in-process or was reused) is alive, then replaces itself with
+// the new AppImage, which the commit already renamed into place. Exit codes:
+// 64 bad arguments, 75 they never exited (nothing started).
+const RELAUNCH_SCRIPT = `set -u
+[ "$#" -eq 4 ] || exit 64
+app_pid="$1"
+viewer_pid="$2"
+polls="$3"
+target="$4"
+case "$app_pid" in ''|0*|*[!0-9]*) exit 64 ;; esac
+case "$viewer_pid" in -) ;; ''|0*|*[!0-9]*) exit 64 ;; esac
+case "$polls" in ''|0*|*[!0-9]*) exit 64 ;; esac
+case "$target" in /*) ;; *) exit 64 ;; esac
+case "$target" in */../*|*/..|*/./*|*/.) exit 64 ;; esac
+running() {
+  kill -0 "$app_pid" 2>/dev/null && return 0
+  [ "$viewer_pid" != - ] && kill -0 "$viewer_pid" 2>/dev/null
+}
+waited=0
+while running; do
+  [ "$waited" -lt "$polls" ] || exit 75
+  waited=$((waited + 1))
+  sleep 0.2 2>/dev/null || sleep 1
+done
+exec "$target"
+`
 // The new AppImage sets these afresh; inherited, they would describe the old one.
 const DROPPED_ENV = new Set(['APPDIR', 'APPIMAGE', 'ARGV0', 'OWD', 'TARGET_APPIMAGE'])
 
-const RELEASE_PAGE = 'Download the update from the release page.'
+const REVIEW = 'Use Review release instead.'
 const INFEASIBLE = Object.freeze({
-  'unsupported-platform': `Agent Inbox can’t install updates by itself on this system. ${RELEASE_PAGE}`,
-  'not-packaged': `Agent Inbox can’t install updates by itself in a development build. ${RELEASE_PAGE}`,
-  'not-appimage': `Agent Inbox can’t install updates by itself unless it runs from its AppImage file. ${RELEASE_PAGE}`,
-  'name-too-long': `Agent Inbox can’t replace its AppImage file because the file name is too long. ${RELEASE_PAGE}`,
-  'not-regular-file': `Agent Inbox can’t safely replace its AppImage file. ${RELEASE_PAGE}`,
-  'not-owner': `Agent Inbox can’t replace an AppImage file that belongs to another user. ${RELEASE_PAGE}`,
-  'read-only': `Agent Inbox can’t replace its AppImage file in this folder. ${RELEASE_PAGE}`,
-  'not-recognized': `Agent Inbox can’t recognize its AppImage file. ${RELEASE_PAGE}`,
+  'unsupported-platform': `Agent Inbox cannot install updates from the app on this system. ${REVIEW}`,
+  'not-packaged': `Installing updates from the app needs the packaged AppImage. ${REVIEW}`,
+  'not-appimage': `Agent Inbox installs updates from the app only when it runs from its AppImage file. ${REVIEW}`,
+  'name-too-long': `The AppImage file name is too long to update in place. ${REVIEW}`,
+  'not-regular-file': `Agent Inbox cannot safely replace its AppImage file. ${REVIEW}`,
+  'not-owner': `This AppImage file belongs to another user account, so Agent Inbox cannot update it. ${REVIEW}`,
+  'read-only': `Agent Inbox cannot replace its AppImage file in its current folder. ${REVIEW}`,
+  'not-recognized': `Agent Inbox does not recognize its AppImage file. ${REVIEW}`,
   'changed-since-launch': 'The AppImage file changed since Agent Inbox started. Restart Agent Inbox to update.',
-  unexpected: `Agent Inbox can’t check whether it can replace its AppImage file. ${RELEASE_PAGE}`,
+  unexpected: `Agent Inbox cannot install updates from the app here. ${REVIEW}`,
 })
 const FEASIBLE = Object.freeze({ ok: true })
 
-const MESSAGES = Object.freeze({
-  'not-feasible': 'update installation is not possible for this AppImage',
-  'not-verified': 'update file no longer matches the signed release',
-  'verification-failed': 'signed update is not an AppImage',
-  staging: 'update could not be staged next to the AppImage',
-  cancelled: 'update installation was cancelled',
-  'commit-failed': 'update could not replace the AppImage; the installed version is unchanged',
-})
+const CANCELLED = 'update install was cancelled'
 
-// Phase-1 stand-in for UpdateInstallError from ./update-install.cjs (#196 part 2).
-class UpdateInstallError extends Error {
-  constructor(code, message = MESSAGES[code] ?? MESSAGES.staging) {
-    super(message)
-    this.name = 'UpdateInstallError'
-    this.code = code
-  }
-}
-
-function fail(code, messageKey = code) {
-  throw new UpdateInstallError(code, MESSAGES[messageKey])
+function fail(code, message) {
+  throw new UpdateInstallError(code, message)
 }
 
 function asInstallError(error) {
-  return error instanceof UpdateInstallError ? error : new UpdateInstallError('staging', MESSAGES.staging)
+  return error instanceof UpdateInstallError ? error : new UpdateInstallError('staging')
 }
 
 function refusal(reason) {
   return Object.freeze({ ok: false, reason, message: INFEASIBLE[reason] })
-}
-
-function canonicalAbsolute(value) {
-  return typeof value === 'string' && value !== '' && path.isAbsolute(value) && path.resolve(value) === value
-    ? value
-    : null
 }
 
 function isInside(directory, target) {
@@ -193,9 +182,14 @@ function createAppImageInstaller(options) {
   if (options === null || typeof options !== 'object') throw new TypeError('options are required')
   if (typeof options.spawnImpl !== 'function') throw new TypeError('spawnImpl is required')
   if (!isPid(options.pid)) throw new TypeError('pid must be a positive integer')
+  if (options.viewerPid !== undefined && typeof options.viewerPid !== 'function') {
+    throw new TypeError('viewerPid must be a function')
+  }
   const helperTimeoutMs = options.helperTimeoutMs ?? DEFAULT_HELPER_TIMEOUT_MS
   if (!Number.isFinite(helperTimeoutMs) || helperTimeoutMs <= 0) throw new TypeError('helperTimeoutMs must be positive')
-  const { env, execPath, uid, platform, isPackaged, pid, viewerPid, spawnImpl } = options
+  const { env, execPath, uid, platform, isPackaged, pid, spawnImpl } = options
+  // Read at commit time: the viewer this app started and stops when it quits.
+  const viewerPid = options.viewerPid ?? (() => null)
   const helperPolls = Math.max(1, Math.ceil(helperTimeoutMs / HELPER_POLL_MS))
   const fsImpl = options.fsImpl ?? fs
   const randomImpl = options.randomImpl ?? randomBytes
@@ -206,18 +200,10 @@ function createAppImageInstaller(options) {
   function locate() {
     if (platform !== 'linux') return refusal('unsupported-platform')
     if (isPackaged !== true) return refusal('not-packaged')
-    const appImage = canonicalAbsolute(env?.APPIMAGE)
-    const appDir = canonicalAbsolute(env?.APPDIR)
-    const executable = canonicalAbsolute(execPath)
-    if (
-      appImage === null
-      || appDir === null
-      || appDir === path.parse(appDir).root
-      || executable === null
-      || !isInside(appDir, executable)
-    ) {
-      return refusal('not-appimage')
-    }
+    const appImage = env?.APPIMAGE
+    const appDir = env?.APPDIR
+    // The same proof that selected the AppImage target for this offer.
+    if (!runsFromAppImage({ appImagePath: appImage, appDir, execPath })) return refusal('not-appimage')
     const name = path.basename(appImage)
     if (Buffer.byteLength(stageName(name, '0'.repeat(STAGE_RANDOM_BYTES * 2))) > NAME_MAX_BYTES) {
       return refusal('name-too-long')
@@ -315,16 +301,11 @@ function createAppImageInstaller(options) {
     }
   }
 
-  function checkedRecord(source) {
+  function checkRecord(source) {
     const record = source?.record
-    const handle = source?.handle
     if (
       record === null
       || typeof record !== 'object'
-      || handle === null
-      || typeof handle !== 'object'
-      || typeof handle.read !== 'function'
-      || typeof handle.stat !== 'function'
       || record.installStrategy !== STRATEGY
       || record.packageType !== 'appimage'
       || !Number.isSafeInteger(record.byteLength)
@@ -332,103 +313,15 @@ function createAppImageInstaller(options) {
       || record.byteLength > MAX_ARTIFACT_BYTES
       || typeof record.sha256 !== 'string'
       || !SHA256_RE.test(record.sha256)
+      || typeof source.handle?.read !== 'function'
+      || typeof source.handle?.stat !== 'function'
     ) {
       fail('not-verified')
     }
-    return Object.freeze({ byteLength: record.byteLength, sha256: record.sha256 })
-  }
-
-  async function checkSourceSize(handle, expected) {
-    try {
-      const stat = await handle.stat()
-      if (stat.isFile() && stat.size === expected.byteLength) return
-    } catch {
-      // An unreadable source cannot be verified.
-    }
-    fail('not-verified')
   }
 
   function throwIfAborted(signal) {
-    if (signal?.aborted) fail('staging', 'cancelled')
-  }
-
-  async function createStage(target) {
-    for (let attempt = 0; attempt < STAGE_ATTEMPTS; attempt += 1) {
-      const suffix = Buffer.from(randomImpl(STAGE_RANDOM_BYTES)).toString('hex')
-      if (!STAGE_SUFFIX_RE.test(suffix)) fail('staging')
-      const stagePath = path.join(target.parent, stageName(target.name, suffix))
-      let handle
-      try {
-        handle = await fsImpl.open(stagePath, OPEN_STAGE_FLAGS, STAGE_MODE)
-      } catch (error) {
-        // Never reuse, follow or remove an existing entry: pick another name.
-        if (error?.code === 'EEXIST') continue
-        fail('staging')
-      }
-      let identity = null
-      let sameDevice = false
-      try {
-        const stat = await handle.stat(BIGINT)
-        identity = stat.isFile() ? identityOf(stat) : null
-        // The commit is a rename, which is atomic only within one file system.
-        sameDevice = identity !== null && identity.dev === target.file.dev
-      } catch {
-        identity = null
-      }
-      if (!sameDevice) {
-        await handle.close().catch(() => {})
-        if (identity !== null) await removeIfOurs(stagePath, identity)
-        fail('staging')
-      }
-      return { path: stagePath, handle, identity }
-    }
-    return fail('staging')
-  }
-
-  async function writeAll(handle, chunk, position) {
-    let offset = 0
-    while (offset < chunk.length) {
-      let bytesWritten
-      try {
-        ({ bytesWritten } = await handle.write(chunk, offset, chunk.length - offset, position + offset))
-      } catch {
-        fail('staging')
-      }
-      if (!Number.isSafeInteger(bytesWritten) || bytesWritten <= 0 || bytesWritten > chunk.length - offset) {
-        fail('staging')
-      }
-      offset += bytesWritten
-    }
-  }
-
-  // Hashes exactly the bytes it writes, and reads one byte past the signed
-  // length so a source that is longer than signed is refused.
-  async function copyVerified(source, stageHandle, expected, signal) {
-    const hash = createHash('sha256')
-    const head = Buffer.alloc(MAGIC_BYTES)
-    const buffer = Buffer.allocUnsafe(Math.min(COPY_CHUNK_BYTES, expected.byteLength + 1))
-    let position = 0
-    while (true) {
-      throwIfAborted(signal)
-      const length = Math.min(buffer.length, expected.byteLength + 1 - position)
-      let bytesRead
-      try {
-        ({ bytesRead } = await source.read(buffer, 0, length, position))
-      } catch {
-        fail('not-verified')
-      }
-      if (!Number.isSafeInteger(bytesRead) || bytesRead < 0 || bytesRead > length) fail('not-verified')
-      if (bytesRead === 0) break
-      if (position + bytesRead > expected.byteLength) fail('not-verified')
-      const chunk = buffer.subarray(0, bytesRead)
-      hash.update(chunk)
-      if (position < MAGIC_BYTES) chunk.copy(head, position, 0, Math.min(bytesRead, MAGIC_BYTES - position))
-      await writeAll(stageHandle, chunk, position)
-      position += bytesRead
-    }
-    if (position !== expected.byteLength || hash.digest('hex') !== expected.sha256) fail('not-verified')
-    await checkSourceSize(source, expected)
-    return head
+    if (signal?.aborted) fail('staging', CANCELLED)
   }
 
   async function staging(operation) {
@@ -436,6 +329,61 @@ function createAppImageInstaller(options) {
       return await operation()
     } catch {
       return fail('staging')
+    }
+  }
+
+  // copyVerifiedSource opens its destination `wx`; this adds O_NOFOLLOW.
+  const stageCopyFs = Object.freeze({
+    open: (target, _flags, mode) => fsImpl.open(target, OPEN_STAGE_FLAGS, mode),
+    unlink: (target) => fsImpl.unlink(target),
+  })
+
+  function stagePathFor(target) {
+    let suffix = ''
+    try {
+      suffix = Buffer.from(randomImpl(STAGE_RANDOM_BYTES)).toString('hex')
+    } catch {
+      suffix = ''
+    }
+    if (!STAGE_SUFFIX_RE.test(suffix)) fail('staging')
+    return path.join(target.parent, stageName(target.name, suffix))
+  }
+
+  // Binds the file copyVerifiedSource just wrote and verified: it must sit on
+  // the AppImage's file system (the commit is a rename) with the signed size,
+  // and the bytes that will run must carry the AppImage magic. Then 0755.
+  async function finalizeStage(stagePath, target, byteLength) {
+    let handle
+    try {
+      handle = await fsImpl.open(stagePath, OPEN_READ_FLAGS)
+    } catch {
+      await fsImpl.unlink(stagePath).catch(() => {})
+      return fail('staging')
+    }
+    let identity = null
+    try {
+      const stat = await staging(() => handle.stat(BIGINT))
+      identity = stat.isFile() ? identityOf(stat) : null
+      if (identity === null || identity.dev !== target.file.dev || stat.size !== BigInt(byteLength)) fail('staging')
+      const head = Buffer.alloc(MAGIC_BYTES)
+      let filled = 0
+      while (filled < MAGIC_BYTES) {
+        const { bytesRead } = await staging(() => handle.read(head, filled, MAGIC_BYTES - filled, filled))
+        if (!Number.isSafeInteger(bytesRead) || bytesRead <= 0 || bytesRead > MAGIC_BYTES - filled) break
+        filled += bytesRead
+      }
+      if (filled !== MAGIC_BYTES || !hasAppImageMagic(head)) fail('verification-failed')
+      await staging(() => handle.chmod(INSTALLED_MODE))
+      await staging(() => handle.sync())
+      const opened = handle
+      handle = null
+      await staging(() => opened.close())
+      return identity
+    } catch (error) {
+      if (handle !== null) await handle.close().catch(() => {})
+      if (identity !== null) await removeIfOurs(stagePath, identity)
+      else await fsImpl.unlink(stagePath).catch(() => {})
+      throw error
     }
   }
 
@@ -451,13 +399,12 @@ function createAppImageInstaller(options) {
     }
   }
 
-  function currentViewerPid() {
-    try {
-      const value = typeof viewerPid === 'function' ? viewerPid() : viewerPid
-      return isPid(value) ? value : 0
-    } catch {
-      return 0
-    }
+  // `-` tells the helper there is no separate viewer process to wait for.
+  function viewerArgument() {
+    const value = viewerPid()
+    if (value === null || value === undefined) return '-'
+    if (!isPid(value)) throw new Error('viewer pid is invalid')
+    return String(value)
   }
 
   // Resolves true once the detached helper is running, false if it could not start.
@@ -467,8 +414,8 @@ function createAppImageInstaller(options) {
       try {
         child = spawnImpl(
           HELPER_SHELL,
-          ['-c', RELAUNCH_SCRIPT, HELPER_NAME, String(pid), String(currentViewerPid()), String(helperPolls), target.appImage],
-          { detached: true, stdio: 'ignore', env: relaunchEnvironment(env, target.appDir), cwd: target.parent },
+          ['-c', RELAUNCH_SCRIPT, HELPER_NAME, String(pid), viewerArgument(), String(helperPolls), target.appImage],
+          { detached: true, stdio: 'ignore', env: relaunchEnvironment(env, target.appDir), cwd: '/' },
         )
         child.once('spawn', () => {
           try {
@@ -536,7 +483,7 @@ function createAppImageInstaller(options) {
     return Object.freeze({
       commit() {
         if (committing === null) {
-          if (state !== 'prepared') return Promise.reject(new UpdateInstallError('commit-failed', MESSAGES['commit-failed']))
+          if (state !== 'prepared') return Promise.reject(new UpdateInstallError('commit-failed'))
           state = 'committing'
           committing = runCommit()
         }
@@ -560,7 +507,7 @@ function createAppImageInstaller(options) {
 
   async function prepare(source, prepareOptions = {}) {
     const signal = prepareOptions?.signal
-    const expected = checkedRecord(source)
+    checkRecord(source)
     throwIfAborted(signal)
     let target
     try {
@@ -569,32 +516,21 @@ function createAppImageInstaller(options) {
       target = null
     }
     if (!target?.ok) fail('not-feasible')
-    await checkSourceSize(source.handle, expected)
     throwIfAborted(signal)
-    let stage
+    const stagePath = stagePathFor(target)
+    live.add(stagePath)
+    let identity = null
     try {
-      stage = await createStage(target)
-    } catch (error) {
-      throw asInstallError(error)
-    }
-    live.add(stage.path)
-    let handle = stage.handle
-    try {
-      const head = await copyVerified(source.handle, handle, expected, signal)
-      if (!hasAppImageMagic(head)) fail('verification-failed')
-      await staging(() => handle.chmod(INSTALLED_MODE))
-      await staging(() => handle.sync())
-      const written = handle
-      handle = null
-      await staging(() => written.close())
+      // Hashes exactly the bytes it consumes; keeps the copy only at the signed length and SHA-256.
+      await copyVerifiedSource(source, stagePath, { fsImpl: stageCopyFs, signal, mode: STAGE_MODE })
+      identity = await finalizeStage(stagePath, target, source.record.byteLength)
       throwIfAborted(signal)
     } catch (error) {
-      if (handle !== null) await handle.close().catch(() => {})
-      live.delete(stage.path)
-      await removeIfOurs(stage.path, stage.identity)
+      live.delete(stagePath)
+      if (identity !== null) await removeIfOurs(stagePath, identity)
       throw asInstallError(error)
     }
-    return preparedInstall(target, stage)
+    return preparedInstall(target, { path: stagePath, identity })
   }
 
   // Locates the AppImage folder for cleanup without requiring it to be writable.

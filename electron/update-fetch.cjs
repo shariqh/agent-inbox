@@ -1,5 +1,6 @@
 'use strict'
 
+const path = require('node:path')
 const {
   verifyManifest,
 } = require('./update-manifest.cjs')
@@ -221,6 +222,25 @@ function compareVersions(left, right) {
   return 0
 }
 
+function canonicalAbsolute(value) {
+  return typeof value === 'string' && value !== '' && path.isAbsolute(value) && path.resolve(value) === value
+    ? value
+    : null
+}
+
+// A Linux app runs from its AppImage only when APPIMAGE names an image AND the
+// executable sits inside APPDIR, that image's mount. A .deb install started from
+// inside another AppImage inherits both variables but runs from /opt, so it
+// keeps its deb target. The AppImage installer applies this same proof.
+function runsFromAppImage({ appImagePath, appDir, execPath } = {}) {
+  const image = canonicalAbsolute(appImagePath)
+  const mount = canonicalAbsolute(appDir)
+  const executable = canonicalAbsolute(execPath)
+  if (image === null || mount === null || executable === null || mount === path.parse(mount).root) return false
+  const relative = path.relative(mount, executable)
+  return relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
+}
+
 function selectTarget(manifest, options) {
   const packaged = options.isPackaged === true
   const supportedArch = options.arch === 'x64' || options.arch === 'arm64'
@@ -233,9 +253,7 @@ function selectTarget(manifest, options) {
     packageType = 'dmg'
   } else if (options.platform === 'linux') {
     architecture = options.arch
-    packageType = typeof options.appImagePath === 'string' && options.appImagePath !== ''
-      ? 'appimage'
-      : 'deb'
+    packageType = runsFromAppImage(options) ? 'appimage' : 'deb'
   } else {
     return null
   }
@@ -351,4 +369,5 @@ module.exports = {
   MANIFEST_URL,
   SIGNATURE_URL,
   checkForUpdate,
+  runsFromAppImage,
 }

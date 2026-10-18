@@ -1,55 +1,4 @@
-import type { DownloadableInstallStrategy, UpdateDownloadFileHandle, VerifiedArtifact } from './update-download.cjs'
-
-// #196 part 3, phase 1: a structural copy of the shared install contract that
-// electron/update-install.d.cts (part 2) owns. Replaced by imports from there
-// once part 2 lands; keep every declaration identical until then.
-export type UpdateInstallErrorCode =
-  | 'not-feasible'
-  | 'not-verified'
-  | 'stale'
-  | 'busy'
-  | 'staging'
-  | 'verification-failed'
-  | 'commit-failed'
-
-export interface InstallCandidate {
-  version: string
-  minimumSystemVersion?: string
-}
-
-/** `message` is plain-language and user-safe: it never contains a path. */
-export type InstallFeasibility = { ok: true } | { ok: false; reason: string; message: string }
-
-/** An already-open read-only handle whose bytes were re-hashed through this same handle immediately before. */
-export interface VerifiedInstallSource {
-  record: VerifiedArtifact
-  /** Positioned reads only; the caller closes it. */
-  handle: Pick<UpdateDownloadFileHandle, 'read' | 'stat'>
-}
-
-export interface PreparedInstall {
-  /**
-   * The only step that changes the installation. Resolves once the
-   * swap/relaunch hand-off is arranged; main quits right after. If it rejects,
-   * the running installation is untouched.
-   */
-  commit(): Promise<void>
-  /** Removes everything prepare() staged. Idempotent; never rejects. */
-  discard(): Promise<void>
-}
-
-export interface PlatformInstaller {
-  readonly strategy: DownloadableInstallStrategy
-  /** Side-effect free; never rejects. */
-  feasibility(candidate: InstallCandidate): Promise<InstallFeasibility>
-  /**
-   * Stages and fully verifies the new build from `source` without modifying
-   * the running installation. Throws UpdateInstallError.
-   */
-  prepare(source: VerifiedInstallSource, options?: { signal?: AbortSignal }): Promise<PreparedInstall>
-  /** Bounded startup cleanup. Never rejects. */
-  cleanup?(): Promise<void>
-}
+import type { PlatformInstaller } from './update-install.cjs'
 
 export type AppImageInfeasibleReason =
   | 'unsupported-platform'
@@ -77,7 +26,7 @@ export interface AppImageInstallStat {
 
 export interface AppImageInstallFileHandle {
   read(buffer: Uint8Array, offset: number, length: number, position: number): Promise<{ bytesRead: number }>
-  write(buffer: Uint8Array, offset: number, length: number, position: number): Promise<{ bytesWritten: number }>
+  write(buffer: Uint8Array, offset: number, length: number, position?: number | null): Promise<{ bytesWritten: number }>
   stat(options: { bigint: true }): Promise<AppImageInstallStat>
   chmod(mode: number): Promise<void>
   sync(): Promise<void>
@@ -120,7 +69,7 @@ export interface AppImageInstaller extends PlatformInstaller {
 }
 
 export function createAppImageInstaller(options: {
-  /** `process.env`; only APPIMAGE and APPDIR are read. */
+  /** `process.env`: APPIMAGE and APPDIR locate the AppImage; the restart helper inherits the rest, minus the old mount. */
   env: Readonly<Record<string, string | undefined>>
   /** `process.execPath`; must sit inside APPDIR, the running AppImage's mount. */
   execPath: string
@@ -130,8 +79,8 @@ export function createAppImageInstaller(options: {
   isPackaged: boolean
   /** `process.pid`: the restart helper starts the new build only after this process exits. */
   pid: number
-  /** A viewer child process this app started, if any; the helper waits for it as well. */
-  viewerPid?: number | null | (() => number | null)
+  /** Read at commit time: a viewer child process this app started, if any; the helper waits for it as well. */
+  viewerPid?: () => number | null
   /** `child_process.spawn`; used once per commit, for the detached `/bin/sh` restart helper. */
   spawnImpl: AppImageSpawn
   /** How long the helper waits for those processes before giving up. Default 120 s. */

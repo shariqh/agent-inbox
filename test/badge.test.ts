@@ -43,7 +43,12 @@ describe('focus hash', () => {
 describe('packaged app can resolve public/ from REPO_ROOT', () => {
   const sh = readFileSync(new URL('../scripts/package-app.sh', import.meta.url), 'utf8')
   it('stages public/ alongside electron/ and dist/', () => {
-    expect(sh).toContain('cp -R "$ROOT/dist" "$ROOT/public" "$ROOT/electron" "$ROOT/release" "$STAGE/"')
+    // package-app.sh stages through the release thin app's copyRequiredTree() (#139).
+    expect(sh).toContain('"$ROOT/scripts/package-app-stage.mjs" stage "$ROOT" "$STAGE"')
+    expect(readFileSync(new URL('../scripts/package-app-stage.mjs', import.meta.url), 'utf8'))
+      .toContain('copyRequiredTree(repoRoot, stageRoot)')
+    expect(readFileSync(new URL('../scripts/build-thin-app.mjs', import.meta.url), 'utf8'))
+      .toContain("for (const name of ['dist', 'public', 'electron', 'release'])")
   })
   it('packages unarchived, so plain file paths resolve at runtime', () => {
     expect(sh).toContain('--no-asar')

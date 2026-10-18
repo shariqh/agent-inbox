@@ -323,6 +323,16 @@ describe('AppImage install feasibility', () => {
     ['an app in a sibling folder that shares the APPDIR prefix', (fx) => ({ execPath: `${fx.appDir}-other/agent-inbox` }), 'not-appimage'],
     ['an app whose executable path is APPDIR itself', (fx) => ({ execPath: fx.appDir }), 'not-appimage'],
     ['a relative executable path', () => ({ execPath: 'agent-inbox' }), 'not-appimage'],
+    // A restart would extract again into a TMPDIR the documented launcher already removed.
+    ['the extract-and-run fallback', (fx) => ({ env: { APPIMAGE: fx.appImage, APPDIR: fx.appDir, APPIMAGE_EXTRACT_AND_RUN: '1' } }), 'extract-and-run'],
+    // The runtime extracts whenever the variable is set at all.
+    ['an APPIMAGE_EXTRACT_AND_RUN set to an empty value', (fx) => ({ env: { APPIMAGE: fx.appImage, APPDIR: fx.appDir, APPIMAGE_EXTRACT_AND_RUN: '' } }), 'extract-and-run'],
+    // --appimage-extract-and-run sets no variable: only APPDIR, the extraction folder, tells.
+    ['an app extracted by --appimage-extract-and-run', (fx) => {
+      const extracted = join(fx.work, `appimage_extracted_${'0123456789abcdef'.repeat(2)}`)
+      mkdirSync(extracted)
+      return { env: { APPIMAGE: fx.appImage, APPDIR: extracted }, execPath: join(extracted, 'agent-inbox') }
+    }, 'extract-and-run'],
     ['a missing AppImage file', (fx) => { unlinkSync(fx.appImage) }, 'not-regular-file'],
     ['a symlinked AppImage', (fx) => {
       const real = join(fx.work, 'real.AppImage')
@@ -1276,18 +1286,18 @@ describe('scheduling the restart into the new AppImage', () => {
     const call = fx.helper.calls[0]!
     expect(call.replacedBefore).toBe(true)
     expect(call.command).toBe('/bin/sh')
-    expect(call.args).toEqual(['-c', expect.any(String), 'agent-inbox-relaunch', String(APP_PID), '5151', '600', fx.appImage, RESULT_PATH])
+    expect(call.args).toEqual(['-c', expect.any(String), 'agent-inbox-relaunch', String(APP_PID), '5151', '600', fx.appImage, RESULT_PATH, '--'])
     const script = call.args[1]!
     expect(script.startsWith('set -u\n')).toBe(true)
     expect(script).not.toContain(fx.work)
     expect(script).not.toMatch(/\beval\b/)
     expect(dollarsQuoted(script)).toBe(true)
-    expect(script.trimEnd().endsWith('exec "$target"')).toBe(true)
+    expect(script.trimEnd().endsWith('exec "$target" "$@"')).toBe(true)
     // The shared helper convention, reported to the attempt store's result file.
     for (const code of [INSTALL_HELPER_EXIT.badArguments, INSTALL_HELPER_EXIT.refused, INSTALL_HELPER_EXIT.timedOut]) {
       expect(script).toContain(`finish ${code}`)
     }
-    expect(script).toContain(`report ${INSTALL_HELPER_EXIT.installed}\nexec "$target"`)
+    expect(script).toContain(`report ${INSTALL_HELPER_EXIT.installed}\nexec "$target" "$@"`)
     expect(call.options).toEqual({
       detached: true,
       stdio: 'ignore',
@@ -1317,7 +1327,52 @@ describe('scheduling the restart into the new AppImage', () => {
     const other = fixture()
     await (await other.installer().prepare(await other.source())).commit()
     expect(other.helper.calls[0]!.args[1]).toBe(script)
-    expect(other.helper.calls[0]!.args.at(-1)).toBe('-')
+    expect(other.helper.calls[0]!.args.slice(7)).toEqual(['-', '--'])
+  })
+
+  it('forwards the arguments the app started with, after `--`, minus the switch its AppRun adds again', async () => {
+    // The new AppImage's AppRun puts this switch in front of the forwarded arguments itself.
+    expect(readFileSync(join(repoRoot, 'scripts', 'build-linux-appimage.mjs'), 'utf8'))
+      .toContain('/Agent Inbox" --disable-setuid-sandbox "$@"`')
+    const user = ['--ozone-platform=wayland', '--no-sandbox', 'two words', '-x', '--', '', '$HOME *']
+    for (const [argv, forwarded] of [
+      [['--disable-setuid-sandbox', ...user], user],
+      // Only AppRun's leading copy is dropped; a copy the user passed is theirs.
+      [['--disable-setuid-sandbox', '--disable-setuid-sandbox'], ['--disable-setuid-sandbox']],
+      // Not started through AppRun: every argument is the user's.
+      [['--no-sandbox', '--disable-setuid-sandbox'], ['--no-sandbox', '--disable-setuid-sandbox']],
+      [[], []],
+    ] as Array<[string[], string[]]>) {
+      const fx = fixture()
+      await (await fx.installer({ argv }).prepare(await fx.source())).commit({ resultPath: RESULT_PATH })
+      expect(fx.helper.calls[0]!.args.slice(6), JSON.stringify(argv)).toEqual([fx.appImage, RESULT_PATH, '--', ...forwarded])
+    }
+
+    // Taken when the installer is created at startup, not when it commits.
+    for (const argv of [['--disable-setuid-sandbox', '--ozone-platform=wayland'], ['--ozone-platform=wayland']]) {
+      const fx = fixture()
+      const installer = fx.installer({ argv })
+      argv.push('--added-later')
+      await (await installer.prepare(await fx.source())).commit()
+      expect(fx.helper.calls[0]!.args.slice(8)).toEqual(['--', '--ozone-platform=wayland'])
+    }
+  })
+
+  it('drops a path list left with no directory, so the helper finds its tools on the shell default PATH', async () => {
+    for (const listed of [(appDir: string) => `${appDir}:${appDir}/usr/sbin:`, () => '', () => ':']) {
+      const fx = fixture()
+      const env = {
+        APPIMAGE: fx.appImage,
+        APPDIR: fx.appDir,
+        PATH: listed(fx.appDir),
+        XDG_DATA_DIRS: `${fx.appDir}/usr/share:`,
+        // An ordinary empty variable is the user's to keep.
+        NO_PROXY: '',
+        HOME: '/home/tester',
+      }
+      await (await fx.installer({ env }).prepare(await fx.source())).commit()
+      expect(fx.helper.calls[0]!.options.env, env.PATH).toEqual({ NO_PROXY: '', HOME: '/home/tester' })
+    }
   })
 
   it('refuses a result path the helper would reject, before changing anything', async () => {
@@ -1381,7 +1436,7 @@ describe('scheduling the restart into the new AppImage', () => {
     }
   })
 
-  it('rejects a missing spawner, app PID or wait at construction', () => {
+  it('rejects a missing spawner, app PID, wait or argument list at construction', () => {
     const fx = fixture()
     for (const overrides of [
       { spawnImpl: undefined },
@@ -1391,9 +1446,63 @@ describe('scheduling the restart into the new AppImage', () => {
       { pid: 1.5 },
       { helperTimeoutMs: 0 },
       { helperTimeoutMs: Number.POSITIVE_INFINITY },
+      { argv: '--no-sandbox' },
+      { argv: null },
+      { argv: ['--no-sandbox', 1] },
     ] as Array<Partial<InstallerOptions>>) {
       expect(() => createAppImageInstaller(fx.options(overrides)), JSON.stringify(overrides)).toThrow(TypeError)
     }
+  })
+})
+
+describe('an app running in the extract-and-run fallback', () => {
+  // The runtime would extract the restart into $TMPDIR/appimage_extracted_<md5>, recreating
+  // (0755) a folder the documented launcher removed as this app exited.
+  it('stages, replaces and starts nothing', async () => {
+    for (const extracted of [
+      (fx: Fixture): Partial<InstallerOptions> => ({ env: { ...fx.options().env, APPIMAGE_EXTRACT_AND_RUN: '1' } }),
+      (fx: Fixture): Partial<InstallerOptions> => {
+        const appDir = join(fx.work, `appimage_extracted_${'f'.repeat(32)}`)
+        mkdirSync(appDir)
+        return { env: { ...fx.options().env, APPDIR: appDir }, execPath: join(appDir, 'agent-inbox') }
+      },
+    ]) {
+      const fx = fixture()
+      const installer = fx.installer(extracted(fx))
+
+      expect(await failure(installer.prepare(await fx.source()))).toMatchObject({ name: 'UpdateInstallError', code: 'not-feasible' })
+      expect(stagesIn(fx.folder)).toEqual([])
+      expect(readFileSync(fx.appImage).equals(fx.oldBytes)).toBe(true)
+      expect(fx.helper.impl).not.toHaveBeenCalled()
+    }
+  })
+
+  it('refuses to commit, before replacing anything, once the restart would extract', async () => {
+    const fx = fixture()
+    const env: Record<string, string> = { APPIMAGE: fx.appImage, APPDIR: fx.appDir, PATH: '/usr/bin:/bin' }
+    const prepared = await fx.installer({ env }).prepare(await fx.source())
+    env.APPIMAGE_EXTRACT_AND_RUN = '1'
+
+    expect(await failure(prepared.commit({ resultPath: RESULT_PATH }))).toMatchObject({ name: 'UpdateInstallError', code: 'commit-failed' })
+    expect(readFileSync(fx.appImage).equals(fx.oldBytes)).toBe(true)
+    expect(stagesIn(fx.folder)).toEqual([])
+    expect(fx.helper.impl).not.toHaveBeenCalled()
+
+    // An environment it can no longer read is no proof that the restart would not extract.
+    const other = fixture()
+    let readable = true
+    const hostile = new Proxy({ APPIMAGE: other.appImage, APPDIR: other.appDir } as Record<string, string>, {
+      get(values, key) {
+        if (!readable) throw new Error('boom')
+        return values[key as string]
+      },
+    })
+    const unreadable = await other.installer({ env: hostile }).prepare(await other.source())
+    readable = false
+    expect(await failure(unreadable.commit())).toMatchObject({ name: 'UpdateInstallError', code: 'commit-failed' })
+    expect(readFileSync(other.appImage).equals(other.oldBytes)).toBe(true)
+    expect(stagesIn(other.folder)).toEqual([])
+    expect(other.helper.impl).not.toHaveBeenCalled()
   })
 })
 
@@ -1438,6 +1547,7 @@ describe('the restart helper under a real /bin/sh', () => {
       '  printf "cwd=%s\\n" "$(pwd -P)"',
       '  printf "umask=%s\\n" "$(umask)"',
       '  printf "result=%s\\n" "$(cat "${RESULT_FOR_TEST:-/nonexistent}" 2>/dev/null)"',
+      '  for arg in "$@"; do printf "arg=%s\\n" "$arg"; done',
       '  env',
       '} > "$out.tmp"',
       'mv "$out.tmp" "$out"',
@@ -1454,7 +1564,7 @@ describe('the restart helper under a real /bin/sh', () => {
     return folder
   }
 
-  // argv: -c <script> <name> <app-pid> <viewer-pid|-> <polls> <target> <result|->
+  // argv: -c <script> <name> <app-pid> <viewer-pid|-> <polls> <target> <result|-> -- <app arguments…>
   const TARGET_ARG = 6
 
   /** The real spawn, with the exec target swapped for a script that records how it was started. */
@@ -1479,13 +1589,15 @@ describe('the restart helper under a real /bin/sh', () => {
   }
 
   function readRecord(path: string) {
-    const lines = readFileSync(path, 'utf8').split('\n').filter((line) => line !== '')
+    const lines = readFileSync(path, 'utf8').split('\n')
+    const argc = Number(lines[0]!.slice('argc='.length))
+    const args = lines.slice(4, 4 + argc).map((line) => line.slice('arg='.length))
     const env = new Map<string, string>()
-    for (const line of lines.slice(4)) {
+    for (const line of lines.slice(4 + argc).filter((entry) => entry !== '')) {
       const split = line.indexOf('=')
       env.set(line.slice(0, split), line.slice(split + 1))
     }
-    return { argc: lines[0], cwd: lines[1], umask: lines[2], result: lines[3], env }
+    return { argc: lines[0], cwd: lines[1], umask: lines[2], result: lines[3], args, env }
   }
 
   it('waits for the app and its viewer to exit, then starts the new file with a scrubbed environment', async () => {
@@ -1520,6 +1632,7 @@ describe('the restart helper under a real /bin/sh', () => {
       env,
       pid: app.pid!,
       viewerPid: () => viewer.pid!,
+      argv: ['--disable-setuid-sandbox', '--ozone-platform=wayland', 'two words', '-x', '--', '', '$HOME *'],
       spawnImpl: spawnInto(script, fx.appImage),
       helperTimeoutMs: 20_000,
     })
@@ -1534,7 +1647,9 @@ describe('the restart helper under a real /bin/sh', () => {
     expect(await appears(record, 5_000)).toBe(true)
 
     const seen = readRecord(record)
-    expect(seen.argc).toBe('argc=0')
+    // The user's arguments, verbatim and unexpanded; the new AppRun adds its own switch again.
+    expect(seen.argc).toBe('argc=6')
+    expect(seen.args).toEqual(['--ozone-platform=wayland', 'two words', '-x', '--', '', '$HOME *'])
     expect(seen.cwd).toBe('cwd=/')
     // Reported before the exec, atomically and privately, without changing the app's own umask.
     expect(seen.result).toBe(`result=${INSTALL_HELPER_EXIT.installed}`)
@@ -1575,18 +1690,18 @@ describe('the restart helper under a real /bin/sh', () => {
     const resultPath = join(folder, 'last-attempt.result')
     const alive = String(process.pid)
     for (const args of [
-      ['0', '-', '5', target, resultPath],
-      ['012', '-', '5', target, resultPath],
-      ['12a', '-', '5', target, resultPath],
-      ['', '-', '5', target, resultPath],
-      [alive, '0', '5', target, resultPath],
-      [alive, '', '5', target, resultPath],
-      [alive, '-', '0', target, resultPath],
-      [alive, '-', 'x', target, resultPath],
-      [alive, '-', '5', 'relative/target', resultPath],
-      [alive, '-', '5', `${fx.work}/../record-launch.sh`, resultPath],
-      [alive, '-', '5', `${fx.work}/./record-launch.sh`, resultPath],
-      [alive, '-', '5', `${target}/`, resultPath],
+      ['0', '-', '5', target, resultPath, '--'],
+      ['012', '-', '5', target, resultPath, '--'],
+      ['12a', '-', '5', target, resultPath, '--'],
+      ['', '-', '5', target, resultPath, '--'],
+      [alive, '0', '5', target, resultPath, '--'],
+      [alive, '', '5', target, resultPath, '--'],
+      [alive, '-', '0', target, resultPath, '--'],
+      [alive, '-', 'x', target, resultPath, '--'],
+      [alive, '-', '5', 'relative/target', resultPath, '--'],
+      [alive, '-', '5', `${fx.work}/../record-launch.sh`, resultPath, '--'],
+      [alive, '-', '5', `${fx.work}/./record-launch.sh`, resultPath, '--'],
+      [alive, '-', '5', `${target}/`, resultPath, '--', '--no-sandbox'],
     ]) {
       expect(runHelper(script, args, fx.work), JSON.stringify(args)).toBe(INSTALL_HELPER_EXIT.badArguments)
       expect(readFileSync(resultPath, 'utf8'), JSON.stringify(args)).toBe(`${INSTALL_HELPER_EXIT.badArguments}\n`)
@@ -1602,15 +1717,19 @@ describe('the restart helper under a real /bin/sh', () => {
     const scratch = join(fx.work, 'cwd')
     mkdirSync(scratch)
     const alive = String(process.pid)
+    const resultPath = join(folder, 'last-attempt.result')
     for (const args of [
-      [alive, '-', '5', target, 'relative.result'],
-      [alive, '-', '5', target, `${folder}/../last-attempt.result`],
-      [alive, '-', '5', target, `${folder}/./last-attempt.result`],
-      [alive, '-', '5', target, `${folder}/`],
-      [alive, '-', '5', target, ''],
-      ['0', '-', '5', target, '-'],
+      [alive, '-', '5', target, 'relative.result', '--'],
+      [alive, '-', '5', target, `${folder}/../last-attempt.result`, '--'],
+      [alive, '-', '5', target, `${folder}/./last-attempt.result`, '--'],
+      [alive, '-', '5', target, `${folder}/`, '--'],
+      [alive, '-', '5', target, '', '--'],
+      ['0', '-', '5', target, '-', '--'],
       [alive, '-', '5', target],
-      [alive, '-', '5', target, join(folder, 'last-attempt.result'), 'extra'],
+      // The app's arguments follow only a `--` in sixth place.
+      [alive, '-', '5', target, resultPath],
+      [alive, '-', '5', target, resultPath, 'extra'],
+      [alive, '-', '5', target, resultPath, '--no-sandbox', '--'],
     ]) {
       expect(runHelper(script, args, scratch), JSON.stringify(args)).toBe(INSTALL_HELPER_EXIT.badArguments)
     }
@@ -1635,7 +1754,7 @@ describe('the restart helper under a real /bin/sh', () => {
     const directory = join(fx.work, 'directory.sh')
     mkdirSync(directory)
     for (const target of [notExecutable, link, directory, join(fx.work, 'missing.sh')]) {
-      expect(runHelper(script, [String(gone.pid), '-', '5', target, resultPath], fx.work), target).toBe(INSTALL_HELPER_EXIT.refused)
+      expect(runHelper(script, [String(gone.pid), '-', '5', target, resultPath, '--'], fx.work), target).toBe(INSTALL_HELPER_EXIT.refused)
       expect(readFileSync(resultPath, 'utf8'), target).toBe(`${INSTALL_HELPER_EXIT.refused}\n`)
       unlinkSync(resultPath)
     }
@@ -1687,6 +1806,27 @@ describe('the restart helper under a real /bin/sh', () => {
     expect(helper.exitCode).toBe(INSTALL_HELPER_EXIT.timedOut)
     expect(readFileSync(resultPath, 'utf8')).toBe(`${INSTALL_HELPER_EXIT.timedOut}\n`)
     expect(existsSync(`${script}.ran`)).toBe(false)
+  })
+
+  it('still waits for the app, then starts the new file, when the app ran with an empty PATH', async () => {
+    const fx = fixture()
+    const script = recorder(fx)
+    const app = sleeper(1)
+    const resultPath = join(reportFolder(fx), 'last-attempt.result')
+    const installer = fx.installer({
+      env: { APPIMAGE: fx.appImage, APPDIR: fx.appDir, PATH: '' },
+      pid: app.pid!,
+      spawnImpl: spawnInto(script, fx.appImage),
+      helperTimeoutMs: 20_000,
+    })
+    const prepared = await installer.prepare(await fx.source())
+    await prepared.commit({ resultPath })
+
+    await new Promise((resolveWait) => setTimeout(resolveWait, 300))
+    expect(existsSync(`${script}.ran`)).toBe(false)
+    await exited(app)
+    expect(await appears(`${script}.ran`, 5_000)).toBe(true)
+    expect(readFileSync(resultPath, 'utf8')).toBe(`${INSTALL_HELPER_EXIT.installed}\n`)
   })
 
   it('starts at once when the app has already exited and no viewer was spawned', async () => {

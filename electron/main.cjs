@@ -32,7 +32,7 @@ const { createUpdateDownloader } = require('./update-download.cjs')
 const { createInstallAttemptStore } = require('./update-install.cjs')
 const { bundlePathFromExecPath, createMacInstaller } = require('./update-install-macos.cjs')
 const { createAppImageInstaller } = require('./update-install-appimage.cjs')
-const { checkForUpdate } = require('./update-fetch.cjs')
+const { checkForUpdate, runsFromAppImage } = require('./update-fetch.cjs')
 const { createUpdatePreferences, createUpdateTrustState } = require('./update-preferences.cjs')
 const { loadUpdateRegistry } = require('./update-trust.cjs')
 const {
@@ -833,9 +833,12 @@ function updateInstallers() {
 // The AppImage replaces its own file, then a host /bin/sh helper starts the new
 // file once this process and its viewer have exited. Electron's own relaunch
 // cannot do it: its relauncher runs from this AppImage's mount, which goes away
-// with the app.
+// with the app. Registered under the proof that selects the AppImage target, so
+// a .deb started from inside another AppImage (which inherits APPIMAGE) has no
+// installer whose startup report could take that AppImage's attempt record.
 function appImageInstallers() {
-  if (!viewerOwned || !app.isPackaged || !process.env.APPIMAGE) return {}
+  const fromAppImage = runsFromAppImage({ appImagePath: process.env.APPIMAGE, appDir: process.env.APPDIR, execPath: process.execPath })
+  if (!viewerOwned || !app.isPackaged || !fromAppImage) return {}
   try {
     return {
       'appimage-self-replace': createAppImageInstaller({
@@ -845,6 +848,7 @@ function appImageInstallers() {
         platform: process.platform,
         isPackaged: app.isPackaged,
         pid: process.pid,
+        argv: process.argv.slice(1),
         viewerPid: spawnedViewerPid,
         spawnImpl: spawn,
       }),

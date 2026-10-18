@@ -10,6 +10,8 @@ export type AppImageInfeasibleReason =
   | 'read-only'
   | 'not-recognized'
   | 'changed-since-launch'
+  /** The runtime's extract-and-run fallback: a restart would extract into a TMPDIR that may no longer be private. */
+  | 'extract-and-run'
   | 'unexpected'
 
 export interface AppImageInstallStat {
@@ -69,7 +71,10 @@ export interface AppImageInstaller extends PlatformInstaller {
 }
 
 export function createAppImageInstaller(options: {
-  /** `process.env`: APPIMAGE and APPDIR locate the AppImage; the restart helper inherits the rest, minus the old mount. */
+  /**
+   * `process.env`: APPIMAGE and APPDIR locate the AppImage; the restart helper inherits the rest, minus the old mount.
+   * Any APPIMAGE_EXTRACT_AND_RUN, or an APPDIR named `appimage_extracted_*`, makes updates notify-only.
+   */
   env: Readonly<Record<string, string | undefined>>
   /** `process.execPath`; must sit inside APPDIR, the running AppImage's mount. */
   execPath: string
@@ -79,6 +84,11 @@ export function createAppImageInstaller(options: {
   isPackaged: boolean
   /** `process.pid`: the restart helper starts the new build only after this process exits. */
   pid: number
+  /**
+   * `process.argv.slice(1)`, copied at creation: the restart passes these to the new AppImage, minus the
+   * leading `--disable-setuid-sandbox` our AppRun added (the new AppRun adds it again). Default none.
+   */
+  argv?: readonly string[]
   /** Read at commit time: a viewer child process this app started, if any; the helper waits for it as well. */
   viewerPid?: () => number | null
   /** `child_process.spawn`; used once per commit, for the detached `/bin/sh` restart helper. */

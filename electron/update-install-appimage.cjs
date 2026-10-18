@@ -16,6 +16,12 @@
 // APPDIR. A stray inherited APPIMAGE (a .deb install started from another
 // AppImage) therefore never points this module at somebody else's file. The
 // file must also still be the one this process started from.
+//
+// The runtime's extract-and-run fallback is notify-only. It extracts every
+// launch into $TMPDIR/appimage_extracted_<md5>, a predictable name it recreates
+// (0755) when missing and reuses when present, and the documented launcher
+// removes its private TMPDIR as this process exits. A restart would therefore
+// extract into a folder another local user could have planted.
 
 const { randomBytes } = require('node:crypto')
 const { constants } = require('node:fs')
@@ -51,24 +57,31 @@ const HELPER_SHELL = '/bin/sh'
 const HELPER_NAME = 'agent-inbox-relaunch'
 const HELPER_POLL_MS = 200
 const DEFAULT_HELPER_TIMEOUT_MS = 120_000
+// Our AppRun (renderAppRun in scripts/build-linux-appimage.mjs) puts this in
+// front of the user's arguments, and the new AppImage's AppRun does it again.
+const APPRUN_ARGUMENT = '--disable-setuid-sandbox'
+const EXTRACTED_PREFIX = 'appimage_extracted_'
 const EXIT = INSTALL_HELPER_EXIT
 // Constant text: every input arrives as an argument and is expanded only inside
 // double quotes. Waits while the app or the viewer process it started (`-` when
 // the viewer runs in-process or was reused) is alive, then replaces itself with
-// the new AppImage, which the commit already renamed into place. Before every
+// the new AppImage, which the commit already renamed into place, passing it the
+// arguments after `--` (the ones the app started with) unchanged. Before every
 // exit, and just before that exec, it writes its INSTALL_HELPER_EXIT code to
-// <result> (temp file + rename, `-` for no report); an invalid <result> is
-// checked first and exits 64 writing nowhere. Each poll counts as 0.2 s, or as
-// five where sleep cannot take fractions, so the wait stays about <polls>/5 s. 64 bad arguments, 75 the app never
-// exited (nothing started), 65 the AppImage path no longer holds a regular,
-// executable, non-symlink file (nothing started), 0 about to start it.
+// <result> (temp file + rename, `-` for no report); an invalid <result> or a
+// missing `--` is checked first and exits 64 writing nowhere. Each poll counts
+// as 0.2 s, or as five where sleep cannot take fractions, so the wait stays
+// about <polls>/5 s. 64 bad arguments, 75 the app never exited (nothing
+// started), 65 the AppImage path no longer holds a regular, executable,
+// non-symlink file (nothing started), 0 about to start it.
 const RELAUNCH_SCRIPT = `set -u
-[ "$#" -eq 5 ] || exit ${EXIT.badArguments}
+[ "$#" -ge 6 ] && [ "$6" = -- ] || exit ${EXIT.badArguments}
 app_pid="$1"
 viewer_pid="$2"
 polls="$3"
 target="$4"
 result="$5"
+shift 6
 valid_path() {
   case "$1" in /*) ;; *) return 1 ;; esac
   case "$1" in */|*/../*|*/..|*/./*|*/.) return 1 ;; esac
@@ -107,7 +120,7 @@ if [ ! -f "$target" ] || [ -L "$target" ] || [ ! -x "$target" ]; then
   finish ${EXIT.refused}
 fi
 report ${EXIT.installed}
-exec "$target"
+exec "$target" "$@"
 `
 // The new AppImage sets these afresh; inherited, they would describe the old one.
 const DROPPED_ENV = new Set(['APPDIR', 'APPIMAGE', 'ARGV0', 'OWD', 'TARGET_APPIMAGE'])
@@ -123,6 +136,7 @@ const INFEASIBLE = Object.freeze({
   'read-only': `Agent Inbox cannot replace its AppImage file in its current folder. ${REVIEW}`,
   'not-recognized': `Agent Inbox does not recognize its AppImage file. ${REVIEW}`,
   'changed-since-launch': 'The AppImage file changed since Agent Inbox started. Restart Agent Inbox to update.',
+  'extract-and-run': `Agent Inbox cannot install updates from the app while its AppImage runs in extract-and-run mode. ${REVIEW}`,
   unexpected: `Agent Inbox cannot install updates from the app here. ${REVIEW}`,
 })
 const FEASIBLE = Object.freeze({ ok: true })
@@ -195,7 +209,10 @@ function validResultPath(value) {
 }
 
 // The new AppImage must not inherit anything that points into the old one's
-// mount, which disappears with this process: drop those path-list entries.
+// mount, which disappears with this process: drop those path-list entries. A
+// list left with only empty entries is dropped like an emptied one, and so is a
+// PATH that names no directory at all: the helper's sleep and mv are then found
+// on /bin/sh's default search path instead of nowhere.
 function relaunchEnvironment(source, appDir) {
   const result = {}
   for (const key of Object.keys(source)) {
@@ -207,10 +224,18 @@ function relaunchEnvironment(source, appDir) {
       const resolved = path.resolve(entry)
       return resolved !== appDir && !isInside(appDir, resolved)
     })
-    if (kept.length === entries.length) result[key] = value
-    else if (kept.length > 0) result[key] = kept.join(':')
+    const namesDirectory = kept.some((entry) => entry !== '')
+    if (!namesDirectory && (kept.length < entries.length || key === 'PATH')) continue
+    result[key] = kept.join(':')
   }
   return result
+}
+
+// Every argument the app started with except the switch our AppRun put in front
+// of them, which the new AppImage's AppRun adds again (else each update would
+// add another copy). A copy the user passed themselves is kept.
+function userArguments(argv) {
+  return Object.freeze(argv[0] === APPRUN_ARGUMENT ? argv.slice(1) : [...argv])
 }
 
 function createAppImageInstaller(options) {
@@ -222,7 +247,13 @@ function createAppImageInstaller(options) {
   }
   const helperTimeoutMs = options.helperTimeoutMs ?? DEFAULT_HELPER_TIMEOUT_MS
   if (!Number.isFinite(helperTimeoutMs) || helperTimeoutMs <= 0) throw new TypeError('helperTimeoutMs must be positive')
+  const argv = options.argv === undefined ? [] : options.argv
+  if (!Array.isArray(argv) || !argv.every((arg) => typeof arg === 'string')) {
+    throw new TypeError('argv must be an array of strings')
+  }
   const { env, execPath, uid, platform, isPackaged, pid, spawnImpl } = options
+  // Copied now, as the app starts; the restart passes them on.
+  const forwarded = userArguments(argv)
   // Read at commit time: the viewer this app started and stops when it quits.
   const viewerPid = options.viewerPid ?? (() => null)
   const helperPolls = Math.max(1, Math.ceil(helperTimeoutMs / HELPER_POLL_MS))
@@ -244,6 +275,18 @@ function createAppImageInstaller(options) {
       return refusal('name-too-long')
     }
     return { ok: true, appImage, appDir, parent: path.dirname(appImage), name }
+  }
+
+  // The runtime extracts whenever APPIMAGE_EXTRACT_AND_RUN is set, to any value,
+  // and a restart would inherit it. --appimage-extract-and-run sets no variable:
+  // there only APPDIR, the extraction folder, tells. Reads env each time, and
+  // an environment it cannot read counts as extracted.
+  function runsExtracted(appDir) {
+    try {
+      return env?.APPIMAGE_EXTRACT_AND_RUN !== undefined || path.basename(appDir).startsWith(EXTRACTED_PREFIX)
+    } catch {
+      return true
+    }
   }
 
   // Taken as the app starts: an AppImage replaced or rewritten since then is no
@@ -284,6 +327,7 @@ function createAppImageInstaller(options) {
   async function inspect() {
     const located = locate()
     if (!located.ok) return located
+    if (runsExtracted(located.appDir)) return refusal('extract-and-run')
     const { appImage, parent } = located
     let file
     try {
@@ -449,7 +493,7 @@ function createAppImageInstaller(options) {
       try {
         child = spawnImpl(
           HELPER_SHELL,
-          ['-c', RELAUNCH_SCRIPT, HELPER_NAME, String(pid), viewerArgument(), String(helperPolls), target.appImage, report],
+          ['-c', RELAUNCH_SCRIPT, HELPER_NAME, String(pid), viewerArgument(), String(helperPolls), target.appImage, report, '--', ...forwarded],
           { detached: true, stdio: 'ignore', env: relaunchEnvironment(env, target.appDir), cwd: '/' },
         )
         child.once('spawn', () => {
@@ -493,10 +537,12 @@ function createAppImageInstaller(options) {
 
     // `resultPath` is where the helper reports its exit code; the controller
     // passes the attempt store's path. Without one the helper reports nowhere.
+    // Nothing is replaced once a restart would extract (env changed since prepare).
     async function runCommit(commitOptions) {
       const resultPath = commitOptions?.resultPath
       let renamed = false
-      if ((resultPath === undefined || validResultPath(resultPath)) && (await unchanged())) {
+      const allowed = (resultPath === undefined || validResultPath(resultPath)) && !runsExtracted(target.appDir)
+      if (allowed && (await unchanged())) {
         try {
           await fsImpl.rename(stage.path, target.appImage)
           renamed = true

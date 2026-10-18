@@ -378,14 +378,21 @@ describe('Electron updater integration', () => {
     expect(appImage).toContain("const HELPER_SHELL = '/bin/sh'")
   })
 
-  it('registers the AppImage installer only for an owned viewer of a packaged AppImage, never via app.relaunch', () => {
+  it('registers the AppImage installer only for an owned viewer of a packaged app proven to run from its AppImage, never via app.relaunch', () => {
     const main = read('electron/main.cjs')
     const start = main.indexOf('function appImageInstallers()')
     const registration = main.slice(start, main.indexOf('\n}', start))
 
     expect(main).toContain("const { createAppImageInstaller } = require('./update-install-appimage.cjs')")
+    expect(main).toContain("const { checkForUpdate, runsFromAppImage } = require('./update-fetch.cjs')")
     expect(main).toContain("if (process.platform === 'linux') return appImageInstallers()")
-    expect(registration).toContain('if (!viewerOwned || !app.isPackaged || !process.env.APPIMAGE) return {}')
+    // The same proof that selects the AppImage target: a bare inherited APPIMAGE registers nothing,
+    // so no installer's startup report can take another AppImage copy's attempt record.
+    expect(registration).toContain(
+      'const fromAppImage = runsFromAppImage({ appImagePath: process.env.APPIMAGE, appDir: process.env.APPDIR, execPath: process.execPath })',
+    )
+    expect(registration).toContain('if (!viewerOwned || !app.isPackaged || !fromAppImage) return {}')
+    expect(registration).not.toContain('!process.env.APPIMAGE')
     for (const line of [
       "'appimage-self-replace': createAppImageInstaller({",
       'env: process.env,',
@@ -394,6 +401,8 @@ describe('Electron updater integration', () => {
       'platform: process.platform,',
       'isPackaged: app.isPackaged,',
       'pid: process.pid,',
+      // What the user started the app with, as Electron's own relaunch would forward it.
+      'argv: process.argv.slice(1),',
       'viewerPid: spawnedViewerPid,',
       'spawnImpl: spawn,',
     ]) {

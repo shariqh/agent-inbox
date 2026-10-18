@@ -286,6 +286,54 @@ function createReleaseSetupAdapter({
   })
 }
 
+/**
+ * The one Setup install in flight, and whether the app has begun to quit
+ * (#205 review). Once any quit begins — Cmd+Q, the menu, logout, the last
+ * window closing, or an update restart — no install may start: one started
+ * then can be killed halfway by the exit, after it removed a registration it
+ * was about to replace and before it added the new one. So every path that
+ * ends the app calls `beginQuit()` first. It refuses every later install, for
+ * good, and cancels the running one, returning a promise (never rejecting)
+ * that settles once nothing runs; it may be called again, as `before-quit`
+ * fires again, and cancels and waits again while anything still runs.
+ */
+function createInstallGate() {
+  let quitting = false
+  let current = null
+  return Object.freeze({
+    quitting() {
+      return quitting
+    },
+    /**
+     * Start one install, `start(onCancel)`, or refuse: 'quitting' once a quit
+     * has begun, 'running' while another install runs. A refusal never calls
+     * `start`.
+     */
+    run(start) {
+      if (quitting) return { refused: 'quitting' }
+      if (current) return { refused: 'running' }
+      const entry = { cancel: null, promise: null }
+      current = entry
+      let started
+      try {
+        started = Promise.resolve(start((cancel) => { entry.cancel = cancel }))
+      } catch (err) {
+        started = Promise.reject(err)
+      }
+      entry.promise = started.finally(() => {
+        if (current === entry) current = null
+      })
+      return { promise: entry.promise }
+    },
+    beginQuit() {
+      quitting = true
+      if (!current) return null
+      current.cancel?.()
+      return current.promise.then(() => undefined, () => undefined)
+    },
+  })
+}
+
 function runAgentInstall({
   repoRoot,
   target,
@@ -347,6 +395,7 @@ function runAgentInstall({
 
 module.exports = {
   canRunSetup,
+  createInstallGate,
   installerRepoRoot,
   isTrustedSetupSender,
   readSetupInfo,

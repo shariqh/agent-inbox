@@ -120,7 +120,7 @@ header { flex-wrap: wrap; }
 .live-state { font-size: 12px; opacity: .6; white-space: nowrap; }
 /* #197: the build a session runs is quiet metadata; an older one is a gentle note, never an alarm */
 .live-build { flex: none; font-size: 11px; opacity: .5; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.live-build.older { opacity: 1; color: color-mix(in srgb, var(--app-warning) 80%, var(--app-text)); }
+.live-build.older, .live-build.newer { opacity: 1; color: color-mix(in srgb, var(--app-warning) 80%, var(--app-text)); }
 .live-build-hint { font-size: 12px; color: color-mix(in srgb, var(--app-warning) 80%, var(--app-text)); }
 #lightbox { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; }
 #lightbox[hidden] { display: none; } /* our display:flex would otherwise beat the UA's [hidden] rule */
@@ -314,6 +314,16 @@ header { flex-wrap: wrap; }
 .setup-result { margin: 10px 0 0; }
 .setup-result.success { border: 1px solid color-mix(in srgb, var(--app-success) 40%, var(--app-border)); border-radius: 7px; background: color-mix(in srgb, var(--app-success) 7%, transparent); }
 .setup-result.failure { border: 1px solid color-mix(in srgb, var(--app-danger) 40%, var(--app-border)); border-radius: 7px; background: color-mix(in srgb, var(--app-danger) 7%, transparent); }
+/* #197 part 2: which build each host's agents run, and the one Update/Match agents action */
+.agents-hosts { list-style: none; margin: 0 0 8px; padding: 0; }
+.agents-hosts li { font-size: 13px; margin: 3px 0; overflow-wrap: anywhere; }
+.agents-hosts li.outdated, .agents-hosts li.newer { color: color-mix(in srgb, var(--app-warning) 80%, var(--app-text)); }
+.agents-actions .agents-update-btn { padding: 6px 11px; border: 1px solid var(--app-accent); border-radius: 7px; background: var(--app-accent); color: var(--app-on-accent); cursor: pointer; }
+.agents-actions .agents-update-btn:disabled { cursor: wait; opacity: .55; }
+.agents-result { margin: 10px 0 0; }
+.agents-result.success { border: 1px solid color-mix(in srgb, var(--app-success) 40%, var(--app-border)); border-radius: 7px; background: color-mix(in srgb, var(--app-success) 7%, transparent); }
+.agents-result.failure { border: 1px solid color-mix(in srgb, var(--app-danger) 40%, var(--app-border)); border-radius: 7px; background: color-mix(in srgb, var(--app-danger) 7%, transparent); }
+.agents-restart ul { margin: 4px 0 0; padding-left: 18px; font-size: 13px; }
 #setup { padding: 16px; border: 1px solid color-mix(in srgb, var(--app-text) 14%, transparent); border-radius: 12px; background: var(--app-surface); box-shadow: 0 18px 48px color-mix(in srgb, var(--app-text) 14%, transparent); }
 body.settings-open #rail,
 body.settings-open #tabs,

@@ -221,6 +221,47 @@ only a prior manifest-owned release registration; a checkout/custom registration
 left untouched. Uninstall likewise removes only exact owned release state and retains
 any runtime still referenced by another host or Claude hook.
 
+### After an app update
+
+An app update does not move your agents by itself, and a running agent session keeps
+the MCP server build it started with until it restarts. Setup's **Agents** section
+shows which build each host is registered to run, compared with the runtime the app
+bundles:
+
+```text
+Claude Code: v1.2.8 runtime (Setup) — older than this app's v1.3.0
+Copilot CLI: source checkout at /Users/you/src/agent-inbox (not managed by Setup)
+Claude hooks: not installed
+```
+
+It reads only the `agent-inbox` entry of `~/.claude.json` and
+`~/.copilot/mcp-config.json`, and the agent-inbox hook entries of
+`~/.claude/settings.json`. Other MCP servers and their settings are never shown, and
+nothing is run to find this out.
+
+- **Update agents** appears when a host registered by Setup runs an older runtime. It
+  runs the same installer as **Install now** for exactly those hosts, keeping its
+  timestamped backups and managed-block rules. It never replaces a checkout or custom
+  registration, and it is available only in the Agent Inbox app's own window.
+- **Match agents to vX** appears instead when a host registered by Setup runs a *newer*
+  runtime than the app, for example after you went back to an older app version. It
+  runs the same installer, which moves the host back to the app's runtime; if one host
+  is behind and another ahead, this one action moves both.
+- **Each host is moved on its own.** Setup runs the installer for Claude Code, then for
+  Copilot CLI, and shows each host's result. If one host cannot be moved (for example
+  its CLI was uninstalled), the other still is.
+- **Restart running sessions afterward.** Setup then says how many sessions of each
+  moved host still run another build: exit each one and run `claude --resume` or
+  `copilot --resume` to pick it back up. Live marks them too: sessions on an older
+  build, and sessions still on a newer build after Match agents.
+- **A source checkout** updates in place: run `git pull` and `npm run build` in it,
+  then restart its sessions.
+- **Claude hooks** are not moved with your agents. Once the app's runtime is installed,
+  Setup shows the command that moves them, for example
+  `bash ~/.agent-inbox/runtime/<runtime-id>/scripts/install-hooks.sh --apply`.
+
+Nothing runs when the app starts; updating agents is always your explicit choice.
+
 ### Host-specific behavior
 
 If `~/.claude/CLAUDE.md` and `~/.copilot/copilot-instructions.md` are symlinks or

@@ -1079,14 +1079,73 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   runtime. Live reads it at page load, when the drawer opens and after a Setup install — never on
   the poll. `sessionBuild()` in `public/livebar.js` compares strict semver only and **gives only the
   advice that backs THAT session**: a checkout session is told to update and rebuild its checkout; a
-  runtime session is told to restart only when a release viewer verified the runtime is installed
-  (`true`), and pointed at Setup only when Setup can install it (`false`); anything else, including a
-  legacy row with no source, says only "older build (vY)". Unknown versions on either side render no
-  hint. The drawer shows every label and the full hint (the collapsed idle fold counts older builds);
+  runtime session's advice follows its host's registration (part 2, below) in a release viewer; anything
+  else, including a legacy row with no source, says only "older build (vY)". Unknown versions on either
+  side render no hint. The drawer shows every label and the full hint (the collapsed idle fold counts older builds);
   the strip adds only an "older build" marker. Presence, not attention: no badge, Needs-you, count or
-  notification. Remaining limit: "installed" is per machine, not per host registration — a host Setup
-  did not register for the new runtime still restarts into its old one. The Setup half of #197
-  (registered-runtime detection, "Update agents") is where that narrows.
+  notification. Part 1's "installed" was per machine, so a host Setup had not moved still restarted into
+  its old runtime; part 2 (below) narrows the runtime advice per host.
+- **Agent registrations and "Update agents" / "Match agents"** *(#197, part 2)* — what a restarted session loads is what
+  its HOST is registered to run, not what is installed. `src/agent-hosts.ts` (VIEWER-PROCESS-ONLY and
+  read-only: no process, network, lock or write) reads it from the files the installer manages and keeps
+  only `mcpServers['agent-inbox']` from `~/.claude.json` and `~/.copilot/mcp-config.json`, plus the
+  agent-inbox-shaped hook entries (`{command, args:[entry, subcommand]}`) in `~/.claude/settings.json`.
+  Every other server, env value and secret is parsed in memory and dropped: never returned, logged or
+  cached. It never asks the host CLIs (`claude mcp get` health-checks a server by starting it). Kinds are
+  `none`, `runtime` (Setup's: runtime id + manifest version), `checkout` (`dist/` beside a `package.json`
+  named agent-inbox and no runtime manifest: its root path), `other` and `unknown`. `runtime` is exactly
+  the installer's ownership rule (`classifyRuntimeRegistration` in `scripts/runtime-config.mjs`): node and
+  entry resolve, by real identity, into the SAME directory under the runtime root, which verifies as an
+  intact runtime naming itself. That check uses the shared verifier with THIS app's expectations relaxed
+  (version, platform, Node major/ABI, later required files): ownership is the question, and a stricter
+  check would hide exactly the older runtimes an update must move. `test/agent-hosts.test.ts` runs the
+  installer's helper over the same files and pins agreement (`owned` ⇔ `runtime`, `absent` ⇔ `none`), so
+  Setup never offers to update a registration the installer would refuse. The viewer caches the result
+  on the three files' link and target stamps plus the runtime root listing (every install changes one)
+  with the same 10-minute backstop, hashes each registered runtime once per directory/manifest stamp, and
+  reuses the release lookup's stricter verification for the current runtime. `/api/version` adds
+  `hosts:{claude,copilot}` as `{kind, version?}` only — no path, id or config — and `updatable`, the one
+  rule (`canUpdateAgents`) Setup's action and Live's "update agents" advice share: a release whose own
+  runtime payload verifies here, installed or not. `/api/setup` adds `agents`:
+  each host and Claude's hooks (a checkout's path included; the owner already sees paths there),
+  `current`, `updatable` (a release whose runtime Setup can install here) and `hooksCommand`. The Setup
+  panel's Agents block (rules in `public/agents.js` `agentsAction`; every string is textContent) offers ONE
+  action only in an Electron window whose `available()` is true, only when `updatable`, and only for the
+  Setup-managed hosts whose runtime differs from `current`, in EITHER direction: the installer replaces a
+  registration it owns whichever way the version moves, so a downgraded app restores a matching runtime.
+  Hosts that are only behind get **Update agents**; a host that is ahead (an app downgrade) gets **Match
+  agents to vX**, which also names the one action when hosts differ both ways. Equal versions (build
+  metadata ignored) get nothing. It calls the existing `install(target)` once per host, `claude` then
+  `copilot`, never `all` and never `--force`: `--target all` stops before changing anything when one
+  host's CLI is gone, which would hold the other host back too, so each host is moved and reported on its
+  own. A step that was cancelled, timed out or could not run ends the run, and the later hosts are reported
+  as not started: a quit cancels the running install, and starting the next host mid-shutdown could have
+  the exit kill it halfway through replacing a registration. Main enforces the same thing on its side:
+  `createInstallGate()` (`electron/setup-runner.cjs`) is its one record of the running install and of the
+  quit, and `beginAppQuit()` in `main.cjs` is the ONE function every quit or restart path calls first
+  (`before-quit` on every firing; an update-restart path must call it too). It refuses every later install
+  for good, revokes the window's Setup, cancels the running install and returns a never-rejecting promise
+  the caller waits on before exiting. A checkout or custom registration is reported, never switched (the
+  runtime-mode installer refuses a registration it does not own anyway). Afterwards it re-reads `/api/setup` and `/api/version` and
+  lists, per host that moved, how many running sessions still run a build that differs from what that
+  host now runs (older, newer or both) and how to restart them (`claude --resume` / `copilot --resume`);
+  it never says a session reloaded. The block also re-reads whenever Settings opens, so a terminal install
+  made meanwhile shows up. It does not move Claude's hooks: once the current runtime is installed the
+  panel hands over `bash <runtime>/scripts/install-hooks.sh --apply` (for hooks behind or ahead) to run in
+  a terminal, and promises that command only when it can install that runtime (`updatable`). No IPC
+  channel, preload method, argv shape or HTTP route was added, and nothing runs at startup. Live's
+  `remedy()` maps a runtime session to its host by its inferred agent (`claude-code` → claude, `copilot`
+  → copilot) and, for a session OLDER than the app, says "restart this session to load vX" only when that
+  host is registered to Setup's runtime at vX or later, "update agents from Setup, then restart this
+  session" only when it is an older Setup runtime and `updatable` (so never toward an action Setup does
+  not show), and nothing otherwise (a missing `hosts` included). `sessionBuild()` keeps `older` (older
+  than the app) separate from `newer`: a runtime session NEWER than the app whose host is now registered
+  to exactly the app's build — after Match agents — gets a "newer build (vS) — restart this session to
+  load vX" marker in the strip and drawer; one whose host still runs a newer build, or an older one, gets
+  none, because a restart would not bring it to the app's build. Known limits: `inferAgent` folds every client named
+  like "claude" into `claude-code`, so a Claude Desktop session is advised by Claude Code's registration;
+  only user-scope registrations are read, not a project or local one that shadows it; and a checkout's
+  version is not read, so its sessions keep the checkout advice.
 
 ## Open backlog — and the seams already in place
 

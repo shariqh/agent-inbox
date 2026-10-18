@@ -1,10 +1,10 @@
 import { Hono } from 'hono'
 import type { Handler } from 'hono'
 import { createHash } from 'node:crypto'
-import { readFileSync, existsSync, readdirSync, lstatSync, realpathSync } from 'node:fs'
+import { readFileSync, existsSync, readdirSync, lstatSync, realpathSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
-import { dirname, isAbsolute, resolve, sep } from 'node:path'
+import { basename, dirname, isAbsolute, resolve, sep } from 'node:path'
 import type Database from 'better-sqlite3'
 import {
   listItems, listOpenQuestions, resolveItem, dismissItem, annotateItem, replyItem, snoozeItem,
@@ -15,6 +15,8 @@ import {
 import type { ResponseKind, SnapshotReadState } from './store.js'
 import { groupItems } from './group.js'
 import { hooksSettingsBlock } from './hook.js'
+import { agentConfigFiles, readAgentHosts, registeredRuntimeVersion } from './agent-hosts.js'
+import type { AgentHosts, HostRegistration, RuntimeVerifier } from './agent-hosts.js'
 import { buildStamp, readBakedInfo } from './stamp.js'
 import type { BakedInfo, BuildStamp } from './stamp.js'
 import { AGENT_INBOX_VERSION } from './version.js'
@@ -37,19 +39,6 @@ const {
   REQUIRED_FILES: string[]
   verifyRuntimePayload: RuntimeVerifier
 }
-
-type RuntimeVerifier = (opts: {
-  root: string
-  expectedManifestDigest?: string
-  expectedPlatform?: string
-  expectedArch?: string
-  expectedPackageVersion?: string
-  expectedProduct?: string
-  expectedNodeMajor?: number
-  expectedNodeModulesAbi?: string
-  requiredEntrypoints?: string[]
-  requiredFiles?: string[]
-}) => { manifest: { runtimeId: string } }
 
 /** Seams, both test-only today — the production path passes neither. */
 export interface ViewerOpts {
@@ -74,6 +63,11 @@ export interface ViewerOpts {
   /** issue #197: the runtime payload verifier, injected so a test can count
    *  the whole-runtime hashing the shared runtime lookup exists to avoid. */
   runtimeVerifier?: RuntimeVerifier
+  /** issue #197 part 2: the home directory whose ~/.claude.json,
+   *  ~/.copilot/mcp-config.json and ~/.claude/settings.json say which build
+   *  each host's agents are registered to run; overridable so a test never
+   *  reads the real one. */
+  agentHome?: string
 }
 
 /** Split a fixed `darwin-arm64`/`darwin-x64` runtime key into platform/arch —
@@ -168,7 +162,7 @@ function installedRuntime(
   hostKey: string,
   expectedDigest: string,
   verify: RuntimeVerifier,
-): { nodeBin: string; entry: string; hookEntry: string } | null {
+): { dir: string; nodeBin: string; entry: string; hookEntry: string } | null {
   let entries: string[]
   try {
     entries = readdirSync(runtimeRoot)
@@ -208,7 +202,7 @@ function installedRuntime(
     const entry = resolve(dir, 'dist', 'mcp-server.js')
     const hookEntry = resolve(dir, 'dist', 'hook-cli.js')
     if (!existsSync(nodeBin) || !existsSync(entry)) continue
-    return { nodeBin, entry, hookEntry }
+    return { dir, nodeBin, entry, hookEntry }
   }
   return null
 }
@@ -376,7 +370,7 @@ function setupInfo(baked: BakedInfo | null, hostKey: string, lookup: ReleaseRunt
 // guarded separately, immediately before spawn, by electron/setup-runner.cjs.
 interface ReleaseRuntime {
   source: { dir: string; installer: string } | null
-  runtime: { nodeBin: string; entry: string; hookEntry: string } | null
+  runtime: { dir: string; nodeBin: string; entry: string; hookEntry: string } | null
 }
 
 const RUNTIME_LOOKUP_BACKSTOP_MS = 10 * 60_000
@@ -408,9 +402,19 @@ function entryStamp(path: string): string | null {
   }
 }
 
-function releaseRuntimeKey(baked: BakedInfo, hostKey: string, runtimeRoot: string, appRoot: string): string {
-  const payload = baked.runtimePayloads?.[hostKey]
-  const source = payload && isContainedRelativePath(payload.path) ? resolve(appRoot, payload.path) : null
+// The same stamp for whatever a symlink points at: a host config file kept in
+// a dotfiles repo changes there, not at the link.
+function targetStamp(path: string): string | null {
+  try {
+    const st = statSync(path, { bigint: true })
+    return `${st.dev}:${st.ino}:${st.size}:${st.mtimeNs}:${st.ctimeNs}`
+  } catch {
+    return null
+  }
+}
+
+// The runtime root and each installed runtime directory and its manifest.
+function runtimeRootStamp(runtimeRoot: string): [string | null, Array<[string, string | null, string | null]> | null] {
   let installed: Array<[string, string | null, string | null]> | null
   try {
     installed = readdirSync(runtimeRoot).sort().map((name) => {
@@ -420,12 +424,19 @@ function releaseRuntimeKey(baked: BakedInfo, hostKey: string, runtimeRoot: strin
   } catch {
     installed = null
   }
+  return [entryStamp(runtimeRoot), installed]
+}
+
+function releaseRuntimeKey(baked: BakedInfo, hostKey: string, runtimeRoot: string, appRoot: string): string {
+  const payload = baked.runtimePayloads?.[hostKey]
+  const source = payload && isContainedRelativePath(payload.path) ? resolve(appRoot, payload.path) : null
+  const [root, installed] = runtimeRootStamp(runtimeRoot)
   return JSON.stringify([
     baked.version ?? null,
     payload?.path ?? null,
     payload?.digest ?? null,
     source ? [entryStamp(source), entryStamp(resolve(source, MANIFEST_FILE))] : null,
-    entryStamp(runtimeRoot),
+    root,
     installed,
   ])
 }
@@ -438,11 +449,65 @@ function releaseRuntimeKey(baked: BakedInfo, hostKey: string, runtimeRoot: strin
 //   true  — this release's exact runtime is installed for this host
 //   false — it is not, but Setup can install it (the source payload verifies)
 //   null  — a checkout (not applicable), or nothing Setup could install here
+// `hosts` (part 2) is what each host is REGISTERED to run, because that, not
+// what is installed, is what a restarted session loads: its kind and, for
+// Setup's runtime, its version. No path, runtime id or config content.
+// `updatable` is whether Setup can move agents onto this release's runtime
+// (see `canUpdateAgents`), so Live points at Setup only when Setup offers it.
 interface AgentVersion {
   current: string | null
   mode: 'dev' | 'release'
   runtimeInstalled: boolean | null
+  updatable: boolean
+  hosts: { claude: HostVersion; copilot: HostVersion }
 }
+
+type HostVersion = Pick<HostRegistration, 'kind' | 'version'>
+
+function hostVersion({ kind, version }: HostRegistration): HostVersion {
+  return version ? { kind, version } : { kind }
+}
+
+// Whether Setup can move agents onto this release's runtime: a release with a
+// version whose own runtime payload verifies for this host, installed or not.
+// The ONE condition the Setup panel's action and Live's "update agents from
+// Setup" advice share, so Live never points at an action Setup does not show.
+function canUpdateAgents(baked: BakedInfo | null, lookup: ReleaseRuntime | null): boolean {
+  return baked?.schema === 2 && !!baked.version && !!lookup?.source
+}
+
+// The Setup panel's per-host view (#197 part 2). `current` is the runtime
+// version Setup installs, a release's baked one; a checkout has none to offer.
+// `updatable` (`canUpdateAgents`) lets the panel offer its one action for a
+// Setup-managed host whose runtime differs, older or newer.
+// `hooksCommand` moves Claude's hooks onto the installed current runtime: the
+// agent installer never touches hooks, so the panel can only hand this over.
+interface AgentsInfo {
+  current: string | null
+  updatable: boolean
+  claude: HostRegistration
+  copilot: HostRegistration
+  hooks: HostRegistration
+  hooksCommand: string
+}
+
+function agentsInfo(baked: BakedInfo | null, lookup: ReleaseRuntime | null, hosts: AgentHosts): AgentsInfo {
+  const current = baked?.schema === 2 ? baked.version ?? null : null
+  const installed = lookup?.runtime ?? null
+  const hooksInstaller = installed ? resolve(installed.dir, 'scripts', 'install-hooks.sh') : null
+  const moveHooks = hooksInstaller !== null && hosts.hooks.kind === 'runtime' &&
+    hosts.hooks.runtimeId !== basename(installed!.dir) && existsSync(hooksInstaller)
+  return {
+    current,
+    updatable: canUpdateAgents(baked, lookup),
+    claude: hosts.claude,
+    copilot: hosts.copilot,
+    hooks: hosts.hooks,
+    hooksCommand: moveHooks ? `bash ${shellQuote(hooksInstaller)} --apply` : '',
+  }
+}
+
+const UNKNOWN_HOSTS: AgentHosts = { claude: { kind: 'unknown' }, copilot: { kind: 'unknown' }, hooks: { kind: 'unknown' } }
 
 // A close/reopen body carries one agent-authored project name. An unparseable
 // body arrives here as null (the caller's .catch) and is refused like any other
@@ -544,6 +609,60 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
     }
   }
 
+  // Issue #197 part 2: what each host is REGISTERED to run (src/agent-hosts.ts),
+  // shared by /api/setup and /api/version the same way. Re-read when one of the
+  // three host config files (link or target) or the runtime root changes —
+  // which every install does — and otherwise after the same backstop. Checking
+  // a registered runtime hashes it, so each one is checked once per stamp of
+  // its directory and manifest; the current runtime the release lookup above
+  // already verified (more strictly) is not hashed again.
+  const agentHome = opts.agentHome ?? homedir()
+  const ownership = new Map<string, { key: string; at: number; value: { version: string | null } | null }>()
+  let hostsCache: { key: string; at: number; value: AgentHosts } | undefined
+  const agentHosts = (baked: BakedInfo | null): AgentHosts => {
+    const lookup = baked?.schema === 2 ? releaseRuntime(baked) : null
+    const installedDir = lookup?.runtime?.dir ?? null
+    const key = JSON.stringify([
+      agentConfigFiles(agentHome).map((file) => [entryStamp(file), targetStamp(file)]),
+      runtimeRootStamp(runtimeRoot),
+      installedDir,
+      baked?.version ?? null,
+    ])
+    const now = Date.now()
+    if (hostsCache && hostsCache.key === key && now - hostsCache.at < RUNTIME_LOOKUP_BACKSTOP_MS) {
+      return hostsCache.value
+    }
+    try {
+      let verifiedDir: string | null = null
+      try {
+        verifiedDir = installedDir ? realpathSync(installedDir) : null
+      } catch {
+        verifiedDir = null
+      }
+      const checked = new Set<string>()
+      const value = readAgentHosts({
+        home: agentHome,
+        runtimeRoot,
+        checkRuntime: (dir, runtimeId) => {
+          if (dir === verifiedDir) return { version: baked?.version ?? null }
+          checked.add(dir)
+          const stamp = `${entryStamp(dir)}|${entryStamp(resolve(dir, MANIFEST_FILE))}`
+          const hit = ownership.get(dir)
+          if (hit && hit.key === stamp && now - hit.at < RUNTIME_LOOKUP_BACKSTOP_MS) return hit.value
+          const verified = registeredRuntimeVersion(dir, runtimeId, verify)
+          ownership.set(dir, { key: stamp, at: now, value: verified })
+          return verified
+        },
+      })
+      for (const dir of ownership.keys()) if (!checked.has(dir)) ownership.delete(dir)
+      hostsCache = { key, at: now, value }
+      return value
+    } catch {
+      hostsCache = undefined
+      return UNKNOWN_HOSTS
+    }
+  }
+
   // boot id lets a long-lived tab detect a server restart (= likely deploy)
   // and reload itself instead of polling forever with stale frontend code
   const boot = new Date().toISOString()
@@ -578,7 +697,8 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
       build = null
     }
     const lookup = baked?.schema === 2 ? releaseRuntime(baked) : null
-    return c.json({ ...setupInfo(baked, runtimeHostKey, lookup), build })
+    const agents = agentsInfo(baked, lookup, agentHosts(baked))
+    return c.json({ ...setupInfo(baked, runtimeHostKey, lookup), agents, build })
   })
 
   if (opts.ownerToken) {
@@ -591,14 +711,18 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
   // Setup install — never on the poll. Local reads only, no git, no network.
   app.get('/api/version', (c) => {
     const baked = readBakedInfo(bakedPath)
+    const registered = agentHosts(baked)
+    const hosts = { claude: hostVersion(registered.claude), copilot: hostVersion(registered.copilot) }
     if (baked?.schema !== 2) {
-      return c.json({ current: AGENT_INBOX_VERSION, mode: 'dev', runtimeInstalled: null } satisfies AgentVersion)
+      return c.json({ current: AGENT_INBOX_VERSION, mode: 'dev', runtimeInstalled: null, updatable: false, hosts } satisfies AgentVersion)
     }
     const lookup = releaseRuntime(baked)
     return c.json({
       current: baked.version ?? null,
       mode: 'release',
       runtimeInstalled: lookup?.runtime ? true : lookup?.source ? false : null,
+      updatable: canUpdateAgents(baked, lookup),
+      hosts,
     } satisfies AgentVersion)
   })
 

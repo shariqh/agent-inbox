@@ -1288,6 +1288,9 @@ describe('reporting an install that did not take effect', () => {
         abandon: vi.fn(async () => { calls.push('abandon') }),
         take: vi.fn(async () => {
           calls.push('take')
+          // Resolve only after a macrotask, so a cleanup scheduled meanwhile would run first.
+          await new Promise((resolveTake) => setTimeout(resolveTake, 0))
+          calls.push('taken')
           return outcome as never
         }),
       },
@@ -1389,8 +1392,8 @@ describe('reporting an install that did not take effect', () => {
     const h = await harness({ outcome: outcome(70) })
     await h.controller.rendererReady()
     await Promise.resolve()
-    expect(h.calls.indexOf('take')).toBeGreaterThan(-1)
-    expect(h.calls.indexOf('take')).toBeLessThan(h.calls.indexOf('cleanup'))
+    expect(h.calls.indexOf('taken')).toBeGreaterThan(-1)
+    expect(h.calls.indexOf('taken')).toBeLessThan(h.calls.indexOf('cleanup'))
   })
 
   it.each([

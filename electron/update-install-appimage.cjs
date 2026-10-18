@@ -6,13 +6,16 @@
 // system), hashing exactly the bytes it copies, and commits with one rename
 // over that file. Until the rename nothing the user runs has changed. After it,
 // the running app keeps executing from its mount of the old inode, which lives
-// until the process exits, and the injected relaunch starts the new file at the
-// same path.
+// until the process exits, and a detached host /bin/sh helper starts the new
+// file once this process (and any viewer child) has exited. Electron's own
+// relaunch is unusable here: its helper runs from the old mount, which is torn
+// down as the app exits.
 //
 // Every step re-proves that this process runs from that AppImage: APPIMAGE and
 // APPDIR must be canonical absolute paths and the executable must live inside
 // APPDIR. A stray inherited APPIMAGE (a .deb install started from another
-// AppImage) therefore never points this module at somebody else's file.
+// AppImage) therefore never points this module at somebody else's file. The
+// file must also still be the one this process started from.
 
 const { createHash, randomBytes } = require('node:crypto')
 const { constants } = require('node:fs')
@@ -43,6 +46,30 @@ const BIGINT = Object.freeze({ bigint: true })
 const OPEN_READ_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0)
 const OPEN_STAGE_FLAGS = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0)
 const OPEN_DIRECTORY_FLAGS = constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0)
+const HELPER_SHELL = '/bin/sh'
+const HELPER_NAME = 'agent-inbox-relaunch'
+const HELPER_POLL_MS = 200
+const DEFAULT_HELPER_TIMEOUT_MS = 120_000
+// Waits while the app or its viewer child is alive, then replaces itself with
+// the new AppImage. Every input arrives as argv; after the poll budget it gives
+// up and starts nothing, and the user opens the already-installed file.
+const RELAUNCH_SCRIPT = [
+  'set -u',
+  'app_pid="$1"',
+  'viewer_pid="$2"',
+  'polls="$3"',
+  'target="$4"',
+  'waited=0',
+  'while kill -0 "$app_pid" 2>/dev/null || { [ "$viewer_pid" -gt 0 ] && kill -0 "$viewer_pid" 2>/dev/null; }; do',
+  '  [ "$waited" -lt "$polls" ] || exit 0',
+  '  sleep 0.2 2>/dev/null || sleep 1',
+  '  waited=$((waited + 1))',
+  'done',
+  'exec "$target"',
+  '',
+].join('\n')
+// The new AppImage sets these afresh; inherited, they would describe the old one.
+const DROPPED_ENV = new Set(['APPDIR', 'APPIMAGE', 'ARGV0', 'OWD', 'TARGET_APPIMAGE'])
 
 const RELEASE_PAGE = 'Download the update from the release page.'
 const INFEASIBLE = Object.freeze({
@@ -54,6 +81,7 @@ const INFEASIBLE = Object.freeze({
   'not-owner': `Agent Inbox can’t replace an AppImage file that belongs to another user. ${RELEASE_PAGE}`,
   'read-only': `Agent Inbox can’t replace its AppImage file in this folder. ${RELEASE_PAGE}`,
   'not-recognized': `Agent Inbox can’t recognize its AppImage file. ${RELEASE_PAGE}`,
+  'changed-since-launch': 'The AppImage file changed since Agent Inbox started. Restart Agent Inbox to update.',
   unexpected: `Agent Inbox can’t check whether it can replace its AppImage file. ${RELEASE_PAGE}`,
 })
 const FEASIBLE = Object.freeze({ ok: true })
@@ -112,6 +140,22 @@ function sameIdentity(stat, identity) {
   return identity !== null && stat.dev === identity.dev && stat.ino === identity.ino
 }
 
+// Identity plus size and modification time, so an in-place rewrite also counts as a change.
+function snapshotOf(stat) {
+  const identity = identityOf(stat)
+  if (identity === null || typeof stat.size !== 'bigint' || typeof stat.mtimeNs !== 'bigint') return null
+  return Object.freeze({ ...identity, size: stat.size, mtimeNs: stat.mtimeNs })
+}
+
+function sameSnapshot(left, right) {
+  return left !== null
+    && right !== null
+    && left.dev === right.dev
+    && left.ino === right.ino
+    && left.size === right.size
+    && left.mtimeNs === right.mtimeNs
+}
+
 function hasAppImageMagic(header) {
   return header.length >= MAGIC_BYTES
     && header.subarray(0, 4).equals(ELF_MAGIC)
@@ -122,10 +166,37 @@ function validUid(uid) {
   return Number.isSafeInteger(uid) && uid >= 0
 }
 
+function isPid(value) {
+  return Number.isSafeInteger(value) && value > 0
+}
+
+// The new AppImage must not inherit anything that points into the old one's
+// mount, which disappears with this process: drop those path-list entries.
+function relaunchEnvironment(source, appDir) {
+  const result = {}
+  for (const key of Object.keys(source)) {
+    const value = source[key]
+    if (typeof value !== 'string' || DROPPED_ENV.has(key)) continue
+    const entries = value.split(':')
+    const kept = entries.filter((entry) => {
+      if (!path.isAbsolute(entry)) return true
+      const resolved = path.resolve(entry)
+      return resolved !== appDir && !isInside(appDir, resolved)
+    })
+    if (kept.length === entries.length) result[key] = value
+    else if (kept.length > 0) result[key] = kept.join(':')
+  }
+  return result
+}
+
 function createAppImageInstaller(options) {
   if (options === null || typeof options !== 'object') throw new TypeError('options are required')
-  if (typeof options.relaunch !== 'function') throw new TypeError('relaunch is required')
-  const { env, execPath, uid, platform, isPackaged, relaunch } = options
+  if (typeof options.spawnImpl !== 'function') throw new TypeError('spawnImpl is required')
+  if (!isPid(options.pid)) throw new TypeError('pid must be a positive integer')
+  const helperTimeoutMs = options.helperTimeoutMs ?? DEFAULT_HELPER_TIMEOUT_MS
+  if (!Number.isFinite(helperTimeoutMs) || helperTimeoutMs <= 0) throw new TypeError('helperTimeoutMs must be positive')
+  const { env, execPath, uid, platform, isPackaged, pid, viewerPid, spawnImpl } = options
+  const helperPolls = Math.max(1, Math.ceil(helperTimeoutMs / HELPER_POLL_MS))
   const fsImpl = options.fsImpl ?? fs
   const randomImpl = options.randomImpl ?? randomBytes
   // Stages this installer still owns; cleanup never touches them, however old.
@@ -151,8 +222,17 @@ function createAppImageInstaller(options) {
     if (Buffer.byteLength(stageName(name, '0'.repeat(STAGE_RANDOM_BYTES * 2))) > NAME_MAX_BYTES) {
       return refusal('name-too-long')
     }
-    return { ok: true, appImage, parent: path.dirname(appImage), name }
+    return { ok: true, appImage, appDir, parent: path.dirname(appImage), name }
   }
+
+  // Taken as the app starts: an AppImage replaced or rewritten since then is no
+  // longer the build this process runs, so it is not ours to replace.
+  const launched = (async () => {
+    const located = locate()
+    if (!located.ok) return null
+    const stat = await fsImpl.lstat(located.appImage, BIGINT)
+    return stat.isFile() ? snapshotOf(stat) : null
+  })().catch(() => null)
 
   async function readMagic(appImage, expected) {
     let handle
@@ -190,8 +270,9 @@ function createAppImageInstaller(options) {
     } catch {
       return refusal('not-regular-file')
     }
-    const fileIdentity = identityOf(file)
-    if (!file.isFile() || fileIdentity === null) return refusal('not-regular-file')
+    const fileSnapshot = snapshotOf(file)
+    if (!file.isFile() || fileSnapshot === null) return refusal('not-regular-file')
+    if (!sameSnapshot(fileSnapshot, await launched)) return refusal('changed-since-launch')
     if (!validUid(uid) || file.uid !== BigInt(uid)) return refusal('not-owner')
     try {
       await fsImpl.access(appImage, constants.W_OK)
@@ -211,9 +292,9 @@ function createAppImageInstaller(options) {
     } catch {
       return refusal('read-only')
     }
-    const magic = await readMagic(appImage, fileIdentity)
+    const magic = await readMagic(appImage, fileSnapshot)
     if (magic !== 'ok') return refusal(magic)
-    return { ...located, file: fileIdentity, folder: folderIdentity }
+    return { ...located, file: fileSnapshot, folder: folderIdentity }
   }
 
   async function feasibility() {
@@ -370,6 +451,41 @@ function createAppImageInstaller(options) {
     }
   }
 
+  function currentViewerPid() {
+    try {
+      const value = typeof viewerPid === 'function' ? viewerPid() : viewerPid
+      return isPid(value) ? value : 0
+    } catch {
+      return 0
+    }
+  }
+
+  // Resolves true once the detached helper is running, false if it could not start.
+  function startHelper(target) {
+    return new Promise((resolveStart) => {
+      let child
+      try {
+        child = spawnImpl(
+          HELPER_SHELL,
+          ['-c', RELAUNCH_SCRIPT, HELPER_NAME, String(pid), String(currentViewerPid()), String(helperPolls), target.appImage],
+          { detached: true, stdio: 'ignore', env: relaunchEnvironment(env, target.appDir), cwd: target.parent },
+        )
+        child.once('spawn', () => {
+          try {
+            child.unref()
+          } catch {
+            // It is running either way.
+          }
+          resolveStart(true)
+        })
+        // Kept for the child's lifetime: an unhandled 'error' event would throw in main.
+        child.on('error', () => resolveStart(false))
+      } catch {
+        resolveStart(false)
+      }
+    })
+  }
+
   function preparedInstall(target, stage) {
     let state = 'prepared'
     let committing = null
@@ -385,7 +501,7 @@ function createAppImageInstaller(options) {
         const file = await fsImpl.lstat(target.appImage, BIGINT)
         const folder = await fsImpl.lstat(target.parent, BIGINT)
         const staged = await fsImpl.lstat(stage.path, BIGINT)
-        return file.isFile() && sameIdentity(file, target.file)
+        return file.isFile() && sameSnapshot(snapshotOf(file), target.file)
           && folder.isDirectory() && sameIdentity(folder, target.folder)
           && staged.isFile() && sameIdentity(staged, stage.identity)
       } catch {
@@ -412,10 +528,8 @@ function createAppImageInstaller(options) {
       state = 'committed'
       live.delete(stage.path)
       await syncDirectory(target.parent)
-      try {
-        relaunch()
-      } catch {
-        console.error('[agent-inbox] the update is installed, but Agent Inbox could not restart; open it again to use the new version')
+      if (!(await startHelper(target))) {
+        console.error('[agent-inbox] the update is installed, but Agent Inbox could not schedule its restart; open it again to use the new version')
       }
     }
 

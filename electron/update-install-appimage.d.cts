@@ -60,6 +60,7 @@ export type AppImageInfeasibleReason =
   | 'not-owner'
   | 'read-only'
   | 'not-recognized'
+  | 'changed-since-launch'
   | 'unexpected'
 
 export interface AppImageInstallStat {
@@ -71,6 +72,7 @@ export interface AppImageInstallStat {
   uid: bigint
   size: bigint
   mtimeMs: bigint
+  mtimeNs: bigint
 }
 
 export interface AppImageInstallFileHandle {
@@ -92,6 +94,26 @@ export interface AppImageInstallFs {
   readdir(path: string): Promise<string[]>
 }
 
+export interface AppImageHelperOptions {
+  detached: true
+  stdio: 'ignore'
+  env: Record<string, string>
+  cwd: string
+}
+
+export interface AppImageHelperProcess {
+  on(event: string, listener: (...args: any[]) => void): unknown
+  once(event: string, listener: (...args: any[]) => void): unknown
+  unref(): void
+}
+
+/** `child_process.spawn`, narrowed to the one call the installer makes. */
+export type AppImageSpawn = (
+  command: string,
+  args: readonly string[],
+  options: AppImageHelperOptions,
+) => AppImageHelperProcess
+
 export interface AppImageInstaller extends PlatformInstaller {
   readonly strategy: 'appimage-self-replace'
   cleanup(): Promise<void>
@@ -106,8 +128,14 @@ export function createAppImageInstaller(options: {
   uid: number
   platform: string
   isPackaged: boolean
-  /** Called once, only after the new build replaced the AppImage file. */
-  relaunch(): void
+  /** `process.pid`: the restart helper starts the new build only after this process exits. */
+  pid: number
+  /** A viewer child process this app started, if any; the helper waits for it as well. */
+  viewerPid?: number | null | (() => number | null)
+  /** `child_process.spawn`; used once per commit, for the detached `/bin/sh` restart helper. */
+  spawnImpl: AppImageSpawn
+  /** How long the helper waits for those processes before giving up. Default 120 s. */
+  helperTimeoutMs?: number
   fsImpl?: AppImageInstallFs
   randomImpl?: (size: number) => Uint8Array
 }): AppImageInstaller

@@ -1,4 +1,5 @@
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
+import type { ChildProcess } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
 import {
   chmodSync,
@@ -18,17 +19,21 @@ import {
   statSync,
   symlinkSync,
   unlinkSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs'
+import { EventEmitter } from 'node:events'
 import * as fsp from 'node:fs/promises'
-import { join, resolve } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import appImageInstall from '../electron/update-install-appimage.cjs'
 import type {
+  AppImageHelperOptions,
   AppImageInstallFileHandle,
   AppImageInstallFs,
   AppImageInstallStat,
+  AppImageSpawn,
   VerifiedInstallSource,
 } from '../electron/update-install-appimage.cjs'
 import type { VerifiedArtifact } from '../electron/update-download.cjs'
@@ -46,6 +51,7 @@ const realFs = fsp as unknown as AppImageInstallFs
 const APPIMAGE_HEADER = Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00, 0x41, 0x49, 0x02])
 const PLAIN_ELF_HEADER = Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00])
 const STAGE_RE = /^\.Agent-Inbox-v1\.3\.0-linux-x86_64\.AppImage\.update-[0-9a-f]{16}$/
+const APP_PID = 4242
 
 const workDirs: string[] = []
 const restoreModes: Array<[string, number]> = []
@@ -115,10 +121,41 @@ interface Fixture {
   newBytes: Buffer
   sourcePath: string
   record: VerifiedArtifact
-  relaunch: ReturnType<typeof vi.fn>
+  helper: FakeHelper
   options(overrides?: Partial<InstallerOptions>): InstallerOptions
   installer(overrides?: Partial<InstallerOptions>): ReturnType<typeof createAppImageInstaller>
   source(overrides?: { bytes?: Buffer; record?: Partial<VerifiedArtifact> }): Promise<VerifiedInstallSource>
+}
+
+type HelperMode = 'spawn' | 'error' | 'throw' | 'manual'
+
+interface HelperCall {
+  command: string
+  args: readonly string[]
+  options: AppImageHelperOptions
+  /** Whether the new build was already at the AppImage path when the helper started. */
+  replacedBefore: boolean
+  child: EventEmitter & { unref: ReturnType<typeof vi.fn> }
+}
+
+interface FakeHelper {
+  impl: ReturnType<typeof vi.fn> & AppImageSpawn
+  calls: HelperCall[]
+  setMode(mode: HelperMode): void
+}
+
+function fakeHelper(replaced: () => boolean): FakeHelper {
+  const calls: HelperCall[] = []
+  let mode: HelperMode = 'spawn'
+  const impl = vi.fn((command: string, args: readonly string[], options: AppImageHelperOptions) => {
+    if (mode === 'throw') throw new Error(`cannot start ${String(args.at(-1))}`)
+    const child = Object.assign(new EventEmitter(), { unref: vi.fn() })
+    calls.push({ command, args, options, replacedBefore: replaced(), child })
+    if (mode === 'spawn') setImmediate(() => child.emit('spawn'))
+    if (mode === 'error') setImmediate(() => child.emit('error', new Error(`spawn ${command} ENOENT`)))
+    return child
+  })
+  return { impl, calls, setMode: (next) => { mode = next } }
 }
 
 function fixture(newBytes: Buffer = appImageBytes(2 * MiB + 12_345)): Fixture {
@@ -148,14 +185,15 @@ function fixture(newBytes: Buffer = appImageBytes(2 * MiB + 12_345)): Fixture {
     packageType: 'appimage',
     installStrategy: 'appimage-self-replace',
   }
-  const relaunch = vi.fn()
+  const helper = fakeHelper(() => readFileSync(appImage).equals(newBytes))
   const options = (overrides: Partial<InstallerOptions> = {}): InstallerOptions => ({
-    env: { APPIMAGE: appImage, APPDIR: appDir, HOME: work },
+    env: { APPIMAGE: appImage, APPDIR: appDir, HOME: work, PATH: '/usr/bin:/bin' },
     execPath,
     uid: UID,
     platform: 'linux',
     isPackaged: true,
-    relaunch,
+    pid: APP_PID,
+    spawnImpl: helper.impl,
     ...overrides,
   })
   return {
@@ -168,7 +206,7 @@ function fixture(newBytes: Buffer = appImageBytes(2 * MiB + 12_345)): Fixture {
     newBytes,
     sourcePath,
     record,
-    relaunch,
+    helper,
     options,
     installer: (overrides) => createAppImageInstaller(options(overrides)),
     async source(overrides = {}) {
@@ -263,7 +301,7 @@ describe('AppImage install feasibility', () => {
     expect(readFileSync(fx.appImage).equals(before.bytes)).toBe(true)
     expect(identity(fx.appImage)).toBe(before.id)
     expect(readdirSync(fx.folder)).toEqual(before.listing)
-    expect(fx.relaunch).not.toHaveBeenCalled()
+    expect(fx.helper.impl).not.toHaveBeenCalled()
   })
 
   type Case = [label: string, arrange: (fx: Fixture) => Partial<InstallerOptions> | void, reason: string]
@@ -525,7 +563,7 @@ describe('preparing an AppImage update', () => {
     expect(readFileSync(fx.appImage).equals(fx.oldBytes)).toBe(true)
     expect(identity(fx.appImage)).toBe(before)
     expect(lstatSync(fx.appImage).mode & 0o7777).toBe(0o755)
-    expect(fx.relaunch).not.toHaveBeenCalled()
+    expect(fx.helper.impl).not.toHaveBeenCalled()
 
     expect(positions.length).toBeGreaterThan(2)
     expect(positions.every((position) => typeof position === 'number')).toBe(true)
@@ -741,13 +779,9 @@ describe('preparing an AppImage update', () => {
 })
 
 describe('committing an AppImage update', () => {
-  it('atomically replaces the AppImage, keeps the running image readable, then relaunches once', async () => {
+  it('atomically replaces the AppImage, keeps the running image readable, then schedules one restart', async () => {
     const fx = fixture()
     const calls: Call[] = []
-    const replacedAtRelaunch: boolean[] = []
-    fx.relaunch.mockImplementation(() => {
-      replacedAtRelaunch.push(readFileSync(fx.appImage).equals(fx.newBytes))
-    })
     // The running AppImage's mount holds the old inode open until the app exits.
     const running = openSync(fx.appImage, 'r')
     try {
@@ -762,8 +796,8 @@ describe('committing an AppImage update', () => {
       expect(identity(fx.appImage)).toBe(staged)
       expect(lstatSync(fx.appImage).mode & 0o7777).toBe(0o755)
       expect(stagesIn(fx.folder)).toEqual([])
-      expect(fx.relaunch).toHaveBeenCalledTimes(1)
-      expect(replacedAtRelaunch).toEqual([true])
+      expect(fx.helper.impl).toHaveBeenCalledTimes(1)
+      expect(fx.helper.calls[0]!.replacedBefore).toBe(true)
       const old = Buffer.alloc(fx.oldBytes.length)
       expect(readSync(running, old, 0, old.length, 0)).toBe(old.length)
       expect(old.equals(fx.oldBytes)).toBe(true)
@@ -789,7 +823,7 @@ describe('committing an AppImage update', () => {
     expect(readFileSync(fx.appImage).equals(replacement)).toBe(true)
     expect(readFileSync(moved).equals(fx.oldBytes)).toBe(true)
     expect(stagesIn(fx.folder)).toEqual([])
-    expect(fx.relaunch).not.toHaveBeenCalled()
+    expect(fx.helper.impl).not.toHaveBeenCalled()
   })
 
   it('refuses to recreate an AppImage that was moved away after prepare', async () => {
@@ -802,7 +836,7 @@ describe('committing an AppImage update', () => {
     expect(existsSync(fx.appImage)).toBe(false)
     expect(readFileSync(moved).equals(fx.oldBytes)).toBe(true)
     expect(stagesIn(fx.folder)).toEqual([])
-    expect(fx.relaunch).not.toHaveBeenCalled()
+    expect(fx.helper.impl).not.toHaveBeenCalled()
   })
 
   it('refuses when the AppImage folder was swapped after prepare, even for the very same files', async () => {
@@ -818,7 +852,7 @@ describe('committing an AppImage update', () => {
 
     expect(await failure(prepared.commit())).toMatchObject({ code: 'commit-failed' })
     expect(readFileSync(fx.appImage).equals(fx.oldBytes)).toBe(true)
-    expect(fx.relaunch).not.toHaveBeenCalled()
+    expect(fx.helper.impl).not.toHaveBeenCalled()
   })
 
   it('refuses a stage replaced after prepare and leaves the stranger alone', async () => {
@@ -834,7 +868,7 @@ describe('committing an AppImage update', () => {
     expect(await failure(prepared.commit())).toMatchObject({ code: 'commit-failed' })
     expect(readFileSync(fx.appImage).equals(fx.oldBytes)).toBe(true)
     expect(readFileSync(stage).equals(stranger)).toBe(true)
-    expect(fx.relaunch).not.toHaveBeenCalled()
+    expect(fx.helper.impl).not.toHaveBeenCalled()
   })
 
   it('leaves the AppImage untouched and removes the stage when the rename fails', async () => {
@@ -847,21 +881,19 @@ describe('committing an AppImage update', () => {
     expect(error.message).not.toContain('/')
     expect(readFileSync(fx.appImage).equals(fx.oldBytes)).toBe(true)
     expect(stagesIn(fx.folder)).toEqual([])
-    expect(fx.relaunch).not.toHaveBeenCalled()
+    expect(fx.helper.impl).not.toHaveBeenCalled()
   })
 
-  it('still resolves with the new build in place when the relaunch throws', async () => {
+  it.each(['throw', 'error'] as const)('still resolves with the new build in place when the restart helper fails to start (%s)', async (mode) => {
     const fx = fixture()
     const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
-    fx.relaunch.mockImplementation(() => {
-      throw new Error(`could not relaunch ${fx.appImage}`)
-    })
+    fx.helper.setMode(mode)
     const prepared = await fx.installer().prepare(await fx.source())
 
     await expect(prepared.commit()).resolves.toBeUndefined()
     expect(readFileSync(fx.appImage).equals(fx.newBytes)).toBe(true)
     expect(stagesIn(fx.folder)).toEqual([])
-    expect(fx.relaunch).toHaveBeenCalledTimes(1)
+    expect(fx.helper.impl).toHaveBeenCalledTimes(1)
     expect(logged).toHaveBeenCalledTimes(1)
     expect(JSON.stringify(logged.mock.calls)).not.toContain(fx.work)
   })
@@ -879,10 +911,10 @@ describe('committing an AppImage update', () => {
 
     await expect(prepared.commit()).resolves.toBeUndefined()
     expect(readFileSync(fx.appImage).equals(fx.newBytes)).toBe(true)
-    expect(fx.relaunch).toHaveBeenCalledTimes(1)
+    expect(fx.helper.impl).toHaveBeenCalledTimes(1)
   })
 
-  it('commits once, and never commits a discarded install', async () => {
+  it('commits once, then refuses to stage again until the app restarts', async () => {
     const fx = fixture()
     const calls: Call[] = []
     const installer = fx.installer({ fsImpl: recordingFs(calls) })
@@ -891,14 +923,24 @@ describe('committing an AppImage update', () => {
     await Promise.all([prepared.commit(), prepared.commit()])
     await expect(prepared.commit()).resolves.toBeUndefined()
     expect(calls.filter((call) => call.op === 'rename')).toHaveLength(1)
-    expect(fx.relaunch).toHaveBeenCalledTimes(1)
+    expect(fx.helper.impl).toHaveBeenCalledTimes(1)
 
-    const discarded = await installer.prepare(await fx.source())
-    await discarded.discard()
-    expect(await failure(discarded.commit())).toMatchObject({ code: 'commit-failed' })
+    // This process still runs the old build, so only a restarted app may update again.
+    expect(await installer.feasibility({ version: '1.5.0' })).toMatchObject({ ok: false, reason: 'changed-since-launch' })
+    expect(await failure(installer.prepare(await fx.source()))).toMatchObject({ code: 'not-feasible' })
     expect(readFileSync(fx.appImage).equals(fx.newBytes)).toBe(true)
     expect(stagesIn(fx.folder)).toEqual([])
-    expect(calls.filter((call) => call.op === 'rename')).toHaveLength(1)
+  })
+
+  it('never commits a discarded install', async () => {
+    const fx = fixture()
+    const prepared = await fx.installer().prepare(await fx.source())
+    await prepared.discard()
+
+    expect(await failure(prepared.commit())).toMatchObject({ code: 'commit-failed' })
+    expect(readFileSync(fx.appImage).equals(fx.oldBytes)).toBe(true)
+    expect(stagesIn(fx.folder)).toEqual([])
+    expect(fx.helper.impl).not.toHaveBeenCalled()
   })
 })
 
@@ -944,7 +986,7 @@ describe('discarding an AppImage update', () => {
     await Promise.all([prepared.commit(), prepared.discard()])
     expect(readFileSync(fx.appImage).equals(fx.newBytes)).toBe(true)
     expect(stagesIn(fx.folder)).toEqual([])
-    expect(fx.relaunch).toHaveBeenCalledTimes(1)
+    expect(fx.helper.impl).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -1072,10 +1114,369 @@ describe('AppImage stage cleanup', () => {
   })
 })
 
+describe('the AppImage file the app started from', () => {
+  const CHANGED = 'The AppImage file changed since Agent Inbox started. Restart Agent Inbox to update.'
+
+  it('refuses once another file replaced it after startup', async () => {
+    const fx = fixture()
+    const installer = fx.installer()
+    await expect(installer.feasibility({ version: '1.4.0' })).resolves.toEqual({ ok: true })
+    const replacement = join(fx.work, 'replacement.AppImage')
+    writeFileSync(replacement, appImageBytes(8192))
+    chmodSync(replacement, 0o755)
+    renameSync(replacement, fx.appImage)
+
+    expect(await installer.feasibility({ version: '1.4.0' })).toEqual({ ok: false, reason: 'changed-since-launch', message: CHANGED })
+    const error = await failure(installer.prepare(await fx.source()))
+    expect(error).toMatchObject({ name: 'UpdateInstallError', code: 'not-feasible' })
+    expect(error.message).not.toContain('/')
+    expect(stagesIn(fx.folder)).toEqual([])
+    // An app started from the new file accepts it.
+    await expect(fx.installer().feasibility({ version: '1.4.0' })).resolves.toEqual({ ok: true })
+  })
+
+  it('refuses once the file was rewritten in place, by size or by modification time', async () => {
+    const fx = fixture()
+    const resized = fx.installer()
+    await resized.feasibility({ version: '1.4.0' })
+    const before = identity(fx.appImage)
+    writeFileSync(fx.appImage, appImageBytes(fx.oldBytes.length + 1))
+    expect(identity(fx.appImage)).toBe(before)
+    expect(await resized.feasibility({ version: '1.4.0' })).toMatchObject({ ok: false, reason: 'changed-since-launch' })
+
+    const touched = fx.installer()
+    await expect(touched.feasibility({ version: '1.4.0' })).resolves.toEqual({ ok: true })
+    const later = new Date(statSync(fx.appImage).mtimeMs + 10_000)
+    utimesSync(fx.appImage, later, later)
+    expect(await touched.feasibility({ version: '1.4.0' })).toMatchObject({ ok: false, reason: 'changed-since-launch' })
+  })
+
+  it('refuses a file it could not see at startup, even once it is back', async () => {
+    const fx = fixture()
+    const away = join(fx.work, 'away.AppImage')
+    renameSync(fx.appImage, away)
+    const installer = fx.installer()
+    expect(await installer.feasibility({ version: '1.4.0' })).toMatchObject({ ok: false, reason: 'not-regular-file' })
+
+    renameSync(away, fx.appImage)
+    expect(await installer.feasibility({ version: '1.4.0' })).toMatchObject({ ok: false, reason: 'changed-since-launch' })
+  })
+
+  it('refuses to commit over a file rewritten in place after prepare', async () => {
+    const fx = fixture()
+    const prepared = await fx.installer().prepare(await fx.source())
+    const rewritten = appImageBytes(fx.oldBytes.length)
+    writeFileSync(fx.appImage, rewritten)
+    const later = new Date(statSync(fx.appImage).mtimeMs + 10_000)
+    utimesSync(fx.appImage, later, later)
+
+    expect(await failure(prepared.commit())).toMatchObject({ name: 'UpdateInstallError', code: 'commit-failed' })
+    expect(readFileSync(fx.appImage).equals(rewritten)).toBe(true)
+    expect(stagesIn(fx.folder)).toEqual([])
+    expect(fx.helper.impl).not.toHaveBeenCalled()
+  })
+})
+
+describe('scheduling the restart into the new AppImage', () => {
+  it('starts one detached host /bin/sh helper with a constant script, argv-only inputs and a scrubbed environment', async () => {
+    const fx = fixture()
+    const env = {
+      APPIMAGE: fx.appImage,
+      APPDIR: fx.appDir,
+      ARGV0: './Agent-Inbox.AppImage',
+      OWD: fx.work,
+      TARGET_APPIMAGE: fx.appImage,
+      PATH: `${fx.appDir}/usr/bin:/usr/local/bin:/usr/bin:${fx.appDir}-other/bin`,
+      LD_LIBRARY_PATH: `${fx.appDir}/usr/lib:${fx.appDir}/usr/lib/x86_64-linux-gnu`,
+      XDG_DATA_DIRS: `${fx.appDir}/usr/share:/usr/local/share:/usr/share`,
+      GSETTINGS_SCHEMA_DIR: `${fx.appDir}/usr/share/glib-2.0/schemas`,
+      GTK_PATH: `${fx.appDir}/../${basename(fx.appDir)}/usr/lib/gtk-3.0`,
+      DISPLAY: ':0',
+      WAYLAND_DISPLAY: 'wayland-0',
+      XAUTHORITY: '/run/user/1000/.mutter-Xwaylandauth.ABC123',
+      DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus',
+      XDG_RUNTIME_DIR: '/run/user/1000',
+      HOME: '/home/tester',
+      USER: 'tester',
+      LANG: 'en_US.UTF-8',
+      LC_TIME: 'en_GB.UTF-8',
+      AGENT_INBOX_PORT: '4319',
+      HTTPS_PROXY: 'http://proxy.example:8080',
+    }
+    const prepared = await fx.installer({ env, viewerPid: () => 5151 }).prepare(await fx.source())
+
+    await expect(prepared.commit()).resolves.toBeUndefined()
+    expect(fx.helper.calls).toHaveLength(1)
+    const call = fx.helper.calls[0]!
+    expect(call.replacedBefore).toBe(true)
+    expect(call.command).toBe('/bin/sh')
+    expect(call.args).toEqual(['-c', expect.any(String), 'agent-inbox-relaunch', String(APP_PID), '5151', '600', fx.appImage])
+    const script = call.args[1]!
+    expect(script.startsWith('set -u\n')).toBe(true)
+    expect(script).not.toContain(fx.work)
+    expect(script).not.toMatch(/\beval\b/)
+    expect(script.match(/(?<!")\$(?!\(\()/g)).toBeNull()
+    expect(script.trimEnd().endsWith('exec "$target"')).toBe(true)
+    expect(call.options).toEqual({
+      detached: true,
+      stdio: 'ignore',
+      cwd: fx.folder,
+      env: {
+        PATH: `/usr/local/bin:/usr/bin:${fx.appDir}-other/bin`,
+        XDG_DATA_DIRS: '/usr/local/share:/usr/share',
+        DISPLAY: ':0',
+        WAYLAND_DISPLAY: 'wayland-0',
+        XAUTHORITY: '/run/user/1000/.mutter-Xwaylandauth.ABC123',
+        DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus',
+        XDG_RUNTIME_DIR: '/run/user/1000',
+        HOME: '/home/tester',
+        USER: 'tester',
+        LANG: 'en_US.UTF-8',
+        LC_TIME: 'en_GB.UTF-8',
+        AGENT_INBOX_PORT: '4319',
+        HTTPS_PROXY: 'http://proxy.example:8080',
+      },
+    })
+    expect(call.child.unref).toHaveBeenCalledTimes(1)
+    // A late error from the started helper must not become an uncaught 'error' event in main.
+    expect(() => call.child.emit('error', new Error('late'))).not.toThrow()
+    expect(() => call.child.emit('error', new Error('later'))).not.toThrow()
+
+    const other = fixture()
+    await (await other.installer().prepare(await other.source())).commit()
+    expect(other.helper.calls[0]!.args[1]).toBe(script)
+  })
+
+  it('resolves the commit only once the helper has started', async () => {
+    const fx = fixture()
+    fx.helper.setMode('manual')
+    const prepared = await fx.installer().prepare(await fx.source())
+    let resolved = false
+    const committing = prepared.commit().then(() => {
+      resolved = true
+    })
+
+    await vi.waitFor(() => expect(fx.helper.calls).toHaveLength(1))
+    await new Promise((resolveWait) => setTimeout(resolveWait, 25))
+    expect(resolved).toBe(false)
+    fx.helper.calls[0]!.child.emit('spawn')
+    await committing
+    expect(resolved).toBe(true)
+    expect(fx.helper.calls[0]!.child.unref).toHaveBeenCalledTimes(1)
+  })
+
+  it('passes only a live positive viewer PID and the configured wait', async () => {
+    const forms: Array<[InstallerOptions['viewerPid'], string]> = [
+      [undefined, '0'],
+      [null, '0'],
+      [777, '777'],
+      [() => 888, '888'],
+      [() => null, '0'],
+      [() => 0, '0'],
+      [() => -1, '0'],
+      [() => 1.5, '0'],
+      [() => Number.NaN, '0'],
+      [() => { throw new Error('gone') }, '0'],
+    ]
+    for (const [viewerPid, expected] of forms) {
+      const fx = fixture()
+      const prepared = await fx.installer({ viewerPid, helperTimeoutMs: 1_000 }).prepare(await fx.source())
+      await prepared.commit()
+      expect(fx.helper.calls[0]!.args.slice(3, 6), String(viewerPid)).toEqual([String(APP_PID), expected, '5'])
+    }
+  })
+
+  it('rejects a missing spawner, app PID or wait at construction', () => {
+    const fx = fixture()
+    for (const overrides of [
+      { spawnImpl: undefined },
+      { pid: 0 },
+      { pid: -1 },
+      { pid: 1.5 },
+      { helperTimeoutMs: 0 },
+      { helperTimeoutMs: Number.POSITIVE_INFINITY },
+    ] as Array<Partial<InstallerOptions>>) {
+      expect(() => createAppImageInstaller(fx.options(overrides)), JSON.stringify(overrides)).toThrow(TypeError)
+    }
+  })
+})
+
+describe('the restart helper under a real /bin/sh', () => {
+  const children: ChildProcess[] = []
+  // Variables a shell may add on its own when it execs the target.
+  const SHELL_VARIABLES = new Set(['PWD', 'OLDPWD', 'SHLVL', '_'])
+
+  afterEach(() => {
+    for (const child of children.splice(0)) {
+      if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) {
+        try {
+          process.kill(child.pid, 'SIGKILL')
+        } catch {
+          // Already gone.
+        }
+      }
+    }
+  })
+
+  function sleeper(seconds: number) {
+    const child = spawn('sleep', [String(seconds)], { stdio: 'ignore' })
+    children.push(child)
+    return child
+  }
+
+  function exited(child: ChildProcess) {
+    return new Promise<void>((resolveExit) => {
+      if (child.exitCode !== null || child.signalCode !== null) resolveExit()
+      else child.once('exit', () => resolveExit())
+    })
+  }
+
+  function recorder(fx: Fixture) {
+    const path = join(fx.work, 'record-launch.sh')
+    writeFileSync(path, [
+      '#!/bin/sh',
+      'out="$0.ran"',
+      '{',
+      '  printf "argc=%s\\n" "$#"',
+      '  printf "cwd=%s\\n" "$(pwd -P)"',
+      '  env',
+      '} > "$out.tmp"',
+      'mv "$out.tmp" "$out"',
+      '',
+    ].join('\n'))
+    chmodSync(path, 0o755)
+    return path
+  }
+
+  /** The real spawn, with the exec target swapped for a script that records how it was started. */
+  function spawnInto(target: string, expected: string): AppImageSpawn {
+    return (command, args, options) => {
+      expect(args.at(-1)).toBe(expected)
+      const child = spawn(command, [...args.slice(0, -1), target], options)
+      children.push(child)
+      return child
+    }
+  }
+
+  async function appears(path: string, withinMs: number) {
+    const deadline = Date.now() + withinMs
+    while (Date.now() < deadline) {
+      if (existsSync(path)) return true
+      await new Promise((resolveWait) => setTimeout(resolveWait, 50))
+    }
+    return existsSync(path)
+  }
+
+  function readRecord(path: string) {
+    const lines = readFileSync(path, 'utf8').split('\n').filter((line) => line !== '')
+    const env = new Map<string, string>()
+    for (const line of lines.slice(2)) {
+      const split = line.indexOf('=')
+      env.set(line.slice(0, split), line.slice(split + 1))
+    }
+    return { argc: lines[0], cwd: lines[1], env }
+  }
+
+  it('waits for the app and its viewer to exit, then starts the new file with a scrubbed environment', async () => {
+    const fx = fixture()
+    const script = recorder(fx)
+    const app = sleeper(1)
+    const viewer = sleeper(2.2)
+    const env = {
+      APPIMAGE: fx.appImage,
+      APPDIR: fx.appDir,
+      ARGV0: 'Agent-Inbox.AppImage',
+      OWD: fx.work,
+      PATH: `${fx.appDir}/usr/bin:/usr/bin:/bin`,
+      LD_LIBRARY_PATH: `${fx.appDir}/usr/lib`,
+      XDG_DATA_DIRS: `${fx.appDir}/usr/share:/usr/share`,
+      GSETTINGS_SCHEMA_DIR: `${fx.appDir}/usr/share/glib-2.0/schemas`,
+      DISPLAY: ':0',
+      WAYLAND_DISPLAY: 'wayland-0',
+      XAUTHORITY: join(fx.work, '.Xauthority'),
+      DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus',
+      XDG_RUNTIME_DIR: '/run/user/1000',
+      HOME: fx.work,
+      USER: 'tester',
+      LANG: 'en_US.UTF-8',
+      LC_ALL: 'C',
+    }
+    const installer = fx.installer({
+      env,
+      pid: app.pid!,
+      viewerPid: () => viewer.pid!,
+      spawnImpl: spawnInto(script, fx.appImage),
+      helperTimeoutMs: 20_000,
+    })
+    const prepared = await installer.prepare(await fx.source())
+    await prepared.commit()
+    const record = `${script}.ran`
+
+    await exited(app)
+    await new Promise((resolveWait) => setTimeout(resolveWait, 300))
+    expect(existsSync(record)).toBe(false)
+    await exited(viewer)
+    expect(await appears(record, 5_000)).toBe(true)
+
+    const seen = readRecord(record)
+    expect(seen.argc).toBe('argc=0')
+    expect(seen.cwd).toBe(`cwd=${fx.folder}`)
+    expect(Object.fromEntries([...seen.env].filter(([key]) => !SHELL_VARIABLES.has(key)))).toEqual({
+      PATH: '/usr/bin:/bin',
+      XDG_DATA_DIRS: '/usr/share',
+      DISPLAY: ':0',
+      WAYLAND_DISPLAY: 'wayland-0',
+      XAUTHORITY: join(fx.work, '.Xauthority'),
+      DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus',
+      XDG_RUNTIME_DIR: '/run/user/1000',
+      HOME: fx.work,
+      USER: 'tester',
+      LANG: 'en_US.UTF-8',
+      LC_ALL: 'C',
+    })
+  })
+
+  it('gives up without starting anything when the app never exits', async () => {
+    const fx = fixture()
+    const script = recorder(fx)
+    const app = sleeper(30)
+    const installer = fx.installer({ pid: app.pid!, spawnImpl: spawnInto(script, fx.appImage), helperTimeoutMs: 600 })
+    const prepared = await installer.prepare(await fx.source())
+    await prepared.commit()
+    const helper = children.at(-1)!
+
+    await exited(helper)
+    expect(helper.exitCode).toBe(0)
+    await new Promise((resolveWait) => setTimeout(resolveWait, 200))
+    expect(existsSync(`${script}.ran`)).toBe(false)
+    expect(app.exitCode).toBeNull()
+    expect(readFileSync(fx.appImage).equals(fx.newBytes)).toBe(true)
+  })
+
+  it('starts at once when the app has already exited and no viewer was spawned', async () => {
+    const fx = fixture()
+    const script = recorder(fx)
+    const gone = sleeper(0)
+    await exited(gone)
+    const installer = fx.installer({
+      pid: gone.pid!,
+      viewerPid: null,
+      spawnImpl: spawnInto(script, fx.appImage),
+      helperTimeoutMs: 4_000,
+    })
+    const prepared = await installer.prepare(await fx.source())
+    const started = Date.now()
+    await prepared.commit()
+
+    expect(await appears(`${script}.ran`, 2_500)).toBe(true)
+    expect(Date.now() - started).toBeLessThan(2_500)
+  })
+})
+
 describe('AppImage installer boundaries', () => {
-  it('stays out of the MCP graph, runs no programs and never reads the recorded path', () => {
+  it('stays out of the MCP graph, starts programs only through spawnImpl and never reads the recorded path', () => {
     const source = readFileSync(join(repoRoot, 'electron', 'update-install-appimage.cjs'), 'utf8')
-    for (const forbidden of ['child_process', "require('electron')", 'openPath', 'spawn', 'hdiutil', 'record.path', 'attention']) {
+    for (const forbidden of ['child_process', "require('electron')", 'openPath', 'execFile', 'app.relaunch', 'hdiutil', 'record.path', 'attention']) {
       expect(source, forbidden).not.toContain(forbidden)
     }
     const srcDir = join(repoRoot, 'src')

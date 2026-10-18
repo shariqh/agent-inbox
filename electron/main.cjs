@@ -28,6 +28,7 @@ const { classifyReuse, watchUpstream } = require('./reuse.cjs')
 const { loadViewer, reloadViewer } = require('./viewer-navigation.cjs')
 const { canRunSetup, installerRepoRoot, runAgentInstall, runtimeKey, selectRuntimePayload } = require('./setup-runner.cjs')
 const { MANUAL_RELEASES_URL, createUpdateController } = require('./update-controller.cjs')
+const { createUpdateDownloader } = require('./update-download.cjs')
 const { checkForUpdate } = require('./update-fetch.cjs')
 const { createUpdatePreferences, createUpdateTrustState } = require('./update-preferences.cjs')
 const { loadUpdateRegistry } = require('./update-trust.cjs')
@@ -178,11 +179,29 @@ ipcMain.handle('agent-inbox:update-automatic', (event, enabled, ...args) => {
   return updateController?.setAutomaticChecks(enabled) ?? false
 })
 
+// User-initiated only. The renderer names nothing: main downloads the artifact
+// the signed manifest pinned, and progress arrives as state-changed events.
+ipcMain.handle('agent-inbox:update-download', (event, ...args) => {
+  if (args.length !== 0 || !isTrustedUpdateSender(event.senderFrame?.url ?? '', event.sender)) {
+    return unavailableUpdateState()
+  }
+  if (!updateController) return unavailableUpdateState()
+  updateController.downloadNow().catch(() => {})
+  return updateController.getState()
+})
+
+ipcMain.handle('agent-inbox:update-download-cancel', (event, ...args) => {
+  if (args.length !== 0 || !isTrustedUpdateSender(event.senderFrame?.url ?? '', event.sender)) {
+    return unavailableUpdateState()
+  }
+  return updateController?.cancelDownload() ?? unavailableUpdateState()
+})
+
 ipcMain.handle('agent-inbox:update-open-release', async (event, ...args) => {
   if (args.length !== 0 || !isTrustedUpdateSender(event.senderFrame?.url ?? '', event.sender)) return false
   const state = updateController?.getState()
-  const verifiedUrl = state?.status === 'available'
-    ? validateReleaseUrl(state.available?.releaseUrl, state.available?.version)
+  const verifiedUrl = state?.available
+    ? validateReleaseUrl(state.available.releaseUrl, state.available.version)
     : null
   const releaseUrl = verifiedUrl ?? MANUAL_RELEASES_URL
   await shell.openExternal(releaseUrl)
@@ -672,12 +691,20 @@ function initializeUpdateController() {
       arch: process.arch,
       isPackaged: app.isPackaged,
       appImagePath: process.env.APPIMAGE,
+      includeArtifact: true,
     }),
-    notifier: ({ version }) => {
+    // Downloads only; nothing here mounts, opens or installs the file.
+    downloader: createUpdateDownloader({
+      directory: path.join(app.getPath('userData'), 'update-downloads'),
+      fetchImpl: fetch,
+    }),
+    notifier: ({ version, downloadable }) => {
       if (!Notification.isSupported()) return
       const note = new Notification({
         title: 'Agent Inbox update available',
-        body: `Version ${version} is ready to review on GitHub Releases.`,
+        body: downloadable
+          ? `Version ${version} is available. Download and verify it from Settings → Updates.`
+          : `Version ${version} is ready to review on GitHub Releases.`,
       })
       note.on('click', () => {
         if (updateWindow) openUpdatesWindow(updateWindow)

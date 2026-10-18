@@ -20,10 +20,15 @@ is listed yet, use the source-build path below.
 Packaged desktop apps can check the signed release manifest from **Settings → Updates**
 or **Check for Updates…** in the app menu. Automatic checks are off by default and can
 be enabled explicitly in Settings. A check makes a plain request to GitHub Releases,
-sends no telemetry, and notifies once when a newer verified version is available. This
-release does not download or install packages: **Review release** opens the verified
-GitHub release page so you can choose and install the package yourself. Browser viewers
-and source/dev Electron runs do not expose update checks.
+sends no telemetry, and notifies once when a newer verified version is available.
+On macOS and AppImage installs, **Download update** fetches exactly the package the
+signed manifest names, only from GitHub Releases, and keeps it only when its size and
+SHA-256 match the manifest. Downloads start only when you click, can be cancelled, and
+are kept in a private `update-downloads` folder inside the app's data directory;
+superseded and installed versions are cleaned up automatically. The app does not install
+the download yet: **Review release** opens the verified GitHub release page so you can
+install the package yourself. DEB installs stay notify-only. Browser viewers and
+source/dev Electron runs do not expose update checks.
 
 The app remembers the newest release version it has verified, in its own file
 (`update-trust-state.json`) in the app's settings folder. If a later check receives older

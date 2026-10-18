@@ -415,6 +415,36 @@ describe('verification, versions, and targets', () => {
     const result = await checkForUpdate(baseOptions(signedFixture(), host))
     expect(result.status).toBe('available')
     expect(result.available?.target.packageType).toBe(packageType)
+    expect('artifact' in result).toBe(false)
+  })
+
+  it.each([
+    [{ platform: 'darwin', arch: 'arm64', isPackaged: true }, 'darwin', 'universal', 'dmg'],
+    [{ platform: 'linux', arch: 'x64', isPackaged: true, appImagePath: '/app' }, 'linux', 'x64', 'appimage'],
+    [{ platform: 'linux', arch: 'arm64', isPackaged: true }, 'linux', 'arm64', 'deb'],
+  ] as const)('attaches the signed target for the main-process downloader only on request: %o', async (host, platform, architecture, packageType) => {
+    const fixture = signedFixture()
+    const result = await checkForUpdate(baseOptions(fixture, { ...host, includeArtifact: true }))
+    const target = fixture.manifest.targets.find((candidate) => (
+      candidate.platform === platform
+      && candidate.architecture === architecture
+      && candidate.packageType === packageType
+    ))!
+
+    expect(result.artifact).toEqual({ version: '2.0.0', tag: 'v2.0.0', ...target })
+    expect(result.available?.target).toEqual({
+      packageType: target.packageType,
+      installStrategy: target.installStrategy,
+    })
+    expect(Object.isFrozen(result.artifact)).toBe(true)
+  })
+
+  it('never attaches an artifact when no newer release is offered', async () => {
+    const current = await checkForUpdate(baseOptions(signedFixture('1.0.0'), { includeArtifact: true }))
+    const unsupported = await checkForUpdate(baseOptions(signedFixture(), { includeArtifact: true, platform: 'win32' }))
+    expect(current.status).toBe('current')
+    expect(unsupported.status).toBe('unsupported')
+    expect('artifact' in current || 'artifact' in unsupported).toBe(false)
   })
 
   it.each([

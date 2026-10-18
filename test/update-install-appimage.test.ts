@@ -38,6 +38,7 @@ import type {
 } from '../electron/update-install-appimage.cjs'
 import type { VerifiedInstallSource } from '../electron/update-install.cjs'
 import type { VerifiedArtifact } from '../electron/update-download.cjs'
+import type { AppImageProbe } from '../electron/update-fetch.cjs'
 
 const { createAppImageInstaller } = appImageInstall
 // The installer's own require, not vitest's import, so instanceof sees the class it throws.
@@ -161,6 +162,27 @@ function fakeHelper(replaced: () => boolean): FakeHelper {
   return { impl, calls, setMode: (next) => { mode = next } }
 }
 
+/** How /proc/self/mountinfo escapes space, tab, newline and backslash. */
+function mangle(value: string) {
+  return value.replace(/[ \t\n\\]/g, (char) => `\\${char.charCodeAt(0).toString(8).padStart(3, '0')}`)
+}
+
+/**
+ * The pinned type2-runtime's FUSE mount as the AppImage proof reads it, for whatever
+ * APPDIR and APPIMAGE `env` names when it is read: APPDIR is a mount point (another
+ * device than its parent) and its mountinfo type and source carry the image's file
+ * name, libfuse's default subtype. `image` names a different mounted file instead.
+ */
+function fuseMounted(env: Readonly<Record<string, string | undefined>>, image?: string): AppImageProbe {
+  return {
+    lstat: (target) => ({ dev: target === env.APPDIR ? 62n : 60n, isDirectory: () => true }),
+    mountInfo: () => {
+      const name = mangle(basename(image ?? env.APPIMAGE ?? ''))
+      return `79 22 0:62 / ${mangle(env.APPDIR ?? '')} ro,nosuid,nodev,relatime - fuse.${name} ${name} ro,user_id=1000,group_id=1000\n`
+    },
+  }
+}
+
 function fixture(newBytes: Buffer = appImageBytes(2 * MiB + 12_345)): Fixture {
   const work = workDir()
   const folder = join(work, 'Applications')
@@ -189,16 +211,21 @@ function fixture(newBytes: Buffer = appImageBytes(2 * MiB + 12_345)): Fixture {
     installStrategy: 'appimage-self-replace',
   }
   const helper = fakeHelper(() => readFileSync(appImage).equals(newBytes))
-  const options = (overrides: Partial<InstallerOptions> = {}): InstallerOptions => ({
-    env: { APPIMAGE: appImage, APPDIR: appDir, HOME: work, PATH: '/usr/bin:/bin' },
-    execPath,
-    uid: UID,
-    platform: 'linux',
-    isPackaged: true,
-    pid: APP_PID,
-    spawnImpl: helper.impl,
-    ...overrides,
-  })
+  const options = (overrides: Partial<InstallerOptions> = {}): InstallerOptions => {
+    const env = overrides.env ?? { APPIMAGE: appImage, APPDIR: appDir, HOME: work, PATH: '/usr/bin:/bin' }
+    return {
+      env,
+      execPath,
+      uid: UID,
+      platform: 'linux',
+      isPackaged: true,
+      pid: APP_PID,
+      spawnImpl: helper.impl,
+      // APPDIR is the runtime's FUSE mount of the image APPIMAGE names; `undefined` reads this machine.
+      appImageProbe: fuseMounted(env),
+      ...overrides,
+    }
+  }
   return {
     work,
     folder,
@@ -323,6 +350,9 @@ describe('AppImage install feasibility', () => {
     ['an app in a sibling folder that shares the APPDIR prefix', (fx) => ({ execPath: `${fx.appDir}-other/agent-inbox` }), 'not-appimage'],
     ['an app whose executable path is APPDIR itself', (fx) => ({ execPath: fx.appDir }), 'not-appimage'],
     ['a relative executable path', () => ({ execPath: 'agent-inbox' }), 'not-appimage'],
+    // On this machine the fixture's APPDIR is a plain folder: no runtime mount at all.
+    ['an APPDIR that is not the runtime mount of the image', () => ({ appImageProbe: undefined }), 'not-appimage'],
+    ['an APPDIR mounted from a different image', (fx) => ({ appImageProbe: fuseMounted(fx.options().env, 'Other.AppImage') }), 'not-appimage'],
     // A restart would extract again into a TMPDIR the documented launcher already removed.
     ['the extract-and-run fallback', (fx) => ({ env: { APPIMAGE: fx.appImage, APPDIR: fx.appDir, APPIMAGE_EXTRACT_AND_RUN: '1' } }), 'extract-and-run'],
     // The runtime extracts whenever the variable is set at all.
@@ -1146,6 +1176,7 @@ describe('AppImage stage cleanup', () => {
     await fx.installer({ platform: 'darwin' }).cleanup()
     await fx.installer({ isPackaged: false }).cleanup()
     await fx.installer({ env: { APPDIR: fx.appDir } }).cleanup()
+    await fx.installer({ appImageProbe: undefined }).cleanup()
     expect(gone(stale)).toBe(false)
 
     for (const fsImpl of [
@@ -1503,6 +1534,56 @@ describe('an app running in the extract-and-run fallback', () => {
     expect(readFileSync(other.appImage).equals(other.oldBytes)).toBe(true)
     expect(stagesIn(other.folder)).toEqual([])
     expect(other.helper.impl).not.toHaveBeenCalled()
+  })
+})
+
+describe('an extracted Agent Inbox started from inside another AppImage', () => {
+  // squashfs-root/AppRun (the usual no-FUSE workaround) run from a shell that another
+  // AppImage, a terminal or an editor, started: APPIMAGE and APPDIR are exported, and
+  // our AppRun points APPDIR at the plain squashfs-root folder that holds the
+  // executable, while APPIMAGE still names the other application's AppImage.
+  function otherApplication(fx: Fixture) {
+    const path = join(fx.folder, 'Other.AppImage')
+    const bytes = appImageBytes(300 * 1024 + 3)
+    writeFileSync(path, bytes)
+    chmodSync(path, 0o755)
+    return { path, bytes, id: identity(path) }
+  }
+
+  it('never replaces, stages beside or cleans up after the other application’s AppImage', async () => {
+    const fx = fixture()
+    const other = otherApplication(fx)
+    const extracted = join(fx.work, 'squashfs-root')
+    mkdirSync(join(extracted, 'usr', 'lib', 'agent-inbox'), { recursive: true })
+    const listing = readdirSync(fx.folder)
+    // This machine's own lstat and /proc/self/mountinfo decide, as in the app.
+    const installer = fx.installer({
+      env: { APPIMAGE: other.path, APPDIR: extracted, HOME: fx.work, PATH: '/usr/bin:/bin' },
+      execPath: join(extracted, 'usr', 'lib', 'agent-inbox', 'Agent Inbox'),
+      appImageProbe: undefined,
+    })
+
+    expect(await installer.feasibility({ version: '1.4.0' })).toMatchObject({ ok: false, reason: 'not-appimage' })
+    expect(await failure(installer.prepare(await fx.source()))).toMatchObject({ name: 'UpdateInstallError', code: 'not-feasible' })
+    await installer.cleanup()
+    expect(readFileSync(other.path).equals(other.bytes)).toBe(true)
+    expect(identity(other.path)).toBe(other.id)
+    expect(readdirSync(fx.folder)).toEqual(listing)
+    expect(fx.helper.impl).not.toHaveBeenCalled()
+  })
+
+  it('refuses our own image mounted by hand when APPIMAGE names the other file', async () => {
+    const fx = fixture()
+    const other = otherApplication(fx)
+    const env = { APPIMAGE: other.path, APPDIR: fx.appDir, HOME: fx.work, PATH: '/usr/bin:/bin' }
+    // A real FUSE mount point at APPDIR, but of our file (--appimage-mount), not of Other.AppImage.
+    const installer = fx.installer({ env, appImageProbe: fuseMounted(env, basename(fx.appImage)) })
+
+    expect(await installer.feasibility({ version: '1.4.0' })).toMatchObject({ ok: false, reason: 'not-appimage' })
+    expect(await failure(installer.prepare(await fx.source()))).toMatchObject({ code: 'not-feasible' })
+    expect(readFileSync(other.path).equals(other.bytes)).toBe(true)
+    expect(identity(other.path)).toBe(other.id)
+    expect(stagesIn(fx.folder)).toEqual([])
   })
 })
 

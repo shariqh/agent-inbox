@@ -1,3 +1,4 @@
+import type { AppImageProbe } from './update-fetch.cjs'
 import type { PlatformInstaller } from './update-install.cjs'
 
 export type AppImageInfeasibleReason =
@@ -78,6 +79,8 @@ export function createAppImageInstaller(options: {
   env: Readonly<Record<string, string | undefined>>
   /** `process.execPath`; must sit inside APPDIR, the running AppImage's mount. */
   execPath: string
+  /** What the AppImage proof reads (runsFromAppImage); this machine's lstat and mountinfo by default. */
+  appImageProbe?: AppImageProbe
   /** `process.getuid()`; the AppImage file must belong to this user. */
   uid: number
   platform: string

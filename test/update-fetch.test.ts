@@ -2,13 +2,13 @@ import { createHash, generateKeyPairSync, sign } from 'node:crypto'
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
-import { join, resolve } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import updateController from '../electron/update-controller.cjs'
 import updateFetch from '../electron/update-fetch.cjs'
 import updatePreferences from '../electron/update-preferences.cjs'
-import type { UpdateCheckOptions } from '../electron/update-fetch.cjs'
+import type { AppImageProbe, UpdateCheckOptions } from '../electron/update-fetch.cjs'
 import type { UpdatePreferencesFs, UpdateTrustStateStore } from '../electron/update-preferences.cjs'
 
 const require = createRequire(import.meta.url)
@@ -25,11 +25,37 @@ const {
 } = updateFetch
 
 const now = new Date('2026-02-01T00:00:00Z')
+const APPIMAGE_FILE = '/home/tester/Applications/Agent-Inbox-v1.0.0-linux-x86_64.AppImage'
+const APPIMAGE_MOUNT = '/tmp/.mount_AgentIn0QvTkK'
+
+/** How /proc/self/mountinfo escapes space, tab, newline and backslash. */
+function mangle(value: string) {
+  return value.replace(/[ \t\n\\]/g, (char) => `\\${char.charCodeAt(0).toString(8).padStart(3, '0')}`)
+}
+
+/** A /proc/self/mountinfo line for a FUSE mount with libfuse's default subtype `name`. */
+function fuseLine(mountPoint: string, name: string) {
+  return `79 131 0:62 / ${mangle(mountPoint)} ro,nosuid,nodev,relatime - fuse.${mangle(name)} ${mangle(name)} ro,user_id=1000,group_id=1000`
+}
+
+/**
+ * The pinned type2-runtime's mount of `image` at `mountPoint` as the AppImage proof
+ * reads it: a mount point (its device differs from its parent's) whose mountinfo
+ * entry carries the image's file name as type `fuse.<name>` and as its source.
+ */
+function fuseMount(image: string, mountPoint: string, mountInfo = `${fuseLine(mountPoint, basename(image))}\n`): AppImageProbe {
+  return {
+    lstat: (target) => ({ dev: target === mountPoint ? 62n : 60n, isDirectory: () => true }),
+    mountInfo: () => mountInfo,
+  }
+}
+
 // The AppImage runtime's variables and where Electron runs from inside its mount.
 const APPIMAGE_HOST = {
-  appImagePath: '/home/tester/Applications/Agent-Inbox-v1.0.0-linux-x86_64.AppImage',
-  appDir: '/tmp/.mount_AgentIn0QvTkK',
-  execPath: '/tmp/.mount_AgentIn0QvTkK/usr/lib/agent-inbox/Agent Inbox',
+  appImagePath: APPIMAGE_FILE,
+  appDir: APPIMAGE_MOUNT,
+  execPath: `${APPIMAGE_MOUNT}/usr/lib/agent-inbox/Agent Inbox`,
+  appImageProbe: fuseMount(APPIMAGE_FILE, APPIMAGE_MOUNT),
 }
 
 function signedFixture(version = '2.0.0') {
@@ -459,6 +485,17 @@ describe('verification, versions, and targets', () => {
     ['an executable in a sibling folder sharing the APPDIR prefix', { execPath: '/tmp/.mount_AgentIn0QvTkK-other/agent-inbox' }],
     ['an executable that is APPDIR itself', { execPath: '/tmp/.mount_AgentIn0QvTkK' }],
     ['no executable path', { execPath: undefined }],
+    // An extracted squashfs-root started from a shell that another AppImage runs: our
+    // AppRun points APPDIR at that plain folder, while APPIMAGE still names the other image.
+    ['an extracted squashfs-root whose APPDIR is not a mount', {
+      appImagePath: '/home/tester/Applications/Other.AppImage',
+      appDir: '/home/tester/squashfs-root',
+      execPath: '/home/tester/squashfs-root/usr/lib/agent-inbox/Agent Inbox',
+      appImageProbe: { lstat: () => ({ dev: 60n, isDirectory: () => true }), mountInfo: () => '' },
+    }],
+    // Our image mounted by hand and its AppRun started the same way: a FUSE mount, of another file.
+    ['an APPDIR mounted from another image than APPIMAGE names', { appImagePath: '/home/tester/Applications/Other.AppImage' }],
+    ['this machine, where nothing is mounted at that APPDIR', { appImageProbe: undefined }],
   ])('keeps the deb target for %s', async (_label, overrides) => {
     const fixture = signedFixture()
     const host = { platform: 'linux', arch: 'x64', isPackaged: true, ...APPIMAGE_HOST, ...overrides }
@@ -472,6 +509,47 @@ describe('verification, versions, and targets', () => {
     expect(runsFromAppImage(APPIMAGE_HOST)).toBe(true)
     expect(runsFromAppImage({ ...APPIMAGE_HOST, execPath: '/opt/Agent Inbox/agent-inbox' })).toBe(false)
     expect(runsFromAppImage({})).toBe(false)
+  })
+
+  // APPDIR must be the pinned runtime's FUSE mount of the file APPIMAGE names, not just
+  // a folder that contains the executable (#210: an extracted squashfs-root inherits
+  // another AppImage's APPIMAGE and would have replaced that application's file).
+  it('accepts APPDIR only as the runtime FUSE mount of the image APPIMAGE names', () => {
+    const name = basename(APPIMAGE_FILE)
+    const ours = fuseLine(APPIMAGE_MOUNT, name)
+    const tmpfsOver = `80 79 0:63 / ${APPIMAGE_MOUNT} rw,relatime - tmpfs tmpfs rw`
+    const mountedAt = (mountInfo: string) => fuseMount(APPIMAGE_FILE, APPIMAGE_MOUNT, mountInfo)
+    const cases: Array<[label: string, probe: AppImageProbe, expected: boolean]> = [
+      ['the FUSE mount of that image', mountedAt(`${ours}\n`), true],
+      ['the same among other mounts, with optional fields', mountedAt([
+        '22 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw',
+        'garbage',
+        `78 22 0:61 / ${APPIMAGE_MOUNT} ro - fuse.${name}`,
+        `79 22 0:62 / ${APPIMAGE_MOUNT} ro,nosuid,nodev,relatime shared:7 master:2 - fuse.${name} ${name} ro,user_id=1000`,
+        '',
+      ].join('\n')), true],
+      ['a FUSE mount over an earlier mount at APPDIR', mountedAt(`${tmpfsOver}\n${ours}\n`), true],
+      ['a plain folder: the same device as its parent', { ...mountedAt(`${ours}\n`), lstat: () => ({ dev: 60n, isDirectory: () => true }) }, false],
+      ['an APPDIR that is not a directory', { ...mountedAt(`${ours}\n`), lstat: (target) => ({ dev: target === APPIMAGE_MOUNT ? 62n : 60n, isDirectory: () => false }) }, false],
+      ['no mount entry at APPDIR', mountedAt(`${fuseLine(`${APPIMAGE_MOUNT}-other`, name)}\n`), false],
+      ['a FUSE mount of another image', mountedAt(`${fuseLine(APPIMAGE_MOUNT, 'Other.AppImage')}\n`), false],
+      ['another FUSE subtype', mountedAt(`79 131 0:62 / ${APPIMAGE_MOUNT} ro - fuse.squashfuse ${name} ro\n`), false],
+      ['another source', mountedAt(`79 131 0:62 / ${APPIMAGE_MOUNT} ro - fuse.${name} squashfuse ro\n`), false],
+      ['a filesystem that is not FUSE', mountedAt(`79 131 0:62 / ${APPIMAGE_MOUNT} ro - squashfs ${name} ro\n`), false],
+      ['a later mount that hides the FUSE mount', mountedAt(`${ours}\n${tmpfsOver}\n`), false],
+      ['an unreadable mountinfo', { ...mountedAt(''), mountInfo: () => { throw new Error('ENOENT') } }, false],
+      ['an APPDIR that cannot be examined', { ...mountedAt(`${ours}\n`), lstat: () => { throw new Error('EACCES') } }, false],
+    ]
+    for (const [label, appImageProbe, expected] of cases) {
+      expect(runsFromAppImage({ ...APPIMAGE_HOST, appImageProbe }), label).toBe(expected)
+    }
+
+    // mountinfo escapes space, tab, newline and backslash in paths and names.
+    const image = '/home/tester/My Apps/Agent Inbox\\Beta.AppImage'
+    const mount = '/home/tester/my tmp/.mount_Agent IXyZ12'
+    const spaced = { appImagePath: image, appDir: mount, execPath: `${mount}/usr/lib/agent-inbox/Agent Inbox` }
+    expect(runsFromAppImage({ ...spaced, appImageProbe: fuseMount(image, mount) })).toBe(true)
+    expect(runsFromAppImage({ ...spaced, appImageProbe: fuseMount(image, mount, `79 131 0:62 / ${mount} ro - fuse.${basename(image)} ${basename(image)} ro\n`) })).toBe(false)
   })
 
   it('never attaches an artifact when no newer release is offered', async () => {

@@ -12,16 +12,19 @@
 // down as the app exits.
 //
 // Every step re-proves that this process runs from that AppImage: APPIMAGE and
-// APPDIR must be canonical absolute paths and the executable must live inside
-// APPDIR. A stray inherited APPIMAGE (a .deb install started from another
-// AppImage) therefore never points this module at somebody else's file. The
-// file must also still be the one this process started from.
+// APPDIR must be canonical absolute paths, the executable must live inside
+// APPDIR, and APPDIR must be the runtime's FUSE mount of the very file APPIMAGE
+// names (runsFromAppImage). A stray inherited APPIMAGE (a .deb install, or an
+// extracted squashfs-root, started from another AppImage) therefore never
+// points this module at somebody else's file. The file must also still be the
+// one this process started from.
 //
 // The runtime's extract-and-run fallback is notify-only. It extracts every
 // launch into $TMPDIR/appimage_extracted_<md5>, a predictable name it recreates
 // (0755) when missing and reuses when present, and the documented launcher
 // removes its private TMPDIR as this process exits. A restart would therefore
-// extract into a folder another local user could have planted.
+// extract into a folder another local user could have planted. That folder is
+// not a mount, so the proof above already fails; the mode is refused by name too.
 
 const { randomBytes } = require('node:crypto')
 const { constants } = require('node:fs')
@@ -251,7 +254,7 @@ function createAppImageInstaller(options) {
   if (!Array.isArray(argv) || !argv.every((arg) => typeof arg === 'string')) {
     throw new TypeError('argv must be an array of strings')
   }
-  const { env, execPath, uid, platform, isPackaged, pid, spawnImpl } = options
+  const { env, execPath, uid, platform, isPackaged, pid, spawnImpl, appImageProbe } = options
   // Copied now, as the app starts; the restart passes them on.
   const forwarded = userArguments(argv)
   // Read at commit time: the viewer this app started and stops when it quits.
@@ -268,8 +271,9 @@ function createAppImageInstaller(options) {
     if (isPackaged !== true) return refusal('not-packaged')
     const appImage = env?.APPIMAGE
     const appDir = env?.APPDIR
-    // The same proof that selected the AppImage target for this offer.
-    if (!runsFromAppImage({ appImagePath: appImage, appDir, execPath })) return refusal('not-appimage')
+    // The same proof that selected the AppImage target for this offer: APPDIR
+    // must also be the runtime's FUSE mount of that very file.
+    if (!runsFromAppImage({ appImagePath: appImage, appDir, execPath, appImageProbe })) return refusal('not-appimage')
     const name = path.basename(appImage)
     if (Buffer.byteLength(stageName(name, '0'.repeat(STAGE_RANDOM_BYTES * 2))) > NAME_MAX_BYTES) {
       return refusal('name-too-long')

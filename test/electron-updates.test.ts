@@ -402,6 +402,11 @@ describe('Electron updater integration', () => {
     for (const source of [main, read('electron/update-install-appimage.cjs')]) {
       expect(source).not.toContain('app.relaunch(')
     }
+    // One registration, into the one controller whose installs the #205 quit gate guards.
+    expect(main.match(/createAppImageInstaller\(/g)).toHaveLength(1)
+    expect(main.match(/appImageInstallers\(\)/g)).toHaveLength(2)
+    expect(main.match(/installers: updateInstallers\(\),/g)).toHaveLength(1)
+    expect(main.match(/\.installNow\(/g)).toHaveLength(1)
   })
 
   it('installs only for the window bound to a viewer this app started and proved it owns', () => {

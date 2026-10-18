@@ -1637,6 +1637,34 @@ describe('the restart helper under a real /bin/sh', () => {
     expect(readFileSync(fx.appImage).equals(fx.newBytes)).toBe(true)
   })
 
+  it('keeps its wait bounded where sleep cannot take fractions of a second', async () => {
+    const fx = fixture()
+    const script = recorder(fx)
+    const bin = join(fx.work, 'bin')
+    mkdirSync(bin)
+    const sleep = join(bin, 'sleep')
+    writeFileSync(sleep, '#!/bin/sh\ncase "$1" in *.*) exit 1 ;; esac\nexec /bin/sleep "$1"\n')
+    chmodSync(sleep, 0o755)
+    const app = sleeper(30)
+    const resultPath = join(reportFolder(fx), 'last-attempt.result')
+    const installer = fx.installer({
+      env: { APPIMAGE: fx.appImage, APPDIR: fx.appDir, PATH: `${bin}:/usr/bin:/bin` },
+      pid: app.pid!,
+      spawnImpl: spawnInto(script, fx.appImage),
+      helperTimeoutMs: 2_000,
+    })
+    const prepared = await installer.prepare(await fx.source())
+    const started = Date.now()
+    await prepared.commit({ resultPath })
+    const helper = children.at(-1)!
+
+    await exited(helper)
+    expect(Date.now() - started).toBeLessThan(5_000)
+    expect(helper.exitCode).toBe(INSTALL_HELPER_EXIT.timedOut)
+    expect(readFileSync(resultPath, 'utf8')).toBe(`${INSTALL_HELPER_EXIT.timedOut}\n`)
+    expect(existsSync(`${script}.ran`)).toBe(false)
+  })
+
   it('starts at once when the app has already exited and no viewer was spawned', async () => {
     const fx = fixture()
     const script = recorder(fx)

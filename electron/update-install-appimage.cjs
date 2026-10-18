@@ -58,7 +58,8 @@ const EXIT = INSTALL_HELPER_EXIT
 // the new AppImage, which the commit already renamed into place. Before every
 // exit, and just before that exec, it writes its INSTALL_HELPER_EXIT code to
 // <result> (temp file + rename, `-` for no report); an invalid <result> is
-// checked first and exits 64 writing nowhere. 64 bad arguments, 75 the app never
+// checked first and exits 64 writing nowhere. Each poll counts as 0.2 s, or as
+// five where sleep cannot take fractions, so the wait stays about <polls>/5 s. 64 bad arguments, 75 the app never
 // exited (nothing started), 65 the AppImage path no longer holds a regular,
 // executable, non-symlink file (nothing started), 0 about to start it.
 const RELAUNCH_SCRIPT = `set -u
@@ -95,8 +96,12 @@ running() {
 waited=0
 while running; do
   [ "$waited" -lt "$polls" ] || finish ${EXIT.timedOut}
-  waited=$((waited + 1))
-  sleep 0.2 2>/dev/null || sleep 1
+  if sleep 0.2 2>/dev/null; then
+    waited=$((waited + 1))
+  else
+    sleep 1
+    waited=$((waited + 5))
+  fi
 done
 if [ ! -f "$target" ] || [ -L "$target" ] || [ ! -x "$target" ]; then
   finish ${EXIT.refused}

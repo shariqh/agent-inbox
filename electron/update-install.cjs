@@ -272,7 +272,11 @@ function createInstallAttemptStore(options = {}) {
       const record = recordText === null ? null : parseRecord(recordText)
       // Another process sharing userData may start while the helper still waits
       // to swap: a young attempt without a result is left for the reopened app.
-      if (record !== null && resultText === null && now().getTime() - Date.parse(record.at) < inFlightMs) return null
+      // A future stamp (the clock was set back) is not young, so it is not held.
+      if (record !== null && resultText === null) {
+        const age = now().getTime() - Date.parse(record.at)
+        if (age >= 0 && age < inFlightMs) return null
+      }
       await abandon()
       if (record === null) return null
       const match = resultText === null ? null : resultText.match(RESULT_RE)

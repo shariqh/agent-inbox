@@ -61,7 +61,8 @@ rejected `commit()` removes the record. The helper's last argument is the store'
 0 installed, 64 bad arguments, 65 refused, 70/71 could not move the app aside/in, 75 timed
 out) before every exit, and before it reopens the app. The first `rendererReady()` of an
 instance that registered an installer takes both files before any cleanup; a record
-without a result that is younger than 150 s may still be in flight and is left alone. If
+without a result that is younger than 150 s may still be in flight and is left alone (a
+record stamped in the future, after the clock was set back, is not young). If
 the app is still older than the attempted release, every published state carries
 `installNotice` with the cause, Settings shows it (with Open Releases when nothing is
 offered), and one native notification fires; it stays on the next offer of that version.

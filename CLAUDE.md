@@ -926,7 +926,8 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   would make its symlink checks test the link's target). The first `rendererReady()`
   takes both files BEFORE any cleanup (cleanup only matches `install-XXXXXX`, pinned), and
   only in an instance with a registered installer; a record without a result younger than
-  150 s (the helper's wait plus margin) is left for the app the helper reopens. The helper
+  150 s (the helper's wait plus margin) is left for the app the helper reopens, while a
+  future stamp (a clock set back) is never young, so it cannot hold a notice. The helper
   writes its result BEFORE reopening the app. Exit 0 is never reported as a failure; an
   app still older than `to` publishes `installNotice` on every state until that release
   stops being offered or a new install starts, and notifies once. Part 3 reuses the store,

@@ -631,11 +631,13 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   Graceful process termination lets the shell attempt rollback; forced `SIGKILL` can
   terminate without shell or adapter cleanup, so never claim rollback precedes every
   terminal result. *(#208)* `install-agents.sh` handles HUP, INT, QUIT, PIPE, ALRM,
-  TERM, XCPU and XFSZ alike: an active transaction rolls back with all of them ignored,
-  reports into a work-directory log that is replayed to stderr afterwards (bash 3.2
-  leaks a failed write into the next command substitution), and exits 128 + the
-  signal. An exit that neither committed nor finished the rollback keeps every MCP
-  snapshot and that log rather than deleting the only recovery copy.
+  TERM, XCPU and XFSZ alike: an active transaction rolls back, reports into a
+  work-directory log that is replayed to stderr afterwards (bash 3.2 leaks a failed
+  write into the next command substitution), and exits 128 + the signal. The shell and
+  its non-Node commands then ignore those signals, but Node resets them at startup, so
+  a repeat signal can still stop a host CLI's `mcp remove` or a runtime helper; that
+  step's warning is reported. An exit that neither committed nor finished the rollback
+  keeps every MCP snapshot, and a kept snapshot or failed step keeps the log too.
   A failed post-publication cleanup is a committed failure and retains
   its recovery path rather than deleting the only prior tree.
   Every applied agent or hook install sources the adjacent

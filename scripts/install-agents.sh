@@ -454,6 +454,7 @@ rollback_mcp_changes() {
     if "${MCP_CMD[@]}" >/dev/null 2>&1; then
       echo "$target: rolled back MCP registration from failed install" >&2
     else
+      ROLLBACK_INCOMPLETE=1
       echo "install-agents: warning: could not roll back $target MCP registration" >&2
     fi
   done
@@ -461,6 +462,7 @@ rollback_mcp_changes() {
     if restore_registration_config "$target"; then
       echo "$target: restored exact MCP configuration after failed install" >&2
     else
+      ROLLBACK_INCOMPLETE=1
       : > "$WORK/$target.preserve-mcp-snapshot"
       echo "install-agents: warning: could not restore $target MCP registration; recovery snapshot retained at $WORK/$target.mcp-config" >&2
     fi
@@ -614,8 +616,15 @@ cleanup() {
   done
   rm -f "$WORK/runtime-installed"
   if [ "$REPORT_DIVERTED" -eq 1 ]; then
+    # Something was not, or may not have been, put back: the report stays,
+    # beside any snapshot it names, for whoever was not reading when it was
+    # written.
+    if [ "$kept" -eq 1 ] || [ "$ROLLBACK_INCOMPLETE" -eq 1 ]; then
+      kept=1
+      echo "install-agents: report retained at $WORK/report.log" >&2
+    fi
     # A separate process replays the report, so a reader that has gone can
-    # fail only that process. The log stays beside any snapshot it explains.
+    # fail only that process.
     cat "$WORK/report.log" >&3 2>/dev/null
     if [ "$kept" -eq 0 ]; then rm -f "$WORK/report.log"; fi
   fi
@@ -651,6 +660,7 @@ rollback_runtime() {
   [ "$RUNTIME_MODE" -eq 1 ] || return
   [ -f "$WORK/runtime-installed" ] || return
   if [ "$(runtime_reference_status "$RUNTIME_ID")" != unreferenced ]; then
+    ROLLBACK_INCOMPLETE=1
     echo "install-agents: retained newly installed runtime because a reference exists or could not be ruled out: $RUNTIME_PATH" >&2
     return
   fi
@@ -658,6 +668,7 @@ rollback_runtime() {
     --runtime-root "$RUNTIME_ROOT" --runtime-id "$RUNTIME_ID" >/dev/null 2>&1; then
     echo "install-agents: removed unreferenced runtime after failed install: $RUNTIME_PATH" >&2
   else
+    ROLLBACK_INCOMPLETE=1
     echo "install-agents: warning: could not remove runtime after failed install: $RUNTIME_PATH" >&2
   fi
 }
@@ -736,11 +747,13 @@ rollback_files() {
         echo "$target: restored instructions after failed install" >&2
       else
         rm -f "$rollback"
+        ROLLBACK_INCOMPLETE=1
         echo "install-agents: warning: could not restore $file" >&2
       fi
     elif rm -f "$file"; then
       echo "$target: removed partial instruction file after failed install" >&2
     else
+      ROLLBACK_INCOMPLETE=1
       echo "install-agents: warning: could not remove partial $file" >&2
     fi
   done
@@ -753,6 +766,9 @@ rollback_files() {
 INTERRUPT_SIGNALS=(HUP INT QUIT PIPE ALRM TERM XCPU XFSZ)
 TRANSACTION_ACTIVE=0
 REPORT_DIVERTED=0
+# Set by any rollback step that could not put its change back; cleanup then
+# keeps the report even after replaying it.
+ROLLBACK_INCOMPLETE=0
 
 # Once a rollback, an interrupt or an abnormal exit begins, this shell writes
 # only to $WORK/report.log, never straight to a reader that may be gone. A
@@ -770,12 +786,18 @@ divert_report() {
   exec 2>>"$WORK/report.log"
 }
 
-# Puts back everything this run changed. From here on every signal above is
-# ignored, by this shell and the commands the restore runs: a second Ctrl-C, a
-# hangup or a write to a vanished reader must not leave the restore half done.
-# Only SIGKILL can stop it, and then no EXIT trap runs, so $WORK keeps every
-# snapshot. TRANSACTION_ACTIVE drops only once the restore has run, which is how
-# cleanup knows a snapshot is no longer the only copy.
+# Puts back everything this run changed. From here on this shell ignores every
+# signal above, and so do the ordinary commands it runs (cp, mv, rm): a second
+# Ctrl-C, a hangup or a write to a vanished reader cannot stop the shell
+# mid-restore or make it start over. Node resets ignored signals other than
+# PIPE and XFSZ to their defaults, though, so a repeat signal can still stop a
+# Node step: a host CLI's `mcp remove` undoing a new registration, or a runtime
+# reference check or prune. Such a step fails like any other: its warning is
+# reported and cleanup keeps the report. Restoring a replaced registration or
+# an instruction file runs no Node. SIGKILL stops everything, and then no EXIT
+# trap runs, so $WORK keeps every snapshot. TRANSACTION_ACTIVE drops only once
+# the restore has run, which is how cleanup knows a snapshot is no longer the
+# only copy.
 rollback_transaction() {
   [ "$TRANSACTION_ACTIVE" -eq 1 ] || return 0
   trap '' "${INTERRUPT_SIGNALS[@]}"

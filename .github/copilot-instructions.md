@@ -204,7 +204,9 @@ Run the build before `npm run electron`; the development shell starts the built
   registration, marker-delimited instruction block, unrelated content,
   symlink targets, and timestamped backups. HUP, INT, QUIT, PIPE, ALRM, TERM,
   XCPU and XFSZ each roll an active install back and exit 128 + the signal;
-  any exit mid-transaction keeps every MCP snapshot.
+  any exit mid-transaction keeps every MCP snapshot. A repeat signal can still
+  stop a Node step of that rollback (host CLI or runtime helper), so it must be
+  reported and its report kept, never claimed as restored.
 - All agent-authored text interpolated into HTML must pass through `esc()`.
   Supplied URLs additionally pass through `safeHttpUrl()` in
   `public/source.js`; build anchors through the existing `chipHtml()` path.

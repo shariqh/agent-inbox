@@ -1346,12 +1346,13 @@ describe('agent setup installer: losing its parent mid-install (#208)', () => {
     }
   })
 
-  it('ignores further signals mid-restore, so every rollback step runs exactly once', async () => {
+  it('ignores further signals in the shell mid-restore, so it never re-runs a rollback step', async () => {
     const f = fixture()
     const claudeBefore = readFileSync(f.claudeFile, 'utf8')
     const copilotBefore = readFileSync(f.copilotFile, 'utf8')
     // Claude is newly registered, Copilot's registration hangs, and the
-    // rollback's own removal of Claude then pauses.
+    // rollback's own removal of Claude then pauses. These /bin/sh fakes inherit
+    // the ignored signals; a Node host CLI does not (see the next test).
     f.env.HANG_ADD = 'copilot'
     f.env.PAUSE_AFTER_REMOVE = 'claude'
     const installer = startInstaller(f, ['--apply'])
@@ -1377,6 +1378,85 @@ describe('agent setup installer: losing its parent mid-install (#208)', () => {
     expect(readFileSync(f.copilotFile, 'utf8')).toBe(copilotBefore)
     expect(workDirs(f)).toEqual([])
     expect(exit).toEqual({ code: 143, signal: null })
+  })
+
+  it('reports, and keeps the report, when a repeat signal stops a Node host CLI mid-restore', async () => {
+    const f = fixture()
+    // Claude Code and Copilot CLI are Node programs, and Node resets every
+    // inherited ignored signal except PIPE and XFSZ to its default at startup,
+    // so the rollback's `trap ''` does not protect them. This fake Claude CLI
+    // runs on Node and, when asked to remove during the rollback, records its
+    // pid and pauses BEFORE removing anything.
+    const cli = join(f.home, 'claude-cli.cjs')
+    writeFileSync(cli, [
+      "const fs = require('node:fs')",
+      'const args = process.argv.slice(2)',
+      "const state = process.env.INSTALL_STATE + '/claude'",
+      'const config = process.env.CLAUDE_CONFIG',
+      "fs.appendFileSync(process.env.INSTALL_LOG, 'claude ' + args.join(' ') + '\\n')",
+      "const verb = args.slice(0, 2).join(' ')",
+      "if (verb === 'mcp get') {",
+      '  if (!fs.existsSync(state)) process.exit(1)',
+      "  console.log('  Scope: User config (available in all your projects)')",
+      "} else if (verb === 'mcp add') {",
+      "  fs.writeFileSync(state, '')",
+      "  fs.writeFileSync(config, JSON.stringify({ mcpServers: { 'agent-inbox': { command: args.join(' ') } } }) + '\\n')",
+      "} else if (verb === 'mcp remove') {",
+      "  fs.writeFileSync(state + '.removing', String(process.pid))",
+      '  setInterval(() => {',
+      "    if (!fs.existsSync(state + '.release')) return",
+      '    fs.rmSync(state, { force: true })',
+      `    fs.writeFileSync(config, '{"mcpServers":{}}\\n')`,
+      '    process.exit(0)',
+      '  }, 20)',
+      '} else process.exit(2)',
+      '',
+    ].join('\n'))
+    writeFileSync(join(f.fakebin, 'claude'), `#!/bin/sh\nexec "${process.execPath}" "${cli}" "$@"\n`)
+    chmodSync(join(f.fakebin, 'claude'), 0o755)
+    // Claude has no registration, so undoing its new one needs its CLI's
+    // `mcp remove`. Copilot's prior registration is replaced, and restoring it
+    // needs only cp and mv.
+    const priorCopilot = seedPriorRegistrations(f).copilot
+    rmSync(join(f.state, 'claude'))
+    writeFileSync(f.env.CLAUDE_CONFIG!, '{"mcpServers":{}}\n')
+    const claudeBefore = readFileSync(f.claudeFile, 'utf8')
+    const copilotBefore = readFileSync(f.copilotFile, 'utf8')
+    f.env.HANG_ADD = 'copilot'
+    const installer = startInstaller(f, ['--apply', '--force'])
+    let exit: Exit
+    try {
+      await waitFor(join(f.state, 'copilot.hanging'), 10_000)
+      process.kill(-installer.child.pid!, 'SIGTERM')
+      await waitFor(join(f.state, 'claude.removing'), 10_000)
+      const cliPid = Number(readFileSync(join(f.state, 'claude.removing'), 'utf8'))
+      // A second Ctrl-C reaches the whole group before Claude's CLI removes.
+      process.kill(-installer.child.pid!, 'SIGINT')
+      await waitForGone(cliPid)
+      release(f)
+      exit = await installer.exited
+    } finally {
+      stopInstaller(f, installer)
+    }
+
+    expect(exit).toEqual({ code: 143, signal: null })
+    // The honest outcome: Claude's new registration is still there, and the
+    // replayed report says the rollback could not undo it.
+    expect(readFileSync(f.env.CLAUDE_CONFIG!, 'utf8')).toContain('agent-inbox')
+    expect(installer.stderr()).toContain('install-agents: warning: could not roll back claude MCP registration')
+    // The replaced Copilot registration is restored, since that runs no Node.
+    expect(readFileSync(f.env.COPILOT_CONFIG!, 'utf8')).toBe(priorCopilot)
+    expect(readFileSync(f.claudeFile, 'utf8')).toBe(claudeBefore)
+    expect(readFileSync(f.copilotFile, 'utf8')).toBe(copilotBefore)
+    expect(stagedLeftovers(f)).toEqual([])
+    // An incomplete rollback keeps its report even after a successful replay,
+    // so the warning outlives a reader that was not there to see it.
+    const work = workDirs(f)
+    expect(work, 'the work directory holding the report').toHaveLength(1)
+    expect(readdirSync(work[0]!)).toEqual(['report.log'])
+    expect(readFileSync(join(work[0]!, 'report.log'), 'utf8'))
+      .toContain('install-agents: warning: could not roll back claude MCP registration')
+    expect(installer.stderr()).toContain(`report retained at ${join(work[0]!, 'report.log')}`)
   })
 
   it('removes a staged instruction copy when staging fails after the reader is gone', async () => {

@@ -44,7 +44,7 @@ import {
 } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { parseArgs } from 'node:util'
-import { dirname, join, resolve, sep } from 'node:path'
+import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path'
 import { DEFAULT_MANIFEST_FILE, isMainModule, verifyPayload } from './runtime-payload.mjs'
 
 /** Resolve a path to its real, canonical filesystem identity, or null if it cannot be resolved (missing, unreadable, a loop). */
@@ -112,7 +112,7 @@ export function classifyRuntimeConfig({ nodeBinPath, entryPath, runtimeRoot, man
       return { status: 'unknown', reason: `runtime directory has no valid ownership manifest: ${err.message}` }
     }
 
-    return { status: 'owned', runtimeId: manifest.runtimeId, path: runtimeDir }
+    return { status: 'owned', runtimeId: manifest.runtimeId, version: manifest.packageVersion, path: runtimeDir }
   } catch (err) {
     return { status: 'unknown', reason: err.message }
   }
@@ -490,14 +490,158 @@ export class HookOwnershipError extends Error {
   }
 }
 
+// ── which Agent Inbox install a hook entry runs (issue #218) ─────────────
+// Two installs' hook sets in one settings file run every hook twice: two
+// nudges and two answer watchers per turn. Before an installer adds its set,
+// it attributes every agent-inbox-shaped entry by the rule src/agent-hosts.ts
+// applies when Setup reports Claude's hooks (classifyLauncher there);
+// test/agent-hosts.test.ts holds the two to agreement.
+
+const MAX_PACKAGE_JSON_BYTES = 4 * 1024 * 1024
+
+/** The source checkout whose dist/hook-cli.js the canonical `file` is: beside a package.json named agent-inbox, with no runtime manifest. */
+function checkoutRootOf(file, manifestFileName) {
+  if (basename(file) !== 'hook-cli.js' || basename(dirname(file)) !== 'dist') return null
+  const root = dirname(dirname(file))
+  if (existsSync(join(root, manifestFileName))) return null
+  try {
+    const st = lstatSync(join(root, 'package.json'))
+    if (!st.isFile() || st.size > MAX_PACKAGE_JSON_BYTES) return null
+    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+    return isPlainObject(pkg) && pkg.name === 'agent-inbox' ? root : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Which Agent Inbox install the hook launcher {command, entry} runs. Never throws.
+ *   runtime  — node and entry in one verified runtime directory under runtimeRoot
+ *   checkout — a source checkout's dist/hook-cli.js (checkoutRootOf)
+ *   other    — identifiably something else, such as another tool's look-alike
+ *   unknown  — a path that does not resolve, a split pair, or a runtime that does not verify
+ */
+function classifyHookLauncher({ command, entry, runtimeRoot, manifestFileName = DEFAULT_MANIFEST_FILE }) {
+  if (typeof command !== 'string' || typeof entry !== 'string') return { kind: 'unknown' }
+  // an entry that is not a path (`npx tsx src/…`) is somebody's own command
+  if (!isAbsolute(entry)) return { kind: 'other' }
+  const file = tryCanonicalize(entry)
+  // a command looked up on PATH is never inside a runtime directory
+  const node = isAbsolute(command) ? tryCanonicalize(command) : null
+  if (!file || (isAbsolute(command) && !node)) return { kind: 'unknown' }
+  const root = runtimeRoot ? tryCanonicalize(runtimeRoot) : null
+  const nodeIn = root !== null && node !== null && isUnder(root, node)
+  const fileIn = root !== null && isUnder(root, file)
+  if (nodeIn || fileIn) {
+    if (!nodeIn || !fileIn) return { kind: 'unknown' }
+    const owned = classifyRuntimeConfig({ nodeBinPath: node, entryPath: file, runtimeRoot: root, manifestFileName })
+    return owned.status === 'owned'
+      ? { kind: 'runtime', runtimeId: owned.runtimeId, version: owned.version, path: owned.path }
+      : { kind: 'unknown' }
+  }
+  const checkout = checkoutRootOf(file, manifestFileName)
+  return checkout ? { kind: 'checkout', path: checkout } : { kind: 'other' }
+}
+
+// The install directory as the settings file names it, when that is the
+// install's own directory: the other checkout's installer matches its entries
+// by that exact string, so its uninstall command must use it too.
+function installDirAsWritten(entry, canonicalDir) {
+  const dir = dirname(dirname(entry))
+  return join(dir, 'dist', 'hook-cli.js') === entry && tryCanonicalize(dir) === canonicalDir ? dir : canonicalDir
+}
+
+/**
+ * Attribute agent-inbox-shaped hook entries (all of `settings`' by default),
+ * skipping those that run `selfEntry`: `foreign` entries belong to an Agent
+ * Inbox install, each with its owner; `unknown` ones cannot be attributed.
+ * Another tool's look-alike is in neither.
+ */
+function attributeHookEntries({ settings, entries = collectCandidateHookEntries(settings), selfEntry = null, runtimeRoot, manifestFileName }) {
+  const foreign = []
+  const unknown = []
+  const seen = new Map()
+  for (const entry of entries) {
+    if (selfEntry !== null && entry.args[0] === selfEntry) continue
+    const key = JSON.stringify([entry.command, entry.args[0]])
+    if (!seen.has(key)) seen.set(key, classifyHookLauncher({ command: entry.command, entry: entry.args[0], runtimeRoot, manifestFileName }))
+    const owner = seen.get(key)
+    if (owner.kind === 'runtime' || owner.kind === 'checkout') {
+      foreign.push({ entry, owner: { ...owner, path: installDirAsWritten(entry.args[0], owner.path) } })
+    } else if (owner.kind === 'unknown') {
+      unknown.push(entry)
+    }
+  }
+  return { foreign, unknown }
+}
+
+/** The installs behind `foreign` entries, first seen first, each with how many of its hooks are there. */
+function hookOwners(foreign) {
+  const owners = new Map()
+  for (const { owner } of foreign) {
+    const key = `${owner.kind}\0${owner.path}`
+    const known = owners.get(key)
+    if (known) known.count += 1
+    else owners.set(key, { ...owner, count: 1 })
+  }
+  return [...owners.values()]
+}
+
+function describeOwner(owner) {
+  return owner.kind === 'runtime'
+    ? `the ${owner.version ? `v${owner.version} ` : ''}Setup runtime at ${owner.path}`
+    : `the source checkout at ${owner.path}`
+}
+
+const hookCount = (count) => `${count} hook${count === 1 ? '' : 's'}`
+
+function shellQuote(value) {
+  return `'${value.replaceAll("'", "'\\''")}'`
+}
+
+/** Refuses adding a hook set beside another Agent Inbox install's, or beside entries no install can be shown to own. Its message is complete as written. */
+class ForeignHooksError extends Error {
+  constructor({ settingsPath, owners, unknown, installer }) {
+    const lines = []
+    if (owners.length > 0) {
+      lines.push(`install-hooks: ${settingsPath} already has Claude hooks from another Agent Inbox install:`)
+      for (const owner of owners) {
+        lines.push(`  - ${describeOwner(owner)} (${hookCount(owner.count)})`)
+        const theirs = join(owner.path, 'scripts', 'install-hooks.sh')
+        lines.push(existsSync(theirs)
+          ? `    remove them: bash ${shellQuote(theirs)} --apply --uninstall`
+          : `    remove them from ${settingsPath} by hand`)
+      }
+      lines.push("Adding this install's hooks beside them would run every hook twice, so nothing was written.")
+      lines.push("To replace them with this install's hooks in one step, run:")
+      lines.push(installer ? `  bash ${shellQuote(installer)} --apply --replace-existing` : '  this installer again with --apply --replace-existing')
+    }
+    if (unknown.length > 0) {
+      const subcommands = new Map()
+      for (const entry of unknown) subcommands.set(entry.args[0], new Set([...(subcommands.get(entry.args[0]) ?? []), entry.args[1]]))
+      lines.push(`install-hooks: ${settingsPath} has hooks shaped like Agent Inbox's that this installer cannot attribute to an install:`)
+      for (const [entry, subs] of subcommands) lines.push(`  - ${entry} (${[...subs].sort().join(', ')})`)
+      lines.push(`They may be another set of Agent Inbox hooks, so nothing was written. Remove them from ${settingsPath} by hand, then run this installer again.`)
+    }
+    super(lines.join('\n'))
+  }
+}
+
+function reportReplaced(owners) {
+  for (const owner of owners) process.stderr.write(`replacing ${hookCount(owner.count)} of ${describeOwner(owner)}\n`)
+}
+
 /**
  * The pure transformation behind the `hooks` CLI subcommand: given the
  * CURRENT settings object, decide (via classifyExistingHooksConfig) whether
  * it is safe to touch, then return the NEW settings object — stripped of our
  * old entries, plus (unless `uninstall`) the fresh block built from
  * `node`/`entry`. Throws HookOwnershipError when existing entries are not
- * provably ours and `force` is not set. Never writes anything; the caller
- * decides how (and whether) to persist the result.
+ * provably ours and `force` is not set. Entries a source checkout of this
+ * repo installed are another Agent Inbox install's set (issue #218): an
+ * install names them in a ForeignHooksError, and replaces them only with
+ * `replaceExisting`, telling `onReplace` whose they were. Never writes
+ * anything; the caller decides how (and whether) to persist the result.
  */
 export function transformHooksSettings({
   settings,
@@ -507,13 +651,26 @@ export function transformHooksSettings({
   force = false,
   uninstall = false,
   migrate = false,
+  replaceExisting = false,
+  installer = null,
+  settingsPath = 'the settings file',
+  onReplace = () => {},
   manifestFileName = DEFAULT_MANIFEST_FILE,
 }) {
   const base = isPlainObject(settings) ? settings : {}
   const existing = classifyExistingHooksConfig({ settings: base, runtimeRoot, manifestFileName })
 
   if (!force && existing.status !== 'absent' && existing.status !== 'owned') {
-    throw new HookOwnershipError(existing.status, existing.reason, existing.entries.length)
+    const notOwned = existing.entries.filter((_, i) => existing.classifications[i]?.status !== 'owned')
+    const { foreign } = attributeHookEntries({ entries: notOwned, runtimeRoot, manifestFileName })
+    const checkoutsOnly = foreign.length === notOwned.length && foreign.every((f) => f.owner.kind === 'checkout')
+    if (uninstall || !checkoutsOnly) {
+      throw new HookOwnershipError(existing.status, existing.reason, existing.entries.length)
+    }
+    const owners = hookOwners(foreign)
+    if (!replaceExisting) throw new ForeignHooksError({ settingsPath, owners, unknown: [], installer })
+    // every candidate is now ours or a checkout's, so the strip below removes exactly those
+    onReplace(owners)
   }
 
   const stripped = stripAgentInboxHookEntries(base, { migrate })
@@ -679,6 +836,9 @@ function runMergeJsonCmd(argv) {
  *     [--uninstall]          strip agent-inbox entries instead of installing
  *     [--migrate]            also strip the two legacy hand-written .sh Stop
  *                            hooks (agent-inbox-pending.sh / agent-inbox-watch.sh)
+ *     [--replace-existing]   also replace the hooks a source checkout of this
+ *                            repo installed (issue #218); not with --uninstall
+ *     [--installer <abs>]    the install-hooks.sh a refusal tells the human to re-run
  *     [--manifest-file <name>]
  *
  * stdout: the fully formatted (2-space, trailing-newline) merged settings
@@ -686,7 +846,9 @@ function runMergeJsonCmd(argv) {
  * exit 0: success (including a --uninstall or fresh-install no-op).
  * exit 1: --settings exists but is not valid JSON, OR existing agent-inbox
  *   hook entries are not provably owned (status custom/split/unknown) and
- *   --force was not given — stderr carries an actionable, specific reason.
+ *   --force was not given, OR they are a source checkout's and neither
+ *   --force nor --replace-existing was given — stderr carries an actionable,
+ *   specific reason.
  * exit 2: a required flag is missing/empty, or the subcommand is unknown.
  */
 function runHooksCmd(argv) {
@@ -701,6 +863,8 @@ function runHooksCmd(argv) {
       force: { type: 'boolean' },
       uninstall: { type: 'boolean' },
       migrate: { type: 'boolean' },
+      'replace-existing': { type: 'boolean' },
+      installer: { type: 'string' },
     },
   })
 
@@ -708,30 +872,86 @@ function runHooksCmd(argv) {
   const entry = resolve(requireString(values, 'entry', 'hooks'))
   const node = values.uninstall ? (values.node ? resolve(values.node) : null) : resolve(requireString(values, 'node', 'hooks'))
   const runtimeRoot = values['runtime-root'] ? resolve(values['runtime-root']) : null
-
-  let current = {}
-  if (existsSync(settingsPath)) {
-    const raw = readFileSync(settingsPath, 'utf8')
-    if (raw.trim() !== '') {
-      try {
-        current = JSON.parse(raw)
-      } catch (err) {
-        throw new Error(`${settingsPath} is not valid JSON — refusing to touch it (${err.message})`)
-      }
-    }
+  if (values.uninstall && values['replace-existing']) {
+    throw new UsageError('hooks: --replace-existing installs one set in place of every other; it cannot be combined with --uninstall')
   }
 
   const result = transformHooksSettings({
-    settings: current,
+    settings: readSettingsFile(settingsPath),
     node,
     entry,
     runtimeRoot,
     force: !!values.force,
     uninstall: !!values.uninstall,
     migrate: !!values.migrate,
+    replaceExisting: !!values['replace-existing'],
+    installer: values.installer ?? null,
+    settingsPath,
+    onReplace: reportReplaced,
     manifestFileName: values['manifest-file'] ?? DEFAULT_MANIFEST_FILE,
   })
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
+}
+
+/** A settings file's JSON; a missing or blank file holds no settings. */
+function readSettingsFile(settingsPath) {
+  if (!existsSync(settingsPath)) return {}
+  const raw = readFileSync(settingsPath, 'utf8')
+  if (raw.trim() === '') return {}
+  try {
+    return JSON.parse(raw)
+  } catch (err) {
+    throw new Error(`${settingsPath} is not valid JSON — refusing to touch it (${err.message})`)
+  }
+}
+
+/**
+ * `foreign-hooks` — a source checkout's guard against adding a second hook
+ * set (issue #218). install-hooks.sh merges in checkout mode with jq; this
+ * attributes every agent-inbox-shaped entry in --settings that does not run
+ * --entry (this install's own) by classifyHookLauncher.
+ *
+ *   runtime-config.mjs foreign-hooks --settings <path> --entry <this install's entry>
+ *     --runtime-root <abs> [--installer <abs>] [--replace-existing] [--manifest-file <name>]
+ *
+ * stdout: a JSON array of the entries --replace-existing removes, each
+ *   {command, args, owner: {kind, path, runtimeId?, version?}}; [] when none.
+ * exit 0: nothing stands in the way; another tool's look-alike never does.
+ * exit 1: another Agent Inbox install's hooks are there and --replace-existing
+ *   was not given, an entry cannot be attributed (flag or not), or --settings
+ *   is not valid JSON — stderr names each install and the exact commands that
+ *   remove its hooks or replace them in one step.
+ * exit 2: a required flag is missing/empty.
+ */
+function runForeignHooksCmd(argv) {
+  const { values } = parseArgs({
+    args: argv,
+    options: {
+      settings: { type: 'string' },
+      entry: { type: 'string' },
+      'runtime-root': { type: 'string' },
+      installer: { type: 'string' },
+      'replace-existing': { type: 'boolean' },
+      'manifest-file': { type: 'string' },
+    },
+  })
+  const settingsPath = resolve(requireString(values, 'settings', 'foreign-hooks'))
+  const selfEntry = requireString(values, 'entry', 'foreign-hooks')
+  const runtimeRoot = resolve(requireString(values, 'runtime-root', 'foreign-hooks'))
+  const replace = !!values['replace-existing']
+
+  const { foreign, unknown } = attributeHookEntries({
+    settings: readSettingsFile(settingsPath),
+    selfEntry,
+    runtimeRoot,
+    manifestFileName: values['manifest-file'] ?? DEFAULT_MANIFEST_FILE,
+  })
+  const owners = hookOwners(foreign)
+  if (unknown.length > 0 || (owners.length > 0 && !replace)) {
+    throw new ForeignHooksError({ settingsPath, owners: replace ? [] : owners, unknown, installer: values.installer ?? null })
+  }
+  reportReplaced(owners)
+  process.stdout.write(`${JSON.stringify(foreign.map(({ entry, owner }) => ({ command: entry.command, args: entry.args, owner })))}\n`)
 }
 
 function main(argv) {
@@ -743,11 +963,12 @@ function main(argv) {
       case 'registration': runRegistrationCmd(rest); break
       case 'merge-json': runMergeJsonCmd(rest); break
       case 'hooks': runHooksCmd(rest); break
+      case 'foreign-hooks': runForeignHooksCmd(rest); break
       default:
-        throw new UsageError('usage: runtime-config.mjs <classify|references|registration|merge-json|hooks> [flags]')
+        throw new UsageError('usage: runtime-config.mjs <classify|references|registration|merge-json|hooks|foreign-hooks> [flags]')
     }
   } catch (err) {
-    process.stderr.write(`runtime-config: ${err.message}\n`)
+    process.stderr.write(err instanceof ForeignHooksError ? `${err.message}\n` : `runtime-config: ${err.message}\n`)
     process.exitCode = err instanceof UsageError ? 2 : 1
   }
 }

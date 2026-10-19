@@ -17,7 +17,8 @@ or the Electron app. One command installs it, one removes it.
 npm run install:hooks                     # dry run — prints what it WOULD write
 npm run install:hooks -- --apply          # write it (timestamped backup first)
 npm run install:hooks -- --apply --migrate    # also retire the legacy .sh Stop hooks
-npm run install:hooks -- --apply --uninstall  # remove every agent-inbox entry
+npm run install:hooks -- --apply --replace-existing  # replace another Agent Inbox install's hooks
+npm run install:hooks -- --apply --uninstall  # remove this install's hooks
 ```
 
 From a source checkout this installer uses `jq`. A portable release runtime instead
@@ -27,7 +28,9 @@ source the same adjacent `scripts/setup-lock.sh`, so their mutating Bash process
 owns one fd-9 kernel lease across the full transaction. Darwin prefers
 descriptor-mode `/usr/bin/lockf` and falls back to same-domain `flock`; Linux uses
 `flock` only. Packaged hook changes replace/remove only entries whose command and
-entrypoint canonicalize to the same valid manifest-owned runtime directory.
+entrypoint canonicalize to the same valid manifest-owned runtime directory, plus,
+with `--replace-existing`, the entries a source checkout installed (see
+[One set of hooks](#one-set-of-hooks-switching-between-a-setup-runtime-and-a-checkout)).
 
 The dry run writes nothing anywhere: its Node selftest runs against a throwaway
 database, so a preview never creates or migrates the hub. `--apply` writes
@@ -39,6 +42,71 @@ written, and a read-only (or immutable) one before anything is staged. A blank
 settings file reads as `{}`, in both checkout and packaged modes. Every write step
 is checked: a failure exits non-zero, leaves the file unchanged and removes the
 staged copy, and nothing reports success before the final rename lands.
+
+## One set of hooks: switching between a Setup runtime and a checkout
+
+Claude Code runs every hook entry in `~/.claude/settings.json`, so two installs'
+sets would run each hook twice: two nudges and two answer watchers per turn
+(issue #218). An install therefore never adds its set beside another Agent Inbox
+install's. It looks at every entry shaped like ours (`{command, args: [entry,
+subcommand]}` with one of the subcommands below) and works out which install it
+belongs to, by the same rule Setup's Agents panel uses to report Claude hooks:
+
+- **a Setup runtime**: the command and entry both resolve into one verified runtime
+  under `~/.agent-inbox/runtime/`;
+- **a source checkout**: the entry is `<checkout>/dist/hook-cli.js`, beside a
+  `package.json` named `agent-inbox`;
+- **anything else**, such as another tool's hook that only looks like ours, is
+  left alone.
+
+When another install's hooks are there, the installer exits 1 and writes nothing.
+The message names that install (a runtime by its version and folder, a checkout by
+its folder), gives the exact command that removes its hooks with that install's
+own installer, and gives the command that replaces them with this install's set in
+one step. The dry run refuses the same way.
+
+**From a Setup runtime to a checkout**, run this from the checkout:
+
+```sh
+npm run install:hooks -- --apply --replace-existing
+```
+
+or, in two steps:
+
+```sh
+bash ~/.agent-inbox/runtime/<runtime-id>/scripts/install-hooks.sh --apply --uninstall
+npm run install:hooks -- --apply
+```
+
+**From a checkout to a Setup runtime**:
+
+```sh
+bash ~/.agent-inbox/runtime/<runtime-id>/scripts/install-hooks.sh --apply --replace-existing
+```
+
+or, in two steps:
+
+```sh
+npm run install:hooks -- --apply --uninstall    # in the checkout
+bash ~/.agent-inbox/runtime/<runtime-id>/scripts/install-hooks.sh --apply
+```
+
+Moving between two checkouts works like the first case. Moving between two Setup
+runtimes needs no flag: a runtime's installer already replaces any Setup runtime's
+hooks.
+
+`--replace-existing` removes every Agent Inbox hook entry it can attribute,
+including this install's own, and installs exactly one set; without `--apply` it
+prints that single set and writes nothing. It cannot be combined with
+`--uninstall`. It never removes another tool's hook. An entry shaped like ours that
+cannot be attributed (a path that no longer resolves, a runtime that no longer
+verifies) is refused with or without the flag, because it might be a second set:
+remove it by hand. From a runtime, the flag replaces a checkout's hooks only; any
+other entry it cannot prove is Agent Inbox's is still refused, as before.
+
+`--force` and `--uninstall` keep their meaning: `--force` replaces only this
+install's own hooks, and `--uninstall` removes only this install's hooks (from a
+runtime, any Setup runtime's).
 
 ## Events → subcommands
 

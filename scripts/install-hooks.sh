@@ -9,15 +9,20 @@
 # Usage:
 #   npm run install:hooks                 # dry run — print the merged result
 #   npm run install:hooks -- --apply      # write it (timestamped backup first)
-#   npm run install:hooks -- --apply --force      # re-install over an existing one
+#   npm run install:hooks -- --apply --force      # re-install over this install's own hooks
+#   npm run install:hooks -- --apply --replace-existing  # also replace another Agent Inbox install's
 #   npm run install:hooks -- --apply --migrate    # also retire the legacy .sh Stop hooks
-#   npm run install:hooks -- --apply --uninstall  # remove every agent-inbox entry
+#   npm run install:hooks -- --apply --uninstall  # remove this install's hooks
+#
+# Hooks from another Agent Inbox install (a Setup runtime, another checkout)
+# are refused, never doubled: docs/hooks.md, "One set of hooks".
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SELF="$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SETTINGS="${HOME}/.claude/settings.json"
-APPLY=0; FORCE=0; UNINSTALL=0; MIGRATE=0
+APPLY=0; FORCE=0; UNINSTALL=0; MIGRATE=0; REPLACE=0
 
 for arg in "$@"; do
   case "$arg" in
@@ -26,10 +31,15 @@ for arg in "$@"; do
     --force) FORCE=1 ;;
     --uninstall) UNINSTALL=1 ;;
     --migrate) MIGRATE=1 ;;
-    -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
+    --replace-existing) REPLACE=1 ;;
+    -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
     *) echo "unknown flag: $arg (try --help)" >&2; exit 2 ;;
   esac
 done
+if [ "$UNINSTALL" -eq 1 ] && [ "$REPLACE" -eq 1 ]; then
+  echo "install-hooks: --replace-existing installs this set in place of every other; it cannot be combined with --uninstall" >&2
+  exit 2
+fi
 
 SETUP_LOCK_HELPER="$SCRIPT_DIR/setup-lock.sh"
 if [ ! -r "$SETUP_LOCK_HELPER" ]; then
@@ -178,11 +188,13 @@ unmergeable() {
 # CLIs and the log line that discovers the real enumeration. The single gate is
 # AGENT_INBOX_HOOK_NOTIFY_TYPES (default: permission_prompt).
 if [ "$RUNTIME_MODE" -eq 1 ]; then
-  hook_args=(hooks --settings "$TARGET" --node "$NODE" --entry "$ENTRY" --runtime-root "$RUNTIME_ROOT")
+  hook_args=(hooks --settings "$TARGET" --node "$NODE" --entry "$ENTRY" --runtime-root "$RUNTIME_ROOT" --installer "$SELF")
   [ "$UNINSTALL" -eq 1 ] && hook_args+=(--uninstall)
   [ "$MIGRATE" -eq 1 ] && hook_args+=(--migrate)
+  [ "$REPLACE" -eq 1 ] && hook_args+=(--replace-existing)
   # Packaged mode deliberately never forwards --force: only exact
-  # manifest-owned release hooks may be replaced or removed.
+  # manifest-owned release hooks may be replaced or removed, plus, with
+  # --replace-existing, those a source checkout of this repo installed.
   MERGED="$("$NODE" "$CONFIG_HELPER" "${hook_args[@]}")" || exit 1
 else
   BLOCK="$(jq -n --arg node "${NODE:-node}" --arg entry "$ENTRY" '
@@ -207,10 +219,23 @@ else
   case "$CURRENT" in *[![:space:]]*) ;; *) CURRENT='{}' ;; esac
   echo "$CURRENT" | jq empty 2>/dev/null || { echo "install-hooks: $SETTINGS is not valid JSON — refusing to touch it" >&2; exit 1; }
 
+  # Another Agent Inbox install's set (a Setup runtime, another checkout) is
+  # never doubled (#218): the helper attributes every agent-inbox-shaped entry
+  # by the rule Setup reports hooks with, refuses beside another install's set
+  # or an entry it cannot attribute, and with --replace-existing lists the
+  # entries to strip below. Another tool's look-alike is never one of them.
+  FOREIGN='[]'
+  if [ "$UNINSTALL" -eq 0 ]; then
+    [ -f "$CONFIG_HELPER" ] || { echo "install-hooks: the hook attribution helper is missing: $CONFIG_HELPER" >&2; exit 1; }
+    owner_args=(foreign-hooks --settings "$TARGET" --entry "$ENTRY" --runtime-root "$RUNTIME_ROOT" --installer "$SELF")
+    [ "$REPLACE" -eq 1 ] && owner_args+=(--replace-existing)
+    FOREIGN="$("$NODE" "$CONFIG_HELPER" "${owner_args[@]}")" || exit 1
+  fi
+
   # Every jq step is checked: a failed one prints nothing, and writing that
   # nothing over settings.json would be data loss reported as success.
   ALREADY="$(echo "$CURRENT" | jq --arg entry "$ENTRY" '[ (.hooks // {}) | .[]? | .[]? | .hooks[]? | select((.args // [])[0] == $entry) ] | length')" || unmergeable
-  if [ "$UNINSTALL" -eq 0 ] && [ "${ALREADY:-0}" -gt 0 ] && [ "$FORCE" -eq 0 ]; then
+  if [ "$UNINSTALL" -eq 0 ] && [ "${ALREADY:-0}" -gt 0 ] && [ "$FORCE" -eq 0 ] && [ "$REPLACE" -eq 0 ]; then
     echo "install-hooks: agent-inbox hooks are already installed in $SETTINGS." >&2
     echo "  Re-run with --force to replace them, or --uninstall to remove them." >&2
     exit 1
@@ -219,9 +244,12 @@ else
   # Strip our own entries (idempotent re-install, and the whole of --uninstall).
   # --migrate additionally retires the legacy hand-written shell hooks, leaving
   # the .sh files themselves on disk so the user can roll back by hand.
-  STRIPPED="$(echo "$CURRENT" | jq --arg entry "$ENTRY" --argjson migrate "$MIGRATE" '
+  # --replace-existing strips the other installs' entries listed above, by their
+  # exact command and arguments.
+  STRIPPED="$(echo "$CURRENT" | jq --arg entry "$ENTRY" --argjson migrate "$MIGRATE" --argjson foreign "$FOREIGN" '
     def mine: (.args // [])[0] == $entry
-              or (($migrate == 1) and (((.command // "") | test("agent-inbox-(pending|watch)\\.sh"))));
+              or (($migrate == 1) and (((.command // "") | test("agent-inbox-(pending|watch)\\.sh"))))
+              or (. as $hook | any($foreign[]; .command == $hook.command and .args == $hook.args));
     if (.hooks | type) == "object" then
       .hooks |= ( with_entries(.value |= ( map(.hooks |= map(select(mine | not)))
                                          | map(select((.hooks // []) | length > 0)) ))

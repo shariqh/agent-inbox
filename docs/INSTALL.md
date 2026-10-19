@@ -375,6 +375,8 @@ nothing is run to find this out.
 - **Claude hooks** are not moved with your agents. Once the app's runtime is installed,
   Setup shows the command that moves them, for example
   `bash ~/.agent-inbox/runtime/<runtime-id>/scripts/install-hooks.sh --apply`.
+  Hooks installed from a source checkout move with the same command plus
+  `--replace-existing`; see [the backstop hooks](#5-optional-the-backstop-hooks-issues-10--21).
 
 Nothing runs when the app starts; updating agents is always your explicit choice.
 
@@ -518,15 +520,32 @@ Deterministic, no-AI Claude Code hooks that (a) raise an inbox item when a sessi
 npm run install:hooks                         # DRY RUN — prints what it would write, changes nothing
 npm run install:hooks -- --apply              # write it (timestamped backup of ~/.claude/settings.json first)
 npm run install:hooks -- --apply --migrate    # also retire the older hand-written agent-inbox-*.sh Stop hooks
-npm run install:hooks -- --apply --uninstall  # remove every agent-inbox entry again
+npm run install:hooks -- --apply --replace-existing  # replace a Setup runtime's or another checkout's hooks with this checkout's
+npm run install:hooks -- --apply --uninstall  # remove this checkout's hooks again
 ```
 
 Source-checkout installation requires `jq`. Packaged installation uses the runtime's
 bundled Node config helper and works without ambient `node` or `jq`. Both paths share
 the same kernel-backed setup lock; packaged hook upgrade/uninstall changes only entries
-whose Node and hook entrypoint resolve to the same valid manifest-owned runtime.
+whose Node and hook entrypoint resolve to the same valid manifest-owned runtime (and,
+with `--replace-existing`, the entries a source checkout installed).
 Nothing about this runs from `npm install` or `npm run build`, and new hook
 registrations are picked up only on a **fresh** Claude Code session.
+
+**Only one install's hooks at a time.** Two sets would run every hook twice, so the
+installer refuses to add its hooks beside those of a Setup runtime or another
+checkout, and changes nothing. Its message names the install whose hooks are there
+and prints the exact commands to remove them or to replace them in one step. To
+switch:
+
+- **Setup runtime → this checkout:** `npm run install:hooks -- --apply --replace-existing`.
+- **This checkout → the Setup runtime:**
+  `bash ~/.agent-inbox/runtime/<runtime-id>/scripts/install-hooks.sh --apply --replace-existing`.
+
+Either way, removing the old install's hooks with its own `--apply --uninstall` first
+and then installing the new ones works too. Other tools' hooks are never touched. See
+[One set of hooks](hooks.md#one-set-of-hooks-switching-between-a-setup-runtime-and-a-checkout)
+in `docs/hooks.md` for the details.
 
 > **Node 24, again.** The installer resolves a Node 24 binary, **proves it** by running `dist/hook-cli.js selftest`, and only then bakes the absolute path into `settings.json`. It refuses to write if that fails. Do not hand-write `"command": "node"` — a hook spawned under Node 26 cannot load `better-sqlite3` and dies silently on every invocation, forever. Override the choice with `AGENT_INBOX_NODE=/abs/path/to/node24`.
 

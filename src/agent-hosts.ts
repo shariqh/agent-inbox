@@ -19,7 +19,10 @@
 // and that directory is an intact runtime whose manifest names it.
 // test/agent-hosts.test.ts runs the installer's helper over the same files and
 // holds the two to agreement, so Setup never offers to update a registration
-// the installer would refuse to replace.
+// the installer would refuse to replace. scripts/runtime-config.mjs mirrors the
+// hooks half too (classifyHookLauncher, issue #218): the hook installer
+// attributes each entry by this rule before it refuses or replaces another
+// install's hook set.
 import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, sep } from 'node:path'
 

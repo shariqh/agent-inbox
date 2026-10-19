@@ -1084,7 +1084,21 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   selftest gets a throwaway database, because opening the hub creates and migrates it.
   `--apply` writes through a symlinked `settings.json` (backup, staged copy and rename beside
   the target), refuses a dangling, non-regular or read-only target, and checks every write
-  before it reports success.
+  before it reports success. *(#218)* An install never adds its set beside another Agent
+  Inbox install's: two sets run every hook twice. Checkout mode asks
+  `runtime-config.mjs foreign-hooks` (under the selftest-proven Node) to attribute every
+  agent-inbox-shaped entry by `classifyHookLauncher`, the rule `src/agent-hosts.ts` reports
+  hooks with (held to agreement by `test/agent-hosts.test.ts`): a verified Setup runtime, a
+  checkout (`dist/hook-cli.js` beside a `package.json` named `agent-inbox`), other, or
+  unknown. A runtime's or another checkout's set is refused (exit 1, nothing written) with
+  the install named and its exact `--apply --uninstall` command plus the one-step
+  `--replace-existing`, which strips exactly those entries by command + args, and the
+  installer's own, then adds one set. An unattributable entry is refused even with the
+  flag; in checkout mode another tool's look-alike is never removed and never blocks.
+  Packaged mode refuses a checkout's set the same way and replaces it only with that flag;
+  everything else it cannot prove is ours still gets `HookOwnershipError` (look-alikes
+  included, as before). `--force` and `--uninstall` keep their exact meaning, and
+  `--replace-existing --uninstall` is a usage error (exit 2).
 - **Close / reopen a project** *(#32)* — a sparse `projects(project, closed_at)` table; **reopen is
   DERIVED, never written** (a project un-closes the moment an item or board is CREATED in it after
   `closed_at`), so `insertItem` stays byte-identical and the un-close is atomic with the very insert

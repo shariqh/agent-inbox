@@ -1622,6 +1622,67 @@ describe('runtime-config hooks: packaged Claude Code hook-settings transformatio
     const settings = join(tmp('hooks-usage-uninstall-'), 'settings.json')
     expect(runCli(CONFIG_CLI, ['hooks', '--settings', settings, '--entry', 'y', '--uninstall']).status).toBe(0)
   })
+
+  // #218: hooks a source checkout of this repo installed are another Agent
+  // Inbox set. The packaged installer names that checkout and the commands that
+  // resolve it, and replaces its hooks only with --replace-existing; anything
+  // else it cannot prove is Agent Inbox's stays, flag or not.
+  function checkoutHookEntry(packageName = 'agent-inbox'): { root: string; entry: string } {
+    const root = tmp('hooks-checkout-')
+    mkdirSync(join(root, 'dist'), { recursive: true })
+    mkdirSync(join(root, 'scripts'), { recursive: true })
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ name: packageName }))
+    writeFileSync(join(root, 'dist', 'hook-cli.js'), 'console.log("checkout hook")\n')
+    writeFileSync(join(root, 'scripts', 'install-hooks.sh'), '#!/bin/bash\n')
+    return { root, entry: join(root, 'dist', 'hook-cli.js') }
+  }
+
+  const threeHooks = (command: string, entry: string): Record<string, HookGroup[]> => ({
+    Notification: [{ hooks: [{ type: 'command', command, args: [entry, 'notification'], timeout: 5 }] }],
+    Stop: [{ hooks: [
+      { type: 'command', command, args: [entry, 'stop'], timeout: 10 },
+      { type: 'command', command, args: [entry, 'watch'], timeout: 1800 },
+    ] }],
+  })
+  const unrelated = { type: 'command', command: 'echo', args: ['unrelated'], timeout: 5 } as unknown as HookEntry
+
+  it('names a source checkout\'s hooks instead of adding a second set, and replaces them only with --replace-existing', () => {
+    const { runtimeRoot, nodeBin, entry } = installedHookRuntime()
+    const checkout = checkoutHookEntry()
+    const settings = join(tmp('hooks-checkout-set-'), 'settings.json')
+    writeFileSync(settings, JSON.stringify({ hooks: { ...threeHooks(process.execPath, checkout.entry), PostToolUse: [{ hooks: [unrelated] }] } }))
+    const args = ['hooks', '--settings', settings, '--node', nodeBin, '--entry', entry, '--runtime-root', runtimeRoot, '--installer', '/opt/runtime/scripts/install-hooks.sh']
+
+    const refused = runFail(CONFIG_CLI, args)
+    expect(refused.status).toBe(1)
+    expect(refused.stdout).toBe('')
+    expect(refused.stderr).toContain(`the source checkout at ${checkout.root} (3 hooks)`)
+    expect(refused.stderr).toContain(`remove them: bash '${join(checkout.root, 'scripts', 'install-hooks.sh')}' --apply --uninstall`)
+    expect(refused.stderr).toContain(`bash '/opt/runtime/scripts/install-hooks.sh' --apply --replace-existing`)
+
+    const replaced = runCli(CONFIG_CLI, [...args, '--replace-existing'])
+    expect(replaced.status, replaced.stderr).toBe(0)
+    expect(replaced.stderr).toContain(`replacing 3 hooks of the source checkout at ${checkout.root}`)
+    const result = JSON.parse(replaced.stdout) as HooksSettings
+    expect(JSON.stringify(result)).not.toContain(checkout.entry)
+    expect(result.hooks!.PostToolUse).toEqual([{ hooks: [unrelated] }])
+    expect(result.hooks!.Stop).toHaveLength(1)
+    expect(result.hooks!.Stop![0]!.hooks.map((h) => [h.command, ...h.args])).toEqual([[nodeBin, entry, 'stop'], [nodeBin, entry, 'watch']])
+  })
+
+  it('--replace-existing never removes a look-alike it cannot attribute to an Agent Inbox install', () => {
+    const { runtimeRoot, nodeBin, entry } = installedHookRuntime()
+    const lookAlike = checkoutHookEntry('agent-inbox-companion')
+    const settings = join(tmp('hooks-look-alike-'), 'settings.json')
+    writeFileSync(settings, JSON.stringify({ hooks: threeHooks(process.execPath, lookAlike.entry) }))
+
+    const result = runFail(CONFIG_CLI, [
+      'hooks', '--settings', settings, '--node', nodeBin, '--entry', entry, '--runtime-root', runtimeRoot, '--replace-existing',
+    ])
+    expect(result.status).toBe(1)
+    expect(result.stdout).toBe('')
+    expect(result.stderr).toMatch(/ownership status 'custom'/)
+  })
 })
 
 // ═══════════════════════════════════════════════════════════════════════

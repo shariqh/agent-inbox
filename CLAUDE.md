@@ -1074,14 +1074,30 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   `refreshInstallPermission()`, which republishes only on a change. An installable
   verified (or install-failed) offer that is not permitted hides Install and restart and
   says "Restart Agent Inbox to install this update." with a **Restart Agent Inbox** button
-  on macOS (`agent-inbox:update-restart`: trusted sender, `darwin` only, refused while
-  quitting or installing; `beginAppQuit()`, then `app.relaunch()`, then `app.quit()`), or
-  "Quit and reopen Agent Inbox to install this update." with no button on an AppImage,
-  which Electron must never relaunch (part 3). The next start reuses the verified download
-  after re-hashing it. `refuseInstall()` stays the backstop for a click that races a
-  revoke. A main-frame navigation that never commits leaves the window revoked until its
-  next load, with the same honest copy. None of it enters `public/attention.js`, badges or
-  Needs-you.
+  on macOS, or "Quit and reopen Agent Inbox to install this update." with no button on an
+  AppImage, which Electron must never relaunch (part 3). (5) `agent-inbox:update-restart`
+  accepts exactly the state that shows that button and nothing else: trusted sender,
+  `darwin`, no quit begun, Setup NOT running (`installGate.running()`: the quit's
+  `beginAppQuit()` would cancel it mid-registration, #205's hazard, and the update path
+  refuses that too), `viewerOwned`, no update installing, an installable `verified` or
+  `install-failed` offer, and `!updateInstallPermitted()`. Without all of them it returns
+  false, so no other state or page (a reused viewer has no installers) can quit the app or
+  relaunch it in a loop; after a relaunch the new window is bound and permitted, so the
+  button is gone. When it is refused, Settings says "Agent Inbox didn't restart. If agent
+  setup is running, try again when it finishes." rather than leave a dead button. It then
+  calls `beginAppQuit()`, `app.relaunch()` and `app.quit()`; the next start reuses the
+  verified download after re-hashing it. (6) `refuseInstall()` stays the backstop for a
+  click that races a revoke; its `install-failed` is marked as main's refusal of the window,
+  and once that window may install again `refreshInstallPermission()` publishes the
+  `verified` download again instead of a stale "restart" beside a working Try again. An
+  install's own failure keeps its reason. (7) Setup's renderer asks `available()` once per
+  page and again when Settings opens: `agent-inbox:install-available` first awaits
+  `installBinding.settled()` (a re-proof in flight, which resolves once its grants are
+  applied), and Settings re-asks on open, adding the one-click install and Update agents
+  when main now allows them (a window only loses Setup to a new page or a quit, so this
+  never takes away a menu that may be running). A main-frame navigation that never commits
+  leaves the window revoked until its next load, with the same honest copy. None of it
+  enters `public/attention.js`, badges or Needs-you.
 - **Session presence** *(#28, corrected by #45)* — every MCP session is a Live row; `status()`
   upgrades it, process exit ends it, and a row that stops being heartbeated expires after ~15 min.
   That expiry only ever fires for a **crashed** process: a live one heartbeats itself, so what

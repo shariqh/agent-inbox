@@ -169,11 +169,13 @@ withdraws that permission until the app has checked again.
 - **1.3.2 and later:** after a reload, the app checks again that the window shows its own
   viewer and keeps **Install and restart** available. If it can't confirm that, for
   example because the viewer didn't answer in time, Settings → Updates says "Restart Agent
-  Inbox to install this update." and offers **Restart Agent Inbox** on macOS. An AppImage
-  says "Quit and reopen Agent Inbox to install this update." instead: quit Agent Inbox and
-  open it again from your AppImage. Either way the verified download is kept: after the
-  restart, click **Check now** and then **Download update**, which re-checks the file you
-  already have instead of downloading it again, and then **Install and restart**.
+  Inbox to install this update." and offers **Restart Agent Inbox** on macOS. If agent
+  setup is still running, the app doesn't restart yet and says so; try again when setup
+  finishes. An AppImage says "Quit and reopen Agent Inbox to install this update."
+  instead: quit Agent Inbox and open it again from your AppImage. Either way the verified
+  download is kept: after the restart, click **Check now** and then **Download update**,
+  which re-checks the file you already have instead of downloading it again, and then
+  **Install and restart**.
 - **1.3.1 and earlier:** after any reload or crash, **Install and restart** kept being
   offered but always failed with "Agent Inbox *X* couldn't be installed. Restart Agent Inbox
   to install this update." until the app restarted. Quit Agent Inbox (`Command-Q` on macOS,

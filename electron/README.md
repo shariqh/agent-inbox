@@ -53,12 +53,22 @@ true only while the install IPC would accept the window (main's `updateInstallPe
 and implies `installable`; the binding republishes it through `refreshInstallPermission()`
 whenever it changes. When a verified download is installable but not permitted, Settings
 hides **Install and restart** and says "Restart Agent Inbox to install this update." On
-macOS it offers **Restart Agent Inbox** (`agent-inbox:update-restart`: trusted sender,
-macOS only, refused while quitting or installing), which calls `beginAppQuit()`, then
-`app.relaunch()` and `app.quit()`. An AppImage gets "Quit and reopen Agent Inbox to install
-this update." and no button, because Electron's relaunch would run from the image's mount.
-The next start reuses the verified download after re-hashing it, and the install IPC's
-"Restart Agent Inbox to install this update." refusal remains the backstop.
+macOS it offers **Restart Agent Inbox**, which calls `beginAppQuit()`, then `app.relaunch()`
+and `app.quit()`. Main's `agent-inbox:update-restart` accepts only the state that shows that
+button: a trusted sender on macOS, no quit begun, agent Setup not running (a quit would
+cancel it mid-registration), a viewer this app owns, no update installing, an installable
+verified or install-failed offer, and a window that may not install. Anything else gets
+`false`, so no other page or state can quit or relaunch the app, and Settings says the app
+didn't restart. An AppImage gets "Quit and reopen Agent Inbox to install this update." and
+no button, because Electron's relaunch would run from the image's mount. The next start
+reuses the verified download after re-hashing it. The install IPC's "Restart Agent Inbox to
+install this update." refusal remains the backstop; once main lets that window install
+again, the controller offers the verified download again rather than that stale request.
+
+Setup's renderer asks `agent-inbox:install-available` once per page and again whenever
+Settings opens. The handler first waits for a re-proof still in flight
+(`installBinding.settled()`), so a reloaded window gets the settled answer, and Settings
+adds the one-click install and **Update agents** once main allows them.
 
 On macOS, `update-install-macos.cjs` refuses a translocated, read-only, foreign-owned,
 symlinked or unwritable bundle and a macOS below the signed minimum. `prepare()` copies

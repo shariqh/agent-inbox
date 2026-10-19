@@ -15,6 +15,7 @@ type InstallBinding = {
   navigationCommitted(url: string): Promise<boolean>
   rendererGone(): void
   closed(): void
+  settled(): Promise<void>
 }
 const {
   canRunSetup,
@@ -664,12 +665,30 @@ describe('createInstallBinding (#216)', () => {
     expect(neverLoaded.granted).toEqual(NONE)
   })
 
+  it('settles once no re-proof is in flight, with that proof\'s grants already applied', async () => {
+    const h = loaded()
+    await expect(h.binding.settled()).resolves.toBeUndefined()
+    for (const outcome of ['passes', 'fails', 'throws'] as const) {
+      h.binding.navigationStarted(VIEWER)
+      void h.binding.navigationCommitted(VIEWER)
+      let settled = false
+      void h.binding.settled().then(() => { settled = true })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(settled).toBe(false)
+      if (outcome === 'passes') h.proof().resolve(true)
+      else if (outcome === 'fails') h.proof().resolve(false)
+      else h.proof().reject(new Error('viewer gone'))
+      await vi.waitFor(() => expect(settled).toBe(true))
+      expect(h.granted).toEqual(outcome === 'passes' ? BOTH : NONE)
+    }
+  })
+
   // Main's own wiring text, evaluated against the real helper and a real gate,
   // so a wiring that skips the proof, the owned-viewer rule or the quit gate
   // fails here rather than in a user's window.
   function mainWiring(flags: { setupInstallEnabled: boolean; viewerOwned: boolean }) {
     const main = readFileSync(join(import.meta.dirname, '..', 'electron', 'main.cjs'), 'utf8')
-    const start = main.indexOf('const installBinding = createInstallBinding({')
+    const start = main.indexOf('  installBinding = createInstallBinding({')
     const end = main.indexOf('\n  })\n', start)
     expect(start).toBeGreaterThan(-1)
     expect(end).toBeGreaterThan(start)
@@ -687,6 +706,7 @@ describe('createInstallBinding (#216)', () => {
       let viewerOwned = flags.viewerOwned
       let setupInstallWebContentsId = null
       let updateInstallWebContentsId = null
+      let installBinding = null
       const setupWindowWebContentsId = 7
       ${main.slice(start, end + '\n  })'.length)}
       return { installBinding, ids: () => ({ setup: setupInstallWebContentsId, update: updateInstallWebContentsId }) }`,
@@ -772,6 +792,45 @@ describe('createInstallBinding (#216)', () => {
     const exited = reprove({}, null, true)
     await expect(exited.fn()).resolves.toBe(false)
     expect(exited.waitForOwnership).not.toHaveBeenCalled()
+  })
+
+  // Setup's one-click install is asked for once per page load (and when Settings
+  // opens): a reload whose re-proof is still running must not answer "copy-only".
+  it('main answers whether Setup is available only once a re-proof in flight has settled', async () => {
+    const main = readFileSync(join(import.meta.dirname, '..', 'electron', 'main.cjs'), 'utf8')
+    const marker = "ipcMain.handle('agent-inbox:install-available', "
+    const start = main.indexOf(marker)
+    expect(start).toBeGreaterThan(-1)
+    const body = main.slice(start + marker.length, main.indexOf('\n})', start) + 2)
+    const proof = deferred<void>()
+    const installBinding = { settled: vi.fn(() => proof.promise) }
+    const world = new Function('installBinding', 'installGate', 'canRunSetup', 'URL_BASE', `
+      let setupInstallEnabled = true
+      let setupInstallWebContentsId = null
+      return { handler: ${body}, bind: (id) => { setupInstallWebContentsId = id } }
+    `)(installBinding, createInstallGate(), canRunSetup, VIEWER) as {
+      handler(event: unknown): Promise<boolean>
+      bind(id: number): void
+    }
+    const event = { senderFrame: { url: VIEWER }, sender: { id: 7 } }
+
+    const answer = world.handler(event)
+    expect(installBinding.settled).toHaveBeenCalledOnce()
+    // The re-proof binds the window while the question waits for it.
+    world.bind(7)
+    proof.resolve()
+    await expect(answer).resolves.toBe(true)
+
+    // Nothing in flight: the binding as it is.
+    installBinding.settled.mockImplementation(() => Promise.resolve())
+    await expect(world.handler({ ...event, sender: { id: 8 } })).resolves.toBe(false)
+    // Before the window exists there is no binding to wait for.
+    const early = new Function('installBinding', 'installGate', 'canRunSetup', 'URL_BASE', `
+      let setupInstallEnabled = true
+      let setupInstallWebContentsId = null
+      return ${body}
+    `)(null, createInstallGate(), canRunSetup, VIEWER) as (event: unknown) => Promise<boolean>
+    await expect(early(event)).resolves.toBe(false)
   })
 
   it('main feeds the binding every main-frame navigation, commit, crash and close of its window before the first load', () => {

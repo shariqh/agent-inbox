@@ -351,13 +351,15 @@ function createInstallGate() {
  *
  * `setupAllowed()` and `updateAllowed()` say what this app may grant at all;
  * when neither holds, nothing is probed. `apply({ setup, update })` sets the
- * window's grants in main.
+ * window's grants in main. `settled()` waits out a proof still running, so a
+ * question about the grants asked during a reload gets the settled answer.
  */
 function createInstallBinding({ viewerUrl, setupAllowed, updateAllowed, isQuitting, proveOwnership, apply }) {
   let loaded = false
   let closed = false
   let navigation = 0
   let awaitingCommit = null
+  let inFlight = null
   const grants = () => ({ setup: setupAllowed() === true, update: updateAllowed() === true })
   const mayBind = (url) => !closed && !isQuitting() && isTrustedSetupSender(url, viewerUrl)
 
@@ -365,6 +367,18 @@ function createInstallBinding({ viewerUrl, setupAllowed, updateAllowed, isQuitti
     navigation += 1
     awaitingCommit = null
     apply({ setup: false, update: false })
+  }
+
+  async function rebind(url, proving) {
+    let proven = false
+    try {
+      proven = (await proveOwnership()) === true
+    } catch {
+      proven = false
+    }
+    if (!proven || proving !== navigation || !mayBind(url)) return false
+    apply(grants())
+    return true
   }
 
   return Object.freeze({
@@ -383,21 +397,22 @@ function createInstallBinding({ viewerUrl, setupAllowed, updateAllowed, isQuitti
      * Resolves true once the window is bound again; a proof that fails or
      * throws resolves false.
      */
-    async navigationCommitted(url) {
-      if (awaitingCommit === null || awaitingCommit !== navigation) return false
+    navigationCommitted(url) {
+      if (awaitingCommit === null || awaitingCommit !== navigation) return Promise.resolve(false)
       awaitingCommit = null
       const wanted = grants()
-      if ((!wanted.setup && !wanted.update) || !mayBind(url)) return false
-      const proving = navigation
-      let proven = false
-      try {
-        proven = (await proveOwnership()) === true
-      } catch {
-        proven = false
+      if ((!wanted.setup && !wanted.update) || !mayBind(url)) return Promise.resolve(false)
+      const proof = rebind(url, navigation)
+      inFlight = proof
+      const done = () => {
+        if (inFlight === proof) inFlight = null
       }
-      if (!proven || proving !== navigation || !mayBind(url)) return false
-      apply(grants())
-      return true
+      proof.then(done, done)
+      return proof
+    },
+    /** Resolves once no proof is in flight, its grants (if any) applied. Never rejects. */
+    settled() {
+      return inFlight === null ? Promise.resolve() : inFlight.then(() => undefined, () => undefined)
     },
     /** The renderer crashed (`render-process-gone`); the window's next load may bind again. */
     rendererGone: revoke,

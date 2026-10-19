@@ -78,6 +78,8 @@ const THEME_BACKGROUND_COLORS = {
 }
 let setupInstallEnabled = false
 let setupInstallWebContentsId = null
+// Grants the window Setup and update installs (#216); created with the window.
+let installBinding = null
 // The one Setup install in flight, and whether the app has begun to quit
 // (#205 review): see beginAppQuit().
 const installGate = createInstallGate()
@@ -278,10 +280,15 @@ function beginAppQuit() {
   return installGate.beginQuit()
 }
 
-ipcMain.handle('agent-inbox:install-available', (event) =>
-  !installGate.quitting() &&
-  setupInstallEnabled &&
-  canRunSetup(event.senderFrame?.url ?? '', URL_BASE, event.sender.id, setupInstallWebContentsId))
+// Asked once per page load and again when Settings opens. A reload's re-proof
+// may still be running (#216): answer once it has settled, so a reloaded window
+// is not left with copy-only Setup.
+ipcMain.handle('agent-inbox:install-available', async (event) => {
+  await installBinding?.settled()
+  return !installGate.quitting() &&
+    setupInstallEnabled &&
+    canRunSetup(event.senderFrame?.url ?? '', URL_BASE, event.sender.id, setupInstallWebContentsId)
+})
 
 ipcMain.handle('agent-inbox:install', async (event, target) => {
   if (installGate.quitting()) {
@@ -979,7 +986,7 @@ app.whenReady().then(async () => {
   // this app started and owns (#216): bound at its first navigation, revoked
   // by every later one, and bound again once that load commits to the viewer
   // and ownership is proven again.
-  const installBinding = createInstallBinding({
+  installBinding = createInstallBinding({
     viewerUrl: URL_BASE,
     setupAllowed: () => setupInstallEnabled,
     // Update installs need only the owned viewer, not agent Setup's runtime payload.

@@ -82,6 +82,44 @@ describe('one-click agent setup menu', () => {
     expect(document.querySelector('.setup-result')?.classList.contains('success')).toBe(true)
   })
 
+  // #216: main proves a reloaded window again, which can finish after this panel was built.
+  it('offers one-click setup the next time Settings opens once main allows this window', async () => {
+    let allowed = false
+    const install = vi.fn(async (target: string) => ({
+      ok: true,
+      exitCode: 0,
+      target,
+      timedOut: false,
+      output: `${target} installed`,
+    }))
+    Object.defineProperty(window, 'agentInboxSetup', {
+      configurable: true,
+      value: { available: async () => allowed, install },
+    })
+    await bootSetup()
+    expect(document.querySelector('.setup-run-btn')).toBeNull()
+    expect(document.querySelector('.setup-app-note')).not.toBeNull()
+
+    allowed = true
+    const gear = document.getElementById('gear') as HTMLButtonElement
+    gear.click()
+    await settle()
+    expect(document.querySelectorAll('.setup-menu')).toHaveLength(1)
+    expect(document.querySelector('.setup-app-note')).toBeNull()
+    const run = document.querySelector('.setup-run-btn') as HTMLButtonElement
+    expect(run.textContent).toBe('Install Claude Code + Copilot CLI now')
+    run.click()
+    await settle()
+    expect(install).toHaveBeenCalledWith('all')
+
+    // Reopening keeps that menu and what it reported.
+    gear.click()
+    gear.click()
+    await settle()
+    expect(document.querySelectorAll('.setup-menu')).toHaveLength(1)
+    expect(document.querySelector('.setup-result')?.textContent).toContain('all installed')
+  })
+
   it('copies an agent-ready prompt for the selected target', async () => {
     const copied: string[] = []
     const writeText = vi.fn(async (text: string) => { copied.push(text) })

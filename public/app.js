@@ -4179,8 +4179,12 @@ function showPanel(id) {
   gear.classList.toggle('active', id === 'setup')
   gear.setAttribute('aria-pressed', String(id === 'setup'))
   // #197: a terminal install or an update can change what each host runs while
-  // the app is open, so Settings re-reads it whenever it opens
-  if (openingSettings) refreshAgents()
+  // the app is open, so Settings re-reads it whenever it opens; #216: so can
+  // whether this window may run one-click Setup, after a reload
+  if (openingSettings) {
+    refreshAgents()
+    refreshSetupAvailability()
+  }
 }
 
 function settingsOpen() {
@@ -7175,7 +7179,7 @@ function setupTargetLabel(target) {
   }[target]
 }
 
-function setupMenu(s, host, canInstall) {
+function setupMenu(s, canInstall) {
   const wrap = document.createElement('div')
   wrap.className = 'setup-menu'
   const title = document.createElement('h3')
@@ -7288,7 +7292,28 @@ function setupMenu(s, host, canInstall) {
   updateLabels()
   wrap.prepend(title, hint, select)
   wrap.append(commandPreview, actions, result)
-  host.appendChild(wrap)
+  return wrap
+}
+
+// What the Setup panel was built with: the setup info, whether this window
+// could run one-click Setup then, and its menu.
+let setupShown = null
+
+// A reloaded window gets one-click Setup back only once main has proven it again
+// (#216), which can finish after this panel was built, so Settings asks again
+// when it opens. A window loses Setup only to a new page or a quit, so this only
+// ever adds the one-click install, never takes away a menu that may be running.
+async function refreshSetupAvailability() {
+  const shown = setupShown
+  if (!shown || shown.canInstall || !window.agentInboxSetup?.available) return
+  const canInstall = await window.agentInboxSetup.available().catch(() => false)
+  if (canInstall !== true || shown !== setupShown || shown.canInstall) return
+  shown.canInstall = true
+  const menu = setupMenu(shown.info, true)
+  shown.menu.replaceWith(menu)
+  shown.menu = menu
+  if (agentsBlock) agentsBlock.canInstall = true
+  await refreshAgents()
 }
 
 function renderThemeSettings(host) {
@@ -7689,7 +7714,9 @@ async function renderSetup() {
     }
     const canInstall = await window.agentInboxSetup?.available?.().catch(() => false) ?? false
     renderAgents(host, s, canInstall)
-    setupMenu(s, host, canInstall)
+    const menu = setupMenu(s, canInstall)
+    host.appendChild(menu)
+    setupShown = { info: s, canInstall, menu }
     // issue #74: a release build withholds these manual/direct commands
     // entirely (empty string) until a runtime matching this exact host's
     // verified payload is installed — render nothing rather than an empty

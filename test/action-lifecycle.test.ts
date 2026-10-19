@@ -931,6 +931,93 @@ describe('watch stop (#217)', () => {
     return stopBoardRowWatch(db, row.id, until, row.revision, board.revision)
   }
 
+  // A v1.3.x MCP process sharing the database after the upgrade: origin/main's
+  // beginNewRowAction and advanceBoardRow statements, verbatim, from a second
+  // connection whose code knows nothing of the #217 columns. Raw SQL is allowed
+  // HERE, in a test, to stand in for that older writer.
+  const olderServerAdvances = (rowId: string) => {
+    const older = new Database(db.name)
+    try {
+      const row = older.prepare('SELECT action_version FROM board_rows WHERE id = ?').get(rowId) as { action_version: number }
+      const now = new Date().toISOString()
+      older.prepare(`
+        UPDATE board_rows
+           SET note = '', next_step = '', action_owner = NULL, impact = '', next_after = '', options = NULL,
+               annotation = NULL, annotation_kind = NULL, annotated_at = NULL, annotation_seen_at = NULL,
+               annotation_seen_by = NULL, handled_at = NULL, handled_seen_at = NULL, handled_seen_by = NULL,
+               snoozed_until = NULL, outcome = '', outcome_at = NULL, action_started_at = ?, action_version = ?,
+               revision = revision + 1, history = ?, updated_at = ?
+         WHERE id = ?`).run(now, row.action_version + 1, '[]', now, rowId)
+      older.prepare(`UPDATE board_rows SET status = 'blocked', note = ?, next_step = ?, action_owner = ?, impact = ?,
+                       next_after = '', options = NULL, updated_at = ? WHERE id = ?`)
+        .run('The next build is ready.', 'Install it.', 'task', 'Ships it.', now, rowId)
+    } finally {
+      older.close()
+    }
+  }
+
+  it('an older server starting the next action carries over neither the stop nor the asker', () => {
+    blocked()
+    clock(5)
+    expect(stopRow(null)).toBe(true)
+    expect(current().row).toMatchObject({ action_agent: 'copilot', watch_stopped_at: at(5) })
+    clock(10)
+    olderServerAdvances(current().row.id)
+    expect(current().row).toMatchObject({
+      action_version: 2, watch_stopped_at: null, watch_stopped_until: null, action_agent: null,
+    })
+  })
+
+  it('a write that leaves the action version alone keeps the stop and the asker', () => {
+    blocked()
+    expect(stopRow(at(60))).toBe(true)
+    db.prepare('UPDATE board_rows SET action_version = action_version').run()
+    expect(current().row).toMatchObject({ watch_stopped_until: at(60), action_agent: 'copilot' })
+  })
+
+  // The control the human sees must follow whoever raised THIS ask: a board's
+  // agent is only its last writer, and only some agents run a watcher.
+  it('records who raised each row action, whichever agent last wrote the board', () => {
+    const ask = (label: string) => ({ label, status: 'blocked' as const, note: 'Needed.', next_step: 'Do it.', action_owner: 'task' as const, impact: 'Ships it.' })
+    upsertBoard(db, { project: 'p', stream: '', agent: 'claude-code', title: 'B', rows: [ask('Deploy')] })
+    expect(current('Deploy').row.action_agent).toBe('claude-code')
+
+    updateBoardRow(db, { project: 'p', stream: '', agent: 'copilot', title: 'B', label: 'Docs', status: 'tracked' })
+    expect(getBoard(db, 'p', 'B')!.agent).toBe('copilot')
+    expect(current('Deploy').row.action_agent).toBe('claude-code')
+    expect(current('Docs').row.action_agent).toBe('copilot')
+
+    let { board, row } = current('Deploy')
+    expect(advanceBoardRow(db, {
+      project: 'p', title: 'B', label: 'Deploy', agent: 'copilot',
+      expectedBoardVersion: board.revision, expectedRevision: row.revision,
+      note: 'The fix is ready.', next_step: 'Deploy it.', action_owner: 'task', impact: 'Ships it.',
+    })).toMatchObject({ ok: true })
+    expect(current('Deploy').row.action_agent).toBe('copilot')
+
+    updateBoardRow(db, { project: 'p', stream: '', agent: 'claude-code', title: 'B', label: 'Deploy', impact: 'Ships 1.4.' })
+    expect(current('Deploy').row.action_agent).toBe('copilot')
+
+    updateBoardRow(db, { project: 'p', stream: '', agent: 'claude-code', title: 'B', label: 'Deploy', status: 'partial' })
+    upsertBoard(db, { project: 'p', stream: '', agent: 'claude-code', title: 'B', rows: [ask('Deploy'), { label: 'Docs', status: 'tracked' }] })
+    expect(current('Deploy').row).toMatchObject({ action_version: 3, action_agent: 'claude-code' })
+
+    ;({ board, row } = current('Deploy'))
+    advanceBoardRow(db, {
+      project: 'p', title: 'B', label: 'Deploy',
+      expectedBoardVersion: board.revision, expectedRevision: row.revision,
+      note: 'One more step.', next_step: 'Confirm it.', action_owner: 'task', impact: 'Ships it.',
+    })
+    expect(current('Deploy').row.action_agent, 'an advance that names no agent records none').toBeNull()
+  })
+
+  it('records who raised a question; one raised by an older server has no asker', () => {
+    expect(getItem(db, question())!.action_agent).toBe('copilot')
+    db.prepare(`INSERT INTO items (id, project, stream, agent, kind, title, status, created_at, updated_at)
+                VALUES ('older', 'p', '', 'copilot', 'question', 'Raised by 1.3', 'open', ?, ?)`).run(at(0), at(0))
+    expect(getItem(db, 'older')!.action_agent).toBeNull()
+  })
+
   it('stops an open question for good or until a time, without touching content or its response version', () => {
     const id = question()
     clock(5)

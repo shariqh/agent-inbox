@@ -216,10 +216,13 @@ Run the build before `npm run electron`; the development shell starts the built
   Its wait backs off statelessly from the ask's age through one function
   (`watchTimeoutMs`) that both the contract and the watcher evaluate (#217).
 - The human's watch stop (`watch_stopped_at`/`watch_stopped_until`, #217) is
-  human-owned, version-pinned and not content: upserts never touch it, only a
-  new ask clears it, a stop for good is final, and its writes bump neither
-  revision nor `updated_at`. It never changes attention, and Claude's hook
-  watch ignores it because that watch never wakes on a timeout.
+  human-owned, version-pinned and not content: upserts never touch it, a stop
+  for good is final, and its writes bump neither revision nor `updated_at`.
+  A new action clears it through the `reset_row_action_watch_state` trigger, so
+  an older server's re-block cannot carry it over. The control follows the
+  ask's own `action_agent` (never `boards.agent`); an unknown asker draws
+  nothing. It never changes attention, and Claude's hook watch ignores it
+  because that watch never wakes on a timeout.
 - Keep network access out of the MCP process. Repository/branch identity is
   inferred locally; live PR state is fetched only by the viewer's `gh` poller.
   PR/check state is ambient information and must not enter the human-attention

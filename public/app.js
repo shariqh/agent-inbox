@@ -17,7 +17,7 @@ import {
 import { createStagedSend } from '/star.js'
 import {
   ageChip, agentCounts, handledUndoRefusal, needsYouEntries, relMs, repliedEntries, rowModel,
-  rowStarOption, stagedLabel, staleFoldLabel, streamCounts, undoRefusal, urgencyChip,
+  rowPickup, rowStarOption, stagedLabel, staleFoldLabel, streamCounts, undoRefusal, urgencyChip,
   ASK_SORT_OPTIONS, askTimeModel, sortNeedsYouByAsk,
 } from '/rowview.js'
 import { cardSections, optionOrder, actionPresentation } from '/card.js'
@@ -2259,18 +2259,21 @@ function dispositionEl(onResponse, onSnooze, key) {
 }
 
 // Issue #217 — "I'll take a while". Only a Copilot session runs the answer
-// watcher this stops, so for any other agent the control would claim an effect
-// it cannot have and is not drawn. It never touches attention: the ask stays in
+// watcher this stops, and only one whose server records who raised the ask
+// (`action_agent`) runs a watcher that honours it — so the control follows THIS
+// ask's asker, never the board's last writer, and an unknown asker draws
+// nothing rather than a guess. It never touches attention: the ask stays in
 // Needs you unless the human also snoozes it. A stop for good is final (the
-// watcher has already exited), so it renders as a reminder, not a control.
+// watcher has already exited), so it renders as a reminder, not a control, and
+// the reminder outlives the answer until an agent has picked that answer up.
 const WAIT_STOP_DEFERRALS = [
   ['Back in ~1 h', 60 * 60_000],
   ['Back in ~3 h', 3 * 60 * 60_000],
   ['Back tomorrow', 24 * 60 * 60_000],
 ]
 
-function waitStopEl(ask, agent, key, onStop) {
-  if (agent !== 'copilot') return null
+function waitStopEl(ask, { answered = false, pickedUp = false, key = '', onStop = null } = {}) {
+  if (ask.action_agent !== 'copilot') return null
   const note = (text) => {
     const el = document.createElement('div')
     el.className = 'wait-stop-note'
@@ -2278,8 +2281,11 @@ function waitStopEl(ask, agent, key, onStop) {
     return el
   }
   if (ask.watch_stopped_at && !ask.watch_stopped_until) {
-    return note(`Agent stopped waiting ${rel(ask.watch_stopped_at)} ago · message it after you answer`)
+    if (!answered) return note(`Agent stopped waiting ${rel(ask.watch_stopped_at)} ago · message it after you answer`)
+    return pickedUp ? null : note('Agent stopped waiting · message it so it picks up your answer')
   }
+  // An answer ends the wait; there is nothing left to stop.
+  if (answered) return null
   const wrap = document.createElement('div')
   wrap.className = 'wait-stop'
   const quietLeft = ask.watch_stopped_at ? Date.parse(ask.watch_stopped_until) - Date.now() : Number.NaN
@@ -2604,17 +2610,23 @@ function rowAnswerEl(b, r, onSaved) {
       },
       `row:${r.id}`,
     ))
-    const waitStop = waitStopEl(r, b.agent, `wait:row:${r.id}`, async (until) => {
-      const res = await postJSON(`/api/boards/${b.id}/rows/${r.id}/stop-waiting`, {
-        until,
-        expected_revision: r.revision,
-        expected_board_version: b.revision,
-      })
-      if (res === null) return
-      showWriteError(r.id, res.ok ? '' : 'This action changed before your click; refreshed without applying it.')
-      await reloadAndPaint()
+    const waitStop = waitStopEl(r, {
+      key: `wait:row:${r.id}`,
+      onStop: async (until) => {
+        const res = await postJSON(`/api/boards/${b.id}/rows/${r.id}/stop-waiting`, {
+          until,
+          expected_revision: r.revision,
+          expected_board_version: b.revision,
+        })
+        if (res === null) return
+        showWriteError(r.id, res.ok ? '' : 'This action changed before your click; refreshed without applying it.')
+        await reloadAndPaint()
+      },
     })
     if (waitStop) wrap.appendChild(waitStop)
+  } else if (r.status === 'blocked') {
+    const reminder = waitStopEl(r, { answered: true, pickedUp: rowPickup(r).pickedUp })
+    if (reminder) wrap.appendChild(reminder)
   }
   bindReplyEditor(input, save)
   row.appendChild(input)
@@ -6274,11 +6286,18 @@ function answerEl(it) {
     },
     `item:${it.id}`,
   ))
-  const waitStop = waitStopEl(it, it.agent, `wait:item:${it.id}`, async (until) => {
-    const res = await postJSON(`/api/items/${it.id}/stop-waiting`, { until })
-    if (res === null) return
-    showWriteError(it.id, res.ok ? '' : 'This question changed before your click; refreshed without applying it.')
-    await reloadAndPaint()
+  const waitStop = waitStopEl(it, {
+    // A chat-recorded answer reuses this surface as a correction form, but the
+    // agent recorded it itself: nothing is waiting, so nothing can be stopped.
+    answered: Boolean(it.reply || it.reply_kind),
+    pickedUp: Boolean(it.reply_seen_at),
+    key: `wait:item:${it.id}`,
+    onStop: async (until) => {
+      const res = await postJSON(`/api/items/${it.id}/stop-waiting`, { until })
+      if (res === null) return
+      showWriteError(it.id, res.ok ? '' : 'This question changed before your click; refreshed without applying it.')
+      await reloadAndPaint()
+    },
   })
   if (waitStop) wrap.appendChild(waitStop)
   return wrap
@@ -6347,6 +6366,10 @@ function itemCardEl(it, {
     ${cardDetailsHtml(it, it, `item:${it.id}`, presentation, { includeAsked })}`
   bindContextDisclosures(el)
   if (s.showAnswer) el.appendChild(answerEl(it))
+  else if (s.answered) {
+    const reminder = waitStopEl(it, { answered: true, pickedUp: Boolean(it.reply_seen_at) })
+    if (reminder) el.appendChild(reminder)
+  }
   if (s.showActions) {
     const actions = document.createElement('div')
     actions.className = 'actions'

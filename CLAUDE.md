@@ -179,10 +179,12 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
 - **Row chaining is versioned and atomic.** `board_advance` uses row `revision` as its CAS
   token; `action_version` is only the human-step number. `advanceBoardRow(...).immediate`
   archives the current action/response/outcome into JSON `history`, clears every
-  human/delivery/snooze/watch-stop/outcome field, increments both counters,
+  human/delivery/snooze/outcome field, increments both counters,
   and installs the next blocked action in one write transaction. Ordinary nonblocked→blocked
   transitions use the same archive/reset path. Agent reads get only `history_count`; the
-  viewer alone receives full history.
+  viewer alone receives full history. *(#217)* The watch stop and the action's asker are
+  reset by the `reset_row_action_watch_state` trigger instead, whenever `action_version`
+  moves, so an older server sharing the file cannot carry them into its new action.
 - **Every row action is version-pinned.** MCP `board_upsert` existing rows carry row
   `revision`; `board_row` carries `expected_revision`; browser/native annotate, snooze and
   handled writes carry row revision plus board revision. A stale notification or sibling
@@ -575,24 +577,38 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   deadline at launch, so re-running the identical question command backs off too (the
   argv carries no timeout; `AGENT_INBOX_WATCH_TIMEOUT_MS` only forces one for tests). The
   human's quiet time — a snooze, or an "I'll take a while" with a time — can only push the
-  deadline out, never past 24 hours from launch, so an orphaned watcher stops within a day.
-  Order is fixed: close, then answer, then a stop for good (exit 3, one stdout line telling
-  the agent not to re-arm), then the deadline (exit 124, unchanged). `board_get({watch:true})`
-  returns no watch for a row stopped for good: re-arming it would only cost another wake.
+  deadline out, and never more than 24 hours past the later of the watcher's launch and the
+  moment the human chose that time (`watch_stopped_at`), so every offered "back in…" is kept
+  in full and an orphaned watcher stops within a day. A snooze records no such moment: one
+  longer than a day costs a recheck a day. Order is fixed: close, then answer, then a stop
+  for good (exit 3, one stdout line telling the agent not to re-arm), then the deadline
+  (exit 124, unchanged). `board_get({watch:true})` returns no watch for a row stopped for
+  good: re-arming it would only cost another wake.
 - **The human's watch stop is human-owned, version-pinned and NOT content (#217).**
   `watch_stopped_at`/`watch_stopped_until` on items and rows record "I'll take a while":
   stopped for good (`until` NULL) or until a time. Like `annotation`/`handled_at`, no agent
-  upsert or row edit touches them; the only reset is `beginNewRowAction` (a re-block or
-  `board_advance`), and an item is its own ask. A stop for good is final — the watcher has
-  already exited, so the store refuses to revise it into a deferral nothing would honour,
-  and the viewer renders a reminder instead of a control. Answered, handled, closed, archived
-  or unblocked asks refuse a stop. Row writes are pinned to row AND board revision, but the
-  write bumps neither revision nor `updated_at`: it changes nothing an agent writes, so an
-  agent's `board_get` → `board_upsert` snapshot stays valid and native notifications (keyed
-  by revision) are not re-announced. Viewer routes require `until` explicitly (date or
-  null): a dropped field is a 400, never the final stop. Attention is untouched — the ask
-  stays in Needs-you unless also snoozed — and the control is drawn only for Copilot asks,
-  because only Copilot runs the watcher it stops. Claude's hook `watch` is deliberately
+  upsert or row edit touches them. The only reset is a new action, by ANY writer: the
+  `reset_row_action_watch_state` trigger (`AFTER UPDATE OF action_version`) clears them,
+  because an older server sharing the file runs its own `beginNewRowAction`, which knows
+  nothing of these columns — exactly the `increment_item_response_revision` precedent. An
+  item is its own ask: no writer, old or new, reopens or re-purposes one. A stop for good is
+  final — the watcher has already exited, so the store refuses to revise it into a deferral
+  nothing would honour, and the viewer renders a reminder instead of a control; that
+  reminder stays on an answered card until an agent picks the answer up. Answered, handled,
+  closed, archived or unblocked asks refuse a stop. Row writes are pinned to row AND board
+  revision, but the write bumps neither revision nor `updated_at`: it changes nothing an
+  agent writes, so an agent's `board_get` → `board_upsert` snapshot stays valid and native
+  notifications (keyed by revision) are not re-announced. Viewer routes require `until`
+  explicitly (date or null): a dropped field is a 400, never the final stop. Attention is
+  untouched — the ask stays in Needs-you unless also snoozed. **The control follows the
+  ask's own asker, `action_agent`, never `boards.agent`** (the board's last writer, which a
+  Copilot edit of another row flips and `board_advance` never restamps). Rows stamp it in
+  the statement that starts each action, tagged with `action_agent_version`; the trigger
+  keeps it only when that tag matches the new version, so an older server's new action has
+  no asker. Items stamp it at insert. Older servers stamp nothing, and their watchers ignore
+  a stop anyway, so an unknown asker draws no control: hide, never guess. Only `copilot`
+  draws it, because only Copilot runs the watcher it stops; a chat-recorded answer draws
+  nothing, since the agent recorded it itself. Claude's hook `watch` is deliberately
   unaffected: it never wakes on a timeout (it exits 0 and re-arms at the agent's own Stop),
   so a stop would only remove its answer wake and save nothing.
 

@@ -7,6 +7,7 @@ import {
 import {
   boardResponseState, copilotWatchLaunch, waitForQuestionResponse, waitForBoardResponse, watchTimeoutMs,
 } from '../src/watch.js'
+import Database from 'better-sqlite3'
 import { existsSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -275,6 +276,60 @@ describe('the human stops a watcher (#217)', () => {
     db.close()
   })
 
+  // A "back in a while" promise is kept from when the human made it: a running
+  // watcher's day-long ceiling counts from that choice, not from its launch.
+  it('honours a "back tomorrow" chosen hours after launch, while a long snooze still rechecks a day after launch', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const start = Date.parse('2026-10-19T12:00:00.000Z')
+    vi.setSystemTime(start)
+    const db = fresh()
+    try {
+      const back = insertItem(db, { ...AGENT, kind: 'question', title: 'back tomorrow' })
+      const snoozed = insertItem(db, { ...AGENT, kind: 'question', title: 'snoozed a week' })
+      let backResult: string | undefined
+      let snoozeResult: string | undefined
+      const backWaiting = waitForQuestionResponse(db, back, { pollMs: 5, timeoutMs: 4 * HOUR }).then((result) => (backResult = result))
+      void waitForQuestionResponse(db, snoozed, { pollMs: 5, timeoutMs: 4 * HOUR }).then((result) => (snoozeResult = result))
+      await sleep(20)
+      vi.setSystemTime(start + 3 * HOUR)
+      expect(stopItemWatch(db, back, new Date(start + 27 * HOUR).toISOString())).toBe(true)
+      expect(snoozeItem(db, snoozed, new Date(start + 7 * 24 * HOUR).toISOString())).toBe(true)
+      vi.setSystemTime(start + 24 * HOUR + MINUTE)
+      await sleep(40)
+      expect(backResult).toBeUndefined()
+      expect(snoozeResult).toBe('timeout')
+      vi.setSystemTime(start + 27 * HOUR)
+      await expect(backWaiting).resolves.toBe('timeout')
+    } finally {
+      db.close()
+      vi.useRealTimers()
+    }
+  })
+
+  // The upgrade window: an older server's re-block or board_advance knows
+  // nothing of the stop, and must not hand the next action a stop the human
+  // never chose. This is origin/main's beginNewRowAction statement.
+  it('the next action an older server starts is watched again, not stopped', async () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'copilot-watch-older-')), 'custom.db')
+    const db = openDb(dbPath)
+    const row = waitingRow(db)
+    const board = getBoard(db, AGENT.project, 'Release')!
+    expect(stopBoardRowWatch(db, row.id, null, row.revision, board.revision)).toBe(true)
+    const older = new Database(dbPath)
+    const now = new Date().toISOString()
+    older.prepare(`UPDATE board_rows
+                      SET note = '', next_step = '', action_owner = NULL, impact = '', next_after = '', options = NULL,
+                          annotation = NULL, annotation_kind = NULL, annotated_at = NULL, annotation_seen_at = NULL,
+                          annotation_seen_by = NULL, handled_at = NULL, handled_seen_at = NULL, handled_seen_by = NULL,
+                          snoozed_until = NULL, outcome = '', outcome_at = NULL, action_started_at = ?, action_version = ?,
+                          revision = revision + 1, history = ?, updated_at = ?
+                    WHERE id = ?`).run(now, row.action_version + 1, '[]', now, row.id)
+    older.close()
+    expect(await runWatchCli(['--row', row.id, String(row.action_version + 1), dbPath], { AGENT_INBOX_WATCH_TIMEOUT_MS: '1000' }))
+      .toMatchObject({ code: 124, stdout: '', stderr: 'Agent Inbox watcher timed out.\n' })
+    db.close()
+  }, 20_000)
+
   it('the CLI exits 3 with a do-not-re-arm line for a stopped ask, and keeps the timeout exit', async () => {
     const dbPath = join(mkdtempSync(join(tmpdir(), 'copilot-watch-stop-')), 'custom.db')
     const db = openDb(dbPath)
@@ -451,11 +506,13 @@ describe('Copilot watch contracts size their wait (#217)', () => {
 
       // A new ask on the stopped row starts fresh, not from the old action's start.
       const current = getBoard(db, 'backoff', 'Release')!
+      expect(current.rows.map((row) => row.action_agent)).toEqual(['copilot', 'copilot'])
       const advanced = await call('board_advance', {
         title: 'Release', label: 'Upload', board_version: current.revision, expected_revision: current.rows[0]!.revision,
         note: 'The signed build is ready.', next_step: 'Upload it.', action_owner: 'task', impact: 'Unblocks the release.',
       })
       expect(advanced.watch).toMatchObject({ label: 'Upload', action_version: 2, timeout_seconds: 1800 })
+      expect(getBoard(db, 'backoff', 'Release')!.rows[0]).toMatchObject({ action_version: 2, action_agent: 'copilot' })
       expect(await waits()).toEqual([['Upload', 1800], ['Sign', 24 * 3600]])
 
       const question = await call('flag', {

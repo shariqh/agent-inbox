@@ -54,6 +54,7 @@ function q(over: Partial<Item> = {}): Item {
     snoozed_until: null,
     watch_stopped_at: null,
     watch_stopped_until: null,
+    action_agent: null,
     outcome: '',
     outcome_at: null,
     repo: null,

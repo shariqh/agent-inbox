@@ -557,6 +557,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
         project: s.project,
         title,
         label,
+        agent: s.agent,
         expectedBoardVersion: board_version,
         expectedRevision: expected_revision,
         note,

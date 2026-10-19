@@ -22,7 +22,8 @@
 - Exit 3 means the human chose "I'll take a while" and asked you to stop waiting.
   Do not re-arm that watcher, and `board_get` returns none for that row; their
   answer still arrives through `pending()` or chat. When they give a time instead,
-  or snooze the ask, the running watcher waits quietly until then.
+  the running watcher waits quietly until then; a snooze does the same, though one
+  longer than a day still times out once a day.
 - Do not invent a shell poller or launch a watcher for notes and milestones.
   Use only returned launch contracts. Unless the human asked you to stop waiting,
   they must not need to send another chat message after answering in the Inbox.

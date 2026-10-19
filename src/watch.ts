@@ -21,8 +21,9 @@ const DEFAULT_POLL_MS = 1_000
 const MINUTE_MS = 60_000
 const WATCH_BASE_MS = 30 * MINUTE_MS
 const WATCH_BACKOFF_CAP_MS = 4 * 60 * MINUTE_MS
-// The longest any one watcher lives, even through a longer quiet time the human
-// asked for: an orphaned watcher whose session ended stops polling within a day.
+// The longest a watcher waits past its launch, or past the human's latest "back
+// in…" choice when that came later: an orphaned watcher whose session ended
+// stops polling within a day, and every offered choice is kept in full.
 const WATCH_MAX_MS = 24 * 60 * MINUTE_MS
 
 // Issue #217 — a timeout is not an answer, so each one costs the asking agent a
@@ -56,6 +57,14 @@ function quietUntilMs(ask: WatchedAsk): number {
     .map((value) => (value ? Date.parse(value) : Number.NaN))
     .filter(Number.isFinite)
   return times.length ? Math.max(...times) : 0
+}
+
+// When the human chose their quiet time: the day-long ceiling counts from then, so
+// a "back tomorrow" chosen hours into a running wait is honoured, not cut short.
+// A snooze records no such moment and is bounded by the watcher's launch.
+function quietChosenAtMs(ask: WatchedAsk): number {
+  if (ask.watch_stopped_at === null || ask.watch_stopped_until === null) return 0
+  return Date.parse(ask.watch_stopped_at) || 0
 }
 
 // The wait a watcher launched now would take: the backoff, or the human's quiet
@@ -124,7 +133,8 @@ export async function waitForBoardResponse(
 }
 
 // An answer or a closed ask always ends the wait first. A stop for good ends it
-// next; otherwise the human's quiet time can only push the deadline out.
+// next; otherwise the human's quiet time can only push the deadline out, up to a
+// day past the later of launch and the moment they chose it.
 async function waitForResponse(
   read: () => AskState,
   options: WatchOptions,
@@ -138,7 +148,8 @@ async function waitForResponse(
     if (watchStoppedForGood(state.ask)) return 'stopped'
     const now = Date.now()
     base ??= launchedAt + (options.timeoutMs ?? watchTimeoutMs(state.ask.startedAt, launchedAt))
-    if (now >= Math.min(launchedAt + WATCH_MAX_MS, Math.max(base, quietUntilMs(state.ask)))) return 'timeout'
+    const ceiling = Math.max(launchedAt, quietChosenAtMs(state.ask)) + WATCH_MAX_MS
+    if (now >= Math.min(ceiling, Math.max(base, quietUntilMs(state.ask)))) return 'timeout'
     await new Promise((resolve) => setTimeout(resolve, pollMs))
   }
 }

@@ -49,7 +49,9 @@ function legacyCopy(documentRef, source) {
   return copied
 }
 
-async function writeClipboard(documentRef, source) {
+// The one clipboard path: the Clipboard API first, then the selection-preserving
+// legacy copy. Resolves to whether anything was copied.
+export async function writeClipboard(documentRef, source) {
   const clipboard = globalThis.navigator?.clipboard
   if (clipboard && typeof clipboard.writeText === 'function') {
     try {

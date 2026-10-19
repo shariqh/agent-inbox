@@ -1515,7 +1515,7 @@ describe('runtime-config hooks: packaged Claude Code hook-settings transformatio
     expect(upgraded.hooks!.Stop![0]!.hooks[0]!.args[0]).toBe(entry2)
   })
 
-  it('refuses to touch existing hook entries whose ownership is custom, without --force', () => {
+  it('refuses beside another tool\'s hook that uses our subcommand names until asked, recommending the one step that keeps it', () => {
     const { runtimeRoot, nodeBin, entry } = installedHookRuntime()
     const settings = join(tmp('hooks-custom-'), 'settings.json')
     const customSettings: HooksSettings = {
@@ -1528,8 +1528,9 @@ describe('runtime-config hooks: packaged Claude Code hook-settings transformatio
       'hooks', '--settings', settings, '--node', nodeBin, '--entry', entry, '--runtime-root', runtimeRoot,
     ])
     expect(result.status).toBe(1)
-    expect(result.stderr).toMatch(/ownership status/)
-    expect(result.stderr).toMatch(/--force/)
+    expect(result.stderr).toContain('/some/custom/hook-cli.js (stop)')
+    expect(result.stderr).toContain('--apply --replace-existing')
+    expect(result.stderr).not.toMatch(/--force/)
     expect(readFileSync(settings, 'utf8')).toBe(before) // never touched on refusal
 
     const forced = runOk(CONFIG_CLI, [
@@ -1539,14 +1540,16 @@ describe('runtime-config hooks: packaged Claude Code hook-settings transformatio
     expect(forced.hooks!.Stop![0]!.hooks[0]!.command).toBe(nodeBin)
   })
 
-  it('treats existing candidate entries as unknown (and gates on --force) when --runtime-root is omitted', () => {
+  it('cannot attribute existing candidate entries (and gates on --force) when --runtime-root is omitted', () => {
     const { nodeBin, entry } = installedHookRuntime()
     const settings = join(tmp('hooks-noroot-'), 'settings.json')
     writeFileSync(settings, JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: nodeBin, args: [entry, 'stop'], timeout: 10 }] }] } }))
 
-    const result = runFail(CONFIG_CLI, ['hooks', '--settings', settings, '--node', nodeBin, '--entry', entry])
-    expect(result.status).toBe(1)
-    expect(result.stderr).toMatch(/unknown/)
+    for (const flags of [[], ['--replace-existing']]) {
+      const result = runFail(CONFIG_CLI, ['hooks', '--settings', settings, '--node', nodeBin, '--entry', entry, ...flags])
+      expect(result.status).toBe(1)
+      expect(result.stderr).toMatch(/cannot attribute/)
+    }
 
     const forced = runOk(CONFIG_CLI, ['hooks', '--settings', settings, '--node', nodeBin, '--entry', entry, '--force']) as HooksSettings
     expect(forced.hooks!.Stop!).toHaveLength(1)
@@ -1624,9 +1627,9 @@ describe('runtime-config hooks: packaged Claude Code hook-settings transformatio
   })
 
   // #218: hooks a source checkout of this repo installed are another Agent
-  // Inbox set. The packaged installer names that checkout and the commands that
-  // resolve it, and replaces its hooks only with --replace-existing; anything
-  // else it cannot prove is Agent Inbox's stays, flag or not.
+  // Inbox set, and hooks whose paths no longer resolve cannot run. The packaged
+  // installer names them, recommends the one-step --replace-existing first,
+  // and replaces them only with it; another tool's hook is never removed.
   function checkoutHookEntry(packageName = 'agent-inbox'): { root: string; entry: string } {
     const root = tmp('hooks-checkout-')
     mkdirSync(join(root, 'dist'), { recursive: true })
@@ -1645,20 +1648,27 @@ describe('runtime-config hooks: packaged Claude Code hook-settings transformatio
     ] }],
   })
   const unrelated = { type: 'command', command: 'echo', args: ['unrelated'], timeout: 5 } as unknown as HookEntry
+  const INSTALLER = '/opt/runtime/scripts/install-hooks.sh'
+  const printed = (stderr: string): string[] => [...stderr.matchAll(/bash '(?:[^']|'\\'')*'(?: --[a-z-]+)+/g)].map((m) => m[0])
+  const withRuntimeSet = (nodeBin: string, entry: string, hooks: Record<string, HookGroup[]>): HooksSettings => ({
+    hooks: Object.fromEntries(Object.entries(threeHooks(nodeBin, entry)).map(([event, groups]) => [event, [...groups, ...(hooks[event] ?? [])]])),
+  })
 
   it('names a source checkout\'s hooks instead of adding a second set, and replaces them only with --replace-existing', () => {
     const { runtimeRoot, nodeBin, entry } = installedHookRuntime()
     const checkout = checkoutHookEntry()
     const settings = join(tmp('hooks-checkout-set-'), 'settings.json')
     writeFileSync(settings, JSON.stringify({ hooks: { ...threeHooks(process.execPath, checkout.entry), PostToolUse: [{ hooks: [unrelated] }] } }))
-    const args = ['hooks', '--settings', settings, '--node', nodeBin, '--entry', entry, '--runtime-root', runtimeRoot, '--installer', '/opt/runtime/scripts/install-hooks.sh']
+    const args = ['hooks', '--settings', settings, '--node', nodeBin, '--entry', entry, '--runtime-root', runtimeRoot, '--installer', INSTALLER]
 
     const refused = runFail(CONFIG_CLI, args)
     expect(refused.status).toBe(1)
     expect(refused.stdout).toBe('')
     expect(refused.stderr).toContain(`the source checkout at ${checkout.root} (3 hooks)`)
-    expect(refused.stderr).toContain(`remove them: bash '${join(checkout.root, 'scripts', 'install-hooks.sh')}' --apply --uninstall`)
-    expect(refused.stderr).toContain(`bash '/opt/runtime/scripts/install-hooks.sh' --apply --replace-existing`)
+    expect(printed(refused.stderr)).toEqual([
+      `bash '${INSTALLER}' --apply --replace-existing`,
+      `bash '${join(checkout.root, 'scripts', 'install-hooks.sh')}' --apply --uninstall`,
+    ])
 
     const replaced = runCli(CONFIG_CLI, [...args, '--replace-existing'])
     expect(replaced.status, replaced.stderr).toBe(0)
@@ -1670,18 +1680,63 @@ describe('runtime-config hooks: packaged Claude Code hook-settings transformatio
     expect(result.hooks!.Stop![0]!.hooks.map((h) => [h.command, ...h.args])).toEqual([[nodeBin, entry, 'stop'], [nodeBin, entry, 'watch']])
   })
 
-  it('--replace-existing never removes a look-alike it cannot attribute to an Agent Inbox install', () => {
+  it('--uninstall beside a checkout\'s hooks names that checkout and its own uninstall, not --force', () => {
+    const { runtimeRoot, nodeBin, entry } = installedHookRuntime()
+    const checkout = checkoutHookEntry()
+    const settings = join(tmp('hooks-checkout-uninstall-'), 'settings.json')
+    writeFileSync(settings, JSON.stringify(withRuntimeSet(nodeBin, entry, threeHooks(process.execPath, checkout.entry))))
+
+    const refused = runFail(CONFIG_CLI, [
+      'hooks', '--settings', settings, '--entry', entry, '--runtime-root', runtimeRoot, '--installer', INSTALLER, '--uninstall',
+    ])
+
+    expect(refused.status).toBe(1)
+    expect(refused.stdout).toBe('')
+    expect(refused.stderr).toContain(`the source checkout at ${checkout.root} (3 hooks)`)
+    expect(refused.stderr).toMatch(/nothing was removed/i)
+    expect(printed(refused.stderr)).toEqual([
+      `bash '${INSTALLER}' --apply --replace-existing`,
+      `bash '${join(checkout.root, 'scripts', 'install-hooks.sh')}' --apply --uninstall`,
+    ])
+    expect(refused.stderr).not.toMatch(/--force|ownership status/)
+  })
+
+  it('--replace-existing replaces the hooks of an install that can no longer run, keeping everything else', () => {
+    const { runtimeRoot, nodeBin, entry } = installedHookRuntime()
+    const gone = join(tmp('hooks-dead-'), 'moved-checkout')
+    const settings = join(tmp('hooks-dead-set-'), 'settings.json')
+    writeFileSync(settings, JSON.stringify({ hooks: { ...threeHooks(process.execPath, join(gone, 'dist', 'hook-cli.js')), PostToolUse: [{ hooks: [unrelated] }] } }))
+    const args = ['hooks', '--settings', settings, '--node', nodeBin, '--entry', entry, '--runtime-root', runtimeRoot, '--installer', INSTALLER]
+
+    const refused = runFail(CONFIG_CLI, args)
+    expect(refused.status).toBe(1)
+    expect(refused.stderr).toContain(`the install at ${gone}, which can no longer run (3 hooks)`)
+    expect(printed(refused.stderr)).toEqual([`bash '${INSTALLER}' --apply --replace-existing`])
+
+    const replaced = runCli(CONFIG_CLI, [...args, '--replace-existing'])
+    expect(replaced.status, replaced.stderr).toBe(0)
+    const result = JSON.parse(replaced.stdout) as HooksSettings
+    expect(JSON.stringify(result)).not.toContain(gone)
+    expect(result.hooks!.PostToolUse).toEqual([{ hooks: [unrelated] }])
+    expect(result.hooks!.Stop![0]!.hooks.map((h) => [h.command, ...h.args])).toEqual([[nodeBin, entry, 'stop'], [nodeBin, entry, 'watch']])
+  })
+
+  it('--replace-existing never removes another tool\'s look-alike: it installs beside it', () => {
     const { runtimeRoot, nodeBin, entry } = installedHookRuntime()
     const lookAlike = checkoutHookEntry('agent-inbox-companion')
     const settings = join(tmp('hooks-look-alike-'), 'settings.json')
-    writeFileSync(settings, JSON.stringify({ hooks: threeHooks(process.execPath, lookAlike.entry) }))
+    const theirs = threeHooks(process.execPath, lookAlike.entry)
+    writeFileSync(settings, JSON.stringify({ hooks: theirs }))
+    const args = ['hooks', '--settings', settings, '--node', nodeBin, '--entry', entry, '--runtime-root', runtimeRoot]
 
-    const result = runFail(CONFIG_CLI, [
-      'hooks', '--settings', settings, '--node', nodeBin, '--entry', entry, '--runtime-root', runtimeRoot, '--replace-existing',
-    ])
-    expect(result.status).toBe(1)
-    expect(result.stdout).toBe('')
-    expect(result.stderr).toMatch(/ownership status 'custom'/)
+    // without the flag the packaged installer still refuses beside it, as before
+    expect(runFail(CONFIG_CLI, args).status).toBe(1)
+
+    const result = runOk(CONFIG_CLI, [...args, '--replace-existing']) as HooksSettings
+    expect(result.hooks!.Notification![0]).toEqual(theirs.Notification![0])
+    expect(result.hooks!.Stop![0]).toEqual(theirs.Stop![0])
+    const ours = Object.values(result.hooks!).flatMap((groups) => groups.flatMap((g) => g.hooks)).filter((h) => h.args[0] === entry)
+    expect(ours.map((h) => h.args[1]).sort()).toEqual(['notification', 'prompt-submit', 'session-end', 'session-start', 'stop', 'watch'])
   })
 })
 

@@ -194,7 +194,7 @@ if [ "$RUNTIME_MODE" -eq 1 ]; then
   [ "$REPLACE" -eq 1 ] && hook_args+=(--replace-existing)
   # Packaged mode deliberately never forwards --force: only exact
   # manifest-owned release hooks may be replaced or removed, plus, with
-  # --replace-existing, those a source checkout of this repo installed.
+  # --replace-existing, another Agent Inbox install's and dead ones (#218).
   MERGED="$("$NODE" "$CONFIG_HELPER" "${hook_args[@]}")" || exit 1
 else
   BLOCK="$(jq -n --arg node "${NODE:-node}" --arg entry "$ENTRY" '
@@ -220,10 +220,11 @@ else
   echo "$CURRENT" | jq empty 2>/dev/null || { echo "install-hooks: $SETTINGS is not valid JSON — refusing to touch it" >&2; exit 1; }
 
   # Another Agent Inbox install's set (a Setup runtime, another checkout) is
-  # never doubled (#218): the helper attributes every agent-inbox-shaped entry
-  # by the rule Setup reports hooks with, refuses beside another install's set
-  # or an entry it cannot attribute, and with --replace-existing lists the
-  # entries to strip below. Another tool's look-alike is never one of them.
+  # never doubled (#218): the helper sorts every agent-inbox-shaped entry by
+  # the rule both modes share, refuses beside another install's hooks or dead
+  # ones (the one-step --replace-existing first) or beside ones that run but
+  # cannot be verified, and with --replace-existing lists the entries to strip
+  # below. Another tool's look-alike is never one of them.
   FOREIGN='[]'
   if [ "$UNINSTALL" -eq 0 ]; then
     [ -f "$CONFIG_HELPER" ] || { echo "install-hooks: the hook attribution helper is missing: $CONFIG_HELPER" >&2; exit 1; }
@@ -244,8 +245,8 @@ else
   # Strip our own entries (idempotent re-install, and the whole of --uninstall).
   # --migrate additionally retires the legacy hand-written shell hooks, leaving
   # the .sh files themselves on disk so the user can roll back by hand.
-  # --replace-existing strips the other installs' entries listed above, by their
-  # exact command and arguments.
+  # --replace-existing strips the entries listed above (other installs' and
+  # dead ones), by their exact command and arguments.
   STRIPPED="$(echo "$CURRENT" | jq --arg entry "$ENTRY" --argjson migrate "$MIGRATE" --argjson foreign "$FOREIGN" '
     def mine: (.args // [])[0] == $entry
               or (($migrate == 1) and (((.command // "") | test("agent-inbox-(pending|watch)\\.sh"))))

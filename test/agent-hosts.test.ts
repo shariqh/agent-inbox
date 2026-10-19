@@ -285,6 +285,7 @@ describe('readAgentHosts (#197)', () => {
       }],
     ]
     const seen = new Set<string>()
+    const attributedKinds = new Set<string>()
     for (const [label, arrange] of arrangements) {
       const s = scratch()
       const launcher = arrange(s)
@@ -294,14 +295,18 @@ describe('readAgentHosts (#197)', () => {
         '--settings', join(s.home, '.claude', 'settings.json'), '--runtime-root', s.runtimeRoot,
         '--entry', join(s.home, 'this-install', 'dist', 'hook-cli.js'),
       ], { encoding: 'utf8' })
-      // refused even with --replace-existing: an entry it cannot attribute
+      // refused even with --replace-existing: an entry it cannot verify
       expect([0, 1], `${label}: ${installer.stderr}`).toContain(installer.status)
       const removed = installer.status === 0 ? JSON.parse(installer.stdout) as Array<{ owner: { kind: string } }> : []
       const attributed = installer.status === 1 ? 'unknown' : removed[0]?.owner.kind ?? 'other'
+      attributedKinds.add(attributed)
+      // the installer splits Setup's "unknown" in two: dead (a path is gone, so
+      // it cannot run, and --replace-existing removes it) or unknown (it runs)
       const kind = read(s).hooks.kind
-      expect(attributed, `${label}: installer says ${attributed}, viewer says ${kind}`).toBe(kind)
+      expect(attributed === 'dead' ? 'unknown' : attributed, `${label}: installer says ${attributed}, viewer says ${kind}`).toBe(kind)
       seen.add(kind)
     }
     expect([...seen].sort()).toEqual(['checkout', 'other', 'runtime', 'unknown'])
+    expect([...attributedKinds].sort()).toEqual(['checkout', 'dead', 'other', 'runtime', 'unknown'])
   })
 })

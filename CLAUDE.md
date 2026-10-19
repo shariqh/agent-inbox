@@ -1085,20 +1085,23 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   `--apply` writes through a symlinked `settings.json` (backup, staged copy and rename beside
   the target), refuses a dangling, non-regular or read-only target, and checks every write
   before it reports success. *(#218)* An install never adds its set beside another Agent
-  Inbox install's: two sets run every hook twice. Checkout mode asks
-  `runtime-config.mjs foreign-hooks` (under the selftest-proven Node) to attribute every
-  agent-inbox-shaped entry by `classifyHookLauncher`, the rule `src/agent-hosts.ts` reports
-  hooks with (held to agreement by `test/agent-hosts.test.ts`): a verified Setup runtime, a
-  checkout (`dist/hook-cli.js` beside a `package.json` named `agent-inbox`), other, or
-  unknown. A runtime's or another checkout's set is refused (exit 1, nothing written) with
-  the install named and its exact `--apply --uninstall` command plus the one-step
-  `--replace-existing`, which strips exactly those entries by command + args, and the
-  installer's own, then adds one set. An unattributable entry is refused even with the
-  flag; in checkout mode another tool's look-alike is never removed and never blocks.
-  Packaged mode refuses a checkout's set the same way and replaces it only with that flag;
-  everything else it cannot prove is ours still gets `HookOwnershipError` (look-alikes
-  included, as before). `--force` and `--uninstall` keep their exact meaning, and
-  `--replace-existing --uninstall` is a usage error (exit 2).
+  Inbox install's: two sets run every hook twice. Both modes sort every agent-inbox-shaped
+  entry with ONE rule, `sortHookEntries` in `runtime-config.mjs` (checkout mode calls it as
+  `foreign-hooks` under the selftest-proven Node): own; replaceable (a verified Setup
+  runtime's, a checkout's — `dist/hook-cli.js` beside a `package.json` named `agent-inbox`
+  — or a dead `…/dist/hook-cli.js` whose entry or Node no longer resolves); unverifiable
+  (a `…/dist/hook-cli.js` that runs but does not verify); or another tool's. Its launcher
+  classification is `src/agent-hosts.ts`'s with Setup's `unknown` split into dead and
+  unknown (`test/agent-hosts.test.ts` holds them to agreement). Replaceable entries refuse
+  (exit 1, nothing written) until `--replace-existing`, which strips exactly them by
+  command + args plus the installer's own and adds one set; unverifiable ones always
+  refuse; another tool's are never removed (checkout mode never refuses for them; packaged
+  mode still does without the flag, as before). Every refusal is one `HookRefusal` whose
+  FIRST printed command is the one-step `--replace-existing`; each other install's own
+  `--apply --uninstall` follows only when it can succeed now — never a runtime's while
+  anything else shaped like ours is present, because every runtime version's uninstall
+  refuses then. Packaged `--uninstall` keeps that refusal and names the checkout. `--force`
+  keeps its exact meaning, and `--replace-existing --uninstall` is a usage error (exit 2).
 - **Close / reopen a project** *(#32)* — a sparse `projects(project, closed_at)` table; **reopen is
   DERIVED, never written** (a project un-closes the moment an item or board is CREATED in it after
   `closed_at`), so `insertItem` stays byte-identical and the un-close is atomic with the very insert

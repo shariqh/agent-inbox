@@ -214,9 +214,9 @@ Run the build before `npm run electron`; the development shell starts the built
   be reported and its report kept, never claimed as restored; one already
   running survives the installer's SIGKILL, still bounded by a detached
   guard, and holds the lease until it ends. Neither hook-install mode may add
-  a second Agent Inbox hook set (#218): another install's set is refused, or
-  replaced entry-for-entry with `--replace-existing`, and another tool's
-  look-alike is never removed.
+  a second Agent Inbox hook set (#218): another install's set, or a dead one,
+  is refused (the one-step `--replace-existing` printed first) or replaced
+  entry-for-entry with that flag, and another tool's look-alike is never removed.
 - All agent-authored text interpolated into HTML must pass through `esc()`.
   Supplied URLs additionally pass through `safeHttpUrl()` in
   `public/source.js`; build anchors through the existing `chipHtml()` path.

@@ -1395,9 +1395,11 @@ describe('hook: installer', () => {
 
   // #218: a checkout install beside another Agent Inbox install's hooks (a
   // Setup runtime, another checkout) added a second full set, so every event
-  // ran twice. The installer now refuses, naming that install and the exact
-  // command that removes its hooks, and --replace-existing swaps every
-  // Agent Inbox set for this one. Other tools' hooks are never touched.
+  // ran twice. The installer now refuses, naming what is there and printing the
+  // one-step --replace-existing first; each other install's own uninstall
+  // follows only when it can succeed. --replace-existing swaps every Agent
+  // Inbox set, and any that can no longer run, for this one. Other tools'
+  // hooks are never touched.
   type HookSet = ReturnType<typeof hooksSettingsBlock>['hooks']
   interface Settings { model?: string; hooks?: Record<string, Array<{ matcher?: string; hooks: Array<{ command: string; args?: string[] }> }>> }
 
@@ -1433,17 +1435,23 @@ describe('hook: installer', () => {
     expect(ours.map((h) => h.args?.[1]).sort()).toEqual(['notification', 'prompt-submit', 'session-end', 'session-start', 'stop', 'watch'])
   }
 
+  /** The commands a refusal prints, in order: the recommended one first. */
+  const printed = (stderr: string): string[] => [...stderr.matchAll(/bash '(?:[^']|'\\'')*'(?: --[a-z-]+)+/g)].map((m) => m[0])
+  const replaceCommand = `bash '${SCRIPT}' --apply --replace-existing`
+  const uninstallCommand = (dir: string): string => `bash '${join(dir, 'scripts', 'install-hooks.sh')}' --apply --uninstall`
+
   it('refuses to add a second set beside a Setup runtime\'s hooks, naming the runtime and the commands that fix it', () => {
     const { dir, entry, file } = home()
     const runtime = installRuntimeVersion(runtimeRootOf(dir), '1.2.4')
     const runtimeSet = setOf(join(runtime, 'bin', 'node'), join(runtime, 'dist', 'hook-cli.js'))
-    const cases: Array<[string, Settings, string[]]> = [
-      ['the runtime\'s set alone (dry run)', withSets(withPostToolUse, runtimeSet), []],
-      ['the runtime\'s set alone', withSets(withPostToolUse, runtimeSet), ['--apply']],
-      // --force replaces this checkout's own set; it must not hide another install's
-      ['the runtime\'s set beside this checkout\'s own', withSets(withPostToolUse, runtimeSet, setOf(process.execPath, entry)), ['--apply', '--force']],
+    const cases: Array<[string, Settings, string[], string[]]> = [
+      ['the runtime\'s set alone (dry run)', withSets(withPostToolUse, runtimeSet), [], [replaceCommand, uninstallCommand(runtime)]],
+      ['the runtime\'s set alone', withSets(withPostToolUse, runtimeSet), ['--apply'], [replaceCommand, uninstallCommand(runtime)]],
+      // --force replaces this checkout's own set; it must not hide another install's. The
+      // runtime's own uninstall would refuse beside this checkout's set, so it is not offered.
+      ['the runtime\'s set beside this checkout\'s own', withSets(withPostToolUse, runtimeSet, setOf(process.execPath, entry)), ['--apply', '--force'], [replaceCommand]],
     ]
-    for (const [label, settings, flags] of cases) {
+    for (const [label, settings, flags, commands] of cases) {
       writeFileSync(file, JSON.stringify(settings))
       const before = readFileSync(file, 'utf8')
 
@@ -1453,12 +1461,31 @@ describe('hook: installer', () => {
       expect(r.out, label).toBe('')
       expect(r.err, label).toContain('already has Claude hooks from another Agent Inbox install')
       expect(r.err, label).toContain(`the v1.2.4 Setup runtime at ${runtime} (6 hooks)`)
-      expect(r.err, label).toContain(`remove them: bash '${join(runtime, 'scripts', 'install-hooks.sh')}' --apply --uninstall`)
-      expect(r.err, label).toContain(`bash '${SCRIPT}' --apply --replace-existing`)
-      expect(r.err, label).not.toMatch(/hooks installed|already installed/)
+      expect(printed(r.err), label).toEqual(commands)
+      expect(r.err, label).not.toMatch(/hooks installed|already installed|--force/)
       expect(readFileSync(file, 'utf8'), label).toBe(before)
       expect(backupsOf(file), label).toEqual([])
     }
+  })
+
+  it('with two sets already in place (this bug\'s aftermath), the first command it prints gets back to one set', () => {
+    const { dir, entry, file } = home()
+    const runtime = installRuntimeVersion(runtimeRootOf(dir), '1.2.4')
+    const runtimeEntry = join(runtime, 'dist', 'hook-cli.js')
+    writeFileSync(file, JSON.stringify(withSets(withPostToolUse, setOf(join(runtime, 'bin', 'node'), runtimeEntry), setOf(process.execPath, entry))))
+
+    const refused = installer(['--apply'], dir, entry)
+    expect(refused.code).toBe(1)
+    const [first] = printed(refused.err)
+
+    const fixed = spawnSync('/bin/bash', ['-c', first!], {
+      encoding: 'utf8',
+      env: { ...process.env, HOME: dir, AGENT_INBOX_HOOK_ENTRY: entry },
+    })
+    expect(fixed.status, fixed.stderr).toBe(0)
+    const s = JSON.parse(readFileSync(file, 'utf8')) as Settings
+    expectOneSet(s, entry, [entry, runtimeEntry])
+    expect(s.hooks!.PostToolUse).toEqual(withPostToolUse.hooks.PostToolUse)
   })
 
   it('refuses beside another checkout\'s hooks, and the command it prints removes exactly that set', () => {
@@ -1476,19 +1503,66 @@ describe('hook: installer', () => {
 
     expect(refused.code).toBe(1)
     expect(refused.err).toContain(`the source checkout at ${other} (6 hooks)`)
-    const remove = `bash '${join(other, 'scripts', 'install-hooks.sh')}' --apply --uninstall`
-    expect(refused.err).toContain(`remove them: ${remove}`)
+    expect(printed(refused.err)).toEqual([replaceCommand, uninstallCommand(other)])
     expect(readFileSync(file, 'utf8')).toBe(before)
 
     const env: NodeJS.ProcessEnv = { ...process.env, HOME: dir }
     delete env.AGENT_INBOX_HOOK_ENTRY
-    const removed = spawnSync('/bin/bash', ['-c', remove], { encoding: 'utf8', env })
+    const removed = spawnSync('/bin/bash', ['-c', uninstallCommand(other)], { encoding: 'utf8', env })
     expect(removed.status, removed.stderr).toBe(0)
     expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual(withPostToolUse)
 
     const installed = installer(['--apply'], dir, entry)
     expect(installed.code, installed.err).toBe(0)
     expectOneSet(JSON.parse(readFileSync(file, 'utf8')), entry, [entry, otherEntry])
+  })
+
+  it('replaces the hooks of a moved or deleted install, which can no longer run, only with --replace-existing', () => {
+    const { dir, entry, file } = home()
+    // a checkout that was moved away, and one whose fnm Node was uninstalled
+    const moved = join(dir, 'moved-checkout')
+    const movedEntry = join(moved, 'dist', 'hook-cli.js')
+    const other = otherCheckout(dir)
+    const otherEntry = join(other, 'dist', 'hook-cli.js')
+    const lookAlike = { hooks: [{ type: 'command', command: process.execPath, args: [join(dir, 'tool', 'notify.js'), 'stop'] }] }
+    writeFileSync(file, JSON.stringify(withSets(withPostToolUse,
+      setOf(process.execPath, movedEntry),
+      setOf(join(dir, 'fnm', 'node-versions', 'v24.0.0', 'bin', 'node'), otherEntry),
+      { Stop: [lookAlike] })))
+    const before = readFileSync(file, 'utf8')
+
+    const refused = installer(['--apply'], dir, entry)
+
+    expect(refused.code).toBe(1)
+    expect(refused.err).toContain(`the install at ${moved}, which can no longer run (6 hooks)`)
+    expect(refused.err).toContain(`the install at ${other}, which can no longer run (6 hooks)`)
+    expect(printed(refused.err)).toEqual([replaceCommand])
+    expect(readFileSync(file, 'utf8')).toBe(before)
+
+    const r = installer(['--apply', '--replace-existing'], dir, entry)
+
+    expect(r.code, r.err).toBe(0)
+    const s = JSON.parse(readFileSync(file, 'utf8')) as Settings
+    expectOneSet(s, entry, [entry, movedEntry, otherEntry])
+    expect(s.hooks!.PostToolUse).toEqual(withPostToolUse.hooks.PostToolUse)
+    expect(s.hooks!.Stop).toContainEqual(lookAlike)
+  })
+
+  it('never touches, or refuses beside, another tool\'s dead hook that is not a dist/hook-cli.js', () => {
+    const { dir, entry, file } = home()
+    const dead = { hooks: [
+      { type: 'command', command: process.execPath, args: [join(dir, 'gone', 'notify.js'), 'stop'] },
+      { type: 'command', command: join(dir, 'gone', 'node'), args: [join(dir, 'gone', 'hook.js'), 'watch'] },
+    ] }
+    writeFileSync(file, JSON.stringify({ hooks: { Stop: [dead] } }))
+
+    for (const flags of [['--apply'], ['--apply', '--replace-existing']]) {
+      const r = installer(flags, dir, entry)
+      expect(r.code, `${flags.join(' ')}: ${r.err}`).toBe(0)
+      const s = JSON.parse(readFileSync(file, 'utf8')) as Settings
+      expect(s.hooks!.Stop![0]).toEqual(dead)
+      expectOneSet(s, entry, [entry])
+    }
   })
 
   it('--replace-existing swaps every Agent Inbox set for exactly this one, keeps other tools\' hooks, and the dry run shows that set', () => {

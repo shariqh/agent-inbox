@@ -400,8 +400,9 @@ describe('portable release installer', () => {
 
   // #218: switching Claude's hooks between a Setup runtime and a source
   // checkout, either way, never leaves two Agent Inbox sets. Each installer
-  // refuses beside the other's set and prints the exact commands that resolve
-  // it: one that removes that set, and one that replaces it in one step.
+  // refuses beside the other's set, printing the one-step replace first and
+  // then the other's own uninstall when that can succeed; both work, and the
+  // first works even when both sets are already there.
   it('switches Claude hooks between a Setup runtime and a checkout in both directions, never holding two sets', () => {
     const f = fixture()
     const payload = runtimePayload('1.2.4')
@@ -438,13 +439,19 @@ describe('portable release installer', () => {
     expect(first.status, first.stderr).toBe(0)
     expectOnly(runtimeEntry, 'runtime installed')
 
-    // runtime → checkout: the refusal names the runtime and the command that removes its hooks
+    // every refusal recommends the one-step replace first, then offers each
+    // other install's own uninstall only when it can succeed right now
+    const printed = (stderr: string): string[] => [...stderr.matchAll(/bash '(?:[^']|'\\'')*'(?: --[a-z-]+)+/g)].map((m) => m[0])
+    const replaceFromRuntime = `bash '${runtimeInstaller}' --apply --replace-existing`
+    const replaceFromCheckout = `bash '${checkoutInstaller}' --apply --replace-existing`
+    const removeRuntime = `bash '${runtimeInstaller}' --apply --uninstall`
+    const removeCheckout = `bash '${checkoutInstaller}' --apply --uninstall`
+
+    // runtime → checkout, in two steps through the alternative
     let refused = fromCheckout('--apply')
     expect(refused.status).toBe(1)
     expect(refused.stderr).toContain(`the v1.2.4 Setup runtime at ${runtime} (6 hooks)`)
-    const removeRuntime = `bash '${runtimeInstaller}' --apply --uninstall`
-    expect(refused.stderr).toContain(`remove them: ${removeRuntime}`)
-    expect(refused.stderr).toContain(`bash '${checkoutInstaller}' --apply --replace-existing`)
+    expect(printed(refused.stderr)).toEqual([replaceFromCheckout, removeRuntime])
     expectOnly(runtimeEntry, 'checkout refused')
     let step = shell(removeRuntime, f.env)
     expect(step.status, step.stderr).toBe(0)
@@ -452,13 +459,11 @@ describe('portable release installer', () => {
     expect(step.status, step.stderr).toBe(0)
     expectOnly(checkoutEntry, 'moved to the checkout')
 
-    // checkout → runtime: the same, from the runtime's side
+    // checkout → runtime, the same from the runtime's side
     refused = fromRuntime('--apply')
     expect(refused.status).toBe(1)
     expect(refused.stderr).toContain(`the source checkout at ${checkout} (6 hooks)`)
-    const removeCheckout = `bash '${checkoutInstaller}' --apply --uninstall`
-    expect(refused.stderr).toContain(`remove them: ${removeCheckout}`)
-    expect(refused.stderr).toContain(`bash '${runtimeInstaller}' --apply --replace-existing`)
+    expect(printed(refused.stderr)).toEqual([replaceFromRuntime, removeCheckout])
     expectOnly(checkoutEntry, 'runtime refused')
     step = shell(removeCheckout, checkoutEnv)
     expect(step.status, step.stderr).toBe(0)
@@ -466,13 +471,39 @@ describe('portable release installer', () => {
     expect(step.status, step.stderr).toBe(0)
     expectOnly(runtimeEntry, 'moved back to the runtime')
 
-    // and each way in one step
-    step = fromCheckout('--apply', '--replace-existing')
+    // and each way in one step, by running the first command a refusal prints
+    step = shell(printed(fromCheckout('--apply').stderr)[0]!, checkoutEnv)
     expect(step.status, step.stderr).toBe(0)
     expectOnly(checkoutEntry, 'replaced by the checkout')
-    step = fromRuntime('--apply', '--replace-existing')
+    step = shell(printed(fromRuntime('--apply').stderr)[0]!, f.env)
     expect(step.status, step.stderr).toBe(0)
     expectOnly(runtimeEntry, 'replaced by the runtime')
+
+    // two sets at once, as this bug left them: the first printed command works from either side
+    const doubled = () => {
+      const s = JSON.parse(readFileSync(settings, 'utf8')) as { hooks: Record<string, Array<{ hooks: Array<{ command: string; args: string[] }> }>> }
+      for (const [event, groups] of Object.entries(s.hooks)) {
+        if (event === 'PostToolUse') continue
+        s.hooks[event] = [...groups, ...groups.map((g) => ({ ...g, hooks: g.hooks.map((h) => ({ ...h, command: process.execPath, args: [checkoutEntry, h.args[1]!] })) }))]
+      }
+      writeFileSync(settings, JSON.stringify(s))
+    }
+    doubled()
+    refused = fromCheckout('--apply')
+    expect(printed(refused.stderr)).toEqual([replaceFromCheckout])
+    step = shell(printed(refused.stderr)[0]!, checkoutEnv)
+    expect(step.status, step.stderr).toBe(0)
+    expectOnly(checkoutEntry, 'doubled, fixed from the checkout')
+    expect(fromRuntime('--apply', '--replace-existing').status).toBe(0)
+    doubled()
+    refused = fromRuntime('--apply', '--uninstall')
+    expect(refused.status).toBe(1)
+    expect(refused.stderr).toContain(`the source checkout at ${checkout} (6 hooks)`)
+    expect(printed(refused.stderr)).toEqual([replaceFromRuntime, removeCheckout])
+    refused = fromRuntime('--apply')
+    step = shell(printed(refused.stderr)[0]!, f.env)
+    expect(step.status, step.stderr).toBe(0)
+    expectOnly(runtimeEntry, 'doubled, fixed from the runtime')
   })
 
   it('installs and removes packaged hooks without ambient node or jq', () => {

@@ -520,7 +520,7 @@ Deterministic, no-AI Claude Code hooks that (a) raise an inbox item when a sessi
 npm run install:hooks                         # DRY RUN — prints what it would write, changes nothing
 npm run install:hooks -- --apply              # write it (timestamped backup of ~/.claude/settings.json first)
 npm run install:hooks -- --apply --migrate    # also retire the older hand-written agent-inbox-*.sh Stop hooks
-npm run install:hooks -- --apply --replace-existing  # replace a Setup runtime's or another checkout's hooks with this checkout's
+npm run install:hooks -- --apply --replace-existing  # replace any other Agent Inbox install's hooks with this checkout's
 npm run install:hooks -- --apply --uninstall  # remove this checkout's hooks again
 ```
 
@@ -528,22 +528,25 @@ Source-checkout installation requires `jq`. Packaged installation uses the runti
 bundled Node config helper and works without ambient `node` or `jq`. Both paths share
 the same kernel-backed setup lock; packaged hook upgrade/uninstall changes only entries
 whose Node and hook entrypoint resolve to the same valid manifest-owned runtime (and,
-with `--replace-existing`, the entries a source checkout installed).
+with `--replace-existing`, another Agent Inbox install's entries and ones that can no
+longer run).
 Nothing about this runs from `npm install` or `npm run build`, and new hook
 registrations are picked up only on a **fresh** Claude Code session.
 
 **Only one install's hooks at a time.** Two sets would run every hook twice, so the
 installer refuses to add its hooks beside those of a Setup runtime or another
-checkout, and changes nothing. Its message names the install whose hooks are there
-and prints the exact commands to remove them or to replace them in one step. To
-switch:
+checkout, or beside hooks of an install that was moved or deleted, and changes
+nothing. Its message names what is there and puts the recommended fix first: one
+command that replaces them all with this install's hooks. To switch:
 
 - **Setup runtime → this checkout:** `npm run install:hooks -- --apply --replace-existing`.
 - **This checkout → the Setup runtime:**
   `bash ~/.agent-inbox/runtime/<runtime-id>/scripts/install-hooks.sh --apply --replace-existing`.
 
-Either way, removing the old install's hooks with its own `--apply --uninstall` first
-and then installing the new ones works too. Other tools' hooks are never touched. See
+The same command fixes hooks that already run twice. Removing the old install's hooks
+with its own `--apply --uninstall` first, and then installing the new ones, works too
+when nothing else is in the way; the message prints that command only when it can
+succeed. Other tools' hooks are never touched. See
 [One set of hooks](hooks.md#one-set-of-hooks-switching-between-a-setup-runtime-and-a-checkout)
 in `docs/hooks.md` for the details.
 

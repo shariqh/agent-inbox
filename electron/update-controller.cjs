@@ -222,6 +222,10 @@ function createUpdateController(options) {
   // It rides on every published state until that release stops being offered
   // or a new install starts.
   let installNotice = null
+  // The install-failed state on screen is main's refusal of a window it has not
+  // bound (refuseInstall), not an install that failed. Once main lets the window
+  // install again, the verified download is offered as before (#216).
+  let windowRefusal = false
 
   // Whether main would let its window install this offer now (#216), so
   // Settings never offers an install main would refuse.
@@ -235,6 +239,7 @@ function createUpdateController(options) {
   }
 
   function publish(next) {
+    if (next.status !== 'install-failed') windowRefusal = false
     const available = next.available
       ? Object.freeze({
           ...next.available,
@@ -765,6 +770,8 @@ function createUpdateController(options) {
     if (disposed || appQuitting() || installBusy() || downloadOperation !== null) return Promise.resolve(state)
     const target = installTarget()
     if (target === null) return Promise.resolve(state)
+    // Whatever this attempt publishes is about the install, not main's refusal.
+    windowRefusal = false
     const operation = { controller: new AbortController(), committing: false, promise: null }
     installOperation = operation
     operation.promise = runInstall(operation, target.installer, target.record, target.available)
@@ -862,13 +869,21 @@ function createUpdateController(options) {
     // Main's own refusal (an unauthorized window) as a clear state that keeps the download.
     refuseInstall(message) {
       if (disposed || installBusy() || installTarget() === null) return state
-      return publish(installState('install-failed', state.available, safeInstallMessage(message, INSTALL_MESSAGES.failed)))
+      const refused = publish(installState('install-failed', state.available, safeInstallMessage(message, INSTALL_MESSAGES.failed)))
+      windowRefusal = true
+      return refused
     },
     // Main's window gained or lost its install grant (#216): republish the offer
-    // when that changes what Settings may show.
+    // when that changes what Settings may show. A window main refused that may
+    // install again gets the verified download back, not a stale refusal.
     refreshInstallPermission() {
       if (disposed || !state.available) return state
-      if (state.available.installPermitted === installPermittedFor(state.available)) return state
+      const permitted = installPermittedFor(state.available)
+      if (windowRefusal && permitted && holdsVerifiedFile()) {
+        const { byteLength } = verifiedArtifact
+        return publish(downloadState('verified', state.available, byteLength, byteLength))
+      }
+      if (state.available.installPermitted === permitted) return state
       return publish({ ...state })
     },
     isInstalling() {

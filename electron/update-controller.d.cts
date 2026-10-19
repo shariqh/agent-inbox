@@ -122,7 +122,11 @@ export interface UpdateController {
   cancelInstall(): Promise<UpdateControllerState>
   /** Publishes `install-failed` with `message` (generic copy if unsafe), keeping the download. */
   refuseInstall(message: string): UpdateControllerState
-  /** Republishes the offer when `isInstallPermitted()` changed its `installPermitted`; otherwise returns the state. */
+  /**
+   * Republishes the offer when `isInstallPermitted()` changed its
+   * `installPermitted`; otherwise returns the state. After `refuseInstall()`, a
+   * window that may install again gets its `verified` download back.
+   */
   refreshInstallPermission(): UpdateControllerState
   /** True from installNow()'s first synchronous step until it settles, and forever after a commit. */
   isInstalling(): boolean

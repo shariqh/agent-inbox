@@ -1,8 +1,12 @@
 // @vitest-environment jsdom
+import { createRequire } from 'node:module'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
 import { insertItem, upsertBoard } from '../../src/store.js'
 import { badgeCount, bootApp, click, freshDb, rowTitles, settle, tabCount, useDomTest } from './harness.js'
+
+const { createUpdateController } = createRequire(import.meta.url)('../../electron/update-controller.cjs') as
+  typeof import('../../electron/update-controller.cjs')
 
 useDomTest()
 
@@ -577,5 +581,113 @@ describe('when this window may not install', () => {
     bridge.emit(offered('available', true, undefined, { installable: true, installPermitted: false }))
     expect(visibleActions()).toEqual(['Check now', 'Download update', 'Review release'])
     expect(detail().hidden).toBe(true)
+  })
+})
+
+// What main publishes, end to end: a real controller behind the bridge. A click
+// that raced a reload is refused; once main binds the window again, Settings must
+// offer the verified download again, never "restart" beside a working Try again.
+describe('a window main binds again after refusing its install', () => {
+  const MB = 1024 * 1024
+
+  async function controlledBoot() {
+    let permitted = true
+    let listener: ((next: unknown) => void) | null = null
+    const tag = 'v1.3.0'
+    const filename = `Agent-Inbox-${tag}-universal.dmg`
+    const preferences = { schema: 1 as const, automaticChecks: false, lastNotifiedVersion: null }
+    const controller = createUpdateController({
+      currentVersion: '1.1.1',
+      preferences: {
+        read: async () => preferences,
+        setAutomatic: async () => preferences,
+        setLastNotifiedVersion: async () => preferences,
+      },
+      checker: async () => ({
+        status: 'available',
+        currentVersion: '1.1.1',
+        automaticChecks: false,
+        checkedAt: '2026-02-01T00:00:00.000Z',
+        message: 'A verified update is available.',
+        available: {
+          version: '1.3.0',
+          tag,
+          releaseUrl: `https://github.com/shariqh/agent-inbox/releases/tag/${tag}`,
+          target: { packageType: 'dmg', installStrategy: 'macos-dmg' },
+        },
+        artifact: {
+          version: '1.3.0', tag, platform: 'darwin', architecture: 'universal', packageType: 'dmg',
+          installStrategy: 'macos-dmg', filename, byteLength: 2 * MB, sha256: 'd'.repeat(64), minimumSystemVersion: '13.5',
+          url: `https://github.com/shariqh/agent-inbox/releases/download/${tag}/${filename}`,
+        },
+      }),
+      notifier: () => {},
+      downloader: {
+        normalize: (value) => value as never,
+        download: async (artifact) => ({ ...artifact, path: '/private/update-downloads/x.dmg' }) as never,
+        cancel: async () => {},
+        prune: async () => {},
+        openVerified: async () => { throw new Error('not reached') },
+      },
+      installers: {
+        'macos-dmg': {
+          strategy: 'macos-dmg',
+          feasibility: async () => ({ ok: true }),
+          prepare: async () => { throw new Error('not reached') },
+        },
+      },
+      requestRestart: () => {},
+      isInstallPermitted: () => permitted,
+      emit: (next) => listener?.(JSON.parse(JSON.stringify(next))),
+    })
+    await controller.checkNow()
+    await controller.downloadNow()
+    const relay = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T
+    Object.defineProperty(window, 'agentInboxUpdates', {
+      configurable: true,
+      value: {
+        available: true,
+        getState: async () => relay(controller.getState()),
+        check: async () => relay(await controller.checkNow()),
+        setAutomatic: async () => relay(controller.getState()),
+        openRelease: async () => true,
+        download: async () => relay(controller.getState()),
+        cancelDownload: async () => relay(controller.getState()),
+        install: async () => relay(controller.getState()),
+        restart: async () => false,
+        onState(callback: (next: unknown) => void) {
+          listener = callback
+          return () => { listener = null }
+        },
+        onOpenUpdates: () => () => {},
+      },
+    })
+    db = freshDb()
+    await bootApp(db, { viewer: { setupInfoPath: '/nonexistent/setup-info.json', stamp: async () => null as never } })
+    await settle()
+    return { controller, permit(value: boolean) { permitted = value } }
+  }
+
+  it('offers Install and restart again with the verified copy, not a stale request to restart', async () => {
+    const { controller, permit } = await controlledBoot()
+    const detail = () => document.querySelector('.updates-detail')?.textContent
+    expect(visibleActions()).toEqual(['Check now', 'Install and restart', 'Review release'])
+
+    // A reload main has not proven yet, and the click that raced it.
+    permit(false)
+    controller.refreshInstallPermission()
+    controller.refuseInstall(RESTART)
+    await settle()
+    expect(document.querySelector('.updates-state')?.textContent).toBe('Agent Inbox 1.3.0 couldn’t be installed.')
+    expect(detail()).toBe(RESTART)
+    expect(visibleActions()).toEqual(['Check now', 'Restart Agent Inbox', 'Review release'])
+
+    permit(true)
+    controller.refreshInstallPermission()
+    await settle()
+    expect(document.querySelector('.updates-state')?.textContent).toBe('Agent Inbox 1.3.0 is downloaded and verified.')
+    expect(detail()).toBe('Its size and SHA-256 match the signed release. Agent Inbox will install it and restart.')
+    expect(visibleActions()).toEqual(['Check now', 'Install and restart', 'Review release'])
+    expect(document.querySelector('.updates-restart')?.hasAttribute('hidden')).toBe(true)
   })
 })

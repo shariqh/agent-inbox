@@ -338,6 +338,77 @@ function createInstallGate() {
   })
 }
 
+/**
+ * Which grants — agent Setup, update installs — one window holds (#216). The
+ * window is bound at its first main-frame navigation, because startup has just
+ * proven that the viewer is the one this app started (`waitForOwnership()`).
+ * Every later main-frame navigation, a reload included, revokes both at once.
+ * They come back only after that navigation commits to the viewer origin AND
+ * `proveOwnership()` passes again. The proof starts after the commit, so it
+ * covers the page the window has just loaded. A newer navigation, a renderer
+ * crash or the window closing discards a proof still running; nothing binds
+ * once the app has begun to quit (#205), and a closed window never binds again.
+ *
+ * `setupAllowed()` and `updateAllowed()` say what this app may grant at all;
+ * when neither holds, nothing is probed. `apply({ setup, update })` sets the
+ * window's grants in main.
+ */
+function createInstallBinding({ viewerUrl, setupAllowed, updateAllowed, isQuitting, proveOwnership, apply }) {
+  let loaded = false
+  let closed = false
+  let navigation = 0
+  let awaitingCommit = null
+  const grants = () => ({ setup: setupAllowed() === true, update: updateAllowed() === true })
+  const mayBind = (url) => !closed && !isQuitting() && isTrustedSetupSender(url, viewerUrl)
+
+  function revoke() {
+    navigation += 1
+    awaitingCommit = null
+    apply({ setup: false, update: false })
+  }
+
+  return Object.freeze({
+    /** A new document started loading in the main frame (`did-start-navigation`). */
+    navigationStarted(url) {
+      if (!loaded) {
+        loaded = true
+        if (mayBind(url)) apply(grants())
+        return
+      }
+      revoke()
+      awaitingCommit = navigation
+    },
+    /**
+     * The main frame committed a new document at `url` (`did-navigate`).
+     * Resolves true once the window is bound again; a proof that fails or
+     * throws resolves false.
+     */
+    async navigationCommitted(url) {
+      if (awaitingCommit === null || awaitingCommit !== navigation) return false
+      awaitingCommit = null
+      const wanted = grants()
+      if ((!wanted.setup && !wanted.update) || !mayBind(url)) return false
+      const proving = navigation
+      let proven = false
+      try {
+        proven = (await proveOwnership()) === true
+      } catch {
+        proven = false
+      }
+      if (!proven || proving !== navigation || !mayBind(url)) return false
+      apply(grants())
+      return true
+    },
+    /** The renderer crashed (`render-process-gone`); the window's next load may bind again. */
+    rendererGone: revoke,
+    /** The window closed: revoked for good. */
+    closed() {
+      closed = true
+      revoke()
+    },
+  })
+}
+
 function runAgentInstall({
   repoRoot,
   target,
@@ -399,6 +470,7 @@ function runAgentInstall({
 
 module.exports = {
   canRunSetup,
+  createInstallBinding,
   createInstallGate,
   installerRepoRoot,
   isTrustedSetupSender,

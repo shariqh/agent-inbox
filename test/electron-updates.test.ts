@@ -24,6 +24,7 @@ type UpdatesBridge = {
   download(...args: unknown[]): Promise<unknown> | false
   cancelDownload(...args: unknown[]): Promise<unknown> | false
   install(...args: unknown[]): Promise<unknown> | false
+  restart(...args: unknown[]): Promise<boolean> | false
   onState(callback: (state: unknown) => void): () => void
 }
 
@@ -78,6 +79,7 @@ async function controllerStates(): Promise<UpdateControllerState[]> {
   let feasible = false
   let setupRunning = true
   let reopenFails = true
+  let permitted = true
   const record = {
     path: '/private/x.dmg', version: '2.0.0', tag, filename, sha256: 'd'.repeat(64), byteLength: 200,
     packageType: 'dmg' as const, installStrategy: 'macos-dmg' as const, minimumSystemVersion: '13.5',
@@ -148,6 +150,7 @@ async function controllerStates(): Promise<UpdateControllerState[]> {
       },
     },
     isSetupRunning: () => setupRunning,
+    isInstallPermitted: () => permitted,
     requestRestart: () => {},
     attemptStore: {
       begin: async () => ({ resultPath: '/private/update-install/last-attempt.result' }),
@@ -179,6 +182,12 @@ async function controllerStates(): Promise<UpdateControllerState[]> {
   setupRunning = false
   await controller.installNow()
   await download('verify')
+  // A window main no longer lets install (#216): the offer says so, and main's refusal keeps the download.
+  permitted = false
+  controller.refreshInstallPermission()
+  controller.refuseInstall('Restart Agent Inbox to install this update.')
+  permitted = true
+  controller.refreshInstallPermission()
   await controller.installNow()
   return emitted
 }
@@ -200,6 +209,8 @@ describe('Electron updater integration', () => {
     expect(preload).toContain("invokeUpdateState('agent-inbox:update-download')")
     expect(preload).toContain("invokeUpdateState('agent-inbox:update-download-cancel')")
     expect(preload).toContain("invokeUpdateState('agent-inbox:update-install')")
+    expect(preload).toContain("ipcRenderer.invoke('agent-inbox:update-restart')")
+    expect(preload).toContain('restart(...args)')
     expect(preload).not.toContain('child_process')
   })
 
@@ -213,6 +224,12 @@ describe('Electron updater integration', () => {
     expect(states.filter((state) => state.status === 'download-failed').map((state) => state.download?.receivedBytes)).toEqual([50, 0])
     expect(states.some((state) => typeof state.installNotice === 'string' && state.status === 'idle')).toBe(true)
     expect(states.some((state) => typeof state.installNotice === 'string' && state.status === 'verified')).toBe(true)
+    // #216: every offer says whether this window may install it, both ways.
+    expect(states.every((state) => !state.available || typeof state.available.installPermitted === 'boolean')).toBe(true)
+    for (const status of ['verified', 'install-failed'] as const) {
+      expect(states.some((state) => state.status === status && state.available?.installable === true && !state.available.installPermitted)).toBe(true)
+      expect(states.some((state) => state.status === status && state.available?.installPermitted === true)).toBe(true)
+    }
     expect(states.at(-1)).toMatchObject({ status: 'installing' })
     expect(states.at(-1)).not.toHaveProperty('installNotice')
     expect(JSON.stringify(states)).not.toContain('/private/')
@@ -253,6 +270,9 @@ describe('Electron updater integration', () => {
     ['an installable offer that cannot download', 'verified', { available: { downloadable: false } }],
     ['an install notice that is not text', 'verified', { installNotice: 5 }],
     ['an overlong install notice', 'verified', { installNotice: 'x'.repeat(401) }],
+    ['an offer without its install permission', 'verified', { available: { installPermitted: undefined } }],
+    ['an install permission that is not a boolean', 'verified', { available: { installPermitted: 'yes' } }],
+    ['a permitted install of an offer that cannot install', 'available', { available: { installPermitted: true } }],
   ] as const)('rejects %s from main', async (_label, status, patch) => {
     const states = await controllerStates()
     const base = states.find((state) => state.status === status)!
@@ -268,6 +288,109 @@ describe('Electron updater integration', () => {
     expect(received).toEqual([])
     await expect(updates.install()).rejects.toThrow(TypeError)
     expect(invoke).toHaveBeenCalledWith('agent-inbox:update-install')
+  })
+
+  it('restarts only on an argument-free request and reports only a plain true', async () => {
+    let answer: unknown = true
+    const { updates, invoke } = loadPreload(() => answer)
+    expect(updates.restart('renderer-chosen-argv')).toBe(false)
+    expect(invoke).not.toHaveBeenCalled()
+    await expect(updates.restart()).resolves.toBe(true)
+    expect(invoke).toHaveBeenCalledWith('agent-inbox:update-restart')
+    answer = 'yes'
+    await expect(updates.restart()).resolves.toBe(false)
+  })
+
+  // #216: a window main no longer lets install gets Restart Agent Inbox on macOS.
+  // main's own handler and restart function are evaluated against fakes.
+  function restartHandler(platform: string, options: { quitting?: boolean; installing?: boolean } = {}) {
+    const main = read('electron/main.cjs')
+    const marker = "ipcMain.handle('agent-inbox:update-restart', "
+    const start = main.indexOf(marker)
+    expect(start).toBeGreaterThan(-1)
+    const body = main.slice(start + marker.length, main.indexOf('\n})', start) + 2)
+    const gate = setupRunner.createInstallGate()
+    if (options.quitting) gate.beginQuit()
+    const restartToInstallUpdate = vi.fn()
+    const handler = new Function(
+      'process', 'isTrustedUpdateSender', 'installGate', 'updateController', 'restartToInstallUpdate',
+      `return ${body}`,
+    )(
+      { platform },
+      (url: string) => url === 'http://127.0.0.1:4319/',
+      gate,
+      { isInstalling: () => options.installing === true },
+      restartToInstallUpdate,
+    ) as (event: unknown, ...args: unknown[]) => unknown
+    const event = (url = 'http://127.0.0.1:4319/') => ({ senderFrame: { url }, sender: {} })
+    return { handler, event, restartToInstallUpdate }
+  }
+
+  it('restarts on macOS only, for the trusted window, and never mid-install or once a quit has begun', () => {
+    const mac = restartHandler('darwin')
+    expect(mac.handler(mac.event(), 'x')).toBe(false)
+    expect(mac.handler(mac.event('https://example.com/'))).toBe(false)
+    expect(mac.restartToInstallUpdate).not.toHaveBeenCalled()
+    expect(mac.handler(mac.event())).toBe(true)
+    expect(mac.restartToInstallUpdate).toHaveBeenCalledOnce()
+
+    // An AppImage relaunched by Electron would start from its mount, gone once the app exits.
+    for (const refused of [
+      restartHandler('linux'),
+      restartHandler('darwin', { quitting: true }),
+      restartHandler('darwin', { installing: true }),
+    ]) {
+      expect(refused.handler(refused.event())).toBe(false)
+      expect(refused.restartToInstallUpdate).not.toHaveBeenCalled()
+    }
+  })
+
+  it('restarts through the path every quit takes: beginAppQuit() first, then relaunch and quit', () => {
+    const main = read('electron/main.cjs')
+    const start = main.indexOf('function restartToInstallUpdate()')
+    expect(start).toBeGreaterThan(-1)
+    const source = main.slice(start, main.indexOf('\n}\n', start) + 2)
+    const calls: string[] = []
+    const app = { relaunch: () => calls.push('relaunch'), quit: () => calls.push('quit') }
+    const restart = new Function('beginAppQuit', 'app', `${source}\nreturn restartToInstallUpdate`)(
+      () => calls.push('beginAppQuit'),
+      app,
+    ) as () => void
+    restart()
+    expect(calls).toEqual(['beginAppQuit', 'relaunch', 'quit'])
+    // Not the committed update's restart: there the helper reopens the app, not Electron.
+    expect(source).not.toContain('updateRestartRequested')
+    expect(main.match(/restartToInstallUpdate\(\)/g)).toHaveLength(2)
+  })
+
+  it('tells Settings whether the install IPC would accept its window right now', () => {
+    const main = read('electron/main.cjs')
+    expect(main).toContain('isInstallPermitted: updateInstallPermitted,')
+    const start = main.indexOf('function updateInstallPermitted()')
+    expect(start).toBeGreaterThan(-1)
+    const source = main.slice(start, main.indexOf('\n}\n', start) + 2)
+    const permitted = (bound: number | null, options: { quitting?: boolean; window?: 'none' | 'destroyed' | 'contents-destroyed' } = {}) => {
+      const gate = setupRunner.createInstallGate()
+      if (options.quitting) gate.beginQuit()
+      const updateWindow = options.window === 'none' ? null : {
+        isDestroyed: () => options.window === 'destroyed',
+        webContents: { id: 7, isDestroyed: () => options.window === 'contents-destroyed' },
+      }
+      return new Function('installGate', 'updateWindow', 'updateInstallWebContentsId', `${source}\nreturn updateInstallPermitted()`)(
+        gate, updateWindow, bound,
+      ) as boolean
+    }
+    expect(permitted(7)).toBe(true)
+    for (const refused of [
+      permitted(null),
+      permitted(8),
+      permitted(7, { quitting: true }),
+      permitted(7, { window: 'none' }),
+      permitted(7, { window: 'destroyed' }),
+      permitted(7, { window: 'contents-destroyed' }),
+    ]) {
+      expect(refused).toBe(false)
+    }
   })
 
   it('gates updates to packaged supported hosts and validates the live sender on every call', () => {
@@ -329,6 +452,11 @@ describe('Electron updater integration', () => {
       const source = read(file)
       expect(source).not.toContain('attention')
       expect(source).not.toContain('setBadgeCount')
+    }
+    // #216: whether a window may install is update state too, never attention.
+    const attention = read('public/attention.js')
+    for (const token of ['installPermitted', 'installable', 'agentInboxUpdates', 'update-restart']) {
+      expect(attention, token).not.toContain(token)
     }
   })
 
@@ -408,9 +536,11 @@ describe('Electron updater integration', () => {
     ]) {
       expect(registration, line).toContain(line)
     }
-    for (const source of [main, read('electron/update-install-appimage.cjs')]) {
-      expect(source).not.toContain('app.relaunch(')
-    }
+    // Electron's relaunch never restarts an AppImage: main's one relaunch is the macOS-only restart (#216).
+    expect(read('electron/update-install-appimage.cjs')).not.toContain('app.relaunch(')
+    expect(main.match(/app\.relaunch\(/g)).toHaveLength(1)
+    expect(main.slice(main.indexOf('function restartToInstallUpdate()'), main.indexOf('\n}\n', main.indexOf('function restartToInstallUpdate()'))))
+      .toContain('app.relaunch()')
     // One registration, into the one controller whose installs the #205 quit gate guards.
     expect(main.match(/createAppImageInstaller\(/g)).toHaveLength(1)
     expect(main.match(/appImageInstallers\(\)/g)).toHaveLength(2)
@@ -434,8 +564,9 @@ describe('Electron updater integration', () => {
     // Ownership is proven once, in the branch that started this app's own viewer.
     expect(main.match(/viewerOwned = true/g)).toHaveLength(1)
     expect(main).toMatch(/\} else if \(await waitForOwnership\(\)\) \{\n\s+viewerOwned = true\n/)
-    expect(main).toContain('if (viewerOwned && viewerOrigin) updateInstallWebContentsId = setupWindowWebContentsId')
-    expect(main).toContain('if (updateInstallWebContentsId === setupWindowWebContentsId) updateInstallWebContentsId = null')
+    // The window binding (#216) grants update installs to the owned viewer alone.
+    expect(main).toContain('updateAllowed: () => viewerOwned,')
+    expect(main).toContain('updateInstallWebContentsId = update ? setupWindowWebContentsId : null')
     const failover = main.slice(main.indexOf('watchUpstream(probe'), main.indexOf("app.on('window-all-closed'"))
     expect(failover).not.toContain('viewerOwned')
   })

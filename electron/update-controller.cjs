@@ -174,6 +174,9 @@ function createUpdateController(options) {
   if (options.isQuitting !== undefined && typeof options.isQuitting !== 'function') {
     throw new TypeError('isQuitting must be a function')
   }
+  if (options.isInstallPermitted !== undefined && typeof options.isInstallPermitted !== 'function') {
+    throw new TypeError('isInstallPermitted must be a function')
+  }
   const attemptStore = options.attemptStore ?? null
   if (attemptStore !== null && ['begin', 'abandon', 'take'].some((name) => typeof attemptStore[name] !== 'function')) {
     throw new TypeError('attemptStore adapter is invalid')
@@ -197,6 +200,7 @@ function createUpdateController(options) {
   const installers = registerInstallers(options.installers, downloader, requestRestart)
   const isSetupRunning = typeof options.isSetupRunning === 'function' ? options.isSetupRunning : () => false
   const isQuitting = typeof options.isQuitting === 'function' ? options.isQuitting : () => false
+  const isInstallPermitted = typeof options.isInstallPermitted === 'function' ? options.isInstallPermitted : () => true
 
   let state = idleState(currentVersion)
   let rendererIsReady = false
@@ -219,10 +223,22 @@ function createUpdateController(options) {
   // or a new install starts.
   let installNotice = null
 
+  // Whether main would let its window install this offer now (#216), so
+  // Settings never offers an install main would refuse.
+  function installPermittedFor(available) {
+    if (available.installable !== true) return false
+    try {
+      return isInstallPermitted() === true
+    } catch {
+      return false
+    }
+  }
+
   function publish(next) {
     const available = next.available
       ? Object.freeze({
           ...next.available,
+          installPermitted: installPermittedFor(next.available),
           target: Object.freeze({ ...next.available.target }),
         })
       : undefined
@@ -847,6 +863,13 @@ function createUpdateController(options) {
     refuseInstall(message) {
       if (disposed || installBusy() || installTarget() === null) return state
       return publish(installState('install-failed', state.available, safeInstallMessage(message, INSTALL_MESSAGES.failed)))
+    },
+    // Main's window gained or lost its install grant (#216): republish the offer
+    // when that changes what Settings may show.
+    refreshInstallPermission() {
+      if (disposed || !state.available) return state
+      if (state.available.installPermitted === installPermittedFor(state.available)) return state
+      return publish({ ...state })
     },
     isInstalling() {
       return installBusy()

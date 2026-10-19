@@ -1496,14 +1496,16 @@ body:has(.nrow[data-open="1"]) .inspector-empty { display: none; }
 .updates-actions button:disabled { cursor: wait; opacity: .55; }
 .updates-actions .updates-review,
 .updates-actions .updates-download,
-.updates-actions .updates-install {
+.updates-actions .updates-install,
+.updates-actions .updates-restart {
   border-color: var(--app-accent);
   background: var(--app-accent);
   color: var(--app-on-accent);
 }
 .updates-actions .updates-review:not(.updates-secondary):hover,
 .updates-actions .updates-download:hover,
-.updates-actions .updates-install:hover { color: var(--app-on-accent); }
+.updates-actions .updates-install:hover,
+.updates-actions .updates-restart:hover { color: var(--app-on-accent); }
 .updates-actions .updates-review.updates-secondary {
   border-color: var(--app-border-strong);
   background: var(--app-surface);

@@ -26,7 +26,7 @@ const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 const { classifyReuse, watchUpstream } = require('./reuse.cjs')
 const { loadViewer, reloadViewer } = require('./viewer-navigation.cjs')
-const { canRunSetup, createInstallGate, installerRepoRoot, runAgentInstall, runtimeKey, selectRuntimePayload } = require('./setup-runner.cjs')
+const { canRunSetup, createInstallBinding, createInstallGate, installerRepoRoot, runAgentInstall, runtimeKey, selectRuntimePayload } = require('./setup-runner.cjs')
 const { MANUAL_RELEASES_URL, createUpdateController } = require('./update-controller.cjs')
 const { createUpdateDownloader } = require('./update-download.cjs')
 const { createInstallAttemptStore } = require('./update-install.cjs')
@@ -113,6 +113,17 @@ function isTrustedUpdateSender(senderUrl, sender) {
   } catch {
     return false
   }
+}
+
+// Whether the install IPC would accept the update window right now (#216), so
+// Settings never offers an Install and restart that main would refuse. The
+// IPC handler still checks the binding itself.
+function updateInstallPermitted() {
+  return !installGate.quitting() &&
+    updateWindow !== null &&
+    !updateWindow.isDestroyed() &&
+    !updateWindow.webContents.isDestroyed() &&
+    updateInstallWebContentsId === updateWindow.webContents.id
 }
 
 function unavailableUpdateState() {
@@ -205,10 +216,11 @@ ipcMain.handle('agent-inbox:update-download-cancel', (event, ...args) => {
   return updateController?.cancelDownload() ?? unavailableUpdateState()
 })
 
-// User-initiated only, and only from the window bound at the first navigation
-// of a viewer this app started and owns. The renderer names nothing: main
-// installs the verified download behind the current offer, and progress
-// arrives as state-changed events.
+// User-initiated only, and only from the window bound to a viewer this app
+// started and owns: at its first navigation, or again once a later load has
+// re-proven it (#216). The renderer names nothing: main installs the verified
+// download behind the current offer, and progress arrives as state-changed
+// events.
 ipcMain.handle('agent-inbox:update-install', (event, ...args) => {
   const senderUrl = event.senderFrame?.url ?? ''
   if (args.length !== 0 || !isTrustedUpdateSender(senderUrl, event.sender)) {
@@ -222,6 +234,16 @@ ipcMain.handle('agent-inbox:update-install', (event, ...args) => {
   }
   updateController.installNow().catch(() => {})
   return updateController.getState()
+})
+
+// Settings offers this when its window may not install (#216). macOS only: an
+// AppImage relaunched by Electron would start from the image's mount, which is
+// gone once the app exits, so there Settings asks to quit and reopen instead.
+ipcMain.handle('agent-inbox:update-restart', (event, ...args) => {
+  if (args.length !== 0 || !isTrustedUpdateSender(event.senderFrame?.url ?? '', event.sender)) return false
+  if (process.platform !== 'darwin' || installGate.quitting() || updateController?.isInstalling()) return false
+  restartToInstallUpdate()
+  return true
 })
 
 ipcMain.handle('agent-inbox:update-open-release', async (event, ...args) => {
@@ -376,6 +398,15 @@ function requestUpdateRestart() {
   app.quit()
 }
 
+// Settings' Restart Agent Inbox (#216, macOS only): a quit like any other, so
+// Setup stops first (#205) and an uncommitted install would be cancelled, then
+// the fresh app binds its new window and reuses the verified download.
+function restartToInstallUpdate() {
+  beginAppQuit()
+  app.relaunch()
+  app.quit()
+}
+
 function themeBackgroundColor() {
   return nativeTheme.shouldUseDarkColors ? THEME_BACKGROUND_COLORS.dark : THEME_BACKGROUND_COLORS.light
 }
@@ -438,6 +469,15 @@ async function waitForOwnership(timeoutMs = 10_000, intervalMs = 250) {
     await sleep(intervalMs)
   }
   return false
+}
+
+// The startup proof again, after the window loaded a new page (#216). The
+// viewer serves OWNER_TOKEN to any local client, so a viewer child this app
+// spawned must also still be running: only then is the listener that answers
+// the one that has held the port since startup, and that served the page.
+async function reproveOwnership() {
+  if (spawnedViewer !== null && spawnedViewerPid() === null) return false
+  return waitForOwnership()
 }
 
 /**
@@ -772,6 +812,7 @@ function initializeUpdateController() {
     attemptStore: createInstallAttemptStore({ directory: path.join(app.getPath('userData'), 'update-install') }),
     isSetupRunning: () => installGate.running(),
     isQuitting: () => installGate.quitting(),
+    isInstallPermitted: updateInstallPermitted,
     requestRestart: requestUpdateRestart,
     notifyInstallFailure: ({ message }) => {
       if (!Notification.isSupported()) return
@@ -926,27 +967,31 @@ app.whenReady().then(async () => {
   const win = createWindow()
   installApplicationMenu(win)
   const setupWindowWebContentsId = win.webContents.id
-  const revokeSetup = () => {
-    if (setupInstallWebContentsId === setupWindowWebContentsId) setupInstallWebContentsId = null
-    if (updateInstallWebContentsId === setupWindowWebContentsId) updateInstallWebContentsId = null
-  }
-  let firstMainNavigation = true
-  win.webContents.on('did-start-navigation', (_event, url, isInPlace, isMainFrame) => {
-    if (!isMainFrame || isInPlace) return
-    if (firstMainNavigation) {
-      firstMainNavigation = false
-      const viewerOrigin = new URL(url).origin === new URL(URL_BASE).origin
-      if (setupInstallEnabled && viewerOrigin) {
-        setupInstallWebContentsId = setupWindowWebContentsId
-      }
-      // Update installs need only the owned viewer, not agent Setup's runtime payload.
-      if (viewerOwned && viewerOrigin) updateInstallWebContentsId = setupWindowWebContentsId
-      return
-    }
-    revokeSetup()
+  // Setup and update installs belong to this window while it shows the viewer
+  // this app started and owns (#216): bound at its first navigation, revoked
+  // by every later one, and bound again once that load commits to the viewer
+  // and ownership is proven again.
+  const installBinding = createInstallBinding({
+    viewerUrl: URL_BASE,
+    setupAllowed: () => setupInstallEnabled,
+    // Update installs need only the owned viewer, not agent Setup's runtime payload.
+    updateAllowed: () => viewerOwned,
+    isQuitting: () => installGate.quitting(),
+    proveOwnership: reproveOwnership,
+    apply({ setup, update }) {
+      setupInstallWebContentsId = setup ? setupWindowWebContentsId : null
+      updateInstallWebContentsId = update ? setupWindowWebContentsId : null
+      updateController?.refreshInstallPermission()
+    },
   })
-  win.webContents.on('render-process-gone', revokeSetup)
-  win.on('closed', revokeSetup)
+  win.webContents.on('did-start-navigation', (_event, url, isInPlace, isMainFrame) => {
+    if (isMainFrame && !isInPlace) installBinding.navigationStarted(url)
+  })
+  win.webContents.on('did-navigate', (_event, url) => {
+    installBinding.navigationCommitted(url).catch(() => {})
+  })
+  win.webContents.on('render-process-gone', () => installBinding.rendererGone())
+  win.on('closed', () => installBinding.closed())
   try {
     await loadViewer(win, URL_BASE)
   } catch (err) {

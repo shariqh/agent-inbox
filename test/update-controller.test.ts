@@ -794,6 +794,7 @@ describe('installing a verified update', () => {
     kind?: 'dmg' | 'appimage'
     mark?: () => string | null
     setupRunning?: () => boolean
+    permitted?: () => boolean
     verify?: boolean
   } = {}) {
     const currentVersion = options.currentVersion ?? '1.0.0'
@@ -833,6 +834,7 @@ describe('installing a verified update', () => {
       downloader: fake.downloader,
       installers: { 'macos-dmg': install.installer },
       isSetupRunning,
+      ...(options.permitted !== undefined ? { isInstallPermitted: options.permitted } : {}),
       requestRestart,
       clock: () => new Date('2026-02-01T00:00:00Z'),
       emit: (value) => emitted.push(value),
@@ -1226,6 +1228,81 @@ describe('installing a verified update', () => {
     })
     expect(installer.prepare).not.toHaveBeenCalled()
     expect(controller.getVerifiedArtifact()).not.toBeNull()
+  })
+
+  // #216: main installs only from the window it bound to the viewer this app
+  // owns. Settings must say when this window may not, instead of offering an
+  // Install and restart that main would refuse.
+  it('publishes whether this window may install, and republishes only when that changes', async () => {
+    let permitted = true
+    const { controller, emitted } = await setup({ permitted: () => permitted })
+    const verified = controller.getState()
+    expect(verified).toMatchObject({ status: 'verified', available: { installable: true, installPermitted: true } })
+    emitted.length = 0
+
+    permitted = false
+    const revoked = controller.refreshInstallPermission()
+    expect(revoked).toEqual({ ...verified, available: { ...verified.available, installPermitted: false } })
+    expect(emitted).toEqual([revoked])
+    expect(controller.refreshInstallPermission()).toBe(revoked)
+    expect(emitted).toHaveLength(1)
+    // The verified download stays for a window that may install it.
+    expect(controller.getVerifiedArtifact()).not.toBeNull()
+
+    // Every later state follows the window's grant, not the one the offer was made under.
+    expect(controller.refuseInstall('Restart Agent Inbox to install this update.')).toMatchObject({
+      status: 'install-failed',
+      available: { installable: true, installPermitted: false },
+    })
+    permitted = true
+    expect(controller.refreshInstallPermission()).toMatchObject({
+      status: 'install-failed',
+      available: { installable: true, installPermitted: true },
+    })
+    expect(emitted).toHaveLength(3)
+  })
+
+  it('never permits an offer it cannot install, and a window check that throws permits nothing', async () => {
+    const notHere = await setup({ verify: false, permitted: () => true })
+    notHere.installer.feasibility.mockResolvedValueOnce({ ok: false, reason: 'translocated', message: NOT_HERE })
+    await expect(notHere.controller.checkNow()).resolves.toMatchObject({
+      available: { downloadable: false, installable: false, installPermitted: false },
+    })
+    const withoutInstaller = await setup({ kind: 'appimage', permitted: () => true })
+    expect(withoutInstaller.controller.getState()).toMatchObject({
+      status: 'verified',
+      available: { installable: false, installPermitted: false },
+    })
+
+    const throwing = await setup({ permitted: () => { throw new Error('window destroyed') } })
+    expect(throwing.controller.getState()).toMatchObject({ available: { installable: true, installPermitted: false } })
+    // Without a window check at all, an installable offer is permitted.
+    const ungated = await setup()
+    expect(ungated.controller.getState()).toMatchObject({ available: { installable: true, installPermitted: true } })
+  })
+
+  it('republishes nothing without an offer or once disposed, and rejects a window check that is not a function', async () => {
+    let permitted = true
+    const idle = await setup({ verify: false, permitted: () => permitted })
+    permitted = false
+    expect(idle.controller.refreshInstallPermission()).toBe(idle.controller.getState())
+    expect(idle.emitted).toEqual([])
+
+    permitted = true
+    const disposed = await setup({ permitted: () => permitted })
+    disposed.emitted.length = 0
+    disposed.controller.dispose()
+    permitted = false
+    expect(disposed.controller.refreshInstallPermission()).toMatchObject({ available: { installPermitted: true } })
+    expect(disposed.emitted).toEqual([])
+
+    expect(() => createUpdateController({
+      currentVersion: '1.0.0',
+      preferences: prefs(),
+      checker: vi.fn(),
+      notifier: vi.fn(),
+      isInstallPermitted: true as never,
+    })).toThrow(TypeError)
   })
 
   it('runs each installer cleanup once at startup alongside the download prune', async () => {

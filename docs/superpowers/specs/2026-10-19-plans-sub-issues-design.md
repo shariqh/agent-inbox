@@ -1,43 +1,44 @@
 # Design: Plans that model GitHub sub-issues and dependencies (issue #103)
 
-**Date:** 2026-10-19
-**Status:** Design for review. Nothing here is implemented. §15 lists eight decisions for the
-owner; each names the PR it gates, so implementation can start as soon as Q1, Q6 and Q8 (PR1's
-gates) are answered.
+**Date:** 2026-10-19 (revision 2)
+**Status:** Approved for implementation. The owner chose the smaller first slice and decided all
+eight questions (§15). Revision 2 also resolves the six blocking review findings (§19). Nothing
+here is implemented yet.
 **Milestone:** v1.4. Part of #103.
 **Scope of this PR:** this document only. Zero source or test changes.
 
 ---
 
-## §0 — The proposal in ten lines
+## §0 — Summary
 
-1. GitHub already models what #103 asks for. Native **sub-issues** give one parent, up to 100
-   ordered children and up to 8 levels. Native **issue dependencies** give "blocked by" and
-   "blocking", up to 50 per type. Both are generally available in GraphQL, REST and `gh` 2.94.0+.
-2. The **viewer process**, never the MCP server, reads them with at most **one batched
-   `gh api graphql` call per poller tick**. A call covers up to 10 issues, uses a constant query
-   whose values all travel as variables, and costs **1 GraphQL point** (measured, §2.7).
-3. Results are cached per repo-qualified issue (`owner/name#123`) in a new `issue_snapshots`
-   table behind `src/store.ts`. It uses the same fetched/checked/error split as
-   `source_links_by_head`.
-4. A pure merge turns the snapshots into one deduplicated graph with two typed edges:
-   **`contains`** (parent → child) and **`blocks`** (blocker → dependent). The freshest
-   observation wins, so an issue always has at most one parent and a stale snapshot cannot
-   duplicate it.
-5. `GET /api/issues` serves that graph as its own conditional snapshot. GitHub changes therefore
-   never change the bytes of `/api/items` or `/api/boards`.
-6. Plans, rows and items still link to issues **locally**: today's inferred `repo`/`issue_ref`
-   stamps, the PR's closing issue, and two new explicit agent fields (a plan-level `issue` pin
-   and a row-level `issue` link). Nothing is parsed from labels or prose.
-7. The UI gains a parent breadcrumb (`#117 › #120`), child progress, "waits on"/"unblocks"
-   chips, a GitHub-ordered sub-issue strip on parent plans, Plans grouped under their parent
-   issue, and Plan Flow edges that look and behave differently for containment and sequencing.
-8. Dependencies are ambient. They never set, suggest or reuse the `blocked` row status, and
-   `public/attention.js` is untouched. A row waiting on another issue is `tracked` or `partial`.
-9. Every failure falls back to today's plain issue chip and plan. Relationship data shows its
-   age, dims after 30 minutes, disappears after 7 days and is pruned after 30 days.
-10. Delivery is five read-only PRs plus one optional PR (§14). Agent Inbox never edits GitHub
-    relationships; agents keep using `gh issue edit`.
+1. GitHub natively models **sub-issues** (one parent, up to 100 ordered children, up to 8
+   levels) and **issue dependencies** (up to 50 per direction). Both are generally available in
+   GraphQL, REST and `gh` 2.94.0+, verified live (§2).
+2. **The first slice is the hierarchy only**, in four PRs (§13): PR1a storage, identity, a pure
+   hierarchy graph and `/api/issues`; PR1b the poller; PR2 explicit plan and row links; PR3
+   breadcrumbs and child progress. Opt-in grouping, dependencies with "waits on" chips, Plan Flow
+   edges and sibling context come later.
+3. Only the viewer process calls GitHub: at most one `gh api graphql` call per poller tick, for
+   up to 10 issues. Each batch size has its own document, and spending follows the cost GitHub
+   reports with each response.
+4. Every candidate issue is served from a fair queue (oldest check first, no cap). An atomic,
+   expiring claim in `store.ts` stops two viewers fetching the same issues.
+5. Snapshots are cached per repo-qualified issue (`owner/name#123`) in `issue_snapshots`, behind
+   `store.ts`.
+6. A pure reconciliation builds one graph. A complete child list is also a negative observation,
+   so a moved, detached or removed child loses its old parent at the next refresh of either side.
+   Ties and cycles resolve deterministically and fail closed.
+7. **Soft failures** (offline, rate limit, no `gh`, logged out) keep the last known data, aged and
+   dimmed. **Hard failures** (not found, forbidden, answered with another issue) delete that
+   issue's relationships and cached titles at once.
+8. `GET /api/issues` is its own conditional snapshot, built from explicit refresh and display key
+   sets, and it reports any truncation exactly. `/api/items` and `/api/boards` never carry GitHub
+   data.
+9. Agents link plans and rows explicitly. Links survive `board_advance`, and a PR that closes
+   several issues is never guessed. Titled `board_get` gains a short summary; `pending()` is
+   unchanged.
+10. Nothing touches attention: `public/attention.js` is unchanged, and a dependency (when it
+    arrives) is `tracked` or `partial`, never `blocked`. Agent Inbox never edits GitHub.
 
 ---
 
@@ -50,9 +51,9 @@ gates) are answered.
 | Item | `items.repo`, `items.issue_ref`, `items.head_repo` | `flag` in `src/mcp.ts` | `issue_ref = scope.issueFor(branch)`: `register({ issue })`, else `inferIssueRef(branch)` in `src/infer.ts` (conservative: `30-x`, `feat/30-x`, `issue-30`, `gh-30`) |
 | Plan (board) | `boards.repo`, `boards.issue_ref`, `boards.head_repo` | `upsertBoard` / `updateBoardRow` in `src/store.ts` | **Restamped from the writing session on every write** (`boardChanged`), so a plan links to whatever branch its last writer was on |
 | Plan row | none | n/a | Rows have no issue identity today |
-| PR | `source_links_by_head.issue_number`, `issue_url` | `parsePrPayload` in `src/prstate.ts` | First `closingIssuesReferences` entry only. `issueRef()` in `public/source.js` prefers it to the branch guess |
+| PR | `source_links_by_head.issue_number`, `issue_url` | `parsePrPayload` in `src/prstate.ts` | Keeps only the first `closingIssuesReferences` entry, and `issueRef()` (`public/source.js:65-80`) shows it, so a PR that closes several issues shows an arbitrary one |
 
-Rendering goes through one path. `sourceChipsHtml()` and `sourceBlockHtml()` call `chipHtml()`,
+Rendering goes through one path: `sourceChipsHtml()` and `sourceBlockHtml()` call `chipHtml()`,
 which calls `anchorHtml()`, which calls `safeHttpUrl()`, all in `public/source.js`. Issue titles
 are always null today because `gh pr list` does not return them, so the chip reads `#30`.
 
@@ -61,26 +62,31 @@ are always null today because `gh pr list` does not return them, so the chip rea
 - `renderBoards()` and `boardEl()` in `public/app.js` render each plan as a card. Source chips
   sit outside `<summary>` so a chip click cannot also toggle the card (#30).
 - `buildMission(board)` in `public/mission.js` returns a root (the plan) plus one path per
-  non-`na` row. A path's result is the row's `outcome` or `next_after` text only. `openMission`,
-  `renderMission` and `missionPathEl` in `public/app.js` render it. CLAUDE.md: "Plan flow is
-  plan-scoped and draws only plan → row → explicit `next_after`/`outcome` paths; `impact` prose
-  never creates a dependency edge."
+  non-`na` row, whose result is the row's `outcome` or `next_after` text only. CLAUDE.md: "Plan
+  flow is plan-scoped and draws only plan → row → explicit `next_after`/`outcome` paths; `impact`
+  prose never creates a dependency edge."
 
 ### 1.3 The live poller
 
 `src/prstate.ts` (VIEWER PROCESS ONLY) is started by `startPrPoller(db)` in
 `src/viewer-server.ts`. It ticks every 60 s (`POLL_INTERVAL_MS`), first at 2 s, behind a `busy`
 guard. `dueTargets()` is the pure TTL policy (open PR 5 min, no PR 15 min, settled 60 min, soft
-error 10 min, hard error 60 min). Each tick makes at most `MAX_PER_TICK` = 4 `gh pr list` calls,
-plus bounded preview reads. `listLinkTargets()` caps targets at 50, skips closed projects (#32),
-and `pruneSourceLinks()` drops rows unchecked for 30 days. `refreshOnce` never rejects.
+error 10 min, hard error 60 min). Each tick takes at most `MAX_PER_TICK` = 4 targets;
+`listLinkTargets()` caps targets at 50 and skips closed projects (#32); `pruneSourceLinks()`
+drops rows unchecked for 30 days; `refreshOnce` never rejects.
+
+Within a tick, `refreshOnce` (`src/prstate.ts:341-366`) works through its targets one after
+another: `gh pr list`, then for an open PR the deployment lookup, the status reads (in parallel)
+and a verification re-read. Each call is bounded by the 10-second `GH_TIMEOUT_MS`, so a busy tick
+can run for minutes, and the `busy` guard skips ticks meanwhile. Anything queued behind it in the
+same tick waits that long too (§5.2).
 
 ### 1.4 A real family in this repository
 
 Issue #117 "Integrate Agent Inbox with Agent Host Protocol" has ten sub-issues, #118 to #127.
 #119 blocks seven of its siblings (#118 and #120 to #125), and #120 blocks #121 (§18). Agent
 Inbox shows none of this today: a plan or question for #120 says `#120` and nothing more. The
-examples in this document use this family.
+examples below use this family.
 
 ---
 
@@ -97,8 +103,8 @@ examples in this document use this family.
 | `gh` support | v2.94.0 (changelog 2026-06-10); installed here: 2.102.0 | `gh issue view/list --json parent,subIssues,subIssuesSummary,blockedBy,blocking,issueType`; `gh issue edit --parent / --add-sub-issue / --add-blocked-by / --add-blocking` and `--remove-*` variants | Changelog 2026-06-10; `gh issue edit --help` |
 
 The REST "Add sub-issue" page still says a sub-issue "must belong to the same repository owner
-as the parent", which the 2025-09-11 changelog superseded. Nothing in this design depends on
-which is true, because issue identity is always repo-qualified.
+as the parent", which the 2025-09-11 changelog superseded. Nothing here depends on which is true,
+because issue identity is always repo-qualified.
 
 ### 2.2 GraphQL (introspected on the `Issue` type)
 
@@ -109,10 +115,10 @@ which is true, because issue identity is always repo-qualified.
 | `subIssuesSummary` | `{ total, completed, percentCompleted }` | none | An object, so it adds no connection cost |
 | `blockedBy`, `blocking` | `IssueConnection` | `orderBy`, `first/last/after/before` | |
 | `issueDependenciesSummary` | `{ blockedBy, blocking, totalBlockedBy, totalBlocking }` | none | The field descriptions contrast `blockedBy` with `totalBlockedBy` ("open and closed"), so `blockedBy` counts open blockers |
-| `issueType` | `IssueType { name, color, … }` | none | Display only, if ever |
+| `issueType` | `IssueType { name, color, … }` | none | Not used |
 
 The mutations are `addSubIssue`, `removeSubIssue`, `reprioritizeSubIssue`, `addBlockedBy`,
-`removeBlockedBy` and `updateIssueIssueType`. This design uses none of them (§11, Q4).
+`removeBlockedBy` and `updateIssueIssueType`. This design uses none of them (Q4).
 
 ### 2.3 REST
 
@@ -135,58 +141,70 @@ docs now pin `X-GitHub-Api-Version: 2026-03-10`; unversioned `gh api` calls were
 ### 2.4 Permissions, private and cross-repository issues
 
 - **Read:** a fine-grained token needs the repository permission "Issues: read". A classic or
-  OAuth token needs `repo` for private repositories; any token reads public ones. The local
-  `gh` token here has `repo, read:org, gist, user, admin:public_key`. Agent Inbox never handles
-  the token; `gh` owns authentication.
+  OAuth token needs `repo` for private repositories; any token reads public ones. The local `gh`
+  token here has `repo, read:org, gist, user, admin:public_key`. Agent Inbox never handles the
+  token; `gh` owns authentication.
 - **Write** needs "Issues: write". This design never writes.
-- **Private:** GitHub answers only what the token can see. A repository or issue the token
-  cannot see is `NOT_FOUND`, exactly like one that does not exist (§2.6).
+- **Private:** GitHub answers only what the token can see. A repository or issue the token cannot
+  see is `NOT_FOUND`, exactly like one that does not exist (§2.6).
 - **SSO:** an organization enforcing SAML returns `FORBIDDEN` with
   `extensions.saml_failure: true` until the token is authorized (observed for `github/roadmap`).
-- **Hidden children:** whether a child the token cannot see is omitted from `nodes` while still
-  counted in totals is not documented. The design does not depend on it: it compares GitHub's
-  counts with the visible list and says so when they differ (§4.5).
+- **Hidden children:** whether a child the token cannot see still counts in totals is not
+  documented. The design compares GitHub's count with the visible list and reports the
+  difference rather than relying on either (§4.5, rule 4).
 
-### 2.5 Pagination, ordering and depth
+### 2.5 Pagination, ordering, depth and validation
 
-- GitHub's own caps equal the page sizes used here. `subIssues(first: 100)` and
-  `blockedBy/blocking(first: 50)` always return the whole list, so **no pagination is needed**.
-  If `pageInfo.hasNextPage` is ever true (GitHub raised a limit), the list is marked truncated
-  and the UI says "+N more on GitHub" instead of paging.
-- Children keep GitHub's order and are stored with their index as `position`. Dependency lists
-  have no meaningful order, so they are sorted by key for deterministic rendering.
-- Ancestors come from nested `parent { parent { … } }` objects. Seven levels above the parent
-  cost nothing extra (objects are not connections) and cover GitHub's 8-level maximum.
+- GitHub's caps equal the page sizes used here: `subIssues(first: 100)` (and later
+  `blockedBy/blocking(first: 50)`) always return the whole list, so **no pagination is needed**.
+  If `pageInfo.hasNextPage` is ever true, the list is marked truncated and the UI says "+N more
+  on GitHub" instead of paging.
+- Children keep GitHub's order. Dependency lists (later) have no meaningful order and are sorted
+  by key.
+- Ancestors come from nested `parent { parent { … } }` objects. Eight levels cost nothing extra
+  (objects are not connections) and cover GitHub's 8-level limit.
+- **Validation is all-or-nothing.** GitHub validates every declared variable before running a
+  query. A document that declares ten non-null variable sets fails as a whole when only three
+  are supplied ("Variable $o3 of type String! was provided invalid value", and no `data` at all).
+  Each batch size therefore needs its own document (§5.6).
 
-### 2.6 Failure shapes (observed)
+### 2.6 Failure shapes and identity (observed)
 
 - **Partial batch:** `gh api graphql` exits 1, still prints the full `{ data, errors }` JSON on
   stdout and the first message on stderr. Each error carries a `type` and a `path` whose first
   element is the alias.
 - Unknown repository: `NOT_FOUND`, path `["r1"]`, "Could not resolve to a Repository with the
-  name 'shariqh/no-such-repo-xyz'."
-- Unknown issue: `NOT_FOUND`, path `["r0","issue"]`.
+  name 'shariqh/no-such-repo-xyz'." Unknown issue: `NOT_FOUND`, path `["r0","issue"]`.
 - **A pull request number:** `issue(number: 215)` is `NOT_FOUND`, while `issueOrPullRequest`
   reports `PullRequest`. A branch heuristic or `register({ issue })` can name a PR, so this is a
   real case.
 - SSO: `FORBIDDEN` with `saml_failure`, `data.r1 = null`, the other aliases intact.
 - REST `GET …/parent` for a top-level issue: HTTP 404 "No parent issue found", which looks the
-  same as "no access". This is one more reason to prefer GraphQL.
+  same as "no access".
+- **Repository redirects are followed.** `repository(owner: "twitter", name: "bootstrap")`
+  answers as `twbs/bootstrap`, and `issue(number: 2)` under the old name returns
+  `twbs/bootstrap#2` (legacy node id `MDU6SXNzdWUxNDQ2Mzk4`).
+- **Issue transfers were not verifiable read-only.** A repo-scoped `issue(number:)` lookup is
+  therefore not assumed to follow an issue that moved to another repository (§4.1).
 
 ### 2.7 Cost (measured)
 
 | Request | GraphQL points | Time | Bytes |
 |---|---|---|---|
-| The query in §5.5, 3 roots | 1 | not timed | 5,735 |
-| Same, 10 roots (live) | 1 | 0.8–0.9 s | 18,550 raw GraphQL; **6,173 merged** (11 nodes, 18 edges) |
-| Same, 25 roots (dry run) | 1 | | |
-| Same, 40 and 50 roots (dry run) | 2 | | |
-| `gh pr list` (the existing poller's call) | about 1 (noisy before/after reading) | 0.4–0.6 s | |
+| First-slice document (§5.6), 1 / 3 / 10 roots | 1 / 1 / 1 | | 2,542 / 3,668 / 7,615 raw; **5,927 merged** for 10 (11 nodes, 10 edges) |
+| Same plus the later dependency and sibling fragments, 10 roots (dry run) | 1 | | |
+| Revision 1 document with dependencies, 10 roots | 1 | 0.8–0.9 s | 18,550 raw |
+| Revision 1 document, 25 / 40 / 50 roots (dry run) | 1 / 2 / 2 | | |
+| `gh pr list` (the existing poller's call) | about 1 (noisy reading) | 0.4–0.6 s | |
 
-Primary limits: 5,000 points per hour per user, 10,000 for GitHub Enterprise Cloud members (this
-account reports 10,000 GraphQL and 15,000 REST). Secondary limits: at most 2,000 points per minute
-on the GraphQL endpoint, where one query counts as 1 point; at most 100 concurrent requests;
-a 10-second server timeout per request.
+These numbers follow GitHub's published formula today, which is not a stable contract. The
+poller therefore budgets from the `rateLimit { cost remaining resetAt }` that each response
+reports (§5.3).
+
+Primary limits are 5,000 points per hour per user, or 10,000 for GitHub Enterprise Cloud members
+(this account reports 10,000 for GraphQL and 15,000 for REST). Secondary limits allow at most
+2,000 points per minute on the GraphQL endpoint (one query counts as 1 point) and 100 concurrent
+requests, with a 10-second server timeout per request.
 
 ### 2.8 Webhooks
 
@@ -200,58 +218,55 @@ Hosted mode (#8) is the seam where a webhook receiver could later replace pollin
 
 Read relationships with GraphQL through `gh api graphql`, read-only:
 
-- One call fetches each root issue, its ancestors, its ordered children and both dependency
-  directions, for up to 25 issues, for 1 point.
-- Field-level errors let the hierarchy survive a dependency failure, and the reverse.
+- For a batch of up to 10 issues (this design's batch size), one call fetches each issue, its
+  ancestors and its ordered children for 1 point at today's formula. The later dependency
+  fragment did not raise the dry-run cost (§2.7).
+- Field-level errors let one section fail without the others.
 - Every node carries an explicit `repository { nameWithOwner }`, and no URL path is built from
   data.
 
 Rejected: `gh issue view --json` per issue (one subprocess per issue; its child nodes carry a URL
-but no repository) and REST (three or four requests per issue, full issue objects, the 404
-ambiguity above).
+but no repository) and REST (several requests per issue, full issue objects, the 404 ambiguity).
 
 ---
 
-## §3 — What the human sees
+## §3 — What the human sees in the first slice
 
-All examples use the #117 family from §1.4.
+All examples use the #117 family.
 
 1. **A child shows its parent.** An agent flags a question on branch `120-ahp-input-requests`.
-   Today its chip reads `#120`. With this design it reads `#117 › #120`, followed by a quiet
-   `waits on #119` chip. Hovering shows "Parent: #117 Integrate Agent Inbox with Agent Host
-   Protocol (0 of 10 done) · Waits on: #119 Build the AHP adapter and persisted projection
-   foundation (open) · checked 3m ago". Both numbers open GitHub in a new tab. The question
-   stays in Needs you because it is a question, not because of #119.
-2. **A parent plan shows its children.** The agent keeps an umbrella plan "AHP integration"
-   pinned to #117. The plan card gains a strip, "Sub-issues on GitHub · 0 of 10 done", listing
-   #118 to #127 in GitHub's order. Each child shows its open or closed mark, who is working on
-   it here ("With claude-code · AHP adapter plan", "Waiting on you", "No local work") and any
-   "waits on" hint. A row the agent linked to a child shows that child's state beside the row.
-3. **Plans group under their parent.** Three PR-sized plans exist for #119, #120 and #122. In
-   Plans they now appear under one header, "#117 Integrate Agent Inbox with Agent Host Protocol
-   · 0 of 10 done", in GitHub's child order, instead of as three unrelated cards. Plans with no
-   known parent stay where they were.
-4. **Plan Flow shows two kinds of edge.** On the umbrella plan, each step linked to a child sits
-   on a "Part of #117" rail (containment). Steps that wait on another step show a "Waits on: AHP
-   adapter (#119)" link (sequencing). The two use different lines, words and screen-reader
-   labels. `impact` and `next_after` stay plain text and never become edges.
-5. **Closing a child moves the rollup.** When #119's PR merges, the PR poller notices `MERGED`
-   on its next check of that PR (every 5 minutes for an open PR) and nudges #119 and every
-   cached issue that mentions it. In the same tick #117 reads "1 of 10 done" and its siblings
-   drop "waits on #119". A child closed without a linked PR shows up within the 10-minute TTL
-   instead.
-6. **Moving a child regroups it once.** If #126 moves from #117 to another parent, the next
-   refresh regroups its plan under the new parent. It is never shown under both, no plan is
-   created or deleted, and no row note changes.
-7. **Failures never hide work.** If `gh` is missing, logged out, offline or rate-limited, the
-   plan and the plain `#120` chip render exactly as today. Relationship chips keep the last
-   known state, labelled "as of 2h ago" and dimmed after 30 minutes, and disappear after 7 days.
-   An issue GitHub will not show (deleted, a PR number, private, SSO-protected) says
-   "unavailable" in its tooltip and draws no relationships.
-8. **A dependency is never "blocked".** A row whose issue waits on #119 is `tracked` before work
-   starts and `partial` once started. Its glyph is whatever the agent set; the dependency only
-   adds a neutral "waits on" chip. The badge, title count, Needs you, dock badge and
-   notifications do not change.
+   Today its chip reads `#120`; now it reads `#117 › #120`. Hovering shows "Parent: #117
+   Integrate Agent Inbox with Agent Host Protocol (0 of 10 done) · checked 3m ago". Both numbers
+   open GitHub in a new tab. The question stays in Needs you because it is a question.
+2. **A parent shows its children.** The agent pins its umbrella plan "AHP integration" to #117.
+   The plan's source block lists "Sub-issues on GitHub · 0 of 10 done": #118 to #127 in GitHub's
+   order, each with an open or closed mark, its title and its **Agent Inbox activity** ("Active ·
+   claude-code · AHP adapter", "Waiting on you", "None here"). Clicking an activity entry opens
+   that plan, row or item here.
+3. **Rows can name their own issue.** A row the agent linked to #119 shows `#117 › #119` beside
+   the row, not the plan's chip.
+4. **Closing a child moves the rollup.** When #119's PR merges, the PR poller notices on its next
+   check of that PR (every 5 minutes for an open PR) and nudges #119 and #117. The next tick,
+   about a minute later, refreshes them, and #117 reads "1 of 10 done". A child closed without a
+   linked PR shows within the 10-minute TTL.
+5. **Moving, detaching or removing a child is reflected once.** At the next refresh of either the
+   child or its old parent, the old breadcrumb disappears. The new parent appears once either side
+   reports it. A child is never shown under two parents; no plan is created or deleted, and no
+   note changes.
+6. **Soft failures age gracefully.** If `gh` is missing, logged out, offline or rate-limited,
+   chips keep the last known state labelled "as of 2h ago", dim after 30 minutes and disappear
+   after 7 days. The plain `#120` chip and the plan never disappear.
+7. **Hard failures end at once.** When GitHub says the issue does not exist (or is a PR), refuses
+   access, or answers with a different issue, its relationships and cached titles disappear
+   immediately and the chip says "unavailable". A renamed repository keeps working because GitHub
+   redirects it.
+8. **A PR that closes several issues is not guessed.** The plan or item falls back to its pin or
+   branch issue, and the PR tooltip lists every issue the PR closes.
+9. **Attention does not change.** The badge, title count, Needs you, dock badge and notifications
+   are exactly as before.
+
+**Later (not in this slice):** opt-in grouping of plans by parent, "waits on" / "unblocks"
+chips, Plan Flow edges, and sibling context (§12, §13).
 
 ---
 
@@ -266,58 +281,94 @@ All examples use the #117 family from §1.4.
   `.` or `..`, the rule `resolvePreviewPayload` applies. Numbers are integers from 1 to
   2,147,483,647 (GraphQL `Int`).
 - **A number is never compared without its repository.** `a/x#5` and `b/y#5` stay distinct in
-  the storage key, the merged graph, DOM `data-issue-key` attributes, search keys and deep links.
+  storage, the graph, DOM `data-issue-key` attributes and search.
+- **Repository redirects become aliases.** Each batch alias reads `nameWithOwner` of the
+  repository GitHub resolved. When that differs from the requested slug, and the returned issue
+  has the requested number and belongs to that resolved repository, the requested key is an
+  alias of the canonical key. This is GitHub's own repository redirect (§2.6).
+- **Any other mismatch is `moved`, a hard failure:** a different number, or an issue whose
+  repository differs from the resolved one. Issue transfers are not followed. Refreshing by
+  GraphQL node id would follow them with proof, and is deferred (§17).
 
-### 4.2 Local links and their precedence
+### 4.2 Local links, precedence and certainty
 
-| Entity | Link source | New? | Precedence |
+| Entity | Link source | Added in | Precedence |
 |---|---|---|---|
-| Item | Closing issue of its branch PR | existing | 1 |
+| Item | Closing issue of its branch PR, **only when that PR closes exactly one issue** | existing, narrowed (PR1a/PR1b) | 1 |
 | Item | `register({ issue })` or `inferIssueRef(branch)`, in `items.repo` | existing | 2 |
-| Plan | Explicit pin: `board_upsert({ issue })` → `boards.issue_pin_repo`, `boards.issue_pin_number` | **new** | 1 |
-| Plan | Closing issue of its branch PR | existing | 2 |
+| Plan | Explicit pin: `board_upsert({ issue })` → `boards.issue_pin_repo`, `issue_pin_number` | PR2 | 1 |
+| Plan | Closing issue of its branch PR, only when exactly one | existing, narrowed | 2 |
 | Plan | Branch-inferred `issue_ref`, restamped on every write | existing | 3 |
-| Row | Explicit link: `rows[].issue` or `board_row({ issue })` → `board_rows.issue_repo`, `board_rows.issue_number` | **new** | only source |
+| Row | Explicit link: `rows[].issue` or `board_row({ issue })` → `board_rows.issue_repo`, `issue_number` | PR2 | only source |
 
-- One pure helper, `issueKeyFor(entity, link)` in a new `public/issue-key.js`, decides the
-  effective issue for the chips **and** for the poller, the way `linkKey` is shared today.
-  `issueRef()` in `public/source.js` delegates to it.
-- **Cross-repository closing issues** take their repository from `issue_url`, accepted only when
-  it is exactly `https://github.com/<slug>/issues/<issue_number>`; otherwise the entity's `repo`
-  is used, as today. No column is added to `source_links_by_head`: an older process sharing the
-  database would leave such a column stale.
-- **Never** used as a link source: labels, titles, notes, `impact`, `next_after`, `context`,
-  comments, checklists, branch names beyond today's `inferIssueRef`, or PR links (#103 non-goal).
+One pure helper, `issueKeyFor(entity, link)` in a new `public/issue-key.js`, decides this for the
+chips and the poller alike, the way `linkKey` is shared today. It returns
+`{ key, source, certain }`; `issueRef()` in `public/source.js` delegates to it. Only `certain`
+identities get relationships (breadcrumbs, progress, activity, later grouping).
 
-**Why the plan pin is needed.** Because boards are restamped from the writing session, an
-umbrella plan maintained from branch `119-ahp-adapter` is linked to #119, not #117. The only
-workaround today, `register({ issue: 117 })`, would also relink every item that session flags.
-The pin is agent-owned and follows the omission rule (omitted preserves, `''` clears back to
-inference). It does **not** replace `boards.repo` or `issue_ref`, which still drive the PR
-lookup in `listLinkTargets()`.
+**Closing references.** PR1b records every closing reference in a new
+`source_links_by_head.closing_refs` column, bound to the row's `fetched_at` (§4.3). A link's PR
+identity is then decided as follows:
+
+| `closing_refs` | PR-derived identity |
+|---|---|
+| Valid, one reference | That issue, `certain` |
+| Valid, several references | None: ambiguous. The entity falls back to its pin or branch issue, and the PR tooltip lists every reference |
+| Valid, none | None, as today |
+| Absent or unbound (written before PR1b, or rewritten since by an older process) | The chip still shows `issue_number` as #30 does, but `certain` is false, so no relationships are drawn |
+
+The ambiguous row is a deliberate change from #30, which showed the first reference. Repository
+names come from each reference's `repository { name, owner { login } }`.
+
+**Why the plan pin is needed.** Plans are restamped from the writing session, so an umbrella
+plan maintained from branch `119-ahp-adapter` is linked to #119, not #117. The only workaround
+today, `register({ issue: 117 })`, would also relink every item that session flags. The pin does
+**not** replace `boards.repo` or `issue_ref`, which still drive the PR lookup in
+`listLinkTargets()`.
+
+**Never** used as a link source: labels, titles, notes, `impact`, `next_after`, `context`,
+comments, checklists, branch names beyond today's `inferIssueRef`, or PR links.
 
 ### 4.3 Schema (additive)
 
-All changes use the existing additive pattern in `runMigrations()`: `CREATE TABLE IF NOT EXISTS`
-and `ensureColumn`. Nothing is backfilled; there is no correct backfill for links nobody declared.
+All changes use the existing additive pattern in `runMigrations()` (`CREATE TABLE IF NOT EXISTS`
+and `ensureColumn`). Nothing is backfilled.
 
 ```sql
+-- PR1a
 CREATE TABLE IF NOT EXISTS issue_snapshots (
   repo TEXT NOT NULL COLLATE NOCASE,   -- requested owner/name; NOCASE folds ASCII, enough for slugs
   number INTEGER NOT NULL,             -- requested issue number
   provider TEXT NOT NULL DEFAULT 'github',
-  snapshot TEXT,                       -- JSON (below); NULL until the first successful fetch
-  fetched_at TEXT,                     -- start time of the last SUCCESSFUL fetch
-  checked_at TEXT NOT NULL,            -- start time of the last attempt
-  error TEXT,                          -- NULL | no-gh | auth | rate-limit | offline | gh-failed | not-found | forbidden
+  snapshot TEXT,                       -- JSON below; NULL before the first success and after a hard failure
+  fetched_at TEXT,                     -- start time of the attempt that produced `snapshot`
+  checked_at TEXT NOT NULL,            -- start time of the latest applied attempt, whatever its outcome
+  error TEXT,                          -- NULL | offline | rate-limit | gh-failed | no-gh | auth | not-found | forbidden | moved
   revision INTEGER NOT NULL DEFAULT 1,
   PRIMARY KEY (repo, number)
 );
+
+-- PR1b
+CREATE TABLE IF NOT EXISTS issue_refresh_claims (
+  repo TEXT NOT NULL COLLATE NOCASE,
+  number INTEGER NOT NULL,
+  owner TEXT NOT NULL,                 -- random id of one viewer process
+  lease_until TEXT NOT NULL,
+  PRIMARY KEY (repo, number)
+);
+-- ensureColumn(db, 'source_links_by_head', 'closing_refs', 'TEXT')
+--   JSON { "fetched_at": <the row's fetched_at>, "refs": [{ "repo": "owner/name", "number": 211 }] }
+
+-- PR2
 -- ensureColumn(db, 'boards', 'issue_pin_repo', 'TEXT')
 -- ensureColumn(db, 'boards', 'issue_pin_number', 'INTEGER')
 -- ensureColumn(db, 'board_rows', 'issue_repo', 'TEXT')
 -- ensureColumn(db, 'board_rows', 'issue_number', 'INTEGER')
 ```
+
+`closing_refs` is valid only while its `fetched_at` equals the row's. An older process's
+`upsertSourceLink` moves `fetched_at` without touching `closing_refs`, which unbinds it. Failure
+and preview writes keep `fetched_at`, so they leave it bound.
 
 Snapshot JSON, version 1, for #120 as fetched on 2026-10-19:
 
@@ -332,76 +383,104 @@ Snapshot JSON, version 1, for #120 as fetched on 2026-10-19:
       "title": "Integrate Agent Inbox with Agent Host Protocol",
       "state": "OPEN", "state_reason": null, "children_total": 10, "children_completed": 0 }
   ],
-  "position": 2,
-  "hierarchy": { "status": "ok", "total": 0, "completed": 0, "truncated": false, "children": [] },
-  "dependencies": {
-    "status": "ok", "truncated": false,
-    "blocked_by_open": 1, "blocked_by_total": 1, "blocking_open": 1, "blocking_total": 1,
-    "blocked_by": [ { "repo": "shariqh/agent-inbox", "number": 119, "state": "OPEN", "state_reason": null,
-                      "title": "Build the AHP adapter and persisted projection foundation" } ],
-    "blocking":   [ { "repo": "shariqh/agent-inbox", "number": 121, "state": "OPEN", "state_reason": null,
-                      "title": "Send Agent Inbox responses back to AHP input requests" } ]
-  }
+  "ancestors_end": "top",
+  "hierarchy": { "status": "ok", "total": 0, "completed": 0, "truncated": false, "children": [] }
 }
 ```
 
-`hierarchy.status` and `dependencies.status` are independent (`ok` or `unavailable`), so a
-dependency error never hides the hierarchy and the reverse (#103: parent-child must work
-without dependency support).
-
-**Why one JSON snapshot per issue rather than an edges table.** It mirrors
-`source_links_by_head` (one cached answer per target key) and is replaced atomically in one
-upsert. The GraphQL shape can grow under `v` without a migration. `store.ts` still validates it
-on write and on read, as it does for `options` and `history`. Nothing needs SQL over edges,
-because the merge (§4.5) runs in pure code either way. The `/api/issues` shape (§4.6) hides the
-storage choice, so a normalized table remains possible later.
+- `ancestors_end` is `top` when the walk reached an issue with no parent, and `limit` when the
+  eighth level still had one (deeper than GitHub allows today).
+- `hierarchy.status` is `ok` or `unavailable`; an unavailable section yields no observations.
+- A later version adds `dependencies` and the sibling list (§12) under a new `v`.
+- **Why one JSON snapshot per issue:** it mirrors `source_links_by_head` (one cached answer per
+  key) and is replaced atomically. The GraphQL shape can grow without a migration, and `store.ts`
+  validates it on write and read, as it does for `options` and `history`. The `/api/issues`
+  shape (§4.7) hides the storage choice.
 
 ### 4.4 `store.ts` API (still the only door)
 
-| Function | Behavior |
+| PR | Function | Behavior |
+|---|---|---|
+| 1a | `upsertIssueSnapshot(db, { repo, number, snapshot, startedAt })` | Validates the v1 shape; applies only when `startedAt` is later than the stored `checked_at` (the **attempt rule**: the most recently started attempt wins, so a late answer from an older attempt is ignored); sets `snapshot`, `fetched_at`, `checked_at`, clears `error`, bumps `revision`, then prunes |
+| 1a | `recordIssueFailure(db, { repo, number, error, startedAt })` | Same attempt rule. A soft error keeps `snapshot` and `fetched_at`; a hard error clears both **in the same statement** |
+| 1a | `listIssueSnapshots(db)` | Every row, parsed; invalid JSON or shape counts as "no snapshot" and never throws |
+| 1a | `listIssueEntities(db)` | Link fields of open items, active and archived plans and their rows, with each one's project and whether that project is closed |
+| 1a | `pruneIssueSnapshots(db, { nowMs })` | Deletes rows unchecked for 30 days, like `pruneSourceLinks()` |
+| 1b | `claimIssueRefresh(db, …)`, `completeIssueRefresh(db, …)` | The lease protocol in §5.5, each one `.immediate()` transaction |
+| 1b | `upsertSourceLink` | Also writes `closing_refs`, bound to the `fetched_at` it writes |
+| 2 | `upsertBoard`, `updateBoardRow`, `advanceBoardRow` | Pin and row link with the omission rule; `advanceBoardRow` and status changes keep links; human annotation, handled and delivery columns untouched |
+
+### 4.5 Hierarchy reconciliation: `buildIssueGraph(snapshots, keySets)` (pure, `src/issue-graph.ts`)
+
+**Observations.** A snapshot of root R fetched at `t` yields the following. `t` is the start time
+of its batch, which every root in that batch shares.
+
+- *Pointer:* `parent(X) = Y` or `parent(X) = none`, for R and for every ancestor whose own
+  `parent` field was read (all of them, except the last one when `ancestors_end` is `limit`).
+- *Membership:* `parent(C) = R` for each child C in R's list.
+- *Absence:* when R's list is complete (hierarchy `ok`, `truncated` false), `parent(Z) ≠ R` for
+  every known issue Z that the list does not contain. GitHub never lists an issue the token
+  cannot see, and the same token cannot fetch such an issue either, so absence is evidence only
+  about issues GitHub shows us.
+- *Facts:* title, state, state reason and child counts for R, its ancestors and its children.
+
+**Rules.**
+
+1. **Order.** All observations about C's parent are sorted newest first. At equal `t`, pointers
+   (rank 0) come before absences (rank 1), and absences before memberships (rank 2).
+2. **Decision.** The first pointer or membership in that order is the candidate. It is accepted
+   unless an absence sorted before it names the same parent; then C's parent is unknown.
+   Observations after the candidate are never consulted, so an older claim cannot return once a
+   newer one has been refuted.
+3. **Contradictory equals.** If a membership with the candidate's `t` and rank names a different
+   parent, C's parent is unknown and C is marked `conflict`.
+4. **Children.** P's children are the issues whose accepted parent is P. They take the order of
+   P's own freshest list (GitHub's order); accepted children missing from that list follow, by
+   key. Counts come from P's freshest facts. The UI reports `total − visible` as "not visible to
+   your GitHub account".
+5. **Cycles.** GitHub forbids cycles, so a cycle among accepted parents means an observation is
+   stale. In each cycle the decision with the oldest deciding `t` is dropped (all of them when
+   several share that `t`), and the cycle's issues are marked `conflict`. Ancestor walks stop
+   after eight levels or at the first repeated issue.
+6. **Hard failures.** A hard failure for K at attempt time `tF` has already deleted K's snapshot
+   (§4.4). Every other observation about K with `t ≤ tF` is dropped (facts, K as a child, K as a
+   parent), and K is reported unavailable. An observation newer than `tF` counts normally.
+7. **Facts.** The freshest observation of an issue's facts wins. At equal `t`, the issue's own
+   root snapshot beats a parent's list, which beats an ancestor walk. Facts never decide
+   parentage.
+8. **Redirects.** Observations are filed under canonical keys; aliases map requested keys to them
+   (§4.1).
+9. **Scope.** Only snapshots of roots in the display set are read. The graph emits those roots,
+   their accepted ancestors and their accepted children, up to the node cap (§6). Other cached
+   rows are inert until pruned.
+10. **Time.** The builder applies no expiry, so its bytes depend on the database alone (§6). The
+    browser dims and hides by age (§5.8).
+
+**Worked examples** (observations about C, newest first):
+
+| Observations | Result |
 |---|---|
-| `upsertIssueSnapshot(db, { repo, number, snapshot, startedAt })` | Validates the v1 shape, then writes it in one conditioned upsert that **refuses an attempt older than the stored success** (`… WHERE excluded.fetched_at > COALESCE(issue_snapshots.fetched_at, '')`). Two viewers can poll one hub, for example a checkout viewer and the packaged app. Bumps `revision`, then prunes. Returns whether it wrote. |
-| `recordIssueFailure(db, { repo, number, error, startedAt })` | Insert-or-update of `checked_at` and `error` that keeps the last good `snapshot` and `fetched_at`, and is ignored when a newer success already landed. |
-| `listIssueSnapshots(db)` | Every row, parsed. Invalid JSON or shape counts as "no snapshot" and never throws. |
-| `listIssueEntities(db)` | Link fields of open items, active plans and their rows, outside closed projects (`closedProjects()`), newest first. |
-| `pruneIssueSnapshots(db, { nowMs })` | Deletes rows unchecked for 30 days, like `pruneSourceLinks()`. |
-| `upsertBoard`, `updateBoardRow` | Accept the plan pin and row link with the omission rule. `Board`, `BoardRow`, `ROW_COLUMNS` and `NewBoardRow` gain the fields; human annotation, handled and delivery columns are untouched. |
+| t20 P's complete list omits C · t10 P lists C | Unknown: C left P, and its new parent is not known yet |
+| t20 C points to Q · t10 P lists C | Q: C moved |
+| t20 C points to none · t10 P lists C | None: C was detached |
+| t20 P lists C · t10 C points to none | P: C was added after C's own last refresh |
+| t20 P lists C and Q lists C (one batch), nothing from C | Unknown, `conflict` |
+| t20 C points to P and P's complete list omits C (one batch) | P: at equal time a pointer outranks an absence |
+| t30 B points to A · t20 A points to B | A cycle: the older decision (A → B) is dropped, B's parent is A, and both are `conflict` |
 
-### 4.5 Merge rules: `buildIssueGraph(snapshots)` (pure, `src/issue-graph.ts`)
+### 4.6 Dependency reconciliation (for the later dependency PR)
 
-1. Each snapshot is a set of **observations** about its root, ancestors, children and
-   dependency neighbours, all stamped with the snapshot's `fetched_at`. A section whose status
-   is `unavailable` observes nothing: it neither adds nor removes an edge.
-2. **Node facts** (title, state, counts): the freshest observation wins. The root's own record
-   wins a tie.
-3. **Parent of C:** taken from the freshest snapshot that observed C's parent, either C's own
-   `ancestors[0]` or a root P that lists C among its children. An empty `ancestors` is an
-   observation too ("no parent"). Every older claim is dropped. So every node has at most one
-   parent, and a moved or detached child never appears under two parents (acceptance
-   criterion 6).
-4. **Child order:** from the parent's own snapshot (GitHub's order) when it is a root, else
-   from the `position` recorded in the children's snapshots; ties sort by key.
-5. **`blocks` edges:** A → B exists if the fresher of A's root snapshot (`blocking`) and B's
-   root snapshot (`blocked_by`) contains it. When only one endpoint is a root, that snapshot
-   decides.
-6. **Self-links** are dropped and **duplicate edges** collapse onto one `kind|from|to` key.
-7. **Cycles.** GitHub forbids `contains` cycles, but snapshots of different ages can still form
-   one. The merge breaks it by dropping the older observation and marks the node `conflict`.
-   Ancestor walks stop at depth 8 or at the first repeated node. A `blocks` cycle is kept as
-   data, and its strongly connected component is marked `cycle: true` so ordering falls back to
-   plan order (§7.5).
-8. **Hidden and truncated children.** `hierarchy.total` (GitHub's count) is compared with the
-   visible list. A difference renders "+N not visible to your GitHub account"; `truncated`
-   renders "+N more on GitHub".
-9. **Moved or renamed.** When GitHub answers with a different `nameWithOwner` or number than
-   requested (a repository rename or an issue transfer), the store keeps the row under the
-   requested key, and the merge files its facts under GitHub's canonical key with the requested
-   key as an **alias**. Relationships follow GitHub's identity, never a guess, and the chip says
-   "moved to `owner/name#n`".
-10. **Expiry is not applied here.** The bytes must depend on the database alone (§6); the
-    frontend hides observations older than 7 days.
+Defined now so that the later PR inherits it:
 
-### 4.6 The merged graph (`GET /api/issues`, version 1)
+- Observations are about a pair "A blocks B". B's root contributes `blocked_by`; A's root
+  contributes `blocking`. A listed pair is positive; a complete list without it is negative.
+- The freshest observation of the pair decides. At equal `t` a negative wins: a missing "waits
+  on" chip degrades to today's view, while a false one misleads.
+- Rule 6 (hard failures) applies to both ends.
+- A `blocks` cycle is kept as data, because GitHub may allow one. Its strongly connected
+  component is marked `cycle`, and any ordering falls back to plan order, then key.
+
+### 4.7 The merged graph (`GET /api/issues`, version 1)
 
 ```json
 {
@@ -409,101 +488,135 @@ storage choice, so a normalized table remains possible later.
   "nodes": [
     { "key": "shariqh/agent-inbox#117", "repo": "shariqh/agent-inbox", "number": 117,
       "title": "Integrate Agent Inbox with Agent Host Protocol", "state": "OPEN", "state_reason": null,
-      "children_total": 10, "children_completed": 0, "observed_at": "2026-10-19T21:50:02.114Z" }
+      "children_total": 10, "children_completed": 0, "observed_at": "2026-10-19T22:30:00.000Z" }
   ],
   "edges": [
     { "kind": "contains", "from": "shariqh/agent-inbox#117", "to": "shariqh/agent-inbox#120",
-      "position": 2, "observed_at": "2026-10-19T21:50:02.114Z" },
-    { "kind": "blocks", "from": "shariqh/agent-inbox#119", "to": "shariqh/agent-inbox#120",
-      "observed_at": "2026-10-19T21:50:02.114Z" }
+      "position": 2, "observed_at": "2026-10-19T22:30:00.000Z" }
   ],
   "roots": [
-    { "key": "shariqh/agent-inbox#120", "fetched_at": "2026-10-19T21:50:02.114Z",
-      "checked_at": "2026-10-19T21:50:02.114Z", "error": null,
-      "hierarchy": "ok", "dependencies": "ok" }
+    { "key": "shariqh/agent-inbox#120", "refresh": true, "fetched_at": "2026-10-19T22:30:00.000Z",
+      "checked_at": "2026-10-19T22:30:00.000Z", "error": null, "failure": null, "children_omitted": 0 }
   ],
-  "aliases": {}
+  "aliases": { "twitter/bootstrap#2": "twbs/bootstrap#2" },
+  "truncated": { "nodes": 0, "edges": 0 }
 }
 ```
 
-The payload contains no URLs. The frontend builds `https://github.com/<repo>/issues/<number>`
-from validated parts (§12).
+- `failure` is `null`, `soft` or `hard`. A hard-failed root has no node.
+- `refresh: false` marks a root that is displayed but no longer refreshed (a closed project, an
+  archived plan).
+- Nodes carry `conflict: true` when rule 3 or 5 applied.
+- `truncated` counts exactly what the node cap removed, and `children_omitted` says where (§6).
+- There are no URLs: the browser builds `https://github.com/<repo>/issues/<number>` from
+  validated parts (§11).
 
 ---
 
-## §5 — Ingestion in the viewer process
+## §5 — Ingestion in the viewer process (PR1b)
 
 ### 5.1 Module and process boundary
 
-A new `src/issue-poller.ts` opens with "VIEWER PROCESS ONLY" and follows `src/prstate.ts`
-exactly:
+A new `src/issue-poller.ts` opens with "VIEWER PROCESS ONLY" and follows `src/prstate.ts`:
 
-- `execFile` with piped streams, never `spawn` with inherited ones;
-- `resolveGh()` reused, with the same quieting environment (`GH_PAGER=cat`, `NO_COLOR=1`,
-  `GH_NO_UPDATE_NOTIFIER=1`), `GH_TIMEOUT_MS` and `GH_MAX_BUFFER`;
+- `execFile` with piped streams;
+- the same quieting environment (`GH_PAGER=cat`, `NO_COLOR=1`, `GH_NO_UPDATE_NOTIFIER=1`);
 - writes only through `store.ts`, and the refresh never rejects.
 
-It imports `store.ts`, `src/issue-graph.ts`, `public/issue-key.js` and the shared `gh` helpers
-of `src/prstate.ts` (`resolveGh`, `classifyError`, the timeout and buffer limits), which is
-itself viewer-only. The boundary test in
-`test/prstate.test.ts` ("the poller runs in the viewer process only") extends to it: no file of
-the stdio server graph (`src/mcp.ts`, `mcp-server.ts`, `store.ts`, `scope.ts`, `infer.ts`,
-`group.ts`, `hook.ts`, `hook-cli.ts`, plus `shape.ts`) may import it.
+It imports `store.ts`, `src/issue-graph.ts`, `public/issue-key.js` and the shared `gh` helpers of
+`src/prstate.ts` (`resolveGh`, `classifyError`, `GH_TIMEOUT_MS`, `GH_MAX_BUFFER`). The boundary
+test in `test/prstate.test.ts` ("the poller runs in the viewer process only") extends to it: no
+file of the stdio server graph (`src/mcp.ts`, `mcp-server.ts`, `store.ts`, `scope.ts`,
+`infer.ts`, `group.ts`, `hook.ts`, `hook-cli.ts`, `shape.ts`) may import it.
 
-### 5.2 One tick, two budgets
+### 5.2 One tick, two classes, explicit deadlines
 
-`src/viewer-server.ts` passes the issue refresh to the existing poller, which runs it **after**
-`refreshOnce` inside the same `busy` window. For example `startPrPoller(db, { after:
-refreshIssueRelations })`; the `startPrPoller(db)` source pin in `test/prstate.test.ts` moves
-with it. As a result:
+```text
+every POLL_INTERVAL_MS (60 s), one busy guard:
+  t0 = now
+  1. issue class: claim and fetch at most one batch (≤ 10 issues). Skipped when nothing is due,
+                  when the budget says wait (§5.3), or after t0 + 15 s. The gh call itself is
+                  bounded by GH_TIMEOUT_MS (10 s).
+  2. PR class:    refreshOnce(db, { deadlineMs: t0 + 45 s }). Each target's work is unchanged,
+                  but no new target starts after the deadline.
+```
 
-- this viewer never runs two `gh` processes at once;
-- a slow tick delays both refreshes and never overlaps the next tick;
-- the budgets are separate, so neither refresh can starve the other.
+- **Issues go first** because their class is one bounded call. The PR class can no longer push
+  it out of a tick (§1.3), and still has at least 30 s to start its targets.
+- Rotating the order was considered and is unnecessary for the same reason.
+- A tick now ends at most one target's in-flight calls after 45 s; before this change it had no
+  end bound.
+- **Merge nudges:** a merge the PR class notices in one tick reaches the issue class in the next.
+- The `startPrPoller(db)` source pin in `test/prstate.test.ts` moves with this wiring.
 
-| Budget | PR refresh (unchanged) | Issue refresh (new) |
-|---|---|---|
-| Calls per tick | `MAX_PER_TICK` = 4 `gh pr list` | `MAX_ISSUE_CALLS_PER_TICK` = 1 `gh api graphql` |
-| Targets per call | 1 branch | `ISSUE_BATCH` = 10 roots |
-| Target cap | `MAX_LINK_TARGETS` = 50 | `MAX_ISSUE_TARGETS` = 50 |
-| Worst-case GraphQL points per hour | about 240 | **60**, which is 1.2% of a 5,000-point hourly budget |
+### 5.3 Budget from the reported cost
 
-Typical use costs a few points per hour, because the TTLs below skip almost every tick.
+- Every response's `rateLimit { cost remaining resetAt }` is recorded.
+- **Token bucket:** `ISSUE_POINTS_PER_HOUR` = 120 per viewer process, refilled continuously. A
+  call starts only when the bucket holds at least the last reported cost (1 to begin with). A
+  call that fails without reporting is charged the last reported cost.
+- **Floor:** when `remaining` falls below `RATE_FLOOR` = 500, the issue class waits until
+  `resetAt`. That counts as a soft `rate-limit` failure, so cached data stays and ages.
+- The measured 1 point per batch (§2.7) is never assumed; a costlier formula just means fewer
+  calls. The bound is 120 points per hour per viewer (2.4% of a 5,000-point budget). One call per
+  tick already caps it at 60 calls an hour.
 
-**Relationships cannot come from the existing `gh pr list` call.** Its JSON exposes
-`closingIssuesReferences` (`id`, `number`, `repository { name, owner { login } }`, `url`) but
-nothing about those issues' parents, children or dependencies, and it runs once per branch. The
-PR refresh keeps supplying the closing-issue identity; the new call supplies the relationships.
+### 5.4 Candidates, TTLs and the fair queue
 
-### 5.3 Targets
+- **Candidates** are the refresh key set (§6): the `certain` effective issues of open items,
+  active plans and (from PR2) their rows, in projects that are not closed. **There is no cap:**
+  revision 1's "50 most recently updated" cut would have starved the 51st issue forever.
+- **When a candidate is due:**
 
-`wantedIssues(entities, links)` (pure) takes the effective issue (`issueKeyFor`) of every open
-item, active plan and active plan row in a project that is not closed. It deduplicates by key
-and keeps the 50 most recently updated. Archived plans and resolved items stop refreshing but
-keep their cache, so a peek at a closed project still shows the last known state (as #32 does
-for PR chips).
+| State | Due again after |
+|---|---|
+| Never fetched | Now |
+| Nudged: a PR whose `certain` closing issue is this key, or one of this key's listed children, turned `MERGED` or `CLOSED` after this key's `checked_at` | Now |
+| Open issue | 10 min |
+| Closed issue | 60 min |
+| Soft failure: `offline`, `rate-limit`, `gh-failed` | 10 min |
+| Soft failure: `no-gh`, `auth` | 60 min |
+| Hard failure: `not-found`, `forbidden`, `moved` | 60 min |
 
-### 5.4 Due order (pure, mirrors `dueTargets`)
+- **Queue order:** never fetched, then nudged, then oldest `checked_at`, then key. Every attempt
+  advances `checked_at`, so every candidate reaches the front and none starves.
+- A tick serves one batch of 10, so N due candidates take ⌈N/10⌉ ticks. Past about 100
+  candidates the effective interval exceeds the TTL; the age labels show the real age.
+- The queue is recomputed each tick from `listIssueEntities`, `listSourceLinks` and
+  `listIssueSnapshots`.
 
-`dueIssueRoots(wanted, snapshots, links, nowMs)`:
+### 5.5 Claims and leases (two viewers, one hub)
 
-- a key never fetched is due first;
-- otherwise a key is due when its age reaches its TTL: open issue 10 min, closed issue 60 min,
-  soft error (`offline`, `rate-limit`, `gh-failed`) 10 min, hard error (`no-gh`, `auth`,
-  `forbidden`, `not-found`) 60 min;
-- **merge nudge:** a key is due at once when a source link whose closing issue is that key, or
-  appears in that key's snapshot, reached `MERGED` or `CLOSED` with `fetched_at` after the key's
-  `checked_at`. Because the issue refresh runs right after the PR refresh, a merge the PR
-  poller notices reaches the rollup in the same tick;
-- order: never fetched, then nudged, then oldest `checked_at`; slice to `ISSUE_BATCH`.
+The attempt rule (§4.4) only orders writes; it does not stop two viewers fetching the same batch.
+Both a checkout viewer and the packaged app can poll one hub, so PR1b adds a lease:
 
-### 5.5 The query
+- **`claimIssueRefresh(db, { owner, queue, limit: 10, leaseMs: 60_000, nowMs })`** runs as one
+  `.immediate()` transaction:
+  1. delete expired leases;
+  2. walk the caller's queue in order;
+  3. skip a key that holds a live lease;
+  4. skip a key whose stored `checked_at` no longer equals the value the caller saw, because
+     another viewer refreshed it since;
+  5. insert a lease for up to `limit` keys and return them.
+- The poller fetches only the keys it claimed.
+- **`completeIssueRefresh(db, { owner, results })`** runs as one `.immediate()` transaction: it
+  applies each result under the attempt rule and deletes this owner's leases for those keys.
+- `owner` is a random id per viewer process. A crashed viewer's lease expires after 60 s, which
+  exceeds `GH_TIMEOUT_MS` plus parsing and writing.
+- Leases never appear in `/api/issues`, so they do not change its bytes. Like any write, they
+  move `data_version`.
+- The PR refresh does not dedupe across viewers today; this design leaves that unchanged.
 
-One constant document; aliases are generated from indices (`r0` to `r9`) and never from data.
+### 5.6 Query documents
+
+There is one deterministic document per batch size, 1 to 10. A pure `relationsQuery(n)` builds
+it from fixed fragments, with aliases `r0`…`r(n-1)` taken from indices and never from data. This
+is the verified first-slice document for one root:
 
 ```graphql
-query Relations($o0: String!, $n0: String!, $k0: Int!) {   # … through $o9/$n9/$k9
-  r0: repository(owner: $o0, name: $n0) { issue(number: $k0) { ...Root } }
+query Relations1($o0: String!, $n0: String!, $k0: Int!) {
+  r0: repository(owner: $o0, name: $n0) { nameWithOwner issue(number: $k0) { ...Root } }
+  rateLimit { cost remaining resetAt }
 }
 
 fragment Node on Issue { number title state stateReason repository { nameWithOwner } }
@@ -511,204 +624,185 @@ fragment Node on Issue { number title state stateReason repository { nameWithOwn
 fragment Root on Issue {
   ...Node
   subIssuesSummary { total completed }
-  issueDependenciesSummary { blockedBy totalBlockedBy blocking totalBlocking }
   parent {
     ...Node
     subIssuesSummary { total completed }
-    subIssues(first: 100) { nodes { number repository { nameWithOwner } } }  # position only
-    parent { ...Node parent { ...Node parent { ...Node parent { ...Node parent { ...Node parent { ...Node } } } } } }
+    parent { ...Node parent { ...Node parent { ...Node parent { ...Node
+      parent { ...Node parent { ...Node parent { ...Node } } } } } } }
   }
   subIssues(first: 100) { totalCount pageInfo { hasNextPage } nodes { ...Node subIssuesSummary { total completed } } }
-  blockedBy(first: 50) { totalCount pageInfo { hasNextPage } nodes { ...Node } }
-  blocking(first: 50)  { totalCount pageInfo { hasNextPage } nodes { ...Node } }
 }
 ```
 
 ```text
-gh api --hostname github.com graphql -f query=<constant> \
+gh api --hostname github.com graphql -f query=<document for n> \
   -f o0=<owner> -f n0=<name> -F k0=<number> …
 ```
 
-- Owner and name go only through `-f` (raw strings). `-F` converts types and reads a file when
-  a value starts with `@`.
-- Numbers go through `-F` after integer validation.
+- A single ten-slot document fails validation for any smaller batch (§2.5). `@include`
+  directives with placeholder values would work, but every request would then carry ten slots of
+  meaningless values; per-size documents are simpler to read and to test.
+- Owner and name go only through `-f` (raw strings): `-F` converts types and reads a file when a
+  value starts with `@`. Numbers go through `-F` after integer validation.
 - `--hostname github.com` stops `GH_HOST` from redirecting the call; `parseRepoSlug` only ever
   produces github.com slugs.
-- The parent's child list is fetched with identities only, to compute `position`. It never
-  becomes sibling edges, which keeps the graph to what is needed.
+- The later dependency and sibling fragments slot into `Root` without changing this structure
+  (§12).
 
-### 5.6 Parsing: `parseIssueBatch(stdout, requested)` (pure)
+### 5.7 Parsing and identity checks: `parseIssueBatch(stdout, claimed)` (pure)
 
-- Accepts stdout from a success **and** from a non-zero exit (partial errors). Unparseable
-  output fails the whole batch through the existing `classifyError`.
-- An error at `[rN]` or `[rN, "issue"]` fails that root only: `NOT_FOUND` → `not-found`,
-  `FORBIDDEN` (including `saml_failure`) → `forbidden`, `RATE_LIMITED` → `rate-limit`, anything
-  else → `gh-failed`.
-- An error under `[rN, "issue", "subIssues" | "parent"]` makes only the hierarchy
-  `unavailable`; one under `blockedBy`/`blocking` makes only the dependencies `unavailable`.
+- Accepts stdout from a success **and** from a non-zero exit (partial errors).
+- **Whole-request failures** are soft failures for every claimed key, classified by
+  `classifyError` and GraphQL `RATE_LIMITED`. They cover unparseable output, a validation error
+  with no `data`, and a process error.
+- **Per alias,** an error at `[rN]` or `[rN, "issue"]`:
+
+| GraphQL error | Failure |
+|---|---|
+| `NOT_FOUND` | `not-found` (hard) |
+| `FORBIDDEN`, including `saml_failure` | `forbidden` (hard) |
+| `RATE_LIMITED` | `rate-limit` (soft) |
+| Anything else | `gh-failed` (soft) |
+
+- A field error under `[rN, "issue", "parent" | "subIssues"]` makes that root's hierarchy
+  `unavailable` (no observations) without failing the root.
+- Identity is checked as in §4.1: an accepted redirect becomes an alias; anything else is `moved`.
 - Every node is validated: slug, integer number, `state` in `{OPEN, CLOSED}`, `state_reason` in
-  `{COMPLETED, NOT_PLANNED, DUPLICATE, REOPENED}` or null. Titles are strings clipped to 300
-  characters, like `TITLE_MAX`. An invalid neighbour is dropped, never coerced.
-- Self-links are dropped and duplicates collapsed. Lists are capped at GitHub's limits (100
-  children, 50 per dependency direction), with `truncated` set when `hasNextPage` is true.
+  `{COMPLETED, NOT_PLANNED, DUPLICATE, REOPENED}` or null, and a title clipped to 300 characters
+  (like `TITLE_MAX`). An invalid neighbour is dropped, never coerced.
+- Self-links (a root listing itself, or an ancestor equal to the root) are dropped. Duplicate
+  children collapse, lists cap at 100, and `truncated` follows `hasNextPage`.
 
-### 5.7 Writes
+### 5.8 Failure classes and freshness
 
-Each root is written with `upsertIssueSnapshot` or `recordIssueFailure`, carrying the time the
-`gh` call **started**. The store refuses a write from an attempt older than the stored success.
+| Class | Codes | Cached data | Retry |
+|---|---|---|---|
+| **Soft:** we could not ask | `offline`, `rate-limit`, `gh-failed`, `no-gh`, `auth` | Kept and shown with its age | 10 min, or 60 min for `no-gh` and `auth` |
+| **Hard:** GitHub answered no | `not-found` (deleted, never existed, a PR number, or invisible to the token), `forbidden` (including SSO), `moved` | **Deleted at once:** relationships and cached titles disappear and the chip says "unavailable" | 60 min |
 
-### 5.8 Freshness policy
+Soft failures and successful snapshots age the same way:
 
 | Time since the last successful fetch | What renders |
 |---|---|
-| Under 30 min | Normal. The tooltip says "checked Xm ago" (`checked_at`). |
-| 30 min to 7 days | Stale: dimmed chips and edges, "as of 2h ago", plus the error reason when there is one ("gh is not logged in — showing what it last saw", reusing `ERROR_LABEL`'s wording). |
-| Over 7 days | Hidden: the plain `#120` chip only. The expanded block says "Relationships unavailable — last seen 9d ago". |
-| Unchecked for 30 days | The snapshot row is pruned. |
+| Under 30 min | Normal; the tooltip says "checked Xm ago" |
+| 30 min to 7 days | Stale: dimmed chips, "as of 2h ago", and the reason when there is one ("gh is not logged in — showing what it last saw", reusing `ERROR_LABEL`'s wording) |
+| Over 7 days | Hidden: the plain `#120` chip only; the source block says "Relationships unavailable — last seen 9d ago" |
+| Unchecked for 30 days | The row is pruned |
 
 The issue chip, plan, row, item and any approval request are never hidden by this policy.
 
 ---
 
-## §6 — Viewer API, conditional snapshots and payload size
+## §6 — Viewer API, key sets, conditional snapshots and payload
 
-- **Route.** `GET /api/issues` is registered through `conditionalSnapshot(db, 'issues', () =>
-  buildIssueGraph(listIssueSnapshots(db)))` in `src/viewer.ts`. Its bytes depend only on the
-  database, because expiry happens in the browser; that is the precondition for the store-token
-  cache. CLAUDE.md's list of retained representations grows from five to six.
+- **Key sets.** `issueKeySets(entities, links)` (pure, `public/issue-key.js`) returns two sets.
+  The route computes them from store reads, and the poller uses the first:
+  - the **refresh set:** the `certain` effective issues of open items, active plans and their
+    rows, in projects that are not closed;
+  - the **display set:** the refresh set, plus the same entities in **closed projects** (kept on
+    purpose, so a peek still shows the last known state, as #32 does for PR chips), plus
+    archived plans and their rows. History (closed items) keeps today's plain chip and is not in
+    either set.
+- **Route.** `GET /api/issues` is registered through `conditionalSnapshot(db, 'issues', …)` in
+  `src/viewer.ts`. It calls `buildIssueGraph(listIssueSnapshots(db), issueKeySets(…))`. Its bytes
+  depend only on the database, the precondition for the store-token cache. CLAUDE.md's list of
+  retained representations grows from five to six.
 - **Existing snapshots stay byte-stable.** `/api/items`, `/api/items?scope=attention`,
-  `/api/items/history`, `/api/boards` and `/api/boards/archived` carry no GitHub data, so a
-  relationship refresh never changes their bytes and clients keep receiving 304. The only new
-  fields in `/api/boards` are the agent-authored links (about 40 bytes per linked row).
-- **Re-serialization.** Every poller write still moves `data_version`, so each retained
-  representation is rebuilt once on its next read, as PR poller writes already cause. Its ETag
-  is unchanged when its bytes are unchanged.
-- **Frontend.** `public/snapshots.js` gains a `/api/issues` validator (version 1; arrays of
+  `/api/items/history`, `/api/boards` and `/api/boards/archived` carry no GitHub data, so
+  snapshot and lease writes never change their bytes and clients keep receiving 304. They do
+  move `data_version`, so each retained representation is rebuilt once on its next read, as PR
+  poller writes already cause. The only new `/api/boards` fields are PR2's agent-authored links.
+- **Frontend (PR3).** `public/snapshots.js` gains a `/api/issues` validator (version 1; arrays of
   string-keyed nodes, edges and roots). `load()` adds it as an eighth concurrent read with the
   `/api/links` fallback: any failure, including a 404 from an older viewer, yields an empty graph
-  and the page renders exactly as before. The boot-marker and generation rules are unchanged.
-- **Size.** The ten-issue #117 family measured 6.2 KB merged (18.5 KB raw GraphQL). The bound
-  is 50 roots × (7 ancestors + 100 children + 100 dependencies), about 10,350 observations,
-  which deduplication usually collapses to a few dozen nodes. To keep a pathological hub under
-  about 500 KB, `MAX_GRAPH_NODES` = 2,000 trims deterministically: first dependency neighbours
-  that are neither roots nor linked rows, then children beyond each root's first 50. It sets
-  `trimmed: true`. A body is transferred only when a refresh changes it, at most once per
-  poller tick.
+  and the page renders exactly as before.
+- **Size and honest truncation.** The ten-issue #117 family measured 5.9 KB merged (§2.7).
+  `MAX_GRAPH_NODES` = 2,000 bounds a pathological hub at roughly 500 KB of nodes. The cap keeps,
+  in order:
+  1. every display root;
+  2. each display root's ancestors;
+  3. children, taken round-robin across display roots in GitHub order, until the cap.
+
+  `truncated` counts the omitted nodes and edges exactly; each affected root reports
+  `children_omitted`, and its list says "+N not shown". A body is transferred only when it
+  changes.
 
 ---
 
-## §7 — Presentation
+## §7 — Presentation (PR3)
 
-New chip builders live **inside `public/source.js`**, so every href still comes from
-`chipHtml()`. The pure view model (indexes, breadcrumbs, ownership, grouping, freshness) lives
-in a new `public/issues.js`, and the Plan Flow model stays in `public/mission.js`.
+New chip builders live inside `public/source.js`, so every href still comes from `chipHtml()`. A
+new pure `public/issues.js` holds the view model: indexes, breadcrumbs, child lists, activity and
+freshness.
 
-### 7.1 Compact chips (rows, cards, plans)
+### 7.1 Chips
 
-`sourceChipsHtml()` renders, in order: the parent chip, the issue chip (existing), a parent's
-progress, a waits-on chip, then the PR chip and Preview (existing).
+`sourceChipsHtml()` renders the parent chip, then the issue chip (existing), then the PR chip and
+Preview (existing).
 
 | Case | Compact rendering |
 |---|---|
 | Child | `#117 › #120`; the parent is its own anchor; only the nearest parent here |
 | Parent with children | `#117 · 0/10` |
-| Waits on open issues | `waits on #119`, or `waits on 3` for several; closed blockers are not shown compactly |
-| Stale | Same chips with `tone-stale` (dimmed); the tooltip says "as of …" |
-| Expired, unavailable or unknown | Today's chip only |
+| Stale | The same chips with `tone-stale` (dimmed); the tooltip says "as of …" |
+| Unavailable (hard failure) | The issue chip alone; the tooltip says why ("GitHub says this issue does not exist or is not visible", "GitHub denied access (SSO?)", "GitHub answered with another issue — update the link") |
+| Expired, no data, or not `certain` | Today's chip only |
 
-The tooltip is plain text, escaped into `title=`: parent title and progress, waits-on titles,
-the unblocks count, and a freshness or error line. The `tabbable` rule from #30 is unchanged:
-chips in list rows stay out of the roving tab order.
+The tooltip is plain text escaped into `title=`. The `tabbable` rule from #30 is unchanged: chips
+in list rows stay out of the roving tab order. A row with its own link (PR2) shows its issue's
+chip in the row's note cell and card instead of the plan's.
 
-### 7.2 Expanded SOURCE block
+### 7.2 Source block
 
 `sourceBlockHtml()` adds:
 
-- the full parent trail, up to eight levels (`cli/cli#14563 › #14529 › #14523` in §18);
-- **Sub-issues** in GitHub's order with a state mark (● open, ✓ completed, ⊘ not planned,
-  ⧉ duplicate), title, local owner (§7.4), and "+N not visible" or "+N more on GitHub";
-- **Waits on** and **Unblocks** lists with titles and states;
-- a freshness line.
+- the full parent trail, up to eight levels (for example `cli/cli#14563 › #14529 › #14523`);
+- for an issue with children, **"Sub-issues on GitHub · N of M done"**: GitHub's order, a state
+  mark (● open, ✓ completed, ⊘ not planned, ⧉ duplicate), the title, its Agent Inbox activity
+  (§7.3), and "+N not visible to your GitHub account", "+N more on GitHub" or "+N not shown"
+  where they apply;
+- a freshness or failure line.
 
-### 7.3 Plans grouped by parent issue
+GitHub's child progress stays separate from the plan's own progress bar, which still measures the
+agent's rows.
 
-`renderBoards()` calls a pure `groupPlansByParent(boards, graph)`:
+### 7.3 Agent Inbox activity (Q7)
 
-- A plan's group is the parent of its effective issue. A plan whose own issue is that parent
-  (an umbrella plan) leads the group.
-- Groups keep the position of their first member in today's order, so recency still decides
-  the order between groups. Inside a group the umbrella comes first, then GitHub's child order,
-  then today's order.
-- `paginateWithPending` pages the flattened list. A group that spans pages repeats its header
-  with "(continued)".
-- Plans with no known parent stay ungrouped in place. Archived plans and lingering logic are
-  unchanged.
-- The header is a parent chip, the GitHub title and "0 of 10 done on GitHub". It is not a card:
-  it has no expanded state and cannot hold a draft.
+For each child, the label summarizes local entities whose `certain` key is that child: rows that
+link it, plans whose effective issue it is, and open items.
 
-**Inside a plan,** when rows link issues under two or more different parents, the row table
-gets thin parent sub-headers; otherwise nothing changes (Q3).
+| Label | Meaning |
+|---|---|
+| "Waiting on you" | One of them is in the `attentionEntries()` result the render already computes |
+| "Active · claude-code · AHP adapter" | The most recently updated open item, active plan or not-done row |
+| "Done here" | Every linked row is `done` or `na`, with no open item |
+| "None here" | Nothing local links this child |
 
-### 7.4 Sub-issue strip and current ownership
+Clicking a label opens that plan, row or item through the existing `focusItem(id, { rowId })`
+path, preserving its poll, draft and focus rules. The label reads attention and never feeds
+anything back.
 
-A plan whose effective issue has children gets a "Sub-issues on GitHub · N of M done" strip
-under its source chips, outside `<summary>` for the same reason as #30. For each child:
+### 7.4 Navigation in this slice
 
-- the chip and title link to GitHub;
-- **current ownership** comes from local entities linked to that child (rows that link it,
-  plans whose effective issue it is, open items). It reads the `attentionEntries()` result the
-  render already computes and changes nothing. The labels are "Waiting on you" (a linked entry
-  needs the human), "With claude-code · <plan>" (linked work is active), "Done here" (every
-  linked row is `done` or `na`) and "No local work". Clicking an owner focuses that plan or
-  item in the app (`focusItem`);
-- GitHub assignees are not shown in v1 (Q7).
-
-GitHub's child progress stays separate from the plan's own progress bar, which still measures
-the agent's rows. A row with an issue link shows that issue's chip in the row's note cell and in
-its card; the row card's source identity is the plan's, with the row's issue in place of the
-plan's.
-
-### 7.5 Plan Flow with typed edges
-
-`buildMission(board, graph)` stays pure and plan-scoped. It additionally returns:
-
-- `root.issue`: the plan's effective issue, its ancestors (a breadcrumb on the root card) and
-  its child progress;
-- per path: `issue` (the row's link), `contains: true` when that issue is a child of the plan's
-  issue, and `waitsOn` / `unblocks` as path indexes, or keys for issues no row links;
-- `ghosts`: children of the plan's issue that no row links, shown in a "Not in this plan" fold;
-- `order`: a stable topological order over the plan's `blocks` edges (Kahn's algorithm, ties by
-  row position). Rows in a cycle keep plan order and show "circular dependency on GitHub".
-
-`missionPathEl` renders the two kinds differently:
-
-| | Containment | Sequencing |
-|---|---|---|
-| Model | `contains: true` | `waitsOn` / `unblocks` |
-| Visual | Solid left rail, "Part of #117" | Dashed accent link chip, "Waits on: AHP adapter (#119)" |
-| Class | `.mission-edge-contains` | `.mission-edge-waits` |
-| Accessible name | "Sub-issue #120 of #117" | "Waits on step AHP adapter (#119)" |
-| Activation | None | Moves focus to the blocking step inside the flow; an issue with no step is a GitHub chip |
-
-The lightbox rules hold: the graph stays mounted and leaving for Plans still needs the explicit
-button. `result` remains `outcome` or `next_after` text only. A row whose `next_after` reads
-"after #119" creates no edge, and a test pins that. Issues in other plans are external chips,
-never cross-plan edges, so Plan Flow stays plan-scoped.
+In-app navigation from the new surfaces lands on the exact plan and row. Searching by issue key
+or GitHub title, and row-level deep-link hashes, come with sibling context (§12.4).
 
 ---
 
 ## §8 — Row status: a dependency is never `blocked`
 
-The viewer never derives, overrides or suggests a row status from GitHub. The agent contract
-(§11) maps dependency situations to statuses:
+The viewer never derives, overrides or suggests a row status from GitHub. PR2 adds this contract
+sentence to the `board_upsert`, `board_row` and `board_advance` descriptions, to the `status`
+field's `.describe()` and to `docs/reporting-snippet.md`: "Waiting on another GitHub issue
+(GitHub's 'blocked by') is tracked or partial, never blocked." Agents can see GitHub
+dependencies through `gh` even before Agent Inbox displays them.
 
-| Situation | Status the agent sets | Viewer shows | Attention |
-|---|---|---|---|
-| The row's issue waits on an open issue; no work has started | `tracked` | Neutral "waits on #119" | None |
-| Work started and is paused on the dependency | `partial` | Neutral "waits on #119" | None |
-| The blocker closes | Unchanged until the agent moves it | The waits-on chip disappears on refresh | None |
-| The row also needs an independent human action, such as approving a design | `blocked`, with `note`, `next_step`, `action_owner` and `impact` | The blocked mark and "waits on #119" | The existing blocked-row rule only |
-| An agent marks `blocked` only because of a dependency | A contract violation the viewer cannot detect | The blocked mark and "waits on #119", so the mistake is visible | As the agent declared it |
+| Situation | Status the agent sets | What the viewer shows (once dependencies ship) |
+|---|---|---|
+| The row's issue waits on an open issue; no work has started | `tracked` | A neutral "waits on #119" |
+| Work started and is paused on the dependency | `partial` | A neutral "waits on #119" |
+| The row also needs an independent human action | `blocked`, with `note`, `next_step`, `action_owner` and `impact` | The blocked mark and "waits on #119" |
+| An agent marks `blocked` only because of a dependency | A contract violation the viewer cannot detect | The blocked mark and "waits on #119", so the mistake is visible |
 
 ---
 
@@ -716,269 +810,478 @@ The viewer never derives, overrides or suggests a row status from GitHub. The ag
 
 - `public/attention.js`, `public/relay.js`, `electron/reply-watch.cjs` and the
   `/api/items?scope=attention` projection stay byte-unchanged.
-- Relationship data is passed to no attention function. It can neither add an entry (a row
-  waiting on #119 never enters Needs you) nor remove one (a question about #120 stays).
-- Ownership labels **read** the attention set the render already computed and never feed back
-  into counts.
-- Dependency chips use neutral tones, never the `bad` tone, never the blocked status mark, and
-  never the word "Blocked" (Q2).
-- The `board_upsert`, `board_row` and `board_advance` descriptions, the `status` field's
-  `.describe()`, and `docs/reporting-snippet.md` gain one sentence: "Waiting on another GitHub
-  issue (GitHub's 'blocked by') is tracked or partial, never blocked."
-- Closed projects (#32) are skipped by the issue poller; cached relationships still render when
-  the human peeks.
+- Relationship data is passed to no attention function. It can neither add an entry nor remove
+  one.
+- Agent Inbox activity labels **read** the attention set the render already computed and never
+  feed back into counts.
+- Relationship chips use neutral tones, never the `bad` tone, the blocked status mark or the word
+  "Blocked".
+- Closed projects (#32) are not refreshed; their cached relationships still render on a peek.
 
 ---
 
-## §10 — Search and deep links
+## §10 — Agent-facing contract (PR2)
 
-- **Index** (`public/search-index.js`): items and plans gain fields "Issue" (`owner/name#N` and
-  `#N`), "Issue title" and "Parent issue" (key and title). Plans add "Sub-issue" for each child
-  and rows add "Row issue". Each field records an `issueKey` and a role (`self`, `parent`,
-  `child`, `waits-on`, `unblocks`) beside the existing `rowId`. GitHub titles are searched as
-  text and highlighted with the existing text-node highlighter.
-- **Navigation:** a result carries `{ targetId, rowId?, field, issueKey?, issueRole? }`.
-  `focusItem` reuses `source.rowId` (`openRows`, `showDoneBoards`), and `findSearchJumpSource`
-  selects `[data-issue-key="…"][data-issue-role="…"]` with `CSS.escape` inside the target, so a
-  hit on "AHP adapter" lands on that plan's row and highlights its `waits on #119` chip, not
-  another chip naming the same issue.
-- **Hash grammar** (`public/badge.js`): `#item/<id>` is unchanged. Optional `/row/<rowId>` and
-  `/issue/<role>/<key>` segments are each `encodeURIComponent`-encoded.
-  `focusHashFor(id, { rowId, issueKey, issueRole })` writes them during in-app navigation, so a
-  reload lands on the same row and chip. Electron's existing one-argument `focusHashFor(id)`
-  calls are unaffected. An older build reading a new-form hash finds no item with that id and
-  does nothing.
-- **Preserved:** filter resets, `forceRender`, `pendingFocusId`, the press guard, draft
-  protection and the #184 history retry.
+### Writes
 
----
-
-## §11 — Agent-facing contract (MCP)
-
-### Writes (PR3)
-
-- `board_upsert({ title, issue?, rows: [{ …, issue? }] })`: the top-level `issue` pins the plan
+- `board_upsert({ title, issue?, rows: [{ …, issue? }] })`: the top-level `issue` pins the plan,
   and `rows[].issue` links a row. `board_row({ …, issue? })` links that row.
-- Accepted forms: `owner/name#123`; `#123` or `123`, resolved at write time against the
-  session's `repo` and refused when the session has none; or
-  `https://github.com/owner/name/issues/123`. Anything else is refused with an error that lists
-  the accepted forms. The stored value is normalized.
-- Omission preserves the stored link and `''` clears it, as for every other agent-owned field.
-- Changing a row link is row content: it bumps the row `revision` and `updated_at`. Changing the
-  plan pin bumps the board revision.
-- Field description: "Links this plan or row to a GitHub issue for display only. Relationships
-  come from GitHub, and Agent Inbox never edits them. Waiting on another issue is tracked or
-  partial, never blocked."
+- **Accepted forms:**
+  - `owner/name#123`;
+  - `#123` or `123`, resolved at write time against the session's `repo` and refused when the
+    session has none;
+  - `https://github.com/owner/name/issues/123`.
 
-### Reads
+  Anything else is refused with an error that lists the accepted forms. The stored value is
+  normalized.
+- **Safeguards (Q1):**
+  - Omission preserves the stored link and `''` clears it, as for every agent-owned field.
+  - `board_advance` keeps the row's link (it archives the action, not the link).
+  - A move into `blocked` keeps the link.
+  - A PR that closes several issues is never guessed (§4.2); the agent can pin explicitly.
+- A link change is row content: it bumps the row `revision` and `updated_at`. A pin change bumps
+  the board revision.
 
-- PR3: plans and rows echo `issue` as the normalized string.
-- PR6 (optional, Q5): titled `board_get` and `pending` rows add a compact `issue_rel`, read from
-  the cache through `store.ts` and merged by `src/issue-graph.ts`. It contains keys and counts
-  only, no titles or bodies (the #42 payload diet), and is omitted when unknown. The MCP process
-  stays network-free: it reads what the viewer cached.
+### Reads (Q5)
+
+- Plans and rows echo `issue` as the normalized string.
+- A **titled** `board_get` adds a short `issue_rel` for the plan and each linked row. It is read
+  from the cache through `store.ts` and built by the pure `src/issue-graph.ts`; the MCP process
+  stays network-free. It holds keys and counts only, never titles or bodies (#42's payload diet),
+  and is omitted when nothing is cached:
 
 ```json
-{ "parent": "shariqh/agent-inbox#117", "children": { "total": 0, "done": 0 },
-  "waits_on": ["shariqh/agent-inbox#119"], "checked_at": "2026-10-19T21:50:02.114Z", "stale": false }
+{ "key": "shariqh/agent-inbox#120", "parent": "shariqh/agent-inbox#117",
+  "children": { "total": 0, "done": 0 }, "checked_at": "2026-10-19T22:30:00.000Z",
+  "stale": false, "unavailable": false }
 ```
 
-### Mutation
+- `pending()` and the title-less `board_get` summary are unchanged.
 
-None (Q4). Agents already have `gh issue edit --parent`, `--add-sub-issue` and
-`--add-blocked-by`, and the viewer shows their changes on the next refresh. If a mutation is
-ever added, it must live in the viewer process behind an explicit human action with a named
-action, carry exact node ids, and re-read the current state immediately before writing, because
-GitHub offers no revision precondition for relationships. It must never reorder, close or
-unlink anything implicitly.
+### Mutation (Q4)
+
+None. Agents use `gh issue edit --parent`, `--add-sub-issue` and so on, and the viewer shows the
+result on the next refresh.
 
 ---
 
-## §12 — Security
+## §11 — Security
 
-- **Text.** Titles are third-party text: a dependency can point at any public issue, and that
-  issue's author controls its title. Every title goes through `esc()` or `textContent`; tooltips
-  go through an escaped `title=`.
+- **Text.** Titles are third-party text: a parent or child can live in a public repository whose
+  issue author controls the title. Every title goes through `esc()` or `textContent`; tooltips go
+  through an escaped `title=`.
 - **URLs.** Hrefs are built from a validated slug and an integer as
-  `https://github.com/<repo>/issues/<n>`, then passed through `chipHtml()` → `anchorHtml()` →
-  `safeHttpUrl()` → `esc()`. GitHub's `url` fields are never requested. The new builders sit in
-  `public/source.js`, so the one-href-path rule from #30 still holds.
-- **Attributes and selectors.** `data-issue-key` and `data-issue-role` go through `esc()`;
-  selectors use `CSS.escape`.
-- **Subprocess.** `execFile` without a shell, a constant query document, values only as
-  variables, `-f` for strings, `-F` only for validated integers, `--hostname github.com`, piped
-  streams, a timeout and a buffer cap.
-- **Surface.** No new write route, no token handling (`gh` owns authentication), and nothing
-  enters the MCP import graph that can reach the network.
-- **Privacy.** Private issue titles are cached in the local hub, as PR titles already are. Hosted
-  mode (#8) must treat them as sensitive.
+  `https://github.com/<repo>/issues/<n>`, then pass through `chipHtml()` → `anchorHtml()` →
+  `safeHttpUrl()` → `esc()`. GitHub's `url` fields are never requested, and the one-href-path rule
+  from #30 holds.
+- **Attributes and selectors.** `data-issue-key` goes through `esc()`; selectors use
+  `CSS.escape`.
+- **Subprocess.** `execFile` without a shell, a deterministic document, values only as variables,
+  `-f` for strings, `-F` only for validated integers, `--hostname github.com`, piped streams, a
+  timeout and a buffer cap.
+- **Surface.** No new write route and no token handling. The MCP process gains only pure modules
+  (`src/issue-graph.ts`, `public/issue-key.js`).
+- **Privacy.** Private issue titles are cached in the local hub, as PR titles already are. A hard
+  failure deletes them at once. Hosted mode (#8) must treat them as sensitive.
 
 ---
 
-## §13 — Test strategy
+## §12 — Later work: design notes (not scheduled)
 
-No test makes a network call. Fixtures are trimmed copies of the live responses in §18.
+### 12.1 Opt-in grouping (Q3)
 
-| Area | File | Covers |
+- Ships only after breadcrumbs are proven, behind a Plans toggle that is off by default and
+  stored per window like other view state.
+- The group key is **`(project, parent issue key)`**. In the all-projects view, plans from
+  different Agent Inbox projects never merge, even under one GitHub parent; the header names
+  both.
+- Groups keep the position of their first member in today's order. Inside a group, the umbrella
+  plan comes first, then GitHub's child order, then today's order.
+- `paginateWithPending` pages the flattened list, and a group that spans pages repeats its header
+  with "(continued)".
+- Inside a plan, thin parent sub-headers appear only when its rows span two or more parents.
+
+### 12.2 Dependencies with "waits on" chips (Q2, Q8)
+
+- Starts after the hierarchy is proven. It adds `issueDependenciesSummary`,
+  `blockedBy(first: 50)` and `blocking(first: 50)` to `Root`; the dry-run cost was still 1 for 10
+  roots.
+- It also adds a `dependencies` snapshot section and the §4.6 reconciliation.
+- Chips read "waits on #119" (or "waits on 3") and "unblocks"; tooltips may say "GitHub: blocked
+  by #119".
+- It adds `waits_on` to `issue_rel` and follows §8 and §9.
+
+### 12.3 Plan Flow edges
+
+`buildMission(board, graph)` stays pure and plan-scoped. Containment and sequencing render
+differently:
+
+| | Containment | Sequencing |
 |---|---|---|
-| Store | `test/issue-store.test.ts` | Additive migration on a pre-#103 database; NOCASE key deduplication; v1 validation on write and read; an older attempt cannot overwrite a newer success, and its failure is ignored; a failure keeps the last good snapshot; prune at 30 days; `listIssueEntities` respects open, active and closed-project rules; omission preserves and `''` clears pins and links; annotations and handled marks survive |
-| Parse and policy | `test/issue-poller.test.ts` | Success; `NOT_FOUND` per alias and per issue; a PR number; SAML `FORBIDDEN`; a dependency field error that keeps the hierarchy; unparseable stdout; invalid slugs, states and oversized titles dropped; self-links and duplicates; `hasNextPage` truncation; hidden-children counts; a moved issue becomes an alias; `dueIssueRoots` tables including the merge nudge and caps; never rejects; recorded argv (`-f`, `-F`, `--hostname`); the boundary test and header pin |
-| Merge | `test/issue-graph.test.ts` | Freshest observation decides the parent; one parent after a move; child order; `blocks` freshness; a `contains` cycle across stale snapshots; a `blocks` cycle; depth bound of 8; `a/x#5` never merges with `b/y#5`; case-insensitive merge; trimming |
-| Viewer | `test/viewer.test.ts` | `/api/issues` 200 then 304; invalidation after a poller write; `/api/items` and `/api/boards` ETags unchanged by a snapshot write |
-| Pure presentation | `test/source.test.ts`, `test/issues.test.ts` | Hostile titles (`<img onerror>`, quotes inside `title=`); hrefs are always constructed; stale and expired states; tone never `bad`; copy never "Blocked"; `issueKeyFor` precedence (pin, then PR, then inferred); plan grouping and continued headers |
-| Search and hashes | `test/search-index.test.ts`, `test/badge.test.ts` | Issue fields carry `issueKey` and role; cross-repo keys stay distinct; new hash segments round-trip and an old-form hash still parses |
-| Plan Flow model | `test/mission.test.ts` | Typed edges; topological order; cycle fallback; `next_after` creates no edge; ghosts |
-| DOM | `test/dom/issue-relations.test.ts` | Chips and breadcrumbs from fixtures; grouping with "(continued)" headers; strip ownership; Plan Flow classes and accessible names; a draft in an open row survives a poll that changes relationships; focus kept; `#item/<plan>/row/<row>/issue/<role>/<key>` opens the row and highlights the chip; a search hit on a child title lands on its plan; a 404 from `/api/issues` renders exactly as before |
-| Attention | `test/dom/issue-attention.test.ts` plus a source pin | The same fixture with and without a graph gives identical badge, title, tab counts, Needs-you rows and dock projection; `public/attention.js` names no issue field |
-| MCP | `test/mcp.integration.test.ts` | Every accepted `issue` form; refusals; omission and clearing; `tools/list` carries the dependency sentence; PR6's compact summary |
-| Exports | `test/dead-exports.test.ts` | Every new export is reachable from production code |
+| Visual | Solid left rail, "Part of #117" | Dashed accent link chip, "Waits on: AHP adapter (#119)" |
+| Class | `.mission-edge-contains` | `.mission-edge-waits` |
+| Accessible name | "Sub-issue #120 of #117" | "Waits on step AHP adapter (#119)" |
+| Activation | None | Moves focus to the blocking step inside the flow |
+
+- Rows keep a stable topological order (Kahn's algorithm, ties by row position). A cycle keeps
+  plan order.
+- Children of the plan's issue that no row links appear in a "Not in this plan" fold.
+- `result` stays `outcome` or `next_after` text only, so a `next_after` of "after #119" creates
+  no edge.
+- Issues in other plans are external chips, never cross-plan edges.
+
+### 12.4 Sibling context
+
+- Adds the parent's child identities to each child's query (`parent.subIssues`, identities only,
+  included in the 1-point dry run). The UI can then show "3rd of 10" and a sibling list, and each
+  complete sibling list adds membership and absence observations.
+- Ships with search by issue key and GitHub title (fields carry `issueKey`, and a hit lands on the
+  exact plan, row and chip).
+- Also adds row-level deep-link hashes: `#item/<id>/row/<rowId>/issue/<key>`, each segment
+  `encodeURIComponent`-encoded. A plain `#item/<id>` keeps working, and an older build ignores the
+  longer form.
 
 ---
 
-## §14 — Delivery: phased PRs
+## §13 — Delivery: the first slice
 
-Sizes are rough production / test lines. Every PR is read-only toward GitHub, and with no `gh`
-or no relationships the UI renders exactly as today (pinned in PR2).
+**Rules for every PR:**
 
-| PR | Scope | Prod | Tests | Needs |
-|---|---|---|---|---|
-| **PR1** Ingestion and store | `issue_snapshots` and its store API; `src/issue-poller.ts`; `src/issue-graph.ts`; `public/issue-key.js`; `/api/issues`; poller wiring; CLAUDE.md and copilot-instructions updates. No UI. Can split into 1a (store, merge, route) and 1b (poller). | ~650 | ~700 | Q1, Q6, Q8 |
-| **PR2** Chips and breadcrumbs | `load()` read and validator; parent, progress and waits-on chips; SOURCE block sections; freshness labels; CSS | ~350 | ~450 | PR1, Q2 |
-| **PR3** Explicit links | Plan pin and row link columns; MCP schemas and descriptions; reporting snippet and host instructions; row chips | ~250 | ~350 | PR1, Q1 |
-| **PR4** Grouping, strip, search, deep links | `groupPlansByParent`; sub-issue strip with ownership; in-plan sub-headers; search fields; hash grammar | ~400 | ~450 | PR2, PR3, Q3, Q7 |
-| **PR5** Plan Flow typed edges | `buildMission(board, graph)`; `missionPathEl` rendering; CSS | ~300 | ~350 | PR3 |
-| **PR6** (optional) Agent summaries | Compact `issue_rel` on titled `board_get` and `pending` | ~120 | ~150 | PR1, PR3, Q5 |
+- No test makes a network call; GitHub fixtures are trimmed copies of the §18 responses.
+- Tests use real SQLite through `openDb()` and never mock the store.
+- `npm run typecheck` stays strict-clean and `test/dead-exports.test.ts` stays green.
+- Each PR updates CLAUDE.md and `.github/copilot-instructions.md` for the invariants it adds.
+- Any PR that renders something re-runs the attention non-regression pin.
 
-This differs from #103's suggested sequence in one way: PR1 ingests dependencies together with
-the hierarchy, because they come from the same call at no extra cost and their parse status is
-independent (Q8). Dependency UI stays separable: its chips land in PR2 and its Plan Flow edges
-in PR5, and either can be held back without touching the hierarchy.
+### PR1a — Schema, identity, pure hierarchy graph, `/api/issues`
+
+**Scope.**
+
+- The `issue_snapshots` table and its store functions (§4.4).
+- `public/issue-key.js`: canonical keys, validation, `issueKeyFor` with certainty, and
+  `issueKeySets`.
+- `src/issue-graph.ts`: §4.5 reconciliation, aliases, scoping and the node cap.
+- The `GET /api/issues` conditional snapshot.
+- No poller and no UI: the graph stays empty until PR1b. About 450 production and 550 test lines.
+
+**Acceptance criteria.**
+
+1. A database created by v1.3.1 migrates additively, and a v1.3.1 process can keep reading and
+   writing it at the same time.
+2. Keys are repo-qualified and case-insensitive; `a/x#5` and `b/y#5` never merge.
+3. Every row of the §4.5 worked-example table produces the stated result, including same-batch
+   ties, `conflict` and cycle breaking.
+4. A soft failure keeps the snapshot. A hard failure deletes it in the same statement and
+   suppresses that issue everywhere (rule 6). A late answer from an older attempt never
+   overwrites a newer one.
+5. A PR that closes several issues yields no `certain` identity, and a legacy row stays
+   display-only.
+6. `/api/issues` answers 304 when nothing changed. Snapshot writes leave the bytes and ETags of
+   `/api/items` and `/api/boards` unchanged.
+7. The display set includes closed-project entities and archived plans, and the refresh set
+   excludes them. Truncation counts are exact.
+
+**Tests.**
+
+- `test/issue-store.test.ts`:
+  - migration from a v1.3.1-shaped database;
+  - NOCASE key deduplication;
+  - v1 validation on write and read (corrupt JSON reads as "no snapshot" without throwing);
+  - the attempt rule for successes and failures;
+  - soft failures keep data, hard failures delete it;
+  - pruning at 30 days;
+  - `listIssueEntities` flags.
+- `test/issue-key.test.ts`: canonical keys and slug validation; `issueKeyFor` precedence and
+  certainty (one reference, several, none, unbound or legacy); both key sets.
+- `test/issue-graph.test.ts`:
+  - the worked-example table, row by row;
+  - two- and three-issue cycles, including a tie;
+  - the depth bound;
+  - rule 6 suppression and later revival;
+  - redirect aliases;
+  - display scoping;
+  - cap order and exact counts;
+  - cross-repository equal numbers.
+- `test/viewer.test.ts` and `test/viewer-snapshot-cache.test.ts`: `/api/issues` 200 then 304,
+  invalidation after a write, existing ETags unchanged.
+- `test/mixed-version.test.ts` (new): frozen v1.3.1 DDL and write statements run on a second
+  connection against a hub the new code migrated, interleaved with new writes. New columns
+  survive, old reads still work, and old writes succeed.
+
+### PR1b — Poller: fair queue, lease, rate-limit budgeting, failure handling
+
+**Scope.**
+
+- `src/issue-poller.ts`, as specified in §5.
+- The `issue_refresh_claims` table with `claimIssueRefresh` and `completeIssueRefresh`.
+- The issues-first tick, and a `deadlineMs` option on `refreshOnce`.
+- `closing_refs` recording in `parsePrPayload` and `upsertSourceLink`.
+- Wiring in `src/viewer-server.ts`, and the boundary test.
+- About 400 production and 500 test lines.
+
+**Acceptance criteria.**
+
+1. With 120 due candidates, every one is fetched within 12 ticks; no candidate is ever skipped
+   for good.
+2. Two viewers on one hub never fetch the same key at the same time, and a crashed viewer's lease
+   expires after 60 s.
+3. The issue class runs first in every tick, and the PR class starts no target after 45 s.
+4. Batches of 1 to 10 each use a valid document of their own size.
+5. Spending follows the reported cost within the bucket; below the floor the class waits until
+   `resetAt`.
+6. Soft failures keep data and hard failures suppress it at once. Partial batches are classified
+   per alias, and a field error affects only its section.
+7. A merged PR nudges its `certain` closing issue and every candidate whose cached list contains
+   that issue.
+8. A PR that closes several issues records every reference and never produces a `certain`
+   identity.
+9. No file of the stdio MCP graph imports the poller.
+
+**Tests.**
+
+- `test/issue-poller.test.ts`:
+  - fairness with 120 candidates on an injected clock;
+  - queue order and the TTL table;
+  - nudges;
+  - document snapshots for n = 1 and n = 10, with recorded argv (`-f`, `-F`, `--hostname`);
+  - parse fixtures: success, `NOT_FOUND` per alias and per issue, a PR number, SAML
+    `FORBIDDEN`, `RATE_LIMITED`, a field error, a validation error with no `data`, unparseable
+    output;
+  - redirect versus `moved`;
+  - the budget at cost 1 and cost 3, and the floor with `resetAt`;
+  - the refresh never rejects.
+- `test/issue-claims.test.ts`: two connections racing claims (`.immediate()`), a stale
+  `checked_at` refused, lease expiry, completion releasing leases, and a late completion under the
+  attempt rule.
+- `test/prstate.test.ts`: the deadline stops new targets; a multi-closing PR stores every
+  reference; the boundary list includes `issue-poller`; the `startPrPoller` source pin is updated.
+- `test/mixed-version.test.ts`: a frozen v1.3.1 `upsertSourceLink` unbinds `closing_refs`.
+
+### PR2 — Explicit plan and row links
+
+**Scope.**
+
+- The pin and link columns.
+- The MCP fields, accepted forms, errors and descriptions (§10), including the §8 contract
+  sentence.
+- Store support, including `advanceBoardRow`.
+- The titled `board_get` summary.
+- Updates to `docs/reporting-snippet.md`, the host instructions and CLAUDE.md.
+- About 250 production and 350 test lines.
+
+**Acceptance criteria.**
+
+1. Every accepted form normalizes to `owner/name#N`; anything else, including `#N` without a
+   session repository, is refused with the accepted forms listed.
+2. A full `board_upsert` that omits `issue` keeps the stored link, and `''` clears it.
+3. `board_advance` and a move into `blocked` keep the link; the human annotation, handled and
+   delivery fields are untouched.
+4. The plan pin outranks the PR issue and the branch issue. `boards.repo`, `issue_ref` and the PR
+   lookup are unchanged.
+5. Titled `board_get` shows `issue_rel` only when cached data exists. `pending()` output and the
+   title-less summary are byte-identical for the same rows.
+6. A v1.3.1 process writing boards and rows on a migrated hub never clears links.
+
+**Tests.**
+
+- `test/mcp.integration.test.ts` (real stdio round trip):
+  - every form and every refusal;
+  - omission and clearing;
+  - `tools/list` carries the link and dependency sentences;
+  - `pending()` is unchanged.
+- `test/store.test.ts`: `advanceBoardRow` keeps links; a reblock keeps them; revision and
+  `updated_at` bump on a link change; annotations and handled marks survive.
+- `test/shape.test.ts`: `issue_rel` appears on titled reads only, with keys and counts and no
+  titles.
+- `test/mixed-version.test.ts`: frozen v1.3.1 `upsertBoard` and `updateBoardRow` statements keep
+  links.
+
+### PR3 — Breadcrumbs and child progress
+
+**Scope.**
+
+- The `load()` read and the `/api/issues` validator.
+- `public/issues.js`.
+- Chips and source-block sections in `public/source.js`, and row link chips.
+- Agent Inbox activity, and navigation from the new surfaces.
+- CSS.
+- About 350 production and 450 test lines.
+
+**Acceptance criteria.**
+
+1. A parent renders its children in GitHub's order with open/closed progress, and a child renders
+   its exact parent (#103 criterion 1).
+2. With no `gh`, no data, or a 404 from `/api/issues`, every surface renders exactly as today.
+3. Soft failures show their age, dim after 30 minutes and hide after 7 days. Hard failures show
+   "unavailable" with no cached title.
+4. Hostile titles render as text, and every href is constructed and passes through `chipHtml`.
+5. The badge, title, tab counts, Needs you and the dock projection are identical with and without
+   relationship data.
+6. A poll that changes relationship data never discards a draft, the focus or an expanded row.
+7. Activity labels read attention and never change it. Each label opens the exact plan, row or
+   item.
+
+**Tests.**
+
+- `test/issues.test.ts`: breadcrumb trails, child order, progress, activity labels, freshness
+  thresholds, unavailable states and aliases.
+- `test/source.test.ts`: hostile titles and quotes inside `title=`; constructed hrefs only;
+  tones; the word "Blocked" never appears.
+- `test/snapshots.test.ts`: the `/api/issues` validator.
+- `test/dom/issue-relations.test.ts`:
+  - rendering from fixtures;
+  - the 404 fallback;
+  - a draft and the focus survive a poll that changes relationships;
+  - navigation to the exact plan and row.
+- `test/dom/issue-attention.test.ts`: attention surfaces are identical with and without a graph,
+  and a source pin checks that `public/attention.js` names no issue field.
+
+### Later (not scheduled; designs in §12)
+
+- **Opt-in grouping** by `(project, parent issue)`, after breadcrumbs are proven.
+- **Dependencies with "waits on" chips**, after hierarchy ingestion and reconciliation are proven.
+- **Plan Flow edges**, after dependencies.
+- **Sibling context**, together with search by issue key and title and row-level deep-link
+  hashes.
+
+### Coverage of #103's acceptance criteria
+
+| #103 criterion | First slice | Later |
+|---|---|---|
+| 1. Child ordering, progress, exact parent | PR3 | |
+| 2. Repo-qualified identities | PR1a | |
+| 3. Cycles, self-links, duplicates, stale and unavailable targets fail closed | PR1a, PR1b (hierarchy) | Dependencies |
+| 4. Sequencing distinct from containment | | Dependencies, Plan Flow edges |
+| 5. Attention unchanged | PR3 (pinned) | Re-pinned by every later PR |
+| 6. Rollups refresh without duplicate plans or lost notes | PR1a, PR1b, PR3 | Opt-in grouping |
+| 7. Search and deep links reach the exact target | PR3: in-app navigation to the exact plan and row | Sibling context: search and hashes |
+| 8. Failures never hide the issue, approval or plan | PR1b, PR3 | |
+| 9. Tests | Each PR | Each PR |
+| 10. Documentation | This document, plus PR1a and PR2 docs | |
 
 ---
 
-## §15 — Open questions for the owner
+## §14 — Revision 1 phasing (superseded)
 
-Each has a recommendation; "Gates" names the first PR that needs the answer.
+Revision 1 proposed six PRs, with dependencies ingested in PR1 and automatic grouping. The owner
+chose the smaller first slice instead (§15). Every unit of revision 1 maps onto §13 or §12, so
+nothing was lost.
 
-**Q1 — How do plans and rows link to issues?** Gates PR1 (precedence) and PR3.
-*Recommended:* add the explicit plan-level `issue` pin and row-level `issue` link (§4.2, §11).
-*Alternatives:* keep only today's inferred stamps, so rows can never link and umbrella plans
-follow the last writer's branch; or parse labels such as "#118 …", which #103's no-inference
-rule rejects.
+---
 
-**Q2 — What does the UI call a dependency?** Gates PR2.
-*Recommended:* "waits on" and "unblocks", with GitHub's terms in tooltips ("GitHub: blocked by
-#119"). In this product "Blocked" means "needs you".
-*Alternative:* GitHub's own "blocked by" and "blocking", which are familiar but collide with
-the Blocked row status.
+## §15 — Decisions (recorded 2026-10-19)
 
-**Q3 — How far does grouping go?** Gates PR4.
-*Recommended:* group plans under their GitHub parent automatically, and add in-plan parent
-sub-headers only when a plan's rows span two or more parents (§7.3).
-*Alternatives:* a grouping toggle that defaults to off, or grouping only inside Plan Flow.
-
-**Q4 — Should Agent Inbox ever edit GitHub relationships?** Gates nothing in this plan.
-*Recommended:* no; agents use `gh issue edit`.
-*Alternative:* a later, guarded viewer action under its own issue (§11).
-
-**Q5 — Should agents see relationship summaries?** Gates PR6.
-*Recommended:* yes, compact keys and counts on titled `board_get` and `pending` only (§11).
-*Alternative:* none; agents run `gh issue view` themselves.
-
-**Q6 — Freshness constants.** Gates PR1.
-*Recommended:* open TTL 10 min, closed 60 min, errors 10 and 60 min, stale at 30 min, hidden
-after 7 days, pruned after 30 days, 10 issues per call, one call per tick, 50 targets.
-
-**Q7 — What does "current ownership" mean?** Gates PR4.
-*Recommended:* Agent Inbox's local ownership only (§7.4).
-*Alternative:* also show GitHub assignees, which adds GitHub-authored logins to the payload.
-
-**Q8 — When are dependencies ingested?** Gates PR1.
-*Recommended:* in PR1, alongside the hierarchy, with dependency chips in PR2 and Plan Flow
-edges in PR5 (§14).
-*Alternative:* follow #103's order literally and add dependency fields to the query in a later
-PR.
+| | Question | Decision | Applied in |
+|---|---|---|---|
+| Phasing | Original six PRs or a smaller first slice? | **Smaller first slice:** PR1a, PR1b, PR2, PR3, then the later list | §13 |
+| Q1 | How do plans and rows link to issues? | **Explicit plan pin and row link,** with safeguards: links survive `board_advance` and omitted fields, and a PR that closes several issues is ambiguous and never guessed | §4.2, §10, PR2 |
+| Q2 | What does the UI call a dependency? | **"waits on" / "unblocks"** | §12.2 |
+| Q3 | Group plans by GitHub parent? | **Deferred until breadcrumbs are proven, then opt-in,** keyed by `(project, parent)` | §12.1 |
+| Q4 | Edit GitHub relationships from Agent Inbox? | **Never** | §10 |
+| Q5 | Agent-facing summaries? | **`pending()` unchanged; short summaries on titled `board_get` only** | §10, PR2 |
+| Q6 | Freshness and budget? | **Open issues every 10 min, closed every 60, dim after 30 min, hide after 7 days,** plus the fair queue, leases, tick deadlines, reported-cost budget and immediate hard-failure suppression | §5, PR1b |
+| Q7 | What is "current ownership"? | **"Agent Inbox activity",** local only, not GitHub assignees | §7.3, PR3 |
+| Q8 | When do dependencies arrive? | **Deferred, ingestion and display alike, until the hierarchy is proven** | §12.2 |
 
 ---
 
 ## §16 — Risks
 
-1. **Agents keep using `blocked` for dependencies.** It cannot be enforced. Tool descriptions,
-   the reporting snippet and the visible "waits on" chip make the mistake obvious, not
-   impossible.
-2. **Stale rollups read as current.** Mitigated by age labels, dimming, the 7-day hide and the
-   merge nudge, but a human can still act on a 25-minute-old count.
-3. **GitHub API drift** (renamed fields, new limits). The parser fails closed and its sections
-   are independent; the worst case is that relationships disappear and nothing else changes.
-4. **Rate-limit pressure** for hubs with many projects. Bounded by 50 targets, 10 per call, one
-   call per tick and the TTLs: at most 60 points per hour.
-5. **Grouping changes the Plans order**, which may surprise. Recency still orders groups; Q3
-   offers a toggle.
-6. **Mixed-version processes share one hub.** Columns are additive; older processes ignore them
-   and their updates leave them untouched; an older viewer never polls issues; the monotonic
-   guard covers two new viewers.
-7. **Private titles in the local hub,** the same exposure PR titles already have; flagged for
-   hosted mode.
-8. **Plan Flow scope creep.** The design keeps list-based typed edges and no graph layout
-   engine; a request for a full DAG view should be a separate issue.
-9. **Payload growth** in pathological hubs, bounded by `MAX_GRAPH_NODES` and the trim flag.
-10. **New hash segments** do nothing in an older open tab until it reloads.
+1. **Stale rollups read as current.** Age labels, dimming, the 7-day hide and merge nudges reduce
+   this, but a 25-minute-old count can still be acted on.
+2. **GitHub API drift** (renamed fields, new limits). The parser fails closed and sections are
+   independent; at worst relationships disappear and nothing else changes.
+3. **Large hubs.** With no cap, more than about 100 due candidates stretch refreshes past the
+   TTL. Ages stay honest, and `ISSUE_BATCH` or the per-tick call count can be tuned.
+4. **Rate limits.** Bounded by the token bucket (120 points per hour per viewer) and the floor.
+5. **Lease correctness across processes.** Claims rely on `.immediate()` transactions on one
+   SQLite file; PR1b tests races on two connections.
+6. **Mixed-version processes.** Old processes ignore the new columns and leave them untouched;
+   `closing_refs` unbinds itself; frozen-statement tests pin both directions.
+7. **Repository rename versus issue transfer.** Renames keep working through redirect aliases.
+   Transferred issues show "unavailable" until relinked (node-id refresh is deferred).
+8. **The #30 display change.** A PR that closes several issues no longer shows its first one.
+   This is deliberate, and the PR tooltip lists every reference.
+9. **Later dependency misuse.** Agents may still mark `blocked` for a dependency. The contract
+   sentence ships in PR2, and "waits on" chips will make the mistake visible.
+10. **Privacy.** Private titles are cached locally, as PR titles are, and hard failures delete
+    them.
 
 ---
 
-## §17 — Rejected alternatives
+## §17 — Rejected and deferred alternatives
 
-- **REST per family:** three or four requests per issue, full issue objects, and a 404 that
-  cannot tell "no parent" from "no access".
-- **`gh issue view --json` per issue:** one subprocess per issue; children carry no repository.
+- **REST per family:** several requests per issue, full issue objects, and a 404 that cannot
+  tell "no parent" from "no access".
+- **`gh issue view --json` per issue:** one subprocess per issue, and children carry no
+  repository.
 - **Extending `gh pr list`:** it has no relationship fields.
-- **Webhooks or `gh webhook forward`:** need a public endpoint or repository admin, plus a new
+- **Webhooks or `gh webhook forward`:** both need a public endpoint or repository admin, plus a
   long-lived process.
-- **A normalized `issue_edges` table now:** needs per-root edge ownership and transactional
-  replacement, and the same freshest-observation merge anyway. The API shape keeps it open.
+- **One constant ten-slot document:** it fails validation for any smaller batch (verified).
+  `@include` with placeholder values: valid, but every request carries ten slots.
+- **A cap of the 50 most recently updated candidates:** it starves the rest. Replaced by the fair
+  queue.
+- **A separate timer for issue refresh:** it would allow two `gh` processes at once and still
+  need its own deadline. Replaced by issues-first in the shared tick.
+- **Rotating the class order each tick:** unnecessary, because the issue class is one bounded
+  call.
+- **Deferred: refresh by GraphQL node id.** It would follow issue transfers with proof, but adds
+  a second document shape and legacy-id handling (`MDU6…` ids still exist).
+- **Deferred: a normalized `issue_edges` table.** It needs per-root edge ownership and the same
+  reconciliation anyway.
 - **Joining relationships into `/api/items` or `/api/boards`:** every refresh would change their
-  bytes and defeat their 304s.
-- **Deriving row status from dependencies:** row status is agent-owned, and the attention
-  invariants forbid it.
-- **Parsing labels, notes or tasklists for issue numbers:** #103 non-goal.
-- **Creating plans or rows from children:** agents own boards, and the rule that a full upsert
-  deletes omitted rows would make generated rows fragile.
+  bytes.
+- **Deriving row status from dependencies,** parsing labels or tasklists, and **creating plans or
+  rows from children:** all ruled out by #103 and the attention invariants.
+- **Automatic grouping:** deferred by Q3.
 
 ---
 
 ## §18 — Verification log and sources
 
-Everything marked "verified" or "observed" above was executed on 2026-10-19 with `gh` 2.102.0,
-read-only:
+Everything marked "verified" or "observed" above was run on 2026-10-19 with `gh` 2.102.0, read-only:
 
 - `gh issue view --json` and `gh issue list --json` list `blockedBy`, `blocking`, `parent`,
   `subIssues`, `subIssuesSummary` and `issueType`. `GH_DEBUG=api gh issue view` queries
   `subIssues(first:100)`, `blockedBy(first:50)`, `blocking(first:50)` and `parent{…}`; its child
   nodes carry `id`, `number`, `state`, `title` and `url`, with no repository.
-- GraphQL introspection: the `Issue` fields in §2.2, with descriptions;
+- GraphQL introspection: the `Issue` fields in §2.2 with their descriptions;
   `SubIssuesSummary { completed, percentCompleted, total }`;
-  `IssueDependenciesSummary { blockedBy, blocking, totalBlockedBy, totalBlocking }` ("open" vs
-  "open and closed"); the mutation list in §2.2. `subIssues` takes no `orderBy`.
-- REST: `GET repos/cli/cli/issues/14529/sub_issues?per_page=2` returned 200 with
-  `Link: <…/repositories/212613049/issues/14529/sub_issues?per_page=2&page=2>; rel="next"`, and
-  objects carrying `parent_issue_url`, `sub_issues_summary` and `issue_dependencies_summary`
-  (35 top-level keys). `GET repos/cli/cli/issues/14528/parent` returned #14529;
-  `GET repos/cli/cli/issues/14563/parent` returned 404 "No parent issue found".
-  `GET repos/microsoft/vscode/issues/332085/dependencies/blocking` returned
-  `Vivswan/litellm-vscode-chat#443`.
+  `IssueDependenciesSummary { blockedBy, blocking, totalBlockedBy, totalBlocking }`;
+  `IssueStateReason` is `REOPENED, NOT_PLANNED, COMPLETED, DUPLICATE`; `subIssues` takes no
+  `orderBy`.
+- REST:
+  - `GET repos/cli/cli/issues/14529/sub_issues?per_page=2` returned 200, with
+    `Link: <…/repositories/212613049/issues/14529/sub_issues?per_page=2&page=2>; rel="next"` and
+    objects carrying `parent_issue_url`, `sub_issues_summary` and `issue_dependencies_summary`
+    (35 top-level keys);
+  - `GET repos/cli/cli/issues/14528/parent` returned #14529;
+  - `GET repos/cli/cli/issues/14563/parent` returned 404 "No parent issue found";
+  - `GET repos/microsoft/vscode/issues/332085/dependencies/blocking` returned
+    `Vivswan/litellm-vscode-chat#443`.
 - `shariqh/agent-inbox`: #117 contains #118 to #127; #119 blocks #118 and #120 to #125; #120
-  blocks #121; #103 has no relationships; no issue types (user-owned repository).
+  blocks #121; #103 has no relationships; there are no issue types (user-owned repository).
 - `cli/cli`: #14563 contains #14529, which contains #14523 to #14528 (three levels, all closed).
-- Partial errors: exit 1 with the full JSON on stdout; `NOT_FOUND` paths as in §2.6;
-  `FORBIDDEN` with `saml_failure` for `github/roadmap`. `issue(number: 215)` is `NOT_FOUND`
-  (a PR).
-- `closingIssuesReferences` from `gh pr list` (PRs #213 and #210): `id`, `number`,
-  `repository { id, name, owner { id, login } }`, `url`.
-- Cost and size: the §5.5 query with 3 roots cost 1 point and returned 5,735 bytes; dry runs
-  cost 1 for 10 and 25 roots and 2 for 40 and 50; 10 live roots took 0.8–0.9 s and returned
-  18,550 bytes raw, 6,173 merged (11 nodes, 18 edges). The 7-level ancestor chain cost 1.
-- This account's limits: REST core 15,000 per hour, GraphQL 10,000 per hour, search 30 per
-  minute.
+  The ancestor walk cost 1 point.
+- Partial errors: exit 1 with the full JSON on stdout; `NOT_FOUND` paths as in §2.6; `FORBIDDEN`
+  with `saml_failure` for `github/roadmap`. `issue(number: 215)` is `NOT_FOUND` (a PR).
+- **Partial batches:** the ten-slot document with three roots exited 1, with errors starting
+  "Variable $o3 of type String! was provided invalid value" and no `data`. The three-slot
+  document succeeded at cost 1 and returned `rateLimit { cost remaining resetAt }`.
+- **Redirects:** `repository(owner: "twitter", name: "bootstrap")` returned `nameWithOwner`
+  `twbs/bootstrap`. `issue(number: 2)` under the old name returned `twbs/bootstrap#2` with id
+  `MDU6SXNzdWUxNDQ2Mzk4`.
+- `closingIssuesReferences` from `gh pr list` (PRs #213 and #210) carries `id`, `number`,
+  `repository { id, name, owner { id, login } }` and `url`.
+- **Cost and size:**
+  - the first-slice document cost 1 point for 1, 3 and 10 roots (2,542, 3,668 and 7,615 bytes),
+    and 5,927 bytes merged for 10;
+  - with the dependency and sibling fragments, a 10-root dry run cost 1;
+  - the revision 1 document cost 1 point for 3 roots (5,735 bytes); 10 roots took 0.8–0.9 s and
+    18,550 bytes; dry runs cost 1 for 10 and 25 roots and 2 for 40 and 50.
+- This account's limits: REST core 15,000 per hour, GraphQL 10,000 per hour, search 30 per minute.
+- Not verified: how `issue(number:)` behaves for an issue transferred to another repository (§4.1).
 
 Sources:
 
@@ -994,7 +1297,7 @@ Sources:
   https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api
 - Webhook events (`sub_issues`, `issue_dependencies`):
   https://docs.github.com/en/webhooks/webhook-events-and-payloads
-- Changelog 2025-04-09, sub-issues, issue types and advanced search GA:
+- Changelog 2025-04-09, sub-issues and issue types GA:
   https://github.blog/changelog/2025-04-09-evolving-github-issues-and-projects/
 - Changelog 2025-08-21, issue dependencies GA, 50 per type:
   https://github.blog/changelog/2025-08-21-dependencies-on-issues/
@@ -1002,5 +1305,31 @@ Sources:
   https://github.blog/changelog/2025-09-11-a-rest-api-for-github-projects-sub-issues-improvements-and-more/
 - Changelog 2026-06-10, `gh` 2.94.0 hierarchy and dependency support:
   https://github.blog/changelog/2026-06-10-manage-sub-issues-types-and-dependencies-from-github-cli/
-- Changelog 2025-02-18, tasklist retirement:
+- Changelog 2025-02-18, tasklist retirement on 2025-04-30:
   https://github.blog/changelog/2025-02-18-github-issues-projects-february-18th-update/
+
+---
+
+## §19 — Revision history
+
+- **Revision 1 (2026-10-19):** initial design with eight open questions and a six-PR plan.
+- **Revision 2 (2026-10-19):** the review fixes and the owner's decisions.
+  - **Reconciliation** gains negative observations, equal-time ranks, conflicts, deterministic
+    cycle breaking, and hard failures as suppressing observations (§4.5, §4.6).
+  - **Scheduling:** a fair queue with no cap, atomic expiring leases, and an issues-first tick
+    with per-class deadlines (§5.2, §5.4, §5.5).
+  - **Failures:** hard failures delete data at once and soft failures age. Repository redirects
+    are aliased; transfers are not assumed (§4.1, §5.8).
+  - **Queries:** one document per batch size, with budgeting from the reported
+    `rateLimit { cost remaining resetAt }` (§5.3, §5.6).
+  - **Key sets:** explicit refresh and display sets, closed projects kept on purpose, and exact
+    truncation counts (§6).
+  - **Grouping** is keyed by `(project, parent)`, opt-in and later (§12.1).
+  - **Adopted from review:**
+    - PR1 split into 1a and 1b;
+    - `board_advance` and mixed-version tests;
+    - multi-closing PRs never guessed (`closing_refs`);
+    - §2.9 matched to the 10-issue batch;
+    - sibling context deferred.
+  - **Decisions recorded** (§15); **phasing** reduced to the first slice plus a later list, with
+    acceptance criteria and tests for each PR (§13).

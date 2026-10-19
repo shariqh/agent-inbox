@@ -7560,7 +7560,16 @@ function renderUpdateSettings(host) {
   const install = btn('Install and restart', () => bridge.install().catch(() => {}))
   install.className = 'updates-install'
   install.hidden = true
-  const restart = btn('Restart Agent Inbox', () => bridge.restart().catch(() => {}))
+  const restart = btn('Restart Agent Inbox', () => {
+    // Main restarts only in the state that offers this button. When it refuses
+    // anyway, usually because agent setup is running, say so: a button that
+    // silently did nothing would lie.
+    bridge.restart().then((restarting) => {
+      if (restarting === true) return
+      detail.textContent = 'Agent Inbox didn’t restart. If agent setup is running, try again when it finishes.'
+      detail.hidden = false
+    }).catch(() => {})
+  })
   restart.className = 'updates-restart'
   restart.hidden = true
   const cancel = btn('Cancel download', () => bridge.cancelDownload().catch(() => {}))

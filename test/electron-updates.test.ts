@@ -303,46 +303,77 @@ describe('Electron updater integration', () => {
 
   // #216: a window main no longer lets install gets Restart Agent Inbox on macOS.
   // main's own handler and restart function are evaluated against fakes.
-  function restartHandler(platform: string, options: { quitting?: boolean; installing?: boolean } = {}) {
+  // main's handler evaluated against fakes: by default exactly the state in which
+  // Settings shows Restart Agent Inbox, a verified download this window may not install.
+  type RestartWorld = {
+    platform?: string
+    quitting?: boolean
+    setupRunning?: boolean
+    viewerOwned?: boolean
+    controller?: boolean
+    installing?: boolean
+    state?: { status: string; available?: { installable: boolean } }
+    permitted?: boolean
+  }
+  function restartHandler(world: RestartWorld = {}) {
     const main = read('electron/main.cjs')
     const marker = "ipcMain.handle('agent-inbox:update-restart', "
     const start = main.indexOf(marker)
     expect(start).toBeGreaterThan(-1)
     const body = main.slice(start + marker.length, main.indexOf('\n})', start) + 2)
     const gate = setupRunner.createInstallGate()
-    if (options.quitting) gate.beginQuit()
+    if (world.setupRunning) gate.run(() => new Promise(() => {}))
+    if (world.quitting) gate.beginQuit()
+    const state = world.state ?? { status: 'verified', available: { installable: true } }
     const restartToInstallUpdate = vi.fn()
     const handler = new Function(
-      'process', 'isTrustedUpdateSender', 'installGate', 'updateController', 'restartToInstallUpdate',
+      'process', 'isTrustedUpdateSender', 'installGate', 'viewerOwned', 'updateController', 'updateInstallPermitted', 'restartToInstallUpdate',
       `return ${body}`,
     )(
-      { platform },
+      { platform: world.platform ?? 'darwin' },
       (url: string) => url === 'http://127.0.0.1:4319/',
       gate,
-      { isInstalling: () => options.installing === true },
+      world.viewerOwned ?? true,
+      world.controller === false ? null : { isInstalling: () => world.installing === true, getState: () => state },
+      () => world.permitted === true,
       restartToInstallUpdate,
     ) as (event: unknown, ...args: unknown[]) => unknown
     const event = (url = 'http://127.0.0.1:4319/') => ({ senderFrame: { url }, sender: {} })
     return { handler, event, restartToInstallUpdate }
   }
 
-  it('restarts on macOS only, for the trusted window, and never mid-install or once a quit has begun', () => {
-    const mac = restartHandler('darwin')
-    expect(mac.handler(mac.event(), 'x')).toBe(false)
-    expect(mac.handler(mac.event('https://example.com/'))).toBe(false)
-    expect(mac.restartToInstallUpdate).not.toHaveBeenCalled()
-    expect(mac.handler(mac.event())).toBe(true)
-    expect(mac.restartToInstallUpdate).toHaveBeenCalledOnce()
+  it('restarts only when Settings offers it: a verified download this window may not install, on macOS', () => {
+    const offered = restartHandler()
+    expect(offered.handler(offered.event(), 'x')).toBe(false)
+    expect(offered.handler(offered.event('https://example.com/'))).toBe(false)
+    expect(offered.restartToInstallUpdate).not.toHaveBeenCalled()
+    expect(offered.handler(offered.event())).toBe(true)
+    expect(offered.restartToInstallUpdate).toHaveBeenCalledOnce()
 
+    // main's own refusal of an unbound window offers it too
+    const refused = restartHandler({ state: { status: 'install-failed', available: { installable: true } } })
+    expect(refused.handler(refused.event())).toBe(true)
+    expect(refused.restartToInstallUpdate).toHaveBeenCalledOnce()
+  })
+
+  it.each([
     // An AppImage relaunched by Electron would start from its mount, gone once the app exits.
-    for (const refused of [
-      restartHandler('linux'),
-      restartHandler('darwin', { quitting: true }),
-      restartHandler('darwin', { installing: true }),
-    ]) {
-      expect(refused.handler(refused.event())).toBe(false)
-      expect(refused.restartToInstallUpdate).not.toHaveBeenCalled()
-    }
+    ['on Linux', { platform: 'linux' }],
+    ['once a quit has begun', { quitting: true }],
+    // A quit cancels a running Setup halfway through a registration (#205).
+    ['while agent Setup runs', { setupRunning: true }],
+    // A reused viewer has no installers, and no page of it may quit or loop the app.
+    ['for a viewer this app does not own', { viewerOwned: false }],
+    ['without an update controller', { controller: false }],
+    ['while an update installs', { installing: true }],
+    ['with no offer on screen', { state: { status: 'idle' } }],
+    ['for an offer not downloaded yet', { state: { status: 'available', available: { installable: true } } }],
+    ['for a verified download this installation cannot install', { state: { status: 'verified', available: { installable: false } } }],
+    ['while this window may install', { permitted: true }],
+  ] as const)('refuses to restart %s', (_label, world) => {
+    const refused = restartHandler(world)
+    expect(refused.handler(refused.event())).toBe(false)
+    expect(refused.restartToInstallUpdate).not.toHaveBeenCalled()
   })
 
   it('restarts through the path every quit takes: beginAppQuit() first, then relaunch and quit', () => {

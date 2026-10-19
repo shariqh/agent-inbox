@@ -371,6 +371,7 @@ const NOTICE = 'Version 1.3.0 could not be installed, so Agent Inbox is still on
 const FAILED = 'The update could not be installed. Nothing was changed. Try again or use Review release.'
 const RESTART = 'Restart Agent Inbox to install this update.'
 const REOPEN = 'Quit and reopen Agent Inbox to install this update.'
+const RESTART_REFUSED = 'Agent Inbox didn’t restart. If agent setup is running, try again when it finishes.'
 
 describe('installing a verified update', () => {
   const MB = 1024 * 1024
@@ -506,6 +507,21 @@ describe('when this window may not install', () => {
     click(document.querySelector('.updates-restart'))
     expect(bridge.restart).toHaveBeenCalledOnce()
     expect(bridge.install).not.toHaveBeenCalled()
+  })
+
+  it('says so when main does not restart, rather than leave a button that did nothing', async () => {
+    const bridge = await boot()
+    bridge.restart.mockResolvedValueOnce(false)
+    bridge.emit(offered('verified', true, bytes, { installable: true, installPermitted: false }))
+
+    click(document.querySelector('.updates-restart'))
+    await settle()
+    expect(detail().hidden).toBe(false)
+    expect(detail().textContent).toBe(RESTART_REFUSED)
+
+    // The next state from main paints as usual.
+    bridge.emit(offered('verified', true, bytes, { installable: true, installPermitted: false }))
+    expect(detail().textContent).toBe(RESTART)
   })
 
   it('asks to quit and reopen an AppImage, which cannot restart itself from here', async () => {

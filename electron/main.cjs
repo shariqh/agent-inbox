@@ -236,12 +236,20 @@ ipcMain.handle('agent-inbox:update-install', (event, ...args) => {
   return updateController.getState()
 })
 
-// Settings offers this when its window may not install (#216). macOS only: an
-// AppImage relaunched by Electron would start from the image's mount, which is
-// gone once the app exits, so there Settings asks to quit and reopen instead.
+// Settings offers Restart Agent Inbox only for a verified download this window
+// may not install (#216), and main accepts the request only in exactly that
+// state. No other state or page can quit the app or relaunch it in a loop
+// through this, and it never cancels a running Setup (#205), which the update
+// install path refuses too. macOS only: an AppImage relaunched by Electron would
+// start from the image's mount, which is gone once the app exits, so there
+// Settings asks to quit and reopen instead.
 ipcMain.handle('agent-inbox:update-restart', (event, ...args) => {
   if (args.length !== 0 || !isTrustedUpdateSender(event.senderFrame?.url ?? '', event.sender)) return false
-  if (process.platform !== 'darwin' || installGate.quitting() || updateController?.isInstalling()) return false
+  if (process.platform !== 'darwin' || !viewerOwned || !updateController) return false
+  if (installGate.quitting() || installGate.running() || updateController.isInstalling()) return false
+  const state = updateController.getState()
+  const offered = (state.status === 'verified' || state.status === 'install-failed') && state.available?.installable === true
+  if (!offered || updateInstallPermitted()) return false
   restartToInstallUpdate()
   return true
 })

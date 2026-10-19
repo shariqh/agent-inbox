@@ -63,6 +63,11 @@ export interface Item {
   reply_kind: ResponseKind | null
   response_revision: number
   snoozed_until: string | null
+  // issue #217 — the human's "I'll take a while" for a Copilot answer watcher:
+  // stopped for good (`watch_stopped_until` NULL) or until a time. Human-owned
+  // and NOT content: writing it moves neither updated_at nor response_revision.
+  watch_stopped_at: string | null
+  watch_stopped_until: string | null
   outcome: string
   outcome_at: string | null
   // issue #30 — the source-link identity inferred locally at write time:
@@ -386,6 +391,12 @@ function runMigrations(db: Database.Database): void {
   ensureColumn(db, 'source_links', 'preview_updated_at', 'TEXT')
   ensureColumn(db, 'source_links', 'preview_error', 'TEXT')
   ensureColumn(db, 'source_links', 'revision', 'INTEGER NOT NULL DEFAULT 1')
+  // issue #217 — the human's stop for a Copilot answer watcher. Plain additive
+  // columns: NULL means nobody asked the watcher to stop, so nothing to backfill.
+  ensureColumn(db, 'items', 'watch_stopped_at', 'TEXT')
+  ensureColumn(db, 'items', 'watch_stopped_until', 'TEXT')
+  ensureColumn(db, 'board_rows', 'watch_stopped_at', 'TEXT')
+  ensureColumn(db, 'board_rows', 'watch_stopped_until', 'TEXT')
   migrateActionLifecycle(db)
   migrateItemResponseRevision(db)
   migrateItemAnnotationDelivery(db)
@@ -961,6 +972,21 @@ export function snoozeItem(db: Database.Database, id: string, until: string | nu
   return info.changes > 0
 }
 
+// Issue #217 — the human tells the asking Copilot session to stop waiting on
+// this question: for good (`until` null) or until a time. One conditioned
+// statement, refused on an answered or closed question, and on a stop for
+// good, which has already ended the watcher and therefore cannot be revised
+// into a deferral that nothing would honour. An item is its own ask, so there
+// is no newer action to pin against. Not content: updated_at stays put.
+export function stopItemWatch(db: Database.Database, id: string, until: string | null): boolean {
+  const info = db.prepare(`UPDATE items SET watch_stopped_at = @now, watch_stopped_until = @until
+                            WHERE id = @id AND kind = 'question' AND status = 'open'
+                              AND COALESCE(reply, '') = ''
+                              AND (watch_stopped_at IS NULL OR watch_stopped_until IS NOT NULL)`)
+    .run({ id, until, now: new Date().toISOString() })
+  return info.changes > 0
+}
+
 export function listItems(db: Database.Database, opts: { status?: Status } = {}): Item[] {
   const rows = opts.status
     ? db.prepare(`SELECT * FROM items WHERE status = ? ORDER BY created_at DESC`).all(opts.status)
@@ -1157,6 +1183,10 @@ export interface BoardRow {
   handled_seen_at: string | null
   handled_seen_by: string | null
   snoozed_until: string | null
+  // issue #217 — the human's stop for this ACTION's Copilot answer watcher (see
+  // stopBoardRowWatch). Cleared only by a new ask, never by a routine upsert.
+  watch_stopped_at: string | null
+  watch_stopped_until: string | null
   outcome: string
   outcome_at: string | null
   created_at: string
@@ -1178,6 +1208,7 @@ const ROW_COLUMNS = `
   id, label, status, note, next_step, action_owner, impact, next_after, options,
   context, annotation, annotation_kind, annotated_at, annotation_seen_at,
   annotation_seen_by, handled_at, handled_seen_at, handled_seen_by, snoozed_until,
+  watch_stopped_at, watch_stopped_until,
   outcome, outcome_at, created_at, updated_at, action_started_at, action_version,
   revision, history, position`
 
@@ -1502,6 +1533,8 @@ function beginNewRowAction(db: Database.Database, rowId: string, now: string): n
            handled_seen_at = NULL,
            handled_seen_by = NULL,
            snoozed_until = NULL,
+           watch_stopped_at = NULL,
+           watch_stopped_until = NULL,
            outcome = '',
            outcome_at = NULL,
            action_started_at = ?,
@@ -1831,6 +1864,33 @@ export function snoozeBoardRow(
     return true
   })
   return run.immediate()
+}
+
+// Issue #217 — the row twin of stopItemWatch, pinned like every human row action
+// to the row AND board revisions the human was looking at, so a stale click can
+// never stop a newer ask that reused this stable row id. Unlike snooze it bumps
+// neither revision nor updated_at: it changes nothing an agent writes, so an
+// agent's board_get → board_upsert snapshot stays valid and a native
+// notification is not re-announced. beginNewRowAction is the one reset.
+export function stopBoardRowWatch(
+  db: Database.Database,
+  rowId: string,
+  until: string | null,
+  expectedRevision: number,
+  expectedBoardRevision: number,
+): boolean {
+  const info = db.prepare(`UPDATE board_rows SET watch_stopped_at = @now, watch_stopped_until = @until
+                            WHERE id = @id AND status = 'blocked' AND revision = @revision
+                              AND COALESCE(annotation, '') = '' AND annotation_kind IS NULL
+                              AND handled_at IS NULL
+                              AND (watch_stopped_at IS NULL OR watch_stopped_until IS NOT NULL)
+                              AND EXISTS (
+                                SELECT 1 FROM boards b
+                                 WHERE b.id = board_rows.board_id
+                                   AND b.status = 'active'
+                                   AND b.revision = @boardRevision)`)
+    .run({ id: rowId, until, revision: expectedRevision, boardRevision: expectedBoardRevision, now: new Date().toISOString() })
+  return info.changes > 0
 }
 
 // ── issue #36: the human's "I did my part" mark ─────────────────────────────

@@ -8,6 +8,7 @@ import { basename, dirname, isAbsolute, resolve, sep } from 'node:path'
 import type Database from 'better-sqlite3'
 import {
   listItems, listItemsPage, listOpenQuestions, resolveItem, dismissItem, annotateItem, replyItem, snoozeItem,
+  stopItemWatch, stopBoardRowWatch,
   listBoards, archiveBoard, unarchiveBoard, annotateBoardRow, snoozeBoardRow,
   markRowHandled, clearRowHandled, listActivity, listActivitySpans, listSourceLinks, defaultDbPath,
   closeProject, reopenProject, closedProjects, readSnapshotState, listIssueEntities, listIssueSnapshots,
@@ -875,6 +876,17 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
     return c.json({ ok })
   })
 
+  // Issue #217 — "I'll take a while". `until` is required: a date asks the
+  // asking Copilot session's watcher to wait quietly until then, and an explicit
+  // null stops it for good. A dropped field is a 400, never the final stop.
+  app.post('/api/items/:id/stop-waiting', async (c) => {
+    const body = await c.req.json<{ until?: unknown }>().catch(() => null)
+    const until = snoozeUntil(body?.until)
+    if (until === undefined) return c.json({ ok: false, error: 'until must be a date or null' }, 400)
+    const ok = stopItemWatch(db, c.req.param('id'), until)
+    return c.json({ ok })
+  })
+
   app.get('/api/boards', conditionalSnapshot(db, 'boards', () => listBoards(db)))
 
   app.get('/api/boards/archived', conditionalSnapshot(db, 'archived-boards', () => listBoards(db, { status: 'archived' })))
@@ -951,6 +963,37 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
         && current.revision === body?.expected_revision
         && currentBoard?.revision === body?.expected_board_version
         ? { ok: false, reason: 'not_snoozable' }
+        : { ok: false, reason: 'version_mismatch' },
+    )
+  })
+
+  // Issue #217 — the row twin of /api/items/:id/stop-waiting, pinned to the row
+  // and board revisions like every other human row action. A refusal against
+  // the caller's current pins means the row cannot be stopped (answered, handled,
+  // no longer blocked, archived, or already stopped for good).
+  app.post('/api/boards/:id/rows/:rowId/stop-waiting', async (c) => {
+    const body = await c.req.json<{
+      until?: unknown
+      expected_revision?: unknown
+      expected_board_version?: unknown
+    }>().catch(() => null)
+    const revision = body?.expected_revision
+    const boardRevision = body?.expected_board_version
+    if (!Number.isInteger(revision) || !Number.isInteger(boardRevision)) {
+      return c.json({ ok: false, error: 'expected_revision and expected_board_version required' }, 400)
+    }
+    const until = snoozeUntil(body?.until)
+    if (until === undefined) return c.json({ ok: false, error: 'until must be a date or null' }, 400)
+    const rowId = c.req.param('rowId')
+    if (stopBoardRowWatch(db, rowId, until, revision as number, boardRevision as number)) return c.json({ ok: true })
+    const currentBoard = [
+      ...listBoards(db),
+      ...listBoards(db, { status: 'archived' }),
+    ].find((board) => board.rows.some((row) => row.id === rowId))
+    const current = currentBoard?.rows.find((row) => row.id === rowId)
+    return c.json(
+      current && current.revision === revision && currentBoard?.revision === boardRevision
+        ? { ok: false, reason: 'not_stoppable' }
         : { ok: false, reason: 'version_mismatch' },
     )
   })

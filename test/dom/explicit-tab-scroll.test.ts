@@ -41,7 +41,7 @@ it('reveals explicit Tab targets only in their scrolling owner and leaves passiv
   Object.defineProperties(footer, {
     clientTop: { configurable: true, value: 1 },
     clientHeight: { configurable: true, value: 293 },
-    scrollHeight: { configurable: true, value: 463 },
+    scrollHeight: { configurable: true, value: 515 },
   })
   vi.spyOn(footer, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 406, 375, 294))
   vi.spyOn(card, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 375, 700))
@@ -49,13 +49,16 @@ it('reveals explicit Tab targets only in their scrolling owner and leaves passiv
   const context = card.querySelector<HTMLTextAreaElement>('.reply-context-input')!
   const more = [...card.querySelectorAll<HTMLElement>('summary')]
     .find((summary) => summary.textContent?.includes('More responses'))!
+  // #217: a Copilot ask also offers "I'll take a while" below More responses.
+  const wait = [...card.querySelectorAll<HTMLElement>('summary')]
+    .find((summary) => summary.textContent === 'I’ll take a while')!
   const resolve = buttonLabelled('Resolve', card)!
   const dismiss = buttonLabelled('Dismiss', card)!
   const note = buttonLabelled('Note', card)!
   const close = card.querySelector<HTMLButtonElement>('.nrow-card-close')!
   for (const [target, top, height] of [
-    [send, 642.5, 44], [context, 696.5, 49], [more, 761.5, 44],
-    [resolve, 813.5, 44], [dismiss, 813.5, 44], [note, 813.5, 44],
+    [send, 642.5, 44], [context, 696.5, 49], [more, 761.5, 44], [wait, 813.5, 44],
+    [resolve, 865.5, 44], [dismiss, 865.5, 44], [note, 865.5, 44],
   ] as const) {
     vi.spyOn(target, 'getBoundingClientRect')
       .mockImplementation(() => new DOMRect(14, top - footer.scrollTop, 100, height))
@@ -74,8 +77,8 @@ it('reveals explicit Tab targets only in their scrolling owner and leaves passiv
     focus.mockRestore()
   }
   send.focus({ preventScroll: true })
-  for (const target of [context, more, resolve, dismiss, note, close]) tabTo(target)
-  for (const target of [note, dismiss, resolve, more, context, send]) tabTo(target, true)
+  for (const target of [context, more, wait, resolve, dismiss, note, close]) tabTo(target)
+  for (const target of [note, dismiss, resolve, wait, more, context, send]) tabTo(target, true)
 
   expect(footer.scrollTop).toBeGreaterThan(0)
   footer.scrollTop = 100

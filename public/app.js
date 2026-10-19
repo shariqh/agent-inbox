@@ -2258,6 +2258,58 @@ function dispositionEl(onResponse, onSnooze, key) {
   return menu
 }
 
+// Issue #217 — "I'll take a while". Only a Copilot session runs the answer
+// watcher this stops, so for any other agent the control would claim an effect
+// it cannot have and is not drawn. It never touches attention: the ask stays in
+// Needs you unless the human also snoozes it. A stop for good is final (the
+// watcher has already exited), so it renders as a reminder, not a control.
+const WAIT_STOP_DEFERRALS = [
+  ['Back in ~1 h', 60 * 60_000],
+  ['Back in ~3 h', 3 * 60 * 60_000],
+  ['Back tomorrow', 24 * 60 * 60_000],
+]
+
+function waitStopEl(ask, agent, key, onStop) {
+  if (agent !== 'copilot') return null
+  const note = (text) => {
+    const el = document.createElement('div')
+    el.className = 'wait-stop-note'
+    el.textContent = text
+    return el
+  }
+  if (ask.watch_stopped_at && !ask.watch_stopped_until) {
+    return note(`Agent stopped waiting ${rel(ask.watch_stopped_at)} ago · message it after you answer`)
+  }
+  const wrap = document.createElement('div')
+  wrap.className = 'wait-stop'
+  const quietLeft = ask.watch_stopped_at ? Date.parse(ask.watch_stopped_until) - Date.now() : Number.NaN
+  if (quietLeft > 0) wrap.appendChild(note(`Agent waits quietly · ${relMs(quietLeft)} left · answering still wakes it`))
+  const menu = document.createElement('details')
+  menu.className = 'disposition-menu wait-menu'
+  menu.open = openDispositionMenus.has(key)
+  menu.addEventListener('toggle', () => {
+    if (menu.open) openDispositionMenus.add(key)
+    else openDispositionMenus.delete(key)
+  })
+  const summary = document.createElement('summary')
+  summary.textContent = 'I’ll take a while'
+  const actions = document.createElement('div')
+  actions.className = 'disposition-actions'
+  const choice = (label, title, until) => {
+    const button = btn(label, () => onStop(until()))
+    button.className = 'disposition-btn'
+    button.title = title
+    actions.appendChild(button)
+  }
+  choice('Stop waiting', 'The agent stops waiting and won’t wake on its own; message it after you answer.', () => null)
+  for (const [label, ms] of WAIT_STOP_DEFERRALS) {
+    choice(label, 'The agent waits quietly until then; answering still wakes it.', () => new Date(Date.now() + ms).toISOString())
+  }
+  menu.append(summary, actions)
+  wrap.appendChild(menu)
+  return wrap
+}
+
 // The human's own exit from a blocked row (#36) — the deed, beside the words.
 //
 // WHY IT EXISTS. The task-shaped blockers that motivated #36 ("create the
@@ -2552,6 +2604,17 @@ function rowAnswerEl(b, r, onSaved) {
       },
       `row:${r.id}`,
     ))
+    const waitStop = waitStopEl(r, b.agent, `wait:row:${r.id}`, async (until) => {
+      const res = await postJSON(`/api/boards/${b.id}/rows/${r.id}/stop-waiting`, {
+        until,
+        expected_revision: r.revision,
+        expected_board_version: b.revision,
+      })
+      if (res === null) return
+      showWriteError(r.id, res.ok ? '' : 'This action changed before your click; refreshed without applying it.')
+      await reloadAndPaint()
+    })
+    if (waitStop) wrap.appendChild(waitStop)
   }
   bindReplyEditor(input, save)
   row.appendChild(input)
@@ -6211,6 +6274,13 @@ function answerEl(it) {
     },
     `item:${it.id}`,
   ))
+  const waitStop = waitStopEl(it, it.agent, `wait:item:${it.id}`, async (until) => {
+    const res = await postJSON(`/api/items/${it.id}/stop-waiting`, { until })
+    if (res === null) return
+    showWriteError(it.id, res.ok ? '' : 'This question changed before your click; refreshed without applying it.')
+    await reloadAndPaint()
+  })
+  if (waitStop) wrap.appendChild(waitStop)
   return wrap
 }
 

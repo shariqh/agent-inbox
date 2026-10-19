@@ -265,6 +265,9 @@ header { flex-wrap: wrap; }
 .disposition-btn { font: inherit; font-size: 11.5px; padding: 2px 9px; border-radius: 999px; border: 1px solid color-mix(in srgb, var(--app-text) 20%, transparent); background: transparent; color: inherit; cursor: pointer; opacity: .7; }
 .disposition-btn:hover { opacity: 1; }
 .disposition-btn.decline { color: color-mix(in srgb, var(--app-danger) 70%, var(--app-text)); }
+/* issue #217 — what the human told the asking agent's watcher. An explanation
+   like .handled-refusal, not an error. */
+.wait-stop-note { margin-top: 8px; font-size: 12px; opacity: .7; white-space: normal; overflow-wrap: anywhere; }
 .reply-input { flex: 1; min-width: 0; min-height: 34px; max-height: 160px; overflow-y: hidden; resize: none; font: inherit; font-size: 13px; line-height: 1.4; padding: 4px 10px; border-radius: 6px; border: 1px solid color-mix(in srgb, var(--app-text) 25%, transparent); background: transparent; color: inherit; }
 .reply-row button, .compare-toggle { font-size: 12px; padding: 3px 10px; border-radius: 6px; border: 1px solid color-mix(in srgb, var(--app-text) 25%, transparent); background: transparent; cursor: pointer; }
 /* issue #36 — the human's "I've done my part" lever. Weighted, because on a

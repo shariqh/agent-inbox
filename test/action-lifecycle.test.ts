@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { spawn } from 'node:child_process'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -23,6 +23,9 @@ import {
   resolveItem,
   snoozeBoardRow,
   snoozeItem,
+  stopBoardRowWatch,
+  stopItemWatch,
+  getItem,
   updateBoardRow as writeBoardRow,
   upsertBoard as writeBoard,
 } from '../src/store.js'
@@ -886,5 +889,150 @@ describe('action lifecycle storage', () => {
       })).toEqual({ ok: true, action_version: upload!.action_version + 1, revision: upload!.revision + 1 })
       expect(labels()).toEqual(['Build', 'Deploy', 'Upload'])
     })
+  })
+})
+
+// Issue #217 — "I'll take a while": the human tells a Copilot answer watcher to
+// stop waiting, for good or until a time. Human-owned like annotation and
+// handled_at, but NOT content: it never moves updated_at or either revision, so
+// it neither re-announces the ask nor invalidates an agent's snapshot.
+describe('watch stop (#217)', () => {
+  let db: Database.Database
+  const T0 = Date.parse('2026-10-19T12:00:00.000Z')
+  const at = (minutes: number) => new Date(T0 + minutes * 60_000).toISOString()
+  const clock = (minutes: number) => vi.setSystemTime(T0 + minutes * 60_000)
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    clock(0)
+    db = freshDb()
+  })
+  afterEach(() => {
+    db.close()
+    vi.useRealTimers()
+  })
+
+  const question = () => insertItem(db, { project: 'p', stream: '', agent: 'copilot', kind: 'question', title: 'Choose' })
+  const blocked = (label = 'Upload') => {
+    upsertBoard(db, {
+      project: 'p', stream: '', agent: 'copilot', title: 'B',
+      rows: [...(getBoard(db, 'p', 'B')?.rows.filter((row) => row.label !== label)
+        .map(({ label: other, status }) => ({ label: other, status })) ?? []),
+      { label, status: 'blocked', note: 'Upload the build.', next_step: 'Upload it.', action_owner: 'task', impact: 'Ships it.' }],
+    })
+    return current(label)
+  }
+  const current = (label = 'Upload') => {
+    const board = getBoard(db, 'p', 'B')!
+    return { board, row: board.rows.find((row) => row.label === label)! }
+  }
+  const stopRow = (until: string | null, label = 'Upload') => {
+    const { board, row } = current(label)
+    return stopBoardRowWatch(db, row.id, until, row.revision, board.revision)
+  }
+
+  it('stops an open question for good or until a time, without touching content or its response version', () => {
+    const id = question()
+    clock(5)
+    const before = getItem(db, id)!
+    expect(stopItemWatch(db, id, at(120))).toBe(true)
+    expect(getItem(db, id)).toEqual({ ...before, watch_stopped_at: at(5), watch_stopped_until: at(120) })
+
+    clock(6)
+    expect(stopItemWatch(db, id, at(180)), 'a deferral can still be moved').toBe(true)
+    expect(stopItemWatch(db, id, null)).toBe(true)
+    expect(getItem(db, id)).toMatchObject({ watch_stopped_at: at(6), watch_stopped_until: null })
+    expect(getItem(db, id)!.updated_at).toBe(before.updated_at)
+    expect(getItem(db, id)!.response_revision).toBe(before.response_revision)
+
+    // A stop for good has already ended the watcher; a later deferral cannot revive it.
+    clock(7)
+    expect(stopItemWatch(db, id, at(240))).toBe(false)
+    expect(stopItemWatch(db, id, null)).toBe(false)
+    expect(getItem(db, id)).toMatchObject({ watch_stopped_at: at(6), watch_stopped_until: null })
+  })
+
+  it('refuses to stop an answered, closed or informational item', () => {
+    const answered = question()
+    replyItem(db, answered, 'Ship it')
+    const resolved = question()
+    resolveItem(db, resolved)
+    const note = insertItem(db, { project: 'p', stream: '', agent: 'copilot', kind: 'note', title: 'FYI' })
+    for (const id of [answered, resolved, note, 'missing']) expect(stopItemWatch(db, id, null), id).toBe(false)
+    expect(listItems(db).every((item) => item.watch_stopped_at === null)).toBe(true)
+  })
+
+  it('pins a row stop to the row and board revisions without bumping either', () => {
+    const { board, row } = blocked()
+    clock(5)
+    expect(stopBoardRowWatch(db, row.id, null, row.revision - 1, board.revision)).toBe(false)
+    expect(stopBoardRowWatch(db, row.id, null, row.revision, board.revision - 1)).toBe(false)
+    expect(current().row.watch_stopped_at).toBeNull()
+
+    expect(stopBoardRowWatch(db, row.id, at(60), row.revision, board.revision)).toBe(true)
+    const after = current()
+    expect(after.row).toEqual({ ...row, watch_stopped_at: at(5), watch_stopped_until: at(60) })
+    expect(after.board.revision).toBe(board.revision)
+    // Unbumped pins stay valid for the human's next write and the agent's next upsert.
+    expect(stopRow(null)).toBe(true)
+    expect(current().row).toMatchObject({ watch_stopped_until: null, revision: row.revision })
+    expect(stopRow(at(90)), 'a stop for good is final').toBe(false)
+  })
+
+  it('refuses to stop an answered, handled, unblocked or archived row', () => {
+    blocked('Answered')
+    blocked('Handled')
+    blocked('Done later')
+    annotateBoardRow(db, current('Answered').row.id, 'Uploaded')
+    markRowHandled(db, current('Handled').row.id)
+    updateBoardRow(db, { project: 'p', stream: '', agent: 'copilot', title: 'B', label: 'Done later', status: 'partial' })
+    for (const label of ['Answered', 'Handled', 'Done later']) expect(stopRow(null, label), label).toBe(false)
+
+    const { board } = current('Answered')
+    archiveBoard(db, board.id, board.revision)
+    const archived = listBoards(db, { status: 'archived' })[0]!
+    const row = archived.rows.find((candidate) => candidate.label === 'Answered')!
+    expect(stopBoardRowWatch(db, row.id, null, row.revision, archived.revision)).toBe(false)
+  })
+
+  it('survives routine agent upserts and row edits of the same blocked ask', () => {
+    blocked()
+    expect(stopRow(at(60))).toBe(true)
+    upsertBoard(db, {
+      project: 'p', stream: '', agent: 'copilot', title: 'B',
+      rows: [{ label: 'Upload', status: 'blocked', note: 'Upload the signed build.' }],
+    })
+    updateBoardRow(db, { project: 'p', stream: '', agent: 'copilot', title: 'B', label: 'Upload', impact: 'Ships 1.4.' })
+    expect(current().row).toMatchObject({
+      note: 'Upload the signed build.', impact: 'Ships 1.4.', watch_stopped_until: at(60), action_version: 1,
+    })
+    expect(current().row.watch_stopped_at).not.toBeNull()
+  })
+
+  it('is cleared by a new ask: board_advance and an ordinary re-block', () => {
+    blocked()
+    expect(stopRow(null)).toBe(true)
+    const { board, row } = current()
+    expect(advanceBoardRow(db, {
+      project: 'p', title: 'B', label: 'Upload', expectedBoardVersion: board.revision, expectedRevision: row.revision,
+      note: 'The notarized build is ready.', next_step: 'Upload it.', action_owner: 'task', impact: 'Ships it.',
+    })).toMatchObject({ ok: true, action_version: 2 })
+    expect(current().row).toMatchObject({ action_version: 2, watch_stopped_at: null, watch_stopped_until: null })
+
+    expect(stopRow(null)).toBe(true)
+    updateBoardRow(db, { project: 'p', stream: '', agent: 'copilot', title: 'B', label: 'Upload', status: 'partial' })
+    updateBoardRow(db, {
+      project: 'p', stream: '', agent: 'copilot', title: 'B', label: 'Upload', status: 'blocked',
+      note: 'One more upload.', next_step: 'Upload it.', action_owner: 'task', impact: 'Ships it.',
+    })
+    expect(current().row).toMatchObject({ action_version: 3, watch_stopped_at: null, watch_stopped_until: null })
+
+    expect(stopRow(at(30))).toBe(true)
+    upsertBoard(db, { project: 'p', stream: '', agent: 'copilot', title: 'B', rows: [{ label: 'Upload', status: 'done' }] })
+    upsertBoard(db, {
+      project: 'p', stream: '', agent: 'copilot', title: 'B',
+      rows: [{ label: 'Upload', status: 'blocked', note: 'Again.', next_step: 'Upload it.', action_owner: 'task', impact: 'Ships it.' }],
+    })
+    expect(current().row).toMatchObject({ action_version: 4, watch_stopped_at: null, watch_stopped_until: null })
   })
 })

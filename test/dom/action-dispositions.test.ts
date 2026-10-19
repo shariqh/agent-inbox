@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from 'vitest'
 import type Database from 'better-sqlite3'
-import { getBoard, insertItem, listItems, openDb, updateBoardRow, upsertBoard } from '../../src/store.js'
+import { getBoard, getItem, insertItem, listItems, openDb, updateBoardRow, upsertBoard } from '../../src/store.js'
 import {
   answerInput, badgeCount, bootApp, buttonLabelled, click, collapseRow, freshDb, row, rowTitles,
   pollTick, sendButton, settle, type, useDomTest,
@@ -209,5 +209,88 @@ describe('human disposition controls', () => {
     await settle()
     expect(getBoard(d, 'alpha', 'Launch')!.rows.find((candidate) => candidate.id === rowId))
       .toMatchObject({ annotation_kind: 'clarify' })
+  })
+})
+
+// Issue #217 — "I'll take a while" tells the asking Copilot session's answer
+// watcher to stop or to wait quietly. It is not an attention change: the ask
+// stays in Needs you, and the badge does not move, before or after.
+describe('the human stops an agent from waiting (#217)', () => {
+  const COPILOT = { ...AGENT, agent: 'copilot' } as const
+  const waitMenu = (id: string) => [...(row(id)?.querySelectorAll('summary') ?? [])]
+    .find((summary) => summary.textContent === 'I’ll take a while') ?? null
+
+  it('stops a Copilot question for good and leaves it in Needs you', async () => {
+    const d = open()
+    const id = insertItem(d, {
+      ...COPILOT, kind: 'question', title: 'Approve the release?', detail: 'The build is ready.',
+      next_step: 'Approve or hold the release.', action_owner: 'approval', impact: 'Ships 1.4.',
+      options: [{ label: 'Approve', recommended: true }, { label: 'Hold' }],
+    })
+    await bootApp(d)
+    expect(badgeCount()).toBe(1)
+    click(row(id))
+    await settle()
+    expect(waitMenu(id)).not.toBeNull()
+
+    click(buttonLabelled('Stop waiting', row(id)!))
+    await settle()
+
+    expect(getItem(d, id)).toMatchObject({ watch_stopped_at: expect.any(String), watch_stopped_until: null, reply: null })
+    expect(badgeCount()).toBe(1)
+    expect(rowTitles()).toContain('Approve or hold the release.')
+    expect(row(id)?.querySelector('.wait-stop-note')?.textContent)
+      .toBe('Agent stopped waiting moments ago · message it after you answer')
+    expect(waitMenu(id)).toBeNull()
+    expect(buttonLabelled('Stop waiting', row(id)!)).toBeNull()
+  })
+
+  it('defers a Copilot blocked row with its revision pins and still lets the human change it', async () => {
+    const d = open()
+    upsertBoard(d, {
+      ...COPILOT,
+      title: 'Release',
+      rows: [{
+        label: 'Install test', status: 'blocked', note: 'The 1.4 build is ready.',
+        next_step: 'Install it and report back.', action_owner: 'task', impact: 'Gates the release.',
+      }],
+    })
+    const before = getBoard(d, 'alpha', 'Release')!
+    const rowId = before.rows[0]!.id
+    await bootApp(d)
+    expect(badgeCount()).toBe(1)
+    click(row(rowId))
+    await settle()
+
+    const clicked = Date.now()
+    click(buttonLabelled('Back in ~3 h', row(rowId)!))
+    await settle()
+
+    const after = getBoard(d, 'alpha', 'Release')!
+    const until = Date.parse(after.rows[0]!.watch_stopped_until!)
+    expect(until).toBeGreaterThanOrEqual(clicked + 3 * 60 * 60_000)
+    expect(until).toBeLessThanOrEqual(Date.now() + 3 * 60 * 60_000)
+    expect(after.rows[0]!.revision).toBe(before.rows[0]!.revision)
+    expect(after.revision).toBe(before.revision)
+    expect(badgeCount()).toBe(1)
+    expect(rowTitles()).toContain('Install it and report back.')
+    expect(row(rowId)?.querySelector('.wait-stop-note')?.textContent)
+      .toBe('Agent waits quietly · 3h left · answering still wakes it')
+    expect(buttonLabelled('Stop waiting', row(rowId)!)).not.toBeNull()
+  })
+
+  it('draws no stop control for an agent that runs no answer watcher', async () => {
+    const d = open()
+    const id = insertItem(d, {
+      ...AGENT, kind: 'question', title: 'Merge?', detail: 'All gates are green.',
+      next_step: 'Choose whether to merge.', action_owner: 'approval', impact: 'Unblocks implementation.',
+      options: [{ label: 'Merge', recommended: true }, { label: 'Hold' }],
+    })
+    await bootApp(d)
+    click(row(id))
+    await settle()
+    expect(row(id)?.querySelector('.disposition-menu')).not.toBeNull()
+    expect(waitMenu(id)).toBeNull()
+    expect(buttonLabelled('Stop waiting', row(id)!)).toBeNull()
   })
 })

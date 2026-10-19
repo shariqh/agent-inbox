@@ -164,6 +164,9 @@ export interface RowSummary {
   options?: QuestionOption[]
   annotation_kind?: ResponseKind
   snoozed_until?: string
+  // issue #217 — the human asked the watcher to stop: for good when no until
+  watch_stopped_at?: string
+  watch_stopped_until?: string | null
   outcome?: string
   outcome_at?: string
   action_started_at?: string
@@ -234,6 +237,10 @@ function summariseRow(r: BoardRow): RowSummary {
   if (r.next_after) out.next_after = r.next_after
   if (r.options?.length) out.options = r.options
   if (r.snoozed_until) out.snoozed_until = r.snoozed_until
+  if (r.watch_stopped_at) {
+    out.watch_stopped_at = r.watch_stopped_at
+    out.watch_stopped_until = r.watch_stopped_until
+  }
   if (r.outcome) out.outcome = r.outcome
   if (r.outcome_at) out.outcome_at = r.outcome_at
   if (r.action_started_at) out.action_started_at = r.action_started_at

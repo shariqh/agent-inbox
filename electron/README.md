@@ -30,9 +30,35 @@ re-read from `update-trust-state.json`, agent Setup, any check in flight and fea
 then reopens the download through `downloader.openVerified()`, which re-hashes it through
 the one read-only handle it hands to `prepare()`; installers hash the bytes they consume
 from that handle again (`copyVerifiedSource`). Main accepts the argument-free
-`agent-inbox:update-install` IPC only from the window bound at the first navigation of a
-viewer this app started and proved it owns, refuses it while Setup runs (and Setup refuses
-while an install runs), and quits through `requestRestart()` once `commit()` resolves.
+`agent-inbox:update-install` IPC only from the window bound to a viewer this app started
+and proved it owns, refuses it while Setup runs (and Setup refuses while an install runs),
+and quits through `requestRestart()` once `commit()` resolves.
+
+The window holds that grant, and Setup's, through `createInstallBinding()` in
+`setup-runner.cjs` (#216). It binds at the window's first main-frame navigation, right
+after startup's `waitForOwnership()`. Every later main-frame navigation (View → Reload,
+Force Reload, the viewer's own restart reload) revokes both grants at once. They come back
+only after that navigation commits to the viewer origin and `reproveOwnership()` passes: the
+startup proof again and, for a dev viewer child this app spawned, that the child still runs.
+The proof runs after the commit, so the listener that answers is the one that served the
+page; `/api/owner` gives the token to any local client, so the token alone would prove
+nothing hours later. A newer navigation, a renderer crash or the window closing discards a
+proof still running, a closed window never binds again, and nothing binds once a quit has
+begun. A reused or failed-over viewer gets neither grant and is never probed. Before 1.3.2 a
+reload revoked the grant until the app restarted, while Settings still offered **Install
+and restart**.
+
+Settings follows the same rule. Every offer carries `available.installPermitted`, which is
+true only while the install IPC would accept the window (main's `updateInstallPermitted()`)
+and implies `installable`; the binding republishes it through `refreshInstallPermission()`
+whenever it changes. When a verified download is installable but not permitted, Settings
+hides **Install and restart** and says "Restart Agent Inbox to install this update." On
+macOS it offers **Restart Agent Inbox** (`agent-inbox:update-restart`: trusted sender,
+macOS only, refused while quitting or installing), which calls `beginAppQuit()`, then
+`app.relaunch()` and `app.quit()`. An AppImage gets "Quit and reopen Agent Inbox to install
+this update." and no button, because Electron's relaunch would run from the image's mount.
+The next start reuses the verified download after re-hashing it, and the install IPC's
+"Restart Agent Inbox to install this update." refusal remains the backstop.
 
 On macOS, `update-install-macos.cjs` refuses a translocated, read-only, foreign-owned,
 symlinked or unwritable bundle and a macOS below the signed minimum. `prepare()` copies
@@ -67,9 +93,10 @@ the app is still older than the attempted release, every published state carries
 `installNotice` with the cause, Settings shows it (with Open Releases when nothing is
 offered), and one native notification fires; it stays on the next offer of that version.
 An app now on that release, or one whose helper reported success, says nothing. Update
-installs follow #205's quit contract: `beginAppQuit()` (called first by `before-quit` and
-by the update restart) refuses new Setup and update installs and revokes both window
-bindings, and a quit while the attempt record is written still stops the install.
+installs follow #205's quit contract: `beginAppQuit()` (called first by `before-quit`, by
+the update restart and by Settings' **Restart Agent Inbox**) refuses new Setup and update
+installs and revokes both window bindings, which never come back during that quit, and a
+quit while the attempt record is written still stops the install.
 
 A Linux AppImage registers `update-install-appimage.cjs` only for an owned viewer of a
 packaged app. Registration, the update check's target selection (`runsFromAppImage()` in

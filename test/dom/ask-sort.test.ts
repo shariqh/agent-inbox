@@ -5,13 +5,18 @@ import {
   advanceBoardRow, getBoard, insertItem, recordActivityCall, resolveItem, upsertActivity, upsertBoard,
 } from '../../src/store.js'
 import {
-  advanceClock, answerInput, bootApp, click, collapseRow, freshDb, pollTick, row, rowTitles, settle, setViewport, showInbox, type, useDomTest,
+  advanceClock, answerInput, bootApp, click, collapseRow, expectConsoleError, freshDb, pollTick, row, rowTitles, settle,
+  setViewport, showInbox, type, useDomTest,
 } from './harness.js'
 
 useDomTest()
 
 let db: Database.Database | null = null
-afterEach(() => { db?.close(); db = null })
+afterEach(() => {
+  db?.close()
+  db = null
+  vi.unstubAllGlobals()
+})
 
 const AGENT = { project: 'alpha', stream: 'main', agent: 'copilot' } as const
 const HOUR = 60 * 60_000
@@ -189,7 +194,7 @@ describe('current ask time and queue sorting (#64)', () => {
     expect(after.dataset.exact).toBe(before.dataset.exact)
   })
 
-  it('resets to current priority on a fresh app load', async () => {
+  it('starts at current priority on a fresh app load when no default is saved', async () => {
     const d = open()
     seedMixedQueue(d)
     await bootApp(d)
@@ -400,5 +405,155 @@ describe('current ask time and queue sorting (#64)', () => {
     expect(escape.defaultPrevented).toBe(false)
     expect(drawer.hidden).toBe(false)
     expect(document.activeElement).toBe(select)
+  })
+})
+
+const DEFAULT_SORT_KEY = 'agent-inbox-default-sort'
+const PRIORITY_ORDER = ['middle approval', 'old question', 'new question']
+const NEWEST_ORDER = ['new question', 'middle approval', 'old question']
+const OLDEST_ORDER = ['old question', 'middle approval', 'new question']
+
+function defaultSortSelect(): HTMLSelectElement {
+  const select = document.querySelector<HTMLSelectElement>('#setup select[aria-label="Default sort order"]')
+  if (!select) throw new Error('default sort setting not rendered')
+  return select
+}
+
+async function chooseDefaultSort(value: 'priority' | 'newest' | 'oldest'): Promise<void> {
+  if (document.getElementById('setup')?.hidden) click(document.getElementById('gear'))
+  const select = defaultSortSelect()
+  select.focus()
+  select.value = value
+  select.dispatchEvent(new Event('change', { bubbles: true }))
+  await settle()
+}
+
+// A fresh page against the same localStorage: a reload, View → Reload or a relaunch.
+async function reopen(d: Database.Database): Promise<void> {
+  vi.resetModules()
+  await bootApp(d)
+}
+
+describe('saved default sort order (#221)', () => {
+  it('boots with the saved default and orders the queue by it', async () => {
+    localStorage.setItem(DEFAULT_SORT_KEY, 'newest')
+    const d = open()
+    seedMixedQueue(d)
+    await bootApp(d)
+
+    expect(sortSelect().value).toBe('newest')
+    expect(rowTitles()).toEqual(NEWEST_ORDER)
+    expect(defaultSortSelect().value).toBe('newest')
+    expect([...defaultSortSelect().options].map((option) => option.textContent))
+      .toEqual(['Priority', 'Newest', 'Oldest'])
+  })
+
+  it('falls back to Priority when the stored default is not a sort order', async () => {
+    localStorage.setItem(DEFAULT_SORT_KEY, 'sideways')
+    const d = open()
+    seedMixedQueue(d)
+    await bootApp(d)
+
+    expect(sortSelect().value).toBe('priority')
+    expect(rowTitles()).toEqual(PRIORITY_ORDER)
+    expect(defaultSortSelect().value).toBe('priority')
+  })
+
+  it('saves a Settings choice and repaints the current view past an unrelated draft', async () => {
+    const d = open()
+    const { oldId } = seedMixedQueue(d)
+    await bootApp(d)
+    click(row(oldId))
+    await settle()
+    type(answerInput(oldId), 'half-written answer')
+    advanceClock(HOUR)
+    insertItem(d, { ...AGENT, kind: 'question', title: 'draft-gated arrival' })
+    await pollTick()
+    expect(rowTitles(), 'the draft must hold the poll, or this test proves nothing').not.toContain('draft-gated arrival')
+
+    await chooseDefaultSort('newest')
+
+    expect(localStorage.getItem(DEFAULT_SORT_KEY)).toBe('newest')
+    expect(rowTitles()).toEqual(['draft-gated arrival', ...NEWEST_ORDER])
+    expect(sortSelect().value).toBe('newest')
+    expect(answerInput(oldId)?.value).toBe('half-written answer')
+    expect(document.getElementById('setup')?.hidden).toBe(false)
+    expect(document.activeElement).toBe(defaultSortSelect())
+    expect(document.getElementById('pauseHint')?.hidden).toBe(true)
+  })
+
+  it('re-sorts by Priority when the default returns to it instead of reusing an earlier pinned order', async () => {
+    const d = open()
+    seedMixedQueue(d)
+    await bootApp(d)
+    expect(rowTitles()).toEqual(PRIORITY_ORDER)
+    await chooseDefaultSort('newest')
+    advanceClock(HOUR)
+    upsertBoard(d, { ...AGENT, title: 'Late launch', rows: [{ label: 'late approval', status: 'blocked', note: 'ready' }] })
+    await pollTick()
+    expect(rowTitles()).toEqual(['late approval', ...NEWEST_ORDER])
+
+    await chooseDefaultSort('priority')
+
+    expect(rowTitles()).toEqual(['late approval', ...PRIORITY_ORDER])
+  })
+
+  it('keeps the saved order through a viewer restart reload', async () => {
+    const reload = vi.fn()
+    vi.stubGlobal('location', { hash: '', reload })
+    const d = open()
+    seedMixedQueue(d)
+    let boot = 'original-viewer'
+    await bootApp(d, {
+      interceptFetch: async (_input, _init, next) => {
+        const response = await next()
+        response.headers.set('x-inbox-boot', boot)
+        return response
+      },
+    })
+    await chooseDefaultSort('newest')
+    expect(rowTitles()).toEqual(NEWEST_ORDER)
+
+    boot = 'restarted-viewer'
+    await pollTick()
+    expect(reload).toHaveBeenCalledTimes(1)
+    await reopen(d)
+
+    expect(sortSelect().value).toBe('newest')
+    expect(rowTitles()).toEqual(NEWEST_ORDER)
+  })
+
+  it('lets the queue Sort menu change only the current view, never the saved default', async () => {
+    localStorage.setItem(DEFAULT_SORT_KEY, 'oldest')
+    const d = open()
+    seedMixedQueue(d)
+    await bootApp(d)
+    expect(rowTitles()).toEqual(OLDEST_ORDER)
+
+    await chooseSort('newest')
+    expect(rowTitles()).toEqual(NEWEST_ORDER)
+    expect(localStorage.getItem(DEFAULT_SORT_KEY)).toBe('oldest')
+    expect(defaultSortSelect().value).toBe('oldest')
+
+    await reopen(d)
+    expect(sortSelect().value).toBe('oldest')
+    expect(rowTitles()).toEqual(OLDEST_ORDER)
+  })
+
+  it('keeps the saved default and the current view when the choice cannot be saved', async () => {
+    const d = open()
+    seedMixedQueue(d)
+    await bootApp(d)
+    expectConsoleError(/Default sort order could not be saved/)
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementationOnce(() => {
+      throw new Error('quota exceeded')
+    })
+
+    await chooseDefaultSort('newest')
+
+    expect(defaultSortSelect().value).toBe('priority')
+    expect(localStorage.getItem(DEFAULT_SORT_KEY)).toBeNull()
+    expect(rowTitles()).toEqual(PRIORITY_ORDER)
+    expect(document.getElementById('status')?.textContent).toBe('default sort order not saved')
   })
 })

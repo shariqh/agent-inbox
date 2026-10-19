@@ -1,9 +1,10 @@
 # Design: Plans that model GitHub sub-issues and dependencies (issue #103)
 
-**Date:** 2026-10-19 (revision 2)
+**Date:** 2026-10-19 (revision 3)
 **Status:** Approved for implementation. The owner chose the smaller first slice and decided all
-eight questions (§15). Revision 2 also resolves the six blocking review findings (§19). Nothing
-here is implemented yet.
+eight questions (§15). Revision 2 resolved the six blocking review findings; revision 3 makes the
+node cap deterministic and clarifies queue capacity and child counts (§19). Nothing here is
+implemented yet.
 **Milestone:** v1.4. Part of #103.
 **Scope of this PR:** this document only. Zero source or test changes.
 
@@ -21,8 +22,9 @@ here is implemented yet.
 3. Only the viewer process calls GitHub: at most one `gh api graphql` call per poller tick, for
    up to 10 issues. Each batch size has its own document, and spending follows the cost GitHub
    reports with each response.
-4. Every candidate issue is served from a fair queue (oldest check first, no cap). An atomic,
-   expiring claim in `store.ts` stops two viewers fetching the same issues.
+4. Every candidate issue waits in one queue, oldest check first, with no cap; §5.4 states its
+   capacity and what the UI shows beyond it. An atomic, expiring claim in `store.ts` stops two
+   viewers fetching the same issues.
 5. Snapshots are cached per repo-qualified issue (`owner/name#123`) in `issue_snapshots`, behind
    `store.ts`.
 6. A pure reconciliation builds one graph. A complete child list is also a negative observation,
@@ -390,6 +392,8 @@ Snapshot JSON, version 1, for #120 as fetched on 2026-10-19:
 
 - `ancestors_end` is `top` when the walk reached an issue with no parent, and `limit` when the
   eighth level still had one (deeper than GitHub allows today).
+- Only `ancestors[0]` (the immediate parent) carries `children_total` and `children_completed`;
+  higher ancestors carry title and state only (§5.6).
 - `hierarchy.status` is `ok` or `unavailable`; an unavailable section yields no observations.
 - A later version adds `dependencies` and the sibling list (§12) under a new `v`.
 - **Why one JSON snapshot per issue:** it mirrors `source_links_by_head` (one cached answer per
@@ -422,7 +426,10 @@ of its batch, which every root in that batch shares.
   every known issue Z that the list does not contain. GitHub never lists an issue the token
   cannot see, and the same token cannot fetch such an issue either, so absence is evidence only
   about issues GitHub shows us.
-- *Facts:* title, state, state reason and child counts for R, its ancestors and its children.
+- *Facts:* title, state and state reason for R, every ancestor read and every child. Child
+  counts (`total`, `completed`) exist only for R, its immediate parent and each of its children,
+  because §5.6 requests `subIssuesSummary` at exactly those levels. Higher ancestors carry no
+  counts.
 
 **Rules.**
 
@@ -436,8 +443,10 @@ of its batch, which every root in that batch shares.
    parent, C's parent is unknown and C is marked `conflict`.
 4. **Children.** P's children are the issues whose accepted parent is P. They take the order of
    P's own freshest list (GitHub's order); accepted children missing from that list follow, by
-   key. Counts come from P's freshest facts. The UI reports `total − visible` as "not visible to
-   your GitHub account".
+   key. Counts come from the freshest observation that has them: P's own snapshot, a snapshot
+   whose immediate parent is P, or a snapshot listing P as a child. When P appears only higher up
+   an ancestor walk, it has no counts and none are shown. The UI reports `total − visible` as
+   "not visible to your GitHub account".
 5. **Cycles.** GitHub forbids cycles, so a cycle among accepted parents means an observation is
    stale. In each cycle the decision with the oldest deciding `t` is dropped (all of them when
    several share that `t`), and the cycle's issues are marked `conflict`. Ancestor walks stop
@@ -499,15 +508,17 @@ Defined now so that the later PR inherits it:
       "checked_at": "2026-10-19T22:30:00.000Z", "error": null, "failure": null, "children_omitted": 0 }
   ],
   "aliases": { "twitter/bootstrap#2": "twbs/bootstrap#2" },
-  "truncated": { "nodes": 0, "edges": 0 }
+  "truncated": { "roots": 0, "ancestors": 0, "children": 0, "edges": 0 }
 }
 ```
 
 - `failure` is `null`, `soft` or `hard`. A hard-failed root has no node.
 - `refresh: false` marks a root that is displayed but no longer refreshed (a closed project, an
   archived plan).
-- Nodes carry `conflict: true` when rule 3 or 5 applied.
-- `truncated` counts exactly what the node cap removed, and `children_omitted` says where (§6).
+- Nodes carry `conflict: true` when rule 3 or 5 applied. `children_total` and
+  `children_completed` are omitted when no observation carries them (rule 4).
+- `truncated` counts exactly what the node cap removed, and `children_omitted` says where
+  children were cut (§6). A root the cap omitted is not listed at all.
 - There are no URLs: the browser builds `https://github.com/<repo>/issues/<number>` from
   validated parts (§11).
 
@@ -579,11 +590,25 @@ every POLL_INTERVAL_MS (60 s), one busy guard:
 | Hard failure: `not-found`, `forbidden`, `moved` | 60 min |
 
 - **Queue order:** never fetched, then nudged, then oldest `checked_at`, then key. Every attempt
-  advances `checked_at`, so every candidate reaches the front and none starves.
-- A tick serves one batch of 10, so N due candidates take ⌈N/10⌉ ticks. Past about 100
-  candidates the effective interval exceeds the TTL; the age labels show the real age.
-- The queue is recomputed each tick from `listIssueEntities`, `listSourceLinks` and
-  `listIssueSnapshots`.
+  advances `checked_at`, moving the key behind every key that has waited longer.
+- **Capacity.** One batch of 10 per issue-class run is at most 10 refreshes a minute (600 an
+  hour) per viewer, and fewer while the budget waits (§5.3). The queue is recomputed each run
+  from `listIssueEntities`, `listSourceLinks` and `listIssueSnapshots`.
+- **No key starves only while arrivals stay below that capacity.** "Arrivals" means keys that
+  jump the queue: new links and nudges. Below capacity, every due key is served:
+  - with no arrivals, N due candidates are all served within ⌈N/10⌉ runs;
+  - arrivals take their share of each batch first, so older keys wait longer, but they still
+    advance.
+
+  If new links or nudges keep coming faster than 10 per run, they take every slot, and older
+  keys can wait until the burst ends. Bursts are bounded in practice: a nudge needs a PR to
+  merge or close, and a new key needs a new link. A steady state above about 100 open candidates
+  (10-minute TTL) also exceeds capacity; then every key is still served in turn, but less often
+  than its TTL.
+- **What the UI shows when the queue is over capacity.** Nothing new, and nothing that pretends
+  to be fresh. Chips show their real age ("checked 25m ago", "as of 2h ago"), dim after 30
+  minutes and hide their relationships after 7 days, exactly as for a soft failure (§5.8). Plain
+  issue chips, plans, attention and Live are unaffected.
 
 ### 5.5 Claims and leases (two viewers, one hub)
 
@@ -716,16 +741,49 @@ The issue chip, plan, row, item and any approval request are never hidden by thi
   string-keyed nodes, edges and roots). `load()` adds it as an eighth concurrent read with the
   `/api/links` fallback: any failure, including a 404 from an older viewer, yields an empty graph
   and the page renders exactly as before.
-- **Size and honest truncation.** The ten-issue #117 family measured 5.9 KB merged (§2.7).
-  `MAX_GRAPH_NODES` = 2,000 bounds a pathological hub at roughly 500 KB of nodes. The cap keeps,
-  in order:
-  1. every display root;
-  2. each display root's ancestors;
-  3. children, taken round-robin across display roots in GitHub order, until the cap.
+- **Size.** The ten-issue #117 family measured 5.9 KB merged (§2.7). `MAX_GRAPH_NODES` = 2,000
+  bounds every response, whatever the hub holds: at most 2,000 nodes, as many edges, one root
+  entry and one alias per kept root. That is about 1 MB in the worst case. A body is transferred
+  only when it changes.
 
-  `truncated` counts the omitted nodes and edges exactly; each affected root reports
-  `children_omitted`, and its list says "+N not shown". A body is transferred only when it
-  changes.
+### The node cap
+
+The builder spends a budget of 2,000 **units**: one per emitted node, plus one per hard-failed
+root, whose `roots` entry has no node. Each emitted node has at most one `contains` edge to its
+parent, so edges stay within the same bound. Display roots and their ancestors are uncapped, so
+the mandatory set alone can exceed the budget, and the builder resolves that deterministically.
+
+1. **Rank** the display roots that have a cached row, by a stable key:
+   1. refresh set before display-only (closed projects, archived plans);
+   2. open on GitHub, then closed, then unavailable (hard-failed, so without facts);
+   3. most recent local activity: the newest `updated_at` among the items, plans and rows that
+      link the key;
+   4. the key itself, ascending.
+2. **Keep whole roots, in rank order.** A root's unit is everything it needs that is not already
+   kept: its node (or its entry, when it has no node) and every accepted ancestor. That is at
+   most nine units. Roots are kept while their units fit. The first root whose unit does not fit
+   is omitted **together with every lower-ranked root**. The cut is always a prefix of the
+   ranking, and a chain is never cut partway. At least 222 roots always fit (⌊2,000 / 9⌋), and
+   more when ancestors are shared.
+3. **Fill children** of the kept roots with what remains: round-robin across them in rank order,
+   each root's children in GitHub order, until the budget is spent.
+
+The ranking reads only the database (local `updated_at` and cached GitHub facts), so the cut is
+the same on every identical read, and the conditional snapshot stays valid.
+
+The response reports the omissions exactly in `truncated`:
+
+| Field | Counts |
+|---|---|
+| `roots` | Display roots with cached data that were omitted |
+| `ancestors` | Distinct ancestors omitted because only omitted roots needed them |
+| `children` | Distinct children omitted |
+| `edges` | `contains` edges omitted |
+
+A kept root whose children were cut reports `children_omitted`, and its list says "+N not shown".
+
+**Fallback.** An omitted root is not listed in `roots`, so the plans, rows and items that link it
+render today's plain chip, exactly like an issue with no data. Nothing else on the page changes.
 
 ---
 
@@ -756,7 +814,8 @@ chip in the row's note cell and card instead of the plan's.
 
 `sourceBlockHtml()` adds:
 
-- the full parent trail, up to eight levels (for example `cli/cli#14563 › #14529 › #14523`);
+- the full parent trail, up to eight levels, with titles and states (for example
+  `cli/cli#14563 › #14529 › #14523`); only the immediate parent shows progress;
 - for an issue with children, **"Sub-issues on GitHub · N of M done"**: GitHub's order, a state
   mark (● open, ✓ completed, ⊘ not planned, ⧉ duplicate), the title, its Agent Inbox activity
   (§7.3), and "+N not visible to your GitHub account", "+N more on GitHub" or "+N not shown"
@@ -979,7 +1038,12 @@ differently:
 6. `/api/issues` answers 304 when nothing changed. Snapshot writes leave the bytes and ETags of
    `/api/items` and `/api/boards` unchanged.
 7. The display set includes closed-project entities and archived plans, and the refresh set
-   excludes them. Truncation counts are exact.
+   excludes them.
+8. When the display roots and their ancestors alone exceed the node cap, roots are kept whole in
+   rank order and the cut is a prefix of the ranking (§6). No chain is ever cut partway. The
+   omitted root, ancestor, child and edge counts are exact, and omitted roots are absent from
+   `roots`.
+9. Child counts appear only where §5.6 requests them; a higher ancestor shows none.
 
 **Tests.**
 
@@ -1000,7 +1064,16 @@ differently:
   - rule 6 suppression and later revival;
   - redirect aliases;
   - display scoping;
-  - cap order and exact counts;
+  - the node cap:
+    - 2,001 single-node roots;
+    - roots with distinct eight-level chains, where 222 always fit;
+    - shared ancestors;
+    - each ranking tier;
+    - the prefix cut, with no partial chain;
+    - exact `truncated` counts;
+    - children round-robin with `children_omitted`;
+    - identical output on repeated reads;
+  - counts only on the root, its immediate parent and its children;
   - cross-repository equal numbers.
 - `test/viewer.test.ts` and `test/viewer-snapshot-cache.test.ts`: `/api/issues` 200 then 304,
   invalidation after a write, existing ETags unchanged.
@@ -1021,8 +1094,9 @@ differently:
 
 **Acceptance criteria.**
 
-1. With 120 due candidates, every one is fetched within 12 ticks; no candidate is ever skipped
-   for good.
+1. With 120 due candidates and no new arrivals, every one is fetched within 12 issue-class runs.
+   While new links or nudges arrive faster than 10 per run, older keys wait and their ages keep
+   growing, and they are served once the burst ends (§5.4).
 2. Two viewers on one hub never fetch the same key at the same time, and a crashed viewer's lease
    expires after 60 s.
 3. The issue class runs first in every tick, and the PR class starts no target after 45 s.
@@ -1041,6 +1115,7 @@ differently:
 
 - `test/issue-poller.test.ts`:
   - fairness with 120 candidates on an injected clock;
+  - an over-capacity run: older keys wait while arrivals exceed 10 per run, then resume;
   - queue order and the TTL table;
   - nudges;
   - document snapshots for n = 1 and n = 10, with recorded argv (`-f`, `-F`, `--hostname`);
@@ -1111,7 +1186,8 @@ differently:
 
 1. A parent renders its children in GitHub's order with open/closed progress, and a child renders
    its exact parent (#103 criterion 1).
-2. With no `gh`, no data, or a 404 from `/api/issues`, every surface renders exactly as today.
+2. With no `gh`, no data, a 404 from `/api/issues`, or a root the node cap omitted, every surface
+   renders exactly as today.
 3. Soft failures show their age, dim after 30 minutes and hide after 7 days. Hard failures show
    "unavailable" with no cached title.
 4. Hostile titles render as text, and every href is constructed and passes through `chipHtml`.
@@ -1191,8 +1267,11 @@ nothing was lost.
    this, but a 25-minute-old count can still be acted on.
 2. **GitHub API drift** (renamed fields, new limits). The parser fails closed and sections are
    independent; at worst relationships disappear and nothing else changes.
-3. **Large hubs.** With no cap, more than about 100 due candidates stretch refreshes past the
-   TTL. Ages stay honest, and `ISSUE_BATCH` or the per-tick call count can be tuned.
+3. **Large hubs and bursts.** The queue's capacity is 10 refreshes a minute per viewer. Above
+   about 100 open candidates, or during a sustained burst of new links and nudges, refreshes fall
+   behind their TTLs and older keys wait (§5.4). Ages and dimming show this honestly, and
+   `ISSUE_BATCH` or the per-tick call count can be tuned. Above the node cap, whole roots fall
+   back to plain chips in rank order (§6).
 4. **Rate limits.** Bounded by the token bucket (120 points per hour per viewer) and the floor.
 5. **Lease correctness across processes.** Claims rely on `.immediate()` transactions on one
    SQLite file; PR1b tests races on two connections.
@@ -1333,3 +1412,12 @@ Sources:
     - sibling context deferred.
   - **Decisions recorded** (§15); **phasing** reduced to the first slice plus a later list, with
     acceptance criteria and tests for each PR (§13).
+- **Revision 3 (2026-10-19):** the delta-review fix and clarifications.
+  - **Node cap (§6):** roots are ranked by a stable key and kept whole, with their ancestor
+    chains, as a prefix of the ranking. The response reports exact omitted root, ancestor, child
+    and edge counts, and omitted roots fall back to plain chips. PR1a gains matching acceptance
+    criteria and tests.
+  - **Queue capacity (§5.4):** "no key starves" now holds only while arrivals stay below 10 per
+    run, and the section says what the UI shows when the queue is over capacity.
+  - **Child counts (§4.5):** counts are claimed only for the root, its immediate parent and its
+    children, matching the query in §5.6.

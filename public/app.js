@@ -133,6 +133,15 @@ localStorage.removeItem('agent-inbox-project-filter')
 let agentFilter = null
 let projectFilter = null
 let hideCompleted = localStorage.getItem(HIDE_DONE_KEY) !== 'false' // default ON
+// Sort order is the one queue setting a launch restores (#221): it only orders
+// the list and never hides work. Settings owns it; the queue's Sort menu changes
+// the current view only.
+const DEFAULT_SORT_KEY = 'agent-inbox-default-sort'
+
+function savedAskSort() {
+  const stored = localStorage.getItem(DEFAULT_SORT_KEY)
+  return ASK_SORT_OPTIONS.some((option) => option.value === stored) ? stored : 'priority'
+}
 
 const NOTES_SEEN_KEY = 'agent-inbox-notes-seen'
 const NOTES_SEEN_IDS_KEY = 'agent-inbox-notes-seen-ids'
@@ -4499,7 +4508,7 @@ function initStagedFlush() {
 // that opens itself. With the old #now strip gone this is the deck's only door.
 let actionFilter = 'all'
 let changedOnly = false
-let askSort = 'priority'
+let askSort = savedAskSort()
 let needsYouHeaderNode = null
 
 function entryEntity(entry) {
@@ -4524,6 +4533,15 @@ function syncNeedsYouHeader(bar) {
   changed.disabled = !lastVisitAt
   const sort = bar.querySelector('.queue-sort select')
   if (sort.value !== askSort) sort.value = askSort
+}
+
+function appendSortOptions(select) {
+  for (const option of ASK_SORT_OPTIONS) {
+    const el = document.createElement('option')
+    el.value = option.value
+    el.textContent = option.label
+    select.appendChild(el)
+  }
 }
 
 function needsYouHeader() {
@@ -4559,12 +4577,7 @@ function needsYouHeader() {
   sortText.textContent = 'Sort'
   const sort = document.createElement('select')
   sort.setAttribute('aria-label', 'Sort queue')
-  for (const option of ASK_SORT_OPTIONS) {
-    const el = document.createElement('option')
-    el.value = option.value
-    el.textContent = option.label
-    sort.appendChild(el)
-  }
+  appendSortOptions(sort)
   sort.value = askSort
   sort.addEventListener('change', () => {
     askSort = sort.value
@@ -7326,6 +7339,38 @@ function renderThemeSettings(host) {
   host.appendChild(section)
 }
 
+function renderSortSettings(host) {
+  const section = document.createElement('section')
+  section.className = 'setup-block sort-settings'
+  const title = document.createElement('h3')
+  title.textContent = 'Default sort order'
+  const hint = document.createElement('p')
+  hint.className = 'setup-hint'
+  hint.id = 'default-sort-hint'
+  hint.textContent = 'Used each time Agent Inbox opens in this browser or app profile. The Sort menu above the queue changes only the current view.'
+  const select = document.createElement('select')
+  select.setAttribute('aria-label', 'Default sort order')
+  select.setAttribute('aria-describedby', hint.id)
+  appendSortOptions(select)
+  select.value = savedAskSort()
+  select.addEventListener('change', () => {
+    try {
+      localStorage.setItem(DEFAULT_SORT_KEY, select.value)
+    } catch (err) {
+      select.value = savedAskSort()
+      console.error('Default sort order could not be saved', err)
+      document.getElementById('status').textContent = 'default sort order not saved'
+      return
+    }
+    askSort = select.value
+    pinnedIds = []
+    // The human's own choice: renderIfIdle() would hold it behind any open draft.
+    forceRender()
+  })
+  section.append(title, hint, select)
+  host.appendChild(section)
+}
+
 let updateSettings = null
 let updateSubscriptionStarted = false
 
@@ -7564,6 +7609,7 @@ async function renderSetup() {
   host.replaceChildren()
   renderThemeSettings(host)
   renderUpdateSettings(host)
+  renderSortSettings(host)
   try {
     const s = await (await fetch('/api/setup')).json()
     const block = (title, text, hint) => {

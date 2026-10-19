@@ -251,4 +251,62 @@ describe('readAgentHosts (#197)', () => {
       expect(kind === 'none', `${label}: installer says ${verdict}, viewer says ${kind}`).toBe(verdict === 'absent')
     }
   })
+
+  // #218: the hook installer attributes every agent-inbox-shaped hook entry by
+  // the rule Setup reports Claude's hooks with, so the set it refuses to
+  // duplicate (or replaces on request) is the one Setup names, and another
+  // tool's look-alike is never taken for one.
+  it('agrees with the hook installer on which install each hook entry runs', () => {
+    const elsewhere = (prefix: string): string => mkdtempSync(join(tmpdir(), prefix))
+    const tool = (): string => {
+      const root = elsewhere('agent-hosts-tool-')
+      mkdirSync(join(root, 'dist'))
+      writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'agent-inbox-companion' }))
+      writeFileSync(join(root, 'dist', 'hook-cli.js'), '// another tool\n')
+      return join(root, 'dist', 'hook-cli.js')
+    }
+    const inRuntime = (dir: string) => ({ command: join(dir, 'bin', 'node'), entry: join(dir, 'dist', 'hook-cli.js') })
+    const checkoutEntry = (): string => join(checkout(), 'dist', 'hook-cli.js')
+    const arrangements: Array<[string, (s: Scratch) => { command: string; entry: string }]> = [
+      ['runtime', (s) => inRuntime(installRuntimeVersion(s.runtimeRoot, '1.2.4'))],
+      ['checkout', () => ({ command: process.execPath, entry: checkoutEntry() })],
+      ['checkout, node on PATH', () => ({ command: 'node', entry: checkoutEntry() })],
+      ['another tool\'s dist/hook-cli.js', () => ({ command: process.execPath, entry: tool() })],
+      ['a relative entry', () => ({ command: 'node', entry: 'dist/hook-cli.js' })],
+      ['a runtime outside the root', () => inRuntime(installRuntimeVersion(elsewhere('agent-hosts-elsewhere-'), '1.2.4'))],
+      ['a missing entry', () => ({ command: process.execPath, entry: join(elsewhere('agent-hosts-gone-'), 'dist', 'hook-cli.js') })],
+      ['a missing node', () => ({ command: join(elsewhere('agent-hosts-gone-'), 'node'), entry: checkoutEntry() })],
+      ['split', (s) => ({ command: join(installRuntimeVersion(s.runtimeRoot, '1.2.4'), 'bin', 'node'), entry: checkoutEntry() })],
+      ['node on PATH, runtime entry', (s) => ({ command: 'node', entry: join(installRuntimeVersion(s.runtimeRoot, '1.2.4'), 'dist', 'hook-cli.js') })],
+      ['tampered', (s) => {
+        const dir = installRuntimeVersion(s.runtimeRoot, '1.2.4')
+        writeFileSync(join(dir, 'dist', 'hook-cli.js'), '// tampered\n')
+        return inRuntime(dir)
+      }],
+    ]
+    const seen = new Set<string>()
+    const attributedKinds = new Set<string>()
+    for (const [label, arrange] of arrangements) {
+      const s = scratch()
+      const launcher = arrange(s)
+      writeHooks(s, [launcher, launcher])
+      const installer = spawnSync(process.execPath, [
+        join(REPO, 'scripts', 'runtime-config.mjs'), 'foreign-hooks', '--replace-existing',
+        '--settings', join(s.home, '.claude', 'settings.json'), '--runtime-root', s.runtimeRoot,
+        '--entry', join(s.home, 'this-install', 'dist', 'hook-cli.js'),
+      ], { encoding: 'utf8' })
+      // refused even with --replace-existing: an entry it cannot verify
+      expect([0, 1], `${label}: ${installer.stderr}`).toContain(installer.status)
+      const removed = installer.status === 0 ? JSON.parse(installer.stdout) as Array<{ owner: { kind: string } }> : []
+      const attributed = installer.status === 1 ? 'unknown' : removed[0]?.owner.kind ?? 'other'
+      attributedKinds.add(attributed)
+      // the installer splits Setup's "unknown" in two: dead (a path is gone, so
+      // it cannot run, and --replace-existing removes it) or unknown (it runs)
+      const kind = read(s).hooks.kind
+      expect(attributed === 'dead' ? 'unknown' : attributed, `${label}: installer says ${attributed}, viewer says ${kind}`).toBe(kind)
+      seen.add(kind)
+    }
+    expect([...seen].sort()).toEqual(['checkout', 'other', 'runtime', 'unknown'])
+    expect([...attributedKinds].sort()).toEqual(['checkout', 'dead', 'other', 'runtime', 'unknown'])
+  })
 })

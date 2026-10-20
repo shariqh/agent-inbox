@@ -1888,6 +1888,16 @@ function realNodeDistRoot(): string | undefined {
 
 const REAL_NODE_ROOT = realNodeDistRoot()
 
+// Staging runs npm, the hook selftest, the 300,000-statement SQLite check and
+// the MCP server probe. That takes about 7-21 s alone, but a busy parallel
+// `npm test` has stretched it past 70 s (#238). These test bodies are
+// synchronous, so Vitest cannot interrupt them: the child-process timeouts in
+// stage-runtime.mjs bound a hang, and Vitest's limit only fails a run that
+// finished late. It therefore allows at least what staging allows its slowest
+// step, the SQLite check's 180 s ceiling (#187), plus a minute for the rest.
+const SQLITE_CHECK_CEILING_MS = 180_000
+const STAGING_TEST_TIMEOUT_MS = SQLITE_CHECK_CEILING_MS + 60_000
+
 /**
  * A minimal fixture repo root stage-runtime.mjs can stage end to end:
  *  - package.json declares ONE dependency, a locally `npm pack`-ed tarball
@@ -2070,7 +2080,7 @@ describe.skipIf(!REAL_NODE_ROOT || !['darwin', 'linux'].includes(process.platfor
         const siblings = readdirSync(outputParent)
         expect(siblings.some((e) => e.startsWith('.agent-inbox-stage-'))).toBe(false)
       },
-      30_000,
+      STAGING_TEST_TIMEOUT_MS,
     )
 
     it(
@@ -2090,7 +2100,7 @@ describe.skipIf(!REAL_NODE_ROOT || !['darwin', 'linux'].includes(process.platfor
         const siblings = readdirSync(outputParent)
         expect(siblings.some((e) => e.startsWith('.agent-inbox-stage-'))).toBe(false)
       },
-      30_000,
+      STAGING_TEST_TIMEOUT_MS,
     )
 
     it.each(['FAKE_GC_FAIL', 'FAKE_GC_SIGNAL'])(
@@ -2108,7 +2118,7 @@ describe.skipIf(!REAL_NODE_ROOT || !['darwin', 'linux'].includes(process.platfor
         expect(existsSync(output)).toBe(false)
         expect(readdirSync(outputParent).some((entry) => entry.startsWith('.agent-inbox-stage-'))).toBe(false)
       },
-      30_000,
+      STAGING_TEST_TIMEOUT_MS,
     )
 
     it(
@@ -2149,7 +2159,7 @@ describe.skipIf(!REAL_NODE_ROOT || !['darwin', 'linux'].includes(process.platfor
         expect(timeoutsFor((args) => basename(args[0] ?? '') === 'hook-cli.js' && args[1] === 'selftest'))
           .toEqual([30_000])
       },
-      30_000,
+      STAGING_TEST_TIMEOUT_MS,
     )
   },
 )
@@ -2160,7 +2170,8 @@ describe('runtime SQLite cleanup gate', () => {
     const result = spawnSync(process.execPath, [
       '--import', 'tsx', SQLITE_CHECK_CLI, join(REPO, 'src', 'store.ts'),
     ], {
-      cwd: REPO, encoding: 'utf8', timeout: 30_000,
+      // the check staging runs, with the ceiling staging gives it
+      cwd: REPO, encoding: 'utf8', timeout: SQLITE_CHECK_CEILING_MS,
       env: { ...process.env, AGENT_INBOX_DB: unusedDb },
     })
     expect(result.status, result.stderr).toBe(0)
@@ -2168,7 +2179,7 @@ describe('runtime SQLite cleanup gate', () => {
     expect(result.stdout).toBe('')
     expect(result.stderr).toBe('')
     expect(existsSync(unusedDb)).toBe(false)
-  }, 35_000)
+  }, STAGING_TEST_TIMEOUT_MS)
 })
 
 

@@ -3,17 +3,17 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs'
-import { constants, tmpdir } from 'node:os'
+import { constants } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
+import { removeScratchDirs, scratchDir } from './scratch.js'
 
 const REPO = resolve(import.meta.dirname, '..')
 const SCRIPT = join(REPO, 'scripts', 'install-agents.sh')
@@ -28,6 +28,8 @@ const IMPORT_LINE = `@${SNIPPET_PATH}`
 const SNIPPET_LINE = 'One ask, one surface'
 const SNIPPET_HEADING = '## Flags (one-shot attention)'
 
+afterEach(removeScratchDirs)
+
 interface Fixture {
   home: string
   env: NodeJS.ProcessEnv
@@ -41,7 +43,7 @@ interface Fixture {
 }
 
 function fixture(): Fixture {
-  const home = mkdtempSync(join(tmpdir(), 'agent-installer-'))
+  const home = scratchDir('agent-installer-')
   const fakebin = join(home, 'fakebin')
   const state = join(home, 'state')
   const log = join(home, 'cli.log')
@@ -1785,7 +1787,7 @@ fi
 // steps through.
 describe('rollback step isolation (#211)', () => {
   function scratch(): string {
-    return mkdtempSync(join(tmpdir(), 'run-isolated-'))
+    return scratchDir('run-isolated-')
   }
 
   function isolate(args: string[]) {

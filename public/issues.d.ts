@@ -26,7 +26,12 @@ export interface IssueNodeView {
   completed?: number
 }
 
-export type IssueFreshness = 'fresh' | 'stale' | 'hidden' | 'unavailable'
+/**
+ * fresh and stale draw relationships; hidden (expired), no-hierarchy (GitHub
+ * returned the issue without its parent or sub-issues) and unavailable (a hard
+ * failure) draw the plain chip and one line saying why.
+ */
+export type IssueFreshness = 'fresh' | 'stale' | 'hidden' | 'no-hierarchy' | 'unavailable'
 
 /** The item, plan or plan row an activity label opens. */
 export interface IssueTarget {

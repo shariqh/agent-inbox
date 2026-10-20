@@ -491,9 +491,17 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   Fresh until 30 minutes after `fetched_at`; stale to 7 days (`tone-stale`, "as of …",
   ERROR_LABEL's reason); hidden after (the plain chip; the block says "Relationships
   unavailable — last seen …"); a hard failure says "unavailable" and why, with no cached
-  title. A soft failure before any success, a root the node cap omitted, an uncertain
-  identity or History (`sourceOptions` passes no view for a closed item) draws #30's plain
-  chip byte for byte. (3) **Identity before relationships.** `issueRef` now delegates to
+  title. An issue GitHub returned without its parent or sub-issues (§5.7: the poller stores
+  `hierarchy: { status: 'unavailable' }` as a success) draws like an expired one, whatever
+  another issue's list says: the plain chip and "Relationships unavailable — GitHub
+  returned this issue but not its parent or sub-issues", never "checked". Each
+  `/api/issues` root carries that status as `hierarchy` (`'ok' | 'unavailable' | null`,
+  null when no snapshot is readable; additive within version 1, an absent field reads as
+  before), and `issueRelations` reads the same field, so the chips and the agent's
+  `issue_rel` agree by construction (`test/issues.test.ts` checks every state). A soft
+  failure before any success, an unreadable snapshot, a root the node cap omitted, an
+  uncertain identity or History (`sourceOptions` passes no view for a closed item) draws
+  #30's plain chip byte for byte. (3) **Identity before relationships.** `issueRef` now delegates to
   `issueKeyFor` (closing over `issue-key.js`, which imports `source.js` back; both only
   call each other inside functions): a plan's pin names its chip, a PR closing several
   issues names none (its tooltip and block list them as `closes …`), and an issue number
@@ -502,9 +510,12 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   matrix note cell, whose row click ignores anchors; `issueRelationsHtml` draws a plan's
   trail and sub-issues in `.board-issues`, outside `<summary>`. (4) **Escaping stays in
   `source.js`.** Titles, agents and labels go through `esc()`, `data-issue-key`/
-  `data-issue-open` too, labels name the repository whenever it differs, every issue URL
-  is built from a validated slug and number and only through `chipHtml()`, relationship
-  chips use only `tone-issue`/`tone-stale`, and the word "Blocked" never appears. An
+  `data-issue-open` too, and labels name the repository whenever it differs. Every
+  relationship link (parent, trail, sub-issue) is built from a validated slug and number;
+  the issue chip keeps #30's URL rules (a PR-derived issue may use the cached `issue_url`,
+  and a number with no usable repository its constructed URL), each filtered by
+  `safeHttpUrl()`. Every href still comes only from `chipHtml()`, relationship chips use
+  only `tone-issue`/`tone-stale`, and the word "Blocked" never appears. An
   activity label opens its target only through `openIssueActivity` → `focusItem(id,
   { rowId })` (closing triage, relay and Plan flow first). No render path fetches, and the
   poll gate, press guard, scroll guards and focus rules are unchanged, so a

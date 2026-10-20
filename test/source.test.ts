@@ -585,6 +585,22 @@ describe('issue relationships in the chips and the source block (#103)', () => {
     }
   })
 
+  // Review round 1: GitHub returned the issue but not its parent or sub-issues.
+  // Nothing is known about its relationships, so it never reads "checked".
+  it('draws an issue GitHub returned without its hierarchy like an expired one: the plain chip and one line', () => {
+    const issues = view(buildIssueGraph([
+      row(K(117), snapshot(K(117), { issue: { title: PARENT }, children: [K(120)] }), at(0)),
+      row(K(120), snapshot(K(120), { unavailable: true }), at(0)),
+    ], keySets([K(117), K(120)])))
+    const line = 'Relationships unavailable — GitHub returned this issue but not its parent or sub-issues'
+    expect(sourceChipsHtml(new Map(), item120, NOW3, { issues })).toBe(sourceChipsHtml(new Map(), item120, NOW3, { issues: null }))
+    const block = sourceBlockHtml(new Map(), item120, NOW3, { issues })
+    expect(block).toContain(line)
+    expect(block.replace(/<[^>]*>/g, ' ')).not.toMatch(/checked|as of|#117/)
+    expect(issueRelationsHtml(new Map(), { ...plan117, issue_pin_number: 120 }, NOW3, { issues }))
+      .toBe(`<div class="card-source src-relations"><div class="src-checked">${line}</div></div>`)
+  })
+
   it('renders hostile titles as inert text, including quotes inside title=', () => {
     const XSS = '"><img src=x onerror=alert(1)>'
     const QUOTES = `It's "quoted" & <b>bold</b>`

@@ -329,8 +329,23 @@ describe('the /api/issues snapshot', () => {
     expect(fetcher.mock.calls[2]?.[1]?.headers).toEqual({ 'If-None-Match': '"g"' })
   })
 
+  // Review round 1: each root says whether its own hierarchy could be read. The
+  // field is additive within version 1, so a body without it is still valid.
+  it.each([
+    ['present and ok', 'ok'],
+    ['present and unavailable', 'unavailable'],
+    ['null, with no readable snapshot', null],
+    ['absent', undefined],
+  ])('accepts a root whose hierarchy status is %s', async (_label, hierarchy) => {
+    const root = { ...graph.roots[0]!, ...(hierarchy === undefined ? {} : { hierarchy }) }
+    const read = createSnapshotReader(vi.fn().mockResolvedValue(json({ ...graph, roots: [root] })))
+    expect(await (await read('/api/issues')).json()).toEqual({ ...graph, roots: [root] })
+  })
+
   it.each([
     ['another version', { ...graph, version: 2 }],
+    ['a root with an unknown hierarchy status', { ...graph, roots: [{ ...graph.roots[0], hierarchy: 'partial' }] }],
+    ['a root whose hierarchy status is not text', { ...graph, roots: [{ ...graph.roots[0], hierarchy: { status: 'ok' } }] }],
     ['a bare array', [graph]],
     ['nodes that are not an array', { ...graph, nodes: {} }],
     ['a node without a string key', { ...graph, nodes: [{ ...graph.nodes[0], key: 117 }] }],

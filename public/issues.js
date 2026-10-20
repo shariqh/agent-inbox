@@ -40,6 +40,12 @@ function freshness(root, nowMs) {
   const fetched = Date.parse(text(root.fetched_at) ?? '')
   // a soft failure before any success knows nothing: today's chip
   if (!Number.isFinite(fetched)) return null
+  // GitHub returned the issue but not its parent or sub-issues (§5.7), so no
+  // relationship is known, whatever another issue's list says; null means this
+  // build cannot read the cached answer. issue_rel calls both unavailable. An
+  // absent status (a viewer older than the field) draws as before.
+  if (root.hierarchy === 'unavailable') return 'no-hierarchy'
+  if (root.hierarchy === null) return null
   const age = nowMs - fetched
   return age > HIDDEN_AFTER_MS ? 'hidden' : age > STALE_AFTER_MS ? 'stale' : 'fresh'
 }

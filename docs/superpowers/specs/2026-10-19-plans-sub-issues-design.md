@@ -510,7 +510,8 @@ Defined now so that the later PR inherits it:
   ],
   "roots": [
     { "key": "shariqh/agent-inbox#120", "refresh": true, "fetched_at": "2026-10-19T22:30:00.000Z",
-      "checked_at": "2026-10-19T22:30:00.000Z", "error": null, "failure": null, "children_omitted": 0 }
+      "checked_at": "2026-10-19T22:30:00.000Z", "error": null, "failure": null, "hierarchy": "ok",
+      "children_omitted": 0 }
   ],
   "aliases": { "twitter/bootstrap#2": "twbs/bootstrap#2" },
   "truncated": { "roots": 0, "ancestors": 0, "children": 0, "edges": 0 }
@@ -518,6 +519,9 @@ Defined now so that the later PR inherits it:
 ```
 
 - `failure` is `null`, `soft` or `hard`. A hard-failed root has no node.
+- `hierarchy` is `ok`, `unavailable` (GitHub returned the issue but not its parent or
+  sub-issues, §5.7) or `null` (no readable snapshot). It was added in PR3 within version 1;
+  a reader treats an absent field as before (revision 7).
 - `refresh: false` marks a root that is displayed but no longer refreshed (a closed project, an
   archived plan).
 - Nodes carry `conflict: true` when rule 3 or 5 applied. `children_total` and
@@ -1521,3 +1525,16 @@ Sources:
   - **Validator (§6).** Version 1, string-keyed nodes, edges and roots, and a record of
     aliases. `public/issues.js` re-validates every node against its own key before drawing
     it, and source.js builds no URL from a node that fails that check.
+  - **A missing hierarchy (§4.7, §5.7; review round 1).** The poller stores an issue whose
+    parent or sub-issues failed to load as a success with an unavailable hierarchy, so a
+    broken parent is never read as "no parent". Each `/api/issues` root now says so in an
+    additive `hierarchy` field. The browser draws such an issue like an expired one: the
+    plain chip, no parent, progress or sub-issues even where another issue's list names
+    them, and one line, "Relationships unavailable — GitHub returned this issue but not its
+    parent or sub-issues". An unreadable snapshot (`hierarchy: null`) draws the plain chip.
+    The titled `board_get` summary reads the same field, so `issue_rel` and the chips agree.
+  - **URLs (§11).** Every relationship link (parent, trail, sub-issue) is built from a
+    validated slug and number. The issue chip keeps #30's rules: a PR-derived issue may use
+    the PR poller's cached `issue_url`, and a number with no usable repository keeps its
+    constructed URL, each filtered by `safeHttpUrl()`. Every href still comes from
+    `chipHtml()`.

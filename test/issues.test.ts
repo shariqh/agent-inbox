@@ -7,7 +7,7 @@ import { buildIssueView, HIDDEN_AFTER_MS, STALE_AFTER_MS } from '../public/issue
 import type { IssueRelation, IssueViewItem, IssueViewPlan, IssueViewRow } from '../public/issues.js'
 import { indexLinks } from '../public/source.js'
 import type { CachedLink } from '../public/source.js'
-import { buildIssueGraph } from '../src/issue-graph.js'
+import { buildIssueGraph, issueRelations } from '../src/issue-graph.js'
 import type { IssueSnapshotRow } from '../src/store.js'
 import { at, facts, keySets, row, snapshot } from './issue-fixtures.js'
 
@@ -147,6 +147,47 @@ describe('freshness and unavailable states (§5.8)', () => {
     expect(soft.relations.has(K(131))).toBe(false)
     const capped = buildIssueView(graphOf(family(), { maxUnits: 1 }), { nowMs: T })
     expect([...capped.relations.keys()]).toEqual([K(117)])
+  })
+
+  // Review round 1. GitHub returned the issue but failed on its parent or
+  // sub-issues (§5.7), so nothing is known about its relationships: draw it
+  // like an expired one, even where another issue's list still names a parent.
+  it('draws nothing for an issue GitHub returned without its hierarchy, however old', () => {
+    const rows = (nowMs: number) => buildIssueView(graphOf([
+      row(K(117), snapshot(K(117), { children: [K(120)] }), at(0)),
+      row(K(120), snapshot(K(120), { unavailable: true }), at(0), { error: 'offline', checkedAt: at(5) }),
+    ]), { nowMs }).relations.get(K(120))
+    for (const nowMs of [T, T + 2 * 60 * 60_000, T + HIDDEN_AFTER_MS + 1]) {
+      expect(rows(nowMs)).toEqual({
+        key: K(120), freshness: 'no-hierarchy', error: 'offline', fetchedAt: at(0), node: null, trail: [], children: [],
+        more: { notVisible: 0, onGitHub: 0, notShown: 0 },
+      })
+    }
+    // a cached answer this build cannot read (another version's, say) knows nothing
+    const unreadable = { ...row(K(120), null, null), fetched_at: at(0) }
+    const graph = graphOf([row(K(117), snapshot(K(117), { children: [K(120)] }), at(0)), unreadable])
+    expect(graph.roots.find((r) => r.key === K(120))?.hierarchy).toBeNull()
+    expect(buildIssueView(graph, { nowMs: T }).relations.has(K(120))).toBe(false)
+  })
+
+  it('agrees with the agent\'s issue_rel on whether there are relationships to draw', () => {
+    const parent = row(K(117), snapshot(K(117), { children: [K(120)] }), at(0))
+    const cases: Array<[string, IssueSnapshotRow, number, boolean]> = [
+      ['fresh', row(K(120), snapshot(K(120), { ancestors: [K(117)] }), at(0)), T, true],
+      ['stale', row(K(120), snapshot(K(120), { ancestors: [K(117)] }), at(0), { error: 'auth', checkedAt: at(90) }), T + 2 * 60 * 60_000, true],
+      ['expired', row(K(120), snapshot(K(120), { ancestors: [K(117)] }), at(0)), T + HIDDEN_AFTER_MS + 1, false],
+      ['no hierarchy', row(K(120), snapshot(K(120), { unavailable: true }), at(0)), T, false],
+      ['unreadable', { ...row(K(120), null, null), fetched_at: at(0) }, T, false],
+      ['hard failure', row(K(120), null, null, { error: 'forbidden', checkedAt: at(1) }), T, false],
+      ['soft failure before any success', row(K(120), null, null, { error: 'offline', checkedAt: at(1) }), T, false],
+    ]
+    for (const [label, child, nowMs, draws] of cases) {
+      const keys = [K(117), K(120)]
+      const agent = issueRelations([parent, child], keys, nowMs).get(K(120))
+      const view = buildIssueView(buildIssueGraph([parent, child], keySets(keys)), { nowMs }).relations.get(K(120))
+      expect(Boolean(agent && !agent.unavailable), `${label}: issue_rel`).toBe(draws)
+      expect(Boolean(view?.node && (view.freshness === 'fresh' || view.freshness === 'stale')), `${label}: view`).toBe(draws)
+    }
   })
 
   it('treats a missing or malformed graph as no graph', () => {

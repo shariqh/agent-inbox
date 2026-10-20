@@ -74,7 +74,7 @@ describe('the v1 graph shape (§4.7)', () => {
     expect(graph.roots).toHaveLength(10)
     expect(graph.roots[0]).toEqual({
       key: 'shariqh/agent-inbox#117', refresh: true, fetched_at: fixture.fetched_at, checked_at: fixture.fetched_at,
-      error: null, failure: null, children_omitted: 0,
+      error: null, failure: null, hierarchy: 'ok', children_omitted: 0,
     })
     expect(graph.aliases).toEqual({})
     expect(graph.truncated).toEqual({ roots: 0, ancestors: 0, children: 0, edges: 0 })
@@ -316,7 +316,7 @@ describe('hard failures (rule 6)', () => {
     expect(JSON.stringify(graph)).not.toContain('Private title')
     expect(childrenOf(graph, P)).toEqual([C])
     expect(graph.roots.find((r) => r.key === K)).toEqual({
-      key: K, refresh: true, fetched_at: null, checked_at: at(20), error: 'not-found', failure: 'hard', children_omitted: 0,
+      key: K, refresh: true, fetched_at: null, checked_at: at(20), error: 'not-found', failure: 'hard', hierarchy: null, children_omitted: 0,
     })
     expect(node(graph, P)).toMatchObject({ children_total: 2 })
   })
@@ -416,10 +416,24 @@ describe('identity and scope', () => {
       row(Q, null, null, { error: 'no-gh', checkedAt: at(40) }),
     ], [P, Q, C], { displayOnly: [Q] })
     expect(graph.roots).toEqual([
-      { key: P, refresh: true, fetched_at: at(10), checked_at: at(40), error: 'rate-limit', failure: 'soft', children_omitted: 0 },
-      { key: Q, refresh: false, fetched_at: null, checked_at: at(40), error: 'no-gh', failure: 'soft', children_omitted: 0 },
+      { key: P, refresh: true, fetched_at: at(10), checked_at: at(40), error: 'rate-limit', failure: 'soft', hierarchy: 'ok', children_omitted: 0 },
+      { key: Q, refresh: false, fetched_at: null, checked_at: at(40), error: 'no-gh', failure: 'soft', hierarchy: null, children_omitted: 0 },
     ])
     expect(nodeKeys(graph)).toEqual([P])
+  })
+
+  // #103 PR3 review: GitHub can return an issue but fail on its parent or
+  // sub-issues (§5.7). The root says so, so the browser can draw no
+  // relationship for it, exactly as issue_rel already reports it unavailable.
+  it('reports whether each root\'s own hierarchy could be read', () => {
+    const graph = build([
+      row(P, snapshot(P, { children: [C] }), at(10)),
+      row(C, snapshot(C, { unavailable: true }), at(10)),
+      row(Q, null, null, { error: 'not-found', checkedAt: at(10) }),
+    ], [P, C, Q])
+    expect(graph.roots.map((r) => [r.key, r.hierarchy])).toEqual([[P, 'ok'], [Q, null], [C, 'unavailable']])
+    // the facts still count: C stays P's child in P's own list
+    expect(childrenOf(graph, P)).toEqual([C])
   })
 
   it('is byte-identical however its inputs are ordered', () => {

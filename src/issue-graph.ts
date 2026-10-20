@@ -55,6 +55,11 @@ export interface IssueGraphRoot {
   checked_at: string
   error: string | null
   failure: 'soft' | 'hard' | null
+  /**
+   * Whether this root's own snapshot could read its parent and sub-issues (§5.7);
+   * null when there is no readable snapshot. Additive within version 1.
+   */
+  hierarchy: 'ok' | 'unavailable' | null
   children_omitted: number
 }
 
@@ -394,6 +399,7 @@ export function buildIssueGraph(
       checked_at: root.row.checked_at,
       error: root.row.error,
       failure: root.row.failure,
+      hierarchy: root.row.snapshot?.hierarchy.status ?? null,
       children_omitted: root.children.filter((key) => !kept.has(key)).length,
     })),
     aliases,
@@ -427,18 +433,14 @@ export function issueRelations(snapshots: IssueSnapshotRow[], keys: Iterable<str
   const display = new Map<string, { refresh: boolean; updated_at: string }>()
   for (const key of keys) display.set(key, { refresh: true, updated_at: '' })
   const graph = buildIssueGraph(snapshots, { refresh: new Set(display.keys()), display })
-  const hierarchyOk = new Map<string, boolean>()
-  for (const row of snapshots) {
-    const key = issueKey(row.repo, row.number)
-    if (key && display.has(key)) hierarchyOk.set(key, row.snapshot?.hierarchy.status === 'ok')
-  }
   const nodes = new Map(graph.nodes.map((node) => [node.key, node]))
   const out = new Map<string, IssueRel>()
   for (const root of graph.roots) {
     if (root.fetched_at === null && root.failure !== 'hard') continue
     const age = root.fetched_at === null ? Infinity : nowMs - Date.parse(root.fetched_at)
     const node = nodes.get(graph.aliases[root.key] ?? root.key)
-    const unavailable = !node || age > REL_HIDDEN_MS || hierarchyOk.get(root.key) !== true
+    // the root's own hierarchy status, which the viewer's chips read too
+    const unavailable = !node || age > REL_HIDDEN_MS || root.hierarchy !== 'ok'
     let parent: string | undefined
     let children: IssueRel['children']
     if (node && !unavailable) {

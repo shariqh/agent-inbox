@@ -4,7 +4,8 @@
 // reaches the page through the real /api/issues route and the poll's eighth read.
 import { afterEach, describe, expect, it } from 'vitest'
 import type Database from 'better-sqlite3'
-import { getBoard, insertItem, resolveItem, upsertBoard, upsertIssueSnapshot } from '../../src/store.js'
+import { getBoard, insertItem, listIssueSnapshots, resolveItem, upsertBoard, upsertIssueSnapshot } from '../../src/store.js'
+import { issueRelations } from '../../src/issue-graph.js'
 import { facts, snapshot } from '../issue-fixtures.js'
 import type { SnapshotOpts } from '../issue-fixtures.js'
 import {
@@ -138,6 +139,29 @@ describe('breadcrumbs and child progress (#103 PR3)', () => {
     viewer.set('graph')
     await pollTick()
     expect(chipKeys(boardCard(umbrella.id).querySelector('.board-source')!)).toEqual([K(117)])
+  })
+})
+
+describe('an issue GitHub returned without its hierarchy (#103 PR3, review round 1)', () => {
+  it('draws the plain chip and one unavailable line, as the agent\'s issue_rel reports it', async () => {
+    db = freshDb()
+    const question = insertItem(db, { ...SCOPE, stream: '120-ahp-input', kind: 'question', title: 'Which input requests come first?', repo: REPO, issue_ref: 120 })
+    // #117's own list still names #120, but #120's parent and sub-issues failed to load
+    cache(db, 117, { issue: { title: UMBRELLA }, children: [facts(K(120), { title: 'Import unresolved AHP input requests' })] })
+    cache(db, 120, { issue: { title: 'Import unresolved AHP input requests' }, unavailable: true })
+    await boot(db)
+    await showInbox()
+    expect(row(question)!.querySelector('.nrow-src')!.innerHTML).toBe(PLAIN_120)
+    click(row(question))
+    await settle()
+    const block = row(question)!.querySelector('.nrow-card .card-source')!
+    expect(block.textContent).toContain('Relationships unavailable — GitHub returned this issue but not its parent or sub-issues')
+    expect(block.textContent).not.toMatch(/checked|as of|#117|Import unresolved/)
+    expect(chipKeys(row(question)!)).toEqual([])
+
+    const rel = issueRelations(listIssueSnapshots(db), [K(117), K(120)], Date.now()).get(K(120))
+    expect(rel).toMatchObject({ key: K(120), unavailable: true })
+    expect(rel).not.toHaveProperty('parent')
   })
 })
 

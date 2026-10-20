@@ -17,9 +17,10 @@
 //      place below, through esc(safeHttpUrl(...)).
 //
 // Issue #103 (PR3) adds GitHub's sub-issue relationships to the same chips and
-// block: issue titles are third-party text too, and every issue URL is built
-// here from a validated slug and number. public/issues.js computes what to
-// draw (`opts.issues`); this file only draws it.
+// block: issue titles are third-party text too, and every relationship link
+// (parent, trail, sub-issue) is built here from a validated slug and number.
+// The issue chip itself keeps #30's URL rules. public/issues.js computes what
+// to draw (`opts.issues`); this file only draws it.
 import { esc } from './esc.js'
 import { closingKeys, issueKey, issueKeyFor } from './issue-key.js'
 
@@ -118,7 +119,7 @@ function issueLabel(repo, number, against) {
   return against && against.toLowerCase() === repo.toLowerCase() ? `#${number}` : `${repo}#${number}`
 }
 
-// Every issue URL is built from a validated slug and number, or not at all.
+// A relationship link is built from a validated slug and number, or not at all.
 function issueUrl(repo, number) {
   return issueKey(repo, number) ? `https://github.com/${repo}/issues/${number}` : ''
 }
@@ -390,10 +391,15 @@ function childrenHtml(rel, tone) {
 
 const lineHtml = (text) => `<div class="src-checked">${esc(text)}</div>`
 
-// How fresh the relationships are, or why there are none.
+// How fresh the relationships are, or why there are none. Only drawn ones ever
+// say "checked" or "as of".
 function freshnessHtml(rel, nowMs) {
   if (rel.freshness === 'unavailable') return lineHtml(`Relationships unavailable — ${unavailableText(rel)}`)
   if (rel.freshness === 'hidden') return lineHtml(`Relationships unavailable — last seen ${agoLabel(rel.fetchedAt, nowMs)}`)
+  if (rel.freshness === 'no-hierarchy') {
+    return lineHtml('Relationships unavailable — GitHub returned this issue but not its parent or sub-issues')
+  }
+  if (!drawn(rel)) return ''
   const reason = reasonOf(rel)
   return lineHtml(`Relationships ${ageText(rel, nowMs)}${reason ? ` — ${reason}` : ''}`)
 }
@@ -481,8 +487,7 @@ export function issueRelationsHtml(index, entity, nowMs, opts = {}) {
     const tone = rel.freshness === 'stale' ? 'stale' : 'issue'
     body = trailHtml(rel, contextRepo(entity, link), tone) + childrenHtml(rel, tone)
     if (!body) return ''
-  } else if (rel.freshness !== 'unavailable' && rel.freshness !== 'hidden') {
-    return ''
   }
-  return `<div class="card-source src-relations">${body}${freshnessHtml(rel, nowMs)}</div>`
+  const line = freshnessHtml(rel, nowMs)
+  return line ? `<div class="card-source src-relations">${body}${line}</div>` : ''
 }

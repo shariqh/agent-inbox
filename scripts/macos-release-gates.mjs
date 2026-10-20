@@ -24,6 +24,7 @@ import { loadReleaseInputs, sha256File } from './release-inputs.mjs'
 import { verifyPackagedUpdateTrust } from './package-update-trust.mjs'
 import { verifyPayload } from './runtime-payload.mjs'
 import { treeIdentity } from './tree-identity.mjs'
+import { probeRuntimeMcp } from './runtime-mcp-probe.mjs'
 
 const APP_NAME = 'Agent Inbox'
 const TAG_RE = /^v(\d+\.\d+\.\d+)$/
@@ -414,6 +415,11 @@ export function verifyDeveloperIdApp({
     cwd: runtime,
     env: { ...process.env, AGENT_INBOX_DB: scratchDb },
   })
+  try {
+    probeRuntimeMcp(join(runtime, 'bin', 'node'), runtime)
+  } catch (err) {
+    throw new ReleaseGateError(`Intel runtime: ${err.message}`)
+  }
   const evidence = {
     schema: 1,
     status: 'passed',

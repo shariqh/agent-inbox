@@ -178,14 +178,15 @@ export function shapeBoard(
 ): ShapedBoard {
   const full = opts.full === true
   if (full) for (const r of board.rows) opts.ledger.claim(rowKey(r.id), r.context)
-  const { issue_pin_repo, issue_pin_number, rows, ...rest } = board
+  const { issue_pin_repo, issue_pin_number, ...rest } = board
   const issue = issueText(issue_pin_repo, issue_pin_number)
-  const plan: Omit<BoardWithRows, 'rows' | RawPlanPin> & IssueEcho = {
+  // overriding `rows` in place keeps every key where it was before PR2
+  return {
     ...rest,
+    rows: board.rows.map((row) => shapeRow(row, full, opts.issues?.rows.get(row.id))),
     ...(issue ? { issue } : {}),
     ...(opts.issues?.plan ? { issue_rel: opts.issues.plan } : {}),
   }
-  return { ...plan, rows: rows.map((row) => shapeRow(row, full, opts.issues?.rows.get(row.id))) }
 }
 
 export interface RowSummary {

@@ -471,6 +471,12 @@ describe('issue links and issue_rel — titled board_get only (#103 PR2)', () =>
     expect(JSON.stringify(bare)).not.toMatch(/issue_rel/)
   })
 
+  it('an unlinked board keeps its previous key order, rows where they always were', () => {
+    const { board } = boardWith([{ label: 'Plain', status: 'tracked' }])
+    const { issue_pin_repo: _repo, issue_pin_number: _number, ...before } = { ...board, rows: [] }
+    expect(Object.keys(shapeBoard(board, { ledger: makeContextLedger() }))).toEqual(Object.keys(before))
+  })
+
   it('the title-less summary carries neither links nor issue_rel', () => {
     const { board } = linkedBoard()
     expect(JSON.stringify(summariseBoard(board))).not.toMatch(/issue/)

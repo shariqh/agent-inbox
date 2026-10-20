@@ -47,6 +47,7 @@ import { dirname, join, posix, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildManifest, copyTreePreservingMode, isMainModule, verifyPayload, writeManifestFile } from './runtime-payload.mjs'
 import { copyAgentInboxLicense } from './license.mjs'
+import { probeRuntimeMcp } from './runtime-mcp-probe.mjs'
 import {
   assertPlainFile,
   nativeRuntimeAdapterFor,
@@ -357,6 +358,13 @@ function runStagedSelftest(stageDir, adapter) {
       } catch (err) {
         throw new StageRuntimeError(`staged runtime failed its ${label} — refusing to publish: ${err.message}`)
       }
+    }
+    // hook-cli reaches no public/ module; only starting the MCP server proves
+    // the runtime carries everything dist/mcp-server.js imports (#103 PR2)
+    try {
+      probeRuntimeMcp(stagedNode, stageDir)
+    } catch (err) {
+      throw new StageRuntimeError(`staged runtime failed its MCP server probe — refusing to publish: ${err.message}`)
     }
   } finally {
     rmSync(scratchDir, { recursive: true, force: true })

@@ -462,7 +462,12 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   `/api/boards` simply gains the raw columns, as store rows always have. Because
   `dist/mcp.js` now imports `../public/issue-key.js` (and through it `source.js`/`esc.js`),
   `scripts/stage-runtime.mjs` stages exactly the `public/` modules `dist/` reaches into every
-  runtime payload; a runtime without them could not even start its MCP server.
+  runtime payload; a runtime without them could not even start its MCP server. Since
+  `hook-cli selftest` reaches no `public/` module, `scripts/runtime-mcp-probe.mjs`
+  (`probeRuntimeMcp`) starts the runtime's own `dist/mcp-server.js` with its own Node against
+  a scratch database and requires initialize + tools/list to answer, bounded by a timeout
+  and writing nothing to stdout. Staging, release assembly and the Intel release gate all
+  run it beside the selftest.
 - **`src/shape.ts` is AGENT-SIDE ONLY (issue #42).** `context` is written for the human
   and rendered collapsed, so agents write it generously — and every agent read used to pay
   for all of it. `shape.ts` is where the MCP read payloads are trimmed (`context` →

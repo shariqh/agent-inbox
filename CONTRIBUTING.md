@@ -60,4 +60,8 @@ architecture invariants documented in [`CLAUDE.md`](CLAUDE.md). Bug reports shou
 include reproduction steps, expected behavior, actual behavior, operating system and
 Node version.
 
+After a pull request merges or a release publishes, remove its worktree, branches,
+scratch directories and build outputs as described in
+[`docs/workspace-hygiene.md`](docs/workspace-hygiene.md).
+
 Security reports must follow [`SECURITY.md`](SECURITY.md), not the public issue tracker.

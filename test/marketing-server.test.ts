@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { once } from 'node:events'
 import { request } from 'node:http'
 import { resolve } from 'node:path'
@@ -44,6 +45,21 @@ describe('isolated marketing preview server', () => {
     expect(response.headers.get('content-security-policy')).toContain('https://cdn.jsdelivr.net')
     expect(response.headers.get('content-security-policy')).toContain("frame-ancestors 'none'")
     expect(await response.text()).toContain('every terminal.')
+  })
+
+  it('allows every inline script, including the import map, by hash next to the pinned CDN', async () => {
+    const response = await fetch(baseUrl)
+    const html = await response.text()
+    const scriptSrc = (response.headers.get('content-security-policy') ?? '')
+      .split(';').map(directive => directive.trim().split(' '))
+      .find(([name]) => name === 'script-src') ?? []
+    const blocks = [...html.matchAll(/<script(\s[^>]*)?>([\s\S]*?)<\/script>/g)]
+    expect(blocks.map(([, attributes]) => attributes?.match(/\btype="([^"]+)"/)?.[1] ?? 'classic'))
+      .toContain('importmap')
+    for (const [, , source] of blocks) {
+      expect(scriptSrc).toContain(`'sha256-${createHash('sha256').update(source!).digest('base64')}'`)
+    }
+    expect(scriptSrc).toContain('https://cdn.jsdelivr.net')
   })
 
   it('serves HEAD without a body', async () => {

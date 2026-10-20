@@ -106,6 +106,8 @@ function runTrustedSetup({ request, adapter, onCancel }) {
     sourceRoot: verified.sourceRoot,
     manifestDigest: verified.manifestDigest,
     packageVersion: verified.packageVersion,
+    // locates the installed copy of this runtime, which Setup's hooks target runs (#206)
+    runtimeId: verified.runtimeId,
     host: Object.freeze({ ...adapter.host }),
   })
 

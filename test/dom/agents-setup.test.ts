@@ -461,7 +461,172 @@ describe('Setup shows what each host\'s agents run (#197)', () => {
     expect(updateButton()?.disabled).toBe(false)
   })
 
-  it('says Setup does not move Claude\'s hooks with the agents, and that the command which does comes once the runtime is installed', async () => {
+  // #206: Claude's Setup-managed hooks move with the agents, as one more fixed
+  // target (`hooks`) run last, through the same bridge. Setup then re-reads
+  // what each host runs and says what moved, and how running sessions pick it up.
+  const hooksCommand = (): string | null => document.querySelector('.agents-hooks-command')?.textContent ?? null
+  const restartText = (): string => {
+    const restart = document.querySelector('.agents-restart') as HTMLElement
+    return restart.hidden ? '' : restart.textContent ?? ''
+  }
+  const HOOKS_MOVED = 'Claude hooks: new Claude Code sessions run the v2.0.0 hooks. Claude Code normally applies changed hooks to running sessions too; to be sure one does, restart it: exit it, then run claude --resume.'
+
+  it('moves Claude\'s Setup-runtime hooks with the agents as a step of their own, after Claude Code, and says what moved', async () => {
+    const release = releaseRuntime('2.0.0')
+    const old = release.installVersion('1.2.4')
+    release.register('claude', old)
+    release.registerHooks(old)
+    const install = vi.fn<Install>(async (t) => {
+      // what the installers do: `claude` installs the runtime and moves the
+      // registration; `hooks` runs that runtime's install-hooks.sh
+      if (t === 'claude') release.register('claude', release.install())
+      if (t === 'hooks') release.registerHooks(release.install())
+      return ok(String(t), t === 'hooks' ? 'agent-inbox hooks installed in ~/.claude/settings.json' : undefined)
+    })
+    bridge(install)
+
+    await boot(release)
+    expect(lines()[2]).toBe('Claude hooks: v1.2.4 runtime (Setup) — older than this app\'s v2.0.0')
+    expect(agentsText()).toContain('Update agents moves Claude Code and Claude hooks to the v2.0.0 runtime. Running sessions keep their build until you restart them.')
+    // the button moves them: no terminal command to copy, no "Setup does not move"
+    expect(hooksCommand()).toBeNull()
+    expect(agentsText()).not.toContain('Setup does not move Claude hooks')
+    click(updateButton())
+    await settle()
+
+    expect(install.mock.calls).toEqual([['claude'], ['hooks']])
+    const result = document.querySelector('.agents-result')
+    expect(result?.textContent).toBe('Claude Code: claude: registered agent-inbox MCP\n\nClaude hooks: agent-inbox hooks installed in ~/.claude/settings.json')
+    expect(result?.classList.contains('success')).toBe(true)
+    // re-read: both moved, nothing left to offer
+    expect(lines()).toEqual([
+      'Claude Code: v2.0.0 runtime (Setup)',
+      'Copilot CLI: not registered',
+      'Claude hooks: v2.0.0 runtime (Setup)',
+    ])
+    expect(updateButton()).toBeNull()
+    expect(restartText()).toBe(
+      'Running sessions keep the build they started with until you restart them.'
+      + 'Claude Code: no running sessions.'
+      + HOOKS_MOVED,
+    )
+    expect(restartText()).not.toMatch(/reloaded|reconnect/i)
+  })
+
+  it('moves hooks alone once this app\'s runtime is installed, with no word about sessions keeping their build', async () => {
+    const release = releaseRuntime('2.0.0')
+    const installed = release.install()
+    release.register('claude', installed)
+    release.registerHooks(release.installVersion('2.1.0'))
+    const install = vi.fn<Install>(async (t) => {
+      release.registerHooks(installed)
+      return ok(String(t), 'agent-inbox hooks installed in ~/.claude/settings.json')
+    })
+    bridge(install)
+
+    await boot(release)
+    expect(lines()[2]).toBe('Claude hooks: v2.1.0 runtime (Setup) — newer than this app\'s v2.0.0')
+    expect(updateButton()?.textContent).toBe('Match agents to v2.0.0')
+    expect(agentsText()).toContain('Claude hooks run a newer runtime than this app. Match agents to v2.0.0 moves them to this app\'s runtime.')
+    expect(agentsText()).not.toContain('Running sessions keep their build')
+    expect(hooksCommand()).toBeNull()
+    click(updateButton())
+    await settle()
+
+    expect(install.mock.calls).toEqual([['hooks']])
+    expect(document.querySelector('.agents-result')?.textContent).toBe('agent-inbox hooks installed in ~/.claude/settings.json')
+    expect(lines()[2]).toBe('Claude hooks: v2.0.0 runtime (Setup)')
+    expect(restartText()).toBe(HOOKS_MOVED)
+  })
+
+  it('never claims hooks moved when the re-read does not show them on this app\'s runtime', async () => {
+    const release = releaseRuntime('2.0.0')
+    const old = release.installVersion('1.2.4')
+    release.register('claude', release.install())
+    release.registerHooks(old)
+    // the installer says it finished, but the settings file still names the old runtime
+    bridge(vi.fn<Install>(async (t) => ok(String(t), 'agent-inbox hooks installed in ~/.claude/settings.json')))
+
+    await boot(release)
+    click(updateButton())
+    await settle()
+
+    expect(lines()[2]).toBe('Claude hooks: v1.2.4 runtime (Setup) — older than this app\'s v2.0.0')
+    expect(document.querySelector('.agents-result')?.classList.contains('failure')).toBe(true)
+    expect(restartText()).toBe('Claude hooks: the installer finished, but Setup does not see them on v2.0.0; the list above shows what it reads.')
+    expect(updateButton()?.textContent).toBe('Update agents')
+  })
+
+  it('reports a hooks step that failed as it is, and keeps offering it', async () => {
+    const release = releaseRuntime('2.0.0')
+    release.register('claude', release.install())
+    release.registerHooks(release.installVersion('1.2.4'))
+    const output = 'install-hooks: another setup is already running'
+    bridge(vi.fn<Install>(async (t) => ({ ok: false, exitCode: 1, target: String(t), timedOut: false, output })))
+
+    await boot(release)
+    click(updateButton())
+    await settle()
+
+    const result = document.querySelector('.agents-result')
+    expect(result?.textContent).toBe(output)
+    expect(result?.classList.contains('failure')).toBe(true)
+    expect(lines()[2]).toBe('Claude hooks: v1.2.4 runtime (Setup) — older than this app\'s v2.0.0')
+    expect(restartText()).toBe('')
+    expect(updateButton()?.disabled).toBe(false)
+  })
+
+  it('does not start the hooks step after the Claude Code step was cancelled', async () => {
+    const release = releaseRuntime('2.0.0')
+    const old = release.installVersion('1.2.4')
+    release.register('claude', old)
+    release.registerHooks(old)
+    const install = vi.fn<Install>(async () => ({ ok: false, exitCode: null, target: 'claude', timedOut: false, cancelled: true, output: 'Agent Inbox is quitting, so setup did not start.' }))
+    bridge(install)
+
+    await boot(release)
+    click(updateButton())
+    await settle()
+
+    expect(install.mock.calls).toEqual([['claude']])
+    expect(document.querySelector('.agents-result')?.textContent).toBe(
+      'Claude Code: Agent Inbox is quitting, so setup did not start.\n\nClaude hooks: not started, because Setup stopped after Claude Code was cancelled.',
+    )
+    expect(lines()[2]).toBe('Claude hooks: v1.2.4 runtime (Setup) — older than this app\'s v2.0.0')
+  })
+
+  it.each([
+    ['a source checkout', (r: ReleaseRuntime) => {
+      // a checkout's installer bakes the user's own Node 24 beside its dist/hook-cli.js
+      const entry = join(checkoutIn(r), 'dist', 'hook-cli.js')
+      writeFileSync(entry, '')
+      mkdirSync(join(r.home, '.claude'), { recursive: true })
+      writeFileSync(join(r.home, '.claude', 'settings.json'), JSON.stringify({
+        hooks: { Stop: [{ hooks: [{ type: 'command', command: process.execPath, args: [entry, 'stop'] }] }] },
+      }))
+    }, /^Claude hooks: source checkout at .* \(not managed by Setup\)$/],
+    ['a runtime that no longer verifies', (r: ReleaseRuntime) => {
+      const dir = r.installVersion('1.2.4')
+      writeFileSync(join(dir, 'dist', 'hook-cli.js'), '// edited\n')
+      r.registerHooks(dir)
+    }, /^Claude hooks: could not be verified, so Setup leaves it unchanged$/],
+  ] as const)('never moves hooks of %s: Update agents moves only Claude Code', async (_label, arrange, line) => {
+    const release = releaseRuntime('2.0.0')
+    release.register('claude', release.installVersion('1.2.8'))
+    arrange(release)
+    const install = vi.fn<Install>(async (t) => ok(String(t)))
+    bridge(install)
+
+    await boot(release)
+    expect(lines()[2]).toMatch(line)
+    expect(agentsText()).toContain('Update agents moves Claude Code to the v2.0.0 runtime.')
+    click(updateButton())
+    await settle()
+
+    expect(install.mock.calls).toEqual([['claude']])
+  })
+
+  it('in a browser tab, says the app moves the hooks and before this app\'s runtime is installed offers no command', async () => {
     const release = releaseRuntime('2.0.0')
     const old = release.installVersion('1.2.4')
     release.register('claude', old)
@@ -470,46 +635,47 @@ describe('Setup shows what each host\'s agents run (#197)', () => {
     await boot(release)
 
     expect(lines()[2]).toBe('Claude hooks: v1.2.4 runtime (Setup) — older than this app\'s v2.0.0')
-    expect(agentsText()).toContain('Setup does not move Claude hooks with your agents. Once the v2.0.0 runtime is installed, the command that moves them appears here.')
-    expect(document.querySelector('.agents-hooks-command')).toBeNull()
+    expect(agentsText()).toContain('Open Settings in the Agent Inbox app to update Claude Code and Claude hooks to the v2.0.0 runtime.')
+    expect(hooksCommand()).toBeNull()
+    expect(updateButton()).toBeNull()
   })
 
-  it('hands over the terminal command that moves Claude\'s hooks onto the installed runtime', async () => {
+  it('in a browser tab, also hands over the terminal command once this app\'s runtime is installed', async () => {
     const release = releaseRuntime('2.0.0')
-    const old = release.installVersion('1.2.4')
-    release.registerHooks(old)
+    release.registerHooks(release.installVersion('1.2.4'))
     const installed = release.install()
     release.register('claude', installed)
 
     await boot(release)
 
-    expect(agentsText()).toContain('Setup does not move Claude hooks with your agents. To move them to v2.0.0, run this in a terminal:')
-    expect(document.querySelector('.agents-hooks-command')?.textContent)
-      .toBe(`bash '${join(installed, 'scripts', 'install-hooks.sh')}' --apply`)
+    expect(agentsText()).toContain('Open Settings in the Agent Inbox app to update Claude hooks to the v2.0.0 runtime.')
+    expect(agentsText()).toContain('Or move them from a terminal:')
+    expect(hooksCommand()).toBe(`bash '${join(installed, 'scripts', 'install-hooks.sh')}' --apply`)
     expect(updateButton()).toBeNull()
   })
 
-  it('promises no hooks command where this release cannot install its own runtime', async () => {
+  it('promises nothing about hooks where this release cannot install its own runtime', async () => {
     const release = releaseRuntime('2.0.0', { hostPayload: false })
     release.registerHooks(release.installVersion('1.2.4'))
+    bridge(vi.fn<Install>(async (t) => ok(String(t))))
 
     await boot(release)
 
     expect(lines()[2]).toBe('Claude hooks: v1.2.4 runtime (Setup) — older than this app\'s v2.0.0')
-    expect(agentsText()).not.toContain('the command that moves them appears here')
-    expect(document.querySelector('.agents-hooks-command')).toBeNull()
+    expect(agentsText()).not.toMatch(/runtime is installed|move them|Open Settings/)
+    expect(hooksCommand()).toBeNull()
+    expect(updateButton()).toBeNull()
   })
 
-  it('hands over the same command for hooks on a NEWER runtime than this app\'s', async () => {
+  it('says Setup moves hooks once this app\'s runtime is installed, when no agent step would install it', async () => {
     const release = releaseRuntime('2.0.0')
-    release.registerHooks(release.installVersion('2.1.0'))
-    const installed = release.install()
-    release.register('claude', installed)
+    release.registerHooks(release.installVersion('1.2.4'))
+    bridge(vi.fn<Install>(async (t) => ok(String(t))))
 
     await boot(release)
 
-    expect(lines()[2]).toBe('Claude hooks: v2.1.0 runtime (Setup) — newer than this app\'s v2.0.0')
-    expect(document.querySelector('.agents-hooks-command')?.textContent)
-      .toBe(`bash '${join(installed, 'scripts', 'install-hooks.sh')}' --apply`)
+    expect(updateButton()).toBeNull()
+    expect(agentsText()).toContain('Once this app\'s v2.0.0 runtime is installed, Setup can move Claude hooks to it.')
+    expect(hooksCommand()).toBeNull()
   })
 })

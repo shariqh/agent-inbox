@@ -1,4 +1,5 @@
 const { existsSync, lstatSync, readFileSync, realpathSync } = require('node:fs')
+const { homedir } = require('node:os')
 const { isAbsolute, join, resolve, sep } = require('node:path')
 const { runTrustedSetup } = require('./setup-core.cjs')
 const { createSetupProcessRunner } = require('./setup-process.cjs')
@@ -12,8 +13,11 @@ const {
   verifyRuntimePayload,
 } = require('./runtime-verify.cjs')
 
-const TARGETS = new Set(['all', 'claude', 'copilot'])
+// `hooks` (#206) moves Claude's hooks with the installed copy of this
+// release's runtime: see installedRuntime() below.
+const TARGETS = new Set(['all', 'claude', 'copilot', 'hooks'])
 const TARGET_NAMES = Object.freeze([...TARGETS])
+const HOOKS_REQUIRED_FILES = Object.freeze([...REQUIRED_FILES, 'scripts/install-hooks.sh'])
 
 // Setup is available only for the four targets handled by the fixed-purpose
 // POSIX shell adapter. Selection is STRICT `${process.platform}-${process.arch}`
@@ -227,8 +231,60 @@ function canRunSetup(senderUrl, viewerUrl, senderId, authorizedWebContentsId) {
     isTrustedSetupSender(senderUrl, viewerUrl)
 }
 
+function setupFailure(target, output) {
+  return { ok: false, exitCode: null, output, target, timedOut: false, cancelled: false }
+}
+
+// Where the installers put runtimes, from the environment they run with:
+// install-agents.sh and install-hooks.sh both read
+// ${AGENT_INBOX_RUNTIME_ROOT:-$HOME/.agent-inbox/runtime}.
+function setupRuntimeRoot(env) {
+  const configured = env.AGENT_INBOX_RUNTIME_ROOT
+  if (configured) return isAbsolute(configured) ? configured : null
+  return join(env.HOME || homedir(), '.agent-inbox', 'runtime')
+}
+
+/**
+ * The installed copy of the runtime the trusted core just verified (#206):
+ * <runtimeRoot>/<runtimeId>, re-verified against the same signed manifest
+ * digest, file list, hashes and modes immediately before its own
+ * install-hooks.sh runs. That installer writes ITS directory's bin/node and
+ * dist/hook-cli.js into Claude's settings, so it never runs from the app
+ * bundle, whose payload the next app update replaces.
+ */
+function installedRuntime({ runtimeRoot, operation, host }) {
+  const target = operation.target
+  if (runtimeRoot === null) {
+    return { error: setupFailure(target, 'Claude hooks were not moved: AGENT_INBOX_RUNTIME_ROOT must be an absolute path.') }
+  }
+  const dir = join(runtimeRoot, operation.runtimeId)
+  try {
+    const { manifest } = verifyRuntimePayload({
+      root: dir,
+      expectedManifestDigest: operation.manifestDigest,
+      expectedPlatform: host.platform,
+      expectedArch: host.arch,
+      expectedProduct: EXPECTED_PRODUCT,
+      expectedPackageVersion: operation.packageVersion,
+      expectedNodeMajor: EXPECTED_NODE_MAJOR,
+      expectedNodeModulesAbi: EXPECTED_NODE_MODULES_ABI,
+      requiredEntrypoints: REQUIRED_ENTRYPOINTS,
+      requiredFiles: HOOKS_REQUIRED_FILES,
+    })
+    if (manifest.runtimeId !== operation.runtimeId) throw new Error('runtime id mismatch')
+  } catch (err) {
+    return {
+      error: setupFailure(target, err?.code === 'not-found'
+        ? `Claude hooks were not moved: this app's v${operation.packageVersion} runtime is not installed yet.`
+        : `Claude hooks were not moved: the installed v${operation.packageVersion} runtime failed integrity verification.`),
+    }
+  }
+  return { dir }
+}
+
 function createReleaseSetupAdapter({
   repoRoot,
+  runtimeRoot,
   processRunner,
 }) {
   const host = Object.freeze({
@@ -274,6 +330,11 @@ function createReleaseSetupAdapter({
       }
     },
     start(operation, { onCancel }) {
+      if (operation.target === 'hooks') {
+        const installed = installedRuntime({ runtimeRoot, operation, host })
+        if (installed.error) return Promise.resolve(installed.error)
+        return processRunner.start({ repoRoot: installed.dir, target: 'hooks', runtime: null }, { onCancel })
+      }
       return processRunner.start({
         repoRoot,
         target: operation.target,
@@ -458,6 +519,11 @@ function runAgentInstall({
   }
 
   if (runtimePayload === null) {
+    // A checkout's hook installer would bake the checkout's own paths, and
+    // Setup manages only its runtimes' hooks.
+    if (target === 'hooks') {
+      return Promise.resolve(setupFailure(target, "Setup moves Claude hooks only from a release build's verified runtime."))
+    }
     return processRunner.start({
       repoRoot,
       target,
@@ -474,6 +540,7 @@ function runAgentInstall({
   }
   const adapter = createReleaseSetupAdapter({
     repoRoot,
+    runtimeRoot: setupRuntimeRoot(env ?? process.env),
     processRunner,
   })
   return runTrustedSetup({

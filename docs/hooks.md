@@ -10,8 +10,10 @@ agent-driven inbox has by construction:
   inbox, but the agent is sitting at the prompt and never calls `pending()`, so
   the answer stays at "waiting for pickup" forever.
 
-Everything here is **opt-in**. Nothing runs from `npm install`, `npm run build`
-or the Electron app. One command installs it, one removes it.
+Everything here is **opt-in**. Nothing runs from `npm install` or `npm run build`,
+and the Electron app only moves hooks a Setup runtime already installed, when you ask
+it to ([Moving hooks from Setup](#moving-hooks-from-setup)). One command installs it,
+one removes it.
 
 ```sh
 npm run install:hooks                     # dry run — prints what it WOULD write
@@ -118,6 +120,33 @@ install's own hooks, and `--uninstall` removes only this install's hooks (from a
 runtime, any Setup runtime's). A runtime's uninstall still refuses while other
 hooks shaped like ours are there; its message names them and gives their own
 installer's uninstall command and the one-step `--replace-existing`.
+
+## Moving hooks from Setup
+
+After an app update, Setup's **Update agents** (or **Match agents to vX** after a
+downgrade) also moves Claude's hooks when a Setup runtime installed them and that
+runtime's version differs from the app's (issue #206). It is the same command Setup
+used to show for a terminal, run for you as a step of its own after Claude Code and
+Copilot CLI:
+
+```sh
+bash ~/.agent-inbox/runtime/<this app's runtime-id>/scripts/install-hooks.sh --apply
+```
+
+It runs from the installed copy of the app's runtime, never from the app bundle, so the
+hooks keep working after the app moves or updates. Setup checks that copy against the
+app's signed runtime manifest first and runs nothing if it is missing or has changed.
+The installer works as above: the shared setup lock, a timestamped backup, and only
+Setup runtimes' hooks replaced. Setup never passes `--force` or `--replace-existing`,
+and never offers the step for hooks from a checkout, custom hooks, or hooks it cannot
+verify. If no agent needs moving, it offers the step once the app's runtime is
+installed. Afterwards Setup reads `~/.claude/settings.json` again and says the hooks
+moved only if they now run the app's runtime.
+
+New Claude Code sessions read the new hooks when they start. Claude Code's
+documentation says its settings file watcher normally applies hook changes to running
+sessions too. Setup cannot see whether a session picked the change up, so restart a
+session (exit it, then `claude --resume`) to be sure.
 
 ## Events → subcommands
 

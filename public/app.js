@@ -25,7 +25,7 @@ import { keyAction, rovingIndex, ariaAnswerLabel, livenessGlyph, deckEntryAt } f
 import { createKeyboardUI } from '/keyboard-ui.js'
 import { partitionNotes, unreadNoteCount, ambientChips, seenWatermark, markSeenIds } from '/notes.js'
 import { liveSummary, lastActivityAt, isDormant, activitySynopsis, sessionBuild } from '/livebar.js'
-import { agentsAction, hostLabel, hostLine, restartGuidance } from '/agents.js'
+import { agentsAction, hooksGuidance, hostLabel, hostLine, restartGuidance } from '/agents.js'
 import { esc } from '/esc.js'
 import { initStructuredTextCopy } from '/structured-copy.js'
 import { captureSelection, restoreSelection } from '/selection.js'
@@ -7100,10 +7100,11 @@ function initSearch() {
 // "Update agents" when they are behind, "Match agents to vX" when one is ahead
 // after an app downgrade (public/agents.js agentsAction). It runs the existing
 // fixed-target install (claude, copilot or all, through the same Electron
-// bridge as the menu below) for exactly those hosts: no new command, nothing at
+// bridge as the menu below) for exactly those hosts, and since #206 the fixed
+// `hooks` target for Claude's Setup-managed hooks: no new command, nothing at
 // startup, and a checkout or custom registration is reported, never switched.
-// The installer refuses to replace a registration it does not own, and this
-// never asks it to force one. Paths come from host config files, so every
+// The installers refuse to replace a registration they do not own, and this
+// never asks them to force one. Paths come from host config files, so every
 // string here is textContent.
 let agentsBlock = null
 
@@ -7156,8 +7157,9 @@ function paintAgents(agents) {
     block.list.appendChild(item)
   }
   const action = agentsAction(agents)
+  const canRun = block.canInstall && Boolean(window.agentInboxSetup?.install)
   if (action) {
-    if (block.canInstall && window.agentInboxSetup?.install) {
+    if (canRun) {
       agentsHint(action.hint)
       const run = btn(action.label, () => updateAgents(action, current, run))
       run.className = 'agents-update-btn'
@@ -7170,9 +7172,12 @@ function paintAgents(agents) {
   if (lines.some((line) => line.kind === 'checkout')) {
     agentsHint('Setup does not update a source checkout: run git pull and npm run build in it, then restart its sessions.')
   }
-  if (lines[2]?.drift) {
+  // Claude's hooks on another Setup runtime (#206): the action moves them when
+  // it can; otherwise say how, but promise only what Setup can do here.
+  const hooksStep = action?.steps.some((step) => step.host === 'hooks') === true
+  if (lines[2]?.drift && !(hooksStep && canRun)) {
     if (typeof agents.hooksCommand === 'string' && agents.hooksCommand) {
-      agentsHint(`Setup does not move Claude hooks with your agents. To move them to v${current}, run this in a terminal:`)
+      agentsHint(hooksStep ? 'Or move them from a terminal:' : `To move Claude hooks to v${current}, run this in a terminal:`)
       const command = document.createElement('pre')
       command.className = 'agents-hooks-command'
       command.textContent = agents.hooksCommand
@@ -7187,20 +7192,25 @@ function paintAgents(agents) {
       })
       copy.className = 'copy-btn'
       block.actions.append(command, copy)
-    } else if (agents.updatable === true) {
+    } else if (agents.updatable === true && !hooksStep) {
       // only a promise Setup can keep: it can install this runtime here
-      agentsHint(`Setup does not move Claude hooks with your agents. Once the v${current} runtime is installed, the command that moves them appears here.`)
+      agentsHint(`Once this app's v${current} runtime is installed, Setup can move Claude hooks to it.`)
     }
   }
 }
 
-// Re-read what each host is registered to run, after any install.
+// Re-read what each host is registered to run, after any install. Resolves to
+// the agents it painted, or null when the read failed.
 function refreshAgents() {
-  if (!agentsBlock) return Promise.resolve()
+  if (!agentsBlock) return Promise.resolve(null)
   return fetch('/api/setup')
     .then((r) => (r.ok ? r.json() : null))
-    .then((s) => { if (s?.agents && typeof s.agents === 'object') paintAgents(s.agents) })
-    .catch(() => { /* keep the status already shown */ })
+    .then((s) => {
+      if (!s?.agents || typeof s.agents !== 'object') return null
+      paintAgents(s.agents)
+      return s.agents
+    })
+    .catch(() => null) // keep the status already shown
 }
 
 // One fixed install target per host, one after another: a host whose CLI is
@@ -7253,24 +7263,34 @@ async function updateAgents(action, current, button) {
   } finally {
     block.running = false
   }
-  show(reports.join('\n\n'), moved.length === action.steps.length ? 'ok' : 'failed')
-  await Promise.all([refreshAgents(), refreshLiveVersion()])
-  if (!moved.length) return
+  const [fresh] = await Promise.all([refreshAgents(), refreshLiveVersion()])
+  // Claude's hooks count as moved only once the re-read shows them on this
+  // app's runtime (#206); the agents' installer results stand as reported.
+  const hooks = moved.includes('hooks') ? hooksGuidance(fresh, current) : null
+  const agentMoves = moved.filter((host) => host !== 'hooks')
+  const confirmed = agentMoves.length + (hooks?.moved ? 1 : 0)
+  show(reports.join('\n\n'), confirmed === action.steps.length ? 'ok' : 'failed')
+  if (!agentMoves.length && !hooks) return
   // A running session keeps the MCP server it started with: say which ones
   // still run another build than their host now loads, and how to restart
   // them, rather than imply anything reloaded. A successful fixed install
   // registers exactly this app's verified runtime, so that is `current`.
-  const moves = moved.map((host) => ({ host, version: current }))
-  const lead = document.createElement('p')
-  lead.className = 'setup-hint'
-  lead.textContent = 'Running sessions keep the build they started with until you restart them.'
+  const items = restartGuidance(lastData?.activity ?? [], agentMoves.map((host) => ({ host, version: current })))
+  if (hooks) items.push(hooks.text)
   const list = document.createElement('ul')
-  for (const text of restartGuidance(lastData?.activity ?? [], moves)) {
+  for (const text of items) {
     const item = document.createElement('li')
     item.textContent = text
     list.appendChild(item)
   }
-  block.restart.replaceChildren(lead, list)
+  if (agentMoves.length) {
+    const lead = document.createElement('p')
+    lead.className = 'setup-hint'
+    lead.textContent = 'Running sessions keep the build they started with until you restart them.'
+    block.restart.replaceChildren(lead, list)
+  } else {
+    block.restart.replaceChildren(list)
+  }
   block.restart.hidden = false
 }
 

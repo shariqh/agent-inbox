@@ -1,10 +1,12 @@
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
+import { hookLaunchers, hooksHome, installRuntime, installStaged, stageRuntime } from './hooks-runtime.js'
+import type { HooksHome, StagedRuntime } from './hooks-runtime.js'
 
 const require = createRequire(import.meta.url)
 const PAYLOAD_CLI = resolve(import.meta.dirname, '..', 'scripts', 'runtime-payload.mjs')
@@ -1371,5 +1373,245 @@ printf '%s\\n' "$@" > "$ARGS_FILE"
       env: { ...process.env, ARGS_FILE: argsFile },
     })
     expect(readFileSync(argsFile, 'utf8')).toBe('--apply\n--target\nclaude\n')
+  })
+})
+
+// #206: Setup moves Claude's hooks through one more fixed target. Its installer
+// bakes its OWN directory's bin/node and dist/hook-cli.js into Claude's
+// settings, so it must run from the installed copy of this release's runtime
+// (~/.agent-inbox/runtime/<runtimeId>), never from the app bundle's payload:
+// hooks pointing into the bundle would break with the next app update. The
+// copy is found by the runtime id the trusted core verified, and re-verified
+// against the same signed manifest digest immediately before spawn.
+describe.skipIf(!['darwin', 'linux'].includes(process.platform))('runAgentInstall: the Claude hooks target (#206)', () => {
+  const key = `${process.platform}-${process.arch}`
+
+  /** A release bundle carrying this host's payload of `version`, and its runtimePayload as main passes it. */
+  function release(version = '1.1.0'): { source: StagedRuntime; payload: { key: string; path: string; digest: string; packageVersion: string } } {
+    const appRoot = mkdtempSync(join(tmpdir(), 'setup-hooks-bundle-'))
+    const source = stageRuntime(join(appRoot, 'runtime', key), version)
+    return { source, payload: { key, path: source.dir, digest: source.digest, packageVersion: version } }
+  }
+
+  /** Claude's hooks installed by an older Setup runtime, through its own real installer. */
+  function olderHooks(h: HooksHome): StagedRuntime {
+    const older = installRuntime(h, '1.0.0')
+    const seeded = spawnSync('/bin/bash', [join(older.dir, 'scripts', 'install-hooks.sh'), '--apply'], { encoding: 'utf8', env: h.env })
+    expect(seeded.status, seeded.stderr).toBe(0)
+    return older
+  }
+
+  function recordingSpawn() {
+    const calls: unknown[][] = []
+    const spawnImpl = (...args: unknown[]): never => {
+      calls.push(args)
+      throw new Error('recorded, not spawned')
+    }
+    return { calls, spawnImpl }
+  }
+
+  it('moves the hooks onto the installed copy of the verified runtime, never the app bundle\'s', async () => {
+    const h = hooksHome()
+    const older = olderHooks(h)
+    const { source, payload } = release()
+    const installed = installStaged(h, source)
+
+    const result = await runAgentInstall({ repoRoot: source.dir, target: 'hooks', runtimePayload: payload, env: h.env })
+
+    expect(result, result.output).toMatchObject({ ok: true, exitCode: 0, target: 'hooks', timedOut: false, cancelled: false })
+    const hooks = hookLaunchers(h)
+    expect(hooks.length).toBeGreaterThan(0)
+    for (const hook of hooks) {
+      expect(hook).toEqual({ command: join(installed.dir, 'bin', 'node'), entry: join(installed.dir, 'dist', 'hook-cli.js') })
+    }
+    expect(JSON.stringify(hooks)).not.toContain(source.dir)
+    expect(JSON.stringify(hooks)).not.toContain(older.dir)
+  })
+
+  it('spawns exactly /bin/bash <installed runtime>/scripts/install-hooks.sh --apply: no --force, no runtime arguments', async () => {
+    const h = hooksHome()
+    const { source, payload } = release()
+    const installed = installStaged(h, source)
+    const { calls, spawnImpl } = recordingSpawn()
+
+    await runAgentInstall({ repoRoot: source.dir, target: 'hooks', runtimePayload: payload, env: h.env, spawnImpl })
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0]![0]).toBe('/bin/bash')
+    expect(calls[0]![1]).toEqual([join(installed.dir, 'scripts', 'install-hooks.sh'), '--apply'])
+    expect(calls[0]![2]).toMatchObject({ cwd: installed.dir, detached: true })
+  })
+
+  it('finds the installed copy where the installers put it: AGENT_INBOX_RUNTIME_ROOT when set', async () => {
+    const h = hooksHome()
+    const elsewhere = join(h.home, 'custom-runtimes')
+    const { source, payload } = release()
+    const installed = installStaged({ ...h, runtimeRoot: elsewhere }, source)
+    const { calls, spawnImpl } = recordingSpawn()
+
+    await runAgentInstall({
+      repoRoot: source.dir, target: 'hooks', runtimePayload: payload, env: { ...h.env, AGENT_INBOX_RUNTIME_ROOT: elsewhere }, spawnImpl,
+    })
+
+    expect(calls[0]![1]).toEqual([join(installed.dir, 'scripts', 'install-hooks.sh'), '--apply'])
+  })
+
+  it.each([
+    ['this release\'s runtime is not installed yet', (_h: HooksHome, _source: StagedRuntime) => {},
+      /not moved: this app's v1\.1\.0 runtime is not installed yet/],
+    ['a file of the installed copy changed', (h: HooksHome, source: StagedRuntime) => {
+      writeFileSync(join(installStaged(h, source).dir, 'scripts', 'install-hooks.sh'), '#!/bin/bash\necho swapped\n')
+    }, /not moved: the installed v1\.1\.0 runtime failed integrity verification/],
+    ['the installed copy carries an extra file', (h: HooksHome, source: StagedRuntime) => {
+      writeFileSync(join(installStaged(h, source).dir, 'scripts', 'extra.sh'), 'echo extra\n')
+    }, /failed integrity verification/],
+    ['the installed copy is a symlink to a matching runtime', (h: HooksHome, source: StagedRuntime) => {
+      const real = installStaged({ ...h, runtimeRoot: join(h.home, 'elsewhere') }, source)
+      mkdirSync(h.runtimeRoot, { recursive: true })
+      symlinkSync(real.dir, join(h.runtimeRoot, source.runtimeId))
+    }, /failed integrity verification/],
+    ['AGENT_INBOX_RUNTIME_ROOT is relative', (h: HooksHome, source: StagedRuntime) => {
+      installStaged(h, source)
+      h.env.AGENT_INBOX_RUNTIME_ROOT = 'relative/runtime'
+    }, /not moved: AGENT_INBOX_RUNTIME_ROOT must be an absolute path/],
+  ] as const)('refuses without spawning when %s, and leaves the hooks where they are', async (_label, arrange, error) => {
+    const h = hooksHome()
+    olderHooks(h)
+    const settingsBefore = readFileSync(h.settings, 'utf8')
+    const { source, payload } = release()
+    arrange(h, source)
+    const { calls, spawnImpl } = recordingSpawn()
+
+    const result = await runAgentInstall({ repoRoot: source.dir, target: 'hooks', runtimePayload: payload, env: h.env, spawnImpl })
+
+    expect(calls).toHaveLength(0)
+    expect(result).toMatchObject({ ok: false, exitCode: null, target: 'hooks', cancelled: false, timedOut: false })
+    expect(result.output).toMatch(error)
+    expect(readFileSync(h.settings, 'utf8')).toBe(settingsBefore)
+  })
+
+  it('refuses where the app bundle\'s own payload does not verify, before looking for the installed copy', async () => {
+    const h = hooksHome()
+    const { source, payload } = release()
+    installStaged(h, source)
+    writeFileSync(join(source.dir, 'dist', 'hook-cli.js'), '// tampered in the bundle\n')
+    const { calls, spawnImpl } = recordingSpawn()
+
+    const result = await runAgentInstall({ repoRoot: source.dir, target: 'hooks', runtimePayload: payload, env: h.env, spawnImpl })
+
+    expect(calls).toHaveLength(0)
+    expect(result.output).toMatch(/release runtime payload failed integrity verification/i)
+  })
+
+  it('refuses the hooks target outright in a dev checkout, which has no verified release runtime', async () => {
+    const root = fixture('#!/bin/bash\ntouch "$SHOULD_NOT_EXIST"\n')
+    mkdirSync(join(root, 'dist'))
+    writeFileSync(join(root, 'scripts', 'install-hooks.sh'), '#!/bin/bash\ntouch "$SHOULD_NOT_EXIST"\n')
+    const { calls, spawnImpl } = recordingSpawn()
+
+    const result = await runAgentInstall({ repoRoot: root, target: 'hooks', runtimePayload: null, spawnImpl })
+
+    expect(calls).toHaveLength(0)
+    expect(result).toMatchObject({ ok: false, exitCode: null, target: 'hooks' })
+    expect(result.output).toMatch(/only from a release build's verified runtime/i)
+  })
+})
+
+// #206: main accepts `hooks` exactly where it accepts the agent targets — a
+// window bound to a viewer this app started and proved it owns, not while the
+// app quits, another Setup install runs, or an app update installs — and hands
+// it to runAgentInstall with the same verified release payload. main's own
+// handler is evaluated against a real install gate and canRunSetup.
+describe('main\'s install handler and the hooks target (#206)', () => {
+  const VIEWER = 'http://127.0.0.1:4319/'
+  const RELEASE = {
+    ok: true, reason: undefined, key: 'darwin-arm64', path: '/Applications/Agent Inbox.app/Contents/Resources/app/runtime/darwin-arm64',
+    digest: `sha256:${'a'.repeat(64)}`, packageVersion: '1.3.2',
+  }
+  type World = {
+    setupInstallEnabled?: boolean
+    bound?: number | null
+    quitting?: boolean
+    setupRunning?: boolean
+    updateInstalling?: boolean
+    runtimeSelection?: Record<string, unknown>
+    checkout?: string
+    runAgentInstall?: (opts: Record<string, unknown>) => Promise<unknown>
+  }
+  type SetupOutcome = { ok: boolean; output: string; target: string; cancelled?: boolean }
+
+  function mainInstall(world: World = {}) {
+    const main = readFileSync(join(import.meta.dirname, '..', 'electron', 'main.cjs'), 'utf8')
+    const marker = "ipcMain.handle('agent-inbox:install', "
+    const start = main.indexOf(marker)
+    expect(start).toBeGreaterThan(-1)
+    const body = main.slice(start + marker.length, main.indexOf('\n})', start) + 2)
+    const gate = createInstallGate()
+    if (world.setupRunning) gate.run(() => new Promise(() => {}))
+    if (world.quitting) gate.beginQuit()
+    const run = vi.fn(world.runAgentInstall ?? (async (opts: Record<string, unknown>) => ({ ok: true, output: 'ran', target: opts['target'] })))
+    const handler = new Function(
+      'installGate', 'setupInstallEnabled', 'canRunSetup', 'URL_BASE', 'setupInstallWebContentsId', 'runtimeSelection',
+      'installerRepoRoot', 'REPO_ROOT', 'updateController', 'runAgentInstall',
+      `return ${body}`,
+    )(
+      gate,
+      world.setupInstallEnabled ?? true,
+      canRunSetup,
+      VIEWER,
+      world.bound === undefined ? 7 : world.bound,
+      world.runtimeSelection ?? RELEASE,
+      installerRepoRoot,
+      world.checkout ?? '/nonexistent-checkout',
+      { isInstalling: () => world.updateInstalling === true },
+      run,
+    ) as (event: unknown, target: unknown) => Promise<SetupOutcome>
+    const event = (url = VIEWER, id = 7) => ({ senderFrame: { url }, sender: { id } })
+    return { handler, event, run }
+  }
+
+  it('hands hooks to runAgentInstall with the verified release payload, from the bound window of the owned viewer', async () => {
+    const m = mainInstall()
+    await expect(m.handler(m.event(), 'hooks')).resolves.toMatchObject({ ok: true, target: 'hooks' })
+    expect(m.run).toHaveBeenCalledOnce()
+    expect(m.run.mock.calls[0]![0]).toMatchObject({
+      repoRoot: RELEASE.path,
+      target: 'hooks',
+      runtimePayload: { key: RELEASE.key, path: RELEASE.path, digest: RELEASE.digest, packageVersion: RELEASE.packageVersion },
+    })
+  })
+
+  it.each([
+    // a reused or failed-over viewer is never this app's own: Setup stays off
+    ['from a viewer this app does not own', { setupInstallEnabled: false }, {}, /unavailable for this viewer/],
+    ['from a window Setup is not bound to', { bound: null }, {}, /unavailable for this viewer/],
+    ['from another window', {}, { id: 8 }, /unavailable for this viewer/],
+    ['from a page of another origin', {}, { url: 'https://example.com/' }, /unavailable for this viewer/],
+    ['once the app has begun to quit', { quitting: true }, {}, /quitting, so setup did not start/],
+    ['while another Setup install runs', { setupRunning: true }, {}, /already running/],
+    ['while an app update installs', { updateInstalling: true }, {}, /update is being installed/],
+  ] as const)('refuses hooks %s, without starting anything', async (_label, world, sender, error) => {
+    const m = mainInstall(world)
+    const { url, id } = sender as { url?: string; id?: number }
+    const outcome = await m.handler(m.event(url, id), 'hooks')
+    expect(outcome.ok).toBe(false)
+    expect(outcome.output).toMatch(error)
+    expect(m.run).not.toHaveBeenCalled()
+  })
+
+  it('a dev checkout has no verified runtime, so its hooks target spawns nothing', async () => {
+    const root = fixture('#!/bin/bash\nexit 0\n')
+    writeFileSync(join(root, 'scripts', 'install-hooks.sh'), '#!/bin/bash\nexit 0\n')
+    const spawnImpl = vi.fn()
+    const m = mainInstall({
+      runtimeSelection: { ok: false, reason: 'no-release-payloads', key: 'darwin-arm64' },
+      checkout: root,
+      runAgentInstall: (opts) => runAgentInstall({ ...(opts as Parameters<typeof runAgentInstall>[0]), spawnImpl: spawnImpl as never }),
+    })
+    const outcome = await m.handler(m.event(), 'hooks')
+    expect(m.run.mock.calls[0]![0]).toMatchObject({ repoRoot: root, target: 'hooks', runtimePayload: null })
+    expect(outcome).toMatchObject({ ok: false, target: 'hooks' })
+    expect(outcome.output).toMatch(/only from a release build's verified runtime/)
+    expect(spawnImpl).not.toHaveBeenCalled()
   })
 })

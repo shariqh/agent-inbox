@@ -250,7 +250,12 @@ The Darwin release adapter owns a frozen host identity derived directly from
 must match that exact identity before execution can start. Both verified release Setup and
 the checkout/dev fallback then use the fixed-purpose `electron/setup-process.cjs` boundary.
 That boundary constructs only exact `/bin/bash scripts/install-agents.sh` argv on macOS and
-Linux, and fails closed before spawn on Windows or an unknown platform. It accepts no
+Linux, plus, for Setup's `hooks` target (#206), exactly
+`/bin/bash <installed runtime>/scripts/install-hooks.sh --apply` from a directory that
+carries a runtime manifest. The release adapter finds that installed copy by the verified
+runtime id and verifies it against the same signed manifest digest just before spawn; a dev
+checkout refuses the target. The boundary fails closed before spawn on Windows or an unknown
+platform. It accepts no
 caller-provided executable, argv, or shell string. This does not enable Linux or Windows
 release Setup. The core does not load the Node-ABI agent runtime or model shell-internal
 self-test, rollback, or pruning work.

@@ -3,7 +3,9 @@
 #
 # DRY-RUN IS THE DEFAULT: this prints the settings.json it *would* write and
 # changes nothing. Pass --apply to actually write. Nothing here runs from
-# `npm install`, `npm run build`, or the Electron app — the user's global
+# `npm install` or `npm run build`, and the Electron app runs it only when the
+# human asks Setup to move hooks a Setup runtime installed (#206): this
+# script from the installed runtime, with --apply alone. The user's global
 # Claude Code config never changes by surprise.
 #
 # Usage:
@@ -32,7 +34,7 @@ for arg in "$@"; do
     --uninstall) UNINSTALL=1 ;;
     --migrate) MIGRATE=1 ;;
     --replace-existing) REPLACE=1 ;;
-    -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
     *) echo "unknown flag: $arg (try --help)" >&2; exit 2 ;;
   esac
 done
@@ -332,4 +334,4 @@ if [ "$UNINSTALL" -eq 1 ]; then
 else
   echo "agent-inbox hooks installed in $SHOWN (Node: ${NODE:-node})" >&2
 fi
-echo "New registrations are picked up only on a FRESH Claude Code session." >&2
+echo "Claude Code reads hooks when a session starts and normally applies a change to running sessions too; restart a session to be sure it has this one." >&2

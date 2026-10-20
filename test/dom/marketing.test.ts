@@ -36,6 +36,95 @@ async function runHero(load: (url: string) => Promise<unknown>) {
   await window.eval(`(async () => {\n${source.replace('import(', 'loadThree(')}\n})()`)
 }
 
+// The parts of Three.js the hero touches, recording each resize and draw.
+function fakeThree() {
+  const sizes: Array<[number, number]> = []
+  let draws = 0
+  class Vector3 {
+    x = 0
+    y = 0
+    z = 0
+    set(x: number, y: number, z: number) {
+      Object.assign(this, { x, y, z })
+    }
+  }
+  class Object3D {
+    position = new Vector3()
+    rotation = new Vector3()
+    add() {}
+  }
+  class Color {
+    set() {}
+    copy() {}
+  }
+  class Material {
+    color = new Color()
+  }
+  class Geometry {}
+  const module = {
+    WebGLRenderer: class {
+      setPixelRatio() {}
+      setSize(width: number, height: number) {
+        sizes.push([width, height])
+      }
+      render() {
+        draws += 1
+      }
+    },
+    Scene: Object3D,
+    Group: Object3D,
+    Mesh: Object3D,
+    PerspectiveCamera: class extends Object3D {
+      aspect = 1
+      updateProjectionMatrix() {}
+    },
+    InstancedMesh: class extends Object3D {
+      setMatrixAt() {}
+    },
+    Matrix4: class {
+      makeTranslation() {}
+    },
+    Color,
+    MeshBasicMaterial: Material,
+    IcosahedronGeometry: Geometry,
+    TorusGeometry: Geometry,
+    SphereGeometry: Geometry,
+    DoubleSide: 2,
+  }
+  return { module, sizes, draws: () => draws }
+}
+
+// Boots the hero with a fake Three.js, a sized canvas and a captured ResizeObserver.
+// Animation frames come from the fake timers (vi.advanceTimersToNextFrame).
+async function startHero(reduceMotion: boolean) {
+  boot()
+  stubModuleSupport({ importmap: true, modulepreload: true })
+  vi.stubGlobal('matchMedia', vi.fn((query: string) => ({
+    matches: query === '(prefers-reduced-motion: reduce)' && reduceMotion,
+    media: query,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  })))
+  const canvas = document.querySelector<HTMLCanvasElement>('#agent-visual')!
+  const size = { width: 640, height: 480 }
+  Object.defineProperty(canvas, 'clientWidth', { configurable: true, get: () => size.width })
+  Object.defineProperty(canvas, 'clientHeight', { configurable: true, get: () => size.height })
+  let observeResize = () => {}
+  vi.stubGlobal('ResizeObserver', class {
+    constructor(callback: () => void) {
+      observeResize = callback
+    }
+    observe() {}
+  })
+  // Keeps the palette observer from outliving this test's page.
+  vi.stubGlobal('MutationObserver', class { observe() {} })
+  const three = fakeThree()
+  await runHero(() => Promise.resolve(three.module))
+  // The hero hides its canvas when anything throws, including a gap in the fake.
+  expect(canvas.hidden).toBe(false)
+  return { three, size, observeResize: () => observeResize() }
+}
+
 function button(selector: string): HTMLButtonElement {
   const element = document.querySelector<HTMLButtonElement>(selector)
   if (!element) throw new Error(`Missing marketing control: ${selector}`)
@@ -171,6 +260,35 @@ describe('local marketing page', () => {
     expect(document.querySelector<HTMLCanvasElement>('#agent-visual')?.hidden).toBe(true)
   })
 
+  it('resizes the hero renderer only when the canvas size changes', async () => {
+    const hero = await startHero(false)
+    expect(hero.three.sizes).toEqual([[640, 480]])
+    vi.advanceTimersToNextFrame()
+    vi.advanceTimersToNextFrame()
+    expect(hero.three.draws()).toBe(3)
+    expect(hero.three.sizes).toEqual([[640, 480]])
+
+    hero.size.width = 800
+    vi.advanceTimersToNextFrame()
+    expect(hero.three.sizes).toEqual([[640, 480], [800, 480]])
+    expect(hero.three.draws()).toBe(4)
+  })
+
+  it('redraws a reduced-motion hero after its canvas is resized', async () => {
+    const hero = await startHero(true)
+    vi.advanceTimersToNextFrame()
+    expect(hero.three.draws()).toBe(1)
+
+    hero.size.height = 360
+    hero.observeResize()
+    expect(hero.three.sizes).toEqual([[640, 480], [640, 360]])
+    expect(hero.three.draws()).toBe(2)
+
+    hero.observeResize()
+    expect(hero.three.sizes).toHaveLength(2)
+    expect(hero.three.draws()).toBe(2)
+  })
+
   it('keeps demo panels and response space mounted so interactions do not resize the demo', () => {
     const { html } = boot()
     const panels = [...document.querySelectorAll<HTMLElement>('.demo-panel')]
@@ -261,6 +379,15 @@ describe('local marketing page', () => {
     expect(document.querySelector('#attention-count')?.textContent).toBe('3')
     expect(document.querySelector<HTMLElement>('#receipt')?.hidden).toBe(true)
     expect(document.querySelectorAll('#decision-options button:disabled')).toHaveLength(0)
+  })
+
+  it('moves keyboard focus to the receipt when a demo answer replaces the chosen button', () => {
+    boot()
+    const choice = button('#decision-options button')
+    choice.focus()
+    choice.click()
+    expect(choice.isConnected).toBe(false)
+    expect(document.activeElement).toBe(document.querySelector('#receipt'))
   })
 
   it('retains each sample response when switching between questions', () => {

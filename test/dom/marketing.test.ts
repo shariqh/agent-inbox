@@ -5,6 +5,37 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const pagePath = resolve('marketing/index.html')
 
+const THREE_MODULE = 'https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.module.js'
+const THREE_CORE = 'https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.core.js'
+// sha384 of the npm tarball's build files, which jsDelivr serves byte for byte.
+const PINNED = {
+  [THREE_MODULE]: 'sha384-m8JoFX52V6NGv2usipnlLJKnJfL7IE8dbniPDDCSGSQv3Hm4n6PjfV6syVwfuoRc',
+  [THREE_CORE]: 'sha384-mdKeCwPEcbDvzaxwhm+MVuLoMou+E7jQqrs4tmu/n8HBYPGI1kZt0MkJxlMR4zFM',
+}
+
+function heroScript(): HTMLScriptElement {
+  const scripts = document.querySelectorAll<HTMLScriptElement>('script[type="module"]')
+  expect(scripts).toHaveLength(1)
+  return scripts[0]!
+}
+
+// jsdom has no HTMLScriptElement.supports, and its link relList rejects
+// modulepreload. Leaving importmap undefined keeps the missing method.
+function stubModuleSupport(support: { importmap?: boolean; modulepreload: boolean }) {
+  if (support.importmap !== undefined) {
+    vi.stubGlobal('HTMLScriptElement', { supports: (type: string) => type === 'importmap' && support.importmap })
+  }
+  vi.spyOn(DOMTokenList.prototype, 'supports').mockImplementation(token => token === 'modulepreload' && support.modulepreload)
+}
+
+// Runs the hero module's own source with import() replaced by `load`.
+async function runHero(load: (url: string) => Promise<unknown>) {
+  const source = heroScript().textContent ?? ''
+  expect(source.split('import(')).toHaveLength(2)
+  vi.stubGlobal('loadThree', load)
+  await window.eval(`(async () => {\n${source.replace('import(', 'loadThree(')}\n})()`)
+}
+
 function button(selector: string): HTMLButtonElement {
   const element = document.querySelector<HTMLButtonElement>(selector)
   if (!element) throw new Error(`Missing marketing control: ${selector}`)
@@ -45,6 +76,7 @@ afterEach(() => {
   vi.clearAllTimers()
   vi.useRealTimers()
   vi.unstubAllGlobals()
+  vi.restoreAllMocks()
   document.documentElement.innerHTML = ''
 })
 
@@ -78,9 +110,65 @@ describe('local marketing page', () => {
     const canvas = document.querySelector<HTMLCanvasElement>('#agent-visual')
     expect(canvas).not.toBeNull()
     expect(canvas?.getAttribute('aria-hidden')).toBe('true')
-    expect(html).toContain("from 'https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.module.min.js'")
+    expect(heroScript().textContent).toContain(`await import('${THREE_MODULE}')`)
     expect(html).toContain("matchMedia('(prefers-reduced-motion: reduce)')")
     expect(html).toContain('var(--cp-accent)')
+  })
+
+  it('pins every Three.js module the hero loads with Subresource Integrity', () => {
+    boot()
+    const maps = document.querySelectorAll('script[type="importmap"]')
+    expect(maps).toHaveLength(1)
+    const map = JSON.parse(maps[0]!.textContent ?? '')
+    expect(map.integrity).toEqual(PINNED)
+    // The jsDelivr URLs map to themselves; every other https module URL, such as
+    // a redirect target's relative ./three.core.js, is blocked.
+    expect(map.imports).toEqual({ [THREE_MODULE]: THREE_MODULE, [THREE_CORE]: THREE_CORE, 'https://': null })
+
+    const preloads = [...document.querySelectorAll<HTMLLinkElement>('link[rel="modulepreload"]')]
+    expect(preloads.map(link => [link.getAttribute('href'), link.getAttribute('integrity'), link.getAttribute('crossorigin')]))
+      .toEqual(Object.entries(PINNED).map(([url, integrity]) => [url, integrity, 'anonymous']))
+
+    const hero = heroScript()
+    const source = hero.textContent ?? ''
+    expect(source).not.toMatch(/^\s*import[\s{*]/m)
+    expect([...source.matchAll(/\bimport\(\s*'([^']+)'\s*\)/g)].map(match => match[1])).toEqual([THREE_MODULE])
+
+    const order = [...document.querySelectorAll('script, link')]
+    const first = (selector: string) => order.findIndex(element => element.matches(selector))
+    expect(first('script[type="importmap"]')).toBeLessThan(first('link[rel="modulepreload"]'))
+    expect(order.indexOf(preloads.at(-1)!)).toBeLessThan(order.indexOf(hero))
+  })
+
+  it('keeps the plain hero and a working demo when Three.js cannot load', async () => {
+    boot()
+    const canvas = document.querySelector<HTMLCanvasElement>('#agent-visual')
+    expect(canvas?.hidden).toBe(false)
+    stubModuleSupport({ importmap: true, modulepreload: true })
+    const load = vi.fn((url: string) => Promise.reject(new TypeError(`Failed to fetch dynamically imported module: ${url}`)))
+
+    await runHero(load)
+
+    expect(load).toHaveBeenCalledWith(THREE_MODULE)
+    expect(canvas?.hidden).toBe(true)
+    button('#tab-plans').click()
+    expect(button('#tab-plans').getAttribute('aria-selected')).toBe('true')
+    expect(document.querySelector('#panel-plans')?.getAttribute('aria-hidden')).toBe('false')
+  })
+
+  it.each([
+    ['has no HTMLScriptElement.supports', { modulepreload: true }],
+    ['lacks import maps', { importmap: false, modulepreload: true }],
+    ['lacks module preloads', { importmap: true, modulepreload: false }],
+  ])('keeps the plain hero without loading Three.js when the browser %s', async (_, support) => {
+    boot()
+    stubModuleSupport(support)
+    const load = vi.fn((_url: string) => Promise.resolve({}))
+
+    await runHero(load)
+
+    expect(load).not.toHaveBeenCalled()
+    expect(document.querySelector<HTMLCanvasElement>('#agent-visual')?.hidden).toBe(true)
   })
 
   it('keeps demo panels and response space mounted so interactions do not resize the demo', () => {

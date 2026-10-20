@@ -16,6 +16,21 @@
       document.documentElement.setAttribute("data-theme", "light");
     }
   </script>
+  <script type="importmap">
+    {
+      "imports": {
+        "https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.module.js": "https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.module.js",
+        "https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.core.js": "https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.core.js",
+        "https://": null
+      },
+      "integrity": {
+        "https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.module.js": "sha384-m8JoFX52V6NGv2usipnlLJKnJfL7IE8dbniPDDCSGSQv3Hm4n6PjfV6syVwfuoRc",
+        "https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.core.js": "sha384-mdKeCwPEcbDvzaxwhm+MVuLoMou+E7jQqrs4tmu/n8HBYPGI1kZt0MkJxlMR4zFM"
+      }
+    }
+  </script>
+  <link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.module.js" integrity="sha384-m8JoFX52V6NGv2usipnlLJKnJfL7IE8dbniPDDCSGSQv3Hm4n6PjfV6syVwfuoRc" crossorigin="anonymous">
+  <link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.core.js" integrity="sha384-mdKeCwPEcbDvzaxwhm+MVuLoMou+E7jQqrs4tmu/n8HBYPGI1kZt0MkJxlMR4zFM" crossorigin="anonymous">
   <style>
     :root {
       color-scheme: light;
@@ -952,12 +967,15 @@ npm run install:agents</code></pre>
   </footer>
 
   <script type="module">
-    import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.module.min.js';
-
     const canvas = document.getElementById('agent-visual');
     const motionQuery = matchMedia('(prefers-reduced-motion: reduce)');
 
     try {
+      // Without import maps and module preloads, the integrity pins may not apply.
+      if (!HTMLScriptElement.supports?.('importmap') || !document.createElement('link').relList?.supports?.('modulepreload')) {
+        throw new Error('Three.js would load unchecked in this browser.');
+      }
+      const THREE = await import('https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.module.js');
       const renderer = new THREE.WebGLRenderer({
         canvas,
         alpha: true,

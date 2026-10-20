@@ -365,8 +365,9 @@ npm run build
 ```
 
 For the local marketing site, run `npm run marketing` and open
-`http://127.0.0.1:4320`. The self-contained page at `marketing/index.html`
-uses fictional demo data and does not connect to your inbox.
+`http://127.0.0.1:4320`. The single-file page at `marketing/index.html`
+uses fictional demo data and does not connect to your inbox; only its hero
+visual loads Three.js from a CDN.
 See [Marketing preview](CONTRIBUTING.md#marketing-preview) for the port option.
 
 The test suite uses real temporary SQLite databases and real stdio MCP integration

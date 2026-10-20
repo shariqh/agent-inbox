@@ -1714,24 +1714,26 @@ describe('hook: installer', () => {
     writeFileSync(join(tool, 'bin', 'node'), '')
     symlinkSync(join(tool, 'lib'), join(dir, 'lib'))
     // to the OS, <dir>/lib/.. is <tool>; to realpathSync it is <dir>, where neither path exists
-    const working = { hooks: [
+    const working = [
       { type: 'command', command: `${dir}/lib/../bin/node`, args: [join(tool, 'dist', 'hook-cli.js'), 'stop'] },
       { type: 'command', command: process.execPath, args: [`${dir}/lib/../dist/hook-cli.js`, 'watch'] },
-    ] }
-    writeFileSync(file, JSON.stringify({ hooks: { Stop: [working] } }))
-    const before = readFileSync(file, 'utf8')
-
-    for (const flags of [['--apply'], ['--apply', '--replace-existing']]) {
-      const r = installer(flags, dir, entry)
-      expect(r.code, flags.join(' ')).toBe(1)
-      expect(r.err).toMatch(/cannot attribute/)
-      expect(r.err).not.toMatch(/can no longer run/)
-      expect(readFileSync(file, 'utf8')).toBe(before)
+    ]
+    for (const hook of working) {
+      writeFileSync(file, JSON.stringify({ hooks: { Stop: [{ hooks: [hook] }] } }))
+      const before = readFileSync(file, 'utf8')
+      for (const flags of [['--apply'], ['--apply', '--replace-existing']]) {
+        const r = installer(flags, dir, entry)
+        const label = `${hook.command} ${hook.args[0]}, ${flags.join(' ')}`
+        expect(r.code, label).toBe(1)
+        expect(r.err, label).toMatch(/cannot attribute/)
+        expect(r.err, label).not.toMatch(/can no longer run/)
+        expect(readFileSync(file, 'utf8'), label).toBe(before)
+      }
     }
 
     // the same shape when the OS cannot find the path either: it cannot run, so it goes
     rmSync(join(tool, 'bin', 'node'))
-    writeFileSync(file, JSON.stringify({ hooks: { Stop: [{ hooks: [working.hooks[0]] }] } }))
+    writeFileSync(file, JSON.stringify({ hooks: { Stop: [{ hooks: [working[0]] }] } }))
     const refused = installer(['--apply'], dir, entry)
     expect(refused.code).toBe(1)
     expect(refused.err).toContain(`the install at ${tool}, which can no longer run (1 hook)`)

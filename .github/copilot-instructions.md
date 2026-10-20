@@ -304,6 +304,12 @@ Run the build before `npm run electron`; the development shell starts the built
 - Every value export in `src/*.ts` and `public/*.js` must be reachable from
   production code. Tests are not consumers. `test/dead-exports.test.ts` enforces
   this; deliberate exceptions require the existing documented mechanisms.
+- Workspace hygiene: the session that merges a PR or publishes a release removes
+  its worktree (`git worktree remove`), local and remote branch, reviewer `/tmp`
+  trees, release downloads and old `build/` outputs before reporting completion,
+  and only after the checks in `docs/workspace-hygiene.md` pass. Never touch the
+  live checkout's `dist/`/`node_modules`, `~/.agent-inbox` data, referenced
+  runtimes, session state, or other sessions' work; keep and report instead.
 
 ## Test conventions
 

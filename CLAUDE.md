@@ -1042,6 +1042,13 @@ not evidence — delete it or move it to a source pin.
   liveness is import-only and airtight, but *within* the declaring file a bare occurrence
   counts however it got there (a local binding, an object key, template-literal text). That
   limit is written down at the `word()` helper — don't restate it more generously.
+- **Workspace hygiene.** The session that merges a PR or publishes a release removes what it
+  left behind before reporting the work complete: its worktree (`git worktree remove`, never
+  `rm -rf`), local and remote branch, reviewers' `/tmp` trees, downloaded release assets and
+  old `build/` outputs. Delete only after the clean and safety checks in
+  [`docs/workspace-hygiene.md`](docs/workspace-hygiene.md) pass; otherwise keep and report.
+  Never touch the live checkout's `dist/`/`node_modules`, `~/.agent-inbox` data, referenced
+  runtimes (the installer prunes runtimes), session state, or other sessions' work.
 
 ## Shipped since v1
 

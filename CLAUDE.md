@@ -1360,8 +1360,15 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   runtime's, a checkout's — `dist/hook-cli.js` beside a `package.json` named `agent-inbox`
   — or a dead `…/dist/hook-cli.js` whose entry or Node no longer resolves); unverifiable
   (a `…/dist/hook-cli.js` that runs but does not verify); or another tool's. Its launcher
-  classification is `src/agent-hosts.ts`'s with Setup's `unknown` split into dead and
-  unknown (`test/agent-hosts.test.ts` holds them to agreement). Replaceable entries refuse
+  classification is `src/agent-hosts.ts`'s with Setup's `unknown` split into dead, elsewhere
+  and unknown (`test/agent-hosts.test.ts` holds them to agreement). *(#232)* A
+  `<dir>/dist/hook-cli.js` beside a runtime manifest is never another tool's: outside the
+  runtime root it is `elsewhere` — replaceable, and own only to that folder's own
+  installer — when `verifyPayload` passes (product `agent-inbox-runtime`) and the command
+  is that folder's Node, else `unknown`; Setup reports both as `unknown`. *(#228)* A path
+  is dead only when `statSync` on it as written fails too: `realpathSync` applies `..`
+  before the symlink in front of it, so a working `<symlinked folder>/../bin/node` is
+  `unknown`, never dead. Replaceable entries refuse
   (exit 1, nothing written) until `--replace-existing`, which strips exactly them by
   command + args plus the installer's own and adds one set; unverifiable ones always
   refuse; another tool's are never removed (checkout mode never refuses for them; packaged
@@ -1616,7 +1623,9 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   Every other server, env value and secret is parsed in memory and dropped: never returned, logged or
   cached. It never asks the host CLIs (`claude mcp get` health-checks a server by starting it). Kinds are
   `none`, `runtime` (Setup's: runtime id + manifest version), `checkout` (`dist/` beside a `package.json`
-  named agent-inbox and no runtime manifest: its root path), `other` and `unknown`. `runtime` is exactly
+  named agent-inbox and no runtime manifest: its root path), `other` and `unknown`. A runtime's layout
+  outside the root is never Setup's: `other` for an MCP registration (the installer's `custom`), but
+  `unknown` for hooks, which the hook installer refuses beside or replaces (#232). `runtime` is exactly
   the installer's ownership rule (`classifyRuntimeRegistration` in `scripts/runtime-config.mjs`): node and
   entry resolve, by real identity, into the SAME directory under the runtime root, which verifies as an
   intact runtime naming itself. That check uses the shared verifier with THIS app's expectations relaxed

@@ -1738,6 +1738,49 @@ describe('runtime-config hooks: packaged Claude Code hook-settings transformatio
     const ours = Object.values(result.hooks!).flatMap((groups) => groups.flatMap((g) => g.hooks)).filter((h) => h.args[0] === entry)
     expect(ours.map((h) => h.args[1]).sort()).toEqual(['notification', 'prompt-submit', 'session-end', 'session-start', 'stop', 'watch'])
   })
+
+  // #232: a verified runtime outside the runtime root (copied or extracted
+  // elsewhere, or installed under another AGENT_INBOX_RUNTIME_ROOT) is another
+  // Agent Inbox install, not another tool's: --replace-existing left it beside
+  // a second set.
+  it('names a runtime outside the runtime root instead of adding a second set, and replaces it only with --replace-existing', () => {
+    const { runtimeRoot, nodeBin, entry } = installedHookRuntime()
+    const other = installedHookRuntime({ packageVersion: '1.2.4' })
+    const otherDir = dirname(dirname(other.entry))
+    const settings = join(tmp('hooks-elsewhere-set-'), 'settings.json')
+    writeFileSync(settings, JSON.stringify({ hooks: { ...threeHooks(other.nodeBin, other.entry), PostToolUse: [{ hooks: [unrelated] }] } }))
+    const args = ['hooks', '--settings', settings, '--node', nodeBin, '--entry', entry, '--runtime-root', runtimeRoot, '--installer', INSTALLER]
+
+    const refused = runFail(CONFIG_CLI, args)
+    expect(refused.status).toBe(1)
+    expect(refused.stdout).toBe('')
+    expect(refused.stderr).toContain(`the v1.2.4 runtime at ${otherDir}, outside Setup's runtime folder (3 hooks)`)
+    expect(printed(refused.stderr)).toEqual([`bash '${INSTALLER}' --apply --replace-existing`])
+
+    const replaced = runCli(CONFIG_CLI, [...args, '--replace-existing'])
+    expect(replaced.status, replaced.stderr).toBe(0)
+    expect(replaced.stderr).toContain(`replacing 3 hooks of the v1.2.4 runtime at ${otherDir}, outside Setup's runtime folder`)
+    const result = JSON.parse(replaced.stdout) as HooksSettings
+    expect(JSON.stringify(result)).not.toContain(other.entry)
+    expect(result.hooks!.PostToolUse).toEqual([{ hooks: [unrelated] }])
+    expect(result.hooks!.Stop![0]!.hooks.map((h) => [h.command, ...h.args])).toEqual([[nodeBin, entry, 'stop'], [nodeBin, entry, 'watch']])
+  })
+
+  it('a runtime outside the runtime root re-installs and removes its own hooks as one under it does', () => {
+    const self = installedHookRuntime({ packageVersion: '1.2.4' })
+    // the root this installer is given is not the one it was installed under
+    const runtimeRoot = tmp('hooks-another-root-')
+    const settings = join(tmp('hooks-elsewhere-own-'), 'settings.json')
+    writeFileSync(settings, JSON.stringify({ hooks: { ...threeHooks(self.nodeBin, self.entry), PostToolUse: [{ hooks: [unrelated] }] } }))
+    const args = ['hooks', '--settings', settings, '--entry', self.entry, '--runtime-root', runtimeRoot]
+
+    const reinstalled = runOk(CONFIG_CLI, [...args, '--node', self.nodeBin]) as HooksSettings
+    const ours = Object.values(reinstalled.hooks!).flatMap((groups) => groups.flatMap((g) => g.hooks)).filter((h) => h.args[0] === self.entry)
+    expect(ours.map((h) => h.args[1]).sort()).toEqual(['notification', 'prompt-submit', 'session-end', 'session-start', 'stop', 'watch'])
+    expect(reinstalled.hooks!.PostToolUse).toEqual([{ hooks: [unrelated] }])
+
+    expect(runOk(CONFIG_CLI, [...args, '--uninstall'])).toEqual({ hooks: { PostToolUse: [{ hooks: [unrelated] }] } })
+  })
 })
 
 // ═══════════════════════════════════════════════════════════════════════

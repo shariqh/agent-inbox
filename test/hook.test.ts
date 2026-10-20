@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { spawn, spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -1645,6 +1645,101 @@ describe('hook: installer', () => {
       expect(r.err).toContain(`${join(runtime, 'dist', 'hook-cli.js')} (notification, prompt-submit, session-end, session-start, stop, watch)`)
       expect(readFileSync(file, 'utf8')).toBe(before)
     }
+  })
+
+  // #232: a runtime copied or extracted outside the runtime root, or installed
+  // under another AGENT_INBOX_RUNTIME_ROOT, is still an Agent Inbox install. It
+  // was taken for another tool's, so a checkout install added a second set.
+  it('refuses beside the hooks of a runtime outside the runtime root, and replaces them only with --replace-existing', () => {
+    const { dir, entry, file } = home()
+    const copied = installRuntimeVersion(join(dir, 'Downloads'), '1.2.4')
+    const copiedEntry = join(copied, 'dist', 'hook-cli.js')
+    writeFileSync(file, JSON.stringify(withSets(withPostToolUse, setOf(join(copied, 'bin', 'node'), copiedEntry))))
+    const before = readFileSync(file, 'utf8')
+
+    for (const flags of [[], ['--apply']]) {
+      const refused = installer(flags, dir, entry)
+      expect(refused.code, flags.join(' ')).toBe(1)
+      expect(refused.out).toBe('')
+      expect(refused.err).toContain('already has Claude hooks from another Agent Inbox install')
+      expect(refused.err).toContain(`the v1.2.4 runtime at ${copied}, outside Setup's runtime folder (6 hooks)`)
+      // 1.3.2 and older runtimes' own uninstall refuses their hooks outside the root
+      expect(printed(refused.err)).toEqual([replaceCommand])
+      expect(readFileSync(file, 'utf8')).toBe(before)
+      expect(backupsOf(file)).toEqual([])
+    }
+
+    const r = installer(['--apply', '--replace-existing'], dir, entry)
+
+    expect(r.code, r.err).toBe(0)
+    expect(r.err).toContain(`replacing 6 hooks of the v1.2.4 runtime at ${copied}, outside Setup's runtime folder`)
+    const s = JSON.parse(readFileSync(file, 'utf8')) as Settings
+    expectOneSet(s, entry, [entry, copiedEntry])
+    expect(s.hooks!.PostToolUse).toEqual(withPostToolUse.hooks.PostToolUse)
+  })
+
+  it('refuses, even with --replace-existing, beside a runtime outside the root that it cannot verify', () => {
+    const { dir, entry, file } = home()
+    const tampered = installRuntimeVersion(join(dir, 'Downloads'), '1.2.4')
+    writeFileSync(join(tampered, 'dist', 'hook-cli.js'), '// tampered\n')
+    const borrowed = installRuntimeVersion(join(dir, 'Desktop'), '1.2.4')
+    const cases: Array<[string, Settings, string]> = [
+      ['a tampered runtime', withSets(withPostToolUse, setOf(join(tampered, 'bin', 'node'), join(tampered, 'dist', 'hook-cli.js'))), join(tampered, 'dist', 'hook-cli.js')],
+      ['a runtime\'s entry under another Node', withSets(withPostToolUse, setOf(process.execPath, join(borrowed, 'dist', 'hook-cli.js'))), join(borrowed, 'dist', 'hook-cli.js')],
+    ]
+    for (const [label, settings, listed] of cases) {
+      writeFileSync(file, JSON.stringify(settings))
+      const before = readFileSync(file, 'utf8')
+      for (const flags of [['--apply'], ['--apply', '--replace-existing']]) {
+        const r = installer(flags, dir, entry)
+        expect(r.code, `${label}, ${flags.join(' ')}`).toBe(1)
+        expect(r.err, label).toMatch(/cannot attribute/)
+        expect(r.err, label).toContain(`${listed} (notification, prompt-submit, session-end, session-start, stop, watch)`)
+        expect(readFileSync(file, 'utf8'), label).toBe(before)
+      }
+    }
+  })
+
+  // #228: realpathSync applies `..` before it follows a symlink, the OS after,
+  // so another tool's working hook written as <symlinked folder>/../bin/node
+  // was called dead, and --replace-existing removed it.
+  it('never removes a working hook whose path runs through a symlinked folder and .., and still replaces one the OS cannot find', () => {
+    const { dir, entry, file } = home()
+    const tool = join(dir, 'tool')
+    mkdirSync(join(tool, 'dist'), { recursive: true })
+    mkdirSync(join(tool, 'lib'))
+    mkdirSync(join(tool, 'bin'))
+    writeFileSync(join(tool, 'package.json'), JSON.stringify({ name: 'agent-inbox-companion' }))
+    writeFileSync(join(tool, 'dist', 'hook-cli.js'), '// another tool\n')
+    writeFileSync(join(tool, 'bin', 'node'), '')
+    symlinkSync(join(tool, 'lib'), join(dir, 'lib'))
+    // to the OS, <dir>/lib/.. is <tool>; to realpathSync it is <dir>, where neither path exists
+    const working = { hooks: [
+      { type: 'command', command: `${dir}/lib/../bin/node`, args: [join(tool, 'dist', 'hook-cli.js'), 'stop'] },
+      { type: 'command', command: process.execPath, args: [`${dir}/lib/../dist/hook-cli.js`, 'watch'] },
+    ] }
+    writeFileSync(file, JSON.stringify({ hooks: { Stop: [working] } }))
+    const before = readFileSync(file, 'utf8')
+
+    for (const flags of [['--apply'], ['--apply', '--replace-existing']]) {
+      const r = installer(flags, dir, entry)
+      expect(r.code, flags.join(' ')).toBe(1)
+      expect(r.err).toMatch(/cannot attribute/)
+      expect(r.err).not.toMatch(/can no longer run/)
+      expect(readFileSync(file, 'utf8')).toBe(before)
+    }
+
+    // the same shape when the OS cannot find the path either: it cannot run, so it goes
+    rmSync(join(tool, 'bin', 'node'))
+    writeFileSync(file, JSON.stringify({ hooks: { Stop: [{ hooks: [working.hooks[0]] }] } }))
+    const refused = installer(['--apply'], dir, entry)
+    expect(refused.code).toBe(1)
+    expect(refused.err).toContain(`the install at ${tool}, which can no longer run (1 hook)`)
+    const replaced = installer(['--apply', '--replace-existing'], dir, entry)
+    expect(replaced.code, replaced.err).toBe(0)
+    const s = JSON.parse(readFileSync(file, 'utf8')) as Settings
+    expect(JSON.stringify(s)).not.toContain('/lib/../')
+    expectOneSet(s, entry, [entry])
   })
 
   it('--uninstall still removes only this checkout\'s own entries', () => {

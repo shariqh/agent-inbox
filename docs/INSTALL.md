@@ -408,8 +408,9 @@ nothing is run to find this out.
   installs hooks you don't have. If no agent needs
   moving, the step appears once the app's runtime is installed. In a browser tab, Setup
   shows that command for a terminal instead. Hooks installed from a source checkout are
-  never moved by Setup; switch them with `--replace-existing`, see
-  [the backstop hooks](#5-optional-the-backstop-hooks-issues-10--21).
+  never moved by Setup; switch them with `--replace-existing` (a 1.3.2 or later
+  runtime), see [the backstop hooks](#5-optional-the-backstop-hooks-issues-10--21).
+  Nor are hooks of a runtime outside Setup's folder, which Setup reports as not verified.
   Claude Code's documentation says it normally applies changed hooks to running sessions
   too; restart a session to be sure.
 
@@ -571,13 +572,18 @@ sessions too; restart a session to be sure it has them.
 
 **Only one install's hooks at a time.** Two sets would run every hook twice, so the
 installer refuses to add its hooks beside those of a Setup runtime or another
-checkout, or beside hooks of an install that was moved or deleted, and changes
-nothing. Its message names what is there and puts the recommended fix first: one
-command that replaces them all with this install's hooks. To switch:
+checkout, of a runtime copied or extracted outside Setup's runtime folder, or of an
+install that was moved or deleted, and changes nothing. Its message names what is
+there and puts the recommended fix first: one command that replaces them all with
+this install's hooks. To switch:
 
 - **Setup runtime → this checkout:** `npm run install:hooks -- --apply --replace-existing`.
 - **This checkout → the Setup runtime:**
   `bash ~/.agent-inbox/runtime/<runtime-id>/scripts/install-hooks.sh --apply --replace-existing`.
+  That needs a 1.3.2 or later runtime (the folder name starts with its version); an
+  older one exits 2 with `unknown flag`. With an older runtime, run
+  `npm run install:hooks -- --apply --uninstall` here first, then that runtime's
+  `install-hooks.sh --apply`.
 
 The same command fixes hooks that already run twice. Removing the old install's hooks
 with its own `--apply --uninstall` first, and then installing the new ones, works too

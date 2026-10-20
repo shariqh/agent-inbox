@@ -1076,9 +1076,10 @@ npm run install:agents</code></pre>
         pointerX = (event.clientX - bounds.left) / bounds.width - .5;
         pointerY = (event.clientY - bounds.top) / bounds.height - .5;
       });
-      // With reduced motion no next frame repaints the cleared canvas, so draw one now.
+      // A real resize clears the canvas after this frame's draw, so repaint now. With
+      // reduced motion no later frame would; render() would also start a second loop.
       new ResizeObserver(() => {
-        if (resize() && motionQuery.matches) render();
+        if (resize()) renderer.render(scene, camera);
       }).observe(canvas);
       new MutationObserver(updatePalette).observe(document.documentElement, {
         attributes: true,

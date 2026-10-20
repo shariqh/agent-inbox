@@ -272,6 +272,15 @@ describe('local marketing page', () => {
     vi.advanceTimersToNextFrame()
     expect(hero.three.sizes).toEqual([[640, 480], [800, 480]])
     expect(hero.three.draws()).toBe(4)
+
+    // A resize seen between frames repaints at once instead of showing a cleared canvas.
+    hero.size.width = 960
+    hero.observeResize()
+    expect(hero.three.sizes).toEqual([[640, 480], [800, 480], [960, 480]])
+    expect(hero.three.draws()).toBe(5)
+    vi.advanceTimersToNextFrame()
+    expect(hero.three.sizes).toHaveLength(3)
+    expect(hero.three.draws()).toBe(6)
   })
 
   it('redraws a reduced-motion hero after its canvas is resized', async () => {

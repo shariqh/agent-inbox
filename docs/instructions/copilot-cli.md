@@ -27,3 +27,5 @@
 - Do not invent a shell poller or launch a watcher for notes and milestones.
   Use only returned launch contracts. Unless the human asked you to stop waiting,
   they must not need to send another chat message after answering in the Inbox.
+- Setting or changing a plan's or row's `issue` link is routine row content: it starts no
+  watch and needs no re-arm. Only a new blocked action returns a `watch`.

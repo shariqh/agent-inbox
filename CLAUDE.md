@@ -396,15 +396,18 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   record is display-only) and the refresh/display key sets (closed projects and archived
   plans are displayed, never refreshed; closed items are History and in neither).
   `/api/items` and `/api/boards` never carry GitHub data, so snapshot writes leave their
-  bytes and validators unchanged. Both new modules stay out of the stdio MCP import graph
-  until PR2's titled `board_get` summary admits them deliberately;
-  `test/issue-graph.test.ts` pins the transitive graph, and `test/mixed-version.test.ts`
-  runs frozen v1.3.1 statements against a migrated hub.
+  bytes and validators unchanged. Both modules are pure, which is the only reason PR2's titled
+  `board_get` summary may admit them (and `public/source.js`/`esc.js`) into the stdio MCP
+  graph; hook-cli and watch-cli still never reach them. `test/issue-graph.test.ts` pins the
+  transitive graph, and `test/mixed-version.test.ts` runs frozen v1.3.1 statements against a
+  migrated hub.
 - **`src/issue-poller.ts` is VIEWER-PROCESS-ONLY too (issue #103, PR1b).** It is the second
   `gh` caller and keeps every prstate rule: `execFile` with argv only, piped stdio, the quieting
   env, `GH_TIMEOUT_MS`/`GH_MAX_BUFFER`, writes only through `store.ts`, never rejects, and never
   reaches attention, a badge or a notification. `test/prstate.test.ts` checks that no file of
-  the stdio graph (its list must stay closed under relative imports) imports either poller.
+  the stdio graph (its list must stay closed under relative imports, `../public/*.js` included)
+  imports either poller, reading every specifier form: single- or double-quoted, side-effect,
+  dynamic and `require`.
   (1) **One tick, issues first** (`startGithubPoller`, started by `viewer-server.ts`): the issue
   class makes at most ONE `gh api graphql` call (≤ 10 issues, one deterministic document per
   batch size, owner/name only through `-f`, numbers through `-F`, `--hostname github.com`),
@@ -421,7 +424,9 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   lease or whose `checked_at` moved since the caller read it, a crashed viewer's lease expires
   after 60 s, and completion releases only its own owner's leases. An invalid snapshot in a
   completion is recorded as a soft `gh-failed`, never thrown: one throw would roll back the batch
-  and the same keys would be refetched every tick. (4) **Budget from the reported cost**
+  and the same keys would be refetched every tick. The store reports each one to its caller
+  (`onInvalid`), and the poller says so ONCE per process on stderr, by key, never by title
+  (`invalidSnapshotNotice`); `store.ts` itself never logs, since it is in the stdio graph. (4) **Budget from the reported cost**
   (`IssueBudget`, per process): a 120-point hourly bucket spent by `rateLimit.cost`, the last
   reported cost when a call reports none; below `RATE_FLOOR` (500) the class waits for `resetAt`
   (capped at an hour) and records a soft `rate-limit` for the batch it would have fetched; a
@@ -436,6 +441,28 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   stores it bound to the `fetched_at` it writes. An older process's success write moves
   `fetched_at` and so unbinds it (pinned in `test/mixed-version.test.ts`); its failure write
   keeps it bound.
+- **Explicit plan pins and row links are agent-owned row content (issue #103, PR2).**
+  `boards.issue_pin_repo`/`issue_pin_number` and `board_rows.issue_repo`/`issue_number` are
+  additive columns written only by `upsertBoard` (`issuePin`, `rows[].issue`) and
+  `updateBoardRow` (`issue`), validated and repository-lowercased in `store.ts`. They follow
+  every other agent field's omission rule: undefined keeps, `null` (MCP `""`) clears. A link
+  change bumps the row `revision` and `updated_at`; a pin change bumps the board revision.
+  `beginNewRowAction`/`advanceBoardRow` and status moves never name the columns, so
+  `board_advance` and a reblock keep the link, and no frozen v1.3.1 statement can clear them
+  (`test/mixed-version.test.ts`). In `public/issue-key.js` a plan pin outranks the PR and
+  branch issue and a row link is a row's only source; both are certain. `boards.repo`,
+  `issue_ref` and the PR lookup are untouched. `listIssueEntities` adds linked rows of active
+  and archived plans, so they join the poller's key sets. MCP (`normalizeIssue` in `mcp.ts`)
+  accepts only `owner/name#N`, `#N`/`N` against the session's `repo` (refused when there is
+  none) and `https://github.com/owner/name/issues/N`, and refuses anything else with that
+  list. `shape.ts` replaces the raw columns with one `issue: "owner/name#N"` string on titled
+  reads and adds `issue_rel` (`issueRelations` in `issue-graph.ts`: keys and counts, never
+  titles, only when the cache holds an answer); `pending()` (`listPendingRows` selects named
+  columns) and the title-less summary carry neither, byte for byte. The viewer's
+  `/api/boards` simply gains the raw columns, as store rows always have. Because
+  `dist/mcp.js` now imports `../public/issue-key.js` (and through it `source.js`/`esc.js`),
+  `scripts/stage-runtime.mjs` stages exactly the `public/` modules `dist/` reaches into every
+  runtime payload; a runtime without them could not even start its MCP server.
 - **`src/shape.ts` is AGENT-SIDE ONLY (issue #42).** `context` is written for the human
   and rendered collapsed, so agents write it generously — and every agent read used to pay
   for all of it. `shape.ts` is where the MCP read payloads are trimmed (`context` →
@@ -1626,8 +1653,9 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
 - **Plans that model GitHub sub-issues** *(#103, v1.4)* — PR1a shipped the `issue_snapshots`
   cache, issue keys and key sets, the pure graph builder and `GET /api/issues`; PR1b the
   viewer poller (fair queue, leases, rate-limit budget, `closing_refs`; see the invariants
-  above). Still to come, per the design's §13: PR2 explicit plan and row links with the
-  titled `board_get` summary, PR3 breadcrumbs and child progress in the UI.
+  above); PR2 explicit plan pins and row links with the titled `board_get` `issue_rel`
+  summary (see the invariant above). Still to come, per the design's §13: PR3 breadcrumbs and
+  child progress in the UI.
 Keep all of these additive and behind the existing seams — don't break v1's local,
 zero-config, no-auth path.
 

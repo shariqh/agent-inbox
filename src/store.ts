@@ -415,6 +415,13 @@ function runMigrations(db: Database.Database): void {
   migrateItemResponseRevision(db)
   migrateItemAnnotationDelivery(db)
   migrateAnnotationDelivery(db)
+  // issue #103 PR2 — an explicit plan pin and row link, agent-owned. Plain
+  // additive columns: no statement an older process runs names them, so its
+  // writes keep them (test/mixed-version.test.ts), and nothing is backfilled.
+  ensureColumn(db, 'boards', 'issue_pin_repo', 'TEXT')
+  ensureColumn(db, 'boards', 'issue_pin_number', 'INTEGER')
+  ensureColumn(db, 'board_rows', 'issue_repo', 'TEXT')
+  ensureColumn(db, 'board_rows', 'issue_number', 'INTEGER')
 }
 
 // Issue #217 — who raised the current ask, and the human's stop for it, belong
@@ -1185,6 +1192,10 @@ export interface Board {
   issue_ref: number | null
   // issue #157 — as on items; null on every board written before #157
   head_repo: string | null
+  // issue #103 PR2 — the plan's explicit issue pin, which outranks its PR and
+  // branch issue (§4.2). Repository lowercased; both null when unpinned.
+  issue_pin_repo: string | null
+  issue_pin_number: number | null
   created_at: string
   updated_at: string
   last_read_at: string | null
@@ -1228,6 +1239,10 @@ export interface BoardRow {
   // starts it. NULL when unknown: a legacy row, or an action an older server
   // started. Never the board's last writer, which can be another agent.
   action_agent: string | null
+  // issue #103 PR2 — the row's explicit issue link, its only issue source.
+  // Agent-owned row content; kept across board_advance and every status change.
+  issue_repo: string | null
+  issue_number: number | null
   outcome: string
   outcome_at: string | null
   created_at: string
@@ -1249,7 +1264,7 @@ const ROW_COLUMNS = `
   id, label, status, note, next_step, action_owner, impact, next_after, options,
   context, annotation, annotation_kind, annotated_at, annotation_seen_at,
   annotation_seen_by, handled_at, handled_seen_at, handled_seen_by, snoozed_until,
-  watch_stopped_at, watch_stopped_until, action_agent,
+  watch_stopped_at, watch_stopped_until, action_agent, issue_repo, issue_number,
   outcome, outcome_at, created_at, updated_at, action_started_at, action_version,
   revision, history, position`
 
@@ -1306,6 +1321,42 @@ export interface NewBoardRow {
   options?: QuestionOption[]
   outcome?: string
   context?: string
+  /** omitted keeps the stored link; null clears it */
+  issue?: IssueLink | null
+}
+
+/** An issue an agent linked explicitly; MCP normalizes every accepted form to it. */
+export interface IssueLink {
+  repo: string
+  number: number
+}
+
+// Validated and lowercased once, here, so every writer stores one form.
+function issueLinkColumns(link: IssueLink | null): { repo: string | null; number: number | null } {
+  if (link === null) return { repo: null, number: null }
+  if (!validIssueSlug(link.repo) || !validIssueNumber(link.number)) {
+    throw new Error(`invalid issue link: ${String(link.repo)}#${String(link.number)}`)
+  }
+  return { repo: link.repo.toLowerCase(), number: link.number }
+}
+
+// Omission is not deletion: undefined writes nothing. Returns whether it changed.
+function setRowIssueLink(db: Database.Database, rowId: string, link: IssueLink | null | undefined, now: string): boolean {
+  if (link === undefined) return false
+  const { repo, number } = issueLinkColumns(link)
+  const info = db.prepare(`UPDATE board_rows SET issue_repo = ?, issue_number = ?, updated_at = ?
+                            WHERE id = ? AND (issue_repo IS NOT ? OR issue_number IS NOT ?)`)
+    .run(repo, number, now, rowId, repo, number)
+  return info.changes > 0
+}
+
+function setBoardIssuePin(db: Database.Database, boardId: string, pin: IssueLink | null | undefined): boolean {
+  if (pin === undefined) return false
+  const { repo, number } = issueLinkColumns(pin)
+  const info = db.prepare(`UPDATE boards SET issue_pin_repo = ?, issue_pin_number = ?
+                            WHERE id = ? AND (issue_pin_repo IS NOT ? OR issue_pin_number IS NOT ?)`)
+    .run(repo, number, boardId, repo, number)
+  return info.changes > 0
 }
 
 export function findBoard(db: Database.Database, project: string, title: string): Board | undefined {
@@ -1323,12 +1374,17 @@ interface UpsertBoardInput {
   repo?: string | null
   issueRef?: number | null
   headRepo?: string | null
+  /** issue #103 PR2: omitted keeps the stored pin; null clears it */
+  issuePin?: IssueLink | null
 }
 
 export function upsertBoard(db: Database.Database, input: UpsertBoardInput): { boardId: string; rowCount: number } {
   const run = db.transaction((inp: UpsertBoardInput): { boardId: string; rowCount: number } => {
     const labels = new Set(inp.rows.map((row) => row.label))
     if (labels.size !== inp.rows.length) throw new Error(`duplicate board row label in "${inp.title}"`)
+    // refuse a bad link before anything is written
+    if (inp.issuePin) issueLinkColumns(inp.issuePin)
+    for (const r of inp.rows) if (r.issue) issueLinkColumns(r.issue)
     const now = new Date().toISOString()
     const before = findBoard(db, inp.project, inp.title)
     if (before && inp.expectedVersion !== before.revision) {
@@ -1341,6 +1397,7 @@ export function upsertBoard(db: Database.Database, input: UpsertBoardInput): { b
       || before.issue_ref !== (inp.issueRef ?? null)
       || before.head_repo !== (inp.headRepo ?? null)
     const boardId = ensureBoard(db, inp, now)
+    boardChanged = setBoardIssuePin(db, boardId, inp.issuePin) || boardChanged
     const existing = db.prepare(`SELECT id, label, status, note, position, action_version, revision FROM board_rows WHERE board_id = ?`).all(boardId) as Array<{
       id: string
       label: string
@@ -1412,18 +1469,20 @@ export function upsertBoard(db: Database.Database, input: UpsertBoardInput): { b
         // wipe every row's backstory. Action fields, including note, preserve on
         // omission; explicit empty values are the only erasure.
         rowChanged = updateRowTextField(db, existingId, 'context', r.context, now) || rowChanged
+        rowChanged = setRowIssueLink(db, existingId, r.issue, now) || rowChanged
         if (r.outcome !== undefined) rowChanged = setRowOutcome(db, existingId, r.outcome, now) || rowChanged
         if (!newAction && rowChanged) incrementRowRevision(db, existingId)
         boardChanged = boardChanged || rowChanged || moved
       } else {
         boardChanged = true
+        const issue = issueLinkColumns(r.issue ?? null)
         db.prepare(`
           INSERT INTO board_rows (
             id, board_id, label, status, note, next_step, action_owner, impact,
             next_after, options, context, outcome, outcome_at, created_at,
             updated_at, action_started_at, action_version, action_agent, action_agent_version,
-            revision, history, position)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 1, 1, '[]', ?)`)
+            revision, history, position, issue_repo, issue_number)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 1, 1, '[]', ?, ?, ?)`)
           .run(
             randomUUID(),
             boardId,
@@ -1443,6 +1502,8 @@ export function upsertBoard(db: Database.Database, input: UpsertBoardInput): { b
             now,
             inp.agent,
             i,
+            issue.repo,
+            issue.number,
           )
       }
     })
@@ -1478,6 +1539,8 @@ interface UpdateRowInput {
   repo?: string | null
   issueRef?: number | null
   headRepo?: string | null
+  /** issue #103 PR2: omitted keeps the stored link; null clears it */
+  issue?: IssueLink | null
 }
 
 type RowTextColumn = 'note' | 'next_step' | 'impact' | 'next_after' | 'context'
@@ -1671,6 +1734,7 @@ export function advanceBoardRow(
 
 export function updateBoardRow(db: Database.Database, input: UpdateRowInput): { boardId: string; rowId: string } {
   const run = db.transaction((inp: UpdateRowInput): { boardId: string; rowId: string } => {
+    const issue = inp.issue === undefined ? undefined : issueLinkColumns(inp.issue)
     const now = new Date().toISOString()
     const before = findBoard(db, inp.project, inp.title)
     if (before && inp.expectedBoardVersion !== before.revision) {
@@ -1719,6 +1783,7 @@ export function updateBoardRow(db: Database.Database, input: UpdateRowInput): { 
         rowChanged = info.changes > 0 || rowChanged
       }
       rowChanged = updateRowTextField(db, existing.id, 'context', inp.context, now) || rowChanged
+      rowChanged = setRowIssueLink(db, existing.id, inp.issue, now) || rowChanged
       if (inp.outcome !== undefined) rowChanged = setRowOutcome(db, existing.id, inp.outcome, now) || rowChanged
       if (!newAction && rowChanged) incrementRowRevision(db, existing.id)
       const boardChanged = syncBoardStatus(db, boardId) || rowChanged || metadataChanged
@@ -1731,8 +1796,9 @@ export function updateBoardRow(db: Database.Database, input: UpdateRowInput): { 
       INSERT INTO board_rows (
         id, board_id, label, status, note, next_step, action_owner, impact,
         next_after, options, context, outcome, outcome_at, created_at, updated_at,
-        action_started_at, action_version, action_agent, action_agent_version, revision, history, position)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 1, 1, '[]', ?)`)
+        action_started_at, action_version, action_agent, action_agent_version, revision, history, position,
+        issue_repo, issue_number)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 1, 1, '[]', ?, ?, ?)`)
       .run(
         rowId,
         boardId,
@@ -1752,6 +1818,8 @@ export function updateBoardRow(db: Database.Database, input: UpdateRowInput): { 
         now,
         inp.agent,
         pos,
+        issue?.repo ?? null,
+        issue?.number ?? null,
       )
     syncBoardStatus(db, boardId)
     if (before) bumpBoardRevision(db, boardId, now)
@@ -3035,19 +3103,26 @@ export interface IssueSnapshotRow {
   revision: number
 }
 
-/** The link fields of one open item or one active or archived plan (§4.4). */
+/** The link fields of one open item, one active or archived plan, or one linked row of such a plan (§4.4). */
 export interface IssueEntity {
-  kind: 'item' | 'plan'
+  kind: 'item' | 'plan' | 'row'
   id: string
   project: string
   /** the project is in the EFFECTIVE closed set (#32) */
   project_closed: boolean
-  /** an archived plan; always false for an item */
+  /** an archived plan or a row of one; always false for an item */
   archived: boolean
+  /** null for a row: a row's only issue source is its explicit link */
   repo: string | null
   stream: string
   head_repo: string | null
   issue_ref: number | null
+  /** PR2: a plan's pin; null for items and rows */
+  issue_pin_repo: string | null
+  issue_pin_number: number | null
+  /** PR2: a row's link; null for items and plans */
+  issue_repo: string | null
+  issue_number: number | null
   /** content time; a legacy item without updated_at falls back to created_at */
   updated_at: string
 }
@@ -3236,18 +3311,26 @@ export function listIssueSnapshots(db: Database.Database): IssueSnapshotRow[] {
   }))
 }
 
-// What can link an issue today: open items and active and archived plans
-// (closed items are History and keep their plain chip). Rows join in PR2, when
-// they gain an explicit link; until then no row has any link field (§4.2).
+// What can link an issue: open items, active and archived plans, and the rows
+// of those plans that carry an explicit link (PR2). Closed items are History
+// and keep their plain chip.
 export function listIssueEntities(db: Database.Database): IssueEntity[] {
   const rows = db.prepare(
     `SELECT 'item' AS kind, id, project, 0 AS archived, repo, stream, head_repo, issue_ref,
+            NULL AS issue_pin_repo, NULL AS issue_pin_number, NULL AS issue_repo, NULL AS issue_number,
             COALESCE(updated_at, created_at) AS updated_at
        FROM items WHERE status = 'open'
      UNION ALL
      SELECT 'plan' AS kind, id, project, status = 'archived' AS archived, repo, stream, head_repo, issue_ref,
+            issue_pin_repo, issue_pin_number, NULL AS issue_repo, NULL AS issue_number,
             updated_at
        FROM boards WHERE status IN ('active', 'archived')
+     UNION ALL
+     SELECT 'row' AS kind, r.id, b.project, b.status = 'archived' AS archived, NULL AS repo, '' AS stream,
+            NULL AS head_repo, NULL AS issue_ref, NULL AS issue_pin_repo, NULL AS issue_pin_number,
+            r.issue_repo, r.issue_number, r.updated_at
+       FROM board_rows r JOIN boards b ON b.id = r.board_id
+      WHERE b.status IN ('active', 'archived') AND r.issue_number IS NOT NULL
      ORDER BY kind, id`,
   ).all() as Array<Omit<IssueEntity, 'archived' | 'project_closed'> & { archived: number }>
   const closed = new Set(closedProjects(db))
@@ -3323,7 +3406,12 @@ export function claimIssueRefresh(
 // Returns how many results the attempt rule applied.
 export function completeIssueRefresh(
   db: Database.Database,
-  input: { owner: string; results: IssueRefreshResult[] },
+  input: {
+    owner: string
+    results: IssueRefreshResult[]
+    /** told of each snapshot the v1 validator refused, which was recorded as gh-failed */
+    onInvalid?: (key: { repo: string; number: number }) => void
+  },
 ): number {
   const release = db.prepare(`DELETE FROM issue_refresh_claims WHERE repo = ? AND number = ? AND owner = ?`)
   return db.transaction((): number => {
@@ -3333,6 +3421,7 @@ export function completeIssueRefresh(
       let done: boolean
       if (r.snapshot) {
         const valid = issueSnapshot(r.snapshot, r.number) !== null
+        if (!valid) input.onInvalid?.({ repo: r.repo, number: r.number })
         done = valid
           ? upsertIssueSnapshot(db, { repo: r.repo, number: r.number, snapshot: r.snapshot, startedAt: r.startedAt })
           : recordIssueFailure(db, { repo: r.repo, number: r.number, error: 'gh-failed', startedAt: r.startedAt })

@@ -574,7 +574,7 @@ describe('the node cap (§6)', () => {
   })
 })
 
-describe('the issue graph stays out of the stdio MCP process', () => {
+describe('the issue graph enters the stdio MCP process only as pure modules', () => {
   const REPO = new URL('..', import.meta.url).pathname
   const read = (path: string) => readFileSync(join(REPO, path), 'utf8')
   const SPEC = /(?:from\s+|import\(\s*|require\(\s*)['"](\.{1,2}\/[^'"]+)['"]/g
@@ -598,9 +598,13 @@ describe('the issue graph stays out of the stdio MCP process', () => {
     return seen
   }
 
-  it('no stdio entry reaches issue-graph or issue-key, directly or transitively', () => {
-    // PR2's titled board_get summary is the planned, deliberate exception (§10, §11)
-    for (const entry of ['src/mcp-server.ts', 'src/hook-cli.ts', 'src/watch-cli.ts']) {
+  it('only the MCP server reaches issue-graph and issue-key, for the titled board_get summary (§10, §11)', () => {
+    const mcp = closure('src/mcp-server.ts')
+    expect(mcp.has('src/issue-graph.ts')).toBe(true)
+    expect(mcp.has('public/issue-key.js')).toBe(true)
+    // …and nothing of the viewer process comes with them
+    expect([...mcp].filter((f) => /viewer|poller|prstate/.test(f))).toEqual([])
+    for (const entry of ['src/hook-cli.ts', 'src/watch-cli.ts']) {
       const graph = closure(entry)
       expect(graph.has('src/store.ts'), entry).toBe(true)
       expect([...graph].filter((f) => /issue-graph|issue-key|viewer/.test(f)), entry).toEqual([])

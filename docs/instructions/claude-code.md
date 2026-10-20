@@ -9,3 +9,5 @@
   the response, and acknowledge it with `resolve` or a board-row status change.
 - Without the optional hooks, call `pending()` between work steps and first thing on the
   next turn. The MCP tools still work; only automatic idle-session wakeup is absent.
+- A board's `issue` links (plan pin and row links) belong to the agent like any other row
+  field; Claude Code needs no hook for them, and they never wake a session.

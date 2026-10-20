@@ -1472,3 +1472,22 @@ Sources:
     `src/issue-graph.ts`. The boundary test covers the whole stdio graph (adding `shape.ts`,
     `watch.ts`, `version.ts` and `server-source.ts`) and checks that its list is closed under
     relative imports.
+- **Revision 6 (2026-10-19):** refinements made while implementing PR2.
+  - **Wire form (§10).** Agents see one `issue: "owner/name#N"` string, present only when
+    linked, never the raw columns; the viewer's `/api/boards` carries the raw columns as it
+    carries every store column, for PR3. Accepted forms are strict: no leading zeros, `https`
+    only (the host matches case-insensitively, one trailing slash is allowed), and the
+    session's `repo` must itself be a valid slug.
+  - **`issue_rel` (§10).** Present when the cache holds a successful snapshot or a hard
+    failure; a soft failure before any success knows nothing and adds none. `stale` means no
+    successful fetch in the last 30 minutes. `unavailable` means a hard failure, an unavailable
+    hierarchy or a snapshot over 7 days old, and then no `parent` or `children` are given.
+    `parent` is omitted when unknown or top-level. A plan's key follows the full §4.2
+    precedence, reading the PR cache locally when it has no pin.
+  - **Stdio graph (§11).** `public/issue-key.js` imports `public/source.js`, which imports
+    `public/esc.js`, so those two pure modules enter the MCP process as well. The design
+    missed one consequence: a Setup runtime payload shipped only `dist/`, so
+    `dist/mcp.js` could not load there. `scripts/stage-runtime.mjs` now stages exactly the
+    `public/` modules `dist/` reaches.
+  - **Entities (§4.4).** Linked rows enter `listIssueEntities` as `kind: 'row'`, with the
+    plan's project and archived state and no branch fields.

@@ -1931,6 +1931,14 @@ export function getItem(db, id) {
 }
 `)
 
+  // issue #103 PR2: dist/ reaches pure modules in ../public/, which a runtime
+  // must carry; c.js is reached by nothing and must stay out
+  writeFileSync(join(repoRoot, 'dist', 'uses-public.js'), 'import { a } from "../public/a.js"\nexport const x = a\n')
+  mkdirSync(join(repoRoot, 'public'), { recursive: true })
+  writeFileSync(join(repoRoot, 'public', 'a.js'), "import { b } from './b.js'\nexport const a = b\n")
+  writeFileSync(join(repoRoot, 'public', 'b.js'), 'export const b = 1\n')
+  writeFileSync(join(repoRoot, 'public', 'c.js'), 'export const c = 1\n')
+
   for (const name of [
     'install-agents.sh',
     'install-hooks.sh',
@@ -1995,6 +2003,9 @@ describe.skipIf(!REAL_NODE_ROOT || !['darwin', 'linux'].includes(process.platfor
         }
         expect(manifest.files).toContainEqual(expect.objectContaining({ path: 'bin/node', mode: 0o755 }))
         expect(manifest.files.some((file) => file.path === 'node.exe')).toBe(false)
+        // exactly the public modules dist/ reaches, transitively (#103 PR2)
+        expect(manifest.files.map((file) => file.path).filter((path) => path.startsWith('public/')).sort())
+          .toEqual(['public/a.js', 'public/b.js'])
         for (const file of manifest.files) {
           expect(file.path).not.toMatch(/(^|\/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml)$/)
           expect(file.path).not.toMatch(/(^|\/)(\.git|\.bin|node_gyp_bins)(\/|$)|\.o(bj)?$/)

@@ -2,8 +2,10 @@
 //
 // PURE: a function of listIssueSnapshots() rows and the display key set alone,
 // with no database, clock, network or I/O, so identical database contents give
-// identical bytes. That is what lets /api/issues be a conditional snapshot. It
-// stays out of the stdio MCP process (test/issue-graph.test.ts pins that).
+// identical bytes. That is what lets /api/issues be a conditional snapshot.
+// Being pure is also what lets the stdio MCP process use it for a titled
+// board_get's issue_rel (#103 PR2) without reaching the network
+// (test/issue-graph.test.ts and test/prstate.test.ts pin that).
 //
 // Reconciliation in one paragraph. Every display root's snapshot, fetched at
 // t, is a set of OBSERVATIONS about who each issue's parent is: a pointer (the
@@ -397,4 +399,62 @@ export function buildIssueGraph(
     aliases,
     truncated,
   }
+}
+
+// ── issue_rel: the agent's short summary (issue #103 PR2, §10) ──────────────
+
+// The ages §5.8 renders by: dimmed after 30 minutes, hidden after 7 days.
+const REL_STALE_MS = 30 * 60_000
+const REL_HIDDEN_MS = 7 * 24 * 60 * 60_000
+
+/** What a titled board_get says about one linked issue: keys and counts, never titles. */
+export interface IssueRel {
+  key: string
+  parent?: string
+  children?: { total: number; done: number }
+  /** the latest applied attempt, whatever its outcome */
+  checked_at: string
+  /** no successful fetch in the last 30 minutes */
+  stale: boolean
+  /** nothing to draw: a hard failure, an unavailable hierarchy or a snapshot over 7 days old */
+  unavailable: boolean
+}
+
+// The relationships the viewer would draw for each key, read off the same
+// reconciled graph. A key with no cached answer gets no entry: a soft failure
+// before any success knows nothing. `nowMs` is passed in to keep this pure.
+export function issueRelations(snapshots: IssueSnapshotRow[], keys: Iterable<string>, nowMs: number): Map<string, IssueRel> {
+  const display = new Map<string, { refresh: boolean; updated_at: string }>()
+  for (const key of keys) display.set(key, { refresh: true, updated_at: '' })
+  const graph = buildIssueGraph(snapshots, { refresh: new Set(display.keys()), display })
+  const hierarchyOk = new Map<string, boolean>()
+  for (const row of snapshots) {
+    const key = issueKey(row.repo, row.number)
+    if (key && display.has(key)) hierarchyOk.set(key, row.snapshot?.hierarchy.status === 'ok')
+  }
+  const nodes = new Map(graph.nodes.map((node) => [node.key, node]))
+  const out = new Map<string, IssueRel>()
+  for (const root of graph.roots) {
+    if (root.fetched_at === null && root.failure !== 'hard') continue
+    const age = root.fetched_at === null ? Infinity : nowMs - Date.parse(root.fetched_at)
+    const node = nodes.get(graph.aliases[root.key] ?? root.key)
+    const unavailable = !node || age > REL_HIDDEN_MS || hierarchyOk.get(root.key) !== true
+    let parent: string | undefined
+    let children: IssueRel['children']
+    if (node && !unavailable) {
+      parent = graph.edges.find((edge) => edge.to === node.key)?.from
+      if (node.children_total !== undefined && node.children_completed !== undefined) {
+        children = { total: node.children_total, done: node.children_completed }
+      }
+    }
+    out.set(root.key, {
+      key: root.key,
+      ...(parent !== undefined ? { parent } : {}),
+      ...(children ? { children } : {}),
+      checked_at: root.checked_at,
+      stale: !(age <= REL_STALE_MS),
+      unavailable,
+    })
+  }
+  return out
 }

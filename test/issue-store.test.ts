@@ -74,11 +74,12 @@ describe('issue snapshot store (issue #103)', () => {
       const before = new Map(tables(old).map((name) => [name, columns(old, name)]))
       old.close()
 
-      // #217 and #103 PR1b append nullable columns of their own; every v1.3.1 column stays in place.
+      // #217 and #103 PR1b/PR2 append nullable columns of their own; every v1.3.1 column stays in place.
       const appended: Record<string, string[]> = {
         source_links_by_head: ['closing_refs'],
         items: ['watch_stopped_at', 'watch_stopped_until', 'action_agent'],
-        board_rows: ['watch_stopped_at', 'watch_stopped_until', 'action_agent', 'action_agent_version'],
+        boards: ['issue_pin_repo', 'issue_pin_number'],
+        board_rows: ['watch_stopped_at', 'watch_stopped_until', 'action_agent', 'action_agent_version', 'issue_repo', 'issue_number'],
       }
       const migrated = openDb(path)
       try {
@@ -348,20 +349,45 @@ describe('issue snapshot store (issue #103)', () => {
         {
           kind: 'item', id: open, project: 'agent-inbox', project_closed: false, archived: false,
           repo: 'shariqh/agent-inbox', stream: '120-ahp-input', head_repo: 'fork/agent-inbox', issue_ref: 120,
-          updated_at: item.updated_at,
+          issue_pin_repo: null, issue_pin_number: null, issue_repo: null, issue_number: null, updated_at: item.updated_at,
         },
         {
           kind: 'plan', id: active.id, project: 'agent-inbox', project_closed: false, archived: false,
           repo: 'shariqh/agent-inbox', stream: '120-ahp-input', head_repo: null, issue_ref: 117, updated_at: active.updated_at,
+          issue_pin_repo: null, issue_pin_number: null, issue_repo: null, issue_number: null,
         },
         {
           kind: 'plan', id: archived.id, project: 'agent-inbox', project_closed: false, archived: true,
           repo: 'shariqh/agent-inbox', stream: '120-ahp-input', head_repo: null, issue_ref: 119, updated_at: archived.updated_at,
+          issue_pin_repo: null, issue_pin_number: null, issue_repo: null, issue_number: null,
         },
         expect.objectContaining({ kind: 'item', id: elsewhere, project: 'retired', project_closed: true, archived: false }),
       ]))
       expect(listIssueEntities(db)).toHaveLength(4)
       expect(listIssueEntities(db).map((e) => e.id)).not.toContain(closedItem)
+    })
+
+    it('carries plan pins and lists linked rows of active and archived plans (PR2)', () => {
+      upsertBoard(db, {
+        ...SCOPE, title: 'Pinned', issuePin: { repo: 'Shariqh/Agent-Inbox', number: 117 },
+        rows: [{ label: 'Linked', status: 'tracked', issue: { repo: 'o/r', number: 5 } }, { label: 'Plain', status: 'tracked' }],
+      })
+      upsertBoard(db, { ...SCOPE, title: 'Done', rows: [{ label: 'Old', status: 'done', issue: { repo: 'o/r', number: 6 } }] })
+      const pinned = getBoard(db, SCOPE.project, 'Pinned')!
+      const linked = pinned.rows.find((r) => r.label === 'Linked')!
+      const old = listBoards(db, { status: 'archived' })[0]!
+      closeProject(db, SCOPE.project)
+      const entities = listIssueEntities(db)
+      expect(entities.find((e) => e.id === pinned.id)).toMatchObject({ kind: 'plan', issue_pin_repo: 'shariqh/agent-inbox', issue_pin_number: 117 })
+      expect(entities.filter((e) => e.kind === 'row')).toHaveLength(2)
+      expect(entities.filter((e) => e.kind === 'row')).toEqual(expect.arrayContaining([
+        {
+          kind: 'row', id: linked.id, project: 'agent-inbox', project_closed: true, archived: false,
+          repo: null, stream: '', head_repo: null, issue_ref: null, issue_pin_repo: null, issue_pin_number: null,
+          issue_repo: 'o/r', issue_number: 5, updated_at: linked.updated_at,
+        },
+        expect.objectContaining({ kind: 'row', id: old.rows[0]!.id, archived: true, issue_repo: 'o/r', issue_number: 6 }),
+      ]))
     })
 
     it('follows the derived reopen of a closed project (#32)', () => {

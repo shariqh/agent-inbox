@@ -21,6 +21,7 @@
 // path, under any option — that is the whole point of #37 and #42 must not undo
 // it while saving tokens.
 import type { ActionOwner, BoardWithRows, BoardRow, Progress, QuestionOption, ResponseKind, RowStatus } from './store.js'
+import type { IssueRel } from './issue-graph.js'
 
 interface HasContext {
   context: string
@@ -130,13 +131,36 @@ export function deliverContext<T extends HasContext>(
 
 // ── board_get ───────────────────────────────────────────────────────────────
 
-type RowWithoutHistory = Omit<BoardRow, 'history'> & { history_count?: number }
-export type ShapedRow = RowWithoutHistory | Trimmed<RowWithoutHistory>
-export type ShapedBoard = Omit<BoardWithRows, 'rows'> & { rows: ShapedRow[] }
+// Issue #103 PR2 — an explicit link reaches an agent as ONE normalized string,
+// `issue: "owner/name#N"`, the form it can send straight back; the raw columns
+// never do. Absent when unlinked.
+type RawRowLink = 'issue_repo' | 'issue_number'
+type RawPlanPin = 'issue_pin_repo' | 'issue_pin_number'
+interface IssueEcho { issue?: string; issue_rel?: IssueRel }
 
-function shapeRow(row: BoardRow, full: boolean): ShapedRow {
-  const { history, ...rest } = row
-  const base: RowWithoutHistory = history.length ? { ...rest, history_count: history.length } : rest
+type RowWithoutHistory = Omit<BoardRow, 'history' | RawRowLink> & IssueEcho & { history_count?: number }
+export type ShapedRow = RowWithoutHistory | Trimmed<RowWithoutHistory>
+export type ShapedBoard = Omit<BoardWithRows, 'rows' | RawPlanPin> & IssueEcho & { rows: ShapedRow[] }
+
+/** issue_rel for the plan and for rows by id, read from the cache by the caller (§10). */
+export interface BoardIssueRelations {
+  plan?: IssueRel
+  rows: Map<string, IssueRel>
+}
+
+function issueText(repo: string | null, number: number | null): string | undefined {
+  return repo !== null && number !== null ? `${repo}#${number}` : undefined
+}
+
+function shapeRow(row: BoardRow, full: boolean, rel: IssueRel | undefined): ShapedRow {
+  const { history, issue_repo, issue_number, ...rest } = row
+  const issue = issueText(issue_repo, issue_number)
+  const base: RowWithoutHistory = {
+    ...rest,
+    ...(history.length ? { history_count: history.length } : {}),
+    ...(issue ? { issue } : {}),
+    ...(rel ? { issue_rel: rel } : {}),
+  }
   return full ? base : trimContext(base)
 }
 
@@ -146,11 +170,22 @@ function shapeRow(row: BoardRow, full: boolean): ShapedRow {
  * so a pending() poll later from the same process does not re-ship what this
  * call just handed over. It is also the recovery path: an agent handed
  * `context_chars` for a row it has never seen asks for the board in full.
+ * `issues` adds issue_rel where the cache knows something (#103 PR2).
  */
-export function shapeBoard(board: BoardWithRows, opts: { full?: boolean; ledger: ContextLedger }): ShapedBoard {
+export function shapeBoard(
+  board: BoardWithRows,
+  opts: { full?: boolean; ledger: ContextLedger; issues?: BoardIssueRelations },
+): ShapedBoard {
   const full = opts.full === true
   if (full) for (const r of board.rows) opts.ledger.claim(rowKey(r.id), r.context)
-  return { ...board, rows: board.rows.map((row) => shapeRow(row, full)) }
+  const { issue_pin_repo, issue_pin_number, rows, ...rest } = board
+  const issue = issueText(issue_pin_repo, issue_pin_number)
+  const plan: Omit<BoardWithRows, 'rows' | RawPlanPin> & IssueEcho = {
+    ...rest,
+    ...(issue ? { issue } : {}),
+    ...(opts.issues?.plan ? { issue_rel: opts.issues.plan } : {}),
+  }
+  return { ...plan, rows: rows.map((row) => shapeRow(row, full, opts.issues?.rows.get(row.id))) }
 }
 
 export interface RowSummary {

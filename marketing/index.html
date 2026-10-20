@@ -1035,13 +1035,19 @@ npm run install:agents</code></pre>
       let frame = 0;
       let pointerX = 0;
       let pointerY = 0;
+      let drawnWidth = 0;
+      let drawnHeight = 0;
+      // setSize() reallocates and clears the drawing buffer, so call it only on a real change.
       function resize() {
         const width = canvas.clientWidth;
         const height = canvas.clientHeight;
-        if (!width || !height) return;
+        if (!width || !height || (width === drawnWidth && height === drawnHeight)) return false;
+        drawnWidth = width;
+        drawnHeight = height;
         renderer.setSize(width, height, false);
         camera.aspect = width / height;
         camera.updateProjectionMatrix();
+        return true;
       }
       function render(time = 0) {
         resize();
@@ -1070,7 +1076,11 @@ npm run install:agents</code></pre>
         pointerX = (event.clientX - bounds.left) / bounds.width - .5;
         pointerY = (event.clientY - bounds.top) / bounds.height - .5;
       });
-      new ResizeObserver(resize).observe(canvas);
+      // A real resize clears the canvas after this frame's draw, so repaint now. With
+      // reduced motion no later frame would; render() would also start a second loop.
+      new ResizeObserver(() => {
+        if (resize()) renderer.render(scene, camera);
+      }).observe(canvas);
       new MutationObserver(updatePalette).observe(document.documentElement, {
         attributes: true,
         attributeFilter: ['data-theme'],
@@ -1178,6 +1188,8 @@ npm run install:agents</code></pre>
             responses.set(selectedQuestion, choice);
             renderQuestion();
             announcement.textContent = `Demo response recorded: ${choice}. Waiting for agent pickup. Nothing was sent.`;
+            // renderQuestion() removed the button that had focus; hand it to the receipt.
+            receipt.focus({ preventScroll: true });
           });
           options.append(button);
         });

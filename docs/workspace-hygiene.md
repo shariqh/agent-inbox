@@ -64,7 +64,15 @@ git -C "$MAIN" branch -r --contains "$H"
 Squash merges make (a) fail even for merged work, so (b) and (c) are the usual proof.
 A branch with no PR and a `+` line in `git cherry` holds work that exists nowhere else:
 `gh api repos/shariqh/agent-inbox/commits/<sha>/pulls` answering HTTP 422 means GitHub
-has never seen it. Keep it and ask the owner.
+has never seen it. Keep it and ask the owner. If the owner wants the space back without
+losing that work, save it first, then remove the worktree and branch as below:
+
+```sh
+B=<session artifact folder>/<name>.bundle
+git -C "$MAIN" bundle create "$B" <branch> ^origin/main
+git -C "$MAIN" bundle verify -q "$B"                  # must print "is okay"
+git -C "$MAIN" bundle list-heads "$B"                 # must list the branch at its tip
+```
 
 ## After a PR merges or closes
 
@@ -78,9 +86,10 @@ has never seen it. Keep it and ask the owner.
 
    If `git worktree remove` refuses because of untracked files that are not ignored,
    keep the worktree and report the files.
-3. Delete the remote branch if GitHub did not. This repository has
-   `delete_branch_on_merge` off, so it usually remains. Delete it only when its tip
-   still equals the PR head and no open PR uses it as a base:
+3. Delete the remote branch if GitHub did not. `delete_branch_on_merge` is on
+   (since 2026-10-20), so GitHub removes a merged PR's branch itself; a closed,
+   unmerged PR's branch, or one GitHub could not delete, remains. Delete it only when
+   its tip still equals the PR head and no open PR uses it as a base:
 
    ```sh
    git -C "$MAIN" ls-remote --heads origin <branch>      # tip must equal headRefOid

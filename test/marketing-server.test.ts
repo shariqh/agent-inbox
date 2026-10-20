@@ -42,24 +42,21 @@ describe('isolated marketing preview server', () => {
     expect(response.headers.get('cache-control')).toBe('no-store')
     expect(response.headers.get('x-content-type-options')).toBe('nosniff')
     expect(response.headers.get('content-security-policy')).toContain("connect-src 'none'")
-    expect(response.headers.get('content-security-policy')).toContain('https://cdn.jsdelivr.net')
+    expect(response.headers.get('content-security-policy')).not.toContain('https:')
     expect(response.headers.get('content-security-policy')).toContain("frame-ancestors 'none'")
     expect(await response.text()).toContain('every terminal.')
   })
 
-  it('allows every inline script, including the import map, by hash next to the pinned CDN', async () => {
+  it('allows only the inline scripts, each by hash', async () => {
     const response = await fetch(baseUrl)
     const html = await response.text()
     const scriptSrc = (response.headers.get('content-security-policy') ?? '')
       .split(';').map(directive => directive.trim().split(' '))
       .find(([name]) => name === 'script-src') ?? []
-    const blocks = [...html.matchAll(/<script(\s[^>]*)?>([\s\S]*?)<\/script>/g)]
-    expect(blocks.map(([, attributes]) => attributes?.match(/\btype="([^"]+)"/)?.[1] ?? 'classic'))
-      .toContain('importmap')
-    for (const [, , source] of blocks) {
-      expect(scriptSrc).toContain(`'sha256-${createHash('sha256').update(source!).digest('base64')}'`)
-    }
-    expect(scriptSrc).toContain('https://cdn.jsdelivr.net')
+    const hashes = [...html.matchAll(/<script(\s[^>]*)?>([\s\S]*?)<\/script>/g)]
+      .map(([, , source]) => `'sha256-${createHash('sha256').update(source!).digest('base64')}'`)
+    expect(hashes.length).toBeGreaterThan(0)
+    expect(scriptSrc.slice(1).sort()).toEqual([...new Set(hashes)].sort())
   })
 
   it('serves HEAD without a body', async () => {

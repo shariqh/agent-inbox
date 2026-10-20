@@ -50,7 +50,7 @@ const server = createServer(async (request, response) => {
       .map(([, source]) => `'sha256-${createHash('sha256').update(source).digest('base64')}'`);
     response.setHeader('Content-Security-Policy', [
       "default-src 'none'",
-      `script-src ${scriptHashes.join(' ')} https://cdn.jsdelivr.net`,
+      `script-src ${scriptHashes.join(' ')}`,
       `style-src ${styleHashes.join(' ')}`,
       "img-src data:",
       "connect-src 'none'",

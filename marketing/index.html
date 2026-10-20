@@ -16,21 +16,6 @@
       document.documentElement.setAttribute("data-theme", "light");
     }
   </script>
-  <script type="importmap">
-    {
-      "imports": {
-        "https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.module.js": "https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.module.js",
-        "https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.core.js": "https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.core.js",
-        "https://": null
-      },
-      "integrity": {
-        "https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.module.js": "sha384-m8JoFX52V6NGv2usipnlLJKnJfL7IE8dbniPDDCSGSQv3Hm4n6PjfV6syVwfuoRc",
-        "https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.core.js": "sha384-mdKeCwPEcbDvzaxwhm+MVuLoMou+E7jQqrs4tmu/n8HBYPGI1kZt0MkJxlMR4zFM"
-      }
-    }
-  </script>
-  <link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.module.js" integrity="sha384-m8JoFX52V6NGv2usipnlLJKnJfL7IE8dbniPDDCSGSQv3Hm4n6PjfV6syVwfuoRc" crossorigin="anonymous">
-  <link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.core.js" integrity="sha384-mdKeCwPEcbDvzaxwhm+MVuLoMou+E7jQqrs4tmu/n8HBYPGI1kZt0MkJxlMR4zFM" crossorigin="anonymous">
   <style>
     :root {
       color-scheme: light;
@@ -132,7 +117,6 @@
     .hero-heading { position: relative; isolation: isolate; display: flex; align-items: center; overflow: hidden; padding: 64px 48px; background: var(--cp-bg-elevated); }
     .hero-heading::after { content: ""; position: absolute; inset: 0; z-index: -1; background: linear-gradient(90deg, var(--cp-bg-elevated) 0%, color-mix(in srgb, var(--cp-bg-elevated) 88%, transparent) 48%, transparent 100%); pointer-events: none; }
     .hero-heading h1 { position: relative; z-index: 1; }
-    .agent-visual { position: absolute; inset: 0; width: 100%; height: 100%; z-index: -2; opacity: .78; pointer-events: none; }
     h1 { font-size: clamp(3.25rem, 5.35vw, 4.75rem); font-weight: 600; line-height: 1.06; letter-spacing: -.04em; }
     h1 span { color: var(--cp-accent); }
     .hero-copy { display: flex; flex-direction: column; justify-content: center; align-items: flex-start; padding: 52px 40px; border-left: 1px solid var(--cp-border); }
@@ -688,7 +672,6 @@
     </div>
     <section class="hero" aria-labelledby="hero-title">
       <div class="hero-heading">
-        <canvas class="agent-visual" id="agent-visual" aria-hidden="true"></canvas>
         <h1 id="hero-title">Stop checking<br><span>every terminal.</span></h1>
       </div>
       <div class="hero-copy">
@@ -966,132 +949,6 @@ npm run install:agents</code></pre>
       <div class="footer-bottom"><span>Free and open source.</span><span>Made available under the <a href="https://github.com/shariqh/agent-inbox/blob/main/LICENSE">MIT license</a>.</span></div>
     </div>
   </footer>
-
-  <script type="module">
-    const canvas = document.getElementById('agent-visual');
-    const motionQuery = matchMedia('(prefers-reduced-motion: reduce)');
-
-    try {
-      // Without import maps and module preloads, the integrity pins may not apply.
-      if (!HTMLScriptElement.supports?.('importmap') || !document.createElement('link').relList?.supports?.('modulepreload')) {
-        throw new Error('Three.js would load unchecked in this browser.');
-      }
-      const THREE = await import('https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.module.js');
-      const renderer = new THREE.WebGLRenderer({
-        canvas,
-        alpha: true,
-        antialias: true,
-        powerPreference: 'low-power',
-      });
-      renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
-
-      const scene = new THREE.Scene();
-      const camera = new THREE.PerspectiveCamera(42, 1, .1, 100);
-      camera.position.set(0, 0, 7);
-
-      const cluster = new THREE.Group();
-      cluster.position.x = 1.45;
-      scene.add(cluster);
-
-      const styles = getComputedStyle(document.documentElement);
-      const accent = new THREE.Color(styles.getPropertyValue('--cp-accent').trim());
-      const muted = new THREE.Color(styles.getPropertyValue('--cp-border-strong').trim());
-      const coreMaterial = new THREE.MeshBasicMaterial({
-        color: accent,
-        wireframe: true,
-        transparent: true,
-        opacity: .34,
-      });
-      const core = new THREE.Mesh(new THREE.IcosahedronGeometry(1.25, 2), coreMaterial);
-      cluster.add(core);
-
-      const ringMaterial = new THREE.MeshBasicMaterial({
-        color: muted,
-        transparent: true,
-        opacity: .3,
-        side: THREE.DoubleSide,
-      });
-      for (const [radius, tilt] of [[1.85, .32], [2.35, -.5], [2.85, .72]]) {
-        const ring = new THREE.Mesh(new THREE.TorusGeometry(radius, .012, 8, 128), ringMaterial);
-        ring.rotation.set(tilt, tilt * .55, tilt * .24);
-        cluster.add(ring);
-      }
-
-      const nodeGeometry = new THREE.SphereGeometry(.07, 12, 12);
-      const nodeMaterial = new THREE.MeshBasicMaterial({ color: accent });
-      const nodes = new THREE.InstancedMesh(nodeGeometry, nodeMaterial, 28);
-      const matrix = new THREE.Matrix4();
-      for (let index = 0; index < 28; index += 1) {
-        const angle = index * .88;
-        const radius = 1.65 + (index % 5) * .27;
-        matrix.makeTranslation(
-          Math.cos(angle) * radius,
-          Math.sin(angle * 1.23) * radius * .58,
-          Math.sin(angle) * .8,
-        );
-        nodes.setMatrixAt(index, matrix);
-      }
-      cluster.add(nodes);
-
-      let frame = 0;
-      let pointerX = 0;
-      let pointerY = 0;
-      let drawnWidth = 0;
-      let drawnHeight = 0;
-      // setSize() reallocates and clears the drawing buffer, so call it only on a real change.
-      function resize() {
-        const width = canvas.clientWidth;
-        const height = canvas.clientHeight;
-        if (!width || !height || (width === drawnWidth && height === drawnHeight)) return false;
-        drawnWidth = width;
-        drawnHeight = height;
-        renderer.setSize(width, height, false);
-        camera.aspect = width / height;
-        camera.updateProjectionMatrix();
-        return true;
-      }
-      function render(time = 0) {
-        resize();
-        const seconds = time * .001;
-        cluster.rotation.y += (pointerX * .16 + seconds * .06 - cluster.rotation.y) * .035;
-        cluster.rotation.x += (pointerY * .12 + Math.sin(seconds * .35) * .08 - cluster.rotation.x) * .035;
-        core.rotation.y = seconds * .14;
-        core.rotation.z = seconds * .08;
-        renderer.render(scene, camera);
-        if (!motionQuery.matches) frame = requestAnimationFrame(render);
-      }
-      function updatePalette() {
-        const current = getComputedStyle(document.documentElement);
-        coreMaterial.color.set(current.getPropertyValue('--cp-accent').trim());
-        nodeMaterial.color.copy(coreMaterial.color);
-        ringMaterial.color.set(current.getPropertyValue('--cp-border-strong').trim());
-        if (motionQuery.matches) render();
-      }
-      function updateMotion() {
-        cancelAnimationFrame(frame);
-        frame = 0;
-        render();
-      }
-      canvas.closest('.hero-heading').addEventListener('pointermove', event => {
-        const bounds = event.currentTarget.getBoundingClientRect();
-        pointerX = (event.clientX - bounds.left) / bounds.width - .5;
-        pointerY = (event.clientY - bounds.top) / bounds.height - .5;
-      });
-      // A real resize clears the canvas after this frame's draw, so repaint now. With
-      // reduced motion no later frame would; render() would also start a second loop.
-      new ResizeObserver(() => {
-        if (resize()) renderer.render(scene, camera);
-      }).observe(canvas);
-      new MutationObserver(updatePalette).observe(document.documentElement, {
-        attributes: true,
-        attributeFilter: ['data-theme'],
-      });
-      motionQuery.addEventListener('change', updateMotion);
-      updateMotion();
-    } catch {
-      canvas.hidden = true;
-    }
-  </script>
 
   <script>
     (() => {

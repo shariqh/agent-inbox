@@ -315,6 +315,59 @@ describe('mcp round-trip', () => {
     }
   }, 20000)
 
+  // Issue #217 end to end: the contract tells the agent how to re-arm and when
+  // not to, the human's stop ends the real watcher with exit 3, and their later
+  // answer still reaches the agent through pending().
+  it('a Copilot question watcher stops when the human asks, and the answer still arrives', async () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-watch-stop-')), 'inbox.db')
+    const transport = new StdioClientTransport({
+      command: 'npx', args: ['tsx', 'src/mcp-server.ts'],
+      env: { ...process.env, AGENT_INBOX_DB: dbPath },
+    })
+    const client = new Client({ name: 'copilot', version: '1.0.0' })
+    await client.connect(transport)
+    const db = openDb(dbPath)
+    const call = async (name: string, args: Record<string, unknown>) => {
+      const result = await client.callTool({ name, arguments: args })
+      expect(result.isError, JSON.stringify(result)).not.toBe(true)
+      return JSON.parse((result.content as Array<{ text: string }>)[0]!.text)
+    }
+    try {
+      const flagged = await call('flag', { kind: 'question', title: 'Install 1.4 and report back?', ...QUESTION_SHAPE })
+      expect(flagged.watch.timeout_seconds).toBe(1800)
+      expect(flagged.watch.on_completion).toContain('A timeout (exit 124) is not an answer: if still waiting, re-run this same command; it waits longer each time.')
+      expect(flagged.watch.on_completion).toContain('Exit 3 means the human asked you to stop waiting: do not re-arm')
+
+      const child = spawn('/bin/sh', ['-c', flagged.watch.shell_command], {
+        env: { ...process.env, AGENT_INBOX_WATCH_POLL_MS: '50' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+      let stdout = ''
+      let stderr = ''
+      child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk })
+      child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk })
+      const completion = new Promise<number | null>((resolve, reject) => {
+        child.once('error', reject)
+        child.once('close', resolve)
+      })
+      const stopped = await createViewer(db).request(`/api/items/${flagged.id}/stop-waiting`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ until: null }),
+      })
+      expect(await stopped.json()).toEqual({ ok: true })
+      expect(await completion, stderr).toBe(3)
+      expect(stdout).toBe('Agent Inbox: the human asked you to stop waiting; do not re-arm. Their answer will arrive via pending().\n')
+
+      replyItem(db, flagged.id, 'Installed; it works.')
+      const pending = await call('pending', {})
+      expect(pending.items).toEqual([expect.objectContaining({
+        id: flagged.id, reply: 'Installed; it works.', watch_stopped_at: expect.any(String), watch_stopped_until: null,
+      })])
+    } finally {
+      db.close()
+      await client.close()
+    }
+  }, 20000)
+
   it('flag accepts options; pending returns the human reply and stamps pickup', async () => {
     const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-pending-')), 'inbox.db')
     const conn = async () => {

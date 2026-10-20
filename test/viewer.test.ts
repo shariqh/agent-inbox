@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
-import { openDb, insertItem, listItems, getItem, annotateItem, replyItem, snoozeItem, answerItem, markReplySeen, upsertBoard as writeBoard, listBoards, annotateBoardRow, snoozeBoardRow, markRowHandled, markHandledDelivered, upsertActivity, endActivity, closeProject, closedProjects, upsertSourceLink, archiveBoard, resolveItem, upsertIssueSnapshot } from '../src/store.js'
+import { openDb, insertItem, listItems, getItem, annotateItem, replyItem, snoozeItem, answerItem, markReplySeen, upsertBoard as writeBoard, listBoards, annotateBoardRow, snoozeBoardRow, markRowHandled, markHandledDelivered, upsertActivity, endActivity, closeProject, closedProjects, upsertSourceLink, archiveBoard, resolveItem, upsertIssueSnapshot, stopItemWatch, stopBoardRowWatch } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
 import { releaseRuntime, registerHost } from './release-runtime.js'
 import { facts, snapshot } from './issue-fixtures.js'
@@ -1287,6 +1287,89 @@ describe('write routes refuse invalid bodies before touching the store (#163)', 
       expect(valid.status).toBe(200)
       expect(await valid.json()).toEqual({ ok: false, reason: 'not_snoozable' })
       expect(listBoards(db)).toEqual(before)
+    })
+  })
+
+  // Issue #217 — `until` is again the whole instruction: a date asks the watcher
+  // to wait quietly until then, and an explicit null stops it for good. A
+  // dropped field must never be read as that final, unrevisable stop.
+  describe('POST /api/items/:id/stop-waiting', () => {
+    it.each(INVALID_UNTIL)('refuses %s and keeps the stored stop', async (_label, body) => {
+      const id = question()
+      stopItemWatch(db, id, FUTURE)
+      const before = getItem(db, id)
+      await expectInvalid(await post(`/api/items/${id}/stop-waiting`, body({})))
+      expect(getItem(db, id)).toEqual(before)
+    })
+
+    it('stops for good on an explicit null and stores a date as UTC ISO', async () => {
+      const deferred = question()
+      let res = await post(`/api/items/${deferred}/stop-waiting`, JSON.stringify({ until: OFFSET_DATE }))
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ ok: true })
+      expect(getItem(db, deferred)).toMatchObject({ watch_stopped_at: expect.any(String), watch_stopped_until: OFFSET_DATE_UTC })
+
+      res = await post(`/api/items/${deferred}/stop-waiting`, JSON.stringify({ until: null }))
+      expect(await res.json()).toEqual({ ok: true })
+      expect(getItem(db, deferred)!.watch_stopped_until).toBeNull()
+    })
+
+    it('reports a store refusal of a valid request as a 200', async () => {
+      const id = question()
+      replyItem(db, id, 'already answered')
+      const res = await post(`/api/items/${id}/stop-waiting`, JSON.stringify({ until: null }))
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ ok: false })
+      expect(getItem(db, id)!.watch_stopped_at).toBeNull()
+    })
+  })
+
+  describe('POST /api/boards/:id/rows/:rowId/stop-waiting', () => {
+    it.each(INVALID_UNTIL)('refuses %s and keeps the stored stop', async (_label, body) => {
+      const rowId = blockedRow()
+      const { path, pins } = rowTarget()
+      stopBoardRowWatch(db, rowId, FUTURE, pins.expected_revision, pins.expected_board_version)
+      const before = listBoards(db)
+      await expectInvalid(await post(`${path}/stop-waiting`, body(pins)))
+      expect(listBoards(db)).toEqual(before)
+    })
+
+    it.each([
+      ['no pins', {}],
+      ['a string revision', { expected_revision: '1', expected_board_version: 1 }],
+      ['a fractional board version', { expected_revision: 1, expected_board_version: 1.5 }],
+    ])('refuses %s before any store call', async (_label, pins) => {
+      blockedRow()
+      const { path } = rowTarget()
+      const before = listBoards(db)
+      await expectInvalid(await post(`${path}/stop-waiting`, JSON.stringify({ until: null, ...pins })))
+      expect(listBoards(db)).toEqual(before)
+    })
+
+    it('stops the current action without bumping either revision', async () => {
+      blockedRow()
+      const { path, pins } = rowTarget()
+      const res = await post(`${path}/stop-waiting`, JSON.stringify({ until: OFFSET_DATE, ...pins }))
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ ok: true })
+      expect(listBoards(db)[0]!.rows[0]!.watch_stopped_until).toBe(OFFSET_DATE_UTC)
+      expect(rowTarget().pins).toEqual(pins)
+    })
+
+    it('classifies a refusal: stale pins are a version mismatch, an answered row is not stoppable', async () => {
+      blockedRow()
+      const { path, pins } = rowTarget()
+      let res = await post(`${path}/stop-waiting`, JSON.stringify({ until: null, ...pins, expected_revision: pins.expected_revision - 1 }))
+      expect(await res.json()).toEqual({ ok: false, reason: 'version_mismatch' })
+      res = await post(`${path}/stop-waiting`, JSON.stringify({ until: null, ...pins, expected_board_version: pins.expected_board_version - 1 }))
+      expect(await res.json()).toEqual({ ok: false, reason: 'version_mismatch' })
+
+      annotateBoardRow(db, listBoards(db)[0]!.rows[0]!.id, 'answered')
+      const current = rowTarget()
+      res = await post(`${current.path}/stop-waiting`, JSON.stringify({ until: null, ...current.pins }))
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ ok: false, reason: 'not_stoppable' })
+      expect(listBoards(db)[0]!.rows[0]!.watch_stopped_at).toBeNull()
     })
   })
 

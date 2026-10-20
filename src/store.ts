@@ -63,6 +63,14 @@ export interface Item {
   reply_kind: ResponseKind | null
   response_revision: number
   snoozed_until: string | null
+  // issue #217 — the human's "I'll take a while" for a Copilot answer watcher:
+  // stopped for good (`watch_stopped_until` NULL) or until a time. Human-owned
+  // and NOT content: writing it moves neither updated_at nor response_revision.
+  watch_stopped_at: string | null
+  watch_stopped_until: string | null
+  // issue #217 — who raised this ask, recorded only by writers that know the
+  // watch stop. NULL on items an older server raised: its watcher ignores a stop.
+  action_agent: string | null
   outcome: string
   outcome_at: string | null
   // issue #30 — the source-link identity inferred locally at write time:
@@ -396,10 +404,40 @@ function runMigrations(db: Database.Database): void {
   // issue #103 PR1b — every issue the cached PR closes, as JSON bound to the
   // fetched_at it was written with (see upsertSourceLink). NULL on legacy rows.
   ensureColumn(db, 'source_links_by_head', 'closing_refs', 'TEXT')
+  // issue #217 — the human's stop for a Copilot answer watcher. Plain additive
+  // columns: NULL means nobody asked the watcher to stop, so nothing to backfill.
+  ensureColumn(db, 'items', 'watch_stopped_at', 'TEXT')
+  ensureColumn(db, 'items', 'watch_stopped_until', 'TEXT')
+  ensureColumn(db, 'board_rows', 'watch_stopped_at', 'TEXT')
+  ensureColumn(db, 'board_rows', 'watch_stopped_until', 'TEXT')
+  migrateRowActionWatchState(db)
   migrateActionLifecycle(db)
   migrateItemResponseRevision(db)
   migrateItemAnnotationDelivery(db)
   migrateAnnotationDelivery(db)
+}
+
+// Issue #217 — who raised the current ask, and the human's stop for it, belong
+// to ONE action. Older servers sharing the file start new actions without
+// knowing either column, so a trigger, not the writer, resets them whenever
+// action_version moves: the stop never carries over, and the asker survives
+// only when the same statement stamped it for the new version. No backfill:
+// an unknown asker hides the stop control rather than guessing.
+function migrateRowActionWatchState(db: Database.Database): void {
+  ensureColumn(db, 'items', 'action_agent', 'TEXT')
+  ensureColumn(db, 'board_rows', 'action_agent', 'TEXT')
+  ensureColumn(db, 'board_rows', 'action_agent_version', 'INTEGER')
+  db.exec(`CREATE TRIGGER IF NOT EXISTS reset_row_action_watch_state
+    AFTER UPDATE OF action_version ON board_rows
+    WHEN NEW.action_version IS NOT OLD.action_version
+    BEGIN
+      UPDATE board_rows
+         SET watch_stopped_at = NULL,
+             watch_stopped_until = NULL,
+             action_agent = CASE WHEN NEW.action_agent_version IS NEW.action_version THEN NEW.action_agent END,
+             action_agent_version = CASE WHEN NEW.action_agent_version IS NEW.action_version THEN NEW.action_version END
+       WHERE id = NEW.id;
+    END`)
 }
 
 function migrateItemResponseRevision(db: Database.Database): void {
@@ -627,11 +665,11 @@ function insertItemRow(db: Database.Database, item: NewItem): string {
   const now = new Date().toISOString()
   db.prepare(
     `INSERT INTO items (
-       id, project, stream, agent, session, kind, title, detail, next_step,
+       id, project, stream, agent, action_agent, session, kind, title, detail, next_step,
        action_owner, impact, next_after, context, options, repo, issue_ref, head_repo,
        status, created_at, updated_at)
      VALUES (
-       @id, @project, @stream, @agent, @session, @kind, @title, @detail, @next_step,
+       @id, @project, @stream, @agent, @agent, @session, @kind, @title, @detail, @next_step,
        @action_owner, @impact, @next_after, @context, @options, @repo, @issue_ref, @head_repo,
        'open', @created_at, @updated_at)`,
   ).run({
@@ -971,6 +1009,21 @@ export function snoozeItem(db: Database.Database, id: string, until: string | nu
   return info.changes > 0
 }
 
+// Issue #217 — the human tells the asking Copilot session to stop waiting on
+// this question: for good (`until` null) or until a time. One conditioned
+// statement, refused on an answered or closed question, and on a stop for
+// good, which has already ended the watcher and therefore cannot be revised
+// into a deferral that nothing would honour. An item is its own ask, so there
+// is no newer action to pin against. Not content: updated_at stays put.
+export function stopItemWatch(db: Database.Database, id: string, until: string | null): boolean {
+  const info = db.prepare(`UPDATE items SET watch_stopped_at = @now, watch_stopped_until = @until
+                            WHERE id = @id AND kind = 'question' AND status = 'open'
+                              AND COALESCE(reply, '') = ''
+                              AND (watch_stopped_at IS NULL OR watch_stopped_until IS NOT NULL)`)
+    .run({ id, until, now: new Date().toISOString() })
+  return info.changes > 0
+}
+
 export function listItems(db: Database.Database, opts: { status?: Status } = {}): Item[] {
   const rows = opts.status
     ? db.prepare(`SELECT * FROM items WHERE status = ? ORDER BY created_at DESC`).all(opts.status)
@@ -1167,6 +1220,14 @@ export interface BoardRow {
   handled_seen_at: string | null
   handled_seen_by: string | null
   snoozed_until: string | null
+  // issue #217 — the human's stop for this ACTION's Copilot answer watcher (see
+  // stopBoardRowWatch). Cleared only by a new action, never by a routine upsert.
+  watch_stopped_at: string | null
+  watch_stopped_until: string | null
+  // issue #217 — the agent that raised this ACTION, stamped in the statement that
+  // starts it. NULL when unknown: a legacy row, or an action an older server
+  // started. Never the board's last writer, which can be another agent.
+  action_agent: string | null
   outcome: string
   outcome_at: string | null
   created_at: string
@@ -1188,6 +1249,7 @@ const ROW_COLUMNS = `
   id, label, status, note, next_step, action_owner, impact, next_after, options,
   context, annotation, annotation_kind, annotated_at, annotation_seen_at,
   annotation_seen_by, handled_at, handled_seen_at, handled_seen_by, snoozed_until,
+  watch_stopped_at, watch_stopped_until, action_agent,
   outcome, outcome_at, created_at, updated_at, action_started_at, action_version,
   revision, history, position`
 
@@ -1299,7 +1361,7 @@ export function upsertBoard(db: Database.Database, input: UpsertBoardInput): { b
           throw new Error(`board row revision mismatch for "${r.label}": expected ${r.revision}, found ${prev.revision}`)
         }
         const newAction = r.status === 'blocked' && prev.status !== 'blocked'
-        if (newAction) beginNewRowAction(db, existingId, now)
+        if (newAction) beginNewRowAction(db, existingId, now, inp.agent)
         let rowChanged = newAction
           || prev.status !== r.status
           || prev.note !== (r.note ?? prev.note)
@@ -1359,8 +1421,9 @@ export function upsertBoard(db: Database.Database, input: UpsertBoardInput): { b
           INSERT INTO board_rows (
             id, board_id, label, status, note, next_step, action_owner, impact,
             next_after, options, context, outcome, outcome_at, created_at,
-            updated_at, action_started_at, action_version, revision, history, position)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, '[]', ?)`)
+            updated_at, action_started_at, action_version, action_agent, action_agent_version,
+            revision, history, position)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 1, 1, '[]', ?)`)
           .run(
             randomUUID(),
             boardId,
@@ -1378,6 +1441,7 @@ export function upsertBoard(db: Database.Database, input: UpsertBoardInput): { b
             now,
             now,
             now,
+            inp.agent,
             i,
           )
       }
@@ -1469,7 +1533,9 @@ function latestIso(...values: Array<string | null>): string | null {
   return latest?.value ?? null
 }
 
-function beginNewRowAction(db: Database.Database, rowId: string, now: string): number {
+// The asker is stamped in the SAME statement that moves action_version, which is
+// what lets reset_row_action_watch_state keep it while clearing the stop.
+function beginNewRowAction(db: Database.Database, rowId: string, now: string, agent: string | null): number {
   const raw = db.prepare(`SELECT ${ROW_COLUMNS} FROM board_rows WHERE id = ?`).get(rowId) as BoardRowRecord | undefined
   if (!raw) throw new Error(`board row not found: ${rowId}`)
   const row = withUnseen([raw])[0]!
@@ -1516,11 +1582,13 @@ function beginNewRowAction(db: Database.Database, rowId: string, now: string): n
            outcome_at = NULL,
            action_started_at = ?,
            action_version = ?,
+           action_agent = ?,
+           action_agent_version = ?,
            revision = revision + 1,
            history = ?,
            updated_at = ?
      WHERE id = ?`)
-    .run(now, nextVersion, JSON.stringify(history), now, rowId)
+    .run(now, nextVersion, agent, nextVersion, JSON.stringify(history), now, rowId)
   return nextVersion
 }
 
@@ -1528,6 +1596,8 @@ export interface AdvanceBoardRowInput {
   project: string
   title: string
   label: string
+  // the asking agent of the new action; omitted, it is recorded as unknown
+  agent?: string
   expectedBoardVersion: number
   expectedRevision: number
   note: string
@@ -1566,7 +1636,7 @@ export function advanceBoardRow(
       return { ok: false, reason: 'version_mismatch', revision: row.revision }
     }
     const now = new Date().toISOString()
-    const version = beginNewRowAction(db, row.id, now)
+    const version = beginNewRowAction(db, row.id, now, inp.agent ?? null)
     db.prepare(`
       UPDATE board_rows
          SET status = 'blocked',
@@ -1628,7 +1698,7 @@ export function updateBoardRow(db: Database.Database, input: UpdateRowInput): { 
       let rowChanged = false
       if (inp.status !== undefined) {
         newAction = inp.status === 'blocked' && existing.status !== 'blocked'
-        if (newAction) beginNewRowAction(db, existing.id, now)
+        if (newAction) beginNewRowAction(db, existing.id, now, inp.agent)
         const info = db.prepare(`UPDATE board_rows SET status = ?, updated_at = ? WHERE id = ? AND status IS NOT ?`)
           .run(inp.status, now, existing.id, inp.status)
         rowChanged = newAction || info.changes > 0
@@ -1661,8 +1731,8 @@ export function updateBoardRow(db: Database.Database, input: UpdateRowInput): { 
       INSERT INTO board_rows (
         id, board_id, label, status, note, next_step, action_owner, impact,
         next_after, options, context, outcome, outcome_at, created_at, updated_at,
-        action_started_at, action_version, revision, history, position)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, '[]', ?)`)
+        action_started_at, action_version, action_agent, action_agent_version, revision, history, position)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 1, 1, '[]', ?)`)
       .run(
         rowId,
         boardId,
@@ -1680,6 +1750,7 @@ export function updateBoardRow(db: Database.Database, input: UpdateRowInput): { 
         now,
         now,
         now,
+        inp.agent,
         pos,
       )
     syncBoardStatus(db, boardId)
@@ -1841,6 +1912,34 @@ export function snoozeBoardRow(
     return true
   })
   return run.immediate()
+}
+
+// Issue #217 — the row twin of stopItemWatch, pinned like every human row action
+// to the row AND board revisions the human was looking at, so a stale click can
+// never stop a newer ask that reused this stable row id. Unlike snooze it bumps
+// neither revision nor updated_at: it changes nothing an agent writes, so an
+// agent's board_get → board_upsert snapshot stays valid and a native
+// notification is not re-announced. The one reset is a new action, by any
+// writer (reset_row_action_watch_state).
+export function stopBoardRowWatch(
+  db: Database.Database,
+  rowId: string,
+  until: string | null,
+  expectedRevision: number,
+  expectedBoardRevision: number,
+): boolean {
+  const info = db.prepare(`UPDATE board_rows SET watch_stopped_at = @now, watch_stopped_until = @until
+                            WHERE id = @id AND status = 'blocked' AND revision = @revision
+                              AND COALESCE(annotation, '') = '' AND annotation_kind IS NULL
+                              AND handled_at IS NULL
+                              AND (watch_stopped_at IS NULL OR watch_stopped_until IS NOT NULL)
+                              AND EXISTS (
+                                SELECT 1 FROM boards b
+                                 WHERE b.id = board_rows.board_id
+                                   AND b.status = 'active'
+                                   AND b.revision = @boardRevision)`)
+    .run({ id: rowId, until, revision: expectedRevision, boardRevision: expectedBoardRevision, now: new Date().toISOString() })
+  return info.changes > 0
 }
 
 // ── issue #36: the human's "I did my part" mark ─────────────────────────────

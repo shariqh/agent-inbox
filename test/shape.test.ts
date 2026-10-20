@@ -16,7 +16,7 @@ import { describe, it, expect } from 'vitest'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { advanceBoardRow, openDb, upsertBoard, listBoards, annotateBoardRow, listPendingRows, markAnnotationDelivered, markRowHandled, markHandledDelivered } from '../src/store.js'
+import { advanceBoardRow, openDb, upsertBoard, listBoards, annotateBoardRow, listPendingRows, markAnnotationDelivered, markRowHandled, markHandledDelivered, stopBoardRowWatch } from '../src/store.js'
 import type { BoardWithRows } from '../src/store.js'
 import { trimContext, makeContextLedger, deliverContext, shapeBoard, summariseBoard, rowKey, itemKey } from '../src/shape.js'
 
@@ -318,6 +318,21 @@ describe('summariseBoard — board_get() with no title', () => {
     const out = summariseBoard(listBoards(db)[0]!)
     expect(out.rows[0]!.handled_at).toMatch(/^\d{4}-\d{2}-\d{2}T/)
     expect(out.rows[0]!.handled_seen_by).toBe('claude-code')
+  })
+
+  // #217 — an agent surveying its boards should see that the human said "I'll
+  // take a while" rather than expect a watcher to wake it; others pay nothing.
+  it('carries the human’s watch stop only on a row that has one', () => {
+    const { db, board } = boardWith([
+      { label: 'Install test', status: 'blocked', note: 'Install 1.4' },
+      { label: 'Sign', status: 'blocked', note: 'Sign 1.4' },
+    ])
+    const row = board.rows[0]!
+    expect(stopBoardRowWatch(db, row.id, null, row.revision, board.revision)).toBe(true)
+    const out = summariseBoard(listBoards(db)[0]!)
+    expect(out.rows[0]).toMatchObject({ watch_stopped_at: expect.stringMatching(/^\d{4}-/), watch_stopped_until: null })
+    expect(out.rows[1]).not.toHaveProperty('watch_stopped_at')
+    expect(out.rows[1]).not.toHaveProperty('watch_stopped_until')
   })
 
   it('an unmarked row spends nothing on the mark either — no three null fields', () => {

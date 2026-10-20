@@ -146,4 +146,5 @@ export function rowStarOption(model: RowModel, item: RowItem): RowOption | null
 export function stagedLabel(staged: { label: string }): string
 export function undoRefusal(item: RowItem, nowMs: number): string | null
 export function handledUndoRefusal(row: RowRow, nowMs: number): string | null
+export function rowPickup(row: RowRow): { pickedUp: boolean; pickedUpAt: string | null; pickedUpBy: string }
 export function repliedEntries(items: RowItem[], nowMs: number, liveSessionIds: Set<string>): Entry[]

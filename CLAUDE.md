@@ -569,6 +569,46 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   reuse this explicit-navigation behavior for passive poll focus restoration.
   `test/dom/explicit-tab-scroll.test.ts` covers the separation; real browser
   geometry is still required to confirm narrow-footer visibility across rebuilds.
+- **A text selection is restored across rebuilds, never held (#223).** A rebuild
+  detaches the nodes a selection lives in, and a live range collapses onto their
+  parent, so the 3s poll used to erase every highlight within one tick. Both render
+  entries capture a non-collapsed selection before anything repaints (`renderIfIdle`
+  before `paintAmbient()`, carried on the prepared frame; `forceRender`'s `render()`
+  before its own ambient frame) and restore it after `restoreQueueView()`, and on the
+  deferred-frame branch after the ambient painters. `public/selection.js` records each
+  boundary as a path from the nearest element with an `id` (or `<body>`); a step into
+  an element carrying a data identity (`data-card-id`, `data-row-id`,
+  `data-context-key`, …) matches that identity and ordinal, not its position, so rows
+  leaving or arriving above keep it. The range is reapplied with `setBaseAndExtent`
+  (direction kept) only when it spells the same DOM text; otherwise it is dropped with
+  `removeAllRanges()`, so a half-rebuilt range is never left stretched over new text.
+  An untouched selection is left alone. Restoring calls no `focus()` and never
+  scrolls, so it cannot steal focus from a background viewer. It is NOT a render gate
+  or a suspension: nothing reads it in `shouldDeferRender()`, `suspendState()` or
+  `#pauseHint`, so a selection held for minutes cannot freeze anything (the C1
+  lesson), and paintAmbient keeps running. Text in a reply box or other focused field
+  is never captured: drafts and their focus bookmarks own it. For the same reason a
+  restore leaves the selection alone when the repaint itself focused a text field
+  (Change answer, draft recovery): Chromium moves the selection into a field on
+  focus, and re-applying the old highlight would leave that field with no caret.
+  `test/dom/text-selection.test.ts` pins survival, both drops, ambient refresh, the
+  no-freeze run, focus/scroll neutrality and the focused reply box.
+- **Copy text when selected is opt-in and owns no event (#222).** Off by default
+  (`agent-inbox-copy-on-select` in localStorage; Settings → Copying).
+  `public/copy-on-select.js` copies when a primary-button gesture ends (judged one
+  task after mouseup) or a keyboard burst settles (400 ms after the last keyup), and
+  only if the selection changed during it: `sameSelection()` compares bookmarks, not
+  nodes, so a #223 restore is the same selection, and a `selectionchange` counts unless
+  it is the restore's own (`isRestoredSelection()`), which also catches the same range
+  dragged over again. A newer gesture, a window blur or turning the setting off
+  supersedes an unfinished one, so a double-click copies once. The text is
+  `getSelection().toString()` with NBSP written as a space (what Cmd+C puts on the
+  clipboard), sent through structured-copy's `writeClipboard` (Clipboard API, then the
+  selection-preserving fallback); no IPC channel carries it. Focused fields and
+  editable content are excluded. Its status region rewrites only on a change, so
+  repeats inside its 1.6 s window are not re-announced. Listeners bind once per
+  document and never prevent a default or stop propagation: clicks, the press guard
+  and attention are unchanged. `test/dom/copy-on-select.test.ts` pins each rule.
 
 - **The hooks runtime is a SECOND OS process on the same db — and it still goes through
   `store.ts`.** `src/hook.ts` (+ the `src/hook-cli.ts` entry) is spawned by Claude Code, not

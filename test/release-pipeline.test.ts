@@ -427,7 +427,7 @@ describe('universal finalization contract', () => {
     const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
     const version = readFileSync(join(root, 'src', 'version.ts'), 'utf8')
     const mcp = readFileSync(join(root, 'src', 'mcp.ts'), 'utf8')
-    expect(pkg.version).toBe('1.3.1')
+    expect(pkg.version).toBe('1.3.2')
     expect(version).toContain(`export const AGENT_INBOX_VERSION = '${pkg.version}'`)
     expect(mcp).toContain(`new McpServer({ name: 'agent-inbox', version: AGENT_INBOX_VERSION })`)
     expect(mcp).toContain('server_version: AGENT_INBOX_VERSION')

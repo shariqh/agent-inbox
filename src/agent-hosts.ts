@@ -21,8 +21,8 @@
 // holds the two to agreement, so Setup never offers to update a registration
 // the installer would refuse to replace. scripts/runtime-config.mjs mirrors the
 // hooks half too (classifyHookLauncher, issue #218, which splits this rule's
-// unknown into dead and unknown): both hook-install modes sort each entry by
-// it before they refuse or replace another install's hook set.
+// unknown into dead, elsewhere and unknown): both hook-install modes sort each
+// entry by it before they refuse or replace another install's hook set.
 import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, sep } from 'node:path'
 
@@ -32,8 +32,10 @@ export type HostKind = 'none' | 'runtime' | 'checkout' | 'other' | 'unknown'
  * none     — no agent-inbox registration (or no agent-inbox hook entries)
  * runtime  — Setup's runtime: `runtimeId` under the runtime root, `version` its manifest's
  * checkout — a source checkout of this repo at `path`, which Setup does not manage
- * other    — some other command, which Setup does not manage
- * unknown  — present but unreadable, malformed, split across builds, or not an intact runtime
+ * other    — some other command, which Setup does not manage (an MCP registration
+ *            of a runtime outside the root included: the installer's `custom`)
+ * unknown  — present but unreadable, malformed, split across builds, or not an
+ *            intact runtime; for hooks, also a runtime outside the root (#232)
  */
 export interface HostRegistration {
   kind: HostKind
@@ -137,18 +139,18 @@ function smallJson(path: string): unknown {
   return JSON.parse(readFileSync(path, 'utf8')) as unknown
 }
 
-// A source checkout of this repo: <root>/dist/<script> beside a package.json
-// named agent-inbox, and no runtime manifest (that layout is a runtime, and one
-// outside Setup's root is not Setup's either).
-function checkoutRoot(entry: string, script: string): string | null {
-  if (basename(entry) !== script || basename(dirname(entry)) !== 'dist') return null
-  const root = dirname(dirname(entry))
-  if (existsSync(join(root, MANIFEST_FILE))) return null
+// The install folder whose dist/<script> the canonical `file` is, or null.
+function installDir(file: string, script: string): string | null {
+  return basename(file) === script && basename(dirname(file)) === 'dist' ? dirname(dirname(file)) : null
+}
+
+// A source checkout of this repo: beside a package.json named agent-inbox.
+function isCheckout(dir: string): boolean {
   try {
-    const pkg = smallJson(join(root, 'package.json'))
-    return isPlainObject(pkg) && pkg['name'] === 'agent-inbox' ? root : null
+    const pkg = smallJson(join(dir, 'package.json'))
+    return isPlainObject(pkg) && pkg['name'] === 'agent-inbox'
   } catch {
-    return null
+    return false
   }
 }
 
@@ -163,8 +165,12 @@ function checkoutRegistration(root: string): HostRegistration {
   return root.length <= 4096 && !CONTROL.test(root) ? { kind: 'checkout', path: root } : { kind: 'checkout' }
 }
 
-// One {command, entry} launcher, by the installer's structural rule.
-function classifyLauncher(command: string, entry: string, runtimeRoot: string, check: RuntimeCheck, script: string): HostRegistration {
+// One {command, entry} launcher, by the installer's structural rule. A
+// runtime's layout outside the root (`elsewhere`) is never Setup's; each caller
+// says what it is to Setup.
+type Launcher = HostRegistration | { kind: 'elsewhere' }
+
+function classifyLauncher(command: string, entry: string, runtimeRoot: string, check: RuntimeCheck, script: string): Launcher {
   // an entry that is not a path (`npx tsx src/…`) is somebody's own command
   if (!isAbsolute(entry)) return { kind: 'other' }
   const file = canonical(entry)
@@ -181,8 +187,10 @@ function classifyLauncher(command: string, entry: string, runtimeRoot: string, c
     const verified = check(join(root, runtimeId), runtimeId)
     return verified ? runtimeRegistration(runtimeId, verified.version) : { kind: 'unknown' }
   }
-  const checkout = checkoutRoot(file, script)
-  return checkout ? checkoutRegistration(checkout) : { kind: 'other' }
+  const dir = installDir(file, script)
+  if (dir === null) return { kind: 'other' }
+  if (existsSync(join(dir, MANIFEST_FILE))) return { kind: 'elsewhere' }
+  return isCheckout(dir) ? checkoutRegistration(dir) : { kind: 'other' }
 }
 
 function mcpRegistration(path: string, runtimeRoot: string, check: RuntimeCheck): HostRegistration {
@@ -195,7 +203,9 @@ function mcpRegistration(path: string, runtimeRoot: string, check: RuntimeCheck)
   const command = isPlainObject(entry) ? own(entry, 'command') : undefined
   const args = isPlainObject(entry) ? own(entry, 'args') : undefined
   if (typeof command !== 'string' || !Array.isArray(args) || typeof args[0] !== 'string') return { kind: 'unknown' }
-  return classifyLauncher(command, args[0], runtimeRoot, check, 'mcp-server.js')
+  const launcher = classifyLauncher(command, args[0], runtimeRoot, check, 'mcp-server.js')
+  // the registration installer's `custom`, which it never replaces
+  return launcher.kind === 'elsewhere' ? { kind: 'other' } : launcher
 }
 
 // Every hook entry shaped like ours ({command, args:[entry, subcommand]}),
@@ -226,12 +236,13 @@ function hooksRegistration(path: string, runtimeRoot: string, check: RuntimeChec
   if (config.state === 'unreadable') return { kind: 'unknown' }
   const launchers = hookLaunchers(config.value)
   if (launchers.length === 0) return { kind: 'none' }
-  const results = launchers.map((entry) => {
+  const results = launchers.map((entry): HostRegistration => {
     const command = own(entry, 'command')
     const args = own(entry, 'args') as unknown[]
-    return typeof command === 'string' && typeof args[0] === 'string'
-      ? classifyLauncher(command, args[0], runtimeRoot, check, 'hook-cli.js')
-      : { kind: 'unknown' as const }
+    if (typeof command !== 'string' || typeof args[0] !== 'string') return { kind: 'unknown' }
+    const launcher = classifyLauncher(command, args[0], runtimeRoot, check, 'hook-cli.js')
+    // another install's set to the hook installer, which refuses beside it (#232)
+    return launcher.kind === 'elsewhere' ? { kind: 'unknown' } : launcher
   })
   const first = results[0]!
   const same = results.every((r) =>

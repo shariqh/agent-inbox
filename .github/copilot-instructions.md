@@ -245,6 +245,12 @@ Run the build before `npm run electron`; the development shell starts the built
   human-initiated write must end in `reloadAndPaint()` so an unrelated draft
   cannot hide the result. A held pointer defers rendering but is not a
   suspension and must not appear in `suspendState()`.
+- A text selection is captured before and restored after each rebuild by both
+  render entries (`public/selection.js`, #223). It never defers or suspends a
+  frame, never focuses or scrolls, and is dropped when its text changed.
+  Copy text when selected (#222) is an opt-in setting that copies only a
+  selection changed by the gesture, outside editors, through structured-copy's
+  `writeClipboard`; it never stops or prevents an event.
 - Browser snapshot reuse is window-local and immutable; a 304 belongs to the
   representation that request sent, and its live boot header still controls safe
   refresh. Passive polls may retain inactive document panes, but navigation and

@@ -247,6 +247,11 @@ cancels a sequence without closing the item underneath. Expanded cards scroll
 with the page at intermediate widths; the desktop inspector and full-screen
 phone card retain their own scrolling.
 
+Selected text stays selected while the viewer refreshes, unless that text changes.
+To copy it without pressing `Cmd/Ctrl C`, turn on **Copy text when selected** in
+Settings. Finishing a selection with the mouse or keyboard then copies it, except
+text you select in a reply box or other field.
+
 ## MCP tools
 
 | Tool | Purpose |

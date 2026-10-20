@@ -28,6 +28,8 @@ import { liveSummary, lastActivityAt, isDormant, activitySynopsis, sessionBuild 
 import { agentsAction, hostLabel, hostLine, restartGuidance } from '/agents.js'
 import { esc } from '/esc.js'
 import { initStructuredTextCopy } from '/structured-copy.js'
+import { captureSelection, restoreSelection } from '/selection.js'
+import { createCopyOnSelect } from '/copy-on-select.js'
 import { renderStructuredText } from '/structured-text.js'
 import { boardRowsView, boardRowLine, progressLabel, hiddenDoneCount, lingeringBoards } from '/boards.js'
 import { titleWithBadge, focusHashFor, parseFocusHash } from '/badge.js'
@@ -323,13 +325,17 @@ function renderIfIdle() {
     showPauseHint() // reads suspendState() only — a bare press prints nothing (#38)
     return
   }
+  // Ambient painters can rebuild under a selection too, so capture it first (#223).
+  const textSelection = captureSelection()
   const frame = paintAmbient()
+  frame.textSelection = textSelection
   // Drafts and active inspector/page scrolling protect only editable lists. Counts,
   // the badge, rail and Live strip above keep reporting fresh data.
   if (dashboardInteractionActive()
     || shouldDeferRender({ ...suspendState(), pressedAt, scrolledAt: lastInteractionScrollAt }, now)) {
     renderDirty = true
     showPauseHint()
+    restoreSelection(textSelection)
     return
   }
   renderDirty = false
@@ -1939,6 +1945,8 @@ function paintEditableSurfaces({ agents, g, boards, archived, live, dashboard, p
 function render() {
   // A prepared frame belongs to the poll; explicit forceRender enters without one.
   const paintAllPanes = preparedFrame === null || !editablePanesPainted
+  // The rebuild below detaches the nodes a text selection lives in (#223).
+  const textSelection = preparedFrame ? preparedFrame.textSelection : captureSelection()
   const frame = preparedFrame ?? paintAmbient()
   frame.paintAllPanes = paintAllPanes
   preparedFrame = null
@@ -1965,6 +1973,7 @@ function render() {
   invalidatePreviewLinks()
   keyboardUI?.refresh()
   restoreQueueView()
+  restoreSelection(textSelection)
   editablePanesPainted = true
 }
 
@@ -7396,6 +7405,39 @@ function renderSortSettings(host) {
   host.appendChild(section)
 }
 
+// Issue #222: off by default; the controller owns the stored preference.
+let copyOnSelect = null
+
+function initCopyOnSelect() {
+  copyOnSelect = createCopyOnSelect({ storage: localStorage })
+}
+
+function renderCopySettings(host) {
+  if (!copyOnSelect) return
+  const section = document.createElement('section')
+  section.className = 'setup-block copy-settings'
+  const title = document.createElement('h3')
+  title.textContent = 'Copying'
+  const preference = document.createElement('label')
+  preference.className = 'settings-toggle'
+  const input = document.createElement('input')
+  input.type = 'checkbox'
+  input.className = 'copy-on-select-toggle'
+  input.checked = copyOnSelect.enabled
+  input.setAttribute('aria-describedby', 'copy-on-select-detail')
+  input.addEventListener('change', () => copyOnSelect.setEnabled(input.checked))
+  const preferenceCopy = document.createElement('span')
+  const label = document.createElement('strong')
+  label.textContent = 'Copy text when selected'
+  const detail = document.createElement('small')
+  detail.id = 'copy-on-select-detail'
+  detail.textContent = 'Copies text to the clipboard as soon as you finish selecting it. Text you select in a reply box or other field is never copied this way.'
+  preferenceCopy.append(label, detail)
+  preference.append(input, preferenceCopy)
+  section.append(title, preference)
+  host.appendChild(section)
+}
+
 let updateSettings = null
 let updateSubscriptionStarted = false
 
@@ -7671,6 +7713,7 @@ async function renderSetup() {
   renderThemeSettings(host)
   renderUpdateSettings(host)
   renderSortSettings(host)
+  renderCopySettings(host)
   try {
     const s = await (await fetch('/api/setup')).json()
     const block = (title, text, hint) => {
@@ -7748,7 +7791,7 @@ async function renderSetup() {
 //   initResponsive → initSidebarCollapse → initPaneResizers → initProjectDisclosure →
 //   initKeys (Task 17) → initFocusHash (Task 17) → initStagedFlush →
 //   initPressGuard (#38) → initScrollGuard → initAgentSelect →
-//   initStructuredTextCopy → initGear → initLiveBar → renderSetup → load →
+//   initStructuredTextCopy → initCopyOnSelect → initGear → initLiveBar → renderSetup → load →
 //   setInterval(load, 3000)
 initTabs()
 initTriage()
@@ -7766,6 +7809,7 @@ initPressGuard()
 initScrollGuard()
 initAgentSelect()
 initStructuredTextCopy()
+initCopyOnSelect()
 initGear()
 initLiveBar()
 renderSetup()

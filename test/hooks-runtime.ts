@@ -10,11 +10,11 @@
 // release payload, so electron/runtime-verify.cjs verifies it as one. The
 // scratch HOME holds ~/.agent-inbox/runtime, the setup lock and
 // ~/.claude/settings.json: nothing here reads or writes the real home.
-import { chmodSync, copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 
 const REPO = resolve(import.meta.dirname, '..')
 const PAYLOAD_CLI = join(REPO, 'scripts', 'runtime-payload.mjs')
@@ -32,7 +32,7 @@ export interface HooksHome {
   home: string
   runtimeRoot: string
   settings: string
-  /** the scratch HOME, a plain PATH, and no AGENT_INBOX_* override from the test runner */
+  /** the scratch HOME, a minimal PATH with the setup lock tool, and no AGENT_INBOX_* override from the test runner */
   env: NodeJS.ProcessEnv
 }
 
@@ -45,7 +45,15 @@ export interface StagedRuntime {
 
 export function hooksHome(): HooksHome {
   const home = mkdtempSync(join(tmpdir(), 'hooks-home-'))
-  const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, PATH: '/usr/bin:/bin' }
+  // The shared setup lock needs lockf or flock. Before macOS 15 there is no
+  // /usr/bin/lockf, and CI installs flock with Homebrew, so the one this
+  // runner has is linked onto the scratch PATH.
+  const lock = spawnSync('/bin/sh', ['-c', 'command -v lockf || command -v flock'], { encoding: 'utf8' }).stdout.trim()
+  if (!lock) throw new Error('hooks runtime tests require lockf or flock')
+  const bin = join(home, 'bin')
+  mkdirSync(bin)
+  symlinkSync(lock, join(bin, basename(lock)))
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, PATH: `${bin}:/usr/bin:/bin` }
   for (const name of Object.keys(env)) if (name.startsWith('AGENT_INBOX_')) delete env[name]
   return {
     home,

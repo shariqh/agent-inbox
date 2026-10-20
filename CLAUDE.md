@@ -114,9 +114,11 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   add the summary, so they never depend on the omitted bodies.
   `/api/items/history` returns exactly the unpaged `done` list, and ONLY `load()`
   reads it: as an extra read when the previous frame needs older history
-  (`historyWanted`: a search in use — open results, a pending or focused query,
-  not text left in a closed box — the Handoffs overlay, History paged past what
-  the page proves, a History deep link, a pending deep link to an omitted item, or
+  (`historyWanted`: a search in use — open results, a pending query or one
+  focused in an active window, not text left in a closed box, even one a
+  background window still reports as focused (#233) — the Handoffs overlay,
+  History paged past what the page proves, a History deep link, a pending deep
+  link to an omitted item, or
   Dashboard recent outcomes the page cannot prove), or, within the same tick and
   under the same boot-marker and generation rules, when the tick's own new page
   needs it, so a sweep never paints a blank History frame. Decide on a PAGE
@@ -555,12 +557,17 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   keeps its last `document.activeElement`. Passive polling must capture focus bookmarks
   only while `document.hasFocus()` is true, before replacing DOM; otherwise restoring a
   card, plan, or project control can steal focus from the host chat composer or another
-  application. Background data/ambient updates still run. Explicit user navigation can
-  focus its destination, and an active viewer must retain its logical focused control
-  across rebuilds. `test/dom/background-focus.test.ts` covers the background and
+  application. Remembered focus does not keep a search in use either: `historyWanted()`
+  checks `activeFocusElement()`, so a query left in a background window's search box
+  does not keep re-reading closed history (#233). Background data/ambient updates still
+  run. Explicit user navigation can focus its destination, and an active viewer must
+  retain its logical focused control across rebuilds.
+  `test/dom/background-focus.test.ts` covers the background and
   foreground halves. In jsdom, a control's `.blur()` also makes `hasFocus()` false;
   tests modeling CSS hiding a control in an active window must explicitly retain
-  document focus rather than accidentally model a background webview.
+  document focus rather than accidentally model a background webview. Conversely, a
+  test modeling a background window keeps `activeElement` by stubbing `hasFocus()` and
+  dispatching `blur`/`focusout`, never by calling `.blur()` (#233).
 
 - **A held pointer defers the rebuild, and it is NOT a suspension (#38 / D2).** The 3s render
   detaches the node under the cursor, so `pointerdown`/`pointerup` share no ancestor and the

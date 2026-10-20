@@ -1,9 +1,8 @@
-import { describe, it, expect } from 'vitest'
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { afterEach, describe, it, expect } from 'vitest'
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { spawn, spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import {
   shouldBackstop, backoffMs, nudgeText, parseEvent, safeSegment, hookOpts,
@@ -17,11 +16,14 @@ import {
 } from '../src/store.js'
 import type { Item } from '../src/store.js'
 import { installRuntimeVersion } from './release-runtime.js'
+import { removeScratchDirs, scratchDir } from './scratch.js'
 
 const REPO = fileURLToPath(new URL('..', import.meta.url))
 // lets a test hand the installer the real hook CLI from source, with no dist/ build
 const TSX_LOADER = pathToFileURL(createRequire(import.meta.url).resolve('tsx')).href
 const NOW = Date.parse('2026-07-26T12:00:00Z')
+
+afterEach(removeScratchDirs)
 
 function q(over: Partial<Item> = {}): Item {
   return {
@@ -200,7 +202,7 @@ describe('hook: options and parsing', () => {
 // override it. The two tests that do are marked as such below; do not add a third
 // grace assertion that quietly inherits the 0.
 function freshEnv(extra: Record<string, string> = {}): { env: Record<string, string>; dbPath: string } {
-  const dbPath = join(mkdtempSync(join(tmpdir(), 'hook-')), 'inbox.db')
+  const dbPath = join(scratchDir('hook-'), 'inbox.db')
   openDb(dbPath).close() // the runtime deliberately no-ops until the db exists
   return { env: { AGENT_INBOX_DB: dbPath, AGENT_INBOX_HOOK_GRACE_MS: '0', ...extra }, dbPath }
 }
@@ -247,7 +249,7 @@ describe('hook: fail-open contract', () => {
   })
 
   it('a db path that cannot be opened is logged, not thrown', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'hook-bad-'))
+    const dir = scratchDir('hook-bad-')
     const dbPath = join(dir, 'inbox.db')
     writeFileSync(dbPath, 'not a database')
     const env = { AGENT_INBOX_DB: dbPath, AGENT_INBOX_HOOK_GRACE_MS: '0' }
@@ -256,7 +258,7 @@ describe('hook: fail-open contract', () => {
   })
 
   it('does nothing at all before the db exists (the per-prompt latency guard)', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'hook-none-')), 'inbox.db')
+    const dbPath = join(scratchDir('hook-none-'), 'inbox.db')
     const env = { AGENT_INBOX_DB: dbPath, AGENT_INBOX_HOOK_GRACE_MS: '0' }
     expect(await runHook(['prompt-submit'], ev(), env)).toEqual({ stdout: '' })
     expect(existsSync(dbPath)).toBe(false)
@@ -425,7 +427,7 @@ describe('hook: self-clearing (the trustworthy badge)', () => {
   // spawn happened to take — with `>` it passes roughly two runs in three. This
   // one is arithmetic, so it cannot flap either way.
   it('sweeps at EXACTLY the cutoff (>=), so MAX_AGE_MS=0 means "clear every backstop"', () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'hook-sweep-')), 'inbox.db')
+    const dbPath = join(scratchDir('hook-sweep-'), 'inbox.db')
     const db = openDb(dbPath)
     const mk = (): Item => {
       insertItem(db, { project: 'agent-inbox', stream: 'main', agent: 'hook', session: 'S1', kind: 'question', title: 'blocked at a prompt' })
@@ -813,7 +815,7 @@ describe('hook: real spawn round-trip', () => {
   it('selftest exits 0 against a usable db and non-zero against a broken one', async () => {
     const { env } = freshEnv()
     expect((await run(['selftest'], '', env)).code).toBe(0)
-    const broken = join(mkdtempSync(join(tmpdir(), 'hook-broken-')), 'inbox.db')
+    const broken = join(scratchDir('hook-broken-'), 'inbox.db')
     writeFileSync(broken, 'not a database')
     const bad = await run(['selftest'], '', { AGENT_INBOX_DB: broken })
     expect(bad.code).not.toBe(0)
@@ -844,7 +846,7 @@ describe('hook: the shell wrapper', () => {
   // its own bytes at hooks/, a dist/hook-cli.js whose exit status we choose, and
   // a HOME with no ~/.local/share/fnm so the v24 glob deterministically misses.
   function tree(cli: string): { script: string; root: string; bin: string } {
-    const root = mkdtempSync(join(tmpdir(), 'hook-wrap-'))
+    const root = scratchDir('hook-wrap-')
     for (const d of ['hooks', 'dist', 'bin']) mkdirSync(join(root, d))
     const script = join(root, 'hooks', 'agent-inbox-hook.sh')
     writeFileSync(script, readFileSync(join(REPO, 'hooks', 'agent-inbox-hook.sh'), 'utf8'))
@@ -947,7 +949,7 @@ describe('hook: installer', () => {
   }
 
   function home(settings?: unknown): { dir: string; entry: string; file: string } {
-    const dir = mkdtempSync(join(tmpdir(), 'hook-home-'))
+    const dir = scratchDir('hook-home-')
     mkdirSync(join(dir, '.claude'), { recursive: true })
     const entry = join(dir, 'stub-cli.js')
     writeFileSync(entry, 'process.exit(0)\n') // stands in for a built, verified dist/hook-cli.js

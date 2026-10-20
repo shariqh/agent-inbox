@@ -3,16 +3,15 @@ import {
   copyFileSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { createServer } from 'node:net'
-import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
+import { removeScratchDirs, scratchDir } from './scratch.js'
 
 const REPO = resolve(import.meta.dirname, '..')
 const LEASE = join(REPO, 'scripts', 'setup-lock.sh')
@@ -33,7 +32,7 @@ const livePids = new Set<number>()
 const liveGroups = new Set<number>()
 
 function temp(prefix: string): string {
-  return mkdtempSync(join(tmpdir(), prefix))
+  return scratchDir(prefix)
 }
 
 function quote(value: string): string {
@@ -180,6 +179,7 @@ function startHolder(
 afterEach(() => {
   for (const pid of liveGroups) killGroup(pid)
   for (const pid of livePids) killPid(pid)
+  removeScratchDirs()
 })
 
 describe('shared Setup lock lease', () => {

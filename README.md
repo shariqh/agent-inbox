@@ -197,7 +197,14 @@ Each plan watcher follows one row action, not every future use of that row.
 Routine plan edits do not create duplicate watchers. After a timeout or restart,
 `board_get({title, watch:true})` returns watches for the plan's remaining blocked
 actions. `pending({project:"..."})` retrieves answers for the original project
-without changing the current session scope.
+without changing the current session scope. Each re-arm of the same unanswered
+request waits longer (30 minutes, then 1, 2 and 4 hours), so a long wait costs the
+agent a few wakes instead of dozens. On a Copilot request you can also choose
+**I'll take a while**: stop the agent waiting (it will not wake on its own, so
+message it after you answer) or ask it to wait quietly for a few hours or until
+tomorrow. A snooze also keeps its watcher quiet, checking in at most once a day.
+Neither removes the request from Needs you. The choice appears only on requests
+raised by a Copilot session running this version, whose watcher honours it.
 
 **Saved, delivered, and acted on are different states.** Watchers only notify the
 host; they never mark a response delivered or complete. An agent receives the

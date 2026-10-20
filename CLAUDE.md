@@ -143,7 +143,8 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   exported functions — items: `insertItem`/`resolveItem`/`dismissItem`/`annotateItem`/
   `replyItem`/`answerItem`/`listItems`/`listItemsPage`; boards: `upsertBoard`/`updateBoardRow`/`getBoard`/`listBoards`/
   `archiveBoard`/`annotateBoardRow`/`markAnnotationDelivered`/`markRowHandled`/
-  `clearRowHandled`/`markHandledDelivered`/`listPendingRows`;
+  `clearRowHandled`/`markHandledDelivered`/`listPendingRows`; watch stops (#217):
+  `stopItemWatch`/`stopBoardRowWatch`;
   projects: `closeProject`/`reopenProject`/`listClosedProjects`/`closedProjects`;
   issue snapshots (#103): `upsertIssueSnapshot`/`recordIssueFailure`/`listIssueSnapshots`/
   `listIssueEntities`/`pruneIssueSnapshots` — plus `openDb`. No raw SQL anywhere else. To change
@@ -181,7 +182,9 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   human/delivery/snooze/outcome field, increments both counters,
   and installs the next blocked action in one write transaction. Ordinary nonblocked→blocked
   transitions use the same archive/reset path. Agent reads get only `history_count`; the
-  viewer alone receives full history.
+  viewer alone receives full history. *(#217)* The watch stop and the action's asker are
+  reset by the `reset_row_action_watch_state` trigger instead, whenever `action_version`
+  moves, so an older server sharing the file cannot carry them into its new action.
 - **Every row action is version-pinned.** MCP `board_upsert` existing rows carry row
   `revision`; `board_row` carries `expected_revision`; browser/native annotate, snooze and
   handled writes carry row revision plus board revision. A stale notification or sibling
@@ -606,6 +609,48 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   `process.execArgv` in the returned command so the same contract works under source `tsx`
   and built Node execution. The command also carries the resolved database path explicitly;
   the host shell does not inherit MCP-only `AGENT_INBOX_DB` configuration.
+  *(#217)* A timeout is not an answer, so every one costs the agent a whole turn to re-arm.
+  The wait is therefore `watchTimeoutMs`: 30 minutes plus the ask's age (item `created_at`,
+  row `action_started_at`) in whole minutes, capped at 4 hours, so re-arms of an unchanged
+  ask double (30 min → 1 h → 2 h → 4 h). It is stateless and evaluated twice by ONE
+  function: the server sizes `timeout_seconds` with it, and the watcher re-derives its own
+  deadline at launch, so re-running the identical question command backs off too (the
+  argv carries no timeout; `AGENT_INBOX_WATCH_TIMEOUT_MS` only forces one for tests). The
+  human's quiet time — a snooze, or an "I'll take a while" with a time — can only push the
+  deadline out, and never more than 24 hours past the later of the watcher's launch and the
+  moment the human chose that time (`watch_stopped_at`), so every offered "back in…" is kept
+  in full and an orphaned watcher stops within a day. A snooze records no such moment: one
+  longer than a day costs a recheck a day. Order is fixed: close, then answer, then a stop
+  for good (exit 3, one stdout line telling the agent not to re-arm), then the deadline
+  (exit 124, unchanged). `board_get({watch:true})` returns no watch for a row stopped for
+  good: re-arming it would only cost another wake.
+- **The human's watch stop is human-owned, version-pinned and NOT content (#217).**
+  `watch_stopped_at`/`watch_stopped_until` on items and rows record "I'll take a while":
+  stopped for good (`until` NULL) or until a time. Like `annotation`/`handled_at`, no agent
+  upsert or row edit touches them. The only reset is a new action, by ANY writer: the
+  `reset_row_action_watch_state` trigger (`AFTER UPDATE OF action_version`) clears them,
+  because an older server sharing the file runs its own `beginNewRowAction`, which knows
+  nothing of these columns — exactly the `increment_item_response_revision` precedent. An
+  item is its own ask: no writer, old or new, reopens or re-purposes one. A stop for good is
+  final — the watcher has already exited, so the store refuses to revise it into a deferral
+  nothing would honour, and the viewer renders a reminder instead of a control; that
+  reminder stays on an answered card until an agent picks the answer up. Answered, handled,
+  closed, archived or unblocked asks refuse a stop. Row writes are pinned to row AND board
+  revision, but the write bumps neither revision nor `updated_at`: it changes nothing an
+  agent writes, so an agent's `board_get` → `board_upsert` snapshot stays valid and native
+  notifications (keyed by revision) are not re-announced. Viewer routes require `until`
+  explicitly (date or null): a dropped field is a 400, never the final stop. Attention is
+  untouched — the ask stays in Needs-you unless also snoozed. **The control follows the
+  ask's own asker, `action_agent`, never `boards.agent`** (the board's last writer, which a
+  Copilot edit of another row flips and `board_advance` never restamps). Rows stamp it in
+  the statement that starts each action, tagged with `action_agent_version`; the trigger
+  keeps it only when that tag matches the new version, so an older server's new action has
+  no asker. Items stamp it at insert. Older servers stamp nothing, and their watchers ignore
+  a stop anyway, so an unknown asker draws no control: hide, never guess. Only `copilot`
+  draws it, because only Copilot runs the watcher it stops; a chat-recorded answer draws
+  nothing, since the agent recorded it itself. Claude's hook `watch` is deliberately
+  unaffected: it never wakes on a timeout (it exits 0 and re-arms at the agent's own Stop),
+  so a stop would only remove its answer wake and save nothing.
 
 - **Agent setup is explicit, dry-run-first, and owns only marked text.**
   `scripts/install-agents.sh` is the supported bridge between two configuration systems:
@@ -1201,6 +1246,11 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   `flag` returns a shell-safe detached-background launch contract. The host owns that process
   and therefore receives the completion notification; the resumed agent calls `pending()`.
   Claude gets no duplicate watcher because its hook already owns wakeup.
+- **Watcher backoff and "I'll take a while"** *(#217)* — re-arming an unchanged ask waits
+  longer each time (30 min → 1 h → 2 h → 4 h), and the human can stop a Copilot ask's
+  watcher for good or ask it to wait quietly until a time. See the watcher and watch-stop
+  invariants above. A native-notification stop action was left out: notification buttons
+  are answers today, and mixing in a non-answer needs its own design.
 - **Backstop hooks** *(#10 + #21)* — `src/hook.ts` + `src/hook-cli.ts`, installed opt-in by
   `scripts/install-hooks.sh` (dry-run by default). #10: a `Notification` hook arms a
   grace-windowed backstop item when a session is stuck at a permission prompt; it is

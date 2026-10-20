@@ -30,7 +30,10 @@ Call `flag` when:
   command** using the returned `mode`, `detach`, `shell_id`, and `timeout_seconds`; do not
   wait for it synchronously. The background completion notification wakes your session when
   the answer lands. On that notification, call `pending()` immediately, act on the answer,
-  and resolve the question. Clients without a returned watcher keep using their native wake
+  and resolve the question. A timeout is not an answer: re-run the same command, which waits
+  longer each time the same question is still unanswered. If the watcher says the human asked
+  you to stop waiting, do not re-arm it; their answer still arrives through `pending()` or
+  chat. Clients without a returned watcher keep using their native wake
   path. Also **poll `pending()`** between work steps: it returns `{ items, rows }` — your open questions with `reply` once answered (an
   option label or free text — follow it either way), plus optional `reply_context` when they
   attach extra direction with their answer, **and `rows`: the human's per-row notes on your
@@ -39,8 +42,8 @@ Call `flag` when:
   and move a board row out of `blocked` after handling its response. `pending()` is the ONE poll —
   everything they have said to you arrives through it. Do
   not park forever waiting in the terminal. If you end a turn with a Copilot question still
-  open, the returned watcher must already be running; do not tell the human they need to
-  message you again.
+  open, the returned watcher must already be running unless the human asked you to stop
+  waiting; do not tell the human they need to message you again.
   **One question, two channels.** A flagged question IS the question you are asking in
   chat — never open a second, independent prompt for a decision you already flagged; point
   at the flag instead. If they answer you in chat, call `answer({ id, text, context? })` so

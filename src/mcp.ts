@@ -6,7 +6,8 @@ import { insertItem, resolveItem, listPending, markReplySeen, markItemAnnotation
 import type { ActionOwner, BoardRow, BoardWithRows, QuestionOption } from './store.js'
 import { makeContextLedger, deliverContext, shapeBoard, summariseBoard, rowKey, itemKey } from './shape.js'
 import { makeScope } from './scope.js'
-import { copilotWatchLaunch } from './watch.js'
+import { copilotWatchLaunch, rowWatchedAsk, watchStoppedForGood } from './watch.js'
+import type { WatchedAsk } from './watch.js'
 import { AGENT_INBOX_VERSION } from './version.js'
 import { detectServerSource } from './server-source.js'
 
@@ -99,13 +100,15 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
   const impactField = z.string().max(180).describe('Why this matters now: the one downstream result or dependency this action unblocks.')
   const nextAfterField = z.string().max(180).describe('What happens immediately after the human responds or completes the task.')
   const summaryDescription = 'TL;DR: one sentence in plain language explaining what changed, what is not finished, or what needs a decision. Write for someone returning without the technical history. Example: "The release is ready, but still needs your approval." Put commit hashes, file paths, test counts, and technical terms such as CAS or converged in context, not the summary.'
-  const rowWatch = (row: Pick<BoardRow, 'id' | 'label' | 'action_version'>, project: string) => ({
+  // `ask` is passed only on a re-arm: it sizes the wait from how long that ask
+  // has already waited (issue #217). A brand-new action starts at the base wait.
+  const rowWatch = (row: Pick<BoardRow, 'id' | 'label' | 'action_version'>, project: string, ask?: WatchedAsk) => ({
     row_id: row.id,
     label: row.label,
     action_version: row.action_version,
-    ...copilotWatchLaunch(row.id, { rowActionVersion: row.action_version, project }),
+    ...copilotWatchLaunch(row.id, { rowActionVersion: row.action_version, project, ask }),
   })
-  const boardWatchDescription = ' Copilot: a new blocked action returns a host-owned watch (or watches for a full board). Immediately launch each returned shell_command as the specified detached background task; the MCP server never launches it. On completion follow on_completion, then acknowledge the response with a status change and outcome. Routine edits do not start another watch; use board_get({title, watch:true}) to re-arm after a timeout or session restart.'
+  const boardWatchDescription = ' Copilot: a new blocked action returns a host-owned watch (or watches for a full board). Immediately launch each returned shell_command as the specified detached background task; the MCP server never launches it. On completion follow on_completion, then acknowledge the response with a status change and outcome. Routine edits do not start another watch; use board_get({title, watch:true}) to re-arm after a timeout or session restart, and each re-arm of an unchanged ask waits longer. If the watcher says the human asked you to stop waiting, do not re-arm it.'
 
   const requireActionShape = (
     label: string,
@@ -129,7 +132,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     'flag',
     {
       description:
-        'Raise an item for the human. Use kind="question" whenever you are about to STOP and WAIT on the human — a decision, a missing credential, an ambiguity you cannot resolve, or a recommendation / next step you are ending your turn on ("recommend X — go?", "want me to ...?", "say the word"). ONE ASK, ONE SURFACE: if an existing board row already represents this same dependency, set that row to blocked instead and DO NOT create a question item; use a question item only when no existing board row owns the ask. The test is not whether you are mid-conversation; it is whether your next move depends on their answer — such a moment left only in chat is invisible, so flag it. kind="note" = a non-blocking assumption/caveat/workaround; kind="done" = a finished milestone, used sparingly. A question must carry: title = the ask, detail = one-sentence TL;DR, next_step = ONE concrete human action, action_owner = decision (they choose) | task (they do it) | approval (they approve and the agent acts), impact = why it matters now, and optional next_after = what immediately follows. decision/approval requires 2-4 options (recommendation first); task must omit options. Put all history, reasoning, files, PRs and links in collapsed context. Copilot question responses include a `watch` launch contract: immediately run its `shell_command` as a detached background task using the returned values; on completion call pending(). One question, two channels: if the human answers in chat, record it with answer. project/stream/agent are inferred automatically.',
+        'Raise an item for the human. Use kind="question" whenever you are about to STOP and WAIT on the human — a decision, a missing credential, an ambiguity you cannot resolve, or a recommendation / next step you are ending your turn on ("recommend X — go?", "want me to ...?", "say the word"). ONE ASK, ONE SURFACE: if an existing board row already represents this same dependency, set that row to blocked instead and DO NOT create a question item; use a question item only when no existing board row owns the ask. The test is not whether you are mid-conversation; it is whether your next move depends on their answer — such a moment left only in chat is invisible, so flag it. kind="note" = a non-blocking assumption/caveat/workaround; kind="done" = a finished milestone, used sparingly. A question must carry: title = the ask, detail = one-sentence TL;DR, next_step = ONE concrete human action, action_owner = decision (they choose) | task (they do it) | approval (they approve and the agent acts), impact = why it matters now, and optional next_after = what immediately follows. decision/approval requires 2-4 options (recommendation first); task must omit options. Put all history, reasoning, files, PRs and links in collapsed context. Copilot question responses include a `watch` launch contract: immediately run its `shell_command` as a detached background task using the returned values; on completion call pending() as its on_completion says. A timeout is not an answer: re-run the same command, which waits longer each time; if the human asked you to stop waiting, do not re-arm. One question, two channels: if the human answers in chat, record it with answer. project/stream/agent are inferred automatically.',
       inputSchema: {
         kind: z.enum(['question', 'note', 'done']),
         title: z.string().min(1).max(120),
@@ -554,6 +557,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
         project: s.project,
         title,
         label,
+        agent: s.agent,
         expectedBoardVersion: board_version,
         expectedRevision: expected_revision,
         note,
@@ -594,7 +598,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
       inputSchema: {
         title: z.string().optional(),
         full: z.boolean().optional(),
-        watch: z.boolean().optional().describe('Copilot only: with a title, return host-owned watches for this board’s blocked actions. Use to re-arm after a timeout or restart; do not launch a second copy of a watch already running.'),
+        watch: z.boolean().optional().describe('Copilot only: with a title, return host-owned watches for this board’s blocked actions. Use to re-arm after a timeout or restart; each re-arm of an unchanged ask waits longer. A row whose watch the human stopped gets none. Do not launch a second copy of a watch already running.'),
       },
     },
     async ({ title, full, watch }) => {
@@ -633,7 +637,10 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
         const board = getBoardByTitle(db, s.project, title)
         if (board && !deliver(board)) continue
         const watches = watch && board?.status === 'active'
-          ? board.rows.filter((row) => row.status === 'blocked').map((row) => rowWatch(row, s.project))
+          ? board.rows.filter((row) => row.status === 'blocked')
+            .map((row) => ({ row, ask: rowWatchedAsk(row) }))
+            .filter(({ ask }) => !watchStoppedForGood(ask))
+            .map(({ row, ask }) => rowWatch(row, s.project, ask))
           : undefined
         const payload = board ? shapeBoard(board, { full, ledger }) : { found: false }
         return {

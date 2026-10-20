@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import { openDb } from './store.js'
-import { waitForBoardResponse, waitForQuestionResponse } from './watch.js'
+import { WATCH_STOPPED_EXIT, waitForBoardResponse, waitForQuestionResponse } from './watch.js'
 
-function boundedEnv(name: string, fallback: number, min: number, max: number): number {
-  const parsed = Number(process.env[name])
+function boundedEnv(name: string, fallback: number | undefined, min: number, max: number): number | undefined {
+  const raw = process.env[name]
+  const parsed = raw === undefined || raw.trim() === '' ? Number.NaN : Number(raw)
   if (!Number.isFinite(parsed)) return fallback
   return Math.min(max, Math.max(min, parsed))
 }
@@ -26,7 +27,8 @@ const db = openDb(dbPath)
 try {
   const options = {
     pollMs: boundedEnv('AGENT_INBOX_WATCH_POLL_MS', 1_000, 50, 60_000),
-    timeoutMs: boundedEnv('AGENT_INBOX_WATCH_TIMEOUT_MS', 30 * 60_000, 1_000, 24 * 60 * 60_000),
+    // Unset: the wait backs off from the ask's own age (issue #217).
+    timeoutMs: boundedEnv('AGENT_INBOX_WATCH_TIMEOUT_MS', undefined, 1_000, 24 * 60 * 60_000),
   }
   const result = actionVersion === undefined
     ? await waitForQuestionResponse(db, id, options)
@@ -35,6 +37,9 @@ try {
     process.stdout.write('Agent Inbox reply ready. Call pending().\n')
   } else if (result === 'closed') {
     process.stdout.write(rowMode ? 'Agent Inbox row action closed.\n' : 'Agent Inbox question closed.\n')
+  } else if (result === 'stopped') {
+    process.stdout.write('Agent Inbox: the human asked you to stop waiting; do not re-arm. Their answer will arrive via pending().\n')
+    process.exitCode = WATCH_STOPPED_EXIT
   } else {
     process.stderr.write('Agent Inbox watcher timed out.\n')
     process.exitCode = 124

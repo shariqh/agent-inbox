@@ -107,7 +107,7 @@ function humanHalves(row) {
   return halves
 }
 
-function rowPickup(row) {
+export function rowPickup(row) {
   const halves = humanHalves(row)
   if (!halves.length || halves.some((h) => !h.at)) return { pickedUp: false, pickedUpAt: null, pickedUpBy: '' }
   const latest = halves.reduce((a, b) => (Date.parse(b.at) > Date.parse(a.at) ? b : a))

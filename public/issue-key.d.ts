@@ -60,5 +60,7 @@ export interface IssueKeySets {
 }
 
 export function issueKey(repo: unknown, number: unknown): string | null
+/** Every issue a PR closes, from a closing_refs record bound to the row's fetched_at; null when there is none. */
+export function closingKeys(link: IssueKeyLink): string[] | null
 export function issueKeyFor(entity: IssueKeyEntity | null, link: IssueKeyLink | null): IssueIdentity | null
 export function issueKeySets(entities: IssueKeySetEntity[], links: IssueKeyLink[]): IssueKeySets

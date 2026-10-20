@@ -151,9 +151,10 @@ describe('conditional snapshot polling', () => {
     await bootApp(db, {
       interceptFetch: async (input, init, next) => {
         // History revalidates its own content-hashed representation (#185); the
-        // time-driven half of that is pinned in conditional-history.test.ts.
+        // time-driven half of that is pinned in conditional-history.test.ts. The
+        // sub-issue graph is a store-token snapshot of its own (#103).
         const path = String(input).split('?')[0]!
-        if (!SNAPSHOTS.has(path) && path !== '/api/activity/history') {
+        if (!SNAPSHOTS.has(path) && path !== '/api/activity/history' && path !== '/api/issues') {
           freshHeaders.push(new Headers(init?.headers).get('if-none-match'))
         }
         return proxy(input, init, next)

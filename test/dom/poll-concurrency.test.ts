@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // Issue #161: one poll tick issues its independent reads together, so its wall
-// time is bounded by the slowest read rather than the sum of all seven. The
+// time is bounded by the slowest read rather than the sum of all eight. The
 // tick's safety rules must survive that: an older tick never overwrites a newer
 // one, each read degrades exactly as it did when the reads were serial, and a
 // viewer restart between two reads of one tick never mixes two servers' data.
@@ -19,7 +19,7 @@ afterEach(() => { db?.close(); db = null; vi.unstubAllGlobals() })
 const AGENT = { project: 'alpha', stream: 'main', agent: 'copilot' } as const
 const POLL_READS = [
   '/api/activity', '/api/activity/history', '/api/boards', '/api/boards/archived',
-  '/api/items', '/api/links', '/api/projects/closed',
+  '/api/issues', '/api/items', '/api/links', '/api/projects/closed',
 ]
 const route = (input: RequestInfo | URL): string => String(input).split('?')[0]!
 const isGet = (init: RequestInit | undefined): boolean => (init?.method ?? 'GET') === 'GET'
@@ -97,7 +97,7 @@ describe('concurrent poll reads (issue #161)', () => {
     expect(badgeCount()).toBe(3)
   })
 
-  it('degrades failed history, closed-project and link reads exactly as before', async () => {
+  it('degrades failed history, closed-project, link and issue-graph reads exactly as before', async () => {
     db = freshDb()
     let failing = false
     await bootApp(db, {
@@ -105,6 +105,7 @@ describe('concurrent poll reads (issue #161)', () => {
         if (failing && route(input) === '/api/activity/history') return new Response('unavailable', { status: 503 })
         if (failing && route(input) === '/api/projects/closed') throw new TypeError('closed projects offline')
         if (failing && route(input) === '/api/links') return new Response('<!doctype html>', { status: 404 })
+        if (failing && route(input) === '/api/issues') throw new TypeError('issue graph offline')
         return next()
       },
     })

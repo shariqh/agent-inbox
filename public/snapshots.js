@@ -20,12 +20,23 @@ const boards = (value) => Array.isArray(value) && value.every((board) =>
   && Array.isArray(board.rows) && board.rows.every((row) => strings(row, ['id', 'label', 'status']))
   && record(board.progress) && ['done', 'countable', 'fraction'].every((key) => Number.isFinite(board.progress[key])))
 const spans = (value) => Array.isArray(value) && value.every(record)
+// Issue #103: the sub-issue graph, version 1. Only its shape is checked here;
+// public/issues.js validates each node and edge again before drawing it. A
+// root's `hierarchy` status is additive within version 1: absent, or one of
+// three known values.
+const HIERARCHY = new Set([undefined, null, 'ok', 'unavailable'])
+const issueGraph = (value) => record(value) && value.version === 1
+  && Array.isArray(value.nodes) && value.nodes.every((node) => strings(node, ['key']))
+  && Array.isArray(value.edges) && value.edges.every((edge) => strings(edge, ['from', 'to']))
+  && Array.isArray(value.roots) && value.roots.every((root) => strings(root, ['key']) && HIERARCHY.has(root.hierarchy))
+  && record(value.aliases)
 const validators = new Map([
   ['/api/items', items],
   ['/api/items/history', history],
   ['/api/boards', boards],
   ['/api/boards/archived', boards],
   ['/api/activity/history', spans],
+  ['/api/issues', issueGraph],
 ])
 // The only route whose query string selects one of its own representations
 // (#185). Anywhere else a query names a different representation, such as the

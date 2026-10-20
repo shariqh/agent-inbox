@@ -1,6 +1,7 @@
 // Types for public/source.js (issue #30). Deliberately a LOCAL entity shape
 // rather than an extension of card.d.ts's CardItem — items and boards both feed
 // these builders, and keeping card.d.ts out of the graph keeps them independent.
+import type { IssueView, IssueViewRow } from './issues.js'
 
 export interface LinkedEntity {
   project?: string
@@ -9,6 +10,9 @@ export interface LinkedEntity {
   issue_ref?: number | null
   /** issue #157 — where the branch is pushed; absent/null means `repo` itself */
   head_repo?: string | null
+  /** issue #103 PR2 — a plan's explicit pin, which outranks its PR and branch issue */
+  issue_pin_repo?: string | null
+  issue_pin_number?: number | null
 }
 
 /** One cached /api/links row — the store's SourceLink, over the wire. */
@@ -38,6 +42,8 @@ export interface CachedLink {
   checked_at: string
   error: string | null
   revision: number
+  /** issue #103 PR1b — every closing reference, bound to fetched_at; JSON text or parsed */
+  closing_refs?: unknown
 }
 
 export type ChipTone = 'merged' | 'good' | 'bad' | 'neutral' | 'muted' | 'issue'
@@ -53,6 +59,12 @@ export interface IssueRef {
   num: number
   url: string
   title: string
+  /** owner/name#number, the repository lowercased; null for a number with no usable repository */
+  key: string | null
+  /** the repository the number belongs to, as shown; null when unknown */
+  repo: string | null
+  /** only a certain identity gets relationships (#103 §4.2) */
+  certain: boolean
 }
 
 export interface PreviewRef {
@@ -65,6 +77,10 @@ export interface PreviewRef {
 export interface SourceOptions {
   tabbable?: boolean
   preview?: boolean
+  /** issue #103 PR3 — the frame's sub-issue view; absent or null draws plain chips */
+  issues?: IssueView | null
+  /** a plan row drawn for its plan: its own issue link, when it has one, replaces the plan's */
+  row?: IssueViewRow | { id: string } | null
 }
 
 export interface PrDetail {
@@ -81,7 +97,7 @@ export function indexLinks(links: CachedLink[] | null | undefined): Map<string, 
 export function linkFor(index: Map<string, CachedLink> | null, entity: LinkedEntity | null): CachedLink | null
 export function safeHttpUrl(url: unknown): string
 export function textLinkHtml(url: unknown, label: unknown): string
-export function issueRef(entity: LinkedEntity | null, link: CachedLink | null): IssueRef | null
+export function issueRef(entity: LinkedEntity | null, link: CachedLink | null, row?: IssueViewRow | { id: string } | null): IssueRef | null
 export const PREVIEW_TTL_MS: number
 export function previewRef(link: CachedLink | null | undefined, nowMs: number): PreviewRef | null
 export function prChip(link: CachedLink | null): PrChip | null
@@ -94,6 +110,20 @@ export function sourceChipsHtml(
   opts?: SourceOptions,
 ): string
 export function sourceBlockHtml(
+  index: Map<string, CachedLink> | null,
+  entity: LinkedEntity | null,
+  nowMs: number,
+  opts?: SourceOptions,
+): string
+/** issue #103 PR3 — a plan row's own issue chips for its matrix note cell; '' for a row with no link */
+export function rowIssueChipsHtml(
+  row: IssueViewRow | { id: string } | null,
+  plan: LinkedEntity | null,
+  nowMs: number,
+  opts?: SourceOptions,
+): string
+/** issue #103 PR3 — a plan card's parent trail and sub-issues; '' when there is nothing to draw */
+export function issueRelationsHtml(
   index: Map<string, CachedLink> | null,
   entity: LinkedEntity | null,
   nowMs: number,

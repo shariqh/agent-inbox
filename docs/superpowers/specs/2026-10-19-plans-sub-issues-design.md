@@ -592,7 +592,7 @@ every POLL_INTERVAL_MS (60 s), one busy guard:
 | Closed issue | 60 min |
 | Soft failure: `offline`, `rate-limit`, `gh-failed` | 10 min |
 | Soft failure: `no-gh`, `auth` | 60 min |
-| Hard failure: `not-found`, `forbidden`, `moved` | 60 min |
+| Hard failure: `not-found`, `forbidden`, `moved` | 10 min (60 before revision 5) |
 
 - **Queue order:** never fetched, then nudged, then oldest `checked_at`, then key. Every attempt
   advances `checked_at`, moving the key behind every key that has waited longer.
@@ -708,7 +708,7 @@ gh api --hostname github.com graphql -f query=<document for n> \
 | Class | Codes | Cached data | Retry |
 |---|---|---|---|
 | **Soft:** we could not ask | `offline`, `rate-limit`, `gh-failed`, `no-gh`, `auth` | Kept and shown with its age | 10 min, or 60 min for `no-gh` and `auth` |
-| **Hard:** GitHub answered no | `not-found` (deleted, never existed, a PR number, or invisible to the token), `forbidden` (including SSO), `moved` | **Deleted at once:** relationships and cached titles disappear and the chip says "unavailable" | 60 min |
+| **Hard:** GitHub answered no | `not-found` (deleted, never existed, a PR number, or invisible to the token), `forbidden` (including SSO), `moved` | **Deleted at once:** relationships and cached titles disappear and the chip says "unavailable" | 10 min (revision 5) |
 
 Soft failures and successful snapshots age the same way:
 
@@ -1442,3 +1442,33 @@ Sources:
   - **Truncation (§6):** each omitted node is counted in exactly one of `roots`, `ancestors` and
     `children`.
   - **Entities (§4.4):** rows join `listIssueEntities` in PR2, when they gain a link.
+- **Revision 5 (2026-10-19):** refinements made while implementing PR1b.
+  - **Hard failures retry every 10 minutes (§5.4, §5.8),** not 60. A soft failure after a
+    hard one keeps the hard error but moves its time forward (revision 4), and rule 6 then
+    hides every newer observation of that issue from other roots until the issue's own next
+    success. The row cannot tell "GitHub said no" from "a later attempt could not ask", so
+    every hard-failed key uses the soft schedule; that bounds the hidden window to one soft TTL
+    after the cause clears, and an SSO authorization or restored access shows within 10
+    minutes. The cost is a tenth of a batch per hard-failed key every 10 minutes.
+  - **Completion never throws on a bad snapshot (§5.5).** A result that fails the v1
+    validator is recorded as a soft `gh-failed`; one throw would roll back the whole batch,
+    and the same keys would be claimed and refetched every tick, starving the queue.
+  - **Budget edges (§5.3).** The wait for `resetAt` is capped at one hour, and a
+    rate-limited request that reported no `rateLimit` backs the class off for 10 minutes.
+    Reported costs below 1 count as 1.
+  - **Parsing fails closed (§5.7).** An alias with both a `NOT_FOUND`/`FORBIDDEN` and any
+    other error is soft: data is deleted only on a clear no. An unreadable immediate parent
+    makes the hierarchy unavailable (it is never read as "no parent"); an unreadable or
+    repeated higher ancestor ends the walk with `ancestors_end: limit`. A child list that
+    lost an invalid entry is marked truncated, so it is no evidence of absence. Invalid
+    child counts are omitted, never coerced.
+  - **`closing_refs` (§4.2).** One unreadable reference voids the whole record (stored as
+    absent), because dropping it could turn two references into one, a false certainty.
+  - **Nudges (§5.4).** A link has no transition time, so its `fetched_at` stands for it: a
+    MERGED or CLOSED link nudges once it was fetched after the key's `checked_at`. A settled
+    PR is re-read hourly, so it re-nudges at most hourly, the closed-issue TTL.
+  - **Wiring (§5.1, §5.2).** The shared tick moved into `src/issue-poller.ts` as
+    `startGithubPoller`, replacing `startPrPoller`; the poller does not need
+    `src/issue-graph.ts`. The boundary test covers the whole stdio graph (adding `shape.ts`,
+    `watch.ts`, `version.ts` and `server-source.ts`) and checks that its list is closed under
+    relative imports.

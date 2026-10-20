@@ -16,6 +16,7 @@ import {
   reopenProject,
 } from '../src/store.js'
 import type { LinkTarget, SourceLink } from '../src/store.js'
+import { issueKeyFor } from '../public/issue-key.js'
 import {
   classifyChecks,
   classifyError,
@@ -46,7 +47,10 @@ function ghPayload(over: Record<string, unknown> = {}): string {
     isDraft: false,
     reviewDecision: 'REVIEW_REQUIRED',
     statusCheckRollup: [{ __typename: 'CheckRun', status: 'COMPLETED', conclusion: 'SUCCESS', name: 'test' }],
-    closingIssuesReferences: [{ number: 30, url: 'https://github.com/shariqh/agent-inbox/issues/30' }],
+    closingIssuesReferences: [{
+      id: 'I_30', number: 30, url: 'https://github.com/shariqh/agent-inbox/issues/30',
+      repository: { id: 'R_1', name: 'agent-inbox', owner: { id: 'U_1', login: 'shariqh' } },
+    }],
     body: 'Links the inbox to its source issue and PR.',
     updatedAt: '2026-07-26T10:00:00Z',
     isCrossRepository: false,
@@ -162,6 +166,34 @@ describe('parsePrPayload', () => {
     expect(pr.issue_url).toBeNull()
   })
 
+  // issue #103 PR1b: every reference, so a PR that closes several is never guessed
+  it('records every closing reference with its repository, in GitHub\'s order', () => {
+    const pr = parsePrPayload(ghPayload({
+      closingIssuesReferences: [
+        { number: 30, url: 'u', repository: { name: 'agent-inbox', owner: { login: 'shariqh' } } },
+        { number: 7, url: 'u', repository: { name: 'Lib', owner: { login: 'Other' } } },
+      ],
+    }), SAME)!
+    expect(pr.closing_refs).toEqual([{ repo: 'shariqh/agent-inbox', number: 30 }, { repo: 'Other/Lib', number: 7 }])
+    // the #30 chip still reads its first reference
+    expect(pr.issue_number).toBe(30)
+  })
+
+  it('records a PR that closes nothing as an empty list, and an unreadable list as no record at all', () => {
+    expect(parsePrPayload(ghPayload({ closingIssuesReferences: [] }), SAME)!.closing_refs).toEqual([])
+    expect(parsePrPayload(ghPayload({ closingIssuesReferences: undefined }), SAME)!.closing_refs).toBeNull()
+    // dropping only the bad reference could turn two into one, a false certainty
+    for (const bad of [
+      { number: 7, url: 'u' },
+      { number: 7, repository: { name: '..', owner: { login: 'x' } } },
+      { number: 0, repository: { name: 'lib', owner: { login: 'x' } } },
+      { number: '7', repository: { name: 'lib', owner: { login: 'x' } } },
+    ]) {
+      const refs = [{ number: 30, repository: { name: 'agent-inbox', owner: { login: 'shariqh' } } }, bad]
+      expect(parsePrPayload(ghPayload({ closingIssuesReferences: refs }), SAME)!.closing_refs).toBeNull()
+    }
+  })
+
   it('returns null for the empty array gh emits when there is no PR, and for junk', () => {
     expect(parsePrPayload('[]', SAME)).toBeNull()
     expect(parsePrPayload('not json', SAME)).toBeNull()
@@ -199,7 +231,7 @@ describe('dueTargets (TTL policy)', () => {
     pr_number: 41, pr_url: null, pr_title: null, pr_state: 'OPEN', pr_draft: false,
     pr_head_sha: null, preview_url: null, preview_environment: null, preview_deployment_id: null,
     preview_updated_at: null, preview_error: null, revision: 1,
-    review_decision: null, checks: null, issue_number: null, issue_url: null, issue_title: null,
+    review_decision: null, checks: null, issue_number: null, issue_url: null, issue_title: null, closing_refs: null,
     tldr: null, fetched_at: new Date(T0).toISOString(), checked_at: new Date(T0).toISOString(), error: null,
     ...over,
   })
@@ -282,6 +314,38 @@ describe('refreshOnce', () => {
     await refreshOnce(db, { run: async () => { calls++; return '[]' }, max: 3 })
     expect(calls).toBe(3)
     expect(MAX_PER_TICK).toBeGreaterThan(0)
+  })
+
+  it('stores every closing reference bound to the fetched_at it wrote (issue #103)', async () => {
+    seedItem('30-x')
+    await refreshOnce(db, {
+      run: async () => ghPayload({
+        closingIssuesReferences: [
+          { number: 30, repository: { name: 'n', owner: { login: 'o' } } },
+          { number: 31, repository: { name: 'n', owner: { login: 'o' } } },
+        ],
+      }),
+    })
+    const link = listSourceLinks(db)[0]!
+    expect(JSON.parse(link.closing_refs!)).toEqual({
+      fetched_at: link.fetched_at, refs: [{ repo: 'o/n', number: 30 }, { repo: 'o/n', number: 31 }],
+    })
+    // several references: never a certain PR identity; the branch issue decides
+    expect(issueKeyFor({ repo: 'o/n', issue_ref: 30 }, link)).toEqual({ key: 'o/n#30', source: 'branch', certain: true })
+  })
+
+  it('starts no new target after deadlineMs, but finishes the one in flight', async () => {
+    for (let i = 0; i < 4; i++) seedItem(`br-${i}`, `q${i}`)
+    let clock = 1_000
+    const calls: string[] = []
+    const done = await refreshOnce(db, {
+      now: () => clock,
+      deadlineMs: 46_000,
+      run: async (_r, branch) => { calls.push(branch); clock += 30_000; return '[]' },
+    })
+    // t=1s starts br-0; t=31s starts br-1; t=61s is past the deadline
+    expect(calls).toHaveLength(2)
+    expect(done).toBe(2)
   })
 
   it('caches "there is no PR" as a real answer, not as an error', async () => {
@@ -580,24 +644,36 @@ describe('the poller runs in the viewer process only', () => {
 
   // the stdio channel is the MCP server's protocol wire: a `gh` subprocess that
   // inherited it, or an update notifier that printed to it, would corrupt MCP
-  it('src/mcp.ts and src/mcp-server.ts never import prstate, directly or transitively', () => {
-    // the whole reachable graph of the stdio server, not just its two entry files
-    // (a comment naming prstate.ts is fine — an IMPORT of it is not)
-    const imports = /(?:from\s+'\.\/prstate\.js'|require\('\.\/prstate)/
-    for (const file of ['src/mcp.ts', 'src/mcp-server.ts', 'src/store.ts', 'src/scope.ts', 'src/infer.ts', 'src/group.ts', 'src/hook.ts', 'src/hook-cli.ts']) {
-      expect(read(file), `${file} pulls prstate into the stdio server`).not.toMatch(imports)
+  // the whole reachable graph of the stdio server, not just its two entry files
+  const STDIO_GRAPH = [
+    'src/mcp.ts', 'src/mcp-server.ts', 'src/store.ts', 'src/scope.ts', 'src/infer.ts', 'src/group.ts',
+    'src/hook.ts', 'src/hook-cli.ts', 'src/shape.ts', 'src/watch.ts', 'src/version.ts', 'src/server-source.ts',
+  ]
+
+  it('no file of the stdio server graph imports prstate or the issue poller, directly or transitively', () => {
+    // (a comment naming either file is fine — an IMPORT of it is not)
+    const imports = /(?:(?:from|import)\s*\(?\s*'\.\/(?:prstate|issue-poller)\.js'|require\('\.\/(?:prstate|issue-poller))/
+    for (const file of STDIO_GRAPH) {
+      expect(read(file), `${file} pulls a gh poller into the stdio server`).not.toMatch(imports)
+    }
+    // the list is the graph: every relative import of a listed file is listed too
+    for (const file of STDIO_GRAPH) {
+      for (const [, spec] of read(file).matchAll(/(?:from|import)\s*\(?\s*'\.\/([\w-]+)\.js'/g)) {
+        expect(STDIO_GRAPH, `${file} imports ./${spec}.js`).toContain(`src/${spec}.ts`)
+      }
     }
   })
 
-  it('src/prstate.ts opens with a header saying so', () => {
+  it('src/prstate.ts and src/issue-poller.ts open with a header saying so', () => {
     expect(read('src/prstate.ts').slice(0, 400)).toContain('VIEWER PROCESS ONLY')
+    expect(read('src/issue-poller.ts').slice(0, 400)).toContain('VIEWER PROCESS ONLY')
   })
 
-  it('src/viewer-server.ts starts it, and createViewer does NOT (a timer there would leak into every viewer test)', () => {
-    expect(read('src/viewer-server.ts')).toContain('startPrPoller(db)')
+  it('src/viewer-server.ts starts the one GitHub tick, and createViewer does NOT (a timer there would leak into every viewer test)', () => {
+    expect(read('src/viewer-server.ts')).toContain('startGithubPoller(db)')
     expect(read('src/viewer-server.ts')).toContain('startLocalViewer(app, port)')
     expect(read('src/viewer-server.ts')).not.toContain('AGENT_INBOX_HOST')
-    expect(read('src/viewer.ts')).not.toContain('startPrPoller')
+    expect(read('src/viewer.ts')).not.toMatch(/startGithubPoller|startPrPoller|issue-poller/)
   })
 
   it('the local HTTP boundary never enters the stdio MCP import graph', () => {
@@ -627,10 +703,12 @@ describe('PR state never enters the attention set', () => {
 })
 
 describe('the source_links cache is only ever touched through store.ts', () => {
-  it('src/prstate.ts contains no raw SQL', () => {
-    const src = readFileSync(join(REPO, 'src/prstate.ts'), 'utf8')
-    for (const sql of ['SELECT ', 'INSERT ', 'UPDATE ', 'DELETE ', 'db.prepare']) {
-      expect(src, `prstate.ts reaches around store.ts with ${sql}`).not.toContain(sql)
+  it('src/prstate.ts and src/issue-poller.ts contain no raw SQL', () => {
+    for (const file of ['src/prstate.ts', 'src/issue-poller.ts']) {
+      const src = readFileSync(join(REPO, file), 'utf8')
+      for (const sql of ['SELECT ', 'INSERT ', 'UPDATE ', 'DELETE ', 'db.prepare', 'db.exec']) {
+        expect(src, `${file} reaches around store.ts with ${sql}`).not.toContain(sql)
+      }
     }
   })
 

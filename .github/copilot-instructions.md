@@ -61,8 +61,10 @@ Run the build before `npm run electron`; the development shell starts the built
   the hardening marker Electron requires before reuse. `localhost` is an exact
   browser alias, not a wider bind. Keep it out of the MCP graph and do not add a
   host-widening environment variable.
-- **Strict process boundaries:** `src/prstate.ts` and `src/stamp.ts` are
-  viewer-process concerns; they must not enter the MCP import graph.
+- **Strict process boundaries:** `src/prstate.ts`, `src/issue-poller.ts` (#103)
+  and `src/stamp.ts` are viewer-process concerns; they must not enter the MCP
+  import graph. The two `gh` pollers share one tick (issues first, then PRs
+  with a 45-second start deadline) and one busy guard.
   `src/shape.ts` trims agent-facing MCP read payloads and must not affect viewer
   API payloads. `src/hook.ts`/`hook-cli.ts` and `src/watch.ts`/`watch-cli.ts` are
   separate host adapters that still access data through `store.ts`.
@@ -152,6 +154,11 @@ Run the build before `npm run electron`; the development shell starts the built
   snapshot and `fetched_at` in that same statement; a soft failure keeps the last
   answer, snapshot or hard failure, and only advances `checked_at`. Reads validate
   the v1 shape and treat anything else as "no snapshot", never an exception.
+  The poller applies them only through `completeIssueRefresh`, after
+  `claimIssueRefresh` leased the keys; both are one `.immediate()` transaction,
+  a lease expires after 60 s, and a claim skips any key whose `checked_at` moved
+  since the queue was read. `closing_refs` is bound to the `fetched_at` written
+  beside it; an older process's success write unbinds it.
 - Race-sensitive state changes must be atomic SQL statements or transactions.
   Do not replace conditioned/version-pinned updates with SELECT-then-UPDATE.
   Human replies, annotations, and handled marks can change from another process
@@ -214,7 +221,8 @@ Run the build before `npm run electron`; the development shell starts the built
   detached command can wake the originating session. Preserve `process.execArgv`
   and the explicit database path so source and built execution behave alike.
 - Keep network access out of the MCP process. Repository/branch identity is
-  inferred locally; live PR state is fetched only by the viewer's `gh` poller.
+  inferred locally; live PR and issue state is fetched only by the viewer's `gh`
+  pollers (`src/prstate.ts`, `src/issue-poller.ts`).
   PR/check state is ambient information and must not enter the human-attention
   predicate.
 - Treat `scripts/install-agents.sh`, `scripts/install-hooks.sh`, and their shared

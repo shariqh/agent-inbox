@@ -16,8 +16,9 @@ import { join } from 'node:path'
 import Database from 'better-sqlite3'
 import {
   insertItem, listBoards, listIssueSnapshots, listItems, listSourceLinks, openDb, recordIssueFailure,
-  upsertIssueSnapshot,
+  upsertIssueSnapshot, upsertSourceLink,
 } from '../src/store.js'
+import { issueKeyFor } from '../public/issue-key.js'
 import { createViewer } from '../src/viewer.js'
 import { at, snapshot } from './issue-fixtures.js'
 
@@ -164,5 +165,49 @@ describe('a v1.3.1 process sharing a hub with this build (issue #103)', () => {
     oldItem(restarted, 'old-122', 122)
     expect(listIssueSnapshots(hub)).toHaveLength(3)
     expect(listItems(hub).map((item) => item.id)).toContain('old-122')
+  })
+
+  // PR1b: closing_refs is bound to the fetched_at written beside it, so an old
+  // process that rewrites the row (moving fetched_at, never touching the column
+  // it does not know) unbinds it, and the PR identity stops being certain.
+  it('a v1.3.1 upsertSourceLink unbinds closing_refs; its failure write leaves them bound', () => {
+    const old = oldProcess()
+    const hub = newProcess()
+    oldItem(old, 'old-120', 120)
+    const item = listItems(hub)[0]!
+    const identity = () => issueKeyFor(item, listSourceLinks(hub)[0] ?? null)
+
+    upsertSourceLink(hub, {
+      repo: REPO, branch: '120-work', head_repo: REPO, pr_number: 41, pr_state: 'OPEN', issue_number: 117,
+      closing_refs: [{ repo: REPO, number: 117 }],
+    })
+    expect(identity()).toEqual({ key: `${REPO}#117`, source: 'pr', certain: true })
+
+    // a failure keeps fetched_at, so the record stays bound
+    vi.setSystemTime(Date.parse(at(61)))
+    old.prepare(V131.recordLinkFailure).run({ repo: REPO, branch: '120-work', head_repo: REPO, error: 'offline', now: at(61) })
+    expect(identity()).toEqual({ key: `${REPO}#117`, source: 'pr', certain: true })
+
+    // the old success write moves fetched_at: the column survives but is unbound
+    vi.setSystemTime(Date.parse(at(62)))
+    old.prepare(V131.upsertSourceLink).get({
+      repo: REPO, branch: '120-work', head_repo: REPO, provider: 'github', pr_number: 41, pr_url: null, pr_title: 'Old PR',
+      pr_state: 'OPEN', pr_head_sha: null, pr_draft: 0, review_decision: null, checks: null, issue_number: 117,
+      issue_url: null, issue_title: null, tldr: null, preview_url: null, preview_environment: null,
+      preview_deployment_id: null, preview_updated_at: null, preview_error: null, now: at(62),
+    })
+    const link = listSourceLinks(hub)[0]!
+    expect(JSON.parse(link.closing_refs!)).toMatchObject({ fetched_at: at(60) })
+    expect(link.fetched_at).toBe(at(62))
+    // the chip still shows #117, as v1.3.1 does, but draws no relationships
+    expect(identity()).toEqual({ key: `${REPO}#117`, source: 'pr', certain: false })
+
+    // the next write from this build binds it again
+    vi.setSystemTime(Date.parse(at(63)))
+    upsertSourceLink(hub, {
+      repo: REPO, branch: '120-work', head_repo: REPO, pr_number: 41, pr_state: 'OPEN', issue_number: 117,
+      closing_refs: [{ repo: REPO, number: 117 }],
+    })
+    expect(identity()).toEqual({ key: `${REPO}#117`, source: 'pr', certain: true })
   })
 })

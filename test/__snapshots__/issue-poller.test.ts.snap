@@ -1,0 +1,32 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`relationsQuery and the gh argv (§5.6) > declares exactly n variable sets and n aliases for every batch size, deterministically 1`] = `
+"query Relations10($o0: String!, $n0: String!, $k0: Int!, $o1: String!, $n1: String!, $k1: Int!, $o2: String!, $n2: String!, $k2: Int!, $o3: String!, $n3: String!, $k3: Int!, $o4: String!, $n4: String!, $k4: Int!, $o5: String!, $n5: String!, $k5: Int!, $o6: String!, $n6: String!, $k6: Int!, $o7: String!, $n7: String!, $k7: Int!, $o8: String!, $n8: String!, $k8: Int!, $o9: String!, $n9: String!, $k9: Int!) {
+  r0: repository(owner: $o0, name: $n0) { nameWithOwner issue(number: $k0) { ...Root } }
+  r1: repository(owner: $o1, name: $n1) { nameWithOwner issue(number: $k1) { ...Root } }
+  r2: repository(owner: $o2, name: $n2) { nameWithOwner issue(number: $k2) { ...Root } }
+  r3: repository(owner: $o3, name: $n3) { nameWithOwner issue(number: $k3) { ...Root } }
+  r4: repository(owner: $o4, name: $n4) { nameWithOwner issue(number: $k4) { ...Root } }
+  r5: repository(owner: $o5, name: $n5) { nameWithOwner issue(number: $k5) { ...Root } }
+  r6: repository(owner: $o6, name: $n6) { nameWithOwner issue(number: $k6) { ...Root } }
+  r7: repository(owner: $o7, name: $n7) { nameWithOwner issue(number: $k7) { ...Root } }
+  r8: repository(owner: $o8, name: $n8) { nameWithOwner issue(number: $k8) { ...Root } }
+  r9: repository(owner: $o9, name: $n9) { nameWithOwner issue(number: $k9) { ...Root } }
+  rateLimit { cost remaining resetAt }
+}
+
+fragment Node on Issue { number title state stateReason repository { nameWithOwner } }
+
+fragment Root on Issue {
+  ...Node
+  subIssuesSummary { total completed }
+  parent {
+    ...Node
+    subIssuesSummary { total completed }
+    parent { ...Node parent { ...Node parent { ...Node parent { ...Node
+      parent { ...Node parent { ...Node parent { ...Node } } } } } } }
+  }
+  subIssues(first: 100) { totalCount pageInfo { hasNextPage } nodes { ...Node subIssuesSummary { total completed } } }
+}
+"
+`;

@@ -1,12 +1,12 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
-import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { hookLaunchers, hooksHome, installRuntime, installStaged, stageRuntime } from './hooks-runtime.js'
 import type { HooksHome, StagedRuntime } from './hooks-runtime.js'
+import { removeScratchDirs, scratchDir } from './scratch.js'
 
 const require = createRequire(import.meta.url)
 const PAYLOAD_CLI = resolve(import.meta.dirname, '..', 'scripts', 'runtime-payload.mjs')
@@ -81,7 +81,7 @@ function selectRuntimePayload(opts: {
 }
 
 function fixture(script: string): string {
-  const root = mkdtempSync(join(tmpdir(), 'setup-runner-'))
+  const root = scratchDir('setup-runner-')
   const scripts = join(root, 'scripts')
   mkdirSync(scripts)
   const installer = join(scripts, 'install-agents.sh')
@@ -89,6 +89,8 @@ function fixture(script: string): string {
   chmodSync(installer, 0o755)
   return root
 }
+
+afterEach(removeScratchDirs)
 
 /** Stages a real runtime PAYLOAD DIRECTORY under `appRoot` (issue #74) —
  *  scripts/runtime-payload.mjs's own on-disk shape: a `runtime-manifest.json`
@@ -168,16 +170,16 @@ describe('Electron one-click setup runner', () => {
   })
 
   it('resolves the packaged checkout from setup-info and refuses a missing installer', () => {
-    const packaged = mkdtempSync(join(tmpdir(), 'setup-packaged-'))
+    const packaged = scratchDir('setup-packaged-')
     const checkout = fixture('exit 0\n')
     writeFileSync(join(packaged, 'setup-info.json'), JSON.stringify({ repoRoot: checkout }))
 
     expect(installerRepoRoot(packaged)).toBe(checkout)
-    expect(installerRepoRoot(mkdtempSync(join(tmpdir(), 'setup-missing-')))).toBe(null)
+    expect(installerRepoRoot(scratchDir('setup-missing-'))).toBe(null)
   })
 
   it('spawns only the fixed installer with validated target arguments', async () => {
-    const argsFile = join(tmpdir(), `setup-args-${process.pid}-${Date.now()}`)
+    const argsFile = join(scratchDir('setup-args-'), 'args')
     const root = fixture(`#!/bin/bash
 printf '%s\\n' "$@" > "$ARGS_FILE"
 printf 'installed %s\\n' "$3"
@@ -858,7 +860,7 @@ describe('createInstallBinding (#216)', () => {
 
 describe('selectRuntimePayload (issue #74)', () => {
   function releaseRoot(): { root: string; arm: { path: string; digest: string }; x64: { path: string; digest: string } } {
-    const root = mkdtempSync(join(tmpdir(), 'runtime-select-'))
+    const root = scratchDir('runtime-select-')
     const arm = stagePayloadDir(root, 'runtime/darwin-arm64', { platform: 'darwin', arch: 'arm64' })
     const x64 = stagePayloadDir(root, 'runtime/darwin-x64', { platform: 'darwin', arch: 'x64' })
     return { root, arm, x64 }
@@ -909,7 +911,7 @@ describe('selectRuntimePayload (issue #74)', () => {
     ['missing setup lock helper', { omitFile: 'scripts/setup-lock.sh' }],
     ['missing rollback step helper', { omitFile: 'scripts/run-isolated.mjs' }],
   ])('rejects %s at selection and immediately before spawn', async (_label, override) => {
-    const root = mkdtempSync(join(tmpdir(), 'runtime-identity-'))
+    const root = scratchDir('runtime-identity-')
     const payload = stagePayloadDir(root, 'runtime/darwin-arm64', {
       platform: 'darwin',
       arch: 'arm64',
@@ -953,7 +955,7 @@ describe('selectRuntimePayload (issue #74)', () => {
     expect(result.reason).toBe('missing-payload')
     expect(result.key).toBe('darwin-x64')
 
-    const linuxRoot = mkdtempSync(join(tmpdir(), 'runtime-select-linux-'))
+    const linuxRoot = scratchDir('runtime-select-linux-')
     const linuxPayloads = {
       'linux-x64': stagePayloadDir(linuxRoot, 'runtime/linux-x64', { platform: 'linux', arch: 'x64' }),
       'linux-arm64': stagePayloadDir(linuxRoot, 'runtime/linux-arm64', { platform: 'linux', arch: 'arm64' }),
@@ -979,7 +981,7 @@ describe('selectRuntimePayload (issue #74)', () => {
   })
 
   it('rejects Win32 and unknown hosts even when metadata contains matching payload keys', () => {
-    const root = mkdtempSync(join(tmpdir(), 'runtime-select-unsupported-'))
+    const root = scratchDir('runtime-select-unsupported-')
     const win32 = selectRuntimePayload({
       appRoot: root,
       platform: 'win32',
@@ -998,7 +1000,7 @@ describe('selectRuntimePayload (issue #74)', () => {
   })
 
   it('reports no-release-payloads for a dev/legacy bundle so callers fall back untouched', () => {
-    const root = mkdtempSync(join(tmpdir(), 'runtime-dev-'))
+    const root = scratchDir('runtime-dev-')
     const result = selectRuntimePayload({ appRoot: root, platform: 'darwin', arch: 'arm64', info: null })
     expect(result).toMatchObject({ ok: false, reason: 'no-release-payloads' })
     const linuxDev = selectRuntimePayload({ appRoot: root, platform: 'linux', arch: 'x64', info: null })
@@ -1077,7 +1079,7 @@ describe('selectRuntimePayload (issue #74)', () => {
   it('rejects an external identical runtime-manifest.json symlink', () => {
     const { root, arm } = releaseRoot()
     const manifestPath = join(root, arm.path, 'runtime-manifest.json')
-    const outside = join(mkdtempSync(join(tmpdir(), 'runtime-manifest-outside-')), 'runtime-manifest.json')
+    const outside = join(scratchDir('runtime-manifest-outside-'), 'runtime-manifest.json')
     writeFileSync(outside, readFileSync(manifestPath))
     rmSync(manifestPath)
     symlinkSync(outside, manifestPath)
@@ -1091,7 +1093,7 @@ describe('selectRuntimePayload (issue #74)', () => {
   })
 
   it.skipIf(!['darwin', 'linux'].includes(process.platform))('re-verifies a release payload immediately before spawn and refuses tampering', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'runtime-reverify-'))
+    const root = scratchDir('runtime-reverify-')
     const key = `${process.platform}-${process.arch}`
     const payload = stagePayloadDir(root, `runtime/${key}`, {
       platform: process.platform,
@@ -1122,7 +1124,7 @@ describe('selectRuntimePayload (issue #74)', () => {
   })
 
   it('rejects a payload path that resolves to a file, not a directory', () => {
-    const root = mkdtempSync(join(tmpdir(), 'runtime-not-dir-'))
+    const root = scratchDir('runtime-not-dir-')
     mkdirSync(join(root, 'runtime'), { recursive: true })
     writeFileSync(join(root, 'runtime', 'darwin-arm64'), 'not a directory')
     const digest = createHash('sha256').update('not a directory').digest('hex')
@@ -1136,7 +1138,7 @@ describe('selectRuntimePayload (issue #74)', () => {
   })
 
   it('rejects a payload directory with no runtime-manifest.json', () => {
-    const root = mkdtempSync(join(tmpdir(), 'runtime-no-manifest-'))
+    const root = scratchDir('runtime-no-manifest-')
     mkdirSync(join(root, 'runtime', 'darwin-arm64'), { recursive: true })
     const result = selectRuntimePayload({
       appRoot: root,
@@ -1148,7 +1150,7 @@ describe('selectRuntimePayload (issue #74)', () => {
   })
 
   it("rejects a manifest whose platform/arch don't match the map key it was selected under", () => {
-    const root = mkdtempSync(join(tmpdir(), 'runtime-mismatch-'))
+    const root = scratchDir('runtime-mismatch-')
     // Staged under the darwin-arm64 key, but its own manifest says x64 — a
     // build-time mix-up that must never be trusted at selection time either.
     const payload = stagePayloadDir(root, 'runtime/darwin-arm64', { platform: 'darwin', arch: 'x64' })
@@ -1162,7 +1164,7 @@ describe('selectRuntimePayload (issue #74)', () => {
   })
 
   it('rejects a payload directory with no installer script', () => {
-    const root = mkdtempSync(join(tmpdir(), 'runtime-no-installer-'))
+    const root = scratchDir('runtime-no-installer-')
     const payload = stagePayloadDir(root, 'runtime/darwin-arm64', { platform: 'darwin', arch: 'arm64', withInstaller: false })
     const result = selectRuntimePayload({
       appRoot: root,
@@ -1174,8 +1176,8 @@ describe('selectRuntimePayload (issue #74)', () => {
   })
 
   it('rejects a payload directory that is itself a symlink, regardless of where it resolves', () => {
-    const root = mkdtempSync(join(tmpdir(), 'runtime-symlink-entry-'))
-    const outside = mkdtempSync(join(tmpdir(), 'runtime-symlink-entry-outside-'))
+    const root = scratchDir('runtime-symlink-entry-')
+    const outside = scratchDir('runtime-symlink-entry-outside-')
     const payload = stagePayloadDir(outside, 'darwin-arm64', { platform: 'darwin', arch: 'arm64' })
     mkdirSync(join(root, 'runtime'), { recursive: true })
     symlinkSync(join(outside, 'darwin-arm64'), join(root, 'runtime', 'darwin-arm64'))
@@ -1190,8 +1192,8 @@ describe('selectRuntimePayload (issue #74)', () => {
   })
 
   it('rejects a payload directory that escapes the app root through an ancestor symlink', () => {
-    const root = mkdtempSync(join(tmpdir(), 'runtime-symlink-app-'))
-    const outside = mkdtempSync(join(tmpdir(), 'runtime-symlink-outside-'))
+    const root = scratchDir('runtime-symlink-app-')
+    const outside = scratchDir('runtime-symlink-outside-')
     // The ancestor `runtime` segment is a symlink out of appRoot — the final
     // `darwin-arm64` path component itself is a real (non-symlink) directory,
     // so this is caught by REAL-path containment, not the symlinked-entry check.
@@ -1208,9 +1210,9 @@ describe('selectRuntimePayload (issue #74)', () => {
   })
 
   it('resolves correctly through a symlinked app root whose real path contains a legitimate payload', () => {
-    const real = mkdtempSync(join(tmpdir(), 'runtime-symlink-real-'))
+    const real = scratchDir('runtime-symlink-real-')
     const { path: relPath, digest } = stagePayloadDir(real, 'runtime/darwin-arm64', { platform: 'darwin', arch: 'arm64' })
-    const outerParent = mkdtempSync(join(tmpdir(), 'runtime-symlink-outer-'))
+    const outerParent = scratchDir('runtime-symlink-outer-')
     const linkedAppRoot = join(outerParent, 'app-root-link')
     symlinkSync(real, linkedAppRoot)
 
@@ -1225,7 +1227,7 @@ describe('selectRuntimePayload (issue #74)', () => {
   })
 
   it('reads setup-info.json fail-open, tolerating a missing or corrupt file', () => {
-    const root = mkdtempSync(join(tmpdir(), 'setup-info-read-'))
+    const root = scratchDir('setup-info-read-')
     expect(readSetupInfo(root)).toBe(null)
     writeFileSync(join(root, 'setup-info.json'), 'not json{{{')
     expect(readSetupInfo(root)).toBe(null)
@@ -1238,8 +1240,8 @@ describe('runAgentInstall runtime payload argv (issue #74)', () => {
   it.skipIf(process.platform !== 'linux' || process.arch !== 'x64')(
     'flows a baked linux-x64 release through exact selection, re-verification, trusted core, and fixed argv',
     async () => {
-      const argsFile = join(tmpdir(), `setup-linux-release-args-${process.pid}-${Date.now()}`)
-      const root = mkdtempSync(join(tmpdir(), 'setup-linux-release-'))
+      const argsFile = join(scratchDir('setup-linux-release-args-'), 'args')
+      const root = scratchDir('setup-linux-release-')
       const payload = stagePayloadDir(root, 'runtime/linux-x64', {
         platform: 'linux',
         arch: 'x64',
@@ -1289,7 +1291,7 @@ printf '%s\\n' "$@" > "$ARGS_FILE"
   it.skipIf(!['darwin', 'linux'].includes(process.platform))(
     'refuses a valid payload for the other POSIX architecture even when both payloads verify',
     async () => {
-      const root = mkdtempSync(join(tmpdir(), 'setup-runtime-cross-arch-'))
+      const root = scratchDir('setup-runtime-cross-arch-')
       const hostKey = `${process.platform}-${process.arch}`
       const otherArch = process.arch === 'arm64' ? 'x64' : 'arm64'
       const otherKey = `${process.platform}-${otherArch}`
@@ -1325,8 +1327,8 @@ printf '%s\\n' "$@" > "$ARGS_FILE"
   )
 
   it.skipIf(!['darwin', 'linux'].includes(process.platform))('passes explicit --runtime-source/--runtime-digest for a release install, and dev installs stay unchanged', async () => {
-    const argsFile = join(tmpdir(), `setup-runtime-args-${process.pid}-${Date.now()}`)
-    const root = mkdtempSync(join(tmpdir(), 'setup-runtime-payload-'))
+    const argsFile = join(scratchDir('setup-runtime-args-'), 'args')
+    const root = scratchDir('setup-runtime-payload-')
     const key = `${process.platform}-${process.arch}`
     const payload = stagePayloadDir(root, `runtime/${key}`, {
       platform: process.platform,
@@ -1363,7 +1365,7 @@ printf 'installed %s\\n' "$3"
   })
 
   it('keeps the exact dev/legacy argv when no runtimePayload is passed', async () => {
-    const argsFile = join(tmpdir(), `setup-dev-args-${process.pid}-${Date.now()}`)
+    const argsFile = join(scratchDir('setup-dev-args-'), 'args')
     const root = fixture(`#!/bin/bash
 printf '%s\\n' "$@" > "$ARGS_FILE"
 `)
@@ -1388,7 +1390,7 @@ describe.skipIf(!['darwin', 'linux'].includes(process.platform))('runAgentInstal
 
   /** A release bundle carrying this host's payload of `version`, and its runtimePayload as main passes it. */
   function release(version = '1.1.0'): { source: StagedRuntime; payload: { key: string; path: string; digest: string; packageVersion: string } } {
-    const appRoot = mkdtempSync(join(tmpdir(), 'setup-hooks-bundle-'))
+    const appRoot = scratchDir('setup-hooks-bundle-')
     const source = stageRuntime(join(appRoot, 'runtime', key), version)
     return { source, payload: { key, path: source.dir, digest: source.digest, packageVersion: version } }
   }

@@ -17,7 +17,9 @@
 #   npm run install:hooks -- --apply --migrate    # also retire the legacy .sh Stop hooks
 #   npm run install:hooks -- --apply --uninstall  # remove this install's hooks
 #   <runtime>/scripts/install-hooks.sh --apply --move-only  # Setup: only move a Setup runtime's set
+#   <runtime>/scripts/install-hooks.sh --move-only          # its dry run; exits 1 if there is nothing to move
 #
+# --move-only with --uninstall or --force is a usage error (exit 2).
 # Hooks from another Agent Inbox install (a Setup runtime, another checkout)
 # are refused, never doubled: docs/hooks.md, "One set of hooks".
 set -u
@@ -37,12 +39,23 @@ for arg in "$@"; do
     --migrate) MIGRATE=1 ;;
     --replace-existing) REPLACE=1 ;;
     --move-only) MOVE_ONLY=1 ;;
-    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
     *) echo "unknown flag: $arg (try --help)" >&2; exit 2 ;;
   esac
 done
 if [ "$UNINSTALL" -eq 1 ] && [ "$REPLACE" -eq 1 ]; then
   echo "install-hooks: --replace-existing installs this set in place of every other; it cannot be combined with --uninstall" >&2
+  exit 2
+fi
+# Setup's move (#206) replaces a Setup runtime's set and nothing else. Refused
+# here, in both modes, before the setup lock or any preflight (#240): a runtime
+# never forwards --force, and a helper refusal would reach the caller as exit 1.
+if [ "$MOVE_ONLY" -eq 1 ] && [ "$UNINSTALL" -eq 1 ]; then
+  echo "install-hooks: --move-only moves a Setup runtime's hooks; it cannot be combined with --uninstall" >&2
+  exit 2
+fi
+if [ "$MOVE_ONLY" -eq 1 ] && [ "$FORCE" -eq 1 ]; then
+  echo "install-hooks: --move-only moves a Setup runtime's hooks; it cannot be combined with --force" >&2
   exit 2
 fi
 

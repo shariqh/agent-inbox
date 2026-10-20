@@ -1,10 +1,10 @@
 # Design: Plans that model GitHub sub-issues and dependencies (issue #103)
 
-**Date:** 2026-10-19 (revision 3)
+**Date:** 2026-10-19 (revision 4)
 **Status:** Approved for implementation. The owner chose the smaller first slice and decided all
 eight questions (§15). Revision 2 resolved the six blocking review findings; revision 3 makes the
-node cap deterministic and clarifies queue capacity and child counts (§19). Nothing here is
-implemented yet.
+node cap deterministic and clarifies queue capacity and child counts (§19). PR1a is implemented;
+revision 4 records the refinements it made (§19).
 **Milestone:** v1.4. Part of #103.
 **Scope of this PR:** this document only. Zero source or test changes.
 
@@ -406,9 +406,9 @@ Snapshot JSON, version 1, for #120 as fetched on 2026-10-19:
 | PR | Function | Behavior |
 |---|---|---|
 | 1a | `upsertIssueSnapshot(db, { repo, number, snapshot, startedAt })` | Validates the v1 shape; applies only when `startedAt` is later than the stored `checked_at` (the **attempt rule**: the most recently started attempt wins, so a late answer from an older attempt is ignored); sets `snapshot`, `fetched_at`, `checked_at`, clears `error`, bumps `revision`, then prunes |
-| 1a | `recordIssueFailure(db, { repo, number, error, startedAt })` | Same attempt rule. A soft error keeps `snapshot` and `fetched_at`; a hard error clears both **in the same statement** |
+| 1a | `recordIssueFailure(db, { repo, number, error, startedAt })` | Same attempt rule. A soft error keeps the last answer: `snapshot` and `fetched_at`, or a stored hard error's code, so it only advances `checked_at`; a hard error clears both **in the same statement** |
 | 1a | `listIssueSnapshots(db)` | Every row, parsed; invalid JSON or shape counts as "no snapshot" and never throws |
-| 1a | `listIssueEntities(db)` | Link fields of open items, active and archived plans and their rows, with each one's project and whether that project is closed |
+| 1a | `listIssueEntities(db)` | Link fields of open items, active and archived plans and (from PR2, when rows gain a link) their rows, with each one's project and whether that project is closed |
 | 1a | `pruneIssueSnapshots(db, { nowMs })` | Deletes rows unchecked for 30 days, like `pruneSourceLinks()` |
 | 1b | `claimIssueRefresh(db, …)`, `completeIssueRefresh(db, …)` | The lease protocol in §5.5, each one `.immediate()` transaction |
 | 1b | `upsertSourceLink` | Also writes `closing_refs`, bound to the `fetched_at` it writes |
@@ -439,21 +439,26 @@ of its batch, which every root in that batch shares.
    unless an absence sorted before it names the same parent; then C's parent is unknown.
    Observations after the candidate are never consulted, so an older claim cannot return once a
    newer one has been refuted.
-3. **Contradictory equals.** If a membership with the candidate's `t` and rank names a different
-   parent, C's parent is unknown and C is marked `conflict`.
+3. **Contradictory equals.** If a membership (or, within one batch, a pointer) with the
+   candidate's `t` and rank names a different parent, C's parent is unknown and C is marked
+   `conflict`.
 4. **Children.** P's children are the issues whose accepted parent is P. They take the order of
    P's own freshest list (GitHub's order); accepted children missing from that list follow, by
-   key. Counts come from the freshest observation that has them: P's own snapshot, a snapshot
-   whose immediate parent is P, or a snapshot listing P as a child. When P appears only higher up
-   an ancestor walk, it has no counts and none are shown. The UI reports `total − visible` as
-   "not visible to your GitHub account".
+   key. Counts come from the freshest observation that has them (at equal `t`, in rule 7's
+   order): P's own snapshot, a snapshot whose immediate parent is P, or a snapshot listing P as a
+   child. When P appears only higher up an ancestor walk, it has no counts and none are shown.
+   The UI reports `total − visible` as "not visible to your GitHub account".
 5. **Cycles.** GitHub forbids cycles, so a cycle among accepted parents means an observation is
    stale. In each cycle the decision with the oldest deciding `t` is dropped (all of them when
    several share that `t`), and the cycle's issues are marked `conflict`. Ancestor walks stop
    after eight levels or at the first repeated issue.
 6. **Hard failures.** A hard failure for K at attempt time `tF` has already deleted K's snapshot
    (§4.4). Every other observation about K with `t ≤ tF` is dropped (facts, K as a child, K as a
-   parent), and K is reported unavailable. An observation newer than `tF` counts normally.
+   parent), and K is reported unavailable. An observation newer than `tF` counts normally. Every
+   cached hard failure counts, displayed or not. A pointer or membership that names K as the
+   parent is not dropped but becomes "parent unknown" at its `t` and rank, so an older claim about
+   that child cannot return. A later soft failure keeps K's hard error (§4.4) and moves `tF` to
+   that attempt, which only ever hides more.
 7. **Facts.** The freshest observation of an issue's facts wins. At equal `t`, the issue's own
    root snapshot beats a parent's list, which beats an ancestor walk. Facts never decide
    parentage.
@@ -779,6 +784,9 @@ The response reports the omissions exactly in `truncated`:
 | `ancestors` | Distinct ancestors omitted because only omitted roots needed them |
 | `children` | Distinct children omitted |
 | `edges` | `contains` edges omitted |
+
+Each omitted node is counted once: an omitted root's own node is that root (`roots`); otherwise
+an ancestor some omitted root needed (`ancestors`); otherwise a child (`children`).
 
 A kept root whose children were cut reports `children_omitted`, and its list says "+N not shown".
 
@@ -1421,3 +1429,16 @@ Sources:
     run, and the section says what the UI shows when the queue is over capacity.
   - **Child counts (§4.5):** counts are claimed only for the root, its immediate parent and its
     children, matching the query in §5.6.
+- **Revision 4 (2026-10-19):** refinements made while implementing PR1a.
+  - **Soft after hard (§4.4):** a soft failure keeps a stored hard error, as it keeps a snapshot.
+    Otherwise the next offline attempt would erase the evidence rule 6 needs, and titles GitHub
+    refused would return from other issues' older lists.
+  - **Rule 6 (§4.5):** every cached hard failure counts, displayed or not, and a claim naming a
+    refused parent becomes "parent unknown" instead of vanishing, so an older claim cannot return
+    from a display-only list nobody refreshes.
+  - **Rule 3 (§4.5):** two pointers of one batch that disagree are contradictory equals too.
+  - **Rule 4 (§4.5):** counts observed at equal `t` follow rule 7's source order, so the choice
+    never depends on input order.
+  - **Truncation (§6):** each omitted node is counted in exactly one of `roots`, `ancestors` and
+    `children`.
+  - **Entities (§4.4):** rows join `listIssueEntities` in PR2, when they gain a link.

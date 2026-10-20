@@ -12,15 +12,16 @@ import {
   CLAIM_COLD_MS, annotateBoardRow, annotateItem, archiveBoard, dismissItem, endActivity, getBoard, getItem,
   insertItem, listBoards, listItems, markAnnotationDelivered, markHandledDelivered,
   markItemAnnotationDelivered, markReplySeen, markRowHandled, openDb, readSnapshotState,
-  recordActivityCall, replyItem, resolveItem, touchActivity, unarchiveBoard, updateBoardRow,
-  upsertActivity, upsertBoard,
+  recordActivityCall, recordIssueFailure, replyItem, resolveItem, touchActivity, unarchiveBoard, updateBoardRow,
+  upsertActivity, upsertBoard, upsertIssueSnapshot,
 } from '../src/store.js'
 import { groupItems } from '../src/group.js'
 import { createViewer } from '../src/viewer.js'
 import { startLocalViewer } from '../src/viewer-network.js'
+import { facts, snapshot } from './issue-fixtures.js'
 
 const NOW = new Date('2026-09-20T12:00:00.000Z')
-const ROUTES = ['/api/items', '/api/boards', '/api/boards/archived'] as const
+const ROUTES = ['/api/items', '/api/boards', '/api/boards/archived', '/api/issues'] as const
 const SCOPE = { project: 'snapshot-cache', stream: 'topic', agent: 'test' }
 
 describe('viewer conditional snapshots', () => {
@@ -119,7 +120,12 @@ describe('viewer conditional snapshots', () => {
     // Issue #184: with no closed items the page is the whole item list, plus an
     // empty closed-history summary.
     const page = { ...groupItems(listItems(db)), history: { total: 0, loaded: 0, before: null, older: [] } }
-    const expected = [page, listBoards(db), listBoards(db, { status: 'archived' })]
+    // Issue #103: nothing here links an issue, so the graph is complete and empty.
+    const graph = {
+      version: 1, nodes: [], edges: [], roots: [], aliases: {},
+      truncated: { roots: 0, ancestors: 0, children: 0, edges: 0 },
+    }
+    const expected = [page, listBoards(db), listBoards(db, { status: 'archived' }), graph]
     for (const [index, route] of ROUTES.entries()) {
       expect(await (await app.request(route)).json()).toEqual(expected[index])
     }
@@ -691,6 +697,93 @@ describe('viewer conditional snapshots', () => {
         expect(response.headers.get('etag')).toBeNull()
       }
       expect(error).toHaveBeenCalled()
+    })
+  })
+
+  // Issue #103 (PR1a): the sub-issue graph is a sixth retained representation.
+  // Its bytes depend on the database alone, so the store tokens validate it;
+  // and no other representation carries GitHub data, so snapshot writes can
+  // never change their bytes.
+  describe('the issue graph representation (issue #103)', () => {
+    const ISSUES = '/api/issues'
+    const KEY = { repo: 'shariqh/agent-inbox', number: 120 }
+    const started = (minutes = 0) => new Date(NOW.getTime() + minutes * 60_000).toISOString()
+
+    function linked(connection = db, issue = 120) {
+      return insertItem(connection, {
+        ...SCOPE, kind: 'question', title: `About #${issue}`, repo: KEY.repo, issue_ref: issue,
+      })
+    }
+
+    function cache(connection = db, minutes = 0) {
+      return upsertIssueSnapshot(connection, {
+        ...KEY,
+        startedAt: started(minutes),
+        snapshot: snapshot('shariqh/agent-inbox#120', {
+          ancestors: [facts('shariqh/agent-inbox#117', { children_total: 10, children_completed: 0 })],
+        }),
+      })
+    }
+
+    it('serves the complete empty v1 graph until something is cached', async () => {
+      linked()
+      expect(await (await app.request(ISSUES)).json()).toEqual({
+        version: 1, nodes: [], edges: [], roots: [], aliases: {},
+        truncated: { roots: 0, ancestors: 0, children: 0, edges: 0 },
+      })
+    })
+
+    it.each(['same', 'other'] as const)('answers 200 once a snapshot lands on the %s connection, then 304', async (source) => {
+      linked()
+      const initial = await tag(ISSUES)
+      cache(source === 'same' ? db : writer)
+      const updated = await changed(ISSUES, initial)
+      expect(updated.body.roots.map((r: { key: string }) => r.key)).toEqual(['shariqh/agent-inbox#120'])
+      expect(updated.body.edges).toEqual([expect.objectContaining({ from: 'shariqh/agent-inbox#117', to: 'shariqh/agent-inbox#120' })])
+      expect((await conditional(ISSUES, updated.etag)).status).toBe(304)
+      recordIssueFailure(writer, { ...KEY, error: 'not-found', startedAt: started(1) })
+      const failed = await changed(ISSUES, updated.etag)
+      expect(failed.body.nodes).toEqual([])
+      expect(failed.body.roots[0]).toMatchObject({ failure: 'hard', error: 'not-found' })
+    })
+
+    it('leaves the bytes and validators of every other representation untouched by snapshot writes', async () => {
+      linked()
+      board()
+      const others = ['/api/items', '/api/items?scope=attention', '/api/items/history', '/api/boards', '/api/boards/archived']
+      const before = await Promise.all(others.map(async (route) => {
+        const response = await app.request(route)
+        return { route, etag: response.headers.get('etag')!, body: await response.text() }
+      }))
+      const issues = await tag(ISSUES)
+      cache(writer)
+      recordIssueFailure(writer, { ...KEY, error: 'offline', startedAt: started(1) })
+      upsertIssueSnapshot(writer, { repo: 'a/x', number: 5, snapshot: snapshot('a/x#5'), startedAt: started(2) })
+      for (const { route, etag, body } of before) {
+        expect((await conditional(route, etag)).status, route).toBe(304)
+        expect(await (await app.request(route)).text(), route).toBe(body)
+      }
+      expect((await conditional(ISSUES, issues)).status).toBe(200)
+    })
+
+    it('changes when what links an issue changes, with no snapshot write', async () => {
+      const id = linked()
+      cache()
+      const shown = await tag(ISSUES)
+      resolveItem(writer, id)
+      const resolved = await changed(ISSUES, shown)
+      expect(resolved.body.roots).toEqual([])
+      expect(resolved.body.nodes).toEqual([])
+    })
+
+    it('never revalidates or is revalidated by another route', async () => {
+      linked()
+      cache()
+      const issues = await tag(ISSUES)
+      const items = await tag('/api/items')
+      expect(issues).not.toBe(items)
+      expect((await conditional(ISSUES, items)).status).toBe(200)
+      expect((await conditional('/api/items', issues)).status).toBe(200)
     })
   })
 })

@@ -10,10 +10,12 @@ import {
   listItems, listItemsPage, listOpenQuestions, resolveItem, dismissItem, annotateItem, replyItem, snoozeItem,
   listBoards, archiveBoard, unarchiveBoard, annotateBoardRow, snoozeBoardRow,
   markRowHandled, clearRowHandled, listActivity, listActivitySpans, listSourceLinks, defaultDbPath,
-  closeProject, reopenProject, closedProjects, readSnapshotState,
+  closeProject, reopenProject, closedProjects, readSnapshotState, listIssueEntities, listIssueSnapshots,
 } from './store.js'
 import type { ResponseKind, SnapshotReadState } from './store.js'
 import { groupItems } from './group.js'
+import { buildIssueGraph } from './issue-graph.js'
+import { issueKeySets } from '../public/issue-key.js'
 import { hooksSettingsBlock } from './hook.js'
 import { agentConfigFiles, readAgentHosts, registeredRuntimeVersion } from './agent-hosts.js'
 import type { AgentHosts, HostRegistration, RuntimeVerifier } from './agent-hosts.js'
@@ -562,7 +564,7 @@ function etagMatches(requested: string | undefined, etag: string): boolean {
 
 function conditionalSnapshot(
   db: Database.Database,
-  name: 'items' | 'attention-items' | 'history-items' | 'boards' | 'archived-boards',
+  name: 'items' | 'attention-items' | 'history-items' | 'boards' | 'archived-boards' | 'issues',
   read: () => object,
 ): Handler {
   // One representation per registration, local to this viewer instance.
@@ -781,6 +783,15 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
   // PURE: it never triggers a gh fetch, so the frontend's 3s poll can hit it
   // freely. The only writer is the poller src/viewer-server.ts starts.
   app.get('/api/links', (c) => c.json(listSourceLinks(db)))
+
+  // Issue #103: the sub-issue graph, reconciled purely from cached GitHub
+  // snapshots and the issues that open items and active or archived plans link
+  // (src/issue-graph.ts). Its bytes depend on the database alone, so it is its
+  // own retained representation with its own validator. /api/items and
+  // /api/boards carry no GitHub data, so a snapshot write never changes their
+  // bytes. Empty until the viewer's poller (PR1b) writes snapshots.
+  app.get('/api/issues', conditionalSnapshot(db, 'issues', () =>
+    buildIssueGraph(listIssueSnapshots(db), issueKeySets(listIssueEntities(db), listSourceLinks(db)))))
 
   app.post('/api/items/:id/resolve', (c) => {
     resolveItem(db, c.req.param('id'))

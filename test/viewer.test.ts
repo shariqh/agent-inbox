@@ -5,9 +5,10 @@ import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
-import { openDb, insertItem, listItems, getItem, annotateItem, replyItem, snoozeItem, answerItem, markReplySeen, upsertBoard as writeBoard, listBoards, annotateBoardRow, snoozeBoardRow, markRowHandled, markHandledDelivered, upsertActivity, endActivity, closeProject, closedProjects, upsertSourceLink } from '../src/store.js'
+import { openDb, insertItem, listItems, getItem, annotateItem, replyItem, snoozeItem, answerItem, markReplySeen, upsertBoard as writeBoard, listBoards, annotateBoardRow, snoozeBoardRow, markRowHandled, markHandledDelivered, upsertActivity, endActivity, closeProject, closedProjects, upsertSourceLink, archiveBoard, resolveItem, upsertIssueSnapshot } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
 import { releaseRuntime, registerHost } from './release-runtime.js'
+import { facts, snapshot } from './issue-fixtures.js'
 
 function freshDb(): Database.Database {
   return openDb(join(mkdtempSync(join(tmpdir(), 'view-')), 'inbox.db'))
@@ -739,6 +740,52 @@ describe('source links api (issue #30)', () => {
     const res = await createViewer(freshDb()).request('/api/links')
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual([])
+  })
+})
+
+// Issue #103 (PR1a): the sub-issue graph. Empty until the viewer's poller
+// (PR1b) caches snapshots; these tests cache them directly through the store.
+describe('issue graph api (issue #103)', () => {
+  const REPO = 'shariqh/agent-inbox'
+  const SCOPE = { project: 'agent-inbox', stream: '120-ahp-input', agent: 'test' }
+
+  it('is the complete empty graph on a fresh db, so nothing renders differently', async () => {
+    const res = await createViewer(freshDb()).request('/api/issues')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toContain('application/json')
+    expect(await res.json()).toEqual({
+      version: 1, nodes: [], edges: [], roots: [], aliases: {},
+      truncated: { roots: 0, ancestors: 0, children: 0, edges: 0 },
+    })
+  })
+
+  it('serves what open items and plans link: closed projects and archived plans displayed, not refreshed', async () => {
+    const db = freshDb()
+    const startedAt = new Date().toISOString()
+    const cache = (key: string, opts: Parameters<typeof snapshot>[1] = {}) => {
+      const hash = key.indexOf('#')
+      upsertIssueSnapshot(db, { repo: key.slice(0, hash), number: Number(key.slice(hash + 1)), snapshot: snapshot(key, opts), startedAt })
+    }
+    insertItem(db, { ...SCOPE, kind: 'question', title: 'Which parent?', repo: REPO, issue_ref: 120 })
+    upsertBoard(db, { ...SCOPE, stream: '119-adapter', title: 'Old plan', rows: [], repo: REPO, issueRef: 119 })
+    const old = listBoards(db).find((board) => board.title === 'Old plan')!
+    archiveBoard(db, old.id, old.revision)
+    insertItem(db, { ...SCOPE, project: 'retired', kind: 'note', title: 'Peek', repo: 'a/x', issue_ref: 5 })
+    closeProject(db, 'retired')
+    resolveItem(db, insertItem(db, { ...SCOPE, kind: 'note', title: 'History', repo: REPO, issue_ref: 121 }))
+    // a PR row cached before closing references were recorded: display-only (§4.2)
+    insertItem(db, { ...SCOPE, stream: '122-legacy', kind: 'note', title: 'Legacy', repo: REPO, issue_ref: 122 })
+    upsertSourceLink(db, { repo: REPO, branch: '122-legacy', pr_number: 9, pr_state: 'OPEN', issue_number: 122 })
+    cache(`${REPO}#120`, { ancestors: [facts(`${REPO}#117`, { children_total: 10, children_completed: 0 })] })
+    for (const key of [`${REPO}#119`, 'a/x#5', `${REPO}#121`, `${REPO}#122`]) cache(key)
+
+    const body = await (await createViewer(db).request('/api/issues')).json()
+    expect(body.roots.map((root: { key: string; refresh: boolean }) => [root.key, root.refresh])).toEqual([
+      ['a/x#5', false], [`${REPO}#119`, false], [`${REPO}#120`, true],
+    ])
+    expect(body.nodes.map((node: { key: string }) => node.key)).toEqual(['a/x#5', `${REPO}#117`, `${REPO}#119`, `${REPO}#120`])
+    expect(body.edges).toEqual([{ kind: 'contains', from: `${REPO}#117`, to: `${REPO}#120`, position: 0, observed_at: startedAt }])
+    expect(body.aliases).toEqual({})
   })
 })
 

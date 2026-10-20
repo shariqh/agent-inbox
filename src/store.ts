@@ -321,6 +321,17 @@ function runMigrations(db: Database.Database): void {
       revision INTEGER NOT NULL DEFAULT 1,
       PRIMARY KEY (repo, branch, head_repo)
     );
+    CREATE TABLE IF NOT EXISTS issue_snapshots (
+      repo TEXT NOT NULL COLLATE NOCASE,
+      number INTEGER NOT NULL,
+      provider TEXT NOT NULL DEFAULT 'github',
+      snapshot TEXT,
+      fetched_at TEXT,
+      checked_at TEXT NOT NULL,
+      error TEXT,
+      revision INTEGER NOT NULL DEFAULT 1,
+      PRIMARY KEY (repo, number)
+    );
   `)
   ensureColumn(db, 'board_rows', 'context', `TEXT NOT NULL DEFAULT ''`)
   ensureColumn(db, 'board_rows', 'annotated_at', 'TEXT')
@@ -2823,6 +2834,303 @@ export function listLinkTargets(db: Database.Database): LinkTarget[] {
 export function pruneSourceLinks(db: Database.Database, opts: { nowMs?: number } = {}): void {
   const cutoff = new Date((opts.nowMs ?? Date.now()) - LINK_TTL_DAYS * 24 * 60 * 60000).toISOString()
   db.prepare(`DELETE FROM source_links_by_head WHERE checked_at < ?`).run(cutoff)
+}
+
+// ── GitHub issue snapshots: the sub-issue cache (issue #103, PR1a) ──────────
+//
+// One cached GitHub answer per repo-qualified issue: the issue, its ancestor
+// walk and its ordered children, as ONE validated JSON document replaced
+// atomically, like a source_links_by_head row (design §4.3). The viewer's
+// poller (PR1b) is the only production writer; src/issue-graph.ts reconciles
+// what listIssueSnapshots returns, and /api/issues serves the result.
+//
+// The key is the REQUESTED owner/name#number. `repo` is COLLATE NOCASE because
+// GitHub compares slugs case-insensitively, so a differently cased request
+// reuses the row; equal numbers in different repositories never meet.
+//
+// THE ATTEMPT RULE: a write applies only when its attempt STARTED after the
+// stored checked_at, so a slow answer from an older attempt can never replace a
+// newer success or failure. It is the WHERE clause of one upsert, never a read
+// followed by a write, so two viewers sharing the hub cannot interleave inside it.
+
+export type IssueState = 'OPEN' | 'CLOSED'
+export type IssueStateReason = 'COMPLETED' | 'NOT_PLANNED' | 'DUPLICATE' | 'REOPENED'
+/** Soft: GitHub could not be asked. Hard: GitHub answered no (§5.8). */
+export type IssueError =
+  | 'offline' | 'rate-limit' | 'gh-failed' | 'no-gh' | 'auth'
+  | 'not-found' | 'forbidden' | 'moved'
+
+export interface IssueFacts {
+  /** GitHub's own casing of nameWithOwner */
+  repo: string
+  number: number
+  title: string
+  state: IssueState
+  state_reason: IssueStateReason | null
+}
+
+/** subIssuesSummary; requested only for the root's immediate parent and its children (§5.6). */
+export interface IssueCounts {
+  children_total: number
+  children_completed: number
+}
+
+export type IssueRelative = IssueFacts & Partial<IssueCounts>
+
+export type IssueHierarchy =
+  | { status: 'ok'; total: number; completed: number; truncated: boolean; children: IssueRelative[] }
+  | { status: 'unavailable' }
+
+/** Snapshot JSON, version 1 (§4.3). */
+export interface IssueSnapshot {
+  v: 1
+  issue: IssueFacts
+  /** the walk upwards: [0] is the immediate parent, the only one with counts */
+  ancestors: IssueRelative[]
+  /** 'top': the walk reached an issue with no parent. 'limit': the last one's parent was not read. */
+  ancestors_end: 'top' | 'limit'
+  hierarchy: IssueHierarchy
+}
+
+export interface IssueSnapshotRow {
+  /** the requested owner/name, as first stored */
+  repo: string
+  number: number
+  provider: string
+  /** null before the first success, after a hard failure, or when the stored JSON is unreadable */
+  snapshot: IssueSnapshot | null
+  /** start time of the attempt that produced `snapshot` */
+  fetched_at: string | null
+  /** start time of the latest applied attempt, whatever its outcome */
+  checked_at: string
+  error: string | null
+  /** derived from `error`; a code this build does not know counts as soft */
+  failure: 'soft' | 'hard' | null
+  revision: number
+}
+
+/** The link fields of one open item or one active or archived plan (§4.4). */
+export interface IssueEntity {
+  kind: 'item' | 'plan'
+  id: string
+  project: string
+  /** the project is in the EFFECTIVE closed set (#32) */
+  project_closed: boolean
+  /** an archived plan; always false for an item */
+  archived: boolean
+  repo: string | null
+  stream: string
+  head_repo: string | null
+  issue_ref: number | null
+  /** content time; a legacy item without updated_at falls back to created_at */
+  updated_at: string
+}
+
+const ISSUE_SOFT_ERRORS = new Set(['offline', 'rate-limit', 'gh-failed', 'no-gh', 'auth'])
+const ISSUE_HARD_ERRORS = new Set(['not-found', 'forbidden', 'moved'])
+const ISSUE_HARD_ERRORS_SQL = [...ISSUE_HARD_ERRORS].map((code) => `'${code}'`).join(', ')
+const ISSUE_STATES = new Set(['OPEN', 'CLOSED'])
+const ISSUE_STATE_REASONS = new Set(['COMPLETED', 'NOT_PLANNED', 'DUPLICATE', 'REOPENED'])
+// GraphQL Int, the largest issue number GitHub can name
+const ISSUE_NUMBER_MAX = 2_147_483_647
+// src/prstate.ts's TITLE_MAX (300) plus the ellipsis its clip() appends
+const ISSUE_TITLE_MAX = 301
+// GitHub's eight hierarchy levels, and its 100 sub-issues per parent
+const ISSUE_ANCESTORS_MAX = 8
+const ISSUE_CHILDREN_MAX = 100
+// a snapshot row unchecked for this long belongs to an issue nobody links
+const ISSUE_TTL_DAYS = 30
+// The attempt rule compares stored times as TEXT, so only this one canonical
+// form (Date#toISOString) is accepted.
+const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/
+
+// parseRepoSlug's character class, without `.` or `..` as either part
+// (resolvePreviewPayload's rule): a slug that could be read as a path is refused.
+function validIssueSlug(repo: unknown): repo is string {
+  return typeof repo === 'string' && /^[\w.-]+\/[\w.-]+$/.test(repo)
+    && repo.split('/').every((part) => part !== '.' && part !== '..')
+}
+
+function validIssueNumber(n: unknown): n is number {
+  return typeof n === 'number' && Number.isInteger(n) && n >= 1 && n <= ISSUE_NUMBER_MAX
+}
+
+const validIssueCount = (n: unknown): n is number =>
+  typeof n === 'number' && Number.isInteger(n) && n >= 0 && n <= ISSUE_NUMBER_MAX
+
+function plainRecord(v: unknown): Record<string, unknown> | null {
+  return typeof v === 'object' && v !== null && !Array.isArray(v) ? v as Record<string, unknown> : null
+}
+
+// One issue of a snapshot, rebuilt from its validated fields alone, so nothing
+// else a caller attached (a body, a URL) is ever stored. `withCounts` says
+// whether this position may carry child counts at all.
+function issueRelative(value: unknown, withCounts: boolean): IssueRelative | null {
+  const v = plainRecord(value)
+  if (!v) return null
+  const { repo, number, title, state, state_reason: reason } = v
+  if (!validIssueSlug(repo) || !validIssueNumber(number)) return null
+  if (typeof title !== 'string' || title.length > ISSUE_TITLE_MAX) return null
+  if (typeof state !== 'string' || !ISSUE_STATES.has(state)) return null
+  if (reason !== null && (typeof reason !== 'string' || !ISSUE_STATE_REASONS.has(reason))) return null
+  const facts: IssueRelative = {
+    repo, number, title, state: state as IssueState, state_reason: reason as IssueStateReason | null,
+  }
+  const hasTotal = 'children_total' in v
+  const hasCompleted = 'children_completed' in v
+  if (!hasTotal && !hasCompleted) return facts
+  const { children_total: total, children_completed: completed } = v
+  if (!withCounts || !validIssueCount(total) || !validIssueCount(completed) || completed > total) return null
+  return { ...facts, children_total: total, children_completed: completed }
+}
+
+function issueRelatives(value: unknown, max: number, withCounts: (index: number) => boolean): IssueRelative[] | null {
+  if (!Array.isArray(value) || value.length > max) return null
+  const out: IssueRelative[] = []
+  for (const [index, entry] of value.entries()) {
+    const node = issueRelative(entry, withCounts(index))
+    if (!node) return null
+    out.push(node)
+  }
+  return out
+}
+
+function issueHierarchy(value: unknown): IssueHierarchy | null {
+  const v = plainRecord(value)
+  if (v?.status === 'unavailable') return { status: 'unavailable' }
+  if (v?.status !== 'ok') return null
+  const { total, completed, truncated } = v
+  if (!validIssueCount(total) || !validIssueCount(completed) || completed > total) return null
+  if (typeof truncated !== 'boolean') return null
+  const children = issueRelatives(v.children, ISSUE_CHILDREN_MAX, () => true)
+  return children ? { status: 'ok', total, completed, truncated, children } : null
+}
+
+// The v1 validator, on write and on read. The issue must carry the number it
+// was requested under; its repository may differ, because GitHub follows
+// repository redirects (§4.1).
+function issueSnapshot(value: unknown, number: number): IssueSnapshot | null {
+  const v = plainRecord(value)
+  if (!v || v.v !== 1) return null
+  const issue = issueRelative(v.issue, false)
+  if (!issue || issue.number !== number) return null
+  const ancestors = issueRelatives(v.ancestors, ISSUE_ANCESTORS_MAX, (index) => index === 0)
+  if (!ancestors) return null
+  const end = v.ancestors_end
+  if (end !== 'top' && !(end === 'limit' && ancestors.length > 0)) return null
+  const hierarchy = issueHierarchy(v.hierarchy)
+  return hierarchy ? { v: 1, issue, ancestors, ancestors_end: end, hierarchy } : null
+}
+
+function readIssueSnapshot(text: string | null, number: number): IssueSnapshot | null {
+  if (text === null) return null
+  try {
+    return issueSnapshot(JSON.parse(text), number)
+  } catch {
+    return null
+  }
+}
+
+function issueRowKey(repo: unknown, number: unknown): { repo: string; number: number } {
+  if (!validIssueSlug(repo) || !validIssueNumber(number)) {
+    throw new Error(`invalid issue key: ${String(repo)}#${String(number)}`)
+  }
+  return { repo, number }
+}
+
+function issueAttempt(startedAt: unknown): string {
+  if (typeof startedAt !== 'string' || !ISO_INSTANT.test(startedAt)
+    || new Date(Date.parse(startedAt)).toISOString() !== startedAt) {
+    throw new Error(`invalid issue attempt time: ${String(startedAt)}`)
+  }
+  return startedAt
+}
+
+// A successful refresh. Returns false when the attempt rule refused it.
+export function upsertIssueSnapshot(
+  db: Database.Database,
+  input: { repo: string; number: number; snapshot: IssueSnapshot; startedAt: string },
+): boolean {
+  const key = issueRowKey(input.repo, input.number)
+  const startedAt = issueAttempt(input.startedAt)
+  const snapshot = issueSnapshot(input.snapshot, key.number)
+  if (!snapshot) throw new Error(`invalid issue snapshot for ${key.repo}#${key.number}`)
+  const applied = db.prepare(
+    `INSERT INTO issue_snapshots (repo, number, snapshot, fetched_at, checked_at, error)
+     VALUES (@repo, @number, @snapshot, @startedAt, @startedAt, NULL)
+     ON CONFLICT(repo, number) DO UPDATE SET
+       snapshot = excluded.snapshot, fetched_at = excluded.fetched_at, checked_at = excluded.checked_at,
+       error = NULL, revision = issue_snapshots.revision + 1
+     WHERE excluded.checked_at > issue_snapshots.checked_at`,
+  ).run({ ...key, snapshot: JSON.stringify(snapshot), startedAt }).changes > 0
+  if (applied) pruneIssueSnapshots(db)
+  return applied
+}
+
+// A failed refresh, under the same attempt rule. A soft failure (we could not
+// ask) keeps the LAST ANSWER, whatever it was: the snapshot and its fetched_at,
+// or a hard failure's code, so it only advances checked_at. Without that, the
+// next offline tick would erase the evidence rule 6 (src/issue-graph.ts) needs,
+// and titles GitHub refused would come back from other issues' older lists. A
+// hard failure clears the snapshot and fetched_at IN THIS SAME STATEMENT: there
+// is no moment at which GitHub has said no and the cached titles are readable.
+export function recordIssueFailure(
+  db: Database.Database,
+  input: { repo: string; number: number; error: IssueError; startedAt: string },
+): boolean {
+  const key = issueRowKey(input.repo, input.number)
+  const startedAt = issueAttempt(input.startedAt)
+  const hard = ISSUE_HARD_ERRORS.has(input.error)
+  if (!hard && !ISSUE_SOFT_ERRORS.has(input.error)) throw new Error(`invalid issue error: ${String(input.error)}`)
+  return db.prepare(
+    `INSERT INTO issue_snapshots (repo, number, checked_at, error) VALUES (@repo, @number, @startedAt, @error)
+     ON CONFLICT(repo, number) DO UPDATE SET
+       checked_at = excluded.checked_at,
+       error = CASE WHEN @hard = 0 AND issue_snapshots.error IN (${ISSUE_HARD_ERRORS_SQL})
+                    THEN issue_snapshots.error ELSE excluded.error END,
+       snapshot = CASE WHEN @hard = 1 THEN NULL ELSE issue_snapshots.snapshot END,
+       fetched_at = CASE WHEN @hard = 1 THEN NULL ELSE issue_snapshots.fetched_at END,
+       revision = issue_snapshots.revision + 1
+     WHERE excluded.checked_at > issue_snapshots.checked_at`,
+  ).run({ ...key, startedAt, error: input.error, hard: hard ? 1 : 0 }).changes > 0
+}
+
+// Every row, parsed. Invalid JSON or an invalid shape (including a snapshot
+// version this build does not know) reads as "no snapshot" and never throws:
+// one corrupt row must not take down /api/issues.
+export function listIssueSnapshots(db: Database.Database): IssueSnapshotRow[] {
+  const rows = db.prepare(
+    `SELECT repo, number, provider, snapshot, fetched_at, checked_at, error, revision
+       FROM issue_snapshots ORDER BY repo, number`,
+  ).all() as Array<Omit<IssueSnapshotRow, 'snapshot' | 'failure'> & { snapshot: string | null }>
+  return rows.map((r) => ({
+    ...r,
+    snapshot: readIssueSnapshot(r.snapshot, r.number),
+    failure: r.error === null ? null : ISSUE_HARD_ERRORS.has(r.error) ? 'hard' : 'soft',
+  }))
+}
+
+// What can link an issue today: open items and active and archived plans
+// (closed items are History and keep their plain chip). Rows join in PR2, when
+// they gain an explicit link; until then no row has any link field (§4.2).
+export function listIssueEntities(db: Database.Database): IssueEntity[] {
+  const rows = db.prepare(
+    `SELECT 'item' AS kind, id, project, 0 AS archived, repo, stream, head_repo, issue_ref,
+            COALESCE(updated_at, created_at) AS updated_at
+       FROM items WHERE status = 'open'
+     UNION ALL
+     SELECT 'plan' AS kind, id, project, status = 'archived' AS archived, repo, stream, head_repo, issue_ref,
+            updated_at
+       FROM boards WHERE status IN ('active', 'archived')
+     ORDER BY kind, id`,
+  ).all() as Array<Omit<IssueEntity, 'archived' | 'project_closed'> & { archived: number }>
+  const closed = new Set(closedProjects(db))
+  return rows.map((r) => ({ ...r, archived: r.archived === 1, project_closed: closed.has(r.project) }))
+}
+
+export function pruneIssueSnapshots(db: Database.Database, opts: { nowMs?: number } = {}): void {
+  const cutoff = new Date((opts.nowMs ?? Date.now()) - ISSUE_TTL_DAYS * 24 * 60 * 60000).toISOString()
+  db.prepare(`DELETE FROM issue_snapshots WHERE checked_at < ?`).run(cutoff)
 }
 
 // ── project closure: retiring a dead project tab without losing it (issue #32) ──

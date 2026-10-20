@@ -1465,6 +1465,11 @@ describe.skipIf(!['darwin', 'linux'].includes(process.platform))('runAgentInstal
     ['the installed copy carries an extra file', (h: HooksHome, source: StagedRuntime) => {
       writeFileSync(join(installStaged(h, source).dir, 'scripts', 'extra.sh'), 'echo extra\n')
     }, /failed integrity verification/],
+    // same runtime id and file hashes, other bytes: only the signed digest tells
+    ['the installed manifest is not byte-identical to the signed one', (h: HooksHome, source: StagedRuntime) => {
+      const manifest = join(installStaged(h, source).dir, 'runtime-manifest.json')
+      writeFileSync(manifest, `${JSON.stringify(JSON.parse(readFileSync(manifest, 'utf8')), null, 4)}\n`)
+    }, /failed integrity verification/],
     ['the installed copy is a symlink to a matching runtime', (h: HooksHome, source: StagedRuntime) => {
       const real = installStaged({ ...h, runtimeRoot: join(h.home, 'elsewhere') }, source)
       mkdirSync(h.runtimeRoot, { recursive: true })

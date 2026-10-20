@@ -7239,6 +7239,18 @@ async function updateAgents(action, current, button) {
   try {
     for (const [index, step] of action.steps.entries()) {
       show([...reports, step.progress].join('\n\n'), 'running')
+      // Claude's hooks (#206) move only if they still run another Setup
+      // runtime once the agent steps are done: the human may have changed them
+      // since this panel was drawn, and the installer would add hooks afresh.
+      if (step.host === 'hooks') {
+        const fresh = await refreshAgents()
+        if (!hostLine('hooks', fresh?.hooks, current).drift) {
+          reports.push(fresh
+            ? `${hostLabel('hooks')}: not started, because they changed since Setup read them; the list above shows them now.`
+            : `${hostLabel('hooks')}: not started, because Setup could not re-read Claude's settings.`)
+          continue
+        }
+      }
       let text
       let stopped = null
       try {

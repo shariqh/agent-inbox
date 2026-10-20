@@ -595,6 +595,63 @@ describe('Setup shows what each host\'s agents run (#197)', () => {
     expect(lines()[2]).toBe('Claude hooks: v1.2.4 runtime (Setup) — older than this app\'s v2.0.0')
   })
 
+  // The panel was drawn before the click, and the agent steps run first: the
+  // hooks step re-reads them and starts only if they still run another Setup
+  // runtime. Otherwise the installer would add hooks the human just removed.
+  it('re-reads Claude\'s hooks before their step and does not start it when they changed meanwhile', async () => {
+    const release = releaseRuntime('2.0.0')
+    const old = release.installVersion('1.2.4')
+    release.register('claude', old)
+    release.registerHooks(old)
+    const install = vi.fn<Install>(async (t) => {
+      release.register('claude', release.install())
+      // removed from a terminal while Claude Code was moving
+      writeFileSync(join(release.home, '.claude', 'settings.json'), '{}\n')
+      return ok(String(t))
+    })
+    bridge(install)
+
+    await boot(release)
+    click(updateButton())
+    await settle()
+
+    expect(install.mock.calls).toEqual([['claude']])
+    expect(document.querySelector('.agents-result')?.textContent).toBe(
+      'Claude Code: claude: registered agent-inbox MCP\n\nClaude hooks: not started, because they changed since Setup read them; the list above shows them now.',
+    )
+    expect(lines()[2]).toBe('Claude hooks: not installed')
+    expect(restartText()).not.toContain('Claude hooks')
+  })
+
+  it('does not start the hooks step when it cannot re-read them', async () => {
+    const release = releaseRuntime('2.0.0')
+    const old = release.installVersion('1.2.4')
+    release.register('claude', old)
+    release.registerHooks(old)
+    let down = false
+    const install = vi.fn<Install>(async (t) => {
+      release.register('claude', release.install())
+      down = true
+      return ok(String(t))
+    })
+    bridge(install)
+    await boot(release)
+    const viewer = globalThis.fetch
+    globalThis.fetch = (input: RequestInfo | URL, init?: RequestInit) =>
+      down && String(input).includes('/api/setup') ? Promise.reject(new Error('viewer restarting')) : viewer(input, init)
+    try {
+      click(updateButton())
+      await settle()
+    } finally {
+      globalThis.fetch = viewer
+    }
+
+    expect(install.mock.calls).toEqual([['claude']])
+    expect(document.querySelector('.agents-result')?.textContent).toBe(
+      'Claude Code: claude: registered agent-inbox MCP\n\nClaude hooks: not started, because Setup could not re-read Claude\'s settings.',
+    )
+  })
+
   it.each([
     ['a source checkout', (r: ReleaseRuntime) => {
       // a checkout's installer bakes the user's own Node 24 beside its dist/hook-cli.js

@@ -41,6 +41,13 @@ export interface OfferedUpdate extends VerifiedAvailableUpdate {
   /** True only when a registered installer said it can install this offer here. Implies downloadable. */
   installable: boolean
   /**
+   * True only while main would accept this window's install request (#216): it
+   * is bound to the viewer this app started and owns, and no quit has begun.
+   * Implies installable. False after a reload or crash main could not re-prove,
+   * when Settings asks for a restart instead of offering Install and restart.
+   */
+  installPermitted: boolean
+  /**
    * Plain-language reason, without any path, that a registered installer cannot
    * install this offer here. Present only on such notify-only offers.
    */
@@ -115,6 +122,12 @@ export interface UpdateController {
   cancelInstall(): Promise<UpdateControllerState>
   /** Publishes `install-failed` with `message` (generic copy if unsafe), keeping the download. */
   refuseInstall(message: string): UpdateControllerState
+  /**
+   * Republishes the offer when `isInstallPermitted()` changed its
+   * `installPermitted`; otherwise returns the state. After `refuseInstall()`, a
+   * window that may install again gets its `verified` download back.
+   */
+  refreshInstallPermission(): UpdateControllerState
   /** True from installNow()'s first synchronous step until it settles, and forever after a commit. */
   isInstalling(): boolean
   /** The verified file while the state is 'verified' or 'install-failed'; null otherwise. Main-process only. */
@@ -148,6 +161,12 @@ export function createUpdateController(options: {
   isSetupRunning?: () => boolean
   /** True once the app has begun to quit (main's beginAppQuit()); no new install starts then. */
   isQuitting?: () => boolean
+  /**
+   * Whether main would accept its window's install request now (#216); read on
+   * every publish into `available.installPermitted`. Defaults to always; a
+   * throw counts as not permitted.
+   */
+  isInstallPermitted?: () => boolean
   /** Called once, right after a commit resolves; main quits so the helper can swap the app. */
   requestRestart?: () => void
   clock?: () => Date

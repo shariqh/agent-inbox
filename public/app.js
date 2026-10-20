@@ -4179,8 +4179,12 @@ function showPanel(id) {
   gear.classList.toggle('active', id === 'setup')
   gear.setAttribute('aria-pressed', String(id === 'setup'))
   // #197: a terminal install or an update can change what each host runs while
-  // the app is open, so Settings re-reads it whenever it opens
-  if (openingSettings) refreshAgents()
+  // the app is open, so Settings re-reads it whenever it opens; #216: so can
+  // whether this window may run one-click Setup, after a reload
+  if (openingSettings) {
+    refreshAgents()
+    refreshSetupAvailability()
+  }
 }
 
 function settingsOpen() {
@@ -7175,7 +7179,7 @@ function setupTargetLabel(target) {
   }[target]
 }
 
-function setupMenu(s, host, canInstall) {
+function setupMenu(s, canInstall) {
   const wrap = document.createElement('div')
   wrap.className = 'setup-menu'
   const title = document.createElement('h3')
@@ -7288,7 +7292,28 @@ function setupMenu(s, host, canInstall) {
   updateLabels()
   wrap.prepend(title, hint, select)
   wrap.append(commandPreview, actions, result)
-  host.appendChild(wrap)
+  return wrap
+}
+
+// What the Setup panel was built with: the setup info, whether this window
+// could run one-click Setup then, and its menu.
+let setupShown = null
+
+// A reloaded window gets one-click Setup back only once main has proven it again
+// (#216), which can finish after this panel was built, so Settings asks again
+// when it opens. A window loses Setup only to a new page or a quit, so this only
+// ever adds the one-click install, never takes away a menu that may be running.
+async function refreshSetupAvailability() {
+  const shown = setupShown
+  if (!shown || shown.canInstall || !window.agentInboxSetup?.available) return
+  const canInstall = await window.agentInboxSetup.available().catch(() => false)
+  if (canInstall !== true || shown !== setupShown || shown.canInstall) return
+  shown.canInstall = true
+  const menu = setupMenu(shown.info, true)
+  shown.menu.replaceWith(menu)
+  shown.menu = menu
+  if (agentsBlock) agentsBlock.canInstall = true
+  await refreshAgents()
 }
 
 function renderThemeSettings(host) {
@@ -7399,6 +7424,24 @@ function formatMegabytes(bytes) {
   return `${megabytes >= 100 ? Math.round(megabytes) : megabytes.toFixed(1)} MB`
 }
 
+// Main installs only from the window it bound to the viewer this app started
+// and owns (#216). After a reload or crash it could not re-prove, installing
+// takes a fresh start, which reuses the verified download.
+function needsRestartToInstall(state) {
+  return state.available?.installable === true && state.available.installPermitted !== true
+}
+
+// Only macOS restarts itself from here; an AppImage is quit and reopened by hand.
+function restartsItself(state) {
+  return state.available?.target?.installStrategy === 'macos-dmg'
+}
+
+function restartToInstallCopy(state) {
+  return restartsItself(state)
+    ? 'Restart Agent Inbox to install this update.'
+    : 'Quit and reopen Agent Inbox to install this update.'
+}
+
 function updateDetailCopy(state) {
   const download = state.download
   switch (state.status) {
@@ -7408,6 +7451,7 @@ function updateDetailCopy(state) {
     case 'downloading':
       return download ? `${formatMegabytes(download.receivedBytes)} of ${formatMegabytes(download.totalBytes)}` : ''
     case 'verified':
+      if (needsRestartToInstall(state)) return restartToInstallCopy(state)
       return state.available?.installable === true
         ? 'Its size and SHA-256 match the signed release. Agent Inbox will install it and restart.'
         : 'Its size and SHA-256 match the signed release. Installing from the app arrives in a later update; until then, use Review release to install it yourself.'
@@ -7417,6 +7461,7 @@ function updateDetailCopy(state) {
         ? state.message
         : 'Nothing unverified was kept. Try again, or review the release on GitHub.'
     case 'install-failed':
+      if (needsRestartToInstall(state)) return restartToInstallCopy(state)
       return typeof state.message === 'string' && state.message !== ''
         ? state.message
         : 'Nothing was changed. Try again, or review the release on GitHub.'
@@ -7439,6 +7484,7 @@ function paintUpdateSettings(state) {
     notice,
     progress,
     releases,
+    restart,
     review,
     section,
     status,
@@ -7448,6 +7494,7 @@ function paintUpdateSettings(state) {
   const installable = state.available?.installable === true
   const downloading = state.status === 'downloading'
   const installing = state.status === 'installing'
+  const installOffered = installable && (state.status === 'verified' || state.status === 'install-failed')
   appVersion.textContent = `Agent Inbox app ${state.currentVersion || 'version unavailable'}`
   status.textContent = updateStateCopy(state)
   status.dataset.state = state.status
@@ -7455,8 +7502,9 @@ function paintUpdateSettings(state) {
   check.textContent = state.status === 'checking' ? 'Checking…' : 'Check now'
   download.hidden = !(downloadable && (state.status === 'available' || state.status === 'download-failed'))
   download.textContent = state.status === 'download-failed' ? 'Try again' : 'Download update'
-  install.hidden = !(installable && (state.status === 'verified' || state.status === 'install-failed'))
+  install.hidden = !(installOffered && !needsRestartToInstall(state))
   install.textContent = state.status === 'install-failed' ? 'Try again' : 'Install and restart'
+  restart.hidden = !(installOffered && needsRestartToInstall(state) && restartsItself(state))
   cancel.hidden = !downloading
   progress.hidden = !downloading
   if (downloading && state.download) {
@@ -7474,14 +7522,14 @@ function paintUpdateSettings(state) {
     : 'Not checked yet'
   // Nothing competes with an install that is already under way.
   review.hidden = !state.available || installing
-  // The download or install is the primary action while it is offered or running.
-  review.classList.toggle('updates-secondary', !download.hidden || !cancel.hidden || !install.hidden)
+  // The download, install or restart is the primary action while it is offered or running.
+  review.classList.toggle('updates-secondary', !download.hidden || !cancel.hidden || !install.hidden || !restart.hidden)
   releases.hidden = state.status !== 'unverified' && state.status !== 'stale' && !(notice.textContent !== '' && !state.available)
   // A pressed action can hide itself (Download → Cancel, Install → installing);
   // keep keyboard focus inside Updates instead of dropping it to the document,
   // but never take focus while the window is in the background.
   if (focused instanceof HTMLElement && focused.hidden && section.contains(focused) && document.hasFocus()) {
-    const next = [cancel, install, download, review, releases, check].find((button) => !button.hidden && !button.disabled)
+    const next = [cancel, install, restart, download, review, releases, check].find((button) => !button.hidden && !button.disabled)
     ;(next ?? section).focus()
   }
 }
@@ -7537,6 +7585,18 @@ function renderUpdateSettings(host) {
   const install = btn('Install and restart', () => bridge.install().catch(() => {}))
   install.className = 'updates-install'
   install.hidden = true
+  const restart = btn('Restart Agent Inbox', () => {
+    // Main restarts only in the state that offers this button. When it refuses
+    // anyway, usually because agent setup is running, say so: a button that
+    // silently did nothing would lie.
+    bridge.restart().then((restarting) => {
+      if (restarting === true) return
+      detail.textContent = 'Agent Inbox didn’t restart. If agent setup is running, try again when it finishes.'
+      detail.hidden = false
+    }).catch(() => {})
+  })
+  restart.className = 'updates-restart'
+  restart.hidden = true
   const cancel = btn('Cancel download', () => bridge.cancelDownload().catch(() => {}))
   cancel.className = 'updates-cancel'
   cancel.hidden = true
@@ -7546,7 +7606,7 @@ function renderUpdateSettings(host) {
   const releases = btn('Open Releases', () => bridge.openRelease().catch(() => {}))
   releases.className = 'updates-releases'
   releases.hidden = true
-  actions.append(check, download, install, cancel, review, releases)
+  actions.append(check, download, install, restart, cancel, review, releases)
 
   const preference = document.createElement('label')
   preference.className = 'updates-preference'
@@ -7585,6 +7645,7 @@ function renderUpdateSettings(host) {
     notice,
     progress,
     releases,
+    restart,
     review,
     section,
     status,
@@ -7653,7 +7714,9 @@ async function renderSetup() {
     }
     const canInstall = await window.agentInboxSetup?.available?.().catch(() => false) ?? false
     renderAgents(host, s, canInstall)
-    setupMenu(s, host, canInstall)
+    const menu = setupMenu(s, canInstall)
+    host.appendChild(menu)
+    setupShown = { info: s, canInstall, menu }
     // issue #74: a release build withholds these manual/direct commands
     // entirely (empty string) until a runtime matching this exact host's
     // verified payload is installed — render nothing rather than an empty

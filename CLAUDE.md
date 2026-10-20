@@ -578,7 +578,8 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   The Setup panel's direct action is deliberately Electron-only:
   `electron/setup-preload.cjs` exposes only `available()`/`install(target)`, with
   `contextIsolation:true` and `nodeIntegration:false`; `main.cjs` accepts only the
-  three fixed targets and only while the app owns the exact local-viewer origin. A
+  three fixed targets and only while the app owns the exact local-viewer origin (the
+  window binding update installs share, #216). A
   reused viewer never gets execution access, and there is no HTTP setup-write route.
   `electron/setup-core.cjs` is the dependency-free control plane. It trusts the POSIX
   adapter's frozen host identity derived from the real `process.platform`/`process.arch`
@@ -931,8 +932,9 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   newer than the running one, one below the high-water mark RE-READ from the trust file,
   a check in flight, Setup running, or a feasibility failure. (7) **Main gating:** the
   argument-free `agent-inbox:update-install` IPC needs a trusted update sender AND the
-  window bound at the first navigation of a viewer this app started and proved it owns
-  (`viewerOwned`, set only in the `waitForOwnership()` branch) — not Setup's runtime
+  window bound to a viewer this app started and proved it owns (`viewerOwned`, set only
+  in the `waitForOwnership()` branch; bound at the first navigation and, since #216, again
+  after a later load re-proves it — below) — not Setup's runtime
   payload; a reused or failed-over viewer never gets installs. Setup and an update
   install exclude each other in both directions: the controller's `isSetupRunning` is
   `installGate.running()` (#205's gate; a source pin evaluates that exact expression
@@ -1045,6 +1047,57 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   controller, preload, three Settings strings and the notifier, plus an attempt record
   with no helper result. Open: the real offer → install → FUSE teardown → relaunch needs
   the first signed 1.3.0 → 1.3.1 pair on a Linux desktop (manual plan in the PR).
+- **Install grants survive a reload of the owned viewer** *(#216)* — Setup and update
+  installs are granted to the one window, not to the app, and before #216 any later
+  main-frame navigation revoked them for good: after View → Reload, Force Reload or a
+  renderer crash, Settings kept showing an **Install and restart** that main always refused
+  ("Restart Agent Inbox to install this update.") until the app restarted. Seen in the first
+  real 1.3.0 → 1.3.1 run. `createInstallBinding()` (`electron/setup-runner.cjs`, beside
+  #205's gate) now owns the grants. (1) The first main-frame navigation binds at once, as
+  before: startup's `waitForOwnership()` proved ownership moments earlier. (2) Every later
+  one (a reload, the viewer's own restart reload, failover's reload) revokes both at once,
+  and they come back only when that navigation commits (`did-navigate`) to the viewer
+  origin AND `reproveOwnership()` passes: the startup proof again, plus, for a dev viewer
+  child this app spawned, that the child still runs. `/api/owner` hands `OWNER_TOKEN` to
+  any local client, so the token alone proves nothing hours later; what does is a listener
+  that has held the port since startup (a packaged app's in-process viewer cannot lose it
+  while the app runs). That is also why the proof starts after the commit, never at the
+  navigation's start: then the listener that answers is the one that served the page.
+  (3) A newer navigation, a renderer crash or the window closing discards a proof still
+  running; a crash revokes and the window's next load may re-bind under the same proof; a
+  closed window never binds again; nothing binds once a quit has begun (#205). (4) Setup
+  is granted only while `setupInstallEnabled`, update installs only while `viewerOwned`;
+  with neither (a reused or failed-over viewer) nothing is probed. The UI is honest as well:
+  the controller publishes `available.installPermitted` from main's
+  `updateInstallPermitted()` (the binding the install IPC checks, and no quit), the preload
+  requires a boolean that implies `installable`, and the binding's `apply` calls
+  `refreshInstallPermission()`, which republishes only on a change. An installable
+  verified (or install-failed) offer that is not permitted hides Install and restart and
+  says "Restart Agent Inbox to install this update." with a **Restart Agent Inbox** button
+  on macOS, or "Quit and reopen Agent Inbox to install this update." with no button on an
+  AppImage, which Electron must never relaunch (part 3). (5) `agent-inbox:update-restart`
+  accepts exactly the state that shows that button and nothing else: trusted sender,
+  `darwin`, no quit begun, Setup NOT running (`installGate.running()`: the quit's
+  `beginAppQuit()` would cancel it mid-registration, #205's hazard, and the update path
+  refuses that too), `viewerOwned`, no update installing, an installable `verified` or
+  `install-failed` offer, and `!updateInstallPermitted()`. Without all of them it returns
+  false, so no other state or page (a reused viewer has no installers) can quit the app or
+  relaunch it in a loop; after a relaunch the new window is bound and permitted, so the
+  button is gone. When it is refused, Settings says "Agent Inbox didn't restart. If agent
+  setup is running, try again when it finishes." rather than leave a dead button. It then
+  calls `beginAppQuit()`, `app.relaunch()` and `app.quit()`; the next start reuses the
+  verified download after re-hashing it. (6) `refuseInstall()` stays the backstop for a
+  click that races a revoke; its `install-failed` is marked as main's refusal of the window,
+  and once that window may install again `refreshInstallPermission()` publishes the
+  `verified` download again instead of a stale "restart" beside a working Try again. An
+  install's own failure keeps its reason. (7) Setup's renderer asks `available()` once per
+  page and again when Settings opens: `agent-inbox:install-available` first awaits
+  `installBinding.settled()` (a re-proof in flight, which resolves once its grants are
+  applied), and Settings re-asks on open, adding the one-click install and Update agents
+  when main now allows them (a window only loses Setup to a new page or a quit, so this
+  never takes away a menu that may be running). A main-frame navigation that never commits
+  leaves the window revoked until its next load, with the same honest copy. None of it
+  enters `public/attention.js`, badges or Needs-you.
 - **Session presence** *(#28, corrected by #45)* — every MCP session is a Live row; `status()`
   upgrades it, process exit ends it, and a row that stops being heartbeated expires after ~15 min.
   That expiry only ever fires for a **crashed** process: a live one heartbeats itself, so what
@@ -1378,7 +1431,7 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   `createInstallGate()` (`electron/setup-runner.cjs`) is its one record of the running install and of the
   quit, and `beginAppQuit()` in `main.cjs` is the ONE function every quit or restart path calls first
   (`before-quit` on every firing; an update-restart path must call it too). It refuses every later install
-  for good, revokes the window's Setup, cancels the running install and returns a never-rejecting promise
+  for good, revokes the window's Setup (and #216's window binding never grants it again), cancels the running install and returns a never-rejecting promise
   the caller waits on before exiting. A checkout or custom registration is reported, never switched (the
   runtime-mode installer refuses a registration it does not own anyway). Afterwards it re-reads `/api/setup` and `/api/version` and
   lists, per host that moved, how many running sessions still run a build that differs from what that

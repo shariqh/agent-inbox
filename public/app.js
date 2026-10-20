@@ -1400,11 +1400,12 @@ function historyWanted(view = lastData) {
   const summary = view?.pageHistory
   if (!summary || summary.loaded >= summary.total) return false
   // A deep link may name any omitted item, and search covers every project
-  // while it is in use: open results, a pending query, or a focused query. Text
-  // left in a closed box waits for the human to return to it.
+  // while it is in use: open results, a pending query, or a query focused in an
+  // active window. Text left in a closed box, or in a background window that
+  // still remembers focus on it (#233), waits for the human to return to it.
   if (historyLookup?.view === navigationKey()) return true
   const input = document.getElementById('search')
-  if (input?.value.trim() && (searchIndexOpen || searchTimer || document.activeElement === input)) return true
+  if (input?.value.trim() && (searchIndexOpen || searchTimer || activeFocusElement() === input)) return true
   const older = olderHistory(summary, olderLens())
   if (relayOpen && older.outcomes > 0) return true
   if (activeTab === 'done' && older.items > 0) {

@@ -380,6 +380,46 @@ describe('paged closed history (issue #184)', () => {
     expect(option()).not.toBeNull()
   })
 
+  // Issue #233: a window going to the background blurs the input and closes the
+  // results, but the document keeps the input as activeElement. `input.blur()`
+  // would also clear that in jsdom, so the events are dispatched instead.
+  it('stops reading older history while the window is in the background, and resumes when it is refocused', async () => {
+    db = freshDb()
+    const { archive } = seedHub(db)
+    advanceClock()
+    const question = insertItem(db, { ...ALPHA, kind: 'question', title: 'Settled while the window is away' })
+    const { reads, interceptFetch } = recorder()
+    await bootApp(db, { interceptFetch })
+    const input = document.getElementById('search') as HTMLInputElement
+    const option = () => document.querySelector(`#searchResults [role="option"][data-search-target="${archive[1]}"]`)
+    input.focus()
+    await searchFor('quokka')
+    expect(historyReads(reads)).toHaveLength(1)
+    expect(option()).not.toBeNull()
+
+    const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    input.dispatchEvent(new FocusEvent('blur', { relatedTarget: null }))
+    input.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: null }))
+    expect(document.getElementById('searchResults')?.hidden).toBe(true)
+    expect(document.activeElement).toBe(input)
+    expect(input.value).toBe('quokka')
+
+    advanceClock()
+    resolveItem(db, question, 'Settled.')
+    await pollTick()
+    expect(tabCount('done')).toBe('64')
+    expect(historyReads(reads)).toHaveLength(1)
+
+    // Back in the foreground, the browser focuses the remembered input again.
+    hasFocus.mockRestore()
+    expect(document.hasFocus()).toBe(true)
+    input.dispatchEvent(new FocusEvent('focus', { relatedTarget: null }))
+    input.dispatchEvent(new FocusEvent('focusin', { bubbles: true, relatedTarget: null }))
+    await settle()
+    expect(historyReads(reads).map((read) => read.status)).toEqual([200, 200])
+    expect(option()).not.toBeNull()
+  })
+
   it('keeps applying the page while the complete History read fails, and says so where it is awaited', async () => {
     db = freshDb()
     seedHub(db)

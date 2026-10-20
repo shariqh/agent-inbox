@@ -52,7 +52,7 @@ describe('local marketing page', () => {
   it('has a complete, self-contained light-first page with no live inbox connection', () => {
     const { html } = boot({ dark: true })
     expect(document.title).toContain('Agent Inbox')
-    expect(document.querySelector('.release-line .version')?.textContent).toBe('v1.2.5')
+    expect(document.querySelector('.release-line .version')?.textContent).toBe('v1.4.0')
     expect(document.documentElement.dataset.theme).toBe('light')
     expect(document.querySelectorAll('h1')).toHaveLength(1)
     expect(document.querySelector('h1')?.textContent).toContain('every terminal.')
@@ -220,6 +220,56 @@ describe('local marketing page', () => {
     expect(previewFaq?.textContent).toContain('current PR head')
     expect(previewFaq?.textContent).toContain('Missing, stale, or conflicting records')
     expect(previewFaq?.textContent).toContain('approval controls stay available')
+  })
+
+  it('links the sample plan to a parent issue whose child progress matches its rows', () => {
+    boot()
+    const plan = document.querySelector('#panel-plans')
+    const chip = plan?.querySelector('.issue-chip')
+    const rows = [...(plan?.querySelectorAll('.plan-row') ?? [])]
+    const done = rows.filter(row => row.querySelector('.state-pill')?.textContent === 'Done')
+    expect(chip?.querySelector('[aria-hidden="true"]')?.textContent).toBe(`#42 · ${done.length}/${rows.length}`)
+    expect(chip?.querySelector('.sr-only')?.textContent).toBe('Linked to GitHub issue #42, with 2 of 4 sub-issues done.')
+    expect(rows.map(row => row.querySelector('.issue-crumb [aria-hidden="true"]')?.textContent))
+      .toEqual(['#42 › #43', '#42 › #44', '#42 › #45', '#42 › #46'])
+    expect(rows.map(row => row.querySelector('.issue-crumb .sr-only')?.textContent)).toEqual([
+      'Issue #43, a sub-issue of #42.',
+      'Issue #44, a sub-issue of #42.',
+      'Issue #45, a sub-issue of #42.',
+      'Issue #46, a sub-issue of #42.',
+    ])
+    expect(document.querySelectorAll('#demo a')).toHaveLength(0)
+  })
+
+  it('describes sub-issues, verified in-app updates, and long Copilot waits without overclaiming', () => {
+    boot()
+    const plans = [...document.querySelectorAll('.feature-aside')].find(
+      aside => aside.querySelector('h3')?.textContent === 'Keep decisions with their plans.',
+    )?.textContent ?? ''
+    expect(plans).toContain('An agent can link a plan to a GitHub issue.')
+    expect(plans).toContain("lists the issue's sub-issues and how many are done")
+    expect(plans).toContain('rows linked to a sub-issue show their parent')
+    expect(plans).toContain('through your signed-in GitHub CLI')
+    expect(plans).not.toContain('Boards')
+
+    const desktop = document.querySelector('.desktop-install')?.textContent ?? ''
+    expect(desktop).toContain('In the macOS app and the Linux AppImage, Settings → Updates can download a new release')
+    expect(desktop).toContain('check it against the signed release manifest')
+    expect(desktop).toContain('when you choose Install and restart')
+    expect(desktop).toContain("Setup's Update agents button then moves your agents to the new version.")
+
+    const faq = (summary: string) => [...document.querySelectorAll('details.faq-item')].find(
+      item => item.querySelector('summary')?.textContent === summary,
+    )?.textContent ?? ''
+    const pickup = faq('How does an agent receive my answer?')
+    expect(pickup).toContain(`On a Copilot CLI request, choose "I'll take a while"`)
+    expect(pickup).toContain('stop waiting, or to wait quietly for a few hours or until tomorrow')
+    expect(pickup).toContain('If it stops, message it after you answer.')
+    expect(pickup).toContain('The request stays in your inbox.')
+    const privacy = faq('Does my inbox leave my machine?')
+    expect(privacy).toContain('Optional update checks and downloads contact GitHub')
+    expect(privacy).toContain('pull request and issue lookups when the GitHub CLI is installed and signed in')
+    expect(privacy).not.toContain('Optional update checks and pull request lookups contact GitHub.')
   })
 
   it('supports feature tabs with keyboard navigation and an exposed selected state', () => {

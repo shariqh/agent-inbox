@@ -10,8 +10,10 @@ agent-driven inbox has by construction:
   inbox, but the agent is sitting at the prompt and never calls `pending()`, so
   the answer stays at "waiting for pickup" forever.
 
-Everything here is **opt-in**. Nothing runs from `npm install`, `npm run build`
-or the Electron app. One command installs it, one removes it.
+Everything here is **opt-in**. Nothing runs from `npm install` or `npm run build`,
+and the Electron app only moves hooks a Setup runtime already installed, when you ask
+it to ([Moving hooks from Setup](#moving-hooks-from-setup)). One command installs it,
+one removes it.
 
 ```sh
 npm run install:hooks                     # dry run — prints what it WOULD write
@@ -28,9 +30,10 @@ source the same adjacent `scripts/setup-lock.sh`, so their mutating Bash process
 owns one fd-9 kernel lease across the full transaction. Darwin prefers
 descriptor-mode `/usr/bin/lockf` and falls back to same-domain `flock`; Linux uses
 `flock` only. Packaged hook changes replace/remove only entries whose command and
-entrypoint canonicalize to the same valid manifest-owned runtime directory, plus,
-with `--replace-existing`, another Agent Inbox install's entries and ones that can
-no longer run (see
+entrypoint canonicalize to the same valid manifest-owned runtime directory under the
+runtime root (or to the runtime's own folder, when it runs from outside the root),
+plus, with `--replace-existing`, another Agent Inbox install's entries and ones that
+can no longer run (see
 [One set of hooks](#one-set-of-hooks-switching-between-a-setup-runtime-and-a-checkout)).
 
 The dry run writes nothing anywhere: its Node selftest runs against a throwaway
@@ -54,15 +57,24 @@ install's. Both install modes sort every entry shaped like ours (`{command, args
 Setup's Agents panel uses to report Claude hooks:
 
 - **a Setup runtime**: the command and entry both resolve into one verified runtime
-  under `~/.agent-inbox/runtime/`;
+  under `~/.agent-inbox/runtime/` (or `AGENT_INBOX_RUNTIME_ROOT`, when set);
+- **a runtime outside that folder**: the command and entry both resolve into one
+  runtime folder elsewhere that verifies against its manifest, for example one
+  copied or extracted to `~/Downloads`, or installed while `AGENT_INBOX_RUNTIME_ROOT`
+  named another folder. It is another Agent Inbox install, but not Setup's;
 - **a source checkout**: the entry is `<checkout>/dist/hook-cli.js`, beside a
   `package.json` named `agent-inbox`;
 - **an install that can no longer run**: a `…/dist/hook-cli.js` entry, or the Node
-  it names, no longer exists (a moved or deleted checkout, an uninstalled Node);
+  it names, no longer exists (a moved or deleted checkout, an uninstalled Node).
+  A path counts as gone only when the operating system cannot find it either;
 - **unverifiable**: a `…/dist/hook-cli.js` that runs but cannot be verified, such
-  as a runtime whose files changed;
+  as a runtime whose files changed, a runtime folder outside Setup's whose hooks
+  run another Node, or a path that only resolves when a symlinked folder is
+  followed before the `..` after it (`<symlinked folder>/../bin/node`);
 - **anything else**, such as another tool's hook that only looks like ours, is
-  never removed.
+  never removed. A `<folder>/dist/hook-cli.js` whose folder holds a
+  `runtime-manifest.json` never counts as another tool's: it is a runtime outside
+  Setup's folder, or unverifiable.
 
 When another install's hooks, or ones that can no longer run, are there, the
 installer exits 1 and writes nothing; the dry run refuses the same way. The
@@ -71,7 +83,8 @@ install by its folder) and prints the recommended fix first: the one command tha
 replaces them all with this install's set. After it, as an alternative, it prints
 each other install's own `--apply --uninstall`, but only when that command can
 succeed as things stand. A runtime's uninstall refuses while hooks of a checkout
-are there, so it is never offered then.
+are there, so it is never offered then, and neither is the uninstall of a runtime
+outside Setup's folder (see below).
 
 **From a Setup runtime to a checkout**, run this from the checkout:
 
@@ -86,38 +99,101 @@ bash ~/.agent-inbox/runtime/<runtime-id>/scripts/install-hooks.sh --apply --unin
 npm run install:hooks -- --apply
 ```
 
-**From a checkout to a Setup runtime**:
+**From a checkout to a Setup runtime**, when the runtime is version 1.3.2 or later:
 
 ```sh
 bash ~/.agent-inbox/runtime/<runtime-id>/scripts/install-hooks.sh --apply --replace-existing
 ```
 
-or, in two steps:
+A runtime's folder is named `agent-inbox-runtime-<version>-…`, for example
+`agent-inbox-runtime-1.3.2-darwin-arm64-…`. Runtimes older than 1.3.2 do not know
+`--replace-existing`: their installer exits 2 with `unknown flag`. With one of those
+(or with any runtime, as an alternative), use two steps:
 
 ```sh
 npm run install:hooks -- --apply --uninstall    # in the checkout
 bash ~/.agent-inbox/runtime/<runtime-id>/scripts/install-hooks.sh --apply
 ```
 
-If both sets are already there, the one-step command fixes it from either side.
-Moving between two checkouts works like the first case. Moving between two Setup
-runtimes needs no flag: a runtime's installer already replaces any Setup runtime's
-hooks.
+If both sets are already there, the one-step command fixes it from the checkout's
+side, or from a 1.3.2 or later runtime's. Moving between two checkouts works like the
+first case. Moving between two Setup runtimes needs no flag: a runtime's installer
+already replaces any Setup runtime's hooks.
+
+**A runtime outside Setup's folder** (copied or extracted elsewhere, or installed
+while `AGENT_INBOX_RUNTIME_ROOT` named another folder) is another install too. The
+installer of a checkout, or of a runtime newer than 1.3.2, refuses beside its hooks,
+naming it as `the v1.2.4 runtime at <folder>, outside Setup's runtime folder`, and
+`--replace-existing` replaces them. Such a runtime's own installer, when newer than
+1.3.2, also re-installs and removes its own hooks there as usual. Setup's Agents
+panel reports these hooks as not verified, since it does not manage them.
+
+Runtimes of 1.3.2 and older take those hooks for another tool's: their
+`--replace-existing` leaves them in place and adds a second set, and their own
+`--apply --uninstall` refuses them, so a refusal never offers it. To install the
+hooks of a 1.3.2 or older runtime beside such a set, clear the set first, then run
+the older runtime's `install-hooks.sh --apply`. Remove the set from `settings.json`
+by hand, or replace it from a checkout and then remove the checkout's set:
+
+```sh
+npm run install:hooks -- --apply --replace-existing
+npm run install:hooks -- --apply --uninstall
+```
+
+A newer Setup runtime's `install-hooks.sh --apply --replace-existing` clears it too;
+the older runtime's `--apply` then replaces that set, as it does any Setup runtime's.
 
 `--replace-existing` removes this install's own hooks, every other install's, and
 every one that can no longer run, then installs exactly one set; without `--apply`
 it prints that single set and writes nothing. It cannot be combined with
 `--uninstall`. It never removes another tool's hook. Unverifiable entries are
 refused with or without the flag, because they might be a working second set:
-remove them by hand. A checkout install never refuses because of another tool's
-hook. A runtime's installer still refuses beside one unless given the flag, which
-then leaves it in place.
+remove them by hand. When the cause is a runtime folder that does not verify, the
+refusal also gives the verifier's reason, such as
+`unmanifested file present in payload: .DS_Store` (macOS Finder adds those to
+folders you open). Delete what was added, or reinstall that runtime, and run the
+installer again; then nothing needs editing by hand. A checkout install never
+refuses because of another tool's hook. A runtime's installer still refuses beside
+one unless given the flag, which then leaves it in place.
 
 `--force` and `--uninstall` keep their meaning: `--force` replaces only this
 install's own hooks, and `--uninstall` removes only this install's hooks (from a
-runtime, any Setup runtime's). A runtime's uninstall still refuses while other
-hooks shaped like ours are there; its message names them and gives their own
-installer's uninstall command and the one-step `--replace-existing`.
+runtime, any Setup runtime's, plus its own folder's when that is outside the
+runtime root). A runtime's uninstall still refuses while other hooks shaped like
+ours are there; its message names them and gives their own installer's uninstall
+command and the one-step `--replace-existing`.
+
+## Moving hooks from Setup
+
+After an app update, Setup's **Update agents** (or **Match agents to vX** after a
+downgrade) also moves Claude's hooks when a Setup runtime installed them and that
+runtime's version differs from the app's (issue #206). It runs the command Setup used
+to show for a terminal, as a step of its own after Claude Code and Copilot CLI, with
+one more flag:
+
+```sh
+bash ~/.agent-inbox/runtime/<this app's runtime-id>/scripts/install-hooks.sh --apply --move-only
+```
+
+`--move-only` makes the installer exit 1 and write nothing when no Setup runtime's
+hooks are there to replace. It checks while it holds the setup lock, so Setup never
+installs hooks afresh, even for a set you removed a moment before. Outside a packaged
+runtime the flag is refused.
+
+It runs from the installed copy of the app's runtime, never from the app bundle, so the
+hooks keep working after the app moves or updates. Setup checks that copy against the
+app's signed runtime manifest first and runs nothing if it is missing or has changed.
+The installer works as above: the shared setup lock, a timestamped backup, and only
+Setup runtimes' hooks replaced. Setup never passes `--force` or `--replace-existing`,
+and never offers the step for hooks from a checkout, custom hooks, or hooks it cannot
+verify. If no agent needs moving, it offers the step once the app's runtime is
+installed. Afterwards Setup reads `~/.claude/settings.json` again and says the hooks
+moved only if they now run the app's runtime.
+
+New Claude Code sessions read the new hooks when they start. Claude Code's
+documentation says its settings file watcher normally applies hook changes to running
+sessions too. Setup cannot see whether a session picked the change up, so restart a
+session (exit it, then `claude --resume`) to be sure.
 
 ## Events → subcommands
 

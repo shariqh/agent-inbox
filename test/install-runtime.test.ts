@@ -506,6 +506,102 @@ describe('portable release installer', () => {
     expectOnly(runtimeEntry, 'doubled, fixed from the runtime')
   })
 
+  // #232, as reported: a verified runtime copied to ~/Downloads, with its six
+  // hooks in settings.json, was taken for another tool's, so a checkout install
+  // exited 0 with twelve Agent Inbox hooks. The same happened to a Setup
+  // runtime once AGENT_INBOX_RUNTIME_ROOT named another folder.
+  it('never adds a second set beside the hooks of a runtime outside the runtime root', () => {
+    const f = fixture()
+    const payload = runtimePayload('1.2.4')
+    const copied = join(f.home, 'Downloads', 'agent-inbox-1.2.4')
+    cpSync(payload.root, copied, { recursive: true })
+    const checkout = sourceCheckout()
+    const settings = join(f.home, '.claude', 'settings.json')
+    mkdirSync(dirname(settings), { recursive: true })
+    const otherTool = [{ hooks: [{ type: 'command', command: 'echo hi' }] }]
+    writeFileSync(settings, JSON.stringify({ model: 'x', hooks: { PostToolUse: otherTool } }))
+
+    const checkoutEnv = { ...f.env, PATH: `${f.fakebin}:${process.env.PATH}`, AGENT_INBOX_NODE: process.execPath }
+    const run = (installer: string, env: NodeJS.ProcessEnv, ...flags: string[]) =>
+      spawnSync('/bin/bash', [installer, ...flags], { encoding: 'utf8', env })
+    const copiedInstaller = join(copied, 'scripts', 'install-hooks.sh')
+    const checkoutInstaller = join(checkout, 'scripts', 'install-hooks.sh')
+    const copiedEntry = join(copied, 'dist', 'hook-cli.js')
+    const checkoutEntry = join(checkout, 'dist', 'hook-cli.js')
+    const entries = (step: string): Array<string | undefined> => {
+      const s = JSON.parse(readFileSync(settings, 'utf8')) as {
+        model: string
+        hooks?: Record<string, Array<{ hooks: Array<{ args?: string[] }> }>>
+      }
+      expect(s.model, step).toBe('x')
+      expect(s.hooks?.PostToolUse, step).toEqual(otherTool)
+      return Object.values(s.hooks ?? {}).flatMap((groups) => groups.flatMap((g) => g.hooks.map((h) => h.args?.[0])))
+        .filter((arg) => arg !== undefined)
+    }
+    const outside = (dir: string) => `the v1.2.4 runtime at ${dir}, outside Setup's runtime folder (6 hooks)`
+
+    // the copy's own installer adds its six hooks, and re-installs over them
+    for (const step of ['copy installed', 'copy re-installed']) {
+      const own = run(copiedInstaller, f.env, '--apply')
+      expect(own.status, own.stderr).toBe(0)
+      expect(entries(step), step).toEqual(Array(6).fill(copiedEntry))
+    }
+
+    // Finder's .DS_Store stops the copy verifying: even its own installer says
+    // which file, and deleting it is all it takes
+    writeFileSync(join(copied, '.DS_Store'), '')
+    for (const flags of [['--apply'], ['--apply', '--uninstall']]) {
+      const stray = run(copiedInstaller, f.env, ...flags)
+      expect(stray.status, flags.join(' ')).toBe(1)
+      expect(stray.stderr).toContain(`\n    ${copied} does not verify as a runtime: unmanifested file present in payload: .DS_Store\n`)
+      expect(stray.stderr).toContain('or reinstall that runtime')
+      expect(entries('stray file'), 'stray file').toEqual(Array(6).fill(copiedEntry))
+    }
+    rmSync(join(copied, '.DS_Store'))
+    const own = run(copiedInstaller, f.env, '--apply')
+    expect(own.status, own.stderr).toBe(0)
+
+    // the reported step, from a checkout
+    let refused = run(checkoutInstaller, checkoutEnv, '--apply')
+    expect(refused.status, refused.stderr).toBe(1)
+    expect(refused.stderr).toContain(outside(copied))
+    expect(entries('checkout refused'), 'checkout refused').toEqual(Array(6).fill(copiedEntry))
+    let step = run(checkoutInstaller, checkoutEnv, '--apply', '--replace-existing')
+    expect(step.status, step.stderr).toBe(0)
+    expect(entries('replaced by the checkout'), 'replaced by the checkout').toEqual(Array(6).fill(checkoutEntry))
+
+    // from a Setup runtime under the root
+    expect(install(f, payload).status).toBe(0)
+    const runtime = join(f.runtimeRoot, payload.runtimeId)
+    const runtimeInstaller = join(runtime, 'scripts', 'install-hooks.sh')
+    const runtimeEntry = join(runtime, 'dist', 'hook-cli.js')
+    step = run(copiedInstaller, f.env, '--apply', '--replace-existing')
+    expect(step.status, step.stderr).toBe(0)
+    refused = run(runtimeInstaller, f.env, '--apply')
+    expect(refused.status, refused.stderr).toBe(1)
+    expect(refused.stderr).toContain(outside(copied))
+    expect(entries('runtime refused'), 'runtime refused').toEqual(Array(6).fill(copiedEntry))
+    step = run(runtimeInstaller, f.env, '--apply', '--replace-existing')
+    expect(step.status, step.stderr).toBe(0)
+    expect(entries('replaced by the runtime'), 'replaced by the runtime').toEqual(Array(6).fill(runtimeEntry))
+
+    // that runtime's own hooks, once the runtime root is another folder
+    const elsewhereEnv = { ...checkoutEnv, AGENT_INBOX_RUNTIME_ROOT: join(f.home, 'another-root') }
+    refused = run(checkoutInstaller, elsewhereEnv, '--apply')
+    expect(refused.status, refused.stderr).toBe(1)
+    expect(refused.stderr).toContain(outside(runtime))
+    step = run(checkoutInstaller, elsewhereEnv, '--apply', '--replace-existing')
+    expect(step.status, step.stderr).toBe(0)
+    expect(entries('replaced from another root'), 'replaced from another root').toEqual(Array(6).fill(checkoutEntry))
+
+    // the copy's own uninstall removes exactly its own set
+    step = run(copiedInstaller, f.env, '--apply', '--replace-existing')
+    expect(step.status, step.stderr).toBe(0)
+    step = run(copiedInstaller, f.env, '--apply', '--uninstall')
+    expect(step.status, step.stderr).toBe(0)
+    expect(entries('copy uninstalled'), 'copy uninstalled').toEqual([])
+  })
+
   it('installs and removes packaged hooks without ambient node or jq', () => {
     const f = fixture()
     const payload = runtimePayload('1.0.0')

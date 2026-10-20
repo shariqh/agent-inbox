@@ -87,9 +87,14 @@ Run the build before `npm run electron`; the development shell starts the built
   does not enable non-Darwin release Setup. There is no HTTP setup-write route.
   Setup's "Update agents" / "Match agents to vX" (#197) reuses the same
   `install(target)` once per Setup-managed host whose runtime differs from the
-  app's (behind, or ahead after a downgrade), `claude` then `copilot`, never
-  `all` or `--force`; status is read by the viewer, so there is no status IPC or
-  installer status mode. Once any quit begins, nothing starts: every quit or
+  app's (behind, or ahead after a downgrade), `claude` then `copilot`, then
+  `hooks` for Claude's Setup-runtime hooks (#206), never `all` or `--force`;
+  status is read by the viewer, so there is no status IPC or
+  installer status mode. `hooks` runs exactly `/bin/bash <installed
+  runtime>/scripts/install-hooks.sh --apply --move-only`, from the installed
+  copy of the verified release runtime (re-verified against the signed manifest
+  digest before spawn), never from the app bundle or a checkout; `--move-only`
+  refuses under the setup lock where no Setup runtime's hooks exist to move. Once any quit begins, nothing starts: every quit or
   restart path calls `beginAppQuit()` in `electron/main.cjs` first, which refuses
   later installs through `createInstallGate()`, revokes the window's Setup, and
   cancels and awaits the running install; the renderer stops its per-host loop
@@ -275,6 +280,8 @@ Run the build before `npm run electron`; the development shell starts the built
   a second Agent Inbox hook set (#218): another install's set, or a dead one,
   is refused (the one-step `--replace-existing` printed first) or replaced
   entry-for-entry with that flag, and another tool's look-alike is never removed.
+  A runtime folder outside the runtime root is never another tool's (#232), and
+  a path is dead only when the OS cannot stat it as written either (#228).
 - All agent-authored text interpolated into HTML must pass through `esc()`.
   Supplied URLs additionally pass through `safeHttpUrl()` in
   `public/source.js`; build anchors through the existing `chipHtml()` path.

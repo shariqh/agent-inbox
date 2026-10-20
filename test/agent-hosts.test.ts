@@ -11,7 +11,7 @@
 // is an intact runtime whose manifest names it. The last test runs the
 // installer's own helper over the same files and holds the two to agreement.
 import { describe, expect, it } from 'vitest'
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
@@ -126,6 +126,10 @@ describe('readAgentHosts (#197)', () => {
     // the command is looked up on PATH and the entry is not a path: still not Setup's
     writeConfig(s, 'copilot', JSON.stringify({ mcpServers: { 'agent-inbox': { command: 'npx', args: ['tsx', 'src/mcp-server.ts'] } } }))
     expect(read(s).copilot).toEqual({ kind: 'other' })
+
+    // a runtime outside the root is the registration installer's `custom`, which it never replaces
+    registerRuntime(s, 'copilot', installRuntimeVersion(mkdtempSync(join(tmpdir(), 'agent-hosts-elsewhere-')), '1.2.8'))
+    expect(read(s).copilot).toEqual({ kind: 'other' })
   })
 
   it('cannot verify a malformed entry, unreadable JSON, a split pair, a missing path or a tampered runtime', () => {
@@ -193,6 +197,13 @@ describe('readAgentHosts (#197)', () => {
     writeHooks(s, [runtimeHook, checkoutHook])
     expect(read(s).hooks).toEqual({ kind: 'unknown' })
 
+    // #232: a runtime copied or extracted outside the root is not Setup's, and the
+    // hook installer refuses beside it rather than taking it for another tool's
+    const copied = installRuntimeVersion(mkdtempSync(join(tmpdir(), 'agent-hosts-copied-')), '1.2.4')
+    const copiedHook = { command: join(copied, 'bin', 'node'), entry: join(copied, 'dist', 'hook-cli.js') }
+    writeHooks(s, [copiedHook, copiedHook])
+    expect(read(s).hooks).toEqual({ kind: 'unknown' })
+
     writeFileSync(join(s.home, '.claude', 'settings.json'), '{ not json')
     expect(read(s).hooks).toEqual({ kind: 'unknown' })
   })
@@ -220,6 +231,7 @@ describe('readAgentHosts (#197)', () => {
       ['old runtime', (s) => registerRuntime(s, 'claude', installRuntimeVersion(s.runtimeRoot, '1.2.8'))],
       ['current runtime', (s) => registerRuntime(s, 'claude', installRuntimeVersion(s.runtimeRoot, '1.3.0'))],
       ['checkout', (s) => registerHost(s.home, 'claude', process.execPath, join(checkout(), 'dist', 'mcp-server.js'))],
+      ['a runtime outside the root', (s) => registerRuntime(s, 'claude', installRuntimeVersion(mkdtempSync(join(tmpdir(), 'agent-hosts-elsewhere-')), '1.2.8'))],
       ['split', (s) => {
         const dir = installRuntimeVersion(s.runtimeRoot, '1.2.8')
         registerHost(s.home, 'claude', join(dir, 'bin', 'node'), join(checkout(), 'dist', 'mcp-server.js'))
@@ -258,35 +270,68 @@ describe('readAgentHosts (#197)', () => {
   // tool's look-alike is never taken for one.
   it('agrees with the hook installer on which install each hook entry runs', () => {
     const elsewhere = (prefix: string): string => mkdtempSync(join(tmpdir(), prefix))
-    const tool = (): string => {
+    const toolRoot = (): string => {
       const root = elsewhere('agent-hosts-tool-')
       mkdirSync(join(root, 'dist'))
       writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'agent-inbox-companion' }))
       writeFileSync(join(root, 'dist', 'hook-cli.js'), '// another tool\n')
-      return join(root, 'dist', 'hook-cli.js')
+      return root
+    }
+    const tool = (): string => join(toolRoot(), 'dist', 'hook-cli.js')
+    // `<link>/..` is the parent of the link's target to the OS, but the link's
+    // own parent to realpathSync, which applies `..` before following it (#228)
+    const throughLink = (target: string): string => {
+      mkdirSync(join(target, 'lib'), { recursive: true })
+      const dir = elsewhere('agent-hosts-link-')
+      symlinkSync(join(target, 'lib'), join(dir, 'lib'))
+      return `${dir}/lib/..`
+    }
+    const withNode = (dir: string): string => {
+      mkdirSync(join(dir, 'bin'), { recursive: true })
+      writeFileSync(join(dir, 'bin', 'node'), '')
+      return dir
     }
     const inRuntime = (dir: string) => ({ command: join(dir, 'bin', 'node'), entry: join(dir, 'dist', 'hook-cli.js') })
     const checkoutEntry = (): string => join(checkout(), 'dist', 'hook-cli.js')
-    const arrangements: Array<[string, (s: Scratch) => { command: string; entry: string }]> = [
-      ['runtime', (s) => inRuntime(installRuntimeVersion(s.runtimeRoot, '1.2.4'))],
-      ['checkout', () => ({ command: process.execPath, entry: checkoutEntry() })],
-      ['checkout, node on PATH', () => ({ command: 'node', entry: checkoutEntry() })],
-      ['another tool\'s dist/hook-cli.js', () => ({ command: process.execPath, entry: tool() })],
-      ['a relative entry', () => ({ command: 'node', entry: 'dist/hook-cli.js' })],
-      ['a runtime outside the root', () => inRuntime(installRuntimeVersion(elsewhere('agent-hosts-elsewhere-'), '1.2.4'))],
-      ['a missing entry', () => ({ command: process.execPath, entry: join(elsewhere('agent-hosts-gone-'), 'dist', 'hook-cli.js') })],
-      ['a missing node', () => ({ command: join(elsewhere('agent-hosts-gone-'), 'node'), entry: checkoutEntry() })],
-      ['split', (s) => ({ command: join(installRuntimeVersion(s.runtimeRoot, '1.2.4'), 'bin', 'node'), entry: checkoutEntry() })],
-      ['node on PATH, runtime entry', (s) => ({ command: 'node', entry: join(installRuntimeVersion(s.runtimeRoot, '1.2.4'), 'dist', 'hook-cli.js') })],
+    // [label, arrange, what the installer attributes it to]
+    const arrangements: Array<[string, (s: Scratch) => { command: string; entry: string }, string]> = [
+      ['runtime', (s) => inRuntime(installRuntimeVersion(s.runtimeRoot, '1.2.4')), 'runtime'],
+      ['checkout', () => ({ command: process.execPath, entry: checkoutEntry() }), 'checkout'],
+      ['checkout, node on PATH', () => ({ command: 'node', entry: checkoutEntry() }), 'checkout'],
+      ['another tool\'s dist/hook-cli.js', () => ({ command: process.execPath, entry: tool() }), 'other'],
+      ['a relative entry', () => ({ command: 'node', entry: 'dist/hook-cli.js' }), 'other'],
+      // #232: copied or extracted elsewhere, or installed under another runtime root
+      ['a runtime outside the root', () => inRuntime(installRuntimeVersion(elsewhere('agent-hosts-elsewhere-'), '1.2.4')), 'elsewhere'],
+      ['a tampered runtime outside the root', () => {
+        const dir = installRuntimeVersion(elsewhere('agent-hosts-elsewhere-'), '1.2.4')
+        writeFileSync(join(dir, 'dist', 'hook-cli.js'), '// tampered\n')
+        return inRuntime(dir)
+      }, 'unknown'],
+      ['a runtime outside the root, run by another node', () => ({
+        command: process.execPath, entry: inRuntime(installRuntimeVersion(elsewhere('agent-hosts-elsewhere-'), '1.2.4')).entry,
+      }), 'unknown'],
+      ['another product\'s runtime outside the root', () => inRuntime(installRuntimeVersion(elsewhere('agent-hosts-elsewhere-'), '1.2.4', {
+        product: 'agent-inbox-companion-runtime',
+      })), 'unknown'],
+      ['a missing entry', () => ({ command: process.execPath, entry: join(elsewhere('agent-hosts-gone-'), 'dist', 'hook-cli.js') }), 'dead'],
+      ['a missing node', () => ({ command: join(elsewhere('agent-hosts-gone-'), 'node'), entry: checkoutEntry() }), 'dead'],
+      // #228: these run, so they are not dead, but they cannot be verified either
+      ['a live <link>/../bin/node', () => ({ command: `${throughLink(withNode(elsewhere('agent-hosts-node-')))}/bin/node`, entry: tool() }), 'unknown'],
+      ['a live <link>/../dist/hook-cli.js', () => ({ command: process.execPath, entry: `${throughLink(toolRoot())}/dist/hook-cli.js` }), 'unknown'],
+      ['a <link>/../bin/node the OS cannot find either', () => ({
+        command: `${throughLink(elsewhere('agent-hosts-gone-'))}/bin/node`, entry: tool(),
+      }), 'dead'],
+      ['split', (s) => ({ command: join(installRuntimeVersion(s.runtimeRoot, '1.2.4'), 'bin', 'node'), entry: checkoutEntry() }), 'unknown'],
+      ['node on PATH, runtime entry', (s) => ({ command: 'node', entry: join(installRuntimeVersion(s.runtimeRoot, '1.2.4'), 'dist', 'hook-cli.js') }), 'unknown'],
       ['tampered', (s) => {
         const dir = installRuntimeVersion(s.runtimeRoot, '1.2.4')
         writeFileSync(join(dir, 'dist', 'hook-cli.js'), '// tampered\n')
         return inRuntime(dir)
-      }],
+      }, 'unknown'],
     ]
     const seen = new Set<string>()
     const attributedKinds = new Set<string>()
-    for (const [label, arrange] of arrangements) {
+    for (const [label, arrange, expected] of arrangements) {
       const s = scratch()
       const launcher = arrange(s)
       writeHooks(s, [launcher, launcher])
@@ -299,14 +344,17 @@ describe('readAgentHosts (#197)', () => {
       expect([0, 1], `${label}: ${installer.stderr}`).toContain(installer.status)
       const removed = installer.status === 0 ? JSON.parse(installer.stdout) as Array<{ owner: { kind: string } }> : []
       const attributed = installer.status === 1 ? 'unknown' : removed[0]?.owner.kind ?? 'other'
+      expect(attributed, `${label}: ${installer.stderr}`).toBe(expected)
       attributedKinds.add(attributed)
-      // the installer splits Setup's "unknown" in two: dead (a path is gone, so
-      // it cannot run, and --replace-existing removes it) or unknown (it runs)
+      // the installer splits Setup's "unknown" in three: dead (a path is gone, so
+      // it cannot run, and --replace-existing removes it), elsewhere (a verified
+      // runtime outside the root: another install's, never Setup's) and unknown
       const kind = read(s).hooks.kind
-      expect(attributed === 'dead' ? 'unknown' : attributed, `${label}: installer says ${attributed}, viewer says ${kind}`).toBe(kind)
+      const asSetup = attributed === 'dead' || attributed === 'elsewhere' ? 'unknown' : attributed
+      expect(asSetup, `${label}: installer says ${attributed}, viewer says ${kind}`).toBe(kind)
       seen.add(kind)
     }
     expect([...seen].sort()).toEqual(['checkout', 'other', 'runtime', 'unknown'])
-    expect([...attributedKinds].sort()).toEqual(['checkout', 'dead', 'other', 'runtime', 'unknown'])
+    expect([...attributedKinds].sort()).toEqual(['checkout', 'dead', 'elsewhere', 'other', 'runtime', 'unknown'])
   })
 })

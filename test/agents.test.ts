@@ -6,7 +6,7 @@
 // running sessions still run another build than their host now loads, and how
 // to restart them. It never says a running session reloaded.
 import { describe, expect, it } from 'vitest'
-import { agentsAction, hostLine, restartGuidance } from '../public/agents.js'
+import { agentsAction, hooksGuidance, hostLine, restartGuidance } from '../public/agents.js'
 
 const runtime = (version: string) => ({ kind: 'runtime', version, runtimeId: `agent-inbox-runtime-${version}-darwin-arm64-0123456789abcdef` })
 
@@ -50,7 +50,7 @@ describe('hostLine', () => {
 
 describe('agentsAction', () => {
   const agents = (claude: unknown, copilot: unknown, extra: Record<string, unknown> = {}) =>
-    ({ current: '1.3.0', updatable: true, claude, copilot, hooks: runtime('1.0.0'), hooksCommand: '', ...extra })
+    ({ current: '1.3.0', updatable: true, claude, copilot, hooks: { kind: 'none' }, hooksCommand: '', ...extra })
 
   // One fixed install target per host, run one after another: a host whose CLI
   // is gone must not block the other, as `--target all` would before changing
@@ -113,6 +113,86 @@ describe('agentsAction', () => {
     expect(agentsAction(null)).toBeNull()
   })
 
+  // #206: Claude's hooks move through their own fixed `hooks` target, which runs
+  // the installed copy of this app's runtime's install-hooks.sh. So the step
+  // comes last, after any agent step (each installs that runtime), and without
+  // one it needs the runtime installed already: exactly when the viewer hands
+  // over `hooksCommand`.
+  const COMMAND = "bash '/home/me/.agent-inbox/runtime/agent-inbox-runtime-1.3.0-darwin-arm64-0123456789abcdef/scripts/install-hooks.sh' --apply"
+
+  it('moves Setup-runtime hooks on another version as their own last step, after the agents', () => {
+    expect(agentsAction(agents(runtime('1.2.8'), runtime('1.3.0'), { hooks: runtime('1.2.4') }))).toEqual({
+      steps: [update('claude', 'Claude Code'), update('hooks', 'Claude hooks')],
+      label: 'Update agents',
+      hint: 'Update agents moves Claude Code and Claude hooks to the v1.3.0 runtime. Running sessions keep their build until you restart them.',
+      elsewhere: 'Open Settings in the Agent Inbox app to update Claude Code and Claude hooks to the v1.3.0 runtime.',
+    })
+    expect(agentsAction(agents(runtime('1.2.8'), runtime('1.1.0'), { hooks: runtime('1.2.4') }))).toMatchObject({
+      steps: [update('claude', 'Claude Code'), update('copilot', 'Copilot CLI'), update('hooks', 'Claude hooks')],
+      hint: 'Update agents moves Claude Code, Copilot CLI and Claude hooks to the v1.3.0 runtime. Running sessions keep their build until you restart them.',
+    })
+  })
+
+  it('moves hooks alone only once this app\'s runtime is installed', () => {
+    expect(agentsAction(agents(runtime('1.3.0'), { kind: 'none' }, { hooks: runtime('1.2.4'), hooksCommand: COMMAND }))).toEqual({
+      steps: [update('hooks', 'Claude hooks')],
+      label: 'Update agents',
+      // no agent moves, so nothing about sessions keeping their build
+      hint: 'Update agents moves Claude hooks to the v1.3.0 runtime.',
+      elsewhere: 'Open Settings in the Agent Inbox app to update Claude hooks to the v1.3.0 runtime.',
+    })
+    // no agent step would install it first: nothing that cannot succeed
+    expect(agentsAction(agents(runtime('1.3.0'), { kind: 'none' }, { hooks: runtime('1.2.4') }))).toBeNull()
+    expect(agentsAction(agents({ kind: 'checkout', path: '/src' }, { kind: 'other' }, { hooks: runtime('1.2.4') }))).toBeNull()
+  })
+
+  it('matches hooks on a NEWER runtime back to this app\'s, and says so', () => {
+    expect(agentsAction(agents(runtime('1.3.0'), runtime('1.3.0'), { hooks: runtime('1.4.0'), hooksCommand: COMMAND }))).toEqual({
+      steps: [{ host: 'hooks', progress: 'Matching Claude hooks to v1.3.0…', done: 'Claude hooks now match v1.3.0.' }],
+      label: 'Match agents to v1.3.0',
+      hint: 'Claude hooks run a newer runtime than this app. Match agents to v1.3.0 moves them to this app\'s runtime.',
+      elsewhere: 'Open Settings in the Agent Inbox app to match Claude hooks to the v1.3.0 runtime.',
+    })
+    expect(agentsAction(agents(runtime('1.2.8'), runtime('1.3.0'), { hooks: runtime('1.4.0') }))).toMatchObject({
+      steps: [update('claude', 'Claude Code'), { host: 'hooks', progress: 'Matching Claude hooks to v1.3.0…', done: 'Claude hooks now match v1.3.0.' }],
+      label: 'Match agents to v1.3.0',
+      hint: 'Match agents to v1.3.0 updates Claude Code and moves Claude hooks back to this app\'s runtime. Running sessions keep their build until you restart them.',
+    })
+  })
+
+  it('never moves hooks Setup does not manage, of unknown version, already current, or where it cannot install this runtime', () => {
+    const hosts = (action: { steps: Array<{ host: string }> } | null) => action?.steps.map((step) => step.host) ?? null
+    for (const hooks of [{ kind: 'checkout', path: '/src/agent-inbox' }, { kind: 'other' }, { kind: 'unknown' }, { kind: 'none' }, { kind: 'runtime' }, runtime('1.3.0')]) {
+      expect(hosts(agentsAction(agents(runtime('1.2.8'), runtime('1.3.0'), { hooks, hooksCommand: COMMAND }))), JSON.stringify(hooks)).toEqual(['claude'])
+      expect(hosts(agentsAction(agents(runtime('1.3.0'), runtime('1.3.0'), { hooks, hooksCommand: COMMAND }))), JSON.stringify(hooks)).toBeNull()
+    }
+    expect(agentsAction(agents(runtime('1.2.8'), runtime('1.3.0'), { hooks: runtime('1.2.4'), hooksCommand: COMMAND, updatable: false }))).toBeNull()
+  })
+})
+
+describe('hooksGuidance', () => {
+  const after = (hooks: unknown) => ({ current: '1.3.0', updatable: true, claude: { kind: 'none' }, copilot: { kind: 'none' }, hooks, hooksCommand: '' })
+
+  it('says hooks moved only when the re-read shows them on exactly this version, and how running sessions pick them up', () => {
+    expect(hooksGuidance(after(runtime('1.3.0')), '1.3.0')).toEqual({
+      moved: true,
+      text: 'Claude hooks: new Claude Code sessions run the v1.3.0 hooks. Claude Code normally applies changed hooks to running sessions too; to be sure one does, restart it: exit it, then run claude --resume.',
+    })
+    expect(hooksGuidance(after(runtime('1.3.0')), '1.3.0').text).not.toMatch(/reloaded|reconnected/i)
+  })
+
+  it('never claims a move the re-read does not show', () => {
+    for (const hooks of [runtime('1.2.4'), runtime('1.4.0'), { kind: 'unknown' }, { kind: 'none' }, { kind: 'checkout', path: '/src' }]) {
+      expect(hooksGuidance(after(hooks), '1.3.0'), JSON.stringify(hooks)).toEqual({
+        moved: false,
+        text: 'Claude hooks: the installer finished, but Setup does not see them on v1.3.0; the list above shows what it reads.',
+      })
+    }
+    expect(hooksGuidance(null, '1.3.0')).toEqual({
+      moved: false,
+      text: 'Claude hooks: the installer finished, but Setup could not re-read Claude\'s settings to confirm the move.',
+    })
+  })
 })
 
 describe('restartGuidance', () => {

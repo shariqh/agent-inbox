@@ -3,8 +3,11 @@
 #
 # DRY-RUN IS THE DEFAULT: this prints the settings.json it *would* write and
 # changes nothing. Pass --apply to actually write. Nothing here runs from
-# `npm install`, `npm run build`, or the Electron app — the user's global
-# Claude Code config never changes by surprise.
+# `npm install` or `npm run build`, and the Electron app runs it only when the
+# human asks Setup to move hooks a Setup runtime installed (#206): this
+# script from the installed runtime, with --apply --move-only, which refuses
+# where there is no such set to move. The user's global Claude Code config
+# never changes by surprise.
 #
 # Usage:
 #   npm run install:hooks                 # dry run — print the merged result
@@ -13,6 +16,7 @@
 #   npm run install:hooks -- --apply --replace-existing  # also replace another Agent Inbox install's
 #   npm run install:hooks -- --apply --migrate    # also retire the legacy .sh Stop hooks
 #   npm run install:hooks -- --apply --uninstall  # remove this install's hooks
+#   <runtime>/scripts/install-hooks.sh --apply --move-only  # Setup: only move a Setup runtime's set
 #
 # Hooks from another Agent Inbox install (a Setup runtime, another checkout)
 # are refused, never doubled: docs/hooks.md, "One set of hooks".
@@ -22,7 +26,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SELF="$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SETTINGS="${HOME}/.claude/settings.json"
-APPLY=0; FORCE=0; UNINSTALL=0; MIGRATE=0; REPLACE=0
+APPLY=0; FORCE=0; UNINSTALL=0; MIGRATE=0; REPLACE=0; MOVE_ONLY=0
 
 for arg in "$@"; do
   case "$arg" in
@@ -32,7 +36,8 @@ for arg in "$@"; do
     --uninstall) UNINSTALL=1 ;;
     --migrate) MIGRATE=1 ;;
     --replace-existing) REPLACE=1 ;;
-    -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
+    --move-only) MOVE_ONLY=1 ;;
+    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
     *) echo "unknown flag: $arg (try --help)" >&2; exit 2 ;;
   esac
 done
@@ -59,6 +64,10 @@ RUNTIME_MODE=0
 RUNTIME_ROOT="${AGENT_INBOX_RUNTIME_ROOT:-$HOME/.agent-inbox/runtime}"
 CONFIG_HELPER="$ROOT/scripts/runtime-config.mjs"
 if [ -f "$ROOT/runtime-manifest.json" ]; then RUNTIME_MODE=1; fi
+if [ "$MOVE_ONLY" -eq 1 ] && [ "$RUNTIME_MODE" -eq 0 ]; then
+  echo "install-hooks: --move-only moves a Setup runtime's hooks; run it from a packaged runtime" >&2
+  exit 2
+fi
 
 if [ "$RUNTIME_MODE" -eq 0 ]; then
   command -v jq >/dev/null 2>&1 || { echo "install-hooks: jq is required for checkout-mode hook setup" >&2; exit 1; }
@@ -192,6 +201,8 @@ if [ "$RUNTIME_MODE" -eq 1 ]; then
   [ "$UNINSTALL" -eq 1 ] && hook_args+=(--uninstall)
   [ "$MIGRATE" -eq 1 ] && hook_args+=(--migrate)
   [ "$REPLACE" -eq 1 ] && hook_args+=(--replace-existing)
+  # Checked under the setup lock, so a set removed meanwhile is never re-added.
+  [ "$MOVE_ONLY" -eq 1 ] && hook_args+=(--move-only)
   # Packaged mode deliberately never forwards --force: only exact
   # manifest-owned release hooks may be replaced or removed, plus, with
   # --replace-existing, another Agent Inbox install's and dead ones (#218).
@@ -332,4 +343,4 @@ if [ "$UNINSTALL" -eq 1 ]; then
 else
   echo "agent-inbox hooks installed in $SHOWN (Node: ${NODE:-node})" >&2
 fi
-echo "New registrations are picked up only on a FRESH Claude Code session." >&2
+echo "Claude Code reads hooks when a session starts and normally applies a change to running sessions too; restart a session to be sure it has this one." >&2

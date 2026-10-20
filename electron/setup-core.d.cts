@@ -43,6 +43,7 @@ export interface SetupOperation {
   readonly sourceRoot: string
   readonly manifestDigest: string
   readonly packageVersion: string
+  readonly runtimeId: string
   readonly host: Readonly<SetupHost>
 }
 

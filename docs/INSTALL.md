@@ -580,10 +580,10 @@ this install's hooks. To switch:
 - **Setup runtime → this checkout:** `npm run install:hooks -- --apply --replace-existing`.
 - **This checkout → the Setup runtime:**
   `bash ~/.agent-inbox/runtime/<runtime-id>/scripts/install-hooks.sh --apply --replace-existing`.
-  That needs a 1.3.2 or later runtime (the folder name starts with its version); an
-  older one exits 2 with `unknown flag`. With an older runtime, run
-  `npm run install:hooks -- --apply --uninstall` here first, then that runtime's
-  `install-hooks.sh --apply`.
+  That needs a 1.3.2 or later runtime (its folder is named
+  `agent-inbox-runtime-<version>-…`); an older one exits 2 with `unknown flag`. With
+  an older runtime, run `npm run install:hooks -- --apply --uninstall` here first,
+  then that runtime's `install-hooks.sh --apply`.
 
 The same command fixes hooks that already run twice. Removing the old install's hooks
 with its own `--apply --uninstall` first, and then installing the new ones, works too
@@ -591,6 +591,13 @@ when nothing else is in the way; the message prints that command only when it ca
 succeed. Other tools' hooks are never touched. See
 [One set of hooks](hooks.md#one-set-of-hooks-switching-between-a-setup-runtime-and-a-checkout)
 in `docs/hooks.md` for the details.
+
+Runtimes of 1.3.2 and older do not recognize hooks of a runtime copied or extracted
+outside Setup's folder: their `--replace-existing` keeps that set and adds a second
+one. To give such a runtime the hooks, first clear that set, either by hand or by
+running `npm run install:hooks -- --apply --replace-existing` and then
+`npm run install:hooks -- --apply --uninstall` here. Then run the runtime's
+`install-hooks.sh --apply`.
 
 > **Node 24, again.** The installer resolves a Node 24 binary, **proves it** by running `dist/hook-cli.js selftest`, and only then bakes the absolute path into `settings.json`. It refuses to write if that fails. Do not hand-write `"command": "node"` — a hook spawned under Node 26 cannot load `better-sqlite3` and dies silently on every invocation, forever. Override the choice with `AGENT_INBOX_NODE=/abs/path/to/node24`.
 

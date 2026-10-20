@@ -1442,6 +1442,8 @@ describe('hook: installer', () => {
   const printed = (stderr: string): string[] => [...stderr.matchAll(/bash '(?:[^']|'\\'')*'(?: --[a-z-]+)+/g)].map((m) => m[0])
   const replaceCommand = `bash '${SCRIPT}' --apply --replace-existing`
   const uninstallCommand = (dir: string): string => `bash '${join(dir, 'scripts', 'install-hooks.sh')}' --apply --uninstall`
+  // how a refusal says to fix a runtime folder that no longer verifies
+  const strayFileHint = 'delete any file that was added to it (macOS Finder adds .DS_Store files) or reinstall that runtime'
 
   it('refuses to add a second set beside a Setup runtime\'s hooks, naming the runtime and the commands that fix it', () => {
     const { dir, entry, file } = home()
@@ -1642,7 +1644,10 @@ describe('hook: installer', () => {
       const r = installer(flags, dir, entry)
       expect(r.code, flags.join(' ')).toBe(1)
       expect(r.err).toMatch(/cannot attribute/)
-      expect(r.err).toContain(`${join(runtime, 'dist', 'hook-cli.js')} (notification, prompt-submit, session-end, session-start, stop, watch)`)
+      expect(r.err).toContain(`  - ${join(runtime, 'bin', 'node')} ${join(runtime, 'dist', 'hook-cli.js')} (notification, prompt-submit, session-end, session-start, stop, watch)`)
+      // the verifier's own reason, so the folder can be fixed without editing settings.json
+      expect(r.err).toContain(`\n    ${runtime} does not verify as a runtime: size mismatch for dist/hook-cli.js`)
+      expect(r.err).toContain(strayFileHint)
       expect(readFileSync(file, 'utf8')).toBe(before)
     }
   })
@@ -1683,21 +1688,55 @@ describe('hook: installer', () => {
     const tampered = installRuntimeVersion(join(dir, 'Downloads'), '1.2.4')
     writeFileSync(join(tampered, 'dist', 'hook-cli.js'), '// tampered\n')
     const borrowed = installRuntimeVersion(join(dir, 'Desktop'), '1.2.4')
-    const cases: Array<[string, Settings, string]> = [
-      ['a tampered runtime', withSets(withPostToolUse, setOf(join(tampered, 'bin', 'node'), join(tampered, 'dist', 'hook-cli.js'))), join(tampered, 'dist', 'hook-cli.js')],
-      ['a runtime\'s entry under another Node', withSets(withPostToolUse, setOf(process.execPath, join(borrowed, 'dist', 'hook-cli.js'))), join(borrowed, 'dist', 'hook-cli.js')],
+    // [label, the hooks' command, their entry, why the folder does not verify]
+    const cases: Array<[string, string, string, string | null]> = [
+      ['a tampered runtime', join(tampered, 'bin', 'node'), join(tampered, 'dist', 'hook-cli.js'), `${tampered} does not verify as a runtime: size mismatch for dist/hook-cli.js`],
+      ['a runtime\'s entry under another Node', process.execPath, join(borrowed, 'dist', 'hook-cli.js'), null],
     ]
-    for (const [label, settings, listed] of cases) {
-      writeFileSync(file, JSON.stringify(settings))
+    for (const [label, command, listed, reason] of cases) {
+      writeFileSync(file, JSON.stringify(withSets(withPostToolUse, setOf(command, listed))))
       const before = readFileSync(file, 'utf8')
       for (const flags of [['--apply'], ['--apply', '--replace-existing']]) {
         const r = installer(flags, dir, entry)
         expect(r.code, `${label}, ${flags.join(' ')}`).toBe(1)
         expect(r.err, label).toMatch(/cannot attribute/)
-        expect(r.err, label).toContain(`${listed} (notification, prompt-submit, session-end, session-start, stop, watch)`)
+        expect(r.err, label).toContain(`  - ${command} ${listed} (notification, prompt-submit, session-end, session-start, stop, watch)`)
+        if (reason) {
+          expect(r.err, label).toContain(`\n    ${reason}`)
+          expect(r.err, label).toContain(strayFileHint)
+        } else {
+          expect(r.err, label).not.toContain('does not verify')
+          expect(r.err, label).not.toContain(strayFileHint)
+        }
         expect(readFileSync(file, 'utf8'), label).toBe(before)
       }
     }
+  })
+
+  // macOS Finder writes .DS_Store into folders the user browses, such as a
+  // runtime extracted to ~/Downloads, and a runtime folder must hold exactly
+  // its manifested files. The refusal names the stray file, so deleting it is
+  // enough: nobody has to edit settings.json.
+  it('names the stray file that stops a runtime folder from verifying, and works once it is deleted', () => {
+    const { dir, entry, file } = home()
+    const copied = installRuntimeVersion(join(dir, 'Downloads'), '1.2.4')
+    const copiedEntry = join(copied, 'dist', 'hook-cli.js')
+    writeFileSync(file, JSON.stringify(withSets(withPostToolUse, setOf(join(copied, 'bin', 'node'), copiedEntry))))
+    writeFileSync(join(copied, '.DS_Store'), '')
+    const before = readFileSync(file, 'utf8')
+
+    for (const flags of [['--apply'], ['--apply', '--replace-existing']]) {
+      const r = installer(flags, dir, entry)
+      expect(r.code, flags.join(' ')).toBe(1)
+      expect(r.err).toContain(`\n    ${copied} does not verify as a runtime: unmanifested file present in payload: .DS_Store\n`)
+      expect(r.err).toContain(strayFileHint)
+      expect(readFileSync(file, 'utf8')).toBe(before)
+    }
+
+    rmSync(join(copied, '.DS_Store'))
+    const r = installer(['--apply', '--replace-existing'], dir, entry)
+    expect(r.code, r.err).toBe(0)
+    expectOneSet(JSON.parse(readFileSync(file, 'utf8')) as Settings, entry, [entry, copiedEntry])
   })
 
   // #228: realpathSync applies `..` before it follows a symlink, the OS after,
@@ -1726,6 +1765,8 @@ describe('hook: installer', () => {
         const label = `${hook.command} ${hook.args[0]}, ${flags.join(' ')}`
         expect(r.code, label).toBe(1)
         expect(r.err, label).toMatch(/cannot attribute/)
+        // the command is listed too: it can be the path that does not resolve
+        expect(r.err, label).toContain(`  - ${hook.command} ${hook.args[0]} (${hook.args[1]})`)
         expect(r.err, label).not.toMatch(/can no longer run/)
         expect(readFileSync(file, 'utf8'), label).toBe(before)
       }

@@ -105,7 +105,7 @@ npm run install:hooks -- --apply
 bash ~/.agent-inbox/runtime/<runtime-id>/scripts/install-hooks.sh --apply --replace-existing
 ```
 
-A runtime's folder name starts with its version, as in
+A runtime's folder is named `agent-inbox-runtime-<version>-…`, for example
 `agent-inbox-runtime-1.3.2-darwin-arm64-…`. Runtimes older than 1.3.2 do not know
 `--replace-existing`: their installer exits 2 with `unknown flag`. With one of those
 (or with any runtime, as an alternative), use two steps:
@@ -121,23 +121,40 @@ first case. Moving between two Setup runtimes needs no flag: a runtime's install
 already replaces any Setup runtime's hooks.
 
 **A runtime outside Setup's folder** (copied or extracted elsewhere, or installed
-while `AGENT_INBOX_RUNTIME_ROOT` named another folder) is another install too. A
-checkout's or a Setup runtime's install refuses beside its hooks, naming it as
-`the v1.2.4 runtime at <folder>, outside Setup's runtime folder`, and
-`--replace-existing` replaces them. Runtimes newer than 1.3.2 also recognize their
-own hooks from such a folder, so their installer re-installs and removes them as
-usual; 1.3.2 and older do not, so a refusal never offers that runtime's own
-`--apply --uninstall`. Setup's Agents panel reports these hooks as not verified,
-since it does not manage them.
+while `AGENT_INBOX_RUNTIME_ROOT` named another folder) is another install too. The
+installer of a checkout, or of a runtime newer than 1.3.2, refuses beside its hooks,
+naming it as `the v1.2.4 runtime at <folder>, outside Setup's runtime folder`, and
+`--replace-existing` replaces them. Such a runtime's own installer, when newer than
+1.3.2, also re-installs and removes its own hooks there as usual. Setup's Agents
+panel reports these hooks as not verified, since it does not manage them.
+
+Runtimes of 1.3.2 and older take those hooks for another tool's: their
+`--replace-existing` leaves them in place and adds a second set, and their own
+`--apply --uninstall` refuses them, so a refusal never offers it. To install the
+hooks of a 1.3.2 or older runtime beside such a set, clear the set first, then run
+the older runtime's `install-hooks.sh --apply`. Remove the set from `settings.json`
+by hand, or replace it from a checkout and then remove the checkout's set:
+
+```sh
+npm run install:hooks -- --apply --replace-existing
+npm run install:hooks -- --apply --uninstall
+```
+
+A newer Setup runtime's `install-hooks.sh --apply --replace-existing` clears it too;
+the older runtime's `--apply` then replaces that set, as it does any Setup runtime's.
 
 `--replace-existing` removes this install's own hooks, every other install's, and
 every one that can no longer run, then installs exactly one set; without `--apply`
 it prints that single set and writes nothing. It cannot be combined with
 `--uninstall`. It never removes another tool's hook. Unverifiable entries are
 refused with or without the flag, because they might be a working second set:
-remove them by hand. A checkout install never refuses because of another tool's
-hook. A runtime's installer still refuses beside one unless given the flag, which
-then leaves it in place.
+remove them by hand. When the cause is a runtime folder that does not verify, the
+refusal also gives the verifier's reason, such as
+`unmanifested file present in payload: .DS_Store` (macOS Finder adds those to
+folders you open). Delete what was added, or reinstall that runtime, and run the
+installer again; then nothing needs editing by hand. A checkout install never
+refuses because of another tool's hook. A runtime's installer still refuses beside
+one unless given the flag, which then leaves it in place.
 
 `--force` and `--uninstall` keep their meaning: `--force` replaces only this
 install's own hooks, and `--uninstall` removes only this install's hooks (from a

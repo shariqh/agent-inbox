@@ -547,6 +547,20 @@ describe('portable release installer', () => {
       expect(entries(step), step).toEqual(Array(6).fill(copiedEntry))
     }
 
+    // Finder's .DS_Store stops the copy verifying: even its own installer says
+    // which file, and deleting it is all it takes
+    writeFileSync(join(copied, '.DS_Store'), '')
+    for (const flags of [['--apply'], ['--apply', '--uninstall']]) {
+      const stray = run(copiedInstaller, f.env, ...flags)
+      expect(stray.status, flags.join(' ')).toBe(1)
+      expect(stray.stderr).toContain(`\n    ${copied} does not verify as a runtime: unmanifested file present in payload: .DS_Store\n`)
+      expect(stray.stderr).toContain('or reinstall that runtime')
+      expect(entries('stray file'), 'stray file').toEqual(Array(6).fill(copiedEntry))
+    }
+    rmSync(join(copied, '.DS_Store'))
+    const own = run(copiedInstaller, f.env, '--apply')
+    expect(own.status, own.stderr).toBe(0)
+
     // the reported step, from a checkout
     let refused = run(checkoutInstaller, checkoutEnv, '--apply')
     expect(refused.status, refused.stderr).toBe(1)

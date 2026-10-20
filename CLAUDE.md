@@ -1365,7 +1365,11 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   `<dir>/dist/hook-cli.js` beside a runtime manifest is never another tool's: outside the
   runtime root it is `elsewhere` — replaceable, and own only to that folder's own
   installer — when `verifyPayload` passes (product `agent-inbox-runtime`) and the command
-  is that folder's Node, else `unknown`; Setup reports both as `unknown`. *(#228)* A path
+  is that folder's Node, else `unknown`; Setup reports both as `unknown`. Verification
+  stays strict (a Finder `.DS_Store` fails it), so the refusal lists each unverifiable
+  entry with its command and, for a runtime folder (under the root or not) that does not
+  verify, the verifier's reason and the fix: delete what was added or reinstall it.
+  *(#228)* A path
   is dead only when `statSync` on it as written fails too: `realpathSync` applies `..`
   before the symlink in front of it, so a working `<symlinked folder>/../bin/node` is
   `unknown`, never dead. Replaceable entries refuse

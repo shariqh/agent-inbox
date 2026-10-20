@@ -24,7 +24,8 @@
 //            runtime directories). However this happened, it is not a clean
 //            "we own this" state — retain, don't guess.
 //   unknown — a path does not exist, is unreadable, or the runtime directory
-//            it resolves to has no valid manifest. Retain rather than assume.
+//            it resolves to has no valid manifest (its `path`, and the
+//            verifier's `problem`, are returned). Retain rather than assume.
 //
 // mergeJsonAtomic() is the paired write primitive: read-modify-write a JSON
 // config file through a same-directory temp file + rename, so a reader never
@@ -110,7 +111,7 @@ export function classifyRuntimeConfig({ nodeBinPath, entryPath, runtimeRoot, man
     try {
       manifest = verifyPayload({ root: runtimeDir, manifestFileName, expect: { runtimeId: nodeRuntimeId } })
     } catch (err) {
-      return { status: 'unknown', reason: `runtime directory has no valid ownership manifest: ${err.message}` }
+      return { status: 'unknown', reason: `runtime directory has no valid ownership manifest: ${err.message}`, path: runtimeDir, problem: err.message }
     }
 
     return { status: 'owned', runtimeId: manifest.runtimeId, version: manifest.packageVersion, path: runtimeDir }
@@ -487,8 +488,8 @@ function runtimeElsewhere(dir, node, manifestFileName) {
   try {
     const manifest = verifyPayload({ root: dir, manifestFileName, expect: { product: RUNTIME_PRODUCT } })
     return { kind: 'elsewhere', runtimeId: manifest.runtimeId, version: manifest.packageVersion, path: dir }
-  } catch {
-    return { kind: 'unknown' }
+  } catch (err) {
+    return { kind: 'unknown', path: dir, problem: err instanceof Error ? err.message : String(err) }
   }
 }
 
@@ -500,7 +501,8 @@ function runtimeElsewhere(dir, node, manifestFileName) {
  *   other     — identifiably something else, such as another tool's look-alike
  *   dead      — the entry, or a command given as a path, can no longer be found, even by the OS
  *   unknown   — it runs, but from a split pair, a runtime folder that does not
- *               verify, or a path only the OS resolves
+ *               verify (its `path`, with the verifier's `problem`), or a path
+ *               only the OS resolves
  */
 function classifyHookLauncher({ command, entry, runtimeRoot, manifestFileName = DEFAULT_MANIFEST_FILE }) {
   if (typeof command !== 'string' || typeof entry !== 'string') return { kind: 'unknown' }
@@ -519,9 +521,8 @@ function classifyHookLauncher({ command, entry, runtimeRoot, manifestFileName = 
   if (nodeIn || fileIn) {
     if (!nodeIn || !fileIn) return { kind: 'unknown' }
     const owned = classifyRuntimeConfig({ nodeBinPath: node, entryPath: file, runtimeRoot: root, manifestFileName })
-    return owned.status === 'owned'
-      ? { kind: 'runtime', runtimeId: owned.runtimeId, version: owned.version, path: owned.path }
-      : { kind: 'unknown' }
+    if (owned.status === 'owned') return { kind: 'runtime', runtimeId: owned.runtimeId, version: owned.version, path: owned.path }
+    return owned.problem ? { kind: 'unknown', path: owned.path, problem: owned.problem } : { kind: 'unknown' }
   }
   const dir = hookCliDir(file)
   if (dir === null) return { kind: 'other' }
@@ -544,7 +545,9 @@ function installDirAsWritten(entry, canonicalDir) {
  *   replaceable  — another Agent Inbox install's (a verified runtime under the
  *                  runtime root or outside it, a checkout), or a dead
  *                  dist/hook-cli.js: only --replace-existing removes these
- *   unverifiable — a dist/hook-cli.js that runs but cannot be verified: never removed
+ *   unverifiable — a dist/hook-cli.js that runs but cannot be verified: never
+ *                  removed. Each is {entry, problem?}, the problem saying why
+ *                  its runtime folder does not verify, when that is the reason.
  *   others       — another tool's hook that only looks like ours: never removed
  * Without a runtime root nothing can be verified, so nothing is replaceable.
  */
@@ -557,13 +560,16 @@ function sortHookEntries({ settings, isOwn, runtimeRoot, manifestFileName }) {
     const owner = seen.get(key)
     const hookCli = typeof entry.args[0] === 'string' && entry.args[0].endsWith('/dist/hook-cli.js')
     if (isOwn(entry, owner)) sorted.own.push(entry)
-    else if (!runtimeRoot) sorted.unverifiable.push(entry)
+    else if (!runtimeRoot) sorted.unverifiable.push({ entry })
     else if (owner.kind === 'runtime' || owner.kind === 'elsewhere' || owner.kind === 'checkout') {
       sorted.replaceable.push({ entry, owner: { ...owner, path: installDirAsWritten(entry.args[0], owner.path) } })
     } else if (owner.kind === 'dead' && hookCli) {
       sorted.replaceable.push({ entry, owner: { kind: 'dead', path: dirname(dirname(entry.args[0])) } })
-    } else if (owner.kind === 'unknown' && hookCli) sorted.unverifiable.push(entry)
-    else sorted.others.push(entry)
+    } else if (owner.kind === 'unknown' && hookCli) {
+      sorted.unverifiable.push(owner.problem
+        ? { entry, problem: `${installDirAsWritten(entry.args[0], owner.path)} does not verify as a runtime: ${owner.problem}` }
+        : { entry })
+    } else sorted.others.push(entry)
   }
   return sorted
 }
@@ -594,10 +600,19 @@ function shellQuote(value) {
   return `'${value.replaceAll("'", "'\\''")}'`
 }
 
-function listEntries(entries) {
-  const subcommands = new Map()
-  for (const entry of entries) subcommands.set(entry.args[0], new Set([...(subcommands.get(entry.args[0]) ?? []), entry.args[1]]))
-  return [...subcommands].map(([entry, subs]) => `  - ${entry} (${[...subs].sort().join(', ')})`)
+/** One line per launcher (its command, entry and subcommands), each followed by its problem, if any. */
+function listEntries(items) {
+  const launchers = new Map()
+  for (const { entry, problem } of items) {
+    const key = JSON.stringify([entry.command, entry.args[0]])
+    const known = launchers.get(key) ?? { entry, problem, subcommands: new Set() }
+    known.subcommands.add(entry.args[1])
+    launchers.set(key, known)
+  }
+  return [...launchers.values()].flatMap(({ entry, problem, subcommands }) => [
+    `  - ${typeof entry.command === 'string' ? `${entry.command} ` : ''}${entry.args[0]} (${[...subcommands].sort().join(', ')})`,
+    ...(problem ? [`    ${problem}`] : []),
+  ])
 }
 
 // Whether `owner`'s own installer can remove its hooks from these settings
@@ -617,18 +632,27 @@ class HookRefusal extends Error {}
 
 /**
  * The refusal for `sorted` (sortHookEntries). What no installer command can
- * clear is named first, to remove by hand. Otherwise the one-step
- * --replace-existing comes first, then each other install's own uninstall
- * that can succeed in this state. `others` lists the look-alikes that block.
+ * clear is named first, to remove by hand, or, when its runtime folder does
+ * not verify, to fix in that folder (the verifier says what is wrong).
+ * Otherwise the one-step --replace-existing comes first, then each other
+ * install's own uninstall that can succeed in this state. `others` lists the
+ * look-alikes that block.
  */
 function hookRefusal({ settingsPath, sorted, others, installer, uninstall }) {
   const notDone = uninstall ? 'nothing was removed' : 'nothing was written'
-  const byHand = [...sorted.unverifiable, ...(uninstall ? others : [])]
+  const byHand = [...sorted.unverifiable, ...(uninstall ? others.map((entry) => ({ entry })) : [])]
   if (byHand.length > 0) {
+    const fixable = byHand.some((item) => item.problem)
     return new HookRefusal([
       `install-hooks: ${settingsPath} has hooks shaped like Agent Inbox's that this installer cannot attribute to an install:`,
       ...listEntries(byHand),
-      `They may be another set of Agent Inbox hooks, so ${notDone}. Remove them from ${settingsPath} by hand, then run this installer again.`,
+      ...(fixable ? [
+        `They may be another set of Agent Inbox hooks, so ${notDone}.`,
+        'To fix a runtime folder that does not verify, delete any file that was added to it (macOS Finder adds .DS_Store files) or reinstall that runtime, then run this installer again.',
+        `Or remove them from ${settingsPath} by hand, then run this installer again.`,
+      ] : [
+        `They may be another set of Agent Inbox hooks, so ${notDone}. Remove them from ${settingsPath} by hand, then run this installer again.`,
+      ]),
     ].join('\n'))
   }
   const owners = hookOwners(sorted.replaceable)
@@ -639,7 +663,7 @@ function hookRefusal({ settingsPath, sorted, others, installer, uninstall }) {
   }
   if (others.length > 0) {
     lines.push(`install-hooks: ${settingsPath} has other tools' hooks that use Agent Inbox's subcommand names; --replace-existing leaves them in place:`)
-    lines.push(...listEntries(others))
+    lines.push(...listEntries(others.map((entry) => ({ entry }))))
   }
   const live = owners.some((o) => o.kind !== 'dead')
   lines.push(uninstall || !live ? `${notDone[0].toUpperCase()}${notDone.slice(1)}.`

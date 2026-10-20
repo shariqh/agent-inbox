@@ -307,6 +307,10 @@ describe('local marketing page', () => {
     expect(document.querySelector('#panel-plans')?.getAttribute('aria-hidden')).toBe('true')
     expect(html).toContain('.demo-panel[aria-hidden="true"]')
     expect(html).toContain('.receipt[hidden]')
+    // The reserved receipt space is a minimum in em, so enlarged text grows it instead of being clipped.
+    const receiptRules = [...html.matchAll(/\.receipt \{([^}]*)\}/g)].map(match => match[1]!)
+    expect(receiptRules.filter(rule => /\bmin-block-size: [\d.]+em;/.test(rule))).toHaveLength(2)
+    expect(receiptRules.filter(rule => /(?:^|[;\s])block-size:/.test(rule))).toEqual([])
 
     button('#tab-plans').click()
     expect(document.querySelectorAll('.demo-panel.is-active')).toHaveLength(1)

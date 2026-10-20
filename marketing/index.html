@@ -210,7 +210,8 @@
     .sample-background { margin-top: 14px; font-size: .625rem; color: var(--cp-text-muted); }
     .sample-background summary { cursor: pointer; padding-block: 5px; }
     .sample-background p { padding-top: 7px; }
-    .receipt { block-size: 83px; margin-top: 14px; padding: 12px; overflow: hidden; border: 1px solid var(--cp-border); border-radius: 6px; color: var(--cp-text); font-size: .625rem; background: var(--cp-bg-elevated); }
+    /* The hidden receipt reserves its space. A minimum in em scales with enlarged text instead of clipping it. */
+    .receipt { min-block-size: 8.3em; margin-top: 14px; padding: 12px; overflow: hidden; border: 1px solid var(--cp-border); border-radius: 6px; color: var(--cp-text); font-size: .625rem; background: var(--cp-bg-elevated); }
     .receipt[hidden] { display: block !important; visibility: hidden; }
     .receipt strong { display: flex; align-items: center; gap: 6px; font-weight: 600; }
     .receipt svg { width: 14px; height: 14px; }
@@ -498,7 +499,7 @@
       .recommendation { font-size: .5rem; }
       .sample-background { font-size: .75rem; }
       .receipt { font-size: .75rem; }
-      .receipt { block-size: 96px; }
+      .receipt { min-block-size: 8em; }
       .demo-caption { padding: 10px 4px 0; font-size: .625rem; }
       .reset-button { padding-top: 0; min-height: 32px; font-size: .625rem; }
       .plan-content, .live-content { padding: 22px 16px; }

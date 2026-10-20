@@ -433,6 +433,8 @@ export interface IssueRefreshOpts {
   budget: IssueBudget
   /** no gh call starts after this time */
   deadlineMs?: number
+  /** the keys of snapshots the store refused as invalid and recorded as gh-failed */
+  onInvalid?: (keys: string[]) => void
 }
 
 export interface IssueRefreshSummary {
@@ -477,10 +479,30 @@ export async function refreshIssuesOnce(db: Database.Database, opts: IssueRefres
       result.code === 0 ? undefined : { code: result.code, stderr: String(result.stderr ?? '') })
     opts.budget.spend(now(), batch.rateLimit, batch.whole === 'rate-limit')
     const results = claimed.map((k, i): IssueRefreshResult => ({ repo: k.repo, number: k.number, startedAt, ...batch.outcomes[i]! }))
-    return { claimed: claimed.length, applied: completeIssueRefresh(db, { owner: opts.owner, results }) }
+    const invalid: string[] = []
+    const applied = completeIssueRefresh(db, {
+      owner: opts.owner, results, onInvalid: (k) => invalid.push(issueKey(k.repo, k.number) ?? `${k.repo}#${k.number}`),
+    })
+    if (invalid.length) opts.onInvalid?.(invalid)
+    return { claimed: claimed.length, applied }
   } catch (err) {
     console.error('[agent-inbox] issue refresh failed', err)
     return { claimed: 0, applied: 0, failed: true }
+  }
+}
+
+// A snapshot the parser accepted but the store's validator refused is recorded
+// as a soft gh-failed (§5.5), which alone looks like an ordinary outage. The
+// two disagreeing is a bug worth reporting, so it is said ONCE per poller: one
+// stderr line naming keys, never titles. Repeating it each tick would flood
+// the log, since the same keys are refetched every 10 minutes.
+export function invalidSnapshotNotice(write: (line: string) => void): (keys: string[]) => void {
+  let said = false
+  return (keys) => {
+    if (said || keys.length === 0) return
+    said = true
+    const shown = keys.slice(0, 5).join(', ') + (keys.length > 5 ? `, and ${keys.length - 5} more` : '')
+    write(`[agent-inbox] ${keys.length} GitHub issue snapshot(s) failed validation and were recorded as gh-failed: ${shown}. Later occurrences are not logged.`)
   }
 }
 
@@ -520,13 +542,15 @@ export interface GithubPollerOpts {
 export function startGithubPoller(db: Database.Database, opts: GithubPollerOpts = {}): { stop(): void } {
   const owner = randomUUID()
   const budget = new IssueBudget(Date.now())
+  // stderr only: under Electron and in the viewer, stdout is no log channel
+  const onInvalid = invalidSnapshotNotice((line) => console.error(line))
   let busy = false
   const tick = async (): Promise<void> => {
     if (busy) return // a slow tick must never overlap the next one
     busy = true
     try {
       const t0 = Date.now()
-      await refreshIssuesOnce(db, { run: opts.issueRun, owner, budget, deadlineMs: t0 + ISSUE_DEADLINE_MS })
+      await refreshIssuesOnce(db, { run: opts.issueRun, owner, budget, deadlineMs: t0 + ISSUE_DEADLINE_MS, onInvalid })
       await refreshOnce(db, { run: opts.run, runApi: opts.runApi, deadlineMs: t0 + PR_DEADLINE_MS })
     } catch (err) {
       console.error('[agent-inbox] github refresh failed', err)

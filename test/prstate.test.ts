@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, posix } from 'node:path'
 import type Database from 'better-sqlite3'
 import {
   openDb,
@@ -644,23 +644,49 @@ describe('the poller runs in the viewer process only', () => {
 
   // the stdio channel is the MCP server's protocol wire: a `gh` subprocess that
   // inherited it, or an update notifier that printed to it, would corrupt MCP
-  // the whole reachable graph of the stdio server, not just its two entry files
+  // the whole reachable graph of the stdio server, not just its two entry files.
+  // Since #103 PR2 it includes the pure issue modules a titled board_get needs.
   const STDIO_GRAPH = [
     'src/mcp.ts', 'src/mcp-server.ts', 'src/store.ts', 'src/scope.ts', 'src/infer.ts', 'src/group.ts',
-    'src/hook.ts', 'src/hook-cli.ts', 'src/shape.ts', 'src/watch.ts', 'src/version.ts', 'src/server-source.ts',
+    'src/hook.ts', 'src/hook-cli.ts', 'src/shape.ts', 'src/watch.ts', 'src/watch-cli.ts', 'src/version.ts',
+    'src/server-source.ts', 'src/issue-graph.ts', 'public/issue-key.js', 'public/source.js', 'public/esc.js',
   ]
+  // Every relative module a file names, in either quote style: static
+  // (`from '…'`), side-effect (`import '…'`), dynamic `import('…')` and
+  // `require('…')`. Type-only imports count too, which only errs on the safe side.
+  const SPECIFIERS = /(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)(['"])(\.{1,2}\/[^'"\n]+)\1/g
+  const specifiers = (code: string): string[] => [...code.matchAll(SPECIFIERS)].map((m) => m[2]!)
+  // repo-relative path of the module a specifier names; src/ sources are .ts
+  const resolveSpec = (file: string, spec: string): string => {
+    const target = posix.join(posix.dirname(file), spec)
+    return target.startsWith('src/') ? target.replace(/\.js$/, '.ts') : target
+  }
+  const POLLERS = ['src/prstate.ts', 'src/issue-poller.ts']
+
+  it('the specifier scan sees every import form, in either quote style', () => {
+    expect(specifiers([
+      `import { a } from './prstate.js'`,
+      `import { b } from "./issue-poller.js"`,
+      `import "./side-effect.js"`,
+      `import './other.js'`,
+      `const m = await import("./dynamic.js")`,
+      `const r = require('./required.js')`,
+      `import { c } from '../public/issue-key.js'`,
+      `import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'`,
+    ].join('\n'))).toEqual([
+      './prstate.js', './issue-poller.js', './side-effect.js', './other.js', './dynamic.js', './required.js', '../public/issue-key.js',
+    ])
+    expect(resolveSpec('src/mcp.ts', '../public/issue-key.js')).toBe('public/issue-key.js')
+    expect(resolveSpec('public/issue-key.js', './source.js')).toBe('public/source.js')
+    expect(resolveSpec('src/mcp.ts', './issue-poller.js')).toBe('src/issue-poller.ts')
+  })
 
   it('no file of the stdio server graph imports prstate or the issue poller, directly or transitively', () => {
-    // (a comment naming either file is fine — an IMPORT of it is not)
-    const imports = /(?:(?:from|import)\s*\(?\s*'\.\/(?:prstate|issue-poller)\.js'|require\('\.\/(?:prstate|issue-poller))/
     for (const file of STDIO_GRAPH) {
-      expect(read(file), `${file} pulls a gh poller into the stdio server`).not.toMatch(imports)
-    }
-    // the list is the graph: every relative import of a listed file is listed too
-    for (const file of STDIO_GRAPH) {
-      for (const [, spec] of read(file).matchAll(/(?:from|import)\s*\(?\s*'\.\/([\w-]+)\.js'/g)) {
-        expect(STDIO_GRAPH, `${file} imports ./${spec}.js`).toContain(`src/${spec}.ts`)
-      }
+      const reached = specifiers(read(file)).map((spec) => resolveSpec(file, spec))
+      expect(reached.filter((target) => POLLERS.includes(target)), `${file} pulls a gh poller into the stdio server`).toEqual([])
+      // the list is the graph: every relative import of a listed file is listed too
+      for (const target of reached) expect(STDIO_GRAPH, `${file} imports ${target}`).toContain(target)
     }
   })
 
@@ -677,9 +703,9 @@ describe('the poller runs in the viewer process only', () => {
   })
 
   it('the local HTTP boundary never enters the stdio MCP import graph', () => {
-    const importsViewerNetwork = /from\s+'\.\/viewer-network\.js'/
-    for (const file of ['src/mcp.ts', 'src/mcp-server.ts', 'src/store.ts', 'src/scope.ts', 'src/infer.ts', 'src/group.ts', 'src/hook.ts', 'src/hook-cli.ts']) {
-      expect(read(file), `${file} pulls the local HTTP boundary into MCP`).not.toMatch(importsViewerNetwork)
+    for (const file of STDIO_GRAPH) {
+      expect(specifiers(read(file)).map((spec) => resolveSpec(file, spec)), `${file} pulls the local HTTP boundary into MCP`)
+        .not.toContain('src/viewer-network.ts')
     }
   })
 })

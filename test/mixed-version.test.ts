@@ -15,8 +15,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
 import {
-  insertItem, listBoards, listIssueSnapshots, listItems, listSourceLinks, openDb, recordIssueFailure,
-  upsertIssueSnapshot, upsertSourceLink,
+  getBoard, insertItem, listBoards, listIssueEntities, listIssueSnapshots, listItems, listSourceLinks, openDb, recordIssueFailure,
+  upsertBoard, upsertIssueSnapshot, upsertSourceLink,
 } from '../src/store.js'
 import { issueKeyFor } from '../public/issue-key.js'
 import { createViewer } from '../src/viewer.js'
@@ -60,6 +60,71 @@ const V131 = {
      ON CONFLICT(repo, branch, head_repo) DO UPDATE SET checked_at = @now, error = @error,
        preview_url = NULL, preview_environment = NULL, preview_deployment_id = NULL,
        preview_updated_at = NULL, preview_error = NULL, revision = source_links_by_head.revision + 1`,
+  // PR2: the board writes a v1.3.1 upsertBoard/updateBoardRow/board_advance runs
+  ensureBoard: `UPDATE boards
+                   SET stream = ?, agent = ?, repo = ?, issue_ref = ?, head_repo = ?,
+                       updated_at = CASE
+                         WHEN stream IS NOT ? OR agent IS NOT ? OR repo IS NOT ? OR issue_ref IS NOT ? OR head_repo IS NOT ?
+                         THEN ? ELSE updated_at END
+                 WHERE id = ?`,
+  upsertRow: `
+          UPDATE board_rows
+             SET status = @status,
+                 note = @note,
+                 position = @position,
+                 updated_at = CASE
+                   WHEN status IS NOT @status OR note IS NOT @note
+                   THEN @now ELSE updated_at END
+           WHERE id = @id`,
+  rowContext: `UPDATE board_rows SET context = ?, updated_at = ? WHERE id = ? AND context IS NOT ?`,
+  rowStatus: `UPDATE board_rows SET status = ?, updated_at = ? WHERE id = ? AND status IS NOT ?`,
+  rowOutcome: `UPDATE board_rows
+                 SET outcome_at = CASE
+                       WHEN @text = '' THEN NULL
+                       ELSE @now END,
+                     updated_at = @now,
+                     outcome = @text
+               WHERE id = @id AND outcome IS NOT @text`,
+  beginNewRowAction: `
+    UPDATE board_rows
+       SET note = '',
+           next_step = '',
+           action_owner = NULL,
+           impact = '',
+           next_after = '',
+           options = NULL,
+           annotation = NULL,
+           annotation_kind = NULL,
+           annotated_at = NULL,
+           annotation_seen_at = NULL,
+           annotation_seen_by = NULL,
+           handled_at = NULL,
+           handled_seen_at = NULL,
+           handled_seen_by = NULL,
+           snoozed_until = NULL,
+           outcome = '',
+           outcome_at = NULL,
+           action_started_at = ?,
+           action_version = ?,
+           revision = revision + 1,
+           history = ?,
+           updated_at = ?
+     WHERE id = ?`,
+  advanceRow: `
+      UPDATE board_rows
+         SET status = 'blocked',
+             note = ?,
+             next_step = ?,
+             action_owner = ?,
+             impact = ?,
+             next_after = ?,
+             options = ?,
+             context = CASE WHEN ? IS NULL THEN context ELSE ? END,
+             updated_at = ?
+       WHERE id = ?`,
+  incrementRowRevision: `UPDATE board_rows SET revision = revision + 1 WHERE id = ? RETURNING revision`,
+  bumpBoardRevision: `UPDATE boards SET revision = revision + 1, updated_at = ? WHERE id = ? RETURNING revision`,
+  syncBoardStatus: `UPDATE boards SET status = ?, updated_at = ? WHERE id = ?`,
   listItems: `SELECT * FROM items ORDER BY created_at DESC`,
   listSourceLinks: `SELECT * FROM source_links_by_head ORDER BY repo ASC, branch ASC, head_repo ASC`,
 }
@@ -209,5 +274,58 @@ describe('a v1.3.1 process sharing a hub with this build (issue #103)', () => {
       closing_refs: [{ repo: REPO, number: 117 }],
     })
     expect(identity()).toEqual({ key: `${REPO}#117`, source: 'pr', certain: true })
+  })
+
+  // PR2 acceptance criterion 6: no statement a v1.3.1 process runs names the
+  // link columns, so none of its board and row writes can clear them.
+  it('v1.3.1 board and row writes on a migrated hub never clear plan pins or row links', () => {
+    const old = oldProcess()
+    const hub = newProcess()
+    upsertBoard(hub, {
+      project: 'agent-inbox', stream: '119-adapter', agent: 'new', title: 'AHP', repo: REPO, issueRef: 119,
+      issuePin: { repo: REPO, number: 117 },
+      rows: [{ label: 'Input', status: 'tracked', issue: { repo: REPO, number: 120 } }, { label: 'Other', status: 'done', issue: { repo: 'o/r', number: 5 } }],
+    })
+    const board = getBoard(hub, 'agent-inbox', 'AHP')!
+    const [input, other] = board.rows
+    const links = () => {
+      const b = getBoard(hub, 'agent-inbox', 'AHP') ?? listBoards(hub, { status: 'archived' })[0]!
+      const byLabel = [...b.rows].sort((x, y) => x.label.localeCompare(y.label))
+      return [b.issue_pin_repo, b.issue_pin_number, ...byLabel.flatMap((r) => [r.issue_repo, r.issue_number])]
+    }
+    const expected = [REPO, 117, REPO, 120, 'o/r', 5]
+    expect(links()).toEqual(expected)
+
+    // a v1.3.1 upsertBoard: restamp the board, rewrite each row, bump revisions
+    vi.setSystemTime(Date.parse(at(61)))
+    const now = at(61)
+    old.prepare(V131.ensureBoard).run('121-other', 'old', REPO, 121, null, '121-other', 'old', REPO, 121, null, now, board.id)
+    old.prepare(V131.upsertRow).run({ status: 'partial', note: 'Old agent note', position: 1, now, id: input!.id })
+    old.prepare(V131.upsertRow).run({ status: 'done', note: '', position: 0, now, id: other!.id })
+    old.prepare(V131.rowContext).run('Old context', now, input!.id, 'Old context')
+    old.prepare(V131.rowOutcome).run({ text: 'Shipped by the old agent', now, id: other!.id })
+    old.prepare(V131.incrementRowRevision).get(input!.id)
+    old.prepare(V131.bumpBoardRevision).get(now, board.id)
+    expect(links()).toEqual(expected)
+
+    // a v1.3.1 updateBoardRow that reblocks the row, then its board_advance
+    old.prepare(V131.beginNewRowAction).run(now, 2, '[]', now, input!.id)
+    old.prepare(V131.rowStatus).run('blocked', now, input!.id, 'blocked')
+    old.prepare(V131.beginNewRowAction).run(now, 3, '[]', now, input!.id)
+    old.prepare(V131.advanceRow).run('Next', 'Do it.', 'task', 'Moves on.', '', null, null, null, now, input!.id)
+    old.prepare(V131.bumpBoardRevision).get(now, board.id)
+    expect(links()).toEqual(expected)
+
+    // its completeness sync archives and reactivates the plan
+    old.prepare(V131.syncBoardStatus).run('archived', now, board.id)
+    expect(links()).toEqual(expected)
+    old.prepare(V131.syncBoardStatus).run('active', now, board.id)
+    expect(links()).toEqual(expected)
+
+    // and this build still reads every link as the entity's certain identity source
+    const entities = listIssueEntities(hub)
+    expect(entities.find((e) => e.id === board.id)).toMatchObject({ issue_pin_repo: REPO, issue_pin_number: 117 })
+    expect(entities.filter((e) => e.kind === 'row').map((e) => [e.issue_repo, e.issue_number]).sort())
+      .toEqual([['o/r', 5], [REPO, 120]])
   })
 })

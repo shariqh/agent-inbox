@@ -9,7 +9,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { ReadBuffer, serializeMessage } from '@modelcontextprotocol/sdk/shared/stdio.js'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
-import { openDb, listItems, listBoards, getBoard, annotateBoardRow, markRowHandled, listPendingRows, replyItem, listActivity, listActivitySpans } from '../src/store.js'
+import { openDb, listItems, listBoards, getBoard, annotateBoardRow, markRowHandled, listPendingRows, replyItem, listActivity, listActivitySpans, upsertIssueSnapshot } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
 
 const REPO_ROOT = new URL('..', import.meta.url).pathname
@@ -1453,5 +1453,209 @@ describe('mcp round-trip', () => {
     expect(item.session).toMatch(/^[0-9a-f-]{36}$/)
 
     await client.close()
+  }, 20000)
+})
+
+// Issue #103 PR2 (§8, §10): explicit plan pins and row links, end to end over
+// a real stdio round trip.
+describe('plan and row issue links (#103 PR2)', () => {
+  const FORMS = /owner\/name#123; #123 or 123 .*https:\/\/github\.com\/owner\/name\/issues\/123; or "" to clear/
+  const text = (r: unknown) => ((r as { content: Array<{ text: string }> }).content)[0]!.text
+  const serve = async (env: Record<string, string>, cwd?: string) => {
+    const t = new StdioClientTransport({
+      command: join(REPO_ROOT, 'node_modules', '.bin', 'tsx'),
+      args: [join(REPO_ROOT, 'src', 'mcp-server.ts')],
+      ...(cwd ? { cwd } : {}),
+      env: { ...process.env, ...env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' },
+    })
+    const c = new Client({ name: 'claude-code', version: '1.0.0' })
+    await c.connect(t)
+    return c
+  }
+  const call = async (c: Client, name: string, args: Record<string, unknown>) => {
+    const res = await c.callTool({ name, arguments: args })
+    if (res.isError) throw new Error(text(res))
+    return JSON.parse(text(res))
+  }
+
+  it('normalizes every accepted form, refuses everything else with the forms listed, keeps on omission and clears on ""', async () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-issue-links-')), 'inbox.db')
+    const c = await serve({ AGENT_INBOX_DB: dbPath }, mkdtempSync(join(tmpdir(), 'mcp-issue-cwd-')))
+    await call(c, 'register', { project: 'p', repo: 'Me/Work' })
+    await call(c, 'board_upsert', {
+      title: 'AHP', issue: 'Shariqh/Agent-Inbox#117',
+      rows: [
+        { label: 'hash', status: 'tracked', issue: '#12' },
+        { label: 'bare', status: 'tracked', issue: ' 13 ' },
+        { label: 'url', status: 'tracked', issue: 'https://github.com/A/B/issues/14' },
+        { label: 'url-slash', status: 'tracked', issue: 'HTTPS://GitHub.com/a/b.js/issues/15/' },
+        { label: 'none', status: 'tracked' },
+      ],
+    })
+    let board = await call(c, 'board_get', { title: 'AHP' })
+    const issues = () => Object.fromEntries(board.rows.map((r: { label: string; issue?: string }) => [r.label, r.issue]))
+    expect(board.issue).toBe('shariqh/agent-inbox#117')
+    expect(issues()).toEqual({ hash: 'me/work#12', bare: 'me/work#13', url: 'a/b#14', 'url-slash': 'a/b.js#15', none: undefined })
+    expect(JSON.stringify(board)).not.toMatch(/issue_pin_repo|issue_repo|issue_rel/)
+
+    await call(c, 'board_row', { title: 'AHP', board_version: board.revision, label: 'none', expected_revision: 1, issue: 'c/d#2147483647' })
+    board = await call(c, 'board_get', { title: 'AHP' })
+    expect(issues().none).toBe('c/d#2147483647')
+
+    // every refusal names the accepted forms and writes nothing
+    const before = board.revision
+    for (const bad of ['a/b', '#0', '012', 'abc', 'a/b#', 'a/..#1', '../x#1', 'a b/c#1', '#2147483648', '   ', 'a/b#1 extra',
+      'https://gitlab.com/a/b/issues/1', 'https://github.com/a/b/pull/1', 'http://github.com/a/b/issues/1', 'https://github.com/a/b/issues/1#c']) {
+      const viaRow = await c.callTool({ name: 'board_row', arguments: { title: 'AHP', board_version: before, label: 'none', expected_revision: 2, issue: bad } })
+      expect(viaRow.isError, bad).toBe(true)
+      expect(text(viaRow), bad).toMatch(FORMS)
+      const viaPin = await c.callTool({ name: 'board_upsert', arguments: { title: 'AHP', board_version: before, issue: bad, rows: [] } })
+      expect(viaPin.isError, bad).toBe(true)
+      expect(text(viaPin), bad).toMatch(FORMS)
+    }
+    board = await call(c, 'board_get', { title: 'AHP' })
+    expect(board.revision).toBe(before)
+    expect(board.rows).toHaveLength(5)
+
+    // a full re-send of what board_get returned, minus issue, keeps every link
+    const resend = (rows: Array<Record<string, unknown>>) => rows.map(({ label, status, revision }) => ({ label, status, revision }))
+    await call(c, 'board_upsert', { title: 'AHP', board_version: board.revision, rows: resend(board.rows) })
+    const kept = await call(c, 'board_get', { title: 'AHP' })
+    expect(kept.revision).toBe(board.revision)
+    expect(kept.issue).toBe('shariqh/agent-inbox#117')
+    board = kept
+    expect(issues().hash).toBe('me/work#12')
+
+    // the documented flow: board_get → board_upsert with the echoed issue strings is a no-op
+    await call(c, 'board_upsert', {
+      title: 'AHP', board_version: board.revision, issue: board.issue,
+      rows: board.rows.map(({ label, status, revision, issue }: Record<string, unknown>) => ({ label, status, revision, ...(issue ? { issue } : {}) })),
+    })
+    expect((await call(c, 'board_get', { title: 'AHP' })).revision).toBe(board.revision)
+
+    // "" clears the pin and a row link
+    const hash = board.rows.find((r: { label: string }) => r.label === 'hash')
+    await call(c, 'board_upsert', {
+      title: 'AHP', board_version: board.revision, issue: '',
+      rows: resend(board.rows).map((r) => (r.label === 'hash' ? { ...r, issue: '' } : r)),
+    })
+    board = await call(c, 'board_get', { title: 'AHP' })
+    expect(board).not.toHaveProperty('issue')
+    expect(issues().hash).toBeUndefined()
+    expect(board.rows.find((r: { label: string }) => r.label === 'hash').revision).toBe(hash.revision + 1)
+    await call(c, 'board_row', { title: 'AHP', board_version: board.revision, label: 'bare', expected_revision: 1, issue: '' })
+    board = await call(c, 'board_get', { title: 'AHP' })
+    expect(issues().bare).toBeUndefined()
+    await c.close()
+  }, 30000)
+
+  it('refuses #N and N when the session has no repository', async () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-issue-norepo-')), 'inbox.db')
+    const c = await serve({ AGENT_INBOX_DB: dbPath }, mkdtempSync(join(tmpdir(), 'mcp-issue-norepo-cwd-')))
+    expect((await call(c, 'whoami', {})).repo).toBeNull()
+    for (const bad of ['#5', '5']) {
+      const res = await c.callTool({ name: 'board_upsert', arguments: { title: 'T', rows: [{ label: 'a', status: 'tracked', issue: bad }] } })
+      expect(res.isError, bad).toBe(true)
+      expect(text(res), bad).toMatch(/no GitHub repository/)
+      expect(text(res), bad).toMatch(FORMS)
+    }
+    expect(listBoards(openDb(dbPath))).toEqual([])
+    // a qualified form needs no session repository
+    await call(c, 'board_upsert', { title: 'T', rows: [{ label: 'a', status: 'tracked', issue: 'o/r#5' }] })
+    expect((await call(c, 'board_get', { title: 'T' })).rows[0].issue).toBe('o/r#5')
+    await c.close()
+  }, 20000)
+
+  it('board_advance and a move into blocked keep the link', async () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-issue-advance-')), 'inbox.db')
+    const c = await serve({ AGENT_INBOX_DB: dbPath }, mkdtempSync(join(tmpdir(), 'mcp-issue-advance-cwd-')))
+    await call(c, 'board_upsert', { title: 'T', rows: [{ label: 'a', status: 'tracked', issue: 'o/r#5' }] })
+    let board = await call(c, 'board_get', { title: 'T' })
+    await call(c, 'board_upsert', { title: 'T', board_version: board.revision, rows: [blockedRow('a', { revision: board.rows[0].revision })] })
+    board = await call(c, 'board_get', { title: 'T' })
+    expect(board.rows[0]).toMatchObject({ status: 'blocked', action_version: 2, issue: 'o/r#5' })
+    await call(c, 'board_advance', {
+      title: 'T', label: 'a', board_version: board.revision, expected_revision: board.rows[0].revision,
+      note: 'Next step.', next_step: 'Do it.', action_owner: 'task', impact: 'Moves on.',
+    })
+    board = await call(c, 'board_get', { title: 'T' })
+    expect(board.rows[0]).toMatchObject({ status: 'blocked', action_version: 3, issue: 'o/r#5' })
+    await c.close()
+  }, 20000)
+
+  it('a titled board_get adds issue_rel from the cache; pending() and the title-less summary stay byte-identical', async () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-issue-rel-')), 'inbox.db')
+    const c = await serve({ AGENT_INBOX_DB: dbPath }, mkdtempSync(join(tmpdir(), 'mcp-issue-rel-cwd-')))
+    await call(c, 'board_upsert', { title: 'T', rows: [blockedRow('a'), { label: 'b', status: 'partial' }] })
+    const hub = openDb(dbPath)
+    const stored = listBoards(hub)[0]!
+    annotateBoardRow(hub, stored.rows[0]!.id, 'Go ahead.')
+    // the first poll stamps delivery; from then on the same rows read the same
+    await call(c, 'pending', {})
+    await call(c, 'board_get', {})
+    const pendingBefore = text(await c.callTool({ name: 'pending', arguments: {} }))
+    const summaryBefore = text(await c.callTool({ name: 'board_get', arguments: {} }))
+
+    // link the plan and both rows WITHOUT changing their revisions, as only a
+    // raw write can, so the two reads see exactly the same rows
+    hub.prepare(`UPDATE boards SET issue_pin_repo = 'o/r', issue_pin_number = 1`).run()
+    hub.prepare(`UPDATE board_rows SET issue_repo = 'o/r', issue_number = 2`).run()
+    expect(text(await c.callTool({ name: 'pending', arguments: {} }))).toBe(pendingBefore)
+    expect(text(await c.callTool({ name: 'board_get', arguments: {} }))).toBe(summaryBefore)
+
+    // nothing cached yet: links echo, no issue_rel
+    const bare = await call(c, 'board_get', { title: 'T' })
+    expect(bare.issue).toBe('o/r#1')
+    expect(JSON.stringify(bare)).not.toMatch(/issue_rel/)
+
+    // the viewer's poller caches #1 (parent of #2) and #2
+    const now = Date.now()
+    const iso = (ms: number) => new Date(ms).toISOString()
+    const node = (n: number, title: string) => ({ repo: 'o/r', number: n, title, state: 'OPEN' as const, state_reason: null })
+    upsertIssueSnapshot(hub, { repo: 'o/r', number: 1, startedAt: iso(now - 60_000), snapshot: {
+      v: 1, issue: node(1, 'Secret umbrella title'), ancestors: [], ancestors_end: 'top',
+      hierarchy: { status: 'ok', total: 4, completed: 1, truncated: false, children: [node(2, 'Secret child title')] },
+    } })
+    upsertIssueSnapshot(hub, { repo: 'o/r', number: 2, startedAt: iso(now - 60 * 60_000), snapshot: {
+      v: 1, issue: node(2, 'Secret child title'), ancestors: [{ ...node(1, 'Secret umbrella title'), children_total: 4, children_completed: 1 }],
+      ancestors_end: 'top', hierarchy: { status: 'ok', total: 0, completed: 0, truncated: false, children: [] },
+    } })
+    const rel = await call(c, 'board_get', { title: 'T' })
+    expect(rel.issue_rel).toEqual({ key: 'o/r#1', children: { total: 4, done: 1 }, checked_at: iso(now - 60_000), stale: false, unavailable: false })
+    for (const row of rel.rows) {
+      expect(row.issue_rel).toEqual({ key: 'o/r#2', parent: 'o/r#1', children: { total: 0, done: 0 }, checked_at: iso(now - 60 * 60_000), stale: true, unavailable: false })
+    }
+    expect(JSON.stringify(rel)).not.toMatch(/Secret/)
+    // …and the polls still do not change
+    expect(text(await c.callTool({ name: 'pending', arguments: {} }))).toBe(pendingBefore)
+    expect(text(await c.callTool({ name: 'board_get', arguments: {} }))).toBe(summaryBefore)
+    await c.close()
+  }, 20000)
+
+  it('tools/list carries the link fields, the accepted forms and the dependency sentence (§8)', async () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-issue-tools-')), 'inbox.db')
+    const c = await serve({ AGENT_INBOX_DB: dbPath })
+    const tools = new Map((await c.listTools()).tools.map((x) => [x.name, x]))
+    const sentence = "Waiting on another GitHub issue (GitHub's 'blocked by') is tracked or partial, never blocked."
+    for (const name of ['board_upsert', 'board_row', 'board_advance']) {
+      expect(tools.get(name)!.description, name).toContain(sentence)
+    }
+    interface JsonNode { description?: string; properties?: Record<string, JsonNode>; items?: JsonNode }
+    const schemaOf = (name: string): JsonNode => tools.get(name)!.inputSchema as unknown as JsonNode
+    for (const status of [schemaOf('board_upsert').properties!['rows']!.items!.properties!['status']!, schemaOf('board_row').properties!['status']!]) {
+      expect(status.description).toContain(sentence)
+    }
+    for (const field of [
+      schemaOf('board_upsert').properties!['issue']!,
+      schemaOf('board_upsert').properties!['rows']!.items!.properties!['issue']!,
+      schemaOf('board_row').properties!['issue']!,
+    ]) {
+      expect(field.description).toMatch(FORMS)
+      expect(field.description).toMatch(/Omitted keeps.*"" clears/)
+      expect(field.description).toMatch(/board_advance and a move into blocked keep it/)
+    }
+    expect(schemaOf('board_advance').properties).not.toHaveProperty('issue')
+    expect(tools.get('board_get')!.description).toMatch(/issue_rel/)
+    await c.close()
   }, 20000)
 })

@@ -2,12 +2,18 @@
 // passes store rows (src/store.ts IssueEntity, SourceLink) and the browser will
 // pass the same shapes over the wire.
 
-/** What an item or plan says about its own issue (§4.2). */
+/** What an item, plan or row says about its own issue (§4.2). */
 export interface IssueKeyEntity {
   repo?: string | null
   stream?: string | null
   head_repo?: string | null
   issue_ref?: number | null
+  /** PR2: a plan's explicit pin, which outranks its PR and branch issue */
+  issue_pin_repo?: string | null
+  issue_pin_number?: number | null
+  /** PR2: a row's explicit link, its only source */
+  issue_repo?: string | null
+  issue_number?: number | null
 }
 
 /** One cached PR row: the /api/links shape, of which only these fields matter. */
@@ -21,7 +27,7 @@ export interface IssueKeyLink {
   closing_refs?: unknown
 }
 
-export type IssueKeySource = 'pr' | 'branch'
+export type IssueKeySource = 'pin' | 'link' | 'pr' | 'branch'
 
 export interface IssueIdentity {
   /** owner/name#number, the repository lowercased */
@@ -32,7 +38,7 @@ export interface IssueIdentity {
 }
 
 export interface IssueKeySetEntity extends IssueKeyEntity {
-  kind: 'item' | 'plan'
+  kind: 'item' | 'plan' | 'row'
   id: string
   project: string
   project_closed: boolean

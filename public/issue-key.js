@@ -44,8 +44,11 @@ function closingKeys(link) {
   return [...keys]
 }
 
-// Which issue an item or plan belongs to, and whether that is CERTAIN enough to
-// draw relationships for (§4.2). In precedence order:
+// Which issue an item, plan or row belongs to, and whether that is CERTAIN
+// enough to draw relationships for (§4.2). In precedence order:
+//   0. an explicit link an agent wrote (PR2): a plan's pin, or a row's link,
+//      which is a row's only source. It outranks everything below, so a plan
+//      maintained from a child's branch can still name its umbrella issue.
 //   1. its PR's closing issue, only when the PR closes exactly ONE issue. A PR
 //      that closes several is never guessed, and one that closes none says
 //      nothing: either way the branch issue decides.
@@ -54,6 +57,12 @@ function closingKeys(link) {
 // the chip, as #30 always has, but that identity is not certain: the record
 // that would prove it is the only one is missing.
 export function issueKeyFor(entity, link) {
+  if (entity) {
+    const pin = issueKey(entity.issue_pin_repo, entity.issue_pin_number)
+    if (pin) return { key: pin, source: 'pin', certain: true }
+    const linked = issueKey(entity.issue_repo, entity.issue_number)
+    if (linked) return { key: linked, source: 'link', certain: true }
+  }
   if (link) {
     const refs = closingKeys(link)
     if (refs && refs.length === 1) return { key: refs[0], source: 'pr', certain: true }

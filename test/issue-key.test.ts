@@ -87,6 +87,29 @@ describe('issueKeyFor: precedence and certainty (§4.2)', () => {
   })
 })
 
+describe('issueKeyFor: explicit links (PR2)', () => {
+  const pinned = { ...item, issue_pin_repo: 'Shariqh/Agent-Inbox', issue_pin_number: 117 }
+  const pin = { key: 'shariqh/agent-inbox#117', source: 'pin', certain: true }
+
+  it('a plan pin outranks the PR issue and the branch issue', () => {
+    expect(issueKeyFor(pinned, null)).toEqual(pin)
+    expect(issueKeyFor(pinned, link({ closing_refs: bound({ repo: REPO, number: 211 }) }))).toEqual(pin)
+    expect(issueKeyFor(pinned, link({ issue_number: 211 }))).toEqual(pin)
+    expect(issueKeyFor({ ...pinned, repo: null, issue_ref: null }, null)).toEqual(pin)
+  })
+
+  it('an unusable pin falls back to the PR and branch issue', () => {
+    expect(issueKeyFor({ ...pinned, issue_pin_number: null }, null)).toEqual({ key: 'shariqh/agent-inbox#120', source: 'branch', certain: true })
+    expect(issueKeyFor({ ...pinned, issue_pin_repo: '../x' }, link({ closing_refs: bound({ repo: REPO, number: 211 }) })))
+      .toEqual({ key: 'shariqh/agent-inbox#211', source: 'pr', certain: true })
+  })
+
+  it('a row link is the row’s only source, and certain', () => {
+    expect(issueKeyFor({ issue_repo: 'o/r', issue_number: 5 }, null)).toEqual({ key: 'o/r#5', source: 'link', certain: true })
+    expect(issueKeyFor({ issue_repo: null, issue_number: null }, null)).toBeNull()
+  })
+})
+
 describe('issueKeySets: refresh and display (§6)', () => {
   const at = (minute: number) => new Date(Date.UTC(2026, 9, 19, 22, minute)).toISOString()
   function entity(extra: Partial<IssueKeySetEntity>): IssueKeySetEntity {
@@ -140,5 +163,15 @@ describe('issueKeySets: refresh and display (§6)', () => {
     expect([...sets.display.keys()].sort()).toEqual([
       'shariqh/agent-inbox#3', 'shariqh/agent-inbox#31', 'shariqh/agent-inbox#33',
     ])
+  })
+
+  it('a pinned plan and its linked rows join both sets on their explicit keys (PR2)', () => {
+    const sets = issueKeySets([
+      entity({ id: 'plan', kind: 'plan', issue_ref: 119, issue_pin_repo: REPO, issue_pin_number: 117 }),
+      entity({ id: 'row', kind: 'row', repo: null, stream: '', issue_repo: 'o/r', issue_number: 5, updated_at: at(5) }),
+      entity({ id: 'old-row', kind: 'row', archived: true, repo: null, stream: '', issue_repo: 'o/r', issue_number: 6 }),
+    ], [])
+    expect([...sets.refresh].sort()).toEqual(['o/r#5', 'shariqh/agent-inbox#117'])
+    expect([...sets.display.keys()].sort()).toEqual(['o/r#5', 'o/r#6', 'shariqh/agent-inbox#117'])
   })
 })

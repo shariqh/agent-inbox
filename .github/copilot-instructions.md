@@ -72,9 +72,11 @@ Run the build before `npm run electron`; the development shell starts the built
   the `agent-inbox` entry of each host config (and agent-inbox hook entries), never
   returns or logs anything else, and never spawns a process — not even a host CLI.
   Its runtime rule must stay the installer's ownership rule; a test pins agreement.
-  `src/issue-graph.ts` and `public/issue-key.js` (#103) are pure and, until PR2's
-  titled `board_get` summary admits them deliberately, viewer-process-only; a
-  test pins the transitive stdio MCP import graph.
+  `src/issue-graph.ts` and `public/issue-key.js` (#103) are pure; the MCP server
+  admits them (with `public/source.js`/`esc.js`) only for the titled `board_get`
+  `issue_rel` summary, and a test pins the transitive stdio MCP import graph.
+  `scripts/stage-runtime.mjs` stages the `public/` modules `dist/` reaches, so a
+  runtime payload can load them.
 - **Setup path:** `scripts/install-agents.sh` is the canonical dry-run-first
   installer for MCP registration and managed host instructions. Electron exposes
   only fixed setup targets through `electron/setup-preload.cjs` and invokes that
@@ -148,6 +150,10 @@ Run the build before `npm run electron`; the development shell starts the built
   which only schedules that `load()`; `forceRender`, renders and the poll use
   neither. A failed read degrades: the page still applies and waiting surfaces
   say older history is unavailable.
+- Plan pins and row issue links (#103 PR2) are agent-owned fields: omission keeps,
+  MCP `""` clears, `board_advance` and a reblock keep them, and a pin outranks the
+  PR and branch issue. MCP normalizes every accepted form to `owner/name#N` and
+  refuses anything else; `pending()` and the title-less `board_get` never carry them.
 - Issue snapshots (#103) are written only through `upsertIssueSnapshot` and
   `recordIssueFailure`. The attempt rule (apply only when the attempt started after
   the stored `checked_at`) is the `WHERE` of one upsert; a hard failure clears the

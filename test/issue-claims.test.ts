@@ -131,13 +131,17 @@ describe('issue refresh claims (issue #103 PR1b)', () => {
   it('records an invalid snapshot as a soft gh-failed rather than rolling back the whole batch', () => {
     claim(db, 'a', [key(1), key(2)])
     const bad = { ...snapshot(`${REPO}#2`), v: 2 } as unknown as ReturnType<typeof snapshot>
+    const invalid: Array<{ repo: string; number: number }> = []
     expect(completeIssueRefresh(db, {
       owner: 'a',
       results: [
         { repo: REPO, number: 1, startedAt: at(60), snapshot: snapshot(`${REPO}#1`) },
         { repo: REPO, number: 2, startedAt: at(60), snapshot: bad },
       ],
+      onInvalid: (k) => invalid.push(k),
     })).toBe(2)
+    // the downgrade is reported to the caller, which logs it (the store never does)
+    expect(invalid).toEqual([{ repo: REPO, number: 2 }])
     expect(listIssueSnapshots(db).map((r) => [r.number, r.error])).toEqual([[1, null], [2, 'gh-failed']])
     expect(claim(db, 'b', [key(2, at(60))])).toEqual([2])
   })

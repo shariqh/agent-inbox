@@ -131,7 +131,8 @@ prose. Do this **proactively**, without being asked:
   **one ask, one surface** — never also create a question item for that dependency.
   **Being stuck is not being blocked:** a failing
   test, a build or release that does not exist yet, another PR — no person can unblock those, so
-  they are `partial` (or `tracked`) with the reason in `note`.
+  they are `partial` (or `tracked`) with the reason in `note`. Waiting on another GitHub issue
+  (GitHub's 'blocked by') is tracked or partial, never blocked.
   `pending()` delivers their response kind too: `answer`, `clarify`, or `decline`.
   A row comes back as an `annotation` (words/choice), or `handled_at` — **the human telling you THEY have gone and
   DONE the thing** you blocked on. Both mean their part is finished; **flip the row's status
@@ -158,6 +159,14 @@ prose. Do this **proactively**, without being asked:
   `next_step: "Choose whether to merge PR #582."`,
   `action_owner: "approval"`, `impact: "Unblocks PR-X"`,
   `options: [Merge PR #582 (recommended), Hold]`; the six review rounds belong in `context`.
+- **GitHub issue links.** `board_upsert({ title, issue, rows })` pins the plan to an issue (say an
+  umbrella issue, when you work from a child's branch), and `rows[].issue` or
+  `board_row({ issue })` links a row. Accepted forms: `owner/name#123`, `#123` or `123` (this
+  session's GitHub repository) and `https://github.com/owner/name/issues/123`; anything else is
+  refused. Omitting `issue` keeps the link, `""` clears it, and `board_advance` or a move into
+  `blocked` keeps it. A titled `board_get` echoes `issue` and, once the viewer has fetched it,
+  a short `issue_rel` (parent and child counts, never titles). Agent Inbox never edits GitHub
+  relationships: use `gh issue edit --parent` / `--add-sub-issue`.
 - **`board_row({ title, label, expected_revision, status?, ..., outcome? })`** — update one
   existing row; when acknowledging the human, move it out of `blocked` and record the result.
 - **`board_advance({ title, label, board_version, expected_revision, ...fresh action })`** — atomically archive

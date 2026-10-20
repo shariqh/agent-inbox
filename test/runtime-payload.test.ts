@@ -1931,6 +1931,26 @@ export function getItem(db, id) {
 }
 `)
 
+  // issue #103 PR2: dist/ reaches pure modules in ../public/, which a runtime
+  // must carry; c.js is reached by nothing and must stay out
+  writeFileSync(join(repoRoot, 'dist', 'uses-public.js'), 'import { a } from "../public/a.js"\nexport const x = a\n')
+  // the MCP server probe starts this stand-in from the STAGED tree, so it also
+  // proves the reached public/ modules were staged
+  writeFileSync(join(repoRoot, 'dist', 'mcp-server.js'), `
+import { a } from "../public/a.js"
+import { createInterface } from 'node:readline'
+const send = (m) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...m }) + '\\n')
+createInterface({ input: process.stdin }).on('line', (line) => {
+  const m = JSON.parse(line)
+  if (m.method === 'initialize') send({ id: m.id, result: { protocolVersion: m.params.protocolVersion, capabilities: {}, serverInfo: { name: 'fixture', version: String(a) } } })
+  if (m.method === 'tools/list') send({ id: m.id, result: { tools: ['flag', 'pending', 'board_get'].map((name) => ({ name })) } })
+})
+`)
+  mkdirSync(join(repoRoot, 'public'), { recursive: true })
+  writeFileSync(join(repoRoot, 'public', 'a.js'), "import { b } from './b.js'\nexport const a = b\n")
+  writeFileSync(join(repoRoot, 'public', 'b.js'), 'export const b = 1\n')
+  writeFileSync(join(repoRoot, 'public', 'c.js'), 'export const c = 1\n')
+
   for (const name of [
     'install-agents.sh',
     'install-hooks.sh',
@@ -1995,6 +2015,9 @@ describe.skipIf(!REAL_NODE_ROOT || !['darwin', 'linux'].includes(process.platfor
         }
         expect(manifest.files).toContainEqual(expect.objectContaining({ path: 'bin/node', mode: 0o755 }))
         expect(manifest.files.some((file) => file.path === 'node.exe')).toBe(false)
+        // exactly the public modules dist/ reaches, transitively (#103 PR2)
+        expect(manifest.files.map((file) => file.path).filter((path) => path.startsWith('public/')).sort())
+          .toEqual(['public/a.js', 'public/b.js'])
         for (const file of manifest.files) {
           expect(file.path).not.toMatch(/(^|\/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml)$/)
           expect(file.path).not.toMatch(/(^|\/)(\.git|\.bin|node_gyp_bins)(\/|$)|\.o(bj)?$/)
@@ -2146,5 +2169,84 @@ describe('main-entrypoint detection: symlinked ancestor / alias paths', () => {
     const result = runFail(aliasedStageCli!, [])
     expect(result.status).not.toBe(0)
     expect(result.stderr.length).toBeGreaterThan(0)
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════
+// runtime-mcp-probe.mjs — the staged MCP server must actually START (#103
+// PR2 review). hook-cli selftest reaches no public/ module, so a runtime that
+// lost one still passed every gate while its MCP server could not load.
+// ═══════════════════════════════════════════════════════════════════════
+const PROBE_CLI = join(REPO, 'scripts', 'runtime-mcp-probe.mjs')
+
+// A stand-in server that, like the real one, needs ../public/a.js → ./b.js
+// before it can answer initialize and tools/list over newline-delimited JSON.
+function probeFixture(): string {
+  const root = tmp('mcp-probe-')
+  mkdirSync(join(root, 'dist'), { recursive: true })
+  mkdirSync(join(root, 'public'), { recursive: true })
+  writeFileSync(join(root, 'public', 'a.js'), "export { tools } from './b.js'\n")
+  writeFileSync(join(root, 'public', 'b.js'), "export const tools = ['flag', 'pending', 'board_get']\n")
+  writeFileSync(join(root, 'dist', 'mcp-server.js'), `
+import { tools } from "../public/a.js"
+import { createInterface } from 'node:readline'
+if (!process.env.AGENT_INBOX_DB) process.exit(9)
+const send = (m) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...m }) + '\\n')
+createInterface({ input: process.stdin }).on('line', (line) => {
+  const m = JSON.parse(line)
+  if (m.method === 'initialize') send({ id: m.id, result: { protocolVersion: m.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'agent-inbox', version: '0' } } })
+  if (m.method === 'tools/list') send({ id: m.id, result: { tools: tools.map((name) => ({ name, inputSchema: { type: 'object' } })) } })
+})
+`)
+  return root
+}
+
+function probe(root: string) {
+  return spawnSync(process.execPath, [PROBE_CLI, root], { encoding: 'utf8', timeout: 60_000 })
+}
+
+describe('runtime-mcp-probe: the staged MCP server answers initialize and tools/list', () => {
+  it('passes an intact runtime, silently', () => {
+    const result = probe(probeFixture())
+    expect(result.stderr).toBe('')
+    expect(result.stdout).toBe('')
+    expect(result.status).toBe(0)
+  })
+
+  it('fails a runtime missing one transitively imported public/ module', () => {
+    const root = probeFixture()
+    rmSync(join(root, 'public', 'b.js'))
+    const result = probe(root)
+    expect(result.status).not.toBe(0)
+    expect(result.stderr).toMatch(/ERR_MODULE_NOT_FOUND|Cannot find module/)
+    expect(result.stderr).toContain('public/b.js')
+  })
+
+  it('fails a server that answers without the agent-inbox tools', () => {
+    const root = probeFixture()
+    writeFileSync(join(root, 'public', 'b.js'), "export const tools = ['other']\n")
+    const result = probe(root)
+    expect(result.status).not.toBe(0)
+    expect(result.stderr).toMatch(/tools\/list/)
+  })
+
+  it('times out a server that never answers', () => {
+    const root = probeFixture()
+    writeFileSync(join(root, 'dist', 'mcp-server.js'), 'setInterval(() => {}, 1000)\n')
+    const result = spawnSync(process.execPath, [PROBE_CLI, root, '--timeout-ms', '1500'], { encoding: 'utf8', timeout: 30_000 })
+    expect(result.status).not.toBe(0)
+    expect(result.stderr).toMatch(/did not answer within 1500 ms/)
+  })
+
+  it.skipIf(!existsSync(join(REPO, 'dist', 'mcp-server.js')))('passes this checkout’s real built server', () => {
+    const result = probe(REPO)
+    expect(result.stderr).toBe('')
+    expect(result.status).toBe(0)
+  }, 60_000)
+
+  it('runs wherever the staged selftest runs: staging, release assembly and the Intel release gate', () => {
+    for (const file of ['stage-runtime.mjs', 'assemble-macos-release.mjs', 'macos-release-gates.mjs']) {
+      expect(readFileSync(join(REPO, 'scripts', file), 'utf8'), file).toMatch(/probeRuntimeMcp\(/)
+    }
   })
 })

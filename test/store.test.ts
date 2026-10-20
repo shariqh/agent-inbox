@@ -38,6 +38,7 @@ import {
   touchActivity,
   recordActivityCall,
   CLAIM_COLD_MS,
+  advanceBoardRow,
   closeProject,
   reopenProject,
   listClosedProjects,
@@ -3272,5 +3273,119 @@ describe('read-then-write transactions reserve the WAL writer (#154)', () => {
     expect(ids).toEqual([open[0]!.id, open[0]!.id])
     other.close()
     db.close()
+  })
+})
+
+// Issue #103 PR2 — explicit plan pins and row links (§4.2, §10). They are
+// agent-owned fields with the omission rule: undefined keeps, null clears.
+describe('plan and row issue links (#103 PR2)', () => {
+  let db: Database.Database
+  beforeEach(() => { db = freshDb() })
+  const base = { project: 'p', stream: '120-work', agent: 'a', title: 'AHP' }
+  const link = (number: number, repo = 'Shariqh/Agent-Inbox') => ({ repo, number })
+  const row = (label = 'Adapter') => getBoard(db, 'p', 'AHP')!.rows.find((r) => r.label === label)!
+
+  it('stores a pin and row links normalized, and keeps them when a full upsert omits issue', () => {
+    upsertBoard(db, { ...base, issuePin: link(117), rows: [{ label: 'Adapter', status: 'tracked', issue: link(120) }, { label: 'Plain', status: 'tracked' }] })
+    const board = getBoard(db, 'p', 'AHP')!
+    expect(board).toMatchObject({ issue_pin_repo: 'shariqh/agent-inbox', issue_pin_number: 117 })
+    expect(row()).toMatchObject({ issue_repo: 'shariqh/agent-inbox', issue_number: 120 })
+    expect(row('Plain')).toMatchObject({ issue_repo: null, issue_number: null })
+
+    const before = { board: board.revision, row: row().revision, updated: row().updated_at }
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      vi.setSystemTime(Date.now() + 60_000)
+      upsertBoard(db, { ...base, rows: [{ label: 'Adapter', status: 'tracked' }, { label: 'Plain', status: 'tracked' }] })
+    } finally {
+      vi.useRealTimers()
+    }
+    const after = getBoard(db, 'p', 'AHP')!
+    expect(after).toMatchObject({ issue_pin_repo: 'shariqh/agent-inbox', issue_pin_number: 117, revision: before.board })
+    expect(row()).toMatchObject({ issue_repo: 'shariqh/agent-inbox', issue_number: 120, revision: before.row, updated_at: before.updated })
+  })
+
+  it('null clears a pin and a link; a link change bumps the row revision and updated_at, a pin change the board revision', () => {
+    upsertBoard(db, { ...base, issuePin: link(117), rows: [{ label: 'Adapter', status: 'tracked', issue: link(120) }] })
+    const r0 = row()
+    const b0 = getBoard(db, 'p', 'AHP')!.revision
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      vi.setSystemTime(Date.now() + 60_000)
+      upsertBoard(db, { ...base, rows: [{ label: 'Adapter', status: 'tracked', issue: link(121) }] })
+      expect(row()).toMatchObject({ issue_number: 121, revision: r0.revision + 1 })
+      expect(row().updated_at > r0.updated_at).toBe(true)
+      expect(getBoard(db, 'p', 'AHP')!.revision).toBe(b0 + 1)
+
+      vi.setSystemTime(Date.now() + 60_000)
+      upsertBoard(db, { ...base, issuePin: link(118), rows: [{ label: 'Adapter', status: 'tracked' }] })
+      expect(getBoard(db, 'p', 'AHP')).toMatchObject({ issue_pin_number: 118, revision: b0 + 2 })
+      expect(row().revision).toBe(r0.revision + 1)
+
+      upsertBoard(db, { ...base, issuePin: null, rows: [{ label: 'Adapter', status: 'tracked', issue: null }] })
+      expect(getBoard(db, 'p', 'AHP')).toMatchObject({ issue_pin_repo: null, issue_pin_number: null })
+      expect(row()).toMatchObject({ issue_repo: null, issue_number: null, revision: r0.revision + 2 })
+
+      // the same value again changes nothing
+      const settled = { board: getBoard(db, 'p', 'AHP')!.revision, row: row().revision }
+      upsertBoard(db, { ...base, issuePin: null, rows: [{ label: 'Adapter', status: 'tracked', issue: null }] })
+      expect(getBoard(db, 'p', 'AHP')!.revision).toBe(settled.board)
+      expect(row().revision).toBe(settled.row)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('board_row links, keeps on omission and clears on null', () => {
+    updateBoardRow(db, { ...base, label: 'Adapter', status: 'tracked', issue: link(120) })
+    expect(row()).toMatchObject({ issue_repo: 'shariqh/agent-inbox', issue_number: 120 })
+    const r1 = row().revision
+    updateBoardRow(db, { ...base, label: 'Adapter', note: 'Still going.' })
+    expect(row()).toMatchObject({ issue_number: 120, revision: r1 + 1 })
+    updateBoardRow(db, { ...base, label: 'Adapter', issue: link(121, 'o/r') })
+    expect(row()).toMatchObject({ issue_repo: 'o/r', issue_number: 121, revision: r1 + 2 })
+    updateBoardRow(db, { ...base, label: 'Adapter', issue: null })
+    expect(row()).toMatchObject({ issue_repo: null, issue_number: null, revision: r1 + 3 })
+  })
+
+  it('refuses a link the store cannot normalize, before writing anything', () => {
+    for (const bad of [link(0), link(2147483648), link(1.5), link(5, 'no-slash'), link(5, 'o/..'), link(5, 'o/r x')]) {
+      expect(() => upsertBoard(db, { ...base, rows: [{ label: 'Adapter', status: 'tracked', issue: bad }] })).toThrow(/invalid issue link/)
+      expect(() => upsertBoard(db, { ...base, issuePin: bad, rows: [] })).toThrow(/invalid issue link/)
+      expect(() => updateBoardRow(db, { ...base, label: 'Adapter', issue: bad })).toThrow(/invalid issue link/)
+    }
+    expect(findBoard(db, 'p', 'AHP')).toBeUndefined()
+  })
+
+  it('a reblock and board_advance keep the link; a link change never touches the human fields', () => {
+    upsertBoard(db, { ...base, rows: [{ label: 'Adapter', status: 'tracked', issue: link(120) }] })
+    const blocked = { status: 'blocked' as const, note: 'Pick one.', next_step: 'Choose.', action_owner: 'task' as const, impact: 'Unblocks it.' }
+    upsertBoard(db, { ...base, rows: [{ label: 'Adapter', ...blocked }] })
+    expect(row()).toMatchObject({ status: 'blocked', action_version: 2, issue_number: 120 })
+    updateBoardRow(db, { ...base, label: 'Adapter', status: 'partial' })
+    updateBoardRow(db, { ...base, label: 'Adapter', ...blocked })
+    expect(row()).toMatchObject({ status: 'blocked', action_version: 3, issue_number: 120 })
+
+    // the human answers, marks their part done, an agent picks both up
+    expect(annotateBoardRow(db, row().id, 'Use the adapter.')).toBe(true)
+    expect(markRowHandled(db, row().id)).toBe(true)
+    const r = row()
+    expect(markAnnotationDelivered(db, r.id, r.annotated_at, 'copilot', { row: r.revision, board: getBoard(db, 'p', 'AHP')!.revision })).toBe(true)
+    expect(markHandledDelivered(db, r.id, r.handled_at, 'copilot', { row: r.revision, board: getBoard(db, 'p', 'AHP')!.revision })).toBe(true)
+    const human = (x: BoardRow) => [x.annotation, x.annotation_kind, x.annotated_at, x.annotation_seen_at, x.annotation_seen_by, x.handled_at, x.handled_seen_at, x.handled_seen_by]
+    const answered = human(row())
+    upsertBoard(db, { ...base, rows: [{ label: 'Adapter', status: 'blocked', issue: link(121) }] })
+    expect(human(row())).toEqual(answered)
+    updateBoardRow(db, { ...base, label: 'Adapter', issue: link(122) })
+    expect(human(row())).toEqual(answered)
+    expect(row().issue_number).toBe(122)
+
+    const out = advanceBoardRow(db, {
+      project: 'p', title: 'AHP', label: 'Adapter', agent: 'a',
+      expectedBoardVersion: getBoard(db, 'p', 'AHP')!.revision, expectedRevision: row().revision,
+      note: 'Next: review it.', next_step: 'Review.', action_owner: 'task', impact: 'Ships it.',
+    })
+    expect(out.ok).toBe(true)
+    expect(row()).toMatchObject({ annotation: null, handled_at: null, issue_repo: 'shariqh/agent-inbox', issue_number: 122 })
   })
 })

@@ -13,7 +13,7 @@ import {
 import type { IssueSnapshot } from '../src/store.js'
 import {
   IssueBudget, ISSUE_BATCH, ISSUE_POINTS_PER_HOUR, ISSUE_TTL, RATE_FLOOR, issueQueue, parseIssueBatch,
-  refreshIssuesOnce, relationsArgs, relationsQuery, startGithubPoller,
+  invalidSnapshotNotice, refreshIssuesOnce, relationsArgs, relationsQuery, startGithubPoller,
 } from '../src/issue-poller.js'
 import type { IssueGhRun } from '../src/issue-poller.js'
 import { createViewer } from '../src/viewer.js'
@@ -689,3 +689,28 @@ describe('the fake GitHub', () => {
   })
 })
 
+
+// PR1b review hardening: a snapshot the store refuses is downgraded to a soft
+// gh-failed, which is visible ONCE, on stderr, by key and never by title.
+describe('invalidSnapshotNotice', () => {
+  it('says it once per poller, naming keys and never titles', () => {
+    const lines: string[] = []
+    const notice = invalidSnapshotNotice((line) => lines.push(line))
+    notice([])
+    expect(lines).toEqual([])
+    notice(['o/r#1', 'o/r#2', 'o/r#3', 'o/r#4', 'o/r#5', 'o/r#6', 'o/r#7'])
+    notice(['o/r#8'])
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toMatch(/^\[agent-inbox\] 7 GitHub issue snapshot\(s\) failed validation and were recorded as gh-failed: o\/r#1, o\/r#2, o\/r#3, o\/r#4, o\/r#5, and 2 more\./)
+    expect(lines[0]).not.toContain('o/r#8')
+  })
+
+  it('the viewer poller writes it to stderr, never stdout', () => {
+    const src = readFileSync(new URL('../src/issue-poller.ts', import.meta.url), 'utf8')
+    expect(src).toContain('const onInvalid = invalidSnapshotNotice((line) => console.error(line))')
+    expect(src).toMatch(/refreshIssuesOnce\(db, \{[^}]*onInvalid \}\)/)
+    expect(src).not.toMatch(/console\.log|process\.stdout/)
+    // the store reports through the caller and never logs itself (it is in the stdio graph)
+    expect(readFileSync(new URL('../src/store.ts', import.meta.url), 'utf8')).not.toMatch(/console\.(log|error|warn)/)
+  })
+})

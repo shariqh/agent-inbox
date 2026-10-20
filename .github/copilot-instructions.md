@@ -88,6 +88,13 @@ Run the build before `npm run electron`; the development shell starts the built
   cancels and awaits the running install; the renderer stops its per-host loop
   at a step that was cancelled, timed out or could not run (a plain failure,
   such as a missing CLI, continues).
+  Setup and update installs are granted to the window by `createInstallBinding()`
+  (#216): bound at its first navigation, revoked by every later one, and granted
+  again only after that load commits to the viewer origin and ownership is proven
+  again (`reproveOwnership()`), never once a quit has begun. Settings shows
+  `available.installPermitted`; a window that may not install gets the restart
+  copy, with Electron's relaunch on macOS only (never for an AppImage). Main's
+  restart IPC accepts only that exact state, never while Setup runs.
   `scripts/setup-filesystem.cjs` is the
   Node-core-only runtime identity/staging/publication/removal boundary used by
   the shipped Darwin install path and build-time runtime publisher. Its Win32
@@ -213,7 +220,10 @@ Run the build before `npm run electron`; the development shell starts the built
   stdio, so repeat signals cannot stop it. A step that fails or times out must
   be reported and its report kept, never claimed as restored; one already
   running survives the installer's SIGKILL, still bounded by a detached
-  guard, and holds the lease until it ends.
+  guard, and holds the lease until it ends. Neither hook-install mode may add
+  a second Agent Inbox hook set (#218): another install's set, or a dead one,
+  is refused (the one-step `--replace-existing` printed first) or replaced
+  entry-for-entry with that flag, and another tool's look-alike is never removed.
 - All agent-authored text interpolated into HTML must pass through `esc()`.
   Supplied URLs additionally pass through `safeHttpUrl()` in
   `public/source.js`; build anchors through the existing `chipHtml()` path.

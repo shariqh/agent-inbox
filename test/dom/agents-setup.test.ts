@@ -295,6 +295,29 @@ describe('Setup shows what each host\'s agents run (#197)', () => {
     expect(install).not.toHaveBeenCalled()
   })
 
+  // #216: main proves a reloaded window again, which can finish after Setup was built.
+  it('offers Update agents the next time Settings opens once main allows this window', async () => {
+    const release = releaseRuntime('2.0.0')
+    release.register('claude', release.installVersion('1.2.8'))
+    let allowed = false
+    const install = vi.fn<Install>(async (t) => ok(String(t)))
+    Object.defineProperty(window, 'agentInboxSetup', {
+      configurable: true,
+      value: { available: async () => allowed, install },
+    })
+
+    await boot(release)
+    expect(updateButton()).toBeNull()
+
+    allowed = true
+    click(document.getElementById('gear'))
+    await settle()
+    expect(updateButton()?.textContent).toBe('Update agents')
+    click(updateButton())
+    await settle()
+    expect(install.mock.calls).toEqual([['claude']])
+  })
+
   it('in a browser tab, says where to match a host that runs a newer runtime', async () => {
     const release = releaseRuntime('2.0.0')
     release.register('claude', release.installVersion('2.1.0'))

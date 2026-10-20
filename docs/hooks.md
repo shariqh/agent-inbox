@@ -125,13 +125,18 @@ installer's uninstall command and the one-step `--replace-existing`.
 
 After an app update, Setup's **Update agents** (or **Match agents to vX** after a
 downgrade) also moves Claude's hooks when a Setup runtime installed them and that
-runtime's version differs from the app's (issue #206). It is the same command Setup
-used to show for a terminal, run for you as a step of its own after Claude Code and
-Copilot CLI:
+runtime's version differs from the app's (issue #206). It runs the command Setup used
+to show for a terminal, as a step of its own after Claude Code and Copilot CLI, with
+one more flag:
 
 ```sh
-bash ~/.agent-inbox/runtime/<this app's runtime-id>/scripts/install-hooks.sh --apply
+bash ~/.agent-inbox/runtime/<this app's runtime-id>/scripts/install-hooks.sh --apply --move-only
 ```
+
+`--move-only` makes the installer exit 1 and write nothing when no Setup runtime's
+hooks are there to replace. It checks while it holds the setup lock, so Setup never
+installs hooks afresh, even for a set you removed a moment before. Outside a packaged
+runtime the flag is refused.
 
 It runs from the installed copy of the app's runtime, never from the app bundle, so the
 hooks keep working after the app moves or updates. Setup checks that copy against the

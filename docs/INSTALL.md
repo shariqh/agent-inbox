@@ -401,9 +401,11 @@ nothing is run to find this out.
 - **A source checkout** updates in place: run `git pull` and `npm run build` in it,
   then restart its sessions.
 - **Claude hooks** that a Setup runtime installed move with your agents: Setup runs the
-  app's own runtime installer for them, `install-hooks.sh --apply` from
+  app's own runtime installer for them, `install-hooks.sh --apply --move-only` from
   `~/.agent-inbox/runtime/<runtime-id>/`, as a step of its own after Claude Code and
-  Copilot CLI, and then says whether they now run the app's runtime. If no agent needs
+  Copilot CLI, and then says whether they now run the app's runtime. `--move-only` makes
+  the installer write nothing where no Setup runtime's hooks are there, so Setup never
+  installs hooks you don't have. If no agent needs
   moving, the step appears once the app's runtime is installed. In a browser tab, Setup
   shows that command for a terminal instead. Hooks installed from a source checkout are
   never moved by Setup; switch them with `--replace-existing`, see

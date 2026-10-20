@@ -1428,7 +1428,7 @@ describe.skipIf(!['darwin', 'linux'].includes(process.platform))('runAgentInstal
     expect(JSON.stringify(hooks)).not.toContain(older.dir)
   })
 
-  it('spawns exactly /bin/bash <installed runtime>/scripts/install-hooks.sh --apply: no --force, no runtime arguments', async () => {
+  it('spawns exactly /bin/bash <installed runtime>/scripts/install-hooks.sh --apply --move-only: no --force, no runtime arguments', async () => {
     const h = hooksHome()
     const { source, payload } = release()
     const installed = installStaged(h, source)
@@ -1438,7 +1438,7 @@ describe.skipIf(!['darwin', 'linux'].includes(process.platform))('runAgentInstal
 
     expect(calls).toHaveLength(1)
     expect(calls[0]![0]).toBe('/bin/bash')
-    expect(calls[0]![1]).toEqual([join(installed.dir, 'scripts', 'install-hooks.sh'), '--apply'])
+    expect(calls[0]![1]).toEqual([join(installed.dir, 'scripts', 'install-hooks.sh'), '--apply', '--move-only'])
     expect(calls[0]![2]).toMatchObject({ cwd: installed.dir, detached: true })
   })
 
@@ -1453,7 +1453,7 @@ describe.skipIf(!['darwin', 'linux'].includes(process.platform))('runAgentInstal
       repoRoot: source.dir, target: 'hooks', runtimePayload: payload, env: { ...h.env, AGENT_INBOX_RUNTIME_ROOT: elsewhere }, spawnImpl,
     })
 
-    expect(calls[0]![1]).toEqual([join(installed.dir, 'scripts', 'install-hooks.sh'), '--apply'])
+    expect(calls[0]![1]).toEqual([join(installed.dir, 'scripts', 'install-hooks.sh'), '--apply', '--move-only'])
   })
 
   it.each([

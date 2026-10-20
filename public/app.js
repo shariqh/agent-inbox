@@ -7241,9 +7241,16 @@ async function updateAgents(action, current, button) {
       show([...reports, step.progress].join('\n\n'), 'running')
       // Claude's hooks (#206) move only if they still run another Setup
       // runtime once the agent steps are done: the human may have changed them
-      // since this panel was drawn, and the installer would add hooks afresh.
+      // since this panel was drawn. This re-read is for the message; the
+      // installer's --move-only refuses under the setup lock all the same.
       if (step.host === 'hooks') {
         const fresh = await refreshAgents()
+        if (hooksGuidance(fresh, current).moved) {
+          // already where the human asked for them, moved some other way meanwhile
+          reports.push(`${hostLabel('hooks')}: already run v${current}, so there was nothing to move.`)
+          moved.push('hooks')
+          continue
+        }
         if (!hostLine('hooks', fresh?.hooks, current).drift) {
           reports.push(fresh
             ? `${hostLabel('hooks')}: not started, because they changed since Setup read them; the list above shows them now.`

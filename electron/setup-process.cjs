@@ -104,9 +104,11 @@ function createSetupProcessRunner({
             runtime.manifestDigest,
           ]
       // Never --force, --replace-existing or --uninstall: the runtime's
-      // installer replaces only Setup runtimes' hooks and refuses beside any other.
+      // installer replaces only Setup runtimes' hooks and refuses beside any
+      // other. --move-only makes it refuse, under the setup lock, where no
+      // Setup runtime's hooks are there to move: Setup never adds a fresh set.
       const argv = target === 'hooks'
-        ? [script, '--apply']
+        ? [script, '--apply', '--move-only']
         : [script, '--apply', '--target', target, ...runtimeArgs]
 
       return new Promise((resolveResult) => {

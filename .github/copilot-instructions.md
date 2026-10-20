@@ -91,9 +91,10 @@ Run the build before `npm run electron`; the development shell starts the built
   `hooks` for Claude's Setup-runtime hooks (#206), never `all` or `--force`;
   status is read by the viewer, so there is no status IPC or
   installer status mode. `hooks` runs exactly `/bin/bash <installed
-  runtime>/scripts/install-hooks.sh --apply`, from the installed copy of the
-  verified release runtime (re-verified against the signed manifest digest
-  before spawn), never from the app bundle or a checkout. Once any quit begins, nothing starts: every quit or
+  runtime>/scripts/install-hooks.sh --apply --move-only`, from the installed
+  copy of the verified release runtime (re-verified against the signed manifest
+  digest before spawn), never from the app bundle or a checkout; `--move-only`
+  refuses under the setup lock where no Setup runtime's hooks exist to move. Once any quit begins, nothing starts: every quit or
   restart path calls `beginAppQuit()` in `electron/main.cjs` first, which refuses
   later installs through `createInstallGate()`, revokes the window's Setup, and
   cancels and awaits the running install; the renderer stops its per-host loop

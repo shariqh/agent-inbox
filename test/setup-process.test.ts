@@ -301,7 +301,7 @@ describe('the Claude hooks target (#206)', () => {
     return root
   }
 
-  it('runs exactly /bin/bash <runtime>/scripts/install-hooks.sh --apply from that runtime', async () => {
+  it('runs exactly /bin/bash <runtime>/scripts/install-hooks.sh --apply --move-only from that runtime', async () => {
     const root = installed()
     const spawned = child()
     let call: unknown[] = []
@@ -318,7 +318,7 @@ describe('the Claude hooks target (#206)', () => {
     const result = await runner.start({ repoRoot: root, target: 'hooks', runtime: null })
 
     expect(call[0]).toBe('/bin/bash')
-    expect(call[1]).toEqual([join(root, 'scripts', 'install-hooks.sh'), '--apply'])
+    expect(call[1]).toEqual([join(root, 'scripts', 'install-hooks.sh'), '--apply', '--move-only'])
     expect(call[2]).toMatchObject({ cwd: root, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
     expect((call[2] as Record<string, unknown>)).not.toHaveProperty('shell')
     expect(result).toMatchObject({ ok: true, exitCode: 0, target: 'hooks', timedOut: false, cancelled: false })
@@ -385,6 +385,9 @@ describe('the Claude hooks target (#206)', () => {
       expect(new Set(hookLaunchers(h).map((hook) => hook.entry))).toEqual(new Set([join(older.dir, 'dist', 'hook-cli.js')]))
       const before = readdirSync(dirname(h.settings)).filter((name) => name.includes('.bak.')).length
       const newer = installRuntime(h, '1.1.0')
+      // the seeding run above took the lock; this one must take it again
+      const lock = join(h.home, '.agent-inbox', 'install-agents.lock')
+      rmSync(lock)
 
       const result = await createSetupProcessRunner({ env: h.env }).start({ repoRoot: newer.dir, target: 'hooks', runtime: null })
 
@@ -404,7 +407,66 @@ describe('the Claude hooks target (#206)', () => {
       expect(settings.hooks['PostToolUse']).toEqual([{ hooks: [{ type: 'command', command: 'echo hi' }] }])
       expect(readdirSync(dirname(h.settings)).filter((name) => name.includes('.bak.')).length).toBe(before + 1)
       // it ran under the shared setup lock, in the scratch HOME
-      expect(existsSync(join(h.home, '.agent-inbox', 'install-agents.lock'))).toBe(true)
+      expect(existsSync(lock)).toBe(true)
     },
   )
+
+  // Review of #236: the renderer offers the step only for a Setup runtime's
+  // hooks, but nothing below it checked. `--move-only` makes the installer
+  // itself refuse, under the setup lock, when there is no Setup runtime's set
+  // to move: a direct `hooks` run never installs hooks afresh.
+  describe.skipIf(!['darwin', 'linux'].includes(process.platform))('--move-only', () => {
+    const NOTHING = /has no Claude hooks from a Setup runtime to move, so nothing was written/
+
+    it.each([
+      ['no settings file', null],
+      ['settings without hooks', '{"model":"x"}\n'],
+      ['only another tool\'s hooks', `${JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: 'echo hi' }] }] } })}\n`],
+    ] as const)('writes nothing and exits 1 through Setup where there is %s', async (_label, contents) => {
+      const h = hooksHome()
+      if (contents !== null) {
+        mkdirSync(dirname(h.settings), { recursive: true })
+        writeFileSync(h.settings, contents)
+      }
+      const runtime = installRuntime(h, '1.1.0')
+
+      const result = await createSetupProcessRunner({ env: h.env }).start({ repoRoot: runtime.dir, target: 'hooks', runtime: null })
+
+      expect(result).toMatchObject({ ok: false, exitCode: 1, target: 'hooks' })
+      expect(result.output).toMatch(NOTHING)
+      if (contents === null) {
+        expect(existsSync(h.settings)).toBe(false)
+      } else {
+        expect(readFileSync(h.settings, 'utf8')).toBe(contents)
+        expect(readdirSync(dirname(h.settings)).filter((name) => name !== 'settings.json')).toEqual([])
+      }
+    })
+
+    it('is refused outside a packaged runtime, before anything is read', () => {
+      const h = hooksHome()
+      const checkout = mkdtempSync(join(tmpdir(), 'move-only-checkout-'))
+      mkdirSync(join(checkout, 'scripts'))
+      for (const script of ['install-hooks.sh', 'setup-lock.sh']) {
+        writeFileSync(join(checkout, 'scripts', script), readFileSync(join(import.meta.dirname, '..', 'scripts', script)))
+      }
+
+      const result = spawnSync('/bin/bash', [join(checkout, 'scripts', 'install-hooks.sh'), '--apply', '--move-only'], { encoding: 'utf8', env: h.env })
+
+      expect(result.status).toBe(2)
+      expect(result.stderr).toMatch(/--move-only moves a Setup runtime's hooks/)
+      expect(existsSync(join(h.home, '.claude'))).toBe(false)
+    })
+
+    it('cannot be combined with --uninstall or --force in the config helper', () => {
+      const h = hooksHome()
+      const helper = join(import.meta.dirname, '..', 'scripts', 'runtime-config.mjs')
+      for (const flag of ['--uninstall', '--force']) {
+        const result = spawnSync(process.execPath, [
+          helper, 'hooks', '--settings', h.settings, '--node', process.execPath, '--entry', '/x/dist/hook-cli.js', '--move-only', flag,
+        ], { encoding: 'utf8', env: h.env })
+        expect(result.status, flag).toBe(2)
+        expect(result.stderr).toMatch(/--move-only .* cannot be combined with --uninstall or --force/)
+      }
+    })
+  })
 })

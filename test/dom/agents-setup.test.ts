@@ -623,6 +623,41 @@ describe('Setup shows what each host\'s agents run (#197)', () => {
     expect(restartText()).not.toContain('Claude hooks')
   })
 
+  // Review of #236: moved meanwhile (from a terminal, say), the end state is
+  // what the human asked for, so it is reported as done, not as a failure.
+  it('reports hooks that reached this app\'s runtime meanwhile as already moved, and the run as done', async () => {
+    const release = releaseRuntime('2.0.0')
+    const old = release.installVersion('1.2.4')
+    release.register('claude', old)
+    release.registerHooks(old)
+    const install = vi.fn<Install>(async (t) => {
+      const installed = release.install()
+      release.register('claude', installed)
+      // `install-hooks.sh --apply` from that runtime, run in a terminal meanwhile
+      release.registerHooks(installed)
+      return ok(String(t))
+    })
+    bridge(install)
+
+    await boot(release)
+    click(updateButton())
+    await settle()
+
+    expect(install.mock.calls).toEqual([['claude']])
+    const result = document.querySelector('.agents-result')
+    expect(result?.textContent).toBe(
+      'Claude Code: claude: registered agent-inbox MCP\n\nClaude hooks: already run v2.0.0, so there was nothing to move.',
+    )
+    expect(result?.classList.contains('success')).toBe(true)
+    expect(result?.classList.contains('failure')).toBe(false)
+    expect(lines()[2]).toBe('Claude hooks: v2.0.0 runtime (Setup)')
+    expect(restartText()).toBe(
+      'Running sessions keep the build they started with until you restart them.'
+      + 'Claude Code: no running sessions.'
+      + HOOKS_MOVED,
+    )
+  })
+
   it('does not start the hooks step when it cannot re-read them', async () => {
     const release = releaseRuntime('2.0.0')
     const old = release.installVersion('1.2.4')

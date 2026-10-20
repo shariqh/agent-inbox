@@ -636,6 +636,7 @@ export function transformHooksSettings({
   uninstall = false,
   migrate = false,
   replaceExisting = false,
+  moveOnly = false,
   installer = null,
   settingsPath = 'the settings file',
   onReplace = () => {},
@@ -648,6 +649,11 @@ export function transformHooksSettings({
     const replace = replaceExisting && !uninstall
     if (sorted.unverifiable.length > 0 || (!replace && sorted.replaceable.length + sorted.others.length > 0)) {
       throw hookRefusal({ settingsPath, sorted, others: replace ? [] : sorted.others, installer, uninstall })
+    }
+
+    // Setup's `hooks` target (#206) moves a Setup runtime's set, never adds one.
+    if (moveOnly && sorted.own.length === 0) {
+      throw new HookRefusal(`install-hooks: ${settingsPath} has no Claude hooks from a Setup runtime to move, so nothing was written.`)
     }
     const removed = new Set([...sorted.own, ...(replace ? sorted.replaceable.map((r) => r.entry) : [])])
     if (replace) onReplace(hookOwners(sorted.replaceable))
@@ -820,6 +826,9 @@ function runMergeJsonCmd(argv) {
  *     [--replace-existing]   also replace another Agent Inbox install's hooks
  *                            and dead ones, leaving other tools' look-alikes
  *                            in place (issue #218); not with --uninstall
+ *     [--move-only]          Setup's move (#206): exit 1 and print nothing
+ *                            unless a Setup runtime's hooks are there to
+ *                            replace; not with --uninstall or --force
  *     [--installer <abs>]    the install-hooks.sh a refusal tells the human to re-run
  *     [--manifest-file <name>]
  *
@@ -846,6 +855,7 @@ function runHooksCmd(argv) {
       uninstall: { type: 'boolean' },
       migrate: { type: 'boolean' },
       'replace-existing': { type: 'boolean' },
+      'move-only': { type: 'boolean' },
       installer: { type: 'string' },
     },
   })
@@ -857,6 +867,9 @@ function runHooksCmd(argv) {
   if (values.uninstall && values['replace-existing']) {
     throw new UsageError('hooks: --replace-existing installs one set in place of every other; it cannot be combined with --uninstall')
   }
+  if (values['move-only'] && (values.uninstall || values.force)) {
+    throw new UsageError('hooks: --move-only moves a Setup runtime\'s set; it cannot be combined with --uninstall or --force')
+  }
 
   const result = transformHooksSettings({
     settings: readSettingsFile(settingsPath),
@@ -867,6 +880,7 @@ function runHooksCmd(argv) {
     uninstall: !!values.uninstall,
     migrate: !!values.migrate,
     replaceExisting: !!values['replace-existing'],
+    moveOnly: !!values['move-only'],
     installer: values.installer ?? null,
     settingsPath,
     onReplace: reportReplaced,

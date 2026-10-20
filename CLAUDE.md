@@ -773,22 +773,36 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   The Setup panel's direct action is deliberately Electron-only:
   `electron/setup-preload.cjs` exposes only `available()`/`install(target)`, with
   `contextIsolation:true` and `nodeIntegration:false`; `main.cjs` accepts only the
-  three fixed targets and only while the app owns the exact local-viewer origin (the
+  four fixed targets (`all`, `claude`, `copilot` and, since #206, `hooks`) and only
+  while the app owns the exact local-viewer origin (the
   window binding update installs share, #216). A
   reused viewer never gets execution access, and there is no HTTP setup-write route.
   `electron/setup-core.cjs` is the dependency-free control plane. It trusts the POSIX
   adapter's frozen host identity derived from the real `process.platform`/`process.arch`
   and requires the selected key plus verified manifest platform/architecture to match it
-  exactly. The core carries only values the current adapter consumes; shell-internal
+  exactly. The core carries only values the current adapter consumes (the verified
+  `runtimeId` locates the installed copy the `hooks` target runs); shell-internal
   self-tests, rollback and pruning are not self-certified policy fields.
   `electron/setup-runner.cjs` selects only the exact architecture-keyed runtime payload
   from release `setup-info.json`. Both its verified release path and checkout/dev fallback
   delegate execution to the fixed-purpose `electron/setup-process.cjs` boundary, which
-  constructs only exact `/bin/bash scripts/install-agents.sh` argv, bounds output/time,
+  constructs only exact `/bin/bash scripts/install-agents.sh` argv, plus for `hooks`
+  exactly `/bin/bash <installed runtime>/scripts/install-hooks.sh --apply --move-only`
+  (never `--force` or another flag, and only from a directory carrying a runtime manifest),
+  bounds output/time,
   and preserves POSIX process-group cancellation. It accepts no executable or arbitrary
   argv from callers, permits exact-host macOS/Linux shell execution, and fails closed before
   spawn on Windows or unknown platforms. Release setup-info callers declare an exact key set
   from the shared runtime registry; current macOS callers remain Darwin-only.
+  *(#206)* `hooks` exists only in release mode: a dev checkout refuses it. Its installer
+  bakes ITS directory's `bin/node` and `dist/hook-cli.js` into Claude's settings, so it
+  never runs from the app bundle (the next app update replaces that payload) but from the
+  installed copy at `${AGENT_INBOX_RUNTIME_ROOT:-$HOME/.agent-inbox/runtime}/<runtimeId>`,
+  the root the installers themselves use. After the core verifies the bundle's payload,
+  that copy is verified again against the same signed manifest digest (with
+  `scripts/install-hooks.sh` required) immediately before spawn; a missing copy, a
+  changed or extra file, or a symlinked directory refuses without spawning. Main gates it
+  exactly like the agent targets.
   `electron/runtime-verify.cjs` is the externally anchored verifier: using the digest from
   signed-bundle `setup-info.json`, it synchronously verifies the complete manifest file
   list, hashes, modes, entrypoints and runtime identity at selection and immediately before
@@ -1327,7 +1341,9 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   invariants above. A native-notification stop action was left out: notification buttons
   are answers today, and mixing in a non-answer needs its own design.
 - **Backstop hooks** *(#10 + #21)* — `src/hook.ts` + `src/hook-cli.ts`, installed opt-in by
-  `scripts/install-hooks.sh` (dry-run by default). #10: a `Notification` hook arms a
+  `scripts/install-hooks.sh` (dry-run by default; *#206:* the app runs it only to move hooks a
+  Setup runtime already installed, on the human's click, and `--move-only` makes the
+  installer itself refuse, under the setup lock, where there are none). #10: a `Notification` hook arms a
   grace-windowed backstop item when a session is stuck at a permission prompt; it is
   self-clearing, rate-limited and janitored, so the badge stays trustworthy. #21: `stop`,
   `prompt-submit` and `session-start` nudge an idle agent to call `pending()`, and the
@@ -1637,10 +1653,27 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   lists, per host that moved, how many running sessions still run a build that differs from what that
   host now runs (older, newer or both) and how to restart them (`claude --resume` / `copilot --resume`);
   it never says a session reloaded. The block also re-reads whenever Settings opens, so a terminal install
-  made meanwhile shows up. It does not move Claude's hooks: once the current runtime is installed the
-  panel hands over `bash <runtime>/scripts/install-hooks.sh --apply` (for hooks behind or ahead) to run in
-  a terminal, and promises that command only when it can install that runtime (`updatable`). No IPC
-  channel, preload method, argv shape or HTTP route was added, and nothing runs at startup. Live's
+  made meanwhile shows up. *(#206)* Claude's hooks move with the agents when they are
+  Setup's (kind `runtime`) on another version than `current`, in either direction, and
+  `updatable`: one more step, `hooks`, last in the action, so an agent step before it has
+  installed this app's runtime; without one it is offered only once that runtime is installed
+  (`hooksCommand` is set exactly then). A checkout's, a custom, an unverifiable or a
+  version-unknown hook set is never moved. The step runs the installed runtime's own
+  `install-hooks.sh --apply --move-only` under its shared lock, backup and manifest-owned
+  replacement. `--move-only` (forwarded to `runtime-config.mjs hooks`) exits 1 and writes
+  nothing when no Setup runtime's hooks are there to replace, checked under that lock, so
+  neither a direct `install('hooks')` nor a set removed after the panel's re-read is ever
+  installed afresh; the renderer's re-read before the step only words the message, and a set
+  that reached `current` meanwhile is reported as already moved;
+  a cancelled, timed-out or unrunnable step before it leaves it "not started". Afterwards the
+  hooks count as moved only when the re-read shows them on exactly `current`
+  (`hooksGuidance`); otherwise the result is marked failed and says Setup does not see the
+  move. Running sessions: Claude Code reads hooks at session start, and its documentation
+  says its settings file watcher normally applies a change to running sessions too, so the
+  advice says that and names the restart that makes sure, never a reload it cannot see. A
+  browser tab, or a window Setup is not granted to, gets the app hint plus
+  `bash <runtime>/scripts/install-hooks.sh --apply` once the runtime is installed. No IPC
+  channel, preload method or HTTP route was added for this, and nothing runs at startup. Live's
   `remedy()` maps a runtime session to its host by its inferred agent (`claude-code` → claude, `copilot`
   → copilot) and, for a session OLDER than the app, says "restart this session to load vX" only when that
   host is registered to Setup's runtime at vX or later, "update agents from Setup, then restart this

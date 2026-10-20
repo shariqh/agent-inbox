@@ -4,10 +4,11 @@
 // read from the host config files by src/agent-hosts.ts). This says it in one
 // line per host, picks the Setup-managed hosts whose runtime differs from this
 // app's (older, or newer after an app downgrade), names the one action that
-// moves exactly those — one fixed install target per host — and, afterwards,
-// says which running sessions still run another build than their host now
-// loads, and how to restart them. A restart is the only way a running session
-// loads another build, so nothing here ever says one reloaded.
+// moves exactly those — one fixed install target per host, and since #206 one
+// for Claude's hooks — and, afterwards, says which running sessions still run
+// another build than their host now loads, and how to restart them. A restart
+// is the only way a running session loads another build, so nothing here ever
+// says one reloaded.
 import { compareVersions, hostOfAgent } from './livebar.js'
 
 const LABELS = { claude: 'Claude Code', copilot: 'Copilot CLI', hooks: 'Claude hooks' }
@@ -58,7 +59,12 @@ export function hostLine(host, reg, current) {
   }
 }
 
-const names = (hosts) => hosts.map(hostLabel).join(' and ')
+const names = (hosts) => {
+  const labels = hosts.map(hostLabel)
+  return labels.length < 3 ? labels.join(' and ') : `${labels.slice(0, -1).join(', ')} and ${labels.at(-1)}`
+}
+// "Claude hooks" is a plural noun even alone.
+const several = (hosts) => hosts.length > 1 || hosts[0] === 'hooks'
 const KEEP = 'Running sessions keep their build until you restart them.'
 
 /**
@@ -73,7 +79,11 @@ const KEEP = 'Running sessions keep their build until you restart them.'
  *
  * Its `steps` are one fixed install target per host, run one after another:
  * `--target all` stops before changing anything when one host's CLI is gone,
- * which would leave the other host stuck behind it too.
+ * which would leave the other host stuck behind it too. Claude's hooks (#206)
+ * are a step of their own, last: their `hooks` target runs the installed copy
+ * of this app's runtime's install-hooks.sh, which an agent step before it
+ * installs. Without one, that runtime must be installed already, which is
+ * exactly when the viewer hands over `hooksCommand`.
  * @returns {{steps: Array<{host: string, progress: string, done: string}>, label: string, hint: string, elsewhere: string} | null}
  */
 export function agentsAction(agents) {
@@ -81,18 +91,23 @@ export function agentsAction(agents) {
   const current = typeof agents.current === 'string' ? agents.current : null
   if (!current) return null
   const lines = ['claude', 'copilot'].map((host) => hostLine(host, agents[host], current)).filter((line) => line.drift)
+  const moveAgents = lines.length > 0
+  const hooks = hostLine('hooks', agents.hooks, current)
+  const runtimeInstalled = typeof agents.hooksCommand === 'string' && agents.hooksCommand !== ''
+  if (hooks.drift && (moveAgents || runtimeInstalled)) lines.push(hooks)
   if (!lines.length) return null
+  const keep = moveAgents ? ` ${KEEP}` : ''
   const older = lines.filter((line) => line.drift === 'older').map((line) => line.host)
   const newer = lines.filter((line) => line.drift === 'newer').map((line) => line.host)
   const hosts = lines.map((line) => line.host)
   const steps = lines.map(({ host, label, drift }) => drift === 'older'
     ? { host, progress: `Updating ${label}…`, done: `${label} updated.` }
-    : { host, progress: `Matching ${label} to v${current}…`, done: `${label} now matches v${current}.` })
+    : { host, progress: `Matching ${label} to v${current}…`, done: `${label} now ${host === 'hooks' ? 'match' : 'matches'} v${current}.` })
   if (!newer.length) {
     return {
       steps,
       label: 'Update agents',
-      hint: `Update agents moves ${names(older)} to the v${current} runtime. ${KEEP}`,
+      hint: `Update agents moves ${names(older)} to the v${current} runtime.${keep}`,
       elsewhere: `Open Settings in the Agent Inbox app to update ${names(older)} to the v${current} runtime.`,
     }
   }
@@ -101,8 +116,8 @@ export function agentsAction(agents) {
     steps,
     label,
     hint: older.length
-      ? `${label} updates ${names(older)} and moves ${names(newer)} back to this app's runtime. ${KEEP}`
-      : `${names(newer)} ${plural(newer.length, 'runs', 'run')} a newer runtime than this app. ${label} moves ${plural(newer.length, 'it', 'them')} to this app's runtime. ${KEEP}`,
+      ? `${label} updates ${names(older)} and moves ${names(newer)} back to this app's runtime.${keep}`
+      : `${names(newer)} ${several(newer) ? 'run' : 'runs'} a newer runtime than this app. ${label} moves ${several(newer) ? 'them' : 'it'} to this app's runtime.${keep}`,
     elsewhere: `Open Settings in the Agent Inbox app to match ${names(hosts)} to the v${current} runtime.`,
   }
 }
@@ -139,4 +154,29 @@ export function restartGuidance(activity, moves) {
     }
     return parts.join(' ')
   })
+}
+
+/**
+ * After the hooks step (#206) reported success: what the re-read of /api/setup
+ * (`agents`, or null when it failed) shows. The hooks count as moved only when
+ * they now run Setup's runtime at exactly `version`. New sessions read hooks
+ * when they start; Claude Code's documentation says its settings file watcher
+ * normally applies hook changes to running sessions as well, which Setup has
+ * no way to observe, so it names the restart that makes sure.
+ * @returns {{moved: boolean, text: string}}
+ */
+export function hooksGuidance(agents, version) {
+  const reg = registration(agents?.hooks)
+  if (reg.kind === 'runtime' && compareVersions(reg.version, version) === 0) {
+    return {
+      moved: true,
+      text: `Claude hooks: new Claude Code sessions run the v${version} hooks. Claude Code normally applies changed hooks to running sessions too; to be sure one does, restart it: exit it, then run ${RESUME.claude}.`,
+    }
+  }
+  return {
+    moved: false,
+    text: agents && typeof agents === 'object'
+      ? `Claude hooks: the installer finished, but Setup does not see them on v${version}; the list above shows what it reads.`
+      : "Claude hooks: the installer finished, but Setup could not re-read Claude's settings to confirm the move.",
+  }
 }

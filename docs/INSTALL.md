@@ -400,11 +400,18 @@ nothing is run to find this out.
   build, and sessions still on a newer build after Match agents.
 - **A source checkout** updates in place: run `git pull` and `npm run build` in it,
   then restart its sessions.
-- **Claude hooks** are not moved with your agents. Once the app's runtime is installed,
-  Setup shows the command that moves them, for example
-  `bash ~/.agent-inbox/runtime/<runtime-id>/scripts/install-hooks.sh --apply`.
-  Hooks installed from a source checkout move with the same command plus
-  `--replace-existing`; see [the backstop hooks](#5-optional-the-backstop-hooks-issues-10--21).
+- **Claude hooks** that a Setup runtime installed move with your agents: Setup runs the
+  app's own runtime installer for them, `install-hooks.sh --apply --move-only` from
+  `~/.agent-inbox/runtime/<runtime-id>/`, as a step of its own after Claude Code and
+  Copilot CLI, and then says whether they now run the app's runtime. `--move-only` makes
+  the installer write nothing where no Setup runtime's hooks are there, so Setup never
+  installs hooks you don't have. If no agent needs
+  moving, the step appears once the app's runtime is installed. In a browser tab, Setup
+  shows that command for a terminal instead. Hooks installed from a source checkout are
+  never moved by Setup; switch them with `--replace-existing`, see
+  [the backstop hooks](#5-optional-the-backstop-hooks-issues-10--21).
+  Claude Code's documentation says it normally applies changed hooks to running sessions
+  too; restart a session to be sure.
 
 Nothing runs when the app starts; updating agents is always your explicit choice.
 
@@ -558,8 +565,9 @@ the same kernel-backed setup lock; packaged hook upgrade/uninstall changes only 
 whose Node and hook entrypoint resolve to the same valid manifest-owned runtime (and,
 with `--replace-existing`, another Agent Inbox install's entries and ones that can no
 longer run).
-Nothing about this runs from `npm install` or `npm run build`, and new hook
-registrations are picked up only on a **fresh** Claude Code session.
+Nothing about this runs from `npm install` or `npm run build`. Claude Code reads hooks
+when a session starts, and its documentation says it normally applies changes to running
+sessions too; restart a session to be sure it has them.
 
 **Only one install's hooks at a time.** Two sets would run every hook twice, so the
 installer refuses to add its hooks beside those of a Setup runtime or another

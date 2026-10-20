@@ -3,8 +3,11 @@ const { homedir } = require('node:os')
 const { isAbsolute, join } = require('node:path')
 const { spawn } = require('node:child_process')
 
-const TARGETS = new Set(['all', 'claude', 'copilot'])
+// `hooks` (#206) moves Claude's hooks with an INSTALLED runtime's own hook
+// installer; every other target is an agent install.
+const TARGETS = new Set(['all', 'claude', 'copilot', 'hooks'])
 const SUPPORTED_PLATFORMS = new Set(['darwin', 'linux'])
+const RUNTIME_MANIFEST = 'runtime-manifest.json'
 const DIGEST_RE = /^sha256:[0-9a-f]{64}$/i
 const DEFAULT_MAX_OUTPUT = 64 * 1024
 const DEFAULT_TIMEOUT_MS = 120_000
@@ -21,8 +24,8 @@ function setupResult(target, output) {
   }
 }
 
-function installerPath(repoRoot) {
-  return join(repoRoot, 'scripts', 'install-agents.sh')
+function installerPath(repoRoot, target) {
+  return join(repoRoot, 'scripts', target === 'hooks' ? 'install-hooks.sh' : 'install-agents.sh')
 }
 
 function installerEnv(env) {
@@ -49,13 +52,19 @@ function validatedOperation(operation, platform) {
   if (typeof repoRoot !== 'string' || !isAbsolute(repoRoot)) {
     return { error: setupResult(target, 'Invalid Setup repository root.') }
   }
-  const script = installerPath(repoRoot)
+  const script = installerPath(repoRoot, target)
   if (!existsSync(script)) {
     return { error: setupResult(target, `Installer not found at ${script}`) }
   }
 
   const runtime = operation?.runtime
-  if (runtime !== null) {
+  if (target === 'hooks') {
+    // Its installer bakes its own bin/node and dist/hook-cli.js into Claude's
+    // settings, so it runs only from an installed runtime, in runtime mode.
+    if (runtime !== null || !existsSync(join(repoRoot, RUNTIME_MANIFEST))) {
+      return { error: setupResult(target, 'Claude hooks move only from an installed runtime.') }
+    }
+  } else if (runtime !== null) {
     if (
       !runtime ||
       typeof runtime !== 'object' ||
@@ -94,6 +103,13 @@ function createSetupProcessRunner({
             '--runtime-digest',
             runtime.manifestDigest,
           ]
+      // Never --force, --replace-existing or --uninstall: the runtime's
+      // installer replaces only Setup runtimes' hooks and refuses beside any
+      // other. --move-only makes it refuse, under the setup lock, where no
+      // Setup runtime's hooks are there to move: Setup never adds a fresh set.
+      const argv = target === 'hooks'
+        ? [script, '--apply', '--move-only']
+        : [script, '--apply', '--target', target, ...runtimeArgs]
 
       return new Promise((resolveResult) => {
         let output = ''
@@ -129,7 +145,7 @@ function createSetupProcessRunner({
 
         let child
         try {
-          child = spawnImpl('/bin/bash', [script, '--apply', '--target', target, ...runtimeArgs], {
+          child = spawnImpl('/bin/bash', argv, {
             cwd: repoRoot,
             detached: true,
             env: installerEnv(env),

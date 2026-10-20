@@ -127,9 +127,12 @@ describe('trusted Setup core', () => {
       'host',
       'manifestDigest',
       'packageVersion',
+      'runtimeId',
       'sourceRoot',
       'target',
     ])
+    // the verified runtime id locates the installed copy Setup's hooks target runs from (#206)
+    expect(operation.runtimeId).toBe(verified(selections['darwin-arm64']).runtimeId)
     expect(Object.isFrozen(operation)).toBe(true)
     expect(Object.isFrozen(operation.host)).toBe(true)
   })

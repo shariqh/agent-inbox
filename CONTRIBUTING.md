@@ -40,23 +40,39 @@ The hero's animated visual is the one exception. It loads Three.js r186 from
 jsDelivr as two module files: `three.module.js` and the `three.core.js` it
 imports. Both requests go to `https://cdn.jsdelivr.net`, and they are the page's
 only third-party requests. The page pins each file with Subresource Integrity
-(sha384) in its import map and its `modulepreload` links. The import map also
+(sha384) in its import map and in its `modulepreload` links. The import map also
 blocks every other `https:` module URL, so a redirect cannot swap in a different
 `three.core.js`. If the files are blocked, offline, or fail the integrity check,
 the hero falls back to its plain background without the visual, as it does when
 WebGL is unavailable, and the rest of the page works as usual.
 
+Browsers differ in which pins they check. Chrome checks the `modulepreload`
+integrity, and from Chrome 127 the import map's as well. Firefox checks the
+import map from Firefox 138. Safari ignores `modulepreload` integrity, so from
+Safari 18 the import map is its only check. The hero loads Three.js only where
+the browser reports support for both import maps and module preloads (Chrome 96,
+Firefox 115, Safari 17 or later); other browsers keep the plain hero. Two cases
+remain: Safari 17 supports both features but checks neither pin, so it runs the
+files unchecked, and Firefox 115 to 137 relies on its `modulepreload` integrity,
+which hasn't been tested.
+
 Keep the full document intact rather than inserting it into a blog template.
 If the host sets a Content Security Policy, allow the embedded script and style
 blocks by hash, including the import map, and allow `https://cdn.jsdelivr.net`
 in `script-src`; `scripts/serve-marketing.mjs` shows how the local preview builds
-that policy.
+that policy. A policy that refuses the import map leaves Safari with no integrity
+check, and no browser then blocks a redirect around the pins.
 
 To move to another Three.js release, use files that ship in its npm package.
 jsDelivr generates any `.min.js` file a package lacks and advises against SRI
-for generated files, because it may rebuild them with different bytes. Update
-the hero's import URL, the import map, and both `modulepreload` links, and
-compute each sha384 from the `build/` files in the package's npm tarball.
+for generated files, because it may rebuild them with different bytes. Check
+what `three.module.js` imports, and what those files import in turn, and pin
+every file: the import map blocks any module URL it doesn't list, so a missed
+file would hide the hero while the tests still pass. For each file, add a
+self-mapping to the import map's `imports`, a sha384 to its `integrity`, and a
+`modulepreload` link, computing the hash from the `build/` files in the
+package's npm tarball. Then update the hero's import URL and `PINNED` in
+`test/dom/marketing.test.ts`.
 
 Only the marketing page should be published. `npm run marketing` is a
 loopback-only review server, and `npm run view` serves the private inbox; neither

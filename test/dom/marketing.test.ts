@@ -19,6 +19,23 @@ function heroScript(): HTMLScriptElement {
   return scripts[0]!
 }
 
+// jsdom has no HTMLScriptElement.supports, and its link relList rejects
+// modulepreload. Leaving importmap undefined keeps the missing method.
+function stubModuleSupport(support: { importmap?: boolean; modulepreload: boolean }) {
+  if (support.importmap !== undefined) {
+    vi.stubGlobal('HTMLScriptElement', { supports: (type: string) => type === 'importmap' && support.importmap })
+  }
+  vi.spyOn(DOMTokenList.prototype, 'supports').mockImplementation(token => token === 'modulepreload' && support.modulepreload)
+}
+
+// Runs the hero module's own source with import() replaced by `load`.
+async function runHero(load: (url: string) => Promise<unknown>) {
+  const source = heroScript().textContent ?? ''
+  expect(source.split('import(')).toHaveLength(2)
+  vi.stubGlobal('loadThree', load)
+  await window.eval(`(async () => {\n${source.replace('import(', 'loadThree(')}\n})()`)
+}
+
 function button(selector: string): HTMLButtonElement {
   const element = document.querySelector<HTMLButtonElement>(selector)
   if (!element) throw new Error(`Missing marketing control: ${selector}`)
@@ -59,6 +76,7 @@ afterEach(() => {
   vi.clearAllTimers()
   vi.useRealTimers()
   vi.unstubAllGlobals()
+  vi.restoreAllMocks()
   document.documentElement.innerHTML = ''
 })
 
@@ -126,18 +144,31 @@ describe('local marketing page', () => {
     boot()
     const canvas = document.querySelector<HTMLCanvasElement>('#agent-visual')
     expect(canvas?.hidden).toBe(false)
-    const source = heroScript().textContent ?? ''
-    expect(source.split('import(')).toHaveLength(2)
+    stubModuleSupport({ importmap: true, modulepreload: true })
     const load = vi.fn((url: string) => Promise.reject(new TypeError(`Failed to fetch dynamically imported module: ${url}`)))
-    vi.stubGlobal('loadBlockedThree', load)
 
-    await window.eval(`(async () => {\n${source.replace('import(', 'loadBlockedThree(')}\n})()`)
+    await runHero(load)
 
     expect(load).toHaveBeenCalledWith(THREE_MODULE)
     expect(canvas?.hidden).toBe(true)
     button('#tab-plans').click()
     expect(button('#tab-plans').getAttribute('aria-selected')).toBe('true')
     expect(document.querySelector('#panel-plans')?.getAttribute('aria-hidden')).toBe('false')
+  })
+
+  it.each([
+    ['has no HTMLScriptElement.supports', { modulepreload: true }],
+    ['lacks import maps', { importmap: false, modulepreload: true }],
+    ['lacks module preloads', { importmap: true, modulepreload: false }],
+  ])('keeps the plain hero without loading Three.js when the browser %s', async (_, support) => {
+    boot()
+    stubModuleSupport(support)
+    const load = vi.fn((_url: string) => Promise.resolve({}))
+
+    await runHero(load)
+
+    expect(load).not.toHaveBeenCalled()
+    expect(document.querySelector<HTMLCanvasElement>('#agent-visual')?.hidden).toBe(true)
   })
 
   it('keeps demo panels and response space mounted so interactions do not resize the demo', () => {

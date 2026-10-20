@@ -971,6 +971,10 @@ npm run install:agents</code></pre>
     const motionQuery = matchMedia('(prefers-reduced-motion: reduce)');
 
     try {
+      // Without import maps and module preloads, the integrity pins may not apply.
+      if (!HTMLScriptElement.supports?.('importmap') || !document.createElement('link').relList?.supports?.('modulepreload')) {
+        throw new Error('Three.js would load unchecked in this browser.');
+      }
       const THREE = await import('https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.module.js');
       const renderer = new THREE.WebGLRenderer({
         canvas,

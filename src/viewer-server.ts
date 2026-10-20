@@ -1,7 +1,7 @@
 import { serveStatic } from '@hono/node-server/serve-static'
 import { openDb } from './store.js'
 import { createViewer } from './viewer.js'
-import { startPrPoller } from './prstate.js'
+import { startGithubPoller } from './issue-poller.js'
 import { startLocalViewer } from './viewer-network.js'
 
 const port = Number(process.env.AGENT_INBOX_PORT ?? 4319)
@@ -11,8 +11,9 @@ const app = createViewer(db, { ownerToken: process.env.AGENT_INBOX_OWNER_TOKEN }
 // never may). Started here rather than inside createViewer because every viewer
 // test constructs the app with app.request(...) and a timer there would leak
 // into all of them. NOTE: Electron loads the COMPILED dist/viewer-server.js, so
-// the poller only reaches the packaged app after `npm run build`.
-startPrPoller(db)
+// the poller only reaches the packaged app after `npm run build`. Issue #103:
+// one tick runs the issue class (sub-issues) first, then the PR class.
+startGithubPoller(db)
 app.get('/*', serveStatic({ root: './public' }))
 
 startLocalViewer(app, port)

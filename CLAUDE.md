@@ -147,7 +147,7 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   `stopItemWatch`/`stopBoardRowWatch`;
   projects: `closeProject`/`reopenProject`/`listClosedProjects`/`closedProjects`;
   issue snapshots (#103): `upsertIssueSnapshot`/`recordIssueFailure`/`listIssueSnapshots`/
-  `listIssueEntities`/`pruneIssueSnapshots` — plus `openDb`. No raw SQL anywhere else. To change
+  `listIssueEntities`/`pruneIssueSnapshots`/`claimIssueRefresh`/`completeIssueRefresh` — plus `openDb`. No raw SQL anywhere else. To change
   storage, reimplement this module; nothing else touches SQLite.
 - **Boards: the human's annotations are sacred.** A board is idempotent by
   `(project, title)` (UNIQUE); rows match by `label`, positions come from array order.
@@ -359,9 +359,9 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   text (PR titles are third-party network text). Every href is constructed in ONE place,
   `chipHtml()` in `public/source.js`, through `esc(safeHttpUrl(...))` — a URL that does not
   survive `safeHttpUrl` renders as a `<span>`. Do not build an anchor anywhere else.
-- **`src/prstate.ts` is VIEWER-PROCESS-ONLY (issue #30).** It is the one module that shells out to a
-  network tool (`gh`), so `src/mcp.ts`/`src/mcp-server.ts` must never import it, directly or
-  transitively — a subprocess that inherited a stream, or gh's update notifier, would corrupt the MCP
+- **`src/prstate.ts` is VIEWER-PROCESS-ONLY (issue #30).** It and `src/issue-poller.ts` (#103, below)
+  are the only modules that shell out to a network tool (`gh`), so `src/mcp.ts`/`src/mcp-server.ts`
+  must never import either, directly or transitively — a subprocess that inherited a stream, or gh's update notifier, would corrupt the MCP
   wire. It writes only through `store.ts` (`upsertSourceLink`/`recordLinkFailure`; the TTL *policy*,
   `dueTargets`, is a pure function over what the store returned) and it can never reject: an
   unhandled rejection from a background PR fetcher would take down the human's entire UI. **A failing
@@ -372,8 +372,8 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   Design: [`docs/superpowers/specs/2026-10-19-plans-sub-issues-design.md`](docs/superpowers/specs/2026-10-19-plans-sub-issues-design.md).
   `issue_snapshots` holds one validated v1 JSON answer per REQUESTED `owner/name#number`
   (`repo` is `COLLATE NOCASE`), written only through `upsertIssueSnapshot`/
-  `recordIssueFailure`; PR1b's viewer poller is their production caller, so until it lands
-  only tests write snapshots and `/api/issues` serves an empty graph. Four rules hold there.
+  `recordIssueFailure`, whose production caller is `completeIssueRefresh` (the poller, below).
+  Four rules hold there.
   (1) **The attempt rule** is the `WHERE` of ONE upsert: a write applies only when its
   attempt STARTED after the stored `checked_at`, so a late answer from an older attempt
   never lands; never turn it into a read followed by a write. (2) A hard failure
@@ -400,6 +400,42 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   until PR2's titled `board_get` summary admits them deliberately;
   `test/issue-graph.test.ts` pins the transitive graph, and `test/mixed-version.test.ts`
   runs frozen v1.3.1 statements against a migrated hub.
+- **`src/issue-poller.ts` is VIEWER-PROCESS-ONLY too (issue #103, PR1b).** It is the second
+  `gh` caller and keeps every prstate rule: `execFile` with argv only, piped stdio, the quieting
+  env, `GH_TIMEOUT_MS`/`GH_MAX_BUFFER`, writes only through `store.ts`, never rejects, and never
+  reaches attention, a badge or a notification. `test/prstate.test.ts` checks that no file of
+  the stdio graph (its list must stay closed under relative imports) imports either poller.
+  (1) **One tick, issues first** (`startGithubPoller`, started by `viewer-server.ts`): the issue
+  class makes at most ONE `gh api graphql` call (≤ 10 issues, one deterministic document per
+  batch size, owner/name only through `-f`, numbers through `-F`, `--hostname github.com`),
+  skipped after t0 + 15 s; then `refreshOnce(db, { deadlineMs: t0 + 45 s })` starts no new PR
+  target after the deadline. One busy guard covers both, so there are never two `gh` processes.
+  (2) **The queue is uncapped and fair** (`issueQueue`, pure): the refresh key set ordered never
+  fetched, then nudged, then oldest `checked_at`, then key. A nudge is a MERGED/CLOSED link whose
+  CERTAIN closing issue is the key or one of its listed children, seen after the key's
+  `checked_at`. TTLs: open 10 min, closed 60, soft 10 (`no-gh`/`auth` 60), and hard 10 — not the
+  design's 60, because a soft failure after a hard one keeps the hard error while moving its time
+  forward, which hides newer observations from other roots until the issue's own next success.
+  (3) **Claims are leases** (`issue_refresh_claims`): `claimIssueRefresh` and
+  `completeIssueRefresh` are each ONE `.immediate()` transaction; a claim skips keys with a live
+  lease or whose `checked_at` moved since the caller read it, a crashed viewer's lease expires
+  after 60 s, and completion releases only its own owner's leases. An invalid snapshot in a
+  completion is recorded as a soft `gh-failed`, never thrown: one throw would roll back the batch
+  and the same keys would be refetched every tick. (4) **Budget from the reported cost**
+  (`IssueBudget`, per process): a 120-point hourly bucket spent by `rateLimit.cost`, the last
+  reported cost when a call reports none; below `RATE_FLOOR` (500) the class waits for `resetAt`
+  (capped at an hour) and records a soft `rate-limit` for the batch it would have fetched; a
+  rate-limited call that reported nothing backs off ten minutes. (5) **Parsing fails closed**
+  (`parseIssueBatch`): a whole failure is soft for every key; per alias `NOT_FOUND`/`FORBIDDEN`
+  are hard only when no other error names that alias; a field error under `parent`/`subIssues`
+  marks only that root's hierarchy unavailable; an unreadable immediate parent is never read as
+  "no parent"; a list that lost an invalid child is marked truncated so it is no evidence of
+  absence; a repository redirect becomes an alias and any other identity mismatch is `moved`.
+  (6) **`closing_refs`**: `parsePrPayload` records every closing reference (one unreadable
+  reference voids the list rather than shrinking it to a false single), and `upsertSourceLink`
+  stores it bound to the `fetched_at` it writes. An older process's success write moves
+  `fetched_at` and so unbinds it (pinned in `test/mixed-version.test.ts`); its failure write
+  keeps it bound.
 - **`src/shape.ts` is AGENT-SIDE ONLY (issue #42).** `context` is written for the human
   and rendered collapsed, so agents write it generously — and every agent read used to pay
   for all of it. `shape.ts` is where the MCP read payloads are trimmed (`context` →
@@ -1588,10 +1624,10 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   env overrides are already in place. Design (three blocking decisions, three verified wiring traps):
   [`docs/superpowers/specs/2026-07-26-remote-hosted-mode-design.md`](docs/superpowers/specs/2026-07-26-remote-hosted-mode-design.md).
 - **Plans that model GitHub sub-issues** *(#103, v1.4)* — PR1a shipped the `issue_snapshots`
-  cache, issue keys and key sets, the pure graph builder and `GET /api/issues` (see the
-  invariant above). Still to come, per the design's §13: PR1b the viewer poller (fair
-  queue, leases, rate-limit budget, `closing_refs`), PR2 explicit plan and row links with
-  the titled `board_get` summary, PR3 breadcrumbs and child progress in the UI.
+  cache, issue keys and key sets, the pure graph builder and `GET /api/issues`; PR1b the
+  viewer poller (fair queue, leases, rate-limit budget, `closing_refs`; see the invariants
+  above). Still to come, per the design's §13: PR2 explicit plan and row links with the
+  titled `board_get` summary, PR3 breadcrumbs and child progress in the UI.
 Keep all of these additive and behind the existing seams — don't break v1's local,
 zero-config, no-auth path.
 

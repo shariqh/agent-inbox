@@ -340,6 +340,13 @@ function runMigrations(db: Database.Database): void {
       revision INTEGER NOT NULL DEFAULT 1,
       PRIMARY KEY (repo, number)
     );
+    CREATE TABLE IF NOT EXISTS issue_refresh_claims (
+      repo TEXT NOT NULL COLLATE NOCASE,
+      number INTEGER NOT NULL,
+      owner TEXT NOT NULL,
+      lease_until TEXT NOT NULL,
+      PRIMARY KEY (repo, number)
+    );
   `)
   ensureColumn(db, 'board_rows', 'context', `TEXT NOT NULL DEFAULT ''`)
   ensureColumn(db, 'board_rows', 'annotated_at', 'TEXT')
@@ -394,6 +401,9 @@ function runMigrations(db: Database.Database): void {
   ensureColumn(db, 'source_links', 'preview_updated_at', 'TEXT')
   ensureColumn(db, 'source_links', 'preview_error', 'TEXT')
   ensureColumn(db, 'source_links', 'revision', 'INTEGER NOT NULL DEFAULT 1')
+  // issue #103 PR1b — every issue the cached PR closes, as JSON bound to the
+  // fetched_at it was written with (see upsertSourceLink). NULL on legacy rows.
+  ensureColumn(db, 'source_links_by_head', 'closing_refs', 'TEXT')
   // issue #217 — the human's stop for a Copilot answer watcher. Plain additive
   // columns: NULL means nobody asked the watcher to stop, so nothing to backfill.
   ensureColumn(db, 'items', 'watch_stopped_at', 'TEXT')
@@ -2740,6 +2750,12 @@ export interface SourceLink extends SourcePreview {
   issue_number: number | null
   issue_url: string | null
   issue_title: string | null
+  /**
+   * issue #103: JSON `{ fetched_at, refs: [{ repo, number }] }`, every issue the
+   * PR closes. Valid only while its fetched_at equals the row's: an older
+   * process's upsert moves fetched_at without touching it, which unbinds it.
+   */
+  closing_refs: string | null
   tldr: string | null
   // when the last SUCCESSFUL fetch landed vs when we last tried at all — the
   // gap between them is exactly how stale a still-rendered good row is
@@ -2766,6 +2782,8 @@ export interface NewSourceLink extends Partial<SourcePreview> {
   issue_number?: number | null
   issue_url?: string | null
   issue_title?: string | null
+  /** omitted or null: no record (a branch with no PR, or an unreadable list) */
+  closing_refs?: Array<{ repo: string; number: number }> | null
   tldr?: string | null
 }
 
@@ -2785,21 +2803,29 @@ const MAX_LINK_TARGETS = 50
 // is a byte neither can contain (public/source.js keys its index the same way).
 const linkKey = (repo: string, branch: string, head: string): string => `${repo}\u0000${branch}\u0000${head}`
 
+// The closing references as stored: bound to the fetched_at written beside
+// them. Any invalid reference voids the record, as parsePrPayload does.
+function closingRefsRecord(refs: NewSourceLink['closing_refs'], fetchedAt: string): string | null {
+  if (!Array.isArray(refs)) return null
+  if (!refs.every((ref) => validIssueSlug(ref?.repo) && validIssueNumber(ref?.number))) return null
+  return JSON.stringify({ fetched_at: fetchedAt, refs: refs.map(({ repo, number }) => ({ repo, number })) })
+}
+
 // A successful fetch: writes every field, stamps BOTH timestamps and clears the
 // error. Housekeeping rides along, mirroring upsertActivity's day-old sweep.
 export function upsertSourceLink(db: Database.Database, link: NewSourceLink): number {
   const now = new Date().toISOString()
   const result = db.prepare(
     `INSERT INTO source_links_by_head (repo, branch, head_repo, provider, pr_number, pr_url, pr_title, pr_state, pr_head_sha, pr_draft,
-       review_decision, checks, issue_number, issue_url, issue_title, tldr, fetched_at, checked_at, error,
+       review_decision, checks, issue_number, issue_url, issue_title, closing_refs, tldr, fetched_at, checked_at, error,
        preview_url, preview_environment, preview_deployment_id, preview_updated_at, preview_error)
      VALUES (@repo, @branch, @head_repo, @provider, @pr_number, @pr_url, @pr_title, @pr_state, @pr_head_sha, @pr_draft,
-       @review_decision, @checks, @issue_number, @issue_url, @issue_title, @tldr, @now, @now, NULL,
+       @review_decision, @checks, @issue_number, @issue_url, @issue_title, @closing_refs, @tldr, @now, @now, NULL,
        @preview_url, @preview_environment, @preview_deployment_id, @preview_updated_at, @preview_error)
      ON CONFLICT(repo, branch, head_repo) DO UPDATE SET
        provider = @provider, pr_number = @pr_number, pr_url = @pr_url, pr_title = @pr_title,
        pr_state = @pr_state, pr_head_sha = @pr_head_sha, pr_draft = @pr_draft, review_decision = @review_decision, checks = @checks,
-       issue_number = @issue_number, issue_url = @issue_url, issue_title = @issue_title, tldr = @tldr,
+       issue_number = @issue_number, issue_url = @issue_url, issue_title = @issue_title, closing_refs = @closing_refs, tldr = @tldr,
        preview_url = @preview_url, preview_environment = @preview_environment,
        preview_deployment_id = @preview_deployment_id, preview_updated_at = @preview_updated_at,
        preview_error = @preview_error, revision = source_links_by_head.revision + 1,
@@ -2821,6 +2847,7 @@ export function upsertSourceLink(db: Database.Database, link: NewSourceLink): nu
     issue_number: link.issue_number ?? null,
     issue_url: link.issue_url ?? null,
     issue_title: link.issue_title ?? null,
+    closing_refs: closingRefsRecord(link.closing_refs, now),
     preview_url: link.preview_url ?? null,
     preview_environment: link.preview_environment ?? null,
     preview_deployment_id: link.preview_deployment_id ?? null,
@@ -3230,6 +3257,93 @@ export function listIssueEntities(db: Database.Database): IssueEntity[] {
 export function pruneIssueSnapshots(db: Database.Database, opts: { nowMs?: number } = {}): void {
   const cutoff = new Date((opts.nowMs ?? Date.now()) - ISSUE_TTL_DAYS * 24 * 60 * 60000).toISOString()
   db.prepare(`DELETE FROM issue_snapshots WHERE checked_at < ?`).run(cutoff)
+}
+
+// ── refresh claims: one viewer fetches a key at a time (issue #103 PR1b) ────
+//
+// The attempt rule orders writes but cannot stop two viewers sharing this hub
+// (a checkout viewer and the packaged app) from fetching the same batch. A
+// claim is a lease: the viewer that holds a live one is the only one that asks
+// GitHub about that key until it completes or the lease expires (§5.5). Both
+// calls are ONE .immediate() transaction: a deferred one would read before it
+// writes, and two viewers could both see a key unclaimed.
+
+/** One queued key, with the checked_at its caller saw (null: never fetched). */
+export interface IssueClaimKey {
+  repo: string
+  number: number
+  checked_at: string | null
+}
+
+export interface IssueRefreshResult {
+  repo: string
+  number: number
+  /** start time of the attempt, for the attempt rule */
+  startedAt: string
+  snapshot?: IssueSnapshot
+  error?: IssueError
+}
+
+// Walks the caller's queue in order, skipping a key another viewer holds or
+// refreshed since the caller read it, and leases up to `limit` keys.
+export function claimIssueRefresh(
+  db: Database.Database,
+  input: { owner: string; queue: IssueClaimKey[]; limit: number; leaseMs: number; nowMs: number },
+): IssueClaimKey[] {
+  if (typeof input.owner !== 'string' || !input.owner) throw new Error('invalid claim owner')
+  const now = new Date(input.nowMs).toISOString()
+  const leaseUntil = new Date(input.nowMs + input.leaseMs).toISOString()
+  const held = db.prepare(`SELECT 1 FROM issue_refresh_claims WHERE repo = ? AND number = ?`).pluck()
+  const checked = db.prepare(`SELECT checked_at FROM issue_snapshots WHERE repo = ? AND number = ?`).pluck()
+  const lease = db.prepare(`INSERT INTO issue_refresh_claims (repo, number, owner, lease_until) VALUES (?, ?, ?, ?)`)
+  return db.transaction((): IssueClaimKey[] => {
+    db.prepare(`DELETE FROM issue_refresh_claims WHERE lease_until <= ?`).run(now)
+    const claimed: IssueClaimKey[] = []
+    const seen = new Set<string>()
+    for (const entry of input.queue) {
+      if (claimed.length >= input.limit) break
+      if (!validIssueSlug(entry.repo) || !validIssueNumber(entry.number)) continue
+      const id = `${entry.repo.toLowerCase()}#${entry.number}`
+      if (seen.has(id)) continue
+      seen.add(id)
+      if (held.get(entry.repo, entry.number) !== undefined) continue
+      const stored = (checked.get(entry.repo, entry.number) as string | undefined) ?? null
+      if (stored !== entry.checked_at) continue
+      lease.run(entry.repo, entry.number, input.owner, leaseUntil)
+      claimed.push({ repo: entry.repo, number: entry.number, checked_at: entry.checked_at })
+    }
+    return claimed
+  }).immediate()
+}
+
+// Applies each result under the attempt rule, then releases this owner's
+// leases on those keys (never another owner's). A snapshot that fails the v1
+// validator is recorded as a soft gh-failed instead: one throw would roll back
+// the whole batch, and the same keys would be claimed and refetched every tick.
+// Returns how many results the attempt rule applied.
+export function completeIssueRefresh(
+  db: Database.Database,
+  input: { owner: string; results: IssueRefreshResult[] },
+): number {
+  const release = db.prepare(`DELETE FROM issue_refresh_claims WHERE repo = ? AND number = ? AND owner = ?`)
+  return db.transaction((): number => {
+    let applied = 0
+    for (const r of input.results) {
+      if (!validIssueSlug(r.repo) || !validIssueNumber(r.number)) continue
+      let done: boolean
+      if (r.snapshot) {
+        const valid = issueSnapshot(r.snapshot, r.number) !== null
+        done = valid
+          ? upsertIssueSnapshot(db, { repo: r.repo, number: r.number, snapshot: r.snapshot, startedAt: r.startedAt })
+          : recordIssueFailure(db, { repo: r.repo, number: r.number, error: 'gh-failed', startedAt: r.startedAt })
+      } else {
+        done = recordIssueFailure(db, { repo: r.repo, number: r.number, error: r.error ?? 'gh-failed', startedAt: r.startedAt })
+      }
+      if (done) applied++
+      release.run(r.repo, r.number, input.owner)
+    }
+    return applied
+  }).immediate()
 }
 
 // ── project closure: retiring a dead project tab without losing it (issue #32) ──

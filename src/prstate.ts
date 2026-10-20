@@ -23,6 +23,7 @@ import type Database from 'better-sqlite3'
 import { listLinkTargets, listSourceLinks, upsertSourceLink, recordLinkFailure, setSourcePreview } from './store.js'
 import type { LinkTarget, SourceLink, SourcePreview } from './store.js'
 import { PREVIEW_TTL_MS, safeHttpUrl } from '../public/source.js'
+import { issueKey } from '../public/issue-key.js'
 
 // ── cadence, TTLs and subprocess limits: every tunable number, in one place ──
 const MIN = 60_000
@@ -73,7 +74,18 @@ export interface PrPayload {
   issue_number: number | null
   issue_url: string | null
   issue_title: string | null
+  /**
+   * issue #103: EVERY issue the PR closes, in GitHub's order, or null when gh's
+   * list could not be read whole. One unreadable reference voids the record:
+   * dropping it could turn two references into one, a false certainty.
+   */
+  closing_refs: ClosingRef[] | null
   tldr: string
+}
+
+export interface ClosingRef {
+  repo: string
+  number: number
 }
 
 // ── pure classification ─────────────────────────────────────────────────────
@@ -128,6 +140,23 @@ export function firstLine(body: unknown): string {
     if (line) return line.length > TLDR_MAX ? `${line.slice(0, TLDR_MAX)}…` : line
   }
   return ''
+}
+
+// `closingIssuesReferences` names each issue's repository as
+// `repository { name, owner { login } }` (design §18).
+function closingRefs(value: unknown): ClosingRef[] | null {
+  if (!Array.isArray(value)) return null
+  const refs: ClosingRef[] = []
+  for (const raw of value as unknown[]) {
+    const ref = record(raw)
+    const repository = record(ref?.repository)
+    const login = str(record(repository?.owner)?.login)
+    const name = str(repository?.name)
+    const repo = login && name ? `${login}/${name}` : null
+    if (!repo || issueKey(repo, ref?.number) === null) return null
+    refs.push({ repo, number: ref!.number as number })
+  }
+  return refs
 }
 
 function str(v: unknown): string | null {
@@ -203,6 +232,7 @@ export function parsePrPayload(json: string, target: Pick<LinkTarget, 'repo' | '
     // the frontend has one place to read it from and a later `gh issue view`
     // fill-in needs no migration; v1 leaves it null and renders "#30".
     issue_title: null,
+    closing_refs: closingRefs(pr.closingIssuesReferences),
     tldr: firstLine(pr.body),
   }
 }
@@ -319,6 +349,9 @@ export interface RefreshOpts {
   runApi?: GhApiRun
   nowMs?: number
   max?: number
+  /** issue #103 §5.2: no new target starts after this time; the one in flight finishes */
+  deadlineMs?: number
+  now?: () => number
 }
 
 // Resolves ALWAYS — never rejects. Node 24 defaults to
@@ -330,6 +363,7 @@ export async function refreshOnce(db: Database.Database, opts: RefreshOpts = {})
   const runApi = opts.runApi ?? defaultGhApiRun
   const nowMs = opts.nowMs ?? Date.now()
   const max = opts.max ?? MAX_PER_TICK
+  const now = opts.now ?? Date.now
   let targets: LinkTarget[]
   try {
     targets = dueTargets(listLinkTargets(db), listSourceLinks(db), nowMs).slice(0, max)
@@ -339,6 +373,7 @@ export async function refreshOnce(db: Database.Database, opts: RefreshOpts = {})
   }
   let done = 0
   for (const t of targets) {
+    if (opts.deadlineMs !== undefined && now() > opts.deadlineMs) break
     try {
       const out = await run(t.repo, t.branch)
       const pr = parsePrPayload(String(out), t)
@@ -436,34 +471,4 @@ const defaultGhApiRun: GhApiRun = async (endpoint) => {
     env: { ...process.env, GH_PAGER: 'cat', NO_COLOR: '1', GH_NO_UPDATE_NOTIFIER: '1' },
   })
   return stdout
-}
-
-export interface PollerOpts {
-  run?: GhRun
-  runApi?: GhApiRun
-  intervalMs?: number
-}
-
-export function startPrPoller(db: Database.Database, opts: PollerOpts = {}): { stop(): void } {
-  const run = opts.run ?? defaultGhRun
-  const intervalMs = opts.intervalMs ?? POLL_INTERVAL_MS
-  let busy = false
-  const tick = (): void => {
-    if (busy) return // a slow tick must never overlap the next one
-    busy = true
-    refreshOnce(db, { run, runApi: opts.runApi })
-      .catch((err: unknown) => console.error('[agent-inbox] pr refresh failed', err))
-      .finally(() => { busy = false })
-  }
-  // .unref() on both: the poller must never be the reason a process stays alive
-  const first = setTimeout(tick, FIRST_TICK_DELAY_MS)
-  first.unref()
-  const timer = setInterval(tick, intervalMs)
-  timer.unref()
-  return {
-    stop() {
-      clearTimeout(first)
-      clearInterval(timer)
-    },
-  }
 }

@@ -60,8 +60,9 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   each per viewer, plus `/api/items?scope=attention` (issue #156): the Electron
   dock watcher's lean read, built from open questions alone and registered
   separately with its own validator so neither `/api/items` representation can
-  revalidate the other, and `/api/items/history` (issue #184, below), likewise its
-  own registration and validator. Any other query string keeps the default items response.
+  revalidate the other, `/api/items/history` (issue #184, below), likewise its
+  own registration and validator, and `/api/issues` (issue #103, below), the sixth.
+  Any other query string keeps the default items response.
   Matching `If-None-Match` returns a bodyless 304; unconditional
   clients still receive full JSON. Keep `Cache-Control: no-store` and the current
   outer `x-inbox-boot` marker on 304 responses too. Store-only invalidation reads
@@ -143,7 +144,9 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   `replyItem`/`answerItem`/`listItems`/`listItemsPage`; boards: `upsertBoard`/`updateBoardRow`/`getBoard`/`listBoards`/
   `archiveBoard`/`annotateBoardRow`/`markAnnotationDelivered`/`markRowHandled`/
   `clearRowHandled`/`markHandledDelivered`/`listPendingRows`;
-  projects: `closeProject`/`reopenProject`/`listClosedProjects`/`closedProjects` — plus `openDb`. No raw SQL anywhere else. To change
+  projects: `closeProject`/`reopenProject`/`listClosedProjects`/`closedProjects`;
+  issue snapshots (#103): `upsertIssueSnapshot`/`recordIssueFailure`/`listIssueSnapshots`/
+  `listIssueEntities`/`pruneIssueSnapshots` — plus `openDb`. No raw SQL anywhere else. To change
   storage, reimplement this module; nothing else touches SQLite.
 - **Boards: the human's annotations are sacred.** A board is idempotent by
   `(project, title)` (UNIQUE); rows match by `label`, positions come from array order.
@@ -362,6 +365,38 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   CI check or a changes-requested review NEVER enters the attention set** — `public/attention.js` is
   untouched, no badge moves, no notification fires. A red CI is the agent's problem, not the human
   being blocked; this is the likeliest place for scope creep to damage tenet 2.
+- **The sub-issue graph is cached GitHub data, reconciled purely (issue #103, PR1a).**
+  Design: [`docs/superpowers/specs/2026-10-19-plans-sub-issues-design.md`](docs/superpowers/specs/2026-10-19-plans-sub-issues-design.md).
+  `issue_snapshots` holds one validated v1 JSON answer per REQUESTED `owner/name#number`
+  (`repo` is `COLLATE NOCASE`), written only through `upsertIssueSnapshot`/
+  `recordIssueFailure`; PR1b's viewer poller is their production caller, so until it lands
+  only tests write snapshots and `/api/issues` serves an empty graph. Four rules hold there.
+  (1) **The attempt rule** is the `WHERE` of ONE upsert: a write applies only when its
+  attempt STARTED after the stored `checked_at`, so a late answer from an older attempt
+  never lands; never turn it into a read followed by a write. (2) A hard failure
+  (`not-found`/`forbidden`/`moved`) clears `snapshot` and `fetched_at` in that SAME
+  statement. (3) A soft failure keeps the LAST ANSWER, whichever it was: the snapshot, or a
+  hard failure's code, so it only advances `checked_at` (otherwise the next offline tick
+  would erase the evidence rule 6 needs and refused titles would return). (4) Validation
+  runs on write and read; an unreadable or unknown-version row reads as "no snapshot" and
+  never throws. `src/issue-graph.ts` (`buildIssueGraph`) is PURE — no database, clock,
+  network or I/O — so identical database contents give identical bytes, which is why
+  `/api/issues` can be a store-token conditional snapshot. It applies §4.5's
+  reconciliation (newest observation first; pointers, then absences, then memberships at
+  equal time; contradictory equals and cycles fail closed as `conflict`; facts and counts
+  never decide parentage) and §6's deterministic node cap (whole roots in rank order, a
+  prefix cut, exact `truncated` counts). Rule 6 suppression reads EVERY cached hard failure,
+  displayed or not, and a claim that names a refused parent becomes "unknown" rather than
+  vanishing, so an older claim can never come back. `public/issue-key.js` owns keys (repo
+  lowercased; a number is never compared without its repository), `issueKeyFor` certainty
+  (a PR closing several issues is never guessed; a PR row without a bound `closing_refs`
+  record is display-only) and the refresh/display key sets (closed projects and archived
+  plans are displayed, never refreshed; closed items are History and in neither).
+  `/api/items` and `/api/boards` never carry GitHub data, so snapshot writes leave their
+  bytes and validators unchanged. Both new modules stay out of the stdio MCP import graph
+  until PR2's titled `board_get` summary admits them deliberately;
+  `test/issue-graph.test.ts` pins the transitive graph, and `test/mixed-version.test.ts`
+  runs frozen v1.3.1 statements against a migrated hub.
 - **`src/shape.ts` is AGENT-SIDE ONLY (issue #42).** `context` is written for the human
   and rendered collapsed, so agents write it generously — and every agent read used to pay
   for all of it. `shape.ts` is where the MCP read payloads are trimmed (`context` →
@@ -1409,6 +1444,11 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   agents declare scope via `register` instead of auto-inference. `AGENT_INBOX_DB`/`AGENT_INBOX_PORT`
   env overrides are already in place. Design (three blocking decisions, three verified wiring traps):
   [`docs/superpowers/specs/2026-07-26-remote-hosted-mode-design.md`](docs/superpowers/specs/2026-07-26-remote-hosted-mode-design.md).
+- **Plans that model GitHub sub-issues** *(#103, v1.4)* — PR1a shipped the `issue_snapshots`
+  cache, issue keys and key sets, the pure graph builder and `GET /api/issues` (see the
+  invariant above). Still to come, per the design's §13: PR1b the viewer poller (fair
+  queue, leases, rate-limit budget, `closing_refs`), PR2 explicit plan and row links with
+  the titled `board_get` summary, PR3 breadcrumbs and child progress in the UI.
 Keep all of these additive and behind the existing seams — don't break v1's local,
 zero-config, no-auth path.
 

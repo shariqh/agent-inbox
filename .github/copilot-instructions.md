@@ -70,6 +70,9 @@ Run the build before `npm run electron`; the development shell starts the built
   the `agent-inbox` entry of each host config (and agent-inbox hook entries), never
   returns or logs anything else, and never spawns a process — not even a host CLI.
   Its runtime rule must stay the installer's ownership rule; a test pins agreement.
+  `src/issue-graph.ts` and `public/issue-key.js` (#103) are pure and, until PR2's
+  titled `board_get` summary admits them deliberately, viewer-process-only; a
+  test pins the transitive stdio MCP import graph.
 - **Setup path:** `scripts/install-agents.sh` is the canonical dry-run-first
   installer for MCP registration and managed host instructions. Electron exposes
   only fixed setup targets through `electron/setup-preload.cjs` and invokes that
@@ -116,7 +119,10 @@ Run the build before `npm run electron`; the development shell starts the built
   reader is promoted to the writer.
 - Conditional viewer snapshots retain only items, the dock watcher's
   `/api/items?scope=attention` projection (its own validator, never the default
-  representation's), `/api/items/history` (likewise its own) and active/archived boards.
+  representation's), `/api/items/history` (likewise its own), active/archived boards
+  and the `/api/issues` sub-issue graph (#103, likewise its own; its builder is pure,
+  so its bytes depend on the database alone). `/api/items` and `/api/boards` never
+  carry GitHub data, so issue snapshot writes leave their bytes and validators unchanged.
   Invalidate on same/other-connection writes, schema changes and pickup stamps;
   never cache an uncommitted snapshot. Keep dynamic routes fresh, no-store and
   the boot marker intact, and never turn a read failure into cached success.
@@ -133,6 +139,12 @@ Run the build before `npm run electron`; the development shell starts the built
   which only schedules that `load()`; `forceRender`, renders and the poll use
   neither. A failed read degrades: the page still applies and waiting surfaces
   say older history is unavailable.
+- Issue snapshots (#103) are written only through `upsertIssueSnapshot` and
+  `recordIssueFailure`. The attempt rule (apply only when the attempt started after
+  the stored `checked_at`) is the `WHERE` of one upsert; a hard failure clears the
+  snapshot and `fetched_at` in that same statement; a soft failure keeps the last
+  answer, snapshot or hard failure, and only advances `checked_at`. Reads validate
+  the v1 shape and treat anything else as "no snapshot", never an exception.
 - Race-sensitive state changes must be atomic SQL statements or transactions.
   Do not replace conditioned/version-pinned updates with SELECT-then-UPDATE.
   Human replies, annotations, and handled marks can change from another process

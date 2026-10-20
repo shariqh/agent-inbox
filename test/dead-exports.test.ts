@@ -53,6 +53,8 @@ const ALLOWED = new Map<string, string>([
   ['colors.js:RESERVED_HUE', 'the reserved state-band constant test/colors.test.ts asserts every palette hue against (spec §2) — an invariant, not a call site'],
   ['colors.js:overrideHue', 'spec §2 hue-pinning seam: the store-backed writer a future gear-panel picker calls. Delete it on purpose, never by drift'],
   ['store.ts:listClosedProjects', 'the RAW projects-table reader (issue #32). CLAUDE.md makes store.ts the only door to the DB, so "closing twice leaves ONE row" has no other way to be asserted; production must use closedProjects(), the EFFECTIVE set, and its doc comment says so. Wire it into the viewer if and when the "closed 3d ago" chip is actually built'],
+  ['store.ts:upsertIssueSnapshot', 'issue #103 is delivered in slices (design §13): PR1a ships the issue_snapshots door, its v1 validator and the attempt rule, and /api/issues already reads them; the viewer poller of PR1b is the production writer. Until it lands only tests write snapshots, and the stale-entry check below forces PR1b to drop this entry'],
+  ['store.ts:recordIssueFailure', 'the failure half of the same issue #103 PR1a door (soft failures keep the last answer, hard failures clear it in one statement); its production caller is the PR1b poller, exactly like upsertIssueSnapshot. Drop with it'],
 ])
 
 // Modules nothing imports because something outside JS starts them. Each one is

@@ -1,0 +1,417 @@
+{
+  "_source": "Trimmed from the live first-slice GraphQL response for #117..#126 (design §2.7 and §18, 2026-10-19), converted to v1 snapshots (§4.3).",
+  "fetched_at": "2026-10-19T22:30:00.000Z",
+  "rows": [
+    {
+      "repo": "shariqh/agent-inbox",
+      "number": 117,
+      "snapshot": {
+        "v": 1,
+        "issue": {
+          "repo": "shariqh/agent-inbox",
+          "number": 117,
+          "title": "Integrate Agent Inbox with Agent Host Protocol",
+          "state": "OPEN",
+          "state_reason": null
+        },
+        "ancestors": [],
+        "ancestors_end": "top",
+        "hierarchy": {
+          "status": "ok",
+          "total": 10,
+          "completed": 0,
+          "truncated": false,
+          "children": [
+            {
+              "repo": "shariqh/agent-inbox",
+              "number": 118,
+              "title": "Support multiple local and remote Agent Hosts",
+              "state": "OPEN",
+              "state_reason": null,
+              "children_total": 0,
+              "children_completed": 0
+            },
+            {
+              "repo": "shariqh/agent-inbox",
+              "number": 119,
+              "title": "Build the AHP adapter and persisted projection foundation",
+              "state": "OPEN",
+              "state_reason": null,
+              "children_total": 0,
+              "children_completed": 0
+            },
+            {
+              "repo": "shariqh/agent-inbox",
+              "number": 120,
+              "title": "Import unresolved AHP input requests into Needs you",
+              "state": "OPEN",
+              "state_reason": null,
+              "children_total": 0,
+              "children_completed": 0
+            },
+            {
+              "repo": "shariqh/agent-inbox",
+              "number": 121,
+              "title": "Send Agent Inbox responses back to AHP input requests",
+              "state": "OPEN",
+              "state_reason": null,
+              "children_total": 0,
+              "children_completed": 0
+            },
+            {
+              "repo": "shariqh/agent-inbox",
+              "number": 122,
+              "title": "Show persistent AHP sessions in the Live view",
+              "state": "OPEN",
+              "state_reason": null,
+              "children_total": 0,
+              "children_completed": 0
+            },
+            {
+              "repo": "shariqh/agent-inbox",
+              "number": 123,
+              "title": "Open the originating AHP session from Agent Inbox",
+              "state": "OPEN",
+              "state_reason": null,
+              "children_total": 0,
+              "children_completed": 0
+            },
+            {
+              "repo": "shariqh/agent-inbox",
+              "number": 124,
+              "title": "Surface AHP changeset summaries and review actions",
+              "state": "OPEN",
+              "state_reason": null,
+              "children_total": 0,
+              "children_completed": 0
+            },
+            {
+              "repo": "shariqh/agent-inbox",
+              "number": 125,
+              "title": "Push targeted viewer refreshes from AHP adapter events",
+              "state": "OPEN",
+              "state_reason": null,
+              "children_total": 0,
+              "children_completed": 0
+            },
+            {
+              "repo": "shariqh/agent-inbox",
+              "number": 126,
+              "title": "Support explicit cross-agent handoff packages with provenance",
+              "state": "OPEN",
+              "state_reason": null,
+              "children_total": 0,
+              "children_completed": 0
+            },
+            {
+              "repo": "shariqh/agent-inbox",
+              "number": 127,
+              "title": "Add a conformance suite for AHP, Claude Code, Codex, and MCP adapters",
+              "state": "OPEN",
+              "state_reason": null,
+              "children_total": 0,
+              "children_completed": 0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "repo": "shariqh/agent-inbox",
+      "number": 118,
+      "snapshot": {
+        "v": 1,
+        "issue": {
+          "repo": "shariqh/agent-inbox",
+          "number": 118,
+          "title": "Support multiple local and remote Agent Hosts",
+          "state": "OPEN",
+          "state_reason": null
+        },
+        "ancestors": [
+          {
+            "repo": "shariqh/agent-inbox",
+            "number": 117,
+            "title": "Integrate Agent Inbox with Agent Host Protocol",
+            "state": "OPEN",
+            "state_reason": null,
+            "children_total": 10,
+            "children_completed": 0
+          }
+        ],
+        "ancestors_end": "top",
+        "hierarchy": {
+          "status": "ok",
+          "total": 0,
+          "completed": 0,
+          "truncated": false,
+          "children": []
+        }
+      }
+    },
+    {
+      "repo": "shariqh/agent-inbox",
+      "number": 119,
+      "snapshot": {
+        "v": 1,
+        "issue": {
+          "repo": "shariqh/agent-inbox",
+          "number": 119,
+          "title": "Build the AHP adapter and persisted projection foundation",
+          "state": "OPEN",
+          "state_reason": null
+        },
+        "ancestors": [
+          {
+            "repo": "shariqh/agent-inbox",
+            "number": 117,
+            "title": "Integrate Agent Inbox with Agent Host Protocol",
+            "state": "OPEN",
+            "state_reason": null,
+            "children_total": 10,
+            "children_completed": 0
+          }
+        ],
+        "ancestors_end": "top",
+        "hierarchy": {
+          "status": "ok",
+          "total": 0,
+          "completed": 0,
+          "truncated": false,
+          "children": []
+        }
+      }
+    },
+    {
+      "repo": "shariqh/agent-inbox",
+      "number": 120,
+      "snapshot": {
+        "v": 1,
+        "issue": {
+          "repo": "shariqh/agent-inbox",
+          "number": 120,
+          "title": "Import unresolved AHP input requests into Needs you",
+          "state": "OPEN",
+          "state_reason": null
+        },
+        "ancestors": [
+          {
+            "repo": "shariqh/agent-inbox",
+            "number": 117,
+            "title": "Integrate Agent Inbox with Agent Host Protocol",
+            "state": "OPEN",
+            "state_reason": null,
+            "children_total": 10,
+            "children_completed": 0
+          }
+        ],
+        "ancestors_end": "top",
+        "hierarchy": {
+          "status": "ok",
+          "total": 0,
+          "completed": 0,
+          "truncated": false,
+          "children": []
+        }
+      }
+    },
+    {
+      "repo": "shariqh/agent-inbox",
+      "number": 121,
+      "snapshot": {
+        "v": 1,
+        "issue": {
+          "repo": "shariqh/agent-inbox",
+          "number": 121,
+          "title": "Send Agent Inbox responses back to AHP input requests",
+          "state": "OPEN",
+          "state_reason": null
+        },
+        "ancestors": [
+          {
+            "repo": "shariqh/agent-inbox",
+            "number": 117,
+            "title": "Integrate Agent Inbox with Agent Host Protocol",
+            "state": "OPEN",
+            "state_reason": null,
+            "children_total": 10,
+            "children_completed": 0
+          }
+        ],
+        "ancestors_end": "top",
+        "hierarchy": {
+          "status": "ok",
+          "total": 0,
+          "completed": 0,
+          "truncated": false,
+          "children": []
+        }
+      }
+    },
+    {
+      "repo": "shariqh/agent-inbox",
+      "number": 122,
+      "snapshot": {
+        "v": 1,
+        "issue": {
+          "repo": "shariqh/agent-inbox",
+          "number": 122,
+          "title": "Show persistent AHP sessions in the Live view",
+          "state": "OPEN",
+          "state_reason": null
+        },
+        "ancestors": [
+          {
+            "repo": "shariqh/agent-inbox",
+            "number": 117,
+            "title": "Integrate Agent Inbox with Agent Host Protocol",
+            "state": "OPEN",
+            "state_reason": null,
+            "children_total": 10,
+            "children_completed": 0
+          }
+        ],
+        "ancestors_end": "top",
+        "hierarchy": {
+          "status": "ok",
+          "total": 0,
+          "completed": 0,
+          "truncated": false,
+          "children": []
+        }
+      }
+    },
+    {
+      "repo": "shariqh/agent-inbox",
+      "number": 123,
+      "snapshot": {
+        "v": 1,
+        "issue": {
+          "repo": "shariqh/agent-inbox",
+          "number": 123,
+          "title": "Open the originating AHP session from Agent Inbox",
+          "state": "OPEN",
+          "state_reason": null
+        },
+        "ancestors": [
+          {
+            "repo": "shariqh/agent-inbox",
+            "number": 117,
+            "title": "Integrate Agent Inbox with Agent Host Protocol",
+            "state": "OPEN",
+            "state_reason": null,
+            "children_total": 10,
+            "children_completed": 0
+          }
+        ],
+        "ancestors_end": "top",
+        "hierarchy": {
+          "status": "ok",
+          "total": 0,
+          "completed": 0,
+          "truncated": false,
+          "children": []
+        }
+      }
+    },
+    {
+      "repo": "shariqh/agent-inbox",
+      "number": 124,
+      "snapshot": {
+        "v": 1,
+        "issue": {
+          "repo": "shariqh/agent-inbox",
+          "number": 124,
+          "title": "Surface AHP changeset summaries and review actions",
+          "state": "OPEN",
+          "state_reason": null
+        },
+        "ancestors": [
+          {
+            "repo": "shariqh/agent-inbox",
+            "number": 117,
+            "title": "Integrate Agent Inbox with Agent Host Protocol",
+            "state": "OPEN",
+            "state_reason": null,
+            "children_total": 10,
+            "children_completed": 0
+          }
+        ],
+        "ancestors_end": "top",
+        "hierarchy": {
+          "status": "ok",
+          "total": 0,
+          "completed": 0,
+          "truncated": false,
+          "children": []
+        }
+      }
+    },
+    {
+      "repo": "shariqh/agent-inbox",
+      "number": 125,
+      "snapshot": {
+        "v": 1,
+        "issue": {
+          "repo": "shariqh/agent-inbox",
+          "number": 125,
+          "title": "Push targeted viewer refreshes from AHP adapter events",
+          "state": "OPEN",
+          "state_reason": null
+        },
+        "ancestors": [
+          {
+            "repo": "shariqh/agent-inbox",
+            "number": 117,
+            "title": "Integrate Agent Inbox with Agent Host Protocol",
+            "state": "OPEN",
+            "state_reason": null,
+            "children_total": 10,
+            "children_completed": 0
+          }
+        ],
+        "ancestors_end": "top",
+        "hierarchy": {
+          "status": "ok",
+          "total": 0,
+          "completed": 0,
+          "truncated": false,
+          "children": []
+        }
+      }
+    },
+    {
+      "repo": "shariqh/agent-inbox",
+      "number": 126,
+      "snapshot": {
+        "v": 1,
+        "issue": {
+          "repo": "shariqh/agent-inbox",
+          "number": 126,
+          "title": "Support explicit cross-agent handoff packages with provenance",
+          "state": "OPEN",
+          "state_reason": null
+        },
+        "ancestors": [
+          {
+            "repo": "shariqh/agent-inbox",
+            "number": 117,
+            "title": "Integrate Agent Inbox with Agent Host Protocol",
+            "state": "OPEN",
+            "state_reason": null,
+            "children_total": 10,
+            "children_completed": 0
+          }
+        ],
+        "ancestors_end": "top",
+        "hierarchy": {
+          "status": "ok",
+          "total": 0,
+          "completed": 0,
+          "truncated": false,
+          "children": []
+        }
+      }
+    }
+  ]
+}

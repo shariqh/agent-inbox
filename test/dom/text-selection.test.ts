@@ -17,7 +17,7 @@
 // rebuilding.
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
-import { insertItem, listBoards, resolveItem, upsertActivity, upsertBoard } from '../../src/store.js'
+import { insertItem, listBoards, replyItem, resolveItem, upsertActivity, upsertBoard } from '../../src/store.js'
 import {
   advanceClock, answerInput, badgeCount, bootApp, buttonLabelled, click, freshDb, pollTick, repaint, row,
   settle, showInbox, tabCount, type, useDomTest,
@@ -290,6 +290,31 @@ describe('#223 · a text selection survives the 3-second rebuild', () => {
     expect(badgeCount()).toBe(2)
     expect(node.isConnected, 'the ambient painter rebuilt the dispatch list').toBe(false)
     expect(selected()).toBe('release dashboard')
+  })
+
+  it('leaves the caret in a reply box the repaint focused (Change answer)', async () => {
+    // A button press keeps the page selection in Chromium, and focusing a text
+    // field moves the selection into it. Re-applying the old highlight after the
+    // repaint focused the reopened reply box would leave it with no caret.
+    const d = freshDb()
+    db = d
+    const id = insertItem(d, { ...AGENT, kind: 'question', title: 'Approve the rollout?', detail: DETAIL })
+    replyItem(d, id, 'old answer')
+    await bootApp(d)
+    await showInbox()
+    click(row(id))
+    await settle()
+    selectText(cardOf(id)?.querySelector('.card-tldr-body'), 'migration command')
+
+    click(buttonLabelled('Change answer', row(id)!))
+    await settle()
+
+    const reply = answerInput(id)!
+    expect(reply.value).toBe('old answer')
+    expect(document.activeElement).toBe(reply)
+    expect([reply.selectionStart, reply.selectionEnd]).toEqual([reply.value.length, reply.value.length])
+    expect(selected(), 'a highlight re-applied outside the focused reply box takes its caret').toBe('')
+    expect(document.getSelection()!.isCollapsed).toBe(true)
   })
 
   it('restoring moves neither keyboard focus nor scroll', async () => {

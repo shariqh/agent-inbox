@@ -38,13 +38,20 @@ function elementOf(node) {
   return node.nodeType === 1 ? node : node.parentElement
 }
 
+// A focused text field owns the caret: capture never runs while one is focused,
+// so a field focused at restore time was focused by the repaint, and re-applying
+// an old highlight would take its caret (Chromium moves the selection into a
+// field on focus).
+function textEntryFocused(documentRef) {
+  const active = documentRef.activeElement
+  return !!active && (typeof active.selectionStart === 'number' || active.isContentEditable === true)
+}
+
 // Text in a reply box or other field belongs to its editor: drafts and their
 // focus restoration own it, and copy-on-select must never overwrite the
 // clipboard with text the human selected only to replace.
 function editingText(documentRef, node) {
-  if (elementOf(node)?.closest(EDITABLE_SELECTOR)) return true
-  const active = documentRef.activeElement
-  return !!active && (typeof active.selectionStart === 'number' || active.isContentEditable === true)
+  return !!elementOf(node)?.closest(EDITABLE_SELECTOR) || textEntryFocused(documentRef)
 }
 
 function locate(documentRef, node, offset) {
@@ -124,7 +131,7 @@ export function captureSelection(documentRef = globalThis.document) {
 // other is dropped, so a rebuild never leaves a range stretched over new text.
 export function restoreSelection(bookmark, documentRef = globalThis.document) {
   const selection = bookmark ? documentRef.getSelection?.() : null
-  if (!selection) return
+  if (!selection || textEntryFocused(documentRef)) return
   const { anchorNode, anchorOffset, focusNode, focusOffset } = bookmark.nodes
   if (anchorNode.isConnected && focusNode.isConnected && selection.rangeCount === 1
     && selection.anchorNode === anchorNode && selection.anchorOffset === anchorOffset

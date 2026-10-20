@@ -74,10 +74,22 @@ describe('issue snapshot store (issue #103)', () => {
       const before = new Map(tables(old).map((name) => [name, columns(old, name)]))
       old.close()
 
+      // #217 appends nullable columns of its own; every v1.3.1 column stays in place.
+      const appended: Record<string, string[]> = {
+        items: ['watch_stopped_at', 'watch_stopped_until', 'action_agent'],
+        board_rows: ['watch_stopped_at', 'watch_stopped_until', 'action_agent', 'action_agent_version'],
+      }
       const migrated = openDb(path)
       try {
         expect(tables(migrated)).toEqual([...before.keys(), 'issue_snapshots'].sort())
-        for (const [name, shape] of before) expect(columns(migrated, name), name).toEqual(shape)
+        for (const [name, shape] of before) {
+          const now = columns(migrated, name) as Array<{ name: string; notnull: number; dflt_value: unknown; pk: number }>
+          expect(now.slice(0, shape.length), name).toEqual(shape)
+          expect(now.slice(shape.length).map((column) => column.name), name).toEqual(appended[name] ?? [])
+          expect(now.slice(shape.length).every((column) => !column.notnull && column.dflt_value === null && !column.pk), name).toBe(true)
+        }
+        expect(migrated.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = 'reset_row_action_watch_state'`).get())
+          .toBeTruthy()
         expect(listItems(migrated).map((item) => [item.id, item.title, item.issue_ref])).toEqual([['legacy', 'Still here?', 120]])
         expect(listIssueSnapshots(migrated)).toEqual([])
       } finally {

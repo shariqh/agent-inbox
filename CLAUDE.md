@@ -1011,7 +1011,9 @@ not evidence — delete it or move it to a source pin.
   guards, keep `npm run typecheck` clean.
 - **TDD.** Every change: failing test → red → implement → green. Tests use **real** temp
   SQLite DBs (`AGENT_INBOX_DB`/`mkdtempSync`), never mock the store. The MCP test is a real
-  spawn-the-server round-trip.
+  spawn-the-server round-trip. *(#240)* Scratch HOMEs and runtimes come from `scratchDir()`
+  in `test/scratch.ts`, with `removeScratchDirs()` in `afterEach`, so repeated runs do not
+  fill `$TMPDIR`; the hook, installer and Setup suites already work this way.
 - **Test environments are per-file.** There is no global `test.environment`: the node suite
   (store, mcp, infer) stays on node and a DOM file opts in with a
   `// @vitest-environment jsdom` docblock. `test/dom/harness.ts` is deliberately NOT named
@@ -1433,6 +1435,10 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   anything else shaped like ours is present, because every runtime version's uninstall
   refuses then. Packaged `--uninstall` keeps that refusal and names the checkout. `--force`
   keeps its exact meaning, and `--replace-existing --uninstall` is a usage error (exit 2).
+  *(#240)* So are `--move-only` with `--uninstall` or `--force`, refused by the shell in both
+  modes before the lock or any preflight: a runtime never forwards `--force`, and a helper
+  refusal reaches the caller as exit 1. `--move-only` without `--apply` is a dry run that
+  exits 1 where there is nothing to move.
 - **Close / reopen a project** *(#32)* — a sparse `projects(project, closed_at)` table; **reopen is
   DERIVED, never written** (a project un-closes the moment an item or board is CREATED in it after
   `closed_at`), so `insertItem` stays byte-identical and the un-close is atomic with the very insert

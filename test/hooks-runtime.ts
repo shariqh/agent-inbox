@@ -9,12 +9,14 @@
 // manifested for THIS host exactly as scripts/runtime-payload.mjs manifests a
 // release payload, so electron/runtime-verify.cjs verifies it as one. The
 // scratch HOME holds ~/.agent-inbox/runtime, the setup lock and
-// ~/.claude/settings.json: nothing here reads or writes the real home.
-import { chmodSync, copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+// ~/.claude/settings.json: nothing here reads or writes the real home. The
+// HOMEs and staging folders are scratch directories (./scratch.ts), so a file
+// using these helpers calls removeScratchDirs() from its afterEach.
+import { chmodSync, copyFileSync, cpSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
+import { scratchDir } from './scratch.js'
 
 const REPO = resolve(import.meta.dirname, '..')
 const PAYLOAD_CLI = join(REPO, 'scripts', 'runtime-payload.mjs')
@@ -44,7 +46,7 @@ export interface StagedRuntime {
 }
 
 export function hooksHome(): HooksHome {
-  const home = mkdtempSync(join(tmpdir(), 'hooks-home-'))
+  const home = scratchDir('hooks-home-')
   // The shared setup lock needs lockf or flock. Before macOS 15 there is no
   // /usr/bin/lockf, and CI installs flock with Homebrew, so the one this
   // runner has is linked onto the scratch PATH.
@@ -103,7 +105,7 @@ export function installStaged(h: HooksHome, staged: StagedRuntime): StagedRuntim
 
 /** Stage a runtime of `version` in a scratch folder and install it. */
 export function installRuntime(h: HooksHome, version: string): StagedRuntime {
-  return installStaged(h, stageRuntime(join(mkdtempSync(join(tmpdir(), 'hooks-staged-')), 'payload'), version))
+  return installStaged(h, stageRuntime(join(scratchDir('hooks-staged-'), 'payload'), version))
 }
 
 /** Every agent-inbox hook launcher in the scratch settings file, as {command, entry}. */

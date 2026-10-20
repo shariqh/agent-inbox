@@ -177,8 +177,11 @@ bash ~/.agent-inbox/runtime/<this app's runtime-id>/scripts/install-hooks.sh --a
 
 `--move-only` makes the installer exit 1 and write nothing when no Setup runtime's
 hooks are there to replace. It checks while it holds the setup lock, so Setup never
-installs hooks afresh, even for a set you removed a moment before. Outside a packaged
-runtime the flag is refused.
+installs hooks afresh, even for a set you removed a moment before. Without `--apply`
+it is a dry run of that move: it prints the settings the move would write, or exits 1
+when there is nothing to move. Outside a packaged runtime the flag is refused, and
+`--move-only` with `--uninstall` or `--force` is a usage error; both exit 2 before the
+installer takes the setup lock or reads your settings.
 
 It runs from the installed copy of the app's runtime, never from the app bundle, so the
 hooks keep working after the app moves or updates. Setup checks that copy against the

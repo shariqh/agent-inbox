@@ -5,7 +5,6 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
@@ -15,11 +14,11 @@ import {
 import { createHash } from 'node:crypto'
 import { spawn, spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
-import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { readAgentHosts, registeredRuntimeVersion } from '../src/agent-hosts.js'
 import type { RuntimeVerifier } from '../src/agent-hosts.js'
+import { removeScratchDirs, scratchDir } from './scratch.js'
 
 const REPO = resolve(import.meta.dirname, '..')
 const PAYLOAD_CLI = join(REPO, 'scripts', 'runtime-payload.mjs')
@@ -28,8 +27,10 @@ const { verifyRuntimePayload } = createRequire(import.meta.url)('../electron/run
 }
 
 function temp(prefix: string): string {
-  return mkdtempSync(join(tmpdir(), prefix))
+  return scratchDir(prefix)
 }
+
+afterEach(removeScratchDirs)
 
 function copy(src: string, dest: string): void {
   mkdirSync(dirname(dest), { recursive: true })

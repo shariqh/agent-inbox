@@ -76,8 +76,12 @@ describe('issue snapshot store (issue #103)', () => {
 
       const migrated = openDb(path)
       try {
-        expect(tables(migrated)).toEqual([...before.keys(), 'issue_snapshots'].sort())
-        for (const [name, shape] of before) expect(columns(migrated, name), name).toEqual(shape)
+        expect(tables(migrated)).toEqual([...before.keys(), 'issue_refresh_claims', 'issue_snapshots'].sort())
+        // PR1b appends one nullable column to source_links_by_head; nothing else changes
+        const added: Record<string, unknown[]> = {
+          source_links_by_head: [{ name: 'closing_refs', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 }],
+        }
+        for (const [name, shape] of before) expect(columns(migrated, name), name).toEqual([...shape, ...(added[name] ?? [])])
         expect(listItems(migrated).map((item) => [item.id, item.title, item.issue_ref])).toEqual([['legacy', 'Still here?', 120]])
         expect(listIssueSnapshots(migrated)).toEqual([])
       } finally {

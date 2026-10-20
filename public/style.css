@@ -724,6 +724,27 @@ a.src-chip:hover { opacity: 1; text-decoration: underline; }
 .src-checked { font-size: 11px; opacity: .5; }
 .board-source { display: flex; align-items: center; gap: 6px; padding: 2px 12px 6px; }
 
+/* ── sub-issue relationships (issue #103) ─────────────────────────────────────
+   GitHub's hierarchy beside the source chips. Ambient like them: neutral tones
+   only, never the danger colour or a blocked mark, and a stale answer is dimmed
+   rather than hidden. A plan's progress bar still measures its own rows. */
+.src-chip.tone-stale { color: var(--app-link); border-color: color-mix(in srgb, var(--app-link) 24%, transparent); opacity: .45; }
+.src-sep { font-size: 11px; opacity: .5; }
+.src-progress { opacity: .8; }
+.src-mark { display: inline-block; width: 1.1em; font-size: 11px; text-align: center; opacity: .7; }
+.src-trail, .src-child-list { display: flex; flex-direction: column; gap: 3px; margin: 0; padding: 0; list-style: none; }
+.src-trail > li + li::before, .src-trail + .src-row::before { content: '›'; opacity: .5; }
+.src-children { display: flex; flex-direction: column; gap: 4px; }
+.src-children-head { font-size: 11px; font-weight: 600; opacity: .7; }
+.src-child { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.src-child .src-tldr { flex: 1 1 12em; min-width: 0; }
+.src-activity { font-size: 11px; opacity: .75; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 24em; }
+button.src-activity { padding: 0 7px; border: 1px solid color-mix(in srgb, var(--app-text) 16%, transparent); border-radius: 999px; background: transparent; color: inherit; font-family: inherit; cursor: pointer; }
+button.src-activity:hover { opacity: 1; text-decoration: underline; }
+.src-more { font-size: 11px; opacity: .5; }
+.board-issues { padding: 0 12px 6px; }
+.row-src { display: inline-flex; align-items: center; gap: 4px; margin-right: 6px; vertical-align: middle; }
+
 /* ── Editorial desk ─────────────────────────────────────────────────────── */
 header { position: static; background: transparent; }
 .app-shell { min-height: calc(100vh - 28px); }

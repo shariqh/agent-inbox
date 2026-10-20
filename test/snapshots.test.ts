@@ -298,3 +298,59 @@ describe('activity history snapshots', () => {
     expect(fetcher.mock.calls[2]?.[1]?.headers).toEqual({ 'If-None-Match': '"good"' })
   })
 })
+
+// Issue #103 PR3: the sub-issue graph is the poll's eighth read, a conditional
+// snapshot with a validator of its own. A body the validator refuses is never
+// cached; load() turns that refusal into "no graph", never a failed tick.
+describe('the /api/issues snapshot', () => {
+  const graph = {
+    version: 1,
+    nodes: [{ key: 'shariqh/agent-inbox#117', repo: 'shariqh/agent-inbox', number: 117, title: 'Parent', state: 'OPEN', state_reason: null, observed_at: '2026-10-19T22:30:00.000Z' }],
+    edges: [{ kind: 'contains', from: 'shariqh/agent-inbox#117', to: 'shariqh/agent-inbox#120', position: 0, observed_at: '2026-10-19T22:30:00.000Z' }],
+    roots: [{ key: 'shariqh/agent-inbox#120', refresh: true, fetched_at: '2026-10-19T22:30:00.000Z', checked_at: '2026-10-19T22:30:00.000Z', error: null, failure: null, children_omitted: 0 }],
+    aliases: {},
+    truncated: { roots: 0, ancestors: 0, children: 0, edges: 0 },
+  }
+  const json = (value: unknown, etag?: string) =>
+    new Response(JSON.stringify(value), { headers: etag ? { etag } : {} })
+
+  it('accepts a version 1 graph, freezes it and revalidates it in its own slot', async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(json(graph, '"g"'))
+      .mockResolvedValueOnce(json(payload('A'), '"g"'))
+      .mockResolvedValueOnce(new Response(null, { status: 304 }))
+    const read = createSnapshotReader(fetcher)
+    const first = await (await read('/api/issues')).json()
+    expect(first).toEqual(graph)
+    expect(Object.isFrozen((first as typeof graph).roots[0])).toBe(true)
+    await (await read('/api/items')).json() // the same opaque tag on another route shares nothing
+    expect(fetcher.mock.calls[1]?.[1]?.headers).toBeUndefined()
+    expect(await (await read('/api/issues')).json()).toBe(first)
+    expect(fetcher.mock.calls[2]?.[1]?.headers).toEqual({ 'If-None-Match': '"g"' })
+  })
+
+  it.each([
+    ['another version', { ...graph, version: 2 }],
+    ['a bare array', [graph]],
+    ['nodes that are not an array', { ...graph, nodes: {} }],
+    ['a node without a string key', { ...graph, nodes: [{ ...graph.nodes[0], key: 117 }] }],
+    ['an edge without its ends', { ...graph, edges: [{ kind: 'contains', from: 'shariqh/agent-inbox#117' }] }],
+    ['a root without a string key', { ...graph, roots: [{ refresh: true }] }],
+    ['roots that are missing', { ...graph, roots: undefined }],
+    ['aliases that are not a record', { ...graph, aliases: [] }],
+  ])('refuses %s without caching its validator', async (_label, value) => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(json(value, '"bad"'))
+      .mockResolvedValueOnce(json(graph))
+    const read = createSnapshotReader(fetcher)
+    await expect((await read('/api/issues')).json()).rejects.toThrow('Invalid snapshot payload')
+    await (await read('/api/issues')).json()
+    expect(fetcher.mock.calls[1]?.[1]?.headers).toBeUndefined()
+  })
+
+  it('fails explicitly on a 404 from a viewer that predates the route, and takes no query', async () => {
+    const read = createSnapshotReader(vi.fn().mockResolvedValue(new Response('<!doctype html>', { status: 404 })))
+    await expect((await read('/api/issues')).json()).rejects.toThrow('HTTP 404')
+    await expect(read('/api/issues?scope=attention')).rejects.toThrow('Unsupported snapshot route')
+  })
+})

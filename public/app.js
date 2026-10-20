@@ -34,7 +34,10 @@ import { renderStructuredText } from '/structured-text.js'
 import { boardRowsView, boardRowLine, progressLabel, hiddenDoneCount, lingeringBoards } from '/boards.js'
 import { titleWithBadge, focusHashFor, parseFocusHash } from '/badge.js'
 import { layoutMode, railLabel, NARROW_MAX, PROJECT_DISCLOSURE_MAX } from '/layout.js'
-import { indexLinks, PREVIEW_TTL_MS, previewRef, sourceChipsHtml, sourceBlockHtml } from '/source.js'
+import {
+  indexLinks, issueRelationsHtml, PREVIEW_TTL_MS, previewRef, rowIssueChipsHtml, sourceChipsHtml, sourceBlockHtml,
+} from '/source.js'
+import { buildIssueView } from '/issues.js'
 import { buildSummary } from '/buildstamp.js'
 import { actionCategory, actionOwnerLabel, agentFollowupChip, changeKind, lifecycleReceipt, responseLabel } from '/action.js'
 import { buildRelay } from '/relay.js'
@@ -123,6 +126,9 @@ let editablePanesPainted = false
 // reach a renderer before the first /api/links response lands, and linkFor(null)
 // would throw into load()'s catch and blank the whole page.
 let linkIndex = new Map()
+// issue #103 PR3 — the sub-issue view, rebuilt beside linkIndex in every ambient
+// frame. Empty until /api/issues answers, and whenever it cannot: plain chips.
+let issueView = buildIssueView(null)
 let previewExpiryTimer = null
 const boundPreviewLinks = new WeakSet()
 const HIDE_DONE_KEY = 'agent-inbox-hide-completed'
@@ -462,6 +468,18 @@ async function closedHistoryBody(read) {
   }
 }
 
+// The sub-issue graph (#103) falls back like links: a 404 from an older viewer,
+// a network error or a body its validator refuses means "no graph", and every
+// surface renders its plain chips. Read after the boot decision, like every
+// snapshot body, because a 304 resolves to the cached graph.
+async function issuesBody(read) {
+  try {
+    return await settledValue(read).json()
+  } catch {
+    return null
+  }
+}
+
 async function load() {
   if (reloadRequested) return false
   const generation = ++loadGeneration
@@ -477,7 +495,7 @@ async function load() {
   // closed history the page omitted only while a surface still needs it (#184).
   const wantHistory = historyWanted()
   try {
-    const [items, boardsRead, archivedRead, activityRead, historyRead, closedRead, linksRead, closedHistoryRead] = await Promise.allSettled([
+    const [items, boardsRead, archivedRead, activityRead, historyRead, closedRead, linksRead, issuesRead, closedHistoryRead] = await Promise.allSettled([
       readSnapshot('/api/items').then(marked),
       readSnapshot('/api/boards').then(marked),
       readSnapshot('/api/boards/archived').then(marked),
@@ -494,6 +512,9 @@ async function load() {
       // an empty links set must mean "render exactly as before this feature", never
       // a dead page. A viewer that predates this route answers 404 with HTML.
       fetch('/api/links').then(marked).then((r) => (r.ok ? r.json() : [])).catch(() => []),
+      // The sub-issue graph (#103), the eighth read: a conditional snapshot with
+      // its own validator and the same fallback (issuesBody).
+      readSnapshot('/api/issues').then(marked),
       wantHistory ? readSnapshot('/api/items/history').then(marked) : null,
     ])
     if (reloadRequested || generation < appliedLoadGeneration) return false
@@ -513,9 +534,9 @@ async function load() {
     const body = (read) => (read.status === 'fulfilled' ? read.value.json() : Promise.reject(read.reason))
     const bodies = await Promise.allSettled([
       res.json(), body(boardsRead), body(archivedRead), body(activityRead), historyBody(historyRead),
-      wantHistory ? closedHistoryBody(closedHistoryRead) : null,
+      wantHistory ? closedHistoryBody(closedHistoryRead) : null, issuesBody(issuesRead),
     ])
-    const [g, boards, archived, activity, activityHistory, firstOlder] = bodies.map(settledValue)
+    const [g, boards, archived, activity, activityHistory, firstOlder, issues] = bodies.map(settledValue)
     const closedSnapshot = settledValue(closedRead)
     const links = settledValue(linksRead)
     if (reloadRequested || generation < appliedLoadGeneration) return false
@@ -562,6 +583,7 @@ async function load() {
       activityHistory,
       closed: [...authoritativeClosed],
       links,
+      issues,
     }
     applyProjectMutationIntents()
     renderIfIdle()
@@ -1862,6 +1884,16 @@ function paintAmbient() {
   // nothing in applyBadge / attentionCount on purpose: PR state is ambient, and
   // a red CI must never move the badge (tenets 1 and 2).
   linkIndex = indexLinks(lastData.links ?? [])
+  // issue #103 PR3 — the same frame's sub-issue view. Its activity labels READ
+  // the attention set; nothing here reaches applyBadge, a count or the dock.
+  issueView = buildIssueView(lastData.issues, {
+    items: allItems(lastData.g),
+    boards: lastData.boards,
+    archived: lastData.archived,
+    links: linkIndex,
+    attention: attentionEntries(allItems(lastData.g), lastData.boards, Date.now(), liveSessionIds(), lastData.closed ?? []),
+    nowMs: Date.now(),
+  })
   renderRail()
   // AFTER renderRail: renderRail is what reconciles a stale projectFilter, and
   // withoutClosed reads projectFilter to decide whether this is a peek.
@@ -2708,6 +2740,10 @@ function sourceOptions(entity, identity = entity) {
   return {
     preview: entity.action_owner === 'approval' && (entity.status === 'open' || entity.status === 'blocked')
       && !(lastData?.closed ?? []).includes(identity.project),
+    // issue #103: relationships for open items, plans and their rows; History
+    // keeps its plain chip. A row drawn for its plan names its own issue link.
+    issues: Array.isArray(identity.rows) || !identity.status || identity.status === 'open' ? issueView : null,
+    row: entity === identity ? null : entity,
   }
 }
 
@@ -2729,6 +2765,7 @@ function cardDetailsHtml(entity, identity, key, presentation, { includeAsked = t
 
 function bindContextDisclosures(root) {
   invalidatePreviewLinks(root)
+  bindIssueActivity(root)
   for (const details of root.querySelectorAll('details[data-context-key]')) {
     details.addEventListener('toggle', () => {
       const key = details.dataset.contextKey
@@ -2736,6 +2773,24 @@ function bindContextDisclosures(root) {
       details.open ? openContexts.add(key) : openContexts.delete(key)
     })
   }
+}
+
+// issue #103 PR3 — an Agent Inbox activity label opens that item, plan or row
+// here, through the focusItem path search, deep links and outcomes already use.
+function bindIssueActivity(root) {
+  for (const button of root.querySelectorAll('button[data-issue-open]')) {
+    button.addEventListener('click', (event) => {
+      event.stopPropagation()
+      openIssueActivity(button.dataset.issueOpen, button.dataset.issueRow)
+    })
+  }
+}
+
+function openIssueActivity(id, rowId) {
+  if (triageDeck) closeTriage({ restoreFocus: false })
+  if (relayOpen) closeRelay()
+  if (missionBoardId) closeMission({ restoreFocus: false })
+  focusItem(id, rowId ? { rowId } : null)
 }
 
 function actionBlocksHtml(presentation) {
@@ -5526,12 +5581,21 @@ function boardEl(b, archived = false, lingering = false) {
   // navigate AND collapse the card, writing a spurious collapsedCards entry that
   // outlives the session. preventDefault (the .hidden-hint precedent above) is
   // not reusable here — on an anchor it kills the navigation we want.
-  const srcHtml = sourceChipsHtml(linkIndex, b, Date.now(), { tabbable: true })
+  const srcHtml = sourceChipsHtml(linkIndex, b, Date.now(), { tabbable: true, issues: issueView })
   if (srcHtml) {
     const src = document.createElement('div')
     src.className = 'board-source'
     src.innerHTML = srcHtml
     el.appendChild(src)
+  }
+  // issue #103 — the pinned issue's parent trail and sub-issues, also outside <summary>
+  const relHtml = issueRelationsHtml(linkIndex, b, Date.now(), { issues: issueView })
+  if (relHtml) {
+    const rel = document.createElement('div')
+    rel.className = 'board-issues'
+    rel.innerHTML = relHtml
+    bindIssueActivity(rel)
+    el.appendChild(rel)
   }
   const table = document.createElement('table')
   table.className = 'board-table matrix'
@@ -5539,12 +5603,14 @@ function boardEl(b, archived = false, lingering = false) {
     const tr = document.createElement('tr')
     tr.className = `board-row${needsAnswer ? ' needs-answer' : ''}${openRows.has(r.id) ? ' open' : ''}`
     tr.dataset.rowId = r.id
-    // one-line note only; the long context lives behind the row click
+    // one-line note only; the long context lives behind the row click. A row
+    // linked to its own issue (#103) names it first, where a long note cannot hide it.
+    const rowSrc = rowIssueChipsHtml(r, b, Date.now(), { issues: issueView })
     tr.innerHTML = `
       <td class="row-num">${num}</td>
       <td class="row-glyph ${r.status}" title="${esc(STATUS_LABEL[r.status] ?? r.status)}">${GLYPH[r.status] || ''}</td>
       <td class="row-label">${esc(r.label)}</td>
-      <td class="row-note"><span class="note-line">${esc(boardRowLine(r))}</span>${r.context ? '<span class="more-dot" title="has background — click the row">…</span>' : ''}${r.annotation ? `<span class="annotation-dot" title="${esc(r.annotation)}">Note${r.annotation_unseen ? '<span class="unseen" title="not yet delivered to an agent">●</span>' : ''}</span>` : ''}${r.handled_at ? `<span class="handled-dot" title="you marked your part done">✓${r.handled_seen_at ? '' : '<span class="unseen" title="not yet delivered to an agent">●</span>'}</span>` : ''}</td>`
+      <td class="row-note">${rowSrc ? `<span class="row-src">${rowSrc}</span>` : ''}<span class="note-line">${esc(boardRowLine(r))}</span>${r.context ? '<span class="more-dot" title="has background — click the row">…</span>' : ''}${r.annotation ? `<span class="annotation-dot" title="${esc(r.annotation)}">Note${r.annotation_unseen ? '<span class="unseen" title="not yet delivered to an agent">●</span>' : ''}</span>` : ''}${r.handled_at ? `<span class="handled-dot" title="you marked your part done">✓${r.handled_seen_at ? '' : '<span class="unseen" title="not yet delivered to an agent">●</span>'}</span>` : ''}</td>`
     const actionTd = document.createElement('td')
     actionTd.className = 'row-action'
     const toggle = () => {
@@ -5561,7 +5627,7 @@ function boardEl(b, archived = false, lingering = false) {
       actionTd.appendChild(a)
     }
     tr.appendChild(actionTd)
-    tr.addEventListener('click', (e) => { if (!e.target.closest('button, input')) toggle() })
+    tr.addEventListener('click', (e) => { if (!e.target.closest('button, input, a')) toggle() })
     table.appendChild(tr)
     if (openRows.has(r.id)) {
       const ptr = document.createElement('tr')

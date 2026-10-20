@@ -1491,3 +1491,33 @@ Sources:
     `public/` modules `dist/` reaches.
   - **Entities (§4.4).** Linked rows enter `listIssueEntities` as `kind: 'row'`, with the
     plan's project and archived state and no branch fields.
+- **Revision 7 (2026-10-20):** refinements made while implementing PR3.
+  - **Identity before relationships (§4.2, §7.1).** `issueRef()` now delegates to
+    `issueKeyFor`, so a pinned plan's chip names its pin and a linked row names its own
+    issue even when no relationship data exists. Criterion 2's "exactly as today" therefore
+    means today's plain chip and no relationship UI; which issue that chip names follows
+    PR2's links. An issue number with no usable repository (a non-GitHub remote) keeps
+    #30's unkeyed chip. A PR that closes several issues names none, and both its tooltip
+    and the card block list them ("closes #5, cli/cli#6").
+  - **Labels (§4.1, §7.2).** A number shows its repository whenever it differs from the
+    one it is read against: the entity's own repository first, then each trail level's,
+    and a child's parent for its children. Same-repository chips read exactly as #30's.
+  - **Freshness (§5.8).** Ages count from `fetched_at`, so "checked 3m ago" is never
+    fresher than the data; the reason line appears only once stale. The thresholds are the
+    same `issue_rel` uses: dim after 30 minutes, hide after 7 days.
+  - **"+N more on GitHub" (§7.2).** `/api/issues` version 1 carries no list-truncation
+    flag, so the browser derives it from GitHub's count: children beyond the 100-item page
+    are "more on GitHub", children the node cap cut are "not shown", and the rest of
+    GitHub's count is "not visible to your GitHub account".
+  - **Activity (§7.3).** "Waiting on you" outranks "Active", which outranks "Done here".
+    Archived plans and their rows count as done here, closed items count as nothing, and a
+    blocked row with no link of its own waits under its plan's issue. Ties break by
+    `updated_at`, then target. Each label with a target is a button that closes triage,
+    the relay and Plan flow, then calls `focusItem(id, { rowId })`.
+  - **Plan card (§3.2).** A plan's trail and sub-issues render in a block outside
+    `<summary>`, below its chips. A linked row's chips come first in its note cell, so a
+    long note cannot hide them; at narrow widths the note cell is hidden and the row panel
+    names the issue.
+  - **Validator (§6).** Version 1, string-keyed nodes, edges and roots, and a record of
+    aliases. `public/issues.js` re-validates every node against its own key before drawing
+    it, and source.js builds no URL from a node that fails that check.

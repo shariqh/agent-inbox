@@ -93,11 +93,11 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   Read the live boot header before consuming cached data. Untagged servers retain
   full-fetch behavior, malformed replies fail explicitly, and no snapshot content
   is persisted to browser storage. Derive mutable view state rather than changing
-  authoritative cached records. A poll tick starts its seven reads together (#161)
-  and applies nothing until all settle: history, closed projects and links keep
-  their fallbacks, any other failure still fails the whole tick (reported in the
-  old serial order) without blanking the frame, and `loadGeneration` still
-  discards an older tick that finishes late.
+  authoritative cached records. A poll tick starts its eight reads together (#161)
+  and applies nothing until all settle: history, closed projects, links and the
+  sub-issue graph (#103) keep their fallbacks, any other failure still fails the
+  whole tick (reported in the old serial order) without blanking the frame, and
+  `loadGeneration` still discards an older tick that finishes late.
 - **Closed history is paged out of the default items snapshot (issue #184).**
   `/api/items` carries every open item, the `RECENT_CLOSED_ITEMS` (50) most
   recently TOUCHED closed items (`listItemsPage`: the newest of every item stamp)
@@ -470,6 +470,46 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   a scratch database and requires initialize + tools/list to answer, bounded by a timeout
   and writing nothing to stdout. Staging, release assembly and the Intel release gate all
   run it beside the selftest.
+- **Breadcrumbs and child progress are ambient GitHub data (issue #103, PR3).** The page
+  reads `/api/issues` as the poll's EIGHTH concurrent read, through `readSnapshot` with a
+  validator of its own (`public/snapshots.js`: version 1, string-keyed nodes, edges and
+  roots, record aliases; no query string) under the tick's boot-marker and
+  `loadGeneration` rules. `issuesBody` gives it the `/api/links` fallback: a 404 from an
+  older viewer, a network error or a body the validator refuses is `null`, "no graph",
+  and never fails the tick. Four things are load-bearing. (1) **One view per frame, read
+  only.** `paintAmbient` rebuilds `issueView` beside `linkIndex` with `buildIssueView`
+  (`public/issues.js`, pure): relations keyed by the key each `/api/issues` root was
+  requested under, nodes re-validated against their own key (an invalid one is dropped),
+  the trail top first (eight levels), children in GitHub's order and the "+N not visible
+  to your GitHub account / more on GitHub / not shown" counts. Its Agent Inbox activity
+  labels READ the frame's `attentionEntries` and feed nothing back — Waiting on you, then
+  Active (the newest open item, active plan or not-done row), then Done here, then None
+  here, for certain keys only (an unlinked blocked row waits under its plan's issue).
+  `public/attention.js`, `relay.js` and `reply-watch.cjs` name no issue field, and
+  `test/dom/issue-attention.test.ts` pins badge, title, tab counts, Needs you and the dock
+  projection identical with and without a graph. (2) **Freshness is the browser's.**
+  Fresh until 30 minutes after `fetched_at`; stale to 7 days (`tone-stale`, "as of …",
+  ERROR_LABEL's reason); hidden after (the plain chip; the block says "Relationships
+  unavailable — last seen …"); a hard failure says "unavailable" and why, with no cached
+  title. A soft failure before any success, a root the node cap omitted, an uncertain
+  identity or History (`sourceOptions` passes no view for a closed item) draws #30's plain
+  chip byte for byte. (3) **Identity before relationships.** `issueRef` now delegates to
+  `issueKeyFor` (closing over `issue-key.js`, which imports `source.js` back; both only
+  call each other inside functions): a plan's pin names its chip, a PR closing several
+  issues names none (its tooltip and block list them as `closes …`), and an issue number
+  with no usable repository keeps #30's unkeyed chip. `opts.row` makes a linked row name
+  its own issue in its card and Needs-you line; `rowIssueChipsHtml` draws it first in the
+  matrix note cell, whose row click ignores anchors; `issueRelationsHtml` draws a plan's
+  trail and sub-issues in `.board-issues`, outside `<summary>`. (4) **Escaping stays in
+  `source.js`.** Titles, agents and labels go through `esc()`, `data-issue-key`/
+  `data-issue-open` too, labels name the repository whenever it differs, every issue URL
+  is built from a validated slug and number and only through `chipHtml()`, relationship
+  chips use only `tone-issue`/`tone-stale`, and the word "Blocked" never appears. An
+  activity label opens its target only through `openIssueActivity` → `focusItem(id,
+  { rowId })` (closing triage, relay and Plan flow first). No render path fetches, and the
+  poll gate, press guard, scroll guards and focus rules are unchanged, so a
+  relationship-changing poll keeps drafts, focus and expanded rows
+  (`test/dom/issue-relations.test.ts`).
 - **`src/shape.ts` is AGENT-SIDE ONLY (issue #42).** `context` is written for the human
   and rendered collapsed, so agents write it generously — and every agent read used to pay
   for all of it. `shape.ts` is where the MCP read payloads are trimmed (`context` →
@@ -1666,8 +1706,9 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   cache, issue keys and key sets, the pure graph builder and `GET /api/issues`; PR1b the
   viewer poller (fair queue, leases, rate-limit budget, `closing_refs`; see the invariants
   above); PR2 explicit plan pins and row links with the titled `board_get` `issue_rel`
-  summary (see the invariant above). Still to come, per the design's §13: PR3 breadcrumbs and
-  child progress in the UI.
+  summary (see the invariant above); PR3 breadcrumbs, child progress and Agent Inbox
+  activity in the UI (see the invariant above). That completes the first slice; opt-in
+  grouping, dependencies, Plan Flow edges and sibling context are the design's §12.
 Keep all of these additive and behind the existing seams — don't break v1's local,
 zero-config, no-auth path.
 

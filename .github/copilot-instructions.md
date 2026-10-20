@@ -154,6 +154,18 @@ Run the build before `npm run electron`; the development shell starts the built
   MCP `""` clears, `board_advance` and a reblock keep them, and a pin outranks the
   PR and branch issue. MCP normalizes every accepted form to `owner/name#N` and
   refuses anything else; `pending()` and the title-less `board_get` never carry them.
+- Breadcrumbs and child progress (#103 PR3) are ambient. `/api/issues` is the
+  poll's eighth read, through its own snapshot validator and a links-style
+  fallback: a 404, network error or refused body means no graph and today's plain
+  chips, never a failed tick. `public/issues.js` (`buildIssueView`, pure) is
+  rebuilt in `paintAmbient` beside `linkIndex`; it ages relationships (dim after
+  30 min, hide after 7 days, "unavailable" with no title after a hard failure)
+  and its activity labels READ the frame's `attentionEntries` and never feed a
+  badge or count. `public/source.js` draws it: `issueRef` delegates to
+  `issueKeyFor`, a linked row names its own issue, every issue URL is built from
+  a validated slug and number through `chipHtml()`, and the word "Blocked" never
+  appears. History keeps its plain chip, and labels open their target only
+  through `focusItem`.
 - Issue snapshots (#103) are written only through `upsertIssueSnapshot` and
   `recordIssueFailure`. The attempt rule (apply only when the attempt started after
   the stored `checked_at`) is the `WHERE` of one upsert; a hard failure clears the

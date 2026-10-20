@@ -22,8 +22,8 @@ export function issueKey(repo, number) {
 // carries no VALID record bound to its own fetched_at: written before PR1b
 // recorded them, rewritten since by an older process (which moves fetched_at
 // and so unbinds the record), or unreadable. Accepts the stored JSON text or an
-// already parsed object.
-function closingKeys(link) {
+// already parsed object. The PR tooltip lists them (PR3).
+export function closingKeys(link) {
   let record = link.closing_refs
   if (typeof record === 'string') {
     try {

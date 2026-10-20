@@ -91,6 +91,13 @@ Run the build before `npm run electron`; the development shell starts the built
   cancels and awaits the running install; the renderer stops its per-host loop
   at a step that was cancelled, timed out or could not run (a plain failure,
   such as a missing CLI, continues).
+  Setup and update installs are granted to the window by `createInstallBinding()`
+  (#216): bound at its first navigation, revoked by every later one, and granted
+  again only after that load commits to the viewer origin and ownership is proven
+  again (`reproveOwnership()`), never once a quit has begun. Settings shows
+  `available.installPermitted`; a window that may not install gets the restart
+  copy, with Electron's relaunch on macOS only (never for an AppImage). Main's
+  restart IPC accepts only that exact state, never while Setup runs.
   `scripts/setup-filesystem.cjs` is the
   Node-core-only runtime identity/staging/publication/removal boundary used by
   the shipped Darwin install path and build-time runtime publisher. Its Win32

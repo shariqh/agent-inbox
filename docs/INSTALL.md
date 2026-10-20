@@ -54,7 +54,9 @@ restart**. It never starts on its own. The app can install updates only when:
 - Agent setup is not running at the same moment.
 
 When one of these is not met, Settings → Updates says why and offers **Review release**
-instead of the download. When you click **Install and restart**, the app:
+instead of the download. If it says "Restart Agent Inbox to install this update." instead,
+see [Install and restart asks you to restart first](#install-and-restart-asks-you-to-restart-first).
+When you click **Install and restart**, the app:
 
 1. re-checks the downloaded file against the signed size and SHA-256;
 2. copies it to a private folder, opens it read-only, and copies the new Agent Inbox
@@ -115,8 +117,10 @@ own. The app can install updates only when:
 
 When either of the first two is not met, Settings → Updates treats the app like a DEB
 install: it shows the new version with **Review release** and no download. When another
-is not met, it says why and offers **Review release** instead of the download. When you
-click **Install and restart**, the app:
+is not met, it says why and offers **Review release** instead of the download. If it says
+"Quit and reopen Agent Inbox to install this update." instead, see
+[Install and restart asks you to restart first](#install-and-restart-asks-you-to-restart-first).
+When you click **Install and restart**, the app:
 
 1. re-checks the downloaded file against the signed size and SHA-256;
 2. copies it into a hidden file next to your AppImage, for example
@@ -152,7 +156,31 @@ Older builds can mix cached interface files from different versions. If the app 
 but never loads its content or responds to clicks, choose **View → Force Reload**
 (`Command-Shift-R` on macOS, `Ctrl-Shift-R` on Linux). This reloads the interface without
 deleting saved Inbox data or preferences. Do not delete the database or reset browser
-storage to recover from this problem.
+storage to recover from this problem. In 1.3.1 and earlier, a reload also stops **Install
+and restart** from working until Agent Inbox restarts; see the next section.
+
+### Install and restart asks you to restart first
+
+Agent Inbox installs updates (and runs agent Setup) only from a window showing the viewer
+that this app started itself. Reloading the window (**View → Reload**, **View → Force
+Reload**, or the viewer's own reload after it restarts) or a crash of the window's content
+withdraws that permission until the app has checked again.
+
+- **1.3.2 and later:** after a reload, the app checks again that the window shows its own
+  viewer and keeps **Install and restart** available. If it can't confirm that, for
+  example because the viewer didn't answer in time, Settings → Updates says "Restart Agent
+  Inbox to install this update." and offers **Restart Agent Inbox** on macOS. If agent
+  setup is still running, the app doesn't restart yet and says so; try again when setup
+  finishes. An AppImage says "Quit and reopen Agent Inbox to install this update."
+  instead: quit Agent Inbox and open it again from your AppImage. Either way the verified
+  download is kept: after the restart, click **Check now** and then **Download update**,
+  which re-checks the file you already have instead of downloading it again, and then
+  **Install and restart**.
+- **1.3.1 and earlier:** after any reload or crash, **Install and restart** kept being
+  offered but always failed with "Agent Inbox *X* couldn't be installed. Restart Agent Inbox
+  to install this update." until the app restarted. Quit Agent Inbox (`Command-Q` on macOS,
+  **File → Quit** on Linux), open it again, and repeat **Check now**, **Download update**
+  and **Install and restart** in Settings → Updates without reloading the window first.
 
 ## Recommended macOS installation
 

@@ -9,8 +9,17 @@ import { describe, expect, it, vi } from 'vitest'
 const require = createRequire(import.meta.url)
 const PAYLOAD_CLI = resolve(import.meta.dirname, '..', 'scripts', 'runtime-payload.mjs')
 const SETUP_INFO_CLI = resolve(import.meta.dirname, '..', 'scripts', 'write-setup-info.mjs')
+type InstallBindingGrant = { setup: boolean; update: boolean }
+type InstallBinding = {
+  navigationStarted(url: string): void
+  navigationCommitted(url: string): Promise<boolean>
+  rendererGone(): void
+  closed(): void
+  settled(): Promise<void>
+}
 const {
   canRunSetup,
+  createInstallBinding,
   createInstallGate,
   installerRepoRoot,
   isTrustedSetupSender,
@@ -20,6 +29,14 @@ const {
   selectRuntimePayload: selectRuntimePayloadRaw,
 } = require('../electron/setup-runner.cjs') as {
   canRunSetup(senderUrl: string, viewerUrl: string, senderId: number, authorizedWebContentsId: number | null): boolean
+  createInstallBinding(options: {
+    viewerUrl: string
+    setupAllowed(): boolean
+    updateAllowed(): boolean
+    isQuitting(): boolean
+    proveOwnership(): Promise<boolean>
+    apply(grant: InstallBindingGrant): void
+  }): InstallBinding
   createInstallGate(): {
     quitting(): boolean
     running(): boolean
@@ -246,7 +263,7 @@ while :; do sleep 1; done
     expect(main).toContain("accelerator: 'CommandOrControl+,'")
     expect(main).toContain("win.webContents.send('agent-inbox:toggle-settings')")
     expect(main).toContain('const setupWindowWebContentsId = win.webContents.id')
-    expect(main).toContain('setupInstallWebContentsId === setupWindowWebContentsId')
+    expect(main).toContain('setupInstallWebContentsId = setup ? setupWindowWebContentsId : null')
     expect(preload).toContain("contextBridge.exposeInMainWorld('agentInboxSetup'")
     expect(preload).toContain('onToggleSettings')
     expect(preload).not.toContain('child_process')
@@ -441,6 +458,399 @@ describe('createInstallGate (#205)', () => {
     expect(beforeQuit).toContain('const running = beginAppQuit()')
     expect(beforeQuit).toContain('event.preventDefault()')
     expect(main).not.toContain('quitAfterSetup')
+  })
+})
+
+// #216: a reload of the app's own viewer (View → Reload, Force Reload, the
+// viewer's restart reload) revoked Setup and update installs for good, so
+// Settings kept offering an Install and restart that main refused until the app
+// restarted. The binding now comes back, but only under the startup rule: the
+// reload committed to the viewer origin and the viewer is proven, again, to be
+// the one this app started.
+describe('createInstallBinding (#216)', () => {
+  const VIEWER = 'http://127.0.0.1:4319/'
+  const NONE: InstallBindingGrant = { setup: false, update: false }
+  const BOTH: InstallBindingGrant = { setup: true, update: true }
+  type Deferred<T> = { promise: Promise<T>; resolve(value: T): void; reject(error: unknown): void }
+
+  function deferred<T>(): Deferred<T> {
+    let resolve!: (value: T) => void
+    let reject!: (error: unknown) => void
+    const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej })
+    return { promise, resolve, reject }
+  }
+
+  function harness(allowed: { setup?: boolean; update?: boolean } = {}) {
+    const granted: InstallBindingGrant = { ...NONE }
+    let quitting = false
+    const proofs: Deferred<boolean>[] = []
+    const proveOwnership = vi.fn(() => {
+      const proof = deferred<boolean>()
+      proofs.push(proof)
+      return proof.promise
+    })
+    const binding = createInstallBinding({
+      viewerUrl: VIEWER,
+      setupAllowed: () => allowed.setup ?? true,
+      updateAllowed: () => allowed.update ?? true,
+      isQuitting: () => quitting,
+      proveOwnership,
+      apply(grant) { Object.assign(granted, grant) },
+    })
+    return {
+      binding,
+      granted,
+      proveOwnership,
+      proof(index = proofs.length - 1) { return proofs[index]! },
+      quit() { quitting = true },
+    }
+  }
+
+  // The app's first load, already bound.
+  function loaded(allowed?: { setup?: boolean; update?: boolean }) {
+    const h = harness(allowed)
+    h.binding.navigationStarted(VIEWER)
+    void h.binding.navigationCommitted(VIEWER)
+    return h
+  }
+
+  it('binds the window at its first navigation to the viewer without a new proof, as before', async () => {
+    const h = harness()
+    h.binding.navigationStarted(VIEWER)
+    expect(h.granted).toEqual(BOTH)
+    await expect(h.binding.navigationCommitted(VIEWER)).resolves.toBe(false)
+    expect(h.proveOwnership).not.toHaveBeenCalled()
+    expect(h.granted).toEqual(BOTH)
+
+    const elsewhere = harness()
+    elsewhere.binding.navigationStarted('https://example.com/')
+    expect(elsewhere.granted).toEqual(NONE)
+  })
+
+  it('revokes at once on a reload and rebinds only once it committed and ownership is proven again', async () => {
+    const h = loaded()
+    for (let reload = 1; reload <= 2; reload += 1) {
+      h.binding.navigationStarted(VIEWER)
+      expect(h.granted).toEqual(NONE)
+      // Proven after the commit, never at the start: the proof must cover the page just served.
+      expect(h.proveOwnership).toHaveBeenCalledTimes(reload - 1)
+      const rebound = h.binding.navigationCommitted(VIEWER)
+      expect(h.proveOwnership).toHaveBeenCalledTimes(reload)
+      expect(h.granted).toEqual(NONE)
+      h.proof().resolve(true)
+      await expect(rebound).resolves.toBe(true)
+      expect(h.granted).toEqual(BOTH)
+    }
+    // A second commit with no new navigation proves nothing.
+    await expect(h.binding.navigationCommitted(VIEWER)).resolves.toBe(false)
+    expect(h.proveOwnership).toHaveBeenCalledTimes(2)
+  })
+
+  it.each([
+    'https://example.com/',
+    'http://127.0.0.1:4320/',
+    'http://localhost:4319/',
+    'https://127.0.0.1:4319/',
+    'not a url',
+  ])('stays revoked when the reload commits to %s', async (url) => {
+    const h = loaded()
+    h.binding.navigationStarted(VIEWER)
+    await expect(h.binding.navigationCommitted(url)).resolves.toBe(false)
+    expect(h.proveOwnership).not.toHaveBeenCalled()
+    expect(h.granted).toEqual(NONE)
+  })
+
+  it.each(['fails', 'throws', 'answers something other than true'] as const)('stays revoked when the re-proof %s', async (outcome) => {
+    const h = loaded()
+    h.binding.navigationStarted(VIEWER)
+    const rebound = h.binding.navigationCommitted(VIEWER)
+    if (outcome === 'fails') h.proof().resolve(false)
+    else if (outcome === 'throws') h.proof().reject(new Error('viewer gone'))
+    else h.proof().resolve('yes' as unknown as boolean)
+    await expect(rebound).resolves.toBe(false)
+    expect(h.granted).toEqual(NONE)
+  })
+
+  it('never binds, or probes, a viewer this app does not own', async () => {
+    const h = loaded({ setup: false, update: false })
+    expect(h.granted).toEqual(NONE)
+    h.binding.navigationStarted(VIEWER)
+    await expect(h.binding.navigationCommitted(VIEWER)).resolves.toBe(false)
+    expect(h.proveOwnership).not.toHaveBeenCalled()
+    expect(h.granted).toEqual(NONE)
+  })
+
+  it.each([
+    [{ setup: false, update: true }],
+    [{ setup: true, update: false }],
+  ])('rebinds only what this app may grant: %j', async (allowed) => {
+    const h = loaded(allowed)
+    expect(h.granted).toEqual(allowed)
+    h.binding.navigationStarted(VIEWER)
+    expect(h.granted).toEqual(NONE)
+    const rebound = h.binding.navigationCommitted(VIEWER)
+    h.proof().resolve(true)
+    await expect(rebound).resolves.toBe(true)
+    expect(h.granted).toEqual(allowed)
+  })
+
+  it('never binds once a quit has begun: before the first load, before the commit, or while the proof runs', async () => {
+    const early = harness()
+    early.quit()
+    early.binding.navigationStarted(VIEWER)
+    expect(early.granted).toEqual(NONE)
+
+    const beforeCommit = loaded()
+    beforeCommit.binding.navigationStarted(VIEWER)
+    beforeCommit.quit()
+    await expect(beforeCommit.binding.navigationCommitted(VIEWER)).resolves.toBe(false)
+    expect(beforeCommit.proveOwnership).not.toHaveBeenCalled()
+    expect(beforeCommit.granted).toEqual(NONE)
+
+    const duringProof = loaded()
+    duringProof.binding.navigationStarted(VIEWER)
+    const rebound = duringProof.binding.navigationCommitted(VIEWER)
+    duringProof.quit()
+    duringProof.proof().resolve(true)
+    await expect(rebound).resolves.toBe(false)
+    expect(duringProof.granted).toEqual(NONE)
+  })
+
+  it.each(['another navigation', 'a renderer crash', 'the window closing'] as const)(
+    'discards a proof that %s overtook', async (event) => {
+      const h = loaded()
+      h.binding.navigationStarted(VIEWER)
+      const stale = h.binding.navigationCommitted(VIEWER)
+      if (event === 'another navigation') h.binding.navigationStarted(VIEWER)
+      else if (event === 'a renderer crash') h.binding.rendererGone()
+      else h.binding.closed()
+      h.proof(0).resolve(true)
+      await expect(stale).resolves.toBe(false)
+      expect(h.granted).toEqual(NONE)
+      if (event !== 'another navigation') return
+      // The newer navigation proves itself and binds.
+      const fresh = h.binding.navigationCommitted(VIEWER)
+      h.proof(1).resolve(true)
+      await expect(fresh).resolves.toBe(true)
+      expect(h.granted).toEqual(BOTH)
+    },
+  )
+
+  it('revokes on a renderer crash, and the next load of the owned viewer rebinds under the same proof', async () => {
+    const h = loaded()
+    h.binding.rendererGone()
+    expect(h.granted).toEqual(NONE)
+    await expect(h.binding.navigationCommitted(VIEWER)).resolves.toBe(false)
+    expect(h.proveOwnership).not.toHaveBeenCalled()
+
+    h.binding.navigationStarted(VIEWER)
+    const rebound = h.binding.navigationCommitted(VIEWER)
+    h.proof().resolve(true)
+    await expect(rebound).resolves.toBe(true)
+    expect(h.granted).toEqual(BOTH)
+  })
+
+  it('never binds a closed window again', async () => {
+    const h = loaded()
+    h.binding.closed()
+    expect(h.granted).toEqual(NONE)
+    h.binding.navigationStarted(VIEWER)
+    await expect(h.binding.navigationCommitted(VIEWER)).resolves.toBe(false)
+    expect(h.proveOwnership).not.toHaveBeenCalled()
+    expect(h.granted).toEqual(NONE)
+
+    const neverLoaded = harness()
+    neverLoaded.binding.closed()
+    neverLoaded.binding.navigationStarted(VIEWER)
+    expect(neverLoaded.granted).toEqual(NONE)
+  })
+
+  it('settles once no re-proof is in flight, with that proof\'s grants already applied', async () => {
+    const h = loaded()
+    await expect(h.binding.settled()).resolves.toBeUndefined()
+    for (const outcome of ['passes', 'fails', 'throws'] as const) {
+      h.binding.navigationStarted(VIEWER)
+      void h.binding.navigationCommitted(VIEWER)
+      let settled = false
+      void h.binding.settled().then(() => { settled = true })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(settled).toBe(false)
+      if (outcome === 'passes') h.proof().resolve(true)
+      else if (outcome === 'fails') h.proof().resolve(false)
+      else h.proof().reject(new Error('viewer gone'))
+      await vi.waitFor(() => expect(settled).toBe(true))
+      expect(h.granted).toEqual(outcome === 'passes' ? BOTH : NONE)
+    }
+  })
+
+  // Main's own wiring text, evaluated against the real helper and a real gate,
+  // so a wiring that skips the proof, the owned-viewer rule or the quit gate
+  // fails here rather than in a user's window.
+  function mainWiring(flags: { setupInstallEnabled: boolean; viewerOwned: boolean }) {
+    const main = readFileSync(join(import.meta.dirname, '..', 'electron', 'main.cjs'), 'utf8')
+    const start = main.indexOf('  installBinding = createInstallBinding({')
+    const end = main.indexOf('\n  })\n', start)
+    expect(start).toBeGreaterThan(-1)
+    expect(end).toBeGreaterThan(start)
+    const gate = createInstallGate()
+    const proofs: Deferred<boolean>[] = []
+    const reproveOwnership = vi.fn(() => {
+      const proof = deferred<boolean>()
+      proofs.push(proof)
+      return proof.promise
+    })
+    const refreshInstallPermission = vi.fn()
+    const wiring = new Function(
+      'createInstallBinding', 'URL_BASE', 'installGate', 'reproveOwnership', 'updateController', 'flags',
+      `let setupInstallEnabled = flags.setupInstallEnabled
+      let viewerOwned = flags.viewerOwned
+      let setupInstallWebContentsId = null
+      let updateInstallWebContentsId = null
+      let installBinding = null
+      const setupWindowWebContentsId = 7
+      ${main.slice(start, end + '\n  })'.length)}
+      return { installBinding, ids: () => ({ setup: setupInstallWebContentsId, update: updateInstallWebContentsId }) }`,
+    )(createInstallBinding, VIEWER, gate, reproveOwnership, { refreshInstallPermission }, flags) as {
+      installBinding: InstallBinding
+      ids(): { setup: number | null; update: number | null }
+    }
+    return { ...wiring, gate, reproveOwnership, refreshInstallPermission, proof: () => proofs.at(-1)! }
+  }
+
+  it('main rebinds its window to the owned viewer only after the startup proof passes again', async () => {
+    const w = mainWiring({ setupInstallEnabled: true, viewerOwned: true })
+    w.installBinding.navigationStarted(VIEWER)
+    expect(w.ids()).toEqual({ setup: 7, update: 7 })
+    expect(w.refreshInstallPermission).toHaveBeenCalledTimes(1)
+
+    w.installBinding.navigationStarted(VIEWER)
+    expect(w.ids()).toEqual({ setup: null, update: null })
+    // Settings learns at once that this window may no longer install.
+    expect(w.refreshInstallPermission).toHaveBeenCalledTimes(2)
+    const failed = w.installBinding.navigationCommitted(VIEWER)
+    expect(w.reproveOwnership).toHaveBeenCalledOnce()
+    w.proof().resolve(false)
+    await expect(failed).resolves.toBe(false)
+    expect(w.ids()).toEqual({ setup: null, update: null })
+
+    w.installBinding.navigationStarted(VIEWER)
+    const rebound = w.installBinding.navigationCommitted(VIEWER)
+    w.proof().resolve(true)
+    await expect(rebound).resolves.toBe(true)
+    expect(w.ids()).toEqual({ setup: 7, update: 7 })
+    expect(w.refreshInstallPermission).toHaveBeenLastCalledWith()
+
+    w.installBinding.navigationStarted(VIEWER)
+    const quitting = w.installBinding.navigationCommitted(VIEWER)
+    expect(w.gate.beginQuit()).toBeNull()
+    w.proof().resolve(true)
+    await expect(quitting).resolves.toBe(false)
+    expect(w.ids()).toEqual({ setup: null, update: null })
+  })
+
+  it('main grants Setup only while Setup is enabled, and nothing to a viewer it does not own', async () => {
+    const updatesOnly = mainWiring({ setupInstallEnabled: false, viewerOwned: true })
+    updatesOnly.installBinding.navigationStarted(VIEWER)
+    expect(updatesOnly.ids()).toEqual({ setup: null, update: 7 })
+    updatesOnly.installBinding.navigationStarted(VIEWER)
+    const rebound = updatesOnly.installBinding.navigationCommitted(VIEWER)
+    updatesOnly.proof().resolve(true)
+    await rebound
+    expect(updatesOnly.ids()).toEqual({ setup: null, update: 7 })
+
+    const reused = mainWiring({ setupInstallEnabled: false, viewerOwned: false })
+    reused.installBinding.navigationStarted(VIEWER)
+    reused.installBinding.navigationStarted(VIEWER)
+    await expect(reused.installBinding.navigationCommitted(VIEWER)).resolves.toBe(false)
+    expect(reused.reproveOwnership).not.toHaveBeenCalled()
+    expect(reused.ids()).toEqual({ setup: null, update: null })
+  })
+
+  it('main re-proves ownership with the startup proof, and a spawned viewer must still be running', async () => {
+    const main = readFileSync(join(import.meta.dirname, '..', 'electron', 'main.cjs'), 'utf8')
+    const start = main.indexOf('async function reproveOwnership()')
+    expect(start).toBeGreaterThan(-1)
+    const source = main.slice(start, main.indexOf('\n}\n', start) + 2)
+    const reprove = (spawnedViewer: unknown, pid: number | null, proven: boolean) => {
+      const waitForOwnership = vi.fn(async () => proven)
+      const fn = new Function('spawnedViewer', 'spawnedViewerPid', 'waitForOwnership', `${source}\nreturn reproveOwnership`)(
+        spawnedViewer, () => pid, waitForOwnership,
+      ) as () => Promise<boolean>
+      return { fn, waitForOwnership }
+    }
+
+    // The packaged app's in-process viewer: exactly the startup proof.
+    for (const proven of [true, false]) {
+      const inProcess = reprove(null, null, proven)
+      await expect(inProcess.fn()).resolves.toBe(proven)
+      expect(inProcess.waitForOwnership).toHaveBeenCalledOnce()
+    }
+    const running = reprove({}, 4242, true)
+    await expect(running.fn()).resolves.toBe(true)
+    expect(running.waitForOwnership).toHaveBeenCalledOnce()
+    // The served token proves nothing once the child that held the port is gone.
+    const exited = reprove({}, null, true)
+    await expect(exited.fn()).resolves.toBe(false)
+    expect(exited.waitForOwnership).not.toHaveBeenCalled()
+  })
+
+  // Setup's one-click install is asked for once per page load (and when Settings
+  // opens): a reload whose re-proof is still running must not answer "copy-only".
+  it('main answers whether Setup is available only once a re-proof in flight has settled', async () => {
+    const main = readFileSync(join(import.meta.dirname, '..', 'electron', 'main.cjs'), 'utf8')
+    const marker = "ipcMain.handle('agent-inbox:install-available', "
+    const start = main.indexOf(marker)
+    expect(start).toBeGreaterThan(-1)
+    const body = main.slice(start + marker.length, main.indexOf('\n})', start) + 2)
+    const proof = deferred<void>()
+    const installBinding = { settled: vi.fn(() => proof.promise) }
+    const world = new Function('installBinding', 'installGate', 'canRunSetup', 'URL_BASE', `
+      let setupInstallEnabled = true
+      let setupInstallWebContentsId = null
+      return { handler: ${body}, bind: (id) => { setupInstallWebContentsId = id } }
+    `)(installBinding, createInstallGate(), canRunSetup, VIEWER) as {
+      handler(event: unknown): Promise<boolean>
+      bind(id: number): void
+    }
+    const event = { senderFrame: { url: VIEWER }, sender: { id: 7 } }
+
+    const answer = world.handler(event)
+    expect(installBinding.settled).toHaveBeenCalledOnce()
+    // The re-proof binds the window while the question waits for it.
+    world.bind(7)
+    proof.resolve()
+    await expect(answer).resolves.toBe(true)
+
+    // Nothing in flight: the binding as it is.
+    installBinding.settled.mockImplementation(() => Promise.resolve())
+    await expect(world.handler({ ...event, sender: { id: 8 } })).resolves.toBe(false)
+    // Before the window exists there is no binding to wait for.
+    const early = new Function('installBinding', 'installGate', 'canRunSetup', 'URL_BASE', `
+      let setupInstallEnabled = true
+      let setupInstallWebContentsId = null
+      return ${body}
+    `)(null, createInstallGate(), canRunSetup, VIEWER) as (event: unknown) => Promise<boolean>
+    await expect(early(event)).resolves.toBe(false)
+  })
+
+  it('main feeds the binding every main-frame navigation, commit, crash and close of its window before the first load', () => {
+    const main = readFileSync(join(import.meta.dirname, '..', 'electron', 'main.cjs'), 'utf8')
+    const wiring = [
+      "win.webContents.on('did-start-navigation', (_event, url, isInPlace, isMainFrame) => {\n    if (isMainFrame && !isInPlace) installBinding.navigationStarted(url)\n  })",
+      "win.webContents.on('did-navigate', (_event, url) => {\n    installBinding.navigationCommitted(url).catch(() => {})\n  })",
+      "win.webContents.on('render-process-gone', () => installBinding.rendererGone())",
+      "win.on('closed', () => installBinding.closed())",
+    ]
+    for (const line of wiring) {
+      expect(main, line).toContain(line)
+      expect(main.indexOf(line)).toBeLessThan(main.indexOf('await loadViewer(win, URL_BASE)'))
+    }
+    expect(main.match(/createInstallBinding\(/g)).toHaveLength(1)
+    // The binding is the only writer of a window's grants; a quit only ever clears them.
+    expect(main.match(/setupInstallWebContentsId = (?!null)/g)).toHaveLength(1)
+    expect(main.match(/updateInstallWebContentsId = (?!null)/g)).toHaveLength(1)
+    expect(main).not.toContain('firstMainNavigation')
+    expect(main).not.toContain('revokeSetup')
   })
 })
 

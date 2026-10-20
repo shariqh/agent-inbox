@@ -48,7 +48,8 @@ function isByteCount(value) {
   return Number.isSafeInteger(value) && value >= 0
 }
 
-// installable implies downloadable; a reason explains only a notify-only offer.
+// installable implies downloadable, and installPermitted (#216) implies installable;
+// a reason explains only a notify-only offer.
 const MAX_INSTALL_NOTICE_LENGTH = 400
 
 function isOffer(available, status) {
@@ -60,7 +61,9 @@ function isOffer(available, status) {
     typeof available.releaseUrl === 'string' &&
     typeof available.downloadable === 'boolean' &&
     typeof available.installable === 'boolean' &&
+    typeof available.installPermitted === 'boolean' &&
     (!available.installable || available.downloadable) &&
+    (!available.installPermitted || available.installable) &&
     (available.reason === undefined || (
       typeof available.reason === 'string' &&
       !available.installable &&
@@ -137,6 +140,11 @@ if (updatesAvailable) {
     install(...args) {
       if (args.length !== 0) return false
       return invokeUpdateState('agent-inbox:update-install')
+    },
+    // Quits and reopens the app so a fresh window can install (#216); macOS only.
+    restart(...args) {
+      if (args.length !== 0) return false
+      return ipcRenderer.invoke('agent-inbox:update-restart').then((restarting) => restarting === true)
     },
     openRelease(...args) {
       if (args.length !== 0) return false

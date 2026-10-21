@@ -1,6 +1,5 @@
 import { EventEmitter } from 'node:events'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -15,6 +14,7 @@ import {
 } from '../src/store.js'
 import type { NewBoardRow } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
+import { scratchDir } from './scratch.js'
 
 const NOW = Date.parse('2026-07-31T12:00:00.000Z')
 const MINUTE = 60_000
@@ -235,7 +235,7 @@ describe('native attention notifications', () => {
   const askRow = () => getBoard(db, PROJECT, TITLE)!.rows.find((row) => row.label === ASK.label)!
 
   beforeEach(() => {
-    directory = mkdtempSync(join(tmpdir(), 'notification-identity-'))
+    directory = scratchDir('notification-identity-')
     db = openDb(join(directory, 'inbox.db'))
     viewer = createViewer(db)
   })
@@ -438,7 +438,7 @@ describe('the dock watcher lean item read (issue #156)', () => {
   const HOUR = 60 * MINUTE
 
   it('derives the same attention sets, response targets and reminders as the full payload', async () => {
-    const directory = mkdtempSync(join(tmpdir(), 'dock-watch-'))
+    const directory = scratchDir('dock-watch-')
     const db = openDb(join(directory, 'inbox.db'))
     vi.useFakeTimers({ toFake: ['Date'] })
     try {

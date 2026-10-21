@@ -8,14 +8,13 @@
 // this repo's strict, allowJs-less tsconfig, and exercising the CLI contract
 // is exactly what a Bash caller (a future installer/packaging step) will do
 // anyway.
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import {
   chmodSync,
   copyFileSync,
   existsSync,
   lstatSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
@@ -24,10 +23,10 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { createHash } from 'node:crypto'
-import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { pathToFileURL } from 'node:url'
+import { removeScratchDirs, scratchDir } from './scratch.js'
 
 const REPO = resolve(import.meta.dirname, '..')
 const PAYLOAD_CLI = join(REPO, 'scripts', 'runtime-payload.mjs')
@@ -40,8 +39,10 @@ const FAKE_XATTR_FAIL_FIXTURE = join(REPO, 'test', 'fixtures', 'runtime', 'fake-
 const FAKE_XATTR_RECORD_FIXTURE = join(REPO, 'test', 'fixtures', 'runtime', 'fake-xattr-record.sh')
 
 function tmp(prefix: string): string {
-  return mkdtempSync(join(tmpdir(), prefix))
+  return scratchDir(prefix)
 }
+
+afterEach(removeScratchDirs)
 
 interface CliResult {
   status: number

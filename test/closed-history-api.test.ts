@@ -2,8 +2,7 @@
 // most recently touched closed items, with a summary of what it left out; the
 // complete closed history is a separate conditional representation.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { rmSync } from 'node:fs'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
 import {
@@ -13,6 +12,7 @@ import {
 import type { Item } from '../src/store.js'
 import { groupItems } from '../src/group.js'
 import { createViewer } from '../src/viewer.js'
+import { scratchDir } from './scratch.js'
 
 const BASE = Date.parse('2026-10-01T00:00:00.000Z')
 const SLICE = 50
@@ -24,7 +24,7 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] })
   clock = 0
   vi.setSystemTime(BASE)
-  directory = mkdtempSync(join(tmpdir(), 'closed-history-'))
+  directory = scratchDir('closed-history-')
   db = openDb(join(directory, 'inbox.db'))
 })
 

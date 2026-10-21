@@ -1,8 +1,8 @@
 import { createRequire } from 'node:module'
-import { mkdtempSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
+import { scratchDir } from './scratch.js'
 
 const require = createRequire(import.meta.url)
 const {
@@ -30,7 +30,7 @@ describe('optional Electron update trust initialization', () => {
   it('safe-disables update checks when the registry file is missing', () => {
     const logger = { error: vi.fn() }
     const registry = loadUpdateRegistry({
-      registryPath: join(mkdtempSync(join(tmpdir(), 'update-trust-missing-')), 'missing.json'),
+      registryPath: join(scratchDir('update-trust-missing-'), 'missing.json'),
       logger,
     })
 
@@ -40,7 +40,7 @@ describe('optional Electron update trust initialization', () => {
   })
 
   it('safe-disables malformed registry data without logging file contents', () => {
-    const temp = mkdtempSync(join(tmpdir(), 'update-trust-malformed-'))
+    const temp = scratchDir('update-trust-malformed-')
     const registryPath = join(temp, 'update-keys.json')
     const sensitiveFixture = 'must-not-appear-in-log'
     writeFileSync(registryPath, `{"schema":1,"unexpected":"${sensitiveFixture}"}\n`)

@@ -10,7 +10,7 @@
 // The injected `git` runner is used only for the paths a real repo cannot stage:
 // git missing entirely, and counting probes to prove the cache.
 import { describe, it, expect } from 'vitest'
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -19,13 +19,14 @@ import {
   buildStamp, execGit, readBakedInfo, STAMP_TTL_MS,
   type BakedInfo, type GitRun, type StampCache,
 } from '../src/stamp.js'
+import { scratchDir } from './scratch.js'
 
 const REPO = new URL('..', import.meta.url).pathname
 
 // ── real git fixtures ───────────────────────────────────────────────────────
 
 function tmpRepo(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'stamp-'))
+  const dir = scratchDir('stamp-')
   execFileSync('git', ['init', '-q'], { cwd: dir })
   execFileSync('git', ['config', 'user.email', 't@t.dev'], { cwd: dir })
   execFileSync('git', ['config', 'user.name', 't'], { cwd: dir })
@@ -75,7 +76,7 @@ describe('buildStamp · the dev path has no baked commit and must not claim stal
   })
 
   it('says nothing at all when the cwd is not a git checkout', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'plain-'))
+    const dir = scratchDir('plain-')
 
     const stamp = await buildStamp(null, dir, fresh())
 
@@ -263,7 +264,7 @@ describe('buildStamp · a release build (schema 2) is a third case, never dev/cu
 
 describe('readBakedInfo · a corrupt setup-info.json can never break the viewer', () => {
   const write = (body: string): string => {
-    const dir = mkdtempSync(join(tmpdir(), 'baked-'))
+    const dir = scratchDir('baked-')
     const p = join(dir, 'setup-info.json')
     writeFileSync(p, body)
     return p
@@ -387,7 +388,7 @@ describe('the git subprocess CAPTURES stdout', () => {
     // A REAL spawn: if execGit ever inherited stdout, git's sha would land on
     // this child's stdout and the assertion below would see it. That is exactly
     // what would corrupt the MCP wire if this module were ever imported there.
-    const dir = mkdtempSync(join(tmpdir(), 'capture-'))
+    const dir = scratchDir('capture-')
     // .mts, not .ts: the file lives outside the repo, so tsx has no
     // "type":"module" nearby and would compile a bare .ts to CJS (no top-level await).
     const script = join(dir, 'probe.mts')

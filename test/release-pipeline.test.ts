@@ -5,7 +5,6 @@ import {
   lstatSync,
   linkSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   readdirSync,
   readlinkSync,
@@ -44,6 +43,7 @@ import { assertRuntimeSourceCommit } from '../scripts/runtime-provenance.mjs'
 import { resolveSourceProvenance } from '../scripts/source-provenance.mjs'
 import { RUNTIME_TARGETS } from '../scripts/runtime-targets.mjs'
 import { verifyPackagedUpdateTrust } from '../scripts/package-update-trust.mjs'
+import { scratchDir } from './scratch.js'
 
 const root = resolve(process.cwd())
 
@@ -119,7 +119,7 @@ describe('native architecture release stages', () => {
   })
 
   it('binds CI provenance to checkout HEAD and records local dirty state', () => {
-    const repo = mkdtempSync(join(tmpdir(), 'release-provenance-'))
+    const repo = scratchDir('release-provenance-')
     execFileSync('git', ['init', '--quiet'], { cwd: repo })
     writeFileSync(join(repo, 'file'), 'clean\n')
     execFileSync('git', ['add', 'file'], { cwd: repo })
@@ -150,7 +150,7 @@ describe('native architecture release stages', () => {
   })
 
   it('ships the exact Agent Inbox MIT notice separately in app and runtime payloads', () => {
-    const temp = mkdtempSync(join(tmpdir(), 'release-license-'))
+    const temp = scratchDir('release-license-')
     const expected = readFileSync(join(root, 'LICENSE'), 'utf8')
     const appLicense = join(temp, 'app', 'LICENSE.agent-inbox')
     const runtimeLicense = join(temp, 'runtime', 'LICENSE.agent-inbox')
@@ -167,7 +167,7 @@ describe('native architecture release stages', () => {
   })
 
   it('copies exact nonempty Electron and Chromium notices into app resources', () => {
-    const temp = mkdtempSync(join(tmpdir(), 'electron-notices-'))
+    const temp = scratchDir('electron-notices-')
     const packagerOutput = join(temp, 'packager')
     const app = join(packagerOutput, 'Agent Inbox.app')
     mkdirSync(join(app, 'Contents', 'Resources'), { recursive: true })
@@ -184,7 +184,7 @@ describe('native architecture release stages', () => {
 
   it('loads the shipped update verifier and pinned registry from a macOS app folder', () => {
     const appResources = join(
-      mkdtempSync(join(tmpdir(), 'macos-update-trust-')),
+      scratchDir('macos-update-trust-'),
       'Agent Inbox.app',
       'Contents',
       'Resources',
@@ -213,7 +213,7 @@ describe('native architecture release stages', () => {
   })
 
   it('preserves executable modes and symlinks across job archives', () => {
-    const temp = mkdtempSync(join(tmpdir(), 'release-archive-'))
+    const temp = scratchDir('release-archive-')
     const source = join(temp, 'thin-arm64')
     mkdirSync(join(source, 'Agent Inbox.app', 'Contents', 'Frameworks'), { recursive: true })
     const executable = join(source, 'Agent Inbox.app', 'Contents', 'MacOS')
@@ -233,7 +233,7 @@ describe('native architecture release stages', () => {
   })
 
   it('validates the expected root before extraction and rejects escaping symlinks', () => {
-    const temp = mkdtempSync(join(tmpdir(), 'release-extract-'))
+    const temp = scratchDir('release-extract-')
     const wrongRoot = join(temp, 'wrong-root')
     mkdirSync(wrongRoot)
     writeFileSync(join(wrongRoot, 'file'), 'payload')
@@ -310,7 +310,7 @@ describe('universal finalization contract', () => {
   })
 
   it.skipIf(process.platform !== 'darwin')('behaviorally preserves keyed thin runtimes while merging app Mach-Os', async () => {
-    const temp = mkdtempSync(join(tmpdir(), 'universal-fixture-'))
+    const temp = scratchDir('universal-fixture-')
     const source = join(temp, 'main.c')
     writeFileSync(source, 'int main(void) { return 0; }\n')
     const binaries = {
@@ -453,7 +453,7 @@ describe('universal finalization contract', () => {
   })
 
   it('binds thin reports to app bytes and matching clean or dirty source provenance', () => {
-    const temp = mkdtempSync(join(tmpdir(), 'thin-provenance-'))
+    const temp = scratchDir('thin-provenance-')
     const inputs = loadReleaseInputs()
     const provenance = { sourceCommit: 'a'.repeat(40), sourceDirty: true }
     const runtimeManifestDigests = {
@@ -675,7 +675,7 @@ describe('universal finalization contract', () => {
   })
 
   it('publishes only checksummed transfer artifacts and never a raw app bundle', () => {
-    const output = mkdtempSync(join(tmpdir(), 'release-output-'))
+    const output = scratchDir('release-output-')
     for (const name of [
       'app.tar.gz',
       'provisional.dmg',

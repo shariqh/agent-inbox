@@ -1,11 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { once } from 'node:events'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { rmSync } from 'node:fs'
 import { request } from 'node:http'
 import type { Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
 import {
@@ -19,6 +18,7 @@ import { groupItems } from '../src/group.js'
 import { createViewer } from '../src/viewer.js'
 import { startLocalViewer } from '../src/viewer-network.js'
 import { facts, snapshot } from './issue-fixtures.js'
+import { scratchDir } from './scratch.js'
 
 const NOW = new Date('2026-09-20T12:00:00.000Z')
 const ROUTES = ['/api/items', '/api/boards', '/api/boards/archived', '/api/issues'] as const
@@ -35,7 +35,7 @@ describe('viewer conditional snapshots', () => {
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(NOW)
-    directory = mkdtempSync(join(tmpdir(), 'viewer-snapshots-'))
+    directory = scratchDir('viewer-snapshots-')
     path = join(directory, 'inbox.db')
     db = openDb(path)
     writer = openDb(path)

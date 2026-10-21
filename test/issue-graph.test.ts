@@ -3,14 +3,14 @@
 // listIssueSnapshots() rows and the display key set, so most cases build rows
 // by hand; the revival case goes through the real store.
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { readdirSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { buildIssueGraph, MAX_GRAPH_NODES } from '../src/issue-graph.js'
 import type { IssueGraph } from '../src/issue-graph.js'
 import { listIssueSnapshots, openDb, recordIssueFailure, upsertIssueSnapshot } from '../src/store.js'
 import type { IssueSnapshot, IssueSnapshotRow } from '../src/store.js'
 import { at, facts, keySets, row, snapshot } from './issue-fixtures.js'
+import { scratchDir } from './scratch.js'
 
 const parentOf = (graph: IssueGraph, key: string): string | null =>
   graph.edges.find((edge) => edge.to === key)?.from ?? null
@@ -361,7 +361,7 @@ describe('hard failures (rule 6)', () => {
     it('suppress at once and revive with the next success', () => {
       vi.useFakeTimers({ toFake: ['Date'] })
       vi.setSystemTime(Date.parse(at(60)))
-      dir = mkdtempSync(join(tmpdir(), 'issue-graph-'))
+      dir = scratchDir('issue-graph-')
       const db = openDb(join(dir, 'inbox.db'))
       try {
         const sets = keySets([P, K])

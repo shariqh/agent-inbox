@@ -11,20 +11,22 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join, relative, win32 } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import setupFilesystemModule from '../scripts/setup-filesystem.cjs'
 import type {
   SetupFilesystemIO,
   SetupPathStat,
 } from '../scripts/setup-filesystem.cjs'
+import { removeScratchDirs, scratchDir } from './scratch.js'
 
 const { createSetupFilesystem } = setupFilesystemModule
 
 function temp(prefix: string): string {
-  return mkdtempSync(join(tmpdir(), prefix))
+  return scratchDir(prefix)
 }
+
+afterEach(removeScratchDirs)
 
 function nodeIo(overrides: Partial<SetupFilesystemIO> = {}): SetupFilesystemIO {
   return {

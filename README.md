@@ -189,7 +189,9 @@ responses on blocked plan rows, including "I've done my part", clarification, an
 decline. The hook checks for an answer before it starts waiting. An armed watcher
 does not lose a later answer just because another agent received it first. A Stop
 continuation does not wake repeatedly for the same unread response; it can still
-wait for answers to requests that were unanswered when it started.
+wait for answers to requests that were unanswered when it started. It also watches
+a project the session chose with `register`, and questions the session raises after
+its turn ended; a newer turn's watcher replaces the older one.
 
 Copilot questions and new blocked plan actions return host-owned watcher commands.
 The agent must launch them in its CLI session; the MCP server never does so.

@@ -74,16 +74,17 @@ describe('issue snapshot store (issue #103)', () => {
       const before = new Map(tables(old).map((name) => [name, columns(old, name)]))
       old.close()
 
-      // #217 and #103 PR1b/PR2 append nullable columns of their own; every v1.3.1 column stays in place.
+      // #217, #103 PR1b/PR2 and #253 append nullable columns of their own; every v1.3.1 column stays in place.
       const appended: Record<string, string[]> = {
         source_links_by_head: ['closing_refs'],
         items: ['watch_stopped_at', 'watch_stopped_until', 'action_agent'],
         boards: ['issue_pin_repo', 'issue_pin_number'],
         board_rows: ['watch_stopped_at', 'watch_stopped_until', 'action_agent', 'action_agent_version', 'issue_repo', 'issue_number'],
+        activity: ['host_pid', 'server_pid'],
       }
       const migrated = openDb(path)
       try {
-        expect(tables(migrated)).toEqual([...before.keys(), 'issue_refresh_claims', 'issue_snapshots'].sort())
+        expect(tables(migrated)).toEqual([...before.keys(), 'hook_watch_claims', 'issue_refresh_claims', 'issue_snapshots'].sort())
         for (const [name, shape] of before) {
           const now = columns(migrated, name) as Array<{ name: string; notnull: number; dflt_value: unknown; pk: number }>
           expect(now.slice(0, shape.length), name).toEqual(shape)

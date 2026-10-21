@@ -211,7 +211,7 @@ runtime; `src/hook-cli.ts` is the thin entry that owns stdin and the exit code.
 | `SessionEnd` | `session-end` | 5s | clears this session's backstop | *(empty)* |
 | `UserPromptSubmit` | `prompt-submit` | 10s | clears this session's backstop; nudges if an answer is unpicked | one JSON object |
 | `Stop` | `stop` | 10s | clears this session's backstop; bounces the agent back to work if an answer is unpicked | one JSON object |
-| `Stop` (asyncRewake) | `watch` | 1800s | polls until the human answers, then exits **2** to wake the model | *(empty; stderr carries the payload)* |
+| `Stop` (asyncRewake) | `watch` | 1800s | polls until the human answers one of this session's requests, then exits **2** to wake the model | *(empty; stderr carries the payload)* |
 | *(manual/cron)* | `sweep` | — | runs the 24h janitor over orphaned backstop items | *(empty)* |
 | *(installer only)* | `selftest` | — | proves the resolved Node can load `better-sqlite3`. The ONE subcommand allowed to exit non-zero on failure | one line |
 
@@ -270,6 +270,63 @@ emits was not observed at runtime**, so the runtime is defensive about it:
   so the first real firing documents the true enumeration;
 - when `notification_type` is absent (older CLI) the gate falls back to matching
   `message` against `/permission|approve this|waiting for your input/i`.
+
+## #21: which answers reach a session (issue #253)
+
+`session-start`, `prompt-submit`, `stop` and `watch` look for answers in the
+projects this Claude Code session uses. That is the project inferred from the
+hook's `cwd`, as before, plus, when the hook can see this session's Agent Inbox
+server:
+
+- the project that server is scoped to now, including one the session chose with
+  `register` (which changes the project inside the server only);
+- the project of every question that server raised and that is still open, so a
+  project the session registered earlier stays covered after it moves on.
+
+**How a hook sees its session's server.** Claude Code starts both directly. Its
+hooks reference says an exec-form hook (`command` plus `args`, which is what the
+installer writes) is spawned "directly with `args` as the argument vector", with
+no shell. A stdio MCP server registered as a command (what `install:agents`
+registers) runs as its direct child too. Each server records the pid of the
+process that started it (`host_pid`) and its own pid on its presence row; a hook
+links to the rows whose host is its own parent, still refreshed by their
+heartbeat, not ended, and whose server process still runs. Checked on 2026-10-21
+with Claude Code 2.1.296: in each of two running sessions, the `claude` process
+was the parent of both the Agent Inbox server and the running `watch` hook.
+`CLAUDE_CODE_SESSION_ID` is not used: Claude Code documents that a server keeps
+the id it was spawned with across `/clear` (and possibly `--continue`), and one
+of those two sessions already showed a server id different from its hooks'.
+
+**Without that link, the hooks look at the cwd project alone, and the watcher's
+set stays the one it captured when it armed, as before** (the hand-over below
+still applies). That covers a server from an older build, which records no host;
+a hook started through `hooks/agent-inbox-hook.sh`, or any other process that
+stays between Claude Code and the hook or the server (a server started through
+`npx` or `tsx`, say); and any error while looking, which is logged to `hook.log`.
+
+**What the watcher waits on.** When it arms, it captures every question and
+blocked row in those projects that is still unanswered. That stays project-wide,
+so two sessions in one repository both wake for those. While the link holds, it
+also waits on every question this session's servers raise later, in any project,
+but never on a later request from another session. Answers that are waiting
+unread when it arms wake it at once, except on a `stop_hook_active` continuation;
+a request that was already answered at arming never wakes it. A blocked row
+raised after it armed is not watched, because rows do not record which session
+raised them: the next Stop's `stop` and `watch` pick it up.
+
+**One watcher at a time.** With the link, a watcher stays armed for its whole
+window (`AGENT_INBOX_WATCH_SECS`) even when nothing is waiting, since the session
+may still flag a question from a background subagent. Without it, it stands down
+as before once nothing it watches is still waiting. Each watcher holds a lease in
+the hub: one per Claude Code process with the link (so the first Stop after a
+`/clear` takes over too), one per harness session without it. The next Stop's
+watcher takes the lease, and the older one exits 0, silently, at its next poll. A
+watcher checks its lease at every poll and again just before it would wake. It
+also stops at its next poll once the process that started it is gone, since
+nothing is left to wake.
+
+The nudge names every project that has responses and the `pending({project:"…"})`
+call that reads each one without changing the session's scope.
 
 ## #10: how a backstop item behaves
 
@@ -334,9 +391,11 @@ cannot stop nagging is exactly what the viewer rebuild was designed against
   escalate to red after an hour. Blocked terminals stay non-escalating
   (`parked`, then `stale` past 72h).
 - **No SessionEnd "you ended with nothing flagged" note.** The two session-id
-  spaces never join: an MCP-authored item carries a `randomUUID()`, so a hook
-  can never tell whether *this* Claude Code session produced items. The
-  per-session form of that check is unimplementable, so it is not shipped.
+  spaces never join: an MCP-authored item carries a `randomUUID()`, and the
+  harness id never reaches the server reliably. The link through the shared
+  Claude Code process (#253, above) holds only while the session's server runs
+  and the hook is started directly, which is too weak a basis for telling the
+  human what a session did not do, so the note is still not shipped.
 - **`idle_prompt` is off by default.** It fires whenever the human walks away
   from a legitimately finished turn — pure badge noise. Opt in with
   `AGENT_INBOX_HOOK_NOTIFY_TYPES` if you want it.
@@ -346,7 +405,7 @@ cannot stop nagging is exactly what the viewer rebuild was designed against
 | var | default | meaning |
 |---|---|---|
 | `AGENT_INBOX_HOOKS` | *(unset)* | set to `0` to make every subcommand a silent no-op |
-| `AGENT_INBOX_DB` | `~/.agent-inbox/inbox.db` | the hub. Marker state, the watcher lock and `hook.log` all live beside it, which is what makes the runtime hermetic under test |
+| `AGENT_INBOX_DB` | `~/.agent-inbox/inbox.db` | the hub. The watcher's lease lives in it, and marker state and `hook.log` live beside it, which is what makes the runtime hermetic under test |
 | `AGENT_INBOX_HOOK_NOTIFY_TYPES` | `permission_prompt` | comma-separated `notification_type` gate |
 | `AGENT_INBOX_HOOK_GRACE_MS` | `90000` | how long a permission prompt may sit before it earns an item |
 | `AGENT_INBOX_HOOK_RECENT_MS` | `1800000` | a real agent question this fresh suppresses the backstop |
@@ -424,9 +483,10 @@ Two hand-written scripts predate this: `~/.claude/hooks/agent-inbox-pending.sh`
 and `agent-inbox-watch.sh`. They shell out to a database CLI with hand-escaped
 SQL — a direct violation of the store-is-the-only-door invariant — and they
 take their watcher lock in `$TMPDIR`. The ported `stop` and `watch` subcommands
-replace both, and take their lock under
-`$(dirname $AGENT_INBOX_DB)/hook-state/` instead, so the two cannot see each
-other's locks: **run `--migrate` before trusting the new watcher**, or you will
-briefly have two watchers on one project. `--migrate` rewrites only the
+replace both, and keep their watcher's lease in the hub instead, so the two
+cannot see each other: **run `--migrate` before trusting the new watcher**, or
+you will briefly have two watchers on one project. `--migrate` rewrites only the
 `settings.json` entries and leaves the `.sh` files on disk, so rolling back is
-an edit away.
+an edit away. (Builds before #253 kept a lock file under
+`$(dirname $AGENT_INBOX_DB)/hook-state/`; a watcher one of them armed runs out
+its own window beside a newer one, once.)

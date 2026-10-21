@@ -265,6 +265,13 @@ Run the build before `npm run electron`; the development shell starts the built
   ask's own `action_agent` (never `boards.agent`); an unknown asker draws
   nothing. It never changes attention, and Claude's hook watch ignores it
   because that watch never wakes on a timeout.
+- The human's pin for later (`pinned_at`, #247) is human-owned, version-pinned
+  and not content, like the watch stop: its writes bump neither revision nor
+  `updated_at`, and no agent write names it. The triggers
+  `clear_row_pin_when_ask_ends` and `clear_item_pin_when_ask_ends` clear it when
+  the ask is answered, closed or unblocked, or a new action starts, so an older
+  server's writes cannot carry it over. A pin and a snooze with a time replace
+  each other.
 - Keep network access out of the MCP process. Repository/branch identity is
   inferred locally; live PR and issue state is fetched only by the viewer's `gh`
   pollers (`src/prstate.ts`, `src/issue-poller.ts`).

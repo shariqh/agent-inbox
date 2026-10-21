@@ -146,7 +146,7 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   `replyItem`/`answerItem`/`listItems`/`listItemsPage`; boards: `upsertBoard`/`updateBoardRow`/`getBoard`/`listBoards`/
   `archiveBoard`/`annotateBoardRow`/`markAnnotationDelivered`/`markRowHandled`/
   `clearRowHandled`/`markHandledDelivered`/`listPendingRows`; watch stops (#217):
-  `stopItemWatch`/`stopBoardRowWatch`;
+  `stopItemWatch`/`stopBoardRowWatch`; pins for later (#247): `pinItem`/`pinBoardRow`;
   projects: `closeProject`/`reopenProject`/`listClosedProjects`/`closedProjects`;
   issue snapshots (#103): `upsertIssueSnapshot`/`recordIssueFailure`/`listIssueSnapshots`/
   `listIssueEntities`/`pruneIssueSnapshots`/`claimIssueRefresh`/`completeIssueRefresh` — plus `openDb`. No raw SQL anywhere else. To change
@@ -199,8 +199,9 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
 - **Viewer write bodies are validated before the store sees them** *(issue #163)*. Every
   JSON write route in `src/viewer.ts` parses with `.catch(() => null)` and type-checks each
   field it uses: `text` a string; when present, `context` a string, `kind` a response kind
-  and `handled` a boolean; `until` a parseable date (stored as UTC ISO, because the store
-  compares `snoozed_until` as text) or null; revisions integers. Invalid
+  and `handled` a boolean; `pinned` a boolean, always required (#247); `until` a parseable
+  date (stored as UTC ISO, because the store compares `snoozed_until` as text) or null;
+  revisions integers. Invalid
   input is `400 { ok:false, error }` with no store call: never a 500 from a parse or `trim()`
   throw, and never a coerced default that silently overwrites state with a 200. The split is
   `postJSON()`'s contract (a non-2xx means "the write never happened"), so a store REFUSAL of
@@ -835,6 +836,27 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   nothing, since the agent recorded it itself. Claude's hook `watch` is deliberately
   unaffected: it never wakes on a timeout (it exits 0 and re-arms at the agent's own Stop),
   so a stop would only remove its answer wake and save nothing.
+- **A pin for later is human-owned, version-pinned and NOT content (#247).**
+  Design: [`docs/superpowers/specs/2026-10-21-pin-for-later-design.md`](docs/superpowers/specs/2026-10-21-pin-for-later-design.md).
+  `items.pinned_at`/`board_rows.pinned_at` say "set this unanswered ask aside, with no return
+  time". Only `pinItem`/`pinBoardRow` (the viewer's `POST …/later` routes, `{ pinned }`
+  required) write it, on an unanswered open question or an unanswered, unhandled blocked row
+  of an active plan; a re-pin keeps the first time. Like the #217 watch stop it bumps neither
+  revision nor `updated_at`, so an agent's `board_get` → `board_upsert` snapshot stays valid
+  and a native notification keyed by revision is not re-announced, yet row writes are still
+  pinned to row AND board revision. In this server a pin clears `snoozed_until` and a snooze
+  with a time clears `pinned_at` (waking does not); an older server's snooze leaves both set,
+  which is harmless. No agent write names the column, so a full re-send keeps it. The resets
+  are TRIGGERS, so an older server's writes obey them too: `clear_row_pin_when_ask_ends` (a new
+  action, a move out of `blocked`, an answer, a response kind, a handled mark) and
+  `clear_item_pin_when_ask_ends` (closed, answered, a response kind). Each inner UPDATE names
+  only `pinned_at`, which no trigger listens to, so neither re-fires or moves `updated_at`,
+  `revision` or `response_revision`. `beginNewRowAction`, an answering `replyItem` or
+  `annotateBoardRow`, and `markRowHandled` also clear it in their own statement, exactly where
+  the trigger would: a cleared note answers nothing and keeps the pin. Agents see `pinned_at`
+  in `pending()` (a pinned blocked row arrives on every poll until its status flips, as a
+  snoozed one does) and in `board_get`; the Copilot watcher ignores it. Attention does not read
+  it yet: the demotion, the pinned fold and the Later section are #247's later slices.
 
 - **Agent setup is explicit, dry-run-first, and owns only marked text.**
   `scripts/install-agents.sh` is the supported bridge between two configuration systems:

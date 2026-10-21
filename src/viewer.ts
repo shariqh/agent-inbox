@@ -8,7 +8,7 @@ import { basename, dirname, isAbsolute, resolve, sep } from 'node:path'
 import type Database from 'better-sqlite3'
 import {
   listItems, listItemsPage, listOpenQuestions, resolveItem, dismissItem, annotateItem, replyItem, snoozeItem,
-  stopItemWatch, stopBoardRowWatch,
+  stopItemWatch, stopBoardRowWatch, pinItem, pinBoardRow,
   listBoards, archiveBoard, unarchiveBoard, annotateBoardRow, snoozeBoardRow,
   markRowHandled, clearRowHandled, listActivity, listActivitySpans, listSourceLinks, defaultDbPath,
   closeProject, reopenProject, closedProjects, readSnapshotState, listIssueEntities, listIssueSnapshots,
@@ -887,6 +887,17 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
     return c.json({ ok })
   })
 
+  // Issue #247 — "Pin for later". `pinned` is the whole instruction: true sets
+  // the question aside, false brings it back. There is no default, so a dropped
+  // field is a 400 rather than a silent pin or unpin.
+  app.post('/api/items/:id/later', async (c) => {
+    const body = await c.req.json<{ pinned?: unknown }>().catch(() => null)
+    const pinned = body?.pinned
+    if (typeof pinned !== 'boolean') return c.json({ ok: false, error: 'pinned must be a boolean' }, 400)
+    const ok = pinItem(db, c.req.param('id'), pinned)
+    return c.json(ok ? { ok: true } : { ok: false, reason: 'not_pinnable' })
+  })
+
   app.get('/api/boards', conditionalSnapshot(db, 'boards', () => listBoards(db)))
 
   app.get('/api/boards/archived', conditionalSnapshot(db, 'archived-boards', () => listBoards(db, { status: 'archived' })))
@@ -994,6 +1005,37 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
     return c.json(
       current && current.revision === revision && currentBoard?.revision === boardRevision
         ? { ok: false, reason: 'not_stoppable' }
+        : { ok: false, reason: 'version_mismatch' },
+    )
+  })
+
+  // Issue #247 — the row twin of /api/items/:id/later, pinned to the row and
+  // board revisions like every other human row action. A refusal against the
+  // caller's current pins means the row cannot be pinned (answered, handled, no
+  // longer blocked, archived, or nothing to unpin); anything else is stale (#160).
+  app.post('/api/boards/:id/rows/:rowId/later', async (c) => {
+    const body = await c.req.json<{
+      pinned?: unknown
+      expected_revision?: unknown
+      expected_board_version?: unknown
+    }>().catch(() => null)
+    const pinned = body?.pinned
+    const revision = body?.expected_revision
+    const boardRevision = body?.expected_board_version
+    if (!Number.isInteger(revision) || !Number.isInteger(boardRevision)) {
+      return c.json({ ok: false, error: 'expected_revision and expected_board_version required' }, 400)
+    }
+    if (typeof pinned !== 'boolean') return c.json({ ok: false, error: 'pinned must be a boolean' }, 400)
+    const rowId = c.req.param('rowId')
+    if (pinBoardRow(db, rowId, pinned, revision as number, boardRevision as number)) return c.json({ ok: true })
+    const currentBoard = [
+      ...listBoards(db),
+      ...listBoards(db, { status: 'archived' }),
+    ].find((board) => board.rows.some((row) => row.id === rowId))
+    const current = currentBoard?.rows.find((row) => row.id === rowId)
+    return c.json(
+      current && current.revision === revision && currentBoard?.revision === boardRevision
+        ? { ok: false, reason: 'not_pinnable' }
         : { ok: false, reason: 'version_mismatch' },
     )
   })

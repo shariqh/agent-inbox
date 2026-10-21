@@ -200,6 +200,8 @@ export interface RowSummary {
   options?: QuestionOption[]
   annotation_kind?: ResponseKind
   snoozed_until?: string
+  // issue #247 — the human set the ask aside with no time ("Pin for later")
+  pinned_at?: string
   // issue #217 — the human asked the watcher to stop: for good when no until
   watch_stopped_at?: string
   watch_stopped_until?: string | null
@@ -273,6 +275,7 @@ function summariseRow(r: BoardRow): RowSummary {
   if (r.next_after) out.next_after = r.next_after
   if (r.options?.length) out.options = r.options
   if (r.snoozed_until) out.snoozed_until = r.snoozed_until
+  if (r.pinned_at) out.pinned_at = r.pinned_at
   if (r.watch_stopped_at) {
     out.watch_stopped_at = r.watch_stopped_at
     out.watch_stopped_until = r.watch_stopped_until

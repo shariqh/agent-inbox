@@ -102,6 +102,9 @@ fragment Root on Issue {
       parent { ...Node parent { ...Node parent { ...Node } } } } } } }
   }
   subIssues(first: 100) { totalCount pageInfo { hasNextPage } nodes { ...Node subIssuesSummary { total completed } } }
+}
+
+fragment Deps on Issue {
   issueDependenciesSummary { blockedBy totalBlockedBy blocking totalBlocking }
   blockedBy(first: 50) { totalCount pageInfo { hasNextPage } nodes { ...Node } }
   blocking(first: 50) { totalCount pageInfo { hasNextPage } nodes { ...Node } }
@@ -109,7 +112,10 @@ fragment Root on Issue {
 
 // One deterministic document per batch size: GitHub validates every declared
 // variable, so a ten-slot document fails for any smaller batch (§2.5). Aliases
-// come from indices, never from data.
+// come from indices, never from data. Each issue is asked for twice: `rN` for
+// the issue and its hierarchy, `dN` for its dependencies. GitHub marks the
+// dependency fields non-null, so an error in one nulls the whole issue it was
+// asked on; on an alias of their own that is only `dN.issue`, never `rN.issue`.
 export function relationsQuery(n: number): string {
   if (!Number.isInteger(n) || n < 1 || n > ISSUE_BATCH) throw new Error(`invalid batch size: ${n}`)
   const vars: string[] = []
@@ -117,6 +123,7 @@ export function relationsQuery(n: number): string {
   for (let i = 0; i < n; i++) {
     vars.push(`$o${i}: String!, $n${i}: String!, $k${i}: Int!`)
     lines.push(`  r${i}: repository(owner: $o${i}, name: $n${i}) { nameWithOwner issue(number: $k${i}) { ...Root } }`)
+    lines.push(`  d${i}: repository(owner: $o${i}, name: $n${i}) { issue(number: $k${i}) { ...Deps } }`)
   }
   return `query Relations${n}(${vars.join(', ')}) {\n${lines.join('\n')}\n  rateLimit { cost remaining resetAt }\n}\n\n${FRAGMENTS}\n`
 }
@@ -286,14 +293,18 @@ function dependencies(issue: Record<string, unknown>, root: string): IssueDepend
   return { status: 'ok', blocked_by: { ...blockedByCounts, ...blockedBy }, blocking: { ...blockingCounts, ...blocking } }
 }
 
+// The section is read from the issue's own dependency alias, dN, which no
+// other part of the outcome reads. Any error there, wherever GitHub left it,
+// fails only this section; a null or missing dN.issue reads the same way.
+function dependenciesOf(data: Record<string, unknown>, errors: Array<{ path: unknown[] }>, i: number, root: string): IssueDependencies {
+  const alias = `d${i}`
+  if (errors.some((e) => e.path[0] === alias)) return { status: 'unavailable' }
+  const issue = record(record(data[alias])?.issue)
+  return issue ? dependencies(issue, root) : { status: 'unavailable' }
+}
+
 const ERROR_ROOT = (path: unknown[], alias: string): boolean =>
   path[0] === alias && (path.length === 1 || (path.length === 2 && path[1] === 'issue'))
-
-// A field error under one of these fails only that section of the root (§5.7, slice 2 §5.2).
-const HIERARCHY_FIELDS = new Set(['parent', 'subIssues'])
-const DEPENDENCY_FIELDS = new Set(['issueDependenciesSummary', 'blockedBy', 'blocking'])
-const underSection = (path: unknown[], fields: Set<string>): boolean =>
-  path[1] === 'issue' && typeof path[2] === 'string' && fields.has(path[2])
 
 function rootError(errors: Array<{ type: unknown }>): IssueError {
   // data is deleted only on a clear no: any other error on the alias is soft
@@ -312,9 +323,8 @@ function outcome(
   const mine = errors.filter((e) => e.path[0] === alias)
   const atRoot = mine.filter((e) => ERROR_ROOT(e.path, alias))
   if (atRoot.length > 0) return { error: rootError(atRoot) }
-  const hierarchyFailed = mine.some((e) => underSection(e.path, HIERARCHY_FIELDS))
-  const dependenciesFailed = mine.some((e) => underSection(e.path, DEPENDENCY_FIELDS))
-  if (mine.some((e) => !underSection(e.path, HIERARCHY_FIELDS) && !underSection(e.path, DEPENDENCY_FIELDS))) {
+  const sectionFailed = mine.some((e) => e.path[1] === 'issue' && (e.path[2] === 'parent' || e.path[2] === 'subIssues'))
+  if (mine.some((e) => !(e.path[1] === 'issue' && (e.path[2] === 'parent' || e.path[2] === 'subIssues')))) {
     return { error: 'gh-failed' }
   }
 
@@ -330,14 +340,14 @@ function outcome(
   const facts = node(issue, false)
   if (!facts) return { error: 'gh-failed' }
   const root = keyOf(facts)
-  const rest = hierarchyFailed ? null : hierarchy(issue, root)
+  const rest = sectionFailed ? null : hierarchy(issue, root)
   return {
     snapshot: {
       v: 1,
       issue: { repo: facts.repo, number: facts.number, title: facts.title, state: facts.state, state_reason: facts.state_reason },
       ...(rest ?? { ancestors: [], ancestors_end: 'top', hierarchy: { status: 'unavailable' } }),
     },
-    dependencies: dependenciesFailed ? { status: 'unavailable' } : dependencies(issue, root),
+    dependencies: dependenciesOf(data, errors, i, root),
   }
 }
 
@@ -426,8 +436,10 @@ export function issueQueue(input: {
     }
     // A success with no dependency section this build can read: written before
     // slice 2, or since by an older viewer, which unbinds it. A failure is
-    // left to its own TTL: GitHub could not be asked, or said no.
-    if (row.error === null && row.snapshot !== null && row.dependencies === null) {
+    // left to its own TTL: GitHub could not be asked, or said no. So is a row
+    // checked "in the future" (the clock moved back): the attempt rule would
+    // refuse every write until then, and the key would be fetched every tick.
+    if (row.error === null && row.snapshot !== null && row.dependencies === null && Date.parse(row.checked_at) <= input.nowMs) {
       queue.push({ key, repo, number, checked_at: row.checked_at, reason: 'upgrade' })
       continue
     }

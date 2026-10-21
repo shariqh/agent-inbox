@@ -33,7 +33,8 @@ const RELATIONS_10_DEPS = readFileSync(new URL('./fixtures/issue-relations-10-de
 
 // ── a fake GitHub: answers the real document shape for the keys it is asked ──
 
-interface WorldIssue { title?: string; state?: 'OPEN' | 'CLOSED'; parent?: string; blockedBy?: string[] }
+// `depsError`: GitHub fails that dependency field of the issue (slice 2)
+interface WorldIssue { title?: string; state?: 'OPEN' | 'CLOSED'; parent?: string; blockedBy?: string[]; depsError?: string }
 type World = Map<string, WorldIssue>
 
 const split = (key: string) => ({ repo: key.slice(0, key.lastIndexOf('#')), number: Number(key.slice(key.lastIndexOf('#') + 1)) })
@@ -83,7 +84,6 @@ function gqlRoot(world: World, key: string) {
       totalCount: kids.length, pageInfo: { hasNextPage: false },
       nodes: kids.map((k) => ({ ...gqlNode(world, k), subIssuesSummary: summary(world, k) })),
     },
-    ...gqlDependencies(world, key),
   }
 }
 
@@ -105,14 +105,31 @@ function fakeGitHub(world: World, rateLimit = { cost: 1, remaining: 4_000, reset
   const calls: string[][] = []
   const run: IssueGhRun = (args) => {
     calls.push(asked(args))
+    const ownAlias = args.some((arg) => arg.startsWith('query=') && /\bd0: repository\(/.test(arg))
     const data: Record<string, unknown> = { rateLimit }
     const errors: unknown[] = []
     asked(args).forEach((key, i) => {
       const { repo } = split(key)
-      if (world.has(key)) data[`r${i}`] = { nameWithOwner: repo, issue: gqlRoot(world, key) }
-      else {
+      const field = world.get(key)?.depsError
+      if (world.has(key)) {
+        // GitHub answers the document it is sent. The dependency fields are
+        // non-null, so an error in one nulls the issue it was asked on: only
+        // dN.issue when they have an alias of their own, else rN.issue itself.
+        const deps = field ? null : gqlDependencies(world, key)
+        if (ownAlias) {
+          data[`r${i}`] = { nameWithOwner: repo, issue: gqlRoot(world, key) }
+          data[`d${i}`] = { issue: deps }
+        } else {
+          data[`r${i}`] = { nameWithOwner: repo, issue: deps && { ...gqlRoot(world, key), ...deps } }
+        }
+        if (field) errors.push({ path: [ownAlias ? `d${i}` : `r${i}`, 'issue', field], message: 'Something went wrong while executing your query.' })
+      } else {
         data[`r${i}`] = { nameWithOwner: repo, issue: null }
         errors.push({ type: 'NOT_FOUND', path: [`r${i}`, 'issue'], message: 'Could not resolve to an issue' })
+        if (ownAlias) {
+          data[`d${i}`] = { issue: null }
+          errors.push({ type: 'NOT_FOUND', path: [`d${i}`, 'issue'], message: 'Could not resolve to an issue' })
+        }
       }
     })
     return { stdout: JSON.stringify(errors.length ? { data, errors } : { data }), stderr: '', code: errors.length ? 1 : 0 }
@@ -123,12 +140,19 @@ function fakeGitHub(world: World, rateLimit = { cost: 1, remaining: 4_000, reset
 // ────────────────────────────────────────────────────────────────────────────
 
 describe('relationsQuery and the gh argv (§5.6)', () => {
-  it('builds exactly the verified one-root document: slice 1’s, with slice 2’s dependency fields closing Root', () => {
+  // GitHub marks the three dependency fields non-null, so an error in any of
+  // them nulls the whole issue it was asked on. They get an alias of their own,
+  // and slice 1's verified Root is unchanged.
+  it('builds exactly the verified one-root document: slice 1’s, plus slice 2’s dependency fields on an alias of their own', () => {
     const block = DESIGN.split('```graphql\n')[1]!.split('```')[0]!
     const deps = DEPS_DESIGN.split('```graphql\n')[1]!.split('```')[0]!
     const norm = (s: string) => s.replace(/\s+/g, ' ').trim()
+    const r0 = '  r0: repository(owner: $o0, name: $n0) { nameWithOwner issue(number: $k0) { ...Root } }\n'
+    expect(block).toContain(r0)
     expect(deps).toContain('blockedBy(first: 50)')
-    expect(norm(relationsQuery(1))).toBe(norm(`${block.trimEnd().slice(0, -1)}${deps}}`))
+    const expected = block.replace(r0, `${r0}  d0: repository(owner: $o0, name: $n0) { issue(number: $k0) { ...Deps } }\n`)
+      + `\nfragment Deps on Issue {\n${deps}}\n`
+    expect(norm(relationsQuery(1))).toBe(norm(expected))
   })
 
   it('declares exactly n variable sets and n aliases for every batch size, deterministically', () => {
@@ -139,7 +163,9 @@ describe('relationsQuery and the gh argv (§5.6)', () => {
       expect(doc.match(/\$o\d+: String!/g)).toHaveLength(n)
       expect(doc.match(/\$k\d+: Int!/g)).toHaveLength(n)
       expect(doc.match(/\br\d+: repository\(/g)).toHaveLength(n)
+      expect(doc.match(/\bd\d+: repository\(/g)).toHaveLength(n)
       expect(doc).toContain(`r${n - 1}: repository(owner: $o${n - 1}, name: $n${n - 1})`)
+      expect(doc).toContain(`d${n - 1}: repository(owner: $o${n - 1}, name: $n${n - 1}) { issue(number: $k${n - 1}) { ...Deps } }`)
       expect(doc).not.toContain(`$o${n}:`)
     }
     expect(relationsQuery(10)).toMatchSnapshot()
@@ -167,7 +193,12 @@ describe('parseIssueBatch (§5.7)', () => {
     issue: {
       number, title: `T${number}`, state: 'OPEN', stateReason: null, repository: { nameWithOwner: repo },
       subIssuesSummary: { total: 0, completed: 0 }, parent: null,
-      subIssues: { totalCount: 0, pageInfo: { hasNextPage: false }, nodes: [] },
+      subIssues: { totalCount: 0, pageInfo: { hasNextPage: false }, nodes: [] }, ...extra,
+    },
+  })
+  // the same issue asked on its dependency alias, dN (slice 2)
+  const deps = (extra: Record<string, unknown> = {}) => ({
+    issue: {
       issueDependenciesSummary: { blockedBy: 0, totalBlockedBy: 0, blocking: 0, totalBlocking: 0 },
       blockedBy: { totalCount: 0, pageInfo: { hasNextPage: false }, nodes: [] },
       blocking: { totalCount: 0, pageInfo: { hasNextPage: false }, nodes: [] },
@@ -225,7 +256,9 @@ describe('parseIssueBatch (§5.7)', () => {
 
   it('a field error under parent or subIssues makes only that root\'s hierarchy unavailable', () => {
     const batch = parseIssueBatch(out({
-      data: { r0: ok('a/b', 1, { subIssues: null }), r1: ok('a/b', 2, { parent: null }), r2: ok('a/b', 3) },
+      data: {
+        r0: ok('a/b', 1, { subIssues: null }), d0: deps(), r1: ok('a/b', 2, { parent: null }), d1: deps(), r2: ok('a/b', 3), d2: deps(),
+      },
       errors: [
         { type: 'INTERNAL', path: ['r0', 'issue', 'subIssues'], message: 'timeout' },
         // an error deep in a section voids it even when the rest of it looks whole
@@ -374,37 +407,50 @@ describe('parseIssueBatch (§5.7)', () => {
     })
   })
 
-  it('a field error under issueDependenciesSummary, blockedBy or blocking makes only that root’s dependencies unavailable', () => {
+  // GitHub marks the three fields, their counts and pageInfo non-null, so an
+  // error in any of them nulls the whole issue it was asked on: dN.issue.
+  it('an error under the dependency alias leaves the issue and its hierarchy standing: only its dependencies are unavailable', () => {
+    const generic = 'Something went wrong while executing your query. This may be the result of a timeout.'
     const batch = parseIssueBatch(out({
       data: {
-        r0: ok('a/b', 1, { issueDependenciesSummary: null }),
-        r1: ok('a/b', 2, { blockedBy: null }),
-        r2: ok('a/b', 3),
-        r3: ok('a/b', 4, { parent: null }),
-        r4: ok('a/b', 5),
+        r0: ok('a/b', 1), d0: { issue: null },
+        r1: ok('a/b', 2), d1: { issue: null },
+        r2: ok('a/b', 3), d2: { issue: null },
+        // a node is nullable, so its error leaves the rest of the list in place: still unavailable
+        r3: ok('a/b', 4), d3: deps({ blocking: connection([null]) }),
+        // even a clear no on the dependency alias says nothing about the issue itself
+        r4: ok('a/b', 5), d4: null,
+        r5: ok('a/b', 6),
+        r6: ok('a/b', 7), d6: deps(),
       },
       errors: [
-        { type: 'INTERNAL', path: ['r0', 'issue', 'issueDependenciesSummary'], message: 'timeout' },
-        { type: 'INTERNAL', path: ['r1', 'issue', 'blockedBy'], message: 'timeout' },
-        // an error deep in the section voids it even when the rest of it looks whole
-        { type: 'INTERNAL', path: ['r2', 'issue', 'blocking', 'nodes', 0, 'title'], message: 'timeout' },
-        // one error in each section: each fails on its own and the root still stands
-        { type: 'INTERNAL', path: ['r3', 'issue', 'parent'], message: 'timeout' },
-        { type: 'INTERNAL', path: ['r3', 'issue', 'blocking'], message: 'timeout' },
+        { path: ['d0', 'issue', 'issueDependenciesSummary', 'blockedBy'], message: generic },
+        { path: ['d1', 'issue', 'blockedBy'], message: generic },
+        { path: ['d2', 'issue', 'blocking', 'pageInfo'], message: generic },
+        { type: 'FORBIDDEN', path: ['d3', 'issue', 'blocking', 'nodes', 0], message: 'Resource not accessible by integration' },
+        { type: 'NOT_FOUND', path: ['d4'], message: 'Could not resolve to a Repository' },
       ],
-    }), claimed('a/b#1', 'a/b#2', 'a/b#3', 'a/b#4', 'a/b#5'), { code: 1, stderr: '' })
+    }), claimed('a/b#1', 'a/b#2', 'a/b#3', 'a/b#4', 'a/b#5', 'a/b#6', 'a/b#7'), { code: 1, stderr: '' })
     expect(batch.outcomes.map((o) => ('error' in o ? o.error : [o.snapshot.hierarchy.status, o.dependencies.status]))).toEqual([
-      ['ok', 'unavailable'], ['ok', 'unavailable'], ['ok', 'unavailable'], ['unavailable', 'unavailable'], ['ok', 'ok'],
+      ['ok', 'unavailable'], ['ok', 'unavailable'], ['ok', 'unavailable'], ['ok', 'unavailable'],
+      ['ok', 'unavailable'], ['ok', 'unavailable'], ['ok', 'ok'],
     ])
-    // an unavailable section carries no lists, so it yields no observations
-    expect(dependenciesOf(batch, 0)).toEqual({ status: 'unavailable' })
-    expect(dependenciesOf(batch, 4)).toEqual(NO_DEPENDENCIES)
+    expect(batch.outcomes[0]).toEqual({
+      snapshot: {
+        v: 1, issue: { repo: 'a/b', number: 1, title: 'T1', state: 'OPEN', state_reason: null },
+        ancestors: [], ancestors_end: 'top', hierarchy: { status: 'ok', total: 0, completed: 0, truncated: false, children: [] },
+      },
+      // an unavailable section carries no lists, so it yields no observations
+      dependencies: { status: 'unavailable' },
+    })
+    expect(dependenciesOf(batch, 6)).toEqual(NO_DEPENDENCIES)
   })
 
   it('validates every listed issue like a child: drops an invalid one (the list is then incomplete), the root itself and duplicates; clips titles; caps at 50', () => {
     const batch = parseIssueBatch(out({
       data: {
-        r0: ok('a/b', 1, {
+        r0: ok('a/b', 1),
+        d0: deps({
           issueDependenciesSummary: summary(3, 4, 1, 1),
           blockedBy: connection([
             dep(30), dep(1), dep(30), dep(4, { state: 'MAYBE' }),
@@ -412,11 +458,14 @@ describe('parseIssueBatch (§5.7)', () => {
           ]),
           blocking: connection([dep(5, { repository: { nameWithOwner: 'Other/Lib' } })], true),
         }),
-        r1: ok('a/b', 9, { issueDependenciesSummary: summary(51, 51, 0, 0), blockedBy: connection(Array.from({ length: 51 }, (_, i) => dep(100 + i))) }),
+        r1: ok('a/b', 9),
+        d1: deps({ issueDependenciesSummary: summary(51, 51, 0, 0), blockedBy: connection(Array.from({ length: 51 }, (_, i) => dep(100 + i))) }),
         // the root itself and a repeat are dropped without making the list incomplete
-        r2: ok('a/b', 3, { issueDependenciesSummary: summary(0, 0, 1, 1), blocking: connection([dep(3), dep(8), dep(8)]) }),
+        r2: ok('a/b', 3),
+        d2: deps({ issueDependenciesSummary: summary(0, 0, 1, 1), blocking: connection([dep(3), dep(8), dep(8)]) }),
         // counts come from the summary alone: an issue the token cannot see is no missing entry
-        r3: ok('a/b', 2, { issueDependenciesSummary: summary(2, 3, 0, 0), blockedBy: connection([dep(7)]) }),
+        r3: ok('a/b', 2),
+        d3: deps({ issueDependenciesSummary: summary(2, 3, 0, 0), blockedBy: connection([dep(7)]) }),
       },
     }), claimed('a/b#1', 'a/b#9', 'a/b#3', 'a/b#2'))
     expect(dependenciesOf(batch, 0)).toEqual({
@@ -440,13 +489,13 @@ describe('parseIssueBatch (§5.7)', () => {
   it('reads a dependency section it cannot trust as unavailable, never as "no dependencies", and keeps the hierarchy', () => {
     const batch = parseIssueBatch(out({
       data: {
-        r0: ok('a/b', 1, { issueDependenciesSummary: summary(2, 1, 0, 0) }),
-        r1: ok('a/b', 2, { issueDependenciesSummary: summary(0, 0, -1, 0) }),
-        r2: ok('a/b', 3, { issueDependenciesSummary: { ...summary(0, 0, 0, 0), totalBlocking: 0.5 } }),
-        r3: ok('a/b', 4, { blocking: undefined }),
-        r4: ok('a/b', 5, { blockedBy: null }),
-        r5: ok('a/b', 6, { blocking: { totalCount: 0, nodes: [] } }),
-        r6: ok('a/b', 7, { blockedBy: { totalCount: 0, pageInfo: { hasNextPage: false }, nodes: null } }),
+        r0: ok('a/b', 1), d0: deps({ issueDependenciesSummary: summary(2, 1, 0, 0) }),
+        r1: ok('a/b', 2), d1: deps({ issueDependenciesSummary: summary(0, 0, -1, 0) }),
+        r2: ok('a/b', 3), d2: deps({ issueDependenciesSummary: { ...summary(0, 0, 0, 0), totalBlocking: 0.5 } }),
+        r3: ok('a/b', 4), d3: deps({ blocking: undefined }),
+        r4: ok('a/b', 5), d4: deps({ blockedBy: null }),
+        r5: ok('a/b', 6), d5: deps({ blocking: { totalCount: 0, nodes: [] } }),
+        r6: ok('a/b', 7), d6: deps({ blockedBy: { totalCount: 0, pageInfo: { hasNextPage: false }, nodes: null } }),
       },
     }), claimed('a/b#1', 'a/b#2', 'a/b#3', 'a/b#4', 'a/b#5', 'a/b#6', 'a/b#7'))
     expect(batch.outcomes.map((o) => ('error' in o ? o.error : o.dependencies))).toEqual(Array(7).fill({ status: 'unavailable' }))
@@ -583,6 +632,16 @@ describe('issueQueue: candidates, TTLs and order (§5.4)', () => {
     expect(numbers(ms(3.001) + ISSUE_TTL.softSlow)).toContain(6)
   })
 
+  // After the clock moves back, the attempt rule refuses every write that
+  // started before the stored checked_at, so the section could never be bound
+  // and the key would be fetched on every tick.
+  it('takes no upgrade whose checked_at is ahead of the clock', () => {
+    item(1)
+    seed(1, 10, { deps: null })
+    expect(queue(ms(10) - 1)).toEqual([])
+    expect(queue(ms(10)).map((e) => [e.number, e.reason])).toEqual([[1, 'upgrade']])
+  })
+
   it('a settled PR closing one of a key’s open blockers nudges that key, once', () => {
     for (const n of [121, 122, 123]) item(n)
     const blocker = (number: number, state: 'OPEN' | 'CLOSED' = 'OPEN') =>
@@ -674,6 +733,28 @@ describe('refreshIssuesOnce (§5.2–5.5)', () => {
         blocking: { open: 1, total: 1, truncated: false, list: [issue(122)] },
       },
     })])
+  })
+
+  // The real shape: GitHub fails a dependency field, `d0.issue` is null with an
+  // error at its path, and `r0` is intact. The issue must keep its hierarchy
+  // refresh, however long the dependency fields keep failing.
+  it('a dependency field that keeps failing never stops the hierarchy refresh: stored each time, the section unavailable', async () => {
+    item(117)
+    const w = world(117, 118, 119)
+    w.get(`${REPO}#118`)!.parent = `${REPO}#117`
+    w.get(`${REPO}#117`)!.depsError = 'blockedBy'
+    const gh = fakeGitHub(w)
+    const read = () => listIssueSnapshots(db).find((r) => r.number === 117)!
+    expect(await refreshIssuesOnce(db, { run: gh.run, now, owner: 'v1', budget: new IssueBudget(clock) })).toMatchObject({ applied: 1 })
+    expect(read()).toMatchObject({ error: null, fetched_at: at(0), dependencies: { status: 'unavailable' } })
+    expect(read().snapshot!.hierarchy).toMatchObject({ status: 'ok', children: [{ number: 118 }] })
+
+    tick(10)
+    w.get(`${REPO}#119`)!.parent = `${REPO}#117`
+    w.get(`${REPO}#117`)!.depsError = 'issueDependenciesSummary'
+    await refreshIssuesOnce(db, { run: gh.run, now, owner: 'v1', budget: new IssueBudget(clock) })
+    expect(read()).toMatchObject({ error: null, fetched_at: at(10), dependencies: { status: 'unavailable' } })
+    expect(read().snapshot!.hierarchy).toMatchObject({ status: 'ok', children: [{ number: 118 }, { number: 119 }] })
   })
 
   it('soft failures keep data, hard failures suppress it at once (a partial batch, per alias)', async () => {

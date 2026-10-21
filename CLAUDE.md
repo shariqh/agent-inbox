@@ -446,16 +446,21 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   keeps it bound.
 - **GitHub issue dependencies ride the same call, bound to their fetch (issue #103 slice 2, PR A).**
   Design: [`docs/superpowers/specs/2026-10-21-plan-dependencies-design.md`](docs/superpowers/specs/2026-10-21-plan-dependencies-design.md).
-  The `Root` fragment adds `issueDependenciesSummary` and `blockedBy`/`blocking(first: 50)`
-  (GitHub's own limit per type): still ONE call per batch, measured at 1 point and 12.6 KB for
-  the ten-issue #117 family (`test/fixtures/issue-relations-10-deps.json`). (1) **Parsing**
-  (`parseIssueBatch`) fails closed per section: a field error under any of the three fields makes
-  only that root's dependencies `unavailable`, independently of its hierarchy; each listed issue
-  is validated like a child, and an invalid one is dropped and marks its list truncated; the root
-  itself and repeats are dropped; lists cap at 50 and are kept in key order (GitHub's order means
-  nothing). `open`/`total` come from the summary alone (an issue the token cannot see is no
-  truncation), and an unreadable summary or list, or more open than total, makes the whole
-  section unavailable: one half alone could read as "blocked by nothing". (2) **Storage:**
+  A `Deps` fragment asks for `issueDependenciesSummary` and `blockedBy`/`blocking(first: 50)`
+  (GitHub's own limit per type) on a SECOND alias per issue, `dN`, with `rN`'s variables; `Root`
+  is slice 1's, byte for byte. Still ONE call per batch, measured at 1 point and 12.8 KB for the
+  ten-issue #117 family (`test/fixtures/issue-relations-10-deps.json`). The alias is what isolates
+  the sections: GitHub marks the three fields, their `Int!` counts and `pageInfo` non-null, so an
+  error in any of them nulls the whole issue it was asked on. Inside `rN` that would turn the issue
+  into a soft `gh-failed` and stop its hierarchy refreshing; on `dN` it nulls only `dN.issue`.
+  (1) **Parsing** (`parseIssueBatch`) fails closed per section: `rN` is read exactly as in slice 1,
+  and the section only from `dN`, where any error, or a null or missing `dN.issue`, makes only that
+  issue's dependencies `unavailable` (never the issue itself, whatever the error's type); each
+  listed issue is validated like a child, and an invalid one is dropped and marks its list
+  truncated; the root itself and repeats are dropped; lists cap at 50 and are kept in key order
+  (GitHub's order means nothing). `open`/`total` come from the summary alone (an issue the token
+  cannot see is no truncation), and an unreadable summary or list, or more open than total, makes
+  the whole section unavailable: one half alone could read as "blocked by nothing". (2) **Storage:**
   `issue_snapshots.dependencies` (additive) holds `{ v: 1, fetched_at, status, blocked_by,
   blocking }`, written by `upsertIssueSnapshot` in the SAME statement as the snapshot (omitted:
   NULL) and validated on write and read. It counts only while BOUND, its `fetched_at` equal to the
@@ -471,10 +476,11 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   a readable snapshot but no bound section: fetched at once, so a hub catches up at 10 keys a
   tick after an upgrade, and a v1.4 viewer's refresh costs one refetch. A failed row keeps its own
   TTL, deliberately narrower than the design's §5.4: without `gh`, or offline, it would otherwise
-  be retried every tick. A settled PR also nudges each key whose bound section lists its certain
-  closing issue as an OPEN blocker. (4) **Nothing reads it yet:** `src/issue-graph.ts` builds its
-  output from named fields, so `/api/issues`, `issue_rel`, the UI and attention are unchanged
-  until PR B.
+  be retried every tick. So does a row whose `checked_at` is ahead of the clock (it moved back):
+  the attempt rule would refuse every write, and the key would be fetched every tick. A settled
+  PR also nudges each key whose bound section lists its certain closing issue as an OPEN blocker.
+  (4) **Nothing reads it yet:** `src/issue-graph.ts` builds its output from named fields, so
+  `/api/issues`, `issue_rel`, the UI and attention are unchanged until PR B.
 - **Explicit plan pins and row links are agent-owned row content (issue #103, PR2).**
   `boards.issue_pin_repo`/`issue_pin_number` and `board_rows.issue_repo`/`issue_number` are
   additive columns written only by `upsertBoard` (`issuePin`, `rows[].issue`) and

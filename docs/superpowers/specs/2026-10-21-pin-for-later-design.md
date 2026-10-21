@@ -438,6 +438,8 @@ and 4.
 
 ## §11 — Decisions for Shariq
 
+**Decided 2026-10-21:** Shariq approved the recommended answer to every question below: the Later section is on by default, "I'll take a while" also defers the ask in the same write, pins don't expire, and with the setting off the Pin control is hidden while existing pins show in a "pinned" fold.
+
 **1. Should the Later section be on by default?**
 - **A. On (recommended).** Snoozed asks already leave Needs you today, so on is a small change
   for existing users, and it is what the issue asks for.

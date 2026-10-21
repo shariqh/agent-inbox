@@ -1,4 +1,4 @@
-import { afterEach, describe, it, expect } from 'vitest'
+import { afterEach, describe, it, expect, vi } from 'vitest'
 import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { spawn, spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
@@ -12,11 +12,13 @@ import type { SessionMarker } from '../src/hook.js'
 import {
   openDb, insertItem, listItems, replyItem, markReplySeen, resolveItem,
   upsertBoard, getBoard, annotateBoardRow, markRowHandled, markAnnotationDelivered,
-  updateBoardRow, archiveBoard, advanceBoardRow,
+  updateBoardRow, archiveBoard, advanceBoardRow, upsertActivity, endActivity,
 } from '../src/store.js'
 import type { Item } from '../src/store.js'
 import { installRuntimeVersion } from './release-runtime.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
+import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 
 const REPO = fileURLToPath(new URL('..', import.meta.url))
 // lets a test hand the installer the real hook CLI from source, with no dist/ build
@@ -72,7 +74,7 @@ function q(over: Partial<Item> = {}): Item {
 const OPTS = hookOpts({})
 
 it('points the legacy viewer fallback at the canonical IPv4 loopback URL', () => {
-  expect(nudgeText(1, 'agent-inbox')).toContain('127.0.0.1:4319/api/items')
+  expect(nudgeText([['agent-inbox', 1]])).toContain('127.0.0.1:4319/api/items')
 })
 
 describe('hook: suppression rules', () => {
@@ -179,11 +181,23 @@ describe('hook: options and parsing', () => {
   })
 
   it('nudgeText names the project, the count and the pending tool', () => {
-    const t = nudgeText(2, 'agent-inbox')
+    const t = nudgeText([['agent-inbox', 2]])
     expect(t).toContain('agent-inbox')
     expect(t).toContain('2')
     expect(t).toContain('pending')
     expect(t).toContain('resolve')
+  })
+
+  // #253: a response can wait in a project other than the one this session is
+  // scoped to, where a bare pending() would not find it.
+  it('nudgeText counts every project and names the pending call that reads each one', () => {
+    const t = nudgeText([['homelab', 2], ['dev-setup', 1]])
+    expect(t).toContain('3 response(s)')
+    expect(t).toContain('2 in project homelab')
+    expect(t).toContain('1 in project dev-setup')
+    expect(t).toContain('pending({project:"homelab"})')
+    expect(t).toContain('pending({project:"dev-setup"})')
+    expect(nudgeText([['homelab', 1]])).toContain('1 response(s) in project homelab')
   })
 
   it('SUBCOMMANDS is the dispatcher contract the docs are checked against', () => {
@@ -217,6 +231,46 @@ function waitingRow(db: ReturnType<typeof openDb>, project = 'agent-inbox') {
     rows: [{ label: 'Upload', status: 'blocked', action_owner: 'task', note: 'The release is ready.', next_step: 'Upload the build.' }],
   })
   return getBoard(db, project, 'Release')!.rows[0]!
+}
+
+// #253: the presence row an Agent Inbox server of THIS Claude Code process
+// writes. In-process, runHook's parent is the test runner's parent, so that is
+// the host both "processes" share, exactly as Claude Code is for a real hook and
+// its MCP server.
+function linkServer(db: ReturnType<typeof openDb>, session: string, project: string, over: { host_pid?: number; server_pid?: number } = {}) {
+  upsertActivity(db, {
+    session, project, stream: '', agent: 'claude-code', doing: 'open', idle: true, claim: false,
+    host_pid: process.ppid, server_pid: process.pid, ...over,
+  })
+}
+
+function question(db: ReturnType<typeof openDb>, project: string, title: string, session?: string): string {
+  return insertItem(db, { project, stream: '', agent: 'claude-code', session, kind: 'question', title })
+}
+
+// The watcher's lease lives in the hub; tests read it raw, as the frozen
+// statements in test/mixed-version.test.ts do. A missing hub reads as no
+// leases: opening it would recreate a scratch dir a failed test already removed.
+function leases(dbPath: string): Array<{ claim_key: string }> {
+  if (!existsSync(dbPath)) return []
+  const db = openDb(dbPath)
+  try {
+    return db.prepare(`SELECT claim_key FROM hook_watch_claims`).all() as Array<{ claim_key: string }>
+  } finally {
+    db.close()
+  }
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+// A watcher claims its lease only after it has captured what it waits on, so
+// anything written after this resolves happened after it armed.
+async function armed(dbPath: string, count = 1): Promise<void> {
+  const deadline = Date.now() + 10_000
+  while (leases(dbPath).length < count) {
+    if (Date.now() > deadline) throw new Error('the watcher never armed')
+    await sleep(10)
+  }
 }
 
 // the deferred commit is what actually writes the row; the notification hook
@@ -644,14 +698,9 @@ describe('hook: watch', () => {
     replyItem(db, old, 'Already waiting')
     const row = waitingRow(db)
     const running = runHook(['watch'], ev({ stop_hook_active: true }), env)
-    let answered = false
-    const timer = setTimeout(() => {
-      markRowHandled(db, row.id)
-      answered = true
-    }, 50)
+    await armed(dbPath)
+    markRowHandled(db, row.id)
     const result = await running
-    clearTimeout(timer)
-    expect(answered).toBe(true)
     expect(result.exitCode).toBe(2)
     db.close()
   })
@@ -661,17 +710,15 @@ describe('hook: watch', () => {
     const db = openDb(dbPath)
     const row = waitingRow(db)
     const running = runHook(['watch'], ev(), env)
-    const timer = setTimeout(() => {
-      const board = getBoard(db, 'agent-inbox', 'Release')!
-      advanceBoardRow(db, {
-        project: board.project, title: board.title, label: row.label,
-        expectedBoardVersion: board.revision, expectedRevision: row.revision,
-        note: 'A later request.', next_step: 'Upload the next build.', action_owner: 'task', impact: 'Next release.',
-      })
-      annotateBoardRow(db, row.id, 'Answer to the later request')
-    }, 50)
+    await armed(dbPath)
+    const board = getBoard(db, 'agent-inbox', 'Release')!
+    advanceBoardRow(db, {
+      project: board.project, title: board.title, label: row.label,
+      expectedBoardVersion: board.revision, expectedRevision: row.revision,
+      note: 'A later request.', next_step: 'Upload the next build.', action_owner: 'task', impact: 'Next release.',
+    })
+    annotateBoardRow(db, row.id, 'Answer to the later request')
     const result = await running
-    clearTimeout(timer)
     expect(result).toEqual({ stdout: '' })
     db.close()
   })
@@ -681,13 +728,11 @@ describe('hook: watch', () => {
     const db = openDb(dbPath)
     const row = waitingRow(db)
     const running = runHook(['watch'], ev(), env)
-    const timer = setTimeout(() => {
-      annotateBoardRow(db, row.id, 'Continue')
-      const answered = getBoard(db, 'agent-inbox', 'Release')!.rows[0]!
-      markAnnotationDelivered(db, row.id, answered.annotated_at, 'sibling')
-    }, 50)
+    await armed(dbPath)
+    annotateBoardRow(db, row.id, 'Continue')
+    const answered = getBoard(db, 'agent-inbox', 'Release')!.rows[0]!
+    markAnnotationDelivered(db, row.id, answered.annotated_at, 'sibling')
     const result = await running
-    clearTimeout(timer)
     expect(result.exitCode).toBe(2)
     db.close()
   })
@@ -723,15 +768,27 @@ describe('hook: watch', () => {
     expect(await running).toEqual({ stdout: '' })
   })
 
-  it('a second watcher for the same host session stands down while the lock is held', async () => {
+  // #253: the newest Stop's watcher replaces the session's older one instead of
+  // standing down beside it. The older one keeps its own (older) set, so only the
+  // newer watcher can know about a question raised in between.
+  it('a second watcher for the same host session takes over: the first exits quietly at its next poll', async () => {
     const { env, dbPath } = freshEnv(fast)
-    insertItem(openDb(dbPath), { project: 'agent-inbox', stream: '', agent: 'claude-code', kind: 'question', title: 'which?' })
+    const db = openDb(dbPath)
+    question(db, 'agent-inbox', 'which?')
     const first = runHook(['watch'], ev(), env)
-    await new Promise((r) => setTimeout(r, 100))
-    const started = Date.now()
-    expect(await runHook(['watch'], ev(), env)).toEqual({ stdout: '' })
-    expect(Date.now() - started).toBeLessThan(3000)
-    await first
+    let firstDone = 0
+    void first.then(() => { firstDone = Date.now() })
+    await armed(dbPath)
+    const later = question(db, 'agent-inbox', 'raised after the first watcher armed')
+    const second = runHook(['watch'], ev(), env)
+    // the first leaves long before its own 4s window runs out, and before any answer
+    const deadline = Date.now() + 1500
+    while (!firstDone && Date.now() < deadline) await sleep(10)
+    expect(firstDone).toBeGreaterThan(0)
+    replyItem(db, later, 'go')
+    expect(await first).toEqual({ stdout: '' })
+    expect(await second).toMatchObject({ stdout: '', exitCode: 2, stderr: expect.stringMatching(/pending/) })
+    db.close()
   })
 
   it('another host session in the same project retains its own wake source', async () => {
@@ -747,14 +804,278 @@ describe('hook: watch', () => {
     db.close()
   })
 
-  it('takes its lock beside the db, never in TMPDIR where the legacy shell watcher lives', async () => {
+  it('keeps its lease in the hub and drops it on exit, never a lock file in TMPDIR where the legacy shell watcher lives', async () => {
     const { env, dbPath } = freshEnv(fast)
-    insertItem(openDb(dbPath), { project: 'agent-inbox', stream: '', agent: 'claude-code', kind: 'question', title: 'which?' })
+    question(openDb(dbPath), 'agent-inbox', 'which?')
     const running = runHook(['watch'], ev(), env)
-    await new Promise((r) => setTimeout(r, 100))
-    expect(existsSync(join(dirname(dbPath), 'hook-state', 'watch-agent-inbox-S1.lock'))).toBe(true)
+    await sleep(100)
+    expect(leases(dbPath)).toEqual([{ claim_key: 'session:S1:agent-inbox' }])
+    const stateDir = join(dirname(dbPath), 'hook-state')
+    expect(existsSync(stateDir) ? readdirSync(stateDir).filter((name) => name.endsWith('.lock')) : []).toEqual([])
     await running
-    expect(existsSync(join(dirname(dbPath), 'hook-state', 'watch-agent-inbox-S1.lock'))).toBe(false)
+    expect(leases(dbPath)).toEqual([])
+  })
+})
+
+// ── #253: the projects this Claude Code session uses, and one watcher at a time ──
+
+describe("hook: the session's own projects and the newest watcher (#253)", () => {
+  const fast = { AGENT_INBOX_WATCH_SECS: '4', AGENT_INBOX_WATCH_POLL_MS: '20' }
+  // a whole watch window in about a second, for the "never wakes" cases
+  const brief = { AGENT_INBOX_WATCH_SECS: '1', AGENT_INBOX_WATCH_POLL_MS: '20' }
+
+  it('wakes for an answer in a project the session registered, not only the cwd project', async () => {
+    const { env, dbPath } = freshEnv(fast)
+    const db = openDb(dbPath)
+    linkServer(db, 'mcp-1', 'homelab')
+    const id = question(db, 'homelab', 'Which pool?', 'mcp-1')
+    const running = runHook(['watch'], ev(), env)
+    const timer = setTimeout(() => replyItem(db, id, 'tank'), 100)
+    const result = await running
+    clearTimeout(timer)
+    expect(result).toMatchObject({ stdout: '', exitCode: 2 })
+    expect(result.stderr).toContain('1 response(s) in project homelab')
+    expect(result.stderr).toContain('pending({project:"homelab"})')
+    db.close()
+  })
+
+  it('wakes for a blocked row in a project the session registered', async () => {
+    const { env, dbPath } = freshEnv(fast)
+    const db = openDb(dbPath)
+    linkServer(db, 'mcp-1', 'homelab')
+    const row = waitingRow(db, 'homelab')
+    const running = runHook(['watch'], ev(), env)
+    const timer = setTimeout(() => annotateBoardRow(db, row.id, 'Use tank'), 100)
+    const result = await running
+    clearTimeout(timer)
+    expect(result).toMatchObject({ stdout: '', exitCode: 2, stderr: expect.stringContaining('project homelab') })
+    expect(JSON.parse((await runHook(['stop'], ev(), env)).stdout).reason).toContain('project homelab')
+    db.close()
+  })
+
+  it('wakes for a question the session flags after the watcher armed, even with nothing waiting at the Stop', async () => {
+    const { env, dbPath } = freshEnv(fast)
+    const db = openDb(dbPath)
+    linkServer(db, 'mcp-1', 'agent-inbox')
+    const running = runHook(['watch'], ev(), env)
+    await armed(dbPath)
+    const id = question(db, 'agent-inbox', 'Raised by a background subagent', 'mcp-1')
+    await sleep(60) // a poll or two sees it unanswered first
+    replyItem(db, id, 'yes')
+    expect(await running).toMatchObject({ stdout: '', exitCode: 2, stderr: expect.stringContaining('project agent-inbox') })
+    db.close()
+  })
+
+  it("wakes for the session's later question in a project it registered after the Stop", async () => {
+    const { env, dbPath } = freshEnv(fast)
+    const db = openDb(dbPath)
+    linkServer(db, 'mcp-1', 'agent-inbox')
+    question(db, 'agent-inbox', 'Waiting when the turn ended', 'someone-else')
+    const running = runHook(['watch'], ev(), env)
+    await armed(dbPath)
+    linkServer(db, 'mcp-1', 'homelab')
+    replyItem(db, question(db, 'homelab', 'Raised and answered between two polls', 'mcp-1'), 'yes')
+    expect(await running).toMatchObject({ stdout: '', exitCode: 2, stderr: expect.stringContaining('project homelab') })
+    db.close()
+  })
+
+  // Delivery is not acknowledgement: a sibling's pickup must not take this
+  // session's wake for a question it raised after the Stop.
+  it("still wakes for the session's later question when another reader picked the answer up first", async () => {
+    const { env, dbPath } = freshEnv(fast)
+    const db = openDb(dbPath)
+    linkServer(db, 'mcp-1', 'agent-inbox')
+    const running = runHook(['watch'], ev(), env)
+    await armed(dbPath)
+    const id = question(db, 'agent-inbox', 'Raised by a background subagent', 'mcp-1')
+    replyItem(db, id, 'yes')
+    const answered = listItems(db).find((item) => item.id === id)!
+    expect(markReplySeen(db, id, answered.replied_at, answered.response_revision, 'sibling')).toBe(true)
+    expect(await running).toMatchObject({ stdout: '', exitCode: 2 })
+    db.close()
+  })
+
+  it("never wakes for another session's question raised after the watcher armed", async () => {
+    const { env, dbPath } = freshEnv(brief)
+    const db = openDb(dbPath)
+    linkServer(db, 'mcp-1', 'agent-inbox')
+    const running = runHook(['watch'], ev(), env)
+    await armed(dbPath)
+    replyItem(db, question(db, 'agent-inbox', 'Not ours', 'mcp-other'), 'no')
+    expect(await running).toEqual({ stdout: '' })
+    db.close()
+  })
+
+  it('a new Stop in the same Claude Code process takes over, even under a new session id (/clear)', async () => {
+    const { env, dbPath } = freshEnv(fast)
+    const db = openDb(dbPath)
+    linkServer(db, 'mcp-1', 'agent-inbox')
+    const first = runHook(['watch'], ev({ session_id: 'before-clear' }), env)
+    await armed(dbPath)
+    const second = runHook(['watch'], ev({ session_id: 'after-clear' }), env)
+    expect(await Promise.race([first, sleep(1500).then(() => 'still running')])).toEqual({ stdout: '' })
+    expect(leases(dbPath)).toEqual([{ claim_key: `host:${process.ppid}` }])
+    replyItem(db, question(db, 'agent-inbox', 'After the clear', 'mcp-1'), 'yes')
+    expect(await second).toMatchObject({ stdout: '', exitCode: 2 })
+    db.close()
+  })
+
+  // Review of #256 (should-fix): a watcher that wakes at once must not take
+  // the older watcher's lease, or what only that one waits on goes unwatched.
+  it('an immediate wake leaves the older watcher watching its own requests', async () => {
+    const { env, dbPath } = freshEnv(fast)
+    const db = openDb(dbPath)
+    const q = question(db, 'agent-inbox', 'Asked before the turn ended')
+    const first = runHook(['watch'], ev(), env) // Stop N-1: waits on q
+    await armed(dbPath)
+    // turn N: a response the first watcher does not wait on
+    const r = question(db, 'agent-inbox', 'Raised after the first watcher armed', 'someone-else')
+    replyItem(db, r, 'done')
+    // Stop N: stop blocks, and that Stop's watcher wakes at once
+    expect(JSON.parse((await runHook(['stop'], ev(), env)).stdout)).toMatchObject({ decision: 'block' })
+    expect(await runHook(['watch'], ev(), env)).toMatchObject({ stdout: '', exitCode: 2 })
+    // the agent reads r; the human answers q later in the continuation
+    const read = listItems(db).find((item) => item.id === r)!
+    expect(markReplySeen(db, r, read.replied_at, read.response_revision)).toBe(true)
+    await sleep(100) // several of the first watcher's polls
+    replyItem(db, q, 'yes')
+    // Stop N+1 is a continuation: neither of its hooks wakes for q, so the first watcher must
+    expect(await runHook(['stop'], ev({ stop_hook_active: true }), env)).toEqual({ stdout: '' })
+    expect(await runHook(['watch'], ev({ stop_hook_active: true }), env)).toEqual({ stdout: '' })
+    expect(await first).toMatchObject({ stdout: '', exitCode: 2 })
+    db.close()
+  })
+
+  // The narrower window: an answer that lands between an older watcher's polls
+  // is in a newer watcher's answered-at-arming set, so the older one looks once
+  // more at its own requests before it leaves.
+  it('a watcher that is taken over still wakes for its own request answered since its last poll', async () => {
+    const { env, dbPath } = freshEnv(fast)
+    const db = openDb(dbPath)
+    const q = question(db, 'agent-inbox', 'Waited on by the first watcher')
+    const q2 = question(db, 'agent-inbox', 'Keeps the continuation watcher armed')
+    const first = runHook(['watch'], ev(), env)
+    await armed(dbPath)
+    // both before the first watcher's next poll (runHook arms synchronously)
+    replyItem(db, q, 'yes')
+    const second = runHook(['watch'], ev({ stop_hook_active: true }), env)
+    expect(await first).toMatchObject({ stdout: '', exitCode: 2 })
+    replyItem(db, q2, 'yes')
+    expect(await second).toMatchObject({ stdout: '', exitCode: 2 })
+    db.close()
+  })
+
+  // Review of #256 (nit): unlinked, the lease stays per harness session AND cwd
+  // project, as main's lock was, so moving to another repository never drops
+  // the watch on the first one.
+  it("without a link, the session's watcher for another repository never replaces this one's", async () => {
+    const { env, dbPath } = freshEnv(fast)
+    const db = openDb(dbPath)
+    const here = question(db, 'agent-inbox', 'Asked in this repository')
+    const elsewhere = join(scratchDir('hook-cwd-'), 'otherrepo')
+    mkdirSync(elsewhere)
+    const there = question(db, 'otherrepo', 'Asked in the other repository')
+    const first = runHook(['watch'], ev(), env)
+    const second = runHook(['watch'], ev({ cwd: elsewhere }), env)
+    expect(leases(dbPath).map((lease) => lease.claim_key).sort()).toEqual(['session:S1:agent-inbox', 'session:S1:otherrepo'])
+    await sleep(100) // several polls of each
+    replyItem(db, here, 'yes')
+    expect(await first).toMatchObject({ stdout: '', exitCode: 2, stderr: expect.stringContaining('project agent-inbox') })
+    replyItem(db, there, 'yes')
+    expect(await second).toMatchObject({ stdout: '', exitCode: 2, stderr: expect.stringContaining('project otherrepo') })
+    db.close()
+  })
+
+  it('an answer already waiting in a registered project nudges at once, and the loop guards still hold', async () => {
+    const { env, dbPath } = freshEnv(brief)
+    const db = openDb(dbPath)
+    linkServer(db, 'mcp-1', 'homelab')
+    replyItem(db, question(db, 'homelab', 'Which pool?', 'mcp-1'), 'tank')
+    expect(await runHook(['watch'], ev(), env)).toMatchObject({ stdout: '', exitCode: 2, stderr: expect.stringContaining('project homelab') })
+    // a Stop continuation never re-wakes for the response that was already waiting
+    expect(await runHook(['watch'], ev({ stop_hook_active: true }), env)).toEqual({ stdout: '' })
+    const stop = JSON.parse((await runHook(['stop'], ev(), env)).stdout)
+    expect(stop).toMatchObject({ decision: 'block', reason: expect.stringContaining('project homelab') })
+    expect(await runHook(['stop'], ev({ stop_hook_active: true }), env)).toEqual({ stdout: '' })
+    db.close()
+  })
+
+  it.each(['prompt-submit', 'session-start'] as const)('%s counts responses in every project the session uses', async (sub) => {
+    const { env, dbPath } = freshEnv()
+    const db = openDb(dbPath)
+    linkServer(db, 'mcp-1', 'homelab')
+    replyItem(db, question(db, 'homelab', 'Which pool?', 'mcp-1'), 'tank')
+    replyItem(db, question(db, 'agent-inbox', 'Which branch?'), 'main')
+    const stdout = (await runHook([sub], ev(), env)).stdout
+    const out = sub === 'prompt-submit' ? JSON.parse(stdout).hookSpecificOutput.additionalContext as string : stdout
+    expect(out).toContain('2 response(s)')
+    expect(out).toContain('1 in project agent-inbox')
+    expect(out).toContain('1 in project homelab')
+    expect(out).toContain('pending({project:"homelab"})')
+    db.close()
+  })
+
+  it("follows the projects of the session's own open questions after it registers elsewhere", async () => {
+    const { env, dbPath } = freshEnv()
+    const db = openDb(dbPath)
+    linkServer(db, 'mcp-1', 'homelab')
+    const earlier = question(db, 'footage', 'Asked before the session moved to homelab', 'mcp-1')
+    replyItem(db, earlier, 'keep the originals')
+    expect(JSON.parse((await runHook(['stop'], ev(), env)).stdout).reason).toContain('project footage')
+    db.close()
+  })
+
+  describe('without a live link to this session’s server, it watches exactly as before', () => {
+    // each presence row below is one the hook must not trust
+    const unlinked: Array<[string, (db: ReturnType<typeof openDb>) => void]> = [
+      ['an older server that records no host', (db) => upsertActivity(db, { session: 'old-1', project: 'homelab', stream: '', agent: 'claude-code', doing: 'open', idle: true, claim: false })],
+      ['a server of another Claude Code process', (db) => linkServer(db, 'mcp-2', 'homelab', { host_pid: process.ppid + 100_000 })],
+      ['a server that has exited', (db) => {
+        linkServer(db, 'mcp-3', 'homelab')
+        endActivity(db, 'mcp-3')
+      }],
+      ['a server whose process is gone', (db) => linkServer(db, 'mcp-4', 'homelab', { server_pid: spawnSync(process.execPath, ['-e', '']).pid })],
+    ]
+
+    it.each(unlinked)('ignores %s: only the cwd project counts', async (_, presence) => {
+      const { env, dbPath } = freshEnv(fast)
+      const db = openDb(dbPath)
+      presence(db)
+      replyItem(db, question(db, 'homelab', 'Which pool?', 'mcp-1'), 'tank')
+      const started = Date.now()
+      // nothing unanswered in the cwd project: the watcher stands down at once
+      expect(await runHook(['watch'], ev(), env)).toEqual({ stdout: '' })
+      expect(Date.now() - started).toBeLessThan(3000)
+      expect(await runHook(['stop'], ev(), env)).toEqual({ stdout: '' })
+      expect(await runHook(['prompt-submit'], ev(), env)).toEqual({ stdout: '' })
+      db.close()
+    })
+
+    it('ignores a presence row that stopped refreshing over 15 minutes ago', async () => {
+      const { env, dbPath } = freshEnv()
+      const db = openDb(dbPath)
+      vi.useFakeTimers({ toFake: ['Date'] })
+      try {
+        linkServer(db, 'mcp-1', 'homelab')
+        replyItem(db, question(db, 'homelab', 'Which pool?', 'mcp-1'), 'tank')
+        vi.setSystemTime(Date.now() + 16 * 60_000)
+        expect(await runHook(['stop'], ev(), env)).toEqual({ stdout: '' })
+      } finally {
+        vi.useRealTimers()
+      }
+      db.close()
+    })
+
+    it('keeps the fixed set: a question raised after arming, by anyone, does not wake it', async () => {
+      const { env, dbPath } = freshEnv(brief)
+      const db = openDb(dbPath)
+      question(db, 'agent-inbox', 'Waiting when the turn ended')
+      const running = runHook(['watch'], ev(), env)
+      await armed(dbPath)
+      replyItem(db, question(db, 'agent-inbox', 'Raised later', 'mcp-1'), 'yes')
+      expect(await running).toEqual({ stdout: '' })
+      db.close()
+    })
   })
 })
 
@@ -788,10 +1109,9 @@ describe('hook: real spawn round-trip', () => {
     const db = openDb(dbPath)
     const id = insertItem(db, { project: 'agent-inbox', stream: '', agent: 'claude-code', kind: 'question', title: 'which?' })
     const running = run(['watch'], ev(), env)
-    const lock = join(dirname(dbPath), 'hook-state', 'watch-agent-inbox-S1.lock')
     const deadline = Date.now() + 9000
-    while (!existsSync(lock) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50))
-    const armed = existsSync(lock)
+    while (leases(dbPath).length === 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50))
+    const armed = leases(dbPath).length === 1
     replyItem(db, id, 'the second one')
     const res = await running
     db.close()
@@ -799,6 +1119,84 @@ describe('hook: real spawn round-trip', () => {
     expect(res.code).toBe(2)
     expect(res.err).toMatch(/pending/)
     expect(res.out).toBe('')
+  })
+
+  // #253, end to end: this test process plays Claude Code. It starts the MCP
+  // server and the hook directly, as Claude Code starts a stdio server and an
+  // exec-form hook, so both see it as their parent, and that shared parent is
+  // the only link between them.
+  it('a hook finds the project its sibling MCP server registered, through their shared parent', async () => {
+    const { env, dbPath } = freshEnv({ AGENT_INBOX_WATCH_SECS: '20', AGENT_INBOX_WATCH_POLL_MS: '50' })
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: ['--import', TSX_LOADER, join(REPO, 'src', 'mcp-server.ts')],
+      env: { ...process.env, ...env } as Record<string, string>,
+    })
+    const client = new Client({ name: 'claude-code', version: '1.0.0' })
+    await client.connect(transport)
+    try {
+      await client.callTool({ name: 'register', arguments: { project: 'homelab' } })
+      const flagged = await client.callTool({ name: 'flag', arguments: {
+        kind: 'question', title: 'Which pool?', detail: 'The footage pipeline needs a pool.',
+        next_step: 'Choose the pool.', action_owner: 'task', impact: 'Unblocks the copy.',
+      } })
+      const { id } = JSON.parse((flagged.content as Array<{ text: string }>)[0]!.text) as { id: string }
+      const watcher = spawn(process.execPath, ['--import', TSX_LOADER, join(REPO, 'src', 'hook-cli.ts'), 'watch'], {
+        env: { ...process.env, ...env }, cwd: REPO,
+      })
+      let err = ''
+      watcher.stderr.on('data', (d) => { err += String(d) })
+      const exited = new Promise<number | null>((resolve) => watcher.on('close', resolve))
+      watcher.stdin.end(ev())
+      const deadline = Date.now() + 10_000
+      while (leases(dbPath).length === 0 && Date.now() < deadline) await sleep(50)
+      expect(leases(dbPath)).toEqual([{ claim_key: `host:${process.pid}` }])
+      const db = openDb(dbPath)
+      replyItem(db, id, 'tank')
+      db.close()
+      expect(await exited).toBe(2)
+      expect(err).toContain('project homelab')
+    } finally {
+      await client.close()
+    }
+  })
+
+  // When Claude Code exits, nothing is left to wake: the watcher stops at its
+  // next poll rather than polling out its whole window as an orphan.
+  it('the watcher exits once the process that started it is gone', async () => {
+    const { env, dbPath } = freshEnv({ AGENT_INBOX_WATCH_SECS: '20', AGENT_INBOX_WATCH_POLL_MS: '50' })
+    question(openDb(dbPath), 'agent-inbox', 'which?')
+    // a stand-in for Claude Code: it starts the hook, reports its pid, and exits when told to
+    const host = [
+      `const { spawn } = require('node:child_process')`,
+      `const child = spawn(process.execPath, ['--import', ${JSON.stringify(TSX_LOADER)}, ${JSON.stringify(join(REPO, 'src', 'hook-cli.ts'))}, 'watch'], { stdio: ['pipe', 'ignore', 'ignore'] })`,
+      `child.stdin.end(${JSON.stringify(ev())})`,
+      `process.stdout.write(child.pid + '\\n')`,
+      `process.stdin.on('data', () => {}).on('end', () => process.exit(0))`,
+    ].join('\n')
+    const fake = spawn(process.execPath, ['-e', host], { env: { ...process.env, ...env }, cwd: REPO, stdio: ['pipe', 'pipe', 'ignore'] })
+    const gone = new Promise<void>((resolve) => fake.on('close', () => resolve()))
+    const pid = await new Promise<number>((resolve) => {
+      let out = ''
+      fake.stdout.on('data', (d) => {
+        out += String(d)
+        if (out.includes('\n')) resolve(Number(out.trim()))
+      })
+    })
+    const alive = (): boolean => { try { process.kill(pid, 0); return true } catch { return false } }
+    try {
+      let deadline = Date.now() + 10_000
+      while (leases(dbPath).length === 0 && Date.now() < deadline) await sleep(50)
+      expect(leases(dbPath)).toHaveLength(1)
+      fake.stdin.end()
+      await gone
+      deadline = Date.now() + 3000
+      while (alive() && Date.now() < deadline) await sleep(50)
+      expect(alive()).toBe(false)
+      expect(leases(dbPath)).toEqual([])
+    } finally {
+      if (alive()) process.kill(pid, 'SIGKILL')
+    }
   })
 
   it('a board-only answer wakes the real hook child and remains available to pending', async () => {

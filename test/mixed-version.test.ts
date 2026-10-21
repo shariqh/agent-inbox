@@ -15,9 +15,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
 import {
-  getBoard, insertItem, listBoards, listIssueEntities, listIssueSnapshots, listItems, listSourceLinks, openDb, recordIssueFailure,
-  upsertBoard, upsertIssueSnapshot, upsertSourceLink,
+  getBoard, insertItem, listActivity, listBoards, listHostSessions, listIssueEntities, listIssueSnapshots, listItems, listSourceLinks, openDb, recordIssueFailure,
+  replyItem, upsertActivity, upsertBoard, upsertIssueSnapshot, upsertSourceLink,
 } from '../src/store.js'
+import { runHook } from '../src/hook.js'
 import { issueKeyFor } from '../public/issue-key.js'
 import { createViewer } from '../src/viewer.js'
 import { at, snapshot } from './issue-fixtures.js'
@@ -127,6 +128,26 @@ const V131 = {
   syncBoardStatus: `UPDATE boards SET status = ?, updated_at = ? WHERE id = ?`,
   listItems: `SELECT * FROM items ORDER BY created_at DESC`,
   listSourceLinks: `SELECT * FROM source_links_by_head ORDER BY repo ASC, branch ASC, head_repo ASC`,
+  // #253: a v1.3.1 MCP server's presence write (registration and status)
+  upsertActivity: `INSERT INTO activity (session, project, stream, agent, doing, last_doing, detail, children, idle, started_at, updated_at, server_version, server_source)
+     VALUES (
+       @session, @project, @stream, @agent, @doing,
+       CASE WHEN @claim = 1 AND @idle = 0 AND @doing <> '' AND @doing <> 'open' THEN @doing ELSE '' END,
+       @detail, @children, @idle, @now, @now, @server_version, @server_source
+     )
+     ON CONFLICT(session) DO UPDATE SET
+       project = @project, stream = @stream, agent = @agent,
+       doing    = CASE WHEN @claim = 1 THEN @doing ELSE doing END,
+       last_doing = CASE
+         WHEN @claim = 1 AND @idle = 0 AND @doing <> '' AND @doing <> 'open' THEN @doing
+         ELSE last_doing
+       END,
+       detail   = CASE WHEN @claim = 1 THEN COALESCE(NULLIF(@detail, ''), detail) ELSE detail END,
+       children = CASE WHEN @claim = 1 THEN COALESCE(@children, children) ELSE children END,
+       idle     = CASE WHEN @claim = 1 THEN @idle ELSE idle END,
+       server_version = COALESCE(@server_version, server_version),
+       server_source  = COALESCE(@server_source, server_source),
+       updated_at = @now, ended_at = NULL`,
 }
 
 const REPO = 'shariqh/agent-inbox'
@@ -327,5 +348,36 @@ describe('a v1.3.1 process sharing a hub with this build (issue #103)', () => {
     expect(entities.find((e) => e.id === board.id)).toMatchObject({ issue_pin_repo: REPO, issue_pin_number: 117 })
     expect(entities.filter((e) => e.kind === 'row').map((e) => [e.issue_repo, e.issue_number]).sort())
       .toEqual([['o/r', 5], [REPO, 120]])
+  })
+
+  // #253: the hook links to a server only through the host it recorded. An old
+  // server records none, so a hook sharing the hub with it keeps today's watch
+  // of the cwd project, and the old server's migration replays cleanly.
+  it('a v1.3.1 server’s presence row links no hook to it, while this build’s row does', async () => {
+    const old = oldProcess()
+    const hub = newProcess()
+    const presence = (session: string) => ({
+      session, project: 'homelab', stream: '', agent: 'claude-code', doing: 'open', detail: '', children: null,
+      idle: 1, claim: 0, server_version: '1.3.1', server_source: 'checkout', now: new Date().toISOString(),
+    })
+    old.prepare(V131.upsertActivity).run(presence('old-mcp'))
+    const asked = insertItem(hub, { project: 'homelab', stream: '', agent: 'claude-code', session: 'old-mcp', kind: 'question', title: 'Which pool?' })
+    replyItem(hub, asked, 'tank')
+    const stop = () => runHook(['stop'], JSON.stringify({ session_id: 'S1', cwd: process.cwd() }), { AGENT_INBOX_DB: path })
+    expect(listHostSessions(hub, process.ppid)).toEqual([])
+    expect(await stop()).toEqual({ stdout: '' })
+
+    // the old server keeps writing beside this build, and replays its migration
+    old.prepare(V131.upsertActivity).run({ ...presence('old-mcp'), project: 'footage' })
+    old.close()
+    const restarted = oldProcess()
+    restarted.prepare(V131.upsertActivity).run(presence('old-mcp-2'))
+    expect(listActivity(hub).map((a) => [a.session, a.project]).sort()).toEqual([['old-mcp', 'footage'], ['old-mcp-2', 'homelab']])
+    expect(listHostSessions(hub, process.ppid)).toEqual([])
+
+    // the same row from this build carries its host, and the hook follows it
+    upsertActivity(hub, { session: 'new-mcp', project: 'homelab', stream: '', agent: 'claude-code', doing: 'open', idle: true, claim: false, host_pid: process.ppid, server_pid: process.pid })
+    expect(listHostSessions(hub, process.ppid)).toEqual([{ session: 'new-mcp', project: 'homelab', server_pid: process.pid }])
+    expect(JSON.parse((await stop()).stdout)).toMatchObject({ decision: 'block', reason: expect.stringContaining('project homelab') })
   })
 })

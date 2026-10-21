@@ -9,11 +9,14 @@
 //
 // The stdout contract is per-subcommand and exact — see docs/hooks.md.
 import { spawn } from 'node:child_process'
-import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, statSync, unlinkSync, rmSync } from 'node:fs'
+import { createHash, randomUUID } from 'node:crypto'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, statSync, rmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type Database from 'better-sqlite3'
-import { defaultDbPath, insertItem, listItems, listPending, listPendingRows, listUnansweredBoardRows, openDb, resolveItem } from './store.js'
+import {
+  claimHookWatch, defaultDbPath, holdsHookWatch, insertItem, listHostSessions, listItems, listPending, listPendingRows,
+  listSessionQuestions, listUnansweredBoardRows, openDb, releaseHookWatch, resolveItem,
+} from './store.js'
 import type { Item } from './store.js'
 import { inferProject, inferStream } from './infer.js'
 import { boardResponseState } from './watch.js'
@@ -194,10 +197,18 @@ export function shouldBackstop({ pending, sessionId, nowMs, marker, opts }: Back
   return true
 }
 
-export function nudgeText(count: number, project: string): string {
+// One nudge for every response waiting in the session's projects (#253): how
+// many, where, and the pending() call that reads each project whatever this
+// session is currently scoped to.
+export function nudgeText(responses: ReadonlyArray<readonly [project: string, count: number]>): string {
+  const total = responses.reduce((sum, [, n]) => sum + n, 0)
+  const where = responses.length === 1
+    ? `in project ${responses[0]![0]}`
+    : `(${responses.map(([project, n]) => `${n} in project ${project}`).join(', ')})`
+  const reads = responses.map(([project]) => `pending({project:${JSON.stringify(project)}})`).join(', ')
   return (
-    `agent-inbox: the human sent ${count} response(s) in project ${project} — ` +
-    `call the agent-inbox \`pending\` tool now and act on the reply, reply_context, annotation, or handled_at. ` +
+    `agent-inbox: the human sent ${total} response(s) ${where} — ` +
+    `call the agent-inbox \`pending\` tool now (${reads}) and act on the reply, reply_context, annotation, or handled_at. ` +
     `Then \`resolve\` the item or use \`board_row\` to change the row status and record an outcome. ` +
     `If this session has no pending tool, read the reply from the viewer API ` +
     `(curl -s 127.0.0.1:4319/api/items and /api/boards) and tell the human the Inbox connection needs to be restored.`
@@ -335,6 +346,60 @@ function unpickedBoardRows(db: Database.Database, project: string): Set<string> 
       || (row.handled_at && !row.handled_seen_at)
     ))
     .map((row) => row.row_id))
+}
+
+// the responses nobody has picked up yet, per project, in scope order
+function unpickedResponses(db: Database.Database, projects: readonly string[]): Array<[string, number]> {
+  const out: Array<[string, number]> = []
+  for (const project of projects) {
+    const n = unpickedReplies(listPending(db, project)) + unpickedBoardRows(db, project).size
+    if (n > 0) out.push([project, n])
+  }
+  return out
+}
+
+// ── #253: the projects this Claude Code session uses ────────────────────────
+
+// `register` changes a session's project inside its MCP server only, so the
+// cwd alone cannot tell a hook where the session files its questions. Claude
+// Code starts a stdio MCP server and an exec-form hook directly, so the hook's
+// parent is the process each of the session's servers recorded as its host
+// (listHostSessions). A server counts only while its own process still runs:
+// a row whose pid nothing holds is a crash, and a reused host pid alone is
+// not this session.
+interface SessionScope {
+  projects: string[] // the cwd project first
+  servers: Set<string> // MCP session ids of this session's live Agent Inbox servers
+  host: number | null // the Claude Code process, once a live server proves it
+}
+
+function running(pid: number | null): boolean {
+  if (pid === null || !Number.isInteger(pid) || pid <= 0) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+// Fail-open: no link, or any error finding one, leaves exactly the cwd project.
+function sessionScope(db: Database.Database, ctx: Ctx, cwdProject: string): SessionScope {
+  const scope: SessionScope = { projects: [cwdProject], servers: new Set(), host: null }
+  const host = process.ppid
+  if (!Number.isInteger(host) || host <= 1) return scope
+  try {
+    const live = listHostSessions(db, host).filter((server) => running(server.server_pid))
+    if (live.length === 0) return scope
+    const servers = new Set(live.map((server) => server.session))
+    // a project registered earlier stays in scope while one of its questions is open
+    const asked = listSessionQuestions(db, [...servers])
+    const projects = new Set([cwdProject, ...live.map((server) => server.project), ...asked.map((q) => q.project)])
+    return { projects: [...projects], servers, host }
+  } catch (err) {
+    logLine(ctx.dbPath, `scope: ${err instanceof Error ? err.message : String(err)} — using ${cwdProject} alone`)
+    return scope
+  }
 }
 
 // ── the dispatcher ──────────────────────────────────────────────────────────
@@ -571,9 +636,9 @@ function cmdSessionStep(ctx: Ctx): HookResult {
       disarm(ctx.dbPath, ctx.ev.session_id)
     }
     if (ctx.sub === 'session-end') return EMPTY
-    const n = unpickedReplies(listPending(db, project)) + unpickedBoardRows(db, project).size
-    if (n === 0) return EMPTY
-    const text = nudgeText(n, project)
+    const responses = unpickedResponses(db, sessionScope(db, ctx, project).projects)
+    if (responses.length === 0) return EMPTY
+    const text = nudgeText(responses)
     if (ctx.sub === 'prompt-submit') {
       // VERIFIED: additionalContext must be nested inside hookSpecificOutput —
       // a top-level copy is not ignored, it earns a user-visible
@@ -604,62 +669,98 @@ function cmdSweep(ctx: Ctx): HookResult {
 
 // ── #21's async half: the answer watcher ────────────────────────────────────
 
-function lockPath(dbPath: string, project: string, sessionId?: string): string {
-  const session = sessionId ? `-${safeSegment(sessionId)}` : ''
-  return join(stateDir(dbPath), `watch-${safeSegment(project)}${session}.lock`)
+function respond(responses: Map<string, number>, project: string): void {
+  responses.set(project, (responses.get(project) ?? 0) + 1)
 }
 
-function lockHeld(file: string): boolean {
-  try {
-    const pid = Number(readFileSync(file, 'utf8').trim())
-    if (!Number.isInteger(pid) || pid <= 0) return false
-    process.kill(pid, 0)
-    return true
-  } catch {
-    return false
-  }
+function wake(responses: ReadonlyArray<readonly [string, number]>): HookResult {
+  return { stdout: '', stderr: `${nudgeText(responses)}\n`, exitCode: 2 }
+}
+
+// The open questions a watcher can see: every one in the session's projects,
+// plus any its linked servers raised under another project.
+function visibleQuestions(db: Database.Database, scope: SessionScope): Item[] {
+  const seen = new Map<string, Item>()
+  for (const project of scope.projects) for (const q of listPending(db, project)) seen.set(q.id, q)
+  for (const q of listSessionQuestions(db, [...scope.servers])) seen.set(q.id, q)
+  return [...seen.values()]
 }
 
 // Runs on Stop with asyncRewake: poll until the human answers, then exit 2 —
 // which is what wakes the model. stderr carries the payload, so the shell
 // wrapper must NOT redirect it.
+//
+// Issue #253 — it waits on every question and blocked row still unanswered
+// when it armed, in each project the session uses (project-wide, as before),
+// and, while this session's servers are linked, on any question they raise
+// later. Unlinked, the set stays the one captured at arming. Anything already
+// answered at arming never wakes it: an unread answer woke it at once, and
+// that immediate wake takes no lease, so an older watcher keeps waiting on its
+// own requests. One watcher per Claude Code process, or per harness session
+// and cwd project when unlinked: a newer Stop's watcher takes the lease, and
+// this one leaves at its next poll, waking first only if one of its own
+// requests was answered since its last poll.
 async function cmdWatch(ctx: Ctx): Promise<HookResult> {
   const { project } = scopeOf(ctx.ev)
   const db = openDb(ctx.dbPath) // opened ONCE for the whole loop
-  const lock = lockPath(ctx.dbPath, project, ctx.ev.session_id)
-  let held = false
+  const parent = process.ppid
+  const lease = { key: '', token: `${process.pid}-${randomUUID()}`, held: false }
+  const claim = (): void => {
+    claimHookWatch(db, lease.key, lease.token)
+    lease.held = true
+  }
   try {
-    const initialItems = listPending(db, project)
-    const watchedItems = new Set(initialItems.filter((item) => !item.reply).map((item) => item.id))
-    const watchedRows = listUnansweredBoardRows(db, project)
-    const ready = unpickedReplies(initialItems) + unpickedBoardRows(db, project).size
-    if (ready && ctx.ev.stop_hook_active !== true) {
-      return { stdout: '', stderr: `${nudgeText(ready, project)}\n`, exitCode: 2 }
-    }
-    if (!watchedItems.size && !watchedRows.length) return EMPTY
-    if (lockHeld(lock)) return EMPTY
-    mkdirSync(stateDir(ctx.dbPath), { recursive: true })
-    writeFileSync(lock, String(process.pid))
-    held = true
+    const scope = sessionScope(db, ctx, project)
+    lease.key = scope.host !== null
+      ? `host:${scope.host}`
+      : ctx.ev.session_id ? `session:${ctx.ev.session_id}:${project}` : `project:${project}`
+    // What it waits on is read before what already waits unread, so an answer
+    // landing between the reads is in one of them: it wakes at once or is awaited.
+    const asked = visibleQuestions(db, scope)
+    const answered = new Set(asked.filter((item) => item.reply).map((item) => item.id))
+    const awaited = new Set(asked.filter((item) => !item.reply).map((item) => item.id))
+    const watchedRows = scope.projects.flatMap((p) => listUnansweredBoardRows(db, p).map((row) => ({ ...row, project: p })))
+    const ready = unpickedResponses(db, scope.projects)
+    if (ready.length && ctx.ev.stop_hook_active !== true) return wake(ready)
+    // a linked watcher stays for the session's later questions, even with nothing waiting yet
+    if (scope.host === null && !awaited.size && !watchedRows.length) return EMPTY
+    claim()
     const deadline = Date.now() + ctx.opts.watchSecs * 1000
     while (Date.now() < deadline) {
-      const pending = listPending(db, project).filter((item) => watchedItems.has(item.id))
-      let rowResponses = 0
-      let waitingOnRow = false
+      // Claude Code exited: nothing is left to wake
+      if (process.ppid !== parent) return EMPTY
+      // A newer Stop's watcher counts what was answered before it armed as
+      // already answered, so a superseded watcher still looks once more.
+      const superseded = !holdsHookWatch(db, lease.key, lease.token)
+      const responses = new Map<string, number>()
+      let waiting = false
+      for (const item of visibleQuestions(db, scope)) {
+        if (answered.has(item.id) || !(awaited.has(item.id) || scope.servers.has(item.session ?? ''))) continue
+        if (item.reply) respond(responses, item.project)
+        else waiting = true
+      }
       for (const row of watchedRows) {
         const state = boardResponseState(db, row.id, row.action_version)
-        if (state === 'reply') rowResponses++
-        if (state === undefined) waitingOnRow = true
+        if (state === 'reply') respond(responses, row.project)
+        if (state === undefined) waiting = true
       }
-      // Only requests captured when arming can wake this host; delivery is not acknowledgement.
-      const n = pending.filter((item) => item.reply).length + rowResponses
-      if (n > 0) return { stdout: '', stderr: `${nudgeText(n, project)}\n`, exitCode: 2 }
-      if (pending.length === 0 && !waitingOnRow) return EMPTY
+      // Only these requests can wake this host; delivery is not acknowledgement.
+      if (responses.size) {
+        // the cwd project first, then the session's others; a project it registered after arming last
+        const rank = (p: string): number => {
+          const at = scope.projects.indexOf(p)
+          return at === -1 ? scope.projects.length : at
+        }
+        return wake([...responses].sort(([a], [b]) => rank(a) - rank(b)))
+      }
+      if (superseded || (scope.host === null && !waiting)) return EMPTY
       await delay(ctx.opts.watchPollMs)
     }
     return EMPTY
   } finally {
+    if (lease.held) {
+      try { releaseHookWatch(db, lease.key, lease.token) } catch { /* a stale lease is pruned after a day */ }
+    }
     db.close()
-    if (held) { try { unlinkSync(lock) } catch { /* already gone */ } }
   }
 }

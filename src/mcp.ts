@@ -84,10 +84,14 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
   // restart and what would update each one. That rides on this existing write
   // and never counts as activity.
   const build = { server_version: AGENT_INBOX_VERSION, server_source: detectServerSource(import.meta.url) }
+  // Issue #253 — and which process started this server. Claude Code starts a
+  // stdio server and its hooks directly, so a hook finds the servers of its own
+  // session by its parent pid; the server's own pid lets it check they still run.
+  const host = () => ({ host_pid: process.ppid, server_pid: process.pid })
   const registerPresence = (): void => {
     try {
       const s = scope.get(clientName())
-      upsertActivity(db, { session: sessionId, project: s.project, stream: s.stream, agent: s.agent, doing: 'open', idle: true, claim: false, ...build })
+      upsertActivity(db, { session: sessionId, project: s.project, stream: s.stream, agent: s.agent, doing: 'open', idle: true, claim: false, ...build, ...host() })
     } catch { /* presence must never break the server */ }
   }
 
@@ -338,11 +342,11 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
       // row while the machine slept, the next status call recreates it whole.
       if (done) {
         // the effort is over but the session lives on — revert to open presence
-        upsertActivity(db, { session: sessionId, project: s.project, stream: s.stream, agent: s.agent, doing: 'open', idle: true, children: [], ...build })
+        upsertActivity(db, { session: sessionId, project: s.project, stream: s.stream, agent: s.agent, doing: 'open', idle: true, children: [], ...build, ...host() })
         return { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] }
       }
       if (!doing) throw new Error('doing is required unless done: true')
-      upsertActivity(db, { session: sessionId, project: s.project, stream: s.stream, agent: s.agent, doing, detail, children, ...build })
+      upsertActivity(db, { session: sessionId, project: s.project, stream: s.stream, agent: s.agent, doing, detail, children, ...build, ...host() })
       return { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] }
     },
   )

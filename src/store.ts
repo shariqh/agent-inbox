@@ -347,6 +347,11 @@ function runMigrations(db: Database.Database): void {
       lease_until TEXT NOT NULL,
       PRIMARY KEY (repo, number)
     );
+    CREATE TABLE IF NOT EXISTS hook_watch_claims (
+      claim_key TEXT PRIMARY KEY,
+      token TEXT NOT NULL,
+      claimed_at TEXT NOT NULL
+    );
   `)
   ensureColumn(db, 'board_rows', 'context', `TEXT NOT NULL DEFAULT ''`)
   ensureColumn(db, 'board_rows', 'annotated_at', 'TEXT')
@@ -365,6 +370,13 @@ function runMigrations(db: Database.Database): void {
   // Display only, never a liveness or work signal.
   ensureColumn(db, 'activity', 'server_version', 'TEXT')
   ensureColumn(db, 'activity', 'server_source', 'TEXT')
+  // issue #253 — the process that started this session's MCP server (Claude
+  // Code, for a stdio server it spawned) and the server's own pid. A Claude
+  // Code hook is a child of that same process, so its parent pid finds the
+  // servers of its own session. NULL on legacy rows and on rows older servers
+  // write: no hook links to them, and the hook watches the cwd project alone.
+  ensureColumn(db, 'activity', 'host_pid', 'INTEGER')
+  ensureColumn(db, 'activity', 'server_pid', 'INTEGER')
   migrateActivitySynopsis(db)
   ensureColumn(db, 'items', 'context', `TEXT NOT NULL DEFAULT ''`)
   ensureColumn(db, 'items', 'next_step', `TEXT NOT NULL DEFAULT ''`)
@@ -2405,6 +2417,13 @@ export interface ActivityUpdate {
    */
   server_version?: string
   server_source?: ServerSource
+  /**
+   * The process that started this session's MCP server and the server's own
+   * pid (issue #253), which let a Claude Code hook find the servers of its own
+   * session. Kept on omission, like the build fields.
+   */
+  host_pid?: number
+  server_pid?: number
 }
 
 // One statement for the `activity` presence row, plus (when this write is a
@@ -2417,11 +2436,11 @@ const upsertActivityTxn = (db: Database.Database, a: ActivityUpdate): void => {
   // One statement, two modes. Registration can create idle presence but can
   // neither replace a live claim nor write its historical caption.
   db.prepare(
-    `INSERT INTO activity (session, project, stream, agent, doing, last_doing, detail, children, idle, started_at, updated_at, server_version, server_source)
+    `INSERT INTO activity (session, project, stream, agent, doing, last_doing, detail, children, idle, started_at, updated_at, server_version, server_source, host_pid, server_pid)
      VALUES (
        @session, @project, @stream, @agent, @doing,
        CASE WHEN @claim = 1 AND @idle = 0 AND @doing <> '' AND @doing <> 'open' THEN @doing ELSE '' END,
-       @detail, @children, @idle, @now, @now, @server_version, @server_source
+       @detail, @children, @idle, @now, @now, @server_version, @server_source, @host_pid, @server_pid
      )
      ON CONFLICT(session) DO UPDATE SET
        project = @project, stream = @stream, agent = @agent,
@@ -2435,6 +2454,8 @@ const upsertActivityTxn = (db: Database.Database, a: ActivityUpdate): void => {
        idle     = CASE WHEN @claim = 1 THEN @idle ELSE idle END,
        server_version = COALESCE(@server_version, server_version),
        server_source  = COALESCE(@server_source, server_source),
+       host_pid   = COALESCE(@host_pid, host_pid),
+       server_pid = COALESCE(@server_pid, server_pid),
        updated_at = @now, ended_at = NULL`,
   ).run({
     session: a.session,
@@ -2448,6 +2469,8 @@ const upsertActivityTxn = (db: Database.Database, a: ActivityUpdate): void => {
     claim: a.claim === false ? 0 : 1,
     server_version: a.server_version ?? null,
     server_source: a.server_source ?? null,
+    host_pid: a.host_pid ?? null,
+    server_pid: a.server_pid ?? null,
     now,
   })
   // Registration (`claim: false`) never touches spans — it is not speaking for
@@ -2507,6 +2530,10 @@ export const CLAIM_COLD_MS = 30 * 60000
 
 const claimCutoff = (nowMs: number): string => new Date(nowMs - CLAIM_COLD_MS).toISOString()
 
+// How long a presence row outlives its last liveness tick (5 minutes apart):
+// past this, its server crashed rather than went quiet.
+const PRESENCE_STALE_MINUTES = 15
+
 // A REAL tool call: proof the agent is doing something, not just running.
 //
 // It writes both stamps, and it is also where a claim that already went cold is
@@ -2551,7 +2578,7 @@ export function recordActivityCall(db: Database.Database, session: string): void
 
 export function listActivity(db: Database.Database, opts: { staleMinutes?: number } = {}): Activity[] {
   const now = Date.now()
-  const cutoff = new Date(now - (opts.staleMinutes ?? 15) * 60000).toISOString()
+  const cutoff = new Date(now - (opts.staleMinutes ?? PRESENCE_STALE_MINUTES) * 60000).toISOString()
   const cold = claimCutoff(now)
   const rows = db
     .prepare(`SELECT session, project, stream, agent, doing, last_doing, detail, children, idle, started_at, updated_at, last_call_at, server_version, server_source
@@ -2580,6 +2607,64 @@ export function listActivity(db: Database.Database, opts: { staleMinutes?: numbe
     if (a.idle) return lastActive(a) < lastActive(b) ? 1 : lastActive(a) > lastActive(b) ? -1 : 0
     return a.started_at < b.started_at ? -1 : a.started_at > b.started_at ? 1 : 0
   })
+}
+
+// ── issue #253: what a Claude Code hook may know about its own session ──────
+//
+// The hook and the session's stdio MCP server are both children of the Claude
+// Code process, and the server records that parent as `host_pid`. These reads
+// find a live session's servers by it: only rows still refreshed by their
+// heartbeat and not ended, as in listActivity. Whether each server process is
+// still running is the caller's check, not the store's.
+export interface HostSession {
+  session: string
+  project: string
+  server_pid: number | null
+}
+
+export function listHostSessions(db: Database.Database, hostPid: number): HostSession[] {
+  const cutoff = new Date(Date.now() - PRESENCE_STALE_MINUTES * 60000).toISOString()
+  return db
+    .prepare(`SELECT session, project, server_pid FROM activity
+               WHERE host_pid = ? AND ended_at IS NULL AND updated_at >= ?
+               ORDER BY started_at ASC, session ASC`)
+    .all(hostPid, cutoff) as HostSession[]
+}
+
+// The open questions these MCP sessions raised, whatever project each was
+// filed under.
+export function listSessionQuestions(db: Database.Database, sessions: readonly string[]): Item[] {
+  if (sessions.length === 0) return []
+  const rows = db
+    .prepare(`SELECT * FROM items
+               WHERE status = 'open' AND kind = 'question'
+                 AND session IN (SELECT value FROM json_each(?))
+               ORDER BY created_at ASC`)
+    .all(JSON.stringify(sessions)) as StoredItem[]
+  return rows.map(parseItem)
+}
+
+// The Claude hook's answer-watcher lease: one row per watched host (or harness
+// session). A newer Stop's claim replaces the token, so the older watcher sees
+// it has lost the lease at its next poll and exits. Release deletes only the
+// caller's own token, so a watcher can never drop a newer watcher's lease.
+// Leases a killed watcher left behind are pruned after a day.
+export function claimHookWatch(db: Database.Database, key: string, token: string): void {
+  const now = Date.now()
+  db.transaction(() => {
+    db.prepare(`DELETE FROM hook_watch_claims WHERE claimed_at < ?`).run(new Date(now - 24 * 60 * 60000).toISOString())
+    db.prepare(`INSERT INTO hook_watch_claims (claim_key, token, claimed_at) VALUES (?, ?, ?)
+                ON CONFLICT(claim_key) DO UPDATE SET token = excluded.token, claimed_at = excluded.claimed_at`)
+      .run(key, token, new Date(now).toISOString())
+  }).immediate()
+}
+
+export function holdsHookWatch(db: Database.Database, key: string, token: string): boolean {
+  return db.prepare(`SELECT 1 FROM hook_watch_claims WHERE claim_key = ? AND token = ?`).get(key, token) !== undefined
+}
+
+export function releaseHookWatch(db: Database.Database, key: string, token: string): void {
+  db.prepare(`DELETE FROM hook_watch_claims WHERE claim_key = ? AND token = ?`).run(key, token)
 }
 
 // ── activity spans: truthful claim intervals, read-only for the dashboard ────

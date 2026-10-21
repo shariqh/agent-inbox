@@ -584,6 +584,8 @@ or rows from issues.
 
 ## §14 — Decisions for Shariq
 
+**Decided 2026-10-21:** Shariq approved the recommended answer to every question below: both dependency sources ship, grouping is off by default as a saved preference with a Plans header switch, Plan flow keeps the agent's row order with "waits on"/"unblocks" buttons, and v1.5 is PRs A–F.
+
 **D1. Which dependency sources ship?**
 
 1. **Both: GitHub "blocked by" read by the poller, and an agent-written `waits_on` row field for

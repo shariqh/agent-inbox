@@ -1,10 +1,12 @@
-// test/scratch.ts — temporary directories a test file removes after each test
-// (#240), so repeated runs do not fill $TMPDIR with scratch HOMEs and runtimes.
+// test/scratch.ts — temporary directories removed after each test (#240) or,
+// at the latest, after each test file (#245), so repeated runs do not fill
+// $TMPDIR with scratch HOMEs, databases and runtimes.
 //
 // Deliberately NOT named *.test.ts: it is imported, never collected.
 //
-// A file that makes scratch directories, directly or through a helper such as
-// hooks-runtime.ts, calls removeScratchDirs() from its afterEach.
+// test/scratch-setup.ts removes whatever a file left when the file ends. A file
+// that makes scratch directories only inside its tests, directly or through a
+// helper such as hooks-runtime.ts, also calls removeScratchDirs() from its afterEach.
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'

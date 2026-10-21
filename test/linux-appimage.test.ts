@@ -1,7 +1,6 @@
 import {
   chmodSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   readdirSync,
   readlinkSync,
@@ -30,6 +29,7 @@ import {
   verifyNormalizedRuntimePrefix,
   verifySquashfsModes,
 } from '../scripts/verify-linux-appimage.mjs'
+import { scratchDir } from './scratch.js'
 
 describe('Linux AppImage packaging', () => {
   it('derives the one canonical artifact name from an exact package version', () => {
@@ -43,7 +43,7 @@ describe('Linux AppImage packaging', () => {
   })
 
   it('stages only the required AppImage metadata, icon, launcher, and thin application tree', () => {
-    const root = mkdtempSync(join(tmpdir(), 'appimage-layout-'))
+    const root = scratchDir('appimage-layout-')
     const invalidThinApp = join(root, 'thin-file')
     const thinApp = join(root, 'thin')
     const appDir = join(root, 'AppDir')
@@ -137,7 +137,7 @@ describe('Linux AppImage packaging', () => {
   })
 
   it('normalizes only appimagetool reserved MD5 bytes in the pinned runtime prefix', () => {
-    const root = mkdtempSync(join(tmpdir(), 'appimage-runtime-prefix-'))
+    const root = scratchDir('appimage-runtime-prefix-')
     const runtime = join(root, 'runtime')
     const bytes = Buffer.alloc(512)
     bytes.set([0x7f, 0x45, 0x4c, 0x46, 2, 1])
@@ -296,7 +296,7 @@ describe('Linux AppImage packaging', () => {
   })
 
   it('extracts under a child-only zero umask and preserves the caller umask', () => {
-    const root = mkdtempSync(join(tmpdir(), 'appimage-extraction-'))
+    const root = scratchDir('appimage-extraction-')
     const fakeAppImage = join(root, 'fake.AppImage')
     writeFileSync(fakeAppImage, [
       '#!/bin/sh',
@@ -324,7 +324,7 @@ describe('Linux AppImage packaging', () => {
   })
 
   it('runs appimagetool under a child-only canonical umask and preserves exact argv', () => {
-    const root = mkdtempSync(join(tmpdir(), 'appimagetool-umask-'))
+    const root = scratchDir('appimagetool-umask-')
     const home = join(root, 'home')
     const tool = join(root, 'fake-appimagetool')
     const runtime = join(root, 'runtime')

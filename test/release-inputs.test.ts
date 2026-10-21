@@ -1,5 +1,4 @@
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
@@ -13,6 +12,7 @@ import {
   validateInstalledReleaseTools,
   verifyArchiveDigest,
 } from '../scripts/release-inputs.mjs'
+import { scratchDir } from './scratch.js'
 
 describe('macOS release inputs', () => {
   it('pins the exact Node and Electron release contract in one validated manifest', () => {
@@ -57,13 +57,13 @@ describe('macOS release inputs', () => {
   })
 
   it('fails closed on a pinned archive hash mismatch', () => {
-    const archive = join(mkdtempSync(join(tmpdir(), 'release-input-')), 'node.tar.xz')
+    const archive = join(scratchDir('release-input-'), 'node.tar.xz')
     writeFileSync(archive, 'not the official archive')
     expect(() => verifyArchiveDigest(archive, '0'.repeat(64))).toThrow(/SHA-256 mismatch/)
   })
 
   it('removes partial output when a network download fails', async () => {
-    const destination = join(mkdtempSync(join(tmpdir(), 'release-download-')), 'node.tar.xz')
+    const destination = join(scratchDir('release-download-'), 'node.tar.xz')
     await expect(downloadArchive({
       url: 'https://nodejs.invalid/node.tar.xz',
       destination,

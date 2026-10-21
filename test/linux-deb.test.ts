@@ -2,7 +2,6 @@ import {
   chmodSync,
   lstatSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   readlinkSync,
   symlinkSync,
@@ -41,6 +40,7 @@ import {
   normalizeTreeTimes,
   renderLinuxDesktopEntry,
 } from '../scripts/linux-package-common.mjs'
+import { scratchDir } from './scratch.js'
 
 function octal(value: number, width: number): Buffer {
   return Buffer.from(`${value.toString(8).padStart(width - 1, '0')}\0`, 'ascii')
@@ -87,7 +87,7 @@ function tarEntry(options: Parameters<typeof tarHeader>[0], content = Buffer.all
 }
 
 function writeTar(entries: Buffer[]): string {
-  const root = mkdtempSync(join(tmpdir(), 'linux-deb-tar-'))
+  const root = scratchDir('linux-deb-tar-')
   const path = join(root, 'archive.tar')
   writeFileSync(path, Buffer.concat([...entries, Buffer.alloc(1024)]))
   return path
@@ -116,7 +116,7 @@ function arMember(name: string, content: Buffer, padding = '\n'): Buffer {
 
 describe('Linux DEB archive gates', () => {
   it('parses the exact ar member metadata and payload identity', () => {
-    const root = mkdtempSync(join(tmpdir(), 'linux-deb-ar-'))
+    const root = scratchDir('linux-deb-ar-')
     const path = join(root, 'fixture.deb')
     writeFileSync(path, Buffer.concat([
       Buffer.from('!<arch>\n'),
@@ -193,7 +193,7 @@ describe('Linux DEB archive gates', () => {
 
     const corrupt = readFileSync(writeTar([tarEntry({ name: './file' }, Buffer.from('x'))]))
     corrupt[0] = (corrupt[0] ?? 0) ^ 1
-    const root = mkdtempSync(join(tmpdir(), 'linux-deb-corrupt-'))
+    const root = scratchDir('linux-deb-corrupt-')
     const corruptPath = join(root, 'corrupt.tar')
     writeFileSync(corruptPath, corrupt)
     expect(() => parseTarArchive(corruptPath)).toThrow(LinuxDebArchiveError)
@@ -202,7 +202,7 @@ describe('Linux DEB archive gates', () => {
 
 describe('shared Linux package staging', () => {
   it('copies contained trees under deterministic modes and rejects privilege or escape', () => {
-    const root = mkdtempSync(join(tmpdir(), 'linux-package-tree-'))
+    const root = scratchDir('linux-package-tree-')
     const source = join(root, 'source')
     const destination = join(root, 'destination')
     mkdirSync(join(source, 'nested'), { recursive: true, mode: 0o700 })
@@ -226,7 +226,7 @@ describe('shared Linux package staging', () => {
   })
 
   it('normalizes timestamps and keeps the shared desktop contract exact', () => {
-    const root = mkdtempSync(join(tmpdir(), 'linux-package-time-'))
+    const root = scratchDir('linux-package-time-')
     mkdirSync(join(root, 'dir'))
     writeFileSync(join(root, 'dir', 'file'), 'payload')
     normalizeTreeTimes(root, 1_700_000_000)
@@ -255,7 +255,7 @@ describe('shared Linux package staging', () => {
   })
 
   it('requires a plain 0755 Chromium sandbox input', () => {
-    const root = mkdtempSync(join(tmpdir(), 'linux-package-sandbox-'))
+    const root = scratchDir('linux-package-sandbox-')
     writeFileSync(join(root, 'chrome-sandbox'), 'sandbox', { mode: 0o755 })
     expect(() => assertChromeSandboxInput(root)).not.toThrow()
     chmodSync(join(root, 'chrome-sandbox'), 0o4755)
@@ -317,7 +317,7 @@ describe('Linux DEB package contract', () => {
   })
 
   it('stages the exact package layout under hostile ambient umask', () => {
-    const root = mkdtempSync(join(tmpdir(), 'linux-deb-stage-'))
+    const root = scratchDir('linux-deb-stage-')
     const app = join(root, 'thin')
     const packageRoot = join(root, 'package')
     const icon = join(root, 'icon.png')

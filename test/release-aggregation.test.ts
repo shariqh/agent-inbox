@@ -1,12 +1,10 @@
 import { createHash } from 'node:crypto'
 import {
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
@@ -15,6 +13,7 @@ import {
   validateLinuxReleaseArtifacts,
 } from '../scripts/release-aggregation.mjs'
 import { loadLinuxReleaseInputs } from '../scripts/linux-release-inputs.mjs'
+import { scratchDir } from './scratch.js'
 
 const root = resolve(process.cwd())
 const sourceCommit = 'a'.repeat(40)
@@ -31,7 +30,7 @@ const context = {
 const work: string[] = []
 
 function tempDir() {
-  const path = mkdtempSync(join(tmpdir(), 'release-aggregation-'))
+  const path = scratchDir('release-aggregation-')
   work.push(path)
   return path
 }

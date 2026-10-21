@@ -22,14 +22,14 @@
 // within one file.
 import { afterEach, beforeEach, expect, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
-import { mkdtempSync, readFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type Database from 'better-sqlite3'
 import { openDb } from '../../src/store.js'
 import { createViewer } from '../../src/viewer.js'
 import type { ViewerOpts } from '../../src/viewer.js'
+import { scratchDir } from '../scratch.js'
 
 // NOT `new URL('../../public/x', import.meta.url)`. The rest of test/ uses that form
 // happily, but those files run in the NODE environment (ssr transform mode). A jsdom
@@ -46,7 +46,7 @@ const readPublic = (name: string): string => readFileSync(join(PUBLIC_DIR, name)
 export function freshDb(): Database.Database {
   const root = process.env.AGENT_INBOX_TEST_DB_ROOT
   if (root) return openDb(join(root, `inbox-dom-${randomUUID()}.db`))
-  return openDb(join(mkdtempSync(join(tmpdir(), 'inbox-dom-')), 'inbox.db'))
+  return openDb(join(scratchDir('inbox-dom-'), 'inbox.db'))
 }
 
 /**
@@ -124,7 +124,7 @@ export function mountViewer(db: Database.Database, { holdFetch = false, viewer, 
   // #197 part 2: /api/setup and /api/version read each host's registration from
   // a home directory's config files. A test reads an empty scratch home unless
   // it brings its own — never the real one.
-  const app = createViewer(db, { agentHome: mkdtempSync(join(tmpdir(), 'inbox-dom-home-')), ...viewer })
+  const app = createViewer(db, { agentHome: scratchDir('inbox-dom-home-'), ...viewer })
   const posts: PostRecord[] = []
   let failStatus: number | null = null
   let release: (() => void) | null = null

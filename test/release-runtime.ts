@@ -16,10 +16,10 @@
 // Paths resolve through node:path, never `new URL(…, import.meta.url)`: jsdom
 // test files run in Vite's web transform mode (see test/dom/harness.ts).
 import { createHash } from 'node:crypto'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
-import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
+import { scratchDir } from './scratch.js'
 
 const PAYLOAD_CLI = resolve(import.meta.dirname, '..', 'scripts', 'runtime-payload.mjs')
 const HOST = 'darwin-arm64'
@@ -93,7 +93,7 @@ export interface PayloadOptions {
 
 /** Install a real, verifiable runtime of `version` under `runtimeRoot`, exactly as the installer lays it out. */
 export function installRuntimeVersion(runtimeRoot: string, version: string, opts: PayloadOptions = {}): string {
-  const scratch = mkdtempSync(join(tmpdir(), 'release-staged-'))
+  const scratch = scratchDir('release-staged-')
   try {
     const staged = join(scratch, 'payload')
     const runtimeId = writePayload(staged, version, opts)
@@ -117,8 +117,8 @@ export function registerHost(home: string, host: AgentHost, command: string, ent
 }
 
 export function releaseRuntime(version: string, opts: { hostPayload?: boolean } = {}): ReleaseRuntime {
-  const appRoot = mkdtempSync(join(tmpdir(), 'release-bundle-'))
-  const home = mkdtempSync(join(tmpdir(), 'release-home-'))
+  const appRoot = scratchDir('release-bundle-')
+  const home = scratchDir('release-home-')
   const runtimeRoot = join(home, 'runtime')
   const payloadDir = join(appRoot, 'runtime', HOST)
   const runtimeId = writePayload(payloadDir, version)

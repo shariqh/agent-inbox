@@ -1030,10 +1030,17 @@ not evidence — delete it or move it to a source pin.
 - Strict tsc, `noUncheckedIndexedAccess: true` — array access is `T | undefined`; use `!`/
   guards, keep `npm run typecheck` clean.
 - **TDD.** Every change: failing test → red → implement → green. Tests use **real** temp
-  SQLite DBs (`AGENT_INBOX_DB`/`mkdtempSync`), never mock the store. The MCP test is a real
-  spawn-the-server round-trip. *(#240)* Scratch HOMEs and runtimes come from `scratchDir()`
-  in `test/scratch.ts`, with `removeScratchDirs()` in `afterEach`, so repeated runs do not
-  fill `$TMPDIR`; the hook, installer and Setup suites already work this way.
+  SQLite DBs (`AGENT_INBOX_DB`/`scratchDir()`), never mock the store. The MCP test is a real
+  spawn-the-server round-trip. *(#240, #245)* Scratch directories a test makes come
+  from `scratchDir()` in `test/scratch.ts`, so repeated runs do not fill `$TMPDIR`: the
+  `test/scratch-setup.ts` setupFile removes a file's leftovers once it ends, and a file whose
+  tests are independent also calls `removeScratchDirs()` from `afterEach` (a directory made
+  in `beforeAll` or at module level must wait for the file's end). The one exception is
+  `test/hook.test.ts`'s module-level project repository: that file removes its scratch
+  directories after every test, so it makes the repository with `mkdtempSync` and removes it
+  in its own `afterAll`. Hook tests run in a git
+  repository whose origin the test names, never the checkout itself, so a copy or fork
+  under another name passes them too.
 - **Test environments are per-file.** There is no global `test.environment`: the node suite
   (store, mcp, infer) stays on node and a DOM file opts in with a
   `// @vitest-environment jsdom` docblock. `test/dom/harness.ts` is deliberately NOT named

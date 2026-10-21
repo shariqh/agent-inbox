@@ -1,6 +1,4 @@
 import { describe, expect, it } from 'vitest'
-import { mkdtempSync } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
@@ -13,6 +11,7 @@ import {
   replyItem,
   upsertBoard,
 } from '../src/store.js'
+import { scratchDir } from './scratch.js'
 
 async function connection(dbPath: string): Promise<Client> {
   const transport = new StdioClientTransport({
@@ -35,7 +34,7 @@ async function call(client: Client, name: string, args: Record<string, unknown>)
 
 describe('MCP action lifecycle contract', () => {
   it('exposes ownership/impact fields and enforces decision-vs-task option shapes', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-action-contract-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-action-contract-'), 'inbox.db')
     const client = await connection(dbPath)
     const tools = new Map((await client.listTools()).tools.map((tool) => [tool.name, tool]))
 
@@ -104,7 +103,7 @@ describe('MCP action lifecycle contract', () => {
   }, 20000)
 
   it('carries response kinds, outcomes, and atomic row advancement end to end', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-action-flow-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-action-flow-'), 'inbox.db')
     const client = await connection(dbPath)
 
     await call(client, 'board_upsert', {
@@ -258,7 +257,7 @@ describe('MCP action lifecycle contract', () => {
   }, 25000)
 
   it('reads an archived board by title so agents can obtain current CAS revisions', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-archived-read-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-archived-read-'), 'inbox.db')
     const client = await connection(dbPath)
     await call(client, 'board_upsert', {
       title: 'Completed rollout',
@@ -276,7 +275,7 @@ describe('MCP action lifecycle contract', () => {
   // history is not JSON: a tripwire no store write can produce, so any path that
   // still loads them fails loudly here instead of merely slowly in production.
   it('resolves archived and new titles exactly as before without loading other projects’ archived boards', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-archived-titles-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-archived-titles-'), 'inbox.db')
     const store = openDb(dbPath)
     for (const project of ['decoy-a', 'decoy-b']) {
       const { boardId } = upsertBoard(store, {

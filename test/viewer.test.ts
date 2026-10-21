@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { cpSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync } from 'node:fs'
+import { cpSync, mkdirSync, writeFileSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
@@ -9,15 +9,16 @@ import { openDb, insertItem, listItems, getItem, annotateItem, replyItem, snooze
 import { createViewer } from '../src/viewer.js'
 import { releaseRuntime, registerHost } from './release-runtime.js'
 import { facts, snapshot } from './issue-fixtures.js'
+import { scratchDir } from './scratch.js'
 
 function freshDb(): Database.Database {
-  return openDb(join(mkdtempSync(join(tmpdir(), 'view-')), 'inbox.db'))
+  return openDb(join(scratchDir('view-'), 'inbox.db'))
 }
 
 // /api/setup and /api/version read each host's registration from the home
 // directory's config files (#197). Every test here points them at an empty
 // scratch home, never the real one.
-const NO_AGENTS = { agentHome: mkdtempSync(join(tmpdir(), 'view-home-')) }
+const NO_AGENTS = { agentHome: scratchDir('view-home-') }
 
 function upsertBoard(db: Database.Database, input: Parameters<typeof writeBoard>[1]) {
   const existing = [...listBoards(db), ...listBoards(db, { status: 'archived' })]
@@ -125,7 +126,7 @@ describe('viewer api', () => {
   describe('GET /api/version — what a restarted session would load (#197)', () => {
     const PKG = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }
     const setupInfo = (info: unknown): string => {
-      const path = join(mkdtempSync(join(tmpdir(), 'view-version-')), 'setup-info.json')
+      const path = join(scratchDir('view-version-'), 'setup-info.json')
       writeFileSync(path, JSON.stringify(info))
       return path
     }
@@ -133,7 +134,7 @@ describe('viewer api', () => {
     const UNREGISTERED = { claude: { kind: 'none' }, copilot: { kind: 'none' } }
 
     it('a checkout, or a bundle packaged from one, answers with its own package version; the runtime question does not apply', async () => {
-      const missing = join(mkdtempSync(join(tmpdir(), 'view-version-')), 'setup-info.json')
+      const missing = join(scratchDir('view-version-'), 'setup-info.json')
       const res = await createViewer(db, { ...NO_AGENTS, setupInfoPath: missing }).request('/api/version')
       expect(res.status).toBe(200)
       expect(await res.json()).toEqual({ current: PKG.version, mode: 'dev', runtimeInstalled: null, updatable: false, hosts: UNREGISTERED })
@@ -198,7 +199,7 @@ describe('viewer api', () => {
       expect(JSON.stringify(body)).not.toContain(release.home)
 
       // a checkout and an unrecognized command are reported by kind alone
-      const checkout = mkdtempSync(join(tmpdir(), 'view-checkout-'))
+      const checkout = scratchDir('view-checkout-')
       mkdirSync(join(checkout, 'dist'))
       writeFileSync(join(checkout, 'package.json'), '{"name":"agent-inbox"}')
       writeFileSync(join(checkout, 'dist', 'mcp-server.js'), '')
@@ -638,7 +639,7 @@ describe('viewer api', () => {
 // the real /api/setup handler, with the real git subprocess doing the comparing.
 describe('GET /api/setup carries the build stamp (issue #40)', () => {
   function tmpRepo(): string {
-    const dir = mkdtempSync(join(tmpdir(), 'setup-repo-'))
+    const dir = scratchDir('setup-repo-')
     execFileSync('git', ['init', '-q'], { cwd: dir })
     execFileSync('git', ['config', 'user.email', 't@t.dev'], { cwd: dir })
     execFileSync('git', ['config', 'user.name', 't'], { cwd: dir })
@@ -649,7 +650,7 @@ describe('GET /api/setup carries the build stamp (issue #40)', () => {
     return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim()
   }
   function bakedFile(body: unknown): string {
-    const p = join(mkdtempSync(join(tmpdir(), 'setup-info-')), 'setup-info.json')
+    const p = join(scratchDir('setup-info-'), 'setup-info.json')
     writeFileSync(p, typeof body === 'string' ? body : JSON.stringify(body))
     return p
   }

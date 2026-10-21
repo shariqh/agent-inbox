@@ -10,8 +10,7 @@
 // they stand for the process that cannot change. Later slices add their own
 // frozen cases here (PR1b: closing_refs; PR2: plan and row links).
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
 import {
@@ -22,6 +21,7 @@ import { runHook } from '../src/hook.js'
 import { issueKeyFor } from '../public/issue-key.js'
 import { createViewer } from '../src/viewer.js'
 import { at, snapshot } from './issue-fixtures.js'
+import { scratchDir } from './scratch.js'
 
 const V131_SCHEMA = readFileSync(new URL('./fixtures/v1.3.1-schema.sql', import.meta.url), 'utf8')
 
@@ -160,7 +160,7 @@ describe('a v1.3.1 process sharing a hub with this build (issue #103)', () => {
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(Date.parse(at(60)))
-    dir = mkdtempSync(join(tmpdir(), 'mixed-version-'))
+    dir = scratchDir('mixed-version-')
     path = join(dir, 'inbox.db')
   })
 

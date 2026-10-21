@@ -56,13 +56,13 @@
 //     only caught by luck: `setInterval(alsoTick, …)` where `alsoTick` calls
 //     `heartbeat()` — one `recordActivityCall`, still in `heartbeat`, bug back.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync, readFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
 import ts from 'typescript'
 import { livenessTick } from '../src/mcp.js'
 import { openDb, upsertActivity, recordActivityCall, listActivity } from '../src/store.js'
+import { scratchDir } from './scratch.js'
 
 const START = Date.parse('2026-07-25T09:00:00.000Z')
 const CLAIM = 'Executing Track B — 18-task viewer redesign'
@@ -136,7 +136,7 @@ describe('the liveness tick moves liveness and nothing else (#45)', () => {
   let db: Database.Database
 
   beforeEach(() => {
-    db = openDb(join(mkdtempSync(join(tmpdir(), 'inbox-tick-')), 'inbox.db'))
+    db = openDb(join(scratchDir('inbox-tick-'), 'inbox.db'))
     vi.useFakeTimers()
     vi.setSystemTime(START)
   })

@@ -1,8 +1,9 @@
-import { afterEach, describe, it, expect, vi } from 'vitest'
-import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { afterAll, afterEach, describe, it, expect, vi } from 'vitest'
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { spawn, spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import {
   shouldBackstop, backoffMs, nudgeText, parseEvent, safeSegment, hookOpts,
@@ -26,6 +27,19 @@ const TSX_LOADER = pathToFileURL(createRequire(import.meta.url).resolve('tsx')).
 const NOW = Date.parse('2026-07-26T12:00:00Z')
 
 afterEach(removeScratchDirs)
+
+// The project every hook event runs in (#245). A hook infers its project from the
+// event's cwd, so these tests give it a git repository whose origin names
+// PROJECT, never the checkout's own folder or remote: a copy of this repo under
+// any name, or a fork, must pass them too. Made once per file and removed after
+// it, since afterEach removes every scratchDir().
+const PROJECT = 'hook-project'
+const PROJECT_DIR = mkdtempSync(join(tmpdir(), 'hook-project-'))
+for (const args of [['init', '-q'], ['remote', 'add', 'origin', `https://github.com/example/${PROJECT}.git`]]) {
+  const git = spawnSync('git', ['-C', PROJECT_DIR, ...args], { encoding: 'utf8' })
+  if (git.status !== 0) throw new Error(`git ${args[0]} failed: ${git.stderr}`)
+}
+afterAll(() => rmSync(PROJECT_DIR, { recursive: true, force: true }))
 
 function q(over: Partial<Item> = {}): Item {
   return {
@@ -222,10 +236,10 @@ function freshEnv(extra: Record<string, string> = {}): { env: Record<string, str
 }
 
 function ev(over: Record<string, unknown> = {}): string {
-  return JSON.stringify({ session_id: 'S1', cwd: process.cwd(), notification_type: 'permission_prompt', message: 'Claude needs your permission to run Bash', ...over })
+  return JSON.stringify({ session_id: 'S1', cwd: PROJECT_DIR, notification_type: 'permission_prompt', message: 'Claude needs your permission to run Bash', ...over })
 }
 
-function waitingRow(db: ReturnType<typeof openDb>, project = 'agent-inbox') {
+function waitingRow(db: ReturnType<typeof openDb>, project = PROJECT) {
   upsertBoard(db, {
     project, stream: 'main', agent: 'claude-code', title: 'Release',
     rows: [{ label: 'Upload', status: 'blocked', action_owner: 'task', note: 'The release is ready.', next_step: 'Upload the build.' }],
@@ -328,7 +342,7 @@ describe('hook: notification backstop (#10)', () => {
     expect(await runHook(['notification-commit'], ev(), env)).toEqual({ stdout: '' })
     const after = listItems(openDb(dbPath))
     expect(after).toHaveLength(1)
-    expect(after[0]).toMatchObject({ kind: 'question', status: 'open', agent: 'hook', session: 'S1', project: 'agent-inbox' })
+    expect(after[0]).toMatchObject({ kind: 'question', status: 'open', agent: 'hook', session: 'S1', project: PROJECT })
     expect(after[0]!.title).toMatch(/permission prompt/i)
     expect(after[0]!.context).toMatch(/backstop hook/)
   })
@@ -347,7 +361,7 @@ describe('hook: notification backstop (#10)', () => {
   it('is suppressed while a real agent question in this project is fresh', async () => {
     const { env, dbPath } = freshEnv()
     const db = openDb(dbPath)
-    insertItem(db, { project: 'agent-inbox', stream: 'main', agent: 'claude-code', kind: 'question', title: 'already asked' })
+    insertItem(db, { project: PROJECT, stream: 'main', agent: 'claude-code', kind: 'question', title: 'already asked' })
     await backstop(env)
     expect(listItems(db).filter((i) => i.agent === 'hook')).toHaveLength(0)
   })
@@ -370,11 +384,11 @@ describe('hook: notification backstop (#10)', () => {
 
   it('falls back to matching the message when the CLI sends no notification_type', async () => {
     const { env, dbPath } = freshEnv()
-    const noType = JSON.stringify({ session_id: 'S1', cwd: process.cwd(), message: 'Claude needs your permission to use Bash' })
+    const noType = JSON.stringify({ session_id: 'S1', cwd: PROJECT_DIR, message: 'Claude needs your permission to use Bash' })
     await runHook(['notification'], noType, env)
     await runHook(['notification-commit'], noType, env)
     expect(listItems(openDb(dbPath))).toHaveLength(1)
-    const chatty = JSON.stringify({ session_id: 'S2', cwd: process.cwd(), message: 'all done' })
+    const chatty = JSON.stringify({ session_id: 'S2', cwd: PROJECT_DIR, message: 'all done' })
     await runHook(['notification'], chatty, env)
     await runHook(['notification-commit'], chatty, env)
     expect(listItems(openDb(dbPath))).toHaveLength(1)
@@ -470,7 +484,7 @@ describe('hook: self-clearing (the trustworthy badge)', () => {
     await backstop(env, { session_id: 'S1' })
     await backstop({ ...env, AGENT_INBOX_HOOK_COOLDOWN_MS: '0' }, { session_id: 'S2' })
     const db = openDb(dbPath)
-    insertItem(db, { project: 'agent-inbox', stream: 'main', agent: 'claude-code', session: 'mcp-1', kind: 'question', title: 'a real flag' })
+    insertItem(db, { project: PROJECT, stream: 'main', agent: 'claude-code', session: 'mcp-1', kind: 'question', title: 'a real flag' })
     await runHook(['stop'], ev({ session_id: 'S1' }), env)
     const open = listItems(db, { status: 'open' })
     expect(open.map((i) => i.session).sort()).toEqual(['S2', 'mcp-1'])
@@ -484,7 +498,7 @@ describe('hook: self-clearing (the trustworthy badge)', () => {
     const dbPath = join(scratchDir('hook-sweep-'), 'inbox.db')
     const db = openDb(dbPath)
     const mk = (): Item => {
-      insertItem(db, { project: 'agent-inbox', stream: 'main', agent: 'hook', session: 'S1', kind: 'question', title: 'blocked at a prompt' })
+      insertItem(db, { project: PROJECT, stream: 'main', agent: 'hook', session: 'S1', kind: 'question', title: 'blocked at a prompt' })
       return listItems(db, { status: 'open' })[0]!
     }
     const DAY = 24 * 60 * 60 * 1000
@@ -515,7 +529,7 @@ describe('hook: self-clearing (the trustworthy badge)', () => {
   it('leaves a genuine agent question alone however old it is', async () => {
     const { env, dbPath } = freshEnv()
     const db = openDb(dbPath)
-    insertItem(db, { project: 'agent-inbox', stream: 'main', agent: 'claude-code', kind: 'question', title: 'still yours' })
+    insertItem(db, { project: PROJECT, stream: 'main', agent: 'claude-code', kind: 'question', title: 'still yours' })
     await runHook(['sweep'], ev(), { ...env, AGENT_INBOX_HOOK_MAX_AGE_MS: '0' })
     expect(listItems(db, { status: 'open' })).toHaveLength(1)
   })
@@ -525,7 +539,7 @@ describe('hook: pickup nudge (#21)', () => {
   function answered(): { env: Record<string, string>; dbPath: string; id: string } {
     const { env, dbPath } = freshEnv()
     const db = openDb(dbPath)
-    const id = insertItem(db, { project: 'agent-inbox', stream: 'main', agent: 'claude-code', kind: 'question', title: 'flags or branch?' })
+    const id = insertItem(db, { project: PROJECT, stream: 'main', agent: 'claude-code', kind: 'question', title: 'flags or branch?' })
     replyItem(db, id, 'flags — but canary first')
     return { env, dbPath, id }
   }
@@ -600,7 +614,7 @@ describe('hook: board-response pickup (#130)', () => {
     expect(body.decision).toBe('block')
     expect(body.reason).toMatch(/pending/)
     expect(body.reason).toMatch(/board_row/)
-    expect(getBoard(db, 'agent-inbox', 'Release')!.rows[0]!.annotation_seen_at).toBeNull()
+    expect(getBoard(db, PROJECT, 'Release')!.rows[0]!.annotation_seen_at).toBeNull()
     expect(await runHook(['stop'], ev({ stop_hook_active: true }), env)).toEqual({ stdout: '' })
     db.close()
   })
@@ -611,7 +625,7 @@ describe('hook: board-response pickup (#130)', () => {
     const row = waitingRow(db)
     markRowHandled(db, row.id)
     expect((await runHook([sub], ev(), env)).stdout).toMatch(/pending/)
-    expect(getBoard(db, 'agent-inbox', 'Release')!.rows[0]!.handled_seen_at).toBeNull()
+    expect(getBoard(db, PROJECT, 'Release')!.rows[0]!.handled_seen_at).toBeNull()
     db.close()
   })
 
@@ -620,14 +634,14 @@ describe('hook: board-response pickup (#130)', () => {
     const db = openDb(dbPath)
     const row = waitingRow(db)
     annotateBoardRow(db, row.id, 'Done')
-    const board = getBoard(db, 'agent-inbox', 'Release')!
+    const board = getBoard(db, PROJECT, 'Release')!
     updateBoardRow(db, {
       project: board.project, stream: board.stream, agent: board.agent, title: board.title,
       label: row.label, status: 'partial',
       expectedBoardVersion: board.revision, expectedRevision: board.rows[0]!.revision,
     })
     expect(await runHook(['stop'], ev(), env)).toEqual({ stdout: '' })
-    const updated = getBoard(db, 'agent-inbox', 'Release')!
+    const updated = getBoard(db, PROJECT, 'Release')!
     archiveBoard(db, updated.id, updated.revision)
     const other = waitingRow(db, 'elsewhere')
     annotateBoardRow(db, other.id, 'Do not wake this project')
@@ -642,7 +656,7 @@ describe('hook: watch', () => {
   it('exits 2 with the nudge on stderr the moment a reply lands', async () => {
     const { env, dbPath } = freshEnv(fast)
     const db = openDb(dbPath)
-    const id = insertItem(db, { project: 'agent-inbox', stream: 'main', agent: 'claude-code', kind: 'question', title: 'which?' })
+    const id = insertItem(db, { project: PROJECT, stream: 'main', agent: 'claude-code', kind: 'question', title: 'which?' })
     const running = runHook(['watch'], ev(), env)
     setTimeout(() => replyItem(openDb(dbPath), id, 'the second one'), 100)
     const res = await running
@@ -663,7 +677,7 @@ describe('hook: watch', () => {
     const result = await running
     clearTimeout(timer)
     expect(result).toMatchObject({ stdout: '', exitCode: 2, stderr: expect.stringMatching(/pending/) })
-    const current = getBoard(db, 'agent-inbox', 'Release')!.rows[0]!
+    const current = getBoard(db, PROJECT, 'Release')!.rows[0]!
     expect(current.annotation_seen_at).toBeNull()
     expect(current.handled_seen_at).toBeNull()
     db.close()
@@ -683,7 +697,7 @@ describe('hook: watch', () => {
     const db = openDb(dbPath)
     const row = waitingRow(db)
     annotateBoardRow(db, row.id, 'Continue')
-    const question = insertItem(db, { project: 'agent-inbox', stream: '', agent: 'claude-code', kind: 'question', title: 'Proceed?' })
+    const question = insertItem(db, { project: PROJECT, stream: '', agent: 'claude-code', kind: 'question', title: 'Proceed?' })
     replyItem(db, question, 'Yes')
     for (let attempt = 0; attempt < 2; attempt++) {
       expect(await runHook(['watch'], ev({ stop_hook_active: true }), env)).toEqual({ stdout: '' })
@@ -694,7 +708,7 @@ describe('hook: watch', () => {
   it('a Stop continuation can still wait for a future response without repeating the old one', async () => {
     const { env, dbPath } = freshEnv(fast)
     const db = openDb(dbPath)
-    const old = insertItem(db, { project: 'agent-inbox', stream: '', agent: 'claude-code', kind: 'question', title: 'Old request' })
+    const old = insertItem(db, { project: PROJECT, stream: '', agent: 'claude-code', kind: 'question', title: 'Old request' })
     replyItem(db, old, 'Already waiting')
     const row = waitingRow(db)
     const running = runHook(['watch'], ev({ stop_hook_active: true }), env)
@@ -711,7 +725,7 @@ describe('hook: watch', () => {
     const row = waitingRow(db)
     const running = runHook(['watch'], ev(), env)
     await armed(dbPath)
-    const board = getBoard(db, 'agent-inbox', 'Release')!
+    const board = getBoard(db, PROJECT, 'Release')!
     advanceBoardRow(db, {
       project: board.project, title: board.title, label: row.label,
       expectedBoardVersion: board.revision, expectedRevision: row.revision,
@@ -730,7 +744,7 @@ describe('hook: watch', () => {
     const running = runHook(['watch'], ev(), env)
     await armed(dbPath)
     annotateBoardRow(db, row.id, 'Continue')
-    const answered = getBoard(db, 'agent-inbox', 'Release')!.rows[0]!
+    const answered = getBoard(db, PROJECT, 'Release')!.rows[0]!
     markAnnotationDelivered(db, row.id, answered.annotated_at, 'sibling')
     const result = await running
     expect(result.exitCode).toBe(2)
@@ -743,7 +757,7 @@ describe('hook: watch', () => {
     waitingRow(db)
     const running = runHook(['watch'], ev(), env)
     const timer = setTimeout(() => {
-      const board = getBoard(db, 'agent-inbox', 'Release')!
+      const board = getBoard(db, PROJECT, 'Release')!
       archiveBoard(db, board.id, board.revision)
     }, 50)
     expect(await running).toEqual({ stdout: '' })
@@ -753,7 +767,7 @@ describe('hook: watch', () => {
 
   it('exits 0 immediately when the project has no unanswered question', async () => {
     const { env, dbPath } = freshEnv(fast)
-    insertItem(openDb(dbPath), { project: 'agent-inbox', stream: '', agent: 'claude-code', kind: 'note', title: 'fyi' })
+    insertItem(openDb(dbPath), { project: PROJECT, stream: '', agent: 'claude-code', kind: 'note', title: 'fyi' })
     const started = Date.now()
     expect(await runHook(['watch'], ev(), env)).toEqual({ stdout: '' })
     expect(Date.now() - started).toBeLessThan(3000)
@@ -762,7 +776,7 @@ describe('hook: watch', () => {
   it('stands down when the last open question is resolved out from under it', async () => {
     const { env, dbPath } = freshEnv(fast)
     const db = openDb(dbPath)
-    const id = insertItem(db, { project: 'agent-inbox', stream: '', agent: 'claude-code', kind: 'question', title: 'which?' })
+    const id = insertItem(db, { project: PROJECT, stream: '', agent: 'claude-code', kind: 'question', title: 'which?' })
     const running = runHook(['watch'], ev(), env)
     setTimeout(() => resolveItem(openDb(dbPath), id), 100)
     expect(await running).toEqual({ stdout: '' })
@@ -774,12 +788,12 @@ describe('hook: watch', () => {
   it('a second watcher for the same host session takes over: the first exits quietly at its next poll', async () => {
     const { env, dbPath } = freshEnv(fast)
     const db = openDb(dbPath)
-    question(db, 'agent-inbox', 'which?')
+    question(db, PROJECT, 'which?')
     const first = runHook(['watch'], ev(), env)
     let firstDone = 0
     void first.then(() => { firstDone = Date.now() })
     await armed(dbPath)
-    const later = question(db, 'agent-inbox', 'raised after the first watcher armed')
+    const later = question(db, PROJECT, 'raised after the first watcher armed')
     const second = runHook(['watch'], ev(), env)
     // the first leaves long before its own 4s window runs out, and before any answer
     const deadline = Date.now() + 1500
@@ -806,10 +820,10 @@ describe('hook: watch', () => {
 
   it('keeps its lease in the hub and drops it on exit, never a lock file in TMPDIR where the legacy shell watcher lives', async () => {
     const { env, dbPath } = freshEnv(fast)
-    question(openDb(dbPath), 'agent-inbox', 'which?')
+    question(openDb(dbPath), PROJECT, 'which?')
     const running = runHook(['watch'], ev(), env)
     await sleep(100)
-    expect(leases(dbPath)).toEqual([{ claim_key: 'session:S1:agent-inbox' }])
+    expect(leases(dbPath)).toEqual([{ claim_key: `session:S1:${PROJECT}` }])
     const stateDir = join(dirname(dbPath), 'hook-state')
     expect(existsSync(stateDir) ? readdirSync(stateDir).filter((name) => name.endsWith('.lock')) : []).toEqual([])
     await running
@@ -856,21 +870,21 @@ describe("hook: the session's own projects and the newest watcher (#253)", () =>
   it('wakes for a question the session flags after the watcher armed, even with nothing waiting at the Stop', async () => {
     const { env, dbPath } = freshEnv(fast)
     const db = openDb(dbPath)
-    linkServer(db, 'mcp-1', 'agent-inbox')
+    linkServer(db, 'mcp-1', PROJECT)
     const running = runHook(['watch'], ev(), env)
     await armed(dbPath)
-    const id = question(db, 'agent-inbox', 'Raised by a background subagent', 'mcp-1')
+    const id = question(db, PROJECT, 'Raised by a background subagent', 'mcp-1')
     await sleep(60) // a poll or two sees it unanswered first
     replyItem(db, id, 'yes')
-    expect(await running).toMatchObject({ stdout: '', exitCode: 2, stderr: expect.stringContaining('project agent-inbox') })
+    expect(await running).toMatchObject({ stdout: '', exitCode: 2, stderr: expect.stringContaining(`project ${PROJECT}`) })
     db.close()
   })
 
   it("wakes for the session's later question in a project it registered after the Stop", async () => {
     const { env, dbPath } = freshEnv(fast)
     const db = openDb(dbPath)
-    linkServer(db, 'mcp-1', 'agent-inbox')
-    question(db, 'agent-inbox', 'Waiting when the turn ended', 'someone-else')
+    linkServer(db, 'mcp-1', PROJECT)
+    question(db, PROJECT, 'Waiting when the turn ended', 'someone-else')
     const running = runHook(['watch'], ev(), env)
     await armed(dbPath)
     linkServer(db, 'mcp-1', 'homelab')
@@ -884,10 +898,10 @@ describe("hook: the session's own projects and the newest watcher (#253)", () =>
   it("still wakes for the session's later question when another reader picked the answer up first", async () => {
     const { env, dbPath } = freshEnv(fast)
     const db = openDb(dbPath)
-    linkServer(db, 'mcp-1', 'agent-inbox')
+    linkServer(db, 'mcp-1', PROJECT)
     const running = runHook(['watch'], ev(), env)
     await armed(dbPath)
-    const id = question(db, 'agent-inbox', 'Raised by a background subagent', 'mcp-1')
+    const id = question(db, PROJECT, 'Raised by a background subagent', 'mcp-1')
     replyItem(db, id, 'yes')
     const answered = listItems(db).find((item) => item.id === id)!
     expect(markReplySeen(db, id, answered.replied_at, answered.response_revision, 'sibling')).toBe(true)
@@ -898,10 +912,10 @@ describe("hook: the session's own projects and the newest watcher (#253)", () =>
   it("never wakes for another session's question raised after the watcher armed", async () => {
     const { env, dbPath } = freshEnv(brief)
     const db = openDb(dbPath)
-    linkServer(db, 'mcp-1', 'agent-inbox')
+    linkServer(db, 'mcp-1', PROJECT)
     const running = runHook(['watch'], ev(), env)
     await armed(dbPath)
-    replyItem(db, question(db, 'agent-inbox', 'Not ours', 'mcp-other'), 'no')
+    replyItem(db, question(db, PROJECT, 'Not ours', 'mcp-other'), 'no')
     expect(await running).toEqual({ stdout: '' })
     db.close()
   })
@@ -909,13 +923,13 @@ describe("hook: the session's own projects and the newest watcher (#253)", () =>
   it('a new Stop in the same Claude Code process takes over, even under a new session id (/clear)', async () => {
     const { env, dbPath } = freshEnv(fast)
     const db = openDb(dbPath)
-    linkServer(db, 'mcp-1', 'agent-inbox')
+    linkServer(db, 'mcp-1', PROJECT)
     const first = runHook(['watch'], ev({ session_id: 'before-clear' }), env)
     await armed(dbPath)
     const second = runHook(['watch'], ev({ session_id: 'after-clear' }), env)
     expect(await Promise.race([first, sleep(1500).then(() => 'still running')])).toEqual({ stdout: '' })
     expect(leases(dbPath)).toEqual([{ claim_key: `host:${process.ppid}` }])
-    replyItem(db, question(db, 'agent-inbox', 'After the clear', 'mcp-1'), 'yes')
+    replyItem(db, question(db, PROJECT, 'After the clear', 'mcp-1'), 'yes')
     expect(await second).toMatchObject({ stdout: '', exitCode: 2 })
     db.close()
   })
@@ -925,11 +939,11 @@ describe("hook: the session's own projects and the newest watcher (#253)", () =>
   it('an immediate wake leaves the older watcher watching its own requests', async () => {
     const { env, dbPath } = freshEnv(fast)
     const db = openDb(dbPath)
-    const q = question(db, 'agent-inbox', 'Asked before the turn ended')
+    const q = question(db, PROJECT, 'Asked before the turn ended')
     const first = runHook(['watch'], ev(), env) // Stop N-1: waits on q
     await armed(dbPath)
     // turn N: a response the first watcher does not wait on
-    const r = question(db, 'agent-inbox', 'Raised after the first watcher armed', 'someone-else')
+    const r = question(db, PROJECT, 'Raised after the first watcher armed', 'someone-else')
     replyItem(db, r, 'done')
     // Stop N: stop blocks, and that Stop's watcher wakes at once
     expect(JSON.parse((await runHook(['stop'], ev(), env)).stdout)).toMatchObject({ decision: 'block' })
@@ -952,8 +966,8 @@ describe("hook: the session's own projects and the newest watcher (#253)", () =>
   it('a watcher that is taken over still wakes for its own request answered since its last poll', async () => {
     const { env, dbPath } = freshEnv(fast)
     const db = openDb(dbPath)
-    const q = question(db, 'agent-inbox', 'Waited on by the first watcher')
-    const q2 = question(db, 'agent-inbox', 'Keeps the continuation watcher armed')
+    const q = question(db, PROJECT, 'Waited on by the first watcher')
+    const q2 = question(db, PROJECT, 'Keeps the continuation watcher armed')
     const first = runHook(['watch'], ev(), env)
     await armed(dbPath)
     // both before the first watcher's next poll (runHook arms synchronously)
@@ -971,16 +985,16 @@ describe("hook: the session's own projects and the newest watcher (#253)", () =>
   it("without a link, the session's watcher for another repository never replaces this one's", async () => {
     const { env, dbPath } = freshEnv(fast)
     const db = openDb(dbPath)
-    const here = question(db, 'agent-inbox', 'Asked in this repository')
+    const here = question(db, PROJECT, 'Asked in this repository')
     const elsewhere = join(scratchDir('hook-cwd-'), 'otherrepo')
     mkdirSync(elsewhere)
     const there = question(db, 'otherrepo', 'Asked in the other repository')
     const first = runHook(['watch'], ev(), env)
     const second = runHook(['watch'], ev({ cwd: elsewhere }), env)
-    expect(leases(dbPath).map((lease) => lease.claim_key).sort()).toEqual(['session:S1:agent-inbox', 'session:S1:otherrepo'])
+    expect(leases(dbPath).map((lease) => lease.claim_key).sort()).toEqual([`session:S1:${PROJECT}`, 'session:S1:otherrepo'])
     await sleep(100) // several polls of each
     replyItem(db, here, 'yes')
-    expect(await first).toMatchObject({ stdout: '', exitCode: 2, stderr: expect.stringContaining('project agent-inbox') })
+    expect(await first).toMatchObject({ stdout: '', exitCode: 2, stderr: expect.stringContaining(`project ${PROJECT}`) })
     replyItem(db, there, 'yes')
     expect(await second).toMatchObject({ stdout: '', exitCode: 2, stderr: expect.stringContaining('project otherrepo') })
     db.close()
@@ -1005,11 +1019,11 @@ describe("hook: the session's own projects and the newest watcher (#253)", () =>
     const db = openDb(dbPath)
     linkServer(db, 'mcp-1', 'homelab')
     replyItem(db, question(db, 'homelab', 'Which pool?', 'mcp-1'), 'tank')
-    replyItem(db, question(db, 'agent-inbox', 'Which branch?'), 'main')
+    replyItem(db, question(db, PROJECT, 'Which branch?'), 'main')
     const stdout = (await runHook([sub], ev(), env)).stdout
     const out = sub === 'prompt-submit' ? JSON.parse(stdout).hookSpecificOutput.additionalContext as string : stdout
     expect(out).toContain('2 response(s)')
-    expect(out).toContain('1 in project agent-inbox')
+    expect(out).toContain(`1 in project ${PROJECT}`)
     expect(out).toContain('1 in project homelab')
     expect(out).toContain('pending({project:"homelab"})')
     db.close()
@@ -1069,10 +1083,10 @@ describe("hook: the session's own projects and the newest watcher (#253)", () =>
     it('keeps the fixed set: a question raised after arming, by anyone, does not wake it', async () => {
       const { env, dbPath } = freshEnv(brief)
       const db = openDb(dbPath)
-      question(db, 'agent-inbox', 'Waiting when the turn ended')
+      question(db, PROJECT, 'Waiting when the turn ended')
       const running = runHook(['watch'], ev(), env)
       await armed(dbPath)
-      replyItem(db, question(db, 'agent-inbox', 'Raised later', 'mcp-1'), 'yes')
+      replyItem(db, question(db, PROJECT, 'Raised later', 'mcp-1'), 'yes')
       expect(await running).toEqual({ stdout: '' })
       db.close()
     })
@@ -1107,7 +1121,7 @@ describe('hook: real spawn round-trip', () => {
   it('the watch child exits with status 2 — the code that wakes the model', async () => {
     const { env, dbPath } = freshEnv({ AGENT_INBOX_WATCH_SECS: '8', AGENT_INBOX_WATCH_POLL_MS: '50' })
     const db = openDb(dbPath)
-    const id = insertItem(db, { project: 'agent-inbox', stream: '', agent: 'claude-code', kind: 'question', title: 'which?' })
+    const id = insertItem(db, { project: PROJECT, stream: '', agent: 'claude-code', kind: 'question', title: 'which?' })
     const running = run(['watch'], ev(), env)
     const deadline = Date.now() + 9000
     while (leases(dbPath).length === 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50))
@@ -1165,7 +1179,7 @@ describe('hook: real spawn round-trip', () => {
   // next poll rather than polling out its whole window as an orphan.
   it('the watcher exits once the process that started it is gone', async () => {
     const { env, dbPath } = freshEnv({ AGENT_INBOX_WATCH_SECS: '20', AGENT_INBOX_WATCH_POLL_MS: '50' })
-    question(openDb(dbPath), 'agent-inbox', 'which?')
+    question(openDb(dbPath), PROJECT, 'which?')
     // a stand-in for Claude Code: it starts the hook, reports its pid, and exits when told to
     const host = [
       `const { spawn } = require('node:child_process')`,
@@ -1206,7 +1220,7 @@ describe('hook: real spawn round-trip', () => {
     markRowHandled(db, row.id)
     const result = await run(['watch'], ev(), env)
     expect(result).toMatchObject({ code: 2, out: '', err: expect.stringMatching(/pending/) })
-    expect(getBoard(db, 'agent-inbox', 'Release')!.rows[0]!.handled_seen_at).toBeNull()
+    expect(getBoard(db, PROJECT, 'Release')!.rows[0]!.handled_seen_at).toBeNull()
     db.close()
   })
 

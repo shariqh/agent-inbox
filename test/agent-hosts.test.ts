@@ -11,14 +11,14 @@
 // is an intact runtime whose manifest names it. The last test runs the
 // installer's own helper over the same files and holds the two to agreement.
 import { describe, expect, it } from 'vitest'
-import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
-import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { readAgentHosts, registeredRuntimeVersion } from '../src/agent-hosts.js'
 import type { RuntimeVerifier } from '../src/agent-hosts.js'
 import { installRuntimeVersion, registerHost } from './release-runtime.js'
+import { scratchDir } from './scratch.js'
 
 const REPO = resolve(import.meta.dirname, '..')
 const { verifyRuntimePayload } = createRequire(import.meta.url)('../electron/runtime-verify.cjs') as {
@@ -27,7 +27,7 @@ const { verifyRuntimePayload } = createRequire(import.meta.url)('../electron/run
 
 interface Scratch { home: string; runtimeRoot: string }
 function scratch(): Scratch {
-  const home = mkdtempSync(join(tmpdir(), 'agent-hosts-'))
+  const home = scratchDir('agent-hosts-')
   const runtimeRoot = join(home, '.agent-inbox', 'runtime')
   mkdirSync(runtimeRoot, { recursive: true })
   return { home, runtimeRoot }
@@ -43,7 +43,7 @@ function read(s: Scratch, verify: RuntimeVerifier = verifyRuntimePayload) {
 
 /** A source checkout of this repo: package.json named agent-inbox, a built dist/. */
 function checkout(): string {
-  const root = mkdtempSync(join(tmpdir(), 'agent-hosts-checkout-'))
+  const root = scratchDir('agent-hosts-checkout-')
   mkdirSync(join(root, 'dist'), { recursive: true })
   writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'agent-inbox', version: '1.3.0' }))
   writeFileSync(join(root, 'dist', 'mcp-server.js'), '// mcp\n')
@@ -115,7 +115,7 @@ describe('readAgentHosts (#197)', () => {
     const s = scratch()
     const root = checkout()
     registerHost(s.home, 'claude', process.execPath, join(root, 'dist', 'mcp-server.js'))
-    const script = join(mkdtempSync(join(tmpdir(), 'agent-hosts-other-')), 'server.js')
+    const script = join(scratchDir('agent-hosts-other-'), 'server.js')
     writeFileSync(script, '// someone else\'s build\n')
     registerHost(s.home, 'copilot', process.execPath, script)
 
@@ -128,7 +128,7 @@ describe('readAgentHosts (#197)', () => {
     expect(read(s).copilot).toEqual({ kind: 'other' })
 
     // a runtime outside the root is the registration installer's `custom`, which it never replaces
-    registerRuntime(s, 'copilot', installRuntimeVersion(mkdtempSync(join(tmpdir(), 'agent-hosts-elsewhere-')), '1.2.8'))
+    registerRuntime(s, 'copilot', installRuntimeVersion(scratchDir('agent-hosts-elsewhere-'), '1.2.8'))
     expect(read(s).copilot).toEqual({ kind: 'other' })
   })
 
@@ -199,7 +199,7 @@ describe('readAgentHosts (#197)', () => {
 
     // #232: a runtime copied or extracted outside the root is not Setup's, and the
     // hook installer refuses beside it rather than taking it for another tool's
-    const copied = installRuntimeVersion(mkdtempSync(join(tmpdir(), 'agent-hosts-copied-')), '1.2.4')
+    const copied = installRuntimeVersion(scratchDir('agent-hosts-copied-'), '1.2.4')
     const copiedHook = { command: join(copied, 'bin', 'node'), entry: join(copied, 'dist', 'hook-cli.js') }
     writeHooks(s, [copiedHook, copiedHook])
     expect(read(s).hooks).toEqual({ kind: 'unknown' })
@@ -231,7 +231,7 @@ describe('readAgentHosts (#197)', () => {
       ['old runtime', (s) => registerRuntime(s, 'claude', installRuntimeVersion(s.runtimeRoot, '1.2.8'))],
       ['current runtime', (s) => registerRuntime(s, 'claude', installRuntimeVersion(s.runtimeRoot, '1.3.0'))],
       ['checkout', (s) => registerHost(s.home, 'claude', process.execPath, join(checkout(), 'dist', 'mcp-server.js'))],
-      ['a runtime outside the root', (s) => registerRuntime(s, 'claude', installRuntimeVersion(mkdtempSync(join(tmpdir(), 'agent-hosts-elsewhere-')), '1.2.8'))],
+      ['a runtime outside the root', (s) => registerRuntime(s, 'claude', installRuntimeVersion(scratchDir('agent-hosts-elsewhere-'), '1.2.8'))],
       ['split', (s) => {
         const dir = installRuntimeVersion(s.runtimeRoot, '1.2.8')
         registerHost(s.home, 'claude', join(dir, 'bin', 'node'), join(checkout(), 'dist', 'mcp-server.js'))
@@ -269,7 +269,7 @@ describe('readAgentHosts (#197)', () => {
   // duplicate (or replaces on request) is the one Setup names, and another
   // tool's look-alike is never taken for one.
   it('agrees with the hook installer on which install each hook entry runs', () => {
-    const elsewhere = (prefix: string): string => mkdtempSync(join(tmpdir(), prefix))
+    const elsewhere = (prefix: string): string => scratchDir(prefix)
     const toolRoot = (): string => {
       const root = elsewhere('agent-hosts-tool-')
       mkdirSync(join(root, 'dist'))

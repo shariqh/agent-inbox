@@ -7,13 +7,12 @@ import {
 import {
   chmodSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   writeFileSync,
 } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { scratchDir } from './scratch.js'
 
 const root = resolve(process.cwd())
 const inputsPath = join(root, '.github', 'workflows', 'macos-release.yml')
@@ -212,7 +211,7 @@ function runPublisher(
     createResponseMismatch?: boolean
   } = {},
 ) {
-  const temp = mkdtempSync(join(tmpdir(), 'release-publisher-'))
+  const temp = scratchDir('release-publisher-')
   const handoff = join(temp, 'handoff')
   const bin = join(temp, 'bin')
   const log = join(temp, 'gh.log')

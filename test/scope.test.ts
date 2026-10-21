@@ -1,9 +1,8 @@
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest'
-import { mkdtempSync } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join, basename } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { makeScope } from '../src/scope.js'
+import { scratchDir } from './scratch.js'
 
 // Issue #159 counts REAL git spawns: the spy delegates to the genuine
 // execFileSync, so every repo below is still built and read by git itself.
@@ -20,7 +19,7 @@ function gitSpawns(cwd: string, ...args: string[]): number {
 
 describe('makeScope', () => {
   it('infers project/stream from cwd and agent from the client name', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'plain-'))
+    const dir = scratchDir('plain-')
     const scope = makeScope(dir)
     const s = scope.get('claude-code')
     expect(s.project).toBe(basename(dir))
@@ -29,7 +28,7 @@ describe('makeScope', () => {
   })
 
   it('override replaces project/stream but agent still comes from the client', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'plain-'))
+    const dir = scratchDir('plain-')
     const scope = makeScope(dir)
     scope.override({ project: 'oris', stream: 'release' })
     const s = scope.get('github-copilot')
@@ -42,7 +41,7 @@ describe('makeScope', () => {
 // ── issue #30: the link identity rides along on the same seam ────────────────
 
 function tmpGitRepo(opts: { remote?: string; branch?: string } = {}): string {
-  const dir = mkdtempSync(join(tmpdir(), 'repo-'))
+  const dir = scratchDir('repo-')
   execFileSync('git', ['init', '-q'], { cwd: dir })
   execFileSync('git', ['config', 'user.email', 't@t.dev'], { cwd: dir })
   execFileSync('git', ['config', 'user.name', 't'], { cwd: dir })
@@ -62,7 +61,7 @@ describe('makeScope carries the source link identity (issue #30)', () => {
   })
 
   it('is null-safe outside a git repo — no repo, no issue, and nothing throws', () => {
-    const s = makeScope(mkdtempSync(join(tmpdir(), 'plain-'))).get('claude-code')
+    const s = makeScope(scratchDir('plain-')).get('claude-code')
     expect(s.repo).toBeNull()
     expect(s.issue).toBeNull()
   })
@@ -105,7 +104,7 @@ describe('makeScope carries the source link identity (issue #30)', () => {
   })
 
   it('headFor is null with no branch or no github remote', () => {
-    expect(makeScope(mkdtempSync(join(tmpdir(), 'plain-'))).headFor('feature')).toBeNull()
+    expect(makeScope(scratchDir('plain-')).headFor('feature')).toBeNull()
     expect(makeScope(tmpGitRepo({ remote: 'git@github.com:me/agent-inbox.git' })).headFor('')).toBeNull()
   })
 })

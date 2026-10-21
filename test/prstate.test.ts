@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { mkdtempSync, readFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { readFileSync } from 'node:fs'
 import { join, posix } from 'node:path'
 import type Database from 'better-sqlite3'
 import {
@@ -29,11 +28,12 @@ import {
   MAX_PER_TICK,
   PR_WINDOW,
 } from '../src/prstate.js'
+import { scratchDir } from './scratch.js'
 
 const REPO = new URL('..', import.meta.url).pathname
 
 function freshDb(): Database.Database {
-  return openDb(join(mkdtempSync(join(tmpdir(), 'prstate-')), 'inbox.db'))
+  return openDb(join(scratchDir('prstate-'), 'inbox.db'))
 }
 
 // the shape `gh pr list --json …` actually emits (verified live against cli/cli),

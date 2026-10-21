@@ -5,18 +5,25 @@ import Database from 'better-sqlite3'
 import {
   advanceBoardRow,
   annotateBoardRow,
+  annotateItem,
+  answerItem,
   archiveBoard,
   clearRowHandled,
+  dismissItem,
   getBoard,
+  getBoardByTitle,
   insertItem,
   listBoards,
   listItems,
+  listPending,
   listPendingRows,
   listUnansweredBoardRows,
   markAnnotationDelivered,
   markReplySeen,
   markRowHandled,
   openDb,
+  pinBoardRow,
+  pinItem,
   replyItem,
   resolveItem,
   snoozeBoardRow,
@@ -24,9 +31,11 @@ import {
   stopBoardRowWatch,
   stopItemWatch,
   getItem,
+  unarchiveBoard,
   updateBoardRow as writeBoardRow,
   upsertBoard as writeBoard,
 } from '../src/store.js'
+import type { RowStatus } from '../src/store.js'
 import { scratchDir } from './scratch.js'
 
 function freshDb(): Database.Database {
@@ -1120,5 +1129,332 @@ describe('watch stop (#217)', () => {
       rows: [{ label: 'Upload', status: 'blocked', note: 'Again.', next_step: 'Upload it.', action_owner: 'task', impact: 'Ships it.' }],
     })
     expect(current().row).toMatchObject({ action_version: 4, watch_stopped_at: null, watch_stopped_until: null })
+  })
+})
+
+// Issue #247 — "Pin for later": the human sets an unanswered ask aside with no
+// return time. Human-owned like the #217 watch stop and, like it, NOT content:
+// a pin moves neither updated_at nor any revision. Two triggers clear it when
+// the ask ends or a new action starts, so an older server's writes obey them too.
+describe('pin for later (#247)', () => {
+  let db: Database.Database
+  const T0 = Date.parse('2026-10-21T12:00:00.000Z')
+  const at = (minutes: number) => new Date(T0 + minutes * 60_000).toISOString()
+  const clock = (minutes: number) => vi.setSystemTime(T0 + minutes * 60_000)
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    clock(0)
+    db = freshDb()
+  })
+  afterEach(() => {
+    db.close()
+    vi.useRealTimers()
+  })
+
+  const question = (kind: 'question' | 'note' = 'question') =>
+    insertItem(db, { project: 'p', stream: '', agent: 'copilot', kind, title: 'Choose' })
+  const ask = (label: string) => ({
+    label, status: 'blocked' as const, note: 'Upload the build.', next_step: 'Upload it.', action_owner: 'task' as const, impact: 'Ships it.',
+  })
+  const plan = (...labels: string[]) =>
+    upsertBoard(db, { project: 'p', stream: '', agent: 'copilot', title: 'B', rows: labels.map(ask) })
+  // archived plans included: a pin outlives an archive
+  const current = (label = 'Upload') => {
+    const board = getBoardByTitle(db, 'p', 'B')!
+    return { board, row: board.rows.find((row) => row.label === label)! }
+  }
+  const pinRow = (pinned: boolean, label = 'Upload') => {
+    const { board, row } = current(label)
+    return pinBoardRow(db, row.id, pinned, row.revision, board.revision)
+  }
+  const edit = (label: string, change: Omit<Parameters<typeof updateBoardRow>[1], 'project' | 'stream' | 'agent' | 'title' | 'label'>) =>
+    updateBoardRow(db, { project: 'p', stream: '', agent: 'copilot', title: 'B', label, ...change })
+  // the agent's full-table re-send of the plan as it stands, with some rows changed
+  const resend = (changes: Record<string, { status?: RowStatus; note?: string }>, order?: string[]) => {
+    const rows = current().board.rows
+    return upsertBoard(db, {
+      project: 'p', stream: '', agent: 'copilot', title: 'B',
+      rows: (order ?? rows.map((row) => row.label)).map((label) => {
+        const row = rows.find((candidate) => candidate.label === label)!
+        return { label, status: row.status, note: row.note, ...changes[label] }
+      }),
+    })
+  }
+
+  it('pins an open question without touching its content or response version; a re-pin keeps the first time', () => {
+    const id = question()
+    clock(5)
+    const before = getItem(db, id)!
+    expect(pinItem(db, id, true)).toBe(true)
+    expect(getItem(db, id)).toEqual({ ...before, pinned_at: at(5) })
+
+    clock(6)
+    expect(pinItem(db, id, true), 'pinning again is not a refusal').toBe(true)
+    expect(getItem(db, id)!.pinned_at, 'and keeps the first time').toBe(at(5))
+
+    expect(pinItem(db, id, false)).toBe(true)
+    expect(getItem(db, id)).toEqual(before)
+    expect(pinItem(db, id, false), 'nothing left to unpin').toBe(false)
+  })
+
+  it('refuses to pin an answered, closed or informational item', () => {
+    const answered = question()
+    replyItem(db, answered, 'Ship it')
+    const clarified = question()
+    replyItem(db, clarified, 'Which build?', undefined, 'clarify')
+    const told = question()
+    answerItem(db, told, 'Said in chat: ship it')
+    const resolved = question()
+    resolveItem(db, resolved)
+    const dismissed = question()
+    dismissItem(db, dismissed)
+    const note = question('note')
+    // a response kind with no words, as only an older or foreign writer leaves it
+    const kindOnly = question()
+    db.prepare(`UPDATE items SET reply_kind = 'decline' WHERE id = ?`).run(kindOnly)
+    for (const id of [answered, clarified, told, resolved, dismissed, note, kindOnly, 'missing']) expect(pinItem(db, id, true), id).toBe(false)
+    expect(listItems(db).map((item) => item.pinned_at)).toEqual(Array(7).fill(null))
+
+    // a retracted answer leaves the question unanswered again
+    const retracted = question()
+    replyItem(db, retracted, 'Oops')
+    replyItem(db, retracted, '')
+    expect(pinItem(db, retracted, true)).toBe(true)
+  })
+
+  it('a pin clears a question’s snooze; a snooze with a time clears the pin; waking keeps it', () => {
+    const id = question()
+    expect(snoozeItem(db, id, at(60))).toBe(true)
+    clock(5)
+    const snoozed = getItem(db, id)!
+    expect(pinItem(db, id, true)).toBe(true)
+    expect(getItem(db, id)).toEqual({ ...snoozed, snoozed_until: null, pinned_at: at(5) })
+
+    clock(6)
+    expect(snoozeItem(db, id, null)).toBe(true)
+    expect(getItem(db, id)).toMatchObject({ snoozed_until: null, pinned_at: at(5) })
+    expect(snoozeItem(db, id, at(120))).toBe(true)
+    expect(getItem(db, id)).toMatchObject({ snoozed_until: at(120), pinned_at: null })
+  })
+
+  it('clears a question’s pin when it is answered, recorded from chat or closed, and on nothing else', () => {
+    const pinned = () => {
+      const id = question()
+      expect(pinItem(db, id, true)).toBe(true)
+      return id
+    }
+    const ends: Array<[string, (id: string) => unknown]> = [
+      ['an inbox answer', (id) => replyItem(db, id, 'Ship it')],
+      ['a clarification', (id) => replyItem(db, id, 'Which build?', undefined, 'clarify')],
+      ['a chat answer', (id) => answerItem(db, id, 'Said in chat: ship it')],
+      ['resolve', (id) => resolveItem(db, id, 'Shipped.')],
+      ['dismiss', (id) => dismissItem(db, id)],
+    ]
+    for (const [label, end] of ends) {
+      const id = pinned()
+      end(id)
+      expect(getItem(db, id)!.pinned_at, label).toBeNull()
+    }
+    const keeps: Array<[string, (id: string) => unknown]> = [
+      ['a note on the card', (id) => annotateItem(db, id, 'Looking at it tomorrow')],
+      ['a pickup stamp', (id) => markReplySeen(db, id, null)],
+      ['the watch stop', (id) => stopItemWatch(db, id, null)],
+      ['waking a snooze', (id) => snoozeItem(db, id, null)],
+      ['a retracted answer', (id) => replyItem(db, id, '')],
+    ]
+    for (const [label, keep] of keeps) {
+      const id = pinned()
+      keep(id)
+      expect(getItem(db, id)!.pinned_at, label).toBe(at(0))
+    }
+  })
+
+  // What an older server's write meets is the trigger, not this build's writer.
+  // One column per statement, none of which names updated_at, so the trigger
+  // must clear exactly on its listed events and move nothing else when it does.
+  // Recursive triggers on: the inner UPDATE names only pinned_at, so neither
+  // pin trigger, nor the response-revision trigger, can fire again from it.
+  it.each<[string, string, boolean, number]>([
+    ['a status change', `UPDATE items SET status = 'resolved' WHERE id = ?`, false, 0],
+    ['a reply', `UPDATE items SET reply = 'Ship it' WHERE id = ?`, false, 1],
+    ['a response kind', `UPDATE items SET reply_kind = 'decline' WHERE id = ?`, false, 1],
+    ['an empty reply', `UPDATE items SET reply = '' WHERE id = ?`, true, 1],
+    ['an unchanged status', `UPDATE items SET status = 'open' WHERE id = ?`, true, 0],
+    ['an annotation', `UPDATE items SET annotation = 'Tomorrow' WHERE id = ?`, true, 1],
+  ])('the question trigger on %s', (_label, sql, kept, responseWrites) => {
+    const id = question()
+    expect(pinItem(db, id, true)).toBe(true)
+    const before = getItem(db, id)!
+    db.pragma('recursive_triggers = ON')
+    db.prepare(sql).run(id)
+    const after = getItem(db, id)!
+    expect(after.pinned_at).toBe(kept ? at(0) : null)
+    expect(after.updated_at).toBe(before.updated_at)
+    expect(after.response_revision).toBe(before.response_revision + responseWrites)
+  })
+
+  it('pins a blocked row against its row and board revisions without bumping either', () => {
+    plan('Upload')
+    const { board, row } = current()
+    clock(5)
+    expect(pinBoardRow(db, row.id, true, row.revision - 1, board.revision)).toBe(false)
+    expect(pinBoardRow(db, row.id, true, row.revision, board.revision - 1)).toBe(false)
+    expect(current().row.pinned_at).toBeNull()
+
+    expect(pinBoardRow(db, row.id, true, row.revision, board.revision)).toBe(true)
+    let after = current()
+    expect(after.row).toEqual({ ...row, pinned_at: at(5) })
+    expect(after.board).toMatchObject({ revision: board.revision, updated_at: board.updated_at })
+
+    clock(6)
+    expect(pinRow(true), 'pinning again is not a refusal').toBe(true)
+    expect(current().row.pinned_at, 'and keeps the first time').toBe(at(5))
+
+    expect(pinBoardRow(db, row.id, false, row.revision + 1, board.revision)).toBe(false)
+    expect(pinBoardRow(db, row.id, false, row.revision, board.revision + 1)).toBe(false)
+    expect(current().row.pinned_at).toBe(at(5))
+    expect(pinRow(false)).toBe(true)
+    after = current()
+    expect(after.row).toEqual(row)
+    expect(after.board).toMatchObject({ revision: board.revision, updated_at: board.updated_at })
+    expect(pinRow(false), 'nothing left to unpin').toBe(false)
+  })
+
+  it('leaves an agent’s pre-pin snapshot valid, and its writes of the same ask keep the pin', () => {
+    plan('Upload', 'Docs')
+    const before = current()
+    const docs = current('Docs').row
+    expect(pinRow(true)).toBe(true)
+    // the table the agent read before the pin, re-sent reordered with an edited note
+    writeBoard(db, {
+      project: 'p', stream: '', agent: 'copilot', title: 'B', expectedVersion: before.board.revision,
+      rows: [
+        { ...ask('Docs'), revision: docs.revision },
+        { ...ask('Upload'), note: 'Upload the signed build.', revision: before.row.revision },
+      ],
+    })
+    edit('Upload', { impact: 'Ships 1.5.' })
+    expect(current().row).toMatchObject({
+      note: 'Upload the signed build.', impact: 'Ships 1.5.', position: 1, action_version: 1, pinned_at: at(0),
+    })
+  })
+
+  it('refuses to pin an answered, handled, unblocked, archived or missing row', () => {
+    plan('Answered', 'Declined', 'Kind only', 'Handled', 'Moved on', 'Retracted', 'Archived')
+    annotateBoardRow(db, current('Answered').row.id, 'Uploaded')
+    annotateBoardRow(db, current('Declined').row.id, 'Not this release.', 'decline')
+    // a response kind with no words, as only an older or foreign writer leaves it
+    db.prepare(`UPDATE board_rows SET annotation_kind = 'decline' WHERE id = ?`).run(current('Kind only').row.id)
+    markRowHandled(db, current('Handled').row.id)
+    edit('Moved on', { status: 'partial' })
+    for (const label of ['Answered', 'Declined', 'Kind only', 'Handled', 'Moved on']) expect(pinRow(true, label), label).toBe(false)
+
+    // a cleared note leaves the row unanswered again (#160)
+    annotateBoardRow(db, current('Retracted').row.id, 'Uploaded')
+    annotateBoardRow(db, current('Retracted').row.id, '')
+    expect(pinRow(true, 'Retracted')).toBe(true)
+
+    const { board } = current('Archived')
+    expect(archiveBoard(db, board.id, board.revision)).toBe(true)
+    expect(pinRow(true, 'Archived'), 'an archived plan takes no row actions').toBe(false)
+    expect(pinBoardRow(db, 'missing', true, 1, current().board.revision)).toBe(false)
+    expect(current('Archived').row.pinned_at).toBeNull()
+  })
+
+  it('a pin clears a row’s snooze; a snooze with a time clears the pin; waking keeps it', () => {
+    plan('Upload')
+    let { board, row } = current()
+    expect(snoozeBoardRow(db, row.id, at(60), row.revision, board.revision)).toBe(true)
+    clock(5)
+    const snoozed = current()
+    expect(pinRow(true)).toBe(true)
+    expect(current().row).toEqual({ ...snoozed.row, snoozed_until: null, pinned_at: at(5) })
+    expect(current().board.revision).toBe(snoozed.board.revision)
+
+    ;({ board, row } = current())
+    expect(snoozeBoardRow(db, row.id, null, row.revision, board.revision)).toBe(true)
+    expect(current().row.pinned_at, 'waking keeps the pin').toBe(at(5))
+    ;({ board, row } = current())
+    expect(snoozeBoardRow(db, row.id, at(120), row.revision, board.revision)).toBe(true)
+    expect(current().row).toMatchObject({ snoozed_until: at(120), pinned_at: null })
+  })
+
+  it('clears a row’s pin when the human answers or completes it, or the agent moves the ask on', () => {
+    const labels = ['answer', 'clarify', 'handled', 'unblocked', 'advanced', 'finished']
+    plan(...labels, 'kept')
+    for (const label of [...labels, 'kept']) expect(pinRow(true, label), label).toBe(true)
+
+    annotateBoardRow(db, current('answer').row.id, 'Uploaded')
+    annotateBoardRow(db, current('clarify').row.id, 'Which build?', 'clarify')
+    markRowHandled(db, current('handled').row.id)
+    edit('unblocked', { status: 'partial' })
+    const { board, row } = current('advanced')
+    expect(advanceBoardRow(db, {
+      project: 'p', title: 'B', label: 'advanced', expectedBoardVersion: board.revision, expectedRevision: row.revision,
+      note: 'The notarized build is ready.', next_step: 'Upload it.', action_owner: 'task', impact: 'Ships it.',
+    })).toMatchObject({ ok: true, action_version: 2 })
+    resend({ finished: { status: 'done' } })
+
+    for (const label of labels) expect(current(label).row.pinned_at, label).toBeNull()
+    expect(current('kept').row.pinned_at).toBe(at(0))
+  })
+
+  it('keeps a row’s pin through routine writes to the same ask, a cleared note, the watch stop and an archive', () => {
+    plan('Upload', 'Docs')
+    expect(pinRow(true)).toBe(true)
+    resend({ Upload: { note: 'Upload the signed build.' } }, ['Docs', 'Upload'])
+    edit('Upload', { impact: 'Ships 1.5.' })
+    edit('Docs', { status: 'partial' })
+    annotateBoardRow(db, current().row.id, '')
+    let { board, row } = current()
+    expect(stopBoardRowWatch(db, row.id, null, row.revision, board.revision)).toBe(true)
+    expect(current().row.pinned_at).toBe(at(0))
+
+    ;({ board } = current())
+    expect(archiveBoard(db, board.id, board.revision)).toBe(true)
+    expect(pinRow(false), 'an archived plan takes no row actions').toBe(false)
+    expect(unarchiveBoard(db, board.id, current().board.revision)).toBe(true)
+    ;({ row } = current())
+    expect(row).toMatchObject({ note: 'Upload the signed build.', status: 'blocked', action_version: 1, pinned_at: at(0) })
+  })
+
+  it.each<[string, string, boolean]>([
+    ['a status change', `UPDATE board_rows SET status = 'partial' WHERE id = ?`, false],
+    ['a new action', `UPDATE board_rows SET action_version = action_version + 1 WHERE id = ?`, false],
+    ['an answer', `UPDATE board_rows SET annotation = 'Uploaded' WHERE id = ?`, false],
+    ['a response kind', `UPDATE board_rows SET annotation_kind = 'decline' WHERE id = ?`, false],
+    ['a handled mark', `UPDATE board_rows SET handled_at = '2026-10-21T12:30:00.000Z' WHERE id = ?`, false],
+    ['an unchanged status', `UPDATE board_rows SET status = 'blocked' WHERE id = ?`, true],
+    ['an unchanged action version', `UPDATE board_rows SET action_version = action_version WHERE id = ?`, true],
+    ['a cleared note', `UPDATE board_rows SET annotation = '' WHERE id = ?`, true],
+    ['an agent note edit', `UPDATE board_rows SET note = 'Upload the signed build.' WHERE id = ?`, true],
+    ['a snooze', `UPDATE board_rows SET snoozed_until = '2026-10-21T13:00:00.000Z' WHERE id = ?`, true],
+  ])('the row trigger on %s', (_label, sql, kept) => {
+    plan('Upload')
+    expect(pinRow(true)).toBe(true)
+    const before = current()
+    db.pragma('recursive_triggers = ON')
+    db.prepare(sql).run(before.row.id)
+    const after = current()
+    expect(after.row.pinned_at).toBe(kept ? at(0) : null)
+    expect(after.row.revision).toBe(before.row.revision)
+    expect(after.row.updated_at).toBe(before.row.updated_at)
+    expect(after.board.revision).toBe(before.board.revision)
+  })
+
+  it('delivers a pinned ask to pending() on every poll until it ends', () => {
+    plan('Upload', 'Docs')
+    expect(listPendingRows(db, 'p')).toEqual([])
+    expect(pinRow(true)).toBe(true)
+    const rows = listPendingRows(db, 'p')
+    expect(rows).toEqual([expect.objectContaining({ label: 'Upload', status: 'blocked', pinned_at: at(0) })])
+    expect(listPendingRows(db, 'p'), 'delivery is not acknowledgement').toEqual(rows)
+    edit('Upload', { status: 'partial', outcome: 'Uploaded it myself.' })
+    expect(listPendingRows(db, 'p')).toEqual([])
+
+    const id = question()
+    expect(pinItem(db, id, true)).toBe(true)
+    expect(listPending(db, 'p')).toEqual([expect.objectContaining({ id, pinned_at: at(0) })])
   })
 })

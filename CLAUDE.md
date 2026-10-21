@@ -929,10 +929,12 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   targets. Once the rename commits, the runtime id is free: an interrupted, failed or
   `SIGKILL`ed prune leaves trash, never a half-deleted runtime that a later install of the
   same version would refuse as a collision. A failed trash deletion still counts as
-  pruned. Each install and prune first removes up to 16 leftover `.trash-*` entries that
+  pruned. Each install and prune first tries to remove up to 16 leftover `.trash-*` entries that
   this uid owns, each pinned by identity and re-checked just before removal (a link is
   only unlinked); a folder whose contents failed the post-rename identity check carries
-  a `.retained` marker and is kept for recovery. Win32 has no owner to compare, so its
+  a `.retained` marker and is kept for recovery. *(#214)* Only an entry it tries to
+  remove counts toward the 16, a failed removal included, so trash it keeps (another
+  user's, or marked `.retained`) can never hold back newer trash. Win32 has no owner to compare, so its
   model retains all trash. Nothing named `.trash-*` is ever a runtime: manifests,
   install and prune refuse that id, and `list` skips it.
   `runtime-payload.mjs install` reserves exit 3 for an error carrying
@@ -959,7 +961,12 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   (TERM, then KILL) and exits 124, reported as not finished in time. The guard
   survives the installer's `SIGKILL`, so that bound always applies. A helper killed
   while its own Node is still starting has started nothing and is rerun, at most three
-  times. Neither the guard nor the command gets the installer's stdio (Setup still
+  times. *(#214)* A command that ran and was then killed by one of those signals ends
+  the helper with the same 128 + signal status, so the helper first creates a start
+  marker (`--started-file`, in the work directory) once it ignores them and before it
+  starts anything; it starts nothing when it cannot. Only a restart status with no
+  marker is rerun; with the marker, the step is reported like any other failure.
+  Neither the guard nor the command gets the installer's stdio (Setup still
   sees its pipes close when the installer dies), but both get fd 9, so the lease lasts
   as long as the step. Forward-path Node steps stay in the installer's group.
   Hosts refuse to remove a server a failed add never registered, so a failed undo

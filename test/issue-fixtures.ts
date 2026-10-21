@@ -70,6 +70,7 @@ export function row(
     ...parts(key),
     provider: 'github',
     snapshot: snap,
+    dependencies: null,
     fetched_at: snap ? fetchedAt : null,
     checked_at: extra.checkedAt ?? fetchedAt ?? at(0),
     error,

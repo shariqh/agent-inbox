@@ -27,6 +27,9 @@ fragment Root on Issue {
       parent { ...Node parent { ...Node parent { ...Node } } } } } } }
   }
   subIssues(first: 100) { totalCount pageInfo { hasNextPage } nodes { ...Node subIssuesSummary { total completed } } }
+  issueDependenciesSummary { blockedBy totalBlockedBy blocking totalBlocking }
+  blockedBy(first: 50) { totalCount pageInfo { hasNextPage } nodes { ...Node } }
+  blocking(first: 50) { totalCount pageInfo { hasNextPage } nodes { ...Node } }
 }
 "
 `;

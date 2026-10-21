@@ -21,7 +21,8 @@ import {
   claimIssueRefresh, completeIssueRefresh, listIssueEntities, listIssueSnapshots, listSourceLinks,
 } from './store.js'
 import type {
-  IssueClaimKey, IssueEntity, IssueError, IssueRefreshResult, IssueRelative, IssueSnapshot, IssueSnapshotRow, SourceLink,
+  IssueClaimKey, IssueDependencies, IssueEntity, IssueError, IssueFacts, IssueRefreshResult, IssueRelative, IssueSnapshot,
+  IssueSnapshotRow, SourceLink,
 } from './store.js'
 import {
   FIRST_TICK_DELAY_MS, GH_MAX_BUFFER, GH_TIMEOUT_MS, POLL_INTERVAL_MS, classifyError, refreshOnce, resolveGh,
@@ -48,6 +49,8 @@ const MAX_WAIT_MS = 60 * MIN
 const TITLE_MAX = 300
 const ANCESTORS_MAX = 8
 const CHILDREN_MAX = 100
+/** GitHub's own limit per relationship type, so `first: 50` reads the whole list (slice 2 §2) */
+const DEPENDENCIES_MAX = 50
 
 /**
  * When a candidate is due again (§5.4). `hard` departs from the design's 60
@@ -85,7 +88,7 @@ export interface IssueGhResult {
 /** Injected so tests never shell out. */
 export type IssueGhRun = (args: string[]) => Promise<IssueGhResult> | IssueGhResult
 
-// ── query documents (§5.6) ──────────────────────────────────────────────────
+// ── query documents (§5.6; slice 2 §5.1 adds the three dependency fields) ───
 
 const FRAGMENTS = `fragment Node on Issue { number title state stateReason repository { nameWithOwner } }
 
@@ -99,6 +102,9 @@ fragment Root on Issue {
       parent { ...Node parent { ...Node parent { ...Node } } } } } } }
   }
   subIssues(first: 100) { totalCount pageInfo { hasNextPage } nodes { ...Node subIssuesSummary { total completed } } }
+  issueDependenciesSummary { blockedBy totalBlockedBy blocking totalBlocking }
+  blockedBy(first: 50) { totalCount pageInfo { hasNextPage } nodes { ...Node } }
+  blocking(first: 50) { totalCount pageInfo { hasNextPage } nodes { ...Node } }
 }`
 
 // One deterministic document per batch size: GitHub validates every declared
@@ -130,7 +136,7 @@ export function relationsArgs(batch: Array<{ repo: string; number: number }>): s
 
 // ── parsing and identity checks (§5.7), pure ────────────────────────────────
 
-export type IssueOutcome = { snapshot: IssueSnapshot } | { error: IssueError }
+export type IssueOutcome = { snapshot: IssueSnapshot; dependencies: IssueDependencies } | { error: IssueError }
 
 export interface IssueBatch {
   /** one per claimed key, in claimed order */
@@ -234,8 +240,60 @@ function hierarchy(issue: Record<string, unknown>, root: string): Omit<IssueSnap
   }
 }
 
+// One direction's open and total counts from issueDependenciesSummary, which
+// GitHub keeps apart (slice 2 §2), so a valid pair never has more open than total.
+function openAndTotal(open: unknown, total: unknown): { open: number; total: number } | null {
+  if (typeof open !== 'number' || typeof total !== 'number') return null
+  if (!Number.isInteger(open) || !Number.isInteger(total) || open < 0 || open > total) return null
+  return { open, total }
+}
+
+// One direction's list, validated like children, or null when it cannot be read.
+function dependencyList(v: unknown, root: string): { truncated: boolean; list: IssueFacts[] } | null {
+  const connection = record(v)
+  const nodes = connection?.nodes
+  const more = record(connection?.pageInfo)?.hasNextPage
+  if (!Array.isArray(nodes) || typeof more !== 'boolean') return null
+  // as with children: a list that lost an entry is no evidence that any issue left it
+  let truncated = more
+  const listed = new Map<string, IssueFacts>()
+  for (const raw of nodes as unknown[]) {
+    const issue = node(raw, false)
+    if (!issue) {
+      truncated = true
+      continue
+    }
+    const key = keyOf(issue)
+    if (key === root || listed.has(key)) continue
+    if (listed.size >= DEPENDENCIES_MAX) {
+      truncated = true
+      break
+    }
+    listed.set(key, issue)
+  }
+  return { truncated, list: [...listed.keys()].sort().map((key) => listed.get(key)!) }
+}
+
+// The dependency section (slice 2 §5.2). Anything unreadable makes the whole
+// section unavailable: one half alone could read as "blocked by nothing".
+function dependencies(issue: Record<string, unknown>, root: string): IssueDependencies {
+  const summary = record(issue.issueDependenciesSummary)
+  const blockedByCounts = openAndTotal(summary?.blockedBy, summary?.totalBlockedBy)
+  const blockingCounts = openAndTotal(summary?.blocking, summary?.totalBlocking)
+  const blockedBy = dependencyList(issue.blockedBy, root)
+  const blocking = dependencyList(issue.blocking, root)
+  if (!blockedByCounts || !blockingCounts || !blockedBy || !blocking) return { status: 'unavailable' }
+  return { status: 'ok', blocked_by: { ...blockedByCounts, ...blockedBy }, blocking: { ...blockingCounts, ...blocking } }
+}
+
 const ERROR_ROOT = (path: unknown[], alias: string): boolean =>
   path[0] === alias && (path.length === 1 || (path.length === 2 && path[1] === 'issue'))
+
+// A field error under one of these fails only that section of the root (§5.7, slice 2 §5.2).
+const HIERARCHY_FIELDS = new Set(['parent', 'subIssues'])
+const DEPENDENCY_FIELDS = new Set(['issueDependenciesSummary', 'blockedBy', 'blocking'])
+const underSection = (path: unknown[], fields: Set<string>): boolean =>
+  path[1] === 'issue' && typeof path[2] === 'string' && fields.has(path[2])
 
 function rootError(errors: Array<{ type: unknown }>): IssueError {
   // data is deleted only on a clear no: any other error on the alias is soft
@@ -254,8 +312,9 @@ function outcome(
   const mine = errors.filter((e) => e.path[0] === alias)
   const atRoot = mine.filter((e) => ERROR_ROOT(e.path, alias))
   if (atRoot.length > 0) return { error: rootError(atRoot) }
-  const sectionFailed = mine.some((e) => e.path[1] === 'issue' && (e.path[2] === 'parent' || e.path[2] === 'subIssues'))
-  if (mine.some((e) => !(e.path[1] === 'issue' && (e.path[2] === 'parent' || e.path[2] === 'subIssues')))) {
+  const hierarchyFailed = mine.some((e) => underSection(e.path, HIERARCHY_FIELDS))
+  const dependenciesFailed = mine.some((e) => underSection(e.path, DEPENDENCY_FIELDS))
+  if (mine.some((e) => !underSection(e.path, HIERARCHY_FIELDS) && !underSection(e.path, DEPENDENCY_FIELDS))) {
     return { error: 'gh-failed' }
   }
 
@@ -271,13 +330,14 @@ function outcome(
   const facts = node(issue, false)
   if (!facts) return { error: 'gh-failed' }
   const root = keyOf(facts)
-  const rest = sectionFailed ? null : hierarchy(issue, root)
+  const rest = hierarchyFailed ? null : hierarchy(issue, root)
   return {
     snapshot: {
       v: 1,
       issue: { repo: facts.repo, number: facts.number, title: facts.title, state: facts.state, state_reason: facts.state_reason },
       ...(rest ?? { ancestors: [], ancestors_end: 'top', hierarchy: { status: 'unavailable' } }),
     },
+    dependencies: dependenciesFailed ? { status: 'unavailable' } : dependencies(issue, root),
   }
 }
 
@@ -314,7 +374,7 @@ export function parseIssueBatch(
 // ── the fair queue (§5.4), pure ─────────────────────────────────────────────
 
 export interface IssueQueueEntry extends IssueClaimKey {
-  reason: 'new' | 'nudged' | 'due'
+  reason: 'new' | 'upgrade' | 'nudged' | 'due'
 }
 
 function ttlFor(row: IssueSnapshotRow): number {
@@ -325,11 +385,12 @@ function ttlFor(row: IssueSnapshotRow): number {
   return row.snapshot?.issue.state === 'CLOSED' ? ISSUE_TTL.closed : ISSUE_TTL.open
 }
 
-const TIER = { new: 0, nudged: 1, due: 2 } as const
+const TIER = { new: 0, upgrade: 1, nudged: 2, due: 3 } as const
 
 // The candidates are the refresh key set (§6), uncapped. Order: never fetched,
-// then nudged, then oldest checked_at, then key. Every attempt advances
-// checked_at, so a served key moves behind every key that has waited longer.
+// then upgrades (slice 2 §5.4), then nudged, then oldest checked_at, then key.
+// Every attempt advances checked_at, so a served key moves behind every key
+// that has waited longer.
 export function issueQueue(input: {
   entities: IssueEntity[]
   links: SourceLink[]
@@ -363,8 +424,17 @@ export function issueQueue(input: {
       queue.push({ key, repo, number, checked_at: null, reason: 'new' })
       continue
     }
+    // A success with no dependency section this build can read: written before
+    // slice 2, or since by an older viewer, which unbinds it. A failure is
+    // left to its own TTL: GitHub could not be asked, or said no.
+    if (row.error === null && row.snapshot !== null && row.dependencies === null) {
+      queue.push({ key, repo, number, checked_at: row.checked_at, reason: 'upgrade' })
+      continue
+    }
+    // a key learns at once that a listed child, or one of its open blockers, was closed by a PR
     const listed = row.snapshot?.hierarchy.status === 'ok' ? row.snapshot.hierarchy.children : []
-    const nudges = [settledAt.get(key), ...listed.map((c) => settledAt.get(keyOf(c)))]
+    const blockers = row.dependencies?.status === 'ok' ? row.dependencies.blocked_by.list.filter((b) => b.state === 'OPEN') : []
+    const nudges = [settledAt.get(key), ...[...listed, ...blockers].map((issue) => settledAt.get(keyOf(issue)))]
     if (nudges.some((t) => t !== undefined && t > row.checked_at)) {
       queue.push({ key, repo, number, checked_at: row.checked_at, reason: 'nudged' })
       continue

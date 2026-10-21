@@ -8,7 +8,7 @@ import {
   boardResponseState, copilotWatchLaunch, waitForQuestionResponse, waitForBoardResponse, watchTimeoutMs,
 } from '../src/watch.js'
 import Database from 'better-sqlite3'
-import { existsSync, mkdtempSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
@@ -17,11 +17,12 @@ import type { EventEmitter } from 'node:events'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { buildMcpServer } from '../src/mcp.js'
+import { scratchDir } from './scratch.js'
 
 const AGENT = { project: 'agent-inbox', stream: 'main', agent: 'copilot' } as const
 
 function fresh() {
-  return openDb(join(mkdtempSync(join(tmpdir(), 'copilot-watch-')), 'inbox.db'))
+  return openDb(join(scratchDir('copilot-watch-'), 'inbox.db'))
 }
 
 function waitingRow(db: ReturnType<typeof openDb>, label = 'Upload') {
@@ -310,7 +311,7 @@ describe('the human stops a watcher (#217)', () => {
   // nothing of the stop, and must not hand the next action a stop the human
   // never chose. This is origin/main's beginNewRowAction statement.
   it('the next action an older server starts is watched again, not stopped', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'copilot-watch-older-')), 'custom.db')
+    const dbPath = join(scratchDir('copilot-watch-older-'), 'custom.db')
     const db = openDb(dbPath)
     const row = waitingRow(db)
     const board = getBoard(db, AGENT.project, 'Release')!
@@ -331,7 +332,7 @@ describe('the human stops a watcher (#217)', () => {
   }, 20_000)
 
   it('the CLI exits 3 with a do-not-re-arm line for a stopped ask, and keeps the timeout exit', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'copilot-watch-stop-')), 'custom.db')
+    const dbPath = join(scratchDir('copilot-watch-stop-'), 'custom.db')
     const db = openDb(dbPath)
     const stopped = insertItem(db, { ...AGENT, kind: 'question', title: 'stopped' })
     stopItemWatch(db, stopped, null)
@@ -350,7 +351,7 @@ describe('the human stops a watcher (#217)', () => {
   }, 20_000)
 
   it('the CLI outlives its own timeout through a "back in a while" and exits promptly on the answer', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'copilot-watch-defer-')), 'custom.db')
+    const dbPath = join(scratchDir('copilot-watch-defer-'), 'custom.db')
     const db = openDb(dbPath)
     const id = insertItem(db, { ...AGENT, kind: 'question', title: 'deferred' })
     stopItemWatch(db, id, new Date(Date.now() + 20_000).toISOString())
@@ -398,7 +399,7 @@ describe('copilotWatchLaunch', () => {
   })
 
   it('the CLI can watch a board row in the explicit database', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'copilot-row-watch-cli-')), 'custom.db')
+    const dbPath = join(scratchDir('copilot-row-watch-cli-'), 'custom.db')
     const db = openDb(dbPath)
     const row = waitingRow(db)
     markRowHandled(db, row.id)
@@ -422,7 +423,7 @@ describe('copilotWatchLaunch', () => {
   })
 
   it.each(['0', '-1', '01', '2x', '9007199254740992'])('the CLI refuses action version %s before opening a database', (version) => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'copilot-watch-invalid-')), 'must-not-exist.db')
+    const dbPath = join(scratchDir('copilot-watch-invalid-'), 'must-not-exist.db')
     const entry = fileURLToPath(new URL('../src/watch-cli.ts', import.meta.url))
     const result = spawnSync(process.execPath, ['--import', 'tsx', entry, '--row', 'row-1', version, dbPath], {
       encoding: 'utf8', timeout: 5_000,
@@ -434,7 +435,7 @@ describe('copilotWatchLaunch', () => {
   })
 
   it('the CLI watches the explicit non-default database path', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'copilot-watch-cli-')), 'custom.db')
+    const dbPath = join(scratchDir('copilot-watch-cli-'), 'custom.db')
     const db = openDb(dbPath)
     const id = insertItem(db, { ...AGENT, kind: 'question', title: 'which?' })
     const entry = fileURLToPath(new URL('../src/watch-cli.ts', import.meta.url))

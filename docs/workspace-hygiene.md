@@ -123,10 +123,10 @@ git -C "$MAIN" bundle list-heads "$B"                 # must list the branch at 
 
 ## Tests and reviews
 
-- Tests make scratch directories with `scratchDir()` from `test/scratch.ts` and call
-  `removeScratchDirs()` from `afterEach` (#240). Directories a test makes any other way
-  must be removed by that test. Remaining leaks, including the DOM harness's
-  `inbox-dom-*` databases, are tracked in #245.
+- Tests make scratch directories with `scratchDir()` from `test/scratch.ts` (#240, #245).
+  The `test/scratch-setup.ts` setupFile removes each file's leftovers when the file ends,
+  and some files also call `removeScratchDirs()` from `afterEach`. Directories a test
+  makes any other way must be removed by that test.
 - Reviewers create their trees under `/tmp/review-<n>` (or another name that carries the
   PR number) and delete them, or `git worktree remove` them, when the review ends.
 - Agents put logs and diagnostics in their session artifact folder, not in `/tmp` or the

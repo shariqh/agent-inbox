@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { rmSync } from 'node:fs'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
 import {
@@ -8,6 +7,7 @@ import {
 } from '../src/store.js'
 import { parsePrPayload, refreshOnce, resolvePreviewPayload, TTL } from '../src/prstate.js'
 import { createViewer } from '../src/viewer.js'
+import { scratchDir } from './scratch.js'
 
 const HEAD = 'a'.repeat(40)
 const NEXT_HEAD = 'b'.repeat(40)
@@ -126,7 +126,7 @@ describe('preview caching does not gate approval requests', () => {
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(new Date(NOW))
-    directory = mkdtempSync(join(tmpdir(), 'inbox-preview-'))
+    directory = scratchDir('inbox-preview-')
     db = openDb(join(directory, 'inbox.db'))
     insertItem(db, { project: 'p', agent: 'a', stream: 'feature', repo: 'o/n', kind: 'question', title: 'Approve', action_owner: 'approval' })
   })

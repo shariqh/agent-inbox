@@ -1,13 +1,12 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { mkdtempSync } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
 import { createViewer } from '../src/viewer.js'
 import { annotateBoardRow, getBoard, insertItem, listItems, openDb, updateBoardRow, upsertBoard } from '../src/store.js'
+import { scratchDir } from './scratch.js'
 
 function freshDb(): Database.Database {
-  return openDb(join(mkdtempSync(join(tmpdir(), 'action-viewer-')), 'inbox.db'))
+  return openDb(join(scratchDir('action-viewer-'), 'inbox.db'))
 }
 
 describe('viewer action dispositions', () => {

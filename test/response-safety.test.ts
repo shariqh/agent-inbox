@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
@@ -15,6 +14,7 @@ import {
 import { buildMcpServer } from '../src/mcp.js'
 import { createViewer } from '../src/viewer.js'
 import replyWatch from '../electron/reply-watch.cjs'
+import { scratchDir } from './scratch.js'
 
 const NOW = new Date('2026-09-20T12:00:00.000Z')
 const PROJECT = 'response-safety'
@@ -39,7 +39,7 @@ describe('response lifecycle safety', () => {
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(NOW)
-    directory = mkdtempSync(join(tmpdir(), 'response-safety-'))
+    directory = scratchDir('response-safety-')
     const path = join(directory, 'inbox.db')
     agent = openDb(path)
     human = openDb(path)

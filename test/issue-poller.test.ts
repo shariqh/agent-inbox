@@ -2,8 +2,7 @@
 // refreshIssuesOnce with an injected clock and an injected `gh`, over a real
 // SQLite hub; nothing here touches the network.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
 import {
@@ -18,6 +17,7 @@ import {
 import type { IssueGhRun } from '../src/issue-poller.js'
 import { createViewer } from '../src/viewer.js'
 import { at, snapshot } from './issue-fixtures.js'
+import { scratchDir } from './scratch.js'
 
 const REPO = 'shariqh/agent-inbox'
 const MIN = 60_000
@@ -309,7 +309,7 @@ describe('issueQueue: candidates, TTLs and order (§5.4)', () => {
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(ms(0))
-    dir = mkdtempSync(join(tmpdir(), 'issue-queue-'))
+    dir = scratchDir('issue-queue-')
     db = openDb(join(dir, 'inbox.db'))
   })
   afterEach(() => {
@@ -424,7 +424,7 @@ describe('refreshIssuesOnce (§5.2–5.5)', () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     clock = ms(0)
     vi.setSystemTime(clock)
-    dir = mkdtempSync(join(tmpdir(), 'issue-poller-'))
+    dir = scratchDir('issue-poller-')
     db = openDb(join(dir, 'inbox.db'))
   })
   afterEach(() => {
@@ -656,7 +656,7 @@ describe('startGithubPoller: one tick, issues first (§5.2)', () => {
 
   it('runs the issue class before the PR class in every tick, and never overlaps ticks', async () => {
     vi.useFakeTimers()
-    const dir = mkdtempSync(join(tmpdir(), 'issue-tick-'))
+    const dir = scratchDir('issue-tick-')
     const db = openDb(join(dir, 'inbox.db'))
     insertItem(db, { project: 'p', stream: '30-x', agent: 'a', kind: 'question', title: 'q', repo: 'o/n', issue_ref: 30 })
     const order: string[] = []

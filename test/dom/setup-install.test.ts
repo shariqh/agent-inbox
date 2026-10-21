@@ -1,13 +1,13 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createHash } from 'node:crypto'
-import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, cpSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
-import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import type Database from 'better-sqlite3'
 import type { BuildStamp } from '../../src/stamp.js'
 import { bootApp, freshDb, settle, useDomTest } from './harness.js'
+import { scratchDir } from '../scratch.js'
 
 useDomTest()
 
@@ -171,8 +171,8 @@ describe('release mode (issue #74) — truthful Setup API + conditional renderin
     payloadDir: string
     runtimeId: string
   } {
-    const bundleDir = mkdtempSync(join(tmpdir(), 'release-bundle-'))
-    const runtimeRoot = mkdtempSync(join(tmpdir(), 'release-runtime-root-'))
+    const bundleDir = scratchDir('release-bundle-')
+    const runtimeRoot = scratchDir('release-runtime-root-')
     dirs.push(bundleDir, runtimeRoot)
     const version = '1.2.3'
     const payloadDir = join(bundleDir, 'runtime', 'darwin-arm64')
@@ -301,7 +301,7 @@ describe('release mode (issue #74) — truthful Setup API + conditional renderin
     ['a mode change', (payloadDir: string) => chmodSync(join(payloadDir, 'scripts', 'install-agents.sh'), 0o755)],
     ['a manifest symlink', (payloadDir: string) => {
       const manifest = join(payloadDir, 'runtime-manifest.json')
-      const outsideDir = mkdtempSync(join(tmpdir(), 'release-manifest-outside-'))
+      const outsideDir = scratchDir('release-manifest-outside-')
       dirs.push(outsideDir)
       const outside = join(outsideDir, 'runtime-manifest.json')
       writeFileSync(outside, readFileSync(manifest))
@@ -390,8 +390,8 @@ describe('release mode (issue #74) — truthful Setup API + conditional renderin
     // runtime-manifest.json at all — a corrupt/incomplete download, not a
     // dev/legacy bundle. The source must not verify, and nothing about that
     // directory may leak into a "success-shaped" command.
-    const bundleDir = mkdtempSync(join(tmpdir(), 'release-bundle-broken-'))
-    const runtimeRoot = mkdtempSync(join(tmpdir(), 'release-runtime-root-broken-'))
+    const bundleDir = scratchDir('release-bundle-broken-')
+    const runtimeRoot = scratchDir('release-runtime-root-broken-')
     dirs.push(bundleDir, runtimeRoot)
     const payloadDir = join(bundleDir, 'runtime', 'darwin-arm64')
     mkdirSync(join(payloadDir, 'scripts'), { recursive: true })

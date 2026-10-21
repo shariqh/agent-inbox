@@ -13,14 +13,13 @@
 // and the viewer's /api/boards path never routes through it (pinned in
 // test/viewer.test.ts).
 import { describe, it, expect } from 'vitest'
-import { mkdtempSync } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { advanceBoardRow, openDb, upsertBoard, listBoards, annotateBoardRow, listPendingRows, markAnnotationDelivered, markRowHandled, markHandledDelivered, stopBoardRowWatch } from '../src/store.js'
 import type { BoardWithRows } from '../src/store.js'
 import { trimContext, makeContextLedger, deliverContext, shapeBoard, summariseBoard, rowKey, itemKey } from '../src/shape.js'
 import { issueRelations } from '../src/issue-graph.js'
 import { at, row as snapRow, snapshot } from './issue-fixtures.js'
+import { scratchDir } from './scratch.js'
 
 const LONG = 'why this row exists, at the length agents are told to write. '.repeat(12)
 
@@ -35,7 +34,7 @@ function boardWith(rows: Array<{
   db: ReturnType<typeof openDb>
   board: BoardWithRows
 } {
-  const db = openDb(join(mkdtempSync(join(tmpdir(), 'shape-')), 'inbox.db'))
+  const db = openDb(join(scratchDir('shape-'), 'inbox.db'))
   upsertBoard(db, { project: 'p', stream: 's', agent: 'a', title: 'rollout', rows })
   return { db, board: listBoards(db)[0]! }
 }
@@ -408,7 +407,7 @@ describe('constraint A — no shaping path may drop the human’s annotation', (
 describe('issue links and issue_rel — titled board_get only (#103 PR2)', () => {
   const REPO = 'shariqh/agent-inbox'
   function linkedBoard() {
-    const db = openDb(join(mkdtempSync(join(tmpdir(), 'shape-issue-')), 'inbox.db'))
+    const db = openDb(join(scratchDir('shape-issue-'), 'inbox.db'))
     upsertBoard(db, {
       project: 'p', stream: 's', agent: 'a', title: 'AHP', issuePin: { repo: REPO, number: 117 },
       rows: [

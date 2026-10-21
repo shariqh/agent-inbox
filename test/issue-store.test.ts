@@ -2,8 +2,7 @@
 // Snapshots are written only by these tests for now; PR1b's poller is the
 // production writer.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
 import {
@@ -12,6 +11,7 @@ import {
 } from '../src/store.js'
 import type { IssueSnapshot } from '../src/store.js'
 import { at, facts, snapshot } from './issue-fixtures.js'
+import { scratchDir } from './scratch.js'
 
 const FROZEN_V131 = readFileSync(new URL('./fixtures/v1.3.1-schema.sql', import.meta.url), 'utf8')
 const KEY = { repo: 'shariqh/agent-inbox', number: 120 }
@@ -26,7 +26,7 @@ describe('issue snapshot store (issue #103)', () => {
     // fixture evening must also be "now" or these tests would age out.
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(Date.parse(at(60)))
-    dir = mkdtempSync(join(tmpdir(), 'issue-store-'))
+    dir = scratchDir('issue-store-')
     db = openDb(join(dir, 'inbox.db'))
   })
 

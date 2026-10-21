@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { rmSync } from 'node:fs'
 import { join } from 'node:path'
 import type { EventEmitter } from 'node:events'
 import Database from 'better-sqlite3'
@@ -17,6 +16,7 @@ import { inferProject } from '../src/infer.js'
 import { runHook } from '../src/hook.js'
 import { waitForQuestionResponse } from '../src/watch.js'
 import { attentionEntries } from '../public/attention.js'
+import { scratchDir } from './scratch.js'
 
 const PROJECT = inferProject(process.cwd())
 const NOW = new Date('2026-09-20T16:00:00.000Z')
@@ -35,7 +35,7 @@ describe('item annotation delivery', () => {
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(NOW)
-    directory = mkdtempSync(join(tmpdir(), 'item-annotations-'))
+    directory = scratchDir('item-annotations-')
     path = join(directory, 'inbox.db')
     agent = openDb(path)
     human = openDb(path)

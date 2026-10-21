@@ -237,6 +237,14 @@ function registration(path: string): { command: string; args: string[] } | undef
   }).mcpServers?.['agent-inbox']
 }
 
+// Three tests here run the installer four to six times each and take about
+// 2.5-4.5 s alone, but a busy parallel `npm test` has stretched the slowest to
+// 17.3 s, past Vitest's 15 s default (#245). Their bodies are synchronous, so
+// Vitest cannot interrupt them: its limit only fails a run that finished late,
+// as #243 found for the staging tests. Allow them two minutes, four times the
+// 30 s bound the installer gives each isolated step.
+const MULTI_INSTALL_TEST_TIMEOUT_MS = 120_000
+
 describe('portable release installer', () => {
   it('rolls back a newly published exact runtime when the helper reports a committed failure', () => {
     const f = fixture()
@@ -341,7 +349,7 @@ describe('portable release installer', () => {
     )
     expect(removed.status, removed.stderr).toBe(0)
     expect(readdirSync(f.runtimeRoot).filter((name) => !name.startsWith('.'))).toEqual([])
-  })
+  }, MULTI_INSTALL_TEST_TIMEOUT_MS)
 
   // #197 part 2: Setup's Agents block reads back exactly what the installer
   // wrote, host by host — and "Update agents" for one host moves only that one.
@@ -505,7 +513,7 @@ describe('portable release installer', () => {
     step = shell(printed(refused.stderr)[0]!, f.env)
     expect(step.status, step.stderr).toBe(0)
     expectOnly(runtimeEntry, 'doubled, fixed from the runtime')
-  })
+  }, MULTI_INSTALL_TEST_TIMEOUT_MS)
 
   // #232, as reported: a verified runtime copied to ~/Downloads, with its six
   // hooks in settings.json, was taken for another tool's, so a checkout install
@@ -601,7 +609,7 @@ describe('portable release installer', () => {
     step = run(copiedInstaller, f.env, '--apply', '--uninstall')
     expect(step.status, step.stderr).toBe(0)
     expect(entries('copy uninstalled'), 'copy uninstalled').toEqual([])
-  })
+  }, MULTI_INSTALL_TEST_TIMEOUT_MS)
 
   it('installs and removes packaged hooks without ambient node or jq', () => {
     const f = fixture()

@@ -4,14 +4,14 @@
 // ~/.agent-inbox/runtime/<id>/, or a payload inside the app bundle) carries
 // runtime-manifest.json beside its dist/; a checkout never does.
 import { describe, it, expect } from 'vitest'
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { detectServerSource } from '../src/server-source.js'
+import { scratchDir } from './scratch.js'
 
 function layout(files: string[]): string {
-  const root = mkdtempSync(join(tmpdir(), 'server-source-'))
+  const root = scratchDir('server-source-')
   for (const file of files) {
     mkdirSync(join(root, file, '..'), { recursive: true })
     writeFileSync(join(root, file), '')

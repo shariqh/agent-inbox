@@ -1,5 +1,4 @@
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { chmodSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
@@ -10,6 +9,7 @@ import {
   validateLinuxAppImageInputs,
   verifyPinnedAppImageTool,
 } from '../scripts/linux-appimage-inputs.mjs'
+import { scratchDir } from './scratch.js'
 
 describe('Linux AppImage inputs', () => {
   it('pins the exact thin profile, tagged packaging tool, icon, and desktop contract', () => {
@@ -135,7 +135,7 @@ describe('Linux AppImage inputs', () => {
   })
 
   it('verifies the pinned tool bytes, size, plain-file identity, and execute bit before use', () => {
-    const root = mkdtempSync(join(tmpdir(), 'appimagetool-input-'))
+    const root = scratchDir('appimagetool-input-')
     const tool = join(root, 'appimagetool')
     writeFileSync(tool, 'pinned tool bytes')
     chmodSync(tool, 0o755)

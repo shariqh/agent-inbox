@@ -74,12 +74,12 @@ describe('issue snapshot store (issue #103)', () => {
       const before = new Map(tables(old).map((name) => [name, columns(old, name)]))
       old.close()
 
-      // #217, #103 PR1b/PR2 and #253 append nullable columns of their own; every v1.3.1 column stays in place.
+      // #217, #103 PR1b/PR2, #253 and #247 append nullable columns of their own; every v1.3.1 column stays in place.
       const appended: Record<string, string[]> = {
         source_links_by_head: ['closing_refs'],
-        items: ['watch_stopped_at', 'watch_stopped_until', 'action_agent'],
+        items: ['watch_stopped_at', 'watch_stopped_until', 'action_agent', 'pinned_at'],
         boards: ['issue_pin_repo', 'issue_pin_number'],
-        board_rows: ['watch_stopped_at', 'watch_stopped_until', 'action_agent', 'action_agent_version', 'issue_repo', 'issue_number'],
+        board_rows: ['watch_stopped_at', 'watch_stopped_until', 'action_agent', 'action_agent_version', 'issue_repo', 'issue_number', 'pinned_at'],
         activity: ['host_pid', 'server_pid'],
       }
       const migrated = openDb(path)
@@ -91,8 +91,10 @@ describe('issue snapshot store (issue #103)', () => {
           expect(now.slice(shape.length).map((column) => column.name), name).toEqual(appended[name] ?? [])
           expect(now.slice(shape.length).every((column) => !column.notnull && column.dflt_value === null && !column.pk), name).toBe(true)
         }
-        expect(migrated.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = 'reset_row_action_watch_state'`).get())
-          .toBeTruthy()
+        for (const trigger of ['reset_row_action_watch_state', 'clear_row_pin_when_ask_ends', 'clear_item_pin_when_ask_ends']) {
+          expect(migrated.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = ?`).get(trigger), trigger)
+            .toBeTruthy()
+        }
         expect(listItems(migrated).map((item) => [item.id, item.title, item.issue_ref])).toEqual([['legacy', 'Still here?', 120]])
         expect(listIssueSnapshots(migrated)).toEqual([])
       } finally {

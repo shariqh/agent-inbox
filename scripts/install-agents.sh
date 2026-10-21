@@ -507,6 +507,10 @@ esac
 # Node resets the signals this shell ignores before the helper can ignore
 # them itself. The helper then dies with 128 + that signal before it has
 # started anything, so the step simply runs again, up to three times in all.
+# A command that ran and was then killed by one of those signals ends the
+# helper with the same status, so the helper creates a start marker once it
+# ignores them, before it starts anything: a step that ended this way and
+# left the marker is reported like any other failure, never run again.
 ISOLATE_RESTART_STATUSES=""
 for isolate_signal in HUP INT QUIT ALRM TERM XCPU; do
   ISOLATE_RESTART_STATUSES="$ISOLATE_RESTART_STATUSES $((128 + $(kill -l "$isolate_signal")))"
@@ -515,21 +519,27 @@ done
 # Usage: isolated [--stdout] -- <command> [args...]. With --stdout, the
 # command's stdout is relayed to this function's; otherwise it is discarded.
 isolated() {
-  local attempt=1 status
+  local attempt=1 status started="$WORK/isolated-step.started"
   while :; do
+    rm -f "$started"
     if [ "$_AGENT_INBOX_SETUP_LOCK_HELD" -eq 1 ]; then
-      "$ISOLATE_NODE" "$ISOLATE_HELPER" --timeout-ms "$ROLLBACK_STEP_TIMEOUT_MS" --lease-fd 9 "$@" 3>&-
+      "$ISOLATE_NODE" "$ISOLATE_HELPER" --timeout-ms "$ROLLBACK_STEP_TIMEOUT_MS" \
+        --started-file "$started" --lease-fd 9 "$@" 3>&-
     else
-      "$ISOLATE_NODE" "$ISOLATE_HELPER" --timeout-ms "$ROLLBACK_STEP_TIMEOUT_MS" "$@" 3>&-
+      "$ISOLATE_NODE" "$ISOLATE_HELPER" --timeout-ms "$ROLLBACK_STEP_TIMEOUT_MS" \
+        --started-file "$started" "$@" 3>&-
     fi
     status=$?
     case " $ISOLATE_RESTART_STATUSES " in
       *" $status "*) ;;
-      *) return "$status" ;;
+      *) break ;;
     esac
-    [ "$attempt" -lt 3 ] || return "$status"
+    [ ! -e "$started" ] || break
+    [ "$attempt" -lt 3 ] || break
     attempt=$((attempt + 1))
   done
+  rm -f "$started"
+  return "$status"
 }
 
 # A Node step the forward path shares runs directly until a rollback begins,

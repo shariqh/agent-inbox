@@ -651,6 +651,51 @@ describe('Setup filesystem removal through trash', () => {
     expect(readFileSync(join(outside, 'keep.txt'), 'utf8')).toBe('keep\n')
   })
 
+  it('counts only trash it may remove against its bound, so trash it keeps never holds back newer trash (#214)', () => {
+    const parent = temp('setup-fs-leftover-kept-')
+    const uid = process.getuid!()
+    const names = (stem: string, length: number) =>
+      Array.from({ length }, (_, index) => `.trash-${stem}-${String(index).padStart(2, '0')}`)
+    // Sorted ahead of what it may remove: seventeen entries it keeps (twelve
+    // marked for recovery, five someone else's), then two it may remove but
+    // cannot, then eighteen it can.
+    const keptNames = names('kept', 17)
+    const lockedNames = names('locked', 2)
+    const kept = keptNames.map((name) => join(parent, name))
+    const locked = lockedNames.map((name) => join(parent, name))
+    const foreign = new Set(kept.slice(12))
+    kept.forEach((path, index) => mkdirSync(index < 12 ? join(path, '.retained') : path, { recursive: true }))
+    for (const name of [...lockedNames, ...names('runtime', 18)]) mkdirSync(join(parent, name, 'runtime'), { recursive: true })
+    const filesystem = createSetupFilesystem({
+      uid,
+      io: nodeIo({
+        lstat(path) {
+          const stat = lstatSync(path, { bigint: true })
+          if (!foreign.has(path)) return stat
+          return {
+            dev: stat.dev,
+            ino: stat.ino,
+            uid: stat.uid + 1n,
+            isFile: () => stat.isFile(),
+            isDirectory: () => stat.isDirectory(),
+            isSymbolicLink: () => stat.isSymbolicLink(),
+          }
+        },
+        remove(path, options) {
+          if (locked.includes(path)) throw Object.assign(new Error('permission denied'), { code: 'EACCES' })
+          rmSync(path, options)
+        },
+      }),
+    })
+
+    // A removal that fails still counts toward the bound of 16.
+    const first = filesystem.removeLeftoverTrash(parent)
+    expect(first.removed).toHaveLength(14)
+    expect(first.retained).toEqual([...kept, ...locked])
+    expect(filesystem.removeLeftoverTrash(parent).removed).toHaveLength(4)
+    expect(trashEntries(parent).sort()).toEqual([...keptNames, ...lockedNames])
+  })
+
   it('retains leftover trash it does not own or whose identity changes before removal', () => {
     const parent = temp('setup-fs-leftover-retain-')
     mkdirSync(join(parent, '.trash-foreign'))

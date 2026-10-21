@@ -106,6 +106,7 @@ case "$1:$2" in
     fi
     rm -f "$INSTALL_STATE/$name"
     printf '{"mcpServers":{}}\\n' > "$config"
+    if [ "\${SIGNAL_AFTER_REMOVE:-}" = "$name" ]; then kill -TERM $$; fi
     if [ "\${PAUSE_AFTER_REMOVE:-}" = "$name" ]; then
       touch "$INSTALL_STATE/$name.removed"
       while [ ! -f "$INSTALL_STATE/$name.release" ]; do sleep 0.05; done
@@ -1566,6 +1567,25 @@ describe('agent setup installer: losing its parent mid-install (#208)', () => {
     expect(workDirs(f)).toEqual([])
   })
 
+  it('never runs an undo again when its command ran and was then killed by a signal (#214)', () => {
+    const f = fixture()
+    // Claude registers and Copilot's add fails. Undoing Claude removes its
+    // registration, then SIGTERM kills the host CLI: the same 143 a helper
+    // killed while its Node is still starting reports.
+    f.env.FAIL_ADD = 'copilot'
+    f.env.SIGNAL_AFTER_REMOVE = 'claude'
+
+    const result = run(f, ['--apply'])
+
+    expect(result.code).toBe(1)
+    expect(count(readFileSync(f.log, 'utf8'), 'claude mcp remove')).toBe(1)
+    expect(existsSync(join(f.state, 'claude'))).toBe(false)
+    expect(readFileSync(f.env.CLAUDE_CONFIG!, 'utf8')).not.toContain('agent-inbox')
+    // The re-check finds nothing registered, so there is nothing to report.
+    expect(result.err).not.toContain('could not roll back')
+    expect(workDirs(f)).toEqual([])
+  })
+
   it('lets an undo outlive a killed installer without holding its pipes, and keeps the lock until it ends (#211)', async () => {
     const f = fixture()
     useNodeClaudeCli(f)
@@ -1820,6 +1840,28 @@ describe('rollback step isolation (#211)', () => {
     expect([quiet.status, quiet.stdout, quiet.stderr]).toEqual([0, '', ''])
     const relayed = isolate(['--stdout', '--', '/bin/sh', '-c', 'printf "%s" "{\\"status\\":\\"ok\\"}"; echo err >&2'])
     expect([relayed.status, relayed.stdout, relayed.stderr]).toEqual([0, '{"status":"ok"}', ''])
+  })
+
+  it('creates its start marker before it starts anything, and starts nothing without one (#214)', async () => {
+    const dir = scratch()
+    const started = join(dir, 'started')
+    // The command runs only once the marker exists, and still finds it there
+    // when it is then killed by a signal.
+    const killed = isolate(['--started-file', started, '--', '/bin/sh', '-c', `test -f '${started}' && kill -TERM $$`])
+    expect(killed.status).toBe(128 + constants.signals.SIGTERM)
+    expect(existsSync(started)).toBe(true)
+
+    // A marker already there, or one that cannot be created, starts nothing.
+    const ran = join(dir, 'ran')
+    for (const marker of [started, join(dir, 'missing', 'started')]) {
+      const refused = isolate(['--started-file', marker, '--', '/bin/sh', '-c', `touch '${ran}'`])
+      expect(refused.status, marker).toBe(126)
+      expect(refused.stderr, marker).toContain('could not create its start marker')
+    }
+    expect(isolate(['--started-file', '', '--', '/bin/sh', '-c', 'exit 0']).status).toBe(125)
+    // Nor did a detached guard start the command after the helper had gone.
+    await sleep(1000)
+    expect(existsSync(ran)).toBe(false)
   })
 
   it('stops a command that outlives its bound, with everything in its process group, and exits 124', async () => {

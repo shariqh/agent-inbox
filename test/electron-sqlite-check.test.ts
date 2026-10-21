@@ -1,12 +1,13 @@
 import type { SpawnSyncOptions, SpawnSyncReturns } from 'node:child_process'
-import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
-import { homedir, tmpdir } from 'node:os'
+import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   ElectronSqliteCheckError,
   runElectronSqliteCheck,
 } from '../scripts/electron-sqlite-check.mjs'
+import { scratchDir } from './scratch.js'
 
 const root = resolve(process.cwd())
 const checkScript = join(root, 'scripts', 'runtime-sqlite-check.mjs')
@@ -43,7 +44,7 @@ function fakeSpawn(check: Outcome, probe: Outcome = { stdout: `${JSON.stringify(
 }
 
 function appFixture(): { executable: string; storePath: string } {
-  const app = mkdtempSync(join(tmpdir(), 'electron-sqlite-app-'))
+  const app = scratchDir('electron-sqlite-app-')
   const storePath = join(app, 'store.js')
   writeFileSync(storePath, 'export {}\n')
   return { executable: join(app, 'Agent Inbox'), storePath }
@@ -169,7 +170,7 @@ describe('Electron-embedded allocation-driven SQLite check (#135)', () => {
     const fake = fakeSpawn({ status: 0 })
     expect(() => runElectronSqliteCheck({
       executable: '/missing/Agent Inbox',
-      storePath: join(mkdtempSync(join(tmpdir(), 'electron-sqlite-empty-')), 'dist', 'store.js'),
+      storePath: join(scratchDir('electron-sqlite-empty-'), 'dist', 'store.js'),
       expected,
       log: () => {},
       spawn: fake.spawn,

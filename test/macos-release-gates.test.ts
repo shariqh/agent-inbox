@@ -3,14 +3,12 @@ import { createHash } from 'node:crypto'
 import {
   chmodSync,
   existsSync,
-  mkdtempSync,
   mkdirSync,
   readFileSync,
   readdirSync,
   rmSync,
   writeFileSync,
 } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
@@ -27,6 +25,7 @@ import {
 } from '../scripts/macos-release-gates.mjs'
 import { loadReleaseInputs } from '../scripts/release-inputs.mjs'
 import { treeIdentity } from '../scripts/tree-identity.mjs'
+import { scratchDir } from './scratch.js'
 
 const root = resolve(process.cwd())
 const signingIdentity = 'Developer ID Application: Release Test (AB12CD34EF)'
@@ -42,7 +41,7 @@ function taggedAt(repo: string, tag: string) {
 }
 
 function makeSigningHarness(emptySearchList = false) {
-  const temp = mkdtempSync(join(tmpdir(), 'release-signing-'))
+  const temp = scratchDir('release-signing-')
   const state = join(temp, 'signing state')
   const bin = join(temp, 'bin')
   const security = join(bin, 'security')
@@ -133,7 +132,7 @@ esac
 }
 
 function makeTaggedRepo(version = '1.2.3', lockRootVersion = version) {
-  const repo = mkdtempSync(join(tmpdir(), 'release-tag-'))
+  const repo = scratchDir('release-tag-')
   execFileSync('git', ['init', '--quiet'], { cwd: repo })
   writeFileSync(join(repo, 'package.json'), `${JSON.stringify({ version })}\n`)
   writeFileSync(
@@ -272,7 +271,7 @@ printf '%s\\n' "$*" >> "$FAKE_SLEEP_LOG"
 }
 
 function runNotarize(failures: Partial<Record<StaplerAction, StaplerFailure[]>> = {}) {
-  const temp = mkdtempSync(join(tmpdir(), 'notary-process-'))
+  const temp = scratchDir('notary-process-')
   try {
     const submitted = join(temp, 'Agent Inbox.zip')
     const stapleTarget = join(temp, 'Agent Inbox.app')
@@ -317,7 +316,7 @@ function runNotarize(failures: Partial<Record<StaplerAction, StaplerFailure[]>> 
 
 // Drives the real `build-dmg` gate up to the codesign check that follows its stapler validate.
 function runBuildDmg(failures: StaplerFailure[]) {
-  const temp = mkdtempSync(join(tmpdir(), 'final-dmg-stapler-'))
+  const temp = scratchDir('final-dmg-stapler-')
   try {
     const app = join(temp, 'Agent Inbox.app')
     const appReceipt = join(temp, 'app-notary-receipt.json')
@@ -488,7 +487,7 @@ describe('macOS release gates', () => {
       runHeadSha: fixture.sha,
     })
 
-    const temp = mkdtempSync(join(tmpdir(), 'release-thin-handoff-'))
+    const temp = scratchDir('release-thin-handoff-')
     const runtimeManifestDigests = {
       'darwin-arm64': 'a'.repeat(64),
       'darwin-x64': 'b'.repeat(64),
@@ -556,7 +555,7 @@ describe('macOS release gates', () => {
   })
 
   it('rejects a tag reachable only through a merged second parent', () => {
-    const repo = mkdtempSync(join(tmpdir(), 'release-side-parent-'))
+    const repo = scratchDir('release-side-parent-')
     execFileSync('git', ['init', '--quiet'], { cwd: repo })
     writeFileSync(join(repo, 'package.json'), '{"version":"1.2.3"}\n')
     writeFileSync(join(repo, 'package-lock.json'), '{"version":"1.2.3","packages":{"":{"version":"1.2.3"}}}\n')
@@ -645,7 +644,7 @@ describe('macOS release gates', () => {
   })
 
   it('requires an Accepted notary submission and matching safe log metadata', () => {
-    const temp = mkdtempSync(join(tmpdir(), 'notary-receipt-'))
+    const temp = scratchDir('notary-receipt-')
     const submitted = join(temp, 'Agent Inbox.zip')
     const submitJson = join(temp, 'submit.json')
     const logJson = join(temp, 'log.json')
@@ -700,7 +699,7 @@ describe('macOS release gates', () => {
   })
 
   it('allows publication only for exact post-staple assets and distinct accepted tickets', () => {
-    const temp = mkdtempSync(join(tmpdir(), 'release-assets-'))
+    const temp = scratchDir('release-assets-')
     const assets = join(temp, 'assets')
     mkdirSync(assets)
     const dmgName = 'Agent-Inbox-v1.2.3-universal.dmg'

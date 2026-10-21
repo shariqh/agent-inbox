@@ -1,7 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { spawn } from 'node:child_process'
-import { mkdtempSync } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
 import {
@@ -29,9 +27,10 @@ import {
   updateBoardRow as writeBoardRow,
   upsertBoard as writeBoard,
 } from '../src/store.js'
+import { scratchDir } from './scratch.js'
 
 function freshDb(): Database.Database {
-  return openDb(join(mkdtempSync(join(tmpdir(), 'lifecycle-')), 'inbox.db'))
+  return openDb(join(scratchDir('lifecycle-'), 'inbox.db'))
 }
 
 function boardState(db: Database.Database, project: string, title: string) {
@@ -91,7 +90,7 @@ describe('action lifecycle storage', () => {
   beforeEach(() => { db = freshDb() })
 
   it('waits for a concurrent writer before migration reads and preserves its commit', async () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'migration-lock-')), 'inbox.db')
+    const path = join(scratchDir('migration-lock-'), 'inbox.db')
     openDb(path).close()
 
     const holder = spawn(process.execPath, ['--input-type=module', '-e', HOLD_WRITE_LOCK, path], {
@@ -119,7 +118,7 @@ describe('action lifecycle storage', () => {
   }, 10000)
 
   it('backfills legacy item/row timestamps from their existing creation records', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'lifecycle-migration-')), 'inbox.db')
+    const path = join(scratchDir('lifecycle-migration-'), 'inbox.db')
     const legacy = new Database(path)
     legacy.exec(`
       CREATE TABLE items (

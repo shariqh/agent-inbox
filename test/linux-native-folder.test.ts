@@ -1,4 +1,4 @@
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -14,12 +14,13 @@ import { buildLinuxThinApp } from '../scripts/build-linux-thin-app.mjs'
 import { resolveLinuxCompilerEnvironment } from '../scripts/linux-release-inputs.mjs'
 import { PROCESS_PROBE } from '../scripts/verify-linux-thin-app.mjs'
 import { verifyPackagedUpdateTrust } from '../scripts/package-update-trust.mjs'
+import { scratchDir } from './scratch.js'
 
 function elfFixture(arch: 'x64' | 'arm64', symbols: string[] = []): string {
   const bytes = Buffer.alloc(64)
   bytes.set([0x7f, 0x45, 0x4c, 0x46, 2, 1])
   bytes.writeUInt16LE(arch === 'x64' ? 62 : 183, 18)
-  const path = join(mkdtempSync(join(tmpdir(), 'linux-elf-')), 'binary')
+  const path = join(scratchDir('linux-elf-'), 'binary')
   writeFileSync(path, Buffer.concat([bytes, Buffer.from(`\0${symbols.join('\0')}\0`)]))
   return path
 }
@@ -103,7 +104,7 @@ describe('native Linux folder gates', () => {
   })
 
   it('gates every plain ELF in the folder and reports sorted relative paths without following links', () => {
-    const root = mkdtempSync(join(tmpdir(), 'linux-elf-tree-'))
+    const root = scratchDir('linux-elf-tree-')
     writeFileSync(join(root, 'README'), 'not an ELF')
     writeElf(join(root, 'z', 'libextra.so'), 'x64', ['GLIBC_2.28'])
     writeElf(join(root, 'a', 'helper'), 'x64', ['GLIBCXX_3.4.25'])
@@ -262,7 +263,7 @@ describe('native Linux folder gates', () => {
 
   it('loads the shipped update verifier and pinned registry from a Linux app folder', () => {
     const appResources = join(
-      mkdtempSync(join(tmpdir(), 'linux-update-trust-')),
+      scratchDir('linux-update-trust-'),
       'Agent Inbox',
       'resources',
       'app',

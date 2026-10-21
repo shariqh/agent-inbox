@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { mkdtempSync, readFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { spawn, execFileSync } from 'node:child_process'
 import type { ChildProcessByStdio } from 'node:child_process'
@@ -11,6 +10,7 @@ import { ReadBuffer, serializeMessage } from '@modelcontextprotocol/sdk/shared/s
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { openDb, listItems, listBoards, getBoard, annotateBoardRow, markRowHandled, listPendingRows, replyItem, listActivity, listActivitySpans, upsertIssueSnapshot } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
+import { scratchDir } from './scratch.js'
 
 const REPO_ROOT = new URL('..', import.meta.url).pathname
 
@@ -63,7 +63,7 @@ const childTransport = (child: ChildProcessByStdio<Writable, Readable, null>): T
 
 describe('mcp round-trip', () => {
   it('flag writes a row attributed to this session, and whoami reflects register', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-'), 'inbox.db')
     const transport = new StdioClientTransport({
       command: 'npx',
       args: ['tsx', 'src/mcp-server.ts'],
@@ -112,7 +112,7 @@ describe('mcp round-trip', () => {
   // the BASE repo. Those git subprocesses run mid-protocol, so this round trip is
   // also the proof that they never write to the server's stdout.
   it('flag and board writes stamp the repository the branch is pushed to, beside a registered base', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'mcp-head-'))
+    const dir = scratchDir('mcp-head-')
     const git = (...args: string[]) => execFileSync('git', args, { cwd: dir, stdio: 'ignore' })
     git('init', '-q')
     git('config', 'user.email', 't@t.dev')
@@ -128,7 +128,7 @@ describe('mcp round-trip', () => {
     git('config', 'branch.patch-1.remote', 'origin')
     git('config', 'branch.patch-1.pushRemote', 'origin')
     git('config', 'branch.patch-1.merge', 'refs/pull/7/head')
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-head-db-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-head-db-'), 'inbox.db')
     const transport = new StdioClientTransport({
       command: join(REPO_ROOT, 'node_modules', '.bin', 'tsx'),
       args: [join(REPO_ROOT, 'src', 'mcp-server.ts')],
@@ -153,7 +153,7 @@ describe('mcp round-trip', () => {
   })
 
   it('returns a host-launched answer watcher only for Copilot questions', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-copilot-watch-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-copilot-watch-'), 'inbox.db')
     const transport = new StdioClientTransport({
       command: 'npx',
       args: ['tsx', 'src/mcp-server.ts'],
@@ -181,7 +181,7 @@ describe('mcp round-trip', () => {
   })
 
   it('returns exact-action Copilot watches for new board asks and explicit re-arming', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-board-watch-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-board-watch-'), 'inbox.db')
     const transport = new StdioClientTransport({
       command: 'npx', args: ['tsx', 'src/mcp-server.ts'],
       env: { ...process.env, AGENT_INBOX_DB: dbPath },
@@ -252,7 +252,7 @@ describe('mcp round-trip', () => {
   }, 20000)
 
   it('a resumed watcher can retrieve its original project without changing the current scope', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-project-wake-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-project-wake-'), 'inbox.db')
     const transport = new StdioClientTransport({
       command: 'npx', args: ['tsx', 'src/mcp-server.ts'],
       env: { ...process.env, AGENT_INBOX_DB: dbPath },
@@ -319,7 +319,7 @@ describe('mcp round-trip', () => {
   // not to, the human's stop ends the real watcher with exit 3, and their later
   // answer still reaches the agent through pending().
   it('a Copilot question watcher stops when the human asks, and the answer still arrives', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-watch-stop-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-watch-stop-'), 'inbox.db')
     const transport = new StdioClientTransport({
       command: 'npx', args: ['tsx', 'src/mcp-server.ts'],
       env: { ...process.env, AGENT_INBOX_DB: dbPath },
@@ -369,7 +369,7 @@ describe('mcp round-trip', () => {
   }, 20000)
 
   it('flag accepts options; pending returns the human reply and stamps pickup', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-pending-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-pending-'), 'inbox.db')
     const conn = async () => {
       const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
       const c = new Client({ name: 'claude-code', version: '1.0.0' }); await c.connect(t); return c
@@ -408,7 +408,7 @@ describe('mcp round-trip', () => {
   // Two real OS processes: the MCP server writes through `answer`, the viewer side
   // writes through replyItem on its own connection to the same WAL file.
   it('answer records a chat reply end-to-end, leaves pickup alone, and yields to a waiting inbox answer', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-answer-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-answer-'), 'inbox.db')
     const transport = new StdioClientTransport({
       command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath },
     })
@@ -461,7 +461,7 @@ describe('mcp round-trip', () => {
   }, 20000)
 
   it('sessions auto-register presence; status upgrades it; done reverts; exit removes', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-status-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-status-'), 'inbox.db')
     const transport = new StdioClientTransport({
       command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath },
     })
@@ -528,7 +528,7 @@ describe('mcp round-trip', () => {
   // as a terminal hangup would, and the test, not the SDK's close() fallback to
   // SIGTERM, decides how it ends.
   it.each(['SIGHUP', 'SIGTERM', 'stdin EOF'] as const)('%s ends the session: ended_at is recorded and the open span closed', async (ending) => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-ending-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-ending-'), 'inbox.db')
     const child = spawn(process.execPath, ['--import', 'tsx', 'src/mcp-server.ts'], {
       env: { ...process.env, AGENT_INBOX_DB: dbPath },
       stdio: ['pipe', 'pipe', 'inherit'],
@@ -580,7 +580,7 @@ describe('mcp round-trip', () => {
   // the fallback and that the fallback actually ran after it. A post-fallback
   // claim leaves no writer, so the bounded poll times out rather than passing.
   it('a status claim made inside the 2s handshake-fallback window survives the fallback', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-register-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-register-'), 'inbox.db')
     const transport = new StdioClientTransport({
       command: 'npx', args: ['tsx', 'src/mcp-server.ts'],
       env: { ...process.env, AGENT_INBOX_DB: dbPath },
@@ -610,7 +610,7 @@ describe('mcp round-trip', () => {
   }, 20000)
 
   it('board tools upsert, update a row, and archive a board', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-board-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-board-'), 'inbox.db')
     const transport = new StdioClientTransport({
       command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath },
     })
@@ -658,7 +658,7 @@ describe('mcp round-trip', () => {
   }, 20000)
 
   it('board_get reads a board back including a human annotation', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-get-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-get-'), 'inbox.db')
     const conn = async () => {
       const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
       const c = new Client({ name: 'claude-code', version: '1.0.0' }); await c.connect(t); return c
@@ -694,7 +694,7 @@ describe('mcp round-trip', () => {
   // incidental call can do is name the first reader. Exempting the title-less
   // form would be a third mark-seen rule nobody would remember.
   it('board_get with no title delivers every annotation in the project, and says so honestly', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-getall-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-getall-'), 'inbox.db')
     const conn = async () => {
       const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
       const c = new Client({ name: 'claude-code', version: '1.0.0' }); await c.connect(t); return c
@@ -738,7 +738,7 @@ describe('mcp round-trip', () => {
   // surfaced one was independently choosing to call `board_get`. Observed in the
   // wild: a "merge it" note sat unread for a day while the agent polled throughout.
   it('pending delivers a board annotation to an agent that never calls board_get (#37)', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-pending-rows-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-pending-rows-'), 'inbox.db')
     const conn = async () => {
       const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
       const c = new Client({ name: 'claude-code', version: '1.0.0' }); await c.connect(t); return c
@@ -805,7 +805,7 @@ describe('mcp round-trip', () => {
   // human's screen then read "delivered to claude-code" — the exact signal that
   // tells them to stop chasing it. Two real server processes, one project.
   it('a sibling session’s poll cannot eat the answer the manager is waiting for (#37 F1)', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-fanout-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-fanout-'), 'inbox.db')
     const conn = async () => {
       const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
       const c = new Client({ name: 'claude-code', version: '1.0.0' }); await c.connect(t); return c
@@ -850,7 +850,7 @@ describe('mcp round-trip', () => {
   // change of mind would. Raw SQL is allowed here for the same reason store.test.ts
   // allows it — a test constructing a moment production cannot otherwise schedule.
   it('pending never hands over an annotation the human replaced mid-poll (#37 F2)', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-midpoll-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-midpoll-'), 'inbox.db')
     const conn = async () => {
       const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
       const c = new Client({ name: 'claude-code', version: '1.0.0' }); await c.connect(t); return c
@@ -896,7 +896,7 @@ describe('mcp round-trip', () => {
   // MCP boundary — the store still returns whole rows, and the viewer still
   // gets them (test/viewer.test.ts).
   it('board_get omits row context by default, returns it with full: true, and summarises with no title (#42)', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-shape-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-shape-'), 'inbox.db')
     const conn = async () => {
       const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
       const c = new Client({ name: 'claude-code', version: '1.0.0' }); await c.connect(t); return c
@@ -946,7 +946,7 @@ describe('mcp round-trip', () => {
   // context each time. The human's words must keep coming back; the agent's own
   // backstory must not.
   it('pending hands each context over once per process, then only its size (#42)', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-once-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-once-'), 'inbox.db')
     const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
     const c1 = new Client({ name: 'claude-code', version: '1.0.0' }); await c1.connect(t)
     const call = async (name: string, args: Record<string, unknown>) =>
@@ -992,7 +992,7 @@ describe('mcp round-trip', () => {
   // parent's process and therefore its parent's ledger — see the recovery test
   // below, which is why that case is survivable rather than solved.
   it('an agent in a separate process gets the context on ITS first poll, however often others polled (#42)', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-sibling-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-sibling-'), 'inbox.db')
     const conn = async () => {
       const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
       const c = new Client({ name: 'claude-code', version: '1.0.0' }); await c.connect(t); return c
@@ -1028,7 +1028,7 @@ describe('mcp round-trip', () => {
   // never actually handed. Same trigger technique as F2 — a deterministic stand-in
   // for the human's hand, firing from inside the handler.
   it('a row dropped mid-poll is not recorded as delivered — its context still ships next time (#42)', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-cas-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-cas-'), 'inbox.db')
     const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
     const c1 = new Client({ name: 'claude-code', version: '1.0.0' }); await c1.connect(t)
     const call = async (name: string, args: Record<string, unknown>) =>
@@ -1074,7 +1074,7 @@ describe('mcp round-trip', () => {
   // items, which is the only read path an item has. One process = one client
   // here, exactly the fan-out's sharing.
   it('pending({full:true}) recovers context another caller in the same process already drained (#42)', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-recover-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-recover-'), 'inbox.db')
     const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
     const c1 = new Client({ name: 'claude-code', version: '1.0.0' }); await c1.connect(t)
     const call = async (name: string, args: Record<string, unknown>) =>
@@ -1114,7 +1114,7 @@ describe('mcp round-trip', () => {
   // the hatch, on both tools, and how to CLEAR a context now that omitting it
   // keeps the stored text.
   it('the payload contract is discoverable at the call site — the tool definitions say it (#42)', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-desc-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-desc-'), 'inbox.db')
     const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
     const c1 = new Client({ name: 'claude-code', version: '1.0.0' }); await c1.connect(t)
     const tools = new Map((await c1.listTools()).tools.map((x) => [x.name, x]))
@@ -1173,7 +1173,7 @@ describe('mcp round-trip', () => {
   // they are told to make. A mark the agent cannot see is the same dead end the
   // issue is about, so this drives the real stdio server end to end.
   it('pending delivers a handled mark to an agent that never calls board_get (#36)', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-handled-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-handled-'), 'inbox.db')
     const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
     const c1 = new Client({ name: 'claude-code', version: '1.0.0' }); await c1.connect(t)
     const call = async (name: string, args: Record<string, unknown>) =>
@@ -1221,7 +1221,7 @@ describe('mcp round-trip', () => {
   }, 20000)
 
   it('board_get delivers the handled mark too, and re-blocking clears it (#36)', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-handled2-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-handled2-'), 'inbox.db')
     const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
     const c1 = new Client({ name: 'claude-code', version: '1.0.0' }); await c1.connect(t)
     const call = async (name: string, args: Record<string, unknown>) =>
@@ -1274,7 +1274,7 @@ describe('mcp round-trip', () => {
   }, 20000)
 
   it('the tool descriptions tell agents the mark can arrive and how to acknowledge it (#36)', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-handleddesc-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-handleddesc-'), 'inbox.db')
     const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
     const c1 = new Client({ name: 'claude-code', version: '1.0.0' }); await c1.connect(t)
     const tools = new Map((await c1.listTools()).tools.map((x) => [x.name, x]))
@@ -1295,7 +1295,7 @@ describe('mcp round-trip', () => {
   }, 20000)
 
   it('the board tools say who `blocked` waits on, and carry the negative example (#44)', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-blocked-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-blocked-'), 'inbox.db')
     const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
     const c1 = new Client({ name: 'claude-code', version: '1.0.0' }); await c1.connect(t)
     const tools = new Map((await c1.listTools()).tools.map((x) => [x.name, x]))
@@ -1342,7 +1342,7 @@ describe('mcp round-trip', () => {
   }, 20000)
 
   it('rejects a new blocked row that has no TL;DR or concrete next step', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-action-shape-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-action-shape-'), 'inbox.db')
     const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
     const c1 = new Client({ name: 'claude-code', version: '1.0.0' }); await c1.connect(t)
 
@@ -1383,7 +1383,7 @@ describe('mcp round-trip', () => {
   // payload an agent re-sends carries `context_chars`, not `context` — so this
   // exact loop is where a wiped board would come from.
   it('board_get → board_upsert keeps every row’s context (#42)', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-rmw-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-rmw-'), 'inbox.db')
     const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
     const c1 = new Client({ name: 'claude-code', version: '1.0.0' }); await c1.connect(t)
     const call = async (name: string, args: Record<string, unknown>) =>
@@ -1434,7 +1434,7 @@ describe('mcp round-trip', () => {
   }, 20000)
 
   it('a flagged item records the asking session, matching its live activity row', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-session-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-session-'), 'inbox.db')
     const transport = new StdioClientTransport({
       command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath },
     })
@@ -1479,8 +1479,8 @@ describe('plan and row issue links (#103 PR2)', () => {
   }
 
   it('normalizes every accepted form, refuses everything else with the forms listed, keeps on omission and clears on ""', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-issue-links-')), 'inbox.db')
-    const c = await serve({ AGENT_INBOX_DB: dbPath }, mkdtempSync(join(tmpdir(), 'mcp-issue-cwd-')))
+    const dbPath = join(scratchDir('mcp-issue-links-'), 'inbox.db')
+    const c = await serve({ AGENT_INBOX_DB: dbPath }, scratchDir('mcp-issue-cwd-'))
     await call(c, 'register', { project: 'p', repo: 'Me/Work' })
     await call(c, 'board_upsert', {
       title: 'AHP', issue: 'Shariqh/Agent-Inbox#117',
@@ -1550,8 +1550,8 @@ describe('plan and row issue links (#103 PR2)', () => {
   }, 30000)
 
   it('refuses #N and N when the session has no repository', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-issue-norepo-')), 'inbox.db')
-    const c = await serve({ AGENT_INBOX_DB: dbPath }, mkdtempSync(join(tmpdir(), 'mcp-issue-norepo-cwd-')))
+    const dbPath = join(scratchDir('mcp-issue-norepo-'), 'inbox.db')
+    const c = await serve({ AGENT_INBOX_DB: dbPath }, scratchDir('mcp-issue-norepo-cwd-'))
     expect((await call(c, 'whoami', {})).repo).toBeNull()
     for (const bad of ['#5', '5']) {
       const res = await c.callTool({ name: 'board_upsert', arguments: { title: 'T', rows: [{ label: 'a', status: 'tracked', issue: bad }] } })
@@ -1567,8 +1567,8 @@ describe('plan and row issue links (#103 PR2)', () => {
   }, 20000)
 
   it('board_advance and a move into blocked keep the link', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-issue-advance-')), 'inbox.db')
-    const c = await serve({ AGENT_INBOX_DB: dbPath }, mkdtempSync(join(tmpdir(), 'mcp-issue-advance-cwd-')))
+    const dbPath = join(scratchDir('mcp-issue-advance-'), 'inbox.db')
+    const c = await serve({ AGENT_INBOX_DB: dbPath }, scratchDir('mcp-issue-advance-cwd-'))
     await call(c, 'board_upsert', { title: 'T', rows: [{ label: 'a', status: 'tracked', issue: 'o/r#5' }] })
     let board = await call(c, 'board_get', { title: 'T' })
     await call(c, 'board_upsert', { title: 'T', board_version: board.revision, rows: [blockedRow('a', { revision: board.rows[0].revision })] })
@@ -1584,8 +1584,8 @@ describe('plan and row issue links (#103 PR2)', () => {
   }, 20000)
 
   it('a titled board_get adds issue_rel from the cache; pending() and the title-less summary stay byte-identical', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-issue-rel-')), 'inbox.db')
-    const c = await serve({ AGENT_INBOX_DB: dbPath }, mkdtempSync(join(tmpdir(), 'mcp-issue-rel-cwd-')))
+    const dbPath = join(scratchDir('mcp-issue-rel-'), 'inbox.db')
+    const c = await serve({ AGENT_INBOX_DB: dbPath }, scratchDir('mcp-issue-rel-cwd-'))
     await call(c, 'board_upsert', { title: 'T', rows: [blockedRow('a'), { label: 'b', status: 'partial' }] })
     const hub = openDb(dbPath)
     const stored = listBoards(hub)[0]!
@@ -1633,7 +1633,7 @@ describe('plan and row issue links (#103 PR2)', () => {
   }, 20000)
 
   it('tools/list carries the link fields, the accepted forms and the dependency sentence (§8)', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-issue-tools-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-issue-tools-'), 'inbox.db')
     const c = await serve({ AGENT_INBOX_DB: dbPath })
     const tools = new Map((await c.listTools()).tools.map((x) => [x.name, x]))
     const sentence = "Waiting on another GitHub issue (GitHub's 'blocked by') is tracked or partial, never blocked."

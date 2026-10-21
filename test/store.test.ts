@@ -1,8 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { spawn } from 'node:child_process'
-import { mkdtempSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
 import {
@@ -51,9 +49,10 @@ import {
   listActivitySpans,
 } from '../src/store.js'
 import type { BoardRow, BoardWithRows, RowStatus } from '../src/store.js'
+import { scratchDir } from './scratch.js'
 
 function freshDb(): Database.Database {
-  const dir = mkdtempSync(join(tmpdir(), 'inbox-'))
+  const dir = scratchDir('inbox-')
   return openDb(join(dir, 'inbox.db'))
 }
 
@@ -374,7 +373,7 @@ describe('answer-back', () => {
   // before or after the call is already correctly handled either way — only a write
   // landing INSIDE the guard's own statement sequence is the exploit window).
   it('an atomic guard survives markReplySeen from a second connection racing the blank-clear', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'inbox-race-'))
+    const dir = scratchDir('inbox-race-')
     const path = join(dir, 'inbox.db')
     const db1 = openDb(path)
     const db2 = new Database(path)
@@ -429,7 +428,7 @@ describe('answer-back', () => {
   // now marked picked up by an agent that never saw it, and no future pending()
   // returns it. Forced with two real connections rather than reasoned about.
   it('markReplySeen refuses to stamp an answer the human replaced under the agent', async () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'inbox-reply-race-')), 'inbox.db')
+    const path = join(scratchDir('inbox-reply-race-'), 'inbox.db')
     const mcp = openDb(path)
     const viewer = new Database(path)
     viewer.pragma('journal_mode = WAL')
@@ -474,7 +473,7 @@ describe('answer-back', () => {
   })
 
   it('openDb migrates a legacy items table missing the answer columns', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'inbox-legacy3-')), 'inbox.db')
+    const path = join(scratchDir('inbox-legacy3-'), 'inbox.db')
     const legacy = new Database(path)
     legacy.exec(`
       CREATE TABLE items (
@@ -518,7 +517,7 @@ describe('dual-channel answers (#29)', () => {
   })
 
   it('a legacy items table migrates to carry reply_source, defaulting to null', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'inbox-legacy-source-')), 'inbox.db')
+    const path = join(scratchDir('inbox-legacy-source-'), 'inbox.db')
     const legacy = new Database(path)
     legacy.exec(`
       CREATE TABLE items (
@@ -552,7 +551,7 @@ describe('dual-channel answers (#29)', () => {
   })
 
   it('migrates response history and versions older-writer corrections without changing timestamps', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'inbox-response-revision-')), 'inbox.db')
+    const path = join(scratchDir('inbox-response-revision-'), 'inbox.db')
     const legacy = new Database(path)
     legacy.exec(`
       CREATE TABLE items (
@@ -668,7 +667,7 @@ describe('dual-channel answers (#29)', () => {
   // un-clearable by their own "Change answer" (replyItem's blank-clear refuses once
   // reply_seen_at is set). Same interception shape as the replyItem race pin above.
   it('the precedence guard is one atomic statement: a viewer replyItem racing from a second connection still wins the whole record', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'inbox-answer-race-')), 'inbox.db')
+    const path = join(scratchDir('inbox-answer-race-'), 'inbox.db')
     const db1 = openDb(path) // the MCP server's connection
     const db2 = new Database(path) // the viewer's
     db2.pragma('journal_mode = WAL')
@@ -766,7 +765,7 @@ describe('live activity', () => {
   })
 
   it('migrates a legacy claim or preserved idle detail into the historical synopsis atomically', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'inbox-legacy-activity-')), 'inbox.db')
+    const path = join(scratchDir('inbox-legacy-activity-'), 'inbox.db')
     const legacy = new Database(path)
     const now = new Date().toISOString()
     legacy.exec(`
@@ -1145,7 +1144,7 @@ describe('live activity — the server build a session registered with (#197)', 
   })
 
   it('migrates a legacy activity table: existing rows read null until their session registers a build', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'inbox-legacy-build-')), 'inbox.db')
+    const path = join(scratchDir('inbox-legacy-build-'), 'inbox.db')
     const legacy = new Database(path)
     const now = new Date(START).toISOString()
     legacy.exec(`
@@ -1191,7 +1190,7 @@ describe('activity spans', () => {
   afterEach(() => { vi.useRealTimers() })
 
   it('migration is additive with no backfill — pre-existing activity rows produce no spans', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'inbox-legacy-spans-')), 'inbox.db')
+    const path = join(scratchDir('inbox-legacy-spans-'), 'inbox.db')
     const legacy = new Database(path)
     const now = new Date().toISOString()
     legacy.exec(`
@@ -1777,7 +1776,7 @@ describe('boards', () => {
   })
 
   it('openDb migrates a pre-context db by adding the column', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'inbox-legacy-')), 'inbox.db')
+    const path = join(scratchDir('inbox-legacy-'), 'inbox.db')
     const legacy = new Database(path)
     legacy.exec(`
       CREATE TABLE board_rows (
@@ -1917,7 +1916,7 @@ describe('unseen annotations', () => {
   })
 
   it('openDb migrates legacy tables missing last_read_at/annotated_at', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'inbox-legacy2-')), 'inbox.db')
+    const path = join(scratchDir('inbox-legacy2-'), 'inbox.db')
     const legacy = new Database(path)
     legacy.exec(`
       CREATE TABLE boards (
@@ -2097,7 +2096,7 @@ describe('per-row annotation delivery (#37)', () => {
   // nobody and no future poll ever returns it — the exact shape of the bug
   // replyItem's `AND reply_seen_at IS NULL` guard fixed for items.
   it('the delivery stamp refuses an annotation the human replaced under the reader', async () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'inbox-row-race-')), 'inbox.db')
+    const path = join(scratchDir('inbox-row-race-'), 'inbox.db')
     const mcp = openDb(path)                        // the MCP server's process
     const viewer = new Database(path)               // the viewer's own process
     viewer.pragma('journal_mode = WAL')
@@ -2201,7 +2200,7 @@ describe('per-row annotation delivery (#37)', () => {
   // still sitting in the human's Needs-you list right now. (There is exactly one
   // in the live DB: an unmerged "merge it".)
   it('openDb backfills annotation_seen_at from the OLD board-level rule, all four cases', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'inbox-seenat-')), 'inbox.db')
+    const path = join(scratchDir('inbox-seenat-'), 'inbox.db')
     const legacy = new Database(path)
     legacy.exec(`
       CREATE TABLE boards (
@@ -2486,7 +2485,7 @@ describe('row handled mark (#36)', () => {
   })
 
   it('openDb adds the three columns to a board_rows table that predates them', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'inbox-handled-')), 'inbox.db')
+    const path = join(scratchDir('inbox-handled-'), 'inbox.db')
     const legacy = new Database(path)
     legacy.exec(`
       CREATE TABLE boards (
@@ -2610,7 +2609,7 @@ describe('item session (liveness)', () => {
   })
 
   it('openDb migrates a legacy items table missing the session column', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'inbox-legacy4-')), 'inbox.db')
+    const path = join(scratchDir('inbox-legacy4-'), 'inbox.db')
     const legacy = new Database(path)
     legacy.exec(`
       CREATE TABLE items (
@@ -2822,7 +2821,7 @@ describe('items and boards carry the link identity they were raised on', () => {
   })
 
   it('openDb migrates legacy items/boards tables missing repo/issue_ref', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'inbox-legacy30-')), 'inbox.db')
+    const path = join(scratchDir('inbox-legacy30-'), 'inbox.db')
     const legacy = new Database(path)
     legacy.exec(`
       CREATE TABLE items (
@@ -2868,7 +2867,7 @@ describe('items and boards carry the link identity they were raised on', () => {
   })
 
   it('openDb gives legacy items/boards a NULL head_repo, and new writes persist one', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'inbox-legacy157-')), 'inbox.db')
+    const path = join(scratchDir('inbox-legacy157-'), 'inbox.db')
     const legacy = new Database(path)
     legacy.exec(`
       CREATE TABLE items (
@@ -3056,7 +3055,7 @@ describe('source links', () => {
   // so none of its rows can be verified — and some are exactly the fork PRs this
   // fix exists to stop showing. Older processes may still write that table.
   it('never serves a row from the unverifiable pre-#157 source_links cache', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'inbox-legacy157-links-')), 'inbox.db')
+    const path = join(scratchDir('inbox-legacy157-links-'), 'inbox.db')
     const legacy = new Database(path)
     legacy.exec(`
       CREATE TABLE source_links (
@@ -3165,7 +3164,7 @@ describe('read-then-write transactions reserve the WAL writer (#154)', () => {
   }
 
   function seeded(): { path: string; db: Database.Database; board: BoardWithRows } {
-    const path = join(mkdtempSync(join(tmpdir(), 'inbox-writer-')), 'inbox.db')
+    const path = join(scratchDir('inbox-writer-'), 'inbox.db')
     const db = openDb(path)
     upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'B', rows: [{ label: 'one', status: 'tracked' }] })
     return { path, db, board: getBoard(db, 'p', 'B')! }
@@ -3250,7 +3249,7 @@ describe('read-then-write transactions reserve the WAL writer (#154)', () => {
   })
 
   it('the same milestone announced from two connections at once is ONE row with ONE id', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'inbox-milestone-')), 'inbox.db')
+    const path = join(scratchDir('inbox-milestone-'), 'inbox.db')
     const db = openDb(path)
     const other = openDb(path)
     other.pragma('busy_timeout = 0')

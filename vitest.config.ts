@@ -22,6 +22,8 @@ export default defineConfig({
   test: {
     include: ['test/**/*.test.ts'],
     testTimeout: 15000,
+    // removes each file's leftover scratchDir() directories once it ends (#245)
+    setupFiles: ['test/scratch-setup.ts'],
     // No global `environment`: the node suite (store, mcp, infer) stays on node and
     // DOM files opt in with a `// @vitest-environment jsdom` docblock.
   },

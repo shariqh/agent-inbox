@@ -316,9 +316,11 @@ Run the build before `npm run electron`; the development shell starts the built
 - Store and viewer tests use real temporary SQLite databases through
   `openDb()`; do not mock the store. `test/mcp.integration.test.ts` performs a
   real stdio client/server round trip.
-- Make scratch directories with `scratchDir()` from `test/scratch.ts` and call
-  `removeScratchDirs()` from `afterEach`, so repeated runs do not fill
-  `$TMPDIR` (#240).
+- Make scratch directories with `scratchDir()` from `test/scratch.ts`, never a
+  bare `mkdtempSync` under `tmpdir()`, so repeated runs do not fill `$TMPDIR`
+  (#240, #245). The `test/scratch-setup.ts` setupFile removes a file's leftovers
+  when it ends; call `removeScratchDirs()` from `afterEach` as well when no
+  directory is made in `beforeAll` or at module level.
 - Node is the default Vitest environment. DOM tests opt in per file with
   `// @vitest-environment jsdom`; keep `test/dom/harness.ts` outside the
   `*.test.ts` naming pattern.

@@ -15,14 +15,12 @@ import {
   copyFileSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { npmCliForCurrentNode } from '../scripts/build-thin-app.mjs'
 import {
@@ -32,19 +30,14 @@ import {
   stageDevelopmentApp,
   verifyStagedLockGraph,
 } from '../scripts/package-app-stage.mjs'
+import { removeScratchDirs, scratchDir } from './scratch.js'
 
 const root = resolve(process.cwd())
-const temps: string[] = []
-
 function tmp(prefix: string): string {
-  const dir = mkdtempSync(join(tmpdir(), prefix))
-  temps.push(dir)
-  return dir
+  return scratchDir(prefix)
 }
 
-afterEach(() => {
-  for (const dir of temps.splice(0)) rmSync(dir, { recursive: true, force: true })
-})
+afterEach(removeScratchDirs)
 
 function caught(run: () => unknown): PackageAppStageError {
   try {

@@ -3,14 +3,14 @@
 // crashed viewer's lease expires on its own.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { spawn } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
 import {
   claimIssueRefresh, completeIssueRefresh, listIssueSnapshots, openDb, recordIssueFailure, upsertIssueSnapshot,
 } from '../src/store.js'
 import { at, snapshot } from './issue-fixtures.js'
+import { scratchDir } from './scratch.js'
 
 const REPO = 'shariqh/agent-inbox'
 const ROOT = new URL('..', import.meta.url).pathname
@@ -27,7 +27,7 @@ describe('issue refresh claims (issue #103 PR1b)', () => {
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(ms(60))
-    dir = mkdtempSync(join(tmpdir(), 'issue-claims-'))
+    dir = scratchDir('issue-claims-')
     path = join(dir, 'inbox.db')
     db = openDb(path)
   })

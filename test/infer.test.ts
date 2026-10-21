@@ -1,14 +1,13 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { mkdtempSync } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join, basename } from 'node:path'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { inferProject, inferStream, inferAgent, remoteUrl, parseRepoSlug, inferRepo, inferIssueRef, inferHeadRepo } from '../src/infer.js'
+import { scratchDir } from './scratch.js'
 
 const REPO_ROOT = new URL('..', import.meta.url).pathname
 
 function tmpGitRepo(opts: { remote?: string; branch?: string } = {}): string {
-  const dir = mkdtempSync(join(tmpdir(), 'repo-'))
+  const dir = scratchDir('repo-')
   execFileSync('git', ['init', '-q'], { cwd: dir })
   execFileSync('git', ['config', 'user.email', 't@t.dev'], { cwd: dir })
   execFileSync('git', ['config', 'user.name', 't'], { cwd: dir })
@@ -28,7 +27,7 @@ describe('inferProject', () => {
     expect(inferProject(dir)).toBe(basename(dir))
   })
   it('falls back to cwd basename outside any git repo', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'plain-'))
+    const dir = scratchDir('plain-')
     expect(inferProject(dir)).toBe(basename(dir))
   })
 })
@@ -39,7 +38,7 @@ describe('inferStream', () => {
     expect(inferStream(dir)).toBe('feat/x')
   })
   it('returns empty string outside a git repo', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'plain-'))
+    const dir = scratchDir('plain-')
     expect(inferStream(dir)).toBe('')
   })
 })
@@ -68,7 +67,7 @@ describe('remoteUrl', () => {
     expect(remoteUrl(tmpGitRepo({ remote: 'git@github.com:shariqh/social-agent.git' })))
       .toBe('git@github.com:shariqh/social-agent.git')
     expect(remoteUrl(tmpGitRepo())).toBeNull()
-    expect(remoteUrl(mkdtempSync(join(tmpdir(), 'plain-')))).toBeNull()
+    expect(remoteUrl(scratchDir('plain-'))).toBeNull()
   })
 })
 
@@ -106,7 +105,7 @@ describe('inferRepo', () => {
   })
   it('returns null with no remote, and outside any git repo', () => {
     expect(inferRepo(tmpGitRepo())).toBeNull()
-    expect(inferRepo(mkdtempSync(join(tmpdir(), 'plain-')))).toBeNull()
+    expect(inferRepo(scratchDir('plain-'))).toBeNull()
   })
 })
 
@@ -226,7 +225,7 @@ describe('inferHeadRepo', () => {
     git(dir, 'config', 'branch.feature.remote', 'lab')
     expect(inferHeadRepo(dir, 'feature')).toBe('shariqh/agent-inbox')
     expect(inferHeadRepo(tmpGitRepo({ branch: 'feature' }), 'feature')).toBeNull()
-    expect(inferHeadRepo(mkdtempSync(join(tmpdir(), 'plain-')), 'feature')).toBeNull()
+    expect(inferHeadRepo(scratchDir('plain-'), 'feature')).toBeNull()
     expect(inferHeadRepo(dir, '')).toBeNull()
   })
 

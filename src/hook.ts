@@ -694,9 +694,12 @@ function visibleQuestions(db: Database.Database, scope: SessionScope): Item[] {
 // when it armed, in each project the session uses (project-wide, as before),
 // and, while this session's servers are linked, on any question they raise
 // later. Unlinked, the set stays the one captured at arming. Anything already
-// answered at arming never wakes it: an unread answer woke it at once. One
-// watcher per Claude Code process (or harness session): a newer Stop's
-// watcher takes the lease, and this one exits quietly at its next poll.
+// answered at arming never wakes it: an unread answer woke it at once, and
+// that immediate wake takes no lease, so an older watcher keeps waiting on its
+// own requests. One watcher per Claude Code process, or per harness session
+// and cwd project when unlinked: a newer Stop's watcher takes the lease, and
+// this one leaves at its next poll, waking first only if one of its own
+// requests was answered since its last poll.
 async function cmdWatch(ctx: Ctx): Promise<HookResult> {
   const { project } = scopeOf(ctx.ev)
   const db = openDb(ctx.dbPath) // opened ONCE for the whole loop
@@ -708,23 +711,27 @@ async function cmdWatch(ctx: Ctx): Promise<HookResult> {
   }
   try {
     const scope = sessionScope(db, ctx, project)
-    lease.key = scope.host !== null ? `host:${scope.host}` : ctx.ev.session_id ? `session:${ctx.ev.session_id}` : `project:${project}`
-    const ready = unpickedResponses(db, scope.projects)
-    if (ready.length && ctx.ev.stop_hook_active !== true) {
-      claim() // so an older watcher cannot wake for the same response too
-      return wake(ready)
-    }
+    lease.key = scope.host !== null
+      ? `host:${scope.host}`
+      : ctx.ev.session_id ? `session:${ctx.ev.session_id}:${project}` : `project:${project}`
+    // What it waits on is read before what already waits unread, so an answer
+    // landing between the reads is in one of them: it wakes at once or is awaited.
     const asked = visibleQuestions(db, scope)
     const answered = new Set(asked.filter((item) => item.reply).map((item) => item.id))
     const awaited = new Set(asked.filter((item) => !item.reply).map((item) => item.id))
     const watchedRows = scope.projects.flatMap((p) => listUnansweredBoardRows(db, p).map((row) => ({ ...row, project: p })))
+    const ready = unpickedResponses(db, scope.projects)
+    if (ready.length && ctx.ev.stop_hook_active !== true) return wake(ready)
     // a linked watcher stays for the session's later questions, even with nothing waiting yet
     if (scope.host === null && !awaited.size && !watchedRows.length) return EMPTY
     claim()
     const deadline = Date.now() + ctx.opts.watchSecs * 1000
     while (Date.now() < deadline) {
-      // Claude Code exited (nothing is left to wake), or a newer Stop took over
-      if (process.ppid !== parent || !holdsHookWatch(db, lease.key, lease.token)) return EMPTY
+      // Claude Code exited: nothing is left to wake
+      if (process.ppid !== parent) return EMPTY
+      // A newer Stop's watcher counts what was answered before it armed as
+      // already answered, so a superseded watcher still looks once more.
+      const superseded = !holdsHookWatch(db, lease.key, lease.token)
       const responses = new Map<string, number>()
       let waiting = false
       for (const item of visibleQuestions(db, scope)) {
@@ -739,7 +746,6 @@ async function cmdWatch(ctx: Ctx): Promise<HookResult> {
       }
       // Only these requests can wake this host; delivery is not acknowledgement.
       if (responses.size) {
-        if (!holdsHookWatch(db, lease.key, lease.token)) return EMPTY
         // the cwd project first, then the session's others; a project it registered after arming last
         const rank = (p: string): number => {
           const at = scope.projects.indexOf(p)
@@ -747,7 +753,7 @@ async function cmdWatch(ctx: Ctx): Promise<HookResult> {
         }
         return wake([...responses].sort(([a], [b]) => rank(a) - rank(b)))
       }
-      if (scope.host === null && !waiting) return EMPTY
+      if (superseded || (scope.host === null && !waiting)) return EMPTY
       await delay(ctx.opts.watchPollMs)
     }
     return EMPTY

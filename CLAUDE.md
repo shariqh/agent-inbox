@@ -728,13 +728,19 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   `CLAUDE_CODE_SESSION_ID` is not the link: a server keeps the id it was spawned with across
   `/clear`. A linked hook counts the servers' current projects and the projects of their open
   questions; no link (an older server, a hook or server started through another process such as
-  the shell wrapper or `npx`, a dead server pid, any read error) is today's cwd project alone. `watch`
-  keeps the project-wide set of asks unanswered at arming, adds only questions the linked servers
-  raise LATER (by `items.session`, never another session's new ask), and, linked, stays armed with
-  nothing waiting. One lease per Claude Code process (per harness session when unlinked) in
-  `hook_watch_claims`: a newer Stop's watcher takes it, and the older one exits silently at its next
-  poll; release is compare-and-delete, so a watcher never drops a newer one's lease. A watcher whose
-  parent exits stops at its next poll. Full contract: [`docs/hooks.md`](docs/hooks.md).
+  the shell wrapper or `npx`, a dead server pid, any read error) means the cwd project alone and
+  the set fixed at arming, though takeover and the orphan exit below still apply. `watch` reads
+  what it waits on before what already waits unread, so an answer landing between those reads is
+  in one of them. It keeps the project-wide set of asks unanswered at arming, adds only questions
+  the linked servers raise LATER (by `items.session`, never another session's new ask), and,
+  linked, stays armed with nothing waiting. Waking at once for an answer already waiting takes NO
+  lease: the older watcher keeps waiting on its own asks. A watcher that starts waiting takes the
+  one lease per Claude Code process (per harness session AND cwd project when unlinked, like the
+  old lock) in `hook_watch_claims`; the older watcher, at its next poll, wakes if one of its own
+  asks was answered since its last poll (the newer one counts it as answered at arming) and
+  otherwise exits silently. Release is compare-and-delete, so a watcher never drops a newer one's
+  lease. A watcher whose parent exits stops at its next poll. Full contract:
+  [`docs/hooks.md`](docs/hooks.md).
 
 - **The Copilot answer watcher is host-owned, exact-item, and read-only.** Copilot has no
   supported session-resume API, but a detached background command's completion notification

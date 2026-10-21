@@ -298,18 +298,22 @@ the id it was spawned with across `/clear` (and possibly `--continue`), and one
 of those two sessions already showed a server id different from its hooks'.
 
 **Without that link, the hooks look at the cwd project alone, and the watcher's
-set stays the one it captured when it armed, as before** (the hand-over below
-still applies). That covers a server from an older build, which records no host;
-a hook started through `hooks/agent-inbox-hook.sh`, or any other process that
-stays between Claude Code and the hook or the server (a server started through
-`npx` or `tsx`, say); and any error while looking, which is logged to `hook.log`.
+set stays the one it captured when it armed.** Two things differ from earlier
+builds even then: a newer watcher for the same session and cwd project replaces
+the older one instead of standing down beside it (see below), and a watcher
+stops once the process that started it is gone. That covers a server from an
+older build, which records no host; a hook started through
+`hooks/agent-inbox-hook.sh`, or any other process that stays between Claude Code
+and the hook or the server (a server started through `npx` or `tsx`, say); and
+any error while looking, which is logged to `hook.log`.
 
 **What the watcher waits on.** When it arms, it captures every question and
 blocked row in those projects that is still unanswered. That stays project-wide,
 so two sessions in one repository both wake for those. While the link holds, it
 also waits on every question this session's servers raise later, in any project,
 but never on a later request from another session. Answers that are waiting
-unread when it arms wake it at once, except on a `stop_hook_active` continuation;
+unread when it arms wake it at once, except on a `stop_hook_active` continuation,
+and that wake leaves any older watcher alone, still waiting on its own requests;
 a request that was already answered at arming never wakes it. A blocked row
 raised after it armed is not watched, because rows do not record which session
 raised them: the next Stop's `stop` and `watch` pick it up.
@@ -317,13 +321,15 @@ raised them: the next Stop's `stop` and `watch` pick it up.
 **One watcher at a time.** With the link, a watcher stays armed for its whole
 window (`AGENT_INBOX_WATCH_SECS`) even when nothing is waiting, since the session
 may still flag a question from a background subagent. Without it, it stands down
-as before once nothing it watches is still waiting. Each watcher holds a lease in
-the hub: one per Claude Code process with the link (so the first Stop after a
-`/clear` takes over too), one per harness session without it. The next Stop's
-watcher takes the lease, and the older one exits 0, silently, at its next poll. A
-watcher checks its lease at every poll and again just before it would wake. It
-also stops at its next poll once the process that started it is gone, since
-nothing is left to wake.
+as before once nothing it watches is still waiting. Each watcher that starts
+waiting holds a lease in the hub: one per Claude Code process with the link (so
+the first Stop after a `/clear` takes over too), and one per harness session and
+cwd project without it, like the lock earlier builds kept. The next Stop's
+watcher takes the lease. At its next poll the older one looks at its own requests
+once more, because the newer one counts anything answered before it armed as
+already answered: it wakes if one of them was answered since its last poll, and
+otherwise exits 0, silently. A watcher also stops at its next poll once the
+process that started it is gone, since nothing is left to wake.
 
 The nudge names every project that has responses and the `pending({project:"…"})`
 call that reads each one without changing the session's scope.

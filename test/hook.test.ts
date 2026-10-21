@@ -249,8 +249,10 @@ function question(db: ReturnType<typeof openDb>, project: string, title: string,
 }
 
 // The watcher's lease lives in the hub; tests read it raw, as the frozen
-// statements in test/mixed-version.test.ts do.
+// statements in test/mixed-version.test.ts do. A missing hub reads as no
+// leases: opening it would recreate a scratch dir a failed test already removed.
 function leases(dbPath: string): Array<{ claim_key: string }> {
+  if (!existsSync(dbPath)) return []
   const db = openDb(dbPath)
   try {
     return db.prepare(`SELECT claim_key FROM hook_watch_claims`).all() as Array<{ claim_key: string }>
@@ -807,7 +809,7 @@ describe('hook: watch', () => {
     question(openDb(dbPath), 'agent-inbox', 'which?')
     const running = runHook(['watch'], ev(), env)
     await sleep(100)
-    expect(leases(dbPath)).toEqual([{ claim_key: 'session:S1' }])
+    expect(leases(dbPath)).toEqual([{ claim_key: 'session:S1:agent-inbox' }])
     const stateDir = join(dirname(dbPath), 'hook-state')
     expect(existsSync(stateDir) ? readdirSync(stateDir).filter((name) => name.endsWith('.lock')) : []).toEqual([])
     await running
@@ -915,6 +917,72 @@ describe("hook: the session's own projects and the newest watcher (#253)", () =>
     expect(leases(dbPath)).toEqual([{ claim_key: `host:${process.ppid}` }])
     replyItem(db, question(db, 'agent-inbox', 'After the clear', 'mcp-1'), 'yes')
     expect(await second).toMatchObject({ stdout: '', exitCode: 2 })
+    db.close()
+  })
+
+  // Review of #256 (should-fix): a watcher that wakes at once must not take
+  // the older watcher's lease, or what only that one waits on goes unwatched.
+  it('an immediate wake leaves the older watcher watching its own requests', async () => {
+    const { env, dbPath } = freshEnv(fast)
+    const db = openDb(dbPath)
+    const q = question(db, 'agent-inbox', 'Asked before the turn ended')
+    const first = runHook(['watch'], ev(), env) // Stop N-1: waits on q
+    await armed(dbPath)
+    // turn N: a response the first watcher does not wait on
+    const r = question(db, 'agent-inbox', 'Raised after the first watcher armed', 'someone-else')
+    replyItem(db, r, 'done')
+    // Stop N: stop blocks, and that Stop's watcher wakes at once
+    expect(JSON.parse((await runHook(['stop'], ev(), env)).stdout)).toMatchObject({ decision: 'block' })
+    expect(await runHook(['watch'], ev(), env)).toMatchObject({ stdout: '', exitCode: 2 })
+    // the agent reads r; the human answers q later in the continuation
+    const read = listItems(db).find((item) => item.id === r)!
+    expect(markReplySeen(db, r, read.replied_at, read.response_revision)).toBe(true)
+    await sleep(100) // several of the first watcher's polls
+    replyItem(db, q, 'yes')
+    // Stop N+1 is a continuation: neither of its hooks wakes for q, so the first watcher must
+    expect(await runHook(['stop'], ev({ stop_hook_active: true }), env)).toEqual({ stdout: '' })
+    expect(await runHook(['watch'], ev({ stop_hook_active: true }), env)).toEqual({ stdout: '' })
+    expect(await first).toMatchObject({ stdout: '', exitCode: 2 })
+    db.close()
+  })
+
+  // The narrower window: an answer that lands between an older watcher's polls
+  // is in a newer watcher's answered-at-arming set, so the older one looks once
+  // more at its own requests before it leaves.
+  it('a watcher that is taken over still wakes for its own request answered since its last poll', async () => {
+    const { env, dbPath } = freshEnv(fast)
+    const db = openDb(dbPath)
+    const q = question(db, 'agent-inbox', 'Waited on by the first watcher')
+    const q2 = question(db, 'agent-inbox', 'Keeps the continuation watcher armed')
+    const first = runHook(['watch'], ev(), env)
+    await armed(dbPath)
+    // both before the first watcher's next poll (runHook arms synchronously)
+    replyItem(db, q, 'yes')
+    const second = runHook(['watch'], ev({ stop_hook_active: true }), env)
+    expect(await first).toMatchObject({ stdout: '', exitCode: 2 })
+    replyItem(db, q2, 'yes')
+    expect(await second).toMatchObject({ stdout: '', exitCode: 2 })
+    db.close()
+  })
+
+  // Review of #256 (nit): unlinked, the lease stays per harness session AND cwd
+  // project, as main's lock was, so moving to another repository never drops
+  // the watch on the first one.
+  it("without a link, the session's watcher for another repository never replaces this one's", async () => {
+    const { env, dbPath } = freshEnv(fast)
+    const db = openDb(dbPath)
+    const here = question(db, 'agent-inbox', 'Asked in this repository')
+    const elsewhere = join(scratchDir('hook-cwd-'), 'otherrepo')
+    mkdirSync(elsewhere)
+    const there = question(db, 'otherrepo', 'Asked in the other repository')
+    const first = runHook(['watch'], ev(), env)
+    const second = runHook(['watch'], ev({ cwd: elsewhere }), env)
+    expect(leases(dbPath).map((lease) => lease.claim_key).sort()).toEqual(['session:S1:agent-inbox', 'session:S1:otherrepo'])
+    await sleep(100) // several polls of each
+    replyItem(db, here, 'yes')
+    expect(await first).toMatchObject({ stdout: '', exitCode: 2, stderr: expect.stringContaining('project agent-inbox') })
+    replyItem(db, there, 'yes')
+    expect(await second).toMatchObject({ stdout: '', exitCode: 2, stderr: expect.stringContaining('project otherrepo') })
     db.close()
   })
 
@@ -1080,7 +1148,7 @@ describe('hook: real spawn round-trip', () => {
       watcher.stderr.on('data', (d) => { err += String(d) })
       const exited = new Promise<number | null>((resolve) => watcher.on('close', resolve))
       watcher.stdin.end(ev())
-      const deadline = Date.now() + 15_000
+      const deadline = Date.now() + 10_000
       while (leases(dbPath).length === 0 && Date.now() < deadline) await sleep(50)
       expect(leases(dbPath)).toEqual([{ claim_key: `host:${process.pid}` }])
       const db = openDb(dbPath)
@@ -1117,7 +1185,7 @@ describe('hook: real spawn round-trip', () => {
     })
     const alive = (): boolean => { try { process.kill(pid, 0); return true } catch { return false } }
     try {
-      let deadline = Date.now() + 15_000
+      let deadline = Date.now() + 10_000
       while (leases(dbPath).length === 0 && Date.now() < deadline) await sleep(50)
       expect(leases(dbPath)).toHaveLength(1)
       fake.stdin.end()

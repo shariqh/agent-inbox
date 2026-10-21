@@ -2,7 +2,7 @@
 // Runs one command in a session of its own and relays its exit status
 // (issue #211).
 //
-//   run-isolated.mjs [--timeout-ms <ms>] [--lease-fd <fd>] [--stdout] -- <command> [args...]
+//   run-isolated.mjs [--timeout-ms <ms>] [--lease-fd <fd>] [--started-file <path>] [--stdout] -- <command> [args...]
 //
 // install-agents.sh runs the Node steps of a rollback through this: a host
 // CLI's `mcp remove` or `mcp get`, and the runtime reference check and prune.
@@ -16,6 +16,12 @@
 //   already reset them by then: a signal that lands while Node is still
 //   starting ends this process before it has started anything, with status
 //   128 + that signal, and the caller may simply run it again.
+// · A command killed by one of those signals ends this process with the same
+//   status. --started-file tells the two apart (#214): once this process
+//   ignores those signals, and before it starts anything, it creates that
+//   file, which must not exist yet. One of those statuses with no file means
+//   nothing was started; with the file, the command may have run. If the
+//   file cannot be created, nothing is started and the status is 126.
 // · It starts a guard, this same script with --guard, detached: in a session
 //   of its own, which no signal sent to the caller's process group reaches,
 //   not even the SIGKILL Setup sends 10 s after a cancel. The guard starts the
@@ -35,7 +41,7 @@
 //
 // POSIX only; Node core only.
 import { spawn } from 'node:child_process'
-import { writeSync } from 'node:fs'
+import { writeFileSync, writeSync } from 'node:fs'
 import { constants } from 'node:os'
 import { fileURLToPath } from 'node:url'
 
@@ -78,7 +84,7 @@ function fail(status, message) {
 }
 
 function parseOptions(argv) {
-  const options = { guard: false, timeoutMs: DEFAULT_TIMEOUT_MS, leaseFd: null, relayStdout: false, command: [] }
+  const options = { guard: false, timeoutMs: DEFAULT_TIMEOUT_MS, leaseFd: null, startedFile: null, relayStdout: false, command: [] }
   let index = 0
   while (index < argv.length && argv[index] !== '--') {
     const flag = argv[index]
@@ -93,8 +99,11 @@ function parseOptions(argv) {
     } else if (flag === '--lease-fd' && /^[1-9][0-9]*$/.test(value) && Number(value) > 2 && Number(value) < 1024) {
       options.leaseFd = Number(value)
       index += 2
+    } else if (flag === '--started-file' && value !== '') {
+      options.startedFile = value
+      index += 2
     } else {
-      fail(EXIT_USAGE, `invalid option: ${flag}\nusage: run-isolated.mjs [--timeout-ms <ms>] [--lease-fd <fd>] [--stdout] -- <command> [args...]`)
+      fail(EXIT_USAGE, `invalid option: ${flag}\nusage: run-isolated.mjs [--timeout-ms <ms>] [--lease-fd <fd>] [--started-file <path>] [--stdout] -- <command> [args...]`)
     }
   }
   options.command = argv.slice(index + 1)
@@ -183,11 +192,18 @@ function runGuard({ timeoutMs, leaseFd, relayStdout, command }) {
   })
 }
 
-function runFront({ timeoutMs, leaseFd, relayStdout, command }) {
+function runFront({ timeoutMs, leaseFd, relayStdout, startedFile, command }) {
   const args = [...process.execArgv, fileURLToPath(import.meta.url), '--guard', '--timeout-ms', String(timeoutMs)]
   if (relayStdout) args.push('--stdout')
   if (leaseFd !== null) args.push('--lease-fd', String(leaseFd))
   args.push('--', ...command)
+  if (startedFile !== null) {
+    try {
+      writeFileSync(startedFile, '', { flag: 'wx', mode: 0o600 })
+    } catch (error) {
+      fail(EXIT_CANNOT_RUN, `could not create its start marker: ${error.message}`)
+    }
+  }
   let guard
   try {
     guard = startDetached(process.execPath, args, {

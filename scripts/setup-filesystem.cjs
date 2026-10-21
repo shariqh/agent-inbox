@@ -10,7 +10,7 @@ const TRASH_PREFIX = '.trash-'
 // Left inside a trash folder whose contents failed an identity check, so a
 // later cleanup retains it for recovery as well.
 const RETAINED_MARKER = '.retained'
-// Leftover trash entries one cleanup removes at most.
+// Leftover trash entries one cleanup tries to remove at most.
 const TRASH_CLEANUP_LIMIT = 16
 
 function filesystemError(code, message, options = {}) {
@@ -479,26 +479,35 @@ function createSetupFilesystem({
 
   // One leftover trash entry, pinned by identity and owner and checked again
   // immediately before it is deleted. A link is unlinked, never followed.
+  // 'kept' means it is not one to remove (another user's, marked for
+  // recovery, or unreadable), so no removal was tried.
   function removeTrashEntry(path) {
+    let pinned
+    let kind
     try {
-      const pinned = io.lstat(path)
-      const kind = entryKindOrLink(pinned)
-      if (kind === null || !ownedByCaller(pinned)) return false
-      if (kind === 'directory' && retainedForRecovery(path)) return false
+      pinned = io.lstat(path)
+      kind = entryKindOrLink(pinned)
+      if (kind === null || !ownedByCaller(pinned)) return 'kept'
+      if (kind === 'directory' && retainedForRecovery(path)) return 'kept'
+    } catch {
+      return 'kept'
+    }
+    try {
       const current = io.lstat(path)
       if (current.dev !== pinned.dev || current.ino !== pinned.ino || entryKindOrLink(current) !== kind) {
-        return false
+        return 'failed'
       }
       io.remove(path, { recursive: kind === 'directory', force: false })
-      return true
+      return 'removed'
     } catch {
-      return false
+      return 'failed'
     }
   }
 
-  // Deletes up to TRASH_CLEANUP_LIMIT leftover trash entries directly inside
-  // `parent` that this user owns. Anything else, or anything that cannot be
-  // removed safely, is retained; this never throws for a single entry.
+  // Tries to delete up to TRASH_CLEANUP_LIMIT leftover trash entries directly
+  // inside `parent` that this user owns; trash it keeps does not count, so it
+  // can never hold back newer trash. Anything else, or anything that cannot
+  // be removed safely, is retained; this never throws for a single entry.
   function removeLeftoverTrash(parent) {
     const parentPath = normalizeAbsolute(pathApi, platform, parent)
     const removed = []
@@ -510,9 +519,13 @@ function createSetupFilesystem({
       if (isMissing(error)) return Object.freeze({ removed, retained })
       throw error
     }
-    for (const name of names.filter(isTrashName).sort().slice(0, TRASH_CLEANUP_LIMIT)) {
+    let attempts = 0
+    for (const name of names.filter(isTrashName).sort()) {
+      if (attempts === TRASH_CLEANUP_LIMIT) break
       const path = pathApi.join(parentPath, name)
-      if (removeTrashEntry(path)) removed.push(path)
+      const outcome = removeTrashEntry(path)
+      if (outcome !== 'kept') attempts += 1
+      if (outcome === 'removed') removed.push(path)
       else retained.push(path)
     }
     return Object.freeze({ removed, retained })

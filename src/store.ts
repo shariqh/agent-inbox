@@ -63,6 +63,9 @@ export interface Item {
   reply_kind: ResponseKind | null
   response_revision: number
   snoozed_until: string | null
+  // issue #247 — the human's "Pin for later": set aside with no return time.
+  // Human-owned and NOT content (see pinItem); a trigger clears it when the ask ends.
+  pinned_at: string | null
   // issue #217 — the human's "I'll take a while" for a Copilot answer watcher:
   // stopped for good (`watch_stopped_until` NULL) or until a time. Human-owned
   // and NOT content: writing it moves neither updated_at nor response_revision.
@@ -434,6 +437,40 @@ function runMigrations(db: Database.Database): void {
   ensureColumn(db, 'boards', 'issue_pin_number', 'INTEGER')
   ensureColumn(db, 'board_rows', 'issue_repo', 'TEXT')
   ensureColumn(db, 'board_rows', 'issue_number', 'INTEGER')
+  migratePinForLater(db)
+}
+
+// Issue #247 — the human's "Pin for later". NULL means not pinned, so there is
+// nothing to backfill. The resets are triggers, not writer code, so the writes
+// of an older server sharing the file, which know nothing of pins, still end a
+// pin when the ask ends or a new action starts (reset_row_action_watch_state's
+// precedent). Each inner UPDATE names only pinned_at, which no trigger listens
+// to, so neither can fire again, and neither moves updated_at or a revision.
+function migratePinForLater(db: Database.Database): void {
+  ensureColumn(db, 'items', 'pinned_at', 'TEXT')
+  ensureColumn(db, 'board_rows', 'pinned_at', 'TEXT')
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS clear_row_pin_when_ask_ends
+    AFTER UPDATE OF action_version, status, annotation, annotation_kind, handled_at ON board_rows
+    WHEN NEW.pinned_at IS NOT NULL AND (
+          NEW.action_version IS NOT OLD.action_version
+       OR NEW.status IS NOT 'blocked'
+       OR COALESCE(NEW.annotation, '') <> ''
+       OR NEW.annotation_kind IS NOT NULL
+       OR NEW.handled_at IS NOT NULL)
+    BEGIN
+      UPDATE board_rows SET pinned_at = NULL WHERE id = NEW.id;
+    END;
+    CREATE TRIGGER IF NOT EXISTS clear_item_pin_when_ask_ends
+    AFTER UPDATE OF status, reply, reply_kind ON items
+    WHEN NEW.pinned_at IS NOT NULL AND (
+          NEW.status IS NOT 'open'
+       OR COALESCE(NEW.reply, '') <> ''
+       OR NEW.reply_kind IS NOT NULL)
+    BEGIN
+      UPDATE items SET pinned_at = NULL WHERE id = NEW.id;
+    END;
+  `)
 }
 
 // Issue #217 — who raised the current ask, and the human's stop for it, belong
@@ -762,7 +799,7 @@ export function replyItem(
     const info = db.prepare(`UPDATE items
                    SET reply = @reply, reply_context = @replyContext, replied_at = @now, reply_seen_at = NULL,
                        reply_source = 'inbox', reply_kind = @kind,
-                       snoozed_until = NULL, updated_at = @now
+                       snoozed_until = NULL, pinned_at = NULL, updated_at = @now
                  WHERE id = @id AND kind = 'question' AND status = 'open'`)
       .run(params)
     return info.changes > 0
@@ -1022,9 +1059,13 @@ export function annotateItem(db: Database.Database, id: string, text: string): b
   return info.changes > 0
 }
 
+// A snooze with a time replaces a pin (#247); waking (null) leaves one alone.
 export function snoozeItem(db: Database.Database, id: string, until: string | null): boolean {
-  const info = db.prepare(`UPDATE items SET snoozed_until = ?, updated_at = ? WHERE id = ? AND status = 'open'`)
-    .run(until, new Date().toISOString(), id)
+  const info = db.prepare(`UPDATE items SET snoozed_until = @until,
+                              pinned_at = CASE WHEN @until IS NOT NULL THEN NULL ELSE pinned_at END,
+                              updated_at = @now
+                            WHERE id = @id AND status = 'open'`)
+    .run({ id, until, now: new Date().toISOString() })
   return info.changes > 0
 }
 
@@ -1040,6 +1081,22 @@ export function stopItemWatch(db: Database.Database, id: string, until: string |
                               AND COALESCE(reply, '') = ''
                               AND (watch_stopped_at IS NULL OR watch_stopped_until IS NOT NULL)`)
     .run({ id, until, now: new Date().toISOString() })
+  return info.changes > 0
+}
+
+// Issue #247 — "Pin for later": the human sets an unanswered question aside
+// with no return time, or (pinned false) brings it back. One conditioned
+// statement each way. A re-pin keeps the first time, and a pin replaces a
+// snooze. Not content, like the #217 watch stop: updated_at and the response
+// revision stay put. An answer or a closure clears it through
+// clear_item_pin_when_ask_ends, whichever server writes it.
+export function pinItem(db: Database.Database, id: string, pinned: boolean): boolean {
+  const info = pinned
+    ? db.prepare(`UPDATE items SET pinned_at = COALESCE(pinned_at, @now), snoozed_until = NULL
+                   WHERE id = @id AND kind = 'question' AND status = 'open'
+                     AND COALESCE(reply, '') = '' AND reply_kind IS NULL`)
+      .run({ id, now: new Date().toISOString() })
+    : db.prepare(`UPDATE items SET pinned_at = NULL WHERE id = @id AND pinned_at IS NOT NULL`).run({ id })
   return info.changes > 0
 }
 
@@ -1243,6 +1300,9 @@ export interface BoardRow {
   handled_seen_at: string | null
   handled_seen_by: string | null
   snoozed_until: string | null
+  // issue #247 — the human's "Pin for later" for this ACTION (see pinBoardRow).
+  // Cleared by a trigger when the ask ends or a new action starts.
+  pinned_at: string | null
   // issue #217 — the human's stop for this ACTION's Copilot answer watcher (see
   // stopBoardRowWatch). Cleared only by a new action, never by a routine upsert.
   watch_stopped_at: string | null
@@ -1276,7 +1336,7 @@ const ROW_COLUMNS = `
   id, label, status, note, next_step, action_owner, impact, next_after, options,
   context, annotation, annotation_kind, annotated_at, annotation_seen_at,
   annotation_seen_by, handled_at, handled_seen_at, handled_seen_by, snoozed_until,
-  watch_stopped_at, watch_stopped_until, action_agent, issue_repo, issue_number,
+  pinned_at, watch_stopped_at, watch_stopped_until, action_agent, issue_repo, issue_number,
   outcome, outcome_at, created_at, updated_at, action_started_at, action_version,
   revision, history, position`
 
@@ -1653,6 +1713,7 @@ function beginNewRowAction(db: Database.Database, rowId: string, now: string, ag
            handled_seen_at = NULL,
            handled_seen_by = NULL,
            snoozed_until = NULL,
+           pinned_at = NULL,
            outcome = '',
            outcome_at = NULL,
            action_started_at = ?,
@@ -1925,11 +1986,16 @@ export function annotateBoardRow(
 ): boolean {
   const now = new Date().toISOString()
   const annotation = text.trim()
+  const answerKind = annotation ? kind : null
   const run = db.transaction((): boolean => {
+    // An answer ends a pin (#247) exactly where clear_row_pin_when_ask_ends
+    // would; a cleared note answers nothing and leaves it.
     const row = db.prepare(`UPDATE board_rows
                                SET annotation = ?, annotation_kind = ?, annotated_at = ?,
                                    annotation_seen_at = NULL, annotation_seen_by = NULL,
-                                   snoozed_until = NULL, updated_at = ?, revision = revision + 1
+                                   snoozed_until = NULL,
+                                   pinned_at = CASE WHEN ? IS NOT NULL THEN NULL ELSE pinned_at END,
+                                   updated_at = ?, revision = revision + 1
                              WHERE id = ? AND (? IS NULL OR revision = ?)
                                AND EXISTS (
                                  SELECT 1 FROM boards b
@@ -1939,8 +2005,9 @@ export function annotateBoardRow(
                              RETURNING board_id`)
       .get(
         annotation,
-        annotation ? kind : null,
+        answerKind,
         now,
+        answerKind,
         now,
         rowId,
         expectedRevision ?? null,
@@ -1966,8 +2033,11 @@ export function snoozeBoardRow(
   const run = db.transaction((): boolean => {
     // Unanswered means empty-or-NULL, as in listUnansweredBoardRows and
     // attention.js: annotateBoardRow stores a cleared note as '' (#160).
+    // A snooze with a time replaces a pin (#247); waking (null) leaves one alone.
     const row = db.prepare(`UPDATE board_rows
-                               SET snoozed_until = ?, updated_at = ?, revision = revision + 1
+                               SET snoozed_until = ?,
+                                   pinned_at = CASE WHEN ? IS NOT NULL THEN NULL ELSE pinned_at END,
+                                   updated_at = ?, revision = revision + 1
                              WHERE id = ? AND status = 'blocked'
                                AND (? IS NULL OR revision = ?)
                                AND COALESCE(annotation, '') = '' AND annotation_kind IS NULL
@@ -1979,6 +2049,7 @@ export function snoozeBoardRow(
                                     AND (? IS NULL OR b.revision = ?))
                              RETURNING board_id`)
       .get(
+        until,
         until,
         now,
         rowId,
@@ -2022,6 +2093,43 @@ export function stopBoardRowWatch(
   return info.changes > 0
 }
 
+// Issue #247 — the row twin of pinItem, pinned like every human row action to
+// the row AND board revisions the human saw, so a stale click can never pin or
+// unpin a newer ask that reused this stable row id. Like the #217 watch stop it
+// bumps neither revision nor updated_at: a pin changes nothing an agent writes,
+// so an agent's board_get → board_upsert snapshot stays valid and a native
+// notification keyed by revision is not re-announced. A new action, an answer,
+// a handled mark or a move out of blocked clears it (clear_row_pin_when_ask_ends).
+export function pinBoardRow(
+  db: Database.Database,
+  rowId: string,
+  pinned: boolean,
+  expectedRevision: number,
+  expectedBoardRevision: number,
+): boolean {
+  const pins = { id: rowId, revision: expectedRevision, boardRevision: expectedBoardRevision }
+  const info = pinned
+    ? db.prepare(`UPDATE board_rows SET pinned_at = COALESCE(pinned_at, @now), snoozed_until = NULL
+                   WHERE id = @id AND status = 'blocked' AND revision = @revision
+                     AND COALESCE(annotation, '') = '' AND annotation_kind IS NULL
+                     AND handled_at IS NULL
+                     AND EXISTS (
+                       SELECT 1 FROM boards b
+                        WHERE b.id = board_rows.board_id
+                          AND b.status = 'active'
+                          AND b.revision = @boardRevision)`)
+      .run({ ...pins, now: new Date().toISOString() })
+    : db.prepare(`UPDATE board_rows SET pinned_at = NULL
+                   WHERE id = @id AND pinned_at IS NOT NULL AND revision = @revision
+                     AND EXISTS (
+                       SELECT 1 FROM boards b
+                        WHERE b.id = board_rows.board_id
+                          AND b.status = 'active'
+                          AND b.revision = @boardRevision)`)
+      .run(pins)
+  return info.changes > 0
+}
+
 // ── issue #36: the human's "I did my part" mark ─────────────────────────────
 //
 // WHY IT IS NOT A STATUS. The task-shaped blockers that motivated #36 — "create
@@ -2050,7 +2158,7 @@ export function markRowHandled(
   const run = db.transaction((): boolean => {
     const row = db.prepare(`UPDATE board_rows
                  SET handled_at = ?, handled_seen_at = NULL, handled_seen_by = NULL,
-                     snoozed_until = NULL, updated_at = ?, revision = revision + 1
+                     snoozed_until = NULL, pinned_at = NULL, updated_at = ?, revision = revision + 1
                WHERE id = ? AND (? IS NULL OR revision = ?)
                  AND EXISTS (
                    SELECT 1 FROM boards b
@@ -2274,6 +2382,7 @@ export interface PendingRow {
   handled_seen_at: string | null
   handled_seen_by: string | null
   snoozed_until: string | null
+  pinned_at: string | null
   outcome: string
   outcome_at: string | null
   action_started_at: string
@@ -2315,6 +2424,7 @@ export function listPendingRows(db: Database.Database, project: string): Pending
               r.annotation_seen_at AS annotation_seen_at, r.annotation_seen_by AS annotation_seen_by,
               r.handled_at AS handled_at, r.handled_seen_at AS handled_seen_at,
               r.handled_seen_by AS handled_seen_by, r.snoozed_until AS snoozed_until,
+              r.pinned_at AS pinned_at,
               r.outcome AS outcome, r.outcome_at AS outcome_at,
               r.action_started_at AS action_started_at, r.action_version AS action_version,
               r.revision AS revision,
@@ -2322,6 +2432,7 @@ export function listPendingRows(db: Database.Database, project: string): Pending
          FROM board_rows r JOIN boards b ON b.id = r.board_id
         WHERE b.project = ? AND b.status = 'active'
           AND (r.snoozed_until > ?
+               OR (r.pinned_at IS NOT NULL AND r.status = 'blocked')
                OR r.annotation_kind IS NOT NULL
                OR (r.annotation IS NOT NULL AND r.annotation <> '')
                OR r.handled_at IS NOT NULL)

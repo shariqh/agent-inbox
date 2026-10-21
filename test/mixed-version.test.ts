@@ -14,8 +14,8 @@ import { readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
 import {
-  getBoard, insertItem, listActivity, listBoards, listHostSessions, listIssueEntities, listIssueSnapshots, listItems, listSourceLinks, openDb, recordIssueFailure,
-  replyItem, upsertActivity, upsertBoard, upsertIssueSnapshot, upsertSourceLink,
+  getBoard, getItem, insertItem, listActivity, listBoards, listHostSessions, listIssueEntities, listIssueSnapshots, listItems, listSourceLinks, openDb,
+  pinBoardRow, pinItem, recordIssueFailure, replyItem, upsertActivity, upsertBoard, upsertIssueSnapshot, upsertSourceLink,
 } from '../src/store.js'
 import { runHook } from '../src/hook.js'
 import { issueKeyFor } from '../public/issue-key.js'
@@ -379,5 +379,237 @@ describe('a v1.3.1 process sharing a hub with this build (issue #103)', () => {
     upsertActivity(hub, { session: 'new-mcp', project: 'homelab', stream: '', agent: 'claude-code', doing: 'open', idle: true, claim: false, host_pid: process.ppid, server_pid: process.pid })
     expect(listHostSessions(hub, process.ppid)).toEqual([{ session: 'new-mcp', project: 'homelab', server_pid: process.pid }])
     expect(JSON.parse((await stop()).stdout)).toMatchObject({ decision: 'block', reason: expect.stringContaining('project homelab') })
+  })
+})
+
+// Issue #247 — the writes a v1.4.0 process runs, copied verbatim from src/store.ts
+// at tag v1.4.0. None names pinned_at, so a re-send of the same ask keeps a pin,
+// and only the two triggers can end one when that process answers, closes or
+// moves the ask on. v1.4.0's migration only adds what is missing, so on a hub
+// this build migrated it changes nothing: these statements are what matter.
+const V140 = {
+  upsertRow: `
+          UPDATE board_rows
+             SET status = @status,
+                 note = @note,
+                 position = @position,
+                 updated_at = CASE
+                   WHEN status IS NOT @status OR note IS NOT @note
+                   THEN @now ELSE updated_at END
+           WHERE id = @id`,
+  // updateRowTextField for `impact`
+  rowText: `UPDATE board_rows SET impact = ?, updated_at = ? WHERE id = ? AND impact IS NOT ?`,
+  incrementRowRevision: `UPDATE board_rows SET revision = revision + 1 WHERE id = ? RETURNING revision`,
+  bumpBoardRevision: `UPDATE boards SET revision = revision + 1, updated_at = ? WHERE id = ? RETURNING revision`,
+  rowStatus: `UPDATE board_rows SET status = ?, updated_at = ? WHERE id = ? AND status IS NOT ?`,
+  beginNewRowAction: `
+    UPDATE board_rows
+       SET note = '',
+           next_step = '',
+           action_owner = NULL,
+           impact = '',
+           next_after = '',
+           options = NULL,
+           annotation = NULL,
+           annotation_kind = NULL,
+           annotated_at = NULL,
+           annotation_seen_at = NULL,
+           annotation_seen_by = NULL,
+           handled_at = NULL,
+           handled_seen_at = NULL,
+           handled_seen_by = NULL,
+           snoozed_until = NULL,
+           outcome = '',
+           outcome_at = NULL,
+           action_started_at = ?,
+           action_version = ?,
+           action_agent = ?,
+           action_agent_version = ?,
+           revision = revision + 1,
+           history = ?,
+           updated_at = ?
+     WHERE id = ?`,
+  advanceRow: `
+      UPDATE board_rows
+         SET status = 'blocked',
+             note = ?,
+             next_step = ?,
+             action_owner = ?,
+             impact = ?,
+             next_after = ?,
+             options = ?,
+             context = CASE WHEN ? IS NULL THEN context ELSE ? END,
+             updated_at = ?
+       WHERE id = ?`,
+  annotateBoardRow: `UPDATE board_rows
+                               SET annotation = ?, annotation_kind = ?, annotated_at = ?,
+                                   annotation_seen_at = NULL, annotation_seen_by = NULL,
+                                   snoozed_until = NULL, updated_at = ?, revision = revision + 1
+                             WHERE id = ? AND (? IS NULL OR revision = ?)
+                               AND EXISTS (
+                                 SELECT 1 FROM boards b
+                                  WHERE b.id = board_rows.board_id
+                                    AND b.status = 'active'
+                                    AND (? IS NULL OR b.revision = ?))
+                             RETURNING board_id`,
+  markRowHandled: `UPDATE board_rows
+                 SET handled_at = ?, handled_seen_at = NULL, handled_seen_by = NULL,
+                     snoozed_until = NULL, updated_at = ?, revision = revision + 1
+               WHERE id = ? AND (? IS NULL OR revision = ?)
+                 AND EXISTS (
+                   SELECT 1 FROM boards b
+                    WHERE b.id = board_rows.board_id
+                      AND b.status = 'active'
+                      AND (? IS NULL OR b.revision = ?))
+               RETURNING board_id`,
+  snoozeBoardRow: `UPDATE board_rows
+                               SET snoozed_until = ?, updated_at = ?, revision = revision + 1
+                             WHERE id = ? AND status = 'blocked'
+                               AND (? IS NULL OR revision = ?)
+                               AND COALESCE(annotation, '') = '' AND annotation_kind IS NULL
+                               AND handled_at IS NULL
+                               AND EXISTS (
+                                 SELECT 1 FROM boards b
+                                  WHERE b.id = board_rows.board_id
+                                    AND b.status = 'active'
+                                    AND (? IS NULL OR b.revision = ?))
+                             RETURNING board_id`,
+  replyItem: `UPDATE items
+                   SET reply = @reply, reply_context = @replyContext, replied_at = @now, reply_seen_at = NULL,
+                       reply_source = 'inbox', reply_kind = @kind,
+                       snoozed_until = NULL, updated_at = @now
+                 WHERE id = @id AND kind = 'question' AND status = 'open'`,
+  answerItem: `UPDATE items
+          SET reply = ?, reply_context = ?, replied_at = ?, reply_seen_at = ?,
+              reply_source = 'agent', reply_kind = ?, snoozed_until = NULL, updated_at = ?
+       WHERE id = ? AND kind = 'question' AND status = 'open'
+         AND (reply IS NULL OR reply = '' OR reply_seen_at IS NOT NULL)
+       RETURNING response_revision + 1 AS response_revision`,
+  resolveItem: `UPDATE items
+                 SET status = 'resolved',
+                     resolved_at = COALESCE(resolved_at, @now),
+                     updated_at = CASE
+                       WHEN status IS NOT 'resolved'
+                         OR (@text <> '' AND outcome IS NOT @text)
+                       THEN @now ELSE updated_at END,
+                     outcome = CASE WHEN @text <> '' THEN @text ELSE outcome END,
+                     outcome_at = CASE
+                       WHEN @text = '' OR outcome IS @text THEN outcome_at
+                       ELSE @now END
+               WHERE id = @id
+                 AND (@guarded = 0 OR status IN ('open', 'resolved'))
+                 AND (@guarded = 0
+                      OR response_revision = @expected
+                      OR (@expected IS NULL AND response_revision = 0))`,
+  dismissItem: `UPDATE items SET status = 'dismissed', updated_at = ? WHERE id = ?`,
+  snoozeItem: `UPDATE items SET snoozed_until = ?, updated_at = ? WHERE id = ? AND status = 'open'`,
+}
+
+describe('a v1.4.0 process sharing a hub with pinned asks (#247)', () => {
+  let dir: string
+  let path: string
+  const open: Database.Database[] = []
+  const LABELS = ['Upload', 'Sign', 'Notes', 'Answer', 'Handled', 'Snoozed', 'Cleared']
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(Date.parse(at(60)))
+    dir = scratchDir('mixed-version-pins-')
+    path = join(dir, 'inbox.db')
+  })
+
+  afterEach(() => {
+    for (const connection of open.splice(0)) if (connection.open) connection.close()
+    rmSync(dir, { recursive: true, force: true })
+    vi.useRealTimers()
+  })
+
+  // v1.4.0's openDb() pragmas, on a hub this build already migrated
+  function olderProcess(): Database.Database {
+    const db = new Database(path)
+    open.push(db)
+    db.pragma('busy_timeout = 5000')
+    db.pragma('journal_mode = WAL')
+    return db
+  }
+
+  function pinnedPlan(hub: Database.Database) {
+    upsertBoard(hub, {
+      project: 'agent-inbox', stream: '', agent: 'new', title: 'Release',
+      rows: LABELS.map((label) => ({ label, status: 'blocked' as const, note: `${label} it.`, next_step: 'Do it.', action_owner: 'task' as const, impact: 'Ships it.' })),
+    })
+    for (const label of LABELS) {
+      const board = getBoard(hub, 'agent-inbox', 'Release')!
+      const row = board.rows.find((candidate) => candidate.label === label)!
+      expect(pinBoardRow(hub, row.id, true, row.revision, board.revision), label).toBe(true)
+    }
+    const board = getBoard(hub, 'agent-inbox', 'Release')!
+    return { board, row: (label: string) => board.rows.find((candidate) => candidate.label === label)! }
+  }
+
+  const pins = (hub: Database.Database) => Object.fromEntries(
+    getBoard(hub, 'agent-inbox', 'Release')!.rows.map((row) => [row.label, row.pinned_at]),
+  )
+
+  it('its re-send of the same ask keeps a row pin; its board_advance and move out of blocked clear one', () => {
+    const hub = openDb(path)
+    open.push(hub)
+    const old = olderProcess()
+    const { board, row } = pinnedPlan(hub)
+    const now = at(61)
+
+    // a v1.4.0 upsertBoard re-sending every row, still blocked, one with a new note and impact
+    LABELS.forEach((label, position) => {
+      old.prepare(V140.upsertRow).run({ status: 'blocked', note: label === 'Upload' ? 'Upload the signed build.' : row(label).note, position, now, id: row(label).id })
+    })
+    old.prepare(V140.rowText).run('Ships 1.5.', now, row('Upload').id, 'Ships 1.5.')
+    old.prepare(V140.incrementRowRevision).get(row('Upload').id)
+    old.prepare(V140.bumpBoardRevision).get(now, board.id)
+    expect(pins(hub)).toEqual(Object.fromEntries(LABELS.map((label) => [label, at(60)])))
+
+    // its board_advance: a new action, then the next ask
+    old.prepare(V140.beginNewRowAction).run(now, 2, 'old', 2, '[]', now, row('Sign').id)
+    old.prepare(V140.advanceRow).run('The notarized build is ready.', 'Sign it.', 'task', 'Ships it.', '', null, null, null, now, row('Sign').id)
+    // its updateBoardRow moving an ask out of blocked, the first half of a re-block
+    old.prepare(V140.rowStatus).run('partial', now, row('Notes').id, 'partial')
+    old.prepare(V140.bumpBoardRevision).get(now, board.id)
+    expect(pins(hub)).toMatchObject({ Upload: at(60), Sign: null, Notes: null })
+    expect(getBoard(hub, 'agent-inbox', 'Release')!.rows.find((candidate) => candidate.label === 'Upload'))
+      .toMatchObject({ note: 'Upload the signed build.', impact: 'Ships 1.5.', action_version: 1 })
+  })
+
+  it('its viewer’s answer or handled mark clears a row pin; its snooze and a cleared note leave the pin', () => {
+    const hub = openDb(path)
+    open.push(hub)
+    const old = olderProcess()
+    const { row } = pinnedPlan(hub)
+    const now = at(61)
+    old.prepare(V140.annotateBoardRow).get('Uploaded', 'answer', now, now, row('Answer').id, null, null, null, null)
+    old.prepare(V140.markRowHandled).get(now, now, row('Handled').id, null, null, null, null)
+    old.prepare(V140.snoozeBoardRow).get(at(120), now, row('Snoozed').id, null, null, null, null)
+    old.prepare(V140.annotateBoardRow).get('', null, now, now, row('Cleared').id, null, null, null, null)
+    expect(pins(hub)).toMatchObject({ Answer: null, Handled: null, Snoozed: at(60), Cleared: at(60), Upload: at(60) })
+    // both set is harmless: the ask is set aside either way, and the snooze ends on its own
+    expect(getBoard(hub, 'agent-inbox', 'Release')!.rows.find((candidate) => candidate.label === 'Snoozed')!.snoozed_until).toBe(at(120))
+  })
+
+  it('its reply, chat answer, resolve or dismiss clears a question pin; its snooze leaves the pin', () => {
+    const hub = openDb(path)
+    open.push(hub)
+    const old = olderProcess()
+    const ask = (title: string) => {
+      const id = insertItem(hub, { project: 'agent-inbox', stream: '', agent: 'new', kind: 'question', title })
+      expect(pinItem(hub, id, true), title).toBe(true)
+      return id
+    }
+    const [replied, told, resolved, dismissed, snoozed] = ['Reply', 'Chat', 'Resolve', 'Dismiss', 'Snooze'].map(ask) as [string, string, string, string, string]
+    const now = at(61)
+    old.prepare(V140.replyItem).run({ id: replied, reply: 'Ship it', replyContext: null, kind: 'answer', now })
+    old.prepare(V140.answerItem).get('Said in chat: ship it', null, now, now, 'answer', now, told)
+    old.prepare(V140.resolveItem).run({ now, text: '', id: resolved, guarded: 0, expected: null })
+    old.prepare(V140.dismissItem).run(now, dismissed)
+    old.prepare(V140.snoozeItem).run(at(120), now, snoozed)
+    for (const id of [replied, told, resolved, dismissed]) expect(getItem(hub, id)!.pinned_at, id).toBeNull()
+    expect(getItem(hub, snoozed)).toMatchObject({ pinned_at: at(60), snoozed_until: at(120) })
   })
 })

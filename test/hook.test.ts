@@ -70,6 +70,7 @@ function q(over: Partial<Item> = {}): Item {
     reply_kind: null,
     response_revision: 0,
     snoozed_until: null,
+    pinned_at: null,
     watch_stopped_at: null,
     watch_stopped_until: null,
     action_agent: null,

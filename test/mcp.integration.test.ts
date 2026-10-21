@@ -8,7 +8,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { ReadBuffer, serializeMessage } from '@modelcontextprotocol/sdk/shared/stdio.js'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
-import { openDb, listItems, listBoards, getBoard, annotateBoardRow, markRowHandled, listPendingRows, replyItem, listActivity, listActivitySpans, upsertIssueSnapshot } from '../src/store.js'
+import { openDb, listItems, listBoards, getBoard, annotateBoardRow, markRowHandled, listPendingRows, pinBoardRow, pinItem, replyItem, listActivity, listActivitySpans, upsertIssueSnapshot } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
 import { scratchDir } from './scratch.js'
 
@@ -1291,6 +1291,52 @@ describe('mcp round-trip', () => {
     const rowStatusDesc = ((tools.get('board_row')!.inputSchema as unknown as { properties: Record<string, { description?: string }> })
       .properties['status']!).description ?? ''
     expect(rowStatusDesc, 'the reset rule rides on the FIELD an agent is filling in').toMatch(/NEW request|new request/)
+    await c1.close()
+  }, 20000)
+
+  // #247 — a pin rides the reads an agent already makes, as a snooze does: the
+  // human set the ask aside, it is still open, and nothing about it is answered.
+  it('pending and board_get carry the human’s pin; a pinned row keeps arriving until its status flips (#247)', async () => {
+    const dbPath = join(scratchDir('mcp-pinned-'), 'inbox.db')
+    const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
+    const c1 = new Client({ name: 'claude-code', version: '1.0.0' }); await c1.connect(t)
+    const call = async (name: string, args: Record<string, unknown>) =>
+      JSON.parse(((await c1.callTool({ name, arguments: args })).content as Array<{ text: string }>)[0]!.text)
+    const tools = new Map((await c1.listTools()).tools.map((x) => [x.name, x]))
+    expect(tools.get('pending')!.description ?? '').toMatch(/pinned_at means they set it aside with no time/)
+
+    const flagged = await call('flag', { kind: 'question', title: 'Which build?', ...QUESTION_SHAPE })
+    await call('board_upsert', { title: 'wave 0', rows: [blockedRow('Upload'), blockedRow('Sign')] })
+    expect(await call('pending', {})).toMatchObject({ rows: [], items: [expect.objectContaining({ id: flagged.id, pinned_at: null })] })
+
+    // the human pins both in the VIEWER — a different process
+    const hub = openDb(dbPath)
+    const project = listBoards(hub)[0]!.project
+    const board = getBoard(hub, project, 'wave 0')!
+    const upload = board.rows.find((r) => r.label === 'Upload')!
+    expect(pinBoardRow(hub, upload.id, true, upload.revision, board.revision)).toBe(true)
+    expect(pinItem(hub, flagged.id, true)).toBe(true)
+
+    const first = await call('pending', {})
+    expect(first.items).toEqual([expect.objectContaining({ id: flagged.id, pinned_at: expect.stringMatching(/^\d{4}-/) })])
+    expect(first.rows).toEqual([expect.objectContaining({ label: 'Upload', status: 'blocked', pinned_at: expect.stringMatching(/^\d{4}-/) })])
+    const again = await call('pending', {})
+    expect(again.rows, 'a pin is not an acknowledgement').toEqual([expect.objectContaining({ label: 'Upload', pinned_at: first.rows[0].pinned_at })])
+
+    const read = await call('board_get', { title: 'wave 0' })
+    expect(read.rows.map((r: { label: string; pinned_at: string | null }) => [r.label, r.pinned_at]))
+      .toEqual([['Upload', first.rows[0].pinned_at], ['Sign', null]])
+    const summary = await call('board_get', {})
+    expect(summary.boards[0].rows[0]).toMatchObject({ label: 'Upload', pinned_at: first.rows[0].pinned_at })
+    expect(summary.boards[0].rows[1]).not.toHaveProperty('pinned_at')
+
+    // the agent's snapshot from before the pin still writes, and ends the pin
+    await call('board_row', {
+      title: 'wave 0', board_version: board.revision, label: 'Upload', expected_revision: upload.revision,
+      status: 'done', outcome: 'Uploaded it.',
+    })
+    expect((await call('pending', {})).rows).toEqual([])
+    expect(getBoard(openDb(dbPath), project, 'wave 0')!.rows.find((r) => r.label === 'Upload')!.pinned_at).toBeNull()
     await c1.close()
   }, 20000)
 

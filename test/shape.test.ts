@@ -14,7 +14,7 @@
 // test/viewer.test.ts).
 import { describe, it, expect } from 'vitest'
 import { join } from 'node:path'
-import { advanceBoardRow, openDb, upsertBoard, listBoards, annotateBoardRow, listPendingRows, markAnnotationDelivered, markRowHandled, markHandledDelivered, stopBoardRowWatch } from '../src/store.js'
+import { advanceBoardRow, openDb, upsertBoard, listBoards, annotateBoardRow, listPendingRows, markAnnotationDelivered, markRowHandled, markHandledDelivered, pinBoardRow, stopBoardRowWatch } from '../src/store.js'
 import type { BoardWithRows } from '../src/store.js'
 import { trimContext, makeContextLedger, deliverContext, shapeBoard, summariseBoard, rowKey, itemKey } from '../src/shape.js'
 import { issueRelations } from '../src/issue-graph.js'
@@ -334,6 +334,20 @@ describe('summariseBoard — board_get() with no title', () => {
     expect(out.rows[0]).toMatchObject({ watch_stopped_at: expect.stringMatching(/^\d{4}-/), watch_stopped_until: null })
     expect(out.rows[1]).not.toHaveProperty('watch_stopped_at')
     expect(out.rows[1]).not.toHaveProperty('watch_stopped_until')
+  })
+
+  // #247 — likewise a pin: the human set the ask aside, with no time. Shown
+  // beside a snooze; a row without one pays nothing.
+  it('carries the human’s pin only on a row that has one', () => {
+    const { db, board } = boardWith([
+      { label: 'Install test', status: 'blocked', note: 'Install 1.5' },
+      { label: 'Sign', status: 'blocked', note: 'Sign 1.5' },
+    ])
+    const row = board.rows[0]!
+    expect(pinBoardRow(db, row.id, true, row.revision, board.revision)).toBe(true)
+    const out = summariseBoard(listBoards(db)[0]!)
+    expect(out.rows[0]).toMatchObject({ pinned_at: expect.stringMatching(/^\d{4}-/) })
+    expect(out.rows[1]).not.toHaveProperty('pinned_at')
   })
 
   it('an unmarked row spends nothing on the mark either — no three null fields', () => {

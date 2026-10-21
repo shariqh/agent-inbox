@@ -320,7 +320,9 @@ Run the build before `npm run electron`; the development shell starts the built
   bare `mkdtempSync` under `tmpdir()`, so repeated runs do not fill `$TMPDIR`
   (#240, #245). The `test/scratch-setup.ts` setupFile removes a file's leftovers
   when it ends; call `removeScratchDirs()` from `afterEach` as well when no
-  directory is made in `beforeAll` or at module level.
+  directory is made in `beforeAll` or at module level. The one exception,
+  `test/hook.test.ts`'s module-level project repository, is removed by that
+  file's own `afterAll`.
 - Node is the default Vitest environment. DOM tests opt in per file with
   `// @vitest-environment jsdom`; keep `test/dom/harness.ts` outside the
   `*.test.ts` naming pattern.

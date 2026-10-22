@@ -1129,6 +1129,15 @@ describe('write routes refuse invalid bodies before touching the store (#163)', 
     // parseable, but its +YYYYYY form would sort below every 4-digit-year stamp
     ['a beyond-year-9999 until', (valid) => JSON.stringify({ ...valid, until: '+010000-01-01T00:00:00.000Z' })],
   ]
+  // #247: `defer` is optional on the two stop-waiting routes, but a present
+  // value must be a boolean. A coerced 'false' or 1 would pin or snooze an ask
+  // the human never set aside, or drop a deferral they asked for.
+  const INVALID_DEFER: BodyCase[] = [
+    ['a string defer', (valid) => JSON.stringify({ ...valid, defer: 'true' })],
+    ['a numeric defer', (valid) => JSON.stringify({ ...valid, defer: 1 })],
+    ['a null defer', (valid) => JSON.stringify({ ...valid, defer: null })],
+    ['an object defer', (valid) => JSON.stringify({ ...valid, defer: { pinned: true } })],
+  ]
   // The store compares snoozed_until as TEXT, so a valid date is stored as UTC ISO.
   const OFFSET_DATE = '2099-01-01T00:00:00+02:00'
   const OFFSET_DATE_UTC = '2098-12-31T22:00:00.000Z'
@@ -1323,6 +1332,42 @@ describe('write routes refuse invalid bodies before touching the store (#163)', 
       expect(await res.json()).toEqual({ ok: false })
       expect(getItem(db, id)!.watch_stopped_at).toBeNull()
     })
+
+    it.each(INVALID_DEFER)('refuses %s before any store call', async (_label, body) => {
+      const id = question()
+      const before = getItem(db, id)
+      for (const until of [null, FUTURE]) await expectInvalid(await post(`/api/items/${id}/stop-waiting`, body({ until })))
+      expect(getItem(db, id)).toEqual(before)
+    })
+
+    // #247 §5.4: with the Later section on, the same write also defers the ask.
+    it('defers the question in the same write: a stop for good pins it, a date snoozes it', async () => {
+      const pinned = question()
+      let res = await post(`/api/items/${pinned}/stop-waiting`, JSON.stringify({ until: null, defer: true }))
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ ok: true })
+      expect(getItem(db, pinned)).toMatchObject({
+        watch_stopped_at: expect.any(String), watch_stopped_until: null, pinned_at: expect.any(String), snoozed_until: null,
+      })
+
+      const snoozed = question()
+      res = await post(`/api/items/${snoozed}/stop-waiting`, JSON.stringify({ until: OFFSET_DATE, defer: true }))
+      expect(await res.json()).toEqual({ ok: true })
+      expect(getItem(db, snoozed)).toMatchObject({
+        watch_stopped_until: OFFSET_DATE_UTC, snoozed_until: OFFSET_DATE_UTC, pinned_at: null,
+      })
+
+      const plain = question()
+      res = await post(`/api/items/${plain}/stop-waiting`, JSON.stringify({ until: null, defer: false }))
+      expect(await res.json()).toEqual({ ok: true })
+      expect(getItem(db, plain)).toMatchObject({ watch_stopped_until: null, pinned_at: null, snoozed_until: null })
+
+      // a stop for good is final, so a later deferral is refused whole
+      res = await post(`/api/items/${pinned}/stop-waiting`, JSON.stringify({ until: OFFSET_DATE, defer: true }))
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ ok: false })
+      expect(getItem(db, pinned)).toMatchObject({ watch_stopped_until: null, snoozed_until: null, pinned_at: expect.any(String) })
+    })
   })
 
   describe('POST /api/boards/:id/rows/:rowId/stop-waiting', () => {
@@ -1355,6 +1400,43 @@ describe('write routes refuse invalid bodies before touching the store (#163)', 
       expect(await res.json()).toEqual({ ok: true })
       expect(listBoards(db)[0]!.rows[0]!.watch_stopped_until).toBe(OFFSET_DATE_UTC)
       expect(rowTarget().pins).toEqual(pins)
+    })
+
+    it.each(INVALID_DEFER)('refuses %s before any store call', async (_label, body) => {
+      blockedRow()
+      const { path, pins } = rowTarget()
+      const before = listBoards(db)
+      for (const until of [null, FUTURE]) await expectInvalid(await post(`${path}/stop-waiting`, body({ until, ...pins })))
+      expect(listBoards(db)).toEqual(before)
+    })
+
+    // #247 §5.4: the snooze half moves the row revision exactly as a snooze
+    // does; the pin half, like the stop, moves neither revision.
+    it('defers the row in the same write and classifies a refusal as before', async () => {
+      blockedRow()
+      let { path, pins } = rowTarget()
+      let res = await post(`${path}/stop-waiting`, JSON.stringify({ until: null, defer: true, ...pins, expected_revision: pins.expected_revision - 1 }))
+      expect(await res.json()).toEqual({ ok: false, reason: 'version_mismatch' })
+      expect(listBoards(db)[0]!.rows[0]).toMatchObject({ watch_stopped_at: null, pinned_at: null })
+
+      res = await post(`${path}/stop-waiting`, JSON.stringify({ until: OFFSET_DATE, defer: true, ...pins }))
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ ok: true })
+      expect(listBoards(db)[0]!.rows[0]).toMatchObject({ watch_stopped_until: OFFSET_DATE_UTC, snoozed_until: OFFSET_DATE_UTC })
+      expect(rowTarget().pins).toEqual({
+        expected_revision: pins.expected_revision + 1, expected_board_version: pins.expected_board_version + 1,
+      })
+
+      ;({ path, pins } = rowTarget())
+      res = await post(`${path}/stop-waiting`, JSON.stringify({ until: null, defer: true, ...pins }))
+      expect(await res.json()).toEqual({ ok: true })
+      expect(listBoards(db)[0]!.rows[0]).toMatchObject({ watch_stopped_until: null, snoozed_until: null, pinned_at: expect.any(String) })
+      expect(rowTarget().pins).toEqual(pins)
+
+      res = await post(`${path}/stop-waiting`, JSON.stringify({ until: OFFSET_DATE, defer: true, ...pins }))
+      expect(res.status).toBe(200)
+      expect(await res.json(), 'a stop for good is final').toEqual({ ok: false, reason: 'not_stoppable' })
+      expect(listBoards(db)[0]!.rows[0]).toMatchObject({ snoozed_until: null, pinned_at: expect.any(String) })
     })
 
     it('classifies a refusal: stale pins are a version mismatch, an answered row is not stoppable', async () => {

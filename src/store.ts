@@ -1073,19 +1073,56 @@ export function snoozeItem(db: Database.Database, id: string, until: string | nu
   return info.changes > 0
 }
 
+// Issue #247 §5.4 — "I'll take a while" with the Later section on: the watch
+// stop and the inbox deferral (a pin for `until` null, a snooze to `until`
+// otherwise) land together or not at all.
+interface StopWatchOptions {
+  defer?: boolean
+}
+
+// A refused half is not an error, so it rolls the transaction back through this
+// sentinel rather than an exception the caller would have to tell apart.
+const DEFER_REFUSED = Symbol('defer refused')
+
+// ONE IMMEDIATE transaction: the write lock is held from its BEGIN, so no other
+// process can land between the halves. Each half is the existing conditioned
+// write, pinned to the same revisions; the stop moves no revision, so the
+// deferral checks exactly what the stop checked. Any refusal or error undoes
+// both.
+function stopAndDefer(db: Database.Database, stop: () => boolean, defer: () => boolean): boolean {
+  const run = db.transaction((): true => {
+    if (!stop() || !defer()) throw DEFER_REFUSED
+    return true
+  })
+  try {
+    return run.immediate()
+  } catch (err) {
+    if (err === DEFER_REFUSED) return false
+    throw err
+  }
+}
+
 // Issue #217 — the human tells the asking Copilot session to stop waiting on
 // this question: for good (`until` null) or until a time. One conditioned
 // statement, refused on an answered or closed question, and on a stop for
 // good, which has already ended the watcher and therefore cannot be revised
 // into a deferral that nothing would honour. An item is its own ask, so there
 // is no newer action to pin against. Not content: updated_at stays put.
-export function stopItemWatch(db: Database.Database, id: string, until: string | null): boolean {
-  const info = db.prepare(`UPDATE items SET watch_stopped_at = @now, watch_stopped_until = @until
+// `defer` (#247) also pins the question (stop for good) or snoozes it to the
+// same time, exactly as pinItem or snoozeItem would, in the same transaction.
+export function stopItemWatch(
+  db: Database.Database,
+  id: string,
+  until: string | null,
+  { defer = false }: StopWatchOptions = {},
+): boolean {
+  const stop = (): boolean => db.prepare(`UPDATE items SET watch_stopped_at = @now, watch_stopped_until = @until
                             WHERE id = @id AND kind = 'question' AND status = 'open'
                               AND COALESCE(reply, '') = ''
                               AND (watch_stopped_at IS NULL OR watch_stopped_until IS NOT NULL)`)
-    .run({ id, until, now: new Date().toISOString() })
-  return info.changes > 0
+    .run({ id, until, now: new Date().toISOString() }).changes > 0
+  if (!defer) return stop()
+  return stopAndDefer(db, stop, () => (until === null ? pinItem(db, id, true) : snoozeItem(db, id, until)))
 }
 
 // Issue #247 — "Pin for later": the human sets an unanswered question aside
@@ -2075,15 +2112,19 @@ export function snoozeBoardRow(
 // neither revision nor updated_at: it changes nothing an agent writes, so an
 // agent's board_get → board_upsert snapshot stays valid and a native
 // notification is not re-announced. The one reset is a new action, by any
-// writer (reset_row_action_watch_state).
+// writer (reset_row_action_watch_state). `defer` (#247) also pins the row
+// (stop for good) or snoozes it to the same time against the same revisions,
+// exactly as pinBoardRow or snoozeBoardRow would, in the same transaction: the
+// snooze half moves the revisions as any snooze does, the pin half moves none.
 export function stopBoardRowWatch(
   db: Database.Database,
   rowId: string,
   until: string | null,
   expectedRevision: number,
   expectedBoardRevision: number,
+  { defer = false }: StopWatchOptions = {},
 ): boolean {
-  const info = db.prepare(`UPDATE board_rows SET watch_stopped_at = @now, watch_stopped_until = @until
+  const stop = (): boolean => db.prepare(`UPDATE board_rows SET watch_stopped_at = @now, watch_stopped_until = @until
                             WHERE id = @id AND status = 'blocked' AND revision = @revision
                               AND COALESCE(annotation, '') = '' AND annotation_kind IS NULL
                               AND handled_at IS NULL
@@ -2094,7 +2135,11 @@ export function stopBoardRowWatch(
                                    AND b.status = 'active'
                                    AND b.revision = @boardRevision)`)
     .run({ id: rowId, until, revision: expectedRevision, boardRevision: expectedBoardRevision, now: new Date().toISOString() })
-  return info.changes > 0
+    .changes > 0
+  if (!defer) return stop()
+  return stopAndDefer(db, stop, () => (until === null
+    ? pinBoardRow(db, rowId, true, expectedRevision, expectedBoardRevision)
+    : snoozeBoardRow(db, rowId, until, expectedRevision, expectedBoardRevision)))
 }
 
 // Issue #247 — the row twin of pinItem, pinned like every human row action to

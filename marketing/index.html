@@ -1016,6 +1016,10 @@ npm run install:agents</code></pre>
 
       let frame = 0;
       let inView = false;
+      // The hero turns with the time it has spent animating, not page time, so
+      // after a pause it resumes where it stopped instead of spinning to catch up.
+      let elapsed = 0;
+      let last = null;
       let pointerX = 0;
       let pointerY = 0;
       let drawnWidth = 0;
@@ -1042,7 +1046,10 @@ npm run install:agents</code></pre>
         renderer.render(scene, camera);
       }
       function animate(time) {
-        render(time);
+        // A frame after a long gap, such as a hidden tab, still counts at most 50 ms.
+        if (last !== null) elapsed += Math.min(time - last, 50);
+        last = time;
+        render(elapsed);
         frame = requestAnimationFrame(animate);
       }
       function updatePalette() {
@@ -1056,7 +1063,10 @@ npm run install:agents</code></pre>
       // motion is allowed, and a loop that is already running is never started again.
       function updateMotion() {
         const moving = inView && !motionQuery.matches;
-        if (moving && !frame) frame = requestAnimationFrame(animate);
+        if (moving && !frame) {
+          last = null;
+          frame = requestAnimationFrame(animate);
+        }
         if (!moving && frame) {
           cancelAnimationFrame(frame);
           frame = 0;

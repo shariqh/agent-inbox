@@ -33,9 +33,11 @@ async function runHero(load: (url: string) => Promise<unknown>) {
   await window.eval(`(async () => {\n${source.replace('import(', 'loadThree(')}\n})()`)
 }
 
-// The parts of Three.js the hero touches, recording each resize and draw.
+// The parts of Three.js the hero touches, recording each resize and draw, and the
+// Y rotation of the hero's cluster and of its core at each draw.
 function fakeThree() {
   const sizes: Array<[number, number]> = []
+  const poses: Array<{ cluster: number; core: number }> = []
   let draws = 0
   class Vector3 {
     x = 0
@@ -48,7 +50,10 @@ function fakeThree() {
   class Object3D {
     position = new Vector3()
     rotation = new Vector3()
-    add() {}
+    children: Object3D[] = []
+    add(child: Object3D) {
+      this.children.push(child)
+    }
   }
   class Color {
     set() {}
@@ -64,8 +69,11 @@ function fakeThree() {
       setSize(width: number, height: number) {
         sizes.push([width, height])
       }
-      render() {
+      render(scene: Object3D) {
         draws += 1
+        // The scene holds the cluster, whose first child is the core.
+        const cluster = scene.children[0]!
+        poses.push({ cluster: cluster.rotation.y, core: cluster.children[0]!.rotation.y })
       }
     },
     Scene: Object3D,
@@ -88,7 +96,7 @@ function fakeThree() {
     SphereGeometry: Geometry,
     DoubleSide: 2,
   }
-  return { module, sizes, draws: () => draws }
+  return { module, sizes, draws: () => draws, poses: () => poses }
 }
 
 // Boots the hero with a fake Three.js, a sized canvas, and captured resize, intersection
@@ -372,6 +380,34 @@ describe('local marketing page', () => {
     hero.setReducedMotion(false)
     vi.advanceTimersToNextFrame()
     expect(hero.three.draws()).toBe(7)
+  })
+
+  it('resumes the hero where it stopped instead of spinning to catch up', async () => {
+    const hero = await startHero(false)
+    for (let frame = 0; frame < 30; frame += 1) vi.advanceTimersToNextFrame()
+    // The core turns .14 rad per second animated, so one 60 Hz frame turns it at most this far.
+    const oneFrame = .14 / 60
+    const turned = () => {
+      const [before, after] = hero.three.poses().slice(-2)
+      return { core: Math.abs(after!.core - before!.core), cluster: Math.abs(after!.cluster - before!.cluster) }
+    }
+    expect(turned().core).toBeGreaterThan(0)
+
+    // A minute offscreen: the first frame back moves no more than an ordinary frame.
+    hero.intersect(false)
+    vi.advanceTimersByTime(60_000)
+    hero.intersect(true)
+    vi.advanceTimersToNextFrame()
+    expect(turned().core).toBeLessThanOrEqual(oneFrame)
+    expect(turned().cluster).toBeLessThan(.01)
+
+    // A hidden tab stops frames without an observer report; the next frame counts at most 50 ms.
+    const frames: FrameRequestCallback[] = []
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => frames.push(callback))
+    vi.advanceTimersToNextFrame()
+    frames.shift()!(1_000_000)
+    frames.shift()!(1_060_000)
+    expect(turned().core).toBeLessThanOrEqual(.14 * .05 + 1e-9)
   })
 
   it('redraws a reduced-motion hero after its canvas is resized', async () => {

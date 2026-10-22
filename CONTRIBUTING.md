@@ -52,8 +52,12 @@ npm tarball it came from and that tarball's `integrity`. `test/dom/marketing.tes
 checks the hashes, that the manifest lists every file under `marketing/vendor/`,
 and that each module the hero imports, directly or through another module, is
 vendored. A publishing site should copy exactly the files the manifest lists and
-can check each against its SHA-256; the sync that publishes
-https://shariq.dev/agent-inbox/ does both.
+can check each against its SHA-256. The sync that publishes
+https://shariq.dev/agent-inbox/ does both, and it also downloads the named
+`three` release from the npm registry, checks the tarball against the registry's
+`dist.integrity`, and requires each vendored file to match the same file in that
+tarball. It accepts only `three.module.js`, `three.core.js` and `LICENSE` from the
+`three` package, so vendoring any other file needs a change to that sync first.
 
 Keep the full document intact rather than inserting it into a blog template, and
 serve the `.js` files with a JavaScript MIME type. If the host sets a Content

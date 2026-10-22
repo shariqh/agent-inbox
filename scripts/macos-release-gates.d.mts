@@ -62,7 +62,7 @@ export function buildFinalReleaseEvidence(options: {
 export function withMountedDmg<T>(options: {
   dmg: string
   mount: string
-  runCommand: (path: string, args: string[]) => unknown
+  runCommand: (path: string, args: string[], options?: { timeout?: number }) => unknown
   verify: () => Promise<T> | T
 }): Promise<T>
 

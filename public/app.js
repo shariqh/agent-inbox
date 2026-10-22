@@ -48,6 +48,7 @@ import { PANE_DEFAULTS, paneKeyValue, paneValueFromPointer, resolvePaneLayout } 
 import { createThemeController } from '/theme.js'
 import { activityHistoryUrl, createSnapshotReader } from '/snapshots.js'
 import { knownHistory, knownOutcomes, mergeClosedHistory, olderHistory } from '/closed-history.js'
+import { DRAFTS_KEY, draftEntry, draftKey, mergeDrafts, readDrafts } from '/drafts.js'
 
 void paginateGroups // kept exported+tested (spec §15); the viewer no longer calls it
 
@@ -329,6 +330,8 @@ function initScrollGuard() {
 
 // #pauseHint is emitted by the shell (Task 6); this is the only writer
 function showPauseHint() {
+  // Every draft change is followed by a hint refresh, so its save is queued here (#279).
+  scheduleDraftSave()
   const el = document.getElementById('pauseHint')
   if (!el) return
   const hint = refreshPending && hasUnsentResponses()
@@ -354,9 +357,11 @@ function renderIfIdle() {
   const frame = paintAmbient()
   frame.textSelection = textSelection
   // Drafts and active inspector/page scrolling protect only editable lists. Counts,
-  // the badge, rail and Live strip above keep reporting fresh data.
-  if (dashboardInteractionActive()
-    || shouldDeferRender({ ...suspendState(), pressedAt, scrolledAt: lastInteractionScrollAt }, now)) {
+  // the badge, rail and Live strip above keep reporting fresh data. Before the
+  // first editable frame no editor exists to protect, so a draft restored at
+  // boot (#279) cannot leave the lists blank.
+  if (editablePanesPainted && (dashboardInteractionActive()
+    || shouldDeferRender({ ...suspendState(), pressedAt, scrolledAt: lastInteractionScrollAt }, now))) {
     renderDirty = true
     showPauseHint()
     restoreSelection(textSelection)
@@ -604,6 +609,8 @@ async function load() {
       issues,
     }
     applyProjectMutationIntents()
+    // #279: drafts restored at boot learn where they belong from the first data.
+    placeRestoredDrafts()
     renderIfIdle()
     if (!bootFocusDone) { bootFocusDone = true; applyFocusHash() }
     // A deep link waiting on older history lands once it has been read, unless
@@ -2064,6 +2071,8 @@ const rowDraftMeta = {} // row id → recovery labels/revision if its owner disa
 const rowDraftGenerations = {} // row id → monotonic edit token across duplicate editors
 const rowSubmissionTokens = {} // row id → latest async submission allowed to retire its draft
 const staleRowDrafts = {} // row-id + revision key → one refused action response
+const ROW_SET_ASIDE = 'Kept from before you set this aside.'
+const ROW_ACTION_CHANGED = 'Not sent because this action changed.'
 let requestedDraftFocusBookmark = null
 let draftRecoveryFocusPending = false
 let draftRecoveryTarget = null
@@ -2608,6 +2617,8 @@ function rowAnswerEl(b, r, onSaved) {
       boardTitle: b.title,
       label: r.label,
       context: staleDraft?.context ?? r.context ?? '',
+      boardId: b.id,
+      boardRevision: b.revision,
     }
   }
   if (staleDraft?.revision === r.revision) rowDraftKinds[r.id] = staleDraft.kind
@@ -2625,6 +2636,8 @@ function rowAnswerEl(b, r, onSaved) {
         boardTitle: b.title,
         label: r.label,
         context: r.context ?? '',
+        boardId: b.id,
+        boardRevision: b.revision,
       }
     } else {
       delete rowDraftMeta[r.id]
@@ -2659,6 +2672,8 @@ function rowAnswerEl(b, r, onSaved) {
           boardTitle: b.title,
           label: r.label,
           context: r.context ?? '',
+          boardId: b.id,
+          boardRevision: b.revision,
         }
         input.value = typed
       }
@@ -2803,7 +2818,7 @@ function rowAnswerEl(b, r, onSaved) {
     warning.className = 'write-error stale-draft'
     warning.textContent = recovery.revision === r.revision
       ? 'Not sent because the board changed. Review the preserved draft and send again.'
-      : `${recovery.setAside ? 'Kept from before you set this aside.' : 'Not sent because this action changed.'} Preserved ${recovery.kind}: ${recovery.text}`
+      : `${recovery.setAside ? ROW_SET_ASIDE : ROW_ACTION_CHANGED} Preserved ${recovery.kind}: ${recovery.text}`
     wrap.appendChild(warning)
   }
   return wrap
@@ -5057,17 +5072,22 @@ function renderNeedsYou(g, boardsInView, nowMs) {
   // card and its draft are never inside a closed fold. The human closing that
   // fold closes the card (closeCardIn).
   const holdsOpenCard = (entries) => Boolean(openRowId) && entries.some((entry) => needsEntryId(entry) === openRowId)
+  // #279: a draft restored at boot is not left inside a closed fold either; it
+  // is revealed once, like a deep link, and the human may close the fold again.
+  const holdsRestored = (entries) => entries.some((entry) => revealDraftIds.has(needsEntryId(entry)))
+  const reveals = (entries) => holdsOpenCard(entries) || holdsRestored(entries)
   if (laterSection) {
-    if (holdsOpenCard(later)) openDeferredFolds.add('later')
+    if (reveals(later)) openDeferredFolds.add('later')
     if (later.length) host.appendChild(laterSectionEl(sortLaterEntries(later), opts, nowMs))
   } else {
     for (const reason of DEFERRED_FOLDS) {
       const deferred = sortDeferredEntries(later.filter((entry) => entry.later === reason))
-      if (holdsOpenCard(deferred)) openDeferredFolds.add(reason)
+      if (reveals(deferred)) openDeferredFolds.add(reason)
       if (deferred.length) host.appendChild(deferredFoldEl(reason, deferred, opts, nowMs))
     }
   }
-  if (holdsOpenCard(stale)) staleFoldOpen = true
+  if (reveals(stale)) staleFoldOpen = true
+  revealDraftIds.clear()
   if (stale.length) host.appendChild(staleFoldEl(stale, opts, nowMs))
   renderOrphanedDrafts(host)
   // fix round 2 (I3): the foot chip is fed the SAME scoped notes the Notes tab
@@ -5117,6 +5137,7 @@ function renderOrphanedDrafts(host) {
       clear: () => deleteItemDraftRecovery(key, draft.owner),
       text: [
         draft.title,
+        draft.reason,
         `${draft.kind}: ${draft.text}`,
         draft.context ? `context: ${draft.context}` : '',
       ].filter(Boolean).join(' · '),
@@ -5137,6 +5158,7 @@ function renderOrphanedDrafts(host) {
           draft.boardTitle,
           draft.label,
           `action ${draft.actionVersion ?? draft.revision}`,
+          draft.reason,
           `${draft.kind}: ${draft.text}`,
           draft.context ? `context: ${draft.context}` : '',
         ].filter(Boolean).join(' · '),
@@ -5970,6 +5992,8 @@ const itemDraftRetryIntents = {} // item id → exact ambiguous intent while its
 const itemDraftSubmissions = {}  // item id → in-flight free-text intents keyed by draft generation
 const staleItemDrafts = {}       // recovery key → refused/orphaned answer preserved outside the poll gate
 const itemNoteDrafts = {}        // item id → pending or unconfirmed native Note attempt
+const NOTE_REFUSED = 'Note was not saved — this item is closed or no longer available.'
+const NOTE_UNCONFIRMED = 'Note save was not confirmed — review the stored note before retrying.'
 const ITEM_REPLY_INTENT_SESSION_KEY = 'agent-inbox-reply-intent'
 
 function effectiveReply(it) {
@@ -6011,7 +6035,9 @@ function claimItemIntent(id, { staged = false } = {}) {
   if (!staged) invalidateItemDraftIntents(id)
   const sequence = ++storedReplyIntent.sequence
   sessionStorage.setItem(ITEM_REPLY_INTENT_SESSION_KEY, JSON.stringify(storedReplyIntent))
-  const intent = { sequence, actionId: globalThis.crypto.randomUUID() }
+  // The claiming window's identity travels with the intent, so a stored draft
+  // retried from another window replays this exact intent (#279).
+  const intent = { sequence, actionId: globalThis.crypto.randomUUID(), clientId: storedReplyIntent.clientId }
   if (!staged) itemLatestIntents[id] = intent
   if (!staged) cancelStagedItemIntent(id)
   return intent
@@ -6086,7 +6112,7 @@ function cancelStagedItemIntent(id) {
 function postItemReply(id, body, intent) {
   return postJSON(`/api/items/${id}/reply`, {
     ...body,
-    intent_client_id: storedReplyIntent.clientId,
+    intent_client_id: intent.clientId ?? storedReplyIntent.clientId,
     intent_sequence: intent.sequence,
     intent_action_id: intent.actionId,
   })
@@ -6159,6 +6185,7 @@ function preserveItemDraftRecovery(id, {
   owner = null,
   expectedOwner = null,
   generation = itemDraftGenerations[id] ?? 0,
+  reason = '',
 }) {
   const recoveryKey = key ?? itemDraftRecoveryKey(id, { intent, generation, kind })
   if (
@@ -6174,6 +6201,8 @@ function preserveItemDraftRecovery(id, {
     kind,
     intent: intent ? { ...intent } : null,
     owner: owner ?? itemDraftRecoveryOwner(ownerIntent, generation),
+    // why a restored draft is here (#279); a retry that fails again keeps it
+    reason: reason || staleItemDrafts[recoveryKey]?.reason || '',
   }
   return recoveryKey
 }
@@ -6310,6 +6339,317 @@ function reconcileDraftOwners() {
   }
   if (recovered) requestDraftRecovery()
   return recovered
+}
+
+// ── durable drafts (#279) ───────────────────────────────────────────────────
+// Every unsent response this window holds (answers and their context, plan-row
+// notes, Note attempts and the unsent responses list) is mirrored into this
+// profile's localStorage through public/drafts.js: within DRAFT_SAVE_MS of a
+// change, and again as the page goes away. Never to the server, and nothing
+// here sends anything. The window's memory stays the source of truth: a save
+// writes what changed since this window last loaded or wrote it, so emptying
+// an editor, a successful send and Clear delete the stored copy too.
+const DRAFT_SAVE_MS = 300
+const QUESTION_CHANGED = 'Not sent because this question changed.'
+const QUESTION_CLOSED = 'Not sent because this question is closed or no longer available.'
+// An item recovery's in-memory key repeats across page loads; its stored key
+// carries this load's id so a later load's recovery can never overwrite it.
+const draftPageId = globalThis.crypto.randomUUID()
+// key → { savedAt, json } of each entry this window loaded or last wrote. Only
+// these may be deleted, and only while storage still holds that very copy.
+const knownDrafts = new Map()
+// What the boot read, until the first data places it (placeRestoredDrafts).
+let restoredDrafts = (() => {
+  let raw = null
+  try {
+    raw = localStorage.getItem(DRAFTS_KEY)
+  } catch {
+    // storage unavailable: nothing to restore, and every later save fails quietly
+  }
+  const loaded = readDrafts(raw, Date.now())
+  for (const [key, { savedAt, draft }] of loaded) knownDrafts.set(key, { savedAt, json: JSON.stringify(draft) })
+  return loaded
+})()
+// Restored drafts the next queue render must not leave inside a closed fold.
+const revealDraftIds = new Set()
+let draftSaveTimer = null
+
+function storedIntent(intent) {
+  return intent
+    ? { clientId: intent.clientId ?? storedReplyIntent.clientId, sequence: intent.sequence, actionId: intent.actionId }
+    : null
+}
+
+function collectDrafts() {
+  const drafts = new Map()
+  const add = (raw, key = null) => {
+    const draft = draftEntry(raw)
+    if (draft) drafts.set(key ?? draftKey(draft), draft)
+  }
+  for (const [key, { draft }] of restoredDrafts ?? []) drafts.set(key, draft)
+  for (const id of new Set([...Object.keys(draftReplies), ...Object.keys(draftReplyContexts)])) {
+    const generation = itemDraftGenerations[id] ?? 0
+    const submission = itemDraftSubmission(id, generation)
+    add({
+      type: 'reply',
+      itemId: id,
+      title: itemDraftMeta[id]?.title ?? freshItem(id)?.title ?? 'Question',
+      text: draftReplies[id] ?? '',
+      context: draftReplyContexts[id] ?? '',
+      responseRevision: itemDraftMeta[id]?.responseRevision ?? freshItem(id)?.response_revision ?? 0,
+      intent: storedIntent(reusableDraftIntent(id, generation) ?? (submission?.retryable ? submission.intent : null)),
+    })
+  }
+  for (const [key, draft] of Object.entries(staleItemDrafts)) {
+    add({
+      type: 'item-recovery',
+      itemId: draft.itemId,
+      title: draft.title,
+      text: draft.text,
+      context: draft.context ?? '',
+      kind: draft.kind,
+      intent: storedIntent(draft.intent),
+      reason: draft.reason ?? '',
+    }, key.startsWith('item-recovery:') ? key : `item-recovery:${draftPageId}:${key}`)
+  }
+  for (const [id, text] of Object.entries(rowDrafts)) {
+    const meta = rowDraftMeta[id]
+    if (!meta) continue
+    add({
+      type: 'row',
+      rowId: id,
+      boardId: meta.boardId,
+      boardRevision: meta.boardRevision,
+      revision: meta.revision,
+      actionVersion: meta.actionVersion ?? null,
+      text,
+      kind: rowDraftKinds[id] ?? 'answer',
+      boardTitle: meta.boardTitle,
+      label: meta.label,
+      context: meta.context ?? '',
+      setAside: meta.setAside === true,
+    })
+  }
+  for (const draft of Object.values(staleRowDrafts)) {
+    add({
+      type: 'row-recovery',
+      rowId: draft.rowId,
+      revision: draft.revision,
+      actionVersion: draft.actionVersion ?? null,
+      text: draft.text,
+      kind: draft.kind,
+      boardTitle: draft.boardTitle,
+      label: draft.label,
+      context: draft.context ?? '',
+      setAside: draft.setAside === true,
+      reason: draft.reason ?? '',
+    })
+  }
+  for (const [id, draft] of Object.entries(itemNoteDrafts)) {
+    add({ type: 'note', itemId: id, title: draft.title, text: draft.text, error: draft.error ?? '', pending: Boolean(draft.pending) })
+  }
+  return drafts
+}
+
+// A refused write (a full profile) is tried once more within a tighter budget,
+// then left to the next change; the drafts stay in this window's memory.
+function writeDrafts(changes, nowMs) {
+  for (const limits of [undefined, { maxChars: 50_000 }]) {
+    try {
+      localStorage.setItem(DRAFTS_KEY, mergeDrafts(localStorage.getItem(DRAFTS_KEY), changes, nowMs, limits))
+      return true
+    } catch {
+      // QuotaExceededError, or storage turned off: say nothing alarming
+    }
+  }
+  return false
+}
+
+function saveDrafts() {
+  clearTimeout(draftSaveTimer)
+  draftSaveTimer = null
+  const current = collectDrafts()
+  const upserts = new Map()
+  const deletes = new Map()
+  const json = new Map()
+  for (const [key, draft] of current) {
+    json.set(key, JSON.stringify(draft))
+    if (knownDrafts.get(key)?.json !== json.get(key)) upserts.set(key, draft)
+  }
+  for (const [key, known] of knownDrafts) {
+    if (!current.has(key)) deletes.set(key, known.savedAt)
+  }
+  if (!upserts.size && !deletes.size) return
+  const savedAt = Date.now()
+  if (!writeDrafts({ upserts, deletes }, savedAt)) return
+  for (const key of deletes.keys()) knownDrafts.delete(key)
+  for (const key of upserts.keys()) knownDrafts.set(key, { savedAt, json: json.get(key) })
+}
+
+// At most DRAFT_SAVE_MS after the first unsaved change, however fast the typing.
+function scheduleDraftSave() {
+  if (draftSaveTimer === null) draftSaveTimer = setTimeout(saveDrafts, DRAFT_SAVE_MS)
+}
+
+function initDraftPersistence() {
+  window.addEventListener('pagehide', saveDrafts)
+  window.addEventListener('beforeunload', saveDrafts)
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') saveDrafts() })
+}
+
+// The server already holds exactly this response, whoever sent it: nothing is unsent.
+function itemHolds(item, { text, context = '', kind = 'answer' }) {
+  return Boolean(item && text.trim() && (item.reply ?? '') === text.trim()
+    && (item.reply_context ?? '') === context.trim() && (item.reply_kind ?? 'answer') === kind)
+}
+
+// Two windows that restored the same draft may each have kept it; one copy is enough.
+function recoveryHolds(itemId, { text, context = '', kind = 'answer' }) {
+  return Object.values(staleItemDrafts).some((draft) => draft.itemId === itemId && draft.kind === kind
+    && draft.text.trim() === text.trim() && (draft.context ?? '').trim() === context.trim())
+}
+
+function rowHolds(rowId, { text, kind }) {
+  const row = [...(lastData?.boards ?? []), ...(lastData?.archived ?? [])]
+    .flatMap((board) => board.rows).find((candidate) => candidate.id === rowId)
+  return Boolean(row && (row.annotation ?? '') === text.trim() && (row.annotation_kind ?? 'answer') === kind)
+}
+
+// Back to its editor while its target is unchanged; to the unsent responses,
+// with the reason, once it is not; nowhere once the server holds exactly that
+// text. Returns where an editor draft went back to.
+function placeRestoredDraft(key, draft) {
+  switch (draft.type) {
+    case 'reply': {
+      const id = draft.itemId
+      const item = freshItem(id)
+      if (itemHolds(item, draft)) return null
+      const generation = bumpDraftGeneration(itemDraftGenerations, id)
+      if (draft.intent) itemLatestIntents[id] = { ...draft.intent }
+      if (item && cardSections(item).showAnswer && item.response_revision === draft.responseRevision
+        && draftReplies[id] === undefined && draftReplyContexts[id] === undefined) {
+        draftReplies[id] = draft.text
+        draftReplyContexts[id] = draft.context
+        itemDraftMeta[id] = { title: draft.title, responseRevision: draft.responseRevision }
+        if (draft.intent) itemDraftRetryIntents[id] = { generation, intent: { ...draft.intent } }
+        return { id, queue: true }
+      }
+      if (recoveryHolds(id, draft)) return null
+      preserveItemDraftRecovery(id, {
+        title: draft.title,
+        text: draft.text,
+        context: draft.context,
+        kind: 'answer',
+        intent: draft.intent,
+        generation,
+        reason: item?.status === 'open' ? QUESTION_CHANGED : QUESTION_CLOSED,
+      })
+      return null
+    }
+    case 'item-recovery':
+      if (itemHolds(freshItem(draft.itemId), draft) || recoveryHolds(draft.itemId, draft)) return null
+      if (draft.intent) itemLatestIntents[draft.itemId] = { ...draft.intent }
+      staleItemDrafts[key] = {
+        itemId: draft.itemId,
+        title: draft.title,
+        text: draft.text,
+        context: draft.context,
+        kind: draft.kind,
+        intent: draft.intent ? { ...draft.intent } : null,
+        owner: itemDraftRecoveryOwner(draft.intent, itemDraftGenerations[draft.itemId] ?? 0),
+        reason: draft.reason,
+      }
+      return null
+    case 'row': {
+      const id = draft.rowId
+      if (rowHolds(id, draft)) return null
+      const owner = currentRow(id)
+      if (owner?.row.revision === draft.revision && rowDrafts[id] === undefined) {
+        rowDrafts[id] = draft.text
+        rowDraftKinds[id] = draft.kind
+        rowDraftMeta[id] = {
+          revision: draft.revision,
+          actionVersion: draft.actionVersion ?? undefined,
+          boardTitle: draft.boardTitle,
+          label: draft.label,
+          context: draft.context,
+          boardId: draft.boardId,
+          boardRevision: draft.boardRevision,
+        }
+        bumpDraftGeneration(rowDraftGenerations, id)
+        // a row the queue does not show keeps its text in its Plans panel,
+        // opened as a deep link opens it
+        if (owner.row.status !== 'blocked') {
+          openRows.add(id)
+          if (owner.row.status === 'done') showDoneBoards.add(owner.board.id)
+        }
+        return { id, queue: owner.row.status === 'blocked' }
+      }
+      staleRowDrafts[rowDraftRecoveryKey(id, draft.revision)] = {
+        rowId: id,
+        revision: draft.revision,
+        actionVersion: draft.actionVersion ?? undefined,
+        text: draft.text,
+        kind: draft.kind,
+        boardTitle: draft.boardTitle,
+        label: draft.label,
+        context: draft.context,
+        setAside: draft.setAside,
+        reason: draft.setAside ? ROW_SET_ASIDE : ROW_ACTION_CHANGED,
+      }
+      return null
+    }
+    case 'row-recovery':
+      if (rowHolds(draft.rowId, draft)) return null
+      staleRowDrafts[rowDraftRecoveryKey(draft.rowId, draft.revision)] = {
+        rowId: draft.rowId,
+        revision: draft.revision,
+        actionVersion: draft.actionVersion ?? undefined,
+        text: draft.text,
+        kind: draft.kind,
+        boardTitle: draft.boardTitle,
+        label: draft.label,
+        context: draft.context,
+        setAside: draft.setAside,
+        reason: draft.reason,
+      }
+      return null
+    case 'note': {
+      const item = freshItem(draft.itemId)
+      if (item && (item.annotation ?? '') === draft.text) return null
+      itemNoteDrafts[draft.itemId] = {
+        title: draft.title,
+        text: draft.text,
+        pending: false,
+        // a save still in flight when the page went away was never confirmed
+        error: draft.pending || !draft.error ? NOTE_UNCONFIRMED : draft.error,
+      }
+      return null
+    }
+    default:
+      return null
+  }
+}
+
+// Once, with the first data and before the first render reads a draft. It
+// sends nothing, focuses nothing and opens no tab; it reopens the card of the
+// newest restored queue draft unless a card is already open, and the next
+// queue render opens any fold holding a restored draft.
+function placeRestoredDrafts() {
+  if (!restoredDrafts) return
+  const restored = [...restoredDrafts].sort(([, left], [, right]) => left.savedAt - right.savedAt)
+  restoredDrafts = null
+  let reopenId = null
+  for (const [key, { draft }] of restored) {
+    const placed = placeRestoredDraft(key, draft)
+    if (!placed) continue
+    revealDraftIds.add(placed.id)
+    if (placed.queue) reopenId = placed.id
+  }
+  if (reopenId !== null && openRowId === null) {
+    selectedId = reopenId
+    setOpenRow(reopenId, { resume: false })
+  }
 }
 
 function sendReply(...args) {
@@ -6586,9 +6926,12 @@ function answerEl(it) {
   input.dataset.draftFocusKey = `${it.id}:answer`
   input.placeholder = opts.length ? 'or answer in your own words…' : 'answer…'
   input.value = effectiveReply(it)
+  // The response revision pins the draft to the version of the question it was
+  // written against; a restored draft goes back only to that version (#279).
   const rememberDraftOwner = () => {
-    if (input.value.trim() || ctxInput.value.trim()) itemDraftMeta[it.id] = { title: it.title }
-    else delete itemDraftMeta[it.id]
+    if (input.value.trim() || ctxInput.value.trim()) {
+      itemDraftMeta[it.id] = { title: it.title, responseRevision: it.response_revision ?? 0 }
+    } else delete itemDraftMeta[it.id]
   }
   input.addEventListener('input', () => {
     invalidateItemDraftIntents(it.id)
@@ -6626,6 +6969,9 @@ function answerEl(it) {
   bindReplyEditor(ctxInput, submit)
   ctxRow.appendChild(ctxInput)
   wrap.appendChild(ctxRow)
+  // Change answer's prefill was not typed here: pin it to the question it is shown against.
+  if (itemDraftMeta[it.id]?.responseRevision === undefined
+    && (draftReplies[it.id] !== undefined || draftReplyContexts[it.id] !== undefined)) rememberDraftOwner()
   wrap.appendChild(dispositionEl(
     (kind, text) => sendReply(
       it.id, text, effectiveReplyContext(it), kind, editorGeneration,
@@ -6691,9 +7037,7 @@ function editItemNote(it) {
       delete itemNoteDrafts[it.id]
     } else {
       draft.pending = false
-      draft.error = result?.ok === false
-        ? 'Note was not saved — this item is closed or no longer available.'
-        : 'Note save was not confirmed — review the stored note before retrying.'
+      draft.error = result?.ok === false ? NOTE_REFUSED : NOTE_UNCONFIRMED
       requestDraftRecovery(null)
     }
     await reloadAndPaint()
@@ -8367,7 +8711,7 @@ async function renderSetup() {
 //   initTabs → initTriage → initRelay → initMission → initSearch →
 //   initResponsive → initSidebarCollapse → initPaneResizers → initProjectDisclosure →
 //   initKeys (Task 17) → initFocusHash (Task 17) → initStagedFlush →
-//   initPressGuard (#38) → initScrollGuard → initAgentSelect →
+//   initDraftPersistence (#279) → initPressGuard (#38) → initScrollGuard → initAgentSelect →
 //   initStructuredTextCopy → initCopyOnSelect → initGear → initLiveBar → renderSetup → load →
 //   setInterval(load, 3000)
 initTabs()
@@ -8382,6 +8726,7 @@ initProjectDisclosure()
 initKeys()
 initFocusHash()
 initStagedFlush()
+initDraftPersistence()
 initPressGuard()
 initScrollGuard()
 initAgentSelect()

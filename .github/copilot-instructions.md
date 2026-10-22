@@ -391,6 +391,15 @@ Run the build before `npm run electron`; the development shell starts the built
   representation that request sent, and its live boot header still controls safe
   refresh. Passive polls may retain inactive document panes, but navigation and
   human writes must paint current data without hiding ambient or recovery state.
+- Unsent drafts (#279) are mirrored into this profile's `localStorage`
+  (`agent-inbox-drafts-v1`) through the pure `public/drafts.js`, never to the
+  server, the hub database or an agent. The window's memory stays authoritative:
+  a save writes only what changed, so a successful send, Clear or an emptied
+  editor deletes the stored copy and a refused send keeps it. Restoring happens
+  once in the first applied `load()`: an unchanged target gets its draft back in
+  its editor, a changed one sends it to the unsent responses with a reason, and
+  nothing is ever sent, focused or switched for the human. A window deletes only
+  the copy it loaded or last wrote; the viewer-restart hold stays.
 - Every value export in `src/*.ts` and `public/*.js` must be reachable from
   production code. Tests are not consumers. `test/dead-exports.test.ts` enforces
   this; deliberate exceptions require the existing documented mechanisms.

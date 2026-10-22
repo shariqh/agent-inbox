@@ -34,6 +34,7 @@ const path = require('node:path')
 
 const MAX_URL_LENGTH = 8192
 const MAX_PATH_LENGTH = 4096
+const MAX_APP_PATH = 1024
 const CONTROL_RE = /[\u0000-\u001f\u007f]/
 const OPEN_COMMAND = '/usr/bin/open'
 const QUICK_LOOK_COMMAND = '/usr/bin/qlmanage'
@@ -43,6 +44,14 @@ const OPEN_WAIT_MS = 10_000
 const MARKDOWN_EXTENSIONS = new Set(['md', 'markdown'])
 const OPENED = Object.freeze({ ok: true, action: 'opened' })
 const FAILED = Object.freeze({ ok: false, reason: 'failed' })
+// Apps that run what they open. Main never launches one for a link, whatever a
+// rule says, and the picker refuses them: a guard against a slip, not a
+// boundary, since the human's own choice is what is being checked.
+const RUNNER_APPS = new Set([
+  'alacritty', 'automator', 'ghostty', 'hyper', 'installer', 'iterm', 'iterm2', 'kitty', 'python launcher',
+  'python launcher 3', 'script editor', 'shortcuts', 'terminal', 'warp', 'wezterm',
+])
+const APP_FAILURE = { 'not-an-app': 'app-missing', 'runs-code': 'app-refused' }
 
 // Lowercased, without the dot. Never opened, whatever app claims them: they
 // run code, install something, or open something else in their place.
@@ -125,14 +134,40 @@ function launch(spawnImpl, command, args, { waitForExit }) {
   })
 }
 
-// An app a rule names must still be an app bundle when it is used.
-async function usableApp(app, fsp) {
-  if (typeof app !== 'string' || !path.isAbsolute(app) || !/\.app$/i.test(app)) return false
+// An absolute, normalized path that names an .app bundle, by its shape alone.
+function appBundlePath(value) {
+  if (typeof value !== 'string' || value === '' || value.length > MAX_APP_PATH || CONTROL_RE.test(value)) return null
+  if (!path.isAbsolute(value) || !/\.app$/i.test(value)) return null
+  return path.normalize(value)
+}
+
+const isRunnerApp = (app) => RUNNER_APPS.has(path.basename(app).replace(/\.app$/i, '').toLowerCase())
+
+// The one check for an app a rule may launch, when the picker returns it and
+// again at every launch, since the file holding the rule can be edited by
+// hand and the bundle can move or change: after symlinks, its real path must
+// still be an .app bundle with a Contents/Info.plist, and neither the name it
+// was chosen under nor the one it resolves to may run what it opens. The real
+// path is what gets launched.
+async function launchableApp(value, fsp = fs.promises) {
+  const app = appBundlePath(value)
+  if (!app) return { error: 'not-an-app' }
+  let real
   try {
-    return (await fsp.stat(app)).isDirectory()
+    real = await fsp.realpath(app)
+    const [bundle, plist] = await Promise.all([fsp.stat(real), fsp.stat(path.join(real, 'Contents', 'Info.plist'))])
+    if (!/\.app$/i.test(real) || !bundle.isDirectory() || !plist.isFile()) return { error: 'not-an-app' }
   } catch {
-    return false
+    return { error: 'not-an-app' }
   }
+  return isRunnerApp(app) || isRunnerApp(real) ? { error: 'runs-code' } : { app: real }
+}
+
+// `open -a <app> -- <target>` once the app passes launchableApp.
+async function openWithApp(spawnImpl, app, target, fsp) {
+  const checked = await launchableApp(app, fsp)
+  if (checked.error) return { ok: false, reason: APP_FAILURE[checked.error] }
+  return (await launch(spawnImpl, OPEN_COMMAND, ['-a', checked.app, '--', target], { waitForExit: true })) ? OPENED : FAILED
 }
 
 const customOpening = ({ platform, spawnImpl }) => platform === 'darwin' && typeof spawnImpl === 'function'
@@ -148,17 +183,17 @@ function fileRule(rules, filePath) {
 
 async function openWebHref(href, { shell, rules, platform, spawnImpl, fsp = fs.promises }) {
   const web = customOpening({ platform, spawnImpl }) && rules ? rules.web : null
-  if (web && web.handler === 'app') {
-    if (!(await usableApp(web.app, fsp))) return { ok: false, reason: 'app-missing' }
-    return (await launch(spawnImpl, OPEN_COMMAND, ['-a', web.app, '--', href], { waitForExit: true })) ? OPENED : FAILED
-  }
+  if (web && web.handler === 'app') return openWithApp(spawnImpl, web.app, href, fsp)
   await shell.openExternal(href)
   return OPENED
 }
 
 // The one way main opens a web URL, for the preload method and the window's
 // own open and navigate paths alike. Returns whether it asked the OS to.
-// `options` (part 2) carries the Settings → Links rules, read lazily.
+// `options` (part 2) carries the Settings → Links rules, read lazily. Nothing
+// on this path can say why a chosen browser did not open (it has gone, it is
+// refused, or it failed to start), so the default browser opens it instead:
+// the href is already checked.
 function openWebLink(value, shell, options = {}) {
   const href = externalWebUrl(value)
   if (!href) return false
@@ -166,6 +201,7 @@ function openWebLink(value, shell, options = {}) {
     .then(() => (typeof options.readRules === 'function' ? options.readRules() : null))
     .catch(() => null)
     .then((rules) => openWebHref(href, { ...options, shell, rules }))
+    .then((result) => (result.ok ? null : shell.openExternal(href)))
     .catch(() => {})
   return true
 }
@@ -256,10 +292,7 @@ async function openLinkRequest(raw, { shell, homeDir, fsp, rules = null, platfor
     if (rule && rule.handler === 'quicklook') {
       return (await launch(spawnImpl, QUICK_LOOK_COMMAND, ['-p', plan.path], { waitForExit: false })) ? OPENED : FAILED
     }
-    if (rule && rule.handler === 'app') {
-      if (!(await usableApp(rule.app, fsp ?? fs.promises))) return { ok: false, reason: 'app-missing' }
-      return (await launch(spawnImpl, OPEN_COMMAND, ['-a', rule.app, '--', plan.path], { waitForExit: true })) ? OPENED : FAILED
-    }
+    if (rule && rule.handler === 'app') return await openWithApp(spawnImpl, rule.app, plan.path, fsp ?? fs.promises)
     const error = await shell.openPath(plan.path)
     return error ? FAILED : OPENED
   } catch {
@@ -285,11 +318,14 @@ function isTrustedLinkSender({ sender, senderFrame, window, viewerUrl }) {
 }
 
 module.exports = {
+  appBundlePath,
   blockedFileName,
   externalWebUrl,
   fileOpenPlan,
   isTrustedLinkSender,
+  isRunnerApp,
   isViewerUrl,
+  launchableApp,
   linkRequest,
   normalizeLocalPath,
   openLinkRequest,

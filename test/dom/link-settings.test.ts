@@ -173,12 +173,17 @@ describe('file chip actions (issue #300 part 2)', () => {
     }
   })
 
-  it('says when the app chosen for a type has gone', async () => {
-    Object.defineProperty(window, 'agentInboxLinks', { configurable: true, value: { open: vi.fn(async () => ({ ok: false, reason: 'app-missing' })) } })
+  it('says when the app chosen for a type has gone, or is one main refuses to launch', async () => {
+    const open = vi.fn(async () => ({ ok: false, reason: 'app-missing' }))
+    Object.defineProperty(window, 'agentInboxLinks', { configurable: true, value: { open } })
     const strip = await card()
     click(strip.querySelector('button[data-link-kind="file"]'))
     await settle()
     expect(document.getElementById('linkOpenStatus')?.textContent).toBe('The app chosen in Settings → Links is gone. Choose another there.')
+    open.mockResolvedValueOnce({ ok: false, reason: 'app-refused' })
+    click(strip.querySelector('button[data-link-kind="file"]'))
+    await settle()
+    expect(document.getElementById('linkOpenStatus')?.textContent).toBe('Agent Inbox won’t open links with the app chosen in Settings → Links. Choose another there.')
   })
 
   it('in a browser, keeps the plain chip, whose click already copies the path', async () => {

@@ -50,7 +50,7 @@ contextBridge.exposeInMainWorld('agentInboxTheme', {
 // what may open (electron/link-open.cjs).
 const LINK_REASONS = new Set([
   'folder', 'app', 'blocked', 'executable', 'special', 'requested', 'rule',
-  'invalid', 'missing', 'inaccessible', 'failed', 'unavailable', 'app-missing',
+  'invalid', 'missing', 'inaccessible', 'failed', 'unavailable', 'app-missing', 'app-refused',
 ])
 
 function linkRequest(request) {

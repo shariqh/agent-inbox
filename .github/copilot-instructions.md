@@ -399,9 +399,12 @@ Run the build before `npm run electron`; the development shell starts the built
   `link-preferences.json` (schema 1, `createLockedFile`, tolerant reader that
   never overwrites a newer schema). The renderer names a rule and a handler,
   never an app path; an app comes only from main's own `dialog.showOpenDialog`
-  limited to `.app` bundles. Rules apply only after the safety policy, and
-  launch with argv only (`/usr/bin/open -a <app> -- <target>`,
-  `/usr/bin/qlmanage -p <file>`), no shell, stdio ignored.
+  limited to `.app` bundles, and `launchableApp` re-checks it at every launch
+  (real path, `Contents/Info.plist`, never an app that runs what it opens).
+  Rules apply only after the safety policy, and launch with argv only
+  (`/usr/bin/open -a <app> -- <target>`, `/usr/bin/qlmanage -p <file>`), no
+  shell, stdio ignored. On the window's own open path, a chosen browser that
+  fails falls back to the default one.
 - The 3-second poll uses the gated `load()`/`renderIfIdle()` path. Its reads
   run concurrently, but a tick applies only after all settle, and only if no newer
   tick has applied and every boot marker agrees. A successful

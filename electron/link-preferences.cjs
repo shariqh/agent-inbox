@@ -16,36 +16,21 @@
 // with an execute bit is still only revealed, whatever a rule says.
 const fs = require('node:fs/promises')
 const path = require('node:path')
-const { blockedFileName } = require('./link-open.cjs')
+const { appBundlePath, blockedFileName, isRunnerApp, launchableApp } = require('./link-open.cjs')
 const { createLockedFile, resolveFilePath } = require('./update-preferences.cjs')
 
 const FILENAME = 'link-preferences.json'
 const SCHEMA = 1
 const MAX_TYPES = 20
-const MAX_APP_PATH = 1024
 const EXTENSION_RE = /^[a-z0-9][a-z0-9+_-]{0,15}$/
-const CONTROL_RE = /[\u0000-\u001f\u007f]/
 const MARKDOWN = new Set(['md', 'markdown'])
 const WEB_HANDLERS = new Set(['default', 'app'])
 const FILE_HANDLERS = new Set(['default', 'quicklook', 'reveal', 'app'])
 // What the renderer may set directly; 'app' comes only from chooseApp().
 const SETTABLE = { web: new Set(['default']), file: new Set(['default', 'quicklook', 'reveal']) }
-// Apps that run what they open. Choosing one would turn every opened document
-// into a program, so the picker refuses them (a guard against a slip, not a
-// boundary: the human's own choice is what is being checked).
-const RUNNERS = new Set([
-  'alacritty', 'automator', 'ghostty', 'hyper', 'installer', 'iterm', 'iterm2', 'kitty', 'python launcher',
-  'python launcher 3', 'script editor', 'shortcuts', 'terminal', 'warp', 'wezterm',
-])
 
 function defaults() {
   return { web: { handler: 'default' }, markdown: { handler: 'default' }, types: [] }
-}
-
-function appPath(value) {
-  if (typeof value !== 'string' || value.length > MAX_APP_PATH || CONTROL_RE.test(value)) return null
-  if (!path.isAbsolute(value) || !/\.app$/i.test(value)) return null
-  return path.normalize(value)
 }
 
 const appName = (app) => path.basename(app).replace(/\.app$/i, '')
@@ -53,8 +38,10 @@ const appName = (app) => path.basename(app).replace(/\.app$/i, '')
 function readRule(value, handlers) {
   if (!value || typeof value !== 'object' || !handlers.has(value.handler)) return null
   if (value.handler !== 'app') return { handler: value.handler }
-  const app = appPath(value.app)
-  return app ? { handler: 'app', app } : null
+  // a hand-edited file can name anything; link-open.cjs checks the app again
+  // at every launch, and a runner is dropped here so Settings never shows one
+  const app = appBundlePath(value.app)
+  return app && !isRunnerApp(app) ? { handler: 'app', app } : null
 }
 
 function normalizeExtension(value) {
@@ -149,18 +136,11 @@ function settingsView(prefs) {
   }
 }
 
-// The single .app bundle the picker returned, or why not.
+// The single .app bundle the picker returned, by the same check every launch
+// makes (link-open.cjs launchableApp), saved as its real path; or why not.
 async function chosenApp(paths, fsp = fs) {
   if (!Array.isArray(paths) || paths.length !== 1) return { error: 'not-an-app' }
-  const app = appPath(paths[0])
-  if (!app) return { error: 'not-an-app' }
-  try {
-    const [bundle, plist] = await Promise.all([fsp.stat(app), fsp.stat(path.join(app, 'Contents', 'Info.plist'))])
-    if (!bundle.isDirectory() || !plist.isFile()) return { error: 'not-an-app' }
-  } catch {
-    return { error: 'not-an-app' }
-  }
-  return RUNNERS.has(appName(app).toLowerCase()) ? { error: 'runs-code' } : { app }
+  return launchableApp(paths[0], fsp)
 }
 
 // What the Settings → Links IPC calls. Every method answers with the settings

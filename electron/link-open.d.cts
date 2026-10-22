@@ -5,7 +5,7 @@ export type LinkRequest =
   | { kind: 'web'; url: string }
   | { kind: 'file'; path: string; reveal: boolean }
 
-export type LinkFailure = 'invalid' | 'missing' | 'inaccessible' | 'failed' | 'unavailable' | 'app-missing'
+export type LinkFailure = 'invalid' | 'missing' | 'inaccessible' | 'failed' | 'unavailable' | 'app-missing' | 'app-refused'
 export type RevealReason = 'folder' | 'app' | 'blocked' | 'executable' | 'special'
 
 export type LinkResult =
@@ -16,7 +16,7 @@ export type LinkResult =
 export type FilePlan =
   | { ok: true; action: 'open'; path: string }
   | { ok: true; action: 'reveal'; path: string; reason: RevealReason }
-  | { ok: false; reason: Exclude<LinkFailure, 'unavailable' | 'app-missing'> }
+  | { ok: false; reason: Exclude<LinkFailure, 'unavailable' | 'app-missing' | 'app-refused'> }
 
 export interface LinkShell {
   openExternal(url: string): Promise<void>
@@ -29,6 +29,13 @@ interface Fsp {
   lstat(path: string): Promise<{ isSymbolicLink(): boolean; isDirectory(): boolean; isFile(): boolean; mode: number }>
   stat(path: string): Promise<{ isDirectory(): boolean; isFile(): boolean }>
 }
+
+/** An absolute, normalized path naming an .app bundle by its shape alone, or null. */
+export function appBundlePath(value: unknown): string | null
+/** Whether an app's name is one that runs what it opens (Terminal, Script Editor, Python Launcher, …). */
+export function isRunnerApp(app: string): boolean
+/** The pick-time and launch-time check: the real path of a bundle with an Info.plist that runs nothing. */
+export function launchableApp(value: unknown, fsp?: Pick<Fsp, 'realpath' | 'stat'>): Promise<{ app: string } | { error: 'not-an-app' | 'runs-code' }>
 
 /** Settings → Links (part 2), as electron/link-preferences.cjs reads them. */
 export type LinkRule = { handler: 'default' | 'quicklook' | 'reveal' } | { handler: 'app'; app: string }

@@ -62,6 +62,7 @@ describe('the link bridge (issue #300)', () => {
     for (const [answer, expected] of [
       [{ ok: true, action: 'revealed', reason: 'blocked', path: '/private/x' }, { ok: true, action: 'revealed', reason: 'blocked' }],
       [{ ok: false, reason: 'missing' }, { ok: false, reason: 'missing' }],
+      [{ ok: false, reason: 'app-refused' }, { ok: false, reason: 'app-refused' }],
       [{ ok: true, action: 'revealed', reason: '<script>' }, { ok: false, reason: 'failed' }],
       [{ ok: true, action: 'launched' }, { ok: false, reason: 'failed' }],
       ['opened', { ok: false, reason: 'failed' }],

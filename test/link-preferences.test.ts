@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import prefsModule from '../electron/link-preferences.cjs'
@@ -128,15 +128,28 @@ describe('Settings → Links operations (issue #300)', () => {
     }
     const { settings: s, filePath } = settings(async () => [real])
     expect((await s.chooseApp('web')).rules[0]).toMatchObject({ handler: 'app', appName: 'Viewer' })
-    expect(JSON.parse(readFileSync(filePath, 'utf8')).web).toEqual({ handler: 'app', app: real })
+    expect(JSON.parse(readFileSync(filePath, 'utf8')).web).toEqual({ handler: 'app', app: realpathSync(real) })
   })
 
-  it('refuses an app that runs what it opens', async () => {
+  it('refuses an app that runs what it opens, by its own name or the name it resolves to', async () => {
     const root = scratchDir('link-apps-')
     for (const name of ['Terminal', 'iTerm', 'Script Editor', 'Python Launcher 3']) {
       const { settings: s } = settings(async () => [appBundle(root, name)])
       expect((await s.chooseApp('markdown')).error, name).toBe('runs-code')
     }
+    symlinkSync(appBundle(join(root, 'hidden'), 'Python Launcher'), join(root, 'Viewer.app'))
+    const { settings: s } = settings(async () => [join(root, 'Viewer.app')])
+    expect((await s.chooseApp('markdown')).error).toBe('runs-code')
+  })
+
+  it('drops a hand-edited rule that names an app that runs what it opens', () => {
+    const { prefs } = parseLinkPreferences(JSON.stringify({
+      schema: 1,
+      web: { handler: 'app', app: '/Applications/iTerm.app' },
+      markdown: { handler: 'app', app: '/System/Applications/Utilities/Terminal.app' },
+      types: [{ extension: 'txt', handler: 'app', app: '/Applications/Python 3.13/Python Launcher.app' }],
+    }))
+    expect(prefs).toEqual(DEFAULTS)
   })
 
   it('never opens the picker for a rule that does not exist', async () => {

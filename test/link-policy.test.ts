@@ -281,27 +281,34 @@ describe('Settings → Links rules, applied after the safety policy (issue #300 
       chmodSync(join(root, name), mode)
       return realpathSync(join(root, name))
     }
-    const app = join(root, 'QLMarkdown.app')
-    mkdirSync(join(app, 'Contents'), { recursive: true })
     mkdirSync(join(root, 'docs.md'))
+    const app = bundle(root, 'QLMarkdown')
     return {
-      root, app,
+      root, app, realApp: realpathSync(app),
       doc: file('notes.md'), log: file('run.log'), script: file('run.sh'), tool: file('tool.md', 0o755),
     }
+  }
+
+  // An .app bundle as the native picker would have accepted it.
+  function bundle(root: string, name: string): string {
+    const app = join(root, `${name}.app`)
+    mkdirSync(join(app, 'Contents'), { recursive: true })
+    writeFileSync(join(app, 'Contents', 'Info.plist'), '<plist/>')
+    return app
   }
 
   const rules = (over: Record<string, unknown> = {}) =>
     ({ web: { handler: 'default' }, markdown: { handler: 'default' }, types: [], ...over }) as unknown as LinkRules
 
   it('opens Markdown in the app chosen in main’s picker, argv only: open -a <app> -- <file>', async () => {
-    const { root, app, doc } = files()
+    const { root, app, realApp, doc } = files()
     const { calls, spawnImpl } = fakeSpawn()
     const { calls: shellCalls, shell } = recordingShell()
     const result = await openLinkRequest({ kind: 'file', path: doc, reveal: false }, {
       shell, homeDir: root, rules: rules({ markdown: { handler: 'app', app } }), platform: 'darwin', spawnImpl,
     })
     expect(result).toEqual({ ok: true, action: 'opened' })
-    expect(calls).toEqual([{ command: '/usr/bin/open', args: ['-a', app, '--', doc], options: SPAWN_OPTIONS }])
+    expect(calls).toEqual([{ command: '/usr/bin/open', args: ['-a', realApp, '--', doc], options: SPAWN_OPTIONS }])
     expect(shellCalls).toEqual([])
   })
 
@@ -371,7 +378,7 @@ describe('Settings → Links rules, applied after the safety policy (issue #300 
   })
 
   it('opens web links in the chosen browser, from the preload method and the window’s own open path', async () => {
-    const { root, app } = files()
+    const { root, app, realApp } = files()
     const { calls, spawnImpl } = fakeSpawn()
     const { calls: shellCalls, shell } = recordingShell()
     const webApp = rules({ web: { handler: 'app', app } })
@@ -381,7 +388,68 @@ describe('Settings → Links rules, applied after the safety policy (issue #300 
     expect(openWebLink('https://example.com/c', shell, { platform: 'darwin', spawnImpl, readRules: async () => { throw new Error('unreadable') } })).toBe(true)
     expect(openWebLink('file:///etc/passwd', shell, { platform: 'darwin', spawnImpl, readRules: async () => webApp })).toBe(false)
     await new Promise((resolve) => setTimeout(resolve, 10))
-    expect(calls.map((call) => call.args)).toEqual([['-a', app, '--', 'https://example.com/a'], ['-a', app, '--', 'https://example.com/b']])
+    expect(calls.map((call) => call.args)).toEqual([['-a', realApp, '--', 'https://example.com/a'], ['-a', realApp, '--', 'https://example.com/b']])
     expect(shellCalls).toEqual([['openExternal', 'https://example.com/c']])
+  })
+
+  it('falls back to the default browser on the window’s own path when the chosen one has gone, is refused or fails', async () => {
+    const { root, app, realApp } = files()
+    const runner = bundle(root, 'Terminal')
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 10))
+    for (const [chosen, spawned, exitCode] of [
+      ['/Volumes/Gone/Firefox.app', false, 0],
+      [runner, false, 0],
+      [app, true, 1],
+    ] as Array<[string, boolean, number]>) {
+      const { calls, spawnImpl } = fakeSpawn({ exitCode })
+      const { calls: shellCalls, shell } = recordingShell()
+      const webApp = rules({ web: { handler: 'app', app: chosen } })
+      expect(openWebLink('https://example.com/pr/1', shell, { platform: 'darwin', spawnImpl, readRules: async () => webApp })).toBe(true)
+      await settle()
+      expect(calls.map((call) => call.args), chosen).toEqual(spawned ? [['-a', realApp, '--', 'https://example.com/pr/1']] : [])
+      expect(shellCalls, chosen).toEqual([['openExternal', 'https://example.com/pr/1']])
+    }
+  })
+
+  it('checks the chosen app again at launch: its real path, its Info.plist and what it runs', async () => {
+    const { root, doc } = files()
+    const { shell } = recordingShell()
+    const outside = join(root, 'plain-folder')
+    mkdirSync(outside)
+    const launcher = bundle(root, 'Python Launcher')
+    const hollow = bundle(root, 'Hollow')
+    rmSync(join(hollow, 'Contents', 'Info.plist'))
+    const odd = bundle(root, 'Odd')
+    rmSync(join(odd, 'Contents', 'Info.plist'))
+    mkdirSync(join(odd, 'Contents', 'Info.plist'))
+    const viewer = bundle(join(root, 'real'), 'Viewer')
+    const shaped = join(root, 'NotAnApp')
+    mkdirSync(join(shaped, 'Contents'), { recursive: true })
+    writeFileSync(join(shaped, 'Contents', 'Info.plist'), '<plist/>')
+    const link = (name: string, target: string) => {
+      symlinkSync(target, join(root, name))
+      return join(root, name)
+    }
+    for (const [app, reason] of [
+      [bundle(root, 'Terminal'), 'app-refused'],
+      [link('Disguised.app', launcher), 'app-refused'],
+      [link('iTerm.app', viewer), 'app-refused'],
+      [link('Bin.app', '/bin'), 'app-missing'],
+      [link('Folder.app', outside), 'app-missing'],
+      [link('Shaped.app', shaped), 'app-missing'],
+      [hollow, 'app-missing'],
+      [odd, 'app-missing'],
+    ] as Array<[string, string]>) {
+      const { calls, spawnImpl } = fakeSpawn()
+      expect(await openLinkRequest({ kind: 'file', path: doc, reveal: false }, {
+        shell, homeDir: root, platform: 'darwin', spawnImpl, rules: rules({ markdown: { handler: 'app', app } }),
+      }), app).toEqual({ ok: false, reason })
+      expect(calls, app).toEqual([])
+    }
+    const { calls, spawnImpl } = fakeSpawn()
+    expect(await openLinkRequest({ kind: 'file', path: doc, reveal: false }, {
+      shell, homeDir: root, platform: 'darwin', spawnImpl, rules: rules({ markdown: { handler: 'app', app: link('Alias.app', viewer) } }),
+    })).toEqual({ ok: true, action: 'opened' })
+    expect(calls.map((call) => call.args)).toEqual([['-a', realpathSync(viewer), '--', doc]])
   })
 })

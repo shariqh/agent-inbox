@@ -415,15 +415,21 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   renderer's `agentInboxLinkSettings` bridge (get, setHandler, chooseApp, addType, removeType,
   exact arity, same sender check as opening) names a rule id and a handler, NEVER an app path:
   `app` comes only from `chooseApp`, which asks main's own `dialog.showOpenDialog` (`openFile`,
-  `.app` filter) and saves only a real bundle with `Contents/Info.plist` that is not an app that
-  runs what it opens (Terminal, iTerm, Script Editor, Python Launcher…), and the view the
-  renderer gets names the app, never its path. `openLinkRequest` applies a rule only AFTER
-  `fileOpenPlan`'s verdict and a reveal request, so whatever is only revealed stays revealed, and
-  launches with argv only (`/usr/bin/open -a <app> -- <target>`, `/usr/bin/qlmanage -p <file>`),
-  `shell: false`, stdio ignored, detached; an app that has gone since is `app-missing`. The web
-  rule also governs the window-open and navigate paths (`openWebLink(url, shell, { readRules })`,
-  where an unreadable file means the system defaults). Off macOS nothing is offered and links keep
-  the system defaults. In the desktop app (`linkFileActions()`), a strip's file chip also gets
+  `.app` filter), and the view the renderer gets names the app, never its path. ONE check,
+  `launchableApp` in `link-open.cjs`, judges an app when the picker returns it AND at every launch
+  (the file can be edited by hand, the bundle can move): its `realpath` must still end in `.app`,
+  be a directory and hold a `Contents/Info.plist` file, and neither the name it was chosen under
+  nor the one it resolves to may be an app that runs what it opens (Terminal, iTerm, Script Editor,
+  Python Launcher…); the real path is what is saved and launched, and the reader also drops a rule
+  naming a runner. `openLinkRequest` applies a rule only AFTER `fileOpenPlan`'s verdict and a
+  reveal request, so whatever is only revealed stays revealed, and launches with argv only
+  (`/usr/bin/open -a <app> -- <target>`, `/usr/bin/qlmanage -p <file>`), `shell: false`, stdio
+  ignored, detached; an app that fails the check is `app-missing` (gone or not an app) or
+  `app-refused` (a runner), reported to the renderer. The web rule also governs the window-open and
+  navigate paths (`openWebLink(url, shell, { readRules })`, where an unreadable file means the
+  system defaults); nothing there can say why, so a chosen browser that is gone, refused or fails
+  to start falls back to `shell.openExternal` on the already-checked href. Off macOS nothing is
+  offered and links keep the system defaults. In the desktop app (`linkFileActions()`), a strip's file chip also gets
   Reveal and Copy path buttons (`data-link-action`), never in a browser.
 - **`src/prstate.ts` is VIEWER-PROCESS-ONLY (issue #30).** It and `src/issue-poller.ts` (#103, below)
   are the only modules that shell out to a network tool (`gh`), so `src/mcp.ts`/`src/mcp-server.ts`

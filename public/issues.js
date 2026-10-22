@@ -189,15 +189,29 @@ function dependenciesOf(root, node, { nodes, countsOf, blocking, activity }) {
   }
   const waitsOn = side(blocking.blockersOf.get(node.key), count(counts.blocked_by_open), count(counts.blocked_by_total))
   const unblocks = side(blocking.dependentsOf.get(node.key), count(counts.blocking_open), count(counts.blocking_total))
-  // the node cap cut these (§6.3); they are counted once, not as missing
-  const notShown = count(root.dependencies_omitted) ?? 0
-  let left = notShown
-  for (const more of [unblocks.more, waitsOn.more]) {
-    for (const field of ['notVisible', 'onGitHub']) {
-      const taken = Math.min(left, more[field])
-      more[field] -= taken
-      left -= taken
+  // the node cap cut these open ones (§6.3, #275); they are counted once, not
+  // as missing, each taken only from its own direction's lines
+  const take = (left, sides) => {
+    for (const more of sides) {
+      for (const field of ['notVisible', 'onGitHub']) {
+        const taken = Math.min(left, more[field])
+        more[field] -= taken
+        left -= taken
+      }
     }
+  }
+  const open = record(root.dependencies_omitted_open) ? root.dependencies_omitted_open : null
+  const cutWaits = open ? count(open.blocked_by) : null
+  const cutUnblocks = open ? count(open.blocking) : null
+  let notShown
+  if (cutWaits !== null && cutUnblocks !== null) {
+    notShown = cutWaits + cutUnblocks
+    take(cutWaits, [waitsOn.more])
+    take(cutUnblocks, [unblocks.more])
+  } else {
+    // an older viewer reports one count of every cut entry, closed included
+    notShown = count(root.dependencies_omitted) ?? 0
+    take(notShown, [unblocks.more, waitsOn.more])
   }
   return {
     status: 'ok', waitsOn: waitsOn.list, unblocks: unblocks.list, cycle: blocking.circular.has(node.key),

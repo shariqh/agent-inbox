@@ -6524,17 +6524,20 @@ function placeRestoredDraft(key, draft) {
       const id = draft.itemId
       const item = freshItem(id)
       if (itemHolds(item, draft)) return null
+      const inPlace = item && cardSections(item).showAnswer && item.response_revision === draft.responseRevision
+        && draftReplies[id] === undefined && draftReplyContexts[id] === undefined
+      if (!inPlace && recoveryHolds(id, draft)) return null
       const generation = bumpDraftGeneration(itemDraftGenerations, id)
+      // the restored intent is this window's latest for the question, so a
+      // refused retry keeps its text rather than counting as superseded
       if (draft.intent) itemLatestIntents[id] = { ...draft.intent }
-      if (item && cardSections(item).showAnswer && item.response_revision === draft.responseRevision
-        && draftReplies[id] === undefined && draftReplyContexts[id] === undefined) {
+      if (inPlace) {
         draftReplies[id] = draft.text
         draftReplyContexts[id] = draft.context
         itemDraftMeta[id] = { title: draft.title, responseRevision: draft.responseRevision }
         if (draft.intent) itemDraftRetryIntents[id] = { generation, intent: { ...draft.intent } }
         return { id, queue: true }
       }
-      if (recoveryHolds(id, draft)) return null
       preserveItemDraftRecovery(id, {
         title: draft.title,
         text: draft.text,

@@ -275,6 +275,30 @@ describe('a draft comes back where it was', () => {
     expect(stored()).toEqual({})
   })
 
+  it('keeps a restored unsent response whose Retry is refused', async () => {
+    db = freshDb()
+    const id = question(db)
+    const first = await bootApp(db)
+    await showInbox()
+    click(row(id))
+    await settle()
+    first.failPostsWith(500)
+    expectConsoleError(/reply failed: HTTP 500/)
+    click(buttonLabelled('Tuesday', row(id)!))
+    await settle()
+    resolveItem(db, id)
+
+    const bridge = await reopen(db)
+    await pollTick()
+    click(buttonLabelled('Retry', recovery()!))
+    await settle()
+    expect(bridge.posts).toHaveLength(1)
+    expect(getItem(db, id)?.reply).toBeNull()
+    expect(recovery()?.textContent).toContain('answer: Tuesday')
+    await saved()
+    expect(storedTexts()).toEqual(['Tuesday'])
+  })
+
   it('reuses an ambiguous send\'s intent when the restored draft is sent again', async () => {
     db = freshDb()
     const id = question(db)

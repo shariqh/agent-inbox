@@ -5697,6 +5697,9 @@ function boardEl(b, archived = false, lingering = false) {
   }
   const table = document.createElement('table')
   table.className = 'board-table matrix'
+  // A fixed-layout table sizes its columns from these, never from its first
+  // row, which may be a full-width "Part of #N" header (#103 slice 2).
+  table.innerHTML = '<colgroup><col class="col-num"><col class="col-glyph"><col class="col-label"><col class="col-4"><col class="col-5"></colgroup>'
   const shownRows = boardRowsView(b, { hideCompleted, showDone: showDoneBoards.has(b.id) })
   const runs = groupByParent && !archived ? rowParentRuns(shownRows.map(({ row }) => row), issueView) : null
   for (const { row: r, num, needsAnswer } of shownRows) {

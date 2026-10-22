@@ -408,6 +408,41 @@ describe('plan grouping keys (slice 2 §7)', () => {
     flat(cached([120, 121]), T, indexLinks([legacy]), [plan('pr120', null, { stream: '120-x' }), plan('p121', 121)])
   })
 
+  // Departure 3: a plan is the umbrella of its own group before it is a member
+  // of its parent's; a group left with no member dissolves and frees its plans.
+  it('settles three nesting levels: a dissolved group\'s umbrella joins its parent\'s group', () => {
+    // #100 > (#117, #118); #117 > #120; #120 > #130
+    const f = (n: number) => facts(K(n), { title: `Issue ${n}` })
+    const rows = [
+      row(K(100), snapshot(K(100), { children: [f(117), f(118)] }), at(0)),
+      row(K(117), snapshot(K(117), { ancestors: [f(100)], children: [f(120)] }), at(0)),
+      row(K(118), snapshot(K(118), { ancestors: [f(100)] }), at(0)),
+      row(K(120), snapshot(K(120), { ancestors: [f(117), f(100)], children: [f(130)] }), at(0)),
+      row(K(130), snapshot(K(130), { ancestors: [f(120), f(117), f(100)] }), at(0)),
+    ]
+    const plans = [plan('p130', 130), plan('p118', 118), plan('flat', null), plan('p120', 120), plan('p117', 117), plan('p100', 100)]
+    const out = planGroups(plans, view(rows), null)
+    // #117's group would hold only p117 (p120 leads #120's), so it dissolves and p117 joins #100's
+    expect(ids(out.plans)).toEqual(['p120', 'p130', 'p100', 'p117', 'p118', 'flat'])
+    const top = out.groupOf.get('p100')!
+    expect(top.parent.key).toBe(K(100))
+    expect(top.size).toBe(3)
+    expect(out.groupOf.get('p117')).toBe(top)
+    expect(out.groupOf.get('p118')).toBe(top)
+    const low = out.groupOf.get('p120')!
+    expect(low.parent.key).toBe(K(120))
+    expect(out.groupOf.get('p130')).toBe(low)
+    expect(out.groupOf.has('flat')).toBe(false)
+
+    // without p130, #120's group has no member and dissolves too: p120 rejoins
+    // #117's, which now holds two plans, so p117 leads it and #100 keeps only p118 and p100
+    const fewer = planGroups(plans.filter((p) => p.id !== 'p130'), view(rows), null)
+    expect(ids(fewer.plans)).toEqual(['p100', 'p118', 'flat', 'p117', 'p120'])
+    expect(fewer.groupOf.get('p120')?.parent.key).toBe(K(117))
+    expect(fewer.groupOf.get('p118')?.parent.key).toBe(K(100))
+    expect(fewer.groupOf.get('p100')?.size).toBe(2)
+  })
+
   it('reads the freshness itself, not just whether a node is present', () => {
     const fresh = view(cached([120, 121]))
     for (const freshness of ['hidden', 'no-hierarchy', 'unavailable'] as const) {

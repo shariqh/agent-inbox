@@ -153,6 +153,27 @@ describe('grouping plans by parent issue (slice 2 §7)', () => {
     expect(headerSwitch().checked).toBe(true)
   })
 
+  it('never refocuses the switch once the window is in the background (#233)', async () => {
+    db = freshDb()
+    seed(db)
+    await boot(db)
+    await showPlans()
+    headerSwitch().focus()
+    expect(document.activeElement).toBe(headerSwitch())
+    // a background window keeps activeElement; never .blur() here (#233)
+    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    const blurred = headerSwitch()
+    blurred.dispatchEvent(new FocusEvent('blur'))
+    blurred.dispatchEvent(new FocusEvent('focusout', { bubbles: true }))
+    window.dispatchEvent(new FocusEvent('blur'))
+    const focus = vi.spyOn(HTMLElement.prototype, 'focus')
+    plan(db, 'Late plan', null)
+    await pollTick()
+    expect(blurred.isConnected, 'the poll must rebuild Plans, or this test proves nothing').toBe(false)
+    expect(focus).not.toHaveBeenCalled()
+    expect(document.activeElement).not.toBe(headerSwitch())
+  })
+
   it('the header switch changes only the current view, never the saved default', async () => {
     db = freshDb()
     seed(db)

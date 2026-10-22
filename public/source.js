@@ -293,9 +293,54 @@ function anchorHtml(url, innerHtml, attrs) {
 
 // Structured text supplies raw source text as its label. Escaping stays here
 // beside href construction so callers cannot accidentally make a safe URL with
-// an unsafe label (or vice versa).
-export function textLinkHtml(url, label) {
-  return anchorHtml(url, esc(label), 'class="structured-link"') || esc(label)
+// an unsafe label (or vice versa). `kind` (issue #300) says what the link is,
+// web or a GitHub pr/issue, for the click handler and the Links strip.
+export function textLinkHtml(url, label, kind = 'web') {
+  return anchorHtml(url, esc(label), `class="structured-link" data-link-kind="${esc(linkKind(kind))}"`) || esc(label)
+}
+
+// ── issue #300: local files and the Links strip ─────────────────────────────
+// A local file is never an href. It is a control carrying its path in an
+// escaped data- attribute; public/link-open.js asks Electron main to open it,
+// and main alone decides what may open. Inline it is a role="button" anchor
+// with no href, so its text still reads and selects as part of the sentence.
+const LINK_KINDS = { web: 'Web', pr: 'PR', issue: 'Issue', file: 'File' }
+const linkKind = (kind) => (Object.hasOwn(LINK_KINDS, kind) && kind !== 'file' ? kind : 'web')
+
+export function fileLinkHtml(path, label, title) {
+  if (typeof path !== 'string' || !path) return esc(label)
+  return `<a class="structured-link file-link" role="button" tabindex="0" data-link-kind="file" data-link-path="${esc(path)}"` +
+    ` title="${esc(title || path)}">${esc(label)}</a>`
+}
+
+const STRIP_VISIBLE = 6
+
+function linkChipHtml(link) {
+  if (!link || !Object.hasOwn(LINK_KINDS, link.kind)) return ''
+  const inner = `<span class="link-kind">${esc(LINK_KINDS[link.kind])}</span> <span class="link-label">${esc(link.label)}</span>`
+  if (link.kind === 'file') {
+    if (typeof link.path !== 'string' || !link.path) return ''
+    return `<button type="button" class="src-chip tone-link" data-link-kind="file" data-link-path="${esc(link.path)}"` +
+      ` title="${esc(link.title || link.path)}">${inner}</button>`
+  }
+  if (!safeHttpUrl(link.url)) return ''
+  return chipHtml(link.url, 'link', inner, link.title || '', true, `data-link-kind="${esc(link.kind)}"`)
+}
+
+// The compact Links strip at the top of an open card (§2 of the issue): every
+// link the card's text shows, the item's own PR and issue first, each with
+// its kind and a short label; past the first few, a "+N more" disclosure whose
+// open state the caller keeps by `key` across rebuilds.
+export function linkStripHtml(links, { key = '', open = false } = {}) {
+  const chips = (Array.isArray(links) ? links : []).map(linkChipHtml).filter(Boolean)
+  if (!chips.length) return ''
+  const rest = chips.slice(STRIP_VISIBLE)
+  const more = rest.length
+    ? `<details class="card-links-more" data-context-key="${esc(key)}"${open ? ' open' : ''}>` +
+      `<summary>${esc(`+${rest.length} more`)}</summary><span class="card-links-rest">${rest.join('')}</span></details>`
+    : ''
+  return `<div class="card-links" role="group" aria-label="Links"><span class="card-links-label" aria-hidden="true">Links</span>` +
+    `${chips.slice(0, STRIP_VISIBLE).join('')}${more}</div>`
 }
 
 // A source-chip URL that does not survive safeHttpUrl renders as a plain span:

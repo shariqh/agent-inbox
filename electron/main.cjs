@@ -26,6 +26,7 @@ const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 const { classifyReuse, watchUpstream } = require('./reuse.cjs')
 const { loadViewer, reloadViewer } = require('./viewer-navigation.cjs')
+const { isTrustedLinkSender, isViewerUrl, openLinkRequest, openWebLink } = require('./link-open.cjs')
 const { canRunSetup, createInstallBinding, createInstallGate, installerRepoRoot, runAgentInstall, runtimeKey, selectRuntimePayload } = require('./setup-runner.cjs')
 const { MANUAL_RELEASES_URL, createUpdateController } = require('./update-controller.cjs')
 const { createUpdateDownloader } = require('./update-download.cjs')
@@ -91,6 +92,8 @@ const installGate = createInstallGate()
 let runtimeSelection = { ok: false, reason: 'unresolved', key: runtimeKey(process.platform, process.arch) }
 let themeWindow = null
 let themeWindowWebContentsId = null
+// The one viewer window whose top frame may ask main to open a link (#300).
+let linkWindow = null
 let updateWindow = null
 let updateController = null
 // True only once waitForOwnership() proved the viewer is the one this app
@@ -342,6 +345,16 @@ ipcMain.handle('agent-inbox:install', async (event, target) => {
     return { ok: false, exitCode: null, output: 'Agent setup is already running.', target, timedOut: false }
   }
   return await started.promise
+})
+
+// Issue #300: the viewer asks, main decides. Only the viewer window's own top
+// frame on the viewer origin may ask (see isTrustedLinkSender), with exactly one
+// request; link-open.cjs re-validates it and opens a web link, opens a file
+// with its default app, or only reveals anything that could run code.
+ipcMain.handle('agent-inbox:open-link', (event, request, ...args) => {
+  const trusted = isTrustedLinkSender({ sender: event.sender, senderFrame: event.senderFrame, window: linkWindow, viewerUrl: URL_BASE })
+  if (args.length !== 0 || !trusted) return { ok: false, reason: 'unavailable' }
+  return openLinkRequest(request, { shell, homeDir: app.getPath('home') })
 })
 
 ipcMain.handle('agent-inbox:set-theme-preference', (event, preference) => {
@@ -712,23 +725,27 @@ function createWindow() {
   })
   themeWindow = win
   updateWindow = win
+  linkWindow = win
   const webContentsId = win.webContents.id
   themeWindowWebContentsId = webContentsId
   syncThemeChrome(win)
   // Keep our title; the page's <title> would otherwise overwrite it.
   win.on('page-title-updated', (e) => e.preventDefault())
 
-  // Any target=_blank / window.open goes to the system browser, never a new Electron window.
+  // Any target=_blank / window.open goes to the system browser, never a new
+  // Electron window, and only when it is http(s) (#300): agent text can carry
+  // any scheme, and the OS would hand file:, custom or app schemes to whatever
+  // claims them.
   win.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url)
+    openWebLink(url, shell)
     return { action: 'deny' }
   })
-  // In-window navigation away from the local viewer also goes to the system browser.
+  // In-window navigation away from the local viewer goes to the system browser
+  // the same way; anything else is dropped.
   win.webContents.on('will-navigate', (e, url) => {
-    if (!url.startsWith(URL_BASE)) {
-      e.preventDefault()
-      shell.openExternal(url)
-    }
+    if (isViewerUrl(url, URL_BASE)) return
+    e.preventDefault()
+    openWebLink(url, shell)
   })
   win.webContents.on('did-finish-load', async () => {
     if (!win.isDestroyed() && !win.isVisible()) {
@@ -751,6 +768,7 @@ function createWindow() {
     if (themeWindow === win) themeWindow = null
     if (themeWindowWebContentsId === webContentsId) themeWindowWebContentsId = null
     if (updateWindow === win) updateWindow = null
+    if (linkWindow === win) linkWindow = null
   })
 
   return win

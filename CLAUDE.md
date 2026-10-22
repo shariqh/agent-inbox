@@ -368,6 +368,43 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   text (PR titles are third-party network text). Every href is constructed in ONE place,
   `chipHtml()` in `public/source.js`, through `esc(safeHttpUrl(...))` — a URL that does not
   survive `safeHttpUrl` renders as a `<span>`. Do not build an anchor anywhere else.
+- **Links in agent text are found conservatively, drawn by `source.js`, and opened only by
+  Electron main (issue #300).** `public/links.js` (pure) finds GitHub references (`#287`,
+  `PR #284`, `owner/name#12`, a bare `#N` only against the card's own `repo`) and local paths
+  (`/Users/…`, `~/…`, optional `:line`) in the plain runs between the URLs `structured-text.js`
+  finds; `renderStructuredText(value, { repo, found })` threads both. A wrong link is worse than
+  none, so ordinals (a single-digit `#N` needs `issue`/`PR`/a closing keyword or parentheses),
+  counters (`step #12`, `run #1234`), colours, entities, versions, dates, routes such as
+  `/api/items` (only known roots like `/Users`, `/home`, `/tmp` start a path), globs, and paths
+  that go on across a space stay plain; every check is bounded, so a run scans in linear time.
+  `structured-text.js` must stay under 350 lines (a test pins it), so new grammar goes in
+  `links.js`. References and URLs become anchors through `anchorHtml`/`chipHtml` like every
+  href; a local file is a control carrying its path in an escaped `data-link-path`, NEVER an
+  href (inline: a `role="button"` anchor with no href, so it still reads and selects as text;
+  in the strip: a `<button>`). `public/link-strip.js` builds the Links strip under each card's
+  origin (Inbox inspector, Review queue, Notes, History, Plans row panel: they all share
+  `cardOriginHtml`) by COLLECTING what `renderStructuredText` renders for each agent field, so
+  it lists exactly the links the card shows, never one from a fence or quarantined markup: own
+  PR and issue first, then first appearance, one chip per target (`#284`, `PR #284` and its
+  github.com URL share a key), six visible and a `+N more` `<details>` kept open across
+  rebuilds by `openContexts`; no strip when the text links nothing beyond the origin chips.
+  Nothing about links reaches `public/attention.js`, a badge or a count. `public/link-open.js`
+  is ONE capture-phase listener per document (the inspector stops propagation): in Electron
+  every detected link (`[data-link-kind]`) goes to the one preload method
+  `window.agentInboxLinks.open({kind:'web',url} | {kind:'file',path,reveal})`, a modified click
+  on a web link keeps its native path; in a browser a file link copies its path through
+  `writeClipboard` and says a browser cannot open local files. `electron/link-open.cjs`
+  decides, testable without Electron: the sender is the viewer window's exact `webContents`,
+  its top frame, on the viewer origin (the update channel's non-install check plus the top
+  frame; not the install path's ownership proof, because opening never runs code, so links
+  work in a reused viewer too); the request has exactly its keys; a web link is http(s) by
+  `URL` and only its normalized href reaches `shell.openExternal`; a file path is absolute
+  after `~/`, normalized, control-free, and judged by its FINAL target after `realpath`:
+  missing is reported, a folder or `.app` is only revealed, a blocked extension on the link or
+  its target (apps, launchers, location files, installers, disk images, executables, scripts,
+  macro documents, certificates) or any execute bit is only revealed, anything else goes to
+  `shell.openPath` on the resolved path. The check is point-in-time. `setWindowOpenHandler` and
+  `will-navigate` share `openWebLink`, so no path in main hands a non-http(s) URL to the OS.
 - **`src/prstate.ts` is VIEWER-PROCESS-ONLY (issue #30).** It and `src/issue-poller.ts` (#103, below)
   are the only modules that shell out to a network tool (`gh`), so `src/mcp.ts`/`src/mcp-server.ts`
   must never import either, directly or transitively — a subprocess that inherited a stream, or gh's update notifier, would corrupt the MCP

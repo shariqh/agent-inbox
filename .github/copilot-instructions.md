@@ -375,6 +375,22 @@ Run the build before `npm run electron`; the development shell starts the built
 - All agent-authored text interpolated into HTML must pass through `esc()`.
   Supplied URLs additionally pass through `safeHttpUrl()` in
   `public/source.js`; build anchors through the existing `chipHtml()` path.
+- Links in agent text (#300) are found only by `public/links.js` (GitHub
+  references and local paths; URLs stay in `structured-text.js`, which must
+  stay under 350 lines) and drawn only by `public/source.js`. Detection is
+  conservative: ordinals, counters, colours, routes such as `/api/items`,
+  globs and paths with spaces stay plain. A local file is never an href: it
+  carries its path in an escaped `data-link-path`. `public/link-strip.js`
+  lists a card's links by collecting what `renderStructuredText` renders, so
+  the strip never shows a link from a fence or quarantined markup, and nothing
+  about links reaches attention, a badge or a count. Only Electron main opens
+  anything: `public/link-open.js` calls the one preload method
+  `agentInboxLinks.open`, and `electron/link-open.cjs` re-checks the sender
+  (the viewer window's top frame on its origin), the request's exact shape,
+  http(s) only, and a file's final target: folders, apps, executables,
+  scripts, installers, launchers and any execute bit are only revealed.
+  `setWindowOpenHandler` and `will-navigate` share the same http(s) check. A
+  browser copies a file's path instead.
 - The 3-second poll uses the gated `load()`/`renderIfIdle()` path. Its reads
   run concurrently, but a tick applies only after all settle, and only if no newer
   tick has applied and every boot marker agrees. A successful

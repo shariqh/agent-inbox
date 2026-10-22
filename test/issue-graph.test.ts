@@ -801,10 +801,12 @@ describe('dependency reconciliation (slice 2 §6.1)', () => {
   })
 
   it('reads facts from dependency lists as listed facts: the freshest wins, and an issue’s own root at equal t (S1 rule 7)', () => {
+    // #121 lists #150, and its key sorts first: only the source, not the observer, can let #150's own root win a tie
+    const X = N(150)
     const titleAt = (listedAt: string) => node(build([
-      row(B, snapshot(B, { issue: { title: 'own', state: 'OPEN' } }), at(10)),
-      withDeps(D, listedAt, deps({ blockedBy: [facts(B, { title: 'listed', state: 'CLOSED', state_reason: 'COMPLETED' })] })),
-    ], [B, D]), B)
+      row(X, snapshot(X, { issue: { title: 'own', state: 'OPEN' } }), at(10)),
+      withDeps(D, listedAt, deps({ blocking: [facts(X, { title: 'listed', state: 'CLOSED', state_reason: 'COMPLETED' })] })),
+    ], [X, D]), X)
     expect(titleAt(at(20))).toMatchObject({ title: 'listed', state: 'CLOSED', observed_at: at(20) })
     expect(titleAt(at(10))).toMatchObject({ title: 'own', state: 'OPEN', observed_at: at(10) })
   })
@@ -978,6 +980,17 @@ describe('issue_rel: waits_on_issues and unblocks (slice 2 §6.4)', () => {
   it('keeps them when only the hierarchy is unavailable: the two sections are separate', () => {
     const rel = issueRelations([withDeps(T, at(50), deps({ blockedBy: [N(119)] }), { unavailable: true })], [T], NOW).get(T)
     expect(rel).toEqual({ key: T, waits_on_issues: [N(119)], unblocks: 0, checked_at: at(50), stale: false, unavailable: true })
+  })
+
+  it('reads the whole reconciled graph: a response’s node cap never shortens the list', () => {
+    // 1,996 linked issues fill the response budget; #121's 50 blockers would not fit in it
+    const own = Array.from({ length: 50 }, (_, i) => `a/b#${i + 100}`)
+    const others = Array.from({ length: 1_995 }, (_, i) => `z/z#${i + 1}`)
+    const rows = [withDeps(T, at(50), deps({ blockedBy: own })), ...others.map((key) => row(key, snapshot(key), at(50)))]
+    expect(build(rows, [T, ...others]).nodes.length).toBe(MAX_GRAPH_NODES)
+    const rel = issueRelations(rows, [T, ...others], NOW)
+    expect(rel.get(T)?.waits_on_issues).toEqual(own)
+    expect(rel.size).toBe(1_996)
   })
 
   it('lists at most 50 blockers, the first by key, and only keys, never titles', () => {

@@ -189,8 +189,9 @@ function dependenciesOf(root, node, { nodes, countsOf, blocking, activity }) {
   }
   const waitsOn = side(blocking.blockersOf.get(node.key), count(counts.blocked_by_open), count(counts.blocked_by_total))
   const unblocks = side(blocking.dependentsOf.get(node.key), count(counts.blocking_open), count(counts.blocking_total))
-  // the node cap cut these (§6.3); they are counted once, not as missing
-  const notShown = count(root.dependencies_omitted) ?? 0
+  // the node cap cut these open ones (§6.3, #275); they are counted once, not
+  // as missing. An older viewer reports only every cut entry, closed included.
+  const notShown = count(root.dependencies_omitted_open) ?? count(root.dependencies_omitted) ?? 0
   let left = notShown
   for (const more of [unblocks.more, waitsOn.more]) {
     for (const field of ['notVisible', 'onGitHub']) {

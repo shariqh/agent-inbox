@@ -5,7 +5,7 @@
 import { describe, expect, it } from 'vitest'
 import { buildIssueView, HIDDEN_AFTER_MS, planGroups, rowParentRuns, STALE_AFTER_MS } from '../public/issues.js'
 import type { IssueRelation, IssueViewItem, IssueViewPlan, IssueViewRow, IssueWaitEntry } from '../public/issues.js'
-import { indexLinks } from '../public/source.js'
+import { indexLinks, issueRelationsHtml } from '../public/source.js'
 import type { CachedLink } from '../public/source.js'
 import { buildIssueGraph, issueRelations } from '../src/issue-graph.js'
 import type { IssueSnapshotRow } from '../src/store.js'
@@ -547,7 +547,7 @@ describe('GitHub dependencies in the view (slice 2 PR D)', () => {
     // the cap cut four of the page: they are "not shown", not also "more on GitHub"
     const cutPage = { ...graphOf([depRow(121, { blocking: page, blockingTruncated: true, blockingCounts: { open: 60, total: 80 } })]) }
     const kept = { ...cutPage, edges: cutPage.edges.filter((e) => !(e.kind === 'blocks' && [K(500), K(501), K(502), K(503)].includes(e.to))),
-      roots: cutPage.roots.map((r) => ({ ...r, dependencies_omitted: 4 })) }
+      roots: cutPage.roots.map((r) => ({ ...r, dependencies_omitted: 4, dependencies_omitted_open: 4 })) }
     expect(depsOfRel(buildIssueView(kept, { nowMs }), K(121)).more).toEqual({
       waitsOn: { notVisible: 0, onGitHub: 0 }, unblocks: { notVisible: 0, onGitHub: 10 }, notShown: 4,
     })
@@ -580,11 +580,36 @@ describe('GitHub dependencies in the view (slice 2 PR D)', () => {
     const cut = {
       ...graph,
       edges: graph.edges.filter((e) => !(e.kind === 'blocks' && (e.to === K(123) || e.to === K(124)))),
-      roots: graph.roots.map((r) => ({ ...r, dependencies_omitted: 2 })),
+      roots: graph.roots.map((r) => ({ ...r, dependencies_omitted: 2, dependencies_omitted_open: 2 })),
     }
     const capped = depsOfRel(buildIssueView(cut, { nowMs }), K(121))
     expect(capped.unblocks.map((d) => d.node.key)).toEqual([K(122)])
     expect(capped.more).toEqual({ waitsOn: { notVisible: 0, onGitHub: 0 }, unblocks: { notVisible: 0, onGitHub: 0 }, notShown: 2 })
+  })
+
+  it('says "+N not shown" for the OPEN dependencies the node cap cut, never the closed ones (#275)', () => {
+    // #121 waits on #116..#119 (#116 and #118 closed) and unblocks #130 (closed)
+    // and #131; two more open blockers are hidden from this account. Three units
+    // keep #121, #116 and #117: the cap cuts #118, #119, #130 and #131, two open.
+    const closed = (n: number) => facts(K(n), { state: 'CLOSED' })
+    const graph = graphOf([depRow(121, { blockedBy: [closed(116), K(117), closed(118), K(119)], blockedByCounts: { open: 4, total: 6 }, blocking: [closed(130), K(131)] })], { maxUnits: 3 })
+    expect(graph.roots[0]).toMatchObject({ dependencies_omitted: 4, dependencies_omitted_open: 2 })
+    const view = buildIssueView(graph, { nowMs })
+    const found = depsOfRel(view, K(121))
+    expect(found.waitsOn.map((d) => d.node.key)).toEqual([K(117)])
+    expect(found.unblocks).toEqual([])
+    expect(found.more).toEqual({ waitsOn: { notVisible: 2, onGitHub: 0 }, unblocks: { notVisible: 0, onGitHub: 0 }, notShown: 2 })
+    // the three kinds of "+N" never count an open one twice: listed + every line = the open total
+    const lines = (m: { notVisible: number; onGitHub: number }) => m.notVisible + m.onGitHub
+    expect(found.waitsOn.length + found.unblocks.length + lines(found.more.waitsOn) + lines(found.more.unblocks) + found.more.notShown).toBe(5)
+    const plan = { repo: REPO, stream: 'main', issue_pin_repo: REPO, issue_pin_number: 121, project: 'agent-inbox' }
+    const html = issueRelationsHtml(new Map(), plan, nowMs, { issues: view })
+    expect(html).toContain('+2 not shown')
+    expect(html).toContain('+2 not visible to your GitHub account')
+    expect(html).not.toContain('+4 not shown')
+    // an older viewer's graph has only the count of every cut entry
+    const older = { ...graph, roots: graph.roots.map(({ dependencies_omitted_open: _open, ...r }) => r) }
+    expect(depsOfRel(buildIssueView(older, { nowMs }), K(121)).more.notShown).toBe(4)
   })
 
   describe('plan and row entries', () => {

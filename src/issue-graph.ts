@@ -103,6 +103,11 @@ export interface IssueGraphRoot {
   children_omitted: number
   /** slice 2: this root's blocks edges (each a "waits on" or "unblocks" entry) the cap cut */
   dependencies_omitted: number
+  /**
+   * #275: those of them whose other end is OPEN by its freshest facts, the
+   * ones a list of open dependencies lacks. Additive within version 1.
+   */
+  dependencies_omitted_open: number
 }
 
 export interface IssueGraph {
@@ -638,6 +643,18 @@ export function buildIssueGraph(
   const blocking: IssueBlocksEdge[] = [...emitted].sort(byEnds).map((pair) => ({
     kind: 'blocks' as const, from: pair.from, to: pair.to, observed_at: pair.t, ...(circular(pair) ? { cycle: true as const } : {}),
   }))
+  // #275: every cut entry, and those whose other end is open by the same
+  // freshest facts the nodes carry (an issue whose state is unknown is not open)
+  const omittedOf = (root: Root) => {
+    let omitted = 0
+    let open = 0
+    for (const pair of root.blocks) {
+      if (emitted.has(pair)) continue
+      omitted++
+      if (factsOf.get(pair.to === root.node ? pair.from : pair.to)?.value.state === 'OPEN') open++
+    }
+    return { dependencies_omitted: omitted, dependencies_omitted_open: open }
+  }
   const aliases: Record<string, string> = {}
   const keptByKey = [...keptRoots].sort((a, b) => byKey(a.key, b.key))
   for (const root of keptByKey) if (root.node !== root.key) aliases[root.key] = root.node
@@ -655,7 +672,7 @@ export function buildIssueGraph(
       hierarchy: root.row.snapshot?.hierarchy.status ?? null,
       dependencies: root.row.snapshot ? ownSection.get(root.key) ?? 'unknown' : null,
       children_omitted: root.children.filter((key) => !kept.has(key)).length,
-      dependencies_omitted: root.blocks.filter((pair) => !emitted.has(pair)).length,
+      ...omittedOf(root),
     })),
     aliases,
     truncated,

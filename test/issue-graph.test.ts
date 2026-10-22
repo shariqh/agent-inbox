@@ -78,7 +78,7 @@ describe('the v1 graph shape (§4.7)', () => {
     expect(graph.roots).toHaveLength(10)
     expect(graph.roots[0]).toEqual({
       key: 'shariqh/agent-inbox#117', refresh: true, fetched_at: fixture.fetched_at, checked_at: fixture.fetched_at,
-      error: null, failure: null, hierarchy: 'ok', dependencies: 'unknown', children_omitted: 0, dependencies_omitted: 0,
+      error: null, failure: null, hierarchy: 'ok', dependencies: 'unknown', children_omitted: 0, dependencies_omitted: 0, dependencies_omitted_open: 0,
     })
     expect(graph.aliases).toEqual({})
     expect(graph.truncated).toEqual({ roots: 0, ancestors: 0, children: 0, dependencies: 0, edges: 0 })
@@ -320,7 +320,7 @@ describe('hard failures (rule 6)', () => {
     expect(JSON.stringify(graph)).not.toContain('Private title')
     expect(childrenOf(graph, P)).toEqual([C])
     expect(graph.roots.find((r) => r.key === K)).toEqual({
-      key: K, refresh: true, fetched_at: null, checked_at: at(20), error: 'not-found', failure: 'hard', hierarchy: null, dependencies: null, children_omitted: 0, dependencies_omitted: 0,
+      key: K, refresh: true, fetched_at: null, checked_at: at(20), error: 'not-found', failure: 'hard', hierarchy: null, dependencies: null, children_omitted: 0, dependencies_omitted: 0, dependencies_omitted_open: 0,
     })
     expect(node(graph, P)).toMatchObject({ children_total: 2 })
   })
@@ -420,8 +420,8 @@ describe('identity and scope', () => {
       row(Q, null, null, { error: 'no-gh', checkedAt: at(40) }),
     ], [P, Q, C], { displayOnly: [Q] })
     expect(graph.roots).toEqual([
-      { key: P, refresh: true, fetched_at: at(10), checked_at: at(40), error: 'rate-limit', failure: 'soft', hierarchy: 'ok', dependencies: 'unknown', children_omitted: 0, dependencies_omitted: 0 },
-      { key: Q, refresh: false, fetched_at: null, checked_at: at(40), error: 'no-gh', failure: 'soft', hierarchy: null, dependencies: null, children_omitted: 0, dependencies_omitted: 0 },
+      { key: P, refresh: true, fetched_at: at(10), checked_at: at(40), error: 'rate-limit', failure: 'soft', hierarchy: 'ok', dependencies: 'unknown', children_omitted: 0, dependencies_omitted: 0, dependencies_omitted_open: 0 },
+      { key: Q, refresh: false, fetched_at: null, checked_at: at(40), error: 'no-gh', failure: 'soft', hierarchy: null, dependencies: null, children_omitted: 0, dependencies_omitted: 0, dependencies_omitted_open: 0 },
     ])
     expect(nodeKeys(graph)).toEqual([P])
   })
@@ -999,6 +999,39 @@ describe('the node cap with dependency neighbours (slice 2 §6.3)', () => {
     expect(graph.truncated).toEqual({ roots: 0, ancestors: 0, children: 0, dependencies: 0, edges: 1_000 })
     expect(elapsed).toBeLessThan(2_000)
     expect(JSON.stringify(build([...rows].reverse(), [...keys].reverse()))).toBe(JSON.stringify(graph))
+  })
+})
+
+describe('the open neighbours the cap cut (#275)', () => {
+  // P outranks Q. P lists #11 (open), #12 and #13 as blockers and #15 as a
+  // dependent, the last three closed as P saw them at t10; Q, fetched at t20,
+  // lists #13 as OPEN, the freshest fact about it. Three units keep P, Q and
+  // P's first blocker, so the cap cuts #12, #13 and #15 from P and #13 from Q.
+  const [P, Q] = [N(1), N(2)]
+  const closed = (key: string) => facts(key, { state: 'CLOSED' })
+  const rows = [
+    withDeps(P, at(10), deps({ blockedBy: [N(11), closed(N(12)), closed(N(13))], blocking: [closed(N(15))] })),
+    withDeps(Q, at(20), deps({ blockedBy: [N(13)] })),
+  ]
+  const keys = [P, Q]
+  const ranked = { updatedAt: { [P]: at(20), [Q]: at(10) } }
+  const omitted = (graph: IssueGraph) => graph.roots.map((r) => [r.key, r.dependencies_omitted, r.dependencies_omitted_open])
+
+  it('counts only the cut neighbours whose freshest state is OPEN, beside every cut entry', () => {
+    const graph = build(rows, keys, ranked, 3)
+    expect(nodeKeys(graph)).toEqual([P, Q, N(11)].sort())
+    expect(pairs(graph)).toEqual([`${N(11)} → ${P}`])
+    // #13 is open: Q's fresher list outranks P's older one, as node facts do
+    expect(omitted(graph)).toEqual([[P, 3, 1], [Q, 1, 1]])
+    // nothing cut, nothing open cut
+    expect(omitted(build(rows, keys, ranked))).toEqual([[P, 0, 0], [Q, 0, 0]])
+  })
+
+  it('stays byte-identical however its inputs are ordered, capped and uncapped', () => {
+    for (const cap of [3, undefined]) {
+      const first = JSON.stringify(build(rows, keys, ranked, cap))
+      expect(JSON.stringify(build([...rows].reverse(), [...keys].reverse(), ranked, cap))).toBe(first)
+    }
   })
 })
 

@@ -394,6 +394,11 @@ root's blockers, then its dependents, by key), and finally any other edge betwee
 nodes, by key: an omitted root's node can still be emitted as a kept root's neighbour or child,
 and its edges to other emitted nodes count too. A root's `dependencies_omitted` counts its
 entries (edges) not emitted, whether a neighbour was cut or the edge budget ran out.
+*(#275)* `dependencies_omitted_open` counts those of them whose other end is OPEN by the
+freshest facts the build resolved for it (the same rule node facts follow; an unknown state is
+not open). It is additive within version 1, linear in the root's entries, and is what "+N not
+shown" draws: the lists show open issues only, so a closed neighbour the cap cut is not one
+the list lacks.
 
 The cap bounds the response, not the work. The build reads every display root's own dependency
 section before anything is cut, so its cost grows with the total number of dependency entries
@@ -560,7 +565,8 @@ All new chips are built in `public/source.js`, so every href still comes from `c
   the direction, closed ones included, so when `total` exceeds 50 an unlisted open issue may
   simply sit beyond it: then all `open` minus listed is "+N more on GitHub", and "not visible"
   is used only when the page was complete (`total` ≤ 50). The two cannot be told apart beyond
-  the page, and permissions are never blamed for it. "+N not shown" (`dependencies_omitted`)
+  the page, and permissions are never blamed for it. "+N not shown" (`dependencies_omitted_open`,
+#275; `dependencies_omitted` from a graph that lacks it)
   covers both directions, so it is one line under the section rather than one per list, and it
   is taken out of the other two counts so no issue is counted twice.
 - **The row detail** names a step as "step Build" and a GitHub issue by chip and title, each
@@ -849,3 +855,7 @@ Run on 2026-10-21 with `gh` 2.102.0, read-only:
   and no activity labels in the row detail. Review of #274: open issues missing from a page of
   50 that mixes closed ones are "more on GitHub", never "not visible" (only a complete page
   proves that), and a `waits_on` target whose row is `na` counts as satisfied, like `done`.
+- **#275 (2026-10-22):** "+N not shown" counted every dependency entry the node cap cut,
+  closed ones included, though the lists show open issues only. Roots gain an additive
+  `dependencies_omitted_open` (§6.3); `dependencies_omitted` keeps its meaning, and the view
+  falls back to it for a graph without the new field (§9.1).

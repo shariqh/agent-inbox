@@ -30,11 +30,30 @@ const FAMILY = JSON.parse(readFileSync(new URL('./fixtures/issue-117-family.json
 const RELATIONS_10 = readFileSync(new URL('./fixtures/issue-relations-10.json', import.meta.url), 'utf8')
 // the live answer to the slice-2 document for the same ten issues (2026-10-21, cost 1)
 const RELATIONS_10_DEPS = readFileSync(new URL('./fixtures/issue-relations-10-deps.json', import.meta.url), 'utf8')
+// the live answer to today's document, sub-issues on hN, for ten issues of this repository (#267)
+const RELATIONS_10_HIERARCHY = readFileSync(new URL('./fixtures/issue-relations-10-hierarchy.json', import.meta.url), 'utf8')
+
+// The two older live answers asked for an issue's sub-issues inside rN. Today's
+// document asks for the same fields, unchanged, on hN: this moves them there.
+function onHierarchyAlias(stdout: string): string {
+  const body = JSON.parse(stdout) as { data: Record<string, { issue?: Record<string, unknown> | null } | null> }
+  for (const alias of Object.keys(body.data).filter((a) => /^r\d+$/.test(a))) {
+    const issue = body.data[alias]?.issue
+    if (!issue) continue
+    const { subIssuesSummary, subIssues, ...rest } = issue
+    body.data[alias]!.issue = rest
+    body.data[`h${alias.slice(1)}`] = { issue: { subIssuesSummary, subIssues } }
+  }
+  return JSON.stringify(body)
+}
 
 // ── a fake GitHub: answers the real document shape for the keys it is asked ──
 
-// `depsError`: GitHub fails that dependency field of the issue (slice 2)
-interface WorldIssue { title?: string; state?: 'OPEN' | 'CLOSED'; parent?: string; blockedBy?: string[]; depsError?: string }
+// `depsError`: GitHub fails that dependency field of the issue (slice 2);
+// `hierarchyError`: GitHub fails that sub-issue field of the issue (#267)
+interface WorldIssue {
+  title?: string; state?: 'OPEN' | 'CLOSED'; parent?: string; blockedBy?: string[]; depsError?: string; hierarchyError?: string
+}
 type World = Map<string, WorldIssue>
 
 const split = (key: string) => ({ repo: key.slice(0, key.lastIndexOf('#')), number: Number(key.slice(key.lastIndexOf('#') + 1)) })
@@ -75,11 +94,13 @@ function gqlRoot(world: World, key: string) {
     if (level === 0) node.subIssuesSummary = summary(world, k)
     return node
   }
+  return { ...gqlNode(world, key), parent: chain(world.get(key)?.parent, 0) }
+}
+
+function gqlChildren(world: World, key: string) {
   const kids = childrenOf(world, key)
   return {
-    ...gqlNode(world, key),
     subIssuesSummary: summary(world, key),
-    parent: chain(world.get(key)?.parent, 0),
     subIssues: {
       totalCount: kids.length, pageInfo: { hasNextPage: false },
       nodes: kids.map((k) => ({ ...gqlNode(world, k), subIssuesSummary: summary(world, k) })),
@@ -105,30 +126,36 @@ function fakeGitHub(world: World, rateLimit = { cost: 1, remaining: 4_000, reset
   const calls: string[][] = []
   const run: IssueGhRun = (args) => {
     calls.push(asked(args))
-    const ownAlias = args.some((arg) => arg.startsWith('query=') && /\bd0: repository\(/.test(arg))
+    const query = args.find((arg) => arg.startsWith('query=')) ?? ''
+    const ownAlias = { d: /\bd0: repository\(/.test(query), h: /\bh0: repository\(/.test(query) }
     const data: Record<string, unknown> = { rateLimit }
     const errors: unknown[] = []
     asked(args).forEach((key, i) => {
       const { repo } = split(key)
-      const field = world.get(key)?.depsError
+      const sides = [
+        { alias: 'd', field: world.get(key)?.depsError, fields: () => gqlDependencies(world, key) },
+        { alias: 'h', field: world.get(key)?.hierarchyError, fields: () => gqlChildren(world, key) },
+      ] as const
       if (world.has(key)) {
-        // GitHub answers the document it is sent. The dependency fields are
-        // non-null, so an error in one nulls the issue it was asked on: only
-        // dN.issue when they have an alias of their own, else rN.issue itself.
-        const deps = field ? null : gqlDependencies(world, key)
-        if (ownAlias) {
-          data[`r${i}`] = { nameWithOwner: repo, issue: gqlRoot(world, key) }
-          data[`d${i}`] = { issue: deps }
-        } else {
-          data[`r${i}`] = { nameWithOwner: repo, issue: deps && { ...gqlRoot(world, key), ...deps } }
+        // GitHub answers the document it is sent. These fields are non-null, so
+        // an error in one nulls the issue it was asked on: only that side's
+        // alias when it has one of its own, else rN.issue itself.
+        let issue: Record<string, unknown> | null = gqlRoot(world, key)
+        for (const side of sides) {
+          if (ownAlias[side.alias]) data[`${side.alias}${i}`] = { issue: side.field ? null : side.fields() }
+          else if (issue) issue = side.field ? null : { ...issue, ...side.fields() }
+          if (side.field) {
+            errors.push({ path: [ownAlias[side.alias] ? `${side.alias}${i}` : `r${i}`, 'issue', side.field], message: 'Something went wrong while executing your query.' })
+          }
         }
-        if (field) errors.push({ path: [ownAlias ? `d${i}` : `r${i}`, 'issue', field], message: 'Something went wrong while executing your query.' })
+        data[`r${i}`] = { nameWithOwner: repo, issue }
       } else {
         data[`r${i}`] = { nameWithOwner: repo, issue: null }
         errors.push({ type: 'NOT_FOUND', path: [`r${i}`, 'issue'], message: 'Could not resolve to an issue' })
-        if (ownAlias) {
-          data[`d${i}`] = { issue: null }
-          errors.push({ type: 'NOT_FOUND', path: [`d${i}`, 'issue'], message: 'Could not resolve to an issue' })
+        for (const side of sides) {
+          if (!ownAlias[side.alias]) continue
+          data[`${side.alias}${i}`] = { issue: null }
+          errors.push({ type: 'NOT_FOUND', path: [`${side.alias}${i}`, 'issue'], message: 'Could not resolve to an issue' })
         }
       }
     })
@@ -140,17 +167,18 @@ function fakeGitHub(world: World, rateLimit = { cost: 1, remaining: 4_000, reset
 // ────────────────────────────────────────────────────────────────────────────
 
 describe('relationsQuery and the gh argv (§5.6)', () => {
-  // GitHub marks the three dependency fields non-null, so an error in any of
-  // them nulls the whole issue it was asked on. They get an alias of their own,
-  // and slice 1's verified Root is unchanged.
+  // GitHub marks the sub-issue fields (#267) and the three dependency fields
+  // non-null, so an error in any of them nulls the whole issue it was asked on.
+  // Each group gets an alias of its own; rN keeps the issue and its parent chain.
   it('builds exactly the verified one-root document: slice 1’s, plus slice 2’s dependency fields on an alias of their own', () => {
     const block = DESIGN.split('```graphql\n')[1]!.split('```')[0]!
     const deps = DEPS_DESIGN.split('```graphql\n')[1]!.split('```')[0]!
     const norm = (s: string) => s.replace(/\s+/g, ' ').trim()
     const r0 = '  r0: repository(owner: $o0, name: $n0) { nameWithOwner issue(number: $k0) { ...Root } }\n'
-    expect(block).toContain(r0)
+    const h0 = '  h0: repository(owner: $o0, name: $n0) { issue(number: $k0) { ...Children } }\n'
+    expect(block).toContain(r0 + h0)
     expect(deps).toContain('blockedBy(first: 50)')
-    const expected = block.replace(r0, `${r0}  d0: repository(owner: $o0, name: $n0) { issue(number: $k0) { ...Deps } }\n`)
+    const expected = block.replace(h0, `${h0}  d0: repository(owner: $o0, name: $n0) { issue(number: $k0) { ...Deps } }\n`)
       + `\nfragment Deps on Issue {\n${deps}}\n`
     expect(norm(relationsQuery(1))).toBe(norm(expected))
   })
@@ -164,7 +192,9 @@ describe('relationsQuery and the gh argv (§5.6)', () => {
       expect(doc.match(/\$k\d+: Int!/g)).toHaveLength(n)
       expect(doc.match(/\br\d+: repository\(/g)).toHaveLength(n)
       expect(doc.match(/\bd\d+: repository\(/g)).toHaveLength(n)
+      expect(doc.match(/\bh\d+: repository\(/g)).toHaveLength(n)
       expect(doc).toContain(`r${n - 1}: repository(owner: $o${n - 1}, name: $n${n - 1})`)
+      expect(doc).toContain(`h${n - 1}: repository(owner: $o${n - 1}, name: $n${n - 1}) { issue(number: $k${n - 1}) { ...Children } }`)
       expect(doc).toContain(`d${n - 1}: repository(owner: $o${n - 1}, name: $n${n - 1}) { issue(number: $k${n - 1}) { ...Deps } }`)
       expect(doc).not.toContain(`$o${n}:`)
     }
@@ -190,12 +220,22 @@ describe('parseIssueBatch (§5.7)', () => {
   const claimed = (...keys: string[]) => keys.map(split)
   const ok = (repo: string, number: number, extra: Record<string, unknown> = {}) => ({
     nameWithOwner: repo,
+    issue: { number, title: `T${number}`, state: 'OPEN', stateReason: null, repository: { nameWithOwner: repo }, parent: null, ...extra },
+  })
+  // the same issue asked on its hierarchy alias, hN (#267)
+  const kids = (extra: Record<string, unknown> = {}) => ({
     issue: {
-      number, title: `T${number}`, state: 'OPEN', stateReason: null, repository: { nameWithOwner: repo },
-      subIssuesSummary: { total: 0, completed: 0 }, parent: null,
-      subIssues: { totalCount: 0, pageInfo: { hasNextPage: false }, nodes: [] }, ...extra,
+      subIssuesSummary: { total: 0, completed: 0 },
+      subIssues: { totalCount: 0, pageInfo: { hasNextPage: false }, nodes: [] },
+      ...extra,
     },
   })
+  // every rN given its hN, unless the test already set one
+  const withKids = (data: Record<string, unknown>) => {
+    const out: Record<string, unknown> = { ...data }
+    for (const alias of Object.keys(data).filter((a) => /^r\d+$/.test(a))) out[`h${alias.slice(1)}`] ??= kids()
+    return out
+  }
   // the same issue asked on its dependency alias, dN (slice 2)
   const deps = (extra: Record<string, unknown> = {}) => ({
     issue: {
@@ -217,7 +257,7 @@ describe('parseIssueBatch (§5.7)', () => {
   // GitHub did not return is unavailable, never "no dependencies".
   it('turns the live ten-root response into exactly the stored #117 family snapshots', () => {
     const keys = FAMILY.rows.map((r) => ({ repo: r.repo, number: r.number }))
-    const batch = parseIssueBatch(RELATIONS_10, keys)
+    const batch = parseIssueBatch(onHierarchyAlias(RELATIONS_10), keys)
     expect(batch.outcomes).toEqual(FAMILY.rows.map((r) => ({ snapshot: r.snapshot, dependencies: { status: 'unavailable' } })))
     expect(batch.rateLimit).toEqual({ cost: 1, remaining: 9136, resetAt: '2026-10-19T22:49:46Z' })
   })
@@ -254,17 +294,22 @@ describe('parseIssueBatch (§5.7)', () => {
     expect(batch.outcomes).toEqual([{ error: 'gh-failed' }])
   })
 
-  it('a field error under parent or subIssues makes only that root\'s hierarchy unavailable', () => {
+  // `parent` is nullable, so GitHub nulls only the parent an error was under:
+  // the issue stays readable on rN, and its parentage must not read as "none".
+  it('a field error under parent makes only that root\'s hierarchy unavailable', () => {
     const batch = parseIssueBatch(out({
-      data: {
-        r0: ok('a/b', 1, { subIssues: null }), d0: deps(), r1: ok('a/b', 2, { parent: null }), d1: deps(), r2: ok('a/b', 3), d2: deps(),
-      },
+      data: withKids({
+        r0: ok('a/b', 1, { parent: null }), d0: deps(), r1: ok('a/b', 2, { parent: null }), d1: deps(), r2: ok('a/b', 3), d2: deps(),
+        r3: ok('a/b', 4), d3: deps(),
+      }),
       errors: [
-        { type: 'INTERNAL', path: ['r0', 'issue', 'subIssues'], message: 'timeout' },
+        { type: 'INTERNAL', path: ['r0', 'issue', 'parent', 'title'], message: 'timeout' },
         // an error deep in a section voids it even when the rest of it looks whole
         { type: 'INTERNAL', path: ['r2', 'issue', 'parent', 'parent', 'title'], message: 'timeout' },
+        // stateReason is nullable too, but it is the issue's own: an error there fails the issue, softly
+        { type: 'INTERNAL', path: ['r3', 'issue', 'stateReason'], message: 'timeout' },
       ],
-    }), claimed('a/b#1', 'a/b#2', 'a/b#3'), { code: 1, stderr: '' })
+    }), claimed('a/b#1', 'a/b#2', 'a/b#3', 'a/b#4'), { code: 1, stderr: '' })
     expect(batch.outcomes[0]).toEqual({
       snapshot: { v: 1, issue: { repo: 'a/b', number: 1, title: 'T1', state: 'OPEN', state_reason: null },
         ancestors: [], ancestors_end: 'top', hierarchy: { status: 'unavailable' } },
@@ -273,6 +318,85 @@ describe('parseIssueBatch (§5.7)', () => {
     })
     expect(batch.outcomes[1]).toMatchObject({ snapshot: { hierarchy: { status: 'ok' } } })
     expect(batch.outcomes[2]).toMatchObject({ snapshot: { issue: { number: 3 }, ancestors: [], hierarchy: { status: 'unavailable' } } })
+    expect(batch.outcomes[3]).toEqual({ error: 'gh-failed' })
+  })
+
+  // #267, the real shape: GitHub marks subIssues, subIssuesSummary and their
+  // counts and pageInfo non-null, so an error under any of them nulls the whole
+  // issue it was asked on. On hN that is only hN.issue: rN still refreshes.
+  it('an error under the hierarchy alias refreshes the issue and its parent: only its hierarchy is unavailable', () => {
+    const generic = 'Something went wrong while executing your query. This may be the result of a timeout.'
+    const parent = { number: 9, title: 'P9', state: 'OPEN', stateReason: null, repository: { nameWithOwner: 'a/b' }, parent: null }
+    const child = { number: 7, title: 'C7', state: 'OPEN', stateReason: null, repository: { nameWithOwner: 'a/b' }, subIssuesSummary: { total: 0, completed: 0 } }
+    const batch = parseIssueBatch(out({
+      data: {
+        r0: ok('a/b', 1, { title: 'Renamed', state: 'CLOSED', stateReason: 'COMPLETED', parent }), h0: { issue: null }, d0: deps(),
+        r1: ok('a/b', 2), h1: { issue: null }, d1: deps(),
+        // a node is nullable, so its error leaves the rest of the list in place: still unavailable
+        r2: ok('a/b', 3), h2: kids({ subIssues: { totalCount: 2, pageInfo: { hasNextPage: false }, nodes: [null, child] } }), d2: deps(),
+        // even a clear no on the hierarchy alias says nothing about the issue itself
+        r3: ok('a/b', 4), h3: null, d3: deps(),
+        // an answer that never came is unavailable, never "no sub-issues"
+        r4: ok('a/b', 5), d4: deps(),
+        r5: ok('a/b', 6), h5: kids(), d5: deps(),
+      },
+      errors: [
+        { path: ['h0', 'issue', 'subIssues', 'pageInfo'], message: generic },
+        { path: ['h1', 'issue', 'subIssuesSummary', 'total'], message: generic },
+        { type: 'FORBIDDEN', path: ['h2', 'issue', 'subIssues', 'nodes', 0], message: 'Resource not accessible by integration' },
+        { type: 'NOT_FOUND', path: ['h3'], message: 'Could not resolve to a Repository' },
+      ],
+    }), claimed('a/b#1', 'a/b#2', 'a/b#3', 'a/b#4', 'a/b#5', 'a/b#6'), { code: 1, stderr: '' })
+    expect(batch.outcomes.map((o) => ('error' in o ? o.error : [o.snapshot.hierarchy.status, o.dependencies.status]))).toEqual([
+      ['unavailable', 'ok'], ['unavailable', 'ok'], ['unavailable', 'ok'], ['unavailable', 'ok'], ['unavailable', 'ok'], ['ok', 'ok'],
+    ])
+    // the issue's own facts are this fetch's; no parentage is claimed without the whole hierarchy
+    expect(batch.outcomes[0]).toEqual({
+      snapshot: {
+        v: 1, issue: { repo: 'a/b', number: 1, title: 'Renamed', state: 'CLOSED', state_reason: 'COMPLETED' },
+        ancestors: [], ancestors_end: 'top', hierarchy: { status: 'unavailable' },
+      },
+      dependencies: NO_DEPENDENCIES,
+    })
+  })
+
+  it('the two side aliases fail independently of each other and of the issue', () => {
+    const generic = 'Something went wrong while executing your query.'
+    const batch = parseIssueBatch(out({
+      data: {
+        r0: ok('a/b', 1), h0: { issue: null }, d0: { issue: null },
+        r1: ok('a/b', 2), h1: { issue: null }, d1: deps(),
+        r2: ok('a/b', 3), h2: kids(), d2: { issue: null },
+      },
+      errors: [
+        { path: ['h0', 'issue', 'subIssues'], message: generic },
+        { path: ['d0', 'issue', 'blockedBy'], message: generic },
+        { path: ['h1', 'issue', 'subIssuesSummary'], message: generic },
+        { path: ['d2', 'issue', 'blocking'], message: generic },
+      ],
+    }), claimed('a/b#1', 'a/b#2', 'a/b#3'), { code: 1, stderr: '' })
+    expect(batch.outcomes.map((o) => ('error' in o ? o.error : [o.snapshot.issue.title, o.snapshot.hierarchy.status, o.dependencies.status]))).toEqual([
+      ['T1', 'unavailable', 'unavailable'], ['T2', 'unavailable', 'ok'], ['T3', 'ok', 'unavailable'],
+    ])
+  })
+
+  // GitHub's real answer for a missing issue names all three aliases. Only rN
+  // decides the issue's fate; errors on the side aliases never soften it.
+  it('a clear no on the issue stays hard whatever its side aliases say', () => {
+    const missing = (alias: string, type: string) => ({ type, path: [alias, 'issue'], message: 'Could not resolve to an issue' })
+    const batch = parseIssueBatch(out({
+      data: {
+        r0: { nameWithOwner: 'a/b', issue: null }, h0: { issue: null }, d0: { issue: null },
+        r1: { nameWithOwner: 'a/b', issue: null }, h1: { issue: null }, d1: { issue: null },
+        r2: { nameWithOwner: 'a/b', issue: null }, h2: kids(), d2: deps(),
+      },
+      errors: [
+        missing('r0', 'NOT_FOUND'), missing('h0', 'NOT_FOUND'), missing('d0', 'NOT_FOUND'),
+        missing('r1', 'FORBIDDEN'), missing('h1', 'INTERNAL'), missing('d1', 'INTERNAL'),
+        missing('r2', 'NOT_FOUND'),
+      ],
+    }), claimed('a/b#1', 'a/b#2', 'a/b#3'), { code: 1, stderr: '' })
+    expect(batch.outcomes).toEqual([{ error: 'not-found' }, { error: 'forbidden' }, { error: 'not-found' }])
   })
 
   it('fails a whole request softly for every claimed key, by its cause', () => {
@@ -312,15 +436,16 @@ describe('parseIssueBatch (§5.7)', () => {
     })
     const batch = parseIssueBatch(out({
       data: {
-        r0: ok('a/b', 1, {
-          title: 'x'.repeat(500),
+        r0: ok('a/b', 1, { title: 'x'.repeat(500) }),
+        h0: kids({
           subIssuesSummary: { total: 5, completed: 3 },
           subIssues: {
             totalCount: 5, pageInfo: { hasNextPage: false },
             nodes: [child(2), child(1), child(2), child(3, { stateReason: 'WONTFIX' }), child(4, { subIssuesSummary: { total: 1, completed: 2 } })],
           },
         }),
-        r1: ok('a/b', 9, {
+        r1: ok('a/b', 9),
+        h1: kids({
           subIssues: { totalCount: 101, pageInfo: { hasNextPage: true }, nodes: [child(10)] },
           subIssuesSummary: { total: 101, completed: 1 },
         }),
@@ -347,13 +472,13 @@ describe('parseIssueBatch (§5.7)', () => {
         ...(numbers.length === 1 && end === 'open' ? {} : { parent: chainOf(numbers.slice(1), end) }),
       }
     const batch = parseIssueBatch(out({
-      data: {
+      data: withKids({
         r0: ok('a/b', 1, { parent: chainOf([2, 3, 4, 5, 6, 7, 8, 9], 'open') }),
         r1: ok('a/b', 1, { parent: chainOf([2, 3]) }),
         r2: ok('a/b', 1, { parent: chainOf([2, 1, 3]) }),
         r3: ok('a/b', 1, { parent: { ...(chainOf([2]) as object), state: 'MAYBE' } }),
         r4: ok('a/b', 1, { parent: chainOf([2, 3], 'open') }),
-      },
+      }),
     }), claimed('a/b#1', 'a/b#1', 'a/b#1', 'a/b#1', 'a/b#1'))
     const walk = (i: number) => {
       const s = (batch.outcomes[i] as { snapshot: IssueSnapshot }).snapshot
@@ -381,7 +506,7 @@ describe('parseIssueBatch (§5.7)', () => {
 
   it('reads the #117 family’s dependencies from the live slice-2 response, both directions agreeing (slice 2 §2)', () => {
     const keys = FAMILY.rows.map((r) => ({ repo: r.repo, number: r.number }))
-    const batch = parseIssueBatch(RELATIONS_10_DEPS, keys)
+    const batch = parseIssueBatch(onHierarchyAlias(RELATIONS_10_DEPS), keys)
     expect(batch.rateLimit).toMatchObject({ cost: 1 })
     // the added fields leave the hierarchy exactly as slice 1 stored it
     expect(batch.outcomes.map((o) => ('snapshot' in o ? o.snapshot : o))).toEqual(FAMILY.rows.map((r) => r.snapshot))
@@ -407,12 +532,28 @@ describe('parseIssueBatch (§5.7)', () => {
     })
   })
 
+  // #267: today's document, recorded live on 2026-10-21 for ten issues of this
+  // repository. Splitting off hN cost nothing: still one point for ten issues.
+  it('reads the live answer to today’s document: sub-issues from hN, the parent chain from rN, at cost 1', () => {
+    const numbers = [103, 117, 118, 119, 120, 121, 247, 253, 267, 148]
+    const body = JSON.parse(RELATIONS_10_HIERARCHY) as { data: Record<string, { issue?: Record<string, unknown> }> }
+    expect(Object.keys(body.data.r0!.issue!)).not.toContain('subIssues')
+    expect(Object.keys(body.data.h0!.issue!).sort()).toEqual(['subIssues', 'subIssuesSummary'])
+    const batch = parseIssueBatch(RELATIONS_10_HIERARCHY, numbers.map((number) => ({ repo: REPO, number })))
+    expect(batch.rateLimit).toMatchObject({ cost: 1 })
+    expect(batch.outcomes.map((o) => ('error' in o ? o.error : [o.snapshot.issue.number, o.snapshot.hierarchy.status, o.dependencies.status])))
+      .toEqual(numbers.map((n) => [n, 'ok', 'ok']))
+    const snap = (n: number) => (batch.outcomes[numbers.indexOf(n)] as { snapshot: IssueSnapshot }).snapshot
+    expect(snap(117).hierarchy).toMatchObject({ status: 'ok', total: 10, children: expect.arrayContaining([expect.objectContaining({ number: 118 })]) })
+    expect(snap(118).ancestors).toEqual([expect.objectContaining({ number: 117, children_total: 10 })])
+  })
+
   // GitHub marks the three fields, their counts and pageInfo non-null, so an
   // error in any of them nulls the whole issue it was asked on: dN.issue.
   it('an error under the dependency alias leaves the issue and its hierarchy standing: only its dependencies are unavailable', () => {
     const generic = 'Something went wrong while executing your query. This may be the result of a timeout.'
     const batch = parseIssueBatch(out({
-      data: {
+      data: withKids({
         r0: ok('a/b', 1), d0: { issue: null },
         r1: ok('a/b', 2), d1: { issue: null },
         r2: ok('a/b', 3), d2: { issue: null },
@@ -422,7 +563,7 @@ describe('parseIssueBatch (§5.7)', () => {
         r4: ok('a/b', 5), d4: null,
         r5: ok('a/b', 6),
         r6: ok('a/b', 7), d6: deps(),
-      },
+      }),
       errors: [
         { path: ['d0', 'issue', 'issueDependenciesSummary', 'blockedBy'], message: generic },
         { path: ['d1', 'issue', 'blockedBy'], message: generic },
@@ -488,7 +629,7 @@ describe('parseIssueBatch (§5.7)', () => {
 
   it('reads a dependency section it cannot trust as unavailable, never as "no dependencies", and keeps the hierarchy', () => {
     const batch = parseIssueBatch(out({
-      data: {
+      data: withKids({
         r0: ok('a/b', 1), d0: deps({ issueDependenciesSummary: summary(2, 1, 0, 0) }),
         r1: ok('a/b', 2), d1: deps({ issueDependenciesSummary: summary(0, 0, -1, 0) }),
         r2: ok('a/b', 3), d2: deps({ issueDependenciesSummary: { ...summary(0, 0, 0, 0), totalBlocking: 0.5 } }),
@@ -496,7 +637,7 @@ describe('parseIssueBatch (§5.7)', () => {
         r4: ok('a/b', 5), d4: deps({ blockedBy: null }),
         r5: ok('a/b', 6), d5: deps({ blocking: { totalCount: 0, nodes: [] } }),
         r6: ok('a/b', 7), d6: deps({ blockedBy: { totalCount: 0, pageInfo: { hasNextPage: false }, nodes: null } }),
-      },
+      }),
     }), claimed('a/b#1', 'a/b#2', 'a/b#3', 'a/b#4', 'a/b#5', 'a/b#6', 'a/b#7'))
     expect(batch.outcomes.map((o) => ('error' in o ? o.error : o.dependencies))).toEqual(Array(7).fill({ status: 'unavailable' }))
     expect(batch.outcomes.every((o) => 'snapshot' in o && o.snapshot.hierarchy.status === 'ok')).toBe(true)
@@ -755,6 +896,36 @@ describe('refreshIssuesOnce (§5.2–5.5)', () => {
     await refreshIssuesOnce(db, { run: gh.run, now, owner: 'v1', budget: new IssueBudget(clock) })
     expect(read()).toMatchObject({ error: null, fetched_at: at(10), dependencies: { status: 'unavailable' } })
     expect(read().snapshot!.hierarchy).toMatchObject({ status: 'ok', children: [{ number: 118 }, { number: 119 }] })
+  })
+
+  // #267, the real shape: GitHub fails a sub-issue field, `h0.issue` is null
+  // with an error at its path, and `r0` is intact. The issue's title, state and
+  // parent must keep refreshing, however long the sub-issue fields keep failing.
+  it('a sub-issue field that keeps failing never stops the issue refreshing: stored each time, the hierarchy unavailable', async () => {
+    item(117)
+    const w = world(103, 117, 118)
+    w.get(`${REPO}#118`)!.parent = `${REPO}#117`
+    w.get(`${REPO}#117`)!.hierarchyError = 'subIssues'
+    const gh = fakeGitHub(w)
+    const read = () => listIssueSnapshots(db).find((r) => r.number === 117)!
+    expect(await refreshIssuesOnce(db, { run: gh.run, now, owner: 'v1', budget: new IssueBudget(clock) })).toMatchObject({ applied: 1 })
+    expect(read()).toMatchObject({ error: null, fetched_at: at(0), dependencies: { status: 'ok' } })
+    expect(read().snapshot!.hierarchy).toEqual({ status: 'unavailable' })
+
+    tick(10)
+    w.get(`${REPO}#117`)!.title = 'Renamed on GitHub'
+    w.get(`${REPO}#117`)!.state = 'CLOSED'
+    w.get(`${REPO}#117`)!.hierarchyError = 'subIssuesSummary'
+    await refreshIssuesOnce(db, { run: gh.run, now, owner: 'v1', budget: new IssueBudget(clock) })
+    expect(read()).toMatchObject({ error: null, fetched_at: at(10), dependencies: { status: 'ok' } })
+    expect(read().snapshot).toMatchObject({ issue: { title: 'Renamed on GitHub', state: 'CLOSED' }, hierarchy: { status: 'unavailable' } })
+
+    // once GitHub answers again, the hierarchy comes back with the next fetch (closed: 60 minutes)
+    tick(60)
+    delete w.get(`${REPO}#117`)!.hierarchyError
+    w.get(`${REPO}#117`)!.parent = `${REPO}#103`
+    await refreshIssuesOnce(db, { run: gh.run, now, owner: 'v1', budget: new IssueBudget(clock) })
+    expect(read().snapshot).toMatchObject({ ancestors: [{ number: 103 }], hierarchy: { status: 'ok', children: [{ number: 118 }] } })
   })
 
   it('soft failures keep data, hard failures suppress it at once (a partial batch, per alias)', async () => {

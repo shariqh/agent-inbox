@@ -60,9 +60,23 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   each per viewer, plus `/api/items?scope=attention` (issue #156): the Electron
   dock watcher's lean read, built from open questions alone and registered
   separately with its own validator so neither `/api/items` representation can
-  revalidate the other, `/api/items/history` (issue #184, below), likewise its
-  own registration and validator, and `/api/issues` (issue #103, below), the sixth.
-  Any other query string keeps the default items response.
+  revalidate the other, `/api/boards?scope=attention` (issue #287), the same
+  watcher's plans read, likewise its own (`listBoardsWithBlockedRows`: the
+  default's active plans that hold a blocked row, in its order, each narrowed to
+  those rows, every plan field and `progress` otherwise the default's),
+  `/api/items/history` (issue #184, below), likewise its own registration and
+  validator, `/api/issues` (issue #103, below), the seventh, and `/api/links`
+  (issue #288), the eighth: the cached PR state, whose bytes depend on the
+  database alone because the PR poller writes them through `store.ts` and the
+  previews it keeps follow open items and active plans. Any other query string
+  keeps the default items or boards response. The dock watcher reads its two
+  projections through `electron/conditional-read.cjs`: each read sends the
+  validator its last 200 carried and reuses what it parsed on a 304, an untagged
+  answer (an older viewer) is never held, and a failure drops what was held. An
+  older reused viewer ignores the parameter and serves its full list, which the
+  shared predicate reads the same way (`test/reply-watch.test.ts`). The predicate
+  still runs every tick, 304s or not, because the clock alone changes what it
+  decides, and a refused notification answer re-reads the default `/api/boards`.
   Matching `If-None-Match` returns a bodyless 304; unconditional
   clients still receive full JSON. Keep `Cache-Control: no-store` and the current
   outer `x-inbox-boot` marker on 304 responses too. Store-only invalidation reads
@@ -94,10 +108,12 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   full-fetch behavior, malformed replies fail explicitly, and no snapshot content
   is persisted to browser storage. Derive mutable view state rather than changing
   authoritative cached records. A poll tick starts its eight reads together (#161)
-  and applies nothing until all settle: history, closed projects, links and the
-  sub-issue graph (#103) keep their fallbacks, any other failure still fails the
-  whole tick (reported in the old serial order) without blanking the frame, and
-  `loadGeneration` still discards an older tick that finishes late.
+  and applies nothing until all settle: history, closed projects, links (read as a
+  snapshot since #288, its body through `linksBody`, so a 404, a network error or
+  a refused body is no links) and the sub-issue graph (#103) keep their
+  fallbacks, any other failure still fails the whole tick (reported in the old
+  serial order) without blanking the frame, and `loadGeneration` still discards
+  an older tick that finishes late.
 - **Closed history is paged out of the default items snapshot (issue #184).**
   `/api/items` carries every open item, the `RECENT_CLOSED_ITEMS` (50) most
   recently TOUCHED closed items (`listItemsPage`: the newest of every item stamp)

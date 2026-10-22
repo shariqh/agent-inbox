@@ -3,14 +3,16 @@ import { readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import conditionalRead from '../electron/conditional-read.cjs'
 import replyWatch from '../electron/reply-watch.cjs'
 import { attentionEntries, laterEntries } from '../public/attention.js'
-import type { AttentionBoard, AttentionItem } from '../public/attention.js'
+import type { AttentionBoard, AttentionEntry, AttentionItem, LaterEntry } from '../public/attention.js'
 import { optionOrder } from '../public/card.js'
 import type { CardOption } from '../public/card.js'
 import {
-  advanceBoardRow, annotateBoardRow, annotateItem, closeProject, dismissItem, getBoard, getItem, insertItem,
-  markReplySeen, openDb, pinBoardRow, pinItem, replyItem, resolveItem, snoozeItem, upsertBoard,
+  advanceBoardRow, annotateBoardRow, annotateItem, archiveBoard, closeProject, dismissItem, getBoard, getItem,
+  insertItem, markReplySeen, markRowHandled, openDb, pinBoardRow, pinItem, replyItem, resolveItem, snoozeBoardRow,
+  snoozeItem, upsertActivity, upsertBoard,
 } from '../src/store.js'
 import type { NewBoardRow } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
@@ -269,15 +271,15 @@ describe('native attention notifications', () => {
   })
 
   // One startAttentionWatch poll without the Electron side effects, reading what
-  // main.cjs reads: the lean item projection (#156) and the active boards.
+  // main.cjs reads: the lean item (#156) and plan (#287) projections, through
+  // its conditional reader. Its notification refresh reads every active plan.
   function watch() {
     let known: Set<string> | null = null
+    const read = conditionalRead.createConditionalReader(request)
     return async () => {
-      const grouped = await (await request(`${BASE}api/items?scope=attention`)).json() as {
-        needsYou: Array<{ items: AttentionItem[] }>
-      }
+      const grouped = await read<{ needsYou: Array<{ items: AttentionItem[] }> }>(`${BASE}api/items?scope=attention`)
       const items = grouped.needsYou.flatMap((group) => group.items)
-      const boards = await latestBoards()
+      const boards = await read<AttentionBoard[]>(`${BASE}api/boards?scope=attention`)
       const everything = attentionEntries(items, boards, Date.now(), [])
       const fresh = replyWatch.freshAttentionNotifications(known, everything.map(replyWatch.attentionNotification))
       known = replyWatch.knownNotificationIds(everything, laterEntries(items, boards, Date.now()))
@@ -638,6 +640,362 @@ describe('the dock watcher lean item read (issue #156)', () => {
       db.close()
       rmSync(directory, { recursive: true, force: true })
     }
+  })
+})
+
+// issue #287: the watcher's reads are conditional, and its plans read is the
+// lean `?scope=attention` projection rather than every plan's every row.
+describe('the dock watcher conditional reads (issue #287)', () => {
+  const URL = 'http://127.0.0.1:4319/api/boards?scope=attention'
+
+  function viewerAnswering(answers: Array<{ status: number; etag?: string; body?: unknown } | Error>) {
+    const sent: Array<string | null> = []
+    let parsed = 0
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      sent.push(new Headers(init?.headers).get('if-none-match'))
+      const answer = answers.shift()!
+      if (answer instanceof Error) throw answer
+      return {
+        status: answer.status,
+        headers: new Headers(answer.etag ? { etag: answer.etag } : {}),
+        json: async () => { parsed++; return structuredClone(answer.body) },
+      }
+    })
+    return { fetchImpl, sent, parsed: () => parsed }
+  }
+
+  it('sends the validator its last answer carried and reuses what it parsed on a 304', async () => {
+    const { fetchImpl, sent, parsed } = viewerAnswering([
+      { status: 200, etag: '"plans-1"', body: [{ id: 'plan' }] },
+      { status: 304, etag: '"plans-1"' },
+      { status: 200, etag: '"plans-2"', body: [] },
+      { status: 304, etag: '"plans-2"' },
+    ])
+    const read = conditionalRead.createConditionalReader(fetchImpl)
+    const first = await read(URL)
+    expect(first).toEqual([{ id: 'plan' }])
+    expect(await read(URL)).toBe(first)
+    expect(await read(URL)).toEqual([])
+    expect(await read(URL)).toEqual([])
+    expect(sent).toEqual([null, '"plans-1"', '"plans-1"', '"plans-2"'])
+    expect(parsed()).toBe(2)
+  })
+
+  it('holds nothing from an answer without a validator, as a viewer older than conditional reads sends', async () => {
+    const { fetchImpl, sent, parsed } = viewerAnswering([
+      { status: 200, body: ['first'] },
+      { status: 200, body: ['second'] },
+    ])
+    const read = conditionalRead.createConditionalReader(fetchImpl)
+    expect(await read(URL)).toEqual(['first'])
+    expect(await read(URL)).toEqual(['second'])
+    expect(sent).toEqual([null, null])
+    expect(parsed()).toBe(2)
+  })
+
+  it('keeps one validator per address', async () => {
+    const other = 'http://127.0.0.1:4319/api/items?scope=attention'
+    const { fetchImpl, sent } = viewerAnswering([
+      { status: 200, etag: '"plans"', body: [] },
+      { status: 200, etag: '"items"', body: { needsYou: [] } },
+      { status: 304, etag: '"items"' },
+      { status: 304, etag: '"plans"' },
+    ])
+    const read = conditionalRead.createConditionalReader(fetchImpl)
+    await read(URL)
+    await read(other)
+    expect(await read(other)).toEqual({ needsYou: [] })
+    expect(await read(URL)).toEqual([])
+    expect(sent).toEqual([null, null, '"items"', '"plans"'])
+  })
+
+  it('never answers a failed read from what it holds, and asks unconditionally after one', async () => {
+    const { fetchImpl, sent } = viewerAnswering([
+      { status: 200, etag: '"plans-1"', body: ['held'] },
+      { status: 500, body: { ok: false } },
+      { status: 200, etag: '"plans-1"', body: ['held'] },
+    ])
+    const read = conditionalRead.createConditionalReader(fetchImpl)
+    await read(URL)
+    await expect(read(URL)).rejects.toThrow('HTTP 500')
+    expect(await read(URL)).toEqual(['held'])
+    expect(sent).toEqual([null, '"plans-1"', null])
+
+    const { fetchImpl: unasked } = viewerAnswering([{ status: 304, etag: '"plans-1"' }])
+    await expect(conditionalRead.createConditionalReader(unasked)(URL)).rejects.toThrow('HTTP 304')
+  })
+
+  // A viewer that cannot be reached may come back as another instance, so what
+  // was held is dropped there too rather than revalidated against it.
+  it('drops what it holds when the viewer cannot be reached, and asks unconditionally after', async () => {
+    const { fetchImpl, sent } = viewerAnswering([
+      { status: 200, etag: '"plans-1"', body: ['held'] },
+      new TypeError('fetch failed: connect ECONNREFUSED 127.0.0.1:4319'),
+      { status: 200, etag: '"plans-2"', body: ['restarted'] },
+    ])
+    const read = conditionalRead.createConditionalReader(fetchImpl)
+    await read(URL)
+    await expect(read(URL)).rejects.toThrow('ECONNREFUSED')
+    expect(await read(URL)).toEqual(['restarted'])
+    expect(sent).toEqual([null, '"plans-1"', null])
+  })
+})
+
+describe('the dock watcher lean plans read (issue #287)', () => {
+  const HOUR = 60 * MINUTE
+  const BASE = 'http://127.0.0.1:4319/'
+  type Grouped = { needsYou: Array<{ items: AttentionItem[] }>; notes: Array<{ items: AttentionItem[] }>; done: AttentionItem[] }
+  let directory: string
+  let db: Database.Database
+  let viewer: ReturnType<typeof createViewer>
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    directory = scratchDir('dock-plans-')
+    db = openDb(join(directory, 'inbox.db'))
+    viewer = createViewer(db)
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    db.close()
+    rmSync(directory, { recursive: true, force: true })
+  })
+
+  const row = (project: string, title: string, label: string) =>
+    getBoard(db, project, title)!.rows.find((candidate) => candidate.label === label)!
+
+  // Every kind of plan row the dock can meet. All of it lands in one frozen
+  // millisecond, so tie order is exercised as well.
+  function seed() {
+    const scope = (project: string) => ({ project, stream: 'release', agent: 'copilot' })
+    vi.setSystemTime(NOW - 96 * HOUR)
+    insertItem(db, { ...scope('alpha'), kind: 'question', title: 'Nobody listening any more' })
+    vi.setSystemTime(NOW - 10 * MINUTE)
+    upsertActivity(db, { ...scope('alpha'), session: 'live', doing: 'Shipping' })
+    insertItem(db, { ...scope('alpha'), session: 'live', kind: 'question', title: 'Waiting on you' })
+    replyItem(db, insertItem(db, { ...scope('alpha'), session: 'live', kind: 'question', title: 'Answered' }), 'Go')
+    upsertBoard(db, {
+      ...scope('alpha'),
+      title: 'Release',
+      rows: [
+        { label: 'Approve', status: 'blocked', options: [{ label: 'Hold' }, { label: 'Ship it', recommended: true }] },
+        { label: 'Choose', status: 'blocked' },
+        { label: 'Clarify', status: 'blocked' },
+        { label: 'Did it', status: 'blocked' },
+        { label: 'Set aside', status: 'blocked' },
+        { label: 'Later today', status: 'blocked' },
+        { label: 'Track', status: 'tracked', context: 'Tracked work.' },
+        { label: 'Build', status: 'partial' },
+        { label: 'Ship', status: 'done' },
+        { label: 'Skip', status: 'na' },
+        { label: 'Plan', status: 'missing' },
+      ],
+    })
+    annotateBoardRow(db, row('alpha', 'Release', 'Choose').id, 'Option B')
+    annotateBoardRow(db, row('alpha', 'Release', 'Clarify').id, 'Which window?', 'clarify')
+    expect(markRowHandled(db, row('alpha', 'Release', 'Did it').id)).toBe(true)
+    annotateBoardRow(db, row('alpha', 'Release', 'Track').id, 'A note on tracked work')
+    const aside = row('alpha', 'Release', 'Set aside')
+    expect(pinBoardRow(db, aside.id, true, aside.revision, getBoard(db, 'alpha', 'Release')!.revision)).toBe(true)
+    const later = row('alpha', 'Release', 'Later today')
+    expect(snoozeBoardRow(db, later.id, new Date(NOW + HOUR).toISOString(), later.revision,
+      getBoard(db, 'alpha', 'Release')!.revision)).toBe(true)
+    upsertBoard(db, { ...scope('alpha'), title: 'Docs', rows: [{ label: 'Write', status: 'partial' }, { label: 'Review', status: 'done' }] })
+    // A chained ask carries the history of its earlier steps.
+    upsertBoard(db, { ...scope('beta'), title: 'Migration', rows: [{ label: 'Cutover', status: 'blocked' }, { label: 'Backfill', status: 'tracked' }] })
+    const migration = getBoard(db, 'beta', 'Migration')!
+    expect(advanceBoardRow(db, {
+      project: 'beta', title: 'Migration', label: 'Cutover', agent: 'copilot',
+      expectedBoardVersion: migration.revision, expectedRevision: migration.rows[0]!.revision,
+      note: 'Step one is done.', next_step: 'Approve step two.', action_owner: 'approval',
+      impact: 'Finishes the move.', options: [{ label: 'Approve', recommended: true }, { label: 'Hold' }],
+    })).toMatchObject({ ok: true })
+    // A closed project counts toward `known`, never toward the badge.
+    upsertBoard(db, { ...scope('gamma'), title: 'Closed plan', rows: [{ label: 'Sign off', status: 'blocked' }, { label: 'Parked', status: 'blocked' }] })
+    const parked = row('gamma', 'Closed plan', 'Parked')
+    expect(pinBoardRow(db, parked.id, true, parked.revision, getBoard(db, 'gamma', 'Closed plan')!.revision)).toBe(true)
+    closeProject(db, 'gamma')
+    // An archived plan is in neither read.
+    upsertBoard(db, { ...scope('alpha'), title: 'Retired', rows: [{ label: 'Old ask', status: 'blocked' }] })
+    const retired = getBoard(db, 'alpha', 'Retired')!
+    expect(archiveBoard(db, retired.id, retired.revision)).toBe(true)
+    vi.setSystemTime(NOW)
+  }
+
+  const get = async <T>(route: string) => (await viewer.request(route)).json() as Promise<T>
+  // An entry carries its plan, and only the plan's row list differs between the reads.
+  const comparable = (entries: Array<AttentionEntry | LaterEntry>) => entries.map((entry) => (
+    entry.kind === 'row' ? { ...entry, board: { ...entry.board, rows: [] } } : entry
+  ))
+  const labels = (entries: Array<AttentionEntry | LaterEntry>) => entries.flatMap((entry) => (
+    entry.kind === 'row' ? [`${entry.row.label}${'later' in entry ? `:${entry.later}` : ''}`] : []
+  )).sort()
+
+  it('derives the same badge, attention, known set and response targets as every plan', async () => {
+    seed()
+    const grouped = await get<Grouped>('/api/items?scope=attention')
+    const items = grouped.needsYou.flatMap((group) => group.items)
+    const lean = await get<AttentionBoard[]>('/api/boards?scope=attention')
+    const full = await get<AttentionBoard[]>('/api/boards')
+    const page = await get<Grouped>('/api/items')
+    const pageItems = [...page.needsYou.flatMap((group) => group.items), ...page.notes.flatMap((group) => group.items), ...page.done]
+    const closed = await get<string[]>('/api/projects/closed')
+    expect(closed).toEqual(['gamma'])
+    expect(full.map((plan) => plan.title).sort()).toEqual(['Closed plan', 'Docs', 'Migration', 'Release'])
+    expect(lean.map((plan) => plan.title).sort()).toEqual(['Closed plan', 'Migration', 'Release'])
+    expect(JSON.stringify(lean).length).toBeLessThan(JSON.stringify(full).length)
+
+    const live = ['live']
+    for (const nowMs of [NOW, NOW + 2 * HOUR]) {
+      // The dock badge reads the lean projections; the document badge reads the page's.
+      const dock = attentionEntries(items, lean, nowMs, live, closed)
+      const documentBadge = attentionEntries(pageItems, full, nowMs, live, closed)
+      expect(comparable(dock)).toEqual(comparable(documentBadge))
+      expect(dock.map(replyWatch.attentionNotification)).toEqual(documentBadge.map(replyWatch.attentionNotification))
+      const everything = attentionEntries(items, lean, nowMs, live)
+      const everythingFull = attentionEntries(pageItems, full, nowMs, live)
+      expect(comparable(everything)).toEqual(comparable(everythingFull))
+      const later = laterEntries(items, lean, nowMs)
+      const laterFull = laterEntries(pageItems, full, nowMs)
+      expect(comparable(later)).toEqual(comparable(laterFull))
+      expect(replyWatch.knownNotificationIds(everything, later))
+        .toEqual(replyWatch.knownNotificationIds(everythingFull, laterFull))
+    }
+    // The fixture reaches every case: a chained ask, a snooze that ends, pins,
+    // and a closed project kept in `known` but off the badge.
+    expect(labels(attentionEntries(items, lean, NOW, live, closed))).toEqual(['Approve', 'Cutover'])
+    expect(labels(attentionEntries(items, lean, NOW, live))).toEqual(['Approve', 'Cutover', 'Sign off'])
+    expect(labels(attentionEntries(items, lean, NOW + 2 * HOUR, live, closed))).toEqual(['Approve', 'Cutover', 'Later today'])
+    expect(labels(laterEntries(items, lean, NOW))).toEqual(['Later today:snoozed', 'Parked:pinned', 'Set aside:pinned'])
+    const cutover = attentionEntries(items, lean, NOW, live).find((entry) => entry.kind === 'row' && entry.row.label === 'Cutover')
+    expect((cutover as unknown as { row: { history: unknown[] } }).row.history).toHaveLength(1)
+    const ask = attentionEntries(items, lean, NOW, live, closed).map(replyWatch.attentionNotification)
+      .find((notification) => notification.text.endsWith('Approve'))!
+    expect(replyWatch.cannedResponseActions(optionOrder((ask.item as { options: CardOption[] }).options)).responses)
+      .toEqual(['Ship it', 'Hold'])
+
+    // The response watch: answered and handled asks, never a note on other work.
+    expect(replyWatch.responseTargets(grouped, lean)).toEqual(replyWatch.responseTargets(grouped, full))
+    expect(replyWatch.responseTargets(grouped, lean).flatMap((target) => (target.label ? [target.label] : [])).sort())
+      .toEqual(['Choose', 'Clarify', 'Did it'])
+    const fromFull = replyWatch.createResponseWatch()
+    const fromLean = replyWatch.createResponseWatch()
+    for (const nowMs of [NOW, NOW + 2 * MINUTE, NOW + 20 * MINUTE]) {
+      const expected = fromFull.scan(grouped, full, nowMs)
+      const actual = fromLean.scan(grouped, lean, nowMs)
+      expect(actual).toEqual(expected)
+      expect(replyWatch.wakeAdapterPayload([...actual.newTargets, ...actual.reminders]))
+        .toEqual(replyWatch.wakeAdapterPayload([...expected.newTargets, ...expected.reminders]))
+    }
+  })
+
+  // electron/main.cjs cannot be imported here: this is one startAttentionWatch
+  // tick without the Electron side effects, through the reader it uses.
+  type Fetch = (url: string, init?: RequestInit) => Promise<Response>
+  function dock(fetchImpl: Fetch) {
+    const read = conditionalRead.createConditionalReader(fetchImpl)
+    let known: Set<string> | null = null
+    return async () => {
+      const g = await read<Grouped>(`${BASE}api/items?scope=attention`)
+      const boards = await read<AttentionBoard[]>(`${BASE}api/boards?scope=attention`)
+      const activity = await (await fetchImpl(`${BASE}api/activity`)).json() as Array<{ session: string }>
+      const closed = await (await fetchImpl(`${BASE}api/projects/closed`)).json() as string[]
+      const items = g.needsYou.flatMap((group) => group.items)
+      const live = new Set(activity.map((session) => session.session))
+      const attn = attentionEntries(items, boards, Date.now(), live, closed)
+      const everything = attentionEntries(items, boards, Date.now(), live)
+      const fresh = replyWatch.freshAttentionNotifications(known, attn.map(replyWatch.attentionNotification))
+      known = replyWatch.knownNotificationIds(everything, laterEntries(items, boards, Date.now()))
+      return { badge: attn.length, fresh: fresh.map((notification) => notification.id), known: [...known].sort() }
+    }
+  }
+
+  it('gives one result per tick from this viewer, an older one and an untagged one, and 304s when quiet', async () => {
+    seed()
+    const statuses: string[] = []
+    const current: Fetch = async (url, init) => {
+      const response = await viewer.request(url, init)
+      statuses.push(`${url.slice(BASE.length - 1)} ${response.status}`)
+      return response
+    }
+    // A reused viewer from before #287 ignores the parameter and answers with its
+    // default representation, validator and all.
+    const older: Fetch = async (url, init) => viewer.request(url.replace('api/boards?scope=attention', 'api/boards'), init)
+    // One from before conditional snapshots and both projections sends no validator.
+    const untagged: Fetch = async (url) => {
+      const response = await viewer.request(url.replace('?scope=attention', ''))
+      const headers = new Headers(response.headers)
+      headers.delete('etag')
+      return new Response(response.body, { status: response.status, headers })
+    }
+    const ticks = [current, older, untagged].map(dock)
+    const tick = async () => {
+      statuses.length = 0
+      const results = []
+      for (const poll of ticks) results.push(await poll())
+      const [mine, ...others] = results
+      for (const result of others) expect(result).toEqual(mine)
+      return mine!
+    }
+    const documentBadge = async () => {
+      const page = await get<Grouped>('/api/items')
+      const pageItems = [...page.needsYou.flatMap((group) => group.items), ...page.notes.flatMap((group) => group.items), ...page.done]
+      const live = (await get<Array<{ session: string }>>('/api/activity')).map((session) => session.session)
+      return attentionEntries(pageItems, await get<AttentionBoard[]>('/api/boards'), Date.now(), live, await get<string[]>('/api/projects/closed')).length
+    }
+    const QUIET = ['/api/items?scope=attention 304', '/api/boards?scope=attention 304', '/api/activity 200', '/api/projects/closed 200']
+
+    const first = await tick()
+    expect(first.fresh).toEqual([])
+    expect(first.badge).toBe(await documentBadge())
+    expect(await tick()).toEqual(first)
+    expect(statuses).toEqual(QUIET)
+
+    // A write the dock cannot count changes neither read's bytes.
+    insertItem(db, { project: 'alpha', stream: 'release', agent: 'copilot', kind: 'note', title: 'An aside' })
+    expect(await tick()).toEqual(first)
+    expect(statuses).toEqual(QUIET)
+
+    // A new ask is announced once, everywhere.
+    const docs = getBoard(db, 'alpha', 'Docs')!
+    upsertBoard(db, {
+      project: 'alpha', stream: 'release', agent: 'copilot', title: 'Docs', expectedVersion: docs.revision,
+      rows: [
+        ...docs.rows.map(({ label, revision, status }) => ({ label, revision, status })),
+        { label: 'Publish', status: 'blocked' as const },
+      ],
+    })
+    const publish = row('alpha', 'Docs', 'Publish')
+    const arrived = await tick()
+    expect(arrived.fresh).toEqual([`r:${publish.id}:v${publish.revision}`])
+    expect(arrived.badge).toBe(first.badge + 1)
+    expect(arrived.badge).toBe(await documentBadge())
+
+    // The clock alone ends a snooze: both reads stay 304 and the ask is still announced.
+    vi.setSystemTime(NOW + 2 * HOUR)
+    const woke = await tick()
+    const snoozed = row('alpha', 'Release', 'Later today')
+    expect(woke.fresh).toEqual([`r:${snoozed.id}:v${snoozed.revision}`])
+    expect(woke.badge).toBe(await documentBadge())
+    expect(statuses.slice(0, 2)).toEqual(QUIET.slice(0, 2))
+
+    // Pinning an ask and bringing it back announces nothing.
+    const pin = async (pinned: boolean) => {
+      const plan = getBoard(db, 'alpha', 'Docs')!
+      const ask = plan.rows.find((candidate) => candidate.label === 'Publish')!
+      expect(await (await viewer.request(`/api/boards/${plan.id}/rows/${ask.id}/later`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ pinned, expected_revision: ask.revision, expected_board_version: plan.revision }),
+      })).json()).toEqual({ ok: true })
+    }
+    await pin(true)
+    const pinned = await tick()
+    expect(pinned.fresh).toEqual([])
+    expect(pinned.badge).toBe(woke.badge - 1)
+    await pin(false)
+    expect(await tick()).toEqual({ ...woke, fresh: [] })
   })
 })
 

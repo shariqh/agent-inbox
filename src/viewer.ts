@@ -9,7 +9,7 @@ import type Database from 'better-sqlite3'
 import {
   listItems, listItemsPage, listOpenQuestions, resolveItem, dismissItem, annotateItem, replyItem, snoozeItem,
   stopItemWatch, stopBoardRowWatch, pinItem, pinBoardRow,
-  listBoards, archiveBoard, unarchiveBoard, annotateBoardRow, snoozeBoardRow,
+  listBoards, listBoardsWithBlockedRows, archiveBoard, unarchiveBoard, annotateBoardRow, snoozeBoardRow,
   markRowHandled, clearRowHandled, listActivity, listActivitySpans, listSourceLinks, defaultDbPath,
   closeProject, reopenProject, closedProjects, readSnapshotState, listIssueEntities, listIssueSnapshots,
 } from './store.js'
@@ -587,7 +587,7 @@ function etagMatches(requested: string | undefined, etag: string): boolean {
 
 function conditionalSnapshot(
   db: Database.Database,
-  name: 'items' | 'attention-items' | 'history-items' | 'boards' | 'archived-boards' | 'issues',
+  name: 'items' | 'attention-items' | 'history-items' | 'boards' | 'attention-boards' | 'archived-boards' | 'issues' | 'links',
   read: () => object,
 ): Handler {
   // One representation per registration, local to this viewer instance.
@@ -805,7 +805,10 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
   // issue #30 — the cached PR state, one row per (repo, branch). Deliberately
   // PURE: it never triggers a gh fetch, so the frontend's 3s poll can hit it
   // freely. The only writer is the poller src/viewer-server.ts starts.
-  app.get('/api/links', (c) => c.json(listSourceLinks(db)))
+  // Issue #288: its bytes depend on the database alone (the poller writes them
+  // through store.ts, and the previews it keeps follow open items and active
+  // plans), so it is a retained representation with its own validator.
+  app.get('/api/links', conditionalSnapshot(db, 'links', () => listSourceLinks(db)))
 
   // Issue #103: the sub-issue graph, reconciled purely from cached GitHub
   // snapshots and the issues that open items and active or archived plans link
@@ -924,7 +927,14 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
     return c.json(ok ? { ok: true } : { ok: false, reason: 'not_pinnable' })
   })
 
-  app.get('/api/boards', conditionalSnapshot(db, 'boards', () => listBoards(db)))
+  const allBoards = conditionalSnapshot(db, 'boards', () => listBoards(db))
+  // Issue #287: the same dock watcher read every plan, every row and all of their
+  // background every 3 seconds as well. `?scope=attention` serves the same shape
+  // narrowed to the plans holding a blocked row and to those rows, as its own
+  // cached representation with its own validator, so neither can revalidate or
+  // evict the other; any other query string keeps the full response.
+  const attentionBoards = conditionalSnapshot(db, 'attention-boards', () => listBoardsWithBlockedRows(db))
+  app.get('/api/boards', (c, next) => (c.req.query('scope') === 'attention' ? attentionBoards : allBoards)(c, next))
 
   app.get('/api/boards/archived', conditionalSnapshot(db, 'archived-boards', () => listBoards(db, { status: 'archived' })))
 

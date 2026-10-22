@@ -20,6 +20,8 @@ const boards = (value) => Array.isArray(value) && value.every((board) =>
   && Array.isArray(board.rows) && board.rows.every((row) => strings(row, ['id', 'label', 'status']))
   && record(board.progress) && ['done', 'countable', 'fraction'].every((key) => Number.isFinite(board.progress[key])))
 const spans = (value) => Array.isArray(value) && value.every(record)
+// Issue #288: the cached PR state, one record per (repo, branch, head).
+const links = (value) => Array.isArray(value) && value.every((link) => strings(link, ['repo', 'branch']))
 // Issue #103: the sub-issue graph, version 1. Only its shape is checked here;
 // public/issues.js validates each node and edge again before drawing it. A
 // root's `hierarchy` status is additive within version 1: absent, or one of
@@ -37,6 +39,7 @@ const validators = new Map([
   ['/api/boards/archived', boards],
   ['/api/activity/history', spans],
   ['/api/issues', issueGraph],
+  ['/api/links', links],
 ])
 // The only route whose query string selects one of its own representations
 // (#185). Anywhere else a query names a different representation, such as the

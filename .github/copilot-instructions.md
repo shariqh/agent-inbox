@@ -143,11 +143,19 @@ Run the build before `npm run electron`; the development shell starts the built
   reads before it may write `.immediate()`: SQLite never waits when a deferred
   reader is promoted to the writer.
 - Conditional viewer snapshots retain only items, the dock watcher's
-  `/api/items?scope=attention` projection (its own validator, never the default
-  representation's), `/api/items/history` (likewise its own), active/archived boards
-  and the `/api/issues` sub-issue graph (#103, likewise its own; its builder is pure,
-  so its bytes depend on the database alone). `/api/items` and `/api/boards` never
-  carry GitHub data, so issue snapshot writes leave their bytes and validators unchanged.
+  `/api/items?scope=attention` and `/api/boards?scope=attention` projections (#156,
+  #287; each its own validator, never the default representation's),
+  `/api/items/history` (likewise its own), active/archived boards,
+  the `/api/issues` sub-issue graph (#103, likewise its own; its builder is pure,
+  so its bytes depend on the database alone) and the `/api/links` PR state (#288,
+  likewise its own; the PR poller writes it through `store.ts` and its previews
+  follow open items and active plans, so its bytes depend on the database alone too,
+  and a 404, network error or refused body still means no links). `/api/items` and
+  `/api/boards` never carry GitHub data, so issue snapshot writes leave their bytes
+  and validators unchanged.
+  The dock watcher reads its two projections conditionally through
+  `electron/conditional-read.cjs` and still runs the shared predicate every tick,
+  because the clock alone changes what it decides.
   Invalidate on same/other-connection writes, schema changes and pickup stamps;
   never cache an uncommitted snapshot. Keep dynamic routes fresh, no-store and
   the boot marker intact, and never turn a read failure into cached success.

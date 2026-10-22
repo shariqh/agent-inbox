@@ -1357,10 +1357,14 @@ describe('write routes refuse invalid bodies before touching the store (#163)', 
         watch_stopped_until: OFFSET_DATE_UTC, snoozed_until: OFFSET_DATE_UTC, pinned_at: null,
       })
 
-      const plain = question()
-      res = await post(`/api/items/${plain}/stop-waiting`, JSON.stringify({ until: null, defer: false }))
-      expect(await res.json()).toEqual({ ok: true })
-      expect(getItem(db, plain)).toMatchObject({ watch_stopped_until: null, pinned_at: null, snoozed_until: null })
+      for (const body of [{ until: null, defer: false }, { until: FUTURE }]) {
+        const plain = question()
+        res = await post(`/api/items/${plain}/stop-waiting`, JSON.stringify(body))
+        expect(await res.json(), JSON.stringify(body)).toEqual({ ok: true })
+        expect(getItem(db, plain), 'without defer the ask stays where it is').toMatchObject({
+          watch_stopped_at: expect.any(String), pinned_at: null, snoozed_until: null,
+        })
+      }
 
       // a stop for good is final, so a later deferral is refused whole
       res = await post(`/api/items/${pinned}/stop-waiting`, JSON.stringify({ until: OFFSET_DATE, defer: true }))

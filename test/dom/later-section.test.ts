@@ -239,11 +239,19 @@ describe('the Later section (#247)', () => {
     expect(getItem(d, snoozed)!.snoozed_until).toBeNull()
   })
 
-  it('says the queue is clear when Later is empty too', async () => {
+  it('says the queue is clear when Later is empty too, or when the section is off', async () => {
     const d = open()
     await bootApp(d)
     await showInbox()
     expect(calmHead()).toBe('Your queue is clear')
+
+    pinItem(d, question(d), true)
+    await pollTick()
+    expect(calmHead()).toBe('Nothing needs you now · 1 in Later')
+    await chooseLater(false)
+    await showInbox()
+    expect(fold('pinned')).not.toBeNull()
+    expect(calmHead(), 'with the section off there is no Later to name').toBe('Your queue is clear')
   })
 
   it('counts Later in the current lens only, never in the badge, the tab or the rail', async () => {
@@ -673,6 +681,26 @@ describe('a drafted ask deferred from the Review queue lands in view (#247)', ()
     expect(document.getElementById('notes')?.hidden).toBe(false)
     expect(document.querySelector('.tab[data-tab="needsYou"]')?.getAttribute('aria-selected')).toBe('false')
     expect(deckInput()?.value).toBe('Half an answer')
+  })
+
+  it('stays on Plans when a drafted row is set aside from its plan panel, where the draft still shows', async () => {
+    const d = open()
+    upsertBoard(d, { ...AGENT, title: 'Release', rows: [blockedRow()] })
+    const rowId = getBoard(d, 'alpha', 'Release')!.rows[0]!.id
+    await bootApp(d)
+    click(document.querySelector('.tab[data-tab="boards"]'))
+    await settle()
+    click(buttonLabelled('Answer', document.querySelector(`#boards [data-row-id="${rowId}"]`)!))
+    await settle()
+    const panel = () => document.querySelector(`#boards [data-row-id="${rowId}"] + .row-panel-row`)
+    type(panel()!.querySelector<HTMLTextAreaElement>('.reply-input'), 'Half an answer')
+    click(buttonLabelled('Pin for later', panel()!))
+    await settle()
+
+    expect(getBoard(d, 'alpha', 'Release')!.rows[0]!.pinned_at).not.toBeNull()
+    expect(document.getElementById('boards')?.hidden).toBe(false)
+    expect(document.querySelector('.tab[data-tab="needsYou"]')?.getAttribute('aria-selected')).toBe('false')
+    expect(panel()?.querySelector<HTMLTextAreaElement>('.reply-input')?.value).toBe('Half an answer')
   })
 
   it('clears an agent filter that would hide the ask', async () => {

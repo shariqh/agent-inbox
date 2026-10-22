@@ -181,6 +181,8 @@ These come from `CLAUDE.md` and are not up for redesign:
 
 ### Motion
 
+Open [`mockup-a-mission-control.html`](assets/2026-10-22-dashboard-2/mockup-a-mission-control.html) in a browser to see the motion (macOS "Reduce motion" turns it off).
+
 | Element | Motion | Reduced motion |
 |---|---|---|
 | Lane pulse | `transform: scale` + `opacity` ring, 2 s loop, only while the claim is live | Solid dot plus the word "live" |

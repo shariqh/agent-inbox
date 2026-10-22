@@ -68,6 +68,46 @@
 .rib-axis div { display: flex; justify-content: space-between; }
 .rib-now { position: absolute; right: 0; top: -6px; bottom: -6px; width: 2px; background: var(--app-accent); }
 </style>
+<style>
+/* ── Motion (proposal §4 and §10) ─────────────────────────────────────────
+   CSS only; every animation moves transform or opacity, nothing else.
+   Infinite animations on this screen: 11 (budget 12):
+     4 lane pulse rings (working lanes) · 3 subagent pulses (staggered)
+     1 top-edge sweep + 1 heartbeat head, both on the lane with the newest
+       call only (sweeps on all four lanes plus four heads would be 17)
+     1 Now-strip ring · 1 Today-ribbon stripe drift (one masked overlay
+       whose pseudo-element translates; background-position never animates)
+   One-shots (500 ms): the newest "Just landed" row and the top Needs-you card.
+   prefers-reduced-motion: every infinite animation off, one-shots instant. */
+@keyframes m-pulse { from { transform: scale(.55); opacity: .75; } to { transform: scale(1.35); opacity: 0; } }
+@keyframes m-sweep { 0% { transform: translateX(-100%); opacity: 0; } 8% { opacity: .9; } 45% { transform: translateX(265%); opacity: 0; } 100% { transform: translateX(265%); opacity: 0; } }
+@keyframes m-beat { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.7); opacity: .45; } }
+@keyframes m-spin { to { transform: rotate(360deg); } }
+@keyframes m-drift { to { transform: translateX(16.97px); } }
+@keyframes m-arrive { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+.lane .lane-top .pulse::after { animation: m-pulse 2s ease-out infinite; }
+.kid .pulse::after { animation: m-pulse 2s ease-out var(--d, 0s) infinite; }
+.lane::after { opacity: 0; }
+.lane.fresh::after { animation: m-sweep 4s ease-in-out infinite; }
+.lane.fresh .trace .head { transform-box: fill-box; transform-origin: center; animation: m-beat 1.2s ease-in-out infinite; }
+.now-chip .orbit { animation: m-spin 6s linear infinite; }
+.rib-rows { position: relative; display: flow-root; }
+.rib-bar.live { background: var(--c); }
+.rib-live { position: absolute; top: 0; bottom: 0; left: 120px; right: 0; overflow: hidden; pointer-events: none;
+  /* one 8px band per live bar: rows start 3px + 16px apart, the track is centred in a 13px row */
+  -webkit-mask: linear-gradient(#000 0 0) right 0 top 5.5px / 14% 8px no-repeat, linear-gradient(#000 0 0) right 0 top 21.5px / 10% 8px no-repeat, linear-gradient(#000 0 0) right 0 top 37.5px / 7% 8px no-repeat, linear-gradient(#000 0 0) right 0 top 53.5px / 5% 8px no-repeat;
+          mask: linear-gradient(#000 0 0) right 0 top 5.5px / 14% 8px no-repeat, linear-gradient(#000 0 0) right 0 top 21.5px / 10% 8px no-repeat, linear-gradient(#000 0 0) right 0 top 37.5px / 7% 8px no-repeat, linear-gradient(#000 0 0) right 0 top 53.5px / 5% 8px no-repeat; }
+.rib-live::before { content: ''; position: absolute; top: 0; bottom: 0; left: -17px; right: 0;
+  background: repeating-linear-gradient(-45deg, rgba(255, 255, 255, .34) 0 6px, transparent 6px 12px);
+  animation: m-drift 1.1s linear infinite; }
+.landed.new, .m-card-head + .ask { animation: m-arrive .5s ease-out both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .lane .lane-top .pulse::after, .kid .pulse::after, .lane.fresh::after, .lane.fresh .trace .head,
+  .now-chip .orbit, .rib-live::before, .landed.new, .m-card-head + .ask { animation: none !important; }
+}
+</style>
 </head>
 <body>
 <div class="m-shell">
@@ -93,15 +133,15 @@
   <div class="lane-top"><span class="pulse"></span><strong>Migrating billing webhooks</strong><span class="m-spacer"></span><span class="lane-who">claude-code · oris · main</span><span class="m-soft lane-ago">8s ago</span></div>
   <div class="lane-meta"><div class="lane-detail">Step 3 of 5: Paddle signature check</div><div class="lane-trace"><svg class="trace" viewBox="0 0 220 22" preserveAspectRatio="none" style="--c:#c77dff"><path class="area" d="M0.0,16.4 L12.9,14.6 L25.9,15.5 L38.8,11.0 L51.8,9.2 L64.7,12.8 L77.6,7.4 L90.6,5.6 L103.5,11.0 L116.5,9.2 L129.4,3.8 L142.4,7.4 L155.3,12.8 L168.2,14.6 L181.2,16.4 L194.1,17.3 L207.1,18.2 L220.0,18.2 L220,22 L0,22 Z"/><path d="M0.0,16.4 L12.9,14.6 L25.9,15.5 L38.8,11.0 L51.8,9.2 L64.7,12.8 L77.6,7.4 L90.6,5.6 L103.5,11.0 L116.5,9.2 L129.4,3.8 L142.4,7.4 L155.3,12.8 L168.2,14.6 L181.2,16.4 L194.1,17.3 L207.1,18.2 L220.0,18.2"/><circle class="head" cx="218" cy="18.2" r="2.6"/></svg></div>
     <div class="lane-plan"><div class="lane-plan-head"><span>Billing webhook migration</span><b>2/5</b></div><span class="seg"><i class="d"></i><i class="d"></i><i class="now"></i><i class=""></i><i class=""></i></span></div></div>
-  <div class="kids"><span class="kid"><span class="pulse" style="--c:#c77dff"></span><b>reviewer</b><span class="m-muted">Reviewing webhook diff</span></span></div>
+  <div class="kids"><span class="kid" style="--d:.3s"><span class="pulse" style="--c:#c77dff"></span><b>reviewer</b><span class="m-muted">Reviewing webhook diff</span></span></div>
   <div class="lane-ask"><span class="m-chip t-att">Asking you</span><span>Retry failed Paddle webhooks for 72h or 24h?</span><span class="m-spacer"></span><span class="lane-ask-go">Answer in Needs you →</span></div>
 </article>
     
-<article class="lane has-ask" style="--c:#38d6c0">
+<article class="lane has-ask fresh" style="--c:#38d6c0">
   <div class="lane-top"><span class="pulse"></span><strong>Profiling the 3-second poll</strong><span class="m-spacer"></span><span class="lane-who">copilot · agent-inbox · feat/281-efficiency</span><span class="m-soft lane-ago">3s ago</span></div>
   <div class="lane-meta"><div class="lane-detail">Measuring /api/items bytes per tick</div><div class="lane-trace"><svg class="trace" viewBox="0 0 220 22" preserveAspectRatio="none" style="--c:#38d6c0"><path class="area" d="M0.0,12.8 L12.9,11.0 L25.9,7.4 L38.8,9.2 L51.8,5.6 L64.7,3.8 L77.6,7.4 L90.6,5.6 L103.5,2.9 L116.5,4.7 L129.4,7.4 L142.4,3.8 L155.3,5.6 L168.2,9.2 L181.2,6.5 L194.1,3.8 L207.1,5.6 L220.0,4.7 L220,22 L0,22 Z"/><path d="M0.0,12.8 L12.9,11.0 L25.9,7.4 L38.8,9.2 L51.8,5.6 L64.7,3.8 L77.6,7.4 L90.6,5.6 L103.5,2.9 L116.5,4.7 L129.4,7.4 L142.4,3.8 L155.3,5.6 L168.2,9.2 L181.2,6.5 L194.1,3.8 L207.1,5.6 L220.0,4.7"/><circle class="head" cx="218" cy="4.7" r="2.6"/></svg></div>
     <div class="lane-plan"><div class="lane-plan-head"><span>Efficiency audit (#281)</span><b>2/5</b></div><span class="seg"><i class="d"></i><i class="d"></i><i class="now"></i><i class=""></i><i class="b"></i></span></div></div>
-  <div class="kids"><span class="kid"><span class="pulse" style="--c:#38d6c0"></span><b>explore</b><span class="m-muted">Reading src/viewer.ts snapshot path</span></span><span class="kid"><span class="pulse" style="--c:#38d6c0"></span><b>task</b><span class="m-muted">Running vitest store suite</span></span></div>
+  <div class="kids"><span class="kid" style="--d:.8s"><span class="pulse" style="--c:#38d6c0"></span><b>explore</b><span class="m-muted">Reading src/viewer.ts snapshot path</span></span><span class="kid" style="--d:1.3s"><span class="pulse" style="--c:#38d6c0"></span><b>task</b><span class="m-muted">Running vitest store suite</span></span></div>
   <div class="lane-ask"><span class="m-chip t-att">Asking you</span><span>Merge PR #283 (poll snapshot trim)?</span><span class="m-spacer"></span><span class="lane-ask-go">Answer in Needs you →</span></div>
 </article>
     
@@ -157,11 +197,14 @@
 </div>
 <section class="m-card ribbon" style="margin-bottom:16px">
   <div class="m-card-head" style="margin-bottom:6px"><h2>Today</h2><small>who worked when · ◆ asked you · ● outcome</small><span class="m-spacer"></span><span class="m-btn small ghost">8 h ▾</span></div>
+  <div class="rib-rows">
   <div class="rib-row"><span class="rib-name"><i style="background:#38d6c0"></i>agent-inbox</span><div class="rib-track"><span class="rib-bar" style="left:4%;width:14%;background:#38d6c0"></span><span class="rib-bar" style="left:30%;width:11%;background:#38d6c0"></span><span class="rib-mark o" style="left:41%"></span><span class="rib-bar" style="left:55%;width:8%;background:#38d6c0"></span><span class="rib-bar" style="left:70%;width:10%;background:#38d6c0"></span><span class="rib-mark o" style="left:80%"></span><span class="rib-bar live" style="left:86%;width:14%;--c:#38d6c0"></span></div></div>
   <div class="rib-row"><span class="rib-name"><i style="background:#c77dff"></i>oris</span><div class="rib-track"><span class="rib-bar" style="left:10%;width:16%;background:#c77dff"></span><span class="rib-bar" style="left:46%;width:12%;background:#c77dff"></span><span class="rib-mark q" style="left:58%"></span><span class="rib-bar live" style="left:90%;width:10%;--c:#c77dff"></span></div></div>
   <div class="rib-row"><span class="rib-name"><i style="background:#4cc9f0"></i>homelab</span><div class="rib-track"><span class="rib-bar" style="left:0%;width:8%;background:#4cc9f0"></span><span class="rib-mark o" style="left:8%"></span><span class="rib-bar" style="left:62%;width:13%;background:#4cc9f0"></span><span class="rib-bar live" style="left:93%;width:7%;--c:#4cc9f0"></span></div></div>
   <div class="rib-row"><span class="rib-name"><i style="background:#4895ef"></i>social-agent</span><div class="rib-track"><span class="rib-bar" style="left:20%;width:13%;background:#4895ef"></span><span class="rib-bar" style="left:80%;width:8%;background:#4895ef"></span><span class="rib-mark q" style="left:88%"></span><span class="rib-bar live" style="left:95%;width:5%;--c:#4895ef"></span></div></div>
   <div class="rib-row"><span class="rib-name"><i style="background:#8f99a3"></i>portal-docs</span><div class="rib-track"><span class="rib-bar" style="left:36%;width:16%;background:#8f99a3"></span><span class="rib-mark o" style="left:52%"></span></div></div>
+  <span class="rib-live" aria-hidden="true"></span>
+  </div>
   <div class="rib-axis"><span></span><div><span>03:00</span><span>05:00</span><span>07:00</span><span>09:00</span><span>now 11:00</span></div></div>
 </section></main>
 </div>

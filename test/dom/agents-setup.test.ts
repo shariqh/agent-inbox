@@ -746,7 +746,7 @@ describe('Setup shows what each host\'s agents run (#197)', () => {
     expect(updateButton()).toBeNull()
   })
 
-  it('promises nothing about hooks where this release cannot install its own runtime', async () => {
+  it('promises nothing about hooks where this release cannot install its own runtime, and says where to look', async () => {
     const release = releaseRuntime('2.0.0', { hostPayload: false })
     release.registerHooks(release.installVersion('1.2.4'))
     bridge(vi.fn<Install>(async (t) => ok(String(t))))
@@ -755,6 +755,8 @@ describe('Setup shows what each host\'s agents run (#197)', () => {
 
     expect(lines()[2]).toBe('Claude hooks: v1.2.4 runtime (Setup) — older than this app\'s v2.0.0')
     expect(agentsText()).not.toMatch(/runtime is installed|move them|Open Settings/)
+    // #278: never an older line without a next step
+    expect(agentsText()).toContain('Setup cannot move these hooks. To change them, run Agent Inbox\'s hook installer in a terminal, as docs/hooks.md describes.')
     expect(hooksCommand()).toBeNull()
     expect(updateButton()).toBeNull()
   })
@@ -769,5 +771,54 @@ describe('Setup shows what each host\'s agents run (#197)', () => {
     expect(updateButton()).toBeNull()
     expect(agentsText()).toContain('Once this app\'s v2.0.0 runtime is installed, Setup can move Claude hooks to it.')
     expect(hooksCommand()).toBeNull()
+  })
+
+  // #278, as reported on v1.5.0: both agents run from a source checkout, Claude's
+  // hooks still run an old Setup runtime, and this app's runtime is not
+  // installed. Setup never switches a checkout, so nothing in it would ever
+  // install that runtime: the panel hands over the checkout's own hook command
+  // (built and quoted by the viewer) instead of promising a step it cannot take.
+  it.each([
+    ['in the app', true],
+    ['in a browser tab', false],
+  ] as const)('hands over the checkout\'s own hook command when Claude Code runs from a checkout, %s', async (_label, inApp) => {
+    const release = releaseRuntime('1.5.0')
+    release.registerHooks(release.installVersion('1.2.4'))
+    // a checkout path comes from a config file: text, never markup
+    const root = realpathSync(checkoutIn(release, "it's <img src=x onerror=alert(1)>"))
+    registerHost(release.home, 'claude', process.execPath, join(root, 'dist', 'mcp-server.js'))
+    registerHost(release.home, 'copilot', process.execPath, join(root, 'dist', 'mcp-server.js'))
+    const install = vi.fn<Install>(async (t) => ok(String(t)))
+    if (inApp) bridge(install)
+    const writeText = vi.fn(async (_text: string) => {})
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    try {
+      await boot(release)
+
+      expect(lines()).toEqual([
+        `Claude Code: source checkout at ${root} (not managed by Setup)`,
+        `Copilot CLI: source checkout at ${root} (not managed by Setup)`,
+        'Claude hooks: v1.2.4 runtime (Setup) — older than this app\'s v1.5.0',
+      ])
+      expect(updateButton()).toBeNull()
+      expect(agentsText()).toContain('Setup does not update a source checkout: run git pull and npm run build in it, then restart its sessions.')
+      expect(agentsText()).toContain('Claude Code runs from your source checkout. To point Claude hooks at it too, run this in a terminal with Node 24:')
+      const command = `cd '${root.replaceAll("'", "'\\''")}' && npm run install:hooks -- --apply --replace-existing`
+      expect(hooksCommand()).toBe(command)
+      expect(document.querySelectorAll('.agents-hooks-command')).toHaveLength(1)
+      expect(document.querySelector('#setup img')).toBeNull()
+      // no promise Setup cannot keep, and nothing else about moving them
+      expect(agentsText()).not.toMatch(/runtime is installed|Setup cannot move|Open Settings/)
+
+      const copy = document.querySelector('.agents-hooks-command')?.nextElementSibling ?? null
+      expect(copy?.textContent).toBe('Copy')
+      click(copy)
+      await settle()
+      expect(writeText.mock.calls).toEqual([[command]])
+      expect(copy?.textContent).toBe('Copied ✓')
+      expect(install).not.toHaveBeenCalled()
+    } finally {
+      Reflect.deleteProperty(navigator, 'clipboard')
+    }
   })
 })

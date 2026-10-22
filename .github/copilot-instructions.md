@@ -94,7 +94,15 @@ Run the build before `npm run electron`; the development shell starts the built
   runtime>/scripts/install-hooks.sh --apply --move-only`, from the installed
   copy of the verified release runtime (re-verified against the signed manifest
   digest before spawn), never from the app bundle or a checkout; `--move-only`
-  refuses under the setup lock where no Setup runtime's hooks exist to move. Once any quit begins, nothing starts: every quit or
+  refuses under the setup lock where no Setup runtime's hooks exist to move.
+  Where no Setup step can move outdated hooks (#278), the panel hands over the
+  checkout's own `npm run install:hooks -- --apply --replace-existing` when
+  Claude Code runs from a checkout (built and quoted by the viewer as `/api/setup`
+  `checkoutHooksCommand`), promises a later move only while a Setup install
+  could put the app's runtime in place, and otherwise says Setup cannot move them.
+  That promise can still show where no install keeps it: `none` also covers a
+  host whose CLI is not installed, which the viewer cannot see without running
+  anything (custom or unverifiable Claude Code plus no Copilot CLI); docs/hooks.md gives the way out. Once any quit begins, nothing starts: every quit or
   restart path calls `beginAppQuit()` in `electron/main.cjs` first, which refuses
   later installs through `createInstallGate()`, revokes the window's Setup, and
   cancels and awaits the running install; the renderer stops its per-host loop
@@ -179,7 +187,9 @@ Run the build before `npm run electron`; the development shell starts the built
   `cycle: true` (iterative SCC, no recursion, no new stdio module). A node's `deps` come only
   from its own section. The cap keeps S1's order, then fills dependency neighbours round-robin
   (blockers before dependents, by key); a `blocks` edge needs both nodes emitted, all edges stay
-  within twice the node budget, and every omission is counted. `snapshots.js` accepts the
+  within twice the node budget, and every omission is counted (a root's
+  `dependencies_omitted`, and `dependencies_omitted_open` `{ blocked_by, blocking }` for
+  those whose other end is OPEN by its freshest facts, #275). `snapshots.js` accepts the
   body unchanged and PR D draws it (below). `issue_rel`
   adds `waits_on_issues` (open blocker keys, at most 50) and `unblocks` only while the key's own
   section is bound, `ok`, at most 7 days old and not dropped by rule 6 (that root reports
@@ -206,7 +216,8 @@ Run the build before `npm run electron`; the development shell starts the built
   dependents, activity labels read from `attentionEntries`, `cycle`, and +N counts of open
   ones beyond the page (any unlisted open one when the direction's total exceeds GitHub's
   50-entry page, which includes closed issues), hidden from the account (only when the page
-  was complete) or cut by the cap), `{status:'unavailable'}`
+  was complete) or cut by the cap: "+N not shown" counts only the open ones the cap cut,
+  `dependencies_omitted_open`, and each direction is taken only from its own lines, #275), `{status:'unavailable'}`
   for a refused section, and `null` otherwise: never "no dependencies". `planWaits` and
   `rowWaits` merge a row's unfinished `waits_on` steps (local, drawn with no graph; dangling
   labels and `done` or `na` targets draw nothing) with its issue's open blockers, one entry per pair.

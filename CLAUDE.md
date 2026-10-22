@@ -525,9 +525,12 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   emitted, and every edge of a response, both kinds, stays within `2 × maxUnits`: containment
   first (at most one per node, so never cut), then `blocks` edges in the same round-robin, then
   any other between emitted nodes, by key. `truncated.dependencies`, `truncated.edges` (both
-  kinds) and each root's `dependencies_omitted` (its entries not emitted) are exact. Everything
-  is additive within version 1 (`blocks` edges, node `deps`, root `dependencies`
-  `ok|unavailable|unknown|null` and `dependencies_omitted`), and the bytes still depend on the
+  kinds) and each root's `dependencies_omitted` (its entries not emitted) are exact, as is
+  `dependencies_omitted_open` (#275: `{ blocked_by, blocking }`, those whose other end is OPEN
+  by the same freshest facts its node would carry, split by direction; an unknown state is not
+  open, and an entry rule 6 dropped is in neither count). Everything is additive within version 1
+  (`blocks` edges, node `deps`, root `dependencies` `ok|unavailable|unknown|null`,
+  `dependencies_omitted` and `dependencies_omitted_open`), and the bytes still depend on the
   database alone, so `/api/issues` stays a store-token conditional snapshot.
   `public/snapshots.js` accepts the body unchanged; PR D (below) draws it, and
   `test/issues.test.ts` and `test/dom/issue-relations.test.ts` pin that breadcrumbs, child
@@ -680,8 +683,12 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   dependencies of a direction, CLOSED ones included, so the unlisted open ones (`open` minus
   listed) are "more on GitHub" when that direction's `total` exceeds 50 and "not visible to
   your GitHub account" only when the page was complete (`total` ≤ 50): never blame
-  permissions for what may sit beyond the page (review of #274). The node cap's cut
-  (`dependencies_omitted`, once per section) is taken out of those two counts.
+  permissions for what may sit beyond the page (review of #274). The node cap's cut of OPEN
+  ones ("+N not shown": the sum of `dependencies_omitted_open`'s two directions, one line per
+  section, #275) is taken out of those two counts, each direction only from its own list's
+  lines, so a closed neighbour the cap cut never inflates it and a cut blocker is never called
+  hidden. A graph without the field (an older viewer) falls back to `dependencies_omitted`,
+  taken from both directions as before.
   Closed issues draw nothing and are never counted. The same view adds `planWaits` (plan
   id → its certain issue's open blockers) and `rowWaits` (row id → its `waits_on` steps that
   are neither `done` nor `na` (a step that will not happen holds nothing up), then its own link's open blockers). Steps are local and draw with no graph;
@@ -2115,7 +2122,20 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   says its settings file watcher normally applies a change to running sessions too, so the
   advice says that and names the restart that makes sure, never a reload it cannot see. A
   browser tab, or a window Setup is not granted to, gets the app hint plus
-  `bash <runtime>/scripts/install-hooks.sh --apply` once the runtime is installed. No IPC
+  `bash <runtime>/scripts/install-hooks.sh --apply` once the runtime is installed. *(#278)* A hooks
+  line that differs from `current` never ends without a next step (`hooksNextStep`): with no hooks
+  step and no `hooksCommand`, a Claude Code registered to a checkout gets that checkout's own
+  `cd <path> && npm run install:hooks -- --apply --replace-existing`, built and quoted by the viewer
+  (`/api/setup` `checkoutHooksCommand`, present only while Claude Code runs from a checkout whose
+  hooks are not that checkout's); the "once this app's runtime is installed" promise stays only while
+  `updatable` and an agent host is unregistered or on Setup's runtime, i.e. a Setup install could put
+  that runtime in place (Setup never switches a checkout, and a failed install removes a runtime it
+  just published). Known limit: `none` also covers a host whose CLI is not installed, which the
+  viewer cannot tell apart without running anything, so with Claude Code `other`/`unknown` and no
+  Copilot CLI the promise still shows although neither target can keep it (`install-agents.sh`
+  stops at "'copilot' CLI is not installed"; `claude` refuses a registration it does not own);
+  docs/hooks.md points to the checkout or terminal path instead. Otherwise the panel says Setup
+  cannot move them and points at docs/hooks.md. No IPC
   channel, preload method or HTTP route was added for this, and nothing runs at startup. Live's
   `remedy()` maps a runtime session to its host by its inferred agent (`claude-code` → claude, `copilot`
   → copilot) and, for a session OLDER than the app, says "restart this session to load vX" only when that

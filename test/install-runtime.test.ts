@@ -745,7 +745,12 @@ fs.rmSync = function rmSync(path, options) {
       "const fs = require('node:fs')",
       "if (/runtime-config\\.mjs$/.test(process.argv[1] || '') && process.argv[2] === 'references') {",
       `  fs.writeFileSync(${JSON.stringify(paused)}, String(process.pid))`,
-      `  while (!fs.existsSync(${JSON.stringify(released)})) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20)`,
+      // Gives up after FAKE_WAIT_LIMIT_S (default 120 s) so an orphan exits (#286).
+      '  const giveUp = Date.now() + Number(process.env.FAKE_WAIT_LIMIT_S || 120) * 1000',
+      `  while (!fs.existsSync(${JSON.stringify(released)})) {`,
+      '    if (Date.now() >= giveUp) process.exit(124)',
+      '    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20)',
+      '  }',
       '}',
       '',
     ].join('\n'))

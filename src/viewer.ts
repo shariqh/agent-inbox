@@ -485,6 +485,9 @@ function canUpdateAgents(baked: BakedInfo | null, lookup: ReleaseRuntime | null)
 // Setup-managed host whose runtime differs, older or newer.
 // `hooksCommand` moves Claude's hooks onto the installed current runtime: the
 // agent installer never touches hooks, so the panel can only hand this over.
+// `checkoutHooksCommand` (#278) points them at the source checkout Claude Code
+// runs from instead, present only while they are not that checkout's: Setup
+// never switches a checkout, so it never installs this runtime on its behalf.
 interface AgentsInfo {
   current: string | null
   updatable: boolean
@@ -492,6 +495,15 @@ interface AgentsInfo {
   copilot: HostRegistration
   hooks: HostRegistration
   hooksCommand: string
+  checkoutHooksCommand?: string
+}
+
+// The checkout's own hook installer. `--replace-existing` because the hooks
+// there belong to another install, which it otherwise refuses beside (#218).
+function checkoutHooksCommand({ claude, hooks }: AgentHosts): string | null {
+  if (claude.kind !== 'checkout' || !claude.path) return null
+  if (hooks.kind === 'none' || (hooks.kind === 'checkout' && hooks.path === claude.path)) return null
+  return `cd ${shellQuote(claude.path)} && npm run install:hooks -- --apply --replace-existing`
 }
 
 function agentsInfo(baked: BakedInfo | null, lookup: ReleaseRuntime | null, hosts: AgentHosts): AgentsInfo {
@@ -500,6 +512,7 @@ function agentsInfo(baked: BakedInfo | null, lookup: ReleaseRuntime | null, host
   const hooksInstaller = installed ? resolve(installed.dir, 'scripts', 'install-hooks.sh') : null
   const moveHooks = hooksInstaller !== null && hosts.hooks.kind === 'runtime' &&
     hosts.hooks.runtimeId !== basename(installed!.dir) && existsSync(hooksInstaller)
+  const fromCheckout = checkoutHooksCommand(hosts)
   return {
     current,
     updatable: canUpdateAgents(baked, lookup),
@@ -507,6 +520,7 @@ function agentsInfo(baked: BakedInfo | null, lookup: ReleaseRuntime | null, host
     copilot: hosts.copilot,
     hooks: hosts.hooks,
     hooksCommand: moveHooks ? `bash ${shellQuote(hooksInstaller)} --apply` : '',
+    ...(fromCheckout ? { checkoutHooksCommand: fromCheckout } : {}),
   }
 }
 

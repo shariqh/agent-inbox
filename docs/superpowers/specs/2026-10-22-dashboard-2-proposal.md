@@ -1,7 +1,7 @@
 # Proposal: Dashboard 2.0 (issue #280)
 
 **Date:** 2026-10-22
-**Status:** Proposal for review. Eight decisions for Shariq are in §12.
+**Status:** Accepted. Shariq chose direction A and all eight recommendations on 2026-10-22 (§12).
 **Milestone:** v2.0. Research for #280; the redesign becomes separate issues once a direction is picked.
 **Scope of this PR:** this document, three concept mockups and screenshots of today's UI. No source
 or test changes.
@@ -392,17 +392,17 @@ hidden) before phase 2 merges; each phase then reports against them.
 
 Each phase is one reviewable PR and ships on its own.
 
-| Phase | PR | What ships | New data | Size |
-|---|---|---|---|---|
-| 0 | Motion foundation | Motion tokens, the reduced-motion block, hidden-page pause, and a test that every infinite animation is covered. | None | S |
-| 1 | **Answer from the Dashboard** | The Needs you rail on today's Dashboard (replacing Ownership flow): top 3 attention entries, one-click options, task done, snooze, pin, expand to answer, Open in Inbox, "N in Later", keys. Drafts join the render gate and recovery. | None | M |
-| 2 | **Live lanes** | Lanes replace Live dispatch: `doing`, `detail`, recency, subagents, pulse, linked plan bar (joined by project + branch + agent), "Asking you" strip. Now strip replaces the signal cards. | None | M |
-| 3 | **Today ribbon and Just landed** | Ribbon replaces the bar chart (range menu kept); ask and outcome markers; arrival highlight. | None | M |
-| 4 | **Heartbeat and explicit links** | Per-session call trace; optional `boards.session` stamp; optional `status({ progress })`. Store, MCP, mixed-version tests, then the UI. | Yes | M |
-| 5 | **Command-center polish** | Project/agent quick filters on lanes, Dashboard keys in the keyboard help, lane click opens the Live drawer row or plan, optional full timeline from the ribbon (C). | None | S–M |
+| Phase | Issue | PR | What ships | New data | Size |
+|---|---|---|---|---|---|
+| 0 | #302 | Motion foundation | Motion tokens, the reduced-motion block, hidden-page pause, and a test that every infinite animation is covered. | None | S |
+| 1 | #303 | **Answer from the Dashboard** | The Needs you rail on today's Dashboard (replacing Ownership flow): top 3 attention entries, one-click options, task done, snooze, pin, expand to answer, Open in Inbox, "N in Later", keys. Drafts join the render gate and recovery. | None | M |
+| 2 | #304 | **Live lanes** | Lanes replace Live dispatch: `doing`, `detail`, recency, subagents, pulse, linked plan bar (joined by project + branch + agent), "Asking you" strip. Now strip replaces the signal cards. | None | M |
+| 3 | #305 | **Today ribbon and Just landed** | Ribbon replaces the bar chart (range menu kept); ask and outcome markers; arrival highlight. | None | M |
+| 4 | #306 | **Heartbeat and explicit links** | Per-session call trace (D5); `boards.session` stamp (D4). Store, MCP, mixed-version tests, then the UI. Agent-reported progress stays out (D7). | Yes | M |
+| 5 | #307 | **Command-center polish** | Project/agent quick filters on lanes, Dashboard keys in the keyboard help, lane click opens the Live drawer row or plan, optional full timeline from the ribbon (C). | None | S–M |
 
 Phases 1–3 deliver the recommended direction with no schema change. Phase 4 is optional
-enrichment; phase 5 is polish.
+enrichment; phase 5 is polish. §14 lists further improvements and mock clean-ups by phase.
 
 Tests per phase follow the house rules: pure model tests for `public/dashboard.js`, jsdom tests for
 drafts, focus, press guard and background windows (`test/dom/`), an attention-parity test showing
@@ -413,16 +413,19 @@ reduced-motion CSS that jsdom cannot evaluate.
 
 ## §12 — Decisions for Shariq
 
-| # | Decision | Options | Recommendation |
-|---|---|---|---|
-| D1 | Direction | A Mission control · B Command center · C Timeline | **A**, with B's rail actions and C's ribbon |
-| D2 | Where a lane's ask is answered | Rail only, lane shows "Asking you" and jumps there · Buttons on the lane too | **Rail only**: one answer surface on screen, simpler drafts |
-| D3 | How much of the queue the rail holds | Top 3 + Review queue · The whole queue, scrolling | **Top 3**; the Inbox and Review queue stay the full tools |
-| D4 | Session-to-plan link | Join by project + branch + agent now, stamp later · Stamp `boards.session` before lanes ship | **Join now, stamp in phase 4** |
-| D5 | Heartbeat trace | Add 30 one-minute call counts per session · No trace, pulse by recency only | **Add it in phase 4**; lanes ship without it |
-| D6 | Motion level | Full by default (OS reduced motion turns it off) + Settings "Calm" · Calm by default | **Full by default**, with the setting |
-| D7 | Agent-reported progress | Add optional `status({ progress: { done, total } })` · Plans only | **Plans only for v2.0**; revisit after lanes ship |
-| D8 | Today's charts | Remove the bar chart and Ownership flow · Keep them under a fold | **Remove**: the ribbon and rail replace them |
+All eight were decided on 2026-10-22 with the recommended choice. Shariq: "ok this is really
+good. i like that you're bringing all the disparate pieces together."
+
+| # | Decision | Options | Recommendation | Decided (2026-10-22) |
+|---|---|---|---|---|
+| D1 | Direction | A Mission control · B Command center · C Timeline | **A**, with B's rail actions and C's ribbon | A |
+| D2 | Where a lane's ask is answered | Rail only, lane shows "Asking you" and jumps there · Buttons on the lane too | **Rail only**: one answer surface on screen, simpler drafts | Rail only |
+| D3 | How much of the queue the rail holds | Top 3 + Review queue · The whole queue, scrolling | **Top 3**; the Inbox and Review queue stay the full tools | Top 3 |
+| D4 | Session-to-plan link | Join by project + branch + agent now, stamp later · Stamp `boards.session` before lanes ship | **Join now, stamp in phase 4** | Join now, stamp in phase 4 |
+| D5 | Heartbeat trace | Add 30 one-minute call counts per session · No trace, pulse by recency only | **Add it in phase 4**; lanes ship without it | Add it in phase 4 |
+| D6 | Motion level | Full by default (OS reduced motion turns it off) + Settings "Calm" · Calm by default | **Full by default**, with the setting | Full by default, with the setting |
+| D7 | Agent-reported progress | Add optional `status({ progress: { done, total } })` · Plans only | **Plans only for v2.0**; revisit after lanes ship | Plans only for v2.0 |
+| D8 | Today's charts | Remove the bar chart and Ownership flow · Keep them under a fold | **Remove**: the ribbon and rail replace them | Remove |
 
 ---
 
@@ -438,3 +441,38 @@ reduced-motion CSS that jsdom cannot evaluate.
   attention.
 - **A separate always-on-top mini window.** Out of scope for v2.0; it would need its own Electron
   design.
+
+---
+
+## §14 — Further improvements
+
+Added after the decisions, each folded into the phase that delivers it (§11). Everything uses data
+§9 already lists unless marked new.
+
+| Phase | Improvement |
+|---|---|
+| 1 (#303) | **"Agent waiting" first in the rail.** Asks whose session is live and waiting (`classifyLiveness` → `waiting`) rank before parked ones and carry a small "agent waiting" chip. Ordering only, never membership. |
+| 1 (#303) | **Hoisted links on rail cards** once #300 lands. |
+| 2 (#304) | **Quiet lanes.** A lane that claims work but has made no call for N minutes, before the 30-minute claim decay, shows "quiet 12m". |
+| 2 (#304) | **Waiting on you.** A lane blocked on you shows "waiting on you 2h" and jumps to the ask. |
+| 3 (#305) | **"Since you last looked."** After a gap, one line such as "3 outcomes landed, 2 new asks, 1 session finished", from the existing previous-visit watermark (`lastVisitAt`). |
+| 5 (#307) | **Session focus panel.** Clicking a lane opens a side panel with that session's asks, plan, recent outcomes and ambient PR/CI chips, plus #300's hoisted links (open in your chosen apps). PR/CI state stays ambient, never attention. |
+| 5 (#307) | **Command palette actions.** ⌘K gains "answer…", "open plan…" and "jump to session…". |
+
+### Mock clean-ups
+
+From a re-read of Concept A in both themes. The first four are fixed in the mockup; the last two
+are left for the phase that builds the surface.
+
+1. **Fixed:** the header repeated the Now strip ("4 agents working across 4 projects"); it now says
+   when it last updated.
+2. **Fixed:** PR #283 was both an open ask ("Merge PR #283?") and "Just landed"; the landed row is
+   now a different, merged PR. Phase 3 must never list an open ask's PR as landed.
+3. **Fixed:** the Now strip said 11/23 plan steps while the lanes' bars add up to 8/18. Phase 2 must
+   derive both from one model.
+4. **Fixed:** every rail card said "2m" while the Now strip said "oldest 2 h"; ages now agree.
+5. **Open (phase 1):** "waiting on you" appears three times (Now strip, rail header, Review queue
+   button) besides the sidebar badge. Pick one owner; drop the number from the others.
+6. **Open (phases 1 and 3):** the rail is too dense. Its Snooze, Pin and Open glyphs need labels or
+   tooltips, and Just landed is clipped to one row at 900 px; give it a fixed row budget or move
+   it under the ribbon.

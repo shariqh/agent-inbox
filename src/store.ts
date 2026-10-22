@@ -2703,6 +2703,27 @@ export function listBoards(db: Database.Database, opts: { status?: 'active' | 'a
   })
 }
 
+// Issue #287: the plans for the Electron dock watcher's 3-second poll. Of a plan,
+// the shared predicate and the response watch read only its blocked rows, so
+// this keeps listBoards' active plans that hold one, in its order, each narrowed
+// to those rows; every plan field, `progress` over all its rows included, is
+// listBoards' (test/reply-watch.test.ts pins that the dock derives the same
+// results from either). It runs listBoards' plan statement, so ties keep its
+// order, and never parses or serializes another row, which the default
+// representation would cost in Electron main after every write.
+export function listBoardsWithBlockedRows(db: Database.Database): BoardWithRows[] {
+  const boards = db.prepare(`SELECT * FROM boards WHERE status = ? ORDER BY updated_at DESC`).all('active') as Board[]
+  const rowStmt = db.prepare(`SELECT ${ROW_COLUMNS} FROM board_rows
+    WHERE board_id = ? AND status = 'blocked' ORDER BY position ASC`)
+  const statusStmt = db.prepare(`SELECT status FROM board_rows WHERE board_id = ?`)
+  const out: BoardWithRows[] = []
+  for (const b of boards) {
+    const rows = withUnseen(rowStmt.all(b.id) as BoardRowRecord[])
+    if (rows.length) out.push({ ...b, rows, progress: computeProgress(statusStmt.all(b.id) as BoardRow[]) })
+  }
+  return out
+}
+
 // ── live activity: ephemeral presence, one row per session ──────────────────
 
 export interface ActivityChild {

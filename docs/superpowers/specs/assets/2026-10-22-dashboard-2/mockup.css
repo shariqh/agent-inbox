@@ -1,0 +1,55 @@
+/* Mockup-only layout. Tokens, fonts and theme come from the app's public/style.css. */
+html, body { margin: 0; height: 900px; overflow: hidden; }
+body { padding: 0; }
+* { box-sizing: border-box; }
+.m-shell { display: grid; grid-template-columns: 220px 1fr; height: 900px; }
+.m-side { background: var(--app-elevated); border-right: 1px solid var(--app-border); padding: 22px 16px; display: flex; flex-direction: column; gap: 4px; }
+.m-brand { display: flex; align-items: center; gap: 10px; margin: 0 4px 22px; }
+.m-brand img { width: 22px; height: 22px; }
+.m-brand strong { display: block; font-size: 15px; }
+.m-brand small { color: var(--app-muted); font-size: 11px; }
+.m-tab { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 8px; color: var(--app-muted); font-size: 13.5px; }
+.m-tab.on { background: var(--app-accent-soft); color: var(--app-text); font-weight: 650; }
+.m-tab b { margin-left: auto; font-size: 11px; color: var(--app-text-soft); font-weight: 600; }
+.m-tab.on b { color: var(--app-attention); }
+.m-label { margin: 22px 8px 8px; font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--app-text-soft); font-weight: 700; }
+.m-proj { display: flex; align-items: center; gap: 8px; padding: 6px 10px; font-size: 13px; color: var(--app-muted); }
+.m-proj i { width: 7px; height: 7px; border-radius: 50%; background: var(--c); }
+.m-proj b { margin-left: auto; font-size: 11px; color: var(--app-attention); }
+.m-main { padding: 22px 30px 0; overflow: hidden; display: flex; flex-direction: column; gap: 16px; }
+.m-head { display: flex; align-items: flex-end; gap: 16px; }
+.m-kicker { color: var(--app-accent); font-size: 10.5px; letter-spacing: .14em; font-weight: 750; text-transform: uppercase; }
+.m-h1 { margin: 2px 0 0; font-size: 27px; letter-spacing: -.02em; font-weight: 750; }
+.m-head .m-sub { color: var(--app-muted); font-size: 13px; margin-bottom: 4px; }
+.m-spacer { flex: 1; }
+.m-btn { display: inline-flex; align-items: center; gap: 7px; padding: 6px 12px; border: 1px solid var(--app-border); border-radius: 8px; background: var(--app-surface); color: var(--app-text); font-size: 12.5px; font-weight: 600; white-space: nowrap; }
+.m-btn.primary { background: var(--app-accent); border-color: var(--app-accent); color: var(--app-on-accent); }
+.m-btn.ghost { background: transparent; }
+.m-btn.small { padding: 3px 9px; font-size: 11.5px; border-radius: 7px; }
+.m-btn.rec { border-color: color-mix(in srgb, var(--app-accent) 60%, transparent); color: var(--app-accent); }
+.m-btn kbd, .m-kbd { font: 600 10px ui-monospace, Menlo, monospace; padding: 1px 5px; border: 1px solid var(--app-border-strong); border-radius: 4px; color: var(--app-text-soft); }
+.m-card { background: var(--app-surface); border: 1px solid var(--app-border); border-radius: 12px; padding: 14px 16px; }
+.m-card h2 { margin: 0; font-size: 13.5px; font-weight: 700; }
+.m-card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.m-card-head small { color: var(--app-text-soft); font-size: 11.5px; }
+.m-chip { display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 700; background: color-mix(in srgb, var(--t) 16%, transparent); color: var(--t); white-space: nowrap; }
+.t-agent { --t: var(--app-agent); } .t-att { --t: var(--app-attention); } .t-plan { --t: var(--app-plan); } .t-out { --t: var(--app-outcome); } .t-mute { --t: var(--app-text-soft); }
+.m-muted { color: var(--app-muted); } .m-soft { color: var(--app-text-soft); }
+.m-annot { position: absolute; z-index: 5; max-width: 230px; padding: 6px 9px; border-radius: 8px; background: #fff3a8; color: #2b2400; font: 600 11px/1.35 ui-sans-serif, -apple-system, sans-serif; box-shadow: 0 2px 8px rgba(0,0,0,.35); }
+.m-annot::before { content: attr(data-n); display: inline-grid; place-items: center; width: 16px; height: 16px; margin-right: 5px; border-radius: 50%; background: #2b2400; color: #fff3a8; font-size: 10px; }
+/* pulse ring (drawn mid-animation for the still) */
+.pulse { position: relative; width: 12px; height: 12px; flex: 0 0 auto; }
+.pulse::before { content: ''; position: absolute; inset: 2px; border-radius: 50%; background: var(--c, var(--app-agent)); }
+.pulse::after { content: ''; position: absolute; inset: -5px; border-radius: 50%; border: 2px solid var(--c, var(--app-agent)); opacity: .35; }
+.pulse.idle::after { display: none; } .pulse.idle::before { background: var(--app-text-soft); }
+.pulse.ask { --c: var(--app-attention); }
+/* segmented plan bar */
+.seg { display: flex; gap: 3px; height: 6px; }
+.seg i { flex: 1; border-radius: 2px; background: color-mix(in srgb, var(--app-text) 12%, transparent); }
+.seg i.d { background: var(--app-outcome); } .seg i.p { background: var(--app-plan); }
+.seg i.b { background: var(--app-attention); } .seg i.now { background: linear-gradient(90deg, var(--app-plan) 0 55%, color-mix(in srgb, var(--app-plan) 30%, transparent) 55%); }
+/* sparkline trace */
+.trace { height: 22px; width: 100%; }
+.trace path { fill: none; stroke: var(--c, var(--app-agent)); stroke-width: 1.5; }
+.trace .area { fill: color-mix(in srgb, var(--c, var(--app-agent)) 14%, transparent); stroke: none; }
+.trace .head { fill: var(--c, var(--app-agent)); }

@@ -9,16 +9,16 @@
 // listItems and listSourceLinks). Never edit them to follow a newer schema:
 // they stand for the process that cannot change. Later slices add their own
 // frozen cases here (PR1b: closing_refs; PR2: plan and row links). The
-// statements of a v1.4.0 process (#247's pins, slice 2's issue snapshots) are
-// in their own block at the end.
+// statements of a v1.4.0 process (#247's pins, slice 2's issue snapshots and
+// waits_on) are in their own blocks at the end.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
 import {
   getBoard, getItem, insertItem, listActivity, listBoards, listHostSessions, listIssueEntities, listIssueSnapshots, listItems, listSourceLinks, openDb,
-  pinBoardRow, pinItem, recordIssueFailure, replyItem, stopBoardRowWatch, stopItemWatch, upsertActivity, upsertBoard,
-  upsertIssueSnapshot, upsertSourceLink,
+  pinBoardRow, pinItem, recordIssueFailure, replyItem, stopBoardRowWatch, stopItemWatch, updateBoardRow, upsertActivity,
+  upsertBoard, upsertIssueSnapshot, upsertSourceLink,
 } from '../src/store.js'
 import type { IssueDependencies } from '../src/store.js'
 import { issueQueue } from '../src/issue-poller.js'
@@ -758,5 +758,166 @@ describe('a v1.4.0 viewer sharing a hub with this build (issue #103 slice 2)', (
     expect(read()).toMatchObject({ fetched_at: at(13), error: null, dependencies: null })
     expect(oldSuccess(old, at(10)).changes).toBe(0)
     expect(read()).toMatchObject({ fetched_at: at(13), dependencies: null })
+  })
+})
+
+// Issue #103 slice 2, PR C (§11) — the rest of the plan writes a v1.4.0 process
+// runs, copied verbatim from src/store.ts at tag v1.4.0 (V140 above holds the
+// others). None names waits_on, so none can change it: a v1.4.0 upsert keeps it
+// on every row that survives, and its DELETE leaves a dangling label behind.
+const V140_PLAN = {
+  ensureBoard: `UPDATE boards
+                   SET stream = ?, agent = ?, repo = ?, issue_ref = ?, head_repo = ?,
+                       updated_at = CASE
+                         WHEN stream IS NOT ? OR agent IS NOT ? OR repo IS NOT ? OR issue_ref IS NOT ? OR head_repo IS NOT ?
+                         THEN ? ELSE updated_at END
+                 WHERE id = ?`,
+  // updateRowTextField for `context`
+  rowContext: `UPDATE board_rows SET context = ?, updated_at = ? WHERE id = ? AND context IS NOT ?`,
+  rowActionOwner: `UPDATE board_rows SET action_owner = ?, updated_at = ? WHERE id = ? AND action_owner IS NOT ?`,
+  rowOptions: `UPDATE board_rows SET options = ?, updated_at = ? WHERE id = ? AND options IS NOT ?`,
+  rowIssueLink: `UPDATE board_rows SET issue_repo = ?, issue_number = ?, updated_at = ?
+                            WHERE id = ? AND (issue_repo IS NOT ? OR issue_number IS NOT ?)`,
+  rowOutcome: `UPDATE board_rows
+                 SET outcome_at = CASE
+                       WHEN @text = '' THEN NULL
+                       ELSE @now END,
+                     updated_at = @now,
+                     outcome = @text
+               WHERE id = @id AND outcome IS NOT @text`,
+  insertRow: `
+          INSERT INTO board_rows (
+            id, board_id, label, status, note, next_step, action_owner, impact,
+            next_after, options, context, outcome, outcome_at, created_at,
+            updated_at, action_started_at, action_version, action_agent, action_agent_version,
+            revision, history, position, issue_repo, issue_number)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 1, 1, '[]', ?, ?, ?)`,
+  deleteRow: `DELETE FROM board_rows WHERE id = ?`,
+  syncBoardStatus: `UPDATE boards SET status = ?, updated_at = ? WHERE id = ?`,
+}
+
+describe('a v1.4.0 process sharing a hub with waits_on (#103 slice 2)', () => {
+  let dir: string
+  let path: string
+  const open: Database.Database[] = []
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(Date.parse(at(60)))
+    dir = scratchDir('mixed-version-waits-')
+    path = join(dir, 'inbox.db')
+  })
+
+  afterEach(() => {
+    for (const connection of open.splice(0)) if (connection.open) connection.close()
+    rmSync(dir, { recursive: true, force: true })
+    vi.useRealTimers()
+  })
+
+  // v1.4.0's openDb() pragmas, on a hub this build already migrated
+  function olderProcess(): Database.Database {
+    const db = new Database(path)
+    open.push(db)
+    db.pragma('busy_timeout = 5000')
+    db.pragma('journal_mode = WAL')
+    return db
+  }
+
+  function releasePlan() {
+    const hub = openDb(path)
+    open.push(hub)
+    upsertBoard(hub, {
+      project: 'agent-inbox', stream: '', agent: 'new', title: 'Release',
+      rows: [
+        { label: 'Build', status: 'tracked' },
+        { label: 'Sign', status: 'tracked', waits_on: ['Build'] },
+        { label: 'Publish', status: 'tracked', waits_on: ['Sign', 'Build'] },
+      ],
+    })
+    const board = getBoard(hub, 'agent-inbox', 'Release')!
+    const id = (label: string) => board.rows.find((candidate) => candidate.label === label)!.id
+    const current = () => getBoard(hub, 'agent-inbox', 'Release') ?? listBoards(hub, { status: 'archived' })[0]!
+    const waits = () => Object.fromEntries(current().rows.map((row) => [row.label, row.waits_on]))
+    return { hub, board, id, current, waits }
+  }
+
+  it('none of its board, row or viewer writes changes waits_on', () => {
+    const { board, id, waits } = releasePlan()
+    const old = olderProcess()
+    const expected = { Build: null, Sign: ['Build'], Publish: ['Build', 'Sign'] }
+    expect(waits()).toEqual(expected)
+
+    // a v1.4.0 upsertBoard: restamp the plan, then rewrite every field of every row
+    vi.setSystemTime(Date.parse(at(61)))
+    const now = at(61)
+    old.prepare(V140_PLAN.ensureBoard).run('121-other', 'old', REPO, 121, null, '121-other', 'old', REPO, 121, null, now, board.id)
+    ;['Build', 'Sign', 'Publish'].forEach((label, i) => {
+      old.prepare(V140.upsertRow).run({ status: 'partial', note: `Old note ${i}`, position: 2 - i, now, id: id(label) })
+      old.prepare(V140.rowText).run('Old impact', now, id(label), 'Old impact')
+      old.prepare(V140_PLAN.rowContext).run('Old context', now, id(label), 'Old context')
+      old.prepare(V140_PLAN.rowActionOwner).run('task', now, id(label), 'task')
+      old.prepare(V140_PLAN.rowOptions).run(null, now, id(label), null)
+      old.prepare(V140_PLAN.rowIssueLink).run(REPO, 120 + i, now, id(label), REPO, 120 + i)
+      old.prepare(V140_PLAN.rowOutcome).run({ text: 'Old outcome', now, id: id(label) })
+      old.prepare(V140.incrementRowRevision).get(id(label))
+    })
+    old.prepare(V140.bumpBoardRevision).get(now, board.id)
+    expect(waits()).toEqual(expected)
+
+    // its updateBoardRow re-blocks Publish, its viewer snoozes, answers and marks it handled, its board_advance moves on
+    const publish = id('Publish')
+    old.prepare(V140.beginNewRowAction).run(now, 2, 'old', 2, '[]', now, publish)
+    old.prepare(V140.rowStatus).run('blocked', now, publish, 'blocked')
+    old.prepare(V140.snoozeBoardRow).get(at(120), now, publish, null, null, null, null)
+    old.prepare(V140.annotateBoardRow).get('Ship it.', 'answer', now, now, publish, null, null, null, null)
+    old.prepare(V140.markRowHandled).get(now, now, publish, null, null, null, null)
+    old.prepare(V140.beginNewRowAction).run(now, 3, 'old', 3, '[]', now, publish)
+    old.prepare(V140.advanceRow).run('Announce it.', 'Approve the post.', 'task', 'Tells users.', '', null, null, null, now, publish)
+    old.prepare(V140.bumpBoardRevision).get(now, board.id)
+    expect(waits()).toEqual(expected)
+
+    // its completeness sync archives and reactivates the plan
+    old.prepare(V140_PLAN.syncBoardStatus).run('archived', now, board.id)
+    expect(waits()).toEqual(expected)
+    old.prepare(V140_PLAN.syncBoardStatus).run('active', now, board.id)
+    expect(waits()).toEqual(expected)
+  })
+
+  it('its DELETE leaves a label this build keeps; its re-insert brings the row back with nothing to wait on', () => {
+    const { hub, board, id, current, waits } = releasePlan()
+    const old = olderProcess()
+    const now = at(61)
+
+    // a v1.4.0 upsert that omits Build deletes it
+    old.prepare(V140_PLAN.deleteRow).run(id('Build'))
+    old.prepare(V140.bumpBoardRevision).get(now, board.id)
+    expect(waits()).toEqual({ Sign: ['Build'], Publish: ['Build', 'Sign'] })
+
+    // this build keeps the dangling label through a routine write and a re-send of it
+    const row = (label: string) => current().rows.find((candidate) => candidate.label === label)!
+    updateBoardRow(hub, {
+      project: 'agent-inbox', stream: '', agent: 'new', title: 'Release', label: 'Sign',
+      expectedBoardVersion: current().revision, expectedRevision: row('Sign').revision, status: 'partial',
+    })
+    upsertBoard(hub, {
+      project: 'agent-inbox', stream: '', agent: 'new', title: 'Release', expectedVersion: current().revision,
+      rows: [
+        { label: 'Sign', status: 'partial', revision: row('Sign').revision, waits_on: ['Build'] },
+        { label: 'Publish', status: 'tracked', revision: row('Publish').revision, waits_on: ['Build', 'Sign'] },
+      ],
+    })
+    expect(waits()).toEqual({ Sign: ['Build'], Publish: ['Build', 'Sign'] })
+
+    // a v1.4.0 upsert adds Build back: its insert writes no waits_on, so the
+    // revived labels can only point at it, and no cycle can form through it
+    old.prepare(V140_PLAN.insertRow).run(
+      'old-build', board.id, 'Build', 'tracked', '', '', null, '', '', null, '', '', null, now, now, now, 'old', 2, null, null,
+    )
+    expect(waits()).toEqual({ Sign: ['Build'], Publish: ['Build', 'Sign'], Build: null })
+    // so a cycle through it is still this build's to refuse
+    expect(() => updateBoardRow(hub, {
+      project: 'agent-inbox', stream: '', agent: 'new', title: 'Release', label: 'Build',
+      expectedBoardVersion: current().revision, expectedRevision: row('Build').revision, waits_on: ['Publish'],
+    })).toThrow('waits_on would create a cycle: Build → Publish → Build')
   })
 })

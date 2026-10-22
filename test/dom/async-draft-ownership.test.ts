@@ -443,6 +443,7 @@ describe('async draft ownership', () => {
     const bridge = await bootApp(db)
     const fetchNow = globalThis.fetch
     let loseFirstResponse = true
+    let lostBody = ''
     globalThis.fetch = async (input, init) => {
       if (
         loseFirstResponse
@@ -450,7 +451,9 @@ describe('async draft ownership', () => {
         && String(input).includes(`/items/${id}/reply`)
       ) {
         loseFirstResponse = false
-        await fetchNow(input, init)
+        // lost before it reached the server, so the answer is unchanged and the
+        // Send replays the exact intent
+        lostBody = String(init.body)
         throw new Error('lost original response')
       }
       return fetchNow(input, init)
@@ -466,25 +469,18 @@ describe('async draft ownership', () => {
     click(row(id)?.querySelector('.star-btn'))
     click(buttonLabelled('Undo', row(id)!))
     await settle()
-
-    expect(replyItem(db, id, 'Later Y', undefined, 'answer', {
-      clientId: 'other-window',
-      sequence: 1,
-      actionId: 'later-after-staged-undo',
-    })).toBe(true)
-    const later = getItem(db, id)!
-    expect(markReplySeen(db, id, later.replied_at)).toBe(true)
+    await pollTick()
 
     click(buttonLabelled('Send', row(id)!))
     await settle()
 
     const replyPosts = bridge.posts.filter((post) => post.url.includes(`/items/${id}/reply`))
-    const first = JSON.parse(String(replyPosts[0]?.init?.body))
-    const retry = JSON.parse(String(replyPosts[1]?.init?.body))
+    expect(replyPosts).toHaveLength(1)
+    const first = JSON.parse(lostBody)
+    const retry = JSON.parse(String(replyPosts[0]?.init?.body))
     expect(retry.intent_action_id).toBe(first.intent_action_id)
     expect(retry.intent_sequence).toBe(first.intent_sequence)
-    expect(getItem(db, id)?.reply).toBe('Later Y')
-    expect(getItem(db, id)?.reply_seen_at).not.toBeNull()
+    expect(getItem(db, id)).toMatchObject({ reply: 'Original A', reply_source: 'inbox' })
   })
 
   it('cancels a staged star when the preserved draft is retried before transport', async () => {
@@ -620,7 +616,7 @@ describe('async draft ownership', () => {
     expect(remaining).not.toContain('Option Y')
   })
 
-  it('retries an uncertain option with the exact action identity without resetting pickup', async () => {
+  it('retires an uncertain option the server already holds without resetting pickup', async () => {
     db = freshDb()
     const id = insertItem(db, {
       ...AGENT,
@@ -628,7 +624,7 @@ describe('async draft ownership', () => {
       title: 'Exact recovery replay',
       options: [{ label: 'Option Y' }],
     })
-    await bootApp(db)
+    const bridge = await bootApp(db)
     const fetchNow = globalThis.fetch
     let loseFirstResponse = true
     globalThis.fetch = async (input, init) => {
@@ -657,6 +653,8 @@ describe('async draft ownership', () => {
     click(buttonLabelled('Retry', recovery))
     await settle()
 
+    // the server holds exactly that answer, so the Retry sends nothing (#279)
+    expect(bridge.posts.filter((post) => post.url.includes(`/items/${id}/reply`))).toHaveLength(1)
     expect(getItem(db, id)?.reply_seen_at).not.toBeNull()
     expect(document.querySelector('.stale-drafts-fold')).toBeNull()
   })
@@ -689,7 +687,7 @@ describe('async draft ownership', () => {
     expect(document.querySelector('.stale-drafts-fold')?.textContent ?? '').not.toContain('Submission A')
   })
 
-  it('retries an owner-removed ambiguous free-text reply with its exact action identity', async () => {
+  it('retries an owner-removed ambiguous free-text reply afresh once a later answer replaced it', async () => {
     db = freshDb()
     const id = insertItem(db, {
       ...AGENT,
@@ -735,17 +733,19 @@ describe('async draft ownership', () => {
     })).toBe(true)
     const later = getItem(db, id)!
     expect(markReplySeen(db, id, later.replied_at)).toBe(true)
+    await pollTick()
 
     click(buttonLabelled('Retry', document.querySelector('.stale-drafts-fold')!))
     await settle()
 
+    // The lost send landed and was then replaced: replaying its identity would
+    // be answered from the record without writing, so the Retry sends afresh (#279).
     const replyPosts = bridge.posts.filter((post) => post.url.includes(`/items/${id}/reply`))
     const first = JSON.parse(String(replyPosts[0]?.init?.body))
     const retry = JSON.parse(String(replyPosts[1]?.init?.body))
-    expect(retry.intent_action_id).toBe(first.intent_action_id)
-    expect(retry.intent_sequence).toBe(first.intent_sequence)
-    expect(getItem(db, id)?.reply).toBe('Later Y')
-    expect(getItem(db, id)?.reply_seen_at).not.toBeNull()
+    expect(retry.intent_action_id).not.toBe(first.intent_action_id)
+    expect(retry.intent_sequence).toBeGreaterThan(first.intent_sequence)
+    expect(getItem(db, id)).toMatchObject({ reply: 'Original X', reply_source: 'inbox', reply_seen_at: null })
     expect(document.querySelector('.stale-drafts-fold')).toBeNull()
   })
 
@@ -956,7 +956,7 @@ describe('async draft ownership', () => {
         && String(input).includes(`/items/${id}/reply`)
       ) {
         loseFirstResponse = false
-        await fetchNow(input, init)
+        // lost before it reached the server, so the Retry is an exact replay
         throw new Error('lost initial response')
       }
       return fetchNow(input, init)
@@ -1007,7 +1007,7 @@ describe('async draft ownership', () => {
     expect(document.querySelector('.stale-drafts-fold')).toBeNull()
   })
 
-  it('reuses an unchanged free-text action after an ambiguous failure without overwriting a later reply', async () => {
+  it('sends an unchanged free-text draft afresh after an ambiguous failure once a later reply replaced it', async () => {
     db = freshDb()
     const id = insertItem(db, {
       ...AGENT,
@@ -1045,17 +1045,19 @@ describe('async draft ownership', () => {
     })).toBe(true)
     const later = getItem(db, id)!
     expect(markReplySeen(db, id, later.replied_at)).toBe(true)
+    await pollTick()
 
     click(buttonLabelled('Send', row(id)!))
     await settle()
 
+    // Replaying the landed send's identity would be answered from the record
+    // without writing, and the human's text would be lost: the Send is fresh (#279).
     const replyPosts = bridge.posts.filter((post) => post.url.includes(`/items/${id}/reply`))
     const first = JSON.parse(String(replyPosts[0]?.init?.body))
     const retry = JSON.parse(String(replyPosts[1]?.init?.body))
-    expect(retry.intent_action_id).toBe(first.intent_action_id)
-    expect(retry.intent_sequence).toBe(first.intent_sequence)
-    expect(getItem(db, id)?.reply).toBe('Later Y')
-    expect(getItem(db, id)?.reply_seen_at).not.toBeNull()
+    expect(retry.intent_action_id).not.toBe(first.intent_action_id)
+    expect(retry.intent_sequence).toBeGreaterThan(first.intent_sequence)
+    expect(getItem(db, id)).toMatchObject({ reply: 'Original X', reply_source: 'inbox', reply_seen_at: null })
   })
 
   it('invalidates an ambiguous free-text action as soon as the draft is edited', async () => {

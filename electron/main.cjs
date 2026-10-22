@@ -17,7 +17,7 @@
 //      before and kill that child on quit — only because we own it.
 //   4. Open a BrowserWindow on the viewer URL once the server responds.
 
-const { app, BrowserWindow, ipcMain, Menu, Notification, nativeTheme, shell } = require('electron')
+const { app, BrowserWindow, ipcMain, Menu, Notification, nativeTheme, session, shell } = require('electron')
 const { spawn } = require('node:child_process')
 const { randomBytes } = require('node:crypto')
 const { existsSync } = require('node:fs')
@@ -1074,6 +1074,10 @@ app.on('before-quit', (event) => {
 
 // Kill the viewer only if we spawned it; a pre-existing server is left untouched.
 app.on('will-quit', () => {
+  // Unsent drafts live in this profile's localStorage (#279), and Chromium may
+  // still hold the last ones in memory. Every window has closed, and run its
+  // pagehide save, before will-quit, so commit them to disk here.
+  if (app.isReady()) session.defaultSession.flushStorageData()
   updateController?.dispose()
   if (spawnedViewer && spawnedViewer.exitCode === null) {
     spawnedViewer.kill()

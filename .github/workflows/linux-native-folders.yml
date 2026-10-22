@@ -67,7 +67,6 @@ jobs:
         with:
           node-version: ${{ steps.release-inputs.outputs.node-version }}
           architecture: ${{ matrix.arch }}
-          cache: npm
       - run: npm ci
       - name: Validate exact Linux release inputs and gates
         run: |

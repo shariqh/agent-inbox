@@ -40,7 +40,6 @@ jobs:
         with:
           node-version: ${{ steps.release-inputs.outputs.node-version }}
           architecture: arm64
-          cache: npm
       - run: npm ci
       - name: Validate exact package inputs and source gates
         run: |
@@ -315,7 +314,6 @@ jobs:
         with:
           node-version: ${{ steps.release-inputs.outputs.node-version }}
           architecture: arm64
-          cache: npm
       - run: npm ci
       - run: npm run build
       - name: Stage verified native arm64 runtime

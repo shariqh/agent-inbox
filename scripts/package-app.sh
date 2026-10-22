@@ -86,8 +86,12 @@ else
 fi
 
 cd "$STAGE"
-npm ci --prefix "$STAGE" --omit=dev --prefer-offline --no-audit --no-fund
-"$REBUILD" -f -w better-sqlite3 -v "$ELECTRON_VERSION" -m "$STAGE"
+# No install scripts and no prebuilds (#315): better-sqlite3's install script
+# and electron-rebuild's default both unpack a cached or downloaded prebuild
+# without checking a digest, so the addon is always compiled from the
+# lockfile-pinned source.
+npm ci --prefix "$STAGE" --omit=dev --ignore-scripts --prefer-offline --no-audit --no-fund
+"$REBUILD" -f -w better-sqlite3 -v "$ELECTRON_VERSION" -m "$STAGE" --build-from-source
 verify_graph staged "$STAGE"
 
 cd "$ROOT"

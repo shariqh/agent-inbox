@@ -26,7 +26,6 @@ jobs:
         with:
           node-version: ${{ steps.release-inputs.outputs.node-version }}
           architecture: arm64
-          cache: npm
       - run: npm ci
       - name: Install pinned SquashFS verifier
         run: |

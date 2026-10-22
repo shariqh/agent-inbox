@@ -283,6 +283,19 @@ describe('native architecture release stages', () => {
       .toBeLessThan(source.indexOf('const packagerOut'))
   })
 
+  it('installs and compiles each thin app stage only through the prebuild-free step (#315)', () => {
+    for (const builder of ['build-thin-app.mjs', 'build-linux-thin-app.mjs']) {
+      const source = readFileSync(join(root, 'scripts', builder), 'utf8')
+      const install = source.indexOf('await installAppDependencies({')
+      expect(install, builder).toBeGreaterThan(-1)
+      expect(source.indexOf('pruneNativeAddonBuildArtifacts(stageRoot)', install), builder).toBeGreaterThan(install)
+      expect(source, builder).not.toMatch(/'ci', '--omit=dev'|await rebuild\(|@electron\/rebuild/)
+    }
+    const linux = readFileSync(join(root, 'scripts', 'build-linux-thin-app.mjs'), 'utf8')
+    expect(linux.indexOf('Object.assign(process.env, compilerEnvironment)'))
+      .toBeLessThan(linux.indexOf('await installAppDependencies({'))
+  })
+
   it('runs the Electron-embedded SQLite check in every native thin app before publication (#135)', () => {
     const source = readFileSync(join(root, 'scripts', 'build-thin-app.mjs'), 'utf8')
     const lipo = source.indexOf('lipoArchs(nativeAddon)')
@@ -633,6 +646,15 @@ describe('universal finalization contract', () => {
     expect(universal).toContain('npx vitest run test/setup-lock.test.ts')
     expect(trigger).toContain('      - "scripts/**"')
     expect(trigger).toContain('      - "test/setup-*.test.ts"')
+  })
+
+  it('restores no npm cache where a release is built, signed or verified (#315)', () => {
+    // A restored <cache>/_prebuilds would still reach the checkout's own npm ci,
+    // whose prebuild-install unpacks it unchecked and loads the addon it holds.
+    const workflowsDir = join(root, '.github', 'workflows')
+    for (const file of readdirSync(workflowsDir).filter((name) => /\.ya?ml$/.test(name) && name !== 'ci.yml')) {
+      expect(readFileSync(join(workflowsDir, file), 'utf8'), file).not.toMatch(/^\s*cache:\s*npm\b/m)
+    }
   })
 
   it('pins every repository workflow action and disables checkout credential persistence', () => {

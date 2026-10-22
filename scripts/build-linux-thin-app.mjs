@@ -12,7 +12,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { packager } from '@electron/packager'
-import { rebuild } from '@electron/rebuild'
+import { installAppDependencies } from './app-dependencies.mjs'
 import {
   APP_NAME,
   copyRequiredTree,
@@ -93,23 +93,17 @@ export async function buildLinuxThinApp({
     copyRequiredTree(repoRoot, stageRoot)
     copyTreePreservingMode(runtime, join(stageRoot, 'runtime', key))
 
-    execFileSync(process.execPath, [npmCliForCurrentNode(), 'ci', '--omit=dev', '--no-audit', '--no-fund'], {
-      cwd: stageRoot,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 10 * 60_000,
-    })
     const previousCompilerEnvironment = {
       CC: process.env.CC,
       CXX: process.env.CXX,
     }
     Object.assign(process.env, compilerEnvironment)
     try {
-      await rebuild({
-        buildPath: stageRoot,
+      await installAppDependencies({
+        stageRoot,
+        npmCli: npmCliForCurrentNode(),
         electronVersion: inputs.electron.version,
         arch,
-        force: true,
-        onlyModules: ['better-sqlite3'],
       })
     } finally {
       for (const name of ['CC', 'CXX']) {

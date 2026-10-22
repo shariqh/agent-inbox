@@ -16,7 +16,7 @@ import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { packager } from '@electron/packager'
-import { rebuild } from '@electron/rebuild'
+import { installAppDependencies } from './app-dependencies.mjs'
 import { copyAgentInboxLicense } from './license.mjs'
 import { runElectronSqliteCheck } from './electron-sqlite-check.mjs'
 import { copyTreePreservingMode, verifyPayload } from './runtime-payload.mjs'
@@ -186,17 +186,11 @@ export async function buildThinApp({
     copyTreePreservingMode(runtimeArm64, join(stageRoot, 'runtime', 'darwin-arm64'))
     copyTreePreservingMode(runtimeX64, join(stageRoot, 'runtime', 'darwin-x64'))
 
-    execFileSync(process.execPath, [npmCliForCurrentNode(), 'ci', '--omit=dev', '--no-audit', '--no-fund'], {
-      cwd: stageRoot,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 10 * 60_000,
-    })
-    await rebuild({
-      buildPath: stageRoot,
+    await installAppDependencies({
+      stageRoot,
+      npmCli: npmCliForCurrentNode(),
       electronVersion: inputs.electron.version,
       arch,
-      force: true,
-      onlyModules: ['better-sqlite3'],
     })
     pruneNativeAddonBuildArtifacts(stageRoot)
     execFileSync(process.execPath, [

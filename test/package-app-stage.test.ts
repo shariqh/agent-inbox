@@ -64,8 +64,9 @@ describe('package-app.sh installs and verifies the checked-in lockfile graph (#1
     expect(sh).not.toMatch(/writeFileSync\('\$STAGE\/package\.json'/)
   })
 
+  // --ignore-scripts and --build-from-source: no cached or downloaded prebuild (#315)
   it('installs with npm ci from the lockfile, never by resolving package.json ranges', () => {
-    at('npm ci --prefix "$STAGE" --omit=dev --prefer-offline --no-audit --no-fund')
+    at('npm ci --prefix "$STAGE" --omit=dev --ignore-scripts --prefer-offline --no-audit --no-fund')
     expect(sh).not.toMatch(/npm install\b/)
   })
 
@@ -73,7 +74,7 @@ describe('package-app.sh installs and verifies the checked-in lockfile graph (#1
     const stage = at('"$ROOT/scripts/package-app-stage.mjs" stage')
     const install = at('npm ci --prefix "$STAGE" --omit=dev')
     const enterStage = sh.lastIndexOf('cd "$STAGE"', install)
-    const rebuild = at('"$REBUILD" -f -w better-sqlite3 -v "$ELECTRON_VERSION" -m "$STAGE"')
+    const rebuild = at('"$REBUILD" -f -w better-sqlite3 -v "$ELECTRON_VERSION" -m "$STAGE" --build-from-source')
     const stagedCheck = at('verify_graph staged "$STAGE"')
     const leaveStage = at('cd "$ROOT"\n# --no-asar')
     const packager = at('npx --yes @electron/packager "$STAGE"')
@@ -200,8 +201,8 @@ describe('package-app.sh refuses to continue past a step that did nothing', () =
       `npm cwd=${repo} run generate:icons -- --check`,
       `npm cwd=${repo} run build`,
       `stage-tool ${tool} stage ${repo} ${stage}`,
-      `npm cwd=${stage} ci --prefix ${stage} --omit=dev --prefer-offline --no-audit --no-fund`,
-      `electron-rebuild cwd=${stage} -f -w better-sqlite3 -v 43.8.0 -m ${stage}`,
+      `npm cwd=${stage} ci --prefix ${stage} --omit=dev --ignore-scripts --prefer-offline --no-audit --no-fund`,
+      `electron-rebuild cwd=${stage} -f -w better-sqlite3 -v 43.8.0 -m ${stage} --build-from-source`,
       `stage-tool ${tool} verify ${join(repo, 'package-lock.json')} ${stage} --label staged`,
     ])
   })

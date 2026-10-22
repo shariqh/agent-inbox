@@ -85,7 +85,8 @@ Each job:
 2. downloads and SHA-verifies the official Node archive;
 3. stages the portable runtime with its own Node/npm and runs the runtime
    manifest, Node ABI, `better-sqlite3`, hook, and allocation-driven SQLite self-tests;
-4. rebuilds `better-sqlite3` for the pinned Electron ABI;
+4. compiles `better-sqlite3` for the pinned Electron ABI from the lockfile-pinned
+   source, with install scripts off and no prebuild (#315);
 5. creates a thin Electron application folder containing only the matching
    Linux runtime key;
 6. verifies ELF architecture, libc symbol floors, Electron/Node versions and

@@ -75,9 +75,13 @@ stated minimum before updating either pinned major.
 
 1. Stage and self-test the arm64 and x64 Node runtime payloads independently.
 2. Restore both verified payloads into each native thin Electron build.
-3. Rebuild `better-sqlite3` for Electron 43.8.0 on that architecture, then run the
+3. Compile `better-sqlite3` for Electron 43.8.0 on that architecture, then run the
    allocation-driven SQLite check under that packaged Electron
-   ([Electron's embedded Node](#electrons-embedded-node)).
+   ([Electron's embedded Node](#electrons-embedded-node)). The stage installs with
+   `npm ci --ignore-scripts` and `@electron/rebuild` runs with `buildFromSource`
+   (`scripts/app-dependencies.mjs`), so the addon is always built from the
+   lockfile-pinned source: prebuild-install would otherwise unpack a cached or
+   downloaded prebuild, JavaScript included, without checking a digest (#315).
 4. Preserve each thin app with a tar archive so framework symlinks and executable
    modes survive artifact transfer.
 5. Merge the thin apps with `@electron/universal`. The two
@@ -88,6 +92,9 @@ stated minimum before updating either pinned major.
 
 Set `SOURCE_DATE_EPOCH` to the source commit time for repeatable `setup-info.json`
 metadata. No build script downloads an unpinned `latest` tool or Node archive.
+Release, build and signing workflows restore no npm cache: the checkout's own
+`npm ci` still runs better-sqlite3's install script, whose prebuild-install would
+unpack a planted `<cache>/_prebuilds` archive and load the addon in it (#315).
 The app and each portable runtime carry the project MIT notice as
 `LICENSE.agent-inbox`; the runtime keeps Node's separate upstream notice as `LICENSE`.
 The signed app also preserves Electron's upstream `LICENSE.electron` and

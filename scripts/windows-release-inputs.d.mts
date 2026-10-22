@@ -21,6 +21,16 @@ export type WindowsReleaseInputs = {
       sha256: string
     }>
   }
+  nodeHeaders: {
+    archive: string
+    root: string
+    url: string
+    sha256: string
+    importLibraries: Record<WindowsRuntimeKey, {
+      url: string
+      sha256: string
+    }>
+  }
   electron: {
     version: string
     modulesAbi: string

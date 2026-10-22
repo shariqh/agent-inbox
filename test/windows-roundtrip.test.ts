@@ -1,14 +1,12 @@
 import { createHash } from 'node:crypto'
 import {
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import {
   buildManifest,
   copyTreePreservingMode,
@@ -16,10 +14,11 @@ import {
 } from '../scripts/runtime-payload.mjs'
 import { treeIdentity } from '../scripts/tree-identity.mjs'
 import { verifyWindowsRoundTrip } from '../scripts/verify-windows-roundtrip.mjs'
+import { removeScratchDirs, scratchDir } from './scratch.js'
 
 const SOURCE_COMMIT = 'a'.repeat(40)
 const PACKAGE_VERSION = '1.2.3'
-const NODE_VERSION = 'v24.19.0'
+const NODE_VERSION = 'v24.18.1'
 const NODE_MODULES_ABI = '137'
 
 function sha256(path: string): string {
@@ -37,7 +36,7 @@ function fixture(): {
   restoredRuntimeReport: string
   options: Parameters<typeof verifyWindowsRoundTrip>[0]
 } {
-  const root = mkdtempSync(join(tmpdir(), 'windows-roundtrip-'))
+  const root = scratchDir('windows-roundtrip-')
   const originalApp = join(root, 'original-app')
   const restoredApp = join(root, 'restored-app')
   const originalRuntime = join(root, 'original-runtime')
@@ -84,6 +83,7 @@ function fixture(): {
     runtimeManifestDigest,
     key: 'win32-x64',
     nativeAddonSelftests: 'passed',
+    electronSqliteCheck: 'passed',
     setupAvailable: false,
   }
   writeFileSync(originalAppReport, `${JSON.stringify(appReport, null, 2)}\n`)
@@ -122,6 +122,8 @@ function fixture(): {
 }
 
 describe('Windows archive round-trip evidence', () => {
+  afterEach(removeScratchDirs)
+
   it('requires exact original/restored app and runtime identities', () => {
     const f = fixture()
     expect(verifyWindowsRoundTrip(f.options)).toMatchObject({
@@ -129,8 +131,17 @@ describe('Windows archive round-trip evidence', () => {
       runtimeId: JSON.parse(readFileSync(f.originalRuntimeReport, 'utf8')).runtimeId,
       runtimeSourceCommit: SOURCE_COMMIT,
       nativeAddonSelftests: 'passed',
+      electronSqliteCheck: 'passed',
       setupAvailable: false,
     })
+  })
+
+  it('rejects an application report that did not pass the Electron SQLite check (#135)', () => {
+    const f = fixture()
+    const report = JSON.parse(readFileSync(f.restoredAppReport, 'utf8'))
+    delete report.electronSqliteCheck
+    writeFileSync(f.restoredAppReport, `${JSON.stringify(report, null, 2)}\n`)
+    expect(() => verifyWindowsRoundTrip(f.options)).toThrow(/restored application report identity mismatch/)
   })
 
   it('rejects a missing non-launch application file', () => {

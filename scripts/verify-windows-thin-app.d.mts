@@ -16,6 +16,7 @@ export type WindowsThinReport = {
   compatibility: Array<{ path: string; arch: 'x64'; format: 'PE32+' }>
   appTreeDigest: string
   nativeAddonSelftests: 'passed'
+  electronSqliteCheck: 'passed'
   setupAvailable: false
 }
 export function verifyWindowsThinApp(options: {

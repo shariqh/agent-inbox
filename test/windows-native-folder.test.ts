@@ -1,7 +1,13 @@
-import { readFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
+import { createTreeArchive } from '../scripts/archive-tree.mjs'
 import { buildWindowsThinApp } from '../scripts/build-windows-thin-app.mjs'
+import { nativeRuntimeAdapterFor } from '../scripts/native-runtime-adapter.mjs'
+import { downloadArchive } from '../scripts/release-inputs.mjs'
+import { provisionWindowsNodeHeaders } from '../scripts/stage-native-runtime.mjs'
+import { removeScratchDirs, scratchDir } from './scratch.js'
 
 const root = resolve(process.cwd())
 
@@ -49,6 +55,9 @@ describe('native Windows x64 folder foundation', () => {
     expect(build).not.toMatch(/WiX|Squirrel|electron-forge|portable\.zip/i)
     expect(verify).toContain("reason !== 'unsupported-platform'")
     expect(verify).toContain('setupAvailable: false')
+    expect(verify).toContain('verifyPackagedUpdateTrust(resources)')
+    expect(verify).toContain('runElectronSqliteCheck({')
+    expect(verify).toContain("electronSqliteCheck: 'passed'")
     expect(targets).toContain("'win32-x64'")
     expect(targets).toContain('const POSIX_SETUP_RUNTIME_KEYS')
     expect(runner).toContain('const RUNTIME_KEYS = new Set(POSIX_SETUP_RUNTIME_KEYS)')
@@ -83,5 +92,105 @@ describe('native Windows x64 folder foundation', () => {
     ]) {
       expect(pkg.scripts['package:smoke']).toContain(test)
     }
+  })
+})
+
+const sha256 = (path: string): string => createHash('sha256').update(readFileSync(path)).digest('hex')
+
+// The real Windows adapter on Windows; elsewhere the same list/extract flags on the host's
+// tar, which detects gzip by itself exactly as Windows' bsdtar does.
+const headersAdapter = process.platform === 'win32'
+  ? nativeRuntimeAdapterFor('win32-x64')
+  : { archiveExecutable: '/usr/bin/tar', archiveListFlags: ['-tf'], archiveExtractFlags: ['-xf'] }
+
+function headersFixture(archiveRoot = 'node-v24.18.1') {
+  const root = scratchDir('windows-node-headers-')
+  const include = join(root, 'source', archiveRoot, 'include', 'node')
+  mkdirSync(include, { recursive: true })
+  for (const name of ['common.gypi', 'config.gypi', 'node_version.h']) {
+    writeFileSync(join(include, name), `${name}\n`)
+  }
+  const archive = createTreeArchive({
+    source: join(root, 'source', archiveRoot),
+    archive: join(root, 'served', 'node-v24.18.1-headers.tar.gz'),
+  })
+  const library = join(root, 'served', 'node.lib')
+  writeFileSync(library, 'import library\n')
+  const workDir = join(root, 'extract')
+  const nodeRoot = join(workDir, 'node-v24.18.1-win-x64')
+  mkdirSync(nodeRoot, { recursive: true })
+  writeFileSync(join(nodeRoot, 'node.exe'), 'node\n')
+  const headers = {
+    archive: 'node-v24.18.1-headers.tar.gz',
+    root: 'node-v24.18.1',
+    url: 'https://nodejs.org/dist/v24.18.1/node-v24.18.1-headers.tar.gz',
+    sha256: sha256(archive),
+    importLibraries: {
+      'win32-x64': {
+        url: 'https://nodejs.org/dist/v24.18.1/win-x64/node.lib',
+        sha256: sha256(library),
+      },
+    },
+  }
+  const served = new Map([[headers.url, archive], [headers.importLibraries['win32-x64'].url, library]])
+  const requested: string[] = []
+  const download = (options: { url: string; destination: string; expectedSha256: string }) => downloadArchive({
+    ...options,
+    fetchImpl: async (url: string | URL | Request) => {
+      requested.push(String(url))
+      return new Response(readFileSync(served.get(String(url))!))
+    },
+  })
+  const provision = () => provisionWindowsNodeHeaders({
+    headers,
+    key: 'win32-x64',
+    adapter: headersAdapter,
+    nodeRoot,
+    workDir,
+    cacheRoot: join(root, 'cache'),
+    download,
+  })
+  return { headers, library, nodeRoot, requested, provision }
+}
+
+describe('verified Node headers for native Windows staging (#135)', () => {
+  afterEach(removeScratchDirs)
+
+  it('adds the pinned headers and import library where node-gyp reads --nodedir', async () => {
+    const f = headersFixture()
+    await expect(f.provision()).resolves.toEqual({
+      headers: {
+        archive: f.headers.archive,
+        root: f.headers.root,
+        url: f.headers.url,
+        sha256: f.headers.sha256,
+      },
+      importLibrary: f.headers.importLibraries['win32-x64'],
+    })
+    expect(f.requested).toEqual([f.headers.url, f.headers.importLibraries['win32-x64'].url])
+    expect(readFileSync(join(f.nodeRoot, 'include', 'node', 'common.gypi'), 'utf8')).toBe('common.gypi\n')
+    expect(readFileSync(join(f.nodeRoot, 'Release', 'node.lib'))).toEqual(readFileSync(f.library))
+  })
+
+  it('refuses a substituted headers tarball before changing the distribution', async () => {
+    const f = headersFixture()
+    f.headers.sha256 = '0'.repeat(64)
+    await expect(f.provision()).rejects.toThrow(/SHA-256 mismatch/)
+    expect(existsSync(join(f.nodeRoot, 'include'))).toBe(false)
+    expect(existsSync(join(f.nodeRoot, 'Release'))).toBe(false)
+  })
+
+  it('refuses headers from another release root before extracting them', async () => {
+    const f = headersFixture('node-v24.19.0')
+    await expect(f.provision()).rejects.toThrow(/outside node-v24\.18\.1/)
+    expect(existsSync(join(f.nodeRoot, 'include'))).toBe(false)
+    expect(f.requested).toEqual([f.headers.url])
+  })
+
+  it('never mixes headers into a distribution that already carries include/', async () => {
+    const f = headersFixture()
+    mkdirSync(join(f.nodeRoot, 'include'))
+    await expect(f.provision()).rejects.toThrow(/already contains include/)
+    expect(f.requested).toEqual([])
   })
 })

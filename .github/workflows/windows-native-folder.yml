@@ -12,6 +12,7 @@ on:
       - "package.json"
       - "package-lock.json"
       - "public/**"
+      - "release/update-keys.json"
       - "release/windows-inputs.json"
       - "scripts/**"
       - "src/**"
@@ -43,7 +44,7 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           "node-version=$(node scripts/windows-release-inputs.mjs --node-version)" |
             Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ steps.release-inputs.outputs.node-version }}
           architecture: x64
@@ -104,8 +105,8 @@ jobs:
             Set-Content build/reports/win32-x64-runtime.json
           $stageReport = Get-Content build/reports/win32-x64-runtime.json -Raw |
             ConvertFrom-Json
-          $expected = (Get-Content release/windows-inputs.json -Raw |
-            ConvertFrom-Json).node.distributions.'win32-x64'
+          $inputs = Get-Content release/windows-inputs.json -Raw | ConvertFrom-Json
+          $expected = $inputs.node.distributions.'win32-x64'
           if (
             $stageReport.key -ne "win32-x64" -or
             $stageReport.archive -ne $expected.archive -or
@@ -114,6 +115,17 @@ jobs:
             $stageReport.archiveSha256 -ne $expected.sha256
           ) {
             throw "native runtime archive identity report mismatch"
+          }
+          $headers = $inputs.nodeHeaders
+          $importLibrary = $headers.importLibraries.'win32-x64'
+          if (
+            $stageReport.nodeHeadersArchive -ne $headers.archive -or
+            $stageReport.nodeHeadersUrl -ne $headers.url -or
+            $stageReport.nodeHeadersSha256 -ne $headers.sha256 -or
+            $stageReport.nodeImportLibraryUrl -ne $importLibrary.url -or
+            $stageReport.nodeImportLibrarySha256 -ne $importLibrary.sha256
+          ) {
+            throw "native runtime Node headers identity report mismatch"
           }
           $runtime = Resolve-Path build/runtime/win32-x64
           & "$runtime\node.exe" "$runtime\scripts\runtime-payload.mjs" verify `
@@ -262,7 +274,7 @@ jobs:
             $process.WaitForExit()
           }
       - run: npm run typecheck
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-win32-x64-folder-inputs
           path: |

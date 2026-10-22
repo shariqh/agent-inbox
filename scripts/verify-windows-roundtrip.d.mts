@@ -11,6 +11,7 @@ export type WindowsRoundTripEvidence = {
   nodeVersion: string
   nodeModulesAbi: string
   nativeAddonSelftests: 'passed'
+  electronSqliteCheck: 'passed'
   setupAvailable: false
 }
 export function verifyWindowsRoundTrip(options: {

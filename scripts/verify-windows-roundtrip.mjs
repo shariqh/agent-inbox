@@ -62,6 +62,7 @@ function verifyAppSide({
   if (report.runtimeManifestDigest !== runtimeManifestDigest ||
       report.key !== KEY ||
       report.nativeAddonSelftests !== 'passed' ||
+      report.electronSqliteCheck !== 'passed' ||
       report.setupAvailable !== false) {
     throw new WindowsRoundTripVerificationError(`${label} application report identity mismatch`)
   }
@@ -153,6 +154,7 @@ export function verifyWindowsRoundTrip({
     nodeVersion: originalManifest.nodeVersion,
     nodeModulesAbi: originalManifest.nodeModulesAbi,
     nativeAddonSelftests: restored.report.nativeAddonSelftests,
+    electronSqliteCheck: restored.report.electronSqliteCheck,
     setupAvailable: restored.report.setupAvailable,
   }
 }

@@ -4,14 +4,34 @@ Windows delivery is intentionally split into dependency-ordered layers. The curr
 foundation builds a native, unsigned Electron folder on `windows-2022`; it is CI evidence
 for later installer work, not a downloadable Windows release.
 
+## Pinned inputs
+
+`release/windows-inputs.json` pins the same Node **24.18.1** and Electron **43.8.0** as the
+macOS and Linux profiles, including the
+[Node 24.18.1 compatibility hold for #135](macos-release.md#node-24181-compatibility-hold-135);
+a test keeps the three profiles' Node and Electron pins identical. The official Windows
+ZIP carries neither Node's C/C++ headers nor `node.lib`, so the profile also pins the same
+release's `node-v24.18.1-headers.tar.gz` and `win-x64/node.lib` by official URL and
+SHA-256 (all copied from that release's signed `SHASUMS256.txt`). Native staging verifies
+both, lists and checks the headers tarball before extracting it, and adds them to the
+extracted distribution (`include/node` and `Release/node.lib`), so `better-sqlite3` is
+rebuilt against verified headers of exactly the shipped Node, as on macOS and Linux, never
+against headers node-gyp would download. Neither file enters the runtime payload.
+
 ## What the native folder proves
 
 - The official pinned Node 24 `win32-x64` ZIP is downloaded, hashed, inspected before
-  extraction, staged with the Node-ABI dependency tree, and self-tested on Windows x64.
+  extraction, staged with the Node-ABI dependency tree, and self-tested on Windows x64:
+  the hook selftest, the allocation-driven SQLite cleanup check (#135), and the MCP
+  server probe (initialize + tools/list) all run before the manifest is written.
 - The input contract pins Windows `10.0.17763` as the minimum OS version for later
   package acceptance; this layer's native evidence itself runs on Windows Server 2022.
 - The Electron app is packaged natively with a separate Electron-ABI
-  `better-sqlite3` rebuild.
+  `better-sqlite3` rebuild. The packaged Electron runs the same allocation-driven SQLite
+  check in Node mode against its own addon and `dist/store.js`, and the packaged update
+  verifier, trust boundary and key registry must match the source byte for byte. The
+  folder never checks for or installs updates: Electron enables the updater only on
+  macOS and Linux.
 - Every `.exe`, `.dll`, and `.node` in the restored folder is a plain AMD64 PE32+
   image. Native process probes require Electron ABI 148 and Node ABI 137 to load their
   respective addons.

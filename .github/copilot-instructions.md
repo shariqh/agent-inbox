@@ -175,8 +175,8 @@ Run the build before `npm run electron`; the development shell starts the built
   `cycle: true` (iterative SCC, no recursion, no new stdio module). A node's `deps` come only
   from its own section. The cap keeps S1's order, then fills dependency neighbours round-robin
   (blockers before dependents, by key); a `blocks` edge needs both nodes emitted, all edges stay
-  within twice the node budget, and every omission is counted. The browser ignores them until
-  PR D (`snapshots.js` accepts the body, `issues.js` reads `contains` edges only). `issue_rel`
+  within twice the node budget, and every omission is counted. `snapshots.js` accepts the
+  body unchanged and PR D draws it (below). `issue_rel`
   adds `waits_on_issues` (open blocker keys, at most 50) and `unblocks` only while the key's own
   section is bound, `ok`, at most 7 days old and not dropped by rule 6 (that root reports
   `unknown`); never name them `waits_on` (a row's writable step labels) or anything built on
@@ -197,6 +197,19 @@ Run the build before `npm run electron`; the development shell starts the built
   the issue chip keeps #30's URL rules (filtered by `safeHttpUrl()`), every href
   comes from `chipHtml()`, and the word "Blocked" never appears. History keeps its
   plain chip, and labels open their target only through `focusItem`.
+- "Waits on" in Plans (#103 slice 2 PR D) is ambient. `buildIssueView` gives a drawn
+  relation `dependencies` only when its root says `dependencies: "ok"` (open blockers and
+  dependents, activity labels read from `attentionEntries`, `cycle`, and +N counts of open
+  ones beyond the page (any unlisted open one when the direction's total exceeds GitHub's
+  50-entry page, which includes closed issues), hidden from the account (only when the page
+  was complete) or cut by the cap), `{status:'unavailable'}`
+  for a refused section, and `null` otherwise: never "no dependencies". `planWaits` and
+  `rowWaits` merge a row's unfinished `waits_on` steps (local, drawn with no graph; dangling
+  labels and `done` or `na` targets draw nothing) with its issue's open blockers, one entry per pair.
+  Chips and lists are built only in `public/source.js` (`esc()`, `chipHtml()`, a link only
+  from a validated slug and number, `tone-issue`/`tone-stale`, never the word "Blocked");
+  matrix chips stay out of the roving order. No dependency or `waits_on` value reaches
+  attention, a badge, a count or the dock.
 - Grouping plans by parent issue (#103 slice 2) is opt-in and only reorders.
   `agent-inbox-group-plans` is a saved preference seeded on every load (like
   #221's sort order); the Plans header switch changes only the current view, and

@@ -67,10 +67,51 @@ export interface IssueRelation {
   /** in GitHub's order */
   children: IssueChildView[]
   more: { notVisible: number; onGitHub: number; notShown: number }
+  /**
+   * GitHub dependencies (slice 2 §9.1), fresh and stale only: null when the
+   * section is unknown or the relation does not draw, never "no dependencies".
+   */
+  dependencies: IssueDependenciesView | null
+}
+
+/** The OPEN issues on one side that the list cannot show. */
+export interface IssueDependencyMore {
+  /** counted by GitHub but not visible to this account */
+  notVisible: number
+  /** beyond GitHub's page */
+  onGitHub: number
+}
+
+export type IssueDependenciesView =
+  | { status: 'unavailable' }
+  | {
+      status: 'ok'
+      /** open blockers, by repository and number */
+      waitsOn: IssueChildView[]
+      /** open dependents, by repository and number */
+      unblocks: IssueChildView[]
+      /** a GitHub cycle touches this issue */
+      cycle: boolean
+      /** `notShown`: entries the node cap cut, either side */
+      more: { waitsOn: IssueDependencyMore; unblocks: IssueDependencyMore; notShown: number }
+    }
+
+/** One thing a plan or row waits on: a step of its plan, an open GitHub issue, or both at once. */
+export interface IssueWaitEntry {
+  step: { id: string; label: string } | null
+  node: IssueNodeView | null
+  /** the GitHub relation's age; null for a step alone */
+  freshness: 'fresh' | 'stale' | null
+  fetchedAt: string | null
+  sources: Array<'step' | 'github'>
 }
 
 export interface IssueView {
   relations: Map<string, IssueRelation>
+  /** plan id → its issue's open blockers */
+  planWaits: Map<string, IssueWaitEntry[]>
+  /** row id → its unfinished waits_on steps and its issue's open blockers */
+  rowWaits: Map<string, IssueWaitEntry[]>
 }
 
 export interface IssueViewItem extends IssueKeyEntity {
@@ -91,6 +132,8 @@ export interface IssueViewRow {
   issue_repo?: string | null
   issue_number?: number | null
   updated_at?: string | null
+  /** labels of other rows of the same plan (slice 2 §4) */
+  waits_on?: readonly string[]
 }
 
 export interface IssueViewPlan extends IssueKeyEntity {

@@ -4,12 +4,13 @@
 // over fixture rows, so every case is a body the viewer could actually serve.
 import { describe, expect, it } from 'vitest'
 import { buildIssueView, HIDDEN_AFTER_MS, planGroups, rowParentRuns, STALE_AFTER_MS } from '../public/issues.js'
-import type { IssueRelation, IssueViewItem, IssueViewPlan, IssueViewRow } from '../public/issues.js'
+import type { IssueRelation, IssueViewItem, IssueViewPlan, IssueViewRow, IssueWaitEntry } from '../public/issues.js'
 import { indexLinks } from '../public/source.js'
 import type { CachedLink } from '../public/source.js'
 import { buildIssueGraph, issueRelations } from '../src/issue-graph.js'
 import type { IssueSnapshotRow } from '../src/store.js'
-import { at, depsOf, facts, keySets, row, snapshot } from './issue-fixtures.js'
+import { at, deps, depsOf, facts, keySets, row, snapshot } from './issue-fixtures.js'
+import type { DepsOpts } from './issue-fixtures.js'
 
 const REPO = 'shariqh/agent-inbox'
 const K = (n: number): string => `${REPO}#${n}`
@@ -137,7 +138,7 @@ describe('freshness and unavailable states (§5.8)', () => {
       const view = buildIssueView(graphOf([row(K(130), null, null, { error, checkedAt: at(1) })]), { nowMs: T })
       expect(relation(view, K(130))).toEqual({
         key: K(130), freshness: 'unavailable', error, fetchedAt: null, node: null, trail: [], children: [],
-        more: { notVisible: 0, onGitHub: 0, notShown: 0 },
+        more: { notVisible: 0, onGitHub: 0, notShown: 0 }, dependencies: null,
       })
     }
   })
@@ -160,7 +161,7 @@ describe('freshness and unavailable states (§5.8)', () => {
     for (const nowMs of [T, T + 2 * 60 * 60_000, T + HIDDEN_AFTER_MS + 1]) {
       expect(rows(nowMs)).toEqual({
         key: K(120), freshness: 'no-hierarchy', error: 'offline', fetchedAt: at(0), node: null, trail: [], children: [],
-        more: { notVisible: 0, onGitHub: 0, notShown: 0 },
+        more: { notVisible: 0, onGitHub: 0, notShown: 0 }, dependencies: null,
       })
     }
     // a cached answer this build cannot read (another version's, say) knows nothing
@@ -446,7 +447,7 @@ describe('plan grouping keys (slice 2 §7)', () => {
   it('reads the freshness itself, not just whether a node is present', () => {
     const fresh = view(cached([120, 121]))
     for (const freshness of ['hidden', 'no-hierarchy', 'unavailable'] as const) {
-      const forged = { relations: new Map([...fresh.relations].map(([key, rel]) => [key, { ...rel, freshness }])) }
+      const forged = { ...fresh, relations: new Map([...fresh.relations].map(([key, rel]) => [key, { ...rel, freshness }])) }
       expect(planGroups([plan('p120', 120), plan('p121', 121)], forged, null).groupOf.size).toBe(0)
     }
   })
@@ -473,41 +474,194 @@ describe('plan grouping keys (slice 2 §7)', () => {
   })
 })
 
-// Slice 2 PR B: /api/issues now carries GitHub dependencies (blocks edges, node
-// deps, each root's dependency status). Today's view reads containment only, so
-// breadcrumbs, children, progress, plan groups and row runs are identical with
-// and without them; PR D draws them.
-describe('GitHub dependencies leave today’s view alone (slice 2 PR B)', () => {
-  const plan = (id: string, pin: number | null): IssueViewPlan => ({
-    id, project: 'agent-inbox', agent: 'copilot', title: `Plan ${id}`, status: 'active', repo: REPO, stream: 'main',
-    issue_ref: null, ...(pin === null ? {} : { issue_pin_repo: REPO, issue_pin_number: pin }), rows: [],
+// Slice 2 PR D (§9.1): GitHub dependencies in the view. A relation that draws
+// relationships also carries its issue's open blockers ("waits on") and open
+// dependents ("unblocks"); plans and rows get the chips' entries, with a row's
+// agent-declared waits_on steps beside its issue's blockers.
+describe('GitHub dependencies in the view (slice 2 PR D)', () => {
+  const nowMs = T + 3 * 60_000
+  const depRow = (n: number, d: DepsOpts, extra: { fetchedAt?: string; error?: 'offline' | 'not-found' } = {}) =>
+    row(K(n), snapshot(K(n)), extra.fetchedAt ?? at(0), {
+      dependencies: deps(d), ...(extra.error ? { error: extra.error, checkedAt: at(100) } : {}),
+    })
+  const deps121 = (): DepsOpts => ({
+    blockedBy: [K(119), facts(K(118), { state: 'CLOSED', state_reason: 'COMPLETED' }), 'Other/Repo#5'],
+    blocking: [K(122), facts(K(123), { state: 'CLOSED', state_reason: 'COMPLETED' })],
+  })
+  const depsOfRel = (view: ReturnType<typeof buildIssueView>, key: string) => {
+    const found = relation(view, key).dependencies
+    if (!found || found.status !== 'ok') throw new Error(`no dependencies for ${key}`)
+    return found
+  }
+
+  it('lists the open blockers and dependents by repository and number, with activity, and drops closed ones', () => {
+    const view = buildIssueView(graphOf([depRow(121, deps121())]), { nowMs })
+    const found = depsOfRel(view, K(121))
+    expect(found.waitsOn.map((d) => d.node.key)).toEqual(['other/repo#5', K(119)])
+    expect(found.unblocks.map((d) => d.node.key)).toEqual([K(122)])
+    expect(found.waitsOn.map((d) => d.activity.label)).toEqual(['None here', 'None here'])
+    expect(found.cycle).toBe(false)
+    expect(found.more).toEqual({ waitsOn: { notVisible: 0, onGitHub: 0 }, unblocks: { notVisible: 0, onGitHub: 0 }, notShown: 0 })
   })
 
-  it('draws the same relations, plan groups and row runs with and without blocks edges and the new fields', () => {
-    const parent117 = facts(K(117), { title: 'Integrate Agent Inbox with Agent Host Protocol', children_total: 10, children_completed: 1 })
-    const rows = [family()[0]!, ...[120, 121].map((n) => row(K(n), snapshot(K(n), { ancestors: [parent117] }), at(0)))]
-    // #121 and #120 wait on each other, issues elsewhere block #120 and the parentless #117, and #120 blocks #122
-    const section = depsOf([[K(121), K(120)], [K(120), K(121)], ['other/repo#5', K(120)], [K(120), K(122)], ['other/repo#6', K(117)]])
-    const plain = graphOf(rows)
-    const dependent = graphOf(rows.map((r) => ({ ...r, dependencies: section(`${r.repo}#${r.number}`) })))
-    expect(dependent.edges.filter((e) => e.kind === 'blocks')).toHaveLength(5)
-    expect(dependent.edges.some((e) => e.kind === 'blocks' && e.cycle)).toBe(true)
-    expect(dependent.nodes.filter((n) => n.deps)).toHaveLength(3)
-    expect(dependent.roots.every((r) => r.dependencies === 'ok')).toBe(true)
-
-    const nowMs = T + 3 * 60_000
-    const before = buildIssueView(plain, { nowMs })
-    const after = buildIssueView(dependent, { nowMs })
-    expect(after).toEqual(before)
-    expect(relation(after, K(117)).children.map((c) => c.node.number)).toEqual(GITHUB_ORDER)
-    expect(relation(after, K(120)).trail.map((n) => n.key)).toEqual([K(117)])
-
-    const plans = [plan('a', null), plan('p120', 120), plan('x', null), plan('umb', 117), plan('p121', 121)]
-    const grouped = planGroups(plans, after, null)
-    expect(grouped.groupOf.size).toBe(3)
-    expect(grouped).toEqual(planGroups(plans, before, null))
-    const linked = (id: string, n: number): IssueViewRow => ({ id, label: id, status: 'tracked', issue_repo: REPO, issue_number: n })
-    const steps = [linked('r1', 120), linked('r2', 121)]
-    expect(rowParentRuns(steps, after)).toEqual(rowParentRuns(steps, before))
+  it('ages with the relationships: stale keeps the lists, expired and unavailable draw none', () => {
+    const stale = buildIssueView(graphOf([depRow(121, deps121(), { error: 'offline' })]), { nowMs: T + 60 * 60_000 })
+    expect(relation(stale, K(121)).freshness).toBe('stale')
+    expect(depsOfRel(stale, K(121)).waitsOn).toHaveLength(2)
+    const hidden = buildIssueView(graphOf([depRow(121, deps121())]), { nowMs: T + HIDDEN_AFTER_MS + 1 })
+    expect(relation(hidden, K(121)).dependencies).toBeNull()
+    const hard = buildIssueView(graphOf([depRow(121, deps121(), { error: 'not-found' })]), { nowMs })
+    expect(relation(hard, K(121)).freshness).toBe('unavailable')
+    expect(relation(hard, K(121)).dependencies).toBeNull()
   })
+
+  it('draws no list for an unknown section, and says unavailable only when GitHub said so', () => {
+    const unknown = buildIssueView(graphOf([row(K(121), snapshot(K(121)), at(0))]), { nowMs })
+    expect(relation(unknown, K(121)).dependencies).toBeNull()
+    const refused = buildIssueView(graphOf([row(K(121), snapshot(K(121)), at(0), { dependencies: { status: 'unavailable' } })]), { nowMs })
+    expect(relation(refused, K(121)).dependencies).toEqual({ status: 'unavailable' })
+  })
+
+  it('marks a cycle that touches the issue, and only then', () => {
+    const pairs = depsOf([[K(120), K(121)], [K(121), K(120)], [K(121), K(122)]])
+    const rows = [120, 121, 122].map((n) => row(K(n), snapshot(K(n)), at(0), { dependencies: pairs(K(n)) }))
+    const view = buildIssueView(graphOf(rows), { nowMs })
+    expect(depsOfRel(view, K(120)).cycle).toBe(true)
+    expect(depsOfRel(view, K(121)).cycle).toBe(true)
+    expect(depsOfRel(view, K(122)).cycle).toBe(false)
+    expect(depsOfRel(view, K(122)).waitsOn.map((d) => d.node.key)).toEqual([K(121)])
+  })
+
+  it('counts the open ones it cannot show: hidden from the account, beyond the page, and cut by the node cap', () => {
+    const hiddenFrom = buildIssueView(graphOf([depRow(121, {
+      blockedBy: [K(119), K(120), facts(K(118), { state: 'CLOSED' })], blockedByCounts: { open: 5, total: 7 },
+    })]), { nowMs })
+    expect(depsOfRel(hiddenFrom, K(121)).more.waitsOn).toEqual({ notVisible: 3, onGitHub: 0 })
+
+    const page = Array.from({ length: 50 }, (_, i) => K(500 + i))
+    const beyond = buildIssueView(graphOf([depRow(121, {
+      blocking: page, blockingTruncated: true, blockingCounts: { open: 60, total: 80 },
+    })]), { nowMs })
+    expect(depsOfRel(beyond, K(121)).unblocks).toHaveLength(50)
+    expect(depsOfRel(beyond, K(121)).more.unblocks).toEqual({ notVisible: 0, onGitHub: 10 })
+    // the cap cut four of the page: they are "not shown", not also "more on GitHub"
+    const cutPage = { ...graphOf([depRow(121, { blocking: page, blockingTruncated: true, blockingCounts: { open: 60, total: 80 } })]) }
+    const kept = { ...cutPage, edges: cutPage.edges.filter((e) => !(e.kind === 'blocks' && [K(500), K(501), K(502), K(503)].includes(e.to))),
+      roots: cutPage.roots.map((r) => ({ ...r, dependencies_omitted: 4 })) }
+    expect(depsOfRel(buildIssueView(kept, { nowMs }), K(121)).more).toEqual({
+      waitsOn: { notVisible: 0, onGitHub: 0 }, unblocks: { notVisible: 0, onGitHub: 10 }, notShown: 4,
+    })
+
+    // a page of 50 that mixes open and closed: the open ones it lacks may sit
+    // beyond it, so they are never blamed on permissions (review of #274, F1)
+    const mixed = (n: number) => [
+      ...Array.from({ length: 5 }, (_, i) => K(n + i)),
+      ...Array.from({ length: 45 }, (_, i) => facts(K(n + 100 + i), { state: 'CLOSED' })),
+    ]
+    const both = buildIssueView(graphOf([depRow(121, {
+      blockedBy: mixed(600), blockedByTruncated: true, blockedByCounts: { open: 20, total: 80 },
+      blocking: mixed(800), blockingTruncated: true, blockingCounts: { open: 9, total: 51 },
+    })]), { nowMs })
+    expect(depsOfRel(both, K(121)).waitsOn).toHaveLength(5)
+    expect(depsOfRel(both, K(121)).more).toEqual({
+      waitsOn: { notVisible: 0, onGitHub: 15 }, unblocks: { notVisible: 0, onGitHub: 4 }, notShown: 0,
+    })
+    // a complete page (total ≤ 50) lists everything this account can see
+    const complete = buildIssueView(graphOf([depRow(121, {
+      blockedBy: mixed(600), blockedByCounts: { open: 8, total: 50 },
+      blocking: [K(130), facts(K(131), { state: 'CLOSED' })], blockingCounts: { open: 4, total: 6 },
+    })]), { nowMs })
+    expect(depsOfRel(complete, K(121)).more).toEqual({
+      waitsOn: { notVisible: 3, onGitHub: 0 }, unblocks: { notVisible: 3, onGitHub: 0 }, notShown: 0,
+    })
+
+    // the node cap: two dependents were cut, and the root says so
+    const graph = graphOf([depRow(121, { blockedBy: [K(119)], blocking: [K(122), K(123), K(124)] })])
+    const cut = {
+      ...graph,
+      edges: graph.edges.filter((e) => !(e.kind === 'blocks' && (e.to === K(123) || e.to === K(124)))),
+      roots: graph.roots.map((r) => ({ ...r, dependencies_omitted: 2 })),
+    }
+    const capped = depsOfRel(buildIssueView(cut, { nowMs }), K(121))
+    expect(capped.unblocks.map((d) => d.node.key)).toEqual([K(122)])
+    expect(capped.more).toEqual({ waitsOn: { notVisible: 0, onGitHub: 0 }, unblocks: { notVisible: 0, onGitHub: 0 }, notShown: 2 })
+  })
+
+  describe('plan and row entries', () => {
+    const step = (id: string, label: string, status: string, link: number | null, waits: string[] = []): IssueViewRow => ({
+      id, label, status, waits_on: waits, ...(link === null ? {} : { issue_repo: REPO, issue_number: link }),
+    })
+    const rows = [
+      step('rb', 'Build', 'done', 119),
+      step('rs', 'Sign', 'tracked', 120),
+      step('rp', 'Ship', 'partial', 121, ['Build', 'Gone', 'Sign']),
+      step('rd', 'Doc', 'tracked', null, ['Sign']),
+      step('rx', 'Extra', 'tracked', null, ['Build']),
+      step('rn', 'Skipped', 'na', null),
+      step('ry', 'Later', 'tracked', null, ['Doc', 'Skipped']),
+    ]
+    const shipPlan: IssueViewPlan = {
+      id: 'p', project: 'agent-inbox', agent: 'copilot', title: 'Release', status: 'active', repo: REPO, stream: 'main',
+      issue_ref: null, issue_pin_repo: REPO, issue_pin_number: 121, rows,
+    }
+    // #121 waits on #119 (still open on GitHub), #120 and #122; #118 is closed
+    const graph = () => graphOf([depRow(121, { blockedBy: [K(119), K(120), K(122), facts(K(118), { state: 'CLOSED' })] })])
+    const brief = (entries: readonly IssueWaitEntry[] | undefined) =>
+      (entries ?? []).map((e) => [e.step?.label ?? null, e.node?.key ?? null, e.sources.join('+')])
+
+    it('merges a step and its GitHub issue into one entry, ignores done and dangling steps, and keeps GitHub-only blockers', () => {
+      const view = buildIssueView(graph(), { boards: [shipPlan], nowMs })
+      expect(brief(view.rowWaits.get('rp'))).toEqual([
+        ['Sign', K(120), 'step+github'],
+        [null, K(119), 'github'],
+        [null, K(122), 'github'],
+      ])
+      expect(brief(view.rowWaits.get('rd'))).toEqual([['Sign', null, 'step']])
+      // its only step is done; a step that will not happen (na) holds nothing up either
+      expect(view.rowWaits.has('rx')).toBe(false)
+      expect(brief(view.rowWaits.get('ry'))).toEqual([['Doc', null, 'step']])
+      expect(view.rowWaits.has('rs')).toBe(false)
+      expect(brief(view.planWaits.get('p'))).toEqual([[null, K(119), 'github'], [null, K(120), 'github'], [null, K(122), 'github']])
+      expect(view.rowWaits.get('rp')?.every((e) => e.node === null || e.freshness === 'fresh')).toBe(true)
+    })
+
+    it('keeps the steps without a graph, and drops the GitHub half whenever it would not draw', () => {
+      const steps = [['Sign', null, 'step']]
+      for (const [graphBody, at_] of [[null, nowMs], [graph(), T + HIDDEN_AFTER_MS + 1]] as const) {
+        const view = buildIssueView(graphBody, { boards: [shipPlan], nowMs: at_ })
+        expect(brief(view.rowWaits.get('rp'))).toEqual(steps)
+        expect(view.planWaits.has('p')).toBe(false)
+      }
+      const unknown = buildIssueView(graphOf([row(K(121), snapshot(K(121)), at(0))]), { boards: [shipPlan], nowMs })
+      expect(brief(unknown.rowWaits.get('rp'))).toEqual(steps)
+      // an archived plan's rows draw as its card does
+      const archived = buildIssueView(graph(), { archived: [{ ...shipPlan, status: 'archived' }], nowMs })
+      expect(brief(archived.rowWaits.get('rd'))).toEqual([['Sign', null, 'step']])
+    })
+
+    it('reads a stale relationship as stale, and never makes an uncertain plan identity wait', () => {
+      const stale = buildIssueView(graphOf([depRow(121, { blockedBy: [K(122)] }, { error: 'offline' })]), { boards: [shipPlan], nowMs: T + 60 * 60_000 })
+      expect(stale.planWaits.get('p')?.map((e) => e.freshness)).toEqual(['stale'])
+      const guessed = { ...shipPlan, issue_pin_repo: null, issue_pin_number: null, stream: '121-x', issue_ref: 121 }
+      // a branch guess is certain enough for chips, but a PR that closes several issues is not
+      const view = buildIssueView(graph(), { boards: [guessed], nowMs })
+      expect(brief(view.planWaits.get('p')).map(([, key]) => key)).toEqual([K(119), K(120), K(122)])
+      const unsure = { ...guessed, stream: 'feature', issue_ref: null }
+      const links = indexLinks([{ repo: REPO, branch: 'feature', head_repo: REPO, issue_number: 121 } as CachedLink])
+      expect(buildIssueView(graph(), { boards: [unsure], links, nowMs }).planWaits.has('p')).toBe(false)
+    })
+  })
+})
+
+// The pure view must never feed attention (§10).
+it('dependencies change no relation field slice 1 draws', () => {
+  const parent117 = facts(K(117), { title: 'Integrate Agent Inbox with Agent Host Protocol', children_total: 10, children_completed: 1 })
+  const rows = [family()[0]!, ...[120, 121].map((n) => row(K(n), snapshot(K(n), { ancestors: [parent117] }), at(0)))]
+  const section = depsOf([[K(121), K(120)], [K(120), K(121)], ['other/repo#5', K(120)], [K(120), K(122)], ['other/repo#6', K(117)]])
+  const nowMs = T + 3 * 60_000
+  const before = buildIssueView(graphOf(rows), { nowMs })
+  const after = buildIssueView(graphOf(rows.map((r) => ({ ...r, dependencies: section(`${r.repo}#${r.number}`) }))), { nowMs })
+  const strip = (view: ReturnType<typeof buildIssueView>) => [...view.relations].map(([key, { dependencies: _d, ...rest }]) => [key, rest])
+  expect(strip(after)).toEqual(strip(before))
+  expect([...before.relations.values()].every((r) => r.dependencies === null)).toBe(true)
 })

@@ -391,6 +391,32 @@ function childrenHtml(rel, tone) {
 
 const lineHtml = (text) => `<div class="src-checked">${esc(text)}</div>`
 
+// Slice 2 §9.1: "Dependencies on GitHub", open issues only, below the
+// sub-issues. A dependency is not the human's blocker: neutral tones, never
+// the blocked mark or the word, and only text says "waits on" or "circular".
+function dependencySideHtml(heading, side, more, against, tone) {
+  const items = side.filter((dep) => linkable(dep.node)).map(({ node, activity }) =>
+    `<li class="src-child">${markHtml(node)}${nodeChipHtml(node, against, tone)}<span class="src-tldr">${esc(node.title)}</span>${activityHtml(activity)}</li>`)
+  for (const [n, what] of [[more.notVisible, 'not visible to your GitHub account'], [more.onGitHub, 'more on GitHub']]) {
+    if (n > 0) items.push(`<li class="src-more">${esc(`+${n} ${what}`)}</li>`)
+  }
+  if (!items.length) return ''
+  return `<div class="src-deps-head">${esc(heading)}</div><ul class="src-child-list src-dep-list" aria-label="${esc(heading)}">${items.join('')}</ul>`
+}
+
+function dependenciesHtml(rel, tone) {
+  const deps = rel.dependencies
+  if (!deps) return ''
+  if (deps.status === 'unavailable') return lineHtml('Dependencies unavailable — GitHub returned this issue but not its dependencies')
+  if (deps.status !== 'ok') return ''
+  const against = rel.node.repo
+  const body = (deps.cycle ? lineHtml('Circular dependency on GitHub') : '')
+    + dependencySideHtml('Waits on', deps.waitsOn, deps.more.waitsOn, against, tone)
+    + dependencySideHtml('Unblocks', deps.unblocks, deps.more.unblocks, against, tone)
+    + (deps.more.notShown > 0 ? `<div class="src-more">${esc(`+${deps.more.notShown} not shown`)}</div>` : '')
+  return body ? `<div class="src-children src-deps"><div class="src-children-head">Dependencies on GitHub</div>${body}</div>` : ''
+}
+
 // How fresh the relationships are, or why there are none. Only drawn ones ever
 // say "checked" or "as of".
 function freshnessHtml(rel, nowMs) {
@@ -417,7 +443,7 @@ function issueBlockHtml(issue, rel, against, nowMs) {
   const tone = rel.freshness === 'stale' ? 'stale' : 'issue'
   const self = `<div class="src-row">${markHtml(rel.node)}${chipHtml(issue.url, tone, esc(issueLabel(issue.repo, issue.num, labelRepo(rel, against))), '', true, keyAttr(issue.key))}` +
     `<span class="src-tldr">${esc(rel.node.title)}</span></div>`
-  return trailHtml(rel, against, tone) + self + childrenHtml(rel, tone) + freshnessHtml(rel, nowMs)
+  return trailHtml(rel, against, tone) + self + childrenHtml(rel, tone) + dependenciesHtml(rel, tone) + freshnessHtml(rel, nowMs)
 }
 
 // The compact row/board chips. `tabbable` defaults to false: §13's roving tab
@@ -485,7 +511,7 @@ export function issueRelationsHtml(index, entity, nowMs, opts = {}) {
   let body = ''
   if (drawn(rel)) {
     const tone = rel.freshness === 'stale' ? 'stale' : 'issue'
-    body = trailHtml(rel, contextRepo(entity, link), tone) + childrenHtml(rel, tone)
+    body = trailHtml(rel, contextRepo(entity, link), tone) + childrenHtml(rel, tone) + dependenciesHtml(rel, tone)
     if (!body) return ''
   }
   const line = freshnessHtml(rel, nowMs)
@@ -518,4 +544,75 @@ export function planGroupHeadHtml(group, nowMs, opts = {}) {
 export function rowParentHeadHtml(parent, plan) {
   const label = issueLabel(parent.repo, parent.number, contextRepo(plan, null))
   return `<th colspan="5" scope="colgroup" class="row-parent-head" title="${esc(parent.title)}">${esc(`Part of ${label}`)}</th>`
+}
+
+// ── slice 2 §9.1: what a plan or row waits on ───────────────────────────────
+
+const waitsOf = (opts, table, id) => {
+  const map = opts && opts.issues ? opts.issues[table] : null
+  const entries = map instanceof Map && typeof id === 'string' ? map.get(id) : null
+  // an issue that is no valid slug and number is never named, as everywhere here
+  return (Array.isArray(entries) ? entries : []).flatMap((entry) => {
+    if (!entry.node || linkable(entry.node)) return [entry]
+    return entry.step ? [{ ...entry, node: null, freshness: null, sources: ['step'] }] : []
+  })
+}
+const waitIssueLabel = (entry, against) => issueLabel(entry.node.repo, entry.node.number, against)
+const waitSource = (entry) => entry.sources.map((source) => (source === 'step' ? 'step in this plan' : 'GitHub')).join(' · ')
+
+// One target as plain text: "step Build (#119 Title)", "#119 Title" or "step Build".
+function waitText(entry, against) {
+  const issue = entry.node ? `${waitIssueLabel(entry, against)} ${entry.node.title}` : ''
+  if (!entry.step) return issue
+  return `step ${entry.step.label}${issue ? ` (${issue})` : ''}`
+}
+
+// The chip's age line: "as of …" once any GitHub half is stale.
+function waitsAge(entries, nowMs) {
+  const github = entries.filter((entry) => entry.node && entry.freshness)
+  if (!github.length) return ''
+  const stale = github.find((entry) => entry.freshness === 'stale')
+  return stale ? `as of ${agoLabel(stale.fetchedAt, nowMs)}` : `checked ${agoLabel(github[0].fetchedAt, nowMs)}`
+}
+
+// "waits on #119", "waits on 3", "waits on step Build" or "waits on 2 steps";
+// its title lists each target with its source. Only one issue is a link.
+function waitsChipHtml(entries, against, nowMs, tabbable) {
+  if (!entries.length) return ''
+  const [first] = entries
+  let label
+  if (entries.length > 1) label = `waits on ${entries.length}${entries.every((entry) => entry.step) ? ' steps' : ''}`
+  else label = first.step ? `waits on step ${first.step.label}` : `waits on ${waitIssueLabel(first, against)}`
+  const url = entries.length === 1 && !first.step && first.node ? issueUrl(first.node.repo, first.node.number) : ''
+  const age = waitsAge(entries, nowMs)
+  const tip = ['Waits on:', ...entries.map((entry) => `${waitText(entry, against)} — ${waitSource(entry)}`), ...(age ? [age] : [])].join('\n')
+  const tone = entries.some((entry) => entry.freshness === 'stale') ? 'stale' : 'issue'
+  return chipHtml(url, tone, esc(label), tip, tabbable, `data-waits-on="${esc(entries.length)}"`)
+}
+
+// After a row's issue chip, in the plan's matrix and the row's card.
+export function rowWaitsChipHtml(row, plan, nowMs, opts = {}) {
+  return waitsChipHtml(waitsOf(opts, 'rowWaits', row && row.id), contextRepo(plan, null), nowMs, opts.tabbable === true)
+}
+
+// Beside a plan's own issue chip.
+export function planWaitsChipHtml(plan, nowMs, opts = {}) {
+  return waitsChipHtml(waitsOf(opts, 'planWaits', plan && plan.id), contextRepo(plan, null), nowMs, opts.tabbable === true)
+}
+
+// The row detail's "Waits on" (rowPanelEl): both kinds, each with its source.
+export function rowWaitsHtml(row, plan, nowMs, opts = {}) {
+  const entries = waitsOf(opts, 'rowWaits', row && row.id)
+  if (!entries.length) return ''
+  const against = contextRepo(plan, null)
+  const items = entries.map((entry) => {
+    const step = entry.step ? `<span class="src-step">${esc(`step ${entry.step.label}`)}</span>` : ''
+    const tone = entry.freshness === 'stale' ? 'stale' : 'issue'
+    const issue = entry.node
+      ? `${markHtml(entry.node)}${nodeChipHtml(entry.node, against, tone)}<span class="src-tldr">${esc(entry.node.title)}</span>` : ''
+    return `<li class="src-wait">${step}${issue}<span class="src-wait-source">${esc(waitSource(entry))}</span></li>`
+  })
+  const age = waitsAge(entries, nowMs)
+  return `<div class="card-source src-waits"><div class="card-source-label">WAITS ON</div><ul class="src-wait-list">${items.join('')}</ul>` +
+    `${age ? lineHtml(age) : ''}</div>`
 }

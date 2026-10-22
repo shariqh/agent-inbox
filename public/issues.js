@@ -17,6 +17,8 @@ export const HIDDEN_AFTER_MS = 7 * 24 * 60 * 60_000
 // GitHub's eight hierarchy levels, and its 100-sub-issue page (§2.5)
 const TRAIL_MAX = 8
 const CHILD_PAGE = 100
+// GitHub's dependency page, as the poller stores it (slice 2 §5.1)
+const DEPENDENCY_PAGE = 50
 const MARKS = new Map([['COMPLETED', 'completed'], ['NOT_PLANNED', 'not planned'], ['DUPLICATE', 'duplicate']])
 
 const record = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -139,24 +141,141 @@ function activityOf(slots) {
   return { kind: 'none', label: 'None here', target: null }
 }
 
+// GitHub's "blocked by" edges (slice 2 §6.2, blocker → dependent), each pair
+// once, and the issues on a cycle. A dependency is never the human's blocker:
+// nothing here reaches attention (§10).
+function blockingIndex() {
+  const seen = new Set()
+  const index = { blockersOf: new Map(), dependentsOf: new Map(), circular: new Set() }
+  index.add = (edge) => {
+    const pair = `${edge.from}\u0000${edge.to}`
+    if (seen.has(pair)) return
+    seen.add(pair)
+    index.blockersOf.set(edge.to, [...(index.blockersOf.get(edge.to) ?? []), edge.from])
+    index.dependentsOf.set(edge.from, [...(index.dependentsOf.get(edge.from) ?? []), edge.to])
+    if (edge.cycle === true) index.circular.add(edge.from).add(edge.to)
+  }
+  return index
+}
+
+const byIssue = (a, b) => {
+  const ra = a.repo.toLowerCase()
+  const rb = b.repo.toLowerCase()
+  return ra !== rb ? (ra < rb ? -1 : 1) : a.number - b.number
+}
+
+// What a list cannot show of the OPEN issues its section counts. GitHub's page
+// holds the first 50 of ALL of them, closed included, so when the direction has
+// more than 50 an unlisted open one may simply sit beyond it: "more on GitHub",
+// never blamed on permissions. Only a complete page (total ≤ 50) proves the rest
+// are hidden from this account. Closed ones draw nothing and are never counted.
+function depMoreOf(listed, open, total) {
+  if (open === null) return { notVisible: 0, onGitHub: 0 }
+  const missing = Math.max(0, open - listed)
+  return (total ?? open) > DEPENDENCY_PAGE ? { notVisible: 0, onGitHub: missing } : { notVisible: missing, onGitHub: 0 }
+}
+
+// §9.1's "Dependencies on GitHub" for a drawn relation. Only a section the
+// issue's own root fetched and GitHub answered (`ok`) has lists; `unavailable`
+// says so; `unknown`, a missing field and anything else draw nothing, never
+// "no dependencies" (§9, degradation).
+function dependenciesOf(root, node, { nodes, countsOf, blocking, activity }) {
+  if (root.dependencies === 'unavailable') return { status: 'unavailable' }
+  if (root.dependencies !== 'ok') return null
+  const counts = countsOf.get(node.key) ?? {}
+  const side = (keys, open, total) => {
+    const list = (keys ?? []).map((key) => nodes.get(key)).filter((n) => n && n.state === 'OPEN').sort(byIssue)
+    return { list: list.map((n) => ({ node: n, activity: activityOf(activity.get(n.key)) })), more: depMoreOf(list.length, open, total) }
+  }
+  const waitsOn = side(blocking.blockersOf.get(node.key), count(counts.blocked_by_open), count(counts.blocked_by_total))
+  const unblocks = side(blocking.dependentsOf.get(node.key), count(counts.blocking_open), count(counts.blocking_total))
+  // the node cap cut these (§6.3); they are counted once, not as missing
+  const notShown = count(root.dependencies_omitted) ?? 0
+  let left = notShown
+  for (const more of [unblocks.more, waitsOn.more]) {
+    for (const field of ['notVisible', 'onGitHub']) {
+      const taken = Math.min(left, more[field])
+      more[field] -= taken
+      left -= taken
+    }
+  }
+  return {
+    status: 'ok', waitsOn: waitsOn.list, unblocks: unblocks.list, cycle: blocking.circular.has(node.key),
+    more: { waitsOn: waitsOn.more, unblocks: unblocks.more, notShown },
+  }
+}
+
+// The GitHub half of a plan's or row's "waits on": the open blockers of its
+// certain issue, while that relation draws.
+function githubWaits(rel) {
+  if (!rel || !rel.dependencies || rel.dependencies.status !== 'ok') return []
+  return rel.dependencies.waitsOn.map(({ node }) => ({ node, freshness: rel.freshness, fetchedAt: rel.fetchedAt }))
+}
+
+// §9.1: per plan, its issue's open blockers; per row, its waits_on steps that
+// are neither done nor na (a label naming a removed row draws nothing, §4.2) beside its own
+// issue's open blockers. A step whose issue is one of those blockers is ONE
+// entry, labelled with both sources.
+function waitsOf({ boards, archived, links }, relations, canonical) {
+  const planWaits = new Map()
+  const rowWaits = new Map()
+  const certain = (entity) => {
+    const identity = issueKeyFor(entity, linkFor(links ?? null, entity))
+    return identity && identity.certain ? relations.get(identity.key) : null
+  }
+  for (const plan of [...(boards ?? []), ...(archived ?? [])]) {
+    if (!record(plan)) continue
+    const own = githubWaits(certain(plan)).map((g) => ({ step: null, ...g, sources: ['github'] }))
+    if (own.length) planWaits.set(plan.id, own)
+    const rows = (Array.isArray(plan.rows) ? plan.rows : []).filter(record)
+    const byLabel = new Map(rows.map((r) => [r.label, r]))
+    for (const r of rows) {
+      const fromGitHub = githubWaits(relations.get(issueKey(r.issue_repo, r.issue_number)))
+      const entries = []
+      for (const label of Array.isArray(r.waits_on) ? r.waits_on : []) {
+        const target = byLabel.get(label)
+        // a step that is done, or will not happen (na), holds nothing up
+        if (!target || target === r || target.status === 'done' || target.status === 'na') continue
+        const key = issueKey(target.issue_repo, target.issue_number)
+        const same = key ? fromGitHub.findIndex((g) => g.node.key === canonical(key)) : -1
+        const github = same >= 0 ? fromGitHub.splice(same, 1)[0] : null
+        entries.push({
+          step: { id: target.id, label: target.label }, node: github ? github.node : null,
+          freshness: github ? github.freshness : null, fetchedAt: github ? github.fetchedAt : null,
+          sources: github ? ['step', 'github'] : ['step'],
+        })
+      }
+      entries.push(...fromGitHub.map((g) => ({ step: null, ...g, sources: ['github'] })))
+      if (entries.length) rowWaits.set(r.id, entries)
+    }
+  }
+  return { planWaits, rowWaits }
+}
+
 // One frame's relationships, keyed by the issue key an entity asked for: the
 // roots of /api/issues (§4.7). A key with no entry draws today's plain chip.
 export function buildIssueView(graph, { items, boards, archived, links, attention, nowMs = Date.now() } = {}) {
   const relations = new Map()
   if (!record(graph) || graph.version !== 1 || !Array.isArray(graph.nodes) || !Array.isArray(graph.edges)
-    || !Array.isArray(graph.roots)) return { relations }
+    || !Array.isArray(graph.roots)) return { relations, ...waitsOf({ boards, archived, links }, relations, (key) => key) }
   const aliases = record(graph.aliases) ? graph.aliases : {}
   const canonical = (key) => (Object.hasOwn(aliases, key) && typeof aliases[key] === 'string' ? aliases[key] : key)
   const nodes = new Map()
+  // a node's own dependency counts (slice 2 §6.2), kept beside its view
+  const countsOf = new Map()
   for (const node of graph.nodes) {
     const view = nodeView(node)
-    if (view && !nodes.has(view.key)) nodes.set(view.key, view)
+    if (!view || nodes.has(view.key)) continue
+    nodes.set(view.key, view)
+    if (record(node.deps)) countsOf.set(view.key, node.deps)
   }
   const parentOf = new Map()
   const childrenOf = new Map()
+  const blocking = blockingIndex()
   for (const edge of graph.edges) {
-    if (!record(edge) || edge.kind !== 'contains' || edge.from === edge.to || parentOf.has(edge.to)
-      || !nodes.has(edge.from) || !nodes.has(edge.to)) continue
+    if (!record(edge) || edge.from === edge.to || !nodes.has(edge.from) || !nodes.has(edge.to)) continue
+    if (edge.kind === 'blocks') blocking.add(edge)
+    if (edge.kind !== 'contains' || parentOf.has(edge.to)) continue
     parentOf.set(edge.to, edge.from)
     childrenOf.set(edge.from, [...(childrenOf.get(edge.from) ?? []), { key: edge.to, position: count(edge.position) ?? Infinity }])
   }
@@ -167,7 +286,7 @@ export function buildIssueView(graph, { items, boards, archived, links, attentio
     if (!state) continue
     const relation = {
       key: root.key, freshness: state, error: text(root.error), fetchedAt: text(root.fetched_at),
-      node: null, trail: [], children: [], more: { notVisible: 0, onGitHub: 0, notShown: 0 },
+      node: null, trail: [], children: [], more: { notVisible: 0, onGitHub: 0, notShown: 0 }, dependencies: null,
     }
     if (state === 'fresh' || state === 'stale') {
       const node = nodes.get(canonical(root.key))
@@ -179,10 +298,11 @@ export function buildIssueView(graph, { items, boards, archived, links, attentio
         .sort((a, b) => a.position - b.position || (a.key < b.key ? -1 : 1))
         .map(({ key }) => ({ node: nodes.get(key), activity: activityOf(activity.get(key)) }))
       relation.more = moreOf(node, relation.children.length, count(root.children_omitted) ?? 0)
+      relation.dependencies = dependenciesOf(root, node, { nodes, countsOf, blocking, activity })
     }
     relations.set(root.key, relation)
   }
-  return { relations }
+  return { relations, ...waitsOf({ boards, archived, links }, relations, canonical) }
 }
 
 // Slice 2 §7: opt-in grouping. Only fresh and stale relations take part; every

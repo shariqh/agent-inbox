@@ -255,12 +255,13 @@ describe('navigation from Agent Inbox activity (#103 PR3, criterion 7)', () => {
   })
 })
 
-// Slice 2 PR B: /api/issues now carries GitHub dependencies. Until PR D draws
-// them, the page must look exactly as a body without them draws it. Had the
-// browser's validator refused such a body, every breadcrumb, child list and
-// plan group would silently have fallen back to plain chips.
-describe('GitHub dependencies in /api/issues (slice 2 PR B)', () => {
-  it('leave breadcrumbs, child progress and plan grouping exactly as a body without them draws', async () => {
+// Slice 2 PR B: /api/issues carries GitHub dependencies, and PR D draws them
+// (test/dom/plan-dependencies.test.ts). Everything else on the page must look
+// exactly as a body without them draws it: had the browser's validator refused
+// such a body, every breadcrumb, child list and plan group would silently have
+// fallen back to plain chips.
+describe('GitHub dependencies in /api/issues (slice 2 PR B, drawn by PR D)', () => {
+  it('add only their own chips and section: breadcrumbs, child progress and plan grouping are unchanged', async () => {
     db = freshDb()
     const { question, umbrella } = seed(db)
     upsertBoard(db, {
@@ -325,15 +326,24 @@ describe('GitHub dependencies in /api/issues (slice 2 PR B)', () => {
       await showInbox()
       const breadcrumb = row(question)!.querySelector('.nrow-src')!.innerHTML
       await showTab('boards')
-      return { breadcrumb, plans: document.getElementById('boards')!.innerHTML }
+      const plans = document.getElementById('boards')!.cloneNode(true) as HTMLElement
+      const added = [...plans.querySelectorAll('[data-waits-on], .src-deps')]
+      for (const el of added) el.remove()
+      return { breadcrumb, plans: plans.innerHTML, added: added.map((el) => el.textContent) }
     }
     const without = await surfaces()
+    expect(without.added).toEqual([])
 
     strip = false
     await pollTick()
     const withDependencies = await surfaces()
     expect(blocks).toBe(6)
-    expect(withDependencies).toEqual(without)
+    expect({ ...withDependencies, added: [] }).toEqual(without)
+    // the umbrella and the row on #119 each wait on an issue elsewhere; #120 waits on #119 and #121, and blocks #121
+    expect(withDependencies.added).toEqual(expect.arrayContaining([
+      'waits on elsewhere/repo#7', 'waits on elsewhere/repo#5', 'waits on 2',
+    ]))
+    expect(withDependencies.added.some((t) => t?.startsWith('Dependencies on GitHubCircular dependency on GitHub'))).toBe(true)
     // and both draw the relationships, not today's plain chips
     expect(chipKeys(row(question)!.querySelector('.nrow-src')!)).toEqual([K(117), K(120)])
     expect(boardCard(umbrella.id).querySelector('.board-issues')?.textContent).toContain('Sub-issues on GitHub · 1 of 10 done')

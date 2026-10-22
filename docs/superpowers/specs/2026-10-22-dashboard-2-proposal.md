@@ -186,9 +186,9 @@ Open [`mockup-a-mission-control.html`](assets/2026-10-22-dashboard-2/mockup-a-mi
 | Element | Motion | Reduced motion |
 |---|---|---|
 | Lane pulse | `transform: scale` + `opacity` ring, 2 s loop, only while the claim is live | Solid dot plus the word "live" |
-| Lane top edge | A short light sweep (`translateX`) every few seconds on working lanes | None |
+| Lane top edge | A short light sweep (`translateX`) every few seconds, only on the lane with the newest call (keeps infinite animations within the §10 cap of 12 and marks the latest activity) | None |
 | Subagent pulse | Same as lane, smaller, staggered | Solid dot |
-| Heartbeat trace | Static SVG redrawn per poll; the head dot pulses | Static |
+| Heartbeat trace | Static SVG redrawn per poll; the head dot pulses only on the lane with the newest call (same reason) | Static |
 | Now ring | Slow rotation of a partial ring while anything is working | Static ring |
 | New outcome / new ask | One-time 500 ms fade and slide on arrival | Instant |
 | Ribbon "now" segment | Stripes drift (on a transformed pseudo-element) | Static stripes |
@@ -357,7 +357,7 @@ and get a mixed-version test, as every additive column has so far.
 1. **CSS only, on `transform` and `opacity`.** No JavaScript animation loops, no canvas, no WebGL,
    no chart library. Stripes move on a transformed pseudo-element, never by animating
    `background-position`.
-2. **At most 12 infinite animations on screen.** Lanes beyond that, and every idle lane, are static.
+2. **At most 12 infinite animations on screen.** The lane sweep and heartbeat head run only on the lane with the newest call; lanes beyond the cap, and every idle lane, are static.
 3. **Paused when the page is hidden** (`document.hidden`); Electron already throttles hidden
    windows. A visible but unfocused window keeps its motion, since glancing at it is the point.
 4. **Reduced motion is honoured.** A new `@media (prefers-reduced-motion: reduce)` block turns every

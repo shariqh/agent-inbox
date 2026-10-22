@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { activityHistoryUrl, createSnapshotReader } from '../public/snapshots.js'
+import { buildIssueGraph } from '../src/issue-graph.js'
+import { at, depsOf, keySets, row, snapshot } from './issue-fixtures.js'
 
 function payload(title = 'A') {
   return {
@@ -367,5 +369,33 @@ describe('the /api/issues snapshot', () => {
     const read = createSnapshotReader(vi.fn().mockResolvedValue(new Response('<!doctype html>', { status: 404 })))
     await expect((await read('/api/issues')).json()).rejects.toThrow('HTTP 404')
     await expect(read('/api/issues?scope=attention')).rejects.toThrow('Unsupported snapshot route')
+  })
+
+  // Slice 2 PR B: GitHub dependencies stay inside version 1. Were the body
+  // refused, load() would fall back to "no graph" and every breadcrumb, child
+  // list and plan group would silently vanish; so the real builder's output is
+  // read here, with every new field present.
+  it('accepts the builder\'s body with blocks edges, node deps and each root\'s dependency fields', async () => {
+    const K = (n: number) => `shariqh/agent-inbox#${n}`
+    const section = depsOf([[K(119), K(121)], [K(121), K(119)], [K(120), K(121)]])
+    const body = JSON.parse(JSON.stringify(buildIssueGraph([
+      row(K(121), snapshot(K(121), { ancestors: [K(117)] }), at(10), { dependencies: section(K(121)) }),
+      row(K(119), snapshot(K(119)), at(10), { dependencies: section(K(119)) }),
+      row(K(122), snapshot(K(122)), at(10), { dependencies: { status: 'unavailable' } }),
+      row(K(123), snapshot(K(123)), at(10)),
+      row(K(124), null, null, { error: 'offline', checkedAt: at(10) }),
+    ], keySets([K(121), K(119), K(122), K(123), K(124)]), { maxUnits: 6 }))) as {
+      edges: Array<{ kind: string; cycle?: true }>
+      nodes: Array<{ deps?: unknown }>
+      roots: Array<{ dependencies: unknown; dependencies_omitted: number }>
+      truncated: { dependencies: number }
+    }
+    expect(body.edges.map((e) => [e.kind, e.cycle ?? false])).toEqual([['contains', false], ['blocks', true], ['blocks', true]])
+    expect(body.nodes.filter((n) => n.deps)).toHaveLength(2)
+    expect(body.roots.map((r) => r.dependencies).sort()).toEqual([null, 'ok', 'ok', 'unavailable', 'unknown'].sort())
+    expect(body.roots.some((r) => r.dependencies_omitted > 0)).toBe(true)
+    expect(body.truncated.dependencies).toBe(1)
+    const read = createSnapshotReader(vi.fn().mockResolvedValue(json(body, '"deps"')))
+    expect(await (await read('/api/issues')).json()).toEqual(body)
   })
 })

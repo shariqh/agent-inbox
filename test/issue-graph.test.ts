@@ -5,17 +5,21 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { readdirSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
-import { buildIssueGraph, MAX_GRAPH_NODES } from '../src/issue-graph.js'
-import type { IssueGraph } from '../src/issue-graph.js'
+import { buildIssueGraph, issueRelations, MAX_GRAPH_NODES } from '../src/issue-graph.js'
+import type { IssueBlocksEdge, IssueContainsEdge, IssueGraph } from '../src/issue-graph.js'
+import { parseIssueBatch } from '../src/issue-poller.js'
 import { listIssueSnapshots, openDb, recordIssueFailure, upsertIssueSnapshot } from '../src/store.js'
-import type { IssueSnapshot, IssueSnapshotRow } from '../src/store.js'
-import { at, facts, keySets, row, snapshot } from './issue-fixtures.js'
+import type { IssueDependencies, IssueSnapshot, IssueSnapshotRow } from '../src/store.js'
+import { at, deps, depsOf, facts, keySets, row, snapshot } from './issue-fixtures.js'
+import type { SnapshotOpts } from './issue-fixtures.js'
 import { scratchDir } from './scratch.js'
 
+const contains = (graph: IssueGraph): IssueContainsEdge[] =>
+  graph.edges.filter((edge): edge is IssueContainsEdge => edge.kind === 'contains')
 const parentOf = (graph: IssueGraph, key: string): string | null =>
-  graph.edges.find((edge) => edge.to === key)?.from ?? null
+  contains(graph).find((edge) => edge.to === key)?.from ?? null
 const childrenOf = (graph: IssueGraph, key: string): string[] =>
-  graph.edges.filter((edge) => edge.from === key).sort((a, b) => a.position - b.position).map((edge) => edge.to)
+  contains(graph).filter((edge) => edge.from === key).sort((a, b) => a.position - b.position).map((edge) => edge.to)
 const node = (graph: IssueGraph, key: string) => graph.nodes.find((n) => n.key === key)
 const nodeKeys = (graph: IssueGraph): string[] => graph.nodes.map((n) => n.key)
 const rootKeys = (graph: IssueGraph): string[] => graph.roots.map((r) => r.key)
@@ -46,7 +50,7 @@ describe('the v1 graph shape (§4.7)', () => {
   it('is empty, but complete, when nothing is cached', () => {
     expect(build([], [P, C])).toEqual({
       version: 1, nodes: [], edges: [], roots: [], aliases: {},
-      truncated: { roots: 0, ancestors: 0, children: 0, edges: 0 },
+      truncated: { roots: 0, ancestors: 0, children: 0, dependencies: 0, edges: 0 },
     })
   })
 
@@ -74,10 +78,10 @@ describe('the v1 graph shape (§4.7)', () => {
     expect(graph.roots).toHaveLength(10)
     expect(graph.roots[0]).toEqual({
       key: 'shariqh/agent-inbox#117', refresh: true, fetched_at: fixture.fetched_at, checked_at: fixture.fetched_at,
-      error: null, failure: null, hierarchy: 'ok', children_omitted: 0,
+      error: null, failure: null, hierarchy: 'ok', dependencies: 'unknown', children_omitted: 0, dependencies_omitted: 0,
     })
     expect(graph.aliases).toEqual({})
-    expect(graph.truncated).toEqual({ roots: 0, ancestors: 0, children: 0, edges: 0 })
+    expect(graph.truncated).toEqual({ roots: 0, ancestors: 0, children: 0, dependencies: 0, edges: 0 })
   })
 })
 
@@ -200,7 +204,7 @@ describe('reconciliation rules', () => {
       row('o/r#30', snapshot('o/r#30', { ancestors: [P] }), at(20)),
     ], [P, 'o/r#7', 'o/r#30'])
     expect(childrenOf(graph, P)).toEqual(['o/r#9', 'o/r#5', 'o/r#30', 'o/r#7'])
-    expect(graph.edges.filter((e) => e.from === P).map((e) => [e.to, e.position])).toEqual([
+    expect(contains(graph).filter((e) => e.from === P).map((e) => [e.to, e.position])).toEqual([
       ['o/r#9', 0], ['o/r#5', 1], ['o/r#30', 2], ['o/r#7', 3],
     ])
   })
@@ -289,7 +293,7 @@ describe('reconciliation rules', () => {
     // the first root needs 1 + 8 units, not 11; #108's root then needs two more, which do not fit
     expect(rootKeys(graph)).toEqual(['o/r#100'])
     expect(nodeKeys(graph)).toEqual(['o/r#100', ...chain].sort())
-    expect(graph.truncated).toEqual({ roots: 1, ancestors: 2, children: 0, edges: 2 })
+    expect(graph.truncated).toEqual({ roots: 1, ancestors: 2, children: 0, dependencies: 0, edges: 2 })
   })
 
   it('keeps a/x#5 and b/y#5 apart everywhere', () => {
@@ -316,7 +320,7 @@ describe('hard failures (rule 6)', () => {
     expect(JSON.stringify(graph)).not.toContain('Private title')
     expect(childrenOf(graph, P)).toEqual([C])
     expect(graph.roots.find((r) => r.key === K)).toEqual({
-      key: K, refresh: true, fetched_at: null, checked_at: at(20), error: 'not-found', failure: 'hard', hierarchy: null, children_omitted: 0,
+      key: K, refresh: true, fetched_at: null, checked_at: at(20), error: 'not-found', failure: 'hard', hierarchy: null, dependencies: null, children_omitted: 0, dependencies_omitted: 0,
     })
     expect(node(graph, P)).toMatchObject({ children_total: 2 })
   })
@@ -416,8 +420,8 @@ describe('identity and scope', () => {
       row(Q, null, null, { error: 'no-gh', checkedAt: at(40) }),
     ], [P, Q, C], { displayOnly: [Q] })
     expect(graph.roots).toEqual([
-      { key: P, refresh: true, fetched_at: at(10), checked_at: at(40), error: 'rate-limit', failure: 'soft', hierarchy: 'ok', children_omitted: 0 },
-      { key: Q, refresh: false, fetched_at: null, checked_at: at(40), error: 'no-gh', failure: 'soft', hierarchy: null, children_omitted: 0 },
+      { key: P, refresh: true, fetched_at: at(10), checked_at: at(40), error: 'rate-limit', failure: 'soft', hierarchy: 'ok', dependencies: 'unknown', children_omitted: 0, dependencies_omitted: 0 },
+      { key: Q, refresh: false, fetched_at: null, checked_at: at(40), error: 'no-gh', failure: 'soft', hierarchy: null, dependencies: null, children_omitted: 0, dependencies_omitted: 0 },
     ])
     expect(nodeKeys(graph)).toEqual([P])
   })
@@ -462,7 +466,7 @@ describe('the node cap (§6)', () => {
     expect(graph.nodes).toHaveLength(2000)
     expect(rootKeys(graph)).toEqual(ranked.slice(0, 2000))
     expect(rootKeys(graph)).not.toContain(ranked[2000])
-    expect(graph.truncated).toEqual({ roots: 1, ancestors: 0, children: 0, edges: 0 })
+    expect(graph.truncated).toEqual({ roots: 1, ancestors: 0, children: 0, dependencies: 0, edges: 0 })
   })
 
   it('always fits 222 roots with distinct eight-level chains, and cuts whole chains only', () => {
@@ -479,7 +483,7 @@ describe('the node cap (§6)', () => {
       const repo = root.key.split('#')[0]!
       expect(graph.nodes.filter((n) => n.key.startsWith(`${repo}#`)), repo).toHaveLength(9)
     }
-    expect(graph.truncated).toEqual({ roots: 78, ancestors: 78 * 8, children: 0, edges: 78 * 8 })
+    expect(graph.truncated).toEqual({ roots: 78, ancestors: 78 * 8, children: 0, dependencies: 0, edges: 78 * 8 })
   })
 
   it('charges a shared ancestor once', () => {
@@ -492,7 +496,7 @@ describe('the node cap (§6)', () => {
     // the first root pays 9 units, every later one only its own node
     expect(graph.roots).toHaveLength(1992)
     expect(graph.nodes).toHaveLength(2000)
-    expect(graph.truncated).toEqual({ roots: 108, ancestors: 0, children: 0, edges: 108 })
+    expect(graph.truncated).toEqual({ roots: 108, ancestors: 0, children: 0, dependencies: 0, edges: 108 })
   })
 
   it('ranks roots by refresh, then open/closed/unavailable, then local activity, then key', () => {
@@ -528,7 +532,7 @@ describe('the node cap (§6)', () => {
     const graph = build(rows, keysOf(rows), {}, 5)
     expect(rootKeys(graph)).toEqual(['o/r#1'])
     expect(nodeKeys(graph)).toEqual(['o/r#1'])
-    expect(graph.truncated).toEqual({ roots: 2, ancestors: 8, children: 0, edges: 8 })
+    expect(graph.truncated).toEqual({ roots: 2, ancestors: 8, children: 0, dependencies: 0, edges: 8 })
   })
 
   it('fills children round-robin in rank order and reports exactly what it cut', () => {
@@ -539,9 +543,9 @@ describe('the node cap (§6)', () => {
     const graph = build(rows, [P, Q], { updatedAt: { [P]: at(20), [Q]: at(10) } }, 5)
     expect(nodeKeys(graph)).toEqual([P, 'o/r#11', 'o/r#12', Q, 'o/r#21'].sort())
     expect(graph.roots.map((r) => [r.key, r.children_omitted])).toEqual([[P, 1], [Q, 1]])
-    expect(graph.truncated).toEqual({ roots: 0, ancestors: 0, children: 2, edges: 2 })
+    expect(graph.truncated).toEqual({ roots: 0, ancestors: 0, children: 2, dependencies: 0, edges: 2 })
     // positions stay GitHub's, gaps and all
-    expect(graph.edges.map((e) => [e.to, e.position])).toEqual([['o/r#11', 0], ['o/r#12', 1], ['o/r#21', 0]])
+    expect(contains(graph).map((e) => [e.to, e.position])).toEqual([['o/r#11', 0], ['o/r#12', 1], ['o/r#21', 0]])
   })
 
   it('never charges for a child that is already kept', () => {
@@ -552,7 +556,7 @@ describe('the node cap (§6)', () => {
     // P and C cost 2; the one remaining unit goes to #4 because C is already there
     const graph = build(rows, [P, C], {}, 3)
     expect(nodeKeys(graph)).toEqual([P, C, 'o/r#4'])
-    expect(graph.truncated).toEqual({ roots: 0, ancestors: 0, children: 0, edges: 0 })
+    expect(graph.truncated).toEqual({ roots: 0, ancestors: 0, children: 0, dependencies: 0, edges: 0 })
   })
 
   it('counts every omitted node once: an omitted root’s node is the root, then ancestors, then children', () => {
@@ -572,7 +576,7 @@ describe('the node cap (§6)', () => {
     expect(nodeKeys(graph)).toEqual([r1, x])
     // y moved under z at t20, so r1 keeps only x; y is an omitted root, w and z omitted ancestors
     expect(graph.roots).toEqual([expect.objectContaining({ key: r1, children_omitted: 0 })])
-    expect(graph.truncated).toEqual({ roots: 2, ancestors: 2, children: 0, edges: 2 })
+    expect(graph.truncated).toEqual({ roots: 2, ancestors: 2, children: 0, dependencies: 0, edges: 2 })
   })
 
   it('charges a root with no node one unit for its entry', () => {
@@ -585,6 +589,493 @@ describe('the node cap (§6)', () => {
     // open #3 first, then the two without facts by key
     expect(rootKeys(graph)).toEqual(['o/r#1', 'o/r#3'])
     expect(graph.truncated.roots).toBe(1)
+  })
+})
+
+// ── slice 2: GitHub dependencies (design 2026-10-21, §6) ────────────────────
+//
+// Observations are about a pair "A blocks B": A's `blocking` list and B's
+// `blocked_by` list say so, and a COMPLETE list that omits the other end says
+// it no longer holds. The newest decides, a negative at equal time.
+
+const N = (n: number): string => `shariqh/agent-inbox#${n}`
+const blocksEdges = (graph: IssueGraph): IssueBlocksEdge[] =>
+  graph.edges.filter((edge): edge is IssueBlocksEdge => edge.kind === 'blocks')
+const pairs = (graph: IssueGraph): string[] => blocksEdges(graph).map((edge) => `${edge.from} → ${edge.to}`)
+const rootOf = (graph: IssueGraph, key: string) => graph.roots.find((r) => r.key === key)
+/** A display root fetched at `t` whose dependency section reads as `section` (null: unknown). */
+const withDeps = (key: string, t: string, section: IssueDependencies | null, opts: SnapshotOpts = {}) =>
+  row(key, snapshot(key, opts), t, { dependencies: section })
+
+describe('the §6.1 worked examples: "#119 blocks #121", row by row (slice 2)', () => {
+  const B = N(119) // the blocker
+  const D = N(121) // its dependent
+
+  it('t20 #121 lists #119 in blocked_by → an edge', () => {
+    const graph = build([withDeps(D, at(20), deps({ blockedBy: [B] }))], [D])
+    expect(blocksEdges(graph)).toEqual([{ kind: 'blocks', from: B, to: D, observed_at: at(20) }])
+    // the blocker is known from that list alone, which carries its facts
+    expect(nodeKeys(graph)).toEqual([B, D])
+    expect(node(graph, B)).toMatchObject({ title: `Title of ${B}`, observed_at: at(20) })
+  })
+
+  it('t20 #121’s complete blocked_by omits #119 · t10 #119 lists #121 in blocking → no edge: removed since', () => {
+    const graph = build([withDeps(D, at(20), deps()), withDeps(B, at(10), deps({ blocking: [D] }))], [D, B])
+    expect(pairs(graph)).toEqual([])
+    expect(nodeKeys(graph)).toEqual([B, D])
+  })
+
+  it('t20 #119 lists #121 · t20 #121’s complete list omits #119 → no edge: a negative wins at equal t', () => {
+    expect(pairs(build([withDeps(B, at(20), deps({ blocking: [D] })), withDeps(D, at(20), deps())], [B, D]))).toEqual([])
+    // …whichever end holds the positive
+    expect(pairs(build([withDeps(D, at(20), deps({ blockedBy: [B] })), withDeps(B, at(20), deps())], [B, D]))).toEqual([])
+  })
+
+  it('t20 #121’s list is truncated and omits #119 · t10 #119 lists #121 → an edge: a truncated list is no evidence of absence', () => {
+    const graph = build([
+      withDeps(D, at(20), deps({ blockedBy: [N(120)], blockedByTruncated: true })),
+      withDeps(B, at(10), deps({ blocking: [D] })),
+    ], [D, B])
+    expect(blocksEdges(graph)).toEqual([
+      { kind: 'blocks', from: B, to: D, observed_at: at(10) },
+      { kind: 'blocks', from: N(120), to: D, observed_at: at(20) },
+    ])
+    // …whichever end's list is truncated
+    const mirrored = build([
+      withDeps(B, at(20), deps({ blocking: [N(122)], blockingTruncated: true })),
+      withDeps(D, at(10), deps({ blockedBy: [B] })),
+    ], [B, D])
+    expect(blocksEdges(mirrored)).toEqual([
+      { kind: 'blocks', from: B, to: D, observed_at: at(10) },
+      { kind: 'blocks', from: B, to: N(122), observed_at: at(20) },
+    ])
+  })
+
+  it('t20 #121’s section is unbound (a v1.4 refresh) · t10 #119 lists #121 → an edge, as of t10', () => {
+    const graph = build([withDeps(D, at(20), null), withDeps(B, at(10), deps({ blocking: [D] }))], [D, B])
+    expect(blocksEdges(graph)).toEqual([{ kind: 'blocks', from: B, to: D, observed_at: at(10) }])
+    expect(rootOf(graph, D)?.dependencies).toBe('unknown')
+  })
+
+  it('#119 hard-failed at t15 · t10 #121 lists #119 → no edge; #119 unavailable', () => {
+    const graph = build([
+      withDeps(D, at(10), deps({ blockedBy: [facts(B, { title: 'Private title' })] })),
+      row(B, null, null, { error: 'not-found', checkedAt: at(15) }),
+    ], [D, B])
+    expect(pairs(graph)).toEqual([])
+    expect(node(graph, B)).toBeUndefined()
+    expect(JSON.stringify(graph)).not.toContain('Private title')
+    expect(rootOf(graph, B)).toMatchObject({ failure: 'hard', dependencies: null })
+    expect(graph.truncated.edges).toBe(0)
+  })
+})
+
+describe('dependency reconciliation (slice 2 §6.1)', () => {
+  const B = N(119)
+  const D = N(121)
+
+  it('reconciles the live #117 family: #119 blocks seven siblings and #120 blocks #121, both directions agreeing', () => {
+    // the live slice-2 answer for #117–#126, its sub-issues moved onto hN as today's document asks
+    const body = JSON.parse(readFileSync(new URL('./fixtures/issue-relations-10-deps.json', import.meta.url), 'utf8')) as {
+      data: Record<string, { issue?: Record<string, unknown> | null } | null>
+    }
+    for (const alias of Object.keys(body.data).filter((a) => /^r\d+$/.test(a))) {
+      const { subIssuesSummary, subIssues, ...rest } = body.data[alias]!.issue!
+      body.data[alias]!.issue = rest
+      body.data[`h${alias.slice(1)}`] = { issue: { subIssuesSummary, subIssues } }
+    }
+    const keys = Array.from({ length: 10 }, (_, i) => ({ repo: 'shariqh/agent-inbox', number: 117 + i }))
+    const { outcomes } = parseIssueBatch(JSON.stringify(body), keys)
+    const rows = outcomes.map((outcome, i) => {
+      if (!('snapshot' in outcome)) throw new Error(`#${keys[i]!.number} did not parse`)
+      return row(N(keys[i]!.number), outcome.snapshot, at(10), { dependencies: outcome.dependencies })
+    })
+    const graph = build(rows, keys.map((k) => N(k.number)))
+    expect(pairs(graph)).toEqual([
+      ...[118, 120, 121, 122, 123, 124, 125].map((n) => `${B} → ${N(n)}`),
+      `${N(120)} → ${D}`,
+    ])
+    expect(blocksEdges(graph).every((edge) => edge.observed_at === at(10) && !('cycle' in edge))).toBe(true)
+    expect(node(graph, D)?.deps).toEqual({ blocked_by_open: 2, blocked_by_total: 2, blocking_open: 0, blocking_total: 0 })
+    expect(node(graph, B)?.deps).toEqual({ blocked_by_open: 0, blocked_by_total: 0, blocking_open: 7, blocking_total: 7 })
+    expect(graph.roots.every((r) => r.dependencies === 'ok' && r.dependencies_omitted === 0)).toBe(true)
+    // the hierarchy is exactly what it was without dependencies
+    const bare = build(rows.map((r) => ({ ...r, dependencies: null })), keys.map((k) => N(k.number)))
+    expect(contains(graph)).toEqual(contains(bare))
+    expect(graph.nodes.map(({ deps: _deps, ...rest }) => rest)).toEqual(bare.nodes)
+  })
+
+  it('the newest observation decides, whichever end made it', () => {
+    const notAnyMore = withDeps(B, at(20), deps())
+    expect(pairs(build([withDeps(D, at(10), deps({ blockedBy: [B] })), notAnyMore], [D, B]))).toEqual([])
+    expect(blocksEdges(build([withDeps(D, at(30), deps({ blockedBy: [B] })), notAnyMore], [D, B])))
+      .toEqual([{ kind: 'blocks', from: B, to: D, observed_at: at(30) }])
+  })
+
+  it('an unavailable section is no observation at all', () => {
+    const graph = build([withDeps(D, at(20), { status: 'unavailable' }), withDeps(B, at(10), deps({ blocking: [D] }))], [D, B])
+    expect(blocksEdges(graph)).toEqual([{ kind: 'blocks', from: B, to: D, observed_at: at(10) }])
+    expect(rootOf(graph, D)?.dependencies).toBe('unavailable')
+  })
+
+  it('reads an issue’s dependencies even when GitHub could not return its hierarchy', () => {
+    const graph = build([withDeps(D, at(10), deps({ blockedBy: [B] }), { unavailable: true })], [D])
+    expect(pairs(graph)).toEqual([`${B} → ${D}`])
+    expect(rootOf(graph, D)).toMatchObject({ hierarchy: 'unavailable', dependencies: 'ok' })
+  })
+
+  it('files a redirected root’s observations under its canonical key (S1 rule 8)', () => {
+    const OLD = 'old/name#121'
+    const redirected = (section: IssueDependencies) =>
+      row(OLD, snapshot(OLD, { issue: { repo: 'shariqh/agent-inbox' } }), at(20), { dependencies: section })
+    const agree = build([redirected(deps({ blockedBy: [B] })), withDeps(B, at(10), deps({ blocking: [D] }))], [OLD, B])
+    expect(agree.aliases).toEqual({ [OLD]: D })
+    expect(blocksEdges(agree)).toEqual([{ kind: 'blocks', from: B, to: D, observed_at: at(20) }])
+    expect(nodeKeys(agree)).toEqual([B, D])
+    expect(rootOf(agree, OLD)?.dependencies).toBe('ok')
+    // the redirected root's newer complete list refutes #119's older claim about the canonical key
+    expect(pairs(build([redirected(deps()), withDeps(B, at(10), deps({ blocking: [D] }))], [OLD, B]))).toEqual([])
+  })
+
+  it('drops a pair whose either end failed at or after the observation, and counts it again when observed after (S1 rule 6)', () => {
+    // the dependent failed: #119's older list naming #121 says nothing any more, title included
+    const failed = build([
+      withDeps(B, at(10), deps({ blocking: [facts(D, { title: 'Private title' })] })),
+      row(D, null, null, { error: 'forbidden', checkedAt: at(15) }),
+    ], [B, D])
+    expect(pairs(failed)).toEqual([])
+    expect(failed.truncated.edges).toBe(0)
+    expect(nodeKeys(failed)).toEqual([B])
+    expect(JSON.stringify(failed)).not.toContain('Private title')
+    // a failure at the very time of the observation drops it too
+    expect(pairs(build([
+      withDeps(B, at(15), deps({ blocking: [D] })), row(D, null, null, { error: 'not-found', checkedAt: at(15) }),
+    ], [B, D]))).toEqual([])
+    // every cached failure counts, displayed or not
+    expect(pairs(build([
+      withDeps(B, at(10), deps({ blocking: [D] })), row(D, null, null, { error: 'moved', checkedAt: at(15) }),
+    ], [B]))).toEqual([])
+    // an observation newer than the failure counts normally
+    const after = build([
+      withDeps(B, at(25), deps({ blocking: [facts(D, { title: 'Visible again' })] })),
+      row(D, null, null, { error: 'not-found', checkedAt: at(20) }),
+    ], [B, D])
+    expect(blocksEdges(after)).toEqual([{ kind: 'blocks', from: B, to: D, observed_at: at(25) }])
+    expect(node(after, D)).toMatchObject({ title: 'Visible again' })
+    // a newer observation brings a failed end's facts back, but never a pair seen at or before
+    // its failure, whichever end failed
+    const revived = (failed: string, observer: string, section: IssueDependencies) => build([
+      withDeps(observer, at(15), section),
+      row(failed, null, null, { error: 'not-found', checkedAt: at(15) }),
+      row(N(117), snapshot(N(117), { children: [failed] }), at(20)),
+    ], [observer, failed, N(117)])
+    for (const graph of [revived(B, D, deps({ blockedBy: [B] })), revived(D, B, deps({ blocking: [D] }))]) {
+      expect(nodeKeys(graph)).toEqual([N(117), B, D])
+      expect(pairs(graph)).toEqual([])
+      expect(graph.truncated.edges).toBe(0)
+    }
+  })
+
+  // Review of #271, F1: a requested key GitHub redirected keeps a section after
+  // its canonical issue is refused. Rule 6 drops that section, so nothing is
+  // known of its dependencies, though the issues it lists keep their facts.
+  it('says nothing from a section rule 6 dropped: the root reports unknown, with no counts and no issue_rel fields', () => {
+    const listed = facts('b/s#1', { title: 'Listed by a refused root' })
+    const rows = (section: IssueDependencies) => [
+      // the plan links the old name, which GitHub answered as a/r#1 at t10
+      row('old/r#1', snapshot('a/r#1'), at(10), { dependencies: section }),
+      // a/r#1 itself was refused at t15, and a fresher list keeps a node for it
+      row('a/r#1', null, null, { error: 'not-found', checkedAt: at(15) }),
+      row('b/s#2', snapshot('b/s#2', { children: ['a/r#1'] }), at(20)),
+      row('b/s#1', null, null, { error: 'offline', checkedAt: at(5) }),
+    ]
+    const keys = ['old/r#1', 'b/s#2', 'b/s#1']
+    for (const section of [deps({ blockedBy: [listed] }), { status: 'unavailable' } as const]) {
+      const graph = build(rows(section), keys)
+      expect(rootOf(graph, 'old/r#1')?.dependencies, section.status).toBe('unknown')
+      expect(node(graph, 'a/r#1'), section.status).toMatchObject({ observed_at: at(20) })
+      expect(node(graph, 'a/r#1'), section.status).not.toHaveProperty('deps')
+      expect(pairs(graph), section.status).toEqual([])
+      const rel = issueRelations(rows(section), keys, Date.parse(at(30))).get('old/r#1')
+      expect(rel, section.status).not.toHaveProperty('waits_on_issues')
+      expect(rel, section.status).not.toHaveProperty('unblocks')
+    }
+    // the issue the dropped list names is no refused issue: its facts stand, as a refused parent's children's do
+    expect(node(build(rows(deps({ blockedBy: [listed] })), keys), 'b/s#1')).toMatchObject({ title: 'Listed by a refused root', observed_at: at(10) })
+  })
+
+  it('takes an issue’s counts from its freshest own section, however its rows sort', () => {
+    // a/r#1 is cached under its own key (older) and under an old name GitHub redirects (newer)
+    const graph = build([
+      row('a/r#1', snapshot('a/r#1'), at(10), { dependencies: deps({ blockedByCounts: { open: 1, total: 1 } }) }),
+      row('old/r#1', snapshot('a/r#1'), at(20), { dependencies: deps({ blockedByCounts: { open: 3, total: 4 } }) }),
+    ], ['a/r#1', 'old/r#1'])
+    expect(node(graph, 'a/r#1')?.deps).toEqual({ blocked_by_open: 3, blocked_by_total: 4, blocking_open: 0, blocking_total: 0 })
+  })
+
+  it('drops self-pairs', () => {
+    const graph = build([withDeps(D, at(10), deps({ blockedBy: [D, B], blocking: [D] }))], [D])
+    expect(blocksEdges(graph)).toEqual([{ kind: 'blocks', from: B, to: D, observed_at: at(10) }])
+  })
+
+  it('keeps circular dependencies as data: every edge inside a strongly connected component carries cycle', () => {
+    const [A1, A2, A3, A4, A5] = [N(201), N(202), N(203), N(204), N(205)]
+    // A1 ⇄ A2 and A2 → A3 → A4 → A2 share one component; A4 → A5 leaves it
+    const section = depsOf([[A1, A2], [A2, A1], [A2, A3], [A3, A4], [A4, A2], [A4, A5]])
+    const keys = [A1, A2, A3, A4, A5]
+    const graph = build(keys.map((key) => withDeps(key, at(10), section(key))), keys)
+    expect(blocksEdges(graph).map((edge) => [edge.from, edge.to, edge.cycle ?? false])).toEqual([
+      [A1, A2, true], [A2, A1, true], [A2, A3, true], [A3, A4, true], [A4, A2, true], [A4, A5, false],
+    ])
+    // a cycle decides nothing else
+    expect(graph.nodes.some((n) => n.conflict)).toBe(false)
+  })
+
+  it('marks no cycle where an issue is reached twice: a diamond is not circular', () => {
+    const [X, Y, Z] = [N(301), N(302), N(303)]
+    const section = depsOf([[X, Y], [X, Z], [Z, Y]])
+    const keys = [X, Y, Z]
+    const graph = build(keys.map((key) => withDeps(key, at(10), section(key))), keys)
+    expect(pairs(graph)).toEqual([`${X} → ${Y}`, `${X} → ${Z}`, `${Z} → ${Y}`])
+    expect(blocksEdges(graph).some((edge) => 'cycle' in edge)).toBe(false)
+  })
+
+  it('finds components without recursion: a 30,000-issue ring is one cycle, a 30,000-issue chain none', () => {
+    const LENGTH = 30_000
+    const keyOf = (i: number) => `ring/r#${i + 1}`
+    const graphOf = (ring: boolean) => {
+      const keys = Array.from({ length: LENGTH }, (_, i) => keyOf(i))
+      const rows = keys.map((key, i) => withDeps(key, at(10), deps({
+        blockedBy: i > 0 ? [keyOf(i - 1)] : ring ? [keyOf(LENGTH - 1)] : [],
+        blocking: i < LENGTH - 1 ? [keyOf(i + 1)] : ring ? [keyOf(0)] : [],
+      })))
+      return build(rows, keys)
+    }
+    const ring = blocksEdges(graphOf(true))
+    const chain = blocksEdges(graphOf(false))
+    expect(ring.length).toBeGreaterThan(100)
+    expect(ring.every((edge) => edge.cycle === true)).toBe(true)
+    expect(chain.length).toBeGreaterThan(100)
+    expect(chain.some((edge) => 'cycle' in edge)).toBe(false)
+  })
+
+  it('reads facts from dependency lists as listed facts: the freshest wins, and an issue’s own root at equal t (S1 rule 7)', () => {
+    // #121 lists #150, and its key sorts first: only the source, not the observer, can let #150's own root win a tie
+    const X = N(150)
+    const titleAt = (listedAt: string) => node(build([
+      row(X, snapshot(X, { issue: { title: 'own', state: 'OPEN' } }), at(10)),
+      withDeps(D, listedAt, deps({ blocking: [facts(X, { title: 'listed', state: 'CLOSED', state_reason: 'COMPLETED' })] })),
+    ], [X, D]), X)
+    expect(titleAt(at(20))).toMatchObject({ title: 'listed', state: 'CLOSED', observed_at: at(20) })
+    expect(titleAt(at(10))).toMatchObject({ title: 'own', state: 'OPEN', observed_at: at(10) })
+  })
+
+  it('carries counts only from an issue’s own bound, ok section, never inferred from other lists', () => {
+    const graph = build([
+      // #121 counts four blockers, three open, of which the token sees two
+      withDeps(D, at(10), deps({ blockedBy: [B, N(120)], blockedByCounts: { open: 3, total: 4 }, blocking: [N(122)] })),
+      withDeps(N(130), at(10), { status: 'unavailable' }),
+      withDeps(N(131), at(10), null),
+      row(N(132), null, null, { error: 'offline', checkedAt: at(10) }),
+    ], [D, N(130), N(131), N(132)])
+    expect(node(graph, D)?.deps).toEqual({ blocked_by_open: 3, blocked_by_total: 4, blocking_open: 1, blocking_total: 1 })
+    for (const key of [B, N(120), N(122), N(130), N(131)]) expect(node(graph, key), key).not.toHaveProperty('deps')
+    expect(graph.roots.map((r) => [r.key, r.dependencies])).toEqual([
+      [D, 'ok'], [N(130), 'unavailable'], [N(131), 'unknown'], [N(132), null],
+    ])
+  })
+
+  it('reads only display roots’ sections: any other cached row is inert', () => {
+    const graph = build([withDeps(D, at(10), null), withDeps(N(140), at(20), deps({ blocking: [D] }))], [D])
+    expect(pairs(graph)).toEqual([])
+    expect(nodeKeys(graph)).toEqual([D])
+  })
+
+  it('is byte-identical however its inputs are ordered', () => {
+    const section = depsOf([[B, D], [N(120), D], [D, N(122)], [N(122), N(120)], [N(120), N(122)]])
+    const keys = [B, N(120), D, N(122)]
+    const rows = keys.map((key, i) => withDeps(key, at(10 + i), section(key), { children: i === 0 ? [N(150)] : [] }))
+    const first = JSON.stringify(build(rows, keys, {}, 4))
+    expect(JSON.stringify(build([...rows].reverse(), [...keys].reverse(), {}, 4))).toBe(first)
+    expect(JSON.parse(first).edges.some((edge: { kind: string }) => edge.kind === 'blocks')).toBe(true)
+  })
+})
+
+describe('the node cap with dependency neighbours (slice 2 §6.3)', () => {
+  it('fills children first, then dependency neighbours round-robin in rank order: blockers before dependents, by key', () => {
+    const [P, Q] = [N(1), N(2)]
+    const rows = [
+      withDeps(P, at(10), deps({ blockedBy: [N(12), N(11)], blocking: [N(13)] }), { children: [N(31), N(32)] }),
+      withDeps(Q, at(10), deps({ blockedBy: [N(21)], blocking: [N(23), N(22)] })),
+    ]
+    const ranked = { updatedAt: { [P]: at(20), [Q]: at(10) } }
+    // two roots, two children, then four neighbours: P's two blockers, Q's blocker and its first dependent
+    const graph = build(rows, [P, Q], ranked, 8)
+    expect(nodeKeys(graph)).toEqual([P, N(11), N(12), Q, N(21), N(22), N(31), N(32)].sort())
+    expect(pairs(graph)).toEqual([`${N(11)} → ${P}`, `${N(12)} → ${P}`, `${Q} → ${N(22)}`, `${N(21)} → ${Q}`])
+    expect(graph.roots.map((r) => [r.key, r.children_omitted, r.dependencies_omitted])).toEqual([[P, 0, 1], [Q, 0, 1]])
+    expect(graph.truncated).toEqual({ roots: 0, ancestors: 0, children: 0, dependencies: 2, edges: 2 })
+    // children come first: one unit after them goes to P's first blocker
+    const tight = build(rows, [P, Q], ranked, 5)
+    expect(nodeKeys(tight)).toEqual([P, N(11), Q, N(31), N(32)].sort())
+    expect(tight.roots.map((r) => [r.key, r.children_omitted, r.dependencies_omitted])).toEqual([[P, 0, 2], [Q, 0, 3]])
+    expect(tight.truncated).toEqual({ roots: 0, ancestors: 0, children: 0, dependencies: 5, edges: 5 })
+  })
+
+  it('emits a blocks edge only when both of its nodes are emitted', () => {
+    // R2 is cut as a root (its chain does not fit) but kept as R1's blocker; its own blocker Z and parent A are not
+    const [R1, R2, A, Z] = [N(1), N(2), N(3), N(4)]
+    const graph = build([
+      withDeps(R1, at(10), deps({ blockedBy: [R2] })),
+      withDeps(R2, at(10), deps({ blockedBy: [Z], blocking: [R1] }), { ancestors: [A] }),
+    ], [R1, R2], { updatedAt: { [R1]: at(20), [R2]: at(10) } }, 2)
+    expect(rootKeys(graph)).toEqual([R1])
+    expect(nodeKeys(graph)).toEqual([R1, R2])
+    expect(graph.edges).toEqual([{ kind: 'blocks', from: R2, to: R1, observed_at: at(10) }])
+    expect(graph.roots[0]).toMatchObject({ dependencies_omitted: 0 })
+    expect(graph.truncated).toEqual({ roots: 1, ancestors: 1, children: 0, dependencies: 1, edges: 2 })
+  })
+
+  it('then emits any other edge between two emitted nodes, by key, though no kept root owns it', () => {
+    // R2 is cut as a root but kept as R1's blocker, as is X: X → R2 belongs to no kept root
+    const [R1, R2, X] = [N(1), N(2), N(3)]
+    const graph = build([
+      withDeps(R1, at(10), deps({ blockedBy: [R2, X] })),
+      withDeps(R2, at(10), deps({ blockedBy: [X], blocking: [R1] }), { ancestors: [N(4), N(5)] }),
+    ], [R1, R2], { updatedAt: { [R1]: at(20), [R2]: at(10) } }, 3)
+    expect(rootKeys(graph)).toEqual([R1])
+    expect(nodeKeys(graph)).toEqual([R1, R2, X])
+    expect(pairs(graph)).toEqual([`${R2} → ${R1}`, `${X} → ${R1}`, `${X} → ${R2}`])
+    // only R2's chain is cut: two nodes and their two contains edges
+    expect(graph.truncated).toEqual({ roots: 1, ancestors: 2, children: 0, dependencies: 0, edges: 2 })
+  })
+
+  it('caps edges at twice the node budget, round-robin in rank order, and counts every omitted one', () => {
+    const keys = [N(1), N(2), N(3), N(4), N(5)]
+    const [A, B, C, D, E] = keys as [string, string, string, string, string]
+    // every issue blocks every other: one component, 20 edges among 5 nodes
+    const section = depsOf(keys.flatMap((from) => keys.filter((to) => to !== from).map((to): [string, string] => [from, to])))
+    const updatedAt = Object.fromEntries(keys.map((key, i) => [key, at(50 - i)]))
+    const graph = build(keys.map((key) => withDeps(key, at(10), section(key))), keys, { updatedAt }, 5)
+    expect(graph.nodes).toHaveLength(5)
+    // round one takes each root's first blocker; round two its next, until 2 × 5
+    expect(pairs(graph).sort()).toEqual([
+      `${B} → ${A}`, `${A} → ${B}`, `${A} → ${C}`, `${A} → ${D}`, `${A} → ${E}`,
+      `${C} → ${A}`, `${C} → ${B}`, `${B} → ${C}`, `${B} → ${D}`, `${B} → ${E}`,
+    ].sort())
+    expect(blocksEdges(graph).every((edge) => edge.cycle === true)).toBe(true)
+    expect(graph.roots.map((r) => [r.key, r.dependencies_omitted])).toEqual([[A, 2], [B, 2], [C, 4], [D, 6], [E, 6]])
+    expect(graph.truncated).toEqual({ roots: 0, ancestors: 0, children: 0, dependencies: 0, edges: 10 })
+  })
+
+  it('counts contains edges against the same budget: a response never holds more than twice its node budget in edges', () => {
+    // four roots that all block each other (12 edges), the first with one child: 5 units, so 10 edges
+    const keys = [N(1), N(2), N(3), N(4)]
+    const section = depsOf(keys.flatMap((from) => keys.filter((to) => to !== from).map((to): [string, string] => [from, to])))
+    const updatedAt = Object.fromEntries(keys.map((key, i) => [key, at(40 - i)]))
+    const graph = build(keys.map((key, i) => withDeps(key, at(10), section(key), { children: i === 0 ? [N(31)] : [] })), keys, { updatedAt }, 5)
+    expect(nodeKeys(graph)).toEqual([...keys, N(31)].sort())
+    expect(contains(graph)).toHaveLength(1)
+    expect(blocksEdges(graph)).toHaveLength(9)
+    expect(graph.truncated).toEqual({ roots: 0, ancestors: 0, children: 0, dependencies: 0, edges: 3 })
+    // each omitted edge joins two roots
+    expect(graph.roots.reduce((sum, r) => sum + r.dependencies_omitted, 0)).toBe(6)
+  })
+
+  it('fits 2,000 nodes and 4,000 edges at the real cap, fast and byte-identical', () => {
+    // 100 roots, each blocked by 50 of 1,900 other issues: 2,000 nodes and 5,000 edges
+    const POOL = 1_900
+    const rows = Array.from({ length: 100 }, (_, r) => withDeps(`root/r#${r + 1}`, at(10), deps({
+      blockedBy: Array.from({ length: 50 }, (_, j) => `pool/p#${((r * 19 + j) % POOL) + 1}`),
+    })))
+    const keys = rows.map((r) => `${r.repo}#${r.number}`)
+    const started = performance.now()
+    const graph = build(rows, keys)
+    const elapsed = performance.now() - started
+    expect(graph.nodes).toHaveLength(MAX_GRAPH_NODES)
+    expect(blocksEdges(graph)).toHaveLength(2 * MAX_GRAPH_NODES)
+    // forty rounds of one blocker each: every root keeps its first forty
+    expect(graph.roots.every((r) => r.dependencies_omitted === 10)).toBe(true)
+    expect(graph.truncated).toEqual({ roots: 0, ancestors: 0, children: 0, dependencies: 0, edges: 1_000 })
+    expect(elapsed).toBeLessThan(2_000)
+    expect(JSON.stringify(build([...rows].reverse(), [...keys].reverse()))).toBe(JSON.stringify(graph))
+  })
+})
+
+describe('issue_rel: waits_on_issues and unblocks (slice 2 §6.4)', () => {
+  const NOW = Date.parse(at(60))
+  const T = N(121)
+  const iso = (ms: number) => new Date(ms).toISOString()
+  const WEEK = 7 * 24 * 60 * 60_000
+
+  it('lists the open blockers that reconciled to an edge, sorted, and counts open dependents', () => {
+    const closed = { state: 'CLOSED' as const, state_reason: 'COMPLETED' as const }
+    const rel = issueRelations([
+      withDeps(T, at(50), deps({
+        blockedBy: [N(120), N(119), N(122), facts(N(118), closed)],
+        blocking: [N(130), N(131), facts(N(132), closed)],
+      })),
+      // #122's own newer list says it no longer blocks #121; #131 closed since #121's list
+      withDeps(N(122), at(55), deps()),
+      row(N(131), snapshot(N(131), { issue: closed }), at(55)),
+    ], [T, N(122), N(131)], NOW)
+    expect(rel.get(T)).toEqual({
+      key: T, children: { total: 0, done: 0 }, waits_on_issues: [N(119), N(120)], unblocks: 1,
+      checked_at: at(50), stale: false, unavailable: false,
+    })
+    // known and empty is said so; unknown is not
+    expect(rel.get(N(122))).toMatchObject({ waits_on_issues: [], unblocks: 0 })
+    expect(rel.get(N(131))).not.toHaveProperty('waits_on_issues')
+    expect(rel.get(N(131))).not.toHaveProperty('unblocks')
+  })
+
+  it.each([
+    ['missing or unbound', null],
+    ['unavailable', { status: 'unavailable' } as const],
+  ])('omits both when the issue’s own section is %s, whatever other lists say', (_label, section) => {
+    const rel = issueRelations([
+      withDeps(T, at(50), section),
+      withDeps(N(119), at(50), deps({ blocking: [T] })),
+    ], [T, N(119)], NOW)
+    expect(rel.get(T)).toEqual({ key: T, children: { total: 0, done: 0 }, checked_at: at(50), stale: false, unavailable: false })
+    expect(rel.get(N(119))).toMatchObject({ waits_on_issues: [], unblocks: 1 })
+  })
+
+  it('omits both once the section is older than 7 days, and without a readable snapshot', () => {
+    const at7 = issueRelations([withDeps(T, iso(NOW - WEEK), deps({ blockedBy: [N(119)] }))], [T], NOW).get(T)
+    expect(at7).toMatchObject({ waits_on_issues: [N(119)], unblocks: 0, stale: true, unavailable: false })
+    const older = issueRelations([withDeps(T, iso(NOW - WEEK - 1), deps({ blockedBy: [N(119)] }))], [T], NOW).get(T)
+    expect(older).toEqual({ key: T, checked_at: iso(NOW - WEEK - 1), stale: true, unavailable: true })
+    const failed = issueRelations([row(T, null, null, { error: 'not-found', checkedAt: at(50) })], [T], NOW).get(T)
+    expect(failed).toEqual({ key: T, checked_at: at(50), stale: true, unavailable: true })
+  })
+
+  it('keeps them when only the hierarchy is unavailable: the two sections are separate', () => {
+    const rel = issueRelations([withDeps(T, at(50), deps({ blockedBy: [N(119)] }), { unavailable: true })], [T], NOW).get(T)
+    expect(rel).toEqual({ key: T, waits_on_issues: [N(119)], unblocks: 0, checked_at: at(50), stale: false, unavailable: true })
+  })
+
+  it('reads the whole reconciled graph: a response’s node cap never shortens the list', () => {
+    // 1,996 linked issues fill the response budget; #121's 50 blockers would not fit in it
+    const own = Array.from({ length: 50 }, (_, i) => `a/b#${i + 100}`)
+    const others = Array.from({ length: 1_995 }, (_, i) => `z/z#${i + 1}`)
+    const rows = [withDeps(T, at(50), deps({ blockedBy: own })), ...others.map((key) => row(key, snapshot(key), at(50)))]
+    expect(build(rows, [T, ...others]).nodes.length).toBe(MAX_GRAPH_NODES)
+    const rel = issueRelations(rows, [T, ...others], NOW)
+    expect(rel.get(T)?.waits_on_issues).toEqual(own)
+    expect(rel.size).toBe(1_996)
+  })
+
+  it('lists at most 50 blockers, the first by key, and only keys, never titles', () => {
+    const own = Array.from({ length: 50 }, (_, i) => facts(`a/b#${i + 100}`, { title: `Secret ${i}` }))
+    const others = Array.from({ length: 5 }, (_, i) => `a/a#${i + 1}`)
+    const rel = issueRelations([
+      withDeps(T, at(40), deps({ blockedBy: own })),
+      ...others.map((key) => withDeps(key, at(50), deps({ blocking: [T] }))),
+    ], [T, ...others], NOW).get(T)!
+    expect(rel.waits_on_issues).toHaveLength(50)
+    expect(rel.waits_on_issues).toEqual([...others, ...own.map((f) => `a/b#${f.number}`)].sort().slice(0, 50))
+    expect(JSON.stringify(rel)).not.toMatch(/Secret|Title of/)
   })
 })
 

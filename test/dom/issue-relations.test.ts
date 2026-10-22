@@ -254,3 +254,89 @@ describe('navigation from Agent Inbox activity (#103 PR3, criterion 7)', () => {
     expect(row(question)?.getAttribute('aria-expanded')).toBe('true')
   })
 })
+
+// Slice 2 PR B: /api/issues now carries GitHub dependencies. Until PR D draws
+// them, the page must look exactly as a body without them draws it. Had the
+// browser's validator refused such a body, every breadcrumb, child list and
+// plan group would silently have fallen back to plain chips.
+describe('GitHub dependencies in /api/issues (slice 2 PR B)', () => {
+  it('leave breadcrumbs, child progress and plan grouping exactly as a body without them draws', async () => {
+    db = freshDb()
+    const { question, umbrella } = seed(db)
+    upsertBoard(db, {
+      ...SCOPE, stream: '120-plan', title: 'Input plan', repo: REPO, issuePin: { repo: REPO, number: 120 },
+      rows: [{ label: 'Import', status: 'tracked' }],
+    })
+    // #119 blocks #120 and #121; #120 and #121 wait on each other; an issue elsewhere blocks #119
+    const list = (keys: Array<[string, number]>) => ({
+      open: keys.length, total: keys.length, truncated: false,
+      list: keys.map(([repo, number]) => facts(`${repo}#${number}`, repo === REPO ? { title: `Sub-issue ${number}` } : {})),
+    })
+    const withDeps = (n: number, title: string, blockedBy: Array<[string, number]>, blocking: Array<[string, number]>) =>
+      upsertIssueSnapshot(db!, {
+        repo: REPO, number: n, startedAt: new Date().toISOString(),
+        snapshot: snapshot(K(n), { issue: { title }, ancestors: [parent117()] }),
+        dependencies: { status: 'ok', blocked_by: list(blockedBy), blocking: list(blocking) },
+      })
+    advanceClock(1000)
+    // and one elsewhere blocks the umbrella, which has no parent a blocks edge could be mistaken for
+    upsertIssueSnapshot(db, {
+      repo: REPO, number: 117, startedAt: new Date().toISOString(),
+      snapshot: snapshot(K(117), {
+        issue: { title: UMBRELLA }, completed: 1,
+        children: [118, 119, 120, 121, 122, 123, 124, 125, 126, 127].map((n) => facts(K(n), n === 118
+          ? { state: 'CLOSED', state_reason: 'COMPLETED', title: 'Support multiple Agent Hosts' }
+          : { title: `Sub-issue ${n}` })),
+      }),
+      dependencies: { status: 'ok', blocked_by: list([['elsewhere/repo', 7]]), blocking: list([]) },
+    })
+    withDeps(119, 'Build the AHP adapter', [['elsewhere/repo', 5]], [[REPO, 120], [REPO, 121]])
+    withDeps(120, 'Import unresolved AHP input requests', [[REPO, 119], [REPO, 121]], [[REPO, 121]])
+    localStorage.setItem('agent-inbox-group-plans', 'true')
+
+    // what a viewer without dependency data serves: no blocks edge, no new field
+    let strip = true
+    let blocks = 0
+    await bootApp(db, {
+      interceptFetch: async (input, _init, next) => {
+        const response = await next()
+        if (route(input) !== '/api/issues' || response.status !== 200) return response
+        const body = await response.json() as {
+          edges: Array<{ kind: string }>; nodes: Array<Record<string, unknown>>; roots: Array<Record<string, unknown>>
+          truncated: Record<string, number>
+        }
+        blocks = body.edges.filter((edge) => edge.kind === 'blocks').length
+        const shown = strip
+          ? {
+              ...body,
+              edges: body.edges.filter((edge) => edge.kind === 'contains'),
+              nodes: body.nodes.map(({ deps: _deps, ...node }) => node),
+              roots: body.roots.map(({ dependencies: _status, dependencies_omitted: _omitted, ...root }) => root),
+              truncated: Object.fromEntries(Object.entries(body.truncated).filter(([key]) => key !== 'dependencies')),
+            }
+          : body
+        const headers = new Headers(response.headers)
+        headers.delete('etag')
+        headers.delete('content-length')
+        return new Response(JSON.stringify(shown), { status: 200, headers })
+      },
+    })
+    const surfaces = async () => {
+      await showInbox()
+      const breadcrumb = row(question)!.querySelector('.nrow-src')!.innerHTML
+      await showTab('boards')
+      return { breadcrumb, plans: document.getElementById('boards')!.innerHTML }
+    }
+    const without = await surfaces()
+
+    strip = false
+    await pollTick()
+    const withDependencies = await surfaces()
+    expect(blocks).toBe(6)
+    expect(withDependencies).toEqual(without)
+    // and both draw the relationships, not today's plain chips
+    expect(chipKeys(row(question)!.querySelector('.nrow-src')!)).toEqual([K(117), K(120)])
+    expect(boardCard(umbrella.id).querySelector('.board-issues')?.textContent).toContain('Sub-issues on GitHub · 1 of 10 done')
+    expect([...document.querySelectorAll('#boards .plan-group-head')]).toHaveLength(1)
+  })
+})

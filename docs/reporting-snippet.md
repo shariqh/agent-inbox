@@ -165,8 +165,10 @@ prose. Do this **proactively**, without being asked:
   session's GitHub repository) and `https://github.com/owner/name/issues/123`; anything else is
   refused. Omitting `issue` keeps the link, `""` clears it, and `board_advance` or a move into
   `blocked` keeps it. A titled `board_get` echoes `issue` and, once the viewer has fetched it,
-  a short `issue_rel` (parent and child counts, never titles). Agent Inbox never edits GitHub
-  relationships: use `gh issue edit --parent` / `--add-sub-issue`.
+  a short `issue_rel` (parent and child counts, never titles; once GitHub's dependencies are
+  known, also `waits_on_issues`, the open blockers' issue keys, and an `unblocks` count). Those
+  keys are read-only GitHub data, never labels for `waits_on`. Agent Inbox never edits GitHub
+  relationships: use `gh issue edit --parent` / `--add-sub-issue` / `--add-blocked-by`.
 - **Step dependencies.** `rows[].waits_on` (or `board_row({ waits_on })`) lists the labels of
   other rows in the same plan that a row waits on: at most 20 entries as sent, and duplicates
   collapse. Omitting it keeps the list, `[]` clears it, and `board_advance` or a move into

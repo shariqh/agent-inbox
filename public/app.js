@@ -2303,6 +2303,46 @@ function dispositionEl(onResponse, onSnooze, key, onPin = null) {
   return menu
 }
 
+// The one write behind every deferral (#247): a snooze or a pin, of a question
+// or a plan row, from any card. The ask moves into a fold that starts closed,
+// and a draft left on it would sit there unseen while it pauses the list. So a
+// deferral that leaves a draft behind keeps it in view instead.
+async function deferAsk(entry, reason, url, body, { refusal = '', onSaved = null } = {}) {
+  const ask = entryEntity(entry)
+  const res = await postJSON(url, body)
+  if (res === null) return
+  if (refusal) showWriteError(ask.id, res.ok ? '' : refusal)
+  if (res.ok) {
+    if (holdsDraft(ask.id)) keepDraftInView(entry, reason)
+    onSaved?.()
+  }
+  await reloadAndPaint()
+}
+
+// The test suspendState() applies: a draft is more than whitespace.
+function holdsDraft(id) {
+  return [draftReplies[id], draftReplyContexts[id], rowDrafts[id]]
+    .some((text) => String(text ?? '').trim() !== '')
+}
+
+// Open the deferred ask's fold and give it the open card, as opening its row
+// would. From the Review queue or a plan panel it was not the open card, and
+// those ignore the list's filters, so widen any filter that would hide it.
+function keepDraftInView(entry, reason) {
+  openDeferredFolds.add(reason)
+  const ask = entryEntity(entry)
+  if (openRowId === ask.id) return
+  const owner = entry.kind === 'row' ? entry.board : entry.item
+  if (projectFilter && projectFilter !== owner.project) projectFilter = owner.project
+  if (agentFilter && agentFilter !== owner.agent) agentFilter = null
+  if (!filterActionEntries([entry]).length) {
+    actionFilter = 'all'
+    changedOnly = false
+  }
+  selectedId = ask.id
+  setOpenRow(ask.id, { resume: false })
+}
+
 // Issue #217 — "I'll take a while". Only a Copilot session runs the answer
 // watcher this stops, and only one whose server records who raised the ask
 // (`action_agent`) runs a watcher that honours it — so the control follows THIS
@@ -2642,29 +2682,21 @@ function rowAnswerEl(b, r, onSaved) {
         rowDraftKinds[r.id] = kind
         save()
       },
-      async (until) => {
-        const res = await postJSON(`/api/boards/${b.id}/rows/${r.id}/snooze`, {
-          until,
-          expected_revision: r.revision,
-          expected_board_version: b.revision,
-        })
-        if (res === null) return
-        if (!res.ok) { await reloadAndPaint(); return }
-        onSaved?.()
-        await reloadAndPaint()
-      },
+      (until) => deferAsk(
+        { kind: 'row', row: r, board: b },
+        'snoozed',
+        `/api/boards/${b.id}/rows/${r.id}/snooze`,
+        { until, expected_revision: r.revision, expected_board_version: b.revision },
+        { onSaved },
+      ),
       `row:${r.id}`,
-      r.pinned_at ? null : async () => {
-        const res = await postJSON(`/api/boards/${b.id}/rows/${r.id}/later`, {
-          pinned: true,
-          expected_revision: r.revision,
-          expected_board_version: b.revision,
-        })
-        if (res === null) return
-        showWriteError(r.id, res.ok ? '' : 'This action changed before your click; refreshed without applying it.')
-        if (res.ok) onSaved?.()
-        await reloadAndPaint()
-      },
+      r.pinned_at ? null : () => deferAsk(
+        { kind: 'row', row: r, board: b },
+        'pinned',
+        `/api/boards/${b.id}/rows/${r.id}/later`,
+        { pinned: true, expected_revision: r.revision, expected_board_version: b.revision },
+        { onSaved, refusal: 'This action changed before your click; refreshed without applying it.' },
+      ),
     ))
     const waitStop = waitStopEl(r, {
       key: `wait:row:${r.id}`,
@@ -6385,18 +6417,15 @@ function answerEl(it) {
     (kind, text) => sendReply(
       it.id, text, effectiveReplyContext(it), kind, editorGeneration,
     ),
-    async (until) => {
-      const res = await postJSON(`/api/items/${it.id}/snooze`, { until })
-      if (res === null) return
-      await reloadAndPaint()
-    },
+    (until) => deferAsk({ kind: 'item', item: it }, 'snoozed', `/api/items/${it.id}/snooze`, { until }),
     `item:${it.id}`,
-    it.reply || it.reply_kind || it.pinned_at ? null : async () => {
-      const res = await postJSON(`/api/items/${it.id}/later`, { pinned: true })
-      if (res === null) return
-      showWriteError(it.id, res.ok ? '' : 'This question changed before your click; refreshed without applying it.')
-      await reloadAndPaint()
-    },
+    it.reply || it.reply_kind || it.pinned_at ? null : () => deferAsk(
+      { kind: 'item', item: it },
+      'pinned',
+      `/api/items/${it.id}/later`,
+      { pinned: true },
+      { refusal: 'This question changed before your click; refreshed without applying it.' },
+    ),
   ))
   const waitStop = waitStopEl(it, {
     // A chat-recorded answer reuses this surface as a correction form, but the

@@ -343,3 +343,204 @@ describe('Pin for later (#247)', () => {
     expect(row(kept)?.closest('details')).toBeNull()
   })
 })
+
+// #247 review: deferring an ask moves it into a fold that starts closed. A draft
+// it holds still pauses the list (by design), so the draft must stay on screen:
+// the fold opens and the ask keeps the open card, from the list or the Review
+// queue, for a pin or a snooze.
+describe('a draft on a deferred ask stays in view (#247)', () => {
+  const PAUSED = 'paused — updating when you\'re done'
+  const lightbox = () => document.getElementById('lightbox')!
+  const deckInput = () => lightbox().querySelector<HTMLTextAreaElement>('.reply-input:not(.reply-context-input)')
+
+  function expectDraftInView(id: string, name: 'pinned' | 'snoozed', text: string) {
+    expect(fold(name)?.open, `the ${name} fold is open`).toBe(true)
+    expect(row(id)?.closest(`.${name}-fold`)).toBe(fold(name))
+    expect(row(id)?.dataset.open, 'the ask keeps the open card').toBe('1')
+    expect(answerInput(id)?.value).toBe(text)
+    expect(answerInput(id)?.closest('details:not([open])')).toBeNull()
+    expect(document.getElementById('pauseHint')?.hidden).toBe(false)
+    expect(document.getElementById('pauseHint')?.textContent).toBe(PAUSED)
+  }
+
+  async function arriveWhilePaused(d: Database.Database) {
+    advanceClock()
+    const next = question(d, 'Arrived while paused')
+    await pollTick()
+    await pollTick()
+    return next
+  }
+
+  it.each([
+    ['Pin for later', 'pinned', 'question'],
+    ['Not now · 4h', 'snoozed', 'question'],
+    ['Pin for later', 'pinned', 'plan row'],
+  ] as const)('keeps the draft in view after "%s" from the list (%s, %s)', async (choice, name, kind) => {
+    const d = open()
+    let id: string
+    if (kind === 'question') {
+      id = question(d)
+    } else {
+      upsertBoard(d, { ...AGENT, title: 'Release', rows: [blockedRow()] })
+      id = getBoard(d, 'alpha', 'Release')!.rows[0]!.id
+    }
+    await bootApp(d)
+    await showInbox()
+    click(row(id))
+    await settle()
+    type(answerInput(id), 'Half an answer')
+    click(buttonLabelled(choice, row(id)!))
+    await settle()
+    expect(badgeCount()).toBe(0)
+
+    const next = await arriveWhilePaused(d)
+    expect(badgeCount()).toBe(1)
+    expectDraftInView(id, name, 'Half an answer')
+    expect(row(next), 'the list stays paused while the draft exists').toBeNull()
+
+    type(answerInput(id), '')
+    await settle()
+    expect(row(next), 'clearing the draft lets the list catch up').not.toBeNull()
+  })
+
+  // A row snooze moves the row revision, and a draft never answers a newer
+  // revision, so the existing recovery keeps it: the unsent-responses list.
+  it('keeps a plan row draft in view after a snooze, in the unsent responses', async () => {
+    const d = open()
+    upsertBoard(d, { ...AGENT, title: 'Release', rows: [blockedRow()] })
+    const id = getBoard(d, 'alpha', 'Release')!.rows[0]!.id
+    await bootApp(d)
+    await showInbox()
+    click(row(id))
+    await settle()
+    type(answerInput(id), 'Half an answer')
+    click(buttonLabelled('Not now · 4h', row(id)!))
+    await settle()
+
+    const next = await arriveWhilePaused(d)
+    const recovery = document.querySelector<HTMLDetailsElement>('#needsYouList .stale-drafts-fold')
+    expect(recovery?.open).toBe(true)
+    expect(recovery?.textContent).toContain('Half an answer')
+    expect(fold('snoozed')?.open).toBe(true)
+    expect(row(id)?.querySelector('.stale-draft')?.textContent).toContain('Preserved answer: Half an answer')
+    expect(row(next), 'a recovered draft no longer pauses the list').not.toBeNull()
+  })
+
+  it.each(['question', 'plan row'] as const)('keeps the draft of a %s pinned from the Review queue in view once the deck moves on', async (kind) => {
+    const d = open()
+    const other = question(d, 'Reviewed next')
+    advanceClock()
+    let id: string
+    if (kind === 'question') {
+      id = question(d, 'Set aside with a draft')
+    } else {
+      upsertBoard(d, { ...AGENT, title: 'Release', rows: [blockedRow()] })
+      id = getBoard(d, 'alpha', 'Release')!.rows[0]!.id
+    }
+    await bootApp(d)
+    await showInbox()
+    click(buttonLabelled('Review queue'))
+    await settle()
+    click(lightbox().querySelector('.lb-next'))
+    await settle()
+    type(deckInput(), 'Half an answer')
+    click(buttonLabelled('Pin for later', lightbox()))
+    await settle()
+
+    expect(lightbox().hidden, 'the deck moves on').toBe(false)
+    expect(lightbox().querySelector('.lb-count')?.textContent).toBe('1 of 1')
+    expect(lightbox().textContent).toContain('Reviewed next')
+    click(lightbox().querySelector('.lb-close'))
+    await settle()
+
+    await arriveWhilePaused(d)
+    expectDraftInView(id, 'pinned', 'Half an answer')
+    expect(row(other)?.dataset.open).toBeUndefined()
+  })
+
+  it('widens a list filter that would hide the ask the Review queue deferred', async () => {
+    const d = open()
+    const id = question(d)
+    insertItem(d, { ...AGENT, project: 'beta', kind: 'question', title: 'Beta question' })
+    await bootApp(d)
+    await showInbox()
+    click(document.querySelector('#rail button.rail-tab[data-project="beta"]'))
+    await settle()
+    expect(row(id)).toBeNull()
+
+    click(buttonLabelled('Review queue'))
+    await settle()
+    expect(lightbox().textContent).toContain('Choose: Merge?')
+    type(deckInput(), 'Half an answer')
+    click(buttonLabelled('Pin for later', lightbox()))
+    await settle()
+    click(lightbox().querySelector('.lb-close'))
+    await settle()
+
+    await arriveWhilePaused(d)
+    expect(document.querySelector('#rail [data-project="alpha"]')?.getAttribute('aria-selected')).toBe('true')
+    expectDraftInView(id, 'pinned', 'Half an answer')
+  })
+
+  it('opens no fold when the deferral is refused, and the draft stays with its card', async () => {
+    const d = open()
+    const pinned = question(d, 'Already set aside')
+    pinItem(d, pinned, true)
+    upsertBoard(d, { ...AGENT, title: 'Release', rows: [blockedRow()] })
+    const board = getBoard(d, 'alpha', 'Release')!
+    const id = board.rows[0]!.id
+    await bootApp(d)
+    await showInbox()
+    click(row(id))
+    await settle()
+    type(answerInput(id), 'Half an answer')
+    updateBoardRow(d, {
+      ...AGENT, title: 'Release', label: 'Install test',
+      expectedBoardVersion: board.revision, expectedRevision: board.rows[0]!.revision,
+      note: 'The 1.4.1 build is ready instead.',
+    })
+
+    click(buttonLabelled('Pin for later', row(id)!))
+    await settle()
+    expect(getBoard(d, 'alpha', 'Release')!.rows[0]!.pinned_at).toBeNull()
+    expect(fold('pinned')?.open).toBe(false)
+    expect(row(id)?.closest('details')).toBeNull()
+    expect(row(id)?.dataset.open).toBe('1')
+    expect(row(id)?.textContent).toContain('Half an answer')
+  })
+
+  it('still files an ask without a draft into its closed fold and leaves the open card alone', async () => {
+    const d = open()
+    const reading = question(d, 'Being read')
+    advanceClock()
+    const snoozed = question(d, 'Snoozed bare')
+    advanceClock()
+    const pinned = question(d, 'Pinned bare')
+    await bootApp(d)
+    await showInbox()
+
+    click(row(snoozed))
+    await settle()
+    click(buttonLabelled('Not now · 4h', row(snoozed)!))
+    await settle()
+    expect(fold('snoozed')?.open).toBe(false)
+
+    click(row(reading))
+    await settle()
+    click(buttonLabelled('Review queue'))
+    await settle()
+    click(lightbox().querySelector('.lb-next'))
+    await settle()
+    expect(lightbox().textContent).toContain('Pinned bare')
+    click(buttonLabelled('Pin for later', lightbox()))
+    await settle()
+    click(lightbox().querySelector('.lb-close'))
+    await settle()
+
+    expect(fold('pinned')?.open).toBe(false)
+    expect(row(pinned)?.closest('.pinned-fold')).toBe(fold('pinned'))
+    expect(row(pinned)?.dataset.open).toBeUndefined()
+    expect(row(reading)?.dataset.open).toBe('1')
+    expect(document.getElementById('pauseHint')?.hidden).toBe(true)
+  })
+})

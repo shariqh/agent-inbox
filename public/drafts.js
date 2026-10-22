@@ -6,10 +6,12 @@
 // stored entry may look like and how one window's changes merge into what the
 // profile's other windows wrote.
 //
-// The rule for two windows on one profile: per entry key, the last write wins;
+// The rule for two windows on one profile: per entry key, the latest write wins;
 // a window deletes only the copy it last loaded or wrote (compare-and-delete on
 // `savedAt`), and never touches an entry it was not told about. Any write drops
 // what this build cannot read, so a later build that adds a kind needs a new key.
+// A stamp from the future (the clock was set back) is never yet expired, and
+// any write brings it back to now, so it can be overwritten and does expire.
 
 export const DRAFTS_KEY = 'agent-inbox-drafts-v1'
 
@@ -38,6 +40,17 @@ function intentOf(value) {
 }
 
 const optionalInt = (value, min) => (value === null || value === undefined ? null : isInt(value, min) ? value : undefined)
+const optionalText = (value, max) => value === null || isText(value, max)
+
+// What a question draft is pinned to: the question's answer (when it was last
+// written, by whom, of what kind), never response_revision, which the human's
+// own Note also moves. undefined means "invalid"; null means "not known".
+function answerOf(value) {
+  if (value === null || value === undefined) return null
+  if (typeof value !== 'object' || !optionalText(value.at, 64) || !optionalText(value.source, 32)
+    || !optionalText(value.kind, 32)) return undefined
+  return { at: value.at, source: value.source, kind: value.kind }
+}
 
 // The one canonical shape of each kind: unknown fields are dropped and the key
 // order is fixed, so equal drafts serialize to equal JSON. Null for anything
@@ -48,22 +61,22 @@ export function draftEntry(raw) {
   switch (raw.type) {
     case 'reply': {
       const intent = intentOf(raw.intent)
-      if (intent === undefined || !isId(raw.itemId) || !isText(raw.title, MAX_LABEL)
-        || !isText(raw.text) || !isText(raw.context) || !filled(raw.text, raw.context)
-        || !isInt(raw.responseRevision, 0)) return null
+      const answer = answerOf(raw.answer)
+      if (intent === undefined || answer === undefined || !isId(raw.itemId) || !isText(raw.title, MAX_LABEL)
+        || !isText(raw.text) || !isText(raw.context) || !filled(raw.text, raw.context)) return null
       return {
-        type: 'reply', itemId: raw.itemId, title: raw.title, text: raw.text, context: raw.context,
-        responseRevision: raw.responseRevision, intent,
+        type: 'reply', itemId: raw.itemId, title: raw.title, text: raw.text, context: raw.context, answer, intent,
       }
     }
     case 'item-recovery': {
       const intent = intentOf(raw.intent)
-      if (intent === undefined || !isId(raw.itemId) || !isText(raw.title, MAX_LABEL)
+      const answer = answerOf(raw.answer)
+      if (intent === undefined || answer === undefined || !isId(raw.itemId) || !isText(raw.title, MAX_LABEL)
         || !isText(raw.text) || !isText(raw.context) || !filled(raw.text, raw.context)
         || !KINDS.has(raw.kind) || !isText(reason, MAX_LABEL)) return null
       return {
         type: 'item-recovery', itemId: raw.itemId, title: raw.title, text: raw.text, context: raw.context,
-        kind: raw.kind, intent, reason,
+        kind: raw.kind, answer, intent, reason,
       }
     }
     case 'row': {
@@ -71,11 +84,12 @@ export function draftEntry(raw) {
       if (actionVersion === undefined || !isId(raw.rowId) || !isId(raw.boardId) || !isInt(raw.boardRevision, 0)
         || !isInt(raw.revision, 0) || !isText(raw.text) || !filled(raw.text) || !KINDS.has(raw.kind)
         || !isText(raw.boardTitle, MAX_LABEL) || !isText(raw.label, MAX_LABEL) || !isText(raw.context)
-        || typeof (raw.setAside ?? false) !== 'boolean') return null
+        || typeof (raw.setAside ?? false) !== 'boolean' || typeof (raw.unconfirmed ?? false) !== 'boolean') return null
+      // unconfirmed: its send was in flight, or lost its answer, when this was written
       return {
         type: 'row', rowId: raw.rowId, boardId: raw.boardId, boardRevision: raw.boardRevision,
         revision: raw.revision, actionVersion, text: raw.text, kind: raw.kind, boardTitle: raw.boardTitle,
-        label: raw.label, context: raw.context, setAside: raw.setAside === true,
+        label: raw.label, context: raw.context, setAside: raw.setAside === true, unconfirmed: raw.unconfirmed === true,
       }
     }
     case 'row-recovery': {
@@ -120,54 +134,23 @@ function keyFits(key, draft) {
   return key === draftKey(draft)
 }
 
+// Whether an entry last written at `savedAt` is past the retention period.
+export function draftExpired(savedAt, nowMs, retentionMs = RETENTION_MS) {
+  return savedAt < nowMs - retentionMs
+}
+
 function limitsOf({ retentionMs = RETENTION_MS, maxEntries = MAX_ENTRIES, maxChars = MAX_CHARS } = {}) {
   return { retentionMs, maxEntries, maxChars }
 }
 
-// Every valid entry younger than the retention period, in stored order.
-// Unreadable, unknown, mislabelled and expired entries are left out, never thrown.
-export function readDrafts(raw, nowMs, limits) {
-  const { retentionMs } = limitsOf(limits)
-  const drafts = new Map()
-  let parsed = null
-  try {
-    parsed = typeof raw === 'string' ? JSON.parse(raw) : null
-  } catch {
-    return drafts
-  }
-  const entries = parsed && parsed.v === VERSION ? parsed.entries : null
-  if (!entries || typeof entries !== 'object' || Array.isArray(entries)) return drafts
-  for (const [key, value] of Object.entries(entries)) {
-    if (!value || typeof value !== 'object' || !isInt(value.savedAt, 0)) continue
-    if (value.savedAt < nowMs - retentionMs) continue
-    const draft = draftEntry(value.draft)
-    if (!draft || !keyFits(key, draft)) continue
-    drafts.set(key, { savedAt: value.savedAt, draft })
-  }
-  return drafts
-}
-
 const serialize = (drafts) => JSON.stringify({ v: VERSION, entries: Object.fromEntries(drafts) })
 
-// What storage should hold after this window's changes: deletes apply only to
-// the copy this window last saw, upserts are stamped `nowMs` unless a copy
-// stamped later is already there, and the bounds evict the oldest entries.
-export function mergeDrafts(raw, { upserts, deletes }, nowMs, limits) {
-  const { maxEntries, maxChars } = limitsOf(limits)
-  const drafts = readDrafts(raw, nowMs, limits)
-  for (const [key, savedAt] of deletes) {
-    if (drafts.get(key)?.savedAt === savedAt) drafts.delete(key)
-  }
-  for (const [key, value] of upserts) {
-    const draft = draftEntry(value)
-    if (!draft || !keyFits(key, draft)) continue
-    if ((drafts.get(key)?.savedAt ?? -Infinity) > nowMs) continue
-    drafts.set(key, { savedAt: nowMs, draft })
-  }
+// The bounds, oldest first. An entry that can never fit goes first, so it
+// cannot evict everything older.
+function bounded(drafts, { maxEntries, maxChars }) {
   // `"key":value` plus its comma: never less than what the entry adds to the JSON
   const base = serialize(new Map()).length
   const sizes = new Map([...drafts].map(([key, value]) => [key, JSON.stringify(key).length + JSON.stringify(value).length + 2]))
-  // An entry that can never fit goes first, so it cannot evict everything older.
   for (const [key, size] of sizes) {
     if (base + size > maxChars) {
       drafts.delete(key)
@@ -182,5 +165,46 @@ export function mergeDrafts(raw, { upserts, deletes }, nowMs, limits) {
     drafts.delete(key)
     chars -= sizes.get(key) ?? 0
   }
-  return serialize(drafts)
+  return drafts
+}
+
+// Every valid entry younger than the retention period, within both bounds, in
+// stored order, each with the stamp it is stored under. Unreadable, unknown,
+// mislabelled and expired entries are left out, never thrown.
+export function readDrafts(raw, nowMs, limits) {
+  const bounds = limitsOf(limits)
+  const drafts = new Map()
+  let parsed = null
+  try {
+    parsed = typeof raw === 'string' ? JSON.parse(raw) : null
+  } catch {
+    return drafts
+  }
+  const entries = parsed && parsed.v === VERSION ? parsed.entries : null
+  if (!entries || typeof entries !== 'object' || Array.isArray(entries)) return drafts
+  for (const [key, value] of Object.entries(entries)) {
+    if (!value || typeof value !== 'object' || !isInt(value.savedAt, 0)) continue
+    if (draftExpired(value.savedAt, nowMs, bounds.retentionMs)) continue
+    const draft = draftEntry(value.draft)
+    if (!draft || !keyFits(key, draft)) continue
+    drafts.set(key, { savedAt: value.savedAt, draft })
+  }
+  return bounded(drafts, bounds)
+}
+
+// What storage should hold after this window's changes: deletes apply only to
+// the copy this window last saw, every remaining stamp from the future is
+// brought back to `nowMs`, upserts are stamped `nowMs`, and the bounds evict the
+// oldest entries.
+export function mergeDrafts(raw, { upserts, deletes }, nowMs, limits) {
+  const drafts = readDrafts(raw, nowMs, limits)
+  for (const [key, savedAt] of deletes) {
+    if (drafts.get(key)?.savedAt === savedAt) drafts.delete(key)
+  }
+  for (const value of drafts.values()) value.savedAt = Math.min(value.savedAt, nowMs)
+  for (const [key, value] of upserts) {
+    const draft = draftEntry(value)
+    if (draft && keyFits(key, draft)) drafts.set(key, { savedAt: nowMs, draft })
+  }
+  return serialize(bounded(drafts, limitsOf(limits)))
 }

@@ -399,10 +399,13 @@ Run the build before `npm run electron`; the development shell starts the built
   server, the hub database or an agent. The window's memory stays authoritative:
   a save writes only what changed, so a successful send, Clear or an emptied
   editor deletes the stored copy and a refused send keeps it. Restoring happens
-  once in the first applied `load()`: an unchanged target gets its draft back in
-  its editor, a changed one sends it to the unsent responses with a reason, and
-  nothing is ever sent, focused or switched for the human. A window deletes only
-  the copy it loaded or last wrote; the viewer-restart hold stays.
+  once in the first applied `load()`: an unchanged target in an open project gets
+  its draft back in its editor; anything else goes to the unsent responses with a
+  reason, "not confirmed" (and a fresh intent on Retry) once a send of it was
+  tried and its target moved. Nothing is ever sent, focused or switched for the
+  human. Question drafts pin the question's answer, not `response_revision`. A
+  window deletes only the copy it loaded or last wrote, and its leaving save
+  writes back a draft another window deleted; the viewer-restart hold stays.
 - Every value export in `src/*.ts` and `public/*.js` must be reachable from
   production code. Tests are not consumers. `test/dead-exports.test.ts` enforces
   this; deliberate exceptions require the existing documented mechanisms.

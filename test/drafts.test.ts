@@ -9,7 +9,7 @@ const NOW = Date.parse('2026-10-22T12:00:00.000Z')
 const DAY = 24 * 60 * 60 * 1000
 
 const reply = (itemId: string, text = 'Ship it.'): Draft => ({
-  type: 'reply', itemId, title: 'Question', text, context: '', responseRevision: 0, intent: null,
+  type: 'reply', itemId, title: 'Question', text, context: '', answer: { at: null, source: null, kind: null }, intent: null,
 })
 
 function store(entries: Record<string, { savedAt: number; draft: unknown }>): string {
@@ -38,8 +38,9 @@ describe('draftEntry', () => {
       { ...reply('q1'), type: 'unknown' },
       { ...reply('q1'), itemId: '' },
       { ...reply('q1'), text: '  ', context: '' },
-      { ...reply('q1'), responseRevision: -1 },
-      { ...reply('q1'), responseRevision: 1.5 },
+      { ...reply('q1'), answer: { at: 7, source: null, kind: null } },
+      { ...reply('q1'), answer: { at: null, source: null } },
+      { ...reply('q1'), answer: 'pinned' },
       { ...reply('q1'), intent: { clientId: 'c', sequence: 0, actionId: 'a' } },
       { ...reply('q1'), intent: { clientId: '', sequence: 1, actionId: 'a' } },
       { ...reply('q1'), title: 7 },
@@ -53,6 +54,23 @@ describe('draftEntry', () => {
     ]) {
       expect(draftEntry(raw), JSON.stringify(raw)).toBeNull()
     }
+  })
+
+  it('keeps the answer a question draft or recovery was pinned to, and an unconfirmed row send', () => {
+    const answered = { at: '2026-10-22T11:00:00.000Z', source: 'agent', kind: 'answer' }
+    expect(draftEntry({ ...reply('q1'), answer: answered })).toMatchObject({ answer: answered })
+    expect(draftEntry({ ...reply('q1'), answer: null })).toMatchObject({ answer: null })
+    expect(draftEntry({
+      type: 'item-recovery', itemId: 'q1', title: 'Q', text: 'x', context: '', kind: 'answer', answer: answered, intent: null, reason: '',
+    })).toMatchObject({ answer: answered })
+    expect(draftEntry({
+      type: 'row', rowId: 'r1', boardId: 'b1', boardRevision: 4, revision: 7, actionVersion: 2,
+      text: 'Go.', kind: 'answer', boardTitle: 'Plan', label: 'Step', context: '', unconfirmed: true,
+    })).toMatchObject({ unconfirmed: true, setAside: false })
+    expect(draftEntry({
+      type: 'row', rowId: 'r1', boardId: 'b1', boardRevision: 4, revision: 7, actionVersion: 2,
+      text: 'Go.', kind: 'answer', boardTitle: 'Plan', label: 'Step', context: '', unconfirmed: 'yes',
+    })).toBeNull()
   })
 
   it('names every kind but an item recovery, whose window names it', () => {
@@ -86,6 +104,24 @@ describe('readDrafts', () => {
     for (const broken of [null, '', '{', 'null', '[]', JSON.stringify({ v: 2, entries: {} }), JSON.stringify({ v: 1, entries: [] })]) {
       expect(readDrafts(broken, NOW).size).toBe(0)
     }
+  })
+
+  it('applies both bounds as it reads, evicting the oldest', () => {
+    const many: Record<string, { savedAt: number; draft: Draft }> = {}
+    for (let index = 0; index < 150; index += 1) {
+      many[`reply:q${index}`] = { savedAt: NOW - 1000 + index, draft: reply(`q${index}`) }
+    }
+    const kept = [...readDrafts(store(many), NOW).keys()]
+    expect(kept).toHaveLength(100)
+    expect(kept[0]).toBe('reply:q50')
+    const big = (itemId: string) => reply(itemId, 'x'.repeat(60_000))
+    const heavy = store({
+      'reply:a': { savedAt: NOW - 4, draft: big('a') },
+      'reply:b': { savedAt: NOW - 3, draft: big('b') },
+      'reply:c': { savedAt: NOW - 2, draft: big('c') },
+      'reply:d': { savedAt: NOW - 1, draft: big('d') },
+    })
+    expect([...readDrafts(heavy, NOW).keys()]).toEqual(['reply:b', 'reply:c', 'reply:d'])
   })
 
   it('keeps an entry until it is thirty days old', () => {
@@ -127,13 +163,44 @@ describe('mergeDrafts', () => {
     expect(keys(merged).sort()).toEqual(['note:n1', 'reply:q1'])
   })
 
-  it('lets the last write win per entry, and never overwrites a copy stamped after this write', () => {
+  it('lets the latest write win per entry', () => {
     const older = store({ 'reply:q1': { savedAt: NOW - 1, draft: reply('q1', 'theirs') } })
     expect(readDrafts(mergeDrafts(older, { upserts: new Map([['reply:q1', reply('q1', 'mine')]]), deletes: none }, NOW), NOW)
-      .get('reply:q1')?.draft).toMatchObject({ text: 'mine' })
-    const newer = store({ 'reply:q1': { savedAt: NOW + 1000, draft: reply('q1', 'theirs') } })
-    expect(readDrafts(mergeDrafts(newer, { upserts: new Map([['reply:q1', reply('q1', 'mine')]]), deletes: none }, NOW), NOW)
-      .get('reply:q1')?.draft).toMatchObject({ text: 'theirs' })
+      .get('reply:q1')).toEqual({ savedAt: NOW, draft: reply('q1', 'mine') })
+  })
+
+  describe('a stamp from the future (the clock was set back)', () => {
+    const ahead = NOW + 365 * DAY
+
+    it('can still be overwritten', () => {
+      const raw = store({ 'reply:q1': { savedAt: ahead, draft: reply('q1', 'before the clock moved') } })
+      expect(readDrafts(mergeDrafts(raw, { upserts: new Map([['reply:q1', reply('q1', 'mine')]]), deletes: none }, NOW), NOW)
+        .get('reply:q1')).toEqual({ savedAt: NOW, draft: reply('q1', 'mine') })
+    })
+
+    it('is re-stamped by any write, so it expires thirty days later', () => {
+      const raw = store({ 'reply:q1': { savedAt: ahead, draft: reply('q1') } })
+      expect(readDrafts(raw, NOW + 31 * DAY).size, 'read alone counts it as written now').toBe(1)
+      const merged = mergeDrafts(raw, { upserts: new Map([['reply:q2', reply('q2')]]), deletes: none }, NOW)
+      expect(readDrafts(merged, NOW).get('reply:q1')?.savedAt).toBe(NOW)
+      expect(readDrafts(merged, NOW + 31 * DAY).size).toBe(0)
+    })
+
+    it('is still deleted by the window that read its stamp', () => {
+      const raw = store({ 'reply:q1': { savedAt: ahead, draft: reply('q1') } })
+      expect(keys(mergeDrafts(raw, { upserts: new Map(), deletes: new Map([['reply:q1', ahead]]) }, NOW))).toEqual([])
+    })
+
+    it('counts as the newest entry when the bounds evict', () => {
+      const entries: Record<string, { savedAt: number; draft: Draft }> = { 'reply:ahead': { savedAt: ahead, draft: reply('ahead') } }
+      for (let index = 0; index < 100; index += 1) {
+        entries[`reply:q${index}`] = { savedAt: NOW - 1000 + index, draft: reply(`q${index}`) }
+      }
+      const kept = [...readDrafts(store(entries), NOW).keys()]
+      expect(kept).toHaveLength(100)
+      expect(kept).toContain('reply:ahead')
+      expect(kept).not.toContain('reply:q0')
+    })
   })
 
   it('refuses to write an invalid or mislabelled entry', () => {

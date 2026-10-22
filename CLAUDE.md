@@ -846,38 +846,52 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   key, so an emptied editor, a successful send (JSON `ok:true`), Clear and every
   deliberate discard delete the stored copy, and a refused send keeps it as an unsent
   response. A save is queued from `showPauseHint()`, which every draft change reaches,
-  lands within 300 ms, and runs again on `pagehide`, `beforeunload` and
-  `visibilitychange` to hidden. Each entry carries the version it was written against:
-  a question draft its `response_revision` as of the last edit, a row draft its row
-  and board ids and revisions and action version, and any reply intent its claiming
-  client id, so a Retry after a restart replays the same intent to the server. The
-  tab's reply identity itself stays in `sessionStorage`: shared, two windows would
-  merge their counters and refuse each other's newer replies. Restoring happens once,
-  in the first applied `load()` before its `renderIfIdle()` (`placeRestoredDrafts`),
-  and sends nothing, focuses nothing and switches no tab. A draft whose target is
-  unchanged goes back to its editor, the newest one in the queue reopens its card
-  when none is open, a Plans-only row reopens its panel, and the next queue render
-  opens any fold holding a restored draft once. A draft whose target changed (closed,
-  answered elsewhere or in chat, a row action or revision that moved, an archived
-  plan, a removed item or row) goes to the unsent responses with a stored `reason`:
-  "this question changed", "this question is closed or no longer available", "this
-  action changed", or #272's set-aside reason only when it was recorded. A draft whose
-  exact text the server already holds is dropped. `renderIfIdle()` paints the first
-  editable frame even with restored drafts, since no editor exists yet to protect;
-  every later tick pauses exactly as for a typed draft. Bounds: 30 days since the
-  last write, 100 entries and 200,000 characters, oldest evicted first; a refused
+  and lands within 300 ms. The leaving saves (`pagehide`, `beforeunload`,
+  `visibilitychange` to hidden) also write back every draft the window still holds
+  whose key storage lost: another window sent or cleared it, no newer copy exists, and
+  the text on this screen would otherwise go with it. A routine save leaves that
+  delete alone, and a draft whose own last write has expired is let go. Each entry
+  carries what it was written against: a question draft the question's answer as of
+  the last edit (`replied_at`, source and kind, never `response_revision`, which the
+  human's own Note also moves), a recovery the answer its intent was tried against, a
+  row draft its row and board ids and revisions, its action version and whether its
+  send was still unanswered, and any reply intent its claiming client id. The tab's
+  reply identity itself stays in `sessionStorage`: shared, two windows would merge
+  their counters and refuse each other's newer replies. Restoring happens once, in the
+  first applied `load()` before its `renderIfIdle()` (`placeRestoredDrafts`), and sends
+  nothing, focuses nothing and switches no tab. A draft whose target is unchanged and
+  whose project is open goes back to its editor, the newest one in the queue reopens
+  its card when none is open, a Plans-only row reopens its panel, and the next queue
+  render opens any fold holding a restored draft once. Anything else goes to the
+  unsent responses, which never pause the list and show in every project view, with a
+  stored `reason`: "this question changed", "this question is closed or no longer
+  available", "this action changed", "Kept because this project is closed", or #272's
+  set-aside reason only when it was recorded. Once a send of the text was tried and
+  never answered (a reply intent, or a row send still in flight), the reason says
+  "Your send was not confirmed", never "not sent": the write may have landed. A reply
+  intent replays exactly only while the question's answer is unchanged since it was
+  claimed; once the answer moved, the send may have landed and been superseded, so
+  the intent is dropped and Retry is a fresh send. A draft whose exact text the server
+  already holds is dropped. `renderIfIdle()` paints the first editable frame even with
+  restored drafts, since no editor exists yet to protect; every later tick pauses
+  exactly as for a typed draft. Bounds, applied on every read and write: 30 days since
+  the last write, 100 entries and 200,000 characters, oldest evicted first; a refused
   write (a full profile) is retried once within 50,000 characters, then the drafts
-  stay in memory without an alarm. Two windows on one profile: per key the last write
-  wins, a window deletes only the copy it loaded or last wrote (compare-and-delete on
-  `savedAt`) and never an entry it was not told about. There is no `storage`-event
-  sync, so another window's newer draft appears on this window's next load, and two
-  windows editing one target each keep their own text on screen. Electron commits
-  DOM storage in `will-quit` (`session.defaultSession.flushStorageData()`), after
-  every window has closed and run its `pagehide` save. Not covered: a crash within the
-  300 ms before a save or before Chromium commits it, another browser or profile, the
-  viewer opened at its other address (`localhost` and `127.0.0.1` are separate
-  origins), a private window, and clearing site data. `test/drafts.test.ts` and
-  `test/dom/durable-drafts.test.ts` pin it.
+  stay in memory without an alarm. A stamp from the future (the clock was set back)
+  counts as now, and any write re-stamps it, so it can be overwritten and expires.
+  Two windows on one profile: per key the latest write wins, a window deletes only the
+  copy it loaded or last wrote (compare-and-delete on `savedAt`) and never an entry it
+  was not told about, and after a write it knows only what storage then holds exactly
+  as it holds it. There is no `storage`-event sync, so another window's newer draft
+  appears on this window's next load, and two windows editing one target each keep
+  their own text on screen. Electron commits DOM storage in `will-quit`
+  (`session.defaultSession.flushStorageData()`), after every window has closed and
+  run its `pagehide` save. Not covered: a crash within the 300 ms before a save or
+  before Chromium commits it, another browser or profile, the viewer opened at its
+  other address (`localhost` and `127.0.0.1` are separate origins), a private window,
+  and clearing site data. `test/drafts.test.ts` and `test/dom/durable-drafts.test.ts`
+  pin it; the DOM file removes a closed page's unload listeners itself, because jsdom
+  keeps every boot's on one window.
 - **Dashboard focus must not freeze monitoring detail.** Mount the structural frame
   and native range selector once, then refresh ownership, dispatch, recent outcomes
   and history through the ambient painter as well as headline signals. Preserve the

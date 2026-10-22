@@ -7,6 +7,16 @@ export interface DraftIntent {
   actionId: string
 }
 
+/**
+ * A question's answer as a draft last saw it: when it was written, by whom
+ * (`inbox` or `agent`) and of what kind. A Note does not move it.
+ */
+export interface DraftAnswer {
+  at: string | null
+  source: string | null
+  kind: string | null
+}
+
 export type Draft =
   | {
       type: 'reply'
@@ -14,8 +24,8 @@ export type Draft =
       title: string
       text: string
       context: string
-      /** the question's response revision the draft was written against */
-      responseRevision: number
+      /** the question's answer when the draft was last edited; null when unknown */
+      answer: DraftAnswer | null
       intent: DraftIntent | null
     }
   | {
@@ -25,6 +35,8 @@ export type Draft =
       text: string
       context: string
       kind: DraftResponseKind
+      /** the question's answer when the recovery was made; null when unknown */
+      answer: DraftAnswer | null
       intent: DraftIntent | null
       reason: string
     }
@@ -41,6 +53,8 @@ export type Draft =
       label: string
       context: string
       setAside: boolean
+      /** its send was in flight, or lost its answer, when this was written */
+      unconfirmed: boolean
     }
   | {
       type: 'row-recovery'
@@ -78,6 +92,7 @@ export interface DraftLimits {
 export const DRAFTS_KEY: string
 export function draftEntry(raw: unknown): Draft | null
 export function draftKey(draft: Draft): string | null
+export function draftExpired(savedAt: number, nowMs: number, retentionMs?: number): boolean
 export function readDrafts(raw: string | null, nowMs: number, limits?: DraftLimits): Map<string, StoredDraft>
 export function mergeDrafts(
   raw: string | null,

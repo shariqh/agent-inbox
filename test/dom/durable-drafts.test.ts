@@ -5,11 +5,11 @@
 // to the unsent responses with an honest reason. Nothing is ever sent for the
 // human. A boot in this file is a fresh page against the same localStorage,
 // which is what a reload, a closed and reopened window and an app restart are.
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
 import {
-  advanceBoardRow, answerItem, archiveBoard, getBoard, getItem, insertItem, pinItem, replyItem, resolveItem,
-  upsertBoard,
+  advanceBoardRow, annotateItem, answerItem, archiveBoard, closeProject, getBoard, getItem, insertItem, markReplySeen,
+  pinItem, replyItem, resolveItem, upsertBoard,
 } from '../../src/store.js'
 import type { BootOptions, ViewerBridge } from './harness.js'
 import {
@@ -19,11 +19,29 @@ import {
 
 useDomTest()
 
+// A page that goes away takes its listeners with it. jsdom keeps every boot's on
+// one window, and an earlier page's leaving save would then write its drafts
+// into a later test's storage, so this file removes a closed page's listeners.
+const PAGE_EVENTS = new Set(['pagehide', 'beforeunload', 'visibilitychange'])
+const pageListeners: Array<[EventTarget, string, EventListenerOrEventListenerObject]> = []
+beforeEach(() => {
+  for (const target of [window, document] as EventTarget[]) {
+    const add = target.addEventListener.bind(target)
+    vi.spyOn(target, 'addEventListener').mockImplementation((type, listener, options) => {
+      if (PAGE_EVENTS.has(type) && listener) pageListeners.push([target, type, listener])
+      add(type, listener, options)
+    })
+  }
+})
+
+function closePage(): void {
+  for (const [target, type, listener] of pageListeners.splice(0)) target.removeEventListener(type, listener)
+}
+
 let db: Database.Database | null = null
 afterEach(async () => {
-  // Earlier boots stay registered for `pagehide` (the harness cannot remove a
-  // listener), so every page in this file ends with its drafts already saved.
   await vi.advanceTimersByTimeAsync(300)
+  closePage()
   db?.close()
   db = null
 })
@@ -37,8 +55,13 @@ const QUESTION_CLOSED = 'Not sent because this question is closed or no longer a
 const ACTION_CHANGED = 'Not sent because this action changed.'
 const SET_ASIDE = 'Kept from before you set this aside.'
 const UNCONFIRMED = 'Note save was not confirmed'
+const PROJECT_CLOSED = 'Kept because this project is closed.'
+const SEND_UNCONFIRMED_QUESTION = 'Your send was not confirmed, and this question has changed since.'
+const SEND_UNCONFIRMED_ACTION = 'Your send was not confirmed, and this action has changed since.'
 
 interface Stored { savedAt: number; draft: Record<string, unknown> }
+// A stored question draft's pin for a question nobody has answered yet.
+const UNANSWERED = { at: null, source: null, kind: null }
 
 function stored(): Record<string, Stored> {
   const raw = localStorage.getItem(KEY)
@@ -62,6 +85,7 @@ async function saved(): Promise<void> {
 // (vi.clearAllTimers() also rewinds the fake clock, so the time is kept.)
 async function reopen(d: Database.Database, opts?: BootOptions): Promise<ViewerBridge> {
   window.dispatchEvent(new Event('pagehide'))
+  closePage()
   const now = Date.now()
   vi.clearAllTimers()
   vi.setSystemTime(now)
@@ -299,6 +323,20 @@ describe('a draft comes back where it was', () => {
     expect(storedTexts()).toEqual(['Tuesday'])
   })
 
+  it('keeps a question draft in its editor after the human adds a Note to that question', async () => {
+    db = freshDb()
+    const id = question(db)
+    await bootApp(db)
+    await draftAnswer(id, 'Still my answer.')
+    window.dispatchEvent(new Event('pagehide'))
+    expect(annotateItem(db, id, 'My own note on it.')).toBe(true)
+
+    await reopen(db)
+    await showInbox()
+    expect(answerInput(id)?.value).toBe('Still my answer.')
+    expect(recovery()).toBeNull()
+  })
+
   it('reuses an ambiguous send\'s intent when the restored draft is sent again', async () => {
     db = freshDb()
     const id = question(db)
@@ -381,6 +419,86 @@ describe('a draft whose target changed goes to the unsent responses', () => {
     expect(fold.textContent).not.toContain(SET_ASIDE)
     await saved()
     expect(Object.keys(stored())).toEqual([`row-recovery:${rowId}:${board.rows[0]!.revision}`])
+  })
+
+  it.each([
+    ['a typed answer', 'Ship Tuesday.', async (id: string) => {
+      await draftAnswer(id, 'Ship Tuesday.')
+      click(sendButton(id))
+    }],
+    ['an option pick', 'Tuesday', async (id: string) => {
+      await showInbox()
+      click(row(id))
+      await settle()
+      click(buttonLabelled('Tuesday', row(id)!))
+    }],
+  ] as const)('says %s whose send was not confirmed is not confirmed, and Retry sends it afresh', async (_label, text, send) => {
+    db = freshDb()
+    const id = question(db)
+    let lose = true
+    const first = await bootApp(db, {
+      interceptFetch: async (input, init, next) => {
+        const response = await next()
+        if (lose && init?.method === 'POST' && String(input).includes(`/items/${id}/reply`)) {
+          lose = false
+          throw new Error('lost reply response')
+        }
+        return response
+      },
+    })
+    expectConsoleError(/lost reply response/)
+    await send(id)
+    await settle()
+    const lost = JSON.parse(String(first.posts.at(-1)?.init?.body)) as Record<string, unknown>
+    expect(getItem(db, id)?.reply, 'the send committed; only its answer was lost').toBe(text)
+    window.dispatchEvent(new Event('pagehide'))
+    // While the app is closed the agent picks the answer up and records another in chat.
+    const committed = getItem(db, id)!
+    expect(markReplySeen(db, id, committed.replied_at, committed.response_revision)).toBe(true)
+    expect(answerItem(db, id, 'Chat answer').ok).toBe(true)
+
+    const bridge = await reopen(db)
+    await pollTick()
+    expect(bridge.posts).toHaveLength(0)
+    const fold = recovery()!
+    expect(fold.textContent).toContain(SEND_UNCONFIRMED_QUESTION)
+    expect(fold.textContent).not.toContain('Not sent')
+    click(buttonLabelled('Retry', fold))
+    await settle()
+    const retried = JSON.parse(String(bridge.posts[0]!.init?.body)) as Record<string, unknown>
+    expect(retried['intent_action_id']).not.toBe(lost['intent_action_id'])
+    expect(getItem(db, id)).toMatchObject({ reply: text, reply_source: 'inbox' })
+    expect(recovery()).toBeNull()
+    await saved()
+    expect(stored()).toEqual({})
+  })
+
+  it('says a plan-row send still in flight at unload was not confirmed once its action moved', async () => {
+    db = freshDb()
+    const board = plan(db)
+    const rowId = board.rows[0]!.id
+    await bootApp(db, {
+      interceptFetch: async (input, init, next) => {
+        if (init?.method === 'POST' && String(input).includes(`/rows/${rowId}/annotate`)) {
+          await next()
+          return new Promise(() => {})
+        }
+        return next()
+      },
+    })
+    await draftAnswer(rowId, 'Approved for Thursday.')
+    click(sendButton(rowId))
+    await settle()
+    expect(getBoard(db, 'alpha', 'Launch plan')!.rows[0]!.annotation).toBe('Approved for Thursday.')
+    window.dispatchEvent(new Event('pagehide'))
+    moveAction(db)
+
+    await reopen(db)
+    await pollTick()
+    const fold = recovery()!
+    expect(fold.textContent).toContain(SEND_UNCONFIRMED_ACTION)
+    expect(fold.textContent).toContain('Approved for Thursday.')
+    expect(fold.textContent).not.toContain(ACTION_CHANGED)
   })
 
   it('keeps #272\'s set-aside reason only where the human set the ask aside', async () => {
@@ -532,6 +650,40 @@ describe('bounds', () => {
     expect(Object.keys(stored())).toEqual([`reply:${other}`])
   })
 
+  it('lets drafts stamped in the future by a clock set back be edited, kept and deleted', async () => {
+    db = freshDb()
+    const id = question(db)
+    const other = question(db, 'Second question')
+    await bootApp(db)
+    await draftAnswer(other, 'Other, before the clock moved.')
+    await draftAnswer(id, 'Before the clock moved.')
+    await saved()
+    vi.setSystemTime(Date.now() - 60 * 60_000)
+
+    await reopen(db)
+    await draftAnswer(id, 'After the clock moved back.')
+    await saved()
+    expect(storedTexts().sort()).toEqual(['After the clock moved back.', 'Other, before the clock moved.'])
+    for (const entry of Object.values(stored())) expect(entry.savedAt).toBeLessThanOrEqual(Date.now())
+    // The other draft was never edited here; the write above re-stamped it, and
+    // this window's delete of it still lands.
+    await draftAnswer(other, 'Other, before the clock moved.')
+    click(sendButton(other))
+    await settle()
+    expect(getItem(db, other)?.reply).toBe('Other, before the clock moved.')
+    await saved()
+    expect(storedTexts()).toEqual(['After the clock moved back.'])
+
+    await reopen(db)
+    await showInbox()
+    expect(answerInput(id)?.value).toBe('After the clock moved back.')
+    click(sendButton(id))
+    await settle()
+    expect(getItem(db, id)?.reply).toBe('After the clock moved back.')
+    await saved()
+    expect(stored()).toEqual({})
+  })
+
   it('keeps at most 100 entries, evicting the oldest', async () => {
     db = freshDb()
     const entries: Record<string, Stored> = {}
@@ -600,6 +752,30 @@ describe('two windows on one profile', () => {
     expect(storedTexts().sort()).toEqual(['The other window.', 'Theirs.'])
   })
 
+  it('writes its on-screen draft back as the page goes away when another window sent that draft', async () => {
+    db = freshDb()
+    const id = question(db)
+    await bootApp(db)
+    await draftAnswer(id, 'B: ship Thursday.')
+    await saved()
+    const mine = stored()[`reply:${id}`]!
+    // Window A saves its own answer later, so it wins; then A sends it, which
+    // deletes the stored copy, and the question is answered.
+    seed({ [`reply:${id}`]: { savedAt: mine.savedAt + 1, draft: { ...mine.draft, text: 'A: ship Tuesday.' } } })
+    seed({})
+    replyItem(db, id, 'A: ship Tuesday.', undefined, 'answer', { clientId: 'window-a', sequence: 1, actionId: 'a-send' })
+    await pollTick()
+    expect(answerInput(id)?.value, 'this window still shows its draft').toBe('B: ship Thursday.')
+    expect(stored(), 'routine saves leave the other window\'s delete alone').toEqual({})
+
+    window.dispatchEvent(new Event('pagehide'))
+    expect(storedTexts()).toEqual(['B: ship Thursday.'])
+    await reopen(db)
+    await pollTick()
+    expect(recovery()?.textContent).toContain(QUESTION_CHANGED)
+    expect(recovery()?.textContent).toContain('B: ship Thursday.')
+  })
+
   it('lets the later edit of the same draft win', async () => {
     db = freshDb()
     const id = question(db)
@@ -607,7 +783,7 @@ describe('two windows on one profile', () => {
     seed({
       [`reply:${id}`]: {
         savedAt: Date.now() - 5000,
-        draft: { type: 'reply', itemId: id, title: 'Release day?', text: 'Older, elsewhere.', context: '', responseRevision: 0, intent: null },
+        draft: { type: 'reply', itemId: id, title: 'Release day?', text: 'Older, elsewhere.', context: '', answer: UNANSWERED, intent: null },
       },
     })
     await draftAnswer(id, 'Newer, here.')
@@ -634,13 +810,46 @@ describe('two windows on one profile', () => {
   })
 })
 
+describe('a draft in a project the human closed', () => {
+  it.each(['question', 'plan row'] as const)('keeps a %s draft as an unsent response that does not pause the list', async (kind) => {
+    db = freshDb()
+    const BETA = { ...AGENT, project: 'beta' }
+    let id: string
+    if (kind === 'question') {
+      advanceClock()
+      id = insertItem(db, { ...BETA, kind: 'question', title: 'Beta question' })
+    } else {
+      upsertBoard(db, {
+        ...BETA,
+        title: 'Beta plan',
+        rows: [{ label: 'Approve beta', status: 'blocked', note: 'Choose.', next_step: 'Approve it.', action_owner: 'approval', impact: 'Ships.' }],
+      })
+      id = getBoard(db, 'beta', 'Beta plan')!.rows[0]!.id
+    }
+    await bootApp(db)
+    await draftAnswer(id, 'Beta draft.')
+    window.dispatchEvent(new Event('pagehide'))
+    closeProject(db, 'beta')
+
+    const bridge = await reopen(db)
+    await pollTick()
+    expect(bridge.posts).toHaveLength(0)
+    expect(recovery()?.textContent).toContain(PROJECT_CLOSED)
+    expect(recovery()?.textContent).toContain('Beta draft.')
+    const arrival = question(db, 'Arrived after the relaunch')
+    await pollTick()
+    expect(row(arrival), 'the queue keeps updating').not.toBeNull()
+    expect(document.getElementById('pauseHint')?.textContent).toBe('')
+  })
+})
+
 describe('a restored draft behaves like a typed one', () => {
   function restoredDrafts(d: Database.Database): { pinned: string; open: string } {
     const pinned = question(d, 'Pinned question')
     expect(pinItem(d, pinned, true)).toBe(true)
     const open = question(d, 'Open question')
     const draft = (itemId: string, text: string) => ({
-      type: 'reply', itemId, title: 'Q', text, context: '', responseRevision: getItem(d, itemId)!.response_revision, intent: null,
+      type: 'reply', itemId, title: 'Q', text, context: '', answer: UNANSWERED, intent: null,
     })
     seed({
       [`reply:${pinned}`]: { savedAt: Date.now() - 2000, draft: draft(pinned, 'Pinned draft.') },
@@ -676,11 +885,11 @@ describe('a restored draft behaves like a typed one', () => {
     seed({
       [`reply:${id}`]: {
         savedAt: Date.now(),
-        draft: { type: 'reply', itemId: id, title: 'Q', text: 'In place.', context: '', responseRevision: 0, intent: null },
+        draft: { type: 'reply', itemId: id, title: 'Q', text: 'In place.', context: '', answer: UNANSWERED, intent: null },
       },
       [`reply:${gone}`]: {
         savedAt: Date.now(),
-        draft: { type: 'reply', itemId: gone, title: 'Q', text: 'To recovery.', context: '', responseRevision: 0, intent: null },
+        draft: { type: 'reply', itemId: gone, title: 'Q', text: 'To recovery.', context: '', answer: UNANSWERED, intent: null },
       },
     })
     resolveItem(db, gone)

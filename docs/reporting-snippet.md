@@ -168,10 +168,12 @@ prose. Do this **proactively**, without being asked:
   a short `issue_rel` (parent and child counts, never titles). Agent Inbox never edits GitHub
   relationships: use `gh issue edit --parent` / `--add-sub-issue`.
 - **Step dependencies.** `rows[].waits_on` (or `board_row({ waits_on })`) lists the labels of
-  other rows in the same plan that a row waits on, at most 20. Omitting it keeps the list, `[]`
-  clears it, and `board_advance` or a move into `blocked` keeps it. An unknown label, a row naming
-  itself and a cycle are refused with the reason; a label whose row you later remove is kept and
-  draws nothing. It never makes a row `blocked`: a row that waits is `tracked` or `partial`.
+  other rows in the same plan that a row waits on: at most 20 entries as sent, and duplicates
+  collapse. Omitting it keeps the list, `[]` clears it, and `board_advance` or a move into
+  `blocked` keeps it. An unknown label, a row naming itself and a cycle are refused with the
+  reason; a label whose row you later remove is kept and draws nothing. It never makes a row
+  `blocked`: a row that only waits is `tracked` or `partial`, and `blocked` remains for a
+  separate human action.
 - **`board_row({ title, label, expected_revision, status?, ..., outcome? })`** — update one
   existing row; when acknowledging the human, move it out of `blocked` and record the result.
 - **`board_advance({ title, label, board_version, expected_revision, ...fresh action })`** — atomically archive

@@ -519,7 +519,8 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   write and every frozen v1.4.0 statement never name it, so `board_advance`, a reblock and an
   older server's writes keep it (`test/mixed-version.test.ts`). Five rules hold. (1) **Shape
   before anything is written** (`waitsOnLabels`): at most 20 raw entries, none empty, never
-  the row's own label; MCP's zod schema says the same. (2) **Meaning inside the writing
+  the row's own label. MCP's zod schema refuses the same sizes and empty labels at the call
+  site; only the store refuses a row naming itself. (2) **Meaning inside the writing
   `.immediate()` transaction, after its rows are written** (`checkWaitsOn`), so a refusal
   rolls the whole write back and a dependency committed while the write waited for the lock
   still counts. (3) **Only what the write adds is checked.** A label a row names for the
@@ -530,10 +531,17 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   returns. Never prune it: that would rewrite other rows' agent-owned fields and revisions.
   (4) **A write may not create a cycle**: every edge it adds or revives (a returning row
   brings back the labels naming it) is refused when its target already reaches its source,
-  and the error names the shortest such cycle in row order. A cycle already stored (only a
-  raw write can make one: this build refuses it and older builds write no `waits_on`) is not
-  an unrelated write's to fix. When no row of the write carries `waits_on`, nothing is
-  checked: a returning row without one can be waited on, never wait. (5) **Reads never
+  and the error names the shortest cycle through the first such edge in row order. **The
+  check is linear and must stay so**, because it runs holding the hub's write lock: strongly
+  connected components are computed once (`waitsOnComponents`, iterative Tarjan) and the
+  path search (`waitsOnPath`) runs only for the first added edge whose ends share one,
+  which is exactly the edge a search per edge would refuse, with the same message. A search
+  per edge held the lock for 5 s on a 1000-row plan, long enough for another process's
+  write to fail on `busy_timeout` (`test/store.test.ts` pins the time). A cycle already
+  stored (only a raw write can make one: this build refuses it and older builds write no
+  `waits_on`) is not an unrelated write's to fix. When no row of the write carries
+  `waits_on`, nothing is checked: a returning row without one can be waited on, never
+  wait. (5) **Reads never
   throw**: `parseWaitsOn` reads anything but a valid 1–20 label array as `null`, and an
   unreadable stored value counts as no stored labels for (3). `shape.ts` echoes it exactly
   as stored on titled `board_get` rows that have one (absent otherwise), so a read → re-send

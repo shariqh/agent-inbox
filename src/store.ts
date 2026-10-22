@@ -1509,6 +1509,7 @@ function planWaitsOn(db: Database.Database, boardId: string): PlanWaits {
 // adds or revives (a returning row brings back the labels naming it) may close a
 // cycle. A label stored earlier whose row is gone stays and is never re-checked,
 // so a row naming a removed one never refuses someone else's routine write.
+// Linear in the plan's rows and edges: this runs holding the hub's write lock.
 function checkWaitsOn(db: Database.Database, boardId: string, before: PlanWaits, written: Map<string, string[]>): void {
   const after = planWaitsOn(db, boardId)
   for (const [label, labels] of written) {
@@ -1519,14 +1520,67 @@ function checkWaitsOn(db: Database.Database, boardId: string, before: PlanWaits,
       }
     }
   }
+  let components: Map<string, number> | undefined
   for (const [from, labels] of after) {
     for (const to of labels) {
       const resolvedBefore = before.has(to) && Boolean(before.get(from)?.includes(to))
       if (!after.has(to) || resolvedBefore) continue
+      // An edge lies on a cycle exactly when its ends share a component, so the
+      // path search runs once, for the first such edge: the one the error names.
+      components ??= waitsOnComponents(after)
+      if (components.get(from) !== components.get(to)) continue
       const path = waitsOnPath(after, to, from)
       if (path) throw new Error(`waits_on would create a cycle: ${[from, ...path].join(' → ')}`)
     }
   }
+}
+
+// Strongly connected components over rows that exist (Tarjan), iterative so a
+// long chain cannot overflow the stack. Rows sharing a number reach each other.
+function waitsOnComponents(plan: PlanWaits): Map<string, number> {
+  const index = new Map<string, number>()
+  const low = new Map<string, number>()
+  const component = new Map<string, number>()
+  const stack: string[] = []
+  let visited = 0
+  let found = 0
+  const visit = (row: string): void => {
+    index.set(row, visited)
+    low.set(row, visited++)
+    stack.push(row)
+  }
+  for (const root of plan.keys()) {
+    if (index.has(root)) continue
+    visit(root)
+    const frames = [{ row: root, edge: 0 }]
+    while (frames.length) {
+      const frame = frames[frames.length - 1]!
+      const targets = plan.get(frame.row)!
+      if (frame.edge < targets.length) {
+        const to = targets[frame.edge++]!
+        if (!plan.has(to)) continue
+        if (!index.has(to)) {
+          visit(to)
+          frames.push({ row: to, edge: 0 })
+        } else if (!component.has(to)) {
+          // still on the stack: part of the component being built
+          low.set(frame.row, Math.min(low.get(frame.row)!, index.get(to)!))
+        }
+        continue
+      }
+      frames.pop()
+      const parent = frames[frames.length - 1]
+      if (parent) low.set(parent.row, Math.min(low.get(parent.row)!, low.get(frame.row)!))
+      if (low.get(frame.row) !== index.get(frame.row)) continue
+      let member: string
+      do {
+        member = stack.pop()!
+        component.set(member, found)
+      } while (member !== frame.row)
+      found++
+    }
+  }
+  return component
 }
 
 // The shortest chain of waits_on from `start` to `goal` over rows that exist,
@@ -1539,8 +1593,8 @@ function waitsOnPath(plan: PlanWaits, start: string, goal: string): string[] | n
     const at = queue[i]!
     if (at === goal) {
       const path = [at]
-      for (let step = previous.get(at); step !== undefined; step = previous.get(step)) path.unshift(step)
-      return path
+      for (let step = previous.get(at); step !== undefined; step = previous.get(step)) path.push(step)
+      return path.reverse()
     }
     for (const next of plan.get(at) ?? []) {
       if (!plan.has(next) || seen.has(next)) continue

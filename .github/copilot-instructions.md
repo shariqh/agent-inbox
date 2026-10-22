@@ -163,9 +163,11 @@ Run the build before `npm run electron`; the development shell starts the built
   sorted as JSON. Omission keeps, `[]` clears, `board_advance` and a reblock keep it.
   `store.ts` checks it inside the writing `.immediate()` transaction, and only what the
   write adds: a newly named label must be a row of the plan, no row names itself, at most
-  20, and no added or revived edge may close a cycle. A label whose row was removed stays,
-  never re-checked; never prune it. Only titled `board_get` echoes it, and it never makes a
-  row `blocked` or enters attention.
+  20, and no added or revived edge may close a cycle. That cycle check holds the write
+  lock, so it stays linear: components once, then one path search for the edge the error
+  names; never a search per edge. A label whose row was removed stays, never re-checked;
+  never prune it. Only titled `board_get` echoes it, and it never makes a row `blocked` or
+  enters attention.
 - Breadcrumbs and child progress (#103 PR3) are ambient. `/api/issues` is the
   poll's eighth read, through its own snapshot validator and a links-style
   fallback: a 404, network error or refused body means no graph and today's plain

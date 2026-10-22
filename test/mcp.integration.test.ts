@@ -1761,9 +1761,15 @@ describe('step dependencies: waits_on (#103 slice 2 PR C)', () => {
     board = await call(c, 'board_get', { title: 'Release' })
     expect(rowOf(board, 'Publish')).not.toHaveProperty('waits_on')
     expect(rowOf(board, 'Publish').revision).toBe(publish.revision + 1)
-    await call(c, 'board_row', { title: 'Release', board_version: board.revision, label: 'Publish', expected_revision: publish.revision + 1, waits_on: ['Sign'] })
+    await call(c, 'board_row', { title: 'Release', board_version: board.revision, label: 'Publish', expected_revision: publish.revision + 1, waits_on: ['Sign', 'Build'] })
     board = await call(c, 'board_get', { title: 'Release' })
-    expect(rowOf(board, 'Publish')).toMatchObject({ waits_on: ['Sign'], revision: publish.revision + 2 })
+    expect(rowOf(board, 'Publish')).toMatchObject({ waits_on: ['Build', 'Sign'], revision: publish.revision + 2 })
+
+    // a board_row re-send of the same labels, reordered and repeated, changes nothing
+    await call(c, 'board_row', { title: 'Release', board_version: board.revision, label: 'Publish', expected_revision: publish.revision + 2, waits_on: ['Build', 'Sign', 'Build'] })
+    const same = await call(c, 'board_get', { title: 'Release' })
+    expect(same.revision).toBe(board.revision)
+    expect(rowOf(same, 'Publish')).toMatchObject({ waits_on: ['Build', 'Sign'], revision: publish.revision + 2 })
     await c.close()
   }, 20000)
 
@@ -1847,10 +1853,13 @@ describe('step dependencies: waits_on (#103 slice 2 PR C)', () => {
     for (const field of [schemaOf('board_upsert').properties!['rows']!.items!.properties!['waits_on']!, schemaOf('board_row').properties!['waits_on']!]) {
       expect(field).toMatchObject({ type: 'array', maxItems: 20, items: { type: 'string', minLength: 1 } })
       expect(field.description).toMatch(/labels of other rows in this plan/i)
+      expect(field.description).toMatch(/at most 20 entries as sent; duplicates collapse/)
       expect(field.description).toMatch(/Omitted keeps.*\[\] clears/)
       expect(field.description).toMatch(/board_advance and a move into blocked keep it/)
       expect(field.description).toMatch(/never makes a row blocked/)
       expect(field.description).toMatch(/never asks the human/)
+      // a waiting row may still be blocked on a separate human action (§3.3)
+      expect(field.description).toMatch(/a row that only waits on another step is tracked or partial; blocked remains for a separate human action/)
     }
     for (const name of ['board_upsert', 'board_row']) expect(tools.get(name)!.description, name).toMatch(/waits_on/)
     expect(schemaOf('board_advance').properties).not.toHaveProperty('waits_on')

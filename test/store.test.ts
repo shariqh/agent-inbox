@@ -3479,6 +3479,39 @@ describe('step dependencies: waits_on (#103 slice 2 PR C)', () => {
     expect(row('Publish')).toMatchObject({ waits_on: null, revision: 4 })
   })
 
+  it('a board_row re-send of the same labels, reordered or repeated, changes nothing', () => {
+    upsertBoard(db, { ...base, rows: steps({ Publish: ['Build', 'Sign'] }) })
+    const before = { board: plan().revision, row: row('Publish').revision, at: row('Publish').updated_at, build: row('Build').revision }
+
+    tick()
+    updateBoardRow(db, { ...base, label: 'Publish', waits_on: ['Sign', 'Build', 'Sign'] })
+    updateBoardRow(db, { ...base, label: 'Publish', status: 'tracked', note: '', waits_on: ['Build', 'Sign', 'Build'] })
+    updateBoardRow(db, { ...base, label: 'Build', waits_on: [] })
+    expect(plan().revision).toBe(before.board)
+    expect(row('Publish')).toMatchObject({ waits_on: ['Build', 'Sign'], revision: before.row, updated_at: before.at })
+    expect(row('Build')).toMatchObject({ waits_on: null, revision: before.build })
+  })
+
+  // Review of #265: the cycle search ran once per added edge, so one large write
+  // held the hub's write lock for seconds (this plan took 5 s+), long enough for
+  // another process's write to give up on busy_timeout.
+  it('checks a 1000-row plan, each row naming its 20 previous rows, in well under the lock budget', () => {
+    const label = (i: number) => `Step ${i}`
+    const rows = Array.from({ length: 1000 }, (_, i) => ({
+      label: label(i), status: 'tracked' as const,
+      waits_on: Array.from({ length: Math.min(20, i) }, (_, k) => label(i - 1 - k)),
+    }))
+    const started = performance.now()
+    upsertBoard(db, { ...base, rows })
+    // every row reaches the first one, so it cannot wait on the last
+    expect(() => updateBoardRow(db, { ...base, label: label(0), waits_on: [label(999)] }))
+      .toThrow(/^waits_on would create a cycle: Step 0 → Step 999 → .* → Step 0$/)
+    updateBoardRow(db, { ...base, label: label(999), waits_on: [label(500), label(0)] })
+    const elapsed = performance.now() - started
+    expect(row(label(999)).waits_on).toEqual([label(0), label(500)])
+    expect(elapsed, `${Math.round(elapsed)} ms`).toBeLessThan(2000)
+  }, 30_000)
+
   it('refuses an unknown label, the row itself, more than 20 labels and an empty label, writing nothing', () => {
     upsertBoard(db, { ...base, rows: steps({ Publish: ['Sign'] }) })
     const stored = JSON.stringify(plan())

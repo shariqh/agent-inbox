@@ -176,9 +176,11 @@ their revisions). A revived reference is re-checked for cycles by the write that
 As built (PR C), "written in this call" means **named for the first time**: a label already
 stored on that row is not re-checked, so re-sending a dangling label exactly as `board_get`
 echoed it is accepted, while a newly named missing label is refused. The cycle rule is applied
-the same way: a write is refused when an edge it adds or revives lies on a cycle. Only a raw
-write can store a cycle (a v1.5 write refuses one and v1.4 writes no `waits_on`, see §11), and
-an unrelated write is not refused for it.
+the same way: a write is refused when an edge it adds or revives lies on a cycle, and the error
+names the shortest cycle through the first such edge in row order. Strongly connected
+components are computed once and the path search runs only for that edge, so the check stays
+linear while it holds the write lock. Only a raw write can store a cycle (a v1.5 write refuses
+one and v1.4 writes no `waits_on`, see §11), and an unrelated write is not refused for it.
 
 ### 4.3 Storage
 
@@ -698,5 +700,5 @@ Run on 2026-10-21 with `gh` 2.102.0, read-only:
 
 - **Revision 1 (2026-10-21):** first draft for slice 2.
 - **PR C notes (2026-10-21):** §4.2 now says how "written in this call" and the cycle rule
-  were built (only what a write adds is checked), and §11 notes that a v1.4 re-add cannot
-  close a cycle.
+  were built (only what a write adds is checked, in linear time under the write lock), and §11
+  notes that a v1.4 re-add cannot close a cycle.

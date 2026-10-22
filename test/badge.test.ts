@@ -123,8 +123,9 @@ describe('the Electron dock badge shares the §7 attention predicate (no duplica
   // body read what is VISIBLE.
   it('maintains its seen-set from the UNSUPPRESSED set, so reopening announces nothing old', () => {
     const watch = main.slice(main.indexOf('function startAttentionWatch'))
-    expect(watch).toMatch(/known\s*=\s*new Set\(everything\.map/)
     expect(watch).toMatch(/const everything = attentionEntries\(items, boards, Date\.now\(\), liveSessions\)/)
+    // #247: the pinned asks join it, read without the closed set for the same reason.
+    expect(watch).toMatch(/known\s*=\s*knownNotificationIds\(everything, laterEntries\(items, boards, Date\.now\(\)\)\)/)
   })
 
   it('never swallows a failed module import silently', () => {

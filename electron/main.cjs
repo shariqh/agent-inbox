@@ -42,6 +42,7 @@ const {
   createResponseWatch,
   formatResponseReminder,
   freshAttentionNotifications,
+  knownNotificationIds,
   refreshNotificationTarget,
   responseForNotificationAction,
   runWakeAdapter,
@@ -560,7 +561,7 @@ function startAttentionWatch(win) {
     } catch {
       return // the .catch above owns the (loud) reporting
     }
-    const { attentionEntries, focusHashFor, optionOrder } = mods
+    const { attentionEntries, laterEntries, focusHashFor, optionOrder } = mods
     try {
       // The lean item projection (issue #156): the same Grouped shape without the
       // closed history this watcher never reads, which would otherwise be built,
@@ -615,10 +616,11 @@ function startAttentionWatch(win) {
       // reopening would re-announce every one of them as new — an OS notification
       // for items the human closed days ago. Reopen is the advertised happy path,
       // so that would fire routinely. `known` tracks what EXISTS; the badge and
-      // the notification body track what is VISIBLE.
+      // the notification body track what is VISIBLE. It also keeps the asks the
+      // human pinned for later (#247), so bringing one back announces nothing.
       const everything = attentionEntries(items, boards, Date.now(), liveSessions)
       const fresh = freshAttentionNotifications(known, entries)
-      known = new Set(everything.map(attentionNotification).map((e) => e.id))
+      known = knownNotificationIds(everything, laterEntries(items, boards, Date.now()))
       // Per-item notifications stay (owner's call) — informational only.
       if (fresh.length && Notification.isSupported()) {
         console.log(`[agent-inbox] notifying: ${fresh.length} new (${fresh[0].text})`)

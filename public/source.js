@@ -314,14 +314,32 @@ export function fileLinkHtml(path, label, title) {
 }
 
 const STRIP_VISIBLE = 6
+// Static markup, no supplied text: the two secondary file actions (part 2).
+const REVEAL_ICON = '<svg class="link-action-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">' +
+  '<circle cx="7" cy="7" r="4.25"/><path d="M10.25 10.25 13.5 13.5"/></svg>'
+const COPY_ICON = '<svg class="link-action-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">' +
+  '<rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M3.5 10.5v-6a1 1 0 0 1 1-1h6"/></svg>'
 
-function linkChipHtml(link) {
+// In the desktop app (`actions`), a file chip also offers Reveal and Copy path:
+// two buttons carrying the same escaped path, never an href.
+function fileChipHtml(link, inner, actions) {
+  const path = esc(link.path)
+  const chip = `<button type="button" class="src-chip tone-link" data-link-kind="file" data-link-path="${path}"` +
+    ` title="${esc(link.title || link.path)}">${inner}</button>`
+  if (!actions || typeof actions.reveal !== 'string') return chip
+  return `<span class="link-file" role="group" aria-label="${esc(`File ${link.label}`)}">${chip}` +
+    `<button type="button" class="link-file-action" data-link-action="reveal" data-link-path="${path}"` +
+    ` title="${esc(actions.reveal)}" aria-label="${esc(`${actions.reveal}: ${link.label}`)}">${REVEAL_ICON}</button>` +
+    `<button type="button" class="link-file-action" data-link-action="copy" data-link-path="${path}"` +
+    ` title="Copy path" aria-label="${esc(`Copy path: ${link.label}`)}">${COPY_ICON}</button></span>`
+}
+
+function linkChipHtml(link, actions) {
   if (!link || !Object.hasOwn(LINK_KINDS, link.kind)) return ''
   const inner = `<span class="link-kind">${esc(LINK_KINDS[link.kind])}</span> <span class="link-label">${esc(link.label)}</span>`
   if (link.kind === 'file') {
     if (typeof link.path !== 'string' || !link.path) return ''
-    return `<button type="button" class="src-chip tone-link" data-link-kind="file" data-link-path="${esc(link.path)}"` +
-      ` title="${esc(link.title || link.path)}">${inner}</button>`
+    return fileChipHtml(link, inner, actions)
   }
   if (!safeHttpUrl(link.url)) return ''
   return chipHtml(link.url, 'link', inner, link.title || '', true, `data-link-kind="${esc(link.kind)}"`)
@@ -331,8 +349,8 @@ function linkChipHtml(link) {
 // link the card's text shows, the item's own PR and issue first, each with
 // its kind and a short label; past the first few, a "+N more" disclosure whose
 // open state the caller keeps by `key` across rebuilds.
-export function linkStripHtml(links, { key = '', open = false } = {}) {
-  const chips = (Array.isArray(links) ? links : []).map(linkChipHtml).filter(Boolean)
+export function linkStripHtml(links, { key = '', open = false, actions = null } = {}) {
+  const chips = (Array.isArray(links) ? links : []).map((link) => linkChipHtml(link, actions)).filter(Boolean)
   if (!chips.length) return ''
   const rest = chips.slice(STRIP_VISIBLE)
   const more = rest.length

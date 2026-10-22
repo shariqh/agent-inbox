@@ -17,7 +17,7 @@
 //      before and kill that child on quit — only because we own it.
 //   4. Open a BrowserWindow on the viewer URL once the server responds.
 
-const { app, BrowserWindow, ipcMain, Menu, Notification, nativeTheme, shell } = require('electron')
+const { app, BrowserWindow, dialog, ipcMain, Menu, Notification, nativeTheme, shell } = require('electron')
 const { spawn } = require('node:child_process')
 const { randomBytes } = require('node:crypto')
 const { existsSync } = require('node:fs')
@@ -27,6 +27,7 @@ const { pathToFileURL } = require('node:url')
 const { classifyReuse, watchUpstream } = require('./reuse.cjs')
 const { loadViewer, reloadViewer } = require('./viewer-navigation.cjs')
 const { isTrustedLinkSender, isViewerUrl, openLinkRequest, openWebLink } = require('./link-open.cjs')
+const { createLinkPreferences, createLinkSettings } = require('./link-preferences.cjs')
 const { canRunSetup, createInstallBinding, createInstallGate, installerRepoRoot, runAgentInstall, runtimeKey, selectRuntimePayload } = require('./setup-runner.cjs')
 const { MANUAL_RELEASES_URL, createUpdateController } = require('./update-controller.cjs')
 const { createUpdateDownloader } = require('./update-download.cjs')
@@ -351,11 +352,49 @@ ipcMain.handle('agent-inbox:install', async (event, target) => {
 // frame on the viewer origin may ask (see isTrustedLinkSender), with exactly one
 // request; link-open.cjs re-validates it and opens a web link, opens a file
 // with its default app, or only reveals anything that could run code.
-ipcMain.handle('agent-inbox:open-link', (event, request, ...args) => {
-  const trusted = isTrustedLinkSender({ sender: event.sender, senderFrame: event.senderFrame, window: linkWindow, viewerUrl: URL_BASE })
-  if (args.length !== 0 || !trusted) return { ok: false, reason: 'unavailable' }
-  return openLinkRequest(request, { shell, homeDir: app.getPath('home') })
+const linkSender = (event) => isTrustedLinkSender({ sender: event.sender, senderFrame: event.senderFrame, window: linkWindow, viewerUrl: URL_BASE })
+// Settings → Links (part 2): main's own file, read on each open, so a change
+// applies to the next click. An unreadable file means the system defaults.
+let linkPreferences = null
+const linkPrefs = () => (linkPreferences ??= createLinkPreferences({ app }))
+const linkRules = () => linkPrefs().read().catch(() => null)
+const linkOpening = { platform: process.platform, spawnImpl: spawn }
+
+ipcMain.handle('agent-inbox:open-link', async (event, request, ...args) => {
+  if (args.length !== 0 || !linkSender(event)) return { ok: false, reason: 'unavailable' }
+  return openLinkRequest(request, { shell, homeDir: app.getPath('home'), rules: await linkRules(), ...linkOpening })
 })
+
+// The renderer names a rule and a handler, never an app: an app comes only from
+// this native picker, limited to .app bundles, and is checked again before it
+// is saved (link-preferences.cjs).
+let linkSettings = null
+const linkSettingsFor = () => (linkSettings ??= createLinkSettings({
+  preferences: linkPrefs(),
+  platform: process.platform,
+  chooseApp: async () => {
+    const options = {
+      title: 'Choose an app', buttonLabel: 'Choose', defaultPath: '/Applications',
+      properties: ['openFile'], filters: [{ name: 'Applications', extensions: ['app'] }],
+    }
+    const result = linkWindow && !linkWindow.isDestroyed()
+      ? await dialog.showOpenDialog(linkWindow, options)
+      : await dialog.showOpenDialog(options)
+    return result.canceled ? null : result.filePaths
+  },
+}))
+
+function handleLinkSettings(channel, arity, call) {
+  ipcMain.handle(channel, (event, ...args) => {
+    if (args.length !== arity || !linkSender(event)) return { available: false, rules: [] }
+    return call(linkSettingsFor(), ...args)
+  })
+}
+handleLinkSettings('agent-inbox:link-settings', 0, (settings) => settings.view())
+handleLinkSettings('agent-inbox:link-settings-set', 2, (settings, ruleId, handler) => settings.setHandler(ruleId, handler))
+handleLinkSettings('agent-inbox:link-settings-choose-app', 1, (settings, ruleId) => settings.chooseApp(ruleId))
+handleLinkSettings('agent-inbox:link-settings-add-type', 1, (settings, extension) => settings.addType(extension))
+handleLinkSettings('agent-inbox:link-settings-remove-type', 1, (settings, ruleId) => settings.removeType(ruleId))
 
 ipcMain.handle('agent-inbox:set-theme-preference', (event, preference) => {
   const senderUrl = event.senderFrame?.url ?? ''
@@ -737,7 +776,7 @@ function createWindow() {
   // any scheme, and the OS would hand file:, custom or app schemes to whatever
   // claims them.
   win.webContents.setWindowOpenHandler(({ url }) => {
-    openWebLink(url, shell)
+    openWebLink(url, shell, { readRules: linkRules, ...linkOpening })
     return { action: 'deny' }
   })
   // In-window navigation away from the local viewer goes to the system browser
@@ -745,7 +784,7 @@ function createWindow() {
   win.webContents.on('will-navigate', (e, url) => {
     if (isViewerUrl(url, URL_BASE)) return
     e.preventDefault()
-    openWebLink(url, shell)
+    openWebLink(url, shell, { readRules: linkRules, ...linkOpening })
   })
   win.webContents.on('did-finish-load', async () => {
     if (!win.isDestroyed() && !win.isVisible()) {

@@ -20,14 +20,29 @@
 //   The check is point-in-time: someone who can already write to the folder
 //   can still swap the file between the check and the open.
 //
-// Pure apart from the filesystem reads and the injected shell, so every rule
-// is testable without Electron (test/link-open.test.ts).
+// Settings → Links (part 2, macOS only) can then choose how an openable file or
+// a web link opens: an app the human picked in main's own native picker
+// (`/usr/bin/open -a <app> -- <target>`), Quick Look (`/usr/bin/qlmanage -p`)
+// or Reveal. The safety policy above always runs first, so a rule never opens
+// anything it would only reveal. Launches use argv only: no shell, stdio
+// ignored.
+//
+// Pure apart from the filesystem reads and the injected shell and spawn, so
+// every rule is testable without Electron (test/link-policy.test.ts).
 const fs = require('node:fs')
 const path = require('node:path')
 
 const MAX_URL_LENGTH = 8192
 const MAX_PATH_LENGTH = 4096
 const CONTROL_RE = /[\u0000-\u001f\u007f]/
+const OPEN_COMMAND = '/usr/bin/open'
+const QUICK_LOOK_COMMAND = '/usr/bin/qlmanage'
+// `open` returns once Launch Services has the request; a slower answer counts
+// as started rather than holding the click.
+const OPEN_WAIT_MS = 10_000
+const MARKDOWN_EXTENSIONS = new Set(['md', 'markdown'])
+const OPENED = Object.freeze({ ok: true, action: 'opened' })
+const FAILED = Object.freeze({ ok: false, reason: 'failed' })
 
 // Lowercased, without the dot. Never opened, whatever app claims them: they
 // run code, install something, or open something else in their place.
@@ -79,13 +94,78 @@ function isViewerUrl(value, viewerUrl) {
   }
 }
 
+// Starts `command` with `args`, never through a shell, output ignored, and
+// detached so a long-lived viewer (Quick Look) outlives nothing of ours.
+// Resolves whether it started (and, with waitForExit, whether it exited 0).
+function launch(spawnImpl, command, args, { waitForExit }) {
+  return new Promise((resolve) => {
+    let child
+    try {
+      child = spawnImpl(command, args, { stdio: 'ignore', shell: false, detached: true, windowsHide: true })
+    } catch {
+      resolve(false)
+      return
+    }
+    let settled = false
+    let timer = null
+    const finish = (ok) => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      resolve(ok)
+    }
+    child.once('error', () => finish(false))
+    if (waitForExit) {
+      timer = setTimeout(() => finish(true), OPEN_WAIT_MS)
+      child.once('exit', (code) => finish(code === 0))
+    } else {
+      child.once('spawn', () => finish(true))
+    }
+    if (typeof child.unref === 'function') child.unref()
+  })
+}
+
+// An app a rule names must still be an app bundle when it is used.
+async function usableApp(app, fsp) {
+  if (typeof app !== 'string' || !path.isAbsolute(app) || !/\.app$/i.test(app)) return false
+  try {
+    return (await fsp.stat(app)).isDirectory()
+  } catch {
+    return false
+  }
+}
+
+const customOpening = ({ platform, spawnImpl }) => platform === 'darwin' && typeof spawnImpl === 'function'
+
+// The rule Settings → Links holds for a file, by its extension, or null.
+function fileRule(rules, filePath) {
+  if (!rules || typeof rules !== 'object') return null
+  const ext = path.extname(filePath).slice(1).toLowerCase()
+  if (!ext) return null
+  if (MARKDOWN_EXTENSIONS.has(ext)) return rules.markdown ?? null
+  return (Array.isArray(rules.types) ? rules.types : []).find((type) => type && type.extension === ext) ?? null
+}
+
+async function openWebHref(href, { shell, rules, platform, spawnImpl, fsp = fs.promises }) {
+  const web = customOpening({ platform, spawnImpl }) && rules ? rules.web : null
+  if (web && web.handler === 'app') {
+    if (!(await usableApp(web.app, fsp))) return { ok: false, reason: 'app-missing' }
+    return (await launch(spawnImpl, OPEN_COMMAND, ['-a', web.app, '--', href], { waitForExit: true })) ? OPENED : FAILED
+  }
+  await shell.openExternal(href)
+  return OPENED
+}
+
 // The one way main opens a web URL, for the preload method and the window's
 // own open and navigate paths alike. Returns whether it asked the OS to.
-function openWebLink(value, shell) {
+// `options` (part 2) carries the Settings → Links rules, read lazily.
+function openWebLink(value, shell, options = {}) {
   const href = externalWebUrl(value)
   if (!href) return false
   Promise.resolve()
-    .then(() => shell.openExternal(href))
+    .then(() => (typeof options.readRules === 'function' ? options.readRules() : null))
+    .catch(() => null)
+    .then((rules) => openWebHref(href, { ...options, shell, rules }))
     .catch(() => {})
   return true
 }
@@ -151,16 +231,16 @@ function linkRequest(value) {
 }
 
 // Never rejects: the renderer gets { ok, action?, reason? } and says what
-// happened.
-async function openLinkRequest(raw, { shell, homeDir, fsp } = {}) {
+// happened. `rules`, `platform` and `spawnImpl` (part 2) apply Settings →
+// Links on macOS, and only to what the safety policy lets open.
+async function openLinkRequest(raw, { shell, homeDir, fsp, rules = null, platform = null, spawnImpl = null } = {}) {
   const request = linkRequest(raw)
   if (!request) return { ok: false, reason: 'invalid' }
   try {
     if (request.kind === 'web') {
       const href = externalWebUrl(request.url)
       if (!href) return { ok: false, reason: 'invalid' }
-      await shell.openExternal(href)
-      return { ok: true, action: 'opened' }
+      return await openWebHref(href, { shell, rules, platform, spawnImpl, fsp })
     }
     const plan = await fileOpenPlan(request.path, { homeDir, fsp })
     if (!plan.ok) return { ok: false, reason: plan.reason }
@@ -168,10 +248,22 @@ async function openLinkRequest(raw, { shell, homeDir, fsp } = {}) {
       shell.showItemInFolder(plan.path)
       return { ok: true, action: 'revealed', reason: request.reveal ? 'requested' : plan.reason }
     }
+    const rule = customOpening({ platform, spawnImpl }) ? fileRule(rules, plan.path) : null
+    if (rule && rule.handler === 'reveal') {
+      shell.showItemInFolder(plan.path)
+      return { ok: true, action: 'revealed', reason: 'rule' }
+    }
+    if (rule && rule.handler === 'quicklook') {
+      return (await launch(spawnImpl, QUICK_LOOK_COMMAND, ['-p', plan.path], { waitForExit: false })) ? OPENED : FAILED
+    }
+    if (rule && rule.handler === 'app') {
+      if (!(await usableApp(rule.app, fsp ?? fs.promises))) return { ok: false, reason: 'app-missing' }
+      return (await launch(spawnImpl, OPEN_COMMAND, ['-a', rule.app, '--', plan.path], { waitForExit: true })) ? OPENED : FAILED
+    }
     const error = await shell.openPath(plan.path)
-    return error ? { ok: false, reason: 'failed' } : { ok: true, action: 'opened' }
+    return error ? FAILED : OPENED
   } catch {
-    return { ok: false, reason: 'failed' }
+    return FAILED
   }
 }
 

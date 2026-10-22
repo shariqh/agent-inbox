@@ -109,7 +109,11 @@ export interface StripLink {
   url?: string
   path?: string
 }
-export function linkStripHtml(links: StripLink[] | null | undefined, opts?: { key?: string; open?: boolean }): string
+export function linkStripHtml(
+  links: StripLink[] | null | undefined,
+  /** `actions` (part 2): give each file chip Reveal and Copy path, naming Reveal as `actions.reveal` */
+  opts?: { key?: string; open?: boolean; actions?: { reveal: string } | null },
+): string
 export function issueRef(entity: LinkedEntity | null, link: CachedLink | null, row?: IssueViewRow | { id: string } | null): IssueRef | null
 export const PREVIEW_TTL_MS: number
 export function previewRef(link: CachedLink | null | undefined, nowMs: number): PreviewRef | null

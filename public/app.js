@@ -32,7 +32,8 @@ import { captureSelection, restoreSelection } from '/selection.js'
 import { createCopyOnSelect } from '/copy-on-select.js'
 import { renderStructuredText } from '/structured-text.js'
 import { cardLinks } from '/link-strip.js'
-import { initLinkOpening } from '/link-open.js'
+import { initLinkOpening, linkFileActions } from '/link-open.js'
+import { renderLinkSettings } from '/link-settings.js'
 import { boardRowsView, boardRowLine, progressLabel, hiddenDoneCount, lingeringBoards } from '/boards.js'
 import { titleWithBadge, focusHashFor, parseFocusHash } from '/badge.js'
 import { layoutMode, railLabel, NARROW_MAX, PROJECT_DISCLOSURE_MAX } from '/layout.js'
@@ -2937,7 +2938,7 @@ function textContext(identity) {
 // text shows; '' when there is nothing beyond the PR and issue chips above it.
 function cardLinksHtml(entity, identity) {
   const key = `links:${entity.id}`
-  return linkStripHtml(cardLinks(entity, identity, linkIndex), { key, open: openContexts.has(key) })
+  return linkStripHtml(cardLinks(entity, identity, linkIndex), { key, open: openContexts.has(key), actions: linkFileActions() })
 }
 
 function cardOriginHtml(entity, identity, { showProject = true } = {}) {
@@ -8306,6 +8307,7 @@ async function renderSetup() {
   renderLaterSettings(host)
   renderPlanSettings(host)
   renderCopySettings(host)
+  renderLinkSettings(host)
   try {
     const s = await (await fetch('/api/setup')).json()
     const block = (title, text, hint) => {

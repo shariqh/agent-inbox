@@ -57,3 +57,18 @@ export function createUpdateTrustState(options:
       fsImpl?: UpdatePreferencesFs
     }
 ): UpdateTrustStateStore
+
+/** One userData JSON file behind a cross-process lock, written by temp file and rename (#300 reuses it). */
+export interface LockedFile {
+  readBytes(): Promise<string | Buffer | null>
+  atomicWrite(value: unknown): Promise<void>
+  mutate<T>(operation: () => Promise<T>): Promise<T>
+  settled(): Promise<unknown>
+}
+
+export function createLockedFile(filePath: string, fsImpl: UpdatePreferencesFs): LockedFile
+
+export function resolveFilePath(
+  options: { filePath?: string; app?: { getPath(name: 'userData'): string }; filename?: string },
+  defaultFilename: string,
+): string

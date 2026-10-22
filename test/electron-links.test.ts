@@ -8,6 +8,7 @@ function read(relPath: string): string {
 }
 
 type LinksBridge = { open(...args: unknown[]): Promise<unknown> }
+type SettingsBridge = Record<'get' | 'setHandler' | 'chooseApp' | 'addType' | 'removeType', (...args: unknown[]) => Promise<unknown>>
 
 // Runs the real preload against a fake `electron`, so its checks are exercised
 // rather than pinned as text.
@@ -26,7 +27,7 @@ function loadPreload(answer: (channel: string, ...args: unknown[]) => unknown) {
     if (id !== 'electron') throw new Error(`unexpected require ${id}`)
     return electron
   }, { argv: [] })
-  return { links: exposed.agentInboxLinks as LinksBridge, invoke }
+  return { links: exposed.agentInboxLinks as LinksBridge, settings: exposed.agentInboxLinkSettings as SettingsBridge, invoke }
 }
 
 describe('the link bridge (issue #300)', () => {
@@ -78,10 +79,11 @@ describe('main opens links only through electron/link-open.cjs (issue #300)', ()
 
   it('registers one link channel behind the viewer-window sender check', () => {
     expect([...main.matchAll(/ipcMain\.handle\('(agent-inbox:open-link)'/g)]).toHaveLength(1)
-    const handler = main.slice(main.indexOf("ipcMain.handle('agent-inbox:open-link'"), main.indexOf("ipcMain.handle('agent-inbox:set-theme-preference'"))
-    expect(handler).toContain('isTrustedLinkSender({ sender: event.sender, senderFrame: event.senderFrame, window: linkWindow, viewerUrl: URL_BASE })')
-    expect(handler).toContain("if (args.length !== 0 || !trusted) return { ok: false, reason: 'unavailable' }")
-    expect(handler).toContain("return openLinkRequest(request, { shell, homeDir: app.getPath('home') })")
+    expect(main).toContain('const linkSender = (event) => isTrustedLinkSender({ sender: event.sender, senderFrame: event.senderFrame, window: linkWindow, viewerUrl: URL_BASE })')
+    const handler = main.slice(main.indexOf("ipcMain.handle('agent-inbox:open-link'"), main.indexOf('let linkSettings = null'))
+    expect(handler).toContain("if (args.length !== 0 || !linkSender(event)) return { ok: false, reason: 'unavailable' }")
+    expect(handler).toContain("return openLinkRequest(request, { shell, homeDir: app.getPath('home'), rules: await linkRules(), ...linkOpening })")
+    expect(main).toContain('const linkOpening = { platform: process.platform, spawnImpl: spawn }')
     expect(main).toContain('  linkWindow = win\n')
     expect(main).toContain('    if (linkWindow === win) linkWindow = null\n')
   })
@@ -90,12 +92,78 @@ describe('main opens links only through electron/link-open.cjs (issue #300)', ()
     // before #300 both handed ANY url to shell.openExternal
     expect(main).not.toContain('shell.openExternal(url)')
     expect([...main.matchAll(/shell\.openExternal\(([^)]*)\)/g)].map((m) => m[1])).toEqual(['releaseUrl'])
-    expect(main).toMatch(/setWindowOpenHandler\(\(\{ url \}\) => \{\s*openWebLink\(url, shell\)\s*return \{ action: 'deny' \}/)
-    expect(main).toMatch(/'will-navigate', \(e, url\) => \{\s*if \(isViewerUrl\(url, URL_BASE\)\) return\s*e\.preventDefault\(\)\s*openWebLink\(url, shell\)/)
+    expect(main).toMatch(/setWindowOpenHandler\(\(\{ url \}\) => \{\s*openWebLink\(url, shell, \{ readRules: linkRules, \.\.\.linkOpening \}\)\s*return \{ action: 'deny' \}/)
+    expect(main).toMatch(/'will-navigate', \(e, url\) => \{\s*if \(isViewerUrl\(url, URL_BASE\)\) return\s*e\.preventDefault\(\)\s*openWebLink\(url, shell, \{ readRules: linkRules, \.\.\.linkOpening \}\)/)
+  })
+
+  it('takes an app only from its own native picker, limited to .app bundles, behind the same sender check', () => {
+    const settings = main.slice(main.indexOf('let linkSettings = null'), main.indexOf("ipcMain.handle('agent-inbox:set-theme-preference'"))
+    expect(settings).toContain("properties: ['openFile'], filters: [{ name: 'Applications', extensions: ['app'] }],")
+    expect(settings).toContain('return result.canceled ? null : result.filePaths')
+    expect(settings).toContain('if (args.length !== arity || !linkSender(event)) return { available: false, rules: [] }')
+    expect([...settings.matchAll(/handleLinkSettings\('([^']+)', (\d)/g)].map((m) => [m[1], Number(m[2])])).toEqual([
+      ['agent-inbox:link-settings', 0],
+      ['agent-inbox:link-settings-set', 2],
+      ['agent-inbox:link-settings-choose-app', 1],
+      ['agent-inbox:link-settings-add-type', 1],
+      ['agent-inbox:link-settings-remove-type', 1],
+    ])
+    // the only call that can store an app is chooseApp, which asks the picker itself
+    expect(settings).toContain("(settings, ruleId) => settings.chooseApp(ruleId))")
+    expect(main.match(/dialog\.showOpenDialog\(/g)).toHaveLength(2)
   })
 
   it('never opens a file any other way', () => {
     expect(main).not.toMatch(/shell\.(openPath|showItemInFolder)\(/)
     expect(read('electron/setup-preload.cjs')).not.toMatch(/require\('(?!electron')/)
+  })
+})
+
+describe('the Settings → Links bridge (issue #300 part 2)', () => {
+  const VIEW = {
+    available: true,
+    rules: [{ id: 'markdown', label: 'Markdown (.md, .markdown)', kind: 'file', handler: 'app', appName: 'QLMarkdown', removable: false }],
+  }
+
+  it('has exactly five methods, each sending a rule id and at most a handler or an extension', async () => {
+    const { settings, invoke } = loadPreload(() => VIEW)
+    expect(Object.keys(settings).sort()).toEqual(['addType', 'chooseApp', 'get', 'removeType', 'setHandler'])
+    await settings.get()
+    await settings.setHandler('markdown', 'quicklook')
+    await settings.chooseApp('markdown')
+    await settings.addType('.log')
+    await settings.removeType('ext:log')
+    expect(invoke.mock.calls).toEqual([
+      ['agent-inbox:link-settings'],
+      ['agent-inbox:link-settings-set', 'markdown', 'quicklook'],
+      ['agent-inbox:link-settings-choose-app', 'markdown'],
+      ['agent-inbox:link-settings-add-type', '.log'],
+      ['agent-inbox:link-settings-remove-type', 'ext:log'],
+    ])
+  })
+
+  it.each([
+    ['get', ['extra']],
+    ['setHandler', ['markdown']],
+    ['setHandler', ['markdown', { app: '/Applications/Calculator.app' }]],
+    ['setHandler', ['markdown', 'app', '/Applications/Calculator.app']],
+    ['chooseApp', ['markdown', '/Applications/Calculator.app']],
+    ['chooseApp', [{ path: '/Applications/Calculator.app' }]],
+    ['addType', ['x'.repeat(65)]],
+    ['removeType', []],
+  ] as const)('refuses %s(%j) without asking main', async (method, args) => {
+    const { settings, invoke } = loadPreload(() => VIEW)
+    await expect(settings[method](...args)).resolves.toEqual({ available: false, rules: [], error: 'invalid' })
+    expect(invoke).not.toHaveBeenCalled()
+  })
+
+  it('hands back a checked view that can name an app but never carry its path', async () => {
+    const leaky = { ...VIEW, rules: [{ ...VIEW.rules[0], app: '/Applications/QLMarkdown.app' }], extra: true, error: 'runs-code' }
+    const { settings } = loadPreload(() => leaky)
+    await expect(settings.get()).resolves.toEqual({ ...VIEW, error: 'runs-code' })
+    for (const bad of [null, { available: 'yes', rules: [] }, { available: true, rules: [{ ...VIEW.rules[0], handler: 'shell' }] }]) {
+      const { settings: s } = loadPreload(() => bad)
+      await expect(s.get()).resolves.toEqual({ available: false, rules: [], error: 'failed' })
+    }
   })
 })

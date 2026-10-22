@@ -405,6 +405,26 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   macro documents, certificates) or any execute bit is only revealed, anything else goes to
   `shell.openPath` on the resolved path. The check is point-in-time. `setWindowOpenHandler` and
   `will-navigate` share `openWebLink`, so no path in main hands a non-http(s) URL to the OS.
+- **Settings → Links (#300 part 2) is macOS-only, main-owned, and never outranks the safety
+  policy.** `electron/link-preferences.cjs` keeps the rules in userData `link-preferences.json`:
+  schema 1, written by `createLockedFile` (exported from `update-preferences.cjs`: temp file and
+  rename under the same cross-process lock), read tolerantly (corrupt → defaults, a bad rule
+  dropped, a newer schema read as defaults and never overwritten, unknown top-level fields kept).
+  Rules: Web links (Default browser or an app), Markdown (`.md`, `.markdown`) and up to 20 added
+  types (System default, Quick Look, Reveal, or an app); a blocked type can never get one. The
+  renderer's `agentInboxLinkSettings` bridge (get, setHandler, chooseApp, addType, removeType,
+  exact arity, same sender check as opening) names a rule id and a handler, NEVER an app path:
+  `app` comes only from `chooseApp`, which asks main's own `dialog.showOpenDialog` (`openFile`,
+  `.app` filter) and saves only a real bundle with `Contents/Info.plist` that is not an app that
+  runs what it opens (Terminal, iTerm, Script Editor, Python Launcher…), and the view the
+  renderer gets names the app, never its path. `openLinkRequest` applies a rule only AFTER
+  `fileOpenPlan`'s verdict and a reveal request, so whatever is only revealed stays revealed, and
+  launches with argv only (`/usr/bin/open -a <app> -- <target>`, `/usr/bin/qlmanage -p <file>`),
+  `shell: false`, stdio ignored, detached; an app that has gone since is `app-missing`. The web
+  rule also governs the window-open and navigate paths (`openWebLink(url, shell, { readRules })`,
+  where an unreadable file means the system defaults). Off macOS nothing is offered and links keep
+  the system defaults. In the desktop app (`linkFileActions()`), a strip's file chip also gets
+  Reveal and Copy path buttons (`data-link-action`), never in a browser.
 - **`src/prstate.ts` is VIEWER-PROCESS-ONLY (issue #30).** It and `src/issue-poller.ts` (#103, below)
   are the only modules that shell out to a network tool (`gh`), so `src/mcp.ts`/`src/mcp-server.ts`
   must never import either, directly or transitively — a subprocess that inherited a stream, or gh's update notifier, would corrupt the MCP

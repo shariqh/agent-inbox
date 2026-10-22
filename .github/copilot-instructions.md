@@ -391,6 +391,14 @@ Run the build before `npm run electron`; the development shell starts the built
   scripts, installers, launchers and any execute bit are only revealed.
   `setWindowOpenHandler` and `will-navigate` share the same http(s) check. A
   browser copies a file's path instead.
+- Settings → Links (#300 part 2, macOS only) lives in main:
+  `electron/link-preferences.cjs` keeps per-type rules in userData
+  `link-preferences.json` (schema 1, `createLockedFile`, tolerant reader that
+  never overwrites a newer schema). The renderer names a rule and a handler,
+  never an app path; an app comes only from main's own `dialog.showOpenDialog`
+  limited to `.app` bundles. Rules apply only after the safety policy, and
+  launch with argv only (`/usr/bin/open -a <app> -- <target>`,
+  `/usr/bin/qlmanage -p <file>`), no shell, stdio ignored.
 - The 3-second poll uses the gated `load()`/`renderIfIdle()` path. Its reads
   run concurrently, but a tick applies only after all settle, and only if no newer
   tick has applied and every boot marker agrees. A successful

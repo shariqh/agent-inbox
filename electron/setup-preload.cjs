@@ -49,8 +49,8 @@ contextBridge.exposeInMainWorld('agentInboxTheme', {
 // re-validates the sender and everything in the request, and alone decides
 // what may open (electron/link-open.cjs).
 const LINK_REASONS = new Set([
-  'folder', 'app', 'blocked', 'executable', 'special', 'requested',
-  'invalid', 'missing', 'inaccessible', 'failed', 'unavailable',
+  'folder', 'app', 'blocked', 'executable', 'special', 'requested', 'rule',
+  'invalid', 'missing', 'inaccessible', 'failed', 'unavailable', 'app-missing',
 ])
 
 function linkRequest(request) {
@@ -78,6 +78,63 @@ contextBridge.exposeInMainWorld('agentInboxLinks', {
     const request = args.length === 1 ? linkRequest(args[0]) : null
     if (!request) return Promise.resolve({ ok: false, reason: 'invalid' })
     return ipcRenderer.invoke('agent-inbox:open-link', request).then(linkResult, () => ({ ok: false, reason: 'failed' }))
+  },
+})
+
+// Issue #300 part 2: Settings → Links. Main keeps the rules; the renderer names
+// a rule and a handler, never an app path, because an app comes only from
+// main's own native picker. Each call answers with a checked copy of the view.
+const SETTINGS_HANDLERS = new Set(['default', 'quicklook', 'reveal', 'app'])
+const SETTINGS_ERRORS = new Set(['invalid', 'covered', 'blocked', 'exists', 'full', 'not-an-app', 'runs-code', 'newer', 'failed'])
+
+function settingsView(value) {
+  if (!value || typeof value !== 'object' || typeof value.available !== 'boolean' || !Array.isArray(value.rules)) return null
+  const rules = []
+  for (const rule of value.rules) {
+    if (
+      !rule || typeof rule !== 'object' ||
+      typeof rule.id !== 'string' || typeof rule.label !== 'string' ||
+      (rule.kind !== 'web' && rule.kind !== 'file') || !SETTINGS_HANDLERS.has(rule.handler) ||
+      !(rule.appName === null || typeof rule.appName === 'string') || typeof rule.removable !== 'boolean'
+    ) return null
+    rules.push({ id: rule.id, label: rule.label, kind: rule.kind, handler: rule.handler, appName: rule.appName, removable: rule.removable })
+  }
+  const view = { available: value.available, rules }
+  if (SETTINGS_ERRORS.has(value.error)) view.error = value.error
+  return view
+}
+
+const failedSettings = (error) => ({ available: false, rules: [], error })
+
+function settingsCall(channel, ...args) {
+  return ipcRenderer.invoke(channel, ...args).then(
+    (value) => settingsView(value) ?? failedSettings('failed'),
+    () => failedSettings('failed'),
+  )
+}
+
+const isText = (value) => typeof value === 'string' && value.length <= 64
+
+contextBridge.exposeInMainWorld('agentInboxLinkSettings', {
+  get(...args) {
+    if (args.length !== 0) return Promise.resolve(failedSettings('invalid'))
+    return settingsCall('agent-inbox:link-settings')
+  },
+  setHandler(...args) {
+    if (args.length !== 2 || !isText(args[0]) || !isText(args[1])) return Promise.resolve(failedSettings('invalid'))
+    return settingsCall('agent-inbox:link-settings-set', args[0], args[1])
+  },
+  chooseApp(...args) {
+    if (args.length !== 1 || !isText(args[0])) return Promise.resolve(failedSettings('invalid'))
+    return settingsCall('agent-inbox:link-settings-choose-app', args[0])
+  },
+  addType(...args) {
+    if (args.length !== 1 || !isText(args[0])) return Promise.resolve(failedSettings('invalid'))
+    return settingsCall('agent-inbox:link-settings-add-type', args[0])
+  },
+  removeType(...args) {
+    if (args.length !== 1 || !isText(args[0])) return Promise.resolve(failedSettings('invalid'))
+    return settingsCall('agent-inbox:link-settings-remove-type', args[0])
   },
 })
 

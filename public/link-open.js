@@ -12,12 +12,26 @@
 //
 // A browser has no such bridge. Web links keep their ordinary new-tab
 // behaviour, and a file link copies its path, because a page cannot open a
-// local file. Nothing here reaches attention, a badge or a count.
+// local file. In the desktop app a file chip also has Reveal and Copy path
+// (part 2). Nothing here reaches attention, a badge or a count.
 import { writeClipboard } from './structured-copy.js'
 
 const BINDING = Symbol.for('agent-inbox.link-open')
 const STATUS_MS = 2600
 const NEVER_OPENED = new Set(['blocked', 'executable', 'special'])
+
+const finderName = (platform) => (/^Mac/i.test(platform) ? 'Finder' : 'your file manager')
+
+// The secondary actions a file chip gets, or null in a browser, which can
+// neither reveal a file nor needs a second way to copy its path.
+export function linkFileActions({
+  bridge = () => globalThis.agentInboxLinks,
+  platform = globalThis.navigator?.platform ?? '',
+} = {}) {
+  const found = bridge()
+  if (!found || typeof found.open !== 'function') return null
+  return { reveal: /^Mac/i.test(platform) ? 'Reveal in Finder' : 'Show in folder' }
+}
 
 function statusRegion(documentRef) {
   const existing = documentRef.getElementById('linkOpenStatus')
@@ -44,6 +58,7 @@ export function linkOpenMessage(result, request, { finder = 'Finder' } = {}) {
   }
   const reason = result && typeof result.reason === 'string' ? result.reason : 'failed'
   if (reason === 'missing') return `Not found: ${name}`
+  if (reason === 'app-missing') return 'The app chosen in Settings → Links is gone. Choose another there.'
   if (reason === 'inaccessible') return `Agent Inbox can’t read ${name}`
   if (reason === 'invalid') return `Agent Inbox can’t open ${name}`
   if (reason === 'unavailable') return 'Links can’t be opened from this window.'
@@ -72,7 +87,7 @@ const linkElement = (event) => {
 export function initLinkOpening({
   documentRef = globalThis.document,
   bridge = () => globalThis.agentInboxLinks,
-  finder = /^Mac/i.test(globalThis.navigator?.platform ?? '') ? 'Finder' : 'your file manager',
+  finder = finderName(globalThis.navigator?.platform ?? ''),
 } = {}) {
   if (!documentRef) return
   const region = statusRegion(documentRef)
@@ -103,22 +118,31 @@ export function initLinkOpening({
     }
     show(linkOpenMessage(result, request, { finder }), result && result.ok === true ? 'success' : 'error')
   }
-  const copyPath = async (path) => {
+  const copyPath = async (path, note) => {
     const copied = await writeClipboard(documentRef, path).catch(() => false)
-    show(copied ? 'Copied the path. A browser can’t open local files.' : 'Couldn’t copy the path.', copied ? 'success' : 'error')
+    show(copied ? `Copied the path.${note}` : 'Couldn’t copy the path.', copied ? 'success' : 'error')
   }
 
   bind(documentRef, {
     click(event) {
+      const links = api()
+      const action = event.target && typeof event.target.closest === 'function' ? event.target.closest('[data-link-action]') : null
+      if (action) {
+        event.preventDefault()
+        const path = action.dataset.linkPath
+        if (!path) return
+        if (action.dataset.linkAction === 'copy') void copyPath(path, '')
+        else if (action.dataset.linkAction === 'reveal' && links) void open(links, { kind: 'file', path, reveal: true })
+        return
+      }
       const el = linkElement(event)
       if (!el) return
-      const links = api()
       if (el.dataset.linkKind === 'file') {
         event.preventDefault()
         const path = el.dataset.linkPath
         if (!path) return
         if (links) void open(links, { kind: 'file', path, reveal: false })
-        else void copyPath(path)
+        else void copyPath(path, ' A browser can’t open local files.')
         return
       }
       if (!links || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return

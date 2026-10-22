@@ -1426,6 +1426,14 @@ body:has(.nrow[data-open="1"]) .inspector-empty { display: none; }
 .card-links-more > summary::-webkit-details-marker { display: none; }
 .card-links-more[open] { flex-basis: 100%; }
 .card-links-rest { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+/* Part 2: in the desktop app a file chip carries Reveal and Copy path. */
+.link-file { display: inline-flex; align-items: stretch; max-width: 100%; }
+.link-file > .src-chip { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.link-file-action { display: inline-grid; place-items: center; width: 24px; padding: 0; border: 1px solid color-mix(in srgb, var(--app-link) 28%, transparent); border-left: 0; background: transparent; color: var(--app-link); cursor: pointer; }
+.link-file-action:last-child { border-radius: 0 999px 999px 0; }
+.link-file-action:hover { background: color-mix(in srgb, var(--app-link) 10%, transparent); }
+.link-file-action:focus-visible { outline: 2px solid var(--app-focus); outline-offset: 2px; }
+.link-action-icon { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
 /* An inline file link reads as a link in its sentence, and selects like text. */
 .file-link { color: LinkText; text-decoration: underline dotted; text-underline-offset: 2px; cursor: pointer; }
 .file-link:hover { text-decoration-style: solid; }
@@ -1479,6 +1487,27 @@ body:has(.nrow[data-open="1"]) .inspector-empty { display: none; }
 .setup-menu-actions .setup-run-btn { border-color: var(--app-accent); background: var(--app-accent); color: var(--app-on-accent); }
 .theme-picker { padding-bottom: 18px; border-bottom: 1px solid var(--app-border); }
 .copy-settings { padding-bottom: 18px; border-bottom: 1px solid var(--app-border); }
+.link-settings { padding-bottom: 18px; border-bottom: 1px solid var(--app-border); }
+.link-rules { display: grid; gap: 8px; margin: 8px 0 12px; }
+.link-rule { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 220px) auto; align-items: center; gap: 10px; }
+.link-rule-label { font-size: 12.5px; overflow-wrap: anywhere; }
+.link-rule select, .link-add-type input {
+  min-width: 0;
+  padding: 6px 9px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-surface);
+  color: var(--app-text);
+  font: inherit;
+  font-size: 12.5px;
+}
+.link-rule select:focus, .link-add-type input:focus { outline: 2px solid color-mix(in srgb, var(--app-focus) 24%, transparent); outline-offset: 1px; border-color: var(--app-focus); }
+.link-rule-remove, .link-add-type button { padding: 5px 10px; border: 1px solid var(--app-border); border-radius: 8px; background: transparent; color: var(--app-text); font: inherit; font-size: 12px; cursor: pointer; }
+.link-add-type { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.link-add-type label { font-size: 12.5px; }
+.link-add-type input { width: 110px; }
+.link-settings-message { margin: 8px 0 0; font-size: 12px; color: var(--app-danger); }
+.link-settings-message:empty { display: none; }
 .theme-picker fieldset {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

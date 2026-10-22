@@ -18,11 +18,11 @@ afterEach(() => {
   Reflect.deleteProperty(navigator, 'clipboard')
 })
 
-interface Rule { id: string, label: string, kind: 'web' | 'file', handler: string, appName: string | null, removable: boolean }
+interface Rule { id: string, label: string, kind: 'web' | 'file', handler: string, appName: string | null, removable: boolean, systemDefault: boolean }
 interface View { available: boolean, rules: Rule[], error?: string }
 
-const WEB: Rule = { id: 'web', label: 'Web links', kind: 'web', handler: 'default', appName: null, removable: false }
-const MARKDOWN: Rule = { id: 'markdown', label: 'Markdown (.md, .markdown)', kind: 'file', handler: 'default', appName: null, removable: false }
+const WEB: Rule = { id: 'web', label: 'Web links', kind: 'web', handler: 'default', appName: null, removable: false, systemDefault: true }
+const MARKDOWN: Rule = { id: 'markdown', label: 'Markdown (.md, .markdown)', kind: 'file', handler: 'default', appName: null, removable: false, systemDefault: true }
 
 // A main process that keeps rules the way link-preferences.cjs does, as far as
 // this section can tell.
@@ -38,8 +38,13 @@ function settingsBridge(start: View = { available: true, rules: [WEB, MARKDOWN] 
     chooseApp: vi.fn(async (id: string) => { set(id, { handler: 'app', appName: 'QLMarkdown' }); return answer() }),
     addType: vi.fn(async (extension: string) => {
       const ext = extension.replace(/^\./, '').toLowerCase()
-      if (ext === 'sh') return answer('blocked')
-      view = { ...view, rules: [...view.rules, { id: `ext:${ext}`, label: `.${ext}`, kind: 'file', handler: 'default', appName: null, removable: true }] }
+      if (ext === 'command') return answer('blocked')
+      // as main does, a type off the allow-list starts as Reveal, with no System default
+      const systemDefault = ext !== 'py'
+      view = {
+        ...view,
+        rules: [...view.rules, { id: `ext:${ext}`, label: `.${ext}`, kind: 'file', handler: systemDefault ? 'default' : 'reveal', appName: null, removable: true, systemDefault }],
+      }
       return answer()
     }),
     removeType: vi.fn(async (id: string) => { view = { ...view, rules: view.rules.filter((rule) => rule.id !== id) }; return answer() }),
@@ -104,13 +109,20 @@ describe('Settings → Links (issue #300 part 2)', () => {
     await settle()
     expect(api.addType).toHaveBeenCalledWith('.LOG')
     expect(select('ext:log')).not.toBeNull()
+    expect(options(select('ext:log')).map(([value]) => value)).toEqual(['default', 'quicklook', 'reveal', 'choose'])
     expect(input().value).toBe('')
 
-    input().value = '.sh'
+    input().value = '.py'
+    submit()
+    await settle()
+    expect(options(select('ext:py'))).toEqual([['quicklook', 'Quick Look'], ['reveal', 'Reveal in Finder'], ['choose', 'Choose app…']])
+    expect(select('ext:py')?.value).toBe('reveal')
+
+    input().value = '.command'
     submit()
     await settle()
     expect(section()?.querySelector('.link-settings-message')?.textContent).toBe('Agent Inbox never opens that type of file, so it can’t have a rule.')
-    expect(input().value).toBe('.sh')
+    expect(input().value).toBe('.command')
 
     click(section()?.querySelector('button[aria-label="Remove .log"]'))
     await settle()

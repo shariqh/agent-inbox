@@ -6,7 +6,9 @@
 // window.agentInboxLinkSettings bridge, and names a rule and a handler: an app
 // comes only from main's own native picker ("Choose app…"), and what comes back
 // names the app, never its path. Main's safety policy still runs before any
-// rule, so apps, scripts and installers are only ever revealed. Per-type apps
+// rule, so apps, installers, aliases and anything executable are only ever
+// revealed, and "System default" is offered only for the common document types
+// main opens with the system's app (a rule's `systemDefault`). Per-type apps
 // are macOS-only; elsewhere, and in a browser, the section says so. Every
 // string reaches the DOM as textContent.
 const FILE_HANDLERS = [['default', 'System default'], ['quicklook', 'Quick Look'], ['reveal', 'Reveal in Finder']]
@@ -56,7 +58,7 @@ export function renderLinkSettings(host, {
     hint.textContent = 'In the Agent Inbox app on macOS, you can choose which app opens web links and each type of file.'
     return section
   }
-  hint.textContent = 'Links you open from the Inbox use these instead of your Mac’s defaults. Apps, scripts and installers are never opened, whatever you choose.'
+  hint.textContent = 'Links you open from the Inbox use these instead of your Mac’s defaults. To open a type Agent Inbox only shows in Finder, such as .py, add it and choose an app. Apps, installers, aliases and anything executable are never opened.'
 
   const form = make('form', 'link-add-type')
   const addLabel = make('label', '', 'Add a file type')
@@ -112,7 +114,10 @@ export function renderLinkSettings(host, {
     select.id = `link-rule-${index}`
     select.dataset.rule = rule.id
     label.htmlFor = select.id
-    for (const [value, text] of rule.kind === 'web' ? WEB_HANDLERS : FILE_HANDLERS) select.appendChild(option(documentRef, value, text))
+    for (const [value, text] of rule.kind === 'web' ? WEB_HANDLERS : FILE_HANDLERS) {
+      if (value === 'default' && rule.systemDefault === false) continue
+      select.appendChild(option(documentRef, value, text))
+    }
     if (rule.appName) select.appendChild(option(documentRef, 'app', rule.appName))
     select.appendChild(option(documentRef, 'choose', rule.appName ? 'Choose another app…' : 'Choose app…'))
     select.value = rule.handler === 'app' && !rule.appName ? 'default' : rule.handler

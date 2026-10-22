@@ -398,16 +398,22 @@ Detection is cautious, so some things that could be links stay text: a single-di
 `#N` needs `issue`, `PR` or a word such as `Fixes` before it, and relative paths,
 paths with spaces and routes such as `/api/items` never link.
 
-In the desktop app a web link opens in your browser and a file in its default app.
-Folders, apps, scripts, installers and anything with an execute bit are only shown in
-Finder, never opened. In a browser tab, clicking a file link copies its path.
+In the desktop app a web link opens in your browser, and a common document (Markdown,
+text, logs, JSON, YAML, TOML, CSV, XML, PDF, images, SVG, HTML, diffs, MOV and MP4)
+opens in its default app. Anything else is only shown in Finder: folders, apps,
+scripts and other code, installers, disk images, aliases, files set to open with a
+particular app, and anything with an execute bit. In a browser tab, clicking a file
+link copies its path.
 
 On macOS, **Settings → Links** chooses how links open from the Inbox instead of the
 Mac's defaults: web links in a browser you pick, and Markdown (`.md`, `.markdown`) or
-any file type you add with its system default, Quick Look, Reveal in Finder or an app
-you choose. The rules above still win, so an app or a script is only ever shown in
-Finder. In the desktop app every file chip also has **Reveal in Finder** and **Copy
-path**.
+any file type you add with Quick Look, Reveal in Finder or an app you choose (and the
+system default, for the common documents above). That is also how to open other
+types, such as code in your editor: add `.py` and choose Sublime Text. Folders, apps,
+installers, aliases, files set to open with a particular app and anything with an
+execute bit are still only shown in Finder, whatever you choose, and some types (such
+as `.command`, `.pkg` or `.dmg`) can't have a rule at all. In the desktop app every
+file chip also has **Reveal in Finder** and **Copy path**.
 
 ## Architecture
 

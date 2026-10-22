@@ -49,6 +49,7 @@ describe('the link bridge (issue #300)', () => {
     [[null]],
     [['https://example.com']],
     [[{ kind: 'file', path: '/Users/s/a.md' }]],
+    [[{ kind: 'file', path: '/Users/s/a.md', reveal: 'yes' }]],
     [[{ kind: 'file', path: 7, reveal: false }]],
     [[{ kind: 'shell', command: 'open -a Calculator' }]],
   ])('refuses %j without asking main', async (args) => {
@@ -61,6 +62,8 @@ describe('the link bridge (issue #300)', () => {
     const request = { kind: 'file', path: '/Users/s/a.sh', reveal: false }
     for (const [answer, expected] of [
       [{ ok: true, action: 'revealed', reason: 'blocked', path: '/private/x' }, { ok: true, action: 'revealed', reason: 'blocked' }],
+      [{ ok: true, action: 'revealed', reason: 'type' }, { ok: true, action: 'revealed', reason: 'type' }],
+      [{ ok: true, action: 'revealed', reason: 'requested' }, { ok: true, action: 'revealed', reason: 'requested' }],
       [{ ok: false, reason: 'missing' }, { ok: false, reason: 'missing' }],
       [{ ok: false, reason: 'app-refused' }, { ok: false, reason: 'app-refused' }],
       [{ ok: true, action: 'revealed', reason: '<script>' }, { ok: false, reason: 'failed' }],
@@ -123,7 +126,7 @@ describe('main opens links only through electron/link-open.cjs (issue #300)', ()
 describe('the Settings → Links bridge (issue #300 part 2)', () => {
   const VIEW = {
     available: true,
-    rules: [{ id: 'markdown', label: 'Markdown (.md, .markdown)', kind: 'file', handler: 'app', appName: 'QLMarkdown', removable: false }],
+    rules: [{ id: 'markdown', label: 'Markdown (.md, .markdown)', kind: 'file', handler: 'app', appName: 'QLMarkdown', removable: false, systemDefault: true }],
   }
 
   it('has exactly five methods, each sending a rule id and at most a handler or an extension', async () => {
@@ -162,7 +165,12 @@ describe('the Settings → Links bridge (issue #300 part 2)', () => {
     const leaky = { ...VIEW, rules: [{ ...VIEW.rules[0], app: '/Applications/QLMarkdown.app' }], extra: true, error: 'runs-code' }
     const { settings } = loadPreload(() => leaky)
     await expect(settings.get()).resolves.toEqual({ ...VIEW, error: 'runs-code' })
-    for (const bad of [null, { available: 'yes', rules: [] }, { available: true, rules: [{ ...VIEW.rules[0], handler: 'shell' }] }]) {
+    for (const bad of [
+      null,
+      { available: 'yes', rules: [] },
+      { available: true, rules: [{ ...VIEW.rules[0], handler: 'shell' }] },
+      { available: true, rules: [{ ...VIEW.rules[0], systemDefault: 'yes' }] },
+    ]) {
       const { settings: s } = loadPreload(() => bad)
       await expect(s.get()).resolves.toEqual({ available: false, rules: [], error: 'failed' })
     }

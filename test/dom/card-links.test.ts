@@ -228,7 +228,7 @@ describe('opening a link (issue #300)', () => {
     click(strip.querySelector('button[data-link-kind="file"]'))
     await settle()
     expect(open).toHaveBeenLastCalledWith({ kind: 'file', path: '/Users/s/docs/spec.md', reveal: false })
-    expect(status()).toContain('Agent Inbox never opens apps, scripts or installers.')
+    expect(status()).toContain('Agent Inbox never opens apps, scripts, installers or aliases.')
 
     expect(clickPrevented(strip.querySelector('a[data-link-kind="web"]')!)).toBe(true)
     expect(open).toHaveBeenLastCalledWith({ kind: 'web', url: 'https://example.com/guide' })
@@ -252,6 +252,16 @@ describe('opening a link (issue #300)', () => {
     expect(open).toHaveBeenCalledWith({ kind: 'file', path: '/Users/s/docs/spec.md', reveal: false })
     expect(status()).toBe('Not found: /Users/s/docs/spec.md')
     expect(row(id)?.getAttribute('aria-expanded')).toBe('true')
+  })
+
+  it('says when a file was only shown because Agent Inbox does not open its type', async () => {
+    bridge(async () => ({ ok: true, action: 'revealed', reason: 'type' }))
+    db = freshDb()
+    const id = seed(db)
+    const card = await openInspector(db, id)
+    click(stripOf(card)!.querySelector('button[data-link-kind="file"]'))
+    await settle()
+    expect(status()).toMatch(/^Shown in .+: this type isn’t opened automatically\.$/)
   })
 
   it('in a browser, a file link copies its path and says why; web links keep their own behaviour', async () => {

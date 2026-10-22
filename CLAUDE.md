@@ -400,18 +400,30 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   work in a reused viewer too); the request has exactly its keys; a web link is http(s) by
   `URL` and only its normalized href reaches `shell.openExternal`; a file path is absolute
   after `~/`, normalized, control-free, and judged by its FINAL target after `realpath`:
-  missing is reported, a folder or `.app` is only revealed, a blocked extension on the link or
-  its target (apps, launchers, location files, installers, disk images, executables, scripts,
-  macro documents, certificates) or any execute bit is only revealed, anything else goes to
-  `shell.openPath` on the resolved path. The check is point-in-time. `setWindowOpenHandler` and
-  `will-navigate` share `openWebLink`, so no path in main hands a non-http(s) URL to the OS.
+  missing is reported, a folder or `.app` is only revealed, a denied extension on the link or
+  its target (apps, launchers, location and VPN files, installers, disk images, executables,
+  compiled and Windows scripts, documents that can carry macros, certificates) or any execute
+  bit is only revealed. **Opening is an ALLOW-list** (`OPENABLE_EXTENSIONS`: Markdown, text,
+  logs, JSON/YAML/TOML, CSV/TSV, XML, PDF, images, SVG, HTML, diffs, MOV/MP4): any other type
+  is revealed with reason `type`, because a deny-list of what runs code never ends; code files
+  (`py`, `sh`, …) are neither allowed nor denied. On macOS, before anything opens, the resolved
+  file is checked for an alias, which `realpath` does not follow and Launch Services opens the
+  target of (bookmark magic `book\0\0\0\0mark` in its first bytes, the Finder alias flag in
+  `com.apple.FinderInfo`, a non-empty `..namedfork/rsrc`), and for a per-file
+  `com.apple.LaunchServices.OpenWith`; xattrs are read with `/usr/bin/xattr` through
+  `execFile`, argv only, and a check that cannot finish reveals (`blocked`, fail closed). Only
+  then does `shell.openPath` get the resolved path. The check is point-in-time.
+  `setWindowOpenHandler` and `will-navigate` share `openWebLink`, so no path in main hands a
+  non-http(s) URL to the OS.
 - **Settings → Links (#300 part 2) is macOS-only, main-owned, and never outranks the safety
   policy.** `electron/link-preferences.cjs` keeps the rules in userData `link-preferences.json`:
   schema 1, written by `createLockedFile` (exported from `update-preferences.cjs`: temp file and
   rename under the same cross-process lock), read tolerantly (corrupt → defaults, a bad rule
   dropped, a newer schema read as defaults and never overwritten, unknown top-level fields kept).
   Rules: Web links (Default browser or an app), Markdown (`.md`, `.markdown`) and up to 20 added
-  types (System default, Quick Look, Reveal, or an app); a blocked type can never get one. The
+  types (Quick Look, Reveal, or an app, plus System default only for a type on the allow-list:
+  the view's `systemDefault` says which, an added type off the list starts as Reveal, and a stored
+  System default off the list reads as Reveal); a denied type can never get one. The
   renderer's `agentInboxLinkSettings` bridge (get, setHandler, chooseApp, addType, removeType,
   exact arity, same sender check as opening) names a rule id and a handler, NEVER an app path:
   `app` comes only from `chooseApp`, which asks main's own `dialog.showOpenDialog` (`openFile`,
@@ -421,10 +433,15 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   be a directory and hold a `Contents/Info.plist` file, and neither the name it was chosen under
   nor the one it resolves to may be an app that runs what it opens (Terminal, iTerm, Script Editor,
   Python Launcher…); the real path is what is saved and launched, and the reader also drops a rule
-  naming a runner. `openLinkRequest` applies a rule only AFTER `fileOpenPlan`'s verdict and a
-  reveal request, so whatever is only revealed stays revealed, and launches with argv only
-  (`/usr/bin/open -a <app> -- <target>`, `/usr/bin/qlmanage -p <file>`), `shell: false`, stdio
-  ignored, detached; an app that fails the check is `app-missing` (gone or not an app) or
+  naming a runner. `fileOpenPlan(value, { rules })` reads a rule only AFTER a folder, a bundle, a
+  denied type and an execute bit have been revealed; a Reveal rule reveals (`rule`); an app or
+  Quick Look rule may open a type the allow-list leaves out (the escape hatch for code files,
+  such as `.py` in an editor), while System default never does; and the alias and Open With
+  checks run before any rule or default opens a file, so a rule never applies to an alias, an
+  Open With file, an executable, a bundle or a denied type. A reveal request (a file chip's
+  Reveal action, `{kind:'file',path,reveal:true}`) reveals whatever the rule. Launches use argv
+  only (`/usr/bin/open -a <app> -- <target>`, `/usr/bin/qlmanage -p <file>`), `shell: false`,
+  stdio ignored, detached; an app that fails the check is `app-missing` (gone or not an app) or
   `app-refused` (a runner), reported to the renderer. The web rule also governs the window-open and
   navigate paths (`openWebLink(url, shell, { readRules })`, where an unreadable file means the
   system defaults); nothing there can say why, so a chosen browser that is gone, refused or fails
@@ -1607,7 +1624,11 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   SAME volume; then `plutil` id + version, `codesign --verify --deep --strict` with a
   requirement built only from constants (`identifier` + Team ID `VVR2DKR923`), and
   `spctl --assess` — Node-written files carry no quarantine, so this is the only
-  Gatekeeper evaluation. (4) **The helper** is constant `/bin/sh` text, spawned detached
+  Gatekeeper evaluation. Release DMGs are lzma `ULMO` images since #289
+  (`scripts/macos-dmg.mjs`, which refuses any other format): these flags attach them as
+  they attached `UDZO`, and every installer since 1.3.0 uses the same flags, so a later
+  DMG format must stay attachable by them.
+  (4) **The helper** is constant `/bin/sh` text, spawned detached
   with fixed argv, `stdio:'ignore'` and a minimal `PATH`. It waits until BOTH the app PID
   and the viewer PID it started (`-` for an in-process or reused viewer) have exited —
   otherwise the relaunched app could find the dying viewer on the port and take the
@@ -2174,7 +2195,20 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   says its settings file watcher normally applies a change to running sessions too, so the
   advice says that and names the restart that makes sure, never a reload it cannot see. A
   browser tab, or a window Setup is not granted to, gets the app hint plus
-  `bash <runtime>/scripts/install-hooks.sh --apply` once the runtime is installed. No IPC
+  `bash <runtime>/scripts/install-hooks.sh --apply` once the runtime is installed. *(#278)* A hooks
+  line that differs from `current` never ends without a next step (`hooksNextStep`): with no hooks
+  step and no `hooksCommand`, a Claude Code registered to a checkout gets that checkout's own
+  `cd <path> && npm run install:hooks -- --apply --replace-existing`, built and quoted by the viewer
+  (`/api/setup` `checkoutHooksCommand`, present only while Claude Code runs from a checkout whose
+  hooks are not that checkout's); the "once this app's runtime is installed" promise stays only while
+  `updatable` and an agent host is unregistered or on Setup's runtime, i.e. a Setup install could put
+  that runtime in place (Setup never switches a checkout, and a failed install removes a runtime it
+  just published). Known limit: `none` also covers a host whose CLI is not installed, which the
+  viewer cannot tell apart without running anything, so with Claude Code `other`/`unknown` and no
+  Copilot CLI the promise still shows although neither target can keep it (`install-agents.sh`
+  stops at "'copilot' CLI is not installed"; `claude` refuses a registration it does not own);
+  docs/hooks.md points to the checkout or terminal path instead. Otherwise the panel says Setup
+  cannot move them and points at docs/hooks.md. No IPC
   channel, preload method or HTTP route was added for this, and nothing runs at startup. Live's
   `remedy()` maps a runtime session to its host by its inferred agent (`claude-code` → claude, `copilot`
   → copilot) and, for a session OLDER than the app, says "restart this session to load vX" only when that

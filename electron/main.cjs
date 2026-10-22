@@ -350,8 +350,9 @@ ipcMain.handle('agent-inbox:install', async (event, target) => {
 
 // Issue #300: the viewer asks, main decides. Only the viewer window's own top
 // frame on the viewer origin may ask (see isTrustedLinkSender), with exactly one
-// request; link-open.cjs re-validates it and opens a web link, opens a file
-// with its default app, or only reveals anything that could run code.
+// request; link-open.cjs re-validates it and opens a web link, opens a common
+// document type with its default app or the app a Settings → Links rule names,
+// or only reveals anything else.
 const linkSender = (event) => isTrustedLinkSender({ sender: event.sender, senderFrame: event.senderFrame, window: linkWindow, viewerUrl: URL_BASE })
 // Settings → Links (part 2): main's own file, read on each open, so a change
 // applies to the next click. An unreadable file means the system defaults.

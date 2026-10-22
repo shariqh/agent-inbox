@@ -50,8 +50,10 @@ describe('link-preferences.json is read tolerantly (issue #300)', () => {
         { extension: 'log', handler: 'reveal' },
         { extension: '.TXT', handler: 'quicklook' },
         { extension: 'log', handler: 'default' },
-        { extension: 'sh', handler: 'default' },
+        { extension: 'command', handler: 'app', app: '/Applications/Sublime Text.app' },
+        { extension: 'pkg', handler: 'quicklook' },
         { extension: 'md', handler: 'reveal' },
+        { extension: 'py', handler: 'default' },
         { extension: 'csv', handler: 'app', app: 'relative/Numbers.app' },
         { extension: 'csv', handler: 'app', app: '/Applications/Numbers' },
         { extension: 'x y', handler: 'default' },
@@ -62,7 +64,7 @@ describe('link-preferences.json is read tolerantly (issue #300)', () => {
     expect(prefs).toEqual({
       web: { handler: 'default' },
       markdown: { handler: 'app', app: '/Applications/QLMarkdown.app' },
-      types: [{ extension: 'log', handler: 'reveal' }, { extension: 'txt', handler: 'quicklook' }],
+      types: [{ extension: 'log', handler: 'reveal' }, { extension: 'txt', handler: 'quicklook' }, { extension: 'py', handler: 'reveal' }],
     })
   })
 
@@ -91,8 +93,8 @@ describe('Settings → Links operations (issue #300)', () => {
     expect(await s.view()).toEqual({
       available: true,
       rules: [
-        { id: 'web', label: 'Web links', kind: 'web', handler: 'default', appName: null, removable: false },
-        { id: 'markdown', label: 'Markdown (.md, .markdown)', kind: 'file', handler: 'default', appName: null, removable: false },
+        { id: 'web', label: 'Web links', kind: 'web', handler: 'default', appName: null, removable: false, systemDefault: true },
+        { id: 'markdown', label: 'Markdown (.md, .markdown)', kind: 'file', handler: 'default', appName: null, removable: false, systemDefault: true },
       ],
     })
     await s.addType('.LOG')
@@ -176,8 +178,11 @@ describe('Settings → Links operations (issue #300)', () => {
   })
 
   it.each([
-    ['sh', 'blocked'],
     ['.command', 'blocked'],
+    ['pkg', 'blocked'],
+    ['cdr', 'blocked'],
+    ['xlsb', 'blocked'],
+    ['afploc', 'blocked'],
     ['app', 'blocked'],
     ['md', 'covered'],
     ['Markdown', 'covered'],
@@ -188,6 +193,26 @@ describe('Settings → Links operations (issue #300)', () => {
   ])('refuses to add %j as a file type (%s)', async (extension, error) => {
     const { settings: s } = settings()
     expect((await s.addType(extension)).error).toBe(error)
+  })
+
+  it('offers System default only for a type the system default may open; code opens only with an app or Quick Look', async () => {
+    const root = scratchDir('link-apps-')
+    const sublime = appBundle(root, 'Sublime Text')
+    const { settings: s, filePath } = settings(async () => [sublime])
+    await s.addType('pdf')
+    let view = await s.addType('.py')
+    expect(view.rules.slice(2).map((rule: { id: string, handler: string, systemDefault: boolean }) => [rule.id, rule.handler, rule.systemDefault]))
+      .toEqual([['ext:pdf', 'default', true], ['ext:py', 'reveal', false]])
+    expect(JSON.parse(readFileSync(filePath, 'utf8')).types).toEqual([{ extension: 'pdf', handler: 'default' }, { extension: 'py', handler: 'reveal' }])
+    expect((await s.setHandler('ext:py', 'default')).error).toBe('invalid')
+    expect((await s.setHandler('ext:py', 'quicklook')).rules[3]).toMatchObject({ handler: 'quicklook' })
+    view = await s.chooseApp('ext:py')
+    expect(view.rules[3]).toMatchObject({ id: 'ext:py', handler: 'app', appName: 'Sublime Text', systemDefault: false })
+    expect((await s.setHandler('ext:pdf', 'default')).error).toBeUndefined()
+    expect(JSON.parse(readFileSync(filePath, 'utf8')).types).toEqual([
+      { extension: 'pdf', handler: 'default' },
+      { extension: 'py', handler: 'app', app: realpathSync(sublime) },
+    ])
   })
 
   it('adds a type once, up to twenty, and removes it', async () => {

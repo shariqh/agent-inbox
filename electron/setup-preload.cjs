@@ -49,7 +49,7 @@ contextBridge.exposeInMainWorld('agentInboxTheme', {
 // re-validates the sender and everything in the request, and alone decides
 // what may open (electron/link-open.cjs).
 const LINK_REASONS = new Set([
-  'folder', 'app', 'blocked', 'executable', 'special', 'requested', 'rule',
+  'folder', 'app', 'blocked', 'executable', 'special', 'type', 'requested', 'rule',
   'invalid', 'missing', 'inaccessible', 'failed', 'unavailable', 'app-missing', 'app-refused',
 ])
 
@@ -95,9 +95,13 @@ function settingsView(value) {
       !rule || typeof rule !== 'object' ||
       typeof rule.id !== 'string' || typeof rule.label !== 'string' ||
       (rule.kind !== 'web' && rule.kind !== 'file') || !SETTINGS_HANDLERS.has(rule.handler) ||
-      !(rule.appName === null || typeof rule.appName === 'string') || typeof rule.removable !== 'boolean'
+      !(rule.appName === null || typeof rule.appName === 'string') || typeof rule.removable !== 'boolean' ||
+      typeof rule.systemDefault !== 'boolean'
     ) return null
-    rules.push({ id: rule.id, label: rule.label, kind: rule.kind, handler: rule.handler, appName: rule.appName, removable: rule.removable })
+    rules.push({
+      id: rule.id, label: rule.label, kind: rule.kind, handler: rule.handler, appName: rule.appName,
+      removable: rule.removable, systemDefault: rule.systemDefault,
+    })
   }
   const view = { available: value.available, rules }
   if (SETTINGS_ERRORS.has(value.error)) view.error = value.error

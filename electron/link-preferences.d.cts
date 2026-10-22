@@ -12,6 +12,8 @@ export interface LinkSettingsRule {
   /** the chosen app's name; never its path */
   appName: string | null
   removable: boolean
+  /** whether "System default" is offered: only for the types link-open.cjs's allow-list opens */
+  systemDefault: boolean
 }
 
 export interface LinkSettingsView {

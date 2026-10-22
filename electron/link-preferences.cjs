@@ -11,12 +11,15 @@
 // build wrote with a newer schema reads as the defaults and is never
 // overwritten.
 //
-// A rule decides only how an openable file opens. electron/link-open.cjs
-// applies the safety policy first, so a folder, an app, a script or anything
-// with an execute bit is still only revealed, whatever a rule says.
+// A rule decides only how a file the safety policy lets through opens:
+// electron/link-open.cjs reveals a folder, a bundle, a denied type or anything
+// with an execute bit before it reads a rule, and an alias or a file with its
+// own Open With before it opens anything. A rule with an app or Quick Look may
+// open a type the system default may not (a code file in an editor); System
+// default is offered only for the types on link-open.cjs's allow-list.
 const fs = require('node:fs/promises')
 const path = require('node:path')
-const { appBundlePath, blockedFileName, isRunnerApp, launchableApp } = require('./link-open.cjs')
+const { appBundlePath, blockedFileName, isRunnerApp, launchableApp, openableFileName } = require('./link-open.cjs')
 const { createLockedFile, resolveFilePath } = require('./update-preferences.cjs')
 
 const FILENAME = 'link-preferences.json'
@@ -51,6 +54,8 @@ function normalizeExtension(value) {
 }
 
 const blockedExtension = (extension) => blockedFileName(`file.${extension}`)
+// Whether "System default" may open this type at all (the allow-list).
+const systemDefaultFor = (extension) => openableFileName(`file.${extension}`)
 
 // { prefs, record, writable }: `record` is the file's own object, so a write
 // keeps any field a newer build added.
@@ -75,7 +80,8 @@ function parseLinkPreferences(bytes) {
     const rule = readRule(type, FILE_HANDLERS)
     if (!extension || !rule || seen.has(extension) || blockedExtension(extension) || prefs.types.length >= MAX_TYPES) continue
     seen.add(extension)
-    prefs.types.push({ extension, ...rule })
+    // System default would only reveal a type off the allow-list; say so
+    prefs.types.push(rule.handler === 'default' && !systemDefaultFor(extension) ? { extension, handler: 'reveal' } : { extension, ...rule })
   }
   return { prefs, record: value, writable: true }
 }
@@ -110,28 +116,29 @@ function createLinkPreferences(options = {}) {
 
 // The rule a settings id names, as [get, set] over a copy of the preferences.
 function ruleSlot(prefs, id) {
-  if (id === 'web') return { kind: 'web', get: () => prefs.web, set: (rule) => { prefs.web = rule } }
-  if (id === 'markdown') return { kind: 'file', get: () => prefs.markdown, set: (rule) => { prefs.markdown = rule } }
+  if (id === 'web') return { kind: 'web', systemDefault: true, get: () => prefs.web, set: (rule) => { prefs.web = rule } }
+  if (id === 'markdown') return { kind: 'file', systemDefault: true, get: () => prefs.markdown, set: (rule) => { prefs.markdown = rule } }
   const extension = typeof id === 'string' && id.startsWith('ext:') ? normalizeExtension(id.slice(4)) : null
   const index = extension && id === `ext:${extension}` ? prefs.types.findIndex((type) => type.extension === extension) : -1
   if (index < 0) return null
   return {
     kind: 'file',
+    systemDefault: systemDefaultFor(extension),
     get: () => prefs.types[index],
     set: (rule) => { prefs.types[index] = { extension, ...rule } },
   }
 }
 
 function settingsView(prefs) {
-  const row = (id, label, kind, rule, removable) => ({
-    id, label, kind, handler: rule.handler, appName: rule.handler === 'app' ? appName(rule.app) : null, removable,
+  const row = (id, label, kind, rule, removable, systemDefault) => ({
+    id, label, kind, handler: rule.handler, appName: rule.handler === 'app' ? appName(rule.app) : null, removable, systemDefault,
   })
   return {
     available: true,
     rules: [
-      row('web', 'Web links', 'web', prefs.web, false),
-      row('markdown', 'Markdown (.md, .markdown)', 'file', prefs.markdown, false),
-      ...prefs.types.map((type) => row(`ext:${type.extension}`, `.${type.extension}`, 'file', type, true)),
+      row('web', 'Web links', 'web', prefs.web, false, true),
+      row('markdown', 'Markdown (.md, .markdown)', 'file', prefs.markdown, false, true),
+      ...prefs.types.map((type) => row(`ext:${type.extension}`, `.${type.extension}`, 'file', type, true, systemDefaultFor(type.extension))),
     ],
   }
 }
@@ -171,7 +178,7 @@ function createLinkSettings({ preferences, platform, chooseApp, fsp = fs }) {
     view: () => (platform === 'darwin' ? view() : unavailable()),
     setHandler: (id, handler) => change((prefs) => {
       const slot = ruleSlot(prefs, id)
-      if (!slot || !SETTABLE[slot.kind].has(handler)) return { refused: 'invalid' }
+      if (!slot || !SETTABLE[slot.kind].has(handler) || (handler === 'default' && !slot.systemDefault)) return { refused: 'invalid' }
       slot.set({ handler })
       return prefs
     }),
@@ -207,7 +214,7 @@ function createLinkSettings({ preferences, platform, chooseApp, fsp = fs }) {
       if (blockedExtension(extension)) return { refused: 'blocked' }
       if (prefs.types.some((type) => type.extension === extension)) return { refused: 'exists' }
       if (prefs.types.length >= MAX_TYPES) return { refused: 'full' }
-      prefs.types.push({ extension, handler: 'default' })
+      prefs.types.push({ extension, handler: systemDefaultFor(extension) ? 'default' : 'reveal' })
       return prefs
     }),
     removeType: (id) => change((prefs) => {

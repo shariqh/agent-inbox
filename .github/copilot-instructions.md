@@ -94,7 +94,15 @@ Run the build before `npm run electron`; the development shell starts the built
   runtime>/scripts/install-hooks.sh --apply --move-only`, from the installed
   copy of the verified release runtime (re-verified against the signed manifest
   digest before spawn), never from the app bundle or a checkout; `--move-only`
-  refuses under the setup lock where no Setup runtime's hooks exist to move. Once any quit begins, nothing starts: every quit or
+  refuses under the setup lock where no Setup runtime's hooks exist to move.
+  Where no Setup step can move outdated hooks (#278), the panel hands over the
+  checkout's own `npm run install:hooks -- --apply --replace-existing` when
+  Claude Code runs from a checkout (built and quoted by the viewer as `/api/setup`
+  `checkoutHooksCommand`), promises a later move only while a Setup install
+  could put the app's runtime in place, and otherwise says Setup cannot move them.
+  That promise can still show where no install keeps it: `none` also covers a
+  host whose CLI is not installed, which the viewer cannot see without running
+  anything (custom or unverifiable Claude Code plus no Copilot CLI); docs/hooks.md gives the way out. Once any quit begins, nothing starts: every quit or
   restart path calls `beginAppQuit()` in `electron/main.cjs` first, which refuses
   later installs through `createInstallGate()`, revokes the window's Setup, and
   cancels and awaits the running install; the renderer stops its per-host loop
@@ -390,10 +398,13 @@ Run the build before `npm run electron`; the development shell starts the built
   anything: `public/link-open.js` calls the one preload method
   `agentInboxLinks.open`, and `electron/link-open.cjs` re-checks the sender
   (the viewer window's top frame on its origin), the request's exact shape,
-  http(s) only, and a file's final target: folders, apps, executables,
-  scripts, installers, launchers and any execute bit are only revealed.
-  `setWindowOpenHandler` and `will-navigate` share the same http(s) check. A
-  browser copies a file's path instead.
+  http(s) only, and a file's final target: folders, apps, denied types
+  (launchers, installers, disk images, executables, macro documents, …) and
+  any execute bit are only revealed. Opening is an allow-list of common
+  document types; anything else is revealed, and on macOS so is an alias or a
+  file with its own Open With (checked through `/usr/bin/xattr`, argv only,
+  failing closed). `setWindowOpenHandler` and `will-navigate` share the same
+  http(s) check. A browser copies a file's path instead.
 - Settings → Links (#300 part 2, macOS only) lives in main:
   `electron/link-preferences.cjs` keeps per-type rules in userData
   `link-preferences.json` (schema 1, `createLockedFile`, tolerant reader that
@@ -401,7 +412,10 @@ Run the build before `npm run electron`; the development shell starts the built
   never an app path; an app comes only from main's own `dialog.showOpenDialog`
   limited to `.app` bundles, and `launchableApp` re-checks it at every launch
   (real path, `Contents/Info.plist`, never an app that runs what it opens).
-  Rules apply only after the safety policy, and launch with argv only
+  A rule is read only after folders, bundles, denied types and execute bits
+  are revealed, and the alias and Open With checks run before it opens
+  anything. An app or Quick Look rule may open a type off the allow-list (a
+  code file in an editor); System default never does. Launches use argv only
   (`/usr/bin/open -a <app> -- <target>`, `/usr/bin/qlmanage -p <file>`), no
   shell, stdio ignored. On the window's own open path, a chosen browser that
   fails falls back to the default one.

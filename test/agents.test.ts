@@ -6,7 +6,7 @@
 // running sessions still run another build than their host now loads, and how
 // to restart them. It never says a running session reloaded.
 import { describe, expect, it } from 'vitest'
-import { agentsAction, hooksGuidance, hostLine, restartGuidance } from '../public/agents.js'
+import { agentsAction, hooksGuidance, hooksNextStep, hostLine, restartGuidance } from '../public/agents.js'
 
 const runtime = (version: string) => ({ kind: 'runtime', version, runtimeId: `agent-inbox-runtime-${version}-darwin-arm64-0123456789abcdef` })
 
@@ -167,6 +167,120 @@ describe('agentsAction', () => {
       expect(hosts(agentsAction(agents(runtime('1.3.0'), runtime('1.3.0'), { hooks, hooksCommand: COMMAND }))), JSON.stringify(hooks)).toBeNull()
     }
     expect(agentsAction(agents(runtime('1.2.8'), runtime('1.3.0'), { hooks: runtime('1.2.4'), hooksCommand: COMMAND, updatable: false }))).toBeNull()
+  })
+})
+
+// #278: a hooks line that differs from this app's runtime always ends in a step
+// the human can take. Setup installs this app's runtime only while it registers
+// an agent it manages, and never switches a checkout, so with Claude Code on a
+// checkout nothing in Setup would ever keep a "once this app's runtime is
+// installed" promise: the checkout's own hook installer is the step there.
+describe('hooksNextStep (#278)', () => {
+  const CHECKOUT = '/Users/me/Development/agent-inbox'
+  const checkout = { kind: 'checkout', path: CHECKOUT }
+  const CHECKOUT_COMMAND = `cd '${CHECKOUT}' && npm run install:hooks -- --apply --replace-existing`
+  const RUNTIME_COMMAND = "bash '/home/me/.agent-inbox/runtime/agent-inbox-runtime-1.5.0-darwin-arm64-0123456789abcdef/scripts/install-hooks.sh' --apply"
+  const state = (claude: unknown, copilot: unknown, extra: Record<string, unknown> = {}) =>
+    ({ current: '1.5.0', updatable: true, claude, copilot, hooks: runtime('1.2.4'), hooksCommand: '', ...extra })
+  const FROM_CHECKOUT = {
+    text: 'Claude Code runs from your source checkout. To point Claude hooks at it too, run this in a terminal with Node 24:',
+    command: CHECKOUT_COMMAND,
+  }
+  const PROMISE = { text: 'Once this app\'s v1.5.0 runtime is installed, Setup can move Claude hooks to it.', command: null }
+  const MANUAL = {
+    text: 'Setup cannot move these hooks. To change them, run Agent Inbox\'s hook installer in a terminal, as docs/hooks.md describes.',
+    command: null,
+  }
+
+  it('hands over the hook command of the checkout Claude Code runs from, and no runtime promise: the reported case', () => {
+    const reported = state(checkout, checkout, { checkoutHooksCommand: CHECKOUT_COMMAND })
+    expect(agentsAction(reported)).toBeNull()
+    expect(hooksNextStep(reported, true)).toEqual(FROM_CHECKOUT)
+    expect(hooksNextStep(reported, false)).toEqual(FROM_CHECKOUT)
+    // the checkout's own installer even where a Setup install could put this
+    // app's runtime in place for Copilot CLI: Claude Code would not run it
+    expect(hooksNextStep(state(checkout, { kind: 'none' }, { checkoutHooksCommand: CHECKOUT_COMMAND }), true)).toEqual(FROM_CHECKOUT)
+    // hooks on a newer runtime, after an app downgrade
+    expect(hooksNextStep(state(checkout, checkout, { hooks: runtime('1.6.0'), checkoutHooksCommand: CHECKOUT_COMMAND }), true)).toEqual(FROM_CHECKOUT)
+    // where this release cannot install its own runtime at all
+    expect(hooksNextStep(state(checkout, checkout, { updatable: false, checkoutHooksCommand: CHECKOUT_COMMAND }), false)).toEqual(FROM_CHECKOUT)
+  })
+
+  it('keeps the promise only where a Setup install could put this app\'s runtime in place', () => {
+    // an unregistered host, or one on Setup's runtime, is one Setup can register
+    for (const [claude, copilot] of [
+      [{ kind: 'none' }, { kind: 'none' }],
+      [{ kind: 'other' }, { kind: 'none' }],
+      [{ kind: 'unknown' }, { kind: 'runtime' }],
+      [{ kind: 'checkout' }, { kind: 'none' }],
+    ]) {
+      expect(hooksNextStep(state(claude, copilot), true), JSON.stringify([claude, copilot])).toEqual(PROMISE)
+      expect(hooksNextStep(state(claude, copilot), false), JSON.stringify([claude, copilot])).toEqual(PROMISE)
+    }
+  })
+
+  it('says plainly that Setup cannot move them, and where to look, when nothing in Setup could', () => {
+    for (const [claude, copilot] of [
+      [{ kind: 'other' }, checkout],
+      [{ kind: 'unknown' }, { kind: 'other' }],
+      // a checkout whose path could not be reported: no command to hand over
+      [{ kind: 'checkout' }, checkout],
+    ]) {
+      expect(hooksNextStep(state(claude, copilot), true), JSON.stringify([claude, copilot])).toEqual(MANUAL)
+    }
+    // this release cannot install its runtime here, whatever the hosts are
+    expect(hooksNextStep(state({ kind: 'none' }, { kind: 'none' }, { updatable: false }), true)).toEqual(MANUAL)
+    expect(hooksNextStep(state({ kind: 'runtime' }, { kind: 'none' }, { updatable: false }), false)).toEqual(MANUAL)
+  })
+
+  it('leaves the runtime\'s own hook command and the action\'s steps as they were', () => {
+    // installed, so the action moves them: its button here, its terminal command elsewhere
+    for (const claude of [{ kind: 'none' }, checkout]) {
+      const installed = state(claude, { kind: 'none' }, { hooksCommand: RUNTIME_COMMAND, checkoutHooksCommand: CHECKOUT_COMMAND })
+      expect(agentsAction(installed)?.steps.map((step) => step.host)).toEqual(['hooks'])
+      expect(hooksNextStep(installed, true)).toBeNull()
+      expect(hooksNextStep(installed, false)).toEqual({ text: 'Or move them from a terminal:', command: RUNTIME_COMMAND })
+    }
+    // installed but no action to run it: the command alone
+    expect(hooksNextStep(state({ kind: 'none' }, { kind: 'none' }, { hooksCommand: RUNTIME_COMMAND, updatable: false }), true))
+      .toEqual({ text: 'To move Claude hooks to v1.5.0, run this in a terminal:', command: RUNTIME_COMMAND })
+    // an agent step installs the runtime first: the button, or the action's
+    // "Open Settings in the Agent Inbox app" line, is the step
+    for (const claude of [runtime('1.2.8'), checkout]) {
+      const moving = state(claude, runtime('1.2.8'), { checkoutHooksCommand: CHECKOUT_COMMAND })
+      expect(agentsAction(moving)?.steps.at(-1)?.host).toBe('hooks')
+      expect(hooksNextStep(moving, true)).toBeNull()
+      expect(hooksNextStep(moving, false)).toBeNull()
+    }
+  })
+
+  it('adds nothing for hooks on the checkout, on this app\'s runtime, absent, or Setup does not compare', () => {
+    for (const hooks of [checkout, { kind: 'checkout', path: '/elsewhere/agent-inbox' }, runtime('1.5.0'), { kind: 'runtime' }, { kind: 'none' }, { kind: 'other' }, { kind: 'unknown' }]) {
+      expect(hooksNextStep(state(checkout, checkout, { hooks, checkoutHooksCommand: CHECKOUT_COMMAND }), true), JSON.stringify(hooks)).toBeNull()
+    }
+    // a checkout viewer has no runtime of its own to compare with
+    expect(hooksNextStep(state(checkout, checkout, { current: null, checkoutHooksCommand: CHECKOUT_COMMAND }), true)).toBeNull()
+    expect(hooksNextStep(null, true)).toBeNull()
+  })
+
+  it('never leaves an older or newer hooks line without a next step, and promises only what Setup can do', () => {
+    const kinds = [
+      { kind: 'none' }, { kind: 'runtime' }, runtime('1.2.8'), runtime('1.5.0'), runtime('1.6.0'),
+      checkout, { kind: 'checkout' }, { kind: 'other' }, { kind: 'unknown' },
+    ]
+    for (const claude of kinds) for (const copilot of kinds) for (const hooks of [runtime('1.2.4'), runtime('1.6.0')]) {
+      for (const updatable of [true, false]) for (const hooksCommand of ['', RUNTIME_COMMAND]) for (const canRun of [true, false]) {
+        const agents = state(claude, copilot, { hooks, updatable, hooksCommand, ...(claude === checkout ? { checkoutHooksCommand: CHECKOUT_COMMAND } : {}) })
+        const label = JSON.stringify({ claude, copilot, hooks, updatable, hooksCommand, canRun })
+        const hooksStep = agentsAction(agents)?.steps.some((step) => step.host === 'hooks') === true
+        const step = hooksNextStep(agents, canRun)
+        // the action's button, its "Open Settings in the Agent Inbox app" line, or this
+        expect(hooksStep || step !== null, label).toBe(true)
+        if (step?.text === PROMISE.text) {
+          expect(updatable && [claude, copilot].some((reg) => reg.kind === 'none' || reg.kind === 'runtime'), label).toBe(true)
+        }
+      }
+    }
   })
 })
 

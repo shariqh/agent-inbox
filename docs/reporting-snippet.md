@@ -92,8 +92,10 @@ GitHub references (`#287`, `PR #284`, `owner/name#12`) and local file paths beco
 too, and every link a card shows is also listed at the top of the card. **Write local files
 the human should open as absolute paths** (`/Users/…/docs/spec.md` or `~/…/spec.md`, with
 an optional `:line`), never repo-relative ones (`docs/spec.md`); a path containing a space
-does not link. A single-digit `#N` links only after `issue`, `PR` or a closing keyword such
-as `Fixes`, or in parentheses like `(#7)`, because on its own it reads as an ordinal.
+does not link. Common documents (Markdown, text, JSON, YAML, CSV, PDF, images, HTML) open in
+their default app; any other file is only shown in its folder. A single-digit `#N` links
+only after `issue`, `PR` or a closing keyword such as `Fixes`, or in parentheses like
+`(#7)`, because on its own it reads as an ordinal.
 **Always provide `context`** — the background a human returning cold needs
 to act without asking you anything: what you were working on, why this came up, relevant
 files/PRs/links. They may read the item hours later with zero memory of the task; it

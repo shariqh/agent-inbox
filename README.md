@@ -24,7 +24,7 @@ share one SQLite database on your machine.
 |---|---|
 | **Live operations dashboard** | Real current state plus locally persisted agent-claim history, with every signal drilling into a working view |
 | **Cross-project inbox** | Questions and handoffs from every active coding session in one prioritized queue |
-| **Action-aware responses** | Recommended options, free-text answers, snooze, clarify, and decline controls |
+| **Action-aware responses** | Recommended options, free-text answers, snooze, pin for later, clarify, and decline controls |
 | **Durable plans** | Tracking boards with stable rows, progress, next steps, outcomes, and human-owned actions |
 | **Live sessions** | Ambient status for active agents and their current work without turning activity into alerts |
 | **Dual-host setup** | Audited installers and instructions for GitHub Copilot CLI and Claude Code |
@@ -204,9 +204,12 @@ request waits longer (30 minutes, then 1, 2 and 4 hours), so a long wait costs t
 agent a few wakes instead of dozens. On a Copilot request you can also choose
 **I'll take a while**: stop the agent waiting (it will not wake on its own, so
 message it after you answer) or ask it to wait quietly for a few hours or until
-tomorrow. A snooze also keeps its watcher quiet, checking in at most once a day.
-Neither removes the request from Needs you. The choice appears only on requests
-raised by a Copilot session running this version, whose watcher honours it.
+tomorrow. With the Later section on (the default), the same choice also sets the
+request aside: **Stop waiting** pins it in Later, and a quiet wait snoozes it there
+until the same time. With the section off, the request stays in Needs you. A
+snooze also keeps its watcher quiet, checking in at most once a day. The choice
+appears only on requests raised by a Copilot session running this version, whose
+watcher honours it.
 
 **Saved, delivered, and acted on are different states.** Watchers only notify the
 host; they never mark a response delivered or complete. An agent receives the
@@ -228,6 +231,30 @@ first, and a session running from a source checkout is told to update and rebuil
 it. After Setup matches agents back to an older app, sessions still on the newer
 build are marked too. A server too old to report its build shows nothing rather than
 a guess.
+
+## Setting requests aside
+
+A request's **More responses** menu can set it aside. **Pin for later** keeps it
+with no return time. **Not now · 4h**, **Tomorrow** and **Next week** snooze it
+until then. A request you set aside leaves the title badge, the tab count and the
+app icon badge, but it stays on screen.
+
+Set-aside requests wait in the **Later** section at the foot of the Inbox. It is
+collapsed under one count for the current filters, such as `Later · 3` and
+`2 pinned · 1 snoozed, next back in 2h`. Snoozed requests come first, soonest
+back first, then pinned requests, oldest first. Each row says why it waits, and
+**Back to inbox** returns it at once. You can still answer, clarify or decline a
+request inside Later. A snoozed request comes back by itself when its time
+passes. A pinned request comes back when you return it, or when the agent ends
+the request or starts a new one. When nothing else needs you, the queue says how
+many requests wait in Later, and search still lists them under Open items with a
+Later label.
+
+The Later section is on by default. Turn it off in **Settings → Inbox** to keep
+the earlier layout: a snoozed fold, a pinned fold for requests you already
+pinned, and no Pin for later choice. The setting is saved for each browser or
+app profile and changes only the layout. Badges, counts and notifications are the
+same either way.
 
 ## Keyboard controls
 

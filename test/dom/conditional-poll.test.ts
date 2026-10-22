@@ -167,7 +167,7 @@ describe('conditional snapshot polling', () => {
     await pollTick()
     expect(reads.slice(-3).every((entry) => entry.status === 304)).toBe(true)
     expect(badgeCount()).toBe(1)
-    expect(row(id)?.closest('.snoozed-fold')).toBeNull()
+    expect(row(id)?.closest('details')).toBeNull()
     expect(document.getElementById('liveStripLabel')?.textContent).toContain('1 connected · no task reported')
     expect(freshHeaders.every((header) => header === null)).toBe(true)
   })

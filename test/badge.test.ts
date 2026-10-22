@@ -177,10 +177,16 @@ describe('focusItem opens ancestor <details> folds, not just the target (fix rou
   it('flips staleFoldOpen so the next 3s poll does not re-collapse the stale fold', () => {
     expect(helper).toMatch(/staleFoldOpen\s*=\s*true/)
   })
-  // #247: the snoozed and pinned folds, likewise. jsdom's own toggle event
-  // re-records a programmatic open, so only the source can hold this line.
+  // #247: the snoozed and pinned folds and the Later section, likewise. jsdom's
+  // own toggle event re-records a programmatic open, so only the source can
+  // hold these lines: the helper records the key, and the section carries it.
   it('records an opened deferred fold so the next 3s poll keeps it open', () => {
     expect(helper).toMatch(/openDeferredFolds\.add\(node\.dataset\.deferredFold\)/)
+    const sectionStart = js.indexOf('function laterSectionEl(')
+    const section = js.slice(sectionStart, js.indexOf('\n}', sectionStart))
+    expect(sectionStart).toBeGreaterThan(-1)
+    expect(section).toMatch(/section\.dataset\.deferredFold = 'later'/)
+    expect(section).toMatch(/openDeferredFolds\.has\('later'\)/)
   })
   it('flips showArchived so the next 3s poll does not re-collapse the archived fold', () => {
     expect(helper).toMatch(/showArchived\s*=\s*true/)

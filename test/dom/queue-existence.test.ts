@@ -53,7 +53,7 @@ describe('Needs-you inspector existence reconciliation', () => {
     navigateToHash(`#item/${snoozedId}`)
     await settle()
     await pollTick()
-    expect(row(snoozedId)?.closest<HTMLDetailsElement>('.snoozed-fold')?.open).toBe(true)
+    expect(row(snoozedId)?.closest<HTMLDetailsElement>('.later-section')?.open).toBe(true)
     expect(row(snoozedId)?.dataset.open).toBe('1')
   })
 })

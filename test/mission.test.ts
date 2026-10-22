@@ -176,6 +176,18 @@ describe('buildMission with dependencies (slice 2 §9.2)', () => {
     expect(pathOf(mission, 'ri').waitsOn.some((e) => e.kind === 'step' && e.rowId === 'ro')).toBe(false)
   })
 
+  it('links a GitHub blocker known only from the waiting step\'s own issue, in both directions', () => {
+    // Review waits on AHP adapter only because #131 says #119 blocks it; #119 was never fetched
+    const rows = [step('ra', 'AHP adapter', 'partial', 119), step('rv', 'Review', 'tracked', 131)]
+    const plan = planOf('p', 'Review plan', rows, null)
+    const snaps = [row(K(131), snapshot(K(131)), at(0), { dependencies: depsOf([[K(119), K(131)]])(K(131)) })]
+    const issues = buildIssueView(buildIssueGraph(snaps, keySets([K(131), K(119)])), { boards: [plan], nowMs })
+    expect(issues.relations.get(K(119))?.dependencies ?? null).toBeNull()
+    const mission = buildMission(plan, { issues, links: null })
+    expect(brief(pathOf(mission, 'rv').waitsOn)).toEqual(['step AHP adapter #119 [github]'])
+    expect(brief(pathOf(mission, 'ra').unblocks)).toEqual(['step Review #131 [github]'])
+  })
+
   /** #117, #119 and #120 fetched; `unfetched` linked but never fetched. */
   function rebuild(pairs: (key: string) => IssueDependencies, unfetched: number[]) {
     const under117 = { ancestors: [ahp] }

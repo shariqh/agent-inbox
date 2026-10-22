@@ -698,8 +698,10 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   follow row order, and `unblocks` is the exact inverse of every step's `waitsOn`, so the two
   can never disagree. GitHub edges come from either end: a row's own `rowWaits` (its issue's
   open blockers) and, for a row whose issue is OPEN, its relation's open dependents (an edge
-  known only from the blocker's side still draws). `done`/`na` targets are satisfied because
-  `rowWaits` already drops them, and an `na` row is never a node. An issue no drawn row links
+  known only from the blocker's side still draws). Local `waits_on` to `done`/`na` steps are
+  satisfied (`rowWaits` drops them); GitHub edges follow the OPEN issue, so a `done` row whose
+  issue is still open can still be waited on, as a button to that step. An `na` row is never
+  a node. An issue no drawn row links
   is `{ kind: 'issue' }` with its slice-1 activity label (`IssueWaitEntry.activity`, additive);
   it is never turned into an edge to another plan. `partOf` is the step's parent where it
   differs from the plan's certain issue; `outside` is the plan issue's children that no row

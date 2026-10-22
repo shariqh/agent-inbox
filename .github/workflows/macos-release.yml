@@ -12,6 +12,11 @@ concurrency:
   group: macos-release-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  # Every npm install in this workflow compiles better-sqlite3 rather than load an
+  # unpinned prebuild; no job or step may override it (#315).
+  npm_config_build_from_source: "true"
+
 jobs:
   linux-x64-appimage:
     permissions:
@@ -55,9 +60,6 @@ jobs:
           node-version: ${{ steps.release-inputs.outputs.node-version }}
           package-manager-cache: false
       - run: npm ci
-        env:
-          # Compile better-sqlite3 rather than load an unpinned prebuild (#315).
-          npm_config_build_from_source: "true"
       - run: npm run release:inputs
       - id: tag
         name: Require annotated tag, exact version, and exact checkout
@@ -101,9 +103,6 @@ jobs:
           architecture: ${{ matrix.arch }}
           package-manager-cache: false
       - run: npm ci
-        env:
-          # Compile better-sqlite3 rather than load an unpinned prebuild (#315).
-          npm_config_build_from_source: "true"
       - run: echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct '${{ needs.validate-tag.outputs.source-commit }}')" >> "$GITHUB_ENV"
       - run: npm run build
       - name: Stage verified native runtime
@@ -151,9 +150,6 @@ jobs:
           architecture: ${{ matrix.arch }}
           package-manager-cache: false
       - run: npm ci
-        env:
-          # Compile better-sqlite3 rather than load an unpinned prebuild (#315).
-          npm_config_build_from_source: "true"
       - run: echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct '${{ needs.validate-tag.outputs.source-commit }}')" >> "$GITHUB_ENV"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:

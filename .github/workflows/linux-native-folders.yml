@@ -42,6 +42,11 @@ concurrency:
   group: linux-native-folders-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Every npm install in this workflow compiles better-sqlite3 rather than load an
+  # unpinned prebuild; no job or step may override it (#315).
+  npm_config_build_from_source: "true"
+
 jobs:
   native-folder:
     name: Native folder / ${{ matrix.key }}
@@ -69,9 +74,6 @@ jobs:
           architecture: ${{ matrix.arch }}
           package-manager-cache: false
       - run: npm ci
-        env:
-          # Compile better-sqlite3 rather than load an unpinned prebuild (#315).
-          npm_config_build_from_source: "true"
       - name: Validate exact Linux release inputs and gates
         run: |
           npm run release:linux-inputs

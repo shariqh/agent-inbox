@@ -3,9 +3,9 @@
 // step may take a prebuild from the npm cache: prebuild-install unpacks
 // whatever <cache>/_prebuilds holds without checking a digest, so a planted
 // archive would ship an addon, and JavaScript, that the build never compiled.
-// The release, build and signing workflows' own checkout npm ci, whose addon
-// nothing ships but their scripts and tests load, opts out through
-// npm_config_build_from_source instead.
+// Every other npm install in the release, build and signing workflows, whose
+// addon nothing ships but their scripts and tests load, opts out through
+// npm_config_build_from_source, set once for the whole workflow.
 //
 // The fixture stands in for better-sqlite3 (same name, version, repository and
 // install script) with an addon that compiles in seconds, and is installed by
@@ -141,6 +141,10 @@ describe.skipIf(!NPM_CLI || !HAS_NODE_HEADERS)('staged app dependencies never ta
       npm_config_better_sqlite3_binary_host: 'http://127.0.0.1:9',
       npm_config_nodedir: NODE_PREFIX,
       npm_config_update_notifier: 'false',
+      // The release workflows set this for every step; inherited, it would make the
+      // first case compile and the hardened one pass whatever its own flags. Empty is
+      // unset to npm and to prebuild-install alike.
+      npm_config_build_from_source: '',
     }
     for (const [name, value] of Object.entries(mirrorEnv)) vi.stubEnv(name, value)
 
@@ -209,8 +213,8 @@ describe.skipIf(!NPM_CLI || !HAS_NODE_HEADERS)('staged app dependencies never ta
   }, 120_000)
 
   it('compiles the addon from source when an install sets npm_config_build_from_source', () => {
-    // How the release, build and signing workflows run their own checkout npm ci;
-    // npm 11 only warns about the unknown config and leaves it in the script's env.
+    // How every npm install in the release, build and signing workflows runs (they run
+    // this file too); npm 11 only warns about the unknown config and passes it on.
     const root = stage()
     npm(['ci', '--omit=dev', '--no-audit', '--no-fund'], root, { ...process.env, npm_config_build_from_source: 'true' })
 

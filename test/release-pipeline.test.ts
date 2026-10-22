@@ -672,24 +672,22 @@ describe('universal finalization contract', () => {
     expect(trigger).toContain('      - "test/setup-*.test.ts"')
   })
 
-  it('restores no npm cache where a release is built, signed or verified (#315)', () => {
-    // A restored <cache>/_prebuilds would reach any install that still runs
-    // prebuild-install, which unpacks it unchecked and loads the addon it holds.
+  // Every workflow but ci.yml builds, signs or verifies a release (#315)
+  const releaseWorkflows = (): { file: string, lines: string[] }[] => {
     const workflowsDir = join(root, '.github', 'workflows')
-    for (const file of readdirSync(workflowsDir).filter((name) => /\.ya?ml$/.test(name) && name !== 'ci.yml')) {
-      expect(readFileSync(join(workflowsDir, file), 'utf8'), file).not.toMatch(/^\s*cache:\s*npm\b/m)
-    }
-  })
+    return readdirSync(workflowsDir)
+      .filter((name) => /\.ya?ml$/.test(name) && name !== 'ci.yml')
+      .map((file) => ({ file, lines: readFileSync(join(workflowsDir, file), 'utf8').split(/\r?\n/) }))
+  }
+  const indentOf = (line: string): number => line.match(/^ */)?.[0].length ?? 0
+  const isContent = (line: string): boolean => line.trim() !== '' && !line.trim().startsWith('#')
 
-  it('compiles better-sqlite3 in every install and lets setup-node cache nothing where a release is built, signed or verified (#315)', () => {
-    // Nothing from the checkout's own npm ci ships, but scripts and tests load its
-    // better-sqlite3 in jobs that build the release or hold the signing and notary
-    // secrets, so it takes no prebuild either, and setup-node restores no cache of its
-    // own accord (its package-manager-cache input defaults to true). ci.yml holds no
-    // secret and keeps its prebuilds.
+  it('restores no npm cache where a release is built, signed or verified (#315)', () => {
+    // prebuild-install unpacks a restored <cache>/_prebuilds without checking a digest.
+    // An explicit cache input wins over package-manager-cache: false, however it is
+    // quoted, and that input defaults to true: setup-node then caches on its own once
+    // package.json names npm as its package manager.
     type Step = { line: number, indent: number, lines: string[] }
-    const indentOf = (line: string): number => line.match(/^ */)?.[0].length ?? 0
-    const isContent = (line: string): boolean => line.trim() !== '' && !line.trim().startsWith('#')
     const workflowSteps = (lines: string[]): Step[] => {
       const steps: Step[] = []
       let stepsIndent = -1
@@ -710,47 +708,59 @@ describe('universal finalization contract', () => {
       }
       return steps
     }
-    // The entries under one of a step's own keys, such as env: or with:
-    const entries = (step: Step, key: string): string[] => {
-      const at = step.lines.findIndex((line) => line.trim() === `${key}:` && indentOf(line) === step.indent + 2)
+    // The entries of a step's block-style with:, so a flow-style one fails the check below
+    const inputs = (step: Step): string[] => {
+      const at = step.lines.findIndex((line) => line.trim() === 'with:' && indentOf(line) === step.indent + 2)
       if (at < 0) return []
       const end = step.lines.findIndex((line, index) => index > at && isContent(line) && indentOf(line) <= step.indent + 2)
       return step.lines.slice(at + 1, end < 0 ? undefined : end).filter((line) => indentOf(line) === step.indent + 4)
     }
-    const INSTALL = /\bnpm\s+(?:ci|install|i|rebuild|update)\b/
-    const SETUP_NODE = /^\s*(?:-\s+)?uses:\s+actions\/setup-node@/
+    const SETUP_NODE = /actions\/setup-node@/
 
-    const workflowsDir = join(root, '.github', 'workflows')
-    let installs = 0
     let setupNodes = 0
-    for (const file of readdirSync(workflowsDir).filter((name) => /\.ya?ml$/.test(name) && name !== 'ci.yml')) {
-      const lines = readFileSync(join(workflowsDir, file), 'utf8').split(/\r?\n/)
+    for (const { file, lines } of releaseWorkflows()) {
       const checked = new Set<number>()
       for (const step of workflowSteps(lines)) {
+        if (!step.lines.some((line) => isContent(line) && SETUP_NODE.test(line))) continue
+        setupNodes += 1
         const where = `${file}:${step.line}`
-        const own = step.lines.filter(isContent)
-        if (own.some((line) => INSTALL.test(line))) {
-          installs += 1
-          expect(entries(step, 'env'), `${where} must compile better-sqlite3 rather than take a prebuild`)
-            .toContain(`${' '.repeat(step.indent + 4)}npm_config_build_from_source: "true"`)
-          step.lines.forEach((_, offset) => checked.add(step.line + offset))
-        }
-        if (own.some((line) => SETUP_NODE.test(line))) {
-          setupNodes += 1
-          expect(entries(step, 'with'), `${where} must turn off setup-node's package-manager cache`)
-            .toContain(`${' '.repeat(step.indent + 4)}package-manager-cache: false`)
-          step.lines.forEach((_, offset) => checked.add(step.line + offset))
-        }
+        expect(inputs(step), `${where} must turn off setup-node's package-manager cache`)
+          .toContain(`${' '.repeat(step.indent + 4)}package-manager-cache: false`)
+        expect(inputs(step).filter((line) => /^\s*["']?cache[\w-]*["']?\s*:/.test(line)), `${where} must set no cache input`)
+          .toEqual([])
+        step.lines.forEach((_, offset) => checked.add(step.line + offset))
       }
-      // Every install and setup-node line belongs to a step checked above
       lines.forEach((line, index) => {
-        if (isContent(line) && (INSTALL.test(line) || SETUP_NODE.test(line))) {
-          expect(checked.has(index + 1), `${file}:${index + 1} is outside any checked step`).toBe(true)
-        }
+        if (!isContent(line)) return
+        if (SETUP_NODE.test(line)) expect(checked.has(index + 1), `${file}:${index + 1} is outside any checked step`).toBe(true)
+        expect(line, `${file}:${index + 1} must restore no cache`).not.toMatch(/\buses:\s*["']?actions\/cache\b/)
       })
     }
-    expect(installs).toBeGreaterThan(0)
     expect(setupNodes).toBeGreaterThan(0)
+  })
+
+  it('compiles better-sqlite3 in every npm install where a release is built, signed or verified (#315)', () => {
+    // Nothing from the checkout's own npm install ships, but scripts and tests load its
+    // better-sqlite3 in jobs that build the release or hold the signing and notary
+    // secrets. Set once for the whole workflow, the variable reaches every step and every
+    // npm spelling (npm --prefix . ci, clean-install, ic, install-test and the rest). No
+    // other line may name it, since a job or step env, a $GITHUB_ENV write, an unset or
+    // an npm --build-from-source flag could turn it off. ci.yml keeps its prebuilds.
+    const SETTING = '  npm_config_build_from_source: "true"'
+    for (const { file, lines } of releaseWorkflows()) {
+      const at = lines.indexOf('env:')
+      const end = at < 0 ? -1 : lines.findIndex((line, index) => index > at && isContent(line) && indentOf(line) === 0)
+      const topEnv = at < 0 ? [] : lines.slice(at + 1, end < 0 ? undefined : end)
+      expect(topEnv, `${file} must set it in its top-level env`).toContain(SETTING)
+      const setting = at + 1 + topEnv.indexOf(SETTING)
+      lines.forEach((line, index) => {
+        if (!isContent(line) || index === setting) return
+        expect(line, `${file}:${index + 1} must not set or unset it again`).not.toMatch(/build[-_]?from[-_]?source/i)
+      })
+    }
+    // An npm that stops passing the variable to install scripts fails the release run itself
+    expect(readFileSync(join(root, '.github', 'workflows', 'macos-universal.yml'), 'utf8'))
+      .toMatch(/^\s*- run: npx vitest run [^\n]*test\/app-dependencies\.test\.ts/m)
   })
 
   it('pins every repository workflow action and disables checkout credential persistence', () => {

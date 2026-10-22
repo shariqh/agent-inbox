@@ -1449,11 +1449,14 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   (`pwd -P`) and treats a missing staged manifest or an unconfirmed graph check as failure:
   a step that silently did nothing could otherwise let `npm ci` walk up and strip the
   checkout's devDependencies. *(#315)* Every workflow but `ci.yml` builds, signs or
-  verifies a release, so none restores an npm cache (no `cache: npm`, and
-  `package-manager-cache: false` on each setup-node step) and each checkout `npm ci`
-  there sets `npm_config_build_from_source=true`: nothing from that install ships, but
-  scripts and tests load its addon in jobs that build the release or hold signing and
-  notary secrets. `test/release-pipeline.test.ts` pins all three; `ci.yml` keeps its
+  verifies a release, so none restores an npm cache (no setup-node `cache` input of any
+  kind, and `package-manager-cache: false` on each setup-node step), and each sets
+  `npm_config_build_from_source=true` once, in its top-level `env`, which no job or step
+  may name again: nothing from the checkout's install ships, but scripts and tests load
+  its addon in jobs that build the release or hold signing and notary secrets, and a
+  workflow-wide value reaches every npm spelling (`npm --prefix . ci`, `clean-install`,
+  `ic`). `test/release-pipeline.test.ts` pins all of it, `macos-universal.yml` runs
+  `test/app-dependencies.test.ts` under the release Node, and `ci.yml` keeps its
   prebuilds.
 - **Portable release runtime** *(#74 Layer 1)* — the app may additionally embed
   `darwin-arm64` and `darwin-x64` Node 24 payloads staged outside the Electron dependency

@@ -100,14 +100,14 @@ The workflow uploads short-lived Actions artifacts for review and protected
 aggregation. It has read-only repository permissions, persists no checkout
 credentials, uses no secrets, and cannot publish GitHub Release assets itself.
 
-Like every release, build and signing workflow, it restores no npm cache (no
-`cache: npm`, and `package-manager-cache: false` on each `actions/setup-node`
-step), and its checkout-level `npm ci` sets `npm_config_build_from_source=true`
-(#315). Nothing from that install ships, but the job's scripts and tests load its
-better-sqlite3 beside the artifacts they build, so it never takes a prebuild:
-node-gyp compiles it with the runner's default compiler, against headers it
-downloads for the runner's Node and checks against that release's
-`SHASUMS256.txt`.
+Like every release, build and signing workflow, it restores no npm cache (no `cache`
+input on any `actions/setup-node` step, and `package-manager-cache: false` on each),
+and it sets `npm_config_build_from_source=true` once in its top-level `env`, which no
+job or step sets again (#315). Nothing from the checkout's own install ships, but the
+job's scripts and tests load its better-sqlite3 beside the artifacts they build, so no
+npm install in the workflow takes a prebuild: node-gyp compiles it with the runner's
+default compiler, against headers it downloads for the runner's Node and checks
+against that release's `SHASUMS256.txt`.
 
 ## Build an AppImage
 

@@ -437,6 +437,10 @@ function runMigrations(db: Database.Database): void {
   ensureColumn(db, 'boards', 'issue_pin_number', 'INTEGER')
   ensureColumn(db, 'board_rows', 'issue_repo', 'TEXT')
   ensureColumn(db, 'board_rows', 'issue_number', 'INTEGER')
+  // issue #103 slice 2 — GitHub's issue dependencies, as JSON bound to the
+  // fetched_at written beside them (see upsertIssueSnapshot). NULL on legacy
+  // rows and after an older viewer's write: "unknown", never "no dependencies".
+  ensureColumn(db, 'issue_snapshots', 'dependencies', 'TEXT')
   migratePinForLater(db)
   // issue #103 slice 2 (§4.3) — a row's agent-declared step dependencies, a
   // sorted JSON array of other rows' labels (NULL = none). Additive like PR2's
@@ -3376,6 +3380,12 @@ export function pruneSourceLinks(db: Database.Database, opts: { nowMs?: number }
 // stored checked_at, so a slow answer from an older attempt can never replace a
 // newer success or failure. It is the WHERE clause of one upsert, never a read
 // followed by a write, so two viewers sharing the hub cannot interleave inside it.
+//
+// Slice 2 adds a second section in its own column, `dependencies`: GitHub's
+// "blocked by" and "blocking" lists, fetched with the snapshot, written in the
+// same statement and BOUND to that fetch's fetched_at. The v1 snapshot keeps
+// its shape, so an older viewer still reads every row; its writes unbind the
+// section instead of erasing it, and this build never trusts an unbound one.
 
 export type IssueState = 'OPEN' | 'CLOSED'
 export type IssueStateReason = 'COMPLETED' | 'NOT_PLANNED' | 'DUPLICATE' | 'REOPENED'
@@ -3416,6 +3426,22 @@ export interface IssueSnapshot {
   hierarchy: IssueHierarchy
 }
 
+/** One direction of an issue's GitHub dependencies (slice 2 §5.3). */
+export interface IssueDependencyList {
+  /** from issueDependenciesSummary: the open ones, and all of them (open and closed) */
+  open: number
+  total: number
+  /** GitHub has more, or an entry was dropped: never evidence that an issue left the list */
+  truncated: boolean
+  /** the issues visible to the token, in key order (GitHub's order means nothing here) */
+  list: IssueFacts[]
+}
+
+/** The dependency section fetched with a snapshot (slice 2 §5.3); `unavailable` carries no lists. */
+export type IssueDependencies =
+  | { status: 'ok'; blocked_by: IssueDependencyList; blocking: IssueDependencyList }
+  | { status: 'unavailable' }
+
 export interface IssueSnapshotRow {
   /** the requested owner/name, as first stored */
   repo: string
@@ -3423,6 +3449,13 @@ export interface IssueSnapshotRow {
   provider: string
   /** null before the first success, after a hard failure, or when the stored JSON is unreadable */
   snapshot: IssueSnapshot | null
+  /**
+   * Slice 2: the dependency section, only while it is valid, readable beside a
+   * readable snapshot and BOUND to this row's fetched_at. null when it is
+   * missing, unbound (an older viewer refreshed the row since) or unreadable:
+   * "unknown", never "no dependencies".
+   */
+  dependencies: IssueDependencies | null
   /** start time of the attempt that produced `snapshot` */
   fetched_at: string | null
   /** start time of the latest applied attempt, whatever its outcome */
@@ -3469,6 +3502,8 @@ const ISSUE_TITLE_MAX = 301
 // GitHub's eight hierarchy levels, and its 100 sub-issues per parent
 const ISSUE_ANCESTORS_MAX = 8
 const ISSUE_CHILDREN_MAX = 100
+// GitHub's 50 issues per dependency relationship type (slice 2 §2)
+const ISSUE_DEPENDENCIES_MAX = 50
 // a snapshot row unchecked for this long belongs to an issue nobody links
 const ISSUE_TTL_DAYS = 30
 // The attempt rule compares stored times as TEXT, so only this one canonical
@@ -3562,6 +3597,41 @@ function readIssueSnapshot(text: string | null, number: number): IssueSnapshot |
   }
 }
 
+function issueDependencyList(value: unknown): IssueDependencyList | null {
+  const v = plainRecord(value)
+  if (!v) return null
+  const { open, total, truncated } = v
+  if (!validIssueCount(open) || !validIssueCount(total) || open > total) return null
+  if (typeof truncated !== 'boolean') return null
+  const list = issueRelatives(v.list, ISSUE_DEPENDENCIES_MAX, () => false)
+  return list ? { open, total, truncated, list } : null
+}
+
+// The slice-2 dependency section's validator, on write and on read, rebuilt
+// from its validated fields alone. An unavailable section carries no lists.
+function issueDependencies(value: unknown): IssueDependencies | null {
+  const v = plainRecord(value)
+  if (v?.status === 'unavailable') return { status: 'unavailable' }
+  if (v?.status !== 'ok') return null
+  const blockedBy = issueDependencyList(v.blocked_by)
+  const blocking = issueDependencyList(v.blocking)
+  return blockedBy && blocking ? { status: 'ok', blocked_by: blockedBy, blocking } : null
+}
+
+// A section is read only while BOUND: its own fetched_at must equal the row's.
+// An older viewer's success moves the row's fetched_at without knowing this
+// column, and an older hard failure clears it, so either one unbinds the
+// section rather than erasing it (slice 2 §5.3, the closing_refs precedent).
+function readIssueDependencies(text: string | null, fetchedAt: string | null): IssueDependencies | null {
+  if (text === null || fetchedAt === null) return null
+  try {
+    const v = plainRecord(JSON.parse(text))
+    return v && v.v === 1 && v.fetched_at === fetchedAt ? issueDependencies(v) : null
+  } catch {
+    return null
+  }
+}
+
 function issueRowKey(repo: unknown, number: unknown): { repo: string; number: number } {
   if (!validIssueSlug(repo) || !validIssueNumber(number)) {
     throw new Error(`invalid issue key: ${String(repo)}#${String(number)}`)
@@ -3577,23 +3647,33 @@ function issueAttempt(startedAt: unknown): string {
   return startedAt
 }
 
-// A successful refresh. Returns false when the attempt rule refused it.
+// A successful refresh. Returns false when the attempt rule refused it. The
+// dependency section (slice 2) is written in the SAME statement, bound to this
+// attempt's fetched_at; omitted, the column is cleared and reads as "unknown".
 export function upsertIssueSnapshot(
   db: Database.Database,
-  input: { repo: string; number: number; snapshot: IssueSnapshot; startedAt: string },
+  input: { repo: string; number: number; snapshot: IssueSnapshot; dependencies?: IssueDependencies; startedAt: string },
 ): boolean {
   const key = issueRowKey(input.repo, input.number)
   const startedAt = issueAttempt(input.startedAt)
   const snapshot = issueSnapshot(input.snapshot, key.number)
   if (!snapshot) throw new Error(`invalid issue snapshot for ${key.repo}#${key.number}`)
+  const dependencies = input.dependencies === undefined ? null : issueDependencies(input.dependencies)
+  if (input.dependencies !== undefined && !dependencies) throw new Error(`invalid issue dependencies for ${key.repo}#${key.number}`)
   const applied = db.prepare(
-    `INSERT INTO issue_snapshots (repo, number, snapshot, fetched_at, checked_at, error)
-     VALUES (@repo, @number, @snapshot, @startedAt, @startedAt, NULL)
+    `INSERT INTO issue_snapshots (repo, number, snapshot, dependencies, fetched_at, checked_at, error)
+     VALUES (@repo, @number, @snapshot, @dependencies, @startedAt, @startedAt, NULL)
      ON CONFLICT(repo, number) DO UPDATE SET
-       snapshot = excluded.snapshot, fetched_at = excluded.fetched_at, checked_at = excluded.checked_at,
+       snapshot = excluded.snapshot, dependencies = excluded.dependencies,
+       fetched_at = excluded.fetched_at, checked_at = excluded.checked_at,
        error = NULL, revision = issue_snapshots.revision + 1
      WHERE excluded.checked_at > issue_snapshots.checked_at`,
-  ).run({ ...key, snapshot: JSON.stringify(snapshot), startedAt }).changes > 0
+  ).run({
+    ...key,
+    snapshot: JSON.stringify(snapshot),
+    dependencies: dependencies && JSON.stringify({ v: 1, fetched_at: startedAt, ...dependencies }),
+    startedAt,
+  }).changes > 0
   if (applied) pruneIssueSnapshots(db)
   return applied
 }
@@ -3605,6 +3685,8 @@ export function upsertIssueSnapshot(
 // and titles GitHub refused would come back from other issues' older lists. A
 // hard failure clears the snapshot and fetched_at IN THIS SAME STATEMENT: there
 // is no moment at which GitHub has said no and the cached titles are readable.
+// Clearing fetched_at alone unbinds the dependency section (an older build's
+// hard failure does only that); this build clears the column as well.
 export function recordIssueFailure(
   db: Database.Database,
   input: { repo: string; number: number; error: IssueError; startedAt: string },
@@ -3620,6 +3702,7 @@ export function recordIssueFailure(
        error = CASE WHEN @hard = 0 AND issue_snapshots.error IN (${ISSUE_HARD_ERRORS_SQL})
                     THEN issue_snapshots.error ELSE excluded.error END,
        snapshot = CASE WHEN @hard = 1 THEN NULL ELSE issue_snapshots.snapshot END,
+       dependencies = CASE WHEN @hard = 1 THEN NULL ELSE issue_snapshots.dependencies END,
        fetched_at = CASE WHEN @hard = 1 THEN NULL ELSE issue_snapshots.fetched_at END,
        revision = issue_snapshots.revision + 1
      WHERE excluded.checked_at > issue_snapshots.checked_at`,
@@ -3628,17 +3711,25 @@ export function recordIssueFailure(
 
 // Every row, parsed. Invalid JSON or an invalid shape (including a snapshot
 // version this build does not know) reads as "no snapshot" and never throws:
-// one corrupt row must not take down /api/issues.
+// one corrupt row must not take down /api/issues. The dependency section reads
+// the same way, and only beside a readable snapshot: nothing else anchors it.
 export function listIssueSnapshots(db: Database.Database): IssueSnapshotRow[] {
   const rows = db.prepare(
-    `SELECT repo, number, provider, snapshot, fetched_at, checked_at, error, revision
+    `SELECT repo, number, provider, snapshot, dependencies, fetched_at, checked_at, error, revision
        FROM issue_snapshots ORDER BY repo, number`,
-  ).all() as Array<Omit<IssueSnapshotRow, 'snapshot' | 'failure'> & { snapshot: string | null }>
-  return rows.map((r) => ({
-    ...r,
-    snapshot: readIssueSnapshot(r.snapshot, r.number),
-    failure: r.error === null ? null : ISSUE_HARD_ERRORS.has(r.error) ? 'hard' : 'soft',
-  }))
+  ).all() as Array<Omit<IssueSnapshotRow, 'snapshot' | 'dependencies' | 'failure'> & {
+    snapshot: string | null
+    dependencies: string | null
+  }>
+  return rows.map((r) => {
+    const snapshot = readIssueSnapshot(r.snapshot, r.number)
+    return {
+      ...r,
+      snapshot,
+      dependencies: snapshot ? readIssueDependencies(r.dependencies, r.fetched_at) : null,
+      failure: r.error === null ? null : ISSUE_HARD_ERRORS.has(r.error) ? 'hard' : 'soft',
+    }
+  })
 }
 
 // What can link an issue: open items, active and archived plans, and the rows
@@ -3694,6 +3785,8 @@ export interface IssueRefreshResult {
   /** start time of the attempt, for the attempt rule */
   startedAt: string
   snapshot?: IssueSnapshot
+  /** slice 2: the dependency section fetched with `snapshot` */
+  dependencies?: IssueDependencies
   error?: IssueError
 }
 
@@ -3731,15 +3824,16 @@ export function claimIssueRefresh(
 
 // Applies each result under the attempt rule, then releases this owner's
 // leases on those keys (never another owner's). A snapshot that fails the v1
-// validator is recorded as a soft gh-failed instead: one throw would roll back
-// the whole batch, and the same keys would be claimed and refetched every tick.
+// validator, or a dependency section that fails its own, is recorded as a soft
+// gh-failed instead: one throw would roll back the whole batch, and the same
+// keys would be claimed and refetched every tick.
 // Returns how many results the attempt rule applied.
 export function completeIssueRefresh(
   db: Database.Database,
   input: {
     owner: string
     results: IssueRefreshResult[]
-    /** told of each snapshot the v1 validator refused, which was recorded as gh-failed */
+    /** told of each result the validators refused, which was recorded as gh-failed */
     onInvalid?: (key: { repo: string; number: number }) => void
   },
 ): number {
@@ -3751,9 +3845,12 @@ export function completeIssueRefresh(
       let done: boolean
       if (r.snapshot) {
         const valid = issueSnapshot(r.snapshot, r.number) !== null
+          && (r.dependencies === undefined || issueDependencies(r.dependencies) !== null)
         if (!valid) input.onInvalid?.({ repo: r.repo, number: r.number })
         done = valid
-          ? upsertIssueSnapshot(db, { repo: r.repo, number: r.number, snapshot: r.snapshot, startedAt: r.startedAt })
+          ? upsertIssueSnapshot(db, {
+              repo: r.repo, number: r.number, snapshot: r.snapshot, dependencies: r.dependencies, startedAt: r.startedAt,
+            })
           : recordIssueFailure(db, { repo: r.repo, number: r.number, error: 'gh-failed', startedAt: r.startedAt })
       } else {
         done = recordIssueFailure(db, { repo: r.repo, number: r.number, error: r.error ?? 'gh-failed', startedAt: r.startedAt })

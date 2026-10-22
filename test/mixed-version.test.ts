@@ -8,7 +8,9 @@
 // ensureBoard, upsertBoard's row insert, upsertSourceLink, recordLinkFailure,
 // listItems and listSourceLinks). Never edit them to follow a newer schema:
 // they stand for the process that cannot change. Later slices add their own
-// frozen cases here (PR1b: closing_refs; PR2: plan and row links).
+// frozen cases here (PR1b: closing_refs; PR2: plan and row links). The
+// statements of a v1.4.0 process (#247's pins, slice 2's issue snapshots and
+// waits_on) are in their own blocks at the end.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
@@ -17,10 +19,12 @@ import {
   getBoard, getItem, insertItem, listActivity, listBoards, listHostSessions, listIssueEntities, listIssueSnapshots, listItems, listSourceLinks, openDb,
   pinBoardRow, pinItem, recordIssueFailure, replyItem, updateBoardRow, upsertActivity, upsertBoard, upsertIssueSnapshot, upsertSourceLink,
 } from '../src/store.js'
+import type { IssueDependencies } from '../src/store.js'
+import { issueQueue } from '../src/issue-poller.js'
 import { runHook } from '../src/hook.js'
 import { issueKeyFor } from '../public/issue-key.js'
 import { createViewer } from '../src/viewer.js'
-import { at, snapshot } from './issue-fixtures.js'
+import { at, facts, snapshot } from './issue-fixtures.js'
 import { scratchDir } from './scratch.js'
 
 const V131_SCHEMA = readFileSync(new URL('./fixtures/v1.3.1-schema.sql', import.meta.url), 'utf8')
@@ -503,6 +507,22 @@ const V140 = {
                       OR (@expected IS NULL AND response_revision = 0))`,
   dismissItem: `UPDATE items SET status = 'dismissed', updated_at = ? WHERE id = ?`,
   snoozeItem: `UPDATE items SET snoozed_until = ?, updated_at = ? WHERE id = ? AND status = 'open'`,
+  // issue #103 slice 2: upsertIssueSnapshot and recordIssueFailure (ISSUE_HARD_ERRORS_SQL expanded)
+  upsertIssueSnapshot: `INSERT INTO issue_snapshots (repo, number, snapshot, fetched_at, checked_at, error)
+     VALUES (@repo, @number, @snapshot, @startedAt, @startedAt, NULL)
+     ON CONFLICT(repo, number) DO UPDATE SET
+       snapshot = excluded.snapshot, fetched_at = excluded.fetched_at, checked_at = excluded.checked_at,
+       error = NULL, revision = issue_snapshots.revision + 1
+     WHERE excluded.checked_at > issue_snapshots.checked_at`,
+  recordIssueFailure: `INSERT INTO issue_snapshots (repo, number, checked_at, error) VALUES (@repo, @number, @startedAt, @error)
+     ON CONFLICT(repo, number) DO UPDATE SET
+       checked_at = excluded.checked_at,
+       error = CASE WHEN @hard = 0 AND issue_snapshots.error IN ('not-found', 'forbidden', 'moved')
+                    THEN issue_snapshots.error ELSE excluded.error END,
+       snapshot = CASE WHEN @hard = 1 THEN NULL ELSE issue_snapshots.snapshot END,
+       fetched_at = CASE WHEN @hard = 1 THEN NULL ELSE issue_snapshots.fetched_at END,
+       revision = issue_snapshots.revision + 1
+     WHERE excluded.checked_at > issue_snapshots.checked_at`,
 }
 
 describe('a v1.4.0 process sharing a hub with pinned asks (#247)', () => {
@@ -611,6 +631,94 @@ describe('a v1.4.0 process sharing a hub with pinned asks (#247)', () => {
     old.prepare(V140.snoozeItem).run(at(120), now, snoozed)
     for (const id of [replied, told, resolved, dismissed]) expect(getItem(hub, id)!.pinned_at, id).toBeNull()
     expect(getItem(hub, snoozed)).toMatchObject({ pinned_at: at(60), snoozed_until: at(120) })
+  })
+})
+
+// Issue #103 slice 2 §5.3: the dependency section is bound to the fetched_at
+// written beside it. A v1.4.0 viewer knows nothing of the column, so its
+// writes can only move or clear fetched_at, which unbinds the section rather
+// than erasing it: mixed versions lose freshness, never correctness.
+describe('a v1.4.0 viewer sharing a hub with this build (issue #103 slice 2)', () => {
+  let dir: string
+  let path: string
+  const open: Database.Database[] = []
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(Date.parse(at(60)))
+    dir = scratchDir('mixed-v140-')
+    path = join(dir, 'inbox.db')
+  })
+
+  afterEach(() => {
+    for (const connection of open.splice(0)) if (connection.open) connection.close()
+    rmSync(dir, { recursive: true, force: true })
+    vi.useRealTimers()
+  })
+
+  // the hub is migrated by this build first; v1.4.0's own migration would only
+  // replay CREATE TABLE IF NOT EXISTS and its known columns, never drop one
+  function bothProcesses(): { hub: Database.Database; old: Database.Database } {
+    const hub = openDb(path)
+    const old = new Database(path)
+    open.push(hub, old)
+    old.pragma('busy_timeout = 5000')
+    old.pragma('journal_mode = WAL')
+    return { hub, old }
+  }
+
+  const KEY = { repo: REPO, number: 121 }
+  const DEPS: IssueDependencies = {
+    status: 'ok',
+    blocked_by: { open: 2, total: 2, truncated: false, list: [facts(`${REPO}#119`), facts(`${REPO}#120`)] },
+    blocking: { open: 0, total: 0, truncated: false, list: [] },
+  }
+  const oldSuccess = (old: Database.Database, startedAt: string) =>
+    old.prepare(V140.upsertIssueSnapshot).run({ ...KEY, snapshot: JSON.stringify(snapshot(`${REPO}#121`)), startedAt })
+  const oldFailure = (old: Database.Database, error: string, startedAt: string) =>
+    old.prepare(V140.recordIssueFailure).run({ ...KEY, error, startedAt, hard: ['not-found', 'forbidden', 'moved'].includes(error) ? 1 : 0 })
+
+  it('a v1.4.0 success unbinds the section, so this build reads "unknown" and fetches it again at once; its soft failure keeps it bound', () => {
+    const { hub, old } = bothProcesses()
+    const read = () => listIssueSnapshots(hub)[0]!
+    const stored = () => (hub.prepare(`SELECT dependencies FROM issue_snapshots`).get() as { dependencies: string | null }).dependencies
+    insertItem(hub, { project: 'agent-inbox', stream: '121-work', agent: 'new', kind: 'question', title: 'q', repo: REPO, issue_ref: 121 })
+    const queue = () => issueQueue({
+      entities: listIssueEntities(hub), links: listSourceLinks(hub), snapshots: listIssueSnapshots(hub), nowMs: Date.parse(at(13)),
+    }).map((e) => [e.number, e.reason])
+
+    upsertIssueSnapshot(hub, { ...KEY, snapshot: snapshot(`${REPO}#121`), dependencies: DEPS, startedAt: at(10) })
+    expect(read().dependencies).toEqual(DEPS)
+
+    // an old soft failure keeps fetched_at: the section stays bound and ages with the snapshot
+    oldFailure(old, 'offline', at(11))
+    expect(read()).toMatchObject({ fetched_at: at(10), error: 'offline', dependencies: DEPS })
+
+    // an old success moves fetched_at without touching the column it does not know
+    oldSuccess(old, at(12))
+    expect(read()).toMatchObject({ fetched_at: at(12), error: null, snapshot: snapshot(`${REPO}#121`), dependencies: null })
+    expect(JSON.parse(stored()!)).toMatchObject({ fetched_at: at(10), status: 'ok' })
+    expect(queue()).toEqual([[121, 'upgrade']])
+
+    // the next write from this build binds it again
+    upsertIssueSnapshot(hub, { ...KEY, snapshot: snapshot(`${REPO}#121`), dependencies: DEPS, startedAt: at(13) })
+    expect(read()).toMatchObject({ fetched_at: at(13), dependencies: DEPS })
+    expect(queue()).toEqual([])
+  })
+
+  it('a v1.4.0 hard failure unbinds the section, and no later v1.4.0 write can bind the leftover again', () => {
+    const { hub, old } = bothProcesses()
+    const read = () => listIssueSnapshots(hub)[0]!
+    upsertIssueSnapshot(hub, { ...KEY, snapshot: snapshot(`${REPO}#121`), dependencies: DEPS, startedAt: at(10) })
+
+    oldFailure(old, 'not-found', at(11))
+    expect(read()).toMatchObject({ snapshot: null, fetched_at: null, failure: 'hard', dependencies: null })
+    // every later write that applies starts after checked_at, never at the leftover's fetched_at
+    oldFailure(old, 'offline', at(12))
+    oldSuccess(old, at(13))
+    expect(read()).toMatchObject({ fetched_at: at(13), error: null, dependencies: null })
+    expect(oldSuccess(old, at(10)).changes).toBe(0)
+    expect(read()).toMatchObject({ fetched_at: at(13), dependencies: null })
   })
 })
 

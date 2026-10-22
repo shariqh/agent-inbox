@@ -25,6 +25,27 @@ function sha256(path: string): string {
   return createHash('sha256').update(readFileSync(path)).digest('hex')
 }
 
+const embeddedRuntime = (app: string): string => join(app, 'resources', 'app', 'runtime', 'win32-x64')
+const setupInfoPath = (app: string): string => join(app, 'resources', 'app', 'setup-info.json')
+
+// Edit both folders alike and re-record their tree digests, as a build that
+// produced them would, so only the identity checks under test can object.
+function editBothApps(f: ReturnType<typeof fixture>, edit: (app: string) => void): void {
+  for (const [app, report] of [[f.originalApp, f.originalAppReport], [f.restoredApp, f.restoredAppReport]] as const) {
+    edit(app)
+    const value = JSON.parse(readFileSync(report, 'utf8'))
+    writeFileSync(report, `${JSON.stringify({ ...value, appTreeDigest: treeIdentity(app) }, null, 2)}\n`)
+  }
+}
+
+function editSetupInfo(f: ReturnType<typeof fixture>, change: (payload: { path: string; digest: string }) => void): void {
+  editBothApps(f, (app) => {
+    const info = JSON.parse(readFileSync(setupInfoPath(app), 'utf8'))
+    change(info.runtimePayloads['win32-x64'])
+    writeFileSync(setupInfoPath(app), `${JSON.stringify(info, null, 2)}\n`)
+  })
+}
+
 function fixture(): {
   originalApp: string
   restoredApp: string
@@ -71,6 +92,7 @@ function fixture(): {
       },
     },
   }, null, 2)}\n`)
+  copyTreePreservingMode(originalRuntime, embeddedRuntime(originalApp))
   copyTreePreservingMode(originalApp, restoredApp)
   copyTreePreservingMode(originalRuntime, restoredRuntime)
 
@@ -154,6 +176,29 @@ describe('Windows archive round-trip evidence', () => {
     const f = fixture()
     writeFileSync(join(f.restoredRuntime, 'NOTICE.txt'), 'tampered\n')
     expect(() => verifyWindowsRoundTrip(f.options)).toThrow(/size mismatch|checksum mismatch|payload/i)
+  })
+
+  it('rejects setup metadata that names another path for the runtime', () => {
+    const f = fixture()
+    editSetupInfo(f, (payload) => { payload.path = 'runtime/x' })
+    expect(() => verifyWindowsRoundTrip(f.options)).toThrow(/original setup-info identity mismatch/)
+  })
+
+  it('rejects folders whose embedded runtime was altered', () => {
+    const f = fixture()
+    editBothApps(f, (app) => writeFileSync(join(embeddedRuntime(app), 'NOTICE.txt'), 'tampered\n'))
+    expect(() => verifyWindowsRoundTrip(f.options)).toThrow(/original embedded runtime: .*mismatch/)
+  })
+
+  it('rejects folders that embed a different, self-consistent runtime', () => {
+    const f = fixture()
+    editBothApps(f, (app) => {
+      const runtime = embeddedRuntime(app)
+      writeFileSync(join(runtime, 'NOTICE.txt'), 'another runtime\n')
+      const manifest = JSON.parse(readFileSync(join(runtime, 'runtime-manifest.json'), 'utf8'))
+      writeManifestFile(runtime, buildManifest({ ...manifest, root: runtime }))
+    })
+    expect(() => verifyWindowsRoundTrip(f.options)).toThrow(/original embedded runtime differs from the archived runtime/)
   })
 
   it('rejects a substituted restored runtime manifest or verification report', () => {

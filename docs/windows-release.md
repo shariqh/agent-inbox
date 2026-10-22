@@ -41,7 +41,11 @@ against headers node-gyp would download. Neither file enters the runtime payload
 - Original and restored application tree digests must match exactly. The separately
   restored runtime is reverified against the original manifest digest, source commit,
   `win32-x64`/Node/ABI identity, and native-addon selftest; setup metadata is rechecked
-  for builder-path leakage before upload.
+  for builder-path leakage before upload. Because Windows selection refuses before it reads
+  a payload, the verifier itself requires the metadata to name exactly `runtime/win32-x64`
+  with the embedded `runtime-manifest.json` digest, verified as Setup verifies a payload on
+  macOS and Linux, and the round trip requires each folder's embedded runtime to be the
+  archived one.
 - The restored app launches with system Node removed from `PATH`, serves the hardened
   loopback boundary, and its bundled runtime selftests, installs, and prunes under a
   disposable user profile.

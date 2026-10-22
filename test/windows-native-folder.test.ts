@@ -6,7 +6,9 @@ import { createTreeArchive } from '../scripts/archive-tree.mjs'
 import { buildWindowsThinApp } from '../scripts/build-windows-thin-app.mjs'
 import { nativeRuntimeAdapterFor } from '../scripts/native-runtime-adapter.mjs'
 import { downloadArchive } from '../scripts/release-inputs.mjs'
+import { buildManifest, writeManifestFile } from '../scripts/runtime-payload.mjs'
 import { provisionWindowsNodeHeaders } from '../scripts/stage-native-runtime.mjs'
+import { verifyWindowsSetupMetadata } from '../scripts/verify-windows-thin-app.mjs'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
 const root = resolve(process.cwd())
@@ -198,3 +200,85 @@ describe('verified Node headers for native Windows staging (#135)', () => {
   })
 })
 
+// What a release folder's resources/app holds for Setup: the metadata and the
+// runtime it names, with every file Setup's payload verification requires.
+function setupMetadataFixture() {
+  const resources = scratchDir('windows-setup-metadata-')
+  const runtime = join(resources, 'runtime', 'win32-x64')
+  for (const file of [
+    'node.exe',
+    'dist/mcp-server.js',
+    'dist/hook-cli.js',
+    'dist/watch-cli.js',
+    'scripts/install-agents.sh',
+    'scripts/runtime-payload.mjs',
+    'scripts/runtime-config.mjs',
+    'scripts/setup-filesystem.cjs',
+    'scripts/setup-lock.sh',
+    'scripts/run-isolated.mjs',
+  ]) {
+    mkdirSync(join(runtime, file, '..'), { recursive: true })
+    writeFileSync(join(runtime, file), `${file}\n`)
+  }
+  writeManifestFile(runtime, buildManifest({
+    root: runtime,
+    product: 'agent-inbox-runtime',
+    packageVersion: '1.5.0',
+    sourceCommit: 'a'.repeat(40),
+    platform: 'win32',
+    arch: 'x64',
+    nodeVersion: 'v24.18.1',
+    nodeModulesAbi: '137',
+    entrypoints: ['dist/mcp-server.js', 'dist/hook-cli.js', 'dist/watch-cli.js'],
+  }))
+  const digest = `sha256:${sha256(join(runtime, 'runtime-manifest.json'))}`
+  const info = {
+    schema: 2,
+    version: '1.5.0',
+    runtimePayloads: { 'win32-x64': { path: 'runtime/win32-x64', digest } },
+  }
+  const write = (change: (payload: { path: string; digest: string }) => void = () => {}) => {
+    const edited = structuredClone(info)
+    change(edited.runtimePayloads['win32-x64'])
+    writeFileSync(join(resources, 'setup-info.json'), `${JSON.stringify(edited, null, 2)}\n`)
+  }
+  write()
+  return { resources, runtime, digest, write }
+}
+
+describe('Windows setup metadata against the embedded runtime', () => {
+  afterEach(removeScratchDirs)
+
+  it('accepts metadata that names the embedded runtime and its manifest digest', () => {
+    const f = setupMetadataFixture()
+    expect(verifyWindowsSetupMetadata({ resources: f.resources })).toMatchObject({
+      setupKeys: ['win32-x64'],
+      runtimeManifestDigest: f.digest,
+    })
+  })
+
+  it('rejects any other payload path', () => {
+    const f = setupMetadataFixture()
+    for (const path of ['runtime/x', 'runtime/win32-x64/', './runtime/win32-x64']) {
+      f.write((payload) => { payload.path = path })
+      expect(() => verifyWindowsSetupMetadata({ resources: f.resources }), path)
+        .toThrow(/must place win32-x64 at runtime\/win32-x64/)
+    }
+  })
+
+  it('rejects a digest that is not the embedded runtime manifest\'s', () => {
+    const f = setupMetadataFixture()
+    f.write((payload) => { payload.digest = `sha256:${'0'.repeat(64)}` })
+    expect(() => verifyWindowsSetupMetadata({ resources: f.resources }))
+      .toThrow(/does not match the embedded win32-x64 runtime: .*digest/)
+    f.write((payload) => { payload.digest = payload.digest.toUpperCase().replace('SHA256:', 'sha256:') })
+    expect(() => verifyWindowsSetupMetadata({ resources: f.resources })).toThrow(/digest must be exactly sha256:/)
+  })
+
+  it('rejects an embedded runtime that no longer matches its manifest', () => {
+    const f = setupMetadataFixture()
+    writeFileSync(join(f.runtime, 'dist', 'hook-cli.js'), 'tampered\n')
+    expect(() => verifyWindowsSetupMetadata({ resources: f.resources }))
+      .toThrow(/does not match the embedded win32-x64 runtime: .*mismatch/)
+  })
+})

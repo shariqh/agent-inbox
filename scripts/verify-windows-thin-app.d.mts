@@ -19,6 +19,11 @@ export type WindowsThinReport = {
   electronSqliteCheck: 'passed'
   setupAvailable: false
 }
+export function verifyWindowsSetupMetadata(options: { resources: string }): {
+  setupInfo: { schema: 2; version: string; runtimePayloads: Record<'win32-x64', { path: string; digest: string }> }
+  setupKeys: ['win32-x64']
+  runtimeManifestDigest: string
+}
 export function verifyWindowsThinApp(options: {
   app: string
   inputsPath?: string

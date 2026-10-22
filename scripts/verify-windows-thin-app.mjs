@@ -18,7 +18,9 @@ import {
 import { loadWindowsReleaseInputs } from './windows-release-inputs.mjs'
 
 const require = createRequire(import.meta.url)
+const { verifyRuntimePayload } = require('../electron/runtime-verify.cjs')
 const { selectRuntimePayload } = require('../electron/setup-runner.cjs')
+const WINDOWS_KEY = 'win32-x64'
 
 export class WindowsThinVerificationError extends Error {
   constructor(message) {
@@ -102,32 +104,49 @@ function assertKnownPeEvidence(appRoot, compatibility, knownFiles) {
   }
 }
 
-export function verifyWindowsThinApp({
-  app,
-  inputsPath,
-  sourceCommit,
-}) {
-  const inputs = loadWindowsReleaseInputs(inputsPath)
-  const key = 'win32-x64'
-  const appRoot = resolve(app)
-  const executable = join(appRoot, `${APP_NAME}.exe`)
-  const resources = join(appRoot, 'resources', 'app')
-  const runtimeRoot = join(resources, 'runtime', key)
-  const electronAddon = findNativeAddon(resources)
-  const runtimeNode = join(runtimeRoot, 'node.exe')
-  const runtimeAddon = findNativeAddon(runtimeRoot)
-  assertElectronNotices(appRoot)
-  verifyPackagedUpdateTrust(resources)
-
+/**
+ * Check the release setup metadata against the runtime the folder ships. Win32
+ * selection refuses before it reads a payload path or digest, so unlike on
+ * Linux nothing else compares them: the payload must be exactly
+ * runtime/win32-x64, and its digest that of the embedded runtime-manifest.json,
+ * verified as Setup's selection verifies a payload on macOS and Linux.
+ */
+export function verifyWindowsSetupMetadata({ resources }) {
+  const key = WINDOWS_KEY
   const setupInfo = JSON.parse(readFileSync(join(resources, 'setup-info.json'), 'utf8'))
   if (setupInfo.schema !== 2) {
     throw new WindowsThinVerificationError(`release setup-info schema must be 2, found ${String(setupInfo.schema)}`)
+  }
+  if (typeof setupInfo.version !== 'string' || !setupInfo.version) {
+    throw new WindowsThinVerificationError('release setup-info is missing its package version')
   }
   const setupKeys = Object.keys(setupInfo.runtimePayloads ?? {})
   if (setupKeys.length !== 1 || setupKeys[0] !== key) {
     throw new WindowsThinVerificationError(`release setup-info runtime keys must be exactly ${key}`)
   }
   assertNoBuilderPaths(setupInfo)
+  const payload = setupInfo.runtimePayloads[key]
+  if (payload?.path !== `runtime/${key}`) {
+    throw new WindowsThinVerificationError(`release setup-info must place ${key} at runtime/${key}`)
+  }
+  let verified
+  try {
+    verified = verifyRuntimePayload({
+      root: join(resources, 'runtime', key),
+      expectedManifestDigest: payload.digest,
+      expectedPlatform: 'win32',
+      expectedArch: 'x64',
+      expectedPackageVersion: setupInfo.version,
+    })
+  } catch (err) {
+    throw new WindowsThinVerificationError(
+      `release setup-info does not match the embedded ${key} runtime: ${err.message}`,
+    )
+  }
+  const runtimeManifestDigest = `sha256:${verified.manifestDigest}`
+  if (payload.digest !== runtimeManifestDigest) {
+    throw new WindowsThinVerificationError(`release setup-info ${key} digest must be exactly ${runtimeManifestDigest}`)
+  }
   const selection = selectRuntimePayload({
     appRoot: resources,
     platform: 'win32',
@@ -139,6 +158,27 @@ export function verifyWindowsThinApp({
       `Windows Setup must remain unavailable for ${key}: ${selection.reason ?? 'unexpected selection'}`,
     )
   }
+  return { setupInfo, setupKeys, runtimeManifestDigest }
+}
+
+export function verifyWindowsThinApp({
+  app,
+  inputsPath,
+  sourceCommit,
+}) {
+  const inputs = loadWindowsReleaseInputs(inputsPath)
+  const key = WINDOWS_KEY
+  const appRoot = resolve(app)
+  const executable = join(appRoot, `${APP_NAME}.exe`)
+  const resources = join(appRoot, 'resources', 'app')
+  const runtimeRoot = join(resources, 'runtime', key)
+  const electronAddon = findNativeAddon(resources)
+  const runtimeNode = join(runtimeRoot, 'node.exe')
+  const runtimeAddon = findNativeAddon(runtimeRoot)
+  assertElectronNotices(appRoot)
+  verifyPackagedUpdateTrust(resources)
+
+  const { setupInfo, setupKeys, runtimeManifestDigest } = verifyWindowsSetupMetadata({ resources })
 
   const distribution = inputs.node.distributions[key]
   const runtimeManifest = verifyPayload({
@@ -204,7 +244,7 @@ export function verifyWindowsThinApp({
     electronModulesAbi: electronProbe.modulesAbi,
     nodeVersion: runtimeProbe.version,
     nodeModulesAbi: runtimeProbe.modulesAbi,
-    runtimeManifestDigest: setupInfo.runtimePayloads[key].digest,
+    runtimeManifestDigest,
     setupInfoSchema: setupInfo.schema,
     setupRuntimeKeys: setupKeys,
     compatibility,

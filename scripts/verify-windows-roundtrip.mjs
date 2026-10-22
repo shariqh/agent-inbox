@@ -50,6 +50,8 @@ function verifyAppSide({
   reportPath,
   packageVersion,
   runtimeManifestDigest,
+  runtimeManifest,
+  expectedRuntime,
   label,
 }) {
   const report = readObject(reportPath, `${label} application report`)
@@ -73,8 +75,21 @@ function verifyAppSide({
   assertNoBuilderPaths(setupInfo, `${label} setup-info`)
   if (setupInfo.schema !== 2 || setupInfo.version !== packageVersion ||
       !isDeepStrictEqual(Object.keys(setupInfo.runtimePayloads ?? {}), [KEY]) ||
+      setupInfo.runtimePayloads[KEY]?.path !== `runtime/${KEY}` ||
       setupInfo.runtimePayloads[KEY]?.digest !== runtimeManifestDigest) {
     throw new WindowsRoundTripVerificationError(`${label} setup-info identity mismatch`)
+  }
+  // The runtime the folder embeds must be the separately archived one.
+  const embeddedRuntime = join(root, 'resources', 'app', 'runtime', KEY)
+  let embeddedManifest
+  try {
+    embeddedManifest = verifyPayload({ root: embeddedRuntime, expect: expectedRuntime })
+  } catch (err) {
+    throw new WindowsRoundTripVerificationError(`${label} embedded runtime: ${err.message}`)
+  }
+  if (`sha256:${sha256File(join(embeddedRuntime, 'runtime-manifest.json'))}` !== runtimeManifestDigest ||
+      !isDeepStrictEqual(embeddedManifest, runtimeManifest)) {
+    throw new WindowsRoundTripVerificationError(`${label} embedded runtime differs from the archived runtime`)
   }
   return { report, actualTreeDigest }
 }
@@ -129,6 +144,8 @@ export function verifyWindowsRoundTrip({
     reportPath: originalAppReport,
     packageVersion,
     runtimeManifestDigest,
+    runtimeManifest: originalManifest,
+    expectedRuntime,
     label: 'original',
   })
   const restored = verifyAppSide({
@@ -136,6 +153,8 @@ export function verifyWindowsRoundTrip({
     reportPath: restoredAppReport,
     packageVersion,
     runtimeManifestDigest,
+    runtimeManifest: originalManifest,
+    expectedRuntime,
     label: 'restored',
   })
   if (original.actualTreeDigest !== restored.actualTreeDigest) {

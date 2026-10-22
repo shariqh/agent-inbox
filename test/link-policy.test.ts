@@ -180,7 +180,7 @@ describe('fileOpenPlan judges the final target (issue #300)', () => {
 
 describe('fileOpenPlan opens only common document types itself (issue #300)', () => {
   const OPENABLE = [
-    'md', 'markdown', 'txt', 'text', 'log', 'json', 'jsonl', 'yaml', 'yml', 'toml', 'csv', 'tsv', 'xml', 'pdf',
+    'md', 'markdown', 'txt', 'text', 'log', 'json', 'jsonl', 'yaml', 'yml', 'toml', 'csv', 'tsv', 'pdf',
     'png', 'jpg', 'jpeg', 'gif', 'webp', 'heic', 'svg', 'html', 'htm', 'diff', 'patch', 'mov', 'mp4',
   ]
   const write = (root: string, name: string) => {
@@ -198,7 +198,9 @@ describe('fileOpenPlan opens only common document types itself (issue #300)', ()
     }
   })
 
-  it.each(['a.py', 'a.rb', 'a.pl', 'a.php', 'a.sh', 'a.zsh', 'a.js', 'a.ts', 'a.applescript', 'a.docx', 'a.rtf', 'a.zip', 'a.xyz', 'README', '.zshrc', 'a.md.bak'])(
+  // XML among them: Office's handler on Windows sends a .xml that names Word in
+  // its processing instruction to Word, and Word 2003 XML can carry macros.
+  it.each(['a.py', 'a.rb', 'a.pl', 'a.php', 'a.sh', 'a.zsh', 'a.js', 'a.ts', 'a.applescript', 'a.docx', 'a.rtf', 'a.xml', 'B.XML', 'a.zip', 'a.xyz', 'README', '.zshrc', 'a.md.bak'])(
     'only reveals %s, a type it does not open, without reading its attributes',
     async (name) => {
       const root = scratchDir('link-unlisted-')
@@ -215,6 +217,16 @@ describe('fileOpenPlan opens only common document types itself (issue #300)', ()
     const file = write(root, name)
     expect(await fileOpenPlan(file, { homeDir: root, platform: 'darwin', execFileImpl: fakeXattr().execFileImpl }))
       .toEqual({ ok: true, action: 'reveal', path: realpathSync(file), reason: 'blocked' })
+  })
+
+  it('only reveals Word 2003 XML, which Office would hand to Word, as it does any XML', async () => {
+    const root = scratchDir('link-word-xml-')
+    const { calls, execFileImpl } = fakeXattr()
+    const file = join(root, 'report.xml')
+    writeFileSync(file, '<?xml version="1.0"?>\n<?mso-application progid="Word.Document"?>\n<w:wordDocument/>\n')
+    expect(await fileOpenPlan(file, { homeDir: root, platform: 'win32', execFileImpl }))
+      .toEqual({ ok: true, action: 'reveal', path: realpathSync(file), reason: 'type' })
+    expect(calls).toEqual([])
   })
 
   it('judges the type of the final target, not the name of the link', async () => {

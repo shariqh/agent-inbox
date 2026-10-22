@@ -431,9 +431,10 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   its target (apps, launchers, location and VPN files, installers, disk images, executables,
   compiled and Windows scripts, documents that can carry macros, certificates) or any execute
   bit is only revealed. **Opening is an ALLOW-list** (`OPENABLE_EXTENSIONS`: Markdown, text,
-  logs, JSON/YAML/TOML, CSV/TSV, XML, PDF, images, SVG, HTML, diffs, MOV/MP4): any other type
+  logs, JSON/YAML/TOML, CSV/TSV, PDF, images, SVG, HTML, diffs, MOV/MP4): any other type
   is revealed with reason `type`, because a deny-list of what runs code never ends; code files
-  (`py`, `sh`, …) are neither allowed nor denied. On macOS, before anything opens, the resolved
+  (`py`, `sh`, …) are neither allowed nor denied, and XML stays off the list (on Windows,
+  Office's handler sends a `.xml` naming Word to Word, and Word 2003 XML can carry macros). On macOS, before anything opens, the resolved
   file is checked for an alias, which `realpath` does not follow and Launch Services opens the
   target of (bookmark magic `book\0\0\0\0mark` in its first bytes, the Finder alias flag in
   `com.apple.FinderInfo`, a non-empty `..namedfork/rsrc`), and for a per-file

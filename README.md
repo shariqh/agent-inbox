@@ -399,7 +399,7 @@ Detection is cautious, so some things that could be links stay text: a single-di
 paths with spaces and routes such as `/api/items` never link.
 
 In the desktop app a web link opens in your browser, and a common document (Markdown,
-text, logs, JSON, YAML, TOML, CSV, XML, PDF, images, SVG, HTML, diffs, MOV and MP4)
+text, logs, JSON, YAML, TOML, CSV, PDF, images, SVG, HTML, diffs, MOV and MP4)
 opens in its default app. Anything else is only shown in Finder: folders, apps,
 scripts and other code, installers, disk images, aliases, files set to open with a
 particular app, and anything with an execute bit. Files open only in the viewer the

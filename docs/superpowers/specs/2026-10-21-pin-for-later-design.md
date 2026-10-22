@@ -501,9 +501,10 @@ What shipped differs from the text above in these places, each on purpose:
   the draft is still on screen there.
 - **The open card stays in view (review).** A deferral that keeps a drafted ask
   as the open card no longer opens its fold itself. One render-time rule does it
-  for every case: the deferred fold (Later, snoozed or pinned) that holds the open
-  card always renders open, whatever moved its ask there, including the setting
-  in either direction, a pin from another window or a native notification.
+  for every case: the fold (Later, snoozed, pinned, or the older stale fold) that
+  holds the open card always renders open, whatever moved its ask there,
+  including the setting in either direction, a pin from another window, a native
+  notification or an ask turning stale while open.
   Without a draft, a deferral closes the card, as §2.1 says, so the ask waits in
   a closed fold. The human closing a fold that holds the open card closes that
   card too; otherwise the rule would open the fold again on the next frame.

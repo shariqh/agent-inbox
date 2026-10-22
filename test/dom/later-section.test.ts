@@ -538,6 +538,119 @@ describe('the fold that holds the open card renders open (#247)', () => {
     expect(container()?.open).toBe(false)
     expect(row(id)?.querySelector('.nrow-card')).toBeNull()
   })
+
+  // The same rule holds for the stale fold ("stale — decide later"): an ask with
+  // no live session turns stale on the clock alone, while its card is open.
+  const staleFold = () => [...document.querySelectorAll<HTMLDetailsElement>('#needsYouList details.stale-fold')]
+    .find((el) => !el.dataset.deferredFold && !el.classList.contains('stale-drafts-fold')) ?? null
+  const STALE = 72 * HOUR
+
+  it('keeps an open card in view when its ask turns stale, after a poll', async () => {
+    const d = open()
+    const id = question(d)
+    advanceClock(STALE - 60_000)
+    await bootApp(d)
+    await showInbox()
+    click(row(id))
+    await settle()
+    expect(staleFold()).toBeNull()
+
+    advanceClock(2 * 60_000)
+    await pollTick()
+    expect(row(id)?.closest('details')).toBe(staleFold())
+    expect(staleFold()?.open).toBe(true)
+    expect(visible(id)).toBe(true)
+  })
+
+  it('keeps a drafted open card in view when its ask turns stale, on the next forced frame', async () => {
+    const d = open()
+    const id = question(d)
+    advanceClock(STALE - 60_000)
+    await bootApp(d)
+    await showInbox()
+    click(row(id))
+    await settle()
+    type(answerInput(id), 'Half an answer')
+
+    advanceClock(2 * 60_000)
+    await pollTick()
+    expect(staleFold(), 'the draft holds the poll').toBeNull()
+    expect(visible(id)).toBe(true)
+    await showInbox()
+    expect(row(id)?.closest('details')).toBe(staleFold())
+    expect(staleFold()?.open).toBe(true)
+    expect(visible(id)).toBe(true)
+    expect(answerInput(id)?.value).toBe('Half an answer')
+  })
+
+  it('closing the stale fold while it holds the open card closes the card too, and it stays closed', async () => {
+    const d = open()
+    const id = question(d)
+    advanceClock(STALE + HOUR)
+    await bootApp(d)
+    await showInbox()
+    setOpen(staleFold(), true)
+    click(row(id))
+    await settle()
+    expect(visible(id)).toBe(true)
+
+    setOpen(staleFold(), false)
+    await settle()
+    expect(row(id)?.dataset.open).toBeUndefined()
+    advanceClock()
+    question(d, 'Arrives later')
+    await pollTick()
+    expect(staleFold()?.open).toBe(false)
+    expect(row(id)?.querySelector('.nrow-card')).toBeNull()
+  })
+
+  it('keeps the draft of a card closed with its stale fold', async () => {
+    const d = open()
+    const id = question(d)
+    advanceClock(STALE + HOUR)
+    await bootApp(d)
+    await showInbox()
+    setOpen(staleFold(), true)
+    click(row(id))
+    await settle()
+    type(answerInput(id), 'Half an answer')
+
+    setOpen(staleFold(), false)
+    await settle()
+    expect(row(id)?.dataset.open).toBeUndefined()
+    setOpen(staleFold(), true)
+    click(row(id))
+    await settle()
+    expect(answerInput(id)?.value).toBe('Half an answer')
+  })
+
+  it('leaves a stale fold without the open card as the human left it', async () => {
+    const d = open()
+    question(d, 'Nobody is listening')
+    advanceClock(STALE + HOUR)
+    const reading = question(d, 'Being read')
+    await bootApp(d)
+    await showInbox()
+    click(row(reading))
+    await settle()
+    advanceClock()
+    question(d, 'Arrives first')
+    await pollTick()
+    expect(staleFold()?.open, 'closed by default').toBe(false)
+
+    setOpen(staleFold(), true)
+    advanceClock()
+    question(d, 'Arrives second')
+    await pollTick()
+    expect(staleFold()?.open).toBe(true)
+
+    setOpen(staleFold(), false)
+    advanceClock()
+    question(d, 'Arrives third')
+    await pollTick()
+    expect(staleFold()?.open).toBe(false)
+    expect(visible(reading), 'closing it leaves a card outside it open').toBe(true)
+  })
 })
 
 describe('the Later section setting (#247)', () => {

@@ -943,10 +943,11 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   `reloadAndPaint()`, like every human write. Every deferral, pin or snooze, goes through
   `deferAsk`. When the ask holds a draft it keeps the open card (or, from the Review queue or
   a plan panel, takes it, widening a list filter that would hide it); without one the card
-  closes (§2.1). **One render-time rule keeps the open card in view:** `renderNeedsYou` adds the
-  deferred fold (Later, snoozed or pinned) that holds the open card to `openDeferredFolds`, so
-  it always renders open, whatever moved the ask there: a deferral, the Later setting, another
-  client or a native notification. A draft pauses the list by design, so nothing may carry it
+  closes (§2.1). **One render-time rule keeps the open card in view:** `renderNeedsYou` opens the
+  fold under the queue (Later, snoozed, pinned or stale) that holds the open card, through
+  `openDeferredFolds` or `staleFoldOpen`, so it always renders open, whatever moved the ask
+  there: a deferral, the Later setting, another client, a native notification, or the clock
+  for an ask that turns stale while open. A draft pauses the list by design, so nothing may carry it
   out of sight; fix a new case through this rule, never with a per-transition patch. The human
   closing that fold closes the card too (`closeCardIn`, keeping any draft as any closed card
   does), or the next frame would open the fold again under them. Deferred

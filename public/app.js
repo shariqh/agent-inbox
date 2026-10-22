@@ -5011,23 +5011,23 @@ function renderNeedsYou(g, boardsInView, nowMs) {
   }
   for (const e of visible) host.appendChild(needsRowEl(rowModel(e, opts), e, nowMs))
   if (remaining > 0) host.appendChild(moreButton('needsYou', remaining))
-  // #247: the deferred fold that holds the open card always renders open,
-  // whatever moved its ask there (a deferral, the Later setting, another client
-  // or a native notification), so an open card and its draft are never inside
-  // a closed fold. The human closing that fold closes the card (closeCardIn).
-  const keepOpenCardVisible = (key, entries) => {
-    if (openRowId && entries.some((entry) => needsEntryId(entry) === openRowId)) openDeferredFolds.add(key)
-  }
+  // #247: the fold (Later, snoozed, pinned or stale) that holds the open card
+  // always renders open, whatever moved its ask there (a deferral, the Later
+  // setting, another client, a native notification or the clock), so an open
+  // card and its draft are never inside a closed fold. The human closing that
+  // fold closes the card (closeCardIn).
+  const holdsOpenCard = (entries) => Boolean(openRowId) && entries.some((entry) => needsEntryId(entry) === openRowId)
   if (laterSection) {
-    keepOpenCardVisible('later', later)
+    if (holdsOpenCard(later)) openDeferredFolds.add('later')
     if (later.length) host.appendChild(laterSectionEl(sortLaterEntries(later), opts, nowMs))
   } else {
     for (const reason of DEFERRED_FOLDS) {
       const deferred = sortDeferredEntries(later.filter((entry) => entry.later === reason))
-      keepOpenCardVisible(reason, deferred)
+      if (holdsOpenCard(deferred)) openDeferredFolds.add(reason)
       if (deferred.length) host.appendChild(deferredFoldEl(reason, deferred, opts, nowMs))
     }
   }
+  if (holdsOpenCard(stale)) staleFoldOpen = true
   if (stale.length) host.appendChild(staleFoldEl(stale, opts, nowMs))
   renderOrphanedDrafts(host)
   // fix round 2 (I3): the foot chip is fed the SAME scoped notes the Notes tab
@@ -5182,9 +5182,9 @@ function revealDetailsAncestors(target) {
   }
 }
 
-// A deferred fold renders open while it holds the open card, so the human
-// closing one closes that card too; otherwise the next frame would open the
-// fold again under them. A draft in it is kept, as when any card is closed.
+// A fold under the queue renders open while it holds the open card, so the
+// human closing one closes that card too; otherwise the next frame would open
+// the fold again under them. A draft in it is kept, as when any card is closed.
 function closeCardIn(fold) {
   const row = openRowId ? needsYouRowEl(openRowId) : null
   if (!row || !fold.contains(row)) return
@@ -5254,6 +5254,7 @@ function staleFoldEl(entries, opts, nowMs) {
   if (staleFoldOpen) fold.open = true
   fold.addEventListener('toggle', () => {
     staleFoldOpen = fold.open
+    if (!fold.open) closeCardIn(fold)
     restoreRowSelection(false)
   })
   const summary = document.createElement('summary')

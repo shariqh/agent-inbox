@@ -295,6 +295,12 @@ describe('the Settings → Links bridge (issue #300 part 2)', () => {
     expect(invoke).not.toHaveBeenCalled()
   })
 
+  it('passes on main\'s word that this page is not the viewer the app owns', async () => {
+    const unowned = { available: false, rules: [], error: 'unowned' }
+    const { settings } = loadPreload(() => unowned)
+    await expect(settings.get()).resolves.toEqual(unowned)
+  })
+
   it('hands back a checked view that can name an app but never carry its path', async () => {
     const leaky = { ...VIEW, rules: [{ ...VIEW.rules[0], app: '/Applications/QLMarkdown.app' }], extra: true, error: 'runs-code' }
     const { settings } = loadPreload(() => leaky)

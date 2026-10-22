@@ -519,10 +519,13 @@ body.settings-open .floating-search { opacity: .32; }
 .stale-fold > summary { cursor: pointer; font-size: 12px; letter-spacing: .02em; padding: 4px 0; list-style: none; }
 .stale-fold > summary::before { content: "▸ "; font-size: 10px; }
 .stale-fold[open] > summary::before { content: "▾ "; }
-.snoozed-fold, .pinned-fold { opacity: .78; }
-/* #247: the Later section. Only the waiting rows' lines are dimmed, never the
-   section: an open card's desktop inspector is fixed inside its row, and an
-   ancestor's opacity would fade the whole inspector with it. */
+/* #247: deferred asks are dimmed by their row lines (and a fold's summary),
+   never by the fold or section itself: an open card's desktop inspector is
+   fixed inside its row, and an ancestor's opacity would fade it whole. */
+.snoozed-fold, .pinned-fold { opacity: 1; }
+.snoozed-fold > summary, .pinned-fold > summary,
+.snoozed-fold > .nrow > .nrow-l1, .snoozed-fold > .nrow > .nrow-l2,
+.pinned-fold > .nrow > .nrow-l1, .pinned-fold > .nrow > .nrow-l2 { opacity: .78; }
 .later-section { margin-top: 12px; }
 .later-section > summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; padding: 6px 0; cursor: pointer; list-style: none; font-size: 12.5px; }
 .later-section > summary::-webkit-details-marker { display: none; }

@@ -10,7 +10,7 @@ import type Database from 'better-sqlite3'
 import { attentionEntries } from '../../public/attention.js'
 import type { AttentionBoard, AttentionItem } from '../../public/attention.js'
 import {
-  getBoard, getItem, insertItem, pinBoardRow, pinItem, snoozeBoardRow, snoozeItem, updateBoardRow, upsertBoard,
+  closeProject, getBoard, getItem, insertItem, pinBoardRow, pinItem, snoozeItem, updateBoardRow, upsertBoard,
 } from '../../src/store.js'
 import {
   advanceClock, answerInput, badgeCount, bootApp, buttonLabelled, click, expectConsoleError, freshDb, navigateToHash,
@@ -60,10 +60,15 @@ const openLater = () => {
   el.open = true
   el.dispatchEvent(new Event('toggle'))
 }
+const setOpen = (fold: HTMLDetailsElement | null, open: boolean) => {
+  if (!fold) throw new Error('setOpen(): no fold')
+  fold.open = open
+  fold.dispatchEvent(new Event('toggle'))
+}
 const laterTitle = () => laterSection()?.querySelector('.later-title')?.textContent ?? null
 const laterBreakdown = () => laterSection()?.querySelector('.later-breakdown')?.textContent ?? null
 const fold = (name: 'pinned' | 'snoozed') => document.querySelector<HTMLDetailsElement>(`#needsYouList .${name}-fold`)
-const inLater = (id: string) => Boolean(row(id)) && row(id)?.closest('.later-section') === laterSection()
+const inLater = (id: string) => Boolean(row(id)?.closest('.later-section'))
 const inQueue = (id: string) => Boolean(row(id)) && row(id)?.closest('details') === null
 const laterIds = () => [...(laterSection()?.querySelectorAll<HTMLElement>('.nrow[data-card-id]') ?? [])]
   .map((el) => el.dataset.cardId)
@@ -361,6 +366,180 @@ describe('the Later section (#247)', () => {
   })
 })
 
+// #247 review: the fold that holds the open card always renders open, whatever
+// moved its ask there: a deferral, the Later setting, another client or a
+// native notification. One rule at render time, not one patch per transition,
+// so an open card, and a draft in it, is never inside a closed fold.
+describe('the fold that holds the open card renders open (#247)', () => {
+  const visible = (id: string) => {
+    const card = row(id)?.querySelector('.nrow-card')
+    return Boolean(card) && card!.closest('details:not([open])') === null
+  }
+
+  it('keeps a drafted open card in view when the Later section is turned off, and after a poll', async () => {
+    const d = open()
+    const id = question(d)
+    pinItem(d, id, true)
+    await bootApp(d)
+    await showInbox()
+    openLater()
+    click(row(id))
+    await settle()
+    type(answerInput(id), 'Half an answer')
+
+    await chooseLater(false)
+    await showInbox()
+    expect(fold('pinned')?.open).toBe(true)
+    expect(visible(id)).toBe(true)
+    expect(answerInput(id)?.value).toBe('Half an answer')
+
+    advanceClock()
+    question(d, 'Arrived while paused')
+    await pollTick()
+    expect(fold('pinned')?.open).toBe(true)
+    expect(visible(id)).toBe(true)
+    expect(document.getElementById('pauseHint')?.textContent).toBe(PAUSED)
+  })
+
+  it('keeps a drafted open card in view when the Later section is turned on, and after a poll', async () => {
+    localStorage.setItem(LATER_KEY, 'false')
+    const d = open()
+    const id = question(d)
+    snoozeItem(d, id, new Date(Date.now() + 4 * HOUR).toISOString())
+    await bootApp(d)
+    await showInbox()
+    setOpen(fold('snoozed'), true)
+    click(row(id))
+    await settle()
+    type(answerInput(id), 'Half an answer')
+
+    await chooseLater(true)
+    await showInbox()
+    expect(laterSection()?.open).toBe(true)
+    expect(inLater(id)).toBe(true)
+    expect(visible(id)).toBe(true)
+    expect(answerInput(id)?.value).toBe('Half an answer')
+
+    advanceClock()
+    question(d, 'Arrived while paused')
+    await pollTick()
+    expect(laterSection()?.open).toBe(true)
+    expect(visible(id)).toBe(true)
+  })
+
+  it('keeps the open card in view when another client pins its ask', async () => {
+    const d = open()
+    const id = question(d)
+    await bootApp(d)
+    await showInbox()
+    click(row(id))
+    await settle()
+
+    const res = await fetch(`/api/items/${id}/later`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ pinned: true }),
+    })
+    expect(await res.json()).toEqual({ ok: true })
+    await pollTick()
+    expect(inLater(id)).toBe(true)
+    expect(laterSection()?.open).toBe(true)
+    expect(visible(id)).toBe(true)
+  })
+
+  it('keeps a drafted open card in view on the next forced frame after another client pins its ask', async () => {
+    const d = open()
+    const id = question(d)
+    await bootApp(d)
+    await showInbox()
+    click(row(id))
+    await settle()
+    type(answerInput(id), 'Half an answer')
+    pinItem(d, id, true)
+    await pollTick()
+    expect(inLater(id), 'the draft holds the poll').toBe(false)
+
+    await showInbox()
+    expect(inLater(id)).toBe(true)
+    expect(laterSection()?.open).toBe(true)
+    expect(visible(id)).toBe(true)
+    expect(answerInput(id)?.value).toBe('Half an answer')
+  })
+
+  it('files an ask that is not the open card into a closed fold', async () => {
+    const d = open()
+    const reading = question(d, 'Being read')
+    advanceClock()
+    const other = question(d, 'Pinned elsewhere')
+    await bootApp(d)
+    await showInbox()
+    click(row(reading))
+    await settle()
+    pinItem(d, other, true)
+    await pollTick()
+    expect(inLater(other)).toBe(true)
+    expect(laterSection()?.open).toBe(false)
+    expect(visible(reading)).toBe(true)
+  })
+
+  it('keeps Later closed once the human closes it', async () => {
+    const d = open()
+    pinItem(d, question(d), true)
+    await bootApp(d)
+    await showInbox()
+    openLater()
+    setOpen(laterSection(), false)
+    advanceClock()
+    question(d, 'Arrives later')
+    await pollTick()
+    expect(laterSection()?.open).toBe(false)
+  })
+
+  it('keeps a fold the human closed closed when it does not hold the open card', async () => {
+    const d = open()
+    const reading = question(d, 'Being read')
+    advanceClock()
+    pinItem(d, question(d, 'Pinned'), true)
+    await bootApp(d)
+    await showInbox()
+    openLater()
+    click(row(reading))
+    await settle()
+    setOpen(laterSection(), false)
+    advanceClock()
+    question(d, 'Arrives later')
+    await pollTick()
+    expect(laterSection()?.open).toBe(false)
+    expect(visible(reading)).toBe(true)
+    await showInbox()
+    expect(laterSection()?.open).toBe(false)
+  })
+
+  it.each([
+    ['Later', 'on'],
+    ['the pinned fold', 'off'],
+  ] as const)('closing %s while it holds the open card closes the card too, and it stays closed', async (_label, mode) => {
+    if (mode === 'off') localStorage.setItem(LATER_KEY, 'false')
+    const d = open()
+    const id = question(d)
+    pinItem(d, id, true)
+    await bootApp(d)
+    await showInbox()
+    const container = () => (mode === 'on' ? laterSection() : fold('pinned'))
+    setOpen(container(), true)
+    click(row(id))
+    await settle()
+    expect(visible(id)).toBe(true)
+
+    setOpen(container(), false)
+    await settle()
+    expect(row(id)?.dataset.open).toBeUndefined()
+    advanceClock()
+    question(d, 'Arrives later')
+    await pollTick()
+    expect(container()?.open).toBe(false)
+    expect(row(id)?.querySelector('.nrow-card')).toBeNull()
+  })
+})
+
 describe('the Later section setting (#247)', () => {
   it('is on by default, and a value it does not know reads as the default', async () => {
     localStorage.setItem(LATER_KEY, 'sideways')
@@ -614,6 +793,22 @@ describe('search with the Later section (#247)', () => {
     expect(row(pinned)?.dataset.open).toBe('1')
   })
 
+  it('draws no Later label for an ask of a closed project, which Later does not show either', async () => {
+    const d = open()
+    const id = question(d, 'Rollout beta', { project: 'beta' })
+    pinItem(d, id, true)
+    question(d, 'Alpha asking')
+    closeProject(d, 'beta')
+    await bootApp(d)
+    await showInbox()
+    expect(laterSection()).toBeNull()
+    await searchFor('Rollout')
+    await settle()
+    const result = document.querySelector<HTMLElement>(`#searchResults [data-search-target="${id}"]`)
+    expect(result?.closest('.search-result-group')?.querySelector('.search-result-group-label')?.textContent).toBe('Open items')
+    expect(result?.querySelector('.search-result-later')).toBeNull()
+  })
+
   it('draws no Later chip with the setting off', async () => {
     localStorage.setItem(LATER_KEY, 'false')
     const d = open()
@@ -669,6 +864,35 @@ describe('a drafted ask deferred from the Review queue lands in view (#247)', ()
     expect(document.activeElement === focused || lightbox().contains(document.activeElement)).toBe(true)
     click(lightbox().querySelector('.lb-close'))
     await settle()
+    expectDraftInLater(id)
+  })
+
+  // Closing the queue returns focus to whatever opened it; after the switch that
+  // is the Inbox's Review queue button, never a control on the tab that is gone.
+  // The switch itself focuses nothing, even when the write lands while the
+  // window is in the background.
+  it('returns focus to the Inbox Review queue button after the switch, and moves none while in the background', async () => {
+    const d = open()
+    const id = question(d)
+    await bootApp(d)
+    const notesTab = document.querySelector<HTMLElement>('.tab[data-tab="notes"]')!
+    click(notesTab)
+    await settle()
+    notesTab.focus()
+    await openReviewQueue()
+    type(deckInput(), 'Half an answer')
+    const before = document.activeElement
+    const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    click(buttonLabelled('Pin for later', lightbox()))
+    await settle()
+    expect(document.querySelector('.tab[data-tab="needsYou"]')?.getAttribute('aria-selected')).toBe('true')
+    expect(document.activeElement, 'the switch moves no focus').toBe(before)
+
+    hasFocus.mockRestore()
+    click(lightbox().querySelector('.lb-close'))
+    await settle()
+    expect(document.activeElement).toBe(document.querySelector('#needsYou .triage-btn'))
+    expect(document.activeElement).not.toBe(notesTab)
     expectDraftInLater(id)
   })
 

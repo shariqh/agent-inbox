@@ -78,7 +78,8 @@ describe('human disposition controls', () => {
     expect(badgeCount()).toBe(0)
     expect(rowTitles()).toContain('Choose whether to merge.')
     expect(chipText(id)).toMatch(/^Back in /)
-    expect(document.querySelector('.later-section')?.textContent).toContain('Merge?')
+    expect(row(id)?.closest('.later-section')).not.toBeNull()
+    expect(row(id)?.dataset.open, 'without a draft the card closes').toBeUndefined()
 
     click(buttonLabelled('Back to inbox', row(id)!))
     await settle()

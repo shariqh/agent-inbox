@@ -1292,7 +1292,7 @@ function searchStatusText(results, query) {
 // snooze ends.
 function markLaterResults(results) {
   if (!laterSection || !results.length) return results
-  const later = new Set(laterEntries(allItems(lastData.g), [], Date.now()).map((entry) => entry.item.id))
+  const later = new Set(laterEntries(allItems(lastData.g), [], Date.now(), closedSet()).map((entry) => entry.item.id))
   return results.map((result) => (
     result.section === 'open' && later.has(result.targetId) ? { ...result, later: true } : result
   ))
@@ -2349,16 +2349,18 @@ function dispositionEl(onResponse, onSnooze, key, onPin = null) {
 }
 
 // The one write behind every deferral (#247): a snooze or a pin, of a question
-// or a plan row, from any card. The ask moves into a fold that starts closed,
-// and a draft left on it would sit there unseen while it pauses the list. So a
-// deferral that leaves a draft behind keeps it in view instead.
-async function deferAsk(entry, reason, url, body, { refusal = '', onSaved = null } = {}) {
+// or a plan row, from any card. An ask that holds a draft keeps (or takes) the
+// open card, and the fold that holds the open card always renders open
+// (renderNeedsYou), so the draft that pauses the list stays in view. Without a
+// draft the card closes (§2.1) and the ask waits in its closed fold.
+async function deferAsk(entry, url, body, { refusal = '', onSaved = null } = {}) {
   const ask = entryEntity(entry)
   const res = await postJSON(url, body)
   if (res === null) return
   if (refusal) showWriteError(ask.id, res.ok ? '' : refusal)
   if (res.ok) {
-    if (holdsDraft(ask.id)) keepDraftInView(entry, reason)
+    if (holdsDraft(ask.id)) keepDraftInView(entry)
+    else if (openRowId === ask.id) setOpenRow(null, { resume: false })
     onSaved?.()
   }
   await reloadAndPaint()
@@ -2368,7 +2370,7 @@ async function deferAsk(entry, reason, url, body, { refusal = '', onSaved = null
 // in the same write: "Stop waiting" pins it and "Back in …" snoozes it to the
 // same time. Through deferAsk, so a drafted ask stays in view.
 function deferWaitStop(entry, url, until, pins, options) {
-  return deferAsk(entry, until === null ? 'pinned' : 'snoozed', url, { until, defer: true, ...pins }, options)
+  return deferAsk(entry, url, { until, defer: true, ...pins }, options)
 }
 
 // The test suspendState() applies: a draft is more than whitespace.
@@ -2377,15 +2379,17 @@ function holdsDraft(id) {
     .some((text) => String(text ?? '').trim() !== '')
 }
 
-// Open the deferred ask's fold (the Later section while it is on) and give it
-// the open card, as opening its row would. From the Review queue or a plan
-// panel it was not the open card, and those ignore the list's filters, so widen
-// any filter that would hide it. A Review queue opened with `t` on another tab
-// returns there when it closes, so the Inbox becomes the visible tab; focus
-// stays in the queue.
-function keepDraftInView(entry, reason) {
-  openDeferredFolds.add(laterSection ? 'later' : reason)
-  if (triageDeck && activeTab !== 'needsYou') selectTab('needsYou', { paint: false })
+// Give the deferred ask the open card, as opening its row would; its fold then
+// renders open. From the Review queue or a plan panel it was not the open card,
+// and those ignore the list's filters, so widen any filter that would hide it.
+// A Review queue opened with `t` on another tab would return there when it
+// closes, so the Inbox becomes the visible tab and the queue returns to its
+// Review queue button instead; nothing is focused now.
+function keepDraftInView(entry) {
+  if (triageDeck && activeTab !== 'needsYou') {
+    selectTab('needsYou', { paint: false })
+    triageReturnFocus = { kind: 'triageButton' }
+  }
   const ask = entryEntity(entry)
   if (openRowId === ask.id) return
   const owner = entry.kind === 'row' ? entry.board : entry.item
@@ -2746,7 +2750,6 @@ function rowAnswerEl(b, r, onSaved) {
       },
       (until) => deferAsk(
         { kind: 'row', row: r, board: b },
-        'snoozed',
         `/api/boards/${b.id}/rows/${r.id}/snooze`,
         { until, expected_revision: r.revision, expected_board_version: b.revision },
         { onSaved },
@@ -2754,7 +2757,6 @@ function rowAnswerEl(b, r, onSaved) {
       `row:${r.id}`,
       r.pinned_at || !laterSection ? null : () => deferAsk(
         { kind: 'row', row: r, board: b },
-        'pinned',
         `/api/boards/${b.id}/rows/${r.id}/later`,
         { pinned: true, expected_revision: r.revision, expected_board_version: b.revision },
         { onSaved, refusal: 'This action changed before your click; refreshed without applying it.' },
@@ -5009,11 +5011,20 @@ function renderNeedsYou(g, boardsInView, nowMs) {
   }
   for (const e of visible) host.appendChild(needsRowEl(rowModel(e, opts), e, nowMs))
   if (remaining > 0) host.appendChild(moreButton('needsYou', remaining))
+  // #247: the deferred fold that holds the open card always renders open,
+  // whatever moved its ask there (a deferral, the Later setting, another client
+  // or a native notification), so an open card and its draft are never inside
+  // a closed fold. The human closing that fold closes the card (closeCardIn).
+  const keepOpenCardVisible = (key, entries) => {
+    if (openRowId && entries.some((entry) => needsEntryId(entry) === openRowId)) openDeferredFolds.add(key)
+  }
   if (laterSection) {
+    keepOpenCardVisible('later', later)
     if (later.length) host.appendChild(laterSectionEl(sortLaterEntries(later), opts, nowMs))
   } else {
     for (const reason of DEFERRED_FOLDS) {
       const deferred = sortDeferredEntries(later.filter((entry) => entry.later === reason))
+      keepOpenCardVisible(reason, deferred)
       if (deferred.length) host.appendChild(deferredFoldEl(reason, deferred, opts, nowMs))
     }
   }
@@ -5153,9 +5164,9 @@ function renderOrphanedDrafts(host) {
 // re-collapses under the user mid-read
 let staleFoldOpen = false
 // The deferred folds under Needs you (#247), in render order, keyed by the
-// reason laterEntries tags each entry with, and the ones the human has open.
-// The Later section, which replaces them while its setting is on, is the key
-// 'later' in the same set.
+// reason laterEntries tags each entry with, and the ones that are open: opened
+// by the human, a deep link, or because they hold the open card. The Later
+// section, which replaces them while its setting is on, is the key 'later'.
 const DEFERRED_FOLDS = ['snoozed', 'pinned']
 const openDeferredFolds = new Set()
 
@@ -5171,6 +5182,18 @@ function revealDetailsAncestors(target) {
   }
 }
 
+// A deferred fold renders open while it holds the open card, so the human
+// closing one closes that card too; otherwise the next frame would open the
+// fold again under them. A draft in it is kept, as when any card is closed.
+function closeCardIn(fold) {
+  const row = openRowId ? needsYouRowEl(openRowId) : null
+  if (!row || !fold.contains(row)) return
+  setOpenRow(null, { resume: false })
+  row.removeAttribute('data-open')
+  row.setAttribute('aria-expanded', 'false')
+  row.querySelector('.nrow-card')?.remove()
+}
+
 // Asks the human set aside: out of every count, but one click away, each with
 // its own way back (Wake now, Back to inbox) on the row.
 function deferredFoldEl(reason, entries, opts, nowMs) {
@@ -5180,7 +5203,10 @@ function deferredFoldEl(reason, entries, opts, nowMs) {
   if (openDeferredFolds.has(reason)) fold.open = true
   fold.addEventListener('toggle', () => {
     if (fold.open) openDeferredFolds.add(reason)
-    else openDeferredFolds.delete(reason)
+    else {
+      openDeferredFolds.delete(reason)
+      closeCardIn(fold)
+    }
     restoreRowSelection(false)
   })
   const summary = document.createElement('summary')
@@ -5201,7 +5227,10 @@ function laterSectionEl(entries, opts, nowMs) {
   if (openDeferredFolds.has('later')) section.open = true
   section.addEventListener('toggle', () => {
     if (section.open) openDeferredFolds.add('later')
-    else openDeferredFolds.delete('later')
+    else {
+      openDeferredFolds.delete('later')
+      closeCardIn(section)
+    }
     restoreRowSelection(false)
   })
   const summary = document.createElement('summary')
@@ -6557,11 +6586,10 @@ function answerEl(it) {
     (kind, text) => sendReply(
       it.id, text, effectiveReplyContext(it), kind, editorGeneration,
     ),
-    (until) => deferAsk({ kind: 'item', item: it }, 'snoozed', `/api/items/${it.id}/snooze`, { until }),
+    (until) => deferAsk({ kind: 'item', item: it }, `/api/items/${it.id}/snooze`, { until }),
     `item:${it.id}`,
     it.reply || it.reply_kind || it.pinned_at || !laterSection ? null : () => deferAsk(
       { kind: 'item', item: it },
-      'pinned',
       `/api/items/${it.id}/later`,
       { pinned: true },
       { refusal: 'This question changed before your click; refreshed without applying it.' },

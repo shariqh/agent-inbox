@@ -2,8 +2,9 @@
 // Issue #247 (part 2 review, 8a): the `t` key opens the Review queue from any
 // tab. A draft on an ask it then defers lives in the Inbox list, so after a
 // successful deferral the Inbox becomes the visible tab, without moving focus.
-// This is the only boot in its file, so its synthetic keydown on document
-// reaches exactly one app instance's listener.
+// Closing the queue then returns focus to the Inbox's Review queue button,
+// never to the Notes tab that opened it. This is the only boot in its file, so
+// its synthetic keydown on document reaches exactly one app instance's listener.
 import { afterEach, describe, expect, it } from 'vitest'
 import type Database from 'better-sqlite3'
 import { getItem, insertItem } from '../../src/store.js'
@@ -22,8 +23,10 @@ describe('the Review queue opened with `t` on another tab (#247)', () => {
       next_step: 'Choose whether to merge.', action_owner: 'approval', options: [{ label: 'Merge', recommended: true }],
     })
     await bootApp(db)
-    click(document.querySelector('.tab[data-tab="notes"]'))
+    const notesTab = document.querySelector<HTMLElement>('.tab[data-tab="notes"]')!
+    click(notesTab)
     await settle()
+    notesTab.focus()
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 't', bubbles: true, cancelable: true }))
     await settle()
     const lightbox = document.getElementById('lightbox')!
@@ -42,6 +45,7 @@ describe('the Review queue opened with `t` on another tab (#247)', () => {
 
     click(lightbox.querySelector('.lb-close'))
     await settle()
+    expect(document.activeElement, 'not the Notes tab, which is no longer showing').toBe(document.querySelector('#needsYou .triage-btn'))
     expect(document.querySelector<HTMLDetailsElement>('#needsYouList .later-section')?.open).toBe(true)
     expect(row(id)?.dataset.open).toBe('1')
     expect(answerInput(id)?.value).toBe('Half an answer')

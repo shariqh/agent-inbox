@@ -941,9 +941,15 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   question or an unanswered blocked row of an active plan, and is not drawn on one already
   pinned; it posts to the `later` route with the row and board revisions and ends in
   `reloadAndPaint()`, like every human write. Every deferral, pin or snooze, goes through
-  `deferAsk`. When the ask holds a draft, its fold opens and the ask keeps the open card (or,
-  from the Review queue or a plan panel, takes it, widening a list filter that would hide it):
-  a draft pauses the list by design, so a deferral must never carry it out of sight. Deferred
+  `deferAsk`. When the ask holds a draft it keeps the open card (or, from the Review queue or
+  a plan panel, takes it, widening a list filter that would hide it); without one the card
+  closes (§2.1). **One render-time rule keeps the open card in view:** `renderNeedsYou` adds the
+  deferred fold (Later, snoozed or pinned) that holds the open card to `openDeferredFolds`, so
+  it always renders open, whatever moved the ask there: a deferral, the Later setting, another
+  client or a native notification. A draft pauses the list by design, so nothing may carry it
+  out of sight; fix a new case through this rule, never with a per-transition patch. The human
+  closing that fold closes the card too (`closeCardIn`, keeping any draft as any closed card
+  does), or the next frame would open the fold again under them. Deferred
   rows carry a reason chip instead of an urgency (`Pinned 2d ago`, `Back in 3h`,
   `… · agent waits quietly` while a Copilot asker's #217 deferral runs). Electron's `known`
   set is the unsuppressed attention set plus the `pinned` Later entries
@@ -961,9 +967,10 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   reaches the badge, a tab or the rail. Its order is `sortLaterEntries` (snoozed soonest back
   first, then pinned oldest first, ties by a stable key), never the Sort menu. Rows are
   ordinary `.nrow`s whose way back is always "Back to inbox"; only their lines are dimmed,
-  never the section, because the desktop inspector is fixed inside its row and an ancestor's
-  opacity would fade it. The empty state says `Nothing needs you now · N in Later`; search
-  marks an Open items result in Later with a `Later` label (`markLaterResults`, beside the
+  never the section (nor, with the setting off, the snoozed and pinned folds), because the
+  desktop inspector is fixed inside its row and an ancestor's opacity would fade it. The empty state says `Nothing needs you now · N in Later`; search
+  marks an Open items question in Later with a `Later` label (`markLaterResults`, with the
+  closed set the section uses, beside the
   clock, so a snooze ending changes the result signature). Off: slice 2's snoozed and pinned
   folds, the Pin control is not drawn, and Settings shows how many pins still wait in the
   pinned fold (`paintLaterSectionHint`, ambient). **The coupled write (§5.4).** With the
@@ -979,7 +986,8 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   and an older process's statements meet the existing triggers (`test/mixed-version.test.ts`
   pins its re-send keeping both halves and its new action ending both). A deferral from a
   Review queue opened on another tab with `t` switches to the Inbox (`selectTab(…, { paint:
-  false })`, no focus move) only when the ask holds a draft and the write succeeded.
+  false })`, no focus move) only when the ask holds a draft and the write succeeded, and the
+  queue then returns focus to the Inbox's Review queue button, not to the tab it left.
 
 - **Agent setup is explicit, dry-run-first, and owns only marked text.**
   `scripts/install-agents.sh` is the supported bridge between two configuration systems:

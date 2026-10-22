@@ -247,8 +247,8 @@ back first, then pinned requests, oldest first. Each row says why it waits, and
 request inside Later. A snoozed request comes back by itself when its time
 passes. A pinned request comes back when you return it, or when the agent ends
 the request or starts a new one. When nothing else needs you, the queue says how
-many requests wait in Later, and search still lists them under Open items with a
-Later label.
+many requests wait in Later. Search still finds them: a question is listed under
+Open items with a Later label, and a plan row under Active plans with its plan.
 
 The Later section is on by default. Turn it off in **Settings → Inbox** to keep
 the earlier layout: a snoozed fold, a pinned fold for requests you already

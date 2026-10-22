@@ -335,11 +335,11 @@ describe('a draft whose target changed goes to the unsent responses', () => {
       const board = getBoard(d, 'alpha', 'Launch plan')!
       expect(archiveBoard(d, board.id, board.revision)).toBe(true)
     }],
-    ['its row was removed', (d: Database.Database) => {
+    ['it was removed', (d: Database.Database) => {
       const board = getBoard(d, 'alpha', 'Launch plan')!
       upsertBoard(d, { ...AGENT, title: 'Launch plan', expectedVersion: board.revision, rows: [] })
     }],
-  ] as const)('a plan row whose %s', async (_label, change) => {
+  ] as const)('a plan row when %s', async (_label, change) => {
     db = freshDb()
     const board = plan(db)
     const rowId = board.rows[0]!.id

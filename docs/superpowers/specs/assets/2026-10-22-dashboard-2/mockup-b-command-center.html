@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>Concept B — Command center</title>
+<!-- Mockup for docs/superpowers/specs/2026-10-22-dashboard-2-proposal.md. Synthetic data. -->
+<link rel="stylesheet" href="../../../../../public/style.css">
+<link rel="stylesheet" href="mockup.css">
+<style>
+.top { display: flex; gap: 8px; align-items: center; }
+.pill { display: inline-flex; align-items: center; gap: 7px; padding: 5px 11px; border-radius: 999px; border: 1px solid var(--app-border); background: var(--app-surface); font-size: 12px; color: var(--app-muted); }
+.pill strong { color: var(--app-text); font-size: 13px; }
+.pill.att { border-color: color-mix(in srgb, var(--app-attention) 55%, transparent); color: var(--app-attention); }
+.pill.att strong { color: var(--app-attention); }
+.livedot { width: 8px; height: 8px; border-radius: 50%; background: var(--app-agent); box-shadow: 0 0 0 4px color-mix(in srgb, var(--app-agent) 25%, transparent); }
+.grid { display: grid; grid-template-columns: 1fr 380px; gap: 16px; flex: 1; min-height: 0; padding-bottom: 16px; }
+.col { display: flex; flex-direction: column; gap: 14px; min-height: 0; }
+.focus { padding: 18px 20px; border-color: color-mix(in srgb, var(--app-attention) 45%, var(--app-border)); position: relative; }
+.focus-top { display: flex; gap: 8px; align-items: center; font-size: 11.5px; }
+.focus h3 { margin: 8px 0 4px; font-size: 21px; letter-spacing: -.015em; }
+.focus .tldr { font-size: 13.5px; color: var(--app-muted); }
+.facts { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 12px 0; }
+.fact { padding: 8px 10px; border-radius: 8px; background: var(--app-soft); font-size: 12px; }
+.fact b { display: block; font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--app-text-soft); margin-bottom: 2px; }
+.opts { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.opt { padding: 10px 12px; border: 1px solid var(--app-border); border-radius: 10px; background: var(--app-elevated); font-size: 12px; position: relative; }
+.opt strong { font-size: 13.5px; display: flex; gap: 8px; align-items: center; }
+.opt.rec { border-color: var(--app-accent); background: var(--app-accent-soft); }
+.opt .k { position: absolute; right: 10px; top: 10px; }
+.reply { display: flex; gap: 8px; margin-top: 12px; }
+.reply .box { flex: 1; padding: 8px 10px; border: 1px solid var(--app-border); border-radius: 8px; color: var(--app-text-soft); font-size: 12.5px; }
+.focus-actions { display: flex; gap: 8px; margin-top: 12px; align-items: center; font-size: 12px; }
+.next { display: grid; grid-template-columns: 10px 1fr auto; gap: 12px; align-items: center; padding: 10px 12px; border-top: 1px solid var(--app-border); }
+.next:first-of-type { border-top: 0; }
+.next .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--c); }
+.next-top { display: flex; gap: 8px; align-items: center; font-size: 11px; }
+.next strong { font-size: 13px; }
+.next-actions { display: flex; gap: 6px; align-items: center; }
+.ico { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 6px; border: 1px solid var(--app-border); color: var(--app-muted); font-size: 12px; }
+.sess { display: grid; grid-template-columns: 26px 1fr auto; gap: 10px; align-items: center; padding: 8px 0; border-top: 1px solid var(--app-border); font-size: 11.5px; }
+.sess:first-of-type { border-top: 0; }
+.sess strong { font-size: 13px; }
+.sess.idle { opacity: .55; }
+.sess-ago { font-size: 11px; }
+.kidc { color: var(--app-agent); font-weight: 650; }
+.eq { display: flex; gap: 3px; align-items: flex-end; height: 18px; }
+.eq i { width: 4px; border-radius: 2px; background: var(--c); }
+.eq.idle i { height: 3px !important; background: var(--app-text-soft); }
+.plan { display: grid; grid-template-columns: 36px 1fr; gap: 10px; align-items: center; padding: 6px 0; font-size: 11.5px; }
+.plan strong { font-size: 12.5px; }
+.ring { width: 34px; height: 34px; transform: rotate(-90deg); }
+.ring circle { fill: none; stroke-width: 4; }
+.ring .bg { stroke: color-mix(in srgb, var(--app-text) 10%, transparent); }
+.ring .fg { stroke-linecap: round; }
+.keys { display: flex; gap: 12px; font-size: 11px; color: var(--app-text-soft); }
+</style>
+</head>
+<body>
+<div class="m-shell">
+  <aside class="m-side">
+    <div class="m-brand"><img src="../../../../../public/favicon-32.png" alt=""><span><strong>Agent Inbox</strong><small>Local workspace</small></span></div>
+    <div class="m-tab on">Dashboard<b></b></div><div class="m-tab">Inbox<b>5</b></div><div class="m-tab">Plans<b>4</b></div><div class="m-tab">Notes<b>2</b></div><div class="m-tab">History<b>3</b></div>
+    <div class="m-label">Projects</div>
+    <div class="m-proj" style="--c:var(--app-text-soft)"><i></i>All<b>5</b></div><div class="m-proj" style="--c:#38d6c0"><i></i>agent-inbox<b>2</b></div><div class="m-proj" style="--c:#4cc9f0"><i></i>homelab<b>1</b></div><div class="m-proj" style="--c:#c77dff"><i></i>oris<b>1</b></div><div class="m-proj" style="--c:#8f99a3"><i></i>portal-docs<b></b></div><div class="m-proj" style="--c:#4895ef"><i></i>social-agent<b>1</b></div>
+  </aside>
+  <main class="m-main">
+<div class="m-head"><div><div class="m-kicker">Dashboard</div><h1 class="m-h1">Command center</h1></div><span class="m-spacer"></span>
+  <div class="top"><span class="pill att"><strong>5</strong> waiting on you</span><span class="pill"><span class="livedot"></span><strong>4</strong> working · 3 subagents</span><span class="pill"><strong>11/23</strong> plan steps</span><span class="pill"><strong>6</strong> outcomes today</span></div></div>
+<div class="grid">
+  <div class="col">
+    <section class="m-card focus">
+      <div class="focus-top"><span class="m-chip t-att">Up next · 1 of 5</span><span class="m-soft">oris · claude-code · main · asked 2 h ago</span><span class="m-spacer"></span><span class="m-chip t-agent">agent is waiting · live</span></div>
+      <h3>Retry failed Paddle webhooks for 72 h or 24 h?</h3>
+      <div class="tldr">Both are safe; 72 h covers weekend outages.</div>
+      <div class="facts"><div class="fact"><b>Why now</b>Unblocks step 4 of the billing migration</div><div class="fact"><b>Then</b>I wire the retry queue and run the replay test.</div></div>
+      <div class="opts">
+        <div class="opt rec"><span class="m-kbd k">1</span><strong>72 hours <span class="m-chip t-att">recommended</span></strong><span class="m-muted">Covers weekend outages; more queued rows</span></div>
+        <div class="opt"><span class="m-kbd k">2</span><strong>24 hours</strong><span class="m-muted">Smaller queue; weekend failures need a manual replay</span></div>
+      </div>
+      <div class="reply"><div class="box">Or answer in your own words…</div><span class="m-btn primary">Send</span></div>
+      <div class="focus-actions"><span class="m-btn small ghost">Snooze ▾</span><span class="m-btn small ghost">Pin for later</span><span class="m-btn small ghost">Ask to clarify</span><span class="m-btn small ghost">Decline</span><span class="m-spacer"></span><span class="m-btn small ghost">Open in Inbox ↗</span></div>
+    </section>
+    <section class="m-card" style="padding:12px 14px">
+      <div class="m-card-head" style="margin-bottom:4px"><h2>Then</h2><small>one click answers · ★ = agent's recommendation</small><span class="m-spacer"></span><span class="keys"><span><span class="m-kbd">J</span>/<span class="m-kbd">K</span> move</span><span><span class="m-kbd">1</span>–<span class="m-kbd">4</span> choose</span><span><span class="m-kbd">S</span> snooze</span><span><span class="m-kbd">P</span> pin</span></span></div>
+      <div class="next" style="--c:#38d6c0"><i class="dot"></i><div class="next-main"><div class="next-top"><span class="m-soft">agent-inbox</span><span class="m-chip t-att">Approval</span><span class="m-soft">14m</span></div><strong>Merge PR #283 (poll snapshot trim)?</strong></div><div class="next-actions"><span class="m-btn small rec">Merge ★</span><span class="m-btn small">Hold</span><span class="ico">◷</span><span class="ico">⌖</span></div></div>
+      <div class="next" style="--c:#4cc9f0"><i class="dot"></i><div class="next-main"><div class="next-top"><span class="m-soft">homelab</span><span class="m-chip t-plan">To do</span><span class="m-soft">22m</span></div><strong>Re-seat the second GPU power cable</strong></div><div class="next-actions"><span class="m-btn small rec">I've done my part</span><span class="ico">◷</span><span class="ico">⌖</span></div></div>
+      <div class="next" style="--c:#4895ef"><i class="dot"></i><div class="next-main"><div class="next-top"><span class="m-soft">social-agent</span><span class="m-chip t-att">Decision</span><span class="m-soft">41m</span></div><strong>Lead the v1.5 post with dependencies?</strong></div><div class="next-actions"><span class="m-btn small rec">Dependencies ★</span><span class="m-btn small">Plan grouping</span><span class="ico">◷</span><span class="ico">⌖</span></div></div>
+      <div class="next" style="--c:#8f99a3"><i class="dot"></i><div class="next-main"><div class="next-top"><span class="m-soft">portal-docs · plan step</span><span class="m-chip t-att">Decision</span><span class="m-soft">1h</span></div><strong>Publish the v2 API guide to production?</strong></div><div class="next-actions"><span class="m-btn small rec">Publish ★</span><span class="m-btn small">Hold</span><span class="ico">◷</span><span class="ico">⌖</span></div></div>
+      <div class="m-soft" style="font-size:11.5px;padding:8px 12px 0;border-top:1px solid var(--app-border)">Later · 1 pinned, 0 snoozed — <span style="color:var(--app-accent)">show</span></div>
+    </section>
+  </div>
+  <div class="col">
+    <section class="m-card">
+      <div class="m-card-head"><h2>Live</h2><span class="m-chip t-agent">4 working</span><span class="m-spacer"></span><small>what's being worked on</small></div>
+      <div class="sess"><span class="eq" style="--c:#38d6c0"><i style="height:40%"></i><i style="height:90%"></i><i style="height:60%"></i></span><div><strong>Profiling the 3-second poll</strong><div class="m-soft">agent-inbox · copilot · <span class="kidc">2 subagents</span></div></div><span class="m-soft sess-ago">3s</span></div>
+      <div class="sess"><span class="eq" style="--c:#c77dff"><i style="height:40%"></i><i style="height:90%"></i><i style="height:60%"></i></span><div><strong>Migrating billing webhooks</strong><div class="m-soft">oris · claude-code · <span class="kidc">1 subagent</span></div></div><span class="m-soft sess-ago">8s</span></div>
+      <div class="sess"><span class="eq" style="--c:#4cc9f0"><i style="height:40%"></i><i style="height:90%"></i><i style="height:60%"></i></span><div><strong>Rebuilding ComfyUI image</strong><div class="m-soft">homelab · copilot</div></div><span class="m-soft sess-ago">41s</span></div>
+      <div class="sess"><span class="eq" style="--c:#4895ef"><i style="height:40%"></i><i style="height:90%"></i><i style="height:60%"></i></span><div><strong>Drafting LinkedIn post for v1.5</strong><div class="m-soft">social-agent · claude-code</div></div><span class="m-soft sess-ago">2m</span></div>
+      <div class="sess idle"><span class="eq idle" style="--c:#8f99a3"><i style="height:40%"></i><i style="height:90%"></i><i style="height:60%"></i></span><div><strong>No task reported</strong><div class="m-soft">portal-docs · copilot · last work 3 h ago</div></div><span class="m-soft sess-ago"></span></div>
+    </section>
+    <section class="m-card">
+      <div class="m-card-head"><h2>Plans in motion</h2><span class="m-spacer"></span><small>steps done</small></div>
+      <div class="plan"><svg viewBox="0 0 36 36" class="ring"><circle cx="18" cy="18" r="15" class="bg"/><circle cx="18" cy="18" r="15" class="fg" style="stroke:var(--app-plan);stroke-dasharray:56.5 94.2"/></svg><div><strong>Dual-GPU upgrade</strong><div class="m-soft">homelab · 3/5 · 1 in progress</div></div></div>
+      <div class="plan"><svg viewBox="0 0 36 36" class="ring"><circle cx="18" cy="18" r="15" class="bg"/><circle cx="18" cy="18" r="15" class="fg" style="stroke:var(--app-attention);stroke-dasharray:37.7 94.2"/></svg><div><strong>Efficiency audit (#281)</strong><div class="m-soft">agent-inbox · 2/5 · 1 waiting on you</div></div></div>
+      <div class="plan"><svg viewBox="0 0 36 36" class="ring"><circle cx="18" cy="18" r="15" class="bg"/><circle cx="18" cy="18" r="15" class="fg" style="stroke:var(--app-plan);stroke-dasharray:37.7 94.2"/></svg><div><strong>Billing webhook migration</strong><div class="m-soft">oris · 2/5</div></div></div>
+      <div class="plan"><svg viewBox="0 0 36 36" class="ring"><circle cx="18" cy="18" r="15" class="bg"/><circle cx="18" cy="18" r="15" class="fg" style="stroke:var(--app-plan);stroke-dasharray:31.1 94.2"/></svg><div><strong>v1.5 launch content</strong><div class="m-soft">social-agent · 1/3</div></div></div>
+    </section>
+    <section class="m-card">
+      <div class="m-card-head"><h2>Just landed</h2><span class="m-spacer"></span><small>last 24 h</small></div>
+      <div style="font-size:12px"><b>Trim /api/items page</b> <span class="m-muted">· PR #283 · 4m</span><br><b>Measure poll bytes</b> <span class="m-muted">· 412 KB/tick · 31m</span></div>
+    </section>
+  </div>
+</div></main>
+</div>
+</body>
+</html>

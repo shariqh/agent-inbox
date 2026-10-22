@@ -23,6 +23,17 @@ export type KeyIntent =
   | { type: 'openDeck' }
 
 export const KEYS: { next: string[]; prev: string[] }
+export interface KeyboardCommand {
+  id: string
+  key: string
+  display: string
+  label: string
+  group: string
+  prefix?: string
+  selector?: string
+  legacy?: boolean
+}
+export const KEYBOARD_COMMANDS: readonly KeyboardCommand[]
 export function keyAction(key: string, ctx?: KeyContext): KeyIntent | null
 export function rovingIndex(current: number, key: string, count: number): number
 export function ariaAnswerLabel(

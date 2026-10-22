@@ -21,14 +21,15 @@
 // `var()` is never resolved, and window/document listeners accumulate across boots
 // within one file.
 import { afterEach, beforeEach, expect, vi } from 'vitest'
-import { mkdtempSync, readFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { randomUUID } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type Database from 'better-sqlite3'
 import { openDb } from '../../src/store.js'
 import { createViewer } from '../../src/viewer.js'
 import type { ViewerOpts } from '../../src/viewer.js'
+import { scratchDir } from '../scratch.js'
 
 // NOT `new URL('../../public/x', import.meta.url)`. The rest of test/ uses that form
 // happily, but those files run in the NODE environment (ssr transform mode). A jsdom
@@ -43,7 +44,9 @@ const readPublic = (name: string): string => readFileSync(join(PUBLIC_DIR, name)
 
 /** A real, empty, throwaway SQLite DB. Seed it through `src/store.ts` exports only. */
 export function freshDb(): Database.Database {
-  return openDb(join(mkdtempSync(join(tmpdir(), 'inbox-dom-')), 'inbox.db'))
+  const root = process.env.AGENT_INBOX_TEST_DB_ROOT
+  if (root) return openDb(join(root, `inbox-dom-${randomUUID()}.db`))
+  return openDb(join(scratchDir('inbox-dom-'), 'inbox.db'))
 }
 
 /**
@@ -103,6 +106,12 @@ export interface BootOptions {
    * Inject a plain object and `/api/setup` is deterministic.
    */
   viewer?: ViewerOpts
+  /** Intercept selected viewer requests while forwarding all others to the real Hono app. */
+  interceptFetch?: (
+    input: RequestInfo | URL,
+    init: RequestInit | undefined,
+    next: () => Promise<Response>,
+  ) => Promise<Response>
 }
 
 /**
@@ -111,8 +120,11 @@ export interface BootOptions {
  * The bridge is `async` on purpose: Hono types `.request()` as
  * `Response | Promise<Response>`, which is not assignable to `fetch` directly.
  */
-export function mountViewer(db: Database.Database, { holdFetch = false, viewer }: BootOptions = {}): ViewerBridge {
-  const app = createViewer(db, viewer)
+export function mountViewer(db: Database.Database, { holdFetch = false, viewer, interceptFetch }: BootOptions = {}): ViewerBridge {
+  // #197 part 2: /api/setup and /api/version read each host's registration from
+  // a home directory's config files. A test reads an empty scratch home unless
+  // it brings its own — never the real one.
+  const app = createViewer(db, { agentHome: scratchDir('inbox-dom-home-'), ...viewer })
   const posts: PostRecord[] = []
   let failStatus: number | null = null
   let release: (() => void) | null = null
@@ -124,7 +136,8 @@ export function mountViewer(db: Database.Database, { holdFetch = false, viewer }
       if (failStatus !== null) return new Response('boom', { status: failStatus })
     }
     if (parked) await parked
-    return await app.request(url, init)
+    const next = async () => await app.request(url, init)
+    return interceptFetch ? await interceptFetch(input, init, next) : await next()
   }
   return {
     posts,
@@ -422,6 +435,12 @@ export function click(el: Element | null | undefined): void {
   if (!el) throw new Error('click(): nothing to click — the selector matched nothing')
   if (!document.contains(el)) throw new Error('click(): stale node — re-query after every render/await')
   ;(el as HTMLElement).click()
+}
+
+/** Enter the focused action queue explicitly now that Dashboard is the cold-launch view. */
+export async function showInbox(): Promise<void> {
+  click(document.querySelector('.tab[data-tab="needsYou"]'))
+  await settle()
 }
 
 /** Close an open Needs-you inspector through its explicit Escape action. */

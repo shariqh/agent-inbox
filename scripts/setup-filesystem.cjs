@@ -1,7 +1,17 @@
-const { lstatSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync } = require('node:fs')
+const { lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync } = require('node:fs')
 const { posix, win32 } = require('node:path')
 
 const STAGE_PREFIX = '.agent-inbox-stage-'
+// A directory being removed is first renamed into a fresh `.trash-<name>-*`
+// folder beside it, so an interrupted removal leaves only trash, never a
+// half-deleted tree under the name it had. Nothing with this prefix is ever a
+// runtime.
+const TRASH_PREFIX = '.trash-'
+// Left inside a trash folder whose contents failed an identity check, so a
+// later cleanup retains it for recovery as well.
+const RETAINED_MARKER = '.retained'
+// Leftover trash entries one cleanup tries to remove at most.
+const TRASH_CLEANUP_LIMIT = 16
 
 function filesystemError(code, message, options = {}) {
   const error = new Error(message)
@@ -15,6 +25,10 @@ function filesystemError(code, message, options = {}) {
 
 function isMissing(error) {
   return error && typeof error === 'object' && error.code === 'ENOENT'
+}
+
+function isTrashName(name) {
+  return typeof name === 'string' && name.startsWith(TRASH_PREFIX)
 }
 
 function defaultIo() {
@@ -36,6 +50,9 @@ function defaultIo() {
     },
     remove(path, options) {
       rmSync(path, options)
+    },
+    readdir(path) {
+      return readdirSync(path)
     },
   }
 }
@@ -83,9 +100,18 @@ function sameIdentity(left, right) {
     left.inode === right.inode
 }
 
+// Leftover trash is removed only when this uid owns it. Win32 has no POSIX
+// owner to compare, so its model retains all leftover trash rather than
+// trusting the name alone.
+function defaultUid(platform) {
+  if (platform === 'win32' || typeof process.getuid !== 'function') return null
+  return process.getuid()
+}
+
 function createSetupFilesystem({
   platform = process.platform,
   io = defaultIo(),
+  uid = defaultUid(platform),
 } = {}) {
   const pathApi = platform === 'win32' ? win32 : posix
 
@@ -361,17 +387,148 @@ function createSetupFilesystem({
     return result
   }
 
+  // Renames the validated directory into a fresh trash folder beside it, then
+  // deletes that folder. Once the rename commits, the name is free whatever
+  // happens next; an interrupted or failed deletion leaves trash that a later
+  // removeLeftoverTrash() deletes. Recursive deletion removes links, never
+  // what they point at.
   function removeDirectory({ target, validate }) {
     if (typeof validate !== 'function') {
       throw filesystemError('invalid-callback', 'directory validation callback is required')
     }
     const normalized = normalizeAbsolute(pathApi, platform, target)
+    const requestedParent = pathApi.dirname(normalized)
+    const name = pathApi.basename(normalized)
+    if (requestedParent === normalized) {
+      throw filesystemError('invalid-path', `refusing to remove a filesystem root: ${normalized}`)
+    }
+    if (isTrashName(name)) {
+      throw filesystemError('invalid-path', `refusing to remove a trash entry as a directory: ${normalized}`)
+    }
     const identity = identify(normalized, 'directory')
     validate(normalized)
-    assertIdentity(identity, normalized)
-    io.remove(normalized, { recursive: true, force: false })
-    assertMissing(normalized)
+    const parent = parentIdentity(requestedParent)
+    const operationTarget = pathApi.join(parent.canonicalPath, name)
+    assertIdentity(identity, operationTarget)
+
+    const trash = io.mkdtemp(pathApi.join(parent.canonicalPath, `${TRASH_PREFIX}${name}-`))
+    const trashIdentity = identify(trash, 'directory')
+    const moved = pathApi.join(trash, name)
+    try {
+      assertParentIdentity(requestedParent, parent)
+      assertIdentity(identity, operationTarget)
+      io.rename(operationTarget, moved)
+    } catch (error) {
+      // Nothing was moved: the empty trash folder is this call's own.
+      try {
+        assertIdentity(trashIdentity)
+        assertMissing(moved)
+        io.remove(trash, { recursive: true, force: false })
+      } catch {
+        // Left for a later cleanup.
+      }
+      throw error
+    }
+
+    try {
+      assertIdentity(trashIdentity)
+      assertIdentity(identity, moved)
+    } catch (identityError) {
+      try {
+        io.mkdir(pathApi.join(trash, RETAINED_MARKER), { recursive: false })
+      } catch {
+        // The folder is retained either way; the marker only keeps a later
+        // cleanup from deleting it.
+      }
+      throw filesystemError(
+        'trash-identity-changed',
+        `directory was moved aside for deletion but its identity changed; untrusted path retained at ${trash}`,
+        { committed: true, recoveryPath: trash, cause: identityError },
+      )
+    }
+
+    try {
+      io.remove(trash, { recursive: true, force: false })
+    } catch (removeError) {
+      throw filesystemError(
+        'trash-cleanup-failed',
+        `directory was moved aside but not fully deleted; a later cleanup removes ${trash}`,
+        { committed: true, recoveryPath: trash, cause: removeError },
+      )
+    }
     return Object.freeze({ path: normalized, identity })
+  }
+
+  function entryKindOrLink(stat) {
+    return stat.isSymbolicLink() ? 'link' : entryKind(stat)
+  }
+
+  function ownedByCaller(stat) {
+    if (uid === null || uid === undefined || stat.uid === undefined || stat.uid === null) return false
+    return BigInt(stat.uid) === BigInt(uid)
+  }
+
+  function retainedForRecovery(path) {
+    try {
+      io.lstat(pathApi.join(path, RETAINED_MARKER))
+      return true
+    } catch (error) {
+      return !isMissing(error)
+    }
+  }
+
+  // One leftover trash entry, pinned by identity and owner and checked again
+  // immediately before it is deleted. A link is unlinked, never followed.
+  // 'kept' means it is not one to remove (another user's, marked for
+  // recovery, or unreadable), so no removal was tried.
+  function removeTrashEntry(path) {
+    let pinned
+    let kind
+    try {
+      pinned = io.lstat(path)
+      kind = entryKindOrLink(pinned)
+      if (kind === null || !ownedByCaller(pinned)) return 'kept'
+      if (kind === 'directory' && retainedForRecovery(path)) return 'kept'
+    } catch {
+      return 'kept'
+    }
+    try {
+      const current = io.lstat(path)
+      if (current.dev !== pinned.dev || current.ino !== pinned.ino || entryKindOrLink(current) !== kind) {
+        return 'failed'
+      }
+      io.remove(path, { recursive: kind === 'directory', force: false })
+      return 'removed'
+    } catch {
+      return 'failed'
+    }
+  }
+
+  // Tries to delete up to TRASH_CLEANUP_LIMIT leftover trash entries directly
+  // inside `parent` that this user owns; trash it keeps does not count, so it
+  // can never hold back newer trash. Anything else, or anything that cannot
+  // be removed safely, is retained; this never throws for a single entry.
+  function removeLeftoverTrash(parent) {
+    const parentPath = normalizeAbsolute(pathApi, platform, parent)
+    const removed = []
+    const retained = []
+    let names
+    try {
+      names = io.readdir(parentPath)
+    } catch (error) {
+      if (isMissing(error)) return Object.freeze({ removed, retained })
+      throw error
+    }
+    let attempts = 0
+    for (const name of names.filter(isTrashName).sort()) {
+      if (attempts === TRASH_CLEANUP_LIMIT) break
+      const path = pathApi.join(parentPath, name)
+      const outcome = removeTrashEntry(path)
+      if (outcome !== 'kept') attempts += 1
+      if (outcome === 'removed') removed.push(path)
+      else retained.push(path)
+    }
+    return Object.freeze({ removed, retained })
   }
 
   return Object.freeze({
@@ -379,9 +536,11 @@ function createSetupFilesystem({
     assertIdentity,
     stageDirectory,
     removeDirectory,
+    removeLeftoverTrash,
   })
 }
 
 module.exports = {
   createSetupFilesystem,
+  isTrashName,
 }

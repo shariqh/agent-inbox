@@ -17,8 +17,8 @@ function open(): Database.Database {
   return db
 }
 
-describe('floating workspace search', () => {
-  it('lives outside the header while the agent picker belongs to the responsive sidebar', async () => {
+describe('workspace search', () => {
+  it('lives in the utility header while the agent picker belongs to the responsive sidebar', async () => {
     const d = open()
     insertItem(d, {
       project: 'alpha',
@@ -34,7 +34,7 @@ describe('floating workspace search', () => {
     const agent = document.querySelector('.agent-pick')!
     expect(search.closest('.floating-search')?.getAttribute('role')).toBe('search')
     expect(search.getAttribute('aria-keyshortcuts')).toBe('Meta+K Control+K')
-    expect(document.getElementById('topbar')?.contains(search)).toBe(false)
+    expect(document.getElementById('topbar')?.contains(search)).toBe(true)
     expect(document.querySelector('.sidebar-shell')?.contains(agent)).toBe(true)
     expect(document.getElementById('topbar')?.contains(agent)).toBe(false)
   })

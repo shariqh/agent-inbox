@@ -16,7 +16,7 @@ import type Database from 'better-sqlite3'
 import { insertItem, listItems, markReplySeen, replyItem } from '../../src/store.js'
 import {
   advanceClock, answerInput, bootApp, buttonLabelled, click, collapseRow, expectConsoleError, freshDb,
-  pollTick, row, rowTitles, rows, sendButton, settle, setViewport, type, useDomTest,
+  pollTick, row, rowTitles, rows, sendButton, settle, setViewport, showInbox, type, useDomTest,
 } from './harness.js'
 
 useDomTest()
@@ -92,6 +92,7 @@ describe('Needs-you row selection is idempotent and single-open', () => {
     advanceClock()
     const second = insertItem(d, { ...AGENT, kind: 'question', title: 'second' })
     await bootApp(d)
+    await showInbox()
 
     click(row(first))
     await settle()
@@ -128,6 +129,7 @@ describe('Needs-you row selection is idempotent and single-open', () => {
     advanceClock()
     insertItem(d, { ...AGENT, kind: 'question', title: 'second' })
     await bootApp(d)
+    await showInbox()
 
     click(row(first))
     await settle()
@@ -217,6 +219,7 @@ describe('Needs-you row selection is idempotent and single-open', () => {
     const d = open()
     const id = insertItem(d, { ...AGENT, kind: 'question', title: 'compact pointer' })
     await bootApp(d)
+    await showInbox()
 
     click(row(id))
     await settle()
@@ -235,6 +238,7 @@ describe('Needs-you row selection is idempotent and single-open', () => {
     const d = open()
     const id = insertItem(d, { ...AGENT, kind: 'question', title: 'compact keyboard' })
     await bootApp(d)
+    await showInbox()
 
     row(id)!.focus()
     row(id)!.dispatchEvent(new window.KeyboardEvent('keydown', {
@@ -290,6 +294,7 @@ describe('Needs-you row selection is idempotent and single-open', () => {
     const d = open()
     const id = insertItem(d, { ...AGENT, kind: 'question', title: 'collapse me' })
     await bootApp(d)
+    await showInbox()
 
     click(row(id))
     await settle()
@@ -408,7 +413,7 @@ describe('C2 · a REFUSED change-answer must not freeze the viewer', () => {
 
     // `?.textContent` on a missing node is undefined, and `expect(undefined).not.toBe('')`
     // passes — so match the copy instead of asserting "not empty".
-    expect(document.querySelector('.refusal-msg')?.textContent ?? '').toMatch(/Picked up/)
+    expect(document.querySelector('.refusal-msg')?.textContent ?? '').toMatch(/Delivered/)
     expect(listItems(d)[0]?.reply, 'the picked-up answer must survive the refusal').toBe(ANSWER)
 
     await collapseRow(id) // the rejected reply draft remains the only suspend reason

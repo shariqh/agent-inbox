@@ -3,14 +3,12 @@ import { createHash } from 'node:crypto'
 import {
   chmodSync,
   existsSync,
-  mkdtempSync,
   mkdirSync,
   readFileSync,
   readdirSync,
   rmSync,
   writeFileSync,
 } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
@@ -25,13 +23,25 @@ import {
   validateThinHandoff,
   withMountedDmg,
 } from '../scripts/macos-release-gates.mjs'
+import { loadReleaseInputs } from '../scripts/release-inputs.mjs'
 import { treeIdentity } from '../scripts/tree-identity.mjs'
+import { scratchDir } from './scratch.js'
 
 const root = resolve(process.cwd())
 const signingIdentity = 'Developer ID Application: Release Test (AB12CD34EF)'
+const fixtureTaggedAt = '2026-08-25T20:12:51Z'
+
+function taggedAt(repo: string, tag: string) {
+  const value = execFileSync(
+    'git',
+    ['for-each-ref', '--format=%(taggerdate:iso8601-strict)', `refs/tags/${tag}`],
+    { cwd: repo, encoding: 'utf8' },
+  ).trim()
+  return new Date(value).toISOString().replace('.000Z', 'Z')
+}
 
 function makeSigningHarness(emptySearchList = false) {
-  const temp = mkdtempSync(join(tmpdir(), 'release-signing-'))
+  const temp = scratchDir('release-signing-')
   const state = join(temp, 'signing state')
   const bin = join(temp, 'bin')
   const security = join(bin, 'security')
@@ -122,7 +132,7 @@ esac
 }
 
 function makeTaggedRepo(version = '1.2.3', lockRootVersion = version) {
-  const repo = mkdtempSync(join(tmpdir(), 'release-tag-'))
+  const repo = scratchDir('release-tag-')
   execFileSync('git', ['init', '--quiet'], { cwd: repo })
   writeFileSync(join(repo, 'package.json'), `${JSON.stringify({ version })}\n`)
   writeFileSync(
@@ -139,9 +149,197 @@ function makeTaggedRepo(version = '1.2.3', lockRootVersion = version) {
     '-c', 'user.name=Release Test',
     '-c', 'user.email=release@example.invalid',
     'tag', '-a', `v${version}`, '-m', `Release v${version}`,
-  ], { cwd: repo })
+  ], {
+    cwd: repo,
+    env: {
+      ...process.env,
+      GIT_COMMITTER_DATE: fixtureTaggedAt,
+    },
+  })
   const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim()
-  return { repo, sha, tag: `v${version}` }
+  return { repo, sha, tag: `v${version}`, taggedAt: fixtureTaggedAt }
+}
+
+type StaplerAction = 'staple' | 'validate'
+type StaplerFailure = { output: string, status: number }
+
+const cloudKitTicketLookup =
+  'https://api.apple-cloudkit.com/database/1/com.apple.gk.ticket-delivery/production/public/records/lookup'
+
+// The stapler failure that sank all three Notarize attempts of release run 38783536267.
+function staplerConnectionLost(
+  action: StaplerAction,
+  task = 'FB9BCA30-16D9-4A0D-B99D-F769D2C53AD7',
+): StaplerFailure {
+  return {
+    status: 68,
+    output: [
+      'error is Error Domain=NSURLErrorDomain Code=-1005 "The network connection was lost." '
+        + 'UserInfo={_kCFStreamErrorCodeKey=-4, NSUnderlyingError=0x6000025f41b0 '
+        + '{Error Domain=kCFErrorDomainCFNetwork Code=-1005 "(null)" '
+        + 'UserInfo={_kCFStreamErrorCodeKey=-4, _kCFStreamErrorDomainKey=4}}, '
+        + `_NSURLErrorFailingURLSessionTaskErrorKey=LocalDataTask <${task}>.<1>, `
+        + '_NSURLErrorRelatedURLSessionTaskErrorKey=(',
+      `    "LocalDataTask <${task}>.<1>"`,
+      '), NSLocalizedDescription=The network connection was lost., '
+        + `NSErrorFailingURLStringKey=${cloudKitTicketLookup}, `
+        + `NSErrorFailingURLKey=${cloudKitTicketLookup}, _kCFStreamErrorDomainKey=4}`,
+      "CloudKit's response is inconsistent with expections: (null)",
+      `The ${action === 'staple' ? 'staple and validate' : 'validate'} action failed! Error 68.`,
+    ].join('\n'),
+  }
+}
+
+// Stapler's report when Apple's ticket service has not published an accepted ticket yet.
+const staplerTicketNotPublished: StaplerFailure = {
+  status: 65,
+  output: [
+    'CloudKit query for Agent Inbox.app (2/0123456789abcdef0123456789abcdef01234567) '
+      + 'failed due to "Record not found".',
+    'Could not find base64 encoded ticket in response for 2/0123456789abcdef0123456789abcdef01234567',
+    'The staple and validate action failed! Error 65.',
+  ].join('\n'),
+}
+
+// A real stapler failure that no retry can fix: same exit 65, no transient wording.
+const staplerNotStapled: StaplerFailure = {
+  status: 65,
+  output: 'Agent Inbox.app does not have a ticket stapled to it.\nThe validate action failed! Error 65.',
+}
+
+function staplerOutages(action: StaplerAction, count: number) {
+  return Array.from({ length: count }, (_, index) =>
+    staplerConnectionLost(action, `00000000-0000-4000-8000-00000000000${index + 1}`))
+}
+
+// Fake xcrun/sleep for APPLE_XCRUN_BIN/STAPLER_RETRY_SLEEP_BIN. Stapler attempt N replays
+// fakes/<action>.N.{out,status} when present and otherwise succeeds.
+function makeXcrunFakes(temp: string, failures: Partial<Record<StaplerAction, StaplerFailure[]>>) {
+  const fakes = join(temp, 'fakes')
+  const xcrun = join(fakes, 'xcrun')
+  const sleep = join(fakes, 'sleep')
+  const xcrunLog = join(temp, 'xcrun.log')
+  const sleepLog = join(temp, 'sleep.log')
+  const digest = createHash('sha256').update('zip bytes').digest('hex')
+  mkdirSync(fakes)
+  for (const action of ['staple', 'validate'] as const) {
+    for (const [index, failure] of (failures[action] ?? []).entries()) {
+      writeFileSync(join(fakes, `${action}.${index + 1}.out`), `${failure.output}\n`)
+      writeFileSync(join(fakes, `${action}.${index + 1}.status`), `${failure.status}\n`)
+    }
+  }
+  writeFileSync(xcrun, `#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> "$FAKE_XCRUN_LOG"
+if [ "$1 $2" = "notarytool submit" ]; then
+  printf '%s\\n' '{"id":"11111111-2222-3333-4444-555555555555","status":"Accepted"}'
+elif [ "$1 $2" = "notarytool log" ]; then
+  printf '%s\\n' '{"jobId":"11111111-2222-3333-4444-555555555555","status":"Accepted","statusCode":0,"archiveFilename":"Agent Inbox.zip","sha256":"${digest}","issues":[]}' > "$4"
+elif [ "$1" = stapler ]; then
+  attempt=1
+  [ ! -f "$FAKE_XCRUN_DIR/$2.count" ] || attempt=$(( $(cat "$FAKE_XCRUN_DIR/$2.count") + 1 ))
+  printf '%s\\n' "$attempt" > "$FAKE_XCRUN_DIR/$2.count"
+  printf 'Processing: %s\\n' "$3"
+  if [ -f "$FAKE_XCRUN_DIR/$2.$attempt.status" ]; then
+    cat "$FAKE_XCRUN_DIR/$2.$attempt.out" >&2
+    exit "$(cat "$FAKE_XCRUN_DIR/$2.$attempt.status")"
+  fi
+  if [ "$2" = staple ]; then
+    echo 'The staple and validate action worked!'
+  else
+    echo 'The validate action worked!'
+  fi
+fi
+`)
+  writeFileSync(sleep, `#!/bin/sh
+printf '%s\\n' "$*" >> "$FAKE_SLEEP_LOG"
+`)
+  chmodSync(xcrun, 0o755)
+  chmodSync(sleep, 0o755)
+  const lines = (path: string) => (existsSync(path) ? readFileSync(path, 'utf8').trim().split('\n') : [])
+  return {
+    env: {
+      APPLE_XCRUN_BIN: xcrun,
+      STAPLER_RETRY_SLEEP_BIN: sleep,
+      FAKE_XCRUN_LOG: xcrunLog,
+      FAKE_XCRUN_DIR: fakes,
+      FAKE_SLEEP_LOG: sleepLog,
+    },
+    calls: () => lines(xcrunLog).map((call) => call.split(' ').slice(0, 2).join(' ')),
+    sleeps: () => lines(sleepLog).map(Number),
+  }
+}
+
+function runNotarize(failures: Partial<Record<StaplerAction, StaplerFailure[]>> = {}) {
+  const temp = scratchDir('notary-process-')
+  try {
+    const submitted = join(temp, 'Agent Inbox.zip')
+    const stapleTarget = join(temp, 'Agent Inbox.app')
+    const receipt = join(temp, 'receipt.json')
+    writeFileSync(submitted, 'zip bytes')
+    mkdirSync(stapleTarget)
+    const fakes = makeXcrunFakes(temp, failures)
+    const result = spawnSync('/bin/bash', [
+      join(root, 'scripts', 'notarize-macos.sh'),
+      'app',
+      submitted,
+      stapleTarget,
+      receipt,
+    ], {
+      cwd: root,
+      env: {
+        ...process.env,
+        ...fakes.env,
+        APPLE_NOTARY_PRIVATE_KEY_BASE64: Buffer.from(
+          '-----BEGIN PRIVATE KEY-----\nfixture\n-----END PRIVATE KEY-----\n',
+        ).toString('base64'),
+        APPLE_NOTARY_KEY_ID: 'A1B2C3D4E5',
+        APPLE_NOTARY_ISSUER_ID: '12345678-1234-1234-1234-123456789abc',
+        RUNNER_TEMP: temp,
+      },
+      encoding: 'utf8',
+    })
+    return {
+      status: result.status,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      output: `${result.stdout}${result.stderr}`,
+      receipt: existsSync(receipt) ? readFileSync(receipt, 'utf8') : '',
+      calls: fakes.calls(),
+      sleeps: fakes.sleeps(),
+      notaryWorkDirs: readdirSync(temp).filter((name) => name.startsWith('agent-inbox-notary.')),
+    }
+  } finally {
+    rmSync(temp, { recursive: true, force: true })
+  }
+}
+
+// Drives the real `build-dmg` gate up to the codesign check that follows its stapler validate.
+function runBuildDmg(failures: StaplerFailure[]) {
+  const temp = scratchDir('final-dmg-stapler-')
+  try {
+    const app = join(temp, 'Agent Inbox.app')
+    const appReceipt = join(temp, 'app-notary-receipt.json')
+    mkdirSync(app)
+    writeFileSync(appReceipt, `${JSON.stringify({ kind: 'app', status: 'Accepted' })}\n`)
+    const fakes = makeXcrunFakes(temp, { validate: failures })
+    const result = spawnSync(process.execPath, [
+      join(root, 'scripts', 'macos-release-gates.mjs'),
+      'build-dmg',
+      '--app', app,
+      '--version', '1.2.3',
+      '--app-receipt', appReceipt,
+      '--icon', join(root, 'electron', 'icon.icns'),
+      '--output', join(temp, 'Agent-Inbox-v1.2.3-universal.dmg'),
+    ], {
+      cwd: root,
+      env: { ...process.env, ...fakes.env },
+      encoding: 'utf8',
+    })
+    return { status: result.status, stderr: result.stderr, calls: fakes.calls(), sleeps: fakes.sleeps() }
+  } finally {
+    rmSync(temp, { recursive: true, force: true })
+  }
 }
 
 describe('macOS release gates', () => {
@@ -155,6 +353,7 @@ describe('macOS release gates', () => {
       tag: 'v1.0.1',
       version: '1.0.1',
       sourceCommit: fixture.sha,
+      taggedAt: fixtureTaggedAt,
       annotated: true,
     })
 
@@ -176,6 +375,7 @@ describe('macOS release gates', () => {
       tag: 'v1.2.3',
       version: '1.2.3',
       sourceCommit: fixture.sha,
+      taggedAt: fixtureTaggedAt,
       annotated: true,
     })
 
@@ -212,6 +412,7 @@ describe('macOS release gates', () => {
         tag: fixture.tag,
         version: '1.2.3',
         sourceCommit: fixture.sha,
+        taggedAt: fixture.taggedAt,
         annotated: true,
       },
       trustedSha,
@@ -224,6 +425,20 @@ describe('macOS release gates', () => {
         tag: fixture.tag,
         version: '1.2.3',
         sourceCommit: fixture.sha,
+        taggedAt: '2026-08-25T20:12:52Z',
+        annotated: true,
+      },
+      trustedSha,
+      runHeadSha: fixture.sha,
+    })).toThrow(/tag timestamp/)
+    expect(() => validateProtectedRelease({
+      repoRoot: fixture.repo,
+      context: {
+        schema: 1,
+        tag: fixture.tag,
+        version: '1.2.3',
+        sourceCommit: fixture.sha,
+        taggedAt: fixture.taggedAt,
         annotated: true,
       },
       trustedSha,
@@ -236,6 +451,7 @@ describe('macOS release gates', () => {
         tag: fixture.tag,
         version: '1.2.3',
         sourceCommit: fixture.sha,
+        taggedAt: fixture.taggedAt,
         annotated: true,
       },
       trustedSha: fixture.sha,
@@ -261,6 +477,7 @@ describe('macOS release gates', () => {
       tag: fixture.tag,
       version: '1.2.3',
       sourceCommit: fixture.sha,
+      taggedAt: fixture.taggedAt,
       annotated: true,
     } as const
     validateProtectedRelease({
@@ -270,7 +487,7 @@ describe('macOS release gates', () => {
       runHeadSha: fixture.sha,
     })
 
-    const temp = mkdtempSync(join(tmpdir(), 'release-thin-handoff-'))
+    const temp = scratchDir('release-thin-handoff-')
     const runtimeManifestDigests = {
       'darwin-arm64': 'a'.repeat(64),
       'darwin-x64': 'b'.repeat(64),
@@ -294,13 +511,14 @@ describe('macOS release gates', () => {
         product: 'Agent Inbox',
         arch,
         packageVersion: context.version,
-        electronVersion: '43.1.1',
-        nodeVersion: 'v24.19.0',
+        electronVersion: loadReleaseInputs().electron.version,
+        nodeVersion: 'v24.18.1',
         nodeModulesAbi: '137',
         sourceCommit: context.sourceCommit,
         sourceDirty: false,
         runtimeSourceCommit: context.sourceCommit,
         nativeRuntimeSelftest: 'passed',
+        electronSqliteCheck: 'passed',
         runtimeKeys: ['darwin-arm64', 'darwin-x64'],
         nativeAddonArchitectures: arch === 'arm64' ? ['arm64'] : ['x86_64'],
         appTreeDigest: treeIdentity(app),
@@ -337,7 +555,7 @@ describe('macOS release gates', () => {
   })
 
   it('rejects a tag reachable only through a merged second parent', () => {
-    const repo = mkdtempSync(join(tmpdir(), 'release-side-parent-'))
+    const repo = scratchDir('release-side-parent-')
     execFileSync('git', ['init', '--quiet'], { cwd: repo })
     writeFileSync(join(repo, 'package.json'), '{"version":"1.2.3"}\n')
     writeFileSync(join(repo, 'package-lock.json'), '{"version":"1.2.3","packages":{"":{"version":"1.2.3"}}}\n')
@@ -383,6 +601,7 @@ describe('macOS release gates', () => {
         tag: 'v1.2.3',
         version: '1.2.3',
         sourceCommit,
+        taggedAt: taggedAt(repo, 'v1.2.3'),
         annotated: true,
       },
       trustedSha,
@@ -425,7 +644,7 @@ describe('macOS release gates', () => {
   })
 
   it('requires an Accepted notary submission and matching safe log metadata', () => {
-    const temp = mkdtempSync(join(tmpdir(), 'notary-receipt-'))
+    const temp = scratchDir('notary-receipt-')
     const submitted = join(temp, 'Agent Inbox.zip')
     const submitJson = join(temp, 'submit.json')
     const logJson = join(temp, 'log.json')
@@ -480,7 +699,7 @@ describe('macOS release gates', () => {
   })
 
   it('allows publication only for exact post-staple assets and distinct accepted tickets', () => {
-    const temp = mkdtempSync(join(tmpdir(), 'release-assets-'))
+    const temp = scratchDir('release-assets-')
     const assets = join(temp, 'assets')
     mkdirSync(assets)
     const dmgName = 'Agent-Inbox-v1.2.3-universal.dmg'
@@ -490,6 +709,7 @@ describe('macOS release gates', () => {
       tag: 'v1.2.3',
       version: '1.2.3',
       sourceCommit: 'a'.repeat(40),
+      taggedAt: fixtureTaggedAt,
       annotated: true,
     } as const
     const identity = 'Developer ID Application: Example Corp (AB12CD34EF)'
@@ -668,51 +888,117 @@ describe('macOS release gates', () => {
   })
 
   it('keeps notary key bytes temporary and staples only after an accepted receipt', () => {
-    const temp = mkdtempSync(join(tmpdir(), 'notary-process-'))
-    const submitted = join(temp, 'Agent Inbox.zip')
-    const stapleTarget = join(temp, 'Agent Inbox.app')
-    const receipt = join(temp, 'receipt.json')
-    const xcrun = join(temp, 'xcrun')
-    const xcrunLog = join(temp, 'xcrun.log')
-    const digest = createHash('sha256').update('zip bytes').digest('hex')
-    writeFileSync(submitted, 'zip bytes')
-    mkdirSync(stapleTarget)
-    writeFileSync(xcrun, `#!/bin/sh
-set -eu
-printf '%s\\n' "$*" >> "${xcrunLog}"
-if [ "$1 $2" = "notarytool submit" ]; then
-  printf '%s\\n' '{"id":"11111111-2222-3333-4444-555555555555","status":"Accepted"}'
-elif [ "$1 $2" = "notarytool log" ]; then
-  printf '%s\\n' '{"jobId":"11111111-2222-3333-4444-555555555555","status":"Accepted","statusCode":0,"archiveFilename":"Agent Inbox.zip","sha256":"${digest}","issues":[]}' > "$4"
-fi
-`)
-    chmodSync(xcrun, 0o755)
-    const result = spawnSync('bash', [
-      join(root, 'scripts', 'notarize-macos.sh'),
-      'app',
-      submitted,
-      stapleTarget,
-      receipt,
-    ], {
-      cwd: root,
-      env: {
-        ...process.env,
-        APPLE_XCRUN_BIN: xcrun,
-        APPLE_NOTARY_PRIVATE_KEY_BASE64: Buffer.from(
-          '-----BEGIN PRIVATE KEY-----\nfixture\n-----END PRIVATE KEY-----\n',
-        ).toString('base64'),
-        APPLE_NOTARY_KEY_ID: 'A1B2C3D4E5',
-        APPLE_NOTARY_ISSUER_ID: '12345678-1234-1234-1234-123456789abc',
-        RUNNER_TEMP: temp,
-      },
-      encoding: 'utf8',
+    const run = runNotarize()
+    expect(run.status, run.stderr).toBe(0)
+    expect(run.receipt).toContain('"status": "Accepted"')
+    expect(run.calls).toEqual(['notarytool submit', 'notarytool log', 'stapler staple', 'stapler validate'])
+    expect(run.sleeps).toEqual([])
+    expect(run.notaryWorkDirs).toEqual([])
+  })
+
+  it('retries a dropped Apple ticket connection or unpublished ticket with bounded backoff', () => {
+    const run = runNotarize({
+      staple: [staplerConnectionLost('staple'), staplerTicketNotPublished],
+      validate: [staplerConnectionLost('validate')],
     })
-    expect(result.status, result.stderr).toBe(0)
-    expect(readFileSync(receipt, 'utf8')).toContain('"status": "Accepted"')
-    const calls = readFileSync(xcrunLog, 'utf8')
-    expect(calls.indexOf('notarytool submit')).toBeLessThan(calls.indexOf('notarytool log'))
-    expect(calls.indexOf('notarytool log')).toBeLessThan(calls.indexOf('stapler staple'))
-    expect(calls.indexOf('stapler staple')).toBeLessThan(calls.indexOf('stapler validate'))
-    expect(readdirSync(temp).filter((name) => name.startsWith('agent-inbox-notary.'))).toEqual([])
+    expect(run.status, run.output).toBe(0)
+    expect(run.calls).toEqual([
+      'notarytool submit',
+      'notarytool log',
+      'stapler staple',
+      'stapler staple',
+      'stapler staple',
+      'stapler validate',
+      'stapler validate',
+    ])
+    expect(run.sleeps).toEqual([15, 30, 15])
+    expect(run.output).toContain(staplerConnectionLost('staple').output)
+    expect(run.output).toContain(staplerTicketNotPublished.output)
+    expect(run.output).toContain(staplerConnectionLost('validate').output)
+    expect(run.output).toContain('The staple and validate action worked!')
+    expect(run.output).toContain('The validate action worked!')
+    expect(run.notaryWorkDirs).toEqual([])
+  })
+
+  it.each([
+    {
+      action: 'validate' as const,
+      failure: staplerNotStapled,
+      staplerCalls: ['stapler staple', 'stapler validate'],
+    },
+    {
+      action: 'staple' as const,
+      failure: { status: 68, output: 'The staple and validate action failed! Error 68.' },
+      staplerCalls: ['stapler staple'],
+    },
+  ])('stops at once with stapler output and status for a non-transient $action failure', (
+    { action, failure, staplerCalls },
+  ) => {
+    const run = runNotarize({ [action]: [failure, failure] })
+    expect(run.status).toBe(failure.status)
+    expect(run.calls).toEqual(['notarytool submit', 'notarytool log', ...staplerCalls])
+    expect(run.sleeps).toEqual([])
+    expect(run.output).toContain(failure.output)
+  })
+
+  it('gives up after five transient stapler failures with the last output and status', () => {
+    const failures = staplerOutages('staple', 6)
+    const run = runNotarize({ staple: failures })
+    expect(run.status).toBe(68)
+    expect(run.calls).toEqual(['notarytool submit', 'notarytool log', ...Array(5).fill('stapler staple')])
+    expect(run.sleeps).toEqual([15, 30, 60, 120])
+    expect(run.stderr).toContain(failures[4]!.output)
+    expect(run.notaryWorkDirs).toEqual([])
+  })
+
+  it.each([
+    {
+      outcome: 'retries transient failures, then reaches the signature gate',
+      failures: [staplerConnectionLost('validate'), staplerTicketNotPublished],
+      status: 1,
+      attempts: 3,
+      sleeps: [15, 30],
+      logged: [
+        staplerConnectionLost('validate').output,
+        staplerTicketNotPublished.output,
+        'The validate action worked!',
+        'codesign --verify',
+      ],
+    },
+    {
+      outcome: 'gives up after five transient failures with the last output and status',
+      failures: staplerOutages('validate', 6),
+      status: 68,
+      attempts: 5,
+      sleeps: [15, 30, 60, 120],
+      logged: [staplerOutages('validate', 5)[4]!.output],
+    },
+    {
+      outcome: 'stops at once with stapler output and status on a non-transient failure',
+      failures: [staplerNotStapled, staplerNotStapled],
+      status: 65,
+      attempts: 1,
+      sleeps: [],
+      logged: [staplerNotStapled.output],
+    },
+  ])('build-dmg stapler validate $outcome', ({ failures, status, attempts, sleeps, logged }) => {
+    const run = runBuildDmg(failures)
+    expect(run.status, run.stderr).toBe(status)
+    expect(run.calls).toEqual(Array(attempts).fill('stapler validate'))
+    expect(run.sleeps).toEqual(sleeps)
+    for (const text of logged) expect(run.stderr).toContain(text)
+  })
+
+  it('sends every stapler call in the release gates through the one retry helper', () => {
+    // verify-final-dmg and final-evidence check real Developer ID signatures before their
+    // stapler validate, so tests cannot drive those calls; pin that they use the helper.
+    const gates = readFileSync(join(root, 'scripts', 'macos-release-gates.mjs'), 'utf8')
+    expect(gates.match(/\[\s*'stapler'/g)).toHaveLength(1)
+    expect(gates.match(/runStapler\('validate', \w+\)/g)).toEqual([
+      "runStapler('validate', app)",
+      "runStapler('validate', copiedApp)",
+      "runStapler('validate', app)",
+      "runStapler('validate', dmg)",
+    ])
   })
 })

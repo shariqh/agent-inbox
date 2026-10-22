@@ -5,14 +5,18 @@ import {
   advanceBoardRow,
   annotateBoardRow,
   getBoard,
+  getItem,
   insertItem,
   listBoards,
   markAnnotationDelivered,
+  markReplySeen,
+  replyItem,
+  resolveItem,
   updateBoardRow,
   upsertBoard,
 } from '../../src/store.js'
 import {
-  advanceClock, bootApp, buttonLabelled, click, freshDb, row, rowTitles, settle, useDomTest,
+  advanceClock, badgeCount, bootApp, buttonLabelled, click, freshDb, pollTick, row, rowTitles, settle, useDomTest,
 } from './harness.js'
 
 useDomTest()
@@ -85,16 +89,16 @@ describe('action lifecycle presentation', () => {
 
     click(buttonLabelled('Decisions'))
     await settle()
-    expect(rowTitles()).toEqual(['Publish?'])
+    expect(rowTitles()).toEqual(['Choose whether to publish.'])
 
     click(buttonLabelled('To do'))
     await settle()
-    expect(rowTitles()).toEqual(['Upload notarized build'])
+    expect(rowTitles()).toEqual(['Upload the build.'])
 
     click(buttonLabelled('All'))
     click(buttonLabelled('Updates'))
     await settle()
-    expect(new Set(rowTitles())).toEqual(new Set(['Publish?', 'Upload notarized build']))
+    expect(new Set(rowTitles())).toEqual(new Set(['Choose whether to publish.', 'Upload the build.']))
   })
 
   it('shows impact, next-after, lifecycle history, and outcomes without expanding background', async () => {
@@ -140,9 +144,17 @@ describe('action lifecycle presentation', () => {
     expect(card?.textContent).toContain('Starts the design-partner evidence loop.')
     expect(card?.textContent).toContain('Review replies and schedule interviews.')
     expect(card?.querySelector('.action-history')?.textContent).toContain('People Pipeline')
+    for (const selector of ['.card-context', '.action-history']) {
+      const disclosure = card?.querySelector<HTMLDetailsElement>(selector)
+      disclosure!.open = true
+      disclosure!.dispatchEvent(new window.Event('toggle'))
+    }
+    await pollTick()
+    expect(row(current.id)?.querySelector<HTMLDetailsElement>('.card-context')?.open).toBe(true)
+    expect(row(current.id)?.querySelector<HTMLDetailsElement>('.action-history')?.open).toBe(true)
   })
 
-  it('flags answered work that an agent picked up but has not finished', async () => {
+  it('flags a delivered response with no recorded result, without claiming the asking agent resumed', async () => {
     const d = open()
     upsertBoard(d, {
       ...AGENT,
@@ -168,6 +180,53 @@ describe('action lifecycle presentation', () => {
     expect(chipText(rowId)).toBe('follow-up due 2h')
     click(row(rowId))
     await settle()
-    expect(row(rowId)?.textContent).toContain('With the agent')
+    expect(row(rowId)?.textContent).toContain('Delivered to claude-code')
+    expect(row(rowId)?.querySelector('.lifecycle-receipt')?.textContent).toContain('Delivered to an agent')
+    expect(row(rowId)?.querySelector('.outcome-block')).toBeNull()
+  })
+
+  it('distinguishes an unanswered request, a saved response, delivery, and a recorded result', async () => {
+    const d = open()
+    const id = insertItem(d, {
+      ...AGENT,
+      kind: 'question',
+      title: 'Publish the release?',
+      detail: 'The release is ready.',
+      next_step: 'Choose whether to publish.',
+      options: [{ label: 'Publish', recommended: true }, { label: 'Hold' }],
+    })
+
+    await bootApp(d)
+    expect(badgeCount()).toBe(1)
+    click(row(id))
+    await settle()
+    expect(row(id)?.querySelector('.pickup')).toBeNull()
+    expect(row(id)?.querySelector('.opt-pill.rec')?.textContent).toContain('Publish')
+
+    advanceClock()
+    replyItem(d, id, 'Publish')
+    await pollTick()
+    expect(row(id)?.querySelector('.pickup.awaiting')?.textContent).toBe('Saved · waiting for delivery')
+    expect(row(id)?.querySelector('.outcome-block')).toBeNull()
+    expect(badgeCount()).toBe(0)
+
+    advanceClock()
+    markReplySeen(d, id, getItem(d, id)!.replied_at)
+    await pollTick()
+    expect(row(id)?.querySelector('.pickup.picked')?.textContent).toBe('Delivered to an agent')
+    expect(row(id)?.querySelector('.pickup.picked')?.getAttribute('title'))
+      .toBe('Delivery does not confirm the asking agent has resumed.')
+    expect(row(id)?.querySelector('.outcome-block')).toBeNull()
+    expect(getItem(d, id)?.status).toBe('open')
+    expect(badgeCount()).toBe(0)
+
+    advanceClock()
+    resolveItem(d, id, 'Release published.')
+    await pollTick()
+    click(document.querySelector('.tab[data-tab="done"]'))
+    await settle()
+    const result = document.querySelector(`[data-card-id="${id}"]`)
+    expect(result?.textContent).toContain('Release published.')
+    expect(result?.querySelector('.outcome-block')?.textContent).toContain('Release published.')
   })
 })

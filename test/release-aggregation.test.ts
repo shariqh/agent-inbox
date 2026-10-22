@@ -1,12 +1,10 @@
 import { createHash } from 'node:crypto'
 import {
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
@@ -14,21 +12,25 @@ import {
   validateDryRunReleaseArtifacts,
   validateLinuxReleaseArtifacts,
 } from '../scripts/release-aggregation.mjs'
+import { loadLinuxReleaseInputs } from '../scripts/linux-release-inputs.mjs'
+import { scratchDir } from './scratch.js'
 
 const root = resolve(process.cwd())
 const sourceCommit = 'a'.repeat(40)
 const sourceTree = 'b'.repeat(40)
+const taggedAt = '2026-08-25T20:12:51Z'
 const context = {
   schema: 1,
   tag: 'v1.0.1',
   version: '1.0.1',
   sourceCommit,
+  taggedAt,
   annotated: true,
 } as const
 const work: string[] = []
 
 function tempDir() {
-  const path = mkdtempSync(join(tmpdir(), 'release-aggregation-'))
+  const path = scratchDir('release-aggregation-')
   work.push(path)
   return path
 }
@@ -89,7 +91,9 @@ function writePackageArtifact(
   const digest = sha256Bytes(bytes)
   writeFileSync(`${artifact}.sha256`, `${digest}  ${artifactName}\n`)
 
-  const linuxInputsSha256 = sha256File(join(root, 'release/linux-inputs.json'))
+  const linuxInputsPath = join(root, 'release/linux-inputs.json')
+  const linuxInputs = loadLinuxReleaseInputs(linuxInputsPath)
+  const linuxInputsSha256 = sha256File(linuxInputsPath)
   const common = {
     schema: 1,
     product: 'Agent Inbox',
@@ -99,8 +103,8 @@ function writePackageArtifact(
     sourceDirty: false,
     linuxInputsSha256,
     setupRuntimeKeys: [target],
-    electronVersion: '43.1.1',
-    nodeVersion: 'v24.19.0',
+    electronVersion: linuxInputs.electron.version,
+    nodeVersion: linuxInputs.node.version,
     exactHostSetupSelection: 'passed',
     chromeSandboxMode: 0o4755,
   }
@@ -137,8 +141,8 @@ function writePackageArtifact(
         appImageSha256: digest,
         chromeSandboxMode: 0o4755,
         setupRuntimeKeys: [target],
-        electronVersion: '43.1.1',
-        nodeVersion: 'v24.19.0',
+        electronVersion: linuxInputs.electron.version,
+        nodeVersion: linuxInputs.node.version,
         exactHostSetupSelection: 'passed',
       }
     : {
@@ -152,16 +156,14 @@ function writePackageArtifact(
         debSha256: digest,
         chromeSandboxMode: 0o4755,
         setupRuntimeKeys: [target],
-        electronVersion: '43.1.1',
-        nodeVersion: 'v24.19.0',
+        electronVersion: linuxInputs.electron.version,
+        nodeVersion: linuxInputs.node.version,
         exactHostSetupSelection: 'passed',
       }
   writeJson(join(reportsDir, verifyName), verification)
   writeJson(join(reportsDir, `${target}-runtime.json`), {
     key: target,
-    archiveSha256: target === 'linux-x64'
-      ? '14b342e71204f811bde6153be8e04b62aef63c236fef92b55f9c83154b409647'
-      : '01443c1e1a29e531ccad5a46fefa6df490d2189c49f7955904aecdbb0fe86fdc',
+    archiveSha256: linuxInputs.node.distributions[target].sha256,
   })
   writeJson(join(reportsDir, `${target}-runtime-verify.json`), {
     schema: 1,
@@ -175,6 +177,7 @@ function writePackageArtifact(
     packageVersion: context.version,
     sourceCommit,
     target,
+    electronSqliteCheck: 'passed',
   })
   return {
     artifact,
@@ -394,7 +397,21 @@ describe('multi-platform release aggregation', () => {
     })).toThrow(/checksum|sha-256|digest/i)
   })
 
-  it('assembles five packages plus one deterministic exact-name checksum manifest', () => {
+  it('requires Electron-embedded SQLite check evidence from every native thin folder (#135)', () => {
+    const fixture = makeLinuxFixture()
+    const thinReport = join(fixture.root, 'linux-arm64-deb', 'thin', 'linux-arm64', 'Agent Inbox.thin-report.json')
+    const thin = JSON.parse(readFileSync(thinReport, 'utf8')) as Record<string, unknown>
+    delete thin.electronSqliteCheck
+    writeJson(thinReport, thin)
+    expect(() => validateLinuxReleaseArtifacts({
+      artifactsRoot: fixture.root,
+      context,
+      repoRoot: root,
+      sourceTree,
+    })).toThrow(/linux-arm64-deb thin report lacks the Electron-embedded SQLite check \(#135\)/)
+  })
+
+  it('assembles five packages, the exact checksum file, and a deterministic update manifest', () => {
     const linux = makeLinuxFixture()
     const mac = makeMacFixture()
     const output = tempDir()
@@ -415,6 +432,7 @@ describe('multi-platform release aggregation', () => {
       'agent-inbox_1.0.1_amd64.deb',
       'agent-inbox_1.0.1_arm64.deb',
       'SHA256SUMS.txt',
+      'update-manifest.json',
     ])
     const checksums = readFileSync(join(output, 'release-assets', 'SHA256SUMS.txt'), 'utf8')
     const lines = checksums.trimEnd().split('\n')
@@ -431,9 +449,54 @@ describe('multi-platform release aggregation', () => {
       expect(name).toBeTruthy()
       expect(line.startsWith(sha256File(join(output, 'release-assets', name!)))).toBe(true)
     }
+    const updateManifestPath = join(output, 'release-assets', 'update-manifest.json')
+    const updateManifestBytes = readFileSync(updateManifestPath, 'utf8')
+    expect(updateManifestBytes.endsWith('\n')).toBe(true)
+    const updateManifest = JSON.parse(updateManifestBytes)
+    expect(updateManifest).toMatchObject({
+      schema: 1,
+      kind: 'agent-inbox-update-manifest',
+      repository: 'shariqh/agent-inbox',
+      version: '1.0.1',
+      tag: 'v1.0.1',
+      source: {
+        commit: sourceCommit,
+        tree: sourceTree,
+      },
+      publishedAt: taggedAt,
+      signingKeyId: 'ed25519-99927ba2f6af6482',
+      trustedKeyIds: ['ed25519-99927ba2f6af6482'],
+    })
+    expect(updateManifest.targets).toHaveLength(5)
+    expect(updateManifest.targets.map((target: {
+      platform: string
+      architecture: string
+      packageType: string
+    }) => `${target.platform}/${target.architecture}/${target.packageType}`)).toEqual([
+      'darwin/universal/dmg',
+      'linux/arm64/appimage',
+      'linux/arm64/deb',
+      'linux/x64/appimage',
+      'linux/x64/deb',
+    ])
+    expect(updateManifest.targets.map((target: { filename: string }) => target.filename).sort())
+      .toEqual(lines.map((line) => line.slice(66)).sort())
+    for (const target of updateManifest.targets) {
+      const checksum = lines.find((line) => line.endsWith(`  ${target.filename}`))
+      expect(checksum?.slice(0, 64)).toBe(target.sha256)
+      expect(target.byteLength).toBe(
+        readFileSync(join(output, 'release-assets', target.filename)).byteLength,
+      )
+    }
     const aggregateEvidence = readFileSync(result.evidencePath, 'utf8')
     expect(aggregateEvidence).not.toContain(output)
     expect(aggregateEvidence).not.toContain(basename(mac.evidence))
+    expect(JSON.parse(aggregateEvidence).updateManifest).toEqual({
+      name: 'update-manifest.json',
+      size: Buffer.byteLength(updateManifestBytes),
+      sha256: sha256Bytes(updateManifestBytes),
+      keyRegistrySha256: sha256File(join(root, 'release/update-keys.json')),
+    })
   })
 
   it('marks PR/manual aggregation evidence non-publishable while proving the complete inventory', () => {
@@ -467,6 +530,8 @@ describe('multi-platform release aggregation', () => {
       'agent-inbox_1.0.1_amd64.deb',
       'agent-inbox_1.0.1_arm64.deb',
       'SHA256SUMS.txt',
+      'update-manifest.json',
+      'update-manifest.json.sig',
     ])
     expect(evidence.assets.find((asset) => asset.platform === 'macos')).toMatchObject({
       provisional: true,

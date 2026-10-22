@@ -1,6 +1,6 @@
 {
   "name": "agent-inbox",
-  "version": "1.0.1",
+  "version": "1.5.0",
   "description": "Local, cross-project attention inbox for coding agents",
   "private": true,
   "license": "MIT",
@@ -27,6 +27,7 @@
     "build": "tsc -p tsconfig.build.json",
     "mcp": "tsx src/mcp-server.ts",
     "view": "tsx src/viewer-server.ts",
+    "marketing": "node scripts/serve-marketing.mjs",
     "hook": "tsx src/hook-cli.ts",
     "watch": "tsx src/watch-cli.ts",
     "generate:icons": "bash scripts/generate-icons.sh",
@@ -56,18 +57,19 @@
     "verify:linux-deb": "node scripts/verify-linux-deb.mjs",
     "verify:linux-deb:arm64": "node scripts/verify-linux-deb.mjs --arch arm64",
     "package:macos": "node scripts/assemble-macos-release.mjs",
-    "package:smoke": "vitest run test/native-runtime-adapter.test.ts test/runtime-payload.test.ts test/install-runtime.test.ts test/setup-core.test.ts test/setup-process.test.ts test/setup-filesystem.test.ts test/setup-lock.test.ts test/setup-runner.test.ts test/package-stamp.test.ts test/release-inputs.test.ts test/linux-release-inputs.test.ts test/linux-native-folder.test.ts test/linux-release-workflow.test.ts test/linux-appimage-inputs.test.ts test/linux-appimage.test.ts test/linux-appimage-workflow.test.ts test/linux-deb-inputs.test.ts test/linux-deb.test.ts test/linux-deb-workflow.test.ts test/release-aggregation.test.ts test/release-aggregation-workflow.test.ts test/release-pipeline.test.ts test/macos-release-gates.test.ts test/macos-release-workflow.test.ts test/windows-release-inputs.test.ts test/windows-binary-gates.test.ts test/windows-native-folder.test.ts test/windows-release-workflow.test.ts test/windows-roundtrip.test.ts test/windows-setup-filesystem.test.ts",
+    "package:smoke": "vitest run test/native-runtime-adapter.test.ts test/runtime-payload.test.ts test/install-runtime.test.ts test/setup-core.test.ts test/setup-process.test.ts test/setup-filesystem.test.ts test/setup-lock.test.ts test/setup-runner.test.ts test/package-stamp.test.ts test/package-app-stage.test.ts test/electron-sqlite-check.test.ts test/release-inputs.test.ts test/linux-release-inputs.test.ts test/linux-native-folder.test.ts test/linux-release-workflow.test.ts test/linux-appimage-inputs.test.ts test/linux-appimage.test.ts test/linux-appimage-workflow.test.ts test/linux-deb-inputs.test.ts test/linux-deb.test.ts test/linux-deb-workflow.test.ts test/update-manifest.test.ts test/update-trust.test.ts test/release-aggregation.test.ts test/release-aggregation-workflow.test.ts test/release-pipeline.test.ts test/macos-release-gates.test.ts test/macos-release-workflow.test.ts test/windows-release-inputs.test.ts test/windows-binary-gates.test.ts test/windows-native-folder.test.ts test/windows-release-workflow.test.ts test/windows-roundtrip.test.ts test/windows-setup-filesystem.test.ts",
     "test:package": "npm run package:smoke",
     "test": "vitest run",
+    "test:structured-text:perf": "AGENT_INBOX_STRUCTURED_TEXT_PERF_GATE=1 vitest run test/structured-text.test.ts -t \"keeps hostile 50k-candidate input linear and isolated between renders\"",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "package:app": "bash scripts/package-app.sh"
   },
   "dependencies": {
-    "@hono/node-server": "2.0.12",
-    "@modelcontextprotocol/sdk": "1.30.0",
+    "@hono/node-server": "2.1.5",
+    "@modelcontextprotocol/sdk": "1.32.1",
     "better-sqlite3": "^12.11.1",
-    "hono": "^4.12.34",
+    "hono": "^4.13.13",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -78,16 +80,16 @@
     "@leeoniya/ufuzzy": "^1.0.19",
     "@types/better-sqlite3": "^7.6.11",
     "@types/node": "^24.0.0",
-    "electron": "43.1.1",
+    "electron": "43.8.0",
     "electron-installer-dmg": "5.0.1",
     "jsdom": "^29.1.1",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.12"
   },
   "allowScripts": {
     "better-sqlite3@12.11.1": true,
-    "electron@43.1.1": true,
+    "electron@43.8.0": true,
     "esbuild@0.28.1": true,
     "esbuild@0.21.5": true,
     "fsevents@2.3.3": true,

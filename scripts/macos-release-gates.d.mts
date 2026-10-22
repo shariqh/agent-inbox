@@ -5,6 +5,7 @@ export interface ReleaseContext {
   tag: string
   version: string
   sourceCommit: string
+  taggedAt: string
   annotated: true
 }
 

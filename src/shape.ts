@@ -21,6 +21,7 @@
 // path, under any option — that is the whole point of #37 and #42 must not undo
 // it while saving tokens.
 import type { ActionOwner, BoardWithRows, BoardRow, Progress, QuestionOption, ResponseKind, RowStatus } from './store.js'
+import type { IssueRel } from './issue-graph.js'
 
 interface HasContext {
   context: string
@@ -130,13 +131,38 @@ export function deliverContext<T extends HasContext>(
 
 // ── board_get ───────────────────────────────────────────────────────────────
 
-type RowWithoutHistory = Omit<BoardRow, 'history'> & { history_count?: number }
-export type ShapedRow = RowWithoutHistory | Trimmed<RowWithoutHistory>
-export type ShapedBoard = Omit<BoardWithRows, 'rows'> & { rows: ShapedRow[] }
+// Issue #103 PR2 — an explicit link reaches an agent as ONE normalized string,
+// `issue: "owner/name#N"`, the form it can send straight back; the raw columns
+// never do. Absent when unlinked. Slice 2's `waits_on` is echoed the same way:
+// exactly as stored, so a read → re-send is a no-op, and absent when none.
+type RawRowLink = 'issue_repo' | 'issue_number'
+type RawPlanPin = 'issue_pin_repo' | 'issue_pin_number'
+interface IssueEcho { issue?: string; issue_rel?: IssueRel }
 
-function shapeRow(row: BoardRow, full: boolean): ShapedRow {
-  const { history, ...rest } = row
-  const base: RowWithoutHistory = history.length ? { ...rest, history_count: history.length } : rest
+type RowWithoutHistory = Omit<BoardRow, 'history' | RawRowLink | 'waits_on'> & IssueEcho & { history_count?: number; waits_on?: string[] }
+export type ShapedRow = RowWithoutHistory | Trimmed<RowWithoutHistory>
+export type ShapedBoard = Omit<BoardWithRows, 'rows' | RawPlanPin> & IssueEcho & { rows: ShapedRow[] }
+
+/** issue_rel for the plan and for rows by id, read from the cache by the caller (§10). */
+export interface BoardIssueRelations {
+  plan?: IssueRel
+  rows: Map<string, IssueRel>
+}
+
+function issueText(repo: string | null, number: number | null): string | undefined {
+  return repo !== null && number !== null ? `${repo}#${number}` : undefined
+}
+
+function shapeRow(row: BoardRow, full: boolean, rel: IssueRel | undefined): ShapedRow {
+  const { history, issue_repo, issue_number, waits_on, ...rest } = row
+  const issue = issueText(issue_repo, issue_number)
+  const base: RowWithoutHistory = {
+    ...rest,
+    ...(history.length ? { history_count: history.length } : {}),
+    ...(issue ? { issue } : {}),
+    ...(waits_on ? { waits_on } : {}),
+    ...(rel ? { issue_rel: rel } : {}),
+  }
   return full ? base : trimContext(base)
 }
 
@@ -146,11 +172,23 @@ function shapeRow(row: BoardRow, full: boolean): ShapedRow {
  * so a pending() poll later from the same process does not re-ship what this
  * call just handed over. It is also the recovery path: an agent handed
  * `context_chars` for a row it has never seen asks for the board in full.
+ * `issues` adds issue_rel where the cache knows something (#103 PR2).
  */
-export function shapeBoard(board: BoardWithRows, opts: { full?: boolean; ledger: ContextLedger }): ShapedBoard {
+export function shapeBoard(
+  board: BoardWithRows,
+  opts: { full?: boolean; ledger: ContextLedger; issues?: BoardIssueRelations },
+): ShapedBoard {
   const full = opts.full === true
   if (full) for (const r of board.rows) opts.ledger.claim(rowKey(r.id), r.context)
-  return { ...board, rows: board.rows.map((row) => shapeRow(row, full)) }
+  const { issue_pin_repo, issue_pin_number, ...rest } = board
+  const issue = issueText(issue_pin_repo, issue_pin_number)
+  // overriding `rows` in place keeps every key where it was before PR2
+  return {
+    ...rest,
+    rows: board.rows.map((row) => shapeRow(row, full, opts.issues?.rows.get(row.id))),
+    ...(issue ? { issue } : {}),
+    ...(opts.issues?.plan ? { issue_rel: opts.issues.plan } : {}),
+  }
 }
 
 export interface RowSummary {
@@ -164,6 +202,11 @@ export interface RowSummary {
   options?: QuestionOption[]
   annotation_kind?: ResponseKind
   snoozed_until?: string
+  // issue #247 — the human set the ask aside with no time ("Pin for later")
+  pinned_at?: string
+  // issue #217 — the human asked the watcher to stop: for good when no until
+  watch_stopped_at?: string
+  watch_stopped_until?: string | null
   outcome?: string
   outcome_at?: string
   action_started_at?: string
@@ -234,6 +277,11 @@ function summariseRow(r: BoardRow): RowSummary {
   if (r.next_after) out.next_after = r.next_after
   if (r.options?.length) out.options = r.options
   if (r.snoozed_until) out.snoozed_until = r.snoozed_until
+  if (r.pinned_at) out.pinned_at = r.pinned_at
+  if (r.watch_stopped_at) {
+    out.watch_stopped_at = r.watch_stopped_at
+    out.watch_stopped_until = r.watch_stopped_until
+  }
   if (r.outcome) out.outcome = r.outcome
   if (r.outcome_at) out.outcome_at = r.outcome_at
   if (r.action_started_at) out.action_started_at = r.action_started_at

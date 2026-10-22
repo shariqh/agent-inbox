@@ -1,7 +1,7 @@
 // test/card.test.ts
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
-import { optionOrder, recommendedWarning, cardSections } from '../public/card.js'
+import { actionPresentation, optionOrder, recommendedWarning, cardSections } from '../public/card.js'
 import type { CardItem } from '../public/card.js'
 
 const base: CardItem = {
@@ -10,6 +10,60 @@ const base: CardItem = {
   options: null, reply: null, reply_context: null, reply_seen_at: null, reply_source: null,
 }
 const item = (over: Partial<CardItem> = {}): CardItem => ({ ...base, ...over })
+
+describe('action-first presentation', () => {
+  it('uses the pending request without changing its stored tracking title', () => {
+    const source = item({ title: '#132 / release-gate', next_step: 'Approve the release.' })
+    expect(actionPresentation(source)).toMatchObject({
+      headline: 'Approve the release.',
+      headlineField: 'next-step',
+      originalTitle: '#132 / release-gate',
+      detail: 'one line',
+    })
+    expect(source.title).toBe('#132 / release-gate')
+    expect(actionPresentation({ label: 'QA-17', status: 'blocked', next_step: 'Upload the recording.' }).headline)
+      .toBe('Upload the recording.')
+  })
+
+  it('keeps legacy, non-action, answered, and completed titles truthful', () => {
+    for (const source of [
+      item({ next_step: ' \n ' }),
+      item({ kind: 'note' }),
+      item({ kind: 'done' }),
+      item({ reply: 'Yes' }),
+      item({ reply_kind: 'decline' }),
+      item({ status: 'resolved' }),
+      item({ outcome: 'Already published.' }),
+    ]) expect(actionPresentation(source).headline).toBe(source.title)
+    expect(actionPresentation(item(), { done: true }).headline).toBe(base.title)
+    for (const source of [
+      { label: 'QA-17', status: 'done', next_step: 'Upload the recording.' },
+      { label: 'QA-17', status: 'blocked', next_step: 'Upload the recording.', annotation: 'Uploaded' },
+      { label: 'QA-17', status: 'blocked', next_step: 'Upload the recording.', handled_at: '2026-09-01' },
+      { label: 'QA-17', status: 'blocked', next_step: 'Upload the recording.', annotation_kind: 'clarify' },
+    ]) expect(actionPresentation(source).headline).toBe('QA-17')
+  })
+
+  it('removes only exact repetition and preserves full warnings and consequences', () => {
+    const warning = 'Do not publish before the backup finishes.\n\nThe old client will stop working.'
+    expect(actionPresentation(item({
+      detail: warning,
+      impact: warning,
+      next_after: 'I will verify the backup before publishing.',
+    }))).toMatchObject({
+      detail: warning,
+      impact: '',
+      nextAfter: 'I will verify the backup before publishing.',
+    })
+    expect(actionPresentation(item({
+      detail: 'Choose whether to drop it.',
+      impact: 'Choose whether to drop it. This permanently deletes data.',
+    }))).toMatchObject({
+      detail: '',
+      impact: 'Choose whether to drop it. This permanently deletes data.',
+    })
+  })
+})
 
 describe('optionOrder', () => {
   it('puts the recommended option first and keeps the rest stable', () => {
@@ -74,6 +128,28 @@ describe('cardSections', () => {
     expect(s.recWarning).toContain('2 options are marked recommended')
     expect(s.options.length).toBe(2)
   })
+
+  it('distinguishes current, legacy, older-payload and closed annotation receipts without inventing pickup', () => {
+    const note = item({
+      kind: 'note', annotation: 'Legacy feedback.',
+      annotated_at: null, annotation_seen_at: null, annotation_seen_by: null,
+    })
+    expect(cardSections(note).annotationReceipt).toMatchObject({
+      state: 'waiting', text: 'Legacy feedback.', savedAt: null, seenAt: null, cleared: false,
+    })
+    expect(cardSections(item({ kind: 'note', annotation: 'Old payload.' })).annotationReceipt)
+      .toMatchObject({ state: 'untracked', seenAt: null })
+    expect(cardSections({ ...note, status: 'resolved' }).annotationReceipt)
+      .toMatchObject({ state: 'closed', seenAt: null })
+    expect(cardSections({ ...note, annotation_seen_at: 'not-a-time' }).annotationReceipt)
+      .toMatchObject({ state: 'untracked', seenAt: null })
+    expect(cardSections({ ...note, status: undefined }).annotationReceipt)
+      .toMatchObject({ state: 'untracked', seenAt: null })
+    expect(cardSections({ ...note, annotation: '', annotated_at: null }).annotationReceipt).toBeNull()
+    expect(cardSections({
+      ...note, annotation: '', annotated_at: '2026-09-20T10:00:00.000Z',
+    }).annotationReceipt).toMatchObject({ state: 'waiting', cleared: true })
+  })
 })
 
 // Source-level pins: which shared builder app.js imports, rather than what it
@@ -83,7 +159,7 @@ describe('app.js wiring (source-level pins)', () => {
   const js = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8')
 
   it('imports the shared card builders instead of re-declaring them', () => {
-    expect(js).toMatch(/import\s*\{\s*cardSections,\s*optionOrder\s*\}\s*from\s*'\/card\.js'/)
+    expect(js).toMatch(/import\s*\{\s*cardSections,\s*optionOrder,\s*actionPresentation\s*\}\s*from\s*'\/card\.js'/)
   })
 
   it('has no separate expansion-state variable — only Task 9\'s openRowId/setOpenRow', () => {
@@ -155,12 +231,14 @@ describe('app.js wiring (source-level pins)', () => {
   it('the background block is identity-keyed, safely rendered, and rebound after rendering', () => {
     const start = js.indexOf('function itemCardEl(')
     const fn = js.slice(start, js.indexOf('\nasync function changeAnswer('))
-    expect(fn).toContain('actionBlocksHtml(s.detail, s.nextStep, s.actionOwner, s.impact, s.nextAfter, s.context, `item:${it.id}`)')
+    expect(fn).toContain('actionPresentation(it, { done })')
+    expect(fn).toContain('actionBlocksHtml(presentation)')
+    expect(fn).toContain('cardDetailsHtml(it, it, `item:${it.id}`, presentation, { includeAsked })')
     expect(fn).toContain('bindContextDisclosures(el)')
-    const blocks = js.slice(js.indexOf('function contextHtml('), js.indexOf('\n// the inline expansion'))
+    const blocks = js.slice(js.indexOf('function cardDetailsHtml('), js.indexOf('\n// the inline expansion'))
     expect(blocks).toContain('data-context-key="${esc(key)}"')
     expect(blocks).toContain("openContexts.has(key) ? ' open' : ''")
-    expect(blocks).toMatch(/card-context-body">\$\{renderStructuredText\(context\)\}/)
+    expect(blocks).toMatch(/card-context-body">\$\{renderStructuredText\(entity\.context\)\}/)
   })
 
   // #29: an answer an agent recorded from chat must be visibly agent-written, and the
@@ -176,15 +254,15 @@ describe('app.js wiring (source-level pins)', () => {
     // helper and the guard moved with it into rowHumanStateHtml, where every
     // branch is gated on the field it describes. Pin the helper as the single
     // source and both guards by name, rather than loosening the count.
-    expect((fn.match(/Waiting for the agent/g) ?? []).length).toBe(1)
+    expect((fn.match(/Saved · waiting for delivery/g) ?? []).length).toBe(1)
     const markFn = js.slice(js.indexOf('function pickupMarkHtml('), js.indexOf('function rowHumanStateHtml('))
-    expect((markFn.match(/Waiting for the agent/g) ?? []).length).toBe(1)
+    expect((markFn.match(/Saved · waiting for delivery/g) ?? []).length).toBe(1)
     const rowFn = js.slice(js.indexOf('function rowHumanStateHtml('), js.indexOf('\nfunction rowPanelEl('))
-    expect(rowFn, 'the row marker is never printed outside a guarded branch').not.toMatch(/Waiting for the agent/)
+    expect(rowFn, 'the row marker is never printed outside a guarded branch').not.toMatch(/Saved · waiting for delivery/)
     expect(rowFn).toContain('if (r.annotation || r.annotation_kind)')
     expect(rowFn).toContain('if (r.handled_at) parts.push(')
-    expect((js.match(/Waiting for the agent/g) ?? []).length, 'exactly one per noun, nowhere else').toBe(2)
-    const replyBlock = fn.split('\n').find((l) => l.includes('Waiting for the agent'))!
+    expect((js.match(/Saved · waiting for delivery/g) ?? []).length, 'exactly one per noun, nowhere else').toBe(2)
+    const replyBlock = fn.split('\n').find((l) => l.includes('Saved · waiting for delivery'))!
     expect(replyBlock).toContain('${s.reply || it.reply_kind ?')
     expect(replyBlock).toContain('reply-block')
     // the chip is a FIXED string selected by an equality test — interpolating the

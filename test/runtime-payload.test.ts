@@ -8,14 +8,13 @@
 // this repo's strict, allowJs-less tsconfig, and exercising the CLI contract
 // is exactly what a Bash caller (a future installer/packaging step) will do
 // anyway.
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import {
   chmodSync,
   copyFileSync,
   existsSync,
   lstatSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
@@ -24,22 +23,26 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { createHash } from 'node:crypto'
-import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { execFileSync, spawnSync } from 'node:child_process'
+import { pathToFileURL } from 'node:url'
+import { removeScratchDirs, scratchDir } from './scratch.js'
 
 const REPO = resolve(import.meta.dirname, '..')
 const PAYLOAD_CLI = join(REPO, 'scripts', 'runtime-payload.mjs')
 const CONFIG_CLI = join(REPO, 'scripts', 'runtime-config.mjs')
 const STAGE_CLI = join(REPO, 'scripts', 'stage-runtime.mjs')
+const SQLITE_CHECK_CLI = join(REPO, 'scripts', 'runtime-sqlite-check.mjs')
 const SETUP_FILESYSTEM = join(REPO, 'scripts', 'setup-filesystem.cjs')
 const FAKE_NODE_FIXTURE = join(REPO, 'test', 'fixtures', 'runtime', 'fake-node.sh')
 const FAKE_XATTR_FAIL_FIXTURE = join(REPO, 'test', 'fixtures', 'runtime', 'fake-xattr-fail.sh')
 const FAKE_XATTR_RECORD_FIXTURE = join(REPO, 'test', 'fixtures', 'runtime', 'fake-xattr-record.sh')
 
 function tmp(prefix: string): string {
-  return mkdtempSync(join(tmpdir(), prefix))
+  return scratchDir(prefix)
 }
+
+afterEach(removeScratchDirs)
 
 interface CliResult {
   status: number
@@ -75,6 +78,7 @@ function committedFailureCli(): string {
   writeFileSync(join(root, 'setup-filesystem.cjs'), `
 const original = require(${JSON.stringify(SETUP_FILESYSTEM)})
 module.exports = {
+  ...original,
   createSetupFilesystem(options) {
     const filesystem = original.createSetupFilesystem(options)
     return Object.freeze({
@@ -697,6 +701,49 @@ describe('runtime-payload prune: deletes only an exact, validly-owned runtime di
     const { runtimeRoot } = installedFixture('prune-traversal')
     const result = runFail(PAYLOAD_CLI, ['prune', '--runtime-root', runtimeRoot, '--runtime-id', '../escape'])
     expect(result.stderr).toMatch(/unsafe runtimeId/)
+  })
+
+  // #211: once the runtime is renamed aside its id is free, so a trash folder
+  // that cannot be deleted yet is left for the next install or prune.
+  it('counts a runtime as pruned once it is renamed aside, even when deleting it fails', () => {
+    const { runtimeRoot, runtimeId } = installedFixture('prune-retained')
+    const preload = join(tmp('prune-retained-preload-'), 'fail-trash-delete.cjs')
+    writeFileSync(preload, [
+      "const fs = require('node:fs')",
+      'const remove = fs.rmSync',
+      'fs.rmSync = function rmSync(path, options) {',
+      "  if (String(path).includes('/.trash-')) throw Object.assign(new Error('permission denied'), { code: 'EACCES' })",
+      '  return remove.call(this, path, options)',
+      '}',
+      '',
+    ].join('\n'))
+
+    const pruned = runOk(PAYLOAD_CLI, ['prune', '--runtime-root', runtimeRoot, '--runtime-id', runtimeId], {
+      ...process.env,
+      NODE_OPTIONS: `--require ${preload}`,
+    }) as { pruned: boolean; retained?: string }
+
+    expect(pruned.pruned).toBe(true)
+    expect(existsSync(join(runtimeRoot, runtimeId))).toBe(false)
+    expect(basename(pruned.retained ?? '')).toMatch(/^\.trash-/)
+    expect(existsSync(pruned.retained!)).toBe(true)
+    expect(runOk(PAYLOAD_CLI, ['list', '--runtime-root', runtimeRoot])).toEqual([])
+
+    // The next prune removes it, even of a runtime id that is already gone.
+    runFail(PAYLOAD_CLI, ['prune', '--runtime-root', runtimeRoot, '--runtime-id', runtimeId])
+    expect(existsSync(pruned.retained!)).toBe(false)
+  })
+
+  // #211: a pruned runtime is renamed into a `.trash-*` folder first, so no
+  // runtime may ever claim that prefix.
+  it('never trusts a manifest whose runtime id is a reserved trash name', () => {
+    const root = tmp('verify-trash-runtime-id-')
+    buildFixturePayload(root)
+    const forged = forgeManifest(root, { product: '.trash-runtime' })
+    writeFileSync(join(root, 'runtime-manifest.json'), JSON.stringify(forged, null, 2))
+
+    const result = runFail(PAYLOAD_CLI, ['verify', '--root', root])
+    expect(result.stderr).toMatch(/reserved trash name/)
   })
 })
 
@@ -1469,7 +1516,7 @@ describe('runtime-config hooks: packaged Claude Code hook-settings transformatio
     expect(upgraded.hooks!.Stop![0]!.hooks[0]!.args[0]).toBe(entry2)
   })
 
-  it('refuses to touch existing hook entries whose ownership is custom, without --force', () => {
+  it('refuses beside another tool\'s hook that uses our subcommand names until asked, recommending the one step that keeps it', () => {
     const { runtimeRoot, nodeBin, entry } = installedHookRuntime()
     const settings = join(tmp('hooks-custom-'), 'settings.json')
     const customSettings: HooksSettings = {
@@ -1482,8 +1529,9 @@ describe('runtime-config hooks: packaged Claude Code hook-settings transformatio
       'hooks', '--settings', settings, '--node', nodeBin, '--entry', entry, '--runtime-root', runtimeRoot,
     ])
     expect(result.status).toBe(1)
-    expect(result.stderr).toMatch(/ownership status/)
-    expect(result.stderr).toMatch(/--force/)
+    expect(result.stderr).toContain('/some/custom/hook-cli.js (stop)')
+    expect(result.stderr).toContain('--apply --replace-existing')
+    expect(result.stderr).not.toMatch(/--force/)
     expect(readFileSync(settings, 'utf8')).toBe(before) // never touched on refusal
 
     const forced = runOk(CONFIG_CLI, [
@@ -1493,14 +1541,16 @@ describe('runtime-config hooks: packaged Claude Code hook-settings transformatio
     expect(forced.hooks!.Stop![0]!.hooks[0]!.command).toBe(nodeBin)
   })
 
-  it('treats existing candidate entries as unknown (and gates on --force) when --runtime-root is omitted', () => {
+  it('cannot attribute existing candidate entries (and gates on --force) when --runtime-root is omitted', () => {
     const { nodeBin, entry } = installedHookRuntime()
     const settings = join(tmp('hooks-noroot-'), 'settings.json')
     writeFileSync(settings, JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: nodeBin, args: [entry, 'stop'], timeout: 10 }] }] } }))
 
-    const result = runFail(CONFIG_CLI, ['hooks', '--settings', settings, '--node', nodeBin, '--entry', entry])
-    expect(result.status).toBe(1)
-    expect(result.stderr).toMatch(/unknown/)
+    for (const flags of [[], ['--replace-existing']]) {
+      const result = runFail(CONFIG_CLI, ['hooks', '--settings', settings, '--node', nodeBin, '--entry', entry, ...flags])
+      expect(result.status).toBe(1)
+      expect(result.stderr).toMatch(/cannot attribute/)
+    }
 
     const forced = runOk(CONFIG_CLI, ['hooks', '--settings', settings, '--node', nodeBin, '--entry', entry, '--force']) as HooksSettings
     expect(forced.hooks!.Stop!).toHaveLength(1)
@@ -1575,6 +1625,162 @@ describe('runtime-config hooks: packaged Claude Code hook-settings transformatio
     // --uninstall does not require --node.
     const settings = join(tmp('hooks-usage-uninstall-'), 'settings.json')
     expect(runCli(CONFIG_CLI, ['hooks', '--settings', settings, '--entry', 'y', '--uninstall']).status).toBe(0)
+  })
+
+  // #218: hooks a source checkout of this repo installed are another Agent
+  // Inbox set, and hooks whose paths no longer resolve cannot run. The packaged
+  // installer names them, recommends the one-step --replace-existing first,
+  // and replaces them only with it; another tool's hook is never removed.
+  function checkoutHookEntry(packageName = 'agent-inbox'): { root: string; entry: string } {
+    const root = tmp('hooks-checkout-')
+    mkdirSync(join(root, 'dist'), { recursive: true })
+    mkdirSync(join(root, 'scripts'), { recursive: true })
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ name: packageName }))
+    writeFileSync(join(root, 'dist', 'hook-cli.js'), 'console.log("checkout hook")\n')
+    writeFileSync(join(root, 'scripts', 'install-hooks.sh'), '#!/bin/bash\n')
+    return { root, entry: join(root, 'dist', 'hook-cli.js') }
+  }
+
+  const threeHooks = (command: string, entry: string): Record<string, HookGroup[]> => ({
+    Notification: [{ hooks: [{ type: 'command', command, args: [entry, 'notification'], timeout: 5 }] }],
+    Stop: [{ hooks: [
+      { type: 'command', command, args: [entry, 'stop'], timeout: 10 },
+      { type: 'command', command, args: [entry, 'watch'], timeout: 1800 },
+    ] }],
+  })
+  const unrelated = { type: 'command', command: 'echo', args: ['unrelated'], timeout: 5 } as unknown as HookEntry
+  const INSTALLER = '/opt/runtime/scripts/install-hooks.sh'
+  const printed = (stderr: string): string[] => [...stderr.matchAll(/bash '(?:[^']|'\\'')*'(?: --[a-z-]+)+/g)].map((m) => m[0])
+  const withRuntimeSet = (nodeBin: string, entry: string, hooks: Record<string, HookGroup[]>): HooksSettings => ({
+    hooks: Object.fromEntries(Object.entries(threeHooks(nodeBin, entry)).map(([event, groups]) => [event, [...groups, ...(hooks[event] ?? [])]])),
+  })
+
+  it('names a source checkout\'s hooks instead of adding a second set, and replaces them only with --replace-existing', () => {
+    const { runtimeRoot, nodeBin, entry } = installedHookRuntime()
+    const checkout = checkoutHookEntry()
+    const settings = join(tmp('hooks-checkout-set-'), 'settings.json')
+    writeFileSync(settings, JSON.stringify({ hooks: { ...threeHooks(process.execPath, checkout.entry), PostToolUse: [{ hooks: [unrelated] }] } }))
+    const args = ['hooks', '--settings', settings, '--node', nodeBin, '--entry', entry, '--runtime-root', runtimeRoot, '--installer', INSTALLER]
+
+    const refused = runFail(CONFIG_CLI, args)
+    expect(refused.status).toBe(1)
+    expect(refused.stdout).toBe('')
+    expect(refused.stderr).toContain(`the source checkout at ${checkout.root} (3 hooks)`)
+    expect(printed(refused.stderr)).toEqual([
+      `bash '${INSTALLER}' --apply --replace-existing`,
+      `bash '${join(checkout.root, 'scripts', 'install-hooks.sh')}' --apply --uninstall`,
+    ])
+
+    const replaced = runCli(CONFIG_CLI, [...args, '--replace-existing'])
+    expect(replaced.status, replaced.stderr).toBe(0)
+    expect(replaced.stderr).toContain(`replacing 3 hooks of the source checkout at ${checkout.root}`)
+    const result = JSON.parse(replaced.stdout) as HooksSettings
+    expect(JSON.stringify(result)).not.toContain(checkout.entry)
+    expect(result.hooks!.PostToolUse).toEqual([{ hooks: [unrelated] }])
+    expect(result.hooks!.Stop).toHaveLength(1)
+    expect(result.hooks!.Stop![0]!.hooks.map((h) => [h.command, ...h.args])).toEqual([[nodeBin, entry, 'stop'], [nodeBin, entry, 'watch']])
+  })
+
+  it('--uninstall beside a checkout\'s hooks names that checkout and its own uninstall, not --force', () => {
+    const { runtimeRoot, nodeBin, entry } = installedHookRuntime()
+    const checkout = checkoutHookEntry()
+    const settings = join(tmp('hooks-checkout-uninstall-'), 'settings.json')
+    writeFileSync(settings, JSON.stringify(withRuntimeSet(nodeBin, entry, threeHooks(process.execPath, checkout.entry))))
+
+    const refused = runFail(CONFIG_CLI, [
+      'hooks', '--settings', settings, '--entry', entry, '--runtime-root', runtimeRoot, '--installer', INSTALLER, '--uninstall',
+    ])
+
+    expect(refused.status).toBe(1)
+    expect(refused.stdout).toBe('')
+    expect(refused.stderr).toContain(`the source checkout at ${checkout.root} (3 hooks)`)
+    expect(refused.stderr).toMatch(/nothing was removed/i)
+    expect(printed(refused.stderr)).toEqual([
+      `bash '${INSTALLER}' --apply --replace-existing`,
+      `bash '${join(checkout.root, 'scripts', 'install-hooks.sh')}' --apply --uninstall`,
+    ])
+    expect(refused.stderr).not.toMatch(/--force|ownership status/)
+  })
+
+  it('--replace-existing replaces the hooks of an install that can no longer run, keeping everything else', () => {
+    const { runtimeRoot, nodeBin, entry } = installedHookRuntime()
+    const gone = join(tmp('hooks-dead-'), 'moved-checkout')
+    const settings = join(tmp('hooks-dead-set-'), 'settings.json')
+    writeFileSync(settings, JSON.stringify({ hooks: { ...threeHooks(process.execPath, join(gone, 'dist', 'hook-cli.js')), PostToolUse: [{ hooks: [unrelated] }] } }))
+    const args = ['hooks', '--settings', settings, '--node', nodeBin, '--entry', entry, '--runtime-root', runtimeRoot, '--installer', INSTALLER]
+
+    const refused = runFail(CONFIG_CLI, args)
+    expect(refused.status).toBe(1)
+    expect(refused.stderr).toContain(`the install at ${gone}, which can no longer run (3 hooks)`)
+    expect(printed(refused.stderr)).toEqual([`bash '${INSTALLER}' --apply --replace-existing`])
+
+    const replaced = runCli(CONFIG_CLI, [...args, '--replace-existing'])
+    expect(replaced.status, replaced.stderr).toBe(0)
+    const result = JSON.parse(replaced.stdout) as HooksSettings
+    expect(JSON.stringify(result)).not.toContain(gone)
+    expect(result.hooks!.PostToolUse).toEqual([{ hooks: [unrelated] }])
+    expect(result.hooks!.Stop![0]!.hooks.map((h) => [h.command, ...h.args])).toEqual([[nodeBin, entry, 'stop'], [nodeBin, entry, 'watch']])
+  })
+
+  it('--replace-existing never removes another tool\'s look-alike: it installs beside it', () => {
+    const { runtimeRoot, nodeBin, entry } = installedHookRuntime()
+    const lookAlike = checkoutHookEntry('agent-inbox-companion')
+    const settings = join(tmp('hooks-look-alike-'), 'settings.json')
+    const theirs = threeHooks(process.execPath, lookAlike.entry)
+    writeFileSync(settings, JSON.stringify({ hooks: theirs }))
+    const args = ['hooks', '--settings', settings, '--node', nodeBin, '--entry', entry, '--runtime-root', runtimeRoot]
+
+    // without the flag the packaged installer still refuses beside it, as before
+    expect(runFail(CONFIG_CLI, args).status).toBe(1)
+
+    const result = runOk(CONFIG_CLI, [...args, '--replace-existing']) as HooksSettings
+    expect(result.hooks!.Notification![0]).toEqual(theirs.Notification![0])
+    expect(result.hooks!.Stop![0]).toEqual(theirs.Stop![0])
+    const ours = Object.values(result.hooks!).flatMap((groups) => groups.flatMap((g) => g.hooks)).filter((h) => h.args[0] === entry)
+    expect(ours.map((h) => h.args[1]).sort()).toEqual(['notification', 'prompt-submit', 'session-end', 'session-start', 'stop', 'watch'])
+  })
+
+  // #232: a verified runtime outside the runtime root (copied or extracted
+  // elsewhere, or installed under another AGENT_INBOX_RUNTIME_ROOT) is another
+  // Agent Inbox install, not another tool's: --replace-existing left it beside
+  // a second set.
+  it('names a runtime outside the runtime root instead of adding a second set, and replaces it only with --replace-existing', () => {
+    const { runtimeRoot, nodeBin, entry } = installedHookRuntime()
+    const other = installedHookRuntime({ packageVersion: '1.2.4' })
+    const otherDir = dirname(dirname(other.entry))
+    const settings = join(tmp('hooks-elsewhere-set-'), 'settings.json')
+    writeFileSync(settings, JSON.stringify({ hooks: { ...threeHooks(other.nodeBin, other.entry), PostToolUse: [{ hooks: [unrelated] }] } }))
+    const args = ['hooks', '--settings', settings, '--node', nodeBin, '--entry', entry, '--runtime-root', runtimeRoot, '--installer', INSTALLER]
+
+    const refused = runFail(CONFIG_CLI, args)
+    expect(refused.status).toBe(1)
+    expect(refused.stdout).toBe('')
+    expect(refused.stderr).toContain(`the v1.2.4 runtime at ${otherDir}, outside Setup's runtime folder (3 hooks)`)
+    expect(printed(refused.stderr)).toEqual([`bash '${INSTALLER}' --apply --replace-existing`])
+
+    const replaced = runCli(CONFIG_CLI, [...args, '--replace-existing'])
+    expect(replaced.status, replaced.stderr).toBe(0)
+    expect(replaced.stderr).toContain(`replacing 3 hooks of the v1.2.4 runtime at ${otherDir}, outside Setup's runtime folder`)
+    const result = JSON.parse(replaced.stdout) as HooksSettings
+    expect(JSON.stringify(result)).not.toContain(other.entry)
+    expect(result.hooks!.PostToolUse).toEqual([{ hooks: [unrelated] }])
+    expect(result.hooks!.Stop![0]!.hooks.map((h) => [h.command, ...h.args])).toEqual([[nodeBin, entry, 'stop'], [nodeBin, entry, 'watch']])
+  })
+
+  it('a runtime outside the runtime root re-installs and removes its own hooks as one under it does', () => {
+    const self = installedHookRuntime({ packageVersion: '1.2.4' })
+    // the root this installer is given is not the one it was installed under
+    const runtimeRoot = tmp('hooks-another-root-')
+    const settings = join(tmp('hooks-elsewhere-own-'), 'settings.json')
+    writeFileSync(settings, JSON.stringify({ hooks: { ...threeHooks(self.nodeBin, self.entry), PostToolUse: [{ hooks: [unrelated] }] } }))
+    const args = ['hooks', '--settings', settings, '--entry', self.entry, '--runtime-root', runtimeRoot]
+
+    const reinstalled = runOk(CONFIG_CLI, [...args, '--node', self.nodeBin]) as HooksSettings
+    const ours = Object.values(reinstalled.hooks!).flatMap((groups) => groups.flatMap((g) => g.hooks)).filter((h) => h.args[0] === self.entry)
+    expect(ours.map((h) => h.args[1]).sort()).toEqual(['notification', 'prompt-submit', 'session-end', 'session-start', 'stop', 'watch'])
+    expect(reinstalled.hooks!.PostToolUse).toEqual([{ hooks: [unrelated] }])
+
+    expect(runOk(CONFIG_CLI, [...args, '--uninstall'])).toEqual({ hooks: { PostToolUse: [{ hooks: [unrelated] }] } })
   })
 })
 
@@ -1683,6 +1889,16 @@ function realNodeDistRoot(): string | undefined {
 
 const REAL_NODE_ROOT = realNodeDistRoot()
 
+// Staging runs npm, the hook selftest, the 300,000-statement SQLite check and
+// the MCP server probe. That takes about 7-21 s alone, but a busy parallel
+// `npm test` has stretched it past 70 s (#238). These test bodies are
+// synchronous, so Vitest cannot interrupt them: the child-process timeouts in
+// stage-runtime.mjs bound a hang, and Vitest's limit only fails a run that
+// finished late. It therefore allows at least what staging allows its slowest
+// step, the SQLite check's 180 s ceiling (#187), plus a minute for the rest.
+const SQLITE_CHECK_CEILING_MS = 180_000
+const STAGING_TEST_TIMEOUT_MS = SQLITE_CHECK_CEILING_MS + 60_000
+
 /**
  * A minimal fixture repo root stage-runtime.mjs can stage end to end:
  *  - package.json declares ONE dependency, a locally `npm pack`-ed tarball
@@ -1750,6 +1966,44 @@ function buildFixtureRepoRoot(): string {
     + "}\n"
     + "console.error('unknown subcommand'); process.exit(1)\n",
   )
+  writeFileSync(join(repoRoot, 'dist', 'store.js'), `
+import { writeFileSync } from 'node:fs'
+import { openDb as realOpenDb, getItem as realGetItem } from ${JSON.stringify(pathToFileURL(join(REPO, 'src', 'store.ts')).href)}
+let reads = 0
+process.once('exit', (code) => {
+  if (code === 0) writeFileSync(new URL('../gc-check.marker', import.meta.url), String(reads))
+})
+export function openDb(path) {
+  if (path !== ':memory:') throw new Error('GC check must use a private in-memory store')
+  return realOpenDb(path)
+}
+export function getItem(db, id) {
+  reads++
+  if (process.env.FAKE_GC_FAIL === '1') throw new Error('fake allocation-driven GC failure')
+  if (process.env.FAKE_GC_SIGNAL === '1') process.kill(process.pid, 'SIGTERM')
+  return realGetItem(db, id)
+}
+`)
+
+  // issue #103 PR2: dist/ reaches pure modules in ../public/, which a runtime
+  // must carry; c.js is reached by nothing and must stay out
+  writeFileSync(join(repoRoot, 'dist', 'uses-public.js'), 'import { a } from "../public/a.js"\nexport const x = a\n')
+  // the MCP server probe starts this stand-in from the STAGED tree, so it also
+  // proves the reached public/ modules were staged
+  writeFileSync(join(repoRoot, 'dist', 'mcp-server.js'), `
+import { a } from "../public/a.js"
+import { createInterface } from 'node:readline'
+const send = (m) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...m }) + '\\n')
+createInterface({ input: process.stdin }).on('line', (line) => {
+  const m = JSON.parse(line)
+  if (m.method === 'initialize') send({ id: m.id, result: { protocolVersion: m.params.protocolVersion, capabilities: {}, serverInfo: { name: 'fixture', version: String(a) } } })
+  if (m.method === 'tools/list') send({ id: m.id, result: { tools: ['flag', 'pending', 'board_get'].map((name) => ({ name })) } })
+})
+`)
+  mkdirSync(join(repoRoot, 'public'), { recursive: true })
+  writeFileSync(join(repoRoot, 'public', 'a.js'), "import { b } from './b.js'\nexport const a = b\n")
+  writeFileSync(join(repoRoot, 'public', 'b.js'), 'export const b = 1\n')
+  writeFileSync(join(repoRoot, 'public', 'c.js'), 'export const c = 1\n')
 
   for (const name of [
     'install-agents.sh',
@@ -1758,6 +2012,7 @@ function buildFixtureRepoRoot(): string {
     'runtime-config.mjs',
     'setup-filesystem.cjs',
     'setup-lock.sh',
+    'run-isolated.mjs',
   ]) {
     writeFileSync(join(repoRoot, 'scripts', name), `# fixture placeholder for ${name}\n`)
   }
@@ -1804,6 +2059,7 @@ describe.skipIf(!REAL_NODE_ROOT || !['darwin', 'linux'].includes(process.platfor
         // Lifecycle scripts actually ran — proves --ignore-scripts was
         // dropped: marker-pkg's own postinstall wrote this file.
         expect(existsSync(join(output, 'node_modules', 'marker-pkg', 'postinstall-ran.marker'))).toBe(true)
+        expect(readFileSync(join(output, 'gc-check.marker'), 'utf8')).toBe('300000')
 
         // @electron/packager always strips these names. They must be removed
         // before manifesting or every copied app payload fails verification.
@@ -1813,6 +2069,9 @@ describe.skipIf(!REAL_NODE_ROOT || !['darwin', 'linux'].includes(process.platfor
         }
         expect(manifest.files).toContainEqual(expect.objectContaining({ path: 'bin/node', mode: 0o755 }))
         expect(manifest.files.some((file) => file.path === 'node.exe')).toBe(false)
+        // exactly the public modules dist/ reaches, transitively (#103 PR2)
+        expect(manifest.files.map((file) => file.path).filter((path) => path.startsWith('public/')).sort())
+          .toEqual(['public/a.js', 'public/b.js'])
         for (const file of manifest.files) {
           expect(file.path).not.toMatch(/(^|\/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml)$/)
           expect(file.path).not.toMatch(/(^|\/)(\.git|\.bin|node_gyp_bins)(\/|$)|\.o(bj)?$/)
@@ -1822,7 +2081,7 @@ describe.skipIf(!REAL_NODE_ROOT || !['darwin', 'linux'].includes(process.platfor
         const siblings = readdirSync(outputParent)
         expect(siblings.some((e) => e.startsWith('.agent-inbox-stage-'))).toBe(false)
       },
-      30_000,
+      STAGING_TEST_TIMEOUT_MS,
     )
 
     it(
@@ -1842,10 +2101,87 @@ describe.skipIf(!REAL_NODE_ROOT || !['darwin', 'linux'].includes(process.platfor
         const siblings = readdirSync(outputParent)
         expect(siblings.some((e) => e.startsWith('.agent-inbox-stage-'))).toBe(false)
       },
-      30_000,
+      STAGING_TEST_TIMEOUT_MS,
+    )
+
+    it.each(['FAKE_GC_FAIL', 'FAKE_GC_SIGNAL'])(
+      'refuses publication when SQLite cleanup fails after hook selftest passes (%s)',
+      (failure) => {
+        const repoRoot = buildFixtureRepoRoot()
+        const outputParent = tmp('stage-gc-fail-')
+        const output = join(outputParent, 'runtime')
+        const result = runFail(STAGE_CLI, [
+          '--node-root', REAL_NODE_ROOT as string, '--platform', process.platform, '--arch', process.arch,
+          '--output', output, '--repo-root', repoRoot,
+        ], { ...process.env, [failure]: '1' })
+
+        expect(result.stderr).toMatch(/failed its allocation-driven SQLite check/)
+        expect(existsSync(output)).toBe(false)
+        expect(readdirSync(outputParent).some((entry) => entry.startsWith('.agent-inbox-stage-'))).toBe(false)
+      },
+      STAGING_TEST_TIMEOUT_MS,
+    )
+
+    it(
+      'gives the allocation-driven SQLite check a 180 s ceiling, once, and keeps the hook selftest at 30 s (#187)',
+      () => {
+        // Record the options the real staging run passes to execFileSync rather
+        // than waiting out a timeout.
+        const repoRoot = buildFixtureRepoRoot()
+        const spyRoot = tmp('stage-timeout-spy-')
+        const spy = join(spyRoot, 'record-exec-timeouts.mjs')
+        const calls = join(spyRoot, 'calls.jsonl')
+        writeFileSync(spy, [
+          "import childProcess from 'node:child_process'",
+          "import { appendFileSync } from 'node:fs'",
+          "import { syncBuiltinESMExports } from 'node:module'",
+          'const realExecFileSync = childProcess.execFileSync',
+          'childProcess.execFileSync = (file, args, options) => {',
+          `  appendFileSync(${JSON.stringify(calls)}, JSON.stringify({ args, timeout: options?.timeout }) + '\\n')`,
+          '  return realExecFileSync(file, args, options)',
+          '}',
+          'syncBuiltinESMExports()',
+        ].join('\n'))
+        const output = join(tmp('stage-timeouts-'), 'runtime')
+
+        const result = spawnSync(process.execPath, [
+          '--import', pathToFileURL(spy).href, STAGE_CLI,
+          '--node-root', REAL_NODE_ROOT as string, '--platform', process.platform, '--arch', process.arch,
+          '--output', output, '--repo-root', repoRoot,
+        ], { encoding: 'utf8' })
+        expect(result.status, result.stderr).toBe(0)
+        expect(existsSync(join(output, 'runtime-manifest.json'))).toBe(true)
+
+        const recorded = readFileSync(calls, 'utf8').trim().split('\n')
+          .map((line) => JSON.parse(line) as { args?: string[]; timeout?: number })
+        const timeoutsFor = (matches: (args: string[]) => boolean) =>
+          recorded.filter((call) => matches(call.args ?? [])).map((call) => call.timeout)
+        expect(timeoutsFor((args) => basename(args[0] ?? '') === 'runtime-sqlite-check.mjs')).toEqual([180_000])
+        expect(timeoutsFor((args) => basename(args[0] ?? '') === 'hook-cli.js' && args[1] === 'selftest'))
+          .toEqual([30_000])
+      },
+      STAGING_TEST_TIMEOUT_MS,
     )
   },
 )
+
+describe('runtime SQLite cleanup gate', () => {
+  it('exercises the real store in a separate ESM process without an explicit GC or user database', () => {
+    const unusedDb = join(tmp('gc-unused-db-'), 'must-not-exist.db')
+    const result = spawnSync(process.execPath, [
+      '--import', 'tsx', SQLITE_CHECK_CLI, join(REPO, 'src', 'store.ts'),
+    ], {
+      // the check staging runs, with the ceiling staging gives it
+      cwd: REPO, encoding: 'utf8', timeout: SQLITE_CHECK_CEILING_MS,
+      env: { ...process.env, AGENT_INBOX_DB: unusedDb },
+    })
+    expect(result.status, result.stderr).toBe(0)
+    expect(result.signal).toBeNull()
+    expect(result.stdout).toBe('')
+    expect(result.stderr).toBe('')
+    expect(existsSync(unusedDb)).toBe(false)
+  }, STAGING_TEST_TIMEOUT_MS)
+})
 
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1888,5 +2224,84 @@ describe('main-entrypoint detection: symlinked ancestor / alias paths', () => {
     const result = runFail(aliasedStageCli!, [])
     expect(result.status).not.toBe(0)
     expect(result.stderr.length).toBeGreaterThan(0)
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════
+// runtime-mcp-probe.mjs — the staged MCP server must actually START (#103
+// PR2 review). hook-cli selftest reaches no public/ module, so a runtime that
+// lost one still passed every gate while its MCP server could not load.
+// ═══════════════════════════════════════════════════════════════════════
+const PROBE_CLI = join(REPO, 'scripts', 'runtime-mcp-probe.mjs')
+
+// A stand-in server that, like the real one, needs ../public/a.js → ./b.js
+// before it can answer initialize and tools/list over newline-delimited JSON.
+function probeFixture(): string {
+  const root = tmp('mcp-probe-')
+  mkdirSync(join(root, 'dist'), { recursive: true })
+  mkdirSync(join(root, 'public'), { recursive: true })
+  writeFileSync(join(root, 'public', 'a.js'), "export { tools } from './b.js'\n")
+  writeFileSync(join(root, 'public', 'b.js'), "export const tools = ['flag', 'pending', 'board_get']\n")
+  writeFileSync(join(root, 'dist', 'mcp-server.js'), `
+import { tools } from "../public/a.js"
+import { createInterface } from 'node:readline'
+if (!process.env.AGENT_INBOX_DB) process.exit(9)
+const send = (m) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...m }) + '\\n')
+createInterface({ input: process.stdin }).on('line', (line) => {
+  const m = JSON.parse(line)
+  if (m.method === 'initialize') send({ id: m.id, result: { protocolVersion: m.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'agent-inbox', version: '0' } } })
+  if (m.method === 'tools/list') send({ id: m.id, result: { tools: tools.map((name) => ({ name, inputSchema: { type: 'object' } })) } })
+})
+`)
+  return root
+}
+
+function probe(root: string) {
+  return spawnSync(process.execPath, [PROBE_CLI, root], { encoding: 'utf8', timeout: 60_000 })
+}
+
+describe('runtime-mcp-probe: the staged MCP server answers initialize and tools/list', () => {
+  it('passes an intact runtime, silently', () => {
+    const result = probe(probeFixture())
+    expect(result.stderr).toBe('')
+    expect(result.stdout).toBe('')
+    expect(result.status).toBe(0)
+  })
+
+  it('fails a runtime missing one transitively imported public/ module', () => {
+    const root = probeFixture()
+    rmSync(join(root, 'public', 'b.js'))
+    const result = probe(root)
+    expect(result.status).not.toBe(0)
+    expect(result.stderr).toMatch(/ERR_MODULE_NOT_FOUND|Cannot find module/)
+    expect(result.stderr).toContain('public/b.js')
+  })
+
+  it('fails a server that answers without the agent-inbox tools', () => {
+    const root = probeFixture()
+    writeFileSync(join(root, 'public', 'b.js'), "export const tools = ['other']\n")
+    const result = probe(root)
+    expect(result.status).not.toBe(0)
+    expect(result.stderr).toMatch(/tools\/list/)
+  })
+
+  it('times out a server that never answers', () => {
+    const root = probeFixture()
+    writeFileSync(join(root, 'dist', 'mcp-server.js'), 'setInterval(() => {}, 1000)\n')
+    const result = spawnSync(process.execPath, [PROBE_CLI, root, '--timeout-ms', '1500'], { encoding: 'utf8', timeout: 30_000 })
+    expect(result.status).not.toBe(0)
+    expect(result.stderr).toMatch(/did not answer within 1500 ms/)
+  })
+
+  it.skipIf(!existsSync(join(REPO, 'dist', 'mcp-server.js')))('passes this checkout’s real built server', () => {
+    const result = probe(REPO)
+    expect(result.stderr).toBe('')
+    expect(result.status).toBe(0)
+  }, 60_000)
+
+  it('runs wherever the staged selftest runs: staging, release assembly and the Intel release gate', () => {
+    for (const file of ['stage-runtime.mjs', 'assemble-macos-release.mjs', 'macos-release-gates.mjs']) {
+      expect(readFileSync(join(REPO, 'scripts', file), 'utf8'), file).toMatch(/probeRuntimeMcp\(/)
+    }
   })
 })

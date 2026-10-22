@@ -3,6 +3,7 @@ import { request } from 'node:http'
 import type { Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { serveStatic } from '@hono/node-server/serve-static'
 import { Hono } from 'hono'
 import { startLocalViewer } from '../src/viewer-network.js'
 
@@ -21,6 +22,7 @@ describe('local viewer network boundary', () => {
     app.get('/', (c) => c.text('viewer'))
     app.get('/api/secret', (c) => c.json({ secret: true }))
     app.post('/api/mutate', (c) => c.json({ mutated: true }))
+    app.get('/*', serveStatic({ root: './public' }))
 
     server = startLocalViewer(app, 0)
     if (!server.listening) await once(server, 'listening')
@@ -87,6 +89,29 @@ describe('local viewer network boundary', () => {
     expect(response.headers['x-frame-options']).toBe('DENY')
   })
 
+  describe.each(['GET', 'HEAD'])('%s cache policy', (method) => {
+    it.each(['/index.html', '/app.js', '/card.js', '/rowview.js', '/style.css'])(
+      'prevents heuristic caching of the unversioned resource %s',
+      async (path) => {
+        const response = await send(path, { method })
+        expect(response.status).toBe(200)
+        expect(response.headers['last-modified']).toBeDefined()
+        expect(response.headers['cache-control']).toBe('no-store')
+        if (method === 'HEAD') expect(response.body).toBe('')
+      },
+    )
+  })
+
+  it.each([
+    ['/', 200],
+    ['/api/secret', 200],
+    ['/missing-module.js', 404],
+  ] as const)('keeps the cache policy on viewer response %s', async (path, status) => {
+    const response = await send(path)
+    expect(response.status).toBe(status)
+    expect(response.headers['cache-control']).toBe('no-store')
+  })
+
   it('keeps localhost as an exact browser alias', async () => {
     const response = await send('/api/mutate', {
       method: 'POST',
@@ -96,6 +121,7 @@ describe('local viewer network boundary', () => {
     })
     expect(response.status).toBe(200)
     expect(response.body).toContain('"mutated":true')
+    expect(response.headers['cache-control']).toBe('no-store')
   })
 
   it('rejects attacker-controlled Host before the viewer app', async () => {

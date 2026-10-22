@@ -13,12 +13,13 @@
 // and the viewer's /api/boards path never routes through it (pinned in
 // test/viewer.test.ts).
 import { describe, it, expect } from 'vitest'
-import { mkdtempSync } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { advanceBoardRow, openDb, upsertBoard, listBoards, annotateBoardRow, listPendingRows, markAnnotationDelivered, markRowHandled, markHandledDelivered } from '../src/store.js'
+import { advanceBoardRow, openDb, upsertBoard, listBoards, annotateBoardRow, listPendingRows, markAnnotationDelivered, markRowHandled, markHandledDelivered, pinBoardRow, stopBoardRowWatch } from '../src/store.js'
 import type { BoardWithRows } from '../src/store.js'
 import { trimContext, makeContextLedger, deliverContext, shapeBoard, summariseBoard, rowKey, itemKey } from '../src/shape.js'
+import { issueRelations } from '../src/issue-graph.js'
+import { at, row as snapRow, snapshot } from './issue-fixtures.js'
+import { scratchDir } from './scratch.js'
 
 const LONG = 'why this row exists, at the length agents are told to write. '.repeat(12)
 
@@ -33,7 +34,7 @@ function boardWith(rows: Array<{
   db: ReturnType<typeof openDb>
   board: BoardWithRows
 } {
-  const db = openDb(join(mkdtempSync(join(tmpdir(), 'shape-')), 'inbox.db'))
+  const db = openDb(join(scratchDir('shape-'), 'inbox.db'))
   upsertBoard(db, { project: 'p', stream: 's', agent: 'a', title: 'rollout', rows })
   return { db, board: listBoards(db)[0]! }
 }
@@ -320,6 +321,35 @@ describe('summariseBoard — board_get() with no title', () => {
     expect(out.rows[0]!.handled_seen_by).toBe('claude-code')
   })
 
+  // #217 — an agent surveying its boards should see that the human said "I'll
+  // take a while" rather than expect a watcher to wake it; others pay nothing.
+  it('carries the human’s watch stop only on a row that has one', () => {
+    const { db, board } = boardWith([
+      { label: 'Install test', status: 'blocked', note: 'Install 1.4' },
+      { label: 'Sign', status: 'blocked', note: 'Sign 1.4' },
+    ])
+    const row = board.rows[0]!
+    expect(stopBoardRowWatch(db, row.id, null, row.revision, board.revision)).toBe(true)
+    const out = summariseBoard(listBoards(db)[0]!)
+    expect(out.rows[0]).toMatchObject({ watch_stopped_at: expect.stringMatching(/^\d{4}-/), watch_stopped_until: null })
+    expect(out.rows[1]).not.toHaveProperty('watch_stopped_at')
+    expect(out.rows[1]).not.toHaveProperty('watch_stopped_until')
+  })
+
+  // #247 — likewise a pin: the human set the ask aside, with no time. Shown
+  // beside a snooze; a row without one pays nothing.
+  it('carries the human’s pin only on a row that has one', () => {
+    const { db, board } = boardWith([
+      { label: 'Install test', status: 'blocked', note: 'Install 1.5' },
+      { label: 'Sign', status: 'blocked', note: 'Sign 1.5' },
+    ])
+    const row = board.rows[0]!
+    expect(pinBoardRow(db, row.id, true, row.revision, board.revision)).toBe(true)
+    const out = summariseBoard(listBoards(db)[0]!)
+    expect(out.rows[0]).toMatchObject({ pinned_at: expect.stringMatching(/^\d{4}-/) })
+    expect(out.rows[1]).not.toHaveProperty('pinned_at')
+  })
+
   it('an unmarked row spends nothing on the mark either — no three null fields', () => {
     const { db, board } = boardWith([{ label: 'QA', status: 'tracked' }])
     void board
@@ -382,5 +412,86 @@ describe('constraint A — no shaping path may drop the human’s annotation', (
       trimContext(pending),
     ]
     for (const p of payloads) expect(JSON.stringify(p)).toContain(stamp)
+  })
+})
+
+// Issue #103 PR2 (§10, Q5): a titled read echoes each explicit link as the
+// normalized string and adds `issue_rel`, keys and counts only, when the
+// cache knows something. The title-less summary and pending() stay unchanged.
+describe('issue links and issue_rel — titled board_get only (#103 PR2)', () => {
+  const REPO = 'shariqh/agent-inbox'
+  function linkedBoard() {
+    const db = openDb(join(scratchDir('shape-issue-'), 'inbox.db'))
+    upsertBoard(db, {
+      project: 'p', stream: 's', agent: 'a', title: 'AHP', issuePin: { repo: REPO, number: 117 },
+      rows: [
+        { label: 'Input', status: 'tracked', issue: { repo: REPO, number: 120 } },
+        { label: 'Unknown', status: 'tracked', issue: { repo: REPO, number: 999 } },
+        { label: 'Plain', status: 'partial' },
+      ],
+    })
+    return { db, board: listBoards(db)[0]! }
+  }
+  const snapshots = [
+    snapRow(`${REPO}#117`, snapshot(`${REPO}#117`, { children: [`${REPO}#120`, `${REPO}#121`], total: 10, completed: 3 }), at(50)),
+    snapRow(`${REPO}#120`, snapshot(`${REPO}#120`, { ancestors: [`${REPO}#117`] }), at(10)),
+  ]
+
+  it('issueRelations: keys and counts, freshness, and no titles; nothing for an uncached key', () => {
+    const rel = issueRelations(snapshots, [`${REPO}#117`, `${REPO}#120`, `${REPO}#999`], Date.parse(at(60)))
+    expect(Object.fromEntries(rel)).toEqual({
+      [`${REPO}#117`]: { key: `${REPO}#117`, children: { total: 10, done: 3 }, checked_at: at(50), stale: false, unavailable: false },
+      [`${REPO}#120`]: { key: `${REPO}#120`, parent: `${REPO}#117`, children: { total: 0, done: 0 }, checked_at: at(10), stale: true, unavailable: false },
+    })
+    expect(JSON.stringify(Object.fromEntries(rel))).not.toMatch(/Title of/)
+  })
+
+  it('issueRelations: an unavailable hierarchy, a hard failure and a week-old snapshot say unavailable and draw nothing', () => {
+    const rel = issueRelations([
+      snapRow(`${REPO}#1`, snapshot(`${REPO}#1`, { unavailable: true }), at(55)),
+      snapRow(`${REPO}#2`, null, null, { error: 'not-found', checkedAt: at(56) }),
+      snapRow(`${REPO}#3`, snapshot(`${REPO}#3`, { children: [`${REPO}#4`] }), at(-8 * 24 * 60), { checkedAt: at(58) }),
+      snapRow(`${REPO}#5`, null, null, { error: 'offline', checkedAt: at(57) }),
+    ], [`${REPO}#1`, `${REPO}#2`, `${REPO}#3`, `${REPO}#5`], Date.parse(at(60)))
+    expect(rel.get(`${REPO}#1`)).toEqual({ key: `${REPO}#1`, checked_at: at(55), stale: false, unavailable: true })
+    // nothing was ever fetched successfully, so nothing is fresh
+    expect(rel.get(`${REPO}#2`)).toEqual({ key: `${REPO}#2`, checked_at: at(56), stale: true, unavailable: true })
+    expect(rel.get(`${REPO}#3`)).toEqual({ key: `${REPO}#3`, checked_at: at(58), stale: true, unavailable: true })
+    // a soft failure before any success cached nothing
+    expect(rel.has(`${REPO}#5`)).toBe(false)
+  })
+
+  it('shapeBoard echoes links as strings and carries issue_rel only where given; raw link columns never reach the agent', () => {
+    const { board } = linkedBoard()
+    const rel = issueRelations(snapshots, [`${REPO}#117`, `${REPO}#120`, `${REPO}#999`], Date.parse(at(60)))
+    const input = board.rows.find((r) => r.label === 'Input')!
+    const out = shapeBoard(board, {
+      ledger: makeContextLedger(),
+      issues: { plan: rel.get(`${REPO}#117`), rows: new Map([[input.id, rel.get(`${REPO}#120`)!]]) },
+    })
+    expect(out).toMatchObject({ issue: `${REPO}#117`, issue_rel: { key: `${REPO}#117`, children: { total: 10, done: 3 } } })
+    const byLabel = (label: string) => out.rows.find((r) => r.label === label)!
+    expect(byLabel('Input')).toMatchObject({ issue: `${REPO}#120`, issue_rel: { parent: `${REPO}#117` } })
+    expect(byLabel('Unknown')).toMatchObject({ issue: `${REPO}#999` })
+    expect(byLabel('Unknown')).not.toHaveProperty('issue_rel')
+    expect(byLabel('Plain')).not.toHaveProperty('issue')
+    const text = JSON.stringify(out)
+    expect(text).not.toMatch(/issue_pin_repo|issue_pin_number|issue_repo|"issue_number"|Title of/)
+
+    // no cache: no issue_rel anywhere, the links still echo
+    const bare = shapeBoard(board, { ledger: makeContextLedger() })
+    expect(bare).toMatchObject({ issue: `${REPO}#117` })
+    expect(JSON.stringify(bare)).not.toMatch(/issue_rel/)
+  })
+
+  it('an unlinked board keeps its previous key order, rows where they always were', () => {
+    const { board } = boardWith([{ label: 'Plain', status: 'tracked' }])
+    const { issue_pin_repo: _repo, issue_pin_number: _number, ...before } = { ...board, rows: [] }
+    expect(Object.keys(shapeBoard(board, { ledger: makeContextLedger() }))).toEqual(Object.keys(before))
+  })
+
+  it('the title-less summary carries neither links nor issue_rel', () => {
+    const { board } = linkedBoard()
+    expect(JSON.stringify(summariseBoard(board))).not.toMatch(/issue/)
   })
 })

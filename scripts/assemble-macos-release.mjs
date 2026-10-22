@@ -35,6 +35,7 @@ import {
 import { resolveSourceProvenance } from './source-provenance.mjs'
 import { assertRuntimeSourceCommit } from './runtime-provenance.mjs'
 import { treeIdentity } from './tree-identity.mjs'
+import { probeRuntimeMcp } from './runtime-mcp-probe.mjs'
 
 const APP_NAME = 'Agent Inbox'
 export const UNIVERSAL_RUNTIME_GLOB = 'Contents/Resources/app/runtime/**'
@@ -315,6 +316,11 @@ function runNativeRuntimeSelftest(appResources) {
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 30_000,
     })
+    try {
+      probeRuntimeMcp(join(runtime, 'bin', 'node'), runtime)
+    } catch (err) {
+      throw new MacReleaseError(`native runtime ${key}: ${err.message}`)
+    }
     return { key, status: 'passed' }
   } finally {
     rmSync(scratch, { recursive: true, force: true })
@@ -353,6 +359,7 @@ export function verifyThinReports({
       report.sourceDirty !== provenance.sourceDirty ||
       report.runtimeSourceCommit !== provenance.sourceCommit ||
       report.nativeRuntimeSelftest !== 'passed' ||
+      report.electronSqliteCheck !== 'passed' ||
       JSON.stringify(report.runtimeKeys) !== JSON.stringify(RUNTIME_KEYS) ||
       JSON.stringify(report.nativeAddonArchitectures?.slice().sort()) !== JSON.stringify(expectedAddonArch)
     ) {

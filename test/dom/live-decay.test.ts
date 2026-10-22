@@ -36,10 +36,10 @@ describe('the Live drawer after a claim goes cold (#45)', () => {
     await bootApp(d)
 
     expect(drawer().querySelectorAll('.live-entry')).toHaveLength(0)
-    expect(drawer().querySelector('.idle-fold > summary')?.textContent).toBe('1 idle session')
-    expect(drawer().querySelector('.idle-row .live-state-label')?.textContent).toBe('Idle')
-    expect(drawer().querySelector('.idle-row .live-doing')?.textContent).toBe('Last activity: Executing Track B — 18-task viewer redesign')
-    expect(document.getElementById('liveStripLabel')?.textContent).toBe('no agents running')
+    expect(drawer().querySelector('.idle-fold > summary')?.textContent).toBe('1 connection · no task reported')
+    expect(drawer().querySelector('.idle-row .live-state-label')?.textContent).toBe('Connected')
+    expect(drawer().querySelector('.idle-row .live-doing')?.textContent).toBe('Last report: Executing Track B — 18-task viewer redesign')
+    expect(document.getElementById('liveStripLabel')?.textContent).toBe('1 connected · no task reported')
 
     // the row did NOT expire, so the item is still an agent blocked on you
     const nrow = rows().find((r) => r.dataset['cardId'] === id)!
@@ -65,15 +65,15 @@ describe('the Live drawer after a claim goes cold (#45)', () => {
     expect(seen.map((r) => r.querySelector('.live-who')?.textContent)).toEqual(['claude · alpha', 'claude · beta'])
     expect(seen[0]!.classList.contains('dormant')).toBe(false)
     expect(seen[1]!.classList.contains('dormant')).toBe(true)
-    // The recent row reports its real last call; the forgotten one foregrounds silence.
-    expect(seen[1]!.querySelector('.live-age')?.textContent).toMatch(/^quiet 9h/)
-    expect(seen[0]!.querySelector('.live-age')?.textContent).toMatch(/^last call /)
+    // Both rows date real Inbox calls, not inferred activity in the agent's terminal.
+    expect(seen[1]!.querySelector('.live-age')?.textContent).toBe('Inbox call 9h ago')
+    expect(seen[0]!.querySelector('.live-age')?.textContent).toMatch(/^Inbox call /)
     // …and both hover surfaces must use the same real-call stamp. Keyed on
     // `updated_at` — what it used to read — this row would claim "last update 2m
     // ago", because the server heartbeated it two minutes ago and will go on
     // doing so forever. Color now identifies the project; the title carries state.
-    expect(seen[1]!.querySelector('.live-age')?.getAttribute('title')).toBe('last call 9h ago')
-    expect(seen[1]!.querySelector('.live-dot')?.getAttribute('title')).toBe('beta · idle · last call 9h ago')
-    expect(seen.every((r) => r.querySelector('.live-doing')?.textContent === 'No activity summary yet')).toBe(true)
+    expect(seen[1]!.querySelector('.live-age')?.getAttribute('title')).toBe('Inbox call 9h ago')
+    expect(seen[1]!.querySelector('.live-dot')?.getAttribute('title')).toBe('beta · connected · Inbox call 9h ago')
+    expect(seen.every((r) => r.querySelector('.live-doing')?.textContent === 'No task reported yet')).toBe(true)
   })
 })

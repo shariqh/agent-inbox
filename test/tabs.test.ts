@@ -16,9 +16,9 @@ const boards = [
 ]
 
 describe('tab model', () => {
-  it('boots to Needs you and lists the four content tabs in order (Live is a footer strip, not a tab — spec §16)', () => {
-    expect(DEFAULT_TAB).toBe('needsYou')
-    expect(TAB_IDS).toEqual(['needsYou', 'boards', 'notes', 'done'])
+  it('boots to Dashboard and keeps Live as a footer strip rather than a tab', () => {
+    expect(DEFAULT_TAB).toBe('dashboard')
+    expect(TAB_IDS).toEqual(['dashboard', 'needsYou', 'boards', 'notes', 'done'])
     expect(TAB_IDS[0]).toBe(DEFAULT_TAB)
   })
 
@@ -39,6 +39,13 @@ describe('tab model', () => {
 
   it('treats a missing notes number as zero rather than NaN', () => {
     expect(tabCounts({ globalAttention: 0, scoped: { boards: [], done: [] } }).notes).toBe(0)
+  })
+
+  // Issue #184: History counts the closed items the page omitted, so the tab
+  // reads the same with or without the complete history loaded.
+  it('adds the omitted closed history to the History count', () => {
+    const c = tabCounts({ globalAttention: 0, scoped: { boards: [], done: [{ id: 'd1' }] }, olderDone: 41 })
+    expect(c.done).toBe(42)
   })
 })
 

@@ -18,6 +18,7 @@ import { parseArgs } from 'node:util'
 import { packager } from '@electron/packager'
 import { rebuild } from '@electron/rebuild'
 import { copyAgentInboxLicense } from './license.mjs'
+import { runElectronSqliteCheck } from './electron-sqlite-check.mjs'
 import { copyTreePreservingMode, verifyPayload } from './runtime-payload.mjs'
 import { assertRuntimeSourceCommit } from './runtime-provenance.mjs'
 import { loadReleaseInputs, RUNTIME_KEYS, validateInstalledReleaseTools } from './release-inputs.mjs'
@@ -248,6 +249,16 @@ export async function buildThinApp({
         `better_sqlite3.node is not ${expectedLipoArch}; found ${nativeAddonArchitectures.join(', ')}`,
       )
     }
+    runElectronSqliteCheck({
+      executable: join(app, 'Contents', 'MacOS', APP_NAME),
+      storePath: join(resources, 'dist', 'store.js'),
+      expected: {
+        platform: 'darwin',
+        arch,
+        electron: inputs.electron.version,
+      },
+      label: `packaged Electron (darwin-${arch})`,
+    })
     for (const key of RUNTIME_KEYS) {
       const distribution = inputs.node.distributions[key]
       const copiedManifest = verifyPayload({
@@ -285,6 +296,7 @@ export async function buildThinApp({
       ),
       appTreeDigest: treeIdentity(destination),
       nativeRuntimeSelftest: 'passed',
+      electronSqliteCheck: 'passed',
       nativeAddonArchitectures,
     }
     writeFileSync(`${destination}.thin-report.json`, `${JSON.stringify(report, null, 2)}\n`)

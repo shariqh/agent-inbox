@@ -5,6 +5,7 @@ export type ReleaseContext = {
   tag: string
   version: string
   sourceCommit: string
+  taggedAt: string
   annotated: true
 }
 

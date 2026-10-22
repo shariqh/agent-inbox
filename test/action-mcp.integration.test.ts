@@ -1,6 +1,4 @@
 import { describe, expect, it } from 'vitest'
-import { mkdtempSync } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
@@ -11,7 +9,9 @@ import {
   listItems,
   openDb,
   replyItem,
+  upsertBoard,
 } from '../src/store.js'
+import { scratchDir } from './scratch.js'
 
 async function connection(dbPath: string): Promise<Client> {
   const transport = new StdioClientTransport({
@@ -34,7 +34,7 @@ async function call(client: Client, name: string, args: Record<string, unknown>)
 
 describe('MCP action lifecycle contract', () => {
   it('exposes ownership/impact fields and enforces decision-vs-task option shapes', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-action-contract-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-action-contract-'), 'inbox.db')
     const client = await connection(dbPath)
     const tools = new Map((await client.listTools()).tools.map((tool) => [tool.name, tool]))
 
@@ -103,7 +103,7 @@ describe('MCP action lifecycle contract', () => {
   }, 20000)
 
   it('carries response kinds, outcomes, and atomic row advancement end to end', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-action-flow-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-action-flow-'), 'inbox.db')
     const client = await connection(dbPath)
 
     await call(client, 'board_upsert', {
@@ -242,8 +242,13 @@ describe('MCP action lifecycle contract', () => {
       options: [{ label: 'Ship', recommended: true }, { label: 'Hold' }],
     })
     replyItem(openDb(dbPath), item.body.id, 'Ship', undefined, 'answer')
-    await call(client, 'pending', {})
-    await call(client, 'resolve', { id: item.body.id, outcome: 'Release shipped successfully.' })
+    const answered = (await call(client, 'pending', {})).body.items
+      .find((candidate: { id: string }) => candidate.id === item.body.id)
+    await call(client, 'resolve', {
+      id: item.body.id,
+      expected_response_revision: answered.response_revision,
+      outcome: 'Release shipped successfully.',
+    })
     expect(listItems(openDb(dbPath)).find((candidate) => candidate.id === item.body.id)).toMatchObject({
       status: 'resolved',
       outcome: 'Release shipped successfully.',
@@ -252,7 +257,7 @@ describe('MCP action lifecycle contract', () => {
   }, 25000)
 
   it('reads an archived board by title so agents can obtain current CAS revisions', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-archived-read-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-archived-read-'), 'inbox.db')
     const client = await connection(dbPath)
     await call(client, 'board_upsert', {
       title: 'Completed rollout',
@@ -261,6 +266,63 @@ describe('MCP action lifecycle contract', () => {
     const read = await call(client, 'board_get', { title: 'Completed rollout' })
     expect(read.body).toMatchObject({ title: 'Completed rollout', status: 'archived', revision: 1 })
     expect(read.body.rows[0]).toMatchObject({ label: 'Ship', revision: 1 })
+    await client.close()
+  }, 20000)
+
+  // Issue #159 — board_get, board_row and board_upsert each name ONE board, yet
+  // an archived or brand-new title used to load and parse every archived board
+  // in EVERY project. The other projects' archived boards below hold a row whose
+  // history is not JSON: a tripwire no store write can produce, so any path that
+  // still loads them fails loudly here instead of merely slowly in production.
+  it('resolves archived and new titles exactly as before without loading other projects’ archived boards', async () => {
+    const dbPath = join(scratchDir('mcp-archived-titles-'), 'inbox.db')
+    const store = openDb(dbPath)
+    for (const project of ['decoy-a', 'decoy-b']) {
+      const { boardId } = upsertBoard(store, {
+        project, stream: '', agent: 'test', title: 'Completed rollout', rows: [{ label: 'Ship', status: 'done' }],
+      })
+      store.prepare(`UPDATE board_rows SET history = 'tripwire: not JSON' WHERE board_id = ?`).run(boardId)
+    }
+    const text = (result: Awaited<ReturnType<Client['callTool']>>) =>
+      (result.content as Array<{ text: string }>)[0]!.text
+    const client = await connection(dbPath)
+    await call(client, 'register', { project: 'home' })
+
+    const created = await client.callTool({
+      name: 'board_upsert',
+      arguments: { title: 'Completed rollout', rows: [{ label: 'Ship', status: 'done' }] },
+    })
+    expect(created.isError, text(created)).not.toBe(true)
+    expect((await call(client, 'board_get', { title: 'Never written' })).body).toEqual({ found: false })
+    const read = await call(client, 'board_get', { title: 'Completed rollout' })
+    expect(read.body).toMatchObject({ project: 'home', status: 'archived', revision: 1 })
+    expect(read.body.rows).toMatchObject([{ label: 'Ship', revision: 1 }])
+
+    // an archived board still demands its CAS versions before a write reactivates it
+    const unversioned = await client.callTool({
+      name: 'board_row',
+      arguments: { title: 'Completed rollout', label: 'Follow-up', status: 'tracked' },
+    })
+    expect(unversioned.isError).toBe(true)
+    expect(text(unversioned)).toContain('existing board "Completed rollout" requires board_version 1')
+    const unrevised = await client.callTool({
+      name: 'board_upsert',
+      arguments: {
+        title: 'Completed rollout',
+        board_version: 1,
+        rows: [{ label: 'Ship', status: 'done' }, { label: 'Follow-up', status: 'tracked' }],
+      },
+    })
+    expect(unrevised.isError).toBe(true)
+    expect(text(unrevised)).toContain('existing row "Ship" requires revision 1')
+
+    const reopened = await client.callTool({
+      name: 'board_row',
+      arguments: { title: 'Completed rollout', board_version: 1, label: 'Follow-up', status: 'tracked' },
+    })
+    expect(reopened.isError, text(reopened)).not.toBe(true)
+    expect(getBoard(openDb(dbPath), 'home', 'Completed rollout')!.rows.map((row) => row.label))
+      .toEqual(['Ship', 'Follow-up'])
     await client.close()
   }, 20000)
 })

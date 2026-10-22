@@ -100,6 +100,38 @@ export function refreshNotificationTarget(
   target: NotificationResponseTarget,
 ): NotificationResponseTarget | null
 
+export interface AttentionNotification {
+  id: string
+  itemId: string
+  text: string
+  /** The question item or board row; its options become the native buttons. */
+  item: unknown
+  target: NotificationResponseTarget
+}
+
+export function attentionNotification(
+  entry:
+    | { kind: 'item'; item: { id: string; title?: string } }
+    | {
+        kind: 'row'
+        row: { id: string; label?: string; revision?: number }
+        board: { id: string; title?: string; revision?: number }
+      },
+): AttentionNotification
+
+export function freshAttentionNotifications(
+  known: ReadonlySet<string> | null,
+  notifications: AttentionNotification[],
+): AttentionNotification[]
+
+type NotifiableEntry = Parameters<typeof attentionNotification>[0]
+
+/** Issue #247 — the ids already announced: attention plus the asks pinned for later. */
+export function knownNotificationIds(
+  attention: NotifiableEntry[],
+  later: Array<NotifiableEntry & { later: 'snoozed' | 'pinned' }> | null | undefined,
+): Set<string>
+
 export function responseTargets(grouped: unknown, boards: unknown[]): ResponseTarget[]
 
 export function createResponseWatch(options?: {

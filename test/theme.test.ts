@@ -64,10 +64,10 @@ function declaredThemeTokens(css: string, selector: string): Record<string, stri
 }
 
 describe('theme preference model', () => {
-  it('defaults invalid, missing, and unreadable preferences to Light', () => {
-    expect(readThemePreference(store())).toBe('light')
-    expect(readThemePreference(store({ [THEME_STORAGE_KEY]: 'sepia' }))).toBe('light')
-    expect(readThemePreference({ getItem() { throw new Error('denied') } })).toBe('light')
+  it('defaults invalid, missing, and unreadable preferences to Dark', () => {
+    expect(readThemePreference(store())).toBe('dark')
+    expect(readThemePreference(store({ [THEME_STORAGE_KEY]: 'sepia' }))).toBe('dark')
+    expect(readThemePreference({ getItem() { throw new Error('denied') } })).toBe('dark')
   })
 
   it('persists only Light, Dark, or System', () => {
@@ -120,16 +120,16 @@ describe('theme preference model', () => {
     const root = { dataset: {} as Record<string, string> }
     const controller = createThemeController({
       storage: {
-        getItem: () => 'light',
+        getItem: () => 'dark',
         setItem() { throw new Error('quota exceeded') },
       },
       root,
       media: query,
     })
 
-    expect(() => controller.setPreference('dark')).toThrow(/quota exceeded/)
-    expect(controller.preference).toBe('light')
-    expect(root.dataset.theme).toBe('light')
+    expect(() => controller.setPreference('light')).toThrow(/quota exceeded/)
+    expect(controller.preference).toBe('dark')
+    expect(root.dataset.theme).toBe('dark')
   })
 })
 
@@ -155,7 +155,7 @@ describe('early theme bootstrap and palette', () => {
     })
   })
 
-  it('derives both semantic palettes from the approved Burgundy Coral identity', () => {
+  it('derives both semantic palettes from the approved Live Operations Desk identity', () => {
     const light = declaredThemeTokens(css, ':root {')
     const dark = declaredThemeTokens(css, ':root[data-theme="dark"]')
 
@@ -167,44 +167,53 @@ describe('early theme bootstrap and palette', () => {
       'brand-coral-600': '#d76298',
       'brand-coral-400': '#eb84bb',
       'brand-coral-200': '#f6a6d1',
-      'app-bg': '#f8f3f4',
-      'app-elevated': '#fcf8f9',
-      'app-surface': '#fffdfd',
-      'app-soft': '#f4eaed',
-      'app-border': '#e4d5da',
-      'app-border-strong': '#9b7683',
-      'app-text': '#2f1c22',
-      'app-muted': '#6d505a',
-      'app-text-soft': '#7e616b',
+      'app-bg': '#edf0f2',
+      'app-elevated': '#f7f8f9',
+      'app-surface': '#ffffff',
+      'app-soft': '#f1f3f4',
+      'app-border': '#d8dde2',
+      'app-border-strong': '#7b858f',
+      'app-text': '#15191d',
+      'app-muted': '#4f5861',
+      'app-text-soft': '#5f6a74',
       'app-accent': '#a63864',
       'app-accent-hover': '#8e2f55',
       'app-accent-soft': 'rgba(166, 56, 100, .10)',
+      'app-attention': '#a63864',
+      'app-agent': '#087f72',
+      'app-plan': '#8c6f00',
+      'app-outcome': '#1f743c',
       'app-link': '#87345f',
       'app-focus': '#87345f',
       'app-action-secondary': '#87345f',
       'app-on-accent': '#ffffff',
-      'app-code-border': '#856a73',
-      'app-code-error': '#b5263f',
+      'app-code-border': '#7c8791',
+      'app-danger': '#b93643',
+      'app-code-error': '#b93643',
     })
     expect(dark).toMatchObject({
-      'app-bg': '#171113',
-      'app-elevated': '#21171b',
-      'app-surface': '#2b1d22',
-      'app-soft': '#37262c',
-      'app-border': '#5c414a',
-      'app-border-strong': '#96717e',
-      'app-text': '#f8eef2',
-      'app-muted': '#d0bbc3',
-      'app-text-soft': '#b8a1aa',
+      'app-bg': '#090b0d',
+      'app-elevated': '#101214',
+      'app-surface': '#15181b',
+      'app-soft': '#1a1e22',
+      'app-border': '#2b3036',
+      'app-border-strong': '#68737e',
+      'app-text': '#f4f6f8',
+      'app-muted': '#b2b8bf',
+      'app-text-soft': '#8f99a3',
       'app-accent': '#eb84bb',
       'app-accent-hover': '#f6a6d1',
       'app-accent-soft': 'rgba(235, 132, 187, .16)',
+      'app-attention': '#eb84bb',
+      'app-agent': '#38d6c0',
+      'app-plan': '#e7c54b',
+      'app-outcome': '#77d995',
       'app-link': '#f0a1c7',
       'app-focus': '#f0a1c7',
       'app-action-secondary': '#f0a1c7',
       'app-on-accent': '#30181d',
-      'app-code-border': '#b89aa5',
-      'app-code-error': '#ff9aa5',
+      'app-code-border': '#69737d',
+      'app-code-error': '#ff8b94',
     })
   })
 
@@ -216,7 +225,10 @@ describe('early theme bootstrap and palette', () => {
         expect(contrast(token['app-muted']!, token[surface]!), `${name} muted on ${surface}`).toBeGreaterThanOrEqual(4.5)
         expect(contrast(token['app-text-soft']!, token[surface]!), `${name} soft text on ${surface}`).toBeGreaterThanOrEqual(4.5)
       }
-      for (const semantic of ['app-accent', 'app-success', 'app-danger', 'app-warning', 'app-link'] as const) {
+      for (const semantic of [
+        'app-accent', 'app-attention', 'app-agent', 'app-plan', 'app-outcome',
+        'app-success', 'app-danger', 'app-warning', 'app-link',
+      ] as const) {
         expect(contrast(token[semantic]!, token['app-surface']!), `${name} ${semantic}`).toBeGreaterThanOrEqual(4.5)
       }
       expect(contrast(token['app-border-strong']!, token['app-surface']!), `${name} strong border`).toBeGreaterThanOrEqual(3)

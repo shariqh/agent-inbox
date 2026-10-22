@@ -1,13 +1,13 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createHash } from 'node:crypto'
-import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, cpSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
-import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import type Database from 'better-sqlite3'
 import type { BuildStamp } from '../../src/stamp.js'
 import { bootApp, freshDb, settle, useDomTest } from './harness.js'
+import { scratchDir } from '../scratch.js'
 
 useDomTest()
 
@@ -82,6 +82,44 @@ describe('one-click agent setup menu', () => {
     expect(document.querySelector('.setup-result')?.classList.contains('success')).toBe(true)
   })
 
+  // #216: main proves a reloaded window again, which can finish after this panel was built.
+  it('offers one-click setup the next time Settings opens once main allows this window', async () => {
+    let allowed = false
+    const install = vi.fn(async (target: string) => ({
+      ok: true,
+      exitCode: 0,
+      target,
+      timedOut: false,
+      output: `${target} installed`,
+    }))
+    Object.defineProperty(window, 'agentInboxSetup', {
+      configurable: true,
+      value: { available: async () => allowed, install },
+    })
+    await bootSetup()
+    expect(document.querySelector('.setup-run-btn')).toBeNull()
+    expect(document.querySelector('.setup-app-note')).not.toBeNull()
+
+    allowed = true
+    const gear = document.getElementById('gear') as HTMLButtonElement
+    gear.click()
+    await settle()
+    expect(document.querySelectorAll('.setup-menu')).toHaveLength(1)
+    expect(document.querySelector('.setup-app-note')).toBeNull()
+    const run = document.querySelector('.setup-run-btn') as HTMLButtonElement
+    expect(run.textContent).toBe('Install Claude Code + Copilot CLI now')
+    run.click()
+    await settle()
+    expect(install).toHaveBeenCalledWith('all')
+
+    // Reopening keeps that menu and what it reported.
+    gear.click()
+    gear.click()
+    await settle()
+    expect(document.querySelectorAll('.setup-menu')).toHaveLength(1)
+    expect(document.querySelector('.setup-result')?.textContent).toContain('all installed')
+  })
+
   it('copies an agent-ready prompt for the selected target', async () => {
     const copied: string[] = []
     const writeText = vi.fn(async (text: string) => { copied.push(text) })
@@ -133,8 +171,8 @@ describe('release mode (issue #74) — truthful Setup API + conditional renderin
     payloadDir: string
     runtimeId: string
   } {
-    const bundleDir = mkdtempSync(join(tmpdir(), 'release-bundle-'))
-    const runtimeRoot = mkdtempSync(join(tmpdir(), 'release-runtime-root-'))
+    const bundleDir = scratchDir('release-bundle-')
+    const runtimeRoot = scratchDir('release-runtime-root-')
     dirs.push(bundleDir, runtimeRoot)
     const version = '1.2.3'
     const payloadDir = join(bundleDir, 'runtime', 'darwin-arm64')
@@ -144,6 +182,7 @@ describe('release mode (issue #74) — truthful Setup API + conditional renderin
     if (opts.omitFile !== 'scripts/runtime-config.mjs') writeFileSync(join(payloadDir, 'scripts', 'runtime-config.mjs'), '// config helper\n')
     if (opts.omitFile !== 'scripts/setup-filesystem.cjs') writeFileSync(join(payloadDir, 'scripts', 'setup-filesystem.cjs'), '// filesystem adapter\n')
     if (opts.omitFile !== 'scripts/setup-lock.sh') writeFileSync(join(payloadDir, 'scripts', 'setup-lock.sh'), '# shared setup lock\n')
+    if (opts.omitFile !== 'scripts/run-isolated.mjs') writeFileSync(join(payloadDir, 'scripts', 'run-isolated.mjs'), '// rollback step isolation\n')
     mkdirSync(join(payloadDir, 'bin'), { recursive: true })
     mkdirSync(join(payloadDir, 'dist'), { recursive: true })
     mkdirSync(join(payloadDir, 'node_modules', 'better-sqlite3', 'build', 'Release'), { recursive: true })
@@ -238,6 +277,7 @@ describe('release mode (issue #74) — truthful Setup API + conditional renderin
     ['missing config helper', { omitFile: 'scripts/runtime-config.mjs' }],
     ['missing filesystem adapter', { omitFile: 'scripts/setup-filesystem.cjs' }],
     ['missing setup lock helper', { omitFile: 'scripts/setup-lock.sh' }],
+    ['missing rollback step helper', { omitFile: 'scripts/run-isolated.mjs' }],
   ])('withholds source and manual commands for %s', async (_label, override) => {
     const { setupInfoPath, runtimeRoot, payloadDir } = releaseBundle(override)
     await bootApp(open(), {
@@ -261,7 +301,7 @@ describe('release mode (issue #74) — truthful Setup API + conditional renderin
     ['a mode change', (payloadDir: string) => chmodSync(join(payloadDir, 'scripts', 'install-agents.sh'), 0o755)],
     ['a manifest symlink', (payloadDir: string) => {
       const manifest = join(payloadDir, 'runtime-manifest.json')
-      const outsideDir = mkdtempSync(join(tmpdir(), 'release-manifest-outside-'))
+      const outsideDir = scratchDir('release-manifest-outside-')
       dirs.push(outsideDir)
       const outside = join(outsideDir, 'runtime-manifest.json')
       writeFileSync(outside, readFileSync(manifest))
@@ -350,8 +390,8 @@ describe('release mode (issue #74) — truthful Setup API + conditional renderin
     // runtime-manifest.json at all — a corrupt/incomplete download, not a
     // dev/legacy bundle. The source must not verify, and nothing about that
     // directory may leak into a "success-shaped" command.
-    const bundleDir = mkdtempSync(join(tmpdir(), 'release-bundle-broken-'))
-    const runtimeRoot = mkdtempSync(join(tmpdir(), 'release-runtime-root-broken-'))
+    const bundleDir = scratchDir('release-bundle-broken-')
+    const runtimeRoot = scratchDir('release-runtime-root-broken-')
     dirs.push(bundleDir, runtimeRoot)
     const payloadDir = join(bundleDir, 'runtime', 'darwin-arm64')
     mkdirSync(join(payloadDir, 'scripts'), { recursive: true })

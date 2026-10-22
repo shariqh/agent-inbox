@@ -14,8 +14,55 @@ fnm exec --using=24 npm run release:inputs
 ```
 
 The Node SHA-256 values are copied from the official
-`https://nodejs.org/dist/v24.19.0/SHASUMS256.txt` distribution metadata. Runtime
+`https://nodejs.org/dist/v24.18.1/SHASUMS256.txt` distribution metadata. Runtime
 staging rejects any hash, URL, archive root, platform, ABI, or architecture mismatch.
+
+### Node 24.18.1 compatibility hold (#135)
+
+Portable runtimes use **Node 24.18.1**, including its security fixes over 24.18.0.
+Node 24.19.0's `node::ObjectWrap` headers added cleanup hooks without the companion
+runtime registry fix ([upstream #65446](https://github.com/nodejs/node/issues/65446)).
+The resulting `better-sqlite3` statement destructor can abort during allocation-driven
+GC, including MCP/watcher startup. ABI 137 compatibility and a passing hook selftest
+do not prove safety.
+
+Staging rebuilds the addon from source using the verified distribution's own headers
+(`npm_config_nodedir`), then runs `scripts/runtime-sqlite-check.mjs` with the staged
+Node against the staged `dist/store.js`. Its private in-memory store creates and
+releases 300,000 statements under ordinary allocation pressure; explicit `global.gc()`
+is deliberately not a substitute. A failure, signal, or timeout refuses publication.
+The check has a 180-second ceiling: GitHub's Intel runners need roughly 25–30 seconds
+for it, so the previous 30-second ceiling timed out about a quarter of their runs (#187).
+An executable-only downgrade with a 24.19-built addon still reproduces the assertion:
+**both the runtime and addon must be rebuilt**, never patched into a signed payload.
+
+This is a release compatibility mitigation, not an upstream fix. Revisit the pin when
+a corrected Node 24 release passes the same native GC and packaged MCP/watcher checks.
+Each architecture still needs its own native release evidence; Apple-silicon or
+emulated x64 results do not establish native Intel or Linux behavior.
+
+#### Electron's embedded Node
+
+The same header change reaches the app itself through the Node.js that Electron embeds.
+Electron 43.5.0 bundles Node 24.19.0. A `better-sqlite3` rebuilt against its headers
+imports `node::RemoveEnvironmentCleanupHook` and aborts in statement cleanup
+(`hooks.cc:142`, `Assertion failed: (env) != nullptr`) both under `ELECTRON_RUN_AS_NODE`
+and in Electron's main process. That main process is where the packaged app runs its viewer
+and store. Electron 43.6.0 backported the runtime fix
+([electron/electron#53393](https://github.com/electron/electron/pull/53393)). The pinned
+Electron 43.8.0 (Node 24.22.0) therefore needs no hold, but each build still proves it:
+
+- After the `lipo` check, each native thin-app build runs `scripts/runtime-sqlite-check.mjs`
+  with the packaged `Contents/MacOS/Agent Inbox` in Node mode (`ELECTRON_RUN_AS_NODE=1`).
+- The check runs against that app's own Electron-rebuilt `better_sqlite3.node` and packaged
+  `dist/store.js`.
+- The child's `HOME`, `TMPDIR`, XDG directories and `AGENT_INBOX_DB` point into a scratch
+  directory. No other inherited variable reaches it, including `NODE_OPTIONS`.
+- Electron must first report the pinned version in Node mode. The app does not flip Electron
+  fuses, so `RunAsNode` remains enabled.
+- The check has the same 180-second ceiling as runtime staging.
+- A failure, signal or timeout fails the build.
+- The thin report records `electronSqliteCheck: "passed"`, and universal assembly requires it.
 
 **Requires macOS 13.5 (Ventura) or later.** Release builds support both Apple silicon and
 Intel. Electron 43 itself supports macOS 12, but the bundled official Node 24 runtime
@@ -28,7 +75,9 @@ stated minimum before updating either pinned major.
 
 1. Stage and self-test the arm64 and x64 Node runtime payloads independently.
 2. Restore both verified payloads into each native thin Electron build.
-3. Rebuild `better-sqlite3` for Electron 43.1.1 on that architecture.
+3. Rebuild `better-sqlite3` for Electron 43.8.0 on that architecture, then run the
+   allocation-driven SQLite check under that packaged Electron
+   ([Electron's embedded Node](#electrons-embedded-node)).
 4. Preserve each thin app with a tar archive so framework symlinks and executable
    modes survive artifact transfer.
 5. Merge the thin apps with `@electron/universal`. The two
@@ -205,16 +254,28 @@ The credentialed sequence is intentionally split:
 8. In an unprivileged aggregation job, revalidate the four exact-run Linux package
    artifacts and reports, combine their final bytes with the notarized DMG, and generate
    the canonical `SHA256SUMS.txt` from all five binary packages in ascending bytewise
-   filename order.
-9. Revalidate the complete aggregate evidence and exact six-file public allowlist.
-   Immediately before draft creation, the sole write-token step re-reads the remote tag
+   filename order. Generate deterministic `update-manifest.json` bytes from that same
+   package evidence, the annotated-tag timestamp, and the source commit's pinned update
+   key registry.
+9. In a separate read-only protected job, scan every published stable release before the
+   new version. The first signed-manifest release is allowed only when none of those
+   releases contains either manifest asset. Later releases require an exact manifest/
+   signature pair on the latest prior stable release, a valid signature and strict
+   manifest, and signed authorization for the new signing key. Only after that proof does
+   one Node process receive the update private key, derive its public SPKI, require an
+   exact registry/key-id match, and sign the exact manifest bytes. Signature-envelope
+   schema 1 is an ordered array: production emits one entry today, while a future rotation
+   release can carry both old- and new-key signatures without changing the schema.
+10. Revalidate the complete aggregate/signing evidence and exact eight-file public
+   allowlist. Immediately before draft creation, the sole write-token step re-reads the remote tag
    ref, requires an annotated tag object, peels it to a commit, and requires that commit
    to remain the authorized source commit. Publication starts as a private draft with
    neutral staging metadata. After upload it validates exact remote names, uniqueness,
-   nonzero sizes, and API SHA-256 digests when present; it then always downloads all six
-   assets, compares every byte with the protected handoff, and rehashes all five packages
-   through the downloaded checksum manifest. Only one final API update installs the public
-   title/notes and clears the draft bit.
+   nonzero sizes, and API SHA-256 digests when present; it then always downloads all eight
+   assets, compares every byte with the protected handoff, rehashes all five packages
+   through the downloaded checksum manifest, and independently verifies the manifest
+   signature and its package target metadata. Only one final API update installs the
+   public title/notes and clears the draft bit.
 
 The public allowlist is exactly:
 
@@ -224,12 +285,15 @@ The public allowlist is exactly:
 - `agent-inbox_X.Y.Z_amd64.deb`
 - `agent-inbox_X.Y.Z_arm64.deb`
 - `SHA256SUMS.txt`
+- `update-manifest.json`
+- `update-manifest.json.sig`
 
 The protected workflow grants `contents: write` only to the final publication job.
 Every earlier checkout sets `persist-credentials: false` and every earlier job has
 `contents: read` and `actions: read`. The write job contains no third-party action or
 checkout and exactly one trusted shell step; the write-scoped `github.token` exists only
-in that step.
+in that step. `SHA256SUMS.txt` continues to cover only the five binary packages; the
+manifest and signature are independently bound by Ed25519 and SHA-256 evidence.
 
 ### One-time operator prerequisites
 
@@ -250,6 +314,7 @@ Before pushing a release tag, configure the repository's `macos-release` environ
    | `APPLE_DEVELOPER_ID_P12_BASE64` | Canonical base64 of a password-protected P12 containing the Developer ID Application certificate and private key |
    | `APPLE_DEVELOPER_ID_P12_PASSWORD` | P12 export password |
    | `APPLE_NOTARY_PRIVATE_KEY_BASE64` | Canonical base64 of the App Store Connect Team API `.p8` PEM |
+   | `AGENT_INBOX_UPDATE_PRIVATE_KEY_BASE64` | Canonical base64 of the Ed25519 PKCS#8 PEM whose public SPKI matches `release/update-keys.json` |
 
 4. Add these environment **variables**:
 
@@ -259,6 +324,17 @@ Before pushing a release tag, configure the repository's `macos-release` environ
    | `APPLE_TEAM_ID` | Ten-character Apple Developer Team ID matching the identity |
    | `APPLE_NOTARY_KEY_ID` | App Store Connect Team API Key ID |
    | `APPLE_NOTARY_ISSUER_ID` | App Store Connect Team API Issuer UUID |
+   | `AGENT_INBOX_UPDATE_KEY_ROTATION_OVERRIDE` | Normally unset; emergency rotation only: `ALLOW-UPDATE-KEY-ROTATION:vX.Y.Z:ed25519-<derived-id>` |
+
+Signature-envelope schema 1 is ready for safe overlap rotation, but the current protected
+signer intentionally accepts one secret and emits one signature. **Do not change
+`signingKeyId` for routine rotation with this workflow.** A future rotation change must
+first extend the protected signer to receive both keys without exposing either, publish
+manifests signed by both old and new keys, and keep dual-signing every release while the
+supported upgrade floor can still include clients that pin only the old key. Verification
+then lets a client skip individual overlap builds and still authenticate a later
+dual-signed release. Stop emitting the old signature and remove its public key only when
+those clients are explicitly outside the supported direct-upgrade floor.
 
 Use the minimum App Store Connect role Apple documents for Developer ID notarization.
 Do not paste, request, or store any P12, password, private key, or encoded credential in
@@ -270,7 +346,9 @@ The workflow uses current `xcrun notarytool` Team API authentication (`--key`,
 `--key-id`, and `--issuer`) and `--wait`. Each private key is decoded into a mode-0600
 temporary directory for one submission and removed by a shell trap. Each P12 is deleted
 immediately after import; the generated keychain is deleted in an `if: always()` step.
-No credential value is written to a job output or artifact.
+The update signer does not materialize its private key: one Node process decodes the
+environment value, derives and checks the public key, signs, and clears mutable key buffers
+on every path. No credential value is written to argv, logs, job output, or an artifact.
 
 ### Release runbook
 
@@ -327,6 +405,26 @@ No credential value is written to a job output or artifact.
   marker, asset, metadata, byte, or checksum fails closed without mutation.
 - A signing, Intel, notarization, stapling, Gatekeeper, provenance, or checksum failure
   cannot reach publication because every downstream job has a hard `needs` dependency.
+- Stapling starts only after Apple has accepted the submission, and only fetches and
+  checks the ticket through Apple's CloudKit ticket service. Every `xcrun stapler` call in
+  the Notarize job therefore runs through one retry helper, `runStapler()` in
+  `scripts/macos-release-gates.mjs`: the app and DMG `staple`/`validate` in
+  `scripts/notarize-macos.sh`, and the `stapler validate` checks in `build-dmg`,
+  `verify-final-dmg` and `final-evidence`. Each call gets up to five attempts with 15,
+  30, 60 and 120 second waits, but only when stapler's output shows a dropped connection
+  to that service (`NSURLErrorDomain`, `network connection`,
+  `CloudKit's response is inconsistent`) or a ticket Apple has not published yet
+  (`Record not found`). Every attempt's output stays in the log. Any other stapler
+  failure, or a fifth transient one, fails the step with stapler's own output and exit
+  status. The protected jobs run the tagged commit's scripts, so a re-run of an older
+  tag does not gain this retry.
+- An incomplete prior manifest pair, invalid previous signature, unknown signing key, or
+  missing signed `trustedKeyIds` authorization fails before the new private key is exposed.
+  Do not set the rotation override or change `signingKeyId` for routine releases with the
+  current one-key signer. The override is an audited emergency action bound to one exact
+  tag and derived key id; using it accepts that clients without the new pinned key may need
+  a manual update. Routine rotation requires first implementing the dual-key signing
+  extension and overlap sequence above.
 - An unrelated default-branch advance after the tag is accepted when the tag remains on
   first-parent history. If trusted release tooling or pinned packaging inputs changed
   incompatibly before protected preflight, the handoff fails before credentials are
@@ -353,6 +451,26 @@ xcrun stapler validate "$ASSET"
 spctl --assess --type open --context context:primary-signature --verbose=4 \
   "$ASSET"
 ```
+
+`update-manifest.json.sig` authenticates the exact UTF-8 bytes of
+`update-manifest.json`; reformatting or reserializing the JSON invalidates every signature.
+Its canonical key-id-sorted signature array permits old+new overlap during key rotation;
+verification structurally validates every entry, ignores cryptographic entries for keys
+that this installed client does not pin, and succeeds only when at least one entry validates
+under a pinned trusted key. An envelope containing only unknown keys still fails. This is
+what lets an old-key client authenticate an old+new dual-signed release before it installs
+the expanded registry.
+`publishedAt` is the annotated tagger timestamp normalized to UTC whole seconds, never the
+workflow clock; `expiresAt` is deterministically 180 days later. The signer refuses an
+already-expired manifest, while previous-release continuity checks intentionally verify
+historical structure/signatures without applying current-time expiry so expiry cannot
+prevent a fix-forward release.
+Agent Inbox 1.3 and later also persist the highest release version whose manifest they
+verified and report any older signed manifest as stale instead of offering it. Marking an
+older release as GitHub's latest therefore cannot roll those clients back; retract a bad
+release by publishing a newer fixed version.
+The signed manifest contains the same five package SHA-256 values and byte lengths, but it
+does not replace the package-only `SHA256SUMS.txt` command above.
 
 After mounting the DMG, the app must also pass:
 

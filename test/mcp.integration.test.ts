@@ -1,10 +1,18 @@
 import { describe, it, expect } from 'vitest'
-import { mkdtempSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { spawn, execFileSync } from 'node:child_process'
+import type { ChildProcessByStdio } from 'node:child_process'
+import type { Readable, Writable } from 'node:stream'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
-import { openDb, listItems, listBoards, getBoard, annotateBoardRow, markRowHandled, listPendingRows, replyItem, listActivity } from '../src/store.js'
+import { ReadBuffer, serializeMessage } from '@modelcontextprotocol/sdk/shared/stdio.js'
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
+import { openDb, listItems, listBoards, getBoard, annotateBoardRow, markRowHandled, listPendingRows, pinBoardRow, pinItem, replyItem, listActivity, listActivitySpans, upsertIssueSnapshot } from '../src/store.js'
+import { createViewer } from '../src/viewer.js'
+import { scratchDir } from './scratch.js'
+
+const REPO_ROOT = new URL('..', import.meta.url).pathname
 
 const QUESTION_SHAPE = {
   detail: 'A concise summary of the current state.',
@@ -32,9 +40,30 @@ const blockedRow = (label: string, over: Record<string, unknown> = {}) => ({
   ...over,
 })
 
+// A stdio Transport over a server process the test spawned and owns, so the test
+// controls exactly how that process ends. close() only reaps a still-running child.
+const childTransport = (child: ChildProcessByStdio<Writable, Readable, null>): Transport => {
+  const buffer = new ReadBuffer()
+  const transport: Transport = {
+    start: async () => {
+      child.stdout.on('data', (chunk: Buffer) => {
+        buffer.append(chunk)
+        for (let message = buffer.readMessage(); message; message = buffer.readMessage()) transport.onmessage?.(message)
+      })
+      child.stdin.on('error', (error) => transport.onerror?.(error))
+      child.once('close', () => transport.onclose?.())
+    },
+    send: async (message) => { child.stdin.write(serializeMessage(message)) },
+    close: async () => {
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
+    },
+  }
+  return transport
+}
+
 describe('mcp round-trip', () => {
   it('flag writes a row attributed to this session, and whoami reflects register', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-'), 'inbox.db')
     const transport = new StdioClientTransport({
       command: 'npx',
       args: ['tsx', 'src/mcp-server.ts'],
@@ -78,8 +107,53 @@ describe('mcp round-trip', () => {
     expect(d.status).toBe('open')
   })
 
+  // issue #157 — the HEAD repository a branch is pushed to is inferred from git in
+  // the MCP process (its tracking/push remote, else origin) and stamped beside
+  // the BASE repo. Those git subprocesses run mid-protocol, so this round trip is
+  // also the proof that they never write to the server's stdout.
+  it('flag and board writes stamp the repository the branch is pushed to, beside a registered base', async () => {
+    const dir = scratchDir('mcp-head-')
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: dir, stdio: 'ignore' })
+    git('init', '-q')
+    git('config', 'user.email', 't@t.dev')
+    git('config', 'user.name', 't')
+    git('commit', '--allow-empty', '-q', '-m', 'init')
+    git('checkout', '-q', '-b', 'feature')
+    git('remote', 'add', 'origin', 'git@github.com:me/x.git')
+    git('remote', 'add', 'fork', 'https://github.com/fork/x.git')
+    git('config', 'branch.feature.remote', 'fork')
+    // issue #183 — the config gh pr checkout writes for a fork PR whose author did
+    // not allow maintainer edits: its upstream is the base's refs/pull/<n>/head
+    git('branch', 'patch-1')
+    git('config', 'branch.patch-1.remote', 'origin')
+    git('config', 'branch.patch-1.pushRemote', 'origin')
+    git('config', 'branch.patch-1.merge', 'refs/pull/7/head')
+    const dbPath = join(scratchDir('mcp-head-db-'), 'inbox.db')
+    const transport = new StdioClientTransport({
+      command: join(REPO_ROOT, 'node_modules', '.bin', 'tsx'),
+      args: [join(REPO_ROOT, 'src', 'mcp-server.ts')],
+      cwd: dir,
+      // hermetic: a global remote.pushDefault would outrank the tracking remote
+      env: { ...process.env, AGENT_INBOX_DB: dbPath, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' },
+    })
+    const client = new Client({ name: 'claude-code', version: '1.0.0' })
+    await client.connect(transport)
+    await client.callTool({ name: 'register', arguments: { repo: 'upstream/x' } })
+    await client.callTool({ name: 'flag', arguments: { kind: 'note', title: 'pushed to the fork', ...INFO_SHAPE } })
+    await client.callTool({ name: 'board_upsert', arguments: { title: 'plan', rows: [{ label: 'a', status: 'tracked' }] } })
+    await client.callTool({ name: 'flag', arguments: { kind: 'note', title: 'reviewing a fork PR', stream: 'patch-1', ...INFO_SHAPE } })
+    await client.close()
+
+    const db = openDb(dbPath)
+    expect(listItems(db).find((i) => i.title === 'pushed to the fork')).toMatchObject({ repo: 'upstream/x', stream: 'feature', head_repo: 'fork/x' })
+    expect(listBoards(db)[0]).toMatchObject({ repo: 'upstream/x', stream: 'feature', head_repo: 'fork/x' })
+    // the pull ref names no repository, so no listed PR can verify against it
+    expect(listItems(db).find((i) => i.title === 'reviewing a fork PR'))
+      .toMatchObject({ repo: 'upstream/x', stream: 'patch-1', head_repo: 'refs/pull/7/head' })
+  })
+
   it('returns a host-launched answer watcher only for Copilot questions', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-copilot-watch-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-copilot-watch-'), 'inbox.db')
     const transport = new StdioClientTransport({
       command: 'npx',
       args: ['tsx', 'src/mcp-server.ts'],
@@ -106,8 +180,196 @@ describe('mcp round-trip', () => {
     await client.close()
   })
 
+  it('returns exact-action Copilot watches for new board asks and explicit re-arming', async () => {
+    const dbPath = join(scratchDir('mcp-board-watch-'), 'inbox.db')
+    const transport = new StdioClientTransport({
+      command: 'npx', args: ['tsx', 'src/mcp-server.ts'],
+      env: { ...process.env, AGENT_INBOX_DB: dbPath },
+    })
+    const client = new Client({ name: 'copilot', version: '1.0.0' })
+    await client.connect(transport)
+    const db = openDb(dbPath)
+    const call = async (name: string, args: Record<string, unknown>) => {
+      const result = await client.callTool({ name, arguments: args })
+      expect(result.isError, JSON.stringify(result)).not.toBe(true)
+      return JSON.parse((result.content as Array<{ text: string }>)[0]!.text)
+    }
+    try {
+      await call('register', { project: 'watch-project' })
+      const created = await call('board_upsert', {
+        title: 'Release', rows: [blockedRow('Upload'), { label: 'Documentation', status: 'tracked' }],
+      })
+      let board = getBoard(db, 'watch-project', 'Release')!
+      let row = board.rows[0]!
+      expect(created.watches).toHaveLength(1)
+      expect(created.watches[0]).toMatchObject({
+        row_id: row.id, action_version: 1, mode: 'async', detach: true,
+        shell_id: `agent-inbox-row-${row.id}-1`,
+      })
+      expect(created.watches[0].shell_command).toContain("'--row'")
+      expect(created.watches[0].on_completion).toContain('pending({project:"watch-project"})')
+
+      const refresh = await call('board_upsert', {
+        title: board.title, board_version: board.revision,
+        rows: board.rows.map(({ label, status, revision }) => ({ label, status, revision })),
+      })
+      expect(refresh.watches).toBeUndefined()
+      const plain = await call('board_get', { title: board.title })
+      expect(plain.watches).toBeUndefined()
+      const rearmed = await call('board_get', { title: board.title, watch: true })
+      expect(rearmed.watches).toHaveLength(1)
+      expect(rearmed.watches[0].shell_id).toBe(created.watches[0].shell_id)
+
+      board = getBoard(db, 'watch-project', 'Release')!
+      row = board.rows[0]!
+      const extra = await call('board_row', {
+        title: board.title, board_version: board.revision, ...blockedRow('Choose date'),
+      })
+      expect(extra.watch).toMatchObject({ action_version: 1, detach: true })
+      expect(extra.watch.row_id).not.toBe(row.id)
+      board = getBoard(db, 'watch-project', 'Release')!
+      const advanced = await call('board_advance', {
+        title: board.title, board_version: board.revision, label: row.label,
+        expected_revision: row.revision,
+        note: 'The next release is ready.', next_step: 'Upload the next build.',
+        action_owner: 'task', impact: 'Makes the release available.',
+      })
+      expect(advanced.watch).toMatchObject({ row_id: row.id, action_version: 2 })
+      expect(advanced.watch.shell_id).not.toBe(created.watches[0].shell_id)
+      const stale = await call('board_advance', {
+        title: board.title, board_version: board.revision, label: row.label,
+        expected_revision: row.revision,
+        note: 'An outdated request.', next_step: 'Do not act.', action_owner: 'task', impact: 'Stale.',
+      })
+      expect(stale.ok).toBe(false)
+      expect(stale.watch).toBeUndefined()
+      const missingTitle = await client.callTool({ name: 'board_get', arguments: { watch: true } })
+      expect(missingTitle.isError).toBe(true)
+    } finally {
+      db.close()
+      await client.close()
+    }
+  }, 20000)
+
+  it('a resumed watcher can retrieve its original project without changing the current scope', async () => {
+    const dbPath = join(scratchDir('mcp-project-wake-'), 'inbox.db')
+    const transport = new StdioClientTransport({
+      command: 'npx', args: ['tsx', 'src/mcp-server.ts'],
+      env: { ...process.env, AGENT_INBOX_DB: dbPath },
+    })
+    const client = new Client({ name: 'copilot', version: '1.0.0' })
+    await client.connect(transport)
+    const db = openDb(dbPath)
+    const call = async (name: string, args: Record<string, unknown>) => {
+      const result = await client.callTool({ name, arguments: args })
+      expect(result.isError).not.toBe(true)
+      return JSON.parse((result.content as Array<{ text: string }>)[0]!.text)
+    }
+    try {
+      await call('register', { project: 'original-project' })
+      const created = await call('board_upsert', { title: 'Release', rows: [blockedRow('Upload')] })
+      const board = getBoard(db, 'original-project', 'Release')!
+      const row = board.rows[0]!
+      const child = spawn('/bin/sh', ['-c', created.watches[0].shell_command], {
+        env: { ...process.env, AGENT_INBOX_WATCH_TIMEOUT_MS: '1000', AGENT_INBOX_WATCH_POLL_MS: '50' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+      let stdout = ''
+      let stderr = ''
+      child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk })
+      child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk })
+      const completion = new Promise<number | null>((resolve, reject) => {
+        child.once('error', reject)
+        child.once('close', resolve)
+      })
+      const response = await createViewer(db).request(`/api/boards/${board.id}/rows/${row.id}/handled`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ expected_revision: row.revision, expected_board_version: board.revision }),
+      })
+      expect(response.status).toBe(200)
+      expect(await completion, stderr).toBe(0)
+      expect(stdout).toContain('Call pending()')
+      expect(getBoard(db, board.project, board.title)!.rows[0]!.handled_seen_at).toBeNull()
+      await call('register', { project: 'different-project', stream: 'different-branch' })
+      expect(listActivity(db)).toEqual([
+        expect.objectContaining({ project: 'different-project', stream: 'different-branch' }),
+      ])
+      expect((await call('pending', {})).rows).toHaveLength(0)
+      const pending = await call('pending', { project: 'original-project' })
+      expect(pending.rows).toEqual([expect.objectContaining({ row_id: row.id, handled_at: expect.any(String) })])
+      expect((await call('whoami', {})).project).toBe('different-project')
+      await call('register', { project: board.project })
+      await call('board_row', {
+        title: board.title, label: row.label,
+        board_version: pending.rows[0].board_revision, expected_revision: pending.rows[0].revision,
+        status: 'partial', outcome: 'Your upload was received; preparing the release.',
+      })
+      expect((await call('pending', {})).rows).toHaveLength(0)
+      expect(getBoard(db, board.project, board.title)!.rows[0]).toMatchObject({
+        status: 'partial', outcome: 'Your upload was received; preparing the release.',
+      })
+    } finally {
+      db.close()
+      await client.close()
+    }
+  }, 20000)
+
+  // Issue #217 end to end: the contract tells the agent how to re-arm and when
+  // not to, the human's stop ends the real watcher with exit 3, and their later
+  // answer still reaches the agent through pending().
+  it('a Copilot question watcher stops when the human asks, and the answer still arrives', async () => {
+    const dbPath = join(scratchDir('mcp-watch-stop-'), 'inbox.db')
+    const transport = new StdioClientTransport({
+      command: 'npx', args: ['tsx', 'src/mcp-server.ts'],
+      env: { ...process.env, AGENT_INBOX_DB: dbPath },
+    })
+    const client = new Client({ name: 'copilot', version: '1.0.0' })
+    await client.connect(transport)
+    const db = openDb(dbPath)
+    const call = async (name: string, args: Record<string, unknown>) => {
+      const result = await client.callTool({ name, arguments: args })
+      expect(result.isError, JSON.stringify(result)).not.toBe(true)
+      return JSON.parse((result.content as Array<{ text: string }>)[0]!.text)
+    }
+    try {
+      const flagged = await call('flag', { kind: 'question', title: 'Install 1.4 and report back?', ...QUESTION_SHAPE })
+      expect(flagged.watch.timeout_seconds).toBe(1800)
+      expect(flagged.watch.on_completion).toContain('A timeout (exit 124) is not an answer: if still waiting, re-run this same command; it waits longer each time.')
+      expect(flagged.watch.on_completion).toContain('Exit 3 means the human asked you to stop waiting: do not re-arm')
+
+      const child = spawn('/bin/sh', ['-c', flagged.watch.shell_command], {
+        env: { ...process.env, AGENT_INBOX_WATCH_POLL_MS: '50' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+      let stdout = ''
+      let stderr = ''
+      child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk })
+      child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk })
+      const completion = new Promise<number | null>((resolve, reject) => {
+        child.once('error', reject)
+        child.once('close', resolve)
+      })
+      const stopped = await createViewer(db).request(`/api/items/${flagged.id}/stop-waiting`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ until: null }),
+      })
+      expect(await stopped.json()).toEqual({ ok: true })
+      expect(await completion, stderr).toBe(3)
+      expect(stdout).toBe('Agent Inbox: the human asked you to stop waiting; do not re-arm. Their answer will arrive via pending().\n')
+
+      replyItem(db, flagged.id, 'Installed; it works.')
+      const pending = await call('pending', {})
+      expect(pending.items).toEqual([expect.objectContaining({
+        id: flagged.id, reply: 'Installed; it works.', watch_stopped_at: expect.any(String), watch_stopped_until: null,
+      })])
+    } finally {
+      db.close()
+      await client.close()
+    }
+  }, 20000)
+
   it('flag accepts options; pending returns the human reply and stamps pickup', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-pending-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-pending-'), 'inbox.db')
     const conn = async () => {
       const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
       const c = new Client({ name: 'claude-code', version: '1.0.0' }); await c.connect(t); return c
@@ -146,7 +408,7 @@ describe('mcp round-trip', () => {
   // Two real OS processes: the MCP server writes through `answer`, the viewer side
   // writes through replyItem on its own connection to the same WAL file.
   it('answer records a chat reply end-to-end, leaves pickup alone, and yields to a waiting inbox answer', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-answer-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-answer-'), 'inbox.db')
     const transport = new StdioClientTransport({
       command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath },
     })
@@ -160,7 +422,8 @@ describe('mcp round-trip', () => {
     // a refusal is JSON the agent can branch on, never a thrown MCP error
     expect(await call('answer', { id, text: '   ' })).toEqual({ ok: false, reason: 'empty' })
 
-    expect(await call('answer', { id, text: 'sqlite', context: 'stay local until remote mode' })).toEqual({ ok: true })
+    expect(await call('answer', { id, text: 'sqlite', context: 'stay local until remote mode' }))
+      .toEqual({ ok: true, response_revision: 1 })
     let item = listItems(openDb(dbPath))[0]!
     expect(item.reply).toBe('sqlite')
     expect(item.reply_context).toBe('stay local until remote mode')
@@ -188,8 +451,9 @@ describe('mcp round-trip', () => {
     expect(item.reply).toBe('no — postgres')
     expect(item.reply_source).toBe('inbox')
 
-    // and either channel's answer survives the agent resolving afterwards
-    expect(await call('resolve', { id })).toEqual({ ok: true })
+    // Resolve the response actually handled, not an older answer a sibling read.
+    const current = (await call('pending', {})).items[0]
+    expect(await call('resolve', { id, expected_response_revision: current.response_revision })).toEqual({ ok: true })
     await client.close()
     item = listItems(openDb(dbPath))[0]!
     expect(item.status).toBe('resolved')
@@ -197,7 +461,7 @@ describe('mcp round-trip', () => {
   }, 20000)
 
   it('sessions auto-register presence; status upgrades it; done reverts; exit removes', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-status-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-status-'), 'inbox.db')
     const transport = new StdioClientTransport({
       command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath },
     })
@@ -214,6 +478,13 @@ describe('mcp round-trip', () => {
     // nothing to claim yet. `last_call_at` IS the alive-vs-working distinction:
     // only heartbeat() writes it, and heartbeat() runs on real calls only.
     expect(live[0]!.last_call_at).toBeNull()
+    // issue #197 — registration records which build this server runs: the very
+    // version its initialize handshake reported (the package version), and that
+    // it runs from a checkout — this one has no runtime-manifest.json.
+    const handshake = client.getServerVersion()?.version
+    expect(handshake).toBe(JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8')).version)
+    const build = { server_version: handshake, server_source: 'checkout' }
+    expect(live[0]).toMatchObject(build)
 
     await client.callTool({ name: 'status', arguments: {
       doing: 'fan-out: migrating 3 modules',
@@ -225,16 +496,71 @@ describe('mcp round-trip', () => {
     expect(live[0]!.doing).toBe('fan-out: migrating 3 modules')
     expect(live[0]!.children.map((c) => c.name)).toEqual(['mig-a', 'mig-b'])
     expect(live[0]!.last_call_at).not.toBeNull() // a real call — the claim is now backed by one
+    expect(live[0]).toMatchObject(build)
 
     await client.callTool({ name: 'status', arguments: { done: true } })
     live = listActivity(openDb(dbPath))
     expect(live).toHaveLength(1) // effort over, session alive → back to idle presence
     expect(live[0]!.idle).toBe(true)
     expect(live[0]!.last_doing).toBe('fan-out: migrating 3 modules')
+    expect(live[0]).toMatchObject(build)
+
+    // A row the day-old housekeeping swept while the machine slept is recreated
+    // by the session's next status call, which still says which build it runs.
+    // (Fixture instrumentation: raw SQL stands in for a day of fake time that
+    // cannot reach the spawned server's clock.)
+    openDb(dbPath).prepare('DELETE FROM activity').run()
+    await client.callTool({ name: 'status', arguments: { doing: 'back after a long sleep' } })
+    live = listActivity(openDb(dbPath))
+    expect(live).toHaveLength(1)
+    expect(live[0]).toMatchObject(build)
 
     await client.close()
     await new Promise((r) => setTimeout(r, 500))
     expect(listActivity(openDb(dbPath))).toHaveLength(0) // process exit ends the row
+  }, 20000)
+
+  // Issue #162. Closing a terminal tab or window delivers SIGHUP, and Node's default
+  // disposition for it kills the process WITHOUT emitting 'exit': the session never
+  // recorded its end, lingered as a ghost Live row for up to 15 minutes and left its
+  // span open. The server runs directly under Node, not through the npx/tsx wrappers
+  // (tsx relays only SIGINT/SIGTERM), so the signal reaches the server process exactly
+  // as a terminal hangup would, and the test, not the SDK's close() fallback to
+  // SIGTERM, decides how it ends.
+  it.each(['SIGHUP', 'SIGTERM', 'stdin EOF'] as const)('%s ends the session: ended_at is recorded and the open span closed', async (ending) => {
+    const dbPath = join(scratchDir('mcp-ending-'), 'inbox.db')
+    const child = spawn(process.execPath, ['--import', 'tsx', 'src/mcp-server.ts'], {
+      env: { ...process.env, AGENT_INBOX_DB: dbPath },
+      stdio: ['pipe', 'pipe', 'inherit'],
+    })
+    const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+      child.once('exit', (code, signal) => resolve({ code, signal }))
+    })
+    const client = new Client({ name: 'claude-code', version: '1.0.0' })
+    const db = openDb(dbPath)
+    try {
+      await client.connect(childTransport(child))
+      await client.callTool({ name: 'status', arguments: { doing: 'closing the terminal' } })
+      const [live] = listActivity(db)
+      expect(live?.doing).toBe('closing the terminal')
+      expect(listActivitySpans(db).map((span) => span.ended_at)).toEqual([null])
+
+      if (ending === 'stdin EOF') child.stdin.end()
+      else child.kill(ending)
+      const exit = await exited
+
+      const row = db.prepare(`SELECT ended_at FROM activity WHERE session = ?`).get(live!.session) as { ended_at: string | null }
+      expect(row.ended_at, `server exit: ${JSON.stringify(exit)}`).not.toBeNull()
+      expect(listActivity(db)).toEqual([])
+      const spans = listActivitySpans(db)
+      expect(spans).toHaveLength(1)
+      expect(spans[0]!.session).toBe(live!.session)
+      expect(spans[0]!.ended_at).not.toBeNull()
+      expect(exit).toEqual({ code: 0, signal: null })
+    } finally {
+      await client.close()
+      db.close()
+    }
   }, 20000)
 
   // src/mcp.ts registers presence twice — on the initialize notification, and
@@ -254,7 +580,7 @@ describe('mcp round-trip', () => {
   // the fallback and that the fallback actually ran after it. A post-fallback
   // claim leaves no writer, so the bounded poll times out rather than passing.
   it('a status claim made inside the 2s handshake-fallback window survives the fallback', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-register-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-register-'), 'inbox.db')
     const transport = new StdioClientTransport({
       command: 'npx', args: ['tsx', 'src/mcp-server.ts'],
       env: { ...process.env, AGENT_INBOX_DB: dbPath },
@@ -284,7 +610,7 @@ describe('mcp round-trip', () => {
   }, 20000)
 
   it('board tools upsert, update a row, and archive a board', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-board-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-board-'), 'inbox.db')
     const transport = new StdioClientTransport({
       command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath },
     })
@@ -332,7 +658,7 @@ describe('mcp round-trip', () => {
   }, 20000)
 
   it('board_get reads a board back including a human annotation', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-get-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-get-'), 'inbox.db')
     const conn = async () => {
       const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
       const c = new Client({ name: 'claude-code', version: '1.0.0' }); await c.connect(t); return c
@@ -368,7 +694,7 @@ describe('mcp round-trip', () => {
   // incidental call can do is name the first reader. Exempting the title-less
   // form would be a third mark-seen rule nobody would remember.
   it('board_get with no title delivers every annotation in the project, and says so honestly', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-getall-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-getall-'), 'inbox.db')
     const conn = async () => {
       const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
       const c = new Client({ name: 'claude-code', version: '1.0.0' }); await c.connect(t); return c
@@ -412,7 +738,7 @@ describe('mcp round-trip', () => {
   // surfaced one was independently choosing to call `board_get`. Observed in the
   // wild: a "merge it" note sat unread for a day while the agent polled throughout.
   it('pending delivers a board annotation to an agent that never calls board_get (#37)', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-pending-rows-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-pending-rows-'), 'inbox.db')
     const conn = async () => {
       const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
       const c = new Client({ name: 'claude-code', version: '1.0.0' }); await c.connect(t); return c
@@ -479,7 +805,7 @@ describe('mcp round-trip', () => {
   // human's screen then read "delivered to claude-code" — the exact signal that
   // tells them to stop chasing it. Two real server processes, one project.
   it('a sibling session’s poll cannot eat the answer the manager is waiting for (#37 F1)', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-fanout-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-fanout-'), 'inbox.db')
     const conn = async () => {
       const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
       const c = new Client({ name: 'claude-code', version: '1.0.0' }); await c.connect(t); return c
@@ -524,7 +850,7 @@ describe('mcp round-trip', () => {
   // change of mind would. Raw SQL is allowed here for the same reason store.test.ts
   // allows it — a test constructing a moment production cannot otherwise schedule.
   it('pending never hands over an annotation the human replaced mid-poll (#37 F2)', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-midpoll-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-midpoll-'), 'inbox.db')
     const conn = async () => {
       const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
       const c = new Client({ name: 'claude-code', version: '1.0.0' }); await c.connect(t); return c
@@ -570,7 +896,7 @@ describe('mcp round-trip', () => {
   // MCP boundary — the store still returns whole rows, and the viewer still
   // gets them (test/viewer.test.ts).
   it('board_get omits row context by default, returns it with full: true, and summarises with no title (#42)', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-shape-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-shape-'), 'inbox.db')
     const conn = async () => {
       const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
       const c = new Client({ name: 'claude-code', version: '1.0.0' }); await c.connect(t); return c
@@ -620,7 +946,7 @@ describe('mcp round-trip', () => {
   // context each time. The human's words must keep coming back; the agent's own
   // backstory must not.
   it('pending hands each context over once per process, then only its size (#42)', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-once-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-once-'), 'inbox.db')
     const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
     const c1 = new Client({ name: 'claude-code', version: '1.0.0' }); await c1.connect(t)
     const call = async (name: string, args: Record<string, unknown>) =>
@@ -666,7 +992,7 @@ describe('mcp round-trip', () => {
   // parent's process and therefore its parent's ledger — see the recovery test
   // below, which is why that case is survivable rather than solved.
   it('an agent in a separate process gets the context on ITS first poll, however often others polled (#42)', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-sibling-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-sibling-'), 'inbox.db')
     const conn = async () => {
       const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
       const c = new Client({ name: 'claude-code', version: '1.0.0' }); await c.connect(t); return c
@@ -702,7 +1028,7 @@ describe('mcp round-trip', () => {
   // never actually handed. Same trigger technique as F2 — a deterministic stand-in
   // for the human's hand, firing from inside the handler.
   it('a row dropped mid-poll is not recorded as delivered — its context still ships next time (#42)', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-cas-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-cas-'), 'inbox.db')
     const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
     const c1 = new Client({ name: 'claude-code', version: '1.0.0' }); await c1.connect(t)
     const call = async (name: string, args: Record<string, unknown>) =>
@@ -748,7 +1074,7 @@ describe('mcp round-trip', () => {
   // items, which is the only read path an item has. One process = one client
   // here, exactly the fan-out's sharing.
   it('pending({full:true}) recovers context another caller in the same process already drained (#42)', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-recover-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-recover-'), 'inbox.db')
     const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
     const c1 = new Client({ name: 'claude-code', version: '1.0.0' }); await c1.connect(t)
     const call = async (name: string, args: Record<string, unknown>) =>
@@ -788,7 +1114,7 @@ describe('mcp round-trip', () => {
   // the hatch, on both tools, and how to CLEAR a context now that omitting it
   // keeps the stored text.
   it('the payload contract is discoverable at the call site — the tool definitions say it (#42)', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-desc-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-desc-'), 'inbox.db')
     const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
     const c1 = new Client({ name: 'claude-code', version: '1.0.0' }); await c1.connect(t)
     const tools = new Map((await c1.listTools()).tools.map((x) => [x.name, x]))
@@ -813,7 +1139,15 @@ describe('mcp round-trip', () => {
     }
     expect(flagSchema.required).toEqual(expect.arrayContaining(['detail', 'next_step']))
     expect(flagSchema.properties['detail']?.description).toMatch(/TL;DR/)
+    expect(flagSchema.properties['detail']?.description).toMatch(/plain language/)
+    expect(flagSchema.properties['detail']?.description).toMatch(/commit hashes.*context/)
     expect(flagSchema.properties['next_step']?.description).toMatch(/ONE concrete action/)
+    expect(pending.inputSchema.properties).toHaveProperty('project')
+    expect(tools.get('board_get')!.inputSchema.properties).toHaveProperty('watch')
+    for (const name of ['board_upsert', 'board_row', 'board_advance']) {
+      expect(tools.get(name)!.description).toMatch(/watch/)
+      expect(tools.get(name)!.description).toMatch(/host|Copilot/)
+    }
 
     expect(tools.get('board_get')!.description).toContain('full: true')
     expect(tools.get('board_get')!.description).toMatch(/UTF-16 code units/)
@@ -839,7 +1173,7 @@ describe('mcp round-trip', () => {
   // they are told to make. A mark the agent cannot see is the same dead end the
   // issue is about, so this drives the real stdio server end to end.
   it('pending delivers a handled mark to an agent that never calls board_get (#36)', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-handled-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-handled-'), 'inbox.db')
     const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
     const c1 = new Client({ name: 'claude-code', version: '1.0.0' }); await c1.connect(t)
     const call = async (name: string, args: Record<string, unknown>) =>
@@ -887,7 +1221,7 @@ describe('mcp round-trip', () => {
   }, 20000)
 
   it('board_get delivers the handled mark too, and re-blocking clears it (#36)', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-handled2-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-handled2-'), 'inbox.db')
     const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
     const c1 = new Client({ name: 'claude-code', version: '1.0.0' }); await c1.connect(t)
     const call = async (name: string, args: Record<string, unknown>) =>
@@ -940,7 +1274,7 @@ describe('mcp round-trip', () => {
   }, 20000)
 
   it('the tool descriptions tell agents the mark can arrive and how to acknowledge it (#36)', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-handleddesc-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-handleddesc-'), 'inbox.db')
     const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
     const c1 = new Client({ name: 'claude-code', version: '1.0.0' }); await c1.connect(t)
     const tools = new Map((await c1.listTools()).tools.map((x) => [x.name, x]))
@@ -960,8 +1294,54 @@ describe('mcp round-trip', () => {
     await c1.close()
   }, 20000)
 
+  // #247 — a pin rides the reads an agent already makes, as a snooze does: the
+  // human set the ask aside, it is still open, and nothing about it is answered.
+  it('pending and board_get carry the human’s pin; a pinned row keeps arriving until its status flips (#247)', async () => {
+    const dbPath = join(scratchDir('mcp-pinned-'), 'inbox.db')
+    const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
+    const c1 = new Client({ name: 'claude-code', version: '1.0.0' }); await c1.connect(t)
+    const call = async (name: string, args: Record<string, unknown>) =>
+      JSON.parse(((await c1.callTool({ name, arguments: args })).content as Array<{ text: string }>)[0]!.text)
+    const tools = new Map((await c1.listTools()).tools.map((x) => [x.name, x]))
+    expect(tools.get('pending')!.description ?? '').toMatch(/pinned_at means they set it aside with no time/)
+
+    const flagged = await call('flag', { kind: 'question', title: 'Which build?', ...QUESTION_SHAPE })
+    await call('board_upsert', { title: 'wave 0', rows: [blockedRow('Upload'), blockedRow('Sign')] })
+    expect(await call('pending', {})).toMatchObject({ rows: [], items: [expect.objectContaining({ id: flagged.id, pinned_at: null })] })
+
+    // the human pins both in the VIEWER — a different process
+    const hub = openDb(dbPath)
+    const project = listBoards(hub)[0]!.project
+    const board = getBoard(hub, project, 'wave 0')!
+    const upload = board.rows.find((r) => r.label === 'Upload')!
+    expect(pinBoardRow(hub, upload.id, true, upload.revision, board.revision)).toBe(true)
+    expect(pinItem(hub, flagged.id, true)).toBe(true)
+
+    const first = await call('pending', {})
+    expect(first.items).toEqual([expect.objectContaining({ id: flagged.id, pinned_at: expect.stringMatching(/^\d{4}-/) })])
+    expect(first.rows).toEqual([expect.objectContaining({ label: 'Upload', status: 'blocked', pinned_at: expect.stringMatching(/^\d{4}-/) })])
+    const again = await call('pending', {})
+    expect(again.rows, 'a pin is not an acknowledgement').toEqual([expect.objectContaining({ label: 'Upload', pinned_at: first.rows[0].pinned_at })])
+
+    const read = await call('board_get', { title: 'wave 0' })
+    expect(read.rows.map((r: { label: string; pinned_at: string | null }) => [r.label, r.pinned_at]))
+      .toEqual([['Upload', first.rows[0].pinned_at], ['Sign', null]])
+    const summary = await call('board_get', {})
+    expect(summary.boards[0].rows[0]).toMatchObject({ label: 'Upload', pinned_at: first.rows[0].pinned_at })
+    expect(summary.boards[0].rows[1]).not.toHaveProperty('pinned_at')
+
+    // the agent's snapshot from before the pin still writes, and ends the pin
+    await call('board_row', {
+      title: 'wave 0', board_version: board.revision, label: 'Upload', expected_revision: upload.revision,
+      status: 'done', outcome: 'Uploaded it.',
+    })
+    expect((await call('pending', {})).rows).toEqual([])
+    expect(getBoard(openDb(dbPath), project, 'wave 0')!.rows.find((r) => r.label === 'Upload')!.pinned_at).toBeNull()
+    await c1.close()
+  }, 20000)
+
   it('the board tools say who `blocked` waits on, and carry the negative example (#44)', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-blocked-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-blocked-'), 'inbox.db')
     const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
     const c1 = new Client({ name: 'claude-code', version: '1.0.0' }); await c1.connect(t)
     const tools = new Map((await c1.listTools()).tools.map((x) => [x.name, x]))
@@ -1008,7 +1388,7 @@ describe('mcp round-trip', () => {
   }, 20000)
 
   it('rejects a new blocked row that has no TL;DR or concrete next step', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-action-shape-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-action-shape-'), 'inbox.db')
     const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
     const c1 = new Client({ name: 'claude-code', version: '1.0.0' }); await c1.connect(t)
 
@@ -1049,7 +1429,7 @@ describe('mcp round-trip', () => {
   // payload an agent re-sends carries `context_chars`, not `context` — so this
   // exact loop is where a wiped board would come from.
   it('board_get → board_upsert keeps every row’s context (#42)', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-rmw-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-rmw-'), 'inbox.db')
     const t = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } })
     const c1 = new Client({ name: 'claude-code', version: '1.0.0' }); await c1.connect(t)
     const call = async (name: string, args: Record<string, unknown>) =>
@@ -1100,7 +1480,7 @@ describe('mcp round-trip', () => {
   }, 20000)
 
   it('a flagged item records the asking session, matching its live activity row', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'mcp-session-')), 'inbox.db')
+    const dbPath = join(scratchDir('mcp-session-'), 'inbox.db')
     const transport = new StdioClientTransport({
       command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath },
     })
@@ -1119,5 +1499,423 @@ describe('mcp round-trip', () => {
     expect(item.session).toMatch(/^[0-9a-f-]{36}$/)
 
     await client.close()
+  }, 20000)
+})
+
+// Issue #103 PR2 (§8, §10): explicit plan pins and row links, end to end over
+// a real stdio round trip.
+describe('plan and row issue links (#103 PR2)', () => {
+  const FORMS = /owner\/name#123; #123 or 123 .*https:\/\/github\.com\/owner\/name\/issues\/123; or "" to clear/
+  const text = (r: unknown) => ((r as { content: Array<{ text: string }> }).content)[0]!.text
+  const serve = async (env: Record<string, string>, cwd?: string) => {
+    const t = new StdioClientTransport({
+      command: join(REPO_ROOT, 'node_modules', '.bin', 'tsx'),
+      args: [join(REPO_ROOT, 'src', 'mcp-server.ts')],
+      ...(cwd ? { cwd } : {}),
+      env: { ...process.env, ...env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' },
+    })
+    const c = new Client({ name: 'claude-code', version: '1.0.0' })
+    await c.connect(t)
+    return c
+  }
+  const call = async (c: Client, name: string, args: Record<string, unknown>) => {
+    const res = await c.callTool({ name, arguments: args })
+    if (res.isError) throw new Error(text(res))
+    return JSON.parse(text(res))
+  }
+
+  it('normalizes every accepted form, refuses everything else with the forms listed, keeps on omission and clears on ""', async () => {
+    const dbPath = join(scratchDir('mcp-issue-links-'), 'inbox.db')
+    const c = await serve({ AGENT_INBOX_DB: dbPath }, scratchDir('mcp-issue-cwd-'))
+    await call(c, 'register', { project: 'p', repo: 'Me/Work' })
+    await call(c, 'board_upsert', {
+      title: 'AHP', issue: 'Shariqh/Agent-Inbox#117',
+      rows: [
+        { label: 'hash', status: 'tracked', issue: '#12' },
+        { label: 'bare', status: 'tracked', issue: ' 13 ' },
+        { label: 'url', status: 'tracked', issue: 'https://github.com/A/B/issues/14' },
+        { label: 'url-slash', status: 'tracked', issue: 'HTTPS://GitHub.com/a/b.js/issues/15/' },
+        { label: 'none', status: 'tracked' },
+      ],
+    })
+    let board = await call(c, 'board_get', { title: 'AHP' })
+    const issues = () => Object.fromEntries(board.rows.map((r: { label: string; issue?: string }) => [r.label, r.issue]))
+    expect(board.issue).toBe('shariqh/agent-inbox#117')
+    expect(issues()).toEqual({ hash: 'me/work#12', bare: 'me/work#13', url: 'a/b#14', 'url-slash': 'a/b.js#15', none: undefined })
+    expect(JSON.stringify(board)).not.toMatch(/issue_pin_repo|issue_repo|issue_rel/)
+
+    await call(c, 'board_row', { title: 'AHP', board_version: board.revision, label: 'none', expected_revision: 1, issue: 'c/d#2147483647' })
+    board = await call(c, 'board_get', { title: 'AHP' })
+    expect(issues().none).toBe('c/d#2147483647')
+
+    // every refusal names the accepted forms and writes nothing
+    const before = board.revision
+    for (const bad of ['a/b', '#0', '012', 'abc', 'a/b#', 'a/..#1', '../x#1', 'a b/c#1', '#2147483648', '   ', 'a/b#1 extra',
+      'https://gitlab.com/a/b/issues/1', 'https://github.com/a/b/pull/1', 'http://github.com/a/b/issues/1', 'https://github.com/a/b/issues/1#c']) {
+      const viaRow = await c.callTool({ name: 'board_row', arguments: { title: 'AHP', board_version: before, label: 'none', expected_revision: 2, issue: bad } })
+      expect(viaRow.isError, bad).toBe(true)
+      expect(text(viaRow), bad).toMatch(FORMS)
+      const viaPin = await c.callTool({ name: 'board_upsert', arguments: { title: 'AHP', board_version: before, issue: bad, rows: [] } })
+      expect(viaPin.isError, bad).toBe(true)
+      expect(text(viaPin), bad).toMatch(FORMS)
+    }
+    board = await call(c, 'board_get', { title: 'AHP' })
+    expect(board.revision).toBe(before)
+    expect(board.rows).toHaveLength(5)
+
+    // a full re-send of what board_get returned, minus issue, keeps every link
+    const resend = (rows: Array<Record<string, unknown>>) => rows.map(({ label, status, revision }) => ({ label, status, revision }))
+    await call(c, 'board_upsert', { title: 'AHP', board_version: board.revision, rows: resend(board.rows) })
+    const kept = await call(c, 'board_get', { title: 'AHP' })
+    expect(kept.revision).toBe(board.revision)
+    expect(kept.issue).toBe('shariqh/agent-inbox#117')
+    board = kept
+    expect(issues().hash).toBe('me/work#12')
+
+    // the documented flow: board_get → board_upsert with the echoed issue strings is a no-op
+    await call(c, 'board_upsert', {
+      title: 'AHP', board_version: board.revision, issue: board.issue,
+      rows: board.rows.map(({ label, status, revision, issue }: Record<string, unknown>) => ({ label, status, revision, ...(issue ? { issue } : {}) })),
+    })
+    expect((await call(c, 'board_get', { title: 'AHP' })).revision).toBe(board.revision)
+
+    // "" clears the pin and a row link
+    const hash = board.rows.find((r: { label: string }) => r.label === 'hash')
+    await call(c, 'board_upsert', {
+      title: 'AHP', board_version: board.revision, issue: '',
+      rows: resend(board.rows).map((r) => (r.label === 'hash' ? { ...r, issue: '' } : r)),
+    })
+    board = await call(c, 'board_get', { title: 'AHP' })
+    expect(board).not.toHaveProperty('issue')
+    expect(issues().hash).toBeUndefined()
+    expect(board.rows.find((r: { label: string }) => r.label === 'hash').revision).toBe(hash.revision + 1)
+    await call(c, 'board_row', { title: 'AHP', board_version: board.revision, label: 'bare', expected_revision: 1, issue: '' })
+    board = await call(c, 'board_get', { title: 'AHP' })
+    expect(issues().bare).toBeUndefined()
+    await c.close()
+  }, 30000)
+
+  it('refuses #N and N when the session has no repository', async () => {
+    const dbPath = join(scratchDir('mcp-issue-norepo-'), 'inbox.db')
+    const c = await serve({ AGENT_INBOX_DB: dbPath }, scratchDir('mcp-issue-norepo-cwd-'))
+    expect((await call(c, 'whoami', {})).repo).toBeNull()
+    for (const bad of ['#5', '5']) {
+      const res = await c.callTool({ name: 'board_upsert', arguments: { title: 'T', rows: [{ label: 'a', status: 'tracked', issue: bad }] } })
+      expect(res.isError, bad).toBe(true)
+      expect(text(res), bad).toMatch(/no GitHub repository/)
+      expect(text(res), bad).toMatch(FORMS)
+    }
+    expect(listBoards(openDb(dbPath))).toEqual([])
+    // a qualified form needs no session repository
+    await call(c, 'board_upsert', { title: 'T', rows: [{ label: 'a', status: 'tracked', issue: 'o/r#5' }] })
+    expect((await call(c, 'board_get', { title: 'T' })).rows[0].issue).toBe('o/r#5')
+    await c.close()
+  }, 20000)
+
+  it('board_advance and a move into blocked keep the link', async () => {
+    const dbPath = join(scratchDir('mcp-issue-advance-'), 'inbox.db')
+    const c = await serve({ AGENT_INBOX_DB: dbPath }, scratchDir('mcp-issue-advance-cwd-'))
+    await call(c, 'board_upsert', { title: 'T', rows: [{ label: 'a', status: 'tracked', issue: 'o/r#5' }] })
+    let board = await call(c, 'board_get', { title: 'T' })
+    await call(c, 'board_upsert', { title: 'T', board_version: board.revision, rows: [blockedRow('a', { revision: board.rows[0].revision })] })
+    board = await call(c, 'board_get', { title: 'T' })
+    expect(board.rows[0]).toMatchObject({ status: 'blocked', action_version: 2, issue: 'o/r#5' })
+    await call(c, 'board_advance', {
+      title: 'T', label: 'a', board_version: board.revision, expected_revision: board.rows[0].revision,
+      note: 'Next step.', next_step: 'Do it.', action_owner: 'task', impact: 'Moves on.',
+    })
+    board = await call(c, 'board_get', { title: 'T' })
+    expect(board.rows[0]).toMatchObject({ status: 'blocked', action_version: 3, issue: 'o/r#5' })
+    await c.close()
+  }, 20000)
+
+  it('a titled board_get adds issue_rel from the cache; pending() and the title-less summary stay byte-identical', async () => {
+    const dbPath = join(scratchDir('mcp-issue-rel-'), 'inbox.db')
+    const c = await serve({ AGENT_INBOX_DB: dbPath }, scratchDir('mcp-issue-rel-cwd-'))
+    await call(c, 'board_upsert', { title: 'T', rows: [blockedRow('a'), { label: 'b', status: 'partial' }] })
+    const hub = openDb(dbPath)
+    const stored = listBoards(hub)[0]!
+    annotateBoardRow(hub, stored.rows[0]!.id, 'Go ahead.')
+    // the first poll stamps delivery; from then on the same rows read the same
+    await call(c, 'pending', {})
+    await call(c, 'board_get', {})
+    const pendingBefore = text(await c.callTool({ name: 'pending', arguments: {} }))
+    const summaryBefore = text(await c.callTool({ name: 'board_get', arguments: {} }))
+
+    // link the plan and both rows WITHOUT changing their revisions, as only a
+    // raw write can, so the two reads see exactly the same rows
+    hub.prepare(`UPDATE boards SET issue_pin_repo = 'o/r', issue_pin_number = 1`).run()
+    hub.prepare(`UPDATE board_rows SET issue_repo = 'o/r', issue_number = 2`).run()
+    expect(text(await c.callTool({ name: 'pending', arguments: {} }))).toBe(pendingBefore)
+    expect(text(await c.callTool({ name: 'board_get', arguments: {} }))).toBe(summaryBefore)
+
+    // nothing cached yet: links echo, no issue_rel
+    const bare = await call(c, 'board_get', { title: 'T' })
+    expect(bare.issue).toBe('o/r#1')
+    expect(JSON.stringify(bare)).not.toMatch(/issue_rel/)
+
+    // the viewer's poller caches #1 (parent of #2) and #2
+    const now = Date.now()
+    const iso = (ms: number) => new Date(ms).toISOString()
+    const node = (n: number, title: string) => ({ repo: 'o/r', number: n, title, state: 'OPEN' as const, state_reason: null })
+    upsertIssueSnapshot(hub, { repo: 'o/r', number: 1, startedAt: iso(now - 60_000), snapshot: {
+      v: 1, issue: node(1, 'Secret umbrella title'), ancestors: [], ancestors_end: 'top',
+      hierarchy: { status: 'ok', total: 4, completed: 1, truncated: false, children: [node(2, 'Secret child title')] },
+    } })
+    upsertIssueSnapshot(hub, { repo: 'o/r', number: 2, startedAt: iso(now - 60 * 60_000), snapshot: {
+      v: 1, issue: node(2, 'Secret child title'), ancestors: [{ ...node(1, 'Secret umbrella title'), children_total: 4, children_completed: 1 }],
+      ancestors_end: 'top', hierarchy: { status: 'ok', total: 0, completed: 0, truncated: false, children: [] },
+    } })
+    const rel = await call(c, 'board_get', { title: 'T' })
+    expect(rel.issue_rel).toEqual({ key: 'o/r#1', children: { total: 4, done: 1 }, checked_at: iso(now - 60_000), stale: false, unavailable: false })
+    for (const row of rel.rows) {
+      expect(row.issue_rel).toEqual({ key: 'o/r#2', parent: 'o/r#1', children: { total: 0, done: 0 }, checked_at: iso(now - 60 * 60_000), stale: true, unavailable: false })
+    }
+    expect(JSON.stringify(rel)).not.toMatch(/Secret/)
+    // …and the polls still do not change
+    expect(text(await c.callTool({ name: 'pending', arguments: {} }))).toBe(pendingBefore)
+    expect(text(await c.callTool({ name: 'board_get', arguments: {} }))).toBe(summaryBefore)
+    await c.close()
+  }, 20000)
+
+  it('tools/list carries the link fields, the accepted forms and the dependency sentence (§8)', async () => {
+    const dbPath = join(scratchDir('mcp-issue-tools-'), 'inbox.db')
+    const c = await serve({ AGENT_INBOX_DB: dbPath })
+    const tools = new Map((await c.listTools()).tools.map((x) => [x.name, x]))
+    const sentence = "Waiting on another GitHub issue (GitHub's 'blocked by') or on another step (`waits_on`) is tracked or partial, never blocked."
+    for (const name of ['board_upsert', 'board_row', 'board_advance']) {
+      expect(tools.get(name)!.description, name).toContain(sentence)
+    }
+    interface JsonNode { description?: string; properties?: Record<string, JsonNode>; items?: JsonNode }
+    const schemaOf = (name: string): JsonNode => tools.get(name)!.inputSchema as unknown as JsonNode
+    for (const status of [schemaOf('board_upsert').properties!['rows']!.items!.properties!['status']!, schemaOf('board_row').properties!['status']!]) {
+      expect(status.description).toContain(sentence)
+    }
+    for (const field of [
+      schemaOf('board_upsert').properties!['issue']!,
+      schemaOf('board_upsert').properties!['rows']!.items!.properties!['issue']!,
+      schemaOf('board_row').properties!['issue']!,
+    ]) {
+      expect(field.description).toMatch(FORMS)
+      expect(field.description).toMatch(/Omitted keeps.*"" clears/)
+      expect(field.description).toMatch(/board_advance and a move into blocked keep it/)
+    }
+    expect(schemaOf('board_advance').properties).not.toHaveProperty('issue')
+    expect(tools.get('board_get')!.description).toMatch(/issue_rel/)
+    await c.close()
+  }, 20000)
+
+  // Slice 2 PR B (§6.4): GitHub dependencies reach the agent as issue keys and
+  // a count, read-only, and apart from the row's own waits_on step labels.
+  it('a titled board_get adds issue_rel.waits_on_issues and unblocks; pending() and the title-less summary stay byte-identical', async () => {
+    const dbPath = join(scratchDir('mcp-issue-deps-'), 'inbox.db')
+    const c = await serve({ AGENT_INBOX_DB: dbPath }, scratchDir('mcp-issue-deps-cwd-'))
+    await call(c, 'board_upsert', {
+      title: 'T', issue: 'o/r#121',
+      rows: [
+        { label: 'Adapter', status: 'partial', issue: 'o/r#119' },
+        { label: 'Import', status: 'tracked', issue: 'o/r#121', waits_on: ['Adapter'] },
+      ],
+    })
+    await call(c, 'pending', {})
+    const pendingBefore = text(await c.callTool({ name: 'pending', arguments: {} }))
+    const summaryBefore = text(await c.callTool({ name: 'board_get', arguments: {} }))
+
+    // the viewer's poller caches #121 (blocked by #119, #120 and the closed #118) and #119
+    const hub = openDb(dbPath)
+    const startedAt = new Date(Date.now() - 60_000).toISOString()
+    const issue = (n: number, state: 'OPEN' | 'CLOSED' = 'OPEN') =>
+      ({ repo: 'o/r', number: n, title: `Secret title ${n}`, state, state_reason: state === 'CLOSED' ? 'COMPLETED' as const : null })
+    const list = (issues: Array<ReturnType<typeof issue>>) =>
+      ({ open: issues.filter((i) => i.state === 'OPEN').length, total: issues.length, truncated: false, list: issues })
+    const cache = (n: number, blockedBy: Array<ReturnType<typeof issue>>, blocking: Array<ReturnType<typeof issue>>) =>
+      upsertIssueSnapshot(hub, {
+        repo: 'o/r', number: n, startedAt,
+        snapshot: { v: 1, issue: issue(n), ancestors: [], ancestors_end: 'top', hierarchy: { status: 'ok', total: 0, completed: 0, truncated: false, children: [] } },
+        dependencies: { status: 'ok', blocked_by: list(blockedBy), blocking: list(blocking) },
+      })
+    cache(121, [issue(119), issue(120), issue(118, 'CLOSED')], [])
+    cache(119, [], [issue(121), issue(122)])
+
+    const board = await call(c, 'board_get', { title: 'T' })
+    const deps = { key: 'o/r#121', waits_on_issues: ['o/r#119', 'o/r#120'], unblocks: 0, stale: false, unavailable: false }
+    expect(board.issue_rel).toMatchObject(deps)
+    const rowOf = (label: string) => board.rows.find((r: { label: string }) => r.label === label)
+    expect(rowOf('Adapter').issue_rel).toMatchObject({ key: 'o/r#119', waits_on_issues: [], unblocks: 2 })
+    // the row's own step labels and GitHub's issue keys never mix
+    expect(rowOf('Import')).toMatchObject({ waits_on: ['Adapter'], issue_rel: deps })
+    expect(JSON.stringify(board)).not.toMatch(/Secret/)
+    expect(text(await c.callTool({ name: 'pending', arguments: {} }))).toBe(pendingBefore)
+    expect(text(await c.callTool({ name: 'board_get', arguments: {} }))).toBe(summaryBefore)
+
+    const description = (await c.listTools()).tools.find((t) => t.name === 'board_get')!.description!
+    expect(description).toContain('issue_rel: { key, parent?, children?: { total, done }, waits_on_issues?, unblocks?, checked_at, stale, unavailable }')
+    expect(description).toContain('issue_rel.waits_on_issues holds GitHub issue keys')
+    expect(description).toContain('read-only and distinct from the row’s own writable waits_on step labels')
+    expect(description).toContain('never a reason to mark a row blocked')
+    await c.close()
+  }, 20000)
+})
+
+// Issue #103 slice 2, PR C (§4): agent-declared step dependencies, end to end
+// over a real stdio round trip.
+describe('step dependencies: waits_on (#103 slice 2 PR C)', () => {
+  const text = (r: unknown) => ((r as { content: Array<{ text: string }> }).content)[0]!.text
+  const serve = async (env: Record<string, string>) => {
+    const t = new StdioClientTransport({
+      command: join(REPO_ROOT, 'node_modules', '.bin', 'tsx'),
+      args: [join(REPO_ROOT, 'src', 'mcp-server.ts')],
+      cwd: scratchDir('mcp-waits-cwd-'),
+      env: { ...process.env, ...env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' },
+    })
+    const c = new Client({ name: 'claude-code', version: '1.0.0' })
+    await c.connect(t)
+    return c
+  }
+  const call = async (c: Client, name: string, args: Record<string, unknown>) => {
+    const res = await c.callTool({ name, arguments: args })
+    if (res.isError) throw new Error(text(res))
+    return JSON.parse(text(res))
+  }
+  type Row = { label: string; status: string; revision: number; waits_on?: string[] }
+  const waitsOf = (board: { rows: Row[] }) => Object.fromEntries(board.rows.map((r) => [r.label, r.waits_on]))
+  const rowOf = (board: { rows: Row[] }, label: string) => board.rows.find((r) => r.label === label)!
+
+  it('echoes waits_on sorted on the rows that have one; a read → re-send is a no-op, omission keeps and [] clears', async () => {
+    const c = await serve({ AGENT_INBOX_DB: join(scratchDir('mcp-waits-'), 'inbox.db') })
+    await call(c, 'board_upsert', {
+      title: 'Release',
+      rows: [
+        { label: 'Build', status: 'done' },
+        { label: 'Sign', status: 'partial', waits_on: ['Build'] },
+        { label: 'Publish', status: 'tracked', waits_on: ['Sign', 'Build', 'Sign'] },
+      ],
+    })
+    let board = await call(c, 'board_get', { title: 'Release' })
+    expect(waitsOf(board)).toEqual({ Build: undefined, Sign: ['Build'], Publish: ['Build', 'Sign'] })
+    expect(rowOf(board, 'Build')).not.toHaveProperty('waits_on')
+
+    // the documented flow, board_get → board_upsert with what it echoed, changes nothing; nor does omitting it
+    const resend = (rows: Row[], echo: boolean) => rows.map(({ label, status, revision, waits_on }) => ({
+      label, status, revision, ...(echo && waits_on ? { waits_on } : {}),
+    }))
+    for (const echo of [true, false]) {
+      await call(c, 'board_upsert', { title: 'Release', board_version: board.revision, rows: resend(board.rows, echo) })
+      const again = await call(c, 'board_get', { title: 'Release' })
+      expect(again.revision, `echo: ${echo}`).toBe(board.revision)
+      expect(waitsOf(again)).toEqual(waitsOf(board))
+    }
+
+    // board_row clears with [] and sets again, each a row revision
+    const publish = rowOf(board, 'Publish')
+    await call(c, 'board_row', { title: 'Release', board_version: board.revision, label: 'Publish', expected_revision: publish.revision, waits_on: [] })
+    board = await call(c, 'board_get', { title: 'Release' })
+    expect(rowOf(board, 'Publish')).not.toHaveProperty('waits_on')
+    expect(rowOf(board, 'Publish').revision).toBe(publish.revision + 1)
+    await call(c, 'board_row', { title: 'Release', board_version: board.revision, label: 'Publish', expected_revision: publish.revision + 1, waits_on: ['Sign', 'Build'] })
+    board = await call(c, 'board_get', { title: 'Release' })
+    expect(rowOf(board, 'Publish')).toMatchObject({ waits_on: ['Build', 'Sign'], revision: publish.revision + 2 })
+
+    // a board_row re-send of the same labels, reordered and repeated, changes nothing
+    await call(c, 'board_row', { title: 'Release', board_version: board.revision, label: 'Publish', expected_revision: publish.revision + 2, waits_on: ['Build', 'Sign', 'Build'] })
+    const same = await call(c, 'board_get', { title: 'Release' })
+    expect(same.revision).toBe(board.revision)
+    expect(rowOf(same, 'Publish')).toMatchObject({ waits_on: ['Build', 'Sign'], revision: publish.revision + 2 })
+    await c.close()
+  }, 20000)
+
+  it('refuses unknown labels, a row naming itself, cycles and oversized lists as tool errors that say why', async () => {
+    const c = await serve({ AGENT_INBOX_DB: join(scratchDir('mcp-waits-refused-'), 'inbox.db') })
+    await call(c, 'board_upsert', { title: 'Release', rows: [{ label: 'Build', status: 'done' }, { label: 'Sign', status: 'tracked', waits_on: ['Build'] }] })
+    const board = await call(c, 'board_get', { title: 'Release' })
+    const build = rowOf(board, 'Build')
+    const sign = rowOf(board, 'Sign')
+    const plan = { title: 'Release', board_version: board.revision }
+    const refusals: Array<[string, Record<string, unknown>, RegExp]> = [
+      ['board_row', { ...plan, label: 'Sign', expected_revision: sign.revision, waits_on: ['Build', 'Ship'] },
+        /waits_on of row "Sign" names "Ship", but no row of this plan is labelled "Ship"/],
+      ['board_row', { ...plan, label: 'Sign', expected_revision: sign.revision, waits_on: ['Sign'] },
+        /waits_on of row "Sign" names the row itself/],
+      ['board_row', { ...plan, label: 'Build', expected_revision: build.revision, waits_on: ['Sign'] },
+        /waits_on would create a cycle: Build → Sign → Build/],
+      ['board_upsert', { ...plan, rows: [{ label: 'Build', status: 'done', revision: build.revision, waits_on: ['Sign'] }, { label: 'Sign', status: 'tracked', revision: sign.revision }] },
+        /waits_on would create a cycle: Build → Sign → Build/],
+      ['board_row', { ...plan, label: 'Sign', expected_revision: sign.revision, waits_on: Array.from({ length: 21 }, (_, i) => `Step ${i}`) },
+        /expected array to have <=20 items at waits_on/],
+      ['board_upsert', { ...plan, rows: [{ label: 'Build', status: 'done', revision: build.revision, waits_on: [''] }, { label: 'Sign', status: 'tracked', revision: sign.revision }] },
+        /expected string to have >=1 characters at rows\[0\]\.waits_on\[0\]/],
+    ]
+    for (const [name, args, why] of refusals) {
+      const res = await c.callTool({ name, arguments: args })
+      expect(res.isError, `${name} ${JSON.stringify(args)}`).toBe(true)
+      expect(text(res)).toMatch(why)
+    }
+    const after = await call(c, 'board_get', { title: 'Release' })
+    expect(after.revision).toBe(board.revision)
+    expect(waitsOf(after)).toEqual({ Build: undefined, Sign: ['Build'] })
+    await c.close()
+  }, 20000)
+
+  it('board_advance and a move into blocked keep waits_on', async () => {
+    const c = await serve({ AGENT_INBOX_DB: join(scratchDir('mcp-waits-advance-'), 'inbox.db') })
+    await call(c, 'board_upsert', { title: 'T', rows: [{ label: 'b', status: 'done' }, { label: 'a', status: 'tracked', waits_on: ['b'] }] })
+    let board = await call(c, 'board_get', { title: 'T' })
+    await call(c, 'board_upsert', {
+      title: 'T', board_version: board.revision,
+      rows: [{ label: 'b', status: 'done', revision: rowOf(board, 'b').revision }, blockedRow('a', { revision: rowOf(board, 'a').revision })],
+    })
+    board = await call(c, 'board_get', { title: 'T' })
+    expect(rowOf(board, 'a')).toMatchObject({ status: 'blocked', action_version: 2, waits_on: ['b'] })
+    await call(c, 'board_advance', {
+      title: 'T', label: 'a', board_version: board.revision, expected_revision: rowOf(board, 'a').revision,
+      note: 'Next step.', next_step: 'Do it.', action_owner: 'task', impact: 'Moves on.',
+    })
+    board = await call(c, 'board_get', { title: 'T' })
+    expect(rowOf(board, 'a')).toMatchObject({ status: 'blocked', action_version: 3, waits_on: ['b'] })
+    await c.close()
+  }, 20000)
+
+  it('pending() and the title-less board_get never carry waits_on', async () => {
+    const dbPath = join(scratchDir('mcp-waits-reads-'), 'inbox.db')
+    const c = await serve({ AGENT_INBOX_DB: dbPath })
+    await call(c, 'board_upsert', { title: 'T', rows: [blockedRow('a'), { label: 'b', status: 'partial' }] })
+    const hub = openDb(dbPath)
+    annotateBoardRow(hub, listBoards(hub)[0]!.rows[0]!.id, 'Go ahead.')
+    // the first poll stamps delivery; from then on the same rows read the same
+    await call(c, 'pending', {})
+    await call(c, 'board_get', {})
+    const pendingBefore = text(await c.callTool({ name: 'pending', arguments: {} }))
+    const summaryBefore = text(await c.callTool({ name: 'board_get', arguments: {} }))
+
+    // a raw write leaves every revision alone, so only waits_on differs between the reads
+    hub.prepare(`UPDATE board_rows SET waits_on = '["b"]' WHERE label = 'a'`).run()
+    expect(text(await c.callTool({ name: 'pending', arguments: {} }))).toBe(pendingBefore)
+    expect(text(await c.callTool({ name: 'board_get', arguments: {} }))).toBe(summaryBefore)
+    expect(rowOf(await call(c, 'board_get', { title: 'T' }), 'a').waits_on).toEqual(['b'])
+    hub.close()
+    await c.close()
+  }, 20000)
+
+  it('tools/list explains waits_on where agents write it, and board_advance takes none', async () => {
+    const c = await serve({ AGENT_INBOX_DB: join(scratchDir('mcp-waits-tools-'), 'inbox.db') })
+    const tools = new Map((await c.listTools()).tools.map((x) => [x.name, x]))
+    interface JsonNode { description?: string; type?: string; maxItems?: number; properties?: Record<string, JsonNode>; items?: JsonNode & { minLength?: number } }
+    const schemaOf = (name: string): JsonNode => tools.get(name)!.inputSchema as unknown as JsonNode
+    for (const field of [schemaOf('board_upsert').properties!['rows']!.items!.properties!['waits_on']!, schemaOf('board_row').properties!['waits_on']!]) {
+      expect(field).toMatchObject({ type: 'array', maxItems: 20, items: { type: 'string', minLength: 1 } })
+      expect(field.description).toMatch(/labels of other rows in this plan/i)
+      expect(field.description).toMatch(/at most 20 entries as sent; duplicates collapse/)
+      expect(field.description).toMatch(/Omitted keeps.*\[\] clears/)
+      expect(field.description).toMatch(/board_advance and a move into blocked keep it/)
+      expect(field.description).toMatch(/never makes a row blocked/)
+      expect(field.description).toMatch(/never asks the human/)
+      // a waiting row may still be blocked on a separate human action (§3.3)
+      expect(field.description).toMatch(/a row that only waits on another step is tracked or partial; blocked remains for a separate human action/)
+    }
+    for (const name of ['board_upsert', 'board_row']) expect(tools.get(name)!.description, name).toMatch(/waits_on/)
+    expect(schemaOf('board_advance').properties).not.toHaveProperty('waits_on')
+    expect(tools.get('board_advance')!.description).toMatch(/keeps its GitHub issue link and waits_on/)
+    expect(tools.get('board_get')!.description).toMatch(/waits_on/)
+    await c.close()
   }, 20000)
 })

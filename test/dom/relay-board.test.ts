@@ -75,6 +75,8 @@ describe('Handoffs milestone', () => {
     expect(relay.querySelectorAll('[data-relay-lane="outcome"] .relay-card')).toHaveLength(1)
     expect(relay.querySelector('[data-relay-lane="agent"]')?.textContent).toContain('Publish?')
     expect(relay.querySelector('[data-relay-lane="agent"]')?.textContent).toContain('Upload build')
+    expect(relay.querySelector('[data-relay-lane="agent"]')?.textContent).toContain('delivered moments')
+    expect(relay.querySelector('[data-relay-lane="agent"]')?.textContent).toContain('Waiting for delivery')
     expect(relay.querySelector('[data-relay-lane="outcome"]')?.textContent).toContain('Release shipped successfully.')
 
     const openButton = relay.querySelector<HTMLButtonElement>('.relay-open')!

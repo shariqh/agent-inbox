@@ -1,15 +1,25 @@
-import { describe, it, expect, beforeEach } from 'vitest'
-import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { cpSync, mkdirSync, writeFileSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
-import { openDb, insertItem, listItems, answerItem, markReplySeen, upsertBoard as writeBoard, listBoards, annotateBoardRow, markHandledDelivered, upsertActivity, closeProject, closedProjects, upsertSourceLink } from '../src/store.js'
+import { openDb, insertItem, listItems, getItem, annotateItem, replyItem, snoozeItem, answerItem, markReplySeen, upsertBoard as writeBoard, listBoards, annotateBoardRow, snoozeBoardRow, markRowHandled, markHandledDelivered, upsertActivity, endActivity, closeProject, closedProjects, upsertSourceLink, archiveBoard, resolveItem, upsertIssueSnapshot, stopItemWatch, stopBoardRowWatch } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
+import { releaseRuntime, registerHost } from './release-runtime.js'
+import { facts, snapshot } from './issue-fixtures.js'
+import type { IssueDependencies } from '../src/store.js'
+import { scratchDir } from './scratch.js'
 
 function freshDb(): Database.Database {
-  return openDb(join(mkdtempSync(join(tmpdir(), 'view-')), 'inbox.db'))
+  return openDb(join(scratchDir('view-'), 'inbox.db'))
 }
+
+// /api/setup and /api/version read each host's registration from the home
+// directory's config files (#197). Every test here points them at an empty
+// scratch home, never the real one.
+const NO_AGENTS = { agentHome: scratchDir('view-home-') }
 
 function upsertBoard(db: Database.Database, input: Parameters<typeof writeBoard>[1]) {
   const existing = [...listBoards(db), ...listBoards(db, { status: 'archived' })]
@@ -40,7 +50,7 @@ describe('viewer api', () => {
   })
 
   it('GET /api/setup returns agent-registration commands and the reporting snippet', async () => {
-    const app = createViewer(db)
+    const app = createViewer(db, NO_AGENTS)
     const res = await app.request('/api/setup')
     expect(res.status).toBe(200)
     const body = await res.json()
@@ -67,7 +77,7 @@ describe('viewer api', () => {
   })
 
   it('GET /api/setup carries a hand-mergeable backstop-hooks block (#10 / #21)', async () => {
-    const body = await (await createViewer(db).request('/api/setup')).json()
+    const body = await (await createViewer(db, NO_AGENTS).request('/api/setup')).json()
     expect(typeof body.hooksSettings).toBe('string')
     const parsed = JSON.parse(body.hooksSettings)
     expect(Object.keys(parsed.hooks).sort()).toEqual(
@@ -98,6 +108,313 @@ describe('viewer api', () => {
     expect(body[0].children[0].name).toBe('kid')
   })
 
+  // issue #197 — one additive per-row field. The response stays a bare array of
+  // rows: electron/main.cjs and the Live strip both read it as one.
+  it('GET /api/activity rows carry the server build each session registered with, null for a legacy row', async () => {
+    upsertActivity(db, { session: 'new', project: 'p', stream: 'main', agent: 'copilot', doing: 'open', idle: true, claim: false, server_version: '1.2.8', server_source: 'runtime' })
+    upsertActivity(db, { session: 'old', project: 'p', stream: 'main', agent: 'claude-code', doing: 'open', idle: true, claim: false })
+    const body = await (await createViewer(db).request('/api/activity')).json() as Array<Record<string, unknown>>
+    expect(Array.isArray(body)).toBe(true)
+    const bySession = new Map(body.map((a) => [a.session, a]))
+    expect(bySession.get('new')).toMatchObject({ server_version: '1.2.8', server_source: 'runtime' })
+    expect(bySession.get('old')).toMatchObject({ server_version: null, server_source: null })
+    expect(Object.keys(bySession.get('new')!).sort()).toEqual([
+      'agent', 'children', 'detail', 'doing', 'idle', 'last_call_at', 'last_doing',
+      'project', 'server_source', 'server_version', 'session', 'started_at', 'stream', 'updated_at',
+    ])
+  })
+
+  describe('GET /api/version — what a restarted session would load (#197)', () => {
+    const PKG = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }
+    const setupInfo = (info: unknown): string => {
+      const path = join(scratchDir('view-version-'), 'setup-info.json')
+      writeFileSync(path, JSON.stringify(info))
+      return path
+    }
+    const read = async (app: ReturnType<typeof createViewer>): Promise<unknown> => (await app.request('/api/version')).json()
+    const UNREGISTERED = { claude: { kind: 'none' }, copilot: { kind: 'none' } }
+
+    it('a checkout, or a bundle packaged from one, answers with its own package version; the runtime question does not apply', async () => {
+      const missing = join(scratchDir('view-version-'), 'setup-info.json')
+      const res = await createViewer(db, { ...NO_AGENTS, setupInfoPath: missing }).request('/api/version')
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ current: PKG.version, mode: 'dev', runtimeInstalled: null, updatable: false, hosts: UNREGISTERED })
+      const devBundle = createViewer(db, { ...NO_AGENTS, setupInfoPath: setupInfo({ repoRoot: '/checkout', nodeBin: '/node' }) })
+      expect(await read(devBundle)).toEqual({ current: PKG.version, mode: 'dev', runtimeInstalled: null, updatable: false, hosts: UNREGISTERED })
+    })
+
+    it('a release answers with its baked version and whether that exact runtime is installed for this host', async () => {
+      const release = releaseRuntime('2.0.0')
+      const app = createViewer(db, release.viewer)
+      // not installed, and Setup can install it: its source payload verifies
+      expect(await read(app)).toEqual({ current: '2.0.0', mode: 'release', runtimeInstalled: false, updatable: true, hosts: UNREGISTERED })
+      // a Setup install is noticed on the very next read, memo or not
+      release.install()
+      expect(await read(app)).toEqual({ current: '2.0.0', mode: 'release', runtimeInstalled: true, updatable: true, hosts: UNREGISTERED })
+    })
+
+    // Live may point at Setup's update only when Setup would actually offer it,
+    // and Setup offers it only while the app's own runtime verifies — installed
+    // or not (review of #205).
+    it('says Setup cannot update agents when the app\'s runtime no longer verifies, even with one installed', async () => {
+      const release = releaseRuntime('2.0.0')
+      release.install()
+      writeFileSync(join(release.payloadDir, 'dist', 'mcp-server.js'), '// tampered after install\n')
+      expect(await read(createViewer(db, release.viewer)))
+        .toEqual({ current: '2.0.0', mode: 'release', runtimeInstalled: true, updatable: false, hosts: UNREGISTERED })
+    })
+
+    it('answers null for the runtime when Setup could not install it here, so no advice is offered', async () => {
+      const noHostPayload = releaseRuntime('2.0.0', { hostPayload: false })
+      expect(await read(createViewer(db, noHostPayload.viewer)))
+        .toEqual({ current: '2.0.0', mode: 'release', runtimeInstalled: null, updatable: false, hosts: UNREGISTERED })
+      const unverifiable = releaseRuntime('2.0.0')
+      writeFileSync(join(unverifiable.payloadDir, 'dist', 'mcp-server.js'), '// tampered source\n')
+      expect(await read(createViewer(db, unverifiable.viewer)))
+        .toEqual({ current: '2.0.0', mode: 'release', runtimeInstalled: null, updatable: false, hosts: UNREGISTERED })
+    })
+
+    it('a release with no baked version answers null rather than guessing', async () => {
+      const app = createViewer(db, { ...NO_AGENTS, setupInfoPath: setupInfo({ schema: 2, runtimePayloads: {} }) })
+      expect(await read(app)).toEqual({ current: null, mode: 'release', runtimeInstalled: null, updatable: false, hosts: UNREGISTERED })
+    })
+
+    // Part 2: a restart loads whatever THAT host is registered to run, so Live
+    // gets each host's registration — its kind and, for Setup's runtime, its
+    // version. Nothing else: no path, no runtime id, no config content.
+    it('says which build each host is registered to run, and nothing more', async () => {
+      const release = releaseRuntime('2.0.0')
+      const old = release.installVersion('1.2.8')
+      release.register('claude', old)
+      release.register('copilot', release.install())
+      const app = createViewer(db, release.viewer)
+
+      const body = await read(app)
+      expect(body).toEqual({
+        current: '2.0.0',
+        mode: 'release',
+        runtimeInstalled: true,
+        updatable: true,
+        hosts: { claude: { kind: 'runtime', version: '1.2.8' }, copilot: { kind: 'runtime', version: '2.0.0' } },
+      })
+      expect(JSON.stringify(body)).not.toContain(release.home)
+
+      // a checkout and an unrecognized command are reported by kind alone
+      const checkout = scratchDir('view-checkout-')
+      mkdirSync(join(checkout, 'dist'))
+      writeFileSync(join(checkout, 'package.json'), '{"name":"agent-inbox"}')
+      writeFileSync(join(checkout, 'dist', 'mcp-server.js'), '')
+      registerHost(release.home, 'claude', process.execPath, join(checkout, 'dist', 'mcp-server.js'))
+      registerHost(release.home, 'copilot', process.execPath, join(checkout, 'package.json'))
+      const later = await read(app) as { hosts: unknown }
+      expect(later.hosts).toEqual({ claude: { kind: 'checkout' }, copilot: { kind: 'other' } })
+      expect(JSON.stringify(later)).not.toContain(checkout)
+    })
+
+    it('/api/setup carries each host\'s registration for the Setup panel, and how to move hooks once the runtime is installed', async () => {
+      const release = releaseRuntime('2.0.0')
+      const old = release.installVersion('1.2.8')
+      const oldId = old.slice(release.runtimeRoot.length + 1)
+      release.register('claude', old)
+      release.registerHooks(old)
+      const app = createViewer(db, release.viewer)
+      const agents = async () => (await (await app.request('/api/setup')).json()).agents
+
+      expect(await agents()).toEqual({
+        current: '2.0.0',
+        updatable: true,
+        claude: { kind: 'runtime', version: '1.2.8', runtimeId: oldId },
+        copilot: { kind: 'none' },
+        hooks: { kind: 'runtime', version: '1.2.8', runtimeId: oldId },
+        hooksCommand: '',
+      })
+
+      const installed = release.install()
+      expect((await agents()).hooksCommand)
+        .toBe(`bash '${join(installed, 'scripts', 'install-hooks.sh')}' --apply`)
+
+      // a release whose payload Setup cannot install offers no update
+      const noPayload = releaseRuntime('2.0.0', { hostPayload: false })
+      noPayload.register('claude', noPayload.installVersion('1.2.8'))
+      const fixed = (await (await createViewer(db, noPayload.viewer).request('/api/setup')).json()).agents
+      expect(fixed).toMatchObject({ current: '2.0.0', updatable: false, claude: { kind: 'runtime', version: '1.2.8' } })
+
+      // a checkout viewer reports registrations, but Setup does not manage versions there
+      const dev = (await (await createViewer(db, { ...NO_AGENTS, setupInfoPath: join(release.home, 'none.json') }).request('/api/setup')).json()).agents
+      expect(dev).toEqual({
+        current: null, updatable: false,
+        claude: { kind: 'none' }, copilot: { kind: 'none' }, hooks: { kind: 'none' }, hooksCommand: '',
+      })
+    })
+
+    it('never returns another MCP server\'s config from either route', async () => {
+      const release = releaseRuntime('2.0.0')
+      const old = release.installVersion('1.2.8')
+      writeFileSync(join(release.home, '.claude.json'), JSON.stringify({
+        oauthAccount: { emailAddress: 'someone@example.com' },
+        mcpServers: {
+          vault: { command: '/opt/vault/bin/mcp', args: ['--token', 'ghp_SECRET'], env: { VAULT_TOKEN: 'sk-SECRET' } },
+          'agent-inbox': { command: join(old, 'bin', 'node'), args: [join(old, 'dist', 'mcp-server.js')], env: { MINE: 'sk-SECRET-OWN' } },
+        },
+      }))
+      const app = createViewer(db, release.viewer)
+      for (const route of ['/api/version', '/api/setup']) {
+        const text = await (await app.request(route)).text()
+        for (const secret of ['/opt/vault', 'ghp_SECRET', 'sk-SECRET', 'someone@example.com']) {
+          expect(text, `${route}: ${secret}`).not.toContain(secret)
+        }
+      }
+    })
+
+    // /api/setup and /api/version share ONE verified runtime lookup. Verifying
+    // hashes a whole runtime on the viewer thread (Electron main in the packaged
+    // app), so it runs again only when something it looked at has changed.
+    const RUNTIME_VERIFY = createRequire(import.meta.url)('../electron/runtime-verify.cjs') as {
+      verifyRuntimePayload(opts: { root: string }): { manifest: { runtimeId: string } }
+    }
+    const counting = () => {
+      const roots: string[] = []
+      const calls: Array<{ root: string; requiredFiles?: string[] }> = []
+      const runtimeVerifier = (opts: { root: string; requiredFiles?: string[] }) => {
+        roots.push(opts.root)
+        calls.push(opts)
+        return RUNTIME_VERIFY.verifyRuntimePayload(opts)
+      }
+      // a registered runtime is checked for ownership only (#197 part 2): no
+      // required files, unlike the release lookups for this app's own runtime
+      const ownership = (dir: string): number =>
+        calls.filter((c) => c.root === realpathSync(dir) && c.requiredFiles?.length === 0).length
+      return { roots, runtimeVerifier, ownership }
+    }
+
+    it('verifies a registered older runtime once, reuses the release lookup for the current one, and re-reads a changed host', async () => {
+      const release = releaseRuntime('2.0.0')
+      const old = release.installVersion('1.2.8')
+      const current = release.install()
+      release.register('claude', old)
+      release.register('copilot', current)
+      const verifier = counting()
+      const app = createViewer(db, { ...release.viewer, runtimeVerifier: verifier.runtimeVerifier })
+
+      expect(await read(app)).toMatchObject({ hosts: { claude: { version: '1.2.8' }, copilot: { version: '2.0.0' } } })
+      expect((await (await app.request('/api/setup')).json()).agents.claude).toMatchObject({ version: '1.2.8' })
+      expect(await read(app)).toMatchObject({ hosts: { claude: { version: '1.2.8' } } })
+      expect(verifier.ownership(old)).toBe(1)
+      // the shared release lookup already verified the current runtime, more strictly
+      expect(verifier.ownership(current)).toBe(0)
+
+      // Claude Code rewrites ~/.claude.json all the time: re-reading it must not
+      // hash the runtime it still points at again
+      const claudeJson = join(release.home, '.claude.json')
+      const config = JSON.parse(readFileSync(claudeJson, 'utf8')) as Record<string, unknown>
+      writeFileSync(claudeJson, JSON.stringify({ ...config, numStartups: 42 }))
+      expect(await read(app)).toMatchObject({ hosts: { claude: { kind: 'runtime', version: '1.2.8' } } })
+      expect(verifier.ownership(old)).toBe(1)
+
+      // an update moves Claude to the current runtime: its config changed, so
+      // the next read says so without hashing anything again
+      release.register('claude', current)
+      expect(await read(app)).toMatchObject({ hosts: { claude: { kind: 'runtime', version: '2.0.0' } } })
+      expect(verifier.ownership(current)).toBe(0)
+      expect(verifier.ownership(old)).toBe(1)
+
+      // a pruned runtime leaves a registration nothing can verify
+      release.register('claude', old)
+      rmSync(old, { recursive: true })
+      expect(await read(app)).toMatchObject({ hosts: { claude: { kind: 'unknown' } } })
+    })
+
+    it('notices a change made through a symlinked host config, at its target', async () => {
+      const release = releaseRuntime('2.0.0')
+      const old = release.installVersion('1.2.8')
+      const current = release.install()
+      const dotfiles = join(release.home, 'dotfiles')
+      mkdirSync(dotfiles)
+      release.register('claude', old)
+      renameSync(join(release.home, '.claude.json'), join(dotfiles, 'claude.json'))
+      symlinkSync(join(dotfiles, 'claude.json'), join(release.home, '.claude.json'))
+      const app = createViewer(db, release.viewer)
+      expect(await read(app)).toMatchObject({ hosts: { claude: { kind: 'runtime', version: '1.2.8' } } })
+
+      // edit only the target, as a dotfiles checkout or `claude mcp add` through the link does
+      const config = JSON.parse(readFileSync(join(dotfiles, 'claude.json'), 'utf8')) as { mcpServers: Record<string, unknown> }
+      config.mcpServers['agent-inbox'] = { command: join(current, 'bin', 'node'), args: [join(current, 'dist', 'mcp-server.js')] }
+      writeFileSync(join(dotfiles, 'claude.json'), JSON.stringify(config))
+      expect(await read(app)).toMatchObject({ hosts: { claude: { kind: 'runtime', version: '2.0.0' } } })
+    })
+
+    it('verifies once for /api/setup and /api/version together, and repeated reads do not re-hash', async () => {
+      const release = releaseRuntime('2.0.0')
+      release.install()
+      const verifier = counting()
+      const app = createViewer(db, { ...release.viewer, runtimeVerifier: verifier.runtimeVerifier })
+      expect((await (await app.request('/api/setup')).json()).runtimeAvailable).toBe(true)
+      const verified = verifier.roots.length
+      expect(verified).toBeGreaterThan(0)
+      expect(await read(app)).toMatchObject({ runtimeInstalled: true })
+      expect((await (await app.request('/api/setup')).json()).runtimeAvailable).toBe(true)
+      expect(await read(app)).toMatchObject({ runtimeInstalled: true })
+      expect(verifier.roots).toHaveLength(verified)
+    })
+
+    it('re-verifies after an install, a manifest change, an atomic replace or a removal', async () => {
+      const release = releaseRuntime('2.0.0')
+      const verifier = counting()
+      const app = createViewer(db, { ...release.viewer, runtimeVerifier: verifier.runtimeVerifier })
+      const reverified = async (expected: boolean | null): Promise<void> => {
+        const before = verifier.roots.length
+        expect(await read(app)).toMatchObject({ runtimeInstalled: expected })
+        expect(verifier.roots.length).toBeGreaterThan(before)
+      }
+      await reverified(false) // nothing installed yet; Setup can install it
+      const installed = release.install()
+      await reverified(true) // a Setup install
+      const manifest = join(installed, 'runtime-manifest.json')
+      const original = readFileSync(manifest)
+      writeFileSync(manifest, Buffer.concat([original, Buffer.from('\n')]))
+      await reverified(false) // its manifest changed in place
+      writeFileSync(manifest, original)
+      // pin every time the key reads to a whole millisecond, so the replace below
+      // can put each one back exactly
+      const PINNED = new Date('2026-10-17T10:00:00.000Z')
+      const pin = (...paths: string[]): void => { for (const path of paths) utimesSync(path, PINNED, PINNED) }
+      pin(release.runtimeRoot, installed, manifest)
+      await reverified(true)
+      // an atomic replace: a staged tree renamed over the same name, with every
+      // size and mtime the key reads unchanged — only identity and ctime differ
+      const staged = join(release.runtimeRoot, '.staged')
+      cpSync(installed, staged, { recursive: true })
+      writeFileSync(join(staged, 'dist', 'mcp-server.js'), '// tampered\n')
+      rmSync(installed, { recursive: true })
+      renameSync(staged, installed)
+      pin(release.runtimeRoot, installed, manifest)
+      await reverified(false)
+      rmSync(installed, { recursive: true })
+      await reverified(false) // removed
+      // the app's own payload is part of the key too
+      writeFileSync(join(release.payloadDir, 'runtime-manifest.json'), '{}')
+      await reverified(null)
+    })
+
+    it('still re-verifies an edit deep inside an installed runtime after a long backstop', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] })
+      try {
+        const release = releaseRuntime('2.0.0')
+        const installed = release.install()
+        const app = createViewer(db, release.viewer)
+        expect(await read(app)).toMatchObject({ runtimeInstalled: true })
+        // an in-place edit below the runtime directory changes nothing the key reads
+        writeFileSync(join(installed, 'dist', 'mcp-server.js'), '// tampered after install\n')
+        vi.setSystemTime(Date.now() + 5 * 60_000)
+        expect(await read(app)).toMatchObject({ runtimeInstalled: true })
+        vi.setSystemTime(Date.now() + 6 * 60_000)
+        expect(await read(app)).toMatchObject({ runtimeInstalled: false })
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+  })
+
   it('GET /api/items returns grouped items', async () => {
     insertItem(db, { project: 'p', stream: '', agent: 'claude-code', kind: 'question', title: 'q' })
     const app = createViewer(db)
@@ -107,16 +424,99 @@ describe('viewer api', () => {
     expect(body.needsYou[0].items[0].title).toBe('q')
   })
 
-  it('POST resolve, dismiss, annotate mutate the row', async () => {
+  describe('GET /api/activity/history — truthful claim-interval history', () => {
+    const START = Date.parse('2026-08-01T09:00:00.000Z')
+
+    beforeEach(() => {
+      vi.useFakeTimers()
+      vi.setSystemTime(START)
+    })
+    afterEach(() => { vi.useRealTimers() })
+
+    it('returns an empty list when nothing has ever claimed work', async () => {
+      const res = await createViewer(db).request('/api/activity/history')
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual([])
+    })
+
+    it('returns closed and open spans with the shape the dashboard needs', async () => {
+      upsertActivity(db, { session: 's1', project: 'p', stream: 'main', agent: 'claude-code', doing: 'reviewing #74' })
+      vi.setSystemTime(START + 5 * 60_000)
+      endActivity(db, 's1')
+      upsertActivity(db, { session: 's2', project: 'p', stream: 'main', agent: 'claude-code', doing: 'shipping' })
+
+      const res = await createViewer(db).request('/api/activity/history')
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body).toHaveLength(2)
+      const closed = body.find((s: { session: string }) => s.session === 's1')
+      const open = body.find((s: { session: string }) => s.session === 's2')
+      expect(closed.doing).toBe('reviewing #74')
+      expect(closed.ended_at).toBe(new Date(START + 5 * 60_000).toISOString())
+      expect(closed.effective_ended_at).toBe(closed.ended_at)
+      expect(open.ended_at).toBeNull()
+      expect(open.effective_ended_at).toBeNull()
+    })
+
+    it('filters by project', async () => {
+      upsertActivity(db, { session: 's1', project: 'proj-a', stream: '', agent: 'a', doing: 'task a' })
+      upsertActivity(db, { session: 's2', project: 'proj-b', stream: '', agent: 'a', doing: 'task b' })
+      const res = await createViewer(db).request('/api/activity/history?project=proj-a')
+      const body = await res.json()
+      expect(body.map((s: { session: string }) => s.session)).toEqual(['s1'])
+    })
+
+    it('filters by since_ms, excluding spans that ended before the window and keeping ongoing ones', async () => {
+      upsertActivity(db, { session: 'old', project: 'p', stream: '', agent: 'a', doing: 'old task' })
+      vi.setSystemTime(START + 5 * 60_000)
+      endActivity(db, 'old')
+      vi.setSystemTime(START + 20 * 60_000)
+      upsertActivity(db, { session: 'ongoing', project: 'p', stream: '', agent: 'a', doing: 'still going' })
+
+      const res = await createViewer(db).request(`/api/activity/history?since_ms=${START + 15 * 60_000}`)
+      const body = await res.json()
+      expect(body.map((s: { session: string }) => s.session)).toEqual(['ongoing'])
+    })
+
+    it('rejects a non-numeric since_ms with 400 rather than silently ignoring it', async () => {
+      const res = await createViewer(db).request('/api/activity/history?since_ms=not-a-number')
+      expect(res.status).toBe(400)
+      const body = await res.json()
+      expect(body.ok).toBe(false)
+    })
+
+    it('rejects a finite number outside the JavaScript date range', async () => {
+      const res = await createViewer(db).request('/api/activity/history?since_ms=1e20')
+      expect(res.status).toBe(400)
+      const body = await res.json()
+      expect(body.ok).toBe(false)
+    })
+
+    it('is independent of /api/activity — a span survives a session ending even though live presence drops it', async () => {
+      upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'a', doing: 'reviewing' })
+      endActivity(db, 's1')
+      const live = await (await createViewer(db).request('/api/activity')).json()
+      expect(live).toEqual([]) // ended session drops out of live presence
+      const history = await (await createViewer(db).request('/api/activity/history')).json()
+      expect(history).toHaveLength(1) // but the span survives
+    })
+  })
+
+  it('POST resolve, dismiss, annotate preserve feedback and refuse closed annotation edits', async () => {
     const a = insertItem(db, { project: 'p', stream: '', agent: 'claude-code', kind: 'question', title: 'a' })
     const b = insertItem(db, { project: 'p', stream: '', agent: 'claude-code', kind: 'note', title: 'b' })
     const app = createViewer(db)
-    expect((await app.request(`/api/items/${a}/resolve`, { method: 'POST' })).status).toBe(200)
-    expect((await app.request(`/api/items/${b}/dismiss`, { method: 'POST' })).status).toBe(200)
     const annRes = await app.request(`/api/items/${a}/annotate`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'noted' }),
     })
     expect(annRes.status).toBe(200)
+    expect(await annRes.json()).toEqual({ ok: true })
+    expect((await app.request(`/api/items/${a}/resolve`, { method: 'POST' })).status).toBe(200)
+    expect((await app.request(`/api/items/${b}/dismiss`, { method: 'POST' })).status).toBe(200)
+    const late = await app.request(`/api/items/${a}/annotate`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'late rewrite' }),
+    })
+    expect(await late.json()).toEqual({ ok: false })
     const rows = listItems(db)
     expect(rows.find((r) => r.id === a)!.status).toBe('resolved')
     expect(rows.find((r) => r.id === a)!.annotation).toBe('noted')
@@ -240,7 +640,7 @@ describe('viewer api', () => {
 // the real /api/setup handler, with the real git subprocess doing the comparing.
 describe('GET /api/setup carries the build stamp (issue #40)', () => {
   function tmpRepo(): string {
-    const dir = mkdtempSync(join(tmpdir(), 'setup-repo-'))
+    const dir = scratchDir('setup-repo-')
     execFileSync('git', ['init', '-q'], { cwd: dir })
     execFileSync('git', ['config', 'user.email', 't@t.dev'], { cwd: dir })
     execFileSync('git', ['config', 'user.name', 't'], { cwd: dir })
@@ -251,12 +651,12 @@ describe('GET /api/setup carries the build stamp (issue #40)', () => {
     return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim()
   }
   function bakedFile(body: unknown): string {
-    const p = join(mkdtempSync(join(tmpdir(), 'setup-info-')), 'setup-info.json')
+    const p = join(scratchDir('setup-info-'), 'setup-info.json')
     writeFileSync(p, typeof body === 'string' ? body : JSON.stringify(body))
     return p
   }
   const setup = async (path?: string): Promise<Record<string, never> & { build: { drift: string; commit: string | null; head: string | null; builtAt: string | null; repoRoot: string | null }; note: string; claudeCommand: string }> => {
-    const res = await createViewer(freshDb(), path ? { setupInfoPath: path } : {}).request('/api/setup')
+    const res = await createViewer(freshDb(), path ? { ...NO_AGENTS, setupInfoPath: path } : NO_AGENTS).request('/api/setup')
     expect(res.status).toBe(200)
     return await res.json()
   }
@@ -345,13 +745,102 @@ describe('source links api (issue #30)', () => {
   })
 })
 
+// Issue #103 (PR1a): the sub-issue graph. Empty until the viewer's poller
+// (PR1b) caches snapshots; these tests cache them directly through the store.
+describe('issue graph api (issue #103)', () => {
+  const REPO = 'shariqh/agent-inbox'
+  const SCOPE = { project: 'agent-inbox', stream: '120-ahp-input', agent: 'test' }
+
+  it('is the complete empty graph on a fresh db, so nothing renders differently', async () => {
+    const res = await createViewer(freshDb()).request('/api/issues')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toContain('application/json')
+    expect(await res.json()).toEqual({
+      version: 1, nodes: [], edges: [], roots: [], aliases: {},
+      truncated: { roots: 0, ancestors: 0, children: 0, dependencies: 0, edges: 0 },
+    })
+  })
+
+  it('serves what open items and plans link: closed projects and archived plans displayed, not refreshed', async () => {
+    const db = freshDb()
+    const startedAt = new Date().toISOString()
+    const cache = (key: string, opts: Parameters<typeof snapshot>[1] = {}) => {
+      const hash = key.indexOf('#')
+      upsertIssueSnapshot(db, { repo: key.slice(0, hash), number: Number(key.slice(hash + 1)), snapshot: snapshot(key, opts), startedAt })
+    }
+    insertItem(db, { ...SCOPE, kind: 'question', title: 'Which parent?', repo: REPO, issue_ref: 120 })
+    upsertBoard(db, { ...SCOPE, stream: '119-adapter', title: 'Old plan', rows: [], repo: REPO, issueRef: 119 })
+    const old = listBoards(db).find((board) => board.title === 'Old plan')!
+    archiveBoard(db, old.id, old.revision)
+    insertItem(db, { ...SCOPE, project: 'retired', kind: 'note', title: 'Peek', repo: 'a/x', issue_ref: 5 })
+    closeProject(db, 'retired')
+    resolveItem(db, insertItem(db, { ...SCOPE, kind: 'note', title: 'History', repo: REPO, issue_ref: 121 }))
+    // a PR row cached before closing references were recorded: display-only (§4.2)
+    insertItem(db, { ...SCOPE, stream: '122-legacy', kind: 'note', title: 'Legacy', repo: REPO, issue_ref: 122 })
+    upsertSourceLink(db, { repo: REPO, branch: '122-legacy', pr_number: 9, pr_state: 'OPEN', issue_number: 122 })
+    cache(`${REPO}#120`, { ancestors: [facts(`${REPO}#117`, { children_total: 10, children_completed: 0 })] })
+    for (const key of [`${REPO}#119`, 'a/x#5', `${REPO}#121`, `${REPO}#122`]) cache(key)
+
+    const body = await (await createViewer(db).request('/api/issues')).json()
+    expect(body.roots.map((root: { key: string; refresh: boolean }) => [root.key, root.refresh])).toEqual([
+      ['a/x#5', false], [`${REPO}#119`, false], [`${REPO}#120`, true],
+    ])
+    expect(body.nodes.map((node: { key: string }) => node.key)).toEqual(['a/x#5', `${REPO}#117`, `${REPO}#119`, `${REPO}#120`])
+    expect(body.edges).toEqual([{ kind: 'contains', from: `${REPO}#117`, to: `${REPO}#120`, position: 0, observed_at: startedAt }])
+    expect(body.aliases).toEqual({})
+  })
+
+  // Slice 2 §6.2: GitHub dependencies, additive within version 1.
+  it('carries blocks edges, own-section counts and each root\'s dependency status; the tag moves only with the bytes', async () => {
+    const db = freshDb()
+    const startedAt = new Date(Date.now() - 60_000).toISOString()
+    const depsOf = (blockedBy: number[], blocking: number[]): IssueDependencies => ({
+      status: 'ok',
+      blocked_by: { open: blockedBy.length, total: blockedBy.length, truncated: false, list: blockedBy.map((n) => facts(`${REPO}#${n}`)) },
+      blocking: { open: blocking.length, total: blocking.length, truncated: false, list: blocking.map((n) => facts(`${REPO}#${n}`)) },
+    })
+    insertItem(db, { ...SCOPE, kind: 'question', title: 'Which input first?', repo: REPO, issue_ref: 121 })
+    insertItem(db, { ...SCOPE, stream: '122-x', kind: 'note', title: 'Unchecked', repo: REPO, issue_ref: 122 })
+    upsertIssueSnapshot(db, { repo: REPO, number: 121, snapshot: snapshot(`${REPO}#121`), dependencies: depsOf([119, 120], []), startedAt })
+    upsertIssueSnapshot(db, { repo: REPO, number: 122, snapshot: snapshot(`${REPO}#122`), startedAt })
+    const app = createViewer(db)
+
+    const first = await app.request('/api/issues')
+    const body = await first.json()
+    expect(body.edges).toEqual([
+      { kind: 'blocks', from: `${REPO}#119`, to: `${REPO}#121`, observed_at: startedAt },
+      { kind: 'blocks', from: `${REPO}#120`, to: `${REPO}#121`, observed_at: startedAt },
+    ])
+    expect(body.nodes.find((n: { key: string }) => n.key === `${REPO}#121`).deps)
+      .toEqual({ blocked_by_open: 2, blocked_by_total: 2, blocking_open: 0, blocking_total: 0 })
+    expect(body.nodes.find((n: { key: string }) => n.key === `${REPO}#119`)).not.toHaveProperty('deps')
+    expect(body.roots.map((r: { key: string; dependencies: string; dependencies_omitted: number }) =>
+      [r.key, r.dependencies, r.dependencies_omitted])).toEqual([[`${REPO}#121`, 'ok', 0], [`${REPO}#122`, 'unknown', 0]])
+    expect(body.truncated).toEqual({ roots: 0, ancestors: 0, children: 0, dependencies: 0, edges: 0 })
+
+    // nothing changed: the same tag, even across an unrelated write
+    const etag = first.headers.get('etag')!
+    expect((await app.request('/api/issues', { headers: { 'If-None-Match': etag } })).status).toBe(304)
+    insertItem(db, { ...SCOPE, stream: 'main', kind: 'note', title: 'Unlinked' })
+    expect((await app.request('/api/issues', { headers: { 'If-None-Match': etag } })).status).toBe(304)
+
+    // the same fetch's section now lists only #119: new bytes, a new tag
+    db.prepare(`UPDATE issue_snapshots SET dependencies = ? WHERE number = 121`)
+      .run(JSON.stringify({ v: 1, fetched_at: startedAt, ...depsOf([119], []) }))
+    const changed = await app.request('/api/issues', { headers: { 'If-None-Match': etag } })
+    expect(changed.status).toBe(200)
+    expect(changed.headers.get('etag')).not.toBe(etag)
+    expect((await changed.json()).edges).toEqual([{ kind: 'blocks', from: `${REPO}#119`, to: `${REPO}#121`, observed_at: startedAt }])
+  })
+})
+
 describe('boards api', () => {
   let db: Database.Database
   beforeEach(() => { db = freshDb() })
 
   it('GET /api/boards returns active boards with rows + progress', async () => {
     upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'coverage', rows: [
-      { label: 'theme', status: 'done', context: 'shipped in dark-mode PR' }, { label: 'stems', status: 'partial' }, { label: 'na-row', status: 'na' },
+      { label: 'theme', status: 'done', context: 'shipped in dark-mode PR' }, { label: 'stems', status: 'partial', waits_on: ['theme'] }, { label: 'na-row', status: 'na' },
     ] })
     const res = await createViewer(db).request('/api/boards')
     expect(res.status).toBe(200)
@@ -360,6 +849,8 @@ describe('boards api', () => {
     expect(body[0].title).toBe('coverage')
     expect(body[0].rows.map((r: { label: string }) => r.label)).toEqual(['theme', 'stems', 'na-row'])
     expect(body[0].rows[0].context).toBe('shipped in dark-mode PR')
+    // #103 slice 2: the stored step dependencies, as every agent-authored row field
+    expect(body[0].rows.map((r: { waits_on: string[] | null }) => r.waits_on)).toEqual([null, ['theme'], null])
     expect(body[0].progress.countable).toBe(2)
     expect(body[0].progress.fraction).toBeCloseTo(0.75) // (1 + 0.5)/2
   })
@@ -634,5 +1125,402 @@ describe('the human’s payloads never route through the agent-side shaping (#42
     const src = readFileSync(new URL('../src/viewer.ts', import.meta.url), 'utf8')
     expect(src).not.toMatch(/from '\.\/shape\.js'/)
     expect(src).not.toContain('context_chars')
+  })
+})
+
+// ── issue #163: an invalid write body is refused BEFORE any store call ──────
+// postJSON() in public/app.js keys on the HTTP status: a 4xx means "the write
+// never happened", while a 200 { ok:false } is the store refusing a VALID
+// request. So invalid input must be a 400 that leaves the stored state exactly
+// as it was — never a 500 (a parse or trim() throw), and never a 200 that
+// silently overwrote something. An explicit '' stays a legitimate clear.
+describe('write routes refuse invalid bodies before touching the store (#163)', () => {
+  let db: Database.Database
+  beforeEach(() => { db = freshDb() })
+
+  const post = (path: string, body: string) => createViewer(db).request(path, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body,
+  })
+
+  async function expectInvalid(res: Response) {
+    expect(res.status).toBe(400)
+    expect(await res.json()).toMatchObject({ ok: false, error: expect.any(String) })
+  }
+
+  // Each case receives the route's other fields, valid, so the field under
+  // test is the ONLY thing wrong with the request.
+  type BodyCase = [label: string, body: (valid: Record<string, unknown>) => string]
+  const INVALID_TEXT: BodyCase[] = [
+    ['malformed JSON', () => '{"text": "unterminated'],
+    ['a JSON null body', () => 'null'],
+    ['a missing text', (valid) => JSON.stringify(valid)],
+    ['a null text', (valid) => JSON.stringify({ ...valid, text: null })],
+    ['a numeric text', (valid) => JSON.stringify({ ...valid, text: 123 })],
+    ['an object text', (valid) => JSON.stringify({ ...valid, text: { value: 'nested' } })],
+  ]
+  const FUTURE = '2099-01-01T00:00:00.000Z'
+  // `until` is the whole instruction: a date snoozes, null wakes. Anything else
+  // used to reach the store — coerced to null, or a string stored verbatim that
+  // the viewer cannot parse — and silently WOKE the item or row with a 200.
+  const INVALID_UNTIL: BodyCase[] = [
+    ['malformed JSON', () => '{"until": '],
+    ['a JSON null body', () => 'null'],
+    ['a missing until', (valid) => JSON.stringify(valid)],
+    ['a numeric until', (valid) => JSON.stringify({ ...valid, until: Date.parse(FUTURE) })],
+    ['an object until', (valid) => JSON.stringify({ ...valid, until: { at: FUTURE } })],
+    ['a boolean until', (valid) => JSON.stringify({ ...valid, until: false })],
+    ['an empty until', (valid) => JSON.stringify({ ...valid, until: '' })],
+    ['an unparseable until', (valid) => JSON.stringify({ ...valid, until: 'not-a-date' })],
+    ['a relative-word until', (valid) => JSON.stringify({ ...valid, until: 'tomorrow' })],
+    // parseable, but its +YYYYYY form would sort below every 4-digit-year stamp
+    ['a beyond-year-9999 until', (valid) => JSON.stringify({ ...valid, until: '+010000-01-01T00:00:00.000Z' })],
+  ]
+  // #247: `defer` is optional on the two stop-waiting routes, but a present
+  // value must be a boolean. A coerced 'false' or 1 would pin or snooze an ask
+  // the human never set aside, or drop a deferral they asked for.
+  const INVALID_DEFER: BodyCase[] = [
+    ['a string defer', (valid) => JSON.stringify({ ...valid, defer: 'true' })],
+    ['a numeric defer', (valid) => JSON.stringify({ ...valid, defer: 1 })],
+    ['a null defer', (valid) => JSON.stringify({ ...valid, defer: null })],
+    ['an object defer', (valid) => JSON.stringify({ ...valid, defer: { pinned: true } })],
+  ]
+  // The store compares snoozed_until as TEXT, so a valid date is stored as UTC ISO.
+  const OFFSET_DATE = '2099-01-01T00:00:00+02:00'
+  const OFFSET_DATE_UTC = '2098-12-31T22:00:00.000Z'
+
+  const question = () => insertItem(db, { project: 'p', stream: '', agent: 'a', kind: 'question', title: 'q' })
+
+  function blockedRow(): string {
+    upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'c', rows: [{ label: 'x', status: 'blocked' }] })
+    return listBoards(db)[0]!.rows[0]!.id
+  }
+
+  // the row's CURRENT pins — every seeding write bumps them
+  function rowTarget() {
+    const board = listBoards(db)[0]!
+    const row = board.rows[0]!
+    return {
+      path: `/api/boards/${board.id}/rows/${row.id}`,
+      pins: { expected_revision: row.revision, expected_board_version: board.revision },
+    }
+  }
+
+  describe('POST /api/items/:id/annotate', () => {
+    it.each(INVALID_TEXT)('refuses %s and keeps the stored note', async (_label, body) => {
+      const id = question()
+      annotateItem(db, id, 'keep this note')
+      const before = getItem(db, id)
+      await expectInvalid(await post(`/api/items/${id}/annotate`, body({})))
+      expect(getItem(db, id)).toEqual(before)
+    })
+
+    it('still clears the note on an explicit empty string', async () => {
+      const id = question()
+      annotateItem(db, id, 'old note')
+      const res = await post(`/api/items/${id}/annotate`, JSON.stringify({ text: '' }))
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ ok: true })
+      expect(getItem(db, id)!.annotation).toBe('')
+    })
+  })
+
+  describe('POST /api/items/:id/reply', () => {
+    const INVALID_REPLY: BodyCase[] = [
+      ...INVALID_TEXT,
+      ['a numeric context', () => JSON.stringify({ text: 'Correction', context: 5 })],
+      ['an object context', () => JSON.stringify({ text: 'Correction', context: { value: 'nested' } })],
+      ['a null context', () => JSON.stringify({ text: 'Correction', context: null })],
+    ]
+
+    it.each(INVALID_REPLY)('refuses %s and keeps the stored answer', async (_label, body) => {
+      const id = question()
+      replyItem(db, id, 'keep this answer', 'and its context')
+      const before = getItem(db, id)
+      await expectInvalid(await post(`/api/items/${id}/reply`, body({ context: 'new context' })))
+      expect(getItem(db, id)).toEqual(before)
+    })
+
+    it('still clears an unread answer on an explicit empty string — and still refuses a read one with 200', async () => {
+      const unread = question()
+      replyItem(db, unread, 'take it back')
+      let res = await post(`/api/items/${unread}/reply`, JSON.stringify({ text: '' }))
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ ok: true })
+      expect(getItem(db, unread)!.reply).toBeNull()
+
+      const read = question()
+      replyItem(db, read, 'already read')
+      markReplySeen(db, read, getItem(db, read)!.replied_at)
+      res = await post(`/api/items/${read}/reply`, JSON.stringify({ text: '' }))
+      expect(res.status, 'a refusal of a valid request is not an error').toBe(200)
+      expect(await res.json()).toEqual({ ok: false })
+      expect(getItem(db, read)!.reply).toBe('already read')
+    })
+  })
+
+  describe('POST /api/boards/:id/rows/:rowId/annotate', () => {
+    it.each(INVALID_TEXT)('refuses %s and keeps the stored note', async (_label, body) => {
+      annotateBoardRow(db, blockedRow(), 'keep this note')
+      const { path, pins } = rowTarget()
+      const before = listBoards(db)
+      await expectInvalid(await post(`${path}/annotate`, body({ kind: 'answer', ...pins })))
+      expect(listBoards(db)).toEqual(before)
+    })
+
+    it('still clears the note on an explicit empty string', async () => {
+      annotateBoardRow(db, blockedRow(), 'old note')
+      const { path, pins } = rowTarget()
+      const res = await post(`${path}/annotate`, JSON.stringify({ text: '', ...pins }))
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ ok: true })
+      expect(listBoards(db)[0]!.rows[0]!.annotation).toBe('')
+    })
+  })
+
+  describe('POST /api/items/:id/snooze', () => {
+    it.each(INVALID_UNTIL)('refuses %s and keeps the snooze', async (_label, body) => {
+      const id = question()
+      snoozeItem(db, id, FUTURE)
+      const before = getItem(db, id)
+      await expectInvalid(await post(`/api/items/${id}/snooze`, body({})))
+      expect(getItem(db, id)).toEqual(before)
+    })
+
+    it('still wakes on an explicit null', async () => {
+      const id = question()
+      snoozeItem(db, id, FUTURE)
+      const res = await post(`/api/items/${id}/snooze`, JSON.stringify({ until: null }))
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ ok: true })
+      expect(getItem(db, id)!.snoozed_until).toBeNull()
+    })
+
+    it('stores a valid non-UTC date as UTC ISO', async () => {
+      const id = question()
+      const res = await post(`/api/items/${id}/snooze`, JSON.stringify({ until: OFFSET_DATE }))
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ ok: true })
+      expect(getItem(db, id)!.snoozed_until).toBe(OFFSET_DATE_UTC)
+    })
+  })
+
+  describe('POST /api/boards/:id/rows/:rowId/snooze', () => {
+    it.each(INVALID_UNTIL)('refuses %s and keeps the snooze', async (_label, body) => {
+      snoozeBoardRow(db, blockedRow(), FUTURE)
+      const { path, pins } = rowTarget()
+      const before = listBoards(db)
+      await expectInvalid(await post(`${path}/snooze`, body(pins)))
+      expect(listBoards(db)).toEqual(before)
+    })
+
+    it('still wakes on an explicit null', async () => {
+      snoozeBoardRow(db, blockedRow(), FUTURE)
+      const { path, pins } = rowTarget()
+      const res = await post(`${path}/snooze`, JSON.stringify({ until: null, ...pins }))
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ ok: true })
+      expect(listBoards(db)[0]!.rows[0]!.snoozed_until).toBeNull()
+    })
+
+    it('stores a valid non-UTC date as UTC ISO', async () => {
+      blockedRow()
+      const { path, pins } = rowTarget()
+      const res = await post(`${path}/snooze`, JSON.stringify({ until: OFFSET_DATE, ...pins }))
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ ok: true })
+      expect(listBoards(db)[0]!.rows[0]!.snoozed_until).toBe(OFFSET_DATE_UTC)
+    })
+
+    // #177 classifies the store's refusal of a VALID body; an invalid body is a
+    // 400 before that store call, even on a row that could not be snoozed anyway.
+    it('validates before classifying a refusal: same answered row and current pins', async () => {
+      annotateBoardRow(db, blockedRow(), 'answered')
+      const { path, pins } = rowTarget()
+      const before = listBoards(db)
+      await expectInvalid(await post(`${path}/snooze`, JSON.stringify({ until: 'tomorrow', ...pins })))
+      expect(listBoards(db)).toEqual(before)
+      const valid = await post(`${path}/snooze`, JSON.stringify({ until: FUTURE, ...pins }))
+      expect(valid.status).toBe(200)
+      expect(await valid.json()).toEqual({ ok: false, reason: 'not_snoozable' })
+      expect(listBoards(db)).toEqual(before)
+    })
+  })
+
+  // Issue #217 — `until` is again the whole instruction: a date asks the watcher
+  // to wait quietly until then, and an explicit null stops it for good. A
+  // dropped field must never be read as that final, unrevisable stop.
+  describe('POST /api/items/:id/stop-waiting', () => {
+    it.each(INVALID_UNTIL)('refuses %s and keeps the stored stop', async (_label, body) => {
+      const id = question()
+      stopItemWatch(db, id, FUTURE)
+      const before = getItem(db, id)
+      await expectInvalid(await post(`/api/items/${id}/stop-waiting`, body({})))
+      expect(getItem(db, id)).toEqual(before)
+    })
+
+    it('stops for good on an explicit null and stores a date as UTC ISO', async () => {
+      const deferred = question()
+      let res = await post(`/api/items/${deferred}/stop-waiting`, JSON.stringify({ until: OFFSET_DATE }))
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ ok: true })
+      expect(getItem(db, deferred)).toMatchObject({ watch_stopped_at: expect.any(String), watch_stopped_until: OFFSET_DATE_UTC })
+
+      res = await post(`/api/items/${deferred}/stop-waiting`, JSON.stringify({ until: null }))
+      expect(await res.json()).toEqual({ ok: true })
+      expect(getItem(db, deferred)!.watch_stopped_until).toBeNull()
+    })
+
+    it('reports a store refusal of a valid request as a 200', async () => {
+      const id = question()
+      replyItem(db, id, 'already answered')
+      const res = await post(`/api/items/${id}/stop-waiting`, JSON.stringify({ until: null }))
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ ok: false })
+      expect(getItem(db, id)!.watch_stopped_at).toBeNull()
+    })
+
+    it.each(INVALID_DEFER)('refuses %s before any store call', async (_label, body) => {
+      const id = question()
+      const before = getItem(db, id)
+      for (const until of [null, FUTURE]) await expectInvalid(await post(`/api/items/${id}/stop-waiting`, body({ until })))
+      expect(getItem(db, id)).toEqual(before)
+    })
+
+    // #247 §5.4: with the Later section on, the same write also defers the ask.
+    it('defers the question in the same write: a stop for good pins it, a date snoozes it', async () => {
+      const pinned = question()
+      let res = await post(`/api/items/${pinned}/stop-waiting`, JSON.stringify({ until: null, defer: true }))
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ ok: true })
+      expect(getItem(db, pinned)).toMatchObject({
+        watch_stopped_at: expect.any(String), watch_stopped_until: null, pinned_at: expect.any(String), snoozed_until: null,
+      })
+
+      const snoozed = question()
+      res = await post(`/api/items/${snoozed}/stop-waiting`, JSON.stringify({ until: OFFSET_DATE, defer: true }))
+      expect(await res.json()).toEqual({ ok: true })
+      expect(getItem(db, snoozed)).toMatchObject({
+        watch_stopped_until: OFFSET_DATE_UTC, snoozed_until: OFFSET_DATE_UTC, pinned_at: null,
+      })
+
+      for (const body of [{ until: null, defer: false }, { until: FUTURE }]) {
+        const plain = question()
+        res = await post(`/api/items/${plain}/stop-waiting`, JSON.stringify(body))
+        expect(await res.json(), JSON.stringify(body)).toEqual({ ok: true })
+        expect(getItem(db, plain), 'without defer the ask stays where it is').toMatchObject({
+          watch_stopped_at: expect.any(String), pinned_at: null, snoozed_until: null,
+        })
+      }
+
+      // a stop for good is final, so a later deferral is refused whole
+      res = await post(`/api/items/${pinned}/stop-waiting`, JSON.stringify({ until: OFFSET_DATE, defer: true }))
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ ok: false })
+      expect(getItem(db, pinned)).toMatchObject({ watch_stopped_until: null, snoozed_until: null, pinned_at: expect.any(String) })
+    })
+  })
+
+  describe('POST /api/boards/:id/rows/:rowId/stop-waiting', () => {
+    it.each(INVALID_UNTIL)('refuses %s and keeps the stored stop', async (_label, body) => {
+      const rowId = blockedRow()
+      const { path, pins } = rowTarget()
+      stopBoardRowWatch(db, rowId, FUTURE, pins.expected_revision, pins.expected_board_version)
+      const before = listBoards(db)
+      await expectInvalid(await post(`${path}/stop-waiting`, body(pins)))
+      expect(listBoards(db)).toEqual(before)
+    })
+
+    it.each([
+      ['no pins', {}],
+      ['a string revision', { expected_revision: '1', expected_board_version: 1 }],
+      ['a fractional board version', { expected_revision: 1, expected_board_version: 1.5 }],
+    ])('refuses %s before any store call', async (_label, pins) => {
+      blockedRow()
+      const { path } = rowTarget()
+      const before = listBoards(db)
+      await expectInvalid(await post(`${path}/stop-waiting`, JSON.stringify({ until: null, ...pins })))
+      expect(listBoards(db)).toEqual(before)
+    })
+
+    it('stops the current action without bumping either revision', async () => {
+      blockedRow()
+      const { path, pins } = rowTarget()
+      const res = await post(`${path}/stop-waiting`, JSON.stringify({ until: OFFSET_DATE, ...pins }))
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ ok: true })
+      expect(listBoards(db)[0]!.rows[0]!.watch_stopped_until).toBe(OFFSET_DATE_UTC)
+      expect(rowTarget().pins).toEqual(pins)
+    })
+
+    it.each(INVALID_DEFER)('refuses %s before any store call', async (_label, body) => {
+      blockedRow()
+      const { path, pins } = rowTarget()
+      const before = listBoards(db)
+      for (const until of [null, FUTURE]) await expectInvalid(await post(`${path}/stop-waiting`, body({ until, ...pins })))
+      expect(listBoards(db)).toEqual(before)
+    })
+
+    // #247 §5.4: the snooze half moves the row revision exactly as a snooze
+    // does; the pin half, like the stop, moves neither revision.
+    it('defers the row in the same write and classifies a refusal as before', async () => {
+      blockedRow()
+      let { path, pins } = rowTarget()
+      let res = await post(`${path}/stop-waiting`, JSON.stringify({ until: null, defer: true, ...pins, expected_revision: pins.expected_revision - 1 }))
+      expect(await res.json()).toEqual({ ok: false, reason: 'version_mismatch' })
+      expect(listBoards(db)[0]!.rows[0]).toMatchObject({ watch_stopped_at: null, pinned_at: null })
+
+      res = await post(`${path}/stop-waiting`, JSON.stringify({ until: OFFSET_DATE, defer: true, ...pins }))
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ ok: true })
+      expect(listBoards(db)[0]!.rows[0]).toMatchObject({ watch_stopped_until: OFFSET_DATE_UTC, snoozed_until: OFFSET_DATE_UTC })
+      expect(rowTarget().pins).toEqual({
+        expected_revision: pins.expected_revision + 1, expected_board_version: pins.expected_board_version + 1,
+      })
+
+      ;({ path, pins } = rowTarget())
+      res = await post(`${path}/stop-waiting`, JSON.stringify({ until: null, defer: true, ...pins }))
+      expect(await res.json()).toEqual({ ok: true })
+      expect(listBoards(db)[0]!.rows[0]).toMatchObject({ watch_stopped_until: null, snoozed_until: null, pinned_at: expect.any(String) })
+      expect(rowTarget().pins).toEqual(pins)
+
+      res = await post(`${path}/stop-waiting`, JSON.stringify({ until: OFFSET_DATE, defer: true, ...pins }))
+      expect(res.status).toBe(200)
+      expect(await res.json(), 'a stop for good is final').toEqual({ ok: false, reason: 'not_stoppable' })
+      expect(listBoards(db)[0]!.rows[0]).toMatchObject({ snoozed_until: null, pinned_at: expect.any(String) })
+    })
+
+    it('classifies a refusal: stale pins are a version mismatch, an answered row is not stoppable', async () => {
+      blockedRow()
+      const { path, pins } = rowTarget()
+      let res = await post(`${path}/stop-waiting`, JSON.stringify({ until: null, ...pins, expected_revision: pins.expected_revision - 1 }))
+      expect(await res.json()).toEqual({ ok: false, reason: 'version_mismatch' })
+      res = await post(`${path}/stop-waiting`, JSON.stringify({ until: null, ...pins, expected_board_version: pins.expected_board_version - 1 }))
+      expect(await res.json()).toEqual({ ok: false, reason: 'version_mismatch' })
+
+      annotateBoardRow(db, listBoards(db)[0]!.rows[0]!.id, 'answered')
+      const current = rowTarget()
+      res = await post(`${current.path}/stop-waiting`, JSON.stringify({ until: null, ...current.pins }))
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ ok: false, reason: 'not_stoppable' })
+      expect(listBoards(db)[0]!.rows[0]!.watch_stopped_at).toBeNull()
+    })
+  })
+
+  // An absent `handled` still MARKS (the documented affirmative default); a
+  // present non-boolean is no instruction at all — "false" must not re-mark.
+  describe('POST /api/boards/:id/rows/:rowId/handled', () => {
+    const INVALID_HANDLED: BodyCase[] = [
+      ['a string handled', (valid) => JSON.stringify({ ...valid, handled: 'false' })],
+      ['a numeric handled', (valid) => JSON.stringify({ ...valid, handled: 0 })],
+      ['a null handled', (valid) => JSON.stringify({ ...valid, handled: null })],
+    ]
+
+    it.each(INVALID_HANDLED)('refuses %s and keeps the mark', async (_label, body) => {
+      markRowHandled(db, blockedRow())
+      const { path, pins } = rowTarget()
+      const before = listBoards(db)
+      await expectInvalid(await post(`${path}/handled`, body(pins)))
+      expect(listBoards(db)).toEqual(before)
+    })
   })
 })

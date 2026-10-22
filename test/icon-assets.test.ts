@@ -1,8 +1,8 @@
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { scratchDir } from './scratch.js'
 
 const root = resolve(process.cwd())
 const html = readFileSync(join(root, 'public', 'index.html'), 'utf8')
@@ -53,7 +53,7 @@ describe('the Agent Inbox identity assets', () => {
     expect(dimensions(join(root, 'public', 'favicon-32.png'))).toBe('32x32')
     expect(dimensions(join(root, 'public', 'favicon-16.png'))).toBe('16x16')
 
-    const iconset = join(mkdtempSync(join(tmpdir(), 'agent-inbox-icon-')), 'AgentInbox.iconset')
+    const iconset = join(scratchDir('agent-inbox-icon-'), 'AgentInbox.iconset')
     execFileSync('iconutil', ['--convert', 'iconset', '--output', iconset, join(root, 'electron', 'icon.icns')])
     for (const name of [
       'icon_16x16.png',

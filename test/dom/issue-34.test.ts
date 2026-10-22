@@ -20,6 +20,7 @@ import {
   pollTick,
   row,
   sendButton,
+  showInbox,
   settle,
   type,
   useDomTest,
@@ -46,8 +47,9 @@ describe('issue #34 · correcting a chat-recorded answer', () => {
       title: 'which database?',
       options: [{ label: 'SQLite' }, { label: 'Postgres' }],
     })
-    expect(answerItem(d, id, 'SQLite', 'keep operations simple')).toEqual({ ok: true })
+    expect(answerItem(d, id, 'SQLite', 'keep operations simple')).toEqual({ ok: true, response_revision: 1 })
     await bootApp(d)
+    await showInbox()
 
     click(row(id))
     await settle()
@@ -55,7 +57,7 @@ describe('issue #34 · correcting a chat-recorded answer', () => {
     const card = row(id)!
     expect(card.querySelector('.reply-block')?.textContent).toContain('SQLite')
     expect(card.querySelector('.reply-source')?.textContent).toBe('via chat')
-    expect(card.querySelector('.pickup')?.textContent).toBe('With the agent')
+    expect(card.querySelector('.pickup')?.textContent).toBe('Delivered to an agent')
     expect(card.querySelector('.pickup.awaiting')).toBeNull()
     expect(answerInput(id)?.value).toBe('SQLite')
     expect(card.querySelector<HTMLInputElement>('.reply-context-input')?.value)
@@ -79,7 +81,7 @@ describe('issue #34 · correcting a chat-recorded answer', () => {
       reply: 'Postgres',
     })
     expect(row(id)?.querySelector('.reply-source')).toBeNull()
-    expect(row(id)?.querySelector('.pickup')?.textContent).toBe('Waiting for the agent')
+    expect(row(id)?.querySelector('.pickup')?.textContent).toBe('Saved · waiting for delivery')
   })
 
   it('preserves chat context when correcting with a keyboard option', async () => {
@@ -90,8 +92,9 @@ describe('issue #34 · correcting a chat-recorded answer', () => {
       title: 'which database?',
       options: [{ label: 'SQLite' }, { label: 'Postgres' }],
     })
-    expect(answerItem(d, id, 'SQLite', 'keep operations simple')).toEqual({ ok: true })
+    expect(answerItem(d, id, 'SQLite', 'keep operations simple')).toEqual({ ok: true, response_revision: 1 })
     await bootApp(d)
+    await showInbox()
 
     click(row(id))
     await settle()
@@ -109,7 +112,7 @@ describe('issue #34 · correcting a chat-recorded answer', () => {
   it('preserves chat context when correcting with a disposition', async () => {
     const d = open()
     const id = insertItem(d, { ...AGENT, kind: 'question', title: 'ship now?' })
-    expect(answerItem(d, id, 'Ship', 'only after the canary')).toEqual({ ok: true })
+    expect(answerItem(d, id, 'Ship', 'only after the canary')).toEqual({ ok: true, response_revision: 1 })
     await bootApp(d)
 
     click(row(id))
@@ -127,7 +130,7 @@ describe('issue #34 · correcting a chat-recorded answer', () => {
   it('does not steal focus back after the human leaves an untouched prefill', async () => {
     const d = open()
     const id = insertItem(d, { ...AGENT, kind: 'question', title: 'which database?' })
-    expect(answerItem(d, id, 'SQLite', 'keep operations simple')).toEqual({ ok: true })
+    expect(answerItem(d, id, 'SQLite', 'keep operations simple')).toEqual({ ok: true, response_revision: 1 })
     await bootApp(d)
 
     click(row(id))
@@ -143,7 +146,7 @@ describe('issue #34 · correcting a chat-recorded answer', () => {
   it('does not steal focus back after the human clears a prefilled draft', async () => {
     const d = open()
     const id = insertItem(d, { ...AGENT, kind: 'question', title: 'which database?' })
-    expect(answerItem(d, id, 'SQLite', 'keep operations simple')).toEqual({ ok: true })
+    expect(answerItem(d, id, 'SQLite', 'keep operations simple')).toEqual({ ok: true, response_revision: 1 })
     await bootApp(d)
 
     click(row(id))
@@ -162,7 +165,7 @@ describe('issue #34 · resolved answer receipt', () => {
   it('keeps the chat answer and provenance visible on the History card without pickup copy', async () => {
     const d = open()
     const id = insertItem(d, { ...AGENT, kind: 'question', title: 'which database?' })
-    expect(answerItem(d, id, 'SQLite', 'keep operations simple')).toEqual({ ok: true })
+    expect(answerItem(d, id, 'SQLite', 'keep operations simple')).toEqual({ ok: true, response_revision: 1 })
     resolveItem(d, id)
     await bootApp(d)
 

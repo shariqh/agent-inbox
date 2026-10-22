@@ -104,6 +104,49 @@ function refreshNotificationTarget(boards, target) {
   return { ...target, boardRevision: board.revision }
 }
 
+// The native notification for one attention entry. A row is keyed by its
+// revision so an edited ask is announced again with buttons pinned to the edit.
+// Moving a row does not change its revision (#158), so a reorder announces
+// nothing and the earlier buttons stay usable through refreshNotificationTarget.
+function attentionNotification(entry) {
+  if (entry.kind === 'item') {
+    return {
+      id: `q:${entry.item.id}`,
+      itemId: entry.item.id,
+      text: entry.item.title,
+      item: entry.item,
+      target: { source: 'item', id: entry.item.id },
+    }
+  }
+  return {
+    id: `r:${entry.row.id}:v${entry.row.revision}`,
+    itemId: entry.board.id,
+    text: `🚧 ${entry.board.title} · ${entry.row.label}`,
+    item: entry.row,
+    target: {
+      source: 'row',
+      boardId: entry.board.id,
+      rowId: entry.row.id,
+      revision: entry.row.revision,
+      boardRevision: entry.board.revision,
+    },
+  }
+}
+
+// `known` is null before the first poll: nothing is announced at launch.
+function freshAttentionNotifications(known, notifications) {
+  return known === null ? [] : notifications.filter((notification) => !known.has(notification.id))
+}
+
+// The ids the next poll treats as already announced (#247): every ask in
+// attention, plus every ask the human pinned for later. Bringing a pinned ask
+// back is the human's own move, and a pin moves no revision, so it must not be
+// announced as new. A snooze that ends should be, so snoozed entries stay out.
+function knownNotificationIds(attention, later) {
+  const pinned = (later ?? []).filter((entry) => entry.later === 'pinned')
+  return new Set([...attention, ...pinned].map((entry) => attentionNotification(entry).id))
+}
+
 function responseTargets(grouped, boards) {
   const targets = []
   for (const group of grouped?.needsYou ?? []) {
@@ -281,10 +324,13 @@ function wakeAdapterPayload(targets) {
 }
 
 module.exports = {
+  attentionNotification,
   cannedResponseActions,
   createNotificationRetainer,
   createResponseWatch,
   formatResponseReminder,
+  freshAttentionNotifications,
+  knownNotificationIds,
   responseTargets,
   responseForNotificationAction,
   refreshNotificationTarget,

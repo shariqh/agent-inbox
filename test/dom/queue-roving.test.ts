@@ -4,7 +4,7 @@ import type Database from 'better-sqlite3'
 import {
   getBoard, insertItem, snoozeBoardRow, snoozeItem, upsertBoard,
 } from '../../src/store.js'
-import { bootApp, click, freshDb, pollTick, row, settle, useDomTest } from './harness.js'
+import { bootApp, click, freshDb, pollTick, row, settle, showInbox, useDomTest } from './harness.js'
 
 useDomTest()
 
@@ -32,10 +32,10 @@ describe('Needs-you roving tab stop', () => {
     const snoozedId = insertItem(d, { ...AGENT, kind: 'question', title: 'Snoozed folded row' })
     snoozeItem(d, snoozedId, new Date(Date.now() + 4 * HOUR).toISOString())
     await bootApp(d)
+    await showInbox()
 
-    const snoozed = document.querySelector<HTMLDetailsElement>('.snoozed-fold')!
-    const stale = [...document.querySelectorAll<HTMLDetailsElement>('.stale-fold')]
-      .find((fold) => !fold.classList.contains('snoozed-fold'))!
+    const snoozed = document.querySelector<HTMLDetailsElement>('.later-section')!
+    const stale = document.querySelector<HTMLDetailsElement>('.stale-fold')!
     expect(snoozed.open).toBe(false)
     expect(stale.open).toBe(false)
     expect(row(snoozedId)?.tabIndex).toBe(-1)
@@ -63,6 +63,7 @@ describe('Needs-you roving tab stop', () => {
     const d = open()
     const id = insertItem(d, { ...AGENT, kind: 'question', title: 'Visible after clearing search' })
     await bootApp(d)
+    await showInbox()
     expect(tabbableQueueRows()).toEqual([row(id)])
 
     const search = document.getElementById('search') as HTMLInputElement
@@ -89,6 +90,7 @@ describe('Needs-you roving tab stop', () => {
     insertItem(d, { ...AGENT, kind: 'question', title: 'First visible row' })
     insertItem(d, { ...AGENT, kind: 'question', title: 'Second visible row' })
     await bootApp(d)
+    await showInbox()
     const selectedBefore = tabbableQueueRows()[0]?.dataset.cardId
     expect(selectedBefore).toBeTruthy()
 
@@ -109,7 +111,8 @@ describe('Needs-you roving tab stop', () => {
     expect(document.activeElement).toBe(inbox)
   })
 
-  it('applies newest and oldest ask-time sorting inside snoozed and stale folds', async () => {
+  it('applies newest and oldest ask-time sorting inside snoozed and stale folds with the Later section off', async () => {
+    localStorage.setItem('agent-inbox-later-section', 'false')
     const d = open()
     const staleOld = insertItem(d, { ...AGENT, kind: 'question', title: 'Stale old' })
     vi.setSystemTime(Date.now() + HOUR)
@@ -129,6 +132,7 @@ describe('Needs-you roving tab stop', () => {
     snoozeBoardRow(d, snoozedRow.id, until, snoozedRow.revision, board.revision)
     vi.setSystemTime(Date.now() + 73 * HOUR)
     await bootApp(d)
+    await showInbox()
 
     const titles = (selector: string) => [...document.querySelectorAll(`${selector} .nrow-title`)]
       .map((title) => title.textContent)

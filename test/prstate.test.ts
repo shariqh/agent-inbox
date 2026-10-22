@@ -1,7 +1,6 @@
-import { describe, it, expect, beforeEach } from 'vitest'
-import { mkdtempSync, readFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join, posix } from 'node:path'
 import type Database from 'better-sqlite3'
 import {
   openDb,
@@ -16,6 +15,7 @@ import {
   reopenProject,
 } from '../src/store.js'
 import type { LinkTarget, SourceLink } from '../src/store.js'
+import { issueKeyFor } from '../public/issue-key.js'
 import {
   classifyChecks,
   classifyError,
@@ -26,15 +26,18 @@ import {
   resolveGh,
   TTL,
   MAX_PER_TICK,
+  PR_WINDOW,
 } from '../src/prstate.js'
+import { scratchDir } from './scratch.js'
 
 const REPO = new URL('..', import.meta.url).pathname
 
 function freshDb(): Database.Database {
-  return openDb(join(mkdtempSync(join(tmpdir(), 'prstate-')), 'inbox.db'))
+  return openDb(join(scratchDir('prstate-'), 'inbox.db'))
 }
 
-// the shape `gh pr list --json …` actually emits (verified live against cli/cli)
+// the shape `gh pr list --json …` actually emits (verified live against cli/cli),
+// including the head identity issue #157 verifies against the expected head
 function ghPayload(over: Record<string, unknown> = {}): string {
   return JSON.stringify([{
     number: 41,
@@ -44,12 +47,21 @@ function ghPayload(over: Record<string, unknown> = {}): string {
     isDraft: false,
     reviewDecision: 'REVIEW_REQUIRED',
     statusCheckRollup: [{ __typename: 'CheckRun', status: 'COMPLETED', conclusion: 'SUCCESS', name: 'test' }],
-    closingIssuesReferences: [{ number: 30, url: 'https://github.com/shariqh/agent-inbox/issues/30' }],
+    closingIssuesReferences: [{
+      id: 'I_30', number: 30, url: 'https://github.com/shariqh/agent-inbox/issues/30',
+      repository: { id: 'R_1', name: 'agent-inbox', owner: { id: 'U_1', login: 'shariqh' } },
+    }],
     body: 'Links the inbox to its source issue and PR.',
     updatedAt: '2026-07-26T10:00:00Z',
+    isCrossRepository: false,
+    headRepository: { id: 'R_1', name: 'agent-inbox', nameWithOwner: 'shariqh/agent-inbox' },
+    headRepositoryOwner: { id: 'U_1', login: 'shariqh' },
     ...over,
   }])
 }
+
+// a branch pushed to the repository its PRs are opened against
+const SAME = { repo: 'shariqh/agent-inbox', head_repo: 'shariqh/agent-inbox' }
 
 describe('classifyChecks', () => {
   const run = (conclusion: string, status = 'COMPLETED') => ({ __typename: 'CheckRun', status, conclusion })
@@ -131,7 +143,7 @@ describe('firstLine (the TL;DR)', () => {
 
 describe('parsePrPayload', () => {
   it('reads number/title/url/state/isDraft/reviewDecision off gh pr list output', () => {
-    const pr = parsePrPayload(ghPayload())!
+    const pr = parsePrPayload(ghPayload(), SAME)!
     expect(pr.pr_number).toBe(41)
     expect(pr.pr_title).toBe('source + PR links')
     expect(pr.pr_url).toBe('https://github.com/shariqh/agent-inbox/pull/41')
@@ -143,32 +155,60 @@ describe('parsePrPayload', () => {
   })
 
   it('carries the authoritative issue from closingIssuesReferences', () => {
-    const pr = parsePrPayload(ghPayload())!
+    const pr = parsePrPayload(ghPayload(), SAME)!
     expect(pr.issue_number).toBe(30)
     expect(pr.issue_url).toBe('https://github.com/shariqh/agent-inbox/issues/30')
   })
 
   it('leaves the issue null when the PR closes nothing', () => {
-    const pr = parsePrPayload(ghPayload({ closingIssuesReferences: [] }))!
+    const pr = parsePrPayload(ghPayload({ closingIssuesReferences: [] }), SAME)!
     expect(pr.issue_number).toBeNull()
     expect(pr.issue_url).toBeNull()
   })
 
+  // issue #103 PR1b: every reference, so a PR that closes several is never guessed
+  it('records every closing reference with its repository, in GitHub\'s order', () => {
+    const pr = parsePrPayload(ghPayload({
+      closingIssuesReferences: [
+        { number: 30, url: 'u', repository: { name: 'agent-inbox', owner: { login: 'shariqh' } } },
+        { number: 7, url: 'u', repository: { name: 'Lib', owner: { login: 'Other' } } },
+      ],
+    }), SAME)!
+    expect(pr.closing_refs).toEqual([{ repo: 'shariqh/agent-inbox', number: 30 }, { repo: 'Other/Lib', number: 7 }])
+    // the #30 chip still reads its first reference
+    expect(pr.issue_number).toBe(30)
+  })
+
+  it('records a PR that closes nothing as an empty list, and an unreadable list as no record at all', () => {
+    expect(parsePrPayload(ghPayload({ closingIssuesReferences: [] }), SAME)!.closing_refs).toEqual([])
+    expect(parsePrPayload(ghPayload({ closingIssuesReferences: undefined }), SAME)!.closing_refs).toBeNull()
+    // dropping only the bad reference could turn two into one, a false certainty
+    for (const bad of [
+      { number: 7, url: 'u' },
+      { number: 7, repository: { name: '..', owner: { login: 'x' } } },
+      { number: 0, repository: { name: 'lib', owner: { login: 'x' } } },
+      { number: '7', repository: { name: 'lib', owner: { login: 'x' } } },
+    ]) {
+      const refs = [{ number: 30, repository: { name: 'agent-inbox', owner: { login: 'shariqh' } } }, bad]
+      expect(parsePrPayload(ghPayload({ closingIssuesReferences: refs }), SAME)!.closing_refs).toBeNull()
+    }
+  })
+
   it('returns null for the empty array gh emits when there is no PR, and for junk', () => {
-    expect(parsePrPayload('[]')).toBeNull()
-    expect(parsePrPayload('not json')).toBeNull()
-    expect(parsePrPayload('{}')).toBeNull()
-    expect(parsePrPayload('[{"title":"no number"}]')).toBeNull()
+    expect(parsePrPayload('[]', SAME)).toBeNull()
+    expect(parsePrPayload('not json', SAME)).toBeNull()
+    expect(parsePrPayload('{}', SAME)).toBeNull()
+    expect(parsePrPayload('[{"title":"no number"}]', SAME)).toBeNull()
   })
 
   it('truncates an absurdly long PR title rather than storing it whole', () => {
-    const pr = parsePrPayload(ghPayload({ title: 'y'.repeat(900) }))!
+    const pr = parsePrPayload(ghPayload({ title: 'y'.repeat(900) }), SAME)!
     expect(pr.pr_title!.length).toBeLessThanOrEqual(301)
   })
 
   it('reads draft and merged state', () => {
-    expect(parsePrPayload(ghPayload({ isDraft: true }))!.pr_draft).toBe(true)
-    expect(parsePrPayload(ghPayload({ state: 'MERGED' }))!.pr_state).toBe('MERGED')
+    expect(parsePrPayload(ghPayload({ isDraft: true }), SAME)!.pr_draft).toBe(true)
+    expect(parsePrPayload(ghPayload({ state: 'MERGED' }), SAME)!.pr_state).toBe('MERGED')
   })
 })
 
@@ -185,11 +225,13 @@ describe('classifyError', () => {
 
 describe('dueTargets (TTL policy)', () => {
   const T0 = Date.parse('2026-07-26T12:00:00.000Z')
-  const target = (branch: string): LinkTarget => ({ repo: 'o/n', branch })
+  const target = (branch: string): LinkTarget => ({ repo: 'o/n', branch, head_repo: 'o/n' })
   const link = (branch: string, over: Partial<SourceLink> = {}): SourceLink => ({
-    repo: 'o/n', branch, provider: 'github',
+    repo: 'o/n', branch, head_repo: 'o/n', provider: 'github',
     pr_number: 41, pr_url: null, pr_title: null, pr_state: 'OPEN', pr_draft: false,
-    review_decision: null, checks: null, issue_number: null, issue_url: null, issue_title: null,
+    pr_head_sha: null, preview_url: null, preview_environment: null, preview_deployment_id: null,
+    preview_updated_at: null, preview_error: null, revision: 1,
+    review_decision: null, checks: null, issue_number: null, issue_url: null, issue_title: null, closing_refs: null,
     tldr: null, fetched_at: new Date(T0).toISOString(), checked_at: new Date(T0).toISOString(), error: null,
     ...over,
   })
@@ -272,6 +314,38 @@ describe('refreshOnce', () => {
     await refreshOnce(db, { run: async () => { calls++; return '[]' }, max: 3 })
     expect(calls).toBe(3)
     expect(MAX_PER_TICK).toBeGreaterThan(0)
+  })
+
+  it('stores every closing reference bound to the fetched_at it wrote (issue #103)', async () => {
+    seedItem('30-x')
+    await refreshOnce(db, {
+      run: async () => ghPayload({
+        closingIssuesReferences: [
+          { number: 30, repository: { name: 'n', owner: { login: 'o' } } },
+          { number: 31, repository: { name: 'n', owner: { login: 'o' } } },
+        ],
+      }),
+    })
+    const link = listSourceLinks(db)[0]!
+    expect(JSON.parse(link.closing_refs!)).toEqual({
+      fetched_at: link.fetched_at, refs: [{ repo: 'o/n', number: 30 }, { repo: 'o/n', number: 31 }],
+    })
+    // several references: never a certain PR identity; the branch issue decides
+    expect(issueKeyFor({ repo: 'o/n', issue_ref: 30 }, link)).toEqual({ key: 'o/n#30', source: 'branch', certain: true })
+  })
+
+  it('starts no new target after deadlineMs, but finishes the one in flight', async () => {
+    for (let i = 0; i < 4; i++) seedItem(`br-${i}`, `q${i}`)
+    let clock = 1_000
+    const calls: string[] = []
+    const done = await refreshOnce(db, {
+      now: () => clock,
+      deadlineMs: 46_000,
+      run: async (_r, branch) => { calls.push(branch); clock += 30_000; return '[]' },
+    })
+    // t=1s starts br-0; t=31s starts br-1; t=61s is past the deadline
+    expect(calls).toHaveLength(2)
+    expect(done).toBe(2)
   })
 
   it('caches "there is no PR" as a real answer, not as an error', async () => {
@@ -369,6 +443,138 @@ describe('refreshOnce', () => {
   })
 })
 
+// ── issue #157: a PR counts only when its HEAD repository is the expected one ──
+// `gh pr list -R <base> --head <branch>` filters on the head branch NAME across
+// every fork (`--head owner:branch` is not supported), so a stranger's fork PR
+// from a same-named branch used to be cached as this branch's PR — chip, title,
+// TL;DR and the closing issue that overrides the item's own issue.
+describe('head repository verification (issue #157)', () => {
+  const BASE = 'upstream/x'
+  const SHA = 'c'.repeat(40)
+  let db: Database.Database
+  beforeEach(() => { db = freshDb() })
+
+  // one PR the way `gh pr list --json` lists it, opened from the `head` repository
+  const prFrom = (head: string, number: number, over: Record<string, unknown> = {}) => ({
+    number,
+    title: `PR ${number} from ${head}`,
+    url: `https://github.com/${BASE}/pull/${number}`,
+    state: 'OPEN',
+    headRefOid: SHA,
+    isCrossRepository: head.toLowerCase() !== BASE,
+    headRepository: { id: `R_${number}`, name: head.split('/')[1], nameWithOwner: head },
+    headRepositoryOwner: { id: `U_${number}`, login: head.split('/')[0] },
+    closingIssuesReferences: [{ number: number + 1000, url: `https://github.com/${BASE}/issues/${number + 1000}` }],
+    body: `body of ${number}`,
+    ...over,
+  })
+  const list = (...prs: object[]): string => JSON.stringify(prs)
+  const seed = (branch: string, head_repo?: string) => insertItem(db, {
+    project: 'p', stream: branch, agent: 'a', kind: 'question', title: `q ${branch} ${String(head_repo)}`, repo: BASE, head_repo,
+  })
+  const rowFor = (head: string) => listSourceLinks(db).find((l) => l.head_repo === head)
+  const api = (endpoint: string): string => JSON.stringify(endpoint.includes('/statuses')
+    ? [{ state: 'success', environment_url: 'https://preview.example/pr', updated_at: new Date().toISOString() }]
+    : [{ id: 1, sha: SHA, environment: 'Preview', production_environment: false }])
+
+  it('selects the valid PR when a fork\'s same-named branch is listed first', async () => {
+    seed('main', BASE)
+    await refreshOnce(db, { run: () => list(prFrom('stranger/x', 90), prFrom(BASE, 41)), runApi: () => '[]' })
+    expect(rowFor(BASE)).toMatchObject({ pr_number: 41, pr_title: `PR 41 from ${BASE}`, issue_number: 1041, error: null })
+  })
+
+  it('caches no PR, no closing-issue override and resolves no preview when every result is a fork\'s', async () => {
+    seed('trunk', BASE)
+    const runApi = vi.fn(api)
+    await refreshOnce(db, { run: () => list(prFrom('stranger/x', 90), prFrom('other/x', 91)), runApi })
+    expect(rowFor(BASE)).toMatchObject({
+      pr_number: null, pr_url: null, pr_title: null, pr_head_sha: null, tldr: null,
+      issue_number: null, issue_url: null, preview_url: null, error: null,
+    })
+    expect(runApi).not.toHaveBeenCalled()
+  })
+
+  // the contributor workflow that must KEEP working: origin (or register({ repo }))
+  // names the upstream, and the branch is pushed to the contributor's own fork
+  it('selects the contributor\'s own cross-repository PR when the branch is pushed to their fork', async () => {
+    seed('feature', 'me/x')
+    const runApi = vi.fn(api)
+    const run = vi.fn(() => list(prFrom('stranger/x', 90), prFrom(BASE, 88), prFrom('Me/X', 41)))
+    await refreshOnce(db, { run, runApi })
+    expect(run).toHaveBeenCalledWith(BASE, 'feature')
+    expect(rowFor('me/x')).toMatchObject({ pr_number: 41, issue_number: 1041, preview_url: 'https://preview.example/pr' })
+    // the preview is read from the BASE repository, for the VERIFIED head only
+    expect(runApi).toHaveBeenCalledWith(`repos/${BASE}/deployments?sha=${SHA}&per_page=6`)
+  })
+
+  it('reports a full window with no match as no PR, never as a guess', async () => {
+    seed('patch-1', BASE)
+    const forks = Array.from({ length: PR_WINDOW }, (_, i) => prFrom(`fork${i}/x`, 100 + i))
+    const runApi = vi.fn(api)
+    await refreshOnce(db, { run: () => list(...forks), runApi })
+    expect(rowFor(BASE)).toMatchObject({ pr_number: null, issue_number: null, preview_url: null })
+    expect(runApi).not.toHaveBeenCalled()
+  })
+
+  // an item written before #157 recorded no head: the only PR it can safely
+  // claim is one opened from the base repository itself
+  it('a legacy row with no expected head accepts only a same-repository PR', async () => {
+    seed('feature')
+    await refreshOnce(db, { run: () => list(prFrom('me/x', 41)), runApi: () => '[]' })
+    expect(rowFor(BASE)).toMatchObject({ pr_number: null, issue_number: null })
+    await refreshOnce(db, {
+      run: () => list(prFrom('me/x', 41), prFrom(BASE, 40)), runApi: () => '[]', nowMs: Date.now() + TTL.noPr + 1,
+    })
+    expect(rowFor(BASE)).toMatchObject({ pr_number: 40, issue_number: 1040 })
+  })
+
+  it('caches one branch name pushed to two repositories as two separate answers', async () => {
+    seed('feature', BASE)
+    seed('feature', 'me/x')
+    await refreshOnce(db, { run: () => list(prFrom('me/x', 41), prFrom(BASE, 40)), runApi: () => '[]' })
+    expect(rowFor(BASE)?.pr_number).toBe(40)
+    expect(rowFor('me/x')?.pr_number).toBe(41)
+  })
+
+  // the head re-read that guards a preview runs through the SAME selection
+  it('re-verifies a preview\'s head with the same rule', async () => {
+    seed('main', BASE)
+    let reads = 0
+    // a newer fork PR appearing between the two reads leaves the verified head alone …
+    await refreshOnce(db, {
+      run: () => (++reads === 1 ? list(prFrom(BASE, 41)) : list(prFrom('stranger/x', 95, { headRefOid: 'd'.repeat(40) }), prFrom(BASE, 41))),
+      runApi: api,
+    })
+    expect(reads).toBe(2)
+    expect(rowFor(BASE)).toMatchObject({ pr_number: 41, preview_url: 'https://preview.example/pr' })
+    // … and a re-read whose only PR is a fork's no longer confirms it, however alike it looks
+    reads = 0
+    await refreshOnce(db, {
+      run: () => (++reads === 1 ? list(prFrom(BASE, 41)) : list(prFrom('stranger/x', 41))),
+      runApi: api,
+      nowMs: Date.now() + TTL.openPr + 1,
+    })
+    expect(reads).toBe(2)
+    expect(rowFor(BASE)).toMatchObject({ pr_number: 41, preview_url: null, preview_error: 'head-changed' })
+  })
+
+  // issue #183 — gh pr checkout of a fork PR without maintainer edits leaves a
+  // branch whose upstream is refs/pull/<n>/head of the base, and the base may
+  // have its own same-named branch with a same-repository PR. The recorded head
+  // is that pull ref: this viewer never polls it, and a viewer that still did
+  // (one that predates this fix, sharing the database) could select nothing.
+  it('links no PR to a branch whose head is a pull request ref, not even the base\'s same-named one', async () => {
+    seed('patch-1', 'refs/pull/7/head')
+    const run = vi.fn(() => list(prFrom(BASE, 40), prFrom('contributor/x', 7)))
+    const runApi = vi.fn(api)
+    expect(await refreshOnce(db, { run, runApi })).toBe(0)
+    expect(run).not.toHaveBeenCalled()
+    expect(runApi).not.toHaveBeenCalled()
+    expect(listSourceLinks(db)).toEqual([])
+    expect(parsePrPayload(run(), { repo: BASE, head_repo: 'refs/pull/7/head' })).toBeNull()
+  })
+})
+
 // ── invariants no unit test can observe, pinned as source text ───────────────
 
 describe('the gh subprocess contract', () => {
@@ -400,6 +606,15 @@ describe('the gh subprocess contract', () => {
     expect(src).toContain("'--head'")
   })
 
+  // issue #157 — gh cannot filter by head repository, so the call asks for the
+  // head identity and examines a small bounded window instead of trusting row 0
+  it('requests the head identity over a small bounded window', () => {
+    expect(src).toMatch(/'--limit',\s*String\(PR_WINDOW\)/)
+    for (const field of ['headRepository', 'headRepositoryOwner', 'isCrossRepository']) expect(src).toContain(field)
+    expect(PR_WINDOW).toBeGreaterThan(1)
+    expect(PR_WINDOW).toBeLessThanOrEqual(20)
+  })
+
   it('caps maxBuffer and timeout so a wedged gh cannot hang or balloon the viewer', () => {
     expect(src).toMatch(/timeout:\s*GH_TIMEOUT_MS/)
     expect(src).toMatch(/maxBuffer:\s*GH_MAX_BUFFER/)
@@ -429,30 +644,68 @@ describe('the poller runs in the viewer process only', () => {
 
   // the stdio channel is the MCP server's protocol wire: a `gh` subprocess that
   // inherited it, or an update notifier that printed to it, would corrupt MCP
-  it('src/mcp.ts and src/mcp-server.ts never import prstate, directly or transitively', () => {
-    // the whole reachable graph of the stdio server, not just its two entry files
-    // (a comment naming prstate.ts is fine — an IMPORT of it is not)
-    const imports = /(?:from\s+'\.\/prstate\.js'|require\('\.\/prstate)/
-    for (const file of ['src/mcp.ts', 'src/mcp-server.ts', 'src/store.ts', 'src/scope.ts', 'src/infer.ts', 'src/group.ts', 'src/hook.ts', 'src/hook-cli.ts']) {
-      expect(read(file), `${file} pulls prstate into the stdio server`).not.toMatch(imports)
+  // the whole reachable graph of the stdio server, not just its two entry files.
+  // Since #103 PR2 it includes the pure issue modules a titled board_get needs.
+  const STDIO_GRAPH = [
+    'src/mcp.ts', 'src/mcp-server.ts', 'src/store.ts', 'src/scope.ts', 'src/infer.ts', 'src/group.ts',
+    'src/hook.ts', 'src/hook-cli.ts', 'src/shape.ts', 'src/watch.ts', 'src/watch-cli.ts', 'src/version.ts',
+    'src/server-source.ts', 'src/issue-graph.ts', 'public/issue-key.js', 'public/source.js', 'public/esc.js',
+  ]
+  // Every relative module a file names, in either quote style: static
+  // (`from '…'`), side-effect (`import '…'`), dynamic `import('…')` and
+  // `require('…')`. Type-only imports count too, which only errs on the safe side.
+  const SPECIFIERS = /(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)(['"])(\.{1,2}\/[^'"\n]+)\1/g
+  const specifiers = (code: string): string[] => [...code.matchAll(SPECIFIERS)].map((m) => m[2]!)
+  // repo-relative path of the module a specifier names; src/ sources are .ts
+  const resolveSpec = (file: string, spec: string): string => {
+    const target = posix.join(posix.dirname(file), spec)
+    return target.startsWith('src/') ? target.replace(/\.js$/, '.ts') : target
+  }
+  const POLLERS = ['src/prstate.ts', 'src/issue-poller.ts']
+
+  it('the specifier scan sees every import form, in either quote style', () => {
+    expect(specifiers([
+      `import { a } from './prstate.js'`,
+      `import { b } from "./issue-poller.js"`,
+      `import "./side-effect.js"`,
+      `import './other.js'`,
+      `const m = await import("./dynamic.js")`,
+      `const r = require('./required.js')`,
+      `import { c } from '../public/issue-key.js'`,
+      `import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'`,
+    ].join('\n'))).toEqual([
+      './prstate.js', './issue-poller.js', './side-effect.js', './other.js', './dynamic.js', './required.js', '../public/issue-key.js',
+    ])
+    expect(resolveSpec('src/mcp.ts', '../public/issue-key.js')).toBe('public/issue-key.js')
+    expect(resolveSpec('public/issue-key.js', './source.js')).toBe('public/source.js')
+    expect(resolveSpec('src/mcp.ts', './issue-poller.js')).toBe('src/issue-poller.ts')
+  })
+
+  it('no file of the stdio server graph imports prstate or the issue poller, directly or transitively', () => {
+    for (const file of STDIO_GRAPH) {
+      const reached = specifiers(read(file)).map((spec) => resolveSpec(file, spec))
+      expect(reached.filter((target) => POLLERS.includes(target)), `${file} pulls a gh poller into the stdio server`).toEqual([])
+      // the list is the graph: every relative import of a listed file is listed too
+      for (const target of reached) expect(STDIO_GRAPH, `${file} imports ${target}`).toContain(target)
     }
   })
 
-  it('src/prstate.ts opens with a header saying so', () => {
+  it('src/prstate.ts and src/issue-poller.ts open with a header saying so', () => {
     expect(read('src/prstate.ts').slice(0, 400)).toContain('VIEWER PROCESS ONLY')
+    expect(read('src/issue-poller.ts').slice(0, 400)).toContain('VIEWER PROCESS ONLY')
   })
 
-  it('src/viewer-server.ts starts it, and createViewer does NOT (a timer there would leak into every viewer test)', () => {
-    expect(read('src/viewer-server.ts')).toContain('startPrPoller(db)')
+  it('src/viewer-server.ts starts the one GitHub tick, and createViewer does NOT (a timer there would leak into every viewer test)', () => {
+    expect(read('src/viewer-server.ts')).toContain('startGithubPoller(db)')
     expect(read('src/viewer-server.ts')).toContain('startLocalViewer(app, port)')
     expect(read('src/viewer-server.ts')).not.toContain('AGENT_INBOX_HOST')
-    expect(read('src/viewer.ts')).not.toContain('startPrPoller')
+    expect(read('src/viewer.ts')).not.toMatch(/startGithubPoller|startPrPoller|issue-poller/)
   })
 
   it('the local HTTP boundary never enters the stdio MCP import graph', () => {
-    const importsViewerNetwork = /from\s+'\.\/viewer-network\.js'/
-    for (const file of ['src/mcp.ts', 'src/mcp-server.ts', 'src/store.ts', 'src/scope.ts', 'src/infer.ts', 'src/group.ts', 'src/hook.ts', 'src/hook-cli.ts']) {
-      expect(read(file), `${file} pulls the local HTTP boundary into MCP`).not.toMatch(importsViewerNetwork)
+    for (const file of STDIO_GRAPH) {
+      expect(specifiers(read(file)).map((spec) => resolveSpec(file, spec)), `${file} pulls the local HTTP boundary into MCP`)
+        .not.toContain('src/viewer-network.ts')
     }
   })
 })
@@ -476,10 +729,12 @@ describe('PR state never enters the attention set', () => {
 })
 
 describe('the source_links cache is only ever touched through store.ts', () => {
-  it('src/prstate.ts contains no raw SQL', () => {
-    const src = readFileSync(join(REPO, 'src/prstate.ts'), 'utf8')
-    for (const sql of ['SELECT ', 'INSERT ', 'UPDATE ', 'DELETE ', 'db.prepare']) {
-      expect(src, `prstate.ts reaches around store.ts with ${sql}`).not.toContain(sql)
+  it('src/prstate.ts and src/issue-poller.ts contain no raw SQL', () => {
+    for (const file of ['src/prstate.ts', 'src/issue-poller.ts']) {
+      const src = readFileSync(join(REPO, file), 'utf8')
+      for (const sql of ['SELECT ', 'INSERT ', 'UPDATE ', 'DELETE ', 'db.prepare', 'db.exec']) {
+        expect(src, `${file} reaches around store.ts with ${sql}`).not.toContain(sql)
+      }
     }
   })
 

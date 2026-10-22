@@ -5,7 +5,6 @@ import {
   lstatSync,
   linkSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   readdirSync,
   readlinkSync,
@@ -43,6 +42,8 @@ import { treeIdentity } from '../scripts/tree-identity.mjs'
 import { assertRuntimeSourceCommit } from '../scripts/runtime-provenance.mjs'
 import { resolveSourceProvenance } from '../scripts/source-provenance.mjs'
 import { RUNTIME_TARGETS } from '../scripts/runtime-targets.mjs'
+import { verifyPackagedUpdateTrust } from '../scripts/package-update-trust.mjs'
+import { scratchDir } from './scratch.js'
 
 const root = resolve(process.cwd())
 
@@ -114,10 +115,11 @@ describe('native architecture release stages', () => {
     expect(source).toContain('npm_config_platform: platform')
     expect(source).toContain('npm_config_arch: arch')
     expect(source).toContain("npm_config_build_from_source: 'true'")
+    expect(source).toContain('npm_config_nodedir: nodeRoot')
   })
 
   it('binds CI provenance to checkout HEAD and records local dirty state', () => {
-    const repo = mkdtempSync(join(tmpdir(), 'release-provenance-'))
+    const repo = scratchDir('release-provenance-')
     execFileSync('git', ['init', '--quiet'], { cwd: repo })
     writeFileSync(join(repo, 'file'), 'clean\n')
     execFileSync('git', ['add', 'file'], { cwd: repo })
@@ -148,7 +150,7 @@ describe('native architecture release stages', () => {
   })
 
   it('ships the exact Agent Inbox MIT notice separately in app and runtime payloads', () => {
-    const temp = mkdtempSync(join(tmpdir(), 'release-license-'))
+    const temp = scratchDir('release-license-')
     const expected = readFileSync(join(root, 'LICENSE'), 'utf8')
     const appLicense = join(temp, 'app', 'LICENSE.agent-inbox')
     const runtimeLicense = join(temp, 'runtime', 'LICENSE.agent-inbox')
@@ -165,7 +167,7 @@ describe('native architecture release stages', () => {
   })
 
   it('copies exact nonempty Electron and Chromium notices into app resources', () => {
-    const temp = mkdtempSync(join(tmpdir(), 'electron-notices-'))
+    const temp = scratchDir('electron-notices-')
     const packagerOutput = join(temp, 'packager')
     const app = join(packagerOutput, 'Agent Inbox.app')
     mkdirSync(join(app, 'Contents', 'Resources'), { recursive: true })
@@ -180,6 +182,26 @@ describe('native architecture release stages', () => {
     expect(() => copyElectronNotices(packagerOutput, app)).toThrow(/missing nonempty LICENSE/)
   })
 
+  it('loads the shipped update verifier and pinned registry from a macOS app folder', () => {
+    const appResources = join(
+      scratchDir('macos-update-trust-'),
+      'Agent Inbox.app',
+      'Contents',
+      'Resources',
+      'app',
+    )
+    mkdirSync(join(appResources, 'electron'), { recursive: true })
+    mkdirSync(join(appResources, 'release'), { recursive: true })
+    cpSync(join(root, 'electron/update-manifest.cjs'), join(appResources, 'electron/update-manifest.cjs'))
+    cpSync(join(root, 'electron/update-trust.cjs'), join(appResources, 'electron/update-trust.cjs'))
+    cpSync(join(root, 'release/update-keys.json'), join(appResources, 'release/update-keys.json'))
+
+    expect(verifyPackagedUpdateTrust(appResources)).toEqual({
+      signingKeyId: 'ed25519-99927ba2f6af6482',
+      trustedKeyIds: ['ed25519-99927ba2f6af6482'],
+    })
+  })
+
   it('rejects stale or missing runtime source commits', () => {
     const expected = 'a'.repeat(40)
     expect(assertRuntimeSourceCommit({ sourceCommit: expected }, expected, 'fixture'))
@@ -191,7 +213,7 @@ describe('native architecture release stages', () => {
   })
 
   it('preserves executable modes and symlinks across job archives', () => {
-    const temp = mkdtempSync(join(tmpdir(), 'release-archive-'))
+    const temp = scratchDir('release-archive-')
     const source = join(temp, 'thin-arm64')
     mkdirSync(join(source, 'Agent Inbox.app', 'Contents', 'Frameworks'), { recursive: true })
     const executable = join(source, 'Agent Inbox.app', 'Contents', 'MacOS')
@@ -211,7 +233,7 @@ describe('native architecture release stages', () => {
   })
 
   it('validates the expected root before extraction and rejects escaping symlinks', () => {
-    const temp = mkdtempSync(join(tmpdir(), 'release-extract-'))
+    const temp = scratchDir('release-extract-')
     const wrongRoot = join(temp, 'wrong-root')
     mkdirSync(wrongRoot)
     writeFileSync(join(wrongRoot, 'file'), 'payload')
@@ -284,6 +306,21 @@ describe('native architecture release stages', () => {
     expect(source).toContain(": '/usr/bin/tar'")
     expect(source).not.toMatch(/powershell|cmd\\.exe|shell:\\s*true/i)
   })
+
+  it('runs the Electron-embedded SQLite check in every native thin app before publication (#135)', () => {
+    const source = readFileSync(join(root, 'scripts', 'build-thin-app.mjs'), 'utf8')
+    const lipo = source.indexOf('lipoArchs(nativeAddon)')
+    const check = source.indexOf('runElectronSqliteCheck({')
+    const publish = source.indexOf('publishAtomically(app, destination, force)')
+    expect(lipo).toBeGreaterThan(-1)
+    expect(check).toBeGreaterThan(lipo)
+    expect(publish).toBeGreaterThan(check)
+    const call = source.slice(check, publish)
+    expect(call).toContain("executable: join(app, 'Contents', 'MacOS', APP_NAME)")
+    expect(call).toContain("storePath: join(resources, 'dist', 'store.js')")
+    expect(call).toContain('electron: inputs.electron.version')
+    expect(source.slice(publish)).toContain("electronSqliteCheck: 'passed'")
+  })
 })
 
 describe('universal finalization contract', () => {
@@ -297,7 +334,7 @@ describe('universal finalization contract', () => {
   })
 
   it.skipIf(process.platform !== 'darwin')('behaviorally preserves keyed thin runtimes while merging app Mach-Os', async () => {
-    const temp = mkdtempSync(join(tmpdir(), 'universal-fixture-'))
+    const temp = scratchDir('universal-fixture-')
     const source = join(temp, 'main.c')
     writeFileSync(source, 'int main(void) { return 0; }\n')
     const binaries = {
@@ -402,16 +439,22 @@ describe('universal finalization contract', () => {
       '@electron/packager': '20.3.0',
       '@electron/rebuild': '4.2.0',
       '@electron/universal': '3.0.6',
-      electron: '43.1.1',
+      electron: '43.8.0',
       'electron-installer-dmg': '5.0.1',
     })
   })
 
+  // Issue #197: one constant is the version the MCP server reports in its
+  // initialize handshake AND records on its Live presence row, and the viewer
+  // compares sessions against it. A release bumps it in src/version.ts.
   it('keeps the MCP handshake version aligned with the package release version', () => {
     const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+    const version = readFileSync(join(root, 'src', 'version.ts'), 'utf8')
     const mcp = readFileSync(join(root, 'src', 'mcp.ts'), 'utf8')
-    expect(pkg.version).toBe('1.0.1')
-    expect(mcp).toContain(`new McpServer({ name: 'agent-inbox', version: '${pkg.version}' })`)
+    expect(pkg.version).toBe('1.5.0')
+    expect(version).toContain(`export const AGENT_INBOX_VERSION = '${pkg.version}'`)
+    expect(mcp).toContain(`new McpServer({ name: 'agent-inbox', version: AGENT_INBOX_VERSION })`)
+    expect(mcp).toContain('server_version: AGENT_INBOX_VERSION')
   })
 
   it('makes ad-hoc output ineligible for notarization until Developer ID re-finalization', () => {
@@ -434,7 +477,7 @@ describe('universal finalization contract', () => {
   })
 
   it('binds thin reports to app bytes and matching clean or dirty source provenance', () => {
-    const temp = mkdtempSync(join(tmpdir(), 'thin-provenance-'))
+    const temp = scratchDir('thin-provenance-')
     const inputs = loadReleaseInputs()
     const provenance = { sourceCommit: 'a'.repeat(40), sourceDirty: true }
     const runtimeManifestDigests = {
@@ -466,6 +509,7 @@ describe('universal finalization contract', () => {
         runtimeManifestDigests,
         appTreeDigest: treeIdentity(app),
         nativeRuntimeSelftest: 'passed',
+        electronSqliteCheck: 'passed',
         nativeAddonArchitectures: [arch === 'arm64' ? 'arm64' : 'x86_64'],
       }))
       return { app, report }
@@ -484,6 +528,12 @@ describe('universal finalization contract', () => {
       mode: 'adhoc' as const,
     }
     expect(verifyThinReports(options)).toHaveProperty('arm64.appTreeDigest')
+    const unchecked = JSON.parse(readFileSync(armFixture.report, 'utf8')) as Record<string, unknown>
+    delete unchecked.electronSqliteCheck
+    const uncheckedReport = join(temp, 'arm64-without-electron-sqlite-check.json')
+    writeFileSync(uncheckedReport, JSON.stringify(unchecked))
+    expect(() => verifyThinReports({ ...options, arm64Report: uncheckedReport }))
+      .toThrow(/thin arm64 verification report is invalid/)
     expect(() => verifyThinReports({
       ...options,
       arm64Report: x64Fixture.report,
@@ -546,8 +596,10 @@ describe('universal finalization contract', () => {
     expect(electronModules.every((module) => module.startsWith('electron/'))).toBe(true)
     expect(pullRequestTrigger).toContain('      - "electron/**"')
     const packageApp = readFileSync(join(root, 'scripts', 'package-app.sh'), 'utf8')
+    const packageAppStage = readFileSync(join(root, 'scripts', 'package-app-stage.mjs'), 'utf8')
     const thinApp = readFileSync(join(root, 'scripts', 'build-thin-app.mjs'), 'utf8')
-    expect(packageApp).toContain('"$ROOT/electron"')
+    expect(packageApp).toContain('"$ROOT/scripts/package-app-stage.mjs" stage "$ROOT" "$STAGE"')
+    expect(packageAppStage).toContain('copyRequiredTree(repoRoot, stageRoot)')
     expect(thinApp).toContain("['dist', 'public', 'electron', 'release']")
   })
 
@@ -574,6 +626,14 @@ describe('universal finalization contract', () => {
     expect(pkg.scripts['package:smoke']).toContain('test/setup-filesystem.test.ts')
     expect(verifier).toContain("'scripts/setup-filesystem.cjs'")
     expect(staging).toContain("'setup-filesystem.cjs'")
+  })
+
+  it('keeps the rollback step helper the installer needs in payload verification and staging', () => {
+    const verifier = readFileSync(join(root, 'electron', 'runtime-verify.cjs'), 'utf8')
+    const staging = readFileSync(join(root, 'scripts', 'stage-runtime.mjs'), 'utf8')
+
+    expect(verifier).toContain("'scripts/run-isolated.mjs'")
+    expect(staging).toContain("'run-isolated.mjs'")
   })
 
   it('keeps the shared Setup lease in payload verification, package smoke, and native workflows', () => {
@@ -639,7 +699,7 @@ describe('universal finalization contract', () => {
   })
 
   it('publishes only checksummed transfer artifacts and never a raw app bundle', () => {
-    const output = mkdtempSync(join(tmpdir(), 'release-output-'))
+    const output = scratchDir('release-output-')
     for (const name of [
       'app.tar.gz',
       'provisional.dmg',

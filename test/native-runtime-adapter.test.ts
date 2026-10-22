@@ -1,12 +1,10 @@
 import {
   chmodSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
@@ -19,6 +17,7 @@ import {
   resolveNodeDistributionPaths,
   validateArchiveEntries,
 } from '../scripts/native-runtime-adapter.mjs'
+import { scratchDir } from './scratch.js'
 
 describe('native runtime staging adapters', () => {
   it('preserves the exact POSIX archive and distribution layout', () => {
@@ -130,7 +129,7 @@ describe('native runtime staging adapters', () => {
   })
 
   it('accepts only plain non-symlink files at trusted executable paths', () => {
-    const root = mkdtempSync(join(tmpdir(), 'native-adapter-file-'))
+    const root = scratchDir('native-adapter-file-')
     const file = join(root, 'tar')
     writeFileSync(file, '#!/bin/sh\n')
     chmodSync(file, 0o755)

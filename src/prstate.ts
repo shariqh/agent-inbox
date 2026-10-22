@@ -20,8 +20,10 @@ import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, delimiter } from 'node:path'
 import type Database from 'better-sqlite3'
-import { listLinkTargets, listSourceLinks, upsertSourceLink, recordLinkFailure } from './store.js'
-import type { LinkTarget, SourceLink } from './store.js'
+import { listLinkTargets, listSourceLinks, upsertSourceLink, recordLinkFailure, setSourcePreview } from './store.js'
+import type { LinkTarget, SourceLink, SourcePreview } from './store.js'
+import { PREVIEW_TTL_MS, safeHttpUrl } from '../public/source.js'
+import { issueKey } from '../public/issue-key.js'
 
 // ── cadence, TTLs and subprocess limits: every tunable number, in one place ──
 const MIN = 60_000
@@ -29,15 +31,20 @@ const MIN = 60_000
 export const POLL_INTERVAL_MS = 60_000
 /** a prompt first refresh shortly after the viewer boots, without blocking start */
 export const FIRST_TICK_DELAY_MS = 2_000
-/** ceiling on gh calls per tick — with a handful of live branches this stays far
- *  under 100 calls/hour against a 5000/hour authenticated limit */
+/** ceiling on branches per tick; optional preview reads are bounded separately */
 export const MAX_PER_TICK = 4
+/**
+ * how many PRs sharing a head branch NAME one lookup examines (issue #157):
+ * enough to see past a few forks' same-named branches, never an unbounded list
+ */
+export const PR_WINDOW = 10
 export const GH_TIMEOUT_MS = 10_000
 export const GH_MAX_BUFFER = 8 * 1024 * 1024
+const MAX_PREVIEW_DEPLOYMENTS = 5
 /** how long a cached answer stays good, by what the answer was */
 export const TTL = {
   /** an open PR moves: checks land, reviews arrive */
-  openPr: 5 * MIN,
+  openPr: PREVIEW_TTL_MS,
   /** no PR yet — worth re-asking, but not urgently */
   noPr: 15 * MIN,
   /** MERGED or CLOSED is terminal; we only re-ask in case it reopens */
@@ -53,19 +60,32 @@ export type ChecksState = 'failing' | 'pending' | 'passing' | 'none'
 
 /** Injected so tests never shell out. Returns gh's raw stdout. */
 export type GhRun = (repo: string, branch: string) => Promise<string> | string
+export type GhApiRun = (endpoint: string) => Promise<string> | string
 
 export interface PrPayload {
   pr_number: number
   pr_url: string | null
   pr_title: string | null
   pr_state: string | null
+  pr_head_sha: string | null
   pr_draft: boolean
   review_decision: string | null
   checks: ChecksState
   issue_number: number | null
   issue_url: string | null
   issue_title: string | null
+  /**
+   * issue #103: EVERY issue the PR closes, in GitHub's order, or null when gh's
+   * list could not be read whole. One unreadable reference voids the record:
+   * dropping it could turn two references into one, a false certainty.
+   */
+  closing_refs: ClosingRef[] | null
   tldr: string
+}
+
+export interface ClosingRef {
+  repo: string
+  number: number
 }
 
 // ── pure classification ─────────────────────────────────────────────────────
@@ -122,6 +142,23 @@ export function firstLine(body: unknown): string {
   return ''
 }
 
+// `closingIssuesReferences` names each issue's repository as
+// `repository { name, owner { login } }` (design §18).
+function closingRefs(value: unknown): ClosingRef[] | null {
+  if (!Array.isArray(value)) return null
+  const refs: ClosingRef[] = []
+  for (const raw of value as unknown[]) {
+    const ref = record(raw)
+    const repository = record(ref?.repository)
+    const login = str(record(repository?.owner)?.login)
+    const name = str(repository?.name)
+    const repo = login && name ? `${login}/${name}` : null
+    if (!repo || issueKey(repo, ref?.number) === null) return null
+    refs.push({ repo, number: ref!.number as number })
+  }
+  return refs
+}
+
 function str(v: unknown): string | null {
   return typeof v === 'string' && v ? v : null
 }
@@ -132,11 +169,41 @@ function clip(v: unknown, max: number): string | null {
   return s.length > max ? `${s.slice(0, max)}…` : s
 }
 
-// `gh pr list --json …` emits an ARRAY — empty when the branch has no PR, which
-// is a real answer rather than a failure. noUncheckedIndexedAccess is why every
-// index here is guarded rather than asserted: the array is genuinely empty in
-// the ordinary case.
-export function parsePrPayload(json: string): PrPayload | null {
+function record(v: unknown): Record<string, unknown> | null {
+  return v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : null
+}
+
+// `owner/name` of the repository a listed PR was opened FROM, or null when gh
+// did not say (a deleted fork has no head repository at all).
+function headSlug(pr: Record<string, unknown>): string | null {
+  const repo = record(pr.headRepository)
+  const nameWithOwner = str(repo?.nameWithOwner)
+  if (nameWithOwner) return nameWithOwner
+  const login = str(record(pr.headRepositoryOwner)?.login)
+  const name = str(repo?.name)
+  return login && name ? `${login}/${name}` : null
+}
+
+// Issue #157: `gh pr list --head <branch>` matches the head branch NAME in every
+// fork (gh has no `--head owner:branch`), so a stranger's PR from a same-named
+// branch can come back first. A PR is this branch's PR only when its head
+// repository is the one the branch is pushed to. A same-repository expectation
+// is decided by isCrossRepository alone, which survives a rename; a fork is
+// compared by owner/name, case-insensitively as GitHub compares them. Anything
+// gh did not state plainly is not a match.
+function headMatches(pr: Record<string, unknown>, target: Pick<LinkTarget, 'repo' | 'head_repo'>): boolean {
+  if (typeof pr.isCrossRepository !== 'boolean') return false
+  const expected = target.head_repo.toLowerCase()
+  if (expected === target.repo.toLowerCase()) return !pr.isCrossRepository
+  return pr.isCrossRepository && headSlug(pr)?.toLowerCase() === expected
+}
+
+// `gh pr list --json …` emits an ARRAY, newest first — empty when the branch has
+// no PR, which is a real answer rather than a failure. The answer is the newest
+// PR whose head repository is the target's expected one. When none is, even
+// across a FULL window of other repositories' PRs, that is reported as no PR: a
+// match older than the window is unknown, and a guess is worse than no link.
+export function parsePrPayload(json: string, target: Pick<LinkTarget, 'repo' | 'head_repo'>): PrPayload | null {
   let parsed: unknown
   try {
     parsed = JSON.parse(json)
@@ -144,10 +211,9 @@ export function parsePrPayload(json: string): PrPayload | null {
     return null
   }
   if (!Array.isArray(parsed)) return null
-  const first = (parsed as unknown[])[0]
-  if (!first || typeof first !== 'object') return null
-  const pr = first as Record<string, unknown>
-  if (typeof pr.number !== 'number') return null
+  const pr = (parsed as unknown[]).map(record)
+    .find((candidate) => candidate !== null && typeof candidate.number === 'number' && headMatches(candidate, target))
+  if (!pr || typeof pr.number !== 'number') return null
   const closes = Array.isArray(pr.closingIssuesReferences) ? (pr.closingIssuesReferences as unknown[])[0] : undefined
   const issue = closes && typeof closes === 'object' ? (closes as Record<string, unknown>) : undefined
   return {
@@ -155,6 +221,8 @@ export function parsePrPayload(json: string): PrPayload | null {
     pr_url: str(pr.url),
     pr_title: clip(pr.title, TITLE_MAX),
     pr_state: str(pr.state),
+    pr_head_sha: typeof pr.headRefOid === 'string' && /^[a-f0-9]{40}$/i.test(pr.headRefOid)
+      ? pr.headRefOid.toLowerCase() : null,
     pr_draft: pr.isDraft === true,
     review_decision: str(pr.reviewDecision),
     checks: classifyChecks(pr.statusCheckRollup),
@@ -164,8 +232,70 @@ export function parsePrPayload(json: string): PrPayload | null {
     // the frontend has one place to read it from and a later `gh issue view`
     // fill-in needs no migration; v1 leaves it null and renders "#30".
     issue_title: null,
+    closing_refs: closingRefs(pr.closingIssuesReferences),
     tldr: firstLine(pr.body),
   }
+}
+
+function emptyPreview(error: string | null = null): SourcePreview {
+  return {
+    preview_url: null, preview_environment: null, preview_deployment_id: null,
+    preview_updated_at: null, preview_error: error,
+  }
+}
+
+function metadataArray(json: string): Record<string, unknown>[] {
+  const parsed: unknown = JSON.parse(json)
+  if (!Array.isArray(parsed) || parsed.some((row: unknown) => !row || typeof row !== 'object' || Array.isArray(row))) {
+    throw new Error('Invalid deployment metadata')
+  }
+  return parsed
+}
+
+// A limit hit or failed status read leaves selection incomplete. Do not choose a
+// plausible winner from a partial list, or reinterpret a build/check URL as a preview.
+export async function resolvePreviewPayload(repo: string, headSha: string, runApi: GhApiRun): Promise<SourcePreview> {
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo) || repo.split('/').some((part) => part === '.' || part === '..')
+    || !/^[a-f0-9]{40}$/.test(headSha)) {
+    throw new Error('Invalid preview source identity')
+  }
+  const deployments = metadataArray(await runApi(`repos/${repo}/deployments?sha=${headSha}&per_page=${MAX_PREVIEW_DEPLOYMENTS + 1}`))
+  if (deployments.length > MAX_PREVIEW_DEPLOYMENTS) throw new Error('Preview deployment lookup limit exceeded')
+  const eligible = deployments.flatMap((deployment) => {
+    if (typeof deployment.id !== 'number' || !Number.isSafeInteger(deployment.id) || deployment.id <= 0
+      || typeof deployment.sha !== 'string') {
+      throw new Error('Invalid deployment identity')
+    }
+    return deployment.sha === headSha && deployment.production_environment === false
+      ? [{ id: deployment.id, environment: deployment.environment }] : []
+  })
+  const candidates = await Promise.all(eligible.map(async (deployment) => {
+    const [status] = metadataArray(await runApi(`repos/${repo}/deployments/${deployment.id}/statuses?per_page=1`))
+    if (!status || status.state !== 'success') return null
+    const url = safeHttpUrl(status.environment_url)
+    const environment = str(deployment.environment)?.trim()
+    const updatedAt = str(status.updated_at)
+    if (!url || !environment || !updatedAt || !Number.isFinite(Date.parse(updatedAt))) return null
+    return {
+      url, environment, environmentKey: environment.toLowerCase(),
+      deploymentId: deployment.id, updatedAt,
+    }
+  }))
+  const ready = candidates.filter((candidate) => candidate !== null)
+  const byEnvironment = new Map<string, string>()
+  for (const candidate of ready) {
+    const previous = byEnvironment.get(candidate.environmentKey)
+    if (previous && previous !== candidate.url) throw new Error('Ambiguous preview deployment URLs')
+    byEnvironment.set(candidate.environmentKey, candidate.url)
+  }
+  ready.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt)
+    || (a.environmentKey < b.environmentKey ? -1 : a.environmentKey > b.environmentKey ? 1 : 0)
+    || b.deploymentId - a.deploymentId)
+  const best = ready[0]
+  return best ? {
+    preview_url: best.url, preview_environment: best.environment,
+    preview_deployment_id: best.deploymentId, preview_updated_at: best.updatedAt, preview_error: null,
+  } : emptyPreview()
 }
 
 export function classifyError(code: string | number | undefined, stderr: string): LinkError {
@@ -190,16 +320,16 @@ function ttlFor(link: SourceLink): number {
   return TTL.openPr
 }
 
-const keyOf = (repo: string, branch: string): string => `${repo}\u0000${branch}`
+const keyOf = (repo: string, branch: string, head: string): string => `${repo}\u0000${branch}\u0000${head}`
 
 // Pure: everything it needs already came out of store.ts. A branch with no cache
 // row is due immediately and sorts first, so a newly-flagged item lights up on
 // the next tick rather than waiting behind an established branch.
 export function dueTargets(targets: LinkTarget[], links: SourceLink[], nowMs: number): LinkTarget[] {
-  const byKey = new Map(links.map((l) => [keyOf(l.repo, l.branch), l]))
+  const byKey = new Map(links.map((l) => [keyOf(l.repo, l.branch, l.head_repo), l]))
   const due: Array<{ target: LinkTarget; checkedMs: number }> = []
   for (const t of targets) {
-    const link = byKey.get(keyOf(t.repo, t.branch))
+    const link = byKey.get(keyOf(t.repo, t.branch, t.head_repo))
     if (!link) {
       due.push({ target: t, checkedMs: -Infinity })
       continue
@@ -216,8 +346,12 @@ export function dueTargets(targets: LinkTarget[], links: SourceLink[], nowMs: nu
 
 export interface RefreshOpts {
   run?: GhRun
+  runApi?: GhApiRun
   nowMs?: number
   max?: number
+  /** issue #103 §5.2: no new target starts after this time; the one in flight finishes */
+  deadlineMs?: number
+  now?: () => number
 }
 
 // Resolves ALWAYS — never rejects. Node 24 defaults to
@@ -226,8 +360,10 @@ export interface RefreshOpts {
 // A background PR-title fetcher must never be able to take the inbox down.
 export async function refreshOnce(db: Database.Database, opts: RefreshOpts = {}): Promise<number> {
   const run = opts.run ?? defaultGhRun
+  const runApi = opts.runApi ?? defaultGhApiRun
   const nowMs = opts.nowMs ?? Date.now()
   const max = opts.max ?? MAX_PER_TICK
+  const now = opts.now ?? Date.now
   let targets: LinkTarget[]
   try {
     targets = dueTargets(listLinkTargets(db), listSourceLinks(db), nowMs).slice(0, max)
@@ -237,18 +373,37 @@ export async function refreshOnce(db: Database.Database, opts: RefreshOpts = {})
   }
   let done = 0
   for (const t of targets) {
+    if (opts.deadlineMs !== undefined && now() > opts.deadlineMs) break
     try {
       const out = await run(t.repo, t.branch)
-      const pr = parsePrPayload(String(out))
-      // an empty array is a real answer ("this branch has no PR"), cached like
-      // any other so the TTL backs off instead of re-asking every minute
-      upsertSourceLink(db, { repo: t.repo, branch: t.branch, provider: 'github', ...(pr ?? {}) })
+      const pr = parsePrPayload(String(out), t)
+      // an empty array, or no PR from the expected head repository, is a real
+      // answer ("this branch has no PR"), cached like any other so the TTL backs
+      // off instead of re-asking every minute
+      const revision = upsertSourceLink(db, { repo: t.repo, branch: t.branch, head_repo: t.head_repo, provider: 'github', ...(pr ?? {}) })
       done++
+      if (pr?.pr_state !== 'OPEN' || !pr.pr_head_sha) continue
+      let preview: SourcePreview
+      try {
+        preview = await resolvePreviewPayload(t.repo, pr.pr_head_sha, runApi)
+        if (preview.preview_url) {
+          // the same head verification as the first read: only the SAME verified
+          // PR, still at the same commit, keeps the preview
+          const current = parsePrPayload(String(await run(t.repo, t.branch)), t)
+          if (current?.pr_number !== pr.pr_number || current.pr_head_sha !== pr.pr_head_sha || current.pr_state !== 'OPEN') {
+            preview = emptyPreview('head-changed')
+          }
+        }
+      } catch (err) {
+        const e = err as { code?: string | number; stderr?: unknown; message?: unknown }
+        preview = emptyPreview(classifyError(e?.code, String(e?.stderr ?? e?.message ?? '')))
+      }
+      setSourcePreview(db, { ...t, revision }, preview)
     } catch (err) {
       const e = err as { code?: string | number; stderr?: unknown; message?: unknown }
       const reason = classifyError(e?.code, String(e?.stderr ?? e?.message ?? ''))
       try {
-        recordLinkFailure(db, { repo: t.repo, branch: t.branch, error: reason })
+        recordLinkFailure(db, { repo: t.repo, branch: t.branch, head_repo: t.head_repo, error: reason })
       } catch (writeErr) {
         console.error('[agent-inbox] pr refresh could not record a failure', writeErr)
       }
@@ -279,6 +434,9 @@ export function resolveGh(): string {
 
 // -R and --head are what make this independent of the viewer's cwd: the viewer
 // runs from the agent-inbox checkout while the branch may belong to any repo.
+// --head matches the branch NAME in every fork and gh has no `owner:branch` form
+// (issue #157), so it lists a small window and returns each PR's head identity
+// for parsePrPayload to verify against the repository the branch is pushed to.
 export const defaultGhRun: GhRun = async (repo, branch) => {
   const { stdout } = await execFileAsync(
     resolveGh(),
@@ -287,8 +445,9 @@ export const defaultGhRun: GhRun = async (repo, branch) => {
       '-R', repo,
       '--head', branch,
       '--state', 'all',
-      '--limit', '1',
-      '--json', 'number,title,url,state,isDraft,reviewDecision,statusCheckRollup,closingIssuesReferences,body,updatedAt',
+      '--limit', String(PR_WINDOW),
+      '--json', 'number,title,url,state,headRefOid,isDraft,reviewDecision,statusCheckRollup,closingIssuesReferences,body,updatedAt,'
+        + 'isCrossRepository,headRepository,headRepositoryOwner',
     ],
     {
       timeout: GH_TIMEOUT_MS,
@@ -303,31 +462,13 @@ export const defaultGhRun: GhRun = async (repo, branch) => {
   return stdout
 }
 
-export interface PollerOpts {
-  run?: GhRun
-  intervalMs?: number
-}
-
-export function startPrPoller(db: Database.Database, opts: PollerOpts = {}): { stop(): void } {
-  const run = opts.run ?? defaultGhRun
-  const intervalMs = opts.intervalMs ?? POLL_INTERVAL_MS
-  let busy = false
-  const tick = (): void => {
-    if (busy) return // a slow tick must never overlap the next one
-    busy = true
-    refreshOnce(db, { run })
-      .catch((err: unknown) => console.error('[agent-inbox] pr refresh failed', err))
-      .finally(() => { busy = false })
-  }
-  // .unref() on both: the poller must never be the reason a process stays alive
-  const first = setTimeout(tick, FIRST_TICK_DELAY_MS)
-  first.unref()
-  const timer = setInterval(tick, intervalMs)
-  timer.unref()
-  return {
-    stop() {
-      clearTimeout(first)
-      clearInterval(timer)
-    },
-  }
+const defaultGhApiRun: GhApiRun = async (endpoint) => {
+  const { stdout } = await execFileAsync(resolveGh(), ['api', endpoint], {
+    timeout: GH_TIMEOUT_MS,
+    maxBuffer: GH_MAX_BUFFER,
+    windowsHide: true,
+    encoding: 'utf8',
+    env: { ...process.env, GH_PAGER: 'cat', NO_COLOR: '1', GH_NO_UPDATE_NOTIFIER: '1' },
+  })
+  return stdout
 }

@@ -6,11 +6,13 @@ import { join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { APP_NAME, findNativeAddon } from './build-thin-app.mjs'
+import { runElectronSqliteCheck } from './electron-sqlite-check.mjs'
 import {
   assertElfTreeCompatibility,
   assertProcessIdentity,
 } from './linux-binary-gates.mjs'
 import { loadLinuxReleaseInputs } from './linux-release-inputs.mjs'
+import { verifyPackagedUpdateTrust } from './package-update-trust.mjs'
 import { assertRuntimeSourceCommit } from './runtime-provenance.mjs'
 import { verifyPayload } from './runtime-payload.mjs'
 import { treeIdentity } from './tree-identity.mjs'
@@ -113,6 +115,7 @@ export function verifyLinuxThinApp({
   const runtimeNode = join(runtimeRoot, 'bin', 'node')
   const runtimeAddon = findNativeAddon(runtimeRoot)
   assertElectronNotices(appRoot)
+  verifyPackagedUpdateTrust(resources)
 
   const setupInfo = JSON.parse(readFileSync(join(resources, 'setup-info.json'), 'utf8'))
   if (setupInfo.schema !== 2) {
@@ -172,6 +175,17 @@ export function verifyLinuxThinApp({
     },
     label: 'packaged Electron',
   })
+  runElectronSqliteCheck({
+    executable,
+    storePath: join(resources, 'dist', 'store.js'),
+    expected: {
+      platform: 'linux',
+      arch,
+      electron: inputs.electron.version,
+      modulesAbi: inputs.electron.modulesAbi,
+    },
+    label: `packaged Electron (${key})`,
+  })
   const runtimeProbe = assertProcessIdentity({
     actual: processProbe(runtimeNode, runtimeRoot),
     expected: {
@@ -199,6 +213,7 @@ export function verifyLinuxThinApp({
     compatibility,
     appTreeDigest: treeIdentity(appRoot),
     nativeAddonSelftests: 'passed',
+    electronSqliteCheck: 'passed',
     exactHostSetupSelection: 'passed',
   }
 }

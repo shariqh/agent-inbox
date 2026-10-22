@@ -5,6 +5,7 @@ import { canUndo, starOption } from './star.js'
 import { attentionEntries, classifyLiveness, humanActedOnRow, sortNeedsYou, ESCALATE_MS } from './attention.js'
 import { projectMonogram } from './colors.js'
 import { actionCategory, actionOwnerLabel, agentFollowupChip, changeKind } from './action.js'
+import { actionPresentation } from './card.js'
 
 export const ASK_SORT_OPTIONS = [
   { value: 'priority', label: 'Priority' },
@@ -40,6 +41,46 @@ export function sortNeedsYouByAsk(entries, mode) {
     .map(({ entry }) => entry)
 }
 
+// Issue #247 §2.2: the Later section's own order, whatever the Sort menu says.
+// Snoozed asks first, the soonest back first; then pinned asks, the oldest pin
+// first. An unreadable time sorts last within its reason, and ties fall back to
+// a stable key, so a poll never reshuffles the section.
+export function sortLaterEntries(entries) {
+  return entries
+    .map((entry) => {
+      const entity = entry.kind === 'row' ? entry.row : entry.item
+      const pinned = entry.later === 'pinned'
+      const at = Date.parse((pinned ? entity.pinned_at : entity.snoozed_until) ?? '')
+      return { entry, group: pinned ? 1 : 0, at: Number.isFinite(at) ? at : Number.MAX_VALUE, key: askSortKey(entry) }
+    })
+    .sort((a, b) => {
+      if (a.group !== b.group) return a.group - b.group
+      if (a.at !== b.at) return a.at - b.at
+      return a.key < b.key ? -1 : a.key > b.key ? 1 : 0
+    })
+    .map(({ entry }) => entry)
+}
+
+// The Later header's breakdown: `2 pinned · 1 snoozed, next back in 2h`.
+export function laterBreakdown(entries, nowMs) {
+  let pinned = 0
+  let snoozed = 0
+  let next = Number.POSITIVE_INFINITY
+  for (const entry of entries) {
+    if (entry.later === 'pinned') {
+      pinned += 1
+      continue
+    }
+    snoozed += 1
+    const until = Date.parse((entry.kind === 'row' ? entry.row : entry.item).snoozed_until ?? '')
+    if (Number.isFinite(until)) next = Math.min(next, until)
+  }
+  const parts = []
+  if (pinned) parts.push(`${pinned} pinned`)
+  if (snoozed) parts.push(Number.isFinite(next) ? `${snoozed} snoozed, next back in ${relMs(next - nowMs)}` : `${snoozed} snoozed`)
+  return parts.join(' · ')
+}
+
 export function askTimeModel(askedAt, nowMs) {
   const at = Date.parse(askedAt ?? '')
   if (!Number.isFinite(at)) return null
@@ -64,10 +105,10 @@ export function askTimeModel(askedAt, nowMs) {
 // Line 2 is what makes one-tap defensible (§5): you accept what you just read.
 // The item's own detail wins; otherwise the recommended option's detail.
 export function secondaryLine(item) {
-  if (item.next_step) return `Next: ${item.next_step}`
-  if (item.detail) return item.detail
+  const presentation = actionPresentation(item)
+  if (presentation.detail) return presentation.detail
   const rec = starOption(item)
-  return rec && rec.detail ? rec.detail : ''
+  return rec?.detail && rec.detail !== presentation.headline ? rec.detail : ''
 }
 
 function countDistinct(entities, field) {
@@ -106,11 +147,23 @@ function humanHalves(row) {
   return halves
 }
 
-function rowPickup(row) {
+export function rowPickup(row) {
   const halves = humanHalves(row)
   if (!halves.length || halves.some((h) => !h.at)) return { pickedUp: false, pickedUpAt: null, pickedUpBy: '' }
   const latest = halves.reduce((a, b) => (Date.parse(b.at) > Date.parse(a.at) ? b : a))
   return { pickedUp: true, pickedUpAt: latest.at, pickedUpBy: latest.by }
+}
+
+// Issue #247: why a deferred ask is out of the queue, for its reason chip. Only
+// a Copilot asker runs the #217 watcher a quiet deferral talks about, so any
+// other asker's stored deferral claims nothing (waitStopEl's rule).
+function deferral(entry, entity) {
+  const quiet = entity.action_agent === 'copilot' && entity.watch_stopped_at && entity.watch_stopped_until
+  return {
+    later: entry.later ?? null,
+    pinnedAt: entity.pinned_at ?? null,
+    quietUntil: quiet ? entity.watch_stopped_until : null,
+  }
 }
 
 export function rowModel(entry, {
@@ -121,6 +174,7 @@ export function rowModel(entry, {
 } = {}) {
   if (entry.kind === 'row') {
     const { row, board } = entry
+    const presentation = actionPresentation(row)
     return {
       kind: 'row',
       id: row.id,
@@ -128,14 +182,17 @@ export function rowModel(entry, {
       projectLabel: showProject ? projectMonogram(board.project) : '',
       stream: (streams.get(board.project) ?? 0) > 1 ? (board.stream ?? '') : '',
       agent: (agents.get(board.project) ?? 0) > 1 ? (board.agent ?? '') : '',
-      title: row.label,
-      secondary: row.next_step ? `Next: ${row.next_step}` : (row.note ?? ''),
+      title: presentation.headline,
+      headlineField: presentation.headlineField,
+      originalTitle: presentation.originalTitle,
+      secondary: presentation.detail,
       liveness: entry.liveness ?? 'blocked',
       boardId: board.id,
       boardTitle: board.title,
       created_at: null,
       askedAt: currentAskAt(entry),
       snoozedUntil: row.snoozed_until ?? null,
+      ...deferral(entry, row),
       ownerLabel: actionOwnerLabel(row),
       actionCategory: actionCategory(row),
       changeKind: changeKind(row, lastVisitAt),
@@ -155,6 +212,7 @@ export function rowModel(entry, {
     }
   }
   const it = entry.item
+  const presentation = actionPresentation(it)
   return {
     kind: 'item',
     id: it.id,
@@ -162,7 +220,9 @@ export function rowModel(entry, {
     projectLabel: showProject ? projectMonogram(it.project) : '',
     stream: (streams.get(it.project) ?? 0) > 1 ? (it.stream ?? '') : '',
     agent: (agents.get(it.project) ?? 0) > 1 ? (it.agent ?? '') : '',
-    title: it.title,
+    title: presentation.headline,
+    headlineField: presentation.headlineField,
+    originalTitle: presentation.originalTitle,
     secondary: secondaryLine(it),
     liveness: entry.liveness,
     boardId: null,
@@ -170,6 +230,7 @@ export function rowModel(entry, {
     created_at: it.created_at,
     askedAt: currentAskAt(entry),
     snoozedUntil: it.snoozed_until ?? null,
+    ...deferral(entry, it),
     ownerLabel: actionOwnerLabel(it),
     actionCategory: actionCategory(it),
     changeKind: changeKind(it, lastVisitAt),
@@ -195,10 +256,17 @@ export function rowModel(entry, {
 }
 
 // One time vocabulary shared with the Live freshness dots (§6) — never a raw
-// age ramp: only a live asking session earns heat.
+// age ramp: only a live asking session earns heat. A deferred ask (#247) shows
+// its reason instead: when it was pinned, or when its snooze brings it back.
 export function urgencyChip(model, nowMs) {
-  if (model.liveness === 'snoozed' && model.snoozedUntil) {
-    return { text: `snoozed ${relMs(Date.parse(model.snoozedUntil) - nowMs)}`, tone: 'muted' }
+  if (model.liveness === 'later') {
+    if (model.later === 'pinned') {
+      const at = Date.parse(model.pinnedAt ?? '')
+      return { text: Number.isFinite(at) ? `Pinned ${relMs(Math.max(0, nowMs - at))} ago` : 'Pinned', tone: 'muted' }
+    }
+    const back = `Back in ${relMs(Date.parse(model.snoozedUntil) - nowMs)}`
+    const quiet = Date.parse(model.quietUntil ?? '') > nowMs
+    return { text: quiet ? `${back} · agent waits quietly` : back, tone: 'muted' }
   }
   if (model.kind === 'row') {
     // #37: a blocked row that the human has ANSWERED must stop reading "you
@@ -206,7 +274,7 @@ export function urgencyChip(model, nowMs) {
     // The alarm is relabeled, never removed, so a pickup that never happens
     // stays on screen as the agent's failure rather than as your to-do.
     if (!model.answered) return { text: 'Needs input', tone: 'blocked' }
-    return agentFollowupChip(model, nowMs) ?? { text: 'Waiting for agent', tone: 'muted' }
+    return agentFollowupChip(model, nowMs) ?? { text: 'Waiting for delivery', tone: 'muted' }
   }
   if (model.answered) return agentFollowupChip(model, nowMs) ?? { text: 'Answered', tone: 'muted' }
   const age = nowMs - Date.parse(model.created_at)
@@ -270,7 +338,7 @@ export function stagedLabel(staged) {
 // Undo cannot win the race against a picked-up reply — say so instead of lying.
 export function undoRefusal(item, nowMs) {
   if (canUndo(item)) return null
-  return `Picked up ${relMs(nowMs - Date.parse(item.reply_seen_at))} ago — answering again will not un-do it`
+  return `Delivered ${relMs(nowMs - Date.parse(item.reply_seen_at))} ago — this answer can no longer be withdrawn`
 }
 
 // The mark's own twin of the above (#36). store.ts's clearRowHandled refuses once
@@ -282,7 +350,7 @@ export function undoRefusal(item, nowMs) {
 // it is the evidence about how long an agent has been sitting on this.
 export function handledUndoRefusal(row, nowMs) {
   if (!row.handled_seen_at) return null
-  return `Delivered ${relMs(nowMs - Date.parse(row.handled_seen_at))} ago — un-marking will not un-tell the agent`
+  return `Delivered ${relMs(nowMs - Date.parse(row.handled_seen_at))} ago — this confirmation can no longer be withdrawn`
 }
 
 // Replying does not resolve (§5): answered questions leave the active set and

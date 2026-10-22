@@ -1,20 +1,24 @@
 import { spawnSync } from 'node:child_process'
-import { createHash } from 'node:crypto'
+import {
+  createHash,
+  generateKeyPairSync,
+  sign as signBytes,
+} from 'node:crypto'
 import {
   chmodSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   writeFileSync,
 } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { scratchDir } from './scratch.js'
 
 const root = resolve(process.cwd())
 const inputsPath = join(root, '.github', 'workflows', 'macos-release.yml')
 const protectedPath = join(root, '.github', 'workflows', 'macos-release-protected.yml')
 const sourceCommit = 'a'.repeat(40)
+const taggedAt = '2026-08-25T20:12:51Z'
 
 function extractPublisherScript(workflow: string) {
   const publish = workflow.slice(workflow.indexOf('  publish:'))
@@ -51,15 +55,85 @@ function writePublishHandoff(directory: string) {
     .join('')
   writeFileSync(join(assets, 'SHA256SUMS.txt'), checksumText)
   writeFileSync(join(directory, 'RELEASE_NOTES.md'), 'Notarized release.\n')
-  writeFileSync(join(directory, 'release-context.json'), `${JSON.stringify({
+  const context = {
     schema: 1,
     tag: 'v1.2.3',
     version: '1.2.3',
     sourceCommit,
+    taggedAt,
     annotated: true,
-  })}\n`)
+  } as const
+  writeFileSync(join(directory, 'release-context.json'), `${JSON.stringify(context)}\n`)
+  const { privateKey, publicKey } = generateKeyPairSync('ed25519')
+  const publicKeySpkiBase64 = publicKey.export({ format: 'der', type: 'spki' }).toString('base64')
+  const keyId = `ed25519-${createHash('sha256')
+    .update(Buffer.from(publicKeySpkiBase64, 'base64'))
+    .digest('hex')
+    .slice(0, 16)}`
+  const registry = {
+    schema: 1,
+    signingKeyId: keyId,
+    keys: [{ keyId, algorithm: 'ed25519', publicKeySpkiBase64 }],
+  }
+  const registryBytes = `${JSON.stringify(registry, null, 2)}\n`
+  writeFileSync(join(directory, 'update-keys.json'), registryBytes)
+  const evidenceByName = new Map(assetEvidence.map((asset) => [asset.name, asset]))
+  const target = (
+    platform: 'darwin' | 'linux',
+    architecture: 'universal' | 'arm64' | 'x64',
+    packageType: 'dmg' | 'appimage' | 'deb',
+    filename: string,
+    installStrategy: 'macos-dmg' | 'appimage-self-replace' | 'deb-notify',
+  ) => {
+    const evidence = evidenceByName.get(filename)
+    if (!evidence) throw new Error(`missing fixture evidence for ${filename}`)
+    return {
+      platform,
+      architecture,
+      packageType,
+      filename,
+      url: `https://github.com/shariqh/agent-inbox/releases/download/v1.2.3/${filename}`,
+      byteLength: evidence.size,
+      sha256: evidence.sha256,
+      installStrategy,
+      ...(packageType === 'dmg' ? { minimumSystemVersion: '13.5' } : {}),
+    }
+  }
+  const manifest = {
+    schema: 1,
+    kind: 'agent-inbox-update-manifest',
+    repository: 'shariqh/agent-inbox',
+    version: '1.2.3',
+    tag: 'v1.2.3',
+    source: { commit: sourceCommit, tree: 'c'.repeat(40) },
+    publishedAt: taggedAt,
+    expiresAt: '2027-02-21T20:12:51Z',
+    releaseUrl: 'https://github.com/shariqh/agent-inbox/releases/tag/v1.2.3',
+    signingKeyId: keyId,
+    trustedKeyIds: [keyId],
+    targets: [
+      target('darwin', 'universal', 'dmg', 'Agent-Inbox-v1.2.3-universal.dmg', 'macos-dmg'),
+      target('linux', 'arm64', 'appimage', 'Agent-Inbox-v1.2.3-linux-arm64.AppImage', 'appimage-self-replace'),
+      target('linux', 'arm64', 'deb', 'agent-inbox_1.2.3_arm64.deb', 'deb-notify'),
+      target('linux', 'x64', 'appimage', 'Agent-Inbox-v1.2.3-linux-x86_64.AppImage', 'appimage-self-replace'),
+      target('linux', 'x64', 'deb', 'agent-inbox_1.2.3_amd64.deb', 'deb-notify'),
+    ],
+  }
+  const manifestBytes = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`)
+  writeFileSync(join(assets, 'update-manifest.json'), manifestBytes)
+  const manifestSha256 = createHash('sha256').update(manifestBytes).digest('hex')
+  const envelopeBytes = Buffer.from(`${JSON.stringify({
+    schema: 1,
+    manifestSha256,
+    signatures: [{
+      algorithm: 'ed25519',
+      keyId,
+      signature: signBytes(null, manifestBytes, privateKey).toString('base64'),
+    }],
+  }, null, 2)}\n`)
+  writeFileSync(join(assets, 'update-manifest.json.sig'), envelopeBytes)
   const checksumDigest = createHash('sha256').update(checksumText).digest('hex')
-  writeFileSync(join(directory, 'release-aggregation-evidence.json'), `${JSON.stringify({
+  const aggregateEvidence = {
     schema: 1,
     tag: 'v1.2.3',
     packageVersion: '1.2.3',
@@ -80,6 +154,45 @@ function writePublishHandoff(directory: string) {
       exactReleaseAllowlist: 'passed',
       deterministicChecksums: 'passed',
     },
+    updateManifest: {
+      name: 'update-manifest.json',
+      size: manifestBytes.length,
+      sha256: manifestSha256,
+      keyRegistrySha256: createHash('sha256').update(registryBytes).digest('hex'),
+    },
+  }
+  writeFileSync(
+    join(directory, 'release-aggregation-evidence.json'),
+    `${JSON.stringify(aggregateEvidence)}\n`,
+  )
+  writeFileSync(join(directory, 'update-signing-evidence.json'), `${JSON.stringify({
+    schema: 1,
+    tag: context.tag,
+    sourceCommit,
+    sourceTree: 'c'.repeat(40),
+    signingKeyId: keyId,
+    trustedKeyIds: [keyId],
+    manifest: {
+      name: 'update-manifest.json',
+      size: manifestBytes.length,
+      sha256: manifestSha256,
+    },
+    signature: {
+      name: 'update-manifest.json.sig',
+      size: envelopeBytes.length,
+      sha256: createHash('sha256').update(envelopeBytes).digest('hex'),
+    },
+    history: {
+      authorized: true,
+      mode: 'bootstrap',
+      priorTag: null,
+      rotationOverrideUsed: false,
+    },
+    verification: {
+      privateKeyMatchesRegistry: 'passed',
+      previousReleaseContinuity: 'bootstrap',
+      signature: 'passed',
+    },
   })}\n`)
 }
 
@@ -98,7 +211,7 @@ function runPublisher(
     createResponseMismatch?: boolean
   } = {},
 ) {
-  const temp = mkdtempSync(join(tmpdir(), 'release-publisher-'))
+  const temp = scratchDir('release-publisher-')
   const handoff = join(temp, 'handoff')
   const bin = join(temp, 'bin')
   const log = join(temp, 'gh.log')
@@ -290,7 +403,7 @@ describe('notarized macOS release workflow', () => {
     expect(notarize).toBeGreaterThan(intel)
     expect(publish).toBeGreaterThan(notarize)
     expect(inputs).not.toContain('environment: macos-release')
-    expect(protectedWorkflow.match(/environment: macos-release/g)).toHaveLength(3)
+    expect(protectedWorkflow.match(/environment: macos-release/g)).toHaveLength(4)
     expect(protectedWorkflow).toContain('npm run package:macos --')
     expect(protectedWorkflow).toContain('--mode developer-id')
     expect(`${inputs}\n${protectedWorkflow}`).not.toContain('macos-universal-provisional')
@@ -354,7 +467,7 @@ describe('notarized macOS release workflow', () => {
     expect(publish).toBeGreaterThan(checksums)
     expect(workflow).toContain('scripts/notarize-macos.sh')
     expect(readFileSync(join(root, 'scripts', 'notarize-macos.sh'), 'utf8'))
-      .toContain('"$XCRUN_BIN" stapler validate')
+      .toContain('node scripts/macos-release-gates.mjs stapler validate "$STAPLE_TARGET"')
     expect(workflow).toContain('spctl --assess')
     expect(workflow).toContain('verify-final-dmg')
     expect(workflow).toContain('--transport-evidence build/transported-app-evidence.json')
@@ -393,10 +506,13 @@ describe('notarized macOS release workflow', () => {
     expect(inputs).not.toContain('secrets.')
     const secretRefs = [...workflow.matchAll(/secrets\.([A-Z0-9_]+)/g)].map((match) => match[1])
     expect(new Set(secretRefs)).toEqual(new Set([
+      'AGENT_INBOX_UPDATE_PRIVATE_KEY_BASE64',
       'APPLE_DEVELOPER_ID_P12_BASE64',
       'APPLE_DEVELOPER_ID_P12_PASSWORD',
       'APPLE_NOTARY_PRIVATE_KEY_BASE64',
     ]))
+    expect(secretRefs.filter((name) => name === 'AGENT_INBOX_UPDATE_PRIVATE_KEY_BASE64'))
+      .toHaveLength(1)
     expect(workflow).not.toMatch(/echo\s+.*\$\{\{\s*secrets\./)
     const artifactPaths = [...workflow.matchAll(/^\s+path:\s*(.+)$/gm)].map((match) => match[1])
     expect(artifactPaths.join('\n')).not.toMatch(/p12|p8|keychain/i)

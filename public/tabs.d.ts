@@ -17,6 +17,8 @@ export interface TabCountsInput {
   globalAttention: number
   unreadNotes?: number
   scoped: ScopedCounts
+  /** closed items in the same scope the paged item snapshot omitted (#184) */
+  olderDone?: number
 }
 
 export interface TabCounts {

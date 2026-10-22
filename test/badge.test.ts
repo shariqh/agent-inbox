@@ -43,7 +43,12 @@ describe('focus hash', () => {
 describe('packaged app can resolve public/ from REPO_ROOT', () => {
   const sh = readFileSync(new URL('../scripts/package-app.sh', import.meta.url), 'utf8')
   it('stages public/ alongside electron/ and dist/', () => {
-    expect(sh).toContain('cp -R "$ROOT/dist" "$ROOT/public" "$ROOT/electron" "$ROOT/release" "$STAGE/"')
+    // package-app.sh stages through the release thin app's copyRequiredTree() (#139).
+    expect(sh).toContain('"$ROOT/scripts/package-app-stage.mjs" stage "$ROOT" "$STAGE"')
+    expect(readFileSync(new URL('../scripts/package-app-stage.mjs', import.meta.url), 'utf8'))
+      .toContain('copyRequiredTree(repoRoot, stageRoot)')
+    expect(readFileSync(new URL('../scripts/build-thin-app.mjs', import.meta.url), 'utf8'))
+      .toContain("for (const name of ['dist', 'public', 'electron', 'release'])")
   })
   it('packages unarchived, so plain file paths resolve at runtime', () => {
     expect(sh).toContain('--no-asar')
@@ -118,14 +123,28 @@ describe('the Electron dock badge shares the §7 attention predicate (no duplica
   // body read what is VISIBLE.
   it('maintains its seen-set from the UNSUPPRESSED set, so reopening announces nothing old', () => {
     const watch = main.slice(main.indexOf('function startAttentionWatch'))
-    expect(watch).toMatch(/known\s*=\s*new Set\(everything\.map/)
     expect(watch).toMatch(/const everything = attentionEntries\(items, boards, Date\.now\(\), liveSessions\)/)
+    // #247: the pinned asks join it, read without the closed set for the same reason.
+    expect(watch).toMatch(/known\s*=\s*knownNotificationIds\(everything, laterEntries\(items, boards, Date\.now\(\)\)\)/)
   })
 
   it('never swallows a failed module import silently', () => {
     // a bare `.catch(() => {})` (or no .catch at all) would freeze the badge
     // forever with no signal — the import failure path must log loudly
     expect(main).toMatch(/console\.error\([^)]*attention/i)
+  })
+
+  // issue #156: the watcher polls every 3 seconds in the main process, so it
+  // reads the lean item projection rather than re-downloading the whole history,
+  // and hands the shared predicate only the groups that projection carries.
+  // test/reply-watch.test.ts pins that both inputs derive identical results.
+  it('polls the lean item projection and reads only its needsYou groups', () => {
+    const start = main.indexOf('function startAttentionWatch')
+    const watch = main.slice(start, main.indexOf('\nfunction ', start + 1))
+    expect(watch).toContain('fetch(`${URL_BASE}api/items?scope=attention`)')
+    expect(watch).not.toContain('fetch(`${URL_BASE}api/items`)')
+    expect(watch).toMatch(/const items = g\.needsYou\.flatMap\(/)
+    expect(watch).not.toMatch(/\bg\.(notes|done)\b/)
   })
 })
 
@@ -157,6 +176,17 @@ describe('focusItem opens ancestor <details> folds, not just the target (fix rou
   })
   it('flips staleFoldOpen so the next 3s poll does not re-collapse the stale fold', () => {
     expect(helper).toMatch(/staleFoldOpen\s*=\s*true/)
+  })
+  // #247: the snoozed and pinned folds and the Later section, likewise. jsdom's
+  // own toggle event re-records a programmatic open, so only the source can
+  // hold these lines: the helper records the key, and the section carries it.
+  it('records an opened deferred fold so the next 3s poll keeps it open', () => {
+    expect(helper).toMatch(/openDeferredFolds\.add\(node\.dataset\.deferredFold\)/)
+    const sectionStart = js.indexOf('function laterSectionEl(')
+    const section = js.slice(sectionStart, js.indexOf('\n}', sectionStart))
+    expect(sectionStart).toBeGreaterThan(-1)
+    expect(section).toMatch(/section\.dataset\.deferredFold = 'later'/)
+    expect(section).toMatch(/openDeferredFolds\.has\('later'\)/)
   })
   it('flips showArchived so the next 3s poll does not re-collapse the archived fold', () => {
     expect(helper).toMatch(/showArchived\s*=\s*true/)

@@ -17,6 +17,7 @@ export interface HaystackEntity {
   reply_context?: string
   options?: Array<{ label?: string; detail?: string }>
   rows?: Array<{
+    id?: string
     label?: string
     note?: string
     next_step?: string
@@ -31,6 +32,10 @@ export interface HaystackEntity {
 }
 
 export function haystackFor(entity: HaystackEntity): string
+export function searchTerms(query: string): string[]
+export function createBoundedMatcher(
+  searchFn: (haystack: string[], needle: string) => Array<{ index: number; ranges: number[] }> | null,
+): (haystack: string[], needle: string) => Array<{ index: number; ranges: number[] }> | null
 export function paginate<T>(items: T[], limit: number): { visible: T[]; remaining: number }
 export function paginateGroups<G extends { items: unknown[] }>(
   groups: G[],

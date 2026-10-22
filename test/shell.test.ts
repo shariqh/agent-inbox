@@ -28,11 +28,12 @@ describe('shell markup', () => {
     expect(html).toContain('id="agentSelect"')
     expect(html).toContain('id="search"')
     expect(html).toContain('id="gear"')
+    expect(html).toContain('id="sidebarCollapse"')
     const sidebar = html.slice(html.indexOf('<aside class="sidebar-shell">'), html.indexOf('</aside>'))
     const topbar = html.slice(html.indexOf('<header id="topbar">'), html.indexOf('</header>'))
     expect(sidebar).toContain('id="agentSelect"')
     expect(topbar).not.toContain('id="agentSelect"')
-    expect(topbar).not.toContain('id="search"')
+    expect(topbar).toContain('id="search"')
     expect(html).toMatch(/class="floating-search"[^>]*role="search"/)
   })
 
@@ -43,22 +44,22 @@ describe('shell markup', () => {
     expect(css).not.toMatch(/settings-open[^}]*transition/)
   })
 
-  it('has a project rail and the four content tabs in spec order (Live is a footer strip, not a tab — spec §16)', () => {
+  it('has a project rail and the five content tabs in product order (Live is a footer strip, not a tab)', () => {
     expect(html).toContain('id="rail"')
     const tabs = [...html.matchAll(/<button class="tab"[^>]*data-tab="(\w+)"/g)].map((m) => m[1])
-    expect(tabs).toEqual(['needsYou', 'boards', 'notes', 'done'])
+    expect(tabs).toEqual(['dashboard', 'needsYou', 'boards', 'notes', 'done'])
     expect(html).not.toContain('data-tab="live"')
   })
 
   it('gives every tab a count slot', () => {
     for (const t of ['needsYou', 'boards', 'notes', 'done']) {
-      expect(html, t).toMatch(new RegExp(`data-tab="${t}"[^>]*>[^<]*<span class="tab-count"`))
+      expect(html, t).toMatch(new RegExp(`data-tab="${t}"[\\s\\S]*?<span class="tab-name">[^<]+</span><span class="tab-count"`))
     }
   })
 
   it('keeps every render host the viewer writes into', () => {
     for (const host of [
-      'id="needsYou"', 'id="boards"', 'id="notes"', 'id="done"', 'id="setup"',
+      'id="dashboard"', 'id="needsYou"', 'id="boards"', 'id="notes"', 'id="done"', 'id="setup"',
       'id="needsYouList"', 'class="rows"', 'class="groups"',
       'class="boards"', 'class="items"', 'class="setup-body"',
     ]) expect(html, host).toContain(host)
@@ -72,7 +73,8 @@ describe('shell markup', () => {
     expect(html).toMatch(/id="livePin"[^>]*aria-pressed="false"/)
     expect(html).toContain('Pin Live sessions open')
     expect(html).toContain('class="live-list"')
-    expect(html).toContain('no agents running')
+    expect(html).toContain('Checking connections...')
+    expect(html).not.toContain('no agents running')
   })
 
   it('leaves the pieces later tasks build in JS out of the static markup', () => {
@@ -292,7 +294,8 @@ describe('closed projects (issue #32)', () => {
     const disclosure = fn('function initProjectDisclosure()', '\nfunction railActionEl(')
     expect(disclosure).toContain('projectMode = projectNavigationMode()')
     expect(disclosure).toContain('projectMode = next')
-    expect(disclosure).toContain('const activeFocusState = projectFocusState(document.activeElement)')
+    expect(disclosure).toContain('const active = activeFocusElement()')
+    expect(disclosure).toContain('const activeFocusState = projectFocusState(active)')
     expect(disclosure).toContain('setClosedProjectsOpen(false)')
     expect(disclosure).toContain('restoreProjectFocus(focusState)')
     expect(disclosure).toContain('projectFocusBookmark')
@@ -482,7 +485,7 @@ describe('#38 · the poll keeps its gate, the human bypasses it', () => {
 
   it('refreshes ambient signals before the draft gate, but defers everything during a held press (#39)', () => {
     const body = sourceFn('function renderIfIdle()', '\n// called whenever a draft may have cleared')
-    expect(body).toMatch(/if \(pressHeld\([^)]*\)\)[\s\S]*const frame = paintAmbient\(\)[\s\S]*if \(shouldDeferRender\(/)
+    expect(body).toMatch(/if \(pressHeld\([^)]*\)\)[\s\S]*const frame = paintAmbient\(\)[\s\S]*dashboardInteractionActive\(\)[\s\S]*shouldDeferRender\(/)
 
     const ambient = sourceFn('function paintAmbient()', '\nfunction paintEditableSurfaces(')
     for (const call of ['applyBadge()', 'renderRail()', 'renderLiveBar(', 'setCount(']) {
@@ -521,6 +524,18 @@ describe('#38 · the poll keeps its gate, the human bypasses it', () => {
     const m = js.match(/async function reloadAndPaint\(\)[\s\S]*?\n\}/)
     expect(m, 'reloadAndPaint() not found').toBeTruthy()
     expect(m![0]).toMatch(/await load\(\)[\s\S]*forceRender\(\)/)
+  })
+
+  it('restores queue geometry only after shortcut decoration has finalized the frame', () => {
+    const body = sourceFn('function render()', '\n// one age vocabulary')
+    expect(body).toMatch(/const restoreQueueView = paintEditableSurfaces\(frame\)/)
+    expect(body).toMatch(/keyboardUI\?\.refresh\(\)[\s\S]*restoreQueueView\(\)/)
+    const editable = sourceFn('function paintEditableSurfaces(', '\nfunction render(')
+    expect(editable).toMatch(/const restoreQueueView = renderNeedsYou\(/)
+    expect(editable).toContain('return restoreQueueView')
+    const queue = sourceFn('function renderNeedsYou(', '\nfunction renderOrphanedDrafts(')
+    expect(queue).toMatch(/resizeReplyEditor\(editor\)[\s\S]*cardScrollHost\(restoredCard\)\.scrollTop/)
+    expect(js).toMatch(/if \(editor\.isConnected && !editor\.style\.height\) resizeReplyEditor\(editor\)/)
   })
 
   it('every write a click initiates goes through it — one bare load() survives, the boot call', () => {

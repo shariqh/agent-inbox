@@ -8,8 +8,9 @@
 // the EXACT repo lockfile, the built dist/, and the install scripts + docs
 // the staged runtime needs to register itself with a host agent. Before any
 // of that is pinned under a manifest, `bin/node dist/hook-cli.js selftest`
-// is run against the staged tree itself, proving the exact staged Node +
-// better-sqlite3 combination actually loads — the same gate
+// and an allocation-driven SQLite cleanup check run against the staged tree,
+// proving the exact staged Node + better-sqlite3 combination loads and survives
+// garbage collection. The hook selftest is the same gate
 // install-hooks.sh already applies to a resolved host Node, applied here to
 // what this script is about to ship. Only then is the manifest generated,
 // verified, and the tree published through the same-parent transaction below.
@@ -42,10 +43,11 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { parseArgs } from 'node:util'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join, posix, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildManifest, copyTreePreservingMode, isMainModule, verifyPayload, writeManifestFile } from './runtime-payload.mjs'
 import { copyAgentInboxLicense } from './license.mjs'
+import { probeRuntimeMcp } from './runtime-mcp-probe.mjs'
 import {
   assertPlainFile,
   nativeRuntimeAdapterFor,
@@ -186,6 +188,38 @@ function copyFilePreserving(src, dest) {
   chmodSync(dest, statSync(src).mode & 0o777)
 }
 
+// dist/ imports a few pure browser modules from ../public/ (issue #103 PR2:
+// the MCP server's titled board_get summary uses public/issue-key.js). A
+// runtime ships no viewer, so stage exactly the public modules dist/ reaches,
+// following their own relative imports; without them dist/mcp-server.js
+// cannot even load.
+const RELATIVE_IMPORT = /(?:\bfrom\s*|\bimport\s*\(?\s*)(['"])(\.{1,2}\/[^'"\n]+)\1/g
+
+function distFiles(dir, rel = 'dist') {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => entry.isDirectory()
+    ? distFiles(join(dir, entry.name), posix.join(rel, entry.name))
+    : entry.name.endsWith('.js') ? [posix.join(rel, entry.name)] : [])
+}
+
+function stagePublicModules(repoRoot, stageDir) {
+  const queue = distFiles(join(stageDir, 'dist'))
+  const staged = new Set()
+  while (queue.length) {
+    const rel = queue.pop()
+    const code = readFileSync(join(stageDir, ...rel.split('/')), 'utf8')
+    for (const [, , spec] of code.matchAll(RELATIVE_IMPORT)) {
+      const target = posix.normalize(posix.join(posix.dirname(rel), spec))
+      if (!target.startsWith('public/') || staged.has(target)) continue
+      const src = join(repoRoot, ...target.split('/'))
+      if (!existsSync(src)) throw new StageRuntimeError(`${rel} imports ${target}, which is missing from the repo`)
+      copyFilePreserving(src, join(stageDir, ...target.split('/')))
+      staged.add(target)
+      queue.push(target)
+    }
+  }
+  return [...staged].sort()
+}
+
 function writeJsonFile(path, value) {
   mkdirSync(dirname(path), { recursive: true })
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`)
@@ -271,6 +305,7 @@ const REQUIRED_SCRIPTS = [
   'runtime-config.mjs',
   'setup-filesystem.cjs',
   'setup-lock.sh',
+  'run-isolated.mjs',
 ]
 const REQUIRED_DOCS = [
   'reporting-snippet.md',
@@ -278,6 +313,12 @@ const REQUIRED_DOCS = [
   join('instructions', 'claude-code.md'),
   join('instructions', 'copilot-cli.md'),
 ]
+
+// The allocation-driven check runs 300,000 statements on purpose (#135). GitHub's
+// Intel macOS runners need roughly 25-30 s for it, so a 30 s ceiling timed out
+// about a quarter of darwin-x64 (macos-15-intel) stagings (#187). The loop is
+// bounded and a real hang still fails.
+const SQLITE_CHECK_TIMEOUT_MS = 180_000
 
 /**
  * Prove the exact staged Node + better-sqlite3 combination actually loads,
@@ -289,8 +330,9 @@ const REQUIRED_DOCS = [
  * repo's, since it is the staged copy (and its staged node_modules) that
  * ships. Runs against a scratch, disposable database path (never the real
  * ~/.agent-inbox/inbox.db) so staging a runtime can never touch host state.
- * On failure this throws — the caller must not build/write a manifest or
- * publish anything for a tree that failed this check.
+ * The separate allocation-driven check catches native statement cleanup
+ * failures that open/close and explicit GC miss (#135). On failure this throws
+ * before the caller can manifest or publish the tree.
  */
 function runStagedSelftest(stageDir, adapter) {
   const stagedNode = join(stageDir, ...adapter.payloadNodeExecRelPath.split('/'))
@@ -300,16 +342,30 @@ function runStagedSelftest(stageDir, adapter) {
   }
   const scratchDir = mkdtempSync(join(tmpdir(), 'stage-runtime-selftest-'))
   try {
-    execFileSync(stagedNode, [hookCli, 'selftest'], {
-      cwd: stageDir,
-      env: { ...process.env, AGENT_INBOX_DB: join(scratchDir, 'inbox.db') },
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 30_000,
-    })
-  } catch (err) {
-    throw new StageRuntimeError(
-      `staged runtime failed its selftest (bin/node dist/hook-cli.js selftest) — refusing to publish: ${err.message}`,
-    )
+    for (const [label, args, timeout] of [
+      ['selftest (bin/node dist/hook-cli.js selftest)', [hookCli, 'selftest'], 30_000],
+      ['allocation-driven SQLite check', [
+        join(SCRIPT_DIR, 'runtime-sqlite-check.mjs'), join(stageDir, 'dist', 'store.js'),
+      ], SQLITE_CHECK_TIMEOUT_MS],
+    ]) {
+      try {
+        execFileSync(stagedNode, args, {
+          cwd: stageDir,
+          env: { ...process.env, AGENT_INBOX_DB: join(scratchDir, 'inbox.db') },
+          stdio: ['ignore', 'pipe', 'pipe'],
+          timeout,
+        })
+      } catch (err) {
+        throw new StageRuntimeError(`staged runtime failed its ${label} — refusing to publish: ${err.message}`)
+      }
+    }
+    // hook-cli reaches no public/ module; only starting the MCP server proves
+    // the runtime carries everything dist/mcp-server.js imports (#103 PR2)
+    try {
+      probeRuntimeMcp(stagedNode, stageDir)
+    } catch (err) {
+      throw new StageRuntimeError(`staged runtime failed its MCP server probe — refusing to publish: ${err.message}`)
+    }
   } finally {
     rmSync(scratchDir, { recursive: true, force: true })
   }
@@ -349,6 +405,7 @@ function stageInto(stageDir, {
       npm_config_platform: platform,
       npm_config_arch: arch,
       npm_config_build_from_source: 'true',
+      npm_config_nodedir: nodeRoot,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
     timeout: 10 * 60_000,
@@ -370,6 +427,7 @@ function stageInto(stageDir, {
     throw new StageRuntimeError(`repo is missing a built dist/ at ${distDir} — run \`npm run build\` first`)
   }
   copyTreePreservingMode(distDir, join(stageDir, 'dist'))
+  stagePublicModules(repoRoot, stageDir)
 
   runStagedSelftest(stageDir, adapter)
 

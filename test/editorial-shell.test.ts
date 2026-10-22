@@ -5,38 +5,51 @@ import { describe, expect, it } from 'vitest'
 const root = resolve(process.cwd())
 const html = readFileSync(resolve(root, 'public/index.html'), 'utf8')
 const css = readFileSync(resolve(root, 'public/style.css'), 'utf8')
+const app = readFileSync(resolve(root, 'public/app.js'), 'utf8')
 
 describe('the editorial desk shell', () => {
-  it('is light-first, Burgundy Coral, and uses the approved desktop typography', () => {
+  it('is dark-first, graphite with icon-derived accent, and uses the approved operations typography', () => {
     expect(css).toMatch(/:root\s*\{[^}]*color-scheme:\s*light\s*;/s)
-    expect(css).toContain('--app-bg: #f8f3f4')
-    expect(css).toContain('--brand-coral-400: #eb84bb')
-    expect(css).toContain('"Segoe UI", Aptos, Calibri')
+    expect(html).toContain('<html lang="en" data-theme="dark">')
+    expect(css).toContain('--app-bg: #090b0d')
+    expect(css).toContain('--app-agent: #38d6c0')
+    expect(css).toContain('--app-accent: #eb84bb')
+    expect(css).toContain('ui-sans-serif')
+    expect(css).toContain('"Segoe UI Variable"')
     expect(css).not.toContain('mediumpurple')
     expect(css).not.toContain('rebeccapurple')
+  })
+
+  it('uses the agent accent and a neutral quiet state for dashboard lane dots', () => {
+    expect(css).toMatch(/\.dashboard-agent-dot\s*\{[^}]*background:\s*var\(--app-border-strong\)/s)
+    expect(css).toMatch(/\.dashboard-agent-dot\.active\s*\{[^}]*background:\s*var\(--signal\)/s)
+    expect(css).toMatch(/\.dashboard-agent-dots\s*\{[^}]*flex-wrap:\s*wrap/s)
   })
 
   it('moves navigation into a real sidebar and gives the work area an editorial heading', () => {
     expect(html).toContain('class="sidebar-shell"')
     expect(html).toContain('id="pageTitle"')
-    expect(html).toContain('Your queue')
-    expect(html).toContain('>Inbox<span class="tab-count"')
-    expect(html).toContain('>Plans<span class="tab-count"')
-    expect(html).toContain('>History<span class="tab-count"')
+    expect(html).toContain('Live Operations Desk')
+    expect(html).toContain('class="tab-name">Dashboard</span>')
+    expect(html).toContain('class="tab-name">Inbox</span><span class="tab-count"')
+    expect(html).toContain('class="tab-name">Plans</span><span class="tab-count"')
+    expect(html).toContain('class="tab-name">History</span><span class="tab-count"')
   })
 
-  it('floats workspace search above Live and gives the sidebar ownership of the agent picker', () => {
+  it('keeps search and keyboard controls in the utility bar and the agent picker in the sidebar', () => {
     const sidebar = html.slice(html.indexOf('<aside class="sidebar-shell">'), html.indexOf('</aside>'))
     const topbar = html.slice(html.indexOf('<header id="topbar">'), html.indexOf('</header>'))
     expect(sidebar).toContain('class="agent-pick"')
     expect(sidebar.indexOf('class="agent-pick"')).toBeGreaterThan(sidebar.indexOf('id="projectDisclosure"'))
     expect(sidebar.indexOf('class="agent-pick"')).toBeLessThan(sidebar.indexOf('id="gear"'))
     expect(topbar).not.toContain('class="agent-pick"')
-    expect(topbar).not.toContain('id="search"')
+    expect(topbar).toContain('id="search"')
+    expect(topbar).toContain('id="keyboardTools"')
     expect(html).toMatch(/class="floating-search"[^>]*role="search"[\s\S]*id="search"[^>]*aria-keyshortcuts="Meta\+K Control\+K"/)
-    expect(css).toMatch(/\.floating-search\s*\{[^}]*position:\s*fixed[^}]*bottom:\s*42px[^}]*z-index:\s*45/s)
-    expect(css).toMatch(/\.floating-search\s*\{[^}]*left:\s*calc\(var\(--sidebar-width\)\s*\+\s*\(100vw - var\(--sidebar-width\)\)\s*\/\s*2\)/s)
-    expect(css).toMatch(/\.agent-pick\s*\{[^}]*display:\s*grid[^}]*grid-template-columns:\s*auto minmax\(0,\s*1fr\)[^}]*border-top:\s*1px solid var\(--app-border\)/s)
+    expect(css).toMatch(/#topbar\s*\{[^}]*grid-template-columns:\s*minmax\(180px,\s*1fr\)\s+minmax\(220px,\s*400px\)\s+auto/s)
+    expect(css).toMatch(/\.floating-search\s*\{[^}]*position:\s*relative[^}]*width:\s*100%/s)
+    expect(css).toMatch(/\.search-results\s*\{[^}]*top:\s*calc\(100% \+ 8px\)[^}]*bottom:\s*auto/s)
+    expect(css).toMatch(/\.agent-pick\s*\{[^}]*display:\s*grid[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)[^}]*border-top:\s*1px solid var\(--app-border\)/s)
     expect(css).toMatch(/\.nrow-card\s*\{[^}]*bottom:\s*104px/s)
   })
 
@@ -55,6 +68,46 @@ describe('the editorial desk shell', () => {
     expect(css).toContain('--inspector-width: 520px')
     expect(css).toMatch(/\.nrow-card\s*\{[^}]*width:\s*var\(--inspector-width\)\s*;/s)
     expect(css).toMatch(/#needsYouList\s*\{[^}]*padding-right:\s*calc\(var\(--inspector-width\)/s)
+    expect(css).toMatch(/\.nrow-card-compose\s*\{[^}]*max-height:\s*min\(50%,\s*360px\)[^}]*overflow-y:\s*auto[^}]*overscroll-behavior:\s*contain/s)
+  })
+
+  it('lets inline card regions grow with the page instead of trapping wheel scrolling', () => {
+    // jsdom cannot evaluate these queries. The release must be inside both the
+    // compact media layer and the exact complement of the phone card container.
+    const compact = css.slice(css.indexOf('@media (max-width: 1279px)'))
+    const inline = compact.match(/@container needs-queue \(width > 440px\)\s*\{((?:[^{}]|\{[^{}]*\})*)\}/s)?.[1] ?? ''
+    expect(compact).toMatch(/#needsYouList \.nrow-card\s*\{[^}]*position:\s*static[^}]*overflow:\s*visible/s)
+    expect(inline).toMatch(/\.nrow-card\s*\{[^}]*overscroll-behavior:\s*auto/s)
+    expect(inline).toMatch(/\.nrow-card-head,\s*\.nrow-card-scroll,\s*\.nrow-card-compose\s*\{[^}]*flex:\s*0 0 auto[^}]*max-height:\s*none[^}]*overflow:\s*visible[^}]*overscroll-behavior:\s*auto/s)
+  })
+
+  it('keeps fixed desktop and phone card scrolling bounded and contained', () => {
+    const desktop = css.slice(0, css.indexOf('@media (max-width: 1279px)'))
+    expect(desktop).toMatch(/\.nrow-card-head\s*\{[^}]*max-height:\s*40%[^}]*overflow-y:\s*auto[^}]*overscroll-behavior:\s*contain/s)
+    expect(desktop).toMatch(/\.nrow-card-scroll\s*\{[^}]*flex:\s*1 1 auto[^}]*overflow-y:\s*auto[^}]*overscroll-behavior:\s*contain/s)
+    expect(desktop).toMatch(/\.nrow-card-compose\s*\{[^}]*max-height:\s*min\(50%,\s*360px\)[^}]*overflow-y:\s*auto[^}]*overscroll-behavior:\s*contain/s)
+    const compact = css.slice(css.indexOf('@media (max-width: 1279px)'))
+    const phone = compact.slice(compact.indexOf('@container needs-queue (max-width: 440px)'))
+    expect(phone).toMatch(/#needsYouList \.nrow-card\s*\{[^}]*position:\s*fixed[^}]*inset:\s*0[^}]*height:\s*100dvh[^}]*overflow:\s*hidden/s)
+    expect(phone).toMatch(/\.nrow-card-scroll\s*\{[^}]*min-height:\s*0[^}]*flex:\s*1 1 auto[^}]*overflow-y:\s*auto/s)
+    expect(phone).toMatch(/\.nrow-card-compose\s*\{[^}]*max-height:\s*min\(42dvh,\s*320px\)[^}]*overflow-y:\s*auto[^}]*overscroll-behavior:\s*contain/s)
+    expect(phone).not.toMatch(/overscroll-behavior(?:-y)?:\s*auto/)
+  })
+
+  it('keeps code blocks horizontally scrollable without trapping vertical chaining', () => {
+    const code = css.match(/\.structured-code pre\s*\{([^}]*)\}/s)?.[1] ?? ''
+    expect(code).toMatch(/overflow:\s*auto/)
+    expect(code).not.toMatch(/overscroll-behavior(?:-y)?:\s*(?:contain|none)/)
+  })
+
+  it('wraps action headlines and option labels without clipping warnings or crowding touch controls', () => {
+    expect(css).toMatch(/\.nrow-title\s*\{[^}]*white-space:\s*normal[^}]*overflow-wrap:\s*anywhere/s)
+    expect(css).toMatch(/\.opt-pill\s*\{[^}]*min-width:\s*0[^}]*max-width:\s*100%[^}]*white-space:\s*normal[^}]*overflow-wrap:\s*anywhere/s)
+    expect(css).toMatch(/\.card-tldr,\s*\.card-impact,\s*\.card-after\s*\{[^}]*padding:\s*0[^}]*border:\s*0[^}]*background:\s*transparent/s)
+    expect(css).toMatch(/\.nrow-card-head\s*\{[^}]*display:\s*flex/s)
+    expect(css).toMatch(/\.opt-pill,\s*\.reply-row button,\s*\.disposition-btn\s*\{[^}]*min-height:\s*44px/s)
+    const compact = css.slice(css.indexOf('@media (max-width: 1279px)'))
+    expect(compact).toMatch(/\.nrow-card-compose \.options\.comparing\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s)
   })
 
   it('exposes keyboard-accessible splitters for both adjustable panes', () => {
@@ -69,6 +122,19 @@ describe('the editorial desk shell', () => {
     expect(compact).toMatch(/\.board-table\.matrix\s*\{[^}]*table-layout:\s*fixed/s)
     expect(compact).toMatch(/\.board-table\.matrix \.row-note\s*\{[^}]*display:\s*none/s)
     expect(compact).toMatch(/\.board-table\.matrix \.row-label\s*\{[^}]*text-overflow:\s*ellipsis/s)
+  })
+
+  // #103 slice 2: fixed layout sizes columns from the first row unless <col>s say
+  // otherwise, and a plan's first row may be a full-width "Part of #N" header.
+  it('sizes compact plan columns from a colgroup, never from the first row', () => {
+    const compact = css.slice(css.indexOf('@media (max-width: 1279px)'))
+    expect(app).toContain('<colgroup><col class="col-num"><col class="col-glyph"><col class="col-label"><col class="col-4"><col class="col-5"></colgroup>')
+    expect(compact).toMatch(/\.board-table\.matrix col\.col-num\s*\{[^}]*width:\s*24px/s)
+    expect(compact).toMatch(/\.board-table\.matrix col\.col-glyph\s*\{[^}]*width:\s*30px/s)
+    expect(compact).toMatch(/\.board-table\.matrix col\.col-4\s*\{[^}]*width:\s*72px/s)
+    expect(compact).toMatch(/\.board-table\.matrix col\.col-5\s*\{[^}]*width:\s*0/s)
+    // the wide layout sizes columns from its cells, as before
+    expect(css.slice(0, css.indexOf('@media (max-width: 1279px)'))).not.toMatch(/col\.col-/)
   })
 
   it('composes compact navigation as one masthead with a single project menu', () => {
@@ -88,10 +154,21 @@ describe('the editorial desk shell', () => {
     expect(masthead).not.toMatch(/#rail\s*\{[^}]*overflow-x:\s*auto/s)
     expect(compact).toMatch(/#projectDisclosure #rail \.rail-name\s*\{[^}]*text-overflow:\s*ellipsis/s)
     expect(compact).toMatch(/@container compact-masthead \(max-width:\s*900px\)[\s\S]*\.sidebar-shell \.project-disclosure\s*\{[^}]*grid-column:\s*1\s*\/\s*3[^}]*grid-row:\s*2[\s\S]*\.sidebar-shell \.agent-pick\s*\{[^}]*grid-column:\s*3\s*\/\s*5[^}]*grid-row:\s*2/s)
-    expect(compact).toMatch(/@container compact-masthead \(max-width:\s*620px\)[\s\S]*#tabs\s*\{[^}]*grid-column:\s*1\s*\/\s*-1[^}]*grid-row:\s*2[^}]*grid-template-columns:\s*repeat\(4,\s*minmax\(0,\s*1fr\)\)/s)
-    expect(compact).toMatch(/@container compact-masthead \(max-width:\s*620px\)[\s\S]*#tabs \.tab-count\s*\{[^}]*display:\s*none/s)
+    expect(compact).toMatch(/@container compact-masthead \(max-width:\s*620px\)[\s\S]*#tabs\s*\{[^}]*display:\s*flex[^}]*grid-column:\s*1\s*\/\s*-1[^}]*grid-row:\s*2[^}]*overflow-x:\s*auto/s)
+    expect(compact).toMatch(/@container compact-masthead \(max-width:\s*620px\)[\s\S]*#tabs \.tab-count\s*\{[^}]*display:\s*inline-block/s)
     expect(compact).toMatch(/@container compact-masthead \(max-width:\s*620px\)[\s\S]*\.sidebar-shell \.project-disclosure\s*\{[^}]*grid-column:\s*1[^}]*grid-row:\s*3[\s\S]*\.sidebar-shell \.agent-pick\s*\{[^}]*grid-column:\s*2[^}]*grid-row:\s*3/s)
-    expect(compact).toMatch(/@container compact-masthead \(max-width:\s*440px\)[\s\S]*\.sidebar-shell \.project-disclosure\s*\{[^}]*grid-column:\s*1\s*\/\s*-1[^}]*grid-row:\s*3[\s\S]*\.sidebar-shell \.agent-pick\s*\{[^}]*grid-column:\s*1\s*\/\s*-1[^}]*grid-row:\s*4/s)
+    expect(compact).toMatch(/@container compact-masthead \(max-width:\s*440px\)[\s\S]*\.sidebar-shell\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)[^}]*grid-template-rows:\s*auto auto auto[\s\S]*\.sidebar-shell \.project-disclosure\s*\{[^}]*grid-column:\s*1[^}]*grid-row:\s*3[\s\S]*\.sidebar-shell \.agent-pick\s*\{[^}]*grid-column:\s*2[^}]*grid-row:\s*3/s)
+  })
+
+  it('collapses the wide sidebar into an icon rail without changing compact mastheads', () => {
+    expect(html).toMatch(/id="sidebarCollapse"[^>]*aria-expanded="true"/)
+    expect(css).toMatch(/body\.sidebar-collapsed \.sidebar-shell\s*\{[^}]*padding:/s)
+    expect(css).toMatch(/body\.sidebar-collapsed \.tab-name[\s\S]*display:\s*none/s)
+    expect(css).toMatch(/body\.sidebar-collapsed #rail \.rail-name[\s\S]*display:\s*none/s)
+    expect(css).toMatch(/body\.sidebar-collapsed #liveBar,[\s\S]*left:\s*72px/s)
+    expect(css).toMatch(/body\.sidebar-collapsed #agentSelect option\s*\{[^}]*color:\s*var\(--app-text\)[^}]*font-size:\s*12px/s)
+    const compact = css.slice(css.indexOf('@media (max-width: 1279px)'))
+    expect(compact).toMatch(/\.sidebar-collapse\s*\{[^}]*display:\s*none/s)
   })
 
   it('reflows queue controls by queue width instead of scrolling them under adjacent panes', () => {
@@ -132,7 +209,7 @@ describe('the editorial desk shell', () => {
     const compact = css.slice(css.indexOf('@media (max-width: 1279px)'))
     expect(compact).toMatch(/#topbar\s*\{[^}]*display:\s*flex[^}]*flex-wrap:\s*wrap/s)
     expect(compact).toMatch(/\.page-heading\s*\{[^}]*flex:\s*0 1 auto/s)
-    expect(compact).toMatch(/\.floating-search\s*\{[^}]*left:\s*50%[^}]*width:\s*min\(520px,\s*calc\(100vw - 24px\)\)/s)
+    expect(compact).toMatch(/\.floating-search\s*\{[^}]*width:\s*min\(520px,\s*100%\)[^}]*flex:\s*1 1 300px/s)
     expect(compact).not.toMatch(/\.topbar-tools\s*\{/)
   })
 })

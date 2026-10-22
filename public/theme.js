@@ -6,9 +6,9 @@ const isThemePreference = (value) => THEME_PREFERENCES.includes(value)
 export function readThemePreference(storage) {
   try {
     const value = storage?.getItem?.(THEME_STORAGE_KEY)
-    return isThemePreference(value) ? value : 'light'
+    return isThemePreference(value) ? value : 'dark'
   } catch {
-    return 'light'
+    return 'dark'
   }
 }
 

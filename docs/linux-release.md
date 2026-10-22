@@ -11,11 +11,23 @@ the complete remote draft has been downloaded and rehashed.
 
 `release/linux-inputs.json` is the source of truth for both architectures. It
 pins official Node 24 archive names, roots, URLs, SHA-256 values, Node ABI 137,
-Electron 43.1.1 ABI 148, and the exact Packager/Rebuild versions used by this
+Electron 43.8.0 ABI 148, and the exact Packager/Rebuild versions used by this
 layer. It also pins Clang 15.0.7 for native addon compilation. GCC 11 cannot
 parse Electron 43's deprecation-plus-visibility attribute ordering in the V8
 headers; the build verifies both compiler commands, the exact compiler version,
 and the native target tuple before rebuilding.
+
+The portable Node pin is **24.18.1**, matching the
+[macOS compatibility hold for #135](macos-release.md#node-24181-compatibility-hold-135).
+Both architectures rebuild `better-sqlite3` against those verified archive headers
+and run the allocation-driven SQLite cleanup gate before publication. The pin
+avoids Node 24.19's header regression without dropping 24.18.1's security fixes;
+Linux native runtime verification remains required, not inferred from macOS tests.
+Electron's embedded Node carried the same regression from Electron 43.5.0 until
+Electron 43.6.0's backported fix. Thin-folder verification therefore also runs that
+gate with the packaged Electron executable in Node mode, against its Electron-ABI
+addon and packaged `dist/store.js`
+([Electron's embedded Node](macos-release.md#electrons-embedded-node)).
 
 `release/linux-appimage-x64.json` and `release/linux-appimage-arm64.json` are
 separate exact package contracts. Each pins its architecture-matched
@@ -31,6 +43,13 @@ executing appimagetool. Downloaded bytes remain untrusted until their
 plain-file identity, exact size, and SHA-256 have passed; the tool additionally
 requires executable mode before use.
 
+The in-app AppImage update (`runsFromAppImage()` in `electron/update-fetch.cjs`)
+relies on how this runtime mounts the image. It passes no `fsname` or `subtype`,
+so libfuse names the mount after the image's real file name, and
+`/proc/self/mountinfo` shows type `fuse.<file name>` with source `<file name>`
+at `APPDIR`. Re-check that whenever the runtime pin changes; a different naming
+would make every AppImage update notify-only.
+
 The final native folders set the product floor:
 
 - Linux kernel 4.18 or newer
@@ -39,7 +58,7 @@ The final native folders set the product floor:
 - representative vendor floors: Ubuntu 22.04, Debian 12, and RHEL 9
 
 Node 24's official `BUILDING.md` support table supplies the kernel baseline and
-its portable binary requires glibc 2.28. Electron 43.1.1's executable requires
+its portable binary requires glibc 2.28. Electron 43.8.0's executable requires
 glibc 2.25. The two native `better_sqlite3.node` builds produced on the pinned
 Ubuntu 22.04/Clang toolchain raise the complete folder to glibc 2.34 and
 `GLIBCXX_3.4.29`; the representative distribution floors are the first
@@ -65,13 +84,14 @@ Each job:
 1. validates the exact Linux release profile;
 2. downloads and SHA-verifies the official Node archive;
 3. stages the portable runtime with its own Node/npm and runs the runtime
-   manifest, Node ABI, `better-sqlite3`, and hook self-tests;
+   manifest, Node ABI, `better-sqlite3`, hook, and allocation-driven SQLite self-tests;
 4. rebuilds `better-sqlite3` for the pinned Electron ABI;
 5. creates a thin Electron application folder containing only the matching
    Linux runtime key;
 6. verifies ELF architecture, libc symbol floors, Electron/Node versions and
    ABIs, both native addons, schema-2 Setup metadata, and exact-host payload
-   selection;
+   selection, then runs the allocation-driven SQLite check under the packaged
+   Electron (180-second ceiling, scratch `HOME`/XDG/`AGENT_INBOX_DB`);
 7. archives and restores the runtime and app folder, repeats verification,
    launches the restored app under Xvfb, and exercises runtime install/prune.
 
@@ -288,7 +308,11 @@ This fallback extracts to a temporary directory for each launch. It is not a
 desktop installation flow and does not install or remove host launchers,
 icons, or user data. Keep the unique mode-`0700` `TMPDIR`: the pinned AppImage
 runtime uses a predictable child name while extracting, so a shared `/tmp`
-base would let another local user prepopulate files before launch.
+base would let another local user prepopulate files before launch. For the
+same reason the app does not install its own updates in this mode: a restart
+would extract into that `TMPDIR` after the launcher removed it. Its `APPDIR`
+is not the runtime's FUSE mount, so the update check makes a notify-only offer,
+and the installer also refuses any `APPIMAGE_EXTRACT_AND_RUN` by name.
 
 Each architecture's CI acceptance gate runs both paths as an unprivileged user,
 with the user-namespace sandbox and without `--no-sandbox`, in an
@@ -329,25 +353,44 @@ The public allowlist is exactly:
 - `agent-inbox_X.Y.Z_amd64.deb`
 - `agent-inbox_X.Y.Z_arm64.deb`
 - `SHA256SUMS.txt`
+- `update-manifest.json`
+- `update-manifest.json.sig`
 
 The checksum manifest contains the five binary-package names in ascending
 bytewise filename order. Build reports and per-package checksum sidecars remain
 retained Actions evidence; they are not duplicate public assets. Aggregate
 evidence contains only canonical relative names, hashes, sizes, source and
-manifest identities, and verification outcomes—never builder-local paths.
+manifest identities, and verification outcomes—never builder-local paths. The
+deterministic update manifest repeats the exact five package names, byte lengths,
+and SHA-256 values with platform/architecture/install-strategy metadata. Its
+detached Ed25519 envelope covers the exact manifest bytes and carries a canonical
+key-id-sorted signature array. Production emits one signature; future key rotation
+can overlap old and new signatures without a schema change, and verification accepts
+any valid signature from a pinned trusted key. Structurally valid entries for keys an
+installed client does not yet pin are ignored; an unknown-only envelope still fails.
+The current protected signer remains single-key, so routine rotation must wait for a
+future dual-key signing extension rather than merely flipping the active key. Neither
+manifest asset is added to the package-only checksum file. Agent Inbox 1.3 and later
+persist the highest release version whose manifest they verified and report any older
+signed manifest as stale, so marking an older release as latest cannot roll those
+clients back; fix forward with a newer version instead.
 
 Publication starts with a private draft carrying neutral staging metadata. The
 write-scoped job uploads the exact allowlist, verifies the remote API inventory,
-always downloads all six assets into isolated storage, compares each file with
-the protected handoff, and rehashes all five packages through the downloaded
-checksum manifest. Only then does one API update install the final title/notes
-and make the release public. An exact already-public rerun is a verified no-op;
-an existing draft or any conflicting tag, metadata, asset, byte, or checksum
-fails closed. Draft creation captures the numeric release ID directly from the
-API response and writes a private ownership marker binding the tag, source
-commit/tree, producer run ID/attempt, and inventory digest. Cleanup GETs only
-that ID and deletes only while the complete marker, unique title, draft state,
-tag, and source still match this run. A replaced or edited draft is retained.
+always downloads all eight assets into isolated storage, compares each file with
+the protected handoff, rehashes all five packages through the downloaded
+checksum manifest, and independently verifies the manifest signature and target
+metadata. Only then does one API update install the final title/notes and make
+the release public. Before signing, a separate read-only protected job proves
+that this is the first manifest-bearing release or verifies the latest prior
+manifest pair and signed key continuity. An exact already-public rerun is a
+verified no-op; an existing draft or any conflicting tag, metadata, asset, byte,
+checksum, or signature fails closed. Draft creation captures the numeric release
+ID directly from the API response and writes a private ownership marker binding
+the tag, source commit/tree, producer run ID/attempt, and inventory digest.
+Cleanup GETs only that ID and deletes only while the complete marker, unique
+title, draft state, tag, and source still match this run. A replaced or edited
+draft is retained.
 Once the final publication PATCH may have been attempted, cleanup never
 auto-deletes; the ID/tag remain recovery evidence. Final public notes carry the
 same identity in a non-rendering marker, so exact-public reruns can verify and
@@ -362,9 +405,10 @@ protected environment, Apple credential, or Release API mutation.
 ## Retained limitations
 
 The release intentionally has no RPM, Snap, Flatpak, distro repository,
-Linux signing/attestation provider, or auto-update. SHA-256 verifies downloaded
-bytes against the protected release transaction but is not an OS-wide Linux
-trust claim.
+Linux signing/attestation provider, or Electron update client yet. The signed
+manifest authenticates project-published bytes but does not by itself download
+or install anything. SHA-256 verifies downloaded bytes against the protected
+release transaction but is not an OS-wide Linux trust claim.
 The native x64 and arm64 evidence supports the documented
 Ubuntu/Debian-class glibc baseline only; it is not a claim of universal Linux
 compatibility. If a future hosted runner cannot expose FUSE or unprivileged user

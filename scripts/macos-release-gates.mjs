@@ -2,6 +2,8 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
 import {
+  accessSync,
+  constants as fsConstants,
   copyFileSync,
   existsSync,
   lstatSync,
@@ -15,16 +17,19 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { basename, dirname, join, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { loadReleaseInputs, sha256File } from './release-inputs.mjs'
+import { verifyPackagedUpdateTrust } from './package-update-trust.mjs'
 import { verifyPayload } from './runtime-payload.mjs'
 import { treeIdentity } from './tree-identity.mjs'
+import { probeRuntimeMcp } from './runtime-mcp-probe.mjs'
 
 const APP_NAME = 'Agent Inbox'
 const TAG_RE = /^v(\d+\.\d+\.\d+)$/
 const SHA_RE = /^[0-9a-f]{40}$/
+const UTC_SECONDS_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/
 const TEAM_RE = /^[A-Z0-9]{10}$/
 const KEY_ID_RE = /^[A-Z0-9]{10}$/
 const ISSUER_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -80,6 +85,19 @@ function decodeBase64(value, label) {
   return decoded
 }
 
+function annotatedTagTimestamp(repoRoot, tagRef) {
+  const value = git(repoRoot, [
+    'for-each-ref',
+    '--format=%(taggerdate:iso8601-strict)',
+    tagRef,
+  ])
+  const instant = new Date(value)
+  if (!value || Number.isNaN(instant.getTime())) {
+    throw new ReleaseGateError(`${tagRef} annotated tag timestamp is invalid`)
+  }
+  return instant.toISOString().replace('.000Z', 'Z')
+}
+
 export function validateReleaseTag({ repoRoot, ref, sha }) {
   const match = /^refs\/tags\/(v\d+\.\d+\.\d+)$/.exec(ref ?? '')
   if (!match) throw new ReleaseGateError('release ref must be an exact vX.Y.Z tag')
@@ -92,6 +110,7 @@ export function validateReleaseTag({ repoRoot, ref, sha }) {
     throw new ReleaseGateError(`${tag} must be an annotated tag`)
   }
   const sourceCommit = git(repoRoot, ['rev-parse', `${tagRef}^{commit}`])
+  const taggedAt = annotatedTagTimestamp(repoRoot, tagRef)
   const head = git(repoRoot, ['rev-parse', 'HEAD'])
   if (sourceCommit !== sha || head !== sha) {
     throw new ReleaseGateError(`annotated tag, checkout commit, and supplied source SHA must match (${sourceCommit}, ${head}, ${sha})`)
@@ -106,7 +125,7 @@ export function validateReleaseTag({ repoRoot, ref, sha }) {
   if (git(repoRoot, ['status', '--porcelain', '--untracked-files=no'])) {
     throw new ReleaseGateError('release checkout has tracked working-tree changes')
   }
-  return { schema: 1, tag, version, sourceCommit, annotated: true }
+  return { schema: 1, tag, version, sourceCommit, taggedAt, annotated: true }
 }
 
 export function validateReleaseContext(value) {
@@ -118,7 +137,11 @@ export function validateReleaseContext(value) {
     value.version !== TAG_RE.exec(value.tag)?.[1] ||
     typeof value.sourceCommit !== 'string' ||
     !SHA_RE.test(value.sourceCommit) ||
-    Object.keys(value).sort().join(',') !== 'annotated,schema,sourceCommit,tag,version'
+    typeof value.taggedAt !== 'string' ||
+    !UTC_SECONDS_RE.test(value.taggedAt) ||
+    Number.isNaN(new Date(value.taggedAt).getTime()) ||
+    new Date(value.taggedAt).toISOString().replace('.000Z', 'Z') !== value.taggedAt ||
+    Object.keys(value).sort().join(',') !== 'annotated,schema,sourceCommit,tag,taggedAt,version'
   ) {
     throw new ReleaseGateError('release context is malformed')
   }
@@ -148,6 +171,9 @@ export function validateProtectedRelease({ repoRoot, context, trustedSha, runHea
   }
   if (git(repoRoot, ['rev-parse', `${tagRef}^{commit}`]) !== release.sourceCommit) {
     throw new ReleaseGateError('peeled annotated-tag commit does not match release source')
+  }
+  if (annotatedTagTimestamp(repoRoot, tagRef) !== release.taggedAt) {
+    throw new ReleaseGateError('annotated-tag timestamp does not match release context')
   }
   const firstParent = new Set(git(repoRoot, ['rev-list', '--first-parent', trustedSha]).split('\n'))
   if (!firstParent.has(release.sourceCommit)) {
@@ -247,6 +273,75 @@ function command(path, args, options = {}) {
   }
 }
 
+// Every stapler call in the Notarize job runs through runStapler(), including the app and
+// DMG staple/validate in notarize-macos.sh (via the `stapler` command), so this is the one
+// copy of the retry policy. Stapling starts only after Apple accepted the submission and
+// only fetches or checks the ticket through Apple's CloudKit ticket service. Retry output
+// showing that service dropped the connection or has not published the ticket yet; every
+// other failure is final.
+const STAPLER_TRANSIENT_MARKERS = [
+  'NSURLErrorDomain',
+  'network connection',
+  "CloudKit's response is inconsistent",
+  'Record not found',
+]
+const STAPLER_RETRY_DELAYS_SECONDS = [15, 30, 60, 120]
+
+function executableFromEnv(name, fallback, label) {
+  const path = process.env[name] || fallback
+  try {
+    if (!isAbsolute(path) || !statSync(path).isFile()) throw new Error(path)
+    accessSync(path, fsConstants.X_OK)
+  } catch {
+    throw new ReleaseGateError(`${label} executable must be an absolute executable path`)
+  }
+  return path
+}
+
+function staplerFailure(message, status) {
+  const error = new ReleaseGateError(message)
+  error.exitStatus = status
+  return error
+}
+
+function runStapler(action, target) {
+  if (action !== 'staple' && action !== 'validate') {
+    throw new ReleaseGateError(`unknown stapler action: ${action ?? '(missing)'}`)
+  }
+  requireString(target, 'stapler target')
+  const xcrun = executableFromEnv('APPLE_XCRUN_BIN', '/usr/bin/xcrun', 'xcrun')
+  const sleep = executableFromEnv('STAPLER_RETRY_SLEEP_BIN', '/bin/sleep', 'sleep')
+  const step = `stapler ${action} ${target}`
+  const attempts = STAPLER_RETRY_DELAYS_SECONDS.length + 1
+  for (let attempt = 1; ; attempt += 1) {
+    const result = spawnSync(xcrun, ['stapler', action, target], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 120_000,
+    })
+    const output = `${result.stdout ?? ''}${result.stderr ?? ''}`
+    if (output) process.stderr.write(output.endsWith('\n') ? output : `${output}\n`)
+    if (result.status === 0) return
+    const status = result.status ?? 1
+    if (!STAPLER_TRANSIENT_MARKERS.some((marker) => output.includes(marker))) {
+      const cause = result.error ? ` (${result.error.message})` : ''
+      throw staplerFailure(
+        `${step} failed (exit ${status}) without a transient Apple network or ticket error; not retrying${cause}`,
+        status,
+      )
+    }
+    if (attempt === attempts) {
+      throw staplerFailure(`${step} still failing after ${attempts} attempts (exit ${status})`, status)
+    }
+    const delay = STAPLER_RETRY_DELAYS_SECONDS[attempt - 1]
+    process.stderr.write(
+      `macos-release-gates: ${step} attempt ${attempt}/${attempts} hit a transient Apple ticket-service ` +
+        `error (exit ${status}); retrying in ${delay}s\n`,
+    )
+    execFileSync(sleep, [String(delay)], { stdio: 'ignore' })
+  }
+}
+
 function verifySignatureIdentity(path, identity, teamId, { deep = true } = {}) {
   const verifyArgs = ['--verify']
   if (deep) verifyArgs.push('--deep', '--strict')
@@ -320,6 +415,11 @@ export function verifyDeveloperIdApp({
     cwd: runtime,
     env: { ...process.env, AGENT_INBOX_DB: scratchDb },
   })
+  try {
+    probeRuntimeMcp(join(runtime, 'bin', 'node'), runtime)
+  } catch (err) {
+    throw new ReleaseGateError(`Intel runtime: ${err.message}`)
+  }
   const evidence = {
     schema: 1,
     status: 'passed',
@@ -431,7 +531,7 @@ export async function buildFinalDmg({ app, version, appReceiptPath, output, icon
   if (receipt.kind !== 'app' || receipt.status !== 'Accepted') {
     throw new ReleaseGateError('final DMG requires an accepted app notarization receipt')
   }
-  command('/usr/bin/xcrun', ['stapler', 'validate', app])
+  runStapler('validate', app)
   command('/usr/bin/codesign', ['--verify', '--deep', '--strict', '--verbose=2', app])
   command('/usr/sbin/spctl', ['--assess', '--type', 'execute', '--verbose=4', app])
   const expected = `Agent-Inbox-v${version}-universal.dmg`
@@ -586,7 +686,7 @@ export async function verifyFinalDmg({
         }
         runCommand('/usr/bin/ditto', [join(mount, `${APP_NAME}.app`), copiedApp])
         verifySignatureIdentity(copiedApp, identity, teamId)
-        runCommand('/usr/bin/xcrun', ['stapler', 'validate', copiedApp])
+        runStapler('validate', copiedApp)
         runCommand('/usr/sbin/spctl', ['--assess', '--type', 'execute', '--verbose=4', copiedApp])
 
         const contents = join(copiedApp, 'Contents')
@@ -615,6 +715,7 @@ export async function verifyFinalDmg({
           [join(resources, 'LICENSES.chromium.html'), 'Chromium notices'],
           [join(appResources, 'LICENSE.agent-inbox'), 'Agent Inbox license'],
         ]) requireNonemptyFile(path, label)
+        verifyPackagedUpdateTrust(appResources)
 
         requireExactArchitectures(join(contents, 'MacOS', APP_NAME), ['arm64', 'x86_64'])
         requireExactArchitectures(
@@ -988,6 +1089,11 @@ async function main(argv) {
     process.stdout.write(`${requireString(submit.id, 'notary submission id', UUID_RE)}\n`)
     return
   }
+  if (commandName === 'stapler') {
+    if (positionals.length !== 3) throw new ReleaseGateError('usage: stapler staple|validate TARGET')
+    runStapler(positionals[1], positionals[2])
+    return
+  }
   if (commandName === 'intel-evidence') {
     const result = verifyDeveloperIdApp({
       app: resolve(values.app),
@@ -1046,10 +1152,10 @@ async function main(argv) {
     const app = resolve(values.app)
     const dmg = resolve(values.dmg)
     verifySignatureIdentity(app, values.identity, values.team)
-    command('/usr/bin/xcrun', ['stapler', 'validate', app])
+    runStapler('validate', app)
     command('/usr/sbin/spctl', ['--assess', '--type', 'execute', '--verbose=4', app])
     verifySignatureIdentity(dmg, values.identity, values.team, { deep: false })
-    command('/usr/bin/xcrun', ['stapler', 'validate', dmg])
+    runStapler('validate', dmg)
     command('/usr/sbin/spctl', ['--assess', '--type', 'open', '--context', 'context:primary-signature', '--verbose=4', dmg])
     const evidence = buildFinalReleaseEvidence({
       context,
@@ -1095,6 +1201,6 @@ async function main(argv) {
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main(process.argv.slice(2)).catch((err) => {
     process.stderr.write(`macos-release-gates: ${err.message}\n`)
-    process.exitCode = 1
+    process.exitCode = err.exitStatus ?? 1
   })
 }

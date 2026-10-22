@@ -5,6 +5,8 @@
 # managed instruction block while preserving every unrelated line.
 # If the target file already imports docs/reporting-snippet.md itself (Claude Code
 # only), the managed block cites that import instead of inlining a second copy.
+# When Claude and Copilot resolve to one real instruction file, one shared
+# managed block carries the shared snippet and both host appendices.
 #
 # Usage:
 #   npm run install:agents
@@ -15,6 +17,8 @@
 #   npm run install:agents -- --apply --uninstall
 # Packaged releases additionally pass the fixed, verified runtime payload:
 #   install-agents.sh --apply --runtime-source <dir> --runtime-digest sha256:<hex>
+# Interrupted by HUP, INT, QUIT, PIPE, ALRM, TERM, XCPU or XFSZ, an --apply run
+# restores everything it had changed and exits 128 + the signal number.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -134,6 +138,13 @@ instruction_write_file() {
   else
     echo "$file"
   fi
+}
+
+hosts_share_instruction_write_file() {
+  local claude_file copilot_file
+  claude_file="$(instruction_write_file claude 2>/dev/null)" || return 1
+  copilot_file="$(instruction_write_file copilot 2>/dev/null)" || return 1
+  [ -e "$claude_file" ] && [ -e "$copilot_file" ] && [ "$claude_file" -ef "$copilot_file" ]
 }
 
 instruction_appendix() {
@@ -263,7 +274,7 @@ NOTE
 }
 
 build_block() {
-  local target="$1" output="$2" omit_snippet="$3"
+  local target="$1" output="$2" omit_snippet="$3" shared_file="${4:-0}"
   {
     echo "$BEGIN" || return 1
     if [ "$omit_snippet" -eq 1 ]; then
@@ -272,7 +283,13 @@ build_block() {
       sed '1s/^# /## /' "$SNIPPET_SOURCE" || return 1
     fi
     echo || return 1
-    cat "$(instruction_appendix "$target")" || return 1
+    if [ "$shared_file" -eq 1 ]; then
+      cat "$(instruction_appendix claude)" || return 1
+      echo || return 1
+      cat "$(instruction_appendix copilot)" || return 1
+    else
+      cat "$(instruction_appendix "$target")" || return 1
+    fi
     echo "$END" || return 1
   } > "$output"
 }
@@ -332,7 +349,7 @@ mcp_commands() {
 has_user_registration() {
   local target="$1" output
   mcp_commands "$target" get
-  output="$("${MCP_CMD[@]}" 2>/dev/null)" || return 1
+  output="$(run_node_step --stdout -- "${MCP_CMD[@]}" 2>/dev/null)" || return 1
   case "$target" in
     claude) printf '%s\n' "$output" | grep -Fq 'Scope: User config' ;;
     copilot) printf '%s\n' "$output" | grep -Eq '"source"[[:space:]]*:[[:space:]]*"user"' ;;
@@ -358,7 +375,7 @@ user_registration_state() {
     return 0
   fi
   [ -n "$JSON_NODE" ] || return 1
-  "$JSON_NODE" -e '
+  run_node_step -- "$JSON_NODE" -e '
     const fs = require("node:fs")
     const parsed = JSON.parse(fs.readFileSync(process.argv[1], "utf8"))
     process.exit(parsed.mcpServers && parsed.mcpServers["agent-inbox"] ? 10 : 0)
@@ -431,19 +448,30 @@ restore_registration_config() {
 }
 
 rollback_mcp_changes() {
-  local target
+  local target status reason
   for target in $NEWLY_ADDED; do
     mcp_commands "$target" remove
-    if "${MCP_CMD[@]}" >/dev/null 2>&1; then
+    isolated -- "${MCP_CMD[@]}" >/dev/null 2>&1
+    status=$?
+    if [ "$status" -eq 0 ]; then
       echo "$target: rolled back MCP registration from failed install" >&2
-    else
-      echo "install-agents: warning: could not roll back $target MCP registration" >&2
+    elif [ "$(user_registration_state "$target")" != absent ]; then
+      # A host refuses to remove a server it never registered, as after an add
+      # that failed outright: that leaves nothing to undo. Anything else,
+      # including a check that failed or ran out of time, is reported.
+      ROLLBACK_INCOMPLETE=1
+      reason=""
+      if [ "$status" -eq "$ISOLATED_TIMEOUT_STATUS" ]; then
+        reason=": its mcp remove did not finish within $ROLLBACK_STEP_TIMEOUT_MS ms"
+      fi
+      echo "install-agents: warning: could not roll back $target MCP registration$reason" >&2
     fi
   done
   for target in $NEEDS_RESTORE; do
     if restore_registration_config "$target"; then
       echo "$target: restored exact MCP configuration after failed install" >&2
     else
+      ROLLBACK_INCOMPLETE=1
       : > "$WORK/$target.preserve-mcp-snapshot"
       echo "install-agents: warning: could not restore $target MCP registration; recovery snapshot retained at $WORK/$target.mcp-config" >&2
     fi
@@ -459,6 +487,72 @@ RUNTIME_MANIFEST_DIGEST=""
 PAYLOAD_HELPER=""
 CONFIG_HELPER=""
 SOURCE_NODE=""
+ISOLATE_HELPER=""
+ISOLATE_NODE=""
+
+# The Node steps of a rollback (a host CLI's `mcp remove` or `mcp get`, and
+# the runtime reference check and prune) run through run-isolated.mjs. It
+# starts each one in a session of its own, where no repeat signal sent to
+# this installer's process group reaches it, and stops it after
+# ROLLBACK_STEP_TIMEOUT_MS, a bound that holds even if this installer is
+# killed outright. The step gets none of this shell's output, only the setup
+# lock (fd 9), which stays held until the step has ended.
+ROLLBACK_ISOLATION=0
+ISOLATED_TIMEOUT_STATUS=124
+ROLLBACK_STEP_TIMEOUT_MS="${AGENT_INBOX_ROLLBACK_STEP_TIMEOUT_MS:-30000}"
+case "$ROLLBACK_STEP_TIMEOUT_MS" in
+  ''|*[!0-9]*|0*|??????????*) ROLLBACK_STEP_TIMEOUT_MS=30000 ;;
+esac
+# A repeat signal can still land while the helper's own Node is starting:
+# Node resets the signals this shell ignores before the helper can ignore
+# them itself. The helper then dies with 128 + that signal before it has
+# started anything, so the step simply runs again, up to three times in all.
+# A command that ran and was then killed by one of those signals ends the
+# helper with the same status, so the helper creates a start marker once it
+# ignores them, before it starts anything: a step that ended this way and
+# left the marker is reported like any other failure, never run again.
+ISOLATE_RESTART_STATUSES=""
+for isolate_signal in HUP INT QUIT ALRM TERM XCPU; do
+  ISOLATE_RESTART_STATUSES="$ISOLATE_RESTART_STATUSES $((128 + $(kill -l "$isolate_signal")))"
+done
+
+# Usage: isolated [--stdout] -- <command> [args...]. With --stdout, the
+# command's stdout is relayed to this function's; otherwise it is discarded.
+isolated() {
+  local attempt=1 status started="$WORK/isolated-step.started"
+  while :; do
+    rm -f "$started"
+    if [ "$_AGENT_INBOX_SETUP_LOCK_HELD" -eq 1 ]; then
+      "$ISOLATE_NODE" "$ISOLATE_HELPER" --timeout-ms "$ROLLBACK_STEP_TIMEOUT_MS" \
+        --started-file "$started" --lease-fd 9 "$@" 3>&-
+    else
+      "$ISOLATE_NODE" "$ISOLATE_HELPER" --timeout-ms "$ROLLBACK_STEP_TIMEOUT_MS" \
+        --started-file "$started" "$@" 3>&-
+    fi
+    status=$?
+    case " $ISOLATE_RESTART_STATUSES " in
+      *" $status "*) ;;
+      *) break ;;
+    esac
+    [ ! -e "$started" ] || break
+    [ "$attempt" -lt 3 ] || break
+    attempt=$((attempt + 1))
+  done
+  rm -f "$started"
+  return "$status"
+}
+
+# A Node step the forward path shares runs directly until a rollback begins,
+# and isolated from then on. Usage: run_node_step [--stdout] -- <command>...
+run_node_step() {
+  if [ "$ROLLBACK_ISOLATION" -eq 1 ]; then
+    isolated "$@"
+    return
+  fi
+  if [ "$1" = --stdout ]; then shift; fi
+  shift
+  "$@"
+}
 
 runtime_manifest_value() {
   "$SOURCE_NODE" -e '
@@ -477,9 +571,12 @@ if [ "$RUNTIME_MODE" -eq 1 ]; then
   SOURCE_NODE="$RUNTIME_SOURCE/bin/node"
   PAYLOAD_HELPER="$RUNTIME_SOURCE/scripts/runtime-payload.mjs"
   CONFIG_HELPER="$RUNTIME_SOURCE/scripts/runtime-config.mjs"
+  ISOLATE_HELPER="$RUNTIME_SOURCE/scripts/run-isolated.mjs"
+  ISOLATE_NODE="$SOURCE_NODE"
   [ -x "$SOURCE_NODE" ] || { echo "install-agents: runtime payload Node is missing: $SOURCE_NODE" >&2; exit 1; }
   [ -f "$PAYLOAD_HELPER" ] || { echo "install-agents: runtime payload helper is missing: $PAYLOAD_HELPER" >&2; exit 1; }
   [ -f "$CONFIG_HELPER" ] || { echo "install-agents: runtime config helper is missing: $CONFIG_HELPER" >&2; exit 1; }
+  [ -f "$ISOLATE_HELPER" ] || { echo "install-agents: runtime rollback helper is missing: $ISOLATE_HELPER" >&2; exit 1; }
   [ -f "$RUNTIME_SOURCE/runtime-manifest.json" ] || {
     echo "install-agents: runtime manifest is missing from $RUNTIME_SOURCE" >&2
     exit 1
@@ -527,7 +624,13 @@ else
   ENTRY="${AGENT_INBOX_MCP_ENTRY:-$ROOT/dist/mcp-server.js}"
   SELFTEST="${AGENT_INBOX_SELFTEST_ENTRY:-$ROOT/dist/hook-cli.js}"
   JSON_NODE="$(resolve_node)"
+  ISOLATE_HELPER="$SCRIPT_DIR/run-isolated.mjs"
+  ISOLATE_NODE="$JSON_NODE"
   NODE=""
+  if [ "$APPLY" -eq 1 ] && [ ! -f "$ISOLATE_HELPER" ]; then
+    echo "install-agents: rollback helper is missing: $ISOLATE_HELPER" >&2
+    exit 1
+  fi
   if [ "$UNINSTALL" -eq 0 ]; then
     NODE="$JSON_NODE"
     [ -n "$NODE" ] || { echo "install-agents: no Node binary found — set AGENT_INBOX_NODE" >&2; exit 1; }
@@ -566,8 +669,18 @@ for target in "${TARGETS[@]}"; do
 done
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/agent-inbox-install.XXXXXX")" || exit 1
+# The EXIT trap. Bash also runs it before dying from a fatal signal the script
+# has no handler for, so a transaction still active here was neither committed
+# nor rolled back. A removed registration may then survive only in its
+# snapshot, and every snapshot stays in $WORK instead of being deleted with it.
 cleanup() {
-  local target temp_path
+  local target temp_path keep_snapshots=0 kept=0
+  # Whatever ended the run may have taken the reader of stderr with it.
+  trap '' PIPE
+  if [ "$TRANSACTION_ACTIVE" -eq 1 ]; then
+    keep_snapshots=1
+    divert_report
+  fi
   for target in claude copilot; do
     if [ -f "$WORK/$target.temp-path" ]; then
       temp_path="$(< "$WORK/$target.temp-path")"
@@ -575,18 +688,37 @@ cleanup() {
     fi
     rm -f "$WORK/$target.block" "$WORK/$target.rendered" "$WORK/$target.original" \
       "$WORK/$target.temp-path" "$WORK/$target.existed" "$WORK/$target.skip" "$WORK/$target.applied"
-    if [ ! -f "$WORK/$target.preserve-mcp-snapshot" ]; then
+    if [ "$keep_snapshots" -eq 1 ] && [ -f "$WORK/$target.mcp-config" ]; then
+      echo "install-agents: warning: exited before restoring $target MCP registration; recovery snapshot retained at $WORK/$target.mcp-config" >&2
+      kept=1
+    elif [ -f "$WORK/$target.preserve-mcp-snapshot" ]; then
+      kept=1
+    else
       rm -f "$WORK/$target.mcp-config" "$WORK/$target.mcp-config-path"
     fi
     rm -f "$WORK/$target.preserve-mcp-snapshot"
   done
+  rm -f "$WORK/runtime-installed"
+  if [ "$REPORT_DIVERTED" -eq 1 ]; then
+    # Something was not, or may not have been, put back: the report stays,
+    # beside any snapshot it names, for whoever was not reading when it was
+    # written.
+    if [ "$kept" -eq 1 ] || [ "$ROLLBACK_INCOMPLETE" -eq 1 ]; then
+      kept=1
+      echo "install-agents: report retained at $WORK/report.log" >&2
+    fi
+    # A separate process replays the report, so a reader that has gone can
+    # fail only that process.
+    cat "$WORK/report.log" >&3 2>/dev/null
+    if [ "$kept" -eq 0 ]; then rm -f "$WORK/report.log"; fi
+  fi
   rmdir "$WORK" 2>/dev/null || true
 }
 
 runtime_reference_status() {
   local runtime_id="$1" output
   [ "$RUNTIME_MODE" -eq 1 ] || { echo unreferenced; return; }
-  output="$("$SOURCE_NODE" "$CONFIG_HELPER" references \
+  output="$(run_node_step --stdout -- "$SOURCE_NODE" "$CONFIG_HELPER" references \
     --runtime-root "$RUNTIME_ROOT" --runtime-id "$runtime_id" \
     --file "$HOME/.claude.json" \
     --file "$HOME/.copilot/mcp-config.json" \
@@ -595,31 +727,34 @@ runtime_reference_status() {
     echo unknown
     return
   }
-  printf '%s' "$output" | "$SOURCE_NODE" -e '
-    let text = ""
-    process.stdin.setEncoding("utf8")
-    process.stdin.on("data", (chunk) => { text += chunk })
-    process.stdin.on("end", () => {
-      try {
-        const status = JSON.parse(text).status
-        process.stdout.write(typeof status === "string" ? status : "unknown")
-      } catch { process.stdout.write("unknown") }
-    })
-  '
+  run_node_step --stdout -- "$SOURCE_NODE" -e '
+    try {
+      const status = JSON.parse(process.argv[1]).status
+      process.stdout.write(typeof status === "string" ? status : "unknown")
+    } catch { process.stdout.write("unknown") }
+  ' "$output" 2>/dev/null
 }
 
 rollback_runtime() {
+  local status reason=""
   [ "$RUNTIME_MODE" -eq 1 ] || return
   [ -f "$WORK/runtime-installed" ] || return
   if [ "$(runtime_reference_status "$RUNTIME_ID")" != unreferenced ]; then
+    ROLLBACK_INCOMPLETE=1
     echo "install-agents: retained newly installed runtime because a reference exists or could not be ruled out: $RUNTIME_PATH" >&2
     return
   fi
-  if "$SOURCE_NODE" "$PAYLOAD_HELPER" prune \
-    --runtime-root "$RUNTIME_ROOT" --runtime-id "$RUNTIME_ID" >/dev/null 2>&1; then
+  isolated -- "$SOURCE_NODE" "$PAYLOAD_HELPER" prune \
+    --runtime-root "$RUNTIME_ROOT" --runtime-id "$RUNTIME_ID" >/dev/null 2>&1
+  status=$?
+  if [ "$status" -eq 0 ]; then
     echo "install-agents: removed unreferenced runtime after failed install: $RUNTIME_PATH" >&2
   else
-    echo "install-agents: warning: could not remove runtime after failed install: $RUNTIME_PATH" >&2
+    ROLLBACK_INCOMPLETE=1
+    if [ "$status" -eq "$ISOLATED_TIMEOUT_STATUS" ]; then
+      reason=": its prune did not finish within $ROLLBACK_STEP_TIMEOUT_MS ms"
+    fi
+    echo "install-agents: warning: could not remove runtime after failed install: $RUNTIME_PATH$reason" >&2
   fi
 }
 
@@ -697,32 +832,93 @@ rollback_files() {
         echo "$target: restored instructions after failed install" >&2
       else
         rm -f "$rollback"
+        ROLLBACK_INCOMPLETE=1
         echo "install-agents: warning: could not restore $file" >&2
       fi
     elif rm -f "$file"; then
       echo "$target: removed partial instruction file after failed install" >&2
     else
+      ROLLBACK_INCOMPLETE=1
       echo "install-agents: warning: could not remove partial $file" >&2
     fi
   done
 }
 
+# Every catchable signal whose default action ends the installer. SIGPIPE and
+# SIGHUP are how a run learns its reader is gone: Electron Setup pipes
+# stdout/stderr, so after an app crash or force quit the next write raises
+# SIGPIPE, and a closed terminal sends SIGHUP. All are handled like INT/TERM.
+INTERRUPT_SIGNALS=(HUP INT QUIT PIPE ALRM TERM XCPU XFSZ)
 TRANSACTION_ACTIVE=0
+REPORT_DIVERTED=0
+# Set by any rollback step that could not put its change back; cleanup then
+# keeps the report even after replaying it.
+ROLLBACK_INCOMPLETE=0
+
+# Once a rollback, an interrupt or an abnormal exit begins, this shell writes
+# only to $WORK/report.log, never straight to a reader that may be gone. A
+# failed write does more than lose a line: bash 3.2 (macOS /bin/bash) keeps it
+# buffered and flushes it into the next command substitution, corrupting the
+# very paths a restore reads. `echo -n` first drops whatever a failed write
+# already left there. cleanup replays the log to the original stderr, kept on
+# fd 3.
+divert_report() {
+  [ "$REPORT_DIVERTED" -eq 0 ] || return 0
+  REPORT_DIVERTED=1
+  exec 3>&2
+  exec >/dev/null 2>&1
+  echo -n
+  exec 2>>"$WORK/report.log"
+}
+
+# Puts back everything this run changed. From here on this shell ignores every
+# signal above, and so do the ordinary commands it runs (cp, mv, rm): a second
+# Ctrl-C, a hangup or a write to a vanished reader cannot stop the shell
+# mid-restore or make it start over. Node resets ignored signals other than
+# PIPE and XFSZ to their defaults, so every Node step runs isolated instead
+# (see isolated): a host CLI's `mcp remove` undoing a new registration, its
+# `mcp get` re-check, and the runtime reference check and prune. A step that
+# fails or runs out of time is reported, and cleanup keeps the report.
+# Restoring a replaced registration or an instruction file runs no Node.
+# SIGKILL stops everything except a step already running isolated, which
+# still ends within its bound and holds the setup lock until then; no EXIT
+# trap runs, so $WORK keeps every snapshot. TRANSACTION_ACTIVE drops only once the restore
+# has run, which is how cleanup knows a snapshot is no longer the only copy.
+rollback_transaction() {
+  [ "$TRANSACTION_ACTIVE" -eq 1 ] || return 0
+  trap '' "${INTERRUPT_SIGNALS[@]}"
+  ROLLBACK_ISOLATION=1
+  divert_report
+  rollback_files
+  rollback_mcp_changes
+  TRANSACTION_ACTIVE=0
+}
+
+# Exits 128 + the signal number, the status a shell reports for a process that
+# signal killed.
 interrupt_install() {
-  trap - INT TERM
+  local signal="$1" status="$2"
+  trap '' "${INTERRUPT_SIGNALS[@]}"
+  divert_report
   if [ "$TRANSACTION_ACTIVE" -eq 1 ]; then
-    TRANSACTION_ACTIVE=0
-    echo "install-agents: interrupted — restoring prior configuration" >&2
-    rollback_files
-    rollback_mcp_changes
+    echo "install-agents: interrupted by SIG$signal — restoring prior configuration" >&2
+    rollback_transaction
   fi
-  exit 130
+  exit "$status"
 }
 trap cleanup EXIT
-trap interrupt_install INT TERM
+for interrupt_signal in "${INTERRUPT_SIGNALS[@]}"; do
+  # shellcheck disable=SC2064 # bind each signal's name and exit status now
+  trap "interrupt_install $interrupt_signal $((128 + $(kill -l "$interrupt_signal")))" "$interrupt_signal"
+done
 
 if [ "$APPLY" -eq 0 ]; then
   echo "── dry run: nothing was written or registered. Re-run with --apply. ──" >&2
+fi
+
+SHARED_INSTRUCTION_FILE=0
+if hosts_share_instruction_write_file; then
+  SHARED_INSTRUCTION_FILE=1
 fi
 
 for target in "${TARGETS[@]}"; do
@@ -731,11 +927,11 @@ for target in "${TARGETS[@]}"; do
   block="$WORK/$target.block"
   rendered="$WORK/$target.rendered"
   omit_snippet=0
-  if [ "$UNINSTALL" -eq 0 ] && host_resolves_imports "$target" && imports_snippet "$file"; then
+  if [ "$UNINSTALL" -eq 0 ] && [ "$SHARED_INSTRUCTION_FILE" -eq 0 ] && host_resolves_imports "$target" && imports_snippet "$file"; then
     omit_snippet=1
     echo "$target: $display_file already imports docs/reporting-snippet.md — skipping the inlined snippet; the managed block carries the $target appendix only" >&2
   fi
-  if ! build_block "$target" "$block" "$omit_snippet"; then
+  if ! build_block "$target" "$block" "$omit_snippet" "$SHARED_INSTRUCTION_FILE"; then
     echo "install-agents: could not build the $target instruction block" >&2
     exit 1
   fi
@@ -817,7 +1013,7 @@ if [ "$RUNTIME_MODE" -eq 1 ] && [ "$UNINSTALL" -eq 0 ]; then
         if verify_expected_runtime; then
           : > "$WORK/runtime-installed"
           echo "install-agents: committed install failure published the exact expected runtime; attempting ownership-safe rollback" >&2
-          rollback_runtime
+          rollback_transaction
         else
           echo "install-agents: committed install failure could not verify the exact expected runtime; retained unsafe or unknown path: $RUNTIME_PATH" >&2
         fi
@@ -834,8 +1030,7 @@ if [ "$RUNTIME_MODE" -eq 1 ] && [ "$UNINSTALL" -eq 0 ]; then
   if [ "$runtime_was_present" -eq 0 ]; then : > "$WORK/runtime-installed"; fi
   JSON_NODE="$NODE"
   if ! "$NODE" "$SELFTEST" selftest >/dev/null 2>&1; then
-    rollback_runtime
-    TRANSACTION_ACTIVE=0
+    rollback_transaction
     echo "install-agents: installed runtime selftest failed; host configuration was not changed" >&2
     exit 1
   fi
@@ -848,7 +1043,7 @@ for target in "${TARGETS[@]}"; do
   fi
 
   registration_state="$(user_registration_state "$target")" || {
-    rollback_mcp_changes
+    rollback_transaction
     echo "install-agents: could not determine whether $target has a user-scoped agent-inbox registration; refusing to change it" >&2
     exit 1
   }
@@ -861,21 +1056,21 @@ for target in "${TARGETS[@]}"; do
       if [ "$ownership" = owned ]; then
         release_owned=1
       else
-        rollback_mcp_changes
+        rollback_transaction
         echo "install-agents: refusing to replace or remove the $target registration because it is $ownership, not an exact manifest-owned release runtime" >&2
         exit 1
       fi
     fi
     if [ "$UNINSTALL" -eq 1 ] || [ "$FORCE" -eq 1 ] || [ "$release_owned" -eq 1 ]; then
       if ! capture_registration_config "$target"; then
-        rollback_mcp_changes
+        rollback_transaction
         echo "install-agents: existing MCP registrations and instructions were not changed" >&2
         exit 1
       fi
       NEEDS_RESTORE="$NEEDS_RESTORE $target"
       mcp_commands "$target" remove
       if ! "${MCP_CMD[@]}" >/dev/null; then
-        rollback_mcp_changes
+        rollback_transaction
         echo "install-agents: could not remove the $target user-scoped MCP registration; instructions were not changed" >&2
         exit 1
       fi
@@ -895,7 +1090,7 @@ for target in "${TARGETS[@]}"; do
   fi
   mcp_commands "$target" add
   if ! "${MCP_CMD[@]}" >/dev/null; then
-    rollback_mcp_changes
+    rollback_transaction
     echo "install-agents: could not register the $target user-scoped MCP; instructions were not changed" >&2
     exit 1
   fi
@@ -905,8 +1100,7 @@ done
 for target in "${TARGETS[@]}"; do
   [ -f "$WORK/$target.skip" ] && continue
   file="$(instruction_write_file "$target")" || {
-    rollback_files
-    rollback_mcp_changes
+    rollback_transaction
     exit 1
   }
   if [ -f "$WORK/$target.existed" ]; then
@@ -917,8 +1111,7 @@ for target in "${TARGETS[@]}"; do
       backup="$file.bak.$(date +%Y%m%d%H%M%S).$$.$suffix"
     done
     if ! cp -p "$WORK/$target.original" "$backup"; then
-      rollback_files
-      rollback_mcp_changes
+      rollback_transaction
       echo "install-agents: could not back up $file" >&2
       exit 1
     fi
@@ -928,8 +1121,7 @@ for target in "${TARGETS[@]}"; do
   temp="$(< "$WORK/$target.temp-path")"
   : > "$WORK/$target.applied"
   if ! mv "$temp" "$file"; then
-    rollback_files
-    rollback_mcp_changes
+    rollback_transaction
     echo "install-agents: could not replace $file" >&2
     exit 1
   fi

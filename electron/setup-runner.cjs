@@ -1,4 +1,5 @@
 const { existsSync, lstatSync, readFileSync, realpathSync } = require('node:fs')
+const { homedir } = require('node:os')
 const { isAbsolute, join, resolve, sep } = require('node:path')
 const { runTrustedSetup } = require('./setup-core.cjs')
 const { createSetupProcessRunner } = require('./setup-process.cjs')
@@ -12,8 +13,11 @@ const {
   verifyRuntimePayload,
 } = require('./runtime-verify.cjs')
 
-const TARGETS = new Set(['all', 'claude', 'copilot'])
+// `hooks` (#206) moves Claude's hooks with the installed copy of this
+// release's runtime: see installedRuntime() below.
+const TARGETS = new Set(['all', 'claude', 'copilot', 'hooks'])
 const TARGET_NAMES = Object.freeze([...TARGETS])
+const HOOKS_REQUIRED_FILES = Object.freeze([...REQUIRED_FILES, 'scripts/install-hooks.sh'])
 
 // Setup is available only for the four targets handled by the fixed-purpose
 // POSIX shell adapter. Selection is STRICT `${process.platform}-${process.arch}`
@@ -227,8 +231,60 @@ function canRunSetup(senderUrl, viewerUrl, senderId, authorizedWebContentsId) {
     isTrustedSetupSender(senderUrl, viewerUrl)
 }
 
+function setupFailure(target, output) {
+  return { ok: false, exitCode: null, output, target, timedOut: false, cancelled: false }
+}
+
+// Where the installers put runtimes, from the environment they run with:
+// install-agents.sh and install-hooks.sh both read
+// ${AGENT_INBOX_RUNTIME_ROOT:-$HOME/.agent-inbox/runtime}.
+function setupRuntimeRoot(env) {
+  const configured = env.AGENT_INBOX_RUNTIME_ROOT
+  if (configured) return isAbsolute(configured) ? configured : null
+  return join(env.HOME || homedir(), '.agent-inbox', 'runtime')
+}
+
+/**
+ * The installed copy of the runtime the trusted core just verified (#206):
+ * <runtimeRoot>/<runtimeId>, re-verified against the same signed manifest
+ * digest, file list, hashes and modes immediately before its own
+ * install-hooks.sh runs. That installer writes ITS directory's bin/node and
+ * dist/hook-cli.js into Claude's settings, so it never runs from the app
+ * bundle, whose payload the next app update replaces.
+ */
+function installedRuntime({ runtimeRoot, operation, host }) {
+  const target = operation.target
+  if (runtimeRoot === null) {
+    return { error: setupFailure(target, 'Claude hooks were not moved: AGENT_INBOX_RUNTIME_ROOT must be an absolute path.') }
+  }
+  const dir = join(runtimeRoot, operation.runtimeId)
+  try {
+    const { manifest } = verifyRuntimePayload({
+      root: dir,
+      expectedManifestDigest: operation.manifestDigest,
+      expectedPlatform: host.platform,
+      expectedArch: host.arch,
+      expectedProduct: EXPECTED_PRODUCT,
+      expectedPackageVersion: operation.packageVersion,
+      expectedNodeMajor: EXPECTED_NODE_MAJOR,
+      expectedNodeModulesAbi: EXPECTED_NODE_MODULES_ABI,
+      requiredEntrypoints: REQUIRED_ENTRYPOINTS,
+      requiredFiles: HOOKS_REQUIRED_FILES,
+    })
+    if (manifest.runtimeId !== operation.runtimeId) throw new Error('runtime id mismatch')
+  } catch (err) {
+    return {
+      error: setupFailure(target, err?.code === 'not-found'
+        ? `Claude hooks were not moved: this app's v${operation.packageVersion} runtime is not installed yet.`
+        : `Claude hooks were not moved: the installed v${operation.packageVersion} runtime failed integrity verification.`),
+    }
+  }
+  return { dir }
+}
+
 function createReleaseSetupAdapter({
   repoRoot,
+  runtimeRoot,
   processRunner,
 }) {
   const host = Object.freeze({
@@ -274,6 +330,11 @@ function createReleaseSetupAdapter({
       }
     },
     start(operation, { onCancel }) {
+      if (operation.target === 'hooks') {
+        const installed = installedRuntime({ runtimeRoot, operation, host })
+        if (installed.error) return Promise.resolve(installed.error)
+        return processRunner.start({ repoRoot: installed.dir, target: 'hooks', runtime: null }, { onCancel })
+      }
       return processRunner.start({
         repoRoot,
         target: operation.target,
@@ -282,6 +343,144 @@ function createReleaseSetupAdapter({
           manifestDigest: operation.manifestDigest,
         },
       }, { onCancel })
+    },
+  })
+}
+
+/**
+ * The one Setup install in flight, and whether the app has begun to quit
+ * (#205 review). Once any quit begins — Cmd+Q, the menu, logout, the last
+ * window closing, or an update restart — no install may start: one started
+ * then can be killed halfway by the exit, after it removed a registration it
+ * was about to replace and before it added the new one. So every path that
+ * ends the app calls `beginQuit()` first. It refuses every later install, for
+ * good, and cancels the running one, returning a promise (never rejecting)
+ * that settles once nothing runs; it may be called again, as `before-quit`
+ * fires again, and cancels and waits again while anything still runs.
+ */
+function createInstallGate() {
+  let quitting = false
+  let current = null
+  return Object.freeze({
+    quitting() {
+      return quitting
+    },
+    /** True from the moment an install starts until its promise settles, either way. */
+    running() {
+      return current !== null
+    },
+    /**
+     * Start one install, `start(onCancel)`, or refuse: 'quitting' once a quit
+     * has begun, 'running' while another install runs. A refusal never calls
+     * `start`.
+     */
+    run(start) {
+      if (quitting) return { refused: 'quitting' }
+      if (current) return { refused: 'running' }
+      const entry = { cancel: null, promise: null }
+      current = entry
+      let started
+      try {
+        started = Promise.resolve(start((cancel) => { entry.cancel = cancel }))
+      } catch (err) {
+        started = Promise.reject(err)
+      }
+      entry.promise = started.finally(() => {
+        if (current === entry) current = null
+      })
+      return { promise: entry.promise }
+    },
+    beginQuit() {
+      quitting = true
+      if (!current) return null
+      current.cancel?.()
+      return current.promise.then(() => undefined, () => undefined)
+    },
+  })
+}
+
+/**
+ * Which grants — agent Setup, update installs — one window holds (#216). The
+ * window is bound at its first main-frame navigation, because startup has just
+ * proven that the viewer is the one this app started (`waitForOwnership()`).
+ * Every later main-frame navigation, a reload included, revokes both at once.
+ * They come back only after that navigation commits to the viewer origin AND
+ * `proveOwnership()` passes again. The proof starts after the commit, so it
+ * covers the page the window has just loaded. A newer navigation, a renderer
+ * crash or the window closing discards a proof still running; nothing binds
+ * once the app has begun to quit (#205), and a closed window never binds again.
+ *
+ * `setupAllowed()` and `updateAllowed()` say what this app may grant at all;
+ * when neither holds, nothing is probed. `apply({ setup, update })` sets the
+ * window's grants in main. `settled()` waits out a proof still running, so a
+ * question about the grants asked during a reload gets the settled answer.
+ */
+function createInstallBinding({ viewerUrl, setupAllowed, updateAllowed, isQuitting, proveOwnership, apply }) {
+  let loaded = false
+  let closed = false
+  let navigation = 0
+  let awaitingCommit = null
+  let inFlight = null
+  const grants = () => ({ setup: setupAllowed() === true, update: updateAllowed() === true })
+  const mayBind = (url) => !closed && !isQuitting() && isTrustedSetupSender(url, viewerUrl)
+
+  function revoke() {
+    navigation += 1
+    awaitingCommit = null
+    apply({ setup: false, update: false })
+  }
+
+  async function rebind(url, proving) {
+    let proven = false
+    try {
+      proven = (await proveOwnership()) === true
+    } catch {
+      proven = false
+    }
+    if (!proven || proving !== navigation || !mayBind(url)) return false
+    apply(grants())
+    return true
+  }
+
+  return Object.freeze({
+    /** A new document started loading in the main frame (`did-start-navigation`). */
+    navigationStarted(url) {
+      if (!loaded) {
+        loaded = true
+        if (mayBind(url)) apply(grants())
+        return
+      }
+      revoke()
+      awaitingCommit = navigation
+    },
+    /**
+     * The main frame committed a new document at `url` (`did-navigate`).
+     * Resolves true once the window is bound again; a proof that fails or
+     * throws resolves false.
+     */
+    navigationCommitted(url) {
+      if (awaitingCommit === null || awaitingCommit !== navigation) return Promise.resolve(false)
+      awaitingCommit = null
+      const wanted = grants()
+      if ((!wanted.setup && !wanted.update) || !mayBind(url)) return Promise.resolve(false)
+      const proof = rebind(url, navigation)
+      inFlight = proof
+      const done = () => {
+        if (inFlight === proof) inFlight = null
+      }
+      proof.then(done, done)
+      return proof
+    },
+    /** Resolves once no proof is in flight, its grants (if any) applied. Never rejects. */
+    settled() {
+      return inFlight === null ? Promise.resolve() : inFlight.then(() => undefined, () => undefined)
+    },
+    /** The renderer crashed (`render-process-gone`); the window's next load may bind again. */
+    rendererGone: revoke,
+    /** The window closed: revoked for good. */
+    closed() {
+      closed = true
+      revoke()
     },
   })
 }
@@ -320,6 +519,11 @@ function runAgentInstall({
   }
 
   if (runtimePayload === null) {
+    // A checkout's hook installer would bake the checkout's own paths, and
+    // Setup manages only its runtimes' hooks.
+    if (target === 'hooks') {
+      return Promise.resolve(setupFailure(target, "Setup moves Claude hooks only from a release build's verified runtime."))
+    }
     return processRunner.start({
       repoRoot,
       target,
@@ -336,6 +540,7 @@ function runAgentInstall({
   }
   const adapter = createReleaseSetupAdapter({
     repoRoot,
+    runtimeRoot: setupRuntimeRoot(env ?? process.env),
     processRunner,
   })
   return runTrustedSetup({
@@ -347,6 +552,8 @@ function runAgentInstall({
 
 module.exports = {
   canRunSetup,
+  createInstallBinding,
+  createInstallGate,
   installerRepoRoot,
   isTrustedSetupSender,
   readSetupInfo,

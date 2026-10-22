@@ -198,6 +198,77 @@ describe('workspace search index', () => {
       .toBe('Auckland')
   })
 
+  it.each([
+    ['quartz-internal', '.card-original-title'],
+    ['release-canary-132', '.card-meta'],
+  ])('reveals quieter tracking metadata when searching for %s', async (query, selector) => {
+    const d = open()
+    const target = insertItem(d, {
+      project: 'alpha', stream: 'release-canary-132', agent: 'copilot', kind: 'question',
+      title: 'quartz-internal handoff', next_step: 'Choose a release date.',
+      detail: 'The update is ready.',
+    })
+    await bootApp(d)
+    await searchFor(query)
+    click(option(target))
+    await settle()
+    const details = row(target)?.querySelector<HTMLDetailsElement>('.card-context')
+    expect(row(target)?.querySelector('.nrow-title')?.textContent).toBe('Choose a release date.')
+    expect(details?.open).toBe(true)
+    expect(details?.querySelector(selector)?.textContent).toContain(query)
+    expect([...details!.querySelectorAll(`${selector} .search-jump-highlight`)].map((mark) => mark.textContent))
+      .toEqual(query.split('-'))
+    expect(document.activeElement).toBe(details?.querySelector('summary'))
+    await pollTick()
+    expect(row(target)?.querySelector<HTMLDetailsElement>('.card-context')?.open).toBe(true)
+    expect([...row(target)!.querySelectorAll(`${selector} .search-jump-highlight`)].map((mark) => mark.textContent))
+      .toEqual(query.split('-'))
+  })
+
+  it('reveals a promoted request and an exact duplicate explanation at their remaining source', async () => {
+    const d = open()
+    const target = insertItem(d, {
+      project: 'alpha', stream: 'main', agent: 'copilot', kind: 'question',
+      title: 'Gate 132', next_step: 'Confirm the backup.',
+      detail: 'An incomplete backup risks losing customer data.',
+      impact: 'An incomplete backup risks losing customer data.',
+    })
+    await bootApp(d)
+    await searchFor('backup')
+    click(option(target))
+    await settle()
+    expect(row(target)?.querySelector('.search-jump-highlight')?.textContent).toBe('backup')
+    expect(row(target)?.querySelector('.card-impact')).toBeNull()
+    expect(row(target)?.querySelector('.card-tldr')?.textContent).toContain('risks losing customer data')
+  })
+
+  it('reveals a matching option consequence even after its comparison was collapsed', async () => {
+    const d = open()
+    const target = insertItem(d, {
+      project: 'alpha', stream: 'main', agent: 'copilot', kind: 'question',
+      title: 'Deployment gate', next_step: 'Choose a deployment path.',
+      options: [
+        { label: 'Canary', detail: 'Avoid downtime by checking a small group first.' },
+        { label: 'Full rollout', detail: 'Update every customer at once.' },
+      ],
+    })
+    await bootApp(d)
+    click(row(target))
+    await settle()
+    click(row(target)?.querySelector('.compare-toggle'))
+    await settle()
+    expect(row(target)?.querySelector('.options.comparing')).toBeNull()
+
+    await searchFor('downtime')
+    click(option(target))
+    await settle()
+    expect(row(target)?.querySelector('.options.comparing .opt-detail .search-jump-highlight')?.textContent)
+      .toBe('downtime')
+    await pollTick()
+    expect(row(target)?.querySelector('.options.comparing .opt-detail .search-jump-highlight')?.textContent)
+      .toBe('downtime')
+  })
+
   it('ranks the strongest match first and highlights it instead of preserving queue order', async () => {
     const d = open()
     const strongest = insertItem(d, {
@@ -745,5 +816,89 @@ describe('workspace search index', () => {
     expect(input().value).toBe('launch')
     expect(results().hidden).toBe(false)
     expect(row(target)?.dataset['open']).not.toBe('1')
+  })
+
+  it('keeps rapid queries, newer data and Escape authoritative with multiword plan search', async () => {
+    const d = open()
+    const history = insertItem(d, {
+      project: 'alpha', stream: 'main', agent: 'copilot', kind: 'done',
+      title: 'Release completed work 900',
+    })
+    const latest = insertItem(d, {
+      project: 'alpha', stream: 'main', agent: 'copilot', kind: 'question',
+      title: 'Latest decision',
+    })
+    upsertBoard(d, {
+      project: 'alpha', stream: 'main', agent: 'copilot', title: 'Release plan',
+      rows: Array.from({ length: 3 }, (_, index) => ({
+        label: `Step ${index}`, status: 'tracked',
+        context: 'The release plan is ready. The completed work is verified. '.repeat(5),
+      })),
+    })
+    await bootApp(d)
+    await searchFor('release completed work 900')
+    expect(option(history)).not.toBeNull()
+    input().focus()
+    const oldOption = option(history)
+    type(input(), 'release plan')
+    type(input(), 'latest')
+    expect(oldOption?.getAttribute('aria-disabled')).toBe('true')
+    click(oldOption)
+    expect(document.getElementById('done')?.hidden).toBe(true)
+    await vi.advanceTimersByTimeAsync(200)
+    expect(option(latest)).not.toBeNull()
+    expect(option(history)).toBeNull()
+
+    advanceClock()
+    const arrival = insertItem(d, {
+      project: 'beta', stream: 'main', agent: 'copilot', kind: 'question',
+      title: 'Latest arrival',
+    })
+    await pollTick()
+    expect(option(arrival)).not.toBeNull()
+    expect(document.activeElement).toBe(input())
+    type(input(), 'release completed work 900')
+    input().dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Escape', bubbles: true, cancelable: true,
+    }))
+    await vi.advanceTimersByTimeAsync(200)
+    await pollTick()
+    expect(input().value).toBe('')
+    expect(results().hidden).toBe(true)
+    expect(document.activeElement).not.toBe(input())
+  })
+
+  it('opens the distant multiword Background match with safe highlights on its exact row', async () => {
+    const d = open()
+    const context = `${'Earlier release background. '.repeat(800)}Auckland rotation <img src=x onerror=alert(1)>`
+    upsertBoard(d, {
+      project: 'alpha', stream: 'main', agent: 'copilot', title: 'Regional release',
+      rows: [
+        { label: 'Build', status: 'tracked', context: 'Unrelated release background.' },
+        { label: 'Canary gate', status: 'tracked', context },
+      ],
+    })
+    const board = getBoard(d, 'alpha', 'Regional release')!
+    const target = board.rows[1]!
+    await bootApp(d)
+    await searchFor('auckland rotation')
+    const result = option(board.id)!
+    expect([...result.querySelectorAll('.search-result-match mark')].map((mark) => mark.textContent))
+      .toEqual(['Auckland', 'rotation'])
+    expect(result.querySelector('img')).toBeNull()
+    click(result)
+    await settle()
+    const background = () => document.querySelector<HTMLDetailsElement>(
+      `.row-panel-row[data-row-id="${target.id}"] .card-context`,
+    )
+    expect(background()?.open).toBe(true)
+    expect([...background()!.querySelectorAll('.search-jump-highlight')].map((mark) => mark.textContent))
+      .toEqual(['Auckland', 'rotation'])
+    expect(background()?.querySelector('img')).toBeNull()
+    expect(document.activeElement).toBe(background()?.querySelector('summary'))
+    await pollTick()
+    expect(background()?.open).toBe(true)
+    expect([...background()!.querySelectorAll('.search-jump-highlight')].map((mark) => mark.textContent))
+      .toEqual(['Auckland', 'rotation'])
   })
 })

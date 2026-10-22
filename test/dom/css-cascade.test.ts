@@ -76,3 +76,49 @@ describe('the blocked-row Answer CTA keeps its designed geometry', () => {
     expect(document.querySelectorAll('#boards .row-action .row-expand').length).toBe(1)
   })
 })
+
+describe('answered card layering', () => {
+  it('does not give an open inspector an opacity-created stacking context', async () => {
+    db = freshDb()
+    upsertBoard(db, {
+      ...AGENT, title: 'Review',
+      rows: [{ label: 'Recording', status: 'blocked', action_owner: 'task', next_step: 'Upload the recording.' }],
+    })
+    attachStylesheet()
+    await bootApp(db)
+    click(document.querySelector('.nrow'))
+    await settle()
+    click(document.querySelector('.nrow-card .handled-btn'))
+    await settle()
+
+    const answered = document.querySelector<HTMLElement>('.nrow.answered')!
+    expect(answered.dataset.open).toBe('1')
+    // Literal opacity is reliable here; browser hit-testing covers the stacking result.
+    expect(getComputedStyle(answered).opacity).toBe('1')
+
+    click(answered.querySelector('.nrow-card-close'))
+    await settle()
+    expect(getComputedStyle(document.querySelector('.nrow.answered')!).opacity).toBe('0.7')
+  })
+})
+
+describe('workspace search layering', () => {
+  it('raises only an open-results topbar above inspector handles but below Live and dialogs', async () => {
+    await boardWithBlockedRow()
+    const topbar = document.getElementById('topbar')!
+    const results = document.getElementById('searchResults')!
+    const layer = (selector: string) => Number(getComputedStyle(document.querySelector(selector)!).zIndex)
+    expect(getComputedStyle(topbar).zIndex).toBe('20')
+
+    results.hidden = false
+    expect(getComputedStyle(topbar).zIndex).toBe('45')
+    expect(layer('#topbar')).toBeGreaterThan(layer('.pane-resizer'))
+    expect(layer('#topbar')).toBeLessThan(layer('#liveBar'))
+    expect(layer('#topbar')).toBeLessThan(layer('#relaybox'))
+    expect(layer('#topbar')).toBeLessThan(layer('#missionbox'))
+    expect(layer('#topbar')).toBeLessThan(layer('#lightbox'))
+
+    results.hidden = true
+    expect(getComputedStyle(topbar).zIndex).toBe('20')
+  })
+})

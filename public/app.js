@@ -6,7 +6,7 @@ import {
 } from '/rail.js'
 import {
   attentionCount, attentionEntries, awaitingAgentRows, classifyLiveness, countsByProject,
-  isAskingQuestion, isBlockedRowAttention, snoozedEntries, staleEntries,
+  isAskingQuestion, isBlockedRowAttention, laterEntries, staleEntries,
 } from '/attention.js'
 import { DEFAULT_TAB, TAB_IDS, tabCounts } from '/tabs.js'
 import { projectColor } from '/colors.js'
@@ -16,27 +16,38 @@ import {
 } from '/poll.js'
 import { createStagedSend } from '/star.js'
 import {
-  ageChip, agentCounts, handledUndoRefusal, needsYouEntries, relMs, repliedEntries, rowModel,
-  rowStarOption, stagedLabel, staleFoldLabel, streamCounts, undoRefusal, urgencyChip,
-  ASK_SORT_OPTIONS, askTimeModel, sortNeedsYouByAsk,
+  ageChip, agentCounts, handledUndoRefusal, laterBreakdown, needsYouEntries, relMs, repliedEntries, rowModel,
+  rowPickup, rowStarOption, stagedLabel, staleFoldLabel, streamCounts, undoRefusal, urgencyChip,
+  ASK_SORT_OPTIONS, askTimeModel, sortLaterEntries, sortNeedsYouByAsk,
 } from '/rowview.js'
-import { cardSections, optionOrder } from '/card.js'
+import { cardSections, optionOrder, actionPresentation } from '/card.js'
 import { keyAction, rovingIndex, ariaAnswerLabel, livenessGlyph, deckEntryAt } from '/keys.js'
+import { createKeyboardUI, revealControl } from '/keyboard-ui.js'
 import { partitionNotes, unreadNoteCount, ambientChips, seenWatermark, markSeenIds } from '/notes.js'
-import { liveSummary, lastActivityAt, isDormant, activitySynopsis } from '/livebar.js'
+import { liveSummary, lastActivityAt, isDormant, activitySynopsis, sessionBuild } from '/livebar.js'
+import { agentsAction, hooksGuidance, hostLabel, hostLine, restartGuidance } from '/agents.js'
 import { esc } from '/esc.js'
 import { initStructuredTextCopy } from '/structured-copy.js'
+import { captureSelection, restoreSelection } from '/selection.js'
+import { createCopyOnSelect } from '/copy-on-select.js'
 import { renderStructuredText } from '/structured-text.js'
 import { boardRowsView, boardRowLine, progressLabel, hiddenDoneCount, lingeringBoards } from '/boards.js'
 import { titleWithBadge, focusHashFor, parseFocusHash } from '/badge.js'
 import { layoutMode, railLabel, NARROW_MAX, PROJECT_DISCLOSURE_MAX } from '/layout.js'
-import { indexLinks, sourceChipsHtml, sourceBlockHtml } from '/source.js'
+import {
+  indexLinks, issueRelationsHtml, missionDepsHtml, missionOutsideHtml, planGroupHeadHtml, planWaitsChipHtml, PREVIEW_TTL_MS,
+  previewRef, rowIssueChipsHtml, rowParentHeadHtml, rowWaitsChipHtml, rowWaitsHtml, sourceChipsHtml, sourceBlockHtml,
+} from '/source.js'
+import { buildIssueView, planGroups, rowParentRuns } from '/issues.js'
 import { buildSummary } from '/buildstamp.js'
 import { actionCategory, actionOwnerLabel, agentFollowupChip, changeKind, lifecycleReceipt, responseLabel } from '/action.js'
 import { buildRelay } from '/relay.js'
 import { buildMission } from '/mission.js'
+import { buildActivitySeries, buildDashboard } from '/dashboard.js'
 import { PANE_DEFAULTS, paneKeyValue, paneValueFromPointer, resolvePaneLayout } from '/panes.js'
 import { createThemeController } from '/theme.js'
+import { activityHistoryUrl, createSnapshotReader } from '/snapshots.js'
+import { knownHistory, knownOutcomes, mergeClosedHistory, olderHistory } from '/closed-history.js'
 
 void paginateGroups // kept exported+tested (spec §15); the viewer no longer calls it
 
@@ -59,6 +70,7 @@ let searchResultCache = []
 let searchResultSignature = ''
 let searchUpdating = false
 let searchJumpSource = null
+let keyboardUI = null
 
 function nativeKeyOwner(event) {
   if (!(event.target instanceof Element)) return false
@@ -73,6 +85,8 @@ let shown = { ...PAGE }
 function resetPaging() { shown = { ...PAGE } }
 
 let lastData = null
+const readSnapshot = createSnapshotReader((url, init) => fetch(url, init))
+let dashboardRangeMs = 24 * 60 * 60 * 1000
 let renderedTheme = document.documentElement.dataset.theme ?? 'light'
 function syncThemeChoices(preference) {
   for (const input of document.querySelectorAll('input[name="theme-preference"]')) {
@@ -97,12 +111,27 @@ let authoritativeClosed = []
 let loadGeneration = 0
 let appliedLoadGeneration = 0
 let appliedClosedGeneration = 0
+// Issue #184: /api/items carries open work plus the most recently touched closed
+// items. Older closed history is read from /api/items/history only while some
+// surface needs it (historyWanted); these record needs no rendered state shows.
+let historyLookup = null // a deep link to an item the page omitted
+let historyTabPinned = false // History keeps an omitted target until the tab changes
+let historyRequestedFor = -1 // the applied tick an early poll was requested for
+let historyLoadScheduled = false // that early poll has not started yet
+let historyPaintRequestedFor = -1 // the applied tick a human's history read-and-paint started for
+let searchAwaitingHistory = false
 let preparedFrame = null
+let editablePanesPainted = false
 // issue #30 — the (repo, branch) → cached PR state index, rebuilt once per
 // render. A Map from the start, never null: the deep-link and setup paths can
 // reach a renderer before the first /api/links response lands, and linkFor(null)
 // would throw into load()'s catch and blank the whole page.
 let linkIndex = new Map()
+// issue #103 PR3 — the sub-issue view, rebuilt beside linkIndex in every ambient
+// frame. Empty until /api/issues answers, and whenever it cannot: plain chips.
+let issueView = buildIssueView(null)
+let previewExpiryTimer = null
+const boundPreviewLinks = new WeakSet()
 const HIDE_DONE_KEY = 'agent-inbox-hide-completed'
 // The product is a cross-project attention inbox, so a cold launch must never
 // reopen behind yesterday's project/agent lens while the global badge counts
@@ -113,6 +142,32 @@ localStorage.removeItem('agent-inbox-project-filter')
 let agentFilter = null
 let projectFilter = null
 let hideCompleted = localStorage.getItem(HIDE_DONE_KEY) !== 'false' // default ON
+// Sort order is the one queue setting a launch restores (#221): it only orders
+// the list and never hides work. Settings owns it; the queue's Sort menu changes
+// the current view only.
+const DEFAULT_SORT_KEY = 'agent-inbox-default-sort'
+
+function savedAskSort() {
+  const stored = localStorage.getItem(DEFAULT_SORT_KEY)
+  return ASK_SORT_OPTIONS.some((option) => option.value === stored) ? stored : 'priority'
+}
+
+// The Later section (#247) is saved the same way and for the same reason: it
+// only lays out the queue (pinned and snoozed asks in one section at its foot,
+// or in separate snoozed and pinned folds) and never changes what counts. The
+// dock badge is computed in Electron main, which cannot read this storage, so
+// a preference that changed attention would make the two badges disagree. On
+// by default; any value but 'false' reads as on.
+const LATER_SECTION_KEY = 'agent-inbox-later-section'
+const savedLaterSection = () => localStorage.getItem(LATER_SECTION_KEY) !== 'false'
+let laterSection = savedLaterSection()
+
+// Grouping plans by their GitHub parent (#103 slice 2 §7) is saved the same way
+// and for the same reason: it reorders plans and never hides one. Off by
+// default; the Plans header switch changes only the current view.
+const GROUP_PLANS_KEY = 'agent-inbox-group-plans'
+const savedGroupPlans = () => localStorage.getItem(GROUP_PLANS_KEY) === 'true'
+let groupByParent = savedGroupPlans()
 
 const NOTES_SEEN_KEY = 'agent-inbox-notes-seen'
 const NOTES_SEEN_IDS_KEY = 'agent-inbox-notes-seen-ids'
@@ -155,6 +210,32 @@ function sortDeferredEntries(entries) {
 }
 
 let bootId = null
+let refreshPending = false
+let reloadRequested = false
+let pendingWrites = 0
+
+function hasUnsentResponses() {
+  return Boolean(suspendHint(suspendState())) || hasDraftRecovery()
+}
+
+function shouldDeferBootReload() {
+  const now = Date.now()
+  return hasUnsentResponses() || pendingWrites > 0
+    || stagedStars.size > 0 || stagedDismiss.size > 0
+    || pressHeld(pressedAt, now) || scrollActive(lastInteractionScrollAt, now)
+}
+
+// An HTTP result is not settled until its caller has applied draft ownership or
+// failure recovery. Keep undrafted option picks protected through that work too.
+async function withPendingResponse(action) {
+  pendingWrites += 1
+  try {
+    return await action()
+  } finally {
+    pendingWrites -= 1
+    showPauseHint()
+  }
+}
 
 // ── poll suspension (spec §10) ──────────────────────────────────────────────
 // The 3s rebuild holds for typed drafts and bounded active interactions. A
@@ -163,6 +244,8 @@ let bootId = null
 // protect clicks and trackpad momentum.
 let openRowId = null    // the single inline-expanded Needs-you row (§4)
 let openRowScrollTop = 0 // the inspector's viewport survives the 3s DOM rebuild
+let openRowHeadScrollTop = 0
+let openRowComposeScrollTop = 0
 let pendingFocusId = null // explicit deep link protected through filter + pagination reconciliation
 let pagedFocusId = null // non-Inbox focused card protected only for the current rebuild
 let lastInteractionScrollAt = null // bounded inspector/page scroll activity; never a suspension
@@ -222,9 +305,15 @@ function noteScrollActivity() {
   }, SCROLL_IDLE_MS)
 }
 
+function cardScrollHost(card) {
+  return card?.querySelector('.nrow-card-scroll') ?? card
+}
+
 function noteInspectorScroll(id, card) {
   if (openRowId !== id) return
-  openRowScrollTop = card.scrollTop
+  if (card.classList.contains('nrow-card-head')) openRowHeadScrollTop = card.scrollTop
+  else if (card.classList.contains('nrow-card-compose')) openRowComposeScrollTop = card.scrollTop
+  else openRowScrollTop = card.scrollTop
   noteScrollActivity()
 }
 
@@ -242,8 +331,11 @@ function initScrollGuard() {
 function showPauseHint() {
   const el = document.getElementById('pauseHint')
   if (!el) return
-  const hint = renderDirty ? suspendHint(suspendState()) : null
-  el.textContent = hint ?? ''
+  const hint = refreshPending && hasUnsentResponses()
+    ? 'Viewer updated — finish or clear unsent responses to refresh.'
+    : renderDirty ? suspendHint(suspendState()) : null
+  el.setAttribute('role', 'status')
+  if (el.textContent !== (hint ?? '')) el.textContent = hint ?? ''
   el.hidden = !hint
 }
 
@@ -257,12 +349,17 @@ function renderIfIdle() {
     showPauseHint() // reads suspendState() only — a bare press prints nothing (#38)
     return
   }
+  // Ambient painters can rebuild under a selection too, so capture it first (#223).
+  const textSelection = captureSelection()
   const frame = paintAmbient()
+  frame.textSelection = textSelection
   // Drafts and active inspector/page scrolling protect only editable lists. Counts,
   // the badge, rail and Live strip above keep reporting fresh data.
-  if (shouldDeferRender({ ...suspendState(), pressedAt, scrolledAt: lastInteractionScrollAt }, now)) {
+  if (dashboardInteractionActive()
+    || shouldDeferRender({ ...suspendState(), pressedAt, scrolledAt: lastInteractionScrollAt }, now)) {
     renderDirty = true
     showPauseHint()
+    restoreSelection(textSelection)
     return
   }
   renderDirty = false
@@ -337,6 +434,8 @@ async function reloadAndPaint() {
 function setOpenRow(id, { resume = true } = {}) {
   if (openRowId !== id) {
     openRowScrollTop = 0
+    openRowHeadScrollTop = 0
+    openRowComposeScrollTop = 0
     clearScrollActivity()
   }
   openRowId = id
@@ -351,29 +450,134 @@ function orderedIds(ids) {
   return pinnedIds
 }
 
-async function load() {
-  const generation = ++loadGeneration
+// Promise.allSettled keeps every concurrent read's rejection observed; the tick
+// then reports failures in the order the reads used to run one after another.
+function settledValue(result) {
+  if (result.status === 'rejected') throw result.reason
+  return result.value
+}
+
+// History keeps its own fallback: any failure renders "History unavailable"
+// without failing the tick. Like the other snapshot bodies it is read only after
+// the tick's boot decision, because a 304 resolves to cached spans (#185).
+async function historyBody(read) {
   try {
-    const res = await fetch('/api/items')
-    const boot = res.headers.get('x-inbox-boot')
-    if (bootId && boot && bootId !== boot) { location.reload(); return false } // server restarted → pick up fresh frontend
-    if (boot) bootId = boot
-    const g = await res.json()
-    const boards = await (await fetch('/api/boards')).json()
-    const archived = await (await fetch('/api/boards/archived')).json()
-    const activity = await (await fetch('/api/activity')).json()
-    // Projects the human closed (issue #32). Defensive on purpose: a viewer that
-    // predates this route answers 404 with HTML, a bare .json() would throw into
-    // the catch below, and the WHOLE page would read 'disconnected'. An unknown
-    // closed set must mean "suppress nothing", never a dead page.
-    const closedSnapshot = await fetch('/api/projects/closed')
-      .then((r) => (r.ok ? r.json() : null))
-      .catch(() => null)
-    // Cached PR state (issue #30), same defensive shape and for the same reason:
-    // an empty links set must mean "render exactly as before this feature", never
-    // a dead page. A viewer that predates this route answers 404 with HTML.
-    const links = await fetch('/api/links').then((r) => (r.ok ? r.json() : [])).catch(() => [])
-    if (generation < appliedLoadGeneration) return false
+    const response = settledValue(read)
+    if (response.status !== 200 && response.status !== 304) {
+      return { state: 'error', spans: [], message: `History unavailable (${response.status})` }
+    }
+    return { state: 'ready', spans: await response.json(), message: '' }
+  } catch (error) {
+    return {
+      state: 'error',
+      spans: [],
+      message: error instanceof Error ? `History unavailable: ${error.message}` : 'History unavailable',
+    }
+  }
+}
+
+// Older closed history (#184) degrades like activity history: a failed read
+// leaves this tick's page applied, and the surfaces waiting on it say so.
+async function closedHistoryBody(read) {
+  try {
+    return { done: (await settledValue(read).json()).done, error: null }
+  } catch {
+    return { done: null, error: OLDER_HISTORY_UNAVAILABLE }
+  }
+}
+
+// The sub-issue graph (#103) falls back like links: a 404 from an older viewer,
+// a network error or a body its validator refuses means "no graph", and every
+// surface renders its plain chips. Read after the boot decision, like every
+// snapshot body, because a 304 resolves to the cached graph.
+async function issuesBody(read) {
+  try {
+    return await settledValue(read).json()
+  } catch {
+    return null
+  }
+}
+
+async function load() {
+  if (reloadRequested) return false
+  const generation = ++loadGeneration
+  // Issue #161: the reads are independent, so the tick starts them together and
+  // lasts as long as the slowest one. Each still degrades exactly as it did when
+  // they ran in sequence. Every response names its server instance (#165).
+  const boots = []
+  const marked = (response) => {
+    boots.push(response.headers.get('x-inbox-boot'))
+    return response
+  }
+  // Decided from the previous frame, before any read starts: a passive poll reads
+  // closed history the page omitted only while a surface still needs it (#184).
+  const wantHistory = historyWanted()
+  try {
+    const [items, boardsRead, archivedRead, activityRead, historyRead, closedRead, linksRead, issuesRead, closedHistoryRead] = await Promise.allSettled([
+      readSnapshot('/api/items').then(marked),
+      readSnapshot('/api/boards').then(marked),
+      readSnapshot('/api/boards/archived').then(marked),
+      fetch('/api/activity').then(marked),
+      readSnapshot(activityHistoryUrl(Date.now())).then(marked),
+      // Projects the human closed (issue #32). Defensive on purpose: a viewer that
+      // predates this route answers 404 with HTML, a bare .json() would throw into
+      // the catch below, and the WHOLE page would read 'disconnected'. An unknown
+      // closed set must mean "suppress nothing", never a dead page.
+      fetch('/api/projects/closed').then(marked)
+        .then((r) => (r.ok ? r.json() : null))
+        .catch(() => null),
+      // Cached PR state (issue #30), same defensive shape and for the same reason:
+      // an empty links set must mean "render exactly as before this feature", never
+      // a dead page. A viewer that predates this route answers 404 with HTML.
+      fetch('/api/links').then(marked).then((r) => (r.ok ? r.json() : [])).catch(() => []),
+      // The sub-issue graph (#103), the eighth read: a conditional snapshot with
+      // its own validator and the same fallback (issuesBody).
+      readSnapshot('/api/issues').then(marked),
+      wantHistory ? readSnapshot('/api/items/history').then(marked) : null,
+    ])
+    if (reloadRequested || generation < appliedLoadGeneration) return false
+    const res = settledValue(items)
+    // A restart between two reads of one tick would mix two instances' data, so
+    // any disagreement is a restart, and that tick is never applied.
+    const marks = new Set(boots.filter(Boolean))
+    bootId ??= marks.size === 1 ? [...marks][0] : null
+    if ([...marks].some((mark) => mark !== bootId)) refreshPending = true
+    if (refreshPending && !shouldDeferBootReload()) {
+      reloadRequested = true
+      location.reload()
+      return false
+    }
+    if (marks.size > 1) return false
+    // Bodies only after the live boot decision: a 304 resolves to cached data.
+    const body = (read) => (read.status === 'fulfilled' ? read.value.json() : Promise.reject(read.reason))
+    const bodies = await Promise.allSettled([
+      res.json(), body(boardsRead), body(archivedRead), body(activityRead), historyBody(historyRead),
+      wantHistory ? closedHistoryBody(closedHistoryRead) : null, issuesBody(issuesRead),
+    ])
+    const [g, boards, archived, activity, activityHistory, firstOlder, issues] = bodies.map(settledValue)
+    const closedSnapshot = settledValue(closedRead)
+    const links = settledValue(linksRead)
+    if (reloadRequested || generation < appliedLoadGeneration) return false
+    const nowMs = Date.now()
+    const page = ageNotes(g, nowMs)
+    let older = firstOlder
+    // Issue #184: this tick's own data may need older history the previous frame
+    // did not (a sweep moving the page's boundary past what History shows, say).
+    // Read it inside the same tick, under the same rules, rather than painting a
+    // frame that lacks it.
+    if (!wantHistory && lastData && historyWanted({ page, pageHistory: g.history ?? null, boards, archived, activity })) {
+      const [late] = await Promise.allSettled([readSnapshot('/api/items/history').then(marked)])
+      if (reloadRequested || generation < appliedLoadGeneration) return false
+      // As on the main path: only markers that disagree within this tick are a
+      // restart between its reads. A restart already being held for unsent work
+      // keeps applying ticks, whose markers all name the new server.
+      if (new Set(boots.filter(Boolean)).size > 1) {
+        refreshPending = true
+        return false
+      }
+      older = await closedHistoryBody(late)
+      if (reloadRequested || generation < appliedLoadGeneration) return false
+    }
     appliedLoadGeneration = generation
     if (closedSnapshot !== null) {
       appliedClosedGeneration = generation
@@ -381,16 +585,38 @@ async function load() {
       retireConfirmedProjectMutationIntents(generation)
     }
     lastData = {
-      g: ageNotes(g, Date.now()),
+      // Every surface reads `g`: the page, or the page merged with the complete
+      // History list while one is loaded. `page` and `pageHistory` stay the page
+      // alone, which is what decides whether older history is needed at all.
+      g: older?.done ? ageNotes(mergeClosedHistory(g, older.done), nowMs) : page,
+      page,
+      pageHistory: g.history ?? null,
+      // the summary of what `g` still omits; null once nothing is omitted
+      older: older?.done ? null : g.history ?? null,
+      // why a surface that needed older history this tick is still waiting
+      olderError: older?.error ?? null,
       boards,
       archived,
       activity,
+      activityHistory,
       closed: [...authoritativeClosed],
       links,
+      issues,
     }
     applyProjectMutationIntents()
     renderIfIdle()
     if (!bootFocusDone) { bootFocusDone = true; applyFocusHash() }
+    // A deep link waiting on older history lands once it has been read, unless
+    // the human has navigated since. A held press keeps it waiting for the next
+    // tick rather than rebuilding under the pointer (#38).
+    if (historyLookup && historyLookup.view !== navigationKey()) historyLookup = null
+    if (historyLookup && !omitsHistory() && !pressHeld(pressedAt, Date.now())) {
+      const { id, source } = historyLookup
+      historyLookup = null
+      focusItem(id, source)
+    }
+    // Search results sit outside the editable gate; refresh the waiting list.
+    if (searchAwaitingHistory) renderSearchResults()
     document.getElementById('status').textContent = ''
     if (closedSnapshot !== null) resolveAuthoritativeRefreshWaiters(generation)
     return closedSnapshot !== null
@@ -404,7 +630,53 @@ async function load() {
     console.error(err)
     document.getElementById('status').textContent = 'disconnected'
     return false
+  } finally {
+    invalidatePreviewLinks()
   }
+}
+
+// Invalidate rather than retarget a link inside a protected draft or held press.
+// The next normal rebuild supplies the new link without replacing the editor.
+function invalidatePreviewLinks(root = document) {
+  clearTimeout(previewExpiryTimer)
+  previewExpiryTimer = null
+  const nowMs = Date.now()
+  const closed = new Set(lastData?.closed ?? [])
+  let nextExpiry = Infinity
+  const links = Array.isArray(lastData?.links) ? lastData.links : []
+  const current = new Map([...indexLinks(links)].map(([key, link]) => [encodeURIComponent(key), link]))
+  for (const link of current.values()) {
+    if (previewRef(link, nowMs)) nextExpiry = Math.min(nextExpiry, Date.parse(link.fetched_at) + PREVIEW_TTL_MS)
+  }
+  for (const anchor of root.querySelectorAll('a[data-preview-key][href]')) {
+    const link = current.get(anchor.dataset.previewKey)
+    const preview = previewRef(link, nowMs)
+    if (preview && !closed.has(anchor.dataset.previewProject) && preview.url === anchor.getAttribute('href')
+      && preview.headSha === anchor.dataset.previewHead
+      && String(preview.deploymentId) === anchor.dataset.previewDeployment) {
+      if (!boundPreviewLinks.has(anchor)) {
+        for (const event of ['click', 'auxclick', 'contextmenu']) anchor.addEventListener(event, guardPreviewActivation, true)
+        boundPreviewLinks.add(anchor)
+      }
+      continue
+    }
+    anchor.removeAttribute('href')
+    anchor.setAttribute('aria-disabled', 'true')
+    anchor.tabIndex = -1
+    anchor.classList.add('tone-muted')
+    anchor.textContent = 'Preview unavailable'
+    anchor.title = 'The preview changed or could not be confirmed. Finish your response to refresh the card.'
+  }
+  if (Number.isFinite(nextExpiry)) {
+    previewExpiryTimer = setTimeout(invalidatePreviewLinks, Math.max(1, nextExpiry - nowMs))
+  }
+}
+
+function guardPreviewActivation(event) {
+  const anchor = event.target.closest?.('a[data-preview-key]')
+  if (!anchor) return
+  invalidatePreviewLinks()
+  if (!anchor.hasAttribute('href')) event.preventDefault()
 }
 
 // fix round 1 (hardening): every write-path fetch used to await an unguarded request
@@ -416,6 +688,7 @@ async function load() {
 // bespoke handlers. Returns the parsed JSON body on success, or null on network failure
 // (callers must treat null as "nothing happened, already signaled" and bail out).
 async function postJSON(url, body) {
+  pendingWrites += 1
   try {
     const res = await fetch(url, {
       // fix round 2 (I5): a staged ★ is flushed from `beforeunload`, where a
@@ -444,6 +717,8 @@ async function postJSON(url, body) {
     console.error(`POST ${url} failed`, err)
     document.getElementById('status').textContent = 'disconnected'
     return null
+  } finally {
+    pendingWrites -= 1
   }
 }
 
@@ -537,8 +812,14 @@ function cardFocusKey(el) {
   ])
 }
 
+// A blurred tab or embedded webview retains activeElement. Remember focus only
+// while this document owns it, before replacing any focused DOM.
+function activeFocusElement() {
+  return document.hasFocus() ? document.activeElement : null
+}
+
 function captureCardFocus(card, id) {
-  const active = document.activeElement
+  const active = activeFocusElement()
   if (!active || (active !== card && !card.contains(active))) return null
   const targets = cardFocusTargets(card)
   if (active === card || !targets.includes(active)) return { id, key: null, ordinal: 0 }
@@ -565,7 +846,7 @@ function restoreCardFocus(bookmark) {
 }
 
 function focusedAskedTimeId() {
-  const active = document.activeElement
+  const active = activeFocusElement()
   if (!active?.matches?.('.nrow-asked')) return null
   return active.closest('.nrow[data-card-id]')?.dataset.cardId ?? null
 }
@@ -579,7 +860,7 @@ function restoreAskedTimeFocus(id) {
 }
 
 function pagedCardFocusBookmark() {
-  const active = document.activeElement
+  const active = activeFocusElement()
   const card = active?.closest?.('#notes [data-card-id], #done [data-card-id], #boards [data-card-id]')
   if (!card) return null
   const rowId = active.closest('[data-row-id]')?.dataset.rowId ?? null
@@ -633,11 +914,25 @@ function tabForItem(it) {
 // project, switch to its tab, expand it, scroll to it.
 function focusItem(id, source = null) {
   if (!lastData) return
+  historyLookup = null
   const item = allItems(lastData.g).find((i) => i.id === id)
   const board = [...lastData.boards, ...lastData.archived].find((b) => b.id === id)
   const target = item ?? board
-  if (!target) return
-  if (source) searchJumpSource = { targetId: id, ...source }
+  if (!target) {
+    // Issue #184: the page may omit this closed item. load() retries the link
+    // once the complete history has been read.
+    if (omitsHistory()) {
+      historyLookup = { id, source, view: navigationKey() }
+      requestHistory()
+    }
+    return
+  }
+  const hasSearchSource = source && (
+    typeof source.text === 'string'
+    || Array.isArray(source.fragments)
+    || typeof source.field === 'string'
+  )
+  if (hasSearchSource) searchJumpSource = { targetId: id, ...source }
   else if (searchJumpSource?.targetId !== id) searchJumpSource = null
   pendingFocusId = id
   if (source?.rowId) {
@@ -647,15 +942,25 @@ function focusItem(id, source = null) {
   if (source?.field === 'context') {
     openContexts.add(source.rowId ? `row:${source.rowId}` : `item:${id}`)
   }
+  if (source?.field === 'option-detail') {
+    if (source.rowId) closedRowCompares.delete(source.rowId)
+    else closedCompares.delete(id)
+  }
   projectFilter = target.project
   agentFilter = null
   actionFilter = 'all'
   changedOnly = false
   resetSearch()
-  selectTab(board ? 'boards' : tabForItem(item)) // Task 8: sets activeTab AND shows the panel
+  selectTab(board ? 'boards' : tabForItem(item), { paint: false }) // the explicit forceRender below paints the target
+  // A History target the page alone cannot place keeps the complete history
+  // loaded while History stays open (#184).
+  if (activeTab === 'done') {
+    historyTabPinned = !knownHistory(pageView().g.done, lastData.pageHistory?.before).some((entry) => entry.id === id)
+  }
   const hash = focusHashFor(id)
   if (location.hash !== hash) location.hash = hash // survives reload
   forceRender()
+  requestHistoryPaint() // a History target the page alone cannot place (#184)
   // fix round 2 (C1): this used to call setOpenRow(id) for EVERY target. The
   // inspector is a Needs-you affordance — explicit collapse is reachable only
   // from a rendered `.nrow`. A board
@@ -668,12 +973,7 @@ function focusItem(id, source = null) {
   // above put it there — then render again so the card body mounts under it.
   const queueTarget = needsYouRowEl(id)
   if (queueTarget) {
-    for (let node = queueTarget; node; node = node.parentElement) {
-      if (node.tagName !== 'DETAILS') continue
-      node.open = true
-      if (node.classList.contains('snoozed-fold')) snoozedFoldOpen = true
-      else if (node.classList.contains('stale-fold')) staleFoldOpen = true
-    }
+    revealDetailsAncestors(queueTarget)
     selectRow(id)
   }
   if (queueTarget) setOpenRow(id)
@@ -733,6 +1033,7 @@ function clearSearchResultView() {
   const { input, results, status } = searchElements()
   searchIndexOpen = false
   searchUpdating = false
+  searchAwaitingHistory = false
   searchActiveIndex = -1
   searchResultCache = []
   searchResultSignature = ''
@@ -832,7 +1133,17 @@ function searchResultContent(option, result) {
   const context = document.createElement('span')
   context.className = 'search-result-context'
   context.textContent = result.context
-  option.append(title, kind)
+  if (result.later) {
+    const tags = document.createElement('span')
+    tags.className = 'search-result-tags'
+    const chip = document.createElement('span')
+    chip.className = 'search-result-later'
+    chip.textContent = 'Later'
+    tags.append(chip, kind)
+    option.append(title, tags)
+  } else {
+    option.append(title, kind)
+  }
   if (result.match) {
     const match = document.createElement('span')
     match.className = 'search-result-match'
@@ -872,14 +1183,14 @@ function searchJumpRoot(source) {
 }
 
 const SEARCH_SOURCE_SELECTORS = {
-  title: '.nrow-title, .card-title, .board-title',
+  title: '.card-original-title, .nrow-title, .card-title, .board-title',
   label: '.row-label',
-  detail: '.card-tldr-body',
-  note: '.card-tldr-body, .note-line',
-  'next-step': '.card-next-body',
+  detail: '.card-tldr-body, .card-title, .card-original-title',
+  note: '.card-tldr-body, .card-title, .card-original-title, .note-line',
+  'next-step': '.card-next-body, .card-title, .card-original-title, .card-recorded-request',
   owner: '.action-owner',
-  impact: '.card-impact',
-  next: '.card-after',
+  impact: '.card-impact, .card-tldr-body, .card-title, .card-original-title',
+  next: '.card-after, .card-impact, .card-tldr-body, .card-title, .card-original-title',
   context: '.card-context-body',
   annotation: '.annotation',
   reply: '.reply-block',
@@ -969,6 +1280,24 @@ function applySearchJumpHighlight() {
   return source
 }
 
+function searchStatusText(results, query) {
+  return results.length
+    ? `${results.length} search result${results.length === 1 ? '' : 's'}`
+    : `No results for ${query}`
+}
+
+// #247 §2.2: a question set aside in Later is still an open item, and search
+// keeps finding it there; with the Later section on, its result says where it
+// waits. Marked here, beside the clock, so the result signature changes when a
+// snooze ends.
+function markLaterResults(results) {
+  if (!laterSection || !results.length) return results
+  const later = new Set(laterEntries(allItems(lastData.g), [], Date.now(), closedSet()).map((entry) => entry.item.id))
+  return results.map((result) => (
+    result.section === 'open' && later.has(result.targetId) ? { ...result, later: true } : result
+  ))
+}
+
 function renderSearchResults() {
   const { input, results, status } = searchElements()
   if (!input || !results) return
@@ -979,14 +1308,27 @@ function renderSearchResults() {
     return
   }
   if (!lastData) return
+  // Issue #184: results always cover all of History. While the closed history
+  // the page omits is still being read, keep any prior list busy rather than
+  // listing an incomplete result set. The read itself belongs to the human's
+  // entry points (typing, focusing) or the next poll — never to a render.
+  if (omitsHistory()) {
+    searchAwaitingHistory = true
+    beginSearchUpdate()
+    if (status) status.textContent = olderHistoryWaitText('Searching older history…')
+    return
+  }
+  searchAwaitingHistory = false
   const previousActiveKey = searchResultCache[searchActiveIndex]?.key
   const previousResults = searchResultCache
-  const nextResults = buildSearchResults(lastData, query, fuzzySearch)
+  const nextResults = markLaterResults(buildSearchResults(lastData, query, fuzzySearch))
   const nextSignature = JSON.stringify([query, nextResults])
   if (!results.hidden && searchResultSignature === nextSignature) {
     searchResultCache = nextResults
     finishSearchUpdate()
     input.setAttribute('aria-expanded', 'true')
+    // the list is unchanged, but a busy wait may have replaced its status (#184)
+    if (status) status.textContent = searchStatusText(nextResults, query)
     return
   }
   const existingOptions = [...results.querySelectorAll('[role="option"]')]
@@ -1005,7 +1347,7 @@ function renderSearchResults() {
     empty.className = 'search-results-empty'
     empty.textContent = `No results for “${query}”`
     results.appendChild(empty)
-    if (status) status.textContent = `No results for ${query}`
+    if (status) status.textContent = searchStatusText(searchResultCache, query)
     finishSearchUpdate()
     setSearchActive(-1)
     return
@@ -1050,7 +1392,7 @@ function renderSearchResults() {
   }
   finishSearchUpdate()
   if (status) {
-    status.textContent = `${searchResultCache.length} search result${searchResultCache.length === 1 ? '' : 's'}`
+    status.textContent = searchStatusText(searchResultCache, query)
   }
   const preservedIndex = previousActiveKey
     ? searchResultCache.findIndex((result) => result.key === previousActiveKey)
@@ -1083,6 +1425,89 @@ function ageNotes(g, nowMs) {
   return { ...g, notes, done: [...g.done, ...aged] }
 }
 
+// ── closed history (issue #184) ─────────────────────────────────────────────
+// The lens every loaded item passes through: project/agent filters plus the
+// suppressed (closed, not peeked) projects. Omitted history obeys it too.
+function olderLens() {
+  return { project: projectFilter, agent: agentFilter, hidden: dashboardClosedProjects() }
+}
+
+// Whether lastData.g still omits closed history anywhere.
+function omitsHistory() {
+  const summary = lastData?.older
+  return Boolean(summary && summary.loaded < summary.total)
+}
+
+// The page alone, through the same suppression and filters as the view.
+function pageView(view = lastData) {
+  return filterData(withoutClosed({ g: view.page, boards: view.boards, archived: view.archived }))
+}
+
+// What the human is looking at. A deep link still waiting on older history
+// lands only if this has not changed since it was followed (#184).
+function navigationKey() {
+  return JSON.stringify([activeTab, projectFilter, agentFilter, settingsOpen()])
+}
+
+// Which surfaces need the closed history the page omits. Judged on a PAGE
+// (the applied one, or a tick's new one before it applies), never on merged
+// data, which never needs it: that would drop the history it just loaded and
+// fetch it again on the next tick.
+function historyWanted(view = lastData) {
+  const summary = view?.pageHistory
+  if (!summary || summary.loaded >= summary.total) return false
+  // A deep link may name any omitted item, and search covers every project
+  // while it is in use: open results, a pending query, or a query focused in an
+  // active window. Text left in a closed box, or in a background window that
+  // still remembers focus on it (#233), waits for the human to return to it.
+  if (historyLookup?.view === navigationKey()) return true
+  const input = document.getElementById('search')
+  if (input?.value.trim() && (searchIndexOpen || searchTimer || activeFocusElement() === input)) return true
+  const older = olderHistory(summary, olderLens())
+  if (relayOpen && older.outcomes > 0) return true
+  if (activeTab === 'done' && older.items > 0) {
+    return historyTabPinned || shown.done > knownHistory(pageView(view).g.done, summary.before).length
+  }
+  if (activeTab === 'dashboard' && older.outcomes > 0) {
+    const activity = (view.activity ?? []).filter((a) =>
+      (!projectFilter || a.project === projectFilter) && (!agentFilter || a.agent === agentFilter))
+    return !dashboardModel(pageView(view), summary, activity).recentOutcomesComplete
+  }
+  return false
+}
+
+// Only load() reads older history. A navigation or render that needs it may
+// only ask for an early poll tick: that tick decides, reads and paints through
+// the poll's own gate, so no history path ever forces a frame. One request per
+// applied tick: a failed read is retried by the poll, never in a loop.
+function requestHistory() {
+  if (historyLoadScheduled || !omitsHistory() || historyRequestedFor === appliedLoadGeneration || !historyWanted()) return
+  historyRequestedFor = appliedLoadGeneration
+  historyLoadScheduled = true
+  setTimeout(() => {
+    historyLoadScheduled = false
+    void load()
+  }, 0)
+}
+
+// A human action that needs older history has just painted what is known; this
+// reads the rest and paints it outside the poll's gate, like every frame the
+// human asks for (#38): an unrelated draft or a focused Dashboard control must
+// not hide it. Called only from explicit entry points, never from forceRender,
+// a render or the poll, so passive paths still never force a paint.
+function requestHistoryPaint() {
+  if (!lastData || !omitsHistory() || historyPaintRequestedFor === appliedLoadGeneration || !historyWanted()) return
+  historyPaintRequestedFor = appliedLoadGeneration
+  void reloadAndPaint()
+}
+
+// Shown where a surface waits on older history the last tick could not read.
+const OLDER_HISTORY_UNAVAILABLE = 'Older history is unavailable right now.'
+
+function olderHistoryWaitText(loading) {
+  return lastData?.olderError ? OLDER_HISTORY_UNAVAILABLE : loading
+}
+
 // the CURRENT server state for an item, not a row's closed-over render-time snapshot.
 // fix round 1: the star Undo fallback must decide canUndo/undoRefusal off fresh data —
 // a row that hasn't re-rendered since staging still reads reply_seen_at as null even
@@ -1094,8 +1519,8 @@ function freshItem(id) {
   return lastData ? allItems(lastData.g).find((i) => i.id === id) : undefined
 }
 
-function collectAgents({ g, boards }) {
-  return [...new Set([...allItems(g).map((i) => i.agent), ...boards.map((b) => b.agent)])].sort()
+function collectAgents({ g, boards }, olderAgents = []) {
+  return [...new Set([...allItems(g).map((i) => i.agent), ...boards.map((b) => b.agent), ...olderAgents])].sort()
 }
 
 // Closed projects drop out of the DEFAULT view — UNLESS the human has explicitly
@@ -1134,6 +1559,359 @@ function projectScoped({ g, boards, archived }) {
   }
 }
 
+function dashboardEntryEntity(entry) {
+  return entry?.kind === 'row' ? entry.row : entry?.item
+}
+
+function dashboardEntryTitle(entry) {
+  const entity = dashboardEntryEntity(entry)
+  return entry?.kind === 'row' ? entity?.label : entity?.title
+}
+
+function dashboardEntryProject(entry) {
+  return entry?.kind === 'row' ? entry.board?.project : entry?.item?.project
+}
+
+function dashboardTarget(target) {
+  if (target === 'live') {
+    document.getElementById('liveStrip')?.click()
+    return
+  }
+  if (target === 'outcomes') {
+    openRelay()
+    return
+  }
+  selectTab(target)
+}
+
+function dashboardInteractionActive() {
+  return activeTab === 'dashboard' && Boolean(activeFocusElement()?.closest?.('#dashboard'))
+}
+
+function dashboardFocusBookmark() {
+  return activeFocusElement()?.closest?.('#dashboard [data-dashboard-focus-key]')?.dataset.dashboardFocusKey ?? null
+}
+
+function restoreDashboardFocus(key) {
+  if (!key || activeTab !== 'dashboard') return false
+  const target = document.querySelector(`#dashboard [data-dashboard-focus-key="${CSS.escape(key)}"]`)
+  if (!target) return false
+  if (document.activeElement !== target) target.focus({ preventScroll: true })
+  return document.activeElement === target
+}
+
+function renderDashboardAmbient(model) {
+  const host = document.querySelector('#dashboard .dashboard')
+  if (!host?.querySelector('.dashboard-grid')) return
+  const values = {
+    agents: model.signals.agents.working,
+    waiting: model.signals.waiting,
+    plans: model.signals.plans,
+    outcomes: model.signals.outcomes,
+  }
+  for (const [name, value] of Object.entries(values)) {
+    const el = document.querySelector(`[data-dashboard-signal="${name}"] .dashboard-value`)
+    if (el) el.textContent = String(value)
+  }
+  const total = document.querySelector('[data-dashboard-signal="agents"] .dashboard-value-total')
+  if (total) total.textContent = `/${model.signals.agents.total}`
+  const dots = document.querySelector('[data-dashboard-signal="agents"] .dashboard-agent-dots')
+  if (dots) {
+    const fragment = document.createDocumentFragment()
+    for (let index = 0; index < model.signals.agents.total; index += 1) {
+      const dot = document.createElement('span')
+      dot.className = `dashboard-agent-dot ${index < model.signals.agents.working ? 'active' : 'quiet'}`
+      fragment.appendChild(dot)
+    }
+    dots.replaceChildren(fragment)
+  }
+  const childCount = model.signals.agents.reportedChildren
+  const childContribution = childCount > 0
+    ? `, including ${childCount} reported child agent${childCount === 1 ? '' : 's'}`
+    : ''
+  const labels = {
+    agents: `Agents reporting work: ${model.signals.agents.working} of ${model.signals.agents.total}${childContribution}`,
+    waiting: `Needs you: ${model.signals.waiting} open action${model.signals.waiting === 1 ? '' : 's'}`,
+    plans: `Plans: ${model.signals.plans} across ${model.signals.projects} project${model.signals.projects === 1 ? '' : 's'}`,
+    outcomes: `Recorded outcomes: ${model.signals.outcomes} across items and plan rows`,
+  }
+  for (const [name, label] of Object.entries(labels)) {
+    const card = document.querySelector(`[data-dashboard-signal="${name}"]`)
+    if (card) card.setAttribute('aria-label', label)
+  }
+  for (const [owner, count] of Object.entries(model.ownership)) {
+    const value = host.querySelector(`.flow-${owner} strong`)
+    if (value) value.textContent = String(count)
+  }
+  renderDashboardHistory(host.querySelector('.dashboard-activity'))
+  renderDashboardDispatch(host.querySelector('.dashboard-live-list'), model.sessions)
+  renderDashboardOutcomes(host.querySelector('.dashboard-outcome-list'), model.recentOutcomes, model.recentOutcomesComplete)
+}
+
+const DASHBOARD_SIGNAL_ICONS = {
+  agents: '<circle cx="8" cy="4" r="2"></circle><circle cx="4" cy="12" r="2"></circle><circle cx="12" cy="12" r="2"></circle><path d="M8 6v3M6.5 9.5 5 10.5M9.5 9.5l1.5 1"></path>',
+  waiting: '<path d="M2 3h12v10H2zM2 9h3l1.5 2h3L11 9h3"></path>',
+  plans: '<path d="M3 2h10v12H3zM5.5 5h5M5.5 8h5M5.5 11h3"></path>',
+  outcomes: '<circle cx="8" cy="8" r="6"></circle><path d="m5 8 2 2 4-4"></path>',
+}
+
+function dashboardSignal({ name, label, value, total = null, target, tone, meter = false }) {
+  const card = document.createElement('button')
+  card.type = 'button'
+  card.className = `dashboard-signal tone-${tone}`
+  card.dataset.dashboardSignal = name
+  card.dataset.dashboardTarget = target
+  card.dataset.dashboardFocusKey = `signal:${name}`
+  card.innerHTML = `
+    <span class="dashboard-signal-head">
+      <span class="dashboard-signal-label">${esc(label)}</span>
+      <svg class="dashboard-signal-icon" viewBox="0 0 16 16" aria-hidden="true">${DASHBOARD_SIGNAL_ICONS[name] ?? ''}</svg>
+    </span>
+    <span class="dashboard-value-group">
+      <span class="dashboard-value">${esc(String(value))}</span>
+      ${total == null ? '' : `<span class="dashboard-value-total">/${esc(String(total))}</span>`}
+    </span>
+    ${meter ? '<span class="dashboard-agent-dots" aria-hidden="true"></span>' : ''}
+    <span class="dashboard-signal-arrow" aria-hidden="true">→</span>`
+  card.addEventListener('click', () => dashboardTarget(target))
+  return card
+}
+
+function formatDuration(ms) {
+  const totalMinutes = Math.round(ms / 60000)
+  const hours = Math.floor(totalMinutes / 60)
+  const minutes = totalMinutes % 60
+  if (!hours) return `${minutes}m`
+  return minutes ? `${hours}h ${minutes}m` : `${hours}h`
+}
+
+function renderDashboardHistory(panel) {
+  const head = panel.querySelector('.dashboard-card-head')
+  for (const child of [...panel.children]) if (child !== head) child.remove()
+  panel.classList.remove('is-empty')
+  const endMs = Date.now()
+  const bucketCount = dashboardRangeMs === 86400000 ? 24 : dashboardRangeMs === 604800000 ? 14 : 30
+  const history = lastData.activityHistory ?? { state: 'ready', spans: [], message: '' }
+  const historySpans = (history.spans ?? []).filter((span) =>
+    !dashboardClosedSet().has(span.project)
+    && (!projectFilter || span.project === projectFilter)
+    && (!agentFilter || span.agent === agentFilter))
+  const series = buildActivitySeries(historySpans, {
+    startMs: endMs - dashboardRangeMs,
+    endMs,
+    bucketCount,
+  })
+  if (history.state === 'error') {
+    panel.classList.add('is-empty')
+    const error = document.createElement('div')
+    error.className = 'dashboard-history-empty dashboard-history-error'
+    error.title = history.message
+    error.innerHTML = '<strong>History unavailable</strong>'
+    panel.appendChild(error)
+  } else if (!series.hasHistory) {
+    panel.classList.add('is-empty')
+    const empty = document.createElement('div')
+    empty.className = 'dashboard-history-empty'
+    empty.setAttribute('role', 'img')
+    empty.setAttribute('aria-label', 'No activity history yet')
+    empty.title = 'No activity history yet'
+    empty.innerHTML = '<svg class="dashboard-empty-icon" viewBox="0 0 32 20" aria-hidden="true"><path d="M1 15h5l3-9 5 12 4-8 3 5h10"></path></svg>'
+    panel.appendChild(empty)
+  } else {
+    const total = document.createElement('div')
+    total.className = 'dashboard-activity-total'
+    total.innerHTML = `<strong>${esc(formatDuration(series.totalActiveMs))}</strong>`
+    panel.appendChild(total)
+    const max = Math.max(...series.buckets.map((bucket) => bucket.activeMs), 1)
+    const bars = document.createElement('div')
+    bars.className = 'dashboard-bars'
+    bars.setAttribute('role', 'img')
+    bars.setAttribute('aria-label', `${formatDuration(series.totalActiveMs)} of agent claim time`)
+    for (const bucket of series.buckets) {
+      const bar = document.createElement('span')
+      bar.className = 'dashboard-bar'
+      bar.style.height = `${Math.max(4, (bucket.activeMs / max) * 100)}%`
+      bar.title = `${formatDuration(bucket.activeMs)} · ${bucket.sessions} session${bucket.sessions === 1 ? '' : 's'}`
+      bars.appendChild(bar)
+    }
+    panel.appendChild(bars)
+  }
+}
+
+function renderDashboardDispatch(list, sessions) {
+  list.replaceChildren()
+  if (!sessions.length) {
+    list.innerHTML = '<div class="dashboard-empty" role="img" aria-label="No agent connections" title="No agent connections"><svg class="dashboard-empty-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v4M12 18v4M2 12h4M18 12h4"></path></svg></div>'
+    return
+  }
+  for (const session of sessions.slice(0, 4)) {
+    const row = document.createElement('div')
+    row.className = `dashboard-live-session${session.idle ? ' idle' : ''}`
+    const identity = document.createElement('strong')
+    identity.textContent = `${session.project} / ${session.agent}`
+    const doing = document.createElement('span')
+    doing.textContent = session.historical ? `Last report: ${session.synopsis}` : session.synopsis
+    const state = document.createElement('small')
+    state.textContent = session.idle ? 'Connected' : 'Reported work'
+    row.append(identity, doing, state)
+    list.appendChild(row)
+  }
+}
+
+function renderDashboardOutcomes(list, entries, complete = true) {
+  // Issue #184: outcomes the page omits may still outrank what is listed.
+  if (complete) list.removeAttribute('aria-busy')
+  else list.setAttribute('aria-busy', 'true')
+  const existing = new Map([...list.querySelectorAll('.dashboard-outcome')]
+    .map((row) => [row.dataset.dashboardFocusKey, row]))
+  const active = activeFocusElement()?.closest?.('.dashboard-outcome')
+  const focused = active && list.contains(active) ? active : null
+  const focusedIndex = focused ? [...list.children].indexOf(focused) : -1
+  const rows = entries.slice(0, 4).map((entry) => {
+    const key = `outcome:${entry.kind === 'item' ? entry.item.id : entry.row.id}`
+    let row = existing.get(key)
+    if (!row) {
+      row = document.createElement('button')
+      row.type = 'button'
+      row.className = 'dashboard-outcome'
+      row.dataset.dashboardFocusKey = key
+      row.append(document.createElement('strong'), document.createElement('span'), document.createElement('small'))
+      row.addEventListener('click', () => {
+        if (entry.kind === 'item') focusItem(entry.item.id)
+        else focusItem(entry.board.id, { rowId: entry.row.id })
+      })
+    }
+    row.querySelector('strong').textContent = dashboardEntryTitle(entry) ?? 'Recorded outcome'
+    row.querySelector('span').textContent = dashboardEntryEntity(entry)?.outcome ?? ''
+    row.querySelector('small').textContent = dashboardEntryProject(entry) ?? ''
+    return row
+  })
+  if (focused && rows.includes(focused)) {
+    // Move the other rows around the focused button; detaching that button would
+    // lose native keyboard ownership even if it were immediately reinserted.
+    for (const child of [...list.children]) if (child !== focused) child.remove()
+    const index = rows.indexOf(focused)
+    focused.before(...rows.slice(0, index))
+    focused.after(...rows.slice(index + 1))
+  } else {
+    list.replaceChildren(...rows)
+    if (!rows.length) {
+      list.innerHTML = complete
+        ? '<div class="dashboard-empty" role="img" aria-label="No recorded outcomes" title="No recorded outcomes"><svg class="dashboard-empty-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"></circle><path d="m8 12 2.5 2.5L16 9"></path></svg></div>'
+        : `<div class="dashboard-empty" role="status">${esc(olderHistoryWaitText('Loading older outcomes…'))}</div>`
+    }
+    if (focused) {
+      const next = rows[Math.min(focusedIndex, rows.length - 1)]
+        ?? document.querySelector('[data-dashboard-signal="outcomes"]')
+      next?.focus({ preventScroll: true })
+    }
+  }
+}
+
+function renderDashboard(model) {
+  const host = document.querySelector('#dashboard .dashboard')
+  // Keep native controls mounted; ambient updates replace only their data regions.
+  if (!host || host.querySelector('.dashboard-grid')) return
+
+  const signals = document.createElement('div')
+  signals.className = 'dashboard-signals'
+  signals.append(
+    dashboardSignal({
+      name: 'agents',
+      label: 'Reported work',
+      value: model.signals.agents.working,
+      total: model.signals.agents.total,
+      target: 'live',
+      tone: 'agent',
+      meter: true,
+    }),
+    dashboardSignal({
+      name: 'waiting',
+      label: 'Needs you',
+      value: model.signals.waiting,
+      target: 'needsYou',
+      tone: 'attention',
+    }),
+    dashboardSignal({
+      name: 'plans',
+      label: 'Plans',
+      value: model.signals.plans,
+      target: 'boards',
+      tone: 'plan',
+    }),
+    dashboardSignal({
+      name: 'outcomes',
+      label: 'Recorded outcomes',
+      value: model.signals.outcomes,
+      target: 'outcomes',
+      tone: 'outcome',
+    }),
+  )
+  host.appendChild(signals)
+
+  const grid = document.createElement('div')
+  grid.className = 'dashboard-grid'
+
+  const activityPanel = document.createElement('section')
+  activityPanel.className = 'dashboard-card dashboard-activity'
+  const activityHead = document.createElement('div')
+  activityHead.className = 'dashboard-card-head'
+  activityHead.innerHTML = '<h2>Agent activity</h2>'
+  const range = document.createElement('select')
+  range.className = 'dashboard-range'
+  range.dataset.dashboardFocusKey = 'activity-range'
+  range.setAttribute('aria-label', 'Dashboard activity range')
+  for (const [label, value] of [['24 hours', 86400000], ['7 days', 604800000], ['30 days', 2592000000]]) {
+    const option = document.createElement('option')
+    option.textContent = label
+    option.value = String(value)
+    range.appendChild(option)
+  }
+  range.value = String(dashboardRangeMs)
+  range.addEventListener('change', () => {
+    dashboardRangeMs = Number(range.value)
+    forceRender()
+  })
+  activityHead.appendChild(range)
+  activityPanel.appendChild(activityHead)
+  grid.appendChild(activityPanel)
+
+  const ownership = document.createElement('section')
+  ownership.className = 'dashboard-card dashboard-ownership'
+  ownership.innerHTML = `
+    <div class="dashboard-card-head"><h2>Ownership flow</h2></div>
+    <div class="dashboard-flow">
+      <button type="button" data-flow-target="needsYou" data-dashboard-focus-key="flow:human" class="flow-human"><span>Waiting on you</span><strong>${esc(String(model.ownership.human))}</strong></button>
+      <div class="dashboard-flow-line" aria-hidden="true"></div>
+      <button type="button" data-flow-target="needsYou" data-dashboard-focus-key="flow:agent" class="flow-agent"><span>With agents</span><strong>${esc(String(model.ownership.agent))}</strong></button>
+      <div class="dashboard-flow-line" aria-hidden="true"></div>
+      <button type="button" data-flow-target="outcomes" data-dashboard-focus-key="flow:outcome" class="flow-outcome"><span>Outcome</span><strong>${esc(String(model.ownership.outcome))}</strong></button>
+    </div>`
+  for (const button of ownership.querySelectorAll('[data-flow-target]')) {
+    button.addEventListener('click', () => dashboardTarget(button.dataset.flowTarget))
+  }
+  grid.appendChild(ownership)
+
+  const live = document.createElement('section')
+  live.className = 'dashboard-card dashboard-dispatch'
+  live.innerHTML = '<div class="dashboard-card-head"><h2>Live dispatch</h2></div>'
+  const sessionList = document.createElement('div')
+  sessionList.className = 'dashboard-live-list'
+  live.appendChild(sessionList)
+  grid.appendChild(live)
+
+  const outcomes = document.createElement('section')
+  outcomes.className = 'dashboard-card dashboard-outcomes'
+  outcomes.innerHTML = '<div class="dashboard-card-head"><h2>Recent outcomes</h2></div>'
+  const outcomeList = document.createElement('div')
+  outcomeList.className = 'dashboard-outcome-list'
+  outcomes.appendChild(outcomeList)
+  grid.appendChild(outcomes)
+
+  host.appendChild(grid)
+  renderDashboardAmbient(model)
+}
+
 function paintAmbient() {
   applyBadge()
   // issue #30 — rebuilt ONCE here, before any renderer runs, so the row chips,
@@ -1141,11 +1919,23 @@ function paintAmbient() {
   // nothing in applyBadge / attentionCount on purpose: PR state is ambient, and
   // a red CI must never move the badge (tenets 1 and 2).
   linkIndex = indexLinks(lastData.links ?? [])
+  // issue #103 PR3 — the same frame's sub-issue view. Its activity labels READ
+  // the attention set; nothing here reaches applyBadge, a count or the dock.
+  issueView = buildIssueView(lastData.issues, {
+    items: allItems(lastData.g),
+    boards: lastData.boards,
+    archived: lastData.archived,
+    links: linkIndex,
+    attention: attentionEntries(allItems(lastData.g), lastData.boards, Date.now(), liveSessionIds(), lastData.closed ?? []),
+    nowMs: Date.now(),
+  })
   renderRail()
   // AFTER renderRail: renderRail is what reconciles a stale projectFilter, and
   // withoutClosed reads projectFilter to decide whether this is a peek.
   visibleData = withoutClosed(lastData)
-  const agents = collectAgents(projectScoped(visibleData))
+  // Agents whose only items are closed history the page omitted stay selectable.
+  const agents = collectAgents(projectScoped(visibleData),
+    olderHistory(lastData.older, { project: projectFilter, hidden: dashboardClosedProjects() }).agents)
   if (agentFilter && !agents.includes(agentFilter)) agentFilter = null
   // prune collapse state against ALL cards, not the filtered view (nor the
   // closure-narrowed one), so switching tabs never drops state for cards the
@@ -1156,9 +1946,28 @@ function paintAmbient() {
   const pillLive = (lastData.activity ?? []).filter((a) =>
     (!projectFilter || a.project === projectFilter) && (!agentFilter || a.agent === agentFilter))
   const live = pillLive
+  const dashboard = dashboardModel(filtered, lastData.older, live)
   renderLiveBar(lastData.activity ?? [])    // collapsed strip — GLOBAL, never scoped (§7 filter-blindness, generalized)
+  renderDashboardAmbient(dashboard)
   paintTabCounts(g, boards)
-  return { agents, g, boards, archived, live }
+  paintLaterSectionHint()
+  return { agents, g, boards, archived, live, dashboard }
+}
+
+// `summary` is what `view` omits from closed history (issue #184): omitted
+// outcomes still count, and listed recent outcomes are only those nothing
+// omitted could outrank.
+function dashboardModel({ g, boards, archived }, summary, activity) {
+  return buildDashboard({
+    items: allItems(g),
+    boards,
+    archived,
+    activity,
+    nowMs: Date.now(),
+    liveSessionIds: liveSessionIds(),
+    closedProjects: dashboardClosedProjects(),
+    history: { older: olderHistory(summary, olderLens()) },
+  })
 }
 
 function paintTabCounts(g, boards) {
@@ -1168,19 +1977,24 @@ function paintTabCounts(g, boards) {
     globalAttention: attentionCount(allItems(lastData.g), lastData.boards, Date.now(), liveSessionIds(), lastData.closed ?? []),
     unreadNotes: unreadNoteCount(g.notes.flatMap((gr) => gr.items), notesSeenAt, Date.now(), notesSeenIds),
     scoped: { boards, done: g.done },
+    olderDone: olderHistory(lastData.older, olderLens()).items,
   })
   for (const id of TAB_IDS) setCount(id, counts[id])
 }
 
-function paintEditableSurfaces({ agents, g, boards, archived, live }) {
+function paintEditableSurfaces({ agents, g, boards, archived, live, dashboard, paintAllPanes }) {
   renderSearchResults()
   renderClosedBanner()
   renderAgentSelect(agents)
   renderLive(live) // drawer's expanded list — stays FILTERED (rail-scoped, like every other tab)
-  renderNeedsYou(g, boards, Date.now())
-  renderGroups('notes', g.notes)
-  renderDone(g.done)
-  renderBoards(boards, archived)
+  renderDashboard(dashboard)
+  // Keep the action/recovery queue and overlays current. Only inactive document
+  // panes skip ordinary polls; boot and explicit human repaints remain complete.
+  const restoreQueueView = renderNeedsYou(g, boards, Date.now())
+  if (paintAllPanes || !document.getElementById('notes').hidden) renderGroups('notes', g.notes)
+  if (paintAllPanes || !document.getElementById('done').hidden) renderDone(g.done)
+  for (const board of boards) sessionActiveBoards.add(board.id)
+  if (paintAllPanes || !document.getElementById('boards').hidden) renderBoards(boards, archived)
   // renderGroups may have marked visible notes read. Recount only on a full
   // editable frame; a draft-gated ambient frame must never mark unseen notes.
   paintTabCounts(g, boards)
@@ -1194,26 +2008,45 @@ function paintEditableSurfaces({ agents, g, boards, archived, live }) {
   renderTriage() // keep the open lightbox in sync with fresh data
   renderRelay() // same entities, projected into human → agent → outcome lanes
   renderMission() // selected board, projected through explicit row next/outcome edges
+  return restoreQueueView
 }
 
 function render() {
+  // A prepared frame belongs to the poll; explicit forceRender enters without one.
+  const paintAllPanes = preparedFrame === null || !editablePanesPainted
+  // The rebuild below detaches the nodes a text selection lives in (#223).
+  const textSelection = preparedFrame ? preparedFrame.textSelection : captureSelection()
   const frame = preparedFrame ?? paintAmbient()
+  frame.paintAllPanes = paintAllPanes
   preparedFrame = null
+  const ownsFocus = document.hasFocus()
   const missionFocus = captureMissionFocus()
-  const draftFocus = activeDraftFocusBookmark() ?? requestedDraftFocusBookmark
+  const dashboardFocus = dashboardFocusBookmark()
+  const draftFocus = ownsFocus ? activeDraftFocusBookmark() ?? requestedDraftFocusBookmark : null
   const pagedFocus = pagedCardFocusBookmark()
+  // the Plans header's controls are rebuilt with the list; keep a keyboard user on them
+  const plansHeaderFocusId = activeFocusElement()?.closest?.('#boards .tab-header [id]')?.id ?? null
   pagedFocusId = pagedFocus?.id ?? null
-  if (document.activeElement?.closest?.('.stale-drafts-fold')) draftRecoveryFocusPending = true
+  if (activeFocusElement()?.closest?.('.stale-drafts-fold')) draftRecoveryFocusPending = true
   reconcileDraftOwners()
   requestedDraftFocusBookmark = null
-  paintEditableSurfaces(frame)
+  const restoreQueueView = paintEditableSurfaces(frame)
   pagedFocusId = null
-  if (missionFocus && missionBoardId) {
-    restoreMissionFocus(missionFocus)
-  } else if (!restoreDraftRecoveryFocus() && !restoreDraftFocus(draftFocus)) {
-    restorePagedCardFocus(pagedFocus)
+  if (ownsFocus) {
+    if (missionFocus && missionBoardId) {
+      restoreMissionFocus(missionFocus)
+    } else if (!restoreDashboardFocus(dashboardFocus)
+      && !restoreDraftRecoveryFocus() && !restoreDraftFocus(draftFocus) && !restorePagedCardFocus(pagedFocus)
+      && plansHeaderFocusId) {
+      document.getElementById(plansHeaderFocusId)?.focus({ preventScroll: true })
+    }
   }
   applySearchJumpHighlight()
+  invalidatePreviewLinks()
+  keyboardUI?.refresh()
+  restoreQueueView()
+  restoreSelection(textSelection)
+  editablePanesPainted = true
 }
 
 // one age vocabulary for every surface (§6): rows, chips, Live and tooltips all
@@ -1278,7 +2111,7 @@ function recoverMismatchedRenderedRowDraft(b, r) {
 }
 
 function activeDraftFocusBookmark() {
-  const active = document.activeElement
+  const active = activeFocusElement()
   const key = active?.dataset?.draftFocusKey
   if (!key) return null
   return { key, scopeId: active.closest('[id]')?.id ?? null }
@@ -1408,7 +2241,7 @@ function triageEntryKey(entry) {
 function captureTriageFocus() {
   if (!triageDeck) return null
   const card = document.querySelector('#lightbox .lb-card')
-  const active = document.activeElement
+  const active = activeFocusElement()
   if (!card || !active || !card.contains(active)) return null
   const targets = cardFocusTargets(card)
   if (!targets.includes(active)) return null
@@ -1474,9 +2307,27 @@ const openContexts = new Set()
 const HANDLED_LABEL = 'I’ve done my part'
 const UNHANDLED_LABEL = 'Not done after all'
 
-function dispositionEl(onResponse, onSnooze) {
+// `onPin` is passed only for an unanswered ask that is not pinned yet, and only
+// while the Later section is on (#247): the pin is offered first, above the
+// snooze choices it replaces.
+function dispositionEl(onResponse, onSnooze, key, onPin = null) {
+  const menu = document.createElement('details')
+  menu.className = 'disposition-menu'
+  menu.open = openDispositionMenus.has(key)
+  menu.addEventListener('toggle', () => {
+    if (menu.open) openDispositionMenus.add(key)
+    else openDispositionMenus.delete(key)
+  })
+  const summary = document.createElement('summary')
+  summary.textContent = 'More responses'
   const wrap = document.createElement('div')
   wrap.className = 'disposition-actions'
+  if (onPin) {
+    const pin = btn('Pin for later', onPin)
+    pin.className = 'disposition-btn'
+    pin.title = 'Set this aside with no return time; it waits in Later until you bring it back.'
+    wrap.appendChild(pin)
+  }
   const snooze = (label, ms) => {
     const button = btn(label, () => onSnooze(new Date(Date.now() + ms).toISOString()))
     button.className = 'disposition-btn'
@@ -1493,6 +2344,134 @@ function dispositionEl(onResponse, onSnooze) {
   const decline = btn('Decline', () => onResponse('decline', 'Declined'))
   decline.className = 'disposition-btn decline'
   wrap.appendChild(decline)
+  menu.append(summary, wrap)
+  return menu
+}
+
+// The one write behind every deferral (#247): a snooze or a pin, of a question
+// or a plan row, from any card. An ask that holds a draft keeps (or takes) the
+// open card, and the fold that holds the open card always renders open
+// (renderNeedsYou), so the draft that pauses the list stays in view. Without a
+// draft the card closes (§2.1) and the ask waits in its closed fold.
+async function deferAsk(entry, url, body, { refusal = '', onSaved = null } = {}) {
+  const ask = entryEntity(entry)
+  const res = await postJSON(url, body)
+  if (res === null) return
+  if (refusal) showWriteError(ask.id, res.ok ? '' : refusal)
+  // #272: a row snooze moves the revision, so the next frame moves this draft to
+  // the unsent responses. The mark says why, and is read only by that frame: a
+  // pin moves no revision, so a later agent edit must not inherit it.
+  const meta = res.ok && entry.kind === 'row' && rowDraftMeta[ask.id]?.revision === ask.revision
+    ? rowDraftMeta[ask.id]
+    : null
+  if (meta) meta.setAside = true
+  if (res.ok) {
+    if (holdsDraft(ask.id)) keepDraftInView(entry)
+    else if (openRowId === ask.id) setOpenRow(null, { resume: false })
+    onSaved?.()
+  }
+  await reloadAndPaint()
+  if (meta) delete meta.setAside
+}
+
+// #247 §2.3: with the Later section on, "I'll take a while" also defers the ask
+// in the same write: "Stop waiting" pins it and "Back in …" snoozes it to the
+// same time. Through deferAsk, so a drafted ask stays in view.
+function deferWaitStop(entry, url, until, pins, options) {
+  return deferAsk(entry, url, { until, defer: true, ...pins }, options)
+}
+
+// The test suspendState() applies: a draft is more than whitespace.
+function holdsDraft(id) {
+  return [draftReplies[id], draftReplyContexts[id], rowDrafts[id]]
+    .some((text) => String(text ?? '').trim() !== '')
+}
+
+// Give the deferred ask the open card, as opening its row would; its fold then
+// renders open. From the Review queue or a plan panel it was not the open card,
+// and those ignore the list's filters, so widen any filter that would hide it.
+// A Review queue opened with `t` on another tab would return there when it
+// closes, so the Inbox becomes the visible tab and the queue returns to its
+// Review queue button instead; nothing is focused now.
+function keepDraftInView(entry) {
+  if (triageDeck && activeTab !== 'needsYou') {
+    selectTab('needsYou', { paint: false })
+    triageReturnFocus = { kind: 'triageButton' }
+  }
+  const ask = entryEntity(entry)
+  if (openRowId === ask.id) return
+  const owner = entry.kind === 'row' ? entry.board : entry.item
+  if (projectFilter && projectFilter !== owner.project) projectFilter = owner.project
+  if (agentFilter && agentFilter !== owner.agent) agentFilter = null
+  if (!filterActionEntries([entry]).length) {
+    actionFilter = 'all'
+    changedOnly = false
+  }
+  selectedId = ask.id
+  setOpenRow(ask.id, { resume: false })
+}
+
+// Issue #217 — "I'll take a while". Only a Copilot session runs the answer
+// watcher this stops, and only one whose server records who raised the ask
+// (`action_agent`) runs a watcher that honours it — so the control follows THIS
+// ask's asker, never the board's last writer, and an unknown asker draws
+// nothing rather than a guess. With the Later section off it never touches
+// attention: the ask stays in Needs you unless the human also snoozes it. With
+// it on (#247), the same write also defers the ask (deferWaitStop). A stop for
+// good is final (the watcher has already exited), so it renders as a reminder,
+// not a control, and the reminder outlives the answer until an agent has
+// picked that answer up.
+const WAIT_STOP_DEFERRALS = [
+  ['Back in ~1 h', 60 * 60_000],
+  ['Back in ~3 h', 3 * 60 * 60_000],
+  ['Back tomorrow', 24 * 60 * 60_000],
+]
+
+function waitStopEl(ask, { answered = false, pickedUp = false, key = '', onStop = null } = {}) {
+  if (ask.action_agent !== 'copilot') return null
+  const note = (text) => {
+    const el = document.createElement('div')
+    el.className = 'wait-stop-note'
+    el.textContent = text
+    return el
+  }
+  if (ask.watch_stopped_at && !ask.watch_stopped_until) {
+    if (!answered) return note(`Agent stopped waiting ${rel(ask.watch_stopped_at)} ago · message it after you answer`)
+    return pickedUp ? null : note('Agent stopped waiting · message it so it picks up your answer')
+  }
+  // An answer ends the wait; there is nothing left to stop.
+  if (answered) return null
+  const wrap = document.createElement('div')
+  wrap.className = 'wait-stop'
+  const quietLeft = ask.watch_stopped_at ? Date.parse(ask.watch_stopped_until) - Date.now() : Number.NaN
+  if (quietLeft > 0) wrap.appendChild(note(`Agent waits quietly · ${relMs(quietLeft)} left · answering still wakes it`))
+  const menu = document.createElement('details')
+  menu.className = 'disposition-menu wait-menu'
+  menu.open = openDispositionMenus.has(key)
+  menu.addEventListener('toggle', () => {
+    if (menu.open) openDispositionMenus.add(key)
+    else openDispositionMenus.delete(key)
+  })
+  const summary = document.createElement('summary')
+  summary.textContent = 'I’ll take a while'
+  const actions = document.createElement('div')
+  actions.className = 'disposition-actions'
+  const choice = (label, title, until) => {
+    const button = btn(label, () => onStop(until()))
+    button.className = 'disposition-btn'
+    button.title = title
+    actions.appendChild(button)
+  }
+  choice('Stop waiting', laterSection
+    ? 'The agent stops waiting. The ask moves to Later until you bring it back.'
+    : 'The agent stops waiting and won’t wake on its own; message it after you answer.', () => null)
+  for (const [label, ms] of WAIT_STOP_DEFERRALS) {
+    choice(label, laterSection
+      ? 'The agent waits quietly and the ask waits in Later until then. Answering still wakes the agent.'
+      : 'The agent waits quietly until then; answering still wakes it.', () => new Date(Date.now() + ms).toISOString())
+  }
+  menu.append(summary, actions)
+  wrap.appendChild(menu)
   return wrap
 }
 
@@ -1577,12 +2556,15 @@ function resizeReplyEditor(editor) {
 
 function bindReplyEditor(editor, submit) {
   editor.addEventListener('keydown', (event) => {
+    if (event.isComposing || event.keyCode === 229 || event.repeat || event.altKey) return
     if (event.key !== 'Enter' || (!event.ctrlKey && !event.metaKey)) return
     event.preventDefault()
     submit()
   })
   requestAnimationFrame(() => {
-    if (editor.isConnected) resizeReplyEditor(editor)
+    // Queue restoration may have sized this editor already. A second auto-height
+    // measurement would temporarily shrink and clamp its restored scroll parent.
+    if (editor.isConnected && !editor.style.height) resizeReplyEditor(editor)
   })
 }
 
@@ -1600,6 +2582,7 @@ function rowAnswerEl(b, r, onSaved) {
   recoverMismatchedRenderedRowDraft(b, r)
   const wrap = document.createElement('div')
   wrap.className = 'row-answer'
+  setHintOwner(wrap, r, b)
   const row = document.createElement('div')
   row.className = 'reply-row'
   const input = document.createElement('textarea')
@@ -1650,7 +2633,7 @@ function rowAnswerEl(b, r, onSaved) {
     clearRowRecoveryTarget(r.id, r.revision)
     resumeRender()
   })
-  const save = async () => {
+  const save = () => withPendingResponse(async () => {
     const typed = input.value
     if (!typed.trim()) return
     const kind = input.dataset.responseKind ?? 'answer'
@@ -1680,7 +2663,10 @@ function rowAnswerEl(b, r, onSaved) {
         input.value = typed
       }
       showWriteError(r.id, WRITE_FAILED)
-      resumeRender()
+      // An option POST may outlive a poll rebuild; restore the current editor,
+      // rather than leaving the response only on the detached captured input.
+      if (ownsSubmission && !input.isConnected) forceRender()
+      else resumeRender()
       return
     }
     if (!res.ok) {
@@ -1725,11 +2711,11 @@ function rowAnswerEl(b, r, onSaved) {
     // is global — one unrelated draft anywhere and this write showed the human
     // nothing at all, box still full, ready to send the same string twice.
     await reloadAndPaint()
-  }
+  })
   const options = r.status === 'blocked' ? optionOrder(r.options) : []
   if (options.length) {
     const choices = document.createElement('div')
-    choices.className = 'options row-options comparing'
+    choices.className = `options row-options${closedRowCompares.has(r.id) ? '' : ' comparing'}`
     for (const option of options) {
       const box = document.createElement('div')
       box.className = 'option'
@@ -1751,6 +2737,15 @@ function rowAnswerEl(b, r, onSaved) {
       }
       choices.appendChild(box)
     }
+    if (options.some((option) => option.detail)) {
+      const compare = btn(closedRowCompares.has(r.id) ? 'Compare options' : 'Hide option details', () => {
+        if (closedRowCompares.has(r.id)) closedRowCompares.delete(r.id)
+        else closedRowCompares.add(r.id)
+        forceRender()
+      })
+      compare.className = 'compare-toggle'
+      wrap.appendChild(compare)
+    }
     wrap.appendChild(choices)
   }
   if (r.status === 'blocked' && !r.annotation && !r.annotation_kind && !r.handled_at) {
@@ -1761,22 +2756,44 @@ function rowAnswerEl(b, r, onSaved) {
         rowDraftKinds[r.id] = kind
         save()
       },
-      async (until) => {
-        const res = await postJSON(`/api/boards/${b.id}/rows/${r.id}/snooze`, {
-          until,
-          expected_revision: r.revision,
-          expected_board_version: b.revision,
-        })
+      (until) => deferAsk(
+        { kind: 'row', row: r, board: b },
+        `/api/boards/${b.id}/rows/${r.id}/snooze`,
+        { until, expected_revision: r.revision, expected_board_version: b.revision },
+        { onSaved },
+      ),
+      `row:${r.id}`,
+      r.pinned_at || !laterSection ? null : () => deferAsk(
+        { kind: 'row', row: r, board: b },
+        `/api/boards/${b.id}/rows/${r.id}/later`,
+        { pinned: true, expected_revision: r.revision, expected_board_version: b.revision },
+        { onSaved, refusal: 'This action changed before your click; refreshed without applying it.' },
+      ),
+    ))
+    const waitStop = waitStopEl(r, {
+      key: `wait:row:${r.id}`,
+      onStop: async (until) => {
+        const url = `/api/boards/${b.id}/rows/${r.id}/stop-waiting`
+        const pins = { expected_revision: r.revision, expected_board_version: b.revision }
+        const refusal = 'This action changed before your click; refreshed without applying it.'
+        if (laterSection) {
+          await deferWaitStop({ kind: 'row', row: r, board: b }, url, until, pins, { refusal, onSaved })
+          return
+        }
+        const res = await postJSON(url, { until, ...pins })
         if (res === null) return
-        if (!res.ok) { await reloadAndPaint(); return }
-        onSaved?.()
+        showWriteError(r.id, res.ok ? '' : refusal)
         await reloadAndPaint()
       },
-    ))
+    })
+    if (waitStop) wrap.appendChild(waitStop)
+  } else if (r.status === 'blocked') {
+    const reminder = waitStopEl(r, { answered: true, pickedUp: rowPickup(r).pickedUp })
+    if (reminder) wrap.appendChild(reminder)
   }
   bindReplyEditor(input, save)
   row.appendChild(input)
-  row.appendChild(btn('Send', save))
+  row.appendChild(btn('Send', save, 'submit'))
   const handled = rowHandledEl(b, r)
   if (handled) row.appendChild(handled)
   row.appendChild(writeErrorEl(r.id))
@@ -1786,7 +2803,7 @@ function rowAnswerEl(b, r, onSaved) {
     warning.className = 'write-error stale-draft'
     warning.textContent = recovery.revision === r.revision
       ? 'Not sent because the board changed. Review the preserved draft and send again.'
-      : `Not sent because this action changed. Preserved ${recovery.kind}: ${recovery.text}`
+      : `${recovery.setAside ? 'Kept from before you set this aside.' : 'Not sent because this action changed.'} Preserved ${recovery.kind}: ${recovery.text}`
     wrap.appendChild(warning)
   }
   return wrap
@@ -1802,10 +2819,24 @@ function rowAnswerEl(b, r, onSaved) {
 // Parameterised over the pair of stamps rather than reading the row, because #36
 // gave a row two INDEPENDENTLY delivered halves and the marker has to be able to
 // disagree between them.
-function pickupMarkHtml(seenAt, seenBy) {
+function pickupMarkHtml(seenAt, seenBy, { clientLabel = false } = {}) {
+  const recipient = seenBy ? `${esc(seenBy)}${clientLabel ? ' client' : ''}` : 'an agent'
+  const explanation = clientLabel
+    ? 'Client label, not a unique session. Delivery does not confirm the asking agent has resumed or acted.'
+    : 'Delivery does not confirm the asking agent has resumed.'
   return seenAt
-    ? `<span class="pickup picked">With ${seenBy ? esc(seenBy) : 'the agent'} · ${esc(rel(seenAt))} ago</span>`
-    : '<span class="pickup awaiting">Waiting for the agent</span>'
+    ? `<span class="pickup picked" title="${esc(explanation)}">Delivered to ${recipient} · ${esc(rel(seenAt))} ago</span>`
+    : '<span class="pickup awaiting">Saved · waiting for delivery</span>'
+}
+
+function itemAnnotationHtml(receipt) {
+  if (!receipt) return ''
+  const text = receipt.cleared ? '<strong>Note cleared</strong>' : `<strong>Note:</strong> ${esc(receipt.text)}`
+  const pickup = receipt.state === 'waiting' || receipt.state === 'picked'
+    ? pickupMarkHtml(receipt.seenAt, receipt.seenBy, { clientLabel: true })
+    : `<span class="pickup">${receipt.state === 'closed' ? 'Saved · item closed' : 'Saved · delivery not recorded'}</span>`
+  // Keep pickup text outside .annotation, the exact human-text search source.
+  return `<div class="item-annotation" data-note-state="${esc(receipt.state)}"><div class="annotation">${text}</div>${pickup}</div>`
 }
 
 // Everything the human has left on a row: their words (#37), their "I did my
@@ -1826,13 +2857,37 @@ function rowHumanStateHtml(r) {
   return parts.join('')
 }
 
-function contextHtml(context, key) {
-  if (!context) return ''
-  return `<details class="card-context" data-context-key="${esc(key)}"${openContexts.has(key) ? ' open' : ''}><summary class="card-context-label">Background</summary><div class="card-context-body">${renderStructuredText(context)}</div></details>`
+function sourceOptions(entity, identity = entity) {
+  return {
+    preview: entity.action_owner === 'approval' && (entity.status === 'open' || entity.status === 'blocked')
+      && !(lastData?.closed ?? []).includes(identity.project),
+    // issue #103: relationships for open items, plans and their rows; History
+    // keeps its plain chip. A row drawn for its plan names its own issue link.
+    issues: Array.isArray(identity.rows) || !identity.status || identity.status === 'open' ? issueView : null,
+    row: entity === identity ? null : entity,
+  }
+}
+
+function cardDetailsHtml(entity, identity, key, presentation, { includeAsked = true } = {}) {
+  const metadata = [identity.project, identity.agent, identity.stream].filter(Boolean)
+  return `<details class="card-context" data-context-key="${esc(key)}"${openContexts.has(key) ? ' open' : ''}>
+    <summary class="card-context-label">Details &amp; history</summary>
+    <div class="card-tracking-label">Original ${entity.label === undefined ? 'title' : 'label'}</div>
+    <div class="card-original-title">${esc(presentation.originalTitle)}</div>
+    <div class="meta card-meta">${metadata.map(esc).join(' · ')}</div>
+    ${identity.title && entity.label !== undefined ? `<div class="meta">Plan · ${esc(identity.title)} <span class="board-id">#${esc(identity.id.slice(0, 6))}</span></div>` : ''}
+    ${entity.next_step && entity.next_step !== presentation.headline ? `<div class="card-recorded-request"><span class="card-tracking-label">Recorded request</span>${renderStructuredText(entity.next_step)}</div>` : ''}
+    ${entity.context ? `<div class="card-context-body">${renderStructuredText(entity.context)}</div>` : ''}
+    ${sourceBlockHtml(linkIndex, identity, Date.now(), sourceOptions(entity, identity))}
+    ${lifecycleHtml(entity, { includeAsked })}
+    ${historyHtml(entity)}
+  </details>`
 }
 
 function bindContextDisclosures(root) {
-  for (const details of root.querySelectorAll('.card-context[data-context-key]')) {
+  invalidatePreviewLinks(root)
+  bindIssueActivity(root)
+  for (const details of root.querySelectorAll('details[data-context-key]')) {
     details.addEventListener('toggle', () => {
       const key = details.dataset.contextKey
       if (!key) return
@@ -1841,33 +2896,64 @@ function bindContextDisclosures(root) {
   }
 }
 
-function actionBlocksHtml(tldr, nextStep, actionOwner, impact, nextAfter, context, contextKey) {
+// issue #103 PR3 — an Agent Inbox activity label opens that item, plan or row
+// here, through the focusItem path search, deep links and outcomes already use.
+function bindIssueActivity(root) {
+  for (const button of root.querySelectorAll('button[data-issue-open]')) {
+    button.addEventListener('click', (event) => {
+      event.stopPropagation()
+      openIssueActivity(button.dataset.issueOpen, button.dataset.issueRow)
+    })
+  }
+}
+
+function openIssueActivity(id, rowId) {
+  if (triageDeck) closeTriage({ restoreFocus: false })
+  if (relayOpen) closeRelay()
+  if (missionBoardId) closeMission({ restoreFocus: false })
+  focusItem(id, rowId ? { rowId } : null)
+}
+
+function actionBlocksHtml(presentation) {
   return `
-    ${actionOwner ? `<div class="action-owner">${esc(actionOwnerLabel({ action_owner: actionOwner }))}</div>` : ''}
-    ${nextStep ? `<div class="card-next"><div class="card-section-label">NEXT STEP</div><div class="card-next-body">${renderStructuredText(nextStep)}</div></div>` : ''}
-    ${impact ? `<div class="card-impact"><div class="card-section-label">WHY NOW</div>${renderStructuredText(impact)}</div>` : ''}
-    ${nextAfter ? `<div class="card-after"><div class="card-section-label">AFTER THIS</div>${renderStructuredText(nextAfter)}</div>` : ''}
-    ${tldr ? `<div class="card-tldr"><div class="card-section-label">TL;DR</div><div class="card-tldr-body">${renderStructuredText(tldr)}</div></div>` : ''}
-    ${contextHtml(context, contextKey)}`
+    ${presentation.detail ? `<div class="card-tldr"><div class="card-tldr-body">${renderStructuredText(presentation.detail)}</div></div>` : ''}
+    ${presentation.impact ? `<div class="card-impact"><div class="card-section-label">Why it matters</div>${renderStructuredText(presentation.impact)}</div>` : ''}
+    ${presentation.nextAfter ? `<div class="card-after"><div class="card-section-label">Then</div>${renderStructuredText(presentation.nextAfter)}</div>` : ''}`
+}
+
+function cardHeadingHtml(presentation) {
+  return `<div class="card-title${presentation.headlineField === 'next-step' ? ' card-next-body' : ''}" role="heading" aria-level="2">${renderStructuredText(presentation.headline)}</div>`
+}
+
+function cardOriginHtml(entity, identity, { showProject = true } = {}) {
+  return `<div class="card-origin">
+    ${showProject ? `<span>${esc(identity.project)}</span>` : ''}
+    ${entity.label !== undefined ? `<span>Plan · ${esc(identity.title)}</span>` : ''}
+    ${entity.action_owner ? `<span class="action-owner">${esc(actionOwnerLabel(entity))}</span>` : ''}
+    ${sourceChipsHtml(linkIndex, identity, Date.now(), { ...sourceOptions(entity, identity), tabbable: true })}
+    ${entity !== identity && Array.isArray(identity.rows) ? rowWaitsChipHtml(entity, identity, Date.now(), { issues: issueView, tabbable: true }) : ''}
+  </div>`
 }
 
 function lifecycleHtml(entity, { includeAsked = true } = {}) {
   const steps = lifecycleReceipt(entity)
     .filter((step) => includeAsked || step.label !== 'Asked')
+    .filter((step) => step.kind !== 'outcome')
   if (!steps.length) return ''
   return `<div class="lifecycle-receipt">${steps.map((step) => (
     `<div class="lifecycle-step">${renderStructuredText(step.label)}${step.at ? `<span class="lifecycle-age">· ${esc(rel(step.at))}</span>` : ''}</div>`
   )).join('<span class="lifecycle-arrow">→</span>')}</div>`
 }
 
-function outcomeHtml(outcome) {
+function outcomeHtml(outcome, at = null) {
   return outcome
-    ? `<div class="outcome-block"><div class="outcome-label">Outcome</div>${renderStructuredText(outcome)}</div>`
+    ? `<div class="outcome-block"><div class="outcome-label">Outcome${at ? `<span class="outcome-age">· ${esc(rel(at))}</span>` : ''}</div>${renderStructuredText(outcome)}</div>`
     : ''
 }
 
 function historyHtml(r) {
   if (!r.history?.length) return ''
+  const key = `history:${r.id}`
   const entries = [...r.history].reverse().map((entry) => {
     const response = responseLabel({
       annotation_kind: entry.response_kind,
@@ -1877,22 +2963,26 @@ function historyHtml(r) {
     return `<div class="history-entry">
       <div class="history-title">Step ${esc(String(entry.version))} · ${esc(entry.note || entry.next_step || entry.status)}</div>
       ${response ? `<div>${esc(response)}${entry.response ? `: ${esc(entry.response)}` : ''}</div>` : ''}
-      ${outcomeHtml(entry.outcome)}
+      ${outcomeHtml(entry.outcome, entry.outcome_at)}
     </div>`
   }).join('')
-  return `<details class="action-history"><summary>Prior steps (${r.history.length})</summary>${entries}</details>`
+  return `<details class="action-history" data-context-key="${esc(key)}"${openContexts.has(key) ? ' open' : ''}><summary>Prior steps (${r.history.length})</summary>${entries}</details>`
 }
 
 // the inline expansion under a matrix row: long context + existing annotation + answer
 function rowPanelEl(b, r, readOnly = false) {
   const wrap = document.createElement('div')
   wrap.className = 'row-panel'
+  setHintOwner(wrap, r, b)
+  const presentation = actionPresentation(r, { done: readOnly })
   wrap.innerHTML = `
-    ${actionBlocksHtml(r.note, r.status === 'blocked' ? r.next_step : '', r.action_owner, r.impact, r.next_after, r.context, `row:${r.id}`)}
+    ${cardHeadingHtml(presentation)}
+    ${cardOriginHtml(r, b)}
+    ${actionBlocksHtml(presentation)}
     ${rowHumanStateHtml(r)}
-    ${outcomeHtml(r.outcome)}
-    ${lifecycleHtml(r)}
-    ${historyHtml(r)}`
+    ${outcomeHtml(r.outcome, r.outcome_at)}
+    ${rowWaitsHtml(r, b, Date.now(), { issues: issueView })}
+    ${cardDetailsHtml(r, b, `row:${r.id}`, presentation)}`
   bindContextDisclosures(wrap)
   if (!readOnly) wrap.appendChild(rowAnswerEl(b, r))
   return wrap
@@ -1903,17 +2993,18 @@ function rowPanelEl(b, r, readOnly = false) {
 // Guard the onSaved callback here, at the definition, so neither call site has
 // to know which context it is in — answering a blocked row from the list must
 // not throw just because there is no deck to remove it from.
-function rowCardEl(b, r, onSaved, { includeAsked = true } = {}) {
+function rowCardEl(b, r, onSaved, { includeAsked = true, header = true } = {}) {
   const wrap = document.createElement('div')
   wrap.className = 'lb-row-card'
+  setHintOwner(wrap, r, b)
+  const presentation = actionPresentation(r, { done: b.status === 'archived' })
   wrap.innerHTML = `
-    <div class="meta">Plan · ${esc(b.title)} <span class="board-id">#${esc(b.id.slice(0, 6))}</span></div>
-    <div class="title">${esc(r.label)}</div>
-    ${actionBlocksHtml(r.note, r.next_step, r.action_owner, r.impact, r.next_after, r.context, `row:${r.id}`)}
+    ${header ? cardHeadingHtml(presentation) : ''}
+    ${cardOriginHtml(r, b, { showProject: header })}
+    ${actionBlocksHtml(presentation)}
     ${rowHumanStateHtml(r)}
-    ${outcomeHtml(r.outcome)}
-    ${lifecycleHtml(r, { includeAsked })}
-    ${historyHtml(r)}`
+    ${outcomeHtml(r.outcome, r.outcome_at)}
+    ${cardDetailsHtml(r, b, `row:${r.id}`, presentation, { includeAsked })}`
   bindContextDisclosures(wrap)
   wrap.appendChild(rowAnswerEl(b, r, onSaved))
   return wrap
@@ -1941,12 +3032,12 @@ function renderTriage({
     lb.querySelector('.lb-count').textContent = 'all clear'
     lb.querySelector('.lb-mix').textContent = 'Review complete'
     owner.textContent = ''
-    progress.style.width = '100%'
+    progress.style.transform = 'scaleX(1)'
     card.innerHTML = '<div class="lb-clear">All clear. There is nothing left to review.</div>'
   } else {
     lb.querySelector('.lb-count').textContent = `${triageDeck.index + 1} of ${n}`
     lb.querySelector('.lb-mix').textContent = triageActionMix(triageDeck.entries)
-    progress.style.width = `${((triageDeck.index + 1) / n) * 100}%`
+    progress.style.transform = `scaleX(${(triageDeck.index + 1) / n})`
     const data = findEntryData(triageDeck.entries[triageDeck.index])
     const renderedDeck = triageDeck
     const renderedEntryKey = triageEntryKey(triageDeck.entries[triageDeck.index])
@@ -1988,6 +3079,7 @@ function openRelay() {
   if (missionBoardId) closeMission({ restoreFocus: false })
   relayOpen = true
   renderRelay()
+  requestHistoryPaint() // the outcome lane lists every recorded outcome (#184)
 }
 
 function closeRelay() {
@@ -2015,13 +3107,13 @@ function relaySummaryText(entry) {
 }
 
 function relayPickupChip(entity) {
-  const pickup = lifecycleReceipt(entity).find((step) => step.label === 'With the agent')
-  if (!pickup?.at) return { text: 'Waiting for agent', tone: 'awaiting' }
+  const pickup = lifecycleReceipt(entity).find((step) => step.kind === 'pickup')
+  if (!pickup?.at) return { text: 'Waiting for delivery', tone: 'awaiting' }
   return agentFollowupChip({
     answered: true,
     pickedUp: true,
     pickedUpAt: pickup.at,
-  }, Date.now()) ?? { text: 'With agent', tone: 'muted' }
+  }, Date.now()) ?? { text: 'Delivered', tone: 'muted' }
 }
 
 function focusRelayEntry(entry, lane) {
@@ -2031,7 +3123,7 @@ function focusRelayEntry(entry, lane) {
     return
   }
   if (lane === 'outcome') {
-    focusItem(entry.board.id)
+    focusItem(entry.board.id, { rowId: entry.row.id })
     return
   }
   jumpToCard('needsYou', entry.row.id)
@@ -2066,12 +3158,12 @@ function relayCardEl(entry, lane) {
   return card
 }
 
-function renderRelayLane(box, lane, entries) {
+function renderRelayLane(box, lane, entries, { count = entries.length, loading = false } = {}) {
   const host = box.querySelector(`[data-relay-lane="${lane}"]`)
-  host.querySelector('.relay-count').textContent = String(entries.length)
+  host.querySelector('.relay-count').textContent = String(count)
   const body = host.querySelector('.relay-body')
   body.replaceChildren()
-  if (!entries.length) {
+  if (!entries.length && !loading) {
     const empty = document.createElement('div')
     empty.className = 'relay-empty'
     empty.textContent = lane === 'human'
@@ -2081,6 +3173,13 @@ function renderRelayLane(box, lane, entries) {
     return
   }
   for (const entry of entries) body.appendChild(relayCardEl(entry, lane))
+  if (loading) {
+    const note = document.createElement('div')
+    note.className = 'relay-empty'
+    note.setAttribute('role', 'status')
+    note.textContent = olderHistoryWaitText('Loading older outcomes…')
+    body.appendChild(note)
+  }
 }
 
 function renderRelay() {
@@ -2096,9 +3195,14 @@ function renderRelay() {
   )
   renderRelayLane(box, 'human', relay.human)
   renderRelayLane(box, 'agent', relay.agent)
-  renderRelayLane(box, 'outcome', relay.outcomes)
+  // Issue #184: outcomes the page omits still count; until they are read, list
+  // only the outcomes none of them could outrank.
+  const older = olderHistory(lastData.older, olderLens())
+  const outcomes = relay.outcomes.length + older.outcomes
+  renderRelayLane(box, 'outcome', older.outcomes ? knownOutcomes(relay.outcomes, older.latest) : relay.outcomes,
+    { count: outcomes, loading: older.outcomes > 0 })
   box.querySelector('.relay-summary').textContent =
-    `${relay.human.length} waiting on you · ${relay.agent.length} with agent · ${relay.outcomes.length} outcomes`
+    `${relay.human.length} waiting on you · ${relay.agent.length} with agent · ${outcomes} outcomes`
   box.hidden = false
 }
 
@@ -2122,7 +3226,7 @@ function missionDetailPanel() {
 }
 
 function captureMissionFocus() {
-  const active = document.activeElement
+  const active = activeFocusElement()
   if (!missionBoardId || !active?.closest?.('#missionbox')) return null
   const detail = active.closest('.mission-detail-panel')
   const surface = detail ? 'detail' : 'flow'
@@ -2232,6 +3336,17 @@ function openMissionDetail(row) {
   missionDetailPanel()?.focus({ preventScroll: true })
 }
 
+// Slice 2 §9.2: a "Waits on"/"Unblocks" button is explicit navigation, so it
+// moves focus to that step and may scroll the flow to reveal it. A poll's
+// restoration never comes here.
+function focusMissionStep(rowId) {
+  const path = document.querySelector(`#missionbox .mission-path[data-row-id="${CSS.escape(rowId)}"]`)
+  const target = path?.querySelector('.mission-node-open')
+  if (!target) return
+  target.focus({ preventScroll: true })
+  revealControl(path.querySelector('.mission-node') ?? target, missionPanel())
+}
+
 function closeMissionDetail({ restoreFocus = true } = {}) {
   const returnFocus = missionDetailReturnFocus
   missionDetailRowId = null
@@ -2252,11 +3367,19 @@ function missionPathEl(path, board) {
     <span class="mission-node-meta">${esc(owner)}</span>
     <strong>${esc(row.label)}</strong>
     ${row.note ? `<div class="mission-node-summary">${renderStructuredText(row.note)}</div>` : ''}
+    ${missionDepsHtml(path, board)}
     ${row.impact ? `<div class="mission-node-impact"><span>Why now</span>${renderStructuredText(row.impact)}</div>` : ''}`
   action.addEventListener('click', (event) => {
     if (event.target instanceof Element && event.target.closest('a, button')) return
     openMissionDetail(row)
   })
+  for (const step of action.querySelectorAll('button[data-mission-step]')) {
+    step.addEventListener('click', (event) => {
+      event.stopPropagation()
+      focusMissionStep(step.dataset.missionStep)
+    })
+  }
+  bindIssueActivity(action)
   const open = btn('Open details', () => openMissionDetail(row))
   open.className = 'mission-node-open'
   action.appendChild(open)
@@ -2284,7 +3407,8 @@ function renderMission({ restoreFocus = true } = {}) {
   const board = [...lastData.boards, ...lastData.archived].find((candidate) => candidate.id === missionBoardId)
   if (!board) { closeMission(); return }
   const box = document.getElementById('missionbox')
-  const mission = buildMission(board)
+  // the frame's issue view, as Plans draws it; nothing here fetches (§9.4)
+  const mission = buildMission(board, { issues: issueView, links: linkIndex })
   box.querySelector('.mission-subtitle').textContent = `${mission.root.project} · ${mission.paths.length} steps`
   box.querySelector('.mission-root-project').textContent = mission.root.project
   box.querySelector('.mission-root-title').textContent = mission.root.title
@@ -2298,6 +3422,16 @@ function renderMission({ restoreFocus = true } = {}) {
     paths.appendChild(empty)
   } else {
     for (const path of mission.paths) paths.appendChild(missionPathEl(path, board))
+  }
+  const outsideKey = `mission-outside:${board.id}`
+  const outside = missionOutsideHtml(mission.outside, board, { key: outsideKey, open: openContexts.has(outsideKey) })
+  if (outside) {
+    const foot = document.createElement('div')
+    foot.className = 'mission-outside-foot'
+    foot.innerHTML = outside
+    // its open state and activity labels, as every Background disclosure's
+    bindContextDisclosures(foot)
+    paths.appendChild(foot)
   }
   box.querySelector('.mission-root-card').onclick = () => {
     closeMission({ restoreFocus: false })
@@ -2353,14 +3487,22 @@ let activeTab = DEFAULT_TAB
 
 // single routing entry point: state + DOM together, so no caller can set one
 // without the other
-function selectTab(id) {
+function selectTab(id, { paint = true } = {}) {
   if (!TAB_IDS.includes(id)) return
+  // Choosing a tab supersedes a deep link still waiting on older history, and
+  // leaving History releases the omitted target it was keeping loaded (#184).
+  historyLookup = null
+  if (id !== 'done') historyTabPinned = false
   activeTab = id
   for (const t of document.querySelectorAll('#tabs .tab')) {
     t.setAttribute('aria-selected', String(t.dataset.tab === id))
     t.tabIndex = t.dataset.tab === id ? 0 : -1 // roving tabindex (spec §13)
   }
   showPanel(id)
+  if (paint) {
+    forceRender()
+    requestHistoryPaint()
+  }
   if (id === 'needsYou') restoreRowSelection(false)
 }
 
@@ -2390,6 +3532,7 @@ function filterData({ g, boards, archived }) {
 }
 
 const PAGE_META = {
+  dashboard: { kicker: 'Monitor', title: 'Live Operations Desk' },
   needsYou: { kicker: 'Inbox', title: 'Your queue' },
   boards: { kicker: 'Workspace', title: 'Plans' },
   notes: { kicker: 'Workspace', title: 'Notes' },
@@ -2401,6 +3544,10 @@ const liveSessionIds = () => new Set((lastData.activity ?? []).map((a) => a.sess
 // projects the human retired (issue #32) — server state, not localStorage, so the
 // Electron dock badge (a different OS process) reads the very same set
 const closedSet = () => new Set(lastData.closed ?? [])
+// An explicitly selected closed project is a deliberate peek, not a suppressed
+// default. Dashboard/history must mirror withoutClosed() and keep that project.
+const dashboardClosedProjects = () => (lastData.closed ?? []).filter((project) => project !== projectFilter)
+const dashboardClosedSet = () => new Set(dashboardClosedProjects())
 const themeName = () => document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light'
 
 // spec §2: color persistence. Every caller that paints a project dot/wash goes
@@ -2441,6 +3588,9 @@ const PANE_KEYS = {
   sidebar: 'agent-inbox-sidebar-width',
   inspector: 'agent-inbox-inspector-width',
 }
+const SIDEBAR_COLLAPSED_KEY = 'agent-inbox-sidebar-collapsed'
+const SIDEBAR_COLLAPSED_WIDTH = 72
+let sidebarCollapsed = localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true'
 const panePreferences = {
   sidebar: savedPaneWidth('sidebar'),
   inspector: savedPaneWidth('inspector'),
@@ -2463,10 +3613,16 @@ function updatePaneHandle(kind, pane) {
 function applyPaneLayout() {
   const panes = resolvePaneLayout(window.innerWidth, panePreferences)
   const root = document.documentElement.style
-  root.setProperty('--sidebar-width', `${panes.sidebar.value}px`)
+  const collapsed = layout === 'wide' && sidebarCollapsed
+  root.setProperty('--sidebar-width', `${collapsed ? SIDEBAR_COLLAPSED_WIDTH : panes.sidebar.value}px`)
   root.setProperty('--inspector-width', `${panes.inspector.value}px`)
   updatePaneHandle('sidebar', panes.sidebar)
   updatePaneHandle('inspector', panes.inspector)
+  const sidebarHandle = document.getElementById('sidebarResize')
+  if (sidebarHandle) {
+    sidebarHandle.tabIndex = collapsed ? -1 : 0
+    sidebarHandle.setAttribute('aria-hidden', String(collapsed))
+  }
   return panes
 }
 
@@ -2482,6 +3638,34 @@ function resetPanePreference(kind) {
   panePreferences[kind] = PANE_DEFAULTS[kind]
   localStorage.removeItem(PANE_KEYS[kind])
   applyPaneLayout()
+}
+
+function applySidebarCollapse({ focus = false } = {}) {
+  const active = layout === 'wide' && sidebarCollapsed
+  if (active && railQuery) {
+    railQuery = ''
+    if (lastData) renderRail()
+  }
+  document.body.classList.toggle('sidebar-collapsed', active)
+  const button = document.getElementById('sidebarCollapse')
+  if (button) {
+    button.setAttribute('aria-expanded', String(!active))
+    button.setAttribute('aria-label', active ? 'Expand sidebar' : 'Collapse sidebar')
+    button.title = active ? 'Expand sidebar' : 'Collapse sidebar'
+    if (focus) button.focus({ preventScroll: true })
+  }
+  applyPaneLayout()
+}
+
+function initSidebarCollapse() {
+  const button = document.getElementById('sidebarCollapse')
+  if (!button) return
+  button.addEventListener('click', () => {
+    sidebarCollapsed = !sidebarCollapsed
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(sidebarCollapsed))
+    applySidebarCollapse({ focus: true })
+  })
+  applySidebarCollapse()
 }
 
 function initPaneResizers() {
@@ -2530,6 +3714,7 @@ function initResponsive() {
     const next = mq.matches ? 'narrow' : 'wide'
     if (next === layout) return
     layout = next
+    applySidebarCollapse()
     if (lastData) forceRender() // the rail's visible labels change, so rebuild it
   }
   mq.addEventListener('change', apply)
@@ -2558,8 +3743,7 @@ function projectNavigationMode() {
 
 function higherPriorityEscapeSurfaceOpen() {
   const liveDrawer = document.getElementById('liveDrawer')
-  const visibleModal = [...document.querySelectorAll('[aria-modal="true"]')]
-    .some((dialog) => !dialog.closest('[hidden]'))
+  const visibleModal = keyboardScope() !== document
   return !!(
     triageDeck
     || missionDetailRowId
@@ -2647,9 +3831,10 @@ function initProjectDisclosure() {
     if (!disclosure.isConnected || document.getElementById('projectDisclosure') !== disclosure) return
     const next = projectNavigationMode()
     if (next === projectMode) return
-    const activeFocusState = projectFocusState(document.activeElement)
+    const active = activeFocusElement()
+    const activeFocusState = projectFocusState(active)
     const focusState = activeFocusState
-      ?? (document.activeElement === document.body ? projectFocusBookmark : null)
+      ?? (active === document.body ? projectFocusBookmark : null)
     projectMode = next
     setProjectDisclosure(false)
     setClosedProjectsOpen(false)
@@ -2756,6 +3941,7 @@ function railRowEl(e, { withFilter, closed = false }) {
     setProjectDisclosure(false, { restoreFocus: layout === 'narrow' })
     resetPaging()
     forceRender()
+    requestHistoryPaint()
   })
   // the keyboard half of close/reopen, since the button itself is out of the tab
   // order. `ev` is the keyboard event; `e` is the rail entry — do not merge them.
@@ -3042,6 +4228,7 @@ function closedProjectEntryEl(entry) {
     tabletDismissedOpenKey = null
     resetPaging()
     forceRender()
+    requestHistoryPaint()
   })
 
   const reopen = document.createElement('button')
@@ -3124,6 +4311,7 @@ function renderRail() {
     boards: lastData.boards,
     archived: lastData.archived,
     activity: lastData.activity ?? [],
+    older: lastData.older?.older ?? [],
   })
   // Reconciled against the FULL list, open AND closed: selecting a closed
   // project IS legal — that is the peek — so this must never read `open`, or the
@@ -3180,7 +4368,7 @@ function renderRail() {
   if (host.dataset.sig === sig) return
   if (tablet) closedFoldOpen = foldOpen
   // rebuilding blows away focus; remember the caret so typing in the filter survives
-  const active = document.activeElement
+  const active = activeFocusElement()
   const focusState = projectFocusState(active)
   const caret = active && active.classList.contains('rail-filter') ? active.selectionStart : null
   host.dataset.sig = sig
@@ -3248,6 +4436,7 @@ function renderRail() {
 // option text goes through textContent, never innerHTML: agent names are agent-authored.
 function renderAgentSelect(agents) {
   const sel = document.getElementById('agentSelect')
+  document.body.classList.toggle('agent-filtered', Boolean(agentFilter))
   const sig = JSON.stringify([agents, agentFilter])
   if (sel.dataset.sig === sig) return
   sel.dataset.sig = sig
@@ -3266,11 +4455,13 @@ function initAgentSelect() {
     agentFilter = e.target.value || null
     resetPaging()
     forceRender()
+    requestHistoryPaint()
   })
 }
 
 // which content panel is visible; the tab strip drives this in Task 8
 function showPanel(id) {
+  const openingSettings = id === 'setup' && document.getElementById('setup').hidden
   for (const p of document.querySelectorAll('main > .panel')) p.hidden = p.id !== id
   for (const t of document.querySelectorAll('#tabs .tab')) t.setAttribute('aria-selected', String(t.dataset.tab === id))
   document.body.classList.toggle('settings-open', id === 'setup')
@@ -3280,6 +4471,13 @@ function showPanel(id) {
   const gear = document.getElementById('gear')
   gear.classList.toggle('active', id === 'setup')
   gear.setAttribute('aria-pressed', String(id === 'setup'))
+  // #197: a terminal install or an update can change what each host runs while
+  // the app is open, so Settings re-reads it whenever it opens; #216: so can
+  // whether this window may run one-click Setup, after a reload
+  if (openingSettings) {
+    refreshAgents()
+    refreshSetupAvailability()
+  }
 }
 
 function settingsOpen() {
@@ -3297,13 +4495,54 @@ function toggleSettings() {
   if (!closeSettings()) showPanel('setup')
 }
 
+function openUpdates() {
+  if (!settingsOpen()) showPanel('setup')
+  const section = document.getElementById('updates-settings')
+  if (!section) return
+  section.scrollIntoView({ block: 'center' })
+  section.focus()
+  window.agentInboxUpdates?.check?.().catch(() => {})
+}
+
 function initGear() {
   document.getElementById('gear').addEventListener('click', toggleSettings)
   window.agentInboxSetup?.onToggleSettings?.(toggleSettings)
+  window.agentInboxUpdates?.onOpenUpdates?.(openUpdates)
 }
 
 // live entries the user has expanded, by session id — survives the poll rebuild
 const openLive = new Set()
+
+// Issue #197 — the /api/version body: the build a restarted session would load,
+// the runtime state and what each host is registered to run, which together
+// decide which advice the hint may give. Read at boot, whenever the drawer opens
+// and after a Setup install, so the advice follows an install made since. It
+// stays null when the viewer cannot say, and then no hint renders.
+let liveVersion = null
+
+function refreshLiveVersion() {
+  return fetch('/api/version')
+    .then((r) => (r.ok ? r.json() : null))
+    .then((body) => { liveVersion = body && typeof body === 'object' ? body : null })
+    .catch(() => {})
+}
+
+// A session's build label for the drawer, and its hint when it runs an older
+// build — or, once its host was matched back to this app, a newer one. Both
+// empty when its version is unknown: never a guess.
+function liveBuildHtml(a) {
+  const build = sessionBuild(a, liveVersion)
+  if (!build) return { label: '', hint: '', older: false, newer: false }
+  const marked = build.older || build.newer
+  const title = marked ? build.hint : `This session runs Agent Inbox ${build.label}`
+  const tone = build.older ? ' older' : build.newer ? ' newer' : ''
+  return {
+    label: `<span class="live-build${tone}" title="${esc(title)}">${esc(build.label)}</span>`,
+    hint: marked ? `<span class="live-build-hint">${esc(build.hint)}</span>` : '',
+    older: build.older,
+    newer: build.newer,
+  }
+}
 
 function paintLiveProjectDot(dot, project, state) {
   const color = pcolor(project)
@@ -3316,33 +4555,38 @@ function renderLive(entries) {
   const host = document.querySelector('#liveDrawer .live-list')
   const active = entries.filter((a) => !a.idle)
   const idle = entries.filter((a) => a.idle)
-  host.innerHTML = entries.length ? '' : '<p class="empty">No sessions.</p>'
+  host.title = 'Connections can be shared by multiple agents. Task reports are not proof an agent is running.'
+  host.innerHTML = entries.length ? '' : '<p class="empty">No agent connections.</p>'
   for (const a of active) {
     const el = document.createElement('details')
     el.className = 'live-entry'
     if (openLive.has(a.session)) el.open = true
     el.addEventListener('toggle', () => { el.open ? openLive.add(a.session) : openLive.delete(a.session) })
     const seen = lastActivityAt(a)
+    const age = a.last_call_at ? `Inbox call ${rel(seen)} ago` : `connected ${rel(seen)} ago`
     const { tone: fresh } = ageChip(Date.now() - Date.parse(seen))
     const stream = a.stream ? ` · ${esc(a.stream)}` : ''
-    const kids = a.children.length ? `<span class="live-kids">▸ ${a.children.length} agent${a.children.length > 1 ? 's' : ''}</span>` : ''
+    const kids = a.children.length ? `<span class="live-kids">▸ ${a.children.length} reported agent${a.children.length > 1 ? 's' : ''}</span>` : ''
+    const build = liveBuildHtml(a)
     el.innerHTML = `
       <summary class="card-summary live-summary">
         <span class="live-dot"></span>
         <span class="live-session-copy">
           <span class="live-session-heading">
-            <span class="live-state-label working">Working</span>
+            <span class="live-state-label working">Reported work</span>
             <span class="live-who">${esc(a.agent)} · ${esc(a.project)}${stream}</span>
+            ${build.label}
           </span>
           <span class="live-doing">${esc(a.doing)}</span>
+          ${build.hint}
         </span>
         ${kids}
-        <span class="live-age ${fresh}" title="started ${rel(a.started_at)} ago">last call ${rel(seen)}</span>
+        <span class="live-age ${fresh}" title="connected ${esc(rel(a.started_at))} ago">${esc(age)}</span>
       </summary>
       ${a.detail ? `<div class="detail live-detail">${renderStructuredText(a.detail)}</div>` : ''}`
     const dot = el.querySelector('.live-dot')
     paintLiveProjectDot(dot, a.project, 'working')
-    dot.title = `${a.project} · working · last call ${rel(seen)} ago`
+    dot.title = `${a.project} · reported work · ${age}`
     if (a.children.length) {
       const table = document.createElement('table')
       table.className = 'board-table live-children'
@@ -3366,7 +4610,12 @@ function renderLive(entries) {
     fold.className = 'idle-fold'
     if (openLive.has('__idle__')) fold.open = true
     fold.addEventListener('toggle', () => { fold.open ? openLive.add('__idle__') : openLive.delete('__idle__') })
-    fold.innerHTML = `<summary>${idle.length} idle session${idle.length > 1 ? 's' : ''}</summary>`
+    // #197: the fold is collapsed by default, so it says when a session inside
+    // runs an older build — the idle ones are exactly the long-lived sessions.
+    const builds = new Map(idle.map((a) => [a, liveBuildHtml(a)]))
+    const older = [...builds.values()].filter((b) => b.older).length
+    const newer = [...builds.values()].filter((b) => b.newer).length
+    fold.innerHTML = `<summary>${idle.length} connection${idle.length > 1 ? 's' : ''} · no task reported${older ? ` · ${older} on an older build` : ''}${newer ? ` · ${newer} on a newer build` : ''}</summary>`
     for (const a of idle) {
       const row = document.createElement('div')
       // #45: hours-quiet sessions keep their row (they ARE present, and their
@@ -3378,20 +4627,23 @@ function renderLive(entries) {
       const seen = lastActivityAt(a)
       const { tone: fresh } = ageChip(Date.now() - Date.parse(seen))
       const synopsis = activitySynopsis(a)
-      const age = dormant ? `quiet ${rel(seen)}` : `last call ${rel(seen)}`
+      const age = a.last_call_at ? `Inbox call ${rel(seen)} ago` : `connected ${rel(seen)} ago`
+      const build = builds.get(a)
       row.innerHTML = `
         <span class="live-dot"></span>
         <span class="live-session-copy">
           <span class="live-session-heading">
-            <span class="live-state-label idle">Idle</span>
+            <span class="live-state-label idle">Connected</span>
             <span class="live-who">${esc(a.agent)} · ${esc(a.project)}${stream}</span>
+            ${build.label}
           </span>
-          <span class="live-doing ${synopsis.historical ? 'historical' : 'empty-summary'}">${synopsis.historical ? 'Last activity: ' : ''}${esc(synopsis.text)}</span>
+          <span class="live-doing ${synopsis.historical ? 'historical' : 'empty-summary'}">${synopsis.historical ? 'Last report: ' : ''}${esc(synopsis.text)}</span>
+          ${build.hint}
         </span>
-        <span class="live-age ${fresh}" title="last call ${rel(seen)} ago">${age}</span>`
+        <span class="live-age ${fresh}" title="${esc(age)}">${esc(age)}</span>`
       const dot = row.querySelector('.live-dot')
       paintLiveProjectDot(dot, a.project, 'idle-session')
-      dot.title = `${a.project} · idle · last call ${rel(seen)} ago`
+      dot.title = `${a.project} · connected · ${age}`
       fold.appendChild(row)
     }
     host.appendChild(fold)
@@ -3415,10 +4667,11 @@ function renderLiveBar(entries) {
     dot.style.removeProperty('--project-wash')
   }
   dot.title = s.count
-    ? `${s.count} working across ${projects.length} project${projects.length === 1 ? '' : 's'}`
-    : `${s.idleCount} idle session${s.idleCount === 1 ? '' : 's'}`
+    ? `${s.count} of ${entries.length} connections reporting work across ${projects.length} project${projects.length === 1 ? '' : 's'}`
+    : s.label
   label.textContent = s.label
   list.replaceChildren()
+  const rowsBySession = new Map(entries.filter(Boolean).map((a) => [a.session, a]))
   for (const x of s.sessions) {
     const el = document.createElement('span')
     el.className = `live-session ${x.tone}`
@@ -3428,6 +4681,17 @@ function renderLiveBar(entries) {
     const text = document.createElement('span')
     text.textContent = x.label
     el.append(projectDot, text)
+    // #197: the strip stays compact — nothing extra on the current build, and
+    // only a marker on an older one (or a newer one its host was matched back
+    // from); its title carries the drawer's full hint
+    const build = sessionBuild(rowsBySession.get(x.session), liveVersion)
+    if (build?.older || build?.newer) {
+      const marker = document.createElement('span')
+      marker.className = 'live-build-marker'
+      marker.textContent = build.older ? 'older build' : 'newer build'
+      el.appendChild(marker)
+      el.title = build.hint
+    }
     list.appendChild(el)
   }
 }
@@ -3453,6 +4717,9 @@ function toggleLiveDrawer(open, { restoreFocus = false } = {}) {
   const next = open ?? drawer.hidden
   drawer.hidden = !next
   strip.setAttribute('aria-expanded', String(next))
+  // #197: re-read the build state, so advice shown after a Setup install is
+  // current by the next paint
+  if (next) refreshLiveVersion()
   if (!next) {
     setLivePinned(false)
     if (restoreFocus) strip.focus()
@@ -3482,6 +4749,9 @@ function initLiveBar() {
       toggleLiveDrawer(false, { restoreFocus: true })
     }
   })
+  // #197: read outside the poll; the next paint shows the hints. A failed or
+  // older viewer leaves the build state unknown, which hides every hint.
+  refreshLiveVersion()
 }
 
 // dismissing noise must not cost an expansion: staged 5s, undoable, flushed on blur
@@ -3520,7 +4790,7 @@ const starStage = createStagedSend({
     stagedStars.delete(id)
     invalidateItemDraftIntents(id)
     itemLatestIntents[id] = intent
-    sendReply(id, label, context, 'answer', generation, intent, false)
+    sendReply(id, label, context, 'answer', generation, intent)
   },
 })
 
@@ -3535,7 +4805,7 @@ function initStagedFlush() {
 // that opens itself. With the old #now strip gone this is the deck's only door.
 let actionFilter = 'all'
 let changedOnly = false
-let askSort = 'priority'
+let askSort = savedAskSort()
 let needsYouHeaderNode = null
 
 function entryEntity(entry) {
@@ -3560,6 +4830,15 @@ function syncNeedsYouHeader(bar) {
   changed.disabled = !lastVisitAt
   const sort = bar.querySelector('.queue-sort select')
   if (sort.value !== askSort) sort.value = askSort
+}
+
+function appendSortOptions(select) {
+  for (const option of ASK_SORT_OPTIONS) {
+    const el = document.createElement('option')
+    el.value = option.value
+    el.textContent = option.label
+    select.appendChild(el)
+  }
 }
 
 function needsYouHeader() {
@@ -3595,12 +4874,7 @@ function needsYouHeader() {
   sortText.textContent = 'Sort'
   const sort = document.createElement('select')
   sort.setAttribute('aria-label', 'Sort queue')
-  for (const option of ASK_SORT_OPTIONS) {
-    const el = document.createElement('option')
-    el.value = option.value
-    el.textContent = option.label
-    sort.appendChild(el)
-  }
+  appendSortOptions(sort)
   sort.value = askSort
   sort.addEventListener('change', () => {
     askSort = sort.value
@@ -3612,7 +4886,7 @@ function needsYouHeader() {
   const relay = btn('Handoffs', openRelay)
   relay.className = 'relay-btn'
   tools.appendChild(relay)
-  const tri = btn('Review queue', openTriage)
+  const tri = btn('Review queue', openTriage, 'review')
   tri.className = 'triage-btn'
   tools.appendChild(tri)
   bar.append(filters, tools)
@@ -3679,11 +4953,16 @@ function renderNeedsYouExtras(host, notes) {
   host.appendChild(chip)
 }
 
-// the calm state: no red, no call to action, ambient counts as discrete chips
-function renderEmptyState(host) {
+// the calm state: no red, no call to action, ambient counts as discrete chips.
+// With the Later section on (#247) it names what waits there, so nothing is out
+// of view without a number on screen.
+function renderEmptyState(host, laterCount = 0) {
   const panel = document.createElement('div')
   panel.className = 'calm-panel'
-  panel.innerHTML = '<div class="calm-head">Your queue is clear</div>'
+  const head = document.createElement('div')
+  head.className = 'calm-head'
+  head.textContent = laterCount ? `Nothing needs you now · ${laterCount} in Later` : 'Your queue is clear'
+  panel.appendChild(head)
   // the unread-note count already has its own actionable footer button
   // (renderNeedsYouExtras' .notes-chip) — an inert duplicate here is one
   // number shown twice for the same fact.
@@ -3715,16 +4994,21 @@ function renderEmptyState(host) {
 function renderNeedsYou(g, boardsInView, nowMs) {
   const host = document.getElementById('needsYouList')
   const protectedIds = protectedNeedsYouIds()
+  const scrollOwnerId = openRowId
   const openQueueRow = openRowId ? needsYouRowEl(openRowId) : null
   const openCard = openQueueRow?.querySelector('.nrow-card') ?? null
   const openRowViewportTop = openQueueRow?.getBoundingClientRect().top ?? null
   const cardFocus = openCard ? captureCardFocus(openCard, openRowId) : null
   const askedTimeFocusId = focusedAskedTimeId()
-  if (openCard) openRowScrollTop = openCard.scrollTop
+  if (openCard) {
+    openRowScrollTop = cardScrollHost(openCard).scrollTop
+    openRowHeadScrollTop = openCard.querySelector('.nrow-card-head')?.scrollTop ?? 0
+    openRowComposeScrollTop = openCard.querySelector('.nrow-card-compose')?.scrollTop ?? 0
+  }
   // §13: this rebuilds every row from scratch (poll tick or user action) — capture
   // this BEFORE the list gets cleared below, since clearing a focused element's
   // subtree shifts document.activeElement immediately (to <body>, typically).
-  const hadListFocus = !!document.activeElement?.closest?.('#needsYouList .nrow[data-card-id]')
+  const hadListFocus = !!activeFocusElement()?.closest?.('#needsYouList .nrow[data-card-id]')
   const items = g.needsYou.flatMap((gr) => gr.items)
   const live = liveSessionIds()
   // §7: the LIST is scoped by the rail + search (boardsInView); the tab count is
@@ -3738,9 +5022,9 @@ function renderNeedsYou(g, boardsInView, nowMs) {
   // land in sortNeedsYou's bucket 3 — the same dimmed foot, one ordering rule.
   const replied = repliedEntries(items, nowMs, live)
   const awaiting = awaitingAgentRows(boardsInView, closedSet())
-  const snoozed = sortDeferredEntries(
-    filterActionEntries(snoozedEntries(items, boardsInView, nowMs, closedSet())),
-  )
+  // #247: deferred asks, in the Later section or, with it off, one fold per
+  // reason (snoozed, then pinned). Either way they follow the current lens.
+  const later = filterActionEntries(laterEntries(items, boardsInView, nowMs, closedSet()))
   const unordered = filterActionEntries(needsYouEntries(items, boardsInView, nowMs, live, [...replied, ...awaiting]))
   // §10: pin existing order BEFORE paginating. New arrivals append at the foot,
   // so they appear live without moving the row the human is reading.
@@ -3763,24 +5047,52 @@ function renderNeedsYou(g, boardsInView, nowMs) {
   replaceNeedsYouBody(host, header)
   if (!entries.length) {
     // A demoted stale item is, by definition, not something that needs you.
-    renderEmptyState(host)
+    renderEmptyState(host, laterSection ? later.length : 0)
   }
   for (const e of visible) host.appendChild(needsRowEl(rowModel(e, opts), e, nowMs))
   if (remaining > 0) host.appendChild(moreButton('needsYou', remaining))
-  if (snoozed.length) host.appendChild(snoozedFoldEl(snoozed, opts, nowMs))
+  // #247: the fold (Later, snoozed, pinned or stale) that holds the open card
+  // always renders open, whatever moved its ask there (a deferral, the Later
+  // setting, another client, a native notification or the clock), so an open
+  // card and its draft are never inside a closed fold. The human closing that
+  // fold closes the card (closeCardIn).
+  const holdsOpenCard = (entries) => Boolean(openRowId) && entries.some((entry) => needsEntryId(entry) === openRowId)
+  if (laterSection) {
+    if (holdsOpenCard(later)) openDeferredFolds.add('later')
+    if (later.length) host.appendChild(laterSectionEl(sortLaterEntries(later), opts, nowMs))
+  } else {
+    for (const reason of DEFERRED_FOLDS) {
+      const deferred = sortDeferredEntries(later.filter((entry) => entry.later === reason))
+      if (holdsOpenCard(deferred)) openDeferredFolds.add(reason)
+      if (deferred.length) host.appendChild(deferredFoldEl(reason, deferred, opts, nowMs))
+    }
+  }
+  if (holdsOpenCard(stale)) staleFoldOpen = true
   if (stale.length) host.appendChild(staleFoldEl(stale, opts, nowMs))
   renderOrphanedDrafts(host)
   // fix round 2 (I3): the foot chip is fed the SAME scoped notes the Notes tab
   // count is computed from (render()'s `g.notes`). It used to read the GLOBAL
   // lastData.g.notes, so the chip and the badge disagreed under any rail filter.
   renderNeedsYouExtras(host, g.notes.flatMap((gr) => gr.items))
-  const restoredRow = openRowId ? needsYouRowEl(openRowId) : null
-  const restoredCard = restoredRow?.querySelector('.nrow-card') ?? null
-  if (restoredCard && openRowScrollTop > 0) restoredCard.scrollTop = openRowScrollTop
-  if (restoredRow && openRowViewportTop !== null) {
-    const viewportDelta = restoredRow.getBoundingClientRect().top - openRowViewportTop
-    if (Number.isFinite(viewportDelta) && Math.abs(viewportDelta) > 0.5) {
-      window.scrollBy(0, viewportDelta)
+  // Badges and editor sizing change the footer's scroll range. Restore against
+  // their final geometry, otherwise the browser clamps a valid saved offset early.
+  const restoreQueueView = () => {
+    if (openRowId !== scrollOwnerId) return
+    const restoredRow = openRowId ? needsYouRowEl(openRowId) : null
+    const restoredCard = restoredRow?.querySelector('.nrow-card') ?? null
+    if (restoredCard) {
+      for (const editor of restoredCard.querySelectorAll('textarea.reply-input')) resizeReplyEditor(editor)
+      cardScrollHost(restoredCard).scrollTop = openRowScrollTop
+      const head = restoredCard.querySelector('.nrow-card-head')
+      const compose = restoredCard.querySelector('.nrow-card-compose')
+      if (head) head.scrollTop = openRowHeadScrollTop
+      if (compose) compose.scrollTop = openRowComposeScrollTop
+    }
+    if (restoredRow && openRowViewportTop !== null) {
+      const viewportDelta = restoredRow.getBoundingClientRect().top - openRowViewportTop
+      if (Number.isFinite(viewportDelta) && Math.abs(viewportDelta) > 0.5) {
+        window.scrollBy(0, viewportDelta)
+      }
     }
   }
   const restoredCardFocus = restoreCardFocus(cardFocus)
@@ -3791,6 +5103,7 @@ function renderNeedsYou(g, boardsInView, nowMs) {
   // row focus only when focus was already inside the list and the open card did
   // not restore its own control; a poll must never yank focus from elsewhere.
   restoreRowSelection(hadListFocus && !restoredCardFocus && !restoredAskedTimeFocus)
+  return restoreQueueView
 }
 
 function renderOrphanedDrafts(host) {
@@ -3828,6 +5141,21 @@ function renderOrphanedDrafts(host) {
           draft.context ? `context: ${draft.context}` : '',
         ].filter(Boolean).join(' · '),
       })),
+    ...Object.entries(itemNoteDrafts)
+      .filter(([, draft]) => !draft.pending || draft.error)
+      .map(([id, draft]) => ({
+        id: `note:${id}`,
+        draft,
+        retry: freshItem(id)?.status === 'open' ? () => editItemNote({ id, title: draft.title }) : null,
+        clear: () => {
+          if (itemNoteDrafts[id] !== draft || draft.pending) return false
+          delete itemNoteDrafts[id]
+          return true
+        },
+        text: `${draft.title} · ${draft.pending ? 'Saving note…' : draft.error}\n${draft.text === '' ? 'Clear note' : `Note: ${draft.text}`}`,
+        textClass: 'annotation',
+        pending: draft.pending,
+      })),
   ]
   if (!entries.length) return
   const fold = document.createElement('details')
@@ -3840,10 +5168,16 @@ function renderOrphanedDrafts(host) {
   for (const entry of entries) {
     const line = document.createElement('div')
     line.className = 'stale-draft-line'
-    line.textContent = entry.text
+    if (entry.textClass) {
+      const text = document.createElement('span')
+      text.className = entry.textClass
+      text.textContent = entry.text
+      line.appendChild(text)
+    } else line.textContent = entry.text
     if (entry.retry) {
       const retry = btn('Retry', entry.retry)
       retry.className = 'undo-btn'
+      retry.disabled = Boolean(entry.pending)
       line.appendChild(retry)
     }
     const clear = btn('Clear', () => {
@@ -3858,6 +5192,7 @@ function renderOrphanedDrafts(host) {
       renderIfIdle()
     })
     clear.className = 'undo-btn'
+    clear.disabled = Boolean(entry.pending)
     line.appendChild(clear)
     fold.appendChild(line)
   }
@@ -3868,32 +5203,87 @@ function renderOrphanedDrafts(host) {
 // same precedent as openLive/openContexts: without this the fold silently
 // re-collapses under the user mid-read
 let staleFoldOpen = false
-let snoozedFoldOpen = false
+// The deferred folds under Needs you (#247), in render order, keyed by the
+// reason laterEntries tags each entry with, and the ones that are open: opened
+// by the human, a deep link, or because they hold the open card. The Later
+// section, which replaces them while its setting is on, is the key 'later'.
+const DEFERRED_FOLDS = ['snoozed', 'pinned']
+const openDeferredFolds = new Set()
 
 function revealDetailsAncestors(target) {
   for (let node = target; node; node = node.parentElement) {
     if (node.tagName !== 'DETAILS') continue
     node.open = true
+    if (node.dataset.contextKey) openContexts.add(node.dataset.contextKey)
     if (node.dataset.cardId) setCardCollapsed(node.dataset.cardId, false)
-    if (node.classList.contains('snoozed-fold')) snoozedFoldOpen = true
+    if (node.dataset.deferredFold) openDeferredFolds.add(node.dataset.deferredFold)
     else if (node.classList.contains('stale-fold')) staleFoldOpen = true
     if (node.classList.contains('archived-fold')) showArchived = true
   }
 }
 
-function snoozedFoldEl(entries, opts, nowMs) {
+// A fold under the queue renders open while it holds the open card, so the
+// human closing one closes that card too; otherwise the next frame would open
+// the fold again under them. A draft in it is kept, as when any card is closed.
+function closeCardIn(fold) {
+  const row = openRowId ? needsYouRowEl(openRowId) : null
+  if (!row || !fold.contains(row)) return
+  setOpenRow(null, { resume: false })
+  row.removeAttribute('data-open')
+  row.setAttribute('aria-expanded', 'false')
+  row.querySelector('.nrow-card')?.remove()
+}
+
+// Asks the human set aside: out of every count, but one click away, each with
+// its own way back (Wake now, Back to inbox) on the row.
+function deferredFoldEl(reason, entries, opts, nowMs) {
   const fold = document.createElement('details')
-  fold.className = 'stale-fold snoozed-fold'
-  if (snoozedFoldOpen) fold.open = true
+  fold.className = `stale-fold ${reason}-fold`
+  fold.dataset.deferredFold = reason
+  if (openDeferredFolds.has(reason)) fold.open = true
   fold.addEventListener('toggle', () => {
-    snoozedFoldOpen = fold.open
+    if (fold.open) openDeferredFolds.add(reason)
+    else {
+      openDeferredFolds.delete(reason)
+      closeCardIn(fold)
+    }
     restoreRowSelection(false)
   })
   const summary = document.createElement('summary')
-  summary.textContent = `snoozed (${entries.length})`
+  summary.textContent = `${reason} (${entries.length})`
   fold.appendChild(summary)
   for (const entry of entries) fold.appendChild(needsRowEl(rowModel(entry, opts), entry, nowMs))
   return fold
+}
+
+// Issue #247 §2.2: every pinned and snoozed ask in one section at the foot of
+// the queue, collapsed by default, with one count for the current lens and the
+// reason each ask waits. Its rows are ordinary queue rows, so their cards,
+// drafts, row-scoped writes and deep links work here unchanged.
+function laterSectionEl(entries, opts, nowMs) {
+  const section = document.createElement('details')
+  section.className = 'later-section'
+  section.dataset.deferredFold = 'later'
+  if (openDeferredFolds.has('later')) section.open = true
+  section.addEventListener('toggle', () => {
+    if (section.open) openDeferredFolds.add('later')
+    else {
+      openDeferredFolds.delete('later')
+      closeCardIn(section)
+    }
+    restoreRowSelection(false)
+  })
+  const summary = document.createElement('summary')
+  const title = document.createElement('span')
+  title.className = 'later-title'
+  title.textContent = `Later · ${entries.length}`
+  const breakdown = document.createElement('span')
+  breakdown.className = 'later-breakdown'
+  breakdown.textContent = laterBreakdown(entries, nowMs)
+  summary.append(title, ' ', breakdown)
+  section.appendChild(summary)
+  for (const entry of entries) section.appendChild(needsRowEl(rowModel(entry, opts), entry, nowMs))
+  return section
 }
 
 // nobody is listening and it is older than STALE_MS: out of the active list and
@@ -3904,6 +5294,7 @@ function staleFoldEl(entries, opts, nowMs) {
   if (staleFoldOpen) fold.open = true
   fold.addEventListener('toggle', () => {
     staleFoldOpen = fold.open
+    if (!fold.open) closeCardIn(fold)
     restoreRowSelection(false)
   })
   const summary = document.createElement('summary')
@@ -3915,20 +5306,30 @@ function staleFoldEl(entries, opts, nowMs) {
 
 function needsRowEl(m, entry, nowMs) {
   const el = document.createElement('div')
+  const sourceIdentity = entry.kind === 'row' ? entry.board : entry.item
+  const sourceAction = entry.kind === 'row' ? entry.row : entry.item
   el.className = `nrow nrow-${m.kind}${m.answered ? ' answered' : ''}${stagedDismiss.has(m.id) ? ' staged' : ''}`
   el.dataset.cardId = m.id
+  setHintOwner(el, entry.kind === 'row' ? entry.row : entry.item, entry.kind === 'row' ? entry.board : null)
+  el.setAttribute('role', 'listitem')
+  el.setAttribute('aria-current', 'false')
+  el.setAttribute('aria-expanded', String(openRowId === m.id))
   el.tabIndex = -1
   const chip = urgencyChip(m, nowMs)
+  el.setAttribute('aria-label', `${m.title}. ${m.ownerLabel}. ${chip.text}.`)
   const color = pcolor(m.project)
   const glyph = m.kind === 'row' ? `<button class="nrow-glyph" title="Open plan: ${esc(m.boardTitle ?? '')}">Plan</button>` : ''
   // Items only. Board rows deliberately have no line-level ✕: their expanded
   // card owns the truthful dispositions (snooze, clarify, decline, or do/answer).
   // The old ✕ advertised the x key and did nothing.
   const dismissBit = m.kind === 'item' ? '<button class="nrow-dismiss" title="Dismiss (x)" aria-label="Dismiss">✕</button>' : ''
-  const wakeBit = m.snoozedUntil ? '<button class="nrow-wake" title="Return to Needs you now">Wake now</button>' : ''
+  // The Later section calls both ways back "Back to inbox"; the separate
+  // snoozed fold keeps its Wake now.
+  const wakeBit = m.later
+    ? `<button class="nrow-wake" title="Return to Needs you now">${m.later === 'pinned' || laterSection ? 'Back to inbox' : 'Wake now'}</button>`
+    : ''
   const projBit = m.projectLabel ? `<span class="nrow-proj" title="${esc(m.project)}">${esc(m.projectLabel)}</span>` : ''
   const agentBit = m.agent ? `<span class="nrow-agent">${esc(m.agent)}</span>` : ''
-  const streamBit = m.stream ? `<span class="nrow-stream">${esc(m.stream)}</span>` : ''
   const ownerBit = `<span class="nrow-owner owner-${esc(m.actionCategory)}">${esc(m.ownerLabel)}</span>`
   const changeBit = m.changeKind ? `<span class="nrow-change">${esc(m.changeKind)}</span>` : ''
   const asked = askTimeModel(m.askedAt, nowMs)
@@ -3939,22 +5340,22 @@ function needsRowEl(m, entry, nowMs) {
   // chip, no stream — otherwise it leaves a padded empty line under the row.
   // Still built (with staged-dismiss's own content) when a dismiss is staged,
   // since the ✕ handler below replaces this div's children in place.
-  const showL2 = m.secondary || agentBit || streamBit || stagedDismiss.has(m.id)
-  const l2 = showL2 ? `<div class="nrow-l2"><span class="nrow-sec">${esc(m.secondary)}</span>${agentBit}${streamBit}</div>` : ''
+  const showL2 = m.secondary || agentBit || stagedDismiss.has(m.id)
+  const l2 = showL2 ? `<div class="nrow-l2"><span class="nrow-sec">${esc(m.secondary)}</span>${agentBit}</div>` : ''
   el.innerHTML = `
     <div class="nrow-l1">
       <div class="nrow-primary">
         <span class="pdot" style="background:${color.dot}" title="${esc(m.project)}"></span>
         ${projBit}
         ${glyph}
-        <span class="nrow-title" title="${esc(m.title)}">${esc(m.title)}</span>
+        <span class="nrow-title" title="${esc(m.originalTitle)}">${esc(m.title)}</span>
       </div>
       <div class="nrow-meta">
         ${ownerBit}
         ${changeBit}
         ${askedBit}
         <span class="chip chip-${chip.tone}"><span aria-hidden="true">${livenessGlyph(m.liveness).glyph}</span> ${esc(chip.text)}</span>
-        <span class="nrow-src">${sourceChipsHtml(linkIndex, entry.kind === 'row' ? entry.board : entry.item, nowMs)}</span>
+        <span class="nrow-src">${sourceChipsHtml(linkIndex, sourceIdentity, nowMs, sourceOptions(sourceAction, sourceIdentity))}</span>
         <span class="nrow-star"></span>
         ${wakeBit}
         ${dismissBit}
@@ -3985,6 +5386,7 @@ function needsRowEl(m, entry, nowMs) {
     })
   }
   const dismissBtn = el.querySelector('.nrow-dismiss')
+  if (dismissBtn) dismissBtn.dataset.shortcutId = 'dismiss'
   if (dismissBtn) dismissBtn.addEventListener('click', (ev) => {
     ev.stopPropagation()
     stageDismiss(m.id)
@@ -3992,16 +5394,18 @@ function needsRowEl(m, entry, nowMs) {
   const wakeBtn = el.querySelector('.nrow-wake')
   if (wakeBtn) wakeBtn.addEventListener('click', async (ev) => {
     ev.stopPropagation()
+    // A pinned ask comes back by clearing the pin, a snoozed one by waking it.
+    const [route, body] = m.later === 'pinned' ? ['later', { pinned: false }] : ['snooze', { until: null }]
     const url = entry.kind === 'row'
-      ? `/api/boards/${entry.board.id}/rows/${entry.row.id}/snooze`
-      : `/api/items/${entry.item.id}/snooze`
+      ? `/api/boards/${entry.board.id}/rows/${entry.row.id}/${route}`
+      : `/api/items/${entry.item.id}/${route}`
     const res = await postJSON(url, entry.kind === 'row'
       ? {
-          until: null,
+          ...body,
           expected_revision: entry.row.revision,
           expected_board_version: entry.board.revision,
         }
-      : { until: null })
+      : body)
     if (res === null) return
     if (!res.ok) { await reloadAndPaint(); return }
     await reloadAndPaint()
@@ -4071,6 +5475,7 @@ function needsRowEl(m, entry, nowMs) {
   // a full render (poll or user action) rebuilds the open row from openRowId
   if (openRowId === m.id) {
     el.dataset.open = '1'
+    el.setAttribute('aria-expanded', 'true')
     el.appendChild(rowCardBodyEl(entry, m, nowMs))
   }
   return el
@@ -4082,21 +5487,60 @@ function rowCardBodyEl(entry, m, nowMs) {
   body.className = 'nrow-card'
   body.tabIndex = -1
   body.addEventListener('click', (ev) => ev.stopPropagation()) // clicks in the card must not collapse it
-  const trackScroll = () => noteInspectorScroll(m.id, body)
-  body.addEventListener('wheel', trackScroll, { passive: true })
-  body.addEventListener('scroll', trackScroll, { passive: true })
+  const head = document.createElement('div')
+  head.className = 'nrow-card-head'
+  const heading = document.createElement('div')
+  const title = document.createElement('div')
+  title.className = `card-title${m.headlineField === 'next-step' ? ' card-next-body' : ''}`
+  title.setAttribute('role', 'heading')
+  title.setAttribute('aria-level', '2')
+  title.innerHTML = renderStructuredText(m.title)
+  const meta = document.createElement('span')
+  meta.textContent = [m.project, m.agent].filter(Boolean).join(' · ')
+  heading.append(title, meta)
+  const close = document.createElement('button')
+  close.type = 'button'
+  close.className = 'nrow-card-close'
+  close.setAttribute('aria-label', 'Close action')
+  close.title = 'Close action (Esc)'
+  close.textContent = '×'
+  close.addEventListener('click', (ev) => {
+    ev.stopPropagation()
+    collapseRow(m.id)
+  })
+  head.append(heading, close)
+
+  const scroll = document.createElement('div')
+  scroll.className = 'nrow-card-scroll'
   // `entry` is a render-time closure and the §10 gate can hold a render for
   // minutes, so the snapshot inside it goes stale (issue #31.1, layer 2: a row
   // reopened after a Change answer would otherwise re-mount the OLD reply and
   // hide the answer surface again). Same freshItem() precedent as the star's
   // Undo fallback. Resolved in place: `entry.item` is undefined for board rows.
-  body.appendChild(entry.kind === 'row'
-    ? rowCardEl(entry.board, entry.row, undefined, { includeAsked: false })
+  const card = entry.kind === 'row'
+    ? rowCardEl(entry.board, entry.row, undefined, { includeAsked: false, header: false })
     : itemCardEl(freshItem(entry.item.id) ?? entry.item, {
         nowMs,
         liveness: m.liveness,
         includeAsked: false,
-      }))
+        header: false,
+      })
+  const answer = card.querySelector(':scope > .row-answer, :scope > .options')
+  const actions = card.querySelector(':scope > .actions')
+  scroll.appendChild(card)
+  body.append(head, scroll)
+  if (answer || actions) {
+    const compose = document.createElement('div')
+    compose.className = 'nrow-card-compose'
+    if (answer) compose.appendChild(answer)
+    if (actions) compose.appendChild(actions)
+    body.appendChild(compose)
+  }
+  for (const host of body.children) {
+    const trackScroll = () => noteInspectorScroll(m.id, host)
+    host.addEventListener('wheel', trackScroll, { passive: true })
+    host.addEventListener('scroll', trackScroll, { passive: true })
+  }
   return body
 }
 
@@ -4129,11 +5573,13 @@ function activateRow(el, m, entry, nowMs) {
   setOpenRow(m.id, { resume: false })
   for (const other of document.querySelectorAll('.nrow[data-open="1"]')) {
     other.removeAttribute('data-open')
+    other.setAttribute('aria-expanded', 'false')
     const card = other.querySelector('.nrow-card')
     if (card) card.remove()
   }
   const liveEl = needsYouRowEl(m.id) ?? el
   liveEl.dataset.open = '1'
+  liveEl.setAttribute('aria-expanded', 'true')
   liveEl.appendChild(rowCardBodyEl(entry, m, nowMs))
   resumeRender()
   requestAnimationFrame(() => {
@@ -4154,6 +5600,7 @@ function collapseRow(id) {
   setOpenRow(null)
   const el = needsYouRowEl(id)
   el?.removeAttribute('data-open')
+  el?.setAttribute('aria-expanded', 'false')
   el?.querySelector('.nrow-card')?.remove()
   renderIfIdle()
   requestAnimationFrame(() => selectRow(id))
@@ -4171,19 +5618,85 @@ function renderGroups(sectionId, groups) {
   // is the GLOBAL note list minus what rendered — a note behind the "Show N
   // more" pager and a note behind the rail's project filter were equally unseen,
   // and there is one watermark covering every scope.
-  if (sectionId === 'notes' && activeTab === 'notes') {
+  if (sectionId === 'notes' && !document.getElementById('notes').hidden) {
     const shownIds = new Set(viewed.map((it) => it.id))
     const all = lastData.g.notes.flatMap((gr) => gr.items)
     markNotesSeen(viewed, all.filter((n) => !shownIds.has(n.id)), all)
   }
 }
 
+const openHistoryItems = new Set()
+
+function historyItemEl(it) {
+  const el = document.createElement('details')
+  el.className = `history-row item ${it.kind}`
+  el.dataset.cardId = it.id
+  liveCardIds.add(it.id)
+  el.open = openHistoryItems.has(it.id) || pendingFocusId === it.id || pagedFocusId === it.id
+  el.addEventListener('toggle', () => {
+    if (el.open) openHistoryItems.add(it.id)
+    else openHistoryItems.delete(it.id)
+  })
+
+  const summary = document.createElement('summary')
+  summary.className = 'history-summary'
+  const color = pcolor(it.project)
+  const dot = document.createElement('span')
+  dot.className = 'history-dot'
+  dot.style.background = color.dot
+  dot.setAttribute('aria-hidden', 'true')
+  const copy = document.createElement('span')
+  copy.className = 'history-copy'
+  const title = document.createElement('strong')
+  title.textContent = it.title
+  const outcome = document.createElement('span')
+  outcome.className = 'history-outcome'
+  outcome.textContent = it.outcome
+    || (it.reply ? `You answered: ${it.reply}` : '')
+    || it.detail
+    || (it.status === 'dismissed' ? 'Dismissed' : 'Completed')
+  copy.append(title, outcome)
+  const meta = document.createElement('span')
+  meta.className = 'history-meta'
+  meta.textContent = `${it.project} · ${it.agent}`
+  const stamp = it.outcome_at ?? it.resolved_at ?? it.updated_at ?? it.created_at
+  const time = document.createElement('time')
+  time.dateTime = stamp
+  time.textContent = rel(stamp)
+  meta.appendChild(time)
+  const arrow = document.createElement('span')
+  arrow.className = 'history-arrow'
+  arrow.setAttribute('aria-hidden', 'true')
+  arrow.textContent = '›'
+  summary.append(dot, copy, meta, arrow)
+  el.append(summary, itemCardEl(it, { done: it.status !== 'open', header: false }))
+  return el
+}
+
 function renderDone(items) {
   const host = document.querySelector('#done .items')
-  const { visible, remaining } = paginateWithPending(items, 'done')
-  host.innerHTML = items.length ? '' : '<p class="empty">Nothing yet.</p>'
-  for (const it of visible) host.appendChild(itemEl(it, it.status !== 'open'))
-  if (remaining > 0) host.appendChild(moreButton('done', remaining))
+  // Issue #184: until the closed history the page omits has been read, only the
+  // leading entries nothing omitted can precede are in their final place.
+  const older = olderHistory(lastData.older, olderLens()).items
+  const known = older ? knownHistory(items, lastData.older.before) : items
+  const { visible } = paginateWithPending(known, 'done')
+  // A focus target the page carries outside that prefix still shows at once,
+  // after the known page, as any target beyond the page cap does.
+  const protectedId = pendingFocusId ?? pagedFocusId
+  const target = known !== items && protectedId && !visible.some((it) => it.id === protectedId)
+    ? items.find((it) => it.id === protectedId)
+    : null
+  const listed = target ? [...visible, target] : visible
+  const total = items.length + older
+  host.innerHTML = total ? '' : '<p class="empty">Nothing yet.</p>'
+  for (const it of listed) host.appendChild(historyItemEl(it))
+  if (older && (historyTabPinned || shown.done > known.length)) {
+    const loading = document.createElement('p')
+    loading.className = 'empty history-loading'
+    loading.setAttribute('role', 'status')
+    loading.textContent = olderHistoryWaitText('Loading older history…')
+    host.appendChild(loading)
+  } else if (total > listed.length) host.appendChild(moreButton('done', total - listed.length))
 }
 
 const GLYPH = { done: '✓', partial: '◐', missing: '×', tracked: '→', na: '—', blocked: '!' }
@@ -4235,13 +5748,25 @@ const sessionActiveBoards = new Set() // board ids seen active at some point thi
 function boardsHeader() {
   const bar = document.createElement('div')
   bar.className = 'tab-header'
-  const t = btn('hide completed rows', () => {
+  const t = btn(hideCompleted ? 'Show completed rows' : 'Hide completed rows', () => {
     hideCompleted = !hideCompleted
     localStorage.setItem(HIDE_DONE_KEY, String(hideCompleted))
     forceRender()
   })
   t.className = `header-toggle${hideCompleted ? ' active' : ''}`
-  bar.appendChild(t)
+  const group = document.createElement('label')
+  group.className = 'header-switch'
+  const input = document.createElement('input')
+  input.type = 'checkbox'
+  input.id = 'group-plans-switch'
+  input.setAttribute('role', 'switch')
+  input.checked = groupByParent
+  input.addEventListener('change', () => {
+    groupByParent = input.checked
+    forceRender()
+  })
+  group.append(input, document.createTextNode('Group by parent issue'))
+  bar.append(group, t)
   return bar
 }
 
@@ -4249,15 +5774,27 @@ function renderBoards(boards, archived) {
   const host = document.querySelector('#boards .boards')
   host.innerHTML = ''
   host.appendChild(boardsHeader())
-  for (const b of boards) sessionActiveBoards.add(b.id)
   // a board that reaches 100% is archived by its agent seconds later; it lingers
   // here as a "completed — archived" card so finished work never blinks out (§9)
   const lingering = lingeringBoards(sessionActiveBoards, boards, archived)
   const lingerIds = new Set(lingering.map((b) => b.id))
   const rest = archived.filter((b) => !lingerIds.has(b.id))
   if (!boards.length && !lingering.length && !rest.length) host.insertAdjacentHTML('beforeend', '<p class="empty">No plans yet.</p>')
-  const { visible, remaining } = paginateWithPending(boards, 'boards')
-  for (const b of visible) host.appendChild(boardEl(b))
+  // Grouping only reorders active plans; lingering and archived ones stay flat (§7.2).
+  const grouping = groupByParent ? planGroups(boards, issueView, linkIndex) : null
+  const { visible, remaining } = paginateWithPending(grouping ? grouping.plans : boards, 'boards')
+  visible.forEach((b, i) => {
+    const group = grouping?.groupOf.get(b.id)
+    const previous = i > 0 ? grouping?.groupOf.get(visible[i - 1].id) : undefined
+    // each "Show more" page that opens inside a group repeats its header
+    const continued = group !== undefined && group === previous && i % PAGE.boards === 0
+    if (group && (group !== previous || continued)) {
+      host.insertAdjacentHTML('beforeend', planGroupHeadHtml(group, Date.now(), { continued }))
+    }
+    const el = boardEl(b)
+    if (group) el.classList.add('in-group')
+    host.appendChild(el)
+  })
   if (remaining > 0) host.appendChild(moreButton('boards', remaining))
   for (const b of lingering) host.appendChild(boardEl(b, true, true))
   if (rest.length) {
@@ -4289,7 +5826,7 @@ function boardEl(b, archived = false, lingering = false) {
         <div class="board-meta">${esc(b.project)}${stream} · ${esc(b.agent)}</div>
       </div>
       <div class="bar"><div class="bar-fill" style="width:${p.secondary}"></div></div>
-      <div class="bar-label"><strong class="prog-primary">${p.primary}</strong> done <span class="prog-secondary">${p.secondary}</span>${p.complete ? '<span class="complete-badge">✓ complete</span>' : ''}${lingering ? '<span class="linger-badge">completed — archived</span>' : ''}${hidden ? `<span class="hidden-hint" title="show this board's completed rows">· ${hidden} done hidden — show</span>` : ''}</div>
+      <div class="bar-label"><strong class="prog-primary">${p.primary}</strong> done <span class="prog-secondary">${p.secondary} weighted</span>${p.complete ? '<span class="complete-badge">✓ complete</span>' : ''}${lingering ? '<span class="linger-badge">completed — archived</span>' : ''}${hidden ? `<span class="hidden-hint" title="show this board's completed rows">· ${hidden} done hidden — show</span>` : ''}</div>
     </summary>`
   cardify(el, b.id)
   const hint = el.querySelector('.hidden-hint')
@@ -4304,25 +5841,50 @@ function boardEl(b, archived = false, lingering = false) {
   // navigate AND collapse the card, writing a spurious collapsedCards entry that
   // outlives the session. preventDefault (the .hidden-hint precedent above) is
   // not reusable here — on an anchor it kills the navigation we want.
-  const srcHtml = sourceChipsHtml(linkIndex, b, Date.now(), { tabbable: true })
+  const srcHtml = sourceChipsHtml(linkIndex, b, Date.now(), { tabbable: true, issues: issueView })
+    + planWaitsChipHtml(b, Date.now(), { tabbable: true, issues: issueView })
   if (srcHtml) {
     const src = document.createElement('div')
     src.className = 'board-source'
     src.innerHTML = srcHtml
     el.appendChild(src)
   }
+  // issue #103 — the pinned issue's parent trail and sub-issues, also outside <summary>
+  const relHtml = issueRelationsHtml(linkIndex, b, Date.now(), { issues: issueView })
+  if (relHtml) {
+    const rel = document.createElement('div')
+    rel.className = 'board-issues'
+    rel.innerHTML = relHtml
+    bindIssueActivity(rel)
+    el.appendChild(rel)
+  }
   const table = document.createElement('table')
   table.className = 'board-table matrix'
-  for (const { row: r, num, needsAnswer } of boardRowsView(b, { hideCompleted, showDone: showDoneBoards.has(b.id) })) {
+  // A fixed-layout table sizes its columns from these, never from its first
+  // row, which may be a full-width "Part of #N" header (#103 slice 2).
+  table.innerHTML = '<colgroup><col class="col-num"><col class="col-glyph"><col class="col-label"><col class="col-4"><col class="col-5"></colgroup>'
+  const shownRows = boardRowsView(b, { hideCompleted, showDone: showDoneBoards.has(b.id) })
+  const runs = groupByParent && !archived ? rowParentRuns(shownRows.map(({ row }) => row), issueView) : null
+  for (const { row: r, num, needsAnswer } of shownRows) {
+    const runParent = runs?.get(r.id)
+    if (runParent) {
+      const head = document.createElement('tr')
+      head.className = 'row-parent-run'
+      head.innerHTML = rowParentHeadHtml(runParent, b)
+      table.appendChild(head)
+    }
     const tr = document.createElement('tr')
     tr.className = `board-row${needsAnswer ? ' needs-answer' : ''}${openRows.has(r.id) ? ' open' : ''}`
     tr.dataset.rowId = r.id
-    // one-line note only; the long context lives behind the row click
+    // one-line note only; the long context lives behind the row click. A row
+    // linked to its own issue (#103) names it first, where a long note cannot hide it.
+    // slice 2 §9.1: what the row waits on, after its issue chip
+    const rowSrc = rowIssueChipsHtml(r, b, Date.now(), { issues: issueView }) + rowWaitsChipHtml(r, b, Date.now(), { issues: issueView })
     tr.innerHTML = `
       <td class="row-num">${num}</td>
       <td class="row-glyph ${r.status}" title="${esc(STATUS_LABEL[r.status] ?? r.status)}">${GLYPH[r.status] || ''}</td>
       <td class="row-label">${esc(r.label)}</td>
-      <td class="row-note"><span class="note-line">${esc(boardRowLine(r))}</span>${r.context ? '<span class="more-dot" title="has background — click the row">…</span>' : ''}${r.annotation ? `<span class="annotation-dot" title="${esc(r.annotation)}">Note${r.annotation_unseen ? '<span class="unseen" title="not yet delivered to an agent">●</span>' : ''}</span>` : ''}${r.handled_at ? `<span class="handled-dot" title="you marked your part done">✓${r.handled_seen_at ? '' : '<span class="unseen" title="not yet delivered to an agent">●</span>'}</span>` : ''}</td>`
+      <td class="row-note">${rowSrc ? `<span class="row-src">${rowSrc}</span>` : ''}<span class="note-line">${esc(boardRowLine(r))}</span>${r.context ? '<span class="more-dot" title="has background — click the row">…</span>' : ''}${r.annotation ? `<span class="annotation-dot" title="${esc(r.annotation)}">Note${r.annotation_unseen ? '<span class="unseen" title="not yet delivered to an agent">●</span>' : ''}</span>` : ''}${r.handled_at ? `<span class="handled-dot" title="you marked your part done">✓${r.handled_seen_at ? '' : '<span class="unseen" title="not yet delivered to an agent">●</span>'}</span>` : ''}</td>`
     const actionTd = document.createElement('td')
     actionTd.className = 'row-action'
     const toggle = () => {
@@ -4339,7 +5901,7 @@ function boardEl(b, archived = false, lingering = false) {
       actionTd.appendChild(a)
     }
     tr.appendChild(actionTd)
-    tr.addEventListener('click', (e) => { if (!e.target.closest('button, input')) toggle() })
+    tr.addEventListener('click', (e) => { if (!e.target.closest('button, input, a')) toggle() })
     table.appendChild(tr)
     if (openRows.has(r.id)) {
       const ptr = document.createElement('tr')
@@ -4395,7 +5957,9 @@ function archiveBtn(board) {
 }
 
 // answer-back UI state that must survive the 3s poll rebuild
-const openCompares = new Set()   // item ids with the compare view expanded
+const closedCompares = new Set() // option details stay visible until the human collapses them
+const closedRowCompares = new Set()
+const openDispositionMenus = new Set() // item/row keys with secondary responses expanded
 const draftReplies = {}          // item id → in-progress free-text answer
 const draftReplyContexts = {}    // item id → optional context attached to the answer
 const itemDraftMeta = {}         // item id → recovery labels if its answer surface disappears
@@ -4405,6 +5969,7 @@ const itemLatestIntents = {}     // item id → latest non-cancelled human inten
 const itemDraftRetryIntents = {} // item id → exact ambiguous intent while its draft generation is unchanged
 const itemDraftSubmissions = {}  // item id → in-flight free-text intents keyed by draft generation
 const staleItemDrafts = {}       // recovery key → refused/orphaned answer preserved outside the poll gate
+const itemNoteDrafts = {}        // item id → pending or unconfirmed native Note attempt
 const ITEM_REPLY_INTENT_SESSION_KEY = 'agent-inbox-reply-intent'
 
 function effectiveReply(it) {
@@ -4636,10 +6201,12 @@ function reusableDraftIntent(id, generation) {
 
 function hasDraftRecovery() {
   return Object.keys(staleItemDrafts).length > 0 || Object.keys(staleRowDrafts).length > 0
+    || Object.values(itemNoteDrafts).some((draft) => !draft.pending)
 }
 
 function requestDraftRecovery(target = draftRecoveryTarget) {
   draftRecoveryFocusPending = true
+  if (target === null) draftRecoveryTarget = null
   if (target) {
     draftRecoveryTarget = target
     projectFilter = target.project
@@ -4653,7 +6220,7 @@ function requestDraftRecovery(target = draftRecoveryTarget) {
   if (triageDeck) closeTriage({ restoreFocus: false })
   if (missionBoardId) closeMission({ restoreFocus: false })
   if (relayOpen) closeRelay()
-  selectTab('needsYou')
+  selectTab('needsYou', { paint: false })
 }
 
 function restoreDraftRecoveryFocus() {
@@ -4733,6 +6300,7 @@ function reconcileDraftOwners() {
       boardTitle: meta?.boardTitle ?? 'Plan',
       label: meta?.label ?? 'Removed row',
       context: meta?.context ?? '',
+      setAside: meta?.setAside === true,
     }
     bumpDraftGeneration(rowDraftGenerations, id)
     delete rowDrafts[id]
@@ -4744,7 +6312,11 @@ function reconcileDraftOwners() {
   return recovered
 }
 
-async function sendReply(
+function sendReply(...args) {
+  return withPendingResponse(() => submitItemReply(...args))
+}
+
+async function submitItemReply(
   id,
   text,
   context = '',
@@ -4975,7 +6547,8 @@ async function sendReply(
 // first), a Compare toggle for the tradeoffs, and a free-text answer
 function answerEl(it) {
   const wrap = document.createElement('div')
-  wrap.className = `options${openCompares.has(it.id) ? ' comparing' : ''}`
+  wrap.className = `options${closedCompares.has(it.id) ? '' : ' comparing'}`
+  setHintOwner(wrap, it)
   let editorGeneration = itemDraftGenerations[it.id] ?? 0
   const opts = optionOrder(it.options)
   for (const o of opts) {
@@ -4999,8 +6572,8 @@ function answerEl(it) {
   const row = document.createElement('div')
   row.className = 'reply-row'
   if (opts.some((o) => o.detail)) {
-    const cmp = btn(openCompares.has(it.id) ? 'Hide compare' : 'Compare', () => {
-      openCompares.has(it.id) ? openCompares.delete(it.id) : openCompares.add(it.id)
+    const cmp = btn(closedCompares.has(it.id) ? 'Compare options' : 'Hide option details', () => {
+      closedCompares.has(it.id) ? closedCompares.delete(it.id) : closedCompares.add(it.id)
       forceRender()
     })
     cmp.className = 'compare-toggle'
@@ -5030,7 +6603,7 @@ function answerEl(it) {
   )
   bindReplyEditor(input, submit)
   row.appendChild(input)
-  row.appendChild(btn('Send', submit))
+  row.appendChild(btn('Send', submit, 'submit'))
   row.appendChild(writeErrorEl(it.id)) // persists a failed write's reason across the poll rebuild (C3)
   wrap.appendChild(row)
   const ctxRow = document.createElement('div')
@@ -5057,13 +6630,74 @@ function answerEl(it) {
     (kind, text) => sendReply(
       it.id, text, effectiveReplyContext(it), kind, editorGeneration,
     ),
-    async (until) => {
-      const res = await postJSON(`/api/items/${it.id}/snooze`, { until })
+    (until) => deferAsk({ kind: 'item', item: it }, `/api/items/${it.id}/snooze`, { until }),
+    `item:${it.id}`,
+    it.reply || it.reply_kind || it.pinned_at || !laterSection ? null : () => deferAsk(
+      { kind: 'item', item: it },
+      `/api/items/${it.id}/later`,
+      { pinned: true },
+      { refusal: 'This question changed before your click; refreshed without applying it.' },
+    ),
+  ))
+  const waitStop = waitStopEl(it, {
+    // A chat-recorded answer reuses this surface as a correction form, but the
+    // agent recorded it itself: nothing is waiting, so nothing can be stopped.
+    answered: Boolean(it.reply || it.reply_kind),
+    pickedUp: Boolean(it.reply_seen_at),
+    key: `wait:item:${it.id}`,
+    onStop: async (until) => {
+      const url = `/api/items/${it.id}/stop-waiting`
+      const refusal = 'This question changed before your click; refreshed without applying it.'
+      if (laterSection) {
+        await deferWaitStop({ kind: 'item', item: it }, url, until, {}, { refusal })
+        return
+      }
+      const res = await postJSON(url, { until })
       if (res === null) return
+      showWriteError(it.id, res.ok ? '' : refusal)
       await reloadAndPaint()
     },
-  ))
+  })
+  if (waitStop) wrap.appendChild(waitStop)
   return wrap
+}
+
+function itemNoteAction(it) {
+  const pending = Boolean(itemNoteDrafts[it.id]?.pending)
+  const action = btn(pending ? 'Saving note…' : 'Note', () => editItemNote(it))
+  action.dataset.noteItem = it.id
+  action.disabled = pending
+  action.title = 'Add or edit feedback for agents; leave it blank to clear.'
+  return action
+}
+
+function editItemNote(it) {
+  if (itemNoteDrafts[it.id]?.pending) return
+  return withPendingResponse(async () => {
+    const prior = itemNoteDrafts[it.id]
+    const current = freshItem(it.id) ?? it
+    const text = prompt('Your note (leave blank to clear):', prior?.text ?? current.annotation ?? '')
+    if (text == null) return
+    const draft = { title: current.title, text, pending: true, error: prior?.error ?? '' }
+    itemNoteDrafts[it.id] = draft
+    for (const button of document.querySelectorAll(`[data-note-item="${CSS.escape(it.id)}"]`)) {
+      button.disabled = true
+      button.textContent = 'Saving note…'
+    }
+    if (draft.error) forceRender()
+    const result = await postJSON(`/api/items/${it.id}/annotate`, { text })
+    if (itemNoteDrafts[it.id] !== draft) return
+    if (result?.ok === true) {
+      delete itemNoteDrafts[it.id]
+    } else {
+      draft.pending = false
+      draft.error = result?.ok === false
+        ? 'Note was not saved — this item is closed or no longer available.'
+        : 'Note save was not confirmed — review the stored note before retrying.'
+      requestDraftRecovery(null)
+    }
+    await reloadAndPaint()
+  })
 }
 
 // THE card (§4): meta → title → detail → labeled CONTEXT → options → answer →
@@ -5077,32 +6711,28 @@ function itemCardEl(it, {
 } = {}) {
   const el = document.createElement('div')
   el.className = `card card-${it.kind}`
+  setHintOwner(el, it)
   const s = cardSections(it, { done })
-  const color = pcolor(it.project)
-  const chip = urgencyChip(
-    { kind: 'item', liveness, created_at: it.created_at, answered: s.answered }, nowMs)
-  const head = header ? `
-    <div class="meta card-meta">
-      <span class="pdot" style="background:${color.dot}"></span>
-      <span>${esc(it.project)}</span> · <span>${esc(it.agent)}</span>${it.stream ? ` · <span>${esc(it.stream)}</span>` : ''}
-      <span class="chip chip-${chip.tone}"><span aria-hidden="true">${livenessGlyph(liveness).glyph}</span> ${esc(chip.text)}</span>
-    </div>
-    <div class="card-title">${esc(it.title)}</div>` : ''
+  const presentation = actionPresentation(it, { done })
   el.innerHTML = `
-    ${head}
-    ${sourceBlockHtml(linkIndex, it, nowMs)}
-    ${actionBlocksHtml(s.detail, s.nextStep, s.actionOwner, s.impact, s.nextAfter, s.context, `item:${it.id}`)}
-    ${s.annotation ? `<div class="annotation"><strong>Note:</strong> ${esc(s.annotation)}</div>` : ''}
+    ${header ? cardHeadingHtml(presentation) : ''}
+    ${cardOriginHtml(it, it, { showProject: header })}
+    ${actionBlocksHtml(presentation)}
+    ${itemAnnotationHtml(s.annotationReceipt)}
     ${s.recWarning ? `<div class="rec-warning">Review: ${esc(s.recWarning)}</div>` : ''}
-    ${s.reply || it.reply_kind ? `<div class="reply-block"><strong>${esc(responseLabel(it) || 'You answered')}:</strong> ${esc(s.reply ?? '')}${it.reply_context ? `<div class="reply-context">Context: ${esc(it.reply_context)}</div>` : ''}${it.reply_source === 'agent' ? '<span class="reply-source">via chat</span>' : ''}${s.showPickup ? `<span class="pickup ${it.reply_seen_at ? 'picked' : 'awaiting'}">${it.reply_seen_at ? 'With the agent' : 'Waiting for the agent'}</span>` : ''}</div>` : ''}
-    ${outcomeHtml(s.outcome)}
-    ${lifecycleHtml(it, { includeAsked })}`
+    ${s.reply || it.reply_kind ? `<div class="reply-block"><strong>${esc(responseLabel(it) || 'You answered')}:</strong> ${esc(s.reply ?? '')}${it.reply_context ? `<div class="reply-context">Context: ${esc(it.reply_context)}</div>` : ''}${it.reply_source === 'agent' ? '<span class="reply-source">via chat</span>' : ''}${s.showPickup ? `<span class="pickup ${it.reply_seen_at ? 'picked' : 'awaiting'}"${it.reply_seen_at ? ' title="Delivery does not confirm the asking agent has resumed."' : ''}>${it.reply_seen_at ? 'Delivered to an agent' : 'Saved · waiting for delivery'}</span>` : ''}</div>` : ''}
+    ${outcomeHtml(s.outcome, it.outcome_at)}
+    ${cardDetailsHtml(it, it, `item:${it.id}`, presentation, { includeAsked })}`
   bindContextDisclosures(el)
   if (s.showAnswer) el.appendChild(answerEl(it))
+  else if (s.answered) {
+    const reminder = waitStopEl(it, { answered: true, pickedUp: Boolean(it.reply_seen_at) })
+    if (reminder) el.appendChild(reminder)
+  }
   if (s.showActions) {
     const actions = document.createElement('div')
     actions.className = 'actions'
-    actions.appendChild(btn('Resolve', () => act(it.id, 'resolve')))
+    actions.appendChild(btn('Resolve', () => act(it.id, 'resolve'), 'resolve'))
     actions.appendChild(btn('Dismiss', () => act(it.id, 'dismiss')))
     if (s.answered && !s.showAnswer) {
       // fix round 1 (hardening): a small inline slot beside the button for the
@@ -5112,16 +6742,7 @@ function itemCardEl(it, {
       actions.appendChild(btn('Change answer', () => changeAnswer(it, msg)))
       actions.appendChild(msg)
     }
-    actions.appendChild(btn('Note', async () => {
-      const text = prompt('Your note:')
-      if (text == null) return
-      const res = await postJSON(`/api/items/${it.id}/annotate`, { text })
-      if (res === null) return // network failure — postJSON already signaled it
-      // #38: this button only exists INSIDE the expanded card, so openRowId is
-      // set by construction — a bare load() here could never paint. Guaranteed
-      // self-silencing, not merely unlucky.
-      await reloadAndPaint()
-    }))
+    actions.appendChild(itemNoteAction(it))
     el.appendChild(actions)
   }
   return el
@@ -5212,7 +6833,7 @@ function markSelectedRow(id) {
   for (const el of allRowEls()) {
     const on = operable.has(el) && el.dataset.cardId === id
     el.classList.toggle('selected', on)
-    el.setAttribute('aria-selected', String(on))
+    el.setAttribute('aria-current', String(on))
     el.tabIndex = on ? 0 : -1
   }
 }
@@ -5364,8 +6985,66 @@ function focusSearch(selectText = false) {
   if (selectText) search.select()
 }
 
+function keyboardScope() {
+  const dialogs = [...document.querySelectorAll('[aria-modal="true"]')]
+    .filter((dialog) => !dialog.closest('[hidden], [inert]'))
+  const dialog = dialogs.at(-1)
+  if (dialog) return dialog
+  if (layout === 'narrow' && openRowId) {
+    const card = needsYouRowEl(openRowId)?.querySelector('.nrow-card')
+    if (card && !card.closest('[hidden]') && getComputedStyle(card).position === 'fixed') return card
+  }
+  return document
+}
+
+function keyboardActionScope() {
+  const scope = keyboardScope()
+  if (scope !== document) return scope
+  const focused = document.activeElement?.closest?.(
+    '#needsYouList .nrow[data-card-id], .row-panel-row, .board-row, details.item',
+  )
+  if (focused && !focused.closest('[hidden]')) return focused
+  const rows = rowEls()
+  return rows.find((element) => element.dataset.cardId === selectedId)
+    ?? rows.find((element) => element.dataset.cardId === openRowId)
+    ?? null
+}
+
+function focusKeyboardPanel(id) {
+  if (window.scrollY !== 0) window.scrollTo(0, 0)
+  const firstRow = id === 'needsYou' ? rowEls()[0] : null
+  if (firstRow) { firstRow.focus(); return }
+  const panel = document.getElementById(id)
+  panel.tabIndex = -1
+  panel.focus({ preventScroll: true })
+}
+
+function navigateKeyboard(destination) {
+  if (destination === 'setup') {
+    showPanel('setup')
+    focusKeyboardPanel('setup')
+  } else if (destination === 'agents') {
+    document.getElementById('agentSelect').focus()
+  } else if (destination === 'projects') {
+    if (layout === 'narrow') setProjectDisclosure(true)
+    focusProjectFallback(projectFilter)
+  } else if (destination === 'live') {
+    document.getElementById('liveStrip').click()
+  } else if (TAB_IDS.includes(destination)) {
+    selectTab(destination)
+    focusKeyboardPanel(destination)
+  }
+}
+
 function initKeys() {
+  keyboardUI = createKeyboardUI({
+    getScope: keyboardScope,
+    getActionScope: keyboardActionScope,
+    navigate: navigateKeyboard,
+  })
   document.addEventListener('keydown', (e) => {
+    if (e.isComposing || e.keyCode === 229) return
+    if (e.repeat && !['j', 'k', 'ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight'].includes(e.key)) return
     const t = e.target
     const typing = !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)
     const triageOwnsKey = !!triageDeck
@@ -5382,6 +7061,7 @@ function initKeys() {
     if (!triageOwnsKey && nativeKeyOwner(e)) return
     if (e.key === ',' && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
       e.preventDefault()
+      if (keyboardScope() !== document) return
       toggleSettings()
       return
     }
@@ -5400,6 +7080,12 @@ function initKeys() {
       e.preventDefault()
       closeRelay()
       return
+    }
+    const activeScope = keyboardScope()
+    if (!triageDeck && activeScope !== document && e.key !== 'Escape') {
+      const currentCardAction = activeScope.matches('.nrow-card')
+        && activeScope.contains(e.target) && ['e', 'x'].includes(e.key)
+      if (!currentCardAction) return
     }
     // The row's own keydown listener (needsRowEl) already handles Enter/Escape
     // when the row itself has focus and calls preventDefault() — don't run the
@@ -5461,9 +7147,15 @@ function wireTablist(host, orientation) {
   })
 }
 
-function btn(label, onClick) {
+function setHintOwner(element, entity, board = null) {
+  element.dataset.keyHintOwner = `${board ? 'row' : 'item'}:${entity.id}`
+  element.dataset.keyHintVersion = board ? `${board.revision}:${entity.revision}` : entity.updated_at
+}
+
+function btn(label, onClick, shortcut = null) {
   const b = document.createElement('button')
   b.textContent = label
+  if (shortcut) b.dataset.shortcutId = shortcut
   b.addEventListener('click', onClick)
   return b
 }
@@ -5471,7 +7163,11 @@ function btn(label, onClick) {
 // the pager at the foot of a capped section — reveals PAGE[section] more cards
 function moreButton(section, remaining) {
   const n = Math.min(PAGE[section], remaining)
-  const b = btn(`Show ${n} more (${remaining} hidden)`, () => { shown[section] += PAGE[section]; forceRender() })
+  const b = btn(`Show ${n} more (${remaining} hidden)`, () => {
+    shown[section] += PAGE[section]
+    forceRender()
+    requestHistoryPaint()
+  })
   b.className = 'show-more'
   return b
 }
@@ -5698,6 +7394,8 @@ function initSearch() {
       searchActiveIndex = -1
       renderSearchResults()
     }, 120)
+    // Issue #184: overlap reading the closed history the page omits with the debounce.
+    requestHistory()
   })
   input.addEventListener('focus', () => {
     const value = input.value.trim()
@@ -5705,6 +7403,7 @@ function initSearch() {
     searchQuery = input.value
     searchIndexOpen = true
     renderSearchResults()
+    requestHistory()
   })
   input.addEventListener('keydown', (event) => {
     if (event.isComposing) {
@@ -5744,6 +7443,225 @@ function initSearch() {
   }, true)
 }
 
+// ── Agents (#197 part 2) ────────────────────────────────────────────────────
+// Which build each host's agents are registered to run, and ONE explicit
+// action for the Setup-managed hosts whose runtime differs from this app's:
+// "Update agents" when they are behind, "Match agents to vX" when one is ahead
+// after an app downgrade (public/agents.js agentsAction). It runs the existing
+// fixed-target install (claude, copilot or all, through the same Electron
+// bridge as the menu below) for exactly those hosts, and since #206 the fixed
+// `hooks` target for Claude's Setup-managed hooks: no new command, nothing at
+// startup, and a checkout or custom registration is reported, never switched.
+// The installers refuse to replace a registration they do not own, and this
+// never asks them to force one. Paths come from host config files, so every
+// string here is textContent.
+let agentsBlock = null
+
+function renderAgents(host, s, canInstall) {
+  agentsBlock = null
+  if (!s?.agents || typeof s.agents !== 'object') return
+  const section = document.createElement('section')
+  section.className = 'setup-block agents-status'
+  const title = document.createElement('h3')
+  title.textContent = 'Agents'
+  const list = document.createElement('ul')
+  list.className = 'agents-hosts'
+  const actions = document.createElement('div')
+  actions.className = 'agents-actions'
+  const result = document.createElement('pre')
+  result.className = 'agents-result'
+  result.hidden = true
+  const restart = document.createElement('div')
+  restart.className = 'agents-restart'
+  restart.setAttribute('role', 'status')
+  restart.hidden = true
+  section.append(title, list, actions, result, restart)
+  host.appendChild(section)
+  agentsBlock = { list, actions, result, restart, canInstall, running: false }
+  paintAgents(s.agents)
+}
+
+function agentsHint(text) {
+  const p = document.createElement('p')
+  p.className = 'setup-hint'
+  p.textContent = text
+  agentsBlock.actions.appendChild(p)
+}
+
+function paintAgents(agents) {
+  const block = agentsBlock
+  if (!block) return
+  block.list.replaceChildren()
+  block.actions.replaceChildren()
+  const current = typeof agents.current === 'string' ? agents.current : null
+  const lines = ['claude', 'copilot', 'hooks'].map((h) => hostLine(h, agents[h], current))
+  for (const line of lines) {
+    const item = document.createElement('li')
+    item.dataset.host = line.host
+    item.classList.toggle('outdated', line.drift === 'older')
+    item.classList.toggle('newer', line.drift === 'newer')
+    const name = document.createElement('strong')
+    name.textContent = `${line.label}:`
+    item.append(name, ` ${line.text}`)
+    block.list.appendChild(item)
+  }
+  const action = agentsAction(agents)
+  const canRun = block.canInstall && Boolean(window.agentInboxSetup?.install)
+  if (action) {
+    if (canRun) {
+      agentsHint(action.hint)
+      const run = btn(action.label, () => updateAgents(action, current, run))
+      run.className = 'agents-update-btn'
+      run.disabled = block.running
+      block.actions.appendChild(run)
+    } else {
+      agentsHint(action.elsewhere)
+    }
+  }
+  if (lines.some((line) => line.kind === 'checkout')) {
+    agentsHint('Setup does not update a source checkout: run git pull and npm run build in it, then restart its sessions.')
+  }
+  // Claude's hooks on another Setup runtime (#206): the action moves them when
+  // it can; otherwise say how, but promise only what Setup can do here.
+  const hooksStep = action?.steps.some((step) => step.host === 'hooks') === true
+  if (lines[2]?.drift && !(hooksStep && canRun)) {
+    if (typeof agents.hooksCommand === 'string' && agents.hooksCommand) {
+      agentsHint(hooksStep ? 'Or move them from a terminal:' : `To move Claude hooks to v${current}, run this in a terminal:`)
+      const command = document.createElement('pre')
+      command.className = 'agents-hooks-command'
+      command.textContent = agents.hooksCommand
+      const copy = btn('Copy', async () => {
+        try {
+          await navigator.clipboard.writeText(agents.hooksCommand)
+          copy.textContent = 'Copied ✓'
+        } catch {
+          copy.textContent = 'Copy failed'
+        }
+        setTimeout(() => { copy.textContent = 'Copy' }, 1500)
+      })
+      copy.className = 'copy-btn'
+      block.actions.append(command, copy)
+    } else if (agents.updatable === true && !hooksStep) {
+      // only a promise Setup can keep: it can install this runtime here
+      agentsHint(`Once this app's v${current} runtime is installed, Setup can move Claude hooks to it.`)
+    }
+  }
+}
+
+// Re-read what each host is registered to run, after any install. Resolves to
+// the agents it painted, or null when the read failed.
+function refreshAgents() {
+  if (!agentsBlock) return Promise.resolve(null)
+  return fetch('/api/setup')
+    .then((r) => (r.ok ? r.json() : null))
+    .then((s) => {
+      if (!s?.agents || typeof s.agents !== 'object') return null
+      paintAgents(s.agents)
+      return s.agents
+    })
+    .catch(() => null) // keep the status already shown
+}
+
+// One fixed install target per host, one after another: a host whose CLI is
+// gone fails on its own and never holds the other back, which `--target all`
+// would (the installer stops before changing anything). But a step that was
+// cancelled (Agent Inbox is quitting), timed out, or could not run at all ENDS
+// the run: starting the next host then could have it killed halfway through
+// replacing a registration (#205 review). Each host's outcome is reported as
+// it is, including the hosts that never started.
+async function updateAgents(action, current, button) {
+  const block = agentsBlock
+  if (!block || block.running) return
+  block.running = true
+  button.disabled = true
+  block.restart.hidden = true
+  block.restart.replaceChildren()
+  const show = (text, state) => {
+    block.result.textContent = text
+    block.result.hidden = false
+    block.result.classList.toggle('success', state === 'ok')
+    block.result.classList.toggle('failure', state === 'failed')
+  }
+  const several = action.steps.length > 1
+  const reports = []
+  const moved = []
+  try {
+    for (const [index, step] of action.steps.entries()) {
+      show([...reports, step.progress].join('\n\n'), 'running')
+      // Claude's hooks (#206) move only if they still run another Setup
+      // runtime once the agent steps are done: the human may have changed them
+      // since this panel was drawn. This re-read is for the message; the
+      // installer's --move-only refuses under the setup lock all the same.
+      if (step.host === 'hooks') {
+        const fresh = await refreshAgents()
+        if (hooksGuidance(fresh, current).moved) {
+          // already where the human asked for them, moved some other way meanwhile
+          reports.push(`${hostLabel('hooks')}: already run v${current}, so there was nothing to move.`)
+          moved.push('hooks')
+          continue
+        }
+        if (!hostLine('hooks', fresh?.hooks, current).drift) {
+          reports.push(fresh
+            ? `${hostLabel('hooks')}: not started, because they changed since Setup read them; the list above shows them now.`
+            : `${hostLabel('hooks')}: not started, because Setup could not re-read Claude's settings.`)
+          continue
+        }
+      }
+      let text
+      let stopped = null
+      try {
+        const outcome = await window.agentInboxSetup.install(step.host)
+        const ok = outcome?.ok === true
+        if (ok) moved.push(step.host)
+        else if (outcome?.cancelled === true) stopped = 'was cancelled'
+        else if (outcome?.timedOut === true) stopped = 'timed out'
+        text = outcome?.output || (ok ? step.done : 'Setup failed without output.')
+      } catch (err) {
+        stopped = 'could not run'
+        text = `Setup failed: ${err instanceof Error ? err.message : String(err)}`
+      }
+      reports.push(several ? `${hostLabel(step.host)}: ${text}` : text)
+      if (stopped) {
+        for (const skipped of action.steps.slice(index + 1)) {
+          reports.push(`${hostLabel(skipped.host)}: not started, because Setup stopped after ${hostLabel(step.host)} ${stopped}.`)
+        }
+        break
+      }
+    }
+  } finally {
+    block.running = false
+  }
+  const [fresh] = await Promise.all([refreshAgents(), refreshLiveVersion()])
+  // Claude's hooks count as moved only once the re-read shows them on this
+  // app's runtime (#206); the agents' installer results stand as reported.
+  const hooks = moved.includes('hooks') ? hooksGuidance(fresh, current) : null
+  const agentMoves = moved.filter((host) => host !== 'hooks')
+  const confirmed = agentMoves.length + (hooks?.moved ? 1 : 0)
+  show(reports.join('\n\n'), confirmed === action.steps.length ? 'ok' : 'failed')
+  if (!agentMoves.length && !hooks) return
+  // A running session keeps the MCP server it started with: say which ones
+  // still run another build than their host now loads, and how to restart
+  // them, rather than imply anything reloaded. A successful fixed install
+  // registers exactly this app's verified runtime, so that is `current`.
+  const items = restartGuidance(lastData?.activity ?? [], agentMoves.map((host) => ({ host, version: current })))
+  if (hooks) items.push(hooks.text)
+  const list = document.createElement('ul')
+  for (const text of items) {
+    const item = document.createElement('li')
+    item.textContent = text
+    list.appendChild(item)
+  }
+  if (agentMoves.length) {
+    const lead = document.createElement('p')
+    lead.className = 'setup-hint'
+    lead.textContent = 'Running sessions keep the build they started with until you restart them.'
+    block.restart.replaceChildren(lead, list)
+  } else {
+    block.restart.replaceChildren(list)
+  }
+  block.restart.hidden = false
+}
+
 function setupTargetLabel(target) {
   return {
     all: 'Claude Code + Copilot CLI',
@@ -5752,7 +7670,7 @@ function setupTargetLabel(target) {
   }[target]
 }
 
-function setupMenu(s, host, canInstall) {
+function setupMenu(s, canInstall) {
   const wrap = document.createElement('div')
   wrap.className = 'setup-menu'
   const title = document.createElement('h3')
@@ -5823,6 +7741,10 @@ function setupMenu(s, host, canInstall) {
         run.disabled = false
         select.disabled = false
         updateLabels()
+        // #197: an install changes what Live's older-build hints may advise,
+        // and what each host is registered to run
+        refreshLiveVersion()
+        refreshAgents()
       }
     })
     run.className = 'setup-run-btn'
@@ -5861,7 +7783,28 @@ function setupMenu(s, host, canInstall) {
   updateLabels()
   wrap.prepend(title, hint, select)
   wrap.append(commandPreview, actions, result)
-  host.appendChild(wrap)
+  return wrap
+}
+
+// What the Setup panel was built with: the setup info, whether this window
+// could run one-click Setup then, and its menu.
+let setupShown = null
+
+// A reloaded window gets one-click Setup back only once main has proven it again
+// (#216), which can finish after this panel was built, so Settings asks again
+// when it opens. A window loses Setup only to a new page or a quit, so this only
+// ever adds the one-click install, never takes away a menu that may be running.
+async function refreshSetupAvailability() {
+  const shown = setupShown
+  if (!shown || shown.canInstall || !window.agentInboxSetup?.available) return
+  const canInstall = await window.agentInboxSetup.available().catch(() => false)
+  if (canInstall !== true || shown !== setupShown || shown.canInstall) return
+  shown.canInstall = true
+  const menu = setupMenu(shown.info, true)
+  shown.menu.replaceWith(menu)
+  shown.menu = menu
+  if (agentsBlock) agentsBlock.canInstall = true
+  await refreshAgents()
 }
 
 function renderThemeSettings(host) {
@@ -5912,12 +7855,442 @@ function renderThemeSettings(host) {
   host.appendChild(section)
 }
 
+function renderSortSettings(host) {
+  const section = document.createElement('section')
+  section.className = 'setup-block sort-settings'
+  const title = document.createElement('h3')
+  title.textContent = 'Default sort order'
+  const hint = document.createElement('p')
+  hint.className = 'setup-hint'
+  hint.id = 'default-sort-hint'
+  hint.textContent = 'Used each time Agent Inbox opens in this browser or app profile. The Sort menu above the queue changes only the current view.'
+  const select = document.createElement('select')
+  select.setAttribute('aria-label', 'Default sort order')
+  select.setAttribute('aria-describedby', hint.id)
+  appendSortOptions(select)
+  select.value = savedAskSort()
+  select.addEventListener('change', () => {
+    try {
+      localStorage.setItem(DEFAULT_SORT_KEY, select.value)
+    } catch (err) {
+      select.value = savedAskSort()
+      console.error('Default sort order could not be saved', err)
+      document.getElementById('status').textContent = 'default sort order not saved'
+      return
+    }
+    askSort = select.value
+    pinnedIds = []
+    // The human's own choice: renderIfIdle() would hold it behind any open draft.
+    forceRender()
+  })
+  section.append(title, hint, select)
+  host.appendChild(section)
+}
+
+function renderLaterSettings(host) {
+  const section = document.createElement('section')
+  section.className = 'setup-block later-settings'
+  const title = document.createElement('h3')
+  title.textContent = 'Inbox'
+  const preference = document.createElement('label')
+  preference.className = 'settings-toggle'
+  const input = document.createElement('input')
+  input.type = 'checkbox'
+  input.className = 'later-section-toggle'
+  input.checked = laterSection
+  input.setAttribute('aria-describedby', 'later-section-detail later-section-hint')
+  input.addEventListener('change', () => {
+    try {
+      localStorage.setItem(LATER_SECTION_KEY, String(input.checked))
+    } catch (err) {
+      input.checked = laterSection
+      console.error('Later section setting could not be saved', err)
+      document.getElementById('status').textContent = 'later section setting not saved'
+      return
+    }
+    laterSection = input.checked
+    // The human's own choice: renderIfIdle() would hold it behind any open draft.
+    forceRender()
+  })
+  const preferenceCopy = document.createElement('span')
+  const label = document.createElement('strong')
+  label.textContent = 'Later section'
+  const detail = document.createElement('small')
+  detail.id = 'later-section-detail'
+  detail.textContent = 'Move pinned and snoozed asks to a Later section at the foot of the inbox. Used each time Agent Inbox opens in this browser or app profile.'
+  preferenceCopy.append(label, detail)
+  preference.append(input, preferenceCopy)
+  const hint = document.createElement('p')
+  hint.className = 'setup-hint later-section-hint'
+  hint.id = 'later-section-hint'
+  hint.hidden = true
+  section.append(title, preference, hint)
+  host.appendChild(section)
+  paintLaterSectionHint()
+}
+
+// With the Later section off, pins that already exist stay in the pinned fold
+// (#247 §2.4); say so under the switch, so turning it off never hides an ask
+// without a word. Ambient: painted with every frame, never a render gate.
+function paintLaterSectionHint() {
+  const hint = document.getElementById('later-section-hint')
+  if (!hint || !lastData) return
+  const pinned = laterSection ? 0 : laterEntries(allItems(lastData.g), lastData.boards, Date.now(), closedSet())
+    .filter((entry) => entry.later === 'pinned').length
+  const text = !pinned ? ''
+    : pinned === 1 ? '1 ask is still pinned. It stays in a pinned fold until you bring it back.'
+      : `${pinned} asks are still pinned. They stay in a pinned fold until you bring them back.`
+  if (hint.textContent !== text) hint.textContent = text
+  hint.hidden = !text
+}
+
+function renderPlanSettings(host) {
+  const section = document.createElement('section')
+  section.className = 'setup-block plan-settings'
+  const title = document.createElement('h3')
+  title.textContent = 'Plans'
+  const preference = document.createElement('label')
+  preference.className = 'settings-toggle'
+  const input = document.createElement('input')
+  input.type = 'checkbox'
+  input.checked = savedGroupPlans()
+  input.setAttribute('aria-describedby', 'group-plans-detail')
+  input.addEventListener('change', () => {
+    try {
+      localStorage.setItem(GROUP_PLANS_KEY, String(input.checked))
+    } catch (err) {
+      input.checked = savedGroupPlans()
+      console.error('Plan grouping could not be saved', err)
+      document.getElementById('status').textContent = 'plan grouping not saved'
+      return
+    }
+    groupByParent = input.checked
+    // The human's own choice: renderIfIdle() would hold it behind any open draft.
+    forceRender()
+  })
+  const preferenceCopy = document.createElement('span')
+  const label = document.createElement('strong')
+  label.textContent = 'Group plans by parent issue'
+  const detail = document.createElement('small')
+  detail.id = 'group-plans-detail'
+  detail.textContent = 'Gathers the active plans of one project that share a GitHub parent issue under a heading for it. No plan is hidden. Used each time Agent Inbox opens; the switch above Plans changes only the current view.'
+  preferenceCopy.append(label, detail)
+  preference.append(input, preferenceCopy)
+  section.append(title, preference)
+  host.appendChild(section)
+}
+
+// Issue #222: off by default; the controller owns the stored preference.
+let copyOnSelect = null
+
+function initCopyOnSelect() {
+  copyOnSelect = createCopyOnSelect({ storage: localStorage })
+}
+
+function renderCopySettings(host) {
+  if (!copyOnSelect) return
+  const section = document.createElement('section')
+  section.className = 'setup-block copy-settings'
+  const title = document.createElement('h3')
+  title.textContent = 'Copying'
+  const preference = document.createElement('label')
+  preference.className = 'settings-toggle'
+  const input = document.createElement('input')
+  input.type = 'checkbox'
+  input.className = 'copy-on-select-toggle'
+  input.checked = copyOnSelect.enabled
+  input.setAttribute('aria-describedby', 'copy-on-select-detail')
+  input.addEventListener('change', () => copyOnSelect.setEnabled(input.checked))
+  const preferenceCopy = document.createElement('span')
+  const label = document.createElement('strong')
+  label.textContent = 'Copy text when selected'
+  const detail = document.createElement('small')
+  detail.id = 'copy-on-select-detail'
+  detail.textContent = 'Copies text to the clipboard as soon as you finish selecting it. Text you select in a reply box or other field is never copied this way.'
+  preferenceCopy.append(label, detail)
+  preference.append(input, preferenceCopy)
+  section.append(title, preference)
+  host.appendChild(section)
+}
+
+let updateSettings = null
+let updateSubscriptionStarted = false
+
+function updateStateCopy(state) {
+  const version = state.available?.version ?? ''
+  switch (state.status) {
+    case 'checking': return 'Checking GitHub for a signed release…'
+    case 'current': return 'Agent Inbox is up to date.'
+    case 'available': return `Agent Inbox ${version} is available.`
+    case 'stale': return state.automaticChecks
+      ? 'Release information was out of date. Agent Inbox will check again automatically.'
+      : 'Release information was out of date. Check again later.'
+    case 'downloading': return `Downloading Agent Inbox ${version}…`
+    case 'verified': return `Agent Inbox ${version} is downloaded and verified.`
+    case 'download-failed': return `Agent Inbox ${version} couldn’t be downloaded and verified.`
+    case 'installing': return `Installing version ${version}. Agent Inbox will restart when it’s ready.`
+    case 'install-failed': return `Agent Inbox ${version} couldn’t be installed.`
+    case 'unverified': return 'Couldn’t check right now. You can review Releases manually.'
+    case 'unsupported': return 'Updates are not available for this app build.'
+    default: return 'Ready to check GitHub for a signed release.'
+  }
+}
+
+function formatMegabytes(bytes) {
+  const megabytes = bytes / (1024 * 1024)
+  return `${megabytes >= 100 ? Math.round(megabytes) : megabytes.toFixed(1)} MB`
+}
+
+// Main installs only from the window it bound to the viewer this app started
+// and owns (#216). After a reload or crash it could not re-prove, installing
+// takes a fresh start, which reuses the verified download.
+function needsRestartToInstall(state) {
+  return state.available?.installable === true && state.available.installPermitted !== true
+}
+
+// Only macOS restarts itself from here; an AppImage is quit and reopened by hand.
+function restartsItself(state) {
+  return state.available?.target?.installStrategy === 'macos-dmg'
+}
+
+function restartToInstallCopy(state) {
+  return restartsItself(state)
+    ? 'Restart Agent Inbox to install this update.'
+    : 'Quit and reopen Agent Inbox to install this update.'
+}
+
+function updateDetailCopy(state) {
+  const download = state.download
+  switch (state.status) {
+    case 'available':
+      // Main's plain reason this installation cannot download or install the offer.
+      return typeof state.available?.reason === 'string' ? state.available.reason : ''
+    case 'downloading':
+      return download ? `${formatMegabytes(download.receivedBytes)} of ${formatMegabytes(download.totalBytes)}` : ''
+    case 'verified':
+      if (needsRestartToInstall(state)) return restartToInstallCopy(state)
+      return state.available?.installable === true
+        ? 'Its size and SHA-256 match the signed release. Agent Inbox will install it and restart.'
+        : 'Its size and SHA-256 match the signed release. Installing from the app arrives in a later update; until then, use Review release to install it yourself.'
+    case 'download-failed':
+      // Main says why (for example, a verified file that changed on disk).
+      return typeof state.message === 'string' && state.message !== ''
+        ? state.message
+        : 'Nothing unverified was kept. Try again, or review the release on GitHub.'
+    case 'install-failed':
+      if (needsRestartToInstall(state)) return restartToInstallCopy(state)
+      return typeof state.message === 'string' && state.message !== ''
+        ? state.message
+        : 'Nothing was changed. Try again, or review the release on GitHub.'
+    default:
+      return ''
+  }
+}
+
+function paintUpdateSettings(state) {
+  if (!updateSettings) return
+  const {
+    appVersion,
+    automatic,
+    cancel,
+    check,
+    checked,
+    detail,
+    download,
+    install,
+    notice,
+    progress,
+    releases,
+    restart,
+    review,
+    section,
+    status,
+  } = updateSettings
+  const focused = document.activeElement
+  const downloadable = state.available?.downloadable === true
+  const installable = state.available?.installable === true
+  const downloading = state.status === 'downloading'
+  const installing = state.status === 'installing'
+  const installOffered = installable && (state.status === 'verified' || state.status === 'install-failed')
+  appVersion.textContent = `Agent Inbox app ${state.currentVersion || 'version unavailable'}`
+  status.textContent = updateStateCopy(state)
+  status.dataset.state = state.status
+  check.disabled = state.status === 'checking' || downloading || installing
+  check.textContent = state.status === 'checking' ? 'Checking…' : 'Check now'
+  download.hidden = !(downloadable && (state.status === 'available' || state.status === 'download-failed'))
+  download.textContent = state.status === 'download-failed' ? 'Try again' : 'Download update'
+  install.hidden = !(installOffered && !needsRestartToInstall(state))
+  install.textContent = state.status === 'install-failed' ? 'Try again' : 'Install and restart'
+  restart.hidden = !(installOffered && needsRestartToInstall(state) && restartsItself(state))
+  cancel.hidden = !downloading
+  progress.hidden = !downloading
+  if (downloading && state.download) {
+    progress.max = state.download.totalBytes
+    progress.value = state.download.receivedBytes
+  }
+  detail.textContent = updateDetailCopy(state)
+  detail.hidden = detail.textContent === ''
+  // An earlier install that did not take effect, reported by main after the restart.
+  notice.textContent = typeof state.installNotice === 'string' ? state.installNotice : ''
+  notice.hidden = notice.textContent === ''
+  automatic.checked = Boolean(state.automaticChecks)
+  checked.textContent = state.checkedAt
+    ? `Last checked ${new Date(state.checkedAt).toLocaleString()}`
+    : 'Not checked yet'
+  // Nothing competes with an install that is already under way.
+  review.hidden = !state.available || installing
+  // The download, install or restart is the primary action while it is offered or running.
+  review.classList.toggle('updates-secondary', !download.hidden || !cancel.hidden || !install.hidden || !restart.hidden)
+  releases.hidden = state.status !== 'unverified' && state.status !== 'stale' && !(notice.textContent !== '' && !state.available)
+  // A pressed action can hide itself (Download → Cancel, Install → installing);
+  // keep keyboard focus inside Updates instead of dropping it to the document,
+  // but never take focus while the window is in the background.
+  if (focused instanceof HTMLElement && focused.hidden && section.contains(focused) && document.hasFocus()) {
+    const next = [cancel, install, restart, download, review, releases, check].find((button) => !button.hidden && !button.disabled)
+    ;(next ?? section).focus()
+  }
+}
+
+function renderUpdateSettings(host) {
+  const bridge = window.agentInboxUpdates
+  if (!bridge || bridge.available !== true) return
+
+  const section = document.createElement('section')
+  section.id = 'updates-settings'
+  section.className = 'setup-block updates-settings'
+  section.tabIndex = -1
+
+  const heading = document.createElement('div')
+  heading.className = 'updates-heading'
+  const title = document.createElement('h3')
+  title.textContent = 'Updates'
+  const appVersion = document.createElement('span')
+  appVersion.className = 'updates-version'
+  appVersion.textContent = 'Agent Inbox app'
+  heading.append(title, appVersion)
+
+  const status = document.createElement('p')
+  status.className = 'updates-state'
+  status.setAttribute('role', 'status')
+  status.setAttribute('aria-live', 'polite')
+  status.textContent = 'Ready to check GitHub for a signed release.'
+
+  const notice = document.createElement('p')
+  notice.className = 'updates-notice'
+  notice.hidden = true
+
+  const checked = document.createElement('p')
+  checked.className = 'updates-checked'
+  checked.textContent = 'Not checked yet'
+
+  const progress = document.createElement('progress')
+  progress.className = 'updates-progress'
+  progress.setAttribute('aria-label', 'Update download progress')
+  progress.hidden = true
+
+  const detail = document.createElement('p')
+  detail.className = 'updates-detail'
+  detail.hidden = true
+
+  const actions = document.createElement('div')
+  actions.className = 'updates-actions'
+  const check = btn('Check now', () => bridge.check().catch(() => {}))
+  check.className = 'updates-check'
+  const download = btn('Download update', () => bridge.download().catch(() => {}))
+  download.className = 'updates-download'
+  download.hidden = true
+  const install = btn('Install and restart', () => bridge.install().catch(() => {}))
+  install.className = 'updates-install'
+  install.hidden = true
+  const restart = btn('Restart Agent Inbox', () => {
+    // Main restarts only in the state that offers this button. When it refuses
+    // anyway, usually because agent setup is running, say so: a button that
+    // silently did nothing would lie.
+    bridge.restart().then((restarting) => {
+      if (restarting === true) return
+      detail.textContent = 'Agent Inbox didn’t restart. If agent setup is running, try again when it finishes.'
+      detail.hidden = false
+    }).catch(() => {})
+  })
+  restart.className = 'updates-restart'
+  restart.hidden = true
+  const cancel = btn('Cancel download', () => bridge.cancelDownload().catch(() => {}))
+  cancel.className = 'updates-cancel'
+  cancel.hidden = true
+  const review = btn('Review release', () => bridge.openRelease().catch(() => {}))
+  review.className = 'updates-review'
+  review.hidden = true
+  const releases = btn('Open Releases', () => bridge.openRelease().catch(() => {}))
+  releases.className = 'updates-releases'
+  releases.hidden = true
+  actions.append(check, download, install, restart, cancel, review, releases)
+
+  const preference = document.createElement('label')
+  preference.className = 'updates-preference'
+  const automatic = document.createElement('input')
+  automatic.type = 'checkbox'
+  automatic.className = 'updates-automatic'
+  automatic.setAttribute('aria-describedby', 'updates-automatic-detail')
+  const preferenceCopy = document.createElement('span')
+  const preferenceLabel = document.createElement('strong')
+  preferenceLabel.textContent = 'Check automatically'
+  const preferenceDetail = document.createElement('small')
+  preferenceDetail.id = 'updates-automatic-detail'
+  preferenceDetail.textContent = 'Makes one plain GitHub request on schedule. No telemetry is sent.'
+  preferenceCopy.append(preferenceLabel, preferenceDetail)
+  preference.append(automatic, preferenceCopy)
+  automatic.addEventListener('change', () => {
+    const enabled = automatic.checked
+    bridge.setAutomatic(enabled).catch(() => {
+      automatic.checked = !enabled
+      status.textContent = 'Automatic check preference could not be saved.'
+      status.dataset.state = 'unverified'
+    })
+  })
+
+  section.append(heading, status, notice, progress, detail, checked, actions, preference)
+  host.appendChild(section)
+  updateSettings = {
+    appVersion,
+    automatic,
+    cancel,
+    check,
+    checked,
+    detail,
+    download,
+    install,
+    notice,
+    progress,
+    releases,
+    restart,
+    review,
+    section,
+    status,
+  }
+
+  if (!updateSubscriptionStarted) {
+    updateSubscriptionStarted = true
+    bridge.onState?.(paintUpdateSettings)
+  }
+  bridge.getState().then(paintUpdateSettings).catch(() => paintUpdateSettings({
+    status: 'unverified',
+    currentVersion: '',
+    automaticChecks: false,
+    checkedAt: null,
+  }))
+}
+
 // Setup section: configure new agents or copy the exact setup command. Fetched
 // once, not on the poll.
 async function renderSetup() {
   const host = document.querySelector('#setup .setup-body')
   host.replaceChildren()
   renderThemeSettings(host)
+  renderUpdateSettings(host)
+  renderSortSettings(host)
+  renderLaterSettings(host)
+  renderPlanSettings(host)
+  renderCopySettings(host)
   try {
     const s = await (await fetch('/api/setup')).json()
     const block = (title, text, hint) => {
@@ -5960,7 +8333,10 @@ async function renderSetup() {
       host.appendChild(note)
     }
     const canInstall = await window.agentInboxSetup?.available?.().catch(() => false) ?? false
-    setupMenu(s, host, canInstall)
+    renderAgents(host, s, canInstall)
+    const menu = setupMenu(s, canInstall)
+    host.appendChild(menu)
+    setupShown = { info: s, canInstall, menu }
     // issue #74: a release build withholds these manual/direct commands
     // entirely (empty string) until a runtime matching this exact host's
     // verified payload is installed — render nothing rather than an empty
@@ -5988,11 +8364,11 @@ async function renderSetup() {
 // ── init ────────────────────────────────────────────────────────────────────
 // Canonical order for the finished app; later tasks add their one line at the
 // slot named here and never rewrite this block:
-//   initTabs → initTriage → initSearch → initResponsive → initPaneResizers →
-//   initProjectDisclosure →
+//   initTabs → initTriage → initRelay → initMission → initSearch →
+//   initResponsive → initSidebarCollapse → initPaneResizers → initProjectDisclosure →
 //   initKeys (Task 17) → initFocusHash (Task 17) → initStagedFlush →
 //   initPressGuard (#38) → initScrollGuard → initAgentSelect →
-//   initStructuredTextCopy → initGear → initLiveBar → renderSetup → load →
+//   initStructuredTextCopy → initCopyOnSelect → initGear → initLiveBar → renderSetup → load →
 //   setInterval(load, 3000)
 initTabs()
 initTriage()
@@ -6000,6 +8376,7 @@ initRelay()
 initMission()
 initSearch()
 initResponsive()
+initSidebarCollapse()
 initPaneResizers()
 initProjectDisclosure()
 initKeys()
@@ -6009,6 +8386,7 @@ initPressGuard()
 initScrollGuard()
 initAgentSelect()
 initStructuredTextCopy()
+initCopyOnSelect()
 initGear()
 initLiveBar()
 renderSetup()

@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -14,6 +15,23 @@ const reusable = [
   '.github/workflows/linux-x64-deb.yml',
   '.github/workflows/linux-arm64-deb.yml',
 ]
+
+function stepScript(workflow: string, name: string) {
+  const stepStart = workflow.indexOf(`      - name: ${name}`)
+  if (stepStart < 0) throw new Error(`workflow step not found: ${name}`)
+  const runMarker = '        run: |\n'
+  const runStart = workflow.indexOf(runMarker, stepStart)
+  if (runStart < 0) throw new Error(`workflow run block not found: ${name}`)
+  const contentStart = runStart + runMarker.length
+  const nextStep = workflow.indexOf('\n      - ', contentStart)
+  const nextJob = workflow.indexOf('\n  publish:', contentStart)
+  const candidates = [nextStep, nextJob].filter((value) => value >= 0)
+  const end = candidates.length > 0 ? Math.min(...candidates) : workflow.length
+  return workflow.slice(contentStart, end)
+    .split('\n')
+    .map((line) => line.startsWith('          ') ? line.slice(10) : line)
+    .join('\n')
+}
 
 describe('multi-platform release workflow', () => {
   it('keeps every package workflow manually runnable and read-only while centralizing PR orchestration', () => {
@@ -91,14 +109,33 @@ describe('multi-platform release workflow', () => {
     const workflow = read(protectedPath)
     const verify = workflow.slice(
       workflow.indexOf('  verify-publication:'),
-      workflow.indexOf('  publish:'),
+      workflow.indexOf('  sign-update-manifest:'),
     )
     expect(verify).toContain('name: final-notarized-release')
     expect(verify).toContain('name: protected-linux-handoff')
     expect(verify).toContain('node scripts/release-aggregation.mjs aggregate')
     expect(verify).toContain('release-aggregation-evidence.json')
     expect(verify).toContain('test "$(find build/verified-publish-handoff/release-assets')
-    expect(verify).toContain('= 6')
+    expect(verify).toContain('= 7')
+
+    const sign = workflow.slice(
+      workflow.indexOf('  sign-update-manifest:'),
+      workflow.indexOf('  publish:'),
+    )
+    expect(sign).toContain('name: Sign update manifest')
+    expect(sign).toContain('environment: macos-release')
+    expect(sign).toContain('contents: read')
+    expect(sign).toContain('actions: read')
+    expect(sign).toContain('ref: ${{ github.workflow_sha }}')
+    expect(sign).toContain('node scripts/update-manifest.mjs inspect-history')
+    expect(sign).toContain('node scripts/update-manifest.mjs authorize-history')
+    expect(sign).toContain('node scripts/update-manifest.mjs sign')
+    expect(sign).toContain('gh api --paginate --slurp')
+    expect(sign.indexOf('node scripts/update-manifest.mjs inspect-history'))
+      .toBeLessThan(sign.indexOf('AGENT_INBOX_UPDATE_PRIVATE_KEY_BASE64'))
+    expect(sign).toContain('AGENT_INBOX_UPDATE_PRIVATE_KEY_BASE64')
+    expect(sign).toContain('name: signed-publish-handoff')
+    expect(sign).not.toContain('contents: write')
 
     const publish = workflow.slice(workflow.indexOf('  publish:'))
     expect(publish).toContain('contents: write')
@@ -110,12 +147,15 @@ describe('multi-platform release workflow', () => {
       'agent-inbox_${RELEASE_VERSION}_amd64.deb',
       'agent-inbox_${RELEASE_VERSION}_arm64.deb',
       'SHA256SUMS.txt',
+      'update-manifest.json',
+      'update-manifest.json.sig',
     ]) {
       expect(publish).toContain(name)
     }
     expect(publish).toContain('gh release download "$RELEASE_TAG"')
     expect(publish).not.toContain("process.stdout.write('digest')")
     expect(publish).toContain('shasum -a 256 -c SHA256SUMS.txt')
+    expect(publish).toContain('update manifest signature verification failed')
     expect(publish).toContain('draft: false')
     expect(publish).toContain('--input "$WORK/final-release.json"')
     expect(publish).toContain('final release metadata')
@@ -140,7 +180,24 @@ describe('multi-platform release workflow', () => {
       expect(comment).toMatch(/^v\d+\.\d+\.\d+$/)
     }
     const pkg = JSON.parse(read('package.json'))
+    expect(pkg.scripts['package:smoke']).toContain('test/update-manifest.test.ts')
     expect(pkg.scripts['package:smoke']).toContain('test/release-aggregation.test.ts')
     expect(pkg.scripts['package:smoke']).toContain('test/release-aggregation-workflow.test.ts')
+  })
+
+  it('keeps every protected update-signing shell block syntactically valid', () => {
+    const workflow = read(protectedPath)
+    for (const name of [
+      'Authorize exact update-signing history with trusted code',
+      'Sign exact deterministic update manifest',
+      'Bind exact signed publication handoff',
+    ]) {
+      const script = stepScript(workflow, name).replace(/\$\{\{.*?\}\}/gs, 'fixture')
+      const result = spawnSync('bash', ['-n'], {
+        input: script,
+        encoding: 'utf8',
+      })
+      expect(result.status, `${name}: ${result.stderr}`).toBe(0)
+    }
   })
 })

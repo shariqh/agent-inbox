@@ -4,11 +4,13 @@
 
 // Every project the user can filter by. `activity` matters: a project whose only
 // trace is a LIVE session still deserves a rail tab — the old pill strip dropped
-// it, which is a bug once the rail is the primary navigation.
+// it, which is a bug once the rail is the primary navigation. `older` carries the
+// closed-history groups the paged item snapshot omitted (issue #184), so a
+// project with only old history keeps its tab too.
 // 'unknown' always sorts last so the viewer can pin it to the foot.
-export function railProjects({ items = [], boards = [], archived = [], activity = [] } = {}) {
+export function railProjects({ items = [], boards = [], archived = [], activity = [], older = [] } = {}) {
   const names = new Set()
-  for (const x of [...items, ...boards, ...archived, ...activity]) if (x && x.project) names.add(x.project)
+  for (const x of [...items, ...boards, ...archived, ...activity, ...older]) if (x && x.project) names.add(x.project)
   const rest = [...names].filter((n) => n !== 'unknown').sort()
   return names.has('unknown') ? [...rest, 'unknown'] : rest
 }

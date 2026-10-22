@@ -16,6 +16,16 @@ afterEach(() => { db?.close(); db = null })
 
 const AGENT = { project: 'alpha', stream: 'main', agent: 'copilot' } as const
 
+function removeAnswerEditor(d: Database.Database, id: string): void {
+  // Another window's answer removes the editor without closing response admission.
+  // Resolving the item would now correctly reject every held new reply.
+  expect(replyItem(d, id, 'Answered in another window', undefined, 'answer', {
+    clientId: 'editor-removal-window',
+    sequence: 1,
+    actionId: 'editor-removal',
+  })).toBe(true)
+}
+
 function deferPost(match: string, response?: Response): () => void {
   const fetchNow = globalThis.fetch
   let release!: () => void
@@ -666,7 +676,7 @@ describe('async draft ownership', () => {
     type(answerInput(id), 'Submission A')
     const release = deferPost(`/items/${id}/reply`)
     click(buttonLabelled('Send', row(id)!))
-    resolveItem(db, id)
+    removeAnswerEditor(db, id)
     await pollTick()
     click(buttonLabelled('Review queue'))
     await settle()
@@ -711,7 +721,7 @@ describe('async draft ownership', () => {
     await settle()
     type(answerInput(id), 'Original X')
     click(buttonLabelled('Send', row(id)!))
-    resolveItem(db, id)
+    removeAnswerEditor(db, id)
     await pollTick()
     click(buttonLabelled('Review queue'))
     await settle()
@@ -756,7 +766,7 @@ describe('async draft ownership', () => {
     const release = deferPost(`/items/${id}/reply`)
     click(buttonLabelled('Send', row(id)!))
     type(input, 'Newer draft B')
-    resolveItem(db, id)
+    removeAnswerEditor(db, id)
     await pollTick()
     click(buttonLabelled('Review queue'))
     await settle()
@@ -789,7 +799,7 @@ describe('async draft ownership', () => {
     await vi.advanceTimersByTimeAsync(0)
     await collapseRow(id)
     click(row(id)?.querySelector('.star-btn'))
-    resolveItem(db, id)
+    removeAnswerEditor(db, id)
     await pollTick()
     click(buttonLabelled('Review queue'))
     await settle()
@@ -836,7 +846,7 @@ describe('async draft ownership', () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(count).toBe(2)
 
-    resolveItem(db, id)
+    removeAnswerEditor(db, id)
     await pollTick()
     click(buttonLabelled('Review queue'))
     await settle()
@@ -893,7 +903,7 @@ describe('async draft ownership', () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(count).toBe(2)
 
-    resolveItem(db, id)
+    removeAnswerEditor(db, id)
     await pollTick()
     click(buttonLabelled('Review queue'))
     await settle()
@@ -1271,12 +1281,12 @@ describe('direct overlay draft reconciliation', () => {
     const release = deferPost(`/rows/${first.id}/annotate`)
     click(buttonLabelled('Send', lightbox))
     click(lightbox.querySelector('.lb-next'))
-    expect(lightbox.querySelector('.title')?.textContent).toContain('Current row B')
+    expect(lightbox.querySelector('.card-title')?.textContent).toContain('Current row B')
     release()
     await settle()
 
     expect(lightbox.hidden).toBe(false)
-    expect(lightbox.querySelector('.title')?.textContent).toContain('Current row B')
+    expect(lightbox.querySelector('.card-title')?.textContent).toContain('Current row B')
     expect(lightbox.querySelector('.lb-count')?.textContent).toBe('1 of 1')
   })
 
@@ -1296,13 +1306,13 @@ describe('direct overlay draft reconciliation', () => {
     await settle()
 
     const lightbox = document.getElementById('lightbox')!
-    const compare = buttonLabelled('Compare', lightbox)!
+    const compare = buttonLabelled('Hide option details', lightbox)!
     compare.focus()
     click(compare)
     await settle()
 
     expect(document.activeElement).toBe(lightbox.querySelector('.lb-panel'))
-    expect(buttonLabelled('Hide compare', lightbox)).not.toBeNull()
+    expect(buttonLabelled('Compare options', lightbox)).not.toBeNull()
   })
 
   it('does not transfer focus from a removed Review queue entry to the next row', async () => {
@@ -1329,7 +1339,7 @@ describe('direct overlay draft reconciliation', () => {
     release()
     await settle()
 
-    expect(lightbox.querySelector('.title')?.textContent).toContain('Next row B')
+    expect(lightbox.querySelector('.card-title')?.textContent).toContain('Next row B')
     expect(document.activeElement).toBe(lightbox.querySelector('.lb-panel'))
   })
 })

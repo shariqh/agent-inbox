@@ -7,6 +7,31 @@ export const KEYS = {
   prev: ['k', 'ArrowUp'],
 }
 
+export const KEYBOARD_COMMANDS = [
+  { id: 'hints', key: 'f', display: 'F', label: 'Show keys for the controls on screen', group: 'Start here', selector: '#keyboardHints' },
+  { id: 'help', key: '?', display: '?', label: 'Open keyboard shortcuts', group: 'Start here', selector: '#keyboardHelp' },
+  { id: 'search', key: 'mod+k', display: 'Mod K', label: 'Search this workspace (or press /)', group: 'Start here', legacy: true },
+  { id: 'dashboard', key: 'd', prefix: 'g', display: 'G D', label: 'Dashboard', group: 'Go to', selector: '#tabs [data-tab="dashboard"]' },
+  { id: 'needsYou', key: 'i', prefix: 'g', display: 'G I', label: 'Inbox', group: 'Go to', selector: '#tabs [data-tab="needsYou"]' },
+  { id: 'boards', key: 'p', prefix: 'g', display: 'G P', label: 'Plans', group: 'Go to', selector: '#tabs [data-tab="boards"]' },
+  { id: 'notes', key: 'n', prefix: 'g', display: 'G N', label: 'Notes', group: 'Go to', selector: '#tabs [data-tab="notes"]' },
+  { id: 'done', key: 'h', prefix: 'g', display: 'G H', label: 'History', group: 'Go to', selector: '#tabs [data-tab="done"]' },
+  { id: 'setup', key: 's', prefix: 'g', display: 'G S', label: 'Settings', group: 'Go to', selector: '#gear' },
+  { id: 'agents', key: 'a', prefix: 'g', display: 'G A', label: 'Agent filter', group: 'Go to', selector: '.agent-pick .tab-label' },
+  { id: 'projects', key: 'o', prefix: 'g', display: 'G O', label: 'Project picker', group: 'Go to', selector: '#projectDisclosureToggle, .sidebar-section-label' },
+  { id: 'live', key: 'l', prefix: 'g', display: 'G L', label: 'Toggle Live sessions', group: 'Go to', selector: '#liveStrip .live-label' },
+  { id: 'next', key: 'j', display: 'J / K', label: 'Move between items (arrow keys also work)', group: 'Work through items', legacy: true },
+  { id: 'open', key: 'Enter', display: 'Enter', label: 'Open the selected item or focused control', group: 'Work through items', legacy: true },
+  { id: 'reply', key: 'r', display: 'R', label: 'Focus the open reply box', group: 'Work through items' },
+  { id: 'options', key: '1-4', display: '1-4', label: 'Choose an option in the active card', group: 'Work through items', legacy: true },
+  { id: 'submit', key: 'mod+Enter', display: 'Mod Enter', label: 'Send a reply; plain Enter keeps a new line', group: 'Work through items', legacy: true },
+  { id: 'resolve', key: 'e', display: 'E', label: 'Resolve the current item', group: 'Work through items', legacy: true },
+  { id: 'dismiss', key: 'x', display: 'X', label: 'Dismiss the current item with its undo window', group: 'Work through items', legacy: true },
+  { id: 'review', key: 't', display: 'T', label: 'Open the review queue', group: 'Work through items', legacy: true },
+  { id: 'focus', key: 'Tab', display: 'Tab / Shift Tab', label: 'Move through controls; use arrows for pickers and pane dividers', group: 'Every control', legacy: true },
+  { id: 'escape', key: 'Escape', display: 'Esc', label: 'Leave hints, cancel a shortcut, or close the current surface', group: 'Every control', legacy: true, selector: '.keyboard-close, .lb-close, .relay-close, .mission-close, .mission-detail-close' },
+]
+
 // ctx: { typing, deckOpen, expanded, peeking, optionCount }
 export function keyAction(key, ctx = {}) {
   const {

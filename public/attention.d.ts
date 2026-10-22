@@ -1,4 +1,4 @@
-export type Liveness = 'waiting' | 'parked' | 'stale' | 'snoozed'
+export type Liveness = 'waiting' | 'parked' | 'stale' | 'later'
 
 export interface AttentionItem {
   id: string
@@ -10,6 +10,8 @@ export interface AttentionItem {
   reply_kind?: 'answer' | 'clarify' | 'decline' | null
   session?: string | null
   snoozed_until?: string | null
+  /** issue #247 — the human set this ask aside with no return time. */
+  pinned_at?: string | null
   created_at: string
   title?: string
   detail?: string
@@ -36,6 +38,8 @@ export interface AttentionRow {
   handled_seen_at?: string | null
   handled_seen_by?: string | null
   snoozed_until?: string | null
+  /** issue #247 — the human set this row's current action aside with no return time. */
+  pinned_at?: string | null
   note?: string
   next_step?: string
   action_owner?: 'decision' | 'task' | 'approval' | null
@@ -59,6 +63,13 @@ export interface AttentionBoard {
 export type AttentionEntry =
   | { kind: 'item'; item: AttentionItem; liveness: Liveness }
   | { kind: 'row'; row: AttentionRow; board: AttentionBoard }
+
+/** Why a deferred ask sits in Later (#247). A pin wins when both are set. */
+export type LaterReason = 'snoozed' | 'pinned'
+
+export type LaterEntry =
+  | { kind: 'item'; item: AttentionItem; liveness: 'later'; later: LaterReason }
+  | { kind: 'row'; row: AttentionRow; board: AttentionBoard; liveness: 'later'; later: LaterReason }
 
 export interface StaleEntry {
   kind: 'item'
@@ -98,12 +109,13 @@ export function staleEntries(
   nowMs: number,
   liveSessionIds: LiveSessionIds,
 ): StaleEntry[]
-export function snoozedEntries(
+/** Unanswered asks the human snoozed or pinned for later, each tagged with its reason (#247). */
+export function laterEntries(
   items: AttentionItem[],
   boards: AttentionBoard[],
   nowMs: number,
   closedProjects?: ClosedProjects,
-): AttentionEntry[]
+): LaterEntry[]
 export function attentionCount(
   items: AttentionItem[],
   boards: AttentionBoard[],

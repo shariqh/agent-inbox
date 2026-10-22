@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
 import { insertItem, listItems, snoozeItem } from '../../src/store.js'
 import {
-  advanceClock, bootApp, click, collapseRow, freshDb, navigateToHash, pollTick, row, settle, useDomTest,
+  advanceClock, bootApp, click, collapseRow, freshDb, navigateToHash, pollTick, row, settle, showInbox, useDomTest,
 } from './harness.js'
 
 useDomTest()
@@ -30,6 +30,7 @@ describe('Needs-you deep-link selection ownership', () => {
     advanceClock()
     const linked = insertItem(db, { ...AGENT, kind: 'question', title: 'Linked selection' })
     await bootApp(db)
+    await showInbox()
 
     click(row(first))
     await settle()
@@ -57,7 +58,7 @@ describe('Needs-you deep-link selection ownership', () => {
     navigateToHash(`#item/${snoozed}`)
     await settle()
     await pollTick()
-    expect(row(snoozed)?.closest<HTMLDetailsElement>('.snoozed-fold')?.open).toBe(true)
+    expect(row(snoozed)?.closest<HTMLDetailsElement>('.later-section')?.open).toBe(true)
     expect(row(snoozed)?.classList.contains('selected')).toBe(true)
     expect(row(snoozed)?.tabIndex).toBe(0)
   })

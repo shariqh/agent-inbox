@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -13,12 +13,14 @@ import {
 import { buildLinuxThinApp } from '../scripts/build-linux-thin-app.mjs'
 import { resolveLinuxCompilerEnvironment } from '../scripts/linux-release-inputs.mjs'
 import { PROCESS_PROBE } from '../scripts/verify-linux-thin-app.mjs'
+import { verifyPackagedUpdateTrust } from '../scripts/package-update-trust.mjs'
+import { scratchDir } from './scratch.js'
 
 function elfFixture(arch: 'x64' | 'arm64', symbols: string[] = []): string {
   const bytes = Buffer.alloc(64)
   bytes.set([0x7f, 0x45, 0x4c, 0x46, 2, 1])
   bytes.writeUInt16LE(arch === 'x64' ? 62 : 183, 18)
-  const path = join(mkdtempSync(join(tmpdir(), 'linux-elf-')), 'binary')
+  const path = join(scratchDir('linux-elf-'), 'binary')
   writeFileSync(path, Buffer.concat([bytes, Buffer.from(`\0${symbols.join('\0')}\0`)]))
   return path
 }
@@ -102,7 +104,7 @@ describe('native Linux folder gates', () => {
   })
 
   it('gates every plain ELF in the folder and reports sorted relative paths without following links', () => {
-    const root = mkdtempSync(join(tmpdir(), 'linux-elf-tree-'))
+    const root = scratchDir('linux-elf-tree-')
     writeFileSync(join(root, 'README'), 'not an ELF')
     writeElf(join(root, 'z', 'libextra.so'), 'x64', ['GLIBC_2.28'])
     writeElf(join(root, 'a', 'helper'), 'x64', ['GLIBCXX_3.4.25'])
@@ -174,13 +176,13 @@ describe('native Linux folder gates', () => {
       actual: {
         platform: 'linux',
         arch: 'x64',
-        version: '43.1.1',
+        version: '43.8.0',
         modulesAbi: '146',
       },
       expected: {
         platform: 'linux',
         arch: 'x64',
-        version: '43.1.1',
+        version: '43.8.0',
         modulesAbi: '148',
       },
       label: 'packaged Electron',
@@ -188,6 +190,22 @@ describe('native Linux folder gates', () => {
 
     expect(() => readElfArchitecture(join(tmpdir(), 'missing-elf')))
       .toThrow(LinuxBinaryGateError)
+  })
+
+  it('runs the Electron-embedded SQLite check after the packaged Electron identity probe (#135)', () => {
+    const source = readFileSync(join(resolve(process.cwd()), 'scripts', 'verify-linux-thin-app.mjs'), 'utf8')
+    const probe = source.indexOf('processProbe(executable, resources, true)')
+    const check = source.indexOf('runElectronSqliteCheck({')
+    const report = source.indexOf('return {', check)
+    expect(probe).toBeGreaterThan(-1)
+    expect(check).toBeGreaterThan(probe)
+    expect(report).toBeGreaterThan(check)
+    const call = source.slice(check, report)
+    expect(call).toContain('executable,')
+    expect(call).toContain("storePath: join(resources, 'dist', 'store.js')")
+    expect(call).toContain('electron: inputs.electron.version')
+    expect(call).toContain('modulesAbi: inputs.electron.modulesAbi')
+    expect(source.slice(report)).toContain("electronSqliteCheck: 'passed'")
   })
 
   it('rejects non-native thin builds before reading runtime or repository paths', async () => {
@@ -241,5 +259,25 @@ describe('native Linux folder gates', () => {
     expect(build).toContain('write-setup-info.mjs')
     expect(build).toContain("'--runtime-key', key")
     expect(build).not.toMatch(/AppImage|\.deb\b|electron-builder|electron-forge/i)
+  })
+
+  it('loads the shipped update verifier and pinned registry from a Linux app folder', () => {
+    const appResources = join(
+      scratchDir('linux-update-trust-'),
+      'Agent Inbox',
+      'resources',
+      'app',
+    )
+    mkdirSync(join(appResources, 'electron'), { recursive: true })
+    mkdirSync(join(appResources, 'release'), { recursive: true })
+    const repo = resolve(process.cwd())
+    cpSync(join(repo, 'electron/update-manifest.cjs'), join(appResources, 'electron/update-manifest.cjs'))
+    cpSync(join(repo, 'electron/update-trust.cjs'), join(appResources, 'electron/update-trust.cjs'))
+    cpSync(join(repo, 'release/update-keys.json'), join(appResources, 'release/update-keys.json'))
+
+    expect(verifyPackagedUpdateTrust(appResources)).toEqual({
+      signingKeyId: 'ed25519-99927ba2f6af6482',
+      trustedKeyIds: ['ed25519-99927ba2f6af6482'],
+    })
   })
 })

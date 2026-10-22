@@ -4,7 +4,7 @@ import {
   secondaryLine, streamCounts, agentCounts, rowModel, urgencyChip, relMs,
   FRESH_MS, AGING_MS, freshnessTone, ageChip, needsYouEntries, staleFoldLabel,
   SECONDARY_BUDGET, rowStarOption, stagedLabel, undoRefusal, handledUndoRefusal, repliedEntries,
-  ASK_SORT_OPTIONS, currentAskAt, askTimeModel, sortNeedsYouByAsk,
+  ASK_SORT_OPTIONS, currentAskAt, askTimeModel, sortNeedsYouByAsk, sortLaterEntries, laterBreakdown,
 } from '../public/rowview.js'
 import type { RowItem, Entry } from '../public/rowview.js'
 import { attentionCount } from '../public/attention.js'
@@ -19,9 +19,14 @@ const base: RowItem = {
 const item = (over: Partial<RowItem> = {}): RowItem => ({ ...base, ...over })
 
 describe('secondaryLine', () => {
-  it('leads with the concrete next step when one is present', () => {
+  it('uses the explanation below the action-first headline without repeating the request', () => {
     expect(secondaryLine(item({ detail: 'reviews are green', next_step: 'Merge PR #42.' })))
-      .toBe('Next: Merge PR #42.')
+      .toBe('reviews are green')
+    expect(rowModel({
+      kind: 'item',
+      item: item({ title: 'PR-42 gate', detail: 'reviews are green', next_step: 'Merge PR #42.' }),
+      liveness: 'waiting',
+    })).toMatchObject({ title: 'Merge PR #42.', originalTitle: 'PR-42 gate', secondary: 'reviews are green' })
   })
   it('prefers the item detail', () => {
     expect(secondaryLine(item({ detail: 'one glanceable line' }))).toBe('one glanceable line')
@@ -107,8 +112,8 @@ describe('rowModel', () => {
       board: { id: 'b1', project: 'web', stream: '', title: 'Rollout' },
     })
     expect(m).toMatchObject({
-      kind: 'row', id: 'r1', project: 'web', title: 'Deploy staging',
-      secondary: 'Next: Create the production token.',
+      kind: 'row', id: 'r1', project: 'web', title: 'Create the production token.',
+      originalTitle: 'Deploy staging', secondary: 'needs a prod token',
       boardId: 'b1', boardTitle: 'Rollout', liveness: 'blocked',
     })
   })
@@ -245,9 +250,9 @@ describe('urgencyChip', () => {
   // chip, three states, and the un-delivered one is never silent.
   it('gives an annotated row the two-state pickup vocabulary', () => {
     const row = (over: Record<string, unknown>) => model({ kind: 'row', answered: true, pickedUp: false, pickedUpAt: null, pickedUpBy: '', ...over })
-    expect(urgencyChip(row({}), T0)).toEqual({ text: 'Waiting for agent', tone: 'muted' })
+    expect(urgencyChip(row({}), T0)).toEqual({ text: 'Waiting for delivery', tone: 'muted' })
     expect(urgencyChip(row({ pickedUp: true, pickedUpAt: new Date(T0 - 3 * 60_000).toISOString() }), T0))
-      .toEqual({ text: 'with agent 3m', tone: 'muted' })
+      .toEqual({ text: 'delivered 3m', tone: 'muted' })
   })
   it('an un-picked-up row is never rendered as blocked — the human already answered', () => {
     const m = model({ kind: 'row', answered: true, pickedUp: false, pickedUpAt: null, pickedUpBy: '' })
@@ -259,9 +264,120 @@ describe('urgencyChip', () => {
   // not a third one nobody has to learn.
   it('gives a row marked handled the same two-state pickup vocabulary as an annotated one', () => {
     const marked = model({ kind: 'row', answered: true, handled: true, pickedUp: false, pickedUpAt: null, pickedUpBy: '' })
-    expect(urgencyChip(marked, T0)).toEqual({ text: 'Waiting for agent', tone: 'muted' })
+    expect(urgencyChip(marked, T0)).toEqual({ text: 'Waiting for delivery', tone: 'muted' })
     const collected = { ...marked, pickedUp: true, pickedUpAt: new Date(T0 - 3 * 60_000).toISOString() }
-    expect(urgencyChip(collected, T0)).toEqual({ text: 'with agent 3m', tone: 'muted' })
+    expect(urgencyChip(collected, T0)).toEqual({ text: 'delivered 3m', tone: 'muted' })
+  })
+})
+
+// Issue #247: a deferred ask shows WHY it is out of the queue instead of an
+// urgency it no longer has. The model carries the facts; the chip words them.
+describe('reason chips for deferred asks (#247)', () => {
+  const HOUR = 3600_000
+  const later = (reason: 'snoozed' | 'pinned', over: Partial<RowItem> = {}) =>
+    rowModel({ kind: 'item', item: item(over), liveness: 'later', later: reason })
+
+  it('carries the pin, the reason and a Copilot quiet deferral on the model', () => {
+    const quiet = new Date(T0 + 3 * HOUR).toISOString()
+    expect(later('pinned', { pinned_at: '2026-07-22T12:00:00.000Z' }))
+      .toMatchObject({ liveness: 'later', later: 'pinned', pinnedAt: '2026-07-22T12:00:00.000Z', quietUntil: null })
+    expect(later('snoozed', {
+      snoozed_until: quiet, action_agent: 'copilot', watch_stopped_at: new Date(T0).toISOString(), watch_stopped_until: quiet,
+    })).toMatchObject({ later: 'snoozed', pinnedAt: null, quietUntil: quiet })
+    const row = rowModel({
+      kind: 'row',
+      row: { id: 'r1', label: 'Deploy', status: 'blocked', pinned_at: '2026-07-22T12:00:00.000Z' },
+      board: { id: 'b1', project: 'api', title: 'Release' },
+      liveness: 'later',
+      later: 'pinned',
+    })
+    expect(row).toMatchObject({ liveness: 'later', later: 'pinned', pinnedAt: '2026-07-22T12:00:00.000Z' })
+    expect(rowModel({ kind: 'item', item: item(), liveness: 'waiting' })).toMatchObject({ later: null, pinnedAt: null })
+  })
+
+  it('says how long ago a pinned ask was set aside', () => {
+    const pinned = later('pinned', { pinned_at: new Date(T0 - 2 * 24 * HOUR).toISOString() })
+    expect(urgencyChip(pinned, T0)).toEqual({ text: 'Pinned 2d ago', tone: 'muted' })
+    expect(urgencyChip(later('pinned', { pinned_at: new Date(T0).toISOString() }), T0))
+      .toEqual({ text: 'Pinned moments ago', tone: 'muted' })
+    expect(urgencyChip(later('pinned', { pinned_at: 'not a time' }), T0)).toEqual({ text: 'Pinned', tone: 'muted' })
+  })
+
+  it('says when a snoozed ask comes back, and that the agent waits quietly only while it does', () => {
+    const until = new Date(T0 + 3 * HOUR).toISOString()
+    expect(urgencyChip(later('snoozed', { snoozed_until: until }), T0)).toEqual({ text: 'Back in 3h', tone: 'muted' })
+    const quietly = later('snoozed', {
+      snoozed_until: until, action_agent: 'copilot', watch_stopped_at: new Date(T0).toISOString(), watch_stopped_until: until,
+    })
+    expect(urgencyChip(quietly, T0)).toEqual({ text: 'Back in 3h · agent waits quietly', tone: 'muted' })
+    expect(urgencyChip(quietly, T0 + 4 * HOUR).text).not.toContain('quietly')
+  })
+
+  it('claims no quiet wait for a stop for good or an asker that runs no watcher', () => {
+    const until = new Date(T0 + 3 * HOUR).toISOString()
+    const stopped = later('snoozed', {
+      snoozed_until: until, action_agent: 'copilot', watch_stopped_at: new Date(T0).toISOString(), watch_stopped_until: null,
+    })
+    expect(urgencyChip(stopped, T0).text).toBe('Back in 3h')
+    const claude = later('snoozed', {
+      snoozed_until: until, action_agent: 'claude-code', watch_stopped_at: new Date(T0).toISOString(), watch_stopped_until: until,
+    })
+    expect(urgencyChip(claude, T0).text).toBe('Back in 3h')
+  })
+})
+
+// Issue #247 §2.2: the Later section's own order and header, independent of the
+// queue's Sort menu. Snoozed asks first, the soonest back first; then pinned
+// asks, the oldest pin first; ties by a stable key, so polls never reshuffle.
+describe('the Later section order and breakdown (#247)', () => {
+  const HOUR = 3600_000
+  const iso = (ms: number) => new Date(ms).toISOString()
+  const snoozed = (id: string, untilMs: number): Entry => ({
+    kind: 'item', item: item({ id, snoozed_until: iso(untilMs) }), liveness: 'later', later: 'snoozed',
+  })
+  const pinned = (id: string, atMs: number): Entry => ({
+    kind: 'item', item: item({ id, pinned_at: iso(atMs) }), liveness: 'later', later: 'pinned',
+  })
+  const pinnedRow = (id: string, atMs: number): Entry => ({
+    kind: 'row', row: { id, label: id, status: 'blocked', pinned_at: iso(atMs) }, board: { id: 'b', project: 'api', title: 'B' },
+    liveness: 'later', later: 'pinned',
+  })
+  const snoozedRow = (id: string, untilMs: number): Entry => ({
+    kind: 'row', row: { id, label: id, status: 'blocked', snoozed_until: iso(untilMs) }, board: { id: 'b', project: 'api', title: 'B' },
+    liveness: 'later', later: 'snoozed',
+  })
+  const ids = (entries: Entry[]) => entries.map((entry) => (entry.kind === 'row' ? entry.row.id : entry.item.id))
+
+  it('puts snoozed asks first, soonest back first, then pinned asks, oldest pin first', () => {
+    const entries = [
+      pinned('pinned-new', T0 - HOUR),
+      snoozed('back-late', T0 + 5 * HOUR),
+      pinnedRow('pinned-old', T0 - 3 * HOUR),
+      snoozedRow('back-soon', T0 + HOUR),
+    ]
+    expect(ids(sortLaterEntries(entries))).toEqual(['back-soon', 'back-late', 'pinned-old', 'pinned-new'])
+    expect(ids(entries), 'the input is not reordered in place').toEqual(['pinned-new', 'back-late', 'pinned-old', 'back-soon'])
+  })
+
+  it('breaks ties by a stable key, whatever order the poll delivered them in', () => {
+    const tied = [snoozedRow('b', T0 + HOUR), snoozed('b', T0 + HOUR), snoozed('a', T0 + HOUR), pinned('d', T0), pinned('c', T0)]
+    const expected = ['a', 'b', 'b', 'c', 'd']
+    expect(ids(sortLaterEntries(tied))).toEqual(expected)
+    expect(ids(sortLaterEntries([...tied].reverse()))).toEqual(expected)
+    expect(sortLaterEntries(tied).slice(1, 3).map((entry) => entry.kind)).toEqual(['item', 'row'])
+  })
+
+  it('sorts an unreadable time last within its reason', () => {
+    const broken: Entry = { kind: 'item', item: item({ id: 'broken', pinned_at: 'not a time' }), liveness: 'later', later: 'pinned' }
+    expect(ids(sortLaterEntries([broken, pinned('ok', T0)]))).toEqual(['ok', 'broken'])
+  })
+
+  it('names how many are pinned and snoozed, and when the next snooze ends', () => {
+    const entries = [pinned('p1', T0), snoozed('s1', T0 + 5 * HOUR), pinnedRow('p2', T0), snoozedRow('s2', T0 + 2 * HOUR + 59 * 60_000)]
+    expect(laterBreakdown(entries, T0)).toBe('2 pinned · 2 snoozed, next back in 2h')
+    expect(laterBreakdown([pinned('p1', T0)], T0)).toBe('1 pinned')
+    expect(laterBreakdown([snoozed('s1', T0 + 30 * 60_000)], T0)).toBe('1 snoozed, next back in 30m')
+    expect(laterBreakdown([], T0)).toBe('')
   })
 })
 
@@ -274,7 +390,7 @@ describe('handledUndoRefusal (#36)', () => {
   it('names the delivery age once an agent has been handed the mark', () => {
     const msg = handledUndoRefusal({ id: 'r1', label: 'x', handled_at: '2026-07-24T11:00:00Z', handled_seen_at: new Date(T0 - 4 * 60_000).toISOString() }, T0)
     expect(msg).toContain('4m')
-    expect(msg).toMatch(/will not un-tell the agent/)
+    expect(msg).toBe('Delivered 4m ago — this confirmation can no longer be withdrawn')
   })
 })
 
@@ -505,7 +621,7 @@ describe('undoRefusal', () => {
   it('explains the lost race once the agent picked it up', () => {
     const picked = item({ reply: 'go', reply_seen_at: new Date(T0).toISOString() })
     expect(undoRefusal(picked, T0 + 2 * 60_000))
-      .toBe('Picked up 2m ago — answering again will not un-do it')
+      .toBe('Delivered 2m ago — this answer can no longer be withdrawn')
   })
 })
 

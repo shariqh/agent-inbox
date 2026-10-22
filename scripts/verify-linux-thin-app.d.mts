@@ -21,6 +21,7 @@ export type LinuxThinReport = {
   }>
   appTreeDigest: string
   nativeAddonSelftests: 'passed'
+  electronSqliteCheck: 'passed'
   exactHostSetupSelection: 'passed'
 }
 export function verifyLinuxThinApp(options: {

@@ -14,6 +14,7 @@ on:
       - "scripts/archive-tree.mjs"
       - "scripts/build-linux-thin-app.mjs"
       - "scripts/build-thin-app.mjs"
+      - "scripts/electron-sqlite-check.mjs"
       - "scripts/license.mjs"
       - "scripts/linux-binary-gates.mjs"
       - "scripts/linux-release-inputs.mjs"
@@ -21,6 +22,7 @@ on:
       - "scripts/release-inputs.mjs"
       - "scripts/runtime-payload.mjs"
       - "scripts/runtime-provenance.mjs"
+      - "scripts/runtime-sqlite-check.mjs"
       - "scripts/runtime-targets.mjs"
       - "scripts/setup-filesystem.cjs"
       - "scripts/source-provenance.mjs"
@@ -61,7 +63,7 @@ jobs:
       - id: release-inputs
         name: Resolve pinned Node version
         run: echo "node-version=$(node scripts/linux-release-inputs.mjs --node-version)" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ steps.release-inputs.outputs.node-version }}
           architecture: ${{ matrix.arch }}
@@ -171,7 +173,7 @@ jobs:
           kill "$APP_PID"
           wait "$APP_PID" || true
           trap - EXIT
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-${{ matrix.key }}-folder-inputs
           path: |

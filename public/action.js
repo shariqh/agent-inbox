@@ -45,13 +45,34 @@ function latestIso(...values) {
     .sort((a, b) => b.at - a.at)[0]?.value ?? null
 }
 
+export function itemAnnotationReceipt(entity) {
+  const text = typeof entity?.annotation === 'string' ? entity.annotation : ''
+  const stamp = (value) => typeof value === 'string' && Number.isFinite(Date.parse(value)) ? value : null
+  const savedAt = stamp(entity?.annotated_at)
+  const cleared = entity?.annotation === '' && savedAt !== null
+  if (!text && !cleared) return null
+  const seenAt = stamp(entity?.annotation_seen_at)
+  const tracked = Object.hasOwn(entity, 'annotation_seen_at')
+    && (entity.annotation_seen_at === null || seenAt !== null)
+  return {
+    text,
+    cleared,
+    savedAt,
+    seenAt,
+    seenBy: seenAt && typeof entity.annotation_seen_by === 'string' ? entity.annotation_seen_by : null,
+    state: seenAt ? 'picked' : !tracked ? 'untracked'
+      : entity.status === 'open' ? 'waiting'
+        : entity.status === 'resolved' || entity.status === 'dismissed' ? 'closed' : 'untracked',
+  }
+}
+
 export function agentFollowupChip(model, nowMs) {
   if (!model?.answered || !model?.pickedUp || !model?.pickedUpAt) return null
   const age = nowMs - Date.parse(model.pickedUpAt)
   if (age >= 60 * 60_000) {
     return { text: `follow-up due ${relative(age)}`, tone: age >= 4 * 60 * 60_000 ? 'hot' : 'warm' }
   }
-  return { text: `with agent ${relative(age)}`, tone: 'muted' }
+  return { text: `delivered ${relative(age)}`, tone: 'muted' }
 }
 
 function relative(ms) {
@@ -66,12 +87,24 @@ function relative(ms) {
 export function lifecycleReceipt(entity) {
   const steps = []
   const askedAt = entity?.action_started_at ?? entity?.created_at
-  if (askedAt) steps.push({ label: 'Asked', at: askedAt })
-  const response = responseLabel(entity)
-  const responseAt = latestIso(entity?.replied_at, entity?.annotated_at, entity?.handled_at)
-  if (response) steps.push({ label: response, at: responseAt })
-  const pickupAt = latestIso(entity?.reply_seen_at, entity?.annotation_seen_at, entity?.handled_seen_at)
-  if (pickupAt) steps.push({ label: 'With the agent', at: pickupAt })
-  if (entity?.outcome) steps.push({ label: entity.outcome, at: entity.outcome_at })
+  if (askedAt) steps.push({ kind: 'asked', label: 'Asked', at: askedAt })
+  if (entity?.kind === 'note' || entity?.kind === 'done') {
+    const note = itemAnnotationReceipt(entity)
+    if (note) steps.push({ kind: 'response', label: note.cleared ? 'Note cleared' : 'Note saved', at: note.savedAt })
+    if (note?.seenAt) steps.push({ kind: 'pickup', label: 'Note delivered to an agent', at: note.seenAt })
+  } else {
+    // An item's note is a separate channel, unlike a board row's answer annotation.
+    const responseEntity = entity?.kind === 'question'
+      ? { reply: entity.reply, reply_kind: entity.reply_kind, replied_at: entity.replied_at, reply_seen_at: entity.reply_seen_at }
+      : entity
+    const response = responseLabel(responseEntity)
+    const responseAt = latestIso(responseEntity?.replied_at, responseEntity?.annotated_at, responseEntity?.handled_at)
+    if (response) steps.push({ kind: 'response', label: response, at: responseAt })
+    const pickupAt = latestIso(responseEntity?.reply_seen_at, responseEntity?.annotation_seen_at, responseEntity?.handled_seen_at)
+    if (pickupAt && (entity?.kind !== 'question' || response)) {
+      steps.push({ kind: 'pickup', label: 'Delivered to an agent', at: pickupAt })
+    }
+  }
+  if (entity?.outcome) steps.push({ kind: 'outcome', label: entity.outcome, at: entity.outcome_at })
   return steps
 }

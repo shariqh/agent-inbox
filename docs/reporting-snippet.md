@@ -30,22 +30,40 @@ Call `flag` when:
   command** using the returned `mode`, `detach`, `shell_id`, and `timeout_seconds`; do not
   wait for it synchronously. The background completion notification wakes your session when
   the answer lands. On that notification, call `pending()` immediately, act on the answer,
-  and resolve the question. Clients without a returned watcher keep using their native wake
+  and resolve the question. A timeout is not an answer: re-run the same command, which waits
+  longer each time the same question is still unanswered. If the watcher says the human asked
+  you to stop waiting, do not re-arm it; their answer still arrives through `pending()` or
+  chat. Clients without a returned watcher keep using their native wake
   path. Also **poll `pending()`** between work steps: it returns `{ items, rows }` — your open questions with `reply` once answered (an
   option label or free text — follow it either way), plus optional `reply_context` when they
   attach extra direction with their answer, **and `rows`: the human's per-row notes on your
   boards** (see Boards below). Act on both: call `resolve` after handling a question item,
+  passing `expected_response_revision` from that item's `response_revision`,
   and move a board row out of `blocked` after handling its response. `pending()` is the ONE poll —
   everything they have said to you arrives through it. Do
   not park forever waiting in the terminal. If you end a turn with a Copilot question still
-  open, the returned watcher must already be running; do not tell the human they need to
-  message you again.
+  open, the returned watcher must already be running unless the human asked you to stop
+  waiting; do not tell the human they need to message you again.
   **One question, two channels.** A flagged question IS the question you are asking in
   chat — never open a second, independent prompt for a decision you already flagged; point
   at the flag instead. If they answer you in chat, call `answer({ id, text, context? })` so
   the inbox stops showing it open and unread. If that comes back
   `{ ok:false, reason:"unread_inbox_answer" }` they also answered in the inbox and you have
   not read it — poll `pending()` and follow that one; the inbox wins.
+  A successful `answer` returns `response_revision`; use it when resolving that answer.
+  Once an item has response or annotation history, including a clear, `resolve` requires
+  the exact revision you handled. `response_changed` or `response_revision_required`
+  means re-read with `pending({item_id: id})`, handle the current response, and retry explicitly —
+  never borrow a sibling's newer revision to acknowledge an answer you did not handle.
+  Items with no response history can still be resolved without a revision.
+  `pending()` also delivers human annotations on open notes and milestones, including
+  a clear (empty `annotation` with `annotated_at`). This informational feedback normally
+  leaves the queue after pickup; use `pending({item_id: id})` to recover it afterward,
+  adding `full: true` for its background or `project` when needed.
+  `annotation_seen_at`/`annotation_seen_by` mean handed to a reader, not handled by the
+  intended session. Informational feedback creates no new human attention or automatic
+  host-wake guarantee. Do not resolve a note or milestone merely because you read its
+  feedback; close it only when the item itself is complete or moot.
   Read `reply_kind`: `clarify` means resolve this wording and raise a corrected replacement
   question; `decline` means stop/cancel the proposed path and resolve with an `outcome`.
   `snoozed_until` means the human deferred the ask; do not nag or treat it as an answer.
@@ -113,7 +131,8 @@ prose. Do this **proactively**, without being asked:
   **one ask, one surface** — never also create a question item for that dependency.
   **Being stuck is not being blocked:** a failing
   test, a build or release that does not exist yet, another PR — no person can unblock those, so
-  they are `partial` (or `tracked`) with the reason in `note`.
+  they are `partial` (or `tracked`) with the reason in `note`. Waiting on another GitHub issue
+  (GitHub's 'blocked by') or on another step (`waits_on`) is tracked or partial, never blocked.
   `pending()` delivers their response kind too: `answer`, `clarify`, or `decline`.
   A row comes back as an `annotation` (words/choice), or `handled_at` — **the human telling you THEY have gone and
   DONE the thing** you blocked on. Both mean their part is finished; **flip the row's status
@@ -140,6 +159,23 @@ prose. Do this **proactively**, without being asked:
   `next_step: "Choose whether to merge PR #582."`,
   `action_owner: "approval"`, `impact: "Unblocks PR-X"`,
   `options: [Merge PR #582 (recommended), Hold]`; the six review rounds belong in `context`.
+- **GitHub issue links.** `board_upsert({ title, issue, rows })` pins the plan to an issue (say an
+  umbrella issue, when you work from a child's branch), and `rows[].issue` or
+  `board_row({ issue })` links a row. Accepted forms: `owner/name#123`, `#123` or `123` (this
+  session's GitHub repository) and `https://github.com/owner/name/issues/123`; anything else is
+  refused. Omitting `issue` keeps the link, `""` clears it, and `board_advance` or a move into
+  `blocked` keeps it. A titled `board_get` echoes `issue` and, once the viewer has fetched it,
+  a short `issue_rel` (parent and child counts, never titles; once GitHub's dependencies are
+  known, also `waits_on_issues`, the open blockers' issue keys, and an `unblocks` count). Those
+  keys are read-only GitHub data, never labels for `waits_on`. Agent Inbox never edits GitHub
+  relationships: use `gh issue edit --parent` / `--add-sub-issue` / `--add-blocked-by`.
+- **Step dependencies.** `rows[].waits_on` (or `board_row({ waits_on })`) lists the labels of
+  other rows in the same plan that a row waits on: at most 20 entries as sent, and duplicates
+  collapse. Omitting it keeps the list, `[]` clears it, and `board_advance` or a move into
+  `blocked` keeps it. An unknown label, a row naming itself and a cycle are refused with the
+  reason; a label whose row you later remove is kept and draws nothing. It never makes a row
+  `blocked`: a row that only waits is `tracked` or `partial`, and `blocked` remains for a
+  separate human action.
 - **`board_row({ title, label, expected_revision, status?, ..., outcome? })`** — update one
   existing row; when acknowledging the human, move it out of `blocked` and record the result.
 - **`board_advance({ title, label, board_version, expected_revision, ...fresh action })`** — atomically archive

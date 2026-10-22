@@ -1,7 +1,8 @@
-import { describe, it, expect } from 'vitest'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
+import { afterAll, afterEach, describe, it, expect, vi } from 'vitest'
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { spawn, spawnSync } from 'node:child_process'
-import { fileURLToPath } from 'node:url'
+import { createRequire } from 'node:module'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import {
@@ -9,11 +10,36 @@ import {
   runHook, sweepStale, hooksSettingsBlock, SUBCOMMANDS,
 } from '../src/hook.js'
 import type { SessionMarker } from '../src/hook.js'
-import { openDb, insertItem, listItems, replyItem, markReplySeen, resolveItem } from '../src/store.js'
+import {
+  openDb, insertItem, listItems, replyItem, markReplySeen, resolveItem,
+  upsertBoard, getBoard, annotateBoardRow, markRowHandled, markAnnotationDelivered,
+  updateBoardRow, archiveBoard, advanceBoardRow, upsertActivity, endActivity,
+} from '../src/store.js'
 import type { Item } from '../src/store.js'
+import { installRuntimeVersion } from './release-runtime.js'
+import { removeScratchDirs, scratchDir } from './scratch.js'
+import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 
 const REPO = fileURLToPath(new URL('..', import.meta.url))
+// lets a test hand the installer the real hook CLI from source, with no dist/ build
+const TSX_LOADER = pathToFileURL(createRequire(import.meta.url).resolve('tsx')).href
 const NOW = Date.parse('2026-07-26T12:00:00Z')
+
+afterEach(removeScratchDirs)
+
+// The project every hook event runs in (#245). A hook infers its project from the
+// event's cwd, so these tests give it a git repository whose origin names
+// PROJECT, never the checkout's own folder or remote: a copy of this repo under
+// any name, or a fork, must pass them too. Made once per file and removed after
+// it, since afterEach removes every scratchDir().
+const PROJECT = 'hook-project'
+const PROJECT_DIR = mkdtempSync(join(tmpdir(), 'hook-project-'))
+for (const args of [['init', '-q'], ['remote', 'add', 'origin', `https://github.com/example/${PROJECT}.git`]]) {
+  const git = spawnSync('git', ['-C', PROJECT_DIR, ...args], { encoding: 'utf8' })
+  if (git.status !== 0) throw new Error(`git ${args[0]} failed: ${git.stderr}`)
+}
+afterAll(() => rmSync(PROJECT_DIR, { recursive: true, force: true }))
 
 function q(over: Partial<Item> = {}): Item {
   return {
@@ -32,6 +58,9 @@ function q(over: Partial<Item> = {}): Item {
     context: '',
     status: 'open',
     annotation: null,
+    annotated_at: null,
+    annotation_seen_at: null,
+    annotation_seen_by: null,
     options: null,
     reply: null,
     reply_context: null,
@@ -39,11 +68,17 @@ function q(over: Partial<Item> = {}): Item {
     reply_seen_at: null,
     reply_source: null,
     reply_kind: null,
+    response_revision: 0,
     snoozed_until: null,
+    pinned_at: null,
+    watch_stopped_at: null,
+    watch_stopped_until: null,
+    action_agent: null,
     outcome: '',
     outcome_at: null,
     repo: null,
     issue_ref: null,
+    head_repo: null,
     created_at: new Date(NOW - 60_000).toISOString(),
     updated_at: new Date(NOW - 60_000).toISOString(),
     resolved_at: null,
@@ -54,7 +89,7 @@ function q(over: Partial<Item> = {}): Item {
 const OPTS = hookOpts({})
 
 it('points the legacy viewer fallback at the canonical IPv4 loopback URL', () => {
-  expect(nudgeText(1, 'agent-inbox')).toContain('127.0.0.1:4319/api/items')
+  expect(nudgeText([['agent-inbox', 1]])).toContain('127.0.0.1:4319/api/items')
 })
 
 describe('hook: suppression rules', () => {
@@ -161,11 +196,23 @@ describe('hook: options and parsing', () => {
   })
 
   it('nudgeText names the project, the count and the pending tool', () => {
-    const t = nudgeText(2, 'agent-inbox')
+    const t = nudgeText([['agent-inbox', 2]])
     expect(t).toContain('agent-inbox')
     expect(t).toContain('2')
     expect(t).toContain('pending')
     expect(t).toContain('resolve')
+  })
+
+  // #253: a response can wait in a project other than the one this session is
+  // scoped to, where a bare pending() would not find it.
+  it('nudgeText counts every project and names the pending call that reads each one', () => {
+    const t = nudgeText([['homelab', 2], ['dev-setup', 1]])
+    expect(t).toContain('3 response(s)')
+    expect(t).toContain('2 in project homelab')
+    expect(t).toContain('1 in project dev-setup')
+    expect(t).toContain('pending({project:"homelab"})')
+    expect(t).toContain('pending({project:"dev-setup"})')
+    expect(nudgeText([['homelab', 1]])).toContain('1 response(s) in project homelab')
   })
 
   it('SUBCOMMANDS is the dispatcher contract the docs are checked against', () => {
@@ -184,13 +231,61 @@ describe('hook: options and parsing', () => {
 // override it. The two tests that do are marked as such below; do not add a third
 // grace assertion that quietly inherits the 0.
 function freshEnv(extra: Record<string, string> = {}): { env: Record<string, string>; dbPath: string } {
-  const dbPath = join(mkdtempSync(join(tmpdir(), 'hook-')), 'inbox.db')
+  const dbPath = join(scratchDir('hook-'), 'inbox.db')
   openDb(dbPath).close() // the runtime deliberately no-ops until the db exists
   return { env: { AGENT_INBOX_DB: dbPath, AGENT_INBOX_HOOK_GRACE_MS: '0', ...extra }, dbPath }
 }
 
 function ev(over: Record<string, unknown> = {}): string {
-  return JSON.stringify({ session_id: 'S1', cwd: process.cwd(), notification_type: 'permission_prompt', message: 'Claude needs your permission to run Bash', ...over })
+  return JSON.stringify({ session_id: 'S1', cwd: PROJECT_DIR, notification_type: 'permission_prompt', message: 'Claude needs your permission to run Bash', ...over })
+}
+
+function waitingRow(db: ReturnType<typeof openDb>, project = PROJECT) {
+  upsertBoard(db, {
+    project, stream: 'main', agent: 'claude-code', title: 'Release',
+    rows: [{ label: 'Upload', status: 'blocked', action_owner: 'task', note: 'The release is ready.', next_step: 'Upload the build.' }],
+  })
+  return getBoard(db, project, 'Release')!.rows[0]!
+}
+
+// #253: the presence row an Agent Inbox server of THIS Claude Code process
+// writes. In-process, runHook's parent is the test runner's parent, so that is
+// the host both "processes" share, exactly as Claude Code is for a real hook and
+// its MCP server.
+function linkServer(db: ReturnType<typeof openDb>, session: string, project: string, over: { host_pid?: number; server_pid?: number } = {}) {
+  upsertActivity(db, {
+    session, project, stream: '', agent: 'claude-code', doing: 'open', idle: true, claim: false,
+    host_pid: process.ppid, server_pid: process.pid, ...over,
+  })
+}
+
+function question(db: ReturnType<typeof openDb>, project: string, title: string, session?: string): string {
+  return insertItem(db, { project, stream: '', agent: 'claude-code', session, kind: 'question', title })
+}
+
+// The watcher's lease lives in the hub; tests read it raw, as the frozen
+// statements in test/mixed-version.test.ts do. A missing hub reads as no
+// leases: opening it would recreate a scratch dir a failed test already removed.
+function leases(dbPath: string): Array<{ claim_key: string }> {
+  if (!existsSync(dbPath)) return []
+  const db = openDb(dbPath)
+  try {
+    return db.prepare(`SELECT claim_key FROM hook_watch_claims`).all() as Array<{ claim_key: string }>
+  } finally {
+    db.close()
+  }
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+// A watcher claims its lease only after it has captured what it waits on, so
+// anything written after this resolves happened after it armed.
+async function armed(dbPath: string, count = 1): Promise<void> {
+  const deadline = Date.now() + 10_000
+  while (leases(dbPath).length < count) {
+    if (Date.now() > deadline) throw new Error('the watcher never armed')
+    await sleep(10)
+  }
 }
 
 // the deferred commit is what actually writes the row; the notification hook
@@ -223,7 +318,7 @@ describe('hook: fail-open contract', () => {
   })
 
   it('a db path that cannot be opened is logged, not thrown', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'hook-bad-'))
+    const dir = scratchDir('hook-bad-')
     const dbPath = join(dir, 'inbox.db')
     writeFileSync(dbPath, 'not a database')
     const env = { AGENT_INBOX_DB: dbPath, AGENT_INBOX_HOOK_GRACE_MS: '0' }
@@ -232,7 +327,7 @@ describe('hook: fail-open contract', () => {
   })
 
   it('does nothing at all before the db exists (the per-prompt latency guard)', async () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'hook-none-')), 'inbox.db')
+    const dbPath = join(scratchDir('hook-none-'), 'inbox.db')
     const env = { AGENT_INBOX_DB: dbPath, AGENT_INBOX_HOOK_GRACE_MS: '0' }
     expect(await runHook(['prompt-submit'], ev(), env)).toEqual({ stdout: '' })
     expect(existsSync(dbPath)).toBe(false)
@@ -248,7 +343,7 @@ describe('hook: notification backstop (#10)', () => {
     expect(await runHook(['notification-commit'], ev(), env)).toEqual({ stdout: '' })
     const after = listItems(openDb(dbPath))
     expect(after).toHaveLength(1)
-    expect(after[0]).toMatchObject({ kind: 'question', status: 'open', agent: 'hook', session: 'S1', project: 'agent-inbox' })
+    expect(after[0]).toMatchObject({ kind: 'question', status: 'open', agent: 'hook', session: 'S1', project: PROJECT })
     expect(after[0]!.title).toMatch(/permission prompt/i)
     expect(after[0]!.context).toMatch(/backstop hook/)
   })
@@ -267,7 +362,7 @@ describe('hook: notification backstop (#10)', () => {
   it('is suppressed while a real agent question in this project is fresh', async () => {
     const { env, dbPath } = freshEnv()
     const db = openDb(dbPath)
-    insertItem(db, { project: 'agent-inbox', stream: 'main', agent: 'claude-code', kind: 'question', title: 'already asked' })
+    insertItem(db, { project: PROJECT, stream: 'main', agent: 'claude-code', kind: 'question', title: 'already asked' })
     await backstop(env)
     expect(listItems(db).filter((i) => i.agent === 'hook')).toHaveLength(0)
   })
@@ -290,11 +385,11 @@ describe('hook: notification backstop (#10)', () => {
 
   it('falls back to matching the message when the CLI sends no notification_type', async () => {
     const { env, dbPath } = freshEnv()
-    const noType = JSON.stringify({ session_id: 'S1', cwd: process.cwd(), message: 'Claude needs your permission to use Bash' })
+    const noType = JSON.stringify({ session_id: 'S1', cwd: PROJECT_DIR, message: 'Claude needs your permission to use Bash' })
     await runHook(['notification'], noType, env)
     await runHook(['notification-commit'], noType, env)
     expect(listItems(openDb(dbPath))).toHaveLength(1)
-    const chatty = JSON.stringify({ session_id: 'S2', cwd: process.cwd(), message: 'all done' })
+    const chatty = JSON.stringify({ session_id: 'S2', cwd: PROJECT_DIR, message: 'all done' })
     await runHook(['notification'], chatty, env)
     await runHook(['notification-commit'], chatty, env)
     expect(listItems(openDb(dbPath))).toHaveLength(1)
@@ -390,7 +485,7 @@ describe('hook: self-clearing (the trustworthy badge)', () => {
     await backstop(env, { session_id: 'S1' })
     await backstop({ ...env, AGENT_INBOX_HOOK_COOLDOWN_MS: '0' }, { session_id: 'S2' })
     const db = openDb(dbPath)
-    insertItem(db, { project: 'agent-inbox', stream: 'main', agent: 'claude-code', session: 'mcp-1', kind: 'question', title: 'a real flag' })
+    insertItem(db, { project: PROJECT, stream: 'main', agent: 'claude-code', session: 'mcp-1', kind: 'question', title: 'a real flag' })
     await runHook(['stop'], ev({ session_id: 'S1' }), env)
     const open = listItems(db, { status: 'open' })
     expect(open.map((i) => i.session).sort()).toEqual(['S2', 'mcp-1'])
@@ -401,10 +496,10 @@ describe('hook: self-clearing (the trustworthy badge)', () => {
   // spawn happened to take — with `>` it passes roughly two runs in three. This
   // one is arithmetic, so it cannot flap either way.
   it('sweeps at EXACTLY the cutoff (>=), so MAX_AGE_MS=0 means "clear every backstop"', () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'hook-sweep-')), 'inbox.db')
+    const dbPath = join(scratchDir('hook-sweep-'), 'inbox.db')
     const db = openDb(dbPath)
     const mk = (): Item => {
-      insertItem(db, { project: 'agent-inbox', stream: 'main', agent: 'hook', session: 'S1', kind: 'question', title: 'blocked at a prompt' })
+      insertItem(db, { project: PROJECT, stream: 'main', agent: 'hook', session: 'S1', kind: 'question', title: 'blocked at a prompt' })
       return listItems(db, { status: 'open' })[0]!
     }
     const DAY = 24 * 60 * 60 * 1000
@@ -435,7 +530,7 @@ describe('hook: self-clearing (the trustworthy badge)', () => {
   it('leaves a genuine agent question alone however old it is', async () => {
     const { env, dbPath } = freshEnv()
     const db = openDb(dbPath)
-    insertItem(db, { project: 'agent-inbox', stream: 'main', agent: 'claude-code', kind: 'question', title: 'still yours' })
+    insertItem(db, { project: PROJECT, stream: 'main', agent: 'claude-code', kind: 'question', title: 'still yours' })
     await runHook(['sweep'], ev(), { ...env, AGENT_INBOX_HOOK_MAX_AGE_MS: '0' })
     expect(listItems(db, { status: 'open' })).toHaveLength(1)
   })
@@ -445,7 +540,7 @@ describe('hook: pickup nudge (#21)', () => {
   function answered(): { env: Record<string, string>; dbPath: string; id: string } {
     const { env, dbPath } = freshEnv()
     const db = openDb(dbPath)
-    const id = insertItem(db, { project: 'agent-inbox', stream: 'main', agent: 'claude-code', kind: 'question', title: 'flags or branch?' })
+    const id = insertItem(db, { project: PROJECT, stream: 'main', agent: 'claude-code', kind: 'question', title: 'flags or branch?' })
     replyItem(db, id, 'flags — but canary first')
     return { env, dbPath, id }
   }
@@ -498,7 +593,7 @@ describe('hook: pickup nudge (#21)', () => {
     const other = insertItem(db, { project: 'elsewhere', stream: '', agent: 'claude-code', kind: 'question', title: 'SECRET-TITLE' })
     replyItem(db, other, 'do it')
     const out = JSON.parse((await runHook(['stop'], ev(), env)).stdout)
-    expect(out.reason).toContain('1 of your open question(s)')
+    expect(out.reason).toContain('1 response(s)')
     expect(out.reason).not.toContain('SECRET-TITLE')
     expect(out.reason).not.toContain('elsewhere')
   })
@@ -509,13 +604,60 @@ describe('hook: pickup nudge (#21)', () => {
   })
 })
 
+describe('hook: board-response pickup (#130)', () => {
+  it.each(['answer', 'clarify', 'decline'] as const)('nudges for a board %s without a question item', async (kind) => {
+    const { env, dbPath } = freshEnv()
+    const db = openDb(dbPath)
+    const row = waitingRow(db)
+    annotateBoardRow(db, row.id, 'Please continue.', kind)
+    const result = await runHook(['stop'], ev(), env)
+    const body = JSON.parse(result.stdout)
+    expect(body.decision).toBe('block')
+    expect(body.reason).toMatch(/pending/)
+    expect(body.reason).toMatch(/board_row/)
+    expect(getBoard(db, PROJECT, 'Release')!.rows[0]!.annotation_seen_at).toBeNull()
+    expect(await runHook(['stop'], ev({ stop_hook_active: true }), env)).toEqual({ stdout: '' })
+    db.close()
+  })
+
+  it.each(['session-start', 'prompt-submit'] as const)('%s notices a completed human task', async (sub) => {
+    const { env, dbPath } = freshEnv()
+    const db = openDb(dbPath)
+    const row = waitingRow(db)
+    markRowHandled(db, row.id)
+    expect((await runHook([sub], ev(), env)).stdout).toMatch(/pending/)
+    expect(getBoard(db, PROJECT, 'Release')!.rows[0]!.handled_seen_at).toBeNull()
+    db.close()
+  })
+
+  it('does not wake for completed, archived, or other-project rows', async () => {
+    const { env, dbPath } = freshEnv()
+    const db = openDb(dbPath)
+    const row = waitingRow(db)
+    annotateBoardRow(db, row.id, 'Done')
+    const board = getBoard(db, PROJECT, 'Release')!
+    updateBoardRow(db, {
+      project: board.project, stream: board.stream, agent: board.agent, title: board.title,
+      label: row.label, status: 'partial',
+      expectedBoardVersion: board.revision, expectedRevision: board.rows[0]!.revision,
+    })
+    expect(await runHook(['stop'], ev(), env)).toEqual({ stdout: '' })
+    const updated = getBoard(db, PROJECT, 'Release')!
+    archiveBoard(db, updated.id, updated.revision)
+    const other = waitingRow(db, 'elsewhere')
+    annotateBoardRow(db, other.id, 'Do not wake this project')
+    expect(await runHook(['stop'], ev(), env)).toEqual({ stdout: '' })
+    db.close()
+  })
+})
+
 describe('hook: watch', () => {
   const fast = { AGENT_INBOX_WATCH_SECS: '4', AGENT_INBOX_WATCH_POLL_MS: '20' }
 
   it('exits 2 with the nudge on stderr the moment a reply lands', async () => {
     const { env, dbPath } = freshEnv(fast)
     const db = openDb(dbPath)
-    const id = insertItem(db, { project: 'agent-inbox', stream: 'main', agent: 'claude-code', kind: 'question', title: 'which?' })
+    const id = insertItem(db, { project: PROJECT, stream: 'main', agent: 'claude-code', kind: 'question', title: 'which?' })
     const running = runHook(['watch'], ev(), env)
     setTimeout(() => replyItem(openDb(dbPath), id, 'the second one'), 100)
     const res = await running
@@ -524,9 +666,109 @@ describe('hook: watch', () => {
     expect(res.stderr).toMatch(/pending/)
   })
 
+  it.each(['annotation', 'handled'] as const)('wakes for a board-only %s response', async (response) => {
+    const { env, dbPath } = freshEnv(fast)
+    const db = openDb(dbPath)
+    const row = waitingRow(db)
+    const running = runHook(['watch'], ev(), env)
+    const timer = setTimeout(() => {
+      if (response === 'annotation') annotateBoardRow(db, row.id, 'Continue')
+      else markRowHandled(db, row.id)
+    }, 50)
+    const result = await running
+    clearTimeout(timer)
+    expect(result).toMatchObject({ stdout: '', exitCode: 2, stderr: expect.stringMatching(/pending/) })
+    const current = getBoard(db, PROJECT, 'Release')!.rows[0]!
+    expect(current.annotation_seen_at).toBeNull()
+    expect(current.handled_seen_at).toBeNull()
+    db.close()
+  })
+
+  it('checks answers already waiting before deciding whether to arm', async () => {
+    const { env, dbPath } = freshEnv(fast)
+    const db = openDb(dbPath)
+    const row = waitingRow(db)
+    annotateBoardRow(db, row.id, 'Continue')
+    expect(await runHook(['watch'], ev(), env)).toMatchObject({ stdout: '', exitCode: 2 })
+    db.close()
+  })
+
+  it('does not turn an unread response into repeated Stop continuation wakes', async () => {
+    const { env, dbPath } = freshEnv(fast)
+    const db = openDb(dbPath)
+    const row = waitingRow(db)
+    annotateBoardRow(db, row.id, 'Continue')
+    const question = insertItem(db, { project: PROJECT, stream: '', agent: 'claude-code', kind: 'question', title: 'Proceed?' })
+    replyItem(db, question, 'Yes')
+    for (let attempt = 0; attempt < 2; attempt++) {
+      expect(await runHook(['watch'], ev({ stop_hook_active: true }), env)).toEqual({ stdout: '' })
+    }
+    db.close()
+  })
+
+  it('a Stop continuation can still wait for a future response without repeating the old one', async () => {
+    const { env, dbPath } = freshEnv(fast)
+    const db = openDb(dbPath)
+    const old = insertItem(db, { project: PROJECT, stream: '', agent: 'claude-code', kind: 'question', title: 'Old request' })
+    replyItem(db, old, 'Already waiting')
+    const row = waitingRow(db)
+    const running = runHook(['watch'], ev({ stop_hook_active: true }), env)
+    await armed(dbPath)
+    markRowHandled(db, row.id)
+    const result = await running
+    expect(result.exitCode).toBe(2)
+    db.close()
+  })
+
+  it('does not let a replacement action bypass the armed row version', async () => {
+    const { env, dbPath } = freshEnv(fast)
+    const db = openDb(dbPath)
+    const row = waitingRow(db)
+    const running = runHook(['watch'], ev(), env)
+    await armed(dbPath)
+    const board = getBoard(db, PROJECT, 'Release')!
+    advanceBoardRow(db, {
+      project: board.project, title: board.title, label: row.label,
+      expectedBoardVersion: board.revision, expectedRevision: row.revision,
+      note: 'A later request.', next_step: 'Upload the next build.', action_owner: 'task', impact: 'Next release.',
+    })
+    annotateBoardRow(db, row.id, 'Answer to the later request')
+    const result = await running
+    expect(result).toEqual({ stdout: '' })
+    db.close()
+  })
+
+  it('an armed board watch still wakes if another session stamps delivery first', async () => {
+    const { env, dbPath } = freshEnv(fast)
+    const db = openDb(dbPath)
+    const row = waitingRow(db)
+    const running = runHook(['watch'], ev(), env)
+    await armed(dbPath)
+    annotateBoardRow(db, row.id, 'Continue')
+    const answered = getBoard(db, PROJECT, 'Release')!.rows[0]!
+    markAnnotationDelivered(db, row.id, answered.annotated_at, 'sibling')
+    const result = await running
+    expect(result.exitCode).toBe(2)
+    db.close()
+  })
+
+  it('stands down when its only blocked board is archived', async () => {
+    const { env, dbPath } = freshEnv(fast)
+    const db = openDb(dbPath)
+    waitingRow(db)
+    const running = runHook(['watch'], ev(), env)
+    const timer = setTimeout(() => {
+      const board = getBoard(db, PROJECT, 'Release')!
+      archiveBoard(db, board.id, board.revision)
+    }, 50)
+    expect(await running).toEqual({ stdout: '' })
+    clearTimeout(timer)
+    db.close()
+  })
+
   it('exits 0 immediately when the project has no unanswered question', async () => {
     const { env, dbPath } = freshEnv(fast)
-    insertItem(openDb(dbPath), { project: 'agent-inbox', stream: '', agent: 'claude-code', kind: 'note', title: 'fyi' })
+    insertItem(openDb(dbPath), { project: PROJECT, stream: '', agent: 'claude-code', kind: 'note', title: 'fyi' })
     const started = Date.now()
     expect(await runHook(['watch'], ev(), env)).toEqual({ stdout: '' })
     expect(Date.now() - started).toBeLessThan(3000)
@@ -535,31 +777,320 @@ describe('hook: watch', () => {
   it('stands down when the last open question is resolved out from under it', async () => {
     const { env, dbPath } = freshEnv(fast)
     const db = openDb(dbPath)
-    const id = insertItem(db, { project: 'agent-inbox', stream: '', agent: 'claude-code', kind: 'question', title: 'which?' })
+    const id = insertItem(db, { project: PROJECT, stream: '', agent: 'claude-code', kind: 'question', title: 'which?' })
     const running = runHook(['watch'], ev(), env)
     setTimeout(() => resolveItem(openDb(dbPath), id), 100)
     expect(await running).toEqual({ stdout: '' })
   })
 
-  it('a second watcher for the same project stands down while the lock is held', async () => {
+  // #253: the newest Stop's watcher replaces the session's older one instead of
+  // standing down beside it. The older one keeps its own (older) set, so only the
+  // newer watcher can know about a question raised in between.
+  it('a second watcher for the same host session takes over: the first exits quietly at its next poll', async () => {
     const { env, dbPath } = freshEnv(fast)
-    insertItem(openDb(dbPath), { project: 'agent-inbox', stream: '', agent: 'claude-code', kind: 'question', title: 'which?' })
+    const db = openDb(dbPath)
+    question(db, PROJECT, 'which?')
     const first = runHook(['watch'], ev(), env)
-    await new Promise((r) => setTimeout(r, 100))
-    const started = Date.now()
-    expect(await runHook(['watch'], ev(), env)).toEqual({ stdout: '' })
-    expect(Date.now() - started).toBeLessThan(3000)
-    await first
+    let firstDone = 0
+    void first.then(() => { firstDone = Date.now() })
+    await armed(dbPath)
+    const later = question(db, PROJECT, 'raised after the first watcher armed')
+    const second = runHook(['watch'], ev(), env)
+    // the first leaves long before its own 4s window runs out, and before any answer
+    const deadline = Date.now() + 1500
+    while (!firstDone && Date.now() < deadline) await sleep(10)
+    expect(firstDone).toBeGreaterThan(0)
+    replyItem(db, later, 'go')
+    expect(await first).toEqual({ stdout: '' })
+    expect(await second).toMatchObject({ stdout: '', exitCode: 2, stderr: expect.stringMatching(/pending/) })
+    db.close()
   })
 
-  it('takes its lock beside the db, never in TMPDIR where the legacy shell watcher lives', async () => {
+  it('another host session in the same project retains its own wake source', async () => {
     const { env, dbPath } = freshEnv(fast)
-    insertItem(openDb(dbPath), { project: 'agent-inbox', stream: '', agent: 'claude-code', kind: 'question', title: 'which?' })
+    const db = openDb(dbPath)
+    const row = waitingRow(db)
+    const first = runHook(['watch'], ev({ session_id: 'S1' }), env)
+    const second = runHook(['watch'], ev({ session_id: 'S2' }), env)
+    const timer = setTimeout(() => markRowHandled(db, row.id), 50)
+    const results = await Promise.all([first, second])
+    clearTimeout(timer)
+    expect(results.map((result) => result.exitCode)).toEqual([2, 2])
+    db.close()
+  })
+
+  it('keeps its lease in the hub and drops it on exit, never a lock file in TMPDIR where the legacy shell watcher lives', async () => {
+    const { env, dbPath } = freshEnv(fast)
+    question(openDb(dbPath), PROJECT, 'which?')
     const running = runHook(['watch'], ev(), env)
-    await new Promise((r) => setTimeout(r, 100))
-    expect(existsSync(join(dirname(dbPath), 'hook-state', 'watch-agent-inbox.lock'))).toBe(true)
+    await sleep(100)
+    expect(leases(dbPath)).toEqual([{ claim_key: `session:S1:${PROJECT}` }])
+    const stateDir = join(dirname(dbPath), 'hook-state')
+    expect(existsSync(stateDir) ? readdirSync(stateDir).filter((name) => name.endsWith('.lock')) : []).toEqual([])
     await running
-    expect(existsSync(join(dirname(dbPath), 'hook-state', 'watch-agent-inbox.lock'))).toBe(false)
+    expect(leases(dbPath)).toEqual([])
+  })
+})
+
+// ── #253: the projects this Claude Code session uses, and one watcher at a time ──
+
+describe("hook: the session's own projects and the newest watcher (#253)", () => {
+  const fast = { AGENT_INBOX_WATCH_SECS: '4', AGENT_INBOX_WATCH_POLL_MS: '20' }
+  // a whole watch window in about a second, for the "never wakes" cases
+  const brief = { AGENT_INBOX_WATCH_SECS: '1', AGENT_INBOX_WATCH_POLL_MS: '20' }
+
+  it('wakes for an answer in a project the session registered, not only the cwd project', async () => {
+    const { env, dbPath } = freshEnv(fast)
+    const db = openDb(dbPath)
+    linkServer(db, 'mcp-1', 'homelab')
+    const id = question(db, 'homelab', 'Which pool?', 'mcp-1')
+    const running = runHook(['watch'], ev(), env)
+    const timer = setTimeout(() => replyItem(db, id, 'tank'), 100)
+    const result = await running
+    clearTimeout(timer)
+    expect(result).toMatchObject({ stdout: '', exitCode: 2 })
+    expect(result.stderr).toContain('1 response(s) in project homelab')
+    expect(result.stderr).toContain('pending({project:"homelab"})')
+    db.close()
+  })
+
+  it('wakes for a blocked row in a project the session registered', async () => {
+    const { env, dbPath } = freshEnv(fast)
+    const db = openDb(dbPath)
+    linkServer(db, 'mcp-1', 'homelab')
+    const row = waitingRow(db, 'homelab')
+    const running = runHook(['watch'], ev(), env)
+    const timer = setTimeout(() => annotateBoardRow(db, row.id, 'Use tank'), 100)
+    const result = await running
+    clearTimeout(timer)
+    expect(result).toMatchObject({ stdout: '', exitCode: 2, stderr: expect.stringContaining('project homelab') })
+    expect(JSON.parse((await runHook(['stop'], ev(), env)).stdout).reason).toContain('project homelab')
+    db.close()
+  })
+
+  it('wakes for a question the session flags after the watcher armed, even with nothing waiting at the Stop', async () => {
+    const { env, dbPath } = freshEnv(fast)
+    const db = openDb(dbPath)
+    linkServer(db, 'mcp-1', PROJECT)
+    const running = runHook(['watch'], ev(), env)
+    await armed(dbPath)
+    const id = question(db, PROJECT, 'Raised by a background subagent', 'mcp-1')
+    await sleep(60) // a poll or two sees it unanswered first
+    replyItem(db, id, 'yes')
+    expect(await running).toMatchObject({ stdout: '', exitCode: 2, stderr: expect.stringContaining(`project ${PROJECT}`) })
+    db.close()
+  })
+
+  it("wakes for the session's later question in a project it registered after the Stop", async () => {
+    const { env, dbPath } = freshEnv(fast)
+    const db = openDb(dbPath)
+    linkServer(db, 'mcp-1', PROJECT)
+    question(db, PROJECT, 'Waiting when the turn ended', 'someone-else')
+    const running = runHook(['watch'], ev(), env)
+    await armed(dbPath)
+    linkServer(db, 'mcp-1', 'homelab')
+    replyItem(db, question(db, 'homelab', 'Raised and answered between two polls', 'mcp-1'), 'yes')
+    expect(await running).toMatchObject({ stdout: '', exitCode: 2, stderr: expect.stringContaining('project homelab') })
+    db.close()
+  })
+
+  // Delivery is not acknowledgement: a sibling's pickup must not take this
+  // session's wake for a question it raised after the Stop.
+  it("still wakes for the session's later question when another reader picked the answer up first", async () => {
+    const { env, dbPath } = freshEnv(fast)
+    const db = openDb(dbPath)
+    linkServer(db, 'mcp-1', PROJECT)
+    const running = runHook(['watch'], ev(), env)
+    await armed(dbPath)
+    const id = question(db, PROJECT, 'Raised by a background subagent', 'mcp-1')
+    replyItem(db, id, 'yes')
+    const answered = listItems(db).find((item) => item.id === id)!
+    expect(markReplySeen(db, id, answered.replied_at, answered.response_revision, 'sibling')).toBe(true)
+    expect(await running).toMatchObject({ stdout: '', exitCode: 2 })
+    db.close()
+  })
+
+  it("never wakes for another session's question raised after the watcher armed", async () => {
+    const { env, dbPath } = freshEnv(brief)
+    const db = openDb(dbPath)
+    linkServer(db, 'mcp-1', PROJECT)
+    const running = runHook(['watch'], ev(), env)
+    await armed(dbPath)
+    replyItem(db, question(db, PROJECT, 'Not ours', 'mcp-other'), 'no')
+    expect(await running).toEqual({ stdout: '' })
+    db.close()
+  })
+
+  it('a new Stop in the same Claude Code process takes over, even under a new session id (/clear)', async () => {
+    const { env, dbPath } = freshEnv(fast)
+    const db = openDb(dbPath)
+    linkServer(db, 'mcp-1', PROJECT)
+    const first = runHook(['watch'], ev({ session_id: 'before-clear' }), env)
+    await armed(dbPath)
+    const second = runHook(['watch'], ev({ session_id: 'after-clear' }), env)
+    expect(await Promise.race([first, sleep(1500).then(() => 'still running')])).toEqual({ stdout: '' })
+    expect(leases(dbPath)).toEqual([{ claim_key: `host:${process.ppid}` }])
+    replyItem(db, question(db, PROJECT, 'After the clear', 'mcp-1'), 'yes')
+    expect(await second).toMatchObject({ stdout: '', exitCode: 2 })
+    db.close()
+  })
+
+  // Review of #256 (should-fix): a watcher that wakes at once must not take
+  // the older watcher's lease, or what only that one waits on goes unwatched.
+  it('an immediate wake leaves the older watcher watching its own requests', async () => {
+    const { env, dbPath } = freshEnv(fast)
+    const db = openDb(dbPath)
+    const q = question(db, PROJECT, 'Asked before the turn ended')
+    const first = runHook(['watch'], ev(), env) // Stop N-1: waits on q
+    await armed(dbPath)
+    // turn N: a response the first watcher does not wait on
+    const r = question(db, PROJECT, 'Raised after the first watcher armed', 'someone-else')
+    replyItem(db, r, 'done')
+    // Stop N: stop blocks, and that Stop's watcher wakes at once
+    expect(JSON.parse((await runHook(['stop'], ev(), env)).stdout)).toMatchObject({ decision: 'block' })
+    expect(await runHook(['watch'], ev(), env)).toMatchObject({ stdout: '', exitCode: 2 })
+    // the agent reads r; the human answers q later in the continuation
+    const read = listItems(db).find((item) => item.id === r)!
+    expect(markReplySeen(db, r, read.replied_at, read.response_revision)).toBe(true)
+    await sleep(100) // several of the first watcher's polls
+    replyItem(db, q, 'yes')
+    // Stop N+1 is a continuation: neither of its hooks wakes for q, so the first watcher must
+    expect(await runHook(['stop'], ev({ stop_hook_active: true }), env)).toEqual({ stdout: '' })
+    expect(await runHook(['watch'], ev({ stop_hook_active: true }), env)).toEqual({ stdout: '' })
+    expect(await first).toMatchObject({ stdout: '', exitCode: 2 })
+    db.close()
+  })
+
+  // The narrower window: an answer that lands between an older watcher's polls
+  // is in a newer watcher's answered-at-arming set, so the older one looks once
+  // more at its own requests before it leaves.
+  it('a watcher that is taken over still wakes for its own request answered since its last poll', async () => {
+    const { env, dbPath } = freshEnv(fast)
+    const db = openDb(dbPath)
+    const q = question(db, PROJECT, 'Waited on by the first watcher')
+    const q2 = question(db, PROJECT, 'Keeps the continuation watcher armed')
+    const first = runHook(['watch'], ev(), env)
+    await armed(dbPath)
+    // both before the first watcher's next poll (runHook arms synchronously)
+    replyItem(db, q, 'yes')
+    const second = runHook(['watch'], ev({ stop_hook_active: true }), env)
+    expect(await first).toMatchObject({ stdout: '', exitCode: 2 })
+    replyItem(db, q2, 'yes')
+    expect(await second).toMatchObject({ stdout: '', exitCode: 2 })
+    db.close()
+  })
+
+  // Review of #256 (nit): unlinked, the lease stays per harness session AND cwd
+  // project, as main's lock was, so moving to another repository never drops
+  // the watch on the first one.
+  it("without a link, the session's watcher for another repository never replaces this one's", async () => {
+    const { env, dbPath } = freshEnv(fast)
+    const db = openDb(dbPath)
+    const here = question(db, PROJECT, 'Asked in this repository')
+    const elsewhere = join(scratchDir('hook-cwd-'), 'otherrepo')
+    mkdirSync(elsewhere)
+    const there = question(db, 'otherrepo', 'Asked in the other repository')
+    const first = runHook(['watch'], ev(), env)
+    const second = runHook(['watch'], ev({ cwd: elsewhere }), env)
+    expect(leases(dbPath).map((lease) => lease.claim_key).sort()).toEqual([`session:S1:${PROJECT}`, 'session:S1:otherrepo'])
+    await sleep(100) // several polls of each
+    replyItem(db, here, 'yes')
+    expect(await first).toMatchObject({ stdout: '', exitCode: 2, stderr: expect.stringContaining(`project ${PROJECT}`) })
+    replyItem(db, there, 'yes')
+    expect(await second).toMatchObject({ stdout: '', exitCode: 2, stderr: expect.stringContaining('project otherrepo') })
+    db.close()
+  })
+
+  it('an answer already waiting in a registered project nudges at once, and the loop guards still hold', async () => {
+    const { env, dbPath } = freshEnv(brief)
+    const db = openDb(dbPath)
+    linkServer(db, 'mcp-1', 'homelab')
+    replyItem(db, question(db, 'homelab', 'Which pool?', 'mcp-1'), 'tank')
+    expect(await runHook(['watch'], ev(), env)).toMatchObject({ stdout: '', exitCode: 2, stderr: expect.stringContaining('project homelab') })
+    // a Stop continuation never re-wakes for the response that was already waiting
+    expect(await runHook(['watch'], ev({ stop_hook_active: true }), env)).toEqual({ stdout: '' })
+    const stop = JSON.parse((await runHook(['stop'], ev(), env)).stdout)
+    expect(stop).toMatchObject({ decision: 'block', reason: expect.stringContaining('project homelab') })
+    expect(await runHook(['stop'], ev({ stop_hook_active: true }), env)).toEqual({ stdout: '' })
+    db.close()
+  })
+
+  it.each(['prompt-submit', 'session-start'] as const)('%s counts responses in every project the session uses', async (sub) => {
+    const { env, dbPath } = freshEnv()
+    const db = openDb(dbPath)
+    linkServer(db, 'mcp-1', 'homelab')
+    replyItem(db, question(db, 'homelab', 'Which pool?', 'mcp-1'), 'tank')
+    replyItem(db, question(db, PROJECT, 'Which branch?'), 'main')
+    const stdout = (await runHook([sub], ev(), env)).stdout
+    const out = sub === 'prompt-submit' ? JSON.parse(stdout).hookSpecificOutput.additionalContext as string : stdout
+    expect(out).toContain('2 response(s)')
+    expect(out).toContain(`1 in project ${PROJECT}`)
+    expect(out).toContain('1 in project homelab')
+    expect(out).toContain('pending({project:"homelab"})')
+    db.close()
+  })
+
+  it("follows the projects of the session's own open questions after it registers elsewhere", async () => {
+    const { env, dbPath } = freshEnv()
+    const db = openDb(dbPath)
+    linkServer(db, 'mcp-1', 'homelab')
+    const earlier = question(db, 'footage', 'Asked before the session moved to homelab', 'mcp-1')
+    replyItem(db, earlier, 'keep the originals')
+    expect(JSON.parse((await runHook(['stop'], ev(), env)).stdout).reason).toContain('project footage')
+    db.close()
+  })
+
+  describe('without a live link to this session’s server, it watches exactly as before', () => {
+    // each presence row below is one the hook must not trust
+    const unlinked: Array<[string, (db: ReturnType<typeof openDb>) => void]> = [
+      ['an older server that records no host', (db) => upsertActivity(db, { session: 'old-1', project: 'homelab', stream: '', agent: 'claude-code', doing: 'open', idle: true, claim: false })],
+      ['a server of another Claude Code process', (db) => linkServer(db, 'mcp-2', 'homelab', { host_pid: process.ppid + 100_000 })],
+      ['a server that has exited', (db) => {
+        linkServer(db, 'mcp-3', 'homelab')
+        endActivity(db, 'mcp-3')
+      }],
+      ['a server whose process is gone', (db) => linkServer(db, 'mcp-4', 'homelab', { server_pid: spawnSync(process.execPath, ['-e', '']).pid })],
+    ]
+
+    it.each(unlinked)('ignores %s: only the cwd project counts', async (_, presence) => {
+      const { env, dbPath } = freshEnv(fast)
+      const db = openDb(dbPath)
+      presence(db)
+      replyItem(db, question(db, 'homelab', 'Which pool?', 'mcp-1'), 'tank')
+      const started = Date.now()
+      // nothing unanswered in the cwd project: the watcher stands down at once
+      expect(await runHook(['watch'], ev(), env)).toEqual({ stdout: '' })
+      expect(Date.now() - started).toBeLessThan(3000)
+      expect(await runHook(['stop'], ev(), env)).toEqual({ stdout: '' })
+      expect(await runHook(['prompt-submit'], ev(), env)).toEqual({ stdout: '' })
+      db.close()
+    })
+
+    it('ignores a presence row that stopped refreshing over 15 minutes ago', async () => {
+      const { env, dbPath } = freshEnv()
+      const db = openDb(dbPath)
+      vi.useFakeTimers({ toFake: ['Date'] })
+      try {
+        linkServer(db, 'mcp-1', 'homelab')
+        replyItem(db, question(db, 'homelab', 'Which pool?', 'mcp-1'), 'tank')
+        vi.setSystemTime(Date.now() + 16 * 60_000)
+        expect(await runHook(['stop'], ev(), env)).toEqual({ stdout: '' })
+      } finally {
+        vi.useRealTimers()
+      }
+      db.close()
+    })
+
+    it('keeps the fixed set: a question raised after arming, by anyone, does not wake it', async () => {
+      const { env, dbPath } = freshEnv(brief)
+      const db = openDb(dbPath)
+      question(db, PROJECT, 'Waiting when the turn ended')
+      const running = runHook(['watch'], ev(), env)
+      await armed(dbPath)
+      replyItem(db, question(db, PROJECT, 'Raised later', 'mcp-1'), 'yes')
+      expect(await running).toEqual({ stdout: '' })
+      db.close()
+    })
   })
 })
 
@@ -591,12 +1122,11 @@ describe('hook: real spawn round-trip', () => {
   it('the watch child exits with status 2 — the code that wakes the model', async () => {
     const { env, dbPath } = freshEnv({ AGENT_INBOX_WATCH_SECS: '8', AGENT_INBOX_WATCH_POLL_MS: '50' })
     const db = openDb(dbPath)
-    const id = insertItem(db, { project: 'agent-inbox', stream: '', agent: 'claude-code', kind: 'question', title: 'which?' })
+    const id = insertItem(db, { project: PROJECT, stream: '', agent: 'claude-code', kind: 'question', title: 'which?' })
     const running = run(['watch'], ev(), env)
-    const lock = join(dirname(dbPath), 'hook-state', 'watch-agent-inbox.lock')
     const deadline = Date.now() + 9000
-    while (!existsSync(lock) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50))
-    const armed = existsSync(lock)
+    while (leases(dbPath).length === 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50))
+    const armed = leases(dbPath).length === 1
     replyItem(db, id, 'the second one')
     const res = await running
     db.close()
@@ -606,10 +1136,99 @@ describe('hook: real spawn round-trip', () => {
     expect(res.out).toBe('')
   })
 
+  // #253, end to end: this test process plays Claude Code. It starts the MCP
+  // server and the hook directly, as Claude Code starts a stdio server and an
+  // exec-form hook, so both see it as their parent, and that shared parent is
+  // the only link between them.
+  it('a hook finds the project its sibling MCP server registered, through their shared parent', async () => {
+    const { env, dbPath } = freshEnv({ AGENT_INBOX_WATCH_SECS: '20', AGENT_INBOX_WATCH_POLL_MS: '50' })
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: ['--import', TSX_LOADER, join(REPO, 'src', 'mcp-server.ts')],
+      env: { ...process.env, ...env } as Record<string, string>,
+    })
+    const client = new Client({ name: 'claude-code', version: '1.0.0' })
+    await client.connect(transport)
+    try {
+      await client.callTool({ name: 'register', arguments: { project: 'homelab' } })
+      const flagged = await client.callTool({ name: 'flag', arguments: {
+        kind: 'question', title: 'Which pool?', detail: 'The footage pipeline needs a pool.',
+        next_step: 'Choose the pool.', action_owner: 'task', impact: 'Unblocks the copy.',
+      } })
+      const { id } = JSON.parse((flagged.content as Array<{ text: string }>)[0]!.text) as { id: string }
+      const watcher = spawn(process.execPath, ['--import', TSX_LOADER, join(REPO, 'src', 'hook-cli.ts'), 'watch'], {
+        env: { ...process.env, ...env }, cwd: REPO,
+      })
+      let err = ''
+      watcher.stderr.on('data', (d) => { err += String(d) })
+      const exited = new Promise<number | null>((resolve) => watcher.on('close', resolve))
+      watcher.stdin.end(ev())
+      const deadline = Date.now() + 10_000
+      while (leases(dbPath).length === 0 && Date.now() < deadline) await sleep(50)
+      expect(leases(dbPath)).toEqual([{ claim_key: `host:${process.pid}` }])
+      const db = openDb(dbPath)
+      replyItem(db, id, 'tank')
+      db.close()
+      expect(await exited).toBe(2)
+      expect(err).toContain('project homelab')
+    } finally {
+      await client.close()
+    }
+  })
+
+  // When Claude Code exits, nothing is left to wake: the watcher stops at its
+  // next poll rather than polling out its whole window as an orphan.
+  it('the watcher exits once the process that started it is gone', async () => {
+    const { env, dbPath } = freshEnv({ AGENT_INBOX_WATCH_SECS: '20', AGENT_INBOX_WATCH_POLL_MS: '50' })
+    question(openDb(dbPath), PROJECT, 'which?')
+    // a stand-in for Claude Code: it starts the hook, reports its pid, and exits when told to
+    const host = [
+      `const { spawn } = require('node:child_process')`,
+      `const child = spawn(process.execPath, ['--import', ${JSON.stringify(TSX_LOADER)}, ${JSON.stringify(join(REPO, 'src', 'hook-cli.ts'))}, 'watch'], { stdio: ['pipe', 'ignore', 'ignore'] })`,
+      `child.stdin.end(${JSON.stringify(ev())})`,
+      `process.stdout.write(child.pid + '\\n')`,
+      `process.stdin.on('data', () => {}).on('end', () => process.exit(0))`,
+    ].join('\n')
+    const fake = spawn(process.execPath, ['-e', host], { env: { ...process.env, ...env }, cwd: REPO, stdio: ['pipe', 'pipe', 'ignore'] })
+    const gone = new Promise<void>((resolve) => fake.on('close', () => resolve()))
+    const pid = await new Promise<number>((resolve) => {
+      let out = ''
+      fake.stdout.on('data', (d) => {
+        out += String(d)
+        if (out.includes('\n')) resolve(Number(out.trim()))
+      })
+    })
+    const alive = (): boolean => { try { process.kill(pid, 0); return true } catch { return false } }
+    try {
+      let deadline = Date.now() + 10_000
+      while (leases(dbPath).length === 0 && Date.now() < deadline) await sleep(50)
+      expect(leases(dbPath)).toHaveLength(1)
+      fake.stdin.end()
+      await gone
+      deadline = Date.now() + 3000
+      while (alive() && Date.now() < deadline) await sleep(50)
+      expect(alive()).toBe(false)
+      expect(leases(dbPath)).toEqual([])
+    } finally {
+      if (alive()) process.kill(pid, 'SIGKILL')
+    }
+  })
+
+  it('a board-only answer wakes the real hook child and remains available to pending', async () => {
+    const { env, dbPath } = freshEnv({ AGENT_INBOX_WATCH_SECS: '2', AGENT_INBOX_WATCH_POLL_MS: '20' })
+    const db = openDb(dbPath)
+    const row = waitingRow(db)
+    markRowHandled(db, row.id)
+    const result = await run(['watch'], ev(), env)
+    expect(result).toMatchObject({ code: 2, out: '', err: expect.stringMatching(/pending/) })
+    expect(getBoard(db, PROJECT, 'Release')!.rows[0]!.handled_seen_at).toBeNull()
+    db.close()
+  })
+
   it('selftest exits 0 against a usable db and non-zero against a broken one', async () => {
     const { env } = freshEnv()
     expect((await run(['selftest'], '', env)).code).toBe(0)
-    const broken = join(mkdtempSync(join(tmpdir(), 'hook-broken-')), 'inbox.db')
+    const broken = join(scratchDir('hook-broken-'), 'inbox.db')
     writeFileSync(broken, 'not a database')
     const bad = await run(['selftest'], '', { AGENT_INBOX_DB: broken })
     expect(bad.code).not.toBe(0)
@@ -640,7 +1259,7 @@ describe('hook: the shell wrapper', () => {
   // its own bytes at hooks/, a dist/hook-cli.js whose exit status we choose, and
   // a HOME with no ~/.local/share/fnm so the v24 glob deterministically misses.
   function tree(cli: string): { script: string; root: string; bin: string } {
-    const root = mkdtempSync(join(tmpdir(), 'hook-wrap-'))
+    const root = scratchDir('hook-wrap-')
     for (const d of ['hooks', 'dist', 'bin']) mkdirSync(join(root, d))
     const script = join(root, 'hooks', 'agent-inbox-hook.sh')
     writeFileSync(script, readFileSync(join(REPO, 'hooks', 'agent-inbox-hook.sh'), 'utf8'))
@@ -743,7 +1362,7 @@ describe('hook: installer', () => {
   }
 
   function home(settings?: unknown): { dir: string; entry: string; file: string } {
-    const dir = mkdtempSync(join(tmpdir(), 'hook-home-'))
+    const dir = scratchDir('hook-home-')
     mkdirSync(join(dir, '.claude'), { recursive: true })
     const entry = join(dir, 'stub-cli.js')
     writeFileSync(entry, 'process.exit(0)\n') // stands in for a built, verified dist/hook-cli.js
@@ -1009,6 +1628,599 @@ describe('hook: installer', () => {
     expect(r.err).toMatch(/selftest.*failed/i)
     expect(existsSync(file)).toBe(true)
     expect(JSON.parse(readFileSync(file, 'utf8')).hooks).toBeUndefined()
+  })
+
+  // #155: a dotfiles-managed settings.json is a symlink. Replacing the link with a
+  // regular file silently forks the live config away from the dotfiles copy.
+  const LINK = '../dotfiles/claude-settings.json'
+
+  function linkedHome(contents: string): { dir: string; entry: string; file: string; target: string } {
+    const { dir, entry, file } = home()
+    const target = join(dir, 'dotfiles', 'claude-settings.json')
+    mkdirSync(dirname(target))
+    writeFileSync(target, contents)
+    symlinkSync(LINK, file)
+    return { dir, entry, file, target }
+  }
+
+  function backupsOf(file: string): string[] {
+    const base = file.slice(file.lastIndexOf('/') + 1)
+    return readdirSync(dirname(file)).filter((f) => f.startsWith(`${base}.bak.`))
+  }
+
+  it('--apply writes through a symlinked settings.json: the link survives, its target is backed up and updated', () => {
+    const before = JSON.stringify(withPostToolUse)
+    const { dir, entry, file, target } = linkedHome(before)
+
+    const r = installer(['--apply'], dir, entry)
+
+    expect(r.code, r.err).toBe(0)
+    expect(lstatSync(file).isSymbolicLink()).toBe(true)
+    expect(readlinkSync(file)).toBe(LINK)
+    const s = JSON.parse(readFileSync(target, 'utf8'))
+    expect(s.model).toBe('x')
+    expect(s.hooks.PostToolUse).toHaveLength(1)
+    expect(s.hooks.Notification[0].hooks[0].args).toEqual([entry, 'notification'])
+    const backups = backupsOf(target)
+    expect(backups).toHaveLength(1)
+    expect(readFileSync(join(dirname(target), backups[0]!), 'utf8')).toBe(before)
+    expect(readdirSync(join(dir, '.claude'))).toEqual(['settings.json'])
+  })
+
+  it('--uninstall writes through a symlinked settings.json and leaves the link in place', () => {
+    const { dir, entry, file, target } = linkedHome('{}')
+    const installed = { ...withPostToolUse, hooks: { ...withPostToolUse.hooks, ...hooksSettingsBlock(process.execPath, entry).hooks } }
+    writeFileSync(target, JSON.stringify(installed))
+
+    const r = installer(['--apply', '--uninstall'], dir, entry)
+
+    expect(r.code, r.err).toBe(0)
+    expect(lstatSync(file).isSymbolicLink()).toBe(true)
+    expect(readlinkSync(file)).toBe(LINK)
+    expect(JSON.parse(readFileSync(target, 'utf8'))).toEqual(withPostToolUse)
+    expect(backupsOf(target)).toHaveLength(1)
+  })
+
+  it.each([
+    ['a dangling symlink', '../dotfiles/missing.json', /dangling symlink/],
+    ['a symlink to a directory', '../dotfiles', /not a regular file/],
+  ])('refuses %s with a non-zero exit and writes nothing', (_label, link, reason) => {
+    const { dir, entry, file } = home()
+    const dotfiles = join(dir, 'dotfiles')
+    mkdirSync(dotfiles)
+    symlinkSync(link, file)
+
+    const r = installer(['--apply'], dir, entry)
+
+    expect(r.code).not.toBe(0)
+    expect(r.err).toMatch(reason)
+    expect(r.err).not.toMatch(/hooks installed/)
+    expect(readlinkSync(file)).toBe(link)
+    expect(readdirSync(join(dir, '.claude'))).toEqual(['settings.json'])
+    expect(readdirSync(dotfiles)).toEqual([])
+  })
+
+  // root ignores directory modes, so the unwritable directory cannot be modelled there
+  it.skipIf(process.getuid?.() === 0)('an unwritable ~/.claude exits non-zero, claims nothing and leaves nothing behind', () => {
+    const { dir, entry } = home()
+    const claude = join(dir, '.claude')
+    chmodSync(claude, 0o555)
+    try {
+      const r = installer(['--apply'], dir, entry)
+      expect(r.code).not.toBe(0)
+      expect(r.err).not.toMatch(/hooks installed/)
+      expect(readdirSync(claude)).toEqual([])
+    } finally {
+      chmodSync(claude, 0o755)
+    }
+  })
+
+  it('a rename that fails exits non-zero, claims nothing and removes its staged copy', () => {
+    const { dir, entry, file } = home(withPostToolUse)
+    const before = readFileSync(file, 'utf8')
+    const fakebin = join(dir, 'fakebin')
+    mkdirSync(fakebin)
+    writeFileSync(join(fakebin, 'mv'), '#!/bin/sh\nexit 1\n')
+    chmodSync(join(fakebin, 'mv'), 0o755)
+
+    const r = installer(['--apply'], dir, entry, { PATH: `${fakebin}:${process.env.PATH}` })
+
+    expect(r.code).not.toBe(0)
+    expect(r.err).not.toMatch(/hooks installed/)
+    expect(readFileSync(file, 'utf8')).toBe(before)
+    expect(readdirSync(join(dir, '.claude')).filter((f) => f.includes('.tmp.'))).toEqual([])
+  })
+
+  it('refuses settings it cannot merge into instead of writing an empty file and claiming success', () => {
+    const { dir, entry, file } = home([])
+
+    const r = installer(['--apply'], dir, entry)
+
+    expect(r.code).not.toBe(0)
+    expect(r.err).not.toMatch(/hooks installed/)
+    expect(readFileSync(file, 'utf8')).toBe('[]')
+    expect(readdirSync(join(dir, '.claude'))).toEqual(['settings.json'])
+  })
+
+  // the packaged runtime-config.mjs reads a blank file as {}; checkout mode must agree
+  it.each([
+    ['an empty', ''],
+    ['a whitespace-only', ' \n\t\n'],
+  ])('installs into %s settings.json as if it were {}, backing it up first', (_label, contents) => {
+    const { dir, entry, file } = home()
+    writeFileSync(file, contents)
+
+    const r = installer(['--apply'], dir, entry)
+
+    expect(r.code, r.err).toBe(0)
+    const s = JSON.parse(readFileSync(file, 'utf8'))
+    expect(s.hooks.Notification[0].hooks[0].args).toEqual([entry, 'notification'])
+    const backups = backupsOf(file)
+    expect(backups).toHaveLength(1)
+    expect(readFileSync(join(dirname(file), backups[0]!), 'utf8')).toBe(contents)
+  })
+
+  // root ignores file modes, so a read-only settings file cannot be modelled there
+  it.skipIf(process.getuid?.() === 0)('refuses a read-only settings.json up front, says so, and leaves nothing behind', () => {
+    const { dir, entry, file } = home(withPostToolUse)
+    const before = readFileSync(file, 'utf8')
+    chmodSync(file, 0o444)
+    try {
+      const r = installer(['--apply'], dir, entry)
+
+      expect(r.code).not.toBe(0)
+      expect(r.err).toContain(`${file} is read-only`)
+      expect(r.err).not.toMatch(/hooks installed/)
+      expect(readFileSync(file, 'utf8')).toBe(before)
+      expect(readdirSync(join(dir, '.claude'))).toEqual(['settings.json'])
+    } finally {
+      chmodSync(file, 0o644)
+    }
+  })
+
+  it('the dry run proves Node against a throwaway database and never creates the hub', () => {
+    const { dir, file } = home(withPostToolUse)
+    const before = readFileSync(file, 'utf8')
+    // The REAL hook CLI, run from source: CI runs the suite before it builds dist/.
+    // tsx keeps a transform cache in TMPDIR, so it gets its own; the installer's
+    // TMPDIR then records only what the installer itself leaves behind.
+    const node = join(dir, 'node-with-tsx')
+    writeFileSync(node, [
+      '#!/bin/sh',
+      `TMPDIR='${join(dir, 'tsx-tmp')}'; export TMPDIR`,
+      `exec '${process.execPath}' --import '${TSX_LOADER}' "$@"`,
+      '',
+    ].join('\n'))
+    chmodSync(node, 0o755)
+    const hub = join(dir, 'hub', 'inbox.db')
+    const scratch = join(dir, 'scratch')
+    mkdirSync(scratch)
+
+    const r = installer([], dir, join(REPO, 'src', 'hook-cli.ts'), {
+      AGENT_INBOX_NODE: node,
+      AGENT_INBOX_DB: hub,
+      TMPDIR: scratch,
+    })
+
+    expect(r.code, r.err).toBe(0)
+    expect(existsSync(dirname(hub))).toBe(false)
+    expect(readdirSync(scratch)).toEqual([]) // the throwaway database is gone too
+    expect(readFileSync(file, 'utf8')).toBe(before)
+    expect(Object.keys(JSON.parse(r.out).hooks).sort()).toEqual(
+      ['Notification', 'PostToolUse', 'SessionEnd', 'SessionStart', 'Stop', 'UserPromptSubmit'],
+    )
+  })
+
+  // #218: a checkout install beside another Agent Inbox install's hooks (a
+  // Setup runtime, another checkout) added a second full set, so every event
+  // ran twice. The installer now refuses, naming what is there and printing the
+  // one-step --replace-existing first; each other install's own uninstall
+  // follows only when it can succeed. --replace-existing swaps every Agent
+  // Inbox set, and any that can no longer run, for this one. Other tools'
+  // hooks are never touched.
+  type HookSet = ReturnType<typeof hooksSettingsBlock>['hooks']
+  interface Settings { model?: string; hooks?: Record<string, Array<{ matcher?: string; hooks: Array<{ command: string; args?: string[] }> }>> }
+
+  const runtimeRootOf = (dir: string): string => join(dir, '.agent-inbox', 'runtime')
+  const setOf = (node: string, entry: string): HookSet => hooksSettingsBlock(node, entry).hooks
+
+  function withSets(base: Settings, ...sets: Array<Record<string, unknown[]>>): Settings {
+    const hooks: Record<string, unknown[]> = { ...(base.hooks ?? {}) }
+    for (const set of sets) {
+      for (const [event, groups] of Object.entries(set)) hooks[event] = [...(hooks[event] ?? []), ...groups]
+    }
+    return { ...base, hooks } as Settings
+  }
+
+  /** Another source checkout of this repo with its hooks' installer: package.json named agent-inbox and a built dist/. */
+  function otherCheckout(dir: string): string {
+    const root = join(dir, 'other-checkout')
+    mkdirSync(join(root, 'dist'), { recursive: true })
+    mkdirSync(join(root, 'scripts'))
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'agent-inbox', version: '1.3.0' }))
+    writeFileSync(join(root, 'dist', 'hook-cli.js'), 'process.exit(0)\n')
+    for (const script of ['install-hooks.sh', 'setup-lock.sh']) {
+      writeFileSync(join(root, 'scripts', script), readFileSync(join(REPO, 'scripts', script)))
+    }
+    return root
+  }
+
+  /** Exactly one Agent Inbox set (one entry per subcommand, every one running `entry`) among the `known` entries. */
+  function expectOneSet(settings: Settings, entry: string, known: string[]): void {
+    const ours = Object.values(settings.hooks ?? {}).flatMap((groups) => groups.flatMap((g) => g.hooks))
+      .filter((h) => known.includes(h.args?.[0] ?? ''))
+    expect(ours.map((h) => h.args?.[0])).toEqual(Array(6).fill(entry))
+    expect(ours.map((h) => h.args?.[1]).sort()).toEqual(['notification', 'prompt-submit', 'session-end', 'session-start', 'stop', 'watch'])
+  }
+
+  /** The commands a refusal prints, in order: the recommended one first. */
+  const printed = (stderr: string): string[] => [...stderr.matchAll(/bash '(?:[^']|'\\'')*'(?: --[a-z-]+)+/g)].map((m) => m[0])
+  const replaceCommand = `bash '${SCRIPT}' --apply --replace-existing`
+  const uninstallCommand = (dir: string): string => `bash '${join(dir, 'scripts', 'install-hooks.sh')}' --apply --uninstall`
+  // how a refusal says to fix a runtime folder that no longer verifies
+  const strayFileHint = 'delete any file that was added to it (macOS Finder adds .DS_Store files) or reinstall that runtime'
+
+  it('refuses to add a second set beside a Setup runtime\'s hooks, naming the runtime and the commands that fix it', () => {
+    const { dir, entry, file } = home()
+    const runtime = installRuntimeVersion(runtimeRootOf(dir), '1.2.4')
+    const runtimeSet = setOf(join(runtime, 'bin', 'node'), join(runtime, 'dist', 'hook-cli.js'))
+    const cases: Array<[string, Settings, string[], string[]]> = [
+      ['the runtime\'s set alone (dry run)', withSets(withPostToolUse, runtimeSet), [], [replaceCommand, uninstallCommand(runtime)]],
+      ['the runtime\'s set alone', withSets(withPostToolUse, runtimeSet), ['--apply'], [replaceCommand, uninstallCommand(runtime)]],
+      // --force replaces this checkout's own set; it must not hide another install's. The
+      // runtime's own uninstall would refuse beside this checkout's set, so it is not offered.
+      ['the runtime\'s set beside this checkout\'s own', withSets(withPostToolUse, runtimeSet, setOf(process.execPath, entry)), ['--apply', '--force'], [replaceCommand]],
+    ]
+    for (const [label, settings, flags, commands] of cases) {
+      writeFileSync(file, JSON.stringify(settings))
+      const before = readFileSync(file, 'utf8')
+
+      const r = installer(flags, dir, entry)
+
+      expect(r.code, label).toBe(1)
+      expect(r.out, label).toBe('')
+      expect(r.err, label).toContain('already has Claude hooks from another Agent Inbox install')
+      expect(r.err, label).toContain(`the v1.2.4 Setup runtime at ${runtime} (6 hooks)`)
+      expect(printed(r.err), label).toEqual(commands)
+      expect(r.err, label).not.toMatch(/hooks installed|already installed|--force/)
+      expect(readFileSync(file, 'utf8'), label).toBe(before)
+      expect(backupsOf(file), label).toEqual([])
+    }
+  })
+
+  it('with two sets already in place (this bug\'s aftermath), the first command it prints gets back to one set', () => {
+    const { dir, entry, file } = home()
+    const runtime = installRuntimeVersion(runtimeRootOf(dir), '1.2.4')
+    const runtimeEntry = join(runtime, 'dist', 'hook-cli.js')
+    writeFileSync(file, JSON.stringify(withSets(withPostToolUse, setOf(join(runtime, 'bin', 'node'), runtimeEntry), setOf(process.execPath, entry))))
+
+    const refused = installer(['--apply'], dir, entry)
+    expect(refused.code).toBe(1)
+    const [first] = printed(refused.err)
+
+    const fixed = spawnSync('/bin/bash', ['-c', first!], {
+      encoding: 'utf8',
+      env: { ...process.env, HOME: dir, AGENT_INBOX_HOOK_ENTRY: entry },
+    })
+    expect(fixed.status, fixed.stderr).toBe(0)
+    const s = JSON.parse(readFileSync(file, 'utf8')) as Settings
+    expectOneSet(s, entry, [entry, runtimeEntry])
+    expect(s.hooks!.PostToolUse).toEqual(withPostToolUse.hooks.PostToolUse)
+  })
+
+  it('refuses beside another checkout\'s hooks, and the command it prints removes exactly that set', () => {
+    const { dir, entry, file } = home()
+    // the settings name the checkout through a symlinked folder: that checkout's
+    // installer matches its own entries by that exact path, so the printed
+    // command has to use it rather than the resolved one
+    const other = join(dir, 'linked-checkout')
+    symlinkSync(otherCheckout(dir), other)
+    const otherEntry = join(other, 'dist', 'hook-cli.js')
+    writeFileSync(file, JSON.stringify(withSets(withPostToolUse, setOf(process.execPath, otherEntry))))
+    const before = readFileSync(file, 'utf8')
+
+    const refused = installer(['--apply'], dir, entry)
+
+    expect(refused.code).toBe(1)
+    expect(refused.err).toContain(`the source checkout at ${other} (6 hooks)`)
+    expect(printed(refused.err)).toEqual([replaceCommand, uninstallCommand(other)])
+    expect(readFileSync(file, 'utf8')).toBe(before)
+
+    const env: NodeJS.ProcessEnv = { ...process.env, HOME: dir }
+    delete env.AGENT_INBOX_HOOK_ENTRY
+    const removed = spawnSync('/bin/bash', ['-c', uninstallCommand(other)], { encoding: 'utf8', env })
+    expect(removed.status, removed.stderr).toBe(0)
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual(withPostToolUse)
+
+    const installed = installer(['--apply'], dir, entry)
+    expect(installed.code, installed.err).toBe(0)
+    expectOneSet(JSON.parse(readFileSync(file, 'utf8')), entry, [entry, otherEntry])
+  })
+
+  it('replaces the hooks of a moved or deleted install, which can no longer run, only with --replace-existing', () => {
+    const { dir, entry, file } = home()
+    // a checkout that was moved away, and one whose fnm Node was uninstalled
+    const moved = join(dir, 'moved-checkout')
+    const movedEntry = join(moved, 'dist', 'hook-cli.js')
+    const other = otherCheckout(dir)
+    const otherEntry = join(other, 'dist', 'hook-cli.js')
+    const lookAlike = { hooks: [{ type: 'command', command: process.execPath, args: [join(dir, 'tool', 'notify.js'), 'stop'] }] }
+    writeFileSync(file, JSON.stringify(withSets(withPostToolUse,
+      setOf(process.execPath, movedEntry),
+      setOf(join(dir, 'fnm', 'node-versions', 'v24.0.0', 'bin', 'node'), otherEntry),
+      { Stop: [lookAlike] })))
+    const before = readFileSync(file, 'utf8')
+
+    const refused = installer(['--apply'], dir, entry)
+
+    expect(refused.code).toBe(1)
+    expect(refused.err).toContain(`the install at ${moved}, which can no longer run (6 hooks)`)
+    expect(refused.err).toContain(`the install at ${other}, which can no longer run (6 hooks)`)
+    expect(printed(refused.err)).toEqual([replaceCommand])
+    expect(readFileSync(file, 'utf8')).toBe(before)
+
+    const r = installer(['--apply', '--replace-existing'], dir, entry)
+
+    expect(r.code, r.err).toBe(0)
+    const s = JSON.parse(readFileSync(file, 'utf8')) as Settings
+    expectOneSet(s, entry, [entry, movedEntry, otherEntry])
+    expect(s.hooks!.PostToolUse).toEqual(withPostToolUse.hooks.PostToolUse)
+    expect(s.hooks!.Stop).toContainEqual(lookAlike)
+  })
+
+  it('never touches, or refuses beside, another tool\'s dead hook that is not a dist/hook-cli.js', () => {
+    const { dir, entry, file } = home()
+    const dead = { hooks: [
+      { type: 'command', command: process.execPath, args: [join(dir, 'gone', 'notify.js'), 'stop'] },
+      { type: 'command', command: join(dir, 'gone', 'node'), args: [join(dir, 'gone', 'hook.js'), 'watch'] },
+    ] }
+    writeFileSync(file, JSON.stringify({ hooks: { Stop: [dead] } }))
+
+    for (const flags of [['--apply'], ['--apply', '--replace-existing']]) {
+      const r = installer(flags, dir, entry)
+      expect(r.code, `${flags.join(' ')}: ${r.err}`).toBe(0)
+      const s = JSON.parse(readFileSync(file, 'utf8')) as Settings
+      expect(s.hooks!.Stop![0]).toEqual(dead)
+      expectOneSet(s, entry, [entry])
+    }
+  })
+
+  it('--replace-existing swaps every Agent Inbox set for exactly this one, keeps other tools\' hooks, and the dry run shows that set', () => {
+    const { dir, entry, file } = home()
+    const runtime = installRuntimeVersion(runtimeRootOf(dir), '1.2.4')
+    const runtimeEntry = join(runtime, 'dist', 'hook-cli.js')
+    const other = otherCheckout(dir)
+    const otherEntry = join(other, 'dist', 'hook-cli.js')
+    // another tool's hook with one of our subcommand names: never ours
+    const lookAlike = { hooks: [{ type: 'command', command: 'node', args: ['tools/notify.js', 'stop'] }] }
+    const before = JSON.stringify(withSets(withPostToolUse,
+      setOf(join(runtime, 'bin', 'node'), runtimeEntry),
+      setOf(process.execPath, otherEntry),
+      setOf(process.execPath, entry),
+      { Stop: [lookAlike] }))
+    writeFileSync(file, before)
+    const known = [entry, runtimeEntry, otherEntry]
+
+    const preview = installer(['--replace-existing'], dir, entry)
+
+    expect(preview.code, preview.err).toBe(0)
+    expect(readFileSync(file, 'utf8')).toBe(before)
+    expect(preview.err).toContain(`replacing 6 hooks of the v1.2.4 Setup runtime at ${runtime}`)
+    expect(preview.err).toContain(`replacing 6 hooks of the source checkout at ${other}`)
+    const planned = JSON.parse(preview.out) as Settings
+    expectOneSet(planned, entry, known)
+
+    const r = installer(['--apply', '--replace-existing'], dir, entry)
+
+    expect(r.code, r.err).toBe(0)
+    const s = JSON.parse(readFileSync(file, 'utf8')) as Settings
+    expect(s).toEqual(planned)
+    expectOneSet(s, entry, known)
+    expect(s.model).toBe('x')
+    expect(s.hooks!.PostToolUse).toEqual(withPostToolUse.hooks.PostToolUse)
+    expect(s.hooks!.Stop).toContainEqual(lookAlike)
+    const backups = backupsOf(file)
+    expect(backups).toHaveLength(1)
+    expect(readFileSync(join(dirname(file), backups[0]!), 'utf8')).toBe(before)
+  })
+
+  it('never takes another tool\'s look-alike hook for an Agent Inbox install', () => {
+    const { dir, entry, file } = home()
+    // our file name and subcommands, someone else's package
+    const tool = join(dir, 'tool')
+    mkdirSync(join(tool, 'dist'), { recursive: true })
+    writeFileSync(join(tool, 'package.json'), JSON.stringify({ name: 'agent-inbox-companion' }))
+    writeFileSync(join(tool, 'dist', 'hook-cli.js'), '// another tool\n')
+    const lookAlikes = { hooks: [
+      { type: 'command', command: process.execPath, args: [join(tool, 'dist', 'hook-cli.js'), 'stop'] },
+      { type: 'command', command: 'node', args: [join(tool, 'dist', 'hook-cli.js'), 'watch'] },
+      { type: 'command', command: 'node', args: ['dist/hook-cli.js', 'notification'] },
+    ] }
+    writeFileSync(file, JSON.stringify({ hooks: { Stop: [lookAlikes] } }))
+
+    for (const flags of [['--apply'], ['--apply', '--force'], ['--apply', '--replace-existing']]) {
+      const r = installer(flags, dir, entry)
+      expect(r.code, `${flags.join(' ')}: ${r.err}`).toBe(0)
+      const s = JSON.parse(readFileSync(file, 'utf8')) as Settings
+      expect(s.hooks!.Stop![0]).toEqual(lookAlikes)
+      expectOneSet(s, entry, [entry])
+    }
+  })
+
+  it('refuses, even with --replace-existing, beside agent-inbox-shaped hooks it cannot attribute', () => {
+    const { dir, entry, file } = home()
+    const runtime = installRuntimeVersion(runtimeRootOf(dir), '1.2.4')
+    // no longer the runtime its manifest describes, but it still runs
+    writeFileSync(join(runtime, 'dist', 'hook-cli.js'), '// tampered\n')
+    writeFileSync(file, JSON.stringify(withSets(withPostToolUse, setOf(join(runtime, 'bin', 'node'), join(runtime, 'dist', 'hook-cli.js')))))
+    const before = readFileSync(file, 'utf8')
+
+    for (const flags of [['--apply'], ['--apply', '--replace-existing']]) {
+      const r = installer(flags, dir, entry)
+      expect(r.code, flags.join(' ')).toBe(1)
+      expect(r.err).toMatch(/cannot attribute/)
+      expect(r.err).toContain(`  - ${join(runtime, 'bin', 'node')} ${join(runtime, 'dist', 'hook-cli.js')} (notification, prompt-submit, session-end, session-start, stop, watch)`)
+      // the verifier's own reason, so the folder can be fixed without editing settings.json
+      expect(r.err).toContain(`\n    ${runtime} does not verify as a runtime: size mismatch for dist/hook-cli.js`)
+      expect(r.err).toContain(strayFileHint)
+      expect(readFileSync(file, 'utf8')).toBe(before)
+    }
+  })
+
+  // #232: a runtime copied or extracted outside the runtime root, or installed
+  // under another AGENT_INBOX_RUNTIME_ROOT, is still an Agent Inbox install. It
+  // was taken for another tool's, so a checkout install added a second set.
+  it('refuses beside the hooks of a runtime outside the runtime root, and replaces them only with --replace-existing', () => {
+    const { dir, entry, file } = home()
+    const copied = installRuntimeVersion(join(dir, 'Downloads'), '1.2.4')
+    const copiedEntry = join(copied, 'dist', 'hook-cli.js')
+    writeFileSync(file, JSON.stringify(withSets(withPostToolUse, setOf(join(copied, 'bin', 'node'), copiedEntry))))
+    const before = readFileSync(file, 'utf8')
+
+    for (const flags of [[], ['--apply']]) {
+      const refused = installer(flags, dir, entry)
+      expect(refused.code, flags.join(' ')).toBe(1)
+      expect(refused.out).toBe('')
+      expect(refused.err).toContain('already has Claude hooks from another Agent Inbox install')
+      expect(refused.err).toContain(`the v1.2.4 runtime at ${copied}, outside Setup's runtime folder (6 hooks)`)
+      // 1.3.2 and older runtimes' own uninstall refuses their hooks outside the root
+      expect(printed(refused.err)).toEqual([replaceCommand])
+      expect(readFileSync(file, 'utf8')).toBe(before)
+      expect(backupsOf(file)).toEqual([])
+    }
+
+    const r = installer(['--apply', '--replace-existing'], dir, entry)
+
+    expect(r.code, r.err).toBe(0)
+    expect(r.err).toContain(`replacing 6 hooks of the v1.2.4 runtime at ${copied}, outside Setup's runtime folder`)
+    const s = JSON.parse(readFileSync(file, 'utf8')) as Settings
+    expectOneSet(s, entry, [entry, copiedEntry])
+    expect(s.hooks!.PostToolUse).toEqual(withPostToolUse.hooks.PostToolUse)
+  })
+
+  it('refuses, even with --replace-existing, beside a runtime outside the root that it cannot verify', () => {
+    const { dir, entry, file } = home()
+    const tampered = installRuntimeVersion(join(dir, 'Downloads'), '1.2.4')
+    writeFileSync(join(tampered, 'dist', 'hook-cli.js'), '// tampered\n')
+    const borrowed = installRuntimeVersion(join(dir, 'Desktop'), '1.2.4')
+    // [label, the hooks' command, their entry, why the folder does not verify]
+    const cases: Array<[string, string, string, string | null]> = [
+      ['a tampered runtime', join(tampered, 'bin', 'node'), join(tampered, 'dist', 'hook-cli.js'), `${tampered} does not verify as a runtime: size mismatch for dist/hook-cli.js`],
+      ['a runtime\'s entry under another Node', process.execPath, join(borrowed, 'dist', 'hook-cli.js'), null],
+    ]
+    for (const [label, command, listed, reason] of cases) {
+      writeFileSync(file, JSON.stringify(withSets(withPostToolUse, setOf(command, listed))))
+      const before = readFileSync(file, 'utf8')
+      for (const flags of [['--apply'], ['--apply', '--replace-existing']]) {
+        const r = installer(flags, dir, entry)
+        expect(r.code, `${label}, ${flags.join(' ')}`).toBe(1)
+        expect(r.err, label).toMatch(/cannot attribute/)
+        expect(r.err, label).toContain(`  - ${command} ${listed} (notification, prompt-submit, session-end, session-start, stop, watch)`)
+        if (reason) {
+          expect(r.err, label).toContain(`\n    ${reason}`)
+          expect(r.err, label).toContain(strayFileHint)
+        } else {
+          expect(r.err, label).not.toContain('does not verify')
+          expect(r.err, label).not.toContain(strayFileHint)
+        }
+        expect(readFileSync(file, 'utf8'), label).toBe(before)
+      }
+    }
+  })
+
+  // macOS Finder writes .DS_Store into folders the user browses, such as a
+  // runtime extracted to ~/Downloads, and a runtime folder must hold exactly
+  // its manifested files. The refusal names the stray file, so deleting it is
+  // enough: nobody has to edit settings.json.
+  it('names the stray file that stops a runtime folder from verifying, and works once it is deleted', () => {
+    const { dir, entry, file } = home()
+    const copied = installRuntimeVersion(join(dir, 'Downloads'), '1.2.4')
+    const copiedEntry = join(copied, 'dist', 'hook-cli.js')
+    writeFileSync(file, JSON.stringify(withSets(withPostToolUse, setOf(join(copied, 'bin', 'node'), copiedEntry))))
+    writeFileSync(join(copied, '.DS_Store'), '')
+    const before = readFileSync(file, 'utf8')
+
+    for (const flags of [['--apply'], ['--apply', '--replace-existing']]) {
+      const r = installer(flags, dir, entry)
+      expect(r.code, flags.join(' ')).toBe(1)
+      expect(r.err).toContain(`\n    ${copied} does not verify as a runtime: unmanifested file present in payload: .DS_Store\n`)
+      expect(r.err).toContain(strayFileHint)
+      expect(readFileSync(file, 'utf8')).toBe(before)
+    }
+
+    rmSync(join(copied, '.DS_Store'))
+    const r = installer(['--apply', '--replace-existing'], dir, entry)
+    expect(r.code, r.err).toBe(0)
+    expectOneSet(JSON.parse(readFileSync(file, 'utf8')) as Settings, entry, [entry, copiedEntry])
+  })
+
+  // #228: realpathSync applies `..` before it follows a symlink, the OS after,
+  // so another tool's working hook written as <symlinked folder>/../bin/node
+  // was called dead, and --replace-existing removed it.
+  it('never removes a working hook whose path runs through a symlinked folder and .., and still replaces one the OS cannot find', () => {
+    const { dir, entry, file } = home()
+    const tool = join(dir, 'tool')
+    mkdirSync(join(tool, 'dist'), { recursive: true })
+    mkdirSync(join(tool, 'lib'))
+    mkdirSync(join(tool, 'bin'))
+    writeFileSync(join(tool, 'package.json'), JSON.stringify({ name: 'agent-inbox-companion' }))
+    writeFileSync(join(tool, 'dist', 'hook-cli.js'), '// another tool\n')
+    writeFileSync(join(tool, 'bin', 'node'), '')
+    symlinkSync(join(tool, 'lib'), join(dir, 'lib'))
+    // to the OS, <dir>/lib/.. is <tool>; to realpathSync it is <dir>, where neither path exists
+    const working = [
+      { type: 'command', command: `${dir}/lib/../bin/node`, args: [join(tool, 'dist', 'hook-cli.js'), 'stop'] },
+      { type: 'command', command: process.execPath, args: [`${dir}/lib/../dist/hook-cli.js`, 'watch'] },
+    ]
+    for (const hook of working) {
+      writeFileSync(file, JSON.stringify({ hooks: { Stop: [{ hooks: [hook] }] } }))
+      const before = readFileSync(file, 'utf8')
+      for (const flags of [['--apply'], ['--apply', '--replace-existing']]) {
+        const r = installer(flags, dir, entry)
+        const label = `${hook.command} ${hook.args[0]}, ${flags.join(' ')}`
+        expect(r.code, label).toBe(1)
+        expect(r.err, label).toMatch(/cannot attribute/)
+        // the command is listed too: it can be the path that does not resolve
+        expect(r.err, label).toContain(`  - ${hook.command} ${hook.args[0]} (${hook.args[1]})`)
+        expect(r.err, label).not.toMatch(/can no longer run/)
+        expect(readFileSync(file, 'utf8'), label).toBe(before)
+      }
+    }
+
+    // the same shape when the OS cannot find the path either: it cannot run, so it goes
+    rmSync(join(tool, 'bin', 'node'))
+    writeFileSync(file, JSON.stringify({ hooks: { Stop: [{ hooks: [working[0]] }] } }))
+    const refused = installer(['--apply'], dir, entry)
+    expect(refused.code).toBe(1)
+    expect(refused.err).toContain(`the install at ${tool}, which can no longer run (1 hook)`)
+    const replaced = installer(['--apply', '--replace-existing'], dir, entry)
+    expect(replaced.code, replaced.err).toBe(0)
+    const s = JSON.parse(readFileSync(file, 'utf8')) as Settings
+    expect(JSON.stringify(s)).not.toContain('/lib/../')
+    expectOneSet(s, entry, [entry])
+  })
+
+  it('--uninstall still removes only this checkout\'s own entries', () => {
+    const { dir, entry, file } = home()
+    const runtime = installRuntimeVersion(runtimeRootOf(dir), '1.2.4')
+    const runtimeSet = setOf(join(runtime, 'bin', 'node'), join(runtime, 'dist', 'hook-cli.js'))
+    writeFileSync(file, JSON.stringify(withSets(withPostToolUse, runtimeSet, setOf(process.execPath, entry))))
+
+    const r = installer(['--apply', '--uninstall'], dir, entry)
+
+    expect(r.code, r.err).toBe(0)
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual(withSets(withPostToolUse, runtimeSet))
+  })
+
+  it('refuses --replace-existing with --uninstall as a usage error, before touching anything', () => {
+    const { dir, entry, file } = home(withPostToolUse)
+    const before = readFileSync(file, 'utf8')
+
+    const r = installer(['--apply', '--uninstall', '--replace-existing'], dir, entry)
+
+    expect(r.code).toBe(2)
+    expect(r.err).toMatch(/--replace-existing.*--uninstall/)
+    expect(readFileSync(file, 'utf8')).toBe(before)
   })
 })
 

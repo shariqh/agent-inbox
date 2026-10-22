@@ -54,7 +54,7 @@ describe('Review queue milestone', () => {
     expect(lightbox.querySelector('.lb-mix')?.textContent).toContain('1 decision')
     expect(lightbox.querySelector('.lb-mix')?.textContent).toContain('1 task')
     expect(lightbox.querySelector('.lb-owner')?.textContent).toBe('Ready after approval')
-    expect(lightbox.querySelector<HTMLElement>('.lb-progress-fill')?.style.width).toBe('50%')
+    expect(lightbox.querySelector<HTMLElement>('.lb-progress-fill')?.style.transform).toBe('scaleX(0.5)')
     expect(lightbox.querySelector('.lb-shortcuts')?.textContent).toContain('1-4 choose')
     expect(lightbox.querySelector('.lb-card')?.textContent).toContain('Unblocks implementation.')
   })

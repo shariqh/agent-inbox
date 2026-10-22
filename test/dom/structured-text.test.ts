@@ -52,7 +52,7 @@ describe('structured agent text on cards and plans', () => {
     expect(card?.querySelector('.card-context')?.hasAttribute('open')).toBe(false)
     expect(card?.querySelectorAll('.card-context li')).toHaveLength(2)
     expectSafeLink(
-      card?.querySelector<HTMLAnchorElement>('.card-next .structured-link') ?? null,
+      card?.querySelector<HTMLAnchorElement>('.card-title .structured-link') ?? null,
       'https://example.com/decision',
     )
   })
@@ -314,7 +314,7 @@ describe('structured agent text on outcome, relay, and mission projections', () 
 
     const doneCard = document.querySelector(`[data-card-id="${id}"] .card`)
     expect(doneCard?.querySelectorAll('.outcome-block li')).toHaveLength(2)
-    expect(doneCard?.querySelectorAll('.lifecycle-step li')).toHaveLength(2)
+    expect(doneCard?.querySelectorAll('.lifecycle-step li')).toHaveLength(0)
 
     click(document.querySelector('.relay-btn'))
     await settle()

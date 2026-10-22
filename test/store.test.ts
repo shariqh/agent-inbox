@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { spawn } from 'node:child_process'
+import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
 import {
@@ -20,6 +20,9 @@ import {
   archiveBoard as writeArchiveBoard,
   unarchiveBoard as writeUnarchiveBoard,
   annotateBoardRow,
+  snoozeBoardRow,
+  pinBoardRow,
+  stopBoardRowWatch,
   markAnnotationDelivered,
   markRowHandled,
   clearRowHandled,
@@ -28,6 +31,7 @@ import {
   listBoards,
   computeProgress,
   getBoard,
+  getBoardByTitle,
   markBoardRead,
   upsertActivity,
   endActivity,
@@ -35,6 +39,7 @@ import {
   touchActivity,
   recordActivityCall,
   CLAIM_COLD_MS,
+  advanceBoardRow,
   closeProject,
   reopenProject,
   listClosedProjects,
@@ -44,11 +49,13 @@ import {
   listSourceLinks,
   listLinkTargets,
   pruneSourceLinks,
+  listActivitySpans,
 } from '../src/store.js'
-import type { BoardRow, RowStatus } from '../src/store.js'
+import type { BoardRow, BoardWithRows, RowStatus } from '../src/store.js'
+import { scratchDir } from './scratch.js'
 
 function freshDb(): Database.Database {
-  const dir = mkdtempSync(join(tmpdir(), 'inbox-'))
+  const dir = scratchDir('inbox-')
   return openDb(join(dir, 'inbox.db'))
 }
 
@@ -142,7 +149,7 @@ describe('store', () => {
     expect(listItems(db)[0]!.status).toBe('dismissed')
   })
 
-  it('annotate stores my private note', () => {
+  it('annotate stores human feedback on an open item', () => {
     const id = insertItem(db, { project: 'p', stream: '', agent: 'claude-code', kind: 'question', title: 'which db?' })
     annotateItem(db, id, 'use sqlite')
     expect(listItems(db)[0]!.annotation).toBe('use sqlite')
@@ -369,7 +376,7 @@ describe('answer-back', () => {
   // before or after the call is already correctly handled either way — only a write
   // landing INSIDE the guard's own statement sequence is the exploit window).
   it('an atomic guard survives markReplySeen from a second connection racing the blank-clear', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'inbox-race-'))
+    const dir = scratchDir('inbox-race-')
     const path = join(dir, 'inbox.db')
     const db1 = openDb(path)
     const db2 = new Database(path)
@@ -424,7 +431,7 @@ describe('answer-back', () => {
   // now marked picked up by an agent that never saw it, and no future pending()
   // returns it. Forced with two real connections rather than reasoned about.
   it('markReplySeen refuses to stamp an answer the human replaced under the agent', async () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'inbox-reply-race-')), 'inbox.db')
+    const path = join(scratchDir('inbox-reply-race-'), 'inbox.db')
     const mcp = openDb(path)
     const viewer = new Database(path)
     viewer.pragma('journal_mode = WAL')
@@ -469,7 +476,7 @@ describe('answer-back', () => {
   })
 
   it('openDb migrates a legacy items table missing the answer columns', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'inbox-legacy3-')), 'inbox.db')
+    const path = join(scratchDir('inbox-legacy3-'), 'inbox.db')
     const legacy = new Database(path)
     legacy.exec(`
       CREATE TABLE items (
@@ -513,7 +520,7 @@ describe('dual-channel answers (#29)', () => {
   })
 
   it('a legacy items table migrates to carry reply_source, defaulting to null', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'inbox-legacy-source-')), 'inbox.db')
+    const path = join(scratchDir('inbox-legacy-source-'), 'inbox.db')
     const legacy = new Database(path)
     legacy.exec(`
       CREATE TABLE items (
@@ -534,7 +541,7 @@ describe('dual-channel answers (#29)', () => {
 
   it('answerItem records a chat answer as already picked up, sourced to the agent, item still open', () => {
     const id = ask()
-    expect(answerItem(db, id, 'use postgres', 'ship behind a flag')).toEqual({ ok: true })
+    expect(answerItem(db, id, 'use postgres', 'ship behind a flag')).toEqual({ ok: true, response_revision: 1 })
     const it = row(id)
     expect(it.reply).toBe('use postgres')
     expect(it.reply_context).toBe('ship behind a flag')
@@ -544,6 +551,50 @@ describe('dual-channel answers (#29)', () => {
     expect(it.reply_seen_at).toBe(it.replied_at)
     expect(it.reply_source).toBe('agent')
     expect(it.status).toBe('open') // recording an answer is not resolving; the agent still has to act
+  })
+
+  it('migrates response history and versions older-writer corrections without changing timestamps', () => {
+    const path = join(scratchDir('inbox-response-revision-'), 'inbox.db')
+    const legacy = new Database(path)
+    legacy.exec(`
+      CREATE TABLE items (
+        id TEXT PRIMARY KEY, project TEXT NOT NULL, stream TEXT NOT NULL DEFAULT '',
+        agent TEXT NOT NULL DEFAULT 'unknown', kind TEXT NOT NULL, title TEXT NOT NULL,
+        detail TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'open',
+        annotation TEXT, created_at TEXT NOT NULL, resolved_at TEXT,
+        reply TEXT, replied_at TEXT, reply_seen_at TEXT
+      );
+      INSERT INTO items (id, project, kind, title, created_at, reply, replied_at, annotation)
+      VALUES
+        ('answered', 'p', 'question', 'q', '2026-01-01T00:00:00.000Z', 'yes', '2026-01-01T00:00:00.000Z', NULL),
+        ('cleared', 'p', 'question', 'q', '2026-01-01T00:00:00.000Z', NULL, '2026-01-01T00:00:00.000Z', NULL),
+        ('annotated', 'p', 'question', 'q', '2026-01-01T00:00:00.000Z', NULL, NULL, 'stop'),
+        ('unanswered', 'p', 'question', 'q', '2026-01-01T00:00:00.000Z', NULL, NULL, NULL);
+    `)
+    legacy.close()
+    const migrated = openDb(path)
+    try {
+      const revisions = Object.fromEntries(listItems(migrated).map((item) => [item.id, item.response_revision]))
+      expect(revisions).toEqual({ answered: 1, cleared: 1, annotated: 1, unanswered: 0 })
+      const original = listItems(migrated).find((item) => item.id === 'answered')!
+      // Model a still-running older viewer: its statement knows nothing of the new counter.
+      migrated.prepare(`UPDATE items SET reply = ?, reply_seen_at = NULL WHERE id = 'answered'`).run('no')
+      migrated.prepare(`UPDATE items SET reply = ?, reply_seen_at = NULL WHERE id = 'answered'`).run('yes')
+      const current = listItems(migrated).find((item) => item.id === 'answered')!
+      expect(current.response_revision).toBe(3)
+      expect(current.replied_at).toBe(original.replied_at)
+      expect(current.updated_at).toBe(original.updated_at)
+      expect(markReplySeen(migrated, current.id, original.replied_at, original.response_revision)).toBe(false)
+      expect(markReplySeen(migrated, current.id, current.replied_at, current.response_revision)).toBe(true)
+      const reopened = openDb(path)
+      try {
+        expect(listItems(reopened).find((item) => item.id === 'answered')!.response_revision).toBe(3)
+      } finally {
+        reopened.close()
+      }
+    } finally {
+      migrated.close()
+    }
   })
 
   it('answerItem refuses an empty answer, an unknown id, a note and a resolved question, each with a reason', () => {
@@ -619,7 +670,7 @@ describe('dual-channel answers (#29)', () => {
   // un-clearable by their own "Change answer" (replyItem's blank-clear refuses once
   // reply_seen_at is set). Same interception shape as the replyItem race pin above.
   it('the precedence guard is one atomic statement: a viewer replyItem racing from a second connection still wins the whole record', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'inbox-answer-race-')), 'inbox.db')
+    const path = join(scratchDir('inbox-answer-race-'), 'inbox.db')
     const db1 = openDb(path) // the MCP server's connection
     const db2 = new Database(path) // the viewer's
     db2.pragma('journal_mode = WAL')
@@ -636,6 +687,11 @@ describe('dual-channel answers (#29)', () => {
         const realGet = stmt.get.bind(stmt)
         const realRun = stmt.run.bind(stmt)
         stmt.get = ((...args: unknown[]) => {
+          // UPDATE ... RETURNING uses get too; land the reply before its write.
+          if (!stmt.readonly) {
+            replyItem(db2, id, 'from the inbox')
+            return realGet(...(args as []))
+          }
           const result = realGet(...(args as []))
           replyItem(db2, id, 'from the inbox') // race lands right after a (stale) read
           return result
@@ -712,7 +768,7 @@ describe('live activity', () => {
   })
 
   it('migrates a legacy claim or preserved idle detail into the historical synopsis atomically', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'inbox-legacy-activity-')), 'inbox.db')
+    const path = join(scratchDir('inbox-legacy-activity-'), 'inbox.db')
     const legacy = new Database(path)
     const now = new Date().toISOString()
     legacy.exec(`
@@ -1028,6 +1084,490 @@ describe('live activity — registering presence never overwrites a claim', () =
   })
 })
 
+// ── issue #197: which Agent Inbox build each session runs ───────────────────
+//
+// Registration records the MCP server's own build on its presence row — its
+// version and whether it runs from an installed agent runtime or a checkout — so
+// Live can say which sessions still run an older build and what would update
+// them. It rides on a write that already happens: it is never a liveness or work
+// signal, a later write that does not carry it never clears it, and a legacy row
+// reads NULL rather than a guess.
+describe('live activity — the server build a session registered with (#197)', () => {
+  let db: Database.Database
+  const START = Date.parse('2026-10-17T09:00:00.000Z')
+  const SCOPE = { session: 's1', project: 'agent-inbox', stream: 'main', agent: 'copilot' } as const
+  const BUILD = { server_version: '1.2.8', server_source: 'runtime' } as const
+
+  beforeEach(() => {
+    db = freshDb()
+    vi.useFakeTimers()
+    vi.setSystemTime(START)
+  })
+  afterEach(() => { vi.useRealTimers() })
+
+  const register = (build: Partial<typeof BUILD> = {}, session = 's1'): void => {
+    upsertActivity(db, { ...SCOPE, session, doing: 'open', idle: true, claim: false, ...build })
+  }
+  const row = (session = 's1') => listActivity(db).find((a) => a.session === session)!
+
+  it('registration persists the version and install source, and later writes that omit them keep both', () => {
+    register(BUILD)
+    expect(row()).toMatchObject(BUILD)
+    vi.setSystemTime(START + 60_000)
+    upsertActivity(db, { ...SCOPE, doing: 'Shipping the release', detail: 'step 2' }) // status({doing})
+    expect(row()).toMatchObject(BUILD)
+    upsertActivity(db, { ...SCOPE, doing: 'open', idle: true, children: [] }) // status({done:true})
+    expect(row()).toMatchObject(BUILD)
+    register() // the 2-second fallback, from a caller that sends no build
+    recordActivityCall(db, 's1')
+    touchActivity(db, 's1')
+    expect(row()).toMatchObject(BUILD)
+  })
+
+  it('a session that never reported its build reads null for both, never a guess', () => {
+    register()
+    expect(row()).toMatchObject({ server_version: null, server_source: null })
+  })
+
+  it('is inert to liveness and work: the same stamps, claim and spans as a registration without it', () => {
+    register(BUILD)
+    register({}, 'plain')
+    expect({ ...row(), session: 'plain', server_version: null, server_source: null }).toEqual(row('plain'))
+    expect(row().last_call_at).toBeNull() // registration is still not a tool call
+    expect(listActivitySpans(db)).toEqual([])
+
+    // the liveness tick moves updated_at and nothing else
+    vi.setSystemTime(START + 5 * 60_000)
+    touchActivity(db, 's1')
+    expect(row()).toMatchObject({
+      updated_at: new Date(START + 5 * 60_000).toISOString(),
+      last_call_at: null,
+      ...BUILD,
+    })
+  })
+
+  it('migrates a legacy activity table: existing rows read null until their session registers a build', () => {
+    const path = join(scratchDir('inbox-legacy-build-'), 'inbox.db')
+    const legacy = new Database(path)
+    const now = new Date(START).toISOString()
+    legacy.exec(`
+      CREATE TABLE activity (
+        session TEXT PRIMARY KEY,
+        project TEXT NOT NULL,
+        stream TEXT NOT NULL DEFAULT '',
+        agent TEXT NOT NULL DEFAULT 'unknown',
+        doing TEXT NOT NULL,
+        last_doing TEXT NOT NULL DEFAULT '',
+        detail TEXT NOT NULL DEFAULT '',
+        children TEXT,
+        idle INTEGER NOT NULL DEFAULT 0,
+        started_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        last_call_at TEXT,
+        ended_at TEXT
+      );
+    `)
+    legacy.prepare(
+      `INSERT INTO activity (session, project, agent, doing, idle, started_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run('s1', 'agent-inbox', 'claude-code', 'open', 1, now, now)
+    legacy.close()
+
+    db = openDb(path)
+    expect(row()).toMatchObject({ server_version: null, server_source: null })
+    register(BUILD)
+    expect(row()).toMatchObject(BUILD)
+  })
+})
+
+// ── activity_spans: truthful claim intervals, additive and read-only ────────
+describe('activity spans', () => {
+  let db: Database.Database
+  const START = Date.parse('2026-08-01T09:00:00.000Z')
+
+  beforeEach(() => {
+    db = freshDb()
+    vi.useFakeTimers()
+    vi.setSystemTime(START)
+  })
+  afterEach(() => { vi.useRealTimers() })
+
+  it('migration is additive with no backfill — pre-existing activity rows produce no spans', () => {
+    const path = join(scratchDir('inbox-legacy-spans-'), 'inbox.db')
+    const legacy = new Database(path)
+    const now = new Date().toISOString()
+    legacy.exec(`
+      CREATE TABLE activity (
+        session TEXT PRIMARY KEY,
+        project TEXT NOT NULL,
+        stream TEXT NOT NULL DEFAULT '',
+        agent TEXT NOT NULL DEFAULT 'unknown',
+        doing TEXT NOT NULL,
+        detail TEXT NOT NULL DEFAULT '',
+        children TEXT,
+        idle INTEGER NOT NULL DEFAULT 0,
+        started_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        last_call_at TEXT,
+        ended_at TEXT
+      );
+    `)
+    legacy.prepare(
+      `INSERT INTO activity (session, project, agent, doing, idle, started_at, updated_at, last_call_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run('legacy', 'p', 'claude-code', 'shipping the release', 0, now, now, now)
+    legacy.close()
+
+    const migrated = openDb(path)
+    expect(listActivitySpans(migrated)).toEqual([])
+    migrated.close()
+  })
+
+  it('registration (claim: false) never creates a span, even with a meaningful-looking doing', () => {
+    upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'a', doing: 'reviewing PR', claim: false })
+    expect(listActivitySpans(db)).toEqual([])
+  })
+
+  it('a meaningful claim opens exactly one span', () => {
+    upsertActivity(db, { session: 's1', project: 'p', stream: 'main', agent: 'claude-code', doing: 'migrating tests' })
+    const spans = listActivitySpans(db)
+    expect(spans).toHaveLength(1)
+    expect(spans[0]!.session).toBe('s1')
+    expect(spans[0]!.doing).toBe('migrating tests')
+    expect(spans[0]!.started_at).toBe(new Date(START).toISOString())
+    expect(spans[0]!.last_active_at).toBe(new Date(START).toISOString())
+    expect(spans[0]!.ended_at).toBeNull()
+    expect(spans[0]!.effective_ended_at).toBeNull() // still warm
+  })
+
+  it('an idle/empty/"open" doing never opens a span', () => {
+    upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'a', doing: 'open', idle: true })
+    expect(listActivitySpans(db)).toEqual([])
+    upsertActivity(db, { session: 's2', project: 'p', stream: '', agent: 'a', doing: '' })
+    expect(listActivitySpans(db)).toEqual([])
+  })
+
+  it('the same live claim asserted again does not spam a new row — it bumps last_active_at', () => {
+    upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'a', doing: 'writing tests' })
+    vi.setSystemTime(START + 5 * 60_000)
+    upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'a', doing: 'writing tests' })
+    const spans = listActivitySpans(db)
+    expect(spans).toHaveLength(1)
+    expect(spans[0]!.started_at).toBe(new Date(START).toISOString())
+    expect(spans[0]!.last_active_at).toBe(new Date(START + 5 * 60_000).toISOString())
+    expect(spans[0]!.ended_at).toBeNull()
+  })
+
+  it('a changed claim truthfully closes the prior span (at now) and opens a new one', () => {
+    upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'a', doing: 'writing tests' })
+    vi.setSystemTime(START + 5 * 60_000)
+    upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'a', doing: 'running suite' })
+    const spans = listActivitySpans(db)
+    expect(spans).toHaveLength(2)
+    expect(spans[0]!.doing).toBe('writing tests')
+    expect(spans[0]!.ended_at).toBe(new Date(START + 5 * 60_000).toISOString())
+    expect(spans[0]!.effective_ended_at).toBe(spans[0]!.ended_at)
+    expect(spans[1]!.doing).toBe('running suite')
+    expect(spans[1]!.started_at).toBe(new Date(START + 5 * 60_000).toISOString())
+    expect(spans[1]!.ended_at).toBeNull()
+  })
+
+  it('an explicit idle/open/done claim closes the prior span and opens none', () => {
+    upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'a', doing: 'writing tests' })
+    vi.setSystemTime(START + 5 * 60_000)
+    upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'a', doing: 'open', idle: true })
+    const spans = listActivitySpans(db)
+    expect(spans).toHaveLength(1)
+    expect(spans[0]!.ended_at).toBe(new Date(START + 5 * 60_000).toISOString())
+  })
+
+  it('a stale prior span closes at last_active_at + CLAIM_COLD_MS, not at now, even without a heartbeat first', () => {
+    upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'a', doing: 'writing tests' })
+    // silence past the cold threshold — no recordActivityCall/touchActivity in between
+    vi.setSystemTime(START + CLAIM_COLD_MS + 60 * 60_000)
+    upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'a', doing: 'open', idle: true })
+    const spans = listActivitySpans(db)
+    expect(spans).toHaveLength(1)
+    expect(spans[0]!.ended_at).toBe(new Date(START + CLAIM_COLD_MS).toISOString()) // capped, not "now"
+  })
+
+  it('reasserting the SAME claim text after a cold gap opens a fresh span rather than extending the old one', () => {
+    upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'a', doing: 'writing tests' })
+    vi.setSystemTime(START + CLAIM_COLD_MS + 60 * 60_000)
+    upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'a', doing: 'writing tests' })
+    const spans = listActivitySpans(db)
+    expect(spans).toHaveLength(2)
+    expect(spans[0]!.ended_at).toBe(new Date(START + CLAIM_COLD_MS).toISOString())
+    expect(spans[1]!.started_at).toBe(new Date(START + CLAIM_COLD_MS + 60 * 60_000).toISOString())
+    expect(spans[1]!.ended_at).toBeNull()
+  })
+
+  // Issue #162. Presence takes the latest scope on every write, but a span compared
+  // only `doing`: after register() or a branch checkout moved the session, the same
+  // claim kept extending the OLD span, so Live said one project while history
+  // credited the work to another.
+  it.each([
+    ['project', { project: 'proj-b' }],
+    ['stream', { stream: 'feature' }],
+    ['agent', { agent: 'copilot' }],
+  ] as const)('re-claiming the same doing under a different %s closes the old-scope span and opens a new-scope one', (_field, change) => {
+    const scope = { session: 's1', project: 'proj-a', stream: 'main', agent: 'claude-code' }
+    upsertActivity(db, { ...scope, doing: 'Testing' })
+    vi.setSystemTime(START + 5 * 60_000)
+    upsertActivity(db, { ...scope, ...change, doing: 'Testing' })
+    const spans = listActivitySpans(db)
+    expect(spans).toHaveLength(2)
+    expect(spans[0]).toMatchObject({ ...scope, doing: 'Testing', ended_at: new Date(START + 5 * 60_000).toISOString() })
+    expect(spans[1]).toMatchObject({ ...scope, ...change, doing: 'Testing', started_at: new Date(START + 5 * 60_000).toISOString(), ended_at: null })
+    expect(listActivity(db)[0]).toMatchObject({ ...scope, ...change }) // Live and history agree
+  })
+
+  it('registration (claim: false) into a new scope neither closes, extends nor re-scopes the open span', () => {
+    upsertActivity(db, { session: 's1', project: 'proj-a', stream: 'main', agent: 'claude-code', doing: 'Testing' })
+    const before = listActivitySpans(db)
+    vi.setSystemTime(START + 5 * 60_000)
+    // what register() sends through registerPresence after scope.override
+    upsertActivity(db, { session: 's1', project: 'proj-b', stream: 'feature', agent: 'claude-code', doing: 'open', idle: true, claim: false })
+    expect(listActivity(db)[0]!.project).toBe('proj-b')
+    expect(listActivitySpans(db)).toEqual(before)
+  })
+
+  it('recordActivityCall while still warm bumps last_active_at on the open span', () => {
+    upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'a', doing: 'writing tests' })
+    vi.setSystemTime(START + 10 * 60_000)
+    recordActivityCall(db, 's1')
+    const spans = listActivitySpans(db)
+    expect(spans).toHaveLength(1)
+    expect(spans[0]!.last_active_at).toBe(new Date(START + 10 * 60_000).toISOString())
+    expect(spans[0]!.ended_at).toBeNull()
+  })
+
+  it('recordActivityCall after going cold closes the span at the exact cap, never extending it to now', () => {
+    upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'a', doing: 'writing tests' })
+    vi.setSystemTime(START + 3 * 60 * 60_000) // 3 hours of silence, well past the cap
+    recordActivityCall(db, 's1')
+    const spans = listActivitySpans(db)
+    expect(spans).toHaveLength(1)
+    expect(spans[0]!.ended_at).toBe(new Date(START + CLAIM_COLD_MS).toISOString())
+  })
+
+  it('endActivity after a short stretch of work closes the span at "now"', () => {
+    upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'a', doing: 'writing tests' })
+    vi.setSystemTime(START + 5 * 60_000)
+    endActivity(db, 's1')
+    const spans = listActivitySpans(db)
+    expect(spans[0]!.ended_at).toBe(new Date(START + 5 * 60_000).toISOString())
+  })
+
+  it('endActivity after hours of silence caps the close at last_active_at + CLAIM_COLD_MS, never overstating the work', () => {
+    upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'a', doing: 'writing tests' })
+    vi.setSystemTime(START + 6 * 60 * 60_000) // process exits after a long silence
+    endActivity(db, 's1')
+    const spans = listActivitySpans(db)
+    expect(spans[0]!.ended_at).toBe(new Date(START + CLAIM_COLD_MS).toISOString())
+  })
+
+  it('a crashed session (nothing ever closes it) reads as capped at query time without mutating the stored row', () => {
+    upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'a', doing: 'writing tests' })
+    vi.setSystemTime(START + 2 * 24 * 60 * 60_000) // two days of silence, no heartbeat, no exit
+    const spans = listActivitySpans(db)
+    expect(spans).toHaveLength(1)
+    expect(spans[0]!.ended_at).toBeNull() // the stored row is honest: nobody closed it
+    expect(spans[0]!.effective_ended_at).toBe(new Date(START + CLAIM_COLD_MS).toISOString())
+  })
+
+  it('project and since filters include spans that started before the window but overlap it', () => {
+    upsertActivity(db, { session: 'p1-old', project: 'proj-a', stream: '', agent: 'a', doing: 'first task' })
+    vi.setSystemTime(START + 10 * 60_000)
+    endActivity(db, 'p1-old') // ends inside what will be the "since" window
+    vi.setSystemTime(START + 20 * 60_000)
+    upsertActivity(db, { session: 'p1-new', project: 'proj-a', stream: '', agent: 'a', doing: 'second task' })
+    upsertActivity(db, { session: 'other-project', project: 'proj-b', stream: '', agent: 'a', doing: 'unrelated' })
+
+    const since = START + 15 * 60_000
+    const spans = listActivitySpans(db, { project: 'proj-a', sinceMs: since })
+    // p1-old started and ended before `since` → excluded; p1-new is ongoing → included
+    expect(spans.map((s) => s.session)).toEqual(['p1-new'])
+  })
+
+  it('a span spanning the since boundary (started before, still open) is included as an overlap', () => {
+    upsertActivity(db, { session: 'spanning', project: 'proj-a', stream: '', agent: 'a', doing: 'long task' })
+    vi.setSystemTime(START + 30 * 60_000)
+    const spans = listActivitySpans(db, { project: 'proj-a', sinceMs: START + 15 * 60_000 })
+    expect(spans.map((s) => s.session)).toEqual(['spanning'])
+  })
+
+  it('90-day pruning drops old closed spans and kill-9-style stale open spans, keeping recent ones', () => {
+    // A closed span far outside retention.
+    upsertActivity(db, { session: 'ancient', project: 'p', stream: '', agent: 'a', doing: 'long ago' })
+    endActivity(db, 'ancient')
+    // A "kill -9" style span: opened, never closed, abandoned long enough that
+    // even its capped effective end is outside retention.
+    upsertActivity(db, { session: 'crashed', project: 'p', stream: '', agent: 'a', doing: 'never finished' })
+
+    const past90 = START + 91 * 24 * 60 * 60_000 + CLAIM_COLD_MS + 60_000
+    vi.setSystemTime(past90)
+    // A fresh claim now, to trigger the opportunistic prune inside upsertActivity.
+    upsertActivity(db, { session: 'recent', project: 'p', stream: '', agent: 'a', doing: 'current work' })
+
+    const sessions = listActivitySpans(db).map((s) => s.session)
+    expect(sessions).not.toContain('ancient')
+    expect(sessions).not.toContain('crashed')
+    expect(sessions).toContain('recent')
+  })
+})
+
+// ── issue #161: the `sinceMs` overlap runs in SQL, with unchanged semantics ──
+describe('activity spans: since overlap in SQL (issue #161)', () => {
+  let db: Database.Database
+  const NOW = Date.parse('2026-08-01T09:00:00.000Z')
+  const DAY = 24 * 60 * 60_000
+  const iso = (ms: number): string => new Date(ms).toISOString()
+
+  beforeEach(() => {
+    db = freshDb()
+    vi.useFakeTimers()
+    vi.setSystemTime(NOW)
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  // Rows go in directly: these cases sit on exact millisecond boundaries that
+  // the claim lifecycle cannot be steered onto.
+  function insertSpan(span: { session: string; project?: string; started: number; lastActive: number; ended: number | null }): void {
+    db.prepare(
+      `INSERT INTO activity_spans (session, project, stream, agent, doing, started_at, last_active_at, ended_at)
+       VALUES (?, ?, '', 'agent', 'work', ?, ?, ?)`,
+    ).run(span.session, span.project ?? 'p', iso(span.started), iso(span.lastActive), span.ended === null ? null : iso(span.ended))
+  }
+
+  // The pre-#161 implementation, verbatim: read every retained span, then
+  // apply the overlap filter in JavaScript.
+  function referenceSpans(opts: { project?: string; sinceMs?: number } = {}): unknown[] {
+    const nowMs = Date.now()
+    const cold = new Date(nowMs - CLAIM_COLD_MS).toISOString()
+    const capped = (lastActiveAt: string): string => {
+      const cap = Date.parse(lastActiveAt) + CLAIM_COLD_MS
+      return cap < nowMs ? new Date(cap).toISOString() : new Date(nowMs).toISOString()
+    }
+    const rows = db
+      .prepare(
+        `SELECT id, session, project, stream, agent, doing, started_at, last_active_at, ended_at
+           FROM activity_spans
+          WHERE (@project IS NULL OR project = @project)
+          ORDER BY started_at ASC`,
+      )
+      .all({ project: opts.project ?? null }) as Array<{ last_active_at: string; ended_at: string | null }>
+    const sinceIso = opts.sinceMs !== undefined ? new Date(opts.sinceMs).toISOString() : null
+    const withEffectiveEnd = rows.map((r) => {
+      const stillOpenButStale = r.ended_at === null && r.last_active_at < cold
+      return { ...r, effective_ended_at: r.ended_at ?? (stillOpenButStale ? capped(r.last_active_at) : null) }
+    })
+    if (sinceIso === null) return withEffectiveEnd
+    return withEffectiveEnd.filter((s) => s.effective_ended_at === null || s.effective_ended_at >= sinceIso)
+  }
+
+  it('keeps exactly the spans that overlap since, at every boundary', () => {
+    const since = NOW - 30 * DAY
+    insertSpan({ session: 'closed-before', started: since - 2 * DAY, lastActive: since - 2 * DAY, ended: since - 1 })
+    insertSpan({ session: 'closed-at-since', started: since - DAY, lastActive: since - DAY, ended: since })
+    insertSpan({ session: 'closed-recent', started: since + DAY, lastActive: since + DAY, ended: since + 2 * DAY })
+    insertSpan({ session: 'stale-capped-before', started: since - 3 * DAY, lastActive: since - CLAIM_COLD_MS - 1, ended: null })
+    insertSpan({ session: 'stale-capped-at-since', started: since - 3 * DAY, lastActive: since - CLAIM_COLD_MS, ended: null })
+    insertSpan({ session: 'stale-capped-after', started: since - DAY, lastActive: since + DAY, ended: null })
+    insertSpan({ session: 'stale-just-cold', started: NOW - DAY, lastActive: NOW - CLAIM_COLD_MS - 1, ended: null })
+    insertSpan({ session: 'warm-at-cold', started: NOW - DAY, lastActive: NOW - CLAIM_COLD_MS, ended: null })
+    insertSpan({ session: 'warm', started: since - 10 * DAY, lastActive: NOW - 60_000, ended: null })
+    insertSpan({ session: 'other-project', project: 'q', started: since + DAY, lastActive: since + DAY, ended: since + 2 * DAY })
+
+    const spans = listActivitySpans(db, { sinceMs: since })
+    expect(spans).toEqual(referenceSpans({ sinceMs: since }))
+    // Equal start times keep the full scan's insertion order.
+    expect(spans.map((s) => [s.session, s.effective_ended_at])).toEqual([
+      ['warm', null],
+      ['stale-capped-at-since', iso(since)],
+      ['closed-at-since', iso(since)],
+      ['stale-capped-after', iso(since + DAY + CLAIM_COLD_MS)],
+      ['closed-recent', iso(since + 2 * DAY)],
+      ['other-project', iso(since + 2 * DAY)],
+      ['stale-just-cold', iso(NOW - 1)],
+      ['warm-at-cold', null],
+    ])
+    expect(listActivitySpans(db, { project: 'q', sinceMs: since }).map((s) => s.session)).toEqual(['other-project'])
+    expect(listActivitySpans(db, { project: 'p', sinceMs: since })).toEqual(referenceSpans({ project: 'p', sinceMs: since }))
+  })
+
+  it('matches the full-scan filter over a seeded fixture for every since and project', () => {
+    let seed = 161
+    const random = (): number => {
+      seed = (seed * 1103515245 + 12345) % 2 ** 31
+      return seed / 2 ** 31
+    }
+    const pick = <T>(values: T[]): T => values[Math.floor(random() * values.length)]!
+    const since = NOW - 30 * DAY
+    const edges = [
+      since, since - 1, since + 1,
+      since - CLAIM_COLD_MS, since - CLAIM_COLD_MS - 1, since - CLAIM_COLD_MS + 1,
+      NOW - CLAIM_COLD_MS, NOW - CLAIM_COLD_MS - 1, NOW - CLAIM_COLD_MS + 1,
+      NOW, NOW - DAY, NOW - 89 * DAY, since + DAY,
+    ]
+    for (let i = 0; i < 400; i++) {
+      const lastActive = random() < 0.6 ? pick(edges) : NOW - Math.floor(random() * 90 * DAY)
+      const ended = random() < 0.5 ? null : random() < 0.6 ? pick(edges) : lastActive + Math.floor(random() * DAY)
+      // Few distinct start times, so ties are common.
+      insertSpan({ session: `s${i}`, project: pick(['p', 'q']), started: pick([lastActive - DAY, since - DAY, since]), lastActive, ended })
+    }
+    const sinces = [
+      undefined, since, since + 0.5, since - 0.5, since - CLAIM_COLD_MS, NOW - CLAIM_COLD_MS, NOW, NOW + DAY, 0, -1,
+      // Extended-year bounds compare as strings, exactly as before.
+      Date.parse('0000-01-01T00:10:00.000Z'), Date.parse('+010000-01-01T00:10:00.000Z'), -8.64e15, 8.64e15,
+    ]
+    for (const sinceMs of sinces) {
+      for (const project of [undefined, 'p', 'q', 'missing']) {
+        expect(listActivitySpans(db, { project, sinceMs }), `since=${sinceMs} project=${project}`)
+          .toEqual(referenceSpans({ project, sinceMs }))
+      }
+    }
+  })
+
+  it('reads only the overlapping rows, through the ended_at index', () => {
+    const since = NOW - 30 * DAY
+    for (let i = 0; i < 2000; i++) {
+      const start = NOW - 89 * DAY + i * 60_000
+      insertSpan({ session: `old-${i}`, started: start, lastActive: start, ended: start + 60_000 })
+    }
+    insertSpan({ session: 'abandoned', started: NOW - 80 * DAY, lastActive: NOW - 80 * DAY, ended: null })
+    insertSpan({ session: 'stale', started: NOW - 2 * DAY, lastActive: NOW - 2 * DAY, ended: null })
+    insertSpan({ session: 'recent', started: NOW - DAY, lastActive: NOW - DAY, ended: NOW - DAY + 60_000 })
+    insertSpan({ session: 'warm', started: NOW - 60_000, lastActive: NOW - 60_000, ended: null })
+
+    // Count what SQLite hands back to JavaScript, statement by statement.
+    const reads: Array<{ source: string; params: unknown[]; rows: number }> = []
+    const prepare = db.prepare.bind(db)
+    vi.spyOn(db, 'prepare').mockImplementation(((source: string) => {
+      const statement = prepare(source)
+      if (!/\bFROM activity_spans\b/.test(source)) return statement
+      const all = statement.all.bind(statement) as (...params: unknown[]) => unknown[]
+      statement.all = ((...params: unknown[]) => {
+        const rows = all(...params)
+        reads.push({ source, params, rows: rows.length })
+        return rows
+      }) as typeof statement.all
+      return statement
+    }) as typeof db.prepare)
+
+    expect(listActivitySpans(db, { sinceMs: since }).map((s) => s.session)).toEqual(['stale', 'recent', 'warm'])
+    expect(reads.map((read) => read.rows)).toEqual([3])
+    const plan = (prepare(`EXPLAIN QUERY PLAN ${reads[0]!.source}`).all(...(reads[0]!.params as [])) as Array<{ detail: string }>)
+      .map((step) => step.detail)
+      .join('\n')
+    expect(plan).not.toMatch(/\bSCAN (TABLE )?activity_spans\b/)
+    expect(plan).toMatch(/USING INDEX idx_activity_spans_ended\b/)
+  })
+})
+
 describe('boards', () => {
   let db: Database.Database
   beforeEach(() => { db = freshDb() })
@@ -1239,7 +1779,7 @@ describe('boards', () => {
   })
 
   it('openDb migrates a pre-context db by adding the column', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'inbox-legacy-')), 'inbox.db')
+    const path = join(scratchDir('inbox-legacy-'), 'inbox.db')
     const legacy = new Database(path)
     legacy.exec(`
       CREATE TABLE board_rows (
@@ -1379,7 +1919,7 @@ describe('unseen annotations', () => {
   })
 
   it('openDb migrates legacy tables missing last_read_at/annotated_at', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'inbox-legacy2-')), 'inbox.db')
+    const path = join(scratchDir('inbox-legacy2-'), 'inbox.db')
     const legacy = new Database(path)
     legacy.exec(`
       CREATE TABLE boards (
@@ -1559,7 +2099,7 @@ describe('per-row annotation delivery (#37)', () => {
   // nobody and no future poll ever returns it — the exact shape of the bug
   // replyItem's `AND reply_seen_at IS NULL` guard fixed for items.
   it('the delivery stamp refuses an annotation the human replaced under the reader', async () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'inbox-row-race-')), 'inbox.db')
+    const path = join(scratchDir('inbox-row-race-'), 'inbox.db')
     const mcp = openDb(path)                        // the MCP server's process
     const viewer = new Database(path)               // the viewer's own process
     viewer.pragma('journal_mode = WAL')
@@ -1663,7 +2203,7 @@ describe('per-row annotation delivery (#37)', () => {
   // still sitting in the human's Needs-you list right now. (There is exactly one
   // in the live DB: an unmerged "merge it".)
   it('openDb backfills annotation_seen_at from the OLD board-level rule, all four cases', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'inbox-seenat-')), 'inbox.db')
+    const path = join(scratchDir('inbox-seenat-'), 'inbox.db')
     const legacy = new Database(path)
     legacy.exec(`
       CREATE TABLE boards (
@@ -1948,7 +2488,7 @@ describe('row handled mark (#36)', () => {
   })
 
   it('openDb adds the three columns to a board_rows table that predates them', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'inbox-handled-')), 'inbox.db')
+    const path = join(scratchDir('inbox-handled-'), 'inbox.db')
     const legacy = new Database(path)
     legacy.exec(`
       CREATE TABLE boards (
@@ -2014,6 +2554,46 @@ describe('getBoard (agent read)', () => {
   })
 })
 
+// Issue #159 — the titled MCP board tools need a board WHATEVER its status
+// (board_get hands back an archived board's CAS revisions; board_upsert and
+// board_row demand board_version before a write reactivates it). They used to
+// find one by loading every archived board in every project.
+describe('getBoardByTitle (titled agent read, any status — issue #159)', () => {
+  let db: Database.Database
+  beforeEach(() => { db = freshDb() })
+
+  it('returns an active board exactly as getBoard does', () => {
+    upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'cov', rows: [
+      { label: 'x', status: 'done' }, { label: 'y', status: 'partial' },
+    ] })
+    expect(getBoardByTitle(db, 'p', 'cov')).toEqual(getBoard(db, 'p', 'cov'))
+  })
+
+  it('returns an archived board with its rows and progress, while getBoard stays active-only', () => {
+    const { boardId } = upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'cov', rows: [
+      { label: 'x', status: 'partial' }, { label: 'y', status: 'missing' },
+    ] })
+    archiveBoard(db, boardId)
+    const archived = getBoardByTitle(db, 'p', 'cov')!
+    expect(archived).toMatchObject({ id: boardId, status: 'archived', revision: 2 })
+    expect(archived.rows.map((r) => r.label)).toEqual(['x', 'y'])
+    expect(archived.progress.fraction).toBeCloseTo(0.5 / 2)
+    // the same snapshot the old all-archived-boards scan produced
+    expect(archived).toEqual(listBoards(db, { status: 'archived' })[0])
+    expect(getBoard(db, 'p', 'cov')).toBeUndefined()
+  })
+
+  it('is scoped by project and title: a missing title, or the same title in another project, is undefined', () => {
+    upsertBoard(db, { project: 'other', stream: '', agent: 'a', title: 'cov', rows: [{ label: 'z', status: 'missing' }] })
+    expect(getBoardByTitle(db, 'p', 'cov')).toBeUndefined()
+    expect(getBoardByTitle(db, 'other', 'nope')).toBeUndefined()
+    upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'cov', rows: [{ label: 'x', status: 'done' }] })
+    expect(getBoardByTitle(db, 'p', 'cov')).toMatchObject({ project: 'p', status: 'archived' })
+    expect(getBoardByTitle(db, 'p', 'cov')!.rows.map((r) => r.label)).toEqual(['x'])
+    expect(getBoardByTitle(db, 'other', 'cov')!.rows.map((r) => r.label)).toEqual(['z'])
+  })
+})
+
 describe('item session (liveness)', () => {
   let db: Database.Database
   beforeEach(() => { db = freshDb() })
@@ -2032,7 +2612,7 @@ describe('item session (liveness)', () => {
   })
 
   it('openDb migrates a legacy items table missing the session column', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'inbox-legacy4-')), 'inbox.db')
+    const path = join(scratchDir('inbox-legacy4-'), 'inbox.db')
     const legacy = new Database(path)
     legacy.exec(`
       CREATE TABLE items (
@@ -2244,7 +2824,7 @@ describe('items and boards carry the link identity they were raised on', () => {
   })
 
   it('openDb migrates legacy items/boards tables missing repo/issue_ref', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'inbox-legacy30-')), 'inbox.db')
+    const path = join(scratchDir('inbox-legacy30-'), 'inbox.db')
     const legacy = new Database(path)
     legacy.exec(`
       CREATE TABLE items (
@@ -2271,6 +2851,53 @@ describe('items and boards carry the link identity they were raised on', () => {
     expect(listItems(migrated).find((i) => i.title === 'new')!.repo).toBe('o/n')
     upsertBoard(migrated, { project: 'p', stream: '30-x', agent: 'a', title: 't', rows: [], repo: 'o/n', issueRef: 30 })
     expect(findBoard(migrated, 'p', 't')!.repo).toBe('o/n')
+  })
+
+  // issue #157 — beside the BASE repo (where the PR is searched for) items and
+  // boards record the HEAD repo their branch is pushed to (where the PR must
+  // come from). Restamped on every board write, exactly like repo and issue_ref.
+  it('items and boards record the expected head repository, null when none was inferred', () => {
+    insertItem(db, { project: 'p', stream: 'feature', agent: 'a', kind: 'question', title: 'q', repo: 'upstream/x', head_repo: 'me/x' })
+    insertItem(db, { project: 'p', stream: 'feature', agent: 'a', kind: 'note', title: 'n', repo: 'upstream/x' })
+    expect(listItems(db).find((i) => i.title === 'q')!.head_repo).toBe('me/x')
+    expect(listItems(db).find((i) => i.title === 'n')!.head_repo).toBeNull()
+    upsertBoard(db, { project: 'p', stream: 'feature', agent: 'a', title: 'cov', rows: [{ label: 'a', status: 'tracked' }], repo: 'upstream/x', headRepo: 'me/x' })
+    expect(findBoard(db, 'p', 'cov')!.head_repo).toBe('me/x')
+    updateBoardRow(db, { project: 'p', stream: 'feature', agent: 'a', title: 'cov', label: 'a', status: 'done', repo: 'upstream/x', headRepo: 'other/x' })
+    expect(findBoard(db, 'p', 'cov')!.head_repo).toBe('other/x')
+    upsertBoard(db, { project: 'p', stream: 'feature', agent: 'a', title: 'cov', rows: [{ label: 'a', status: 'done' }], repo: 'upstream/x' })
+    expect(findBoard(db, 'p', 'cov')!.head_repo).toBeNull()
+  })
+
+  it('openDb gives legacy items/boards a NULL head_repo, and new writes persist one', () => {
+    const path = join(scratchDir('inbox-legacy157-'), 'inbox.db')
+    const legacy = new Database(path)
+    legacy.exec(`
+      CREATE TABLE items (
+        id TEXT PRIMARY KEY, project TEXT NOT NULL, stream TEXT NOT NULL DEFAULT '',
+        agent TEXT NOT NULL DEFAULT 'unknown', kind TEXT NOT NULL, title TEXT NOT NULL,
+        detail TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'open',
+        annotation TEXT, created_at TEXT NOT NULL, resolved_at TEXT, repo TEXT, issue_ref INTEGER
+      );
+      CREATE TABLE boards (
+        id TEXT PRIMARY KEY, project TEXT NOT NULL, stream TEXT NOT NULL DEFAULT '',
+        agent TEXT NOT NULL DEFAULT 'unknown', title TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        repo TEXT, issue_ref INTEGER, UNIQUE(project, title)
+      );
+      INSERT INTO items (id, project, stream, kind, title, created_at, repo) VALUES ('old', 'p', 'feature', 'question', 'legacy?', '2026-01-01T00:00:00.000Z', 'o/n');
+      INSERT INTO boards (id, project, stream, title, created_at, updated_at, repo) VALUES ('b-old', 'p', 'feature', 'legacy', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', 'o/n');
+    `)
+    legacy.close()
+    const migrated = openDb(path)
+    expect(listItems(migrated).find((i) => i.id === 'old')!.head_repo).toBeNull()
+    expect(findBoard(migrated, 'p', 'legacy')!.head_repo).toBeNull()
+    // a legacy row can only ever expect a same-repository PR
+    expect(listLinkTargets(migrated)).toEqual([{ repo: 'o/n', branch: 'feature', head_repo: 'o/n' }])
+    insertItem(migrated, { project: 'p', stream: 'feature', agent: 'a', kind: 'question', title: 'new', repo: 'o/n', head_repo: 'me/n' })
+    expect(listItems(migrated).find((i) => i.title === 'new')!.head_repo).toBe('me/n')
+    upsertBoard(migrated, { project: 'p', stream: 'feature', agent: 'a', title: 'legacy', rows: [], repo: 'o/n', headRepo: 'me/n' })
+    expect(findBoard(migrated, 'p', 'legacy')!.head_repo).toBe('me/n')
   })
 })
 
@@ -2347,8 +2974,8 @@ describe('source links', () => {
     resolveItem(db, resolved)
     upsertBoard(db, { project: 'p', stream: 'board-branch', agent: 'a', title: 'cov', rows: [{ label: 'a', status: 'tracked' }], repo: 'o/n', issueRef: 2 })
     const targets = listLinkTargets(db)
-    expect(targets).toContainEqual({ repo: 'o/n', branch: '30-x' })
-    expect(targets).toContainEqual({ repo: 'o/n', branch: 'board-branch' })
+    expect(targets).toContainEqual({ repo: 'o/n', branch: '30-x', head_repo: 'o/n' })
+    expect(targets).toContainEqual({ repo: 'o/n', branch: 'board-branch', head_repo: 'o/n' })
     // two items on ONE branch is ONE target — that is the whole point of caching
     // per (repo, branch) instead of per item
     expect(targets.filter((t) => t.branch === '30-x')).toHaveLength(1)
@@ -2382,7 +3009,7 @@ describe('source links', () => {
     insertItem(db, { project: 'dead', stream: 'shared', agent: 'a', kind: 'question', title: 'q', repo: 'o/n' })
     upsertBoard(db, { project: 'dead', stream: 'board-br', agent: 'a', title: 'cov', rows: [{ label: 'a', status: 'tracked' }], repo: 'o/n' })
     closeProject(db, 'dead')
-    expect(listLinkTargets(db)).toEqual([{ repo: 'o/n', branch: 'shared' }])
+    expect(listLinkTargets(db)).toEqual([{ repo: 'o/n', branch: 'shared', head_repo: 'o/n' }])
   })
 
   it('caps the target list so a huge inbox cannot turn into an unbounded gh fan-out', () => {
@@ -2390,6 +3017,64 @@ describe('source links', () => {
       insertItem(db, { project: 'p', stream: `br-${i}`, agent: 'a', kind: 'question', title: `q${i}`, repo: 'o/n', issue_ref: 1 })
     }
     expect(listLinkTargets(db).length).toBe(50)
+  })
+
+  // issue #157 — a branch NAME is only unique within the repository it is pushed
+  // to. The target and the cache row therefore carry the expected head too.
+  it('listLinkTargets carries each expected head; a row with none expects a same-repository PR', () => {
+    insertItem(db, { project: 'p', stream: 'f', agent: 'a', kind: 'question', title: 'legacy', repo: 'o/n' })
+    insertItem(db, { project: 'p', stream: 'f', agent: 'a', kind: 'question', title: 'same', repo: 'o/n', head_repo: 'o/n' })
+    insertItem(db, { project: 'p', stream: 'f', agent: 'a', kind: 'question', title: 'fork', repo: 'o/n', head_repo: 'me/n' })
+    upsertBoard(db, { project: 'p', stream: 'f', agent: 'a', title: 'cov', rows: [{ label: 'a', status: 'tracked' }], repo: 'o/n', headRepo: 'me/n' })
+    expect(listLinkTargets(db)).toEqual([
+      { repo: 'o/n', branch: 'f', head_repo: 'me/n' },
+      { repo: 'o/n', branch: 'f', head_repo: 'o/n' },
+    ])
+  })
+
+  // issue #183 — a branch that tracks a pull request's head ref (gh pr checkout
+  // of a fork PR without maintainer edits) records that ref as its head. It names
+  // no repository, so no listed PR could ever verify: spend no gh call on it,
+  // while a same-named branch of the base repository keeps its own target.
+  it('listLinkTargets spends no gh call on a branch whose head is a pull request ref', () => {
+    insertItem(db, { project: 'review', stream: 'patch-1', agent: 'a', kind: 'question', title: 'pull', repo: 'o/n', head_repo: 'refs/pull/7/head' })
+    upsertBoard(db, { project: 'review', stream: 'patch-1', agent: 'a', title: 'cov', rows: [{ label: 'a', status: 'tracked' }], repo: 'o/n', headRepo: 'refs/pull/7/head' })
+    expect(listLinkTargets(db)).toEqual([])
+    insertItem(db, { project: 'p', stream: 'patch-1', agent: 'a', kind: 'question', title: 'own', repo: 'o/n', head_repo: 'o/n' })
+    expect(listLinkTargets(db)).toEqual([{ repo: 'o/n', branch: 'patch-1', head_repo: 'o/n' }])
+  })
+
+  it('keeps one cache row per expected head, and a write with no head records the same-repository one', () => {
+    upsertSourceLink(db, good)
+    upsertSourceLink(db, { ...good, head_repo: 'me/agent-inbox', pr_number: 52 })
+    recordLinkFailure(db, { repo: good.repo, branch: good.branch, head_repo: 'me/agent-inbox', error: 'offline' })
+    expect(listSourceLinks(db).map((l) => [l.head_repo, l.pr_number, l.error])).toEqual([
+      ['me/agent-inbox', 52, 'offline'],
+      ['shariqh/agent-inbox', 41, null],
+    ])
+  })
+
+  // the pre-#157 cache never recorded which repository its PR's head came from,
+  // so none of its rows can be verified — and some are exactly the fork PRs this
+  // fix exists to stop showing. Older processes may still write that table.
+  it('never serves a row from the unverifiable pre-#157 source_links cache', () => {
+    const path = join(scratchDir('inbox-legacy157-links-'), 'inbox.db')
+    const legacy = new Database(path)
+    legacy.exec(`
+      CREATE TABLE source_links (
+        repo TEXT NOT NULL, branch TEXT NOT NULL, provider TEXT NOT NULL DEFAULT 'github',
+        pr_number INTEGER, pr_url TEXT, pr_title TEXT, pr_state TEXT, pr_draft INTEGER,
+        review_decision TEXT, checks TEXT, issue_number INTEGER, issue_url TEXT, issue_title TEXT,
+        tldr TEXT, fetched_at TEXT, checked_at TEXT NOT NULL, error TEXT,
+        PRIMARY KEY (repo, branch)
+      );
+      INSERT INTO source_links (repo, branch, pr_number, issue_number, checked_at)
+        VALUES ('cli/cli', 'trunk', 14481, 9999, '${new Date().toISOString()}');
+    `)
+    legacy.close()
+    const migrated = openDb(path)
+    insertItem(migrated, { project: 'p', stream: 'trunk', agent: 'a', kind: 'question', title: 'q', repo: 'cli/cli' })
+    expect(listSourceLinks(migrated)).toEqual([])
   })
 
   it('pruneSourceLinks keeps freshly-checked rows and drops ones unchecked for 30 days', () => {
@@ -2400,5 +3085,569 @@ describe('source links', () => {
     // the clock moves, never the row: checked_at is stamped inside the store
     pruneSourceLinks(db, { nowMs: Date.now() + 31 * 24 * 60 * 60000 })
     expect(listSourceLinks(db)).toHaveLength(0)
+  })
+})
+
+// Issue #154. A DEFERRED transaction that reads first holds a WAL read snapshot,
+// and SQLite never runs the busy handler when that reader is promoted to the
+// writer: another connection holding the write lock fails it with SQLITE_BUSY at
+// once, and a commit that lands after its read fails it with SQLITE_BUSY_SNAPSHOT.
+// busy_timeout only protects a transaction that reserves the writer before it reads.
+describe('read-then-write transactions reserve the WAL writer (#154)', () => {
+  const HOLD_MS = 500
+  const betterSqlite3 = createRequire(import.meta.url).resolve('better-sqlite3')
+  // A second OS process (the viewer, a hook, a sibling MCP server) that takes the
+  // write lock, runs optional `sql` inside it, says `held`, and commits HOLD_MS later.
+  const HOLD_WRITER = `
+    const Database = require(process.argv[1])
+    const db = new Database(process.argv[2])
+    db.pragma('busy_timeout = 5000')
+    db.exec('BEGIN IMMEDIATE')
+    if (process.argv[4]) db.exec(process.argv[4])
+    process.stdout.write('held\\n')
+    setTimeout(() => {
+      db.exec('COMMIT')
+      db.close()
+    }, Number(process.argv[3]))
+  `
+
+  async function holdWriteLock(path: string, sql = ''): Promise<{ exit: Promise<{ code: number | null; stderr: string }> }> {
+    const holder = spawn(process.execPath, ['-e', HOLD_WRITER, betterSqlite3, path, String(HOLD_MS), sql], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let stderr = ''
+    holder.stderr.on('data', (chunk) => { stderr += String(chunk) })
+    const exit = new Promise<{ code: number | null; stderr: string }>((resolve) => {
+      holder.once('close', (code) => resolve({ code, stderr }))
+    })
+    await new Promise<void>((resolve, reject) => {
+      holder.stdout.once('data', (chunk) => {
+        if (String(chunk) === 'held\n') resolve()
+        else reject(new Error(`unexpected lock-holder output: ${String(chunk)}`))
+      })
+      holder.once('error', reject)
+      void exit.then(({ code }) => reject(new Error(`lock holder exited before taking the lock (${code}): ${stderr}`)))
+    })
+    return { exit }
+  }
+
+  // Run `between` once, inside the store call, right after the first statement
+  // whose SQL matches `pattern` has returned its read and before anything writes.
+  function afterFirstRead(db: Database.Database, pattern: RegExp, between: () => void): () => void {
+    const realPrepare = db.prepare.bind(db)
+    let fired = false
+    db.prepare = ((source: string) => {
+      const stmt = realPrepare(source)
+      if (!fired && pattern.test(source)) {
+        const realGet = stmt.get.bind(stmt)
+        stmt.get = ((...args: unknown[]) => {
+          const row = realGet(...(args as []))
+          if (!fired) {
+            fired = true
+            between()
+          }
+          return row
+        }) as typeof stmt.get
+      }
+      return stmt
+    }) as typeof db.prepare
+    return () => { db.prepare = realPrepare }
+  }
+
+  // One thread cannot wait for a lock it holds itself, so the in-process second
+  // connection runs with busy_timeout 0: SQLITE_BUSY means it would have queued.
+  function busyOrCommitted(write: () => void): 'busy' | 'committed' {
+    try {
+      write()
+      return 'committed'
+    } catch (err) {
+      if ((err as { code?: string }).code === 'SQLITE_BUSY') return 'busy'
+      throw err
+    }
+  }
+
+  function seeded(): { path: string; db: Database.Database; board: BoardWithRows } {
+    const path = join(scratchDir('inbox-writer-'), 'inbox.db')
+    const db = openDb(path)
+    upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'B', rows: [{ label: 'one', status: 'tracked' }] })
+    return { path, db, board: getBoard(db, 'p', 'B')! }
+  }
+
+  // Each writer, called with exactly the versions the agent last read.
+  const upsertAsRead = (db: Database.Database, board: BoardWithRows): void => {
+    writeBoard(db, {
+      project: 'p', stream: '', agent: 'a', title: 'B', expectedVersion: board.revision,
+      rows: [{ label: 'one', revision: board.rows[0]!.revision, status: 'partial', note: 'written' }],
+    })
+  }
+  const updateRowAsRead = (db: Database.Database, board: BoardWithRows): void => {
+    writeBoardRow(db, {
+      project: 'p', stream: '', agent: 'a', title: 'B', label: 'one',
+      expectedBoardVersion: board.revision, expectedRevision: board.rows[0]!.revision,
+      status: 'partial', note: 'written',
+    })
+  }
+  const writes: Array<[string, typeof upsertAsRead]> = [['upsertBoard', upsertAsRead], ['updateBoardRow', updateRowAsRead]]
+
+  it.each(writes)('%s waits out another process\'s write lock, then writes', async (_name, write) => {
+    const { path, db, board } = seeded()
+    const { exit } = await holdWriteLock(path)
+
+    const started = Date.now()
+    write(db, board)
+    const waitedMs = Date.now() - started
+
+    expect(waitedMs, 'the write must wait for the holder, not fail at once').toBeGreaterThanOrEqual(250)
+    expect(getBoard(db, 'p', 'B')!.rows[0]).toMatchObject({ status: 'partial', note: 'written' })
+    expect(await exit).toMatchObject({ code: 0 })
+    db.close()
+  })
+
+  it.each(writes)('a commit cannot land between %s\'s read and its write', (_name, write) => {
+    const { path, db, board } = seeded()
+    const other = openDb(path)
+    other.pragma('busy_timeout = 0')
+    const unrelated = { project: 'p', stream: '', agent: 'b', kind: 'note' as const, title: 'unrelated write' }
+    let raced: 'busy' | 'committed' | undefined
+    const restore = afterFirstRead(db, /^SELECT \* FROM boards WHERE project = \? AND title = \?$/, () => {
+      raced = busyOrCommitted(() => { insertItem(other, unrelated) })
+    })
+    try {
+      write(db, board)
+    } finally {
+      restore()
+    }
+
+    expect(raced, 'a concurrent writer queues behind the transaction instead of landing inside it').toBe('busy')
+    insertItem(other, unrelated)
+    expect(getBoard(db, 'p', 'B')!.rows[0]).toMatchObject({ status: 'partial', note: 'written' })
+    expect(listItems(db).map((item) => item.title)).toEqual(['unrelated write'])
+    other.close()
+    db.close()
+  })
+
+  // The waiting writer reads only once it owns the lock, so a revision bumped by
+  // the holder is a genuine CAS refusal: the same error as ever, never a lock error.
+  it('upsertBoard that waited still refuses a board version bumped under the lock', async () => {
+    const { path, db, board } = seeded()
+    const { exit } = await holdWriteLock(path, `UPDATE boards SET revision = revision + 1 WHERE id = '${board.id}'`)
+
+    expect(() => { upsertAsRead(db, board) })
+      .toThrow(`board version mismatch for "B": expected ${board.revision}, found ${board.revision + 1}`)
+    expect(await exit).toMatchObject({ code: 0 })
+    expect(getBoard(db, 'p', 'B')!.rows[0]).toMatchObject({ status: 'tracked', note: '' })
+    db.close()
+  })
+
+  it('updateBoardRow that waited still refuses a row revision bumped under the lock', async () => {
+    const { path, db, board } = seeded()
+    const row = board.rows[0]!
+    const { exit } = await holdWriteLock(path, `UPDATE board_rows SET revision = revision + 1 WHERE id = '${row.id}'`)
+
+    expect(() => { updateRowAsRead(db, board) })
+      .toThrow(`board row revision mismatch for "one": expected ${row.revision}, found ${row.revision + 1}`)
+    expect(await exit).toMatchObject({ code: 0 })
+    expect(getBoard(db, 'p', 'B')!.rows[0]).toMatchObject({ status: 'tracked', note: '' })
+    db.close()
+  })
+
+  // #103 slice 2 (§4.2): waits_on is checked against the plan as it stands once
+  // the write owns the lock, so a dependency committed while it waited counts.
+  it('updateBoardRow that waited refuses the cycle a waits_on committed under the lock would close', async () => {
+    const path = join(scratchDir('inbox-writer-'), 'inbox.db')
+    const db = openDb(path)
+    upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'B', rows: [{ label: 'one', status: 'tracked' }, { label: 'two', status: 'tracked' }] })
+    const board = getBoard(db, 'p', 'B')!
+    const { exit } = await holdWriteLock(path, `UPDATE board_rows SET waits_on = '["one"]' WHERE label = 'two'`)
+
+    expect(() => {
+      writeBoardRow(db, {
+        project: 'p', stream: '', agent: 'a', title: 'B', label: 'one',
+        expectedBoardVersion: board.revision, expectedRevision: board.rows[0]!.revision, waits_on: ['two'],
+      })
+    }).toThrow('waits_on would create a cycle: one → two → one')
+    expect(await exit).toMatchObject({ code: 0 })
+    expect(getBoard(db, 'p', 'B')!.rows.map((r) => r.waits_on)).toEqual([null, ['one']])
+    db.close()
+  })
+
+  it('the same milestone announced from two connections at once is ONE row with ONE id', () => {
+    const path = join(scratchDir('inbox-milestone-'), 'inbox.db')
+    const db = openDb(path)
+    const other = openDb(path)
+    other.pragma('busy_timeout = 0')
+    const milestone = { project: 'p', stream: '', agent: 'a', kind: 'done' as const, title: 'shipped v2' }
+    const ids: string[] = []
+    let queued = false
+    // the second announcement arrives right after the first one's lookup missed
+    const restore = afterFirstRead(db, /kind = 'done'/, () => {
+      queued = busyOrCommitted(() => { ids.push(insertItem(other, milestone)) }) === 'busy'
+    })
+    try {
+      ids.push(insertItem(db, milestone))
+    } finally {
+      restore()
+    }
+    if (queued) ids.push(insertItem(other, milestone)) // what the waiting second process does next
+
+    const open = listItems(db, { status: 'open' }).filter((item) => item.kind === 'done')
+    expect(open).toHaveLength(1)
+    expect(ids).toEqual([open[0]!.id, open[0]!.id])
+    other.close()
+    db.close()
+  })
+})
+
+// Issue #103 PR2 — explicit plan pins and row links (§4.2, §10). They are
+// agent-owned fields with the omission rule: undefined keeps, null clears.
+describe('plan and row issue links (#103 PR2)', () => {
+  let db: Database.Database
+  beforeEach(() => { db = freshDb() })
+  const base = { project: 'p', stream: '120-work', agent: 'a', title: 'AHP' }
+  const link = (number: number, repo = 'Shariqh/Agent-Inbox') => ({ repo, number })
+  const row = (label = 'Adapter') => getBoard(db, 'p', 'AHP')!.rows.find((r) => r.label === label)!
+
+  it('stores a pin and row links normalized, and keeps them when a full upsert omits issue', () => {
+    upsertBoard(db, { ...base, issuePin: link(117), rows: [{ label: 'Adapter', status: 'tracked', issue: link(120) }, { label: 'Plain', status: 'tracked' }] })
+    const board = getBoard(db, 'p', 'AHP')!
+    expect(board).toMatchObject({ issue_pin_repo: 'shariqh/agent-inbox', issue_pin_number: 117 })
+    expect(row()).toMatchObject({ issue_repo: 'shariqh/agent-inbox', issue_number: 120 })
+    expect(row('Plain')).toMatchObject({ issue_repo: null, issue_number: null })
+
+    const before = { board: board.revision, row: row().revision, updated: row().updated_at }
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      vi.setSystemTime(Date.now() + 60_000)
+      upsertBoard(db, { ...base, rows: [{ label: 'Adapter', status: 'tracked' }, { label: 'Plain', status: 'tracked' }] })
+    } finally {
+      vi.useRealTimers()
+    }
+    const after = getBoard(db, 'p', 'AHP')!
+    expect(after).toMatchObject({ issue_pin_repo: 'shariqh/agent-inbox', issue_pin_number: 117, revision: before.board })
+    expect(row()).toMatchObject({ issue_repo: 'shariqh/agent-inbox', issue_number: 120, revision: before.row, updated_at: before.updated })
+  })
+
+  it('null clears a pin and a link; a link change bumps the row revision and updated_at, a pin change the board revision', () => {
+    upsertBoard(db, { ...base, issuePin: link(117), rows: [{ label: 'Adapter', status: 'tracked', issue: link(120) }] })
+    const r0 = row()
+    const b0 = getBoard(db, 'p', 'AHP')!.revision
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      vi.setSystemTime(Date.now() + 60_000)
+      upsertBoard(db, { ...base, rows: [{ label: 'Adapter', status: 'tracked', issue: link(121) }] })
+      expect(row()).toMatchObject({ issue_number: 121, revision: r0.revision + 1 })
+      expect(row().updated_at > r0.updated_at).toBe(true)
+      expect(getBoard(db, 'p', 'AHP')!.revision).toBe(b0 + 1)
+
+      vi.setSystemTime(Date.now() + 60_000)
+      upsertBoard(db, { ...base, issuePin: link(118), rows: [{ label: 'Adapter', status: 'tracked' }] })
+      expect(getBoard(db, 'p', 'AHP')).toMatchObject({ issue_pin_number: 118, revision: b0 + 2 })
+      expect(row().revision).toBe(r0.revision + 1)
+
+      upsertBoard(db, { ...base, issuePin: null, rows: [{ label: 'Adapter', status: 'tracked', issue: null }] })
+      expect(getBoard(db, 'p', 'AHP')).toMatchObject({ issue_pin_repo: null, issue_pin_number: null })
+      expect(row()).toMatchObject({ issue_repo: null, issue_number: null, revision: r0.revision + 2 })
+
+      // the same value again changes nothing
+      const settled = { board: getBoard(db, 'p', 'AHP')!.revision, row: row().revision }
+      upsertBoard(db, { ...base, issuePin: null, rows: [{ label: 'Adapter', status: 'tracked', issue: null }] })
+      expect(getBoard(db, 'p', 'AHP')!.revision).toBe(settled.board)
+      expect(row().revision).toBe(settled.row)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('board_row links, keeps on omission and clears on null', () => {
+    updateBoardRow(db, { ...base, label: 'Adapter', status: 'tracked', issue: link(120) })
+    expect(row()).toMatchObject({ issue_repo: 'shariqh/agent-inbox', issue_number: 120 })
+    const r1 = row().revision
+    updateBoardRow(db, { ...base, label: 'Adapter', note: 'Still going.' })
+    expect(row()).toMatchObject({ issue_number: 120, revision: r1 + 1 })
+    updateBoardRow(db, { ...base, label: 'Adapter', issue: link(121, 'o/r') })
+    expect(row()).toMatchObject({ issue_repo: 'o/r', issue_number: 121, revision: r1 + 2 })
+    updateBoardRow(db, { ...base, label: 'Adapter', issue: null })
+    expect(row()).toMatchObject({ issue_repo: null, issue_number: null, revision: r1 + 3 })
+  })
+
+  it('refuses a link the store cannot normalize, before writing anything', () => {
+    for (const bad of [link(0), link(2147483648), link(1.5), link(5, 'no-slash'), link(5, 'o/..'), link(5, 'o/r x')]) {
+      expect(() => upsertBoard(db, { ...base, rows: [{ label: 'Adapter', status: 'tracked', issue: bad }] })).toThrow(/invalid issue link/)
+      expect(() => upsertBoard(db, { ...base, issuePin: bad, rows: [] })).toThrow(/invalid issue link/)
+      expect(() => updateBoardRow(db, { ...base, label: 'Adapter', issue: bad })).toThrow(/invalid issue link/)
+    }
+    expect(findBoard(db, 'p', 'AHP')).toBeUndefined()
+  })
+
+  it('a reblock and board_advance keep the link; a link change never touches the human fields', () => {
+    upsertBoard(db, { ...base, rows: [{ label: 'Adapter', status: 'tracked', issue: link(120) }] })
+    const blocked = { status: 'blocked' as const, note: 'Pick one.', next_step: 'Choose.', action_owner: 'task' as const, impact: 'Unblocks it.' }
+    upsertBoard(db, { ...base, rows: [{ label: 'Adapter', ...blocked }] })
+    expect(row()).toMatchObject({ status: 'blocked', action_version: 2, issue_number: 120 })
+    updateBoardRow(db, { ...base, label: 'Adapter', status: 'partial' })
+    updateBoardRow(db, { ...base, label: 'Adapter', ...blocked })
+    expect(row()).toMatchObject({ status: 'blocked', action_version: 3, issue_number: 120 })
+
+    // the human answers, marks their part done, an agent picks both up
+    expect(annotateBoardRow(db, row().id, 'Use the adapter.')).toBe(true)
+    expect(markRowHandled(db, row().id)).toBe(true)
+    const r = row()
+    expect(markAnnotationDelivered(db, r.id, r.annotated_at, 'copilot', { row: r.revision, board: getBoard(db, 'p', 'AHP')!.revision })).toBe(true)
+    expect(markHandledDelivered(db, r.id, r.handled_at, 'copilot', { row: r.revision, board: getBoard(db, 'p', 'AHP')!.revision })).toBe(true)
+    const human = (x: BoardRow) => [x.annotation, x.annotation_kind, x.annotated_at, x.annotation_seen_at, x.annotation_seen_by, x.handled_at, x.handled_seen_at, x.handled_seen_by]
+    const answered = human(row())
+    upsertBoard(db, { ...base, rows: [{ label: 'Adapter', status: 'blocked', issue: link(121) }] })
+    expect(human(row())).toEqual(answered)
+    updateBoardRow(db, { ...base, label: 'Adapter', issue: link(122) })
+    expect(human(row())).toEqual(answered)
+    expect(row().issue_number).toBe(122)
+
+    const out = advanceBoardRow(db, {
+      project: 'p', title: 'AHP', label: 'Adapter', agent: 'a',
+      expectedBoardVersion: getBoard(db, 'p', 'AHP')!.revision, expectedRevision: row().revision,
+      note: 'Next: review it.', next_step: 'Review.', action_owner: 'task', impact: 'Ships it.',
+    })
+    expect(out.ok).toBe(true)
+    expect(row()).toMatchObject({ annotation: null, handled_at: null, issue_repo: 'shariqh/agent-inbox', issue_number: 122 })
+  })
+})
+
+// Issue #103 slice 2, PR C (§4) — agent-declared step dependencies. waits_on
+// names other rows of the SAME plan by label: agent-owned row content with the
+// omission rule (undefined keeps, [] clears), checked inside the writing
+// transaction and kept across board_advance and every status change.
+describe('step dependencies: waits_on (#103 slice 2 PR C)', () => {
+  let db: Database.Database
+  beforeEach(() => {
+    db = freshDb()
+    vi.useFakeTimers({ toFake: ['Date'] })
+  })
+  afterEach(() => { vi.useRealTimers() })
+  const base = { project: 'p', stream: 'release', agent: 'a', title: 'Release' }
+  const plan = () => getBoard(db, 'p', 'Release')!
+  const row = (label: string) => plan().rows.find((r) => r.label === label)!
+  const waits = () => Object.fromEntries(plan().rows.map((r) => [r.label, r.waits_on]))
+  const tick = () => { vi.setSystemTime(Date.now() + 60_000) }
+  // Build, Sign and Publish, in that order; a label given here writes that row's waits_on
+  const steps = (waitsOn: Record<string, string[]> = {}) => ['Build', 'Sign', 'Publish'].map((label) => ({
+    label, status: 'tracked' as const, ...(label in waitsOn ? { waits_on: waitsOn[label] } : {}),
+  }))
+
+  it('stores waits_on sorted and de-duplicated, and a full upsert that omits it keeps it', () => {
+    upsertBoard(db, { ...base, rows: steps({ Sign: ['Build'], Publish: ['Sign', 'Build', 'Sign'] }) })
+    expect(waits()).toEqual({ Build: null, Sign: ['Build'], Publish: ['Build', 'Sign'] })
+    const before = { board: plan().revision, row: row('Publish').revision, at: row('Publish').updated_at }
+
+    tick()
+    upsertBoard(db, { ...base, rows: steps() })
+    expect(waits()).toEqual({ Build: null, Sign: ['Build'], Publish: ['Build', 'Sign'] })
+    // the same labels in another order are no change either
+    upsertBoard(db, { ...base, rows: steps({ Publish: ['Sign', 'Build'] }) })
+    expect(plan().revision).toBe(before.board)
+    expect(row('Publish')).toMatchObject({ revision: before.row, updated_at: before.at })
+  })
+
+  it('a change bumps the row revision, its updated_at and the board revision; [] clears it', () => {
+    upsertBoard(db, { ...base, rows: steps({ Publish: ['Sign'] }) })
+    const first = row('Publish')
+    const board = plan().revision
+
+    tick()
+    upsertBoard(db, { ...base, rows: steps({ Publish: ['Build', 'Sign'] }) })
+    expect(row('Publish')).toMatchObject({ waits_on: ['Build', 'Sign'], revision: first.revision + 1 })
+    expect(row('Publish').updated_at > first.updated_at).toBe(true)
+    expect(plan().revision).toBe(board + 1)
+
+    upsertBoard(db, { ...base, rows: steps({ Publish: [] }) })
+    expect(row('Publish')).toMatchObject({ waits_on: null, revision: first.revision + 2 })
+    expect(plan().revision).toBe(board + 2)
+    // clearing what is already clear changes nothing, and no other row moved
+    upsertBoard(db, { ...base, rows: steps({ Publish: [] }) })
+    expect(plan().revision).toBe(board + 2)
+    expect([row('Build').revision, row('Sign').revision]).toEqual([1, 1])
+  })
+
+  it('board_row sets it, keeps it on omission and clears it with []; a new row may name existing ones', () => {
+    upsertBoard(db, { ...base, rows: steps() })
+    updateBoardRow(db, { ...base, label: 'Publish', waits_on: ['Sign', 'Build'] })
+    expect(row('Publish')).toMatchObject({ waits_on: ['Build', 'Sign'], revision: 2 })
+    updateBoardRow(db, { ...base, label: 'Publish', status: 'partial', note: 'Signing first.' })
+    expect(row('Publish')).toMatchObject({ waits_on: ['Build', 'Sign'], revision: 3 })
+    updateBoardRow(db, { ...base, label: 'Announce', waits_on: ['Publish'] })
+    expect(row('Announce')).toMatchObject({ status: 'tracked', waits_on: ['Publish'], revision: 1 })
+    updateBoardRow(db, { ...base, label: 'Publish', waits_on: [] })
+    expect(row('Publish')).toMatchObject({ waits_on: null, revision: 4 })
+  })
+
+  it('a board_row re-send of the same labels, reordered or repeated, changes nothing', () => {
+    upsertBoard(db, { ...base, rows: steps({ Publish: ['Build', 'Sign'] }) })
+    const before = { board: plan().revision, row: row('Publish').revision, at: row('Publish').updated_at, build: row('Build').revision }
+
+    tick()
+    updateBoardRow(db, { ...base, label: 'Publish', waits_on: ['Sign', 'Build', 'Sign'] })
+    updateBoardRow(db, { ...base, label: 'Publish', status: 'tracked', note: '', waits_on: ['Build', 'Sign', 'Build'] })
+    updateBoardRow(db, { ...base, label: 'Build', waits_on: [] })
+    expect(plan().revision).toBe(before.board)
+    expect(row('Publish')).toMatchObject({ waits_on: ['Build', 'Sign'], revision: before.row, updated_at: before.at })
+    expect(row('Build')).toMatchObject({ waits_on: null, revision: before.build })
+  })
+
+  // Review of #265: the cycle search ran once per added edge, so one large write
+  // held the hub's write lock for seconds (this plan took 5 s+), long enough for
+  // another process's write to give up on busy_timeout.
+  it('checks a 1000-row plan, each row naming its 20 previous rows, in well under the lock budget', () => {
+    const label = (i: number) => `Step ${i}`
+    const rows = Array.from({ length: 1000 }, (_, i) => ({
+      label: label(i), status: 'tracked' as const,
+      waits_on: Array.from({ length: Math.min(20, i) }, (_, k) => label(i - 1 - k)),
+    }))
+    const started = performance.now()
+    upsertBoard(db, { ...base, rows })
+    // every row reaches the first one, so it cannot wait on the last
+    expect(() => updateBoardRow(db, { ...base, label: label(0), waits_on: [label(999)] }))
+      .toThrow(/^waits_on would create a cycle: Step 0 → Step 999 → .* → Step 0$/)
+    updateBoardRow(db, { ...base, label: label(999), waits_on: [label(500), label(0)] })
+    const elapsed = performance.now() - started
+    expect(row(label(999)).waits_on).toEqual([label(0), label(500)])
+    expect(elapsed, `${Math.round(elapsed)} ms`).toBeLessThan(2000)
+  }, 30_000)
+
+  it('refuses an unknown label, the row itself, more than 20 labels and an empty label, writing nothing', () => {
+    upsertBoard(db, { ...base, rows: steps({ Publish: ['Sign'] }) })
+    const stored = JSON.stringify(plan())
+    const refusals: Array<[string, () => unknown, string]> = [
+      ['an unknown label', () => upsertBoard(db, { ...base, rows: steps({ Publish: ['Ship'] }) }),
+        'waits_on of row "Publish" names "Ship", but no row of this plan is labelled "Ship"'],
+      ['a row this upsert removes', () => upsertBoard(db, { ...base, rows: [{ label: 'Publish', status: 'tracked', waits_on: ['Build'] }] }),
+        'waits_on of row "Publish" names "Build", but no row of this plan is labelled "Build"'],
+      ['an unknown label through board_row', () => updateBoardRow(db, { ...base, label: 'Sign', waits_on: ['Build', 'Ship'] }),
+        'waits_on of row "Sign" names "Ship", but no row of this plan is labelled "Ship"'],
+      ['the row itself', () => upsertBoard(db, { ...base, rows: steps({ Sign: ['Build', 'Sign'] }) }),
+        'waits_on of row "Sign" names the row itself'],
+      ['the row itself through board_row', () => updateBoardRow(db, { ...base, label: 'Sign', waits_on: ['Sign'] }),
+        'waits_on of row "Sign" names the row itself'],
+      ['21 labels', () => updateBoardRow(db, { ...base, label: 'Sign', waits_on: Array.from({ length: 21 }, (_, i) => `Step ${i}`) }),
+        'waits_on of row "Sign" names 21 rows; the limit is 20'],
+      ['an empty label', () => upsertBoard(db, { ...base, rows: steps({ Sign: ['Build', ''] }) }),
+        'waits_on of row "Sign" contains an empty label'],
+      ['a row of another plan', () => upsertBoard(db, { ...base, title: 'Announce', rows: [{ label: 'Post', status: 'tracked', waits_on: ['Publish'] }] }),
+        'waits_on of row "Post" names "Publish", but no row of this plan is labelled "Publish"'],
+    ]
+    for (const [why, write, message] of refusals) expect(write, why).toThrow(message)
+    expect(JSON.stringify(plan())).toBe(stored)
+    expect(findBoard(db, 'p', 'Announce')).toBeUndefined()
+
+    // a refused board_row creates neither its plan nor its row
+    expect(() => updateBoardRow(db, { ...base, title: 'Other', label: 'a', waits_on: ['b'] })).toThrow(/names "b"/)
+    expect(findBoard(db, 'p', 'Other')).toBeUndefined()
+
+    // twenty is the limit, not one under it
+    const many = Array.from({ length: 20 }, (_, i) => `Step ${i}`)
+    upsertBoard(db, { ...base, title: 'Wide', rows: [...many.map((label) => ({ label, status: 'tracked' as const })), { label: 'Last', status: 'tracked', waits_on: many }] })
+    expect(getBoard(db, 'p', 'Wide')!.rows.at(-1)!.waits_on).toEqual([...many].sort())
+  })
+
+  it('refuses a cycle with an error that names it, and writes nothing', () => {
+    upsertBoard(db, { ...base, rows: steps({ Sign: ['Build'], Publish: ['Sign'] }) })
+    const stored = JSON.stringify(plan())
+    expect(() => updateBoardRow(db, { ...base, label: 'Build', waits_on: ['Publish'] }))
+      .toThrow('waits_on would create a cycle: Build → Publish → Sign → Build')
+    expect(() => upsertBoard(db, { ...base, rows: steps({ Build: ['Sign'] }) }))
+      .toThrow('waits_on would create a cycle: Build → Sign → Build')
+    // two new rows that name each other in one upsert
+    expect(() => upsertBoard(db, {
+      ...base,
+      rows: [...steps(), { label: 'X', status: 'tracked', waits_on: ['Y'] }, { label: 'Y', status: 'tracked', waits_on: ['X'] }],
+    })).toThrow('waits_on would create a cycle: X → Y → X')
+    expect(JSON.stringify(plan())).toBe(stored)
+  })
+
+  it('keeps a label whose row was removed, never re-checks it, and checks cycles when the row comes back', () => {
+    upsertBoard(db, { ...base, rows: steps({ Sign: ['Build'], Publish: ['Build', 'Sign'] }) })
+    // a later upsert drops Build; the rows that name it keep the label
+    upsertBoard(db, { ...base, rows: [{ label: 'Sign', status: 'partial' }, { label: 'Publish', status: 'tracked' }] })
+    expect(waits()).toEqual({ Sign: ['Build'], Publish: ['Build', 'Sign'] })
+
+    // re-sending the stored labels, a routine write and dropping another label all succeed
+    upsertBoard(db, { ...base, rows: [{ label: 'Sign', status: 'partial', waits_on: ['Build'] }, { label: 'Publish', status: 'tracked', waits_on: ['Sign', 'Build'] }] })
+    updateBoardRow(db, { ...base, label: 'Sign', note: 'Waiting for a build.' })
+    updateBoardRow(db, { ...base, label: 'Publish', waits_on: ['Build'] })
+    expect(waits()).toEqual({ Sign: ['Build'], Publish: ['Build'] })
+    // ...while a label named for the first time is still checked
+    expect(() => updateBoardRow(db, { ...base, label: 'Publish', waits_on: ['Build', 'Ship'] })).toThrow(/names "Ship"/)
+
+    // Build comes back waiting on Publish: the revived Publish → Build closes a cycle
+    const stored = JSON.stringify(plan())
+    expect(() => upsertBoard(db, {
+      ...base,
+      rows: [{ label: 'Build', status: 'tracked', waits_on: ['Publish'] }, { label: 'Sign', status: 'partial' }, { label: 'Publish', status: 'tracked' }],
+    })).toThrow('waits_on would create a cycle: Build → Publish → Build')
+    expect(JSON.stringify(plan())).toBe(stored)
+    // without that, Build simply returns and both labels resolve again
+    updateBoardRow(db, { ...base, label: 'Build', status: 'done' })
+    expect(waits()).toEqual({ Sign: ['Build'], Publish: ['Build'], Build: null })
+  })
+
+  it('a cycle already stored is not this write’s to fix: unrelated writes pass, an edge onto it is refused', () => {
+    upsertBoard(db, { ...base, rows: steps({ Sign: ['Build'] }) })
+    // only a raw write can store one: this build refuses it, and older builds write no waits_on
+    db.prepare(`UPDATE board_rows SET waits_on = '["Sign"]' WHERE label = 'Build'`).run()
+    expect(waits()).toEqual({ Build: ['Sign'], Sign: ['Build'], Publish: null })
+    updateBoardRow(db, { ...base, label: 'Sign', status: 'partial' })
+    upsertBoard(db, { ...base, rows: steps({ Publish: ['Sign'] }) })
+    expect(row('Publish').waits_on).toEqual(['Sign'])
+    expect(() => updateBoardRow(db, { ...base, label: 'Sign', waits_on: ['Build', 'Publish'] }))
+      .toThrow('waits_on would create a cycle: Sign → Publish → Sign')
+  })
+
+  it('a reblock and board_advance keep it; human writes never touch it, and its writes never touch theirs', () => {
+    upsertBoard(db, { ...base, rows: steps({ Publish: ['Sign'] }) })
+    const blocked = { status: 'blocked' as const, note: 'Approve the release.', next_step: 'Approve it.', action_owner: 'task' as const, impact: 'Ships it.' }
+    upsertBoard(db, { ...base, rows: [...steps().slice(0, 2), { label: 'Publish', ...blocked }] })
+    expect(row('Publish')).toMatchObject({ status: 'blocked', action_version: 2, waits_on: ['Sign'] })
+    updateBoardRow(db, { ...base, label: 'Publish', status: 'partial' })
+    updateBoardRow(db, { ...base, label: 'Publish', ...blocked })
+    expect(row('Publish')).toMatchObject({ status: 'blocked', action_version: 3, waits_on: ['Sign'] })
+
+    // every human write on the ask leaves it alone
+    const r = () => row('Publish')
+    const version = () => plan().revision
+    expect(pinBoardRow(db, r().id, true, r().revision, version())).toBe(true)
+    expect(stopBoardRowWatch(db, r().id, null, r().revision, version())).toBe(true)
+    expect(snoozeBoardRow(db, r().id, new Date(Date.now() + 3_600_000).toISOString(), r().revision, version())).toBe(true)
+    expect(annotateBoardRow(db, r().id, 'Approved.')).toBe(true)
+    expect(markRowHandled(db, r().id)).toBe(true)
+    expect(markAnnotationDelivered(db, r().id, r().annotated_at, 'copilot', { row: r().revision, board: version() })).toBe(true)
+    expect(markHandledDelivered(db, r().id, r().handled_at, 'copilot', { row: r().revision, board: version() })).toBe(true)
+    expect(r().waits_on).toEqual(['Sign'])
+
+    // and a waits_on write keeps every human field
+    const human = (x: BoardRow) => [x.annotation, x.annotation_kind, x.annotated_at, x.annotation_seen_at, x.annotation_seen_by, x.handled_at, x.handled_seen_at, x.handled_seen_by]
+    const answered = human(r())
+    upsertBoard(db, { ...base, rows: [...steps().slice(0, 2), { label: 'Publish', status: 'blocked', waits_on: ['Build', 'Sign'] }] })
+    expect(human(r())).toEqual(answered)
+    updateBoardRow(db, { ...base, label: 'Publish', waits_on: ['Build'] })
+    expect(human(r())).toEqual(answered)
+
+    const out = advanceBoardRow(db, {
+      project: 'p', title: 'Release', label: 'Publish', agent: 'a',
+      expectedBoardVersion: version(), expectedRevision: r().revision,
+      note: 'Now announce it.', next_step: 'Approve the post.', action_owner: 'task', impact: 'Tells users.',
+    })
+    expect(out.ok).toBe(true)
+    expect(r()).toMatchObject({ action_version: 4, annotation: null, handled_at: null, waits_on: ['Build'] })
+  })
+
+  it('reads an unreadable stored value as none without throwing, and checks every label written over it', () => {
+    upsertBoard(db, { ...base, rows: steps() })
+    const wide = JSON.stringify(Array.from({ length: 21 }, (_, i) => `Step ${i}`))
+    for (const raw of ['not json', '{"Sign":true}', '"Sign"', '[]', '[1]', '[""]', wide]) {
+      db.prepare(`UPDATE board_rows SET waits_on = ? WHERE label = 'Publish'`).run(raw)
+      expect(row('Publish').waits_on, raw).toBeNull()
+      expect(listBoards(db)[0]!.rows.find((r) => r.label === 'Publish')!.waits_on, raw).toBeNull()
+    }
+    expect(() => updateBoardRow(db, { ...base, label: 'Publish', waits_on: ['Step 0'] })).toThrow(/names "Step 0"/)
+    updateBoardRow(db, { ...base, label: 'Publish', waits_on: ['Sign'] })
+    expect(row('Publish').waits_on).toEqual(['Sign'])
   })
 })

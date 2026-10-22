@@ -12,19 +12,39 @@ import {
   sourceTooltip,
   sourceChipsHtml,
   sourceBlockHtml,
+  issueRelationsHtml,
+  rowIssueChipsHtml,
+  previewRef,
+  PREVIEW_TTL_MS,
+  planGroupHeadHtml,
+  rowParentHeadHtml,
+  rowWaitsChipHtml,
+  planWaitsChipHtml,
+  rowWaitsHtml,
+  missionDepsHtml,
+  missionOutsideHtml,
 } from '../public/source.js'
 import type { CachedLink, LinkedEntity } from '../public/source.js'
+import { buildIssueView, planGroups } from '../public/issues.js'
+import { buildMission } from '../public/mission.js'
+import type { MissionBoard } from '../public/mission.js'
+import { buildIssueGraph } from '../src/issue-graph.js'
+import type { IssueError } from '../src/store.js'
+import { at, deps, depsOf, facts, keySets, row, snapshot } from './issue-fixtures.js'
 
 const REPO = new URL('..', import.meta.url).pathname
 const NOW = Date.parse('2026-07-26T12:00:00.000Z')
 
 function link(over: Partial<CachedLink> = {}): CachedLink {
   return {
-    repo: 'shariqh/agent-inbox', branch: '30-x', provider: 'github',
+    repo: 'shariqh/agent-inbox', branch: '30-x', head_repo: 'shariqh/agent-inbox', provider: 'github',
     pr_number: 41, pr_url: 'https://github.com/shariqh/agent-inbox/pull/41',
     pr_title: 'source + PR links', pr_state: 'OPEN', pr_draft: false,
+    pr_head_sha: null,
     review_decision: null, checks: 'none',
     issue_number: null, issue_url: null, issue_title: null,
+    preview_url: null, preview_environment: null, preview_deployment_id: null,
+    preview_updated_at: null, preview_error: null, revision: 1,
     tldr: 'Links the inbox to its source issue and PR.',
     fetched_at: new Date(NOW - 60_000).toISOString(),
     checked_at: new Date(NOW - 60_000).toISOString(),
@@ -42,6 +62,70 @@ describe('indexLinks / linkFor', () => {
     expect(linkFor(index, entity())!.pr_number).toBe(41)
     expect(linkFor(index, entity({ stream: 'other' }))!.pr_number).toBe(9)
     expect(linkFor(index, entity({ repo: 'someone/else' }))).toBeNull()
+  })
+
+  // issue #157 — a branch name is only unique within the repository it is pushed
+  // to, so the join includes the head repository the cached PR was verified for
+  it('joins only the row verified for the repository the entity\'s branch is pushed to', () => {
+    const index = indexLinks([link(), link({ head_repo: 'me/agent-inbox', pr_number: 52 })])
+    expect(linkFor(index, entity({ head_repo: 'me/agent-inbox' }))!.pr_number).toBe(52)
+    expect(linkFor(index, entity({ head_repo: 'shariqh/agent-inbox' }))!.pr_number).toBe(41)
+    // an entity raised before #157 recorded no head: it expects a same-repository PR
+    expect(linkFor(index, entity())!.pr_number).toBe(41)
+    expect(linkFor(index, entity({ head_repo: 'stranger/agent-inbox' }))).toBeNull()
+    expect(linkFor(indexLinks([link({ head_repo: 'me/agent-inbox' })]), entity())).toBeNull()
+    // issue #183 — a branch that tracks a pull request ref records that ref as
+    // its head; it never falls back to the base's same-named branch row
+    expect(linkFor(index, entity({ head_repo: 'refs/pull/7/head' }))).toBeNull()
+  })
+
+  describe('preview provenance and freshness', () => {
+    const ready = () => link({
+      pr_head_sha: 'a'.repeat(40),
+      preview_url: 'https://preview.example/?x=1&y=2',
+      preview_environment: 'Preview',
+      preview_deployment_id: 1,
+      preview_updated_at: new Date(NOW).toISOString(),
+      fetched_at: new Date(NOW).toISOString(),
+    })
+
+    it('expires without another successful poll and rejects future cache timestamps', () => {
+      expect(previewRef(ready(), NOW)).not.toBeNull()
+      expect(previewRef(ready(), NOW + PREVIEW_TTL_MS)).toBeNull()
+      expect(previewRef(ready(), NOW - 1)).toBeNull()
+    })
+
+    it('requires current PR provenance and a complete successful snapshot', () => {
+      for (const change of [
+        { pr_head_sha: null }, { pr_state: 'MERGED' }, { pr_number: null },
+        { provider: 'gitlab' }, { preview_deployment_id: null }, { preview_updated_at: 'bad' },
+        { fetched_at: 'bad' }, { error: 'offline' }, { preview_error: 'head-changed' },
+      ]) {
+        expect(previewRef({ ...ready(), ...change }, NOW)).toBeNull()
+      }
+    })
+
+    it('escapes environment metadata and makes previews opt-in on each action surface', () => {
+      const cached = { ...ready(), preview_environment: '"><img src=x onerror=alert(1)>' }
+      const index = indexLinks([cached])
+      expect(sourceChipsHtml(index, entity(), NOW)).not.toContain('data-preview-key')
+      const html = sourceChipsHtml(index, entity(), NOW, { preview: true })
+      expect(html).not.toContain('<img')
+      expect(html).toContain('&quot;&gt;&lt;img')
+      expect(html).toContain('href="https://preview.example/?x=1&amp;y=2"')
+      expect(html).toContain('tabindex="-1"')
+      expect(sourceBlockHtml(index, entity(), NOW, { preview: true })).not.toContain('tabindex="-1"')
+    })
+
+    // app.js re-validates a rendered preview anchor by looking its key up in
+    // indexLinks(); a key built without the head would orphan a fork-PR preview
+    it('keys a preview anchor exactly as indexLinks keys its cache row', () => {
+      const fromFork = { ...ready(), head_repo: 'me/agent-inbox' }
+      const index = indexLinks([fromFork])
+      const [key] = [...index.keys()]
+      const html = sourceChipsHtml(index, entity({ head_repo: 'me/agent-inbox' }), NOW, { preview: true })
+      expect(html).toContain(`data-preview-key="${encodeURIComponent(key!)}"`)
+    })
   })
 
   it('is null-safe for an entity with no repo or no branch, and for junk input', () => {
@@ -342,11 +426,13 @@ describe('app.js wires the source chips without re-implementing the escaping', (
   it('renders the card block OUTSIDE the header gate, so notes and done cards get it too', () => {
     const start = js.indexOf('function itemCardEl(')
     const fn = js.slice(start, js.indexOf('\nasync function changeAnswer('))
-    expect(fn).toContain('sourceBlockHtml(')
-    // the `header ? ... : ''` ternary is what builds `head`; the source block
-    // must not live inside it
-    const headBlock = fn.slice(fn.indexOf('const head = header ?'), fn.indexOf('el.innerHTML'))
-    expect(headBlock).not.toContain('sourceBlockHtml(')
+    const headBlock = fn.match(/\$\{header \?[\s\S]*?: ''\}/)?.[0]
+    expect(headBlock).toBeDefined()
+    expect(headBlock).not.toContain('cardDetailsHtml(')
+    expect(fn).toContain('${cardDetailsHtml(it, it, `item:${it.id}`, presentation, { includeAsked })}')
+    const detailsStart = js.indexOf('function cardDetailsHtml(')
+    const details = js.slice(detailsStart, js.indexOf('\nfunction bindContextDisclosures(', detailsStart))
+    expect(details).toContain('${sourceBlockHtml(linkIndex, identity, Date.now(), sourceOptions(entity, identity))}')
   })
 
   // a <summary>'s activation toggles its <details>: a chip inside .board-meta
@@ -375,5 +461,649 @@ describe('the source chip styling stays inside the one @media invariant', () => 
     expect(idx).toBeGreaterThan(-1)
     expect(css.slice(0, idx)).not.toContain('.src-word { display: none')
     expect(css.slice(idx)).toContain('.nrow-src .src-word { display: none; }')
+  })
+
+  // #103: relationship chips are ambient; a stale one is dimmed, never alarming
+  it('declares the sub-issue classes, and dims a stale chip without the danger colour', () => {
+    for (const cls of ['.src-chip.tone-stale', '.src-sep', '.src-progress', '.src-trail', '.src-children', '.src-child', '.src-activity', '.src-more', '.board-issues', '.row-src']) {
+      expect(css, `${cls} is unstyled`).toContain(cls)
+    }
+    const stale = css.match(/\.src-chip\.tone-stale \{([^}]*)\}/)?.[1] ?? ''
+    expect(stale).toMatch(/opacity:\s*\.\d+/)
+    expect(stale).not.toContain('danger')
+    expect(css.indexOf('.src-chip.tone-stale')).toBeLessThan(css.search(/@media\s*\(/))
+  })
+})
+
+// ── issue #103 PR3: breadcrumbs and child progress (§7) ─────────────────────
+// The relationship chips and block sections are drawn here too, so the two
+// dangers above apply to GitHub-authored issue titles and to the issue URLs
+// this file constructs from a validated slug and number.
+describe('issue relationships in the chips and the source block (#103)', () => {
+  const R = 'shariqh/agent-inbox'
+  const K = (n: number): string => `${R}#${n}`
+  const T = Date.parse(at(0))
+  const PARENT = 'Integrate Agent Inbox with Agent Host Protocol'
+  const item120 = { repo: R, stream: '120-ahp-input', issue_ref: 120 }
+  const plan117 = { repo: R, stream: '119-ahp-adapter', issue_ref: 119, issue_pin_repo: R, issue_pin_number: 117, project: 'agent-inbox' }
+
+  function family(opts: { parentTitle?: string; childTitle?: string; fetchedAt?: string; error?: IssueError } = {}) {
+    const fetchedAt = opts.fetchedAt ?? at(0)
+    const extra = opts.error ? { error: opts.error, checkedAt: at(100) } : {}
+    const children = [118, 119, 120].map((n) => facts(K(n), n === 118
+      ? { state: 'CLOSED', state_reason: 'COMPLETED' }
+      : n === 120 ? { title: opts.childTitle ?? 'Import unresolved AHP input requests into Needs you' } : {}))
+    const rows = [
+      row(K(117), snapshot(K(117), { issue: { title: opts.parentTitle ?? PARENT }, children, total: 10, completed: 1 }), fetchedAt, extra),
+      row(K(120), snapshot(K(120), {
+        issue: { title: opts.childTitle ?? 'Import unresolved AHP input requests into Needs you' },
+        ancestors: [facts(K(117), { title: opts.parentTitle ?? PARENT, children_total: 10, children_completed: 1 })],
+      }), fetchedAt, extra),
+    ]
+    return buildIssueGraph(rows, keySets(rows.map((r) => `${r.repo}#${r.number}`)))
+  }
+  // the view and the builders read one clock, as one frame of the viewer does
+  const NOW3 = T + 3 * 60_000
+  const view = (graph: unknown, extra: Partial<Parameters<typeof buildIssueView>[1]> = {}) =>
+    buildIssueView(graph, { nowMs: NOW3, ...extra })
+  const hrefs = (html: string): string[] => [...html.matchAll(/href="([^"]*)"/g)].map((m) => m[1]!)
+
+  // AC2: what main rendered before PR3, byte for byte (captured from cb70cf81)
+  it('renders exactly today\'s chips and block when there is no relationship to draw', () => {
+    const PLAIN = '<a href="https://github.com/shariqh/agent-inbox/issues/120" target="_blank" rel="noopener noreferrer" class="src-chip tone-issue" title="issue #120" tabindex="-1">#120</a>'
+    const BLOCK = '<div class="card-source"><div class="card-source-label">SOURCE</div><div class="src-row"><a href="https://github.com/shariqh/agent-inbox/issues/120" target="_blank" rel="noopener noreferrer" class="src-chip tone-issue">#120</a></div></div>'
+    const capped = buildIssueView(buildIssueGraph(
+      [row(K(117), snapshot(K(117)), at(0)), row(K(120), snapshot(K(120), { ancestors: [K(117)] }), at(0))],
+      keySets([K(117), K(120)]), { maxUnits: 1 }), { nowMs: T })
+    const soft = buildIssueView(buildIssueGraph([row(K(120), null, null, { error: 'no-gh', checkedAt: at(1) })], keySets([K(120)])), { nowMs: T })
+    for (const issues of [undefined, null, view(null), capped, soft]) {
+      expect(sourceChipsHtml(new Map(), item120, T, { issues })).toBe(PLAIN)
+      expect(sourceBlockHtml(new Map(), item120, T, { issues })).toBe(BLOCK)
+    }
+  })
+
+  it('shows a child its exact parent as its own anchor, and a parent its progress', () => {
+    const issues = view(family())
+    const chips = sourceChipsHtml(new Map(), item120, NOW3, { issues })
+    expect(chips).toBe(
+      '<a href="https://github.com/shariqh/agent-inbox/issues/117" target="_blank" rel="noopener noreferrer" class="src-chip tone-issue"'
+      + ` title="Parent: #117 ${PARENT} (1 of 10 done) · checked 3m ago" tabindex="-1" data-issue-key="shariqh/agent-inbox#117" aria-label="Parent issue #117">#117</a>`
+      + '<span class="src-sep" aria-hidden="true">›</span>'
+      + '<a href="https://github.com/shariqh/agent-inbox/issues/120" target="_blank" rel="noopener noreferrer" class="src-chip tone-issue"'
+      + ' title="issue #120 — Import unresolved AHP input requests into Needs you · checked 3m ago" tabindex="-1" data-issue-key="shariqh/agent-inbox#120">#120</a>',
+    )
+    // the plan's pin outranks its branch issue (#119), and it is a parent
+    const plan = sourceChipsHtml(new Map(), plan117, NOW3, { issues, tabbable: true })
+    expect(plan).toContain('>#117 <span class="src-progress">· 1/10</span></a>')
+    expect(plan).not.toContain('#119')
+  })
+
+  it('lists the children in GitHub order with their marks, titles and Agent Inbox activity', () => {
+    const question = { id: 'q120', project: 'agent-inbox', agent: 'claude-code', kind: 'question', title: 'Which parent?', status: 'open', ...item120, created_at: at(1), updated_at: at(1) }
+    const issues = view(family(), {
+      items: [question], attention: [{ kind: 'item', item: question, liveness: 'waiting' }],
+      boards: [{ id: 'p1', project: 'agent-inbox', agent: 'copilot', title: 'Adapter', status: 'active', repo: R, stream: 'main', updated_at: at(2),
+        rows: [{ id: 'r119', label: 'Build the adapter', status: 'partial', issue_repo: R, issue_number: 119, updated_at: at(2) }] }],
+    })
+    const block = issueRelationsHtml(new Map(), plan117, NOW3, { issues })
+    expect(block).toContain('Sub-issues on GitHub · 1 of 10 done')
+    expect(block.indexOf('#118')).toBeLessThan(block.indexOf('#119'))
+    expect(block.indexOf('#119')).toBeLessThan(block.indexOf('#120'))
+    expect(block).toContain('aria-label="completed"')
+    expect(block).toContain('<button type="button" class="src-activity" data-issue-open="p1" data-issue-row="r119">Active · copilot · Build the adapter</button>')
+    expect(block).toContain('<button type="button" class="src-activity" data-issue-open="q120">Waiting on you</button>')
+    expect(block).toContain('<span class="src-activity">None here</span>')
+    expect(block).toContain('+7 not visible to your GitHub account')
+    expect(block).toContain('Relationships checked 3m ago')
+    // the card block of the child carries its trail above its own row
+    const child = sourceBlockHtml(new Map(), item120, NOW3, { issues })
+    expect(child.indexOf('#117')).toBeLessThan(child.indexOf('#120'))
+    expect(child).toContain(PARENT)
+  })
+
+  it('dims stale relationships with their age and reason, hides expired ones, and says why one is unavailable', () => {
+    const TWO_HOURS = T + 2 * 60 * 60_000
+    const stale = view(family({ error: 'auth' }), { nowMs: TWO_HOURS })
+    const chips = sourceChipsHtml(new Map(), item120, TWO_HOURS, { issues: stale })
+    expect(chips.match(/class="src-chip tone-stale"/g)).toHaveLength(2)
+    expect(chips).toContain('· as of 2h ago')
+    expect(chips).toContain('gh is not logged in — showing the last state it saw')
+
+    const EIGHT_DAYS = T + 8 * 24 * 60 * 60_000
+    const expired = view(family(), { nowMs: EIGHT_DAYS })
+    expect(sourceChipsHtml(new Map(), item120, EIGHT_DAYS, { issues: expired }))
+      .toBe(sourceChipsHtml(new Map(), item120, EIGHT_DAYS, { issues: null }))
+    expect(sourceBlockHtml(new Map(), item120, EIGHT_DAYS, { issues: expired })).toContain('Relationships unavailable — last seen 8d ago')
+
+    const reasons = {
+      'not-found': 'GitHub says this issue does not exist or is not visible',
+      forbidden: 'GitHub denied access (SSO?)',
+      moved: 'GitHub answered with another issue — update the link',
+    } as const
+    for (const [error, reason] of Object.entries(reasons)) {
+      // refused after a success: the cached titles must not survive
+      const graph = buildIssueGraph([
+        row(K(120), null, null, { error: error as IssueError, checkedAt: at(5) }),
+      ], keySets([K(120)]))
+      const issues = view(graph)
+      const html = sourceChipsHtml(new Map(), item120, NOW3, { issues }) + sourceBlockHtml(new Map(), item120, NOW3, { issues })
+      expect(html).toContain('#120 <span class="src-word">unavailable</span>')
+      expect(html).toContain(reason)
+      expect(html).not.toContain('Import unresolved')
+      expect(html).not.toContain('#117')
+    }
+  })
+
+  // Review round 1: GitHub returned the issue but not its parent or sub-issues.
+  // Nothing is known about its relationships, so it never reads "checked".
+  it('draws an issue GitHub returned without its hierarchy like an expired one: the plain chip and one line', () => {
+    const issues = view(buildIssueGraph([
+      row(K(117), snapshot(K(117), { issue: { title: PARENT }, children: [K(120)] }), at(0)),
+      row(K(120), snapshot(K(120), { unavailable: true }), at(0)),
+    ], keySets([K(117), K(120)])))
+    const line = 'Relationships unavailable — GitHub returned this issue but not its parent or sub-issues'
+    expect(sourceChipsHtml(new Map(), item120, NOW3, { issues })).toBe(sourceChipsHtml(new Map(), item120, NOW3, { issues: null }))
+    const block = sourceBlockHtml(new Map(), item120, NOW3, { issues })
+    expect(block).toContain(line)
+    expect(block.replace(/<[^>]*>/g, ' ')).not.toMatch(/checked|as of|#117/)
+    expect(issueRelationsHtml(new Map(), { ...plan117, issue_pin_number: 120 }, NOW3, { issues }))
+      .toBe(`<div class="card-source src-relations"><div class="src-checked">${line}</div></div>`)
+  })
+
+  it('renders hostile titles as inert text, including quotes inside title=', () => {
+    const XSS = '"><img src=x onerror=alert(1)>'
+    const QUOTES = `It's "quoted" & <b>bold</b>`
+    const hostile = { id: 'x"><img src=x>', project: 'agent-inbox', agent: XSS, kind: 'note', title: QUOTES, status: 'open', ...item120, issue_ref: 118, stream: '118-x', created_at: at(1), updated_at: at(1) }
+    const issues = view(family({ parentTitle: XSS, childTitle: QUOTES }), { items: [hostile] })
+    const html = [
+      sourceChipsHtml(new Map(), item120, NOW3, { issues }),
+      sourceBlockHtml(new Map(), item120, NOW3, { issues }),
+      issueRelationsHtml(new Map(), plan117, NOW3, { issues }),
+    ].join('\n')
+    // the tooltip is plain text, escaped where it is interpolated into title=
+    expect(sourceTooltip(item120, null, NOW3, { issues })).toContain(`issue #120 — ${QUOTES}`)
+    expect(html).not.toContain('<img')
+    expect(html).not.toContain('<b>')
+    expect(html).toContain('&quot;&gt;&lt;img src=x onerror=alert(1)&gt;')
+    expect(html).toContain('It&#39;s &quot;quoted&quot; &amp; &lt;b&gt;bold&lt;/b&gt;')
+    expect(html).toContain('data-issue-open="x&quot;&gt;&lt;img src=x&gt;"')
+    // every attribute value is closed by the quote that opened it
+    for (const tag of html.match(/<[a-z][^>]*>/g) ?? []) expect(tag.split('"').length % 2, tag).toBe(1)
+  })
+
+  it('constructs every href from a validated slug and number, through the one anchor path', () => {
+    const issues = view(family())
+    const html = sourceChipsHtml(new Map(), item120, NOW3, { issues }) + issueRelationsHtml(new Map(), plan117, NOW3, { issues })
+      + sourceBlockHtml(new Map(), item120, NOW3, { issues })
+    expect(hrefs(html).length).toBeGreaterThan(5)
+    for (const href of hrefs(html)) expect(href).toMatch(/^https:\/\/github\.com\/shariqh\/agent-inbox\/issues\/\d+$/)
+    // a node that is not a valid slug and number is never a link (issues.js
+    // drops it; this file still refuses to build an href from one)
+    const forged = { ...issues, relations: new Map([[K(120), {
+      ...issues.relations.get(K(120))!,
+      trail: [{ key: 'x', repo: 'javascript:alert(1)//', number: 1, title: 't', state: 'OPEN' as const, mark: 'open' as const }],
+    }]]) }
+    const bad = sourceChipsHtml(new Map(), item120, NOW3, { issues: forged })
+    expect(bad).not.toContain('javascript:')
+    expect(hrefs(bad)).toEqual(['https://github.com/shariqh/agent-inbox/issues/120'])
+  })
+
+  it('keeps relationship chips neutral and never says Blocked', () => {
+    const blockedRow = { id: 'r120', label: 'Answer the agent', status: 'blocked', issue_repo: R, issue_number: 120, updated_at: at(1) }
+    const board = { id: 'p1', project: 'agent-inbox', agent: 'copilot', title: 'Rollout', status: 'active', repo: R, stream: 'main', updated_at: at(1), rows: [blockedRow] }
+    const outputs: string[] = []
+    for (const [graph, nowMs] of [[family(), T], [family({ error: 'offline' }), T + 60 * 60_000], [family(), T + 9 * 24 * 60 * 60_000]] as const) {
+      const issues = view(graph, { nowMs, boards: [board], attention: [{ kind: 'row', row: blockedRow, board }] })
+      outputs.push(
+        sourceChipsHtml(new Map(), item120, nowMs, { issues }), sourceBlockHtml(new Map(), item120, nowMs, { issues }),
+        issueRelationsHtml(new Map(), plan117, nowMs, { issues }), rowIssueChipsHtml(blockedRow, board, nowMs, { issues }),
+      )
+    }
+    const html = outputs.join('\n')
+    expect(html).toContain('Waiting on you')
+    expect(html).not.toMatch(/blocked/i)
+    expect(html).not.toContain('tone-bad')
+    for (const [, tone] of html.matchAll(/class="src-chip tone-([\w-]+)"/g)) expect(['issue', 'stale']).toContain(tone)
+  })
+
+  // Slice 2 §7.5: the group header is a heading, never a control, and every
+  // GitHub or agent text in it is inert.
+  it('draws a group header and a row run header with hostile titles as inert text', () => {
+    const XSS = '"><img src=x onerror=alert(1)>'
+    const QUOTES = `It's "quoted" & <b>bold</b>`
+    const issues = view(family({ parentTitle: XSS, childTitle: QUOTES }))
+    const plans = [
+      { id: 'umb', project: QUOTES, agent: XSS, title: XSS, repo: R, stream: 'main', issue_pin_repo: R, issue_pin_number: 117 },
+      { id: 'p120', project: QUOTES, agent: XSS, title: QUOTES, repo: R, stream: 'main', issue_pin_repo: R, issue_pin_number: 120 },
+    ]
+    const group = planGroups(plans, issues, null).groupOf.get('umb')!
+    const head = planGroupHeadHtml(group, NOW3)
+    expect(head.startsWith('<h3 class="plan-group-head">')).toBe(true)
+    expect(head.replace(/<[^>]*>/g, '')).toBe(`#117${XSS}1 of 10 sub-issues done · 2 plans · ${QUOTES}`
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;'))
+    expect(planGroupHeadHtml(group, NOW3, { continued: true })).toContain('(continued)')
+    const run = rowParentHeadHtml(issues.relations.get(K(120))!.trail[0]!, plans[0]!)
+    expect(run).toBe(`<th colspan="5" scope="colgroup" class="row-parent-head" title="${XSS.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')}">Part of #117</th>`)
+    const html = head + run
+    expect(html).not.toContain('<img')
+    expect(html).not.toContain('<b>')
+    expect(html).not.toMatch(/blocked/i)
+    expect(hrefs(html)).toEqual(['https://github.com/shariqh/agent-inbox/issues/117'])
+    for (const tag of html.match(/<[a-z][^>]*>/g) ?? []) expect(tag.split('"').length % 2, tag).toBe(1)
+    for (const [, tone] of html.matchAll(/class="src-chip tone-([\w-]+)"/g)) expect(tone).toBe('issue')
+
+    // a group of stale members is dimmed and says how old its evidence is
+    const stale = planGroups(plans, view(family({ fetchedAt: at(0) }), { nowMs: T + 2 * 60 * 60_000 }), null).groupOf.get('umb')!
+    const dim = planGroupHeadHtml(stale, T + 2 * 60 * 60_000)
+    expect(dim.startsWith('<h3 class="plan-group-head stale">')).toBe(true)
+    expect(dim).toContain('class="src-chip tone-stale"')
+    expect(dim).toContain(' · as of 2h ago')
+  })
+
+  it('names a row\'s own issue instead of its plan\'s, and draws nothing for a row with no link', () => {
+    const issues = view(family())
+    const linkedRow = { id: 'r1', label: 'Wire input', status: 'tracked', issue_repo: R, issue_number: 120 }
+    const rowChips = rowIssueChipsHtml(linkedRow, plan117, NOW3, { issues })
+    expect(rowChips).toContain('>#117</a><span class="src-sep" aria-hidden="true">›</span>')
+    expect(rowChips).toContain('>#120</a>')
+    expect(rowIssueChipsHtml({ id: 'r2', label: 'Plain', status: 'tracked' }, plan117, NOW3, { issues })).toBe('')
+    // the row's card shows the row's issue where it would show the plan's
+    expect(sourceChipsHtml(new Map(), plan117, NOW3, { issues, row: linkedRow })).toContain('data-issue-key="shariqh/agent-inbox#120"')
+    expect(sourceChipsHtml(new Map(), plan117, NOW3, { issues, row: { id: 'r2' } })).toContain('· 1/10')
+  })
+
+  it('never guesses which of several closed issues a PR belongs to, and lists them all', () => {
+    const fetched = link().fetched_at
+    const several = link({
+      issue_number: 5, issue_url: 'https://github.com/shariqh/agent-inbox/issues/5',
+      closing_refs: JSON.stringify({ fetched_at: fetched, refs: [{ repo: R, number: 5 }, { repo: 'cli/cli', number: 6 }] }),
+    })
+    const noBranchIssue = entity({ issue_ref: null })
+    expect(issueRef(noBranchIssue, several)).toBeNull()
+    expect(sourceChipsHtml(indexLinks([several]), noBranchIssue, NOW)).not.toContain('issues/5')
+    // the entity falls back to its branch issue, and the PR tooltip lists every one
+    expect(issueRef(entity(), several)!.num).toBe(30)
+    expect(sourceTooltip(entity(), several, NOW)).toContain('closes #5, cli/cli#6')
+    expect(sourceBlockHtml(indexLinks([several]), entity(), NOW)).toContain('closes #5, cli/cli#6')
+    // one bound reference is certain, and reads exactly as #30 always has
+    const one = link({ issue_number: 5, closing_refs: { fetched_at: fetched, refs: [{ repo: R, number: 5 }] } })
+    expect(issueRef(entity(), one)).toMatchObject({ num: 5, key: K(5), certain: true })
+    expect(sourceTooltip(entity(), one, NOW)).not.toContain('closes')
+  })
+})
+
+// Slice 2 PR D (§9.1): "waits on" chips, "Dependencies on GitHub" and the row
+// detail's "Waits on". A dependency is never the human's blocker, so none of it
+// uses the bad tone, the blocked mark or the word "Blocked".
+describe('dependency chips and blocks in Plans (slice 2 PR D)', () => {
+  const R = 'shariqh/agent-inbox'
+  const K = (n: number): string => `${R}#${n}`
+  const T = Date.parse(at(0))
+  const NOW3 = T + 3 * 60_000
+  const XSS = '"><img src=x onerror=alert(1)>'
+  const QUOTES = `It's "quoted" & <b>bold</b>`
+  const hrefs = (html: string): string[] => [...html.matchAll(/href="([^"]*)"/g)].map((m) => m[1]!)
+  const text = (html: string): string => html.replace(/<[^>]*>/g, '')
+  const rows = [
+    { id: 'rb', label: 'Build', status: 'done', issue_repo: R, issue_number: 119 },
+    { id: 'rs', label: QUOTES, status: 'tracked', issue_repo: R, issue_number: 120 },
+    { id: 'rp', label: 'Ship', status: 'partial', issue_repo: R, issue_number: 121, waits_on: ['Build', 'Gone', QUOTES] },
+    { id: 'rd', label: 'Doc', status: 'tracked', waits_on: [QUOTES] },
+    { id: 'rq', label: 'Quiet', status: 'tracked', waits_on: ['Build'] },
+    { id: 'r1', label: 'One', status: 'tracked', issue_repo: R, issue_number: 122 },
+    { id: 'rn', label: 'Skipped', status: 'na' },
+    { id: 'rw', label: 'Wait', status: 'tracked', waits_on: ['Skipped'] },
+    { id: 'rv', label: 'Verify', status: 'tracked', waits_on: ['Doc', 'Skipped'] },
+  ]
+  const plan = { id: 'p', project: 'agent-inbox', agent: 'copilot', title: 'Release', status: 'active', repo: R, stream: 'main',
+    issue_ref: null, issue_pin_repo: R, issue_pin_number: 121, updated_at: at(1), rows }
+  function graph(opts: { title?: string; error?: IssueError; section?: 'ok' | 'unavailable' | 'none' } = {}) {
+    const title = opts.title ?? 'Title of #120'
+    const extra = opts.error ? { error: opts.error, checkedAt: at(100) } : {}
+    const section = opts.section ?? 'ok'
+    const dependencies = (d: Parameters<typeof deps>[0]) => (section === 'ok' ? deps(d) : section === 'unavailable' ? { status: 'unavailable' as const } : null)
+    const snaps = [
+      row(K(121), snapshot(K(121)), at(0), { ...extra, dependencies: dependencies({
+        blockedBy: [facts(K(119)), facts(K(120), { title }), facts('Other/Repo#5', { title }), facts(K(118), { state: 'CLOSED', state_reason: 'COMPLETED', title: 'closed blocker' })],
+        blocking: [facts(K(130), { title }), facts(K(131), { state: 'CLOSED', title: 'closed dependent' })],
+        blockedByCounts: { open: 5, total: 7 },
+      }) }),
+      // #122 waits only on #119, and #124 and #125 wait on each other
+      row(K(122), snapshot(K(122)), at(0), { ...extra, dependencies: dependencies({ blockedBy: [K(119)] }) }),
+      row(K(124), snapshot(K(124)), at(0), { ...extra, dependencies: dependencies({ blockedBy: [K(125)], blocking: [K(125)] }) }),
+    ]
+    return buildIssueGraph(snaps, keySets(snaps.map((r) => `${r.repo}#${r.number}`)))
+  }
+  const view = (g: unknown, nowMs = NOW3, extra: Partial<Parameters<typeof buildIssueView>[1]> = {}) =>
+    buildIssueView(g, { boards: [plan], nowMs, ...extra })
+  const byId = (id: string) => rows.find((r) => r.id === id)!
+
+  it('says what a row waits on in one chip: one issue, several, one step, several steps', () => {
+    const issues = view(graph())
+    // GitHub: #119, #120 and other/repo#5 are open; the step on #120 merges with its issue
+    const ship = rowWaitsChipHtml(byId('rp'), plan, NOW3, { issues })
+    expect(text(ship)).toBe('waits on 3')
+    expect(ship).toMatch(/^<span class="src-chip tone-issue" title="[^"]*" tabindex="-1" data-waits-on="3">/)
+    const tip = ship.match(/title="([^"]*)"/)![1]!
+    expect(tip).toBe([
+      'Waits on:',
+      'step It&#39;s &quot;quoted&quot; &amp; &lt;b&gt;bold&lt;/b&gt; (#120 Title of #120) — step in this plan · GitHub',
+      'Other/Repo#5 Title of #120 — GitHub',
+      '#119 Title of shariqh/agent-inbox#119 — GitHub',
+      'checked 3m ago',
+    ].join('\n'))
+    // one issue is a link, built from its slug and number
+    const one = rowWaitsChipHtml(byId('r1'), plan, NOW3, { issues, tabbable: true })
+    expect(one).toBe('<a href="https://github.com/shariqh/agent-inbox/issues/119" target="_blank" rel="noopener noreferrer" class="src-chip tone-issue"'
+      + ' title="Waits on:\n#119 Title of shariqh/agent-inbox#119 — GitHub\nchecked 3m ago" data-waits-on="1">waits on #119</a>')
+    const doc = rowWaitsChipHtml(byId('rd'), plan, NOW3, { issues })
+    expect(text(doc)).toBe('waits on step It&#39;s &quot;quoted&quot; &amp; &lt;b&gt;bold&lt;/b&gt;')
+    expect(doc).toContain('title="Waits on:\nstep It&#39;s &quot;quoted&quot; &amp; &lt;b&gt;bold&lt;/b&gt; — step in this plan"')
+    expect(hrefs(doc)).toEqual([])
+    const steps = { ...plan, rows: [...rows, { id: 'rm', label: 'Many', status: 'tracked', waits_on: ['Doc', 'One'] }] }
+    expect(text(rowWaitsChipHtml({ id: 'rm' }, steps, NOW3, { issues: view(null, NOW3, { boards: [steps] }) }))).toBe('waits on 2 steps')
+    // nothing open: a done step, a dangling label, no link and no waits
+    for (const id of ['rq', 'rb', 'rs']) expect(rowWaitsChipHtml(byId(id), plan, NOW3, { issues })).toBe('')
+    expect(rowWaitsChipHtml(byId('rp'), plan, NOW3, {})).toBe('')
+  })
+
+  it('gives a plan the same chip for its own issue', () => {
+    const issues = view(graph())
+    const chip = planWaitsChipHtml(plan, NOW3, { issues, tabbable: true })
+    expect(text(chip)).toBe('waits on 3')
+    expect(chip).not.toContain('tabindex')
+    expect(planWaitsChipHtml({ ...plan, id: 'other' }, NOW3, { issues })).toBe('')
+  })
+
+  it('lists "Dependencies on GitHub" below the sub-issues, open ones only, with activity and every count', () => {
+    const question = { id: 'q', project: 'agent-inbox', agent: 'claude-code', kind: 'question', title: 'Which?', status: 'open',
+      repo: R, stream: '119-x', issue_ref: 119, created_at: at(1), updated_at: at(1) }
+    const issues = view(graph(), NOW3, { items: [question], attention: [{ kind: 'item', item: question, liveness: 'waiting' }] })
+    const block = issueRelationsHtml(new Map(), plan, NOW3, { issues })
+    expect(block).toContain('<div class="src-children-head">Dependencies on GitHub</div>')
+    const waits = block.slice(block.indexOf('>Waits on<'), block.indexOf('>Unblocks<'))
+    expect(waits).toContain('<ul class="src-child-list src-dep-list" aria-label="Waits on">')
+    expect(waits.indexOf('Other/Repo#5')).toBeLessThan(waits.indexOf('#119'))
+    expect(waits).toContain('<button type="button" class="src-activity" data-issue-open="q">Waiting on you</button>')
+    expect(waits).toContain('Active · copilot · ')
+    expect(waits).toContain('<li class="src-more">+2 not visible to your GitHub account</li>')
+    expect(waits).not.toContain('closed blocker')
+    const unblocks = block.slice(block.indexOf('>Unblocks<'))
+    expect(unblocks).toContain('href="https://github.com/shariqh/agent-inbox/issues/130"')
+    expect(unblocks).not.toContain('closed dependent')
+    expect(block).not.toContain('Circular')
+    expect(block).toContain('Relationships checked 3m ago')
+    // the cycle through #124
+    const row122 = issueRelationsHtml(new Map(), { ...plan, issue_pin_number: 124 }, NOW3, { issues })
+    expect(row122).toContain('<div class="src-checked">Circular dependency on GitHub</div>')
+    // the card block draws the same section
+    expect(sourceBlockHtml(new Map(), plan, NOW3, { issues })).toContain('Dependencies on GitHub')
+    // the node cap's count, once for the section
+    const capped = { ...issues, relations: new Map([[K(121), { ...issues.relations.get(K(121))!, dependencies: {
+      ...(issues.relations.get(K(121))!.dependencies as Extract<NonNullable<ReturnType<typeof issues.relations.get>>['dependencies'], { status: 'ok' }>),
+      more: { waitsOn: { notVisible: 0, onGitHub: 4 }, unblocks: { notVisible: 0, onGitHub: 0 }, notShown: 2 } } }]]) }
+    const cut = issueRelationsHtml(new Map(), plan, NOW3, { issues: capped })
+    expect(cut).toContain('<li class="src-more">+4 more on GitHub</li>')
+    expect(cut).toContain('<div class="src-more">+2 not shown</div>')
+  })
+
+  it('dims a stale section, and draws nothing unless GitHub answered: unknown, unavailable, expired, refused', () => {
+    const stale = view(graph({ error: 'offline' }), T + 60 * 60_000)
+    const chip = rowWaitsChipHtml(byId('r1'), plan, T + 60 * 60_000, { issues: stale })
+    expect(chip).toContain('class="src-chip tone-stale"')
+    expect(chip).toContain('as of 1h ago')
+    expect(issueRelationsHtml(new Map(), plan, T + 60 * 60_000, { issues: stale })).toContain('Dependencies on GitHub')
+
+    const unknown = view(graph({ section: 'none' }))
+    expect(rowWaitsChipHtml(byId('r1'), plan, NOW3, { issues: unknown })).toBe('')
+    expect(text(rowWaitsChipHtml(byId('rp'), plan, NOW3, { issues: unknown }))).toBe('waits on step It&#39;s &quot;quoted&quot; &amp; &lt;b&gt;bold&lt;/b&gt;')
+    expect(issueRelationsHtml(new Map(), plan, NOW3, { issues: unknown })).not.toMatch(/Dependenc/)
+    const refused = view(graph({ section: 'unavailable' }))
+    expect(planWaitsChipHtml(plan, NOW3, { issues: refused })).toBe('')
+    expect(issueRelationsHtml(new Map(), plan, NOW3, { issues: refused }))
+      .toContain('<div class="src-checked">Dependencies unavailable — GitHub returned this issue but not its dependencies</div>')
+    for (const [g, nowMs] of [[graph(), T + 8 * 24 * 60 * 60_000], [graph({ error: 'not-found' }), NOW3], [null, NOW3]] as const) {
+      const issues = view(g, nowMs)
+      expect(planWaitsChipHtml(plan, nowMs, { issues })).toBe('')
+      expect(rowWaitsChipHtml(byId('r1'), plan, nowMs, { issues })).toBe('')
+      expect(issueRelationsHtml(new Map(), plan, nowMs, { issues })).not.toMatch(/Dependenc|Waits on/)
+    }
+  })
+
+  it('counts a step that will not happen (na) as satisfied, like a done one (review of #274)', () => {
+    const issues = view(graph())
+    expect(rowWaitsChipHtml(byId('rw'), plan, NOW3, { issues })).toBe('')
+    expect(rowWaitsHtml(byId('rw'), plan, NOW3, { issues })).toBe('')
+    expect(text(rowWaitsChipHtml(byId('rv'), plan, NOW3, { issues }))).toBe('waits on step Doc')
+    expect(rowWaitsHtml(byId('rv'), plan, NOW3, { issues }).match(/<li /g)).toHaveLength(1)
+  })
+
+  it('says "more on GitHub", never "not visible", when a page of 50 mixing closed issues leaves open ones out (review of #274)', () => {
+    const mixed = [
+      ...Array.from({ length: 5 }, (_, i) => facts(K(600 + i))),
+      ...Array.from({ length: 45 }, (_, i) => facts(K(700 + i), { state: 'CLOSED' })),
+    ]
+    const snaps = [row(K(121), snapshot(K(121)), at(0), { dependencies: deps({
+      blockedBy: mixed, blockedByTruncated: true, blockedByCounts: { open: 20, total: 80 },
+      blocking: [facts(K(130))], blockingCounts: { open: 3, total: 3 },
+    }) })]
+    const issues = view(buildIssueGraph(snaps, keySets([K(121)])))
+    const html = issueRelationsHtml(new Map(), plan, NOW3, { issues })
+    expect([...html.matchAll(/<li class="src-more">([^<]*)<\/li>/g)].map((m) => m[1])).toEqual([
+      '+15 more on GitHub', '+2 not visible to your GitHub account',
+    ])
+  })
+
+  it('lists both kinds in the row detail, each with its source, and the pair once', () => {
+    const issues = view(graph())
+    const html = rowWaitsHtml(byId('rp'), plan, NOW3, { issues })
+    expect(html.startsWith('<div class="card-source src-waits"><div class="card-source-label">WAITS ON</div><ul class="src-wait-list">')).toBe(true)
+    expect(html.match(/<li /g)).toHaveLength(3)
+    expect(html).toContain('<span class="src-step">step It&#39;s &quot;quoted&quot; &amp; &lt;b&gt;bold&lt;/b&gt;</span>')
+    expect(html).toContain('<span class="src-wait-source">step in this plan · GitHub</span>')
+    expect(html.match(/src-wait-source">GitHub</g)).toHaveLength(2)
+    expect(rowWaitsHtml(byId('rd'), plan, NOW3, { issues })).toContain('<span class="src-wait-source">step in this plan</span>')
+    expect(rowWaitsHtml(byId('rs'), plan, NOW3, { issues })).toBe('')
+  })
+
+  it('renders hostile GitHub titles and labels as inert text everywhere, and never builds an href from them', () => {
+    const issues = view(graph({ title: XSS }), NOW3, { items: [{ id: XSS, project: 'agent-inbox', agent: XSS, kind: 'note', title: XSS,
+      status: 'open', repo: R, stream: '130-x', issue_ref: 130, created_at: at(1), updated_at: at(1) }] })
+    const html = [
+      rowWaitsChipHtml(byId('rp'), plan, NOW3, { issues }), rowWaitsChipHtml(byId('rd'), plan, NOW3, { issues }),
+      planWaitsChipHtml(plan, NOW3, { issues }), rowWaitsHtml(byId('rp'), plan, NOW3, { issues }),
+      issueRelationsHtml(new Map(), plan, NOW3, { issues }), sourceBlockHtml(new Map(), plan, NOW3, { issues }),
+    ].join('\n')
+    expect(html).not.toContain('<img')
+    expect(html).not.toContain('<b>')
+    expect(html).toContain('&quot;&gt;&lt;img src=x onerror=alert(1)&gt;')
+    expect(html).toContain('data-issue-open="&quot;&gt;&lt;img src=x onerror=alert(1)&gt;"')
+    for (const tag of html.match(/<[a-z][^>]*>/g) ?? []) expect(tag.split('"').length % 2, tag).toBe(1)
+    for (const href of hrefs(html)) expect(href).toMatch(/^https:\/\/github\.com\/(shariqh\/agent-inbox|Other\/Repo)\/issues\/\d+$/)
+    // a forged node that is no valid slug and number is never a link
+    const rel = issues.relations.get(K(121))!
+    const okDeps = rel.dependencies as Extract<typeof rel.dependencies, { status: 'ok' }>
+    const forgedNode = { key: 'x', repo: 'javascript:alert(1)//', number: 1, title: 't', state: 'OPEN' as const, mark: 'open' as const }
+    const forged = {
+      ...issues,
+      relations: new Map([[K(121), { ...rel, dependencies: { ...okDeps, waitsOn: [{ node: forgedNode, activity: okDeps.waitsOn[0]!.activity }] } }]]),
+      rowWaits: new Map([['r1', [{ step: null, node: forgedNode, freshness: 'fresh' as const, fetchedAt: at(0), sources: ['github' as const] }]]]),
+      planWaits: new Map(),
+    }
+    const bad = issueRelationsHtml(new Map(), plan, NOW3, { issues: forged }) + rowWaitsChipHtml(byId('r1'), plan, NOW3, { issues: forged })
+      + rowWaitsHtml(byId('r1'), plan, NOW3, { issues: forged })
+    expect(bad).not.toContain('javascript:')
+  })
+
+  it('styles the new classes outside the one @media block, with no danger colour', () => {
+    const css = readFileSync(join(REPO, 'public/style.css'), 'utf8')
+    const media = css.search(/@media\s*\(/)
+    for (const cls of ['.src-deps-head', '.src-wait-list', '.src-wait ', '.src-step', '.src-wait-source']) {
+      expect(css, `${cls} is unstyled`).toContain(cls)
+      expect(css.indexOf(cls)).toBeLessThan(media)
+    }
+    const block = css.slice(css.indexOf('.src-deps-head'), css.indexOf('.src-wait-source'))
+    expect(block).not.toMatch(/danger|--bad|red/)
+  })
+
+  it('keeps every dependency chip neutral and never says Blocked, even on a blocked row', () => {
+    const blockedPlan = { ...plan, rows: rows.map((r) => ({ ...r, status: r.id === 'rp' ? 'blocked' : r.status })) }
+    const outputs: string[] = []
+    for (const [g, nowMs] of [[graph(), NOW3], [graph({ error: 'offline' }), T + 60 * 60_000]] as const) {
+      const issues = view(g, nowMs, { boards: [blockedPlan], attention: [{ kind: 'row', row: blockedPlan.rows[2]!, board: blockedPlan }] })
+      for (const r of blockedPlan.rows) outputs.push(rowWaitsChipHtml(r, blockedPlan, nowMs, { issues }), rowWaitsHtml(r, blockedPlan, nowMs, { issues }))
+      outputs.push(planWaitsChipHtml(blockedPlan, nowMs, { issues }), issueRelationsHtml(new Map(), { ...blockedPlan, issue_pin_number: 124 }, nowMs, { issues }))
+    }
+    const html = outputs.join('\n')
+    expect(html).toContain('waits on')
+    expect(html).toContain('Circular dependency')
+    expect(html).not.toMatch(/blocked/i)
+    expect(html).not.toContain('tone-bad')
+    for (const [, tone] of html.matchAll(/class="src-chip tone-([\w-]+)"/g)) expect(['issue', 'stale']).toContain(tone)
+  })
+})
+
+describe('app.js reads the issue graph like links, and renders it without fetching', () => {
+  const js = readFileSync(join(REPO, 'public/app.js'), 'utf8')
+  const fn = (name: string): string => {
+    const start = js.indexOf(`function ${name}(`)
+    return js.slice(start, js.indexOf('\nfunction ', start + 1))
+  }
+
+  it('starts /api/issues with the poll\'s other reads, through its own snapshot validator, and falls back', () => {
+    const load = js.slice(js.indexOf('async function load()'), js.indexOf('\nasync function postJSON('))
+    expect(load).toContain("readSnapshot('/api/issues').then(marked)")
+    expect(load).toContain('issuesBody(issuesRead)')
+    const body = js.slice(js.indexOf('async function issuesBody('), js.indexOf('\nasync function load()'))
+    expect(body).toMatch(/catch\s*\{\s*return null\s*\}/)
+  })
+
+  it('rebuilds the issue view in the ambient frame from attention it only reads', () => {
+    const ambient = fn('paintAmbient')
+    expect(ambient.indexOf('linkIndex = indexLinks(')).toBeLessThan(ambient.indexOf('issueView = buildIssueView('))
+    expect(ambient.indexOf('applyBadge()')).toBeLessThan(ambient.indexOf('issueView = buildIssueView('))
+    for (const name of ['render', 'paintEditableSurfaces', 'paintAmbient', 'boardEl', 'needsRowEl', 'cardDetailsHtml', 'cardOriginHtml', 'sourceOptions', 'rowPanelEl']) {
+      expect(fn(name), `${name} fetches`).not.toMatch(/\bfetch\(|readSnapshot\(|\bload\(\)/)
+    }
+  })
+
+  it('opens an activity label through focusItem, and keeps chip clicks from toggling a plan row', () => {
+    expect(fn('openIssueActivity')).toContain('focusItem(')
+    expect(fn('bindContextDisclosures')).toContain('bindIssueActivity(')
+    // slice 2 §9.1: the row detail's "Waits on"
+    expect(fn('rowPanelEl')).toContain('rowWaitsHtml(')
+    expect(fn('boardEl')).toContain("closest('button, input, a')")
+  })
+})
+
+// Slice 2 PR E (§9.2): the flow's dependency lines and its "Not in this plan" fold.
+describe('dependencies in Plan flow (slice 2 PR E)', () => {
+  const XSS = '"><img src=x onerror=alert(1)>'
+  const R = 'shariqh/agent-inbox'
+  const K = (n: number): string => `${R}#${n}`
+  const nowMs = Date.parse(at(3))
+  const hrefs = (html: string): string[] => [...html.matchAll(/href="([^"]*)"/g)].map((m) => m[1]!)
+  const step = (id: string, label: string, status: string, link: number | null, waits: string[] = []) => ({
+    id, label, status, waits_on: waits, ...(link === null ? {} : { issue_repo: R, issue_number: link }),
+  })
+
+  /** Hostile step labels and GitHub titles; #119 blocks #120, #130 (no row) blocks #120 too; #140 is outside. */
+  function flow(title = 'Issue', status = 'tracked', nowAt = nowMs, error: IssueError | null = null) {
+    const rows = [
+      step('ra', XSS, 'partial', 119),
+      step('ri', `Import <b>requests</b>`, status, 120, [XSS]),
+      step('rc', 'Control', 'tracked', 125),
+    ]
+    const plan = {
+      id: 'p', title: 'AHP', project: 'agent-inbox', agent: 'copilot', status: 'active', repo: R, stream: 'main', issue_ref: null,
+      issue_pin_repo: R, issue_pin_number: 117, progress: { done: 0, countable: 3, fraction: 0 }, rows,
+    } as unknown as MissionBoard & { rows: ReturnType<typeof step>[] }
+    const pairs = depsOf([[K(119), K(120)], [K(130), K(120)], [K(150), K(119)], [K(119), K(150)]])
+    const t = (n: number) => facts(K(n), { title: `${title} ${n}` })
+    const extra = error ? { error, checkedAt: at(100) } : {}
+    const snaps = [
+      row(K(117), snapshot(K(117), { issue: { title: XSS }, children: [K(119), K(120), t(140)] }), at(0), { dependencies: pairs(K(117)), ...extra }),
+      ...[119, 120].map((n) => row(K(n), snapshot(K(n), { issue: { title: `${title} ${n}` }, ancestors: [facts(K(117), { title: XSS })] }), at(0), { dependencies: pairs(K(n)), ...extra })),
+      row(K(125), snapshot(K(125), { ancestors: [facts(K(200), { title: XSS })] }), at(0), { dependencies: pairs(K(125)), ...extra }),
+      row(K(130), snapshot(K(130), { issue: { title: `${title} 130` } }), at(0), { dependencies: pairs(K(130)), ...extra }),
+    ]
+    const issues = buildIssueView(buildIssueGraph(snaps, keySets(snaps.map((r) => `${r.repo}#${r.number}`))), {
+      boards: [plan] as never, nowMs: nowAt,
+      attention: status === 'blocked' ? [{ kind: 'row', row: rows[1]!, board: plan as never }] : [],
+    })
+    const mission = buildMission(plan, { issues, links: null })
+    const html = (id: string) => missionDepsHtml(mission.paths.find((p) => p.row.id === id)!, plan)
+    return { mission, plan, html }
+  }
+
+  it('draws in-plan steps as named buttons and outside issues as chips with activity, exactly', () => {
+    const { html, mission, plan } = flow()
+    expect(html('ri')).toBe('<div class="mission-deps"><div class="mission-edge-waits"><span class="mission-edge-word">Waits on:</span>'
+      + '<ul class="mission-edge-list" aria-label="Waits on">'
+      + '<li><button type="button" class="mission-step-link" data-mission-step="ra" aria-label="Waits on step &quot;&gt;&lt;img src=x onerror=alert(1)&gt; (#119)" title="step in this plan · GitHub">&quot;&gt;&lt;img src=x onerror=alert(1)&gt; (#119)</button></li>'
+      + '<li><span class="mission-sep" aria-hidden="true">·</span><span class="mission-ext"><a href="https://github.com/shariqh/agent-inbox/issues/130" target="_blank" rel="noopener noreferrer" class="src-chip tone-issue" data-issue-key="shariqh/agent-inbox#130">#130</a>'
+      + '<span class="src-tldr">Issue 130</span><span class="src-activity">None here</span></span></li></ul></div></div>')
+    expect(html('ra')).toContain('aria-label="Unblocks step Import &lt;b&gt;requests&lt;/b&gt; (#120)"')
+    expect(html('ra')).toContain('<div class="mission-circular">Circular dependency</div>')
+    expect(html('rc')).toBe('<div class="mission-deps"><div class="mission-edge-contains" title="&quot;&gt;&lt;img src=x onerror=alert(1)&gt;">Part of #200</div></div>')
+    expect(missionOutsideHtml(mission.outside, plan, { key: 'mission-outside:p' })).toBe(
+      '<details class="mission-outside" data-context-key="mission-outside:p"><summary>Not in this plan · 1</summary>'
+      + '<ul class="src-child-list" aria-label="Sub-issues not in this plan"><li class="src-child"><span class="src-mark" role="img" aria-label="open" title="open">●</span>'
+      + '<a href="https://github.com/shariqh/agent-inbox/issues/140" target="_blank" rel="noopener noreferrer" class="src-chip tone-issue" data-issue-key="shariqh/agent-inbox#140">#140</a>'
+      + '<span class="src-tldr">Issue 140</span><span class="src-activity">None here</span></li></ul></details>')
+    expect(missionOutsideHtml(mission.outside, plan, { open: true })).toContain('<details class="mission-outside" open>')
+    expect(missionOutsideHtml(null, plan)).toBe('')
+  })
+
+  it('styles waits-on dashed and containment as a thin solid rail, never sharing a rule, outside @media and without danger', () => {
+    const css = readFileSync(join(REPO, 'public/style.css'), 'utf8')
+    const media = css.search(/@media\s*\(/)
+    const rule = (selector: string) => {
+      const at = css.indexOf(`${selector} {`)
+      expect(at, `${selector} is unstyled`).toBeGreaterThan(-1)
+      expect(at).toBeLessThan(media)
+      return css.slice(at, css.indexOf('}', at))
+    }
+    expect(rule('.mission-edge-waits')).toMatch(/border-left: 2px dashed/)
+    expect(rule('.mission-edge-contains')).toMatch(/border-left: 1px solid/)
+    for (const sel of ['.mission-deps', '.mission-edge-unblocks', '.mission-step-link', '.mission-circular', '.mission-outside', '.mission-sep', '.mission-ext']) rule(sel)
+    // no selector list styles both edge kinds at once
+    expect(css).not.toMatch(/\.mission-edge-waits[^{]*,[^{]*\.mission-edge-contains|\.mission-edge-contains[^{]*,[^{]*\.mission-edge-waits/)
+    const block = css.slice(css.indexOf('.mission-deps {'), css.indexOf('.mission-foot {'))
+    expect(block).not.toMatch(/danger|--bad|red/)
+  })
+
+  it('moves focus to a step only from its button: the reveal is never part of a restore path', () => {
+    const app = readFileSync(join(REPO, 'public/app.js'), 'utf8')
+    expect(app.match(/revealControl\(/g)).toHaveLength(1)
+    const reveal = app.indexOf('revealControl(')
+    expect(app.lastIndexOf('function focusMissionStep(', reveal)).toBeGreaterThan(app.lastIndexOf('\nfunction ', reveal) - 1)
+    // its one caller is the step button's click listener
+    expect(app.match(/focusMissionStep\(/g)).toHaveLength(2)
+    expect(app).toMatch(/step\.addEventListener\('click', \(event\) => \{\n\s+event\.stopPropagation\(\)\n\s+focusMissionStep\(step\.dataset\.missionStep\)/)
+  })
+
+  it('keeps hostile titles inert, builds only constructed hrefs, and never says Blocked, even on a blocked row', () => {
+    const outputs: string[] = []
+    for (const [status, at_, error] of [['tracked', nowMs, null], ['blocked', Date.parse(at(0)) + 60 * 60_000, 'offline']] as const) {
+      const { html, mission, plan } = flow(XSS, status, at_, error)
+      outputs.push(html('ra'), html('ri'), html('rc'), missionOutsideHtml(mission.outside, plan, { open: true }))
+    }
+    const out = outputs.join('\n')
+    expect(out).toContain('tone-stale')
+    expect(out).not.toContain('<img')
+    expect(out).not.toContain('<b>')
+    for (const tag of out.match(/<[a-z][^>]*>/g) ?? []) expect(tag.split('"').length % 2, tag).toBe(1)
+    for (const href of hrefs(out)) expect(href).toMatch(/^https:\/\/github\.com\/shariqh\/agent-inbox\/issues\/\d+$/)
+    expect(out).not.toMatch(/blocked/i)
+    for (const [, tone] of out.matchAll(/class="src-chip tone-([\w-]+)"/g)) expect(['issue', 'stale']).toContain(tone)
+    // a forged node that is no valid slug and number is never drawn
+    const forged = { key: 'x', repo: 'javascript:alert(1)//', number: 1, title: 't', state: 'OPEN' as const, mark: 'open' as const }
+    const { plan } = flow()
+    const path = { row: { id: 'z', label: 'z', status: 'tracked' as const }, result: null, circular: false,
+      waitsOn: [{ kind: 'issue' as const, node: forged, activity: null, freshness: 'fresh' as const }], unblocks: [],
+      partOf: { node: forged, freshness: 'fresh' as const } }
+    expect(missionDepsHtml(path, plan)).toBe('')
+    expect(missionOutsideHtml({ list: [{ node: forged, activity: { kind: 'none', label: 'None here', target: null } }], freshness: 'fresh' }, plan)).toBe('')
   })
 })

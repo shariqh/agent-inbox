@@ -503,6 +503,18 @@ async function issuesBody(read) {
   }
 }
 
+// Cached PR state (issue #30) is a conditional snapshot since #288, with the
+// same defensive fallback it always had: a 404 from a viewer that predates the
+// route, a network error or a body its validator refuses means no links, and
+// every surface renders exactly as before the feature, never a dead page.
+async function linksBody(read) {
+  try {
+    return await settledValue(read).json()
+  } catch {
+    return []
+  }
+}
+
 async function load() {
   if (reloadRequested) return false
   const generation = ++loadGeneration
@@ -531,10 +543,9 @@ async function load() {
       fetch('/api/projects/closed').then(marked)
         .then((r) => (r.ok ? r.json() : null))
         .catch(() => null),
-      // Cached PR state (issue #30), same defensive shape and for the same reason:
-      // an empty links set must mean "render exactly as before this feature", never
-      // a dead page. A viewer that predates this route answers 404 with HTML.
-      fetch('/api/links').then(marked).then((r) => (r.ok ? r.json() : [])).catch(() => []),
+      // Cached PR state (issue #30): a conditional snapshot (#288) whose body is
+      // read after the boot decision, with its own fallback (linksBody).
+      readSnapshot('/api/links').then(marked),
       // The sub-issue graph (#103), the eighth read: a conditional snapshot with
       // its own validator and the same fallback (issuesBody).
       readSnapshot('/api/issues').then(marked),
@@ -557,11 +568,10 @@ async function load() {
     const body = (read) => (read.status === 'fulfilled' ? read.value.json() : Promise.reject(read.reason))
     const bodies = await Promise.allSettled([
       res.json(), body(boardsRead), body(archivedRead), body(activityRead), historyBody(historyRead),
-      wantHistory ? closedHistoryBody(closedHistoryRead) : null, issuesBody(issuesRead),
+      wantHistory ? closedHistoryBody(closedHistoryRead) : null, issuesBody(issuesRead), linksBody(linksRead),
     ])
-    const [g, boards, archived, activity, activityHistory, firstOlder, issues] = bodies.map(settledValue)
+    const [g, boards, archived, activity, activityHistory, firstOlder, issues, links] = bodies.map(settledValue)
     const closedSnapshot = settledValue(closedRead)
-    const links = settledValue(linksRead)
     if (reloadRequested || generation < appliedLoadGeneration) return false
     const nowMs = Date.now()
     const page = ageNotes(g, nowMs)

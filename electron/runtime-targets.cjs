@@ -33,6 +33,7 @@ const RUNTIME_TARGETS = Object.freeze({
 
 const MACOS_RUNTIME_KEYS = Object.freeze(['darwin-arm64', 'darwin-x64'])
 const LINUX_RUNTIME_KEYS = Object.freeze(['linux-arm64', 'linux-x64'])
+const WINDOWS_RUNTIME_KEYS = Object.freeze(['win32-x64'])
 const POSIX_SETUP_RUNTIME_KEYS = Object.freeze([
   'darwin-arm64',
   'darwin-x64',
@@ -61,6 +62,7 @@ function nodeDistributionIdentity(nodeVersion, key) {
 module.exports = {
   LINUX_RUNTIME_KEYS,
   MACOS_RUNTIME_KEYS,
+  WINDOWS_RUNTIME_KEYS,
   POSIX_SETUP_RUNTIME_KEYS,
   RUNTIME_TARGETS,
   nodeDistributionIdentity,

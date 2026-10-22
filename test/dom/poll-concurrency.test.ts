@@ -6,7 +6,7 @@
 // viewer restart between two reads of one tick never mixes two servers' data.
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
-import { insertItem, upsertBoard } from '../../src/store.js'
+import { insertItem, upsertBoard, upsertSourceLink } from '../../src/store.js'
 import {
   answerInput, badgeCount, bootApp, click, expectConsoleError, freshDb, pollTick, row,
   settle, showInbox, type, useDomTest,
@@ -203,5 +203,70 @@ describe('a viewer restart inside one tick (issue #161)', () => {
     type(answerInput(id), '')
     await pollTick()
     expect(reload).toHaveBeenCalledTimes(1)
+  })
+})
+
+// Issue #288: the cached PR state is a conditional snapshot. The poll revalidates
+// it, still shows the poller's write within one tick, and keeps its fallback: a
+// 404, a network error or a refused body means no links, never a failed tick.
+describe('the PR links read (issue #288)', () => {
+  const SOURCE = { ...AGENT, stream: 'feature', repo: 'o/n', kind: 'question' as const }
+  const link = (over: Record<string, unknown> = {}) => ({
+    repo: 'o/n', branch: 'feature', pr_number: 41, pr_state: 'OPEN', pr_url: 'https://github.com/o/n/pull/41', ...over,
+  })
+  const chips = (id: string): string => row(id)?.querySelector('.nrow-src')?.textContent ?? ''
+
+  it('revalidates while nothing changes and shows the poller\'s write within one tick', async () => {
+    db = freshDb()
+    const id = insertItem(db, { ...SOURCE, title: 'Ship the PR?' })
+    upsertSourceLink(db, link())
+    const statuses: number[] = []
+    await bootApp(db, {
+      interceptFetch: async (input, _init, next) => {
+        const response = await next()
+        if (route(input) === '/api/links') statuses.push(response.status)
+        return response
+      },
+    })
+    await showInbox()
+    expect(chips(id)).toContain('PR 41')
+    expect(chips(id)).toContain('open')
+
+    statuses.length = 0
+    await pollTick()
+    expect(statuses).toEqual([304])
+    expect(chips(id)).toContain('open')
+    upsertSourceLink(db, link({ pr_state: 'MERGED' }))
+    await pollTick()
+    expect(statuses).toEqual([304, 200])
+    expect(chips(id)).toContain('merged')
+    expect(status()).toBe('')
+  })
+
+  it.each([
+    ['answers 404', () => new Response('<!doctype html>', { status: 404 })],
+    ['cannot be reached', () => { throw new TypeError('links offline') }],
+    ['sends a body the reader refuses', () => new Response('{"links":[]}', { headers: { etag: '"refused"' } })],
+  ])('shows plain chips when the links read %s, then recovers', async (_label, failure) => {
+    db = freshDb()
+    const id = insertItem(db, { ...SOURCE, title: 'Ship the PR?' })
+    upsertSourceLink(db, link())
+    let failing = false
+    await bootApp(db, {
+      interceptFetch: async (input, _init, next) => (failing && route(input) === '/api/links' ? failure() : next()),
+    })
+    await showInbox()
+    expect(chips(id)).toContain('PR 41')
+
+    failing = true
+    const later = insertItem(db, { ...SOURCE, title: 'Still arrives' })
+    await pollTick()
+    expect(status()).toBe('')
+    expect(row(later)?.textContent).toContain('Still arrives')
+    expect(chips(id)).not.toContain('PR 41')
+
+    failing = false
+    await pollTick()
+    expect(chips(id)).toContain('PR 41')
   })
 })

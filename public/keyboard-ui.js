@@ -18,6 +18,27 @@ function available(element) {
   return !closed || !!closed.querySelector(':scope > summary')?.contains(element)
 }
 
+// Explicit navigation (Tab in a dialog, a Plan flow step button) reveals its
+// target through the intentional scrollers inside `scope`, never the scope
+// itself or anything behind it. Passive focus restoration never calls this.
+export function revealControl(target, scope) {
+  for (let owner = target.parentElement; owner && scope.contains(owner); owner = owner.parentElement) {
+    const style = getComputedStyle(owner)
+    const bounds = owner.getBoundingClientRect()
+    const rect = target.getBoundingClientRect()
+    const top = bounds.top + owner.clientTop
+    const left = bounds.left + owner.clientLeft
+    if (/^(auto|scroll)$/.test(style.overflowY) && owner.scrollHeight > owner.clientHeight) {
+      if (rect.top < top) owner.scrollTop += Math.floor(rect.top - top)
+      else if (rect.bottom > top + owner.clientHeight) owner.scrollTop += Math.ceil(rect.bottom - top - owner.clientHeight)
+    }
+    if (/^(auto|scroll)$/.test(style.overflowX) && owner.scrollWidth > owner.clientWidth) {
+      if (rect.left < left) owner.scrollLeft += Math.floor(rect.left - left)
+      else if (rect.right > left + owner.clientWidth) owner.scrollLeft += Math.ceil(rect.right - left - owner.clientWidth)
+    }
+  }
+}
+
 export function createKeyboardUI({ getScope, getActionScope, navigate }) {
   const root = document.getElementById('keyboardTools')
   const page = root.ownerDocument
@@ -221,24 +242,6 @@ export function createKeyboardUI({ getScope, getActionScope, navigate }) {
     consume(event)
     control.click()
     return true
-  }
-
-  function revealControl(target, scope) {
-    for (let owner = target.parentElement; owner && scope.contains(owner); owner = owner.parentElement) {
-      const style = getComputedStyle(owner)
-      const bounds = owner.getBoundingClientRect()
-      const rect = target.getBoundingClientRect()
-      const top = bounds.top + owner.clientTop
-      const left = bounds.left + owner.clientLeft
-      if (/^(auto|scroll)$/.test(style.overflowY) && owner.scrollHeight > owner.clientHeight) {
-        if (rect.top < top) owner.scrollTop += Math.floor(rect.top - top)
-        else if (rect.bottom > top + owner.clientHeight) owner.scrollTop += Math.ceil(rect.bottom - top - owner.clientHeight)
-      }
-      if (/^(auto|scroll)$/.test(style.overflowX) && owner.scrollWidth > owner.clientWidth) {
-        if (rect.left < left) owner.scrollLeft += Math.floor(rect.left - left)
-        else if (rect.right > left + owner.clientWidth) owner.scrollLeft += Math.ceil(rect.right - left - owner.clientWidth)
-      }
-    }
   }
 
   function moveDialogFocus(event, scope) {

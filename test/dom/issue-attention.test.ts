@@ -198,6 +198,25 @@ describe('attention with and without relationship data (#103 PR3)', () => {
 
       expect(before.badge).toBe(2)
       expect(withDependencies).toEqual(before)
+
+      // PR E: Plan flow draws the same dependencies, and its buttons, chips and
+      // labels add nothing the badge, title, tabs or dock could count
+      click(document.querySelector('.tab[data-tab="boards"]'))
+      await settle()
+      const adapter = [...document.querySelectorAll<HTMLElement>('#boards .board')].find((card) => card.textContent?.includes('Adapter work'))!
+      click([...adapter.querySelectorAll('button')].find((b) => b.textContent === 'Plan flow'))
+      await settle()
+      const flow = document.getElementById('missionbox')!
+      expect(flow.querySelectorAll('.mission-step-link').length).toBeGreaterThan(0)
+      expect([...flow.querySelectorAll('.mission-deps')].map((el) => el.textContent).join('')).not.toMatch(/blocked/i)
+      // only the row whose own status is blocked carries the blocked node style
+      expect([...flow.querySelectorAll('.mission-node.mission-blocked strong')].map((el) => el.textContent)).toEqual(['Approve the AHP contract'])
+      await pollTick()
+      const { needsYou: _rows, ...withFlow } = await attentionSurfaces()
+      const { needsYou: _before, ...beforeAmbient } = before
+      expect(withFlow).toEqual(beforeAmbient)
+      click(flow.querySelector('.mission-close'))
+      await settle()
     }
   })
 

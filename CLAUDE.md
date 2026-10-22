@@ -689,6 +689,40 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   without dependencies AND `waits_on`, grouping off and on. DOM behaviour (404 and stale
   fallbacks, a draft, focus and expanded row through a dependency-changing poll) is
   `test/dom/plan-dependencies.test.ts`.
+- **Plan flow draws dependencies from Plans' own view model and never reorders (issue #103,
+  slice 2 PR E).** Design §9.2. `buildMission(board, { issues, links })` (`public/mission.js`,
+  pure) reads the frame's `issueView` (`rowWaits`, `relations`) and `linkIndex`; `renderMission`
+  passes them and nothing fetches. Rows keep the agent's order (D3); there is no topological
+  sort. Per step it adds `waitsOn`/`unblocks`: an in-plan step is the first non-`na` row
+  linking an issue, a waits-on/unblocks pair is ONE entry carrying both sources, both lists
+  follow row order, and `unblocks` is the exact inverse of every step's `waitsOn`, so the two
+  can never disagree. GitHub edges come from either end: a row's own `rowWaits` (its issue's
+  open blockers) and, for a row whose issue is OPEN, its relation's open dependents (an edge
+  known only from the blocker's side still draws). Local `waits_on` to `done`/`na` steps are
+  satisfied (`rowWaits` drops them); GitHub edges follow the OPEN issue, so a `done` row whose
+  issue is still open can still be waited on, as a button to that step. An `na` row is never
+  a node. An issue no drawn row links
+  is `{ kind: 'issue' }` with its slice-1 activity label (`IssueWaitEntry.activity`, additive);
+  it is never turned into an edge to another plan. `partOf` is the step's parent where it
+  differs from the plan's certain issue; `outside` is the plan issue's children that no row
+  (any status) links; `circular` is a GitHub `cycle` on the step's issue or membership of a
+  raw `waits_on` cycle (refused by the store, renderable from an older writer). `result`
+  stays `outcome`/`next_after` text: prose, `impact` and row order never create an edge.
+  `public/source.js` draws it (`missionDepsHtml`, `missionOutsideHtml`): steps are real
+  `<button class="mission-step-link" data-mission-step>` named "Waits on step AHP adapter
+  (#119)" / "Unblocks step …"; external issues are `nodeChipHtml` chips plus `activityHtml`;
+  `.mission-edge-waits` (dashed accent) and `.mission-edge-contains` (thin solid rail) never
+  share a rule; no danger tone, blocked mark or the word. In `app.js` a step button's click
+  is the ONLY caller of `focusMissionStep`, which focuses the target's Open details control
+  with `preventScroll` and reveals its node through `revealControl` (hoisted, unchanged, from
+  `keyboard-ui.js`) inside the flow panel only; passive restoration (`captureMissionFocus` /
+  `restoreMissionFocus`) is unchanged and never reveals, and a background window restores
+  nothing. An activity label goes through `bindIssueActivity` → `openIssueActivity`, which
+  closes the flow before `focusItem`. The fold is `details[data-context-key="mission-outside:<plan>"]`,
+  bound through `bindContextDisclosures`, so a poll keeps it open. Pinned by
+  `test/mission.test.ts`, `test/source.test.ts`, `test/dom/mission-map.test.ts`,
+  `test/dom/mission-focus.test.ts` and `test/dom/issue-attention.test.ts` (the flow open adds
+  nothing to any attention surface).
 - **Grouping plans by parent issue is opt-in and only reorders (issue #103, slice 2 §7).**
   Off by default. `agent-inbox-group-plans` in localStorage is a saved preference seeded
   on every load, like Default sort order (#221), because it never hides anything; Settings
@@ -1884,8 +1918,9 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   tradeoffs, and the same underlying card/write paths. Handoffs is a read-only projection of
   those same entities into Waiting on you → With the agent → Outcome; clicking a card routes
   back to its existing action/receipt/plan. Plan flow is plan-scoped and draws only
-  plan → row → explicit `next_after`/`outcome` paths; `impact` prose never creates a dependency
-  edge. Clicking a flow row opens a nested detail/action lightbox and keeps the graph mounted;
+  plan → row → explicit `next_after`/`outcome` paths, plus (#103 slice 2 PR E) recorded
+  `waits_on` steps and GitHub dependencies; `impact`/`next_after` prose never creates a
+  dependency edge. Clicking a flow row opens a nested detail/action lightbox and keeps the graph mounted;
   leaving for Plans requires the explicit button.
 - **Editorial desk shell** — user-facing navigation is Inbox / Plans / Notes / History, while
   stored ids and API vocabulary remain `needsYou` / `boards` / `done` / `blocked`. The app is
@@ -2101,9 +2136,8 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   [`2026-10-21-plan-dependencies-design.md`](docs/superpowers/specs/2026-10-21-plan-dependencies-design.md))
   adds dependencies and opt-in grouping in six PRs: A ingests GitHub's issue dependencies, B
   reconciles them into `blocks` edges and `issue_rel` (`waits_on_issues`, `unblocks`), C adds
-  the agent-written `waits_on` row field, which no UI draws until D and E, and F adds opt-in
-  grouping by parent issue (see the invariants above); Plans chips and Plan flow follow.
-  Sibling context stays later.
+  the agent-written `waits_on` row field, D draws dependencies in Plans, E in Plan flow, and F
+  adds opt-in grouping by parent issue (see the invariants above). Sibling context stays later.
 Keep all of these additive and behind the existing seams — don't break v1's local,
 zero-config, no-auth path.
 

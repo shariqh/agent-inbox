@@ -210,6 +210,16 @@ Run the build before `npm run electron`; the development shell starts the built
   from a validated slug and number, `tone-issue`/`tone-stale`, never the word "Blocked");
   matrix chips stay out of the roving order. No dependency or `waits_on` value reaches
   attention, a badge, a count or the dock.
+- Plan flow (#103 slice 2 PR E) reuses D's view: `buildMission(board, { issues, links })`
+  is pure, keeps the agent's row order, and adds per-step `waitsOn`/`unblocks` (in-plan
+  steps merged across both sources, `unblocks` the exact inverse; local `waits_on` to
+  `done`/`na` steps are satisfied, while GitHub edges follow the open issue, so a `done`
+  row whose issue is still open can still be waited on), external issues with their activity label (never a cross-plan edge), a
+  `partOf` rail where the parent differs from the plan's issue, `circular`, and the
+  "Not in this plan" fold. Prose never creates an edge. `public/source.js` draws it;
+  only a step button's click calls `focusMissionStep` (focus with `preventScroll`, then
+  `revealControl` inside the flow); passive restores never reveal, and nothing reaches
+  attention.
 - Grouping plans by parent issue (#103 slice 2) is opt-in and only reorders.
   `agent-inbox-group-plans` is a saved preference seeded on every load (like
   #221's sort order); the Plans header switch changes only the current view, and

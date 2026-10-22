@@ -515,11 +515,31 @@ body.settings-open .floating-search { opacity: .32; }
 .chip-muted { opacity: .45; }
 .chip-blocked { background: color-mix(in srgb, var(--app-danger) 12%, transparent); color: color-mix(in srgb, var(--app-danger) 70%, var(--app-text)); }
 .undo-btn { font-size: 11.5px; padding: 1px 8px; border-radius: 6px; border: 1px solid color-mix(in srgb, var(--app-text) 25%, transparent); background: transparent; color: inherit; cursor: pointer; }
-.stale-fold { margin-top: 10px; opacity: .6; }
+.stale-fold { margin-top: 10px; }
 .stale-fold > summary { cursor: pointer; font-size: 12px; letter-spacing: .02em; padding: 4px 0; list-style: none; }
 .stale-fold > summary::before { content: "▸ "; font-size: 10px; }
 .stale-fold[open] > summary::before { content: "▾ "; }
-.snoozed-fold, .pinned-fold { opacity: .78; }
+/* #247: a fold that holds queue rows (stale, snoozed or pinned) dims its
+   summary and row lines, never itself: an open card's desktop inspector is
+   fixed inside its row, and the fold's opacity would fade it and trap it in
+   the fold's stacking context. Only the unsent-responses fold, which holds no
+   rows, is dimmed whole. No element matches two of these rules, so neither
+   specificity nor source order decides between them. */
+.stale-fold.stale-drafts-fold { opacity: .6; }
+.stale-fold:not([data-deferred-fold]):not(.stale-drafts-fold) > summary,
+.stale-fold:not([data-deferred-fold]) > .nrow > .nrow-l1,
+.stale-fold:not([data-deferred-fold]) > .nrow > .nrow-l2 { opacity: .6; }
+.snoozed-fold > summary, .pinned-fold > summary,
+.snoozed-fold > .nrow > .nrow-l1, .snoozed-fold > .nrow > .nrow-l2,
+.pinned-fold > .nrow > .nrow-l1, .pinned-fold > .nrow > .nrow-l2 { opacity: .78; }
+.later-section { margin-top: 12px; }
+.later-section > summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; padding: 6px 0; cursor: pointer; list-style: none; font-size: 12.5px; }
+.later-section > summary::-webkit-details-marker { display: none; }
+.later-section > summary::before { content: "▸"; color: var(--app-muted); font-size: 10px; }
+.later-section[open] > summary::before { content: "▾"; }
+.later-title { font-weight: 650; }
+.later-breakdown { color: var(--app-muted); font-size: 11.5px; }
+.later-section > .nrow > .nrow-l1, .later-section > .nrow > .nrow-l2 { opacity: .78; }
 
 .card { display: block; }
 .structured-text { min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
@@ -1161,6 +1181,8 @@ body.sidebar-collapsed .live-drawer { left: 72px; }
 }
 .search-result-main { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; font-weight: 650; }
 .search-result-kind { color: var(--app-accent); font-size: 9.5px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
+.search-result-tags { display: inline-flex; align-items: center; justify-content: flex-end; gap: 6px; }
+.search-result-later { padding: 0 6px; border: 1px solid var(--app-border); border-radius: 999px; color: var(--app-text-soft); font-size: 9.5px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
 .search-result-main mark,
 .search-result-match mark {
   border-radius: 2px;
@@ -1900,6 +1922,7 @@ body.settings-open #liveBar { opacity: .32; }
 }
 
 @container needs-queue (max-width: 440px) {
+  .later-breakdown { flex-basis: 100%; padding-left: 14px; }
   .queue-filter-group { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .queue-tool-group { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .queue-sort { grid-column: 1 / -1; }

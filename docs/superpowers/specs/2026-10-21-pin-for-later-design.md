@@ -467,3 +467,44 @@ and 4.
   folds.
 - C. Ignore pins: show them in Needs you and count them. This needs the setting stored on the
   server so the dock agrees, which §8 rejects.
+
+---
+
+## §12 — Implementation notes (slice 3)
+
+What shipped differs from the text above in these places, each on purpose:
+
+- **Time vocabulary.** The header and chips use the shared `relMs` vocabulary
+  (`next back in 2h`, `Back in 3h`), as slice 2's chips already do, not `2 h`.
+- **Count scope.** The Later count follows the queue's action filters (Decisions,
+  To do, Updates) as well as the project and agent filter, as the snoozed fold it
+  replaces did. Every list surface reads the same filtered set.
+- **Search label.** Only drawn while the Later section is on. With it off there is
+  no section called Later, and the folds carry their own names.
+- **Settings copy.** The checkbox detail adds "Used each time Agent Inbox opens in
+  this browser or app profile.", the wording Default sort order uses.
+- **"Back in …" title.** §2.3 gives only the "Stop waiting" title. The others read
+  "The agent waits quietly and the ask waits in Later until then. Answering still
+  wakes the agent."
+- **The coupled write (§5.4).** It reuses `pinItem`/`pinBoardRow` and
+  `snoozeItem`/`snoozeBoardRow` inside one `.immediate()` transaction, as nested
+  savepoints after the watch stop, rather than a new combined statement. The snooze
+  half is therefore the More-responses snooze by construction. The revisions are
+  checked by each conditioned half under the one write lock instead of by a
+  separate read; the stop moves no revision, so both halves see the same values.
+  A refused half rolls both back.
+- **Review queue on another tab.** Slice 2's review left one case open: a drafted
+  ask deferred from a Review queue opened with `t` on Notes, History or the
+  Dashboard went to the Inbox while the queue returned to the old tab. A
+  successful deferral of an ask that holds a draft now makes the Inbox the visible
+  tab, without moving focus. A deferral from a plan panel stays where it is, since
+  the draft is still on screen there.
+- **The open card stays in view (review).** A deferral that keeps a drafted ask
+  as the open card no longer opens its fold itself. One render-time rule does it
+  for every case: the fold (Later, snoozed, pinned, or the older stale fold) that
+  holds the open card always renders open, whatever moved its ask there,
+  including the setting in either direction, a pin from another window, a native
+  notification or an ask turning stale while open.
+  Without a draft, a deferral closes the card, as §2.1 says, so the ask waits in
+  a closed fold. The human closing a fold that holds the open card closes that
+  card too; otherwise the rule would open the fold again on the next frame.

@@ -140,6 +140,10 @@ export function sortNeedsYouByAsk<T extends AskSortableEntry>(
   entries: T[],
   mode: 'priority' | 'newest' | 'oldest',
 ): T[]
+/** issue #247 — the Later section's order: snoozed soonest back first, then pinned oldest first. */
+export function sortLaterEntries<T extends Entry>(entries: T[]): T[]
+/** issue #247 — the Later header's breakdown, e.g. `2 pinned · 1 snoozed, next back in 2h`. */
+export function laterBreakdown(entries: Entry[], nowMs: number): string
 export function askTimeModel(askedAt: string | null, nowMs: number): {
   datetime: string
   exact: string

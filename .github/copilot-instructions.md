@@ -263,10 +263,20 @@ Run the build before `npm run electron`; the development shell starts the built
   `next_after` says what follows. decision/approval carries 2-4 `options`; task
   omits them so the viewer offers "I've done my part." Long history belongs in
   collapsed `context`.
-- Snoozed and pinned work (#247) leaves badge attention but remains in the explicit
-  snoozed and pinned folds (`laterEntries`, tagged by reason; a pin wins). Every
-  deferral goes through `deferAsk`: an ask that holds a draft opens its fold and
-  keeps the open card, so a draft that pauses the list is never hidden.
+- Snoozed and pinned work (#247) leaves badge attention but remains on screen
+  (`laterEntries`, tagged by reason; a pin wins): in one Later section at the foot
+  of the queue while `agent-inbox-later-section` is on (the default; any value
+  but `'false'`), otherwise in separate snoozed and pinned folds with the Pin
+  control hidden. That setting is layout only, like #221's sort order: it never
+  reaches attention, a badge, a count or the dock, which cannot read it. One
+  render-time rule keeps cards visible: the fold under the queue (Later,
+  snoozed, pinned or stale) that holds the open card always renders open,
+  whatever moved its ask there (the clock included), and the human closing that
+  fold closes the card (keeping its draft).
+  Every deferral goes through `deferAsk`: an ask that holds a draft keeps or
+  takes the open card (switching to the Inbox when the Review queue was opened
+  on another tab), and one without a draft closes it, so only the human's own
+  close can put a draft that pauses the list out of sight.
   Clarify/decline are response kinds, not outcomes. `board_advance` is the only
   same-row chain operation: it CAS-pins row `revision`, archives the prior step,
   and clears human/delivery state atomically. Agent reads get `history_count`, not
@@ -299,8 +309,11 @@ Run the build before `npm run electron`; the development shell starts the built
   A new action clears it through the `reset_row_action_watch_state` trigger, so
   an older server's re-block cannot carry it over. The control follows the
   ask's own `action_agent` (never `boards.agent`); an unknown asker draws
-  nothing. It never changes attention, and Claude's hook watch ignores it
-  because that watch never wakes on a timeout.
+  nothing. It never changes attention by itself, and Claude's hook watch
+  ignores it because that watch never wakes on a timeout. With the Later
+  section on, the stop-waiting routes get `defer: true` (#247): ONE `.immediate()`
+  transaction applies the stop and, against the same revisions, a pin (stop for
+  good) or the ordinary snooze (until a time), or neither.
 - The human's pin for later (`pinned_at`, #247) is human-owned, version-pinned
   and not content, like the watch stop: its writes bump neither revision nor
   `updated_at`, and no agent write names it. The triggers
@@ -388,6 +401,7 @@ Run the build before `npm run electron`; the development shell starts the built
   listener invocation counts because window/document listeners accumulate
   across repeated boots in one test file.
 - jsdom cannot validate this project's media-query layer, unresolved CSS
-  variables, silently dropped declarations, or the affected `font` shorthand.
+  variables, silently dropped declarations, the affected `font` shorthand, or
+  which of two competing rules wins when one is a selector list.
   Cover those cases with pure-JS behavior or source-level assertions instead of
   treating computed style as evidence.

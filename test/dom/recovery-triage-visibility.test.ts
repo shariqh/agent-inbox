@@ -185,7 +185,7 @@ describe('draft recovery visibility from Review queue', () => {
     const unrelated = snoozed.rows[1]!
     await bootApp(db)
 
-    let fold = document.querySelector<HTMLDetailsElement>('.snoozed-fold')!
+    let fold = document.querySelector<HTMLDetailsElement>('.later-section')!
     fold.open = true
     fold.dispatchEvent(new Event('toggle'))
     click(row(target.id))
@@ -200,13 +200,13 @@ describe('draft recovery visibility from Review queue', () => {
       expectedRevision: unrelated.revision,
       note: 'New progress only.',
     })
-    fold = document.querySelector<HTMLDetailsElement>('.snoozed-fold')!
+    fold = document.querySelector<HTMLDetailsElement>('.later-section')!
     fold.open = false
     fold.dispatchEvent(new Event('toggle'))
     staleSend.click()
     await settle()
 
-    fold = document.querySelector<HTMLDetailsElement>('.snoozed-fold')!
+    fold = document.querySelector<HTMLDetailsElement>('.later-section')!
     const recovered = answerInput(target.id)
     expect(fold.open).toBe(true)
     expect(recovered?.value).toBe('Retry from the deferred row')

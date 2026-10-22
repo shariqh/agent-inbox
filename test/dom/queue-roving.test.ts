@@ -34,9 +34,8 @@ describe('Needs-you roving tab stop', () => {
     await bootApp(d)
     await showInbox()
 
-    const snoozed = document.querySelector<HTMLDetailsElement>('.snoozed-fold')!
-    const stale = [...document.querySelectorAll<HTMLDetailsElement>('.stale-fold')]
-      .find((fold) => !fold.classList.contains('snoozed-fold'))!
+    const snoozed = document.querySelector<HTMLDetailsElement>('.later-section')!
+    const stale = document.querySelector<HTMLDetailsElement>('.stale-fold')!
     expect(snoozed.open).toBe(false)
     expect(stale.open).toBe(false)
     expect(row(snoozedId)?.tabIndex).toBe(-1)
@@ -112,7 +111,8 @@ describe('Needs-you roving tab stop', () => {
     expect(document.activeElement).toBe(inbox)
   })
 
-  it('applies newest and oldest ask-time sorting inside snoozed and stale folds', async () => {
+  it('applies newest and oldest ask-time sorting inside snoozed and stale folds with the Later section off', async () => {
+    localStorage.setItem('agent-inbox-later-section', 'false')
     const d = open()
     const staleOld = insertItem(d, { ...AGENT, kind: 'question', title: 'Stale old' })
     vi.setSystemTime(Date.now() + HOUR)

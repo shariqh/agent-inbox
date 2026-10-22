@@ -17,7 +17,8 @@ import { join } from 'node:path'
 import Database from 'better-sqlite3'
 import {
   getBoard, getItem, insertItem, listActivity, listBoards, listHostSessions, listIssueEntities, listIssueSnapshots, listItems, listSourceLinks, openDb,
-  pinBoardRow, pinItem, recordIssueFailure, replyItem, updateBoardRow, upsertActivity, upsertBoard, upsertIssueSnapshot, upsertSourceLink,
+  pinBoardRow, pinItem, recordIssueFailure, replyItem, stopBoardRowWatch, stopItemWatch, updateBoardRow, upsertActivity,
+  upsertBoard, upsertIssueSnapshot, upsertSourceLink,
 } from '../src/store.js'
 import type { IssueDependencies } from '../src/store.js'
 import { issueQueue } from '../src/issue-poller.js'
@@ -632,6 +633,44 @@ describe('a v1.4.0 process sharing a hub with pinned asks (#247)', () => {
     old.prepare(V140.snoozeItem).run(at(120), now, snoozed)
     for (const id of [replied, told, resolved, dismissed]) expect(getItem(hub, id)!.pinned_at, id).toBeNull()
     expect(getItem(hub, snoozed)).toMatchObject({ pinned_at: at(60), snoozed_until: at(120) })
+  })
+
+  // §5.4: this build's "I'll take a while" with Later on writes the watch stop
+  // and a pin or snooze together. A v1.4.0 process knows neither the coupling
+  // nor pins, so only its statements and the triggers can touch the result:
+  // its re-send must keep both halves, and its new action must end both.
+  it('after this build’s coupled "I’ll take a while", its re-send keeps both halves and its board_advance ends both', () => {
+    const hub = openDb(path)
+    open.push(hub)
+    const old = olderProcess()
+    const labels = ['Stopped', 'Quiet']
+    upsertBoard(hub, {
+      project: 'agent-inbox', stream: '', agent: 'new', title: 'Coupled',
+      rows: labels.map((label) => ({ label, status: 'blocked' as const, note: `${label} it.`, next_step: 'Do it.', action_owner: 'task' as const, impact: 'Ships it.' })),
+    })
+    const board = () => getBoard(hub, 'agent-inbox', 'Coupled')!
+    const row = (label: string) => board().rows.find((candidate) => candidate.label === label)!
+    expect(stopBoardRowWatch(hub, row('Stopped').id, null, row('Stopped').revision, board().revision, { defer: true })).toBe(true)
+    expect(stopBoardRowWatch(hub, row('Quiet').id, at(120), row('Quiet').revision, board().revision, { defer: true })).toBe(true)
+    const question = insertItem(hub, { project: 'agent-inbox', stream: '', agent: 'new', kind: 'question', title: 'Coupled question' })
+    expect(stopItemWatch(hub, question, null, { defer: true })).toBe(true)
+    const now = at(61)
+
+    labels.forEach((label, position) => {
+      old.prepare(V140.upsertRow).run({ status: 'blocked', note: row(label).note, position, now, id: row(label).id })
+    })
+    expect(row('Stopped')).toMatchObject({ watch_stopped_at: at(60), watch_stopped_until: null, pinned_at: at(60), snoozed_until: null })
+    expect(row('Quiet')).toMatchObject({ watch_stopped_at: at(60), watch_stopped_until: at(120), pinned_at: null, snoozed_until: at(120) })
+
+    for (const [index, label] of labels.entries()) {
+      old.prepare(V140.beginNewRowAction).run(now, 2, 'old', 2, '[]', now, row(label).id)
+      old.prepare(V140.advanceRow).run(`Next ${index}.`, 'Do it.', 'task', 'Ships it.', '', null, null, null, now, row(label).id)
+      expect(row(label), label).toMatchObject({
+        action_version: 2, watch_stopped_at: null, watch_stopped_until: null, pinned_at: null, snoozed_until: null,
+      })
+    }
+    old.prepare(V140.replyItem).run({ id: question, reply: 'Ship it', replyContext: null, kind: 'answer', now })
+    expect(getItem(hub, question)!.pinned_at).toBeNull()
   })
 })
 

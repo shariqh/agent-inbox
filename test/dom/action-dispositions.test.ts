@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type Database from 'better-sqlite3'
 import {
   advanceBoardRow, annotateBoardRow, answerItem, getBoard, getItem, insertItem, listItems, markAnnotationDelivered,
@@ -55,7 +55,7 @@ describe('human disposition controls', () => {
     expect(after?.open).toBe(true)
   })
 
-  it('snoozes an item into a visible fold and can wake it immediately', async () => {
+  it('snoozes an item into the Later section and can bring it back immediately', async () => {
     const d = open()
     const id = insertItem(d, {
       ...AGENT,
@@ -78,9 +78,10 @@ describe('human disposition controls', () => {
     expect(badgeCount()).toBe(0)
     expect(rowTitles()).toContain('Choose whether to merge.')
     expect(chipText(id)).toMatch(/^Back in /)
-    expect(document.querySelector('.snoozed-fold')?.textContent).toContain('Merge?')
+    expect(row(id)?.closest('.later-section')).not.toBeNull()
+    expect(row(id)?.dataset.open, 'without a draft the card closes').toBeUndefined()
 
-    click(buttonLabelled('Wake now', row(id)!))
+    click(buttonLabelled('Back to inbox', row(id)!))
     await settle()
     expect(badgeCount()).toBe(1)
     expect(chipText(id)).not.toMatch(/^Back in /)
@@ -216,10 +217,13 @@ describe('human disposition controls', () => {
 })
 
 // Issue #217 — "I'll take a while" tells the asking Copilot session's answer
-// watcher to stop or to wait quietly. It is not an attention change: the ask
-// stays in Needs you, and the badge does not move, before or after.
+// watcher to stop or to wait quietly. With the Later section off (#247) it is
+// not an attention change: the ask stays in Needs you, and the badge does not
+// move, before or after. later-section.test.ts covers the coupled write that
+// also defers the ask while the section is on.
 describe('the human stops an agent from waiting (#217)', () => {
   const COPILOT = { ...AGENT, agent: 'copilot' } as const
+  beforeEach(() => { localStorage.setItem('agent-inbox-later-section', 'false') })
   const waitMenu = (id: string) => [...(row(id)?.querySelectorAll('summary') ?? [])]
     .find((summary) => summary.textContent === 'I’ll take a while') ?? null
 

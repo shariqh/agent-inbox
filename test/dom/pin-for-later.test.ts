@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
-// Issue #247, slice 2: "Pin for later" in the More responses menu sets an
-// unanswered ask aside with no return time. The one attention predicate drops
-// it, so every count follows at once, and it waits in a "pinned" fold beside
-// the snoozed fold until the human brings it back or the ask ends.
+// Issue #247: "Pin for later" in the More responses menu sets an unanswered ask
+// aside with no return time. The one attention predicate drops it, so every
+// count follows at once, and it waits in the Later section (slice 3, on by
+// default) until the human brings it back or the ask ends. With the Later
+// section turned off, existing pins wait in a "pinned" fold beside the snoozed
+// fold (slice 2's layout); later-section.test.ts covers the setting itself.
 import { afterEach, describe, expect, it } from 'vitest'
 import type Database from 'better-sqlite3'
 import { attentionEntries } from '../../public/attention.js'
@@ -54,6 +56,14 @@ const openFold = (name: 'pinned' | 'snoozed') => {
   el.open = true
   el.dispatchEvent(new Event('toggle'))
 }
+const later = () => document.querySelector<HTMLDetailsElement>('#needsYouList .later-section')
+const openLater = () => {
+  const el = later()!
+  el.open = true
+  el.dispatchEvent(new Event('toggle'))
+}
+const laterTitle = () => later()?.querySelector('.later-title')?.textContent ?? null
+const laterOff = () => localStorage.setItem('agent-inbox-later-section', 'false')
 
 function chipText(id: string): string {
   const chip = row(id)?.querySelector('.chip')
@@ -68,7 +78,7 @@ const menuChoices = (id: string) => [...(row(id)?.querySelectorAll('.disposition
   .map((button) => button.textContent)
 
 describe('Pin for later (#247)', () => {
-  it('pins a question from More responses into the pinned fold, out of every count, and brings it back', async () => {
+  it('pins a question from More responses into Later, out of every count, and brings it back', async () => {
     const d = open()
     const id = question(d)
     const before = getItem(d, id)!
@@ -87,9 +97,9 @@ describe('Pin for later (#247)', () => {
     expect(getItem(d, id)).toMatchObject({ pinned_at: expect.any(String), updated_at: before.updated_at })
     expect(badgeCount()).toBe(0)
     expect(tabCount('needsYou')).toBe('')
-    expect(row(id)?.closest('.pinned-fold')).toBe(fold('pinned'))
-    expect(fold('pinned')?.querySelector('summary')?.textContent).toBe('pinned (1)')
-    expect(fold('pinned')?.open).toBe(false)
+    expect(row(id)?.closest('.later-section')).toBe(later())
+    expect(laterTitle()).toBe('Later · 1')
+    expect(later()?.open).toBe(false)
     expect(chipText(id)).toBe('Pinned moments ago')
 
     advanceClock(2 * 24 * HOUR)
@@ -100,7 +110,7 @@ describe('Pin for later (#247)', () => {
     await settle()
     expect(getItem(d, id)!.pinned_at).toBeNull()
     expect(badgeCount()).toBe(1)
-    expect(fold('pinned')).toBeNull()
+    expect(later()).toBeNull()
     expect(row(id)?.closest('details')).toBeNull()
   })
 
@@ -131,7 +141,7 @@ describe('Pin for later (#247)', () => {
     })
     expect(after.revision).toBe(before.revision)
     expect(badgeCount()).toBe(0)
-    expect(row(rowId)?.closest('.pinned-fold')).not.toBeNull()
+    expect(row(rowId)?.closest('.later-section')).not.toBeNull()
 
     click(buttonLabelled('Back to inbox', row(rowId)!))
     await settle()
@@ -154,14 +164,15 @@ describe('Pin for later (#247)', () => {
     expect(answerInput(answered), 'the correction form is still there').not.toBeNull()
     expect(menuChoices(answered)).not.toContain('Pin for later')
 
-    openFold('pinned')
+    openLater()
     click(row(pinned))
     await settle()
     expect(menuChoices(pinned)).not.toContain('Pin for later')
     expect(menuChoices(pinned)).toContain('Tomorrow')
   })
 
-  it('keeps the snoozed and pinned folds side by side, each with its own way back', async () => {
+  it('with the Later section off, keeps the snoozed and pinned folds side by side, each with its own way back', async () => {
+    laterOff()
     const d = open()
     const stale = question(d, 'Nobody is listening')
     advanceClock(73 * HOUR)
@@ -202,10 +213,11 @@ describe('Pin for later (#247)', () => {
     await pollTick()
     expect(badgeCount()).toBe(1)
     expect(row(snoozed)?.closest('details')).toBeNull()
-    expect(row(pinned)?.closest('.pinned-fold')).not.toBeNull()
+    expect(row(pinned)?.closest('.later-section')).not.toBeNull()
   })
 
-  it('keeps the pinned fold open, its open card and the card draft across polls', async () => {
+  it('with the Later section off, keeps the pinned fold open, its open card and the card draft across polls', async () => {
+    laterOff()
     const d = open()
     const id = question(d)
     pinItem(d, id, true)
@@ -233,7 +245,8 @@ describe('Pin for later (#247)', () => {
     expect(fold('pinned')?.open).toBe(true)
   })
 
-  it('answering from inside the pinned fold clears the pin and moves the ask to the replied foot', async () => {
+  it('with the Later section off, answering from inside the pinned fold clears the pin and moves the ask to the replied foot', async () => {
+    laterOff()
     const d = open()
     const id = question(d)
     pinItem(d, id, true)
@@ -254,7 +267,8 @@ describe('Pin for later (#247)', () => {
     expect(badgeCount()).toBe(0)
   })
 
-  it('opens the pinned fold for a deep link into a pinned ask', async () => {
+  it('with the Later section off, opens the pinned fold for a deep link into a pinned ask', async () => {
+    laterOff()
     const d = open()
     const id = question(d)
     pinItem(d, id, true)
@@ -275,7 +289,7 @@ describe('Pin for later (#247)', () => {
     expect(pinBoardRow(d, rowId, true, board.rows[0]!.revision, board.revision)).toBe(true)
     await bootApp(d)
     await showInbox()
-    expect(row(rowId)?.closest('.pinned-fold')).not.toBeNull()
+    expect(row(rowId)?.closest('.later-section')).not.toBeNull()
     expect(badgeCount()).toBe(0)
 
     board = getBoard(d, 'alpha', 'Release')!
@@ -339,23 +353,23 @@ describe('Pin for later (#247)', () => {
     pinBoardRow(d, board.rows[1]!.id, true, board.rows[1]!.revision, board.revision)
     await pollTick()
     expect(await surfaces()).toEqual({ badge: 2, tab: 2, queue: 2, dock: 2 })
-    expect(fold('pinned')?.querySelector('summary')?.textContent).toBe('pinned (2)')
+    expect(laterTitle()).toBe('Later · 2')
     expect(row(kept)?.closest('details')).toBeNull()
   })
 })
 
-// #247 review: deferring an ask moves it into a fold that starts closed. A draft
-// it holds still pauses the list (by design), so the draft must stay on screen:
-// the fold opens and the ask keeps the open card, from the list or the Review
-// queue, for a pin or a snooze.
+// #247 review: deferring an ask moves it into Later, which starts closed. A
+// draft it holds still pauses the list (by design), so the draft must stay on
+// screen: Later opens and the ask keeps the open card, from the list or the
+// Review queue, for a pin or a snooze.
 describe('a draft on a deferred ask stays in view (#247)', () => {
   const PAUSED = 'paused — updating when you\'re done'
   const lightbox = () => document.getElementById('lightbox')!
   const deckInput = () => lightbox().querySelector<HTMLTextAreaElement>('.reply-input:not(.reply-context-input)')
 
   function expectDraftInView(id: string, name: 'pinned' | 'snoozed', text: string) {
-    expect(fold(name)?.open, `the ${name} fold is open`).toBe(true)
-    expect(row(id)?.closest(`.${name}-fold`)).toBe(fold(name))
+    expect(later()?.open, `Later is open for a ${name} ask`).toBe(true)
+    expect(row(id)?.closest('.later-section')).toBe(later())
     expect(row(id)?.dataset.open, 'the ask keeps the open card').toBe('1')
     expect(answerInput(id)?.value).toBe(text)
     expect(answerInput(id)?.closest('details:not([open])')).toBeNull()
@@ -421,7 +435,7 @@ describe('a draft on a deferred ask stays in view (#247)', () => {
     const recovery = document.querySelector<HTMLDetailsElement>('#needsYouList .stale-drafts-fold')
     expect(recovery?.open).toBe(true)
     expect(recovery?.textContent).toContain('Half an answer')
-    expect(fold('snoozed')?.open).toBe(true)
+    expect(later()?.open).toBe(true)
     expect(row(id)?.querySelector('.stale-draft')?.textContent).toContain('Preserved answer: Half an answer')
     expect(row(next), 'a recovered draft no longer pauses the list').not.toBeNull()
   })
@@ -503,7 +517,7 @@ describe('a draft on a deferred ask stays in view (#247)', () => {
     click(buttonLabelled('Pin for later', row(id)!))
     await settle()
     expect(getBoard(d, 'alpha', 'Release')!.rows[0]!.pinned_at).toBeNull()
-    expect(fold('pinned')?.open).toBe(false)
+    expect(later()?.open).toBe(false)
     expect(row(id)?.closest('details')).toBeNull()
     expect(row(id)?.dataset.open).toBe('1')
     expect(row(id)?.textContent).toContain('Half an answer')
@@ -523,7 +537,7 @@ describe('a draft on a deferred ask stays in view (#247)', () => {
     await settle()
     click(buttonLabelled('Not now · 4h', row(snoozed)!))
     await settle()
-    expect(fold('snoozed')?.open).toBe(false)
+    expect(later()?.open).toBe(false)
 
     click(row(reading))
     await settle()
@@ -537,8 +551,8 @@ describe('a draft on a deferred ask stays in view (#247)', () => {
     click(lightbox().querySelector('.lb-close'))
     await settle()
 
-    expect(fold('pinned')?.open).toBe(false)
-    expect(row(pinned)?.closest('.pinned-fold')).toBe(fold('pinned'))
+    expect(later()?.open).toBe(false)
+    expect(row(pinned)?.closest('.later-section')).toBe(later())
     expect(row(pinned)?.dataset.open).toBeUndefined()
     expect(row(reading)?.dataset.open).toBe('1')
     expect(document.getElementById('pauseHint')?.hidden).toBe(true)

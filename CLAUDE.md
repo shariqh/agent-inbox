@@ -176,8 +176,9 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
 - **Snooze and pin are demotions, never disappearance.** `snoozed_until` (until due) and,
   since #247, `pinned_at` (no return time) exclude an unanswered item or row from
   `attentionEntries`/badge counts, but `laterEntries` hands them to the renderer tagged
-  `later: 'snoozed' | 'pinned'` (a pin wins when both are set), drawn as a "snoozed" fold with
-  Wake now and a "pinned" fold with Back to inbox. The predicates and `laterEntries` share one
+  `later: 'snoozed' | 'pinned'` (a pin wins when both are set), drawn as one Later section at
+  the foot of the queue while the Later setting is on (the default), or as a "snoozed" fold with
+  Wake now and a "pinned" fold with Back to inbox while it is off. The predicates and `laterEntries` share one
   `laterReason`, so the complements stay exact: every blocked row is in attention ∪ Later ∪
   awaiting-agent, every open question in attention ∪ stale fold ∪ Later ∪ replied foot.
   Clarify/decline are response kinds and therefore human action; they move to awaiting-agent
@@ -203,7 +204,8 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
 - **Viewer write bodies are validated before the store sees them** *(issue #163)*. Every
   JSON write route in `src/viewer.ts` parses with `.catch(() => null)` and type-checks each
   field it uses: `text` a string; when present, `context` a string, `kind` a response kind
-  and `handled` a boolean; `pinned` a boolean, always required (#247); `until` a parseable
+  and `handled` a boolean; `pinned` a boolean, always required (#247); `defer` a boolean when
+  present (#247, the stop-waiting routes); `until` a parseable
   date (stored as UTC ISO, because the store compares `snoozed_until` as text) or null;
   revisions integers. Invalid
   input is `400 { ok:false, error }` with no store call: never a 500 from a parse or `trim()`
@@ -945,8 +947,10 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   revision, but the write bumps neither revision nor `updated_at`: it changes nothing an
   agent writes, so an agent's `board_get` → `board_upsert` snapshot stays valid and native
   notifications (keyed by revision) are not re-announced. Viewer routes require `until`
-  explicitly (date or null): a dropped field is a 400, never the final stop. Attention is
-  untouched — the ask stays in Needs-you unless also snoozed. **The control follows the
+  explicitly (date or null): a dropped field is a 400, never the final stop. The stop itself
+  leaves attention untouched — the ask stays in Needs-you unless also snoozed or pinned; with
+  the Later section on, #247's coupled `defer` write does exactly that in the same
+  transaction (see the pin bullet below). **The control follows the
   ask's own asker, `action_agent`, never `boards.agent`** (the board's last writer, which a
   Copilot edit of another row flips and `board_advance` never restamps). Rows stamp it in
   the statement that starts each action, tagged with `action_agent_version`; the trigger
@@ -983,15 +987,56 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   question or an unanswered blocked row of an active plan, and is not drawn on one already
   pinned; it posts to the `later` route with the row and board revisions and ends in
   `reloadAndPaint()`, like every human write. Every deferral, pin or snooze, goes through
-  `deferAsk`. When the ask holds a draft, its fold opens and the ask keeps the open card (or,
-  from the Review queue or a plan panel, takes it, widening a list filter that would hide it):
-  a draft pauses the list by design, so a deferral must never carry it out of sight. Deferred
+  `deferAsk`. When the ask holds a draft it keeps the open card (or, from the Review queue or
+  a plan panel, takes it, widening a list filter that would hide it); without one the card
+  closes (§2.1). **One render-time rule keeps the open card in view:** `renderNeedsYou` opens the
+  fold under the queue (Later, snoozed, pinned or stale) that holds the open card, through
+  `openDeferredFolds` or `staleFoldOpen`, so it always renders open, whatever moved the ask
+  there: a deferral, the Later setting, another client, a native notification, or the clock
+  for an ask that turns stale while open. A draft pauses the list by design, so nothing may carry it
+  out of sight; fix a new case through this rule, never with a per-transition patch. The human
+  closing that fold closes the card too (`closeCardIn`, keeping any draft as any closed card
+  does), or the next frame would open the fold again under them. Deferred
   rows carry a reason chip instead of an urgency (`Pinned 2d ago`, `Back in 3h`,
   `… · agent waits quietly` while a Copilot asker's #217 deferral runs). Electron's `known`
   set is the unsuppressed attention set plus the `pinned` Later entries
   (`knownNotificationIds` in `electron/reply-watch.cjs`): a pin moves no revision, so Back to
-  inbox announces nothing, while a snooze that ends and a new action are announced. The Later
-  section, its setting and the "I'll take a while" coupling are slice 3.
+  inbox announces nothing, while a snooze that ends and a new action are announced.
+  *(Slice 3)* **The Later section and its setting.** Settings → Inbox → "Later section"
+  (`agent-inbox-later-section` in localStorage, on by default, any value but `'false'` reads
+  as on) is LAYOUT ONLY: Electron main computes the dock badge from the same predicate and
+  cannot read this storage, so a setting that changed attention would make the two badges
+  disagree. On: `laterSectionEl` draws one collapsed `<details class="later-section">` after
+  Show more and before the stale fold, keyed `'later'` in `openDeferredFolds` (so its open
+  state survives rebuilds and `revealDetailsAncestors` opens it for a deep link or draft
+  recovery), headed `Later · N` with `laterBreakdown` (`2 pinned · 1 snoozed, next back in
+  2h`). N follows the lens and the action filters, like every list surface, and never
+  reaches the badge, a tab or the rail. Its order is `sortLaterEntries` (snoozed soonest back
+  first, then pinned oldest first, ties by a stable key), never the Sort menu. Rows are
+  ordinary `.nrow`s whose way back is always "Back to inbox"; only their lines are dimmed,
+  never the section (nor the snoozed, pinned or stale fold, which dim their summary and row
+  lines instead), because the desktop inspector is fixed inside its row and an ancestor's
+  opacity would fade it and trap it in the fold's stacking context. Only the unsent-responses
+  fold, which holds no rows, is dimmed whole. The empty state says `Nothing needs you now · N in Later`; search
+  marks an Open items question in Later with a `Later` label (`markLaterResults`, with the
+  closed set the section uses, beside the
+  clock, so a snooze ending changes the result signature). Off: slice 2's snoozed and pinned
+  folds, the Pin control is not drawn, and Settings shows how many pins still wait in the
+  pinned fold (`paintLaterSectionHint`, ambient). **The coupled write (§5.4).** With the
+  section on, "I'll take a while" posts `defer: true` through `deferAsk`, so a draft stays in
+  view: `stopItemWatch`/`stopBoardRowWatch` then run ONE `.immediate()` transaction
+  (`stopAndDefer`) that applies the #217 stop and, against the same revisions, `pinItem`/
+  `pinBoardRow` (stop for good) or `snoozeItem`/`snoozeBoardRow` (until a time), nested as
+  savepoints. A refused half throws a sentinel that rolls back both; any SQLite error rolls
+  back both and propagates. The halves keep their own semantics: the stop moves nothing, the
+  pin moves nothing, and the snooze moves the row and board revisions and `updated_at`
+  exactly as a More-responses snooze does. The stop moves no revision, so the deferral checks
+  exactly what the stop checked; do not reorder the halves. Nothing in the schema changed,
+  and an older process's statements meet the existing triggers (`test/mixed-version.test.ts`
+  pins its re-send keeping both halves and its new action ending both). A deferral from a
+  Review queue opened on another tab with `t` switches to the Inbox (`selectTab(…, { paint:
+  false })`, no focus move) only when the ask holds a draft and the write succeeded, and the
+  queue then returns focus to the Inbox's Review queue button, not to the tab it left.
 
 - **Agent setup is explicit, dry-run-first, and owns only marked text.**
   `scripts/install-agents.sh` is the supported bridge between two configuration systems:
@@ -1207,7 +1252,7 @@ then imports `public/app.js` **unmodified** — top-level side effects and all.
 CSS: `getComputedStyle` over an attached `public/style.css` genuinely resolves specificity,
 source order, `!important`, `:has()` and `color-mix()` — that is what makes the
 `.answer-btn` geometry test in `test/dom/css-cascade.test.ts` catch the real 13819d2
-regression. **Four verified blind spots; only literal lengths and keywords are trustworthy:**
+regression. **Five verified blind spots; only literal lengths and keywords are trustworthy:**
 
 1. **`@media` never matches.** jsdom's media-list evaluation only answers `all`/`screen`,
    so style.css's single `@media (max-width: 1279px)` block — the ENTIRE spec §14 responsive
@@ -1221,8 +1266,12 @@ regression. **Four verified blind spots; only literal lengths and keywords are t
    13819d2 bug would pass VACUOUSLY on the buggy sheet. This is the dangerous one.
 4. **The `font:` shorthand clobbers a later longhand.** `.answer-btn` declares
    `font: inherit; … font-weight: 600` and jsdom computes `normal`.
+5. **A selector list can outrank a later rule of equal specificity.** With
+   `.a > b, .c > d { opacity: .6 }` before `.e > b { opacity: 1 }`, jsdom computes `.6` for
+   an element both match, where browsers apply the later rule. When rules that compete for
+   one element must be measured, make their selectors disjoint (#247's fold dimming does).
 
-An overstated harness is worse than none. If an assertion falls in one of those four, it is
+An overstated harness is worse than none. If an assertion falls in one of those five, it is
 not evidence — delete it or move it to a source pin.
 
 ## Conventions
@@ -1860,11 +1909,14 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   window-local; the boot path removes the two legacy localStorage keys so an older build
   cannot strand a new build behind a stale lens. Explicit notification/hash deep links are
   the exception: they scope to and open their target. This keeps the global badge and the
-  first visible list honest about the same cross-project workload. Sort order is the one
-  saved queue display preference *(#221)*, because ordering never hides anything: Settings →
+  first visible list honest about the same cross-project workload. Sort order is a saved
+  queue display preference *(#221)*, because ordering never hides anything: Settings →
   Default sort order (`agent-inbox-default-sort`; an unknown value reads as Priority) seeds
   the queue's Sort menu on every load, and a change there repaints at once through
   `forceRender()`. The queue's own Sort menu changes only the current view, never that default.
+  The Later section *(#247)* is the other one, for the same reason: Settings → Inbox → Later
+  section (`agent-inbox-later-section`, on unless it reads `'false'`) only chooses where
+  pinned and snoozed asks are drawn, and repaints at once through `forceRender()`.
 - **Build stamp + staleness signal** *(#40)* — `scripts/write-setup-info.mjs` (called by the
   packager, and executable in a test the way `package-app.sh` never can be) bakes `commit` +
   `builtAt` beside the paths setup-info.json already carried; `src/stamp.ts` reads the checkout's

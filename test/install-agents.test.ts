@@ -30,6 +30,15 @@ const SNIPPET_HEADING = '## Flags (one-shot attention)'
 
 afterEach(removeScratchDirs)
 
+// Every fake below that waits on the test gives up on its own and exits 124
+// after FAKE_WAIT_LIMIT_S seconds (default 120, twice the suite's longest test
+// timeout), so a fake left behind by a dead Vitest worker cannot keep an
+// installer waiting on it for days (#286). `perSecond` is how many times the
+// calling loop runs per second; slow ticks only make the bound longer.
+function boundedWait(perSecond: number): string {
+  return `fake_waited=$((\${fake_waited:-0} + 1)); [ "$fake_waited" -lt $((\${FAKE_WAIT_LIMIT_S:-120} * ${perSecond})) ] || exit 124`
+}
+
 interface Fixture {
   home: string
   env: NodeJS.ProcessEnv
@@ -78,13 +87,13 @@ case "$1:$2" in
       printf '{"mcpServers":{"agent-inbox":{"command":"partial"}}}\\n' > "$config"
       touch "$INSTALL_STATE/$name.mutated"
       trap 'exit 143' TERM INT
-      while :; do sleep 1; done
+      while :; do sleep 1; ${boundedWait(1)}; done
     fi
     if [ "\${HANG_ADD:-}" = "$name" ]; then
       printf '%s\\n' "$$" > "$INSTALL_STATE/$name.hanging-pid"
       touch "$INSTALL_STATE/$name.hanging"
       trap 'exit 143' TERM INT
-      while :; do sleep 1; done
+      while :; do sleep 1; ${boundedWait(1)}; done
     fi
     if [ "\${FAIL_ADD_ONCE:-}" = "$name" ] && [ ! -f "$INSTALL_STATE/$name.add-failed" ]; then
       touch "$INSTALL_STATE/$name.add-failed"
@@ -97,7 +106,7 @@ case "$1:$2" in
     test "\${FAIL_REMOVE:-}" != "$name" || exit 9
     if [ "\${HANG_REMOVE:-}" = "$name" ]; then
       printf '%s\\n' "$$" > "$INSTALL_STATE/$name.remove-pid"
-      while :; do sleep 1; done
+      while :; do sleep 1; ${boundedWait(1)}; done
     fi
     # Like the real hosts, refuse to remove a server that is not registered.
     if [ ! -f "$INSTALL_STATE/$name" ]; then
@@ -109,7 +118,7 @@ case "$1:$2" in
     if [ "\${SIGNAL_AFTER_REMOVE:-}" = "$name" ]; then kill -TERM $$; fi
     if [ "\${PAUSE_AFTER_REMOVE:-}" = "$name" ]; then
       touch "$INSTALL_STATE/$name.removed"
-      while [ ! -f "$INSTALL_STATE/$name.release" ]; do sleep 0.05; done
+      while [ ! -f "$INSTALL_STATE/$name.release" ]; do sleep 0.05; ${boundedWait(20)}; done
     fi
     ;;
   *) exit 2 ;;
@@ -359,7 +368,9 @@ function useNodeClaudeCli(f: Fixture): void {
     "  fs.writeFileSync(config, JSON.stringify({ mcpServers: { 'agent-inbox': { command: args.join(' ') } } }) + '\\n')",
     "} else if (verb === 'mcp remove') {",
     "  fs.writeFileSync(state + '.removing', String(process.pid))",
+    '  const giveUp = Date.now() + Number(process.env.FAKE_WAIT_LIMIT_S || 120) * 1000',
     '  setInterval(() => {',
+    '    if (Date.now() >= giveUp) process.exit(124)',
     "    if (!fs.existsSync(state + '.release')) return",
     '    fs.rmSync(state, { force: true })',
     `    fs.writeFileSync(config, '{"mcpServers":{}}\\n')`,
@@ -780,7 +791,7 @@ if [ "\${MUTATE_THEN_HANG_MV:-}" = 1 ] && [ "$last" = "$COPILOT_FILE" ] && [ ! -
   /bin/mv "$@"
   touch "$INSTALL_STATE/mv-mutated"
   trap 'exit 143' TERM INT
-  while :; do sleep 1; done
+  while :; do sleep 1; ${boundedWait(1)}; done
 fi
 exec /bin/mv "$@"
 `)
@@ -1687,7 +1698,7 @@ for arg in "$@"; do last="$arg"; done
 case "$last" in
   */.agent-inbox.copilot.*)
     touch "$INSTALL_STATE/mktemp.paused"
-    while [ ! -f "$INSTALL_STATE/mktemp.release" ]; do sleep 0.05; done
+    while [ ! -f "$INSTALL_STATE/mktemp.release" ]; do sleep 0.05; ${boundedWait(20)}; done
     exit 1 ;;
 esac
 exec /usr/bin/mktemp "$@"
@@ -1776,7 +1787,7 @@ for arg in "$@"; do last="$arg"; done
 /bin/mv "$@" || exit
 if [ "$last" = "$PAUSE_AFTER_MV" ] && [ ! -f "$INSTALL_STATE/mv.paused" ]; then
   touch "$INSTALL_STATE/mv.paused"
-  while [ ! -f "$INSTALL_STATE/mv.release" ]; do sleep 0.05; done
+  while [ ! -f "$INSTALL_STATE/mv.release" ]; do sleep 0.05; ${boundedWait(20)}; done
 fi
 `)
     chmodSync(fakeMv, 0o755)
@@ -1821,7 +1832,8 @@ describe('rollback step isolation (#211)', () => {
     const script = [
       "const fs = require('node:fs')",
       `fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid))`,
-      `setInterval(() => { if (fs.existsSync(${JSON.stringify(releaseFile)})) process.exit(0) }, 20)`,
+      'const giveUp = Date.now() + Number(process.env.FAKE_WAIT_LIMIT_S || 120) * 1000',
+      `setInterval(() => { if (fs.existsSync(${JSON.stringify(releaseFile)})) process.exit(0); if (Date.now() >= giveUp) process.exit(124) }, 20)`,
     ].join('\n')
     return { args: [process.execPath, '-e', script], pidFile, releaseFile }
   }
@@ -1870,7 +1882,7 @@ describe('rollback step isolation (#211)', () => {
     // Both the command and its background child ignore SIGTERM, so only the
     // SIGKILL that follows can stop them.
     const result = isolate(['--timeout-ms', '300', '--', '/bin/sh', '-c',
-      `trap '' TERM; sleep 60 & echo "$$ $!" > '${pids}'; while :; do sleep 0.1; done`])
+      `trap '' TERM; sleep 60 & echo "$$ $!" > '${pids}'; while :; do sleep 0.1; ${boundedWait(10)}; done`])
 
     expect(result.status).toBe(124)
     expect(result.stderr).toContain('did not finish within 300 ms')

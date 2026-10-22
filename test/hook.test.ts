@@ -1528,7 +1528,8 @@ describe('hook: installer', () => {
       'printf \'%s\\n\' "$$" > "$HOOK_HOLDER_PID"',
       ': > "$HOOK_HOLDER_MARKER"',
       'trap \'exit 143\' TERM INT',
-      'while :; do sleep 1; done',
+      // Gives up after FAKE_WAIT_LIMIT_S (default 120 s) so an orphan exits (#286).
+      'n=0; while :; do sleep 1; n=$((n + 1)); [ "$n" -lt "${FAKE_WAIT_LIMIT_S:-120}" ] || exit 124; done',
       '',
     ].join('\n'))
     chmodSync(join(fakebin, 'jq'), 0o755)

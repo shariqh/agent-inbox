@@ -95,8 +95,9 @@ export interface IssueGraphRoot {
   hierarchy: 'ok' | 'unavailable' | null
   /**
    * Slice 2: this root's own dependency section. `unknown` is a readable
-   * snapshot whose section is missing or unbound (an older viewer refreshed it
-   * since); null, no readable snapshot. Additive within version 1.
+   * snapshot whose section is missing, unbound (an older viewer refreshed it
+   * since) or dropped by rule 6 (its issue was refused since); null, no
+   * readable snapshot. Additive within version 1.
    */
   dependencies: 'ok' | 'unavailable' | 'unknown' | null
   children_omitted: number
@@ -293,6 +294,9 @@ export function buildIssueGraph(
   const aliasOf = new Map<string, string>()
   // slice 2: each canonical issue's own bound, ok dependency sections, and their counts
   const sections = new Map<string, DependencySection[]>()
+  // What each root can still say of its own section, by requested key. One
+  // rule 6 dropped says nothing, like an unbound one: the root reports "unknown".
+  const ownSection = new Map<string, 'ok' | 'unavailable'>()
   const dependencyCountsOf = new Map<string, Seen<IssueDependencyCounts>>()
   const offer = <T>(best: Map<string, Seen<T>>, key: string, t: string, source: number, observer: string, value: () => T) => {
     const held = best.get(key)
@@ -352,6 +356,7 @@ export function buildIssueGraph(
     // The dependency section is a section of its own, read whatever the
     // hierarchy's status. listIssueSnapshots returns it only while it is bound
     // to this row's fetched_at; missing, unbound or unavailable, it says nothing.
+    if (row.dependencies && !suppressed(root, t)) ownSection.set(observer, row.dependencies.status)
     if (row.dependencies?.status === 'ok') section(root, t, observer, row.dependencies)
     // An unavailable hierarchy section yields no observations at all.
     if (snap.hierarchy.status !== 'ok') continue
@@ -648,7 +653,7 @@ export function buildIssueGraph(
       error: root.row.error,
       failure: root.row.failure,
       hierarchy: root.row.snapshot?.hierarchy.status ?? null,
-      dependencies: root.row.snapshot ? root.row.dependencies?.status ?? 'unknown' : null,
+      dependencies: root.row.snapshot ? ownSection.get(root.key) ?? 'unknown' : null,
       children_omitted: root.children.filter((key) => !kept.has(key)).length,
       dependencies_omitted: root.blocks.filter((pair) => !emitted.has(pair)).length,
     })),
@@ -675,7 +680,8 @@ export interface IssueRel {
    * by") that reconciled to an edge, sorted, at most 50. Read-only GitHub data,
    * not a row's own writable `waits_on` step labels, and never a reason for
    * `blocked`. With `unblocks`, present only while this issue's own dependency
-   * section is bound, ok and at most 7 days old: absent means unknown, never none.
+   * section is bound, ok, at most 7 days old and not dropped by rule 6: absent
+   * means unknown, never none.
    */
   waits_on_issues?: string[]
   /** slice 2: how many OPEN issues this one blocks on GitHub */
@@ -688,11 +694,13 @@ export interface IssueRel {
   unavailable: boolean
 }
 
-// The relationships the viewer would draw for each key, read off the same
-// reconciled graph. A key with no cached answer gets no entry: a soft failure
-// before any success knows nothing. `nowMs` is passed in to keep this pure.
-// A summary is no response, so it reads the whole graph: a node cap could
-// otherwise shorten waits_on_issues into a list that looks complete.
+// Each key's relationships, by the same rules the viewer's graph applies but
+// reconciled over the board's own keys only (as since PR2): another display
+// root's newer list can make the two differ until this key's next refresh.
+// A key with no cached answer gets no entry: a soft failure before any
+// success knows nothing. `nowMs` is passed in to keep this pure. A summary is
+// no response, so it reads the whole graph: a node cap could otherwise shorten
+// waits_on_issues into a list that looks complete.
 export function issueRelations(snapshots: IssueSnapshotRow[], keys: Iterable<string>, nowMs: number): Map<string, IssueRel> {
   const display = new Map<string, { refresh: boolean; updated_at: string }>()
   for (const key of keys) display.set(key, { refresh: true, updated_at: '' })

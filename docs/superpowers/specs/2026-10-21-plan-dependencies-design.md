@@ -332,8 +332,9 @@ rules above leave open:
 - A negative needs a positive to matter, so "known" never has to be listed: every pair with a
   positive names two known issues, and a pair with only negatives draws nothing.
 - Like a parent's own list (S1 rule 6), the section of a root that failed at or after its `t`
-  records no observation. The issues it lists still keep their facts, as a refused parent's
-  children do.
+  records no observation and no counts, and its root reports `dependencies: "unknown"`, so
+  `issue_rel` omits both fields (review of #271, F1: before, it read "known, none"). The issues
+  it lists still keep their facts, as a refused parent's children do.
 - Aliases fold the observing root to GitHub's canonical key, as S1 does for a snapshot's own
   issue. Listed issues are already GitHub's canonical answers and are not folded again.
 - The section is read whatever the hierarchy's status: GitHub asks for the two on separate
@@ -363,9 +364,11 @@ All additions are optional fields or a new edge kind, which v1.4 code ignores (�
 `dependencies_omitted` is a number on every root (0 when nothing was cut), and `truncated.edges`
 counts omitted edges of both kinds. `public/snapshots.js` accepts the body unchanged (it checks
 only that each edge has string ends and that a root's `hierarchy` is known), and
-`public/issues.js` reads `contains` edges only, so the page draws exactly what it drew before
-until PR D; `test/snapshots.test.ts`, `test/issues.test.ts` and
-`test/dom/issue-relations.test.ts` pin both.
+`public/issues.js` reads `contains` edges only, so until PR D the page draws what it drew before,
+apart from fresher facts: dependency lists are a new rule 7 source, so a fresher list can update
+an issue's title or state and, at the cap, a root's rank. `test/snapshots.test.ts`,
+`test/issues.test.ts` and `test/dom/issue-relations.test.ts` pin that the page ignores `blocks`
+edges and the new fields.
 
 ### 6.3 The node cap
 
@@ -374,8 +377,12 @@ children round-robin. Then **fill dependency neighbours** round-robin across kep
 order, each root's `blocked_by` before its `blocking`, by key. A `blocks` edge is emitted only
 when both of its nodes are emitted. Edges are capped at 4,000 (twice the node budget) in the
 same deterministic order, and every omission is counted in `truncated`. A root whose neighbours
-were cut reports `dependencies_omitted`, and its list says "+N not shown". Worst case stays under
-about 1.5 MB, and a body is sent only when it changes.
+were cut reports `dependencies_omitted`, and its list says "+N not shown". A full graph at the
+cap, with 2,000 nodes carrying 301-character titles, 60-character slugs and counts, all 4,000
+edge slots used and 2,000 root entries, is about 2.8 MB (`main` sends 1.66 MB for the same rows).
+Longer slugs or alias entries add to that; with this repository's slug and 60-character titles
+the same graph is about 1.75 MB (`main`: 0.92 MB). A body is sent only when it changes.
+*(Corrected in review of #271: the first draft estimated 1.5 MB.)*
 
 The graph's bytes still depend on the database alone, so `/api/issues` remains a store-token
 conditional snapshot (CLAUDE.md "Conditional snapshots must remain authoritative").
@@ -386,8 +393,28 @@ first and are never cut by it: each node has at most one, so they never take mor
 root's blockers, then its dependents, by key), and finally any other edge between two emitted
 nodes, by key: an omitted root's node can still be emitted as a kept root's neighbour or child,
 and its edges to other emitted nodes count too. A root's `dependencies_omitted` counts its
-entries (edges) not emitted, whether a neighbour was cut or the edge budget ran out. At the cap
-(2,000 nodes and 5,000 candidate edges, 4,000 emitted) the build takes about 50 ms.
+entries (edges) not emitted, whether a neighbour was cut or the edge budget ran out.
+
+The cap bounds the response, not the work. The build reads every display root's own dependency
+section before anything is cut, so its cost grows with the total number of dependency entries
+across display roots, about half a microsecond each on a 2024 laptop. Build plus
+`JSON.stringify`, best of several runs, for N display roots that each list K issues per direction
+(review of #271, F2; titles 301 characters, slugs about 60):
+
+| N × K | `main` (reads no dependencies) | First PR B head | As fixed |
+|---|---|---|---|
+| 100 × 5 | 0.4 ms | 2.0 ms | 0.7 ms |
+| 500 × 5 | 1.4 ms | 11.8 ms | 3.9 ms |
+| 2,000 × 5 | 5.7 ms | 52.5 ms | 17.5 ms |
+| 2,000 × 50 | 7.1 ms | about 540 ms | about 110 ms |
+
+The fix keeps every per-entry step to a few hash lookups: positives live in maps by their two
+ends rather than in concatenated pair ids, nothing sorts them (only the edges the round-robin
+leaves, and those emitted, are sorted), accepted pairs are records that nothing re-splits, facts
+keep the freshest observation as it arrives, and `issueKey` runs once per repository and number.
+The output is byte-identical to the first head's on 55,000 random graphs. Keep it that way: the
+viewer rebuilds `/api/issues` after any database write, on Electron's main thread in the
+packaged app.
 
 ### 6.4 `issue_rel` (agent reads)
 
@@ -419,9 +446,12 @@ The MCP process gains no new module: it already imports `issue-graph.ts` and `is
 - `issueRelations` reads the whole reconciled graph, with no node cap: a summary is not a
   response, and a cap could otherwise shorten `waits_on_issues` into a list that looks complete.
   A board's keys bound its size.
-- The dependency fields follow the dependency section alone. An issue whose hierarchy GitHub
-  could not return still reports them, beside `unavailable: true`, which keeps meaning "no parent
-  or sub-issues to draw".
+- The dependency fields follow the dependency section alone, and only while rule 6 has left it
+  standing (§6.1). An issue whose hierarchy GitHub could not return still reports them, beside
+  `unavailable: true`, which keeps meaning "no parent or sub-issues to draw".
+- `issueRelations` reconciles over the board's own keys only, as it has since PR2, so it can
+  differ from the viewer's graph until the key's next refresh: another display root's newer list
+  can decide a pair the board's keys never observed.
 - `[]` and `0` mean known and none; absent means unknown.
 - The `board_get` description names both fields and says they are GitHub issue keys, read-only,
   distinct from the row's own writable `waits_on` step labels, and never a reason to mark a row
@@ -761,3 +791,10 @@ Run on 2026-10-21 with `gh` 2.102.0, read-only:
   means the human here. §6.1 to §6.4 gain "as built" notes: the edge budget bounds both edge
   kinds, `dependencies_omitted` counts edges, a refused root's own section records nothing,
   listed keys are not alias-folded, and `issue_rel` reads the uncapped graph.
+- **Review of #271 (2026-10-21):** a model-based review over random hubs agreed with
+  reconciliation, the cap fill, `issue_rel` and the five departures above, and found: a section
+  rule 6 dropped still read as `ok` on its root, so `issue_rel` said "known, none" (fixed, §6.1);
+  a build cost that grew with every display root's dependency entries, not with the cap (fixed
+  without changing a byte, §6.3); a payload estimate that was too low (corrected, §6.3); four
+  mutations the tests missed (now pinned); and wording that overstated "identical with and
+  without dependencies", since dependency lists are a new rule 7 fact source (§6.2).

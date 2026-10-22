@@ -640,6 +640,15 @@ describe('the §6.1 worked examples: "#119 blocks #121", row by row (slice 2)', 
       { kind: 'blocks', from: B, to: D, observed_at: at(10) },
       { kind: 'blocks', from: N(120), to: D, observed_at: at(20) },
     ])
+    // …whichever end's list is truncated
+    const mirrored = build([
+      withDeps(B, at(20), deps({ blocking: [N(122)], blockingTruncated: true })),
+      withDeps(D, at(10), deps({ blockedBy: [B] })),
+    ], [B, D])
+    expect(blocksEdges(mirrored)).toEqual([
+      { kind: 'blocks', from: B, to: D, observed_at: at(10) },
+      { kind: 'blocks', from: B, to: N(122), observed_at: at(20) },
+    ])
   })
 
   it('t20 #121’s section is unbound (a v1.4 refresh) · t10 #119 lists #121 → an edge, as of t10', () => {
@@ -767,6 +776,43 @@ describe('dependency reconciliation (slice 2 §6.1)', () => {
     }
   })
 
+  // Review of #271, F1: a requested key GitHub redirected keeps a section after
+  // its canonical issue is refused. Rule 6 drops that section, so nothing is
+  // known of its dependencies, though the issues it lists keep their facts.
+  it('says nothing from a section rule 6 dropped: the root reports unknown, with no counts and no issue_rel fields', () => {
+    const listed = facts('b/s#1', { title: 'Listed by a refused root' })
+    const rows = (section: IssueDependencies) => [
+      // the plan links the old name, which GitHub answered as a/r#1 at t10
+      row('old/r#1', snapshot('a/r#1'), at(10), { dependencies: section }),
+      // a/r#1 itself was refused at t15, and a fresher list keeps a node for it
+      row('a/r#1', null, null, { error: 'not-found', checkedAt: at(15) }),
+      row('b/s#2', snapshot('b/s#2', { children: ['a/r#1'] }), at(20)),
+      row('b/s#1', null, null, { error: 'offline', checkedAt: at(5) }),
+    ]
+    const keys = ['old/r#1', 'b/s#2', 'b/s#1']
+    for (const section of [deps({ blockedBy: [listed] }), { status: 'unavailable' } as const]) {
+      const graph = build(rows(section), keys)
+      expect(rootOf(graph, 'old/r#1')?.dependencies, section.status).toBe('unknown')
+      expect(node(graph, 'a/r#1'), section.status).toMatchObject({ observed_at: at(20) })
+      expect(node(graph, 'a/r#1'), section.status).not.toHaveProperty('deps')
+      expect(pairs(graph), section.status).toEqual([])
+      const rel = issueRelations(rows(section), keys, Date.parse(at(30))).get('old/r#1')
+      expect(rel, section.status).not.toHaveProperty('waits_on_issues')
+      expect(rel, section.status).not.toHaveProperty('unblocks')
+    }
+    // the issue the dropped list names is no refused issue: its facts stand, as a refused parent's children's do
+    expect(node(build(rows(deps({ blockedBy: [listed] })), keys), 'b/s#1')).toMatchObject({ title: 'Listed by a refused root', observed_at: at(10) })
+  })
+
+  it('takes an issue’s counts from its freshest own section, however its rows sort', () => {
+    // a/r#1 is cached under its own key (older) and under an old name GitHub redirects (newer)
+    const graph = build([
+      row('a/r#1', snapshot('a/r#1'), at(10), { dependencies: deps({ blockedByCounts: { open: 1, total: 1 } }) }),
+      row('old/r#1', snapshot('a/r#1'), at(20), { dependencies: deps({ blockedByCounts: { open: 3, total: 4 } }) }),
+    ], ['a/r#1', 'old/r#1'])
+    expect(node(graph, 'a/r#1')?.deps).toEqual({ blocked_by_open: 3, blocked_by_total: 4, blocking_open: 0, blocking_total: 0 })
+  })
+
   it('drops self-pairs', () => {
     const graph = build([withDeps(D, at(10), deps({ blockedBy: [D, B], blocking: [D] }))], [D])
     expect(blocksEdges(graph)).toEqual([{ kind: 'blocks', from: B, to: D, observed_at: at(10) }])
@@ -888,6 +934,20 @@ describe('the node cap with dependency neighbours (slice 2 §6.3)', () => {
     expect(graph.edges).toEqual([{ kind: 'blocks', from: R2, to: R1, observed_at: at(10) }])
     expect(graph.roots[0]).toMatchObject({ dependencies_omitted: 0 })
     expect(graph.truncated).toEqual({ roots: 1, ancestors: 1, children: 0, dependencies: 1, edges: 2 })
+  })
+
+  it('then emits any other edge between two emitted nodes, by key, though no kept root owns it', () => {
+    // R2 is cut as a root but kept as R1's blocker, as is X: X → R2 belongs to no kept root
+    const [R1, R2, X] = [N(1), N(2), N(3)]
+    const graph = build([
+      withDeps(R1, at(10), deps({ blockedBy: [R2, X] })),
+      withDeps(R2, at(10), deps({ blockedBy: [X], blocking: [R1] }), { ancestors: [N(4), N(5)] }),
+    ], [R1, R2], { updatedAt: { [R1]: at(20), [R2]: at(10) } }, 3)
+    expect(rootKeys(graph)).toEqual([R1])
+    expect(nodeKeys(graph)).toEqual([R1, R2, X])
+    expect(pairs(graph)).toEqual([`${R2} → ${R1}`, `${X} → ${R1}`, `${X} → ${R2}`])
+    // only R2's chain is cut: two nodes and their two contains edges
+    expect(graph.truncated).toEqual({ roots: 1, ancestors: 2, children: 0, dependencies: 0, edges: 2 })
   })
 
   it('caps edges at twice the node budget, round-robin in rank order, and counts every omitted one', () => {

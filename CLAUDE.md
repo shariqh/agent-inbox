@@ -499,7 +499,8 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   decides, and a negative wins at equal `t`**: a missing "waits on" degrades to today's view, a
   false one misleads. (2) **Rule 6 on both ends:** nothing observed at or before either end's
   hard failure counts, so newer facts that bring a refused issue back never bring its older
-  pairs; a refused root's own section records nothing. (3) **Cycles are data:** every edge inside
+  pairs; a refused root's own section records nothing, and that root reports `dependencies:
+  "unknown"` (review of #271: it used to read "known, none"). (3) **Cycles are data:** every edge inside
   a strongly connected component carries `cycle: true`. The components come from an iterative,
   linear Tarjan, a local copy of `waitsOnComponents`, because `issue-graph.ts` imports no value
   but `issueKey` and the stdio graph gains no module. Self-pairs are dropped, and only the
@@ -516,16 +517,25 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   `ok|unavailable|unknown|null` and `dependencies_omitted`), and the bytes still depend on the
   database alone, so `/api/issues` stays a store-token conditional snapshot. The browser is
   unchanged until PR D: `public/snapshots.js` accepts the body and `public/issues.js` reads
-  `contains` edges only; `test/issues.test.ts` and `test/dom/issue-relations.test.ts` pin
-  breadcrumbs, child progress and grouping identical with and without dependencies, and
-  `test/dom/issue-attention.test.ts` pins attention. **`issue_rel` calls them
+  `contains` edges only; `test/issues.test.ts` and `test/dom/issue-relations.test.ts` pin that
+  breadcrumbs, child progress and grouping ignore `blocks` edges and the new fields, and
+  `test/dom/issue-attention.test.ts` pins attention. Dependency lists are still a rule 7 fact
+  source, so a fresher list can update an issue's title or state and, at the cap, a root's rank. **`issue_rel` calls them
   `waits_on_issues` and `unblocks`, never `waits_on`:** a titled `board_get` row already
   carries its own writable `waits_on` step labels, while these are read-only GitHub issue keys
   (open blockers that reconciled to an edge, sorted, at most 50) and a count of open dependents,
   never a reason for `blocked`; no name here is built on "blocked". Both appear only while the
-  key's own section is bound, `ok` and at most 7 days old (absent is unknown; `[]` and `0` are
+  key's own section is bound, `ok`, at most 7 days old and not dropped by rule 6 (absent is unknown; `[]` and `0` are
   none), whatever the hierarchy's `unavailable` says. `issueRelations` reads the uncapped graph,
   because a cut list would look complete; `pending()` and the title-less summary carry nothing new.
+  **The cap bounds the response, not the work, so the build must stay linear and free of
+  per-pair string work** (review of #271): every display root's dependency entries are read
+  before anything is cut, and the viewer rebuilds `/api/issues` after any database write, on
+  Electron's main thread in the packaged app. Positives live in maps by their two ends, nothing
+  sorts them (only the edges the round-robin leaves, and those emitted), accepted pairs are
+  records nothing re-splits, facts keep the freshest observation as it arrives, and `issueKey`
+  runs once per repository and number. 2,000 roots listing 50 issues each way build in about
+  110 ms (about 540 before), byte-identical.
 - **Explicit plan pins and row links are agent-owned row content (issue #103, PR2).**
   `boards.issue_pin_repo`/`issue_pin_number` and `board_rows.issue_repo`/`issue_number` are
   additive columns written only by `upsertBoard` (`issuePin`, `rows[].issue`) and

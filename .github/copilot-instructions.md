@@ -178,8 +178,10 @@ Run the build before `npm run electron`; the development shell starts the built
   within twice the node budget, and every omission is counted. The browser ignores them until
   PR D (`snapshots.js` accepts the body, `issues.js` reads `contains` edges only). `issue_rel`
   adds `waits_on_issues` (open blocker keys, at most 50) and `unblocks` only while the key's own
-  section is bound, `ok` and at most 7 days old; never name them `waits_on` (a row's writable
-  step labels) or anything built on "blocked".
+  section is bound, `ok`, at most 7 days old and not dropped by rule 6 (that root reports
+  `unknown`); never name them `waits_on` (a row's writable step labels) or anything built on
+  "blocked". The cap bounds the response, not the work: the build reads every display root's
+  dependency entries, so keep it linear, with no per-pair strings and no global sort.
 - Breadcrumbs and child progress (#103 PR3) are ambient. `/api/issues` is the
   poll's eighth read, through its own snapshot validator and a links-style
   fallback: a 404, network error or refused body means no graph and today's plain

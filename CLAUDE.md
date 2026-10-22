@@ -462,7 +462,9 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   (the file can be edited by hand, the bundle can move): its `realpath` must still end in `.app`,
   be a directory and hold a `Contents/Info.plist` file, and neither the name it was chosen under
   nor the one it resolves to may be an app that runs what it opens (Terminal, iTerm, Script Editor,
-  Python Launcher…); the real path is what is saved and launched, and the reader also drops a rule
+  Python Launcher, JavaLauncher…) or hands it to its default app (Finder, System Events, which
+  would make a rule System default for a type off the allow-list); the real path is what is
+  saved and launched, and the reader also drops a rule
   naming a runner. `fileOpenPlan(value, { rules })` reads a rule only AFTER a folder, a bundle, a
   denied type and an execute bit have been revealed; a Reveal rule reveals (`rule`); an app or
   Quick Look rule may open a type the allow-list leaves out (the escape hatch for code files,

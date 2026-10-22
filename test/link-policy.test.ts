@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import links from '../electron/link-open.cjs'
 import type { LinkRules } from '../electron/link-open.cjs'
+import preferences from '../electron/link-preferences.cjs'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
 const { blockedFileName, externalWebUrl, fileOpenPlan, isTrustedLinkSender, isViewerUrl, normalizeLocalPath, openLinkRequest, openWebLink } = links
@@ -791,5 +792,27 @@ describe('Settings → Links rules, applied after the safety policy (issue #300 
       shell, homeDir: root, filesPermitted: true, platform: 'darwin', execFileImpl: noXattr, spawnImpl, rules: rules({ markdown: { handler: 'app', app: link('Alias.app', viewer) } }),
     })).toEqual({ ok: true, action: 'opened' })
     expect(calls.map((call) => call.args)).toEqual([['-a', realpathSync(viewer), '--', doc]])
+  })
+
+  // Finder and System Events open what they are handed with its default app,
+  // so a rule naming one would be System default for a type off the allow-list
+  // (Python Launcher, for a .py); JavaLauncher runs the Java program it opens.
+  it.each(['Finder', 'System Events', 'JavaLauncher'])('refuses %s when it is picked, read back and launched', async (name) => {
+    const { root, code } = files()
+    const app = bundle(root, name)
+    expect(await links.launchableApp(app)).toEqual({ error: 'runs-code' })
+    if (ON_MAC && existsSync(`/System/Library/CoreServices/${name}.app`)) {
+      expect(await links.launchableApp(`/System/Library/CoreServices/${name}.app`)).toEqual({ error: 'runs-code' })
+    }
+    const stored = { schema: 1, types: [{ extension: 'py', handler: 'app', app }] }
+    expect(preferences.parseLinkPreferences(JSON.stringify(stored)).prefs.types).toEqual([])
+    const { calls, spawnImpl } = fakeSpawn()
+    const { calls: shellCalls, shell } = recordingShell()
+    expect(await openLinkRequest({ kind: 'file', path: code, reveal: false }, {
+      shell, homeDir: root, filesPermitted: true, platform: 'darwin', execFileImpl: noXattr, spawnImpl,
+      rules: rules({ types: [{ extension: 'py', handler: 'app', app }] }),
+    })).toEqual({ ok: false, reason: 'app-refused' })
+    expect(calls).toEqual([])
+    expect(shellCalls).toEqual([])
   })
 })

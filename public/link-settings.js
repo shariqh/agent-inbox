@@ -20,7 +20,7 @@ const ERRORS = {
   exists: 'That file type already has a rule.',
   full: 'You can add up to 20 file types.',
   'not-an-app': 'That isn’t an app. Choose one from Applications.',
-  'runs-code': 'That app runs what it opens, so Agent Inbox won’t open links with it.',
+  'runs-code': 'That app can run what it opens, so Agent Inbox won’t open links with it.',
   newer: 'A newer version of Agent Inbox saved these settings. Update it to change them.',
   failed: 'Agent Inbox couldn’t save that. Try again.',
 }

@@ -60,12 +60,21 @@ const OPEN_WAIT_MS = 10_000
 const MARKDOWN_EXTENSIONS = new Set(['md', 'markdown'])
 const OPENED = Object.freeze({ ok: true, action: 'opened' })
 const FAILED = Object.freeze({ ok: false, reason: 'failed' })
-// Apps that run what they open. Main never launches one for a link, whatever a
-// rule says, and the picker refuses them: a guard against a slip, not a
-// boundary, since the human's own choice is what is being checked.
+// Apps that run what they open, or hand it to its default app. Main never
+// launches one for a link, whatever a rule says, the reader drops a rule naming
+// one, and the picker refuses them: a guard against a slip, not a boundary,
+// since the human's own choice is what is being checked. Kept to apps whose
+// behaviour is known:
+//   terminals, Script Editor, Automator, Shortcuts, Installer, Python Launcher
+//     and JavaLauncher (the system's runner for .jar, .class and .jnlp) run it;
+//   Finder and System Events open it with its default app (the Open Documents
+//     event, in each one's own scripting dictionary), so a rule naming one is
+//     System default for a type off the allow-list: Python Launcher for a .py.
+// Archive Utility is not one: it only expands archives and never opens what
+// it extracts.
 const RUNNER_APPS = new Set([
-  'alacritty', 'automator', 'ghostty', 'hyper', 'installer', 'iterm', 'iterm2', 'kitty', 'python launcher',
-  'python launcher 3', 'script editor', 'shortcuts', 'terminal', 'warp', 'wezterm',
+  'alacritty', 'automator', 'finder', 'ghostty', 'hyper', 'installer', 'iterm', 'iterm2', 'javalauncher', 'kitty',
+  'python launcher', 'python launcher 3', 'script editor', 'shortcuts', 'system events', 'terminal', 'warp', 'wezterm',
 ])
 const APP_FAILURE = { 'not-an-app': 'app-missing', 'runs-code': 'app-refused' }
 const XATTR_COMMAND = '/usr/bin/xattr'

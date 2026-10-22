@@ -424,7 +424,8 @@ Run the build before `npm run electron`; the development shell starts the built
   never overwrites a newer schema). The renderer names a rule and a handler,
   never an app path; an app comes only from main's own `dialog.showOpenDialog`
   limited to `.app` bundles, and `launchableApp` re-checks it at every launch
-  (real path, `Contents/Info.plist`, never an app that runs what it opens).
+  (real path, `Contents/Info.plist`, never an app that runs what it opens or
+  hands it to its default app, such as Finder).
   A rule is read only after folders, bundles, denied types and execute bits
   are revealed, and the alias and Open With checks run before it opens
   anything. An app or Quick Look rule may open a type off the allow-list (a

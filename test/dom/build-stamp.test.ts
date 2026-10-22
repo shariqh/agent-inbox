@@ -117,7 +117,12 @@ describe('the Setup panel answers "which build is this"', () => {
     expect(text).toContain('1.2.3')
     expect(text).toContain('a1b2c3d')
     expect(text).not.toContain('package:app')
-    expect(text.toLowerCase()).not.toContain('checkout')
+    // The panel also shows real paths, which may contain the word "checkout"
+    // (#290), so check for the sentences a checkout build makes, not the word.
+    for (const claim of [
+      'Running from the checkout', 'the current build', 'still on that commit', 'behind its source',
+      'moved on to', 'newer than the checkout', 'Nothing to rebuild', 'Repackage to match', 'Could not read',
+    ]) expect(text, claim).not.toContain(claim)
     expect(text).not.toContain('⚠')
   })
 })

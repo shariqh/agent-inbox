@@ -228,7 +228,8 @@ printf '\\nfinished\\n'
     const root = fixture(`#!/bin/bash
 trap 'printf "rolled back\\n"; exit 130' TERM INT
 printf 'started\\n'
-while :; do sleep 1; done
+# Gives up after FAKE_WAIT_LIMIT_S (default 120 s) so an orphan exits (#286).
+n=0; while :; do sleep 1; n=$((n + 1)); [ "$n" -lt "\${FAKE_WAIT_LIMIT_S:-120}" ] || exit 124; done
 `)
     let cancel = () => {}
     const promise = runAgentInstall({

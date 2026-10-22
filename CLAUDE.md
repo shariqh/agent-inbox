@@ -391,7 +391,7 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   Nothing about links reaches `public/attention.js`, a badge or a count. `public/link-open.js`
   is ONE capture-phase listener per document (the inspector stops propagation): in Electron
   every detected link (`[data-link-kind]`) goes to the one preload method
-  `window.agentInboxLinks.open({kind:'web',url} | {kind:'file',path,reveal})`, a modified click
+  `window.agentInboxLinks.open({kind:'web',url} | {kind:'file',path})`, a modified click
   on a web link keeps its native path; in a browser a file link copies its path through
   `writeClipboard` and says a browser cannot open local files. `electron/link-open.cjs`
   decides, testable without Electron: the sender is the viewer window's exact `webContents`,
@@ -400,11 +400,21 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   work in a reused viewer too); the request has exactly its keys; a web link is http(s) by
   `URL` and only its normalized href reaches `shell.openExternal`; a file path is absolute
   after `~/`, normalized, control-free, and judged by its FINAL target after `realpath`:
-  missing is reported, a folder or `.app` is only revealed, a blocked extension on the link or
-  its target (apps, launchers, location files, installers, disk images, executables, scripts,
-  macro documents, certificates) or any execute bit is only revealed, anything else goes to
-  `shell.openPath` on the resolved path. The check is point-in-time. `setWindowOpenHandler` and
-  `will-navigate` share `openWebLink`, so no path in main hands a non-http(s) URL to the OS.
+  missing is reported, a folder or `.app` is only revealed, a denied extension on the link or
+  its target (apps, launchers, location and VPN files, installers, disk images, executables,
+  compiled and Windows scripts, documents that can carry macros, certificates) or any execute
+  bit is only revealed. **Opening is an ALLOW-list** (`OPENABLE_EXTENSIONS`: Markdown, text,
+  logs, JSON/YAML/TOML, CSV/TSV, XML, PDF, images, SVG, HTML, diffs, MOV/MP4): any other type
+  is revealed with reason `type`, because a deny-list of what runs code never ends; code files
+  (`py`, `sh`, …) are neither allowed nor denied. On macOS, before anything opens, the resolved
+  file is checked for an alias, which `realpath` does not follow and Launch Services opens the
+  target of (bookmark magic `book\0\0\0\0mark` in its first bytes, the Finder alias flag in
+  `com.apple.FinderInfo`, a non-empty `..namedfork/rsrc`), and for a per-file
+  `com.apple.LaunchServices.OpenWith`; xattrs are read with `/usr/bin/xattr` through
+  `execFile`, argv only, and a check that cannot finish reveals (`blocked`, fail closed). Only
+  then does `shell.openPath` get the resolved path. The check is point-in-time.
+  `setWindowOpenHandler` and `will-navigate` share `openWebLink`, so no path in main hands a
+  non-http(s) URL to the OS.
 - **`src/prstate.ts` is VIEWER-PROCESS-ONLY (issue #30).** It and `src/issue-poller.ts` (#103, below)
   are the only modules that shell out to a network tool (`gh`), so `src/mcp.ts`/`src/mcp-server.ts`
   must never import either, directly or transitively — a subprocess that inherited a stream, or gh's update notifier, would corrupt the MCP

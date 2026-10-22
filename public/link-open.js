@@ -5,10 +5,11 @@
 //
 // In the desktop app every detected link goes to Electron main through the one
 // preload method, window.agentInboxLinks.open(), and main decides what may
-// open: a web link only after its own http(s) check, a file with its default
-// app, and a folder, an app or anything that could run code is only shown in
-// Finder. A modified click (⌘, ⇧, …) on a web link keeps its native behaviour,
-// which main's window-open handler checks the same way.
+// open: a web link only after its own http(s) check, a common document type
+// with its default app, and a folder, an app, an alias, anything that could run
+// code or any other type is only shown in Finder. A modified click (⌘, ⇧, …) on
+// a web link keeps its native behaviour, which main's window-open handler
+// checks the same way.
 //
 // A browser has no such bridge. Web links keep their ordinary new-tab
 // behaviour, and a file link copies its path, because a page cannot open a
@@ -38,8 +39,9 @@ export function linkOpenMessage(result, request, { finder = 'Finder' } = {}) {
   const name = request && request.kind === 'file' ? request.path : 'this link'
   if (result && result.ok === true) {
     if (result.action !== 'revealed') return ''
+    if (result.reason === 'type') return `Shown in ${finder}: this type isn’t opened automatically.`
     return NEVER_OPENED.has(result.reason)
-      ? `Shown in ${finder}. Agent Inbox never opens apps, scripts or installers.`
+      ? `Shown in ${finder}. Agent Inbox never opens apps, scripts, installers or aliases.`
       : `Shown in ${finder}.`
   }
   const reason = result && typeof result.reason === 'string' ? result.reason : 'failed'
@@ -117,7 +119,7 @@ export function initLinkOpening({
         event.preventDefault()
         const path = el.dataset.linkPath
         if (!path) return
-        if (links) void open(links, { kind: 'file', path, reveal: false })
+        if (links) void open(links, { kind: 'file', path })
         else void copyPath(path)
         return
       }

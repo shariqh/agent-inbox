@@ -37,7 +37,7 @@ describe('the link bridge (issue #300)', () => {
       .resolves.toEqual({ ok: true, action: 'opened' })
     await links.open({ kind: 'web', url: 'https://example.com/x', extra: true })
     expect(invoke.mock.calls).toEqual([
-      ['agent-inbox:open-link', { kind: 'file', path: '/Users/s/a.md', reveal: false }],
+      ['agent-inbox:open-link', { kind: 'file', path: '/Users/s/a.md' }],
       ['agent-inbox:open-link', { kind: 'web', url: 'https://example.com/x' }],
     ])
   })
@@ -47,8 +47,8 @@ describe('the link bridge (issue #300)', () => {
     [[{ kind: 'web', url: 'https://example.com' }, 'second argument']],
     [[null]],
     [['https://example.com']],
-    [[{ kind: 'file', path: '/Users/s/a.md' }]],
-    [[{ kind: 'file', path: 7, reveal: false }]],
+    [[{ kind: 'file' }]],
+    [[{ kind: 'file', path: 7 }]],
     [[{ kind: 'shell', command: 'open -a Calculator' }]],
   ])('refuses %j without asking main', async (args) => {
     const { links, invoke } = loadPreload(() => ({ ok: true, action: 'opened' }))
@@ -57,10 +57,12 @@ describe('the link bridge (issue #300)', () => {
   })
 
   it('hands back only a well-formed answer', async () => {
-    const request = { kind: 'file', path: '/Users/s/a.sh', reveal: false }
+    const request = { kind: 'file', path: '/Users/s/a.sh' }
     for (const [answer, expected] of [
       [{ ok: true, action: 'revealed', reason: 'blocked', path: '/private/x' }, { ok: true, action: 'revealed', reason: 'blocked' }],
+      [{ ok: true, action: 'revealed', reason: 'type' }, { ok: true, action: 'revealed', reason: 'type' }],
       [{ ok: false, reason: 'missing' }, { ok: false, reason: 'missing' }],
+      [{ ok: true, action: 'revealed', reason: 'requested' }, { ok: false, reason: 'failed' }],
       [{ ok: true, action: 'revealed', reason: '<script>' }, { ok: false, reason: 'failed' }],
       [{ ok: true, action: 'launched' }, { ok: false, reason: 'failed' }],
       ['opened', { ok: false, reason: 'failed' }],

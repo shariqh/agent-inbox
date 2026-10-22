@@ -390,10 +390,13 @@ Run the build before `npm run electron`; the development shell starts the built
   anything: `public/link-open.js` calls the one preload method
   `agentInboxLinks.open`, and `electron/link-open.cjs` re-checks the sender
   (the viewer window's top frame on its origin), the request's exact shape,
-  http(s) only, and a file's final target: folders, apps, executables,
-  scripts, installers, launchers and any execute bit are only revealed.
-  `setWindowOpenHandler` and `will-navigate` share the same http(s) check. A
-  browser copies a file's path instead.
+  http(s) only, and a file's final target: folders, apps, denied types
+  (launchers, installers, disk images, executables, macro documents, …) and
+  any execute bit are only revealed. Opening is an allow-list of common
+  document types; anything else is revealed, and on macOS so is an alias or a
+  file with its own Open With (checked through `/usr/bin/xattr`, argv only,
+  failing closed). `setWindowOpenHandler` and `will-navigate` share the same
+  http(s) check. A browser copies a file's path instead.
 - The 3-second poll uses the gated `load()`/`renderIfIdle()` path. Its reads
   run concurrently, but a tick applies only after all settle, and only if no newer
   tick has applied and every boot marker agrees. A successful

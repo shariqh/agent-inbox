@@ -49,16 +49,14 @@ contextBridge.exposeInMainWorld('agentInboxTheme', {
 // re-validates the sender and everything in the request, and alone decides
 // what may open (electron/link-open.cjs).
 const LINK_REASONS = new Set([
-  'folder', 'app', 'blocked', 'executable', 'special', 'requested',
+  'folder', 'app', 'blocked', 'executable', 'special', 'type',
   'invalid', 'missing', 'inaccessible', 'failed', 'unavailable',
 ])
 
 function linkRequest(request) {
   if (!request || typeof request !== 'object' || Array.isArray(request)) return null
   if (request.kind === 'web' && typeof request.url === 'string') return { kind: 'web', url: request.url }
-  if (request.kind === 'file' && typeof request.path === 'string' && typeof request.reveal === 'boolean') {
-    return { kind: 'file', path: request.path, reveal: request.reveal }
-  }
+  if (request.kind === 'file' && typeof request.path === 'string') return { kind: 'file', path: request.path }
   return null
 }
 

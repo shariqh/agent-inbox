@@ -402,6 +402,13 @@ In the desktop app a web link opens in your browser and a file in its default ap
 Folders, apps, scripts, installers and anything with an execute bit are only shown in
 Finder, never opened. In a browser tab, clicking a file link copies its path.
 
+On macOS, **Settings → Links** chooses how links open from the Inbox instead of the
+Mac's defaults: web links in a browser you pick, and Markdown (`.md`, `.markdown`) or
+any file type you add with its system default, Quick Look, Reveal in Finder or an app
+you choose. The rules above still win, so an app or a script is only ever shown in
+Finder. In the desktop app every file chip also has **Reveal in Finder** and **Copy
+path**.
+
 ## Architecture
 
 - **`src/store.ts`** owns schema, migrations, WAL configuration, and every database

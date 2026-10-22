@@ -1682,7 +1682,7 @@ describe('plan and row issue links (#103 PR2)', () => {
     const dbPath = join(scratchDir('mcp-issue-tools-'), 'inbox.db')
     const c = await serve({ AGENT_INBOX_DB: dbPath })
     const tools = new Map((await c.listTools()).tools.map((x) => [x.name, x]))
-    const sentence = "Waiting on another GitHub issue (GitHub's 'blocked by') is tracked or partial, never blocked."
+    const sentence = "Waiting on another GitHub issue (GitHub's 'blocked by') or on another step (`waits_on`) is tracked or partial, never blocked."
     for (const name of ['board_upsert', 'board_row', 'board_advance']) {
       expect(tools.get(name)!.description, name).toContain(sentence)
     }
@@ -1702,6 +1702,160 @@ describe('plan and row issue links (#103 PR2)', () => {
     }
     expect(schemaOf('board_advance').properties).not.toHaveProperty('issue')
     expect(tools.get('board_get')!.description).toMatch(/issue_rel/)
+    await c.close()
+  }, 20000)
+})
+
+// Issue #103 slice 2, PR C (§4): agent-declared step dependencies, end to end
+// over a real stdio round trip.
+describe('step dependencies: waits_on (#103 slice 2 PR C)', () => {
+  const text = (r: unknown) => ((r as { content: Array<{ text: string }> }).content)[0]!.text
+  const serve = async (env: Record<string, string>) => {
+    const t = new StdioClientTransport({
+      command: join(REPO_ROOT, 'node_modules', '.bin', 'tsx'),
+      args: [join(REPO_ROOT, 'src', 'mcp-server.ts')],
+      cwd: scratchDir('mcp-waits-cwd-'),
+      env: { ...process.env, ...env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' },
+    })
+    const c = new Client({ name: 'claude-code', version: '1.0.0' })
+    await c.connect(t)
+    return c
+  }
+  const call = async (c: Client, name: string, args: Record<string, unknown>) => {
+    const res = await c.callTool({ name, arguments: args })
+    if (res.isError) throw new Error(text(res))
+    return JSON.parse(text(res))
+  }
+  type Row = { label: string; status: string; revision: number; waits_on?: string[] }
+  const waitsOf = (board: { rows: Row[] }) => Object.fromEntries(board.rows.map((r) => [r.label, r.waits_on]))
+  const rowOf = (board: { rows: Row[] }, label: string) => board.rows.find((r) => r.label === label)!
+
+  it('echoes waits_on sorted on the rows that have one; a read → re-send is a no-op, omission keeps and [] clears', async () => {
+    const c = await serve({ AGENT_INBOX_DB: join(scratchDir('mcp-waits-'), 'inbox.db') })
+    await call(c, 'board_upsert', {
+      title: 'Release',
+      rows: [
+        { label: 'Build', status: 'done' },
+        { label: 'Sign', status: 'partial', waits_on: ['Build'] },
+        { label: 'Publish', status: 'tracked', waits_on: ['Sign', 'Build', 'Sign'] },
+      ],
+    })
+    let board = await call(c, 'board_get', { title: 'Release' })
+    expect(waitsOf(board)).toEqual({ Build: undefined, Sign: ['Build'], Publish: ['Build', 'Sign'] })
+    expect(rowOf(board, 'Build')).not.toHaveProperty('waits_on')
+
+    // the documented flow, board_get → board_upsert with what it echoed, changes nothing; nor does omitting it
+    const resend = (rows: Row[], echo: boolean) => rows.map(({ label, status, revision, waits_on }) => ({
+      label, status, revision, ...(echo && waits_on ? { waits_on } : {}),
+    }))
+    for (const echo of [true, false]) {
+      await call(c, 'board_upsert', { title: 'Release', board_version: board.revision, rows: resend(board.rows, echo) })
+      const again = await call(c, 'board_get', { title: 'Release' })
+      expect(again.revision, `echo: ${echo}`).toBe(board.revision)
+      expect(waitsOf(again)).toEqual(waitsOf(board))
+    }
+
+    // board_row clears with [] and sets again, each a row revision
+    const publish = rowOf(board, 'Publish')
+    await call(c, 'board_row', { title: 'Release', board_version: board.revision, label: 'Publish', expected_revision: publish.revision, waits_on: [] })
+    board = await call(c, 'board_get', { title: 'Release' })
+    expect(rowOf(board, 'Publish')).not.toHaveProperty('waits_on')
+    expect(rowOf(board, 'Publish').revision).toBe(publish.revision + 1)
+    await call(c, 'board_row', { title: 'Release', board_version: board.revision, label: 'Publish', expected_revision: publish.revision + 1, waits_on: ['Sign'] })
+    board = await call(c, 'board_get', { title: 'Release' })
+    expect(rowOf(board, 'Publish')).toMatchObject({ waits_on: ['Sign'], revision: publish.revision + 2 })
+    await c.close()
+  }, 20000)
+
+  it('refuses unknown labels, a row naming itself, cycles and oversized lists as tool errors that say why', async () => {
+    const c = await serve({ AGENT_INBOX_DB: join(scratchDir('mcp-waits-refused-'), 'inbox.db') })
+    await call(c, 'board_upsert', { title: 'Release', rows: [{ label: 'Build', status: 'done' }, { label: 'Sign', status: 'tracked', waits_on: ['Build'] }] })
+    const board = await call(c, 'board_get', { title: 'Release' })
+    const build = rowOf(board, 'Build')
+    const sign = rowOf(board, 'Sign')
+    const plan = { title: 'Release', board_version: board.revision }
+    const refusals: Array<[string, Record<string, unknown>, RegExp]> = [
+      ['board_row', { ...plan, label: 'Sign', expected_revision: sign.revision, waits_on: ['Build', 'Ship'] },
+        /waits_on of row "Sign" names "Ship", but no row of this plan is labelled "Ship"/],
+      ['board_row', { ...plan, label: 'Sign', expected_revision: sign.revision, waits_on: ['Sign'] },
+        /waits_on of row "Sign" names the row itself/],
+      ['board_row', { ...plan, label: 'Build', expected_revision: build.revision, waits_on: ['Sign'] },
+        /waits_on would create a cycle: Build → Sign → Build/],
+      ['board_upsert', { ...plan, rows: [{ label: 'Build', status: 'done', revision: build.revision, waits_on: ['Sign'] }, { label: 'Sign', status: 'tracked', revision: sign.revision }] },
+        /waits_on would create a cycle: Build → Sign → Build/],
+      ['board_row', { ...plan, label: 'Sign', expected_revision: sign.revision, waits_on: Array.from({ length: 21 }, (_, i) => `Step ${i}`) },
+        /expected array to have <=20 items at waits_on/],
+      ['board_upsert', { ...plan, rows: [{ label: 'Build', status: 'done', revision: build.revision, waits_on: [''] }, { label: 'Sign', status: 'tracked', revision: sign.revision }] },
+        /expected string to have >=1 characters at rows\[0\]\.waits_on\[0\]/],
+    ]
+    for (const [name, args, why] of refusals) {
+      const res = await c.callTool({ name, arguments: args })
+      expect(res.isError, `${name} ${JSON.stringify(args)}`).toBe(true)
+      expect(text(res)).toMatch(why)
+    }
+    const after = await call(c, 'board_get', { title: 'Release' })
+    expect(after.revision).toBe(board.revision)
+    expect(waitsOf(after)).toEqual({ Build: undefined, Sign: ['Build'] })
+    await c.close()
+  }, 20000)
+
+  it('board_advance and a move into blocked keep waits_on', async () => {
+    const c = await serve({ AGENT_INBOX_DB: join(scratchDir('mcp-waits-advance-'), 'inbox.db') })
+    await call(c, 'board_upsert', { title: 'T', rows: [{ label: 'b', status: 'done' }, { label: 'a', status: 'tracked', waits_on: ['b'] }] })
+    let board = await call(c, 'board_get', { title: 'T' })
+    await call(c, 'board_upsert', {
+      title: 'T', board_version: board.revision,
+      rows: [{ label: 'b', status: 'done', revision: rowOf(board, 'b').revision }, blockedRow('a', { revision: rowOf(board, 'a').revision })],
+    })
+    board = await call(c, 'board_get', { title: 'T' })
+    expect(rowOf(board, 'a')).toMatchObject({ status: 'blocked', action_version: 2, waits_on: ['b'] })
+    await call(c, 'board_advance', {
+      title: 'T', label: 'a', board_version: board.revision, expected_revision: rowOf(board, 'a').revision,
+      note: 'Next step.', next_step: 'Do it.', action_owner: 'task', impact: 'Moves on.',
+    })
+    board = await call(c, 'board_get', { title: 'T' })
+    expect(rowOf(board, 'a')).toMatchObject({ status: 'blocked', action_version: 3, waits_on: ['b'] })
+    await c.close()
+  }, 20000)
+
+  it('pending() and the title-less board_get never carry waits_on', async () => {
+    const dbPath = join(scratchDir('mcp-waits-reads-'), 'inbox.db')
+    const c = await serve({ AGENT_INBOX_DB: dbPath })
+    await call(c, 'board_upsert', { title: 'T', rows: [blockedRow('a'), { label: 'b', status: 'partial' }] })
+    const hub = openDb(dbPath)
+    annotateBoardRow(hub, listBoards(hub)[0]!.rows[0]!.id, 'Go ahead.')
+    // the first poll stamps delivery; from then on the same rows read the same
+    await call(c, 'pending', {})
+    await call(c, 'board_get', {})
+    const pendingBefore = text(await c.callTool({ name: 'pending', arguments: {} }))
+    const summaryBefore = text(await c.callTool({ name: 'board_get', arguments: {} }))
+
+    // a raw write leaves every revision alone, so only waits_on differs between the reads
+    hub.prepare(`UPDATE board_rows SET waits_on = '["b"]' WHERE label = 'a'`).run()
+    expect(text(await c.callTool({ name: 'pending', arguments: {} }))).toBe(pendingBefore)
+    expect(text(await c.callTool({ name: 'board_get', arguments: {} }))).toBe(summaryBefore)
+    expect(rowOf(await call(c, 'board_get', { title: 'T' }), 'a').waits_on).toEqual(['b'])
+    hub.close()
+    await c.close()
+  }, 20000)
+
+  it('tools/list explains waits_on where agents write it, and board_advance takes none', async () => {
+    const c = await serve({ AGENT_INBOX_DB: join(scratchDir('mcp-waits-tools-'), 'inbox.db') })
+    const tools = new Map((await c.listTools()).tools.map((x) => [x.name, x]))
+    interface JsonNode { description?: string; type?: string; maxItems?: number; properties?: Record<string, JsonNode>; items?: JsonNode & { minLength?: number } }
+    const schemaOf = (name: string): JsonNode => tools.get(name)!.inputSchema as unknown as JsonNode
+    for (const field of [schemaOf('board_upsert').properties!['rows']!.items!.properties!['waits_on']!, schemaOf('board_row').properties!['waits_on']!]) {
+      expect(field).toMatchObject({ type: 'array', maxItems: 20, items: { type: 'string', minLength: 1 } })
+      expect(field.description).toMatch(/labels of other rows in this plan/i)
+      expect(field.description).toMatch(/Omitted keeps.*\[\] clears/)
+      expect(field.description).toMatch(/board_advance and a move into blocked keep it/)
+      expect(field.description).toMatch(/never makes a row blocked/)
+      expect(field.description).toMatch(/never asks the human/)
+    }
+    for (const name of ['board_upsert', 'board_row']) expect(tools.get(name)!.description, name).toMatch(/waits_on/)
+    expect(schemaOf('board_advance').properties).not.toHaveProperty('waits_on')
+    expect(tools.get('board_advance')!.description).toMatch(/keeps its GitHub issue link and waits_on/)
+    expect(tools.get('board_get')!.description).toMatch(/waits_on/)
     await c.close()
   }, 20000)
 })

@@ -173,6 +173,13 @@ row with that label returns. This avoids two worse options: refusing routine ups
 untouched row names a removed one, or silently rewriting other rows' agent-owned fields (and
 their revisions). A revived reference is re-checked for cycles by the write that revives it.
 
+As built (PR C), "written in this call" means **named for the first time**: a label already
+stored on that row is not re-checked, so re-sending a dangling label exactly as `board_get`
+echoed it is accepted, while a newly named missing label is refused. The cycle rule is applied
+the same way: a write is refused when an edge it adds or revives lies on a cycle. Only a raw
+write can store a cycle (a v1.5 write refuses one and v1.4 writes no `waits_on`, see §11), and
+an unrelated write is not refused for it.
+
 ### 4.3 Storage
 
 ```sql
@@ -524,6 +531,9 @@ All new chips are built in `public/source.js`, so every href still comes from `c
   (pinned with frozen v1.4.0 statements in `test/mixed-version.test.ts`, as PR2 did for issue
   links). A v1.4 upsert can delete a row and so leave a dangling reference, which draws nothing
   (§4.2), or re-add one and so close a cycle unchecked, which renders as "Circular" (§9.2).
+  *As built (PR C):* the second case cannot happen. A v1.4 insert writes no `waits_on`, so a
+  re-added row can only be waited on, and the references it revives cannot close a cycle;
+  `test/mixed-version.test.ts` pins both halves. "Circular" stays a defensive rendering.
 - **v1.5 MCP server reading v1.4 snapshots:** `issue_rel` omits `waits_on`/`unblocks` until the
   viewer refreshes.
 - **Older browser code** is never served by a newer viewer (one process serves both), and v1.4's
@@ -687,3 +697,6 @@ Run on 2026-10-21 with `gh` 2.102.0, read-only:
 ## §18 — Revision history
 
 - **Revision 1 (2026-10-21):** first draft for slice 2.
+- **PR C notes (2026-10-21):** §4.2 now says how "written in this call" and the cycle rule
+  were built (only what a write adds is checked), and §11 notes that a v1.4 re-add cannot
+  close a cycle.

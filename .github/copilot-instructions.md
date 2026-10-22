@@ -159,6 +159,13 @@ Run the build before `npm run electron`; the development shell starts the built
   MCP `""` clears, `board_advance` and a reblock keep them, and a pin outranks the
   PR and branch issue. MCP normalizes every accepted form to `owner/name#N` and
   refuses anything else; `pending()` and the title-less `board_get` never carry them.
+- A row's `waits_on` (#103 slice 2) names other rows of the same plan by label, stored
+  sorted as JSON. Omission keeps, `[]` clears, `board_advance` and a reblock keep it.
+  `store.ts` checks it inside the writing `.immediate()` transaction, and only what the
+  write adds: a newly named label must be a row of the plan, no row names itself, at most
+  20, and no added or revived edge may close a cycle. A label whose row was removed stays,
+  never re-checked; never prune it. Only titled `board_get` echoes it, and it never makes a
+  row `blocked` or enters attention.
 - Breadcrumbs and child progress (#103 PR3) are ambient. `/api/issues` is the
   poll's eighth read, through its own snapshot validator and a links-style
   fallback: a 404, network error or refused body means no graph and today's plain

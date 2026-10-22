@@ -20,6 +20,9 @@ import {
   archiveBoard as writeArchiveBoard,
   unarchiveBoard as writeUnarchiveBoard,
   annotateBoardRow,
+  snoozeBoardRow,
+  pinBoardRow,
+  stopBoardRowWatch,
   markAnnotationDelivered,
   markRowHandled,
   clearRowHandled,
@@ -3248,6 +3251,26 @@ describe('read-then-write transactions reserve the WAL writer (#154)', () => {
     db.close()
   })
 
+  // #103 slice 2 (§4.2): waits_on is checked against the plan as it stands once
+  // the write owns the lock, so a dependency committed while it waited counts.
+  it('updateBoardRow that waited refuses the cycle a waits_on committed under the lock would close', async () => {
+    const path = join(scratchDir('inbox-writer-'), 'inbox.db')
+    const db = openDb(path)
+    upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'B', rows: [{ label: 'one', status: 'tracked' }, { label: 'two', status: 'tracked' }] })
+    const board = getBoard(db, 'p', 'B')!
+    const { exit } = await holdWriteLock(path, `UPDATE board_rows SET waits_on = '["one"]' WHERE label = 'two'`)
+
+    expect(() => {
+      writeBoardRow(db, {
+        project: 'p', stream: '', agent: 'a', title: 'B', label: 'one',
+        expectedBoardVersion: board.revision, expectedRevision: board.rows[0]!.revision, waits_on: ['two'],
+      })
+    }).toThrow('waits_on would create a cycle: one → two → one')
+    expect(await exit).toMatchObject({ code: 0 })
+    expect(getBoard(db, 'p', 'B')!.rows.map((r) => r.waits_on)).toEqual([null, ['one']])
+    db.close()
+  })
+
   it('the same milestone announced from two connections at once is ONE row with ONE id', () => {
     const path = join(scratchDir('inbox-milestone-'), 'inbox.db')
     const db = openDb(path)
@@ -3386,5 +3409,212 @@ describe('plan and row issue links (#103 PR2)', () => {
     })
     expect(out.ok).toBe(true)
     expect(row()).toMatchObject({ annotation: null, handled_at: null, issue_repo: 'shariqh/agent-inbox', issue_number: 122 })
+  })
+})
+
+// Issue #103 slice 2, PR C (§4) — agent-declared step dependencies. waits_on
+// names other rows of the SAME plan by label: agent-owned row content with the
+// omission rule (undefined keeps, [] clears), checked inside the writing
+// transaction and kept across board_advance and every status change.
+describe('step dependencies: waits_on (#103 slice 2 PR C)', () => {
+  let db: Database.Database
+  beforeEach(() => {
+    db = freshDb()
+    vi.useFakeTimers({ toFake: ['Date'] })
+  })
+  afterEach(() => { vi.useRealTimers() })
+  const base = { project: 'p', stream: 'release', agent: 'a', title: 'Release' }
+  const plan = () => getBoard(db, 'p', 'Release')!
+  const row = (label: string) => plan().rows.find((r) => r.label === label)!
+  const waits = () => Object.fromEntries(plan().rows.map((r) => [r.label, r.waits_on]))
+  const tick = () => { vi.setSystemTime(Date.now() + 60_000) }
+  // Build, Sign and Publish, in that order; a label given here writes that row's waits_on
+  const steps = (waitsOn: Record<string, string[]> = {}) => ['Build', 'Sign', 'Publish'].map((label) => ({
+    label, status: 'tracked' as const, ...(label in waitsOn ? { waits_on: waitsOn[label] } : {}),
+  }))
+
+  it('stores waits_on sorted and de-duplicated, and a full upsert that omits it keeps it', () => {
+    upsertBoard(db, { ...base, rows: steps({ Sign: ['Build'], Publish: ['Sign', 'Build', 'Sign'] }) })
+    expect(waits()).toEqual({ Build: null, Sign: ['Build'], Publish: ['Build', 'Sign'] })
+    const before = { board: plan().revision, row: row('Publish').revision, at: row('Publish').updated_at }
+
+    tick()
+    upsertBoard(db, { ...base, rows: steps() })
+    expect(waits()).toEqual({ Build: null, Sign: ['Build'], Publish: ['Build', 'Sign'] })
+    // the same labels in another order are no change either
+    upsertBoard(db, { ...base, rows: steps({ Publish: ['Sign', 'Build'] }) })
+    expect(plan().revision).toBe(before.board)
+    expect(row('Publish')).toMatchObject({ revision: before.row, updated_at: before.at })
+  })
+
+  it('a change bumps the row revision, its updated_at and the board revision; [] clears it', () => {
+    upsertBoard(db, { ...base, rows: steps({ Publish: ['Sign'] }) })
+    const first = row('Publish')
+    const board = plan().revision
+
+    tick()
+    upsertBoard(db, { ...base, rows: steps({ Publish: ['Build', 'Sign'] }) })
+    expect(row('Publish')).toMatchObject({ waits_on: ['Build', 'Sign'], revision: first.revision + 1 })
+    expect(row('Publish').updated_at > first.updated_at).toBe(true)
+    expect(plan().revision).toBe(board + 1)
+
+    upsertBoard(db, { ...base, rows: steps({ Publish: [] }) })
+    expect(row('Publish')).toMatchObject({ waits_on: null, revision: first.revision + 2 })
+    expect(plan().revision).toBe(board + 2)
+    // clearing what is already clear changes nothing, and no other row moved
+    upsertBoard(db, { ...base, rows: steps({ Publish: [] }) })
+    expect(plan().revision).toBe(board + 2)
+    expect([row('Build').revision, row('Sign').revision]).toEqual([1, 1])
+  })
+
+  it('board_row sets it, keeps it on omission and clears it with []; a new row may name existing ones', () => {
+    upsertBoard(db, { ...base, rows: steps() })
+    updateBoardRow(db, { ...base, label: 'Publish', waits_on: ['Sign', 'Build'] })
+    expect(row('Publish')).toMatchObject({ waits_on: ['Build', 'Sign'], revision: 2 })
+    updateBoardRow(db, { ...base, label: 'Publish', status: 'partial', note: 'Signing first.' })
+    expect(row('Publish')).toMatchObject({ waits_on: ['Build', 'Sign'], revision: 3 })
+    updateBoardRow(db, { ...base, label: 'Announce', waits_on: ['Publish'] })
+    expect(row('Announce')).toMatchObject({ status: 'tracked', waits_on: ['Publish'], revision: 1 })
+    updateBoardRow(db, { ...base, label: 'Publish', waits_on: [] })
+    expect(row('Publish')).toMatchObject({ waits_on: null, revision: 4 })
+  })
+
+  it('refuses an unknown label, the row itself, more than 20 labels and an empty label, writing nothing', () => {
+    upsertBoard(db, { ...base, rows: steps({ Publish: ['Sign'] }) })
+    const stored = JSON.stringify(plan())
+    const refusals: Array<[string, () => unknown, string]> = [
+      ['an unknown label', () => upsertBoard(db, { ...base, rows: steps({ Publish: ['Ship'] }) }),
+        'waits_on of row "Publish" names "Ship", but no row of this plan is labelled "Ship"'],
+      ['a row this upsert removes', () => upsertBoard(db, { ...base, rows: [{ label: 'Publish', status: 'tracked', waits_on: ['Build'] }] }),
+        'waits_on of row "Publish" names "Build", but no row of this plan is labelled "Build"'],
+      ['an unknown label through board_row', () => updateBoardRow(db, { ...base, label: 'Sign', waits_on: ['Build', 'Ship'] }),
+        'waits_on of row "Sign" names "Ship", but no row of this plan is labelled "Ship"'],
+      ['the row itself', () => upsertBoard(db, { ...base, rows: steps({ Sign: ['Build', 'Sign'] }) }),
+        'waits_on of row "Sign" names the row itself'],
+      ['the row itself through board_row', () => updateBoardRow(db, { ...base, label: 'Sign', waits_on: ['Sign'] }),
+        'waits_on of row "Sign" names the row itself'],
+      ['21 labels', () => updateBoardRow(db, { ...base, label: 'Sign', waits_on: Array.from({ length: 21 }, (_, i) => `Step ${i}`) }),
+        'waits_on of row "Sign" names 21 rows; the limit is 20'],
+      ['an empty label', () => upsertBoard(db, { ...base, rows: steps({ Sign: ['Build', ''] }) }),
+        'waits_on of row "Sign" contains an empty label'],
+      ['a row of another plan', () => upsertBoard(db, { ...base, title: 'Announce', rows: [{ label: 'Post', status: 'tracked', waits_on: ['Publish'] }] }),
+        'waits_on of row "Post" names "Publish", but no row of this plan is labelled "Publish"'],
+    ]
+    for (const [why, write, message] of refusals) expect(write, why).toThrow(message)
+    expect(JSON.stringify(plan())).toBe(stored)
+    expect(findBoard(db, 'p', 'Announce')).toBeUndefined()
+
+    // a refused board_row creates neither its plan nor its row
+    expect(() => updateBoardRow(db, { ...base, title: 'Other', label: 'a', waits_on: ['b'] })).toThrow(/names "b"/)
+    expect(findBoard(db, 'p', 'Other')).toBeUndefined()
+
+    // twenty is the limit, not one under it
+    const many = Array.from({ length: 20 }, (_, i) => `Step ${i}`)
+    upsertBoard(db, { ...base, title: 'Wide', rows: [...many.map((label) => ({ label, status: 'tracked' as const })), { label: 'Last', status: 'tracked', waits_on: many }] })
+    expect(getBoard(db, 'p', 'Wide')!.rows.at(-1)!.waits_on).toEqual([...many].sort())
+  })
+
+  it('refuses a cycle with an error that names it, and writes nothing', () => {
+    upsertBoard(db, { ...base, rows: steps({ Sign: ['Build'], Publish: ['Sign'] }) })
+    const stored = JSON.stringify(plan())
+    expect(() => updateBoardRow(db, { ...base, label: 'Build', waits_on: ['Publish'] }))
+      .toThrow('waits_on would create a cycle: Build → Publish → Sign → Build')
+    expect(() => upsertBoard(db, { ...base, rows: steps({ Build: ['Sign'] }) }))
+      .toThrow('waits_on would create a cycle: Build → Sign → Build')
+    // two new rows that name each other in one upsert
+    expect(() => upsertBoard(db, {
+      ...base,
+      rows: [...steps(), { label: 'X', status: 'tracked', waits_on: ['Y'] }, { label: 'Y', status: 'tracked', waits_on: ['X'] }],
+    })).toThrow('waits_on would create a cycle: X → Y → X')
+    expect(JSON.stringify(plan())).toBe(stored)
+  })
+
+  it('keeps a label whose row was removed, never re-checks it, and checks cycles when the row comes back', () => {
+    upsertBoard(db, { ...base, rows: steps({ Sign: ['Build'], Publish: ['Build', 'Sign'] }) })
+    // a later upsert drops Build; the rows that name it keep the label
+    upsertBoard(db, { ...base, rows: [{ label: 'Sign', status: 'partial' }, { label: 'Publish', status: 'tracked' }] })
+    expect(waits()).toEqual({ Sign: ['Build'], Publish: ['Build', 'Sign'] })
+
+    // re-sending the stored labels, a routine write and dropping another label all succeed
+    upsertBoard(db, { ...base, rows: [{ label: 'Sign', status: 'partial', waits_on: ['Build'] }, { label: 'Publish', status: 'tracked', waits_on: ['Sign', 'Build'] }] })
+    updateBoardRow(db, { ...base, label: 'Sign', note: 'Waiting for a build.' })
+    updateBoardRow(db, { ...base, label: 'Publish', waits_on: ['Build'] })
+    expect(waits()).toEqual({ Sign: ['Build'], Publish: ['Build'] })
+    // ...while a label named for the first time is still checked
+    expect(() => updateBoardRow(db, { ...base, label: 'Publish', waits_on: ['Build', 'Ship'] })).toThrow(/names "Ship"/)
+
+    // Build comes back waiting on Publish: the revived Publish → Build closes a cycle
+    const stored = JSON.stringify(plan())
+    expect(() => upsertBoard(db, {
+      ...base,
+      rows: [{ label: 'Build', status: 'tracked', waits_on: ['Publish'] }, { label: 'Sign', status: 'partial' }, { label: 'Publish', status: 'tracked' }],
+    })).toThrow('waits_on would create a cycle: Build → Publish → Build')
+    expect(JSON.stringify(plan())).toBe(stored)
+    // without that, Build simply returns and both labels resolve again
+    updateBoardRow(db, { ...base, label: 'Build', status: 'done' })
+    expect(waits()).toEqual({ Sign: ['Build'], Publish: ['Build'], Build: null })
+  })
+
+  it('a cycle already stored is not this write’s to fix: unrelated writes pass, an edge onto it is refused', () => {
+    upsertBoard(db, { ...base, rows: steps({ Sign: ['Build'] }) })
+    // only a raw write can store one: this build refuses it, and older builds write no waits_on
+    db.prepare(`UPDATE board_rows SET waits_on = '["Sign"]' WHERE label = 'Build'`).run()
+    expect(waits()).toEqual({ Build: ['Sign'], Sign: ['Build'], Publish: null })
+    updateBoardRow(db, { ...base, label: 'Sign', status: 'partial' })
+    upsertBoard(db, { ...base, rows: steps({ Publish: ['Sign'] }) })
+    expect(row('Publish').waits_on).toEqual(['Sign'])
+    expect(() => updateBoardRow(db, { ...base, label: 'Sign', waits_on: ['Build', 'Publish'] }))
+      .toThrow('waits_on would create a cycle: Sign → Publish → Sign')
+  })
+
+  it('a reblock and board_advance keep it; human writes never touch it, and its writes never touch theirs', () => {
+    upsertBoard(db, { ...base, rows: steps({ Publish: ['Sign'] }) })
+    const blocked = { status: 'blocked' as const, note: 'Approve the release.', next_step: 'Approve it.', action_owner: 'task' as const, impact: 'Ships it.' }
+    upsertBoard(db, { ...base, rows: [...steps().slice(0, 2), { label: 'Publish', ...blocked }] })
+    expect(row('Publish')).toMatchObject({ status: 'blocked', action_version: 2, waits_on: ['Sign'] })
+    updateBoardRow(db, { ...base, label: 'Publish', status: 'partial' })
+    updateBoardRow(db, { ...base, label: 'Publish', ...blocked })
+    expect(row('Publish')).toMatchObject({ status: 'blocked', action_version: 3, waits_on: ['Sign'] })
+
+    // every human write on the ask leaves it alone
+    const r = () => row('Publish')
+    const version = () => plan().revision
+    expect(pinBoardRow(db, r().id, true, r().revision, version())).toBe(true)
+    expect(stopBoardRowWatch(db, r().id, null, r().revision, version())).toBe(true)
+    expect(snoozeBoardRow(db, r().id, new Date(Date.now() + 3_600_000).toISOString(), r().revision, version())).toBe(true)
+    expect(annotateBoardRow(db, r().id, 'Approved.')).toBe(true)
+    expect(markRowHandled(db, r().id)).toBe(true)
+    expect(markAnnotationDelivered(db, r().id, r().annotated_at, 'copilot', { row: r().revision, board: version() })).toBe(true)
+    expect(markHandledDelivered(db, r().id, r().handled_at, 'copilot', { row: r().revision, board: version() })).toBe(true)
+    expect(r().waits_on).toEqual(['Sign'])
+
+    // and a waits_on write keeps every human field
+    const human = (x: BoardRow) => [x.annotation, x.annotation_kind, x.annotated_at, x.annotation_seen_at, x.annotation_seen_by, x.handled_at, x.handled_seen_at, x.handled_seen_by]
+    const answered = human(r())
+    upsertBoard(db, { ...base, rows: [...steps().slice(0, 2), { label: 'Publish', status: 'blocked', waits_on: ['Build', 'Sign'] }] })
+    expect(human(r())).toEqual(answered)
+    updateBoardRow(db, { ...base, label: 'Publish', waits_on: ['Build'] })
+    expect(human(r())).toEqual(answered)
+
+    const out = advanceBoardRow(db, {
+      project: 'p', title: 'Release', label: 'Publish', agent: 'a',
+      expectedBoardVersion: version(), expectedRevision: r().revision,
+      note: 'Now announce it.', next_step: 'Approve the post.', action_owner: 'task', impact: 'Tells users.',
+    })
+    expect(out.ok).toBe(true)
+    expect(r()).toMatchObject({ action_version: 4, annotation: null, handled_at: null, waits_on: ['Build'] })
+  })
+
+  it('reads an unreadable stored value as none without throwing, and checks every label written over it', () => {
+    upsertBoard(db, { ...base, rows: steps() })
+    const wide = JSON.stringify(Array.from({ length: 21 }, (_, i) => `Step ${i}`))
+    for (const raw of ['not json', '{"Sign":true}', '"Sign"', '[]', '[1]', '[""]', wide]) {
+      db.prepare(`UPDATE board_rows SET waits_on = ? WHERE label = 'Publish'`).run(raw)
+      expect(row('Publish').waits_on, raw).toBeNull()
+      expect(listBoards(db)[0]!.rows.find((r) => r.label === 'Publish')!.waits_on, raw).toBeNull()
+    }
+    expect(() => updateBoardRow(db, { ...base, label: 'Publish', waits_on: ['Step 0'] })).toThrow(/names "Step 0"/)
+    updateBoardRow(db, { ...base, label: 'Publish', waits_on: ['Sign'] })
+    expect(row('Publish').waits_on).toEqual(['Sign'])
   })
 })

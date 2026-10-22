@@ -438,6 +438,11 @@ function runMigrations(db: Database.Database): void {
   ensureColumn(db, 'board_rows', 'issue_repo', 'TEXT')
   ensureColumn(db, 'board_rows', 'issue_number', 'INTEGER')
   migratePinForLater(db)
+  // issue #103 slice 2 (§4.3) — a row's agent-declared step dependencies, a
+  // sorted JSON array of other rows' labels (NULL = none). Additive like PR2's
+  // link columns: no statement an older process runs names it, so its writes
+  // keep it (test/mixed-version.test.ts), and nothing is backfilled.
+  ensureColumn(db, 'board_rows', 'waits_on', 'TEXT')
 }
 
 // Issue #247 — the human's "Pin for later". NULL means not pinned, so there is
@@ -1315,6 +1320,10 @@ export interface BoardRow {
   // Agent-owned row content; kept across board_advance and every status change.
   issue_repo: string | null
   issue_number: number | null
+  // issue #103 slice 2 (§4) — labels of other rows of this plan that this row
+  // waits on, sorted; null when none. Agent-owned like the issue link and kept
+  // the same way. A label whose row was removed stays and resolves to nothing.
+  waits_on: string[] | null
   outcome: string
   outcome_at: string | null
   created_at: string
@@ -1327,9 +1336,10 @@ export interface BoardRow {
   annotation_unseen: boolean
 }
 
-type BoardRowRecord = Omit<BoardRow, 'annotation_unseen' | 'options' | 'history'> & {
+type BoardRowRecord = Omit<BoardRow, 'annotation_unseen' | 'options' | 'history' | 'waits_on'> & {
   options: string | null
   history: string | null
+  waits_on: string | null
 }
 
 const ROW_COLUMNS = `
@@ -1337,7 +1347,7 @@ const ROW_COLUMNS = `
   context, annotation, annotation_kind, annotated_at, annotation_seen_at,
   annotation_seen_by, handled_at, handled_seen_at, handled_seen_by, snoozed_until,
   pinned_at, watch_stopped_at, watch_stopped_until, action_agent, issue_repo, issue_number,
-  outcome, outcome_at, created_at, updated_at, action_started_at, action_version,
+  waits_on, outcome, outcome_at, created_at, updated_at, action_started_at, action_version,
   revision, history, position`
 
 // An annotation is "unseen" until it has been DELIVERED to an agent. Per-row and
@@ -1356,6 +1366,7 @@ function withUnseen(rows: BoardRowRecord[]): BoardRow[] {
     ...r,
     options: parseOptions(r.options),
     history: parseHistory(r.history),
+    waits_on: parseWaitsOn(r.waits_on),
     annotation_unseen: r.annotation != null && r.annotation !== '' && r.annotation_seen_at === null,
   }))
 }
@@ -1395,6 +1406,8 @@ export interface NewBoardRow {
   context?: string
   /** omitted keeps the stored link; null clears it */
   issue?: IssueLink | null
+  /** issue #103 slice 2: labels of other rows of this plan; omitted keeps, [] clears */
+  waits_on?: string[]
 }
 
 /** An issue an agent linked explicitly; MCP normalizes every accepted form to it. */
@@ -1431,6 +1444,110 @@ function setBoardIssuePin(db: Database.Database, boardId: string, pin: IssueLink
   return info.changes > 0
 }
 
+// ── issue #103 slice 2 (§4): a row's agent-declared step dependencies ───────
+//
+// waits_on names other rows of the SAME plan by label, the identity agents
+// already keep stable (§4.4). It is never a human blocker and never attention:
+// a row that waits on another step is tracked or partial.
+const WAITS_ON_LIMIT = 20
+
+// §4.2's shape rules, checked before anything is written. Duplicates collapse
+// and order means nothing, so one form is stored: sorted. [] clears.
+function waitsOnLabels(label: string, value: string[]): string[] {
+  if (!Array.isArray(value) || value.some((target) => typeof target !== 'string')) {
+    throw new Error(`waits_on of row "${label}" must be a list of row labels`)
+  }
+  if (value.length > WAITS_ON_LIMIT) {
+    throw new Error(`waits_on of row "${label}" names ${value.length} rows; the limit is ${WAITS_ON_LIMIT}`)
+  }
+  if (value.includes('')) throw new Error(`waits_on of row "${label}" contains an empty label`)
+  if (value.includes(label)) throw new Error(`waits_on of row "${label}" names the row itself`)
+  return [...new Set(value)].sort()
+}
+
+function waitsOnColumn(labels: string[] | undefined): string | null {
+  return labels?.length ? JSON.stringify(labels) : null
+}
+
+// Validated on read as on write; anything else reads as none, never a throw.
+function parseWaitsOn(raw: string | null): string[] | null {
+  if (raw === null) return null
+  try {
+    const value: unknown = JSON.parse(raw)
+    if (Array.isArray(value) && value.length > 0 && value.length <= WAITS_ON_LIMIT
+      && value.every((target) => typeof target === 'string' && target !== '')) return value as string[]
+  } catch { /* unreadable: none */ }
+  return null
+}
+
+// Omission is not deletion: undefined writes nothing. Returns whether it changed.
+function setRowWaitsOn(db: Database.Database, rowId: string, labels: string[] | undefined, now: string): boolean {
+  if (labels === undefined) return false
+  const encoded = waitsOnColumn(labels)
+  const info = db.prepare(`UPDATE board_rows SET waits_on = ?, updated_at = ? WHERE id = ? AND waits_on IS NOT ?`)
+    .run(encoded, now, rowId, encoded)
+  return info.changes > 0
+}
+
+/** Each row of a plan by label, with the labels it waits on. */
+type PlanWaits = Map<string, string[]>
+
+// In row order, so a refusal names the same cycle every time.
+function planWaitsOn(db: Database.Database, boardId: string): PlanWaits {
+  const rows = db.prepare(`SELECT label, waits_on FROM board_rows WHERE board_id = ? ORDER BY position ASC`)
+    .all(boardId) as Array<{ label: string; waits_on: string | null }>
+  return new Map(rows.map((r) => [r.label, parseWaitsOn(r.waits_on) ?? []]))
+}
+
+// §4.2, inside the writing transaction once its rows are written, so a refusal
+// rolls the whole write back. Only what this write adds is checked: a label a
+// row names for the first time must be a row of the plan, and no edge the write
+// adds or revives (a returning row brings back the labels naming it) may close a
+// cycle. A label stored earlier whose row is gone stays and is never re-checked,
+// so a row naming a removed one never refuses someone else's routine write.
+function checkWaitsOn(db: Database.Database, boardId: string, before: PlanWaits, written: Map<string, string[]>): void {
+  const after = planWaitsOn(db, boardId)
+  for (const [label, labels] of written) {
+    const stored = new Set(before.get(label))
+    for (const target of labels) {
+      if (!stored.has(target) && !after.has(target)) {
+        throw new Error(`waits_on of row "${label}" names "${target}", but no row of this plan is labelled "${target}"`)
+      }
+    }
+  }
+  for (const [from, labels] of after) {
+    for (const to of labels) {
+      const resolvedBefore = before.has(to) && Boolean(before.get(from)?.includes(to))
+      if (!after.has(to) || resolvedBefore) continue
+      const path = waitsOnPath(after, to, from)
+      if (path) throw new Error(`waits_on would create a cycle: ${[from, ...path].join(' → ')}`)
+    }
+  }
+}
+
+// The shortest chain of waits_on from `start` to `goal` over rows that exist,
+// both ends included; null when there is none.
+function waitsOnPath(plan: PlanWaits, start: string, goal: string): string[] | null {
+  const previous = new Map<string, string>()
+  const queue = [start]
+  const seen = new Set(queue)
+  for (let i = 0; i < queue.length; i++) {
+    const at = queue[i]!
+    if (at === goal) {
+      const path = [at]
+      for (let step = previous.get(at); step !== undefined; step = previous.get(step)) path.unshift(step)
+      return path
+    }
+    for (const next of plan.get(at) ?? []) {
+      if (!plan.has(next) || seen.has(next)) continue
+      seen.add(next)
+      previous.set(next, at)
+      queue.push(next)
+    }
+  }
+  return null
+}
+
 export function findBoard(db: Database.Database, project: string, title: string): Board | undefined {
   return db.prepare(`SELECT * FROM boards WHERE project = ? AND title = ?`).get(project, title) as Board | undefined
 }
@@ -1454,9 +1571,11 @@ export function upsertBoard(db: Database.Database, input: UpsertBoardInput): { b
   const run = db.transaction((inp: UpsertBoardInput): { boardId: string; rowCount: number } => {
     const labels = new Set(inp.rows.map((row) => row.label))
     if (labels.size !== inp.rows.length) throw new Error(`duplicate board row label in "${inp.title}"`)
-    // refuse a bad link before anything is written
+    // refuse a bad link or waits_on shape before anything is written
     if (inp.issuePin) issueLinkColumns(inp.issuePin)
     for (const r of inp.rows) if (r.issue) issueLinkColumns(r.issue)
+    const waits = new Map<string, string[]>()
+    for (const r of inp.rows) if (r.waits_on !== undefined) waits.set(r.label, waitsOnLabels(r.label, r.waits_on))
     const now = new Date().toISOString()
     const before = findBoard(db, inp.project, inp.title)
     if (before && inp.expectedVersion !== before.revision) {
@@ -1470,7 +1589,7 @@ export function upsertBoard(db: Database.Database, input: UpsertBoardInput): { b
       || before.head_repo !== (inp.headRepo ?? null)
     const boardId = ensureBoard(db, inp, now)
     boardChanged = setBoardIssuePin(db, boardId, inp.issuePin) || boardChanged
-    const existing = db.prepare(`SELECT id, label, status, note, position, action_version, revision FROM board_rows WHERE board_id = ?`).all(boardId) as Array<{
+    const existing = db.prepare(`SELECT id, label, status, note, position, action_version, revision, waits_on FROM board_rows WHERE board_id = ?`).all(boardId) as Array<{
       id: string
       label: string
       status: RowStatus
@@ -1478,7 +1597,9 @@ export function upsertBoard(db: Database.Database, input: UpsertBoardInput): { b
       position: number
       action_version: number
       revision: number
+      waits_on: string | null
     }>
+    const priorWaits: PlanWaits = new Map(existing.map((r) => [r.label, parseWaitsOn(r.waits_on) ?? []]))
     const idByLabel = new Map(existing.map((r) => [r.label, r]))
     const incoming = new Set<string>()
     inp.rows.forEach((r, i) => {
@@ -1542,6 +1663,7 @@ export function upsertBoard(db: Database.Database, input: UpsertBoardInput): { b
         // omission; explicit empty values are the only erasure.
         rowChanged = updateRowTextField(db, existingId, 'context', r.context, now) || rowChanged
         rowChanged = setRowIssueLink(db, existingId, r.issue, now) || rowChanged
+        rowChanged = setRowWaitsOn(db, existingId, waits.get(r.label), now) || rowChanged
         if (r.outcome !== undefined) rowChanged = setRowOutcome(db, existingId, r.outcome, now) || rowChanged
         if (!newAction && rowChanged) incrementRowRevision(db, existingId)
         boardChanged = boardChanged || rowChanged || moved
@@ -1553,8 +1675,8 @@ export function upsertBoard(db: Database.Database, input: UpsertBoardInput): { b
             id, board_id, label, status, note, next_step, action_owner, impact,
             next_after, options, context, outcome, outcome_at, created_at,
             updated_at, action_started_at, action_version, action_agent, action_agent_version,
-            revision, history, position, issue_repo, issue_number)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 1, 1, '[]', ?, ?, ?)`)
+            revision, history, position, issue_repo, issue_number, waits_on)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 1, 1, '[]', ?, ?, ?, ?)`)
           .run(
             randomUUID(),
             boardId,
@@ -1576,6 +1698,7 @@ export function upsertBoard(db: Database.Database, input: UpsertBoardInput): { b
             i,
             issue.repo,
             issue.number,
+            waitsOnColumn(waits.get(r.label)),
           )
       }
     })
@@ -1584,6 +1707,9 @@ export function upsertBoard(db: Database.Database, input: UpsertBoardInput): { b
       db.prepare(`DELETE FROM board_rows WHERE id = ?`).run(r.id)
       boardChanged = true
     }
+    // only a row this write gave waits_on can close a cycle: a returning row
+    // without one can be waited on, never wait on anything
+    if (waits.size) checkWaitsOn(db, boardId, priorWaits, waits)
     boardChanged = syncBoardStatus(db, boardId) || boardChanged
     if (before && boardChanged) bumpBoardRevision(db, boardId, now)
     return { boardId, rowCount: inp.rows.length }
@@ -1613,6 +1739,8 @@ interface UpdateRowInput {
   headRepo?: string | null
   /** issue #103 PR2: omitted keeps the stored link; null clears it */
   issue?: IssueLink | null
+  /** issue #103 slice 2: labels of other rows of this plan; omitted keeps, [] clears */
+  waits_on?: string[]
 }
 
 type RowTextColumn = 'note' | 'next_step' | 'impact' | 'next_after' | 'context'
@@ -1808,6 +1936,7 @@ export function advanceBoardRow(
 export function updateBoardRow(db: Database.Database, input: UpdateRowInput): { boardId: string; rowId: string } {
   const run = db.transaction((inp: UpdateRowInput): { boardId: string; rowId: string } => {
     const issue = inp.issue === undefined ? undefined : issueLinkColumns(inp.issue)
+    const waits = inp.waits_on === undefined ? undefined : waitsOnLabels(inp.label, inp.waits_on)
     const now = new Date().toISOString()
     const before = findBoard(db, inp.project, inp.title)
     if (before && inp.expectedBoardVersion !== before.revision) {
@@ -1821,6 +1950,7 @@ export function updateBoardRow(db: Database.Database, input: UpdateRowInput): { 
       || before!.head_repo !== (inp.headRepo ?? null)
     )
     const boardId = ensureBoard(db, inp, now)
+    const priorWaits = waits === undefined ? undefined : planWaitsOn(db, boardId)
     const existing = db.prepare(`SELECT id, status, action_version, revision FROM board_rows WHERE board_id = ? AND label = ?`).get(boardId, inp.label) as {
       id: string
       status: RowStatus
@@ -1857,7 +1987,9 @@ export function updateBoardRow(db: Database.Database, input: UpdateRowInput): { 
       }
       rowChanged = updateRowTextField(db, existing.id, 'context', inp.context, now) || rowChanged
       rowChanged = setRowIssueLink(db, existing.id, inp.issue, now) || rowChanged
+      rowChanged = setRowWaitsOn(db, existing.id, waits, now) || rowChanged
       if (inp.outcome !== undefined) rowChanged = setRowOutcome(db, existing.id, inp.outcome, now) || rowChanged
+      if (priorWaits && waits) checkWaitsOn(db, boardId, priorWaits, new Map([[inp.label, waits]]))
       if (!newAction && rowChanged) incrementRowRevision(db, existing.id)
       const boardChanged = syncBoardStatus(db, boardId) || rowChanged || metadataChanged
       if (boardChanged) bumpBoardRevision(db, boardId, now)
@@ -1870,8 +2002,8 @@ export function updateBoardRow(db: Database.Database, input: UpdateRowInput): { 
         id, board_id, label, status, note, next_step, action_owner, impact,
         next_after, options, context, outcome, outcome_at, created_at, updated_at,
         action_started_at, action_version, action_agent, action_agent_version, revision, history, position,
-        issue_repo, issue_number)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 1, 1, '[]', ?, ?, ?)`)
+        issue_repo, issue_number, waits_on)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 1, 1, '[]', ?, ?, ?, ?)`)
       .run(
         rowId,
         boardId,
@@ -1893,7 +2025,9 @@ export function updateBoardRow(db: Database.Database, input: UpdateRowInput): { 
         pos,
         issue?.repo ?? null,
         issue?.number ?? null,
+        waitsOnColumn(waits),
       )
+    if (priorWaits && waits) checkWaitsOn(db, boardId, priorWaits, new Map([[inp.label, waits]]))
     syncBoardStatus(db, boardId)
     if (before) bumpBoardRevision(db, boardId, now)
     return { boardId, rowId }

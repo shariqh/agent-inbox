@@ -471,6 +471,38 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   a scratch database and requires initialize + tools/list to answer, bounded by a timeout
   and writing nothing to stdout. Staging, release assembly and the Intel release gate all
   run it beside the selftest.
+- **`waits_on` is agent-owned row content: labels, checked where it is written (issue #103,
+  slice 2 PR C).** Design: [`docs/superpowers/specs/2026-10-21-plan-dependencies-design.md`](docs/superpowers/specs/2026-10-21-plan-dependencies-design.md)
+  §4. `board_rows.waits_on` is one additive column holding the sorted, de-duplicated JSON
+  array of OTHER rows' labels in the same plan (NULL = none), written only by `upsertBoard`
+  (`rows[].waits_on`) and `updateBoardRow` (`waits_on`). It follows the omission rule:
+  undefined keeps, `[]` clears; a change bumps the row `revision` and `updated_at` (and the
+  board revision). `beginNewRowAction`/`advanceBoardRow`, status moves, every human/browser
+  write and every frozen v1.4.0 statement never name it, so `board_advance`, a reblock and an
+  older server's writes keep it (`test/mixed-version.test.ts`). Five rules hold. (1) **Shape
+  before anything is written** (`waitsOnLabels`): at most 20 raw entries, none empty, never
+  the row's own label; MCP's zod schema says the same. (2) **Meaning inside the writing
+  `.immediate()` transaction, after its rows are written** (`checkWaitsOn`), so a refusal
+  rolls the whole write back and a dependency committed while the write waited for the lock
+  still counts. (3) **Only what the write adds is checked.** A label a row names for the
+  first time must be a row of the plan after the write (for `board_upsert`, the payload); a
+  label already stored is never re-checked. That is what keeps a label whose row was removed
+  (a v1.5 upsert that omits it, or an older server's DELETE) **dangling**: kept, drawing
+  nothing, re-sendable as `board_get` echoed it, and reviving when a row with that label
+  returns. Never prune it: that would rewrite other rows' agent-owned fields and revisions.
+  (4) **A write may not create a cycle**: every edge it adds or revives (a returning row
+  brings back the labels naming it) is refused when its target already reaches its source,
+  and the error names the shortest such cycle in row order. A cycle already stored (only a
+  raw write can make one: this build refuses it and older builds write no `waits_on`) is not
+  an unrelated write's to fix. When no row of the write carries `waits_on`, nothing is
+  checked: a returning row without one can be waited on, never wait. (5) **Reads never
+  throw**: `parseWaitsOn` reads anything but a valid 1–20 label array as `null`, and an
+  unreadable stored value counts as no stored labels for (3). `shape.ts` echoes it exactly
+  as stored on titled `board_get` rows that have one (absent otherwise), so a read → re-send
+  is a no-op; `pending()` and the title-less summary never carry it, and `/api/boards` simply
+  gains the field. It is never `blocked`, never attention: `public/attention.js`,
+  `relay.js` and `reply-watch.cjs` name no `waits_on` (pinned in
+  `test/dom/issue-attention.test.ts`).
 - **Breadcrumbs and child progress are ambient GitHub data (issue #103, PR3).** The page
   reads `/api/issues` as the poll's EIGHTH concurrent read, through `readSnapshot` with a
   validator of its own (`public/snapshots.js`: version 1, string-keyed nodes, edges and
@@ -1834,7 +1866,10 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   above); PR2 explicit plan pins and row links with the titled `board_get` `issue_rel`
   summary (see the invariant above); PR3 breadcrumbs, child progress and Agent Inbox
   activity in the UI (see the invariant above). That completes the first slice; opt-in
-  grouping, dependencies, Plan Flow edges and sibling context are the design's §12.
+  grouping, dependencies, Plan Flow edges and sibling context are the design's §12. Slice 2
+  (v1.5, [`2026-10-21-plan-dependencies-design.md`](docs/superpowers/specs/2026-10-21-plan-dependencies-design.md))
+  ships them as PRs A–F; PR C added the agent-written `waits_on` row field (see the
+  invariant above), which no UI draws until PRs D and E.
 Keep all of these additive and behind the existing seams — don't break v1's local,
 zero-config, no-auth path.
 

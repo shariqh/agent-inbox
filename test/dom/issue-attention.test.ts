@@ -83,13 +83,13 @@ describe('attention with and without relationship data (#103 PR3)', () => {
     expect(withoutGraph).toEqual(before)
   })
 
-  it('pins the attention modules: none of them names an issue field', () => {
+  it('pins the attention modules: none of them names an issue field or waits_on', () => {
     for (const file of ['public/attention.js', 'public/relay.js', 'electron/reply-watch.cjs']) {
       const code = readFileSync(join(ROOT, file), 'utf8').split('\n').filter((line) => {
         const t = line.trim()
         return !(t.startsWith('//') || t.startsWith('*') || t.startsWith('/*'))
       }).join('\n')
-      expect(code, `${file} reads relationship data`).not.toMatch(/issue|sub-?issue|children_|relation/i)
+      expect(code, `${file} reads relationship data`).not.toMatch(/issue|sub-?issue|children_|relation|waits_?on/i)
     }
   })
 })

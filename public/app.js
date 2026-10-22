@@ -25,7 +25,7 @@ import { keyAction, rovingIndex, ariaAnswerLabel, livenessGlyph, deckEntryAt } f
 import { createKeyboardUI, revealControl } from '/keyboard-ui.js'
 import { partitionNotes, unreadNoteCount, ambientChips, seenWatermark, markSeenIds } from '/notes.js'
 import { liveSummary, lastActivityAt, isDormant, activitySynopsis, sessionBuild } from '/livebar.js'
-import { agentsAction, hooksGuidance, hostLabel, hostLine, restartGuidance } from '/agents.js'
+import { agentsAction, hooksGuidance, hooksNextStep, hostLabel, hostLine, restartGuidance } from '/agents.js'
 import { esc } from '/esc.js'
 import { initStructuredTextCopy } from '/structured-copy.js'
 import { captureSelection, restoreSelection } from '/selection.js'
@@ -7537,30 +7537,31 @@ function paintAgents(agents) {
     agentsHint('Setup does not update a source checkout: run git pull and npm run build in it, then restart its sessions.')
   }
   // Claude's hooks on another Setup runtime (#206): the action moves them when
-  // it can; otherwise say how, but promise only what Setup can do here.
-  const hooksStep = action?.steps.some((step) => step.host === 'hooks') === true
-  if (lines[2]?.drift && !(hooksStep && canRun)) {
-    if (typeof agents.hooksCommand === 'string' && agents.hooksCommand) {
-      agentsHint(hooksStep ? 'Or move them from a terminal:' : `To move Claude hooks to v${current}, run this in a terminal:`)
-      const command = document.createElement('pre')
-      command.className = 'agents-hooks-command'
-      command.textContent = agents.hooksCommand
-      const copy = btn('Copy', async () => {
-        try {
-          await navigator.clipboard.writeText(agents.hooksCommand)
-          copy.textContent = 'Copied ✓'
-        } catch {
-          copy.textContent = 'Copy failed'
-        }
-        setTimeout(() => { copy.textContent = 'Copy' }, 1500)
-      })
-      copy.className = 'copy-btn'
-      block.actions.append(command, copy)
-    } else if (agents.updatable === true && !hooksStep) {
-      // only a promise Setup can keep: it can install this runtime here
-      agentsHint(`Once this app's v${current} runtime is installed, Setup can move Claude hooks to it.`)
-    }
+  // it can; otherwise say how, promising only what Setup can do here, and never
+  // leave that line without a next step (#278).
+  const hooks = hooksNextStep(agents, canRun)
+  if (hooks) {
+    agentsHint(hooks.text)
+    if (hooks.command) agentsCommand(hooks.command)
   }
+}
+
+// A command the viewer built and quoted, shown as text with a Copy button.
+function agentsCommand(text) {
+  const command = document.createElement('pre')
+  command.className = 'agents-hooks-command'
+  command.textContent = text
+  const copy = btn('Copy', async () => {
+    try {
+      await navigator.clipboard.writeText(text)
+      copy.textContent = 'Copied ✓'
+    } catch {
+      copy.textContent = 'Copy failed'
+    }
+    setTimeout(() => { copy.textContent = 'Copy' }, 1500)
+  })
+  copy.className = 'copy-btn'
+  agentsBlock.actions.append(command, copy)
 }
 
 // Re-read what each host is registered to run, after any install. Resolves to

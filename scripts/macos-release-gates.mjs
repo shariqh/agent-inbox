@@ -25,6 +25,7 @@ import { verifyPackagedUpdateTrust } from './package-update-trust.mjs'
 import { verifyPayload } from './runtime-payload.mjs'
 import { treeIdentity } from './tree-identity.mjs'
 import { probeRuntimeMcp } from './runtime-mcp-probe.mjs'
+import { createReleaseDmg } from './macos-dmg.mjs'
 
 const APP_NAME = 'Agent Inbox'
 const TAG_RE = /^v(\d+\.\d+\.\d+)$/
@@ -526,7 +527,6 @@ export function validateThinHandoff({ arm64Archive, x64Archive, evidencePath, co
 }
 
 export async function buildFinalDmg({ app, version, appReceiptPath, output, icon }) {
-  const { createDMG } = await import('electron-installer-dmg')
   const receipt = readJson(appReceiptPath, 'accepted app receipt')
   if (receipt.kind !== 'app' || receipt.status !== 'Accepted') {
     throw new ReleaseGateError('final DMG requires an accepted app notarization receipt')
@@ -537,25 +537,20 @@ export async function buildFinalDmg({ app, version, appReceiptPath, output, icon
   const expected = `Agent-Inbox-v${version}-universal.dmg`
   if (basename(output) !== expected) throw new ReleaseGateError(`final DMG must be named ${expected}`)
   mkdirSync(dirname(output), { recursive: true })
-  await createDMG({
-    appPath: app,
-    name: APP_NAME,
-    title: `${APP_NAME} v${version}`,
-    icon,
-    iconSize: 96,
-    format: 'UDZO',
-    overwrite: false,
-    dmgPath: output,
-    contents: [
-      { x: 180, y: 220, type: 'file', path: app },
-      { x: 480, y: 220, type: 'link', path: '/Applications' },
-    ],
-  })
+  await createReleaseDmg({ app, title: `${APP_NAME} v${version}`, icon, output })
   return output
 }
 
+// Reading the final ULMO (lzma) DMG is several times slower than zlib (#289):
+// attaching verifies every block's checksum and copying the app out decompresses
+// all of it. The in-app updater allows the same for the same two steps.
+const DMG_ATTACH_TIMEOUT_MS = 5 * 60_000
+const DMG_COPY_TIMEOUT_MS = 10 * 60_000
+
 export async function withMountedDmg({ dmg, mount, runCommand, verify }) {
-  runCommand('/usr/bin/hdiutil', ['attach', '-nobrowse', '-readonly', '-mountpoint', mount, dmg])
+  runCommand('/usr/bin/hdiutil', ['attach', '-nobrowse', '-readonly', '-mountpoint', mount, dmg], {
+    timeout: DMG_ATTACH_TIMEOUT_MS,
+  })
   let result
   let failure
   try {
@@ -684,7 +679,7 @@ export async function verifyFinalDmg({
         if (!lstatSync(applications).isSymbolicLink() || readlinkSync(applications) !== '/Applications') {
           throw new ReleaseGateError('final DMG Applications entry is not the expected /Applications link')
         }
-        runCommand('/usr/bin/ditto', [join(mount, `${APP_NAME}.app`), copiedApp])
+        runCommand('/usr/bin/ditto', [join(mount, `${APP_NAME}.app`), copiedApp], { timeout: DMG_COPY_TIMEOUT_MS })
         verifySignatureIdentity(copiedApp, identity, teamId)
         runStapler('validate', copiedApp)
         runCommand('/usr/sbin/spctl', ['--assess', '--type', 'execute', '--verbose=4', copiedApp])

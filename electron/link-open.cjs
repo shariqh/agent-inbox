@@ -21,7 +21,7 @@
 //   can still swap the file between the check and the open.
 //
 // Pure apart from the filesystem reads and the injected shell, so every rule
-// is testable without Electron (test/link-open.test.ts).
+// is testable without Electron (test/link-policy.test.ts).
 const fs = require('node:fs')
 const path = require('node:path')
 

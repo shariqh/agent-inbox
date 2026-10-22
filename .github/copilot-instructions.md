@@ -94,7 +94,12 @@ Run the build before `npm run electron`; the development shell starts the built
   runtime>/scripts/install-hooks.sh --apply --move-only`, from the installed
   copy of the verified release runtime (re-verified against the signed manifest
   digest before spawn), never from the app bundle or a checkout; `--move-only`
-  refuses under the setup lock where no Setup runtime's hooks exist to move. Once any quit begins, nothing starts: every quit or
+  refuses under the setup lock where no Setup runtime's hooks exist to move.
+  Where no Setup step can move outdated hooks (#278), the panel hands over the
+  checkout's own `npm run install:hooks -- --apply --replace-existing` when
+  Claude Code runs from a checkout (built and quoted by the viewer as `/api/setup`
+  `checkoutHooksCommand`), promises a later move only while a Setup install
+  could put the app's runtime in place, and otherwise says Setup cannot move them. Once any quit begins, nothing starts: every quit or
   restart path calls `beginAppQuit()` in `electron/main.cjs` first, which refuses
   later installs through `createInstallGate()`, revokes the window's Setup, and
   cancels and awaits the running install; the renderer stops its per-host loop

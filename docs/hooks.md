@@ -193,6 +193,20 @@ verify. If no agent needs moving, it offers the step once the app's runtime is
 installed. Afterwards Setup reads `~/.claude/settings.json` again and says the hooks
 moved only if they now run the app's runtime.
 
+Where no Setup step can move them and the app's runtime is not installed (issue #278),
+Setup promises to move them later only when it could install that runtime itself, for
+an agent that is not registered or runs a Setup runtime. When Claude Code runs from a
+source checkout, Setup never switches it, so it shows that checkout's own command
+instead, to run in a terminal with Node 24:
+
+```sh
+cd <checkout> && npm run install:hooks -- --apply --replace-existing
+```
+
+Otherwise it says it cannot move them, and the commands in
+[One set of hooks](#one-set-of-hooks-switching-between-a-setup-runtime-and-a-checkout)
+apply.
+
 New Claude Code sessions read the new hooks when they start. Claude Code's
 documentation says its settings file watcher normally applies hook changes to running
 sessions too. Setup cannot see whether a session picked the change up, so restart a

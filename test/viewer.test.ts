@@ -247,6 +247,75 @@ describe('viewer api', () => {
       })
     })
 
+    // #278: Setup never switches a checkout registration, so where Claude Code
+    // runs from one, nothing in Setup installs this app's runtime for it. The
+    // viewer hands over that checkout's own hook installer instead, quoted here:
+    // the renderer never builds shell text from a path.
+    it('/api/setup hands over the hook command of the checkout Claude Code runs from, until its hooks are that checkout\'s', async () => {
+      const release = releaseRuntime('2.0.0')
+      const old = release.installVersion('1.2.4')
+      release.registerHooks(old)
+      const checkoutAt = (name: string): string => {
+        const dir = join(scratchDir('view-checkout-'), name)
+        mkdirSync(join(dir, 'dist'), { recursive: true })
+        writeFileSync(join(dir, 'package.json'), '{"name":"agent-inbox"}')
+        writeFileSync(join(dir, 'dist', 'mcp-server.js'), '')
+        writeFileSync(join(dir, 'dist', 'hook-cli.js'), '')
+        return realpathSync(dir)
+      }
+      const settings = join(release.home, '.claude', 'settings.json')
+      const hooksOf = (command: string, entry: string) => writeFileSync(settings, JSON.stringify({
+        hooks: { Stop: [{ hooks: [{ type: 'command', command, args: [entry, 'stop'] }, { type: 'command', command, args: [entry, 'watch'] }] }] },
+      }))
+      const root = checkoutAt("agent inbox's checkout")
+      registerHost(release.home, 'claude', process.execPath, join(root, 'dist', 'mcp-server.js'))
+      registerHost(release.home, 'copilot', process.execPath, join(root, 'dist', 'mcp-server.js'))
+      const app = createViewer(db, release.viewer)
+      const agents = async () => (await (await app.request('/api/setup')).json()).agents
+
+      const res = await app.request('/api/setup')
+      // not a conditional snapshot: every read is answered afresh
+      expect(res.headers.get('etag')).toBeNull()
+      const reported = (await res.json()).agents
+      expect(reported).toMatchObject({
+        current: '2.0.0',
+        updatable: true,
+        claude: { kind: 'checkout', path: root },
+        copilot: { kind: 'checkout', path: root },
+        hooks: { kind: 'runtime', version: '1.2.4' },
+        hooksCommand: '',
+      })
+      const command = `cd '${root.replaceAll("'", "'\\''")}' && npm run install:hooks -- --apply --replace-existing`
+      expect(reported.checkoutHooksCommand).toBe(command)
+      // a shell reads it back as exactly that folder
+      const cd = execFileSync('/bin/sh', ['-c', `${command.slice(0, command.indexOf(' && '))} && pwd -P`], { encoding: 'utf8' })
+      expect(cd.trim()).toBe(root)
+
+      // another checkout's hooks, or ones Setup cannot classify: still the step
+      const other = checkoutAt('other-checkout')
+      hooksOf(process.execPath, join(other, 'dist', 'hook-cli.js'))
+      expect(await agents()).toMatchObject({ hooks: { kind: 'checkout', path: other }, checkoutHooksCommand: command })
+      hooksOf('node', 'hook-cli.js')
+      expect(await agents()).toMatchObject({ hooks: { kind: 'other' }, checkoutHooksCommand: command })
+
+      // already that checkout's hooks, or none: nothing to hand over
+      hooksOf(process.execPath, join(root, 'dist', 'hook-cli.js'))
+      const same = await agents()
+      expect(same.hooks).toEqual({ kind: 'checkout', path: root })
+      expect(same).not.toHaveProperty('checkoutHooksCommand')
+      writeFileSync(settings, '{}')
+      const none = await agents()
+      expect(none.hooks).toEqual({ kind: 'none' })
+      expect(none).not.toHaveProperty('checkoutHooksCommand')
+
+      // Claude Code on Setup's runtime: Setup moves its hooks, not the checkout
+      release.registerHooks(old)
+      release.register('claude', release.installVersion('1.2.8'))
+      const managed = await agents()
+      expect(managed).toMatchObject({ claude: { kind: 'runtime', version: '1.2.8' }, copilot: { kind: 'checkout', path: root } })
+      expect(managed).not.toHaveProperty('checkoutHooksCommand')
+    })
+
     it('never returns another MCP server\'s config from either route', async () => {
       const release = releaseRuntime('2.0.0')
       const old = release.installVersion('1.2.8')

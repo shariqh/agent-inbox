@@ -491,3 +491,31 @@ export function issueRelationsHtml(index, entity, nowMs, opts = {}) {
   const line = freshnessHtml(rel, nowMs)
   return line ? `<div class="card-source src-relations">${body}${line}</div>` : ''
 }
+
+// Slice 2 §7.5: one group of plans under their shared GitHub parent. A heading,
+// not a control: the parent's chip, its title, GitHub's progress when known,
+// how many plans, and their project, since plans of two projects never share
+// a group. A group whose members are all stale is dimmed and says "as of".
+export function planGroupHeadHtml(group, nowMs, opts = {}) {
+  const { parent } = group
+  const tone = group.stale ? 'stale' : 'issue'
+  const label = issueLabel(parent.repo, parent.number, group.against)
+  const chip = chipHtml(issueUrl(parent.repo, parent.number), tone, esc(label), `issue ${label} — ${parent.title}`, true,
+    keyAttr(parent.key))
+  const meta = [
+    ...(parent.total > 0 ? [`${parent.completed} of ${parent.total} sub-issues done`] : []),
+    `${group.size} plan${group.size === 1 ? '' : 's'}`,
+    group.project,
+    ...(group.stale ? [`as of ${agoLabel(group.fetchedAt, nowMs)}`] : []),
+  ].join(' · ')
+  const title = `${parent.title}${opts.continued ? ' (continued)' : ''}`
+  return `<h3 class="plan-group-head${group.stale ? ' stale' : ''}">${chip}` +
+    `<span class="plan-group-title">${esc(title)}</span><span class="plan-group-meta">${esc(meta)}</span></h3>`
+}
+
+// A thin "Part of #117" over a run of a plan's rows (§7.1), a header cell for
+// the matrix's own <tr>.
+export function rowParentHeadHtml(parent, plan) {
+  const label = issueLabel(parent.repo, parent.number, contextRepo(plan, null))
+  return `<th colspan="5" scope="colgroup" class="row-parent-head" title="${esc(parent.title)}">${esc(`Part of ${label}`)}</th>`
+}

@@ -3,7 +3,7 @@
 // the render already computed. The graphs here come from the real pure builder
 // over fixture rows, so every case is a body the viewer could actually serve.
 import { describe, expect, it } from 'vitest'
-import { buildIssueView, HIDDEN_AFTER_MS, STALE_AFTER_MS } from '../public/issues.js'
+import { buildIssueView, HIDDEN_AFTER_MS, planGroups, rowParentRuns, STALE_AFTER_MS } from '../public/issues.js'
 import type { IssueRelation, IssueViewItem, IssueViewPlan, IssueViewRow } from '../public/issues.js'
 import { indexLinks } from '../public/source.js'
 import type { CachedLink } from '../public/source.js'
@@ -307,5 +307,168 @@ describe('Agent Inbox activity (§7.3)', () => {
     })
     const view = buildIssueView(input.graph, { items: input.items, attention: input.attention, nowMs: T })
     expect(labels(view)[120]).toMatchObject({ kind: 'waiting' })
+  })
+})
+
+// Slice 2 §7: opt-in grouping of active plans under their GitHub parent. Keys
+// and order only; the DOM half is test/dom/plan-grouping.test.ts.
+describe('plan grouping keys (slice 2 §7)', () => {
+  const plan = (id: string, pin: number | null, extra: Partial<IssueViewPlan> = {}): IssueViewPlan => ({
+    id, project: 'agent-inbox', agent: 'copilot', title: `Plan ${id}`, status: 'active', repo: REPO, stream: 'main',
+    issue_ref: null, ...(pin === null ? {} : { issue_pin_repo: REPO, issue_pin_number: pin }), rows: [], ...extra,
+  })
+  const parent117 = facts(K(117), { title: 'Umbrella', children_total: 10, children_completed: 1 })
+  /** #117 listing its children in GitHub's order, and each listed child cached under it. */
+  const cached = (kids: number[], fetchedAt = at(0)) => [
+    family(fetchedAt)[0]!,
+    ...kids.map((n) => row(K(n), snapshot(K(n), { ancestors: [parent117] }), fetchedAt)),
+  ]
+  const view = (rows: IssueSnapshotRow[], nowMs = T, opts: { maxUnits?: number } = {}) =>
+    buildIssueView(graphOf(rows, opts), { nowMs })
+  const ids = (plans: readonly IssueViewPlan[]) => plans.map((p) => p.id)
+
+  it('gathers the umbrella, then members in GitHub child order, at the first member\'s place', () => {
+    // today's order puts #120 before #121; GitHub lists #121 first
+    const plans = [plan('a', null), plan('p120', 120), plan('x', null), plan('umb', 117), plan('p121', 121)]
+    const out = planGroups(plans, view(cached([120, 121])), null)
+    expect(ids(out.plans)).toEqual(['a', 'umb', 'p121', 'p120', 'x'])
+    const group = out.groupOf.get('umb')!
+    expect(group).toMatchObject({ project: 'agent-inbox', size: 3, stale: false })
+    expect(group.parent).toMatchObject({ key: K(117), title: 'Integrate Agent Inbox with Agent Host Protocol', total: 10, completed: 1 })
+    expect(out.groupOf.get('p120')).toBe(group)
+    expect(out.groupOf.get('p121')).toBe(group)
+    expect(out.groupOf.has('a')).toBe(false)
+    expect(out.groupOf.has('x')).toBe(false)
+  })
+
+  it('needs two members: a plan alone under its parent, or an umbrella alone, stays flat', () => {
+    const alone = planGroups([plan('a', null), plan('p120', 120)], view(cached([120])), null)
+    expect(ids(alone.plans)).toEqual(['a', 'p120'])
+    expect(alone.groupOf.size).toBe(0)
+    const umbrellaOnly = planGroups([plan('umb', 117), plan('a', null)], view(cached([120])), null)
+    expect(umbrellaOnly.groupOf.size).toBe(0)
+    // the umbrella and one child are two members
+    const pair = planGroups([plan('p120', 120), plan('a', null), plan('umb', 117)], view(cached([120])), null)
+    expect(ids(pair.plans)).toEqual(['umb', 'p120', 'a'])
+    expect(pair.groupOf.get('umb')?.size).toBe(2)
+  })
+
+  it('never merges plans from different Agent Inbox projects under one parent', () => {
+    const other = { project: 'oris' }
+    const split = planGroups([plan('p120', 120), plan('p121', 121, other)], view(cached([120, 121])), null)
+    expect(split.groupOf.size).toBe(0)
+    const both = planGroups([
+      plan('p120', 120), plan('o120', 120, other), plan('p121', 121), plan('o121', 121, other),
+    ], view(cached([120, 121])), null)
+    expect(ids(both.plans)).toEqual(['p121', 'p120', 'o121', 'o120'])
+    const mine = both.groupOf.get('p120')!
+    const theirs = both.groupOf.get('o120')!
+    expect(mine).not.toBe(theirs)
+    expect(mine.key).not.toBe(theirs.key)
+    expect([mine.project, theirs.project]).toEqual(['agent-inbox', 'oris'])
+  })
+
+  it('keeps today\'s order for members GitHub did not order', () => {
+    // #117 itself is not cached, so no list says where its children sit
+    const rows = [120, 121, 122].map((n) => row(K(n), snapshot(K(n), { ancestors: [parent117] }), at(0)))
+    const out = planGroups([plan('p122', 122), plan('p120', 120), plan('p121', 121)], view(rows), null)
+    expect(ids(out.plans)).toEqual(['p122', 'p120', 'p121'])
+    expect(out.groupOf.get('p122')?.size).toBe(3)
+  })
+
+  it('groups stale relations and says so; leaves every other state flat in its place', () => {
+    const plans = [plan('p120', 120), plan('a', null), plan('p121', 121)]
+    const stale = planGroups(plans, view(cached([120, 121]), T + 2 * STALE_AFTER_MS), null)
+    expect(ids(stale.plans)).toEqual(['p121', 'p120', 'a'])
+    expect(stale.groupOf.get('p120')).toMatchObject({ stale: true, fetchedAt: at(0) })
+
+    const flat = (rows: IssueSnapshotRow[] | null, nowMs = T, links: Map<string, CachedLink> | null = null,
+      list: IssueViewPlan[] = plans, opts: { maxUnits?: number } = {}) => {
+      const out = planGroups(list, rows ? view(rows, nowMs, opts) : buildIssueView(null), links)
+      expect(ids(out.plans)).toEqual(ids(list))
+      expect(out.groupOf.size).toBe(0)
+    }
+    // hidden: no successful fetch for over 7 days
+    flat(cached([120, 121]), T + HIDDEN_AFTER_MS + 1)
+    // unavailable: a hard failure on one member leaves the other alone
+    flat([family()[0]!, row(K(120), null, null, { error: 'not-found' }), row(K(121), snapshot(K(121), { ancestors: [parent117] }), at(0))])
+    // no-hierarchy: GitHub returned the issue but not its parent
+    flat([family()[0]!, row(K(120), snapshot(K(120), { unavailable: true }), at(0)), row(K(121), snapshot(K(121), { ancestors: [parent117] }), at(0))])
+    // omitted by the node cap
+    flat(cached([120, 121]), T, null, plans, { maxUnits: 1 })
+    // /api/issues failed or never answered
+    flat(null)
+    // uncertain: a PR row with no bound closing record
+    const legacy: CachedLink = {
+      repo: REPO, branch: '120-x', head_repo: REPO, provider: 'github', pr_number: 9, pr_url: null, pr_title: null,
+      pr_state: 'OPEN', pr_head_sha: null, pr_draft: false, review_decision: null, checks: null, issue_number: 120,
+      issue_url: null, issue_title: null, preview_url: null, preview_environment: null, preview_deployment_id: null,
+      preview_updated_at: null, preview_error: null, tldr: null, fetched_at: at(0), checked_at: at(0), error: null, revision: 1,
+    }
+    flat(cached([120, 121]), T, indexLinks([legacy]), [plan('pr120', null, { stream: '120-x' }), plan('p121', 121)])
+  })
+
+  // Departure 3: a plan is the umbrella of its own group before it is a member
+  // of its parent's; a group left with no member dissolves and frees its plans.
+  it('settles three nesting levels: a dissolved group\'s umbrella joins its parent\'s group', () => {
+    // #100 > (#117, #118); #117 > #120; #120 > #130
+    const f = (n: number) => facts(K(n), { title: `Issue ${n}` })
+    const rows = [
+      row(K(100), snapshot(K(100), { children: [f(117), f(118)] }), at(0)),
+      row(K(117), snapshot(K(117), { ancestors: [f(100)], children: [f(120)] }), at(0)),
+      row(K(118), snapshot(K(118), { ancestors: [f(100)] }), at(0)),
+      row(K(120), snapshot(K(120), { ancestors: [f(117), f(100)], children: [f(130)] }), at(0)),
+      row(K(130), snapshot(K(130), { ancestors: [f(120), f(117), f(100)] }), at(0)),
+    ]
+    const plans = [plan('p130', 130), plan('p118', 118), plan('flat', null), plan('p120', 120), plan('p117', 117), plan('p100', 100)]
+    const out = planGroups(plans, view(rows), null)
+    // #117's group would hold only p117 (p120 leads #120's), so it dissolves and p117 joins #100's
+    expect(ids(out.plans)).toEqual(['p120', 'p130', 'p100', 'p117', 'p118', 'flat'])
+    const top = out.groupOf.get('p100')!
+    expect(top.parent.key).toBe(K(100))
+    expect(top.size).toBe(3)
+    expect(out.groupOf.get('p117')).toBe(top)
+    expect(out.groupOf.get('p118')).toBe(top)
+    const low = out.groupOf.get('p120')!
+    expect(low.parent.key).toBe(K(120))
+    expect(out.groupOf.get('p130')).toBe(low)
+    expect(out.groupOf.has('flat')).toBe(false)
+
+    // without p130, #120's group has no member and dissolves too: p120 rejoins
+    // #117's, which now holds two plans, so p117 leads it and #100 keeps only p118 and p100
+    const fewer = planGroups(plans.filter((p) => p.id !== 'p130'), view(rows), null)
+    expect(ids(fewer.plans)).toEqual(['p100', 'p118', 'flat', 'p117', 'p120'])
+    expect(fewer.groupOf.get('p120')?.parent.key).toBe(K(117))
+    expect(fewer.groupOf.get('p118')?.parent.key).toBe(K(100))
+    expect(fewer.groupOf.get('p100')?.size).toBe(2)
+  })
+
+  it('reads the freshness itself, not just whether a node is present', () => {
+    const fresh = view(cached([120, 121]))
+    for (const freshness of ['hidden', 'no-hierarchy', 'unavailable'] as const) {
+      const forged = { relations: new Map([...fresh.relations].map(([key, rel]) => [key, { ...rel, freshness }])) }
+      expect(planGroups([plan('p120', 120), plan('p121', 121)], forged, null).groupOf.size).toBe(0)
+    }
+  })
+
+  it('never hides or duplicates a plan, and never writes to what it reads', () => {
+    const plans = Object.freeze([plan('umb', 117), plan('p120', 120), plan('p121', 121), plan('a', null), plan('p120b', 120)].map((p) => Object.freeze(p)))
+    const out = planGroups(plans, view(cached([120, 121])), null)
+    expect([...ids(out.plans)].sort()).toEqual([...ids(plans)].sort())
+    expect(new Set(ids(out.plans)).size).toBe(plans.length)
+  })
+
+  it('marks runs of linked rows only when they span two parents', () => {
+    const rows = [
+      ...cached([120, 121]),
+      row(K(130), snapshot(K(130), { ancestors: [facts(K(116), { title: 'Other parent' })] }), at(0)),
+    ]
+    const linked = (id: string, n: number | null): IssueViewRow => (n === null
+      ? { id, label: id, status: 'tracked' }
+      : { id, label: id, status: 'tracked', issue_repo: REPO, issue_number: n })
+    const runs = rowParentRuns([linked('r1', 120), linked('r2', 121), linked('r3', null), linked('r4', 130), linked('r5', 120)], view(rows))
+    expect([...runs].map(([id, node]) => [id, node.key])).toEqual([['r1', K(117)], ['r4', K(116)], ['r5', K(117)]])
+    expect(rowParentRuns([linked('r1', 120), linked('r2', null), linked('r3', 121)], view(rows)).size).toBe(0)
+    expect(rowParentRuns([linked('r1', 120), linked('r4', 130)], buildIssueView(null)).size).toBe(0)
   })
 })

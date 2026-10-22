@@ -21,12 +21,16 @@ import {
   rowWaitsChipHtml,
   planWaitsChipHtml,
   rowWaitsHtml,
+  missionDepsHtml,
+  missionOutsideHtml,
 } from '../public/source.js'
 import type { CachedLink, LinkedEntity } from '../public/source.js'
 import { buildIssueView, planGroups } from '../public/issues.js'
+import { buildMission } from '../public/mission.js'
+import type { MissionBoard } from '../public/mission.js'
 import { buildIssueGraph } from '../src/issue-graph.js'
 import type { IssueError } from '../src/store.js'
-import { at, deps, facts, keySets, row, snapshot } from './issue-fixtures.js'
+import { at, deps, depsOf, facts, keySets, row, snapshot } from './issue-fixtures.js'
 
 const REPO = new URL('..', import.meta.url).pathname
 const NOW = Date.parse('2026-07-26T12:00:00.000Z')
@@ -989,5 +993,117 @@ describe('app.js reads the issue graph like links, and renders it without fetchi
     // slice 2 §9.1: the row detail's "Waits on"
     expect(fn('rowPanelEl')).toContain('rowWaitsHtml(')
     expect(fn('boardEl')).toContain("closest('button, input, a')")
+  })
+})
+
+// Slice 2 PR E (§9.2): the flow's dependency lines and its "Not in this plan" fold.
+describe('dependencies in Plan flow (slice 2 PR E)', () => {
+  const XSS = '"><img src=x onerror=alert(1)>'
+  const R = 'shariqh/agent-inbox'
+  const K = (n: number): string => `${R}#${n}`
+  const nowMs = Date.parse(at(3))
+  const hrefs = (html: string): string[] => [...html.matchAll(/href="([^"]*)"/g)].map((m) => m[1]!)
+  const step = (id: string, label: string, status: string, link: number | null, waits: string[] = []) => ({
+    id, label, status, waits_on: waits, ...(link === null ? {} : { issue_repo: R, issue_number: link }),
+  })
+
+  /** Hostile step labels and GitHub titles; #119 blocks #120, #130 (no row) blocks #120 too; #140 is outside. */
+  function flow(title = 'Issue', status = 'tracked', nowAt = nowMs, error: IssueError | null = null) {
+    const rows = [
+      step('ra', XSS, 'partial', 119),
+      step('ri', `Import <b>requests</b>`, status, 120, [XSS]),
+      step('rc', 'Control', 'tracked', 125),
+    ]
+    const plan = {
+      id: 'p', title: 'AHP', project: 'agent-inbox', agent: 'copilot', status: 'active', repo: R, stream: 'main', issue_ref: null,
+      issue_pin_repo: R, issue_pin_number: 117, progress: { done: 0, countable: 3, fraction: 0 }, rows,
+    } as unknown as MissionBoard & { rows: ReturnType<typeof step>[] }
+    const pairs = depsOf([[K(119), K(120)], [K(130), K(120)], [K(150), K(119)], [K(119), K(150)]])
+    const t = (n: number) => facts(K(n), { title: `${title} ${n}` })
+    const extra = error ? { error, checkedAt: at(100) } : {}
+    const snaps = [
+      row(K(117), snapshot(K(117), { issue: { title: XSS }, children: [K(119), K(120), t(140)] }), at(0), { dependencies: pairs(K(117)), ...extra }),
+      ...[119, 120].map((n) => row(K(n), snapshot(K(n), { issue: { title: `${title} ${n}` }, ancestors: [facts(K(117), { title: XSS })] }), at(0), { dependencies: pairs(K(n)), ...extra })),
+      row(K(125), snapshot(K(125), { ancestors: [facts(K(200), { title: XSS })] }), at(0), { dependencies: pairs(K(125)), ...extra }),
+      row(K(130), snapshot(K(130), { issue: { title: `${title} 130` } }), at(0), { dependencies: pairs(K(130)), ...extra }),
+    ]
+    const issues = buildIssueView(buildIssueGraph(snaps, keySets(snaps.map((r) => `${r.repo}#${r.number}`))), {
+      boards: [plan] as never, nowMs: nowAt,
+      attention: status === 'blocked' ? [{ kind: 'row', row: rows[1]!, board: plan as never }] : [],
+    })
+    const mission = buildMission(plan, { issues, links: null })
+    const html = (id: string) => missionDepsHtml(mission.paths.find((p) => p.row.id === id)!, plan)
+    return { mission, plan, html }
+  }
+
+  it('draws in-plan steps as named buttons and outside issues as chips with activity, exactly', () => {
+    const { html, mission, plan } = flow()
+    expect(html('ri')).toBe('<div class="mission-deps"><div class="mission-edge-waits"><span class="mission-edge-word">Waits on:</span>'
+      + '<ul class="mission-edge-list" aria-label="Waits on">'
+      + '<li><button type="button" class="mission-step-link" data-mission-step="ra" aria-label="Waits on step &quot;&gt;&lt;img src=x onerror=alert(1)&gt; (#119)" title="step in this plan · GitHub">&quot;&gt;&lt;img src=x onerror=alert(1)&gt; (#119)</button></li>'
+      + '<li><span class="mission-sep" aria-hidden="true">·</span><span class="mission-ext"><a href="https://github.com/shariqh/agent-inbox/issues/130" target="_blank" rel="noopener noreferrer" class="src-chip tone-issue" data-issue-key="shariqh/agent-inbox#130">#130</a>'
+      + '<span class="src-tldr">Issue 130</span><span class="src-activity">None here</span></span></li></ul></div></div>')
+    expect(html('ra')).toContain('aria-label="Unblocks step Import &lt;b&gt;requests&lt;/b&gt; (#120)"')
+    expect(html('ra')).toContain('<div class="mission-circular">Circular dependency</div>')
+    expect(html('rc')).toBe('<div class="mission-deps"><div class="mission-edge-contains" title="&quot;&gt;&lt;img src=x onerror=alert(1)&gt;">Part of #200</div></div>')
+    expect(missionOutsideHtml(mission.outside, plan, { key: 'mission-outside:p' })).toBe(
+      '<details class="mission-outside" data-context-key="mission-outside:p"><summary>Not in this plan · 1</summary>'
+      + '<ul class="src-child-list" aria-label="Sub-issues not in this plan"><li class="src-child"><span class="src-mark" role="img" aria-label="open" title="open">●</span>'
+      + '<a href="https://github.com/shariqh/agent-inbox/issues/140" target="_blank" rel="noopener noreferrer" class="src-chip tone-issue" data-issue-key="shariqh/agent-inbox#140">#140</a>'
+      + '<span class="src-tldr">Issue 140</span><span class="src-activity">None here</span></li></ul></details>')
+    expect(missionOutsideHtml(mission.outside, plan, { open: true })).toContain('<details class="mission-outside" open>')
+    expect(missionOutsideHtml(null, plan)).toBe('')
+  })
+
+  it('styles waits-on dashed and containment as a thin solid rail, never sharing a rule, outside @media and without danger', () => {
+    const css = readFileSync(join(REPO, 'public/style.css'), 'utf8')
+    const media = css.search(/@media\s*\(/)
+    const rule = (selector: string) => {
+      const at = css.indexOf(`${selector} {`)
+      expect(at, `${selector} is unstyled`).toBeGreaterThan(-1)
+      expect(at).toBeLessThan(media)
+      return css.slice(at, css.indexOf('}', at))
+    }
+    expect(rule('.mission-edge-waits')).toMatch(/border-left: 2px dashed/)
+    expect(rule('.mission-edge-contains')).toMatch(/border-left: 1px solid/)
+    for (const sel of ['.mission-deps', '.mission-edge-unblocks', '.mission-step-link', '.mission-circular', '.mission-outside', '.mission-sep', '.mission-ext']) rule(sel)
+    // no selector list styles both edge kinds at once
+    expect(css).not.toMatch(/\.mission-edge-waits[^{]*,[^{]*\.mission-edge-contains|\.mission-edge-contains[^{]*,[^{]*\.mission-edge-waits/)
+    const block = css.slice(css.indexOf('.mission-deps {'), css.indexOf('.mission-foot {'))
+    expect(block).not.toMatch(/danger|--bad|red/)
+  })
+
+  it('moves focus to a step only from its button: the reveal is never part of a restore path', () => {
+    const app = readFileSync(join(REPO, 'public/app.js'), 'utf8')
+    expect(app.match(/revealControl\(/g)).toHaveLength(1)
+    const reveal = app.indexOf('revealControl(')
+    expect(app.lastIndexOf('function focusMissionStep(', reveal)).toBeGreaterThan(app.lastIndexOf('\nfunction ', reveal) - 1)
+    // its one caller is the step button's click listener
+    expect(app.match(/focusMissionStep\(/g)).toHaveLength(2)
+    expect(app).toMatch(/step\.addEventListener\('click', \(event\) => \{\n\s+event\.stopPropagation\(\)\n\s+focusMissionStep\(step\.dataset\.missionStep\)/)
+  })
+
+  it('keeps hostile titles inert, builds only constructed hrefs, and never says Blocked, even on a blocked row', () => {
+    const outputs: string[] = []
+    for (const [status, at_, error] of [['tracked', nowMs, null], ['blocked', Date.parse(at(0)) + 60 * 60_000, 'offline']] as const) {
+      const { html, mission, plan } = flow(XSS, status, at_, error)
+      outputs.push(html('ra'), html('ri'), html('rc'), missionOutsideHtml(mission.outside, plan, { open: true }))
+    }
+    const out = outputs.join('\n')
+    expect(out).toContain('tone-stale')
+    expect(out).not.toContain('<img')
+    expect(out).not.toContain('<b>')
+    for (const tag of out.match(/<[a-z][^>]*>/g) ?? []) expect(tag.split('"').length % 2, tag).toBe(1)
+    for (const href of hrefs(out)) expect(href).toMatch(/^https:\/\/github\.com\/shariqh\/agent-inbox\/issues\/\d+$/)
+    expect(out).not.toMatch(/blocked/i)
+    for (const [, tone] of out.matchAll(/class="src-chip tone-([\w-]+)"/g)) expect(['issue', 'stale']).toContain(tone)
+    // a forged node that is no valid slug and number is never drawn
+    const forged = { key: 'x', repo: 'javascript:alert(1)//', number: 1, title: 't', state: 'OPEN' as const, mark: 'open' as const }
+    const { plan } = flow()
+    const path = { row: { id: 'z', label: 'z', status: 'tracked' as const }, result: null, circular: false,
+      waitsOn: [{ kind: 'issue' as const, node: forged, activity: null, freshness: 'fresh' as const }], unblocks: [],
+      partOf: { node: forged, freshness: 'fresh' as const } }
+    expect(missionDepsHtml(path, plan)).toBe('')
+    expect(missionOutsideHtml({ list: [{ node: forged, activity: { kind: 'none', label: 'None here', target: null } }], freshness: 'fresh' }, plan)).toBe('')
   })
 })

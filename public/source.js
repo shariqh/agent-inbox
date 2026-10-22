@@ -554,7 +554,7 @@ const waitsOf = (opts, table, id) => {
   // an issue that is no valid slug and number is never named, as everywhere here
   return (Array.isArray(entries) ? entries : []).flatMap((entry) => {
     if (!entry.node || linkable(entry.node)) return [entry]
-    return entry.step ? [{ ...entry, node: null, freshness: null, sources: ['step'] }] : []
+    return entry.step ? [{ ...entry, node: null, activity: null, freshness: null, sources: ['step'] }] : []
   })
 }
 const waitIssueLabel = (entry, against) => issueLabel(entry.node.repo, entry.node.number, against)
@@ -615,4 +615,56 @@ export function rowWaitsHtml(row, plan, nowMs, opts = {}) {
   const age = waitsAge(entries, nowMs)
   return `<div class="card-source src-waits"><div class="card-source-label">WAITS ON</div><ul class="src-wait-list">${items.join('')}</ul>` +
     `${age ? lineHtml(age) : ''}</div>`
+}
+
+// ── slice 2 §9.2: dependencies in Plan flow ─────────────────────────────────
+// A step of this plan is a button that moves focus to its node (app.js binds
+// `data-mission-step`); an issue no row of this plan links is its GitHub chip
+// and its Agent Inbox activity, never an edge to another plan. Text, not
+// colour, says "waits on", "unblocks", "part of" and "circular".
+
+function missionDepHtml(dep, verb, against) {
+  if (dep.kind === 'step') {
+    const text = `${dep.label}${dep.issue ? ` (${issueLabel(dep.issue.repo, dep.issue.number, against)})` : ''}`
+    return `<button type="button" class="mission-step-link" data-mission-step="${esc(dep.rowId)}"` +
+      ` aria-label="${esc(`${verb} step ${text}`)}" title="${esc(waitSource(dep))}">${esc(text)}</button>`
+  }
+  if (!linkable(dep.node)) return ''
+  const tone = dep.freshness === 'stale' ? 'stale' : 'issue'
+  return `<span class="mission-ext">${nodeChipHtml(dep.node, against, tone)}<span class="src-tldr">${esc(dep.node.title)}</span>` +
+    `${dep.activity ? activityHtml(dep.activity) : ''}</span>`
+}
+
+function missionEdgeHtml(cls, verb, deps, against) {
+  const items = deps.map((dep) => missionDepHtml(dep, verb, against)).filter(Boolean)
+  if (!items.length) return ''
+  const list = items.map((html, i) => `<li>${i ? '<span class="mission-sep" aria-hidden="true">·</span>' : ''}${html}</li>`).join('')
+  return `<div class="${cls}"><span class="mission-edge-word">${esc(verb)}:</span><ul class="mission-edge-list" aria-label="${esc(verb)}">${list}</ul></div>`
+}
+
+// Below a step's summary: "Circular dependency", the "Part of #117" rail, then
+// "Waits on:" and "Unblocks:". '' when the step has none of them.
+export function missionDepsHtml(path, plan) {
+  const against = contextRepo(plan, null)
+  let html = path.circular ? '<div class="mission-circular">Circular dependency</div>' : ''
+  const parent = path.partOf && linkable(path.partOf.node) ? path.partOf.node : null
+  if (parent) {
+    html += `<div class="mission-edge-contains" title="${esc(parent.title)}">${esc(`Part of ${issueLabel(parent.repo, parent.number, against)}`)}</div>`
+  }
+  html += missionEdgeHtml('mission-edge-waits', 'Waits on', path.waitsOn, against)
+  html += missionEdgeHtml('mission-edge-waits mission-edge-unblocks', 'Unblocks', path.unblocks, against)
+  return html ? `<div class="mission-deps">${html}</div>` : ''
+}
+
+// The foot's fold: the plan issue's sub-issues that no row of the plan links.
+export function missionOutsideHtml(outside, plan, opts = {}) {
+  const list = outside ? outside.list.filter((child) => linkable(child.node)) : []
+  if (!list.length) return ''
+  const against = contextRepo(plan, null)
+  const tone = outside.freshness === 'stale' ? 'stale' : 'issue'
+  const items = list.map(({ node, activity }) =>
+    `<li class="src-child">${markHtml(node)}${nodeChipHtml(node, against, tone)}<span class="src-tldr">${esc(node.title)}</span>${activityHtml(activity)}</li>`)
+  const key = typeof opts.key === 'string' && opts.key ? ` data-context-key="${esc(opts.key)}"` : ''
+  return `<details class="mission-outside"${key}${opts.open ? ' open' : ''}><summary>${esc(`Not in this plan · ${list.length}`)}</summary>` +
+    `<ul class="src-child-list" aria-label="Sub-issues not in this plan">${items.join('')}</ul></details>`
 }

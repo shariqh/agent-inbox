@@ -226,6 +226,26 @@ header { flex-wrap: wrap; }
 .mission-result.next { border-color: color-mix(in srgb, var(--app-link) 24%, transparent); }
 .mission-result.empty { color: color-mix(in srgb, var(--app-text) 35%, transparent); font-size: 10.5px; }
 .mission-empty { display: grid; place-items: center; min-height: 140px; color: color-mix(in srgb, var(--app-text) 40%, transparent); }
+/* slice 2 §9.2: dependencies in Plan flow. Waits-on and unblocks are a dashed
+   accent; containment is a thin solid rail. They never share a style, and no
+   dependency uses the danger colour: a dependency is not the human's blocker. */
+.mission-deps { display: grid; gap: 4px; margin-top: 7px; font-size: 10.5px; cursor: default; }
+.mission-edge-waits { padding: 2px 0 2px 8px; border-left: 2px dashed color-mix(in srgb, var(--app-accent) 60%, transparent); }
+.mission-edge-unblocks { border-left-color: color-mix(in srgb, var(--app-accent) 38%, transparent); }
+.mission-edge-contains { padding: 1px 0 1px 8px; border-left: 1px solid color-mix(in srgb, var(--app-text) 24%, transparent); color: color-mix(in srgb, var(--app-text) 55%, transparent); font-size: 9.5px; }
+.mission-edge-word { margin-right: 4px; color: color-mix(in srgb, var(--app-text) 50%, transparent); font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; }
+.mission-edge-list { display: inline; margin: 0; padding: 0; list-style: none; }
+.mission-edge-list > li { display: inline; }
+.mission-sep { margin: 0 5px; color: color-mix(in srgb, var(--app-text) 35%, transparent); }
+.mission-step-link { padding: 0; border: none; background: transparent; color: var(--app-accent); font-family: inherit; font-size: inherit; text-align: left; text-decoration: underline dotted; text-underline-offset: 2px; cursor: pointer; }
+.mission-step-link:hover { text-decoration-style: solid; }
+.mission-ext { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; vertical-align: middle; }
+.mission-ext .src-tldr { font-size: inherit; }
+/* the step a waits-on/unblocks button moved focus to, visible after a mouse click too */
+.mission-node:focus-within { border-color: var(--app-accent); }
+.mission-circular { color: color-mix(in srgb, var(--app-text) 70%, transparent); font-weight: 600; }
+.mission-outside { margin: 12px 0 4px; padding: 6px 10px; border: 1px dashed color-mix(in srgb, var(--app-text) 17%, transparent); border-radius: 9px; font-size: 11px; }
+.mission-outside > summary { color: color-mix(in srgb, var(--app-text) 60%, transparent); cursor: pointer; }
 .mission-foot { padding-top: 10px; color: color-mix(in srgb, var(--app-text) 45%, transparent); font-size: 10.5px; text-align: center; }
 .mission-detail { position: absolute; inset: 0; z-index: 3; display: flex; align-items: center; justify-content: center; }
 .mission-detail[hidden] { display: none; }

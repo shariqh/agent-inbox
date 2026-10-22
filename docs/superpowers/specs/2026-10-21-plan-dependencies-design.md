@@ -595,6 +595,26 @@ All new chips are built in `public/source.js`, so every href still comes from `c
   each member and changes no order.
 - `result` stays `outcome` or `next_after` text only.
 
+*As built (PR E):* `buildMission(board, { issues, links })` reads D's `rowWaits` and
+relations, so the flow and the Plans chips cannot disagree. Details the bullets leave open:
+
+- **Both lists follow the agent's row order**, not the stored (sorted) `waits_on` order the
+  chip tooltip uses, so the flow reads top to bottom. In-plan entries come first, then
+  external issues.
+- **"Unblocks" is the exact inverse of every step's "Waits on"**, and a GitHub edge counts from
+  either end: a row's own open blockers, or (for a row whose issue is open) its relation's open
+  dependents. An edge known only from one side still draws on both steps.
+- **What is a step.** A GitHub issue is an in-plan step when a drawn (not `na`) row links it,
+  even a `done` one: the button takes you there, where D's chip lists it as "GitHub". An issue
+  linked only by an `na` row is drawn as an external chip. "Not in this plan" excludes every
+  row's link, whatever its status.
+- **A local cycle** is found over the raw `waits_on` labels, satisfied ones included, because
+  it is a contract violation the store refuses whatever the targets' status.
+- **The containment rail is text** ("Part of #200", the parent's title on hover), not a link:
+  it is a quiet rail, and the parent is one click away in Plans.
+- The explicit reveal reuses the dialog Tab path's `revealControl`, moved unchanged to a
+  module-level export of `public/keyboard-ui.js`.
+
 ### 9.3 Accessibility
 
 - Text, not colour, carries meaning: "waits on", "unblocks", "circular", "as of …".

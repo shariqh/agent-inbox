@@ -209,7 +209,7 @@ function dependenciesOf(root, node, { nodes, countsOf, blocking, activity }) {
 // certain issue, while that relation draws.
 function githubWaits(rel) {
   if (!rel || !rel.dependencies || rel.dependencies.status !== 'ok') return []
-  return rel.dependencies.waitsOn.map(({ node }) => ({ node, freshness: rel.freshness, fetchedAt: rel.fetchedAt }))
+  return rel.dependencies.waitsOn.map(({ node, activity }) => ({ node, activity, freshness: rel.freshness, fetchedAt: rel.fetchedAt }))
 }
 
 // §9.1: per plan, its issue's open blockers; per row, its waits_on steps that
@@ -240,7 +240,7 @@ function waitsOf({ boards, archived, links }, relations, canonical) {
         const same = key ? fromGitHub.findIndex((g) => g.node.key === canonical(key)) : -1
         const github = same >= 0 ? fromGitHub.splice(same, 1)[0] : null
         entries.push({
-          step: { id: target.id, label: target.label }, node: github ? github.node : null,
+          step: { id: target.id, label: target.label }, node: github ? github.node : null, activity: github ? github.activity : null,
           freshness: github ? github.freshness : null, fetchedAt: github ? github.fetchedAt : null,
           sources: github ? ['step', 'github'] : ['step'],
         })

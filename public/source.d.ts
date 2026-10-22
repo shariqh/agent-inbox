@@ -2,6 +2,7 @@
 // rather than an extension of card.d.ts's CardItem — items and boards both feed
 // these builders, and keeping card.d.ts out of the graph keeps them independent.
 import type { IssueNodeView, IssueView, IssueViewRow, PlanGroup } from './issues.js'
+import type { buildMission, MissionPath } from './mission.js'
 
 export interface LinkedEntity {
   project?: string
@@ -148,4 +149,12 @@ export function rowWaitsHtml(
   plan: (LinkedEntity & { id?: string }) | null,
   nowMs: number,
   opts?: SourceOptions,
+): string
+/** slice 2 §9.2 — a Plan flow step's "Circular", "Part of", "Waits on" and "Unblocks"; '' when none */
+export function missionDepsHtml(path: MissionPath, plan: LinkedEntity | null): string
+/** slice 2 §9.2 — the flow's "Not in this plan" fold; '' when every child is linked */
+export function missionOutsideHtml(
+  outside: ReturnType<typeof buildMission>['outside'],
+  plan: LinkedEntity | null,
+  opts?: { open?: boolean; key?: string },
 ): string

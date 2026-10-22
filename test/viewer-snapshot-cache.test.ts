@@ -9,10 +9,10 @@ import { join } from 'node:path'
 import type Database from 'better-sqlite3'
 import {
   CLAIM_COLD_MS, annotateBoardRow, annotateItem, archiveBoard, dismissItem, endActivity, getBoard, getItem,
-  insertItem, listBoards, listItems, markAnnotationDelivered, markHandledDelivered,
+  insertItem, listBoards, listItems, listSourceLinks, markAnnotationDelivered, markHandledDelivered,
   markItemAnnotationDelivered, markReplySeen, markRowHandled, openDb, readSnapshotState,
-  recordActivityCall, recordIssueFailure, replyItem, resolveItem, touchActivity, unarchiveBoard, updateBoardRow,
-  upsertActivity, upsertBoard, upsertIssueSnapshot,
+  recordActivityCall, recordIssueFailure, recordLinkFailure, replyItem, resolveItem, setSourcePreview, touchActivity,
+  unarchiveBoard, updateBoardRow, upsertActivity, upsertBoard, upsertIssueSnapshot, upsertSourceLink,
 } from '../src/store.js'
 import { groupItems } from '../src/group.js'
 import { createViewer } from '../src/viewer.js'
@@ -407,11 +407,9 @@ describe('viewer conditional snapshots', () => {
     expect((await conditional('/api/items', snapshotTag)).status).toBe(304)
     vi.setSystemTime(new Date(NOW.getTime() + 36 * 60_000))
     expect(await (await conditional('/api/activity', snapshotTag)).json()).toEqual([])
-    for (const route of ['/api/links', '/api/projects/closed']) {
-      const fresh = await conditional(route, snapshotTag)
-      expect(fresh.status).toBe(200)
-      expect(fresh.headers.get('etag')).toBeNull()
-    }
+    const closed = await conditional('/api/projects/closed', snapshotTag)
+    expect(closed.status).toBe(200)
+    expect(closed.headers.get('etag')).toBeNull()
   })
 
   it('keeps conditional responses behind the real loopback boundary and preserves its headers', async () => {
@@ -784,6 +782,128 @@ describe('viewer conditional snapshots', () => {
       expect(issues).not.toBe(items)
       expect((await conditional(ISSUES, items)).status).toBe(200)
       expect((await conditional('/api/items', issues)).status).toBe(200)
+    })
+  })
+
+  // Issue #288: the cached PR state was the one standing poll read that always
+  // answered 200. Its bytes depend on the database alone: the poller writes them
+  // through store.ts, and which previews it serves follows the open items and
+  // active plans, so the store's tokens validate it like the other snapshots.
+  describe('the PR links representation (issue #288)', () => {
+    const LINKS = '/api/links'
+    const REPO = 'shariqh/agent-inbox'
+    const link = (over: Record<string, unknown> = {}) => ({
+      repo: REPO, branch: 'feature', pr_number: 41, pr_state: 'OPEN', pr_url: `https://github.com/${REPO}/pull/41`, ...over,
+    })
+    const later = (seconds: number) => vi.setSystemTime(new Date(NOW.getTime() + seconds * 1000))
+
+    it('returns a tagged representation, then a bodyless no-store 304 with the boot marker', async () => {
+      upsertSourceLink(db, link())
+      const initial = await app.request(LINKS)
+      expect(initial.status).toBe(200)
+      expect(initial.headers.get('content-type')).toContain('application/json')
+      const etag = initial.headers.get('etag')!
+      expect(etag).toMatch(/^"[^"]+"$/)
+      const body = await initial.text()
+      expect(JSON.parse(body)).toEqual(JSON.parse(JSON.stringify(listSourceLinks(db))))
+      for (const method of ['GET', 'HEAD']) {
+        const unchanged = await conditional(LINKS, etag, method)
+        expect(unchanged.status, method).toBe(304)
+        expect(await unchanged.text(), method).toBe('')
+        expect(unchanged.headers.get('etag'), method).toBe(etag)
+        expect(unchanged.headers.get('cache-control'), method).toBe('no-store')
+        expect(unchanged.headers.get('x-inbox-boot'), method).toBe(initial.headers.get('x-inbox-boot'))
+      }
+      // Time alone changes nothing it serves.
+      later(36 * 60)
+      expect((await conditional(LINKS, etag)).status).toBe(304)
+      expect(await (await app.request(LINKS)).text()).toBe(body)
+    })
+
+    it.each(['same', 'other'] as const)('answers 200 once the poller writes on the %s connection, then 304', async (source) => {
+      const connection = source === 'same' ? db : writer
+      const initial = await tag(LINKS)
+      upsertSourceLink(connection, link())
+      const opened = await changed(LINKS, initial)
+      expect(opened.body).toEqual([expect.objectContaining({ pr_number: 41, pr_state: 'OPEN', error: null })])
+      expect((await conditional(LINKS, opened.etag)).status).toBe(304)
+      later(60)
+      upsertSourceLink(connection, link({ pr_state: 'MERGED' }))
+      const merged = await changed(LINKS, opened.etag)
+      expect(merged.body[0]).toMatchObject({ pr_state: 'MERGED' })
+      later(120)
+      recordLinkFailure(connection, { repo: REPO, branch: 'feature', error: 'offline' })
+      const failed = await changed(LINKS, merged.etag)
+      expect(failed.body[0]).toMatchObject({ pr_state: 'MERGED', error: 'offline' })
+      expect((await conditional(LINKS, failed.etag)).status).toBe(304)
+    })
+
+    it('follows the items and plans that keep a preview on screen, with no poller write', async () => {
+      const id = insertItem(db, { ...SCOPE, stream: 'feature', repo: REPO, kind: 'question', title: 'Approve the PR?' })
+      const revision = upsertSourceLink(db, link({ pr_head_sha: 'a'.repeat(40) }))
+      expect(setSourcePreview(db, { repo: REPO, branch: 'feature', revision }, {
+        preview_url: 'https://preview.example/41', preview_environment: 'Preview', preview_deployment_id: 7,
+        preview_updated_at: NOW.toISOString(), preview_error: null,
+      })).toBe(true)
+      const shown = await app.request(LINKS)
+      expect((await shown.json())[0].preview_url).toBe('https://preview.example/41')
+      resolveItem(writer, id)
+      const hidden = await changed(LINKS, shown.headers.get('etag')!)
+      expect(hidden.body[0]).toMatchObject({ pr_number: 41, preview_url: null })
+    })
+
+    it('never revalidates or is revalidated by another route, even with identical bytes', async () => {
+      const links = await app.request(LINKS)
+      const boards = await app.request('/api/boards')
+      expect(await links.text()).toBe(await boards.text())
+      const linksTag = links.headers.get('etag')!
+      const boardsTag = boards.headers.get('etag')!
+      expect(linksTag).toMatch(/^"[^"]+"$/)
+      expect(linksTag).not.toBe(boardsTag)
+      expect((await conditional(LINKS, boardsTag)).status).toBe(200)
+      expect((await conditional('/api/boards', linksTag)).status).toBe(200)
+    })
+
+    it('neither re-reads nor serializes an unchanged representation', async () => {
+      insertItem(db, { ...SCOPE, stream: 'feature', repo: REPO, kind: 'question', title: 'Approve the PR?' })
+      upsertSourceLink(db, link({ preview_url: 'https://preview.example/41' }))
+      const etag = await tag(LINKS)
+      const queries: string[] = []
+      const prepare = db.prepare.bind(db)
+      db.prepare = ((sql: string) => { queries.push(sql); return prepare(sql) }) as typeof db.prepare
+      const stringify = vi.spyOn(JSON, 'stringify')
+      let serializations = 0
+      try {
+        for (let request = 0; request < 3; request++) {
+          expect((await conditional(`${LINKS}?probe=${request}`, etag)).status).toBe(304)
+        }
+        serializations = stringify.mock.calls.length
+      } finally {
+        stringify.mockRestore()
+        db.prepare = prepare
+      }
+      expect(serializations).toBe(0)
+      expect(queries.filter((sql) => /\bFROM\s+(source_links_by_head|items|boards)\b/i.test(sql))).toEqual([])
+    })
+
+    it('does not retain an uncommitted representation after its transaction rolls back', async () => {
+      upsertSourceLink(db, link())
+      const initial = await tag(LINKS)
+      let pending: Promise<Response> | undefined
+      const rollback = new Error('rollback fixture')
+      expect(() => db.transaction(() => {
+        upsertSourceLink(db, link({ pr_state: 'MERGED' }))
+        pending = Promise.resolve(app.request(LINKS))
+        throw rollback
+      })()).toThrow(rollback)
+      const transient = await pending!
+      const transientTag = transient.headers.get('etag')!
+      expect((await transient.json())[0].pr_state).toBe('MERGED')
+      expect(transientTag).not.toBe(initial)
+      const restored = await changed(LINKS, transientTag)
+      expect(restored.body[0].pr_state).toBe('OPEN')
+      expect(restored.etag).toBe(initial)
+      expect((await conditional(LINKS, initial)).status).toBe(304)
     })
   })
 })

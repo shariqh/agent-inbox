@@ -399,3 +399,52 @@ describe('the /api/issues snapshot', () => {
     expect(await (await read('/api/issues')).json()).toEqual(body)
   })
 })
+
+// Issue #288: the cached PR state is a conditional snapshot too. A body the
+// validator refuses is never cached, and load() turns any failure into "no
+// links", never a failed tick.
+describe('the /api/links snapshot', () => {
+  const links = [{
+    repo: 'shariqh/agent-inbox', branch: 'feature', head_repo: 'shariqh/agent-inbox', provider: 'github',
+    pr_number: 41, pr_url: 'https://github.com/shariqh/agent-inbox/pull/41', pr_state: 'OPEN', pr_draft: false,
+    checked_at: '2026-10-22T12:00:00.000Z', fetched_at: '2026-10-22T12:00:00.000Z', error: null, revision: 1,
+  }]
+  const json = (value: unknown, etag?: string) =>
+    new Response(JSON.stringify(value), { headers: etag ? { etag } : {} })
+
+  it('accepts the cached links, freezes them and revalidates them in their own slot', async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(json(links, '"l"'))
+      .mockResolvedValueOnce(json([], '"l"'))
+      .mockResolvedValueOnce(new Response(null, { status: 304 }))
+    const read = createSnapshotReader(fetcher)
+    const first = await (await read('/api/links')).json()
+    expect(first).toEqual(links)
+    expect(Object.isFrozen((first as typeof links)[0])).toBe(true)
+    await (await read('/api/boards')).json() // the same opaque tag on another route shares nothing
+    expect(fetcher.mock.calls[1]?.[1]?.headers).toBeUndefined()
+    expect(await (await read('/api/links')).json()).toBe(first)
+    expect(fetcher.mock.calls[2]?.[1]?.headers).toEqual({ 'If-None-Match': '"l"' })
+  })
+
+  it.each([
+    ['a record', { links }],
+    ['a missing entry', [null]],
+    ['an entry without a repository', [{ ...links[0], repo: undefined }]],
+    ['an entry whose branch is not text', [{ ...links[0], branch: 7 }]],
+  ])('refuses %s without caching its validator', async (_label, value) => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(json(value, '"bad"'))
+      .mockResolvedValueOnce(json(links))
+    const read = createSnapshotReader(fetcher)
+    await expect((await read('/api/links')).json()).rejects.toThrow('Invalid snapshot payload')
+    await (await read('/api/links')).json()
+    expect(fetcher.mock.calls[1]?.[1]?.headers).toBeUndefined()
+  })
+
+  it('fails explicitly on a 404 from a viewer that predates the route, and takes no query', async () => {
+    const read = createSnapshotReader(vi.fn().mockResolvedValue(new Response('<!doctype html>', { status: 404 })))
+    await expect((await read('/api/links')).json()).rejects.toThrow('HTTP 404')
+    await expect(read('/api/links?scope=attention')).rejects.toThrow('Unsupported snapshot route')
+  })
+})

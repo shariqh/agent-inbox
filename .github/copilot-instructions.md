@@ -145,6 +145,10 @@ Run the build before `npm run electron`; the development shell starts the built
   Activity history changes with time alone, so it is conditional only on a hash
   of its freshly computed bytes plus the window and project that selected them;
   never validate it with store tokens or cache it server-side (#185).
+  `/api/links` is a retained snapshot too (#288): the PR poller writes it through
+  `store.ts` and its previews follow open items and active plans, so store tokens
+  validate it. The poll reads it through the snapshot reader, and a 404, network
+  error or refused body still means no links, never a failed tick.
 - `/api/items` pages closed history (#184): every open item, the 50 most recently
   touched closed items, the 4 newest outcome-bearing ones of open projects and a
   `history` summary that keeps every count exact. Only `load()` reads

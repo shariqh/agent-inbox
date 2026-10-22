@@ -80,7 +80,11 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   derive that tag from store tokens or cache the body server-side; the whole
   route costs under a millisecond on a #161-sized hub. The poll floors its 30-day
   `since_ms` to the hour (`activityHistoryUrl`), so successive ticks name one
-  representation.
+  representation. `/api/links` (issue #288) is one more retained representation
+  with its own validator: its bytes depend on the database alone, because the PR
+  poller writes them through `store.ts` and the previews it keeps follow open
+  items and active plans, so the store's tokens validate it and the tick after a
+  poller write answers 200.
   This is bounded snapshot reuse, not a cross-endpoint synchronization protocol.
   The browser keeps its own window-local, deeply frozen representations. A 304
   reuses the exact representation that request revalidated, not a later overlapping
@@ -94,10 +98,12 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   full-fetch behavior, malformed replies fail explicitly, and no snapshot content
   is persisted to browser storage. Derive mutable view state rather than changing
   authoritative cached records. A poll tick starts its eight reads together (#161)
-  and applies nothing until all settle: history, closed projects, links and the
-  sub-issue graph (#103) keep their fallbacks, any other failure still fails the
-  whole tick (reported in the old serial order) without blanking the frame, and
-  `loadGeneration` still discards an older tick that finishes late.
+  and applies nothing until all settle: history, closed projects, links (read as a
+  snapshot since #288, its body through `linksBody`, so a 404, a network error or
+  a refused body is no links) and the sub-issue graph (#103) keep their
+  fallbacks, any other failure still fails the whole tick (reported in the old
+  serial order) without blanking the frame, and `loadGeneration` still discards
+  an older tick that finishes late.
 - **Closed history is paged out of the default items snapshot (issue #184).**
   `/api/items` carries every open item, the `RECENT_CLOSED_ITEMS` (50) most
   recently TOUCHED closed items (`listItemsPage`: the newest of every item stamp)

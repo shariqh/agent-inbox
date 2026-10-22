@@ -573,7 +573,7 @@ function etagMatches(requested: string | undefined, etag: string): boolean {
 
 function conditionalSnapshot(
   db: Database.Database,
-  name: 'items' | 'attention-items' | 'history-items' | 'boards' | 'archived-boards' | 'issues',
+  name: 'items' | 'attention-items' | 'history-items' | 'boards' | 'archived-boards' | 'issues' | 'links',
   read: () => object,
 ): Handler {
   // One representation per registration, local to this viewer instance.
@@ -791,7 +791,10 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
   // issue #30 — the cached PR state, one row per (repo, branch). Deliberately
   // PURE: it never triggers a gh fetch, so the frontend's 3s poll can hit it
   // freely. The only writer is the poller src/viewer-server.ts starts.
-  app.get('/api/links', (c) => c.json(listSourceLinks(db)))
+  // Issue #288: its bytes depend on the database alone (the poller writes them
+  // through store.ts, and the previews it keeps follow open items and active
+  // plans), so it is a retained representation with its own validator.
+  app.get('/api/links', conditionalSnapshot(db, 'links', () => listSourceLinks(db)))
 
   // Issue #103: the sub-issue graph, reconciled purely from cached GitHub
   // snapshots and the issues that open items and active or archived plans link

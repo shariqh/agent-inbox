@@ -35,8 +35,8 @@ import { boardRowsView, boardRowLine, progressLabel, hiddenDoneCount, lingeringB
 import { titleWithBadge, focusHashFor, parseFocusHash } from '/badge.js'
 import { layoutMode, railLabel, NARROW_MAX, PROJECT_DISCLOSURE_MAX } from '/layout.js'
 import {
-  indexLinks, issueRelationsHtml, planGroupHeadHtml, PREVIEW_TTL_MS, previewRef, rowIssueChipsHtml, rowParentHeadHtml,
-  sourceChipsHtml, sourceBlockHtml,
+  indexLinks, issueRelationsHtml, planGroupHeadHtml, planWaitsChipHtml, PREVIEW_TTL_MS, previewRef, rowIssueChipsHtml,
+  rowParentHeadHtml, rowWaitsChipHtml, rowWaitsHtml, sourceChipsHtml, sourceBlockHtml,
 } from '/source.js'
 import { buildIssueView, planGroups, rowParentRuns } from '/issues.js'
 import { buildSummary } from '/buildstamp.js'
@@ -2923,6 +2923,7 @@ function cardOriginHtml(entity, identity, { showProject = true } = {}) {
     ${entity.label !== undefined ? `<span>Plan · ${esc(identity.title)}</span>` : ''}
     ${entity.action_owner ? `<span class="action-owner">${esc(actionOwnerLabel(entity))}</span>` : ''}
     ${sourceChipsHtml(linkIndex, identity, Date.now(), { ...sourceOptions(entity, identity), tabbable: true })}
+    ${entity !== identity && Array.isArray(identity.rows) ? rowWaitsChipHtml(entity, identity, Date.now(), { issues: issueView, tabbable: true }) : ''}
   </div>`
 }
 
@@ -2972,6 +2973,7 @@ function rowPanelEl(b, r, readOnly = false) {
     ${actionBlocksHtml(presentation)}
     ${rowHumanStateHtml(r)}
     ${outcomeHtml(r.outcome, r.outcome_at)}
+    ${rowWaitsHtml(r, b, Date.now(), { issues: issueView })}
     ${cardDetailsHtml(r, b, `row:${r.id}`, presentation)}`
   bindContextDisclosures(wrap)
   if (!readOnly) wrap.appendChild(rowAnswerEl(b, r))
@@ -5802,6 +5804,7 @@ function boardEl(b, archived = false, lingering = false) {
   // outlives the session. preventDefault (the .hidden-hint precedent above) is
   // not reusable here — on an anchor it kills the navigation we want.
   const srcHtml = sourceChipsHtml(linkIndex, b, Date.now(), { tabbable: true, issues: issueView })
+    + planWaitsChipHtml(b, Date.now(), { tabbable: true, issues: issueView })
   if (srcHtml) {
     const src = document.createElement('div')
     src.className = 'board-source'
@@ -5837,7 +5840,8 @@ function boardEl(b, archived = false, lingering = false) {
     tr.dataset.rowId = r.id
     // one-line note only; the long context lives behind the row click. A row
     // linked to its own issue (#103) names it first, where a long note cannot hide it.
-    const rowSrc = rowIssueChipsHtml(r, b, Date.now(), { issues: issueView })
+    // slice 2 §9.1: what the row waits on, after its issue chip
+    const rowSrc = rowIssueChipsHtml(r, b, Date.now(), { issues: issueView }) + rowWaitsChipHtml(r, b, Date.now(), { issues: issueView })
     tr.innerHTML = `
       <td class="row-num">${num}</td>
       <td class="row-glyph ${r.status}" title="${esc(STATUS_LABEL[r.status] ?? r.status)}">${GLYPH[r.status] || ''}</td>

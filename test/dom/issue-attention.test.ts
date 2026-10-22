@@ -115,8 +115,9 @@ describe('attention with and without relationship data (#103 PR3)', () => {
     expect(on).toEqual(off)
   })
 
-  // Slice 2 PR B (§10): GitHub dependencies reach /api/issues and feed nothing here.
-  it('keeps every attention surface identical with and without GitHub dependencies', async () => {
+  // Slice 2 §10 (PR B, drawn since PR D): GitHub dependencies and waits_on
+  // draw chips and lists in Plans, and feed nothing here, grouping on or off.
+  it('keeps every attention surface identical with and without GitHub dependencies and waits_on', async () => {
     db = freshDb()
     insertItem(db, { ...SCOPE, stream: '121-input', kind: 'question', title: 'Which input first?', repo: REPO, issue_ref: 121 })
     upsertBoard(db, {
@@ -127,18 +128,15 @@ describe('attention with and without relationship data (#103 PR3)', () => {
           label: 'Approve the AHP contract', status: 'blocked', issue: { repo: REPO, number: 119 },
           note: 'The contract is drafted.', next_step: 'Approve the contract.', action_owner: 'approval',
           impact: 'Unblocks the adapter.', options: [{ label: 'Approve', recommended: true }, { label: 'Hold' }],
+          waits_on: ['Waits on the adapter'],
         },
+        { label: 'Ship it', status: 'tracked', waits_on: ['Approve the AHP contract', 'Waits on the adapter'] },
       ],
     })
+    upsertBoard(db, { ...SCOPE, stream: 'main', title: 'Child 121', repo: REPO, issuePin: { repo: REPO, number: 121 }, rows: [{ label: 'Import', status: 'tracked' }] })
     const parent = facts(K(117), { title: 'Umbrella', children_total: 3, children_completed: 0 })
     cache(db, 117, { children: [K(119), K(120), K(121)] })
-    for (const n of [119, 120, 121]) cache(db, n, { ancestors: [parent] })
-    await bootApp(db)
-    await showInbox()
-    const before = await attentionSurfaces()
-
-    // the same issues refreshed with GitHub's dependencies: #119 and #120 block #121, open
-    advanceClock(60_000)
+    // #119 and #120 block #121, open
     const list = (issues: IssueFacts[]) => ({ open: issues.length, total: issues.length, truncated: false, list: issues })
     const refresh = (n: number, blockedBy: number[], blocking: number[]) => upsertIssueSnapshot(db!, {
       repo: REPO, number: n, startedAt: new Date().toISOString(), snapshot: snapshot(K(n), { ancestors: [parent] }),
@@ -146,14 +144,61 @@ describe('attention with and without relationship data (#103 PR3)', () => {
     })
     refresh(121, [119, 120], [])
     refresh(119, [], [121])
-    await pollTick()
-    await settle()
-    const graph = await (await fetch('/api/issues')).json() as { edges: Array<{ kind: string }> }
-    expect(graph.edges.filter((edge) => edge.kind === 'blocks')).toHaveLength(2)
-    const withDependencies = await attentionSurfaces()
+    cache(db, 120, { ancestors: [parent] })
 
-    expect(before.badge).toBe(2)
-    expect(withDependencies).toEqual(before)
+    // a page with neither: the bodies an older viewer and an older hub would serve
+    let strip = true
+    const rewrite = async (response: Response, change: (body: never) => unknown) => {
+      const headers = new Headers(response.headers)
+      headers.delete('etag')
+      headers.delete('content-length')
+      return new Response(JSON.stringify(change(await response.json() as never)), { status: 200, headers })
+    }
+    await bootApp(db, {
+      interceptFetch: async (input, _init, next) => {
+        const response = await next()
+        if (!strip || response.status !== 200) return response
+        if (route(input) === '/api/issues') {
+          return rewrite(response, (body: { edges: Array<{ kind: string }>; nodes: Array<Record<string, unknown>>; roots: Array<Record<string, unknown>> }) => ({
+            ...body,
+            edges: body.edges.filter((edge) => edge.kind === 'contains'),
+            nodes: body.nodes.map(({ deps: _deps, ...node }) => node),
+            roots: body.roots.map(({ dependencies: _status, dependencies_omitted: _omitted, ...root }) => root),
+          }))
+        }
+        if (route(input) === '/api/boards') {
+          return rewrite(response, (body: Array<{ rows: Array<Record<string, unknown>> }>) =>
+            body.map((board) => ({ ...board, rows: board.rows.map(({ waits_on: _waits, ...row }) => row) })))
+        }
+        return response
+      },
+    })
+    for (const grouping of [false, true]) {
+      strip = true
+      await pollTick()
+      if (grouping) {
+        click(document.querySelector('.tab[data-tab="boards"]'))
+        await settle()
+        click(document.querySelector('#boards .tab-header input[role="switch"]'))
+        await settle()
+        expect(document.querySelectorAll('#boards .plan-group-head')).toHaveLength(1)
+      }
+      await showInbox()
+      const before = await attentionSurfaces()
+
+      strip = false
+      await pollTick()
+      click(document.querySelector('.tab[data-tab="boards"]'))
+      await settle()
+      expect([...document.querySelectorAll('#boards [data-waits-on]')].map((el) => el.textContent))
+        .toEqual(expect.arrayContaining(['waits on 2', 'waits on step Waits on the adapter', 'waits on 2 steps']))
+      expect(document.querySelector('#boards .src-deps')).not.toBeNull()
+      await showInbox()
+      const withDependencies = await attentionSurfaces()
+
+      expect(before.badge).toBe(2)
+      expect(withDependencies).toEqual(before)
+    }
   })
 
   it('pins the attention modules: none of them names an issue field, a dependency field, waits_on or plan grouping', () => {

@@ -133,3 +133,19 @@ export function issueRelationsHtml(
 export function planGroupHeadHtml(group: PlanGroup, nowMs: number, opts?: { continued?: boolean }): string
 /** slice 2 §7.1 — "Part of #117" over a run of a plan's rows */
 export function rowParentHeadHtml(parent: IssueNodeView, plan: LinkedEntity | null): string
+/** slice 2 §9.1 — "waits on …" after a row's issue chip; '' when it waits on nothing open */
+export function rowWaitsChipHtml(
+  row: IssueViewRow | { id: string } | null,
+  plan: (LinkedEntity & { id?: string }) | null,
+  nowMs: number,
+  opts?: SourceOptions,
+): string
+/** slice 2 §9.1 — "waits on …" beside a plan's own issue chip */
+export function planWaitsChipHtml(plan: (LinkedEntity & { id: string }) | null, nowMs: number, opts?: SourceOptions): string
+/** slice 2 §9.1 — the row detail's "Waits on" block, each target with its source */
+export function rowWaitsHtml(
+  row: IssueViewRow | { id: string } | null,
+  plan: (LinkedEntity & { id?: string }) | null,
+  nowMs: number,
+  opts?: SourceOptions,
+): string

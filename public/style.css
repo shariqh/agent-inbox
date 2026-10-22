@@ -765,6 +765,16 @@ button.src-activity:hover { opacity: 1; text-decoration: underline; }
 .board-issues { padding: 0 12px 6px; }
 .row-src { display: inline-flex; align-items: center; gap: 4px; margin-right: 6px; vertical-align: middle; }
 
+/* ── dependencies (issue #103 slice 2, §9.1) ─────────────────────────────────
+   "waits on" chips, GitHub's waits-on/unblocks lists and a row's "Waits on".
+   A dependency is not the human's blocker: neutral tones only, and text, not
+   colour, says "waits on", "unblocks", "circular" and "as of". */
+.src-deps-head { font-size: 11px; opacity: .6; margin-top: 2px; }
+.src-wait-list { display: flex; flex-direction: column; gap: 3px; margin: 0; padding: 0; list-style: none; }
+.src-wait { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.src-step { font-size: 12px; font-weight: 600; }
+.src-wait-source { font-size: 11px; opacity: .55; }
+
 /* ── Editorial desk ─────────────────────────────────────────────────────── */
 header { position: static; background: transparent; }
 .app-shell { min-height: calc(100vh - 28px); }

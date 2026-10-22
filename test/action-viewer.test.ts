@@ -292,11 +292,11 @@ describe('pin for later routes (#247)', () => {
     expect(await res.json(), 'a vanished row is a stale snapshot').toEqual({ ok: false, reason: 'version_mismatch' })
   })
 
-  it('reaches /api/items, the dock’s attention read and /api/boards, and moves each validator', async () => {
+  it('reaches /api/items, /api/boards and the dock’s attention reads of both, and moves each validator', async () => {
     const id = question()
     plan()
     const app = createViewer(db)
-    const paths = ['/api/items', '/api/items?scope=attention', '/api/boards']
+    const paths = ['/api/items', '/api/items?scope=attention', '/api/boards', '/api/boards?scope=attention']
     const read = async (path: string) => {
       const res = await app.request(path)
       return { etag: res.headers.get('ETag')!, body: await res.json() }
@@ -305,6 +305,7 @@ describe('pin for later routes (#247)', () => {
     expect(before[0]!.body.needsYou[0].items[0]).toMatchObject({ id, pinned_at: null })
     expect(before[1]!.body.needsYou[0].items[0]).toMatchObject({ id, pinned_at: null })
     expect(before[2]!.body[0].rows[0]).toMatchObject({ label: 'Upload', pinned_at: null })
+    expect(before[3]!.body[0].rows[0]).toMatchObject({ label: 'Upload', pinned_at: null })
 
     expect(await (await post(`/api/items/${id}/later`, JSON.stringify({ pinned: true }), app)).json()).toEqual({ ok: true })
     const { path, pins } = current('Upload')
@@ -315,6 +316,7 @@ describe('pin for later routes (#247)', () => {
     expect(after[0]!.body.needsYou[0].items[0].pinned_at).toMatch(/^\d{4}-/)
     expect(after[1]!.body.needsYou[0].items[0].pinned_at).toMatch(/^\d{4}-/)
     expect(after[2]!.body[0].rows[0].pinned_at).toMatch(/^\d{4}-/)
+    expect(after[3]!.body[0].rows[0].pinned_at).toMatch(/^\d{4}-/)
     for (const [index, path] of paths.entries()) {
       const res = await app.request(path, { headers: { 'If-None-Match': before[index]!.etag } })
       expect(res.status, `${path} answers the old validator with the new body`).toBe(200)

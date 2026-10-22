@@ -1246,7 +1246,20 @@ describe('the AppImage file the app started from', () => {
     const fx = fixture()
     const away = join(fx.work, 'away.AppImage')
     renameSync(fx.appImage, away)
-    const installer = fx.installer()
+    // The startup snapshot is the installer's first lstat of the AppImage. Wait for it to
+    // settle before putting the file back, or a busy thread pool can let it see the return.
+    let startupSettled: Promise<unknown> | undefined
+    const fsImpl: AppImageInstallFs = {
+      ...realFs,
+      lstat: (path, options) => {
+        const result = realFs.lstat(path, options)
+        if (startupSettled === undefined && path === fx.appImage) startupSettled = result.catch(() => null)
+        return result
+      },
+    }
+    const installer = fx.installer({ fsImpl })
+    expect(startupSettled).toBeDefined()
+    await startupSettled
     expect(await installer.feasibility({ version: '1.4.0' })).toMatchObject({ ok: false, reason: 'not-regular-file' })
 
     renameSync(away, fx.appImage)

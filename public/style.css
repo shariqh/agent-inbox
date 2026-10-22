@@ -240,6 +240,9 @@ header { flex-wrap: wrap; }
 .mission-step-link { padding: 0; border: none; background: transparent; color: var(--app-accent); font-family: inherit; font-size: inherit; text-align: left; text-decoration: underline dotted; text-underline-offset: 2px; cursor: pointer; }
 .mission-step-link:hover { text-decoration-style: solid; }
 .mission-ext { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; vertical-align: middle; }
+.mission-ext .src-tldr { font-size: inherit; }
+/* the step a waits-on/unblocks button moved focus to, visible after a mouse click too */
+.mission-node:focus-within { border-color: var(--app-accent); }
 .mission-circular { color: color-mix(in srgb, var(--app-text) 70%, transparent); font-weight: 600; }
 .mission-outside { margin: 12px 0 4px; padding: 6px 10px; border: 1px dashed color-mix(in srgb, var(--app-text) 17%, transparent); border-radius: 9px; font-size: 11px; }
 .mission-outside > summary { color: color-mix(in srgb, var(--app-text) 60%, transparent); cursor: pointer; }

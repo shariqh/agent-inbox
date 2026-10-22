@@ -515,8 +515,9 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   first (at most one per node, so never cut), then `blocks` edges in the same round-robin, then
   any other between emitted nodes, by key. `truncated.dependencies`, `truncated.edges` (both
   kinds) and each root's `dependencies_omitted` (its entries not emitted) are exact, as is
-  `dependencies_omitted_open` (#275: those whose other end is OPEN by the same freshest facts
-  its node would carry; an unknown state is not open). Everything is additive within version 1
+  `dependencies_omitted_open` (#275: `{ blocked_by, blocking }`, those whose other end is OPEN
+  by the same freshest facts its node would carry, split by direction; an unknown state is not
+  open, and an entry rule 6 dropped is in neither count). Everything is additive within version 1
   (`blocks` edges, node `deps`, root `dependencies` `ok|unavailable|unknown|null`,
   `dependencies_omitted` and `dependencies_omitted_open`), and the bytes still depend on the
   database alone, so `/api/issues` stays a store-token conditional snapshot.
@@ -672,9 +673,11 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   listed) are "more on GitHub" when that direction's `total` exceeds 50 and "not visible to
   your GitHub account" only when the page was complete (`total` ≤ 50): never blame
   permissions for what may sit beyond the page (review of #274). The node cap's cut of OPEN
-  ones ("+N not shown": `dependencies_omitted_open`, once per section, #275; a graph without
-  it falls back to `dependencies_omitted`) is taken out of those two counts, so a closed
-  neighbour the cap cut never inflates it.
+  ones ("+N not shown": the sum of `dependencies_omitted_open`'s two directions, one line per
+  section, #275) is taken out of those two counts, each direction only from its own list's
+  lines, so a closed neighbour the cap cut never inflates it and a cut blocker is never called
+  hidden. A graph without the field (an older viewer) falls back to `dependencies_omitted`,
+  taken from both directions as before.
   Closed issues draw nothing and are never counted. The same view adds `planWaits` (plan
   id → its certain issue's open blockers) and `rowWaits` (row id → its `waits_on` steps that
   are neither `done` nor `na` (a step that will not happen holds nothing up), then its own link's open blockers). Steps are local and draw with no graph;

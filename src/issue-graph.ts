@@ -105,9 +105,11 @@ export interface IssueGraphRoot {
   dependencies_omitted: number
   /**
    * #275: those of them whose other end is OPEN by its freshest facts, the
-   * ones a list of open dependencies lacks. Additive within version 1.
+   * ones a list of open dependencies lacks, by direction: `blocked_by` its
+   * cut blockers ("waits on"), `blocking` its cut dependents ("unblocks").
+   * Additive within version 1.
    */
-  dependencies_omitted_open: number
+  dependencies_omitted_open: { blocked_by: number; blocking: number }
 }
 
 export interface IssueGraph {
@@ -647,11 +649,12 @@ export function buildIssueGraph(
   // freshest facts the nodes carry (an issue whose state is unknown is not open)
   const omittedOf = (root: Root) => {
     let omitted = 0
-    let open = 0
+    const open = { blocked_by: 0, blocking: 0 }
     for (const pair of root.blocks) {
       if (emitted.has(pair)) continue
       omitted++
-      if (factsOf.get(pair.to === root.node ? pair.from : pair.to)?.value.state === 'OPEN') open++
+      const blocker = pair.to === root.node
+      if (factsOf.get(blocker ? pair.from : pair.to)?.value.state === 'OPEN') open[blocker ? 'blocked_by' : 'blocking']++
     }
     return { dependencies_omitted: omitted, dependencies_omitted_open: open }
   }

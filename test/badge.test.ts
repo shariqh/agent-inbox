@@ -177,6 +177,11 @@ describe('focusItem opens ancestor <details> folds, not just the target (fix rou
   it('flips staleFoldOpen so the next 3s poll does not re-collapse the stale fold', () => {
     expect(helper).toMatch(/staleFoldOpen\s*=\s*true/)
   })
+  // #247: the snoozed and pinned folds, likewise. jsdom's own toggle event
+  // re-records a programmatic open, so only the source can hold this line.
+  it('records an opened deferred fold so the next 3s poll keeps it open', () => {
+    expect(helper).toMatch(/openDeferredFolds\.add\(node\.dataset\.deferredFold\)/)
+  })
   it('flips showArchived so the next 3s poll does not re-collapse the archived fold', () => {
     expect(helper).toMatch(/showArchived\s*=\s*true/)
   })

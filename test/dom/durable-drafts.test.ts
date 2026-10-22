@@ -397,6 +397,35 @@ describe('the stored copy follows the draft', () => {
     expect(stored()).toEqual({})
   })
 
+  it('is dropped at the next load when a send still in flight at unload had landed', async () => {
+    db = freshDb()
+    const id = question(db)
+    const other = question(db, 'Still unsent')
+    await bootApp(db, {
+      interceptFetch: async (input, init, next) => {
+        if (init?.method === 'POST' && String(input).includes(`/items/${id}/reply`)) {
+          await next()
+          return new Promise(() => {})
+        }
+        return next()
+      },
+    })
+    await draftAnswer(other, 'Not sent yet.')
+    await draftAnswer(id, 'Landed answer.')
+    click(sendButton(id))
+    await settle()
+    expect(getItem(db, id)?.reply).toBe('Landed answer.')
+
+    const bridge = await reopen(db)
+    await pollTick()
+    expect(bridge.posts).toHaveLength(0)
+    expect(recovery()).toBeNull()
+    await showInbox()
+    expect(answerInput(other)?.value).toBe('Not sent yet.')
+    await saved()
+    expect(Object.keys(stored())).toEqual([`reply:${other}`])
+  })
+
   it('is kept, as an unsent response, when the send is refused', async () => {
     db = freshDb()
     const id = question(db)

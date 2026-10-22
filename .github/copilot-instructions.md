@@ -99,7 +99,10 @@ Run the build before `npm run electron`; the development shell starts the built
   checkout's own `npm run install:hooks -- --apply --replace-existing` when
   Claude Code runs from a checkout (built and quoted by the viewer as `/api/setup`
   `checkoutHooksCommand`), promises a later move only while a Setup install
-  could put the app's runtime in place, and otherwise says Setup cannot move them. Once any quit begins, nothing starts: every quit or
+  could put the app's runtime in place, and otherwise says Setup cannot move them.
+  That promise can still show where no install keeps it: `none` also covers a
+  host whose CLI is not installed, which the viewer cannot see without running
+  anything (custom or unverifiable Claude Code plus no Copilot CLI); docs/hooks.md gives the way out. Once any quit begins, nothing starts: every quit or
   restart path calls `beginAppQuit()` in `electron/main.cjs` first, which refuses
   later installs through `createInstallGate()`, revokes the window's Setup, and
   cancels and awaits the running install; the renderer stops its per-host loop

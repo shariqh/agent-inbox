@@ -267,7 +267,7 @@ describe('viewer api', () => {
       const hooksOf = (command: string, entry: string) => writeFileSync(settings, JSON.stringify({
         hooks: { Stop: [{ hooks: [{ type: 'command', command, args: [entry, 'stop'] }, { type: 'command', command, args: [entry, 'watch'] }] }] },
       }))
-      const root = checkoutAt("agent inbox's checkout")
+      const root = checkoutAt("agent inbox's $(id) `id` checkout")
       registerHost(release.home, 'claude', process.execPath, join(root, 'dist', 'mcp-server.js'))
       registerHost(release.home, 'copilot', process.execPath, join(root, 'dist', 'mcp-server.js'))
       const app = createViewer(db, release.viewer)
@@ -287,9 +287,16 @@ describe('viewer api', () => {
       })
       const command = `cd '${root.replaceAll("'", "'\\''")}' && npm run install:hooks -- --apply --replace-existing`
       expect(reported.checkoutHooksCommand).toBe(command)
-      // a shell reads it back as exactly that folder
-      const cd = execFileSync('/bin/sh', ['-c', `${command.slice(0, command.indexOf(' && '))} && pwd -P`], { encoding: 'utf8' })
-      expect(cd.trim()).toBe(root)
+      // a shell reads the folder back byte for byte, running nothing in it
+      // ($(id) and `id` stay text), and cd lands in exactly that folder
+      const sent: string = reported.checkoutHooksCommand
+      const suffix = ' && npm run install:hooks -- --apply --replace-existing'
+      expect(sent.startsWith('cd ') && sent.endsWith(suffix)).toBe(true)
+      const quoted = sent.slice('cd '.length, -suffix.length)
+      // latin1 maps each byte to one character: exact, with a readable diff
+      const bytes = (text: string) => Buffer.from(text).toString('latin1')
+      expect(execFileSync('/bin/sh', ['-c', `printf '%s' ${quoted}`], { encoding: 'latin1' })).toBe(bytes(root))
+      expect(execFileSync('/bin/sh', ['-c', `cd ${quoted} && pwd -P`], { encoding: 'latin1' })).toBe(bytes(`${root}\n`))
 
       // another checkout's hooks, or ones Setup cannot classify: still the step
       const other = checkoutAt('other-checkout')

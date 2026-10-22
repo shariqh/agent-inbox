@@ -2112,7 +2112,12 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   hooks are not that checkout's); the "once this app's runtime is installed" promise stays only while
   `updatable` and an agent host is unregistered or on Setup's runtime, i.e. a Setup install could put
   that runtime in place (Setup never switches a checkout, and a failed install removes a runtime it
-  just published); otherwise the panel says Setup cannot move them and points at docs/hooks.md. No IPC
+  just published). Known limit: `none` also covers a host whose CLI is not installed, which the
+  viewer cannot tell apart without running anything, so with Claude Code `other`/`unknown` and no
+  Copilot CLI the promise still shows although neither target can keep it (`install-agents.sh`
+  stops at "'copilot' CLI is not installed"; `claude` refuses a registration it does not own);
+  docs/hooks.md points to the checkout or terminal path instead. Otherwise the panel says Setup
+  cannot move them and points at docs/hooks.md. No IPC
   channel, preload method or HTTP route was added for this, and nothing runs at startup. Live's
   `remedy()` maps a runtime session to its host by its inferred agent (`claude-code` → claude, `copilot`
   → copilot) and, for a session OLDER than the app, says "restart this session to load vX" only when that

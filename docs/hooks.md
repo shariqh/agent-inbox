@@ -195,9 +195,15 @@ moved only if they now run the app's runtime.
 
 Where no Setup step can move them and the app's runtime is not installed (issue #278),
 Setup promises to move them later only when it could install that runtime itself, for
-an agent that is not registered or runs a Setup runtime. When Claude Code runs from a
-source checkout, Setup never switches it, so it shows that checkout's own command
-instead, to run in a terminal with Node 24:
+an agent that is not registered or runs a Setup runtime. One known limit: Setup reads
+only configuration files, so a host whose CLI is not installed also counts as not
+registered, and with Claude Code on a custom or unverifiable registration and no
+Copilot CLI it still makes that promise, although neither install can keep it (the
+Copilot CLI one stops at `'copilot' CLI is not installed`, and the Claude Code one
+refuses a registration it does not own); move the hooks from a checkout or a terminal
+instead, with the commands below. When Claude Code runs from a source checkout, Setup
+never switches it, so it shows that checkout's own command instead, to run in a
+terminal with Node 24:
 
 ```sh
 cd <checkout> && npm run install:hooks -- --apply --replace-existing

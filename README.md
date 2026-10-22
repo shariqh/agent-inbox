@@ -355,6 +355,19 @@ that do not supply GitHub deployment URLs and explicit non-production metadata
 are not supported. A Preview link reports GitHub's last observed deployment
 state; it does not independently verify a provider's served content.
 
+## Grouping plans by parent issue
+
+Plans can gather active plans of one project whose GitHub issues share a parent
+under a heading for that parent: its title, GitHub's "N of M sub-issues done" and
+how many plans it holds. The plan pinned to the parent itself comes first, then the
+others in GitHub's sub-issue order. Grouping is off by default. Turn it on in
+**Settings → Plans** to use it every time Agent Inbox opens, or with the **Group by
+parent issue** switch above Plans for the current view only.
+
+Grouping only reorders. No plan is hidden, plans from different projects are never
+merged, and a plan whose relationship data is missing, older than seven days or
+unavailable stays in its usual place. Badges, counts and notifications do not change.
+
 ## Architecture
 
 - **`src/store.ts`** owns schema, migrations, WAL configuration, and every database

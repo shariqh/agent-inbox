@@ -118,3 +118,30 @@ export interface IssueViewContext {
 }
 
 export function buildIssueView(graph: unknown, context?: IssueViewContext): IssueView
+
+/** Slice 2 §7: two or more active plans of one project under one GitHub parent. */
+export interface PlanGroup {
+  /** project and parent key: plans of different projects never share one */
+  key: string
+  project: string
+  /** the shared parent, with GitHub's sub-issue counts when known */
+  parent: IssueNodeView
+  /** how many plans the group holds */
+  size: number
+  /** every member's relation is stale: the header is dimmed with "as of …" */
+  stale: boolean
+  /** the oldest member's fetch, for that "as of" */
+  fetchedAt: string | null
+  /** the repository the parent's label is read against */
+  against: string | null
+}
+
+/** Today's plans, each once, with groups gathered at their first member's place. */
+export function planGroups<P extends IssueViewPlan>(
+  plans: readonly P[],
+  view: IssueView | null,
+  links: Map<string, CachedLink> | null,
+): { plans: P[]; groupOf: Map<string, PlanGroup> }
+
+/** Row id → the parent its run starts under; empty unless rows span two parents. */
+export function rowParentRuns(rows: readonly IssueViewRow[], view: IssueView | null): Map<string, IssueNodeView>

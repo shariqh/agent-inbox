@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest'
 const root = resolve(process.cwd())
 const html = readFileSync(resolve(root, 'public/index.html'), 'utf8')
 const css = readFileSync(resolve(root, 'public/style.css'), 'utf8')
+const app = readFileSync(resolve(root, 'public/app.js'), 'utf8')
 
 describe('the editorial desk shell', () => {
   it('is dark-first, graphite with icon-derived accent, and uses the approved operations typography', () => {
@@ -121,6 +122,19 @@ describe('the editorial desk shell', () => {
     expect(compact).toMatch(/\.board-table\.matrix\s*\{[^}]*table-layout:\s*fixed/s)
     expect(compact).toMatch(/\.board-table\.matrix \.row-note\s*\{[^}]*display:\s*none/s)
     expect(compact).toMatch(/\.board-table\.matrix \.row-label\s*\{[^}]*text-overflow:\s*ellipsis/s)
+  })
+
+  // #103 slice 2: fixed layout sizes columns from the first row unless <col>s say
+  // otherwise, and a plan's first row may be a full-width "Part of #N" header.
+  it('sizes compact plan columns from a colgroup, never from the first row', () => {
+    const compact = css.slice(css.indexOf('@media (max-width: 1279px)'))
+    expect(app).toContain('<colgroup><col class="col-num"><col class="col-glyph"><col class="col-label"><col class="col-4"><col class="col-5"></colgroup>')
+    expect(compact).toMatch(/\.board-table\.matrix col\.col-num\s*\{[^}]*width:\s*24px/s)
+    expect(compact).toMatch(/\.board-table\.matrix col\.col-glyph\s*\{[^}]*width:\s*30px/s)
+    expect(compact).toMatch(/\.board-table\.matrix col\.col-4\s*\{[^}]*width:\s*72px/s)
+    expect(compact).toMatch(/\.board-table\.matrix col\.col-5\s*\{[^}]*width:\s*0/s)
+    // the wide layout sizes columns from its cells, as before
+    expect(css.slice(0, css.indexOf('@media (max-width: 1279px)'))).not.toMatch(/col\.col-/)
   })
 
   it('composes compact navigation as one masthead with a single project menu', () => {

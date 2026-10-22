@@ -35,9 +35,10 @@ import { boardRowsView, boardRowLine, progressLabel, hiddenDoneCount, lingeringB
 import { titleWithBadge, focusHashFor, parseFocusHash } from '/badge.js'
 import { layoutMode, railLabel, NARROW_MAX, PROJECT_DISCLOSURE_MAX } from '/layout.js'
 import {
-  indexLinks, issueRelationsHtml, PREVIEW_TTL_MS, previewRef, rowIssueChipsHtml, sourceChipsHtml, sourceBlockHtml,
+  indexLinks, issueRelationsHtml, planGroupHeadHtml, PREVIEW_TTL_MS, previewRef, rowIssueChipsHtml, rowParentHeadHtml,
+  sourceChipsHtml, sourceBlockHtml,
 } from '/source.js'
-import { buildIssueView } from '/issues.js'
+import { buildIssueView, planGroups, rowParentRuns } from '/issues.js'
 import { buildSummary } from '/buildstamp.js'
 import { actionCategory, actionOwnerLabel, agentFollowupChip, changeKind, lifecycleReceipt, responseLabel } from '/action.js'
 import { buildRelay } from '/relay.js'
@@ -160,6 +161,13 @@ function savedAskSort() {
 const LATER_SECTION_KEY = 'agent-inbox-later-section'
 const savedLaterSection = () => localStorage.getItem(LATER_SECTION_KEY) !== 'false'
 let laterSection = savedLaterSection()
+
+// Grouping plans by their GitHub parent (#103 slice 2 §7) is saved the same way
+// and for the same reason: it reorders plans and never hides one. Off by
+// default; the Plans header switch changes only the current view.
+const GROUP_PLANS_KEY = 'agent-inbox-group-plans'
+const savedGroupPlans = () => localStorage.getItem(GROUP_PLANS_KEY) === 'true'
+let groupByParent = savedGroupPlans()
 
 const NOTES_SEEN_KEY = 'agent-inbox-notes-seen'
 const NOTES_SEEN_IDS_KEY = 'agent-inbox-notes-seen-ids'
@@ -2016,6 +2024,8 @@ function render() {
   const dashboardFocus = dashboardFocusBookmark()
   const draftFocus = ownsFocus ? activeDraftFocusBookmark() ?? requestedDraftFocusBookmark : null
   const pagedFocus = pagedCardFocusBookmark()
+  // the Plans header's controls are rebuilt with the list; keep a keyboard user on them
+  const plansHeaderFocusId = activeFocusElement()?.closest?.('#boards .tab-header [id]')?.id ?? null
   pagedFocusId = pagedFocus?.id ?? null
   if (activeFocusElement()?.closest?.('.stale-drafts-fold')) draftRecoveryFocusPending = true
   reconcileDraftOwners()
@@ -2026,8 +2036,9 @@ function render() {
     if (missionFocus && missionBoardId) {
       restoreMissionFocus(missionFocus)
     } else if (!restoreDashboardFocus(dashboardFocus)
-      && !restoreDraftRecoveryFocus() && !restoreDraftFocus(draftFocus)) {
-      restorePagedCardFocus(pagedFocus)
+      && !restoreDraftRecoveryFocus() && !restoreDraftFocus(draftFocus) && !restorePagedCardFocus(pagedFocus)
+      && plansHeaderFocusId) {
+      document.getElementById(plansHeaderFocusId)?.focus({ preventScroll: true })
     }
   }
   applySearchJumpHighlight()
@@ -5673,7 +5684,19 @@ function boardsHeader() {
     forceRender()
   })
   t.className = `header-toggle${hideCompleted ? ' active' : ''}`
-  bar.appendChild(t)
+  const group = document.createElement('label')
+  group.className = 'header-switch'
+  const input = document.createElement('input')
+  input.type = 'checkbox'
+  input.id = 'group-plans-switch'
+  input.setAttribute('role', 'switch')
+  input.checked = groupByParent
+  input.addEventListener('change', () => {
+    groupByParent = input.checked
+    forceRender()
+  })
+  group.append(input, document.createTextNode('Group by parent issue'))
+  bar.append(group, t)
   return bar
 }
 
@@ -5687,8 +5710,21 @@ function renderBoards(boards, archived) {
   const lingerIds = new Set(lingering.map((b) => b.id))
   const rest = archived.filter((b) => !lingerIds.has(b.id))
   if (!boards.length && !lingering.length && !rest.length) host.insertAdjacentHTML('beforeend', '<p class="empty">No plans yet.</p>')
-  const { visible, remaining } = paginateWithPending(boards, 'boards')
-  for (const b of visible) host.appendChild(boardEl(b))
+  // Grouping only reorders active plans; lingering and archived ones stay flat (§7.2).
+  const grouping = groupByParent ? planGroups(boards, issueView, linkIndex) : null
+  const { visible, remaining } = paginateWithPending(grouping ? grouping.plans : boards, 'boards')
+  visible.forEach((b, i) => {
+    const group = grouping?.groupOf.get(b.id)
+    const previous = i > 0 ? grouping?.groupOf.get(visible[i - 1].id) : undefined
+    // each "Show more" page that opens inside a group repeats its header
+    const continued = group !== undefined && group === previous && i % PAGE.boards === 0
+    if (group && (group !== previous || continued)) {
+      host.insertAdjacentHTML('beforeend', planGroupHeadHtml(group, Date.now(), { continued }))
+    }
+    const el = boardEl(b)
+    if (group) el.classList.add('in-group')
+    host.appendChild(el)
+  })
   if (remaining > 0) host.appendChild(moreButton('boards', remaining))
   for (const b of lingering) host.appendChild(boardEl(b, true, true))
   if (rest.length) {
@@ -5753,7 +5789,19 @@ function boardEl(b, archived = false, lingering = false) {
   }
   const table = document.createElement('table')
   table.className = 'board-table matrix'
-  for (const { row: r, num, needsAnswer } of boardRowsView(b, { hideCompleted, showDone: showDoneBoards.has(b.id) })) {
+  // A fixed-layout table sizes its columns from these, never from its first
+  // row, which may be a full-width "Part of #N" header (#103 slice 2).
+  table.innerHTML = '<colgroup><col class="col-num"><col class="col-glyph"><col class="col-label"><col class="col-4"><col class="col-5"></colgroup>'
+  const shownRows = boardRowsView(b, { hideCompleted, showDone: showDoneBoards.has(b.id) })
+  const runs = groupByParent && !archived ? rowParentRuns(shownRows.map(({ row }) => row), issueView) : null
+  for (const { row: r, num, needsAnswer } of shownRows) {
+    const runParent = runs?.get(r.id)
+    if (runParent) {
+      const head = document.createElement('tr')
+      head.className = 'row-parent-run'
+      head.innerHTML = rowParentHeadHtml(runParent, b)
+      table.appendChild(head)
+    }
     const tr = document.createElement('tr')
     tr.className = `board-row${needsAnswer ? ' needs-answer' : ''}${openRows.has(r.id) ? ' open' : ''}`
     tr.dataset.rowId = r.id
@@ -7824,6 +7872,42 @@ function paintLaterSectionHint() {
   hint.hidden = !text
 }
 
+function renderPlanSettings(host) {
+  const section = document.createElement('section')
+  section.className = 'setup-block plan-settings'
+  const title = document.createElement('h3')
+  title.textContent = 'Plans'
+  const preference = document.createElement('label')
+  preference.className = 'settings-toggle'
+  const input = document.createElement('input')
+  input.type = 'checkbox'
+  input.checked = savedGroupPlans()
+  input.setAttribute('aria-describedby', 'group-plans-detail')
+  input.addEventListener('change', () => {
+    try {
+      localStorage.setItem(GROUP_PLANS_KEY, String(input.checked))
+    } catch (err) {
+      input.checked = savedGroupPlans()
+      console.error('Plan grouping could not be saved', err)
+      document.getElementById('status').textContent = 'plan grouping not saved'
+      return
+    }
+    groupByParent = input.checked
+    // The human's own choice: renderIfIdle() would hold it behind any open draft.
+    forceRender()
+  })
+  const preferenceCopy = document.createElement('span')
+  const label = document.createElement('strong')
+  label.textContent = 'Group plans by parent issue'
+  const detail = document.createElement('small')
+  detail.id = 'group-plans-detail'
+  detail.textContent = 'Gathers the active plans of one project that share a GitHub parent issue under a heading for it. No plan is hidden. Used each time Agent Inbox opens; the switch above Plans changes only the current view.'
+  preferenceCopy.append(label, detail)
+  preference.append(input, preferenceCopy)
+  section.append(title, preference)
+  host.appendChild(section)
+}
+
 // Issue #222: off by default; the controller owns the stored preference.
 let copyOnSelect = null
 
@@ -8133,6 +8217,7 @@ async function renderSetup() {
   renderUpdateSettings(host)
   renderSortSettings(host)
   renderLaterSettings(host)
+  renderPlanSettings(host)
   renderCopySettings(host)
   try {
     const s = await (await fetch('/api/setup')).json()

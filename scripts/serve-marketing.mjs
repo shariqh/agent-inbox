@@ -14,7 +14,23 @@ if (!/^\d+$/.test(values.port) || !Number.isSafeInteger(port) || port > 65535) {
   process.exit(1);
 }
 
-const pageUrl = new URL('../marketing/index.html', import.meta.url);
+const marketingUrl = new URL('../marketing/', import.meta.url);
+const pageUrl = new URL('index.html', marketingUrl);
+const manifestUrl = new URL('vendor/manifest.json', marketingUrl);
+// Each segment starts with a letter or digit, so a listed path cannot leave marketing/vendor/.
+const vendorPath = /^vendor(?:\/[A-Za-z0-9][A-Za-z0-9._-]*)+$/;
+
+// Reads a file the vendor manifest lists, as the published site serves it. Any other path is absent.
+async function readVendored(pathname) {
+  const { files } = JSON.parse(await readFile(manifestUrl, 'utf8'));
+  const file = files.find(({ path }) => vendorPath.test(path) && `/${path}` === pathname);
+  if (!file) return undefined;
+  return {
+    body: await readFile(new URL(file.path, marketingUrl)),
+    type: file.path.endsWith('.js') ? 'text/javascript; charset=utf-8' : 'text/plain; charset=utf-8',
+  };
+}
+
 const server = createServer(async (request, response) => {
   response.setHeader('Cache-Control', 'no-store');
   response.setHeader('X-Content-Type-Options', 'nosniff');
@@ -37,8 +53,20 @@ const server = createServer(async (request, response) => {
   }
   const pathname = (request.url ?? '').split('?')[0];
   if (pathname !== '/' && pathname !== '/index.html') {
-    response.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
-    response.end(request.method === 'HEAD' ? undefined : 'Not found');
+    try {
+      const file = await readVendored(pathname);
+      if (!file) {
+        response.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+        response.end(request.method === 'HEAD' ? undefined : 'Not found');
+        return;
+      }
+      response.writeHead(200, { 'Content-Type': file.type });
+      response.end(request.method === 'HEAD' ? undefined : file.body);
+    } catch (error) {
+      console.error('Could not read the vendored marketing files:', error);
+      response.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+      response.end(request.method === 'HEAD' ? undefined : 'The marketing preview could not be loaded. Check the server terminal.');
+    }
     return;
   }
 
@@ -50,7 +78,7 @@ const server = createServer(async (request, response) => {
       .map(([, source]) => `'sha256-${createHash('sha256').update(source).digest('base64')}'`);
     response.setHeader('Content-Security-Policy', [
       "default-src 'none'",
-      `script-src ${scriptHashes.join(' ')} https://cdn.jsdelivr.net`,
+      `script-src 'self' ${scriptHashes.join(' ')}`,
       `style-src ${styleHashes.join(' ')}`,
       "img-src data:",
       "connect-src 'none'",

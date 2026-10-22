@@ -132,3 +132,37 @@ describe('Electron viewer cache wiring', () => {
     ).toBe(true)
   })
 })
+
+// #279: unsent drafts live in the profile's localStorage, which Chromium may
+// still hold in memory when the app quits. Every window has closed, and run
+// its pagehide save, before will-quit, so that is where they are committed.
+describe('Electron keeps browser storage through a quit', () => {
+  const OPEN = "app.on('will-quit', () => {"
+  const start = main.indexOf(OPEN)
+  const willQuit = main.slice(start + OPEN.length, main.indexOf('\n})', start))
+
+  function quit(ready: boolean) {
+    const flushStorageData = vi.fn()
+    const dispose = vi.fn()
+    new Function('app', 'session', 'updateController', 'spawnedViewer', willQuit)(
+      { isReady: () => ready },
+      { defaultSession: { flushStorageData } },
+      { dispose },
+      null,
+    )
+    return { flushStorageData, dispose }
+  }
+
+  it('commits DOM storage to disk on every quit, update restarts included', () => {
+    expect(start).toBeGreaterThan(-1)
+    const { flushStorageData, dispose } = quit(true)
+    expect(flushStorageData).toHaveBeenCalledExactlyOnceWith()
+    expect(dispose).toHaveBeenCalledOnce()
+  })
+
+  it('never asks for the default session before the app is ready', () => {
+    const { flushStorageData, dispose } = quit(false)
+    expect(flushStorageData).not.toHaveBeenCalled()
+    expect(dispose).toHaveBeenCalledOnce()
+  })
+})

@@ -184,7 +184,16 @@ Run the build before `npm run electron`; the development shell starts the built
   `claimIssueRefresh` leased the keys; both are one `.immediate()` transaction,
   a lease expires after 60 s, and a claim skips any key whose `checked_at` moved
   since the queue was read. `closing_refs` is bound to the `fetched_at` written
-  beside it; an older process's success write unbinds it.
+  beside it; an older process's success write unbinds it. Slice 2's
+  `dependencies` column follows the same rule: written in the same statement as
+  the snapshot, read only while its `fetched_at` equals the row's (else
+  "unknown", never "no dependencies"); an older process's success or hard
+  failure unbinds it, a soft failure keeps it bound. A success without a bound
+  section is fetched again at once (the queue's `upgrade` tier) unless its
+  `checked_at` is ahead of the clock; a failure keeps its own TTL. The
+  dependency fields are asked on a second alias per issue (`dN`): GitHub marks
+  them non-null, so an error there nulls only `dN.issue` and leaves the issue
+  and its hierarchy refresh in `rN` intact.
 - Race-sensitive state changes must be atomic SQL statements or transactions.
   Do not replace conditioned/version-pinned updates with SELECT-then-UPDATE.
   Human replies, annotations, and handled marks can change from another process

@@ -9,7 +9,7 @@ import {
   archiveBoard, closeProject, getBoard, insertItem, listBoards, listIssueEntities, listIssueSnapshots, listItems,
   openDb, pruneIssueSnapshots, recordIssueFailure, resolveItem, upsertBoard, upsertIssueSnapshot,
 } from '../src/store.js'
-import type { IssueSnapshot } from '../src/store.js'
+import type { IssueDependencies, IssueSnapshot } from '../src/store.js'
 import { at, facts, snapshot } from './issue-fixtures.js'
 import { scratchDir } from './scratch.js'
 
@@ -40,6 +40,17 @@ describe('issue snapshot store (issue #103)', () => {
   const child = snapshot('shariqh/agent-inbox#120', {
     ancestors: [facts('shariqh/agent-inbox#117', { children_total: 10, children_completed: 0 })],
   })
+  // slice 2 §5.3: what the poller fetched with `child`
+  const DEPS: IssueDependencies = {
+    status: 'ok',
+    blocked_by: {
+      open: 1, total: 2, truncated: false,
+      list: [facts('shariqh/agent-inbox#118', { state: 'CLOSED', state_reason: 'COMPLETED' }), facts('shariqh/agent-inbox#119')],
+    },
+    blocking: { open: 1, total: 1, truncated: true, list: [] },
+  }
+  const storedDependencies = () =>
+    (db.prepare(`SELECT dependencies FROM issue_snapshots`).get() as { dependencies: string | null }).dependencies
 
   function columns(connection: Database.Database, table: string) {
     return connection.prepare(`SELECT name, type, "notnull", dflt_value, pk FROM pragma_table_info(?)`).all(table)
@@ -56,6 +67,8 @@ describe('issue snapshot store (issue #103)', () => {
         { name: 'checked_at', type: 'TEXT', notnull: 1, dflt_value: null, pk: 0 },
         { name: 'error', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
         { name: 'revision', type: 'INTEGER', notnull: 1, dflt_value: '1', pk: 0 },
+        // slice 2 §5.3, appended by ensureColumn
+        { name: 'dependencies', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
       ])
       const ddl = db.prepare(`SELECT sql FROM sqlite_master WHERE name = 'issue_snapshots'`).get() as { sql: string }
       expect(ddl.sql).toMatch(/repo TEXT NOT NULL COLLATE NOCASE/)
@@ -102,7 +115,7 @@ describe('issue snapshot store (issue #103)', () => {
       }
       // a second open is a no-op
       const again = openDb(path)
-      expect(columns(again, 'issue_snapshots')).toHaveLength(8)
+      expect(columns(again, 'issue_snapshots')).toHaveLength(9)
       again.close()
     })
   })
@@ -111,7 +124,7 @@ describe('issue snapshot store (issue #103)', () => {
     it('stores a validated v1 snapshot and reads it back parsed, with failure null', () => {
       expect(upsertIssueSnapshot(db, { ...KEY, snapshot: child, startedAt: at(10) })).toBe(true)
       expect(listIssueSnapshots(db)).toEqual([{
-        ...KEY, provider: 'github', snapshot: child, fetched_at: at(10), checked_at: at(10),
+        ...KEY, provider: 'github', snapshot: child, dependencies: null, fetched_at: at(10), checked_at: at(10),
         error: null, failure: null, revision: 1,
       }])
     })
@@ -201,11 +214,12 @@ describe('issue snapshot store (issue #103)', () => {
 
   describe('the attempt rule: the most recently started attempt wins', () => {
     it('ignores a late success from an older attempt', () => {
-      upsertIssueSnapshot(db, { ...KEY, snapshot: child, startedAt: at(20) })
+      upsertIssueSnapshot(db, { ...KEY, snapshot: child, dependencies: DEPS, startedAt: at(20) })
       const older = snapshot('shariqh/agent-inbox#120', { issue: { title: 'Stale title' } })
-      expect(upsertIssueSnapshot(db, { ...KEY, snapshot: older, startedAt: at(10) })).toBe(false)
+      const none: IssueDependencies = { status: 'unavailable' }
+      expect(upsertIssueSnapshot(db, { ...KEY, snapshot: older, dependencies: none, startedAt: at(10) })).toBe(false)
       expect(upsertIssueSnapshot(db, { ...KEY, snapshot: older, startedAt: at(20) })).toBe(false)
-      expect(listIssueSnapshots(db)[0]).toMatchObject({ snapshot: child, fetched_at: at(20), revision: 1 })
+      expect(listIssueSnapshots(db)[0]).toMatchObject({ snapshot: child, dependencies: DEPS, fetched_at: at(20), revision: 1 })
     })
 
     it('ignores a late failure from an older attempt, soft or hard', () => {
@@ -232,20 +246,20 @@ describe('issue snapshot store (issue #103)', () => {
 
   describe('failures', () => {
     it.each(['offline', 'rate-limit', 'gh-failed', 'no-gh', 'auth'] as const)(
-      'a soft %s keeps the snapshot and its fetched_at, and ages checked_at',
+      'a soft %s keeps the snapshot, its dependencies and its fetched_at, and ages checked_at',
       (error) => {
-        upsertIssueSnapshot(db, { ...KEY, snapshot: child, startedAt: at(10) })
+        upsertIssueSnapshot(db, { ...KEY, snapshot: child, dependencies: DEPS, startedAt: at(10) })
         expect(recordIssueFailure(db, { ...KEY, error, startedAt: at(20) })).toBe(true)
         expect(listIssueSnapshots(db)[0]).toMatchObject({
-          snapshot: child, fetched_at: at(10), checked_at: at(20), error, failure: 'soft',
+          snapshot: child, dependencies: DEPS, fetched_at: at(10), checked_at: at(20), error, failure: 'soft',
         })
       },
     )
 
     it.each(['not-found', 'forbidden', 'moved'] as const)(
-      'a hard %s deletes the snapshot and fetched_at in the same statement',
+      'a hard %s deletes the snapshot, its dependencies and fetched_at in the same statement',
       (error) => {
-        upsertIssueSnapshot(db, { ...KEY, snapshot: child, startedAt: at(10) })
+        upsertIssueSnapshot(db, { ...KEY, snapshot: child, dependencies: DEPS, startedAt: at(10) })
         const writes: string[] = []
         const prepare = db.prepare.bind(db)
         db.prepare = ((sql: string) => {
@@ -259,10 +273,12 @@ describe('issue snapshot store (issue #103)', () => {
         }
         expect(writes).toHaveLength(1)
         expect(listIssueSnapshots(db)[0]).toMatchObject({
-          snapshot: null, fetched_at: null, checked_at: at(20), error, failure: 'hard',
+          snapshot: null, dependencies: null, fetched_at: null, checked_at: at(20), error, failure: 'hard',
         })
         const stored = db.prepare(`SELECT snapshot FROM issue_snapshots`).get() as { snapshot: string | null }
         expect(stored.snapshot).toBeNull()
+        // unbound by the cleared fetched_at already; this build clears the column too
+        expect(storedDependencies()).toBeNull()
       },
     )
 
@@ -288,6 +304,97 @@ describe('issue snapshot store (issue #103)', () => {
     })
   })
 
+  describe('the dependency section, bound to its fetch (slice 2 §5.3)', () => {
+    const ok = DEPS as Extract<IssueDependencies, { status: 'ok' }>
+
+    it('is written in the same statement as the snapshot, bound to its fetched_at, and read back parsed', () => {
+      const writes: string[] = []
+      const prepare = db.prepare.bind(db)
+      db.prepare = ((sql: string) => {
+        if (/^\s*(INSERT|UPDATE)/i.test(sql) && /issue_snapshots/.test(sql)) writes.push(sql)
+        return prepare(sql)
+      }) as typeof db.prepare
+      try {
+        expect(upsertIssueSnapshot(db, { ...KEY, snapshot: child, dependencies: DEPS, startedAt: at(10) })).toBe(true)
+      } finally {
+        db.prepare = prepare
+      }
+      expect(writes).toHaveLength(1)
+      expect(listIssueSnapshots(db)).toEqual([{
+        ...KEY, provider: 'github', snapshot: child, dependencies: DEPS, fetched_at: at(10), checked_at: at(10),
+        error: null, failure: null, revision: 1,
+      }])
+      expect(JSON.parse(storedDependencies()!)).toEqual({ v: 1, fetched_at: at(10), ...DEPS })
+    })
+
+    it('keeps an unavailable section as unavailable, and a success without one as unknown', () => {
+      upsertIssueSnapshot(db, { ...KEY, snapshot: child, dependencies: { status: 'unavailable' }, startedAt: at(10) })
+      expect(listIssueSnapshots(db)[0]!.dependencies).toEqual({ status: 'unavailable' })
+      expect(JSON.parse(storedDependencies()!)).toEqual({ v: 1, fetched_at: at(10), status: 'unavailable' })
+      upsertIssueSnapshot(db, { ...KEY, snapshot: child, startedAt: at(20) })
+      expect(storedDependencies()).toBeNull()
+      expect(listIssueSnapshots(db)[0]).toMatchObject({ snapshot: child, dependencies: null })
+    })
+
+    it('stores only the fields it knows (normalized JSON)', () => {
+      const noisy = {
+        ...ok,
+        extra: 'dropped',
+        blocked_by: { ...ok.blocked_by, list: [{ ...facts('a/b#1'), body: 'never cached' }] },
+      } as unknown as IssueDependencies
+      upsertIssueSnapshot(db, { ...KEY, snapshot: child, dependencies: noisy, startedAt: at(10) })
+      expect(JSON.parse(storedDependencies()!)).toEqual({
+        v: 1, fetched_at: at(10), ...ok, blocked_by: { ...ok.blocked_by, list: [facts('a/b#1')] },
+      })
+      expect(storedDependencies()).not.toMatch(/never cached|extra/)
+      // an unavailable section carries no lists
+      upsertIssueSnapshot(db, { ...KEY, snapshot: child, dependencies: { ...ok, status: 'unavailable' } as IssueDependencies, startedAt: at(20) })
+      expect(JSON.parse(storedDependencies()!)).toEqual({ v: 1, fetched_at: at(20), status: 'unavailable' })
+    })
+
+    it.each<[string, () => unknown]>([
+      ['an unknown status', () => ({ ...ok, status: 'partial' })],
+      ['a missing half', () => ({ status: 'ok', blocked_by: ok.blocked_by })],
+      ['more open than total', () => ({ ...ok, blocking: { ...ok.blocking, open: 2 } })],
+      ['a negative count', () => ({ ...ok, blocking: { ...ok.blocking, open: -1 } })],
+      ['a non-integer count', () => ({ ...ok, blocked_by: { ...ok.blocked_by, total: 2.5 } })],
+      ['a non-boolean truncated', () => ({ ...ok, blocking: { ...ok.blocking, truncated: 'no' } })],
+      ['a list that is no array', () => ({ ...ok, blocking: { ...ok.blocking, list: {} } })],
+      ['more than 50 issues', () => ({
+        ...ok, blocking: { open: 51, total: 51, truncated: false, list: Array.from({ length: 51 }, (_, i) => facts(`a/b#${i + 1}`)) },
+      })],
+      ['an unsafe slug in the list', () => ({ ...ok, blocking: { ...ok.blocking, list: [facts('../x#1')] } })],
+      ['an unknown state in the list', () => ({ ...ok, blocking: { ...ok.blocking, list: [facts('a/b#1', { state: 'MERGED' as never })] } })],
+      ['child counts on a listed issue', () => ({ ...ok, blocking: { ...ok.blocking, list: [facts('a/b#1', { children_total: 1, children_completed: 0 })] } })],
+      ['a listed title beyond the clip', () => ({ ...ok, blocking: { ...ok.blocking, list: [facts('a/b#1', { title: 'x'.repeat(302) })] } })],
+    ])('refuses %s on write and stores nothing', (_why, mutate) => {
+      expect(() => upsertIssueSnapshot(db, { ...KEY, snapshot: child, dependencies: mutate() as IssueDependencies, startedAt: at(10) }))
+        .toThrow(/invalid issue dependencies/)
+      expect(listIssueSnapshots(db)).toEqual([])
+    })
+
+    // Deliberate fixture instrumentation: production writes go through
+    // upsertIssueSnapshot, which can never store these.
+    it.each<[string, (text: string) => string | null]>([
+      ['corrupt JSON', () => '{"v":1,'],
+      ['a JSON scalar', () => '42'],
+      ['a newer section version', (text) => JSON.stringify({ ...JSON.parse(text), v: 2 })],
+      ['a shape that fails validation', (text) => JSON.stringify({ ...JSON.parse(text), status: 'partial' })],
+      ['no fetched_at', (text) => JSON.stringify({ ...JSON.parse(text), fetched_at: undefined })],
+      ['another fetch’s fetched_at: unbound', (text) => JSON.stringify({ ...JSON.parse(text), fetched_at: at(9) })],
+    ])('reads %s as "unknown" and keeps the snapshot', (_why, mutate) => {
+      upsertIssueSnapshot(db, { ...KEY, snapshot: child, dependencies: DEPS, startedAt: at(10) })
+      db.prepare(`UPDATE issue_snapshots SET dependencies = ?`).run(mutate(storedDependencies()!))
+      expect(listIssueSnapshots(db)[0]).toMatchObject({ snapshot: child, dependencies: null, fetched_at: at(10) })
+    })
+
+    it('reads no section beside a snapshot it cannot read', () => {
+      upsertIssueSnapshot(db, { ...KEY, snapshot: child, dependencies: DEPS, startedAt: at(10) })
+      db.prepare(`UPDATE issue_snapshots SET snapshot = '{}'`).run()
+      expect(listIssueSnapshots(db)[0]).toMatchObject({ snapshot: null, dependencies: null })
+    })
+  })
+
   describe('reads never throw', () => {
     // Deliberate fixture instrumentation: production writes go through
     // upsertIssueSnapshot, which can never store these.
@@ -301,7 +408,7 @@ describe('issue snapshot store (issue #103)', () => {
       upsertIssueSnapshot(db, { ...KEY, snapshot: child, startedAt: at(10) })
       db.prepare(`UPDATE issue_snapshots SET snapshot = ?`).run(text)
       expect(listIssueSnapshots(db)).toEqual([{
-        ...KEY, provider: 'github', snapshot: null, fetched_at: at(10), checked_at: at(10),
+        ...KEY, provider: 'github', snapshot: null, dependencies: null, fetched_at: at(10), checked_at: at(10),
         error: null, failure: null, revision: 1,
       }])
     })

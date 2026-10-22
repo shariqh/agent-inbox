@@ -3,15 +3,25 @@
 exports[`relationsQuery and the gh argv (§5.6) > declares exactly n variable sets and n aliases for every batch size, deterministically 1`] = `
 "query Relations10($o0: String!, $n0: String!, $k0: Int!, $o1: String!, $n1: String!, $k1: Int!, $o2: String!, $n2: String!, $k2: Int!, $o3: String!, $n3: String!, $k3: Int!, $o4: String!, $n4: String!, $k4: Int!, $o5: String!, $n5: String!, $k5: Int!, $o6: String!, $n6: String!, $k6: Int!, $o7: String!, $n7: String!, $k7: Int!, $o8: String!, $n8: String!, $k8: Int!, $o9: String!, $n9: String!, $k9: Int!) {
   r0: repository(owner: $o0, name: $n0) { nameWithOwner issue(number: $k0) { ...Root } }
+  d0: repository(owner: $o0, name: $n0) { issue(number: $k0) { ...Deps } }
   r1: repository(owner: $o1, name: $n1) { nameWithOwner issue(number: $k1) { ...Root } }
+  d1: repository(owner: $o1, name: $n1) { issue(number: $k1) { ...Deps } }
   r2: repository(owner: $o2, name: $n2) { nameWithOwner issue(number: $k2) { ...Root } }
+  d2: repository(owner: $o2, name: $n2) { issue(number: $k2) { ...Deps } }
   r3: repository(owner: $o3, name: $n3) { nameWithOwner issue(number: $k3) { ...Root } }
+  d3: repository(owner: $o3, name: $n3) { issue(number: $k3) { ...Deps } }
   r4: repository(owner: $o4, name: $n4) { nameWithOwner issue(number: $k4) { ...Root } }
+  d4: repository(owner: $o4, name: $n4) { issue(number: $k4) { ...Deps } }
   r5: repository(owner: $o5, name: $n5) { nameWithOwner issue(number: $k5) { ...Root } }
+  d5: repository(owner: $o5, name: $n5) { issue(number: $k5) { ...Deps } }
   r6: repository(owner: $o6, name: $n6) { nameWithOwner issue(number: $k6) { ...Root } }
+  d6: repository(owner: $o6, name: $n6) { issue(number: $k6) { ...Deps } }
   r7: repository(owner: $o7, name: $n7) { nameWithOwner issue(number: $k7) { ...Root } }
+  d7: repository(owner: $o7, name: $n7) { issue(number: $k7) { ...Deps } }
   r8: repository(owner: $o8, name: $n8) { nameWithOwner issue(number: $k8) { ...Root } }
+  d8: repository(owner: $o8, name: $n8) { issue(number: $k8) { ...Deps } }
   r9: repository(owner: $o9, name: $n9) { nameWithOwner issue(number: $k9) { ...Root } }
+  d9: repository(owner: $o9, name: $n9) { issue(number: $k9) { ...Deps } }
   rateLimit { cost remaining resetAt }
 }
 
@@ -27,6 +37,12 @@ fragment Root on Issue {
       parent { ...Node parent { ...Node parent { ...Node } } } } } } }
   }
   subIssues(first: 100) { totalCount pageInfo { hasNextPage } nodes { ...Node subIssuesSummary { total completed } } }
+}
+
+fragment Deps on Issue {
+  issueDependenciesSummary { blockedBy totalBlockedBy blocking totalBlocking }
+  blockedBy(first: 50) { totalCount pageInfo { hasNextPage } nodes { ...Node } }
+  blocking(first: 50) { totalCount pageInfo { hasNextPage } nodes { ...Node } }
 }
 "
 `;

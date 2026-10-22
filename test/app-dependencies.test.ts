@@ -3,6 +3,9 @@
 // step may take a prebuild from the npm cache: prebuild-install unpacks
 // whatever <cache>/_prebuilds holds without checking a digest, so a planted
 // archive would ship an addon, and JavaScript, that the build never compiled.
+// The release, build and signing workflows' own checkout npm ci, whose addon
+// nothing ships but their scripts and tests load, opts out through
+// npm_config_build_from_source instead.
 //
 // The fixture stands in for better-sqlite3 (same name, version, repository and
 // install script) with an addon that compiles in seconds, and is installed by
@@ -203,6 +206,18 @@ describe.skipIf(!NPM_CLI || !HAS_NODE_HEADERS)('staged app dependencies never ta
     pruneNativeAddonBuildArtifacts(root)
     expect(readFileSync(moduleFile(root, 'build', 'Release', 'better_sqlite3.node'), 'utf8')).toBe(PLANTED_ADDON)
     expect(existsSync(moduleFile(root, 'lib', 'planted.js'))).toBe(true)
+  }, 120_000)
+
+  it('compiles the addon from source when an install sets npm_config_build_from_source', () => {
+    // How the release, build and signing workflows run their own checkout npm ci;
+    // npm 11 only warns about the unknown config and leaves it in the script's env.
+    const root = stage()
+    npm(['ci', '--omit=dev', '--no-audit', '--no-fund'], root, { ...process.env, npm_config_build_from_source: 'true' })
+
+    expect(readFileSync(moduleFile(root, 'lib', 'index.js'), 'utf8')).toBe(GENUINE_JS)
+    expect(existsSync(moduleFile(root, 'lib', 'planted.js'))).toBe(false)
+    expect(existsSync(moduleFile(root, 'build', 'config.gypi'))).toBe(true)
+    expect(requireHere(moduleFile(root, 'build', 'Release', 'better_sqlite3.node')).origin).toBe(COMPILED_ORIGIN)
   }, 120_000)
 
   it('compiles the addon from source and keeps none of the planted files', async () => {

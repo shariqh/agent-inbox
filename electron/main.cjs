@@ -95,6 +95,10 @@ let themeWindow = null
 let themeWindowWebContentsId = null
 // The one viewer window whose top frame may ask main to open a link (#300).
 let linkWindow = null
+// That window's id while it shows the viewer this app started and proved it
+// owns (#300): only then may a link open, reveal or preview a local file. Held
+// by the window's binding (#216), so a reload revokes it until the re-proof.
+let fileLinkWebContentsId = null
 let updateWindow = null
 let updateController = null
 // True only once waitForOwnership() proved the viewer is the one this app
@@ -351,11 +355,25 @@ ipcMain.handle('agent-inbox:install', async (event, target) => {
 // Issue #300: the viewer asks, main decides. Only the viewer window's own top
 // frame on the viewer origin may ask (see isTrustedLinkSender), with exactly one
 // request; link-open.cjs re-validates it and opens a web link, opens a common
-// document type with its default app, or only reveals anything else.
+// document type with its default app, or only reveals anything else. A local
+// file is opened or revealed only while that window shows the viewer this app
+// started and proved it owns (fileLinkWebContentsId, re-proved after every load
+// as installs are); a reused viewer's page can still open web links.
+const linkSender = (event) => isTrustedLinkSender({ sender: event.sender, senderFrame: event.senderFrame, window: linkWindow, viewerUrl: URL_BASE })
+const linkFilesPermitted = (event) => fileLinkWebContentsId !== null && event.sender.id === fileLinkWebContentsId
+
 ipcMain.handle('agent-inbox:open-link', (event, request, ...args) => {
-  const trusted = isTrustedLinkSender({ sender: event.sender, senderFrame: event.senderFrame, window: linkWindow, viewerUrl: URL_BASE })
-  if (args.length !== 0 || !trusted) return { ok: false, reason: 'unavailable' }
-  return openLinkRequest(request, { shell, homeDir: app.getPath('home') })
+  if (args.length !== 0 || !linkSender(event)) return { ok: false, reason: 'unavailable' }
+  return openLinkRequest(request, { shell, homeDir: app.getPath('home'), filesPermitted: linkFilesPermitted(event) })
+})
+
+// Whether this page may open local files, asked once per page load and again
+// when Settings opens, as Setup's is: a reload's re-proof may still be running,
+// so this answers once it has settled.
+ipcMain.handle('agent-inbox:link-files-available', async (event, ...args) => {
+  if (args.length !== 0) return false
+  await installBinding?.settled()
+  return linkSender(event) && linkFilesPermitted(event)
 })
 
 ipcMain.handle('agent-inbox:set-theme-preference', (event, preference) => {
@@ -1022,11 +1040,14 @@ app.whenReady().then(async () => {
     setupAllowed: () => setupInstallEnabled,
     // Update installs need only the owned viewer, not agent Setup's runtime payload.
     updateAllowed: () => viewerOwned,
+    // So do local file links (#300); web links need no grant.
+    filesAllowed: () => viewerOwned,
     isQuitting: () => installGate.quitting(),
     proveOwnership: reproveOwnership,
-    apply({ setup, update }) {
+    apply({ setup, update, files }) {
       setupInstallWebContentsId = setup ? setupWindowWebContentsId : null
       updateInstallWebContentsId = update ? setupWindowWebContentsId : null
+      fileLinkWebContentsId = files ? setupWindowWebContentsId : null
       updateController?.refreshInstallPermission()
     },
   })

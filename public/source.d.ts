@@ -99,7 +99,7 @@ export function linkFor(index: Map<string, CachedLink> | null, entity: LinkedEnt
 export function safeHttpUrl(url: unknown): string
 export function textLinkHtml(url: unknown, label: unknown, kind?: 'web' | 'pr' | 'issue'): string
 /** issue #300 — a local file as an inert control carrying its path; never an href */
-export function fileLinkHtml(path: unknown, label: unknown, title?: unknown): string
+export function fileLinkHtml(path: unknown, label: unknown, title?: unknown, copy?: boolean): string
 
 /** issue #300 — one chip of a card's Links strip */
 export interface StripLink {
@@ -109,7 +109,7 @@ export interface StripLink {
   url?: string
   path?: string
 }
-export function linkStripHtml(links: StripLink[] | null | undefined, opts?: { key?: string; open?: boolean }): string
+export function linkStripHtml(links: StripLink[] | null | undefined, opts?: { key?: string; open?: boolean; copyFiles?: boolean }): string
 export function issueRef(entity: LinkedEntity | null, link: CachedLink | null, row?: IssueViewRow | { id: string } | null): IssueRef | null
 export const PREVIEW_TTL_MS: number
 export function previewRef(link: CachedLink | null | undefined, nowMs: number): PreviewRef | null

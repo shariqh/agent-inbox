@@ -400,34 +400,36 @@ function createInstallGate() {
 }
 
 /**
- * Which grants — agent Setup, update installs — one window holds (#216). The
+ * Which grants — agent Setup, update installs and opening local files from
+ * links (#300) — one window holds (#216). The
  * window is bound at its first main-frame navigation, because startup has just
  * proven that the viewer is the one this app started (`waitForOwnership()`).
- * Every later main-frame navigation, a reload included, revokes both at once.
+ * Every later main-frame navigation, a reload included, revokes them all at once.
  * They come back only after that navigation commits to the viewer origin AND
  * `proveOwnership()` passes again. The proof starts after the commit, so it
  * covers the page the window has just loaded. A newer navigation, a renderer
  * crash or the window closing discards a proof still running; nothing binds
  * once the app has begun to quit (#205), and a closed window never binds again.
  *
- * `setupAllowed()` and `updateAllowed()` say what this app may grant at all;
- * when neither holds, nothing is probed. `apply({ setup, update })` sets the
- * window's grants in main. `settled()` waits out a proof still running, so a
- * question about the grants asked during a reload gets the settled answer.
+ * `setupAllowed()`, `updateAllowed()` and `filesAllowed()` (none by default)
+ * say what this app may grant at all; when none holds, nothing is probed.
+ * `apply({ setup, update, files })` sets the window's grants in main.
+ * `settled()` waits out a proof still running, so a question about the grants
+ * asked during a reload gets the settled answer.
  */
-function createInstallBinding({ viewerUrl, setupAllowed, updateAllowed, isQuitting, proveOwnership, apply }) {
+function createInstallBinding({ viewerUrl, setupAllowed, updateAllowed, filesAllowed = () => false, isQuitting, proveOwnership, apply }) {
   let loaded = false
   let closed = false
   let navigation = 0
   let awaitingCommit = null
   let inFlight = null
-  const grants = () => ({ setup: setupAllowed() === true, update: updateAllowed() === true })
+  const grants = () => ({ setup: setupAllowed() === true, update: updateAllowed() === true, files: filesAllowed() === true })
   const mayBind = (url) => !closed && !isQuitting() && isTrustedSetupSender(url, viewerUrl)
 
   function revoke() {
     navigation += 1
     awaitingCommit = null
-    apply({ setup: false, update: false })
+    apply({ setup: false, update: false, files: false })
   }
 
   async function rebind(url, proving) {
@@ -462,7 +464,7 @@ function createInstallBinding({ viewerUrl, setupAllowed, updateAllowed, isQuitti
       if (awaitingCommit === null || awaitingCommit !== navigation) return Promise.resolve(false)
       awaitingCommit = null
       const wanted = grants()
-      if ((!wanted.setup && !wanted.update) || !mayBind(url)) return Promise.resolve(false)
+      if ((!wanted.setup && !wanted.update && !wanted.files) || !mayBind(url)) return Promise.resolve(false)
       const proof = rebind(url, navigation)
       inFlight = proof
       const done = () => {

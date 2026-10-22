@@ -38,6 +38,8 @@ export interface LinkContext {
   repo?: string | null
   /** receives every link rendered, in order */
   found?: FoundLink[]
+  /** a file link's click copies its path here, so its title says so */
+  copyFiles?: boolean
 }
 
 export interface GithubRef {

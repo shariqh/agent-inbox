@@ -34,17 +34,19 @@ from that handle again (`copyVerifiedSource`). Main accepts the argument-free
 and proved it owns, refuses it while Setup runs (and Setup refuses while an install runs),
 and quits through `requestRestart()` once `commit()` resolves.
 
-The window holds that grant, and Setup's, through `createInstallBinding()` in
+The window holds that grant, Setup's and the one that lets links open local files (#300)
+through `createInstallBinding()` in
 `setup-runner.cjs` (#216). It binds at the window's first main-frame navigation, right
 after startup's `waitForOwnership()`. Every later main-frame navigation (View → Reload,
-Force Reload, the viewer's own restart reload) revokes both grants at once. They come back
+Force Reload, the viewer's own restart reload) revokes every grant at once. They come back
 only after that navigation commits to the viewer origin and `reproveOwnership()` passes: the
 startup proof again and, for a dev viewer child this app spawned, that the child still runs.
 The proof runs after the commit, so the listener that answers is the one that served the
 page; `/api/owner` gives the token to any local client, so the token alone would prove
 nothing hours later. A newer navigation, a renderer crash or the window closing discards a
 proof still running, a closed window never binds again, and nothing binds once a quit has
-begun. A reused or failed-over viewer gets neither grant and is never probed. Before 1.3.2 a
+begun. A reused or failed-over viewer gets no grant and is never probed: its file links
+copy the path, and main refuses their file requests. Before 1.3.2 a
 reload revoked the grant until the app restarted, while Settings still offered **Install
 and restart**.
 

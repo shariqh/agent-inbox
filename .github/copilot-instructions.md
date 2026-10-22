@@ -108,7 +108,8 @@ Run the build before `npm run electron`; the development shell starts the built
   cancels and awaits the running install; the renderer stops its per-host loop
   at a step that was cancelled, timed out or could not run (a plain failure,
   such as a missing CLI, continues).
-  Setup and update installs are granted to the window by `createInstallBinding()`
+  Setup and update installs, and opening local files from links (#300), are
+  granted to the window by `createInstallBinding()`
   (#216): bound at its first navigation, revoked by every later one, and granted
   again only after that load commits to the viewer origin and ownership is proven
   again (`reproveOwnership()`), never once a quit has begun. Settings shows
@@ -401,7 +402,10 @@ Run the build before `npm run electron`; the development shell starts the built
   about links reaches attention, a badge or a count. Only Electron main opens
   anything: `public/link-open.js` calls the one preload method
   `agentInboxLinks.open`, and `electron/link-open.cjs` re-checks the sender
-  (the viewer window's top frame on its origin), the request's exact shape,
+  (the viewer window's top frame on its origin; a local file also needs the
+  binding's `files` grant, so only the viewer this app started and owns opens
+  or reveals files, a reused one copies the path and main refuses it as
+  `unowned`; `agentInboxLinks.filesAvailable()` reads the grant), the request's exact shape,
   http(s) only, and a file's final target: folders, apps, denied types
   (launchers, installers, disk images, executables, macro documents, …) and
   any execute bit are only revealed. Opening is an allow-list of common

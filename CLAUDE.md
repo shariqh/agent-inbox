@@ -407,8 +407,19 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   `writeClipboard` and says a browser cannot open local files. `electron/link-open.cjs`
   decides, testable without Electron: the sender is the viewer window's exact `webContents`,
   its top frame, on the viewer origin (the update channel's non-install check plus the top
-  frame; not the install path's ownership proof, because opening never runs code, so links
-  work in a reused viewer too); the request has exactly its keys; a web link is http(s) by
+  frame), which is all a web link needs, so web links work in a reused viewer too. **A local
+  file (open, reveal, Quick Look) also needs the window to show the viewer this app started
+  and proved it owns**: the window's `createInstallBinding()` holds a third grant, `files`
+  (`filesAllowed: () => viewerOwned`, applied as `fileLinkWebContentsId`), revoked by every
+  later navigation and re-proved like installs (#216), so a reused or failed-over viewer never
+  gets it; main passes `filesPermitted` and `openLinkRequest` refuses a file request without
+  it (`unowned`) before the path is even read. `agentInboxLinks.filesAvailable()` reads the
+  grant (`agent-inbox:link-files-available` awaits `installBinding.settled()`), asked once per
+  page load, again when Settings opens, and again before a file link copies instead of
+  opening; where it is false (and in a browser) `fileLinksCopy()` makes file links say "Copy
+  path" in their title and a click copies the path with "File links open only in Agent
+  Inbox’s own viewer". The UI is only a hint: main's refusal is the boundary, and a refused
+  click falls back to copying. The request has exactly its keys; a web link is http(s) by
   `URL` and only its normalized href reaches `shell.openExternal`; a file path is absolute
   after `~/`, normalized, control-free, and judged by its FINAL target after `realpath`:
   missing is reported, a folder or `.app` is only revealed, a denied extension on the link or
@@ -1755,8 +1766,9 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   (3) A newer navigation, a renderer crash or the window closing discards a proof still
   running; a crash revokes and the window's next load may re-bind under the same proof; a
   closed window never binds again; nothing binds once a quit has begun (#205). (4) Setup
-  is granted only while `setupInstallEnabled`, update installs only while `viewerOwned`;
-  with neither (a reused or failed-over viewer) nothing is probed. The UI is honest as well:
+  is granted only while `setupInstallEnabled`, update installs and (#300) local file links
+  only while `viewerOwned`; with none of them (a reused or failed-over viewer) nothing is
+  probed. The UI is honest as well:
   the controller publishes `available.installPermitted` from main's
   `updateInstallPermitted()` (the binding the install IPC checks, and no quit), the preload
   requires a boolean that implies `installable`, and the binding's `apply` calls

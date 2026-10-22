@@ -47,10 +47,13 @@ contextBridge.exposeInMainWorld('agentInboxTheme', {
 // Issue #300: the one method the viewer opens links through. It passes on a
 // fresh copy of a well-formed request and a checked copy of the answer; main
 // re-validates the sender and everything in the request, and alone decides
-// what may open (electron/link-open.cjs).
+// what may open (electron/link-open.cjs). filesAvailable() only reads whether
+// this page may open local files: main says yes only while the window shows the
+// viewer this app started and proved it owns, and refuses file requests
+// otherwise, whatever the page asks.
 const LINK_REASONS = new Set([
   'folder', 'app', 'blocked', 'executable', 'special', 'type',
-  'invalid', 'missing', 'inaccessible', 'failed', 'unavailable',
+  'invalid', 'missing', 'inaccessible', 'failed', 'unavailable', 'unowned',
 ])
 
 function linkRequest(request) {
@@ -76,6 +79,10 @@ contextBridge.exposeInMainWorld('agentInboxLinks', {
     const request = args.length === 1 ? linkRequest(args[0]) : null
     if (!request) return Promise.resolve({ ok: false, reason: 'invalid' })
     return ipcRenderer.invoke('agent-inbox:open-link', request).then(linkResult, () => ({ ok: false, reason: 'failed' }))
+  },
+  filesAvailable(...args) {
+    if (args.length !== 0) return Promise.resolve(false)
+    return ipcRenderer.invoke('agent-inbox:link-files-available').then((value) => value === true, () => false)
   },
 })
 

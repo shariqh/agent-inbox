@@ -404,7 +404,7 @@ describe('openLinkRequest (issue #300)', () => {
     writeFileSync(join(root, 'a.command'), 'x')
     writeFileSync(join(root, 'a.py'), 'x')
     const { calls, shell } = fakeShell()
-    const deps = { shell, homeDir: root, platform: 'darwin', execFileImpl: fakeXattr().execFileImpl }
+    const deps = { shell, homeDir: root, platform: 'darwin', execFileImpl: fakeXattr().execFileImpl, filesPermitted: true }
     expect(await openLinkRequest({ kind: 'file', path: '~/a.md' }, deps)).toEqual({ ok: true, action: 'opened' })
     expect(await openLinkRequest({ kind: 'file', path: join(root, 'a.command') }, deps)).toEqual({ ok: true, action: 'revealed', reason: 'blocked' })
     expect(await openLinkRequest({ kind: 'file', path: join(root, 'a.py') }, deps)).toEqual({ ok: true, action: 'revealed', reason: 'type' })
@@ -417,9 +417,32 @@ describe('openLinkRequest (issue #300)', () => {
     const root = scratchDir('link-open-alias-')
     writeFileSync(join(root, 'notes.md'), BOOKMARK)
     const { calls, shell } = fakeShell()
-    expect(await openLinkRequest({ kind: 'file', path: join(root, 'notes.md') }, { shell, homeDir: root, platform: 'darwin', execFileImpl: fakeXattr().execFileImpl }))
+    expect(await openLinkRequest({ kind: 'file', path: join(root, 'notes.md') }, { shell, homeDir: root, platform: 'darwin', execFileImpl: fakeXattr().execFileImpl, filesPermitted: true }))
       .toEqual({ ok: true, action: 'revealed', reason: 'blocked' })
     expect(calls).toEqual([['showItemInFolder', realpathSync(join(root, 'notes.md'))]])
+  })
+
+  it('opens files only for the viewer this app owns, and web links anywhere', async () => {
+    const root = scratchDir('link-open-unowned-')
+    writeFileSync(join(root, 'a.md'), 'x')
+    // nothing about the path is even looked at
+    const touched: string[] = []
+    const untouched = new Proxy({}, { get(_target, name) { touched.push(String(name)); throw new Error('the filesystem was read') } })
+    const execFileImpl = () => { touched.push('xattr'); throw new Error('xattr ran') }
+    for (const filesPermitted of [false, undefined, 'yes', 1]) {
+      const { calls, shell } = fakeShell()
+      const deps = { shell, homeDir: root, fsp: untouched, platform: 'darwin', execFileImpl, filesPermitted } as never
+      expect(await openLinkRequest({ kind: 'file', path: join(root, 'a.md') }, deps), String(filesPermitted)).toEqual({ ok: false, reason: 'unowned' })
+      expect(await openLinkRequest({ kind: 'file', path: '/nowhere/at/all.md' }, deps)).toEqual({ ok: false, reason: 'unowned' })
+      expect(await openLinkRequest({ kind: 'web', url: 'https://example.com/pr/1' }, deps)).toEqual({ ok: true, action: 'opened' })
+      expect(calls).toEqual([['openExternal', 'https://example.com/pr/1']])
+    }
+    expect(touched).toEqual([])
+    const { calls, shell } = fakeShell()
+    expect(await openLinkRequest({ kind: 'file', path: join(root, 'a.md') }, {
+      shell, homeDir: root, platform: 'darwin', execFileImpl: fakeXattr().execFileImpl, filesPermitted: true,
+    })).toEqual({ ok: true, action: 'opened' })
+    expect(calls).toEqual([['openPath', realpathSync(join(root, 'a.md'))]])
   })
 
   it.each([
@@ -448,7 +471,7 @@ describe('openLinkRequest (issue #300)', () => {
       openPath: async () => 'no app for this',
       showItemInFolder: () => { throw new Error('nope') },
     }
-    const deps = { shell, homeDir: root, platform: 'darwin', execFileImpl: fakeXattr().execFileImpl }
+    const deps = { shell, homeDir: root, platform: 'darwin', execFileImpl: fakeXattr().execFileImpl, filesPermitted: true }
     expect(await openLinkRequest({ kind: 'web', url: 'https://example.com' }, deps)).toEqual({ ok: false, reason: 'failed' })
     expect(await openLinkRequest({ kind: 'file', path: join(root, 'a.md') }, deps)).toEqual({ ok: false, reason: 'failed' })
     expect(await openLinkRequest({ kind: 'file', path: join(root, 'a.py') }, deps)).toEqual({ ok: false, reason: 'failed' })

@@ -2173,7 +2173,20 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   says its settings file watcher normally applies a change to running sessions too, so the
   advice says that and names the restart that makes sure, never a reload it cannot see. A
   browser tab, or a window Setup is not granted to, gets the app hint plus
-  `bash <runtime>/scripts/install-hooks.sh --apply` once the runtime is installed. No IPC
+  `bash <runtime>/scripts/install-hooks.sh --apply` once the runtime is installed. *(#278)* A hooks
+  line that differs from `current` never ends without a next step (`hooksNextStep`): with no hooks
+  step and no `hooksCommand`, a Claude Code registered to a checkout gets that checkout's own
+  `cd <path> && npm run install:hooks -- --apply --replace-existing`, built and quoted by the viewer
+  (`/api/setup` `checkoutHooksCommand`, present only while Claude Code runs from a checkout whose
+  hooks are not that checkout's); the "once this app's runtime is installed" promise stays only while
+  `updatable` and an agent host is unregistered or on Setup's runtime, i.e. a Setup install could put
+  that runtime in place (Setup never switches a checkout, and a failed install removes a runtime it
+  just published). Known limit: `none` also covers a host whose CLI is not installed, which the
+  viewer cannot tell apart without running anything, so with Claude Code `other`/`unknown` and no
+  Copilot CLI the promise still shows although neither target can keep it (`install-agents.sh`
+  stops at "'copilot' CLI is not installed"; `claude` refuses a registration it does not own);
+  docs/hooks.md points to the checkout or terminal path instead. Otherwise the panel says Setup
+  cannot move them and points at docs/hooks.md. No IPC
   channel, preload method or HTTP route was added for this, and nothing runs at startup. Live's
   `remedy()` maps a runtime session to its host by its inferred agent (`claude-code` → claude, `copilot`
   → copilot) and, for a session OLDER than the app, says "restart this session to load vX" only when that

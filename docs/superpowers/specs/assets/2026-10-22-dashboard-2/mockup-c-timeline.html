@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>Concept C — Timeline</title>
+<!-- Mockup for docs/superpowers/specs/2026-10-22-dashboard-2-proposal.md. Synthetic data. -->
+<link rel="stylesheet" href="../../../../../public/style.css">
+<link rel="stylesheet" href="mockup.css">
+<style>
+.grid { display: grid; grid-template-rows: auto 1fr; gap: 14px; flex: 1; min-height: 0; padding-bottom: 16px; }
+.tl { padding: 14px 16px 10px; position: relative; }
+.tl-axis { display: grid; grid-template-columns: 130px 1fr 220px; font-size: 10.5px; color: var(--app-text-soft); margin-bottom: 6px; }
+.tl-axis .ticks { display: flex; justify-content: space-between; }
+.tl-row { display: grid; grid-template-columns: 130px 1fr 220px; align-items: center; height: 62px; border-top: 1px solid var(--app-border); }
+.tl-name { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
+.tl-name i { width: 8px; height: 8px; border-radius: 50%; background: var(--c); }
+.tl-track { position: relative; height: 100%; background: repeating-linear-gradient(90deg, transparent 0 calc(12.5% - 1px), color-mix(in srgb, var(--app-text) 6%, transparent) calc(12.5% - 1px) 12.5%); }
+.tl-span { position: absolute; top: 14px; height: 22px; border-radius: 6px; background: color-mix(in srgb, var(--c) 30%, transparent); border: 1px solid color-mix(in srgb, var(--c) 70%, transparent); overflow: hidden; }
+.tl-span span { display: block; padding: 3px 7px; font-size: 11px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tl-span.live { background: repeating-linear-gradient(-45deg, color-mix(in srgb, var(--c) 45%, transparent) 0 8px, color-mix(in srgb, var(--c) 28%, transparent) 8px 16px); box-shadow: 0 0 14px color-mix(in srgb, var(--c) 55%, transparent); border-right: 3px solid var(--c); }
+.tl-kid { position: absolute; top: 41px; height: 5px; border-radius: 3px; background: color-mix(in srgb, var(--c) 60%, transparent); }
+.tl-mark { position: absolute; top: 7px; width: 12px; height: 12px; margin-left: -6px; z-index: 2; }
+.tl-mark.q { background: var(--app-attention); transform: rotate(45deg) scale(.8); box-shadow: 0 0 0 3px color-mix(in srgb, var(--app-attention) 30%, transparent); }
+.tl-mark.qa { background: var(--app-text-soft); transform: rotate(45deg) scale(.7); }
+.tl-mark.o { background: var(--app-outcome); border-radius: 50%; }
+.tl-mark.m { background: none; border-left: 2px solid var(--app-outcome); height: 18px; top: 4px; }
+.tl-mark.m::after { content: ''; position: absolute; left: 0; top: 0; width: 9px; height: 7px; background: var(--app-outcome); }
+.tl-now { position: absolute; top: 30px; bottom: 10px; width: 2px; background: var(--app-accent); box-shadow: 0 0 10px var(--app-accent); z-index: 3; }
+.tl-now::before { content: 'now'; position: absolute; bottom: -2px; left: 6px; font-size: 10px; font-weight: 700; color: var(--app-accent); }
+.tl-nowcol { padding-left: 14px; font-size: 11.5px; color: var(--app-muted); line-height: 1.35; }
+.tl-nowcol strong { color: var(--app-text); display: block; font-size: 12px; }
+.pop { position: absolute; z-index: 6; width: 372px; padding: 12px 14px; border-radius: 12px; background: var(--app-elevated); border: 1px solid color-mix(in srgb, var(--app-attention) 55%, var(--app-border)); box-shadow: 0 10px 30px rgba(0,0,0,.45); font-size: 12px; }
+.pop strong { display: block; font-size: 13.5px; margin: 4px 0 2px; }
+.pop .acts { display: flex; gap: 6px; margin-top: 9px; }
+.m-card h2 { white-space: nowrap; }
+.pop::before { content: ''; position: absolute; top: -7px; left: 192px; width: 12px; height: 12px; background: var(--app-elevated); border-left: 1px solid color-mix(in srgb, var(--app-attention) 55%, var(--app-border)); border-top: 1px solid color-mix(in srgb, var(--app-attention) 55%, var(--app-border)); transform: rotate(45deg); }
+.bottom { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; min-height: 0; }
+.pt { padding: 7px 0; border-top: 1px solid var(--app-border); }
+.pt:first-of-type { border-top: 0; }
+.pt-head { display: flex; gap: 8px; align-items: center; font-size: 12px; margin-bottom: 5px; }
+.pt-head i { width: 7px; height: 7px; border-radius: 50%; }
+.pt-steps { display: flex; align-items: center; gap: 4px; flex-wrap: nowrap; overflow: hidden; }
+.pt-step { padding: 2px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 650; white-space: nowrap; border: 1px solid var(--app-border); color: var(--app-text-soft); }
+.pt-step.done { background: color-mix(in srgb, var(--app-outcome) 16%, transparent); color: var(--app-outcome); border-color: transparent; }
+.pt-step.partial { background: color-mix(in srgb, var(--app-plan) 18%, transparent); color: var(--app-plan); border-color: var(--app-plan); }
+.pt-step.blocked { background: color-mix(in srgb, var(--app-attention) 18%, transparent); color: var(--app-attention); border-color: var(--app-attention); }
+.pt-arrow { color: var(--app-text-soft); font-size: 11px; }
+.feed div { display: grid; grid-template-columns: 50px 14px 1fr; gap: 8px; align-items: center; padding: 5px 0; font-size: 12px; border-top: 1px solid var(--app-border); }
+.feed div:first-of-type { border-top: 0; }
+.feed i { width: 9px; height: 9px; border-radius: 50%; }
+.seg-ctl { display: inline-flex; border: 1px solid var(--app-border); border-radius: 8px; overflow: hidden; font-size: 11.5px; }
+.seg-ctl span { padding: 4px 10px; color: var(--app-muted); }
+.seg-ctl span.on { background: var(--app-accent-soft); color: var(--app-text); font-weight: 650; }
+</style>
+</head>
+<body>
+<div class="m-shell">
+  <aside class="m-side">
+    <div class="m-brand"><img src="../../../../../public/favicon-32.png" alt=""><span><strong>Agent Inbox</strong><small>Local workspace</small></span></div>
+    <div class="m-tab on">Dashboard<b></b></div><div class="m-tab">Inbox<b>5</b></div><div class="m-tab">Plans<b>4</b></div><div class="m-tab">Notes<b>2</b></div><div class="m-tab">History<b>3</b></div>
+    <div class="m-label">Projects</div>
+    <div class="m-proj" style="--c:var(--app-text-soft)"><i></i>All<b>5</b></div><div class="m-proj" style="--c:#38d6c0"><i></i>agent-inbox<b>2</b></div><div class="m-proj" style="--c:#4cc9f0"><i></i>homelab<b>1</b></div><div class="m-proj" style="--c:#c77dff"><i></i>oris<b>1</b></div><div class="m-proj" style="--c:#8f99a3"><i></i>portal-docs<b></b></div><div class="m-proj" style="--c:#4895ef"><i></i>social-agent<b>1</b></div>
+  </aside>
+  <main class="m-main">
+<div class="m-head"><div><div class="m-kicker">Dashboard</div><h1 class="m-h1">Today</h1></div><div class="m-sub">4 working · 5 waiting on you · 6 outcomes since 03:00</div><span class="m-spacer"></span><span class="seg-ctl"><span>1 h</span><span class="on">8 h</span><span>24 h</span><span>7 d</span></span><span class="m-btn primary">Review queue · 5</span></div>
+<div class="grid">
+  <section class="m-card tl">
+    <div class="tl-axis"><span>Project</span><div class="ticks"><span>03:00</span><span>04:00</span><span>05:00</span><span>06:00</span><span>07:00</span><span>08:00</span><span>09:00</span><span>10:00</span><span>11:00</span></div><span style="padding-left:14px">Right now</span></div>
+    
+<div class="tl-row" style="--c:#38d6c0">
+  <div class="tl-name"><i></i><strong>agent-inbox</strong></div>
+  <div class="tl-track">
+    <div class="tl-span" style="left:4%;width:14%"><span>Plan v1.5 release notes</span></div><div class="tl-span" style="left:30%;width:11%"><span>Fix #274 counts</span></div><div class="tl-span" style="left:55%;width:8%"><span>Review #276</span></div><div class="tl-span live" style="left:70%;width:29.599999999999994%"><span>Profiling the 3-second poll</span></div><div class="tl-kid" style="left:74%;width:16%"></div><div class="tl-kid" style="left:82%;width:17.599999999999994%"></div>
+    <span class="tl-mark o" style="left:41%" title=""></span><span class="tl-mark m" style="left:63%" title=""></span><span class="tl-mark o" style="left:80%" title=""></span><span class="tl-mark q" style="left:92%" title=""></span>
+  </div>
+  <div class="tl-nowcol"><strong>Profiling the 3-second poll</strong>2 subagents · 3s ago</div>
+</div>
+    
+<div class="tl-row" style="--c:#c77dff">
+  <div class="tl-name"><i></i><strong>oris</strong></div>
+  <div class="tl-track">
+    <div class="tl-span" style="left:10%;width:16%"><span>Webhook inventory</span></div><div class="tl-span live" style="left:46%;width:53.599999999999994%"><span>Migrating billing webhooks</span></div><div class="tl-kid" style="left:88%;width:11.599999999999994%"></div>
+    <span class="tl-mark o" style="left:26%" title=""></span><span class="tl-mark q" style="left:58%" title=""></span><span class="tl-mark qa" style="left:75%" title=""></span>
+  </div>
+  <div class="tl-nowcol"><strong>Migrating billing webhooks</strong>Step 3 of 5 · 8s ago</div>
+</div>
+    
+<div class="tl-row" style="--c:#4cc9f0">
+  <div class="tl-name"><i></i><strong>homelab</strong></div>
+  <div class="tl-track">
+    <div class="tl-span" style="left:0%;width:8%"><span>Restart ubi-llm</span></div><div class="tl-span" style="left:62%;width:13%"><span>Install 2nd GPU</span></div><div class="tl-span live" style="left:84%;width:15.599999999999994%"><span>Rebuilding ComfyUI image</span></div>
+    <span class="tl-mark o" style="left:8%" title=""></span><span class="tl-mark q" style="left:96%" title=""></span>
+  </div>
+  <div class="tl-nowcol"><strong>Rebuilding ComfyUI image</strong>layer 14/22 · 41s ago</div>
+</div>
+    
+<div class="tl-row" style="--c:#4895ef">
+  <div class="tl-name"><i></i><strong>social-agent</strong></div>
+  <div class="tl-track">
+    <div class="tl-span" style="left:20%;width:13%"><span>Blog post</span></div><div class="tl-span live" style="left:80%;width:19.599999999999994%"><span>Drafting LinkedIn post</span></div>
+    <span class="tl-mark m" style="left:33%" title=""></span><span class="tl-mark q" style="left:88%" title=""></span>
+  </div>
+  <div class="tl-nowcol"><strong>Drafting LinkedIn post for v1.5</strong>2m ago</div>
+</div>
+    
+<div class="tl-row" style="--c:#8f99a3">
+  <div class="tl-name"><i></i><strong>portal-docs</strong></div>
+  <div class="tl-track">
+    <div class="tl-span" style="left:36%;width:16%"><span>Publish API guide</span></div>
+    <span class="tl-mark o" style="left:52%" title=""></span>
+  </div>
+  <div class="tl-nowcol"><span class="m-soft">Connected · idle 3 h</span></div>
+</div>
+    <div class="tl-now" style="left:calc(146px + (100% - 32px - 350px) * .996)"></div>
+    <div class="pop" style="left:400px; top:130px"><span class="m-chip t-att">Asked 2 h ago · Decision</span><strong>Retry failed Paddle webhooks for 72 h or 24 h?</strong><span class="m-muted">Both are safe; 72 h covers weekend outages.</span><div class="acts"><span class="m-btn small rec">72 hours ★</span><span class="m-btn small">24 hours</span><span class="m-btn small ghost">Snooze</span><span class="m-btn small ghost">Pin</span><span class="m-btn small ghost">Open ↗</span></div></div>
+    <div class="m-soft" style="font-size:11px;margin-top:8px">◆ asked you (pink = still open) · ◆ grey = answered · ● outcome · ⚑ milestone · thin bars = subagents · striped = working now</div>
+  </section>
+  <div class="bottom">
+    <section class="m-card">
+      <div class="m-card-head"><h2>Plans as a path</h2><span class="m-spacer"></span><small>steps in the agent's order</small></div>
+      <div class="pt"><div class="pt-head"><i style="background:#c77dff"></i><strong>Billing webhook migration</strong><span class="m-soft">oris</span></div><div class="pt-steps"><span class="pt-step done">Inventory</span><span class="pt-arrow">›</span><span class="pt-step done">Signature check</span><span class="pt-arrow">›</span><span class="pt-step partial">Retry queue</span><span class="pt-arrow">›</span><span class="pt-step ">Replay test</span><span class="pt-arrow">›</span><span class="pt-step ">Cut over</span></div></div>
+      <div class="pt"><div class="pt-head"><i style="background:#38d6c0"></i><strong>Efficiency audit (#281)</strong><span class="m-soft">agent-inbox</span></div><div class="pt-steps"><span class="pt-step done">Poll bytes</span><span class="pt-arrow">›</span><span class="pt-step done">Trim page</span><span class="pt-arrow">›</span><span class="pt-step partial">Memory</span><span class="pt-arrow">›</span><span class="pt-step ">DOM budget</span><span class="pt-arrow">›</span><span class="pt-step blocked">Approve #283</span></div></div>
+      <div class="pt"><div class="pt-head"><i style="background:#4cc9f0"></i><strong>Dual-GPU upgrade</strong><span class="m-soft">homelab</span></div><div class="pt-steps"><span class="pt-step done">PSU</span><span class="pt-arrow">›</span><span class="pt-step done">2nd card</span><span class="pt-arrow">›</span><span class="pt-step done">Driver</span><span class="pt-arrow">›</span><span class="pt-step partial">Load test</span><span class="pt-arrow">›</span><span class="pt-step ">Docs</span></div></div>
+    </section>
+    <section class="m-card feed">
+      <div class="m-card-head"><h2>Event feed</h2><span class="m-spacer"></span><small>newest first</small></div>
+      <div><span class="m-soft">10:56</span><i style="background:var(--app-attention)"></i><span><b>homelab</b> asked: Re-seat the second GPU power cable</span></div>
+      <div><span class="m-soft">10:52</span><i style="background:var(--app-outcome)"></i><span><b>agent-inbox</b> outcome: Trim /api/items page · PR #283</span></div>
+      <div><span class="m-soft">10:41</span><i style="background:var(--app-agent)"></i><span><b>agent-inbox</b> started 2 subagents</span></div>
+      <div><span class="m-soft">10:21</span><i style="background:var(--app-attention)"></i><span><b>social-agent</b> asked: Lead the v1.5 post with dependencies?</span></div>
+      <div><span class="m-soft">09:00</span><i style="background:var(--app-text-soft)"></i><span><b>oris</b> you answered: Keep it one more release</span></div>
+    </section>
+  </div>
+</div></main>
+</div>
+</body>
+</html>

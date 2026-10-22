@@ -2287,7 +2287,7 @@ describe('runtime-mcp-probe: the staged MCP server answers initialize and tools/
 
   it('times out a server that never answers', () => {
     const root = probeFixture()
-    writeFileSync(join(root, 'dist', 'mcp-server.js'), 'setInterval(() => {}, 1000)\n')
+    writeFileSync(join(root, 'dist', 'mcp-server.js'), 'setTimeout(() => process.exit(124), Number(process.env.FAKE_WAIT_LIMIT_S || 120) * 1000)\n')
     const result = spawnSync(process.execPath, [PROBE_CLI, root, '--timeout-ms', '1500'], { encoding: 'utf8', timeout: 30_000 })
     expect(result.status).not.toBe(0)
     expect(result.stderr).toMatch(/did not answer within 1500 ms/)

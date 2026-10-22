@@ -132,7 +132,7 @@ prose. Do this **proactively**, without being asked:
   **Being stuck is not being blocked:** a failing
   test, a build or release that does not exist yet, another PR — no person can unblock those, so
   they are `partial` (or `tracked`) with the reason in `note`. Waiting on another GitHub issue
-  (GitHub's 'blocked by') is tracked or partial, never blocked.
+  (GitHub's 'blocked by') or on another step (`waits_on`) is tracked or partial, never blocked.
   `pending()` delivers their response kind too: `answer`, `clarify`, or `decline`.
   A row comes back as an `annotation` (words/choice), or `handled_at` — **the human telling you THEY have gone and
   DONE the thing** you blocked on. Both mean their part is finished; **flip the row's status
@@ -167,6 +167,13 @@ prose. Do this **proactively**, without being asked:
   `blocked` keeps it. A titled `board_get` echoes `issue` and, once the viewer has fetched it,
   a short `issue_rel` (parent and child counts, never titles). Agent Inbox never edits GitHub
   relationships: use `gh issue edit --parent` / `--add-sub-issue`.
+- **Step dependencies.** `rows[].waits_on` (or `board_row({ waits_on })`) lists the labels of
+  other rows in the same plan that a row waits on: at most 20 entries as sent, and duplicates
+  collapse. Omitting it keeps the list, `[]` clears it, and `board_advance` or a move into
+  `blocked` keeps it. An unknown label, a row naming itself and a cycle are refused with the
+  reason; a label whose row you later remove is kept and draws nothing. It never makes a row
+  `blocked`: a row that only waits is `tracked` or `partial`, and `blocked` remains for a
+  separate human action.
 - **`board_row({ title, label, expected_revision, status?, ..., outcome? })`** — update one
   existing row; when acknowledging the human, move it out of `blocked` and record the result.
 - **`board_advance({ title, label, board_version, expected_revision, ...fresh action })`** — atomically archive

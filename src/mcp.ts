@@ -387,17 +387,23 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
   // that is the text a model reads while filling in an enum — and the negative
   // example is the load-bearing half: the observed mistake was a row blocked on
   // a release candidate that did not exist yet, which no human could act on.
-  // Issue #103 §8 — a GitHub dependency is never a human blocker.
-  const NOT_BLOCKED_BY_ISSUE = 'Waiting on another GitHub issue (GitHub\'s \'blocked by\') is tracked or partial, never blocked.'
+  // Issue #103 §8 — a GitHub dependency is never a human blocker; slice 2 §3.3
+  // says the same of another step of the plan (`waits_on`).
+  const NOT_BLOCKED_BY_DEPENDENCY = 'Waiting on another GitHub issue (GitHub\'s \'blocked by\') or on another step (`waits_on`) is tracked or partial, never blocked.'
   const rowStatus = z
     .enum(['done', 'partial', 'missing', 'tracked', 'na', 'blocked'])
     .describe(
-      'Row status. done|partial|missing|tracked|na are descriptive. blocked is the ONE escalation: waiting on the HUMAN and nobody else. A blocked row requires note, next_step, action_owner and impact; decision/approval requires 2-4 options, task omits options. The row is the ask — ONE ASK, ONE SURFACE, never a duplicate question item. Work stuck on a failing test, missing build, another PR or long job is partial/tracked, NEVER blocked. ' + NOT_BLOCKED_BY_ISSUE + ' Moving into blocked is a NEW request and archives the prior action; use board_advance when deliberately chaining the same stable row.',
+      'Row status. done|partial|missing|tracked|na are descriptive. blocked is the ONE escalation: waiting on the HUMAN and nobody else. A blocked row requires note, next_step, action_owner and impact; decision/approval requires 2-4 options, task omits options. The row is the ask — ONE ASK, ONE SURFACE, never a duplicate question item. Work stuck on a failing test, missing build, another PR or long job is partial/tracked, NEVER blocked. ' + NOT_BLOCKED_BY_DEPENDENCY + ' Moving into blocked is a NEW request and archives the prior action; use board_advance when deliberately chaining the same stable row.',
     )
   const issueField = (what: string) => z.string().max(300).describe(
     `${what} Accepted forms: ${ISSUE_FORMS}. Stored and echoed as owner/name#N. Omitted keeps the stored link; "" clears it. board_advance and a move into blocked keep it. A PR that closes several issues is never guessed: link explicitly. Agent Inbox never edits GitHub relationships; use gh issue edit.`,
   )
   const rowIssue = issueField('The GitHub issue this row tracks: its only issue link.')
+  // Issue #103 slice 2 (§4) — the agent's own sequencing of steps within one
+  // plan. The store refuses unknown labels and cycles with the reason.
+  const rowWaitsOn = z.array(z.string().min(1)).max(20).describe(
+    'Labels of other rows in this plan that this row waits on: at most 20 entries as sent; duplicates collapse and order does not matter. Omitted keeps the stored list; [] clears it. board_advance and a move into blocked keep it. Each label you add must name another row of this plan: a row cannot wait on itself, and a write that would make the plan’s waits_on circular is refused. A label whose row is later removed is kept and draws nothing until a row with that label returns. waits_on never makes a row blocked and never asks the human for anything, so it never reaches their attention: a row that only waits on another step is tracked or partial; blocked remains for a separate human action.',
+  )
   const rowNote = z.string().max(240).describe(summaryDescription)
   const rowNextStep = z.string().max(180).describe('The ONE concrete action the human should take now. Required and non-empty when status is blocked.')
   const rowOptions = z.array(responseOption).max(4)
@@ -424,7 +430,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     'board_upsert',
     {
       description:
-        'Create or refresh a tracking board. Idempotent by title; rows match stable labels and omitted ROWS are deleted. Every existing board MUST carry board_version and every existing row MUST carry its current revision from board_get/pending; stale snapshots abort the whole write. blocked means waiting on the HUMAN and is itself the ask — ONE ASK, ONE SURFACE, never a duplicate question item. Every blocked row requires note (TL;DR), next_step, action_owner and impact; decision/approval requires 2-4 options, task omits options. A failing test, missing build, another PR or long job is partial/tracked, never blocked. context is collapsed background. Omitted agent fields preserve stored values; context:"", next_step:"" and options:[] clear deliberately. Routine re-sends never erase the human annotation or handled_at ("I did my part"). When acknowledging a response, move the row out of blocked and include outcome; when another human step follows, use board_advance. issue pins the plan to a GitHub issue, outranking its PR and branch issue; rows[].issue links a row. ' + NOT_BLOCKED_BY_ISSUE + boardWatchDescription,
+        'Create or refresh a tracking board. Idempotent by title; rows match stable labels and omitted ROWS are deleted. Every existing board MUST carry board_version and every existing row MUST carry its current revision from board_get/pending; stale snapshots abort the whole write. blocked means waiting on the HUMAN and is itself the ask — ONE ASK, ONE SURFACE, never a duplicate question item. Every blocked row requires note (TL;DR), next_step, action_owner and impact; decision/approval requires 2-4 options, task omits options. A failing test, missing build, another PR or long job is partial/tracked, never blocked. context is collapsed background. Omitted agent fields preserve stored values; context:"", next_step:"" and options:[] clear deliberately. Routine re-sends never erase the human annotation or handled_at ("I did my part"). When acknowledging a response, move the row out of blocked and include outcome; when another human step follows, use board_advance. issue pins the plan to a GitHub issue, outranking its PR and branch issue; rows[].issue links a row. rows[].waits_on names the other rows of this plan a row waits on (omitted keeps, [] clears). ' + NOT_BLOCKED_BY_DEPENDENCY + boardWatchDescription,
       inputSchema: {
         title: z.string().min(1),
         board_version: z.number().int().positive().optional().describe('Required for an existing board; use revision from board_get.'),
@@ -442,6 +448,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
           outcome: z.string().max(240).optional(),
           context: z.string().optional(),
           issue: rowIssue.optional(),
+          waits_on: rowWaitsOn.optional(),
         })).refine(
           (rows) => new Set(rows.map((row) => row.label)).size === rows.length,
           'row labels must be unique',
@@ -502,7 +509,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     'board_row',
     {
       description:
-        'Update or add ONE board row by stable label. Existing rows require expected_revision from board_get/pending; a stale revision is refused. Omitted fields preserve the current value. blocked means the row needs the HUMAN and nobody else; it requires note, next_step, action_owner and impact. decision/approval requires 2-4 options; task omits options. The row is the ask — ONE ASK, ONE SURFACE, never a duplicate question item. A failing test, missing build or another PR is partial/tracked, not blocked. After pending delivers answer/clarify/decline/handled_at, either move the row out of blocked with outcome or use board_advance for the next human step. A nonblocked→blocked transition is a NEW request and archives the prior action. issue links the row to a GitHub issue. ' + NOT_BLOCKED_BY_ISSUE + boardWatchDescription,
+        'Update or add ONE board row by stable label. Existing rows require expected_revision from board_get/pending; a stale revision is refused. Omitted fields preserve the current value. blocked means the row needs the HUMAN and nobody else; it requires note, next_step, action_owner and impact. decision/approval requires 2-4 options; task omits options. The row is the ask — ONE ASK, ONE SURFACE, never a duplicate question item. A failing test, missing build or another PR is partial/tracked, not blocked. After pending delivers answer/clarify/decline/handled_at, either move the row out of blocked with outcome or use board_advance for the next human step. A nonblocked→blocked transition is a NEW request and archives the prior action. issue links the row to a GitHub issue; waits_on names the other rows of this plan it waits on. ' + NOT_BLOCKED_BY_DEPENDENCY + boardWatchDescription,
       inputSchema: {
         title: z.string().min(1),
         board_version: z.number().int().positive().optional().describe('Required when the board already exists; use revision from board_get.'),
@@ -518,9 +525,10 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
         outcome: z.string().max(240).optional(),
         context: z.string().optional(),
         issue: rowIssue.optional(),
+        waits_on: rowWaitsOn.optional(),
       },
     },
-    async ({ title, board_version, label, expected_revision, status, note, next_step, action_owner, impact, next_after, options, outcome, context, issue }) => {
+    async ({ title, board_version, label, expected_revision, status, note, next_step, action_owner, impact, next_after, options, outcome, context, issue, waits_on }) => {
       heartbeat()
       const s = scope.get(clientName())
       const issueLink = issue === undefined ? undefined : normalizeIssue(issue, s.repo)
@@ -561,6 +569,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
         outcome,
         context,
         issue: issueLink,
+        waits_on,
         repo: s.repo,
         issueRef: s.issue,
         headRepo: s.repo ? scope.headFor(s.stream) : null,
@@ -576,7 +585,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     'board_advance',
     {
       description:
-        'Advance an existing board row into its NEXT human action without changing its stable label. Use this after the human answered/declined/requested clarification and more human work remains. It atomically archives the prior step (including their response and pickup state), clears the old response/snooze/outcome, increments action_version, and installs a fresh blocked action. board_version and expected_revision are required so a sibling agent cannot overwrite newer board, human or agent state. action_owner=task must omit options; decision/approval requires 2-4 options. The row keeps its GitHub issue link. ' + NOT_BLOCKED_BY_ISSUE + boardWatchDescription,
+        'Advance an existing board row into its NEXT human action without changing its stable label. Use this after the human answered/declined/requested clarification and more human work remains. It atomically archives the prior step (including their response and pickup state), clears the old response/snooze/outcome, increments action_version, and installs a fresh blocked action. board_version and expected_revision are required so a sibling agent cannot overwrite newer board, human or agent state. action_owner=task must omit options; decision/approval requires 2-4 options. The row keeps its GitHub issue link and waits_on. ' + NOT_BLOCKED_BY_DEPENDENCY + boardWatchDescription,
       inputSchema: {
         title: z.string().min(1),
         label: z.string().min(1),
@@ -660,7 +669,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     'board_get',
     {
       description:
-        'Re-read a tracking board before updating it. pending() already delivers human responses/handled_at. With a title: full row state; without: a summary of active boards. Board revision protects full snapshots/archive state; row revision is the CAS token for board_row/board_advance; action_version numbers chained steps. history_count says prior steps exist but history text is viewer-only and never sent to agents. Human response fields are always returned. A response changed during the read triggers a fresh snapshot; if it keeps changing, retry the read after the tool error. Rows are never silently omitted from a board snapshot. Agent context is replaced by context_chars unless a titled read uses full: true (its size is UTF-16 code units, so an emoji counts 2). A titled read echoes each plan pin and row link as issue ("owner/name#N") and, when the viewer has cached GitHub data, adds issue_rel: { key, parent?, children?: { total, done }, checked_at, stale, unavailable } — keys and counts only, never titles.',
+        'Re-read a tracking board before updating it. pending() already delivers human responses/handled_at. With a title: full row state; without: a summary of active boards. Board revision protects full snapshots/archive state; row revision is the CAS token for board_row/board_advance; action_version numbers chained steps. history_count says prior steps exist but history text is viewer-only and never sent to agents. Human response fields are always returned. A response changed during the read triggers a fresh snapshot; if it keeps changing, retry the read after the tool error. Rows are never silently omitted from a board snapshot. Agent context is replaced by context_chars unless a titled read uses full: true (its size is UTF-16 code units, so an emoji counts 2). A titled read echoes each plan pin and row link as issue ("owner/name#N") and each row’s waits_on (the labels of the rows it waits on, as stored) when it has one, and, when the viewer has cached GitHub data, adds issue_rel: { key, parent?, children?: { total, done }, checked_at, stale, unavailable } — keys and counts only, never titles.',
       inputSchema: {
         title: z.string().optional(),
         full: z.boolean().optional(),

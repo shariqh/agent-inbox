@@ -133,12 +133,13 @@ export function deliverContext<T extends HasContext>(
 
 // Issue #103 PR2 — an explicit link reaches an agent as ONE normalized string,
 // `issue: "owner/name#N"`, the form it can send straight back; the raw columns
-// never do. Absent when unlinked.
+// never do. Absent when unlinked. Slice 2's `waits_on` is echoed the same way:
+// exactly as stored, so a read → re-send is a no-op, and absent when none.
 type RawRowLink = 'issue_repo' | 'issue_number'
 type RawPlanPin = 'issue_pin_repo' | 'issue_pin_number'
 interface IssueEcho { issue?: string; issue_rel?: IssueRel }
 
-type RowWithoutHistory = Omit<BoardRow, 'history' | RawRowLink> & IssueEcho & { history_count?: number }
+type RowWithoutHistory = Omit<BoardRow, 'history' | RawRowLink | 'waits_on'> & IssueEcho & { history_count?: number; waits_on?: string[] }
 export type ShapedRow = RowWithoutHistory | Trimmed<RowWithoutHistory>
 export type ShapedBoard = Omit<BoardWithRows, 'rows' | RawPlanPin> & IssueEcho & { rows: ShapedRow[] }
 
@@ -153,12 +154,13 @@ function issueText(repo: string | null, number: number | null): string | undefin
 }
 
 function shapeRow(row: BoardRow, full: boolean, rel: IssueRel | undefined): ShapedRow {
-  const { history, issue_repo, issue_number, ...rest } = row
+  const { history, issue_repo, issue_number, waits_on, ...rest } = row
   const issue = issueText(issue_repo, issue_number)
   const base: RowWithoutHistory = {
     ...rest,
     ...(history.length ? { history_count: history.length } : {}),
     ...(issue ? { issue } : {}),
+    ...(waits_on ? { waits_on } : {}),
     ...(rel ? { issue_rel: rel } : {}),
   }
   return full ? base : trimContext(base)

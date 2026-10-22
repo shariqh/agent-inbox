@@ -61,7 +61,10 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   dock watcher's lean read, built from open questions alone and registered
   separately with its own validator so neither `/api/items` representation can
   revalidate the other, `/api/items/history` (issue #184, below), likewise its
-  own registration and validator, and `/api/issues` (issue #103, below), the sixth.
+  own registration and validator, `/api/issues` (issue #103, below), the sixth,
+  and `/api/links` (issue #288), the seventh: the cached PR state, whose bytes
+  depend on the database alone because the PR poller writes them through
+  `store.ts` and the previews it keeps follow open items and active plans.
   Any other query string keeps the default items response.
   Matching `If-None-Match` returns a bodyless 304; unconditional
   clients still receive full JSON. Keep `Cache-Control: no-store` and the current
@@ -80,11 +83,7 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   derive that tag from store tokens or cache the body server-side; the whole
   route costs under a millisecond on a #161-sized hub. The poll floors its 30-day
   `since_ms` to the hour (`activityHistoryUrl`), so successive ticks name one
-  representation. `/api/links` (issue #288) is one more retained representation
-  with its own validator: its bytes depend on the database alone, because the PR
-  poller writes them through `store.ts` and the previews it keeps follow open
-  items and active plans, so the store's tokens validate it and the tick after a
-  poller write answers 200.
+  representation.
   This is bounded snapshot reuse, not a cross-endpoint synchronization protocol.
   The browser keeps its own window-local, deeply frozen representations. A 304
   reuses the exact representation that request revalidated, not a later overlapping

@@ -135,20 +135,20 @@ Run the build before `npm run electron`; the development shell starts the built
   reader is promoted to the writer.
 - Conditional viewer snapshots retain only items, the dock watcher's
   `/api/items?scope=attention` projection (its own validator, never the default
-  representation's), `/api/items/history` (likewise its own), active/archived boards
-  and the `/api/issues` sub-issue graph (#103, likewise its own; its builder is pure,
-  so its bytes depend on the database alone). `/api/items` and `/api/boards` never
-  carry GitHub data, so issue snapshot writes leave their bytes and validators unchanged.
+  representation's), `/api/items/history` (likewise its own), active/archived boards,
+  the `/api/issues` sub-issue graph (#103, likewise its own; its builder is pure,
+  so its bytes depend on the database alone) and the `/api/links` PR state (#288,
+  likewise its own; the PR poller writes it through `store.ts` and its previews
+  follow open items and active plans, so its bytes depend on the database alone too,
+  and a 404, network error or refused body still means no links). `/api/items` and
+  `/api/boards` never carry GitHub data, so issue snapshot writes leave their bytes
+  and validators unchanged.
   Invalidate on same/other-connection writes, schema changes and pickup stamps;
   never cache an uncommitted snapshot. Keep dynamic routes fresh, no-store and
   the boot marker intact, and never turn a read failure into cached success.
   Activity history changes with time alone, so it is conditional only on a hash
   of its freshly computed bytes plus the window and project that selected them;
   never validate it with store tokens or cache it server-side (#185).
-  `/api/links` is a retained snapshot too (#288): the PR poller writes it through
-  `store.ts` and its previews follow open items and active plans, so store tokens
-  validate it. The poll reads it through the snapshot reader, and a 404, network
-  error or refused body still means no links, never a failed tick.
 - `/api/items` pages closed history (#184): every open item, the 50 most recently
   touched closed items, the 4 newest outcome-bearing ones of open projects and a
   `history` summary that keeps every count exact. Only `load()` reads

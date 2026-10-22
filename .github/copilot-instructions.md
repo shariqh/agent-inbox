@@ -257,10 +257,11 @@ Run the build before `npm run electron`; the development shell starts the built
   reaches attention, a badge, a count or the dock, which cannot read it. One
   render-time rule keeps cards visible: the deferred fold (Later, snoozed or
   pinned) that holds the open card always renders open, whatever moved its ask
-  there, and the human closing that fold closes the card. Every deferral goes
-  through `deferAsk`: an ask that holds a draft keeps or takes the open card
-  (switching to the Inbox when the Review queue was opened on another tab), and
-  one without a draft closes it, so a draft that pauses the list is never hidden.
+  there, and the human closing that fold closes the card (keeping its draft).
+  Every deferral goes through `deferAsk`: an ask that holds a draft keeps or
+  takes the open card (switching to the Inbox when the Review queue was opened
+  on another tab), and one without a draft closes it, so only the human's own
+  close can put a draft that pauses the list out of sight.
   Clarify/decline are response kinds, not outcomes. `board_advance` is the only
   same-row chain operation: it CAS-pins row `revision`, archives the prior step,
   and clears human/delivery state atomically. Agent reads get `history_count`, not

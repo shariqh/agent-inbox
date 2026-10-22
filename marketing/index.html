@@ -16,21 +16,6 @@
       document.documentElement.setAttribute("data-theme", "light");
     }
   </script>
-  <script type="importmap">
-    {
-      "imports": {
-        "https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.module.js": "https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.module.js",
-        "https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.core.js": "https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.core.js",
-        "https://": null
-      },
-      "integrity": {
-        "https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.module.js": "sha384-m8JoFX52V6NGv2usipnlLJKnJfL7IE8dbniPDDCSGSQv3Hm4n6PjfV6syVwfuoRc",
-        "https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.core.js": "sha384-mdKeCwPEcbDvzaxwhm+MVuLoMou+E7jQqrs4tmu/n8HBYPGI1kZt0MkJxlMR4zFM"
-      }
-    }
-  </script>
-  <link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.module.js" integrity="sha384-m8JoFX52V6NGv2usipnlLJKnJfL7IE8dbniPDDCSGSQv3Hm4n6PjfV6syVwfuoRc" crossorigin="anonymous">
-  <link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.core.js" integrity="sha384-mdKeCwPEcbDvzaxwhm+MVuLoMou+E7jQqrs4tmu/n8HBYPGI1kZt0MkJxlMR4zFM" crossorigin="anonymous">
   <style>
     :root {
       color-scheme: light;
@@ -972,11 +957,7 @@ npm run install:agents</code></pre>
     const motionQuery = matchMedia('(prefers-reduced-motion: reduce)');
 
     try {
-      // Without import maps and module preloads, the integrity pins may not apply.
-      if (!HTMLScriptElement.supports?.('importmap') || !document.createElement('link').relList?.supports?.('modulepreload')) {
-        throw new Error('Three.js would load unchecked in this browser.');
-      }
-      const THREE = await import('https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.module.js');
+      const THREE = await import('./vendor/three-0.186.0/three.module.js');
       const renderer = new THREE.WebGLRenderer({
         canvas,
         alpha: true,
@@ -1034,6 +1015,11 @@ npm run install:agents</code></pre>
       cluster.add(nodes);
 
       let frame = 0;
+      let inView = false;
+      // The hero turns with the time it has spent animating, not page time, so
+      // after a pause it resumes where it stopped instead of spinning to catch up.
+      let elapsed = 0;
+      let last = null;
       let pointerX = 0;
       let pointerY = 0;
       let drawnWidth = 0;
@@ -1058,7 +1044,13 @@ npm run install:agents</code></pre>
         core.rotation.y = seconds * .14;
         core.rotation.z = seconds * .08;
         renderer.render(scene, camera);
-        if (!motionQuery.matches) frame = requestAnimationFrame(render);
+      }
+      function animate(time) {
+        // A frame after a long gap, such as a hidden tab, still counts at most 50 ms.
+        if (last !== null) elapsed += Math.min(time - last, 50);
+        last = time;
+        render(elapsed);
+        frame = requestAnimationFrame(animate);
       }
       function updatePalette() {
         const current = getComputedStyle(document.documentElement);
@@ -1067,10 +1059,18 @@ npm run install:agents</code></pre>
         ringMaterial.color.set(current.getPropertyValue('--cp-border-strong').trim());
         if (motionQuery.matches) render();
       }
+      // The only place the loop starts or stops. It runs while the hero is in view and
+      // motion is allowed, and a loop that is already running is never started again.
       function updateMotion() {
-        cancelAnimationFrame(frame);
-        frame = 0;
-        render();
+        const moving = inView && !motionQuery.matches;
+        if (moving && !frame) {
+          last = null;
+          frame = requestAnimationFrame(animate);
+        }
+        if (!moving && frame) {
+          cancelAnimationFrame(frame);
+          frame = 0;
+        }
       }
       canvas.closest('.hero-heading').addEventListener('pointermove', event => {
         const bounds = event.currentTarget.getBoundingClientRect();
@@ -1078,16 +1078,22 @@ npm run install:agents</code></pre>
         pointerY = (event.clientY - bounds.top) / bounds.height - .5;
       });
       // A real resize clears the canvas after this frame's draw, so repaint now. With
-      // reduced motion no later frame would; render() would also start a second loop.
+      // reduced motion, or while the hero is offscreen, no later frame would.
       new ResizeObserver(() => {
         if (resize()) renderer.render(scene, camera);
+      }).observe(canvas);
+      // Entries can queue up between callbacks; the newest is the hero's current state.
+      new IntersectionObserver(entries => {
+        inView = entries[entries.length - 1].isIntersecting;
+        updateMotion();
       }).observe(canvas);
       new MutationObserver(updatePalette).observe(document.documentElement, {
         attributes: true,
         attributeFilter: ['data-theme'],
       });
       motionQuery.addEventListener('change', updateMotion);
-      updateMotion();
+      // A still frame now; the observer's first report starts the loop if the hero is in view.
+      render();
     } catch {
       canvas.hidden = true;
     }

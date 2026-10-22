@@ -1,0 +1,3 @@
+# The landing page's vendored files are published byte for byte and checked
+# against marketing/vendor/manifest.json, so Git never converts their line endings.
+marketing/vendor/** -text

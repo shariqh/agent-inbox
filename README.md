@@ -256,6 +256,25 @@ pinned, and no Pin for later choice. The setting is saved for each browser or
 app profile and changes only the layout. Badges, counts and notifications are the
 same either way.
 
+## Unsent drafts
+
+A response you typed but did not send survives a reload, a closed window and an
+app restart: answers and their context, plan-row notes, Note attempts and the
+**unsent responses** list. Drafts stay in this browser or app profile for 30 days
+after your last edit and never reach the hub or an agent until you send them.
+Nothing is sent for you. A draft whose request is unchanged comes back in its
+card. One whose request changed meanwhile (answered elsewhere, closed, or a plan
+row with a new action), or whose project you closed, waits under **unsent
+responses** with the reason. If you had already sent it and no answer came back,
+it says the send was not confirmed rather than that it was never sent. When you
+send or retry such a response, the question is checked first: if it already holds
+exactly your answer, nothing is sent again; if its answer changed since, yours is
+sent as a new answer. Sending,
+emptying or clearing a draft deletes it. A crash in the moment after you type can
+still lose the last keystrokes. Another browser or profile does not see these
+drafts, and neither does the viewer opened at its other address (`localhost`
+instead of `127.0.0.1`).
+
 ## Keyboard controls
 
 Press **F** (or choose **Show keys**) to place short letter codes on the visible

@@ -21,7 +21,7 @@ describe('Electron theme bridge wiring', () => {
   it('pins theme IPC to the active viewer window and native chrome', () => {
     const main = read('electron/main.cjs')
 
-    expect(main).toContain("const { app, BrowserWindow, dialog, ipcMain, Menu, Notification, nativeTheme, shell } = require('electron')")
+    expect(main).toContain("const { app, BrowserWindow, dialog, ipcMain, Menu, Notification, nativeTheme, session, shell } = require('electron')")
     expect(main).toContain("const THEME_SOURCE_VALUES = new Set(['light', 'dark', 'system'])")
     expect(main).toMatch(/const THEME_BACKGROUND_COLORS = \{\s*light: '#edf0f2',\s*dark: '#090b0d',\s*\}/)
     expect(main).toContain("ipcMain.handle('agent-inbox:set-theme-preference'")

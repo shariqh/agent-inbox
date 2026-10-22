@@ -14,6 +14,7 @@ import {
   recordActivityCall, recordIssueFailure, replyItem, resolveItem, touchActivity, unarchiveBoard, updateBoardRow,
   upsertActivity, upsertBoard, upsertIssueSnapshot,
 } from '../src/store.js'
+import type { BoardWithRows } from '../src/store.js'
 import { groupItems } from '../src/group.js'
 import { createViewer } from '../src/viewer.js'
 import { startLocalViewer } from '../src/viewer-network.js'
@@ -535,6 +536,154 @@ describe('viewer conditional snapshots', () => {
     })
   })
 
+  // Issue #287: the dock watcher also re-read every plan, every row and all of
+  // their background every 3 seconds, with no validator.
+  describe('the dock watcher plans projection', () => {
+    const LEAN = '/api/boards?scope=attention'
+    // The projection, stated against the default representation: its plans that
+    // hold a blocked row, in its order, each narrowed to those rows.
+    const narrowed = (boards: BoardWithRows[]) => boards
+      .map((plan) => ({ ...plan, rows: plan.rows.filter((row) => row.status === 'blocked') }))
+      .filter((plan) => plan.rows.length > 0)
+
+    function plans(connection = db) {
+      upsertBoard(connection, {
+        ...SCOPE, title: 'Mixed',
+        rows: [
+          { label: 'Ship', status: 'done', context: 'Shipped long ago.' },
+          {
+            label: 'Approve', status: 'blocked', context: 'The dock needs this ask.',
+            options: [{ label: 'Go', recommended: true }, { label: 'Wait' }],
+          },
+          { label: 'Track', status: 'tracked', context: 'Tracked work the dock never reads.' },
+          { label: 'Choose', status: 'blocked' },
+          { label: 'Skip', status: 'na' },
+        ],
+      })
+      annotateBoardRow(connection, getBoard(connection, SCOPE.project, 'Mixed')!.rows[2]!.id, 'A note on tracked work')
+      upsertBoard(connection, { ...SCOPE, title: 'Quiet', rows: [{ label: 'Build', status: 'partial', context: 'No ask in this plan.' }] })
+      // A newer plan sorts first in both representations.
+      vi.setSystemTime(new Date(NOW.getTime() + 1000))
+      upsertBoard(connection, { ...SCOPE, project: 'elsewhere', title: 'Elsewhere', rows: [{ label: 'Sign', status: 'blocked' }] })
+      upsertBoard(connection, { ...SCOPE, title: 'Retired', rows: [{ label: 'Archived ask', status: 'blocked' }] })
+      const retired = getBoard(connection, SCOPE.project, 'Retired')!
+      archiveBoard(connection, retired.id, retired.revision)
+    }
+
+    it('serves the active plans holding a blocked row, narrowed to those rows and otherwise the default', async () => {
+      // Two plans share one updated_at, so equality also pins that the
+      // projection breaks ties exactly like the default read.
+      plans()
+      const full = await (await app.request('/api/boards')).json() as BoardWithRows[]
+      expect(full.map((plan) => plan.title)).toEqual(['Elsewhere', expect.any(String), expect.any(String)])
+      const response = await app.request(LEAN)
+      expect(response.status).toBe(200)
+      expect(response.headers.get('content-type')).toContain('application/json')
+      const wire = await response.text()
+      const lean = JSON.parse(wire) as BoardWithRows[]
+      expect(lean).toEqual(narrowed(full))
+      expect(lean.map((plan) => plan.title)).toEqual(['Elsewhere', 'Mixed'])
+      const mixed = lean.find((plan) => plan.title === 'Mixed')!
+      expect(mixed.rows.map((row) => row.label)).toEqual(['Approve', 'Choose'])
+      // Every plan field is the default's, its progress over all of its rows included.
+      expect(mixed.progress).toMatchObject({ total: 5, blocked: 2, done: 1 })
+      for (const hidden of ['Shipped long ago.', 'Tracked work the dock never reads.', 'A note on tracked work', 'No ask in this plan.', 'Archived ask']) {
+        expect(wire).not.toContain(hidden)
+      }
+    })
+
+    it('keeps its own body and validator, so a 304 revalidates only its own representation', async () => {
+      // With no plans both bodies are `[]`: only distinct validators keep one
+      // from revalidating the other.
+      const emptyFull = await app.request('/api/boards')
+      const emptyLean = await app.request(LEAN)
+      expect(await emptyLean.text()).toBe(await emptyFull.text())
+      expect(emptyLean.headers.get('etag')).not.toBe(emptyFull.headers.get('etag'))
+
+      plans()
+      const fullTag = await tag('/api/boards')
+      const leanResponse = await app.request(LEAN)
+      const leanTag = leanResponse.headers.get('etag')!
+      expect(leanTag).toMatch(/^"[^"]+"$/)
+      expect(leanTag).not.toBe(fullTag)
+      for (const method of ['GET', 'HEAD']) {
+        const own = await conditional(LEAN, leanTag, method)
+        expect(own.status, method).toBe(304)
+        expect(await own.text(), method).toBe('')
+        expect(own.headers.get('etag'), method).toBe(leanTag)
+        expect(own.headers.get('cache-control'), method).toBe('no-store')
+        expect(own.headers.get('x-inbox-boot'), method).toBe(leanResponse.headers.get('x-inbox-boot'))
+      }
+      for (const [route, foreign, expected] of [[LEAN, fullTag, leanTag], ['/api/boards', leanTag, fullTag]] as const) {
+        const crossed = await conditional(route, foreign)
+        expect(crossed.status, route).toBe(200)
+        expect(crossed.headers.get('etag'), route).toBe(expected)
+      }
+      // An unrecognized scope is the default representation, not a third one.
+      expect((await conditional('/api/boards?scope=everything', fullTag)).status).toBe(304)
+
+      // A write to a plan without a blocked row leaves the projection's bytes,
+      // and so its validator, alone, while the default representation moves.
+      const quiet = getBoard(writer, SCOPE.project, 'Quiet')!
+      updateBoardRow(writer, {
+        ...SCOPE, title: 'Quiet', label: 'Build', note: 'Halfway there.',
+        expectedBoardVersion: quiet.revision, expectedRevision: quiet.rows[0]!.revision,
+      })
+      expect((await conditional(LEAN, leanTag)).status).toBe(304)
+      await changed('/api/boards', fullTag)
+      // Answering an ask changes it, and a plan whose last blocked row moves on leaves it.
+      annotateBoardRow(writer, getBoard(writer, SCOPE.project, 'Mixed')!.rows[1]!.id, 'Go')
+      const answered = await changed(LEAN, leanTag)
+      expect(answered.body.find((plan: BoardWithRows) => plan.title === 'Mixed').rows[0])
+        .toMatchObject({ label: 'Approve', annotation: 'Go' })
+      const elsewhere = getBoard(writer, 'elsewhere', 'Elsewhere')!
+      updateBoardRow(writer, {
+        ...SCOPE, project: 'elsewhere', title: 'Elsewhere', label: 'Sign', status: 'done',
+        expectedBoardVersion: elsewhere.revision, expectedRevision: elsewhere.rows[0]!.revision,
+      })
+      const moved = await changed(LEAN, answered.etag)
+      expect(moved.body.map((plan: BoardWithRows) => plan.title)).toEqual(['Mixed'])
+
+      const queries: string[] = []
+      const prepare = db.prepare.bind(db)
+      db.prepare = ((sql: string) => { queries.push(sql); return prepare(sql) }) as typeof db.prepare
+      const stringify = vi.spyOn(JSON, 'stringify')
+      let serializations = 0
+      try {
+        for (let request = 0; request < 3; request++) {
+          expect((await conditional(`${LEAN}&probe=${request}`, moved.etag)).status).toBe(304)
+        }
+        serializations = stringify.mock.calls.length
+      } finally {
+        stringify.mockRestore()
+        db.prepare = prepare
+      }
+      expect(serializations).toBe(0)
+      expect(queries.filter((sql) => /\bFROM\s+(boards|board_rows)\b/i.test(sql))).toEqual([])
+    })
+
+    it('does not retain an uncommitted projection after its transaction rolls back', async () => {
+      plans()
+      const initial = await tag(LEAN)
+      const ask = getBoard(db, SCOPE.project, 'Mixed')!.rows[1]!.id
+      let pending: Promise<Response> | undefined
+      const rollback = new Error('rollback fixture')
+      expect(() => db.transaction(() => {
+        annotateBoardRow(db, ask, 'Uncommitted answer')
+        pending = Promise.resolve(app.request(LEAN))
+        throw rollback
+      })()).toThrow(rollback)
+      const transient = await pending!
+      const transientTag = transient.headers.get('etag')!
+      expect(await transient.text()).toContain('Uncommitted answer')
+      expect(transientTag).not.toBe(initial)
+      const restored = await changed(LEAN, transientTag)
+      expect(JSON.stringify(restored.body)).not.toContain('Uncommitted answer')
+      expect(restored.etag).toBe(initial)
+      expect((await conditional(LEAN, initial)).status).toBe(304)
+    })
+  })
+
   // Issue #185: history's bytes also change with TIME alone. An open span gains
   // its capped end once it goes cold, without any database write, so the store's
   // write tokens cannot validate it. Its validator comes from the bytes and the
@@ -750,7 +899,10 @@ describe('viewer conditional snapshots', () => {
     it('leaves the bytes and validators of every other representation untouched by snapshot writes', async () => {
       linked()
       board()
-      const others = ['/api/items', '/api/items?scope=attention', '/api/items/history', '/api/boards', '/api/boards/archived']
+      const others = [
+        '/api/items', '/api/items?scope=attention', '/api/items/history',
+        '/api/boards', '/api/boards?scope=attention', '/api/boards/archived',
+      ]
       const before = await Promise.all(others.map(async (route) => {
         const response = await app.request(route)
         return { route, etag: response.headers.get('etag')!, body: await response.text() }

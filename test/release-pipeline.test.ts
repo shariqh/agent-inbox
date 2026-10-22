@@ -283,19 +283,6 @@ describe('native architecture release stages', () => {
       .toBeLessThan(source.indexOf('const packagerOut'))
   })
 
-  it('installs and compiles each thin app stage only through the prebuild-free step (#315)', () => {
-    for (const builder of ['build-thin-app.mjs', 'build-linux-thin-app.mjs']) {
-      const source = readFileSync(join(root, 'scripts', builder), 'utf8')
-      const install = source.indexOf('await installAppDependencies({')
-      expect(install, builder).toBeGreaterThan(-1)
-      expect(source.indexOf('pruneNativeAddonBuildArtifacts(stageRoot)', install), builder).toBeGreaterThan(install)
-      expect(source, builder).not.toMatch(/'ci', '--omit=dev'|await rebuild\(|@electron\/rebuild/)
-    }
-    const linux = readFileSync(join(root, 'scripts', 'build-linux-thin-app.mjs'), 'utf8')
-    expect(linux.indexOf('Object.assign(process.env, compilerEnvironment)'))
-      .toBeLessThan(linux.indexOf('await installAppDependencies({'))
-  })
-
   it('runs the Electron-embedded SQLite check in every native thin app before publication (#135)', () => {
     const source = readFileSync(join(root, 'scripts', 'build-thin-app.mjs'), 'utf8')
     const lipo = source.indexOf('lipoArchs(nativeAddon)')
@@ -309,6 +296,19 @@ describe('native architecture release stages', () => {
     expect(call).toContain("storePath: join(resources, 'dist', 'store.js')")
     expect(call).toContain('electron: inputs.electron.version')
     expect(source.slice(publish)).toContain("electronSqliteCheck: 'passed'")
+  })
+
+  it('installs and compiles each thin app stage only through the prebuild-free step (#315)', () => {
+    for (const builder of ['build-thin-app.mjs', 'build-linux-thin-app.mjs']) {
+      const source = readFileSync(join(root, 'scripts', builder), 'utf8')
+      const install = source.indexOf('await installAppDependencies({')
+      expect(install, builder).toBeGreaterThan(-1)
+      expect(source.indexOf('pruneNativeAddonBuildArtifacts(stageRoot)', install), builder).toBeGreaterThan(install)
+      expect(source, builder).not.toMatch(/'ci', '--omit=dev'|await rebuild\(|@electron\/rebuild/)
+    }
+    const linux = readFileSync(join(root, 'scripts', 'build-linux-thin-app.mjs'), 'utf8')
+    expect(linux.indexOf('Object.assign(process.env, compilerEnvironment)'))
+      .toBeLessThan(linux.indexOf('await installAppDependencies({'))
   })
 })
 

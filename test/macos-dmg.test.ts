@@ -3,11 +3,12 @@
 // later) must still install it with its fixed hdiutil flags. The darwin-only tests
 // use the real electron-installer-dmg/appdmg, hdiutil, ditto and plutil; only the
 // signature checks are stand-ins, because the fixture app is unsigned.
-import { execFile, execFileSync } from 'node:child_process'
+import { execFile, execFileSync, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import * as fsp from 'node:fs/promises'
 import { join, resolve } from 'node:path'
+import { setTimeout as sleep } from 'node:timers/promises'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import macInstall from '../electron/update-install-macos.cjs'
@@ -33,6 +34,37 @@ function mountEntry(path: string) {
   return execFileSync('/sbin/mount', [], { encoding: 'utf8' })
     .split('\n')
     .find((line) => line.includes(` on ${path} (`)) ?? null
+}
+
+// Force-detaches /Volumes/<name>, and /Volumes/<name> N, the name macOS gives a
+// second volume of the same name.
+function detachVolumes(name: string) {
+  const volume = `/Volumes/${name}`
+  for (const line of execFileSync('/sbin/mount', [], { encoding: 'utf8' }).split('\n')) {
+    const mount = /^\/dev\/\S+ on (.+) \([^()]*\)$/.exec(line)?.[1]
+    if (mount === undefined) continue
+    if (mount === volume || (mount.startsWith(`${volume} `) && /^\d+$/.test(mount.slice(volume.length + 1)))) {
+      spawnSync('/usr/bin/hdiutil', ['detach', '-force', mount], { stdio: 'ignore', timeout: 60_000 })
+    }
+  }
+}
+
+// GitHub's hosted macOS runners fail hdiutil now and then for reasons no test can
+// fix: `create failed - Resource busy` (actions/runner-images#7522), or appdmg's
+// `detach … No such file or directory` (this repo's run 39352722375). So each image
+// build here gets one more try after a pause, from a clean slate: no partial output
+// and no volume of its name still mounted. createReleaseDmg() itself never retries.
+async function buildImage(output: string, volume: string, build: () => unknown) {
+  try {
+    await build()
+    return
+  } catch (error) {
+    console.warn(`hdiutil image build failed, retrying once: ${(error as Error).message}`)
+  }
+  rmSync(output, { force: true })
+  detachVolumes(volume)
+  await sleep(5_000)
+  await build()
 }
 
 function writeApp(app: string) {
@@ -71,12 +103,13 @@ describe.skipIf(process.platform !== 'darwin')('a release DMG built on macOS', (
     const app = join(temp, 'build', 'Agent Inbox.app')
     writeApp(app)
     dmg = join(temp, `Agent-Inbox-v${VERSION}-universal.dmg`)
-    await createReleaseDmg({
+    const title = `Agent Inbox DMG test ${process.pid}`
+    await buildImage(dmg, title, () => createReleaseDmg({
       app,
-      title: `Agent Inbox DMG test ${process.pid}`,
+      title,
       icon: join(root, 'electron', 'icon.icns'),
       output: dmg,
-    })
+    }))
   }, 300_000)
 
   afterAll(() => {
@@ -91,11 +124,12 @@ describe.skipIf(process.platform !== 'darwin')('a release DMG built on macOS', (
     expect(requireReleaseDmgFormat(dmg)).toBe('ULMO')
   })
 
-  it('refuses an image of any other format', () => {
+  it('refuses an image of any other format', async () => {
     const source = join(temp, 'zlib-source')
     writeApp(join(source, 'Agent Inbox.app'))
     const zlib = join(temp, 'zlib.dmg')
-    hdiutil(['create', '-srcfolder', source, '-volname', 'Agent Inbox zlib test', '-format', 'UDZO', zlib])
+    const volume = `Agent Inbox zlib test ${process.pid}`
+    await buildImage(zlib, volume, () => hdiutil(['create', '-srcfolder', source, '-volname', volume, '-format', 'UDZO', zlib]))
     expect(() => requireReleaseDmgFormat(zlib)).toThrow(/is UDZO, not ULMO/)
   }, 300_000)
 

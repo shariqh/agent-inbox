@@ -141,10 +141,25 @@ describe('the Electron dock badge shares the §7 attention predicate (no duplica
   it('polls the lean item projection and reads only its needsYou groups', () => {
     const start = main.indexOf('function startAttentionWatch')
     const watch = main.slice(start, main.indexOf('\nfunction ', start + 1))
-    expect(watch).toContain('fetch(`${URL_BASE}api/items?scope=attention`)')
+    expect(watch).toContain('read(`${URL_BASE}api/items?scope=attention`)')
     expect(watch).not.toContain('fetch(`${URL_BASE}api/items`)')
     expect(watch).toMatch(/const items = g\.needsYou\.flatMap\(/)
     expect(watch).not.toMatch(/\bg\.(notes|done)\b/)
+  })
+
+  // issue #287: the plans read is the lean projection too, and both projections
+  // are read conditionally. A refused notification answer still re-reads every
+  // active plan, pinned to the row revision the notification showed.
+  // test/reply-watch.test.ts pins that the lean, full and untagged reads all
+  // derive one result.
+  it('polls both lean projections conditionally and refreshes a refused answer from every plan', () => {
+    const start = main.indexOf('function startAttentionWatch')
+    const watch = main.slice(start, main.indexOf('\nfunction ', start + 1))
+    expect(main).toContain("const { createConditionalReader } = require('./conditional-read.cjs')")
+    expect(watch).toContain('const read = createConditionalReader()')
+    expect(watch).toContain('const boards = await read(`${URL_BASE}api/boards?scope=attention`)')
+    expect(watch).toContain('const latestBoards = await (await fetch(`${URL_BASE}api/boards`)).json()')
+    expect(watch).toContain('refreshNotificationTarget(latestBoards, actionable.target)')
   })
 })
 

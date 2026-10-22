@@ -582,7 +582,10 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   inside a group repeats its `<h3>` header with "(continued)". Lingering and archived
   plans are never grouped. While grouping is on, `rowParentRuns` marks runs of a plan's
   linked rows with "Part of #117" header rows when they span two parents, without
-  reordering. Header text goes through `planGroupHeadHtml`/`rowParentHeadHtml` in
+  reordering. Such a header can be a plan table's first row, and a compact
+  (`table-layout: fixed`) table sizes its columns from its first row unless `<col>`s say
+  otherwise, so the matrix carries a five-column `<colgroup>` and the compact widths live
+  on it (pinned in `test/editorial-shell.test.ts`; jsdom cannot lay out tables). Header text goes through `planGroupHeadHtml`/`rowParentHeadHtml` in
   `public/source.js` (`esc()`, `chipHtml()`, `tone-issue`/`tone-stale` only). No grouping
   value reaches `public/attention.js`, `relay.js`, `reply-watch.cjs`, a badge, a count
   or the dock (`test/dom/issue-attention.test.ts` pins both); the DOM half, including

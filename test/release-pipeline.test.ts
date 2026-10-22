@@ -304,7 +304,7 @@ describe('native architecture release stages', () => {
     const source = readFileSync(join(root, 'scripts', 'archive-tree.mjs'), 'utf8')
     expect(source).toContain("nativeRuntimeAdapterFor('win32-x64').archiveExecutable")
     expect(source).toContain(": '/usr/bin/tar'")
-    expect(source).not.toMatch(/powershell|cmd\\.exe|shell:\\s*true/i)
+    expect(source).not.toMatch(/powershell|cmd\.exe|shell:\s*true/i)
   })
 
   it('runs the Electron-embedded SQLite check in every native thin app before publication (#135)', () => {

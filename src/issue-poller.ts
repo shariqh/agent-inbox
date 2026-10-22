@@ -94,13 +94,16 @@ const FRAGMENTS = `fragment Node on Issue { number title state stateReason repos
 
 fragment Root on Issue {
   ...Node
-  subIssuesSummary { total completed }
   parent {
     ...Node
     subIssuesSummary { total completed }
     parent { ...Node parent { ...Node parent { ...Node parent { ...Node
       parent { ...Node parent { ...Node parent { ...Node } } } } } } }
   }
+}
+
+fragment Children on Issue {
+  subIssuesSummary { total completed }
   subIssues(first: 100) { totalCount pageInfo { hasNextPage } nodes { ...Node subIssuesSummary { total completed } } }
 }
 
@@ -112,10 +115,12 @@ fragment Deps on Issue {
 
 // One deterministic document per batch size: GitHub validates every declared
 // variable, so a ten-slot document fails for any smaller batch (§2.5). Aliases
-// come from indices, never from data. Each issue is asked for twice: `rN` for
-// the issue and its hierarchy, `dN` for its dependencies. GitHub marks the
-// dependency fields non-null, so an error in one nulls the whole issue it was
-// asked on; on an alias of their own that is only `dN.issue`, never `rN.issue`.
+// come from indices, never from data. Each issue is asked for three times: `rN`
+// for the issue and its parent chain, `hN` for its sub-issues (#267), `dN` for
+// its dependencies. GitHub marks the sub-issue and dependency fields non-null,
+// so an error in one nulls the whole issue it was asked on; on an alias of
+// their own that is only `hN.issue` or `dN.issue`, never `rN.issue`. `parent`
+// is nullable, so an error under it nulls only that parent and it stays on rN.
 export function relationsQuery(n: number): string {
   if (!Number.isInteger(n) || n < 1 || n > ISSUE_BATCH) throw new Error(`invalid batch size: ${n}`)
   const vars: string[] = []
@@ -123,6 +128,7 @@ export function relationsQuery(n: number): string {
   for (let i = 0; i < n; i++) {
     vars.push(`$o${i}: String!, $n${i}: String!, $k${i}: Int!`)
     lines.push(`  r${i}: repository(owner: $o${i}, name: $n${i}) { nameWithOwner issue(number: $k${i}) { ...Root } }`)
+    lines.push(`  h${i}: repository(owner: $o${i}, name: $n${i}) { issue(number: $k${i}) { ...Children } }`)
     lines.push(`  d${i}: repository(owner: $o${i}, name: $n${i}) { issue(number: $k${i}) { ...Deps } }`)
   }
   return `query Relations${n}(${vars.join(', ')}) {\n${lines.join('\n')}\n  rateLimit { cost remaining resetAt }\n}\n\n${FRAGMENTS}\n`
@@ -191,7 +197,8 @@ const keyOf = (n: { repo: string; number: number }): string => issueKey(n.repo, 
 
 // The hierarchy half of a snapshot, or null when it cannot be read: then no
 // parentage at all is claimed, so a broken parent is never read as "no parent".
-function hierarchy(issue: Record<string, unknown>, root: string): Omit<IssueSnapshot, 'v' | 'issue'> | null {
+// The parent chain comes from rN's issue, the sub-issues from hN's.
+function hierarchy(issue: Record<string, unknown>, kids: Record<string, unknown>, root: string): Omit<IssueSnapshot, 'v' | 'issue'> | null {
   const ancestors: IssueRelative[] = []
   let end: 'top' | 'limit' = 'top'
   const seen = new Set([root])
@@ -215,8 +222,8 @@ function hierarchy(issue: Record<string, unknown>, root: string): Omit<IssueSnap
     next = (next as Record<string, unknown>).parent
   }
 
-  const summary = counts(issue.subIssuesSummary)
-  const list = record(issue.subIssues)
+  const summary = counts(kids.subIssuesSummary)
+  const list = record(kids.subIssues)
   const nodes = list?.nodes
   const more = record(list?.pageInfo)?.hasNextPage
   if (!summary || !Array.isArray(nodes) || typeof more !== 'boolean') return null
@@ -303,6 +310,15 @@ function dependenciesOf(data: Record<string, unknown>, errors: Array<{ path: unk
   return issue ? dependencies(issue, root) : { status: 'unavailable' }
 }
 
+// The sub-issues, read from the issue's own hierarchy alias, hN, exactly as
+// dependenciesOf reads dN: any error there, or a null or missing hN.issue,
+// leaves them unreadable, and never fails the issue itself.
+function childrenOf(data: Record<string, unknown>, errors: Array<{ path: unknown[] }>, i: number): Record<string, unknown> | null {
+  const alias = `h${i}`
+  if (errors.some((e) => e.path[0] === alias)) return null
+  return record(record(data[alias])?.issue)
+}
+
 const ERROR_ROOT = (path: unknown[], alias: string): boolean =>
   path[0] === alias && (path.length === 1 || (path.length === 2 && path[1] === 'issue'))
 
@@ -323,10 +339,8 @@ function outcome(
   const mine = errors.filter((e) => e.path[0] === alias)
   const atRoot = mine.filter((e) => ERROR_ROOT(e.path, alias))
   if (atRoot.length > 0) return { error: rootError(atRoot) }
-  const sectionFailed = mine.some((e) => e.path[1] === 'issue' && (e.path[2] === 'parent' || e.path[2] === 'subIssues'))
-  if (mine.some((e) => !(e.path[1] === 'issue' && (e.path[2] === 'parent' || e.path[2] === 'subIssues')))) {
-    return { error: 'gh-failed' }
-  }
+  const underParent = (e: { path: unknown[] }) => e.path[1] === 'issue' && e.path[2] === 'parent'
+  if (!mine.every(underParent)) return { error: 'gh-failed' }
 
   const repository = record(data[alias])
   const resolved = repository?.nameWithOwner
@@ -340,7 +354,8 @@ function outcome(
   const facts = node(issue, false)
   if (!facts) return { error: 'gh-failed' }
   const root = keyOf(facts)
-  const rest = sectionFailed ? null : hierarchy(issue, root)
+  const kids = childrenOf(data, errors, i)
+  const rest = mine.length > 0 || !kids ? null : hierarchy(issue, kids, root)
   return {
     snapshot: {
       v: 1,

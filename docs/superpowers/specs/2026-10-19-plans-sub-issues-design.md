@@ -644,12 +644,13 @@ Both a checkout viewer and the packaged app can poll one hub, so PR1b adds a lea
 ### 5.6 Query documents
 
 There is one deterministic document per batch size, 1 to 10. A pure `relationsQuery(n)` builds
-it from fixed fragments, with aliases `r0`…`r(n-1)` taken from indices and never from data. This
-is the verified first-slice document for one root:
+it from fixed fragments, with aliases `r0`…`r(n-1)` and `h0`…`h(n-1)` taken from indices and
+never from data. This is the first-slice document for one root:
 
 ```graphql
 query Relations1($o0: String!, $n0: String!, $k0: Int!) {
   r0: repository(owner: $o0, name: $n0) { nameWithOwner issue(number: $k0) { ...Root } }
+  h0: repository(owner: $o0, name: $n0) { issue(number: $k0) { ...Children } }
   rateLimit { cost remaining resetAt }
 }
 
@@ -657,16 +658,26 @@ fragment Node on Issue { number title state stateReason repository { nameWithOwn
 
 fragment Root on Issue {
   ...Node
-  subIssuesSummary { total completed }
   parent {
     ...Node
     subIssuesSummary { total completed }
     parent { ...Node parent { ...Node parent { ...Node parent { ...Node
       parent { ...Node parent { ...Node parent { ...Node } } } } } } }
   }
+}
+
+fragment Children on Issue {
+  subIssuesSummary { total completed }
   subIssues(first: 100) { totalCount pageInfo { hasNextPage } nodes { ...Node subIssuesSummary { total completed } } }
 }
 ```
+
+The sub-issue fields sit on their own alias, `hN`, with `rN`'s variables (issue #267). GitHub
+marks `subIssues`, `subIssuesSummary` and their counts and `pageInfo` non-null, so an error under
+any of them nulls the whole issue it was asked on. Inside `rN` that would turn the issue into a
+soft `gh-failed` and stop its title, state and parent refreshing; on `hN` it nulls only
+`hN.issue`. `parent` is nullable, so an error under it nulls only that parent, and it stays on
+`rN`. The split did not change the cost: one point for ten issues, as before (§2.7).
 
 ```text
 gh api --hostname github.com graphql -f query=<document for n> \
@@ -698,8 +709,9 @@ gh api --hostname github.com graphql -f query=<document for n> \
 | `RATE_LIMITED` | `rate-limit` (soft) |
 | Anything else | `gh-failed` (soft) |
 
-- A field error under `[rN, "issue", "parent" | "subIssues"]` makes that root's hierarchy
-  `unavailable` (no observations) without failing the root.
+- A field error under `[rN, "issue", "parent"]`, any error under `hN`, or a null or missing
+  `hN.issue` makes that root's hierarchy `unavailable` (no observations) without failing the
+  root. Only `rN` decides the root's own failure class; an error on `hN` never does.
 - Identity is checked as in §4.1: an accepted redirect becomes an alias; anything else is `moved`.
 - Every node is validated: slug, integer number, `state` in `{OPEN, CLOSED}`, `state_reason` in
   `{COMPLETED, NOT_PLANNED, DUPLICATE, REOPENED}` or null, and a title clipped to 300 characters

@@ -442,8 +442,12 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   (capped at an hour) and records a soft `rate-limit` for the batch it would have fetched; a
   rate-limited call that reported nothing backs off ten minutes. (5) **Parsing fails closed**
   (`parseIssueBatch`): a whole failure is soft for every key; per alias `NOT_FOUND`/`FORBIDDEN`
-  are hard only when no other error names that alias; a field error under `parent`/`subIssues`
-  marks only that root's hierarchy unavailable; an unreadable immediate parent is never read as
+  are hard only when no other error names that alias; a field error under `parent`, or any error
+  on the issue's hierarchy alias `hN`, marks only that root's hierarchy unavailable (#267: GitHub
+  marks `subIssues`/`subIssuesSummary` non-null, so an error under them nulls the issue they were
+  asked on; on `hN`, beside `rN` with its variables, that is only `hN.issue`, and the issue's
+  title, state and parent still refresh; `parent` is nullable and stays on `rN`, at the same
+  1 point per ten issues); an unreadable immediate parent is never read as
   "no parent"; a list that lost an invalid child is marked truncated so it is no evidence of
   absence; a repository redirect becomes an alias and any other identity mismatch is `moved`.
   (6) **`closing_refs`**: `parsePrPayload` records every closing reference (one unreadable
@@ -454,14 +458,14 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
 - **GitHub issue dependencies ride the same call, bound to their fetch (issue #103 slice 2, PR A).**
   Design: [`docs/superpowers/specs/2026-10-21-plan-dependencies-design.md`](docs/superpowers/specs/2026-10-21-plan-dependencies-design.md).
   A `Deps` fragment asks for `issueDependenciesSummary` and `blockedBy`/`blocking(first: 50)`
-  (GitHub's own limit per type) on a SECOND alias per issue, `dN`, with `rN`'s variables; `Root`
-  is slice 1's, byte for byte. Still ONE call per batch, measured at 1 point and 12.8 KB for the
+  (GitHub's own limit per type) on another alias per issue, `dN`, with `rN`'s variables, as the
+  sub-issues are on `hN`. Still ONE call per batch, measured at 1 point and 12.8 KB for the
   ten-issue #117 family (`test/fixtures/issue-relations-10-deps.json`). The alias is what isolates
   the sections: GitHub marks the three fields, their `Int!` counts and `pageInfo` non-null, so an
   error in any of them nulls the whole issue it was asked on. Inside `rN` that would turn the issue
   into a soft `gh-failed` and stop its hierarchy refreshing; on `dN` it nulls only `dN.issue`.
-  (1) **Parsing** (`parseIssueBatch`) fails closed per section: `rN` is read exactly as in slice 1,
-  and the section only from `dN`, where any error, or a null or missing `dN.issue`, makes only that
+  (1) **Parsing** (`parseIssueBatch`) fails closed per section: the issue and hierarchy are read
+  from `rN` and `hN` as above, and the section only from `dN`, where any error, or a null or missing `dN.issue`, makes only that
   issue's dependencies `unavailable` (never the issue itself, whatever the error's type); each
   listed issue is validated like a child, and an invalid one is dropped and marks its list
   truncated; the root itself and repeats are dropped; lists cap at 50 and are kept in key order

@@ -422,6 +422,29 @@ describe('the Later section setting (#247)', () => {
     expect(laterHint()?.hidden).toBe(true)
   })
 
+  it('offers no Pin for later with the section off, on a question, a queue row or a plan panel', async () => {
+    localStorage.setItem(LATER_KEY, 'false')
+    const d = open()
+    const id = question(d)
+    upsertBoard(d, { ...AGENT, title: 'Release', rows: [blockedRow()] })
+    const rowId = getBoard(d, 'alpha', 'Release')!.rows[0]!.id
+    await bootApp(d)
+    await showInbox()
+    for (const ask of [id, rowId]) {
+      click(row(ask))
+      await settle()
+      expect(menuChoices(ask), ask).not.toContain('Pin for later')
+      expect(menuChoices(ask)[0], ask).toBe('Not now · 4h')
+    }
+    click(document.querySelector('.tab[data-tab="boards"]'))
+    await settle()
+    click(buttonLabelled('Answer', document.querySelector(`#boards [data-row-id="${rowId}"]`)!))
+    await settle()
+    const panel = document.querySelector(`#boards [data-row-id="${rowId}"] + .row-panel-row`)!
+    expect(buttonLabelled('Not now · 4h', panel)).not.toBeNull()
+    expect(buttonLabelled('Pin for later', panel)).toBeNull()
+  })
+
   it('counts every pin left in the hint, and names none while the section is on', async () => {
     localStorage.setItem(LATER_KEY, 'false')
     const d = open()

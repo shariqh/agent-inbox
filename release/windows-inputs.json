@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "product": "Agent Inbox",
+  "bundleId": "io.github.shariqh.agent-inbox",
+  "minimumWindowsVersion": "10.0.17763",
+  "node": {
+    "version": "v24.18.1",
+    "modulesAbi": "137",
+    "distributions": {
+      "win32-x64": {
+        "platform": "win32",
+        "arch": "x64",
+        "archive": "node-v24.18.1-win-x64.zip",
+        "root": "node-v24.18.1-win-x64",
+        "url": "https://nodejs.org/dist/v24.18.1/node-v24.18.1-win-x64.zip",
+        "sha256": "ec56b84a7551893ab2324ebdfdc4ab974a63b4781162600b68a1293cc3e53765"
+      }
+    }
+  },
+  "nodeHeaders": {
+    "archive": "node-v24.18.1-headers.tar.gz",
+    "root": "node-v24.18.1",
+    "url": "https://nodejs.org/dist/v24.18.1/node-v24.18.1-headers.tar.gz",
+    "sha256": "bee7344a7fc6e3252c4822ca916a50cd6ddda9bb39374d6140a8046d9238fded",
+    "importLibraries": {
+      "win32-x64": {
+        "url": "https://nodejs.org/dist/v24.18.1/win-x64/node.lib",
+        "sha256": "589684168a73547ca47cd22d76a4e465ef561abe89fb1b2b23fe35bbe857d505"
+      }
+    }
+  },
+  "electron": {
+    "version": "43.8.0",
+    "modulesAbi": "148",
+    "packagerVersion": "20.3.0",
+    "rebuildVersion": "4.2.0"
+  }
+}

@@ -65,8 +65,11 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   default's active plans that hold a blocked row, in its order, each narrowed to
   those rows, every plan field and `progress` otherwise the default's),
   `/api/items/history` (issue #184, below), likewise its own registration and
-  validator, and `/api/issues` (issue #103, below), the seventh. Any other query
-  string keeps the default items or boards response. The watcher reads both
+  validator, `/api/issues` (issue #103, below), the seventh, and `/api/links`
+  (issue #288), the eighth: the cached PR state, whose bytes depend on the
+  database alone because the PR poller writes them through `store.ts` and the
+  previews it keeps follow open items and active plans. Any other query string
+  keeps the default items or boards response. The dock watcher reads its two
   projections through `electron/conditional-read.cjs`: each read sends the
   validator its last 200 carried and reuses what it parsed on a 304, an untagged
   answer (an older viewer) is never held, and a failure drops what was held. An
@@ -105,10 +108,12 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   full-fetch behavior, malformed replies fail explicitly, and no snapshot content
   is persisted to browser storage. Derive mutable view state rather than changing
   authoritative cached records. A poll tick starts its eight reads together (#161)
-  and applies nothing until all settle: history, closed projects, links and the
-  sub-issue graph (#103) keep their fallbacks, any other failure still fails the
-  whole tick (reported in the old serial order) without blanking the frame, and
-  `loadGeneration` still discards an older tick that finishes late.
+  and applies nothing until all settle: history, closed projects, links (read as a
+  snapshot since #288, its body through `linksBody`, so a 404, a network error or
+  a refused body is no links) and the sub-issue graph (#103) keep their
+  fallbacks, any other failure still fails the whole tick (reported in the old
+  serial order) without blanking the frame, and `loadGeneration` still discards
+  an older tick that finishes late.
 - **Closed history is paged out of the default items snapshot (issue #184).**
   `/api/items` carries every open item, the `RECENT_CLOSED_ITEMS` (50) most
   recently TOUCHED closed items (`listItemsPage`: the newest of every item stamp)
@@ -1223,8 +1228,10 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   This is point-in-time detection, not a stable handle: inode reuse and races after the
   last check remain. The modeled Win32 policy additionally rejects drive-relative,
   drive-less-rooted, device/extended-namespace and ADS-like paths plus junction/reparse
-  entries exposed as links. Those tests do not establish Windows support; Setup remains
-  limited to exact Darwin/Linux x64/arm64 hosts until native Windows evidence exists.
+  entries exposed as links. Native Windows x64 folder CI proves only the existing
+  immutable runtime create/publish/remove path on NTFS; it does not establish replacement,
+  locking, host-mutation, or process-cancellation behavior. Setup therefore remains
+  limited to exact Darwin/Linux x64/arm64 hosts.
   Recursive rollback/cleanup must re-identify both the private scratch directory and any
   prior-tree backup immediately before mutation. An identity mismatch refuses restore or
   deletion and retains the untrusted path for recovery; never “clean up” a path whose

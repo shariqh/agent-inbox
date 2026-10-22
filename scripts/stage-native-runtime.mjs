@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -8,12 +8,14 @@ import { parseArgs } from 'node:util'
 import {
   archiveExtractCommand,
   archiveListCommand,
+  assertPlainFile,
   assertSystemTool,
   nativeRuntimeAdapterFor,
   validateArchiveEntries,
 } from './native-runtime-adapter.mjs'
 import { loadLinuxReleaseInputs } from './linux-release-inputs.mjs'
 import { downloadArchive, loadReleaseInputs, verifyArchiveDigest } from './release-inputs.mjs'
+import { loadWindowsReleaseInputs } from './windows-release-inputs.mjs'
 import { targetFor } from './runtime-targets.mjs'
 import { stageRuntime } from './stage-runtime.mjs'
 import { resolveSourceProvenance } from './source-provenance.mjs'
@@ -53,6 +55,7 @@ function knownTarget(key) {
 function releaseInputsFor(target, inputsPath) {
   if (target.platform === 'darwin') return loadReleaseInputs(inputsPath)
   if (target.platform === 'linux') return loadLinuxReleaseInputs(inputsPath)
+  if (target.platform === 'win32') return loadWindowsReleaseInputs(inputsPath)
   throw new NativeRuntimeStageError(`no release input profile for runtime target: ${target.key}`)
 }
 
@@ -72,6 +75,75 @@ function archiveEntries(adapter, archive) {
     timeout: 30_000,
   })
   return listing.split(/\r?\n/).filter(Boolean)
+}
+
+/**
+ * The official Windows ZIP carries neither Node's C/C++ headers nor node.lib, yet
+ * stage-runtime.mjs builds better-sqlite3 against npm_config_nodedir = the extracted
+ * distribution, never headers node-gyp would fetch (#135). So give that root the same
+ * release's pinned headers (include/node) and import library at Release/node.lib, where
+ * node-gyp looks under --nodedir for the Release build better-sqlite3 runs. Both are
+ * SHA-256 verified, and the headers tarball is listed and checked like the Node archive
+ * before anything is extracted. Only the extracted copy changes; nothing from include/ or
+ * Release/ is staged into the runtime payload.
+ */
+export async function provisionWindowsNodeHeaders({
+  headers,
+  key,
+  adapter,
+  nodeRoot,
+  workDir,
+  cacheRoot,
+  download = downloadArchive,
+}) {
+  const library = headers?.importLibraries?.[key]
+  if (!library) throw new NativeRuntimeStageError(`no pinned Node import library for ${key}`)
+  for (const name of ['include', 'Release']) {
+    if (existsSync(join(nodeRoot, name))) {
+      throw new NativeRuntimeStageError(`Node distribution already contains ${name}/; refusing to mix in headers`)
+    }
+  }
+
+  const headersArchive = join(cacheRoot, headers.archive)
+  await download({ url: headers.url, destination: headersArchive, expectedSha256: headers.sha256 })
+  validateArchiveEntries(archiveEntries(adapter, headersArchive), headers.root)
+  const headersParent = join(workDir, 'node-headers')
+  mkdirSync(headersParent)
+  runArchiveCommand(archiveExtractCommand(adapter, headersArchive, headersParent), {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 60_000,
+  })
+  const roots = readdirSync(headersParent)
+  if (roots.length !== 1 || roots[0] !== headers.root) {
+    throw new NativeRuntimeStageError(`Node headers archive root mismatch: expected only ${headers.root}`)
+  }
+  const include = join(headersParent, headers.root, 'include')
+  try {
+    for (const name of ['common.gypi', 'config.gypi', 'node_version.h']) {
+      assertPlainFile(join(include, 'node', name), `Node headers include/node/${name}`)
+    }
+  } catch (err) {
+    throw new NativeRuntimeStageError(err.message)
+  }
+
+  const libraryFile = join(cacheRoot, `${headers.root}-${key}-node.lib`)
+  await download({ url: library.url, destination: libraryFile, expectedSha256: library.sha256 })
+  renameSync(include, join(nodeRoot, 'include'))
+  mkdirSync(join(nodeRoot, 'Release'))
+  const stagedLibrary = join(nodeRoot, 'Release', 'node.lib')
+  copyFileSync(libraryFile, stagedLibrary)
+  return {
+    headers: {
+      archive: headers.archive,
+      root: headers.root,
+      url: headers.url,
+      sha256: verifyArchiveDigest(headersArchive, headers.sha256),
+    },
+    importLibrary: {
+      url: library.url,
+      sha256: verifyArchiveDigest(stagedLibrary, library.sha256),
+    },
+  }
 }
 
 export async function stageNativeRuntime({
@@ -115,6 +187,16 @@ export async function stageNativeRuntime({
       throw new NativeRuntimeStageError(`archive root mismatch: expected only ${distribution.root}`)
     }
     const nodeRoot = join(extractParent, distribution.root)
+    const nodeHeaders = target.platform === 'win32'
+      ? await provisionWindowsNodeHeaders({
+        headers: inputs.nodeHeaders,
+        key,
+        adapter,
+        nodeRoot,
+        workDir: extractParent,
+        cacheRoot,
+      })
+      : null
     const result = stageRuntime({
       nodeRoot,
       platform: distribution.platform,
@@ -138,6 +220,7 @@ export async function stageNativeRuntime({
         url: distribution.url,
         sha256: verifyArchiveDigest(archive, distribution.sha256),
       },
+      ...(nodeHeaders ? { nodeHeadersIdentity: nodeHeaders } : {}),
     }
   } finally {
     rmSync(extractParent, { recursive: true, force: true })
@@ -178,6 +261,15 @@ async function main(argv) {
     archiveRoot: result.archiveIdentity.root,
     archiveUrl: result.archiveIdentity.url,
     archiveSha256: result.archiveIdentity.sha256,
+    ...(result.nodeHeadersIdentity
+      ? {
+        nodeHeadersArchive: result.nodeHeadersIdentity.headers.archive,
+        nodeHeadersUrl: result.nodeHeadersIdentity.headers.url,
+        nodeHeadersSha256: result.nodeHeadersIdentity.headers.sha256,
+        nodeImportLibraryUrl: result.nodeHeadersIdentity.importLibrary.url,
+        nodeImportLibrarySha256: result.nodeHeadersIdentity.importLibrary.sha256,
+      }
+      : {}),
   })}\n`)
 }
 

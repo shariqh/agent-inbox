@@ -1544,7 +1544,11 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   SAME volume; then `plutil` id + version, `codesign --verify --deep --strict` with a
   requirement built only from constants (`identifier` + Team ID `VVR2DKR923`), and
   `spctl --assess` — Node-written files carry no quarantine, so this is the only
-  Gatekeeper evaluation. (4) **The helper** is constant `/bin/sh` text, spawned detached
+  Gatekeeper evaluation. Release DMGs are lzma `ULMO` images since #289
+  (`scripts/macos-dmg.mjs`, which refuses any other format): these flags attach them as
+  they attached `UDZO`, and every installer since 1.3.0 uses the same flags, so a later
+  DMG format must stay attachable by them.
+  (4) **The helper** is constant `/bin/sh` text, spawned detached
   with fixed argv, `stdio:'ignore'` and a minimal `PATH`. It waits until BOTH the app PID
   and the viewer PID it started (`-` for an in-process or reused viewer) have exited —
   otherwise the relaunched app could find the dying viewer on the port and take the

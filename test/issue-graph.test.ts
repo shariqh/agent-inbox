@@ -735,6 +735,7 @@ describe('dependency reconciliation (slice 2 §6.1)', () => {
       row(D, null, null, { error: 'forbidden', checkedAt: at(15) }),
     ], [B, D])
     expect(pairs(failed)).toEqual([])
+    expect(failed.truncated.edges).toBe(0)
     expect(nodeKeys(failed)).toEqual([B])
     expect(JSON.stringify(failed)).not.toContain('Private title')
     // a failure at the very time of the observation drops it too
@@ -752,15 +753,18 @@ describe('dependency reconciliation (slice 2 §6.1)', () => {
     ], [B, D])
     expect(blocksEdges(after)).toEqual([{ kind: 'blocks', from: B, to: D, observed_at: at(25) }])
     expect(node(after, D)).toMatchObject({ title: 'Visible again' })
-    // a newer observation brings the failed issue's facts back, but never the older pair
-    const revived = build([
-      withDeps(D, at(10), deps({ blockedBy: [B] })),
-      row(B, null, null, { error: 'not-found', checkedAt: at(15) }),
-      row(N(117), snapshot(N(117), { children: [B] }), at(20)),
-    ], [D, B, N(117)])
-    expect(node(revived, B)).toMatchObject({ observed_at: at(20) })
-    expect(pairs(revived)).toEqual([])
-    expect(revived.truncated.edges).toBe(0)
+    // a newer observation brings a failed end's facts back, but never a pair seen at or before
+    // its failure, whichever end failed
+    const revived = (failed: string, observer: string, section: IssueDependencies) => build([
+      withDeps(observer, at(15), section),
+      row(failed, null, null, { error: 'not-found', checkedAt: at(15) }),
+      row(N(117), snapshot(N(117), { children: [failed] }), at(20)),
+    ], [observer, failed, N(117)])
+    for (const graph of [revived(B, D, deps({ blockedBy: [B] })), revived(D, B, deps({ blocking: [D] }))]) {
+      expect(nodeKeys(graph)).toEqual([N(117), B, D])
+      expect(pairs(graph)).toEqual([])
+      expect(graph.truncated.edges).toBe(0)
+    }
   })
 
   it('drops self-pairs', () => {
@@ -779,6 +783,15 @@ describe('dependency reconciliation (slice 2 §6.1)', () => {
     ])
     // a cycle decides nothing else
     expect(graph.nodes.some((n) => n.conflict)).toBe(false)
+  })
+
+  it('marks no cycle where an issue is reached twice: a diamond is not circular', () => {
+    const [X, Y, Z] = [N(301), N(302), N(303)]
+    const section = depsOf([[X, Y], [X, Z], [Z, Y]])
+    const keys = [X, Y, Z]
+    const graph = build(keys.map((key) => withDeps(key, at(10), section(key))), keys)
+    expect(pairs(graph)).toEqual([`${X} → ${Y}`, `${X} → ${Z}`, `${Z} → ${Y}`])
+    expect(blocksEdges(graph).some((edge) => 'cycle' in edge)).toBe(false)
   })
 
   it('finds components without recursion: a 30,000-issue ring is one cycle, a 30,000-issue chain none', () => {

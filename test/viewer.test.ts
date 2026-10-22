@@ -310,6 +310,13 @@ describe('viewer api', () => {
 
       // Claude Code on Setup's runtime: Setup moves its hooks, not the checkout
       release.registerHooks(old)
+      // (and a checkout whose path Setup cannot show has no command to build)
+      const hidden = checkoutAt('line\nbreak')
+      registerHost(release.home, 'claude', process.execPath, join(hidden, 'dist', 'mcp-server.js'))
+      const pathless = await agents()
+      expect(pathless).toMatchObject({ claude: { kind: 'checkout' }, hooks: { kind: 'runtime', version: '1.2.4' } })
+      expect(pathless.claude).not.toHaveProperty('path')
+      expect(pathless).not.toHaveProperty('checkoutHooksCommand')
       release.register('claude', release.installVersion('1.2.8'))
       const managed = await agents()
       expect(managed).toMatchObject({ claude: { kind: 'runtime', version: '1.2.8' }, copilot: { kind: 'checkout', path: root } })

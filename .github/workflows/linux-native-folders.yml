@@ -67,7 +67,11 @@ jobs:
         with:
           node-version: ${{ steps.release-inputs.outputs.node-version }}
           architecture: ${{ matrix.arch }}
+          package-manager-cache: false
       - run: npm ci
+        env:
+          # Compile better-sqlite3 rather than load an unpinned prebuild (#315).
+          npm_config_build_from_source: "true"
       - name: Validate exact Linux release inputs and gates
         run: |
           npm run release:linux-inputs

@@ -1441,7 +1441,13 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   `npm install` there: either re-resolves ranges. The script works on physical paths
   (`pwd -P`) and treats a missing staged manifest or an unconfirmed graph check as failure:
   a step that silently did nothing could otherwise let `npm ci` walk up and strip the
-  checkout's devDependencies.
+  checkout's devDependencies. *(#315)* Every workflow but `ci.yml` builds, signs or
+  verifies a release, so none restores an npm cache (no `cache: npm`, and
+  `package-manager-cache: false` on each setup-node step) and each checkout `npm ci`
+  there sets `npm_config_build_from_source=true`: nothing from that install ships, but
+  scripts and tests load its addon in jobs that build the release or hold signing and
+  notary secrets. `test/release-pipeline.test.ts` pins all three; `ci.yml` keeps its
+  prebuilds.
 - **Portable release runtime** *(#74 Layer 1)* — the app may additionally embed
   `darwin-arm64` and `darwin-x64` Node 24 payloads staged outside the Electron dependency
   tree. Each payload has a content-derived `runtime-manifest.json`; Electron selects only

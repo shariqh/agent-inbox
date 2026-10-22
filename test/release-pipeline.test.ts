@@ -649,12 +649,83 @@ describe('universal finalization contract', () => {
   })
 
   it('restores no npm cache where a release is built, signed or verified (#315)', () => {
-    // A restored <cache>/_prebuilds would still reach the checkout's own npm ci,
-    // whose prebuild-install unpacks it unchecked and loads the addon it holds.
+    // A restored <cache>/_prebuilds would reach any install that still runs
+    // prebuild-install, which unpacks it unchecked and loads the addon it holds.
     const workflowsDir = join(root, '.github', 'workflows')
     for (const file of readdirSync(workflowsDir).filter((name) => /\.ya?ml$/.test(name) && name !== 'ci.yml')) {
       expect(readFileSync(join(workflowsDir, file), 'utf8'), file).not.toMatch(/^\s*cache:\s*npm\b/m)
     }
+  })
+
+  it('compiles better-sqlite3 in every install where a release is built, signed or verified (#315)', () => {
+    // Nothing from the checkout's own npm ci ships, but scripts and tests load its
+    // better-sqlite3 in jobs that hold the signing and notary secrets, so it takes
+    // no prebuild either, and setup-node restores no cache of its own accord.
+    // ci.yml holds no secret and keeps its prebuilds.
+    type Step = { line: number, indent: number, lines: string[] }
+    const indentOf = (line: string): number => line.match(/^ */)?.[0].length ?? 0
+    const isContent = (line: string): boolean => line.trim() !== '' && !line.trim().startsWith('#')
+    const workflowSteps = (lines: string[]): Step[] => {
+      const steps: Step[] = []
+      let stepsIndent = -1
+      let current: Step | undefined
+      for (const [index, line] of lines.entries()) {
+        if (stepsIndent >= 0 && isContent(line) && indentOf(line) <= stepsIndent) {
+          stepsIndent = -1
+          current = undefined
+        }
+        if (/^\s*steps:\s*$/.test(line)) {
+          stepsIndent = indentOf(line)
+        } else if (stepsIndent >= 0 && /^\s*- /.test(line) && (!current || indentOf(line) === current.indent)) {
+          current = { line: index + 1, indent: indentOf(line), lines: [line] }
+          steps.push(current)
+        } else if (current && (!isContent(line) || indentOf(line) > current.indent)) {
+          current.lines.push(line)
+        }
+      }
+      return steps
+    }
+    // The entries under one of a step's own keys, such as env: or with:
+    const entries = (step: Step, key: string): string[] => {
+      const at = step.lines.findIndex((line) => line.trim() === `${key}:` && indentOf(line) === step.indent + 2)
+      if (at < 0) return []
+      const end = step.lines.findIndex((line, index) => index > at && isContent(line) && indentOf(line) <= step.indent + 2)
+      return step.lines.slice(at + 1, end < 0 ? undefined : end).filter((line) => indentOf(line) === step.indent + 4)
+    }
+    const INSTALL = /\bnpm\s+(?:ci|install|i|rebuild|update)\b/
+    const SETUP_NODE = /^\s*(?:-\s+)?uses:\s+actions\/setup-node@/
+
+    const workflowsDir = join(root, '.github', 'workflows')
+    let installs = 0
+    let setupNodes = 0
+    for (const file of readdirSync(workflowsDir).filter((name) => /\.ya?ml$/.test(name) && name !== 'ci.yml')) {
+      const lines = readFileSync(join(workflowsDir, file), 'utf8').split(/\r?\n/)
+      const checked = new Set<number>()
+      for (const step of workflowSteps(lines)) {
+        const where = `${file}:${step.line}`
+        const own = step.lines.filter(isContent)
+        if (own.some((line) => INSTALL.test(line))) {
+          installs += 1
+          expect(entries(step, 'env'), `${where} must compile better-sqlite3 rather than take a prebuild`)
+            .toContain(`${' '.repeat(step.indent + 4)}npm_config_build_from_source: "true"`)
+          step.lines.forEach((_, offset) => checked.add(step.line + offset))
+        }
+        if (own.some((line) => SETUP_NODE.test(line))) {
+          setupNodes += 1
+          expect(entries(step, 'with'), `${where} must turn off setup-node's package-manager cache`)
+            .toContain(`${' '.repeat(step.indent + 4)}package-manager-cache: false`)
+          step.lines.forEach((_, offset) => checked.add(step.line + offset))
+        }
+      }
+      // Every install and setup-node line belongs to a step checked above
+      lines.forEach((line, index) => {
+        if (isContent(line) && (INSTALL.test(line) || SETUP_NODE.test(line))) {
+          expect(checked.has(index + 1), `${file}:${index + 1} is outside any checked step`).toBe(true)
+        }
+      })
+    }
+    expect(installs).toBeGreaterThan(0)
+    expect(setupNodes).toBeGreaterThan(0)
   })
 
   it('pins every repository workflow action and disables checkout credential persistence', () => {

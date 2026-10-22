@@ -92,9 +92,17 @@ stated minimum before updating either pinned major.
 
 Set `SOURCE_DATE_EPOCH` to the source commit time for repeatable `setup-info.json`
 metadata. No build script downloads an unpinned `latest` tool or Node archive.
-Release, build and signing workflows restore no npm cache: the checkout's own
-`npm ci` still runs better-sqlite3's install script, whose prebuild-install would
-unpack a planted `<cache>/_prebuilds` archive and load the addon in it (#315).
+Release, build and signing workflows restore no npm cache: there is no `cache: npm`,
+and every `actions/setup-node` step sets `package-manager-cache: false`, so a later
+`packageManager` field in `package.json` cannot turn caching on. Each checkout-level
+`npm ci` in them sets `npm_config_build_from_source=true` (#315). Nothing from that
+install ships, but scripts and tests load its better-sqlite3 in the jobs that build
+the release and in those that hold the signing and notary secrets, and
+prebuild-install would otherwise unpack a cached or downloaded prebuild, JavaScript
+included, and load it without checking a digest.
+node-gyp compiles it against headers it downloads for the runner's Node and checks
+against that release's `SHASUMS256.txt`. `ci.yml`, which holds no secret, keeps
+the prebuilds.
 The app and each portable runtime carry the project MIT notice as
 `LICENSE.agent-inbox`; the runtime keeps Node's separate upstream notice as `LICENSE`.
 The signed app also preserves Electron's upstream `LICENSE.electron` and

@@ -26,7 +26,11 @@ jobs:
         with:
           node-version: ${{ steps.release-inputs.outputs.node-version }}
           architecture: arm64
+          package-manager-cache: false
       - run: npm ci
+        env:
+          # Compile better-sqlite3 rather than load an unpinned prebuild (#315).
+          npm_config_build_from_source: "true"
       - name: Install pinned SquashFS verifier
         run: |
           sudo apt-get update

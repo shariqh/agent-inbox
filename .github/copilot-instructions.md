@@ -119,8 +119,9 @@ Run the build before `npm run electron`; the development shell starts the built
   `scripts/setup-filesystem.cjs` is the
   Node-core-only runtime identity/staging/publication/removal boundary used by
   the shipped Darwin install path and build-time runtime publisher. Its Win32
-  policy is modeled only; do not treat it as Windows Setup availability or as
-  a stable-handle fix for the verify-to-execute TOCTOU. Runtime-payload install
+  policy is modeled, and native Windows folder CI exercises only immutable
+  runtime create/publish/remove on NTFS; do not treat either as Windows Setup
+  availability or as a stable-handle fix for the verify-to-execute TOCTOU. Runtime-payload install
   exit 3 means publication may have committed; the shell must exact-verify it
   before invoking ownership-safe rollback and must retain unverifiable paths.
   A prune renames the runtime into a `.trash-*` folder before deleting it, so an

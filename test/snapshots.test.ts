@@ -196,8 +196,8 @@ describe('per-window conditional snapshots', () => {
 
   // #184 + #185: the page, the complete History list and activity history each
   // keep their own slot, even when every server tag is the same opaque string,
-  // and the dock watcher's `?scope=attention` projection can never enter (and so
-  // never share or evict) the page's slot.
+  // and the dock watcher's `?scope=attention` projections (#156, #287) can never
+  // enter (and so never share or evict) the page's slots.
   it('never lets the item, History or activity-history representations share a slot', async () => {
     const window = activityHistoryUrl(Date.parse('2026-07-20T10:00:00.000Z'))
     const bodies: Record<string, unknown> = {
@@ -215,6 +215,7 @@ describe('per-window conditional snapshots', () => {
     const first = new Map<string, unknown>()
     for (const url of Object.keys(bodies)) first.set(url, await (await read(url)).json())
     await expect(read('/api/items?scope=attention')).rejects.toThrow('Unsupported snapshot route')
+    await expect(read('/api/boards?scope=attention')).rejects.toThrow('Unsupported snapshot route')
     await expect(read('/api/items/history?page=2')).rejects.toThrow('Unsupported snapshot route')
     expect(fetcher).toHaveBeenCalledTimes(3)
     for (const url of [...Object.keys(bodies)].reverse()) {

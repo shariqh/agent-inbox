@@ -1,7 +1,7 @@
 // Types for public/source.js (issue #30). Deliberately a LOCAL entity shape
 // rather than an extension of card.d.ts's CardItem — items and boards both feed
 // these builders, and keeping card.d.ts out of the graph keeps them independent.
-import type { IssueView, IssueViewRow } from './issues.js'
+import type { IssueNodeView, IssueView, IssueViewRow, PlanGroup } from './issues.js'
 
 export interface LinkedEntity {
   project?: string
@@ -129,3 +129,7 @@ export function issueRelationsHtml(
   nowMs: number,
   opts?: SourceOptions,
 ): string
+/** slice 2 §7.5 — the heading over one group of plans under a shared GitHub parent */
+export function planGroupHeadHtml(group: PlanGroup, nowMs: number, opts?: { continued?: boolean }): string
+/** slice 2 §7.1 — "Part of #117" over a run of a plan's rows */
+export function rowParentHeadHtml(parent: IssueNodeView, plan: LinkedEntity | null): string

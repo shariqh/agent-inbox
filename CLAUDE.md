@@ -608,6 +608,33 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   poll gate, press guard, scroll guards and focus rules are unchanged, so a
   relationship-changing poll keeps drafts, focus and expanded rows
   (`test/dom/issue-relations.test.ts`).
+- **Grouping plans by parent issue is opt-in and only reorders (issue #103, slice 2 §7).**
+  Off by default. `agent-inbox-group-plans` in localStorage is a saved preference seeded
+  on every load, like Default sort order (#221), because it never hides anything; Settings
+  → Plans saves it, and the Plans header's "Group by parent issue" switch (a labelled
+  `role="switch"` checkbox) changes only the current view. Both repaint through
+  `forceRender()`; there is no third render entry. `planGroups` (`public/issues.js`, pure)
+  reads the frame's `issueView` and `linkIndex`: a group is two or more ACTIVE plans keyed
+  by `(project, parent key)`, so projects never merge even in the all-projects view; a
+  plan's issue is its `certain` `issueKeyFor` identity and its parent the last trail
+  node of a `fresh` or `stale` relation. Every other state (hidden, no-hierarchy,
+  unavailable, uncertain, cut by the node cap, no `/api/issues`) leaves the plan flat in
+  its place, so grouping with no graph is exactly today's list. A plan whose own issue is
+  the parent leads as the umbrella; members follow GitHub's child order where the
+  parent's own list was fetched, else today's order. The group sits at its first
+  member's place; `paginateWithPending` pages the flattened list and a page that opens
+  inside a group repeats its `<h3>` header with "(continued)". Lingering and archived
+  plans are never grouped. While grouping is on, `rowParentRuns` marks runs of a plan's
+  linked rows with "Part of #117" header rows when they span two parents, without
+  reordering. Such a header can be a plan table's first row, and a compact
+  (`table-layout: fixed`) table sizes its columns from its first row unless `<col>`s say
+  otherwise, so the matrix carries a five-column `<colgroup>` and the compact widths live
+  on it (pinned in `test/editorial-shell.test.ts`; jsdom cannot lay out tables). Header text goes through `planGroupHeadHtml`/`rowParentHeadHtml` in
+  `public/source.js` (`esc()`, `chipHtml()`, `tone-issue`/`tone-stale` only). No grouping
+  value reaches `public/attention.js`, `relay.js`, `reply-watch.cjs`, a badge, a count
+  or the dock (`test/dom/issue-attention.test.ts` pins both); the DOM half, including
+  the press guard and a draft surviving a grouping change, is
+  `test/dom/plan-grouping.test.ts`.
 - **`src/shape.ts` is AGENT-SIDE ONLY (issue #42).** `context` is written for the human
   and rendered collapsed, so agents write it generously — and every agent read used to pay
   for all of it. `shape.ts` is where the MCP read payloads are trimmed (`context` →
@@ -1935,10 +1962,10 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   summary (see the invariant above); PR3 breadcrumbs, child progress and Agent Inbox
   activity in the UI (see the invariant above). That completes the first slice. Slice 2 (v1.5,
   [`2026-10-21-plan-dependencies-design.md`](docs/superpowers/specs/2026-10-21-plan-dependencies-design.md))
-  adds dependencies and opt-in grouping in six PRs: A ingests GitHub's issue dependencies and C
-  adds the agent-written `waits_on` row field, which no UI draws until D and E (see the
-  invariants above); the graph and `issue_rel`, Plans chips, Plan flow and grouping follow.
-  Sibling context stays later.
+  adds dependencies and opt-in grouping in six PRs: A ingests GitHub's issue dependencies, C
+  adds the agent-written `waits_on` row field, which no UI draws until D and E, and F adds
+  opt-in grouping by parent issue (see the invariants above); the graph and `issue_rel`,
+  Plans chips and Plan flow follow. Sibling context stays later.
 Keep all of these additive and behind the existing seams — don't break v1's local,
 zero-config, no-auth path.
 

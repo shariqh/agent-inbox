@@ -11,7 +11,7 @@ import type Database from 'better-sqlite3'
 import { insertItem, upsertBoard, upsertIssueSnapshot } from '../../src/store.js'
 import { facts, snapshot } from '../issue-fixtures.js'
 import type { SnapshotOpts } from '../issue-fixtures.js'
-import { badgeCount, bootApp, freshDb, pollTick, rows, settle, showInbox, tabCount, useDomTest } from './harness.js'
+import { badgeCount, bootApp, click, freshDb, pollTick, rows, settle, showInbox, tabCount, useDomTest } from './harness.js'
 
 useDomTest()
 let db: Database.Database | null = null
@@ -83,13 +83,45 @@ describe('attention with and without relationship data (#103 PR3)', () => {
     expect(withoutGraph).toEqual(before)
   })
 
-  it('pins the attention modules: none of them names an issue field or waits_on', () => {
+  // Slice 2 §10: grouping reorders Plans and feeds nothing to attention.
+  it('keeps every attention surface identical with plan grouping on and off', async () => {
+    db = freshDb()
+    insertItem(db, { ...SCOPE, stream: '120-input', kind: 'question', title: 'Which input first?', repo: REPO, issue_ref: 120 })
+    const blocked = (label: string) => ({
+      label, status: 'blocked' as const, note: 'Ready.', next_step: 'Approve it.', action_owner: 'approval' as const,
+      impact: 'Unblocks the family.', options: [{ label: 'Approve', recommended: true }, { label: 'Hold' }],
+    })
+    upsertBoard(db, { ...SCOPE, stream: 'main', title: 'Umbrella', repo: REPO, issuePin: { repo: REPO, number: 117 }, rows: [blocked('Approve the family')] })
+    upsertBoard(db, { ...SCOPE, stream: 'main', title: 'Flat plan', repo: REPO, rows: [blocked('Approve the flat plan')] })
+    upsertBoard(db, { ...SCOPE, stream: 'main', title: 'Child 120', repo: REPO, issuePin: { repo: REPO, number: 120 }, rows: [blocked('Approve the child')] })
+    const parent = facts(K(117), { title: 'Umbrella', children_total: 2, children_completed: 0 })
+    cache(db, 117, { children: [K(120), K(121)] })
+    cache(db, 120, { ancestors: [parent] })
+    await bootApp(db)
+    await showInbox()
+    const off = await attentionSurfaces()
+
+    click(document.querySelector('.tab[data-tab="boards"]'))
+    await settle()
+    click(document.querySelector('#boards .tab-header input[role="switch"]'))
+    await settle()
+    expect(document.querySelectorAll('#boards .plan-group-head')).toHaveLength(1)
+    await pollTick()
+    await showInbox()
+    const on = await attentionSurfaces()
+
+    expect(off.badge).toBe(4)
+    expect(on).toEqual(off)
+  })
+
+  it('pins the attention modules: none of them names an issue field, waits_on or plan grouping', () => {
     for (const file of ['public/attention.js', 'public/relay.js', 'electron/reply-watch.cjs']) {
       const code = readFileSync(join(ROOT, file), 'utf8').split('\n').filter((line) => {
         const t = line.trim()
         return !(t.startsWith('//') || t.startsWith('*') || t.startsWith('/*'))
       }).join('\n')
       expect(code, `${file} reads relationship data`).not.toMatch(/issue|sub-?issue|children_|relation|waits_?on/i)
+      expect(code, `${file} reads plan grouping`).not.toMatch(/planGroups|rowParentRuns|groupOf|groupByParent|group-plans|plan-group|parent/i)
     }
   })
 })

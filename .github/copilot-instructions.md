@@ -183,6 +183,15 @@ Run the build before `npm run electron`; the development shell starts the built
   the issue chip keeps #30's URL rules (filtered by `safeHttpUrl()`), every href
   comes from `chipHtml()`, and the word "Blocked" never appears. History keeps its
   plain chip, and labels open their target only through `focusItem`.
+- Grouping plans by parent issue (#103 slice 2) is opt-in and only reorders.
+  `agent-inbox-group-plans` is a saved preference seeded on every load (like
+  #221's sort order); the Plans header switch changes only the current view, and
+  both repaint through `forceRender()`. `planGroups` (pure, `public/issues.js`)
+  keys a group by `(project, parent)`, needs two active plans, and admits a plan
+  only through a certain identity whose relation is `fresh` or `stale`; anything
+  else stays flat in its place, and no plan is ever hidden. Lingering and archived
+  plans are not grouped. Headers are built in `public/source.js` and no grouping
+  value reaches attention, a badge, a count or the dock.
 - Issue snapshots (#103) are written only through `upsertIssueSnapshot` and
   `recordIssueFailure`. The attempt rule (apply only when the attempt started after
   the stored `checked_at`) is the `WHERE` of one upsert; a hard failure clears the

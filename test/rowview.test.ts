@@ -270,6 +270,62 @@ describe('urgencyChip', () => {
   })
 })
 
+// Issue #247: a deferred ask shows WHY it is out of the queue instead of an
+// urgency it no longer has. The model carries the facts; the chip words them.
+describe('reason chips for deferred asks (#247)', () => {
+  const HOUR = 3600_000
+  const later = (reason: 'snoozed' | 'pinned', over: Partial<RowItem> = {}) =>
+    rowModel({ kind: 'item', item: item(over), liveness: 'later', later: reason })
+
+  it('carries the pin, the reason and a Copilot quiet deferral on the model', () => {
+    const quiet = new Date(T0 + 3 * HOUR).toISOString()
+    expect(later('pinned', { pinned_at: '2026-07-22T12:00:00.000Z' }))
+      .toMatchObject({ liveness: 'later', later: 'pinned', pinnedAt: '2026-07-22T12:00:00.000Z', quietUntil: null })
+    expect(later('snoozed', {
+      snoozed_until: quiet, action_agent: 'copilot', watch_stopped_at: new Date(T0).toISOString(), watch_stopped_until: quiet,
+    })).toMatchObject({ later: 'snoozed', pinnedAt: null, quietUntil: quiet })
+    const row = rowModel({
+      kind: 'row',
+      row: { id: 'r1', label: 'Deploy', status: 'blocked', pinned_at: '2026-07-22T12:00:00.000Z' },
+      board: { id: 'b1', project: 'api', title: 'Release' },
+      liveness: 'later',
+      later: 'pinned',
+    })
+    expect(row).toMatchObject({ liveness: 'later', later: 'pinned', pinnedAt: '2026-07-22T12:00:00.000Z' })
+    expect(rowModel({ kind: 'item', item: item(), liveness: 'waiting' })).toMatchObject({ later: null, pinnedAt: null })
+  })
+
+  it('says how long ago a pinned ask was set aside', () => {
+    const pinned = later('pinned', { pinned_at: new Date(T0 - 2 * 24 * HOUR).toISOString() })
+    expect(urgencyChip(pinned, T0)).toEqual({ text: 'Pinned 2d ago', tone: 'muted' })
+    expect(urgencyChip(later('pinned', { pinned_at: new Date(T0).toISOString() }), T0))
+      .toEqual({ text: 'Pinned moments ago', tone: 'muted' })
+    expect(urgencyChip(later('pinned', { pinned_at: 'not a time' }), T0)).toEqual({ text: 'Pinned', tone: 'muted' })
+  })
+
+  it('says when a snoozed ask comes back, and that the agent waits quietly only while it does', () => {
+    const until = new Date(T0 + 3 * HOUR).toISOString()
+    expect(urgencyChip(later('snoozed', { snoozed_until: until }), T0)).toEqual({ text: 'Back in 3h', tone: 'muted' })
+    const quietly = later('snoozed', {
+      snoozed_until: until, action_agent: 'copilot', watch_stopped_at: new Date(T0).toISOString(), watch_stopped_until: until,
+    })
+    expect(urgencyChip(quietly, T0)).toEqual({ text: 'Back in 3h · agent waits quietly', tone: 'muted' })
+    expect(urgencyChip(quietly, T0 + 4 * HOUR).text).not.toContain('quietly')
+  })
+
+  it('claims no quiet wait for a stop for good or an asker that runs no watcher', () => {
+    const until = new Date(T0 + 3 * HOUR).toISOString()
+    const stopped = later('snoozed', {
+      snoozed_until: until, action_agent: 'copilot', watch_stopped_at: new Date(T0).toISOString(), watch_stopped_until: null,
+    })
+    expect(urgencyChip(stopped, T0).text).toBe('Back in 3h')
+    const claude = later('snoozed', {
+      snoozed_until: until, action_agent: 'claude-code', watch_stopped_at: new Date(T0).toISOString(), watch_stopped_until: until,
+    })
+    expect(urgencyChip(claude, T0).text).toBe('Back in 3h')
+  })
+})
+
 // The mark's own undo-refusal copy, the rows-shaped twin of undoRefusal above.
 describe('handledUndoRefusal (#36)', () => {
   it('is silent while the mark is still undelivered — there is nothing to refuse', () => {

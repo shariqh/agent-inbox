@@ -491,7 +491,7 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   the attempt rule would refuse every write, and the key would be fetched every tick. A settled
   PR also nudges each key whose bound section lists its certain closing issue as an OPEN blocker.
   (4) **Who reads it:** only `src/issue-graph.ts` (PR B, below), for `/api/issues` and
-  `issue_rel`. The UI draws nothing from it until PR D, and attention never reads it.
+  `issue_rel`, and through it the Plans chips and lists (PR D, below); attention never reads it.
 - **GitHub dependencies are reconciled purely into `blocks` edges (issue #103 slice 2, PR B).**
   Design §6. `buildIssueGraph` reads each display root's own bound, `ok` section (rule 9) as
   observations about a pair "A blocks B": the dependent's `blocked_by` or the blocker's
@@ -517,10 +517,10 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   kinds) and each root's `dependencies_omitted` (its entries not emitted) are exact. Everything
   is additive within version 1 (`blocks` edges, node `deps`, root `dependencies`
   `ok|unavailable|unknown|null` and `dependencies_omitted`), and the bytes still depend on the
-  database alone, so `/api/issues` stays a store-token conditional snapshot. The browser is
-  unchanged until PR D: `public/snapshots.js` accepts the body and `public/issues.js` reads
-  `contains` edges only; `test/issues.test.ts` and `test/dom/issue-relations.test.ts` pin that
-  breadcrumbs, child progress and grouping ignore `blocks` edges and the new fields, and
+  database alone, so `/api/issues` stays a store-token conditional snapshot.
+  `public/snapshots.js` accepts the body unchanged; PR D (below) draws it, and
+  `test/issues.test.ts` and `test/dom/issue-relations.test.ts` pin that breadcrumbs, child
+  progress and grouping are the same with and without `blocks` edges and the new fields, and
   `test/dom/issue-attention.test.ts` pins attention. Dependency lists are still a rule 7 fact
   source, so a fresher list can update an issue's title or state and, at the cap, a root's rank. **`issue_rel` calls them
   `waits_on_issues` and `unblocks`, never `waits_on`:** a titled `board_get` row already
@@ -656,6 +656,36 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   poll gate, press guard, scroll guards and focus rules are unchanged, so a
   relationship-changing poll keeps drafts, focus and expanded rows
   (`test/dom/issue-relations.test.ts`).
+- **"Waits on" in Plans is ambient, open-only and never "blocked" (issue #103, slice 2 PR D).**
+  Design §9.1. `buildIssueView` (`public/issues.js`, pure, still rebuilt only in
+  `paintAmbient`) now also reads `blocks` edges: a drawn (`fresh`/`stale`) relation carries
+  `dependencies`, which is `null` unless its own root says `dependencies: "ok"` (unknown,
+  null, a missing field, hidden, no-hierarchy and unavailable relations all draw no list and
+  never "no dependencies"), `{ status: 'unavailable' }` when GitHub refused the section (one
+  "Dependencies unavailable" line), and otherwise the OPEN blockers ("waits on") and OPEN
+  dependents ("unblocks") by repository and number, each with the slice-1 activity label
+  READ from the frame's `attentionEntries`, `cycle` when a `cycle: true` edge touches the
+  issue, and three counts of open ones it cannot show: beyond GitHub's 50-entry page
+  (`open − 50`), not visible to this account (`open` minus listed minus that), and cut by
+  the node cap (`dependencies_omitted`, once per section, taken out of the hidden counts).
+  Closed issues draw nothing and are never counted. The same view adds `planWaits` (plan
+  id → its certain issue's open blockers) and `rowWaits` (row id → its `waits_on` steps that
+  are not `done`, then its own link's open blockers). Steps are local and draw with no graph;
+  a dangling label draws nothing; a step whose linked issue is one of those blockers is ONE
+  entry labelled with both sources. `public/source.js` draws it all: `rowWaitsChipHtml`
+  after a row's issue chip (matrix note cell, out of the roving order unless `tabbable`, and
+  the row card), `planWaitsChipHtml` beside a plan's chip, "Dependencies on GitHub" below the
+  sub-issues in `issueRelationsHtml` and the card source block, and `rowWaitsHtml` in
+  `rowPanelEl`. A chip says "waits on #119", "waits on 3", "waits on step Build" or "waits
+  on 2 steps"; only a single issue is a link, built from a validated slug and number through
+  `chipHtml()`; an entry whose node is no valid slug and number loses its GitHub half (or
+  vanishes). Tones are `tone-issue`/`tone-stale` only: a dependency is never the human's
+  blocker, so never the bad tone, the blocked mark or the word, even on a `blocked` row.
+  Nothing new reaches `public/attention.js`, `relay.js`, `reply-watch.cjs`, a badge, a count
+  or the dock: `test/dom/issue-attention.test.ts` compares every attention surface with and
+  without dependencies AND `waits_on`, grouping off and on. DOM behaviour (404 and stale
+  fallbacks, a draft, focus and expanded row through a dependency-changing poll) is
+  `test/dom/plan-dependencies.test.ts`.
 - **Grouping plans by parent issue is opt-in and only reorders (issue #103, slice 2 §7).**
   Off by default. `agent-inbox-group-plans` in localStorage is a saved preference seeded
   on every load, like Default sort order (#221), because it never hides anything; Settings

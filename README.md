@@ -368,6 +368,17 @@ Grouping only reorders. No plan is hidden, plans from different projects are nev
 merged, and a plan whose relationship data is missing, older than seven days or
 unavailable stays in its usual place. Badges, counts and notifications do not change.
 
+## Dependencies in Plans
+
+When a plan's or a row's GitHub issue is blocked by open issues ("blocked by" on
+GitHub), or a row says it waits on other steps of its plan, Plans shows a quiet
+"waits on #119", "waits on 3" or "waits on step Build" chip; hover it for the list.
+The plan card adds "Dependencies on GitHub" with what the issue waits on and what it
+unblocks, and an expanded row lists everything it waits on and where that came from.
+Only open issues and unfinished steps count. A dependency is not a request for you:
+it never marks a row blocked or changes a badge, count or notification. GitHub data
+dims after 30 minutes without a refresh and disappears after seven days.
+
 ## Architecture
 
 - **`src/store.ts`** owns schema, migrations, WAL configuration, and every database

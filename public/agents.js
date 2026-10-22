@@ -5,7 +5,8 @@
 // line per host, picks the Setup-managed hosts whose runtime differs from this
 // app's (older, or newer after an app downgrade), names the one action that
 // moves exactly those — one fixed install target per host, and since #206 one
-// for Claude's hooks — and, afterwards, says which running sessions still run
+// for Claude's hooks — where that action cannot move outdated hooks, the step
+// that can (#278), and, afterwards, says which running sessions still run
 // another build than their host now loads, and how to restart them. A restart
 // is the only way a running session loads another build, so nothing here ever
 // says one reloaded.
@@ -120,6 +121,51 @@ export function agentsAction(agents) {
       : `${names(newer)} ${several(newer) ? 'run' : 'runs'} a newer runtime than this app. ${label} moves ${several(newer) ? 'them' : 'it'} to this app's runtime.${keep}`,
     elsewhere: `Open Settings in the Agent Inbox app to match ${names(hosts)} to the v${current} runtime.`,
   }
+}
+
+// Hosts a Setup install may register, installing this app's runtime on the way:
+// the installer replaces only a registration it owns, never a checkout's or a
+// custom one, and a failed install removes a runtime it had just published.
+const SETUP_REGISTERS = new Set(['none', 'runtime'])
+const CHECKOUT_HOOKS = 'Claude Code runs from your source checkout. To point Claude hooks at it too, run this in a terminal with Node 24:'
+const MANUAL_HOOKS = "Setup cannot move these hooks. To change them, run Agent Inbox's hook installer in a terminal, as docs/hooks.md describes."
+const commandText = (value) => (typeof value === 'string' && value !== '' ? value : null)
+
+/**
+ * What the panel adds about Claude's hooks when they run another Setup runtime
+ * than this app's (#206), or null when nothing needs adding: the action's hooks
+ * step is the way when there is one, as its button where this window can run it
+ * and its "Open Settings in the Agent Inbox app" line where it cannot. Without
+ * one, that hooks line still ends in a step the human can take (#278), and the
+ * panel promises only what Setup can do here:
+ * - `hooksCommand` (this app's runtime is installed): that terminal command;
+ * - `checkoutHooksCommand` (Claude Code runs from a checkout whose hooks are not
+ *   that checkout's): the checkout's own hook installer, since Setup never
+ *   switches a checkout and so never installs this app's runtime for it;
+ * - where a Setup install could put this app's runtime in place: the promise
+ *   that Setup moves the hooks once it is installed;
+ * - otherwise: Setup cannot move them, and docs/hooks.md has the commands.
+ * Both commands are built and quoted by the viewer, never here.
+ * @returns {{text: string, command: string | null} | null}
+ */
+export function hooksNextStep(agents, canRun) {
+  if (!agents || typeof agents !== 'object') return null
+  const current = typeof agents.current === 'string' ? agents.current : null
+  if (!hostLine('hooks', agents.hooks, current).drift) return null
+  const hooksStep = agentsAction(agents)?.steps.some((step) => step.host === 'hooks') === true
+  if (hooksStep && canRun) return null
+  const runtime = commandText(agents.hooksCommand)
+  if (runtime) {
+    return { text: hooksStep ? 'Or move them from a terminal:' : `To move Claude hooks to v${current}, run this in a terminal:`, command: runtime }
+  }
+  if (hooksStep) return null
+  const checkout = commandText(agents.checkoutHooksCommand)
+  if (checkout) return { text: CHECKOUT_HOOKS, command: checkout }
+  const installs = agents.updatable === true
+    && ['claude', 'copilot'].some((host) => SETUP_REGISTERS.has(registration(agents[host]).kind))
+  return installs
+    ? { text: `Once this app's v${current} runtime is installed, Setup can move Claude hooks to it.`, command: null }
+    : { text: MANUAL_HOOKS, command: null }
 }
 
 /**

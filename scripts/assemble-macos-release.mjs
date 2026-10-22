@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { makeUniversalApp } from '@electron/universal'
 import { sign } from '@electron/osx-sign'
-import { createDMG } from 'electron-installer-dmg'
+import { createReleaseDmg } from './macos-dmg.mjs'
 import {
   buildManifest,
   readManifestFile,
@@ -532,19 +532,11 @@ export async function assembleMacRelease({
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 10 * 60_000,
     })
-    await createDMG({
-      appPath: app,
-      name: APP_NAME,
+    await createReleaseDmg({
+      app,
       title: `${APP_NAME} ${pkg.version}`,
       icon: join(repoRoot, 'electron', 'icon.icns'),
-      iconSize: 96,
-      format: 'UDZO',
-      overwrite: false,
-      dmgPath: join(stage, dmgName),
-      contents: [
-        { x: 180, y: 220, type: 'file', path: app },
-        { x: 480, y: 220, type: 'link', path: '/Applications' },
-      ],
+      output: join(stage, dmgName),
     })
     rmSync(app, { recursive: true, force: true })
 

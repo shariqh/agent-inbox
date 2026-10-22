@@ -1,31 +1,28 @@
 // @vitest-environment jsdom
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { readdirSync, readFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { relative, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const pagePath = resolve('marketing/index.html')
+const vendorDir = resolve('marketing/vendor')
 
-const THREE_MODULE = 'https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.module.js'
-const THREE_CORE = 'https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.core.js'
-// sha384 of the npm tarball's build files, which jsDelivr serves byte for byte.
-const PINNED = {
-  [THREE_MODULE]: 'sha384-m8JoFX52V6NGv2usipnlLJKnJfL7IE8dbniPDDCSGSQv3Hm4n6PjfV6syVwfuoRc',
-  [THREE_CORE]: 'sha384-mdKeCwPEcbDvzaxwhm+MVuLoMou+E7jQqrs4tmu/n8HBYPGI1kZt0MkJxlMR4zFM',
+// Relative to the page, so the site serves Three.js itself.
+const THREE_MODULE = './vendor/three-0.186.0/three.module.js'
+
+interface VendorManifest {
+  files: Array<{ path: string; sha256: string }>
+  sources: Array<{ directory: string; package: string; tarball: string; integrity: string; license: string }>
+}
+
+function vendorManifest(): VendorManifest {
+  return JSON.parse(readFileSync(resolve(vendorDir, 'manifest.json'), 'utf8')) as VendorManifest
 }
 
 function heroScript(): HTMLScriptElement {
   const scripts = document.querySelectorAll<HTMLScriptElement>('script[type="module"]')
   expect(scripts).toHaveLength(1)
   return scripts[0]!
-}
-
-// jsdom has no HTMLScriptElement.supports, and its link relList rejects
-// modulepreload. Leaving importmap undefined keeps the missing method.
-function stubModuleSupport(support: { importmap?: boolean; modulepreload: boolean }) {
-  if (support.importmap !== undefined) {
-    vi.stubGlobal('HTMLScriptElement', { supports: (type: string) => type === 'importmap' && support.importmap })
-  }
-  vi.spyOn(DOMTokenList.prototype, 'supports').mockImplementation(token => token === 'modulepreload' && support.modulepreload)
 }
 
 // Runs the hero module's own source with import() replaced by `load`.
@@ -94,15 +91,20 @@ function fakeThree() {
   return { module, sizes, draws: () => draws }
 }
 
-// Boots the hero with a fake Three.js, a sized canvas and a captured ResizeObserver.
-// Animation frames come from the fake timers (vi.advanceTimersToNextFrame).
+// Boots the hero with a fake Three.js, a sized canvas, and captured resize, intersection
+// and motion-preference callbacks. Animation frames come from the fake timers
+// (vi.advanceTimersToNextFrame).
 async function startHero(reduceMotion: boolean) {
   boot()
-  stubModuleSupport({ importmap: true, modulepreload: true })
+  const motion = { reduce: reduceMotion, onChange: () => {} }
   vi.stubGlobal('matchMedia', vi.fn((query: string) => ({
-    matches: query === '(prefers-reduced-motion: reduce)' && reduceMotion,
+    get matches() {
+      return query === '(prefers-reduced-motion: reduce)' && motion.reduce
+    },
     media: query,
-    addEventListener: vi.fn(),
+    addEventListener: (_type: string, listener: () => void) => {
+      if (query === '(prefers-reduced-motion: reduce)') motion.onChange = listener
+    },
     removeEventListener: vi.fn(),
   })))
   const canvas = document.querySelector<HTMLCanvasElement>('#agent-visual')!
@@ -116,13 +118,32 @@ async function startHero(reduceMotion: boolean) {
     }
     observe() {}
   })
+  let observeIntersection = (_entries: Array<{ isIntersecting: boolean }>) => {}
+  vi.stubGlobal('IntersectionObserver', class {
+    constructor(callback: (entries: Array<{ isIntersecting: boolean }>) => void) {
+      observeIntersection = callback
+    }
+    observe() {}
+  })
   // Keeps the palette observer from outliving this test's page.
   vi.stubGlobal('MutationObserver', class { observe() {} })
   const three = fakeThree()
   await runHero(() => Promise.resolve(three.module))
   // The hero hides its canvas when anything throws, including a gap in the fake.
   expect(canvas.hidden).toBe(false)
-  return { three, size, observeResize: () => observeResize() }
+  // An observer always reports the target's state once it starts observing.
+  const intersect = (...visible: boolean[]) => observeIntersection(visible.map(isIntersecting => ({ isIntersecting })))
+  intersect(true)
+  return {
+    three,
+    size,
+    observeResize: () => observeResize(),
+    intersect,
+    setReducedMotion(reduce: boolean) {
+      motion.reduce = reduce
+      motion.onChange()
+    },
+  }
 }
 
 function button(selector: string): HTMLButtonElement {
@@ -204,36 +225,78 @@ describe('local marketing page', () => {
     expect(html).toContain('var(--cp-accent)')
   })
 
-  it('pins every Three.js module the hero loads with Subresource Integrity', () => {
-    boot()
-    const maps = document.querySelectorAll('script[type="importmap"]')
-    expect(maps).toHaveLength(1)
-    const map = JSON.parse(maps[0]!.textContent ?? '')
-    expect(map.integrity).toEqual(PINNED)
-    // The jsDelivr URLs map to themselves; every other https module URL, such as
-    // a redirect target's relative ./three.core.js, is blocked.
-    expect(map.imports).toEqual({ [THREE_MODULE]: THREE_MODULE, [THREE_CORE]: THREE_CORE, 'https://': null })
-
-    const preloads = [...document.querySelectorAll<HTMLLinkElement>('link[rel="modulepreload"]')]
-    expect(preloads.map(link => [link.getAttribute('href'), link.getAttribute('integrity'), link.getAttribute('crossorigin')]))
-      .toEqual(Object.entries(PINNED).map(([url, integrity]) => [url, integrity, 'anonymous']))
-
-    const hero = heroScript()
-    const source = hero.textContent ?? ''
+  it('loads nothing from another site', () => {
+    const { html } = boot()
+    expect(document.querySelectorAll('script[type="importmap"], script[src], link')).toHaveLength(0)
+    const source = heroScript().textContent ?? ''
     expect(source).not.toMatch(/^\s*import[\s{*]/m)
     expect([...source.matchAll(/\bimport\(\s*'([^']+)'\s*\)/g)].map(match => match[1])).toEqual([THREE_MODULE])
+    // No script or style names another origin, not even protocol-relative.
+    for (const block of document.querySelectorAll('script, style')) {
+      expect(block.textContent).not.toMatch(/(?:[a-z][a-z\d+.-]*:)?\/\/[a-z\d-]+(?:\.[a-z\d-]+)+/i)
+    }
+    // Absolute URLs appear only in links and the SVG namespace...
+    for (const element of document.querySelectorAll('*')) {
+      for (const { name, value } of element.attributes) {
+        if (/^\s*(?:[a-z][a-z\d+.-]*:)?\/\//i.test(value)) {
+          expect(`${element.localName}[${name}]`, value).toMatch(/^(?:a\[href\]|svg\[xmlns\])$/)
+        }
+      }
+    }
+    // ...and every URL in the file, text included, names one of these hosts.
+    const hosts = [...html.matchAll(/\b[a-z][a-z\d+.-]*:\/\/([^/\s"'<>`]+)/gi)].map(match => match[1])
+    expect(hosts.filter(host => !['github.com', 'shariq.dev', 'www.w3.org'].includes(host!))).toEqual([])
+  })
 
-    const order = [...document.querySelectorAll('script, link')]
-    const first = (selector: string) => order.findIndex(element => element.matches(selector))
-    expect(first('script[type="importmap"]')).toBeLessThan(first('link[rel="modulepreload"]'))
-    expect(order.indexOf(preloads.at(-1)!)).toBeLessThan(order.indexOf(hero))
+  it('vendors each module the hero loads, listed with its SHA-256 and npm source', () => {
+    const { files, sources } = vendorManifest()
+    const marketing = resolve('marketing')
+    const entries = readdirSync(vendorDir, { recursive: true, withFileTypes: true })
+    expect(entries.filter(entry => !entry.isFile() && !entry.isDirectory())).toEqual([])
+    // The manifest lists exactly the files under marketing/vendor, in order, with their hashes.
+    const vendored = entries
+      .filter(entry => entry.isFile())
+      .map(entry => relative(marketing, resolve(entry.parentPath, entry.name)).split('\\').join('/'))
+      .filter(path => path !== 'vendor/manifest.json')
+      .sort()
+    expect(files.map(file => file.path)).toEqual(vendored)
+    for (const { path, sha256 } of files) {
+      expect(path).toMatch(/^vendor(?:\/[A-Za-z0-9][A-Za-z0-9._-]*)+$/)
+      expect(createHash('sha256').update(readFileSync(resolve(marketing, path))).digest('hex'), path).toBe(sha256)
+      expect(sources.filter(({ directory }) => path.startsWith(`${directory}/`)), path).toHaveLength(1)
+    }
+    for (const source of sources) {
+      // Each directory holds one npm release, named after it, with that release's license.
+      const [, name, version] = source.package.match(/^([a-z\d][a-z\d._-]*)@(\d+\.\d+\.\d+)$/) ?? []
+      expect(source.directory).toBe(`vendor/${name}-${version}`)
+      expect(source.tarball).toBe(`https://registry.npmjs.org/${name}/-/${name}-${version}.tgz`)
+      expect(source.integrity).toMatch(/^sha512-[A-Za-z\d+/]{86}==$/)
+      expect(source.license).toBe('MIT')
+      expect(readFileSync(resolve(marketing, source.directory, 'LICENSE'), 'utf8')).toContain('The MIT License')
+    }
+
+    // Following imports from the hero reaches only listed files, and every listed module.
+    const page = new URL('https://site.test/landing/')
+    const loaded: string[] = []
+    const queue = [new URL(THREE_MODULE, page)]
+    for (let url = queue.shift(); url; url = queue.shift()) {
+      const path = url.href.slice(page.href.length)
+      expect(url.href.startsWith(page.href) && vendored.includes(path), `${url.href} is not vendored`).toBe(true)
+      if (loaded.includes(path)) continue
+      loaded.push(path)
+      const module = readFileSync(resolve(marketing, path), 'utf8')
+      expect(module, path).not.toMatch(/\bimport\s*\(/)
+      for (const [, specifier] of module.matchAll(/^(?:import|export)\b[^;'"]*?\bfrom\s*['"]([^'"]+)['"]|^import\s*['"]([^'"]+)['"]/gm)) {
+        queue.push(new URL(specifier!, url))
+      }
+    }
+    expect(loaded.sort()).toEqual(vendored.filter(path => path.endsWith('.js')))
   })
 
   it('keeps the plain hero and a working demo when Three.js cannot load', async () => {
     boot()
     const canvas = document.querySelector<HTMLCanvasElement>('#agent-visual')
     expect(canvas?.hidden).toBe(false)
-    stubModuleSupport({ importmap: true, modulepreload: true })
     const load = vi.fn((url: string) => Promise.reject(new TypeError(`Failed to fetch dynamically imported module: ${url}`)))
 
     await runHero(load)
@@ -243,21 +306,6 @@ describe('local marketing page', () => {
     button('#tab-plans').click()
     expect(button('#tab-plans').getAttribute('aria-selected')).toBe('true')
     expect(document.querySelector('#panel-plans')?.getAttribute('aria-hidden')).toBe('false')
-  })
-
-  it.each([
-    ['has no HTMLScriptElement.supports', { modulepreload: true }],
-    ['lacks import maps', { importmap: false, modulepreload: true }],
-    ['lacks module preloads', { importmap: true, modulepreload: false }],
-  ])('keeps the plain hero without loading Three.js when the browser %s', async (_, support) => {
-    boot()
-    stubModuleSupport(support)
-    const load = vi.fn((_url: string) => Promise.resolve({}))
-
-    await runHero(load)
-
-    expect(load).not.toHaveBeenCalled()
-    expect(document.querySelector<HTMLCanvasElement>('#agent-visual')?.hidden).toBe(true)
   })
 
   it('resizes the hero renderer only when the canvas size changes', async () => {
@@ -283,8 +331,57 @@ describe('local marketing page', () => {
     expect(hero.three.draws()).toBe(6)
   })
 
+  it('pauses the hero animation offscreen and resumes exactly one loop', async () => {
+    const hero = await startHero(false)
+    vi.advanceTimersToNextFrame()
+    expect(hero.three.draws()).toBe(2)
+
+    hero.intersect(false)
+    vi.advanceTimersToNextFrame()
+    vi.advanceTimersToNextFrame()
+    expect(hero.three.draws()).toBe(2)
+
+    hero.intersect(true)
+    vi.advanceTimersToNextFrame()
+    expect(hero.three.draws()).toBe(3)
+
+    // Repeated reports, a batch that ends in view, and a motion-preference event leave
+    // one loop: one draw per frame.
+    hero.intersect(true)
+    hero.intersect(false, true)
+    hero.setReducedMotion(false)
+    hero.intersect(true)
+    vi.advanceTimersToNextFrame()
+    expect(hero.three.draws()).toBe(4)
+    vi.advanceTimersToNextFrame()
+    expect(hero.three.draws()).toBe(5)
+
+    // The newest entry decides, so a batch that ends offscreen stops the loop.
+    hero.intersect(true, false)
+    vi.advanceTimersToNextFrame()
+    expect(hero.three.draws()).toBe(5)
+
+    // Reduced motion stops a visible hero; allowing motion again resumes one loop.
+    hero.intersect(true)
+    vi.advanceTimersToNextFrame()
+    expect(hero.three.draws()).toBe(6)
+    hero.setReducedMotion(true)
+    vi.advanceTimersToNextFrame()
+    expect(hero.three.draws()).toBe(6)
+    hero.setReducedMotion(false)
+    hero.setReducedMotion(false)
+    vi.advanceTimersToNextFrame()
+    expect(hero.three.draws()).toBe(7)
+  })
+
   it('redraws a reduced-motion hero after its canvas is resized', async () => {
     const hero = await startHero(true)
+    vi.advanceTimersToNextFrame()
+    expect(hero.three.draws()).toBe(1)
+
+    // Scrolling the hero away and back neither draws nor animates it.
+    hero.intersect(false)
+    hero.intersect(true)
     vi.advanceTimersToNextFrame()
     expect(hero.three.draws()).toBe(1)
 

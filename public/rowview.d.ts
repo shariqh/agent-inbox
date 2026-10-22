@@ -18,6 +18,12 @@ export interface RowItem {
   reply_seen_at?: string | null
   reply_kind?: 'answer' | 'clarify' | 'decline' | null
   snoozed_until?: string | null
+  /** issue #247 — the human set this ask aside with no return time. */
+  pinned_at?: string | null
+  /** issue #217 — who raised this ask, and the human's stop of its answer watcher. */
+  action_agent?: string | null
+  watch_stopped_at?: string | null
+  watch_stopped_until?: string | null
   action_owner?: 'decision' | 'task' | 'approval' | null
   impact?: string
   next_after?: string
@@ -44,6 +50,12 @@ export interface RowRow {
   handled_seen_at?: string | null
   handled_seen_by?: string | null
   snoozed_until?: string | null
+  /** issue #247 — the human set this ask aside with no return time. */
+  pinned_at?: string | null
+  /** issue #217 — who raised this ask, and the human's stop of its answer watcher. */
+  action_agent?: string | null
+  watch_stopped_at?: string | null
+  watch_stopped_until?: string | null
   action_owner?: 'decision' | 'task' | 'approval' | null
   impact?: string
   next_after?: string
@@ -53,10 +65,12 @@ export interface RowRow {
   revision?: number
 }
 
-export type Liveness = 'waiting' | 'parked' | 'stale' | 'snoozed'
+export type Liveness = 'waiting' | 'parked' | 'stale' | 'later'
+/** issue #247 — why a deferred ask sits out of the queue. */
+export type LaterReason = 'snoozed' | 'pinned'
 export type Entry =
-  | { kind: 'item'; item: RowItem; liveness: Liveness }
-  | { kind: 'row'; row: RowRow; board: RowBoard; liveness?: Liveness }
+  | { kind: 'item'; item: RowItem; liveness: Liveness; later?: LaterReason }
+  | { kind: 'row'; row: RowRow; board: RowBoard; liveness?: Liveness; later?: LaterReason }
 
 export interface RowModel {
   kind: 'item' | 'row'
@@ -75,6 +89,11 @@ export interface RowModel {
   created_at: string | null
   askedAt: string | null
   snoozedUntil: string | null
+  /** issue #247 — the deferred fold this ask sits in, or null outside one. */
+  later: LaterReason | null
+  pinnedAt: string | null
+  /** issue #217 — when a Copilot asker's watcher stops waiting quietly, or null. */
+  quietUntil: string | null
   ownerLabel: string
   actionCategory: 'decision' | 'task'
   changeKind: 'new' | 'changed' | null

@@ -4,13 +4,13 @@ import { join } from 'node:path'
 import type Database from 'better-sqlite3'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import replyWatch from '../electron/reply-watch.cjs'
-import { attentionEntries } from '../public/attention.js'
+import { attentionEntries, laterEntries } from '../public/attention.js'
 import type { AttentionBoard, AttentionItem } from '../public/attention.js'
 import { optionOrder } from '../public/card.js'
 import type { CardOption } from '../public/card.js'
 import {
-  annotateBoardRow, annotateItem, closeProject, dismissItem, getBoard, getItem, insertItem,
-  markReplySeen, openDb, replyItem, resolveItem, snoozeItem, upsertBoard,
+  advanceBoardRow, annotateBoardRow, annotateItem, closeProject, dismissItem, getBoard, getItem, insertItem,
+  markReplySeen, openDb, pinBoardRow, pinItem, replyItem, resolveItem, snoozeItem, upsertBoard,
 } from '../src/store.js'
 import type { NewBoardRow } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
@@ -200,7 +200,7 @@ describe('canned notification responses', () => {
     expect(main).toContain('cannedResponseActions(actionable ? optionOrder(actionable.item.options) : [])')
     expect(main).toContain('const entries = attn.map(attentionNotification)')
     expect(main).toContain('const fresh = freshAttentionNotifications(known, entries)')
-    expect(main).toContain('known = new Set(everything.map(attentionNotification).map((e) => e.id))')
+    expect(main).toContain('known = knownNotificationIds(everything, laterEntries(items, boards, Date.now()))')
     expect(main).toContain("note.on('action'")
     expect(main).toContain('submitNotificationResponse(URL_BASE, actionable.target, answer)')
     expect(main).toContain('refreshNotificationTarget')
@@ -208,6 +208,29 @@ describe('canned notification responses', () => {
     expect(main).toContain('if (polling) return')
     expect(main).toContain("poll().finally(() => { polling = false })")
     expect(main).toContain('notificationRetainer.show(note)')
+  })
+})
+
+describe('knownNotificationIds (#247)', () => {
+  const question = (id: string, over: Record<string, unknown> = {}) => ({
+    id, project: 'p', kind: 'question', status: 'open', reply: null, created_at: new Date(NOW).toISOString(), ...over,
+  })
+
+  it('counts every ask in attention plus the pinned asks, never a snoozed one', () => {
+    const pinnedRow = { id: 'r-pinned', status: 'blocked', annotation: null, annotation_unseen: false, revision: 4, pinned_at: new Date(NOW).toISOString() }
+    const snoozedRow = { id: 'r-snoozed', status: 'blocked', annotation: null, annotation_unseen: false, revision: 7, snoozed_until: new Date(NOW + MINUTE).toISOString() }
+    const open = { id: 'r-open', status: 'blocked', annotation: null, annotation_unseen: false, revision: 2 }
+    const boards = [{ id: 'b', project: 'p', title: 'Plan', revision: 9, rows: [open, pinnedRow, snoozedRow] }]
+    const items = [
+      question('q-open'),
+      question('q-pinned', { pinned_at: new Date(NOW).toISOString() }),
+      question('q-snoozed', { snoozed_until: new Date(NOW + MINUTE).toISOString() }),
+    ]
+    const known = replyWatch.knownNotificationIds(
+      attentionEntries(items, boards, NOW, []),
+      laterEntries(items, boards, NOW),
+    )
+    expect([...known].sort()).toEqual(['q:q-open', 'q:q-pinned', 'r:r-open:v2', 'r:r-pinned:v4'])
   })
 })
 
@@ -254,11 +277,25 @@ describe('native attention notifications', () => {
         needsYou: Array<{ items: AttentionItem[] }>
       }
       const items = grouped.needsYou.flatMap((group) => group.items)
-      const entries = attentionEntries(items, await latestBoards(), Date.now(), []).map(replyWatch.attentionNotification)
-      const fresh = replyWatch.freshAttentionNotifications(known, entries)
-      known = new Set(entries.map((entry) => entry.id))
+      const boards = await latestBoards()
+      const everything = attentionEntries(items, boards, Date.now(), [])
+      const fresh = replyWatch.freshAttentionNotifications(known, everything.map(replyWatch.attentionNotification))
+      known = replyWatch.knownNotificationIds(everything, laterEntries(items, boards, Date.now()))
       return fresh
     }
+  }
+
+  const post = async (route: string, body: unknown) => (await request(`${BASE}${route}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })).json()
+
+  const pinAsk = async (pinned: boolean) => {
+    const board = getBoard(db, PROJECT, TITLE)!
+    expect(await post(`api/boards/${board.id}/rows/${askRow().id}/later`, {
+      pinned, expected_revision: askRow().revision, expected_board_version: board.revision,
+    })).toEqual({ ok: true })
   }
 
   async function announceAsk(poll: ReturnType<typeof watch>) {
@@ -335,6 +372,64 @@ describe('native attention notifications', () => {
     const choice = askRow().options![1]!.label
     await replyWatch.submitNotificationResponse(BASE, fresh[0]!.target, choice, request)
     expect(askRow().annotation).toBe(choice)
+  })
+
+  // #247: a pin moves no revision, and `known` keeps pinned asks, so bringing
+  // one back — the human's own move — announces nothing, and the buttons on
+  // the notification already shown still apply.
+  it('does not re-announce a row the human pinned and brought back', async () => {
+    const poll = watch()
+    const shown = await announceAsk(poll)
+    await pinAsk(true)
+    expect(await poll()).toEqual([])
+    await pinAsk(false)
+    expect(await poll()).toEqual([])
+
+    await replyWatch.submitNotificationResponse(BASE, shown.target, 'Tomorrow', request)
+    expect(askRow()).toMatchObject({ annotation: 'Tomorrow', pinned_at: null })
+  })
+
+  it('announces a new action on a pinned row as a new ask', async () => {
+    const poll = watch()
+    const shown = await announceAsk(poll)
+    await pinAsk(true)
+    expect(await poll()).toEqual([])
+
+    const board = getBoard(db, PROJECT, TITLE)!
+    expect(advanceBoardRow(db, {
+      project: PROJECT, title: TITLE, label: ASK.label, agent: 'copilot',
+      expectedBoardVersion: board.revision, expectedRevision: askRow().revision,
+      note: 'The freeze moved.', next_step: 'Choose a window after the freeze.', action_owner: 'decision',
+      impact: 'Schedules the release.', options: [{ label: 'Friday', recommended: true }, { label: 'Monday' }],
+    })).toMatchObject({ ok: true })
+    expect(askRow().pinned_at).toBeNull()
+    const fresh = await poll()
+    expect(fresh).toHaveLength(1)
+    expect(fresh[0]!.id).not.toBe(shown.id)
+    expect(fresh[0]!.target).toMatchObject({ rowId: askRow().id, revision: askRow().revision })
+  })
+
+  it('announces a question again when its snooze ends, never when the human unpins it', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      vi.setSystemTime(NOW)
+      const poll = watch()
+      expect(await poll()).toEqual([])
+      const id = insertItem(db, { project: PROJECT, stream: '', agent: 'copilot', kind: 'question', title: 'Ship it?' })
+      expect(await poll()).toEqual([expect.objectContaining({ id: `q:${id}` })])
+
+      expect(await post(`api/items/${id}/later`, { pinned: true })).toEqual({ ok: true })
+      expect(await poll()).toEqual([])
+      expect(await post(`api/items/${id}/later`, { pinned: false })).toEqual({ ok: true })
+      expect(await poll()).toEqual([])
+
+      expect(await post(`api/items/${id}/snooze`, { until: new Date(NOW + 60 * MINUTE).toISOString() })).toEqual({ ok: true })
+      expect(await poll()).toEqual([])
+      vi.setSystemTime(NOW + 2 * 60 * MINUTE)
+      expect(await poll()).toEqual([expect.objectContaining({ id: `q:${id}` })])
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('keys a question by its id alone', async () => {
@@ -457,6 +552,7 @@ describe('the dock watcher lean item read (issue #156)', () => {
       replyItem(db, read, 'Done')
       expect(markReplySeen(db, read, getItem(db, read)!.replied_at)).toBe(true)
       snoozeItem(db, insertItem(db, { ...scope('beta'), kind: 'question', title: 'Snoozed' }), new Date(NOW + HOUR).toISOString())
+      expect(pinItem(db, insertItem(db, { ...scope('beta'), kind: 'question', title: 'Pinned' }), true)).toBe(true)
       resolveItem(db, insertItem(db, { ...scope('beta'), kind: 'question', title: 'Resolved' }), 'Finished.')
       dismissItem(db, insertItem(db, { ...scope('beta'), kind: 'question', title: 'Dismissed' }))
       annotateItem(db, insertItem(db, { ...scope('beta'), kind: 'note', title: 'Open note' }), 'Noted')
@@ -471,9 +567,12 @@ describe('the dock watcher lean item read (issue #156)', () => {
           { label: 'Approve', status: 'blocked' },
           { label: 'Choose', status: 'blocked' },
           { label: 'Track', status: 'tracked' },
+          { label: 'Set aside', status: 'blocked' },
         ],
       })
       annotateBoardRow(db, getBoard(db, 'alpha', 'Release')!.rows[1]!.id, 'Option B')
+      const release = getBoard(db, 'alpha', 'Release')!
+      expect(pinBoardRow(db, release.rows[3]!.id, true, release.rows[3]!.revision, release.revision)).toBe(true)
       vi.setSystemTime(NOW)
 
       const app = createViewer(db)
@@ -502,6 +601,12 @@ describe('the dock watcher lean item read (issue #156)', () => {
         expect(everything).toEqual(attentionEntries(before, boards, nowMs, ['live']))
         expect(new Set(visible.map((entry) => entry.kind))).toEqual(new Set(['item', 'row']))
         expect(everything.length).toBeGreaterThan(visible.length)
+        // #247: the pins ride the lean read too, so the dock's known set agrees.
+        const later = laterEntries(after, boards, nowMs)
+        expect(later).toEqual(laterEntries(before, boards, nowMs))
+        expect(later.filter((entry) => entry.later === 'pinned')).toHaveLength(2)
+        expect(replyWatch.knownNotificationIds(everything, later))
+          .toEqual(replyWatch.knownNotificationIds(attentionEntries(before, boards, nowMs, ['live']), laterEntries(before, boards, nowMs)))
       }
       expect(attentionEntries(after, boards, NOW + 2 * HOUR, ['live']).length)
         .toBeGreaterThan(attentionEntries(after, boards, NOW, ['live']).length)

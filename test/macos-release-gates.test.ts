@@ -798,6 +798,27 @@ describe('macOS release gates', () => {
     ])
   })
 
+  // #289: the final DMG is lzma-compressed (ULMO), which reads several times slower
+  // than zlib: attaching verifies every block's checksum, and copying the app out
+  // decompresses all of it. Neither may run into the gate's two-minute default.
+  it('gives attaching the final DMG and copying its app out longer than the default two minutes', async () => {
+    const timeouts = new Map<string, number | undefined>()
+    await withMountedDmg({
+      dmg: '/tmp/final.dmg',
+      mount: '/tmp/final-mount',
+      runCommand: (path, args, options) => {
+        timeouts.set(`${path} ${args[0]}`, options?.timeout)
+      },
+      verify: () => undefined,
+    })
+    expect(timeouts.get('/usr/bin/hdiutil attach')).toBeGreaterThan(120_000)
+    const source = readFileSync(join(root, 'scripts', 'macos-release-gates.mjs'), 'utf8')
+    expect(source).toContain(
+      "runCommand('/usr/bin/ditto', [join(mount, `${APP_NAME}.app`), copiedApp], { timeout: DMG_COPY_TIMEOUT_MS })",
+    )
+    expect(source).toMatch(/^const DMG_COPY_TIMEOUT_MS = 10 \* 60_000$/m)
+  })
+
   it('activates the temporary keychain and exactly restores the original user search list', () => {
     const harness = makeSigningHarness()
     const imported = spawnSync('bash', [join(root, 'scripts', 'import-apple-signing.sh'), 'import'], {

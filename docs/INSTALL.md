@@ -407,7 +407,10 @@ nothing is run to find this out.
   the installer write nothing where no Setup runtime's hooks are there, so Setup never
   installs hooks you don't have. If no agent needs
   moving, the step appears once the app's runtime is installed. In a browser tab, Setup
-  shows that command for a terminal instead. Hooks installed from a source checkout are
+  shows that command for a terminal instead. When Claude Code runs from a source
+  checkout, Setup never installs the app's runtime for it, so it shows the checkout's
+  own `npm run install:hooks -- --apply --replace-existing` (after a `cd` into the
+  checkout) to run in a terminal with Node 24. Hooks installed from a source checkout are
   never moved by Setup; switch them with `--replace-existing` (a 1.3.2 or later
   runtime), see [the backstop hooks](#5-optional-the-backstop-hooks-issues-10--21).
   Nor are hooks of a runtime outside Setup's folder, which Setup reports as not verified.

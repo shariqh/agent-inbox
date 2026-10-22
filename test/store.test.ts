@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
+import { writeFileSync } from 'node:fs'
 import Database from 'better-sqlite3'
 import {
   openDb,
@@ -3097,38 +3098,73 @@ describe('read-then-write transactions reserve the WAL writer (#154)', () => {
   const HOLD_MS = 500
   const betterSqlite3 = createRequire(import.meta.url).resolve('better-sqlite3')
   // A second OS process (the viewer, a hook, a sibling MCP server) that takes the
-  // write lock, runs optional `sql` inside it, says `held`, and commits HOLD_MS later.
+  // write lock, runs optional `sql` inside it and says `held`. It keeps the lock
+  // until the test asks for release by creating `releaseFile` (a synchronous
+  // write, so it lands even while the test's own thread is blocked in SQLite),
+  // then commits HOLD_MS later and says `released <monotonic ns>`, stamped just
+  // before COMMIT. Timing from the moment the test RECEIVED `held` flaked on busy
+  // runners (#316): the lock could already be gone by then. Never asked, it gives
+  // up after FAKE_WAIT_LIMIT_S (default 120 s) and exits 124, so an orphan ends (#286).
   const HOLD_WRITER = `
+    const fs = require('node:fs')
     const Database = require(process.argv[1])
     const db = new Database(process.argv[2])
     db.pragma('busy_timeout = 5000')
     db.exec('BEGIN IMMEDIATE')
-    if (process.argv[4]) db.exec(process.argv[4])
+    if (process.argv[5]) db.exec(process.argv[5])
     process.stdout.write('held\\n')
-    setTimeout(() => {
-      db.exec('COMMIT')
-      db.close()
-    }, Number(process.argv[3]))
+    const giveUp = Date.now() + Number(process.env.FAKE_WAIT_LIMIT_S || 120) * 1000
+    const poll = setInterval(() => {
+      if (fs.existsSync(process.argv[4])) {
+        clearInterval(poll)
+        setTimeout(() => {
+          const stamp = process.hrtime.bigint()
+          db.exec('COMMIT')
+          db.close()
+          process.stdout.write('released ' + stamp + '\\n')
+        }, Number(process.argv[3]))
+      } else if (Date.now() > giveUp) {
+        process.exit(124)
+      }
+    }, 5)
   `
 
-  async function holdWriteLock(path: string, sql = ''): Promise<{ exit: Promise<{ code: number | null; stderr: string }> }> {
-    const holder = spawn(process.execPath, ['-e', HOLD_WRITER, betterSqlite3, path, String(HOLD_MS), sql], {
+  interface HeldLock {
+    /** Ask the holder to commit HOLD_MS from now; returns at once. */
+    release: () => void
+    /** The holder's monotonic clock just before its COMMIT. */
+    released: Promise<bigint>
+    exit: Promise<{ code: number | null; stderr: string }>
+  }
+
+  async function holdWriteLock(path: string, sql = ''): Promise<HeldLock> {
+    const releaseFile = join(scratchDir('inbox-lock-release-'), 'release')
+    const holder = spawn(process.execPath, ['-e', HOLD_WRITER, betterSqlite3, path, String(HOLD_MS), releaseFile, sql], {
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     let stderr = ''
+    let stdout = ''
     holder.stderr.on('data', (chunk) => { stderr += String(chunk) })
     const exit = new Promise<{ code: number | null; stderr: string }>((resolve) => {
       holder.once('close', (code) => resolve({ code, stderr }))
     })
-    await new Promise<void>((resolve, reject) => {
-      holder.stdout.once('data', (chunk) => {
-        if (String(chunk) === 'held\n') resolve()
-        else reject(new Error(`unexpected lock-holder output: ${String(chunk)}`))
-      })
+    const line = (wanted: RegExp): Promise<RegExpMatchArray> => new Promise((resolve, reject) => {
+      const check = (): boolean => {
+        const match = stdout.match(wanted)
+        if (match) resolve(match)
+        return Boolean(match)
+      }
+      if (check()) return
+      const onData = (): void => { if (check()) holder.stdout.off('data', onData) }
+      holder.stdout.on('data', onData)
       holder.once('error', reject)
-      void exit.then(({ code }) => reject(new Error(`lock holder exited before taking the lock (${code}): ${stderr}`)))
+      void exit.then(({ code }) => { if (!check()) reject(new Error(`lock holder exited (${code}) before ${wanted}: ${stdout}${stderr}`)) })
     })
-    return { exit }
+    holder.stdout.on('data', (chunk) => { stdout += String(chunk) })
+    await line(/^held\n/)
+    const released = line(/^held\nreleased (\d+)\n/).then((match) => BigInt(match[1]!))
+    released.catch(() => {}) // a test that never releases still awaits exit
+    return { release: () => { writeFileSync(releaseFile, '') }, released, exit }
   }
 
   // Run `between` once, inside the store call, right after the first statement
@@ -3191,13 +3227,18 @@ describe('read-then-write transactions reserve the WAL writer (#154)', () => {
 
   it.each(writes)('%s waits out another process\'s write lock, then writes', async (_name, write) => {
     const { path, db, board } = seeded()
-    const { exit } = await holdWriteLock(path)
+    const { release, released, exit } = await holdWriteLock(path)
 
-    const started = Date.now()
+    // The lock is certainly held here: the holder commits only HOLD_MS after this
+    // request. The write must queue behind it (busy_timeout), never fail at once.
+    release()
+    const started = process.hrtime.bigint()
     write(db, board)
-    const waitedMs = Date.now() - started
+    const finished = process.hrtime.bigint()
+    const releasedAt = await released
 
-    expect(waitedMs, 'the write must wait for the holder, not fail at once').toBeGreaterThanOrEqual(250)
+    expect(started < releasedAt, 'the write started while the holder still had the lock').toBe(true)
+    expect(finished > releasedAt, 'the write completed only after the holder released the lock').toBe(true)
     expect(getBoard(db, 'p', 'B')!.rows[0]).toMatchObject({ status: 'partial', note: 'written' })
     expect(await exit).toMatchObject({ code: 0 })
     db.close()
@@ -3230,8 +3271,9 @@ describe('read-then-write transactions reserve the WAL writer (#154)', () => {
   // the holder is a genuine CAS refusal: the same error as ever, never a lock error.
   it('upsertBoard that waited still refuses a board version bumped under the lock', async () => {
     const { path, db, board } = seeded()
-    const { exit } = await holdWriteLock(path, `UPDATE boards SET revision = revision + 1 WHERE id = '${board.id}'`)
+    const { release, exit } = await holdWriteLock(path, `UPDATE boards SET revision = revision + 1 WHERE id = '${board.id}'`)
 
+    release()
     expect(() => { upsertAsRead(db, board) })
       .toThrow(`board version mismatch for "B": expected ${board.revision}, found ${board.revision + 1}`)
     expect(await exit).toMatchObject({ code: 0 })
@@ -3242,8 +3284,9 @@ describe('read-then-write transactions reserve the WAL writer (#154)', () => {
   it('updateBoardRow that waited still refuses a row revision bumped under the lock', async () => {
     const { path, db, board } = seeded()
     const row = board.rows[0]!
-    const { exit } = await holdWriteLock(path, `UPDATE board_rows SET revision = revision + 1 WHERE id = '${row.id}'`)
+    const { release, exit } = await holdWriteLock(path, `UPDATE board_rows SET revision = revision + 1 WHERE id = '${row.id}'`)
 
+    release()
     expect(() => { updateRowAsRead(db, board) })
       .toThrow(`board row revision mismatch for "one": expected ${row.revision}, found ${row.revision + 1}`)
     expect(await exit).toMatchObject({ code: 0 })
@@ -3258,8 +3301,9 @@ describe('read-then-write transactions reserve the WAL writer (#154)', () => {
     const db = openDb(path)
     upsertBoard(db, { project: 'p', stream: '', agent: 'a', title: 'B', rows: [{ label: 'one', status: 'tracked' }, { label: 'two', status: 'tracked' }] })
     const board = getBoard(db, 'p', 'B')!
-    const { exit } = await holdWriteLock(path, `UPDATE board_rows SET waits_on = '["one"]' WHERE label = 'two'`)
+    const { release, exit } = await holdWriteLock(path, `UPDATE board_rows SET waits_on = '["one"]' WHERE label = 'two'`)
 
+    release()
     expect(() => {
       writeBoardRow(db, {
         project: 'p', stream: '', agent: 'a', title: 'B', label: 'one',

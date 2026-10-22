@@ -126,6 +126,23 @@ Win32 drive, namespace, ADS, case, junction, and rename-failure cases are inject
 models only; they are not native Windows release evidence and do not widen the Darwin-only
 release profile.
 
+## DMG format
+
+Layer 2's provisional DMG and Layer 3's final DMG (built from the stapled app) both come
+from `createReleaseDmg()` in `scripts/macos-dmg.mjs`, so they share one layout and one
+format: lzma-compressed `ULMO` (#289). The v1.5.0 DMG measured 338.7 MB as zlib `UDZO`
+and 254.4 MB as `ULMO`, 25% less to download. `ULMO` needs macOS 10.15, below the app's
+13.5 minimum. The in-app updater of every release since 1.3.0 attaches the DMG with the
+same fixed `hdiutil attach -readonly -nobrowse -noautoopen` flags, which verify the image's
+checksums and read `ULMO` as they read `UDZO`. The builder fails unless
+`hdiutil imageinfo -format` reports `ULMO`, before anything signs or notarizes the image.
+
+lzma costs time. Building the v1.5.0 app's DMG took about 15 seconds longer on an M1 Max,
+and mounting it (which verifies every block's checksum) and copying the app out, as
+Finder and the in-app updater do, took two to three times as long as with `UDZO`. The
+release gate therefore allows 5 minutes for the attach and 10 for the copy instead of its
+2-minute default, the same limits the in-app updater uses for those two steps.
+
 ## Signing modes
 
 `adhoc` is the no-secret PR/local mode. It signs with `-`, disables secure timestamps,

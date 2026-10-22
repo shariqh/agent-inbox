@@ -55,10 +55,12 @@ const BOOKMARK_MAGIC = Buffer.from('book\0\0\0\0mark', 'latin1')
 // default app: documents whose default handler shows them rather than running
 // them. A browser runs a page's or an SVG's script only in its own sandbox.
 // Code files (py, rb, sh, …) are not here, because their default app may run
-// them; anything else is only revealed.
+// them, and neither is XML: on Windows, Office's handler sends a .xml that
+// names Word to Word, and Word 2003 XML can carry macros. Anything else is only
+// revealed.
 const OPENABLE_EXTENSIONS = new Set([
   'csv', 'diff', 'gif', 'heic', 'htm', 'html', 'jpeg', 'jpg', 'json', 'jsonl', 'log', 'markdown', 'md', 'mov',
-  'mp4', 'patch', 'pdf', 'png', 'svg', 'text', 'toml', 'tsv', 'txt', 'webp', 'xml', 'yaml', 'yml',
+  'mp4', 'patch', 'pdf', 'png', 'svg', 'text', 'toml', 'tsv', 'txt', 'webp', 'yaml', 'yml',
 ])
 
 // Lowercased, without the dot. Never opened, whatever app claims them or any

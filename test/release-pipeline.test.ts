@@ -681,11 +681,12 @@ describe('universal finalization contract', () => {
     }
   })
 
-  it('compiles better-sqlite3 in every install where a release is built, signed or verified (#315)', () => {
+  it('compiles better-sqlite3 in every install and lets setup-node cache nothing where a release is built, signed or verified (#315)', () => {
     // Nothing from the checkout's own npm ci ships, but scripts and tests load its
-    // better-sqlite3 in jobs that hold the signing and notary secrets, so it takes
-    // no prebuild either, and setup-node restores no cache of its own accord.
-    // ci.yml holds no secret and keeps its prebuilds.
+    // better-sqlite3 in jobs that build the release or hold the signing and notary
+    // secrets, so it takes no prebuild either, and setup-node restores no cache of its
+    // own accord (its package-manager-cache input defaults to true). ci.yml holds no
+    // secret and keeps its prebuilds.
     type Step = { line: number, indent: number, lines: string[] }
     const indentOf = (line: string): number => line.match(/^ */)?.[0].length ?? 0
     const isContent = (line: string): boolean => line.trim() !== '' && !line.trim().startsWith('#')

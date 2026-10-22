@@ -29,8 +29,12 @@ against headers node-gyp would download. Neither file enters the runtime payload
 - The Electron app is packaged natively with a separate Electron-ABI
   `better-sqlite3` rebuild, compiled from the lockfile-pinned source: the stage installs
   with `npm ci --ignore-scripts` and `@electron/rebuild` runs with `buildFromSource`, so no
-  cached or downloaded prebuild can stand in for it (#315), and the workflow restores no
-  npm cache. The packaged Electron runs the same allocation-driven SQLite
+  cached or downloaded prebuild can stand in for it (#315). The workflow restores no
+  npm cache (`package-manager-cache: false` on setup-node too), and its checkout-level
+  `npm ci` sets `npm_config_build_from_source=true`, so the copy its scripts and tests
+  load is compiled as well, against headers and `node.lib` node-gyp downloads for the
+  runner's Node and checks against that release's `SHASUMS256.txt`. The packaged
+  Electron runs the same allocation-driven SQLite
   check in Node mode against its own addon and `dist/store.js`, and the packaged update
   verifier, trust boundary and key registry must match the source byte for byte. The
   folder never checks for or installs updates: Electron enables the updater only on

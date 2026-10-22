@@ -387,6 +387,7 @@ Run the build before `npm run electron`; the development shell starts the built
   listener invocation counts because window/document listeners accumulate
   across repeated boots in one test file.
 - jsdom cannot validate this project's media-query layer, unresolved CSS
-  variables, silently dropped declarations, or the affected `font` shorthand.
+  variables, silently dropped declarations, the affected `font` shorthand, or
+  which of two competing rules wins when one is a selector list.
   Cover those cases with pure-JS behavior or source-level assertions instead of
   treating computed style as evidence.

@@ -968,8 +968,10 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   reaches the badge, a tab or the rail. Its order is `sortLaterEntries` (snoozed soonest back
   first, then pinned oldest first, ties by a stable key), never the Sort menu. Rows are
   ordinary `.nrow`s whose way back is always "Back to inbox"; only their lines are dimmed,
-  never the section (nor, with the setting off, the snoozed and pinned folds), because the
-  desktop inspector is fixed inside its row and an ancestor's opacity would fade it. The empty state says `Nothing needs you now · N in Later`; search
+  never the section (nor the snoozed, pinned or stale fold, which dim their summary and row
+  lines instead), because the desktop inspector is fixed inside its row and an ancestor's
+  opacity would fade it and trap it in the fold's stacking context. Only the unsent-responses
+  fold, which holds no rows, is dimmed whole. The empty state says `Nothing needs you now · N in Later`; search
   marks an Open items question in Later with a `Later` label (`markLaterResults`, with the
   closed set the section uses, beside the
   clock, so a snooze ending changes the result signature). Off: slice 2's snoozed and pinned
@@ -1204,7 +1206,7 @@ then imports `public/app.js` **unmodified** — top-level side effects and all.
 CSS: `getComputedStyle` over an attached `public/style.css` genuinely resolves specificity,
 source order, `!important`, `:has()` and `color-mix()` — that is what makes the
 `.answer-btn` geometry test in `test/dom/css-cascade.test.ts` catch the real 13819d2
-regression. **Four verified blind spots; only literal lengths and keywords are trustworthy:**
+regression. **Five verified blind spots; only literal lengths and keywords are trustworthy:**
 
 1. **`@media` never matches.** jsdom's media-list evaluation only answers `all`/`screen`,
    so style.css's single `@media (max-width: 1279px)` block — the ENTIRE spec §14 responsive
@@ -1218,8 +1220,12 @@ regression. **Four verified blind spots; only literal lengths and keywords are t
    13819d2 bug would pass VACUOUSLY on the buggy sheet. This is the dangerous one.
 4. **The `font:` shorthand clobbers a later longhand.** `.answer-btn` declares
    `font: inherit; … font-weight: 600` and jsdom computes `normal`.
+5. **A selector list can outrank a later rule of equal specificity.** With
+   `.a > b, .c > d { opacity: .6 }` before `.e > b { opacity: 1 }`, jsdom computes `.6` for
+   an element both match, where browsers apply the later rule. When rules that compete for
+   one element must be measured, make their selectors disjoint (#247's fold dimming does).
 
-An overstated harness is worse than none. If an assertion falls in one of those four, it is
+An overstated harness is worse than none. If an assertion falls in one of those five, it is
 not evidence — delete it or move it to a source pin.
 
 ## Conventions

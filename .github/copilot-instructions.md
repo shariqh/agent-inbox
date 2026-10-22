@@ -231,7 +231,9 @@ Run the build before `npm run electron`; the development shell starts the built
   omits them so the viewer offers "I've done my part." Long history belongs in
   collapsed `context`.
 - Snoozed and pinned work (#247) leaves badge attention but remains in the explicit
-  snoozed and pinned folds (`laterEntries`, tagged by reason; a pin wins).
+  snoozed and pinned folds (`laterEntries`, tagged by reason; a pin wins). Every
+  deferral goes through `deferAsk`: an ask that holds a draft opens its fold and
+  keeps the open card, so a draft that pauses the list is never hidden.
   Clarify/decline are response kinds, not outcomes. `board_advance` is the only
   same-row chain operation: it CAS-pins row `revision`, archives the prior step,
   and clears human/delivery state atomically. Agent reads get `history_count`, not

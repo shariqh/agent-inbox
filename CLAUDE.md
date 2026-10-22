@@ -865,12 +865,16 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   "Pin for later" is the first choice in More responses on an unanswered open
   question or an unanswered blocked row of an active plan, and is not drawn on one already
   pinned; it posts to the `later` route with the row and board revisions and ends in
-  `reloadAndPaint()`, like every human write. Deferred rows carry a reason chip instead of an
-  urgency (`Pinned 2d ago`, `Back in 3h`, `… · agent waits quietly` while a Copilot asker's
-  #217 deferral runs). Electron's `known` set is the unsuppressed attention set plus the
-  `pinned` Later entries (`knownNotificationIds` in `electron/reply-watch.cjs`): a pin moves no
-  revision, so Back to inbox announces nothing, while a snooze that ends and a new action are
-  announced. The Later section, its setting and the "I'll take a while" coupling are slice 3.
+  `reloadAndPaint()`, like every human write. Every deferral, pin or snooze, goes through
+  `deferAsk`. When the ask holds a draft, its fold opens and the ask keeps the open card (or,
+  from the Review queue or a plan panel, takes it, widening a list filter that would hide it):
+  a draft pauses the list by design, so a deferral must never carry it out of sight. Deferred
+  rows carry a reason chip instead of an urgency (`Pinned 2d ago`, `Back in 3h`,
+  `… · agent waits quietly` while a Copilot asker's #217 deferral runs). Electron's `known`
+  set is the unsuppressed attention set plus the `pinned` Later entries
+  (`knownNotificationIds` in `electron/reply-watch.cjs`): a pin moves no revision, so Back to
+  inbox announces nothing, while a snooze that ends and a new action are announced. The Later
+  section, its setting and the "I'll take a while" coupling are slice 3.
 
 - **Agent setup is explicit, dry-run-first, and owns only marked text.**
   `scripts/install-agents.sh` is the supported bridge between two configuration systems:
